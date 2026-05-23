@@ -447,7 +447,19 @@ export async function committerDrainVerb(
   bootstrapOrchdImport({
     db: ctx.db,
     mergeDeps: {
-      dispatchEpicMerge: async (epicId) => dispatchEpicMergeImport({ epicId }),
+      // ADR-232 §D2.a wire-up: pass `localTeamName` so the dispatcher's
+      // local-cage-skip guard fires when the epic resolves to the
+      // running cage (prevents self-dispatch loops per the amendment).
+      // `resolveCage` + `invokeLocal` deliberately omitted in v1: the
+      // dispatcher's default cage-not-found path is QUIET
+      // (skipped-not-mine, no flag-add per the c477954-fix amendment) —
+      // the merge still fires via the in-cage `atmux epic-merge tick`
+      // cron path (ADR-091). Wire-up is sufficient for the §D3
+      // safety-net semantics; full cage-registry walker + EpicMergeContext
+      // assembly land in a follow-up Task once the transport choice
+      // (ADR-232 §D2.b OQ-1) resolves.
+      dispatchEpicMerge: async (epicId) =>
+        dispatchEpicMergeImport({ epicId }, { localTeamName: ctx.team.name }),
     },
     dissolveDeps: {
       dispatchDissolveEpic: async (epicId) =>
@@ -462,6 +474,17 @@ export async function committerDrainVerb(
           { cage: ctx.team.name, branch: parentBase },
           { localCageName: ctx.team.name },
         ),
+    },
+    // ADR-231 §D2 — orchd auto-spawn handler wire-up. Passes
+    // atmuxDir + the running cage's team config so
+    // effectiveAutoSpawn can resolve per-team defaults[] and
+    // spawnEpicHandler can stamp `spawned_at` via the local
+    // state.db. Without this wire-up, the spawn subscriptions
+    // register with a stub that returns `skipped-row-missing` for
+    // every event (safe no-op pre-T-S2.5).
+    spawnDeps: {
+      atmuxDir: ctx.atmuxDir,
+      team: ctx.team,
     },
   });
   let orchdProcessed = 0;
@@ -539,6 +562,20 @@ export async function committerDaemonVerb(
           });
           externalSignals = nativeListener.signals;
           wakeMode = "native-listener";
+          // Abort-bind: SIGINT/SIGTERM → ac.abort() (set above) doesn't
+          // interrupt the subprocess stdout read inside watchEvents'
+          // `for await (... of externalSignals)`. Closing the listener
+          // ends the iterator, which falls through to poll mode where
+          // the abort signal IS honored. Without this, --daemon hangs
+          // until the subprocess writes another line or the parent dies.
+          const stopOnAbort = (): void => {
+            try {
+              nativeListener?.stop();
+            } catch {
+              // ignore — best-effort cleanup
+            }
+          };
+          ac.signal.addEventListener("abort", stopOnAbort, { once: true });
         } catch (e) {
           ctx.logger.log(
             `committer --daemon: native listener spawn failed (${e instanceof Error ? e.message : String(e)}) — falling back to poll`,

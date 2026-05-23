@@ -421,6 +421,36 @@ export function renderCronLines(opts: RenderCronBlockOpts): string[] {
     out.push(`* * * * * ${baseEnv} orchd --drain ${logTail("orchd-drain")}`);
   }
 
+  // 11b. ADR-231 §D4 — orchd auto-spawn cron backstop. Single-shot
+  // `atmux orchd --sweep` walks the kanban for eligible epics + the
+  // resolveSoloWorkerMembers() list, invoking `spawnEpicHandler` /
+  // `dissolveSoloWorkerHandler` for any that match (§D2 + §D6).
+  // Pairs with the event-driven primary trigger (`epic.ready` +
+  // `epic.unblocked` subscriptions) — the cron line is the resilience
+  // backstop for Honker socket churn / NOTIFY gaps / orchd restart-
+  // induced wake loss; worst-case spawn latency stays ≤ cadence
+  // (default 5min).
+  //
+  // Cadence resolution: per-team `team.autoSpawn.sweepCron` wins
+  // (loose-validated by schema via TeamAutoSpawn — 5-field cron
+  // string presence only); else `'*/5 * * * *'` default per
+  // ADR-231 §D4 OQ-C resolution. NOT routed through `cronEvery()`
+  // because cron expressions support non-divisor minutes / hour /
+  // day-of-month / day-of-week patterns the cronEvery helper rejects
+  // by design.
+  //
+  // Unconditional emit: both handlers exit silently when no kanban
+  // row matches (§D2 step 3 autoSpawn gate; §D6 solo-worker scope)
+  // — cheap idle ticks are acceptable, gating on `team.autoSpawn !==
+  // undefined` would suppress the solo-worker-dissolve half of the
+  // sweep for teams that opt into solo-worker but not autoSpawn.
+  //
+  // ADR-192 idempotency: sandwich-marker block re-renders byte-
+  // identical given same opts (same `team.autoSpawn.sweepCron`),
+  // so `atmux start` re-runs are no-ops on the crontab.
+  const sweepCron = team.autoSpawn?.sweepCron ?? "*/5 * * * *";
+  out.push(`${sweepCron} ${baseEnv} orchd --sweep ${logTail("orchd-sweep")}`);
+
   // 12. ADR-091 §State machine — epic-merge-tick: fires `atmux epic-
   // merge tick` every N minutes (default
   // DEFAULT_EPIC_MERGE_CRON_INTERVAL_MINS = 5) when the team is an

@@ -1,6 +1,6 @@
 # ADR-231: orchd auto-spawn + solo-worker dissolve loop semantics — Honker consumer of ADR-224 §D6 registry + ADR-225 eligibility substrate
 
-**Status**: proposed (deferred: implementation lands across e-60e16169 Phase 2 tasks under Epic e-1-118d16a9; status flips to `accepted` at reviewer trunk-signoff per the standard ADR lifecycle for this team)
+**Status**: Accepted (Phase 2 shipped) — ratified by reviewer 2026-05-23 (Phase 2 substrate shipped via EPIC `e-60e16169`: ADR-231 §D2/§D3/§D4/§D5/§D6 implemented across 20 commits `41aafa6..9eb0fe2`; OQ-1 resolved at Phase 1 `d0a808f` as 1-release alias; OQ-3 architecturally moot per §Open questions amendment below; OQ-2 + OQ-4 remain deferred per low-rev / sibling-EPIC convention). Reviewer trunk-signoff: [`docs/reviews/t-19-08071e59-trunk-signoff-2026-05-23.md`](../reviews/t-19-08071e59-trunk-signoff-2026-05-23.md).
 **Date**: 2026-05-23
 **Renumber note (2026-05-23 14:00 MYT)**: this ADR was originally committed as ADR-226 at 029ae9c (P2.T1 on branch atmux-geoyws-epic-e-60e16169). Renumbered to ADR-231 after parent trunk's ADR-226 ('orchd auto-merge subscriber', Phase 3 of sibling EPIC e-a946af69) shipped concurrently at trunk commit 8d75360 (0.8.13 deployed 2026-05-23). Driver-confirmed reconcile via planner OQ-PLANNER1 (Option A): renumber + merge parent base + cross-ref sweep. Parent trunk now reserves 224 (rename/Phase1+2 frame) / 225 (deps+isReady substrate) / 226 (auto-merge P3) / 227 (auto-dissolve P4) / 228 (spawn-queue+pressure-monitor P5) / 229 (auto-push) / 230 (cockpit-mirror); 231 is the next free slot.
 **Driver-ref**: EPIC e-60e16169 Phase 2 (master design-task t-10d9f702 in parent atmux kanban; OQ-PLANNER1 reconcile resolution 2026-05-23 14:00 MYT via lead-outbox). Split decision per ADR-224 §D4 heuristic: §Phase 2 introduced a new top-level concept (consumption pattern for sibling ADR-225's eligibility substrate) AND the per-decision narrative is cleaner in two ADRs than one. ADR-225 (sibling EPIC e-cf8a6195, accepted) became available on trunk via commit 4870833 — making it possible to write this consumer ADR concretely instead of speculatively. Title sharpened from "auto-spawn + auto-dissolve" to "auto-spawn + solo-worker dissolve" to disambiguate from parent's ADR-227 (Phase 4 'orchd auto-dissolve epic-team subscriber') which dissolves epic-teams on `epic.merged` — distinct from this ADR's `task.done`-triggered solo-worker dissolve (closes ADR-221 §Phase 2).
@@ -16,7 +16,7 @@ Phase 2 of EPIC e-60e16169 is the orchestration loop on top of two substrates th
 Phase 2 is the **consumer** that glues these two together with three additional concerns:
 
 - **autoSpawn opt-in** — per-epic config in `epics.extra.autoSpawn` plus per-team defaults in `team.json::autoSpawn.defaults`. ADR-225's `is_ready=1` is operator authorization to *spawn at all*; `autoSpawn=true` is operator authorization to *let orchd do it automatically without manual `atmux team spawn-epic` keystroke*.
-- **Dedup** — `epics.spawned_at` Unix-epoch timestamp column (migration v14→v15, sequenced after ADR-225's v13→v14). orchd skips epics where IS NOT NULL.
+- **Dedup** — `epics.spawned_at` Unix-epoch timestamp column (migration v15→v16, sequenced after ADR-228 spawn_queue v14→v15 + ADR-225 deps/is_ready v13→v14; renumbered from the original v14→v15 at impl time, t-6-8db78adf, since the spawn_queue migration claimed v14→v15 at sibling EPIC e-a946af69 fan-in 8d75360). orchd skips epics where IS NOT NULL.
 - **Failure recovery** — operator-visible flag emission for spawn failures, with a host-pressure transient carve-out (ADR-184 cap refusal is not a real failure, just defer).
 
 The original Phase 2 sketch in ADR-224 §D4 specified `epic.added` as the trigger. **Sibling ADR-225 makes this obsolete**: `epic.added` fires on decomposition land (epic may not be ready); `epic.ready` + `epic.unblocked` fire on the actual eligibility transition. Using the ADR-225 events avoids a race window where orchd would otherwise spawn-epic an epic whose `is_ready=0` (and waste a spawn-epic invocation on the predicate refusal). This ADR adopts the ADR-225 events as the canonical triggers.
@@ -139,12 +139,12 @@ OQ4 resolution (per `.atmux/decisions.md` D4). Three classes:
 Algorithm:
 
 1. Load task via `KanbanTask.findById(taskId)`. If row missing (race-deleted), exit silently.
-2. Resolve the task's owning member's team scope. If the member is NOT in a solo-worker-spawned team (per ADR-221 §D-solo-worker-classifier — implementation detail, lives in `src/core/solo-worker.ts`), exit silently.
+2. Resolve the task's owning member's team scope. If the member is NOT in a solo-worker-spawned team (classifier: `team.name.startsWith("w-")` per ADR-221 §v2 line 72; implementation lives in `src/core/solo-worker.ts::isSoloWorkerTeamName`), exit silently.
 3. If solo-worker AND `KanbanTask.findAllByOwner(member).filter(t => t.status !== 'done').length > 0`, exit silently (pending work).
-4. If solo-worker AND ALL their tasks are done, invoke `atmux team stop --team <worker-team-name>` to dissolve.
-5. Failure: emit flag `orchd: dissolve failed for worker-team <name>: <stderrTail>`. No retry (mirrors §D5).
+4. If solo-worker AND ALL their tasks are done, invoke `atmux team dissolve-worker <worker-team-name>` to dissolve. *§Amendment 2026-05-23-be1 (t-15-6a65eadb impl): the original §D6 wording named `atmux team stop --team <name>` — that verb form doesn't exist in the codebase (only `atmux stop --team-dir <path>` and the canonical `atmux team dissolve-worker <id>` per ADR-221 §v2 line 68). `dissolve-worker` is the correct dissolve verb (handles cockpit cleanup + kanban Epic row transition via the shared `dissolveEpic` core) and the verb ADR-221 §v2 always intended for auto-dissolve. §D6 step 4 corrected here.*
+5. Failure: emit flag `orchd: dissolve failed for worker-team <name>: <stderrTail>` via `atmux flag add --severity p1 --needs unblock`. No retry (mirrors §D5).
 
-Idempotency: re-delivery is no-op. `atmux team stop` is idempotent per ADR-090 (second invocation on already-stopped team is a clean no-op). Honker offset advance only on handler-success ensures re-delivery happens if the handler throws.
+Idempotency: re-delivery after a successful dissolve causes the second `dissolve-worker` invocation to refuse with non-zero exit (epic-team not found in cockpit). The handler classifies that as `escalated` + raises a flag for operator triage — the operator's flag review confirms it's the already-dissolved benign case, no automated retry needed. Honker offset advance only on handler-success ensures re-delivery happens if the handler throws.
 
 ### D7 — Implementation file layout (handler-as-data; orchd.ts stays thin)
 
@@ -153,9 +153,9 @@ Idempotency: re-delivery is no-op. `atmux team stop` is idempotent per ADR-090 (
 | `src/verbs/orchd.ts` | CLI entrypoint: `--start` (daemon loop iterating ORCHD_SUBSCRIPTIONS), `--drain` (one-pass + exit), `--sweep` (cron backstop entrypoint). No handler logic. |
 | `src/core/orchd-registry.ts` | `OrchdSubscription` interface + `ORCHD_SUBSCRIPTIONS` array. Phase 2 appends 3 entries (2 spawn-triggers + 1 dissolve). |
 | `src/core/orchd-spawn.ts` | `spawnEpicHandler` + `effectiveAutoSpawn` + host-pressure classifier. |
-| `src/core/orchd-dissolve.ts` | `dissolveSoloWorkerHandler`. |
+| `src/core/orchd-dissolve-solo-worker.ts` | `dissolveSoloWorkerHandler` + `orchdDissolveSoloWorkerConsume` (consumer surface mirroring `orchd-merge.ts`). *§Amendment 2026-05-23-be1 (t-15-6a65eadb impl): file renamed from the original `orchd-dissolve.ts` because sibling EPIC `e-a946af69` fan-in (commit 8d75360) shipped Phase 4 epic-team auto-dissolve at that path — distinct scope (per-epic vs per-task), distinct topic (`epic.pushed` vs `task.done`), distinct consumerId (`atmux:orchd:auto-dissolve` vs `atmux:orchd:dissolve-solo-worker`). The two files coexist; this ADR's handler now lives at the `-solo-worker` suffix to avoid path collision with parent's Phase 4.* |
 | `src/core/orchd-sweep.ts` | `--sweep` walker. Imports + reuses handlers from orchd-spawn.ts + orchd-dissolve.ts (NOT duplicate logic). |
-| `src/abstractions/sqlite-migrations.ts` | Migration v14→v15: `ALTER TABLE epics ADD COLUMN spawned_at INTEGER`. |
+| `src/abstractions/sqlite-migrations.ts` | Migration v15→v16: `ALTER TABLE epics ADD COLUMN spawned_at INTEGER`. (Renumbered from v14→v15 at impl time, t-6-8db78adf, since ADR-228 spawn_queue claimed v14→v15 at sibling EPIC e-a946af69 fan-in 8d75360.) |
 | `src/schema/kanban.ts` | Extend `KanbanEpic.extra.autoSpawn` Zod sub-shape; add `spawnedAt: z.number().nullable().optional()`. (Do NOT touch `dependsOn` / `isReady` — those are ADR-225 territory.) |
 | `src/schema/team.ts` (or wherever team.json is parsed) | Add `autoSpawn.defaults[]` + `autoSpawn.sweepCron` Zod shape. |
 | `src/verbs/epic.ts` | Add `--auto-spawn` / `--roster` / `--force-spawn` flags to `atmux epic add`. |
@@ -168,7 +168,7 @@ orchd.ts remains <100 LOC after Phase 2 (the handlers ARE the substance; orchd.t
 
 - Trigger topics revised: `epic.added` (original sketch) → `epic.ready` + `epic.unblocked` (this ADR). Aligns with ADR-225 eligibility model; no wasted spawn-epic invocations on un-ready epics.
 - `epicIsEligible()` predicate (ADR-225 export) becomes a hard dependency. orchd no longer carries cycle-detection or dep-walking logic — defers entirely to ADR-225's predicate.
-- New `spawned_at` migration sequenced AFTER sibling's v13→v14 (this is v14→v15).
+- New `spawned_at` migration sequenced AFTER both ADR-225's v13→v14 (deps + is_ready) AND ADR-228's v14→v15 (spawn_queue, sibling EPIC e-a946af69 fan-in 8d75360); this lands as v15→v16. Renumbered from the original v14→v15 at impl time (t-6-8db78adf) per ADR-126 §single-ladder append-only invariant.
 - Failure recovery model gains 3-way classification: hard / host-pressure / eligibility-race. The eligibility-race class is silent (let next event re-fire); host-pressure has its own flag distinct from hard-failure flag.
 
 **What workers see**:
@@ -194,9 +194,9 @@ Schema rollback: `epics.spawned_at` column stays in place (additive migration pe
 
 ## Open questions
 
-1. **OQ-1 (carry-forward from ADR-224 OQ-B): deprecation alias `atmux relayd` survives one release or two?** — default 1 release; reviewer may extend at Phase 1 trunk-signoff time. Status: deferred to Phase 1 reviewer decision.
+1. **OQ-1 (carry-forward from ADR-224 OQ-B): deprecation alias `atmux relayd` survives one release or two?** — **RESOLVED 2026-05-22 (Phase 1 reviewer trunk-signoff `d0a808f`)**: **one release**. Per ADR-224 §D1 deprecation table the alias removes next release; `LEGACY_RELAYD_WINDOW` const at `src/core/orchd-window.ts:43` is paired to the alias removal (single commit, both citing ADR-224 §D1 / §D2 sunset). Original default 1 release stood; reviewer did not extend.
 2. **OQ-2: should `autoSpawn.defaults[]` per-team policy support negative-match (regex match → DISABLE auto-spawn for matched titles)?** — punted. Default: only positive matches in v1. If operator surfaces a use case (e.g. "match `[do-not-spawn]` title prefix to disable"), file an amendment Task. Status: deferred until operator demand.
-3. **OQ-3: should `spawnPressureDeferred` counter reset to 0 on successful spawn-epic?** — lean: yes (counter is "consecutive failures"; success resets). Resolve at P2.T4 (`t-13acce38`) impl time. Status: deferred to implementation review.
+3. **OQ-3: should `spawnPressureDeferred` counter reset to 0 on successful spawn-epic?** — **RESOLVED 2026-05-23 (Phase 2 reviewer trunk-signoff t-19, this ADR)**: **architecturally moot — no explicit reset implemented or required.** Rationale: §D2 step 2 (`spawned_at IS NOT NULL → skipped-already-spawned`) short-circuits the handler for every event post-success; `incrementSpawnPressureDeferred` at `src/core/orchd-spawn.ts:349` is therefore unreachable after the first success for the epic's lifetime. The counter is consecutive-failures-until-first-success, and first-success ends the "consecutive" series by making further increments structurally impossible. If the operator manually clears `spawned_at` (re-enables the epic after a cage dissolve), the same explicit reset should also zero `spawnPressureDeferred` — operator-owned, not handler-owned. Implementation choice: keep success path minimal at `UPDATE epics SET spawned_at = ? WHERE id = ?` — no counter touch.
 4. **OQ-4: should orchd emit its own observability events (`orchd.spawn_attempted`, `orchd.spawn_succeeded`, `orchd.spawn_failed`) for cockpit-mirror consumption?** — deferred. ADR-203 §D2 closed v1 topic set; adding orchd-domain topics needs its own ADR amendment per the same gate ADR-225 §"Events" used. Punt until sibling EPIC e-a946af69 Phase 5 (throttle) lands and the throttle layer needs the visibility. Status: deferred to sibling EPIC.
 
-Resolve OQ-1 + OQ-3 before flipping `Status: accepted`. OQ-2 + OQ-4 may flip to `Status: accepted` while deferred (low-rev; explicit "we'll decide when it matters").
+OQ-1 + OQ-3 resolved per above (gating `Status: accepted` lifted). OQ-2 + OQ-4 remain deferred (low-rev; explicit "we'll decide when it matters"); they did NOT gate this acceptance flip.

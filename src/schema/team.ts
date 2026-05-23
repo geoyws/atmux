@@ -980,6 +980,97 @@ export const TeamAutoPush = z
   );
 export type TeamAutoPush = z.infer<typeof TeamAutoPush>;
 
+/** `team.json::autoSpawn` — ADR-231 §D3 + §D4 per-team auto-spawn config
+ *  for orchd's `spawn-epic` handler.
+ *
+ *  Two sub-fields:
+ *
+ *    - `defaults[]` — first-match-wins routing table. Each entry pairs a
+ *      regex (against the epic id / kanban label, evaluated by the
+ *      spawn-handler — implementation detail in T-S2.5) with a roster
+ *      preset + opt-in flag. Per-epic explicit `extra.autoSpawn.enabled`
+ *      always wins per ADR-231 §D3 resolution precedence; this array is
+ *      the operator's fallback default for "anything that matches X gets
+ *      auto-spawned with roster Y".
+ *
+ *    - `sweepCron` — override for the `atmux orchd --sweep` cadence
+ *      (ADR-231 §D4 OQ-C resolution). Default `'*' / 5 * * * *'` is
+ *      applied at the cron-emission site, NOT here — schema-level
+ *      validation is loose (5-field string presence only) so a misshapen
+ *      cron string surfaces at the sandwich-marker emission code's
+ *      richer parser rather than refusing the whole team.json parse.
+ *
+ *  The block is `.optional()` so existing teams that never opt in carry
+ *  zero config-file footprint. `.strict()` per ADR-054 §D3 drift
+ *  detection — typo'd keys (`defualts`, `sweep_cron`) surface as drift
+ *  findings rather than silently defaulting. */
+export const TeamAutoSpawnDefault = z
+  .object({
+    /** Regex source string, compiled at read time via `new RegExp(match)`
+     *  by the spawn-handler. Validated here via `z.string().refine` so an
+     *  unparseable pattern surfaces at schema-parse time rather than
+     *  crashing the handler's first-match-wins loop. Example: `'^demo-'`
+     *  matches any epic whose id starts with `demo-`. */
+    match: z
+      .string()
+      .min(1, "match: regex source string required")
+      .refine(
+        (s) => {
+          try {
+            new RegExp(s);
+            return true;
+          } catch {
+            return false;
+          }
+        },
+        { message: "match: invalid regex source — does not compile via new RegExp(match)" },
+      ),
+    /** Roster preset name (e.g. `"solo"`, `"backend-heavy"`). Looked up
+     *  by the spawn-handler against the roster registry (out of scope
+     *  here — schema accepts any non-empty string). */
+    roster: z.string().min(1, "roster: preset name required"),
+    /** Literal `true` — entries imply opt-in by inclusion. Authoring
+     *  `false` here is meaningless (just omit the entry); the literal
+     *  schema is a typo-catch for `autoSpawn: false` mistakenly typed
+     *  in a defaults entry. */
+    autoSpawn: z.literal(true),
+    /** When `true`, the spawn-handler passes `--force` to
+     *  `atmux team spawn-epic` — bypasses the ADR-225 eligibility
+     *  predicate. Use sparingly (per ADR-231 §D5 transient carve-outs
+     *  intentionally do NOT force; force-spawn defeats those checks). */
+    forceSpawn: z.boolean().optional(),
+  })
+  .strict();
+export type TeamAutoSpawnDefault = z.infer<typeof TeamAutoSpawnDefault>;
+
+/** ADR-231 §D4 sweepCron loose-validation: requires a 5-field
+ *  whitespace-separated string. Full cron-syntax validation lives in
+ *  the cron sandwich-marker emission code (per AC out-of-scope here).
+ *  This refine catches the obvious mistakes (3-field, empty, leading/
+ *  trailing whitespace pollution) without duplicating the parser. */
+const CRON_5_FIELD = /^\S+\s+\S+\s+\S+\s+\S+\s+\S+$/;
+
+export const TeamAutoSpawn = z
+  .object({
+    defaults: z.array(TeamAutoSpawnDefault).optional(),
+    sweepCron: z
+      .string()
+      .min(1, "sweepCron: cron expression required (5-field)")
+      .refine((s) => CRON_5_FIELD.test(s), {
+        message:
+          "sweepCron: expected 5-field cron expression " +
+          "(minute hour day-of-month month day-of-week); full validation in cron emission code",
+      })
+      .optional(),
+  })
+  .strict()
+  .describe(
+    "ADR-231 §D3 + §D4: per-team autoSpawn config. defaults[] is the " +
+      "first-match-wins routing table consumed by orchd's spawn handler; " +
+      "sweepCron overrides the default '*/5 * * * *' --sweep cadence.",
+  );
+export type TeamAutoSpawn = z.infer<typeof TeamAutoSpawn>;
+
 /** `team.json::modalCycling` — ADR-142 modal-cycling detector tunables.
  *  All fields optional; defaults applied at the call-site per ADR-142
  *  §Configuration. `.strict()` so typos (`windowMins` etc.) trip the
@@ -1356,6 +1447,12 @@ export const Team = z
      *  config. Absent → defaults applied (`enabled: false`, refuse-by-
      *  default per loud-opt-in §DA5 anchor). See {@link TeamAutoPush}. */
     autoPush: TeamAutoPush.optional(),
+    /** ADR-231 §D3 + §D4: per-team orchd auto-spawn config —
+     *  `defaults[]` is the first-match-wins routing table for the
+     *  spawn-handler; `sweepCron` overrides the `atmux orchd --sweep`
+     *  default cadence (every 5min) applied at the cron-emission site.
+     *  See {@link TeamAutoSpawn}. */
+    autoSpawn: TeamAutoSpawn.optional(),
     /** ADR-087: `atmux stop --soft` grace window between the per-member
      *  notify and the manifest write + session kill. Default 5 seconds
      *  when unset. Setting `0` collapses the grace to a single tick but

@@ -41,14 +41,29 @@ import { ConfigError } from "../../errors.ts";
 
 /** Public input shape for {@link dispatchDissolveEpic}. Zod-validated
  *  so callers (sibling injection from `verbs/committer.ts`) get a
- *  clear error when the shape drifts. `targetCage` is optional — when
- *  omitted the dispatcher routes by `epicId` (the epic-team's cage
- *  name equals the epicId per ADR-090 §spawn-epic step 7). */
+ *  clear error when the shape drifts.
+ *
+ *  Per ADR-232 §D2.a (Amendment 2026-05-23 post-e874291 review):
+ *  `targetCage` is the child cage's TEAM NAME (matches
+ *  `team.json::name`), NEVER an epic id. When omitted the dispatcher
+ *  walks the cage registry via `epicToCage` to derive the cage name —
+ *  it does NOT alias `epicId` as `targetCage` (the anti-pattern
+ *  reviewer flagged at e874291). The function refuses obvious
+ *  epicId-shaped values matching {@link EPIC_ID_ANTI_PATTERN_RE} at
+ *  the dispatcher boundary so a misformed wire-up never silently
+ *  routes wrong. */
 export const DispatchDissolveEpicInputSchema = z.object({
   epicId: z.string().min(1, "epicId required"),
   targetCage: z.string().min(1).optional(),
 });
 export type DispatchDissolveEpicInput = z.infer<typeof DispatchDissolveEpicInputSchema>;
+
+/** ADR-232 §D2.a anti-pattern: caller passed an epicId as `targetCage`.
+ *  Matches the canonical `e-<digit>-<hex>` shape produced by
+ *  `addEpic` (digit prefix = epic counter; hex tail = randomBytes).
+ *  Defensive guard — refuses at the dispatcher boundary rather than
+ *  letting the wrong identifier propagate into routing decisions. */
+const EPIC_ID_ANTI_PATTERN_RE = /^e-\d+-[0-9a-f]+$/;
 
 // ---------- Deps (test-injection seam) ----------
 
@@ -146,9 +161,26 @@ export async function dispatchDissolveEpic(
   const raiseFlag = deps.raiseFlag ?? makeDefaultRaiseFlag(spawnFn);
   const log = deps.log ?? ((): void => undefined);
 
+  // (0) ADR-232 §D2.a anti-pattern guard. Refuses obvious
+  //     epicId-as-cage-name caller bugs at the dispatcher boundary so
+  //     a misformed wire-up never silently routes wrong.
+  if (parsed.targetCage !== undefined && EPIC_ID_ANTI_PATTERN_RE.test(parsed.targetCage)) {
+    const reason =
+      `dispatchDissolveEpic: targetCage='${parsed.targetCage}' looks like an epic id — ` +
+      `per ADR-232 §D2.a targetCage must be a child cage TEAM NAME, not an epic id. ` +
+      `Pass omitted targetCage so the cage registry resolves it, or pass the correct cage name.`;
+    log(reason);
+    return { state: "skipped-not-mine", reason };
+  }
+
   // (1) Resolve target cage. Explicit `targetCage` overrides epic-id-
   //     equals-cage-name; default uses the epicId itself per ADR-090
-  //     §spawn-epic step 7.
+  //     §spawn-epic step 7 (epic-team cage NAME defaults to the
+  //     `e-<hash>` id of its spawning epic — this is a NAME-from-id
+  //     coincidence per ADR-090 cage-naming convention, NOT the §D2.a
+  //     anti-pattern of *aliasing* an epicId as cage-name in routing
+  //     decisions. The local-cage-skip guard at step (3) catches the
+  //     self-dispatch case the convention would otherwise enable).
   const targetCage = parsed.targetCage ?? parsed.epicId;
   const localCageName = deps.localCageName;
 

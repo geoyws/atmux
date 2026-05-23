@@ -1,6 +1,6 @@
 # ADR-232: orchd cross-cage dispatcher seam — `dispatchEpicMerge` / `dispatchDissolveEpic` / `dispatchGitPush`
 
-**Status**: proposed (deferred: full design lands post-merge of `origin/atmux-geoyws` once parent's ADR-226 'orchd auto-merge subscriber' + ADR-227 'orchd auto-dissolve epic-team subscriber' + ADR-229 'orchd auto-push' consumer-side handlers are visible on this branch; this stub captures the contract + ownership boundary so Story S0 Tasks can land impl against a named decision)
+**Status**: proposed (deferred: §D2.b transport choice still open per OQ-1; §D2.a routing semantics + naming convention added 2026-05-23 post-fan-in 27924b5 reconcile of reviewer concern on e874291; flips to `accepted` at S0 reviewer trunk-signoff once fix Task lands the §D2.a guard across all three dispatchers + OQ-1 is resolved)
 **Date**: 2026-05-23
 **Driver-ref**: EPIC e-60e16169 Phase 2 — driver P0 scope-addition 2026-05-23 14:00 MYT (lead-outbox); parent kanban `t-7-5507954b` (cross-cage dispatcher scope-addition). Sibling EPIC e-a946af69 fan-in commit 8d75360 (0.8.13) shipped Phase 3/4/6 handler-side without dispatcher-side glue — local-only handlers return `skipped-not-mine` when the requested action targets a non-local cage; without dispatchers, the orchd dogfood loop fails on cross-cage events. This Epic owns the dispatcher half.
 **Cross-refs**: [ADR-224](224-orchd-rename-and-auto-spawn-loop.md) §D6 (Subscription registry seam — dispatchers compose with subscribers but live in `src/core/orchd-dispatch/` not `ORCHD_SUBSCRIPTIONS`), [ADR-231](231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D7 (handler-as-data layout — dispatchers mirror the same pattern), parent ADR-226 (auto-merge subscriber — `dispatchEpicMerge` is its cross-cage transport), parent ADR-227 (auto-dissolve subscriber — `dispatchDissolveEpic` is its cross-cage transport), parent ADR-229 (auto-push — `dispatchGitPush` is its cross-cage transport), [ADR-202](202-honker-in-db-messaging-substrate.md) §IX-A (lean-dispatch contract — dispatchers reuse the same Bun-subprocess + tmux send-keys pattern for cross-cage RPC), [ADR-090](090-epic-team-lifecycle.md) §spawn-epic (cage discovery — dispatchers walk parent's cage list to find target).
@@ -30,7 +30,51 @@ Each dispatcher is a thin transport layer:
 
 `dissolveEpic` is factored OUT of `src/verbs/team/dissolve-epic.ts` (the CLI verb stays as a thin wrapper); the extracted pure function becomes the dispatch target. Same factoring pattern as `performEpicMerge` (already extracted per ADR-091).
 
-### D2 — Cross-cage transport (deferred — design lands post-merge)
+### D2 — Routing semantics + transport choice
+
+**D2.a — Routing semantics: parent → child cage only; never self-dispatch.** (Amendment 2026-05-23 post-fan-in 27924b5 reconcile of reviewer concern on e874291.)
+
+Each dispatcher resolves a `targetCage` value — the **NAME** of the cage (= `team.json::name` of the child epic-team that owns the action). Binding rules:
+
+1. **`targetCage` is the child cage's team name**, e.g. `"e-60e16169"`. It is NEVER the epic id (e.g. `"e-1-118d16a9"`). Conflating the two collapses parent's own committer into the dispatch path — a self-dispatch loop in cages whose `team.json::name` happens to equal an epic id (the common case for epic-teams spawned via `atmux team spawn-epic <epicId>` — team-name defaults to the epicId per ADR-090).
+2. **Local-cage-skip guard.** If `targetCage === team.json::name` of the running cage, the dispatcher returns `{ localExecuted: false, skipped: 'local-cage-already-owns' }` immediately. Local impl already ran via the in-cage handler before the dispatcher was invoked (or will, via the same handler — see §D3); the dispatcher exists for **parent → child fan-out only**, never to re-fire local logic.
+3. **Remote route.** If `targetCage !== team.json::name`, dispatch to the child cage via the transport (D2.b).
+4. **Cage-not-found.** If `targetCage` cannot be resolved (cage not in `atmux team list` enumeration), emit `atmux flag add 'orchd: dispatch failed for <action>: cage <targetCage> not found'` + return error.
+
+**Variable-naming convention (BINDING on impl):**
+
+| Variable | Type | Carries |
+|---|---|---|
+| `targetCage: string` | child team name (matches `team.json::name`) | resolution target for the dispatch |
+| `localTeamName: string` | current cage's team name (read from local `team.json::name`) | guard-comparison source |
+| `targetEpicId: string` (if needed) | the `e-*` epic id triggering the action | ONLY when you also pass it through; never aliased as `targetCage` |
+
+If an impl needs to derive cage from epicId (because the upstream caller only knows the epicId), introduce an explicit `epicToCage(epicId): string` helper that walks `atmux team list` for the owning epic-team. **Do NOT shortcut by setting `targetCage = epicId`** — that's the anti-pattern reviewer flagged at e874291.
+
+**Anti-pattern (reviewer-flagged at e874291):**
+
+```ts
+// WRONG — collapses cage-name and epic-id into one identifier
+const targetCage = input.epicId;
+if (targetCage !== team.name) { dispatchRemote(...) }
+// → parent's committer (team.name = "atmux") ALWAYS sees targetCage !== team.name
+//   → always remote-dispatches, never executes locally.
+// → child cage (team.name = "e-60e16169") sees targetCage === team.name when
+//   the dispatched epicId == its own spawning epicId → SELF-DISPATCH LOOP.
+```
+
+```ts
+// RIGHT — explicit cage resolution, explicit local-skip guard
+const targetCage = await epicToCage(input.epicId);   // returns child team-name
+if (targetCage === localTeamName) {
+  return { localExecuted: false, skipped: "local-cage-already-owns" };
+}
+return await dispatchRemote(targetCage, input);
+```
+
+**Symmetry across the three dispatchers.** The guard + naming convention applies identically to `dispatchEpicMerge` (c477954), `dispatchDissolveEpic` (e874291), `dispatchGitPush` (41aafa6). Fix Task t-20-<id> sweeps all three for compliance even if only e874291 triggered the reviewer flag — the anti-pattern is structural; assume any dispatcher unsifted carries it.
+
+**D2.b — Cross-cage transport (deferred — design lands post-merge).**
 
 Two viable paths, both ADR-202-style:
 

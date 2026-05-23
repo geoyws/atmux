@@ -30,7 +30,7 @@ afterEach(async () => {
 });
 
 describe("sqlite-migrations live ladder", () => {
-  test("opening with the full ladder advances user_version to the tail (v14)", () => {
+  test("opening with the full ladder advances user_version to the tail (v16)", () => {
     // Bump this when a new migration lands. Failing here is the
     // intentional reminder to confirm the new migration's tests cover
     // the new table or column.
@@ -47,7 +47,10 @@ describe("sqlite-migrations live ladder", () => {
     //   - v14→v15 added spawn_queue for orchd refuse-then-queue path
     //             (ADR-228 §D2, t-095190f8) — renumbered from v13→v14
     //             at fan-in 2026-05-23 per ADR-091 §pre-flag #4
-    expect(readUserVersion(db)).toBe(15);
+    //   - v15→v16 added epics.spawned_at for orchd auto-spawn dedup gate
+    //             (ADR-231 §D2, t-6-8db78adf) — renumbered from v14→v15
+    //             at impl time since v14→v15 was claimed by ADR-228
+    expect(readUserVersion(db)).toBe(16);
   });
 });
 
@@ -415,9 +418,12 @@ describe("v13 → v14: backfill semantics on a pre-existing v13 DB", () => {
     }
     closeDatabase(staging);
 
-    // Stage 2: re-open with the full ladder; v13→v14 runs.
+    // Stage 2: re-open with the full ladder; v13→v14 runs (along with
+    // every later step — the ladder is forward-only). user_version
+    // settles at the tail; v13→v14 backfill semantics still apply to
+    // the rows seeded above since the column-set is additive.
     const full = openDatabase(path, migrations);
-    expect(readUserVersion(full)).toBe(14);
+    expect(readUserVersion(full)).toBe(16);
 
     const seen = full
       .prepare("SELECT id, status, depends_on, is_ready FROM epics ORDER BY id")
@@ -674,5 +680,73 @@ describe("v14 → v15: spawn_queue (ADR-228 §D2, t-095190f8)", () => {
       .all() as Array<{ queue_id: string; priority: number }>;
     // q-b (priority 1) before q-a (priority 5); spawning row excluded.
     expect(rows.map((r) => r.queue_id)).toEqual(["q-b", "q-a"]);
+  });
+});
+
+// ---------- v15 → v16 — epics.spawned_at (ADR-231 §D2) ----------
+// Renumbered from v14→v15 at impl time (t-6-8db78adf) per ADR-126
+// §single-ladder append-only invariant — sibling EPIC e-a946af69's
+// ADR-228 spawn_queue migration claimed v14→v15 at fan-in 8d75360.
+
+describe("v15 → v16: epics.spawned_at (ADR-231 §D2, t-6-8db78adf)", () => {
+  test("epics.spawned_at column exists with INTEGER type, nullable, no default", () => {
+    const cols = db.prepare("PRAGMA table_info(epics)").all() as Array<{
+      name: string;
+      type: string;
+      notnull: number;
+      dflt_value: string | null;
+      pk: number;
+    }>;
+    const byName = new Map(cols.map((c) => [c.name, c]));
+    const col = byName.get("spawned_at");
+    expect(col).toBeDefined();
+    expect(col?.type).toBe("INTEGER");
+    // Nullable — orchd dedup-gate uses `IS NOT NULL` predicate, so the
+    // column must accept NULL as the "not yet spawned" state.
+    expect(col?.notnull).toBe(0);
+    // No DEFAULT — existing rows get NULL post-migration, matching
+    // the historical reality that orchd hadn't spawned any of them.
+    expect(col?.dflt_value).toBeNull();
+  });
+
+  test("epics row inserted without spawned_at defaults to NULL", () => {
+    db.prepare(
+      `INSERT INTO epics (id, title, status, created_at)
+       VALUES (?, ?, ?, ?)`,
+    ).run("e-fresh", "fresh epic", "todo", 1_700_000_000);
+    const row = db.prepare("SELECT spawned_at FROM epics WHERE id = ?").get("e-fresh") as {
+      spawned_at: number | null;
+    };
+    expect(row.spawned_at).toBeNull();
+  });
+
+  test("epics.spawned_at accepts a Unix-epoch INTEGER value (operator backfill path)", () => {
+    db.prepare(
+      `INSERT INTO epics (id, title, status, created_at, spawned_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run("e-spawned", "live epic", "in-progress", 1_700_000_000, 1_700_001_234);
+    const row = db.prepare("SELECT spawned_at FROM epics WHERE id = ?").get("e-spawned") as {
+      spawned_at: number | null;
+    };
+    expect(row.spawned_at).toBe(1_700_001_234);
+  });
+
+  test("dedup-gate predicate `spawned_at IS NOT NULL` partitions correctly", () => {
+    db.prepare(`INSERT INTO epics (id, status, created_at) VALUES (?, ?, ?)`).run(
+      "e-pending",
+      "todo",
+      1,
+    );
+    db.prepare(
+      `INSERT INTO epics (id, status, created_at, spawned_at) VALUES (?, ?, ?, ?)`,
+    ).run("e-live", "in-progress", 1, 1_700_000_500);
+    const skipped = db
+      .prepare(`SELECT id FROM epics WHERE spawned_at IS NOT NULL`)
+      .all() as Array<{ id: string }>;
+    const eligible = db
+      .prepare(`SELECT id FROM epics WHERE spawned_at IS NULL`)
+      .all() as Array<{ id: string }>;
+    expect(skipped.map((r) => r.id)).toEqual(["e-live"]);
+    expect(eligible.map((r) => r.id)).toEqual(["e-pending"]);
   });
 });

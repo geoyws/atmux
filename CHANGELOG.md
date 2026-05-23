@@ -7,6 +7,143 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ✨ Added — orchd Phase 2: auto-spawn loop + solo-worker auto-dissolve ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md), EPIC `e-60e16169` Story S3, t-18-b2ca7178)
+
+orchd Phase 2 wires three handlers on top of Phase 1's subscription seam ([ADR-224 §D6](docs/adr/224-orchd-rename-and-auto-spawn-loop.md)):
+
+- **spawn handler** subscribes to `epic.ready` + `epic.unblocked` (NOT `epic.added` — avoids eligibility-refusal burn); spawns the epic-team when `autoSpawn=true` AND `epicIsEligible` ([ADR-225](docs/adr/225-epic-dependencies-and-is-ready-toggle.md)) AND `spawned_at IS NULL`. Registers twice with distinct consumerIds (`atmux:orchd:spawn:on-ready` / `:on-unblocked`) so per-topic Honker offsets stay independent.
+- **solo-worker dissolve handler** subscribes to `task.done`; dissolves solo-worker teams ([ADR-221 §Phase 2](docs/adr/221-solo-worker-scope.md) close-out) when their only owned task transitions to `done`. Shares the `task.done` topic with auto-merge (ADR-226) — distinct consumerIds isolate offsets.
+- **`--sweep` cron backstop** (default `*/5 * * * *`, configurable via `team.json::autoSpawn.sweepCron`) walks eligible epics + solo-workers; reuses canonical handlers per ADR-231 §D4 (NOT duplicate logic).
+
+Per-epic config home: `epics.extra.autoSpawn = { enabled: boolean, roster?: string, forceSpawn?: boolean }`. Set via `atmux epic add --auto-spawn / --no-auto-spawn / --roster <r> / --force-spawn` flags. Per-team policy: `team.json::autoSpawn.defaults[]` regex-match against `epic.title`; per-epic explicit wins. Default: off.
+
+3-way failure classification per ADR-231 §D5: **hard** (flag p1 + `extra.spawnFailed` receipt + NO retry); **host-pressure transient** (counter on `extra.spawnPressureDeferred`; ≥3 → distinct `host-pressure-deferred` flag p1 — operator triages "wait for capacity" separately from "fix config"); **eligibility-race** (silent — next `epic.ready` / `epic.unblocked` event re-fires the handler).
+
+Phase 2 ships behind opt-in (autoSpawn default off) — no existing epic gets auto-spawned without explicit per-epic OR per-team opt-in. Operators continue running `atmux team spawn-epic` manually where autoSpawn=false. Rollback: drop entries from `ORCHD_SUBSCRIPTIONS` + restart orchd → relay-only behaviour; `epics.spawned_at` column stays in place (additive migration per [ADR-126](docs/adr/126-sqlite-state-store.md)).
+
+Per-Task ship trail (each linked below): t-6 (v15→v16 migration, dedup column), t-7 (Zod KanbanEpic.extra.autoSpawn sub-shape), t-8 (Zod team.json autoSpawn.defaults[] + sweepCron), t-9 (epic add CLI flags), t-10 (sweep walker scaffold), t-11 (`atmux orchd --sweep` subverb), t-12 (cron sandwich-marker line), t-13 (failure classifier), t-14 (spawn handler), t-15 (solo-worker dissolve handler), t-16 (S3.1 unit-test scaffolding), t-17 (S3.2 integration trigger matrix), t-18 (this docs sweep).
+
+### ✨ Added — `epics.spawned_at` v15→v16 SQLite migration ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D2 + §D7, EPIC `e-60e16169` Phase 2 Story S1, t-6-8db78adf)
+
+`ALTER TABLE epics ADD COLUMN spawned_at INTEGER` — the canonical dedup gate column read by `spawnEpicHandler` (§D2 step 2) so re-delivered events under at-least-once semantics short-circuit instead of double-spawning. Sequenced AFTER ADR-228 spawn_queue v14→v15 (sibling EPIC e-a946af69 fan-in 8d75360) per the single-ladder append-only invariant of [ADR-126](docs/adr/126-sqlite-state-store.md) — renumbered from the original v14→v15 at impl time. NULL = "never spawned"; positive integer = Unix-epoch seconds set on orchd spawn-success. Additive only; rollback is a no-op (handler skips on Phase 2 disable).
+
+### ✨ Added — Zod `KanbanEpic.extra.autoSpawn` + `spawnedAt` sub-shape ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D2 + §D3, EPIC `e-60e16169` Phase 2 Story S1, t-7-0ad1dfe3)
+
+Extends `src/schema/kanban.ts` `KanbanEpic` with the per-epic orchd auto-spawn config home + the dedup-gate timestamp mirror. `extra.autoSpawn = { enabled: boolean, roster?: string, forceSpawn?: boolean }` types the typed sub-shape inside the `extra` passthrough slot; outer `extra` stays `.passthrough()` for forward-compat sibling keys. Top-level `spawnedAt: z.number().int().nullable().optional()` mirrors the SQLite column from t-6's migration. 7 new schema tests; 100% line + funcs coverage on the kanban schema.
+
+### ✨ Added — `orchdSweep` walker scaffold + handler-reuse seam ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D4, EPIC `e-60e16169` Phase 2 Story S2, t-10-ab3815cf)
+
+`src/core/orchd-sweep.ts::orchdSweep(atmuxDir, deps)` — one-shot walker matching ADR-231 §D4's two-trigger model (event-driven primary via Honker subscriptions + cron-backstop secondary via this walker). Cheap pre-filter: `spawned_at IS NOT NULL` skip (§D2 dedup) → `effectiveAutoSpawn(epic) === false` skip (§D3) → `epicIsEligible().eligible === false` skip (ADR-225). Survivors hit the canonical `spawnEpicHandler` (NOT a re-implementation — invariant per the AC). Solo-worker walk reuses `dissolveSoloWorkerHandler` per epic team. Returns `{epicsConsidered, epicsSpawned, workersConsidered, workersDissolved}` counters surfacing walker observations + handler verdicts independently. Test-injection seam `OrchdSweepDeps` pins each surface for deterministic counter assertions.
+
+### ✨ Added — orchd Phase 2 unit-test scaffolding harness ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md), EPIC `e-60e16169` Phase 2 Story S3, t-16-27fdc08b)
+
+Four reusable test fixtures under `tests/helpers/` consumed by the Phase 2 handler unit tests (t-14 / t-15) and the integration trigger-matrix test (t-17):
+
+- `honker-mock.ts` — `HonkerMock` registers `OrchdSubscription` entries, publishes synthetic events, drains per-consumer with at-least-once semantics (offset advances ONLY on handler-success; throw → next drain re-delivers). Matches the real Honker subscription contract pinned by `src/core/orchd-registry.ts` (consumerId-based offsets, multi-handler-per-topic support).
+- `kanban-fixtures.ts` — `seedEpic({...})` + `seedTask({...})` builders round-trip through the real `KanbanEpic` / `KanbanTask` Zod schemas. `autoSpawn` rides under `extra.autoSpawn` (ADR-231 §D3 shape, t-7); `spawnedAt` at top level (ADR-231 §D2 dedup column, t-6). No test-only field shapes.
+- `spawn-epic-subprocess-stub.ts` — `createSpawnEpicStub()` intercepts `atmux team spawn-epic` invocations; default `SUCCESS_RESULT` (exit 0); polls to `HOST_PRESSURE_RESULT` / `ELIGIBILITY_RACE_RESULT` / `HARD_FAILURE_RESULT` with canonical stderr fixtures matching the t-13 classifier regexes verbatim. `setResultSequence()` for transient-then-success scenarios. Records every invocation in call order.
+- `atmux-flag-spy.ts` — `createFlagSpy()` captures `atmux flag add` calls with message + severity + needs + taskId. `findByMessage` (string / RegExp) for assertion against §D5 hard-failure + host-pressure-deferred flag paths.
+
+20 smoke tests verify each helper works in isolation under bun:test; 100% line coverage on the consumed schema surface.
+
+### ✨ Added — orchd Phase 2 integration trigger-matrix test ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md), EPIC `e-60e16169` Phase 2 Story S3, t-17-d41f607f)
+
+End-to-end integration coverage of the Phase 2 surface at `tests/integration/orchd-phase2-trigger-matrix.test.ts` — drives the full path Honker event (via `HonkerMock`) → production handler (`createSpawnEpicHandler` / `createDissolveSoloWorkerHandler` / `orchdSweep`) → SQLite mutation (`spawned_at`, `extra.spawnFailed`, `extra.spawnPressureDeferred`) → `atmux flag add` emission (via `FlagSpy`). Wires the S3.1 scaffolding (t-16) through a shared spawn router that dispatches `atmux team spawn-epic` → SpawnEpicStub, `atmux team dissolve-worker` → inline DissolveStub, `atmux flag add` → FlagSpy; an `unrouted` channel captures argv shapes the router doesn't recognise (regression guard for future subprocess additions).
+
+Per-scenario isolation: fresh in-memory SQLite + migrations + stub/spy instances per `beforeEach`. atmuxDir is a sentinel `mkdtemp` path; `listEpics` + `epicIsEligible` are dep-injected so nothing touches the host's real `.atmux/`. 21 tests / 96 assertions cover the 7 AC scenarios (event-only success, cron-only success, both-fire dedup, eligibility-race classifier, host-pressure deferred ≥3, hard failure, solo-worker dissolve) plus handler-level dedup, silent-skip branches (row-missing / autoSpawn-off / pre-spawn eligibility-held), forceSpawn bypass, spawn-throws hard-flag path, dissolve silent-skip (task-missing / non-solo / pending-work), and cross-class invariants confirming canonical stderr fixtures stay in sync with the t-13 classifier regexes. Coverage: spawn handler 90% lines, dissolve handler 68%, classifier 100%.
+
+### ✨ Added — orchd auto-spawn handler + effectiveAutoSpawn resolver ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D2 + §D3, EPIC `e-60e16169` Phase 2 Story S2, t-14-c27cdce1)
+
+New `src/core/orchd-spawn.ts` exports `createSpawnEpicHandler` + `effectiveAutoSpawn`. Implements the ADR-231 §D2 5-step algorithm: (1) load epic + row-missing skip; (2) `spawned_at IS NOT NULL` dedup gate; (3) `effectiveAutoSpawn(epic, team)` opt-in gate; (4) ADR-225 `epicIsEligible` predicate gate (bypassed by `forceSpawn=true`); (5) `atmux team spawn-epic <epicId> --from <parentTeam> [--roster X] [--force-spawn]` subprocess with 3-way result classification via `classifySpawnFailure` (t-13): exit 0 → stamp `spawned_at = unixepoch()`; hard → write `extra.spawnFailed = {at, stderrTail}` + `atmux flag add --severity p1 --needs unblock` + NO retry; host-pressure → increment `extra.spawnPressureDeferred`; emit `host-pressure-deferred` flag at ≥3; cron `--sweep` retries; eligibility-race → silent skip (next event re-fires).
+
+`effectiveAutoSpawn(epic, team)` implements §D3 precedence: per-epic explicit `extra.autoSpawn.enabled` (true OR false) wins → per-team `team.json::autoSpawn.defaults[]` first-match (regex tested against `epic.title`) → default off. Pure helper — no I/O, exported for the cron `--sweep` walker to consume (T-S2.1 stub replaceable).
+
+Wired into `src/core/orchd-bootstrap.ts`: TWO new subscriptions register on the same handler factory — `atmux:orchd:spawn:on-ready` (topic `epic.ready`) + `atmux:orchd:spawn:on-unblocked` (topic `epic.unblocked`). Per-topic consumerIds keep Honker offsets independent so a backlog on one topic doesn't shadow the other. `BootstrapOrchdDeps.spawnDeps` is the wire-up seam; absent → factory builds a stub returning `skipped-row-missing` (safe no-op pre-wire). Committer.ts `--drain` injection passes `{atmuxDir, team}` for the production path.
+
+Adjacent infrastructure fix: `src/core/repositories/kanban-repo.ts` extended to surface the `spawned_at` column (added in t-6's v15→v16 migration but missed from `EpicRow` + `epicFromRow` + `epicToRow` + `upsertEpic` SQL — `getEpic` would return `spawnedAt: undefined` defeating the §D2 step-2 dedup gate). Now read-write round-trips correctly; `KNOWN_EPIC_FIELDS` gains `spawnedAt` so it's NOT folded into `extra`.
+
+23 new unit tests at `tests/unit/core/orchd-spawn.test.ts` cover the full §D2 branch matrix (9 §D2 outcomes incl. spawn-throw + forceSpawn-bypasses-eligibility), §D3 precedence (per-epic-true wins, per-epic-false wins, per-team first-match, per-team second-entry, no-match-off, team-absent, empty-title, invalid-regex-graceful), and idempotency on re-delivery. 2 new bootstrap tests pin the 6-subscription canonical order + distinct spawn-handler consumerIds (was 4, +2 for spawn:on-ready + spawn:on-unblocked). 100% line coverage on the new handler module.
+
+### ✨ Added — `atmux orchd --sweep` cron-line emit ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D4, EPIC `e-60e16169` Phase 2 Story S2, t-12-f4c1becb)
+
+The team-cron sandwich-marker block ([ADR-026](docs/adr/026-tmux-session-and-cron-lifecycle.md) + [ADR-192](docs/adr/192-cron-arm-idempotency-contract.md)) now emits one new always-on line — `<cadence> atmux orchd --sweep` — between the existing `orchd --drain` and `epic-merge tick` lines. Wires the cron-backstop half of ADR-231's two-trigger model (event-driven primary via Honker `epic.ready` / `epic.unblocked` subscriptions; cron backstop for socket churn / NOTIFY gaps / orchd restart-induced wake loss). Cadence resolves from `team.json::autoSpawn.sweepCron` (schema-loose-validated 5-field cron string, t-8-3328eb57) with default `'*/5 * * * *'` — both standard `*/N` patterns and richer non-divisor expressions (`7,37 9-17 * * 1-5`) pass through verbatim since the cron line bypasses the divisor-restricted `cronEvery()` helper. `atmux start` writes the new line; `atmux stop` removes it via existing sandwich-marker semantics (no new cleanup code). 7 new unit tests at `tests/unit/core/cron.test.ts`: default cadence, sweepCron override, non-divisor patterns, fallback-without-sweepCron, env-prefix parity, renderCronBlock containment, ADR-192 idempotence. Golden file regenerated (`tests/golden/cron-block.txt`), `orderedVerbs` pin updated.
+
+### ✨ Added — `atmux orchd --sweep` CLI subverb ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D4, EPIC `e-60e16169` Phase 2 Story S2, t-11-84fced39)
+
+One-shot cron-backstop walker subverb on the `atmux orchd` CLI. Wraps `orchdSweep(atmuxDir)` from `src/core/orchd-sweep.ts` (sibling t-10) and prints the `{epicsConsidered, epicsSpawned, workersConsidered, workersDissolved}` counters JSON to stdout per ADR-231 §D4 cron-line + Discord summarization needs (T-S2.3). `--sweep` and the bare positional `sweep` both parse; `--once` reuses the existing flag (consistent with `--drain`). Exit code 0 on any clean sweep (counter values are walker observations, not failure conditions); non-zero only on unrecoverable setup throws (atmuxDir unresolvable, etc.) — the walker itself swallows per-handler errors per its own contract. 6 new unit tests at `tests/unit/verbs/orchd.test.ts` cover parser (`--sweep`, `sweep`, `--team-dir`, `--once`, last-wins-on-mixed-subverb) and dispatch routing (orchdSweep invoked with resolved atmuxDir, counters JSON written to stdout) via `bun:test`'s `mock.module` seam.
+
+### 🟢 Fixed — orchd cross-cage dispatcher seams (ADR-232 §D2.a + c477954 wire-up regression, t-20-91595e35 + t-21-8c0b2bfd)
+
+Sweep across all three dispatchers (`epic-merge`, `dissolve-epic`, `git-push`) to add the [ADR-232 §D2.a](docs/adr/232-orchd-cross-cage-dispatcher-seam.md) routing-semantics guards + heal the c477954 wire-up regression that reviewer flagged. Two-part fix:
+
+- **c477954 typecheck regression — 10 errors cleared in `src/core/orchd-dispatch/epic-merge.ts` + paired tests.** Dropped `DispatchEpicMergeResultSchema.parse(...)` wrapping on returns — output type was already enforced by the function return type, and the Zod parse adds `| undefined` to optional fields under `exactOptionalPropertyTypes:true` (5 src errors). Tests refactored to use a captured-object pattern (`const captured: {epicId?: string; cage?: CageInfo} = {}`) instead of `let x: T | null = null` closure mutation — Bun's TS narrowing collapses the latter to `null` literal at assertion sites (4 test errors). Removed the unused `@ts-expect-error` directive at the empty-string input boundary (the value is TS-valid but Zod-invalid; refine reject at runtime, no TS error to suppress).
+- **c477954 wire-up gap — `committer.ts:450` now injects `localTeamName: ctx.team.name`.** The default `resolveCage` still returns `null` (real cage-registry walker deferred), but the dispatcher's cage-not-found path is now QUIET — `skipped-not-mine` without `flag-add`. Pre-fix the dispatcher flag-spammed on every `task.done` event (because every invocation hit the unwired-resolveCage path), which was actively WORSE than the pre-c477954 silent-stub default. Regression-pinned at `tests/unit/core/orchd-dispatch/epic-merge.test.ts::"default resolveCage (unwired) → quiet skipped-not-mine on every event"`.
+- **ADR-232 §D2.a anti-pattern guard added to `dispatchEpicMerge` + `dispatchDissolveEpic`.** Refuses `targetCage` values matching the epicId shape `/^e-\d+-[0-9a-f]+$/` at the dispatcher boundary — catches the e874291-flagged anti-pattern of aliasing an epicId as a cage name. Returns `{state: "gate-held", reason: "...looks like an epic id..."}` (epic-merge) or `{state: "skipped-not-mine", reason: "..."}` (dissolve-epic) with explainers pointing to ADR-232 §D2.a so the operator immediately sees the intent. `dispatchGitPush` already takes `cage: string` (no `epicId` field) so it's structurally compliant without a new guard.
+- **ADR-232 §D2.a local-cage-skip guard added to `dispatchEpicMerge`.** When `cage.name === localTeamName`, dispatcher returns `{state: "skipped-not-mine", reason: "local-cage-already-owns..."}` immediately — prevents the self-dispatch loop the amendment forbids (the in-cage `atmux epic-merge tick` cron path is the canonical local invocation point per ADR-091; dispatcher's job is parent → child fan-out only). `dispatchDissolveEpic` + `dispatchGitPush` retain the existing local-fire semantic because they're the canonical impl invocation (no separate in-cage handler pre-fires) — noted in a per-dispatcher code comment so the reviewer sees the deliberate distinction.
+
+Test surface: 39 epic-merge tests (added §D2.a + cage-not-found regression coverage), 19+2 dissolve-epic tests (added anti-pattern + legitimate-cage-name §D2.a coverage). 100% line + funcs coverage on `src/core/orchd-dispatch/epic-merge.ts`. Typecheck globally green post fan-in with fe-2's tests/helpers fix at 5282fdc.
+
+### ✨ Added — `atmux epic add` auto-spawn CLI flags ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D3, EPIC `e-60e16169` Phase 2 Story S1, t-9-1060b4c7)
+
+Four new flags on `atmux epic add` populate the per-epic `extra.autoSpawn` Zod sub-shape landed in t-7-0ad1dfe3 (KanbanEpic schema, ADR-231 §D3 §Schema):
+
+| Flag | Effect |
+|---|---|
+| `--auto-spawn` | sets `extra.autoSpawn.enabled = true` (orchd will spawn this epic-team automatically once ADR-225's eligibility predicate flips) |
+| `--no-auto-spawn` | sets `extra.autoSpawn.enabled = false` (explicit opt-out — overrides per-team defaults match in T-S1.3) |
+| `--roster <name>` | sets `extra.autoSpawn.roster = <name>` (e.g. `solo`, `backend-heavy`); requires `--auto-spawn` |
+| `--force-spawn` | sets `extra.autoSpawn.forceSpawn = true` (passes `--force` to `atmux team spawn-epic` — bypasses ADR-225's eligibility predicate); requires `--auto-spawn` |
+
+Mutex enforcement at parse time (caller sees the error before any DB write):
+- `--no-auto-spawn` + `--force-spawn` → UsageError (mutually exclusive — `--no-auto-spawn` opts OUT of orchd spawn, `--force-spawn` opts IN bypassing predicates).
+- `--roster` without `--auto-spawn` → UsageError (roster picks the member set orchd spawns; with auto-spawn off it has no effect).
+- `--force-spawn` without `--auto-spawn` → UsageError (force only affects the orchd-driven spawn path).
+
+No flags → no `autoSpawn` key written; epic falls back to per-team defaults match (T-S1.3) OR off.
+
+Wire-up: `parseAddArgs` captures the flags + does the mutex walk; `epicAdd` plumbs through `AddEpicOpts.autoSpawn`; `addEpic` (src/core/epic.ts) folds the sub-shape into the inserted row's `extra.autoSpawn` slot. Round-trip through the kanban-repo's JSON-extra spillover bag stays forward-compatible with future per-epic config classes via `extra.passthrough()`.
+
+Tests: 11 new cases at `tests/unit/verbs/epic.test.ts` — 6 pure-parse (single flags, combo, no-flags-undefined) + 5 mutex-error + 1 missing-value + 5 verb-dispatch round-trip (CLI → showEpic readout). 80/80 epic tests green; 93.75% func / 87.48% line coverage on `src/verbs/epic.ts`.
+
+Out of scope (separate Tasks):
+- `team.json::autoSpawn.defaults[]` per-team fallback (T-S1.3 — already shipped per CHANGELOG entry below).
+- spawn-handler read-side that consults `extra.autoSpawn.enabled` + `spawnedAt IS NULL` (T-S2.5).
+
+### ✨ Added — `dissolveSoloWorkerHandler` + `isSoloWorkerTeamName` orchd auto-dissolve for solo workers ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D6 + [ADR-221](docs/adr/221-solo-worker-scope.md) §Phase 2, EPIC `e-60e16169` Phase 2 Story S2, t-15-6a65eadb)
+
+Closes ADR-221 §Phase 2 auto-dissolve. New `src/core/orchd-dissolve-solo-worker.ts` exports `dissolveSoloWorkerHandler` (created via `createDissolveSoloWorkerHandler({db, …})`) + `orchdDissolveSoloWorkerConsume` (consumer surface mirroring `orchd-merge.ts` + `orchd-dissolve.ts` so operators learn one factory shape). Subscribes to `task.done` with consumerId `atmux:orchd:dissolve-solo-worker` — distinct from parent's `atmux:orchd:auto-merge` (same topic, isolated by Honker per-consumer offsets per ADR-202 §VIII).
+
+Algorithm per ADR-231 §D6:
+1. Load task row defensively (race-deleted → `skipped-task-missing`).
+2. Classify owning team via `isSoloWorkerTeamName` (`team.name.startsWith("w-")` per ADR-221 §v2 line 72) — exported separately from `src/core/solo-worker.ts` so future tooling (status display, complaint adjudicator) reuses one canonical predicate.
+3. Enumerate the owning member's remaining open tasks — any pending → `skipped-pending-work`.
+4. Spawn `atmux team dissolve-worker <event.team>` — exit-0 → `dissolved`; non-zero or spawn-throw → `escalated` + `atmux flag add --severity p1 --needs unblock` with stderr tail (≤500 chars) in body. NO retry per ADR-231 anti-retry-storm doctrine.
+
+Bootstrap wire-up at `src/core/orchd-bootstrap.ts` registers the new subscription alongside the three existing (merge / dissolve / push); `BootstrapOrchdDeps.dissolveSoloWorkerDeps` is the test/operator override seam. 19 unit tests cover all 5 outcomes (incl. happy-path + 4 skip variants + escalated with stderr/stdout/throw/swallow-on-flag-fail), idempotency on re-delivery, and the consumer-surface (Honker kill-switch, default handler, escalated counter, custom consumerName). Bootstrap tests updated to expect 4 subscriptions (was 3) — including a regression check that `dissolve-solo-worker` shares `task.done` with auto-merge but has a distinct consumerId.
+
+ADR-231 §D6 + §D7 amended same-commit: §D6 step 4 corrected (`atmux team stop --team <name>` → `atmux team dissolve-worker <id>`; the original verb form doesn't exist in the codebase, per ADR-221 §v2 line 68 which always intended `dissolve-worker` for auto-dissolve); §D7 file-layout row renamed (`orchd-dissolve.ts` → `orchd-dissolve-solo-worker.ts` — sibling EPIC `e-a946af69` fan-in 8d75360 already shipped Phase 4 epic-team auto-dissolve at the original path, so this handler takes the `-solo-worker` suffix to avoid collision). 100% line + funcs coverage on the new handler module + classifier.
+
+### ✨ Added — `classifySpawnFailure` orchd spawn-epic recovery classifier ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D5 + [ADR-184](docs/adr/184-host-wide-epic-team-cap-queue-and-dormancy-audit.md), EPIC `e-60e16169` Phase 2 Story S2, t-13-2f8b0d92)
+
+New pure helper `src/core/orchd-spawn-classify.ts` exports `classifySpawnFailure(stderr): 'hard' | 'host-pressure' | 'eligibility-race'` — the 3-way result classifier the spawn handler (T-S2.5) consumes to decide recovery posture per ADR-231 §D5:
+
+- `host-pressure` (`/host-wide cap \(\d+\) reached/`) — ADR-184 refusal signature; handler increments `spawnPressureDeferred` and lets cron `--sweep` retry.
+- `eligibility-race` (`/eligible=false: /`) — ADR-225 predicate refusal signature; handler exits silently and the next `epic.ready` / `epic.unblocked` event re-fires.
+- `hard` (default) — any other non-zero exit; handler writes `epics.extra.spawnFailed` + raises `atmux flag add` + NO retry per ADR-231 anti-retry-storm rationale.
+
+Precedence: when BOTH transient signatures appear in the same stderr blob, host-pressure wins — the more severe operator signal, and the safer fallback when ambiguous (capacity exhaustion ought to surface louder than predicate refusal). Whitespace-tolerant between `host-wide`, `cap`, and the digit group so spawn-epic wrapper formatting drift doesn't silently degrade to `hard`. 16 unit tests cover each class, partial-match boundary cases, empty stderr, multiline blob, and the precedence ordering in both orders. 100% line + funcs coverage on the new module.
+
+### ✨ Added — `team.json::autoSpawn` Zod schema ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D3 + §D4, EPIC `e-60e16169` Phase 2 Story S1, t-8-3328eb57)
+
+New optional `autoSpawn` block on the top-level Team schema (`src/schema/team.ts`) — config home for orchd's `spawn-epic` handler per ADR-231 §D3:
+
+- `defaults[]` — first-match-wins routing table; each entry is `{ match: string (regex source, validated via `new RegExp(match)` in a `z.string().refine` so unparseable patterns are caught at schema-parse time), roster: string, autoSpawn: literal true (typo-catch for opt-out-by-mistake), forceSpawn?: boolean }`. Per-epic explicit `extra.autoSpawn.enabled` always wins per ADR-231 §D3 resolution precedence; this array is the operator's fallback "anything matching X gets auto-spawned with roster Y".
+- `sweepCron` — operator override for the `atmux orchd --sweep` cadence (ADR-231 §D4 OQ-C). Default `*/5 * * * *` is applied at the cron-emission site, NOT here — schema validation is loose (5-field whitespace-separated string presence only) so misshapen cron strings surface at the sandwich-marker emission code's richer parser rather than refusing the whole team.json parse.
+
+Resolution-precedence logic (per-epic explicit > per-team defaults[] first-match > off) lives in `effectiveAutoSpawn()` (out of scope here — Task T-S2.5). Per-epic `epics.extra.autoSpawn` Zod schema lives on the kanban side (out of scope here).
+
+20 new unit tests at `tests/unit/schema/team.test.ts` cover: entry-shape (well-formed, optional forceSpawn, invalid regex, autoSpawn-false typo-catch, empty match/roster, strict unknown-keys); block-shape (empty, multi-entry order, sweepCron 5-field accept, 3-field reject, empty reject, whitespace-pollution reject, strict unknown-keys, invalid-entry-rejects-whole-block); Team-level integration (full-shape parse, back-compat absent, malformed regex via Team.parse, malformed cron via Team.parse, coexists with autoPush). 100% line + funcs coverage on `src/schema/team.ts`.
+
 ### 🔄 Changed — orchd auto-dissolve subscriber now routes through `dispatchDissolveEpic` + `dissolveEpic` factored into `src/core/` ([ADR-232](docs/adr/232-orchd-cross-cage-dispatcher-seam.md) §D1, EPIC `e-60e16169` Phase 2 Story S0, t-4-d75fb776)
 
 Two-step landing:

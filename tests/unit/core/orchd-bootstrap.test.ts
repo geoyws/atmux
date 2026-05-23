@@ -26,11 +26,17 @@ import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
 import {
   bootstrapOrchd,
   ORCHD_DISSOLVE_CONSUMER_ID,
+  ORCHD_DISSOLVE_SOLO_WORKER_CONSUMER_ID,
+  ORCHD_DISSOLVE_SOLO_WORKER_TOPIC,
   ORCHD_DISSOLVE_TOPIC,
   ORCHD_MERGE_CONSUMER_ID,
   ORCHD_MERGE_TOPIC,
   ORCHD_PUSH_CONSUMER_ID,
   ORCHD_PUSH_TOPIC,
+  ORCHD_SPAWN_ON_READY_CONSUMER_ID,
+  ORCHD_SPAWN_ON_READY_TOPIC,
+  ORCHD_SPAWN_ON_UNBLOCKED_CONSUMER_ID,
+  ORCHD_SPAWN_ON_UNBLOCKED_TOPIC,
 } from "../../../src/core/orchd-bootstrap.ts";
 import { ORCHD_SUBSCRIPTIONS } from "../../../src/core/orchd-registry.ts";
 import type {
@@ -55,37 +61,68 @@ afterEach(async () => {
 });
 
 describe("bootstrapOrchd — first registration", () => {
-  test("registers exactly 3 subscriptions in canonical order (merge → dissolve → push)", () => {
+  test("registers exactly 6 subscriptions in canonical order (merge → dissolve → push → dissolve-solo-worker → spawn:on-ready → spawn:on-unblocked)", () => {
     const result = bootstrapOrchd({ db });
 
-    expect(result.registered).toHaveLength(3);
+    expect(result.registered).toHaveLength(6);
     expect(result.registered.map((r) => r.consumerId)).toEqual([
       ORCHD_MERGE_CONSUMER_ID,
       ORCHD_DISSOLVE_CONSUMER_ID,
       ORCHD_PUSH_CONSUMER_ID,
+      ORCHD_DISSOLVE_SOLO_WORKER_CONSUMER_ID,
+      ORCHD_SPAWN_ON_READY_CONSUMER_ID,
+      ORCHD_SPAWN_ON_UNBLOCKED_CONSUMER_ID,
     ]);
     expect(result.registered.map((r) => r.topic)).toEqual([
       ORCHD_MERGE_TOPIC,
       ORCHD_DISSOLVE_TOPIC,
       ORCHD_PUSH_TOPIC,
+      ORCHD_DISSOLVE_SOLO_WORKER_TOPIC,
+      ORCHD_SPAWN_ON_READY_TOPIC,
+      ORCHD_SPAWN_ON_UNBLOCKED_TOPIC,
     ]);
     expect(result.registered.every((r) => r.isNew)).toBe(true);
-    expect(ORCHD_SUBSCRIPTIONS).toHaveLength(3);
+    expect(ORCHD_SUBSCRIPTIONS).toHaveLength(6);
   });
 
-  test("canonical consumer IDs match the ADR-224 §D6 naming convention", () => {
+  test("canonical consumer IDs match the ADR-224 §D6 + ADR-231 §D2/§D6 naming convention", () => {
     expect(ORCHD_MERGE_CONSUMER_ID).toBe("atmux:orchd:auto-merge");
     expect(ORCHD_DISSOLVE_CONSUMER_ID).toBe("atmux:orchd:auto-dissolve");
     expect(ORCHD_PUSH_CONSUMER_ID).toBe("atmux:orchd:auto-push");
+    expect(ORCHD_DISSOLVE_SOLO_WORKER_CONSUMER_ID).toBe("atmux:orchd:dissolve-solo-worker");
+    expect(ORCHD_SPAWN_ON_READY_CONSUMER_ID).toBe("atmux:orchd:spawn:on-ready");
+    expect(ORCHD_SPAWN_ON_UNBLOCKED_CONSUMER_ID).toBe("atmux:orchd:spawn:on-unblocked");
   });
 
   test("canonical topics match each handler module's documented trigger", () => {
     // merge: task.done per ADR-226 §D1
     // dissolve: epic.pushed per ADR-227 §Amendment 2026-05-23
     // push: epic.merged per ADR-229 §D1
+    // dissolve-solo-worker: task.done per ADR-231 §D6
+    // spawn:on-ready: epic.ready per ADR-231 §D2 + ADR-225 §Events
+    // spawn:on-unblocked: epic.unblocked per ADR-231 §D2 + ADR-225 §Events
     expect(ORCHD_MERGE_TOPIC).toBe("task.done");
     expect(ORCHD_DISSOLVE_TOPIC).toBe("epic.pushed");
     expect(ORCHD_PUSH_TOPIC).toBe("epic.merged");
+    expect(ORCHD_DISSOLVE_SOLO_WORKER_TOPIC).toBe("task.done");
+    expect(ORCHD_SPAWN_ON_READY_TOPIC).toBe("epic.ready");
+    expect(ORCHD_SPAWN_ON_UNBLOCKED_TOPIC).toBe("epic.unblocked");
+  });
+
+  test("dissolve-solo-worker shares task.done topic with auto-merge — per-consumer offsets isolate them", () => {
+    // Both subscribe to task.done; consumerIds differ so Honker's
+    // per-consumer offsets keep their drain progress independent
+    // (ADR-202 §VIII + ADR-231 §D6 coordination note).
+    expect(ORCHD_DISSOLVE_SOLO_WORKER_TOPIC).toBe(ORCHD_MERGE_TOPIC);
+    expect(ORCHD_DISSOLVE_SOLO_WORKER_CONSUMER_ID).not.toBe(ORCHD_MERGE_CONSUMER_ID);
+  });
+
+  test("spawn handler subscribes to BOTH epic.ready AND epic.unblocked with distinct consumerIds", () => {
+    // Per ADR-231 §D2: one handler factory, two subscriptions —
+    // per-topic offsets stay independent so a backlog on one topic
+    // doesn't shadow the other.
+    expect(ORCHD_SPAWN_ON_READY_CONSUMER_ID).not.toBe(ORCHD_SPAWN_ON_UNBLOCKED_CONSUMER_ID);
+    expect(ORCHD_SPAWN_ON_READY_TOPIC).not.toBe(ORCHD_SPAWN_ON_UNBLOCKED_TOPIC);
   });
 });
 
@@ -93,11 +130,11 @@ describe("bootstrapOrchd — idempotency", () => {
   test("re-bootstrap with the same db flips every isNew to false, no duplicate push", () => {
     const first = bootstrapOrchd({ db });
     expect(first.registered.every((r) => r.isNew)).toBe(true);
-    expect(ORCHD_SUBSCRIPTIONS).toHaveLength(3);
+    expect(ORCHD_SUBSCRIPTIONS).toHaveLength(6);
 
     const second = bootstrapOrchd({ db });
     expect(second.registered.every((r) => !r.isNew)).toBe(true);
-    expect(ORCHD_SUBSCRIPTIONS).toHaveLength(3);
+    expect(ORCHD_SUBSCRIPTIONS).toHaveLength(6);
   });
 });
 

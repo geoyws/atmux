@@ -201,6 +201,45 @@ export const KanbanEpic = z
      *  for the UPDATE). `epic.ready` event fires on 0→1; no event on
      *  1→0. */
     isReady: z.boolean().default(false),
+    /** ADR-231 §D2 §Schema (sqlite-migrations v15→v16, t-6-8db78adf):
+     *  Unix-epoch timestamp set when orchd auto-spawns this epic-team
+     *  via `atmux team spawn-epic`. Drives the at-least-once dedup
+     *  gate — orchd's spawn handler skips epics where `IS NOT NULL`.
+     *  Storage column `epics.spawned_at` (INTEGER, nullable, no
+     *  DEFAULT); `null` (or missing) means "not yet spawned". Set
+     *  exactly once per epic by orchd's spawn-success path; operators
+     *  may backfill in-flight rows manually post-migration via
+     *  `UPDATE epics SET spawned_at = unixepoch() WHERE id = ?`. */
+    spawnedAt: z.number().int().nullable().optional(),
+    /** ADR-231 §D3 §Schema (per-epic config home): typed sub-shape
+     *  inside `extra` for orchd auto-spawn configuration. `extra`
+     *  itself stays `.passthrough()` so unknown sibling keys flow
+     *  through (forward-compat with future per-epic config classes).
+     *
+     *  - `autoSpawn.enabled` — operator authorization for orchd to
+     *    issue `atmux team spawn-epic` automatically once ADR-225's
+     *    eligibility predicate flips. ADR-225's `is_ready=1` says
+     *    "allowed to spawn at all"; `enabled=true` says "let orchd
+     *    do it without manual keystroke". Both gates must pass.
+     *  - `autoSpawn.roster` — roster name (e.g. `'solo'`,
+     *    `'backend-heavy'`); falls back to per-team default
+     *    (`team.json::autoSpawn.defaults[]`, T-S1.3) then the
+     *    `'default'` literal.
+     *  - `autoSpawn.forceSpawn` — pass `--force` to `atmux team
+     *    spawn-epic`; bypasses ADR-225's eligibility predicate.
+     *    Operator escape hatch — defaults `false`. */
+    extra: z
+      .object({
+        autoSpawn: z
+          .object({
+            enabled: z.boolean(),
+            roster: z.string().optional(),
+            forceSpawn: z.boolean().optional(),
+          })
+          .optional(),
+      })
+      .passthrough()
+      .optional(),
   })
   .passthrough();
 export type KanbanEpic = z.infer<typeof KanbanEpic>;

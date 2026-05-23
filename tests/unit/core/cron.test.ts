@@ -56,16 +56,19 @@ describe("renderCronLines", () => {
     expect(lines.some((l) => /atmux sentinel/.test(l))).toBe(false);
   });
 
-  test("vanilla team renders 4-line block: poke / report / decisions / groom (ADR-160)", () => {
+  test("vanilla team renders 5-line block: poke / report / decisions / groom / orchd --sweep (ADR-160 + ADR-231 §D4)", () => {
     const lines = renderCronLines(baseOpts(baseTeam()));
     // poke default schema-side is `intervalMins: 15` (src/schema/team.ts +
     // src/core/cron.ts:185 — bumped from 5min in t-dcbff97c). ADR-160:
     // verb emission renamed whip → poke; team.whip config field stays.
+    // ADR-231 §D4 added the unconditional `orchd --sweep` backstop line
+    // (default `*/5`; handler is fast-no-op when no kanban row matches).
     expect(lines).toEqual([
       `*/15 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux poke >> /srv/demo/.atmux/logs/poke.log 2>&1`,
       `*/30 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux report >> /srv/demo/.atmux/logs/report.log 2>&1`,
       `0 */4 * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux decisions digest >> /srv/demo/.atmux/logs/decisions-digest.log 2>&1`,
       `0 4 * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux groom --quiet >> /srv/demo/.atmux/logs/groom.log 2>&1`,
+      `*/5 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux orchd --sweep >> /srv/demo/.atmux/logs/orchd-sweep.log 2>&1`,
     ]);
   });
 
@@ -75,14 +78,15 @@ describe("renderCronLines", () => {
     expect(lines).toContain(
       `*/1 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux poke-resume-check >> /srv/demo/.atmux/logs/poke-resume-check.log 2>&1`,
     );
-    // Total now 5 lines.
-    expect(lines.length).toBe(5);
+    // Total now 6 lines (4 base + poke-resume-check + orchd --sweep).
+    expect(lines.length).toBe(6);
   });
 
   test("empty claudeAccount string does NOT add the poke-resume-check line", () => {
     const team = baseTeam({ whip: { claudeAccount: "" } as never });
     const lines = renderCronLines(baseOpts(team));
-    expect(lines.length).toBe(4);
+    // 4 base + orchd --sweep (ADR-231 §D4 unconditional) = 5
+    expect(lines.length).toBe(5);
     expect(lines.some((l) => l.includes("poke-resume-check"))).toBe(false);
   });
 
@@ -196,8 +200,9 @@ describe("renderCronLines", () => {
       ...baseOpts(team),
       tmuxTmpdir: "/tmp/atmux-demo",
     });
-    // poke + 2 discorder + decisions + groom + poke-resume-check + unblocker = 7 (ADR-160)
-    expect(lines.length).toBe(7);
+    // poke + 2 discorder + decisions + groom + poke-resume-check + unblocker +
+    // orchd --sweep (ADR-231 §D4 unconditional) = 8 (ADR-160)
+    expect(lines.length).toBe(8);
     expect(lines.every((l) => l.includes("TMUX_TMPDIR=/tmp/atmux-demo "))).toBe(true);
     expect(lines.some((l) => l.includes("poke-resume-check"))).toBe(true);
     expect(lines.some((l) => l.includes("unblocker tick"))).toBe(true);
@@ -219,10 +224,12 @@ describe("renderCronLines", () => {
     expect(laneLines[0]).toBe(
       `*/5 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux lane-tick >> /srv/demo/.atmux/logs/lane-tick.log 2>&1`,
     );
-    // Placed last per "least-churn diff" — total 4 base + lane-tick = 5,
-    // and lane-tick is the final line.
-    expect(lines.length).toBe(5);
-    expect(lines.at(-1)).toContain("lane-tick");
+    // Post-ADR-231 §D4 the always-on `orchd --sweep` line trails
+    // lane-tick — total 4 base + lane-tick + orchd-sweep = 6, sweep is
+    // the final line; lane-tick sits at index 4 (one above the tail).
+    expect(lines.length).toBe(6);
+    expect(lines.at(-1)).toContain("orchd --sweep");
+    expect(lines.at(-2)).toContain("lane-tick");
   });
 
   test("lane-tick line: ADR-157 §D6 per-team override `crons.laneTickMins=10` emits `*/10`", () => {
@@ -256,7 +263,8 @@ describe("renderCronLines", () => {
     });
     const lines = renderCronLines(baseOpts(team));
     expect(lines.some((l) => l.includes("lane-tick"))).toBe(false);
-    expect(lines.length).toBe(4);
+    // 4 base + orchd --sweep (ADR-231 §D4 unconditional) = 5
+    expect(lines.length).toBe(5);
   });
 
   test("lane-tick line: empty-string .lane treated as no lane (no emit)", () => {
@@ -523,18 +531,21 @@ describe("renderCronLines — config-driven schedules (ADR-079 §A)", () => {
     expect(() => renderCronLines(baseOpts(team))).toThrow(ConfigError);
   });
 
-  test("all defaults → behavior unchanged from pre-ADR-079 (4 lines, byte-identical post-ADR-160 whip→poke rename)", () => {
+  test("all defaults → behavior unchanged from pre-ADR-079 (5 lines post-ADR-231 §D4, byte-identical post-ADR-160 whip→poke rename + ADR-231 §D4 sweep)", () => {
     const lines = renderCronLines(baseOpts(baseTeam()));
     // t-dcbff97c bumped whip default 5min → 15min; ADR-160 renamed the
     // emitted verb whip → poke (config field team.whip is unchanged).
-    // "Behavior unchanged at the schedule + path layer" still holds —
-    // ADR-079 governs the config-driven schedule surface, not the verb
-    // name.
+    // ADR-231 §D4 added the unconditional `orchd --sweep` backstop at
+    // default `*/5` cadence. "Behavior unchanged at the schedule + path
+    // layer" still holds for the original 4 lines — ADR-079 governs the
+    // config-driven schedule surface, not the verb name nor the new
+    // sweep line.
     expect(lines).toEqual([
       `*/15 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux poke >> /srv/demo/.atmux/logs/poke.log 2>&1`,
       `*/30 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux report >> /srv/demo/.atmux/logs/report.log 2>&1`,
       `0 */4 * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux decisions digest >> /srv/demo/.atmux/logs/decisions-digest.log 2>&1`,
       `0 4 * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux groom --quiet >> /srv/demo/.atmux/logs/groom.log 2>&1`,
+      `*/5 * * * * ${P}ATMUX_DIR=/srv/demo/.atmux /usr/local/bin/atmux orchd --sweep >> /srv/demo/.atmux/logs/orchd-sweep.log 2>&1`,
     ]);
   });
 });
@@ -1300,6 +1311,70 @@ describe("renderCronLines — committer-sweep (ADR-134 T7, verb-name ADR-159 TR4
   });
 });
 
+describe("renderCronLines — orchd --sweep (ADR-231 §D4 cron backstop)", () => {
+  test("vanilla team (no autoSpawn block) → emits orchd --sweep at default */5 cadence", () => {
+    const lines = renderCronLines(baseOpts(baseTeam()));
+    const sweep = lines.find((l) => l.includes("orchd --sweep"));
+    expect(sweep).toBeDefined();
+    expect(sweep).toMatch(/^\*\/5 /);
+    expect(sweep).toContain(" orchd --sweep ");
+    expect(sweep).toContain("/srv/demo/.atmux/logs/orchd-sweep.log");
+  });
+
+  test("team.autoSpawn.sweepCron override is emitted verbatim (per-team faster cadence)", () => {
+    const team = baseTeam({
+      autoSpawn: { sweepCron: "*/2 * * * *" } as never,
+    });
+    const lines = renderCronLines(baseOpts(team));
+    const sweep = lines.find((l) => l.includes("orchd --sweep"));
+    expect(sweep).toBeDefined();
+    expect(sweep).toMatch(/^\*\/2 \* \* \* \* /);
+  });
+
+  test("sweepCron supports non-divisor cron patterns (hour ranges / specific minutes)", () => {
+    // Non-divisor patterns the `cronEvery` helper rejects — verify the
+    // sweep line bypasses cronEvery and emits the literal expression.
+    const team = baseTeam({
+      autoSpawn: { sweepCron: "7,37 9-17 * * 1-5" } as never,
+    });
+    const lines = renderCronLines(baseOpts(team));
+    const sweep = lines.find((l) => l.includes("orchd --sweep"));
+    expect(sweep).toBeDefined();
+    expect(sweep).toMatch(/^7,37 9-17 \* \* 1-5 /);
+  });
+
+  test("autoSpawn block present without sweepCron field → falls back to default */5", () => {
+    const team = baseTeam({
+      autoSpawn: { defaults: [] } as never,
+    });
+    const lines = renderCronLines(baseOpts(team));
+    const sweep = lines.find((l) => l.includes("orchd --sweep"));
+    expect(sweep).toMatch(/^\*\/5 /);
+  });
+
+  test("sweep line carries inline PATH= + ATMUX_DIR= prefixes (env-isolation parity)", () => {
+    const lines = renderCronLines(baseOpts(baseTeam()));
+    const sweep = lines.find((l) => l.includes("orchd --sweep"));
+    expect(sweep).toContain(`PATH=${DEFAULT_PATH} `);
+    expect(sweep).toContain("ATMUX_DIR=/srv/demo/.atmux");
+    expect(sweep!.indexOf("PATH=")).toBeLessThan(sweep!.indexOf("ATMUX_DIR="));
+  });
+
+  test("sweep line present in renderCronBlock output between markers (ADR-026 sandwich)", () => {
+    const block = renderCronBlock(baseOpts(baseTeam()));
+    expect(block).toContain("# >>> atmux:team=demo");
+    expect(block).toContain(" orchd --sweep ");
+    expect(block).toContain("# <<< atmux:team=demo");
+  });
+
+  test("idempotence: same opts (with sweepCron override) yield byte-equal lines (ADR-192)", () => {
+    const team = baseTeam({
+      autoSpawn: { sweepCron: "*/10 * * * *" } as never,
+    });
+    expect(renderCronLines(baseOpts(team))).toEqual(renderCronLines(baseOpts(team)));
+  });
+});
+
 // ---------- ADR-057 §D6d / t-bb519494: golden-file parity ----------
 
 describe("renderCronBlock — golden-file parity (ADR-057 §D6d)", () => {
@@ -1382,6 +1457,7 @@ describe("renderCronBlock — golden-file parity (ADR-057 §D6d)", () => {
       " lane-stall-tick ",
       " committer --sweep ",
       " orchd --drain ",
+      " orchd --sweep ",
       " epic-merge tick ",
     ];
     expect(bodyLines.length).toBe(orderedVerbs.length);

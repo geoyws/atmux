@@ -35,7 +35,17 @@
 // bootstrap stays purely about population.
 
 import type { Database } from "bun:sqlite";
-import type { EpicMergedPayload, EventPayload, TaskDonePayload } from "../schema/events.ts";
+import type {
+  EpicMergedPayload,
+  EpicReadyPayload,
+  EpicUnblockedPayload,
+  EventPayload,
+  TaskDonePayload,
+} from "../schema/events.ts";
+import {
+  createDissolveSoloWorkerHandler,
+  type DissolveSoloWorkerHandlerDeps,
+} from "./orchd-dissolve-solo-worker.ts";
 import {
   type AutoDissolveHandlerDeps,
   createAutoDissolveHandler,
@@ -44,6 +54,7 @@ import {
 import { type AutoMergeHandlerDeps, createAutoMergeHandler } from "./orchd-merge.ts";
 import { type AutoPushHandlerDeps, createAutoPushHandler } from "./orchd-push.ts";
 import { registerOrchdSubscription } from "./orchd-registry.ts";
+import { createSpawnEpicHandler, type SpawnEpicHandlerDeps } from "./orchd-spawn.ts";
 
 /** Consumer IDs — exported so step 3/5's drain iterator + tests can
  *  reference the canonical strings without typos. Per ADR-224 §D6
@@ -51,15 +62,33 @@ import { registerOrchdSubscription } from "./orchd-registry.ts";
 export const ORCHD_MERGE_CONSUMER_ID = "atmux:orchd:auto-merge";
 export const ORCHD_DISSOLVE_CONSUMER_ID = "atmux:orchd:auto-dissolve";
 export const ORCHD_PUSH_CONSUMER_ID = "atmux:orchd:auto-push";
+/** ADR-231 §D6: distinct from {@link ORCHD_DISSOLVE_CONSUMER_ID} (which
+ *  handles parent's Phase 4 epic-team dissolve per ADR-227). Honker
+ *  per-consumer offsets isolate the two subscriptions on the shared
+ *  `task.done` topic. */
+export const ORCHD_DISSOLVE_SOLO_WORKER_CONSUMER_ID = "atmux:orchd:dissolve-solo-worker";
+/** ADR-231 §D2: spawnEpicHandler subscribes to BOTH `epic.ready` and
+ *  `epic.unblocked` (per ADR-225 §Events) — two consumerIds isolate
+ *  the per-topic offsets so a backlog on one topic doesn't shadow the
+ *  other. The handler closure is the same factory (`createSpawnEpicHandler`);
+ *  only the subscription bookkeeping differs. */
+export const ORCHD_SPAWN_ON_READY_CONSUMER_ID = "atmux:orchd:spawn:on-ready";
+export const ORCHD_SPAWN_ON_UNBLOCKED_CONSUMER_ID = "atmux:orchd:spawn:on-unblocked";
 
 /** Topics — exported for the same reason. Mirrors each handler module's
  *  documented trigger:
  *  - merge: `task.done` (per ADR-226 §D1)
  *  - dissolve: `epic.pushed` (per ADR-227 §Amendment 2026-05-23 trigger flip)
- *  - push: `epic.merged` (per ADR-229 §D1) */
+ *  - push: `epic.merged` (per ADR-229 §D1)
+ *  - dissolve-solo-worker: `task.done` (per ADR-231 §D6) */
 export const ORCHD_MERGE_TOPIC = "task.done";
 export const ORCHD_DISSOLVE_TOPIC = "epic.pushed";
 export const ORCHD_PUSH_TOPIC = "epic.merged";
+export const ORCHD_DISSOLVE_SOLO_WORKER_TOPIC = "task.done";
+/** ADR-231 §D2 — both events trigger the same spawn handler per
+ *  ADR-225 §Events (deps-graph + operator-flip transitions). */
+export const ORCHD_SPAWN_ON_READY_TOPIC = "epic.ready";
+export const ORCHD_SPAWN_ON_UNBLOCKED_TOPIC = "epic.unblocked";
 
 /**
  * Per-handler dep overrides — partial of the underlying
@@ -81,6 +110,20 @@ export interface BootstrapOrchdDeps {
   dissolveDeps?: Omit<AutoDissolveHandlerDeps, "db">;
   /** Optional overrides for {@link createAutoPushHandler}. */
   pushDeps?: Omit<AutoPushHandlerDeps, "db">;
+  /** ADR-231 §D6: optional overrides for
+   *  {@link createDissolveSoloWorkerHandler}. Absent ⇒ handler factory
+   *  builds with `db` only + applies its own defaults
+   *  ({@link isSoloWorkerTeamName} classifier, real spawn, no-op
+   *  logger). */
+  dissolveSoloWorkerDeps?: Omit<DissolveSoloWorkerHandlerDeps, "db">;
+  /** ADR-231 §D2: REQUIRED overrides for {@link createSpawnEpicHandler}
+   *  when the spawn subscriptions should fire. The factory needs
+   *  `atmuxDir` + `team` (NOT derivable from `db` alone), so absent →
+   *  spawn subscriptions register with a stub that returns
+   *  `skipped-row-missing` for every event (safe no-op). Production
+   *  wire-up (`verbs/committer.ts`) passes the running cage's
+   *  atmuxDir + team config. */
+  spawnDeps?: Omit<SpawnEpicHandlerDeps, "db">;
 }
 
 /** Per-subscription registration result for caller observability. */
@@ -129,6 +172,18 @@ export function bootstrapOrchd(deps: BootstrapOrchdDeps): BootstrapOrchdResult {
     db: deps.db,
     ...(deps.pushDeps ?? {}),
   });
+  const dissolveSoloWorkerHandlerFn = createDissolveSoloWorkerHandler({
+    db: deps.db,
+    ...(deps.dissolveSoloWorkerDeps ?? {}),
+  });
+  // ADR-231 §D2 — spawn handler. When `spawnDeps` is absent (no caller
+  // wire-up), build a stub that returns `skipped-row-missing` for every
+  // event — safe no-op under at-least-once delivery + matches the
+  // pre-T-S2.5 behavior. Production callers (committer.ts) pass
+  // atmuxDir + team config so the real factory builds.
+  const spawnHandlerFn = deps.spawnDeps !== undefined
+    ? createSpawnEpicHandler({ db: deps.db, ...deps.spawnDeps })
+    : async (_event: { epicId: string }) => "skipped-row-missing" as const;
 
   const mergeIsNew = registerOrchdSubscription({
     topic: ORCHD_MERGE_TOPIC,
@@ -151,6 +206,33 @@ export function bootstrapOrchd(deps: BootstrapOrchdDeps): BootstrapOrchdResult {
       await pushHandlerFn(event as EpicMergedPayload);
     },
   });
+  // ADR-231 §D6 — solo-worker auto-dissolve subscriber. Shares the
+  // `task.done` topic with the auto-merge handler; per-consumer
+  // offsets (ADR-202 §VIII) isolate the two.
+  const dissolveSoloWorkerIsNew = registerOrchdSubscription({
+    topic: ORCHD_DISSOLVE_SOLO_WORKER_TOPIC,
+    consumerId: ORCHD_DISSOLVE_SOLO_WORKER_CONSUMER_ID,
+    handler: async (event: EventPayload) => {
+      await dissolveSoloWorkerHandlerFn(event as TaskDonePayload);
+    },
+  });
+  // ADR-231 §D2 — spawn subscriber. Registers TWICE (epic.ready +
+  // epic.unblocked) with distinct consumerIds so per-topic offsets
+  // stay independent. Handler closure is shared (same factory).
+  const spawnOnReadyIsNew = registerOrchdSubscription({
+    topic: ORCHD_SPAWN_ON_READY_TOPIC,
+    consumerId: ORCHD_SPAWN_ON_READY_CONSUMER_ID,
+    handler: async (event: EventPayload) => {
+      await spawnHandlerFn(event as EpicReadyPayload);
+    },
+  });
+  const spawnOnUnblockedIsNew = registerOrchdSubscription({
+    topic: ORCHD_SPAWN_ON_UNBLOCKED_TOPIC,
+    consumerId: ORCHD_SPAWN_ON_UNBLOCKED_CONSUMER_ID,
+    handler: async (event: EventPayload) => {
+      await spawnHandlerFn(event as EpicUnblockedPayload);
+    },
+  });
 
   return {
     registered: [
@@ -161,6 +243,21 @@ export function bootstrapOrchd(deps: BootstrapOrchdDeps): BootstrapOrchdResult {
         isNew: dissolveIsNew,
       },
       { consumerId: ORCHD_PUSH_CONSUMER_ID, topic: ORCHD_PUSH_TOPIC, isNew: pushIsNew },
+      {
+        consumerId: ORCHD_DISSOLVE_SOLO_WORKER_CONSUMER_ID,
+        topic: ORCHD_DISSOLVE_SOLO_WORKER_TOPIC,
+        isNew: dissolveSoloWorkerIsNew,
+      },
+      {
+        consumerId: ORCHD_SPAWN_ON_READY_CONSUMER_ID,
+        topic: ORCHD_SPAWN_ON_READY_TOPIC,
+        isNew: spawnOnReadyIsNew,
+      },
+      {
+        consumerId: ORCHD_SPAWN_ON_UNBLOCKED_CONSUMER_ID,
+        topic: ORCHD_SPAWN_ON_UNBLOCKED_TOPIC,
+        isNew: spawnOnUnblockedIsNew,
+      },
     ],
   };
 }
