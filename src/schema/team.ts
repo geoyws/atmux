@@ -740,58 +740,6 @@ export const TeamObservability = z
 export type TeamObservability = z.infer<typeof TeamObservability>;
 
 /**
- * `team.json::sentinel` enum — pluggable cockpit-W3 whip-manager impl
- * picked for this team. Two-impl set per the 2026-05-14 12:53 MYT
- * ADR-132 simplification (MiniMax + Kimi dropped as "unreliable and
- * not smart enough"; `claude` is the degenerate baseline, `cursor`
- * runs composer-2-fast as the production default).
- *
- * Adding a new backend requires extending this enum AND
- * `Sentinel["name"]` in `src/abstractions/sentinel.ts` in lockstep —
- * the runtime resolver (`resolveSentinel`) lives in
- * `src/core/sentinel-config.ts` and bridges schema-string to impl-
- * factory dispatch.
- */
-export const SentinelImpl = z.enum(["claude", "cursor"]);
-export type SentinelImpl = z.infer<typeof SentinelImpl>;
-
-/**
- * `team.json::sentinelOverrides` — per-team knobs that compose over
- * the impl-side defaults baked into each Sentinel factory. Both
- * fields opt-in; the resolver merges-by-key so explicit values win
- * over per-impl defaults.
- *
- * `.strict()` consistent with the surrounding sub-blocks — drift
- * detection requires unknown-key rejection (ADR-054 §D3).
- */
-export const TeamSentinelOverrides = z
-  .object({
-    /** Per-tick cadence in seconds. Per-impl defaults: `claude` 270s,
-     *  `cursor` 270s (per ADR-132 §D3 — both stay aligned with the
-     *  existing 270s whip cadence; tuned per-team only when commit
-     *  cadence pressure or budget pressure demands it). */
-    cadenceSec: z.number().int().positive().optional(),
-    /** Self-confidence floor (0.0-1.0) below which the non-Claude
-     *  Sentinel escalates instead of acting autonomously. Default
-     *  0.7 per ADR-132 §D5 E5. Ignored by ClaudeSentinel (the
-     *  degenerate impl has no self-confidence signal). */
-    escalationConfidenceThreshold: z.number().min(0).max(1).optional(),
-  })
-  .strict();
-export type TeamSentinelOverrides = z.infer<typeof TeamSentinelOverrides>;
-
-/** ADR-132 §D5 E5 default — non-Claude Sentinel's self-confidence
- *  floor. Below this, the impl escalates to the Claude lead instead
- *  of firing the action. Co-located with the schema so resolver
- *  call-sites share the constant. */
-export const DEFAULT_SENTINEL_ESCALATION_CONFIDENCE = 0.7;
-
-/** ADR-132 §D3 default — per-tick cadence in seconds for both
- *  shipping impls. ClaudeSentinel matches the legacy 270s whip
- *  cadence; CursorSentinel matches it for parity. */
-export const DEFAULT_SENTINEL_CADENCE_SEC = 270;
-
-/**
  * `team.json::ombudsman` sub-config — ADR-147 §D1 + §D2. Per-team
  * complaint adjudicator role. Sentinel + cron wake; opt-in (default
  * disabled). The cron tick line is gated on BOTH
@@ -826,8 +774,7 @@ export type TeamOmbudsman = z.infer<typeof TeamOmbudsman>;
  *  `atmux ombudsman tick` code path when
  *  `team.ombudsman.tickIntervalMins` is unset. Co-located with the
  *  schema so non-Zod call sites (cron renderer, tick verb) share the
- *  same constant — mirrors the
- *  {@link DEFAULT_MERGER_STALENESS_HOURS} / {@link DEFAULT_SENTINEL_CADENCE_SEC}
+ *  same constant — mirrors the {@link DEFAULT_MERGER_STALENESS_HOURS}
  *  precedent. */
 export const DEFAULT_OMBUDSMAN_TICK_INTERVAL_MINS = 15;
 
@@ -1361,16 +1308,6 @@ export const Team = z
      *  does not disable the feature (use bare `stop` for the no-grace
      *  path). */
     softStopGraceSeconds: z.number().int().nonnegative().optional(),
-    /** ADR-132 §D6: pluggable cockpit-W3 whip-manager impl. Default-
-     *  unset resolves to `cockpit.json::defaultSentinel`, then to the
-     *  hard-coded `"claude"` baseline (preserves the pre-Sentinel
-     *  per-team whip codepath for existing rosters). Restart-to-swap
-     *  per OQ-1: changes require an `atmux cockpit rebuild` cycle. */
-    sentinel: SentinelImpl.optional(),
-    /** ADR-132 §D6: per-team knobs that compose over per-impl
-     *  defaults baked into each Sentinel factory. Resolver merges
-     *  by-key (explicit > per-impl default). */
-    sentinelOverrides: TeamSentinelOverrides.optional(),
     /** ADR-139 §Config: refusal-pattern auto-rotate config — see
      *  {@link TeamRefusalDetection}. Absent block → defaults via
      *  {@link resolveRefusalConfig} (enabled=true, soft=3, hard=2,

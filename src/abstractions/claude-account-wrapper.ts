@@ -1,7 +1,7 @@
 // ADR-094 c-alias spawn convention + ADR-167 §Decision wrapper-resolver
 // table. Pure function — `claudeAccount.configDir` → wrapper-command
 // name. Consumed by `src/verbs/cockpit-rotate.ts` (T4) to build the
-// respawn shell command for medic / sentinel cockpit roles.
+// respawn shell command for medic cockpit role.
 //
 // The c-alias wrappers live on the operator's PATH (per global
 // CLAUDE.md §Spawn Pattern); each wrapper exports the per-account
@@ -41,7 +41,7 @@ const WRAPPER_TABLE: ReadonlyMap<string, ClaudeWrapper> = new Map([
  *  cockpit.json entry or register a new wrapper.
  *
  *  Per ADR-167 §Decision wrapper-resolver: cockpit-rotate respawn for
- *  medic / sentinel invokes the wrapper by name; team-driver respawn
+ *  medic invokes the wrapper by name; team-driver respawn
  *  uses the cage retry-loop (per ADR-162) and does NOT thread through
  *  the wrapper, but callers still validate via this resolver to refuse
  *  unknown configDirs at the verb boundary. */

@@ -65,7 +65,6 @@ import { resolveTuiCommand } from "../core/tui-cmd.ts";
 import { UsageError } from "../errors.ts";
 import type {
   CockpitMedic,
-  CockpitSentinel,
   CockpitSuperdoctor,
   CockpitTeam,
 } from "../schema/cockpit.ts";
@@ -114,12 +113,7 @@ export interface ResolveTeamWindowDeps {
    *  fixtures injecting `buildSuperdoctorCommand` keep working; the
    *  reconcile prefers `buildMedicCommand` when both are set. */
   buildSuperdoctorCommand?: (sd: CockpitSuperdoctor) => string;
-  /** ADR-132 §D2: override the sentinel window's shell command (test
-   *  injection). Default uses `buildSentinelWindowCommand`. Tests
-   *  inject `() => "sleep infinity"` so the window persists without a
-   *  real `claude` binary. */
-  buildSentinelCommand?: (m: CockpitSentinel) => string;
-  /** t-22453c1e: sleep override for the medic + sentinel auto-start
+  /** t-22453c1e: sleep override for the medic auto-start
    *  poll loops. Default `setTimeout`-backed. Tests pass a no-op so
    *  wait-for-readiness doesn't burn real wall-clock seconds. */
   autoStartSleep?: (ms: number) => Promise<void>;
@@ -748,9 +742,6 @@ export async function cockpitRebuild(
   // OR coerces from a legacy `superdoctor` block. Pass `medic` directly;
   // the reconcile names the window canonically and migrates any legacy
   // "superdoctor" window in-place on first rebuild.
-  // ADR-132 §D2: cockpit-tier sentinel block at W3 (sibling of medic at
-  // W2). Loader exposes `cockpit.sentinel`; reconcile provisions W3 when
-  // `enabled === true` and shifts team viewers to W4+.
   await reconcileCockpitSession(
     cockpitTmux,
     cockpit.cockpitSession,
@@ -760,7 +751,6 @@ export async function cockpitRebuild(
     cockpit.medic,
     parsed.yes,
     {}, // reconcileOpts — fleet-wide path; no onlyTeam filter
-    cockpit.sentinel,
   );
 
   // Phase 5b (t-3fb7bc54): apply the resolved prefix to the cockpit
@@ -895,9 +885,9 @@ export interface CapturedCockpitWindow {
  * (heavy external dep + platform-specific). The realistic
  * mechanism is **graceful-recreate**: scrollback is preserved as
  * visual context; the operator re-invokes any in-pane work in the
- * new panes. Cron-spawned cockpit roles (medic, martinet,
- * sentinel) re-establish themselves on the next cron tick without
- * operator action — they're not state-bearing across ticks.
+ * new panes. Cron-spawned cockpit roles (medic) re-establish
+ * themselves on the next cron tick without operator action — they're
+ * not state-bearing across ticks.
  *
  * Idempotent — re-running on an already-migrated cockpit returns 0
  * with the "no legacy cockpit on default socket" log. `--dry-run`
@@ -1121,7 +1111,7 @@ export function buildMigrationBreadcrumb(
     `# Captured ${captured.length} window(s) from the legacy default-socket cockpit.`,
     `# Process state was NOT transferred (tmux primitives can't re-bind PIDs across`,
     `# servers); re-invoke any in-pane Claude/script process in the new panes.`,
-    `# Cron-spawned roles (medic/martinet/sentinel) re-establish on the next tick.`,
+    `# Cron-spawned roles (medic) re-establish on the next tick.`,
     "",
   ].join("\n");
   const body = captured
@@ -1458,9 +1448,8 @@ function buildDefaultReadinessProbe(cageTmux: TmuxNamespace, opts: AutolaunchOpt
 /**
  * Reconcile the cockpit session: ensure it exists with window 1 =
  * `superdriver`, an optional window 2 = `medic` (ADR-077 role renamed
- * per ADR-133), an optional window 3 = `sentinel` (ADR-132 §D2), and
- * one viewer window per enabled team. Removes windows for disabled
- * teams. Idempotent.
+ * per ADR-133), and one viewer window per enabled team. Removes
+ * windows for disabled teams. Idempotent.
  *
  * ADR-064 §3 + §OQ4 — each per-team window runs in one of three
  * modes resolved by `resolveTeamWindowMode`:
@@ -1473,24 +1462,16 @@ function buildDefaultReadinessProbe(cageTmux: TmuxNamespace, opts: AutolaunchOpt
  * ADR-077 + ADR-133 — the medic window (legacy: superdoctor) is
  * optional and singleton:
  *   - When `medic?.enabled === true`, it occupies cockpit window
- *     index 2 (between superdriver and the team viewers / sentinel).
+ *     index 2 (between superdriver and the team viewers).
  *     On first upgrade from a pre-ADR-077 cockpit, an existing team
  *     viewer at index 2 is killed-and-recreated to preserve the slot
  *     invariant.
  *   - When unset / disabled, the index-2 slot drops back to the
- *     sentinel (if enabled) or to the first team viewer (otherwise).
+ *     first team viewer.
  *   - Legacy window-name migration: when a window named `superdoctor`
  *     exists from a pre-ADR-133 rebuild AND `medic.enabled === true`,
  *     the legacy window is renamed in-place to `medic` (idempotent;
  *     once renamed, future rebuilds preserve the canonical name).
- *
- * ADR-132 §D2 — the sentinel window is optional and singleton:
- *   - When `sentinel?.enabled === true`, it occupies cockpit window
- *     index N+1 where N = (medic enabled ? 2 : 1). Team viewers
- *     shift to N+2..M.
- *   - When unset / disabled, cockpit shape is unchanged from the
- *     pre-ADR-132 topology (team viewers occupy 2..N or 3..N
- *     depending on medic).
  *
  * Idempotence: when a window already exists for `t.name`, this function
  * preserves it as-is — matching the pre-ADR-064 behaviour. State
@@ -1526,28 +1507,13 @@ export async function reconcileCockpitSession(
   /** ADR-133 canonical singleton (fleet self-healing, was superdoctor). */
   medic?: CockpitMedic,
   /** t-8b0e077e: confirm destructive cockpit-reconcile ops (move-with-kill
-   *  on medic / sentinel target slots + orphan-prune). Required when
-   *  count > 0. Defaults to false — caller (cockpitRebuild) threads
-   *  `parsed.yes`.
-   *
-   *  Position-stable across the ADR-132 reshape — kept at index 7 (the
-   *  pre-ADR-132 slot) so existing test callers continue to type-check
-   *  without churn. ADR-132 §D2's `sentinel` argument lands at index 8
-   *  to preserve back-compat. */
+   *  on medic target slot + orphan-prune). Required when count > 0.
+   *  Defaults to false — caller (cockpitRebuild) threads `parsed.yes`. */
   yes = false,
   /** ADR-063 follow-up — per-team reconcile knobs (only-team filter,
    *  additive-only mode for the orphan-prune pass). When omitted, the
-   *  reconcile runs fleet-wide as before. Kept at position 8 (trunk's
-   *  position before ADR-132 lands) so existing callers + tests keep
-   *  type-checking without ordering churn. */
+   *  reconcile runs fleet-wide as before. */
   reconcileOpts: ReconcileCockpitOpts = {},
-  /** ADR-132 §D2 singleton (cockpit-tier whip manager). When unset or
-   *  `enabled: false`, no W3 window is provisioned. Discriminated
-   *  union on `impl` per the §D4 reshape (Task t-b86fd8cb resolution);
-   *  both `claude` + `cursor` variants honour `.enabled` so the gate
-   *  below works across either impl. New positional slot 9 — callers
-   *  that don't opt in to sentinel just omit. */
-  sentinel?: CockpitSentinel,
 ): Promise<void> {
   const onlyTeam = reconcileOpts.onlyTeam;
 
@@ -1593,11 +1559,10 @@ export async function reconcileCockpitSession(
   }
 
   const wantMedic = medic?.enabled === true;
-  const wantSentinel = sentinel?.enabled === true;
 
   // ADR-135 §D4 — legacy cockpit-role-window migration. Renames in
   // order: `superdoctor → medic` (ADR-133 carry-over), `superdriver
-  // → _superdriver`, `medic → _medic`, `sentinel → _sentinel`.
+  // → _superdriver`, `medic → _medic`.
   // Each rename is idempotent (no-op when canonical name already
   // present). Race-safe within a single rebuild: list windows once,
   // chain renames, list again only if needed by subsequent logic.
@@ -1644,7 +1609,6 @@ export async function reconcileCockpitSession(
     // ADR-135 §D2: underscore-prefix migration for cockpit-role windows.
     await renameInPlace("superdriver", "_superdriver");
     await renameInPlace("medic", "_medic");
-    await renameInPlace("sentinel", "_sentinel");
   }
 
   // t-8b0e077e: pre-pass destructive-op detection. Walk the windows
@@ -1658,15 +1622,14 @@ export async function reconcileCockpitSession(
     sessionName,
     teams,
     wantMedic,
-    wantSentinel,
     yes,
     logger,
     ...(onlyTeam !== undefined ? { onlyTeam } : {}),
   });
 
   // ADR-077 + ADR-133: ensure the medic window exists + sits
-  // IMMEDIATELY after the superdriver window BEFORE adding sentinel /
-  // team viewers, so on a fresh cockpit the downstream windows land
+  // IMMEDIATELY after the superdriver window BEFORE adding team
+  // viewers, so on a fresh cockpit the downstream windows land
   // at the correct slots. The target index is `superdriver.index + 1`
   // rather than a literal `2` because tmux's `base-index` option
   // (operator-config dependent) determines whether window 1 sits at
@@ -1745,75 +1708,6 @@ export async function reconcileCockpitSession(
     }
   }
 
-  // ADR-132 §D2: provision the _sentinel window at index (medic ? 3 : 2).
-  // Same machinery as _medic — newWindow if missing, moveWindow if at
-  // wrong slot, auto-start the loop if just created.
-  if (wantSentinel) {
-    let windowsBefore = await cockpitTmux.window.listWindows(sessionName);
-    const sdrv = windowsBefore.find((w) => w.name === "_superdriver");
-    const baseIdx = sdrv !== undefined ? sdrv.index : 1;
-    // Sentinel sits at base+2 when medic is enabled, base+1 when not.
-    const targetIdx = baseIdx + (wantMedic ? 2 : 1);
-    let mt = windowsBefore.find((w) => w.name === "_sentinel");
-    let mtJustCreated = false;
-    if (mt === undefined) {
-      const builder = deps.buildSentinelCommand ?? buildSentinelWindowCommand;
-      const cmd = builder(sentinel);
-      const newId = await cockpitTmux.window.newWindow({
-        sessionName,
-        name: "_sentinel",
-        detached: true,
-        shellCommand: cmd,
-      });
-      logger.log(`  ✓ added window '_sentinel' (idx ${newId.windowIndex})`);
-      windowsBefore = await cockpitTmux.window.listWindows(sessionName);
-      mt = windowsBefore.find((w) => w.name === "_sentinel");
-      mtJustCreated = true;
-    }
-    if (mt !== undefined && mt.index !== targetIdx) {
-      await cockpitTmux.window.moveWindow({
-        source: { sessionName, windowIndex: mt.index },
-        target: { sessionName, windowIndex: targetIdx },
-        kill: true,
-      });
-      logger.log(`  ✓ moved '_sentinel' to idx ${targetIdx} (was idx ${mt.index})`);
-    }
-
-    // Auto-fire `/loop /sentinel` on fresh creation only. Same
-    // pre-existing-window safety as medic. Reuses autoStartSuperdoctorLoop's
-    // generic poll-then-send machinery via the sentinel variant below.
-    // ADR-132 §D4 discriminated-union narrowing: autoStart +
-    // autoStartTimeoutSec are claude-variant-only fields. The cursor
-    // variant doesn't auto-fire `/loop /sentinel` (it's a non-Claude
-    // process; the cage's spawn command IS the loop entry — no
-    // post-spawn keypress needed).
-    if (
-      mtJustCreated &&
-      sentinel.impl === "claude" &&
-      sentinel.autoStart !== false &&
-      mt !== undefined
-    ) {
-      const settleSec = sentinel.autoStartTimeoutSec ?? 30;
-      try {
-        const autoStartOpts: AutoStartSentinelOpts = {
-          tmux: cockpitTmux,
-          sessionName,
-          windowIndex: mt.index,
-          timeoutMs: settleSec * 1000,
-          logger,
-        };
-        if (deps.autoStartSleep !== undefined) autoStartOpts.sleep = deps.autoStartSleep;
-        if (deps.autoStartCapturePane !== undefined) {
-          autoStartOpts.capturePane = deps.autoStartCapturePane;
-        }
-        await autoStartSentinelLoop(autoStartOpts);
-      } catch (e) {
-        const cause = e instanceof Error ? e.message : String(e);
-        logger.warn(`  ⚠ _sentinel auto-start fell through: ${cause}`);
-      }
-    }
-  }
-
   const windows = await cockpitTmux.window.listWindows(sessionName);
   const present = new Set(windows.map((w) => w.name));
   // ADR-089 §Pillar 1 §Amendment (t-2ea3bdb9, ba1f1c1): the cockpit hosts
@@ -1839,7 +1733,6 @@ export async function reconcileCockpitSession(
   const wanted = new Set([
     "_superdriver",
     ...(wantMedic ? ["_medic"] : []),
-    ...(wantSentinel ? ["_sentinel"] : []),
     ...cockpitTeams.map((t) => t.name),
   ]);
 
@@ -1881,8 +1774,7 @@ export async function reconcileCockpitSession(
     // the cockpit-role windows that precede them (per ADR-135 §D2).
     const windowsForOrder = await cockpitTmux.window.listWindows(sessionName);
     const sdrv = windowsForOrder.find((w) => w.name === "_superdriver");
-    const cursorBase =
-      (sdrv !== undefined ? sdrv.index + 1 : 1) + (wantMedic ? 1 : 0) + (wantSentinel ? 1 : 0);
+    const cursorBase = (sdrv !== undefined ? sdrv.index + 1 : 1) + (wantMedic ? 1 : 0);
     // ADR-089 §Pillar 1 §Amendment: epic-teams are NOT cockpit windows;
     // reorder only places L2 parent teams. Using `teams` (which contains
     // epic-teams too) would assign cockpit slots to entries that have no
@@ -1944,13 +1836,12 @@ export async function reconcileCockpitSession(
   }
 
   // Remove orphan viewer windows (e.g. team that was removed/disabled).
-  // _superdriver + _medic (when enabled) + _sentinel (when enabled)
-  // are always preserved (ADR-135 canonical names). The legacy names
-  // `superdriver` / `medic` / `sentinel` and the pre-ADR-133 legacy
-  // `superdoctor` window are also preserved during the deprecation
-  // window so an operator running between releases doesn't lose a
-  // cage that hasn't been renamed yet. (Cage rename to canonical
-  // happens in the migration shim above; this guard is the
+  // _superdriver + _medic (when enabled) are always preserved (ADR-135
+  // canonical names). The legacy names `superdriver` / `medic` and the
+  // pre-ADR-133 legacy `superdoctor` window are also preserved during
+  // the deprecation window so an operator running between releases
+  // doesn't lose a cage that hasn't been renamed yet. (Cage rename to
+  // canonical happens in the migration shim above; this guard is the
   // belt-and-braces fallback when the shim is somehow skipped, e.g.
   // a test fixture that injects pre-named windows directly.)
   //
@@ -1964,7 +1855,6 @@ export async function reconcileCockpitSession(
     if (w.name === "_superdriver" || w.name === "superdriver") continue;
     if (w.name === "_medic" || w.name === "medic") continue;
     if (w.name === "superdoctor") continue;
-    if (w.name === "_sentinel" || w.name === "sentinel") continue;
     try {
       await cockpitTmux.window.killWindow(`${sessionName}:${w.name}`);
       logger.log(`  ✓ removed orphan window '${w.name}'`);
@@ -1997,59 +1887,11 @@ export function buildSuperdoctorWindowCommand(sd: CockpitSuperdoctor): string {
   return buildClaudeWindowCommand(sd);
 }
 
-/**
- * ADR-132 §D2: build the shell command the cockpit sentinel window
- * runs. Per ADR-132 §D4 the dispatcher cage launches the resolved
- * impl directly — `claude` variant runs the standard claude TUI under
- * the operator account (structurally identical to medic); `cursor`
- * variant runs the `atmux sentinel tick` loop which internally shells
- * out to `cursor-agent --print --model <model>` per tick (wired in
- * `src/verbs/sentinel.ts::buildSentinel` — T3 / t-e96d286a).
- *
- * The window discriminator narrows the invocation:
- *   - claude  → standard claude TUI (`/loop /sentinel` auto-fired
- *               post-settle by `autoStartSentinelLoop`)
- *   - cursor  → bash loop firing `atmux sentinel tick` at the cadence
- *               configured in `team.sentinelOverrides.cadenceSec`
- *               (default 270s per `DEFAULT_SENTINEL_CADENCE_SEC`).
- *               No interactive TUI — cursor-agent is a `--print` CLI
- *               and the loop is owned by the verb shell, not a Claude
- *               REPL.
- *
- * Cage posture (per task body §Cage provisioning + ADR-058 §D3): the
- * cockpit session itself runs as operator UID with full git access —
- * the W3 window therefore IS the Tier-2 cage in trust posture.
- * Sentinel is fleet-wide singleton (one cage observes all teams), so
- * no per-team `/tmp/atmux_cursor_sentinel_<team>/sock` carve-out is
- * provisioned; the task body's per-team cage path predated the §D2
- * fleet-singleton reshape and is reframed here as "operator-UID W3
- * window with per-tick cursor-agent shell-out."
- */
-export function buildSentinelWindowCommand(m: CockpitSentinel): string {
-  if (m.impl === "claude") {
-    return buildClaudeWindowCommand(m);
-  }
-  // Cursor variant — bash loop firing `atmux sentinel tick` at the
-  // cadence configured in `team.sentinelOverrides.cadenceSec` (default
-  // 270s per `DEFAULT_SENTINEL_CADENCE_SEC`). The verb's
-  // `buildSentinel` constructs CursorSentinel which spawns
-  // `cursor-agent --print --output-format json --model <m.model>
-  // --force <prompt>` on every tick.
-  //
-  // Sleep cadence is hard-coded here at 270s (5min - cache-safe per
-  // global CLAUDE.md "Don't pick 300s" cache-window rule). Per-team
-  // override via `sentinelOverrides.cadenceSec` is honored by the
-  // verb's per-team resolver — this loop's cadence is the FLOOR; the
-  // verb may exit early if internal timing dictates.
-  return ["while true; do", "  atmux sentinel tick", "  sleep 270", "done"].join(" ");
-}
-
-/** Shared body for the medic / sentinel window-command builders.
- *  Reads the same `tuiOverrides` + `claudeAccount` fields each block
- *  surfaces (struct shape mirrored on purpose per ADR-077 §D2 +
- *  ADR-132 §D6 — both reuse `CockpitClaudeAccount` / `CockpitTuiOverrides`
- *  verbatim). Kept private so the public builder functions read as
- *  intent-named call sites. */
+/** Shared body for the medic window-command builder.
+ *  Reads the `tuiOverrides` + `claudeAccount` fields the medic block
+ *  surfaces (struct mirrored on purpose per ADR-077 §D2 — reuses
+ *  `CockpitClaudeAccount` / `CockpitTuiOverrides` verbatim). Kept
+ *  private so the public builder reads as an intent-named call site. */
 function buildClaudeWindowCommand(cfg: {
   claudeAccount?: { configDir: string; label?: string | undefined } | undefined;
   tuiOverrides?:
@@ -2096,7 +1938,6 @@ interface RefuseDestructiveOpts {
   sessionName: string;
   teams: ReadonlyArray<CockpitTeam>;
   wantMedic: boolean;
-  wantSentinel: boolean;
   yes: boolean;
   logger: Logger;
   /** ADR-063 ergonomic fix interplay (t-ab8df0b4): when set, the live
@@ -2119,16 +1960,13 @@ interface RefuseDestructiveOpts {
  *   1. `medic` displacement — when wantMedic is on AND the target slot
  *      (`superdriver.index + 1`) is currently occupied by a NON-medic
  *      (and non-superdoctor-mid-migration) window.
- *   2. `sentinel` displacement — when wantSentinel is on AND the target
- *      slot (`superdriver.index + (wantMedic ? 2 : 1)`) is currently
- *      occupied by a NON-sentinel window.
- *   3. Orphan-prune — any window not in {superdriver, medic (when
- *      enabled), sentinel (when enabled), superdoctor (preserved during
- *      ADR-133 deprecation window), team-names...} that the live code's
- *      `killWindow` would sweep.
+ *   2. Orphan-prune — any window not in {superdriver, medic (when
+ *      enabled), superdoctor (preserved during ADR-133 deprecation
+ *      window), team-names...} that the live code's `killWindow` would
+ *      sweep.
  */
 async function refusePlannedDestructiveOps(opts: RefuseDestructiveOpts): Promise<void> {
-  const { cockpitTmux, sessionName, teams, wantMedic, wantSentinel, yes, logger, onlyTeam } = opts;
+  const { cockpitTmux, sessionName, teams, wantMedic, yes, logger, onlyTeam } = opts;
   // Per-team (onlyTeam) mode is purely additive in the live body — no
   // medic relocation, no orphan-prune. Skip the dry-run entirely
   // rather than report "destructive" ops that the live path will never
@@ -2137,8 +1975,8 @@ async function refusePlannedDestructiveOps(opts: RefuseDestructiveOpts): Promise
   const windows = await cockpitTmux.window.listWindows(sessionName);
   const planned: PlannedDestructiveOp[] = [];
 
-  // ADR-135 §D2 canonical names are `_superdriver` / `_medic` /
-  // `_sentinel`; the in-place rename shim (above this call) has
+  // ADR-135 §D2 canonical names are `_superdriver` / `_medic`;
+  // the in-place rename shim (above this call) has
   // already migrated legacy names by the time this dry-run walks the
   // window list. Legacy names are kept in the preserved-window
   // matchers as a belt-and-braces — test fixtures may inject
@@ -2174,37 +2012,17 @@ async function refusePlannedDestructiveOps(opts: RefuseDestructiveOpts): Promise
     }
   }
 
-  // Case 2 — _sentinel displacement.
-  if (wantSentinel) {
-    const targetIdx = baseIdx + (wantMedic ? 2 : 1);
-    const mt = windows.find((w) => w.name === "_sentinel");
-    if (mt !== undefined && mt.index !== targetIdx) {
-      const occupant = windows.find(
-        (w) => w.index === targetIdx && w.name !== "_sentinel" && w.name !== "sentinel",
-      );
-      if (occupant !== undefined) {
-        planned.push({
-          window: occupant.name,
-          action: "move-with-kill",
-          reason: `target slot ${targetIdx} occupied by '${occupant.name}'; _sentinel relocation kills it`,
-        });
-      }
-    }
-  }
-
-  // Case 3 — orphan-prune. Compute the wanted-name set; anything else
+  // Case 2 — orphan-prune. Compute the wanted-name set; anything else
   // that isn't an always-preserved window gets killed.
   const wanted = new Set<string>([
     "_superdriver",
     ...(wantMedic ? ["_medic"] : []),
-    ...(wantSentinel ? ["_sentinel"] : []),
     ...teams.map((t) => t.name),
   ]);
   for (const w of windows) {
     if (wanted.has(w.name)) continue;
     if (w.name === "_superdriver" || w.name === "superdriver") continue;
     if (w.name === "_medic" || w.name === "medic") continue;
-    if (w.name === "_sentinel" || w.name === "sentinel") continue;
     // Legacy `superdoctor` window is preserved during the ADR-133
     // deprecation window — rebuild migrates it via rename-window
     // (pre-pass), not prune. If wantMedic is OFF and the legacy window
@@ -2395,111 +2213,3 @@ function paneIsReady(capture: string): boolean {
   return false;
 }
 
-// ---------- ADR-132 §D2: sentinel auto-start ----------
-
-export interface AutoStartSentinelOpts {
-  tmux: TmuxNamespace;
-  sessionName: string;
-  windowIndex: number;
-  /** Max wall-clock to wait for the pane to settle to a Claude idle
-   *  prompt before bailing without a send-keys. Operator falls back to
-   *  manual `/loop /sentinel` when this fires. */
-  timeoutMs: number;
-  logger: Logger;
-  /** Test injection — defaults to `setTimeout`-backed. */
-  sleep?: (ms: number) => Promise<void>;
-  /** Test injection — defaults to `tmux.pane.capturePane`. */
-  capturePane?: (sessionName: string, windowIndex: number) => Promise<string>;
-}
-
-/**
- * ADR-132 §D2 + ADR-077 §t-22453c1e parallel: poll the freshly-created
- * sentinel pane until it settles to a Claude idle prompt, then
- * `tmux send-keys` `/loop /sentinel` + Enter. Same non-fatal posture as
- * the medic auto-start — every branch logs + returns; the operator
- * falls back to typing the keystroke manually if anything goes wrong.
- *
- * Three terminal outcomes:
- *   - Idle prompt detected → send-keys → verify → log ok / warn-no-verify
- *   - Timeout (default 30s, configurable) → warn + return
- *   - Capture throws → warn + return
- */
-export async function autoStartSentinelLoop(opts: AutoStartSentinelOpts): Promise<void> {
-  const sleep =
-    opts.sleep ??
-    ((ms: number) =>
-      new Promise<void>((res) => {
-        setTimeout(res, ms);
-      }));
-  const capturePane =
-    opts.capturePane ??
-    (async (session: string, idx: number): Promise<string> => {
-      return await opts.tmux.pane.capturePane({
-        target: { sessionName: session, windowIndex: idx },
-      });
-    });
-
-  const deadline = Date.now() + opts.timeoutMs;
-  let ready = false;
-  while (Date.now() < deadline) {
-    let capture: string;
-    try {
-      capture = await capturePane(opts.sessionName, opts.windowIndex);
-    } catch (e) {
-      const cause = e instanceof Error ? e.message : String(e);
-      opts.logger.warn(
-        `  ⚠ sentinel auto-start: capture-pane failed (${cause}); operator falls back to manual \`/loop /sentinel\``,
-      );
-      return;
-    }
-    if (paneIsReady(capture)) {
-      ready = true;
-      break;
-    }
-    await sleep(SUPERDOCTOR_POLL_INTERVAL_MS);
-  }
-  if (!ready) {
-    opts.logger.warn(
-      `  ⚠ sentinel pane not ready after ${Math.floor(opts.timeoutMs / 1000)}s; type \`/loop /sentinel\` manually`,
-    );
-    return;
-  }
-
-  const target: SendTarget = {
-    kind: "member",
-    member: "sentinel",
-    team: opts.sessionName,
-    target: { sessionName: opts.sessionName, windowIndex: opts.windowIndex },
-  };
-  try {
-    await opts.tmux.pane.sendKeys({
-      target,
-      keys: "/loop /sentinel",
-      enter: true,
-    });
-  } catch (e) {
-    const cause = e instanceof Error ? e.message : String(e);
-    opts.logger.warn(
-      `  ⚠ sentinel auto-start: send-keys failed (${cause}); operator falls back to manual`,
-    );
-    return;
-  }
-
-  await sleep(SUPERDOCTOR_POST_SEND_VERIFY_MS);
-  let postCapture: string;
-  try {
-    postCapture = await capturePane(opts.sessionName, opts.windowIndex);
-  } catch {
-    opts.logger.log(
-      "  ✓ sentinel auto-started (`/loop /sentinel` sent; verification capture failed — assume ok)",
-    );
-    return;
-  }
-  if (SUPERDOCTOR_LOOP_LANDED_MARKERS.some((m) => postCapture.includes(m))) {
-    opts.logger.log("  ✓ sentinel auto-started (`/loop /sentinel` confirmed)");
-  } else {
-    opts.logger.warn(
-      "  ⚠ sentinel auto-start: send-keys fired but verification marker not seen in 5s; operator should sanity-check the window",
-    );
-  }
-}

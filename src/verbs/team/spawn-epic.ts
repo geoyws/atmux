@@ -361,19 +361,17 @@ export async function spawnEpic(
   // t-54ba3c49 — soft-warn at 20+ concurrent epics under same parent.
   // Per ADR-090 §Amendment 2026-05-20: the per-parent cap is LIFTED;
   // operators can spawn freely. But at high concurrency (>20 epics
-  // under one parent), sentinel coverage + auto-merge queue throughput
-  // may saturate. This warn is visibility, not refuse — the spawn
-  // proceeds either way. Counts existing epic-team children of the
-  // parent's sessions[] (post-migrateLegacyShape so legacy shapes are
-  // already lifted).
+  // under one parent), auto-merge queue throughput may saturate. This
+  // warn is visibility, not refuse — the spawn proceeds either way.
+  // Counts existing epic-team children of the parent's sessions[]
+  // (post-migrateLegacyShape so legacy shapes are already lifted).
   const SOFT_WARN_THRESHOLD = 20;
   const parentEpicCount = (parentEntry.sessions ?? []).filter(
     (s) => (s as { type?: string }).type === "epic-team",
   ).length;
   if (parentEpicCount >= SOFT_WARN_THRESHOLD) {
     logger.warn(
-      `spawn-epic: ${parentEpicCount} concurrent epic-team(s) already under '${parsed.parentTeam}' — sentinel coverage may saturate at this scale. ` +
-        `Review cockpit.sentinel.maxParallel + auto-merge queue depth. ` +
+      `spawn-epic: ${parentEpicCount} concurrent epic-team(s) already under '${parsed.parentTeam}' — auto-merge queue depth may saturate at this scale. ` +
         `Proceeding (no refuse — per ADR-090 §Amendment 2026-05-20).`,
     );
   }

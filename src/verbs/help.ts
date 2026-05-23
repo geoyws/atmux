@@ -48,19 +48,13 @@ Setup:
                               shape for headless probes.
   cockpit rotate <session-name> [--force]
                               ADR-167 Rung C: canonical rotation of a cockpit-
-                              level role pane — \`medic\` (W2), \`sentinel\` (W3),
-                              or \`<team-name>\` (W4+ driver pane). Refuses
-                              \`superdriver\` unconditionally; four pre-flight
-                              gates (user-not-typing / pane-idle / uptime /
+                              level role pane — \`medic\` (W2) or \`<team-name>\`
+                              (W3+ driver pane). Refuses \`superdriver\`
+                              unconditionally; four pre-flight gates
+                              (user-not-typing / pane-idle / uptime /
                               never-rotate-superdriver) protect against
                               accidental rotation. Driver-only via
                               ATMUX_CALLER_SCOPE=driver.
-  sentinel [tick|status] [--once] [--config <p>] [--state <p>]
-                              ADR-132 §D2: cockpit-tier fleet-wide whip-manager
-                              tick loop (window W3, sibling of medic at W2).
-                              'tick' iterates every enabled team; 'status'
-                              prints last-tick JSON. State persists at
-                              ~/.atmux/state/sentinel-state.json.
 
 Messaging:
   send <member> <msg...>      tmux send-keys to a member's pane

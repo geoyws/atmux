@@ -226,7 +226,6 @@ export const TOPICS = [
   "team.idle",
   "team.recovered",
   "team.stopped",
-  "sentinel.escalated",
   "medic.hygiene-drained",
   "budget.warning",
   "budget.recovered",

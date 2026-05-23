@@ -1,8 +1,8 @@
 // ADR-167: `atmux cockpit rotate <session-name>` — Rung C canonical
-// rotation verb for cockpit-level role panes (medic / sentinel / per-
-// team driver). Closes the missing rung in /bruh's escalation chain
-// (Rung A = member rotate, Rung B = lead rotate via medic, Rung C =
-// this verb, Rung D = full cockpit rebuild).
+// rotation verb for cockpit-level role panes (medic / per-team driver).
+// Closes the missing rung in /bruh's escalation chain (Rung A = member
+// rotate, Rung B = lead rotate via medic, Rung C = this verb, Rung D =
+// full cockpit rebuild).
 //
 // T2 (shipped c376f63): verb dispatch, parser, gate-4 (never-rotate-
 // superdriver), caller-scope gate, role classifier, per-role respawn
@@ -12,16 +12,15 @@
 // audit-row emit + Discord [cockpit-rotate-refused] emit at every
 // gate-refusal site.
 //
-// T4 (shipped 771a104): per-role respawn matrix (medic / sentinel /
-// team-driver), c-alias wrapper resolver (load-bearing for medic +
-// sentinel-claude, skipped for sentinel-cursor + team-driver),
-// Ctrl-C via safeSendKeysWithVerify, success NDJSON audit row +
-// cadence re-arm via autoStartSuperdoctorLoop / autoStartSentinelLoop.
+// T4 (shipped 771a104): per-role respawn matrix (medic / team-driver),
+// c-alias wrapper resolver (load-bearing for medic; skipped for
+// team-driver), Ctrl-C via safeSendKeysWithVerify, success NDJSON
+// audit row + cadence re-arm via autoStartSuperdoctorLoop.
 //
 // T5 (this commit): handoff write-path. Assembles per-role Markdown
-// payload (medic / sentinel: audit-log rotation tail + placeholder
-// state markers; team-driver: lead-outbox tail + audit-log rotation
-// tail). Atomic-writes to `~/.claude/teams/__cockpit__/<role>/
+// payload (medic: audit-log rotation tail + placeholder state markers;
+// team-driver: lead-outbox tail + audit-log rotation tail). Atomic-
+// writes to `~/.claude/teams/__cockpit__/<role>/
 // handoff.md` per ADR-167 §OQ-1 BEFORE Ctrl-C (§Ordering invariant —
 // rotation is re-traceable if a later step crashes mid-flight). 100KB
 // soft cap per ADR-167 OQ-2 with truncate-with-trailer. Handoff write
@@ -75,20 +74,17 @@ import { ConfigError, UsageError } from "../errors.ts";
 import type {
   CockpitClaudeAccount,
   CockpitMedic,
-  CockpitSentinel,
   CockpitTeam,
   CockpitTuiOverrides,
 } from "../schema/cockpit.ts";
 import {
-  autoStartSentinelLoop as autoStartSentinelLoopDefault,
   autoStartSuperdoctorLoop as autoStartSuperdoctorLoopDefault,
-  buildSentinelWindowCommand,
   buildTeamWindowCommand,
 } from "./cockpit.ts";
 
 /** Parsed shape for `atmux cockpit rotate` argv. */
 export interface ParsedCockpitRotateArgs {
-  /** Canonical session-name: `medic` | `sentinel` | `<team-name>`. */
+  /** Canonical session-name: `medic` | `<team-name>`. */
   sessionName: string;
   /** Operator override for the four pre-flight gates. Gate 4 (never-
    *  rotate-superdriver) ignores this flag — see ADR-167 §Pre-flight
@@ -162,7 +158,7 @@ export function parseCockpitRotateArgs(args: ReadonlyArray<string>): ParsedCockp
         if (a.startsWith("-")) {
           throw new UsageError({
             what: `cockpit rotate: unknown arg: ${a}`,
-            hint: "usage: atmux cockpit rotate <medic|sentinel|<team-name>> [--force]",
+            hint: "usage: atmux cockpit rotate <medic|<team-name>> [--force]",
           });
         }
         if (sessionName !== undefined) {
@@ -178,36 +174,33 @@ export function parseCockpitRotateArgs(args: ReadonlyArray<string>): ParsedCockp
   if (sessionName === undefined || sessionName.length === 0) {
     throw new UsageError({
       what: "cockpit rotate: missing <session-name>",
-      hint: "usage: atmux cockpit rotate <medic|sentinel|<team-name>> [--force]",
+      hint: "usage: atmux cockpit rotate <medic|<team-name>> [--force]",
     });
   }
 
   return { sessionName, force };
 }
 
-/** Per-role respawn-path discriminator. `medic` + `sentinel` are
- *  dedicated cockpit roles (W2 + W3 per ADR-135 + ADR-158); anything
- *  else is a team-name → per-team driver pane (W4+). Lead panes are
- *  out of scope — they live in the team cage per ADR-162. */
-export type RoleId = "medic" | "sentinel" | "team-driver";
+/** Per-role respawn-path discriminator. `medic` is the dedicated
+ *  cockpit role (W2 per ADR-135); anything else is a team-name →
+ *  per-team driver pane (W3+). Lead panes are out of scope — they
+ *  live in the team cage per ADR-162. */
+export type RoleId = "medic" | "team-driver";
 
 export function classifyRole(sessionName: string): RoleId {
   if (sessionName === "medic") return "medic";
-  if (sessionName === "sentinel") return "sentinel";
   return "team-driver";
 }
 
 /** Resolve the cockpit window name for a given role + session-name. The
- *  medic + sentinel roles map to fixed `_medic` + `_sentinel` windows
- *  (ADR-135 `_-prefix` convention); team-driver maps to the team's bare
- *  cockpit viewer window (e.g. `atmux`, `sopx`). Joined to the cockpit
- *  session via `<session>:<window>`. */
+ *  medic role maps to fixed `_medic` window (ADR-135 `_-prefix`
+ *  convention); team-driver maps to the team's bare cockpit viewer
+ *  window (e.g. `atmux`, `sopx`). Joined to the cockpit session via
+ *  `<session>:<window>`. */
 export function targetWindowForRole(role: RoleId, sessionName: string): string {
   switch (role) {
     case "medic":
       return "_medic";
-    case "sentinel":
-      return "_sentinel";
     case "team-driver":
       // sessionName here is the team-name passed as the verb arg.
       return sessionName;
@@ -343,10 +336,6 @@ export interface CockpitRotateOpts {
    *  fatal — operator falls back to manual `/loop /medic` if the marker
    *  isn't detected within the timeout). */
   autoStartMedicLoop?: typeof autoStartSuperdoctorLoopDefault;
-  /** Sentinel cadence re-arm seam (T4 t-a245bbc8). Same shape + posture
-   *  as `autoStartMedicLoop`. Skipped at the call site for cursor-impl
-   *  sentinels (per ADR-132 §D4 — no claude TUI to re-arm). */
-  autoStartSentinelLoop?: typeof autoStartSentinelLoopDefault;
   /** Logger seam for the re-arm helpers (T4 t-a245bbc8). Default
    *  forwards via stderr; tests inject a recorder to assert the post-
    *  spawn cadence sequence. The autoStart helpers tag every log line
@@ -391,7 +380,6 @@ interface ResolvedDeps {
   loadCockpit: (opts?: LoadCockpitOpts) => Promise<LoadedCockpit>;
   safeSendKeysWithVerify: typeof safeSendKeysWithVerifyDefault;
   autoStartMedicLoop: typeof autoStartSuperdoctorLoopDefault;
-  autoStartSentinelLoop: typeof autoStartSentinelLoopDefault;
   cadenceLogger: Logger;
   autoStartTimeoutMs: number;
   readAuditLog: (path: string) => Promise<string | null>;
@@ -419,7 +407,6 @@ function resolveDeps(opts: CockpitRotateOpts): ResolvedDeps {
     loadCockpit: opts.loadCockpit ?? loadCockpitDefault,
     safeSendKeysWithVerify: opts.safeSendKeysWithVerify ?? safeSendKeysWithVerifyDefault,
     autoStartMedicLoop: opts.autoStartMedicLoop ?? autoStartSuperdoctorLoopDefault,
-    autoStartSentinelLoop: opts.autoStartSentinelLoop ?? autoStartSentinelLoopDefault,
     cadenceLogger: opts.cadenceLogger ?? {
       log: (msg: string) => stderr(`${msg}\n`),
       ok: (msg: string) => stderr(`${msg}\n`),
@@ -622,26 +609,6 @@ function renderMedicHandoff(
   ].join("\n");
 }
 
-/** Compose the sentinel-role handoff Markdown. */
-function renderSentinelHandoff(
-  whenIso: string,
-  recentRotations: ReadonlyArray<CockpitRotateAuditRow>,
-): string {
-  return [
-    `# Sentinel handoff — ${whenIso}`,
-    "",
-    "## Whip-classifier state snapshot",
-    "_not captured in v1 — follow-up enrichment per ADR-167 §Handoff payload schema_",
-    "",
-    "## NudgeAction history",
-    "_not captured in v1 — follow-up enrichment per ADR-167 §Handoff payload schema_",
-    "",
-    "## Recent escalations / rotation calls (audit log tail)",
-    renderAuditTailMarkdown(recentRotations),
-    "",
-  ].join("\n");
-}
-
 /** Compose the team-driver handoff Markdown. Reads the team's lead-
  *  outbox tail (the per-team `<team-root>/.atmux/lead-outbox.md`
  *  convention) — the operator can re-establish driver context by
@@ -691,9 +658,6 @@ async function assembleHandoffPayload(
     case "medic":
       raw = renderMedicHandoff(whenIso, recentRotations);
       break;
-    case "sentinel":
-      raw = renderSentinelHandoff(whenIso, recentRotations);
-      break;
     case "team-driver": {
       const team = cockpit.teams.find((t) => t.name === sessionName);
       const atmuxDir = team !== undefined ? join(team.root, ".atmux") : "";
@@ -718,7 +682,7 @@ async function assembleHandoffPayload(
 export const claudeUiGoneVerifier: PaneVerifier = (text: string) =>
   !/❯|Cooked|Schlepping|Honking|Compacting/.test(text);
 
-/** Build the claude-respawn shell command for medic + sentinel-claude.
+/** Build the claude-respawn shell command for medic.
  *  Invokes the c-alias wrapper by name (per ADR-167 §Decision wrapper
  *  resolver) so the wrapper's shell init exports the canonical c-alias
  *  env (CLAUDE_CONFIG_DIR + CLAUDECODE + CLAUDE_CODE_EFFORT_LEVEL +
@@ -888,14 +852,11 @@ async function sendCtrlCWithVerify(
 }
 
 /** Resolve the cockpit's per-role config block (claudeAccount +
- *  tuiOverrides) for medic / sentinel from `LoadedCockpit`. Returns
- *  null when the block isn't declared — the caller defaults to the
- *  bare-`claude` wrapper resolution (`/root/.claude` → `claude`). */
+ *  tuiOverrides) for medic from `LoadedCockpit`. Returns null when
+ *  the block isn't declared — the caller defaults to the bare-`claude`
+ *  wrapper resolution (`/root/.claude` → `claude`). */
 function readMedicConfig(cockpit: LoadedCockpit): CockpitMedic | null {
   return cockpit.medic ?? null;
-}
-function readSentinelConfig(cockpit: LoadedCockpit): CockpitSentinel | null {
-  return cockpit.sentinel ?? null;
 }
 function readTeamConfig(cockpit: LoadedCockpit, teamName: string): CockpitTeam | null {
   return cockpit.teams.find((t) => t.name === teamName) ?? null;
@@ -959,22 +920,6 @@ async function performRespawn(
       case "medic": {
         const m = readMedicConfig(cockpit);
         cmd = buildClaudeRespawnCommand(m?.claudeAccount, m?.tuiOverrides);
-        break;
-      }
-      case "sentinel": {
-        const s = readSentinelConfig(cockpit);
-        // Cursor-impl sentinel: spawn line is the sentinel verb's bash
-        // loop (no claude TUI, no wrapper resolution needed). Reuses
-        // cockpit's existing builder for byte-equivalence with rebuild.
-        if (s !== null && s.impl === "cursor") {
-          cmd = buildSentinelWindowCommand(s);
-        } else {
-          // Claude-impl sentinel (or undeclared → default to claude
-          // wrapper): build the c-alias respawn line.
-          const acc = s !== null && s.impl === "claude" ? s.claudeAccount : undefined;
-          const ov = s !== null && s.impl === "claude" ? s.tuiOverrides : undefined;
-          cmd = buildClaudeRespawnCommand(acc, ov);
-        }
         break;
       }
       case "team-driver": {
@@ -1056,8 +1001,8 @@ async function performRespawn(
 
   // Re-arm role-specific cadence. Non-fatal — the auto-start helpers
   // log + return on failure (the operator falls back to manual
-  // `/loop /medic` or `/loop /sentinel`). Team-driver respawn has no
-  // cadence to re-arm (cageRetryLoop runs in the shell itself).
+  // `/loop /medic`). Team-driver respawn has no cadence to re-arm
+  // (cageRetryLoop runs in the shell itself).
   switch (role) {
     case "medic":
       try {
@@ -1073,26 +1018,6 @@ async function performRespawn(
         // case a future refactor raises.
       }
       break;
-    case "sentinel": {
-      const s = readSentinelConfig(cockpit);
-      // ADR-132 §D4 discriminated narrowing: only the claude variant
-      // gets the post-spawn /loop /sentinel injection. The cursor
-      // variant's bash loop is self-starting (the verb IS the loop).
-      if (s === null || s.impl === "claude") {
-        try {
-          await deps.autoStartSentinelLoop({
-            tmux,
-            sessionName: deps.cockpitSessionName,
-            windowIndex,
-            timeoutMs: deps.autoStartTimeoutMs,
-            logger: deps.cadenceLogger,
-          });
-        } catch {
-          // Non-fatal — see medic branch.
-        }
-      }
-      break;
-    }
     case "team-driver":
       // No cadence re-arm — cageRetryLoop is the loop itself.
       break;
