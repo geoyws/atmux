@@ -16,7 +16,7 @@ Phase 2 of EPIC e-60e16169 is the orchestration loop on top of two substrates th
 Phase 2 is the **consumer** that glues these two together with three additional concerns:
 
 - **autoSpawn opt-in** — per-epic config in `epics.extra.autoSpawn` plus per-team defaults in `team.json::autoSpawn.defaults`. ADR-225's `is_ready=1` is operator authorization to *spawn at all*; `autoSpawn=true` is operator authorization to *let orchd do it automatically without manual `atmux team spawn-epic` keystroke*.
-- **Dedup** — `epics.spawned_at` Unix-epoch timestamp column (migration v14→v15, sequenced after ADR-225's v13→v14). orchd skips epics where IS NOT NULL.
+- **Dedup** — `epics.spawned_at` Unix-epoch timestamp column (migration v15→v16, sequenced after ADR-228 spawn_queue v14→v15 + ADR-225 deps/is_ready v13→v14; renumbered from the original v14→v15 at impl time, t-6-8db78adf, since the spawn_queue migration claimed v14→v15 at sibling EPIC e-a946af69 fan-in 8d75360). orchd skips epics where IS NOT NULL.
 - **Failure recovery** — operator-visible flag emission for spawn failures, with a host-pressure transient carve-out (ADR-184 cap refusal is not a real failure, just defer).
 
 The original Phase 2 sketch in ADR-224 §D4 specified `epic.added` as the trigger. **Sibling ADR-225 makes this obsolete**: `epic.added` fires on decomposition land (epic may not be ready); `epic.ready` + `epic.unblocked` fire on the actual eligibility transition. Using the ADR-225 events avoids a race window where orchd would otherwise spawn-epic an epic whose `is_ready=0` (and waste a spawn-epic invocation on the predicate refusal). This ADR adopts the ADR-225 events as the canonical triggers.
@@ -155,7 +155,7 @@ Idempotency: re-delivery is no-op. `atmux team stop` is idempotent per ADR-090 (
 | `src/core/orchd-spawn.ts` | `spawnEpicHandler` + `effectiveAutoSpawn` + host-pressure classifier. |
 | `src/core/orchd-dissolve.ts` | `dissolveSoloWorkerHandler`. |
 | `src/core/orchd-sweep.ts` | `--sweep` walker. Imports + reuses handlers from orchd-spawn.ts + orchd-dissolve.ts (NOT duplicate logic). |
-| `src/abstractions/sqlite-migrations.ts` | Migration v14→v15: `ALTER TABLE epics ADD COLUMN spawned_at INTEGER`. |
+| `src/abstractions/sqlite-migrations.ts` | Migration v15→v16: `ALTER TABLE epics ADD COLUMN spawned_at INTEGER`. (Renumbered from v14→v15 at impl time, t-6-8db78adf, since ADR-228 spawn_queue claimed v14→v15 at sibling EPIC e-a946af69 fan-in 8d75360.) |
 | `src/schema/kanban.ts` | Extend `KanbanEpic.extra.autoSpawn` Zod sub-shape; add `spawnedAt: z.number().nullable().optional()`. (Do NOT touch `dependsOn` / `isReady` — those are ADR-225 territory.) |
 | `src/schema/team.ts` (or wherever team.json is parsed) | Add `autoSpawn.defaults[]` + `autoSpawn.sweepCron` Zod shape. |
 | `src/verbs/epic.ts` | Add `--auto-spawn` / `--roster` / `--force-spawn` flags to `atmux epic add`. |
@@ -168,7 +168,7 @@ orchd.ts remains <100 LOC after Phase 2 (the handlers ARE the substance; orchd.t
 
 - Trigger topics revised: `epic.added` (original sketch) → `epic.ready` + `epic.unblocked` (this ADR). Aligns with ADR-225 eligibility model; no wasted spawn-epic invocations on un-ready epics.
 - `epicIsEligible()` predicate (ADR-225 export) becomes a hard dependency. orchd no longer carries cycle-detection or dep-walking logic — defers entirely to ADR-225's predicate.
-- New `spawned_at` migration sequenced AFTER sibling's v13→v14 (this is v14→v15).
+- New `spawned_at` migration sequenced AFTER both ADR-225's v13→v14 (deps + is_ready) AND ADR-228's v14→v15 (spawn_queue, sibling EPIC e-a946af69 fan-in 8d75360); this lands as v15→v16. Renumbered from the original v14→v15 at impl time (t-6-8db78adf) per ADR-126 §single-ladder append-only invariant.
 - Failure recovery model gains 3-way classification: hard / host-pressure / eligibility-race. The eligibility-race class is silent (let next event re-fire); host-pressure has its own flag distinct from hard-failure flag.
 
 **What workers see**:

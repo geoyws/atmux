@@ -711,4 +711,48 @@ export const migrations: readonly Migration[] = [
       `);
     },
   },
+  // ---------- v15 → v16 ----------
+  // ADR-231 §D2 (orchd auto-spawn dedup gate) — `epics.spawned_at`
+  // Unix-epoch timestamp column. Master task: t-6-8db78adf (S1.1
+  // under EPIC e-1-118d16a9, Story s-1-a993b50c).
+  //
+  // Schema purpose: orchd's spawn handler skips epics where
+  // `spawned_at IS NOT NULL` — the column drives idempotent re-
+  // delivery handling under at-least-once event delivery semantics
+  // per ADR-202. Without it, an `epic.ready` event re-fired by a
+  // honker restart or offset-replay would re-spawn an already-live
+  // epic-team, breaking the host-pressure cap + duplicating worker
+  // claude sessions. With it, the handler does a cheap NULL-check
+  // before any RPC.
+  //
+  // Renumber note: ADR-231 §D2 + §D7 originally specified this as
+  // v14→v15, but sibling EPIC e-a946af69's ADR-228 spawn_queue
+  // migration landed v14→v15 first (fan-in 8d75360 / commit-step
+  // above). Per ADR-126 §single-ladder + this file's header
+  // append-only invariant, the dedup column shifts to v15→v16. ADR
+  // is amended in the same commit (§D2 + §D7 in-place edits) to
+  // keep the doc-as-truth + code consistent per CLAUDE.md
+  // §doc-update gate.
+  //
+  // Schema choice: INTEGER (nullable). Unix-epoch seconds matches
+  // every other ADR-202 timestamp column (`queued_at_sec`, etc.) —
+  // operators can read raw values via `datetime(spawned_at, 'unixepoch')`
+  // without a per-table convention. NULL = "not yet spawned"; the
+  // predicate is a single `IS NOT NULL` check, no sentinel value
+  // (0) needed.
+  //
+  // Backfill: column is ADDed with no DEFAULT clause, so every
+  // existing row gets NULL. That's the correct historical answer —
+  // orchd hadn't spawned any of those epics; if the operator wants
+  // to "mark this one as already spawned" for an in-flight epic-team
+  // they can backfill via `UPDATE epics SET spawned_at = unixepoch()
+  // WHERE id = ?` post-migration. Forward-only; no destructive
+  // down-migration needed.
+  {
+    from: 15,
+    to: 16,
+    up: (db) => {
+      db.exec("ALTER TABLE epics ADD COLUMN spawned_at INTEGER");
+    },
+  },
 ];
