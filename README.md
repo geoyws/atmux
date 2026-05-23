@@ -722,6 +722,12 @@ atmux member sort [--defaults-first]         # canonical reorder (ADR-161 §C)
 atmux reconfigure                            # re-run wizard on existing team
 atmux dashboard [--interval <s>]             # live full-screen panel
 
+🩺 Fleet topology + orphan reap (ADR-222 + ADR-223)
+atmux topo [--tree] [--orphans] [--json]                  # read-only fleet manifest + classifier
+           [--team <name>] [--since <iso>]                # scope filters
+atmux topo --reap [--apply] [--yes] [--class <name>]      # destructive — dry-run by default
+           [--skip-checks] [--json]                       # see docs/RUNBOOK-topology.md
+
 🚢 Release
 atmux release <patch|minor|major>            # one-shot deploy: bump package.json + commit
               [--dry-run] [--allow-dirty]    # + bun run build:install + git push (ADR-183 sibling — t-c3f4c418)

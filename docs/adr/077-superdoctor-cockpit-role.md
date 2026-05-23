@@ -258,6 +258,10 @@ Cross-refs: ADR-009 (rotation gate), ADR-077 (this ADR / medic role), c-06dabd47
 
 Cross-refs: ADR-132 §Amendment 2026-05-19 (sentinel boundary side), ADR-027 (doctor framework), ADR-140 (cheap-model-first — sentinel = mechanical, medic = judgment-bearing), EPIC e-35dd6274 (wedge-clearing mechanism — scope clarity is precondition for probe-class routing per ADR-186), t-186d5910 (sentinel deploy — landing the deploy makes the boundary observable).
 
+### 2026-05-22 — Doctor probes consume the fleet topo manifest
+
+Per [ADR-222](222-cage-topography-read-only-verb-surface.md) §D6, the fleet manifest + orphan classifier are consolidated under `atmux topo`. Doctor probes consume the same manifest rather than re-probing per-class — the cage-tmux-without-registry / cron-block-without-worktree / worktree-without-cage / branch-without-row probes now filter `topo --json`'s `orphans[]` array. ADR-219 §D3's narrow `dissolve-epic` probe stays for one release window then collapses into topo's unified view (per ADR-222 §OQ4).
+
 ### 2026-05-23 — Sentinel role deleted per e-be01fc89; pane-liveness flows on-demand + orchd
 
 The 2026-05-19 boundary text above moved pane-liveness scope to sentinel (W3 cockpit role). With sentinel deleted entirely 2026-05-23 (Sentinel REMOVAL EPIC), that routing is dead. Replacement coverage:

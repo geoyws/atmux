@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ✨ Added — `atmux topo` fleet observability + reap cascade (ADR-222 + ADR-223)
+
+One verb replaces today's N × N manual cleanup loop: enumerates the
+entire fleet (cockpit + parent teams + epic-teams + cage sockets +
+crontab marker blocks + worktrees + branches + kanban epic rows),
+classifies orphans against the [ADR-222 §D4](docs/adr/222-cage-topography-read-only-verb-surface.md)
+6-class taxonomy, and (with `--reap --apply`) composes the canonical
+per-class reap primitives behind a 4-gate safety ladder per
+[ADR-223 §D3](docs/adr/223-reap-cascade-semantics-and-safety.md).
+
+- **`atmux topo`** — flat / `--tree` / `--orphans` / `--json` / `--team` / `--since`
+  read-only manifest. JSON is `schema_version: 1` (cockpit-mirror
+  Rust crate at sibling EPIC pins on it).
+- **`atmux topo --reap`** — dry-run cascade. `--apply` runs the
+  destruction with per-orphan `[y]/[N]/[a]/[q]/[d]` confirmation
+  (Gate 4 deferred to the verb layer). `--yes` bypasses Gate 4 only.
+- **Safety gates** — Gate 1 (active-check, bypassed by
+  `--skip-checks`), Gate 2 (parent-kind, structural / never bypassed),
+  Gate 3 (merge-base, preserves [ADR-219 §D2](docs/adr/219-dissolve-epic-completeness.md)
+  invariant / never bypassed), Gate 4 (interactive, bypassed by `--yes`).
+- **Reap-log** at `~/.atmux/state/reap-log.jsonl` (one row per
+  reaped orphan; `schema_version: 1`).
+- **Composition map** — `tmux kill-server` / `cron-reaper` /
+  `git branch -D` / `rm -rf` (`reapZombieWorktree`) /
+  `removeRegistryEntry`. `dissolveEpic` is intentionally NOT in the
+  map for the `cage-tmux-without-registry` class (always refuses on
+  missing-registry per the 2026-05-22 amendment); two-pass cascade
+  re-classifies residue as `branch-without-row` + `worktree-without-cage`.
+- **Performance**: hax dogfood 2026-05-22 measured 441-449 ms on
+  the live 5T / 16E fleet (4.4× under the 2s budget).
+- **Operator runbook**: [`docs/RUNBOOK-topology.md`](docs/RUNBOOK-topology.md).
+
 ### 🗑️ Removed — Sentinel substrate (EPIC e-be01fc89, 2026-05-23)
 
 The cron-polling sentinel mechanism documented in [ADR-132](docs/adr/132-pluggable-martinet.md) has been removed in entirety. Mechanical observation + Enter-push + `claim-next` re-fires distribute to Honker event consumers per sibling EPIC `e-a946af69` (orchd Phase 3-5; Phase 1 already merged at [f6b078b](https://github.com/geoyws/atmux/commit/f6b078b)).
