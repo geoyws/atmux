@@ -1,6 +1,6 @@
 # ADR-126: SQLite for `.atmux/` state, JSON archive-only
 
-**Status:** proposed
+**Status:** Accepted — ratified by driver 2026-05-23 (foundation shipped + dogfooded for months: state.db powers kanban + merger_state + cron decommission + Honker events + epic-team registry; JSON archive-only enforced via ADR-076 + subsequent migrations through v13 on trunk).
 **Date:** 2026-05-07
 **Owner:** driver
 **Driver-ref:** chat 2026-05-07 16:0X MYT — "let's entertain the idea of using sqlite instead of jq" + corruption incident on `.atmux/kanban.json` from bash misinterpretation. Build-now (post-cutover) per same chat.
