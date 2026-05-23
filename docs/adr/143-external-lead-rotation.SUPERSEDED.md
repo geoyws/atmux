@@ -1,5 +1,7 @@
 # ADR-143: External cron-fired lead-rotation enforcer (stopgap until martinet ships)
 
+> **⚠ SUPERSEDED by [ADR-233](233-cron-auto-install-disabled-trust-orchd.md) — 2026-05-24. Read ADR-233 instead; this file is kept for trace only.**
+
 **Status**: Accepted (2026-05-15, operator-batch-flip)
 **Date**: 2026-05-14
 **Driver-ref**: 2026-05-14 driver session — operator: *"why is it that we always fail to rotate the lead?"*

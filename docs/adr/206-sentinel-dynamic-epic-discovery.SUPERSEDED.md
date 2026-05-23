@@ -1,5 +1,7 @@
 # ADR-206: Sentinel dynamic epic-team discovery — drop the cockpit.json registration requirement
 
+> **⚠ SUPERSEDED by [ADR-211](211-retire-sentinel-role-distribute-to-honker-consumers.md) — 2026-05-23. Read ADR-211 instead; this file is kept for trace only.**
+
 > **Renumbered 2026-05-21**: Originally filed as ADR-185 in a 2026-05-20 driver session, but ADR-185 was already claimed (2026-05-19) by `185-sentinel-epic-team-scope-extension.md`. Driver re-numbered to ADR-206 to resolve the collision; content unchanged.
 
 **Status**: Superseded by e-be01fc89 (sentinel deleted 2026-05-23). Was: Accepted — ratified by driver 2026-05-21 (sentinel discovers epic-teams at tick time, not via cockpit.json registration; operator framing "epic-teams are dynamic, must not be in cockpit.json sessions[]" honored).

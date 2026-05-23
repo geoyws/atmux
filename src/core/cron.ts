@@ -391,65 +391,19 @@ export function renderCronLines(opts: RenderCronBlockOpts): string[] {
   // at the CLI dispatcher (src/cli.ts) with a deprecation warning, but
   // newly-installed cron blocks now route through the canonical name
   // so the alias can drop cleanly next release.
-  const hasGitter = team.members.some((m) => {
-    const role = (m as { role?: string }).role;
-    return role === "committer" || role === "gitter";
-  });
-  if (team.autoMerge?.enabled === true && hasGitter) {
-    const gitterMins =
-      opts.gitterSweepIntervalOverride ??
-      team.autoMerge.cronBackstopMin ??
-      DEFAULT_AUTO_MERGE_CRON_BACKSTOP_MIN;
-    out.push(`${cronEvery(gitterMins)} ${baseEnv} committer --sweep ${logTail("committer-sweep")}`);
-    // ADR-202 §Amendment 2026-05-22 (II) — `committer --drain` line.
-    // Cron-supervised event-driven consumer: every minute, drains any
-    // pending task.done events via the subscriber_offsets table and
-    // exits 0. Defense-in-depth alongside --sweep — the sweep walks
-    // every branch (catches events the substrate missed entirely),
-    // the drain processes events the substrate emitted (latency floor
-    // is the cron cadence of 1min vs --sweep's 5-10min branch walk).
-    //
-    // Gated on the same hasGitter + autoMerge.enabled because both
-    // verbs need the same team config + roster surface. Cadence is
-    // fixed at 1min (the cron floor) — no override needed; this is
-    // the fast path, not a backstop.
-    //
-    // For sub-minute latency, operators launch `atmux committer
-    // --daemon` in a tmux pane (uses the atmux-listener Rust
-    // subprocess for ~60ms wake). Daemon supervision via `atmux start`
-    // is a future amendment.
-    out.push(`* * * * * ${baseEnv} orchd --drain ${logTail("orchd-drain")}`);
-  }
+  // 11. ADR-134 §Triggers cron-backstop half + ADR-202 §Amendment
+  //     2026-05-22 (II) `committer --drain` + `orchd --drain` — ALL
+  //     SUPERSEDED by ADR-233 §D3. Cron-driven committer backstops are
+  //     retired in favor of `atmux committer --daemon` (event-driven
+  //     via atmux-listener Rust subprocess) + orchd's PR_SET_PDEATHSIG-
+  //     gated lifecycle. No `committer --sweep` or `orchd --drain` line
+  //     is emitted from the template anymore.
 
-  // 11b. ADR-231 §D4 — orchd auto-spawn cron backstop. Single-shot
-  // `atmux orchd --sweep` walks the kanban for eligible epics + the
-  // resolveSoloWorkerMembers() list, invoking `spawnEpicHandler` /
-  // `dissolveSoloWorkerHandler` for any that match (§D2 + §D6).
-  // Pairs with the event-driven primary trigger (`epic.ready` +
-  // `epic.unblocked` subscriptions) — the cron line is the resilience
-  // backstop for Honker socket churn / NOTIFY gaps / orchd restart-
-  // induced wake loss; worst-case spawn latency stays ≤ cadence
-  // (default 5min).
-  //
-  // Cadence resolution: per-team `team.autoSpawn.sweepCron` wins
-  // (loose-validated by schema via TeamAutoSpawn — 5-field cron
-  // string presence only); else `'*/5 * * * *'` default per
-  // ADR-231 §D4 OQ-C resolution. NOT routed through `cronEvery()`
-  // because cron expressions support non-divisor minutes / hour /
-  // day-of-month / day-of-week patterns the cronEvery helper rejects
-  // by design.
-  //
-  // Unconditional emit: both handlers exit silently when no kanban
-  // row matches (§D2 step 3 autoSpawn gate; §D6 solo-worker scope)
-  // — cheap idle ticks are acceptable, gating on `team.autoSpawn !==
-  // undefined` would suppress the solo-worker-dissolve half of the
-  // sweep for teams that opt into solo-worker but not autoSpawn.
-  //
-  // ADR-192 idempotency: sandwich-marker block re-renders byte-
-  // identical given same opts (same `team.autoSpawn.sweepCron`),
-  // so `atmux start` re-runs are no-ops on the crontab.
-  const sweepCron = team.autoSpawn?.sweepCron ?? "*/5 * * * *";
-  out.push(`${sweepCron} ${baseEnv} orchd --sweep ${logTail("orchd-sweep")}`);
+  // 11b. ADR-231 §D4 cron-backstop — SUPERSEDED by ADR-233 §D3. orchd
+  //      auto-spawn `--sweep` cron line is retired. Event-driven
+  //      `epic.ready` + `epic.unblocked` Honker subscribers are
+  //      sufficient (the Rust orchd is kernel-blocked on Database::listen,
+  //      idle ~5MB RSS; no missed-event recovery cron needed).
 
   // 12. ADR-091 §State machine — epic-merge-tick: fires `atmux epic-
   // merge tick` every N minutes (default

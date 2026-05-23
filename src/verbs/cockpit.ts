@@ -794,12 +794,13 @@ export async function cockpitRebuild(
     await applyCagePrefix(cockpitTmux, cockpitPrefix);
   }
 
-  // Phase 6 (ADR-086): cockpit-scoped cron block install. Idempotent —
-  // strips any existing `# >>> atmux:cockpit` block and re-appends a
-  // fresh one with the resolved `atmux pulse` line. Honors
-  // `ATMUX_NO_CRON=1` opt-out + non-fatal posture (parity with per-team
-  // cron-install: a crontab swap failure warns, does not abort).
-  await installCockpitCron(opts, cockpit, logger, env);
+  // Phase 6 (ADR-086, superseded by ADR-233 §D2): cockpit-pulse cron
+  // install retired. `atmux cockpit rebuild` no longer writes the
+  // `atmux:cockpit` sandwich block. If the cockpit dies, the operator
+  // manually re-runs `atmux cockpit rebuild` (operator-owned liveness,
+  // not cron-driven self-heal). The `installCockpitCron` helper in
+  // `core/cron.ts` stays exported as a strip-only utility for legacy
+  // cleanup paths but is no longer called from trunk.
 
   logger.ok(`cockpit ready. attach: tmux attach -t ${cockpit.cockpitSession}`);
   // ADR-077 + ADR-133: nudge the operator to start the medic loop

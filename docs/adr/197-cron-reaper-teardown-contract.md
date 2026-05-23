@@ -3,7 +3,7 @@
 **Status**: Accepted — ratified by driver 2026-05-21 (3-part contract: cron-reaper verb + teardown-hook contract + doctor probe; §OQ recommendations as-written: cron-reaper name, strict-string --scope, AFTER worktree-remove hook, 30min backstop cadence, hard-error on rewrite fail, reap-across-projects by default)
 **Date**: 2026-05-20
 **Driver-ref**: 2026-05-20 docs sweep — t-28ccade1 (Epic e-59b43669 T1)
-**Cross-refs**: [ADR-083](083-cron-install-port-scope.md) (cron-install scope + `atmux cron-orphans` shape), [ADR-170](170-sweep-epics-verb.md) (sweep-epics classifier — auto-apply explicitly deferred there), [ADR-178](178-test-cage-leak-reaper.md) (test-cage leak reaper — sibling pattern at the tmux-socket layer), [ADR-181](181-global-ram-budget-gate-on-spawn.md) §T6 (host-audit cousin for the multi-project orphan-cron surface), complaint `c-ced218fb` (10 orphan `atmux:team=` cron blocks survive teardown), complaint `c-27a1c8f4` (test-cage socket leak — sibling class), memory `project_epic_team_dissolve_cron_leak` (the 2026-05-19 observation that motivates this ADR).
+**Cross-refs**: [ADR-083](083-cron-install-port-scope.SUPERSEDED.md) (cron-install scope + `atmux cron-orphans` shape), [ADR-170](170-sweep-epics-verb.md) (sweep-epics classifier — auto-apply explicitly deferred there), [ADR-178](178-test-cage-leak-reaper.md) (test-cage leak reaper — sibling pattern at the tmux-socket layer), [ADR-181](181-global-ram-budget-gate-on-spawn.md) §T6 (host-audit cousin for the multi-project orphan-cron surface), complaint `c-ced218fb` (10 orphan `atmux:team=` cron blocks survive teardown), complaint `c-27a1c8f4` (test-cage socket leak — sibling class), memory `project_epic_team_dissolve_cron_leak` (the 2026-05-19 observation that motivates this ADR).
 
 ## Context
 
@@ -135,7 +135,7 @@ If the teardown-hook integration surfaces problems in production (e.g. cron-reap
 
 ## Cross-refs
 
-- [ADR-083](083-cron-install-port-scope.md) (cron-install-port-scope — `atmux cron-orphans` shape that this ADR supersedes vocabulary-wise).
+- [ADR-083](083-cron-install-port-scope.SUPERSEDED.md) (cron-install-port-scope — `atmux cron-orphans` shape that this ADR supersedes vocabulary-wise).
 - [ADR-170](170-sweep-epics-verb.md) (sweep-epics-verb — auto-apply explicitly deferred there; this ADR's Part B wires the dissolve-side cron-strip that sweep transitively benefits from).
 - [ADR-178](178-test-cage-leak-reaper.md) (test-cage leak reaper — sibling pattern at the tmux-socket layer; same operator-vocabulary `reaper` for "scan + clean leaked resources").
 - [ADR-181](181-global-ram-budget-gate-on-spawn.md) §T6 (host-audit — same multi-project surface; cron-reaper is one of the inventories host-audit aggregates).

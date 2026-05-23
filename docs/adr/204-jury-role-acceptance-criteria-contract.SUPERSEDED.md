@@ -1,5 +1,7 @@
 # ADR-204: `_jury` role + acceptance-criteria contract — adversarial cursor-based gate that ratifies planner ACs pre-work and judges deliverables post-test
 
+> **⚠ SUPERSEDED by [ADR-213](213-retire-jury-reviewer-absorbs-acceptance-criteria.md) — 2026-05-21. Read ADR-213 instead; this file is kept for trace only.**
+
 **Status**: SUPERSEDED 2026-05-21 by [ADR-213](./213-retire-jury-reviewer-absorbs-acceptance-criteria.md) — jury role retires entirely; reviewer absorbs Acceptance-Criteria verification per ADR-213 §D2. AC schema decision (`stories.extra.acceptance_criteria[]` per §D2 of this ADR) PERSISTS via reviewer. ADR-204 §Amendment 2026-05-21 (jury runs Opus not cursor) becomes moot — the role itself retires. ADR-144 §Amendment 2026-05-21 (jury state-machine extension) reverted per ADR-213 §D4. e-5a5110d0 EPIC dissolved 2026-05-21 same session. File preserved for historical lineage; impl-EPIC never ships.
 **Date**: 2026-05-21
 **Driver-ref**: 2026-05-20 evening operator design session — *"i now want u to create a new _jury as a default member for all atmux teams. this _jury will be using cursor-cli and it will judge the work after the reviewer to see if common sense acceptance criterias are met."* — and *"the planner writes the AC, jury ratifies BEFORE work begins; ping pong 3x → lead."*

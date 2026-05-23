@@ -19,7 +19,7 @@ Cheap-model invocations under lean-mode topology fire via:
 
 NOT via continuous cron-polling. The 65-70% Claude-burn reduction projected in this ADR was an EVERY-TICK calculation under cron-polling; under lean-mode, the realized reduction is HIGHER because most ticks no longer fire (no idle-cycle observation cost).
 
-See [ADR-132 §Amendment 2026-05-20](./132-pluggable-martinet.md) + [ADR-189](./189-lean-mode-side-project-topology-preset.md) (the lean-mode pivot anchor) + Epic `e-be01fc89` for the full pivot.
+See [ADR-132 §Amendment 2026-05-20](./132-pluggable-martinet.SUPERSEDED.md) + [ADR-189](./189-lean-mode-side-project-topology-preset.md) (the lean-mode pivot anchor) + Epic `e-be01fc89` for the full pivot.
 
 **Filed via** t-4de68474 (docs role, 2026-05-20).
 

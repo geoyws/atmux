@@ -2,7 +2,7 @@
 
 **Status**: Accepted — ratified by driver 2026-05-21 (9-skill plugin mapping ↔ atmux verbs; skill-side lives in dotfiles, atmux team owns the verb contract not the skill code; §OQ recommendations as-written)
 **Date**: 2026-05-20
-**Driver-ref**: 2026-05-20 driver session — operator design call following the [ADR-183](./183-sentinel-scope-includes-epic-teams.md) + [ADR-185](./185-sentinel-dynamic-epic-discovery.md) ship batch. Operator framing: *"document the skills plugin that pairs with atmux — operator-facing surface, lives in dotfiles, atmux team must not touch it."*
+**Driver-ref**: 2026-05-20 driver session — operator design call following the [ADR-183](./183-sentinel-scope-includes-epic-teams.SUPERSEDED.md) + [ADR-185](./185-sentinel-dynamic-epic-discovery.md) ship batch. Operator framing: *"document the skills plugin that pairs with atmux — operator-facing surface, lives in dotfiles, atmux team must not touch it."*
 **Parent EPIC**: none.
 **Cross-refs**: [ADR-185](./185-sentinel-dynamic-epic-discovery.md) (sibling — dynamic-discovery model for high-churn entities; same no-static-registration argument applied to the operator skill surface), [ADR-094](./094-c-alias-spawn-convention.md) (per-account Claude wrappers — `c-u` / `c-ic` / `c-i` — the operator's pre-existing dotfiles surface this plugin lives alongside), [ADR-145](./145-atmux-adopts-gitter.md) (committer scope — explicit no-deploy boundary; the skills plugin's `/team` verb respects the same scope walls), auto-memory `feedback_claude_skills_dotfiles_territory` — operator-mandated 2026-05-15 that atmux team must NOT escalate claude-skills issues as PRs.
 

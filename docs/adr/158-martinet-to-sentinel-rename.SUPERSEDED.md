@@ -1,5 +1,7 @@
 # ADR-158: martinet → sentinel rename — SV register sweep, supersedes ADR-132 nomenclature
 
+> **⚠ SUPERSEDED by [ADR-211](211-retire-sentinel-role-distribute-to-honker-consumers.md) — 2026-05-23. Read ADR-211 instead; this file is kept for trace only.**
+
 **Status**: Superseded by e-be01fc89 (sentinel deleted 2026-05-23; rename history retained for audit). Was: accepted 2026-05-20.
 **Date**: 2026-05-16 (accepted 2026-05-20 — operator chat-time flip; rename SHIPPED end-to-end 2026-05-16 per TR2 125011d / TR3 1b40f98 / TR4 docs sweep)
 **Driver-ref**: 2026-05-16 driver session — operator chat-time decision on SV/Reddit-eng register sweep for cockpit roles.

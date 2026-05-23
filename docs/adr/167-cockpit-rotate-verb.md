@@ -187,7 +187,7 @@ T5 wires the handoff write-path at the TODO(T5) anchor T4 left at `performRespaw
 - [ADR-033](033-caller-scope-gate.md) — caller-scope gate; cockpit rotate is driver-only.
 - [ADR-077](077-superdoctor-self-healing.md) → renamed medic per ADR-133 — medic cadence; re-arm step in per-role respawn matrix.
 - [ADR-094](094-c-alias-spawn-convention.md) — c-alias spawn convention; claudeAccount wrapper resolution.
-- [ADR-132](132-pluggable-martinet.md) → renamed sentinel per ADR-158 — sentinel pluggable martinet pattern.
+- [ADR-132](132-pluggable-martinet.SUPERSEDED.md) → renamed sentinel per ADR-158 — sentinel pluggable martinet pattern.
 - [ADR-135](135-cockpit-naming-convention.md) — `_-prefix` cockpit window naming; medic / sentinel window IDs.
 - [ADR-138](138-verified-send-keys.md) — safeSendKeysWithVerify; all Ctrl-C + spawn-prompt sends route through this.
 - [ADR-155](155-pane-state-classifier.md) — pane-state probe; reusable abstraction for gate-1 + gate-2.

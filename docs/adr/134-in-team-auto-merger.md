@@ -1,5 +1,7 @@
 # ADR-134: In-team auto-merger via expanded gitter role — per-member-branch fan-in
 
+> **⚠ PARTIALLY SUPERSEDED by [ADR-233](233-cron-auto-install-disabled-trust-orchd.md) — 2026-05-24 (§Triggers cron-backstop half only; `committer --sweep` + paired `orchd --drain` cron lines retired). Remainder canonical: intra-team auto-merger design + `committer --daemon` path stay live.**
+
 **Status**: Accepted (2026-05-15, operator-batch-flip)
 **Date**: 2026-05-14
 **EPIC**: t-51d2c635

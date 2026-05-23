@@ -1,5 +1,7 @@
 # ADR-185: Sentinel scope extension to epic-teams — supersedes ADR-132/158 §Out of scope
 
+> **⚠ SUPERSEDED by [ADR-211](211-retire-sentinel-role-distribute-to-honker-consumers.md) — 2026-05-23. Read ADR-211 instead; this file is kept for trace only.**
+
 **Status**: Superseded by e-be01fc89 (sentinel deleted 2026-05-23). Was: Accepted — ratified by driver 2026-05-21 (scope-widening to epic-teams + new verdicts cage-dead/cage-orphan + reuse `sentinel.enabled` opt-out + parent-channel Discord routing + 1/24h per-epicId rate-limit; §OQ recommendations as-written; sentinel LLM substrate change cursor→Opus is orthogonal and handled by t-90108c45).
 **Date**: 2026-05-19
 **Driver-ref**: driver-inbox P0 2026-05-19 04:10 MYT — "gitter dead for hours and we had no idea". EPIC `e-f2d7c7a5` (sentinel-deploy) Part C `t-c97f585a`. Lead confirmed ADR number 182 in turn 2026-05-19 14:44 MYT (implicit confirmation via "178 + planner sidebar reservations" framing).

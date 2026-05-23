@@ -158,7 +158,7 @@ ADR-159 completes when:
 - [ADR-136](136-hot-rename-member-labels.md) — id-vs-label split; this rename lands in label layer.
 - [ADR-145](145-atmux-adopts-gitter.md) — gitter spawn pattern; gets §Amendments annotation.
 - [ADR-146](146-kanban-auto-files-trunk-merge.md) — auto-files trunk-merge on Story-done; gets §Amendments annotation.
-- [ADR-158](158-martinet-to-sentinel-rename.md) — sibling vocabulary rename (sentinel).
+- [ADR-158](158-martinet-to-sentinel-rename.SUPERSEDED.md) — sibling vocabulary rename (sentinel).
 - [ADR-160](160-*.md) — sibling vocabulary rename (poke).
 - [ADR-161](161-default-member-prefix-and-sort-verbs.md) — committer joins default-role set; gains `_-prefix`.
 - Driver-ref: 2026-05-16 driver session.

@@ -1,5 +1,7 @@
 # ADR-132: Pluggable Martinet — cockpit-level pane-capture + nudging offload from Claude lead to any-LLM impl
 
+> **⚠ SUPERSEDED by [ADR-211](211-retire-sentinel-role-distribute-to-honker-consumers.md) — 2026-05-23. Read ADR-211 instead; this file is kept for trace only.**
+
 **Status**: Superseded by EPIC e-be01fc89 (sentinel deleted 2026-05-23 — see §Amendment 2026-05-23 — final close at bottom). Was: Accepted (2026-05-15, operator-batch-flip)
 **Date**: 2026-05-14
 **Author**: atmux team (planner / t-0a889489)
@@ -265,7 +267,7 @@ Wrong Enter-push: worst case is firing Enter into a queued message that should h
 - **[ADR-138](138-verified-send-keys.md)** — verified send-keys; CursorMartinet's `apply()` MUST call `safeSendKeysWithVerify` per ADR-138 §"Forward-compat with ADR-132". The verified send-keys helper is the primitive every Martinet impl inherits for free.
 - **[ADR-140](140-cheap-model-first.md)** — cheap-model-first principle. Canonical justification for routing mechanical observation + nudges + routine rotation to Cursor martinet, reserving Claude (Opus xhigh) for strategic + code-gen + code review. MiniMax/Kimi drop (Reshape note 2) is anchored to ADR-140 §Decision.
 - **ADR-139** (forward-reference; file not yet authored) — refusal-pattern detection; runs **inside** the martinet tick loop post-ADR-140 (martinet absorbs the detector + auto-rotate-on-trigger). See `[[project_refusal_detection_adr_139]]` memory until the file lands.
-- **[ADR-143](143-external-lead-rotation.md)** — external cron-fired lead-rotation enforcer (stopgap until this ADR's CursorMartinet ships T3/T4 of ADR-140). ADR-143's cron-rotate is deprecated-once-martinet-lands.
+- **[ADR-143](143-external-lead-rotation.SUPERSEDED.md)** — external cron-fired lead-rotation enforcer (stopgap until this ADR's CursorMartinet ships T3/T4 of ADR-140). ADR-143's cron-rotate is deprecated-once-martinet-lands.
 
 ## Open questions
 

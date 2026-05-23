@@ -1,5 +1,7 @@
 # ADR-183: Sentinel scope includes epic-teams — silent-member-death coverage
 
+> **⚠ SUPERSEDED by [ADR-211](211-retire-sentinel-role-distribute-to-honker-consumers.md) — 2026-05-23. Read ADR-211 instead; this file is kept for trace only.**
+
 **Status**: Superseded by e-be01fc89 (sentinel deleted 2026-05-23). Was: accepted 2026-05-20.
 **Date**: 2026-05-20
 **Driver-ref**: 2026-05-20 driver session — operator demand "fix it all, we want sentinel now" closing t-186d5910 Part C. The original implementation comment in `src/verbs/sentinel.ts:360-364` claimed epic-teams were out-of-scope per ADR-132 §"Out of scope", but ADR-132 actually only excludes cockpit-tier surfaces (medic / superdriver); the epic-team exclusion was an implementation choice that predates ADR-091 epic-team proliferation.

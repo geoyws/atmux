@@ -1,5 +1,7 @@
 # ADR-083: cron-install port scope — `atmux start` auto-install glue (refs ADR-051)
 
+> **⚠ SUPERSEDED by [ADR-233](233-cron-auto-install-disabled-trust-orchd.md) — 2026-05-24. Read ADR-233 instead; this file is kept for trace only.**
+
 **Status:** accepted
 **Date:** 2026-05-12
 **Owner:** parity-cron-impl
