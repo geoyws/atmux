@@ -48,11 +48,13 @@ import {
   defaultSeenStatePath,
   loadSeenStateOrDefault,
   parseTopoArgs,
+  type ReapPromptResponse,
   renderFlat,
   renderTree,
   saveSeenState,
   topo,
 } from "../../../src/verbs/topo.ts";
+import type { ReapDeps, ReapLogEntry } from "../../../src/core/reap.ts";
 
 // ---------- Stub IO ----------
 
@@ -164,7 +166,15 @@ const pastGraceSeen = (key: string): SeenState => ({
 describe("parseTopoArgs", () => {
   test("default flags", () => {
     const p = parseTopoArgs([]);
-    expect(p).toEqual({ tree: false, orphansOnly: false, json: false });
+    expect(p).toEqual({
+      tree: false,
+      orphansOnly: false,
+      json: false,
+      reap: false,
+      apply: false,
+      yes: false,
+      skipChecks: false,
+    });
   });
 
   test("--tree + --orphans + --json compose", () => {
@@ -689,7 +699,15 @@ describe("applyFilters", () => {
       orphans: [],
       summary: { teams_count: 0, epics_count: 0, cages_alive: 0, orphans_count: 0, elapsed_ms: 0 },
     };
-    const r = applyFilters(m, { tree: false, orphansOnly: false, json: false });
+    const r = applyFilters(m, {
+      tree: false,
+      orphansOnly: false,
+      json: false,
+      reap: false,
+      apply: false,
+      yes: false,
+      skipChecks: false,
+    });
     expect(r.teams).toEqual([]);
   });
 });
@@ -854,3 +872,494 @@ ATMUX_DIR=/tmp
     expect(blocks).toEqual([]);
   });
 });
+
+// ---------- --reap flag-chain (ADR-223 §D1) ----------
+
+// Stub ReapDeps for verb-level integration testing.
+interface StubReapDepsRecord {
+  deps: ReapDeps;
+  killCageServerCalls: string[];
+  cronReaperReapCalls: string[];
+  rmZombieWorktreeCalls: string[];
+  deleteBranchCalls: Array<{ repo: string; branch: string }>;
+  removeRegistryEntryCalls: string[];
+  reapLog: ReapLogEntry[];
+}
+
+function makeStubReapDeps(): StubReapDepsRecord {
+  const r: StubReapDepsRecord = {
+    deps: {} as ReapDeps,
+    killCageServerCalls: [],
+    cronReaperReapCalls: [],
+    rmZombieWorktreeCalls: [],
+    deleteBranchCalls: [],
+    removeRegistryEntryCalls: [],
+    reapLog: [],
+  };
+  r.deps = {
+    async killCageServer(s) {
+      r.killCageServerCalls.push(s);
+    },
+    async cronReaperReap(s) {
+      r.cronReaperReapCalls.push(s);
+    },
+    async rmZombieWorktree(p) {
+      r.rmZombieWorktreeCalls.push(p);
+    },
+    async deleteBranch(repo, branch) {
+      r.deleteBranchCalls.push({ repo, branch });
+    },
+    async removeRegistryEntry(eid) {
+      r.removeRegistryEntryCalls.push(eid);
+    },
+    async isCageActive() {
+      return false;
+    },
+    async isWorktreeActive() {
+      return false;
+    },
+    async isBranchMerged() {
+      return true;
+    },
+    async appendReapLog(e) {
+      r.reapLog.push(e);
+    },
+    now() {
+      return new Date("2026-05-23T00:00:00.000Z");
+    },
+  };
+  return r;
+}
+
+// Helper: stub IO that emits exactly the orphans we want.
+function makeIOWithOrphans(orphans: Array<{ class: string; ref: string }>): DiscoveryIO {
+  // Build a cockpit so manifest has a parent team for branch+socket resolvers.
+  const cockpit = cockpitWith([team("atmux", "/srv/atmux")]);
+  // Wrap discovery to feed orphans via sockets/cronBlocks fixtures that
+  // pre-grace would otherwise hit 30s gate. Use a pre-aged seen-state
+  // when calling topo() to bypass.
+  const sockets = orphans
+    .filter((o) => o.class === "cage-tmux-without-registry")
+    .map((o) => ({ socket: `/tmp/atmux-x/epics/${o.ref}/tmux-0/default`, parent: "x", eid: o.ref }));
+  const cronBlocks = orphans
+    .filter((o) => o.class === "cron-block-without-worktree")
+    .map((o) => ({ ref: o.ref, atmux_dir: "/gone", atmux_dir_exists: false }));
+  return makeStubIO({ cockpit, sockets, cronBlocks });
+}
+
+function pastGraceForKeys(keys: string[]): SeenState {
+  const old = new Date("2026-05-22T12:00:00.000Z").toISOString();
+  const entries: Record<string, string> = {};
+  for (const k of keys) entries[k] = old;
+  return { schema_version: 1, generated_at: old, entries };
+}
+
+describe("parseTopoArgs — reap flag-chain", () => {
+  test("--reap alone is dry-run; sets reap:true apply:false", () => {
+    const p = parseTopoArgs(["--reap"]);
+    expect(p.reap).toBe(true);
+    expect(p.apply).toBe(false);
+    expect(p.yes).toBe(false);
+  });
+
+  test("--reap --apply sets apply:true", () => {
+    const p = parseTopoArgs(["--reap", "--apply"]);
+    expect(p.apply).toBe(true);
+  });
+
+  test("--reap --apply --yes sets yes:true", () => {
+    const p = parseTopoArgs(["--reap", "--apply", "--yes"]);
+    expect(p.yes).toBe(true);
+  });
+
+  test("--reap --class cron-block-without-worktree sets classFilter", () => {
+    const p = parseTopoArgs(["--reap", "--class", "cron-block-without-worktree"]);
+    expect(p.classFilter).toBe("cron-block-without-worktree");
+  });
+
+  test("--apply without --reap refuses", () => {
+    expect(() => parseTopoArgs(["--apply"])).toThrow(UsageError);
+  });
+
+  test("--yes without --apply refuses", () => {
+    expect(() => parseTopoArgs(["--reap", "--yes"])).toThrow(UsageError);
+  });
+
+  test("--class without --reap refuses", () => {
+    expect(() => parseTopoArgs(["--class", "cron-block-without-worktree"])).toThrow(UsageError);
+  });
+
+  test("--class with unknown class refuses", () => {
+    expect(() => parseTopoArgs(["--reap", "--class", "bogus"])).toThrow(UsageError);
+  });
+
+  test("--class missing value refuses", () => {
+    expect(() => parseTopoArgs(["--reap", "--class"])).toThrow(UsageError);
+  });
+
+  test("--class empty value refuses", () => {
+    expect(() => parseTopoArgs(["--reap", "--class", ""])).toThrow(UsageError);
+  });
+
+  test("--apply --json without --yes refuses (interactive+JSON conflict)", () => {
+    expect(() => parseTopoArgs(["--reap", "--apply", "--json"])).toThrow(UsageError);
+  });
+
+  test("--apply --json --yes accepted", () => {
+    const p = parseTopoArgs(["--reap", "--apply", "--json", "--yes"]);
+    expect(p.json).toBe(true);
+    expect(p.yes).toBe(true);
+  });
+});
+
+describe("topo --reap — dry-run", () => {
+  test("--reap alone lists what would be reaped via skipped[]", async () => {
+    const io = makeIOWithOrphans([{ class: "cron-block-without-worktree", ref: "atmux:team=x" }]);
+    const reap = makeStubReapDeps();
+    const log = makeLogger();
+    const rc = await topo(["--reap"], {
+      io,
+      seenState: pastGraceForKeys(["cron-block-without-worktree::atmux:team=x"]),
+      saveSeenState: async () => {},
+      reapDeps: reap.deps,
+      logger: log,
+    });
+    expect(rc).toBe(0);
+    expect(reap.cronReaperReapCalls).toEqual([]); // dry-run: no real call
+    const out = log.lines.join("\n");
+    expect(out).toContain("reap (dry-run)");
+    expect(out).toContain("SKIPPED");
+  });
+});
+
+describe("topo --reap --apply --yes — non-interactive batch", () => {
+  test("invokes the primitive for each reapable orphan + writes reap-log", async () => {
+    const io = makeIOWithOrphans([
+      { class: "cron-block-without-worktree", ref: "atmux:team=a" },
+      { class: "cage-tmux-without-registry", ref: "e-x" },
+    ]);
+    const reap = makeStubReapDeps();
+    const log = makeLogger();
+    await topo(["--reap", "--apply", "--yes"], {
+      io,
+      seenState: pastGraceForKeys([
+        "cron-block-without-worktree::atmux:team=a",
+        "cage-tmux-without-registry::e-x",
+      ]),
+      saveSeenState: async () => {},
+      reapDeps: reap.deps,
+      logger: log,
+    });
+    expect(reap.cronReaperReapCalls).toEqual(["atmux:team=a"]);
+    expect(reap.killCageServerCalls).toContain("/tmp/atmux-atmux/epics/e-x/tmux-0/default");
+    expect(reap.reapLog).toHaveLength(2);
+    expect(reap.reapLog.every((e) => e.result === "ok")).toBe(true);
+  });
+
+  test("--apply --yes --json emits {reaped, skipped, refused, failed, bypassed, summary}", async () => {
+    const io = makeIOWithOrphans([{ class: "cron-block-without-worktree", ref: "atmux:team=a" }]);
+    const reap = makeStubReapDeps();
+    const log = makeLogger();
+    await topo(["--reap", "--apply", "--yes", "--json"], {
+      io,
+      seenState: pastGraceForKeys(["cron-block-without-worktree::atmux:team=a"]),
+      saveSeenState: async () => {},
+      reapDeps: reap.deps,
+      logger: log,
+    });
+    const parsed = JSON.parse(log.lines[0] ?? "{}");
+    expect(parsed.summary.reaped_count).toBe(1);
+    expect(parsed.reaped).toHaveLength(1);
+    expect(parsed.reaped[0].primitive).toBe("cronReaperReap");
+  });
+});
+
+describe("topo --reap --apply — interactive prompt", () => {
+  test("[y] confirms, primitive runs", async () => {
+    const io = makeIOWithOrphans([{ class: "cron-block-without-worktree", ref: "atmux:team=a" }]);
+    const reap = makeStubReapDeps();
+    const responses: ReapPromptResponse[] = ["y"];
+    let pIdx = 0;
+    const prompt = async (): Promise<ReapPromptResponse> =>
+      responses[pIdx++] ?? "N";
+    const log = makeLogger();
+    await topo(["--reap", "--apply"], {
+      io,
+      seenState: pastGraceForKeys(["cron-block-without-worktree::atmux:team=a"]),
+      saveSeenState: async () => {},
+      reapDeps: reap.deps,
+      prompt,
+      logger: log,
+    });
+    expect(reap.cronReaperReapCalls).toEqual(["atmux:team=a"]);
+  });
+
+  test("[N] declines, primitive does not run", async () => {
+    const io = makeIOWithOrphans([{ class: "cron-block-without-worktree", ref: "atmux:team=a" }]);
+    const reap = makeStubReapDeps();
+    const prompt = async (): Promise<ReapPromptResponse> => "N";
+    const log = makeLogger();
+    await topo(["--reap", "--apply"], {
+      io,
+      seenState: pastGraceForKeys(["cron-block-without-worktree::atmux:team=a"]),
+      saveSeenState: async () => {},
+      reapDeps: reap.deps,
+      prompt,
+      logger: log,
+    });
+    expect(reap.cronReaperReapCalls).toEqual([]);
+  });
+
+  test("[a] collapses confirmation for same-class siblings", async () => {
+    const io = makeIOWithOrphans([
+      { class: "cron-block-without-worktree", ref: "atmux:team=a" },
+      { class: "cron-block-without-worktree", ref: "atmux:team=b" },
+    ]);
+    const reap = makeStubReapDeps();
+    const responses: ReapPromptResponse[] = ["a"]; // single prompt
+    let pIdx = 0;
+    const promptCallCount = { n: 0 };
+    const prompt = async (): Promise<ReapPromptResponse> => {
+      promptCallCount.n += 1;
+      return responses[pIdx++] ?? "N";
+    };
+    const log = makeLogger();
+    await topo(["--reap", "--apply"], {
+      io,
+      seenState: pastGraceForKeys([
+        "cron-block-without-worktree::atmux:team=a",
+        "cron-block-without-worktree::atmux:team=b",
+      ]),
+      saveSeenState: async () => {},
+      reapDeps: reap.deps,
+      prompt,
+      logger: log,
+    });
+    expect(reap.cronReaperReapCalls.length).toBe(2);
+    expect(promptCallCount.n).toBe(1); // [a] short-circuits 2nd prompt
+  });
+
+  test("[q] aborts cascade — no further primitives run", async () => {
+    const io = makeIOWithOrphans([
+      { class: "cron-block-without-worktree", ref: "atmux:team=a" },
+      { class: "cron-block-without-worktree", ref: "atmux:team=b" },
+    ]);
+    const reap = makeStubReapDeps();
+    const prompt = async (): Promise<ReapPromptResponse> => "q";
+    const log = makeLogger();
+    await topo(["--reap", "--apply"], {
+      io,
+      seenState: pastGraceForKeys([
+        "cron-block-without-worktree::atmux:team=a",
+        "cron-block-without-worktree::atmux:team=b",
+      ]),
+      saveSeenState: async () => {},
+      reapDeps: reap.deps,
+      prompt,
+      logger: log,
+    });
+    expect(reap.cronReaperReapCalls).toEqual([]);
+  });
+
+  test("[d] details re-prompts; then [y] confirms", async () => {
+    const io = makeIOWithOrphans([{ class: "cron-block-without-worktree", ref: "atmux:team=a" }]);
+    const reap = makeStubReapDeps();
+    const responses: ReapPromptResponse[] = ["d", "y"];
+    let pIdx = 0;
+    const prompt = async (): Promise<ReapPromptResponse> =>
+      responses[pIdx++] ?? "N";
+    const log = makeLogger();
+    await topo(["--reap", "--apply"], {
+      io,
+      seenState: pastGraceForKeys(["cron-block-without-worktree::atmux:team=a"]),
+      saveSeenState: async () => {},
+      reapDeps: reap.deps,
+      prompt,
+      logger: log,
+    });
+    expect(reap.cronReaperReapCalls).toEqual(["atmux:team=a"]);
+    // Details line should appear in logger output (class: + ref: rows).
+    expect(log.lines.join("\n")).toContain("class:");
+  });
+});
+
+describe("topo --reap --class — filter", () => {
+  test("scopes cascade to one class", async () => {
+    const io = makeIOWithOrphans([
+      { class: "cron-block-without-worktree", ref: "atmux:team=a" },
+      { class: "cage-tmux-without-registry", ref: "e-x" },
+    ]);
+    const reap = makeStubReapDeps();
+    const log = makeLogger();
+    await topo(["--reap", "--apply", "--yes", "--class", "cron-block-without-worktree"], {
+      io,
+      seenState: pastGraceForKeys([
+        "cron-block-without-worktree::atmux:team=a",
+        "cage-tmux-without-registry::e-x",
+      ]),
+      saveSeenState: async () => {},
+      reapDeps: reap.deps,
+      logger: log,
+    });
+    expect(reap.cronReaperReapCalls).toEqual(["atmux:team=a"]);
+    expect(reap.killCageServerCalls).toEqual([]);
+  });
+});
+
+describe("topo --reap --apply — Gate failures route to refused[]", () => {
+  test("Gate 3 (unmerged branch) refuses + reap-log not appended", async () => {
+    const io = makeIOWithOrphans([]);
+    // Inject a branch-without-row manifest directly via overriding the
+    // `--orphans`-only narrative isn't possible — instead, simulate
+    // gate-3 via the unmerged response on isBranchMerged.
+    const reap = makeStubReapDeps();
+    reap.deps.isBranchMerged = async () => false;
+    // Synthesize a branch-without-row orphan via a custom IO with no
+    // sockets but a branch enum from the stub IO's `branchesByParent`.
+    const cockpit = cockpitWith([team("atmux", "/srv/atmux")]);
+    const stubIO = makeStubIO({
+      cockpit,
+      branch: () => "atmux-geoyws", // non-null so listEpicBranches fires
+      branchesByParent: {
+        atmux: [{ parent: "atmux", branch: "atmux-geoyws-epic-e-stale", eid: "e-stale" }],
+      },
+      kanbanEpicRowsByParent: { atmux: [] },
+    });
+    const log = makeLogger();
+    await topo(["--reap", "--apply", "--yes", "--json"], {
+      io: stubIO,
+      seenState: pastGraceForKeys(["branch-without-row::atmux-geoyws-epic-e-stale"]),
+      saveSeenState: async () => {},
+      reapDeps: reap.deps,
+      logger: log,
+    });
+    const parsed = JSON.parse(log.lines[0] ?? "{}");
+    expect(parsed.summary.refused_count).toBe(1);
+    expect(parsed.refused[0].reason).toContain("gate-3-merge-base");
+    expect(reap.reapLog).toHaveLength(0);
+  });
+
+  test("Gate 1 (active cage) refuses without --skip-checks (via stub isCageActive)", async () => {
+    const io = makeIOWithOrphans([{ class: "cage-tmux-without-registry", ref: "e-x" }]);
+    const reap = makeStubReapDeps();
+    reap.deps.isCageActive = async () => true;
+    const log = makeLogger();
+    await topo(["--reap", "--apply", "--yes", "--json"], {
+      io,
+      seenState: pastGraceForKeys(["cage-tmux-without-registry::e-x"]),
+      saveSeenState: async () => {},
+      reapDeps: reap.deps,
+      logger: log,
+    });
+    const parsed = JSON.parse(log.lines[0] ?? "{}");
+    expect(parsed.summary.refused_count).toBe(1);
+    expect(parsed.refused[0].reason).toContain("gate-1-active-check");
+    expect(reap.killCageServerCalls).toEqual([]);
+  });
+});
+
+describe("topo --reap human render — coverage of refused/failed/bypassed branches", () => {
+  test("human render with failed primitive (cron throws)", async () => {
+    const io = makeIOWithOrphans([{ class: "cron-block-without-worktree", ref: "atmux:team=a" }]);
+    const reap = makeStubReapDeps();
+    reap.deps.cronReaperReap = async () => {
+      throw new Error("simulated cron failure");
+    };
+    const log = makeLogger();
+    await topo(["--reap", "--apply", "--yes"], {
+      io,
+      seenState: pastGraceForKeys(["cron-block-without-worktree::atmux:team=a"]),
+      saveSeenState: async () => {},
+      reapDeps: reap.deps,
+      logger: log,
+    });
+    const out = log.lines.join("\n");
+    expect(out).toContain("FAILED");
+    expect(out).toContain("simulated cron failure");
+  });
+
+  test("human render with refused (Gate 1 active cage, no --skip-checks)", async () => {
+    const io = makeIOWithOrphans([{ class: "cage-tmux-without-registry", ref: "e-x" }]);
+    const reap = makeStubReapDeps();
+    reap.deps.isCageActive = async () => true;
+    const log = makeLogger();
+    await topo(["--reap", "--apply", "--yes"], {
+      io,
+      seenState: pastGraceForKeys(["cage-tmux-without-registry::e-x"]),
+      saveSeenState: async () => {},
+      reapDeps: reap.deps,
+      logger: log,
+    });
+    const out = log.lines.join("\n");
+    expect(out).toContain("REFUSED");
+    expect(out).toContain("gate-1-active-check");
+  });
+
+  test("human render with bypassed (--skip-checks bypasses active Gate 1)", async () => {
+    const io = makeIOWithOrphans([{ class: "cage-tmux-without-registry", ref: "e-x" }]);
+    const reap = makeStubReapDeps();
+    reap.deps.isCageActive = async () => true;
+    const log = makeLogger();
+    await topo(["--reap", "--apply", "--yes", "--skip-checks"], {
+      io,
+      seenState: pastGraceForKeys(["cage-tmux-without-registry::e-x"]),
+      saveSeenState: async () => {},
+      reapDeps: reap.deps,
+      logger: log,
+    });
+    const out = log.lines.join("\n");
+    expect(out).toContain("BYPASSED");
+    expect(out).toContain("gate-1-active-check");
+    expect(reap.killCageServerCalls).toContain("/tmp/atmux-atmux/epics/e-x/tmux-0/default");
+  });
+});
+
+describe("topo --reap --json — coverage of skipped/failed JSON branches", () => {
+  test("--reap (dry-run) --json emits skipped[] with primitive labels", async () => {
+    const io = makeIOWithOrphans([{ class: "cron-block-without-worktree", ref: "atmux:team=a" }]);
+    const reap = makeStubReapDeps();
+    const log = makeLogger();
+    await topo(["--reap", "--json"], {
+      io,
+      seenState: pastGraceForKeys(["cron-block-without-worktree::atmux:team=a"]),
+      saveSeenState: async () => {},
+      reapDeps: reap.deps,
+      logger: log,
+    });
+    const parsed = JSON.parse(log.lines[0] ?? "{}");
+    expect(parsed.skipped).toHaveLength(1);
+    expect(parsed.skipped[0].primitive).toBe("cronReaperReap");
+    expect(parsed.skipped[0].reason).toBe("dry-run");
+  });
+
+  test("--apply --yes --json emits failed[] with error message", async () => {
+    const io = makeIOWithOrphans([{ class: "cron-block-without-worktree", ref: "atmux:team=a" }]);
+    const reap = makeStubReapDeps();
+    reap.deps.cronReaperReap = async () => {
+      throw new Error("simulated cron failure");
+    };
+    const log = makeLogger();
+    await topo(["--reap", "--apply", "--yes", "--json"], {
+      io,
+      seenState: pastGraceForKeys(["cron-block-without-worktree::atmux:team=a"]),
+      saveSeenState: async () => {},
+      reapDeps: reap.deps,
+      logger: log,
+    });
+    const parsed = JSON.parse(log.lines[0] ?? "{}");
+    expect(parsed.failed).toHaveLength(1);
+    expect(parsed.failed[0].error).toContain("simulated cron failure");
+  });
+});
+
+describe("parseTopoArgs — --skip-checks", () => {
+  test("--reap --apply --skip-checks sets skipChecks:true", () => {
+    const p = parseTopoArgs(["--reap", "--apply", "--skip-checks"]);
+    expect(p.skipChecks).toBe(true);
+  });
+
+  test("--skip-checks without --apply refuses", () => {
+    expect(() => parseTopoArgs(["--reap", "--skip-checks"])).toThrow(UsageError);
+  });
+});
+

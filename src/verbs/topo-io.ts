@@ -16,16 +16,18 @@
 // `tests/integration/verbs/topo.test.ts`. Pure parse helpers
 // (`parseCronMarkerBlocks`) are unit-tested here.
 
-import { readdir } from "node:fs/promises";
+import { appendFile, readdir, rm } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { createInterface } from "node:readline/promises";
 import { defaultCrontabIO } from "../abstractions/crontab.ts";
-import { exists } from "../abstractions/fs.ts";
+import { ensureDir, exists } from "../abstractions/fs.ts";
 import { closeDatabase, type Database, openDatabase } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { createTmux } from "../abstractions/tmux.ts";
 import { defaultGitSpawn, type GitSpawn } from "../abstractions/worktree.ts";
 import { loadCockpit, resolveCockpitConfigPath } from "../core/cockpit.ts";
+import { makeReapZombieWorktree, type ReapDeps, type ReapLogEntry } from "../core/reap.ts";
 import type {
   BranchOnParent,
   CronMarkerBlock,
@@ -33,6 +35,7 @@ import type {
   KanbanEpicRow,
   KanbanProbe,
   TmuxSocketEntry,
+  TopoOrphan,
   WorktreeOnDisk,
 } from "../core/topo-aggregate.ts";
 
@@ -325,4 +328,161 @@ export async function parseCronMarkerBlocks(body: string): Promise<CronMarkerBlo
     }
   }
   return blocks;
+}
+
+// ---------- Production ReapDeps (ADR-223 §D2 wiring) ----------
+
+/** Default path for the reap-log file per ADR-223 §OQ5. */
+function defaultReapLogPath(): string {
+  const home = process.env.HOME ?? homedir();
+  return join(home, ".atmux", "state", "reap-log.jsonl");
+}
+
+/** Production-default {@link ReapDeps}. Tests inject their own; this
+ *  default is used by the verb when `opts.reapDeps` is omitted.
+ *
+ *  Per ADR-223 §D4 "per-orphan result isolation" — every primitive
+ *  bubbles errors up to the orchestrator (reap.ts) which collects to
+ *  `failed[]` without blocking the cascade. */
+export function defaultReapDeps(): ReapDeps {
+  const git: GitSpawn = defaultGitSpawn;
+  const crontab = defaultCrontabIO();
+  const reapZombieWorktree = makeReapZombieWorktree(async (path) => {
+    await rm(path, { recursive: true, force: true });
+  });
+  return {
+    async killCageServer(socket) {
+      const tx = createTmux({ socketPath: socket });
+      await tx.server.killServer();
+    },
+    async cronReaperReap(scope) {
+      // Strip the marker-fenced block for this scope via existing
+      // src/core/cron.ts helpers + atomic crontab write. Best-effort
+      // per ADR-223 §D4 — failures bubble up + the orchestrator
+      // records to failed[].
+      const body = await crontab.read();
+      if (body === null) return;
+      const team = scope.startsWith("atmux:team=") ? scope.slice("atmux:team=".length) : scope;
+      const cronModule = await import("../core/cron.ts");
+      const stripped = cronModule.stripBlockByTeam(body, team);
+      if (stripped === body) return; // no-op idempotency
+      await crontab.write(stripped);
+    },
+    rmZombieWorktree: reapZombieWorktree,
+    async deleteBranch(repoPath, branch) {
+      const r = await git(["-C", repoPath, "branch", "-D", branch]);
+      if (r.exitCode !== 0) {
+        throw new Error(`git branch -D ${branch} failed: ${r.stderr.trim()}`);
+      }
+    },
+    async removeRegistryEntry(eid) {
+      // Atomic rewrite of cockpit.json removing the matching epic-team
+      // session entry. Defensive — preserves every other field of the
+      // cockpit document via JSON round-trip + minimal mutation.
+      const cockpit = await loadCockpit();
+      const path = resolveCockpitConfigPath();
+      const removed = removeEpicTeamFromSessions(
+        cockpit as unknown as { sessions: unknown[] },
+        eid,
+      );
+      if (!removed) return; // idempotent — entry already gone
+      await ensureDir(dirname(path));
+      const { atomicWrite } = await import("../abstractions/fs.ts");
+      await atomicWrite(path, `${JSON.stringify(cockpit, null, 2)}\n`);
+    },
+    async isCageActive(socket) {
+      try {
+        const tx = createTmux({ socketPath: socket });
+        const sessions = await tx.session.listSessions();
+        if (sessions.length === 0) return false;
+        // Conservative: any session present + recent (within 5min)
+        // counts as active. Without attached-clients introspection
+        // (tmux abstraction doesn't expose it on the session-list
+        // surface), treat session presence as a stop-sign — operator
+        // can pass --skip-checks to override.
+        const fiveMinAgo = Date.now() / 1000 - 5 * 60;
+        return sessions.some((s) => s.created > fiveMinAgo);
+      } catch {
+        return false; // socket gone is not "active"
+      }
+    },
+    async isWorktreeActive(worktreePath) {
+      try {
+        const status = await git(["-C", worktreePath, "status", "--porcelain"]);
+        if (status.exitCode !== 0) return false;
+        if (status.stdout.trim().length > 0) return true; // dirty
+        const commitTime = await git(["-C", worktreePath, "log", "-1", "--format=%ct"]);
+        if (commitTime.exitCode !== 0) return false;
+        const ts = Number.parseInt(commitTime.stdout.trim(), 10);
+        if (!Number.isFinite(ts)) return false;
+        return ts > Date.now() / 1000 - 5 * 60;
+      } catch {
+        return false;
+      }
+    },
+    async isBranchMerged(repoPath, base, branch) {
+      try {
+        const r = await git(["-C", repoPath, "merge-base", "--is-ancestor", branch, base]);
+        return r.exitCode === 0;
+      } catch {
+        return false;
+      }
+    },
+    async appendReapLog(entry: ReapLogEntry) {
+      const path = defaultReapLogPath();
+      await ensureDir(dirname(path));
+      await appendFile(path, `${JSON.stringify(entry)}\n`, "utf8");
+    },
+    now() {
+      return new Date();
+    },
+  };
+}
+
+/** Helper for `removeRegistryEntry` — recursively walk cockpit
+ *  `sessions[]` and drop any `epic-team` entry whose `epicId` matches.
+ *  Returns true iff a removal was performed. Pure on the input tree
+ *  (mutates the array in place; cockpit is mutable in this context). */
+function removeEpicTeamFromSessions(node: { sessions?: unknown[] }, eid: string): boolean {
+  if (!Array.isArray(node.sessions)) return false;
+  let removed = false;
+  for (let i = node.sessions.length - 1; i >= 0; i -= 1) {
+    const entry = node.sessions[i] as
+      | { type?: unknown; epicId?: unknown; sessions?: unknown[] }
+      | undefined;
+    if (entry === undefined) continue;
+    if (entry.type === "epic-team" && entry.epicId === eid) {
+      node.sessions.splice(i, 1);
+      removed = true;
+      continue;
+    }
+    if (Array.isArray(entry.sessions)) {
+      if (removeEpicTeamFromSessions(entry as { sessions: unknown[] }, eid)) removed = true;
+    }
+  }
+  return removed;
+}
+
+// ---------- Default ReapPromptFn (Gate-4, stdin) ----------
+
+/** Default per-orphan prompt — reads stdin via node:readline. Tests
+ *  inject a stubbed prompt to avoid touching the real terminal. */
+export async function defaultReapPrompt(
+  orphan: TopoOrphan,
+  idx: number,
+  total: number,
+): Promise<"y" | "N" | "a" | "q" | "d"> {
+  const banner = `[${idx}/${total}] orphan-class=${orphan.class} ref=${orphan.ref}\n  ${orphan.details}\n  reap: ${orphan.reap_hint ?? "(no hint)"}\n[y]es / [N]o / [a]ll-this-class / [q]uit / [d]etails: `;
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const ans = await rl.question(banner);
+    const c = ans.trim().slice(0, 1);
+    if (c === "y" || c === "Y") return "y";
+    if (c === "a" || c === "A") return "a";
+    if (c === "q" || c === "Q") return "q";
+    if (c === "d" || c === "D") return "d";
+    return "N";
+  } finally {
+    rl.close();
+  }
 }

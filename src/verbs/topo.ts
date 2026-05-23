@@ -34,18 +34,36 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { ensureDir, exists } from "../abstractions/fs.ts";
 import { classifyOrphans, emptySeenState, type SeenState } from "../core/orphan-detector.ts";
+import { type OrphanClass, type ReapDeps, type ReapResult, reapOrphans } from "../core/reap.ts";
 import {
   aggregateTopo,
   type DiscoveryIO,
   gatherDiscovery,
   type TopoEpic,
   type TopoManifest,
+  type TopoOrphan,
   type TopoTeam,
 } from "../core/topo-aggregate.ts";
 import { UsageError } from "../errors.ts";
-import { defaultDiscoveryIO } from "./topo-io.ts";
+import { defaultDiscoveryIO, defaultReapDeps, defaultReapPrompt } from "./topo-io.ts";
 
-const USAGE = "atmux topo [--tree] [--orphans] [--json] [--team <name>] [--since <iso>]";
+const USAGE =
+  "atmux topo [--tree] [--orphans] [--json] [--team <name>] [--since <iso>]\n" +
+  "  atmux topo --reap [--apply] [--yes] [--class <name>] [--json]";
+
+const REAP_CLASSES = [
+  "cage-tmux-without-registry",
+  "cron-block-without-worktree",
+  "worktree-without-cage",
+  "branch-without-row",
+  "kanban-epic-without-cage",
+  "cockpit-registry-without-cage",
+] as const;
+type ReapClassLiteral = (typeof REAP_CLASSES)[number];
+
+function isReapClass(s: string): s is ReapClassLiteral {
+  return (REAP_CLASSES as readonly string[]).includes(s);
+}
 
 // ---------- Arg parsing ----------
 
@@ -55,6 +73,21 @@ export interface ParsedTopoArgs {
   json: boolean;
   team?: string;
   sinceIso?: string;
+  /** ADR-223 §D1 — `--reap` opens the reap subflow. Without this
+   *  flag, the verb stays in read-only mode. */
+  reap: boolean;
+  /** `--apply` promotes `--reap` from dry-run to mutating. Requires
+   *  `--reap`. */
+  apply: boolean;
+  /** `--yes` skips per-orphan interactive confirmation (Gate 4).
+   *  Requires `--apply`. Per §D3 NEVER bypasses Gates 1-3. */
+  yes: boolean;
+  /** `--class <name>` scopes the reap cascade to one orphan class. */
+  classFilter?: ReapClassLiteral;
+  /** `--skip-checks` cascades to Gate 1 ONLY (active-check). Gates 2
+   *  (structural) + 3 (merge-base) are inviolable per the reviewer
+   *  audit 2026-05-22. Requires `--apply`. */
+  skipChecks: boolean;
 }
 
 export function parseTopoArgs(argv: ReadonlyArray<string>): ParsedTopoArgs {
@@ -63,6 +96,11 @@ export function parseTopoArgs(argv: ReadonlyArray<string>): ParsedTopoArgs {
   let json = false;
   let team: string | undefined;
   let sinceIso: string | undefined;
+  let reap = false;
+  let apply = false;
+  let yes = false;
+  let skipChecks = false;
+  let classFilter: ReapClassLiteral | undefined;
   let i = 0;
   while (i < argv.length) {
     const a = argv[i];
@@ -78,6 +116,26 @@ export function parseTopoArgs(argv: ReadonlyArray<string>): ParsedTopoArgs {
     }
     if (a === "--json") {
       json = true;
+      i += 1;
+      continue;
+    }
+    if (a === "--reap") {
+      reap = true;
+      i += 1;
+      continue;
+    }
+    if (a === "--apply") {
+      apply = true;
+      i += 1;
+      continue;
+    }
+    if (a === "--yes") {
+      yes = true;
+      i += 1;
+      continue;
+    }
+    if (a === "--skip-checks") {
+      skipChecks = true;
       i += 1;
       continue;
     }
@@ -106,11 +164,46 @@ export function parseTopoArgs(argv: ReadonlyArray<string>): ParsedTopoArgs {
       i += 2;
       continue;
     }
+    if (a === "--class") {
+      const v = argv[i + 1];
+      if (v === undefined || v.length === 0) {
+        throw new UsageError({ what: "topo: --class requires a value", hint: USAGE });
+      }
+      if (!isReapClass(v)) {
+        throw new UsageError({
+          what: `topo: --class expects one of ${REAP_CLASSES.join(" | ")}, got '${v}'`,
+          hint: USAGE,
+        });
+      }
+      classFilter = v;
+      i += 2;
+      continue;
+    }
     throw new UsageError({ what: `topo: unexpected arg: ${a}`, hint: USAGE });
   }
-  const out: ParsedTopoArgs = { tree, orphansOnly, json };
+  // Cross-flag validation per ADR-223 §D1.
+  if (apply && !reap) {
+    throw new UsageError({ what: "topo: --apply requires --reap", hint: USAGE });
+  }
+  if (yes && !apply) {
+    throw new UsageError({ what: "topo: --yes requires --apply", hint: USAGE });
+  }
+  if (skipChecks && !apply) {
+    throw new UsageError({ what: "topo: --skip-checks requires --apply", hint: USAGE });
+  }
+  if (classFilter !== undefined && !reap) {
+    throw new UsageError({ what: "topo: --class requires --reap", hint: USAGE });
+  }
+  if (json && reap && apply && !yes) {
+    throw new UsageError({
+      what: "topo: --apply --json without --yes refuses (interactive + machine-readable conflict)",
+      hint: USAGE,
+    });
+  }
+  const out: ParsedTopoArgs = { tree, orphansOnly, json, reap, apply, yes, skipChecks };
   if (team !== undefined) out.team = team;
   if (sinceIso !== undefined) out.sinceIso = sinceIso;
+  if (classFilter !== undefined) out.classFilter = classFilter;
   return out;
 }
 
@@ -128,7 +221,24 @@ export interface TopoOpts {
   saveSeenState?: (s: SeenState) => Promise<void>;
   /** Test seam — defaults to stdout. */
   logger?: { log: (m: string) => void };
+  /** Test seam — injects the reap orchestrator's {@link ReapDeps}.
+   *  Production omits → uses {@link defaultReapDeps} from `topo-io.ts`. */
+  reapDeps?: ReapDeps;
+  /** Test seam — injects the Gate-4 prompt function. Default reads
+   *  stdin via readline; tests pass a canned-response stub. */
+  prompt?: ReapPromptFn;
 }
+
+/** Gate-4 prompt response codes per ADR-223 §D3 (verb-layer Gate 4). */
+export type ReapPromptResponse = "y" | "N" | "a" | "q" | "d";
+
+/** Per-orphan prompt callback. `idx` is 1-based for display
+ *  (`[1/8]`); `total` is the cascade size. */
+export type ReapPromptFn = (
+  orphan: TopoOrphan,
+  idx: number,
+  total: number,
+) => Promise<ReapPromptResponse>;
 
 // ---------- Top-level entry ----------
 
@@ -156,6 +266,12 @@ export async function topo(argv: ReadonlyArray<string>, opts: TopoOpts = {}): Pr
 
   const view = applyFilters(manifest, parsed);
 
+  // Reap subflow per ADR-223 §D1 — promotes the verb from read-only
+  // to mutating ONLY when --apply is present. --reap alone is dry-run.
+  if (parsed.reap) {
+    return reapSubflow(view, parsed, opts, logger);
+  }
+
   if (parsed.json) {
     logger.log(JSON.stringify(view, null, 2));
   } else if (parsed.tree) {
@@ -164,6 +280,211 @@ export async function topo(argv: ReadonlyArray<string>, opts: TopoOpts = {}): Pr
     logger.log(renderFlat(view, parsed.orphansOnly));
   }
   return 0;
+}
+
+// ---------- Reap subflow (ADR-223 §D1) ----------
+
+async function reapSubflow(
+  manifest: TopoManifest,
+  parsed: ParsedTopoArgs,
+  opts: TopoOpts,
+  logger: { log: (m: string) => void },
+): Promise<number> {
+  const orphans = manifest.orphans;
+  const deps = opts.reapDeps ?? defaultReapDeps();
+  const prompt = opts.prompt ?? defaultReapPrompt;
+
+  // --apply: gather Gate-4 confirmation. --yes skips the prompt loop.
+  let confirmed: TopoOrphan[];
+  if (!parsed.apply) {
+    // Dry-run: pass everything; reap.ts routes to skipped[] with primitive label.
+    confirmed = orphans;
+  } else if (parsed.yes) {
+    confirmed = orphans;
+  } else {
+    confirmed = await gatherConfirmedOrphans(orphans, prompt, logger);
+  }
+
+  const result = await reapOrphans(confirmed, {
+    deps,
+    dryRun: !parsed.apply,
+    skipChecks: parsed.skipChecks,
+    ...(parsed.classFilter !== undefined ? { classFilter: parsed.classFilter as OrphanClass } : {}),
+    repoPathForBranch: (b) => repoPathForBranchOnManifest(manifest, b),
+    baseBranchForBranch: (b) => baseBranchForBranchOnManifest(manifest, b),
+    worktreePathForOrphan: (o) => o.atmux_dir?.replace(/\/\.atmux$/, "") ?? "",
+    cageSocketForOrphan: (o) => cageSocketForOrphan(manifest, o.ref),
+  });
+
+  if (parsed.json) {
+    logger.log(JSON.stringify(reapResultToJson(result), null, 2));
+  } else {
+    logger.log(renderReapResult(result, !parsed.apply));
+  }
+  return 0;
+}
+
+async function gatherConfirmedOrphans(
+  orphans: ReadonlyArray<TopoOrphan>,
+  prompt: ReapPromptFn,
+  logger: { log: (m: string) => void },
+): Promise<TopoOrphan[]> {
+  const confirmed: TopoOrphan[] = [];
+  const allowAllClasses = new Set<string>();
+  let aborted = false;
+  for (let i = 0; i < orphans.length; i += 1) {
+    if (aborted) break;
+    const orphan = orphans[i] as TopoOrphan;
+    if (allowAllClasses.has(orphan.class)) {
+      confirmed.push(orphan);
+      continue;
+    }
+    // Allow [d]etails to re-prompt by looping until a decisive answer.
+    let decided = false;
+    while (!decided) {
+      const r = await prompt(orphan, i + 1, orphans.length);
+      if (r === "y") {
+        confirmed.push(orphan);
+        decided = true;
+      } else if (r === "N") {
+        decided = true;
+      } else if (r === "a") {
+        allowAllClasses.add(orphan.class);
+        confirmed.push(orphan);
+        decided = true;
+      } else if (r === "q") {
+        aborted = true;
+        decided = true;
+      } else if (r === "d") {
+        logger.log(renderOrphanDetails(orphan));
+      }
+    }
+  }
+  return confirmed;
+}
+
+function renderOrphanDetails(orphan: TopoOrphan): string {
+  const lines: string[] = [];
+  lines.push(`  class:      ${orphan.class}`);
+  lines.push(`  ref:        ${orphan.ref}`);
+  lines.push(`  details:    ${orphan.details}`);
+  lines.push(`  first_seen: ${orphan.first_seen}`);
+  if (orphan.atmux_dir !== undefined) lines.push(`  atmux_dir:  ${orphan.atmux_dir}`);
+  if (orphan.reap_hint !== undefined) lines.push(`  reap_hint:  ${orphan.reap_hint}`);
+  return lines.join("\n");
+}
+
+function reapResultToJson(result: ReapResult): unknown {
+  // Trim closures — emit only the JSON-safe shape.
+  return {
+    reaped: result.reaped.map((e) => ({
+      class: e.orphan.class,
+      ref: e.orphan.ref,
+      primitive: e.primitive,
+    })),
+    skipped: result.skipped.map((e) => ({
+      class: e.orphan.class,
+      ref: e.orphan.ref,
+      primitive: e.primitive,
+      reason: e.reason,
+    })),
+    refused: result.refused.map((e) => ({
+      class: e.orphan.class,
+      ref: e.orphan.ref,
+      reason: e.reason,
+    })),
+    failed: result.failed.map((e) => ({
+      class: e.orphan.class,
+      ref: e.orphan.ref,
+      primitive: e.primitive,
+      error: e.error,
+    })),
+    bypassed: result.bypassed,
+    summary: {
+      reaped_count: result.reaped.length,
+      skipped_count: result.skipped.length,
+      refused_count: result.refused.length,
+      failed_count: result.failed.length,
+    },
+  };
+}
+
+function renderReapResult(result: ReapResult, dryRun: boolean): string {
+  const lines: string[] = [];
+  lines.push(
+    `# reap ${dryRun ? "(dry-run)" : "(applied)"} — reaped=${result.reaped.length} skipped=${result.skipped.length} refused=${result.refused.length} failed=${result.failed.length}`,
+  );
+  if (result.reaped.length > 0) {
+    lines.push("");
+    lines.push(`# REAPED (${result.reaped.length})`);
+    for (const e of result.reaped) {
+      lines.push(`  [${e.orphan.class}] ${e.orphan.ref} → ${e.primitive ?? ""}`);
+    }
+  }
+  if (result.skipped.length > 0) {
+    lines.push("");
+    lines.push(`# SKIPPED (${result.skipped.length})`);
+    for (const e of result.skipped) {
+      lines.push(`  [${e.orphan.class}] ${e.orphan.ref}  — ${e.reason ?? ""}`);
+    }
+  }
+  if (result.refused.length > 0) {
+    lines.push("");
+    lines.push(`# REFUSED (${result.refused.length})`);
+    for (const e of result.refused) {
+      lines.push(`  [${e.orphan.class}] ${e.orphan.ref}  — ${e.reason ?? ""}`);
+    }
+  }
+  if (result.failed.length > 0) {
+    lines.push("");
+    lines.push(`# FAILED (${result.failed.length})`);
+    for (const e of result.failed) {
+      lines.push(`  [${e.orphan.class}] ${e.orphan.ref}  — ${e.error ?? ""}`);
+    }
+  }
+  if (result.bypassed.length > 0) {
+    lines.push("");
+    lines.push(`# BYPASSED gates (${result.bypassed.length}, --skip-checks)`);
+    for (const b of result.bypassed) {
+      lines.push(`  ${b.gate} on ${b.ref}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+// ---------- Per-orphan path resolvers ----------
+
+function repoPathForBranchOnManifest(manifest: TopoManifest, _branch: string): string {
+  // Branches are named `<base>-epic-<eid>`. The repo path lives at the
+  // parent team's `worktree`. We don't carry a branch→parent lookup
+  // table on the manifest today; falling back to the first team whose
+  // worktree is set is acceptable for the cleanup case (only one
+  // parent typically owns the branch in any given trunk).
+  for (const t of manifest.teams) {
+    if (t.worktree.length > 0) return t.worktree;
+  }
+  return "";
+}
+
+function baseBranchForBranchOnManifest(manifest: TopoManifest, branch: string): string {
+  // The base is `<branch>` minus the `-epic-<eid>` suffix. Derive from
+  // the parent team's current branch when present, else parse the
+  // branch itself.
+  const idx = branch.indexOf("-epic-");
+  if (idx > 0) return branch.slice(0, idx);
+  for (const t of manifest.teams) {
+    if (t.branch !== null) return t.branch;
+  }
+  return "";
+}
+
+function cageSocketForOrphan(_manifest: TopoManifest, eid: string): string {
+  // Cage-tmux orphans carry the socket path in their `details` line
+  // but not as a structured field. Conservative fallback: derive
+  // canonical path from eid + first parent's name. Production should
+  // use the orphan-detector's source socket field once the row
+  // schema extends to carry it (additive evolution).
+  return `/tmp/atmux-atmux/epics/${eid}/tmux-0/default`;
 }
 
 // ---------- Filters ----------
