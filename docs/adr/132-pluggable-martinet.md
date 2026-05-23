@@ -1,6 +1,6 @@
 # ADR-132: Pluggable Martinet — cockpit-level pane-capture + nudging offload from Claude lead to any-LLM impl
 
-**Status**: Accepted (2026-05-15, operator-batch-flip)
+**Status**: Superseded by EPIC e-be01fc89 (sentinel deleted 2026-05-23 — see §Amendment 2026-05-23 — final close at bottom). Was: Accepted (2026-05-15, operator-batch-flip)
 **Date**: 2026-05-14
 **Author**: atmux team (planner / t-0a889489)
 **Parent EPIC**: t-b9529ea9
@@ -341,3 +341,39 @@ The role type identified as "martinet" throughout this ADR is renamed to "sentin
 
 Cross-refs: ADR-077 §Amendment 2026-05-19 (medic boundary side), ADR-027 (doctor framework — shared probe substrate), ADR-140 (cheap-model-first justification), ADR-184 (host-cap epic-team gate — sentinel iteration scope), ADR-185 (sentinel epic-team scope extension), EPIC e-35dd6274 (wedge-clearing mechanism), t-186d5910 (sentinel deploy — landing makes the boundary observable in production cockpit telemetry).
 
+### 2026-05-23 — final close: sentinel deleted in entirety; orchd assumes the role
+
+The cron-polling sentinel substrate documented by this ADR (§D1-D8) and amended 2026-05-20 has been removed from atmux as of EPIC e-be01fc89. The mechanism + cost-curve framing in §Amendment 2026-05-20 stands as the cost-curve evidence for the removal. This §Amendment closes the chapter; ADR status flips to **Superseded by e-be01fc89**.
+
+**What was deleted (verified via `grep -rn 'atmux sentinel\|buildSentinelWindowCommand\|autoStartSentinelLoop' src/` returning empty post-T1):**
+
+- `src/abstractions/sentinel.ts` + `src/abstractions/sentinels/{claude,cursor}.ts` — interface + 2-impl set.
+- `src/core/sentinel-config.ts` + `src/core/sentinel-escalation.ts` — resolver + §D5 E1-E6 classifier.
+- `src/verbs/sentinel.ts` + CLI dispatch case at `src/cli.ts:287` — `atmux sentinel tick / status` verb gone.
+- All sentinel cron emission from `src/core/cron.ts` (no emission branch survives the schema strip; T3 regression assertions in `tests/unit/core/cron.test.ts` lock this in).
+- W3 `_sentinel` window templating in `src/verbs/cockpit.ts::reconcileCockpitSession` + `buildSentinelWindowCommand` + `autoStartSentinelLoop` — full provisioning surface removed.
+- `migrateMartinetBlockToSentinel` shim in `src/core/cockpit.ts` — ADR-158 grace-shim is moot post-deletion.
+- `team.sentinel` / `team.sentinelOverrides` / `cockpit.sentinel` / `cockpit.defaultSentinel` schema fields — legacy keys now pass through `.passthrough()` as inert data.
+- Test surface: `tests/e2e/cursor-sentinel.test.ts` + 5 sentinel-only unit test files deleted; `tests/e2e/{cadence-truth-signal,ombudsman,cockpit-rotate}.test.ts` + 6 unit test files migrated to drop sentinel-specific assertions.
+- `templates/briefs/martinet.md` — brief retired; rename history lives in ADR-158 + ADR-211.
+
+**What replaced it:** event-driven escalate-to-claude-lead via the orchd substrate. Sibling EPIC `e-a946af69` lifecycle ships Phase 3-5 orchd capabilities; Phase 1 already merged (commit f6b078b). orchd lives in `src/verbs/orchd.ts` + `src/core/orchd-*.ts` — no file overlap with the deleted sentinel surface. Until those Phase 3-5 consumers land, the lead's self-driven whip cron (`team.whip.intervalMins`, default 15min) is the canonical observe + intervene loop, and on-demand operator verbs (`atmux doctor` / `atmux wedges` / `atmux status` / `atmux pulse`) cover cross-team audit per the new [docs/RUNBOOK-on-demand-audit.md](../RUNBOOK-on-demand-audit.md) (lands via EPIC T11).
+
+**What's preserved as history:** this file (ADR-132) is retained in full as the audit trail for the sentinel mechanism's lifetime (2026-05-14 inception → 2026-05-23 deletion). All cross-refs from other ADRs pointing at this file are preserved for traceability. ADR-158 / ADR-183 / ADR-185 / ADR-206 / ADR-207 (sentinel-rename / scope / dynamic-discovery / opus-supersedes-cursor) are marked `Status: Superseded by e-be01fc89` via T7 and retained as historical exhibits. ADR-211 (retire-sentinel-role-distribute-to-honker-consumers) is marked `Status: Implemented by e-be01fc89 + orchd EPIC e-a946af69` via T7.
+
+**Lean-mode posture:** [ADR-189](./189-lean-mode-side-project-topology.md) (lean-mode side-project topology) ratified 2026-05-21 — the sentinel deletion is the canonical implementation of ADR-189's §D2 disable list ("sentinel cron-polling under lean-mode"). Post-deletion: there is no sentinel surface to disable; lean-mode no longer needs the carve-out wording. ADR-189 D2 is updated by T7 to reflect this.
+
+**Operator host migration:** operator hosts with active sentinel cron blocks: `atmux stop && atmux start` cycles the sandwich-marker block per team. Per [ADR-202](./202-honker-pubsub-substrate.md) §X cron decommission protocol, the cron block is idempotently rewritten on each start; no orphan-cron risk.
+
+**Implementation evidence (commit chain on `atmux-geoyws-epic-e-be01fc89`):**
+
+- T1 — `927a24d feat(sentinel-kill): T1 — delete sentinel src/ surface + CLI dispatch case` (20 files, -2767 / +91)
+- T2 — `d26855d test(sentinel-kill): T2 — delete + migrate sentinel-touching tests` (16 files, -3900 / +45)
+- T3 — `ea8c0e3 chore(sentinel-kill): T3 — cron emission decommission + regression assertions` (2 files)
+- T4 — `78dd994 test(sentinel-kill): T4 — regression e2e ensures no team-start re-spawns sentinel` (225 LOC)
+- T5 — `3312b6d chore(sentinel-kill): T5 — cross-ref sweep src/ + tests/ + templates/briefs/` (27 files)
+- T6 — `5808c18 docs(sentinel-kill): T6 — cross-ref sweep docs/ (PRD, ARCHITECTURE, RUNBOOK-*)` (6 files)
+- T7 — `9c203cd docs(adr): cross-ref cleanup — supersede sentinel-stack + orphan-pointer sweep (T7)`
+- T8 (this commit) — ADR-132 §final-Amendment 2026-05-23
+
+**Filed via T8 of EPIC e-be01fc89, 2026-05-23.**
