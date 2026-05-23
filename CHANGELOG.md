@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ⏳ Deprecated — `atmux epic-merge tick` cron (orchd Phase 3 supersedes; removal scheduled 2026-06-06)
+
+Per [ADR-226 §D4 + §DA3](docs/adr/226-orchd-auto-merge-subscriber.md) cron-backstop coordination + [ADR-202 §X](docs/adr/202-honker-in-db-messaging-substrate.md) cron-decommission protocol: now that orchd subscribes to `task.done` and dispatches `performEpicMerge` sub-second (commit `89fcab8`, 2026-05-23), the per-epic-team `epic-merge tick` cron is no longer the primary epic-merge trigger. It stays installed for **two weeks (until 2026-06-06)** as a defense-in-depth resilience fallback — the orchd primary path competes with the cron via the existing `merger_state` `BEGIN IMMEDIATE` serialization, so first-one-wins.
+
+**Decommission timeline**:
+
+- **2026-05-23** (T+0): orchd-merge primary path live (Phase 3 module ships at commit `89fcab8`). Cron + orchd both installed; either can drive the merge. CHANGELOG entry (this one).
+- **2026-06-06** (T+14): operator-verified orchd primary path stable via Honker event-log query (`SELECT COUNT(*) FROM events WHERE topic = 'epic.merged'` vs cron-attributed `merger_state` rows). Follow-up Task in **parent atmux kanban** removes the cron-block emit from `src/core/cron.ts` (search tag: `epic-merge tick`). Removal lands as a planner-filed Task at T+14 with cron-template-pruning commit + cockpit rebuild verification.
+- **2026-06-13** (T+21): orphan-cron sweep pass — `crontab -l | grep 'epic-merge tick'` on every team-host MUST return zero hits post-decommission. If any team's crontab still carries the line, file a follow-up complaint via medic.
+
+**Rollback path**: `ATMUX_HONKER=off` short-circuits the orchd-merge consumer; the cron-only path resumes. The cron template body lives in `src/core/cron.ts` near the existing `epic-merge tick` invocation; the removal Task at T+14 owns the prune.
+
+See also: [ADR-226 §D4](docs/adr/226-orchd-auto-merge-subscriber.md) (cron-backstop coordination), [ADR-226 §DA3](docs/adr/226-orchd-auto-merge-subscriber.md) (decision-anchor), [ADR-202 §X](docs/adr/202-honker-in-db-messaging-substrate.md) (cron-decommission protocol). Follow-up Task (parent atmux kanban, planner-filed at T+14): "Remove epic-merge tick cron template — orchd Phase 3 dogfood verified".
+
 ### ✨ Added — solo-worker scope v1: 1-2 member roster presets for small standalone tasks (ADR-221, t-8c8ce51c)
 
 Fills the gap between "drop on long-lived member queue" (pollutes branch) and "spawn full 7-member epic-team" (wasteful for single commits). Two new roster presets under `templates/epic-rosters/`:
