@@ -90,6 +90,11 @@ export interface AddEpicOpts {
   title: string;
   body?: string;
   driverRef?: string;
+  /** ADR-225 §Decision: upstream epic ids this new epic depends on.
+   *  Validated synchronously inside the insert transaction —
+   *  self-dep / non-existent / cycle all refuse with UsageError before
+   *  the row lands. Defaults to `[]` (no deps). */
+  dependsOn?: string[];
 }
 
 /** Append an epic to the kanban; return its generated id. Mirrors bash
@@ -105,6 +110,7 @@ export async function addEpic(atmuxDir: string, opts: AddEpicOpts): Promise<stri
       what: `epic add: ${_stateDbPath(atmuxDir)} not initialized; run \`atmux init\` first`,
     });
   }
+  const proposedDeps = opts.dependsOn ?? [];
   // ADR-202 §VIII — running-number ID per-team scoped via id_sequences.
   // Sequence increment + epic row insert run in the same transaction
   // so a rollback drops both.
@@ -112,6 +118,9 @@ export async function addEpic(atmuxDir: string, opts: AddEpicOpts): Promise<stri
   await _withDbAndRepo(atmuxDir, (db, repo) => {
     transactImmediate(db, () => {
       const id = nextId(db, "e");
+      // ADR-225 §Validation: refuse self-dep / non-existent / cycle
+      // BEFORE the row inserts so partial state never lands.
+      _validateDeps(repo, id, proposedDeps, "epic add");
       const epic: KanbanEpic = {
         id,
         title,
@@ -122,12 +131,7 @@ export async function addEpic(atmuxDir: string, opts: AddEpicOpts): Promise<stri
         createdAt: nowEpoch(),
         completedAt: null,
         stories: [],
-        // ADR-225 (T1/T2 substrate): fresh epics start with no deps and
-        // is_ready=0 — operator flips via `epic ready` (T4) post-decomp.
-        // T3 will extend `addEpic` with a `--depends-on` flag + cycle
-        // validation; this literal mirrors the schema defaults so the
-        // existing call-site typechecks under the new KanbanEpic shape.
-        dependsOn: [],
+        dependsOn: proposedDeps,
         isReady: false,
       };
       repo.upsertEpic(epic);
@@ -135,6 +139,208 @@ export async function addEpic(atmuxDir: string, opts: AddEpicOpts): Promise<stri
     });
   });
   return assignedId;
+}
+
+/** ADR-225 §Validation: shared dep-list validator used by `addEpic`
+ *  + `setEpicDependsOn`. Refuses on:
+ *    1. **self-dep** — target id appears in `deps`.
+ *    2. **non-existent dep** — a `deps` id doesn't resolve to an
+ *       epic row (typo protection).
+ *    3. **cycle** — walking transitive deps from any proposed dep
+ *       reaches the target id.
+ *
+ *  Runs synchronously against the open repo so it composes inside the
+ *  caller's `transactImmediate` and partial state never lands.
+ *  `verb` is the verb label used in error messages (`epic add` /
+ *  `epic set-depends-on`). */
+function _validateDeps(
+  repo: KanbanRepo,
+  selfId: string,
+  deps: readonly string[],
+  verb: string,
+): void {
+  // 1. No self-dep.
+  if (deps.includes(selfId)) {
+    throw new UsageError({
+      what: `${verb}: epic ${selfId} cannot depend on itself`,
+    });
+  }
+  // 2. Each dep must resolve. We tolerate dangling refs at READ time
+  // (epicTransitiveDeps), but at WRITE time we refuse — the caller
+  // typed a wrong id.
+  for (const d of deps) {
+    if (repo.getEpic(d) === null) {
+      throw new UsageError({
+        what: `${verb}: dep ${d} does not exist (typo? deleted epic?)`,
+      });
+    }
+  }
+  // 3. No cycles. Walk transitive deps from each proposed dep; if
+  // selfId appears in any chain, the new edge closes a cycle.
+  for (const d of deps) {
+    const chain = _walkTransitiveDeps(repo, d);
+    if (chain.has(selfId)) {
+      throw new UsageError({
+        what:
+          `${verb}: dep ${d} would close a cycle through ${selfId} ` +
+          `(transitive chain from ${d}: ${[...chain].join(" → ")})`,
+      });
+    }
+  }
+}
+
+/** BFS the dep-graph starting from `id`'s `dependsOn` (NOT id itself).
+ *  Returns the set of all transitive dep ids. Dangling refs (deps
+ *  pointing at missing epics) are skipped — render-side concern, not
+ *  walk-time. Visited-set prevents infinite loops on pre-existing
+ *  cycles (defense-in-depth; cycles should be impossible thanks to
+ *  the eager validator above). */
+function _walkTransitiveDeps(repo: KanbanRepo, id: string): Set<string> {
+  const seen = new Set<string>();
+  const queue: string[] = [];
+  const root = repo.getEpic(id);
+  if (root !== null) queue.push(...(root.dependsOn ?? []));
+  while (queue.length > 0) {
+    // biome-ignore lint/style/noNonNullAssertion: length-guarded above
+    const next = queue.shift()!;
+    if (seen.has(next)) continue;
+    seen.add(next);
+    const e = repo.getEpic(next);
+    if (e === null) continue; // dangling — skip, don't throw
+    for (const d of e.dependsOn ?? []) queue.push(d);
+  }
+  // Include the seed id itself in the chain so cycle-error messages
+  // are coherent ("e-A → e-B → e-A" instead of "e-B → e-A"). The
+  // public `epicTransitiveDeps` API strips the seed (per AC: "excluding
+  // `id` itself").
+  seen.add(id);
+  return seen;
+}
+
+/** ADR-225 §Decision — toggle the operator-greenlit bit. Refuses on
+ *  `status='done'` epic (a done epic's eligibility is fully expressed
+ *  by status; the bit is meaningless there). Does NOT emit
+ *  `epic.ready` — event wiring lives in T6's events epic. Returns
+ *  `{from, to, noop}` so the verb layer can render a sensible
+ *  message + skip downstream side-effects on noop.
+ *
+ *  Operator-scope (not driver-scope) — decision-support, not
+ *  destructive; any caller can flip. */
+export async function setEpicReady(
+  atmuxDir: string,
+  id: string,
+  ready: boolean,
+): Promise<{ from: boolean; to: boolean; noop: boolean }> {
+  if (!(await exists(_stateDbPath(atmuxDir)))) {
+    throw new ConfigError({ what: `epic ready: no such epic: ${id}` });
+  }
+  return await _withDbAndRepo(atmuxDir, (db, repo) => {
+    let result: { from: boolean; to: boolean; noop: boolean } = {
+      from: false,
+      to: ready,
+      noop: false,
+    };
+    transactImmediate(db, () => {
+      const epic = repo.getEpic(id);
+      if (epic === null) {
+        throw new ConfigError({ what: `epic ready: no such epic: ${id}` });
+      }
+      if (epic.status === "done") {
+        throw new UsageError({
+          what: `epic ready: is_ready toggle on done epic ${id} is a no-op; refuse`,
+        });
+      }
+      const from = epic.isReady;
+      if (from === ready) {
+        result = { from, to: ready, noop: true };
+        return;
+      }
+      repo.upsertEpic({ ...epic, isReady: ready });
+      result = { from, to: ready, noop: false };
+    });
+    return result;
+  });
+}
+
+/** ADR-225 §Decision — replace the dep list on an existing epic.
+ *  Same validation matrix as `addEpic`: self / existence / cycle.
+ *  Caller passes the FULL new list (no in-place add/remove at this
+ *  layer — the CLI verb owns the merge ergonomics). */
+export async function setEpicDependsOn(
+  atmuxDir: string,
+  id: string,
+  deps: readonly string[],
+): Promise<void> {
+  if (!(await exists(_stateDbPath(atmuxDir)))) {
+    throw new ConfigError({ what: `epic set-depends-on: no such epic: ${id}` });
+  }
+  await _withDbAndRepo(atmuxDir, (db, repo) => {
+    transactImmediate(db, () => {
+      const epic = repo.getEpic(id);
+      if (epic === null) {
+        throw new ConfigError({ what: `epic set-depends-on: no such epic: ${id}` });
+      }
+      _validateDeps(repo, id, deps, "epic set-depends-on");
+      repo.upsertEpic({ ...epic, dependsOn: [...deps] });
+    });
+  });
+}
+
+/** ADR-225 §Decision — flattened set of transitive dep ids reachable
+ *  from `id`'s `dependsOn` chain. Excludes `id` itself per the AC.
+ *  Used by both cycle-detect (internal) AND the `epic deps` render
+ *  verb (T4). Dangling refs are silently skipped. */
+export async function epicTransitiveDeps(atmuxDir: string, id: string): Promise<string[]> {
+  if (!(await exists(_stateDbPath(atmuxDir)))) return [];
+  return await _withRepo(atmuxDir, (repo) => {
+    const chain = _walkTransitiveDeps(repo, id);
+    chain.delete(id); // AC: excluding `id` itself.
+    return [...chain];
+  });
+}
+
+export interface EpicEligibility {
+  eligible: boolean;
+  blockers: string[];
+}
+
+/** ADR-225 §Eligibility — `eligible=true` IFF `isReady=true` AND
+ *  every direct dep resolves to a `status='done'` epic. `done` is
+ *  the bar (not `review`) because review can roll back via unsignoff;
+ *  only done is terminal.
+ *
+ *  Note: only DIRECT deps are checked (not transitive). The graph is
+ *  closed under dep-resolution — if A deps B and B deps C, then B
+ *  cannot reach `done` until C is `done` (epic state machine guards
+ *  this), so direct-only is sound + cheap. Saves an O(N) walk per
+ *  spawn-eligibility tick (hot path for orchd Phase 2).
+ *
+ *  `blockers[]` is empty when eligible; otherwise enumerates
+ *  human-readable refusal reasons so the spawn-epic gate can render
+ *  an actionable message. */
+export async function epicIsEligible(atmuxDir: string, id: string): Promise<EpicEligibility> {
+  if (!(await exists(_stateDbPath(atmuxDir)))) {
+    return { eligible: false, blockers: [`epic ${id}: state.db not initialized`] };
+  }
+  return await _withRepo(atmuxDir, (repo) => {
+    const epic = repo.getEpic(id);
+    if (epic === null) {
+      return { eligible: false, blockers: [`epic ${id}: not found`] };
+    }
+    const blockers: string[] = [];
+    if (!epic.isReady) blockers.push("is_ready=0");
+    for (const d of epic.dependsOn ?? []) {
+      const dep = repo.getEpic(d);
+      if (dep === null) {
+        blockers.push(`dep ${d} missing`);
+        continue;
+      }
+      if (dep.status !== "done") {
+        blockers.push(`dep ${d} not done (status=${dep.status ?? "planning"})`);
+      }
+    }
+    return { eligible: blockers.length === 0, blockers };
+  });
 }
 
 export interface ListEpicsFilter {
