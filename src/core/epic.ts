@@ -9,6 +9,7 @@
 
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
+import { emit } from "../abstractions/events.ts";
 import { exists } from "../abstractions/fs.ts";
 import {
   closeDatabase,
@@ -240,6 +241,8 @@ export async function setEpicReady(
       to: ready,
       noop: false,
     };
+    let shouldEmitReady = false;
+    let emitTransitionedAt = 0;
     transactImmediate(db, () => {
       const epic = repo.getEpic(id);
       if (epic === null) {
@@ -257,7 +260,24 @@ export async function setEpicReady(
       }
       repo.upsertEpic({ ...epic, isReady: ready });
       result = { from, to: ready, noop: false };
+      // ADR-225 §Events — emit `epic.ready` on the 0→1 transition
+      // only. 1→0 downgrades are silent per the ADR (orchd polls vs.
+      // event-driven for the false case). Defer the emit until after
+      // the transaction returns so the events INSERT lands outside
+      // the parent transaction's lock window (events table is the
+      // same db, but BEGIN IMMEDIATE serializes them safely).
+      if (from === false && ready === true) {
+        shouldEmitReady = true;
+        emitTransitionedAt = nowEpoch();
+      }
     });
+    if (shouldEmitReady) {
+      emit(db, {
+        topic: "epic.ready",
+        epicId: id,
+        transitionedAt: emitTransitionedAt,
+      });
+    }
     return result;
   });
 }
@@ -470,6 +490,52 @@ export async function advanceEpic(
     let summaryTaskId: string | null = null;
     if (resolved === "review") {
       summaryTaskId = await dispatchEpicSummary(atmuxDir, repo, db, id);
+    }
+    // ADR-225 §Events — `epic.unblocked`. Fires when THIS transition
+    // (to `done`) clears the LAST unmet dep of any downstream epic.
+    // Per ADR-225 OQ §4: fire only on the transition that clears the
+    // LAST unmet dep — not on every dep transition. The per-dep
+    // transition is still observable via the upstream `epic.advance`
+    // chain; we deduplicate by emitting the all-deps-done event once.
+    //
+    // Scan: every epic where `id` appears in `depends_on`. For each
+    // such A, recompute the deps-done predicate post-flip (this epic
+    // is now done). If A's deps-done predicate now passes AND it had
+    // ≥1 unmet dep before the flip (i.e. this transition is what
+    // tipped the balance), emit. The check is "after my flip, A's
+    // remaining unmet-deps count would be 0" — since we just landed
+    // the flip, query the current state.
+    //
+    // Critically NOT gated on isReady — per ADR-225, this is the
+    // dep-graph event. Consumers (orchd, cockpit-mirror) join with
+    // is_ready=1 at read time when they want the combined
+    // eligibility predicate.
+    if (resolved === "done") {
+      const allEpics = repo.listEpics();
+      for (const a of allEpics) {
+        if (a.id === id) continue;
+        const deps = a.dependsOn ?? [];
+        if (!deps.includes(id)) continue;
+        // A depends on the epic we just flipped. Re-check A's
+        // deps-done state.
+        const stillUnmet = deps.filter((d) => {
+          if (d === id) return false; // we just flipped this one to done
+          const depEpic = repo.getEpic(d);
+          // Dangling refs are treated as unmet so we don't emit
+          // unblocked while A has a typo dep that should refuse the
+          // operator at the validator boundary (`setEpicDependsOn`)
+          // anyway. Belt-and-suspenders against bad state.
+          return depEpic === null || depEpic.status !== "done";
+        });
+        if (stillUnmet.length === 0) {
+          emit(db, {
+            topic: "epic.unblocked",
+            epicId: a.id,
+            byEpicId: id,
+            transitionedAt: now,
+          });
+        }
+      }
     }
     return { from: cur, to: resolved, summaryTaskId, noop: false };
   });
