@@ -91,7 +91,7 @@ receive about a 15h-dormant member.
 ## Core commands
 
 ```
-atmux epic add "title" [--body <text>] [--driver-ref <ref>]
+atmux epic add "title" [--body <text>] [--driver-ref <ref>] [--auto-spawn] [--no-auto-spawn] [--roster <name>] [--force-spawn]   # `--auto-spawn` opts the epic into orchd's auto-spawn loop ([ADR-231](../../docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D2/§D3); cron `--sweep` is the backstop per [ADR-224 §D6](../../docs/adr/224-orchd-rename-and-auto-spawn-loop.md)
 atmux epic show <id>           # planner-decomposed scope, story chain
 atmux epic advance <id> [--to <state>]   # planning→ready→in-progress→review→done
 atmux story show <id>          # acceptance criteria, task chain

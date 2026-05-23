@@ -96,7 +96,9 @@ Every state-mutating verb publishes to its target's UNIX socket after the kanban
 
 ```
 atmux epic add "title" [--body <text>] [--driver-ref <ref>] \
-                       [--depends-on <eid,eid,...>]
+                       [--depends-on <eid,eid,...>] \
+                       [--auto-spawn|--no-auto-spawn] [--roster <name>] [--force-spawn]
+                       # `--auto-spawn` opts the new epic into orchd's auto-spawn loop ([ADR-231](../../docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D2/§D3); spawn fires on `epic.ready` / `epic.unblocked` once eligibility + dedup gates clear
 atmux epic list [--status <s>] [--json]   # also shows R + D=k/n columns per ADR-225
 atmux epic show <id>                       # includes dep chain + is_ready state
 atmux epic advance <id> [--to <state>]

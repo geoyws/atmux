@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ✨ Added — orchd Phase 2: auto-spawn loop + solo-worker auto-dissolve ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md), EPIC `e-60e16169` Story S3, t-18-b2ca7178)
+
+orchd Phase 2 wires three handlers on top of Phase 1's subscription seam ([ADR-224 §D6](docs/adr/224-orchd-rename-and-auto-spawn-loop.md)):
+
+- **spawn handler** subscribes to `epic.ready` + `epic.unblocked` (NOT `epic.added` — avoids eligibility-refusal burn); spawns the epic-team when `autoSpawn=true` AND `epicIsEligible` ([ADR-225](docs/adr/225-epic-dependencies-and-is-ready-toggle.md)) AND `spawned_at IS NULL`. Registers twice with distinct consumerIds (`atmux:orchd:spawn:on-ready` / `:on-unblocked`) so per-topic Honker offsets stay independent.
+- **solo-worker dissolve handler** subscribes to `task.done`; dissolves solo-worker teams ([ADR-221 §Phase 2](docs/adr/221-solo-worker-scope.md) close-out) when their only owned task transitions to `done`. Shares the `task.done` topic with auto-merge (ADR-226) — distinct consumerIds isolate offsets.
+- **`--sweep` cron backstop** (default `*/5 * * * *`, configurable via `team.json::autoSpawn.sweepCron`) walks eligible epics + solo-workers; reuses canonical handlers per ADR-231 §D4 (NOT duplicate logic).
+
+Per-epic config home: `epics.extra.autoSpawn = { enabled: boolean, roster?: string, forceSpawn?: boolean }`. Set via `atmux epic add --auto-spawn / --no-auto-spawn / --roster <r> / --force-spawn` flags. Per-team policy: `team.json::autoSpawn.defaults[]` regex-match against `epic.title`; per-epic explicit wins. Default: off.
+
+3-way failure classification per ADR-231 §D5: **hard** (flag p1 + `extra.spawnFailed` receipt + NO retry); **host-pressure transient** (counter on `extra.spawnPressureDeferred`; ≥3 → distinct `host-pressure-deferred` flag p1 — operator triages "wait for capacity" separately from "fix config"); **eligibility-race** (silent — next `epic.ready` / `epic.unblocked` event re-fires the handler).
+
+Phase 2 ships behind opt-in (autoSpawn default off) — no existing epic gets auto-spawned without explicit per-epic OR per-team opt-in. Operators continue running `atmux team spawn-epic` manually where autoSpawn=false. Rollback: drop entries from `ORCHD_SUBSCRIPTIONS` + restart orchd → relay-only behaviour; `epics.spawned_at` column stays in place (additive migration per [ADR-126](docs/adr/126-sqlite-state-store.md)).
+
+Per-Task ship trail (each linked below): t-6 (v15→v16 migration, dedup column), t-7 (Zod KanbanEpic.extra.autoSpawn sub-shape), t-8 (Zod team.json autoSpawn.defaults[] + sweepCron), t-9 (epic add CLI flags), t-10 (sweep walker scaffold), t-11 (`atmux orchd --sweep` subverb), t-12 (cron sandwich-marker line), t-13 (failure classifier), t-14 (spawn handler), t-15 (solo-worker dissolve handler), t-16 (S3.1 unit-test scaffolding), t-17 (S3.2 integration trigger matrix), t-18 (this docs sweep).
+
+### ✨ Added — `epics.spawned_at` v15→v16 SQLite migration ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D2 + §D7, EPIC `e-60e16169` Phase 2 Story S1, t-6-8db78adf)
+
+`ALTER TABLE epics ADD COLUMN spawned_at INTEGER` — the canonical dedup gate column read by `spawnEpicHandler` (§D2 step 2) so re-delivered events under at-least-once semantics short-circuit instead of double-spawning. Sequenced AFTER ADR-228 spawn_queue v14→v15 (sibling EPIC e-a946af69 fan-in 8d75360) per the single-ladder append-only invariant of [ADR-126](docs/adr/126-sqlite-state-store.md) — renumbered from the original v14→v15 at impl time. NULL = "never spawned"; positive integer = Unix-epoch seconds set on orchd spawn-success. Additive only; rollback is a no-op (handler skips on Phase 2 disable).
+
+### ✨ Added — Zod `KanbanEpic.extra.autoSpawn` + `spawnedAt` sub-shape ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D2 + §D3, EPIC `e-60e16169` Phase 2 Story S1, t-7-0ad1dfe3)
+
+Extends `src/schema/kanban.ts` `KanbanEpic` with the per-epic orchd auto-spawn config home + the dedup-gate timestamp mirror. `extra.autoSpawn = { enabled: boolean, roster?: string, forceSpawn?: boolean }` types the typed sub-shape inside the `extra` passthrough slot; outer `extra` stays `.passthrough()` for forward-compat sibling keys. Top-level `spawnedAt: z.number().int().nullable().optional()` mirrors the SQLite column from t-6's migration. 7 new schema tests; 100% line + funcs coverage on the kanban schema.
+
+### ✨ Added — `orchdSweep` walker scaffold + handler-reuse seam ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D4, EPIC `e-60e16169` Phase 2 Story S2, t-10-ab3815cf)
+
+`src/core/orchd-sweep.ts::orchdSweep(atmuxDir, deps)` — one-shot walker matching ADR-231 §D4's two-trigger model (event-driven primary via Honker subscriptions + cron-backstop secondary via this walker). Cheap pre-filter: `spawned_at IS NOT NULL` skip (§D2 dedup) → `effectiveAutoSpawn(epic) === false` skip (§D3) → `epicIsEligible().eligible === false` skip (ADR-225). Survivors hit the canonical `spawnEpicHandler` (NOT a re-implementation — invariant per the AC). Solo-worker walk reuses `dissolveSoloWorkerHandler` per epic team. Returns `{epicsConsidered, epicsSpawned, workersConsidered, workersDissolved}` counters surfacing walker observations + handler verdicts independently. Test-injection seam `OrchdSweepDeps` pins each surface for deterministic counter assertions.
+
+### ✨ Added — orchd Phase 2 unit-test scaffolding harness ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md), EPIC `e-60e16169` Phase 2 Story S3, t-16-27fdc08b)
+
+Four reusable test fixtures under `tests/helpers/` consumed by the Phase 2 handler unit tests (t-14 / t-15) and the integration trigger-matrix test (t-17):
+
+- `honker-mock.ts` — `HonkerMock` registers `OrchdSubscription` entries, publishes synthetic events, drains per-consumer with at-least-once semantics (offset advances ONLY on handler-success; throw → next drain re-delivers). Matches the real Honker subscription contract pinned by `src/core/orchd-registry.ts` (consumerId-based offsets, multi-handler-per-topic support).
+- `kanban-fixtures.ts` — `seedEpic({...})` + `seedTask({...})` builders round-trip through the real `KanbanEpic` / `KanbanTask` Zod schemas. `autoSpawn` rides under `extra.autoSpawn` (ADR-231 §D3 shape, t-7); `spawnedAt` at top level (ADR-231 §D2 dedup column, t-6). No test-only field shapes.
+- `spawn-epic-subprocess-stub.ts` — `createSpawnEpicStub()` intercepts `atmux team spawn-epic` invocations; default `SUCCESS_RESULT` (exit 0); polls to `HOST_PRESSURE_RESULT` / `ELIGIBILITY_RACE_RESULT` / `HARD_FAILURE_RESULT` with canonical stderr fixtures matching the t-13 classifier regexes verbatim. `setResultSequence()` for transient-then-success scenarios. Records every invocation in call order.
+- `atmux-flag-spy.ts` — `createFlagSpy()` captures `atmux flag add` calls with message + severity + needs + taskId. `findByMessage` (string / RegExp) for assertion against §D5 hard-failure + host-pressure-deferred flag paths.
+
+20 smoke tests verify each helper works in isolation under bun:test; 100% line coverage on the consumed schema surface.
+
+### ✨ Added — orchd Phase 2 integration trigger-matrix test ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md), EPIC `e-60e16169` Phase 2 Story S3, t-17-d41f607f)
+
+End-to-end integration coverage of the Phase 2 surface at `tests/integration/orchd-phase2-trigger-matrix.test.ts` — drives the full path Honker event (via `HonkerMock`) → production handler (`createSpawnEpicHandler` / `createDissolveSoloWorkerHandler` / `orchdSweep`) → SQLite mutation (`spawned_at`, `extra.spawnFailed`, `extra.spawnPressureDeferred`) → `atmux flag add` emission (via `FlagSpy`). Wires the S3.1 scaffolding (t-16) through a shared spawn router that dispatches `atmux team spawn-epic` → SpawnEpicStub, `atmux team dissolve-worker` → inline DissolveStub, `atmux flag add` → FlagSpy; an `unrouted` channel captures argv shapes the router doesn't recognise (regression guard for future subprocess additions).
+
+Per-scenario isolation: fresh in-memory SQLite + migrations + stub/spy instances per `beforeEach`. atmuxDir is a sentinel `mkdtemp` path; `listEpics` + `epicIsEligible` are dep-injected so nothing touches the host's real `.atmux/`. 21 tests / 96 assertions cover the 7 AC scenarios (event-only success, cron-only success, both-fire dedup, eligibility-race classifier, host-pressure deferred ≥3, hard failure, solo-worker dissolve) plus handler-level dedup, silent-skip branches (row-missing / autoSpawn-off / pre-spawn eligibility-held), forceSpawn bypass, spawn-throws hard-flag path, dissolve silent-skip (task-missing / non-solo / pending-work), and cross-class invariants confirming canonical stderr fixtures stay in sync with the t-13 classifier regexes. Coverage: spawn handler 90% lines, dissolve handler 68%, classifier 100%.
+
 ### ✨ Added — orchd auto-spawn handler + effectiveAutoSpawn resolver ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D2 + §D3, EPIC `e-60e16169` Phase 2 Story S2, t-14-c27cdce1)
 
 New `src/core/orchd-spawn.ts` exports `createSpawnEpicHandler` + `effectiveAutoSpawn`. Implements the ADR-231 §D2 5-step algorithm: (1) load epic + row-missing skip; (2) `spawned_at IS NOT NULL` dedup gate; (3) `effectiveAutoSpawn(epic, team)` opt-in gate; (4) ADR-225 `epicIsEligible` predicate gate (bypassed by `forceSpawn=true`); (5) `atmux team spawn-epic <epicId> --from <parentTeam> [--roster X] [--force-spawn]` subprocess with 3-way result classification via `classifySpawnFailure` (t-13): exit 0 → stamp `spawned_at = unixepoch()`; hard → write `extra.spawnFailed = {at, stderrTail}` + `atmux flag add --severity p1 --needs unblock` + NO retry; host-pressure → increment `extra.spawnPressureDeferred`; emit `host-pressure-deferred` flag at ≥3; cron `--sweep` retries; eligibility-race → silent skip (next event re-fires).
