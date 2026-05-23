@@ -85,9 +85,22 @@ export const DEFAULT_SUBMIT_VERIFY_RETRIES = 1;
 // ---------- Boot prompt + readiness regex ----------
 
 /** ADR-081 §C task-body §3 boot prompt. Placeholders are
- *  `{team}` (team name) + `{member}` (member name). Single line so
- *  send-keys + Enter submits cleanly; no bracketed-paste mode is
- *  triggered (which is what makes this approach reliable).
+ *  `{member}` (member name) + `{team}` (team name; kept in signature
+ *  for forward-compat, currently no `{team}` substitution in the
+ *  template body). Single line so send-keys + Enter submits cleanly;
+ *  no bracketed-paste mode is triggered (which is what makes this
+ *  approach reliable).
+ *
+ *  Brief-path update (2026-05-23). The previous template referenced
+ *  `/tmp/atmux-brief-generic-{team}.md` but nothing in atmux ever
+ *  wrote that file — it was a dangling reference that left freshly-
+ *  spawned panes stuck asking "should I bootstrap from CLAUDE.md +
+ *  team.json?" each time. The new template points at two reliable
+ *  absolute locations: `.atmux/team.json` (always at this path per
+ *  atmux convention) for role lookup, and
+ *  `/opt/atmux/current/templates/briefs/<role>.md` (canonical install
+ *  dir per `build:install`) for the role brief. Project `CLAUDE.md`
+ *  carries the project-specific overrides.
  *
  *  Self-verification preamble (2026-05-19 update). The "Your role is
  *  {member}" assertion is trustworthy only when the paste reaches
@@ -100,7 +113,7 @@ export const DEFAULT_SUBMIT_VERIFY_RETRIES = 1;
  *  mismatch rather than silently bootstrap as the wrong member. The
  *  env var is set per-pane at spawn time + is not lying. */
 const BOOT_PROMPT_TEMPLATE =
-  "First run `echo $ATMUX_MEMBER` — if it isn't `{member}`, this paste mis-targeted (alert operator + abort, do NOT bootstrap). Otherwise read /tmp/atmux-brief-generic-{team}.md and your role brief if your role appears in templates/briefs/, then bootstrap as {member}.";
+  "First run `echo $ATMUX_MEMBER` — if it isn't `{member}`, this paste mis-targeted (alert operator + abort, do NOT bootstrap). Otherwise read .atmux/team.json to find your role, then read /opt/atmux/current/templates/briefs/<your-role>.md + project CLAUDE.md, then bootstrap as {member}.";
 
 /** Render the boot prompt for a (team, member) pair. Exported for
  *  unit tests + observability — the lead-outbox failure surface

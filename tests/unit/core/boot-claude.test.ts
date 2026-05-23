@@ -138,16 +138,24 @@ describe("renderBootPrompt", () => {
   test("ADR-081 §C boot prompt — single line, template-substituted, self-verifying", () => {
     const out = renderBootPrompt("atmux", "fe-1");
     expect(out).toBe(
-      "First run `echo $ATMUX_MEMBER` — if it isn't `fe-1`, this paste mis-targeted (alert operator + abort, do NOT bootstrap). Otherwise read /tmp/atmux-brief-generic-atmux.md and your role brief if your role appears in templates/briefs/, then bootstrap as fe-1.",
+      "First run `echo $ATMUX_MEMBER` — if it isn't `fe-1`, this paste mis-targeted (alert operator + abort, do NOT bootstrap). Otherwise read .atmux/team.json to find your role, then read /opt/atmux/current/templates/briefs/<your-role>.md + project CLAUDE.md, then bootstrap as fe-1.",
     );
     // Reviewer pre-flag: single-line (no newlines anywhere)
     expect(out.includes("\n")).toBe(false);
   });
 
-  test("substitutes both placeholders", () => {
+  test("substitutes member placeholder", () => {
+    // 2026-05-23 brief-path update — `{team}` placeholder kept in
+    // renderBootPrompt signature for forward-compat but no longer
+    // substituted in the current template body. Only `{member}` is
+    // a load-bearing substitution; verify both that it lands AND that
+    // the canonical brief-path references are present verbatim
+    // (matching the install-dir layout).
     const out = renderBootPrompt("sopx-guild", "be-2");
-    expect(out).toContain("/tmp/atmux-brief-generic-sopx-guild.md");
     expect(out).toContain("bootstrap as be-2");
+    expect(out).toContain(".atmux/team.json");
+    expect(out).toContain("/opt/atmux/current/templates/briefs/<your-role>.md");
+    expect(out).toContain("project CLAUDE.md");
   });
 
   test("self-verification preamble — recipient must check $ATMUX_MEMBER before adopting role", () => {
