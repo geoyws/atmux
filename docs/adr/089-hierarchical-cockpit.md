@@ -177,7 +177,9 @@ Operator picks once at cockpit setup; documented in **`docs/RUNBOOK-cockpit.md`*
 
 ### (D) `ATMUX_NESTING_LEVEL` env contract
 
-Verbs read `ATMUX_NESTING_LEVEL` (integer, 1-indexed); missing → default `1`. Used in tmux.conf generation to pick the right prefix from `cockpit.prefixChain`.
+Verbs read `ATMUX_NESTING_LEVEL` (integer, 1-indexed per the §C table — `L1=Cockpit`, `L2=top-level team cage`, `L3=epic-team cage`); missing → default `2`. Used in tmux.conf generation to pick the right prefix from `cockpit.prefixChain`.
+
+**Default-shift note (2026-05-24).** Original §D default was `1` (treating L1 as "outermost cage", which collapsed cockpit and top-level team into the same chain slot F1 and relied on tmux-socket separation to avoid physical collision). Operator directive 2026-05-24 — *"Fix code to match ADR §C table + my mental model"* — flipped the default to `2` so standalone `atmux start` produces a team cage at L2 (F2), reserving L1 (F1) for the cockpit. The §C table was always the canonical visual model; the default-shift brings code in line.
 
 **Propagation rule** (§Decision-anchor #5): at cage entry (`src/verbs/start.ts`, `src/verbs/team/spawn-epic.ts`):
 
@@ -187,7 +189,7 @@ unset ATMUX_NESTING_LEVEL
 export ATMUX_NESTING_LEVEL=<computed-own-level>
 ```
 
-Computed level is `parent.ATMUX_NESTING_LEVEL + 1` (or `1` for cockpit-spawned root teams). The UNSET-then-set discipline ensures child processes inside the cage inherit the child's level, not the parent's.
+Computed level is `parent.ATMUX_NESTING_LEVEL + 1` (or `2` for cockpit-spawned root teams — cockpit itself is L1, so its direct team children start at L2). The UNSET-then-set discipline ensures child processes inside the cage inherit the child's level, not the parent's.
 
 ### (E) Nested tmpdir
 

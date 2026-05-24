@@ -624,13 +624,13 @@ describe("applyCagePrefix", () => {
   });
 
   // t-3fb7bc54: rebuild Phase 5b applies `resolvePrefix(1, prefixChain)`
-  // to the cockpit session itself. The cockpit lives on a separate tmux
-  // socket from cage tmuxes (per ADR-162 §Decision-anchor #1), so the
-  // F1-binding on the cockpit doesn't collide with the same F1 on the
-  // L1 cage — different tmux servers own different keybinding
-  // namespaces. This test exercises the Phase 5b shape directly on a
-  // cockpit-shaped fixture: apply the chain's first entry + verify it
-  // lands on global options.
+  // to the cockpit session itself. The cockpit IS L1 per ADR-089 §C
+  // (post-alignment 2026-05-24): L1 = Cockpit, L2 = top-level team
+  // cage, L3 = epic-team cage. Each level has its own distinct slot
+  // (cockpit=F1, team=F2, epic=F3); separate sockets reinforce
+  // isolation but no longer carry the model alone. This test exercises
+  // the Phase 5b shape directly on a cockpit-shaped fixture: apply
+  // the chain's first entry + verify it lands on global options.
   test("applies F1 (chain[0]) on a cockpit-shaped session", async () => {
     const fx = await spinTmux("cockpit-prefix");
     try {

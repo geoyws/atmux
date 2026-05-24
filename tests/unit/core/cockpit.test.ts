@@ -861,25 +861,30 @@ describe("DEFAULT_PREFIX_CHAIN — F-key default ladder", () => {
 });
 
 describe("readNestingLevel — env-driven level parser", () => {
-  test("missing env var → 1 (top-level default)", () => {
-    expect(readNestingLevel({})).toBe(1);
+  // 2026-05-24: default flipped 1 → 2 per ADR-089 §C alignment.
+  // Standalone `atmux start` invokes a top-level team cage which is L2
+  // (L1 is the cockpit itself). Pre-flip default of 1 collided cockpit
+  // and team into the same chain slot (F1) and relied on socket
+  // separation to avoid physical collision.
+  test("missing env var → 2 (standalone team-cage default per ADR-089 §C)", () => {
+    expect(readNestingLevel({})).toBe(2);
   });
 
-  test("empty env value → 1 (defensive)", () => {
-    expect(readNestingLevel({ [ATMUX_NESTING_LEVEL_ENV]: "" })).toBe(1);
+  test("empty env value → 2 (defensive)", () => {
+    expect(readNestingLevel({ [ATMUX_NESTING_LEVEL_ENV]: "" })).toBe(2);
   });
 
   test("valid integer → parsed value", () => {
     expect(readNestingLevel({ [ATMUX_NESTING_LEVEL_ENV]: "3" })).toBe(3);
   });
 
-  test("non-numeric → falls back to 1", () => {
-    expect(readNestingLevel({ [ATMUX_NESTING_LEVEL_ENV]: "abc" })).toBe(1);
+  test("non-numeric → falls back to 2", () => {
+    expect(readNestingLevel({ [ATMUX_NESTING_LEVEL_ENV]: "abc" })).toBe(2);
   });
 
-  test("zero / negative → falls back to 1", () => {
-    expect(readNestingLevel({ [ATMUX_NESTING_LEVEL_ENV]: "0" })).toBe(1);
-    expect(readNestingLevel({ [ATMUX_NESTING_LEVEL_ENV]: "-2" })).toBe(1);
+  test("zero / negative → falls back to 2", () => {
+    expect(readNestingLevel({ [ATMUX_NESTING_LEVEL_ENV]: "0" })).toBe(2);
+    expect(readNestingLevel({ [ATMUX_NESTING_LEVEL_ENV]: "-2" })).toBe(2);
   });
 });
 

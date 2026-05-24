@@ -686,15 +686,20 @@ export async function cockpitRebuild(
   // `cockpit.prefixChain` (or the DEFAULT_PREFIX_CHAIN F1..F12). atmux
   // start already routes through resolveCagePrefixBestEffort; this loop
   // mirrors the same resolution by reading `t.level` from the flattened
-  // enabledTeams() walk + adding 1 (walkSessions yields 0-indexed levels;
-  // resolvePrefix expects 1-indexed per ADR-089 §C). Top-level team =
-  // level 1 = F1; epic-team child = level 2 = F2; etc.
+  // enabledTeams() walk + adding 2 (walkSessions yields 0-indexed depth
+  // counted from top-level team; ADR-089 §C numbers L1=Cockpit, L2=top-
+  // level team cage, L3=epic-team cage; so a top-level team with
+  // t.level=0 must resolve at L2 to get F2). Off-by-one shifted from
+  // `+ 1` → `+ 2` on 2026-05-24 (operator directive — "Fix code to
+  // match ADR §C table"). Top-level team = level 2 = F2; epic-team
+  // child = level 3 = F3; etc. Cockpit itself takes level 1 = F1 via
+  // Phase 5b below.
   for (const t of teams) {
     const sock = await resolveCageSocket(t.name, t.root);
     const cageTmux = factory({ socketPath: sock });
     let prefix: string | undefined;
     try {
-      prefix = resolvePrefix(t.level + 1, cockpit.prefixChain);
+      prefix = resolvePrefix(t.level + 2, cockpit.prefixChain);
     } catch {
       // Best-effort — invalid chain or level > MAX_NESTING_LEVEL falls
       // through to applyCagePrefix's legacy `C-\` default (cosmetic
@@ -755,7 +760,7 @@ export async function cockpitRebuild(
 
   // Phase 5b (t-3fb7bc54): apply the resolved prefix to the cockpit
   // session itself. Phase 3 above wires per-cage prefixes via
-  // applyCagePrefix(cageTmux, resolvePrefix(t.level + 1, ...)) but the
+  // applyCagePrefix(cageTmux, resolvePrefix(t.level + 2, ...)) but the
   // cockpit session — a separate tmux server on the `atmux-cockpit`
   // socket per ADR-162 §Decision-anchor #1 — was never set, so its
   // prefix defaulted to whatever the host tmux config (or applyCagePrefix's
@@ -766,19 +771,13 @@ export async function cockpitRebuild(
   //
   // Resolution: cockpit gets `resolvePrefix(1, cockpit.prefixChain)`
   // (level 1 = `F1` by default). Per ADR-089 §C the chain is 1-indexed
-  // for cages (L1 = top-level team cage, L2 = epic-team child, ...);
-  // the cockpit is structurally the outer container, not a level in
-  // the cage chain, but the chain's first entry is the right operator-
-  // facing value because (a) the cockpit and L1 cages live on
-  // SEPARATE tmux sockets so the same chord doesn't collide (different
-  // tmux servers own different keybinding namespaces), and (b) the
-  // operator's documented workaround was `F1`, which is precisely
-  // `resolvePrefix(1, ...)`. The alternative — introducing a distinct
-  // "cockpit prefix" config knob orthogonal to `prefixChain` — adds
-  // surface without solving anything the chain's first entry doesn't
-  // already cover; deferred (`Out of scope` candidate) until an
-  // operator hits a case where the chain's first entry is wrong for
-  // the cockpit (none observed today).
+  // and the cockpit IS L1: L1 = Cockpit, L2 = top-level team cage,
+  // L3 = epic-team cage. Each level has its own distinct slot, so the
+  // chord pressed at any nesting depth is unambiguous (separate sockets
+  // also reinforce the isolation but no longer carry the model alone).
+  // The off-by-one alignment landed 2026-05-24 (operator directive —
+  // "Fix code to match ADR §C table + my mental model") replacing the
+  // pre-shift convention where cockpit and top-level team shared F1.
   //
   // Best-effort wrap mirrors the Phase 3 loop above — invalid chain
   // or level > MAX_NESTING_LEVEL falls through to applyCagePrefix's

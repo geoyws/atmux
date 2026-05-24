@@ -420,12 +420,14 @@ describe("start — happy path", () => {
     // cockpit.ts and call it after session creation in start.ts.
     //
     // Post-ADR-089 §C (t-7e7031dc): prefix is level-driven, not hard-
-    // coded `C-\`. Without `ATMUX_NESTING_LEVEL` in env, level=1 →
-    // resolvePrefix(1) === "F1" via DEFAULT_PREFIX_CHAIN.
+    // coded `C-\`. Without `ATMUX_NESTING_LEVEL` in env, the default
+    // shifted 1→2 on 2026-05-24 (operator directive — "Fix code to
+    // match ADR §C table"). Standalone start = top-level team cage =
+    // L2 → resolvePrefix(2) === "F2" via DEFAULT_PREFIX_CHAIN.
     await writeTeamJson({ members: [{ name: "alice", role: "member" }] });
     await runStart([], { extraEnv: { ATMUX_NO_CRON: "1" } });
     const opts = await env.tmux.option.showOptions({ global: true });
-    expect(opts.prefix).toBe("F1");
+    expect(opts.prefix).toBe("F2");
   });
 
   test("cage prefix is applied on incremental-restart path too (idempotent) (ADR-089 §C)", async () => {
@@ -439,7 +441,8 @@ describe("start — happy path", () => {
     await env.tmux.option.setOption({ name: "prefix", value: "C-b", global: true });
     expect((await env.tmux.option.showOptions({ global: true })).prefix).toBe("C-b");
     await runStart([], { extraEnv: { ATMUX_NO_CRON: "1" } });
-    expect((await env.tmux.option.showOptions({ global: true })).prefix).toBe("F1");
+    // Default env (no ATMUX_NESTING_LEVEL) → L2 → F2 (see test above).
+    expect((await env.tmux.option.showOptions({ global: true })).prefix).toBe("F2");
   });
 
   test("cage prefix honours ATMUX_NESTING_LEVEL env (level=2 → F2)", async () => {

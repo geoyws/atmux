@@ -583,17 +583,27 @@ export const ATMUX_NESTING_LEVEL_ENV = "ATMUX_NESTING_LEVEL";
 
 /**
  * ADR-089 §D — read the nesting level from `env`. Missing /
- * malformed / non-positive values fall back to **1** (top-level
- * operation; cockpit / standalone `atmux start` case). 1-indexed
- * for human readability — L1 = outermost cage.
+ * malformed / non-positive values fall back to **2** (standalone
+ * `atmux start` invokes a top-level team cage, which per ADR-089
+ * §C is L2 — the cockpit itself is L1). 1-indexed for human
+ * readability per the §C table: L1 = Cockpit, L2 = top-level team
+ * cage, L3 = epic-team cage, L4+ = reserved.
+ *
+ * The default shifted from 1 to 2 on 2026-05-24 (operator directive
+ * — "Fix code to match ADR §C table + my mental model"). Pre-shift
+ * default treated L1 as "outermost cage" which collapsed cockpit
+ * and top-level team into the same chain slot (F1), relying on
+ * tmux-socket separation to avoid physical collision. Post-shift
+ * each level has its own distinct slot: cockpit=F1, team=F2,
+ * epic-team=F3.
  *
  * Pure. Exported for direct unit-testing.
  */
 export function readNestingLevel(env: NodeJS.ProcessEnv): number {
   const raw = env[ATMUX_NESTING_LEVEL_ENV];
-  if (raw === undefined || raw === "") return 1;
+  if (raw === undefined || raw === "") return 2;
   const n = Number.parseInt(raw, 10);
-  if (!Number.isFinite(n) || n < 1) return 1;
+  if (!Number.isFinite(n) || n < 1) return 2;
   return n;
 }
 
