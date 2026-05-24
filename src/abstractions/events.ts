@@ -43,12 +43,22 @@
 
 import type { Database } from "bun:sqlite";
 import { EventPayload } from "../schema/events.ts";
-import type { HonkerRuntimeState } from "./honker.ts";
+import { getHonkerState, type HonkerRuntimeState } from "./honker.ts";
 import { uuidv7 } from "./uuidv7.ts";
 
 /** Runtime state-flag passed by callers — wraps `HonkerRuntimeState.loaded`. */
 export interface EmitOpts {
-  /** True when `loadHonkerOrFallback()` reported `{loaded: true}`. */
+  /** Override the honker-loaded state for this emit. When omitted (the
+   *  default), `emit()` calls `getHonkerState(db)?.loaded ?? false` to
+   *  decide whether to publish NOTIFY — so any caller that ran
+   *  `bootHonker(db)` upstream automatically gets NOTIFY without
+   *  threading the flag through every emit site. Pass `false`
+   *  explicitly to suppress NOTIFY even when the substrate is loaded
+   *  (e.g. tests that exercise the durable-INSERT-only path). Pass
+   *  `true` to force-attempt NOTIFY when you know honker is loaded
+   *  but `bootHonker` wasn't recorded in the cache (test harnesses
+   *  with custom DB lifecycles). See ADR-202 §Amendment 2026-05-24
+   *  for the auto-detect rationale. */
   honkerLoaded?: boolean;
   /** Test-injection seam — override the UUIDv7 generator. */
   generateId?: () => string;
@@ -59,8 +69,12 @@ export interface EmitOpts {
 /**
  * Validate, persist, and (when applicable) notify a typed event payload.
  *
- * Phase-1 contract: every call INSERTs into the events table. Honker
- * native NOTIFY is a future-stub controlled by `opts.honkerLoaded`.
+ * Every call INSERTs into the events table (durable). Honker NOTIFY
+ * (the wake-up half) auto-fires when `getHonkerState(db).loaded` is
+ * true — i.e. when an upstream `bootHonker(db)` registered the
+ * substrate for this DB handle. Callers that want explicit control
+ * (force-on, force-off) pass `opts.honkerLoaded`; the default is
+ * auto-detect per ADR-202 §Amendment 2026-05-24.
  *
  * @param db      Open Database (per-team `state.db` or cockpit-events.db).
  * @param payload Event payload — must validate against the discriminated
@@ -114,7 +128,19 @@ export function emit(
   // authoritative. The stream-publish is best-effort: a thrown error
   // here (substrate-internal hiccup) must not lose the event. Caller
   // already has the durable row.
-  if (opts.honkerLoaded) {
+  //
+  // Auto-detect when `opts.honkerLoaded` is undefined (per ADR-202
+  // §Amendment 2026-05-24, gitter wedge-recovery session). The
+  // pre-amendment behavior — require every caller to thread
+  // `{honkerLoaded: true}` — surfaced as a class of latent bugs where
+  // recovery scripts / ad-hoc emit sites silently skipped NOTIFY,
+  // leaving daemons asleep on durable-but-unannounced events. With
+  // auto-detect, any caller that ran `bootHonker(db)` upstream
+  // automatically publishes NOTIFY; callers that never bootHonker'd
+  // (test fixtures, pure durable-INSERT paths) see no behavior change
+  // because `getHonkerState(db)` returns null → `loaded=false`.
+  const shouldNotify = opts.honkerLoaded ?? (getHonkerState(db)?.loaded ?? false);
+  if (shouldNotify) {
     try {
       db.prepare("SELECT honker_stream_publish(?, ?, ?) AS r").get(
         validated.topic,
