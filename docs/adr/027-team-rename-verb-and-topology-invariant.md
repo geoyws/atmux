@@ -179,7 +179,7 @@ Total surface ~1100 LOC across 5 files vs the spec's 150 LOC estimate. Higher th
 
 **Spec**: bash references (`lib/team-rename.sh`, `lib/whip.sh`, `lib/super-status.sh`, `lib/doctor.sh`, `tests/unit/team_rename.bats`).
 
-**Shipped**: atmux-bun port complete ([ADR-126](./126-sqlite-state-store.md) sqlite-state-store, formerly `adr-bun/060` pre-consolidation + [ADR-154](./154-driver-inbox-lead-outbox-sqlite-migration.md) driver-inbox/lead-outbox sqlite migration, formerly slugged `076-inbox-on-sqlite` + cluster). TypeScript with Bun runtime; Zod schemas; `bun:test`. `lib/super-status.sh` → `src/verbs/sentinel.ts` (renamed via [ADR-158](./158-martinet-to-sentinel-rename.md)). `lib/whip.sh` + `lib/decisions.sh` were CONSOLIDATED into sentinel + other verbs during the port and don't exist as standalone bun files — see §Deviation 8 for the implication for cron-consumer guards.
+**Shipped**: atmux-bun port complete ([ADR-126](./126-sqlite-state-store.md) sqlite-state-store, formerly `adr-bun/060` pre-consolidation + [ADR-154](./154-driver-inbox-lead-outbox-sqlite-migration.md) driver-inbox/lead-outbox sqlite migration, formerly slugged `076-inbox-on-sqlite` + cluster). TypeScript with Bun runtime; Zod schemas; `bun:test`. `lib/super-status.sh` → `src/verbs/sentinel.ts` (renamed via [ADR-158](./158-martinet-to-sentinel-rename.SUPERSEDED.md)). `lib/whip.sh` + `lib/decisions.sh` were CONSOLIDATED into sentinel + other verbs during the port and don't exist as standalone bun files — see §Deviation 8 for the implication for cron-consumer guards.
 
 ### 7 — OQ resolutions
 

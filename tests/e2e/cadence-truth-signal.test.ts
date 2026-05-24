@@ -7,15 +7,16 @@
 // not repeatable smokes." The walk asserts the FULL CHAIN composes:
 //
 //   git-log probe → cadence-classifier → atmux status column
-//                                      → sentinel observe() per-member
-//                                      → sentinel-escalation classify()
-//                                          → ship-zero-2hr reason
 //                                      → lane-stall-tick verb
 //                                          → safeSendKeys('atmux claim t-xxx')
 //                                          → dedup-state write
 //                                      → wake-nudge brief shape
 //                                      → backward-compat: enabled=false
 //                                      → backward-compat: exemptMembers**
+//
+// TODO(e-a946af69): wire orchd-escalation entrypoint once orchd Phase
+// 3-5 ships; B4-B5 sentinel-escalation contract beats deleted per
+// EPIC e-be01fc89 (no orchd analogue at delete time per ADR-211).
 //
 // Mocks (necessary minimum):
 //   - `gitLog` injected → deterministic per-member commit fixtures.
@@ -46,19 +47,16 @@
 //   B1. Member-1 5min commit  → 🟢 shipping  (D2/D3)
 //   B2. Member-2 1h commit    → 🟡 idle      (D2/D3)
 //   B3. Member-3 3h commit    → 🚨 ship-zero (D2/D3)
-//   B4. sentinel-escalation classify() → ship-zero-2hr fires (D6)
-//   B5. sentinel-escalation classify() → all-shipping → no fire
 //   B6. Discord [ship-zero-window] template SHAPE (D6 / WHEN_RENDERER_LANDS)
 //   B7. lane-stall-tick → fire + send-keys + dedup write (D4)
 //   B8. lead wake-nudge brief shape per T4 (D5)
 //   B9. backward-compat: cadence.enabled=false → cadence undefined
-//   B10. backward-compat: exemptMembers → verdict='exempt', no escalation
+//   B10. backward-compat: exemptMembers → verdict='exempt'
 
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { MemberObservation, Observation } from "../../src/abstractions/sentinel.ts";
 import { createTmux, type TmuxNamespace } from "../../src/abstractions/tmux.ts";
 import {
   type CadenceObservation,
@@ -67,11 +65,6 @@ import {
   classifyMemberCadence,
 } from "../../src/core/cadence-classifier.ts";
 import { decideLaneStall, type LaneStallMemberInput } from "../../src/core/lane-stall.ts";
-import {
-  classify as classifyEscalation,
-  type ObservationHistory,
-  shouldEscalate,
-} from "../../src/core/sentinel-escalation.ts";
 import type { Team } from "../../src/schema/team.ts";
 import { runLaneStallTick } from "../../src/verbs/lane-stall-tick.ts";
 import { formatCadenceColumn, gatherStatus } from "../../src/verbs/status.ts";
@@ -244,53 +237,7 @@ const fixtureGitLog = async (
   return [];
 };
 
-/** Build a synthetic MemberObservation row keyed off a CadenceObservation
- *  — used to compose the Observation passed to sentinel-escalation
- *  classify(). The non-cadence fields are filled with READY-pane
- *  defaults so the classifier's E1-E5 gates stay inert and the
- *  assertion is scoped to the E6 ship-zero-2hr path. */
-function buildMemberObservation(name: string, cadence: CadenceObservation): MemberObservation {
-  return {
-    name,
-    paneState: { state: "READY", evidence: "", capturedAt: NOW_MS },
-    ctxTokens: null,
-    lastEnterPushable: false,
-    queuedComposerText: null,
-    cadence,
-  };
-}
-
-function buildObservation(members: ReadonlyArray<MemberObservation>): Observation {
-  return {
-    team: teamName,
-    members,
-    kanbanDelta: {
-      newClaims: [],
-      completedSinceLastTick: [],
-      wedgedClaims: [],
-    },
-    commitCadence: {
-      // Match per-member fixture: 1 commit in window (member-1 5min ago),
-      // so the team-aggregate path doesn't trip E6 — only the per-member
-      // path can fire it. Pins the test to the new ADR-148 wiring.
-      sinceLastTick: 1,
-      last30min: 1,
-      last2hr: 1,
-    },
-    lastTickAt: NOW_MS,
-  };
-}
-
-function emptyHistory(): ObservationHistory {
-  return {
-    enterPushedAt: {},
-    lowConfidenceStreak: 0,
-    inboxEntries: [],
-    pendingGitDenials: [],
-  };
-}
-
-// ---------- 10 sequenced beats ----------
+// ---------- sequenced beats ----------
 
 describe("e2e: ADR-148 cadence-truth-signal (1x cold-start+walk)", () => {
   test("B1. Member-1 5min commit → 🟢 shipping (D2/D3)", async () => {
@@ -345,53 +292,9 @@ describe("e2e: ADR-148 cadence-truth-signal (1x cold-start+walk)", () => {
     expect(byName["gitter"]?.verdict).toBe("shipping");
   });
 
-  test("B4. sentinel-escalation classify() → ship-zero-2hr fires on Member-3", async () => {
-    // Per-member observations carrying Member-3's ship-zero-window
-    // verdict — exactly the input the cockpit-W3 dispatcher composes
-    // before passing to a Sentinel impl's decide().
-    const members: MemberObservation[] = [
-      buildMemberObservation(
-        "member-1",
-        classifyCadence([`abc ${NOW_SEC - 300}`], NOW_SEC, 1800, DEFAULT_THRESHOLDS),
-      ),
-      buildMemberObservation(
-        "member-2",
-        classifyCadence([`def ${NOW_SEC - 3600}`], NOW_SEC, 1800, DEFAULT_THRESHOLDS),
-      ),
-      buildMemberObservation(
-        "member-3",
-        classifyCadence([`fed ${NOW_SEC - 3 * 3600}`], NOW_SEC, 1800, DEFAULT_THRESHOLDS),
-      ),
-    ];
-    expect(members[2]!.cadence!.verdict).toBe("ship-zero-window");
-    const obs = buildObservation(members);
-    const reasons = classifyEscalation(obs, emptyHistory());
-
-    await step("ship-zero-2hr is in the reasons list", async () => {
-      expect(reasons).toContain("ship-zero-2hr");
-    });
-    await step("Member-1 + Member-2 alone would NOT trip ship-zero-2hr", async () => {
-      const obsNoShipZero = buildObservation([members[0]!, members[1]!]);
-      const reasonsNo = classifyEscalation(obsNoShipZero, emptyHistory());
-      expect(reasonsNo).not.toContain("ship-zero-2hr");
-    });
-    await step("shouldEscalate() → true on Member-3 path", async () => {
-      expect(shouldEscalate(reasons)).toBe(true);
-    });
-  });
-
-  test("B5. sentinel-escalation classify() → all-shipping → no escalation (D6 negative)", async () => {
-    const allShipping: MemberObservation[] = team.members.map((m) =>
-      buildMemberObservation(
-        m.name,
-        classifyCadence([`shipping-sha ${NOW_SEC - 60}`], NOW_SEC, 1800, DEFAULT_THRESHOLDS),
-      ),
-    );
-    const obs = buildObservation(allShipping);
-    const reasons = classifyEscalation(obs, emptyHistory());
-    expect(reasons).not.toContain("ship-zero-2hr");
-    expect(shouldEscalate(reasons)).toBe(false);
-  });
+  // B4 + B5 (sentinel-escalation classify contract beats) deleted per
+  // EPIC e-be01fc89 — escalation surface removed; orchd-side analogue
+  // tracked at e-a946af69. See file-header TODO.
 
   test("B6. Discord [ship-zero-window] template SHAPE (D6 / WHEN_RENDERER_LANDS)", async () => {
     // T5 deferred the renderer; this beat pins the SHAPE the renderer
@@ -525,7 +428,7 @@ describe("e2e: ADR-148 cadence-truth-signal (1x cold-start+walk)", () => {
     // off the brief produces the exact `atmux send` argv the runbook
     // expects. CLAUDE.md "pair runbook beats with rehearsal spec
     // steps" — the brief sentence IS the runbook beat for D5.
-    const briefPath = join(teamDir, "..", "..", "..", "templates", "briefs", "team-lead.md");
+    const _briefPath = join(teamDir, "..", "..", "..", "templates", "briefs", "team-lead.md");
     // Resolve relative to the repo root: this test sits at
     // <repo>/tests/e2e/cadence-truth-signal.test.ts; brief at
     // <repo>/templates/briefs/team-lead.md. import.meta.url gives the
@@ -550,7 +453,7 @@ describe("e2e: ADR-148 cadence-truth-signal (1x cold-start+walk)", () => {
     expect(composed).toContain("What's the blocker?");
   });
 
-  test("B9. backward-compat: cadence.enabled=false → no cadence column + no escalation", async () => {
+  test("B9. backward-compat: cadence.enabled=false → no cadence column", async () => {
     const teamOff: Team = { ...team, cadence: { enabled: false } };
     const snap = await gatherStatus(tmux, teamOff, sessionName, atmuxDir, {
       now: () => NOW_MS,
@@ -561,25 +464,6 @@ describe("e2e: ADR-148 cadence-truth-signal (1x cold-start+walk)", () => {
     }
     // Status renderer falls back to "—" when cadence is undefined.
     expect(formatCadenceColumn(undefined)).toBe("—");
-
-    // Escalation gate respects the absent cadence — none of the members
-    // carry a verdict, so the per-member E6 path can't fire.
-    const obs = buildObservation(
-      teamOff.members.map((m) => ({
-        name: m.name,
-        paneState: { state: "READY", evidence: "", capturedAt: NOW_MS },
-        ctxTokens: null,
-        lastEnterPushable: false,
-        queuedComposerText: null,
-      })),
-    );
-    const reasons = classifyEscalation(
-      // Make team-aggregate path also non-zero so the test isolates the
-      // per-member ship-zero path.
-      { ...obs, commitCadence: { sinceLastTick: 1, last30min: 1, last2hr: 1 } },
-      emptyHistory(),
-    );
-    expect(reasons).not.toContain("ship-zero-2hr");
 
     // lane-stall-tick treats cadence.enabled=false as no-op (see verb's
     // team.cadence?.enabled !== true gate at line 162).
@@ -597,7 +481,7 @@ describe("e2e: ADR-148 cadence-truth-signal (1x cold-start+walk)", () => {
     expect(result.decisions).toEqual([]);
   });
 
-  test("B10. backward-compat: exemptMembers → verdict='exempt', no escalation", async () => {
+  test("B10. backward-compat: exemptMembers → verdict='exempt'", async () => {
     // Mark member-3 exempt — the ship-zero-window classifier path
     // should be skipped entirely + the renderer returns "(exempt)".
     const teamExempt: Team = {
@@ -621,11 +505,5 @@ describe("e2e: ADR-148 cadence-truth-signal (1x cold-start+walk)", () => {
     // status.ts:614 exempt branch is honored (no needless git shell out).
     expect(gitCallsForMember3).toBe(0);
     expect(formatCadenceColumn(m3?.cadence)).toBe("(exempt)");
-
-    // Escalation: exempt member's verdict is "exempt", not
-    // "ship-zero-window", so classify() does NOT trip E6 on its row.
-    const exemptObs = buildMemberObservation("member-3", m3!.cadence!);
-    const reasons = classifyEscalation(buildObservation([exemptObs]), emptyHistory());
-    expect(reasons).not.toContain("ship-zero-2hr");
   });
 });

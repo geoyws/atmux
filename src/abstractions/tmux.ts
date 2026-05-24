@@ -71,6 +71,16 @@ export type SendTarget =
       readonly kind: "lead";
       readonly team: string;
       readonly target: Target;
+    }
+  | {
+      /** ADR-202 §Amendment 2026-05-22 (II) — service-window kind for
+       *  bare bash supervisors (orchd, etc.) that are NOT a Claude
+       *  TUI. The discriminator exists so reviewer-grep can filter
+       *  "every send to a non-Claude infra window" distinctly from
+       *  member / lead sends. Tmux argv shape is identical. */
+      readonly kind: "service";
+      readonly team: string;
+      readonly target: Target;
     };
 
 /** Serialize the inner tmux target — pure pass-through to

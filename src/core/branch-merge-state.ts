@@ -247,12 +247,19 @@ const FORWARD_TRANSITIONS: ReadonlyMap<BranchMergeState, ReadonlySet<BranchMerge
  *  in_progress is manual" and ADR-144 §test_failed recovery; everything
  *  else honors {@link FORWARD_TRANSITIONS}.
  *
- *  `merged → in_progress` is intentionally NOT permitted — once a
- *  branch's fan-in succeeds, the next iteration starts from a fresh
- *  `open` row after the branch is realigned to the new base (per
- *  ADR-134 §Per-member-branch lifecycle after success). */
+ *  `merged → open` is permitted per ADR-134 §Amendment 2026-05-22 (II)
+ *  (t-0542595c) — when a long-lived member ships additional commits
+ *  past a previous fan-in, the dispatcher auto-re-enters the state
+ *  machine by transitioning back to `open`. This is consistent with
+ *  the original spec phrase "fresh `open` row after the branch is
+ *  realigned to the new base" — pre-amendment, no caller actually
+ *  performed that reset, so the row stayed at `merged` and refused
+ *  every subsequent commit, requiring manual sqlite intervention. */
 export function isValidTransition(from: BranchMergeState, to: BranchMergeState): boolean {
   if ((from === "conflict" || from === "reverted") && to === "in_progress") {
+    return true;
+  }
+  if (from === "merged" && to === "open") {
     return true;
   }
   return FORWARD_TRANSITIONS.get(from)?.has(to) ?? false;

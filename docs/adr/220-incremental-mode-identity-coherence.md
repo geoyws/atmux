@@ -1,6 +1,6 @@
 # ADR-220: Incremental-mode identity coherence — `ATMUX_MEMBER`-drift detection + auto-promote-to-force
 
-**Status**: proposed
+**Status**: Accepted — ratified by driver 2026-05-23 (shipped via docs branch fan-in `b6b1525` + post-fan-in dispatcher fixes `6ca1ff2`/`baa0b8a` close ATMUX_MEMBER-drift wedge structurally).
 **Date**: 2026-05-22
 **Driver-ref**: 2026-05-22 ~09:50 MYT sopx-driver session — operator dissolved 6 epic-teams and respawned them with a different roster shape; all 6 cages had window-1 successfully renamed to `🐝-lead` via the ADR-135 §D4 + ADR-161 TR2 in-place rename path, but the claude process inside each window still carried `ATMUX_MEMBER=be-2` from its pre-dissolve spawn. Each "lead" window was functionally a `be-2` process reading `templates/briefs/member.md` and posting to `lead-outbox.md` AS `be-2`; the intended lead role was unowned + driver-inbox writes went unread. Operator's manual workaround was `atmux start --force` per cage (6 calls). Filed via ombudsman as `t-67f9061a` from `c-6445c932` (severity=high, kind=safety-gap; 5th sopx-driver complaint of the day on the spawn-dissolve-respawn cycle — capstone of the silent-failure class). Filed via Epic `e-bfa6e62c`.
 

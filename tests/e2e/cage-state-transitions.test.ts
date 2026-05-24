@@ -391,7 +391,7 @@ async function readStatusText(): Promise<string> {
   return stdout;
 }
 
-async function readDoctorJson(): Promise<{
+async function _readDoctorJson(): Promise<{
   rows: { label: string; status: string; detail?: string }[];
 }> {
   const { stdout } = await captureStdout(() => doctorVerb(["--json"]));

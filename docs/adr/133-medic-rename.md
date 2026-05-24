@@ -116,7 +116,7 @@ Considered alternatives during the rename discussion:
 
 - **[ADR-077](077-superdoctor-cockpit-role.md)** — Origin role definition. Annotated with a top-of-file rename-pointer to this ADR (see TR1 commit). Design decisions remain canonical under the new name.
 - **[ADR-131](131-superdoctor-kanban-hygiene.md)** — Kanban-hygiene auto-fix loop. ADR-131 body text references "superdoctor" throughout; EPIC sub-task TR4 propagates the rename to ADR-131's body refs. **Caveat**: ADR-131 is itself proposed and not yet reviewer-accepted; TR4 may compose with a single reviewer-pass.
-- **[ADR-132](132-pluggable-martinet.md)** — Pluggable Martinet (cockpit W3 sibling). ADR-132 already references the W2 role with the new "medic" name in its window-topology table (§D2), assuming this rename ships before ADR-132 is reviewer-accepted. If TR1 lands after ADR-132 acceptance, no edits needed there.
+- **[ADR-132](132-pluggable-martinet.SUPERSEDED.md)** — Pluggable Martinet (cockpit W3 sibling). ADR-132 already references the W2 role with the new "medic" name in its window-topology table (§D2), assuming this rename ships before ADR-132 is reviewer-accepted. If TR1 lands after ADR-132 acceptance, no edits needed there.
 - **ADR-063** — Cockpit verb port + window topology. EPIC sub-task TR5 propagates the rename to ADR-063's cockpit-topology section (sibling to ADR-132 T8's W3 update).
 - **ADR-086** — `atmux pulse`. ADR-086 mentions superdoctor as a sibling layer; TR4 grep-replaces the body text.
 - **ADR-081** §E — supervisor recovery. References superdoctor in the recovery flow; TR4 propagates.

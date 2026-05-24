@@ -44,8 +44,8 @@ Three durable principles (see `docs/ARCHITECTURE.md`):
    diffable, survives tmux restart, replays on `atmux start`.
 3. **No daemon.** Every verb is idempotent. `whip` (15min default per
    `team.whip.intervalMins`, bumped from 5min in t-dcbff97c to dial back
-   the per-tick LLM burn now that the sentinel path covers high-cadence
-   nudging — ADR-132) and `report` (30min) run on cron; nothing long-lived.
+   the per-tick LLM burn) and `report` (30min) run on cron; nothing
+   long-lived.
 
 ### 1.3 Why now
 
@@ -132,85 +132,43 @@ Source: `bin/atmux` dispatcher + `lib/*.sh` per `PLAN.md` §6.2.
 | Decisions / flags    | `decisions add/list/show/digest` / `flags add/list/show/resolve`          |
 | Driver self-state    | `brief-driver` / `driver note` / `reload brief-reload` / `reload config-reload` |
 | Superdriver          | `super-attach` (cross-team / fleet — ADR-025 in parent repo)              |
-| Cockpit              | `cockpit rebuild / reload` (ADR-063), `sentinel tick / status` (ADR-132; renamed from `martinet` per ADR-158) |
+| Cockpit              | `cockpit rebuild / reload` (ADR-063)                                      |
 
-#### Cockpit topology (ADR-063 + ADR-077 + ADR-132 + ADR-133 + ADR-135 + ADR-158)
+#### Cockpit topology (ADR-063 + ADR-077 + ADR-133 + ADR-135)
 
 The operator cockpit session (`atmux_cockpit` by default, was
 `atmux_teams` pre-ADR-135) carries the following window order — opt-in
-surfaces (`_medic`, `_sentinel`) are gated by `cockpit.json` blocks,
-per-team viewers shift down by the number of opt-in surfaces enabled.
-Cockpit-level system roles carry a single-underscore prefix (sorts
-before plain team names in `tmux list-windows`); per-team viewers stay
-plain. Member windows inside team cages use `<emoji>-<member>`
-(hyphen-separated, ADR-135 §D3).
+surface (`_medic`) is gated by a `cockpit.json` block, per-team viewers
+shift down by one when enabled. Cockpit-level system roles carry a
+single-underscore prefix (sorts before plain team names in `tmux
+list-windows`); per-team viewers stay plain. Member windows inside team
+cages use `<emoji>-<member>` (hyphen-separated, ADR-135 §D3).
 
 | # | Window | Role | Authorizing ADR |
 |---|--------|------|-----------------|
 | 1 | `_superdriver` | Operator cross-team REPL | ADR-063 (renamed per ADR-135 §D2) |
 | 2 | `_medic` (was `medic`/`superdoctor`) | Fleet self-healing / diagnosis-and-prevention loop | ADR-077 + ADR-133 + ADR-135 §D2 |
-| 3 | `_sentinel` (was `_martinet` / `martinet`) | Pluggable per-team whip-manager + fleet-wide iterator | ADR-132 §D2 + ADR-135 §D2 + ADR-158 §Part C |
-| 4..N | per-team viewers | One per enabled team in `cockpit.json::sessions` | ADR-063 |
+| 3..N | per-team viewers | One per enabled team in `cockpit.json::sessions` | ADR-063 |
 
-Backward-compat: a cockpit.json without `medic` / `sentinel` blocks
-retains the pre-ADR-077 / pre-ADR-132 topology (W1 _superdriver +
-W2..N per-team viewers). Loader migrates legacy `superdoctor` keys
-to medic semantics with a deprecation warning per ADR-133 §D2.
-Loader also migrates legacy `martinet` keys to `sentinel` semantics
-with a deprecation warning per ADR-158 §Part B (one-release grace).
-Cockpit rebuild detects legacy `atmux_teams` session + legacy
-non-underscored cockpit-role windows and renames them in-place
-(idempotent) per ADR-135 §D4 — including `_martinet` → `_sentinel`
-per ADR-158 §Part C. Member windows in legacy
-`<emoji><member>` format get the same in-place rename treatment on
-next `atmux start`.
+Backward-compat: a cockpit.json without a `medic` block retains the
+pre-ADR-077 topology (W1 `_superdriver` + W2..N per-team viewers).
+Loader migrates legacy `superdoctor` keys to medic semantics with a
+deprecation warning per ADR-133 §D2. Cockpit rebuild detects legacy
+`atmux_teams` session + legacy non-underscored cockpit-role windows and
+renames them in-place (idempotent) per ADR-135 §D4. Member windows in
+legacy `<emoji><member>` format get the same in-place rename treatment
+on next `atmux start`.
 
-**ADR-132 §D6 (T5)** — `team.json::sentinel` (was `martinet` pre-ADR-158)
-selects which pluggable cockpit-W3 whip-manager (`"claude"` degenerate
-baseline / `"cursor"` composer-2-fast production default) observes +
-nudges this team. Resolution: `team.sentinel` > `cockpit.defaultSentinel`
-> hardcoded `"claude"`. Existing rosters without the field keep the
-per-team whip codepath unchanged. Companion `team.sentinelOverrides`
-tunes `cadenceSec` (default 270s) and `escalationConfidenceThreshold`
-(default 0.7). Cockpit-level provisioning lives in `cockpit.json::
-sentinel` — see ADR-132 §D6 for the W3 cage / `cursor-agent` path /
-cage-tier shape. Legacy `martinet` / `defaultMartinet` / `martinetOverrides`
-keys still parse during the ADR-158 grace cycle with a deprecation warn.
-
-**Sentinel scope — parent teams AND epic-teams** (ADR-183 + ADR-183
-§Amendment 2026-05-20). `sentinelTick` observes every enabled team-shape
-session — parent teams *and* epic-teams. The cockpit-tier exclusion
-(medic / superdriver / sentinel itself) is preserved via the
-flattener's discriminator filter, not the team-shape boundary. Epic-team
-silent-member-death (a gitter / committer dying inside an epic-team
-cage) surfaces within ≤270s (W3 loop cadence) — same SLA as parent-team
-coverage. Doctor probe `cockpit-has-w3-sentinel` (P1) guards against a
-regression dropping the W3 install.
-
-**Dynamic-discovery model for epic-teams** (ADR-185, operator design
-call 2026-05-20). Epic-teams have high churn (created / dissolved often,
-≥13 live observed within days of ADR-091 landing). They **MUST be
-absent** from `cockpit.json::sessions[]` — static registration produced
-three drift paths (cron orphan, sentinel gap on stale entries, cockpit-
-rebuild churn). Sentinel discovers them at tick time via one of the
-ADR-185 candidate mechanisms (parent state.db epics query / filesystem
-glob / live tmux enumeration / crontab walk). Parent teams stay
-cockpit.json-registered (low churn, operator-managed); epic-teams are
-discovered. Impl Task t-b51f085b.
-
-**Load-bearing NFR — don't spike CPU + RAM** (operator design call
-2026-05-20). The sentinel-cron backstop was removed earlier this cycle
-due to sustained CPU usage from per-tick cursor-agent spawns; all
-remaining sentinel paths respect this constraint. The cap is enforced
-across three layers: (1) **bounded concurrency** — `Promise.allSettled`
-fleet-pass capped at N=4 concurrent observations per tick (`aec82d5`);
-(2) **per-team timeout** — every team observation gets a hard timeout
-(impl t-ccf06b97); (3) **RAM-aware cursor-agent spawn caps** — the
-W3 sentinel cage's per-impl spawn count is bounded so RAM doesn't
-balloon during fleet observation of a 30+ epic-team cohort (ADR-181
-host-wide cap territory). The constraint is non-negotiable; future
-sentinel work that adds per-tick cost MUST cite this NFR + show how
-it stays inside the budget.
+**Cockpit-W3 sentinel retired (EPIC e-be01fc89, 2026-05-23)** — the
+pluggable cockpit-W3 whip-manager (ADR-132 / ADR-158 / ADR-183 / ADR-185)
+is fully removed. Mechanical observation + Enter-push + `claim-next`
+re-fires distribute to Honker event consumers per sibling EPIC
+e-a946af69 (orchd Phase 3-5). Until those consumers ship, the lead's
+self-driven whip cron (`team.whip.intervalMins`) is the canonical
+observe + intervene loop; on-demand audits via `atmux doctor` cover the
+gap. Legacy `team.sentinel` / `cockpit.sentinel` / `cockpit.defaultSentinel`
+config keys are silently accepted via schema-passthrough but no longer
+drive any spawn.
 
 ### 3.2 TUI matrix
 
@@ -475,6 +433,12 @@ ascending, then `createdAt` ascending. Tasks with non-`done` deps are
 skipped automatically. Cross-lane fallback when a lane is dry
 (`crossLaneClaim=true` default); REVIEW-lane carve-out (ADR-031).
 
+EPICs additionally carry `depends_on` (epic-id list) and `is_ready` (0/1
+kick-off bit) per [ADR-225](adr/225-epic-dependencies-and-is-ready-toggle.md);
+`team spawn-epic <eid>` consults an eligibility predicate (all deps done +
+`is_ready=1`) and refuses on unmet deps with a `--force` override. Two
+events (`epic.unblocked`, `epic.ready`) ship per ADR-203 §D2 amendment.
+
 ### 7.3 Socket-driven messaging (ADR-032, parent repo)
 
 Supervisor-injected keystrokes between turns (event-type prefixed):
@@ -629,6 +593,7 @@ Critical ADRs with active behavior:
 - **ADR-125** — (worktree-local — distinct from parent ADR-125) error-class lane scope.
 - **ADR-052** — Eternal-improvement (kanban-empty fallback to autonomous self-improvement loop). Status: proposed; gated on OQ-1 / OQ-2 / reviewer signoff. T1–T7 landed (T8 e2e + T9 cross-cage announcement blocked).
 - **ADR-053** — Budget observability (probe port + Fix C OAuth refresh + warning bands + refresh-soon + `whip-resume-check` 1-min cron + history.jsonl). R1-T1/T5/T6/T7 landed (`ffad610` / `65c16f3` / `65bdcda` / `09b8091` / `df3a08c` / `8160d71` / `f9ad15b` / `9c50354`).
+- **ADR-222 + ADR-223** — Fleet topology via `atmux topo` (read-only manifest + 6-class orphan classifier per ADR-222) + composable reap cascade (`--reap` flag-chain + 4-gate safety ladder per ADR-223). Replaces N × N manual cleanup with a single composer; cockpit-mirror Rust crate (e-95087c8b S2) pins on `schema_version: 1`. Operator runbook at `docs/RUNBOOK-topology.md`.
 - **ADR-054** — Zod whip-config (TeamWhip schema + per-tick drift detection + `[whip-config-drift]` ping). R1-T3/T4 landed (`4e93746` / `9751f7a`).
 - **ADR-055** — Cursor self-heal (recipe-driven; v1 recipes: `fix:team-json-schema-drift` / `fix:cron-pollution` / `fix:supervisor-missing`). R1-T8 chain landed (`0fa4572` → `80d628e` → `9554f70` → `f50e751` → `1ce71c3`). Reviewer-gate, no auto-commit.
 - **ADR-056** — Account-swap (preemptive handoff at 75% used; lead/planner excluded; sequential per-team flock; OQ-3 = post-resume reconciliation deferred). R1-T10/T11/T12 landed (`f99519f` / `ffa2bd5` / `22ac16b` / `83115ec`).

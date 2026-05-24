@@ -168,11 +168,13 @@ This brief edit composes with CLAUDE.md global rules; no global CLAUDE.md edit n
 
 ### (D6) `ship-zero-window` classifier wiring — fulfills ADR-132 contract
 
+> **§Amendment 2026-05-23 (sentinel deleted per e-be01fc89)**: §D2 cadence-classifier SURVIVES — it remains the canonical ship-zero-window verdict source. The §D6 sentinel-escalate entrypoint (subitems 1+2 below describing Martinet/Sentinel observe() + medic event-driven pickup) is RETIRED — sentinel/martinet role deleted entirely 2026-05-23; orchd substrate (EPIC e-a946af69) absorbs the escalate-to-claude-lead path event-driven. Subitem 3 (Discord template) persists, fired by orchd consumers on cadence-classifier events. Lines below describe historical wiring for audit.
+
 ADR-132 §Escalation E6 specifies `ship-zero-window` as MANDATORY regardless of impl. ADR-148 §D2 ships the classifier; T5 wires the classifier's `verdict === "ship-zero-window"` output into:
 
-1. **Martinet observe() output** — `Observation.members[].cadence: CadenceObservation` is a new field. Martinet's `decide()` checks `cadence.verdict === "ship-zero-window"` and emits `{ kind: "escalate-to-claude-lead", reason: "ship-zero-window detected on <member> (<age> since last commit)", ... }` per the existing escalation contract.
-2. **Medic event-driven pickup** — per ADR-140 cheap-model-first chain, medic subscribes to martinet events; medic fires its hourly diagnosis + complaint-file path when ship-zero-window fires.
-3. **Discord [ship-zero-window] template** — new named template in `src/abstractions/discord.ts` typed renderers. Verdict-line: `🚨 Need you — <member> ship-zero-window <age> (no commits since <SHA>)`. 🚨 is justified here per CLAUDE.md (genuinely-irreversible bar: operator-attention-required on dormancy >2hr).
+1. **Martinet observe() output** — `Observation.members[].cadence: CadenceObservation` is a new field. Martinet's `decide()` checks `cadence.verdict === "ship-zero-window"` and emits `{ kind: "escalate-to-claude-lead", reason: "ship-zero-window detected on <member> (<age> since last commit)", ... }` per the existing escalation contract. *(Retired 2026-05-23 per e-be01fc89; orchd consumes the cadence-classifier verdict directly.)*
+2. **Medic event-driven pickup** — per ADR-140 cheap-model-first chain, medic subscribes to martinet events; medic fires its hourly diagnosis + complaint-file path when ship-zero-window fires. *(Sentinel/martinet event bus retired; per ADR-212 cockpit medic also retired — orchd absorbs both event sources.)*
+3. **Discord [ship-zero-window] template** — new named template in `src/abstractions/discord.ts` typed renderers. Verdict-line: `🚨 Need you — <member> ship-zero-window <age> (no commits since <SHA>)`. 🚨 is justified here per CLAUDE.md (genuinely-irreversible bar: operator-attention-required on dormancy >2hr). *(Template persists; now fired by orchd consumers on cadence-classifier events.)*
 
 ### (D7) Config — `team.json::cadence`
 
@@ -223,7 +225,7 @@ Lead brief is operator-facing + member-facing. Adding "DERELICTION" framing coul
 - **CLAUDE.md** "Don't make a dormant team look like a working team" + whip §0.05 — operator-side principle this ADR makes structural.
 - **ADR-077** ([077-superdoctor-cockpit-role.md](077-superdoctor-cockpit-role.md)) — medic. Medic's event-driven pickup consumes the ship-zero-window classifier output (D6).
 - **ADR-127** — lane-claim auto-pickup. ADR-148 §D4 extends ADR-127's member-idle path to add the lane-stall sibling event.
-- **ADR-132** ([132-pluggable-martinet.md](132-pluggable-martinet.md)) — martinet escalation contract. §D6 implements ADR-132 §E6 ship-zero-window contract bullet (was specified, never wired — ADR-148 closes the gap).
+- **ADR-132** ([132-pluggable-martinet.SUPERSEDED.md](132-pluggable-martinet.SUPERSEDED.md)) — martinet escalation contract. §D6 implements ADR-132 §E6 ship-zero-window contract bullet (was specified, never wired — ADR-148 closes the gap).
 - **ADR-139** ([139-refusal-pattern-auto-rotate.md](139-refusal-pattern-auto-rotate.md)) — refusal-pattern sibling classifier. Same module-shape (pure function, threshold-based, per-member observation, escalation-on-trigger). ADR-148's cadence-classifier and ADR-139's refusal-classifier are siblings — both feed the medic/martinet observation pipeline.
 - **ADR-140** — cheap-model-first principle. Cadence-check belongs in martinet (per-tick observation), NOT in lead (per-turn coding). This ADR's D6 wiring confirms the placement.
 - **ADR-145/146** — auto-files trunk-merge. ADR-148 fixes the consumer side: auto-emit fires correctly; today the issue is that the lane=gitter Task sits while gitter is idle (the cadence-truth shift exposes this). ADR-148's lane-stall fallback (D4) is the structural fix.

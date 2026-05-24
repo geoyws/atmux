@@ -37,7 +37,6 @@
 // + repo root) so the swap is mechanical, no contract change.
 
 import { join } from "node:path";
-import { z } from "zod";
 import { ensureDir, exists, readText, writeText } from "../abstractions/fs.ts";
 import { withLock } from "../abstractions/lock.ts";
 import { closeDatabase, openDatabase } from "../abstractions/sqlite.ts";
@@ -58,7 +57,7 @@ import {
   removeFromSentinel,
   sentinelPath,
 } from "../core/ombudsman.ts";
-import { type CaptureFn, classifyText } from "../core/pane-state.ts";
+import { type CaptureFn } from "../core/pane-state.ts";
 import { ComplaintsRepo } from "../core/repositories/complaints-repo.ts";
 import {
   type AppendLogFn,

@@ -54,6 +54,37 @@ describe("parseCommitterArgs", () => {
   test("unexpected positional arg throws UsageError", () => {
     expect(() => parseCommitterArgs(["--sweep", "extra"])).toThrow(UsageError);
   });
+
+  test("--drain parses as drain sub-verb", () => {
+    expect(parseCommitterArgs(["--drain"])).toEqual({ subverb: "drain" });
+  });
+  test("'drain' bare form parses the same", () => {
+    expect(parseCommitterArgs(["drain"])).toEqual({ subverb: "drain" });
+  });
+  test("--daemon parses as daemon sub-verb", () => {
+    expect(parseCommitterArgs(["--daemon"])).toEqual({ subverb: "daemon" });
+  });
+  test("--daemon --once flag honored", () => {
+    expect(parseCommitterArgs(["--daemon", "--once"])).toEqual({
+      subverb: "daemon",
+      once: true,
+    });
+  });
+  test("--daemon --max-events N captured", () => {
+    expect(parseCommitterArgs(["--daemon", "--max-events", "5"])).toEqual({
+      subverb: "daemon",
+      maxEvents: 5,
+    });
+  });
+  test("--max-events 0 throws UsageError (must be positive)", () => {
+    expect(() => parseCommitterArgs(["--daemon", "--max-events", "0"])).toThrow(UsageError);
+  });
+  test("--max-events without value throws", () => {
+    expect(() => parseCommitterArgs(["--daemon", "--max-events"])).toThrow(UsageError);
+  });
+  test("--max-events non-numeric throws", () => {
+    expect(() => parseCommitterArgs(["--daemon", "--max-events", "abc"])).toThrow(UsageError);
+  });
 });
 
 // ---------- recordingQueueMergeAttempt ----------
@@ -321,5 +352,139 @@ describe("committer() top-level dispatch", () => {
 
   test("missing sub-verb → UsageError propagates", async () => {
     await expect(committer([])).rejects.toThrow(UsageError);
+  });
+});
+
+// ---------- committer --drain / --daemon (ADR-202/203 event-driven) ----------
+
+describe("committer --drain / --daemon integration", () => {
+  let scratch: string;
+  let atmuxDir: string;
+  beforeEach(async () => {
+    scratch = await mkdtemp(join(tmpdir(), "atmux-committer-event-"));
+    atmuxDir = join(scratch, ".atmux");
+    await mkdir(atmuxDir, { recursive: true });
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      JSON.stringify({
+        name: "demo",
+        members: [{ name: "be-1", role: "member", lane: "be" }],
+        autoMerge: { enabled: true },
+        merger: { enabled: true, baseBranch: "main" },
+      }),
+    );
+    // Pre-create state.db so context-build can open + boot Honker.
+    const { closeDatabase, openDatabase } = await import("../../../src/abstractions/sqlite.ts");
+    const { migrations } = await import("../../../src/abstractions/sqlite-migrations.ts");
+    const db = openDatabase(join(atmuxDir, "state.db"), migrations);
+    closeDatabase(db);
+  });
+  afterEach(async () => {
+    await rm(scratch, { recursive: true, force: true });
+  });
+
+  test("--drain with empty events table exits 0 and logs processed=0", async () => {
+    const logs: string[] = [];
+    const logger = {
+      log: (s: string) => logs.push(s),
+      ok: () => {},
+      warn: () => {},
+      err: () => {},
+    };
+    const rc = await committer(["--drain", "--team-dir", scratch], {
+      logger,
+      git: async () => fakeSpawnResult("main\n", 0),
+    });
+    expect(rc).toBe(0);
+    // Honker kill-switch defaults to ON now but ATMUX_HONKER=off in test env,
+    // OR substrate present — either way the drain is honored. Check the log.
+    expect(
+      logs.some((l) => l.includes("committer --drain") || l.includes("ATMUX_HONKER=off")),
+    ).toBe(true);
+  });
+
+  // ADR-224 §D6 + ADR-226/227/229 wire-up (driver P0 step 3/5
+  // 2026-05-23) — `--drain` iterates `ORCHD_SUBSCRIPTIONS` so the
+  // single dispatch path covers both the hardcoded consumers
+  // (gitter / lane-router) AND the registry-sourced handlers.
+  test("--drain populates ORCHD_SUBSCRIPTIONS via bootstrapOrchd and emits orchd-* totals", async () => {
+    // Clear the module-level registry so this test sees the post-drain
+    // population starting from a known-empty baseline.
+    const { ORCHD_SUBSCRIPTIONS } = await import("../../../src/core/orchd-registry.ts");
+    ORCHD_SUBSCRIPTIONS.length = 0;
+
+    const logs: string[] = [];
+    const logger = {
+      log: (s: string) => logs.push(s),
+      ok: () => {},
+      warn: () => {},
+      err: () => {},
+    };
+    const rc = await committer(["--drain", "--team-dir", scratch], {
+      logger,
+      git: async () => fakeSpawnResult("main\n", 0),
+    });
+    expect(rc).toBe(0);
+
+    // The drain log summary MUST surface orchd-* stats — drift detector
+    // for step 3/5's contract. Phase 2 (ADR-231) added 3 consumers:
+    // dissolve-solo-worker + spawn:on-ready + spawn:on-unblocked.
+    const summary = logs.find((l) => l.includes("committer --drain: team="));
+    expect(summary).toBeDefined();
+    expect(summary).toContain("orchd-subs=6");
+    expect(summary).toContain("orchd-errors=0");
+
+    // Registry MUST have been populated with the six canonical consumer
+    // IDs (idempotency means a sibling call wouldn't double-push these).
+    // ADR-231 §D2/§D6 added the spawn + solo-worker-dissolve entries on
+    // top of parent's auto-merge/dissolve/push (ADR-226/227/229).
+    const consumerIds = ORCHD_SUBSCRIPTIONS.map((s) => s.consumerId).sort();
+    expect(consumerIds).toEqual([
+      "atmux:orchd:auto-dissolve",
+      "atmux:orchd:auto-merge",
+      "atmux:orchd:auto-push",
+      "atmux:orchd:dissolve-solo-worker",
+      "atmux:orchd:spawn:on-ready",
+      "atmux:orchd:spawn:on-unblocked",
+    ]);
+
+    // Cleanup so sibling tests don't see leaked registry state.
+    ORCHD_SUBSCRIPTIONS.length = 0;
+  });
+
+  test("--daemon --once with empty events exits 0 cleanly", async () => {
+    const logs: string[] = [];
+    const logger = {
+      log: (s: string) => logs.push(s),
+      ok: () => {},
+      warn: () => {},
+      err: () => {},
+    };
+    // Bound the loop with --once + --max-events 1 so the watcher exits.
+    // Test fires SIGTERM after a short delay as belt-and-braces.
+    // Timer bumped 800→1500ms post-Phase 2 (ADR-231) — bootstrap now
+    // registers 6 orchd consumers (was 3), each walks an empty event
+    // table on startup; the cumulative cold-start work pushes past
+    // 800ms on slower CI nodes. 1500ms = ~250ms per consumer with
+    // headroom for the watcher's own init.
+    const timer = setTimeout(() => process.emit("SIGTERM"), 1500);
+    try {
+      const rc = await committer(
+        ["--daemon", "--team-dir", scratch, "--once", "--max-events", "1"],
+        {
+          logger,
+          git: async () => fakeSpawnResult("main\n", 0),
+        },
+      );
+      expect(rc).toBe(0);
+      expect(logs.some((l) => l.includes("committer --daemon") && l.includes("starting"))).toBe(
+        true,
+      );
+      expect(logs.some((l) => l.includes("committer --daemon") && l.includes("stopped"))).toBe(
+        true,
+      );
+    } finally {
+      clearTimeout(timer);
+    }
   });
 });

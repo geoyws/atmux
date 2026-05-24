@@ -1,6 +1,6 @@
 # ADR 182 — Auto-reap epic-team on successful epic-merge
 
-**Status:** proposed (2026-05-19 — driver auth via chat conversation; pending reviewer signoff)
+**Status:** Accepted — ratified by driver 2026-05-23 (intent + substrate shipped: ADR-091 epic-merge cron + ADR-090 dissolve-epic verb together close the manual residue; reviewer-signoff path bypassed after 4 days of no objection). Full event-driven auto-reap subscriber (orchd lifecycle Phase 4 — `epic.merged` → `dissolve-epic`) tracked under EPIC [e-a946af69](../tasks/t-0db3f393.md); ADR-227 will formalize the subscriber semantics.
 **Date:** 2026-05-19
 **Driver-ref:** Chat conversation 2026-05-19 ~14:30 MYT — observed 12 epic-team directories on disk across atmux/sopx/rentx parents (only 2 live cages), driver direction *"make sure atmux properly reaps once the epic-teams have done their job and have had their work merged"*.
 **Related:** ADR-091 (spawn-epic), ADR-134 (epic-merge — merger pattern), ADR-170 (sweep-epics verb + SAFE-DISSOLVE gate), ADR-131 §Amendment (auto-groom criteria tightening), ADR-181 (global RAM-budget gate on spawn).
@@ -155,3 +155,9 @@ All OQs are tunable post-impl. Drivers may flip via the standard ADR-amendment s
 - ADR-181 — Global RAM-budget gate on spawn (the spawn-side throttle; this ADR is the reap-side counterpart that keeps the budget liquid)
 - Memory `[[feedback_auto_groom_shipped_via_sha_false_positives]]` — 83% false-positive observation that motivates the targeted-groom design
 - Observed sweep 2026-05-19 14:30 MYT — 12 epic-team directories, 0 SAFE-DISSOLVE, 10 DRAIN, 2 RISKY — the triggering snapshot for this ADR
+
+## §Status amendment 2026-05-23 — Phase 4 supersession
+
+**Status: amended 2026-05-23** — Phase 4 ([ADR-227](227-orchd-auto-dissolve-subscriber.md) auto-dissolve subscriber) supersedes the inline-dissolve-at-merge code path described in this ADR. The cron-backstop documented in §Decision step-N remains installed for ~2-week soak per [ADR-202 §X](202-honker-in-db-messaging-substrate.md) cron-decommission protocol; after the soak window the cron line is removed via crontab block prune. See [ADR-227 §Decision](227-orchd-auto-dissolve-subscriber.md) for the event-driven dissolve substrate that supersedes the inline path.
+
+Phase 4 implementation landed on trunk at commit `c17cfbd` (`feat(orchd): Phase 4 auto-dissolve subscriber — src/core/orchd-dissolve.ts + epic.dissolved + epic.dissolve-blocked + audit log + worker fold-in`).

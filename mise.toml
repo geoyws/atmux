@@ -1,0 +1,61 @@
+# Per-project mise toolchain pins.
+#
+# `mise install` in this directory fetches every declared tool at the
+# pinned version (or `stable` for rolling toolchains). Contributors on
+# fresh machines (clone → mise install → bun install → ready) don't
+# need to know that atmux requires Bun AND Rust to build — mise
+# resolves both.
+#
+# CI: same install command works in GitHub Actions. The honker-events
+# branch added rust as a build-time requirement (for rust/atmux-listener);
+# this file makes that explicit at the project boundary.
+
+[tools]
+# Bun — primary runtime + bundler for the TS/JS half of atmux.
+# Pinned to `latest` matching the user-global default; pin to a specific
+# version (e.g. "1.3.11") if reproducibility across contributors becomes
+# a friction point.
+bun = "latest"
+
+# Rust — required for `rust/atmux-listener` (kernel-blocked NOTIFY/LISTEN
+# subprocess per ADR-202 §Amendment 2026-05-22 II). `stable` channel
+# tracks rustup's latest stable release. `cargo build --release` in
+# `rust/atmux-listener/` produces the binary that `npm run build:install`
+# stages alongside the main atmux shim.
+rust = "stable"
+
+# Tmux — atmux's foundational multiplexer (per ADR-018 cage socket
+# isolation). atmux requires >=3.4 (per package.json engines.tmux).
+# Pinned at project level so the engines check doesn't drift from the
+# actual installed version when contributors run on fresh hosts.
+tmux = "latest"
+
+# ---------- Rust ecosystem extras ----------
+# Installed via mise's `cargo:` backend — cargo install with mise-managed
+# binary directory + version pinning. Each tool's purpose noted inline.
+
+# sccache — shared compilation cache for Rust. Drops repeated `cargo
+# build` from ~30s to ~3s on warm cache. Set RUSTC_WRAPPER=sccache in
+# shell env (or .cargo/config.toml `[build] rustc-wrapper = "sccache"`)
+# to activate. Big win for the atmux-listener / atmux-relayd dev loop.
+#
+# Installed via mise's `github:` backend which pulls prebuilt
+# release binaries from GitHub. Avoids the cargo-install path's
+# transitive C dep on libssl-dev (openssl-sys). (Was ubi: prior to
+# mise 2027.1 — github: is the canonical backend now.)
+"github:mozilla/sccache" = "latest"
+
+# cargo-watch — `cargo watch -x check` for live re-typecheck on file
+# save. Optional but recommended for the Rust dev loop alongside
+# `bun --watch` for the TS side. Same github-binary rationale.
+"github:watchexec/cargo-watch" = "latest"
+
+# Notes for the future:
+# - When honker-extension publishes platform-native wheels for darwin-
+#   aarch64, add a tools entry to pull the prebuilt .so/.dylib rather
+#   than requiring contributors to fetch from PyPI manually. Until then,
+#   the install wizard (ADR-200) handles per-host extension provisioning.
+# - Cross-compile from linux-x64 (hax) to darwin-aarch64 (operator MBP):
+#   `cargo-zigbuild` would handle this but requires zig itself. Mise
+#   doesn't expose zig as a plugin yet. Operators run `cargo build` on
+#   each target host until the cross-toolchain story shipping ramps up.

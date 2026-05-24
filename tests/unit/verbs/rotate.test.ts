@@ -179,16 +179,6 @@ describe("getBriefPath", () => {
     expect(await getBriefPath("team-lead", dir)).toBe(join(dir, "member.md"));
   });
 
-  // ADR-158 grace shim renames legacy `martinet` role → canonical `sentinel`
-  // but the brief file stayed at `martinet.md`. Without the alias, a
-  // post-shim sentinel-role spawn would fall through to `member.md` instead
-  // of loading the cockpit-tier sentinel brief.
-  test("role 'sentinel' aliases to martinet.md (ADR-158 grace shim)", async () => {
-    await writeFile(join(dir, "martinet.md"), "canonical martinet brief");
-    await writeFile(join(dir, "member.md"), "m");
-    expect(await getBriefPath("sentinel", dir)).toBe(join(dir, "martinet.md"));
-  });
-
   // Regression: production briefs/ must resolve every role used in
   // shipped team.json templates to a real, readable file. `team-lead`
   // is alias-mapped to `lead.md` inside getBriefPath (canonical brief
@@ -210,10 +200,6 @@ describe("getBriefPath", () => {
     // getBriefPath without falling through to member.md (which would
     // mean spawned ombudsman panes boot with the wrong role contract).
     "ombudsman",
-    // ADR-158 grace shim: `sentinel` aliases to `martinet.md` until the
-    // file gets renamed in the next release. Regression check ensures the
-    // alias keeps resolving to a real shipped file (not member.md).
-    "sentinel",
   ])("production briefs resolve role %s to an existing file", async (role) => {
     const path = await getBriefPath(role, defaultBriefsDir());
     const content = await readFile(path, "utf8");
@@ -221,10 +207,10 @@ describe("getBriefPath", () => {
   });
 
   // ADR-147 T4: ombudsman brief must NOT fall back to member.md — its
-  // role contract (sentinel + cron, no kanban claims, no code edits)
-  // diverges sharply from the generic member loop. A fallback would
-  // boot the pane with member.md's claim-loop instructions, which is
-  // wrong for ombudsman.
+  // role contract (cron + pending-JSON sentinel queue, no kanban
+  // claims, no code edits) diverges sharply from the generic member
+  // loop. A fallback would boot the pane with member.md's claim-loop
+  // instructions, which is wrong for ombudsman.
   test("role 'ombudsman' resolves to ombudsman.md, NOT member.md fallback", async () => {
     const path = await getBriefPath("ombudsman", defaultBriefsDir());
     expect(path.endsWith("/ombudsman.md")).toBe(true);

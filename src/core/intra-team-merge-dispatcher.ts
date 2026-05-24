@@ -301,10 +301,38 @@ export function productionQueueMergeAttempt(deps: ProductionDispatcherDeps): Que
 
     // Entry-state check — refuse fast on in-flight / terminal rows.
     const entryRow = deps.mergerRepo.getState(memberBranch);
-    const entryState: BranchMergeState = entryRow?.state ?? "open";
+    let entryState: BranchMergeState = entryRow?.state ?? "open";
     if (isTerminalState(entryState)) {
-      deps.logger.log(`[dispatcher] ${memberBranch}: refuse-terminal state='${entryState}'`);
-      return { queued: false, reason: `terminal: ${entryState}` };
+      // §Amendment 2026-05-22 (II) (t-0542595c) — auto-re-enter from
+      // `merged` when the member branch has shipped MORE commits past
+      // the previous fan-in. `aheadCount` is `git rev-list --count
+      // <base>..<branch>`; if it's >0, the branch tip has advanced
+      // beyond what was last merged into `<base>`, which is the
+      // signal that fan-in needs to re-run. Pre-amendment, `merged`
+      // was permanently terminal — long-lived members had to
+      // operator-reset `merger_state.state` manually after EVERY
+      // additional commit. `conflict` and `reverted` stay terminal
+      // (per ADR-134 §state-machine "From conflict or reverted,
+      // transition back to in_progress is manual — operator
+      // resolves"). Auto-resets row to `open` so the gate machinery
+      // takes the standard entry path; the in-walk loop below picks
+      // up from there.
+      if (entryState === "merged" && aheadCount > 0) {
+        deps.logger.log(
+          `[dispatcher] ${memberBranch}: auto-re-enter from merged (+${aheadCount} past prior fan-in)`,
+        );
+        deps.mergerRepo.transition({
+          memberBranch,
+          next: "open",
+          note: `auto-re-entry: +${aheadCount} new commits past prior fan-in (§Amendment 2026-05-22 II)`,
+          by: "cron",
+          transitionedAt: now(),
+        });
+        entryState = "open";
+      } else {
+        deps.logger.log(`[dispatcher] ${memberBranch}: refuse-terminal state='${entryState}'`);
+        return { queued: false, reason: `terminal: ${entryState}` };
+      }
     }
     if (CALLER_DRIVEN_STATES.has(entryState)) {
       deps.logger.log(`[dispatcher] ${memberBranch}: refuse-caller-driven state='${entryState}'`);

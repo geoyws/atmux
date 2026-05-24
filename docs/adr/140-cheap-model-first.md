@@ -14,14 +14,24 @@ Cheap-model-first principle (cursor for observation loops + mechanical nudges + 
 
 Cheap-model invocations under lean-mode topology fire via:
 
-1. On-demand operator verb (`atmux sentinel tick --once`, `atmux doctor`, `atmux wedges`)
+1. On-demand operator verb (`atmux doctor`, `atmux wedges`) — `atmux sentinel tick --once` deleted 2026-05-23 per e-be01fc89 (Sentinel REMOVAL EPIC); orchd substrate (EPIC e-a946af69) absorbs its event-driven equivalent.
 2. Event-driven dispatcher hook (escalate-to-claude-lead per `t-ffcbd1dc`)
 
 NOT via continuous cron-polling. The 65-70% Claude-burn reduction projected in this ADR was an EVERY-TICK calculation under cron-polling; under lean-mode, the realized reduction is HIGHER because most ticks no longer fire (no idle-cycle observation cost).
 
-See [ADR-132 §Amendment 2026-05-20](./132-pluggable-martinet.md) + [ADR-189](./189-lean-mode-side-project-topology-preset.md) (the lean-mode pivot anchor) + Epic `e-be01fc89` for the full pivot.
+See [ADR-132 §Amendment 2026-05-20](./132-pluggable-martinet.SUPERSEDED.md) + [ADR-189](./189-lean-mode-side-project-topology-preset.md) (the lean-mode pivot anchor) + Epic `e-be01fc89` for the full pivot.
 
 **Filed via** t-4de68474 (docs role, 2026-05-20).
+
+## §Amendment 2026-05-23 — Sentinel deletion per e-be01fc89
+
+The cheap-model-first principle still applies; the *sentinel-tier invocation surface* is gone. Cursor/Opus invocations for observation/nudging now route through:
+
+- `atmux doctor` (on-demand operator audit, code/lint/test classes per [ADR-027](./027-doctor-self-diagnostics.md))
+- `atmux wedges` (on-demand wedge sweep per [ADR-186](./186-wedge-clearing-mechanism.md))
+- orchd event consumers (EPIC e-a946af69) — event-driven escalate-to-claude-lead absorbs the cron-polling shape
+
+The §Amendment 2026-05-20 cron-polling pivot above is now historical context; e-be01fc89 closes the migration entirely (no `atmux sentinel tick --once` verb remaining).
 
 ## Context
 

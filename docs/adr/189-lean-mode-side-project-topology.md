@@ -5,7 +5,7 @@
 **Driver-ref**: driver-2026-05-20-11:20 MYT (operator killed sentinel cron 11:15 MYT after observing the 40% CPU/cycle cost at 18-team fleet scale).
 **Parent EPIC**: e-be01fc89 (lean-mode side-project topology — anchor decision).
 **Story**: s-47911ef7.
-**Cross-refs**: [ADR-132](./132-pluggable-martinet.md) §Amendment 2026-05-20 (cron-polling deprecation), [ADR-140](./140-cheap-model-first.md) §Amendment 2026-05-20 (cheap-model-first pattern revision), [ADR-091](./091-kanban-driven-auto-merge.md) (epic-team lifecycle — gc integration), [ADR-077](./077-superdoctor-cockpit-role.md) (cockpit super-doctor — observer pattern context; on-demand-not-cron-fired under lean-mode), [ADR-086](./086-atmux-pulse.md) (Discord templates — invariant under lean-mode), [ADR-184](./184-host-wide-epic-team-cap-queue-and-dormancy-audit.md) (host-wide cap — orthogonal but related cost-curve framing), Epic [e-be01fc89](#) (parent — this ADR is its anchor decision).
+**Cross-refs**: [ADR-132](./132-pluggable-martinet.SUPERSEDED.md) §Amendment 2026-05-20 (cron-polling deprecation), [ADR-140](./140-cheap-model-first.md) §Amendment 2026-05-20 (cheap-model-first pattern revision), [ADR-091](./091-kanban-driven-auto-merge.md) (epic-team lifecycle — gc integration), [ADR-077](./077-superdoctor-cockpit-role.md) (cockpit super-doctor — observer pattern context; on-demand-not-cron-fired under lean-mode), [ADR-086](./086-atmux-pulse.SUPERSEDED.md) (Discord templates — invariant under lean-mode), [ADR-184](./184-host-wide-epic-team-cap-queue-and-dormancy-audit.md) (host-wide cap — orthogonal but related cost-curve framing), Epic [e-be01fc89](#) (parent — this ADR is its anchor decision).
 
 ## Context
 
@@ -44,7 +44,7 @@ The flip-point is the schema default. No magic-detection-from-fleet-size; operat
 
 Under `team.json::topology = "lean"`, the following cron-polling surfaces are **disabled by default**:
 
-- **Sentinel cron-polling** (was: `*/270s` per fleet pass via W3 cockpit window + cron backstop). Per [ADR-132](./132-pluggable-martinet.md) §Amendment 2026-05-20, the cron-polling layer becomes lean-mode-opt-in; sentinel still ships, but only on-demand via `atmux sentinel tick --once` and via event-driven escalate-to-claude-lead in the dispatcher (per `t-ffcbd1dc`).
+- **Sentinel cron-polling** — removed entirely 2026-05-23 per e-be01fc89 (Sentinel REMOVAL EPIC); the preserved verb `atmux sentinel tick --once` is deleted as well. On-demand audit flows through `atmux doctor` + orchd substrate (EPIC e-a946af69). Historical context: was `*/270s` per fleet pass via W3 cockpit window + cron backstop per [ADR-132](./132-pluggable-martinet.SUPERSEDED.md).
 - **Doctor cron backstop** (was: `*/5min atmux doctor` planned as part of Epic e-35dd6274 Part E). Under lean-mode, doctor is on-demand only — operator runs `atmux doctor` at session start. The deploy-completeness probe class still ships as the probe library; only the cron firing layer retires.
 - **Drainer-cron pattern** (`~/.atmux/bin/*-drainer.sh` + `*/N` cron blocks). The canonical example was `sentinel-escalation-drainer`; under lean-mode all such drainer-cron blocks are retired. The event-driven dispatcher (per t-ffcbd1dc) is the canonical replacement.
 - **Lane-tick at >`*/15min` frequency**. Default lane-tick stays at `*/15` for nudges; high-freq variants (`*/5min` overrides observed on some teams) are flipped to `*/15` baseline under lean-mode.
@@ -55,7 +55,7 @@ Under lean-mode, the following surfaces ship as the canonical replacements:
 
 - **Aggressive `atmux cockpit gc`** (per Epic e-be01fc89 Story S3). Default `--stale-threshold 7d` under lean-mode (was: opt-in via flag). The gc pass reaps stale epic-team worktrees + cron blocks + cockpit.json entries that fleet-mode would have caught via sentinel polling.
 - **Event-driven escalate-to-claude-lead via dispatcher** (per `t-ffcbd1dc`). When a worker fails to make progress (dispatcher detects via pubsub heartbeat or commit-cadence gap), the dispatcher escalates directly to the claude-lead pane via socket-pubsub — no cron required.
-- **On-demand audit verbs**: `atmux sentinel tick --once`, `atmux doctor`, `atmux wedges` (the latter per [ADR-186](./186-wedge-clearing-mechanism.md)). Operator runs these at session start / on suspicion; the verbs produce the same outputs as the cron-polling layer would have, just at operator cadence.
+- **On-demand audit verbs**: `atmux doctor`, `atmux wedges` (the latter per [ADR-186](./186-wedge-clearing-mechanism.md)). Operator runs these at session start / on suspicion; the verbs produce the same outputs as the cron-polling layer would have, just at operator cadence. (`atmux sentinel tick --once` deleted 2026-05-23 per e-be01fc89; orchd substrate EPIC e-a946af69 absorbs its event-driven equivalent.)
 
 ### D4 — Manual driver triage assumption
 
@@ -87,7 +87,7 @@ The `atmux migrate --topology <lean|fleet>` verb is a sibling Task (per §OQ-2 r
 
 ### Neutral
 
-- **Sentinel + doctor + drainer code stays in tree.** Lean-mode disables the *cron firing*, not the code path. The on-demand verbs (`atmux sentinel tick --once`, `atmux doctor`, `atmux wedges`) continue to ship for both topologies; lean-mode just doesn't auto-fire them.
+- **Doctor + drainer code stays in tree.** Lean-mode disables the *cron firing*, not the code path. The on-demand verbs (`atmux doctor`, `atmux wedges`) continue to ship for both topologies; lean-mode just doesn't auto-fire them. (Sentinel code path deleted entirely 2026-05-23 per e-be01fc89; this Neutral stays accurate for doctor + drainer.)
 - **Topology field is per-team.** A cockpit hosting both lean teams and fleet teams is a supported configuration (per §OQ-3 resolution).
 
 ## Trade-offs considered

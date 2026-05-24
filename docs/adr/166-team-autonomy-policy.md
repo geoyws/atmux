@@ -42,7 +42,7 @@ This ADR introduces ONE shared policy block consumed by ALL action-class actors.
 
 A new sub-config under `team.json`, consumed by all action-class actors:
 
-- martinet (per [ADR-132](132-pluggable-martinet.md) / [ADR-140](140-cheap-model-first.md))
+- martinet (per [ADR-132](132-pluggable-martinet.SUPERSEDED.md) / [ADR-140](140-cheap-model-first.md))
 - `/bruh` skill (claude-skills coordination plugin)
 - gitter (per [ADR-145](145-atmux-adopts-gitter.md))
 - reviewer (per [ADR-013](013-kanban-write-atomicity.md))
@@ -174,7 +174,7 @@ The whole ADR is plumbing on top of existing abstractions. The decision IS the s
 
 - **[ADR-013](013-kanban-write-atomicity.md)** — reviewer's existing convention layer. `autoFileFollowUps` consumer.
 - **[ADR-077](077-superdoctor-cockpit-role.md)** — medic (formerly superdoctor; renamed per ADR-133). Complaint-handling lives here; `autoFileFollowUps` fires martinet's preventive-ask filing path.
-- **[ADR-132](132-pluggable-martinet.md)** — martinet continuous observer. Reads policy per `NudgeAction`.
+- **[ADR-132](132-pluggable-martinet.SUPERSEDED.md)** — martinet continuous observer. Reads policy per `NudgeAction`.
 - **[ADR-140](140-cheap-model-first.md)** — where whip-equivalent observation work lives now (martinet via cursor composer-2-fast). Frames why the `whip → bruh` rename is unnecessary.
 - **[ADR-145](145-atmux-adopts-gitter.md)** — gitter `autoMerge` consumer; this ADR generalizes the per-role `autoMerge.enabled` toggle into the shared autonomy block.
 - **[ADR-148](148-commit-cadence-truth-signal.md)** — sibling team.json config block pattern. Confirms the schema shape.

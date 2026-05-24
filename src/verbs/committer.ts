@@ -44,6 +44,21 @@
 // argv shape the verb consumes.
 
 import { join } from "node:path";
+import {
+  emit as emitImport,
+  loadOffset as loadOffsetImport,
+  saveOffset as saveOffsetImport,
+  watchEvents as watchEventsImport,
+} from "../abstractions/events.ts";
+import {
+  bootHonker as bootHonkerImport,
+  getHonkerState as honkerStateImport,
+} from "../abstractions/honker.ts";
+import {
+  type NativeListenerHandle,
+  resolveDefaultListenerBinary,
+  spawnNativeListener,
+} from "../abstractions/native-listener.ts";
 import { closeDatabase, type Database, openDatabase } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { defaultGitSpawn, type GitSpawn } from "../abstractions/worktree.ts";
@@ -54,37 +69,97 @@ import {
   type QueueMergeFn,
 } from "../core/committer-sweep.ts";
 import { getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts";
+import {
+  createGitterMergeHandler as createGitterMergeHandlerImport,
+  gitterConsume as gitterConsumeImport,
+} from "../core/gitter-consumer.ts";
 import { productionQueueMergeAttempt } from "../core/intra-team-merge-dispatcher.ts";
 import { resolveMergerConfig } from "../core/merger-config.ts";
+import { bootstrapOrchd as bootstrapOrchdImport } from "../core/orchd-bootstrap.ts";
+import { dispatchDissolveEpic as dispatchDissolveEpicImport } from "../core/orchd-dispatch/dissolve-epic.ts";
+import { dispatchEpicMerge as dispatchEpicMergeImport } from "../core/orchd-dispatch/epic-merge.ts";
+import { dispatchGitPush as dispatchGitPushImport } from "../core/orchd-dispatch/git-push.ts";
+import { ORCHD_SUBSCRIPTIONS as ORCHD_SUBSCRIPTIONS_IMPORT } from "../core/orchd-registry.ts";
 import { KanbanRepo } from "../core/repositories/kanban-repo.ts";
 import { MergerStateRepo } from "../core/repositories/merger-state-repo.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { UsageError } from "../errors.ts";
+import type { Team as TeamShape } from "../schema/team.ts";
+import { runLaneTick as runLaneTickImport } from "./lane-tick.ts";
 
-const USAGE = "atmux committer --sweep [--team-dir <path>]";
+const USAGE =
+  "atmux committer <--sweep|--daemon|--drain> [--team-dir <path>] [--once] [--max-events N]";
 
 // ---------- Arg parsing ----------
 
 export interface ParsedCommitterArgs {
-  /** `sweep` is the only sub-verb shipping in T4. T6 may add others
-   *  (member-pane main loop entry) when it lands. */
-  subverb: "sweep";
+  /** Sub-verbs:
+   *   - `sweep`  : original ADR-134 branch-poll cron sweep (T4).
+   *   - `drain`  : ADR-202/203 cron-backstop event drain (one-shot
+   *                gitterConsume — drains pending `task.done` events
+   *                via the offset table, exits 0).
+   *   - `daemon` : ADR-202/203 long-lived NOTIFY/LISTEN consumer
+   *                (watchEvents loop; runs until SIGINT/SIGTERM). */
+  subverb: "sweep" | "drain" | "daemon";
   /** Override the team-dir for `requireTeam` (test injection +
    *  cross-team invocation from the cockpit shell). */
   teamDir?: string;
+  /** For `daemon`: exit after the first batch is processed. Test-mode
+   *  knob; useful for cron-driven re-invocation under restrictive envs
+   *  that don't want a long-lived process. */
+  once?: boolean;
+  /** For `daemon`: stop after processing this many events (safety
+   *  bound). Default unbounded. */
+  maxEvents?: number;
 }
 
 /** Pure parser. Throws `UsageError` on bad invocation; the verb-level
  *  wrapper catches and surfaces via the standard CLI dispatcher. */
 export function parseCommitterArgs(argv: ReadonlyArray<string>): ParsedCommitterArgs {
-  let subverb: "sweep" | undefined;
+  let subverb: "sweep" | "drain" | "daemon" | undefined;
   let teamDir: string | undefined;
+  let once = false;
+  let maxEvents: number | undefined;
   let i = 0;
   while (i < argv.length) {
     const a = argv[i];
     if (a === "--sweep" || a === "sweep") {
       subverb = "sweep";
       i += 1;
+      continue;
+    }
+    if (a === "--drain" || a === "drain") {
+      subverb = "drain";
+      i += 1;
+      continue;
+    }
+    if (a === "--daemon" || a === "daemon") {
+      subverb = "daemon";
+      i += 1;
+      continue;
+    }
+    if (a === "--once") {
+      once = true;
+      i += 1;
+      continue;
+    }
+    if (a === "--max-events") {
+      const v = argv[i + 1];
+      if (v === undefined || v === "") {
+        throw new UsageError({
+          what: "committer: --max-events requires a value",
+          hint: USAGE,
+        });
+      }
+      const n = Number.parseInt(v, 10);
+      if (!Number.isFinite(n) || n <= 0) {
+        throw new UsageError({
+          what: `committer: --max-events must be a positive integer (got ${v})`,
+          hint: USAGE,
+        });
+      }
+      maxEvents = n;
+      i += 2;
       continue;
     }
     if (a === "--team-dir") {
@@ -112,6 +187,8 @@ export function parseCommitterArgs(argv: ReadonlyArray<string>): ParsedCommitter
   }
   const out: ParsedCommitterArgs = { subverb };
   if (teamDir !== undefined) out.teamDir = teamDir;
+  if (once) out.once = true;
+  if (maxEvents !== undefined) out.maxEvents = maxEvents;
   return out;
 }
 
@@ -172,6 +249,10 @@ export async function committer(
   switch (parsed.subverb) {
     case "sweep":
       return await committerSweepVerb(parsed, opts);
+    case "drain":
+      return await committerDrainVerb(parsed, opts);
+    case "daemon":
+      return await committerDaemonVerb(parsed, opts);
   }
 }
 
@@ -236,13 +317,13 @@ export async function committerSweepVerb(
     // stub stays available as an explicit `opts.queueMergeAttempt`
     // injection (test seam only).
     // ADR-134 T3+T4 (t-2b7572d7): resolve member worktree from
-     // `<base>-<member>` branch via the team's worktreeIsolation
-     // convention. Mirrors `src/verbs/status.ts::resolveMemberWorktree`
-     // but takes the branch directly; the convention is `<teamRoot>/
-     // .atmux/worktrees/<member>` (or `team.worktreeRoot/<member>`).
-     // Returns null when worktreeIsolation is disabled — the
-     // dispatcher's rebase path treats null as "missing worktree" and
-     // transitions to terminal conflict.
+    // `<base>-<member>` branch via the team's worktreeIsolation
+    // convention. Mirrors `src/verbs/status.ts::resolveMemberWorktree`
+    // but takes the branch directly; the convention is `<teamRoot>/
+    // .atmux/worktrees/<member>` (or `team.worktreeRoot/<member>`).
+    // Returns null when worktreeIsolation is disabled — the
+    // dispatcher's rebase path treats null as "missing worktree" and
+    // transitions to terminal conflict.
     const worktreeRoot = team.worktreeRoot ?? ".atmux/worktrees";
     const resolveMemberWorktreePath = async (memberBranch: string): Promise<string | null> => {
       if (team.worktreeIsolation !== true) return null;
@@ -290,6 +371,376 @@ export async function committerSweepVerb(
   } finally {
     closeDb(db);
   }
+}
+
+// ---------- ADR-202/203 event-driven verbs ----------
+
+/**
+ * `atmux committer --drain` — one-shot cron-backstop drain of pending
+ * `task.done` events via the offset table. Same handler as `--daemon`
+ * but exits after a single `gitterConsume()` invocation. Replaces the
+ * fixed-cadence branch-poll of `--sweep` once consumers trust event-
+ * driven coordination (cron line decommission per ADR-202 §D6).
+ *
+ * Returns 0 always — drain itself never fails the cron line; handler
+ * throws are caught inside `withIdempotency` and re-attempted next
+ * tick. Hard config errors (no team.json, missing state.db) propagate
+ * through the standard verb error contract.
+ */
+export async function committerDrainVerb(
+  parsed: ParsedCommitterArgs,
+  opts: CommitterOpts = {},
+): Promise<number> {
+  const ctx = await buildEventDrivenContext(parsed, opts);
+  // Drain task.done via the gitter consumer (ADR-202 §I).
+  const gitterResult = await gitterConsumeImport({
+    db: ctx.db,
+    handler: ctx.handler,
+    logger: ctx.consumerLogger,
+  });
+  // Drain task.unclaimed via inline withIdempotency loop (ADR-202 §IV).
+  // Separate consumer name → independent offset → at-least-once recovery
+  // is per-consumer even when the two consumers' rates diverge.
+  let unclaimedProcessed = 0;
+  try {
+    const { withIdempotency } = await import("../abstractions/events.ts");
+    await withIdempotency(
+      ctx.db,
+      "atmux:lane-router",
+      { topics: ["task.unclaimed"] },
+      async (event) => {
+        if (event.topic !== "task.unclaimed") return;
+        await runLaneTickImport(ctx.atmuxDir, ctx.team);
+        unclaimedProcessed += 1;
+      },
+    );
+  } catch (e) {
+    ctx.logger.log(
+      `committer --drain: task.unclaimed drain threw — ${e instanceof Error ? e.message : String(e)} (will retry next tick)`,
+    );
+  }
+  // ADR-224 §D6 + ADR-226/227/229 wire-up (driver P0 step 3/5
+  // 2026-05-23): drain ORCHD_SUBSCRIPTIONS too so the drain path
+  // covers both hardcoded consumers (above) AND every registry-
+  // sourced handler. Driver-preferred over deploying `--start` mode
+  // (the latter requires the `__orchd__` window per ADR-224 §D6, gated
+  // on team restart). Each subscription is consumed under its own
+  // `consumerId` → independent offset → at-least-once recovery; a
+  // throw in one handler does NOT halt sibling subs (`continue`
+  // per-iteration; the wider try/catch covers iterator-itself faults).
+  //
+  // Idempotent `bootstrapOrchd` call: drain is one-shot per process,
+  // so the registry starts empty each invocation. Calling bootstrap
+  // here populates it for the iterator below; if a caller already
+  // populated the registry (tests, future `--start` path), the
+  // idempotency guard inside `registerOrchdSubscription` no-ops the
+  // duplicate consumerIds.
+  //
+  // Push-dispatcher wiring (ADR-232 §D1 — Story s-4-a74c6fc1 / t-5):
+  // inject `dispatchGitPush` so the auto-push handler's Gate-1 fires
+  // a real `git push origin <parentBase>` (default stub returned
+  // `skipped-not-mine` per ADR-232 §D3 safety net). Cage param =
+  // local team.name; remote cages are stubbed per ADR-232 §D2
+  // (local-only v1). Skipped-not-mine still routes back to the
+  // safety net on cage-not-found / push-rejection / fetch-failure
+  // (flag + offset-advance per ADR-232 OQ-3 anti-retry).
+  bootstrapOrchdImport({
+    db: ctx.db,
+    mergeDeps: {
+      // ADR-232 §D2.a wire-up: pass `localTeamName` so the dispatcher's
+      // local-cage-skip guard fires when the epic resolves to the
+      // running cage (prevents self-dispatch loops per the amendment).
+      // `resolveCage` + `invokeLocal` deliberately omitted in v1: the
+      // dispatcher's default cage-not-found path is QUIET
+      // (skipped-not-mine, no flag-add per the c477954-fix amendment) —
+      // the merge still fires via the in-cage `atmux epic-merge tick`
+      // cron path (ADR-091). Wire-up is sufficient for the §D3
+      // safety-net semantics; full cage-registry walker + EpicMergeContext
+      // assembly land in a follow-up Task once the transport choice
+      // (ADR-232 §D2.b OQ-1) resolves.
+      dispatchEpicMerge: async (epicId) =>
+        dispatchEpicMergeImport({ epicId }, { localTeamName: ctx.team.name }),
+    },
+    dissolveDeps: {
+      dispatchDissolveEpic: async (epicId) =>
+        dispatchDissolveEpicImport(
+          { epicId },
+          { localCageName: ctx.team.name },
+        ),
+    },
+    pushDeps: {
+      dispatchGitPush: async (parentBase) =>
+        dispatchGitPushImport(
+          { cage: ctx.team.name, branch: parentBase },
+          { localCageName: ctx.team.name },
+        ),
+    },
+    // ADR-231 §D2 — orchd auto-spawn handler wire-up. Passes
+    // atmuxDir + the running cage's team config so
+    // effectiveAutoSpawn can resolve per-team defaults[] and
+    // spawnEpicHandler can stamp `spawned_at` via the local
+    // state.db. Without this wire-up, the spawn subscriptions
+    // register with a stub that returns `skipped-row-missing` for
+    // every event (safe no-op pre-T-S2.5).
+    spawnDeps: {
+      atmuxDir: ctx.atmuxDir,
+      team: ctx.team,
+    },
+  });
+  let orchdProcessed = 0;
+  let orchdErrors = 0;
+  try {
+    const { withIdempotency } = await import("../abstractions/events.ts");
+    for (const sub of ORCHD_SUBSCRIPTIONS_IMPORT) {
+      try {
+        await withIdempotency(ctx.db, sub.consumerId, { topics: [sub.topic] }, async (event) => {
+          if (event.topic !== sub.topic) return;
+          await sub.handler(event);
+          orchdProcessed += 1;
+        });
+      } catch (e) {
+        orchdErrors += 1;
+        ctx.logger.log(
+          `committer --drain: orchd-sub ${sub.consumerId} (topic=${sub.topic}) threw — ${e instanceof Error ? e.message : String(e)} (will retry next tick)`,
+        );
+      }
+    }
+  } catch (e) {
+    ctx.logger.log(
+      `committer --drain: orchd subscriptions iterator threw — ${e instanceof Error ? e.message : String(e)} (will retry next tick)`,
+    );
+  }
+  ctx.logger.log(
+    `committer --drain: team='${ctx.team.name}' done=${gitterResult.processed} escalated=${gitterResult.escalated} unclaimed=${unclaimedProcessed} orchd-subs=${ORCHD_SUBSCRIPTIONS_IMPORT.length} orchd-processed=${orchdProcessed} orchd-errors=${orchdErrors}`,
+  );
+  ctx.closeDb(ctx.db);
+  return 0;
+}
+
+/**
+ * `atmux committer --daemon` — long-lived NOTIFY/LISTEN consumer.
+ * Subscribes to `task.done` via `watchEvents()` (~100ms wake latency
+ * under Honker, ~1.5s fallback) and routes each event through the
+ * production gitter merge handler.
+ *
+ * Cancellation: handles SIGINT + SIGTERM by aborting the watcher
+ * AbortController and exiting 0 once the in-flight event finishes.
+ *
+ * Test ergonomics: `--once` exits after the first batch; `--max-events
+ * N` exits after processing N events. Both also flip the cancel signal
+ * after the bound is hit.
+ */
+export async function committerDaemonVerb(
+  parsed: ParsedCommitterArgs,
+  opts: CommitterOpts = {},
+): Promise<number> {
+  const ctx = await buildEventDrivenContext(parsed, opts);
+  const ac = new AbortController();
+  const onSig = () => ac.abort();
+  process.once("SIGINT", onSig);
+  process.once("SIGTERM", onSig);
+  let nativeListener: NativeListenerHandle | null = null;
+  try {
+    const honkerLoaded = honkerStateImport(ctx.db)?.loaded ?? false;
+    // ADR-202 §Amendment 2026-05-22 (II) — prefer the atmux-listener
+    // Rust subprocess for kernel-blocking wake when (a) Honker is
+    // loaded and (b) the binary is available on disk. Falls back to
+    // the in-process 100ms poll path when either is missing.
+    const channel = "honker:stream:task.done";
+    const dbPath = `${ctx.atmuxDir}/state.db`;
+    let externalSignals: AsyncIterable<string> | undefined;
+    let wakeMode = "poll";
+    if (honkerLoaded) {
+      const binaryPath = resolveDefaultListenerBinary();
+      if (binaryPath !== null) {
+        try {
+          nativeListener = spawnNativeListener({
+            binaryPath,
+            dbPath,
+            channel,
+            onDiagnostic: (msg) => ctx.logger.log(`committer --daemon: ${msg}`),
+          });
+          externalSignals = nativeListener.signals;
+          wakeMode = "native-listener";
+          // Abort-bind: SIGINT/SIGTERM → ac.abort() (set above) doesn't
+          // interrupt the subprocess stdout read inside watchEvents'
+          // `for await (... of externalSignals)`. Closing the listener
+          // ends the iterator, which falls through to poll mode where
+          // the abort signal IS honored. Without this, --daemon hangs
+          // until the subprocess writes another line or the parent dies.
+          const stopOnAbort = (): void => {
+            try {
+              nativeListener?.stop();
+            } catch {
+              // ignore — best-effort cleanup
+            }
+          };
+          ac.signal.addEventListener("abort", stopOnAbort, { once: true });
+        } catch (e) {
+          ctx.logger.log(
+            `committer --daemon: native listener spawn failed (${e instanceof Error ? e.message : String(e)}) — falling back to poll`,
+          );
+        }
+      }
+    }
+    ctx.logger.log(
+      `committer --daemon: team='${ctx.team.name}' honker=${honkerLoaded ? "loaded" : "fallback"} wake=${wakeMode} starting watcher (topics=[task.done, task.unclaimed])`,
+    );
+    let processed = 0;
+    // Two consumers share the same Bun process but have independent
+    // offsets so a slow gitter merge doesn't starve lane-tick wake-up
+    // (and vice versa). Each event's `topic` discriminator picks the
+    // handler; offset for that handler is what gets advanced.
+    const gitterConsumer = "atmux:gitter";
+    const laneRouterConsumer = "atmux:lane-router";
+    // Watch BOTH topics in one subscription — orchd is the multi-topic
+    // dispatcher. The handler dispatches by topic; offsets are
+    // per-consumer (gitter vs lane-router) for independent recovery.
+    // We pick the LOWER of the two offsets as the initial cursor so
+    // no consumer falls behind silently.
+    const gitterOffset = loadOffsetImport(ctx.db, gitterConsumer);
+    const laneRouterOffset = loadOffsetImport(ctx.db, laneRouterConsumer);
+    const initialOffset = gitterOffset < laneRouterOffset ? gitterOffset : laneRouterOffset;
+    const watcher = watchEventsImport(ctx.db, {
+      topics: ["task.done", "task.unclaimed"],
+      signal: ac.signal,
+      initialOffset,
+      honkerLoaded,
+      ...(externalSignals ? { externalSignals } : {}),
+    });
+    for await (const event of watcher) {
+      try {
+        if (event.topic === "task.done") {
+          // Skip if this event is at-or-before gitter's saved offset
+          // (covers the case where lane-router was behind so we re-
+          // drained shared history).
+          if (event.eventId <= gitterOffset) continue;
+          const outcome = await ctx.handler(event);
+          saveOffsetImport(ctx.db, gitterConsumer, event.eventId);
+          processed += 1;
+          ctx.logger.log(
+            `committer --daemon: handled task.done eventId=${event.eventId} taskId=${event.taskId} outcome=${outcome}`,
+          );
+        } else if (event.topic === "task.unclaimed") {
+          if (event.eventId <= laneRouterOffset) continue;
+          // Run the same lane-tick logic the cron */5 would run.
+          // This is broader than strictly necessary — lane-tick visits
+          // ALL members, not just the lane named in the event — but
+          // re-using the existing verb keeps the behavior identical
+          // to the cron path. The win is latency: 5min → ~1sec on
+          // a fresh unclaimed task.
+          const result = await runLaneTickImport(ctx.atmuxDir, ctx.team);
+          saveOffsetImport(ctx.db, laneRouterConsumer, event.eventId);
+          processed += 1;
+          ctx.logger.log(
+            `committer --daemon: handled task.unclaimed eventId=${event.eventId} taskId=${event.taskId} lane=${event.lane} visited=${result.visited}`,
+          );
+        }
+      } catch (e) {
+        ctx.logger.log(
+          `committer --daemon: handler threw on eventId=${event.eventId} topic=${event.topic} — NOT advancing offset; will retry next NOTIFY: ${e instanceof Error ? e.message : String(e)}`,
+        );
+        break; // stop drain, will retry on next signal
+      }
+      if (parsed.once === true) {
+        ac.abort();
+        break;
+      }
+      if (parsed.maxEvents !== undefined && processed >= parsed.maxEvents) {
+        ac.abort();
+        break;
+      }
+    }
+    ctx.logger.log(
+      `committer --daemon: stopped (processed=${processed} aborted=${ac.signal.aborted})`,
+    );
+  } finally {
+    process.removeListener("SIGINT", onSig);
+    process.removeListener("SIGTERM", onSig);
+    if (nativeListener !== null) nativeListener.stop();
+    ctx.closeDb(ctx.db);
+  }
+  return 0;
+}
+
+/**
+ * Shared bootstrap for `--drain` and `--daemon`. Loads team + opens
+ * state.db + boots Honker + builds the production gitter merge handler.
+ * Returns the assembled context — caller owns DB close via `closeDb`.
+ *
+ * Exported for testing: see `tests/unit/verbs/committer-event-driven.test.ts`.
+ */
+export async function buildEventDrivenContext(
+  parsed: ParsedCommitterArgs,
+  opts: CommitterOpts = {},
+): Promise<{
+  team: TeamShape;
+  teamRoot: string;
+  atmuxDir: string;
+  baseBranch: string;
+  db: Database;
+  closeDb: (db: Database) => void;
+  handler: (
+    event: import("../schema/events.ts").TaskDonePayload,
+  ) => Promise<import("../core/gitter-consumer.ts").HandlerOutcome>;
+  logger: Logger;
+  consumerLogger: import("../core/gitter-consumer.ts").Logger;
+}> {
+  const logger = opts.logger ?? createLogger();
+  const git = opts.git ?? defaultGitSpawn;
+  const openDb = opts.openDb ?? ((p: string) => openDatabase(p, migrations));
+  const closeDb = opts.closeDb ?? closeDatabase;
+  const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
+  const team = await requireTeam(dirOpts);
+  const atmuxDir = await getAtmuxDir(dirOpts);
+  const teamRoot = atmuxDir.endsWith("/.atmux")
+    ? atmuxDir.slice(0, -"/.atmux".length)
+    : join(atmuxDir, "..");
+  const merger = await resolveMergerConfig(team, teamRoot, { git });
+  const baseBranch = merger.baseBranch;
+  const db = openDb(join(atmuxDir, "state.db"));
+  // Boot Honker against this db so getHonkerState() resolves true when
+  // the substrate is healthy. Best-effort — bootHonker never throws.
+  bootHonkerImport(db);
+  const worktreeRoot = team.worktreeRoot ?? ".atmux/worktrees";
+  const resolveMemberWorktreePath = async (memberBranch: string): Promise<string | null> => {
+    if (team.worktreeIsolation !== true) return null;
+    const prefix = `${baseBranch}-`;
+    if (!memberBranch.startsWith(prefix)) return null;
+    const member = memberBranch.slice(prefix.length);
+    if (member.length === 0) return null;
+    return worktreeRoot.startsWith("/")
+      ? join(worktreeRoot, member)
+      : join(teamRoot, worktreeRoot, member);
+  };
+  const consumerLogger: import("../core/gitter-consumer.ts").Logger = {
+    info: (msg) => logger.log(msg),
+    warn: (msg) => logger.log(msg),
+    error: (msg) => logger.log(msg),
+  };
+  const handler = createGitterMergeHandlerImport({
+    teamRoot,
+    baseBranch,
+    git,
+    mergerRepo: new MergerStateRepo(db),
+    kanbanRepo: new KanbanRepo(db),
+    logger: consumerLogger,
+    resolveMemberWorktreePath,
+    emit: emitImport,
+    atmuxDir,
+    roster: team.members.map((m) => m.name),
+  });
+  return {
+    team,
+    teamRoot,
+    atmuxDir,
+    baseBranch,
+    db,
+    closeDb,
+    handler,
+    logger,
+    consumerLogger,
+  };
 }
 
 // ---------- Logging ----------
