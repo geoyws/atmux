@@ -19,7 +19,7 @@ All three lanes (T3 / T4 / T5) ship their intended code + tests in trunk. Each n
 
 ## Root cause
 
-Atmux epic-team mode `worktreeIsolation: false` (per `[ADR-091](../adr/091-epic-team-fan-in.md)` + `.atmux/team.json` of this epic) shares **one** git worktree + **one** `.git/index` across every member's Claude pane. `git add` writes to the shared index; `git commit` reads from + clears it. Two parallel `add`+`commit` cycles can interleave in either direction:
+Atmux epic-team mode `worktreeIsolation: false` (per `[ADR-091](../adr/091-kanban-driven-auto-merge.md)` + `.atmux/team.json` of this epic) shares **one** git worktree + **one** `.git/index` across every member's Claude pane. `git add` writes to the shared index; `git commit` reads from + clears it. Two parallel `add`+`commit` cycles can interleave in either direction:
 
 - **Absorption**: A's `git add <my-files>` lands on top of B's already-staged-but-uncommitted files. A's `git commit` ships A's intended diff *plus* B's unintended files.
 - **Swap**: A `git add`s file X; B `git commit`s before A's commit fires; B's commit ships A's staged X under B's message; A's next `git commit` attempts fail with "nothing to commit".
@@ -78,7 +78,7 @@ For reviewer-grep:
 ## References
 
 - Memory entry: `~/.claude-personal/projects/-root-work-src-atmux/memory/feedback_shared_index_commit_race_hazard.md` (updated with §3 covering this incident).
-- ADR-091 §epic-team fan-in — `docs/adr/091-epic-team-fan-in.md` (why `worktreeIsolation: false` is the steady-state default for ship-velocity).
+- ADR-091 §epic-team fan-in — `docs/adr/091-kanban-driven-auto-merge.md` (why `worktreeIsolation: false` is the steady-state default for ship-velocity).
 - ADR-032 §socket-pubsub messaging — `docs/adr/032-socket-pubsub-messaging-layer.md` (the cross-pane STOP message that prevented be-2's force-push).
 - ADR-027 §Orchestration — `docs/adr/027-team-rename-verb-and-topology-invariant.md` (the parent EPIC; T7 §Deviations will cross-link here).
 - Prior incidents 2026-05-18 (epic `e-f28c2596`): commits `4133af1` (absorption), `7cf5b02` + `1b6b111` (swap + follow-up).

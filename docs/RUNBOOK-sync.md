@@ -28,7 +28,7 @@ atmux sync claude-team-json
 
 `--dry-run` renders a unified-diff-style preview to stdout (`+` additions / `-` removals / space unchanged) per ADR-164 §"Behavior" step 8. Exit `0` regardless of whether changes would land. The on-disk `.claude/team.json` is untouched.
 
-Without `--dry-run` the verb writes atomically via `abstractions/fs.atomicWrite` (mktemp + rename per [ADR-005](adr/005-json-and-lock.md)) and stamps an `_atmuxSync` marker block at the file's top level. Next invocation reads the marker and short-circuits if nothing changed (idempotent — see §3).
+Without `--dry-run` the verb writes atomically via `abstractions/fs.atomicWrite` (mktemp + rename per [ADR-098](adr/098-json-and-locking.md), formerly `adr-bun/005-json-and-locking.md` pre-consolidation) and stamps an `_atmuxSync` marker block at the file's top level. Next invocation reads the marker and short-circuits if nothing changed (idempotent — see §3).
 
 ### `--overwrite-briefs`
 
