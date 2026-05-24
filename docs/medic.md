@@ -13,7 +13,7 @@ A second Claude Opus session in the operator cockpit, sitting at window 2 (right
 | **Owns** | cross-team dispatch, ad-hoc decisions | diagnosis loop, complaint authoring, structural fixes | one team's coordination |
 | **Talks to operator via** | direct (it IS the REPL) | `pending-decisions.md` + Discord pings | driver-inbox + Discord |
 
-(Per [ADR-135](./adr/135-cockpit-naming.md) the cockpit session is `atmux_cockpit` post-rename; pre-ADR-135 deployments still see `atmux_teams`.)
+(Per [ADR-135](./adr/135-cockpit-naming-convention.md) the cockpit session is `atmux_cockpit` post-rename; pre-ADR-135 deployments still see `atmux_teams`.)
 
 ## When you want it
 

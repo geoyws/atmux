@@ -151,7 +151,7 @@ Discipline.
 
 `<surface>` cites the inventory category (verb signature / brief vocabulary / state-file shape / cron template / event schema / ADR-named invariant) so the member can find the right doc to update without re-deriving it.
 
-## main/master push refuse — AC scope-check ([ADR-028](../../docs/adr/028-main-master-pr-only.md))
+## main/master push refuse — AC scope-check ([ADR-028](../../docs/adr/028-main-master-pr-only-no-agent-push.md))
 
 `main` / `master` is **PR-only** fleet-wide. REJECT signoff on any Story whose `acceptanceCriteria` (or any child Task body / deliverable) contains the prohibited push phrasing — even when surrounded by qualifications. The reviewer is the AC-level scope-check; committer / lead enforce at dispatch + commit time.
 

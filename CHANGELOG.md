@@ -20,7 +20,7 @@ Tier 2 (member-side pull-protocol fallback) ships as a follow-up release once Ti
 
 ### 🏷️ `atmux team rename` — forward-going verb (ADR-027 shipped, EPIC e-1e223687)
 
-Closes the 2026-04-27 gap: [ADR-027](docs/adr/027-team-rename-verb-and-topology-invariant.md) was accepted but never implemented. Sibling to `atmux team repair-rename` (recovery side, [ADR-103](docs/adr/103-team-repair-rename.md)). The verb renames a team atomically across every surface the team-name appears in — `team.json:.name`, tmux session + cockpit team-viewer window, cron markers, cockpit registry (`cockpit.json::sessions[]` DFS — superseded shape per [ADR-089](docs/adr/089-recursive-cockpit-sessions.md) §B), single-session capture file — with rollback-staged 10-step orchestration + refuse-gate preflight (in-progress kanban tasks soft-refuse; name collision + invalid charset hard-refuse).
+Closes the 2026-04-27 gap: [ADR-027](docs/adr/027-team-rename-verb-and-topology-invariant.md) was accepted but never implemented. Sibling to `atmux team repair-rename` (recovery side, [ADR-103](docs/adr/103-team-repair-rename.md)). The verb renames a team atomically across every surface the team-name appears in — `team.json:.name`, tmux session + cockpit team-viewer window, cron markers, cockpit registry (`cockpit.json::sessions[]` DFS — superseded shape per [ADR-089](docs/adr/089-hierarchical-cockpit.md) §B), single-session capture file — with rollback-staged 10-step orchestration + refuse-gate preflight (in-progress kanban tasks soft-refuse; name collision + invalid charset hard-refuse).
 
 Implementation across 5 files per the shared-worktree commit-race split pattern (see [`docs/audit/2026-05-20-shared-index-swap.md`](docs/audit/2026-05-20-shared-index-swap.md) for the structural rationale):
 
@@ -67,7 +67,7 @@ Headline: **sentinel epic-team coverage (dynamic discovery to follow) + `atmux r
 
 **Cross-refs**:
 - [ADR-183 §Amendment 2026-05-20](docs/adr/183-sentinel-scope-includes-epic-teams.md) — supersedes the §D1 static-cockpit-roster assumption with the dynamic-discovery model.
-- [ADR-185](docs/adr/185-sentinel-dynamic-epic-discovery.md) — NEW proposed ADR for the dynamic-discovery follow-up (t-b51f085b is its impl Task).
+- [ADR-206](docs/adr/206-sentinel-dynamic-epic-discovery.md) — NEW proposed ADR for the dynamic-discovery follow-up (t-b51f085b is its impl Task).
 - [ADR-187](docs/adr/187-coordination-skills-plugin.md) — NEW proposed ADR documenting the sibling Claude Code skills plugin (`~/work/journals/.sb/claude-skills/plugins/coordination/`).
 - Filed-but-pending: t-b51f085b (sentinel dynamic epic-team discovery, P1) · t-ccf06b97 (sentinel per-tick token budget + per-team timeout, P2) · t-a0396228 (pre-commit hook: migration delete + ADR status downgrade, P2) · t-c0f0ff5a (MEMORY.md auto-archive, P3) · t-60031ded (`atmux bau` native verb, P3).
 
@@ -190,7 +190,7 @@ Decouples the `bootClaudeMember` already-booted sentinel from the rotate-after-`
 **Cross-refs**:
 
 - [ADR-138](docs/adr/138-verified-send-keys.md) §Amendment 2026-05-18 — annotates `detectAndResubmit` as the new downstream consumer + names the wiring sites.
-- [ADR-168](docs/adr/168-send-keys-failures-log.md) — escalation log target; `safeSendKeysWithVerify`'s built-in `onFail:"escalate"` path owns disk persistence (helper `failureLogFn` re-emits to verb stderr only).
+- [ADR-168](docs/adr/168-send-keys-log-rotation-policy.md) — escalation log target; `safeSendKeysWithVerify`'s built-in `onFail:"escalate"` path owns disk persistence (helper `failureLogFn` re-emits to verb stderr only).
 - memory `feedback_atmux_send_for_queued_panes` — revised: post-fix, cron-fired verbs auto-unstick queued panes; driver-side `atmux send <member>` is now a fallback for the rare verify-exhausted case, not the primary recovery path.
 - memory `feedback_shared_index_commit_race_hazard` (NEW, 2026-05-18 e-f28c2596) — observed-twice pattern in this EPIC: shared-worktree shared-index can absorb or swap staged files between concurrent commits (4133af1 pre-push absorption; 7cf5b02/1b6b111 post-push subject-content swap). Mandatory pre/post-commit `git diff --cached --stat` + `git show --stat HEAD` ritual mitigates.
 
@@ -213,7 +213,7 @@ Closes two CLI gaps surfaced during rentx E1 reviewer signoff (operator-authoriz
 
 ### 🟢 Shipped — `atmux cockpit rotate <session-name>` — Rung C canonical rotation verb (ADR-167, EPIC e-0b90d6ac, 2026-05-18)
 
-Operator-fired rotation of cockpit role panes (`medic`, `sentinel`, `<team-name>`) with brief-paste-ready handoff. Closes the previously manual `/bruh` skill §3a fallback (Rung C of the escalation chain — Rung A = member rotate, Rung B = lead rotate via medic, Rung D = full cockpit rebuild). Caller-scope=driver only per [ADR-033](docs/adr/033-caller-scope-gate.md). `superdriver` unconditionally refused (operator REPL pane).
+Operator-fired rotation of cockpit role panes (`medic`, `sentinel`, `<team-name>`) with brief-paste-ready handoff. Closes the previously manual `/bruh` skill §3a fallback (Rung C of the escalation chain — Rung A = member rotate, Rung B = lead rotate via medic, Rung D = full cockpit rebuild). Caller-scope=driver only per [ADR-033](docs/adr/033-kanban-driver-only-flag.md). `superdriver` unconditionally refused (operator REPL pane).
 
 - **[`src/verbs/cockpit-rotate.ts`](src/verbs/cockpit-rotate.ts)** (NEW) — full verb implementation. Argv parser + 4 pre-flight gates (user-not-typing on superdriver compose-box, pane-idle on target window, uptime ≥60min on per-role session-start marker, never-rotate-superdriver) + per-role respawn matrix (medic / sentinel-claude / sentinel-cursor / team-driver) + handoff write-path + audit log. Test seams exposed on `CockpitRotateOpts` for hermetic fixtures (`loadCockpit`, `safeSendKeysWithVerify`, `autoStartMedicLoop`, `autoStartSentinelLoop`, `readAuditLog`, `readLeadOutboxTail`, `atomicWrite`).
 - **[`src/abstractions/claude-account-wrapper.ts`](src/abstractions/claude-account-wrapper.ts)** (NEW) — pure resolver per [ADR-094](docs/adr/094-c-alias-spawn-convention.md) c-alias convention. Maps `claudeAccount.configDir` to the operator's shell wrapper name (`/root/.claude → claude`, `-unum → c-u`, `-icloud → c-ic`, `-ifca → c-i`); unknown configDirs throw `ConfigError` with the registered-set enumeration. Load-bearing for medic + sentinel-claude respawn lines; skipped for sentinel-cursor (no claude TUI) + team-driver (cageRetryLoop per [ADR-162](docs/adr/162-atmux-owns-tmux-infrastructure.md)).
@@ -762,7 +762,7 @@ Operator-fired rotation of cockpit role panes (`medic`, `sentinel`, `<team-name>
 - **ADR-153: auto-promotion rules — kanban-blocked → complaint (24h) / driver-inbox → flag (12h) / lead-outbox → inbox_messages (6h) + `blocked_at` column (proposed)** ([docs/adr/153-auto-promotion-rules.md](docs/adr/153-auto-promotion-rules.md)). Three deterministic, idempotent, cron-driven rules that auto-promote stale signals from low-visibility to high-visibility surfaces. R1: kanban Tasks at `status=blocked` aged >24h auto-file a complaint with `blocker_class="dep-not-shipped"` default (override via `[blocker_class:X]` Task-body marker); auto-resolves when the Task transitions out of blocked. R2: driver-inbox rows with no triage glyph aged >12h auto-append a `[stale-inbox]` flag entry (one-shot, persists until manual `atmux flag resolve`). R3: lead-outbox `## Open` rows unacked >6h auto-emit a heads-up via `inbox_messages` (dedup'd by `relates_to_outbox` predicate; auto-archives via existing `atmux outbox --ack`). New `tasks.blocked_at INTEGER NULL` column set in same transaction as `status='blocked'` UPDATE; existing-row backfill heuristic `blocked_at = claimed_at` is an acknowledged cut-over compromise. Wires into existing whip cycle (extended turn appends `runGroomPass()` — no new cron line); standalone invocation via `atmux groom [--rules R1,R2,R3] [--dry-run]`. Thresholds configurable per-team via `team.json.groom.autoPromotionThresholds` (`r1Hours`/`r2Hours`/`r3Hours`), fleet-default via `cockpit.json`. Every rule carries a `NOT EXISTS (... opened_via=<rule-id> ...)` idempotence predicate — reviewer's load-bearing audit-row. All 8 §Decision-anchor pre-flags folded (default class + idempotence + cron-not-write-hook + flag-stays-one-cycle + backfill compromise + configurable thresholds + cross-team deferred + R3 dedup). Closes complaint `c-33475fd6` (originator: driver-claude-sopx /bruh sweep 2026-05-16 00:17 MYT). Kanban Task `t-28a75ee5` (T1 doc; T2–T7 staged impl). Temporal-overlay sibling of ADR-152; foundation freshness signal for ADR-151 (unblocker).
 
 ### 🟢 Shipped — proposed ADRs
-- **ADR-152: atmux blockers list unified verb (proposed)** ([docs/adr/152-atmux-blockers-list-unified-verb.md](docs/adr/152-atmux-blockers-list-unified-verb.md)). New `atmux blockers list [--json] [--class <c>] [--source <s>] [--max-age <duration>]` verb fans across the 7 coordination surfaces (kanban / complaints / flags / driver-inbox / lead-outbox / decisions / todo) and emits normalized rows `{id, source, opened_at, age, summary, blocker_class, suggested_action, related_task_id?}`. 8-value `blocker_class` closed enum: `decision-pending` / `member-stuck` / `cross-lane-WIP` / `tooling-broken` / `stale-claim` / `dep-not-shipped` / `review-pending` / `push-policy-gate`. READ-ONLY aggregation layer — markdown surfaces stay markdown; SQLite surfaces (kanban, complaints) gain one additive `blocker_class` column; works BEFORE AND AFTER ADR-154 storage port. Closes complaint `c-1d28fc72` (originator: driver-claude-sopx 2026-05-15). Kanban Task `t-94a1c95e` (T1 doc; T2–T6 staged impl). Foundation for ADR-151 (unblocker) + ADR-153 (auto-promotion) + ADR-154 (storage port).
+- **ADR-152: atmux blockers list unified verb (proposed)** ([docs/adr/152-blockers-list-unified-verb.md](docs/adr/152-blockers-list-unified-verb.md)). New `atmux blockers list [--json] [--class <c>] [--source <s>] [--max-age <duration>]` verb fans across the 7 coordination surfaces (kanban / complaints / flags / driver-inbox / lead-outbox / decisions / todo) and emits normalized rows `{id, source, opened_at, age, summary, blocker_class, suggested_action, related_task_id?}`. 8-value `blocker_class` closed enum: `decision-pending` / `member-stuck` / `cross-lane-WIP` / `tooling-broken` / `stale-claim` / `dep-not-shipped` / `review-pending` / `push-policy-gate`. READ-ONLY aggregation layer — markdown surfaces stay markdown; SQLite surfaces (kanban, complaints) gain one additive `blocker_class` column; works BEFORE AND AFTER ADR-154 storage port. Closes complaint `c-1d28fc72` (originator: driver-claude-sopx 2026-05-15). Kanban Task `t-94a1c95e` (T1 doc; T2–T6 staged impl). Foundation for ADR-151 (unblocker) + ADR-153 (auto-promotion) + ADR-154 (storage port).
 
 ### 📋 Proposed — ombudsman role + release-notes layout (ADR-147)
 
@@ -1004,7 +1004,7 @@ Operator-fired rotation of cockpit role panes (`medic`, `sentinel`, `<team-name>
   in `state_kv` (feature `superdoctor-self-heal-escalation`, key per
   `complaint_id`, 1h re-fire window). Documented end-to-end in
   [`docs/superdoctor.md` § "Self-escalation when fixes keep failing"](docs/superdoctor.md).
-- **`atmux stop --soft` + resume manifest** ([ADR-087](docs/adr/087-stop-soft-resume-manifest.md)).
+- **`atmux stop --soft` + resume manifest** ([ADR-087](docs/adr/087-atmux-stop-soft.md)).
   Graceful counterpart to bare `stop`. Reads kanban for in-progress Tasks,
   sends a `# soft-stop incoming — finish current operation, no new claims`
   send-keys comment to each non-shell member pane (enter-false so it lands
@@ -1025,7 +1025,7 @@ Operator-fired rotation of cockpit role panes (`medic`, `sentinel`, `<team-name>
   isolated (one exception doesn't poison the report); all three reads are
   LIVE per ADR-068 §HC#4. Unblocks the whip §2.5 wire (t-21c3aa64) and
   status-verb row (t-9281649f).
-- **`atmux groom` absorbs lane-drift-check** ([ADR-062](docs/adr/062-lane-claim-auto-pickup.md)
+- **`atmux groom` absorbs lane-drift-check** ([ADR-127](docs/adr/127-lane-claim-auto-pickup.md)
   §5). Daily 04:00 sweep gains a 6th sub-op — lane-drift detection across
   every team in the cockpit. Paired with the every-2-min cron lane-tick
   line (below) for fast-feedback drift detection inside the day; groom is
@@ -1034,7 +1034,7 @@ Operator-fired rotation of cockpit role panes (`medic`, `sentinel`, `<team-name>
   a window). The standalone `atmux lane-drift-check` verb stays — useful
   for operator ad-hoc diagnosis.
 - **Cron emits `lane-tick` line + `crons.laneTickEnabled` kill-switch**
-  ([ADR-062](docs/adr/062-lane-claim-auto-pickup.md) §Decision 4).
+  ([ADR-127](docs/adr/127-lane-claim-auto-pickup.md) §Decision 4).
   `src/core/cron.ts::renderCronLines()` now emits a 7th line at end-of-
   block: `*/2 * * * * <baseEnv> lane-tick >> <atmuxDir>/logs/lane-tick.log
   2>&1`. Hardcoded `*/2` cadence per §OQ2 (tighter amplifies classifier
@@ -1053,7 +1053,7 @@ Operator-fired rotation of cockpit role panes (`medic`, `sentinel`, `<team-name>
   runs via indexed query instead of grep. SQLite migration in
   `src/migrations/`.
 - **`atmux epic` + `atmux story` sub-verbs — bun port**
-  ([ADR-007](docs/adr/007-pull-model-kanban.md) hierarchy verbs).
+  ([ADR-007](docs/adr/007-pull-kanban.md) hierarchy verbs).
   Ports `lib/epic.sh` (318 LOC) + `lib/story.sh` (388 LOC) to TS. New
   `src/core/epic.ts` (state-machine + auto-dispatch summary on review
   entry) + `src/core/story.ts` (4 gates: non-test child tasks done →
@@ -1141,7 +1141,7 @@ Operator-fired rotation of cockpit role panes (`medic`, `sentinel`, `<team-name>
   `-b <base>-<member>` per call; cockpit's `--force-cycle` safety gate
   prevents accidental cross-member branch overwrite.
 
-### ✨ Added — Driver-only Task refuse-gate ([ADR-033](docs/adr/033-driveronly-task-refuse-gate.md))
+### ✨ Added — Driver-only Task refuse-gate ([ADR-033](docs/adr/033-kanban-driver-only-flag.md))
 
 - **`Task.driverOnly: boolean`** schema field. `claim --next` skips
   driver-only Tasks during auto-pickup; explicit `atmux claim <id>` from
@@ -1180,7 +1180,7 @@ Operator-fired rotation of cockpit role panes (`medic`, `sentinel`, `<team-name>
   surface under `<atmuxDir>/logs/events.jsonl` (single line per state-
   mutating verb invocation; replaces ad-hoc per-verb logs).
 - **`fix(cron)` config-driven schedules** — see ADR-079 §A above.
-- **`fix(budget-probe)` opt-in OAuth refresh** ([ADR-078](docs/adr/078-budget-probe-oauth-refresh.md))
+- **`fix(budget-probe)` opt-in OAuth refresh** ([ADR-078](docs/adr/078-probe-budget-refresh-opt-in.md))
   — cockpit-rebuild TUI race resolved.
 
 ### ♻️ Changed — post-0.6.0
