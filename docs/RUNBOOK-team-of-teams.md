@@ -1,5 +1,15 @@
 # RUNBOOK — team-of-teams lifecycle (pre-sopx capstone)
 
+> **2026-05-24 alignment** — Post-[ADR-233](adr/233-cron-auto-install-disabled-trust-orchd.md)
+> atmux NEVER writes to crontab; the Rust `atmux-orchd` daemon runs
+> per-team with 4 in-process tickers (5min sweep-merges · 15min
+> context-scan + budget-scan · hourly log-rotate · 24h housekeep) +
+> 10 honker consumers (merge / dissolve / push / spawn:on-ready /
+> spawn:on-unblocked / dissolve-solo-worker / complaint / rotation /
+> gitter). Anywhere this runbook says "wait for the `*/N` cron tick",
+> read that as "orchd's in-process ticker fires every N minutes — or
+> invoke `atmux <verb>` directly to push the cycle yourself."
+
 Operator-facing playbook for the team-of-teams (epic-team) lifecycle that atmux exercises end-to-end in `tests/e2e/team-of-teams-pre-sopx.test.ts`. Pairs ADR-089 (cockpit-walk DFS substrate) + ADR-090 (epic-team lifecycle) + ADR-091 (epic-merge state machine) + ADR-092 (cross-team tell-lead) into a single operator narrative.
 
 ⚠️ **Status: phase-2 partial — cross-team `tell-lead` paths (§Cross-team tell-lead) flipped to Verified per t-bc4fdb19. Lifecycle walk (§Sopx adoption) + doctor checks (§Doctor checks) remain phase-1 / t-c2e544b6 scope. Operator-runnable surfaces (`atmux team spawn-epic` / `dissolve-epic` / `epic-merge` cron) are now on the up-impl-3 branch via cherry-pick of `ba7ee3f` (ADR-092) + `a670648` (phase-1 skeleton); committer fan-in to trunk is in flight (committer-stuck-bug t-f4088323).**

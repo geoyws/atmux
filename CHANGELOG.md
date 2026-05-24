@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 📐 Architecture alignment — orchd + Honker is the runtime; cockpit roles trimmed (2026-05-24)
+
+Codebase-wide alignment pass after the orchd / Honker session shipped 7 epics:
+
+- **`atmux-orchd` (Rust, `rust/atmux-orchd/`) is the per-team runtime** with 10 in-process event consumers + 4 tickers (5min sweep-merges · 15min context-scan + budget-scan · hourly log-rotate · 24h housekeep). Replaces the legacy cron-fired sweep cadences. atmux NEVER writes to crontab per [ADR-233](docs/adr/233-cron-auto-install-disabled-trust-orchd.md); the source-side cron-install path was retired in commit `8e052e9`, with no-op shims at `src/abstractions/crontab.ts` / `src/core/cron.ts` / `src/verbs/cron-{install,remove}.ts` / `src/core/cursor-recipes/fix-cron-pollution.ts` kept for build-compile until importers migrate (commit `374ca7a`).
+- **Honker = in-DB messaging substrate** per [ADR-202](docs/adr/202-honker-in-db-messaging-substrate.md) + [ADR-203](docs/adr/203-event-topic-taxonomy.md). `emit(db, payload)` in `src/abstractions/events.ts` auto-detects honker-loaded state per the ADR-202 §Amendment 2026-05-24. Rust orchd dispatches via Bun `--handle-one --consumer-id <id> --topic <t>` per event; consumers register at `bootstrapOrchd` in `src/core/orchd-bootstrap.ts` (currently 10 entries).
+- **Cockpit roles trimmed (lead-gated retirements):**
+  - **Sentinel retired** per [ADR-211](docs/adr/211-retire-sentinel-role-distribute-to-honker-consumers.md) — orchd consumers absorb observation.
+  - **Medic narrowed to on-demand `atmux medic diagnose <team>`** per [ADR-212](docs/adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md) — routine rotation candidate emission flows as events to lead.
+  - **Jury retired** per [ADR-213](docs/adr/213-retire-jury-reviewer-absorbs-acceptance-criteria.md) — reviewer absorbs Acceptance-Criteria verification.
+  - **Ombudsman retired** per [ADR-214](docs/adr/214-retire-ombudsman-lead-absorbs-complaint-adjudication-via-honker.md) — `complaint.filed` → consumer → `tell-lead` → lead.
+  - Retired roles continue running as the safety net until the cleanup-EPIC cutover (≥30 days after `e-honker-observation-watchdogs` ships stable per ADR-212 §D5 / ADR-213 §D5 / ADR-214 §D7).
+- **New consumers shipped this session:**
+  - `atmux:complaint-consumer` (ADR-214 / e-92b8fa97, commit `079098c`) — wires `complaint.filed` → tell-lead.
+  - `atmux:rotation-consumer` (ADR-212 / e-cc3728bf, commit `89ebbc5`) — wires `member.context-high` → tell-lead.
+- **New orchd subverbs shipped this session:**
+  - `atmux orchd --sweep-merges` (e-11-446429c9, commit `dab3935`) — 5-min in-process backfill sweep.
+  - `atmux orchd --scan-context` (e-13-04c8b3bf, commit `72896a6`) — emits `member.context-high`.
+  - `atmux orchd --scan-budget` (e-14-0f156732, commit `e70ba9e`) — 15min consolidated band-warning + refresh-soon dedup.
+  - `atmux orchd --housekeep` (e-12-640853f3 §S4, commit `8980a3f`) — 24h events / offsets / logs / merger_state prune.
+- **Cross-cuts:** doc-side alignment notes added to `docs/PRD.md`, `docs/ARCHITECTURE.md`, `docs/medic.md`, `docs/RUNBOOK-stall-recovery.md`, `docs/RUNBOOK-team-of-teams.md`. Stale `cron-fired` / `Cron-fired` source-comment heads on `src/verbs/lane-stall-tick.ts`, `src/verbs/lane-drift-check.ts`, `src/verbs/discorder.ts`, `src/core/discorder.ts`, `src/core/queued-text-resubmit.ts`, `src/core/groom-archive.ts` re-pointed to orchd / operator-on-demand. `checkCronBlock` doctor probe in `src/verbs/doctor.ts` re-framed as legacy opt-in (zero cron blocks is now the canonical post-ADR-233 state). Cron-shim files NOT removed — load-bearing for build until importers (`src/verbs/{cockpit,topo-io,stop,team-rename,team-repair-rename,doctor,poke,start}.ts` + `src/core/{soft-stop,topo-aggregate,orchd-housekeep,orchd-merge-sweep}.ts`) migrate; that's its own cleanup-EPIC.
+
 ### ✨ Added — `resolveTmuxBin()` 3-tier resolver + `vendored-tmux-binary` doctor probe (ADR-191, e-162046c7)
 
 First half of the vendored-tmux ship — the source-side resolution chain lands before the build-side install pipeline so the runtime is ready for the binary the moment `build:install` learns to ship it.

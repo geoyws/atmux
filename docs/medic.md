@@ -1,5 +1,21 @@
 # medic
 
+> **2026-05-24 alignment** — Medic is **narrowed to on-demand**
+> per [ADR-212](./adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md).
+> The hourly cockpit-W2 scheduled-tick role retires once the
+> `e-honker-observation-watchdogs` consumer set ships stable ≥30 days
+> (cleanup-EPIC cutover). Until then medic continues running as the
+> safety net. Going forward operators invoke `atmux medic diagnose <team>`
+> directly when they want a diagnosis pass; routine observation +
+> rotation candidate emission migrates to lead-gated Honker consumers
+> (`member.context-high → tell-lead`, `complaint.filed → tell-lead`,
+> etc.) per [ADR-202](./adr/202-honker-in-db-messaging-substrate.md) /
+> [ADR-211](./adr/211-retire-sentinel-role-distribute-to-honker-consumers.md) /
+> [ADR-214](./adr/214-retire-ombudsman-lead-absorbs-complaint-adjudication-via-honker.md).
+> ADR-077's **probe substrate library** (`src/core/doctor-class.ts`,
+> doctor probe registry) PERSISTS — only the cockpit-tier scheduled-tick
+> role retires.
+
 > Operator reference for the cockpit-level self-healing role originally introduced as **`superdoctor`** in [ADR-077](./adr/077-superdoctor-cockpit-role.md) and renamed to **`medic`** on 2026-05-14 per [ADR-133](./adr/133-medic-rename.md). The role's design, authority surface, and complaint-box contract are canonical in ADR-077; only the role's *name* is superseded. **Storage-layer identifiers** (`superdoctor_attempts` table, `SuperdoctorAttemptsRepo`, member sentinel `__superdoctor__`, Discord dedup key `superdoctor-self-heal-escalation`) **remain unchanged** for the deprecation window per ADR-133 §Out of scope — table renames require a separate schema-migration ADR. The skill source (`~/.claude/skills/superdoctor/`) and Discord template prefix (`[superdoctor]`) rename land separately under EPIC `t-d25ff629` TR5 (plugin source) and follow-up work — until those ship, the operator-visible Discord prefix is `[superdoctor]` and the skill path stays put.
 
 ## What it is
