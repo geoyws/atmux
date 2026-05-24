@@ -3,8 +3,9 @@
 // Bash port target: lib/discorder.sh @ HEAD (frozen ref under
 // .archive-bash-atmux-20260507/lib/discorder.sh).
 //
-// Two cron-fired subverbs (per ADR-022, opt-in via a `role: discorder`
-// member declaration):
+// Two subverbs (per ADR-022, opt-in via a `role: discorder`
+// member declaration). Pre-ADR-233 these fired from cron; post-ADR-233
+// the verbs are operator/orchd-invoked (cron auto-install retired):
 //
 //   progress   — 30-min digest of git commits + done Tasks since the
 //                last successful tick. Cursor at

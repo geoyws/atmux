@@ -1,7 +1,7 @@
 // EPIC e-f28c2596 T1 — detect stuck queued text in a worker compose box and
 // (when safe) resubmit it via an injected send-keys-with-verify dep.
 //
-// Background: cron-fired hot-loop verbs (poke / lane-tick) observe member panes
+// Background: orchd-fired hot-loop verbs (poke / lane-tick) observe member panes
 // where the next loop command (`/loop /whip`, `claim --next`, etc.) was typed
 // into the composer but Enter never fired. Without intervention the queued text
 // sits indefinitely; the cage looks alive but no progress lands. The fix

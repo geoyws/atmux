@@ -1185,20 +1185,27 @@ export interface CheckCronBlockOpts {
  * but the cron block was absent; doctor missed it, so the only signal
  * was the silently-stalled lead the morning after.
  *
+ * **2026-05-24 post-ADR-233**: cron auto-install retired (orchd is the
+ * runtime via Honker substrate). The probe now expects ZERO cron blocks
+ * by default — `team.kanban.cronAutoInstall === false` is the canonical
+ * post-cutover state and this probe is silent. The check is retained
+ * for the deprecation window so teams that explicitly opt back in (via
+ * `atmux cron-install`) get the safety net.
+ *
  * Returns:
  * - `[]` when team is null (the team-shape row already surfaced).
- * - `[]` when `team.kanban.cronAutoInstall === false` — explicit opt-out;
- *    the operator manages cron some other way and the absence is intent.
+ * - `[]` when `team.kanban.cronAutoInstall === false` — explicit opt-out
+ *    (canonical post-ADR-233 state) or operator manages cron some other way.
  * - `[]` when `crontab` is not on the host (no PATH match); ADR-083
  *    posture is "skip gracefully on cron-less hosts."
  * - `[]` when the team's marker header (`# >>> atmux:team=<name> …`) is
  *    present anywhere in the current crontab.
- * - one RED row otherwise, hinting `atmux cron-install`.
+ * - one RED row otherwise, hinting `atmux cron-install` (legacy path).
  *
- * RED (not YELLOW) because the failure mode is overnight team death — a
- * GREEN doctor that hides a missing cron block is a worse outcome than
- * a noisy one. Operators who legitimately don't want a block set
- * `kanban.cronAutoInstall: false` and the row stays silent.
+ * RED (not YELLOW) because pre-ADR-233 the failure mode was overnight
+ * team death — a GREEN doctor that hid a missing cron block was worse
+ * than a noisy one. Post-ADR-233 the trigger is opt-in, so the row is
+ * actionable only for operators who explicitly armed cron.
  */
 export async function checkCronBlock(
   team: Team | null,
