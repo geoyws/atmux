@@ -83,6 +83,19 @@ import type { MergerStateRepo } from "./repositories/merger-state-repo.ts";
  *  gate-still-held tick returns `{queued:false, reason:"gate-held"}` so
  *  the sweep records `queue-refused` with a meaningful note.
  *
+ *  **`ready_to_merge` is NOT in this set** (per ADR-134 §Amendment
+ *  2026-05-24, gitter wedge-recovery session). The initial shape
+ *  included `ready_to_merge`, which wedged any branch the dispatcher
+ *  left there after its post-rebase break (per §Amendment 2026-05-18
+ *  t-2b7572d7: "one rebase per tick max — the merge step lands on the
+ *  NEXT cron tick"). Without a `task.done` event to wake the daemon's
+ *  dispatcher path, the merge never landed — sweep self-skipped the
+ *  very state that needs advancing. Dispatcher's entry-state guard
+ *  (CALLER_DRIVEN_STATES in intra-team-merge-dispatcher.ts) does NOT
+ *  include `ready_to_merge`, so re-entry walks `ready_to_merge → merging
+ *  → tested` cleanly. Dispatcher idempotence + BEGIN IMMEDIATE handles
+ *  the rare event/cron race where a `task.done` fires mid-sweep.
+ *
  *  `open` is NOT in this set — `open` is the initial state for a branch
  *  that has never transitioned; the sweep IS allowed to queue from there.
  *  Terminal states (`merged`, `conflict`, `reverted`) are also NOT in
@@ -90,7 +103,6 @@ import type { MergerStateRepo } from "./repositories/merger-state-repo.ts";
  *  next branch-tip advance brings the branch back to the queue path
  *  via a fresh `open → in_progress` transition. */
 const IN_FLIGHT_STATES: ReadonlySet<BranchMergeState> = new Set<BranchMergeState>([
-  "ready_to_merge",
   "rebasing",
   "merging",
   "tested",
@@ -192,8 +204,10 @@ export interface CommitterSweepDeps {
  *
  *   1. `rev-list --count <base>..<member>` === 0   → skipped-zero-ahead
  *   2. mergerState in {@link IN_FLIGHT_STATES}     → skipped-in-flight
- *      (`ready_to_merge` / `rebasing` / `merging` /
- *      `tested` / `test_failed` — actively moving)
+ *      (`rebasing` / `merging` / `tested` /
+ *      `test_failed` — actively moving; `ready_to_merge`
+ *      excluded per ADR-134 §Amendment 2026-05-24 so
+ *      post-rebase-break rows can advance via sweep too)
  *   3. mergerState is terminal (merged/conflict/   → skipped-terminal
  *      reverted) AND ahead-of-base === 0
  *      (covered by step 1 — included here for
