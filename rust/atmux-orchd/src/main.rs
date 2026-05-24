@@ -44,8 +44,10 @@
 //                            (default: task.done,task.unclaimed)
 
 use std::env;
+use std::fs;
+use std::path::Path;
 use std::process::{Command, ExitCode};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use honker::Database;
 use rusqlite::params;
@@ -393,10 +395,38 @@ fn main() -> ExitCode {
     let atmux_bin = env::var("ATMUX_ORCHD_ATMUX_BIN").unwrap_or_else(|_| "atmux".to_string());
     let team_dir = env::var("ATMUX_ORCHD_TEAM_DIR").unwrap_or_else(|_| cwd.clone());
 
+    // e-12-640853f3 §S5 — startup banner. Consumer list mirrors
+    // src/core/orchd-bootstrap.ts; sweep cadence mirrors S6 ticker.
     eprintln!(
-        "atmux-orchd: starting (db={}, atmux={}, team_dir={})",
-        db_path, atmux_bin, team_dir
+        "{} 🧭 orchd boot · v{} team={} root={} db={}",
+        now_ts(),
+        env!("CARGO_PKG_VERSION"),
+        team_name_from_path(&team_dir),
+        team_dir,
+        db_path
     );
+    eprintln!(
+        "{} 📋 orchd consumers · {} subscribed: {}",
+        now_ts(),
+        CONSUMERS.len(),
+        CONSUMERS
+            .iter()
+            .map(|c| c.name.trim_start_matches("atmux:"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    eprintln!(
+        "{} ⏱  orchd cadence · sweep-merges every 300s · log-rotate when oversize",
+        now_ts()
+    );
+
+    // e-12-640853f3 §S1 — log rotation. Check + rotate orchd.log if it
+    // exceeds ATMUX_ORCHD_LOG_MAX_BYTES (default 50 MB). Keeps
+    // ATMUX_ORCHD_LOG_KEEP_N rotated files (default 3) so worst-case
+    // disk = ~150 MB per team. In-process check at startup + once per
+    // hour during the wake loop — no external logrotate dep, no cron
+    // (per ADR-233 + operator stance 2026-05-24).
+    rotate_log_if_oversize(&team_dir);
 
     let db = match Database::open(&db_path) {
         Ok(db) => db,
@@ -446,6 +476,10 @@ fn main() -> ExitCode {
     // when due.
     let sweep_interval = Duration::from_secs(300);
     let mut last_sweep_at = Instant::now();
+    // e-12-640853f3 §S1 — log rotation tick (every hour). Cheap stat
+    // call; rename when oversized.
+    let rotate_interval = Duration::from_secs(3600);
+    let mut last_rotate_at = Instant::now();
     // Fire one sweep at startup (after the initial drain) to catch
     // unattended epics whose events fired while orchd was offline +
     // weren't picked up because their consumer was stub at the time.
@@ -478,6 +512,88 @@ fn main() -> ExitCode {
             spawn_sweep_merges(&atmux_bin, &team_dir);
             last_sweep_at = Instant::now();
         }
+        // Hourly log rotation check (e-12-640853f3 §S1). Cheap.
+        if last_rotate_at.elapsed() >= rotate_interval {
+            rotate_log_if_oversize(&team_dir);
+            last_rotate_at = Instant::now();
+        }
+    }
+}
+
+/// e-12-640853f3 §S5 — short local-clock timestamp prefix. Format
+/// `HH:MM:SSZ` (UTC) — mirrors Bun-side `isoLocalTs()` in
+/// src/core/orchd-log-fmt.ts. Operators reading the orchd pane see
+/// the same shape from both halves.
+fn now_ts() -> String {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let h = (secs / 3600) % 24;
+    let m = (secs / 60) % 60;
+    let s = secs % 60;
+    format!("[{:02}:{:02}:{:02}Z]", h, m, s)
+}
+
+/// Derive the team name from the team_dir path's basename for the
+/// startup banner. Best-effort; falls back to the path itself when
+/// the basename can't be extracted.
+fn team_name_from_path(team_dir: &str) -> String {
+    Path::new(team_dir)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(team_dir)
+        .to_string()
+}
+
+/// e-12-640853f3 §S1 — rotate `.atmux/logs/orchd.log` when it exceeds
+/// `ATMUX_ORCHD_LOG_MAX_BYTES` (default 50 MB). Keeps
+/// `ATMUX_ORCHD_LOG_KEEP_N` rotated files (default 3). Best-effort:
+/// any IO failure is logged + ignored — never aborts orchd.
+fn rotate_log_if_oversize(team_dir: &str) {
+    let max_bytes: u64 = env::var("ATMUX_ORCHD_LOG_MAX_BYTES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(50 * 1024 * 1024);
+    let keep_n: usize = env::var("ATMUX_ORCHD_LOG_KEEP_N")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3);
+
+    let log_path = Path::new(team_dir).join(".atmux/logs/orchd.log");
+    let metadata = match fs::metadata(&log_path) {
+        Ok(m) => m,
+        Err(_) => return, // log doesn't exist yet — nothing to rotate
+    };
+    if metadata.len() < max_bytes {
+        return;
+    }
+
+    // Shift orchd.log.{N-1} → orchd.log.N down to orchd.log → orchd.log.1
+    for i in (1..keep_n).rev() {
+        let from = log_path.with_extension(format!("log.{}", i));
+        let to = log_path.with_extension(format!("log.{}", i + 1));
+        let _ = fs::rename(&from, &to);
+    }
+    let first_rotated = log_path.with_extension("log.1");
+    match fs::rename(&log_path, &first_rotated) {
+        Ok(()) => {
+            eprintln!(
+                "{} 🧹 log-rotate · size={} bytes (cap={}) · rotated → {}",
+                now_ts(),
+                metadata.len(),
+                max_bytes,
+                first_rotated.display()
+            );
+        }
+        Err(e) => {
+            eprintln!(
+                "{} 🔴 log-rotate failed · {} (size={} bytes)",
+                now_ts(),
+                e,
+                metadata.len()
+            );
+        }
     }
 }
 
@@ -487,7 +603,7 @@ fn main() -> ExitCode {
 /// are non-fatal: a failed sweep doesn't compromise the event-driven
 /// fast-path; next tick retries.
 fn spawn_sweep_merges(atmux_bin: &str, team_dir: &str) {
-    eprintln!("atmux-orchd: sweep-merges tick — spawning Bun subverb");
+    eprintln!("{} 🧭 sweep-tick · firing Bun subverb", now_ts());
     let status = Command::new(atmux_bin)
         .arg("orchd")
         .arg("--sweep-merges")
@@ -496,13 +612,19 @@ fn spawn_sweep_merges(atmux_bin: &str, team_dir: &str) {
         .status();
     match status {
         Ok(s) if s.success() => {
-            eprintln!("atmux-orchd: sweep-merges OK");
+            // The Bun subverb already wrote its own [ts]-prefixed
+            // summary line to stdout (via formatSweepReport); we only
+            // log on non-success here to avoid double-noise.
         }
         Ok(s) => {
-            eprintln!("atmux-orchd: sweep-merges exit={:?}", s.code());
+            eprintln!(
+                "{} 🔴 sweep-tick · subverb exit={:?}",
+                now_ts(),
+                s.code()
+            );
         }
         Err(e) => {
-            eprintln!("atmux-orchd: sweep-merges spawn failed: {}", e);
+            eprintln!("{} 🔴 sweep-tick · spawn failed: {}", now_ts(), e);
         }
     }
 }

@@ -721,6 +721,7 @@ async function orchdSweepMergesCli(parsed: ParsedOrchdArgs): Promise<number> {
   const db = openDatabase(dbPath, migrations);
   try {
     const { sweepMerges } = await import("../core/orchd-merge-sweep.ts");
+    const { formatSweepReport } = await import("../core/orchd-log-fmt.ts");
     const epicRepoPath = atmuxDir.endsWith("/.atmux")
       ? atmuxDir.slice(0, -"/.atmux".length)
       : atmuxDir;
@@ -734,7 +735,14 @@ async function orchdSweepMergesCli(parsed: ParsedOrchdArgs): Promise<number> {
       },
       log: (msg) => process.stderr.write(`${msg}\n`),
     });
-    process.stdout.write(`${JSON.stringify(result)}\n`);
+    // e-12-640853f3 §S2 — default render is human-readable summary
+    // (one header line + only-interesting per-epic verdicts). JSON form
+    // available via env override for machine consumers.
+    if (process.env.ATMUX_ORCHD_SWEEP_JSON === "1") {
+      process.stdout.write(`${JSON.stringify(result)}\n`);
+    } else {
+      process.stdout.write(`${formatSweepReport(result)}\n`);
+    }
     return 0;
   } finally {
     closeDatabase(db);
