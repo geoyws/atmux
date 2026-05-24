@@ -11,13 +11,22 @@
 // or `-S <abspath>` prepended to argv. There is NO top-level `tmux`
 // singleton — callers obtain a namespace via `createTmux({ socket })` or
 // `createTmux({ socketPath })`, the factory captures the socket flag in a
-// closure, every internal `spawn({ cmd: "tmux", argv: [...] })` is built
-// from `[...socketArgs, ...subcmdArgv]`. This makes it physically
+// closure, every internal `spawn({ cmd: resolveTmuxBin(), argv: [...] })`
+// is built from `[...socketArgs, ...subcmdArgv]`. This makes it physically
 // impossible for any path through the abstraction to reach the
 // operator's daily-driver tmux server (which is what the env-only
 // `TMUX_TMPDIR` fix failed to guarantee — incident 2026-05-05 01:44 MYT,
 // memory ref `feedback_tmux_test_isolation.md`).
+//
+// Binary resolution (ADR-191, 2026-05-23).
+// ----------------------------------------
+// `cmd:` is computed by `resolveTmuxBin()` (3-tier chain:
+// ATMUX_TMUX_BIN → /opt/atmux/current/bin/tmux → system `tmux` on PATH).
+// Computed once per process via in-helper memoization, so the closure
+// captures a stable binary path; the rest of this module remains
+// argv-shape-only.
 
+import { resolveTmuxBin } from "../core/resolve-tmux-bin.ts";
 import { TmuxError } from "../errors.ts";
 import { type ExpectExitCode, spawn, spawnInheritStdio } from "./spawn.ts";
 
@@ -384,7 +393,7 @@ export function createTmux(config: TmuxConfig): TmuxNamespace {
   ): Promise<RawResult> {
     const argv = [...socketArgs, ...subArgv];
     try {
-      const r = await spawn({ cmd: "tmux", argv, expectExitCode: expect });
+      const r = await spawn({ cmd: resolveTmuxBin(), argv, expectExitCode: expect });
       return { stdout: r.stdout, stderr: r.stderr, exitCode: r.exitCode };
     } catch (e) {
       // Map any thrown error → TmuxError so ADR-006 §tag-by-subsystem holds.
@@ -646,7 +655,7 @@ export function createTmux(config: TmuxConfig): TmuxNamespace {
         subArgv.push("-");
         const argv = [...socketArgs, ...subArgv];
         try {
-          await spawn({ cmd: "tmux", argv, stdin: opts.data, expectExitCode: 0 });
+          await spawn({ cmd: resolveTmuxBin(), argv, stdin: opts.data, expectExitCode: 0 });
         } catch (e) {
           const ctx =
             typeof e === "object" && e !== null && "context" in e
@@ -691,7 +700,7 @@ export function createTmux(config: TmuxConfig): TmuxNamespace {
        *  shapes match the rest of the namespace. */
       async attachSessionInheritStdio(name) {
         const argv = [...socketArgs, "attach-session", "-t", name];
-        const exitCode = await spawnInheritStdio({ cmd: "tmux", argv });
+        const exitCode = await spawnInheritStdio({ cmd: resolveTmuxBin(), argv });
         if (exitCode !== 0) {
           throw new TmuxError({
             argv,
