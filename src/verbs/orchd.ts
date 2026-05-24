@@ -88,7 +88,15 @@ export interface ParsedOrchdArgs {
    *                     subscriber offsets, recent event counts per
    *                     topic, last-handler-outcome. Operator runs it
    *                     instead of grepping logs. */
-  subverb: "start" | "drain" | "sweep" | "handle-one" | "status" | "sweep-merges" | "scan-context";
+  subverb:
+    | "start"
+    | "drain"
+    | "sweep"
+    | "handle-one"
+    | "status"
+    | "sweep-merges"
+    | "scan-context"
+    | "housekeep";
   teamDir?: string;
   /** `--once`: exit after first batch (test ergonomics). */
   once?: boolean;
@@ -133,6 +141,7 @@ export function parseOrchdArgs(argv: ReadonlyArray<string>): ParsedOrchdArgs {
     | "status"
     | "sweep-merges"
     | "scan-context"
+    | "housekeep"
     | undefined;
   let teamDir: string | undefined;
   let once = false;
@@ -178,6 +187,11 @@ export function parseOrchdArgs(argv: ReadonlyArray<string>): ParsedOrchdArgs {
     }
     if (a === "--scan-context" || a === "scan-context") {
       subverb = "scan-context";
+      i += 1;
+      continue;
+    }
+    if (a === "--housekeep" || a === "housekeep") {
+      subverb = "housekeep";
       i += 1;
       continue;
     }
@@ -378,6 +392,9 @@ export async function orchd(
   }
   if (parsed.subverb === "scan-context") {
     return await orchdScanContextCli(parsed);
+  }
+  if (parsed.subverb === "housekeep") {
+    return await orchdHousekeepCli(parsed);
   }
   // Adapt to ParsedCommitterArgs shape. The verb-layer functions
   // accept a superset that includes `--sweep`; we narrow to the
@@ -729,6 +746,70 @@ async function orchdSweepCli(parsed: ParsedOrchdArgs): Promise<number> {
  * + sweep paths share one code path. Writes JSON result to stdout
  * for the Rust caller's log capture.
  */
+/**
+ * `atmux orchd --housekeep` — e-12-640853f3 §S4.
+ *
+ * Daily maintenance pass: prune old events table rows (where every
+ * consumer has progressed past them), drop stale subscriber_offsets
+ * for retired consumer-ids, unlink rotated log archives older than
+ * 30 days, drop merger_state terminal rows older than 30 days.
+ *
+ * Fires from the Rust orchd's 24h in-process ticker — NOT a crontab
+ * entry per operator stance.
+ */
+async function orchdHousekeepCli(parsed: ParsedOrchdArgs): Promise<number> {
+  const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
+  const atmuxDir = await getAtmuxDir(dirOpts);
+  const dbPath = join(atmuxDir, "state.db");
+  const db = openDatabase(dbPath, migrations);
+  try {
+    const { housekeep } = await import("../core/orchd-housekeep.ts");
+    const { isoLocalTs } = await import("../core/orchd-log-fmt.ts");
+    const {
+      ORCHD_MERGE_CONSUMER_ID,
+      ORCHD_DISSOLVE_CONSUMER_ID,
+      ORCHD_PUSH_CONSUMER_ID,
+      ORCHD_DISSOLVE_SOLO_WORKER_CONSUMER_ID,
+      ORCHD_SPAWN_ON_READY_CONSUMER_ID,
+      ORCHD_SPAWN_ON_UNBLOCKED_CONSUMER_ID,
+      ORCHD_COMPLAINT_CONSUMER_ID,
+      ORCHD_ROTATION_CONSUMER_ID,
+    } = await import("../core/orchd-bootstrap.ts");
+    const activeConsumerIds = [
+      "atmux:gitter",
+      "atmux:lane-router",
+      ORCHD_MERGE_CONSUMER_ID,
+      ORCHD_DISSOLVE_CONSUMER_ID,
+      ORCHD_PUSH_CONSUMER_ID,
+      ORCHD_DISSOLVE_SOLO_WORKER_CONSUMER_ID,
+      ORCHD_SPAWN_ON_READY_CONSUMER_ID,
+      ORCHD_SPAWN_ON_UNBLOCKED_CONSUMER_ID,
+      ORCHD_COMPLAINT_CONSUMER_ID,
+      ORCHD_ROTATION_CONSUMER_ID,
+    ];
+    const result = await housekeep({
+      db,
+      atmuxDir,
+      activeConsumerIds,
+      log: (msg) => process.stderr.write(`${msg}\n`),
+    });
+    const ts = isoLocalTs();
+    const errCount = result.errors.length;
+    const emoji = errCount > 0 ? "🔴" : "🧹";
+    process.stdout.write(
+      `[${ts}] ${emoji} housekeep · events=${result.eventsPruned} offsets=${result.offsetsPruned} ` +
+        `rotated-logs=${result.rotatedLogsPruned} merger-terminal=${result.mergerTerminalPruned} ` +
+        `errors=${errCount}\n`,
+    );
+    for (const err of result.errors) {
+      process.stderr.write(`[${ts}] 🔴 housekeep · ${err}\n`);
+    }
+    return 0;
+  } finally {
+    closeDatabase(db);
+  }
+}
+
 /**
  * `atmux orchd --scan-context` — e-13-04c8b3bf §S4.
  *

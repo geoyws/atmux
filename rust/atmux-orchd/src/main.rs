@@ -425,7 +425,7 @@ fn main() -> ExitCode {
             .join(", ")
     );
     eprintln!(
-        "{} ⏱  orchd cadence · sweep-merges every 300s · ctx-scan every 900s · log-rotate when oversize",
+        "{} ⏱  orchd cadence · sweep-merges 5min · ctx-scan 15min · housekeep 24h · log-rotate hourly",
         now_ts()
     );
 
@@ -497,6 +497,11 @@ fn main() -> ExitCode {
     // and decides preclear/rotate.
     let context_scan_interval = Duration::from_secs(15 * 60);
     let mut last_context_scan_at = Instant::now();
+    // e-12-640853f3 §S4 — housekeep tick (every 24h). Prunes old
+    // events / stale offsets / rotated logs / merger_state terminal
+    // rows. In-process per anti-cron stance.
+    let housekeep_interval = Duration::from_secs(24 * 60 * 60);
+    let mut last_housekeep_at = Instant::now();
     // Fire one sweep at startup (after the initial drain) to catch
     // unattended epics whose events fired while orchd was offline +
     // weren't picked up because their consumer was stub at the time.
@@ -504,6 +509,8 @@ fn main() -> ExitCode {
     // Also fire one context scan at startup so the lead sees current
     // saturation state without waiting 15min after orchd boot.
     spawn_scan_context(&atmux_bin, &team_dir);
+    // Housekeep is NOT fired at startup — would slow boot. Let the
+    // first 24h tick drive it; orphans are tolerable for one day.
 
     loop {
         match events.recv_timeout(Duration::from_secs(60)) {
@@ -541,6 +548,11 @@ fn main() -> ExitCode {
         if last_context_scan_at.elapsed() >= context_scan_interval {
             spawn_scan_context(&atmux_bin, &team_dir);
             last_context_scan_at = Instant::now();
+        }
+        // 24h housekeep (e-12-640853f3 §S4).
+        if last_housekeep_at.elapsed() >= housekeep_interval {
+            spawn_housekeep(&atmux_bin, &team_dir);
+            last_housekeep_at = Instant::now();
         }
     }
 }
@@ -650,6 +662,31 @@ fn spawn_sweep_merges(atmux_bin: &str, team_dir: &str) {
         }
         Err(e) => {
             eprintln!("{} 🔴 sweep-tick · spawn failed: {}", now_ts(), e);
+        }
+    }
+}
+
+/// e-12-640853f3 §S4 — spawn the Bun-side `--housekeep` subverb. Same
+/// pattern as sweep-merges / scan-context.
+fn spawn_housekeep(atmux_bin: &str, team_dir: &str) {
+    eprintln!("{} 🧹 housekeep-tick · firing Bun subverb", now_ts());
+    let status = Command::new(atmux_bin)
+        .arg("orchd")
+        .arg("--housekeep")
+        .arg("--team-dir")
+        .arg(team_dir)
+        .status();
+    match status {
+        Ok(s) if s.success() => {}
+        Ok(s) => {
+            eprintln!(
+                "{} 🔴 housekeep-tick · subverb exit={:?}",
+                now_ts(),
+                s.code()
+            );
+        }
+        Err(e) => {
+            eprintln!("{} 🔴 housekeep-tick · spawn failed: {}", now_ts(), e);
         }
     }
 }
