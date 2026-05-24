@@ -96,7 +96,8 @@ export interface ParsedOrchdArgs {
     | "status"
     | "sweep-merges"
     | "scan-context"
-    | "housekeep";
+    | "housekeep"
+    | "scan-budget";
   teamDir?: string;
   /** `--once`: exit after first batch (test ergonomics). */
   once?: boolean;
@@ -142,6 +143,7 @@ export function parseOrchdArgs(argv: ReadonlyArray<string>): ParsedOrchdArgs {
     | "sweep-merges"
     | "scan-context"
     | "housekeep"
+    | "scan-budget"
     | undefined;
   let teamDir: string | undefined;
   let once = false;
@@ -192,6 +194,11 @@ export function parseOrchdArgs(argv: ReadonlyArray<string>): ParsedOrchdArgs {
     }
     if (a === "--housekeep" || a === "housekeep") {
       subverb = "housekeep";
+      i += 1;
+      continue;
+    }
+    if (a === "--scan-budget" || a === "scan-budget") {
+      subverb = "scan-budget";
       i += 1;
       continue;
     }
@@ -395,6 +402,9 @@ export async function orchd(
   }
   if (parsed.subverb === "housekeep") {
     return await orchdHousekeepCli(parsed);
+  }
+  if (parsed.subverb === "scan-budget") {
+    return await orchdScanBudgetCli(parsed);
   }
   // Adapt to ParsedCommitterArgs shape. The verb-layer functions
   // accept a superset that includes `--sweep`; we narrow to the
@@ -746,6 +756,75 @@ async function orchdSweepCli(parsed: ParsedOrchdArgs): Promise<number> {
  * + sweep paths share one code path. Writes JSON result to stdout
  * for the Rust caller's log capture.
  */
+/**
+ * `atmux orchd --scan-budget` — e-14-0f156732.
+ *
+ * Consolidates the existing budget pieces: probeBudget (per-account
+ * rate-limit probe), runBudgetCheck (orchestrator with band-warning
+ * dedup + refresh-soon dedup), discord.ts renderers (no-LLM
+ * templates per ADR-237). Fires from orchd's 15min in-process ticker
+ * alongside ctx-scan.
+ *
+ * Default behavior: probe every unique claudeAccount across team
+ * members, fire Discord band-warning when crossing thresholds
+ * (50% / 75% / 85% / 90% remaining → ping each band ONCE per epoch).
+ * Pause/fallback path remains opt-in via team.json::fallback.enabled.
+ *
+ * Dedup: budget-warning-state.ts already keys on (account, window,
+ * band) — operator's per-account dedup ask satisfied by existing
+ * mechanism.
+ */
+async function orchdScanBudgetCli(parsed: ParsedOrchdArgs): Promise<number> {
+  const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
+  const atmuxDir = await getAtmuxDir(dirOpts);
+  const team = await requireTeam(dirOpts);
+  try {
+    const { runBudgetCheck } = await import("../core/whip-budget-check.ts");
+    const { isoLocalTs } = await import("../core/orchd-log-fmt.ts");
+    const { send: discordSend } = await import("../abstractions/discord.ts");
+    const nowMs = Date.now();
+    const nowSec = Math.floor(nowMs / 1000);
+    const verdict = await runBudgetCheck(
+      {
+        atmuxDir,
+        nowMs,
+        nowSec,
+        team: {
+          name: team.name,
+          members: team.members.map((m) => {
+            const cb: { name: string; claudeAccount?: string } = { name: m.name };
+            if (m.claudeAccount !== undefined && m.claudeAccount !== null) {
+              cb.claudeAccount = m.claudeAccount;
+            }
+            return cb;
+          }),
+          // Fallback path stays opt-in — orchd's scan does NOT auto-spawn
+          // fallback cages; that requires team.fallback.enabled per ADR-058.
+          ...(team.fallback !== undefined ? { fallback: team.fallback } : {}),
+        },
+        config: {
+          // Defaults match whip-budget-check.ts production defaults.
+          budgetPauseThreshold: 90,
+          budgetResumeThreshold: 80,
+          budgetWarningBands: [0.5, 0.25, 0.15],
+          budgetRefreshLeadMins: 30,
+        },
+      },
+      { discordSend },
+    );
+    const ts = isoLocalTs();
+    const emoji = verdict === "active" ? "💰" : verdict.startsWith("paused") ? "🟡" : "💤";
+    process.stdout.write(
+      `[${ts}] ${emoji} budget-scan · verdict=${verdict} · accounts=${new Set(team.members.map((m) => m.claudeAccount).filter((a) => a !== undefined && a !== null && a !== "")).size}\n`,
+    );
+    return 0;
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    process.stderr.write(`[budget-scan] 🔴 errored: ${reason}\n`);
+    return 0; // non-fatal — sweep ticker continues
+  }
+}
+
 /**
  * `atmux orchd --housekeep` — e-12-640853f3 §S4.
  *

@@ -425,7 +425,7 @@ fn main() -> ExitCode {
             .join(", ")
     );
     eprintln!(
-        "{} ⏱  orchd cadence · sweep-merges 5min · ctx-scan 15min · housekeep 24h · log-rotate hourly",
+        "{} ⏱  orchd cadence · sweep-merges 5min · ctx-scan+budget 15min · housekeep 24h · log-rotate hourly",
         now_ts()
     );
 
@@ -506,9 +506,10 @@ fn main() -> ExitCode {
     // unattended epics whose events fired while orchd was offline +
     // weren't picked up because their consumer was stub at the time.
     spawn_sweep_merges(&atmux_bin, &team_dir);
-    // Also fire one context scan at startup so the lead sees current
-    // saturation state without waiting 15min after orchd boot.
+    // Also fire one context scan + budget scan at startup so the
+    // lead sees current saturation state without waiting 15min.
     spawn_scan_context(&atmux_bin, &team_dir);
+    spawn_scan_budget(&atmux_bin, &team_dir);
     // Housekeep is NOT fired at startup — would slow boot. Let the
     // first 24h tick drive it; orphans are tolerable for one day.
 
@@ -544,9 +545,11 @@ fn main() -> ExitCode {
             rotate_log_if_oversize(&team_dir);
             last_rotate_at = Instant::now();
         }
-        // 15min context-saturation scan (e-13-04c8b3bf).
+        // 15min context-saturation scan (e-13-04c8b3bf) + budget scan
+        // (e-14-0f156732). Same cadence per operator stance.
         if last_context_scan_at.elapsed() >= context_scan_interval {
             spawn_scan_context(&atmux_bin, &team_dir);
+            spawn_scan_budget(&atmux_bin, &team_dir);
             last_context_scan_at = Instant::now();
         }
         // 24h housekeep (e-12-640853f3 §S4).
@@ -662,6 +665,28 @@ fn spawn_sweep_merges(atmux_bin: &str, team_dir: &str) {
         }
         Err(e) => {
             eprintln!("{} 🔴 sweep-tick · spawn failed: {}", now_ts(), e);
+        }
+    }
+}
+
+/// e-14-0f156732 — spawn the Bun-side `--scan-budget` subverb. Same
+/// pattern as scan-context. Consolidates existing budget probe +
+/// runBudgetCheck + Discord renderers per ADR-238.
+fn spawn_scan_budget(atmux_bin: &str, team_dir: &str) {
+    eprintln!("{} 💰 budget-scan-tick · firing Bun subverb", now_ts());
+    let status = Command::new(atmux_bin)
+        .arg("orchd")
+        .arg("--scan-budget")
+        .arg("--team-dir")
+        .arg(team_dir)
+        .status();
+    match status {
+        Ok(s) if s.success() => {}
+        Ok(s) => {
+            eprintln!("{} 🔴 budget-scan-tick · subverb exit={:?}", now_ts(), s.code());
+        }
+        Err(e) => {
+            eprintln!("{} 🔴 budget-scan-tick · spawn failed: {}", now_ts(), e);
         }
     }
 }
