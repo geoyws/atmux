@@ -25,6 +25,8 @@ import { openDatabase } from "../../../src/abstractions/sqlite.ts";
 import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
 import {
   bootstrapOrchd,
+  ORCHD_COMPLAINT_CONSUMER_ID,
+  ORCHD_COMPLAINT_TOPIC,
   ORCHD_DISSOLVE_CONSUMER_ID,
   ORCHD_DISSOLVE_SOLO_WORKER_CONSUMER_ID,
   ORCHD_DISSOLVE_SOLO_WORKER_TOPIC,
@@ -61,10 +63,10 @@ afterEach(async () => {
 });
 
 describe("bootstrapOrchd — first registration", () => {
-  test("registers exactly 6 subscriptions in canonical order (merge → dissolve → push → dissolve-solo-worker → spawn:on-ready → spawn:on-unblocked)", () => {
+  test("registers exactly 7 subscriptions in canonical order (merge → dissolve → push → dissolve-solo-worker → spawn:on-ready → spawn:on-unblocked → complaint)", () => {
     const result = bootstrapOrchd({ db });
 
-    expect(result.registered).toHaveLength(6);
+    expect(result.registered).toHaveLength(7);
     expect(result.registered.map((r) => r.consumerId)).toEqual([
       ORCHD_MERGE_CONSUMER_ID,
       ORCHD_DISSOLVE_CONSUMER_ID,
@@ -72,6 +74,7 @@ describe("bootstrapOrchd — first registration", () => {
       ORCHD_DISSOLVE_SOLO_WORKER_CONSUMER_ID,
       ORCHD_SPAWN_ON_READY_CONSUMER_ID,
       ORCHD_SPAWN_ON_UNBLOCKED_CONSUMER_ID,
+      ORCHD_COMPLAINT_CONSUMER_ID,
     ]);
     expect(result.registered.map((r) => r.topic)).toEqual([
       ORCHD_MERGE_TOPIC,
@@ -80,9 +83,10 @@ describe("bootstrapOrchd — first registration", () => {
       ORCHD_DISSOLVE_SOLO_WORKER_TOPIC,
       ORCHD_SPAWN_ON_READY_TOPIC,
       ORCHD_SPAWN_ON_UNBLOCKED_TOPIC,
+      ORCHD_COMPLAINT_TOPIC,
     ]);
     expect(result.registered.every((r) => r.isNew)).toBe(true);
-    expect(ORCHD_SUBSCRIPTIONS).toHaveLength(6);
+    expect(ORCHD_SUBSCRIPTIONS).toHaveLength(7);
   });
 
   test("canonical consumer IDs match the ADR-224 §D6 + ADR-231 §D2/§D6 naming convention", () => {
@@ -130,11 +134,11 @@ describe("bootstrapOrchd — idempotency", () => {
   test("re-bootstrap with the same db flips every isNew to false, no duplicate push", () => {
     const first = bootstrapOrchd({ db });
     expect(first.registered.every((r) => r.isNew)).toBe(true);
-    expect(ORCHD_SUBSCRIPTIONS).toHaveLength(6);
+    expect(ORCHD_SUBSCRIPTIONS).toHaveLength(7);
 
     const second = bootstrapOrchd({ db });
     expect(second.registered.every((r) => !r.isNew)).toBe(true);
-    expect(ORCHD_SUBSCRIPTIONS).toHaveLength(6);
+    expect(ORCHD_SUBSCRIPTIONS).toHaveLength(7);
   });
 });
 

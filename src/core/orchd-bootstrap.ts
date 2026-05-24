@@ -36,12 +36,17 @@
 
 import type { Database } from "bun:sqlite";
 import type {
+  ComplaintFiledPayload,
   EpicMergedPayload,
   EpicReadyPayload,
   EpicUnblockedPayload,
   EventPayload,
   TaskDonePayload,
 } from "../schema/events.ts";
+import {
+  type ComplaintConsumerDeps,
+  createComplaintConsumerHandler,
+} from "./complaint-consumer.ts";
 import {
   createDissolveSoloWorkerHandler,
   type DissolveSoloWorkerHandlerDeps,
@@ -74,6 +79,9 @@ export const ORCHD_DISSOLVE_SOLO_WORKER_CONSUMER_ID = "atmux:orchd:dissolve-solo
  *  only the subscription bookkeeping differs. */
 export const ORCHD_SPAWN_ON_READY_CONSUMER_ID = "atmux:orchd:spawn:on-ready";
 export const ORCHD_SPAWN_ON_UNBLOCKED_CONSUMER_ID = "atmux:orchd:spawn:on-unblocked";
+/** ADR-214 §D2 — complaint consumer. Wakes on `complaint.filed` and
+ *  routes to the lead's tell-lead inbox. */
+export const ORCHD_COMPLAINT_CONSUMER_ID = "atmux:complaint-consumer";
 
 /** Topics — exported for the same reason. Mirrors each handler module's
  *  documented trigger:
@@ -89,6 +97,8 @@ export const ORCHD_DISSOLVE_SOLO_WORKER_TOPIC = "task.done";
  *  ADR-225 §Events (deps-graph + operator-flip transitions). */
 export const ORCHD_SPAWN_ON_READY_TOPIC = "epic.ready";
 export const ORCHD_SPAWN_ON_UNBLOCKED_TOPIC = "epic.unblocked";
+/** ADR-214 §D2 — complaint topic. */
+export const ORCHD_COMPLAINT_TOPIC = "complaint.filed";
 
 /**
  * Per-handler dep overrides — partial of the underlying
@@ -124,6 +134,10 @@ export interface BootstrapOrchdDeps {
    *  wire-up (`verbs/committer.ts`) passes the running cage's
    *  atmuxDir + team config. */
   spawnDeps?: Omit<SpawnEpicHandlerDeps, "db">;
+  /** ADR-214 §D2: optional overrides for the complaint consumer. Absent
+   *  → real-process spawn of `atmux tell-lead`. Tests inject a mock
+   *  `spawnTellLead` to assert on argv. */
+  complaintDeps?: ComplaintConsumerDeps;
 }
 
 /** Per-subscription registration result for caller observability. */
@@ -184,6 +198,9 @@ export function bootstrapOrchd(deps: BootstrapOrchdDeps): BootstrapOrchdResult {
   const spawnHandlerFn = deps.spawnDeps !== undefined
     ? createSpawnEpicHandler({ db: deps.db, ...deps.spawnDeps })
     : async (_event: { epicId: string }) => "skipped-row-missing" as const;
+  // ADR-214 §D2 — complaint consumer. Always builds; deps optional
+  // (defaults to real-process spawn of `atmux tell-lead`).
+  const complaintHandlerFn = createComplaintConsumerHandler(deps.complaintDeps ?? {});
 
   const mergeIsNew = registerOrchdSubscription({
     topic: ORCHD_MERGE_TOPIC,
@@ -233,6 +250,14 @@ export function bootstrapOrchd(deps: BootstrapOrchdDeps): BootstrapOrchdResult {
       await spawnHandlerFn(event as EpicUnblockedPayload);
     },
   });
+  // ADR-214 §D2 — complaint consumer.
+  const complaintIsNew = registerOrchdSubscription({
+    topic: ORCHD_COMPLAINT_TOPIC,
+    consumerId: ORCHD_COMPLAINT_CONSUMER_ID,
+    handler: async (event: EventPayload) => {
+      await complaintHandlerFn(event as ComplaintFiledPayload);
+    },
+  });
 
   return {
     registered: [
@@ -257,6 +282,11 @@ export function bootstrapOrchd(deps: BootstrapOrchdDeps): BootstrapOrchdResult {
         consumerId: ORCHD_SPAWN_ON_UNBLOCKED_CONSUMER_ID,
         topic: ORCHD_SPAWN_ON_UNBLOCKED_TOPIC,
         isNew: spawnOnUnblockedIsNew,
+      },
+      {
+        consumerId: ORCHD_COMPLAINT_CONSUMER_ID,
+        topic: ORCHD_COMPLAINT_TOPIC,
+        isNew: complaintIsNew,
       },
     ],
   };
