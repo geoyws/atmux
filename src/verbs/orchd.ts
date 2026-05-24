@@ -29,6 +29,7 @@ import { closeDatabase, openDatabase } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts";
 import { probeHostPressure } from "../core/host-pressure.ts";
+import { invokeAutoMergeInCage } from "../core/auto-merge-invoke.ts";
 import { bootstrapOrchd } from "../core/orchd-bootstrap.ts";
 import { dispatchDissolveEpic as dispatchDissolveEpicImport } from "../core/orchd-dispatch/dissolve-epic.ts";
 import { dispatchEpicMerge as dispatchEpicMergeImport } from "../core/orchd-dispatch/epic-merge.ts";
@@ -87,7 +88,7 @@ export interface ParsedOrchdArgs {
    *                     subscriber offsets, recent event counts per
    *                     topic, last-handler-outcome. Operator runs it
    *                     instead of grepping logs. */
-  subverb: "start" | "drain" | "sweep" | "handle-one" | "status";
+  subverb: "start" | "drain" | "sweep" | "handle-one" | "status" | "sweep-merges";
   teamDir?: string;
   /** `--once`: exit after first batch (test ergonomics). */
   once?: boolean;
@@ -124,7 +125,7 @@ export interface ParsedOrchdArgs {
 }
 
 export function parseOrchdArgs(argv: ReadonlyArray<string>): ParsedOrchdArgs {
-  let subverb: "start" | "drain" | "sweep" | "handle-one" | "status" | undefined;
+  let subverb: "start" | "drain" | "sweep" | "handle-one" | "status" | "sweep-merges" | undefined;
   let teamDir: string | undefined;
   let once = false;
   let maxEvents: number | undefined;
@@ -159,6 +160,11 @@ export function parseOrchdArgs(argv: ReadonlyArray<string>): ParsedOrchdArgs {
     }
     if (a === "--status" || a === "status") {
       subverb = "status";
+      i += 1;
+      continue;
+    }
+    if (a === "--sweep-merges" || a === "sweep-merges") {
+      subverb = "sweep-merges";
       i += 1;
       continue;
     }
@@ -353,6 +359,9 @@ export async function orchd(
   }
   if (parsed.subverb === "sweep") {
     return await orchdSweepCli(parsed);
+  }
+  if (parsed.subverb === "sweep-merges") {
+    return await orchdSweepMergesCli(parsed);
   }
   // Adapt to ParsedCommitterArgs shape. The verb-layer functions
   // accept a superset that includes `--sweep`; we narrow to the
@@ -582,13 +591,26 @@ async function orchdHandleOneByConsumerId(
   const dbPath = join(atmuxDir, "state.db");
   const db = openDatabase(dbPath, migrations);
   try {
-    // Same dep wiring as committer.ts::committerDrainVerb so each
-    // handler dispatches against real implementations (not stubs).
+    // Same dep wiring as committer.ts::committerDrainVerb plus e-11-446429c9
+    // in-cage epic-merge invoker: when this cage IS an epic-team
+    // (team.epicTeam set), auto-merge dispatches via the in-cage
+    // `atmux epic-merge tick` verb spawn (replaces the retired
+    // ADR-091 cron tick). For parent cages without epicTeam set, the
+    // central dispatcher falls through to its safety-net
+    // skipped-not-mine (cross-cage routing is the deferred ADR-232
+    // §D2 OQ-1 work).
+    const epicRepoPath = atmuxDir.endsWith("/.atmux")
+      ? atmuxDir.slice(0, -"/.atmux".length)
+      : atmuxDir;
     bootstrapOrchd({
       db,
       mergeDeps: {
-        dispatchEpicMerge: async (epicId) =>
-          dispatchEpicMergeImport({ epicId }, { localTeamName: team.name }),
+        dispatchEpicMerge: async (epicId) => {
+          if (team.epicTeam !== undefined && team.epicTeam.parentEpicKanbanId === epicId) {
+            return await invokeAutoMergeInCage(epicRepoPath);
+          }
+          return await dispatchEpicMergeImport({ epicId }, { localTeamName: team.name });
+        },
       },
       dissolveDeps: {
         dispatchDissolveEpic: async (epicId) =>
@@ -678,6 +700,45 @@ async function orchdSweepCli(parsed: ParsedOrchdArgs): Promise<number> {
   const result = await orchdSweep(atmuxDir);
   process.stdout.write(`${JSON.stringify(result)}\n`);
   return 0;
+}
+
+/**
+ * `atmux orchd --sweep-merges` — e-11-446429c9 §S5.
+ *
+ * One-shot reconcile pass: walks epics, dispatches merge for
+ * unattended ready ones. Fires from the Rust orchd's 5-min in-process
+ * ticker (S6) — NOT a crontab entry, dies with the orchd process.
+ *
+ * Same dispatch closure as orchdHandleOneByConsumerId so event-driven
+ * + sweep paths share one code path. Writes JSON result to stdout
+ * for the Rust caller's log capture.
+ */
+async function orchdSweepMergesCli(parsed: ParsedOrchdArgs): Promise<number> {
+  const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
+  const atmuxDir = await getAtmuxDir(dirOpts);
+  const team = await requireTeam(dirOpts);
+  const dbPath = join(atmuxDir, "state.db");
+  const db = openDatabase(dbPath, migrations);
+  try {
+    const { sweepMerges } = await import("../core/orchd-merge-sweep.ts");
+    const epicRepoPath = atmuxDir.endsWith("/.atmux")
+      ? atmuxDir.slice(0, -"/.atmux".length)
+      : atmuxDir;
+    const result = await sweepMerges({
+      db,
+      dispatchEpicMerge: async (epicId) => {
+        if (team.epicTeam !== undefined && team.epicTeam.parentEpicKanbanId === epicId) {
+          return await invokeAutoMergeInCage(epicRepoPath);
+        }
+        return await dispatchEpicMergeImport({ epicId }, { localTeamName: team.name });
+      },
+      log: (msg) => process.stderr.write(`${msg}\n`),
+    });
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    return 0;
+  } finally {
+    closeDatabase(db);
+  }
 }
 
 async function orchdStatus(parsed: ParsedOrchdArgs): Promise<number> {

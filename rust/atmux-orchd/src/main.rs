@@ -45,7 +45,7 @@
 
 use std::env;
 use std::process::{Command, ExitCode};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use honker::Database;
 use rusqlite::params;
@@ -436,6 +436,21 @@ fn main() -> ExitCode {
     let events = db.update_events();
     eprintln!("atmux-orchd: subscribed, entering wake loop");
 
+    // e-11-446429c9 §S6 — in-process 5-min sweep ticker. NOT a
+    // crontab entry per operator anti-cron stance (2026-05-24): "no
+    // crons because they're leaky and dangerous". This timer dies
+    // with the orchd binary — no on-disk scheduler artifact.
+    //
+    // Cadence: 300s between sweeps. Wakes off the same 60s recv
+    // timeout we already use; per-wake we check elapsed and fire
+    // when due.
+    let sweep_interval = Duration::from_secs(300);
+    let mut last_sweep_at = Instant::now();
+    // Fire one sweep at startup (after the initial drain) to catch
+    // unattended epics whose events fired while orchd was offline +
+    // weren't picked up because their consumer was stub at the time.
+    spawn_sweep_merges(&atmux_bin, &team_dir);
+
     loop {
         match events.recv_timeout(Duration::from_secs(60)) {
             Ok(Some(())) => {
@@ -457,6 +472,37 @@ fn main() -> ExitCode {
                 eprintln!("atmux-orchd: watcher closed ({}), exiting", e);
                 return ExitCode::SUCCESS;
             }
+        }
+        // After each wake, check the sweep ticker. Fire if due.
+        if last_sweep_at.elapsed() >= sweep_interval {
+            spawn_sweep_merges(&atmux_bin, &team_dir);
+            last_sweep_at = Instant::now();
+        }
+    }
+}
+
+/// e-11-446429c9 §S6 — spawn the Bun-side `--sweep-merges` subverb.
+/// Fire-and-forget; the subprocess writes its JSON result to stdout,
+/// which the orchd pane's `tee` captures into the per-team log. Errors
+/// are non-fatal: a failed sweep doesn't compromise the event-driven
+/// fast-path; next tick retries.
+fn spawn_sweep_merges(atmux_bin: &str, team_dir: &str) {
+    eprintln!("atmux-orchd: sweep-merges tick — spawning Bun subverb");
+    let status = Command::new(atmux_bin)
+        .arg("orchd")
+        .arg("--sweep-merges")
+        .arg("--team-dir")
+        .arg(team_dir)
+        .status();
+    match status {
+        Ok(s) if s.success() => {
+            eprintln!("atmux-orchd: sweep-merges OK");
+        }
+        Ok(s) => {
+            eprintln!("atmux-orchd: sweep-merges exit={:?}", s.code());
+        }
+        Err(e) => {
+            eprintln!("atmux-orchd: sweep-merges spawn failed: {}", e);
         }
     }
 }
