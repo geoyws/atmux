@@ -386,6 +386,29 @@ export const ComplaintFiledPayload = z
   })
   .passthrough();
 
+/**
+ * `member.context-high` — orchd's 15-min context-saturation scan
+ * (e-13-04c8b3bf) detected a member pane whose Claude TUI statusline
+ * reports context-used percent at or above the team's threshold
+ * (default 40%). Lead consumer (ADR-212 / e-cc3728bf) wakes and
+ * decides: preclear / rotate-member / leave-alone.
+ *
+ * Not autonomous — lead-gated per ADR-212. The event is a signal,
+ * not an instruction.
+ */
+export const MemberContextHighPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("member.context-high"),
+    team: z.string(),
+    member: z.string(),
+    percent: z.number().int().min(0).max(100),
+    threshold: z.number().int().min(0).max(100),
+    matchedSegment: z.string(),
+    capturedAtSec: z.number(),
+  })
+  .passthrough();
+
 // ---------- Discriminated union ----------
 
 /**
@@ -415,6 +438,7 @@ export const EventPayload = z.discriminatedUnion("topic", [
   EpicSpawnAbandonedPayload,
   EpicAddedPayload,
   ComplaintFiledPayload,
+  MemberContextHighPayload,
   InternalHonkerLoadedPayload,
   InternalHonkerFallbackPayload,
 ]);
@@ -438,6 +462,7 @@ export type EpicSpawnQueuedPayload = z.infer<typeof EpicSpawnQueuedPayload>;
 export type EpicSpawnAbandonedPayload = z.infer<typeof EpicSpawnAbandonedPayload>;
 export type EpicAddedPayload = z.infer<typeof EpicAddedPayload>;
 export type ComplaintFiledPayload = z.infer<typeof ComplaintFiledPayload>;
+export type MemberContextHighPayload = z.infer<typeof MemberContextHighPayload>;
 export type InternalHonkerLoadedPayload = z.infer<typeof InternalHonkerLoadedPayload>;
 export type InternalHonkerFallbackPayload = z.infer<typeof InternalHonkerFallbackPayload>;
 
@@ -509,6 +534,9 @@ export const TOPICS = [
   "flag.raised",
   "decision.added",
   "hygiene.violated",
+  // e-13-04c8b3bf — member context-saturation signal (lead-gated
+  // preclear/rotate consumer per ADR-212 / e-cc3728bf).
+  "member.context-high",
   // Cockpit-scope (cross-team fanout)
   "team.idle",
   "team.recovered",

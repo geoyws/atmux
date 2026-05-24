@@ -88,7 +88,7 @@ export interface ParsedOrchdArgs {
    *                     subscriber offsets, recent event counts per
    *                     topic, last-handler-outcome. Operator runs it
    *                     instead of grepping logs. */
-  subverb: "start" | "drain" | "sweep" | "handle-one" | "status" | "sweep-merges";
+  subverb: "start" | "drain" | "sweep" | "handle-one" | "status" | "sweep-merges" | "scan-context";
   teamDir?: string;
   /** `--once`: exit after first batch (test ergonomics). */
   once?: boolean;
@@ -125,7 +125,15 @@ export interface ParsedOrchdArgs {
 }
 
 export function parseOrchdArgs(argv: ReadonlyArray<string>): ParsedOrchdArgs {
-  let subverb: "start" | "drain" | "sweep" | "handle-one" | "status" | "sweep-merges" | undefined;
+  let subverb:
+    | "start"
+    | "drain"
+    | "sweep"
+    | "handle-one"
+    | "status"
+    | "sweep-merges"
+    | "scan-context"
+    | undefined;
   let teamDir: string | undefined;
   let once = false;
   let maxEvents: number | undefined;
@@ -165,6 +173,11 @@ export function parseOrchdArgs(argv: ReadonlyArray<string>): ParsedOrchdArgs {
     }
     if (a === "--sweep-merges" || a === "sweep-merges") {
       subverb = "sweep-merges";
+      i += 1;
+      continue;
+    }
+    if (a === "--scan-context" || a === "scan-context") {
+      subverb = "scan-context";
       i += 1;
       continue;
     }
@@ -362,6 +375,9 @@ export async function orchd(
   }
   if (parsed.subverb === "sweep-merges") {
     return await orchdSweepMergesCli(parsed);
+  }
+  if (parsed.subverb === "scan-context") {
+    return await orchdScanContextCli(parsed);
   }
   // Adapt to ParsedCommitterArgs shape. The verb-layer functions
   // accept a superset that includes `--sweep`; we narrow to the
@@ -713,6 +729,82 @@ async function orchdSweepCli(parsed: ParsedOrchdArgs): Promise<number> {
  * + sweep paths share one code path. Writes JSON result to stdout
  * for the Rust caller's log capture.
  */
+/**
+ * `atmux orchd --scan-context` — e-13-04c8b3bf §S4.
+ *
+ * Walks each member's pane, captures statusline, parses context-%,
+ * emits `member.context-high` event for members at/above threshold
+ * (default 40%, operator-overrideable via team.json::contextThreshold).
+ * Lead consumer (ADR-212 / e-cc3728bf) wakes + decides preclear /
+ * rotate / leave-alone.
+ *
+ * Fires from the Rust orchd's 15-min in-process ticker — NOT a
+ * crontab entry per operator stance.
+ */
+async function orchdScanContextCli(parsed: ParsedOrchdArgs): Promise<number> {
+  const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
+  const atmuxDir = await getAtmuxDir(dirOpts);
+  const team = await requireTeam(dirOpts);
+  const dbPath = join(atmuxDir, "state.db");
+  const db = openDatabase(dbPath, migrations);
+  try {
+    const { scanContextAcrossMembers } = await import("../core/orchd-context-scan.ts");
+    const { buildWindowName, getSessionName, resolveTeamSocket } = await import(
+      "../core/common.ts"
+    );
+    const { createTmux } = await import("../abstractions/tmux.ts");
+
+    const sessionName = await getSessionName({ ...dirOpts, team });
+    const socketPath = resolveTeamSocket(team);
+    const tmux = createTmux({ socketPath });
+
+    const threshold = Number.isFinite(Number(process.env.ATMUX_CONTEXT_THRESHOLD))
+      ? Number(process.env.ATMUX_CONTEXT_THRESHOLD)
+      : undefined;
+
+    const scanDeps: Parameters<typeof scanContextAcrossMembers>[0] = {
+      db,
+      team,
+      tmux,
+      sessionName,
+      resolveWindowTarget: (member) => {
+        const windowName = buildWindowName(member.name, member.emoji, member.label, member.role);
+        return `${sessionName}:${windowName}`;
+      },
+      log: (msg) => process.stderr.write(`${msg}\n`),
+    };
+    if (threshold !== undefined) scanDeps.threshold = threshold;
+    const result = await scanContextAcrossMembers(scanDeps);
+
+    // Human-readable summary line (mirrors sweep-merges shape).
+    const { isoLocalTs } = await import("../core/orchd-log-fmt.ts");
+    const ts = isoLocalTs();
+    const emoji = result.membersEmitted > 0 ? "📊" : "💤";
+    const verdict =
+      result.membersEmitted > 0
+        ? `${result.membersEmitted} over threshold → member.context-high emitted`
+        : result.membersOverThreshold > 0
+          ? `${result.membersOverThreshold} over threshold (deduped)`
+          : "all under threshold";
+    process.stdout.write(
+      `[${ts}] ${emoji} ctx-scan · ${result.membersConsidered} members · ${verdict} · ` +
+        `ok=${result.perMember.filter((m) => m.outcome === "ok").length} ` +
+        `unknown=${result.membersUnknown} errored=${result.membersErrored}\n`,
+    );
+    // Per-member emit lines (only when emitted, for operator scan).
+    for (const pm of result.perMember) {
+      if (pm.outcome === "over-threshold" && pm.emitted === true) {
+        process.stdout.write(
+          `[${ts}] 📊 ctx-scan:${pm.member} ${pm.percent}% (≥${threshold ?? 40}%) emitted\n`,
+        );
+      }
+    }
+    return 0;
+  } finally {
+    closeDatabase(db);
+  }
+}
+
 async function orchdSweepMergesCli(parsed: ParsedOrchdArgs): Promise<number> {
   const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
   const atmuxDir = await getAtmuxDir(dirOpts);

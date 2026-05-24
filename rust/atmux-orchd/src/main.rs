@@ -416,7 +416,7 @@ fn main() -> ExitCode {
             .join(", ")
     );
     eprintln!(
-        "{} ⏱  orchd cadence · sweep-merges every 300s · log-rotate when oversize",
+        "{} ⏱  orchd cadence · sweep-merges every 300s · ctx-scan every 900s · log-rotate when oversize",
         now_ts()
     );
 
@@ -480,10 +480,21 @@ fn main() -> ExitCode {
     // call; rename when oversized.
     let rotate_interval = Duration::from_secs(3600);
     let mut last_rotate_at = Instant::now();
+    // e-13-04c8b3bf — context-saturation scan tick (every 15min per
+    // operator stance 2026-05-24: "wdyt about sweeping for the
+    // context saturation every 15m instead of 5m"). Captures each
+    // member's pane statusline; emits member.context-high events
+    // for over-threshold members. Lead consumer (e-cc3728bf) wakes
+    // and decides preclear/rotate.
+    let context_scan_interval = Duration::from_secs(15 * 60);
+    let mut last_context_scan_at = Instant::now();
     // Fire one sweep at startup (after the initial drain) to catch
     // unattended epics whose events fired while orchd was offline +
     // weren't picked up because their consumer was stub at the time.
     spawn_sweep_merges(&atmux_bin, &team_dir);
+    // Also fire one context scan at startup so the lead sees current
+    // saturation state without waiting 15min after orchd boot.
+    spawn_scan_context(&atmux_bin, &team_dir);
 
     loop {
         match events.recv_timeout(Duration::from_secs(60)) {
@@ -516,6 +527,11 @@ fn main() -> ExitCode {
         if last_rotate_at.elapsed() >= rotate_interval {
             rotate_log_if_oversize(&team_dir);
             last_rotate_at = Instant::now();
+        }
+        // 15min context-saturation scan (e-13-04c8b3bf).
+        if last_context_scan_at.elapsed() >= context_scan_interval {
+            spawn_scan_context(&atmux_bin, &team_dir);
+            last_context_scan_at = Instant::now();
         }
     }
 }
@@ -625,6 +641,32 @@ fn spawn_sweep_merges(atmux_bin: &str, team_dir: &str) {
         }
         Err(e) => {
             eprintln!("{} 🔴 sweep-tick · spawn failed: {}", now_ts(), e);
+        }
+    }
+}
+
+/// e-13-04c8b3bf — spawn the Bun-side `--scan-context` subverb. Same
+/// fire-and-forget pattern as sweep-merges. Subverb writes its own
+/// summary line; we only log on non-success to avoid double-noise.
+fn spawn_scan_context(atmux_bin: &str, team_dir: &str) {
+    eprintln!("{} 📊 ctx-scan-tick · firing Bun subverb", now_ts());
+    let status = Command::new(atmux_bin)
+        .arg("orchd")
+        .arg("--scan-context")
+        .arg("--team-dir")
+        .arg(team_dir)
+        .status();
+    match status {
+        Ok(s) if s.success() => {}
+        Ok(s) => {
+            eprintln!(
+                "{} 🔴 ctx-scan-tick · subverb exit={:?}",
+                now_ts(),
+                s.code()
+            );
+        }
+        Err(e) => {
+            eprintln!("{} 🔴 ctx-scan-tick · spawn failed: {}", now_ts(), e);
         }
     }
 }
