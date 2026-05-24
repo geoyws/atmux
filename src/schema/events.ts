@@ -358,6 +358,34 @@ export const EpicAddedPayload = z
   })
   .passthrough();
 
+/**
+ * `complaint.filed` — a new complaint was filed against a team, OR an
+ * existing OPEN complaint was bumped (dedup re-arm). Consumer
+ * (`atmux:complaint-consumer`, registered via bootstrapOrchd) wakes ~1ms
+ * after INSERT/UPDATE and calls `atmux tell-lead` per ADR-214 §D2.
+ *
+ * `bumped` distinguishes fresh complaints from dedup re-arms — the
+ * consumer rate-limits bumps differently from new filings (a bumped
+ * complaint signals "this is still broken N times now" rather than a
+ * new incident).
+ */
+export const ComplaintFiledPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("complaint.filed"),
+    complaintId: z.string(),
+    targetTeam: z.string(),
+    sourceKind: z.string().nullable(),
+    sourceId: z.string().nullable(),
+    incidentSummary: z.string(),
+    openedBy: z.string().nullable(),
+    severity: z.string().nullable(),
+    sourceCount: z.number().int().positive().default(1),
+    bumped: z.boolean().default(false),
+    filedAtSec: z.number(),
+  })
+  .passthrough();
+
 // ---------- Discriminated union ----------
 
 /**
@@ -386,6 +414,7 @@ export const EventPayload = z.discriminatedUnion("topic", [
   EpicSpawnQueuedPayload,
   EpicSpawnAbandonedPayload,
   EpicAddedPayload,
+  ComplaintFiledPayload,
   InternalHonkerLoadedPayload,
   InternalHonkerFallbackPayload,
 ]);
@@ -408,6 +437,7 @@ export type EpicDissolveBlockedPayload = z.infer<typeof EpicDissolveBlockedPaylo
 export type EpicSpawnQueuedPayload = z.infer<typeof EpicSpawnQueuedPayload>;
 export type EpicSpawnAbandonedPayload = z.infer<typeof EpicSpawnAbandonedPayload>;
 export type EpicAddedPayload = z.infer<typeof EpicAddedPayload>;
+export type ComplaintFiledPayload = z.infer<typeof ComplaintFiledPayload>;
 export type InternalHonkerLoadedPayload = z.infer<typeof InternalHonkerLoadedPayload>;
 export type InternalHonkerFallbackPayload = z.infer<typeof InternalHonkerFallbackPayload>;
 
