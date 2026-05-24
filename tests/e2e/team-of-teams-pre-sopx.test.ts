@@ -167,6 +167,7 @@ interface LifecycleSnapshot {
  *  epic.ts` (lands via aac4ee1) + invoke programmatically. The
  *  `--soft` path is the canonical dissolution mode per ADR-090; the
  *  hard/force path is deferred per body §Out of scope. */
+// biome-ignore lint/correctness/noUnusedVariables: Phase-2 forward-ref scaffold — referenced from the commented `declare const dissolveEpicAgainstParent` block below; both land together when Phase 2 wires the programmatic dissolveEpic invocation.
 interface DissolutionResult {
   readonly finalSnapshot: LifecycleSnapshot;
   readonly mergedShas: ReadonlyArray<string>;

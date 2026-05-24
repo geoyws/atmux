@@ -301,3 +301,111 @@ describe("parseOrchdArgs", () => {
     ).toThrow(UsageError);
   });
 });
+
+// ---------- ADR-231 §D4 — --sweep subverb (t-11-84fced39) ----------
+
+describe("parseOrchdArgs — --sweep subverb (ADR-231 §D4)", () => {
+  test("--sweep parses as sweep sub-verb", () => {
+    expect(parseOrchdArgs(["--sweep"])).toEqual({ subverb: "sweep" });
+  });
+
+  test("'sweep' bare form parses identically", () => {
+    expect(parseOrchdArgs(["sweep"])).toEqual({ subverb: "sweep" });
+  });
+
+  test("--sweep --team-dir captures path", () => {
+    expect(parseOrchdArgs(["--sweep", "--team-dir", "/srv/demo"])).toEqual({
+      subverb: "sweep",
+      teamDir: "/srv/demo",
+    });
+  });
+
+  test("--sweep --once flag captured (canonical cron-line form)", () => {
+    expect(parseOrchdArgs(["--sweep", "--once"])).toEqual({
+      subverb: "sweep",
+      once: true,
+    });
+  });
+
+  test("sweep + start mixed (last wins per parser order)", () => {
+    // Parser walks left-to-right; last subverb token wins. This pins
+    // the existing precedence so a future operator script that
+    // accidentally chains sub-verbs doesn't get a surprising verdict.
+    expect(parseOrchdArgs(["--sweep", "--start"])).toEqual({ subverb: "start" });
+    expect(parseOrchdArgs(["--start", "--sweep"])).toEqual({ subverb: "sweep" });
+  });
+});
+
+// ---------- orchd() dispatch — sweep route ----------
+
+describe("orchd() dispatch — --sweep routes through orchdSweep + prints counters JSON", async () => {
+  // The dispatch invocation lives in `orchd()` not in `parseOrchdArgs`,
+  // and `orchd()` touches the filesystem (getAtmuxDir) + opens a real
+  // SQLite db, so we mock at the module-import boundary. Bun's
+  // `mock.module` rewires `src/core/orchd-sweep.ts::orchdSweep` to a
+  // stub that records its call + returns a fixed counter shape. We
+  // also capture stdout to verify the JSON shape.
+  const { mock } = await import("bun:test");
+  const { mkdtemp, writeFile, mkdir } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+
+  test("orchd --sweep invokes orchdSweep with resolved atmuxDir + prints JSON counters", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "atmux-orchd-sweep-cli-"));
+    const atmuxDir = join(scratch, ".atmux");
+    await mkdir(atmuxDir, { recursive: true });
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      JSON.stringify({ name: "demo", members: [{ name: "be-1", role: "member", tui: "claude" }] }),
+    );
+
+    const sweepCalls: string[] = [];
+    mock.module("../../../src/core/orchd-sweep.ts", () => ({
+      orchdSweep: async (dir: string) => {
+        sweepCalls.push(dir);
+        return {
+          epicsConsidered: 3,
+          epicsSpawned: 1,
+          workersConsidered: 2,
+          workersDissolved: 0,
+        };
+      },
+    }));
+
+    // Capture stdout writes.
+    const stdoutChunks: string[] = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    (process.stdout as unknown as { write: typeof origWrite }).write = ((
+      chunk: string | Uint8Array,
+    ) => {
+      stdoutChunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString());
+      return true;
+    }) as typeof origWrite;
+
+    try {
+      // Late import so module mock is in effect when orchd() runs.
+      const { orchd } = await import(
+        `../../../src/verbs/orchd.ts?cache=${Date.now()}`
+      );
+      // `getAtmuxDir({teamDir})` joins `<teamDir>/.atmux`, so pass the
+      // scratch root (parent of the .atmux/ dir we created).
+      const rc = await orchd(["--sweep", "--team-dir", scratch]);
+      expect(rc).toBe(0);
+    } finally {
+      (process.stdout as unknown as { write: typeof origWrite }).write = origWrite;
+    }
+
+    expect(sweepCalls).toHaveLength(1);
+    expect(sweepCalls[0]).toBe(atmuxDir);
+
+    const stdout = stdoutChunks.join("");
+    expect(stdout.trim()).toBe(
+      JSON.stringify({
+        epicsConsidered: 3,
+        epicsSpawned: 1,
+        workersConsidered: 2,
+        workersDissolved: 0,
+      }),
+    );
+  });
+});

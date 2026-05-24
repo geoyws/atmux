@@ -27,15 +27,15 @@ Add `atmux cockpit rotate <session-name>` verb under the existing `src/verbs/coc
 
 ```
 atmux cockpit rotate medic [--force]
-atmux cockpit rotate sentinel [--force]
 atmux cockpit rotate <team-name> [--force]
 ```
 
-`<session-name>` is one of three canonical targets:
+> **§Amendment 2026-05-23 (sentinel deleted per e-be01fc89)**: The `atmux cockpit rotate sentinel [--force]` subcommand is **retired** — sentinel role deleted entirely 2026-05-23 (Sentinel REMOVAL EPIC); orchd substrate (EPIC e-a946af69) is event-driven and has no rotatable cockpit pane. Lines below that mention sentinel handoff payload / re-arm sentinel-tick / `_sentinel` (W3) targets are preserved as historical audit context — the rotate dispatcher no longer accepts `sentinel` as a target.
+
+`<session-name>` is one of two canonical targets (post-2026-05-23 — `sentinel` retired):
 | Target | Cockpit window | What rotates |
 |---|---|---|
 | `medic` | `_medic` (W2 per ADR-135) | self-healing role pane |
-| `sentinel` | `_sentinel` (W3 per ADR-158) | whip-manager pane |
 | `<team-name>` | `<team-name>` (W4+) | per-team driver pane (NOT the team's lead — lead lives in cage per ADR-162) |
 
 Hard-refused targets: `superdriver` (W1, operator REPL).
@@ -187,7 +187,7 @@ T5 wires the handoff write-path at the TODO(T5) anchor T4 left at `performRespaw
 - [ADR-033](033-caller-scope-gate.md) — caller-scope gate; cockpit rotate is driver-only.
 - [ADR-077](077-superdoctor-self-healing.md) → renamed medic per ADR-133 — medic cadence; re-arm step in per-role respawn matrix.
 - [ADR-094](094-c-alias-spawn-convention.md) — c-alias spawn convention; claudeAccount wrapper resolution.
-- [ADR-132](132-pluggable-martinet.md) → renamed sentinel per ADR-158 — sentinel pluggable martinet pattern.
+- [ADR-132](132-pluggable-martinet.SUPERSEDED.md) → renamed sentinel per ADR-158 — sentinel pluggable martinet pattern.
 - [ADR-135](135-cockpit-naming-convention.md) — `_-prefix` cockpit window naming; medic / sentinel window IDs.
 - [ADR-138](138-verified-send-keys.md) — safeSendKeysWithVerify; all Ctrl-C + spawn-prompt sends route through this.
 - [ADR-155](155-pane-state-classifier.md) — pane-state probe; reusable abstraction for gate-1 + gate-2.

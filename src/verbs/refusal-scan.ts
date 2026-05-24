@@ -1,8 +1,8 @@
 // ADR-139 §D2 / T3 (t-841049e4): `atmux refusal-scan` verb — invoked
-// by medic (hourly, ADR-077 / ADR-133) and martinet (per-tick,
-// ADR-132). Pure orchestration wrapper around `scanTeamForRefusals`
-// from `src/core/refusal-scan.ts`. Verb stays thin: argv parse,
-// `requireTeam` + `getAtmuxDir` resolve, hand off to the core.
+// by medic (hourly, ADR-077 / ADR-133). Pure orchestration wrapper
+// around `scanTeamForRefusals` from `src/core/refusal-scan.ts`. Verb
+// stays thin: argv parse, `requireTeam` + `getAtmuxDir` resolve, hand
+// off to the core.
 //
 // Output: JSON one-liner to stdout (default) so cron logs are
 // machine-parseable, with `--json` reserved for forward-compat

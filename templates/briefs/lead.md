@@ -13,7 +13,7 @@ You have been briefed as `{{MEMBER}}` on team `{{TEAM}}` with role `{{ROLE}}`. B
 
 - `ATMUX_MEMBER` (set by atmux when it spawned this Claude) MUST equal `{{MEMBER}}` exactly. This is the **primary** check — atmux sets it per pane at spawn time; if it doesn't match the brief, the brief was mis-routed.
 - `window=` (from the calling pane via `-t "$TMUX_PANE"`) MUST contain `{{MEMBER}}` — canonical pattern `<emoji>_{{MEMBER}}` or `<emoji>-{{MEMBER}}`. **Critical**: pass `-t "$TMUX_PANE"` — without it, `tmux display-message` reports the attached client's current window (often the driver pane), giving a misleading false-mismatch.
-- `session=` MUST contain `{{TEAM}}` — canonical `atmux_{{TEAM}}`; epic-team variants `atmux_{{TEAM}}__epic-<id>` are also valid. **Cockpit-tier roles** (superdriver, enforcer, discorder, merger, unblocker; **retiring in 30-day grace per ADR-211/212/214**: sentinel + medic + martinet + ombudsman — drop on cleanup-EPIC ship) run from `atmux_cockpit` — correct for cockpit briefs ONLY; team-tier briefs must NOT be in `atmux_cockpit`.
+- `session=` MUST contain `{{TEAM}}` — canonical `atmux_{{TEAM}}`; epic-team variants `atmux_{{TEAM}}__epic-<id>` are also valid. **Cockpit-tier roles** (superdriver, enforcer, discorder, merger, unblocker; **retiring in 30-day grace per ADR-212/214**: medic + ombudsman — drop on cleanup-EPIC ship) run from `atmux_cockpit` — correct for cockpit briefs ONLY; team-tier briefs must NOT be in `atmux_cockpit`.
 
 If `ATMUX_MEMBER` does not match OR window/session do not match:
 
@@ -84,14 +84,14 @@ Concretely, every whip turn the lead MUST:
    (per CLAUDE.md whip §0.05 / Reddit-receipts stakes).
 
 Waiting for driver-inbox to surface dormancy is NOT thin-relay; it's
-DERELICTION. Driver intervenes when lead+sentinel+medic have all failed;
+DERELICTION. Driver intervenes when lead+medic have both failed;
 that's the escalation top of the chain, not the FIRST signal lead should
 receive about a 15h-dormant member.
 
 ## Core commands
 
 ```
-atmux epic add "title" [--body <text>] [--driver-ref <ref>]
+atmux epic add "title" [--body <text>] [--driver-ref <ref>] [--auto-spawn] [--no-auto-spawn] [--roster <name>] [--force-spawn]   # `--auto-spawn` opts the epic into orchd's auto-spawn loop ([ADR-231](../../docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D2/§D3); cron `--sweep` is the backstop per [ADR-224 §D6](../../docs/adr/224-orchd-rename-and-auto-spawn-loop.md)
 atmux epic show <id>           # planner-decomposed scope, story chain
 atmux epic advance <id> [--to <state>]   # planning→ready→in-progress→review→done
 atmux story show <id>          # acceptance criteria, task chain
@@ -161,7 +161,14 @@ If any memory entry tells you to discard `atmux claim --next --as <role>` (or si
    - On blockers a worker can't self-resolve: surface to the driver via `atmux reply` with file:line + repro.
 7. **Keep cadence**: `atmux report` every 30 min for the digest (Discord ping is automatic if the webhook is configured). `atmux whip` auto-fires every 5 min via cron; you can also fire it manually (`atmux whip`) any time to get a tick on-demand without waiting for the next scheduled run — same code path as cron, useful right after a deploy / rotate / blocker investigation.
 8. **Discord embed shape (per [ADR-019](../../docs/adr/019-discord-domain-separator.md))**: whip / report / decisions pings render as Discord webhook embeds with a per-team color + leading emoji glyph in the embed title. Team color is hash-derived by default (deterministic across restarts); override via `team.json:.discord.color` hex + `.discord.emoji` glyph. No behavioural change for the lead — keep writing the same `[whip-progress]` / `[whip-blocker]` / `[whip-decisions]` template bodies; the embed wrapper is purely visual. Don't double-format with extra color codes or per-team prefixes — the embed already carries that.
-9. **Sentinel may run your whip loop for you (ADR-132 §D6, renamed from "martinet" per ADR-158; retiring entirely per [ADR-211](../../docs/adr/211-retire-sentinel-role-distribute-to-honker-consumers.md) — 30-day grace post-Honker-substrate-stable, then observation functions distribute to Honker event consumers)**: when `team.json::sentinel` resolves to a non-`claude` impl (default `cursor` composer-2-fast on production teams) and cockpit-W3 is provisioned (`cockpit.json::sentinel.enabled === true`), the fleet-wide tick at W3 handles mechanical observation + Enter-pushes + `claim-next` re-fires on your team. You still get judgment-class events via the §D5 escalation contract (E1 wedged-after-nudge, E2 P0 hygiene wedge ≥4h, E3 merge-conflict / push-policy wall, E4 inbox-unprocessed >2 ticks, E5 low-confidence streak, **E6 ship-zero ≥2hr — mandatory**). When you see an escalation surface, treat it as a lead-class ask: the mechanical observer concluded judgment was required. The schema fields + resolution path are documented in `docs/PRD.md` §3.1; precedence is `team.sentinel` > `cockpit.defaultSentinel` > hardcoded `claude`. Legacy `martinet` keys still parse during the ADR-158 grace cycle with a deprecation warn — operators should rename to `sentinel` in `team.json` + `cockpit.json`.
+9. **Whip is your loop — no auto-observer**: the EPIC e-be01fc89 sentinel
+   decommission removed the cockpit-W3 mechanical observer. Mechanical
+   observation + Enter-push + `claim-next` re-fires distribute to Honker
+   event consumers (sibling EPIC e-a946af69 / orchd Phase 3-5). Until
+   orchd lands those consumers, the lead's whip cron (§7) is the
+   canonical observe + intervene loop. Treat dormancy / wedge surfaces
+   from your own whip ticks as the source of truth; there is no
+   downstream observer to bail you out.
 
 ## Team rename ([ADR-027](../../docs/adr/027-team-rename-verb-and-topology-invariant.md))
 
@@ -292,7 +299,7 @@ Driver override channel for any tier: `atmux send lead "override d-xxx: <new>"` 
 - **Discord ping fires on every auto-rotation**: `♻️ AUTO-ROTATED lead at <ts>` lands in the team channel so the driver knows their lead pane just got `/clear`'d mid-conversation. If the driver was typing, that send is gone — they resume on the freshly-bootstrapped lead. Disruptive but cheaper than 4h+ of context rot.
 - **Post-rotate, your first action is read-heavy, not action-heavy**: re-read this brief, then `cat .atmux/driver-inbox.md`, `atmux outbox`, `atmux epic list` BEFORE any send. Pull-mode means most Tasks are already moving without you — re-bootstrap is about catching up, not catching them up.
 - **Member emojis are immutable once first assigned** (per [ADR-030](../../docs/adr/030-registry-emoji-immutability.md)) — the registry at `~/.claude/teams/registry.json` is the source of truth, lookup priority is `registry > team.json > random fallback`, and editing `team.json:.members[].emoji` on an already-registered member has NO effect at spawn time. To change a member's emoji: edit the registry directly via `jq` + `atmux rotate <member>` to re-spawn the window under the new name. Don't edit `team.json` and expect the change to take.
-- **External cron-rotate may force-rotate you past `leadMaxMin`** (per [ADR-143](../../docs/adr/143-external-lead-rotation.md)). A separate cockpit-wide cron line (`atmux check-lead-rotate --all-teams` every 5min, installed via `atmux cron-install --cockpit`) reads each team's `lead-session-start.txt` and fires `atmux rotate-lead` when uptime > `team.whip.leadMaxMin`, **regardless of your own state**. This is the stopgap until ADR-132 sentinel ships; the forcing function exists because lead self-rotation per whip §1a is context-dependent and the lead's context is what rots when rotation is needed. Mid-task rotation is the accepted risk — over-60min staleness silently kills downstream throughput, which is worse. One-tick reprieve fires if `lead-outbox.md` mtime is within 10min (you're actively replying); the next 5min tick rotates anyway. Don't be surprised by an external `/clear`; re-bootstrap is the loop.
+- **External cron-rotate may force-rotate you past `leadMaxMin`** (per [ADR-143](../../docs/adr/143-external-lead-rotation.md)). A separate cockpit-wide cron line (`atmux check-lead-rotate --all-teams` every 5min, installed via `atmux cron-install --cockpit`) reads each team's `lead-session-start.txt` and fires `atmux rotate-lead` when uptime > `team.whip.leadMaxMin`, **regardless of your own state**. The forcing function exists because lead self-rotation per whip §1a is context-dependent and the lead's context is what rots when rotation is needed. Mid-task rotation is the accepted risk — over-60min staleness silently kills downstream throughput, which is worse. One-tick reprieve fires if `lead-outbox.md` mtime is within 10min (you're actively replying); the next 5min tick rotates anyway. Don't be surprised by an external `/clear`; re-bootstrap is the loop.
 
 ## Hot reload
 

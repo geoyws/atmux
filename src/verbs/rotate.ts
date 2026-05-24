@@ -122,10 +122,6 @@ export function findLeadMember(team: Team): TeamMember | null {
  *  canonical file. */
 const BRIEF_ALIASES: Readonly<Record<string, string>> = {
   "team-lead": "lead",
-  // ADR-158 grace shim renames `martinet` role → `sentinel`, but the brief
-  // file is still `martinet.md`. Without this alias, sentinel-role spawns
-  // fall through to `member.md` instead of the role brief.
-  sentinel: "martinet",
 };
 
 /** Bash `atmux::brief_path <role>` — returns `<briefsDir>/<role>.md`

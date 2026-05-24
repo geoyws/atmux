@@ -449,6 +449,82 @@ describe("emit — honkerLoaded stream-publish bridge", () => {
     );
     expect(result.eventId).toBeTruthy();
   });
+
+  test("auto-detects from getHonkerState(db) when opts.honkerLoaded omitted (ADR-202 §Amendment 2026-05-24)", () => {
+    // Pre-amendment: callers had to thread `{honkerLoaded: true}`
+    // through every emit site or NOTIFY silently never fired. The
+    // recovery-script class (gitter wedge session 2026-05-24) hit this:
+    // durable INSERT landed but daemon listening on NOTIFY/LISTEN
+    // never woke. Post-amendment: emit() auto-detects via
+    // getHonkerState(db).loaded when opts.honkerLoaded is undefined.
+    //
+    // Bootstraps a fake honker-loaded state (no real extension binary
+    // in unit tests) so the auto-detect predicate sees loaded=true.
+    // The honker_stream_publish() function is absent, so the inner
+    // try/catch swallows the SQLite "no such function" — the
+    // observable effect of the auto-detect is that the catch path
+    // runs at all (vs being skipped entirely under loaded=false).
+    bootHonker(db, {
+      env: { ATMUX_HONKER: "on", HOME: "/root", ATMUX_HONKER_PATH: "/nonexistent.so" },
+    });
+    const result = emit(
+      db,
+      {
+        topic: "task.done",
+        taskId: "t-auto-detect",
+        member: "be-1",
+        team: "demo",
+        doneAtSec: 100,
+      },
+      // No `honkerLoaded` key — relies entirely on auto-detect.
+      { nowSec: () => 100 },
+    );
+    expect(result.eventId).toBeTruthy();
+    // Durable INSERT is the load-bearing assertion: a thrown
+    // honker_stream_publish() must not derail the durable row.
+    const row = db
+      .prepare("SELECT topic FROM events WHERE event_id = ?")
+      .get(result.eventId) as { topic: string };
+    expect(row.topic).toBe("task.done");
+    resetHonkerStateForTest(db);
+  });
+
+  test("explicit honkerLoaded=false overrides auto-detect when bootHonker'd (force-suppress NOTIFY)", () => {
+    // Bootstrap honker (auto-detect would say true) but the explicit
+    // `false` MUST take precedence. Validates the ?? chain ordering in
+    // emit() — opts.honkerLoaded checked first, getHonkerState only
+    // consulted when opts is undefined.
+    bootHonker(db, {
+      env: { ATMUX_HONKER: "on", HOME: "/root", ATMUX_HONKER_PATH: "/nonexistent.so" },
+    });
+    // We can't directly observe "did NOTIFY fire" without a live
+    // honker extension, so the assertion shape mirrors the existing
+    // "honkerLoaded=false" test (lines 436-451): emit() must complete
+    // without throwing and the durable row lands. The behavioral
+    // distinction from the auto-detect test above is the ABSENCE of
+    // a try/catch on a missing function — the early-return in the
+    // NOTIFY branch saves one SQLite prepare() call. The semantic
+    // distinction is the contract: explicit `false` is the
+    // documented opt-out, and this test pins it against future
+    // refactors that might invert the ?? order.
+    const result = emit(
+      db,
+      {
+        topic: "task.done",
+        taskId: "t-explicit-false",
+        member: "be-1",
+        team: "demo",
+        doneAtSec: 100,
+      },
+      { honkerLoaded: false, nowSec: () => 100 },
+    );
+    expect(result.eventId).toBeTruthy();
+    const row = db
+      .prepare("SELECT topic FROM events WHERE event_id = ?")
+      .get(result.eventId) as { topic: string };
+    expect(row.topic).toBe("task.done");
+    resetHonkerStateForTest(db);
+  });
 });
 
 // ---------- watchEvents async-iterator subscription ----------
@@ -671,6 +747,7 @@ describe("watchEvents", () => {
   test("externalSignals throw → falls back to poll-mode gracefully", async () => {
     emit(db, { topic: "task.done", taskId: "t-A", member: "x", team: "y", doneAtSec: 1 });
     const ac = new AbortController();
+    // biome-ignore lint/correctness/useYield: intentional no-yield fixture — generator throws on first .next() call to simulate a crashed external listener and exercise the poll-mode fallback path.
     const signals = (async function* () {
       throw new Error("simulated listener crash");
     })();

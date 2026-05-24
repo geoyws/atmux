@@ -34,7 +34,6 @@ import {
   movePendingToInProgress,
 } from "../core/inbox.ts";
 import {
-  claimTask,
   claimTaskForMember,
   listTasks,
   markTaskDone,

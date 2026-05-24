@@ -59,8 +59,8 @@ describe("parseCockpitRotateArgs", () => {
   });
 
   test("parses --force flag (positional first)", () => {
-    const p = parseCockpitRotateArgs(["sentinel", "--force"]);
-    expect(p).toEqual({ sessionName: "sentinel", force: true });
+    const p = parseCockpitRotateArgs(["atmux", "--force"]);
+    expect(p).toEqual({ sessionName: "atmux", force: true });
   });
 
   test("parses --force flag (positional last)", () => {
@@ -73,7 +73,7 @@ describe("parseCockpitRotateArgs", () => {
   });
 
   test("rejects duplicate positional", () => {
-    expect(() => parseCockpitRotateArgs(["medic", "sentinel"])).toThrow(UsageError);
+    expect(() => parseCockpitRotateArgs(["medic", "atmux"])).toThrow(UsageError);
   });
 
   test("rejects only flags (no positional)", () => {
@@ -87,9 +87,6 @@ describe("classifyRole", () => {
   test("medic → medic", () => {
     expect(classifyRole("medic")).toBe("medic");
   });
-  test("sentinel → sentinel", () => {
-    expect(classifyRole("sentinel")).toBe("sentinel");
-  });
   test("team-name → team-driver", () => {
     expect(classifyRole("atmux")).toBe("team-driver");
     expect(classifyRole("sopx")).toBe("team-driver");
@@ -100,9 +97,6 @@ describe("classifyRole", () => {
 describe("targetWindowForRole", () => {
   test("medic → _medic (ADR-135 _-prefix)", () => {
     expect(targetWindowForRole("medic", "medic")).toBe("_medic");
-  });
-  test("sentinel → _sentinel", () => {
-    expect(targetWindowForRole("sentinel", "sentinel")).toBe("_sentinel");
   });
   test("team-driver → bare team-name", () => {
     expect(targetWindowForRole("team-driver", "atmux")).toBe("atmux");
@@ -267,8 +261,6 @@ interface TestHarness {
   windowsBySession: Map<string, { index: number; id: string; name: string; active: boolean }[]>;
   /** Recorded medic auto-start invocations. */
   medicAutoStartCalls: { sessionName: string; windowIndex: number }[];
-  /** Recorded sentinel auto-start invocations. */
-  sentinelAutoStartCalls: { sessionName: string; windowIndex: number }[];
   /** Recorded T5 handoff writes. */
   handoffWrites: { path: string; content: string }[];
   /** Force atomicWrite to throw the given error on next call. */
@@ -281,10 +273,10 @@ interface TestHarness {
 
 const T0 = 1779100000000;
 
-/** Default synthetic cockpit — declares medic + sentinel (claude impl)
- *  with explicit `/root/.claude` accounts so the wrapper resolver
- *  returns `claude`. Tests assert respawn shape against this baseline;
- *  per-test overrides build narrower cockpit shapes. */
+/** Default synthetic cockpit — declares medic (claude impl) with an
+ *  explicit `/root/.claude` account so the wrapper resolver returns
+ *  `claude`. Tests assert respawn shape against this baseline; per-
+ *  test overrides build narrower cockpit shapes. */
 function defaultCockpit(): LoadedCockpit {
   return {
     sessions: [],
@@ -297,11 +289,6 @@ function defaultCockpit(): LoadedCockpit {
       },
     ],
     medic: {
-      enabled: true,
-      claudeAccount: { configDir: "/root/.claude" },
-    },
-    sentinel: {
-      impl: "claude",
       enabled: true,
       claudeAccount: { configDir: "/root/.claude" },
     },
@@ -335,7 +322,6 @@ function makeHarness(overrides: Partial<TestHarness> = {}): TestHarness {
       : {}),
     windowsBySession: overrides.windowsBySession ?? new Map(),
     medicAutoStartCalls: overrides.medicAutoStartCalls ?? [],
-    sentinelAutoStartCalls: overrides.sentinelAutoStartCalls ?? [],
     handoffWrites: overrides.handoffWrites ?? [],
     ...(overrides.atomicWriteThrows !== undefined
       ? { atomicWriteThrows: overrides.atomicWriteThrows }
@@ -420,12 +406,6 @@ function harnessOpts(h: TestHarness) {
     safeSendKeysWithVerify: makeSafeSendKeysStub(h),
     autoStartMedicLoop: async (opts: { sessionName: string; windowIndex: number }) => {
       h.medicAutoStartCalls.push({
-        sessionName: opts.sessionName,
-        windowIndex: opts.windowIndex,
-      });
-    },
-    autoStartSentinelLoop: async (opts: { sessionName: string; windowIndex: number }) => {
-      h.sentinelAutoStartCalls.push({
         sessionName: opts.sessionName,
         windowIndex: opts.windowIndex,
       });
@@ -528,8 +508,8 @@ describe("cockpitRotate — gate 2 (pane-idle)", () => {
 
   test("refuses when target pane is COMPACTING", async () => {
     const h = makeHarness();
-    h.captures.set("atmux_cockpit:_sentinel", "Compacting conversation");
-    const exit = await cockpitRotate(["sentinel"], harnessOpts(h));
+    h.captures.set("atmux_cockpit:_medic", "Compacting conversation");
+    const exit = await cockpitRotate(["medic"], harnessOpts(h));
     expect(exit).toBe(65);
     expect(h.capturedStderr.join("")).toContain("gate-2-pane-idle");
   });
@@ -646,7 +626,7 @@ describe("cockpitRotate — argv parse error bubbling", () => {
 
 /** Helper — pass gates so T4 respawn runs. Sets gate-3 marker old
  *  enough to pass without --force. */
-function passGates(h: TestHarness, role: "medic" | "sentinel" | "team-driver"): void {
+function passGates(h: TestHarness, role: "medic" | "team-driver"): void {
   h.stats.set(`/test/home/.claude/teams/__cockpit__/${role}/session-start.txt`, {
     mtimeMs: T0 - 2 * 60 * 60_000,
   });
@@ -768,8 +748,6 @@ describe("cockpitRotate — T4 medic respawn", () => {
     // Medic auto-start fired at the spawned window index.
     expect(h.medicAutoStartCalls.length).toBe(1);
     expect(h.medicAutoStartCalls[0]?.windowIndex).toBe(4);
-    // Sentinel auto-start NOT fired (separate role).
-    expect(h.sentinelAutoStartCalls.length).toBe(0);
     // Success audit row written (no Discord).
     expect(h.appendedAudit.length).toBe(1);
     const row = firstAuditRow(h);
@@ -811,65 +789,6 @@ describe("cockpitRotate — T4 medic respawn", () => {
   });
 });
 
-// ---------- T4: sentinel respawn path ----------
-
-describe("cockpitRotate — T4 sentinel respawn", () => {
-  test("claude-impl: wrapper-alias + sentinel autoStart fires", async () => {
-    const h = makeHarness();
-    passGates(h, "sentinel");
-    const exit = await cockpitRotate(["sentinel"], harnessOpts(h));
-
-    expect(exit).toBe(0);
-    expect(h.killWindowCalls).toEqual(["atmux_cockpit:_sentinel"]);
-    expect(h.newWindowCalls[0]?.name).toBe("_sentinel");
-    expect(h.newWindowCalls[0]?.shellCommand).toContain(" claude ");
-    // Sentinel auto-start fired; medic auto-start NOT fired.
-    expect(h.sentinelAutoStartCalls.length).toBe(1);
-    expect(h.medicAutoStartCalls.length).toBe(0);
-    expect(firstAuditRow(h).outcome).toBe("success");
-    expect(firstAuditRow(h).role).toBe("sentinel");
-  });
-
-  test("cursor-impl: bash loop spawn + autoStart SKIPPED (ADR-132 §D4)", async () => {
-    const h = makeHarness({
-      cockpit: {
-        ...defaultCockpit(),
-        sentinel: {
-          impl: "cursor",
-          enabled: true,
-        },
-      } as unknown as LoadedCockpit,
-    });
-    passGates(h, "sentinel");
-    const exit = await cockpitRotate(["sentinel"], harnessOpts(h));
-
-    expect(exit).toBe(0);
-    // Cursor variant uses the bash `while true; do atmux sentinel tick;
-    // sleep 270; done` loop — no claude wrapper, no autoStart.
-    expect(h.newWindowCalls[0]?.shellCommand).toContain("atmux sentinel tick");
-    expect(h.newWindowCalls[0]?.shellCommand).not.toContain(" claude");
-    expect(h.sentinelAutoStartCalls.length).toBe(0);
-    expect(h.medicAutoStartCalls.length).toBe(0);
-  });
-
-  test("non-default claudeAccount on claude-impl threads through resolver", async () => {
-    const h = makeHarness({
-      cockpit: {
-        ...defaultCockpit(),
-        sentinel: {
-          impl: "claude",
-          enabled: true,
-          claudeAccount: { configDir: "/root/.claude-icloud" },
-        },
-      } as unknown as LoadedCockpit,
-    });
-    passGates(h, "sentinel");
-    const exit = await cockpitRotate(["sentinel"], harnessOpts(h));
-    expect(exit).toBe(0);
-    expect(h.newWindowCalls[0]?.shellCommand).toContain(" c-ic ");
-  });
-});
-
 // ---------- T4: team-driver respawn path ----------
 
 describe("cockpitRotate — T4 team-driver respawn", () => {
@@ -889,7 +808,6 @@ describe("cockpitRotate — T4 team-driver respawn", () => {
     expect(h.newWindowCalls[0]?.shellCommand).not.toContain("c-u");
     // No cadence re-arm — team-driver's cageRetryLoop IS the loop.
     expect(h.medicAutoStartCalls.length).toBe(0);
-    expect(h.sentinelAutoStartCalls.length).toBe(0);
     expect(firstAuditRow(h).outcome).toBe("success");
     expect(firstAuditRow(h).role).toBe("team-driver");
     expect(firstAuditRow(h).sessionName).toBe("atmux");
@@ -1038,9 +956,6 @@ describe("handoffPayloadPath", () => {
     expect(handoffPayloadPath("/test/home", "medic")).toBe(
       "/test/home/.claude/teams/__cockpit__/medic/handoff.md",
     );
-    expect(handoffPayloadPath("/test/home", "sentinel")).toBe(
-      "/test/home/.claude/teams/__cockpit__/sentinel/handoff.md",
-    );
     expect(handoffPayloadPath("/test/home", "team-driver")).toBe(
       "/test/home/.claude/teams/__cockpit__/team-driver/handoff.md",
     );
@@ -1075,10 +990,10 @@ describe("parseAuditTailForRole", () => {
   });
 
   test("filters by role — non-matching rows excluded", () => {
-    const sentinelRow = {
+    const teamDriverRow = {
       ts: "2026-05-17T10:00:00.000Z",
-      role: "sentinel",
-      sessionName: "sentinel",
+      role: "team-driver",
+      sessionName: "atmux",
       outcome: "success",
       durationMs: 100,
       callerScope: "driver",
@@ -1092,7 +1007,7 @@ describe("parseAuditTailForRole", () => {
       callerScope: "driver",
       error: "uptime <60min",
     };
-    const ndjson = [JSON.stringify(sentinelRow), JSON.stringify(medicRow)].join("\n");
+    const ndjson = [JSON.stringify(teamDriverRow), JSON.stringify(medicRow)].join("\n");
     const rows = parseAuditTailForRole(ndjson, "medic", 5);
     expect(rows.length).toBe(1);
     expect(rows[0]?.outcome).toBe("gate-3-refused");
@@ -1163,20 +1078,6 @@ describe("cockpitRotate — T5 handoff write happy-path", () => {
     const row = firstAuditRow(h);
     expect(row.outcome).toBe("success");
     expect(row.handoffPath).toBe("/test/home/.claude/teams/__cockpit__/medic/handoff.md");
-  });
-
-  test("sentinel: handoff Markdown carries sentinel-specific sections", async () => {
-    const h = makeHarness();
-    passGates(h, "sentinel");
-    const exit = await cockpitRotate(["sentinel"], harnessOpts(h));
-
-    expect(exit).toBe(0);
-    expect(h.handoffWrites.length).toBe(1);
-    const md = h.handoffWrites[0]?.content ?? "";
-    expect(md).toContain("# Sentinel handoff");
-    expect(md).toContain("## Whip-classifier state snapshot");
-    expect(md).toContain("## NudgeAction history");
-    expect(md).toContain("## Recent escalations / rotation calls (audit log tail)");
   });
 
   test("team-driver: handoff includes lead-outbox tail block + team-name in header", async () => {
@@ -1485,7 +1386,6 @@ describe("cockpitRotate — T6 defaultReadLeadOutboxTail (real-fs)", () => {
       loadCockpit: async () => h.cockpit,
       safeSendKeysWithVerify: makeSafeSendKeysStub(h),
       autoStartMedicLoop: async () => {},
-      autoStartSentinelLoop: async () => {},
       autoStartTimeoutMs: 0,
       atomicWrite: async (path: string, content: string) => {
         h.handoffWrites.push({ path, content });
@@ -1551,7 +1451,6 @@ describe("cockpitRotate — T6 defaultReadLeadOutboxTail (real-fs)", () => {
       loadCockpit: async () => h.cockpit,
       safeSendKeysWithVerify: makeSafeSendKeysStub(h),
       autoStartMedicLoop: async () => {},
-      autoStartSentinelLoop: async () => {},
       autoStartTimeoutMs: 0,
       atomicWrite: async (path: string, content: string) => {
         h.handoffWrites.push({ path, content });
@@ -1642,7 +1541,7 @@ describe("cockpitRotate — T6 safeCapturePane catch branch", () => {
 // cockpit-rotate.ts L423-428 declares 4 inline arrow functions
 // (log/ok/warn/err) inside the `?? {}` default for opts.cadenceLogger.
 // be-2's harness omits cadenceLogger (uses the default), but no test
-// actually drives an autoStart{Medic,Sentinel}Loop that calls
+// actually drives an autoStartMedicLoop that calls
 // logger.log/ok/warn/err — so the 4 arrow bodies are constructed but
 // never invoked. Force-call them via a stub autoStartMedicLoop that
 // exercises every logger method.

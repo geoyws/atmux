@@ -185,14 +185,14 @@ property is structurally preserved by the consolidated runTick loop.
 
 - [ADR-079](079-discord-noise-drainage.md) — whip-cadence Discord notification gating; gets §Amendment.
 - [ADR-085](085-whip-approvals-watcher.md) — whip-cadence approval-detection extension; gets §Amendment.
-- [ADR-132](132-pluggable-martinet.md) — pluggable observer (sentinel post-ADR-158); reads whip-cadence state; gets §Amendment.
+- [ADR-132](132-pluggable-martinet.SUPERSEDED.md) — pluggable observer (sentinel post-ADR-158); reads whip-cadence state; gets §Amendment.
 - [ADR-133](133-medic-rename.md) — rename-mechanics precedent.
 - [ADR-136](136-hot-rename-member-labels.md) — `whip-impl` label rename lives in label layer.
 - [ADR-139](139-refusal-pattern-auto-rotate.md) — refusal-pattern detection during whip-cadence; gets §Amendment.
 - [ADR-140](140-cheap-model-first.md) — cheap-model-first principle (sentinel handles whip-cadence under ADR-158); gets §Amendment.
 - [ADR-149](149-*.md) — whip-related (per EPIC body); gets §Amendment.
 - [ADR-157](157-goal-as-primary-drain.md) — `/goal` as primary drain for whip-cadence; gets §Amendment.
-- [ADR-158](158-martinet-to-sentinel-rename.md) — sibling vocabulary rename.
+- [ADR-158](158-martinet-to-sentinel-rename.SUPERSEDED.md) — sibling vocabulary rename.
 - [ADR-159](159-gitter-to-committer-rename.md) — sibling vocabulary rename.
 - [ADR-161](161-default-member-prefix-and-sort-verbs.md) — `_-prefix` does NOT apply to `whip-impl`/`poke-impl` (user-added, not default).
 - Driver-ref: 2026-05-16 driver session.

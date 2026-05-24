@@ -47,7 +47,6 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { emit as defaultEmit } from "../abstractions/events.ts";
 import { exists } from "../abstractions/fs.ts";
-import { getHonkerState } from "../abstractions/honker.ts";
 import { updateJson } from "../abstractions/json.ts";
 import {
   closeDatabase,
@@ -272,8 +271,6 @@ function tryEmitTaskUnclaimed(args: {
   team: Team;
 }): void {
   const { db, task, team } = args;
-  const honkerLoaded = getHonkerState(db)?.loaded ?? false;
-  const emitOpts = honkerLoaded ? { honkerLoaded: true } : {};
   // Narrow the lane to the ADR-203 v1 enum. The kanban-side `lane`
   // field is a string; the event schema is a closed enum. If the
   // lane isn't one of the seven canonical lanes, skip emit silently
@@ -281,21 +278,19 @@ function tryEmitTaskUnclaimed(args: {
   const canonical: ReadonlyArray<string> = ["fe", "be", "db", "ops", "test", "review", "misc"];
   if (typeof task.lane !== "string" || !canonical.includes(task.lane)) return;
   try {
-    defaultEmit(
-      db,
-      {
-        topic: "task.unclaimed",
-        taskId: task.id,
-        team: team.name,
-        lane: task.lane as "fe" | "be" | "db" | "ops" | "test" | "review" | "misc",
-        ...(task.priority !== null && task.priority !== undefined
-          ? { priority: task.priority }
-          : {}),
-        ...(typeof task.story === "string" ? { storyId: task.story } : {}),
-        ...(typeof task.epic === "string" ? { epicId: task.epic } : {}),
-      },
-      emitOpts,
-    );
+    // emit() auto-detects honkerLoaded from getHonkerState(db) per
+    // ADR-202 §Amendment 2026-05-24 — no manual dance required.
+    defaultEmit(db, {
+      topic: "task.unclaimed",
+      taskId: task.id,
+      team: team.name,
+      lane: task.lane as "fe" | "be" | "db" | "ops" | "test" | "review" | "misc",
+      ...(task.priority !== null && task.priority !== undefined
+        ? { priority: task.priority }
+        : {}),
+      ...(typeof task.story === "string" ? { storyId: task.story } : {}),
+      ...(typeof task.epic === "string" ? { epicId: task.epic } : {}),
+    });
   } catch {
     // Best-effort: missing events table or Zod failure must not break
     // task add. The kanban row is the load-bearing side effect.
@@ -450,9 +445,9 @@ export async function moveTask(
  * table inside the transactImmediate scope, so a rollback drops the
  * event alongside the kanban row. Atomic by construction.
  *
- * Honker NOTIFY happens inside emit() (honker_stream_publish) when
- * `getHonkerState(db)?.loaded === true` — gracefully swallowed when
- * the substrate isn't loaded.
+ * Honker NOTIFY happens inside emit() automatically (auto-detected
+ * via `getHonkerState(db)?.loaded` per ADR-202 §Amendment 2026-05-24)
+ * — gracefully swallowed when the substrate isn't loaded.
  */
 function tryEmitTaskLifecycle(args: {
   db: Database;
@@ -462,39 +457,29 @@ function tryEmitTaskLifecycle(args: {
   emit: typeof defaultEmit;
 }): void {
   const { db, prev, next, team, emit } = args;
-  const honkerLoaded = getHonkerState(db)?.loaded ?? false;
-  const opts = honkerLoaded ? { honkerLoaded: true } : {};
   try {
     if (next.status === "done") {
       const doneAt = (next.completedAt ?? nowEpoch()) as number;
-      emit(
-        db,
-        {
-          topic: "task.done",
-          taskId: next.id,
-          member: prev.owner ?? next.owner ?? "",
-          team: team.name,
-          doneAtSec: doneAt,
-          ...(typeof next.story === "string" ? { storyId: next.story } : {}),
-          ...(typeof next.epic === "string" ? { epicId: next.epic } : {}),
-        },
-        opts,
-      );
+      emit(db, {
+        topic: "task.done",
+        taskId: next.id,
+        member: prev.owner ?? next.owner ?? "",
+        team: team.name,
+        doneAtSec: doneAt,
+        ...(typeof next.story === "string" ? { storyId: next.story } : {}),
+        ...(typeof next.epic === "string" ? { epicId: next.epic } : {}),
+      });
       return;
     }
     if (next.status === "in-progress" && prev.status !== "in-progress") {
-      emit(
-        db,
-        {
-          topic: "task.claimed",
-          taskId: next.id,
-          member: next.owner ?? prev.owner ?? "",
-          team: team.name,
-          ...(typeof next.story === "string" ? { storyId: next.story } : {}),
-          ...(typeof next.epic === "string" ? { epicId: next.epic } : {}),
-        },
-        opts,
-      );
+      emit(db, {
+        topic: "task.claimed",
+        taskId: next.id,
+        member: next.owner ?? prev.owner ?? "",
+        team: team.name,
+        ...(typeof next.story === "string" ? { storyId: next.story } : {}),
+        ...(typeof next.epic === "string" ? { epicId: next.epic } : {}),
+      });
     }
   } catch {
     // Best-effort: missing events table or programmer-introduced Zod

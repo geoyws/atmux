@@ -28,6 +28,8 @@ atmux's kanban speaks Epic / Story / Task. The pull model only works when you ke
 
 - **Task** — an atomic unit of work on the kanban with a lane (FE / BE / DB / OPS / TEST / REVIEW / MISC), optional `--epic` / `--story` tags, optional `--deliverable`, and explicit `--deps`. Workers **pull** the next claimable Task in their lane via `atmux claim --next`; selection prefers their lane, falls back across lanes when `crossLaneClaim=true` (default). Each Task with `.epic` set auto-dispatches a commit-Task to committer on `move done`; one commit per Task, no batching.
 
+EPICs additionally carry `depends_on` + `is_ready` per [ADR-225](docs/adr/225-epic-dependencies-and-is-ready-toggle.md); `atmux team spawn-epic` consults an eligibility predicate (all deps done + `is_ready=1`) and refuses on unmet deps with a `--force` override.
+
 The **lead never decomposes and never dispatches per-Task** — that's the planner's and the kanban's job. The lead routes Epics to the planner, watches state, surfaces blockers, and composes Epic summaries. The **committer never reviews** and never pushes by default. The **reviewer never commits** and never decomposes. Each role has a narrow surface; the kanban orchestrates.
 
 See [docs/adr/007-pull-kanban.md](docs/adr/007-pull-kanban.md) for the full ADR + state-machine spec, and the implementation plan at `~/.claude/plans/pure-pondering-crane.md` for the rollout sequence.
@@ -719,6 +721,12 @@ atmux member swap <id-a> <id-b>              # pairwise window swap (ADR-161 §C
 atmux member sort [--defaults-first]         # canonical reorder (ADR-161 §C)
 atmux reconfigure                            # re-run wizard on existing team
 atmux dashboard [--interval <s>]             # live full-screen panel
+
+🩺 Fleet topology + orphan reap (ADR-222 + ADR-223)
+atmux topo [--tree] [--orphans] [--json]                  # read-only fleet manifest + classifier
+           [--team <name>] [--since <iso>]                # scope filters
+atmux topo --reap [--apply] [--yes] [--class <name>]      # destructive — dry-run by default
+           [--skip-checks] [--json]                       # see docs/RUNBOOK-topology.md
 
 🚢 Release
 atmux release <patch|minor|major>            # one-shot deploy: bump package.json + commit

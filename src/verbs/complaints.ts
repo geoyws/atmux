@@ -34,6 +34,7 @@
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 
+import { emit } from "../abstractions/events.ts";
 import { closeDatabase, openDatabase, transactImmediate } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts";
@@ -357,6 +358,27 @@ async function complaintsFile(parsed: ParsedComplaintsArgs): Promise<number> {
     // `src/core/ombudsman.ts` §"Concurrency" comment — worst case is
     // one delayed adjudication, not a lost complaint.
     transactImmediate(db, () => repo.insert(c));
+    // ADR-214 §D2: emit `complaint.filed` so the orchd consumer wakes
+    // and routes to the lead's tell-lead inbox. Best-effort — durable
+    // row is already committed; cron-backstop drain catches the
+    // consumer up if emit faults.
+    try {
+      emit(db, {
+        topic: "complaint.filed",
+        complaintId: id,
+        targetTeam,
+        sourceKind: parsed.sourceKind ?? null,
+        sourceId: parsed.sourceId ?? null,
+        incidentSummary: parsed.summary ?? "",
+        openedBy: parsed.by ?? null,
+        severity: parsed.severity ?? null,
+        sourceCount: 1,
+        bumped: false,
+        filedAtSec: now,
+      });
+    } catch {
+      // emit failure is non-fatal; row is durable.
+    }
     // ADR-147 T2 skip-gate: only teams with `ombudsman.enabled: true`
     // write the sentinel. Preserves byte-equal behavior for the
     // existing fleet (every team currently has `ombudsman` unset).

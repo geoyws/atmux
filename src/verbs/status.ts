@@ -1038,10 +1038,10 @@ export function resolveHeartbeatStaleSec(team: Team): number {
 
 // ADR-148 §D2 / T5 (t-ac95b267): `classifyCadence` + the default
 // `gitLog` probe live in `src/core/cadence-classifier.ts` post-T5 —
-// sentinel observe() + medic + future doctor probes share one
-// implementation. Re-export here so pre-T5 importers
-// (`import { classifyCadence } from ".../verbs/status"`) keep
-// resolving without churn.
+// medic + future doctor probes + orchd event consumers (EPIC
+// e-a946af69) share one implementation. Re-export here so pre-T5
+// importers (`import { classifyCadence } from ".../verbs/status"`)
+// keep resolving without churn.
 export {
   type CadenceThresholds,
   classifyCadence,

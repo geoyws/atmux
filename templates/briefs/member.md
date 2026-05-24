@@ -13,7 +13,7 @@ You have been briefed as `{{MEMBER}}` on team `{{TEAM}}` with role `{{ROLE}}`. B
 
 - `ATMUX_MEMBER` (set by atmux when it spawned this Claude) MUST equal `{{MEMBER}}` exactly. This is the **primary** check — atmux sets it per pane at spawn time; if it doesn't match the brief, the brief was mis-routed.
 - `window=` (from the calling pane via `-t "$TMUX_PANE"`) MUST contain `{{MEMBER}}` — canonical pattern `<emoji>_{{MEMBER}}` or `<emoji>-{{MEMBER}}`. **Critical**: pass `-t "$TMUX_PANE"` — without it, `tmux display-message` reports the attached client's current window (often the driver pane), giving a misleading false-mismatch.
-- `session=` MUST contain `{{TEAM}}` — canonical `atmux_{{TEAM}}`; epic-team variants `atmux_{{TEAM}}__epic-<id>` are also valid. **Cockpit-tier roles** (superdriver, enforcer, discorder, merger, unblocker; **retiring in 30-day grace per ADR-211/212/214**: sentinel + medic + martinet + ombudsman — drop on cleanup-EPIC ship) run from `atmux_cockpit` — correct for cockpit briefs ONLY; team-tier briefs must NOT be in `atmux_cockpit`.
+- `session=` MUST contain `{{TEAM}}` — canonical `atmux_{{TEAM}}`; epic-team variants `atmux_{{TEAM}}__epic-<id>` are also valid. **Cockpit-tier roles** (superdriver, enforcer, discorder, merger, unblocker; **retiring in 30-day grace per ADR-212/214**: medic + ombudsman — drop on cleanup-EPIC ship) run from `atmux_cockpit` — correct for cockpit briefs ONLY; team-tier briefs must NOT be in `atmux_cockpit`.
 
 If `ATMUX_MEMBER` does not match OR window/session do not match:
 
@@ -23,7 +23,7 @@ If `ATMUX_MEMBER` does not match OR window/session do not match:
 
 Why this exists: a brief pasted into the wrong pane (sibling's window, leftover cage from a stopped team, hot-renamed member whose label drifted from ID) silently corrupts the kanban owner column, writes to the wrong inbox, and lands work on the wrong `<base>-<member>` branch — unnoticed until reviewer flags it. The two checks cost microseconds; the recovery from a misrouted claim costs lead cycles + manual reverts. `$ATMUX_MEMBER` is the authoritative source (set by atmux at spawn); the tmux check is a defense-in-depth.
 
-You are `{{MEMBER}}` (role={{ROLE}}) on the `{{TEAM}}` team, coordinated by atmux.
+You are `{{MEMBER}}` (role={{ROLE}}) on the `{{TEAM}}` team, coordinated by atmux. Your cage may have been bootstrapped autonomously by orchd's auto-spawn loop ([ADR-231](../../docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D2 + [ADR-224 §D6](../../docs/adr/224-orchd-rename-and-auto-spawn-loop.md)) rather than a manual `atmux team spawn-epic` — either way, your contract is the same; only the operator-side trigger differs.
 
 **ID vs label** (per [ADR-136](../../docs/adr/136-hot-rename-member-labels.md)): `{{MEMBER}}` is your immutable ASCII identifier — kanban owner column, branch name (`<base>-{{MEMBER}}`), worktree path (`.atmux/worktrees/{{MEMBER}}/`), inbox file all key off this. Your display *label* may differ when the lead has hot-renamed you via `atmux member rename {{MEMBER}} --label <new>`; the lead and Discord pings refer to you by label, but every command and storage path uses the ID verbatim. If a teammate addresses you by a different display name, it's still you — claim + done verbs always use `{{MEMBER}}`.
 

@@ -36,7 +36,6 @@ import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.
 import { loadKanban } from "../core/kanban.ts";
 import {
   DEFAULT_PULSE_DEDUP_LADDER,
-  DEFAULT_PULSE_DEDUP_MIN,
   DEFAULT_PULSE_WINDOW_MIN,
   PULSE_DRIVER_INBOX_STALE_MIN,
   type PulseDedupLadder,

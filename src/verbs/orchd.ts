@@ -27,16 +27,12 @@ import { join } from "node:path";
 import { loadEventById, saveOffset } from "../abstractions/events.ts";
 import { closeDatabase, openDatabase } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
-import { getAtmuxDir, requireTeam, type ResolveDirOpts } from "../core/common.ts";
-import {
-  type CommitterOpts,
-  buildEventDrivenContext,
-  committerDaemonVerb,
-  committerDrainVerb,
-} from "./committer.ts";
-import { ConfigError, UsageError } from "../errors.ts";
-import { runLaneTick, runLaneTickForOne } from "./lane-tick.ts";
-
+import { getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts";
+import { probeHostPressure } from "../core/host-pressure.ts";
+import { bootstrapOrchd } from "../core/orchd-bootstrap.ts";
+import { dispatchDissolveEpic as dispatchDissolveEpicImport } from "../core/orchd-dispatch/dissolve-epic.ts";
+import { dispatchEpicMerge as dispatchEpicMergeImport } from "../core/orchd-dispatch/epic-merge.ts";
+import { dispatchGitPush as dispatchGitPushImport } from "../core/orchd-dispatch/git-push.ts";
 // ADR-224 §D6 — orchd subscription registry seam (Phase 1 zero-handler).
 // Re-exported from this verb module so Phase 2 + sibling EPIC e-a946af69
 // callers can register against the same canonical surface they see in
@@ -44,17 +40,33 @@ import { runLaneTick, runLaneTickForOne } from "./lane-tick.ts";
 // The actual registry lives in src/core/orchd-registry.ts; this is the
 // public seam from the verb side. Phase 1 ships the wiring; handlers
 // stay empty until Phase 2 dispatches.
-import { visitOrchdSubscriptions } from "../core/orchd-registry.ts";
-export {
-  type OrchdSubscription,
-  ORCHD_SUBSCRIPTIONS,
-  registerOrchdSubscription,
+import {
   findOrchdSubscriptionsByTopic,
+  ORCHD_SUBSCRIPTIONS,
+  visitOrchdSubscriptions,
+} from "../core/orchd-registry.ts";
+import { orchdSweep } from "../core/orchd-sweep.ts";
+import { pressureMonitorTick, resolveSpawnQueueLimits } from "../core/spawn-queue.ts";
+import { ConfigError, UsageError } from "../errors.ts";
+import {
+  buildEventDrivenContext,
+  type CommitterOpts,
+  committerDaemonVerb,
+  committerDrainVerb,
+} from "./committer.ts";
+import { runLaneTick, runLaneTickForOne } from "./lane-tick.ts";
+import { spawnEpic } from "./team/spawn-epic.ts";
+
+export {
+  findOrchdSubscriptionsByTopic,
+  ORCHD_SUBSCRIPTIONS,
+  type OrchdSubscription,
+  registerOrchdSubscription,
   visitOrchdSubscriptions,
 } from "../core/orchd-registry.ts";
 
 const USAGE =
-  "atmux orchd <--start|--drain|--handle-one|--status> [--team-dir <path>] [--once] [--max-events N] [--event-id ID --topic T [--task-id ID --member NAME --lane L]]";
+  "atmux orchd <--start|--drain|--sweep|--handle-one|--status> [--team-dir <path>] [--once] [--max-events N] [--event-id ID --topic T [--task-id ID --member NAME --lane L]]";
 
 export interface ParsedOrchdArgs {
   /** Sub-verbs:
@@ -75,7 +87,7 @@ export interface ParsedOrchdArgs {
    *                     subscriber offsets, recent event counts per
    *                     topic, last-handler-outcome. Operator runs it
    *                     instead of grepping logs. */
-  subverb: "start" | "drain" | "handle-one" | "status";
+  subverb: "start" | "drain" | "sweep" | "handle-one" | "status";
   teamDir?: string;
   /** `--once`: exit after first batch (test ergonomics). */
   once?: boolean;
@@ -101,10 +113,18 @@ export interface ParsedOrchdArgs {
   member?: string;
   /** `--lane L`: see {@link taskId} — required alongside --task-id. */
   lane?: string;
+  /** `--consumer-id ID`: (e-10-eee9ea5a) when the Rust dispatcher
+   *  spawns one --handle-one per ORCHD_SUBSCRIPTIONS entry, it passes
+   *  the consumer-id so Bun can route directly to that specific
+   *  handler (instead of dispatching via topic-only). Required for
+   *  the registry-driven dispatch path; absent → legacy hardcoded
+   *  topic branches (task.done → gitter merge, task.unclaimed →
+   *  lane-tick) for back-compat with un-upgraded Rust binaries. */
+  consumerId?: string;
 }
 
 export function parseOrchdArgs(argv: ReadonlyArray<string>): ParsedOrchdArgs {
-  let subverb: "start" | "drain" | "handle-one" | "status" | undefined;
+  let subverb: "start" | "drain" | "sweep" | "handle-one" | "status" | undefined;
   let teamDir: string | undefined;
   let once = false;
   let maxEvents: number | undefined;
@@ -113,6 +133,7 @@ export function parseOrchdArgs(argv: ReadonlyArray<string>): ParsedOrchdArgs {
   let taskId: string | undefined;
   let member: string | undefined;
   let lane: string | undefined;
+  let consumerId: string | undefined;
   let i = 0;
   while (i < argv.length) {
     const a = argv[i];
@@ -123,6 +144,11 @@ export function parseOrchdArgs(argv: ReadonlyArray<string>): ParsedOrchdArgs {
     }
     if (a === "--drain" || a === "drain") {
       subverb = "drain";
+      i += 1;
+      continue;
+    }
+    if (a === "--sweep" || a === "sweep") {
+      subverb = "sweep";
       i += 1;
       continue;
     }
@@ -232,6 +258,18 @@ export function parseOrchdArgs(argv: ReadonlyArray<string>): ParsedOrchdArgs {
       i += 2;
       continue;
     }
+    if (a === "--consumer-id") {
+      const v = argv[i + 1];
+      if (v === undefined || v === "") {
+        throw new UsageError({
+          what: "orchd: --consumer-id requires a value",
+          hint: USAGE,
+        });
+      }
+      consumerId = v;
+      i += 2;
+      continue;
+    }
     if (a?.startsWith("-") === true) {
       throw new UsageError({ what: `orchd: unknown flag: ${a}`, hint: USAGE });
     }
@@ -239,7 +277,7 @@ export function parseOrchdArgs(argv: ReadonlyArray<string>): ParsedOrchdArgs {
   }
   if (subverb === undefined) {
     throw new UsageError({
-      what: "orchd: no sub-verb specified (--start, --drain, or --handle-one)",
+      what: "orchd: no sub-verb specified (--start, --drain, --sweep, --handle-one, or --status)",
       hint: USAGE,
     });
   }
@@ -278,8 +316,7 @@ export function parseOrchdArgs(argv: ReadonlyArray<string>): ParsedOrchdArgs {
   }
   if (member !== undefined && (taskId === undefined || lane === undefined)) {
     throw new UsageError({
-      what:
-        "orchd --handle-one: --member is only valid alongside --task-id + --lane",
+      what: "orchd --handle-one: --member is only valid alongside --task-id + --lane",
       hint: USAGE,
     });
   }
@@ -292,6 +329,7 @@ export function parseOrchdArgs(argv: ReadonlyArray<string>): ParsedOrchdArgs {
   if (taskId !== undefined) out.taskId = taskId;
   if (member !== undefined) out.member = member;
   if (lane !== undefined) out.lane = lane;
+  if (consumerId !== undefined) out.consumerId = consumerId;
   return out;
 }
 
@@ -312,6 +350,9 @@ export async function orchd(
   }
   if (parsed.subverb === "status") {
     return await orchdStatus(parsed);
+  }
+  if (parsed.subverb === "sweep") {
+    return await orchdSweepCli(parsed);
   }
   // Adapt to ParsedCommitterArgs shape. The verb-layer functions
   // accept a superset that includes `--sweep`; we narrow to the
@@ -334,7 +375,60 @@ export async function orchd(
     visitOrchdSubscriptions(() => {
       // Phase 2 wires this — see [[orchd-registry]] §D6 sketch.
     });
-    return await committerDaemonVerb(committerArgs, opts);
+
+    // ADR-228 §D4 + §D7 (Phase 5b, driver P0 step 4/5 2026-05-23):
+    // pressure-monitor drain loop. Wakes every pressureCheckIntervalSec
+    // (default 60s per ADR-228 §D6), probes host pressure, and on
+    // under-threshold-AND-non-empty-queue invokes pressureMonitorTick
+    // for one drain attempt (drain-one-per-tick per §DA4). Runs in
+    // parallel with committerDaemonVerb's watcher; both stop on
+    // SIGINT/SIGTERM via the shared process-signal handler installed
+    // by committerDaemonVerb.
+    //
+    // Owns its own db handle (per-loop SQLite connection; WAL mode
+    // tolerates concurrent connections) so the inner spawn-epic call
+    // can open additional db handles without contention on the daemon's
+    // primary connection.
+    const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
+    const monitorAtmuxDir = await getAtmuxDir(dirOpts);
+    const monitorDb = openDatabase(join(monitorAtmuxDir, "state.db"), migrations);
+    const monitorLimits = resolveSpawnQueueLimits(process.env);
+    const onMonitorTick = async (): Promise<void> => {
+      try {
+        await pressureMonitorTick({
+          db: monitorDb,
+          probeHostPressure: () => probeHostPressure({ env: process.env }),
+          spawnEpic: async (argv) => {
+            try {
+              const rc = await spawnEpic(argv);
+              return { success: rc === 0 };
+            } catch (e) {
+              return {
+                success: false,
+                reason: e instanceof Error ? e.message : String(e),
+              };
+            }
+          },
+          limits: monitorLimits,
+        });
+      } catch (e) {
+        process.stderr.write(
+          `orchd --start: pressure-monitor tick threw — ${e instanceof Error ? e.message : String(e)}\n`,
+        );
+      }
+    };
+    const monitorInterval = setInterval(() => {
+      void onMonitorTick();
+    }, monitorLimits.pressureCheckIntervalSec * 1000);
+    // setInterval keeps the event loop alive — unref so committerDaemonVerb's
+    // SIGINT-driven exit path isn't blocked by the timer reference.
+    monitorInterval.unref();
+    try {
+      return await committerDaemonVerb(committerArgs, opts);
+    } finally {
+      clearInterval(monitorInterval);
+      closeDatabase(monitorDb);
+    }
   }
   return await committerDrainVerb(committerArgs, opts);
 }
@@ -354,10 +448,7 @@ export async function orchd(
  * does NOT save offset. The Rust binary advances on observing exit-code
  * 0 from this process.
  */
-async function orchdHandleOne(
-  parsed: ParsedOrchdArgs,
-  opts: CommitterOpts = {},
-): Promise<number> {
+async function orchdHandleOne(parsed: ParsedOrchdArgs, opts: CommitterOpts = {}): Promise<number> {
   const eventId = parsed.eventId;
   const topic = parsed.topic;
   if (eventId === undefined || topic === undefined) {
@@ -365,6 +456,17 @@ async function orchdHandleOne(
     throw new UsageError({
       what: "orchd --handle-one: parser invariant violated (missing event-id or topic)",
     });
+  }
+  // e-10-eee9ea5a — registry-driven dispatch path. When the Rust
+  // dispatcher passes --consumer-id, route directly to that handler
+  // from ORCHD_SUBSCRIPTIONS instead of the legacy topic-only
+  // branches. This unblocks every handler registered by
+  // bootstrapOrchd (auto-merge, dissolve-solo-worker, auto-push,
+  // auto-dissolve, spawn-on-ready, spawn-on-unblocked, complaint).
+  // Legacy callers (Rust without --consumer-id, or operator-direct
+  // CLI use) fall through to the hardcoded topic branches below.
+  if (parsed.consumerId !== undefined) {
+    return await orchdHandleOneByConsumerId(parsed, eventId, topic);
   }
   if (topic === "task.done") {
     // Need full event-driven context for the gitter merge handler.
@@ -398,8 +500,7 @@ async function orchdHandleOne(
     }
   }
   if (topic === "task.unclaimed") {
-    const dirOpts: ResolveDirOpts =
-      parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
+    const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
     const team = await requireTeam(dirOpts);
     const atmuxDir = await getAtmuxDir(dirOpts);
     // ADR-202 §Amendment 2026-05-22 IX-A (T3 unified contract): when
@@ -448,6 +549,102 @@ async function orchdHandleOne(
 }
 
 /**
+ * e-10-eee9ea5a — registry-driven `--handle-one` dispatch. The Rust
+ * dispatcher passes `--consumer-id <id>`; we look up that exact
+ * subscription from {@link ORCHD_SUBSCRIPTIONS}, load the event, run
+ * the handler. One spawn per consumer per event (Rust manages
+ * per-consumer offsets via `subscriber_offsets`).
+ *
+ * Bootstrap is called on every invocation — it's idempotent
+ * (registerOrchdSubscription deduplicates by consumerId) so the
+ * registry stays populated across the long-lived Rust loop's repeated
+ * Bun spawns. Bootstrap deps are minimal here (db + team + atmuxDir);
+ * production injection of dispatchers (mergeDeps, pushDeps, etc.)
+ * happens lazily inside each handler's stub-default path, so even the
+ * minimal bootstrap path is sufficient to deliver complaint events
+ * (which need no extra deps) and to no-op spawn events safely
+ * (`skipped-row-missing` per ADR-231 §D2).
+ */
+async function orchdHandleOneByConsumerId(
+  parsed: ParsedOrchdArgs,
+  eventId: string,
+  topic: string,
+): Promise<number> {
+  const consumerId = parsed.consumerId;
+  if (consumerId === undefined) {
+    throw new UsageError({
+      what: "orchd --handle-one: orchdHandleOneByConsumerId called without --consumer-id",
+    });
+  }
+  const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
+  const atmuxDir = await getAtmuxDir(dirOpts);
+  const team = await requireTeam(dirOpts);
+  const dbPath = join(atmuxDir, "state.db");
+  const db = openDatabase(dbPath, migrations);
+  try {
+    // Same dep wiring as committer.ts::committerDrainVerb so each
+    // handler dispatches against real implementations (not stubs).
+    bootstrapOrchd({
+      db,
+      mergeDeps: {
+        dispatchEpicMerge: async (epicId) =>
+          dispatchEpicMergeImport({ epicId }, { localTeamName: team.name }),
+      },
+      dissolveDeps: {
+        dispatchDissolveEpic: async (epicId) =>
+          dispatchDissolveEpicImport({ epicId }, { localCageName: team.name }),
+      },
+      pushDeps: {
+        dispatchGitPush: async (parentBase) =>
+          dispatchGitPushImport({ cage: team.name, branch: parentBase }, { localCageName: team.name }),
+      },
+      spawnDeps: {
+        atmuxDir,
+        team,
+      },
+    });
+    const subs = findOrchdSubscriptionsByTopic(topic).filter((s) => s.consumerId === consumerId);
+    if (subs.length === 0) {
+      process.stderr.write(
+        `orchd --handle-one: no subscription registered for consumerId='${consumerId}' topic='${topic}' (registry has ${ORCHD_SUBSCRIPTIONS.length} subs)\n`,
+      );
+      return 0; // not an error — registry may not yet include this consumer in older builds
+    }
+    const event = loadEventById(db, eventId);
+    if (event === null) {
+      process.stderr.write(
+        `orchd --handle-one: event ${eventId} not found (pruned?) — consumerId='${consumerId}' topic='${topic}' — skip\n`,
+      );
+      return 0;
+    }
+    if (event.topic !== topic) {
+      process.stderr.write(
+        `orchd --handle-one: event ${eventId} topic mismatch — expected '${topic}', got '${event.topic}' — skip\n`,
+      );
+      return 0;
+    }
+    try {
+      const sub = subs[0];
+      if (sub === undefined) {
+        return 0;
+      }
+      await sub.handler(event);
+      // Advance our local offset record — the Rust caller also advances
+      // on rc=0 so this is idempotent.
+      saveOffset(db, consumerId, eventId);
+      return 0;
+    } catch (e) {
+      process.stderr.write(
+        `orchd --handle-one: consumerId='${consumerId}' topic='${topic}' eventId=${eventId} threw: ${e instanceof Error ? e.message : String(e)}\n`,
+      );
+      return 1;
+    }
+  } finally {
+    closeDatabase(db);
+  }
+}
+
+/**
  * `atmux orchd --status` — single-shot diagnostic (ADR-202 §VIII /btw #9).
  *
  * Surfaces orchd's observable state in one command so operators can
@@ -460,9 +657,31 @@ async function orchdHandleOne(
  * Output is tab-separated lines, grep-able. Returns exit 0 always —
  * status is read-only diagnostic.
  */
+
+/**
+ * `atmux orchd --sweep` — one-shot cron-backstop walk (ADR-231 §D4).
+ *
+ * Resolves the local atmuxDir, runs `orchdSweep(atmuxDir)` once, and
+ * prints the counters JSON to stdout for cron-line + Discord
+ * summarization (T-S2.3 surfaces the structured summary). Exit code:
+ * 0 on clean sweep (any counter values); non-zero only if `orchdSweep`
+ * throws (the walker swallows handler errors per its own contract, so
+ * the only throws here are unrecoverable setup failures — atmuxDir
+ * unresolvable, etc.).
+ *
+ * `--once` is the canonical form (consistent with `--drain`); reused
+ * verbatim — no per-invocation arg processing beyond `--team-dir`.
+ */
+async function orchdSweepCli(parsed: ParsedOrchdArgs): Promise<number> {
+  const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
+  const atmuxDir = await getAtmuxDir(dirOpts);
+  const result = await orchdSweep(atmuxDir);
+  process.stdout.write(`${JSON.stringify(result)}\n`);
+  return 0;
+}
+
 async function orchdStatus(parsed: ParsedOrchdArgs): Promise<number> {
-  const dirOpts: ResolveDirOpts =
-    parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
+  const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
   const atmuxDir = await getAtmuxDir(dirOpts);
   const dbPath = join(atmuxDir, "state.db");
   const db = openDatabase(dbPath, migrations);
@@ -481,15 +700,17 @@ async function orchdStatus(parsed: ParsedOrchdArgs): Promise<number> {
       .prepare(
         "SELECT consumer_name, last_event_id, last_processed_at_sec FROM subscriber_offsets ORDER BY consumer_name",
       )
-      .all() as Array<{ consumer_name: string; last_event_id: string; last_processed_at_sec: number }>;
+      .all() as Array<{
+      consumer_name: string;
+      last_event_id: string;
+      last_processed_at_sec: number;
+    }>;
     if (consumers.length === 0) {
       process.stdout.write("(no consumers yet — orchd hasn't processed any events)\n");
     }
     for (const c of consumers) {
       const ageSec = now - c.last_processed_at_sec;
-      process.stdout.write(
-        `${c.consumer_name}\tlast=${c.last_event_id}\tage=${ageSec}s\n`,
-      );
+      process.stdout.write(`${c.consumer_name}\tlast=${c.last_event_id}\tage=${ageSec}s\n`);
     }
 
     // Events table size + recent counts

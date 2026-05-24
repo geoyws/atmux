@@ -113,9 +113,7 @@ export const GitterEscalatedPayload = z
     branch: z.string(),
     commitSha: z.string(),
     conflictFiles: z.array(z.string()).optional(),
-    suggestedResolution: z
-      .enum(["rebase", "squash", "revert", "handoff-to-author"])
-      .optional(),
+    suggestedResolution: z.enum(["rebase", "squash", "revert", "handoff-to-author"]).optional(),
     severity: z.enum(["low", "medium", "high"]).default("medium"),
     failureClass: z.enum([
       "merge-conflict",
@@ -123,6 +121,171 @@ export const GitterEscalatedPayload = z
       "missing-worktree",
       "dispatcher-refused",
     ]),
+  })
+  .passthrough();
+
+/**
+ * `epic.unblocked` — the dep-graph event. Fires when an epic A's LAST
+ * unmet dep just transitioned to `status='done'`. Carries `byEpicId`
+ * = the dep id whose transition cleared the last blocker, so consumers
+ * (orchd, cockpit-mirror) can render "A is unblocked by B done".
+ *
+ * Critically NOT gated on `isReady` — the event reports the dep-graph
+ * fact. Consumers that want the combined eligibility predicate
+ * (deps-done + is_ready=1) join with `is_ready` at read time.
+ *
+ * ADR-225 §Events + §D2 amendment per ADR-203 §D2 closed-set rule.
+ */
+export const EpicUnblockedPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("epic.unblocked"),
+    epicId: z.string(),
+    byEpicId: z.string(),
+    transitionedAt: z.number(),
+  })
+  .passthrough();
+
+/**
+ * `epic.ready` — operator (or workflow) flipped is_ready from 0 to 1.
+ * Fires only on the 0→1 transition; 1→0 downgrades are silent (orchd
+ * polls vs. event-driven for the is_ready=0 case per ADR-225).
+ *
+ * ADR-225 §Events + §D2 amendment per ADR-203 §D2 closed-set rule.
+ */
+export const EpicReadyPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("epic.ready"),
+    epicId: z.string(),
+    transitionedAt: z.number(),
+  })
+  .passthrough();
+
+/**
+ * `epic.merged` — orchd-merge handler successfully merged an epic-team
+ * branch into its parent base. ADR-203 §D2 (Epic lifecycle, ADR-226
+ * §D2 addition 2026-05-23). Consumed by Phase 4 (ADR-227 auto-dissolve).
+ */
+export const EpicMergedPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("epic.merged"),
+    epicId: z.string(),
+    parentBase: z.string(),
+    mergeSha: z.string(),
+    mergedAtSec: z.number(),
+  })
+  .passthrough();
+
+/**
+ * `epic.merge-blocked` — orchd-merge handler's dispatcher returned a
+ * conflict or gate-held outcome. ADR-203 §D2 (Epic lifecycle, ADR-226
+ * §D2 addition 2026-05-23). Operator-observable; no consumer in v1.
+ */
+export const EpicMergeBlockedPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("epic.merge-blocked"),
+    epicId: z.string(),
+    reason: z.string(),
+    blockedAtSec: z.number(),
+  })
+  .passthrough();
+
+/**
+ * `epic.pushed` — orchd-push handler successfully pushed the merged
+ * commit to `origin/<parentBase>`. ADR-203 §D2 (Epic lifecycle,
+ * ADR-229 §D3 addition 2026-05-23). Consumed by Phase 4 (ADR-227
+ * §Amendment 2026-05-23 trigger flip from `epic.merged` to
+ * `epic.pushed`).
+ */
+export const EpicPushedPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("epic.pushed"),
+    epicId: z.string(),
+    base: z.string(),
+    headSha: z.string(),
+    beforeSha: z.string().optional(),
+    pushedAtSec: z.number(),
+    durationMs: z.number().optional(),
+  })
+  .passthrough();
+
+/**
+ * `epic.push-blocked` — orchd-push handler's pre-flight gate refused
+ * (any Gate-{2,3a,3b,4,5,7} failure). ADR-203 §D2 (Epic lifecycle,
+ * ADR-229 §D3 addition 2026-05-23). Operator-observable; no consumer
+ * in v1; surfaces in cockpit-mirror Discord feed per ADR-219. Gate-1
+ * upstream-advanced is a distinct topic ({@link EpicPushConflictPayload})
+ * because the actionable rebase/pull metadata warrants a distinct
+ * Discord template.
+ */
+export const EpicPushBlockedPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("epic.push-blocked"),
+    epicId: z.string(),
+    base: z.string(),
+    gateBlocked: z.enum(["1", "2", "3a", "3b", "4", "5", "7"]),
+    reason: z.string(),
+    blockedAtSec: z.number(),
+  })
+  .passthrough();
+
+/**
+ * `epic.push-conflict` — orchd-push handler's Gate-1 upstream-advanced
+ * refusal. Distinct from `epic.push-blocked` because it carries
+ * actionable rebase/pull metadata (ahead, behind, divergenceSha) +
+ * a distinct Discord template per ADR-219. ADR-203 §D2 (Epic
+ * lifecycle, ADR-229 §D3 addition 2026-05-23).
+ */
+export const EpicPushConflictPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("epic.push-conflict"),
+    epicId: z.string(),
+    base: z.string(),
+    ahead: z.number(),
+    behind: z.number(),
+    divergenceSha: z.string().optional(),
+    blockedAtSec: z.number(),
+  })
+  .passthrough();
+
+/**
+ * `epic.dissolved` — orchd-dissolve handler completed the cage reap
+ * for an epic-team. ADR-203 §D2 (Epic lifecycle; topic existed in v1
+ * but the Zod payload schema landed alongside ADR-227 T5 dissolve
+ * module 2026-05-23). Operator-observable; no consumer in v1 — the
+ * cron-based sweep-epics reaper (`e-db13ac01`) used to handle this
+ * with disk-state probes pre-Phase-4.
+ */
+export const EpicDissolvedPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("epic.dissolved"),
+    epicId: z.string(),
+    dissolvedAtSec: z.number(),
+    dissolvedSha: z.string().optional(),
+  })
+  .passthrough();
+
+/**
+ * `epic.dissolve-blocked` — orchd-dissolve handler's pre-flight gate
+ * refused (worktree dirty, in-flight sessions, ADR-090 §dissolve-epic
+ * gate held). ADR-203 §D2 (Epic lifecycle, ADR-227 §D2 addition
+ * 2026-05-23). Operator-observable; no consumer in v1; surfaces in
+ * cockpit-mirror Discord feed per ADR-219.
+ */
+export const EpicDissolveBlockedPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("epic.dissolve-blocked"),
+    epicId: z.string(),
+    reason: z.string(),
+    blockedAtSec: z.number(),
   })
   .passthrough();
 
@@ -145,6 +308,84 @@ export const InternalHonkerFallbackPayload = z
   })
   .passthrough();
 
+/**
+ * `epic.spawn-queued` — orchd queued a spawn request because the host
+ * was over pressure threshold. ADR-228 §D5. Operator-observable;
+ * surfaces in cockpit-mirror at depth thresholds {3, 5, 10} per
+ * ADR-219 §queue-grew template (mirrors ADR-184 cadence).
+ */
+export const EpicSpawnQueuedPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("epic.spawn-queued"),
+    queueId: z.string(),
+    epicId: z.string(),
+    queuedBy: z.string(),
+    queuedAtSec: z.number(),
+    depth: z.number().int().nonnegative(),
+  })
+  .passthrough();
+
+/**
+ * `epic.spawn-abandoned` — orchd's drain attempts exhausted
+ * `maxAttempts` for a queued spawn request. ADR-228 §D5. Operator
+ * must inspect manually (no automated consumer in v1).
+ */
+export const EpicSpawnAbandonedPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("epic.spawn-abandoned"),
+    queueId: z.string(),
+    epicId: z.string(),
+    attempts: z.number().int().nonnegative(),
+    lastFailureReason: z.string(),
+  })
+  .passthrough();
+
+/**
+ * `epic.added` — a new epic-team was added (either via direct spawn
+ * OR via spawn-queue drain). Sibling EPIC `e-60e16169` Phase 2 auto-
+ * spawn consumes this for downstream automation. ADR-228 §D5 added
+ * this topic to the v1 closed set alongside `epic.spawn-queued` /
+ * `epic.spawn-abandoned`.
+ */
+export const EpicAddedPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("epic.added"),
+    epicId: z.string(),
+    addedAtSec: z.number(),
+  })
+  .passthrough();
+
+/**
+ * `complaint.filed` — a new complaint was filed against a team, OR an
+ * existing OPEN complaint was bumped (dedup re-arm). Consumer
+ * (`atmux:complaint-consumer`, registered via bootstrapOrchd) wakes ~1ms
+ * after INSERT/UPDATE and calls `atmux tell-lead` per ADR-214 §D2.
+ *
+ * `bumped` distinguishes fresh complaints from dedup re-arms — the
+ * consumer rate-limits bumps differently from new filings (a bumped
+ * complaint signals "this is still broken N times now" rather than a
+ * new incident).
+ */
+export const ComplaintFiledPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("complaint.filed"),
+    complaintId: z.string(),
+    targetTeam: z.string(),
+    sourceKind: z.string().nullable(),
+    sourceId: z.string().nullable(),
+    incidentSummary: z.string(),
+    openedBy: z.string().nullable(),
+    severity: z.string().nullable(),
+    sourceCount: z.number().int().positive().default(1),
+    bumped: z.boolean().default(false),
+    filedAtSec: z.number(),
+  })
+  .passthrough();
+
 // ---------- Discriminated union ----------
 
 /**
@@ -161,6 +402,19 @@ export const EventPayload = z.discriminatedUnion("topic", [
   TaskUnclaimedPayload,
   CommitLandedPayload,
   GitterEscalatedPayload,
+  EpicUnblockedPayload,
+  EpicReadyPayload,
+  EpicMergedPayload,
+  EpicMergeBlockedPayload,
+  EpicPushedPayload,
+  EpicPushBlockedPayload,
+  EpicPushConflictPayload,
+  EpicDissolvedPayload,
+  EpicDissolveBlockedPayload,
+  EpicSpawnQueuedPayload,
+  EpicSpawnAbandonedPayload,
+  EpicAddedPayload,
+  ComplaintFiledPayload,
   InternalHonkerLoadedPayload,
   InternalHonkerFallbackPayload,
 ]);
@@ -171,6 +425,19 @@ export type TaskDonePayload = z.infer<typeof TaskDonePayload>;
 export type TaskUnclaimedPayload = z.infer<typeof TaskUnclaimedPayload>;
 export type CommitLandedPayload = z.infer<typeof CommitLandedPayload>;
 export type GitterEscalatedPayload = z.infer<typeof GitterEscalatedPayload>;
+export type EpicUnblockedPayload = z.infer<typeof EpicUnblockedPayload>;
+export type EpicReadyPayload = z.infer<typeof EpicReadyPayload>;
+export type EpicMergedPayload = z.infer<typeof EpicMergedPayload>;
+export type EpicMergeBlockedPayload = z.infer<typeof EpicMergeBlockedPayload>;
+export type EpicPushedPayload = z.infer<typeof EpicPushedPayload>;
+export type EpicPushBlockedPayload = z.infer<typeof EpicPushBlockedPayload>;
+export type EpicPushConflictPayload = z.infer<typeof EpicPushConflictPayload>;
+export type EpicDissolvedPayload = z.infer<typeof EpicDissolvedPayload>;
+export type EpicDissolveBlockedPayload = z.infer<typeof EpicDissolveBlockedPayload>;
+export type EpicSpawnQueuedPayload = z.infer<typeof EpicSpawnQueuedPayload>;
+export type EpicSpawnAbandonedPayload = z.infer<typeof EpicSpawnAbandonedPayload>;
+export type EpicAddedPayload = z.infer<typeof EpicAddedPayload>;
+export type ComplaintFiledPayload = z.infer<typeof ComplaintFiledPayload>;
 export type InternalHonkerLoadedPayload = z.infer<typeof InternalHonkerLoadedPayload>;
 export type InternalHonkerFallbackPayload = z.infer<typeof InternalHonkerFallbackPayload>;
 
@@ -206,7 +473,27 @@ export const TOPICS = [
   "epic.created",
   "epic.dissolved",
   "epic.merge-ready",
+  "epic.merged",
+  "epic.merge-blocked",
+  "epic.pushed",
+  "epic.push-blocked",
+  "epic.push-conflict",
+  "epic.dissolve-blocked",
   "epic.spawn-blocked",
+  // ADR-228 §D5 (Phase 5b spawn-queue): refuse→enqueue + drain-loop
+  // lifecycle. `epic.spawn-queued` fires on admission; `epic.spawn-
+  // abandoned` fires when attempts hit `maxAttempts`; `epic.added`
+  // fires on successful drain (sibling EPIC e-60e16169 auto-spawn
+  // consumer).
+  "epic.spawn-queued",
+  "epic.spawn-abandoned",
+  "epic.added",
+  // ADR-225 amendment per ADR-203 §D2 closed-set rule: dep-graph event
+  // (`epic.unblocked`) + operator-kick-off event (`epic.ready`). Both
+  // team-scope; cockpit-mirror joins them with the parent's epic row
+  // for cross-team awareness (same routing as `epic.merge-ready`).
+  "epic.unblocked",
+  "epic.ready",
   // Commit lifecycle (team-scope)
   "commit.landed",
   "commit.pushed",
@@ -226,7 +513,6 @@ export const TOPICS = [
   "team.idle",
   "team.recovered",
   "team.stopped",
-  "sentinel.escalated",
   "medic.hygiene-drained",
   "budget.warning",
   "budget.recovered",

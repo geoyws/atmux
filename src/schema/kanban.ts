@@ -183,6 +183,63 @@ export const KanbanEpic = z
      *  transitions; operators tail this field via `atmux status` to
      *  triage stuck epics. `null` for clean / not-yet-merged Epics. */
     note: z.string().nullable().optional(),
+    /** ADR-225 §Schema (sqlite-migrations v13→v14): IDs of upstream
+     *  epics this epic depends on. Cardinality stays small (≤3 in
+     *  observed practice). Storage column is `epics.depends_on`
+     *  (TEXT NOT NULL DEFAULT '[]') — repo round-trips JSON ↔ string[].
+     *  Eligibility (`epicIsEligible`, T3) requires every id here to
+     *  resolve to a `status='done'` epic; cycle / self / existence
+     *  validation lives in `addEpic` + `setEpicDependsOn` (T3). */
+    dependsOn: z.array(z.string()).default([]),
+    /** ADR-225 §Schema (sqlite-migrations v13→v14): explicit
+     *  decomposition-complete + operator-greenlit bit. Decouples draft
+     *  vs. ready-for-kick-off from the lifecycle `status`. Storage
+     *  column `epics.is_ready` (INTEGER NOT NULL DEFAULT 0); repo
+     *  coerces 0/1 ↔ boolean. Backfill at migration time flips
+     *  in-progress / review / done epics to `true` so the new substrate
+     *  doesn't retroactively block in-flight work (see migration body
+     *  for the UPDATE). `epic.ready` event fires on 0→1; no event on
+     *  1→0. */
+    isReady: z.boolean().default(false),
+    /** ADR-231 §D2 §Schema (sqlite-migrations v15→v16, t-6-8db78adf):
+     *  Unix-epoch timestamp set when orchd auto-spawns this epic-team
+     *  via `atmux team spawn-epic`. Drives the at-least-once dedup
+     *  gate — orchd's spawn handler skips epics where `IS NOT NULL`.
+     *  Storage column `epics.spawned_at` (INTEGER, nullable, no
+     *  DEFAULT); `null` (or missing) means "not yet spawned". Set
+     *  exactly once per epic by orchd's spawn-success path; operators
+     *  may backfill in-flight rows manually post-migration via
+     *  `UPDATE epics SET spawned_at = unixepoch() WHERE id = ?`. */
+    spawnedAt: z.number().int().nullable().optional(),
+    /** ADR-231 §D3 §Schema (per-epic config home): typed sub-shape
+     *  inside `extra` for orchd auto-spawn configuration. `extra`
+     *  itself stays `.passthrough()` so unknown sibling keys flow
+     *  through (forward-compat with future per-epic config classes).
+     *
+     *  - `autoSpawn.enabled` — operator authorization for orchd to
+     *    issue `atmux team spawn-epic` automatically once ADR-225's
+     *    eligibility predicate flips. ADR-225's `is_ready=1` says
+     *    "allowed to spawn at all"; `enabled=true` says "let orchd
+     *    do it without manual keystroke". Both gates must pass.
+     *  - `autoSpawn.roster` — roster name (e.g. `'solo'`,
+     *    `'backend-heavy'`); falls back to per-team default
+     *    (`team.json::autoSpawn.defaults[]`, T-S1.3) then the
+     *    `'default'` literal.
+     *  - `autoSpawn.forceSpawn` — pass `--force` to `atmux team
+     *    spawn-epic`; bypasses ADR-225's eligibility predicate.
+     *    Operator escape hatch — defaults `false`. */
+    extra: z
+      .object({
+        autoSpawn: z
+          .object({
+            enabled: z.boolean(),
+            roster: z.string().optional(),
+            forceSpawn: z.boolean().optional(),
+          })
+          .optional(),
+      })
+      .passthrough()
+      .optional(),
   })
   .passthrough();
 export type KanbanEpic = z.infer<typeof KanbanEpic>;
@@ -244,10 +301,7 @@ export const KanbanStory = z
      *  `KNOWN_STORY_FIELDS` per ADR-091's extra-JSON-append pattern.
      *  Field schema kept permissive (`z.array(z.record)`) so future
      *  audit-entry additions don't churn the schema. */
-    signoffAudit: z
-      .array(z.record(z.string(), z.unknown()))
-      .nullable()
-      .optional(),
+    signoffAudit: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
     /** ADR-175 GAP 2: how this Story integrates onto trunk.
      *
      *   - `'feature-branch'` (DEFAULT) — current behaviour.
@@ -274,9 +328,7 @@ export const KanbanStory = z
      *  Two values only (per ADR-175 §Decision GAP 2 — YAGNI tightens
      *  scope). A future third mode (e.g. `'no-merge'` per ADR-175
      *  OQ-3) lands additively without schema churn. */
-    mergeMode: z
-      .enum(["feature-branch", "trunk-direct"])
-      .default("feature-branch"),
+    mergeMode: z.enum(["feature-branch", "trunk-direct"]).default("feature-branch"),
   })
   .passthrough();
 export type KanbanStory = z.infer<typeof KanbanStory>;

@@ -43,9 +43,6 @@ import { cockpitMirror } from "./verbs/cockpit-mirror.ts";
 import { committer } from "./verbs/committer.ts";
 import { complaints } from "./verbs/complaints.ts";
 import { cost } from "./verbs/cost.ts";
-import { cronInstall } from "./verbs/cron-install.ts";
-import { cronOrphans } from "./verbs/cron-orphans.ts";
-import { cronRemove } from "./verbs/cron-remove.ts";
 import { dashboard } from "./verbs/dashboard.ts";
 import { discorder } from "./verbs/discorder.ts";
 import { dispatch as dispatchVerb } from "./verbs/dispatch.ts";
@@ -83,7 +80,6 @@ import { outbox, reply } from "./verbs/reply.ts";
 import { report } from "./verbs/report.ts";
 import { rotate, rotateLead } from "./verbs/rotate.ts";
 import { send } from "./verbs/send.ts";
-import { sentinel } from "./verbs/sentinel.ts";
 import { start } from "./verbs/start.ts";
 import { status } from "./verbs/status.ts";
 import { stop } from "./verbs/stop.ts";
@@ -99,6 +95,7 @@ import { sweepEpics } from "./verbs/team/sweep-epics.ts";
 import { teamRename } from "./verbs/team-rename.ts";
 import { teamRepairRename } from "./verbs/team-repair-rename.ts";
 import { tellLead } from "./verbs/tell-lead.ts";
+import { topo } from "./verbs/topo.ts";
 import { up } from "./verbs/up.ts";
 import { version } from "./verbs/version.ts";
 import { watchdog } from "./verbs/watchdog.ts";
@@ -233,6 +230,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return story(argv.slice(1));
     case "team":
       return dispatchTeamSubverb(argv.slice(1));
+    case "topo":
+      return topo(argv.slice(1));
     case "member":
       return dispatchMemberSubverb(argv.slice(1));
     case "sync":
@@ -279,16 +278,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return report(argv.slice(1));
     case "cost":
       return cost(argv.slice(1));
-    case "cron-install":
-      return cronInstall(argv.slice(1));
-    case "cron-remove":
-      return cronRemove(argv.slice(1));
-    case "cron-orphans":
-      return cronOrphans(argv.slice(1));
     case "cockpit":
       return cockpit(argv.slice(1));
-    case "sentinel":
-      return sentinel(argv.slice(1));
     case "ombudsman":
       return ombudsman(argv.slice(1));
     case "committer":

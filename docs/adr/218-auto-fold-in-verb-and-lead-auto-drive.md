@@ -143,6 +143,6 @@ If auto-fold-in proves too aggressive:
 - [ADR-137](137-merge-over-rebase.md) (merge convention — `git merge --no-edit`, never rebase).
 - [ADR-197](197-cron-reaper-teardown-contract.md) (cron-strip inherited via the dissolve-epic teardown hook).
 - [ADR-210](210-eliminate-hold-posture-deadlock-structurally.md) §Tier 1 (same "act on what's already classified" doctrine; this ADR extends to sweep-epic verdicts).
-- [ADR-086](086-atmux-pulse.md) (Discord template vocabulary — `[auto-fold-in]` follows the verdict-first pattern from §D1 step 5).
+- [ADR-086](086-atmux-pulse.SUPERSEDED.md) (Discord template vocabulary — `[auto-fold-in]` follows the verdict-first pattern from §D1 step 5).
 - Epic `e-46f7fd64` (parent — this ADR is its T1 anchor; T2-T8 above).
 - 2026-05-21 sopx 12-branch backlog incident (driver-ref).

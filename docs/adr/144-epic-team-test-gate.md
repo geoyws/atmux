@@ -258,7 +258,7 @@ Driver finding 2026-05-19 06:30 MYT codifies a doctrine implicit in this ADR's �
 
 > **Superseded note (2026-05-21):** [ADR-213](213-retire-jury-reviewer-absorbs-acceptance-criteria.md) §D4 reverts this §Amendment in its entirety. Jury role retires; original ADR-144 state machine (with `review` state) reinstated. The text below is preserved for historical lineage only — `jury-pending` / `jury-approved` / `jury-rejected` states never landed; `--bypass-jury` flag + `juryGateMode` config never implemented. Reviewer signoff (existing `review` state) is the post-test gate per ADR-213 §D2. Gitter refuses merge unless story state is `review`-signed per the original ADR-144 §reviewer-signoff flow.
 
-[ADR-204](204-jury-role-acceptance-criteria-contract.md) introduces a `_jury` cursor-based adversarial-LLM gate that judges shipped work against planner-written acceptance criteria. The jury gate slots between this ADR's `tested` state and the gitter merge step. Story state machine becomes:
+[ADR-204](204-jury-role-acceptance-criteria-contract.SUPERSEDED.md) introduces a `_jury` cursor-based adversarial-LLM gate that judges shipped work against planner-written acceptance criteria. The jury gate slots between this ADR's `tested` state and the gitter merge step. Story state machine becomes:
 
 ```
 planning → ready → in-progress → testing → tested

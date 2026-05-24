@@ -607,4 +607,152 @@ export const migrations: readonly Migration[] = [
       `);
     },
   },
+  // ---------- v13 → v14 ----------
+  // ADR-225 (epic dependencies + isReady toggle) — orchd substrate.
+  // Master design task: parent atmux kanban `t-802c468b`.
+  //
+  // Adds the two columns that promote epic-level dependency + kick-off
+  // bookkeeping from "mentally held by the operator" to "queryable
+  // substrate":
+  //   - `depends_on` — JSON array of upstream epic ids. Top-level
+  //                    column (not extra JSON) so orchd's
+  //                    spawn-eligibility tick can index/scan without
+  //                    JSON-pulling on every probe. Same shape as
+  //                    `tasks.deps` (v0→v1) — SQLite has no native
+  //                    array type; cardinality stays small (≤3 in
+  //                    observed practice).
+  //   - `is_ready`   — INTEGER 0/1 (bool). Default 0 — explicit
+  //                    operator go-ahead prevents accidental
+  //                    auto-spawn on draft epics. Pairs with the
+  //                    `depends_on` predicate in
+  //                    `epicIsEligible()` (T3 / src/core/epic.ts).
+  //
+  // Backfill: existing in-flight epics get `is_ready=1` so the new
+  // substrate doesn't retroactively block ongoing work or invite a
+  // re-spawn (orchd would refuse them on the eligibility predicate
+  // otherwise). `status='done'` rows are included for the same
+  // reason — already-shipped epics are eligibility-satisfied
+  // upstream deps; flipping them to is_ready=1 keeps the predicate
+  // self-consistent (deps-done + is_ready=1).
+  //
+  // `depends_on` backfills via the column default — every existing
+  // row gets `'[]'` (empty array). No legacy data has dependsOn
+  // semantics, so this is the correct historical answer.
+  //
+  // Append-only per the ADR-126 single-ladder invariant (this file's
+  // header §); v12→v13 (events-prune cursor, ADR-202 §XI) already
+  // landed on trunk this morning (Epic B fan-in, f376665), so this
+  // step takes v13→v14.
+  {
+    from: 13,
+    to: 14,
+    up: (db) => {
+      db.exec("ALTER TABLE epics ADD COLUMN depends_on TEXT NOT NULL DEFAULT '[]'");
+      db.exec("ALTER TABLE epics ADD COLUMN is_ready INTEGER NOT NULL DEFAULT 0");
+      db.exec("UPDATE epics SET is_ready = 1 WHERE status IN ('in-progress', 'review', 'done')");
+    },
+  },
+  // ---------- v14 → v15 ----------
+  // ADR-228 §D2 (orchd spawn-queue + pressure monitor) — per-team
+  // spawn-queue table. Renumbered from v13→v14 at fan-in 2026-05-23
+  // per ADR-091 §pre-flag #4: sibling EPIC e-cf8a6195 (ADR-225 epic
+  // deps + isReady) landed v13→v14 first (commit 36b63f3, fan-in
+  // 4870833), so this lands second as v14→v15.
+  //
+  // Master design task: parent atmux kanban driver-ref (ADR-228 author).
+  //
+  // Schema purpose: orchd's pressure-aware spawn flow refuses-then-
+  // queues at the host-pressure gate when load is high. Queued requests
+  // persist here until the drain tick re-attempts spawn (or the
+  // request is abandoned after `MAX_ATTEMPTS`). Per-team scope matches
+  // orchd's daemon scope (one daemon per team consumes the team's
+  // spawn_queue); SQLite gives `BEGIN IMMEDIATE` serialization for
+  // free vs the JSON+flock fragility of the cockpit-level host-
+  // registry queue (memory `project_merger_state_merged_terminal_design_gap`
+  // documents the flock-race class this avoids).
+  //
+  // Columns:
+  //   - `queue_id`            — PK; `q-<8 hex>` matches ADR-184 §queueId regex.
+  //   - `epic_id`             — `e-<id>` being spawned.
+  //   - `spawn_args`          — JSON-encoded full argv to replay on dequeue.
+  //   - `queued_at_sec`       — unix seconds (test-clock injectable).
+  //   - `queued_by`           — requester identity (member/driver).
+  //   - `priority`            — 1-5 (1=highest); FIFO within same priority.
+  //   - `attempts`            — drain re-attempts; abandoned after MAX_ATTEMPTS.
+  //   - `last_attempt_at_sec` — null until first drain attempt.
+  //   - `last_failure_reason` — null on success path; populated on drain failure.
+  //   - `state`               — `queued` | `spawning` | `abandoned` (CHECK constraint).
+  //
+  // Index: `(state, priority, queued_at_sec)` — admit-tick reads
+  // `WHERE state = 'queued' ORDER BY priority, queued_at_sec`; the
+  // composite covers the predicate + sort without an extra sort step.
+  {
+    from: 14,
+    to: 15,
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE spawn_queue (
+          queue_id TEXT PRIMARY KEY NOT NULL,
+          epic_id TEXT NOT NULL,
+          spawn_args TEXT NOT NULL,
+          queued_at_sec INTEGER NOT NULL,
+          queued_by TEXT NOT NULL,
+          priority INTEGER NOT NULL DEFAULT 5,
+          attempts INTEGER NOT NULL DEFAULT 0,
+          last_attempt_at_sec INTEGER,
+          last_failure_reason TEXT,
+          state TEXT NOT NULL DEFAULT 'queued'
+            CHECK (state IN ('queued','spawning','abandoned'))
+        ) STRICT
+      `);
+      db.exec(`
+        CREATE INDEX idx_spawn_queue_priority_queued
+          ON spawn_queue(state, priority, queued_at_sec)
+      `);
+    },
+  },
+  // ---------- v15 → v16 ----------
+  // ADR-231 §D2 (orchd auto-spawn dedup gate) — `epics.spawned_at`
+  // Unix-epoch timestamp column. Master task: t-6-8db78adf (S1.1
+  // under EPIC e-1-118d16a9, Story s-1-a993b50c).
+  //
+  // Schema purpose: orchd's spawn handler skips epics where
+  // `spawned_at IS NOT NULL` — the column drives idempotent re-
+  // delivery handling under at-least-once event delivery semantics
+  // per ADR-202. Without it, an `epic.ready` event re-fired by a
+  // honker restart or offset-replay would re-spawn an already-live
+  // epic-team, breaking the host-pressure cap + duplicating worker
+  // claude sessions. With it, the handler does a cheap NULL-check
+  // before any RPC.
+  //
+  // Renumber note: ADR-231 §D2 + §D7 originally specified this as
+  // v14→v15, but sibling EPIC e-a946af69's ADR-228 spawn_queue
+  // migration landed v14→v15 first (fan-in 8d75360 / commit-step
+  // above). Per ADR-126 §single-ladder + this file's header
+  // append-only invariant, the dedup column shifts to v15→v16. ADR
+  // is amended in the same commit (§D2 + §D7 in-place edits) to
+  // keep the doc-as-truth + code consistent per CLAUDE.md
+  // §doc-update gate.
+  //
+  // Schema choice: INTEGER (nullable). Unix-epoch seconds matches
+  // every other ADR-202 timestamp column (`queued_at_sec`, etc.) —
+  // operators can read raw values via `datetime(spawned_at, 'unixepoch')`
+  // without a per-table convention. NULL = "not yet spawned"; the
+  // predicate is a single `IS NOT NULL` check, no sentinel value
+  // (0) needed.
+  //
+  // Backfill: column is ADDed with no DEFAULT clause, so every
+  // existing row gets NULL. That's the correct historical answer —
+  // orchd hadn't spawned any of those epics; if the operator wants
+  // to "mark this one as already spawned" for an in-flight epic-team
+  // they can backfill via `UPDATE epics SET spawned_at = unixepoch()
+  // WHERE id = ?` post-migration. Forward-only; no destructive
+  // down-migration needed.
+  {
+    from: 15,
+    to: 16,
+    up: (db) => {
+      db.exec("ALTER TABLE epics ADD COLUMN spawned_at INTEGER");
+    },
+  },
 ];

@@ -143,7 +143,8 @@ import { ConfigError, UsageError } from "../errors.ts";
 import { ResumeManifest } from "../schema/resume.ts";
 import type { Team } from "../schema/team.ts";
 import { applyCagePrefix, reconcileCockpitSession } from "./cockpit.ts";
-import { cronInstall } from "./cron-install.ts";
+// ADR-233 §D1: cron auto-install retired; the `cronInstall` import is gone.
+//   Operators who want crons run `atmux cron-install` explicitly.
 import { defaultBriefsDir, getBriefPath, renderBrief } from "./rotate.ts";
 
 // ---------- Arg parsing ----------
@@ -266,10 +267,8 @@ export interface StartOpts {
   /** Logger sink override (default: `createLogger()`, stderr). Tests pass
    *  an in-memory sink so output assertions don't go through stderr. */
   logger?: Logger;
-  /** ADR-083 §IN §4: inject the cron-install verb for tests so `start`
-   *  never touches the host crontab. Default = the real verb; pass a
-   *  no-op or a recorder in unit tests. */
-  cronInstallFn?: (argv: ReadonlyArray<string>) => Promise<number>;
+  // ADR-083 §IN §4 (superseded by ADR-233 §D1): the `cronInstallFn`
+  // injection field is gone — `start` no longer touches the crontab.
   /** ADR-082 W3: inject the git spawner for the worktree provisioning
    *  step. Default = the real `git` via `defaultGitSpawn` from
    *  `abstractions/worktree.ts`. Tests pass a mock so the start path
@@ -1003,40 +1002,14 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
     }
   }
 
-  // 11. ADR-083 §IN §4: auto-install the team's marker-fenced crontab
-  //     block (whip / report / decisions / groom / optional whip-resume-
-  //     check / optional unblocker). Gated by `kanban.cronAutoInstall`
-  //     (default true) — explicit `false` skips entirely and the
-  //     operator must run `atmux cron-install` manually. `ATMUX_NO_CRON`
-  //     env wins over the flag (test sandboxes + out-of-band cron
-  //     management). Non-fatal: the verb itself swallows all install
-  //     failures (warn + exit 0) so `start` never aborts because cron
-  //     hiccuped.
-  //
-  //     t-dcbff97c: fires unconditionally — including under
-  //     `worktreeIsolation=true`. The block's `ATMUX_DIR=<dir>` +
-  //     `TMUX_TMPDIR=<tmuxTmpdir>` baking points cron at the team's
-  //     project root regardless of where the worktrees themselves live,
-  //     so worktree isolation is not a reason to skip. Origin:
-  //     2026-05-13 overnight death of the atmux team — silently missing
-  //     cron block on a worktree-isolated team starved the lead pane of
-  //     external pulses. The explicit `--team-dir` forces cron-install
-  //     to resolve the SAME team that start just loaded — no cwd /
-  //     env-ATMUX_DIR drift between resolution sites.
-  if (shouldAutoInstallCron(team, env)) {
-    const cronFn = opts.cronInstallFn ?? cronInstall;
-    const cronTeamDir = dirname(dir);
-    try {
-      await cronFn(["--quiet", "--team-dir", cronTeamDir]);
-    } catch (e) {
-      // Defense in depth: cronInstall is already non-fatal internally,
-      // but if a future bug raised an unhandled error we'd rather warn
-      // than fail `start`. Mirrors bash's `if atmux::cron_install ...`
-      // guard at lib/start.sh:383.
-      const cause = e instanceof Error ? e.message : String(e);
-      logger.warn(`cron-install fell through: ${cause}`);
-    }
-  }
+  // 11. ADR-233 §D1 (supersedes ADR-083 §IN §4): cron auto-install
+  //     retired. `atmux start` writes ZERO crontab lines. orchd handles
+  //     event-driven work via the Honker substrate (ADR-202) and dies
+  //     with its tmux pane via PR_SET_PDEATHSIG (ADR-224). If an
+  //     operator wants the legacy poke / report / decisions / groom
+  //     crons, they run `atmux cron-install` explicitly. The
+  //     `kanban.cronAutoInstall` schema field stays for back-compat but
+  //     is no longer read at runtime.
 
   // 12. ADR-063 ergonomic fix (t-ab8df0b4): auto-reconcile the cockpit
   //     viewer window when this team is rostered + enabled in
@@ -1154,18 +1127,10 @@ async function autoReconcileCockpitForTeam(
   }
 }
 
-/** ADR-083 §IN §4: `kanban.cronAutoInstall` (default true) gates the
- *  auto-install path. `ATMUX_NO_CRON=<truthy>` env overrides to skip,
- *  matching bash `lib/cron.sh:197-204`. */
-function shouldAutoInstallCron(team: Team, env: NodeJS.ProcessEnv): boolean {
-  const noCron = env.ATMUX_NO_CRON;
-  if (noCron !== undefined && noCron !== "" && noCron !== "0" && noCron.toLowerCase() !== "false") {
-    return false;
-  }
-  const kanban = (team as { kanban?: { cronAutoInstall?: boolean } }).kanban;
-  if (kanban?.cronAutoInstall === false) return false;
-  return true;
-}
+// ADR-083 §IN §4 (superseded by ADR-233 §D1): the `shouldAutoInstallCron`
+// helper is gone. `atmux start` no longer auto-installs crons; the
+// `kanban.cronAutoInstall` schema field stays for back-compat surface
+// but is never read.
 
 /**
  * Resolve the tmux config from parsed args. Pure helper so the verb's

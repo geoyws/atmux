@@ -11,7 +11,7 @@
 // 100% coverage target — every branch in the run loop + the
 // orchestrator's try/finally exercised.
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import type { SpawnOpts, SpawnResult } from "../../../src/abstractions/spawn.ts";
 import {
   expandCagePath,

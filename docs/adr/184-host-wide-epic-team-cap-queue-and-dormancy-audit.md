@@ -386,3 +386,11 @@ Thresholds tunable per host via env. Override via `--force-spawn` flag (operator
 **Cross-refs:** ADR-198 (host-pressure playbook — operator-side runtime relief; this ADR's spawn-side admission control is the *prevention* sibling), EPIC e-13f311f5 (full ADR-184 substrate — queue + dormancy audit; consumes `host-pressure.ts` probe).
 
 **Filed via** 2026-05-21 driver session operator directive.
+
+## §Status amendment 2026-05-23 — Phase 5 queue-ify pointer
+
+**Status: amended 2026-05-23** — Phase 5 ([ADR-228](228-orchd-spawn-queue-pressure-monitor.md) spawn-queue + pressure-monitor) queue-ifies the refuse-on-pressure path for BOTH the orchd-handler-driven auto-spawn flow AND the manual `atmux team spawn-epic` CLI per [ADR-228 §D1](228-orchd-spawn-queue-pressure-monitor.md) (refuse → enqueue → drain) + [§OQ3 HIGH-REV decision](228-orchd-spawn-queue-pressure-monitor.md) (queue-default chosen). Operators wanting the original throw-on-pressure semantics pass `--no-queue` per [ADR-228 §D1 step 3a](228-orchd-spawn-queue-pressure-monitor.md). The throw-immediately escape hatch via `--no-queue` preserves the original ADR-184 §Decision semantics for one-shot scripts that need synchronous failure.
+
+## §Status amendment 2026-05-23-rev2 — Phase 5b impl-landed correction (t-19-d7865662)
+
+Pre-rev1 text incorrectly claimed the manual CLI "continues to refuse with `ConfigError` per the original §Decision semantics; only the event-driven handler now enqueues". That description matched a speculative pre-impl interpretation of ADR-228, but the shipped impl ([t-19-d7865662](../../) Phase 5b) follows ADR-228 §D1 verbatim: BOTH the manual verb AND the auto-spawn handler converge on `enqueueIfPressured` from `src/core/spawn-queue.ts`, with `--no-queue` as the per-invocation escape hatch. The §OQ3 HIGH-REV decision ratified queue-default over refuse-default precisely so operators don't have to manage spawn timing manually — a CLI-only bifurcation would defeat that goal.

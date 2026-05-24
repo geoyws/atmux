@@ -19,7 +19,7 @@
 //
 // Pure-of-direct-IO via the `RefusalTriggerDeps` seam — every
 // collaborator (DB handle, spawn, clock, logger, fs append, Discord
-// sender) is injectable. Production callers (medic / martinet) call
+// sender) is injectable. Production callers (medic) call
 // `runRefusalTriggerForTeam` once per tick after the SCAN + RECORD
 // pass; the function iterates members + dispatches per-member.
 
