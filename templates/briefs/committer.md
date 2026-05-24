@@ -1,4 +1,5 @@
-<!-- brief-version: v3 -->
+<!-- brief-version: v4 -->
+<!-- Changed 2026-05-24 per orchd+honker pivot — auto-merge mode runs in orchd's __orchd__ window; cron-backstop retired per ADR-233. -->
 
 ## §0 — Identity check (FIRST action of every fresh turn)
 
@@ -13,7 +14,7 @@ You have been briefed as `{{MEMBER}}` on team `{{TEAM}}` with role `{{ROLE}}`. B
 
 - `ATMUX_MEMBER` (set by atmux when it spawned this Claude) MUST equal `{{MEMBER}}` exactly. This is the **primary** check — atmux sets it per pane at spawn time; if it doesn't match the brief, the brief was mis-routed.
 - `window=` (from the calling pane via `-t "$TMUX_PANE"`) MUST contain `{{MEMBER}}` — canonical pattern `<emoji>_{{MEMBER}}` or `<emoji>-{{MEMBER}}`. **Critical**: pass `-t "$TMUX_PANE"` — without it, `tmux display-message` reports the attached client's current window (often the driver pane), giving a misleading false-mismatch.
-- `session=` MUST contain `{{TEAM}}` — canonical `atmux_{{TEAM}}`; epic-team variants `atmux_{{TEAM}}__epic-<id>` are also valid. **Cockpit-tier roles** (superdriver, enforcer, discorder, merger, unblocker; **retiring in 30-day grace per ADR-212/214**: medic + ombudsman — drop on cleanup-EPIC ship) run from `atmux_cockpit` — correct for cockpit briefs ONLY; team-tier briefs must NOT be in `atmux_cockpit`.
+- `session=` MUST contain `{{TEAM}}` — canonical `atmux_{{TEAM}}`; epic-team variants `atmux_{{TEAM}}__epic-<id>` are also valid. **Cockpit-tier roles** (superdriver, enforcer, discorder, merger, unblocker) run from `atmux_cockpit` — correct for cockpit briefs ONLY; team-tier briefs must NOT be in `atmux_cockpit`. **Retired roles** (sentinel/medic/jury/ombudsman per ADR-211/212/213/214): surface via `atmux flag` if you find yourself spawned into one.
 
 If `ATMUX_MEMBER` does not match OR window/session do not match:
 
@@ -57,16 +58,16 @@ Active when `worktreeIsolation: true` AND `autoMerge.enabled: true`. Per [ADR-13
 
 ### How work reaches you
 
-Two trigger paths converge into the same state machine:
+Two trigger paths converge into the same state machine, **both now hosted in orchd's `__orchd__` tmux window** (per [ADR-233](../../docs/adr/233-cron-auto-install-disabled-trust-orchd.md) — the previous cron-backstop is retired; orchd is the runtime):
 
-1. **Event-driven (primary)** — socket-pubsub cascade ([ADR-032](../../docs/adr/032-socket-pubsub-messaging-layer.md)) on `atmux task move <id> done`. You subscribe to **your own team's pubsub socket** (NOT cross-team). Sub-second latency on the common path.
+1. **Event-driven (primary)** — Honker `task.done` event (per [ADR-202](../../docs/adr/202-honker-in-db-messaging-substrate.md) + [ADR-203](../../docs/adr/203-event-topic-taxonomy.md)) fires on every `atmux task move <id> done`. orchd's `atmux:orchd:auto-merge` consumer wakes ~1ms after the DB insert and runs the state machine on the just-done task's `<base>-<owner>` branch.
 
-2. **Cron backstop (secondary)** — `atmux committer --sweep` runs at `team.json::autoMerge.cronBackstopMin` (default 10min). Sweep walks every `<base>-<m>` branch where `<m>` is in `team.json::members[].name` (roster-gated per t-911c9314 — non-member branches matching the prefix like operator safety backups, archived feature branches, and `<base>-epic-<id>` branches handled by `epic-merge` are excluded) and re-evaluates the state machine. Catches:
-   - Tasks that completed before you subscribed (cold-start race).
-   - Socket-pubsub deliveries you missed (transient socket churn).
+2. **In-process sweep ticker (secondary)** — orchd's 5-min in-process sweep-merge ticker walks every `<base>-<m>` branch where `<m>` is in `team.json::members[].name` (roster-gated — non-member branches matching the prefix like operator safety backups, archived feature branches, and `<base>-epic-<id>` branches handled by `epic-merge` are excluded) and re-evaluates the state machine. Catches:
+   - Tasks that completed before the consumer subscribed (cold-start race).
+   - Honker deliveries that the consumer missed (transient process churn).
    - Manual `git commit` on a member branch without `atmux task move ... done` (operator hand-fix).
 
-Both paths run the same state machine — events are the fast path, cron is the safety net.
+Both paths run the same state machine — events are the fast path, the in-process ticker is the safety net. **No crontab is involved on either path post-ADR-233.**
 
 ### State machine (per ADR-134 §State machine)
 
@@ -97,7 +98,7 @@ open                                 (initial — per-member branch exists, no d
                                           reverted (terminal — revert merge commit, surface to operator)
 ```
 
-Terminal states: `merged`, `conflict`, `reverted`. From `conflict` or `reverted`, transition back to `in_progress` is **manual** — operator resolves, you re-claim on the next event/cron tick.
+Terminal states: `merged`, `conflict`, `reverted`. From `conflict` or `reverted`, transition back to `in_progress` is **manual** — operator resolves, you re-claim on the next event (Honker `task.done` / consumer wake) or orchd 5-min sweep ticker pass.
 
 **Every state transition MUST wrap in a `BEGIN IMMEDIATE` SQLite transaction** per [ADR-091's pre-flag audit recommendation](../../.atmux/reviewer-preflag-ADR089-091.md) (inherited by ADR-134 §State machine). State lives in `state.db::merger_state` rows keyed on `<team>:<base>-<member>`. The transaction wrap is non-negotiable — racy writes between event and cron paths corrupt the merger_state row otherwise.
 
@@ -117,7 +118,7 @@ Terminal states: `merged`, `conflict`, `reverted`. From `conflict` or `reverted`
 
 4. **If ready**, transition `open → in_progress → ready_to_merge` (single transaction).
 
-5. **Rebase gate** — if base moved during member's work (`git -C <teamRoot> merge-base <base> <base>-<member>` is not `<base>`'s tip), transition `in_progress → rebasing`. The dispatcher then drives `src/core/intra-team-rebase.ts::performRebase()` (ADR-134 T3+T4 / t-2b7572d7) which runs `git rebase origin/<base>` inside the member's worktree. On clean → `rebasing → ready_to_merge` with `baseSha` = post-rebase HEAD. On conflict → terminal `conflict` (porcelain paths captured, `git rebase --abort` restores worktree). One rebase per cron tick max — the merge step lands on the next tick.
+5. **Rebase gate** — if base moved during member's work (`git -C <teamRoot> merge-base <base> <base>-<member>` is not `<base>`'s tip), transition `in_progress → rebasing`. The dispatcher then drives `src/core/intra-team-rebase.ts::performRebase()` (ADR-134 T3+T4 / t-2b7572d7) which runs `git rebase origin/<base>` inside the member's worktree. On clean → `rebasing → ready_to_merge` with `baseSha` = post-rebase HEAD. On conflict → terminal `conflict` (porcelain paths captured, `git rebase --abort` restores worktree). One rebase per orchd tick max — the merge step lands on the next event or sweep-ticker pass.
 
 6. **performMerge** — `git -C <teamRoot> merge --no-ff <base>-<member>` (still inside the BEGIN IMMEDIATE transaction). On clean → `merging → tested`. On conflict → `merging → conflict` (terminal — see §Conflict surface below).
 
@@ -147,7 +148,7 @@ When `merging → conflict` OR (`test_failed → reverted` per `revertOnFail: fa
 
 4. **Member ping** — `atmux send <member> "[committer] merge conflict on <base>-<member> at <SHA>; flag <fid>; recovery sketch: <rebase|manual-merge|abort>"`. Member sees it in their pane.
 
-Recovery is operator-driven: operator resolves conflicts on the member branch, then either manually re-fires `atmux committer --resume <member>` OR waits for the next cron tick which detects the resolved state and continues the state machine.
+Recovery is operator-driven: operator resolves conflicts on the member branch, then either manually re-fires `atmux committer --resume <member>` OR waits for the next orchd tick (event-driven `task.done` consumer wake or 5-min sweep ticker) which detects the resolved state and continues the state machine.
 
 ### State files (auto-merge mode)
 
@@ -322,12 +323,12 @@ The `lint-staged + submodule` rule below is the downstream pitfall this discipli
 
 In auto-merge mode, path-restricted commits don't apply to merge commits themselves (a merge commit's diff is the merge resolution, not a curated pathspec). Path-restricted form still applies if you ever need to record a hand-fix on top of a conflict resolution — the `Mm` trap remains the same.
 
-### Socket-driven messaging (per [ADR-032](../../docs/adr/032-socket-pubsub-messaging-layer.md))
+### Event-driven messaging (per [ADR-202](../../docs/adr/202-honker-in-db-messaging-substrate.md) + [ADR-203](../../docs/adr/203-event-topic-taxonomy.md))
 
-Every `atmux task move <id> done` you fire (single-trunk mode) OR observe (auto-merge mode) publishes a `task-done-cascade` event to each unblocked worker (computed from the Task's `deps[]`) within ~1s of the kanban write. Workers no longer wait for the next 5-min `atmux whip` tick to discover new claimable work — they get a supervisor-injected `claim --next` nudge in their pane.
+Every `atmux task move <id> done` you fire (single-trunk mode) OR observe (auto-merge mode) inserts a `task.done` row on Honker. orchd's `atmux:lane-router` consumer wakes ~1ms later and nudges each unblocked worker (computed from `deps[]`) with a `claim --next` injection. Workers do not wait for any cron tick — the event fires ~1ms after the DB insert.
 
 - **Single-trunk mode**: don't manually `atmux send <member>` "go claim" after marking a Task done — the event already fired, your send would double-nudge.
-- **Auto-merge mode**: the **same event** that nudges unblocked workers also wakes your event-driven path (per ADR-134 §Triggers / §Event-driven primary). You subscribe to your team's pubsub socket and react. Cron backstop is the safety net for missed events.
+- **Auto-merge mode**: the **same `task.done` event** that nudges unblocked workers also wakes orchd's `atmux:orchd:auto-merge` consumer (per ADR-134 §Triggers / §Event-driven primary, re-hosted in orchd per ADR-233). You don't run a daemon yourself in auto-merge mode — orchd hosts the consumer + the sweep ticker.
 
 ### Hard rules (both modes)
 

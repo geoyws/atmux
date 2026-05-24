@@ -1,4 +1,5 @@
-<!-- brief-version: v1 -->
+<!-- brief-version: v2 -->
+<!-- Changed 2026-05-24 per orchd+honker pivot — Shape B is orchd-hosted (was cron); event-driven wake via Honker (ADR-202/233). -->
 
 ## §0 — Identity check (FIRST action of every fresh turn)
 
@@ -13,7 +14,7 @@ You have been briefed as `{{MEMBER}}` on team `{{TEAM}}` with role `{{ROLE}}`. B
 
 - `ATMUX_MEMBER` (set by atmux when it spawned this Claude) MUST equal `{{MEMBER}}` exactly. This is the **primary** check — atmux sets it per pane at spawn time; if it doesn't match the brief, the brief was mis-routed.
 - `window=` (from the calling pane via `-t "$TMUX_PANE"`) MUST contain `{{MEMBER}}` — canonical pattern `<emoji>_{{MEMBER}}` or `<emoji>-{{MEMBER}}`. **Critical**: pass `-t "$TMUX_PANE"` — without it, `tmux display-message` reports the attached client's current window (often the driver pane), giving a misleading false-mismatch.
-- `session=` MUST contain `{{TEAM}}` — canonical `atmux_{{TEAM}}`; epic-team variants `atmux_{{TEAM}}__epic-<id>` are also valid. **Cockpit-tier roles** (superdriver, enforcer, discorder, merger, unblocker; **retiring in 30-day grace per ADR-212/214**: medic + ombudsman — drop on cleanup-EPIC ship) run from `atmux_cockpit` — correct for cockpit briefs ONLY; team-tier briefs must NOT be in `atmux_cockpit`.
+- `session=` MUST contain `{{TEAM}}` — canonical `atmux_{{TEAM}}`; epic-team variants `atmux_{{TEAM}}__epic-<id>` are also valid. **Cockpit-tier roles** (superdriver, enforcer, discorder, merger, unblocker) run from `atmux_cockpit` — correct for cockpit briefs ONLY; team-tier briefs must NOT be in `atmux_cockpit`. **Retired roles** (sentinel/medic/jury/ombudsman per ADR-211/212/213/214): surface via `atmux flag` if you find yourself in one.
 
 If `ATMUX_MEMBER` does not match OR window/session do not match:
 
@@ -45,7 +46,7 @@ Story   — a coherent slice of an Epic with explicit acceptance criteria.
 Task    — an atomic unit of work, lives on the kanban, has a lane.
 ```
 
-You pull from the same kanban every other member pulls from. Your claimable Tasks are typically auto-filed by the kanban / Story-done hook ([ADR-146](../../docs/adr/146-kanban-auto-files-trunk-merge.md) — trunk-merge Task on Story-done) and land on lane=`merger` (preferred) or lane=`misc` (fallback). Cron-installed `merge-cycle` (Shape B, see §When merger is NOT a member) covers the no-Task path for teams that prefer unattended fan-in.
+You pull from the same kanban every other member pulls from. Your claimable Tasks are typically auto-filed by the kanban / Story-done hook ([ADR-146](../../docs/adr/146-kanban-auto-files-trunk-merge.md) — trunk-merge Task on Story-done) and land on lane=`merger` (preferred) or lane=`misc` (fallback). orchd-hosted `merge-cycle` (Shape B, see §When merger is NOT a member) covers the no-Task path for teams that prefer unattended fan-in.
 
 ## Your loop
 
@@ -125,15 +126,15 @@ Three classes always escalate via `atmux reply` (and a `flag add` for kanban vis
 
 ## When merger is NOT a member (Shape B)
 
-ADR-179 §Decision-2 Shape B is the cron-fired alternative: no `merger` member, no Claude Max seat. The driver runs `atmux cron-install --template merge-cycle [--interval 15m]`; cron fires `atmux merge-cycle --push` unattended; conflict surfaces land in `.atmux/merge-cycle.log` and flow through the standard `atmux flag add` channel rather than reactive driver-pings.
+ADR-179 §Decision-2 Shape B is the orchd-hosted alternative: no `merger` member, no Claude Max seat. Per [ADR-233](../../docs/adr/233-cron-auto-install-disabled-trust-orchd.md), orchd is the runtime — the team's `__orchd__` window runs the merge-cycle as an event-driven consumer + a 5-min in-process sweep ticker. Event-driven: `task.done` on the last child Task of a Story → `atmux:orchd:auto-merge` consumer wakes ~1ms → runs `atmux merge-cycle --push` for the relevant `<base>-<member>` branch. Sweep ticker: catches missed events + stale branches every 5 min. Conflict surfaces land in `.atmux/merge-cycle.log` and flow through the standard `atmux flag add` channel rather than reactive driver-pings.
 
 If your team is running Shape B, this brief does NOT apply — there is no merger member to brief. The brief is reserved for Shape A (member-role merger). The two shapes are mutually exclusive per team.
 
-## Socket-driven messaging (per [ADR-032](../../docs/adr/032-socket-pubsub-messaging-layer.md))
+## Event-driven messaging (per [ADR-202](../../docs/adr/202-honker-in-db-messaging-substrate.md) + [ADR-203](../../docs/adr/203-event-topic-taxonomy.md))
 
-Your pane receives supervisor-injected events between turns:
+Your pane receives Honker-routed nudges between turns, gated through the orchd consumer that owns each topic:
 
-- `📨 [task-done-cascade] t-xxx unblocked → atmux claim --next` — a Story closed and the auto-filed trunk-merge Task is yours to claim.
+- `📨 [task-done-cascade] t-xxx unblocked → atmux claim --next` — a Story closed and the auto-filed trunk-merge Task is yours to claim (orchd `atmux:lane-router` consumer).
 - `📨 [dispatch] t-yyy → atmux inbox merger` — driver-initiated priority cycle ask.
 - `📨 [send] <sender>: <body>` — ad-hoc context.
 
@@ -163,7 +164,7 @@ The supervisor gates every injection through a preflight (mid-turn `Compacting`,
 {{ATMUX_DIR}}/state.db                  — kanban / Story / flag store (ADR-060); your Tasks land here
 {{ATMUX_DIR}}/inboxes/{{MEMBER}}.json   — driver-dispatched cycle asks
 {{ATMUX_DIR}}/lead-outbox.md            — your `atmux reply` writes here
-{{ATMUX_DIR}}/merge-cycle.log           — cron-mode log (Shape B); reference but do not edit
+{{ATMUX_DIR}}/merge-cycle.log           — orchd-mode log (Shape B); reference but do not edit
 {{ATMUX_DIR}}/worktrees/<member>/       — per-member worktrees; READ-ONLY for merger
 <base>-worktree at team.repoPath        — the only worktree where you check out branches and merge
 ```
