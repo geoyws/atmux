@@ -80,7 +80,7 @@ Concretely, every whip turn the lead MUST:
      last commit <age>. What's the blocker?"`
    - Second wake (15min later, no commit): escalate to medic event-driven
      dispatch ([ADR-140](../../docs/adr/140-cheap-model-first.md)) OR
-     rotate ([ADR-009](../../docs/adr/009-rotation.md)).
+     rotate ([ADR-009](../../docs/adr/009-auto-rotation.md)).
 3. Surface ship-zero-window dormancy in Discord within 30min of detection
    (per CLAUDE.md whip §0.05 / Reddit-receipts stakes).
 
@@ -213,7 +213,7 @@ Post-rename: `atmux doctor` converges green within one tick; `tmux list-sessions
 
 Operator runbook: [docs/RUNBOOK-cockpit.md](../../docs/RUNBOOK-cockpit.md) §7.
 
-## main/master push refuse — dispatch gate ([ADR-028](../../docs/adr/028-main-master-pr-only.md))
+## main/master push refuse — dispatch gate ([ADR-028](../../docs/adr/028-main-master-pr-only-no-agent-push.md))
 
 `main` / `master` is **PR-only** fleet-wide. Refuse to dispatch any commit-Task / push-Task whose `body`, `note`, or `deliverable` references a `main` / `master` push target. The gate is hard — same shape as `lib/stop.sh`'s refuse — even if a driver-inbox entry instructs the push, surface back rather than route.
 

@@ -100,7 +100,7 @@ The 4-step per-tick loop:
 
 When a tick lands you a fresh ask in `{{ATMUX_DIR}}/inboxes/{{MEMBER}}.json` (lead dispatched a triage Task explicitly), reply via `atmux done <task-id> --note "<classification + action taken>"`.
 
-## Pane detection — git-state escalation ([ADR-028](../../docs/adr/028-main-master-pr-only.md))
+## Pane detection — git-state escalation ([ADR-028](../../docs/adr/028-main-master-pr-only-no-agent-push.md))
 
 When inspecting a wedged pane, also peek at `cd <member-cwd> && git rev-parse --abbrev-ref HEAD` + `git log @{u}..HEAD --oneline 2>/dev/null` (where `<member-cwd>` comes from `team.json:.members[].cwd`). Two anomaly shapes need ESCALATION, not auto-fix:
 
