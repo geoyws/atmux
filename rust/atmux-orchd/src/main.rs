@@ -77,14 +77,83 @@ struct ConsumerCfg {
     /// dispatch internally. Must match the topic literal in
     /// `src/schema/events.ts::TOPICS`.
     bun_topic: &'static str,
+    /// e-10-eee9ea5a — when `Some(id)`, Rust passes `--consumer-id <id>`
+    /// to Bun so `--handle-one` routes via the registry. When `None`
+    /// (legacy back-compat for atmux:gitter + atmux:lane-router), Bun
+    /// falls through to the hardcoded topic branches.
+    bun_consumer_id: Option<&'static str>,
 }
 
 const CONSUMERS: &[ConsumerCfg] = &[
-    ConsumerCfg { name: "atmux:gitter", topic: "task.done", bun_topic: "task.done" },
+    // Legacy: atmux:gitter and atmux:lane-router predate the registry-
+    // driven dispatch (ADR-202 §VII original wiring). Bun's --handle-one
+    // recognizes these topic names without a --consumer-id flag and
+    // routes them through the legacy hardcoded branches (task.done →
+    // gitter merge handler; task.unclaimed → lane-tick). They stay
+    // here for back-compat.
+    ConsumerCfg {
+        name: "atmux:gitter",
+        topic: "task.done",
+        bun_topic: "task.done",
+        bun_consumer_id: None,
+    },
     ConsumerCfg {
         name: "atmux:lane-router",
         topic: "task.unclaimed",
         bun_topic: "task.unclaimed",
+        bun_consumer_id: None,
+    },
+    // e-10-eee9ea5a — registry-driven dispatch. Each entry below maps
+    // 1:1 to a `bootstrapOrchd` registration in
+    // src/core/orchd-bootstrap.ts. The Bun side looks up the handler
+    // by --consumer-id (NOT by topic alone — multiple consumers can
+    // share a topic, e.g. atmux:orchd:auto-merge +
+    // atmux:orchd:dissolve-solo-worker both on task.done). Per-
+    // consumer offset isolation is preserved by the distinct `name`
+    // field.
+    ConsumerCfg {
+        name: "atmux:orchd:auto-merge",
+        topic: "task.done",
+        bun_topic: "task.done",
+        bun_consumer_id: Some("atmux:orchd:auto-merge"),
+    },
+    ConsumerCfg {
+        name: "atmux:orchd:dissolve-solo-worker",
+        topic: "task.done",
+        bun_topic: "task.done",
+        bun_consumer_id: Some("atmux:orchd:dissolve-solo-worker"),
+    },
+    ConsumerCfg {
+        name: "atmux:orchd:auto-push",
+        topic: "epic.merged",
+        bun_topic: "epic.merged",
+        bun_consumer_id: Some("atmux:orchd:auto-push"),
+    },
+    ConsumerCfg {
+        name: "atmux:orchd:auto-dissolve",
+        topic: "epic.pushed",
+        bun_topic: "epic.pushed",
+        bun_consumer_id: Some("atmux:orchd:auto-dissolve"),
+    },
+    ConsumerCfg {
+        name: "atmux:orchd:spawn:on-ready",
+        topic: "epic.ready",
+        bun_topic: "epic.ready",
+        bun_consumer_id: Some("atmux:orchd:spawn:on-ready"),
+    },
+    ConsumerCfg {
+        name: "atmux:orchd:spawn:on-unblocked",
+        topic: "epic.unblocked",
+        bun_topic: "epic.unblocked",
+        bun_consumer_id: Some("atmux:orchd:spawn:on-unblocked"),
+    },
+    // ADR-214 §D2 — complaint consumer routes complaint.filed events
+    // to the lead's tell-lead inbox.
+    ConsumerCfg {
+        name: "atmux:complaint-consumer",
+        topic: "complaint.filed",
+        bun_topic: "complaint.filed",
+        bun_consumer_id: Some("atmux:complaint-consumer"),
     },
 ];
 
@@ -184,6 +253,7 @@ fn dispatch_to_bun(
     team_dir: &str,
     event_id: &str,
     topic: &str,
+    consumer_id: Option<&str>,
     extra_args: &[(&str, &str)],
 ) -> Option<i32> {
     let mut cmd = Command::new(atmux_bin);
@@ -195,6 +265,9 @@ fn dispatch_to_bun(
         .arg(topic)
         .arg("--team-dir")
         .arg(team_dir);
+    if let Some(cid) = consumer_id {
+        cmd.arg("--consumer-id").arg(cid);
+    }
     for (flag, value) in extra_args {
         cmd.arg(flag).arg(value);
     }
@@ -269,6 +342,7 @@ fn drain_and_dispatch(
                 team_dir,
                 &event_id,
                 cfg.bun_topic,
+                cfg.bun_consumer_id,
                 &extra_refs,
             );
             match code {

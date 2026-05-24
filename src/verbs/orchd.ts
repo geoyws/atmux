@@ -29,6 +29,10 @@ import { closeDatabase, openDatabase } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts";
 import { probeHostPressure } from "../core/host-pressure.ts";
+import { bootstrapOrchd } from "../core/orchd-bootstrap.ts";
+import { dispatchDissolveEpic as dispatchDissolveEpicImport } from "../core/orchd-dispatch/dissolve-epic.ts";
+import { dispatchEpicMerge as dispatchEpicMergeImport } from "../core/orchd-dispatch/epic-merge.ts";
+import { dispatchGitPush as dispatchGitPushImport } from "../core/orchd-dispatch/git-push.ts";
 // ADR-224 §D6 — orchd subscription registry seam (Phase 1 zero-handler).
 // Re-exported from this verb module so Phase 2 + sibling EPIC e-a946af69
 // callers can register against the same canonical surface they see in
@@ -36,7 +40,11 @@ import { probeHostPressure } from "../core/host-pressure.ts";
 // The actual registry lives in src/core/orchd-registry.ts; this is the
 // public seam from the verb side. Phase 1 ships the wiring; handlers
 // stay empty until Phase 2 dispatches.
-import { visitOrchdSubscriptions } from "../core/orchd-registry.ts";
+import {
+  findOrchdSubscriptionsByTopic,
+  ORCHD_SUBSCRIPTIONS,
+  visitOrchdSubscriptions,
+} from "../core/orchd-registry.ts";
 import { orchdSweep } from "../core/orchd-sweep.ts";
 import { pressureMonitorTick, resolveSpawnQueueLimits } from "../core/spawn-queue.ts";
 import { ConfigError, UsageError } from "../errors.ts";
@@ -105,6 +113,14 @@ export interface ParsedOrchdArgs {
   member?: string;
   /** `--lane L`: see {@link taskId} — required alongside --task-id. */
   lane?: string;
+  /** `--consumer-id ID`: (e-10-eee9ea5a) when the Rust dispatcher
+   *  spawns one --handle-one per ORCHD_SUBSCRIPTIONS entry, it passes
+   *  the consumer-id so Bun can route directly to that specific
+   *  handler (instead of dispatching via topic-only). Required for
+   *  the registry-driven dispatch path; absent → legacy hardcoded
+   *  topic branches (task.done → gitter merge, task.unclaimed →
+   *  lane-tick) for back-compat with un-upgraded Rust binaries. */
+  consumerId?: string;
 }
 
 export function parseOrchdArgs(argv: ReadonlyArray<string>): ParsedOrchdArgs {
@@ -117,6 +133,7 @@ export function parseOrchdArgs(argv: ReadonlyArray<string>): ParsedOrchdArgs {
   let taskId: string | undefined;
   let member: string | undefined;
   let lane: string | undefined;
+  let consumerId: string | undefined;
   let i = 0;
   while (i < argv.length) {
     const a = argv[i];
@@ -241,6 +258,18 @@ export function parseOrchdArgs(argv: ReadonlyArray<string>): ParsedOrchdArgs {
       i += 2;
       continue;
     }
+    if (a === "--consumer-id") {
+      const v = argv[i + 1];
+      if (v === undefined || v === "") {
+        throw new UsageError({
+          what: "orchd: --consumer-id requires a value",
+          hint: USAGE,
+        });
+      }
+      consumerId = v;
+      i += 2;
+      continue;
+    }
     if (a?.startsWith("-") === true) {
       throw new UsageError({ what: `orchd: unknown flag: ${a}`, hint: USAGE });
     }
@@ -300,6 +329,7 @@ export function parseOrchdArgs(argv: ReadonlyArray<string>): ParsedOrchdArgs {
   if (taskId !== undefined) out.taskId = taskId;
   if (member !== undefined) out.member = member;
   if (lane !== undefined) out.lane = lane;
+  if (consumerId !== undefined) out.consumerId = consumerId;
   return out;
 }
 
@@ -427,6 +457,17 @@ async function orchdHandleOne(parsed: ParsedOrchdArgs, opts: CommitterOpts = {})
       what: "orchd --handle-one: parser invariant violated (missing event-id or topic)",
     });
   }
+  // e-10-eee9ea5a — registry-driven dispatch path. When the Rust
+  // dispatcher passes --consumer-id, route directly to that handler
+  // from ORCHD_SUBSCRIPTIONS instead of the legacy topic-only
+  // branches. This unblocks every handler registered by
+  // bootstrapOrchd (auto-merge, dissolve-solo-worker, auto-push,
+  // auto-dissolve, spawn-on-ready, spawn-on-unblocked, complaint).
+  // Legacy callers (Rust without --consumer-id, or operator-direct
+  // CLI use) fall through to the hardcoded topic branches below.
+  if (parsed.consumerId !== undefined) {
+    return await orchdHandleOneByConsumerId(parsed, eventId, topic);
+  }
   if (topic === "task.done") {
     // Need full event-driven context for the gitter merge handler.
     const committerArgs = {
@@ -505,6 +546,102 @@ async function orchdHandleOne(parsed: ParsedOrchdArgs, opts: CommitterOpts = {})
   throw new ConfigError({
     what: `orchd --handle-one: unknown topic '${topic}' (expected task.done or task.unclaimed)`,
   });
+}
+
+/**
+ * e-10-eee9ea5a — registry-driven `--handle-one` dispatch. The Rust
+ * dispatcher passes `--consumer-id <id>`; we look up that exact
+ * subscription from {@link ORCHD_SUBSCRIPTIONS}, load the event, run
+ * the handler. One spawn per consumer per event (Rust manages
+ * per-consumer offsets via `subscriber_offsets`).
+ *
+ * Bootstrap is called on every invocation — it's idempotent
+ * (registerOrchdSubscription deduplicates by consumerId) so the
+ * registry stays populated across the long-lived Rust loop's repeated
+ * Bun spawns. Bootstrap deps are minimal here (db + team + atmuxDir);
+ * production injection of dispatchers (mergeDeps, pushDeps, etc.)
+ * happens lazily inside each handler's stub-default path, so even the
+ * minimal bootstrap path is sufficient to deliver complaint events
+ * (which need no extra deps) and to no-op spawn events safely
+ * (`skipped-row-missing` per ADR-231 §D2).
+ */
+async function orchdHandleOneByConsumerId(
+  parsed: ParsedOrchdArgs,
+  eventId: string,
+  topic: string,
+): Promise<number> {
+  const consumerId = parsed.consumerId;
+  if (consumerId === undefined) {
+    throw new UsageError({
+      what: "orchd --handle-one: orchdHandleOneByConsumerId called without --consumer-id",
+    });
+  }
+  const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
+  const atmuxDir = await getAtmuxDir(dirOpts);
+  const team = await requireTeam(dirOpts);
+  const dbPath = join(atmuxDir, "state.db");
+  const db = openDatabase(dbPath, migrations);
+  try {
+    // Same dep wiring as committer.ts::committerDrainVerb so each
+    // handler dispatches against real implementations (not stubs).
+    bootstrapOrchd({
+      db,
+      mergeDeps: {
+        dispatchEpicMerge: async (epicId) =>
+          dispatchEpicMergeImport({ epicId }, { localTeamName: team.name }),
+      },
+      dissolveDeps: {
+        dispatchDissolveEpic: async (epicId) =>
+          dispatchDissolveEpicImport({ epicId }, { localCageName: team.name }),
+      },
+      pushDeps: {
+        dispatchGitPush: async (parentBase) =>
+          dispatchGitPushImport({ cage: team.name, branch: parentBase }, { localCageName: team.name }),
+      },
+      spawnDeps: {
+        atmuxDir,
+        team,
+      },
+    });
+    const subs = findOrchdSubscriptionsByTopic(topic).filter((s) => s.consumerId === consumerId);
+    if (subs.length === 0) {
+      process.stderr.write(
+        `orchd --handle-one: no subscription registered for consumerId='${consumerId}' topic='${topic}' (registry has ${ORCHD_SUBSCRIPTIONS.length} subs)\n`,
+      );
+      return 0; // not an error — registry may not yet include this consumer in older builds
+    }
+    const event = loadEventById(db, eventId);
+    if (event === null) {
+      process.stderr.write(
+        `orchd --handle-one: event ${eventId} not found (pruned?) — consumerId='${consumerId}' topic='${topic}' — skip\n`,
+      );
+      return 0;
+    }
+    if (event.topic !== topic) {
+      process.stderr.write(
+        `orchd --handle-one: event ${eventId} topic mismatch — expected '${topic}', got '${event.topic}' — skip\n`,
+      );
+      return 0;
+    }
+    try {
+      const sub = subs[0];
+      if (sub === undefined) {
+        return 0;
+      }
+      await sub.handler(event);
+      // Advance our local offset record — the Rust caller also advances
+      // on rc=0 so this is idempotent.
+      saveOffset(db, consumerId, eventId);
+      return 0;
+    } catch (e) {
+      process.stderr.write(
+        `orchd --handle-one: consumerId='${consumerId}' topic='${topic}' eventId=${eventId} threw: ${e instanceof Error ? e.message : String(e)}\n`,
+      );
+      return 1;
+    }
+  } finally {
+    closeDatabase(db);
+  }
 }
 
 /**
