@@ -35,6 +35,8 @@ import {
   ORCHD_MERGE_TOPIC,
   ORCHD_PUSH_CONSUMER_ID,
   ORCHD_PUSH_TOPIC,
+  ORCHD_ROTATION_CONSUMER_ID,
+  ORCHD_ROTATION_TOPIC,
   ORCHD_SPAWN_ON_READY_CONSUMER_ID,
   ORCHD_SPAWN_ON_READY_TOPIC,
   ORCHD_SPAWN_ON_UNBLOCKED_CONSUMER_ID,
@@ -63,10 +65,10 @@ afterEach(async () => {
 });
 
 describe("bootstrapOrchd — first registration", () => {
-  test("registers exactly 7 subscriptions in canonical order (merge → dissolve → push → dissolve-solo-worker → spawn:on-ready → spawn:on-unblocked → complaint)", () => {
+  test("registers exactly 8 subscriptions in canonical order (merge → dissolve → push → dissolve-solo-worker → spawn:on-ready → spawn:on-unblocked → complaint → rotation)", () => {
     const result = bootstrapOrchd({ db });
 
-    expect(result.registered).toHaveLength(7);
+    expect(result.registered).toHaveLength(8);
     expect(result.registered.map((r) => r.consumerId)).toEqual([
       ORCHD_MERGE_CONSUMER_ID,
       ORCHD_DISSOLVE_CONSUMER_ID,
@@ -75,6 +77,7 @@ describe("bootstrapOrchd — first registration", () => {
       ORCHD_SPAWN_ON_READY_CONSUMER_ID,
       ORCHD_SPAWN_ON_UNBLOCKED_CONSUMER_ID,
       ORCHD_COMPLAINT_CONSUMER_ID,
+      ORCHD_ROTATION_CONSUMER_ID,
     ]);
     expect(result.registered.map((r) => r.topic)).toEqual([
       ORCHD_MERGE_TOPIC,
@@ -84,9 +87,10 @@ describe("bootstrapOrchd — first registration", () => {
       ORCHD_SPAWN_ON_READY_TOPIC,
       ORCHD_SPAWN_ON_UNBLOCKED_TOPIC,
       ORCHD_COMPLAINT_TOPIC,
+      ORCHD_ROTATION_TOPIC,
     ]);
     expect(result.registered.every((r) => r.isNew)).toBe(true);
-    expect(ORCHD_SUBSCRIPTIONS).toHaveLength(7);
+    expect(ORCHD_SUBSCRIPTIONS).toHaveLength(8);
   });
 
   test("canonical consumer IDs match the ADR-224 §D6 + ADR-231 §D2/§D6 naming convention", () => {
@@ -134,11 +138,11 @@ describe("bootstrapOrchd — idempotency", () => {
   test("re-bootstrap with the same db flips every isNew to false, no duplicate push", () => {
     const first = bootstrapOrchd({ db });
     expect(first.registered.every((r) => r.isNew)).toBe(true);
-    expect(ORCHD_SUBSCRIPTIONS).toHaveLength(7);
+    expect(ORCHD_SUBSCRIPTIONS).toHaveLength(8);
 
     const second = bootstrapOrchd({ db });
     expect(second.registered.every((r) => !r.isNew)).toBe(true);
-    expect(ORCHD_SUBSCRIPTIONS).toHaveLength(7);
+    expect(ORCHD_SUBSCRIPTIONS).toHaveLength(8);
   });
 });
 

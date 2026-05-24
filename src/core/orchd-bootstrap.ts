@@ -41,12 +41,17 @@ import type {
   EpicReadyPayload,
   EpicUnblockedPayload,
   EventPayload,
+  MemberContextHighPayload,
   TaskDonePayload,
 } from "../schema/events.ts";
 import {
   type ComplaintConsumerDeps,
   createComplaintConsumerHandler,
 } from "./complaint-consumer.ts";
+import {
+  type RotationConsumerDeps,
+  createRotationConsumerHandler,
+} from "./rotation-consumer.ts";
 import {
   createDissolveSoloWorkerHandler,
   type DissolveSoloWorkerHandlerDeps,
@@ -82,6 +87,11 @@ export const ORCHD_SPAWN_ON_UNBLOCKED_CONSUMER_ID = "atmux:orchd:spawn:on-unbloc
 /** ADR-214 §D2 — complaint consumer. Wakes on `complaint.filed` and
  *  routes to the lead's tell-lead inbox. */
 export const ORCHD_COMPLAINT_CONSUMER_ID = "atmux:complaint-consumer";
+/** ADR-212 / e-cc3728bf — rotation consumer. Wakes on
+ *  `member.context-high` (and future `pane.stuck` / `member.no-progress`
+ *  / `cage.starving` as their observers ship) and routes structured
+ *  decision-matrix to lead's tell-lead inbox. */
+export const ORCHD_ROTATION_CONSUMER_ID = "atmux:rotation-consumer";
 
 /** Topics — exported for the same reason. Mirrors each handler module's
  *  documented trigger:
@@ -99,6 +109,9 @@ export const ORCHD_SPAWN_ON_READY_TOPIC = "epic.ready";
 export const ORCHD_SPAWN_ON_UNBLOCKED_TOPIC = "epic.unblocked";
 /** ADR-214 §D2 — complaint topic. */
 export const ORCHD_COMPLAINT_TOPIC = "complaint.filed";
+/** ADR-212 / e-cc3728bf — rotation observer signal (v1: context-high
+ *  only; future topics layer in additively). */
+export const ORCHD_ROTATION_TOPIC = "member.context-high";
 
 /**
  * Per-handler dep overrides — partial of the underlying
@@ -138,6 +151,9 @@ export interface BootstrapOrchdDeps {
    *  → real-process spawn of `atmux tell-lead`. Tests inject a mock
    *  `spawnTellLead` to assert on argv. */
   complaintDeps?: ComplaintConsumerDeps;
+  /** ADR-212 / e-cc3728bf: optional overrides for the rotation
+   *  consumer. Absent → real `atmux tell-lead` spawn. */
+  rotationDeps?: RotationConsumerDeps;
 }
 
 /** Per-subscription registration result for caller observability. */
@@ -201,6 +217,8 @@ export function bootstrapOrchd(deps: BootstrapOrchdDeps): BootstrapOrchdResult {
   // ADR-214 §D2 — complaint consumer. Always builds; deps optional
   // (defaults to real-process spawn of `atmux tell-lead`).
   const complaintHandlerFn = createComplaintConsumerHandler(deps.complaintDeps ?? {});
+  // ADR-212 / e-cc3728bf — rotation consumer.
+  const rotationHandlerFn = createRotationConsumerHandler(deps.rotationDeps ?? {});
 
   const mergeIsNew = registerOrchdSubscription({
     topic: ORCHD_MERGE_TOPIC,
@@ -258,6 +276,14 @@ export function bootstrapOrchd(deps: BootstrapOrchdDeps): BootstrapOrchdResult {
       await complaintHandlerFn(event as ComplaintFiledPayload);
     },
   });
+  // ADR-212 / e-cc3728bf — rotation consumer.
+  const rotationIsNew = registerOrchdSubscription({
+    topic: ORCHD_ROTATION_TOPIC,
+    consumerId: ORCHD_ROTATION_CONSUMER_ID,
+    handler: async (event: EventPayload) => {
+      await rotationHandlerFn(event as MemberContextHighPayload);
+    },
+  });
 
   return {
     registered: [
@@ -287,6 +313,11 @@ export function bootstrapOrchd(deps: BootstrapOrchdDeps): BootstrapOrchdResult {
         consumerId: ORCHD_COMPLAINT_CONSUMER_ID,
         topic: ORCHD_COMPLAINT_TOPIC,
         isNew: complaintIsNew,
+      },
+      {
+        consumerId: ORCHD_ROTATION_CONSUMER_ID,
+        topic: ORCHD_ROTATION_TOPIC,
+        isNew: rotationIsNew,
       },
     ],
   };

@@ -157,6 +157,15 @@ const CONSUMERS: &[ConsumerCfg] = &[
         bun_topic: "complaint.filed",
         bun_consumer_id: Some("atmux:complaint-consumer"),
     },
+    // ADR-212 / e-cc3728bf — rotation consumer routes
+    // member.context-high (and future pane.stuck / member.no-progress
+    // / cage.starving) events to the lead's tell-lead inbox.
+    ConsumerCfg {
+        name: "atmux:rotation-consumer",
+        topic: "member.context-high",
+        bun_topic: "member.context-high",
+        bun_consumer_id: Some("atmux:rotation-consumer"),
+    },
 ];
 
 fn load_offset(db: &Database, consumer: &str) -> Result<String, String> {
