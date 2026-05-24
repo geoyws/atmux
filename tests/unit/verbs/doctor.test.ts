@@ -1086,11 +1086,10 @@ describe("checkCronIntervalDivisors", () => {
 //
 // Post-ADR-233 the underlying `findCronOrphans` is a no-op shim that
 // always returns `[]` (cron auto-install retired; orchd is the runtime).
-// The orphan-detection paths below exercise the pre-ADR-233 behavior
-// and are kept here as `.skip` for the deprecation window — once the
-// cron-shim modules are deleted in cleanup-EPIC, this whole block goes.
-// The non-skipped subset (PATH-absent / empty-crontab / all-live) stays
-// runnable because those branches still return `[]` either way.
+// Every test below asserts the post-retire contract: regardless of
+// crontab content, the probe surfaces zero rows. Once the cron-shim
+// modules are deleted in cleanup-EPIC, this whole block goes with
+// them.
 
 describe("checkCronOrphans", () => {
   const fakeIO = (body: string | null, opts: { available?: boolean } = {}): CrontabIO => ({
@@ -1130,7 +1129,15 @@ describe("checkCronOrphans", () => {
     expect(rows).toEqual([]);
   });
 
-  test.skip("(ADR-233 retired) orphan block (atmuxDir gone) → one yellow row with team+dir", async () => {
+  // Post-ADR-233 contract: `findCronOrphans` shim returns `[]` for
+  // every input — atmux no longer manages crontab blocks, so no
+  // marker-block can be orphaned. These two tests assert the
+  // post-retire behavior against the two fixture bodies that would
+  // have surfaced rows under the pre-ADR-233 impl. Once the cron-shim
+  // modules retire in cleanup-EPIC, the underlying probe + this whole
+  // describe block go with them.
+
+  test("(ADR-233) orphan-looking block → no rows (shim returns [])", async () => {
     const body = [
       "# >>> atmux:team=ghost — managed by atmux start; do not edit by hand",
       "*/5 * * * * ATMUX_DIR=/srv/ghost/.atmux /bin/atmux whip",
@@ -1140,17 +1147,10 @@ describe("checkCronOrphans", () => {
       crontab: fakeIO(body),
       dirExists: async () => false,
     });
-    expect(rows.length).toBe(1);
-    const r = rows[0];
-    expect(r?.status).toBe("yellow");
-    expect(r?.label).toBe("cron-config");
-    expect(r?.detail).toContain("ghost");
-    expect(r?.detail).toContain("/srv/ghost/.atmux");
-    expect(r?.detail).toContain("does not exist");
-    expect(r?.hint).toContain("crontab -e");
+    expect(rows).toEqual([]);
   });
 
-  test.skip("(ADR-233 retired) mix of live + orphan blocks → only orphans surface", async () => {
+  test("(ADR-233) mix of live + orphan-looking blocks → no rows (shim returns [])", async () => {
     const body = [
       "# >>> atmux:team=alpha — managed by atmux start; do not edit by hand",
       "*/5 * * * * ATMUX_DIR=/srv/alpha/.atmux /bin/atmux whip",
@@ -1164,9 +1164,7 @@ describe("checkCronOrphans", () => {
       crontab: fakeIO(body),
       dirExists: async (p: string) => live.has(p),
     });
-    expect(rows.length).toBe(1);
-    expect(rows[0]?.detail).toContain("ghost");
-    expect(rows[0]?.detail).not.toContain("alpha");
+    expect(rows).toEqual([]);
   });
 });
 
