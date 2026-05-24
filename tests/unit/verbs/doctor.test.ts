@@ -1083,6 +1083,14 @@ describe("checkCronIntervalDivisors", () => {
 });
 
 // ---------- ADR-083 follow-up §DEFERRED row 2: checkCronOrphans ----------
+//
+// Post-ADR-233 the underlying `findCronOrphans` is a no-op shim that
+// always returns `[]` (cron auto-install retired; orchd is the runtime).
+// The orphan-detection paths below exercise the pre-ADR-233 behavior
+// and are kept here as `.skip` for the deprecation window — once the
+// cron-shim modules are deleted in cleanup-EPIC, this whole block goes.
+// The non-skipped subset (PATH-absent / empty-crontab / all-live) stays
+// runnable because those branches still return `[]` either way.
 
 describe("checkCronOrphans", () => {
   const fakeIO = (body: string | null, opts: { available?: boolean } = {}): CrontabIO => ({
@@ -1122,7 +1130,7 @@ describe("checkCronOrphans", () => {
     expect(rows).toEqual([]);
   });
 
-  test("orphan block (atmuxDir gone) → one yellow row with team+dir", async () => {
+  test.skip("(ADR-233 retired) orphan block (atmuxDir gone) → one yellow row with team+dir", async () => {
     const body = [
       "# >>> atmux:team=ghost — managed by atmux start; do not edit by hand",
       "*/5 * * * * ATMUX_DIR=/srv/ghost/.atmux /bin/atmux whip",
@@ -1142,7 +1150,7 @@ describe("checkCronOrphans", () => {
     expect(r?.hint).toContain("crontab -e");
   });
 
-  test("mix of live + orphan blocks → only orphans surface", async () => {
+  test.skip("(ADR-233 retired) mix of live + orphan blocks → only orphans surface", async () => {
     const body = [
       "# >>> atmux:team=alpha — managed by atmux start; do not edit by hand",
       "*/5 * * * * ATMUX_DIR=/srv/alpha/.atmux /bin/atmux whip",
