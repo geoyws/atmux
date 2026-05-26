@@ -156,8 +156,15 @@ export function defaultDiscoveryIO(): DiscoveryIO {
         for (const line of r.stdout.split("\n")) {
           const trimmed = line.trim();
           if (trimmed.length === 0) continue;
-          const eid = trimmed.slice(`${base}-epic-`.length);
-          if (eid.length === 0) continue;
+          const tail = trimmed.slice(`${base}-epic-`.length);
+          if (tail.length === 0) continue;
+          // Reconstruct epicId. Post-2026-05-26 double-e fix: new
+          // branches emit `<base>-epic-<id-without-e-prefix>` so we
+          // re-add the `e-` to recover the canonical epicId. Legacy
+          // branches emitted as `<base>-epic-e-<id>` (double-e form);
+          // their `tail` already starts with `e-` so we keep it
+          // verbatim. Back-compat for the migration window.
+          const eid = tail.startsWith("e-") ? tail : `e-${tail}`;
           out.push({ parent: parentName, branch: trimmed, eid });
         }
         return out;

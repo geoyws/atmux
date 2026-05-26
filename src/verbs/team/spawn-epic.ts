@@ -19,7 +19,9 @@
 //   2. Resolve parent via cockpit walk. Refuses if parent team not
 //      registered in `~/.atmux/cockpit.json::sessions[]`.
 //   3. Compute paths: epicRoot = `<parentRoot>-epics/<epicId>`;
-//      branch = `<parentBase>-epic-<epicId>`; cage tmpdir =
+//      branch = `<parentBase>-epic-<epicIdNoPrefix>` (post-2026-05-26
+//      double-e fix: epicId's leading `e-` stripped before
+//      interpolation to avoid `epic-e-` redundancy); cage tmpdir =
 //      `/tmp/atmux-<parentTeam>/epics/<epicId>` (ADR-089 §Pillar 1).
 //   4. Resolve roster: --roster-file > --roster > default. Mutually
 //      exclusive (per ADR-090 §Decision-anchor #4) — refuse if both
@@ -560,11 +562,17 @@ export async function spawnEpic(
   // 3. Compute paths.
   const epicsDir = `${parentRoot}-epics`;
   const epicRoot = join(epicsDir, parsed.epicId);
-  // ADR-090 §Disk layout: branch = `<parentBase>-epic-<epicId>`.
-  // The parent's current HEAD is the operator-declared default base;
-  // --parent-base lets the operator pin a different one.
+  // ADR-090 §Disk layout (§Amendment 2026-05-26 — double-e fix):
+  // branch = `<parentBase>-epic-<epicIdNoPrefix>`. The epicId carries
+  // its own `e-` prefix (e.g. `e-21-6593dd0f`); the literal `epic-`
+  // token already names the branch class, so we strip the `e-` to
+  // avoid producing `epic-e-21-...` (the "double-e" form). Legacy
+  // branches emitted before this amendment kept the double-e form;
+  // the topo-io.ts parser carries a back-compat fallback during the
+  // migration window.
   const parentBase = parsed.parentBase ?? (await currentBranch(parentRoot, git));
-  const epicBranch = `${parentBase}-epic-${parsed.epicId}`;
+  const epicIdForBranch = parsed.epicId.replace(/^e-/, "");
+  const epicBranch = `${parentBase}-epic-${epicIdForBranch}`;
 
   // Refuse if the epic-team is already spawned (the worktree exists).
   // Operators who want to re-spawn must dissolve-epic first.

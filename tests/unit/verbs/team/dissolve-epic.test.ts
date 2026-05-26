@@ -584,9 +584,12 @@ describe("deleteMergedEpicBranch — merged-branch reaper", () => {
     });
     expect(warns).toEqual([]);
     expect(logs).toEqual([]);
-    // Only the show-ref probe should have fired.
-    expect(argvSeen).toHaveLength(1);
+    // Post-2026-05-26 double-e fix: probes BOTH the new (`<base>-epic-<id-without-e-prefix>`)
+    // and legacy (`<base>-epic-<id>`) branch shapes; both probe before
+    // bail. ADR-090 §Disk layout amendment back-compat window.
+    expect(argvSeen).toHaveLength(2);
     expect(argvSeen[0]).toContain("show-ref");
+    expect(argvSeen[1]).toContain("show-ref");
   });
 
   test("branch present + merged → git branch -D + green log", async () => {
@@ -610,7 +613,7 @@ describe("deleteMergedEpicBranch — merged-branch reaper", () => {
     });
     expect(warns).toEqual([]);
     expect(logs.some((m) => m.includes("deleted merged branch"))).toBe(true);
-    expect(logs.some((m) => m.includes("main-epic-e-1"))).toBe(true);
+    expect(logs.some((m) => m.includes("main-epic-1"))).toBe(true);
     // show-ref + merge-base + branch -D = 3 git calls
     expect(argvSeen).toHaveLength(3);
   });
@@ -638,7 +641,7 @@ describe("deleteMergedEpicBranch — merged-branch reaper", () => {
     expect(warns).toHaveLength(1);
     expect(warns[0]).toContain("unmerged commits");
     expect(warns[0]).toContain("git -C");
-    expect(warns[0]).toContain("branch -D main-epic-e-1");
+    expect(warns[0]).toContain("branch -D main-epic-1");
     expect(logs).toEqual([]);
   });
 

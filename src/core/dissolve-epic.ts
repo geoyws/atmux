@@ -511,23 +511,35 @@ export async function deleteMergedEpicBranch(deps: {
   git: GitSpawn;
   logger: { log: (m: string) => void; warn: (m: string) => void };
 }): Promise<void> {
-  const branch = `${deps.parentBase}-epic-${deps.epicId}`;
+  // Post-2026-05-26 double-e fix (ADR-090 §Disk layout amendment):
+  // new branches emit `<base>-epic-<id-without-e-prefix>`; legacy
+  // pre-fix branches kept the `<base>-epic-e-<id>` form. Probe both
+  // and use whichever exists on disk.
+  const epicIdStripped = deps.epicId.replace(/^e-/, "");
+  const branchNew = `${deps.parentBase}-epic-${epicIdStripped}`;
+  const branchLegacy = `${deps.parentBase}-epic-${deps.epicId}`;
 
-  // Probe — does the branch exist at all? Uses `git -C <root>` so the
-  // command targets the parent repo regardless of the caller's cwd.
-  let branchExists = false;
-  try {
-    const r = await deps.git([
-      "-C",
-      deps.parentRoot,
-      "show-ref",
-      "--verify",
-      "--quiet",
-      `refs/heads/${branch}`,
-    ]);
-    branchExists = r.exitCode === 0;
-  } catch {
-    branchExists = false;
+  async function probeRef(b: string): Promise<boolean> {
+    try {
+      const r = await deps.git([
+        "-C",
+        deps.parentRoot,
+        "show-ref",
+        "--verify",
+        "--quiet",
+        `refs/heads/${b}`,
+      ]);
+      return r.exitCode === 0;
+    } catch {
+      return false;
+    }
+  }
+
+  let branch = branchNew;
+  let branchExists = await probeRef(branchNew);
+  if (!branchExists) {
+    branchExists = await probeRef(branchLegacy);
+    if (branchExists) branch = branchLegacy;
   }
   if (!branchExists) return;
 

@@ -158,7 +158,18 @@ Both schemas stay `.passthrough()` per their existing pattern (read-permissive f
     apps/*, packages/*                          # submodules (init'd at spawn via ADR-088 primitive)
 ```
 
-Worktree branch is **`<parent-base>-epic-<epicId>`** (e.g. `sopx-geoyws-epic-e-1a2b3c4d`). The branch name is structurally distinct from the per-member-branch namespace (`<base>-<member>` for normal teams) — no collision class exists.
+Worktree branch is **`<parent-base>-epic-<epicIdNoPrefix>`** where `<epicIdNoPrefix>` is `<epicId>` with its leading `e-` scope-prefix stripped (e.g. `sopx-geoyws-epic-1a2b3c4d` for `epicId = e-1a2b3c4d`, or `sopx-geoyws-epic-21-6593dd0f` for `epicId = e-21-6593dd0f`). The branch name is structurally distinct from the per-member-branch namespace (`<base>-<member>` for normal teams) — no collision class exists.
+
+#### §Amendment 2026-05-26 — double-e fix
+
+Pre-amendment, the branch token was built as `<parent-base>-epic-<epicId>` (epicId interpolated verbatim with its leading `e-` prefix), yielding redundant forms like `sopx-geoyws-epic-e-1a2b3c4d` — a visible "double-e" the operator surfaced 2026-05-26. The amendment strips the leading `e-` from epicId before interpolating into the branch token; the literal `epic-` already names the branch class.
+
+**Back-compat parser window.** Branches emitted before this amendment carry the old `<base>-epic-e-<id>` form. Three readers cover both shapes:
+- `src/verbs/topo-io.ts::listEpicBranches` parser back-compat: `const eid = tail.startsWith("e-") ? tail : "e-" + tail;` — reconstructs the canonical epicId regardless of branch shape.
+- `src/core/dissolve-epic.ts::deleteMergedEpicBranch` probes both `branchNew` and `branchLegacy` shapes before bailing.
+- `src/verbs/migrate-hex-ids.ts::renameGitBranches` attempts the new shape first, falls back to the legacy shape, so the migrate verb still renames pre-amendment legacy branches into the new compound form.
+
+Live worktrees carrying the old shape are migrated via `git branch -m <old> <new>` in the same commit as this amendment (atmux team: `e-21-6593dd0f` / `e-22-4d6af038` / `e-23-0f71512b`); fleet-wide migration of other teams' stragglers is operator-paced.
 
 Cage tmpdir at **`/tmp/atmux-<parent>/epics/<epicId>/sock`** (per ADR-089 §Pillar 1). Parent cage cleanup tears down children naturally; `ls /tmp/atmux-<parent>/epics/` gives an at-a-glance view of all live child cages.
 
