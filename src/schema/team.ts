@@ -1371,6 +1371,39 @@ export const Team = z
       .strict()
       .nullable()
       .optional(),
+    /** ADR-239 §D7 + §A5 (amended 2026-05-26) — declarative driver roster.
+     *
+     *  When present + non-empty, supersedes the legacy `driverSession` /
+     *  `driverTui` fields and drives `atmux start`'s driver-spawn loop
+     *  per ADR-239 §A1. Operator-interactive ONLY — no send-keys EVER
+     *  (ADR-239 §D2), no pre-prompts / briefs (ADR-239 §D5 + §A3).
+     *
+     *  Conventions enforced at spawn time (not by schema):
+     *    - `drivers[0].name` SHOULD be `"driver"` (the trunk-worktree
+     *      driver; original singular driver under the legacy model);
+     *    - `drivers[N].name` for N>=1 SHOULD be `"driver-2"` … `"driver-N"`;
+     *    - `cwd` for `driver` defaults to `"."` (team root, trunk branch);
+     *    - `cwd` for `driver-N` (N>=2) is conventionally
+     *      `.atmux/worktrees/driver-N` and the spawn loop provisions a
+     *      worktree there on `<base>-driver-N` if missing.
+     *
+     *  Cap of 10 per ADR-239 §A4 OQ1-resolution — teams that legitimately
+     *  need more concurrent driver panes should cite a follow-up ADR
+     *  raising the cap, not silently exceed it. */
+    drivers: z
+      .array(
+        z
+          .object({
+            name: z.string().min(1),
+            tui: z.string().min(1),
+            cwd: z.string().min(1),
+            claudeAccount: z.string().optional(),
+          })
+          .passthrough(),
+      )
+      .min(1)
+      .max(10)
+      .optional(),
     /** Member roster. Order is preserved (window layout depends on it). */
     members: z.array(TeamMember),
     emojis: TeamEmojis.optional(),

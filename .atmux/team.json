@@ -54,15 +54,6 @@
       "cwd": "/root/work/src/atmux",
       "emoji": "🌿",
       "claudeAccount": "proton"
-    },
-    {
-      "name": "ombudsman",
-      "role": "ombudsman",
-      "tui": "claude",
-      "model": "default",
-      "cwd": "/root/work/src/atmux",
-      "emoji": "⚖️",
-      "claudeAccount": "proton"
     }
   ],
   "emojis": {
@@ -119,13 +110,49 @@
     "maxMergesPerHour": null
   },
   "ombudsman": {
-    "enabled": true,
+    "enabled": false,
     "tickIntervalMins": 15
   },
   "tuiCommands": {
     "_comment": "Per-team TUI launch aliases. If set, the prefix here replaces the built-in default for that TUI type.",
     "claude": "CLAUDE_CONFIG_DIR=/root/.claude-proton CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=xhigh CLAUDE_GUARD_AGENT=1 claude --plugin-dir=/root/work/journals/.sb/claude-skills --permission-mode auto"
   },
+  "_comment_members": "ADR-239 §A2 (2026-05-26): strict 5-name roster — keep only members named {lead, planner, docs, reviewer, gitter}. Ombudsman removed in the 2026-05-26 sweep; team-level `ombudsman` config block disabled below.",
+  "_comment_ombudsman_removed": "ADR-239 §A2 (2026-05-26): ombudsman member removed; this config block disabled in the same sweep. Keep the structural placeholder so a future re-enable is a single-edit flip (set enabled:true + re-add member to members[] above).",
+  "_comment_drivers": "ADR-239 §A1 (amended 2026-05-26): 5-driver floor per parent team. Drivers are operator-interactive only — atmux NEVER sends keystrokes to driver panes (no claim-next, no whip poke, no brief paste, no pre-prompt). Each driver-N (N>=2) on its own worktree + long-lived branch (atmux-geoyws-driver-2 … atmux-geoyws-driver-5). driver (the original) stays on atmux-geoyws (trunk). Operator merges trunk into driver-N branches at their discretion. Windows grouped at front (1-5) per D3.",
+  "drivers": [
+    {
+      "name": "driver",
+      "tui": "claude",
+      "cwd": ".",
+      "claudeAccount": "proton"
+    },
+    {
+      "name": "driver-2",
+      "tui": "claude",
+      "cwd": ".atmux/worktrees/driver-2",
+      "claudeAccount": "proton"
+    },
+    {
+      "name": "driver-3",
+      "tui": "claude",
+      "cwd": ".atmux/worktrees/driver-3",
+      "claudeAccount": "proton"
+    },
+    {
+      "name": "driver-4",
+      "tui": "claude",
+      "cwd": ".atmux/worktrees/driver-4",
+      "claudeAccount": "proton"
+    },
+    {
+      "name": "driver-5",
+      "tui": "claude",
+      "cwd": ".atmux/worktrees/driver-5",
+      "claudeAccount": "proton"
+    }
+  ],
   "bareWindowNames": true,
-  "claudeAccount": "proton"
+  "claudeAccount": "proton",
+  "spawnConcurrency": 32
 }

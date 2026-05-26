@@ -132,6 +132,12 @@ import {
   stateDir,
   teamJsonPath,
 } from "../core/common.ts";
+import {
+  type DriverSession,
+  isTrunkDriver,
+  resolveDriverCwd,
+  resolveDriversList,
+} from "../core/drivers.ts";
 import { injectGoalIfActive } from "../core/goal-injection.ts";
 import { submitAfterPaste } from "../core/paste-submit.ts";
 import { maybeSpawnOrchdWindow } from "../core/orchd-window.ts";
@@ -437,73 +443,141 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   const homeWin = `__${team.name}__home`;
   const stillExists = sessionExisted && !parsed.force;
   const projectRoot = dirname(dir);
-  const driverSession = (team as { driverSession?: { tui?: string | null } | null }).driverSession;
-  const driverSessionConfigured = driverSession !== undefined && driverSession !== null;
+  // ADR-239 §A1 + §A5 — resolve the declarative driver roster. Falls back
+  // to a single-element list synthesized from the legacy `driverSession`
+  // / `driverTui` fields (ADR-239 §D7 deprecation window).
+  const drivers = resolveDriversList(team as Parameters<typeof resolveDriversList>[0]);
   let driverInitial = false;
   if (!stillExists) {
-    if (driverSessionConfigured) {
-      // Resolve the driver TUI: driverSession.tui → driverTui → "claude".
-      // Match bash precedence (lib/start.sh:193): the first non-null,
-      // non-empty string wins.
-      const legacyDriverTui = (team as { driverTui?: string | null }).driverTui;
-      const drvTuiRaw =
-        (driverSession?.tui !== undefined && driverSession.tui !== null
-          ? driverSession.tui
-          : undefined) ??
-        (legacyDriverTui !== undefined && legacyDriverTui !== null ? legacyDriverTui : undefined) ??
-        "claude";
-      const drvTui = drvTuiRaw.length > 0 ? drvTuiRaw : "claude";
-      const drvCwd = projectRoot;
-      // Synthetic member shape for the resolver — driver isn't in
-      // team.members[], so build the minimal entry tui-cmd needs.
-      // `model: "default"` mirrors lib/start.sh:197's positional arg.
-      const synthDriver = {
-        name: "driver",
-        role: "driver",
-        tui: drvTui,
-        model: "default",
-        cwd: drvCwd,
-      } as const;
-      let drvCmd: string | undefined;
-      try {
-        drvCmd = resolveTuiCommand(synthDriver, team, { env, cwd: drvCwd });
-      } catch (err) {
-        // Match bash fallthrough (lib/start.sh:206): warn and degrade to
-        // the __home placeholder rather than blocking session creation.
+    if (drivers.length > 0) {
+      // ---------- ADR-239 §A1/§A5 driver-spawn loop ----------
+      //
+      // Each driver pane launches via tmux command-mode (shellCommand on
+      // new-session for the first driver, new-window for the rest). NEVER
+      // routes through pane.sendKeys — ADR-239 §D2 no-send-keys-EVER
+      // invariant is satisfied at spawn time by construction.
+      //
+      // Worktree provisioning for driver-N (N>=2) happens inline: the cwd
+      // convention `.atmux/worktrees/driver-N` triggers a provisionWorktree
+      // call against `<base>-driver-N` off `origin/<base>` (ADR-082/-084
+      // pattern, mirrored from the member-worktree loop below).
+      const gitSpawn = opts.gitSpawn ?? defaultGitSpawn;
+      const rootR = await gitSpawn(["-C", projectRoot, "rev-parse", "--show-toplevel"]);
+      const branchR = await gitSpawn(["-C", projectRoot, "branch", "--show-current"]);
+      const repoPath = rootR.exitCode === 0 ? rootR.stdout.trim() : projectRoot;
+      const baseBranch = branchR.exitCode === 0 ? branchR.stdout.trim() : "";
+      // Worktree provisioning fails closed: an empty baseBranch (detached
+      // HEAD) or non-zero git rev-parse means driver-N panes land on the
+      // shared trunk path instead of an isolated worktree. Logged once.
+      let canProvisionDriverWorktrees = baseBranch.length > 0 && rootR.exitCode === 0;
+      if (!canProvisionDriverWorktrees && drivers.some((d) => !isTrunkDriver(d))) {
         logger.warn(
-          `driver-initial: could not resolve command for tui='${drvTui}' — falling back to __home placeholder (${err instanceof Error ? err.message : String(err)})`,
+          "driver worktree: cannot detect repo root or base branch — driver-N panes will land on the shared trunk cwd (fix git state to re-enable per-driver worktrees)",
         );
       }
-      if (drvCmd !== undefined) {
-        await tmux.session.newSession({
-          name: session,
-          windowName: "driver",
-          cwd: drvCwd,
-        });
-        // Shell-only TUIs (`shell|bash|zsh`) skip send-keys for the same
-        // reason member spawn does (step 8 below): the pane already starts
-        // in `$SHELL`, and `exec $SHELL` re-execs for no observable
-        // benefit. Real TUIs (claude/opencode/etc.) get the launch via
-        // send-keys so the pane stays a shell when the TUI exits.
-        const driverIsShellOnly = drvTui === "shell" || drvTui === "bash" || drvTui === "zsh";
-        if (!driverIsShellOnly) {
-          // newSession returns void — target the freshly-created driver
-          // window by its `<session>:driver` string (Target's string form,
-          // serializeTarget pass-through). The window-name is unique
-          // because it's the only window in the session at this point.
-          await tmux.pane.sendKeys({
-            target: {
-              kind: "member",
-              member: "driver",
-              team: team.name,
-              target: `${session}:driver`,
-            },
-            keys: drvCmd,
-            enter: true,
-          });
+
+      // ADR-239 §A5 — command-mode launch: the resolved TUI cmd runs as
+      // the pane's PID 0. To preserve the "pane stays a usable shell
+      // after the TUI exits" property that the legacy send-keys path
+      // gave for free, non-shell TUIs are wrapped with `sh -c '<cmd>;
+      // exec $SHELL -i'` so the pane drops back to an interactive shell
+      // when the TUI quits. Shell-kind TUIs already ARE a shell — no
+      // wrap (and no command at all; the pane starts in $SHELL by
+      // default per tmux's new-session/new-window semantics).
+      const isShellOnlyTui = (tui: string): boolean =>
+        tui === "shell" || tui === "bash" || tui === "zsh";
+
+      const wrapForShellFallback = (cmd: string): string =>
+        `sh -c ${JSON.stringify(`${cmd}; exec $SHELL -i`)}`;
+
+      const resolveCmd = (drv: DriverSession, cwd: string): string | undefined => {
+        if (isShellOnlyTui(drv.tui)) return undefined;
+        const synth = {
+          name: drv.name,
+          role: "driver",
+          tui: drv.tui,
+          model: "default",
+          cwd,
+          ...(drv.claudeAccount !== undefined ? { claudeAccount: drv.claudeAccount } : {}),
+        };
+        try {
+          const raw = resolveTuiCommand(synth, team, { env, cwd });
+          return wrapForShellFallback(raw);
+        } catch (err) {
+          logger.warn(
+            `driver ${drv.name}: could not resolve command for tui='${drv.tui}' — pane will land in shell (${err instanceof Error ? err.message : String(err)})`,
+          );
+          return undefined;
         }
-        logger.ok(`created tmux session: ${session} (driver at window 1, ${drvTui})`);
+      };
+
+      const ensureDriverWorktree = async (
+        drv: DriverSession,
+        configuredCwd: string,
+      ): Promise<string> => {
+        if (isTrunkDriver(drv) || !canProvisionDriverWorktrees) return configuredCwd;
+        // Per ADR-239 §A1 worktree path: `.atmux/worktrees/driver-N`.
+        // We resolve against the worktree config (DEFAULT_WORKTREE_ROOT
+        // = ".atmux/worktrees") rather than honoring an arbitrary cwd —
+        // operators who diverge from the convention get the explicit
+        // cwd back, no provisioning fired.
+        const conventionalCwd = join(projectRoot, ".atmux", "worktrees", drv.name);
+        if (configuredCwd !== conventionalCwd) return configuredCwd;
+        const wtBranch = `${baseBranch}-${drv.name}`;
+        try {
+          const r = await provisionWorktree(repoPath, baseBranch, wtBranch, conventionalCwd, {
+            git: gitSpawn,
+            ...(team.worktreeInitSubmodules === true ? { initSubmodules: true } : {}),
+          });
+          logger.log(
+            `  · driver worktree ${r.created ? "created" : "reused"}: ${drv.name} → ${conventionalCwd} [${wtBranch}]`,
+          );
+          return conventionalCwd;
+        } catch (err) {
+          logger.warn(
+            `driver worktree: ${drv.name} provision failed — falling back to shared trunk cwd (${err instanceof Error ? err.message : String(err)})`,
+          );
+          canProvisionDriverWorktrees = false;
+          return projectRoot;
+        }
+      };
+
+      // First driver creates the session (window 1). Subsequent drivers
+      // attach as windows 2..N. Window order is driver-N at slots 1..N
+      // per ADR-239 §D3; members follow at N+1.
+      const firstDriver = drivers[0];
+      if (firstDriver !== undefined) {
+        const firstCwd0 = resolveDriverCwd(firstDriver, projectRoot);
+        const firstCwd = await ensureDriverWorktree(firstDriver, firstCwd0);
+        const firstCmd = resolveCmd(firstDriver, firstCwd);
+        const newSessionOpts: Parameters<typeof tmux.session.newSession>[0] = {
+          name: session,
+          windowName: firstDriver.name,
+          cwd: firstCwd,
+        };
+        if (firstCmd !== undefined) newSessionOpts.shellCommand = firstCmd;
+        await tmux.session.newSession(newSessionOpts);
+        logger.ok(
+          `created tmux session: ${session} (${firstDriver.name} at window 1, ${firstDriver.tui})`,
+        );
         driverInitial = true;
+      }
+
+      for (let i = 1; i < drivers.length; i++) {
+        const drv = drivers[i];
+        if (drv === undefined) continue;
+        const cwd0 = resolveDriverCwd(drv, projectRoot);
+        const cwd = await ensureDriverWorktree(drv, cwd0);
+        const cmd = resolveCmd(drv, cwd);
+        const newWindowOpts: Parameters<typeof tmux.window.newWindow>[0] = {
+          sessionName: session,
+          name: drv.name,
+          cwd,
+          detached: true,
+        };
+        if (cmd !== undefined) newWindowOpts.shellCommand = cmd;
+        await tmux.window.newWindow(newWindowOpts);
+        logger.log(`  · driver pane: ${drv.name} at window ${i + 1} (${drv.tui}) cwd=${cwd}`);
       }
     }
     if (!driverInitial) {
@@ -899,10 +973,17 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   //
   //     Idempotent: skipped when the supervisor window already exists
   //     (e.g. `atmux start` re-run on an already-up team).
+  // `dir` is the `.atmux/` directory (per getAtmuxDir contract,
+  // common.ts:58 — "Resolve the .atmux/ directory path"). orchd-window
+  // expects the PROJECT ROOT (parent of .atmux/) so its supervisor's
+  // `mkdir -p .atmux/logs` + `atmux-orchd .atmux/state.db` relative
+  // paths resolve correctly. Pass dirname(dir) — orchd-window self-heals
+  // anyway via resolveCanonicalTeamRoot, but passing the right thing
+  // here avoids the heal-path log noise.
   await maybeSpawnOrchdWindow({
     team,
     session,
-    teamRoot: dir,
+    teamRoot: dirname(dir),
     tmux,
     logger,
     env,

@@ -718,10 +718,13 @@ describe("start — ADR-044 driverSession topology", () => {
     expect(wins.map((w) => w.name)).toEqual([`__${env.team}__home`]);
   });
 
-  test("unknown tui: falls back to __home with a warn log", async () => {
-    // resolveTuiCommand throws UsageError on an unknown tui kind not
-    // registered in tuiCommands. Parity with bash's `falling back to
-    // __home placeholder` warn at lib/start.sh:206.
+  test("unknown tui: driver window still created, warn surfaces, pane lands in shell", async () => {
+    // ADR-239 §A1 (amended 2026-05-26) behavior change vs original
+    // ADR-044: when resolveTuiCommand throws on an unknown tui, the
+    // driver window IS still created (cwd + name), but with NO
+    // shellCommand — the pane lands in the default $SHELL. Operator
+    // can launch the TUI manually. This is the same fall-through as
+    // shell-kind TUIs (no command, just a shell pane).
     await writeTeamJson({
       members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
       driverSession: { tui: "this-tui-does-not-exist-anywhere" },
@@ -731,16 +734,19 @@ describe("start — ADR-044 driverSession topology", () => {
     expect(exit).toBe(0);
 
     const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
-    expect(wins.some((w) => w.name === "driver")).toBe(false);
-    // Warn line surfaces the fall-through reason for operator
-    // observability — they need to know why their driverSession opt-in
-    // didn't take effect.
+    // Driver window IS present — the resolve-failure does NOT block
+    // session creation under ADR-239 §A1.
+    expect(wins.some((w) => w.name === "driver")).toBe(true);
+    // No __home placeholder either — driver creates the session.
+    expect(wins.some((w) => w.name === `__${env.team}__home`)).toBe(false);
+    // Warn line surfaces the resolve-failure reason for operator
+    // observability.
     expect(
       env.logs.some(
         (l) =>
           l.kind === "warn" &&
-          l.msg.includes("driver-initial") &&
-          l.msg.includes("__home placeholder"),
+          l.msg.includes("driver") &&
+          l.msg.includes("could not resolve command"),
       ),
     ).toBe(true);
   });
@@ -797,10 +803,14 @@ describe("start — ADR-044 driverSession topology", () => {
     expect(wins.map((w) => w.name)).toContain("🧭_alpha");
   });
 
-  test("non-shell tui: send-keys fires after newSession (no shell-only skip)", async () => {
-    // Use team.tuiCommands to register a fake tui that resolves to a
-    // benign no-op — exercises the driver send-keys branch (the
-    // non-shell-only path) without actually launching a real TUI binary.
+  test("non-shell tui: shellCommand-mode launch keeps the pane alive after TUI exits (ADR-239 §A5 wrap)", async () => {
+    // Under ADR-239 §A5 the legacy send-keys-after-newSession path is
+    // GONE — replaced with shellCommand-mode launch on `tmux new-session`.
+    // For non-shell TUIs the resolved cmd is wrapped via
+    // `sh -c '<cmd>; exec $SHELL -i'` so the pane drops to an
+    // interactive shell when the TUI exits (otherwise the pane would
+    // die when `true` returns, killing the session before members can
+    // attach).
     const body = {
       name: env.team,
       members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
@@ -823,6 +833,9 @@ describe("start — ADR-044 driverSession topology", () => {
           l.kind === "ok" && l.msg.includes("driver at window 1") && l.msg.includes("fake-driver"),
       ),
     ).toBe(true);
+    // Member window also survived — proves the driver pane didn't die
+    // and take the session with it (the wrap kept the shell alive).
+    expect(wins.map((w) => w.name)).toContain("🧭_alpha");
   });
 
   test("--force with driverSession: driver-initial path runs after kill", async () => {
