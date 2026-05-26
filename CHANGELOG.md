@@ -38,7 +38,7 @@ First half of the vendored-tmux ship — the source-side resolution chain lands 
 - **Doctor probe** `checkVendoredTmuxBinary` (src/verbs/doctor.ts): yellow row `vendored-tmux-missing` when `/opt/atmux/current/bin/tmux` is absent (operators see the fallback signal explicitly) + `vendored-tmux-version-drift` when present-but-not-3.6a. Self-clearing post-install. 7 unit tests cover all branches.
 - **Operator-facing**: `ATMUX_TMUX_BIN` documented in README §Configuration. Build:install pipeline extension (DoD #1) lands separately — gated on operator/driver authorization since it sudo-touches `/opt/atmux/` on live deploys.
 
-Cross-refs: [ADR-191](docs/adr/191-vendored-tmux-binary.md) §Implementation status (this commit), [ADR-162](docs/adr/162-cockpit-socket-isolation.md) (complementary tmux-infra ownership), [ADR-163](docs/adr/163-bundled-tmux-3.6a.md) (pin reference).
+Cross-refs: [ADR-191](docs/adr/191-vendored-tmux-binary.md) §Implementation status (this commit), [ADR-162](docs/adr/162-atmux-owns-tmux-infrastructure.md) (complementary tmux-infra ownership), [ADR-163](docs/adr/163-bundled-tmux-binary.md) (pin reference).
 ### ✨ Added — orchd Phase 2: auto-spawn loop + solo-worker auto-dissolve ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md), EPIC `e-60e16169` Story S3, t-18-b2ca7178)
 
 orchd Phase 2 wires three handlers on top of Phase 1's subscription seam ([ADR-224 §D6](docs/adr/224-orchd-rename-and-auto-spawn-loop.md)):
