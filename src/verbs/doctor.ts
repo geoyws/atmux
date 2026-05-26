@@ -52,6 +52,7 @@ import {
 import { type LoadedCockpit, loadCockpit, resolveCageSessionName } from "../core/cockpit.ts";
 import {
   buildWindowName,
+  buildWindowName,
   buildWindowNameLegacy,
   defaultEmojiForRole,
   driverInboxPath,
@@ -3367,7 +3368,13 @@ async function fixStarvingMembers(
       continue;
     }
     const emoji = member.emoji ?? defaultEmojiForRole(member.role ?? "member");
-    const windowName = `${emoji}${member.name}`;
+    // Use the spawn-side window-name builder so re-paste targets the same
+    // window names start.ts created — honours ADR-135 (hyphen) for
+    // user-added members AND ADR-161 (`_`-prefix) for default-member roles
+    // (team-lead/planner/reviewer/ombudsman). The legacy `${emoji}${name}`
+    // shape predated both ADRs and silently no-ops on every modern team.
+    const memberLabel = (member as { label?: string }).label;
+    const windowName = buildWindowName(member.name, emoji, memberLabel, member.role);
     const target = `${sessionName}:${windowName}`;
     const role = typeof member.role === "string" ? member.role : "member";
     const sendTarget =
