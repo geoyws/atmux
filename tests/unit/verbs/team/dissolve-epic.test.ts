@@ -15,14 +15,14 @@ import type { SpawnResult } from "../../../../src/abstractions/spawn.ts";
 import { closeDatabase, openDatabase } from "../../../../src/abstractions/sqlite.ts";
 import { migrations } from "../../../../src/abstractions/sqlite-migrations.ts";
 import type { TmuxNamespace } from "../../../../src/abstractions/tmux.ts";
+import type { Team as TeamShape } from "../../../../src/schema/team.ts";
 import {
+  type DissolveEpicOpts,
   defaultCageTeardown,
   deleteMergedEpicBranch,
-  type DissolveEpicOpts,
   dissolveEpic,
   parseDissolveEpicArgs,
 } from "../../../../src/verbs/team/dissolve-epic.ts";
-import type { Team as TeamShape } from "../../../../src/schema/team.ts";
 
 let scratch: string;
 let cockpitPath: string;
@@ -509,7 +509,7 @@ describe("defaultCageTeardown — production cage reap", () => {
     expect(calls).not.toContain("killSession");
   });
 
-  test("session name uses ADR-161 cage form 'atmux_<name>'", async () => {
+  test("session name uses cage form 'atmux-<name>' when no state/session.txt anchor", async () => {
     const seen: string[] = [];
     await defaultCageTeardown({
       epicRoot,
@@ -523,9 +523,11 @@ describe("defaultCageTeardown — production cage reap", () => {
         }),
       logger: { log: () => undefined, warn: () => undefined },
     });
-    // cageSessionName('e-1') === 'atmux_e-1'; killSession receives
-    // the `=` exact-match prefix.
-    expect(seen).toEqual(["=atmux_e-1"]);
+    // resolveCageSessionName({name:'e-1', root: epicRoot}) → 'atmux-e-1'
+    // (no anchor in epic root + non-"atmux" team → hyphen-form default,
+    // matching what start.ts creates via getSessionName fallback).
+    // killSession receives the `=` exact-match prefix.
+    expect(seen).toEqual(["=atmux-e-1"]);
   });
 
   test("default path: dissolve-epic with no softStopHook still kills cage", async () => {

@@ -13,7 +13,6 @@ import { z } from "zod";
 import { exists, readTextOrNull } from "../abstractions/fs.ts";
 import { readJson } from "../abstractions/json.ts";
 import { ConfigError, SchemaError } from "../errors.ts";
-import { sessionAnchorPath } from "./common.ts";
 import {
   Cockpit,
   type CockpitMedic,
@@ -23,6 +22,7 @@ import {
   type CockpitTeam,
   type TeamSessionT,
 } from "../schema/cockpit.ts";
+import { sessionAnchorPath } from "./common.ts";
 
 /** Output of `loadCockpit` — same as `Cockpit` but with the legacy
  *  back-compat fields (`teams`, `superdoctor`, `medic`)
@@ -1000,10 +1000,41 @@ export async function resolveCageSocket(
   return legacy;
 }
 
-/** Cage tmux session name. Special-case: the `atmux` team itself uses a
- *  bare `atmux` session (it's the canonical one); every other team uses
- *  `atmux_<name>`. Matches the historical bash convention so existing
- *  cockpit windows + `atmux attach` flows keep working. */
+/** Cage tmux session name — LEGACY synchronous fallback.
+ *
+ *  @deprecated Use {@link resolveCageSessionName} instead. The sync form
+ *  returns `atmux_<name>` which only matches reality for teams whose
+ *  `state/session.txt` anchor happens to be in the same form. For teams
+ *  with no anchor, `start.ts` creates a session named `atmux-<name>`
+ *  (hyphen, per `getSessionName` in common.ts) — the underscore form
+ *  here mismatches, causing cockpit retry-loops + doctor probes to fail
+ *  silently for any dash-bearing or fresh-start team. Kept here for
+ *  back-compat callers; new code MUST use the async resolver below. */
 export function cageSessionName(teamName: string): string {
   return teamName === "atmux" ? "atmux" : `atmux_${teamName}`;
+}
+
+/** Cage tmux session name — anchor-aware async resolver.
+ *
+ *  Resolution order (mirrors `common.ts::getSessionName`):
+ *    1. `<root>/.atmux/state/session.txt` anchor (when present)
+ *    2. Special-case: `team.name === "atmux"` → bare `"atmux"`
+ *    3. Default: `atmux-<name>` (hyphen — matches what `start.ts` creates
+ *       for any unanchored team via `getSessionName` fallback)
+ *
+ *  Use this from any cockpit / dissolve / doctor code path that needs
+ *  to target a cage's tmux session — `hasSession`, `send-keys`,
+ *  retry-loop attaches, etc. — so the name resolved here matches the
+ *  name `start.ts` actually creates. */
+export async function resolveCageSessionName(team: {
+  name: string;
+  root: string;
+}): Promise<string> {
+  const anchor = await readTextOrNull(sessionAnchorPath(join(team.root, ".atmux")));
+  if (anchor !== null) {
+    const trimmed = anchor.trim();
+    if (trimmed.length > 0) return trimmed;
+  }
+  if (team.name === "atmux") return "atmux";
+  return `atmux-${team.name}`;
 }
