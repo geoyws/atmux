@@ -67,6 +67,27 @@ export async function maybeSpawnOrchdWindow(
 ): Promise<boolean> {
   const { team, session, teamRoot, tmux, logger, env } = deps;
 
+  // Gate 0: BAN nested .atmux paths (t-62-df4e59bd + operator-direct
+  // 2026-05-26 "BAN nested .atmux please"). The supervisor's
+  // `mkdir -p .atmux/logs` + relative `.atmux/state.db` arg below
+  // assume pwd is the project root; if pwd is already inside .atmux/,
+  // those paths resolve to .atmux/.atmux/, creating a parallel state.db
+  // that no atmux verb queries. Operator's invariant: a nested
+  // .atmux/.atmux/ must be impossible by construction.
+  const normalizedTeamRoot = teamRoot.replace(/\/+$/, "");
+  if (
+    normalizedTeamRoot.endsWith("/.atmux") ||
+    normalizedTeamRoot.includes("/.atmux/.atmux")
+  ) {
+    logger.warn(
+      `orchd: refusing to spawn — teamRoot '${teamRoot}' is or contains a nested .atmux path. ` +
+        `Invoke atmux from the project root (the dir holding .atmux/team.json), ` +
+        `not from inside .atmux/. Worktrees share the parent team's kanban; ` +
+        `they MUST NOT have their own state.db (see t-62-df4e59bd).`,
+    );
+    return false;
+  }
+
   // Gate 1: autoMerge.enabled === true
   if (team.autoMerge?.enabled !== true) {
     return false;
