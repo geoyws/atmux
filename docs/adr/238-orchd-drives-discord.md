@@ -13,7 +13,7 @@
 - [ADR-202](202-honker-in-db-messaging-substrate.md) — Honker substrate. This ADR adds new event topics + consumer configs on top of the existing infrastructure.
 - [ADR-224](224-orchd-rename-and-auto-spawn-loop.md) — orchd's current consumer surface (`atmux:gitter` → `task.done`, `atmux:lane-router` → `task.unclaimed`). This ADR extends that consumer pattern to Discord-emission.
 - [ADR-233](233-cron-auto-install-disabled-trust-orchd.md) — cron retirement. The Bucket A2 verbs this ADR retires/migrates were cron-fired pre-ADR-233; without cron they have no auto-caller.
-- [ADR-236](236-three-tier-orchd-supervision.md) — superorchd's escalation Discord payload (`[orchd-supervision-failure]`) is a concrete consumer of this ADR's template registry.
+- [ADR-236](236-three-tier-orchd-supervision.SUPERSEDED.md) — superseded by [ADR-240](240-drop-superorchd-orchd-self-supervises.md). Originally proposed `[orchd-supervision-failure]` as a consumer of this ADR's template registry; ADR-240 dropped the superorchd binary that would have emitted it, so this template is NOT built. The template registry shape stays as-is — future external-supervision retrofits would slot into the same registry without ADR-238 changes.
 - [ADR-237](237-no-llm-discord-and-whip-removal.md) — sibling policy ADR. ADR-237 says "no LLM cadence in Discord"; this ADR says "ALL Discord emission goes through orchd, regardless of LLM-vs-deterministic origin". Together they specify the full Discord surface shape.
 - [ADR-068](068-bash-to-ts-cutover.md) — bash discorder cutover history; the `[whip-progress]` / `[whip-heartbeat]` template-name byte-parity decision this ADR finishes reversing per ADR-237 §D4.
 
@@ -67,7 +67,7 @@ enum ConsumerHandler {
 
 Per-topic Discord templates land in `rust/atmux-orchd/src/discord_templates.rs` (new file). Each template is:
 
-- A constant header string (`[heartbeat]`, `[progress]`, `[orchd-supervision-failure]`, `[refusal-detected]`, `[account-swap-completed]`, `[epic-merged]`, `[cockpit-rotated]`, etc.).
+- A constant header string (`[heartbeat]`, `[progress]`, `[refusal-detected]`, `[account-swap-completed]`, `[epic-merged]`, `[cockpit-rotated]`, etc.). (`[orchd-supervision-failure]` from the original ADR-236 §D3 sketch is NOT built — ADR-240 dropped superorchd; no caller emits the template.)
 - A `fn render(payload: &JsonValue, ctx: &TeamContext) -> String` body builder. Pure function, no I/O, deterministic output for identical inputs (essential for dedup correctness).
 
 The template-render function signature is shared across all templates so the dispatcher loop is uniform.
@@ -94,7 +94,7 @@ New SQLite table managed by orchd, schema-migration lands in `src/abstractions/s
 
 ```sql
 CREATE TABLE discord_dedup (
-  template TEXT NOT NULL,         -- e.g. "[orchd-supervision-failure]"
+  template TEXT NOT NULL,         -- e.g. "[refusal-detected]"
   dedup_key TEXT NOT NULL,        -- per-template + per-payload string
   first_sent_at_sec INTEGER NOT NULL,
   last_sent_at_sec INTEGER NOT NULL,
@@ -107,7 +107,7 @@ CREATE INDEX discord_dedup_last_sent ON discord_dedup(last_sent_at_sec);
 Dedup strategies (per-template, chosen in `DiscordTemplate::dedup_strategy()`):
 
 - `Always` — never dedup; send every time. For templates where each event is independently meaningful (epic-merged, cockpit-rotated).
-- `EpochBucket { seconds: u64 }` — dedup within a time bucket. `(template, dedup_key, floor(now/seconds))` is unique. Used by superorchd escalation (5-min bucket per ADR-236 §D3) to prevent ping storms.
+- `EpochBucket { seconds: u64 }` — dedup within a time bucket. `(template, dedup_key, floor(now/seconds))` is unique. Useful for any deterministic alert that fires from a recurring scan (e.g. refusal-detected within a 5-min bucket) so a wedged condition doesn't ping every scan. (Original ADR-236 §D3 superorchd-escalation use of this strategy is moot — ADR-240 dropped superorchd; no caller exists today.)
 - `OncePerPayload` — dedup forever on the exact payload-derived key. Used for events that should fire at most once for a given trigger (e.g. account-swap-success for a specific swap operation).
 
 The dedup check happens in Rust before the HTTP send; on dedup-hit, increment `send_count` + update `last_sent_at_sec` + skip the HTTP send. On dedup-miss, perform the HTTP send and insert the row.
@@ -120,10 +120,10 @@ For each Bucket A2 verb (was cron-fired, now uncalled post-cron-source removal),
 |---|---|---|
 | `atmux discorder progress` | orchd consumer on `task.done` + `epic.merged` topics → `[progress]` template emitted per batch (e.g. when ≥3 events accumulate OR 30 min elapsed since last emit, whichever first) | Operator-visible "what shipped" digest moves from cron-polled to event-batched. No cron, no LLM. |
 | `atmux discorder heartbeat` | orchd self-emit on `heartbeat.tick` cadence (default off; opt-in per team) | Operator-visible "team is alive" signal moves from cron-fired to orchd's own optional internal timer. |
-| `atmux watchdog` | DELETE | Whip-loop-detection was the use case; whip is gone (ADR-237 §D1). No event class needs separate watchdog after refusal-trigger + account-swap-failed + orchd-supervision-failed cover the operator-visible failure modes. |
+| `atmux watchdog` | DELETE | Whip-loop-detection was the use case; whip is gone (ADR-237 §D1). No event class needs separate watchdog after refusal-trigger + account-swap-failed cover the operator-visible failure modes. (Orchd-death falls outside the Discord-auto-ping path per ADR-240; operator notices via dead pane on cockpit-attach.) |
 | `atmux poke` (renamed from `whip`) | DELETE | Whip is gone. `poke` was the bash-side per-cycle worker; replaced by /goal + orchd subscribers. |
 | `atmux poke-resume-check` | DELETE | Same as poke. |
-| `atmux pulse` | DELETE | Cockpit-pulse role replaced by orchd's `heartbeat.tick` self-emit (D2 above) + superorchd's supervision-failure escalation (ADR-236 §D3). |
+| `atmux pulse` | DELETE | Cockpit-pulse role replaced by orchd's `heartbeat.tick` self-emit (D2 above). (Original justification also cited superorchd's supervision-failure escalation per ADR-236 §D3; ADR-240 dropped superorchd, so heartbeat-self-emit is now the sole replacement signal — orchd-death is operator-visible via the dead `__orchd__` pane on cockpit-attach.) |
 | `atmux report` | KEEP, manual only | Operator-fired one-shot report verb stays useful. Cron-fired path was the only auto-caller; now it's CLI-invokable when the operator wants a report. No Discord side effect by default. |
 | `atmux improve` | KEEP, manual only | Same as report. |
 

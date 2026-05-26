@@ -165,7 +165,7 @@
 | 191 | atmux ships its own vendored tmux binary — version-pinning + behavior isolation + reproducibility | 2026-05-20 | Accepted — ratified by driver 2026-05-21 (vendored tmux at /opt/atmux/<v>/bin/ |
 | 192 | Cron-idempotency contract for "arm a cadence" verbs | 2026-05-20 | Accepted — ratified by driver 2026-05-21 (every /Xloop / arm-a-cadence verb ru |
 | 193 | Restore documented `atmux task add` flags — `--epic` / `--story` / `--deliverable` | 2026-05-18 | proposed (deferred: task add `--epic`/`--story`/`--deliverable` flags rejected b |
-| 194 | auto-push targets the just-done SHA, not branch tip — shared-worktree race mitigation | 2026-05-20 | Accepted — ratified by driver 2026-05-21 (push just-done SHA not branch tip; � |
+| 194 | auto-push targets the just-done SHA, not branch tip — shared-worktree race mitigation | 2026-05-20 | Accepted — ratified by driver 2026-05-21 (push just-done SHA not branch tip; � |
 | 195 | epic-team EPIC-done — transfer follow-up Tasks to parent kanban before dissolve | 2026-05-20 | Accepted — ratified by driver 2026-05-21 (EPIC-done transfers follow-ups to pa |
 | 196 | `worktreeIsolation: true` as default for `spawn-epic` — structural fix for shared-index race class | 2026-05-20 | Accepted — ratified by driver 2026-05-21 (worktreeIsolation=true default for s |
 | 197 | Cron-reaper teardown contract — unified cron-cleanup path for `dissolve-epic` / `sweep-epics --apply` / `atmux stop` | 2026-05-20 | Accepted — ratified by driver 2026-05-21 (3-part contract: cron-reaper verb +  |
@@ -201,6 +201,11 @@
 | 232 | orchd cross-cage dispatcher seam — `dispatchEpicMerge` / `dispatchDissolveEpic` / `dispatchGitPush` | 2026-05-23 | proposed (deferred: §D2.b transport choice still open per OQ-1; §D2.a routing  |
 | 233 | Disable cron auto-install — orchd is the runtime, not cron | 2026-05-24 | Proposed (operator-driver-fired 2026-05-24 post-boot-storm; ship under driver in |
 | 234 | 2026-05-24 hax boot-storm + sopx-team-death incident post-mortem | 2026-05-24 | Post-mortem (informational; corrective decisions tracked in [ADR-233](233-cron-a |
+| 239 | Three-driver minimum per team + no-send-keys-to-drivers invariant — `drivers[]` schema, per-driver worktree, windows grouped at front | 2026-05-24 | Accepted (operator-direct 14:30 MYT; atmux team pilot landed 14:45 MYT; code-enforcement task t-51-576216b2; sibling teams pending op |
+| 240 | Drop superorchd — orchd self-supervises, bash supervisor retires (supersedes ADR-236) | 2026-05-24 | Accepted (operator-direct *"simpler is better"* 2026-05-24; D1 + D5 of ADR-236 preserved, D2/D3 dropped) |
+| 241 | `atmux start` preflight wizard — installs vendored deps on cold hosts | 2026-05-25 | Accepted (operator-direct *"let's do the recommended"* 2026-05-25; gated on ADR-191 §Pending `build:install` extension landing first) |
+| 242 | `atmux shutdown` — single-verb whole-fleet teardown (symmetric inverse of `atmux start`) | 2026-05-25 | Accepted (operator-direct *"let's do the recommended"* 2026-05-25) |
+| 243 | Runtime-configurable claude accounts — `~/.atmux/claude-accounts.json` replaces hardcoded `WRAPPER_TABLE` | 2026-05-25 | Accepted (operator-direct *"yes please"* 2026-05-25; bootstrap folds into ADR-241 wizard) |
 
 ## Superseded (skip)
 
@@ -216,4 +221,5 @@ Retained for historical trace only. Skip unless investigating supersession histo
 - [204](204-jury-role-acceptance-criteria-contract.SUPERSEDED.md) — `_jury` role + acceptance-criteria contract — adversarial cursor-based gate that ratifies planner ACs pre-work and judges deliverables post-test — superseded by ADR-213
 - [206](206-sentinel-dynamic-epic-discovery.SUPERSEDED.md) — Sentinel dynamic epic-team discovery — drop the cockpit.json registration requirement — superseded by ADR-211
 - [207](207-opus-sentinel-supersedes-cursor-sentinel-adr-132.SUPERSEDED.md) — Opus-sentinel supersedes cursor-sentinel — rolls back ADR-132 §D1 cursor backend per ADR-201 rejection — superseded by ADR-211
+- [236](236-three-tier-orchd-supervision.SUPERSEDED.md) — Three-tier orchd supervision (D1 internal retry + D2 cockpit superorchd + D3 Discord escalation) — superseded by ADR-240 (D2/D3 dropped, D1+D5 preserved)
 

@@ -2,7 +2,7 @@
 
 **Status**: shipped 2026-05-20 (EPIC e-1e223687)
 **Date**: 2026-04-27
-**Related**: [ADR-016](./016-single-session-topology.md) (Phase 1 single-session opt-in), [ADR-025](./025-superdriver-phase-1.md) (registry + super-* verbs — superseded for cockpit primary-key by [ADR-089](./089-hierarchical-cockpit.md)), [ADR-026](./026-always-single-session-topology.md) (always-single-session default), [ADR-089](./089-hierarchical-cockpit.md) (recursive `sessions[]` schema — registry shape supersession), [ADR-135](./135-cockpit-naming-convention.md) (cockpit window-naming — supersedes the `__<team>__*` per-pane pattern in §Decision step 3), [ADR-103](./103-team-repair-rename.md) (recovery-side sibling verb).
+**Related**: [ADR-016](./016-single-session-topology.md) (Phase 1 single-session opt-in), [ADR-025](./025-superdriver-phase-1.md) (registry + super-* verbs — superseded for cockpit primary-key by [ADR-089](./089-recursive-cockpit-sessions.md)), [ADR-026](./026-always-single-session-topology.md) (always-single-session default), [ADR-089](./089-recursive-cockpit-sessions.md) (recursive `sessions[]` schema — registry shape supersession), [ADR-135](./135-cockpit-naming-convention.md) (cockpit window-naming — supersedes the `__<team>__*` per-pane pattern in §Decision step 3), [ADR-103](./103-team-repair-rename.md) (recovery-side sibling verb).
 
 **Implementation**: EPIC e-1e223687 (atmux-bun port). Source surface:
 - `src/verbs/team-rename.ts` — T1 helpers + arg parser + T2 dispatcher (post-T6 wires every sibling step directly): commits `c8d2c09` (T1) → `c274453` (T2) → `5d1c934` (T6 dispatcher rework).
@@ -126,7 +126,7 @@ All resolutions logged to `.atmux/decisions.md`.
 - [ADR-025: atmux-superdriver Phase 1 — read-only fleet aggregator](./025-superdriver-phase-1.md) — registry schema this verb mutates (superseded for cockpit primary-key by ADR-089 §B)
 - [ADR-026: Always single-session topology](./026-always-single-session-topology.md) — fleet topology default that drives the rename map
 - [ADR-016: Single-session topology — opt-in flag + Phase 2 migrate verb](./016-single-session-topology.md) — migrate verb reused by --migrate-session flag
-- [ADR-089: Hierarchical cockpit `sessions[]` schema](./089-hierarchical-cockpit.md) — supersedes the flat `teams[]` registry shape used in this ADR's §Decision step 6
+- [ADR-089: Recursive cockpit `sessions[]` schema](./089-recursive-cockpit-sessions.md) — supersedes the flat `teams[]` registry shape used in this ADR's §Decision step 6
 - [ADR-135: Cockpit naming convention](./135-cockpit-naming-convention.md) — supersedes the `__<team>__<member>` window-naming literal in §Decision step 3
 - [ADR-103: `atmux team repair-rename`](./103-team-repair-rename.md) — recovery-side sibling verb
 
@@ -138,13 +138,13 @@ Implementation diverged from the §Decision shape in nine known ways. Each is be
 
 **Spec**: §Context line + §Decision step 6 reference `~/.claude/teams/registry.json` (flat) + `atmux::registry_deregister <old>` + `atmux::registry_upsert <new>`.
 
-**Shipped**: superseded by [ADR-089](./089-hierarchical-cockpit.md) §B — flat `teams[]` lifted to recursive `cockpit.json::sessions[]` tree. T4 (`syncCockpitRegistry` in `src/verbs/team-rename-cockpit.ts`) DFS-walks `sessions[]` for the `type: "team"` node matching `oldName`; first match wins, mutates `.name = newName` in place. Legacy flat `teams[]` rosters auto-lift to canonical `sessions[]` shape on first rename via `migrateLegacyShape` (one-way migration; legacy top-level `teams` + `superdoctor` + `medic` + `sentinel` keys are stripped per the shim).
+**Shipped**: superseded by [ADR-089](./089-recursive-cockpit-sessions.md) §B — flat `teams[]` lifted to recursive `cockpit.json::sessions[]` tree. T4 (`syncCockpitRegistry` in `src/verbs/team-rename-cockpit.ts`) DFS-walks `sessions[]` for the `type: "team"` node matching `oldName`; first match wins, mutates `.name = newName` in place. Legacy flat `teams[]` rosters auto-lift to canonical `sessions[]` shape on first rename via `migrateLegacyShape` (one-way migration; legacy top-level `teams` + `superdoctor` + `medic` + `sentinel` keys are stripped per the shim).
 
 ### 2 — Window naming (CRITICAL)
 
 **Spec**: §Decision step 3 — "`tmux rename-window` per pane matching `__<old>__*` → `__<new>__*`".
 
-**Shipped**: window-naming convention shifted via [ADR-135](./135-cockpit-naming-convention.md) + [ADR-161](./161-default-member-prefix-and-sort-verbs.md). The `__<team>__<member>` literal prefix is no longer used. Today:
+**Shipped**: window-naming convention shifted via [ADR-135](./135-cockpit-naming-convention.md) + [ADR-161](./161-default-member-prefix.md). The `__<team>__<member>` literal prefix is no longer used. Today:
 - Cockpit-tier team-viewer windows carry the bare `<team-name>` — T5 (`renameTeamViewerWindow` in `src/verbs/team-rename-tmux.ts`) renames these in place.
 - Per-member windows carry `<emoji>-<member>` or `<emoji>_<member>` (default member) — no team-name in the window name; NOT touched by rename.
 - Cockpit-role windows carry `_<role>` (`_lead`, `_planner`, …) per ADR-135 — no team-name; NOT touched.
@@ -179,7 +179,7 @@ Total surface ~1100 LOC across 5 files vs the spec's 150 LOC estimate. Higher th
 
 **Spec**: bash references (`lib/team-rename.sh`, `lib/whip.sh`, `lib/super-status.sh`, `lib/doctor.sh`, `tests/unit/team_rename.bats`).
 
-**Shipped**: atmux-bun port complete ([ADR-126](./126-sqlite-state-store.md) sqlite-state-store, formerly `adr-bun/060` pre-consolidation + [ADR-154](./154-driver-inbox-lead-outbox-sqlite-migration.md) driver-inbox/lead-outbox sqlite migration, formerly slugged `076-inbox-on-sqlite` + cluster). TypeScript with Bun runtime; Zod schemas; `bun:test`. `lib/super-status.sh` → `src/verbs/sentinel.ts` (renamed via [ADR-158](./158-martinet-to-sentinel-rename.SUPERSEDED.md)). `lib/whip.sh` + `lib/decisions.sh` were CONSOLIDATED into sentinel + other verbs during the port and don't exist as standalone bun files — see §Deviation 8 for the implication for cron-consumer guards.
+**Shipped**: atmux-bun port complete ([ADR-060](./060-sqlite-state.md) + [ADR-076](./076-inbox-on-sqlite.md) + cluster). TypeScript with Bun runtime; Zod schemas; `bun:test`. `lib/super-status.sh` → `src/verbs/sentinel.ts` (renamed via [ADR-158](./158-martinet-to-sentinel-rename.SUPERSEDED.md)). `lib/whip.sh` + `lib/decisions.sh` were CONSOLIDATED into sentinel + other verbs during the port and don't exist as standalone bun files — see §Deviation 8 for the implication for cron-consumer guards.
 
 ### 7 — OQ resolutions
 
