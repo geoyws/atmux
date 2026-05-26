@@ -375,9 +375,9 @@ describe("autolaunchTeam", () => {
         "utf8",
       );
       // Create the cage session with a window named after the member.
-      // Cage session name for "demo" is "atmux_demo" per cageSessionName().
+      // Cage session name for "demo" is "atmux-demo" per resolveCageSessionName() — hyphen-form fallback for unanchored teams (matches getSessionName).
       await fx.tmux.session.newSession({
-        name: "atmux_demo",
+        name: "atmux-demo",
         detached: true,
         windowName: "lead",
       });
@@ -418,7 +418,7 @@ describe("autolaunchTeam", () => {
         "utf8",
       );
       await fx.tmux.session.newSession({
-        name: "atmux_px",
+        name: "atmux-px",
         detached: true,
         windowName: "lead",
       });
@@ -444,7 +444,7 @@ describe("autolaunchTeam", () => {
       );
       expect(summary.launched).toBe(1);
       expect(summary.unbootstrapped).toEqual([]);
-      expect(probeCalls).toEqual(["lead@atmux_px:0"]);
+      expect(probeCalls).toEqual(["lead@atmux-px:0"]);
       // No warning lines emitted on the happy path.
       expect(logs.filter((l) => l.startsWith("warn:"))).toEqual([]);
     } finally {
@@ -471,7 +471,7 @@ describe("autolaunchTeam", () => {
         "utf8",
       );
       await fx.tmux.session.newSession({
-        name: "atmux_py",
+        name: "atmux-py",
         detached: true,
         windowName: "alpha",
       });
@@ -527,12 +527,12 @@ describe("autolaunchTeam", () => {
         "utf8",
       );
       await fx.tmux.session.newSession({
-        name: "atmux_pz",
+        name: "atmux-pz",
         detached: true,
         windowName: "alpha",
       });
       await fx.tmux.window.newWindow({
-        sessionName: "atmux_pz",
+        sessionName: "atmux-pz",
         name: "beta",
       });
       let calls = 0;
@@ -1526,8 +1526,8 @@ describe("buildTeamWindowCommand", () => {
   const team = { name: "demo", root: "/d", enabled: true } as CockpitTeam;
   const uid = process.getuid?.() ?? 0;
 
-  test("attach mode targets <session>:driver via the dual-socket retry loop", () => {
-    const cmd = buildTeamWindowCommand(team, "attach");
+  test("attach mode targets <session>:driver via the dual-socket retry loop", async () => {
+    const cmd = await buildTeamWindowCommand(team, "attach");
     expect(cmd).toContain("attach -t");
     expect(cmd).toContain(":driver");
     expect(cmd).toContain("while true");
@@ -1542,15 +1542,15 @@ describe("buildTeamWindowCommand", () => {
     expect(cmd).toContain("||");
   });
 
-  test("no-driver-config emits the 'set team.json::driverSession' guidance", () => {
-    const cmd = buildTeamWindowCommand(team, "no-driver-config");
+  test("no-driver-config emits the 'set team.json::driverSession' guidance", async () => {
+    const cmd = await buildTeamWindowCommand(team, "no-driver-config");
     expect(cmd).toContain("no driver configured for demo");
     expect(cmd).toContain("team.json::driverSession");
     expect(cmd).toContain("sleep infinity");
   });
 
-  test("session-down emits the 'atmux start' guidance + self-healing retry-loop", () => {
-    const cmd = buildTeamWindowCommand(team, "session-down");
+  test("session-down emits the 'atmux start' guidance + self-healing retry-loop", async () => {
+    const cmd = await buildTeamWindowCommand(team, "session-down");
     expect(cmd).toContain("session not running");
     expect(cmd).toContain("atmux start demo");
     // ADR-063 follow-up: replaced `sleep infinity` with a retry-loop so
@@ -1563,18 +1563,18 @@ describe("buildTeamWindowCommand", () => {
     expect(cmd).toContain(`/d/.atmux/tmux/tmux-${uid}/default`);
   });
 
-  test("placeholder shell-quoting survives team names with apostrophes", () => {
+  test("placeholder shell-quoting survives team names with apostrophes", async () => {
     const apostropheTeam = { name: "ali's-team", root: "/x", enabled: true } as CockpitTeam;
-    const cmd = buildTeamWindowCommand(apostropheTeam, "no-driver-config");
+    const cmd = await buildTeamWindowCommand(apostropheTeam, "no-driver-config");
     // Resulting shell string is single-quoted; the apostrophe in the
     // team name must be escaped via the POSIX `'\''` idiom so the
     // surrounding `printf` quoting doesn't break.
     expect(cmd).toContain("'\\''");
   });
 
-  test("session-down printf message is shell-safe for team names with apostrophes", () => {
+  test("session-down printf message is shell-safe for team names with apostrophes", async () => {
     const apostropheTeam = { name: "ali's-team", root: "/x", enabled: true } as CockpitTeam;
-    const cmd = buildTeamWindowCommand(apostropheTeam, "session-down");
+    const cmd = await buildTeamWindowCommand(apostropheTeam, "session-down");
     // The printf prelude single-quotes its message; the apostrophe in
     // "ali's-team" must be POSIX-escaped or the rest of the command
     // string breaks the shell parse.
