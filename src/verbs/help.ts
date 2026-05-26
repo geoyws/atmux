@@ -48,19 +48,13 @@ Setup:
                               shape for headless probes.
   cockpit rotate <session-name> [--force]
                               ADR-167 Rung C: canonical rotation of a cockpit-
-                              level role pane — \`medic\` (W2), \`sentinel\` (W3),
-                              or \`<team-name>\` (W4+ driver pane). Refuses
-                              \`superdriver\` unconditionally; four pre-flight
-                              gates (user-not-typing / pane-idle / uptime /
+                              level role pane — \`medic\` (W2) or \`<team-name>\`
+                              (W3+ driver pane). Refuses \`superdriver\`
+                              unconditionally; four pre-flight gates
+                              (user-not-typing / pane-idle / uptime /
                               never-rotate-superdriver) protect against
                               accidental rotation. Driver-only via
                               ATMUX_CALLER_SCOPE=driver.
-  sentinel [tick|status] [--once] [--config <p>] [--state <p>]
-                              ADR-132 §D2: cockpit-tier fleet-wide whip-manager
-                              tick loop (window W3, sibling of medic at W2).
-                              'tick' iterates every enabled team; 'status'
-                              prints last-tick JSON. State persists at
-                              ~/.atmux/state/sentinel-state.json.
 
 Messaging:
   send <member> <msg...>      tmux send-keys to a member's pane
@@ -128,6 +122,21 @@ Maintenance:
                               dissolves only SAFE-DISSOLVE candidates (0 open
                               tasks + clean worktree + branch pushed to
                               origin) via the ADR-090 dissolve-epic pipeline.
+  team spawn-worker <task-id> --from <parent> [--roster <preset>] [--parent-base <b>]
+                              ADR-221 §v2: thin wrapper around spawn-epic for
+                              single-task worker-teams. Derives worker-id from
+                              task-id (\`t-x\` / \`x\` / \`w-x\` → \`w-x\`), auto-
+                              creates a wrapper kanban EPIC in the parent, and
+                              defaults --roster=solo. Driver-scope only.
+  team dissolve-worker <worker-id-or-task-id> [--skip-checks] [--force-prune]
+                              ADR-221 §v2: dissolve-epic counterpart for
+                              worker-teams. Refuses generic \`e-\` epic ids;
+                              normalises \`t-\` / bare / \`w-\` forms to \`w-<tail>\`
+                              before delegating. Driver-scope only.
+  team list-workers [--parent <team>] [--json]
+                              ADR-221 §v2: enumerate enabled worker-teams in
+                              the cockpit (epic-teams with \`w-\` prefix). Read-
+                              only — for housekeeping use \`sweep-epics\`.
   reconfigure                 Re-run wizard against an existing team.json
   dashboard [--interval <s>]  Live full-screen status panel
   doctor [--fix] [--json]     Check deps, team.json, TUI PATH, webhook reachability
@@ -138,9 +147,10 @@ Maintenance:
   groom [--dry-run] [--quiet] [--kanban-days N] [--decisions-days N] [--keep-bak N]
                               Daily 04:00 cron sweep — flush archive sections, age
                               out done/cancelled cards, cull stale .bak files.
-  cleanup <logs|inboxes|all> [--max-size <bytes>] [--max-age-days <N>] [--dry-run]
+  cleanup <logs|inboxes|all> [--max-size <bytes>] [--max-age-days <N>] [--purge-legacy] [--dry-run]
                               Rotate big *.log files; prune old .done[] in
-                              member inboxes. Idempotent + cron-safe.
+                              member inboxes, or --purge-legacy to delete
+                              stale .atmux/inboxes/*.json on SQL teams.
   discorder <progress|heartbeat>
                               ADR-022 Discord cron pings. progress = 30-min
                               digest; heartbeat = hourly state-of-team.

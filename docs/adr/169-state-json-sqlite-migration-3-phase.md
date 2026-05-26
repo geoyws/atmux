@@ -1,6 +1,6 @@
 # ADR-169: state.db migration for residual `.atmux/state/*.json` — 3-phase decomp (flags / role_state / budget)
 
-**Status**: proposed
+**Status**: Accepted — ratified by driver 2026-05-21 (3-phase state.db migration: flags / role_state / budget tables; JSON archive-only post-migration per ADR-126; §OQ recommendations as-written)
 **Date**: 2026-05-17
 **Supplements**: [ADR-126](126-sqlite-state-store.md) §SQLite for `.atmux/` state, JSON archive-only
 **Closes**: ombudsman complaint `c-67bbac0a` (filed by medic 2026-05-17; adjudicated 2026-05-17)

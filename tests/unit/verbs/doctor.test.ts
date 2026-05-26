@@ -14,15 +14,19 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { closeDatabase, openDatabase } from "../../../src/abstractions/sqlite.ts";
+import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
 import type { CrontabIO } from "../../../src/abstractions/crontab.ts";
 import type { SpawnResult } from "../../../src/abstractions/spawn.ts";
 import type { CageState } from "../../../src/core/cage-state.ts";
 import type { LoadedCockpit } from "../../../src/core/cockpit.ts";
+import { KanbanRepo } from "../../../src/core/repositories/kanban-repo.ts";
 import { UsageError } from "../../../src/errors.ts";
 import type { Team, TeamMember } from "../../../src/schema/team.ts";
 import {
   buildReport,
   checkCockpitOnDefaultSocket,
+  checkDeployedBinaryLag,
   checkLegacyWindowNameFormat,
   checkCronBlock,
   checkCronIntervalDivisors,
@@ -36,12 +40,14 @@ import {
   checkMergerFanIn,
   checkOrphanSessions,
   checkPhantomInboxes,
+  checkLegacyInboxJson,
   checkReleaseNoteMissing,
   checkSendKeysFailureRecent,
   checkStateDir,
   checkSubmoduleIntegrity,
   checkTeam,
   checkTmuxVersionMismatch,
+  checkVendoredTmuxBinary,
   checkTuiCommandsClaudeOverride,
   checkTuis,
   checkWebhook,
@@ -53,6 +59,7 @@ import {
   type DoctorRow,
   doctor,
   findInboxTaskMarks,
+  findLegacyInboxJson,
   findPhantomInboxes,
   firstBin,
   installHint,
@@ -622,6 +629,101 @@ describe("findPhantomInboxes", () => {
     expect(rows[0]?.label).toBe("phantom-inbox");
     expect(rows[0]?.detail).toContain("t-ghost");
   });
+
+  test("ignores stale JSON inProgress when state.db is canonical", async () => {
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      JSON.stringify({
+        name: "x",
+        members: [{ name: "alpha", role: "lead", tui: "claude" }],
+      }),
+    );
+    await writeFile(
+      join(atmuxDir, "inboxes", "alpha.json"),
+      JSON.stringify({
+        pending: [],
+        inProgress: [{ id: "t-ghost", subject: "stale json phantom" }],
+        done: [],
+      }),
+    );
+    const db = openDatabase(join(atmuxDir, "state.db"), migrations);
+    try {
+      const repo = new KanbanRepo(db);
+      repo.upsertTask({
+        id: "t-live",
+        subject: "live sql task",
+        status: "todo",
+        owner: "alpha",
+        deps: [],
+      });
+    } finally {
+      closeDatabase(db);
+    }
+    expect(await findPhantomInboxes(atmuxDir)).toEqual([]);
+  });
+
+  test("SQL in-progress tasks that exist in kanban are not phantoms", async () => {
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      JSON.stringify({
+        name: "x",
+        members: [{ name: "alpha", role: "lead", tui: "claude" }],
+      }),
+    );
+    const db = openDatabase(join(atmuxDir, "state.db"), migrations);
+    try {
+      const repo = new KanbanRepo(db);
+      repo.upsertTask({
+        id: "t-live",
+        subject: "active claim",
+        status: "in-progress",
+        owner: "alpha",
+        deps: [],
+      });
+    } finally {
+      closeDatabase(db);
+    }
+    expect(await findPhantomInboxes(atmuxDir)).toEqual([]);
+  });
+});
+
+// ---------- findLegacyInboxJson / checkLegacyInboxJson ----------
+
+describe("findLegacyInboxJson", () => {
+  let dir: string;
+  let atmuxDir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "atmux-doctor-legacy-inbox-"));
+    atmuxDir = join(dir, ".atmux");
+    await mkdir(join(atmuxDir, "inboxes"), { recursive: true });
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("returns [] when state.db absent (JSON may still be canonical)", async () => {
+    await writeFile(join(atmuxDir, "inboxes", "gitter.json"), "{}");
+    expect(await findLegacyInboxJson(atmuxDir)).toEqual([]);
+  });
+
+  test("returns legacy json basenames when state.db exists", async () => {
+    await writeFile(join(atmuxDir, "state.db"), "");
+    await writeFile(join(atmuxDir, "inboxes", "gitter.json"), "{}");
+    await writeFile(join(atmuxDir, "inboxes", "alpha.json"), "{}");
+    expect(await findLegacyInboxJson(atmuxDir)).toEqual(["alpha.json", "gitter.json"]);
+  });
+
+  test("checkLegacyInboxJson surfaces yellow doctor row with purge hint", async () => {
+    await writeFile(join(atmuxDir, "state.db"), "");
+    await writeFile(join(atmuxDir, "inboxes", "gitter.json"), "{}");
+    const rows = await checkLegacyInboxJson(atmuxDir);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.label).toBe("legacy-inbox-json");
+    expect(rows[0]?.detail).toContain("gitter.json");
+    expect(rows[0]?.hint).toContain("atmux cleanup inboxes --purge-legacy");
+  });
 });
 
 // ---------- checkCursorPluginCache ----------
@@ -981,6 +1083,13 @@ describe("checkCronIntervalDivisors", () => {
 });
 
 // ---------- ADR-083 follow-up §DEFERRED row 2: checkCronOrphans ----------
+//
+// Post-ADR-233 the underlying `findCronOrphans` is a no-op shim that
+// always returns `[]` (cron auto-install retired; orchd is the runtime).
+// Every test below asserts the post-retire contract: regardless of
+// crontab content, the probe surfaces zero rows. Once the cron-shim
+// modules are deleted in cleanup-EPIC, this whole block goes with
+// them.
 
 describe("checkCronOrphans", () => {
   const fakeIO = (body: string | null, opts: { available?: boolean } = {}): CrontabIO => ({
@@ -1020,7 +1129,15 @@ describe("checkCronOrphans", () => {
     expect(rows).toEqual([]);
   });
 
-  test("orphan block (atmuxDir gone) → one yellow row with team+dir", async () => {
+  // Post-ADR-233 contract: `findCronOrphans` shim returns `[]` for
+  // every input — atmux no longer manages crontab blocks, so no
+  // marker-block can be orphaned. These two tests assert the
+  // post-retire behavior against the two fixture bodies that would
+  // have surfaced rows under the pre-ADR-233 impl. Once the cron-shim
+  // modules retire in cleanup-EPIC, the underlying probe + this whole
+  // describe block go with them.
+
+  test("(ADR-233) orphan-looking block → no rows (shim returns [])", async () => {
     const body = [
       "# >>> atmux:team=ghost — managed by atmux start; do not edit by hand",
       "*/5 * * * * ATMUX_DIR=/srv/ghost/.atmux /bin/atmux whip",
@@ -1030,17 +1147,10 @@ describe("checkCronOrphans", () => {
       crontab: fakeIO(body),
       dirExists: async () => false,
     });
-    expect(rows.length).toBe(1);
-    const r = rows[0];
-    expect(r?.status).toBe("yellow");
-    expect(r?.label).toBe("cron-config");
-    expect(r?.detail).toContain("ghost");
-    expect(r?.detail).toContain("/srv/ghost/.atmux");
-    expect(r?.detail).toContain("does not exist");
-    expect(r?.hint).toContain("crontab -e");
+    expect(rows).toEqual([]);
   });
 
-  test("mix of live + orphan blocks → only orphans surface", async () => {
+  test("(ADR-233) mix of live + orphan-looking blocks → no rows (shim returns [])", async () => {
     const body = [
       "# >>> atmux:team=alpha — managed by atmux start; do not edit by hand",
       "*/5 * * * * ATMUX_DIR=/srv/alpha/.atmux /bin/atmux whip",
@@ -1054,9 +1164,7 @@ describe("checkCronOrphans", () => {
       crontab: fakeIO(body),
       dirExists: async (p: string) => live.has(p),
     });
-    expect(rows.length).toBe(1);
-    expect(rows[0]?.detail).toContain("ghost");
-    expect(rows[0]?.detail).not.toContain("alpha");
+    expect(rows).toEqual([]);
   });
 });
 
@@ -2018,7 +2126,7 @@ describe("checkWorktreeIsolation", () => {
   // ---------- Class 2: orphan ----------
 
   test("isolation ON + dir present that isn't in roster → YELLOW 'worktree-orphan:<dir>'", async () => {
-    const gitSpawn: GitSpawn = async () =>
+    const _gitSpawn: GitSpawn = async () =>
       // The wrong-branch probe runs because alice IS present (matched).
       // We want the orphan to also surface — set up a clean branch state
       // so wrong-branch returns no rows.
@@ -2734,7 +2842,7 @@ describe("collectStarvingMembers — ADR-081 §D row-scan", () => {
   });
 });
 
-// ---------- ADR-088 §Decision-6 W6: checkMergerFanIn ----------
+// ---------- ADR-179 §Decision-6 W6: checkMergerFanIn ----------
 
 describe("checkMergerFanIn", () => {
   let atmuxDir: string;
@@ -3970,6 +4078,103 @@ describe("checkTmuxVersionMismatch", () => {
   });
 });
 
+describe("checkVendoredTmuxBinary", () => {
+  function tmuxOk(stdout: string): SpawnResult {
+    return {
+      exitCode: 0,
+      stdout,
+      stderr: "",
+      argv: ["-V"],
+      cmd: "/opt/atmux/current/bin/tmux",
+      signalled: null,
+      durationMs: 0,
+    };
+  }
+
+  test("vendored binary absent → yellow 'vendored-tmux-missing'", async () => {
+    const rows = await checkVendoredTmuxBinary({
+      existsSync: () => false,
+      tmux: async () => tmuxOk("tmux 3.6a"),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.label).toBe("vendored-tmux-missing");
+    expect(rows[0]?.detail).toContain("/opt/atmux/current/bin/tmux");
+    expect(rows[0]?.hint).toContain("build:install");
+    expect(rows[0]?.hint).toContain("ATMUX_TMUX_BIN");
+  });
+
+  test("vendored present + exact pinned version 3.6a → no rows", async () => {
+    const rows = await checkVendoredTmuxBinary({
+      existsSync: () => true,
+      tmux: async () => tmuxOk("tmux 3.6a"),
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("vendored present + version drift (3.6b) → yellow 'version-drift'", async () => {
+    const rows = await checkVendoredTmuxBinary({
+      existsSync: () => true,
+      tmux: async () => tmuxOk("tmux 3.6b"),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.label).toBe("vendored-tmux-version-drift");
+    expect(rows[0]?.detail).toContain("3.6b");
+    expect(rows[0]?.detail).toContain("3.6a");
+    expect(rows[0]?.hint).toContain("build:install");
+  });
+
+  test("vendored present + unparseable -V → yellow 'version-drift unparseable'", async () => {
+    const rows = await checkVendoredTmuxBinary({
+      existsSync: () => true,
+      tmux: async () => tmuxOk("tmux next-3.7"),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.label).toBe("vendored-tmux-version-drift");
+    expect(rows[0]?.detail).toContain("unparseable");
+  });
+
+  test("vendored present + tmux -V exits non-zero → yellow 'version-drift exited'", async () => {
+    const rows = await checkVendoredTmuxBinary({
+      existsSync: () => true,
+      tmux: async () => ({
+        exitCode: 2,
+        stdout: "",
+        stderr: "permission denied",
+        argv: ["-V"],
+        cmd: "/opt/atmux/current/bin/tmux",
+        signalled: null,
+        durationMs: 0,
+      }),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.label).toBe("vendored-tmux-version-drift");
+    expect(rows[0]?.detail).toContain("exited 2");
+  });
+
+  test("vendored present + spawn throws → yellow 'version-drift failed to run'", async () => {
+    const rows = await checkVendoredTmuxBinary({
+      existsSync: () => true,
+      tmux: async () => {
+        throw new Error("ENOENT");
+      },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.label).toBe("vendored-tmux-version-drift");
+    expect(rows[0]?.detail).toContain("failed to run");
+  });
+
+  test("custom vendoredPath + expectedVersion respected", async () => {
+    const rows = await checkVendoredTmuxBinary({
+      existsSync: (p) => p === "/custom/tmux",
+      tmux: async () => tmuxOk("tmux 3.5"),
+      vendoredPath: "/custom/tmux",
+      expectedVersion: "3.5",
+    });
+    expect(rows).toEqual([]);
+  });
+});
+
 describe("checkCockpitOnDefaultSocket", () => {
   function tmuxOk(stdout: string): SpawnResult {
     return {
@@ -4051,7 +4256,7 @@ describe("checkCockpitOnDefaultSocket", () => {
   });
 
   // Reference to TmuxSpawn type keeps the import alive (consumed via opts.tmux above).
-  test("type sanity — TmuxSpawn shape matches opts.tmux signature", () => {
+  test("type sanity — TmuxSpawn shape matches opts.tmux signature (cockpit-on-default-socket)", () => {
     const spawn: TmuxSpawn = async () => ({
       exitCode: 0,
       stdout: "",
@@ -4064,6 +4269,111 @@ describe("checkCockpitOnDefaultSocket", () => {
     expect(typeof spawn).toBe("function");
   });
 });
+
+
+// ---------- t-400a1cad: checkDeployedBinaryLag ----------
+
+describe("checkDeployedBinaryLag", () => {
+  function gitResult(stdout: string, exitCode = 0): SpawnResult {
+    return {
+      exitCode,
+      stdout,
+      stderr: "",
+      argv: [],
+      cmd: "git",
+      signalled: null,
+      durationMs: 0,
+    };
+  }
+
+  test("matched version + HEAD == last bump commit → silent (green)", async () => {
+    const rows = await checkDeployedBinaryLag({
+      readDeployedVersion: async () => "0.8.7",
+      readSourceVersion: async () => "0.8.7",
+      git: async (argv) => {
+        if (argv[0] === "rev-parse") return gitResult("abc123\n");
+        if (argv[0] === "log") return gitResult("abc123\n");
+        return gitResult("0\n");
+      },
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("source ahead by N commits after last bump → yellow with commit count", async () => {
+    const rows = await checkDeployedBinaryLag({
+      readDeployedVersion: async () => "0.8.7",
+      readSourceVersion: async () => "0.8.7",
+      git: async (argv) => {
+        if (argv[0] === "rev-parse") return gitResult("head-sha\n");
+        if (argv[0] === "log") return gitResult("bump-sha\n");
+        if (argv[0] === "rev-list") return gitResult("3\n");
+        return gitResult("");
+      },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.label).toBe("deployed-binary-lag");
+    expect(rows[0]?.detail).toContain("3 commit");
+    expect(rows[0]?.hint).toContain("build:install");
+  });
+
+  test("version mismatch (source ahead of deploy) → yellow with rebuild hint", async () => {
+    const rows = await checkDeployedBinaryLag({
+      readDeployedVersion: async () => "0.8.5",
+      readSourceVersion: async () => "0.8.7",
+      git: async () => gitResult(""),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.detail).toContain("source package.json=0.8.7");
+    expect(rows[0]?.detail).toContain("/opt/atmux/current=0.8.5");
+    expect(rows[0]?.hint).toContain("build:install");
+  });
+
+  test("no /opt/atmux/current symlink → silent (non-system install)", async () => {
+    const rows = await checkDeployedBinaryLag({
+      readDeployedVersion: async () => null,
+      readSourceVersion: async () => "0.8.7",
+      git: async () => gitResult(""),
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("no package.json → silent (probe doesn't apply)", async () => {
+    const rows = await checkDeployedBinaryLag({
+      readDeployedVersion: async () => "0.8.7",
+      readSourceVersion: async () => null,
+      git: async () => gitResult(""),
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("git spawn throws → silent (deps probe owns tmux/git surface)", async () => {
+    const rows = await checkDeployedBinaryLag({
+      readDeployedVersion: async () => "0.8.7",
+      readSourceVersion: async () => "0.8.7",
+      git: async () => {
+        throw new Error("ENOENT");
+      },
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("rev-list returns 0 (HEAD == last bump) → silent", async () => {
+    const rows = await checkDeployedBinaryLag({
+      readDeployedVersion: async () => "0.8.7",
+      readSourceVersion: async () => "0.8.7",
+      git: async (argv) => {
+        if (argv[0] === "rev-parse") return gitResult("h\n");
+        if (argv[0] === "log") return gitResult("b\n");
+        if (argv[0] === "rev-list") return gitResult("0\n");
+        return gitResult("");
+      },
+    });
+    expect(rows).toEqual([]);
+  });
+});
+
 
 // ---------- EPIC e-a3077ca0 T8: checkLegacyWindowNameFormat ----------
 

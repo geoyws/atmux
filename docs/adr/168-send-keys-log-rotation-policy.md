@@ -1,6 +1,6 @@
 # ADR-168: send-keys-failures.log rotation policy — closes ADR-138 §Escalation log open question
 
-**Status**: proposed
+**Status**: accepted
 **Date**: 2026-05-17
 **Supplements**: [ADR-138](138-verified-send-keys.md) §Escalation log
 **Closes**: `t-c35e8783` ([ADR-138 §Escalation log rotation policy — decide at T8 dogfood gate])
@@ -122,3 +122,10 @@ File as separate Tasks if/when needed:
 3. **OQ-3 (RESOLVED, LOW-rev)**: compression — yes/no.
    - **Default**: yes (`compress` + `delaycompress`).
    - **Rationale**: delaycompress keeps the most-recent rotation uncompressed for grep-friendliness; older rotations compress to ~5-10× smaller. Standard `logrotate` idiom.
+
+
+## §Amendment 2026-05-20 — promoted to accepted (status-drift audit T4)
+
+Promoted from `proposed` → `accepted` per [docs/audits/adr-status-drift-audit-2026-05-20.md](../audits/adr-status-drift-audit-2026-05-20.md) (sha=a6f1541). Code-refs + git-log refs both present at audit time confirming shipped + dogfooded status; the `proposed` marker was bookkeeping debt. Original Date preserved verbatim. Append-only — see Status field for the canonical flip; this §Amendment carries the audit traceability.
+
+**Filed via** t-45b401c3 (T4 sweep, 2026-05-20).

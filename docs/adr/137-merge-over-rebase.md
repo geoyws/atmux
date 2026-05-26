@@ -1,6 +1,6 @@
 # ADR-137: Merge over rebase for intra-team trunk integration
 
-**Status**: proposed
+**Status**: accepted
 **Date**: 2026-05-14
 **Parent task**: t-f35bfefc
 **Driver-ref**: 2026-05-14 driver session — operator on force-push surprise after parity-cron-impl's trunk-advance (t-2411bee8) caused whip-impl + parity-read-impl to rebase + force-push: *"next time this shouldn't happen again correct? let's make it not happen again? force push is weird?"*. Operator picked Path A (merge over rebase) over Path B (short-lived task-branches) + Path C (auto-authorize force-push) for the standing convention.
@@ -130,3 +130,10 @@ Second commit (deferred per the task body's reviewer-split sanction):
 - [x] `atmux doctor` reports zero `member-forcepush-recent` warnings on a fresh team that follows the new convention (commit 2/2 — `checkMemberForcePushRecent` in `src/verbs/doctor.ts`; empty rows when the per-member-branch reflog has no `forced`-matching entries within the 1h window).
 - [x] Discord `[member-forcepush-warning]` template fires on synthetic force-push event in test (commit 2/2 — `renderMemberForcePushWarning` in `src/abstractions/discord.ts`; `member-forcepush-warning` literal added to the `DiscordTemplate` union for R10 compile-time enforcement).
 - [ ] Reviewer-gated across the chain.
+
+
+## §Amendment 2026-05-20 — promoted to accepted (status-drift audit T4)
+
+Promoted from `proposed` → `accepted` per [docs/audits/adr-status-drift-audit-2026-05-20.md](../audits/adr-status-drift-audit-2026-05-20.md) (sha=a6f1541). Code-refs + git-log refs both present at audit time confirming shipped + dogfooded status; the `proposed` marker was bookkeeping debt. Original Date preserved verbatim. Append-only — see Status field for the canonical flip; this §Amendment carries the audit traceability.
+
+**Filed via** t-45b401c3 (T4 sweep, 2026-05-20).

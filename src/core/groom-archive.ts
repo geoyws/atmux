@@ -7,7 +7,8 @@
 //
 // Solution: lazy archival into `<atmuxDir>/archive.db` (same schema,
 // holds the long tail). Runs at the end of `atmux groom` when the
-// caller passes `--archive`. Daily cron-fired.
+// caller passes `--archive`. Post-ADR-233: operator-on-demand (or
+// orchd housekeeping ticker) — the legacy daily cron arming is gone.
 //
 // Atomicity — both halves (INSERT into archive, DELETE from main)
 // share ONE state.db transaction by ATTACH-ing archive.db. A crash

@@ -31,9 +31,9 @@
 //      `performMerge()` (ADR-134 T2). Walks one tick at a time,
 //      composing (1)+(2)+(3) above the merge primitive.
 //   4. **Merge primitive** — `src/abstractions/branch-merge.ts`'s
-//      `mergeMember()` (ADR-088 W1). The actual `git merge --no-ff
+//      `mergeMember()` (ADR-179 W1). The actual `git merge --no-ff
 //      <branch>` step underneath.
-//   5. **Bulk fan-in CLI** — `src/verbs/merge-cycle.ts` (ADR-088 W3 /
+//   5. **Bulk fan-in CLI** — `src/verbs/merge-cycle.ts` (ADR-179 W3 /
 //      ADR-134 T6). The gitter / operator-driven verb that drives a
 //      full per-team sweep.
 //
@@ -88,9 +88,9 @@
 //   B5. Bulk fan-in via `merge-cycle` verb — assert the CLI wrapper
 //       walks the same state-machine + writes the same ledger rows
 //       as the direct `performMerge` ticks. Sibling-coverage to
-//       `tests/e2e/merger-fan-in.test.ts` (ADR-088); this beat adds
+//       `tests/e2e/merger-fan-in.test.ts` (ADR-179); this beat adds
 //       the merger_state ledger assertion that the older test
-//       lacked (ADR-088 wrote flags.md but not the ADR-134 state.db
+//       lacked (ADR-179 wrote flags.md but not the ADR-134 state.db
 //       ledger).
 //
 // Per CLAUDE.md testing discipline §"Pair demo runbook beats with
@@ -517,7 +517,7 @@ describe("e2e merger — ADR-134 T8 acceptance proof (t-c607d9f1)", () => {
   });
 
   test("B5: bulk fan-in via merge-cycle verb — runs the merges; ledger integration deferred to ADR-134 T6/T8 follow-up", async () => {
-    // merge-cycle (ADR-088 W3 / ADR-134 T6) is the operator-driven
+    // merge-cycle (ADR-179 W3 / ADR-134 T6) is the operator-driven
     // bulk fan-in CLI. Trunk-current implementation runs the merge
     // primitive (`mergeMember`) directly and writes flags.md on
     // conflict, but does NOT yet drive the `MergerStateRepo` state
@@ -525,7 +525,7 @@ describe("e2e merger — ADR-134 T8 acceptance proof (t-c607d9f1)", () => {
     // follow-up. This beat pins TWO things:
     //   (a) merge-cycle still works on its own contract (3 clean
     //       merges land, base advances, origin receives push) —
-    //       regression guard on the older ADR-088 surface.
+    //       regression guard on the older ADR-179 surface.
     //   (b) The `merger_state` ledger is observably DECOUPLED from
     //       merge-cycle today (rows are null for branches the verb
     //       just merged). When the integration lands, this

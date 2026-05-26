@@ -686,6 +686,7 @@ function seedStory(repo: KanbanRepo, id: string, branch: string | null): KanbanS
     completedAt: null,
     reviewSignoff: false,
     mergeTaskId: null,
+    mergeMode: "feature-branch",
     branch,
   };
   repo.upsertStory(story);
@@ -762,13 +763,14 @@ describe("tryAutoEmitTrunkMerge (ADR-146 §D1+D2+D5)", () => {
       seedStory(repo, "s-aaaa0001", "geoyws-alpha");
       seedTask(repo, "t-sibling1", "s-aaaa0001", "done");
       const lastTask = seedTask(repo, "t-lastdone", "s-aaaa0001", "done");
-      const newId = tryAutoEmitTrunkMerge(repo, lastTask, makeTeam());
+      const newId = tryAutoEmitTrunkMerge(repo, lastTask, makeTeam(), db);
       expect(newId).not.toBeNull();
       // The new Task lives in the kanban + has the §D2 shape.
       const created = repo.getTask(newId!);
       expect(created).not.toBeNull();
+      // ADR-202 §VIII: compound IDs are `t-N-<8 hex>`.
       expect(created!.subject).toMatch(
-        /^merge t-[0-9a-f]+ \(branch→trunk\): geoyws-alpha → trunk$/,
+        /^merge t-[1-9][0-9]*-[0-9a-f]{8} \(branch→trunk\): geoyws-alpha → trunk$/,
       );
       expect(created!.owner).toBe("gitter");
       expect(created!.lane).toBe("misc");
@@ -788,7 +790,7 @@ describe("tryAutoEmitTrunkMerge (ADR-146 §D1+D2+D5)", () => {
     try {
       seedStory(repo, "s-aaaa0002", null);
       const lastTask = seedTask(repo, "t-nobranch", "s-aaaa0002", "done");
-      const newId = tryAutoEmitTrunkMerge(repo, lastTask, makeTeam());
+      const newId = tryAutoEmitTrunkMerge(repo, lastTask, makeTeam(), db);
       expect(newId).toBeNull();
     } finally {
       closeDatabase(db);
@@ -812,7 +814,7 @@ describe("tryAutoEmitTrunkMerge (ADR-146 §D1+D2+D5)", () => {
         completedAt: 2,
       };
       repo.addTask(task);
-      const newId = tryAutoEmitTrunkMerge(repo, task, makeTeam());
+      const newId = tryAutoEmitTrunkMerge(repo, task, makeTeam(), db);
       expect(newId).toBeNull();
     } finally {
       closeDatabase(db);
@@ -824,7 +826,7 @@ describe("tryAutoEmitTrunkMerge (ADR-146 §D1+D2+D5)", () => {
     try {
       seedStory(repo, "s-aaaa0003", "geoyws-alpha");
       const lastTask = seedTask(repo, "t-sharedcwd", "s-aaaa0003", "done");
-      const newId = tryAutoEmitTrunkMerge(repo, lastTask, makeTeam({ worktreeIsolation: false }));
+      const newId = tryAutoEmitTrunkMerge(repo, lastTask, makeTeam({ worktreeIsolation: false }), db);
       expect(newId).toBeNull();
     } finally {
       closeDatabase(db);
@@ -840,6 +842,7 @@ describe("tryAutoEmitTrunkMerge (ADR-146 §D1+D2+D5)", () => {
         repo,
         lastTask,
         makeTeam({ autoEmitTrunkMerge: { enabled: false } }),
+        db,
       );
       expect(newId).toBeNull();
     } finally {
@@ -856,6 +859,7 @@ describe("tryAutoEmitTrunkMerge (ADR-146 §D1+D2+D5)", () => {
         repo,
         lastTask,
         makeTeam({ merger: { enabled: true, baseBranch: "geoyws", stalenessHours: 24 } }),
+        db,
       );
       expect(newId).toBeNull();
     } finally {
@@ -869,7 +873,7 @@ describe("tryAutoEmitTrunkMerge (ADR-146 §D1+D2+D5)", () => {
       seedStory(repo, "s-aaaa0006", "geoyws-alpha");
       seedTask(repo, "t-still-wip", "s-aaaa0006", "in-progress");
       const lastTask = seedTask(repo, "t-justdone", "s-aaaa0006", "done");
-      const newId = tryAutoEmitTrunkMerge(repo, lastTask, makeTeam());
+      const newId = tryAutoEmitTrunkMerge(repo, lastTask, makeTeam(), db);
       expect(newId).toBeNull();
     } finally {
       closeDatabase(db);
@@ -896,7 +900,7 @@ describe("tryAutoEmitTrunkMerge (ADR-146 §D1+D2+D5)", () => {
         story: "s-aaaa0007",
       };
       repo.addTask(autoEmitTask);
-      const newId = tryAutoEmitTrunkMerge(repo, autoEmitTask, makeTeam());
+      const newId = tryAutoEmitTrunkMerge(repo, autoEmitTask, makeTeam(), db);
       expect(newId).toBeNull();
     } finally {
       closeDatabase(db);
@@ -921,6 +925,7 @@ describe("tryAutoEmitTrunkMerge (ADR-146 §D1+D2+D5)", () => {
             fallbackAssignee: "manual-merger",
           },
         }),
+        db,
       );
       expect(newId).not.toBeNull();
       const created = repo.getTask(newId!);
@@ -944,6 +949,7 @@ describe("tryAutoEmitTrunkMerge (ADR-146 §D1+D2+D5)", () => {
             { name: "alpha", role: "member" },
           ],
         }),
+        db,
       );
       expect(newId).not.toBeNull();
       const created = repo.getTask(newId!);
@@ -983,7 +989,10 @@ describe("moveTask — ADR-146 auto-emit hook integration", () => {
     // 3 tasks now: 2 seed + 1 auto-emit.
     expect(tasks.length).toBe(3);
     const autoEmit = tasks.find((t) =>
-      /^merge t-[0-9a-f]+ \(branch→trunk\): geoyws-alpha → trunk$/.test(t.subject ?? ""),
+      // ADR-202 §VIII: compound IDs are `t-N-<8 hex>`.
+      /^merge t-[1-9][0-9]*-[0-9a-f]{8} \(branch→trunk\): geoyws-alpha → trunk$/.test(
+        t.subject ?? "",
+      ),
     );
     expect(autoEmit).toBeDefined();
     expect(autoEmit!.owner).toBe("gitter");

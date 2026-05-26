@@ -68,16 +68,36 @@ import {
   provisionWorktree,
   pruneWorktree,
 } from "../../abstractions/worktree.ts";
+import { type BudgetProbeState, loadBudgetMap, selectAccount } from "../../core/account-pool.ts";
 import { defaultCockpitConfigPath, migrateLegacyShape } from "../../core/cockpit.ts";
 import { resolveCallerScope } from "../../core/common.ts";
+import { epicIsEligible } from "../../core/epic.ts";
+import {
+  formatPressureError,
+  type HostPressureVerdict,
+  type ProbeHostPressureDeps,
+  probeHostPressure,
+} from "../../core/host-pressure.ts";
+import {
+  logSpawnOverride as defaultLogSpawnOverride,
+  type LogSpawnOverrideOpts,
+  type SpawnForceDiscordFn,
+  type SpawnOverrideRecord,
+} from "../../core/spawn-override.ts";
+import { enqueueIfPressured, resolveSpawnQueueLimits } from "../../core/spawn-queue.ts";
 import { ConfigError, UsageError } from "../../errors.ts";
+import type { ClaudeAccountPoolEntry } from "../../schema/cockpit.ts";
 import { Team, type Team as TeamShape } from "../../schema/team.ts";
 
 const USAGE =
   "atmux team spawn-epic <epicId> --from <parentTeam>\n" +
   "  [--roster <preset> | --roster-file <path>]\n" +
   "  [--parent-base <branch>] [--parent-epic-kanban-id <eid>]\n" +
-  "  [--merge-mode auto|pr] [--no-init-submodules]";
+  "  [--merge-mode auto|pr] [--no-init-submodules]\n" +
+  "  [--no-auto-dissolve]  (per ADR-227 §D3 — keeps cage post-merge for inspection)\n" +
+  "  [--force-spawn]   (bypass host-pressure gate — use sparingly)\n" +
+  "  [--no-queue]      (ADR-228 §D1 — refuse-immediately on pressure instead of enqueue)\n" +
+  "  [--force]         (bypass ADR-225 eligibility gate — logged + Discord)";
 
 // ---------- Arg parsing ----------
 
@@ -90,6 +110,26 @@ export interface ParsedSpawnEpicArgs {
   parentEpicKanbanId?: string;
   mergeMode?: "auto" | "pr";
   initSubmodules: boolean;
+  /** `--no-auto-dissolve` — per ADR-227 §D3: keep the epic-team's cage
+   *  alive post-merge so operators can grep `.atmux/logs/` or run post-
+   *  mortems. Persists to `team.json::epicTeam.autoDissolve = false`;
+   *  default is `true` (auto-dissolve on `epic.pushed`). */
+  autoDissolve: boolean;
+  /** `--force-spawn` — bypass the host-pressure gate. ADR-184 substrate.
+   *  Use sparingly: the gate exists to prevent fleet thrash + OOM. */
+  forceSpawn: boolean;
+  /** `--no-queue` — ADR-228 §D1: refuse-immediately on host-pressure
+   *  instead of enqueue. Default is queue-on-pressure (ADR-228 §DA3
+   *  HIGH-REV decision). Operator-side escape hatch for one-shot
+   *  scripts that need synchronous-failure semantics. */
+  noQueue: boolean;
+  /** `--force` — bypass the ADR-225 eligibility gate (is_ready + deps-
+   *  done). Logged to `~/.atmux/state/spawn-overrides.log` + emits
+   *  `[spawn-force]` Discord. Use sparingly — exists for operator
+   *  emergencies where the predicate is wrong (e.g. dep recovery
+   *  state is stale). Separate from `--force-spawn` (host pressure)
+   *  so an operator who wants one isn't forced to take the other. */
+  forceEligibility: boolean;
 }
 
 export function parseSpawnEpicArgs(argv: ReadonlyArray<string>): ParsedSpawnEpicArgs {
@@ -101,6 +141,10 @@ export function parseSpawnEpicArgs(argv: ReadonlyArray<string>): ParsedSpawnEpic
   let parentEpicKanbanId: string | undefined;
   let mergeMode: "auto" | "pr" | undefined;
   let initSubmodules = true;
+  let autoDissolve = true;
+  let forceSpawn = false;
+  let noQueue = false;
+  let forceEligibility = false;
   let i = 0;
   while (i < argv.length) {
     const a = argv[i];
@@ -146,6 +190,26 @@ export function parseSpawnEpicArgs(argv: ReadonlyArray<string>): ParsedSpawnEpic
       i += 1;
       continue;
     }
+    if (a === "--no-auto-dissolve") {
+      autoDissolve = false;
+      i += 1;
+      continue;
+    }
+    if (a === "--force-spawn") {
+      forceSpawn = true;
+      i += 1;
+      continue;
+    }
+    if (a === "--no-queue") {
+      noQueue = true;
+      i += 1;
+      continue;
+    }
+    if (a === "--force") {
+      forceEligibility = true;
+      i += 1;
+      continue;
+    }
     if (a?.startsWith("-") === true) {
       throw new UsageError({
         what: `spawn-epic: unknown flag: ${a}`,
@@ -187,6 +251,10 @@ export function parseSpawnEpicArgs(argv: ReadonlyArray<string>): ParsedSpawnEpic
     epicId,
     parentTeam,
     initSubmodules,
+    autoDissolve,
+    forceSpawn,
+    noQueue,
+    forceEligibility,
   };
   if (roster !== undefined) out.roster = roster;
   if (rosterFile !== undefined) out.rosterFile = rosterFile;
@@ -226,6 +294,31 @@ export interface SpawnEpicOpts {
   callerScope?: () => "driver" | "member";
   /** Override `process.env` (test injection — for $HOME resolution). */
   env?: NodeJS.ProcessEnv;
+  /** Host-pressure probe injection (test seam). Production default reads
+   *  /proc/loadavg + /proc/meminfo + /proc/cpuinfo. ADR-184 substrate. */
+  probeHostPressure?: (deps: ProbeHostPressureDeps) => Promise<HostPressureVerdict>;
+  /** ADR-225 §Eligibility — predicate injection seam. Defaults to the
+   *  live `epicIsEligible` from core/epic. Test harness mocks to assert
+   *  the gate logic in isolation. */
+  eligibilityProbe?: (
+    atmuxDir: string,
+    eid: string,
+  ) => Promise<{
+    eligible: boolean;
+    blockers: string[];
+  }>;
+  /** ADR-225 §Eligibility consumers — Discord `[spawn-force]` ping
+   *  emitter (test injection). Default is a noop; the production
+   *  cockpit wires this to the Discord publisher used by ADR-144 §T5
+   *  test-gate-bypass. */
+  sendSpawnForceDiscord?: SpawnForceDiscordFn;
+  /** ADR-225 §Eligibility consumers — override log injection seam.
+   *  Default writes to `$HOME/.atmux/state/spawn-overrides.log` via
+   *  {@link logSpawnOverride}. Tests pin to a scratch homeDir. */
+  logSpawnOverride?: (record: SpawnOverrideRecord, opts?: LogSpawnOverrideOpts) => Promise<void>;
+  /** ADR-225 §Eligibility consumers — override log opts (homeDir / now)
+   *  forwarded to the default logger. Tests pin homeDir to scratch. */
+  logSpawnOverrideOpts?: LogSpawnOverrideOpts;
 }
 
 // ---------- Top-level dispatch ----------
@@ -274,6 +367,86 @@ export async function spawnEpic(
     });
   }
 
+  // 1.5. Host-pressure gate. ADR-184 substrate — refuse spawn when the
+  //      host is over load OR RAM threshold. The full ADR-184 EPIC adds
+  //      a queue + dormancy audit; this thin gate is the prerequisite
+  //      defense-in-depth that prevents fleet thrash + OOM.
+  //
+  //      Configurable via ATMUX_SPAWN_MAX_LOAD_RATIO (default 0.75) +
+  //      ATMUX_SPAWN_MIN_FREE_MB (default 8192). Bypass with
+  //      --force-spawn (operator escape hatch, e.g. when you KNOW the
+  //      load avg will drop after spawn because workers will idle).
+  //      Non-Linux platforms skip the gate (probe returns {skipped:true}).
+  if (!parsed.forceSpawn) {
+    const probe = opts.probeHostPressure ?? probeHostPressure;
+    const verdict = await probe({ env });
+    if (!verdict.ok && !verdict.skipped) {
+      // ADR-228 §D1 refuse→enqueue path. Operator-side escape via
+      // `--no-queue` falls through to the original throw-on-pressure
+      // behavior (synchronous failure for one-shot scripts). Default
+      // path opens the parent's state.db and enqueues for orchd's
+      // pressure-monitor drain loop (`pressureMonitorTick` in
+      // `src/core/spawn-queue.ts`).
+      if (!parsed.noQueue) {
+        // Resolve parent root early via cockpit (same lookup step 2
+        // performs on the success path — duplicated here so the rare
+        // pressure-refused branch keeps its own scope).
+        const cockpitRaw = await readJson(cockpitPath, RawCockpitForMutation);
+        const cockpitMigrated = migrateLegacyShape(
+          cockpitRaw,
+          cockpitPath,
+          logger.warn,
+        ) as typeof cockpitRaw;
+        const parentEntry = findTeamSession(
+          (cockpitMigrated.sessions as SessionEntry[] | undefined) ?? [],
+          parsed.parentTeam,
+        );
+        if (parentEntry !== null && parentEntry.root !== undefined && parentEntry.root.length > 0) {
+          const parentAtmuxDir = `${parentEntry.root}/.atmux`;
+          const parentDbPath = `${parentAtmuxDir}/state.db`;
+          const db = openDb(parentDbPath);
+          try {
+            const limits = resolveSpawnQueueLimits(env);
+            const queuedBy = env.ATMUX_CALLER_SCOPE === "driver" ? "driver" : "operator";
+            const enqResult = enqueueIfPressured(parsed.epicId, argv, {
+              db,
+              limits,
+              queuedBy,
+            });
+            if (enqResult.enqueued) {
+              logger.log(
+                `spawn-epic: host pressure too high — queued ${enqResult.queueId} (depth ${enqResult.depth}/${limits.maxDepth}). orchd will retry when load drops. Override with --no-queue.`,
+              );
+              return 0;
+            }
+            // Refused — fall through to throw with reason from
+            // admit() (queue full or duplicate epic).
+            throw new ConfigError({
+              what: `spawn-epic: refused — ${formatPressureError(verdict)} AND ${enqResult.reason}`,
+              hint:
+                "wait for pressure to drop OR override with --force-spawn (use sparingly) OR " +
+                "raise ATMUX_SPAWN_QUEUE_MAX_DEPTH for a larger queue.",
+            });
+          } finally {
+            closeDb(db);
+          }
+        }
+        // Parent missing — fall through to the original throw (no
+        // queue available without a parent db).
+      }
+      throw new ConfigError({
+        what: `spawn-epic: refused — ${formatPressureError(verdict)}`,
+        hint:
+          "wait for pressure to drop OR override with --force-spawn (use sparingly). " +
+          "tune thresholds via ATMUX_SPAWN_MAX_LOAD_RATIO + ATMUX_SPAWN_MIN_FREE_MB env.",
+      });
+    }
+  } else {
+    logger.warn(
+      "spawn-epic: --force-spawn bypasses host-pressure gate (ADR-184) — operator owns the consequences.",
+    );
+  }
+
   // 2. Resolve parent via cockpit walk (raw read so we can mutate +
   //    write back later in step 8). Pre-ADR-089 cockpits carry flat
   //    `teams[]` instead of `sessions[]`; run the migrateLegacyShape
@@ -304,6 +477,85 @@ export async function spawnEpic(
     });
   }
   const parentRoot = parentEntry.root;
+
+  // t-54ba3c49 — soft-warn at 20+ concurrent epics under same parent.
+  // Per ADR-090 §Amendment 2026-05-20: the per-parent cap is LIFTED;
+  // operators can spawn freely. But at high concurrency (>20 epics
+  // under one parent), auto-merge queue throughput may saturate. This
+  // warn is visibility, not refuse — the spawn proceeds either way.
+  // Counts existing epic-team children of the parent's sessions[]
+  // (post-migrateLegacyShape so legacy shapes are already lifted).
+  const SOFT_WARN_THRESHOLD = 20;
+  const parentEpicCount = (parentEntry.sessions ?? []).filter(
+    (s) => (s as { type?: string }).type === "epic-team",
+  ).length;
+  if (parentEpicCount >= SOFT_WARN_THRESHOLD) {
+    logger.warn(
+      `spawn-epic: ${parentEpicCount} concurrent epic-team(s) already under '${parsed.parentTeam}' — auto-merge queue depth may saturate at this scale. ` +
+        `Proceeding (no refuse — per ADR-090 §Amendment 2026-05-20).`,
+    );
+  }
+
+  // 2.5. ADR-225 eligibility gate (T5 / t-1fbd2aa4). Refuses spawn
+  //      when the parent's epic row has is_ready=0 OR any direct dep
+  //      is not status='done'. The predicate lives in core/epic.ts
+  //      (T3). `--force` bypasses the gate but:
+  //        (a) appends a structured override record to
+  //            `~/.atmux/state/spawn-overrides.log` BEFORE any spawn-
+  //            side work begins (audit trail survives a failed spawn).
+  //        (b) emits a `[spawn-force]` Discord ping with the same
+  //            payload (parallel to ADR-144 §T5 test-gate-bypass).
+  //
+  //      The epic row lives in the PARENT team's state.db (the kanban
+  //      that owns the epic). `parentEpicKanbanId` defaults to
+  //      `e-<epicId>` in step 3; we mirror the same fallback here so
+  //      the predicate runs against the same row.
+  const parentAtmuxDir = join(parentRoot, ".atmux");
+  const eligibilityProbe = opts.eligibilityProbe ?? epicIsEligible;
+  const parentEpicKanbanIdForCheck = parsed.parentEpicKanbanId ?? `e-${parsed.epicId}`;
+  const eligibility = await eligibilityProbe(parentAtmuxDir, parentEpicKanbanIdForCheck);
+  if (!eligibility.eligible) {
+    if (!parsed.forceEligibility) {
+      throw new UsageError({
+        what:
+          `spawn-epic: refused — epic ${parentEpicKanbanIdForCheck} is not eligible (ADR-225). ` +
+          `Blockers:\n  - ${eligibility.blockers.join("\n  - ")}`,
+        hint:
+          "fix blockers via `atmux epic ready <eid>` and/or `atmux epic advance` " +
+          "on the upstream deps. To override anyway, re-run with --force (logged " +
+          "to ~/.atmux/state/spawn-overrides.log + Discord [spawn-force]).",
+      });
+    }
+    // --force was set on an ineligible epic — log + Discord BEFORE the
+    // spawn proceeds so the audit trail lands even if the spawn fails
+    // downstream. The Discord seam defaults to noop in tests; in
+    // production the cockpit wires it to the channel publisher.
+    const callerMember =
+      env.ATMUX_MEMBER !== undefined && env.ATMUX_MEMBER.length > 0 ? env.ATMUX_MEMBER : "unknown";
+    const overrideRecord: SpawnOverrideRecord = {
+      epicId: parentEpicKanbanIdForCheck,
+      team: parsed.parentTeam,
+      blockers: eligibility.blockers,
+      callerMember,
+      callerScope: callerScope(),
+    };
+    const logOverride = opts.logSpawnOverride ?? defaultLogSpawnOverride;
+    await logOverride(overrideRecord, opts.logSpawnOverrideOpts);
+    const sendDiscord = opts.sendSpawnForceDiscord ?? (async () => {});
+    await sendDiscord({
+      topic: "spawn-force",
+      epicId: parentEpicKanbanIdForCheck,
+      team: parsed.parentTeam,
+      blockers: eligibility.blockers,
+      callerMember,
+      callerScope: callerScope(),
+    });
+    logger.warn(
+      `spawn-epic: --force bypassed eligibility gate for ${parentEpicKanbanIdForCheck} ` +
+        `(blockers: ${eligibility.blockers.join("; ")}). ` +
+        "Logged to ~/.atmux/state/spawn-overrides.log + Discord [spawn-force].",
+    );
+  }
 
   // 3. Compute paths.
   const epicsDir = `${parentRoot}-epics`;
@@ -336,7 +588,22 @@ export async function spawnEpic(
   //     fall back to the parent's first-member account as the team-default.
   //     Roster entries that explicitly carry `claudeAccount` are NOT
   //     overwritten — operators retain per-roster override control.
-  const rosterMembersWithAccount = await inheritClaudeAccount(rosterMembers, parentRoot);
+  //
+  //     ADR-199: when the cockpit configures `claudeAccountPool[]` AND
+  //     the parent has no team-default claudeAccount AND no per-member
+  //     match, select an account from the pool (least-loaded by budget
+  //     probe). The pool fills the bottom of the inheritance ladder;
+  //     explicit roster + parent matches still win.
+  const poolFallback = await resolvePoolFallback({
+    pool: extractPoolFromCockpit(cockpitMigrated),
+    env,
+  });
+  const rosterMembersWithAccount = await inheritClaudeAccount(
+    rosterMembers,
+    parentRoot,
+    poolFallback,
+    logger,
+  );
 
   // 5. provisionWorktree. Side-effect tracker for rollback.
   await mkdir(epicsDir, { recursive: true });
@@ -365,6 +632,7 @@ export async function spawnEpic(
         parentEpicKanbanId: parsed.parentEpicKanbanId ?? `e-${parsed.epicId}`,
         parentBase,
         mergeMode: parsed.mergeMode ?? "auto",
+        autoDissolve: parsed.autoDissolve,
       },
     });
     const childAtmuxDir = join(epicRoot, ".atmux");
@@ -506,18 +774,20 @@ async function resolveRosterMembers(
 async function inheritClaudeAccount(
   rosterMembers: TeamShape["members"],
   parentRoot: string,
+  poolFallback: ClaudeAccountPoolEntry | null = null,
+  logger?: { log: (m: string) => void; warn: (m: string) => void },
 ): Promise<TeamShape["members"]> {
   const parentTeamPath = join(parentRoot, ".atmux", "team.json");
-  if (!(await exists(parentTeamPath))) return rosterMembers;
-  type ParentMember = { name?: unknown; claudeAccount?: unknown };
-  const ParentShape = z.object({ members: z.array(z.unknown()) }).passthrough();
-  let parentParsed: { members: unknown[] };
-  try {
-    parentParsed = await readJson(parentTeamPath, ParentShape);
-  } catch {
-    return rosterMembers;
+  let parentMembers: { name?: unknown; claudeAccount?: unknown }[] = [];
+  if (await exists(parentTeamPath)) {
+    const ParentShape = z.object({ members: z.array(z.unknown()) }).passthrough();
+    try {
+      const parentParsed = await readJson(parentTeamPath, ParentShape);
+      parentMembers = parentParsed.members as typeof parentMembers;
+    } catch {
+      // Unreadable parent → fall through to pool-fallback if available.
+    }
   }
-  const parentMembers = parentParsed.members as ParentMember[];
   const byName = new Map<string, unknown>();
   let teamDefault: unknown;
   for (const m of parentMembers) {
@@ -531,6 +801,19 @@ async function inheritClaudeAccount(
       if (teamDefault === undefined) teamDefault = m.claudeAccount;
     }
   }
+  // ADR-199: bottom of the inheritance ladder. When no parent default
+  // is available AND no per-member match would fill, the pool fallback
+  // supplies the team-default. The pool entry's {configDir, label}
+  // shape maps 1:1 to claudeAccount.
+  if (teamDefault === undefined && poolFallback !== null) {
+    teamDefault = {
+      configDir: poolFallback.configDir,
+      label: poolFallback.label,
+    };
+    if (logger !== undefined) {
+      logger.log(`spawn-epic: claudeAccount drawn from pool — '${poolFallback.label}' (ADR-199)`);
+    }
+  }
   if (teamDefault === undefined && byName.size === 0) return rosterMembers;
   return rosterMembers.map((m) => {
     const member = m as { name?: unknown; claudeAccount?: unknown };
@@ -542,6 +825,52 @@ async function inheritClaudeAccount(
     if (inherited === undefined) return m;
     return { ...member, claudeAccount: inherited } as TeamShape["members"][number];
   });
+}
+
+/** Read the `claudeAccountPool[]` from a cockpit-shaped object. Returns
+ *  empty array when the key is absent OR malformed (best-effort —
+ *  spawn-epic continues with the existing parent-inheritance path).
+ *  ADR-199 minimal slice. */
+function extractPoolFromCockpit(cockpit: unknown): readonly ClaudeAccountPoolEntry[] {
+  if (cockpit === null || typeof cockpit !== "object") return [];
+  const c = cockpit as { claudeAccountPool?: unknown };
+  if (!Array.isArray(c.claudeAccountPool)) return [];
+  // Defensive coercion: filter to entries matching the {configDir,label}
+  // shape. Zod-strict at the cockpit-load layer would normally enforce
+  // this; the duck-typed filter here keeps us safe if cockpit was read
+  // raw (passthrough) — same defensive pattern as the existing parent
+  // member loop above.
+  const out: ClaudeAccountPoolEntry[] = [];
+  for (const e of c.claudeAccountPool) {
+    if (
+      e !== null &&
+      typeof e === "object" &&
+      typeof (e as { configDir?: unknown }).configDir === "string" &&
+      typeof (e as { label?: unknown }).label === "string"
+    ) {
+      const entry = e as { configDir: string; label: string; weight?: number };
+      out.push({
+        configDir: entry.configDir,
+        label: entry.label,
+        ...(typeof entry.weight === "number" ? { weight: entry.weight } : {}),
+      });
+    }
+  }
+  return out;
+}
+
+/** Resolve the pool selection result into a single account entry, or
+ *  `null` when the pool is empty / nothing selectable. Loads the
+ *  per-label budget probe state from `$HOME/.atmux/state/budget-probe-*.json`. */
+async function resolvePoolFallback(deps: {
+  pool: readonly ClaudeAccountPoolEntry[];
+  env: NodeJS.ProcessEnv;
+}): Promise<ClaudeAccountPoolEntry | null> {
+  if (deps.pool.length === 0) return null;
+  const home = deps.env.HOME ?? "/root";
+  const budgetMap = await loadBudgetMap(deps.pool, home);
+  const { account } = selectAccount({ pool: deps.pool, budgetByLabel: budgetMap });
+  return account;
 }
 
 function defaultTemplatesDir(): string {

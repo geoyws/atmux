@@ -45,6 +45,7 @@
 
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
+import { emit as defaultEmit } from "../abstractions/events.ts";
 import { exists } from "../abstractions/fs.ts";
 import { updateJson } from "../abstractions/json.ts";
 import {
@@ -65,6 +66,7 @@ import {
 } from "../schema/kanban.ts";
 import { DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG, type Team } from "../schema/team.ts";
 import { type CallerScope, kanbanJsonPath, tryLoadTeam } from "./common.ts";
+import { nextId } from "./id-sequence.ts";
 import { KanbanRepo } from "./repositories/kanban-repo.ts";
 
 // ---------- Storage routing (ADR-060) ----------
@@ -184,31 +186,69 @@ export async function addTask(atmuxDir: string, opts: AddTaskOpts): Promise<stri
   if (subject.length === 0) {
     throw new UsageError({ what: "task add: <subject> required" });
   }
-  const id = genTaskId();
   const createdAt = nowEpoch();
+  // ADR-202 §Amendment 2026-05-22 (IV) — task.unclaimed event-emit gate.
+  // Fire when ALL of: status='todo' (always true here) AND lane is set
+  // AND owner is null. lane-router consumer picks it up and runs
+  // lane-tick for the named lane immediately rather than waiting for
+  // the 5-min cron tick. Pre-load team for the team.name scope field;
+  // tryLoadTeam returns null on absent team.json (JSON-only kanbans /
+  // test fixtures), in which case emit silently short-circuits.
+  const lane = opts.lane ?? null;
+  const ownerCandidate =
+    opts.assignee !== undefined && opts.assignee.length > 0 ? opts.assignee : null;
+  const wantsUnclaimedEmit =
+    typeof lane === "string" && lane.length > 0 && ownerCandidate === null;
+  const team = wantsUnclaimedEmit ? await tryLoadTeam({ dir: atmuxDir }) : null;
+  if (await _useSqlite(atmuxDir)) {
+    let assignedId = "";
+    await _withDb(atmuxDir, (db, repo) => {
+      transactImmediate(db, () => {
+        // ADR-202 §VIII — running-number ID per-team scoped via
+        // `id_sequences` table. Allocated inside the same transaction
+        // as the kanban row insert so a rollback drops both.
+        const id = nextId(db, "t");
+        const task: KanbanTask = {
+          id,
+          subject,
+          body: opts.body ?? "",
+          status: "todo",
+          owner: ownerCandidate,
+          deps: opts.deps !== undefined ? [...opts.deps] : [],
+          priority: opts.priority ?? null,
+          lane,
+          createdAt,
+          claimedAt: null,
+          completedAt: null,
+        };
+        if (opts.driverOnly === true) task.driverOnly = true;
+        repo.addTask(task);
+        if (wantsUnclaimedEmit && team !== null) {
+          tryEmitTaskUnclaimed({ db, task, team });
+        }
+        assignedId = id;
+      });
+    });
+    return assignedId;
+  }
+  // JSON mode (legacy / pre-SQLite teams) stays on hex IDs — sequence
+  // counter requires SQLite write transaction. This is fine because
+  // every team running atmux today is SQLite-mode.
+  const id = genTaskId();
   const task: KanbanTask = {
     id,
     subject,
     body: opts.body ?? "",
     status: "todo",
-    owner: opts.assignee !== undefined && opts.assignee.length > 0 ? opts.assignee : null,
+    owner: ownerCandidate,
     deps: opts.deps !== undefined ? [...opts.deps] : [],
     priority: opts.priority ?? null,
-    lane: opts.lane ?? null,
+    lane,
     createdAt,
     claimedAt: null,
     completedAt: null,
   };
-  // ADR-033: stamp driverOnly when explicitly set. Default omitted (the
-  // schema treats `undefined` as not-driver-only via the optional field
-  // shape) so legacy Tasks parse unchanged.
   if (opts.driverOnly === true) task.driverOnly = true;
-  if (await _useSqlite(atmuxDir)) {
-    await _withDb(atmuxDir, (_db, repo) => {
-      repo.addTask(task);
-    });
-    return id;
-  }
   await updateJson(
     kanbanJsonPath(atmuxDir),
     KanbanSchema,
@@ -216,6 +256,45 @@ export async function addTask(atmuxDir: string, opts: AddTaskOpts): Promise<stri
     { initial: emptyKanban() },
   );
   return id;
+}
+
+/**
+ * ADR-202 §Amendment 2026-05-22 (IV): emit `task.unclaimed` on a fresh
+ * unowned-with-lane task. Same-transaction with the addTask write so
+ * event durability matches the kanban row. Best-effort — Zod failure
+ * or missing events table is swallowed (the kanban write is load-
+ * bearing; the event is observability/coordination plumbing).
+ */
+function tryEmitTaskUnclaimed(args: {
+  db: Database;
+  task: KanbanTask;
+  team: Team;
+}): void {
+  const { db, task, team } = args;
+  // Narrow the lane to the ADR-203 v1 enum. The kanban-side `lane`
+  // field is a string; the event schema is a closed enum. If the
+  // lane isn't one of the seven canonical lanes, skip emit silently
+  // — the cron */5 lane-tick still catches non-canonical lanes.
+  const canonical: ReadonlyArray<string> = ["fe", "be", "db", "ops", "test", "review", "misc"];
+  if (typeof task.lane !== "string" || !canonical.includes(task.lane)) return;
+  try {
+    // emit() auto-detects honkerLoaded from getHonkerState(db) per
+    // ADR-202 §Amendment 2026-05-24 — no manual dance required.
+    defaultEmit(db, {
+      topic: "task.unclaimed",
+      taskId: task.id,
+      team: team.name,
+      lane: task.lane as "fe" | "be" | "db" | "ops" | "test" | "review" | "misc",
+      ...(task.priority !== null && task.priority !== undefined
+        ? { priority: task.priority }
+        : {}),
+      ...(typeof task.story === "string" ? { storyId: task.story } : {}),
+      ...(typeof task.epic === "string" ? { epicId: task.epic } : {}),
+    });
+  } catch {
+    // Best-effort: missing events table or Zod failure must not break
+    // task add. The kanban row is the load-bearing side effect.
+  }
 }
 
 /**
@@ -284,7 +363,7 @@ export async function moveTask(
   atmuxDir: string,
   id: string,
   status: string,
-  opts: { callerScope?: CallerScope } = {},
+  opts: { callerScope?: CallerScope; emit?: typeof defaultEmit } = {},
 ): Promise<void> {
   const completedAt = status === "done" ? nowEpoch() : undefined;
   // ADR-033: only `in-progress` and `done` are gated; `todo` / `blocked`
@@ -297,7 +376,15 @@ export async function moveTask(
   // the write-lock-held transaction body. tryLoadTeam returns null
   // on absent team.json (JSON-only kanbans / tests that don't stage
   // a team) — auto-emit silently skips in that case.
-  const team: Team | null = status === "done" ? await tryLoadTeam({ dir: atmuxDir }) : null;
+  //
+  // ADR-202/203: also pre-load team for status transitions that emit
+  // events (claimed / done) — payload carries team.name as scope.
+  const eventStatuses = new Set(["done", "in-progress"]);
+  const team: Team | null =
+    status === "done" || eventStatuses.has(status)
+      ? await tryLoadTeam({ dir: atmuxDir })
+      : null;
+  const emit = opts.emit ?? defaultEmit;
   if (await _useSqlite(atmuxDir)) {
     await _withDb(atmuxDir, (db, repo) => {
       // ADR-146 §Atomic: BEGIN IMMEDIATE so the upsert + the auto-
@@ -317,7 +404,14 @@ export async function moveTask(
         // gitter's task-done cascade (ADR-032) wakes only after
         // both rows commit — no false-positive idle nudge.
         if (status === "done" && team !== null) {
-          tryAutoEmitTrunkMerge(repo, next, team);
+          tryAutoEmitTrunkMerge(repo, next, team, db);
+        }
+        // ADR-202/203 §D2: task-lifecycle event emission, same-tx so
+        // event durability matches the kanban row. Honker NOTIFY (if
+        // loaded) fires inside emit() via honker_stream_publish; the
+        // events table INSERT is authoritative.
+        if (team !== null) {
+          tryEmitTaskLifecycle({ db, prev: cur, next, team, emit });
         }
       });
     });
@@ -331,6 +425,67 @@ export async function moveTask(
     if (completedAt !== undefined) next.completedAt = completedAt;
     return next;
   });
+}
+
+// ---------- ADR-202/203 task-lifecycle event emit hook ----------
+
+/**
+ * Emit task-lifecycle events on status flips per ADR-203 §D2:
+ *
+ *   - `done`         → `task.done`    (every move TO done)
+ *   - `in-progress`  → `task.claimed` (only on FIRST move from todo →
+ *                      in-progress; status-flips within in-progress are
+ *                      no-ops to avoid noise)
+ *
+ * Best-effort: a missing events table (pre-migration) or a Zod failure
+ * is swallowed — the kanban-row mutation is the load-bearing side
+ * effect; the event is observability/coordination plumbing.
+ *
+ * Same-tx with the upsertTask write — `emit()` INSERTs into the events
+ * table inside the transactImmediate scope, so a rollback drops the
+ * event alongside the kanban row. Atomic by construction.
+ *
+ * Honker NOTIFY happens inside emit() automatically (auto-detected
+ * via `getHonkerState(db)?.loaded` per ADR-202 §Amendment 2026-05-24)
+ * — gracefully swallowed when the substrate isn't loaded.
+ */
+function tryEmitTaskLifecycle(args: {
+  db: Database;
+  prev: KanbanTask;
+  next: KanbanTask;
+  team: Team;
+  emit: typeof defaultEmit;
+}): void {
+  const { db, prev, next, team, emit } = args;
+  try {
+    if (next.status === "done") {
+      const doneAt = (next.completedAt ?? nowEpoch()) as number;
+      emit(db, {
+        topic: "task.done",
+        taskId: next.id,
+        member: prev.owner ?? next.owner ?? "",
+        team: team.name,
+        doneAtSec: doneAt,
+        ...(typeof next.story === "string" ? { storyId: next.story } : {}),
+        ...(typeof next.epic === "string" ? { epicId: next.epic } : {}),
+      });
+      return;
+    }
+    if (next.status === "in-progress" && prev.status !== "in-progress") {
+      emit(db, {
+        topic: "task.claimed",
+        taskId: next.id,
+        member: next.owner ?? prev.owner ?? "",
+        team: team.name,
+        ...(typeof next.story === "string" ? { storyId: next.story } : {}),
+        ...(typeof next.epic === "string" ? { epicId: next.epic } : {}),
+      });
+    }
+  } catch {
+    // Best-effort: missing events table or programmer-introduced Zod
+    // failure must not break task move. The kanban row is the
+    // load-bearing side effect.
+  }
 }
 
 // ---------- ADR-146 T2: trunk-merge auto-emit hook ----------
@@ -376,7 +531,11 @@ function resolveAutoEmitOwner(team: Team, fallbackAssignee: string | null): stri
 /** ADR-146 §D2 subject pattern. Loop-prevention §D5 matches against
  *  this exact shape so an auto-emit Task doesn't re-trigger itself
  *  if its own status flips. */
-const AUTO_EMIT_SUBJECT_RE = /^merge t-[0-9a-f]+ \(branch→trunk\):/;
+// Loop-prevention: matches BOTH legacy hex IDs (`t-3b017960`) and the
+// ADR-202 §VIII compound IDs (`t-1-3b017960`). Either form may appear
+// on disk as the subject prefix.
+const AUTO_EMIT_SUBJECT_RE =
+  /^merge t-(?:[1-9][0-9]*-)?[0-9a-f]+ \(branch→trunk\):/;
 
 /** ADR-146 §D5 + §D1 + §D2: emit a `merge t-xxx (branch→trunk)`
  *  Task when ALL of these hold for the just-done Task:
@@ -398,6 +557,11 @@ export function tryAutoEmitTrunkMerge(
   repo: KanbanRepo,
   doneTask: KanbanTask,
   team: Team,
+  /** ADR-202 §VIII — Database handle for running-number ID
+   *  allocation via `id_sequences` table. The function is called
+   *  inside an open transactImmediate scope so the sequence increment
+   *  and the auto-emit task insert are atomic. */
+  db: Database,
 ): string | null {
   // (1) Storyless Tasks never emit. One-off branches / hot-fixes
   //     remain manual per ADR-146 §"Storyless trunk-merges".
@@ -428,7 +592,7 @@ export function tryAutoEmitTrunkMerge(
   }
 
   // (5) Shared-base short-circuit per §D5 row 2. Compare against
-  //     the team's `merger.baseBranch` (when set) — see ADR-088.
+  //     the team's `merger.baseBranch` (when set) — see ADR-179.
   //     The resolver in `src/core/merger-config.ts` is the strict
   //     resolver, but the kanban hook intentionally stays config-
   //     local to avoid pulling in the merger resolver's git-probe
@@ -453,7 +617,9 @@ export function tryAutoEmitTrunkMerge(
   // source-branch + target identically to a manually-filed Task.
   const owner = resolveAutoEmitOwner(team, cfg.fallbackAssignee);
   const emittedAt = nowEpoch();
-  const autoId = genTaskId();
+  // ADR-202 §VIII — running-number ID. Inside the caller's
+  // transactImmediate so atomicity matches the row insert.
+  const autoId = nextId(db, "t");
   // Owning-lane derive per §D2: read the done Task's lane (proxy
   // for "Story's task chain primary lane"). Fall back to "misc"
   // when the done Task is laneless.
@@ -650,8 +816,16 @@ export async function setTaskDriverOnly(
   });
 }
 
-/** Update a task's owner. Throws `ConfigError` on miss. */
-export async function assignTask(atmuxDir: string, id: string, owner: string): Promise<void> {
+/** Update a task's owner. Throws `ConfigError` on miss.
+ *
+ *  Pass `null` to unassign (parking-lot convention per `feedback_
+ *  task_body_no_self_claim_language`) — surfaces in `task list` as
+ *  the bare `-` placeholder and skips the pull-model claim path. */
+export async function assignTask(
+  atmuxDir: string,
+  id: string,
+  owner: string | null,
+): Promise<void> {
   if (await _useSqlite(atmuxDir)) {
     await _withDb(atmuxDir, (db, repo) => {
       transact(db, () => {

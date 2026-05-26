@@ -1,4 +1,4 @@
-// Unit tests for src/verbs/merge-cycle.ts (ADR-088 W3 / t-d78127c7).
+// Unit tests for src/verbs/merge-cycle.ts (ADR-179 W3 / t-d78127c7).
 //
 // Strategy mirrors merge-member.test.ts:
 //   - Parser tests run pure on `parseMergeCycleArgs`.

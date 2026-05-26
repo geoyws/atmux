@@ -14,6 +14,23 @@
 > below describe the legacy JSON path; the bun port is dual-path with
 > `state.db` as source of truth when present.
 
+> **2026-05-24 architecture alignment.** atmux is now event-driven via the
+> Rust **`atmux-orchd`** daemon (per-team process, 10 in-process consumers + 4
+> tickers) backed by the **Honker** in-DB messaging substrate. atmux NEVER
+> writes to crontab — cron auto-install retired per [ADR-233](adr/233-cron-auto-install-disabled-trust-orchd.md);
+> orchd is the runtime. Cockpit roles trimmed: **Sentinel retired**
+> ([ADR-211](adr/211-retire-sentinel-role-distribute-to-honker-consumers.md)),
+> **Medic narrowed to on-demand `atmux medic diagnose <team>`**
+> ([ADR-212](adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md)),
+> **Jury retired** ([ADR-213](adr/213-retire-jury-reviewer-absorbs-acceptance-criteria.md);
+> reviewer absorbs acceptance criteria), **Ombudsman retired**
+> ([ADR-214](adr/214-retire-ombudsman-lead-absorbs-complaint-adjudication-via-honker.md);
+> `complaint.filed` → consumer → tell-lead). Retired roles ship as safety net
+> until cleanup-EPIC ≥30 days after e-honker-observation-watchdogs runs stable.
+> Honker topics live at `src/schema/events.ts::TOPICS`; emit via
+> `emit(db, payload)` in `src/abstractions/events.ts` (auto-detects honker-loaded
+> state per [ADR-202 §Amendment 2026-05-24](adr/202-honker-in-db-messaging-substrate.md)).
+
 ---
 
 ## 1. Vision
@@ -44,8 +61,8 @@ Three durable principles (see `docs/ARCHITECTURE.md`):
    diffable, survives tmux restart, replays on `atmux start`.
 3. **No daemon.** Every verb is idempotent. `whip` (15min default per
    `team.whip.intervalMins`, bumped from 5min in t-dcbff97c to dial back
-   the per-tick LLM burn now that the sentinel path covers high-cadence
-   nudging — ADR-132) and `report` (30min) run on cron; nothing long-lived.
+   the per-tick LLM burn) and `report` (30min) run on cron; nothing
+   long-lived.
 
 ### 1.3 Why now
 
@@ -132,50 +149,43 @@ Source: `bin/atmux` dispatcher + `lib/*.sh` per `PLAN.md` §6.2.
 | Decisions / flags    | `decisions add/list/show/digest` / `flags add/list/show/resolve`          |
 | Driver self-state    | `brief-driver` / `driver note` / `reload brief-reload` / `reload config-reload` |
 | Superdriver          | `super-attach` (cross-team / fleet — ADR-025 in parent repo)              |
-| Cockpit              | `cockpit rebuild / reload` (ADR-063), `sentinel tick / status` (ADR-132; renamed from `martinet` per ADR-158) |
+| Cockpit              | `cockpit rebuild / reload` (ADR-063)                                      |
 
-#### Cockpit topology (ADR-063 + ADR-077 + ADR-132 + ADR-133 + ADR-135 + ADR-158)
+#### Cockpit topology (ADR-063 + ADR-077 + ADR-133 + ADR-135)
 
 The operator cockpit session (`atmux_cockpit` by default, was
 `atmux_teams` pre-ADR-135) carries the following window order — opt-in
-surfaces (`_medic`, `_sentinel`) are gated by `cockpit.json` blocks,
-per-team viewers shift down by the number of opt-in surfaces enabled.
-Cockpit-level system roles carry a single-underscore prefix (sorts
-before plain team names in `tmux list-windows`); per-team viewers stay
-plain. Member windows inside team cages use `<emoji>-<member>`
-(hyphen-separated, ADR-135 §D3).
+surface (`_medic`) is gated by a `cockpit.json` block, per-team viewers
+shift down by one when enabled. Cockpit-level system roles carry a
+single-underscore prefix (sorts before plain team names in `tmux
+list-windows`); per-team viewers stay plain. Member windows inside team
+cages use `<emoji>-<member>` (hyphen-separated, ADR-135 §D3).
 
 | # | Window | Role | Authorizing ADR |
 |---|--------|------|-----------------|
 | 1 | `_superdriver` | Operator cross-team REPL | ADR-063 (renamed per ADR-135 §D2) |
 | 2 | `_medic` (was `medic`/`superdoctor`) | Fleet self-healing / diagnosis-and-prevention loop | ADR-077 + ADR-133 + ADR-135 §D2 |
-| 3 | `_sentinel` (was `_martinet` / `martinet`) | Pluggable per-team whip-manager + fleet-wide iterator | ADR-132 §D2 + ADR-135 §D2 + ADR-158 §Part C |
-| 4..N | per-team viewers | One per enabled team in `cockpit.json::sessions` | ADR-063 |
+| 3..N | per-team viewers | One per enabled team in `cockpit.json::sessions` | ADR-063 |
 
-Backward-compat: a cockpit.json without `medic` / `sentinel` blocks
-retains the pre-ADR-077 / pre-ADR-132 topology (W1 _superdriver +
-W2..N per-team viewers). Loader migrates legacy `superdoctor` keys
-to medic semantics with a deprecation warning per ADR-133 §D2.
-Loader also migrates legacy `martinet` keys to `sentinel` semantics
-with a deprecation warning per ADR-158 §Part B (one-release grace).
-Cockpit rebuild detects legacy `atmux_teams` session + legacy
-non-underscored cockpit-role windows and renames them in-place
-(idempotent) per ADR-135 §D4 — including `_martinet` → `_sentinel`
-per ADR-158 §Part C. Member windows in legacy
-`<emoji><member>` format get the same in-place rename treatment on
-next `atmux start`.
+Backward-compat: a cockpit.json without a `medic` block retains the
+pre-ADR-077 topology (W1 `_superdriver` + W2..N per-team viewers).
+Loader migrates legacy `superdoctor` keys to medic semantics with a
+deprecation warning per ADR-133 §D2. Cockpit rebuild detects legacy
+`atmux_teams` session + legacy non-underscored cockpit-role windows and
+renames them in-place (idempotent) per ADR-135 §D4. Member windows in
+legacy `<emoji><member>` format get the same in-place rename treatment
+on next `atmux start`.
 
-**ADR-132 §D6 (T5)** — `team.json::sentinel` (was `martinet` pre-ADR-158)
-selects which pluggable cockpit-W3 whip-manager (`"claude"` degenerate
-baseline / `"cursor"` composer-2-fast production default) observes +
-nudges this team. Resolution: `team.sentinel` > `cockpit.defaultSentinel`
-> hardcoded `"claude"`. Existing rosters without the field keep the
-per-team whip codepath unchanged. Companion `team.sentinelOverrides`
-tunes `cadenceSec` (default 270s) and `escalationConfidenceThreshold`
-(default 0.7). Cockpit-level provisioning lives in `cockpit.json::
-sentinel` — see ADR-132 §D6 for the W3 cage / `cursor-agent` path /
-cage-tier shape. Legacy `martinet` / `defaultMartinet` / `martinetOverrides`
-keys still parse during the ADR-158 grace cycle with a deprecation warn.
+**Cockpit-W3 sentinel retired (EPIC e-be01fc89, 2026-05-23)** — the
+pluggable cockpit-W3 whip-manager (ADR-132 / ADR-158 / ADR-183 / ADR-185)
+is fully removed. Mechanical observation + Enter-push + `claim-next`
+re-fires distribute to Honker event consumers per sibling EPIC
+e-a946af69 (orchd Phase 3-5). Until those consumers ship, the lead's
+self-driven whip cron (`team.whip.intervalMins`) is the canonical
+observe + intervene loop; on-demand audits via `atmux doctor` cover the
+gap. Legacy `team.sentinel` / `cockpit.sentinel` / `cockpit.defaultSentinel`
+config keys are silently accepted via schema-passthrough but no longer
+drive any spawn.
 
 ### 3.2 TUI matrix
 
@@ -225,6 +235,43 @@ Cross-reference: `README.md` "State layout"; `docs/ARCHITECTURE.md`.
 Environment variables documented in `README.md` "Configuration" — not
 duplicated here to avoid drift. `team.json` schema is the on-disk
 source of truth.
+
+### 3.5 Skills plugin (`/atmux:` namespace, optional)
+
+atmux ships with a Claude Code plugin (`plugins/atmux/`) bundling 12
+operator-cockpit-tier skills under the `/atmux:` namespace —
+`/atmux:bruh`, `/atmux:team`, `/atmux:tell-lead`, `/atmux:session`,
+`/atmux:whip`, `/atmux:bau`, `/atmux:budget`, `/atmux:cockpit-rebuild`,
+`/atmux:ghostbuster`, `/atmux:heads-up`, `/atmux:bruhloop`,
+`/atmux:sweep`. Each wraps a recurring multi-step atmux workflow that
+operators previously either retyped from memory or maintained in
+private dotfiles. Bundling them with atmux makes the cockpit-tier
+workflow discoverable + survives operator-machine bootstrap.
+Source: [ADR-217](adr/217-atmux-skills-plugin-bundled-and-wizard-installed.md).
+
+**Install posture:**
+
+- **Optional** — the install wizard (`atmux init`, per
+  [ADR-200](adr/200-install-wizard-guided-first-run-setup.md))
+  prompts `[Y/n/s]` (yes / no / show-list). Skip with `--no-skills`;
+  re-install later with `--skills-only`.
+- **Symlink not copy** — wizard symlinks
+  `<atmux-source>/plugins/atmux/` into `~/.claude/plugins/atmux/`
+  (Claude Code's plugin discovery path). atmux upgrades automatically
+  refresh the bundled SKILL.md bodies — operators don't have to
+  re-install the plugin to pick up newer skill behavior.
+- **Operator dotfiles override preserved** — if
+  `~/.claude/plugins/atmux/` already exists as a real directory
+  (not a symlink), the wizard preserves it + prints a notice.
+  Operators who maintain their own per-skill customizations keep
+  them; the bundle becomes the default for users who don't.
+- **Doctor probe** — `atmux doctor` adds an `atmux-skills-plugin`
+  row surfacing the install state (green when symlinked +
+  `plugin.json` validates; yellow when missing / malformed;
+  info-level when opted out at wizard time).
+
+For the full skill list + per-skill invocation reference + uninstall
+instructions, see `plugins/atmux/README.md`.
 
 ---
 
@@ -403,6 +450,12 @@ ascending, then `createdAt` ascending. Tasks with non-`done` deps are
 skipped automatically. Cross-lane fallback when a lane is dry
 (`crossLaneClaim=true` default); REVIEW-lane carve-out (ADR-031).
 
+EPICs additionally carry `depends_on` (epic-id list) and `is_ready` (0/1
+kick-off bit) per [ADR-225](adr/225-epic-dependencies-and-is-ready-toggle.md);
+`team spawn-epic <eid>` consults an eligibility predicate (all deps done +
+`is_ready=1`) and refuses on unmet deps with a `--force` override. Two
+events (`epic.unblocked`, `epic.ready`) ship per ADR-203 §D2 amendment.
+
 ### 7.3 Socket-driven messaging (ADR-032, parent repo)
 
 Supervisor-injected keystrokes between turns (event-type prefixed):
@@ -557,6 +610,7 @@ Critical ADRs with active behavior:
 - **ADR-125** — (worktree-local — distinct from parent ADR-125) error-class lane scope.
 - **ADR-052** — Eternal-improvement (kanban-empty fallback to autonomous self-improvement loop). Status: proposed; gated on OQ-1 / OQ-2 / reviewer signoff. T1–T7 landed (T8 e2e + T9 cross-cage announcement blocked).
 - **ADR-053** — Budget observability (probe port + Fix C OAuth refresh + warning bands + refresh-soon + `whip-resume-check` 1-min cron + history.jsonl). R1-T1/T5/T6/T7 landed (`ffad610` / `65c16f3` / `65bdcda` / `09b8091` / `df3a08c` / `8160d71` / `f9ad15b` / `9c50354`).
+- **ADR-222 + ADR-223** — Fleet topology via `atmux topo` (read-only manifest + 6-class orphan classifier per ADR-222) + composable reap cascade (`--reap` flag-chain + 4-gate safety ladder per ADR-223). Replaces N × N manual cleanup with a single composer; cockpit-mirror Rust crate (e-95087c8b S2) pins on `schema_version: 1`. Operator runbook at `docs/RUNBOOK-topology.md`.
 - **ADR-054** — Zod whip-config (TeamWhip schema + per-tick drift detection + `[whip-config-drift]` ping). R1-T3/T4 landed (`4e93746` / `9751f7a`).
 - **ADR-055** — Cursor self-heal (recipe-driven; v1 recipes: `fix:team-json-schema-drift` / `fix:cron-pollution` / `fix:supervisor-missing`). R1-T8 chain landed (`0fa4572` → `80d628e` → `9554f70` → `f50e751` → `1ce71c3`). Reviewer-gate, no auto-commit.
 - **ADR-056** — Account-swap (preemptive handoff at 75% used; lead/planner excluded; sequential per-team flock; OQ-3 = post-resume reconciliation deferred). R1-T10/T11/T12 landed (`f99519f` / `ffa2bd5` / `22ac16b` / `83115ec`).

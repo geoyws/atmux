@@ -1,7 +1,12 @@
-// ADR-148 §D4 / T3: lane-stall cron verb.
+// ADR-148 §D4 / T3: lane-stall verb.
 //
-// Cron-fired (every 5min via `cron-install --template lane-stall-watch`).
-// Per ADR-148 §D4 the verb is the fleet-wide safety net — when a Task
+// Operator-on-demand post-ADR-233 (cron auto-install retired; orchd is
+// the event-driven runtime). Pre-ADR-233 this fired from a cron block;
+// the per-team `cron-install --template lane-stall-watch` arming is
+// gone. Until an orchd consumer subscribes to a lane-stall topic, the
+// verb runs only when an operator/lead invokes `atmux lane-stall-tick`
+// directly. Per ADR-148 §D4 the verb is the fleet-wide safety net —
+// when a Task
 // stalls in a lane whose members are all non-shipping, fire an Enter-
 // push (`atmux claim <task-id>`) to the most-recently-active member's
 // pane. This is the Path A choice per §OQ-2 (Enter-push over filing a
@@ -46,7 +51,7 @@ import {
   pruneDedupState,
   readDedupState,
 } from "../core/lane-stall.ts";
-import { type CaptureFn, classifyText } from "../core/pane-state.ts";
+import { type CaptureFn } from "../core/pane-state.ts";
 import { type SafeSendOpts, type SendKeysFn, safeSendKeys } from "../core/safe-send.ts";
 import { UsageError } from "../errors.ts";
 import { DEFAULT_LANE_STALL_MIN_AGE_SEC, type Team, type TeamMember } from "../schema/team.ts";

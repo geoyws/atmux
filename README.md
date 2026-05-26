@@ -28,6 +28,8 @@ atmux's kanban speaks Epic / Story / Task. The pull model only works when you ke
 
 - **Task** — an atomic unit of work on the kanban with a lane (FE / BE / DB / OPS / TEST / REVIEW / MISC), optional `--epic` / `--story` tags, optional `--deliverable`, and explicit `--deps`. Workers **pull** the next claimable Task in their lane via `atmux claim --next`; selection prefers their lane, falls back across lanes when `crossLaneClaim=true` (default). Each Task with `.epic` set auto-dispatches a commit-Task to committer on `move done`; one commit per Task, no batching.
 
+EPICs additionally carry `depends_on` + `is_ready` per [ADR-225](docs/adr/225-epic-dependencies-and-is-ready-toggle.md); `atmux team spawn-epic` consults an eligibility predicate (all deps done + `is_ready=1`) and refuses on unmet deps with a `--force` override.
+
 The **lead never decomposes and never dispatches per-Task** — that's the planner's and the kanban's job. The lead routes Epics to the planner, watches state, surfaces blockers, and composes Epic summaries. The **committer never reviews** and never pushes by default. The **reviewer never commits** and never decomposes. Each role has a narrow surface; the kanban orchestrates.
 
 See [docs/adr/007-pull-kanban.md](docs/adr/007-pull-kanban.md) for the full ADR + state-machine spec, and the implementation plan at `~/.claude/plans/pure-pondering-crane.md` for the rollout sequence.
@@ -232,7 +234,7 @@ The init wizard does not prompt for this field — opt-in is a manual `team.json
 
 ### Renaming a team
 
-`atmux team rename` renames a team **atomically across every surface** the team-name appears in: `team.json:.name`, tmux session + window names, cron markers, the fleet registry, and the single-session capture file. ~150 LOC of orchestration plus a rollback engine — the verb refuses unsafe states up front rather than half-committing on failure ([ADR-027](docs/adr/027-team-rename-verb-and-topology-invariant.md)).
+`atmux team rename` renames a team **atomically across every surface** the team-name appears in: `team.json:.name`, tmux session, the cockpit team-viewer window (per [ADR-135](docs/adr/135-cockpit-naming-convention.md) — only the team-viewer window carries the team-name; per-member windows are NOT touched), cron markers, the cockpit registry (`cockpit.json::sessions[]` DFS — see ADR-089 §B), and the single-session capture file. Rollback-staged orchestration plus refuse-gate preflight (in-progress kanban, name collision, invalid charset) — the verb refuses unsafe states up front rather than half-committing on failure ([ADR-027](docs/adr/027-team-rename-verb-and-topology-invariant.md)).
 
 ```bash
 atmux team rename <old> <new> [--session <new-session>] [--migrate-session] [--force]
@@ -248,10 +250,10 @@ atmux team rename <old> <new> [--session <new-session>] [--migrate-session] [--f
 
 1. Set the `rename.lock` state file. Cron'd consumers (whip, super-status, decisions digest, cron orphan-detect) check this at entry and return 0 silently — no concurrent state mutation while the rename runs.
 2. `jq`-edit `team.json:.name` → `<new>`. Backup at `team.json.bak.<epoch>`.
-3. `tmux rename-window` per `__<old>__*` window → `__<new>__*`. If `--session <new-session>` differs from the current session name, also `tmux rename-session` (or `--migrate-session` invokes the ADR-016 Phase 2 migrate path for legacy dedicated→driver-session moves).
+3. `tmux rename-window` for the cockpit team-viewer window matching the bare `<old>` name → `<new>` (per [ADR-135](docs/adr/135-cockpit-naming-convention.md) §window-naming: cockpit team-viewer carries the team name; per-member `<emoji>-<member>` + cockpit-role `_<role>` + epic-viewer `🌳-<eid>` windows do NOT carry team-name and are NOT touched). If `--session <new-session>` differs from the current session name, `tmux rename-session` runs too.
 4. Rewrite `state/session.txt` for single-session teams.
 5. **Cron re-install with NEW marker first, then remove the OLD marker.** Install-new-then-remove-old is the explicit ordering — avoids any window where the team has zero cron coverage (per ADR-027 OQ H3). Brief overlap of two markers is harmless; whip is flock-guarded so duplicate fires no-op.
-6. Registry update: `atmux::registry_deregister <old>` + `atmux::registry_upsert <new> <projectRoot> <new-session>`. `createdAt` is preserved on the new entry — rename, not re-init.
+6. Cockpit registry update: DFS-walk `cockpit.json::sessions[]` (per [ADR-089](docs/adr/089-hierarchical-cockpit.md) §B) for the `type: "team"` node matching `<old>`; mutate `.name = <new>` in place. Legacy flat `teams[]` rosters auto-lift to the canonical `sessions[]` shape on first rename via `migrateLegacyShape`. Child epic-team nodes' `.name` fields are NOT touched — only the renamed team's own `.name` is mutated.
 7. Clear `rename.lock`.
 8. Return success.
 
@@ -292,14 +294,14 @@ atmux audit --dry-run             # print fix plan, no mutations (default for bl
 **When to invoke.**
 
 - **Ad-hoc**: after a fleet-wide convention shift (an ADR amendment, a rename burst, a manual `tmux` op that touched topology) — `atmux audit` shows the drift inventory; pick fixes class-by-class.
-- **Whip auto** (per [ADR-040](docs/adr/040-audit-whip-integration.md)): every 5-min whip tick invokes `atmux audit --quiet --fix` as a sub-pass; low-blast classes auto-fire, medium gates on idle, high surfaces. Zero operator action required for D/E/F drift.
+- **Whip auto** (per [ADR-040](docs/adr/040-whip-audit-integration.md)): every 5-min whip tick invokes `atmux audit --quiet --fix` as a sub-pass; low-blast classes auto-fire, medium gates on idle, high surfaces. Zero operator action required for D/E/F drift.
 - **Daily backstop**: a once-a-day cron (operator opt-in) ensures classes that whip might have skipped (target pane busy all day) eventually surface. Phase 2 of the enforcer agent (ADR-039) may take this over fleet-wide.
 
 **Fleet scope.** Per-team is the default invocation. Fleet aggregation walks `~/.claude/teams/registry.json`, runs the per-team audit on each entry, and rolls up findings — that's the **enforcer** role's job ([ADR-039](docs/adr/039-enforcer-agent-role.md)). Cross-team patterns (≥2 teams hitting the same class = convention shift, not 3 independent bugs) become visible at fleet scope.
 
 **Convergence with ELEVATION.** When the ELEVATION manifest + reconciler ships, `atmux audit` becomes a thin wrapper around `atmux diff --class drift` (detect) + `atmux apply --selected-class <a|b|c|d|e|f>` (fix). The class taxonomy migrates verbatim; gating policy survives. The class vocabulary (A–F + future additions) is the durable artifact.
 
-**See also**: [ADR-038](docs/adr/038-declarative-live-audit-model.md) (audit model + sources of truth + class taxonomy + per-class detector/fixer pair pattern); [ADR-039](docs/adr/039-enforcer-agent-role.md) (fleet-level enforcer agent that aggregates per-team audit findings); [ADR-040](docs/adr/040-audit-whip-integration.md) (whip sub-pass that auto-fires safe classes); `docs/audit.md` (operator guide — runbooks per class).
+**See also**: [ADR-038](docs/adr/038-declarative-live-audit-model.md) (audit model + sources of truth + class taxonomy + per-class detector/fixer pair pattern); [ADR-039](docs/adr/039-enforcer-agent-role.md) (fleet-level enforcer agent that aggregates per-team audit findings); [ADR-040](docs/adr/040-whip-audit-integration.md) (whip sub-pass that auto-fires safe classes); `docs/audit.md` (operator guide — runbooks per class).
 
 ### Preset modes
 
@@ -393,7 +395,7 @@ The legacy `atmux report` cron line — pre-discorder, lead-composed report — 
 
 Optional per-team complaint-adjudicator member, spawned at `role=ombudsman, lane=misc` (emoji `⚖️`). Per [ADR-147](docs/adr/147-ombudsman-and-release-notes.md) §D1, reads open complaints (filed by medic / whip-velocity-gate / operator / CLI), triages each into one of five outcomes (file epic / file task / wontfix / already-addressed / defer), and writes its adjudication entry to the day's release-notes file. Surface-only on the code side — never claims code Tasks, never plans, only writes kanban + complaint resolutions.
 
-**Why**: the complaint *filing* side has named owners (medic per ADR-077, whip per ADR-087), but the *adjudicating* side has none — open complaints linger indefinitely until the operator triages them by hand. Ombudsman closes that loop per ADR-147 §Context.
+**Why**: the complaint *filing* side has named owners (medic per ADR-077, whip per ADR-177), but the *adjudicating* side has none — open complaints linger indefinitely until the operator triages them by hand. Ombudsman closes that loop per ADR-147 §Context.
 
 **Wake mechanism** (per [ADR-147](docs/adr/147-ombudsman-and-release-notes.md) §D2): **event-driven, NOT whip-polled**. A sentinel file `.atmux/state/ombudsman-pending.json` is written-through by `atmux complaints file|resolve`; a cron line `atmux ombudsman tick` (default 15min via `team.ombudsman.tickIntervalMins`) fast-paths no-op when the sentinel is empty and wakes the ombudsman pane via verified send-keys ([ADR-138](docs/adr/138-verified-send-keys.md)) when non-empty. Lane-tick MUST NOT inject `atmux claim --next --as ombudsman` — the role is outside the pull-model cadence.
 
@@ -658,10 +660,14 @@ atmux epic add <title> [--body <txt>] [--driver-ref <ref>]
 atmux epic list [--status <s>] [--json]
 atmux epic show <id>
 atmux epic advance <id> [--to <state>]              # planning→ready→in-progress→review→done
-atmux story add <title> --epic <eid> [--ac <text>] [--body <text>]
+atmux story add <title> --epic <eid> [--ac <text>] [--body <text>] \
+                                     [--merge-mode feature-branch|trunk-direct]  # ADR-175
 atmux story list --epic <eid> [--status <s>] [--json]
 atmux story show <id>
-atmux story advance <id> [--to <state>]             # planning→ready→in-progress→testing→review→merging→done
+atmux story advance <id> [--to <state>]             # feature-branch: planning→ready→in-progress→testing→review→merging→done
+                                                    # trunk-direct:   planning→ready→in-progress→testing→review→done  (ADR-175)
+atmux story signoff   <id> [--as <m>] [--note <t>]  # Flip review-signoff bit + audit append (ADR-175 GAP 1)
+atmux story unsignoff <id> [--as <m>] [--note <t>]  # Revert review-signoff (pre-merging only; ADR-175 GAP 1)
 atmux task add <subject> [--body <txt>] [--epic <eid>] [--story <sid>] \
                          [--lane fe|be|db|ops|test|review|misc] \
                          [--deliverable <text>] [--assignee <m>] [--deps <id,id>] [--priority <n>]
@@ -715,6 +721,17 @@ atmux member swap <id-a> <id-b>              # pairwise window swap (ADR-161 §C
 atmux member sort [--defaults-first]         # canonical reorder (ADR-161 §C)
 atmux reconfigure                            # re-run wizard on existing team
 atmux dashboard [--interval <s>]             # live full-screen panel
+
+🩺 Fleet topology + orphan reap (ADR-222 + ADR-223)
+atmux topo [--tree] [--orphans] [--json]                  # read-only fleet manifest + classifier
+           [--team <name>] [--since <iso>]                # scope filters
+atmux topo --reap [--apply] [--yes] [--class <name>]      # destructive — dry-run by default
+           [--skip-checks] [--json]                       # see docs/RUNBOOK-topology.md
+
+🚢 Release
+atmux release <patch|minor|major>            # one-shot deploy: bump package.json + commit
+              [--dry-run] [--allow-dirty]    # + bun run build:install + git push (ADR-183 sibling — t-c3f4c418)
+                                             # exit 0=ok, 64=usage, 65=dirty/no-op refused, 70=step failure
 ```
 
 ## 📡 Commit-cadence column (ADR-148)
@@ -756,7 +773,7 @@ JSON output (`atmux status --json`) gains `members[].cadence` with the full obse
 
 ## 🌱 Eternal-improvement (ADR-052)
 
-`atmux improve` — kanban-empty fallback to autonomous self-improvement loop. See [`docs/adr/052-eternal-improvement.md`](docs/adr/052-eternal-improvement.md). When the team's kanban hits empty, instead of `atmux stop` firing the cage dies, `atmux improve` decomposes "what can we improve on?" into kanban Tasks, dispatches them, loops cycles bounded by a token budget (default `30%-wk`), and only stops when the budget is exhausted AND kanban is still empty. Two modes share one implementation: **Mode A** (user-invoked — driver runs `atmux improve [--budget <spec>]` any time) and **Mode B** (idle-fallback — whip's ADR-043 hook intercepts the auto-stop with `--idle-fallback --default-budget`). Today's `kanban-empty → auto-stop → manual restart` becomes `kanban-empty → improve cycles → auto-stop`. State at `.atmux/state/eternal-improvement.json`.
+`atmux improve` — kanban-empty fallback to autonomous self-improvement loop. See [`docs/adr/052-eternal-improvement-loop.md`](docs/adr/052-eternal-improvement-loop.md). When the team's kanban hits empty, instead of `atmux stop` firing the cage dies, `atmux improve` decomposes "what can we improve on?" into kanban Tasks, dispatches them, loops cycles bounded by a token budget (default `30%-wk`), and only stops when the budget is exhausted AND kanban is still empty. Two modes share one implementation: **Mode A** (user-invoked — driver runs `atmux improve [--budget <spec>]` any time) and **Mode B** (idle-fallback — whip's ADR-043 hook intercepts the auto-stop with `--idle-fallback --default-budget`). Today's `kanban-empty → auto-stop → manual restart` becomes `kanban-empty → improve cycles → auto-stop`. State at `.atmux/state/eternal-improvement.json`.
 
 ## State layout
 
@@ -837,6 +854,35 @@ Member briefs (`templates/briefs/*.md`) are paste-targets for every spawned pane
 
 See [ADR-041 §Prompt-cache discipline](docs/adr/041-token-savings-kanban-slicing.md) for the full rationale + claim-reply / `task list` / whip-prelude levers. Roll-out is incremental (per ADR-041 OQ D2 resolution): each brief touched in normal evolution gets reordered if needed; reviewer flags ordering on changes. Mass restructure was rejected — cache-discipline wins are cumulative.
 
+<!-- per ADR-217 §D7 -->
+## 🛠️ Skills (`/atmux:` namespace)
+
+atmux ships with a Claude Code plugin bundling 12 cockpit-tier skills (`/atmux:bruh`, `/atmux:team`, `/atmux:tell-lead`, `/atmux:whip`, etc.) at [`plugins/atmux/`](plugins/atmux/). Each wraps a recurring multi-step atmux workflow so operators can drive a fleet without memorising the full verb surface. Install via the `atmux init` wizard (per [ADR-200](docs/adr/200-install-wizard-guided-first-run-setup.md)) or manually symlink `plugins/atmux/` into `~/.claude/plugins/atmux/`.
+
+| Skill                       | What it does                                                              | Calls atmux verb              |
+|-----------------------------|---------------------------------------------------------------------------|-------------------------------|
+| `/atmux:bau`                | Business-as-usual status check + auto-escalate dormant teams to lead.     | `atmux status / report` (read) |
+| `/atmux:bruh`               | Unblocker sweep — decisions / blockers / flags / worktrees in one pass.   | `atmux flags / decisions / inbox` |
+| `/atmux:bruhloop`           | 15-min `/atmux:bruh` cadence sugar wrapping `/loop`.                      | (chains to `/atmux:bruh`)     |
+| `/atmux:budget`             | Live rate-limit probe across every Claude account, prints utilisation.    | (pure-shell — Anthropic API)  |
+| `/atmux:cockpit-rebuild`    | Deterministically (re)build the cockpit + every per-team cage.            | `atmux cockpit rebuild`       |
+| `/atmux:ghostbuster`        | Sweep mergeable epic-team branches; merge what's ahead, prune stale.      | `atmux epic-merge / git`      |
+| `/atmux:heads-up <msg>`     | Lightweight nudge to teammates about new tasks / cascade unblocks.        | `atmux send`                  |
+| `/atmux:session`            | Session continuity (cont / preclear / handoff / stop) at phase boundaries.| `atmux handoff`               |
+| `/atmux:sweep`              | Cockpit-level self-healing diagnosis-and-prevention sweep.                | `atmux doctor / status`       |
+| `/atmux:team`               | Team lifecycle (start / stop / add / clear / cleanup / rotate-lead).      | `atmux team / start / stop`   |
+| `/atmux:tell-lead <msg>`    | Driver → lead durable ask with best-effort pane wake-up.                  | `atmux tell-lead`             |
+| `/atmux:whip`               | Autonomous-work nudge loop (run / cadence / watchdog verbs).              | `atmux whip`                  |
+
+**Install posture (per [ADR-217](docs/adr/217-atmux-skills-plugin-bundled-and-wizard-installed.md) §D5):**
+
+- **Optional** — wizard prompts `[Y/n/s]` (yes / no / show-list). Skip with `atmux init --no-skills`; re-install later with `atmux init --skills-only`.
+- **Symlink not copy** — atmux upgrades automatically refresh bundled SKILL.md bodies via the symlink target. No manual re-install needed to pick up newer skill behavior.
+- **Operator dotfiles override preserved** — if `~/.claude/plugins/atmux/` already exists as a real directory (not a symlink), the wizard preserves it + prints a notice. Operators who maintain their own per-skill customizations keep them.
+- **Doctor probe** — `atmux doctor` adds an `atmux-skills-plugin` row surfacing install state (green when symlinked + `plugin.json` validates; yellow when missing / malformed; info-level when opted out at wizard time).
+
+See [`plugins/atmux/README.md`](plugins/atmux/README.md) for the full per-skill reference + uninstall instructions.
+
 ## Configuration (environment variables)
 
 | Var                                  | Default                                      | Purpose                                             |
@@ -855,7 +901,11 @@ See [ADR-041 §Prompt-cache discipline](docs/adr/041-token-savings-kanban-slicin
 | `ATMUX_KIMI_DEFAULT_MODEL`           | `kimi-latest`                                | Default `--model` for Kimi                          |
 | `ATMUX_CURSOR_DEFAULT_MODEL`         | `composer-2`                                 | Default `--model` for Cursor                        |
 | `ATMUX_CURSOR_BIN`                   | `cursor-agent`                               | Cursor CLI binary                                   |
+| `ATMUX_CURSOR_FORCE`                 | `1`                                          | Append `--force` (Auto-run); set `0` to disable     |
+| `ATMUX_CURSOR_APPROVE_MCPS`          | `1`                                          | Append `--approve-mcps`; set `0` to disable           |
+| `ATMUX_CURSOR_ARGS_EXTRA`            | _(empty)_                                    | Extra args appended after `--model`                   |
 | `ATMUX_KIMI_BIN`                     | `kimi`                                       | Kimi CLI binary                                     |
+| `ATMUX_TMUX_BIN`                     | `/opt/atmux/current/bin/tmux` → system `tmux` | Override the tmux binary every atmux call spawns (ADR-191). Vendored default lives next to `atmux`; falls back to system `tmux` on PATH (warn-once) when absent. Operators pinning a different tmux version (testing, local dev build, CI override) set this to win the resolution chain. |
 
 ## Dependencies
 

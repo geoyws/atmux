@@ -32,6 +32,7 @@
 // moot for new cages — Tier 3+ creation is blocked — but retained as
 // a doc-rule for the dead-code teardown path.)
 
+import { resolveTmuxBin } from "../core/resolve-tmux-bin.ts";
 import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
 import { spawn as defaultSpawn, type SpawnOpts, type SpawnResult } from "./spawn.ts";
 import type { TmuxConfig, TmuxNamespace } from "./tmux.ts";
@@ -582,7 +583,7 @@ export async function createFallbackCage(opts: CreateFallbackCageOpts): Promise<
         agent,
         "env",
         `TMUX_TMPDIR=${tmuxTmpdir}`,
-        "tmux",
+        resolveTmuxBin(),
         "-L",
         tmuxSocket,
         "new-session",
@@ -660,7 +661,7 @@ export async function destroyFallbackCage(
     // as the post-mortem artefact. The operator's worktree is NOT
     // archived (it's the live project tree).
     const captureR = await spawnFn({
-      cmd: "tmux",
+      cmd: resolveTmuxBin(),
       argv: [
         "-L",
         handle.tmuxSocket,
@@ -711,7 +712,7 @@ export async function destroyFallbackCage(
         handle.agent,
         "env",
         `TMUX_TMPDIR=${handle.tmuxTmpdir}`,
-        "tmux",
+        resolveTmuxBin(),
         "-L",
         handle.tmuxSocket,
         "kill-session",

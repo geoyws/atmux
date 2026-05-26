@@ -1,10 +1,10 @@
-// ADR-088 §Decision-2+3+6: effective-default helper for `team.merger`.
+// ADR-179 §Decision-2+3+6: effective-default helper for `team.merger`.
 //
 // The Zod schema in `src/schema/team.ts` declares the static defaults
 // (`enabled: false`, `stalenessHours: 24`); this helper resolves the
 // dynamic default for `baseBranch` — when the team omits the field,
 // the merger picks up whatever branch the parent worktree currently has
-// checked out (mirrors ADR-088 §Decision-3 pseudocode
+// checked out (mirrors ADR-179 §Decision-3 pseudocode
 // `team.merger?.baseBranch ?? currentBranch(repoPath)`). Spawn-injectable
 // `git` so the W2/W3/W6 read-sites can stub the branch resolution in
 // unit tests.
@@ -36,7 +36,7 @@ export interface ResolveMergerOpts {
  *
  * Throws `ConfigError` if `git branch --show-current` fails OR returns
  * empty (detached HEAD) AND the team didn't pin `baseBranch` explicitly
- * — the merger cannot proceed without a target branch. ADR-088 W2 /
+ * — the merger cannot proceed without a target branch. ADR-179 W2 /
  * W3 callers surface the error via `atmux reply` to the driver.
  *
  * **Why this exists**: keeps the W2/W3 verbs from each shelling out

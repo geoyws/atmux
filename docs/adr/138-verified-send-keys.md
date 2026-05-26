@@ -222,3 +222,20 @@ EPIC e-f28c2596 ("auto-fire Enter on queued worker compose-box + rotate-lead bri
 - **ADR-081** ([`docs/adr/081-bootstrap-brief-paste-bug.md`](081-bootstrap-brief-paste-bug.md)) — §A C-m submit cascade; this helper sits on top.
 - **ADR-132** — martinet abstraction; long-term home, inherits this helper. Not yet authored at the time of this ADR — forward-reference.
 - **CLAUDE.md** §"Always read pane state BEFORE `tmux send-keys`" — the operator-level discipline this helper codifies into an abstraction.
+
+
+## §Amendment 2026-05-20 — §"Why blanket-3x is wrong" superseded by ADR-188 for text-into-composer scope (t-72f90a08 docs sweep follow-up)
+
+[ADR-188](188-tui-send-keys-canonical-4-step.md) (proposed 2026-05-20) supersedes this ADR's §"Why blanket-3x is wrong" for **text-into-composer callsites only** (`src/core/send.ts`, `src/core/paste-submit.ts`, `src/core/safe-send.ts` message-content sends, plus every verb that invokes those for typing/pasting message content). The new canonical pattern is **scroll → Enter×3 → paste → Enter×3** — wedge-data from 2026-05-19 /bruh fan-out (4-of-5 lead panes wedged) drove the trade-off: empty-turn-fire risk on safe-state callsites is accepted in exchange for the wedge-prevention payoff on popup-prone flows.
+
+**Components of THIS ADR that remain in force** (per ADR-188 §"ADR-138 components that REMAIN in force"):
+
+- `safeSendKeysWithVerify` verifier-after-send pattern (per-call contract)
+- Escalation log at `~/.atmux/state/send-keys-failures.log`
+- 5 built-in verifiers (`composerEmpty` / `agentThinking` / `modalClosed` / `contextNonZero` / `paneMatchesRegex`)
+- `safeSendKeys` preflight gate
+- Telemetry + observability surfaces
+
+ADR-188's 4-step pattern is the **outer wrapper** around this ADR's verify-and-retry mechanism: scroll/dismiss-preamble → send → verify (this ADR) → if verify-failed, the 4-step pattern fires from scratch (not just the send step). Single-keystroke control callsites (menu nav, known-modals.ts auto-dismiss with a specific catalog-keystroke, copy-mode commands, raw tmux key passthrough that is NOT message-content) keep this ADR's verify-and-retry discipline without the 4-step preamble/postamble.
+
+This file is the historical baseline — read ADR-188 for the forward direction once impl lands.

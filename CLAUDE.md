@@ -55,3 +55,11 @@ Preclear at every phase boundary — phase = "shipped X end-to-end" (committed +
 ## Migrators
 
 Roster lives at `.atmux/team.json`; sync to legacy `.claude/team.json` via `atmux sync claude-team-json` (see [docs/RUNBOOK-sync.md](docs/RUNBOOK-sync.md) / [ADR-164](docs/adr/164-sync-claude-team-json.md)).
+
+## Spawn timeout — `ATMUX_SPAWN_TIMEOUT_MS`
+
+Default `spawn()` timeout is 30s (`src/abstractions/spawn.ts::DEFAULT_TIMEOUT_MS`). Submodule-heavy projects (e.g. sopx — nested aix-root / std-root chains) regularly need >30s for cold submodule init, surfacing as `SpawnTimeoutError` mid-`spawn-epic` worktree provisioning. Operators export `ATMUX_SPAWN_TIMEOUT_MS=<ms>` (e.g. `120000`) at team-start. Parsing fails closed: non-numeric / non-positive / non-finite → 30_000ms silently. Per-call `opts.timeoutMs` continues to take precedence. Source: t-681e5b91 (sopx cross-repo dispatch, FIX-A3 Gap #1).
+
+## Cron discipline
+
+Before arming a recurring cadence (OS crontab, Claude Code `CronCreate`, `ScheduleWakeup`-driven `/Xloop`), check whether the same arm exists; skip duplicates. Contract is [ADR-192](docs/adr/192-cron-arm-idempotency-contract.md): (1) pre-arm `CronList` with fuzzy prompt-hash + interval-exact match, (2) Levenshtein-normalized-tokens fuzzy default (operator-configurable threshold), (3) dynamic-paced loops mark `~/.atmux/state/loop-arm-<hash>.json` and re-check at wake-time. Impl ownership for `/Xloop` skills lives in operator dotfiles (claude-skills tree, per memory `feedback_claude_skills_dotfiles_territory`); atmux carries the ADR + cross-refs only. OS-crontab idempotency already covered via `atmux start`'s sandwich markers (`# >>> atmux:team=<name>`).

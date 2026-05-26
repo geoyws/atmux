@@ -1,4 +1,4 @@
-// Unit tests for src/core/whip-escalation.ts (ADR-087 §T2 / Task t-e91fec98).
+// Unit tests for src/core/whip-escalation.ts (ADR-177 §T2 / Task t-e91fec98).
 //
 // Exercises the strikes-≥-threshold → complaint pipeline end-to-end:
 // fresh complaint, dedup bump, strike-record reset, threshold gating,

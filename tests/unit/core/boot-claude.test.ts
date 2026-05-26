@@ -18,6 +18,8 @@ import {
   isTuiReady,
   renderBootFailureNotice,
   renderBootPrompt,
+  bootSignalLive,
+  thinkingActive,
   tokensMoved,
 } from "../../../src/core/boot-claude.ts";
 
@@ -136,16 +138,19 @@ describe("renderBootPrompt", () => {
   test("ADR-081 §C boot prompt — single line, template-substituted, self-verifying", () => {
     const out = renderBootPrompt("atmux", "fe-1");
     expect(out).toBe(
-      "First run `echo $ATMUX_MEMBER` — if it isn't `fe-1`, this paste mis-targeted (alert operator + abort, do NOT bootstrap). Otherwise read /tmp/atmux-brief-generic-atmux.md and your role brief if your role appears in templates/briefs/, then bootstrap as fe-1.",
+      "First run `echo $ATMUX_MEMBER` — if it isn't `fe-1`, this paste mis-targeted (alert operator + abort, do NOT bootstrap). Otherwise read your role brief in templates/briefs/ + the project CLAUDE.md, then bootstrap as fe-1.",
     );
     // Reviewer pre-flag: single-line (no newlines anywhere)
     expect(out.includes("\n")).toBe(false);
   });
 
-  test("substitutes both placeholders", () => {
+  test("substitutes the {member} placeholder", () => {
     const out = renderBootPrompt("sopx-guild", "be-2");
-    expect(out).toContain("/tmp/atmux-brief-generic-sopx-guild.md");
+    // {team} is unused as of the 2026-05-22 dead-file-reference strip
+    // (t-f79db3b9); kept in renderBootPrompt for call-site ABI
+    // stability. The {member} placeholder remains load-bearing.
     expect(out).toContain("bootstrap as be-2");
+    expect(out).toContain("if it isn't `be-2`");
   });
 
   test("self-verification preamble — recipient must check $ATMUX_MEMBER before adopting role", () => {
@@ -158,6 +163,22 @@ describe("renderBootPrompt", () => {
     expect(out).toContain("if it isn't `driver`");
     expect(out).toContain("mis-targeted");
     expect(out).toContain("do NOT bootstrap");
+  });
+
+  test("dead-file-reference strip (t-f79db3b9) — no /tmp/atmux-brief-generic-* path", () => {
+    // Regression-pin for the 2026-05-22 strip. Pre-strip, the prompt
+    // told recipients to read /tmp/atmux-brief-generic-<team>.md, a
+    // file nothing in the codebase ever wrote. The strip removes the
+    // dead reference; role brief + project CLAUDE.md are the
+    // canonical bootstrap sources. If a generic-brief surface ever
+    // resurfaces it belongs in CLAUDE.md, not /tmp/.
+    const out = renderBootPrompt("atmux", "fe-1");
+    expect(out).not.toContain("atmux-brief-generic");
+    expect(out).not.toContain("/tmp/");
+    // Conditional ("if your role appears in templates/briefs/") also
+    // dropped — every role atmux spawns has a brief via BRIEF_ALIASES
+    // + member.md fallback at the resolver layer (rotate.ts).
+    expect(out).not.toContain("if your role appears");
   });
 });
 
@@ -198,6 +219,56 @@ describe("tokensMoved", () => {
     // Note: regex matches 0k too. Document the corner: a freshly-spawned
     // claude shows no count footer at all, so this corner is academic.
     expect(tokensMoved("0k tokens")).toBe(true);
+  });
+});
+
+// ---------- thinkingActive + bootSignalLive (t-a1db24dd) ----------
+
+describe("thinkingActive", () => {
+  test("matches `✻ Churned for Xm Ys`", () => {
+    expect(thinkingActive("✻ Churned for 2m 19s")).toBe(true);
+  });
+  test("matches `✻ Worked for Xm Ys`", () => {
+    expect(thinkingActive("✻ Worked for 1m 30s")).toBe(true);
+  });
+  test("matches `✻ Worked for Xh`", () => {
+    expect(thinkingActive("✻ Worked for 3h")).toBe(true);
+  });
+  test("matches `✻ thinking with N`", () => {
+    expect(thinkingActive("✻ thinking with 4123")).toBe(true);
+  });
+  test("matches alternate spinner glyphs (✶ / ✽ / ✺ / ✷)", () => {
+    expect(thinkingActive("✶ Churned for 1m 5s")).toBe(true);
+    expect(thinkingActive("✽ thinking with 200")).toBe(true);
+    expect(thinkingActive("✺ Worked for 30s")).toBe(true);
+    expect(thinkingActive("✷ Churned for 2h")).toBe(true);
+  });
+  test("MISS: empty → false", () => {
+    expect(thinkingActive("")).toBe(false);
+  });
+  test("MISS: spinner glyph alone with no thinking-verb → false", () => {
+    expect(thinkingActive("✻ (no verb)")).toBe(false);
+  });
+  test("MISS: thinking verb without spinner glyph → false (guard against narrative text matches)", () => {
+    expect(thinkingActive("the planner is thinking with 5 members")).toBe(false);
+  });
+});
+
+describe("bootSignalLive", () => {
+  test("true on tokensMoved-hit", () => {
+    expect(bootSignalLive("↑ 5k ↓ 2k tokens · 12%")).toBe(true);
+  });
+  test("true on thinkingActive-hit (the t-a1db24dd false-negative fix)", () => {
+    expect(bootSignalLive("✻ Churned for 2m 19s")).toBe(true);
+  });
+  test("true on both signals present", () => {
+    expect(bootSignalLive("✻ Worked for 1m 30s\n↑ 1k ↓ 0k tokens")).toBe(true);
+  });
+  test("MISS: empty → false", () => {
+    expect(bootSignalLive("")).toBe(false);
+  });
+  test("MISS: TUI-ready glyph alone → false (TUI rendered but turn hasn't started)", () => {
+    expect(bootSignalLive("❯")).toBe(false);
   });
 });
 
@@ -370,7 +441,7 @@ describe("bootClaudeMember — submit-verify path (t-1b45d565)", () => {
       captures: [
         "✻ Welcome", // sentinel — not booted
         "❯ ", // ready — `❯ ` IS at EOL here, but this capture is consumed by the READINESS poll, not the submit-verify poll
-        "❯ Read /tmp/atmux-brief-generic-atmux.md and your role brief", // submit-verify polls — composer still has prompt text; `❯ ` is NOT at EOL → composerEmpty miss → verify times out across all submitVerifyRetries → submit-not-verified
+        "❯ Read your role brief in templates/briefs/", // submit-verify polls — composer still has prompt text; `❯ ` is NOT at EOL → composerEmpty miss → verify times out across all submitVerifyRetries → submit-not-verified
       ],
     });
     const r = await bootClaudeMember({

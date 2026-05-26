@@ -9,7 +9,7 @@
 //
 //   1. List per-member branches: `git -C <teamRoot> branch --list
 //      "<baseBranch>-*"`. The `<base>-<member>` convention is the
-//      same one ADR-082 + ADR-084 + ADR-088 W1 already use; the
+//      same one ADR-082 + ADR-084 + ADR-179 W1 already use; the
 //      `branch --list` glob does the lane-filtering for us.
 //      Roster gate (t-911c9314): the glob result is then filtered to
 //      `<base>-<m>` where `<m>` is in the team.json roster. Branches
@@ -83,6 +83,19 @@ import type { MergerStateRepo } from "./repositories/merger-state-repo.ts";
  *  gate-still-held tick returns `{queued:false, reason:"gate-held"}` so
  *  the sweep records `queue-refused` with a meaningful note.
  *
+ *  **`ready_to_merge` is NOT in this set** (per ADR-134 §Amendment
+ *  2026-05-24, gitter wedge-recovery session). The initial shape
+ *  included `ready_to_merge`, which wedged any branch the dispatcher
+ *  left there after its post-rebase break (per §Amendment 2026-05-18
+ *  t-2b7572d7: "one rebase per tick max — the merge step lands on the
+ *  NEXT cron tick"). Without a `task.done` event to wake the daemon's
+ *  dispatcher path, the merge never landed — sweep self-skipped the
+ *  very state that needs advancing. Dispatcher's entry-state guard
+ *  (CALLER_DRIVEN_STATES in intra-team-merge-dispatcher.ts) does NOT
+ *  include `ready_to_merge`, so re-entry walks `ready_to_merge → merging
+ *  → tested` cleanly. Dispatcher idempotence + BEGIN IMMEDIATE handles
+ *  the rare event/cron race where a `task.done` fires mid-sweep.
+ *
  *  `open` is NOT in this set — `open` is the initial state for a branch
  *  that has never transitioned; the sweep IS allowed to queue from there.
  *  Terminal states (`merged`, `conflict`, `reverted`) are also NOT in
@@ -90,7 +103,6 @@ import type { MergerStateRepo } from "./repositories/merger-state-repo.ts";
  *  next branch-tip advance brings the branch back to the queue path
  *  via a fresh `open → in_progress` transition. */
 const IN_FLIGHT_STATES: ReadonlySet<BranchMergeState> = new Set<BranchMergeState>([
-  "ready_to_merge",
   "rebasing",
   "merging",
   "tested",
@@ -176,7 +188,7 @@ export interface CommitterSweepDeps {
    *  factory; T4 unit tests pass a recording stub. */
   queueMergeAttempt: QueueMergeFn;
   /** `git` spawn injection (GitSpawn — same shape used by
-   *  `merger-config.ts` and the ADR-088 W1 primitive). Defaults
+   *  `merger-config.ts` and the ADR-179 W1 primitive). Defaults
    *  injected at the verb layer to {@link defaultGitSpawn}. */
   git: GitSpawn;
 }
@@ -192,8 +204,10 @@ export interface CommitterSweepDeps {
  *
  *   1. `rev-list --count <base>..<member>` === 0   → skipped-zero-ahead
  *   2. mergerState in {@link IN_FLIGHT_STATES}     → skipped-in-flight
- *      (`ready_to_merge` / `rebasing` / `merging` /
- *      `tested` / `test_failed` — actively moving)
+ *      (`rebasing` / `merging` / `tested` /
+ *      `test_failed` — actively moving; `ready_to_merge`
+ *      excluded per ADR-134 §Amendment 2026-05-24 so
+ *      post-rebase-break rows can advance via sweep too)
  *   3. mergerState is terminal (merged/conflict/   → skipped-terminal
  *      reverted) AND ahead-of-base === 0
  *      (covered by step 1 — included here for
@@ -338,7 +352,7 @@ async function listMemberBranches(deps: CommitterSweepDeps): Promise<string[]> {
 }
 
 /** Count commits on `memberBranch` that aren't on `baseBranch`. Uses
- *  `git rev-list --count <base>..<member>` per ADR-088 W1's pattern;
+ *  `git rev-list --count <base>..<member>` per ADR-179 W1's pattern;
  *  same semantics, same exit-code handling (non-zero → return 0 so
  *  the sweep skips the branch instead of crashing the tick). */
 async function countAhead(memberBranch: string, deps: CommitterSweepDeps): Promise<number> {

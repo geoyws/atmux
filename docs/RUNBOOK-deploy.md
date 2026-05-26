@@ -108,6 +108,41 @@ Next cron tick picks up the rolled-back binary. In-flight long-lived TUIs keep r
 
 Preserved versions enumerable via `ls /opt/atmux/`. Each is a self-contained `bin/atmux` ELF reachable by direct path.
 
+## Vendored tmux binary (ADR-191)
+
+`build:install` ships its own `/opt/atmux/<version>/bin/tmux` alongside the `atmux` binary so atmux's behavior tracks a pinned tmux version (currently 3.6a). Every atmux call resolves the binary via `resolveTmuxBin()` (`src/core/resolve-tmux-bin.ts`) — 3-tier chain `ATMUX_TMUX_BIN` env override → vendored at `/opt/atmux/current/bin/tmux` → system `tmux` on PATH (warn-once on fallback). The operator's daily-driver `tmux` from the shell is untouched: vendored lives at an explicit absolute path; PATH still resolves `tmux` to whatever the operator has installed (e.g. `/usr/local/bin/tmux` from brew/apt).
+
+### Verify after install
+
+```bash
+/opt/atmux/current/bin/tmux -V                  # → tmux 3.6a
+atmux doctor 2>&1 | rg 'vendored-tmux'          # → no row (green) when binary present + pinned-version match
+```
+
+`atmux doctor` warns yellow `vendored-tmux-missing` when `/opt/atmux/current/bin/tmux` is absent (atmux falls through to system tmux — functional but unpinned), and yellow `vendored-tmux-version-drift` when present-but-not-3.6a (hand-staged binary or stale install). Both rows self-clear after the next clean `build:install`.
+
+### Override for testing
+
+```bash
+ATMUX_TMUX_BIN=/path/to/operator-tmux atmux <verb>   # process-scope, wins the chain
+```
+
+Operator-pinned for testing a different tmux version, local dev build, or CI rig deliberately using system tmux. Override is process-scope; no global state.
+
+### Rollback the vendored binary
+
+```bash
+sudo rm /opt/atmux/<version>/bin/tmux            # one version
+# or for full-fleet drop:
+sudo find /opt/atmux/ -maxdepth 3 -name tmux -type f -delete
+```
+
+Next atmux spawn observes the missing vendored binary, warns once to stderr, falls through to system `tmux` on PATH. Operator workflows continue (system tmux is the floor). To re-install: re-run `bun run build:install` from a trunk worktree.
+
+### Operator daily-driver tmux
+
+UNAFFECTED. The vendored binary lives at an explicit absolute path; the operator's shell still resolves `tmux` (bare) via PATH to whatever the operator has installed personally. `which tmux` from an operator shell should report the operator's personal install, never `/opt/atmux/current/bin/tmux`.
+
 ## Trigger discipline (parking-lot Tasks)
 
 ADR-147 release-event verify tasks (e.g. `t-3b2d1a26`) are **dispatch-only** — they sit `todo` with `priority=2` and no owner. Workers must NOT `claim --next` them; the driver / lead dispatches explicitly post-build:install (`atmux dispatch <member> t-<release-event-id>`). The Task body opens with `⚠️ DO NOT CLAIM via claim --next` as the convention marker; reviewer flags any self-pickup.

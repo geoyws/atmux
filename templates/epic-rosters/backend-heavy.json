@@ -1,0 +1,10 @@
+{
+  "_comment": "5-member backend-heavy preset for Rust + Bun work. ADR-090 §Roster preset. Used by epics where FE work isn't on the critical path (atmux infrastructure, rust crates, ADRs). Trims fe-1/fe-2 vs default.json to reduce Claude-account budget pressure when running multiple epics in parallel.",
+  "members": [
+    { "name": "lead",     "role": "lead",     "tui": "claude" },
+    { "name": "planner",  "role": "planner",  "tui": "claude" },
+    { "name": "reviewer", "role": "reviewer", "tui": "claude" },
+    { "name": "be-1",     "role": "member",   "lane": "be", "tui": "claude" },
+    { "name": "committer","role": "committer","lane": "misc", "tui": "claude" }
+  ]
+}

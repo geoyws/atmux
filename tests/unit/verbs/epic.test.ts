@@ -162,7 +162,7 @@ describe("epicNextState + epicLegalTransition", () => {
 describe("addEpic", () => {
   test("creates an epic with default status 'planning'", async () => {
     const id = await addEpic(atmuxDir, { title: "Onboard new hires" });
-    expect(id).toMatch(/^e-[0-9a-f]{8}$/);
+    expect(id).toMatch(/^e-[1-9][0-9]*-[0-9a-f]{8}$/);
     const epics = await listEpics(atmuxDir);
     expect(epics).toHaveLength(1);
     expect(epics[0]?.id).toBe(id);
@@ -317,7 +317,7 @@ describe("epic verb — dispatch", () => {
     const { out } = await captureStdout(() =>
       epic(["add", "--team-dir", teamDir, "First", "epic"]),
     );
-    expect(out).toMatch(/^e-[0-9a-f]{8}$/m);
+    expect(out).toMatch(/^e-[1-9][0-9]*-[0-9a-f]{8}$/m);
   });
 
   test("epic list (no epics) prints '(no epics)'", async () => {
@@ -387,5 +387,329 @@ describe("epic advance — direct-task children gate", () => {
     await moveTask(atmuxDir, tid, "done");
     const r = await advanceEpic(atmuxDir, eid, "review");
     expect(r.to).toBe("review");
+  });
+});
+
+// ---------- ADR-225: CLI surface for dependsOn / isReady ----------
+
+describe("epic parseAddArgs — --depends-on (ADR-225)", () => {
+  test("--depends-on with a single id", () => {
+    const a = parseAddArgs(["t", "--depends-on", "e-aaa"]);
+    expect(a.dependsOn).toEqual(["e-aaa"]);
+  });
+
+  test("--depends-on comma-splits + trims tokens", () => {
+    const a = parseAddArgs(["t", "--depends-on", " e-aaa , e-bbb ,e-ccc "]);
+    expect(a.dependsOn).toEqual(["e-aaa", "e-bbb", "e-ccc"]);
+  });
+
+  test("--depends-on with empty string → empty list (explicit no-deps)", () => {
+    const a = parseAddArgs(["t", "--depends-on", ""]);
+    expect(a.dependsOn).toEqual([]);
+  });
+
+  test("--depends-on without a value throws UsageError", () => {
+    expect(() => parseAddArgs(["t", "--depends-on"])).toThrow(UsageError);
+  });
+
+  test("--depends-on absent → dependsOn undefined (defaults to [] downstream)", () => {
+    const a = parseAddArgs(["t"]);
+    expect(a.dependsOn).toBeUndefined();
+  });
+});
+
+describe("epic verb — ADR-225 dispatch", () => {
+  test("`epic add --depends-on a,b` writes the dep list correctly", async () => {
+    // Seed two upstream epics.
+    const a = await addEpic(atmuxDir, { title: "A" });
+    const b = await addEpic(atmuxDir, { title: "B" });
+    // Run the verb to add a downstream with both as deps.
+    const { out } = await captureStdout(async () => {
+      return await epic(["add", "--team-dir", teamDir, "Z", "--depends-on", `${a},${b}`]);
+    });
+    const newId = out.trim();
+    const z = await showEpic(atmuxDir, newId);
+    expect(z?.dependsOn?.sort()).toEqual([a, b].sort());
+    expect(z?.isReady).toBe(false);
+  });
+
+  test("`epic ready <id>` flips is_ready=1; `epic show` reflects it", async () => {
+    const a = await addEpic(atmuxDir, { title: "A" });
+    await epic(["ready", a, "--team-dir", teamDir]);
+    const after = await showEpic(atmuxDir, a);
+    expect(after?.isReady).toBe(true);
+  });
+
+  test("`epic unready <id>` reverses to is_ready=0", async () => {
+    const a = await addEpic(atmuxDir, { title: "A" });
+    await epic(["ready", a, "--team-dir", teamDir]);
+    await epic(["unready", a, "--team-dir", teamDir]);
+    const after = await showEpic(atmuxDir, a);
+    expect(after?.isReady).toBe(false);
+  });
+
+  test("`epic ready` then `epic ready` again is a noop (no error)", async () => {
+    const a = await addEpic(atmuxDir, { title: "A" });
+    await epic(["ready", a, "--team-dir", teamDir]);
+    // Second call: same value → noop path.
+    const code = await epic(["ready", a, "--team-dir", teamDir]);
+    expect(code).toBe(0);
+  });
+
+  test("`epic set-depends-on <id> e-NEW` replaces (not appends)", async () => {
+    const a = await addEpic(atmuxDir, { title: "A" });
+    const b = await addEpic(atmuxDir, { title: "B" });
+    const c = await addEpic(atmuxDir, { title: "C", dependsOn: [a] });
+    await epic(["set-depends-on", c, b, "--team-dir", teamDir]);
+    const after = await showEpic(atmuxDir, c);
+    expect(after?.dependsOn).toEqual([b]);
+  });
+
+  test('`epic set-depends-on <id> ""` clears the dep list', async () => {
+    const a = await addEpic(atmuxDir, { title: "A" });
+    const b = await addEpic(atmuxDir, { title: "B", dependsOn: [a] });
+    await epic(["set-depends-on", b, "", "--team-dir", teamDir]);
+    const after = await showEpic(atmuxDir, b);
+    expect(after?.dependsOn).toEqual([]);
+  });
+
+  test("`epic deps <id>` renders a 3-level chain as nested tree", async () => {
+    const a = await addEpic(atmuxDir, { title: "A" });
+    const b = await addEpic(atmuxDir, { title: "B", dependsOn: [a] });
+    const c = await addEpic(atmuxDir, { title: "C", dependsOn: [b] });
+    const { out } = await captureStdout(async () => {
+      return await epic(["deps", c, "--team-dir", teamDir]);
+    });
+    // Three levels: c (root), b (child), a (grandchild). Indent grows
+    // by two spaces per level.
+    expect(out).toContain(c);
+    expect(out).toContain(`  ${b}`);
+    expect(out).toContain(`    ${a}`);
+  });
+
+  test("`epic deps --json` emits the same tree as nested JSON", async () => {
+    const a = await addEpic(atmuxDir, { title: "A" });
+    const b = await addEpic(atmuxDir, { title: "B", dependsOn: [a] });
+    const { out } = await captureStdout(async () => {
+      return await epic(["deps", b, "--team-dir", teamDir, "--json"]);
+    });
+    const tree = JSON.parse(out) as {
+      id: string;
+      status: string;
+      children: Array<{ id: string; status: string; children: unknown[] }>;
+    };
+    expect(tree.id).toBe(b);
+    expect(tree.children).toHaveLength(1);
+    expect(tree.children[0]?.id).toBe(a);
+  });
+
+  test("`epic show` text view includes is_ready + depends_on lines", async () => {
+    const a = await addEpic(atmuxDir, { title: "A" });
+    const b = await addEpic(atmuxDir, { title: "B", dependsOn: [a] });
+    await epic(["ready", b, "--team-dir", teamDir]);
+    const { out } = await captureStdout(async () => {
+      return await epic(["show", b, "--team-dir", teamDir]);
+    });
+    expect(out).toMatch(/is_ready: 1/);
+    expect(out).toContain(`depends_on: [${a}]`);
+  });
+
+  test("`epic list` table includes R + D columns", async () => {
+    const a = await addEpic(atmuxDir, { title: "A" });
+    // Walk a to done so its dep counts as `done`.
+    await advanceEpic(atmuxDir, a, "ready");
+    await advanceEpic(atmuxDir, a, "in-progress");
+    await advanceEpic(atmuxDir, a, "review");
+    await advanceEpic(atmuxDir, a, "done");
+    const b = await addEpic(atmuxDir, { title: "B", dependsOn: [a] });
+    await epic(["ready", b, "--team-dir", teamDir]);
+    const { out } = await captureStdout(async () => {
+      return await epic(["list", "--team-dir", teamDir]);
+    });
+    // Header now exposes R + D columns.
+    expect(out).toContain("R ");
+    expect(out).toContain("D");
+    // b has 1 dep (a), and a is done → D=1/1; b is ready → R=1.
+    const bLine = out.split("\n").find((l) => l.startsWith(b));
+    expect(bLine).toMatch(/\s1\s+1\/1\s/);
+    // a has no deps → D=`-`; a is not ready (we only flipped b) → R=0.
+    const aLine = out.split("\n").find((l) => l.startsWith(a));
+    expect(aLine).toMatch(/\s0\s+-\s/);
+  });
+
+  test("validation propagation: cycle surfaces as UsageError exit", async () => {
+    const a = await addEpic(atmuxDir, { title: "A" });
+    const b = await addEpic(atmuxDir, { title: "B", dependsOn: [a] });
+    // Closing the cycle via the verb path.
+    await expect(epic(["set-depends-on", a, b, "--team-dir", teamDir])).rejects.toThrow(/cycle/);
+  });
+
+  test("validation propagation: self-dep refused via the verb", async () => {
+    const a = await addEpic(atmuxDir, { title: "A" });
+    await expect(epic(["set-depends-on", a, a, "--team-dir", teamDir])).rejects.toThrow(
+      /cannot depend on itself/,
+    );
+  });
+
+  test("validation propagation: non-existent dep refused via epic add", async () => {
+    await expect(
+      epic(["add", "--team-dir", teamDir, "Z", "--depends-on", "e-ghost"]),
+    ).rejects.toThrow(/does not exist/);
+  });
+
+  test("`epic ready` on a missing epic surfaces as ConfigError", async () => {
+    await expect(epic(["ready", "e-ghost", "--team-dir", teamDir])).rejects.toThrow(ConfigError);
+  });
+
+  test("`epic deps` on a missing epic surfaces as ConfigError", async () => {
+    await expect(epic(["deps", "e-ghost", "--team-dir", teamDir])).rejects.toThrow(ConfigError);
+  });
+});
+
+// ---------- Pure: parseAddArgs — ADR-231 §D3 (auto-spawn flags) ----------
+
+describe("epic parseAddArgs — auto-spawn flags (ADR-231 §D3)", () => {
+  test("--auto-spawn alone → autoSpawn={enabled:true}", () => {
+    const a = parseAddArgs(["t", "--auto-spawn"]);
+    expect(a.autoSpawn).toEqual({ enabled: true });
+  });
+
+  test("--no-auto-spawn alone → autoSpawn={enabled:false}", () => {
+    const a = parseAddArgs(["t", "--no-auto-spawn"]);
+    expect(a.autoSpawn).toEqual({ enabled: false });
+  });
+
+  test("--auto-spawn --roster solo → autoSpawn={enabled:true,roster:'solo'}", () => {
+    const a = parseAddArgs(["t", "--auto-spawn", "--roster", "solo"]);
+    expect(a.autoSpawn).toEqual({ enabled: true, roster: "solo" });
+  });
+
+  test("--auto-spawn --force-spawn → autoSpawn={enabled:true,forceSpawn:true}", () => {
+    const a = parseAddArgs(["t", "--auto-spawn", "--force-spawn"]);
+    expect(a.autoSpawn).toEqual({ enabled: true, forceSpawn: true });
+  });
+
+  test("combo: --auto-spawn --roster solo --force-spawn → all three set", () => {
+    const a = parseAddArgs(["t", "--auto-spawn", "--roster", "solo", "--force-spawn"]);
+    expect(a.autoSpawn).toEqual({
+      enabled: true,
+      roster: "solo",
+      forceSpawn: true,
+    });
+  });
+
+  test("no flags → autoSpawn undefined (falls back to per-team defaults match OR off)", () => {
+    const a = parseAddArgs(["t"]);
+    expect(a.autoSpawn).toBeUndefined();
+  });
+
+  test("mutex: --no-auto-spawn + --force-spawn → UsageError", () => {
+    expect(() => parseAddArgs(["t", "--no-auto-spawn", "--force-spawn"])).toThrow(
+      /--no-auto-spawn cannot combine with --force-spawn/,
+    );
+  });
+
+  test("mutex: --roster without --auto-spawn → UsageError (helpful message)", () => {
+    expect(() => parseAddArgs(["t", "--roster", "solo"])).toThrow(
+      /--roster requires --auto-spawn/,
+    );
+  });
+
+  test("mutex: --force-spawn without --auto-spawn → UsageError", () => {
+    expect(() => parseAddArgs(["t", "--force-spawn"])).toThrow(/--force-spawn requires --auto-spawn/);
+  });
+
+  test("mutex: --no-auto-spawn + --roster → UsageError (--roster requires --auto-spawn-enable)", () => {
+    // --no-auto-spawn sets autoSpawnFlag='disable', not 'enable',
+    // so the --roster mutex check fires.
+    expect(() => parseAddArgs(["t", "--no-auto-spawn", "--roster", "solo"])).toThrow(
+      /--roster requires --auto-spawn/,
+    );
+  });
+
+  test("--roster without a value → UsageError", () => {
+    expect(() => parseAddArgs(["t", "--auto-spawn", "--roster"])).toThrow(
+      /--roster requires a value/,
+    );
+  });
+
+  test("--roster with empty value → UsageError (treated as missing)", () => {
+    expect(() => parseAddArgs(["t", "--auto-spawn", "--roster", ""])).toThrow(
+      /--roster requires a value/,
+    );
+  });
+});
+
+// ---------- IO: epic verb dispatch — ADR-231 §D3 round-trip ----------
+
+describe("epic verb — ADR-231 §D3 auto-spawn round-trip", () => {
+  test("`epic add --auto-spawn --roster solo` writes extra.autoSpawn", async () => {
+    const { out } = await captureStdout(async () => {
+      return await epic([
+        "add",
+        "--team-dir",
+        teamDir,
+        "Z",
+        "--auto-spawn",
+        "--roster",
+        "solo",
+      ]);
+    });
+    const newId = out.trim();
+    const z = await showEpic(atmuxDir, newId);
+    expect(z?.extra?.autoSpawn).toEqual({ enabled: true, roster: "solo" });
+  });
+
+  test("`epic add --no-auto-spawn` writes extra.autoSpawn={enabled:false}", async () => {
+    const { out } = await captureStdout(async () => {
+      return await epic(["add", "--team-dir", teamDir, "Z", "--no-auto-spawn"]);
+    });
+    const newId = out.trim();
+    const z = await showEpic(atmuxDir, newId);
+    expect(z?.extra?.autoSpawn).toEqual({ enabled: false });
+  });
+
+  test("`epic add` (no auto-spawn flags) → no autoSpawn key in extra", async () => {
+    const { out } = await captureStdout(async () => {
+      return await epic(["add", "--team-dir", teamDir, "Z"]);
+    });
+    const newId = out.trim();
+    const z = await showEpic(atmuxDir, newId);
+    // Either extra absent OR extra present without autoSpawn — both
+    // valid; the meaningful assertion is "no autoSpawn config" so
+    // per-team defaults (T-S1.3) drive the decision downstream.
+    expect(z?.extra?.autoSpawn).toBeUndefined();
+  });
+
+  test("`epic add --auto-spawn --roster solo --force-spawn` writes full triple", async () => {
+    const { out } = await captureStdout(async () => {
+      return await epic([
+        "add",
+        "--team-dir",
+        teamDir,
+        "Z",
+        "--auto-spawn",
+        "--roster",
+        "solo",
+        "--force-spawn",
+      ]);
+    });
+    const newId = out.trim();
+    const z = await showEpic(atmuxDir, newId);
+    expect(z?.extra?.autoSpawn).toEqual({
+      enabled: true,
+      roster: "solo",
+      forceSpawn: true,
+    });
+  });
+
+  test("`epic add --no-auto-spawn --force-spawn` rejects with mutex UsageError before any DB write", async () => {
+    const before = await listEpics(atmuxDir);
+    await expect(
+      epic(["add", "--team-dir", teamDir, "Z", "--no-auto-spawn", "--force-spawn"]),
+    ).rejects.toThrow(/--no-auto-spawn cannot combine with --force-spawn/);
+    // Confirm no partial row landed.
+    const after = await listEpics(atmuxDir);
+    expect(after.length).toBe(before.length);
   });
 });

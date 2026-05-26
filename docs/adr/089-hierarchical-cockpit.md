@@ -1,6 +1,6 @@
 # ADR-089: Hierarchical cockpit — recursive `sessions[]` + nested tmux prefix chain
 
-**Status**: proposed
+**Status**: accepted
 **Date**: 2026-05-13
 **Driver-ref**: `.atmux/driver-inbox.md` 14:03 MYT 2026-05-13 §Pillar 1+2 (lines 2986-3032).
 **Parent Task**: t-e576dd43. **Authored under**: t-5e7a6631 (ADR seq 3/6, DRAFT only).
@@ -177,7 +177,9 @@ Operator picks once at cockpit setup; documented in **`docs/RUNBOOK-cockpit.md`*
 
 ### (D) `ATMUX_NESTING_LEVEL` env contract
 
-Verbs read `ATMUX_NESTING_LEVEL` (integer, 1-indexed); missing → default `1`. Used in tmux.conf generation to pick the right prefix from `cockpit.prefixChain`.
+Verbs read `ATMUX_NESTING_LEVEL` (integer, 1-indexed per the §C table — `L1=Cockpit`, `L2=top-level team cage`, `L3=epic-team cage`); missing → default `2`. Used in tmux.conf generation to pick the right prefix from `cockpit.prefixChain`.
+
+**Default-shift note (2026-05-24).** Original §D default was `1` (treating L1 as "outermost cage", which collapsed cockpit and top-level team into the same chain slot F1 and relied on tmux-socket separation to avoid physical collision). Operator directive 2026-05-24 — *"Fix code to match ADR §C table + my mental model"* — flipped the default to `2` so standalone `atmux start` produces a team cage at L2 (F2), reserving L1 (F1) for the cockpit. The §C table was always the canonical visual model; the default-shift brings code in line.
 
 **Propagation rule** (§Decision-anchor #5): at cage entry (`src/verbs/start.ts`, `src/verbs/team/spawn-epic.ts`):
 
@@ -187,7 +189,7 @@ unset ATMUX_NESTING_LEVEL
 export ATMUX_NESTING_LEVEL=<computed-own-level>
 ```
 
-Computed level is `parent.ATMUX_NESTING_LEVEL + 1` (or `1` for cockpit-spawned root teams). The UNSET-then-set discipline ensures child processes inside the cage inherit the child's level, not the parent's.
+Computed level is `parent.ATMUX_NESTING_LEVEL + 1` (or `2` for cockpit-spawned root teams — cockpit itself is L1, so its direct team children start at L2). The UNSET-then-set discipline ensures child processes inside the cage inherit the child's level, not the parent's.
 
 ### (E) Nested tmpdir
 
@@ -296,3 +298,31 @@ Covered by §Decision (C) auto-detect + fallback chain. The 12-row compat matrix
 - **T5** = ADR-089 impl: tmux prefix-chain by nesting level + `ATMUX_NESTING_LEVEL` env propagation (`t-7e7031dc`).
 - **T6** = ADR-089 dogfood: cockpit verbs walk recursive tree + nested-cage e2e gate (`t-60982d48`).
 - **T7+** = downstream ADRs (090 epic-team lifecycle / 091 auto-merge / 092 cross-team tell-lead).
+
+
+## §Amendment 2026-05-20 — promoted to accepted (status-drift audit T4)
+
+Promoted from `proposed` → `accepted` per [docs/audits/adr-status-drift-audit-2026-05-20.md](../audits/adr-status-drift-audit-2026-05-20.md) (sha=a6f1541). Code-refs + git-log refs both present at audit time confirming shipped + dogfooded status; the `proposed` marker was bookkeeping debt. Original Date preserved verbatim. Append-only — see Status field for the canonical flip; this §Amendment carries the audit traceability.
+
+**Filed via** t-45b401c3 (T4 sweep, 2026-05-20).
+
+
+## §Amendment 2026-05-22 — `cockpit rebuild` applies the F-key prefix to the cockpit session itself (t-3fb7bc54)
+
+Closes a gap exposed 2026-05-21 21:57 MYT on the operator's hax box (post seed-expansion epic spawn): `atmux cockpit rebuild` applied the level-resolved cage prefix (`resolvePrefix(t.level + 1, cockpit.prefixChain)`) to each enabled CAGE via Phase 3 (`src/verbs/cockpit.ts:693-705`), but never set a prefix on the cockpit session itself. The cockpit's tmux prefix therefore reflected whatever the host tmux config (or `applyCagePrefix`'s legacy `C-\\` default) supplied; operator observed it clobbered to `C-a` and manually ran `tmux -L atmux-cockpit set-option -g prefix F1` per rebuild as the workaround.
+
+**Contract extension** — §C's F-key chain semantics extend by one rung: in addition to the per-level cage prefix wiring (L1 = chain[0] = `F1` default; L2 = chain[1] = `F2` default; etc.), the cockpit session itself receives the **chain's first entry** (`resolvePrefix(1, cockpit.prefixChain)` = `F1` by default). The cockpit is structurally the outer container of all L1 cages — it is NOT a level in the cage chain itself — but `chain[0]` is the right operator-facing value because:
+
+1. The cockpit and L1 cages live on **separate tmux sockets** per [ADR-162](162-atmux-owns-tmux-infrastructure.md) §Decision-anchor #1 (cockpit on `tmux -L atmux-cockpit`; each cage on its own per-team socket). Different tmux servers own different keybinding namespaces — the same `F1` chord doesn't collide; whichever socket the operator's tmux client is attached to receives the chord.
+2. `F1` matches the operator's documented manual workaround verbatim (`tmux -L atmux-cockpit set-option -g prefix F1`); using the chain's first entry preserves that mental model.
+3. No new config knob is required. The alternative (a distinct `cockpit.cockpitPrefix` field orthogonal to `prefixChain`) adds surface without solving anything the chain's first entry doesn't already cover; deferred as a follow-up if and when an operator hits a case where chain[0] is the wrong cockpit value (none observed today).
+
+**Impl** — `src/verbs/cockpit.ts` Phase 5b (new sub-phase between `reconcileCockpitSession` and `installCockpitCron`) calls `applyCagePrefix(cockpitTmux, resolvePrefix(1, cockpit.prefixChain))` with the same best-effort try/catch wrap as the Phase 3 cage loop — invalid chain or level > `MAX_NESTING_LEVEL` falls through to `applyCagePrefix`'s legacy `C-\\` default (cosmetic only; cockpit operation unaffected). The cockpit session already exists by Phase 5b because `reconcileCockpitSession` materialises it; ordering matters so the `set-option -g` lands on a live session.
+
+**Test coverage** — `tests/unit/verbs/cockpit.test.ts::applyCagePrefix "applies F1 (chain[0]) on a cockpit-shaped session"` exercises the Phase 5b shape directly on a cockpit-shaped fixture.
+
+**Out of scope** — making the cockpit-prefix and L1-cage-prefix DIFFERENT entries by default (would force operators to memorise two different chords for visually-adjacent panes on different sockets). Out of scope: per-cockpit cockpit-prefix override config (deferred — no operator demand today).
+
+**Cross-refs:** [ADR-162](162-atmux-owns-tmux-infrastructure.md) §Decision-anchor #1 (cockpit-on-dedicated-socket → enables the same-chord-no-collision argument); `b887009` (the Phase 3 cage-prefix wiring that this amendment extends).
+
+**Filed via** t-3fb7bc54 (docs role, 2026-05-22).

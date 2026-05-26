@@ -230,3 +230,52 @@ async function readDoneEntries(path: string): Promise<DoneLike[]> {
   const done = parsed.done;
   return done === undefined ? [] : (done as unknown as DoneLike[]);
 }
+
+// ---------- Sub-op 3: legacy inbox JSON purge (ADR-076 Phase 3) ----------
+
+export interface PurgeLegacyInboxesResult {
+  /** Basenames removed from `<atmuxDir>/inboxes/`. */
+  removed: string[];
+  /** True when `state.db` is absent — purge is a no-op (JSON may still be canonical). */
+  skipped: boolean;
+}
+
+export interface PurgeLegacyInboxesOpts {
+  dryRun?: boolean;
+}
+
+/**
+ * Remove stale `.atmux/inboxes/*.json` (+ sidecars) when the team is
+ * SQL-canonical (`state.db` exists). ADR-076 Phase 3: writers are
+ * already no-ops on SQL teams; leftover JSON misleads agents/tools that
+ * read the path directly instead of `atmux inbox` / `loadInbox`.
+ */
+export async function purgeLegacyInboxes(
+  atmuxDir: string,
+  opts: PurgeLegacyInboxesOpts = {},
+): Promise<PurgeLegacyInboxesResult> {
+  const dryRun = opts.dryRun === true;
+  const stateDb = join(atmuxDir, "state.db");
+  if (!(await exists(stateDb))) {
+    return { removed: [], skipped: true };
+  }
+
+  const ibDir = resolveInboxDir(atmuxDir);
+  const out: PurgeLegacyInboxesResult = { removed: [], skipped: false };
+  if (!(await exists(ibDir))) return out;
+
+  const entries = await readdir(ibDir).catch(() => [] as string[]);
+  for (const name of entries) {
+    const isLegacy =
+      name.endsWith(".json") ||
+      name.endsWith(".json.lock") ||
+      name.includes(".json.bak");
+    if (!isLegacy) continue;
+    const full = join(ibDir, name);
+    const st = await statOrNull(full);
+    if (st === null || !st.isFile) continue;
+    if (!dryRun) await removeFile(full);
+    out.removed.push(name);
+  }
+  return out;
+}

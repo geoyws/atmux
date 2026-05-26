@@ -236,6 +236,49 @@ Per Task t-45d59eeb the capstone work shipped: three Discord templates wired at 
 - Runner-specific failed-test-name extraction (bun vs vitest vs jest vs pnpm-e2e stdout formats). The renderer's "(test names unavailable)" fallback is the v1 contract; an extraction helper can ship as a follow-up Task once a real product team needs the surface.
 - Deployed-mode PASS e2e walk requires a resolvable staging URL — exercised in production (an IFCA product team) rather than in this dogfood test. The test-gate wiring is identical at the verb layer; the DNS-unresolved test validates the same code path's FAIL surface.
 
+## §Amendment 2026-05-19 — `testGateMode: "skip"` is the doctrine default (test-trust principle, t-afcc71af)
+
+Driver finding 2026-05-19 06:30 MYT codifies a doctrine implicit in this ADR's §Decision: the schema-level default at `src/schema/team.ts::TeamEpicSchema.testGateMode` is `"skip"` (`z.enum(["skip", "cage", "deployed"]).default("skip")`), and the unit-test pin at `tests/unit/core/epic-merge.test.ts` ("testGateMode unset (default) → skip semantics (back-compat)") locks the behavior. This §Amendment makes the **doctrine** explicit:
+
+**`testGateMode: "skip"` is the default because tests are already authoritative at L1** ([ADR-134](134-in-team-auto-merger.md) intra-team merger). When an epic-team's `<parentBase>-epic-<epicId>` trunk fans into the parent's base via `atmux epic-merge tick`, the branch's content **already passed** the auto-merger's `team.json::autoMerge.testCommand` at the epic-team's own `merging → tested` transition. Running the test suite again at the L2 fan-in layer would be:
+
+1. **Wasteful** — same suite, same SHA, same expected outcome.
+2. **Flake-prone** — a flaky test that passed once at L1 may fail on retry at L2 (`testGateMode: "cage"` provisions a fresh cage; `testGateMode: "deployed"` exercises a fresh branch-staging URL with potentially different DNS/cache state). False-fail at L2 triggers `tested → test_failed → reverted` and walks back a merge that was genuinely passing — the failure mode this ADR's `revertOnFail` was supposed to protect against, **inverted by re-test**.
+3. **Doctrine-confusing** — if L1 says pass and L2 says fail, which verdict is authoritative? The test-trust principle answers definitively: L1 is the source of truth; L2's job is to fan-in, not to re-adjudicate.
+
+**`"cage"` and `"deployed"` are operator escape hatches** — for the rare case where the epic-team's L1 tests were knowingly incomplete (skipped flake, partial coverage on a fast-moving epic, intentional opt-out of bun test for a docs-only team). The operator flips `team.json::epicTeam.testGateMode` to `"cage"` or `"deployed"` explicitly; the default behavior across every newly-spawned epic-team is **skip**, and that's by design.
+
+**§Cage mode / §Deployed mode of this ADR stand verbatim** — when `testGateMode !== "skip"`, the state machine's `ready_to_merge → tested` transition routes through `runTestGate()` as documented; the cage/deployed runners (T3 + T4) still ship as the configured behavior. This §Amendment scopes only the default's doctrine — `skip` was always the back-compat default; now it's the **principled** default.
+
+**Reviewer surface** — if a committer or epic-merge code path is observed firing a parent-side test gate on a default fan-in (no `testGateMode` override in `team.json`), file `atmux flag add --severity high --subject "[committer/epic-merge] re-test on default fan-in violates ADR-144 §Amendment 2026-05-19 test-trust principle"`. Brief carriers: [`templates/briefs/committer.md`](../../templates/briefs/committer.md) §Test-trust principle + §Hard rules (both modes); cross-refs [ADR-091 §Amendment 2026-05-19](091-kanban-driven-auto-merge.md) (parent fan-in trust statement) + [ADR-134 §Amendment 2026-05-19](134-in-team-auto-merger.md) (L1 source-of-truth statement).
+
+**Filed via** t-afcc71af (P1 doctrine clarification, 2026-05-19).
+
+## §Amendment 2026-05-21 — Jury gate appended between `tested` and `merge-ready` (per ADR-204) — SUPERSEDED 2026-05-21 by ADR-213
+
+> **Superseded note (2026-05-21):** [ADR-213](213-retire-jury-reviewer-absorbs-acceptance-criteria.md) §D4 reverts this §Amendment in its entirety. Jury role retires; original ADR-144 state machine (with `review` state) reinstated. The text below is preserved for historical lineage only — `jury-pending` / `jury-approved` / `jury-rejected` states never landed; `--bypass-jury` flag + `juryGateMode` config never implemented. Reviewer signoff (existing `review` state) is the post-test gate per ADR-213 §D2. Gitter refuses merge unless story state is `review`-signed per the original ADR-144 §reviewer-signoff flow.
+
+[ADR-204](204-jury-role-acceptance-criteria-contract.SUPERSEDED.md) introduces a `_jury` cursor-based adversarial-LLM gate that judges shipped work against planner-written acceptance criteria. The jury gate slots between this ADR's `tested` state and the gitter merge step. Story state machine becomes:
+
+```
+planning → ready → in-progress → testing → tested
+                                         ↘ test-failed → in-progress
+tested → jury-pending → jury-approved → merge-ready (gitter)
+                     ↘ jury-rejected → in-progress
+```
+
+**Pre-work AC ratification** is a precondition on `planning → ready`: planner cannot move a Story to `ready` (unblocking member claim) until jury has ratified the AC list via `atmux jury ratify <story-id>`. If `stories.extra.acceptance_criteria[]` is present + every entry `status: proposed` + `stories.extra.jury_rounds.ratify === 0`, the move-to-ready verb auto-fires `atmux jury ratify` first. Empty / absent AC list also auto-fails ratify (jury refuses to ratify a Story with no criteria — equivalent to ADR-144's existing empty-acceptanceCriteria reviewer auto-reject pattern, just enforced at the AC-list-level instead of reviewer body).
+
+**Gitter refusal:** gitter refuses to merge unless story state is `jury-approved`. Same kill-switch shape as test-gate refusal in §Operator bypass — operator bypass via `--bypass-jury` driver-scope-only flag, mirrors `--bypass-test-gate`. Both bypasses log to decisions.md per the existing audit convention.
+
+**`testGateMode: "skip"` interaction:** when test-gate is skipped (the doctrine default per §Amendment 2026-05-19), the state machine transition from `in-progress` skips `testing → tested` and lands directly in `jury-pending`. Jury still fires. The test-trust principle stands — L1 tests authoritative — but jury is **non-skippable** by default because AC verification is a different concern from test verification (test passes ≠ AC met; that's the entire reason ADR-204 exists). Operator may set `team.json::epicTeam.juryGateMode: "skip"` symmetric to `testGateMode: "skip"` for explicit opt-out, but the **default is jury-on**.
+
+**3-strike ping-pong cap + lead escalation:** see ADR-204 §D5. State machine does not re-enter `jury-pending` from `jury-rejected` until the epic-team has produced a new commit on the branch (gates against thrashing without code change).
+
+**Reviewer surface (sibling to §Amendment 2026-05-19's reviewer flag):** if gitter merges a Story without `jury-approved` state (and no `--bypass-jury` audit row in decisions.md), file `atmux flag add --severity high --subject "[gitter] merged without jury verdict per ADR-144 §Amendment 2026-05-21 + ADR-204"`.
+
+**Filed via** ADR-204 same-commit-set (2026-05-21).
+
 ## Cross-refs
 
 - [ADR-090](090-epic-team-lifecycle.md) — epic-team lifecycle; provisions cage/deployment at spawn time.

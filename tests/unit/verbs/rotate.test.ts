@@ -207,10 +207,10 @@ describe("getBriefPath", () => {
   });
 
   // ADR-147 T4: ombudsman brief must NOT fall back to member.md — its
-  // role contract (sentinel + cron, no kanban claims, no code edits)
-  // diverges sharply from the generic member loop. A fallback would
-  // boot the pane with member.md's claim-loop instructions, which is
-  // wrong for ombudsman.
+  // role contract (cron + pending-JSON sentinel queue, no kanban
+  // claims, no code edits) diverges sharply from the generic member
+  // loop. A fallback would boot the pane with member.md's claim-loop
+  // instructions, which is wrong for ombudsman.
   test("role 'ombudsman' resolves to ombudsman.md, NOT member.md fallback", async () => {
     const path = await getBriefPath("ombudsman", defaultBriefsDir());
     expect(path.endsWith("/ombudsman.md")).toBe(true);
@@ -1079,9 +1079,12 @@ describe("rotate() — public verb", () => {
     // pre-fix these arrays would have been EMPTY because the sentinel
     // short-circuited).
     expect(calls.loadBuffer.length).toBeGreaterThanOrEqual(1);
-    expect(calls.loadBuffer.some((l) => l.data.includes("/tmp/atmux-brief-generic-t.md"))).toBe(
-      true,
-    );
+    // Post-2026-05-22 (t-f79db3b9 dead-file-reference strip): the
+    // boot prompt no longer references /tmp/atmux-brief-generic-<team>.md.
+    // Assert on the surviving identity-check anchor instead — it's the
+    // load-bearing substring that distinguishes the boot prompt from any
+    // other loadBuffer payload.
+    expect(calls.loadBuffer.some((l) => l.data.includes("echo $ATMUX_MEMBER"))).toBe(true);
     expect(calls.pasteBuffer.length).toBeGreaterThanOrEqual(1);
   });
 

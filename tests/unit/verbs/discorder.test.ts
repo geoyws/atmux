@@ -333,4 +333,38 @@ describe("discorder verb", () => {
     const warn = env.logs.find((l) => l.kind === "warn");
     expect(warn).toBeDefined();
   });
+
+  // ADR-027 rename.lock guard: present lock → skip + exit 0 BEFORE
+  // the per-subverb single-instance lock is acquired or the progress
+  // aggregator fires. Mid-rename team.json/cron mutations would
+  // otherwise fold into the digest's header / footer.
+  test("rename.lock present → skip + exit 0, no aggregator call", async () => {
+    await seedTeamJson();
+    await writeFile(join(env.atmuxDir, "state", "rename.lock"), "{}");
+    let aggregateCalls = 0;
+    const rc = await discorder(["progress"], {
+      atmuxDir: env.atmuxDir,
+      env: {},
+      logger: env.logger,
+      nowMs: RUN_MS,
+      team: TEAM,
+      skipDiscord: true,
+      aggregateProgressFn: async () => {
+        aggregateCalls += 1;
+        return {
+          sinceEpoch: 0,
+          commits: [],
+          commitsTruncated: false,
+          doneTasks: [],
+          doneTasksTruncated: false,
+          advancedStories: [],
+          advancedStoriesTruncated: false,
+        };
+      },
+    });
+    expect(rc).toBe(0);
+    expect(aggregateCalls).toBe(0); // guard fired before aggregator
+    const skip = env.logs.find((l) => l.msg.includes("rename.lock present"));
+    expect(skip).toBeDefined();
+  });
 });

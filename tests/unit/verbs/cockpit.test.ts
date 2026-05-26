@@ -622,6 +622,33 @@ describe("applyCagePrefix", () => {
       await rm(fx.socketDir, { recursive: true, force: true });
     }
   });
+
+  // t-3fb7bc54: rebuild Phase 5b applies `resolvePrefix(1, prefixChain)`
+  // to the cockpit session itself. The cockpit IS L1 per ADR-089 §C
+  // (post-alignment 2026-05-24): L1 = Cockpit, L2 = top-level team
+  // cage, L3 = epic-team cage. Each level has its own distinct slot
+  // (cockpit=F1, team=F2, epic=F3); separate sockets reinforce
+  // isolation but no longer carry the model alone. This test exercises
+  // the Phase 5b shape directly on a cockpit-shaped fixture: apply
+  // the chain's first entry + verify it lands on global options.
+  test("applies F1 (chain[0]) on a cockpit-shaped session", async () => {
+    const fx = await spinTmux("cockpit-prefix");
+    try {
+      await fx.tmux.session.newSession({
+        name: "atmux_test_cockpit",
+        detached: true,
+        windowName: "_superdriver",
+      });
+      await applyCagePrefix(fx.tmux, "F1");
+      const opts = await fx.tmux.option.showOptions({ global: true });
+      expect(opts.prefix).toBe("F1");
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("reconcileCockpitSession", () => {
@@ -1330,50 +1357,6 @@ describe("buildSuperdoctorWindowCommand (ADR-077)", () => {
     expect(cmd).toContain("CLAUDE_CODE_EFFORT_LEVEL=high");
     expect(cmd).toContain("--permission-mode dontAsk");
     expect(cmd).toContain("--plugin-dir=/p/dir");
-  });
-});
-
-// ---------- ADR-132 §D2: buildSentinelWindowCommand ----------
-
-describe("buildSentinelWindowCommand (ADR-132 §D2)", () => {
-  test("claude variant emits standard claude TUI invocation", async () => {
-    const { buildSentinelWindowCommand } = await import("../../../src/verbs/cockpit.ts");
-    const cmd = buildSentinelWindowCommand({
-      impl: "claude",
-      enabled: true,
-    });
-    expect(cmd).toContain("claude");
-    expect(cmd).toContain("CLAUDE_CODE_EFFORT_LEVEL=xhigh");
-    expect(cmd).toContain("--permission-mode auto");
-  });
-
-  test("claude variant honours tuiOverrides + claudeAccount", async () => {
-    const { buildSentinelWindowCommand } = await import("../../../src/verbs/cockpit.ts");
-    const cmd = buildSentinelWindowCommand({
-      impl: "claude",
-      enabled: true,
-      claudeAccount: { configDir: "/root/.claude-mart", label: "mart" },
-      tuiOverrides: { effortLevel: "high" },
-    });
-    expect(cmd).toContain("CLAUDE_CONFIG_DIR=/root/.claude-mart");
-    expect(cmd).toContain("CLAUDE_CODE_EFFORT_LEVEL=high");
-  });
-
-  test("cursor variant emits 'while true; do atmux sentinel tick; sleep N; done' loop (T3)", async () => {
-    const { buildSentinelWindowCommand } = await import("../../../src/verbs/cockpit.ts");
-    const cmd = buildSentinelWindowCommand({
-      impl: "cursor",
-      enabled: true,
-      cursorBinPath: "/usr/local/bin/cursor-agent",
-      model: "composer-2-fast",
-      cageTier: "tier-2",
-    });
-    expect(cmd).toContain("while true");
-    expect(cmd).toContain("atmux sentinel tick");
-    expect(cmd).toContain("sleep");
-    // Cursor variant must NOT spawn a Claude TUI — it shells out to
-    // cursor-agent per tick from inside the verb.
-    expect(cmd).not.toContain("claude --permission-mode");
   });
 });
 
@@ -2110,176 +2093,6 @@ describe("cockpitRebuild", () => {
       const joined = logs.join("\n");
       // No medic / superdoctor configured → no /loop nudge surfaces.
       expect(joined).not.toContain("/loop /superdoctor");
-    } finally {
-      try {
-        await fx.tmux.server.killServer();
-      } catch {}
-      await rm(fx.socketDir, { recursive: true, force: true });
-    }
-  });
-
-  test("ADR-086: rebuild installs the cockpit cron block (atmux pulse)", async () => {
-    await writeFile(
-      join(homeDir, ".atmux", "cockpit.json"),
-      JSON.stringify({
-        cockpitSession: "test_cockpit_cron_install",
-        teams: [{ name: "demo", root: projRoot, enabled: true }],
-      }),
-      "utf8",
-    );
-    const fx = await spinTmux("cockpit-reb-cron-install");
-    let crontabBody = "";
-    const fakeCrontab = {
-      available: async () => true,
-      read: async () => crontabBody,
-      write: async (body: string) => {
-        crontabBody = body;
-      },
-    };
-    try {
-      const { logger, logs } = makeLogger();
-      const code = await cockpitRebuild(
-        {
-          subverb: "rebuild",
-          noCycle: true,
-          forceCycle: false,
-          ackDangerous: false,
-          noLaunch: true,
-          yes: false,
-        },
-        {
-          env: { HOME: homeDir },
-          tmuxFactory: () => fx.tmux,
-          logger,
-          startFn: async () => 0,
-          crontab: fakeCrontab,
-          resolveAtmuxBin: () => "/usr/local/bin/atmux",
-        },
-      );
-      expect(code).toBe(0);
-      expect(crontabBody).toContain("# >>> atmux:cockpit");
-      expect(crontabBody).toContain("atmux pulse");
-      expect(crontabBody).toContain(join(homeDir, ".atmux", "cockpit.json"));
-      // Second rebuild is idempotent — same body.
-      const before = crontabBody;
-      const code2 = await cockpitRebuild(
-        {
-          subverb: "rebuild",
-          noCycle: true,
-          forceCycle: false,
-          ackDangerous: false,
-          noLaunch: true,
-          yes: false,
-        },
-        {
-          env: { HOME: homeDir },
-          tmuxFactory: () => fx.tmux,
-          logger,
-          startFn: async () => 0,
-          crontab: fakeCrontab,
-          resolveAtmuxBin: () => "/usr/local/bin/atmux",
-        },
-      );
-      expect(code2).toBe(0);
-      expect(crontabBody).toBe(before);
-      // Second run should log "up to date".
-      expect(logs.some((l) => l.includes("up to date"))).toBe(true);
-    } finally {
-      try {
-        await fx.tmux.server.killServer();
-      } catch {}
-      await rm(fx.socketDir, { recursive: true, force: true });
-    }
-  });
-
-  test("ADR-086: ATMUX_NO_CRON skips cron install entirely", async () => {
-    await writeFile(
-      join(homeDir, ".atmux", "cockpit.json"),
-      JSON.stringify({
-        cockpitSession: "test_cockpit_no_cron",
-        teams: [{ name: "demo", root: projRoot, enabled: true }],
-      }),
-      "utf8",
-    );
-    const fx = await spinTmux("cockpit-reb-no-cron");
-    let wrote = false;
-    const fakeCrontab = {
-      available: async () => true,
-      read: async () => "",
-      write: async () => {
-        wrote = true;
-      },
-    };
-    try {
-      const { logger } = makeLogger();
-      await cockpitRebuild(
-        {
-          subverb: "rebuild",
-          noCycle: true,
-          forceCycle: false,
-          ackDangerous: false,
-          noLaunch: true,
-          yes: false,
-        },
-        {
-          env: { HOME: homeDir, ATMUX_NO_CRON: "1" },
-          tmuxFactory: () => fx.tmux,
-          logger,
-          startFn: async () => 0,
-          crontab: fakeCrontab,
-          resolveAtmuxBin: () => "/usr/local/bin/atmux",
-        },
-      );
-      expect(wrote).toBe(false);
-    } finally {
-      try {
-        await fx.tmux.server.killServer();
-      } catch {}
-      await rm(fx.socketDir, { recursive: true, force: true });
-    }
-  });
-
-  test("ADR-086: crontab unavailable → warn + continue (rebuild still succeeds)", async () => {
-    await writeFile(
-      join(homeDir, ".atmux", "cockpit.json"),
-      JSON.stringify({
-        cockpitSession: "test_cockpit_cron_unavail",
-        teams: [{ name: "demo", root: projRoot, enabled: true }],
-      }),
-      "utf8",
-    );
-    const fx = await spinTmux("cockpit-reb-cron-unavail");
-    const fakeCrontab = {
-      available: async () => false,
-      read: async () => "",
-      write: async () => {
-        throw new Error("should not be called");
-      },
-    };
-    try {
-      const { logger, logs } = makeLogger();
-      const code = await cockpitRebuild(
-        {
-          subverb: "rebuild",
-          noCycle: true,
-          forceCycle: false,
-          ackDangerous: false,
-          noLaunch: true,
-          yes: false,
-        },
-        {
-          env: { HOME: homeDir },
-          tmuxFactory: () => fx.tmux,
-          logger,
-          startFn: async () => 0,
-          crontab: fakeCrontab,
-          resolveAtmuxBin: () => "/usr/local/bin/atmux",
-        },
-      );
-      expect(code).toBe(0);
-      expect(logs.some((l) => l.startsWith("warn:") && l.includes("crontab not on PATH"))).toBe(
-        true,
-      );
     } finally {
       try {
         await fx.tmux.server.killServer();

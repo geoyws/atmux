@@ -1,6 +1,6 @@
 # ADR-090: Epic-team lifecycle — `spawn-epic` / `dissolve-epic` verbs + `TeamEpic` schema + roster preset
 
-**Status**: proposed
+**Status**: accepted
 **Date**: 2026-05-15
 **Driver-ref**: `.atmux/driver-inbox.md` 14:03 MYT 2026-05-13 §Pillar 4 (lines 3054–3069) + §Pillar 3 EPIC-Task linkage (lines 3036–3052) + §Open call #3 (auto-merge gitter ownership, line 3137) + §Open call #5 resolved (EPIC-done definition, line 3140) + §Files modified (line 3088 schema citation).
 **Parent Task**: t-e576dd43 (team-of-teams umbrella). **Authored under**: t-6f80c4cb (ADR seq 4/6, DRAFT only).
@@ -15,7 +15,7 @@
 
 [ADR-087](087-atmux-stop-soft.md) ships the `--soft` graceful-shutdown primitive + resume manifest. ADR-087 §Consequences explicitly names this ADR as the consumer: *"`src/core/soft-stop.ts` — new module exporting `softStop({team, tmux, atmuxDir, ...})` for re-use by ADR-090 `dissolve-epic`"*. Dissolve-epic is a graceful-stop-plus-prune; the lifecycle wraps soft-stop without reimplementing it.
 
-[ADR-088](088-per-member-branch-fan-in.md) ships the bulk-merge `merger` verb for the **per-member-branch / normal-team** topology. This ADR addresses the **shared-cwd / epic-team** topology — a DIFFERENT fan-in pattern (single epic-branch → parent-base), running on a DIFFERENT scope (one epic-team → its parent). The two fan-in patterns coexist; no contention.
+[ADR-179](179-per-member-branch-fan-in.md) ships the bulk-merge `merger` verb for the **per-member-branch / normal-team** topology. This ADR addresses the **shared-cwd / epic-team** topology — a DIFFERENT fan-in pattern (single epic-branch → parent-base), running on a DIFFERENT scope (one epic-team → its parent). The two fan-in patterns coexist; no contention.
 
 [ADR-091](091-kanban-driven-auto-merge.md) (draft pending, t-4af76f05) ships the kanban-driven auto-merge state machine that fires `git merge --no-ff <epic-branch>` once an epic-team's kanban hits `ready_to_merge`. ADR-091 cites this ADR for the `task.role: "reviewer-trunk-signoff"` marker convention; the two ADRs MUST agree on the marker shape (pre-flag #1 below). ADR-090 ships the marker definition; ADR-091 consumes it.
 
@@ -344,7 +344,7 @@ Backward-compat is structural: every new field is `.optional()` and every new ve
 
 **None outstanding** — all 7 reviewer pre-flag anchors + all 4 adjacent-class audit recommendations are folded into §Decision above. Carve-out:
 
-- **Class 3 multi-epic resource contention** (audit §Class 3, line 162): structurally pre-ship-unauditable. Post-dogfood Task seed in audit §Class 3; planner files the seed Task after `spawn-epic` ships green (T8 dogfood gate, separate impl Task tracked in this ADR's sibling decomp; deferred per audit carve-out).
+- **Class 3 multi-epic resource contention** (audit §Class 3, line 162): structurally pre-ship-unauditable. Post-dogfood Task seed in audit §Class 3; planner files the seed Task after `spawn-epic` ships green (T8 dogfood gate, separate impl Task tracked in this ADR's sibling decomp; deferred per audit carve-out). **Resolved via §Amendment 2026-05-20 — cap lifted unconditionally**; see ## Amendments below.
 - **GH Actions cross-account secret-scoping under pr-mode** (audit Class 1 §6): slow-mode wire-up only; documented in §Out-of-scope below. Re-surfaces when ADR-091's pr-mode runtime is implemented.
 
 ## Out of scope
@@ -358,6 +358,45 @@ Backward-compat is structural: every new field is `.optional()` and every new ve
 - **Adjacent-class audit Task** — already filed as t-cc4c5fd9 (complete; this ADR consumes its findings).
 - **Impl Tasks** — this ADR is a single design-doc commit. Sub-tasks are filed in the same session per [[feedback_decomp_same_session_with_deps]] in a sibling commit (see §Decomp below).
 
+## Amendments
+
+### 2026-05-20 — lift the per-parent concurrent-epic cap (t-54ba3c49)
+
+**Driver-call source:** operator 2026-05-20 22:30 MYT, post-128GB-RAM-confirmation: *"why do the atmux teams only have epic running at one time? why don't they have multiple running? ... 1 epic team is too slow ... or 5 is also slow"*.
+
+**What changes:**
+- The §Open questions / §Out-of-scope §Class 3 multi-epic deferred-stress-test carve-out is **resolved as: no cap.**
+- The `/bruh` §0.6 hard-stop ("Already an active epic-team under the parent") is **removed** from the convention.
+- The verb `spawn-epic` did **not** enforce a cap in source code (verified 2026-05-20 — `rg active.*epic.*team src/verbs/team/` returns zero hits in spawn-epic). The cap lived only as a `/bruh` skill convention. This amendment formalizes the lift at the design layer.
+
+**What stays:**
+- Soft observability — a follow-up impl task may add a stderr warn at 20+ concurrent epics under same parent (visibility nudge, not refuse).
+- Auto-merge cron throughput (5-10 merges/min) remains the ground-truth queue regulator; concurrent epics fan-in serially through ADR-091's state machine, so trunk-merge ordering is preserved by construction without a spawn-side cap.
+
+**Why the cap was originally set vs why it's lifted now:**
+
+| Original concern (audit §Class 3) | Status post-128GB hax |
+|---|---|
+| RAM (4-6GB per epic-team × N) | NO — 21+ epics fit in 128GB |
+| Trunk merge serialization | YES (still binding) — but degrades gracefully via auto-merge queue latency, not hard fail |
+| Per-cage cron load (N × auto-merge tick) | NO — 20× `*/5` cron = trivial |
+| Operator coordination bandwidth (parent lead/planner overload) | WEAK — epic-teams have their own lead/planner/reviewer; parent lead only routes EPIC-level decisions |
+| Cockpit visual clutter | NO — scrollable / collapsible |
+
+Only trunk-merge serialization remains load-bearing, and it self-regulates via the auto-merge cron. No spawn-time guard needed.
+
+**Cross-refs added by this amendment:**
+- [[feedback_hax_128gb_ram_throttling]] — 128GB context that makes the lift safe
+- [`aec82d5`](../../) — sentinel bounded N=4 concurrency cap (the safety net for observation under high epic count)
+- [t-b51f085b](../../) — sentinel dynamic-discovery follow-up (handles the increased team count in observation)
+- [t-54ba3c49](../../) — this amendment's tracking task (the visibility-warn impl is here if shipped)
+
+**Acceptance evidence (post-ship dogfood):**
+- Spawn 3+ concurrent epic-teams under the atmux parent
+- All bootstrap cleanly; sentinel surfaces all of them in `atmux sentinel status`
+- Auto-merge cron processes the queue in commit order
+- No RAM pressure (host shows <50% memory utilization with all epics live)
+
 ## Cross-references
 
 - [ADR-018](018-per-team-tmuxdir.md) — per-team tmpdir; nesting under `/tmp/atmux-<parent>/epics/<epicId>/sock` re-uses this primitive.
@@ -366,8 +405,8 @@ Backward-compat is structural: every new field is `.optional()` and every new ve
 - [ADR-082](082-worktree-isolation-per-member.md) — per-member worktree primitive (reused; HARD CONFLICT carve-out per §Decision-anchor #3).
 - [ADR-084](084-worktree-per-member-branch-model.md) — per-member-branch model (HARD CONFLICT carve-out per §Decision-anchor #3).
 - [ADR-087](087-atmux-stop-soft.md) — `soft-stop` primitive (consumed by `dissolve-epic` per §`dissolve-epic` step 4).
-- [ADR-088](088-per-member-branch-fan-in.md) — `initSubmodules` primitive (consumed by `spawn-epic` step 6).
-- [ADR-088 (the OTHER one)](088-worktree-submodule-init.md) — pre-existing duplicate-numbered ADR (project has two ADR-087 + two ADR-088 files; this duplication predates ADR-090 and is flagged for future cleanup outside this ADR's scope per CLAUDE.md §Docs Discipline "Single ADR tree per project").
+- [ADR-088](088-worktree-submodule-init.md) — `initSubmodules` primitive (consumed by `spawn-epic` step 6). *(Link target corrected 2026-05-18 via t-88da6978 — previously misrouted to `088-per-member-branch-fan-in.md`, which never contained the `initSubmodules` primitive; that ADR is now ADR-179 per the collision resolution noted below.)*
+- [ADR-179](179-per-member-branch-fan-in.md) — per-member-branch fan-in (`<base>-<member>` → `<base>` merger); pre-existing collision with `088-worktree-submodule-init.md` resolved 2026-05-18 via t-88da6978 (renumbered → ADR-179, mirroring the sibling t-fe51cf64 resolution that moved whip-velocity-gate from ADR-087 to ADR-177 the same day). Both 087 + 088 collisions now closed; the project once again has a single ADR per number per CLAUDE.md §Docs Discipline "Single ADR tree per project".
 - [ADR-089](089-hierarchical-cockpit.md) — recursive `Cockpit.sessions[]` + tmux prefix chain (consumed by `spawn-epic` step 10).
 - [ADR-091](091-kanban-driven-auto-merge.md) — auto-merge state machine (consumes `TeamEpic.mergeMode` + `KanbanTask.role` + `KanbanEpic.epicTeamName/Root`); forward-ref pending t-4af76f05 ship.
 - [ADR-092](092-cross-team-tell-lead.md) — cross-team tell-lead + caller-scope gate; forward-ref.
@@ -377,3 +416,80 @@ Backward-compat is structural: every new field is `.optional()` and every new ve
 - `.atmux/reviewer-preflag-ADR089-091.md` §ADR-090 (7 anchors).
 - `.atmux/audits/adr-089-091-adjacent-class-2026-05-13.md` §Class 1 (4 schema-field recs) + §Class 3 carve-out.
 - Project [CLAUDE.md](../../CLAUDE.md) §Testing Discipline (trunk-signoff test-coverage gate per §Decision-anchor #5) + §Docs Discipline (same-commit doc updates) + §Push Policy (epic-team's `<base>-epic-<epicId>` branches fall under `<dev>-staging` shape — auto-push allowed).
+
+
+## §Amendment 2026-05-20 — promoted to accepted (status-drift audit T4)
+
+Promoted from `proposed` → `accepted` per [docs/audits/adr-status-drift-audit-2026-05-20.md](../audits/adr-status-drift-audit-2026-05-20.md) (sha=a6f1541). Code-refs + git-log refs both present at audit time confirming shipped + dogfooded status; the `proposed` marker was bookkeeping debt. Original Date preserved verbatim. Append-only — see Status field for the canonical flip; this §Amendment carries the audit traceability.
+
+**Filed via** t-45b401c3 (T4 sweep, 2026-05-20).
+
+
+## §Amendment 2026-05-20 — `claudeAccount` inheritance contract (t-72f90a08)
+
+Closes a 2026-05-16 dogfood regression surfaced by the first real epic-team spawn (`e-fbef65d7`): the default roster preset shipped without `claudeAccount`, so every spawned cage member hit `Please run /login · API Error: 401` on first bootstrap. Driver workaround was `jq`-patch the child `team.json` post-spawn + `atmux stop --force` + `atmux start` (6/7 bootstrapped cleanly afterwards). The proper fix is roster-synthesis-time inheritance from the parent, documented here so future roster preset additions can't silently regress the same way.
+
+**Contract** — `spawn-epic` MUST inherit `claudeAccount` from the parent team's per-member entries onto roster members that don't already specify one:
+
+1. **Per-member name match wins.** For each roster member, look up the parent member with the same `.name`; if the parent carries `claudeAccount`, the child member inherits it.
+2. **Team-default fallback.** Roster members whose name is absent from the parent (e.g. lane-indexed `fe-1` against a parent without `fe-1`) inherit the parent's first-found `claudeAccount` — preserves the no-401-on-bootstrap invariant when the roster names diverge from the parent's roster.
+3. **Roster-pin wins.** Roster entries that already specify `claudeAccount` are NEVER overwritten by inheritance — the preset author's explicit choice takes precedence (e.g. an `ifca` member inside a `personal`-account parent stays `ifca`).
+4. **No-account parent ⇒ no-op.** If the parent's `team.json` is unreadable OR has no `claudeAccount` anywhere, inheritance is a no-op (returns members unchanged). The downstream `loadTeam` schema validation surfaces a misconfig more clearly than a synthetic error would.
+
+**Concrete impl**: `src/verbs/team/spawn-epic.ts::inheritClaudeAccount` (helper added 2026-05-16 at commit `2674670`, "fix(epic-team): two regressions caught by 2026-05-16 dogfood"). Same-commit test coverage was missed at the time; landed retroactively at t-72f90a08 (5 unit tests in `tests/unit/verbs/team/spawn-epic.test.ts` covering all four rules above).
+
+**Cross-refs:** Memory `feedback_spawn_epic_claude_account_inheritance_gap.md` (workaround anchor) · ADR-091 §Decision-anchor #3 (sibling marker-shape consistency).
+
+**Filed via** t-72f90a08 (docs role, 2026-05-20).
+
+
+## §Amendment 2026-05-21 — `dissolve-epic` cage-teardown regression (ghost-tmux pile-up)
+
+Closes a long-running production regression surfaced 2026-05-21 by the operator: `atmux team dissolve-epic` was leaking the per-epic tmux server + its workers on every dissolve, leading to ~20+ ghost tmux sessions accumulating across the host (~38GB combined RSS observed at audit time). The root cause is a 1-line wiring bug in this ADR's §`dissolve-epic` step 5 ("soft-stop the child cage"): the implementation gated the entire teardown step on `opts.softStopHook !== undefined`, which is only true under test injection. In production `opts.softStopHook` is undefined → step 5 was a no-op → cage tmux server kept running indefinitely. Steps 6–8 (worktree prune + cockpit unregister + parent EPIC mark-done) proceeded normally, so the orphan tmux became invisible to `atmux cockpit list` despite still consuming RAM.
+
+**Contract** — `dissolve-epic` MUST always reap the child cage tmux server when the child team.json is present (i.e. the cage was spawned at some point). The reap has two sequential steps:
+
+1. **softStop** (per ADR-087) — graceful: writes `<epicRoot>/.atmux/state/resume.json`, notifies each member pane via a comment-prefixed line, sleeps `team.softStopGraceSeconds` (default 5s). Failures here are non-fatal — the manifest is forensic-only; the actual reap is step 2.
+2. **`tmux kill-session`** — load-bearing: kills the cage tmux server unconditionally after step 1, regardless of whether step 1 succeeded. Mirrors `verbs/stop.ts:272` killSession invocation (the canonical reap for non-dissolve teardowns).
+
+Both steps no-op when `tmux.session.hasSession()` returns false (idempotent dissolve of an already-stopped epic-team). Both steps swallow their own failures so the outer dissolve pipeline always reaches worktree-prune + cockpit-mutate (the operator-visible state advance).
+
+**Test-injection seam** — `DissolveEpicOpts.softStopHook` retained but reshaped: was `(epicRoot: string) => Promise<void>`, now `(deps: { epicRoot, childTeam }) => Promise<void>`. The default wires `defaultCageTeardown` (exported from same module for direct unit-test coverage). Tests that don't want to mock a full tmux pass `softStopHook: async () => undefined` to opt out; tests that exercise the default cage reap pass a mock `tmuxFactory`.
+
+**Why this isn't the kind of thing the doc-update gate would have caught** — the regression existed at ADR-090's original ship and the §step-5 description matched the intent. The bug was that the **default for `opts.softStopHook` did not match the comment claiming it was "real softStop() invocation against the child's cage."** Effectively a TODO that was committed instead of completed; doc said one thing, code did another. Caught only by operator-observed ghost session pile-up + the 2026-05-21 audit trace.
+
+**Concrete impl**: `src/verbs/team/dissolve-epic.ts::defaultCageTeardown` (helper added 2026-05-21). 5 unit tests in `tests/unit/verbs/team/dissolve-epic.test.ts` cover: (a) alive cage → both softStop + killSession run, (b) dead cage → killSession skipped, (c) hasSession throws → no killSession + no rethrow, (d) session name uses ADR-161 cage form `atmux_<name>`, (e) end-to-end dissolve with no `softStopHook` still kills cage. Total dissolve-epic tests: 16/16 pass.
+
+**Out of scope / follow-up**: A `cockpit.reaper` consumer subscribed to `epic.dissolved` events (per [ADR-202](202-honker-pubsub-substrate-deferred.md) substrate) will provide defense-in-depth — re-runs the reap until the orphan tmux is gone + surfaces dropped reaps to lead. That work lives in the Honker gitter EPIC e-d5278f2b alongside the trunk-merge consumer (ADR-091).
+
+**Cross-refs:** ADR-087 (softStop primitive — composed here) · ADR-202 (Honker substrate — defense-in-depth path) · `verbs/stop.ts:272` (canonical killSession pattern after softStop).
+
+**Filed via** 2026-05-21 driver session — operator-surfaced ghost-tmux pile-up.
+
+
+## §Amendment 2026-05-22 — dissolve-epic completeness extension (e-7a1014f9)
+
+Closes the broader cage-residue class that surfaced overnight 2026-05-21 → 22 (superdoctor reaped 18 GB RAM + 67 claude procs across 8 orphan-cage sweeps in one day). Yesterday's §Amendment 2026-05-21 wired softStop + killSession into `defaultCageTeardown`; today's extension covers the two remaining sites:
+
+**Fix #1 (cage tmux kill-server)** — `defaultCageTeardown` now calls `tmux.server.killServer()` AFTER `killSession`. Cage tmux is single-purpose by ADR-018 design (one cage = one server on a per-tmpdir socket), so killing the whole server is the canonical reap. The killSession-then-killServer ordering preserves graceful-before-hammer semantics: softStop notifies → killSession ends the named session → killServer evicts the socket file + any stray sibling sessions.
+
+**Fix #2 (merged-branch deletion)** — new `deleteMergedEpicBranch` helper invoked at step 6a (after `pruneWorktree`). Resolves the branch name from `childTeam.epicTeam.parentBase` per ADR-090 §Disk layout (`<parentBase>-epic-<epicId>`), probes existence + ancestor-of-trunk via `git merge-base --is-ancestor`, then `git branch -D` when merged. Behavior matrix:
+
+- Branch absent → no-op
+- Branch present + merged → `git branch -D` + green log
+- Branch present + unmerged → **preserve + warn with operator rescue command** — applies even under `--skip-checks` (the skip-checks override bypasses kanban + worktree-dirty gates but does NOT silently destroy unpushed commits)
+- Git delete fails → warn + manual hint (best-effort)
+
+**Fix #3 (orphan-detection doctor probe)** — filed as follow-up Task; not in this commit. The probe walks per-team tmux sockets, cross-refs against `cockpit.json::sessions[]`, surfaces yellow `cage-orphan` row + manual kill-server hint when invariant `cage tmux alive ⇒ epic-id rostered in cockpit` fails. Cleanup-EPIC e-7a1014f9 owns the impl after this commit ships.
+
+**Concrete impl**: `src/verbs/team/dissolve-epic.ts::defaultCageTeardown` (extended) + `src/verbs/team/dissolve-epic.ts::deleteMergedEpicBranch` (new helper, exported for direct unit coverage). 6 new unit tests + 1 existing test updated to assert killSession-before-killServer ordering. Total dissolve-epic suite: 22/22 pass. Coverage: 80% funcs / 90% lines on dissolve-epic.ts.
+
+**Closes:** e-7a1014f9 §Fix #1 + §Fix #2 (Fix #3 deferred to same EPIC's follow-up Task). De-duplicates e-88e1ffa9 (same scope filed twice; closing as superseded after this commit lands).
+
+**Cross-refs:** ADR-018 (per-team tmux socket isolation — kill-server scope), ADR-179 (per-member-branch fan-in — merged-branch detection pattern via `merge-base --is-ancestor`), e-7a1014f9 (parent EPIC), t-609c1921 (driver-only tracking ticket).
+
+**Filed via** 2026-05-22 driver session — overnight superdoctor reap signaling the dissolve-epic completeness gap.
+
+## §see-also (2026-05-22)
+
+[ADR-223](223-reap-cascade-semantics-and-safety.md) §D2 — orphan-reap cascade interacts with `dissolve-epic`'s refusal semantics. Per the 2026-05-22 amendment, `dissolveEpic` is NOT in the composition map for the cage-tmux-without-registry orphan class (it always refuses when the cockpit registry entry is missing); the cascade uses `tmux -S <socket> kill-server` as PRIMARY and lets the next pass re-classify residue as `branch-without-row` + `worktree-without-cage`. dissolve-epic stays the canonical primitive for any cleanly-registered epic-team teardown.

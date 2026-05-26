@@ -1,6 +1,6 @@
 # ADR-157: `/goal` as primary drain for Claude service-loop roles — lane-tick narrows to backstop
 
-**Status**: proposed (2026-05-16, planner-decomp T1; pending reviewer pre-flag → accepted)
+**Status**: accepted (2026-05-16, planner-decomp T1; pending reviewer pre-flag → accepted)
 **Date**: 2026-05-16
 **Author**: atmux team (planner-decomp / lead re-slot 01:08 MYT; draft by up-impl)
 **Parent EPIC**: t-3c1aab98
@@ -176,7 +176,14 @@ EPIC-level acceptance (T1 closes only the draft beat; T2–T7 carry the rest):
 - [ADR-080](080-operator-observed-improvements.md) — lane-tick substrate; §B2 auto-done sweep + §A2 lead-ctx-rotate nudge are the two preserved safety nets (D5 #1–#2).
 - [ADR-145](145-atmux-adopts-gitter.md) — gitter-pattern; `/goal` interaction with gitter resolved orthogonal (Decision-anchor #7).
 - [ADR-134](134-in-team-auto-merger.md) — in-team auto-merger; `gitter --sweep` cron orthogonality documented (Decision-anchor #7).
-- [ADR-132](132-pluggable-martinet.md) + [ADR-140](140-cheap-model-first.md) — martinet `runtime: "cursor"` carve-out (D4).
+- [ADR-132](132-pluggable-martinet.SUPERSEDED.md) + [ADR-140](140-cheap-model-first.md) — martinet `runtime: "cursor"` carve-out (D4).
 - ADR-151 (unblocker) — first goal-driven role consumer (Out of scope T7 dep).
 - [ADR-148](148-commit-cadence-truth-signal.md) — cadence-as-canonical-truth; `/goal` latency informs the new cadence baseline (D6).
 - [[feedback_decomp_same_session_with_deps]] — planner-decomp gate honored; T1–T7 filed same-session with populated `deps[]`.
+
+
+## §Amendment 2026-05-20 — promoted to accepted (status-drift audit T4)
+
+Promoted from `proposed` → `accepted` per [docs/audits/adr-status-drift-audit-2026-05-20.md](../audits/adr-status-drift-audit-2026-05-20.md) (sha=a6f1541). Code-refs + git-log refs both present at audit time confirming shipped + dogfooded status; the `proposed` marker was bookkeeping debt. Original Date preserved verbatim. Append-only — see Status field for the canonical flip; this §Amendment carries the audit traceability.
+
+**Filed via** t-45b401c3 (T4 sweep, 2026-05-20).

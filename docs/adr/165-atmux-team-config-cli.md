@@ -1,6 +1,6 @@
 # ADR-165: `atmux team set / get / unset` — CLI surface for `team.json` config edits
 
-**Status**: proposed
+**Status**: Accepted — ratified by driver 2026-05-21 (`atmux team set/get/unset <dot.path> [value]` — atomic write + Zod-gate + backup + audit; reuses ADR-098 flock+tempfile-rename pattern; §OQ recommendations as-written)
 **Date**: 2026-05-16
 **Author**: `whip-impl` (T1 draft per `t-85b928a9`, parent EPIC `t-2deb17f0` — `atmux team set <key> <value>` CLI surface)
 **Driver-ref**: 2026-05-16 08:07 MYT — driver flag on a sibling team: *"had to bypass atmux to flip `team.json.autoMerge.enabled` (null → true) because no CLI verb exists for it."* Manual JSON edits with hand-written backups are fragile; operators have shipped typos (`autoMerg`, `eternalImprovment`) that survive until the next `atmux start` schema-validation pass.

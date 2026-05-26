@@ -1,4 +1,4 @@
-// ADR-087 §T2 (Task t-e91fec98) — dedup-aware complaint filer.
+// ADR-177 §T2 (Task t-e91fec98) — dedup-aware complaint filer.
 //
 // The whip→superdoctor escalation pipeline must coalesce repeated strikes
 // into a single complaint row + a bumped `source_count`, NOT flood the
@@ -20,6 +20,7 @@
 
 import type { Database } from "bun:sqlite";
 import { randomBytes } from "node:crypto";
+import { emit } from "../abstractions/events.ts";
 import type { Complaint } from "../schema/complaints.ts";
 import { ComplaintsRepo } from "./repositories/complaints-repo.ts";
 
@@ -112,6 +113,18 @@ export function fileDedupedComplaint(
       typeof existing.extra.source_count === "number" ? existing.extra.source_count : 1;
     const newCount = prevCount + 1;
     repo.bumpSourceCount(existing.id, nowSec, newCount);
+    emitComplaintFiled(db, {
+      complaintId: existing.id,
+      targetTeam: opts.targetTeam,
+      sourceKind: opts.sourceKind,
+      sourceId: opts.sourceId,
+      incidentSummary: opts.incidentSummary,
+      openedBy: opts.openedBy ?? null,
+      severity: extractSeverity(opts.extra),
+      sourceCount: newCount,
+      bumped: true,
+      filedAtSec: nowSec,
+    });
     return { id: existing.id, isNew: false, sourceCount: newCount };
   }
   // Fresh row. `source_count` + `last_seen` overwrite any caller-supplied
@@ -141,5 +154,56 @@ export function fileDedupedComplaint(
     extra: newExtra,
   };
   repo.insert(c);
+  emitComplaintFiled(db, {
+    complaintId: id,
+    targetTeam: opts.targetTeam,
+    sourceKind: opts.sourceKind,
+    sourceId: opts.sourceId,
+    incidentSummary: opts.incidentSummary,
+    openedBy: opts.openedBy ?? null,
+    severity: extractSeverity(opts.extra),
+    sourceCount: 1,
+    bumped: false,
+    filedAtSec: nowSec,
+  });
   return { id, isNew: true, sourceCount: 1 };
+}
+
+/** Pull `severity` out of the caller-supplied extra bag. Free-form by
+ *  convention (commonly `info`/`warn`/`urgent`/`critical` per ADR-214). */
+function extractSeverity(extra: Record<string, unknown> | undefined): string | null {
+  if (extra === undefined) return null;
+  const v = extra.severity;
+  return typeof v === "string" && v.length > 0 ? v : null;
+}
+
+/** ADR-214 §D2 wire — emit `complaint.filed` post-write. Best-effort: a
+ *  thrown error here (schema drift, db full) must NOT abort the file
+ *  operation; the complaint row is already durable. Consumer wakes off
+ *  the row regardless on its next drain via the cron-backstop sweep. */
+function emitComplaintFiled(
+  db: Database,
+  payload: {
+    complaintId: string;
+    targetTeam: string;
+    sourceKind: string;
+    sourceId: string;
+    incidentSummary: string;
+    openedBy: string | null;
+    severity: string | null;
+    sourceCount: number;
+    bumped: boolean;
+    filedAtSec: number;
+  },
+): void {
+  try {
+    emit(db, {
+      topic: "complaint.filed",
+      ...payload,
+    });
+  } catch {
+    // Substrate degradation — durable INSERT already succeeded. The
+    // cron-backstop drain (ADR-202 §D6) catches the consumer up on
+    // next tick.
+  }
 }

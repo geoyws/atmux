@@ -36,7 +36,6 @@ import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.
 import { loadKanban } from "../core/kanban.ts";
 import {
   DEFAULT_PULSE_DEDUP_LADDER,
-  DEFAULT_PULSE_DEDUP_MIN,
   DEFAULT_PULSE_WINDOW_MIN,
   PULSE_DRIVER_INBOX_STALE_MIN,
   type PulseDedupLadder,
@@ -60,6 +59,7 @@ import {
 } from "../core/superdoctor-activity.ts";
 import { UsageError } from "../errors.ts";
 import type { CockpitPulse, CockpitTeam } from "../schema/cockpit.ts";
+import { isRenameInProgress } from "./team-rename-fs.ts";
 import type { Team } from "../schema/team.ts";
 import { Team as TeamSchema } from "../schema/team.ts";
 import {
@@ -343,6 +343,15 @@ export async function pulse(argv: ReadonlyArray<string>, opts: PulseOpts = {}): 
   const teams = enabledTeams(cockpit);
   const observations: PulseObservation[] = [];
   for (const team of teams) {
+    // ADR-027 §Consequences — rename.lock guard. team.json + cron
+    // markers may be mid-mutation during a rename; gathering inputs
+    // (reads team.json + kanban + driver-inbox + cron state) against
+    // an in-flight rename surfaces an indeterminate verdict that
+    // would resolve correctly on the next tick. Skip silently.
+    if (await isRenameInProgress(join(team.root, ".atmux"))) {
+      stderr(`pulse: ${team.name}: skipping — rename.lock present (ADR-027)\n`);
+      continue;
+    }
     const obs = await gatherTeamInputs(team, {
       ...(opts.gitSpawn !== undefined ? { gitSpawn: opts.gitSpawn } : {}),
       ...(opts.runDoctor !== undefined ? { runDoctor: opts.runDoctor } : {}),

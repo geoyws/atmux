@@ -25,12 +25,27 @@
 //   the red row, and prunes phantom-inbox entries (other fix paths
 //   deferred per ADR-019).
 
+import { existsSync as fsExistsSync } from "node:fs";
+import { readlink as fsReadlink } from "node:fs/promises";
 import { join } from "node:path";
 import { type CrontabIO, defaultCrontabIO } from "../abstractions/crontab.ts";
+import { announceHonkerState } from "../abstractions/events.ts";
+import {
+  bootHonker,
+  type HonkerHooks,
+  type HonkerRuntimeState,
+} from "../abstractions/honker.ts";
+import {
+  type HostPressureVerdict,
+  probeHostPressure,
+  type ProbeHostPressureDeps,
+} from "../core/host-pressure.ts";
 import { resolveWebhookUrl } from "../abstractions/discord.ts";
 import { exists, readTextOrNull, removeFile, statOrNull, writeText } from "../abstractions/fs.ts";
 import { probeStatus } from "../abstractions/http.ts";
 import { tryReadJson } from "../abstractions/json.ts";
+import { closeDatabase, openDatabase } from "../abstractions/sqlite.ts";
+import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { resolveDayFilePath } from "../abstractions/release-notes.ts";
 import { spawn as defaultSpawn, type SpawnResult } from "../abstractions/spawn.ts";
 import { mytDate, now } from "../abstractions/time.ts";
@@ -50,13 +65,14 @@ import {
   defaultEmojiForRole,
   driverInboxPath,
   getAtmuxDir,
-  inboxPathFor,
   kanbanJsonPath,
   type ResolveDirOpts,
   resolveTeamSocket,
   teamJsonPath,
   tryLoadTeam,
 } from "../core/common.ts";
+import { loadInbox } from "../core/inbox.ts";
+import { KanbanRepo } from "../core/repositories/kanban-repo.ts";
 import { type CronBlockTarget, findCronOrphans } from "../core/cron.ts";
 import {
   type DriverInboxEntry,
@@ -68,12 +84,12 @@ import {
   probeDriverPane,
 } from "../core/driver-pane-health.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
+import { resolveTmuxBin } from "../core/resolve-tmux-bin.ts";
 import { inspectClaudeReadiness } from "../core/pane-readiness.ts";
 import { classifyText } from "../core/pane-state.ts";
 import {
   findPhantomInProgressClaims,
   formatPruneIso,
-  type PhantomClaim,
   prunePhantomInProgressClaims,
 } from "../core/phantom-prune.ts";
 import { DEFAULT_SEND_KEYS_FAILURES_LOG_REL } from "../core/safe-send.ts";
@@ -83,7 +99,6 @@ import {
   type DriftReport,
 } from "../core/whip-config-drift.ts";
 import { UsageError } from "../errors.ts";
-import { Inbox } from "../schema/inbox.ts";
 import { Kanban } from "../schema/kanban.ts";
 import { type Team, type TeamMember, Team as TeamSchema } from "../schema/team.ts";
 
@@ -563,15 +578,36 @@ export interface PhantomEntry {
 }
 
 export async function findPhantomInboxes(atmuxDir: string): Promise<PhantomEntry[]> {
-  const kanban = await tryReadJson(kanbanJsonPath(atmuxDir), Kanban);
-  if (kanban === null) return [];
-  const liveIds = new Set(kanban.tasks.map((t) => t.id));
-  const team = await tryLoadTeam({ dir: atmuxDir });
+  const stateDb = join(atmuxDir, "state.db");
+  // Malformed team.json → SchemaError out of tryLoadTeam. checkTeam already
+  // surfaces the red row; phantom-inbox scan has no team roster to walk, so
+  // treat unparseable identically to absent (return []). Without this catch,
+  // `atmux doctor` crashes on a malformed team.json instead of emitting red.
+  let team: Awaited<ReturnType<typeof tryLoadTeam>>;
+  try {
+    team = await tryLoadTeam({ dir: atmuxDir });
+  } catch {
+    return [];
+  }
   if (team === null) return [];
+
+  const liveIds = new Set<string>();
+  if (await exists(stateDb)) {
+    const db = openDatabase(stateDb, migrations);
+    try {
+      for (const t of new KanbanRepo(db).listTasks()) liveIds.add(t.id);
+    } finally {
+      closeDatabase(db);
+    }
+  } else {
+    const kanban = await tryReadJson(kanbanJsonPath(atmuxDir), Kanban);
+    if (kanban === null) return [];
+    for (const t of kanban.tasks) liveIds.add(t.id);
+  }
+
   const phantoms: PhantomEntry[] = [];
   for (const m of team.members) {
-    const inbox = await tryReadJson(inboxPathFor(atmuxDir, m.name), Inbox);
-    if (inbox === null) continue;
+    const inbox = await loadInbox(atmuxDir, m.name);
     for (const e of inbox.inProgress) {
       if (!liveIds.has(e.id)) {
         phantoms.push({ member: m.name, id: e.id, subject: e.subject ?? "" });
@@ -579,6 +615,320 @@ export async function findPhantomInboxes(atmuxDir: string): Promise<PhantomEntry
     }
   }
   return phantoms;
+}
+
+/** Legacy ADR-076 JSON inbox files on SQL-canonical teams mislead tools
+ *  that read the path directly. Surface for `atmux cleanup inboxes --purge-legacy`. */
+export async function findLegacyInboxJson(atmuxDir: string): Promise<string[]> {
+  const stateDb = join(atmuxDir, "state.db");
+  if (!(await exists(stateDb))) return [];
+  const ibDir = join(atmuxDir, "inboxes");
+  if (!(await exists(ibDir))) return [];
+  const { readdir } = await import("node:fs/promises");
+  const names: string[] = [];
+  for (const name of await readdir(ibDir).catch(() => [] as string[])) {
+    if (name.endsWith(".json")) names.push(name);
+  }
+  return names.sort();
+}
+
+export async function checkLegacyInboxJson(atmuxDir: string): Promise<DoctorRow[]> {
+  const files = await findLegacyInboxJson(atmuxDir);
+  if (files.length === 0) return [];
+  const sample = files.slice(0, 3).join(", ");
+  const more = files.length > 3 ? ` (+${files.length - 3} more)` : "";
+  return [
+    {
+      status: "yellow",
+      label: "legacy-inbox-json",
+      detail: `${files.length} stale .atmux/inboxes/*.json file(s) on SQL-canonical team (e.g. ${sample}${more})`,
+      hint: "atmux cleanup inboxes --purge-legacy  (canonical inbox is state.db tasks + `atmux inbox <member>`)",
+    },
+  ];
+}
+
+// ---------- Honker substrate probe (ADR-202 §D11) ----------
+
+/** Pure: map a HonkerRuntimeState into a doctor row. Exported for unit
+ *  tests; the verb-side wrapper `checkHonker(atmuxDir)` boots + delegates. */
+export function honkerStateRows(state: HonkerRuntimeState | null): DoctorRow[] {
+  if (state === null) {
+    return [
+      {
+        status: "info",
+        label: "honker",
+        detail: "boot not invoked (no state.db opened on this run)",
+      },
+    ];
+  }
+  if (state.loaded) {
+    return [
+      {
+        status: "green",
+        label: "honker",
+        detail: `substrate loaded — extension at ${state.extensionPath ?? "<unknown>"}`,
+      },
+    ];
+  }
+  // loaded === false branches: kill-switch off vs explicit fallback
+  if (state.fallbackReason === null) {
+    return [
+      {
+        status: "info",
+        label: "honker",
+        detail: "kill-switch off (ATMUX_HONKER unset or off); poll-mode in effect",
+      },
+    ];
+  }
+  return [
+    {
+      status: "yellow",
+      label: "honker",
+      detail: `fallback mode — ${state.fallbackReason}`,
+      hint:
+        "extension binary not yet provisioned (install wizard ADR-200 §D6 ships this); " +
+        "consumers fall through to poll-mode + cron-backstop sweep",
+    },
+  ];
+}
+
+/** Boot the Honker substrate against the team's state.db, announce
+ *  via the events bus, and surface the runtime state as a doctor row.
+ *  Tolerant of missing state.db (returns info row) — first-run hosts
+ *  don't fail this probe. */
+export async function checkHonker(
+  atmuxDir: string,
+  hooks: HonkerHooks = {},
+): Promise<DoctorRow[]> {
+  const stateDb = join(atmuxDir, "state.db");
+  if (!(await exists(stateDb))) {
+    return [
+      {
+        status: "info",
+        label: "honker",
+        detail: "state.db absent (first-run or atmux init not invoked)",
+      },
+    ];
+  }
+  const db = openDatabase(stateDb, migrations);
+  try {
+    const state = bootHonker(db, hooks, announceHonkerState());
+    return honkerStateRows(state);
+  } finally {
+    closeDatabase(db);
+  }
+}
+
+// ---------- host-pressure probe (ADR-184 §Amendment 2026-05-21) ----------
+
+/** Pure mapping. State-snapshot → doctor row. Tests inject verdicts to
+ *  hit every branch without /proc reads. */
+export function hostPressureRows(verdict: HostPressureVerdict): DoctorRow[] {
+  if (verdict.skipped) {
+    return [
+      {
+        status: "info",
+        label: "host-pressure",
+        detail: "probe skipped — non-Linux platform (gate inactive)",
+      },
+    ];
+  }
+  if (verdict.probe === null || verdict.thresholds === null) {
+    // Linux but probe failed somehow — surface as info, don't block.
+    return [
+      {
+        status: "info",
+        label: "host-pressure",
+        detail: "probe data unavailable",
+      },
+    ];
+  }
+  const loadCeil = verdict.probe.cpuCores * verdict.thresholds.maxLoadRatio;
+  const memMb = verdict.probe.memAvailableMb;
+  const memMbThreshold = verdict.thresholds.minMemMb;
+  const baseDetail = [
+    `load 15min ${verdict.probe.loadAvg15min.toFixed(2)} / ${loadCeil.toFixed(2)} ceil`,
+    `mem ${memMb}MB / ${memMbThreshold}MB floor`,
+    `${verdict.probe.cpuCores} cores`,
+  ].join(" · ");
+  if (verdict.ok) {
+    return [
+      {
+        status: "green",
+        label: "host-pressure",
+        detail: `under threshold — ${baseDetail}`,
+      },
+    ];
+  }
+  return [
+    {
+      status: "yellow",
+      label: "host-pressure",
+      detail: `OVER threshold — ${baseDetail}`,
+      hint:
+        `${verdict.reasons.join("; ")} — spawn-epic will REFUSE until pressure drops. ` +
+        `override: --force-spawn (use sparingly); tune: ATMUX_SPAWN_MAX_LOAD_RATIO + ATMUX_SPAWN_MIN_FREE_MB env.`,
+    },
+  ];
+}
+
+/** Verb-side wrapper — runs the live probe + maps to rows. Production
+ *  default; tests inject `probeFn` to drive specific verdicts. */
+export async function checkHostPressure(
+  probeFn: (deps: ProbeHostPressureDeps) => Promise<HostPressureVerdict> = probeHostPressure,
+): Promise<DoctorRow[]> {
+  const verdict = await probeFn({});
+  return hostPressureRows(verdict);
+}
+
+// ---------- atmux-skills-plugin probe (ADR-217 §D5) ----------
+
+/** Inputs the pure state-mapper resolves to a doctor row. Exported so
+ *  tests exercise every branch without filesystem I/O. */
+export type SkillsPluginState =
+  | { kind: "opted-out" }
+  | { kind: "symlink-missing" }
+  | { kind: "plugin-json-missing"; installPath: string }
+  | { kind: "plugin-json-malformed"; installPath: string; reason: string }
+  | { kind: "plugin-json-schema-fail"; installPath: string; reason: string }
+  | { kind: "green"; installPath: string; pluginName: string };
+
+/** Pure mapping. Same shape as `honkerStateRows` — keep the wrapper +
+ *  state mapper paired so unit tests can hit every branch. */
+export function skillsPluginStateRows(state: SkillsPluginState): DoctorRow[] {
+  switch (state.kind) {
+    case "opted-out":
+      return [
+        {
+          status: "info",
+          label: "atmux-skills-plugin",
+          detail:
+            "user opted out via wizard (marker present at ~/.atmux/state/skills-plugin-opted-out)",
+        },
+      ];
+    case "symlink-missing":
+      return [
+        {
+          status: "yellow",
+          label: "atmux-skills-plugin",
+          detail: "skills plugin not installed at ~/.claude/plugins/atmux/",
+          hint: "atmux init --skills-only  (or rerun the install wizard)",
+        },
+      ];
+    case "plugin-json-missing":
+      return [
+        {
+          status: "yellow",
+          label: "atmux-skills-plugin",
+          detail: `plugin.json missing at ${state.installPath}/.claude-plugin/plugin.json`,
+          hint: "atmux init --skills-only --force  (re-installs the bundled plugin)",
+        },
+      ];
+    case "plugin-json-malformed":
+      return [
+        {
+          status: "yellow",
+          label: "atmux-skills-plugin",
+          detail: `plugin.json malformed at ${state.installPath} — ${state.reason}`,
+          hint: "atmux init --skills-only --force  (overwrites with bundled manifest)",
+        },
+      ];
+    case "plugin-json-schema-fail":
+      return [
+        {
+          status: "yellow",
+          label: "atmux-skills-plugin",
+          detail: `plugin.json schema validation failed at ${state.installPath} — ${state.reason}`,
+          hint: "atmux init --skills-only --force  (re-installs the bundled plugin)",
+        },
+      ];
+    case "green":
+      return [
+        {
+          status: "green",
+          label: "atmux-skills-plugin",
+          detail: `skills plugin installed at ${state.installPath} (plugin=${state.pluginName})`,
+        },
+      ];
+  }
+}
+
+export interface CheckSkillsPluginOpts {
+  /** Override $HOME for tests. */
+  home?: string;
+}
+
+/** I/O wrapper. Resolves the install path under $HOME, probes for the
+ *  opt-out marker first, then verifies the symlink + plugin.json. Returns
+ *  the empty array when $HOME is unset (defensive — caller probably has
+ *  bigger issues, no point emitting a doctor row about it). */
+export async function checkSkillsPlugin(
+  opts: CheckSkillsPluginOpts = {},
+): Promise<DoctorRow[]> {
+  const home = opts.home ?? process.env.HOME;
+  if (home === undefined || home.length === 0) return [];
+
+  const optOutMarker = join(home, ".atmux", "state", "skills-plugin-opted-out");
+  if (await exists(optOutMarker)) {
+    return skillsPluginStateRows({ kind: "opted-out" });
+  }
+
+  // Canonical install path: real dir (operator dotfiles override) or
+  // symlink to <atmux-source>/plugins/atmux/. Both count as "installed"
+  // for the probe; the wizard step distinguishes for UX purposes.
+  const installPath = join(home, ".claude", "plugins", "atmux");
+  const st = await statOrNull(installPath);
+  if (st === null || !st.isDirectory) {
+    return skillsPluginStateRows({ kind: "symlink-missing" });
+  }
+
+  const manifestPath = join(installPath, ".claude-plugin", "plugin.json");
+  const raw = await readTextOrNull(manifestPath);
+  if (raw === null) {
+    return skillsPluginStateRows({ kind: "plugin-json-missing", installPath });
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    return skillsPluginStateRows({
+      kind: "plugin-json-malformed",
+      installPath,
+      reason: e instanceof Error ? e.message : String(e),
+    });
+  }
+  // Minimal shape check on the keys the probe's green path depends on.
+  // The Claude Code plugin-schema pin lives in the sibling integration
+  // test (t-e57fe51e) — this probe stays cheap + tolerant of additive
+  // schema fields so a CC schema bump doesn't flip every operator's row
+  // yellow.
+  if (parsed === null || typeof parsed !== "object") {
+    return skillsPluginStateRows({
+      kind: "plugin-json-schema-fail",
+      installPath,
+      reason: "manifest is not an object",
+    });
+  }
+  const m = parsed as Record<string, unknown>;
+  if (typeof m.name !== "string" || m.name.length === 0) {
+    return skillsPluginStateRows({
+      kind: "plugin-json-schema-fail",
+      installPath,
+      reason: "missing or empty 'name' field",
+    });
+  }
+  if (!Array.isArray(m.skills)) {
+    return skillsPluginStateRows({
+      kind: "plugin-json-schema-fail",
+      installPath,
+      reason: "'skills' field is not an array",
+    });
+  }
+  return skillsPluginStateRows({
+    kind: "green",
+    installPath,
+    pluginName: m.name,
+  });
 }
 
 export async function checkPhantomInboxes(atmuxDir: string): Promise<DoctorRow[]> {
@@ -835,20 +1185,27 @@ export interface CheckCronBlockOpts {
  * but the cron block was absent; doctor missed it, so the only signal
  * was the silently-stalled lead the morning after.
  *
+ * **2026-05-24 post-ADR-233**: cron auto-install retired (orchd is the
+ * runtime via Honker substrate). The probe now expects ZERO cron blocks
+ * by default — `team.kanban.cronAutoInstall === false` is the canonical
+ * post-cutover state and this probe is silent. The check is retained
+ * for the deprecation window so teams that explicitly opt back in (via
+ * `atmux cron-install`) get the safety net.
+ *
  * Returns:
  * - `[]` when team is null (the team-shape row already surfaced).
- * - `[]` when `team.kanban.cronAutoInstall === false` — explicit opt-out;
- *    the operator manages cron some other way and the absence is intent.
+ * - `[]` when `team.kanban.cronAutoInstall === false` — explicit opt-out
+ *    (canonical post-ADR-233 state) or operator manages cron some other way.
  * - `[]` when `crontab` is not on the host (no PATH match); ADR-083
  *    posture is "skip gracefully on cron-less hosts."
  * - `[]` when the team's marker header (`# >>> atmux:team=<name> …`) is
  *    present anywhere in the current crontab.
- * - one RED row otherwise, hinting `atmux cron-install`.
+ * - one RED row otherwise, hinting `atmux cron-install` (legacy path).
  *
- * RED (not YELLOW) because the failure mode is overnight team death — a
- * GREEN doctor that hides a missing cron block is a worse outcome than
- * a noisy one. Operators who legitimately don't want a block set
- * `kanban.cronAutoInstall: false` and the row stays silent.
+ * RED (not YELLOW) because pre-ADR-233 the failure mode was overnight
+ * team death — a GREEN doctor that hid a missing cron block was worse
+ * than a noisy one. Post-ADR-233 the trigger is opt-in, so the row is
+ * actionable only for operators who explicitly armed cron.
  */
 export async function checkCronBlock(
   team: Team | null,
@@ -1888,9 +2245,9 @@ function parsePorcelainWorktrees(stdout: string): PorcelainWorktree[] {
   return out;
 }
 
-// ---------- ADR-088 W6: merger-fan-in probe class ----------
+// ---------- ADR-179 W6: merger-fan-in probe class ----------
 
-/** ADR-088 §Decision-2+3+6: `team.merger` block, mirrored locally because
+/** ADR-179 §Decision-2+3+6: `team.merger` block, mirrored locally because
  *  this branch (geoyws-up-impl-2) implements W6 in parallel with sibling
  *  branches that own W3 (`merge-cycle` verb) and W4 (the canonical Zod
  *  block on `team.ts`). When the trunk merge lands, the schema-level
@@ -1904,7 +2261,7 @@ interface MergerConfig {
   stalenessHours?: number;
 }
 
-/** ADR-088 §Decision-6 default. The W4 Zod default lives at the schema
+/** ADR-179 §Decision-6 default. The W4 Zod default lives at the schema
  *  layer; this constant is the read-site fallback so the probe runs
  *  identically pre- and post-trunk-merge. */
 const DEFAULT_MERGER_STALENESS_HOURS = 24;
@@ -1927,7 +2284,7 @@ export interface CheckMergerFanInOpts {
 }
 
 /**
- * ADR-088 §Decision-6 — surface 2 anomaly classes for the merger fan-in
+ * ADR-179 §Decision-6 — surface 2 anomaly classes for the merger fan-in
  * policy. Both are pre-emptive: they flag misconfiguration / drift before
  * unattended fan-in silently stops working.
  *
@@ -1937,7 +2294,7 @@ export interface CheckMergerFanInOpts {
  *                              than `merger.stalenessHours`
  *                              (default 24h). YELLOW. Hint: run
  *                              `atmux merge-member <m>` manually. The
- *                              ADR-088 §Decision-6 auto-fix path (clean
+ *                              ADR-179 §Decision-6 auto-fix path (clean
  *                              base worktree + clean fast-forward) is
  *                              wired into `--fix` once the W3
  *                              `merge-cycle` verb merges into trunk;
@@ -1993,7 +2350,7 @@ export async function checkMergerFanIn(
   const projectRoot = atmuxDir.replace(/\/?\.atmux\/?$/, "") || "/";
 
   // Resolve base — `merger.baseBranch` wins if set; otherwise fall back
-  // to current branch in the project root (matches ADR-088 §Decision-3
+  // to current branch in the project root (matches ADR-179 §Decision-3
   // resolution order in `mergeMember`).
   let baseBranch = typeof merger?.baseBranch === "string" ? merger.baseBranch : "";
   if (baseBranch.length === 0) {
@@ -2210,7 +2567,7 @@ export function compareTmuxVersion(a: ParsedTmuxVersion, b: ParsedTmuxVersion): 
 export type TmuxSpawn = (argv: ReadonlyArray<string>) => Promise<SpawnResult>;
 
 const defaultTmuxSpawn: TmuxSpawn = (argv) =>
-  defaultSpawn({ cmd: "tmux", argv, expectExitCode: "any", timeoutMs: 5_000 });
+  defaultSpawn({ cmd: resolveTmuxBin(), argv, expectExitCode: "any", timeoutMs: 5_000 });
 
 export interface CheckTmuxVersionOpts {
   /** tmux spawn override. */
@@ -2315,6 +2672,106 @@ export async function checkTmuxVersionMismatch(
   return [];
 }
 
+export interface CheckVendoredTmuxBinaryOpts {
+  /** Filesystem probe override (test seam). */
+  existsSync?: (path: string) => boolean;
+  /** tmux spawn override — invoked with the resolved binary as `cmd`. */
+  tmux?: TmuxSpawn;
+  /** Override the path probed for the vendored binary. */
+  vendoredPath?: string;
+  /** Override the version we expect the vendored binary to report. */
+  expectedVersion?: string;
+}
+
+/**
+ * ADR-191 probe — `vendored-tmux-binary`. Two yellow rows possible:
+ *
+ *   1. `vendored-tmux-missing` — `/opt/atmux/current/bin/tmux` absent.
+ *      Operators on dev builds (no `build:install` ever run) and
+ *      pre-ADR-191 deploys both land here. Self-clearing after the
+ *      build pipeline lands the binary.
+ *   2. `vendored-tmux-version-drift` — vendored binary present but
+ *      `tmux -V` against it doesn't match the ADR-191 pin (3.6a).
+ *      Indicates an out-of-date install or a hand-staged binary.
+ *
+ * Both rows are warn-class; atmux falls through to system tmux via
+ * `resolveTmuxBin()` so no behavior breaks. The probe gives the
+ * operator a discoverable signal that the resolution chain is on the
+ * fallback tier instead of the vendored tier.
+ */
+export async function checkVendoredTmuxBinary(
+  opts: CheckVendoredTmuxBinaryOpts = {},
+): Promise<DoctorRow[]> {
+  const exists = opts.existsSync ?? fsExistsSync;
+  const tmux = opts.tmux ?? defaultTmuxSpawn;
+  const vendoredPath = opts.vendoredPath ?? "/opt/atmux/current/bin/tmux";
+  const expected = opts.expectedVersion ?? TMUX_TESTED_VERSION;
+
+  if (!exists(vendoredPath)) {
+    return [
+      {
+        status: "yellow",
+        label: "vendored-tmux-missing",
+        detail: `${vendoredPath} not installed — resolveTmuxBin() falls through to system tmux`,
+        hint:
+          "ship the binary via `bun run build:install` (per ADR-191) or set " +
+          "ATMUX_TMUX_BIN to silence the fallback warning.",
+      },
+    ];
+  }
+
+  // Vendored binary present. Run `tmux -V` against the resolved binary
+  // (which is the vendored path when present) to confirm the pin.
+  let result: SpawnResult;
+  try {
+    result = await tmux(["-V"]);
+  } catch {
+    return [
+      {
+        status: "yellow",
+        label: "vendored-tmux-version-drift",
+        detail: `${vendoredPath} present but \`tmux -V\` failed to run`,
+        hint: `expected ${expected} per ADR-191; re-run build:install or check file mode.`,
+      },
+    ];
+  }
+  if (result.exitCode !== 0) {
+    return [
+      {
+        status: "yellow",
+        label: "vendored-tmux-version-drift",
+        detail: `${vendoredPath} present but \`tmux -V\` exited ${result.exitCode}`,
+        hint: `expected ${expected} per ADR-191; re-run build:install or check file mode.`,
+      },
+    ];
+  }
+  const parsed = parseTmuxVersion(result.stdout);
+  if (parsed === null) {
+    return [
+      {
+        status: "yellow",
+        label: "vendored-tmux-version-drift",
+        detail: `\`tmux -V\` output unparseable: ${result.stdout.trim().slice(0, 80)}`,
+        hint: `expected ${expected} per ADR-191; report regressions to atmux issues.`,
+      },
+    ];
+  }
+  const actual = `${parsed.major}.${parsed.minor}${parsed.suffix}`;
+  if (actual !== expected) {
+    return [
+      {
+        status: "yellow",
+        label: "vendored-tmux-version-drift",
+        detail: `vendored tmux reports ${actual}, expected ${expected}`,
+        hint:
+          "re-run `bun run build:install` to retarget /opt/atmux/current at the pinned version " +
+          "(ADR-191 §Decision).",
+      },
+    ];
+  }
+  return [];
+}
+
 export interface CheckCockpitOnDefaultSocketOpts {
   /** tmux spawn override. */
   tmux?: TmuxSpawn;
@@ -2361,6 +2818,126 @@ export async function checkCockpitOnDefaultSocket(
       hint:
         "run 'atmux cockpit migrate-socket' to move it to the dedicated " +
         "atmux-cockpit socket (ADR-162 §Decision-anchor #4).",
+    },
+  ];
+}
+
+
+export interface CheckDeployedBinaryLagOpts {
+  /** Git spawn override (test injection). Reads HEAD + the commit that
+   *  last touched package.json. Defaults to `defaultGitSpawn`. */
+  git?: GitSpawn;
+  /** Reader for /opt/atmux/current symlink target. Returns the version
+   *  string (e.g. `"0.8.7"`) or null when the symlink is absent /
+   *  unreadable. Defaults to readlink on the canonical path. */
+  readDeployedVersion?: () => Promise<string | null>;
+  /** Reader for the source-tree package.json version. Defaults to
+   *  reading `./package.json`. Test injection. */
+  readSourceVersion?: () => Promise<string | null>;
+}
+
+/**
+ * t-400a1cad — `deployed-binary-lag` warn-class probe.
+ *
+ * Compares the source tree (git HEAD + package.json version) against
+ * the deployed binary at `/opt/atmux/current`. Emits yellow when the
+ * source has commits past the deployed version — exactly the class
+ * that hid t-186d5910 for ~30h (code-shipped-not-deployed).
+ *
+ * Signals checked, in order:
+ *   1. Source package.json version vs deployed `/opt/atmux/current`
+ *      symlink target. Mismatch → yellow with `atmux release` hint.
+ *   2. When versions match: count commits between HEAD and the SHA
+ *      that last bumped package.json. Any commits → yellow (source
+ *      ahead of deploy; needs version bump + redeploy).
+ *
+ * Silent when:
+ *   - /opt/atmux/current absent (non-system install — operator runs
+ *     from source via `bun run` and doesn't deploy to /opt).
+ *   - package.json absent (probe doesn't apply).
+ *   - git not on PATH (deps probe covers this surface).
+ *   - source ↔ deploy in sync (the green case).
+ */
+export async function checkDeployedBinaryLag(
+  opts: CheckDeployedBinaryLagOpts = {},
+): Promise<DoctorRow[]> {
+  const git = opts.git ?? defaultGitSpawn;
+  const readDeployedVersion =
+    opts.readDeployedVersion ??
+    (async (): Promise<string | null> => {
+      try {
+        const target = await fsReadlink("/opt/atmux/current");
+        // /opt/atmux/0.8.7 → "0.8.7"
+        const m = target.match(/\/([0-9]+\.[0-9]+\.[0-9]+(?:[.-][A-Za-z0-9.-]+)?)\/?$/);
+        return m?.[1] ?? null;
+      } catch {
+        return null;
+      }
+    });
+  const readSourceVersion =
+    opts.readSourceVersion ??
+    (async (): Promise<string | null> => {
+      const buf = await readTextOrNull("package.json");
+      if (buf === null) return null;
+      try {
+        const parsed = JSON.parse(buf);
+        const v = parsed?.version;
+        return typeof v === "string" ? v : null;
+      } catch {
+        return null;
+      }
+    });
+
+  const [deployed, source] = await Promise.all([readDeployedVersion(), readSourceVersion()]);
+  if (deployed === null) return []; // no system install — silent
+  if (source === null) return []; // no source-side version — silent
+
+  // Signal 1: version mismatch.
+  if (source !== deployed) {
+    return [
+      {
+        status: "yellow",
+        label: "deployed-binary-lag",
+        detail: `source package.json=${source} but /opt/atmux/current=${deployed}`,
+        hint: "run `bun run build:install` (or t-c3f4c418's `atmux release` once landed) to roll forward.",
+      },
+    ];
+  }
+
+  // Signal 2: versions match but commits after the last bump exist.
+  let headRes: SpawnResult;
+  let lastBumpRes: SpawnResult;
+  try {
+    headRes = await git(["rev-parse", "HEAD"]);
+    lastBumpRes = await git(["log", "-1", "--pretty=%H", "--", "package.json"]);
+  } catch {
+    return []; // git spawn miss → silent
+  }
+  if (headRes.exitCode !== 0 || lastBumpRes.exitCode !== 0) return [];
+
+  const headSha = headRes.stdout.trim();
+  const lastBumpSha = lastBumpRes.stdout.trim();
+  if (headSha === "" || lastBumpSha === "") return [];
+  if (headSha === lastBumpSha) return []; // version-bump commit IS HEAD — green
+
+  // Count commits between last-bump and HEAD (exclusive of last-bump,
+  // inclusive of HEAD).
+  let countRes: SpawnResult;
+  try {
+    countRes = await git(["rev-list", "--count", `${lastBumpSha}..HEAD`]);
+  } catch {
+    return [];
+  }
+  if (countRes.exitCode !== 0) return [];
+  const n = Number.parseInt(countRes.stdout.trim(), 10);
+  if (!Number.isFinite(n) || n <= 0) return [];
+
+  return [
+    {
+      status: "yellow",
+      label: "deployed-binary-lag",
+      detail: `${n} commit(s) after v${source} bump — source ahead of /opt/atmux/current`,
+      hint: "version bump + `bun run build:install` (or `atmux release patch` per t-c3f4c418) to ship the post-bump commits.",
     },
   ];
 }
@@ -2536,10 +3113,29 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   rows.push(...(await checkStateDir(atmuxDir)));
   rows.push(...(await checkWebhook(team)));
   rows.push(...(await checkPhantomInboxes(atmuxDir)));
+  rows.push(...(await checkLegacyInboxJson(atmuxDir)));
+  // ADR-202 §D11: Honker substrate runtime probe. Surfaces extension-
+  // load state + fallback reason so operators can see whether the
+  // event-driven path is live or whether consumers are in cron-backstop
+  // poll mode. Info-level when state.db absent or kill-switch off;
+  // yellow on fallback (load failure / smoke fail); green on loaded.
+  rows.push(...(await checkHonker(atmuxDir)));
+  // ADR-184 §Amendment 2026-05-21: host-pressure probe. Surfaces the
+  // /proc/loadavg + /proc/meminfo readings vs configured thresholds
+  // (ATMUX_SPAWN_MAX_LOAD_RATIO + ATMUX_SPAWN_MIN_FREE_MB). Green
+  // under threshold; yellow over (spawn-epic refuses); info on
+  // non-Linux platforms.
+  rows.push(...(await checkHostPressure()));
+  // ADR-217 §D5: installed-state of the /atmux: skills plugin (12
+  // cockpit-tier skills shipped via plugins/atmux/, installed by the
+  // wizard step in `atmux init`). Green when symlink + plugin.json
+  // valid; yellow on missing / malformed; info when user opted out
+  // via wizard [n]. $HOME-unset → silent no-row.
+  rows.push(...(await checkSkillsPlugin()));
   // t-af159454: phantom in-progress claims (kanban rows with dead
   // owner panes). Distinct vulnerability class from phantom-inbox
-  // above (that one scans JSON inbox files; this scans the live
-  // kanban). Cage-only — singleSession teams short-circuit in the
+  // above (that one scans member inProgress via loadInbox; this scans
+  // the live kanban). Cage-only — singleSession teams short-circuit in
   // check itself.
   rows.push(...(await checkPhantomInProgressClaims(atmuxDir, team)));
   // Cursor-plugin-cache parity — only fires when cursor-agent is
@@ -2585,7 +3181,7 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   // the same `(emoji, label-or-name)` display tuple. Pure (no I/O);
   // returns [] when team is null OR no collisions exist.
   rows.push(...checkMemberLabelCollision(team));
-  // ADR-088 §Decision-6 W6: merger-fan-in anomalies — stale per-member
+  // ADR-179 §Decision-6 W6: merger-fan-in anomalies — stale per-member
   // branch + role/feature-flag mismatch. Silent when `team.merger` is
   // unset or `merger.enabled !== true` (the staleness branch); the
   // role-mismatch branch surfaces regardless when a `role: "merger"`
@@ -2601,7 +3197,18 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   // when a legacy cockpit lingers on the default socket. Self-clearing
   // post-migration. Never blocks.
   rows.push(...(await checkTmuxVersionMismatch()));
+  // ADR-191: vendored tmux at /opt/atmux/current/bin/tmux. Warn when
+  // absent (resolveTmuxBin() falls through to system tmux) or when
+  // present-but-version-drift. Self-clearing post-build:install.
+  rows.push(...(await checkVendoredTmuxBinary()));
   rows.push(...(await checkCockpitOnDefaultSocket()));
+  // t-400a1cad: deployed-binary-lag — warn class.
+  // t-400a1cad: deployed-binary-lag — warn class. Compares git HEAD +
+  // package.json version against /opt/atmux/current symlink target.
+  // Catches the "code-shipped-not-deployed" class that hid t-186d5910
+  // for ~30h. Silent on non-system install (no /opt/atmux/current) or
+  // missing package.json (probe doesn't apply).
+  rows.push(...(await checkDeployedBinaryLag()));
   // EPIC e-a3077ca0 T8: legacy-window-name-format — warn class.
   // Walks every cockpit cage (falls back to currentTeam if cockpit
   // is absent / unreadable) and flags default-member-role windows

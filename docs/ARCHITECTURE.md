@@ -8,6 +8,24 @@
 > `decisions.md`, `flags.md`, `driver-inbox.md`, `lead-outbox.md`, `HANDOFF.md`) and
 > append-only JSONL logs stay as files.
 
+> **2026-05-24 architecture alignment** — atmux ships an event-driven core now: the
+> Rust **`atmux-orchd`** daemon (`rust/atmux-orchd/`) runs one process per team with
+> 10 in-process consumers + 4 tickers (5min sweep-merges · 15min context-scan +
+> budget-scan · hourly log-rotate · 24h housekeep) per [ADR-233](adr/233-cron-auto-install-disabled-trust-orchd.md).
+> The **Honker** in-DB messaging substrate ([ADR-202](adr/202-honker-in-db-messaging-substrate.md),
+> [ADR-203](adr/203-event-topic-taxonomy.md)) replaces cron polling — `emit(db, payload)`
+> in `src/abstractions/events.ts` auto-detects honker-loaded state and the Rust orchd
+> spawns Bun `--handle-one --consumer-id <id> --topic <t>` per event. Several cockpit
+> roles have been retired in favor of lead-gated honker consumers — **Sentinel
+> retired** ([ADR-211](adr/211-retire-sentinel-role-distribute-to-honker-consumers.md)),
+> **Medic narrowed to on-demand** ([ADR-212](adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md)),
+> **Jury retired** ([ADR-213](adr/213-retire-jury-reviewer-absorbs-acceptance-criteria.md)),
+> **Ombudsman retired** ([ADR-214](adr/214-retire-ombudsman-lead-absorbs-complaint-adjudication-via-honker.md)).
+> Some role/cron references in the sections below describe the pre-retirement shape;
+> they remain accurate for teams that haven't cut over yet (retired roles stay
+> running as the safety net until the cleanup-EPIC cutover ≥30 days after
+> e-honker-observation-watchdogs ships stable).
+
 ## Principles
 
 1. **tmux is the IPC.** atmux doesn't speak any AI provider API. It writes shell commands into tmux panes via `tmux send-keys` and reads responses by capturing pane output. That means it works with *any* interactive coding-agent TUI — Claude Code, Cursor, OpenCode, Kimi, or any future one.
@@ -22,12 +40,12 @@ Per [ADR-162](adr/162-atmux-owns-tmux-infrastructure.md):
 
 | Tier     | Socket flag                                              | Session name      | What runs there                                                                            |
 |----------|----------------------------------------------------------|-------------------|--------------------------------------------------------------------------------------------|
-| Cockpit  | `tmux -L atmux-cockpit` (named socket, dedicated)        | `atmux_cockpit`   | Operator's window into every enabled team — `_superdriver`, `_medic`, `_martinet`, per-team viewers ([ADR-135](adr/135-cockpit-naming-convention.md) `_-prefix` for default roles) |
-| Per-team | `tmux -S <team-root>/.atmux/tmux/tmux-0/default` (cage)  | `atmux-<team>`    | The team's members + lead + planner + reviewer panes (one window per role). Cage-tier per [ADR-058](adr/058-cage-tier-isolation.md). |
+| Cockpit  | `tmux -L atmux-cockpit` (named socket, dedicated)        | `atmux_cockpit`   | Operator's window into every enabled team — `_superdriver`, `_medic`, per-team viewers ([ADR-135](adr/135-cockpit-naming-convention.md) `_-prefix` for default roles) |
+| Per-team | `tmux -S <team-root>/.atmux/tmux/tmux-0/default` (cage)  | `atmux-<team>`    | The team's members + lead + planner + reviewer panes (one window per role). Cage-tier per [ADR-018](adr/018-per-team-tmux-socket-isolation.md). |
 
 **Config (both tiers):** every session is created with `-f <atmux.conf-path>` resolved by `getAtmuxTmuxConfPath()` in `src/core/tmux-paths.ts`. Default: `templates/tmux/atmux.conf` (installed under `/opt/atmux/<version>/templates/`). Operator override: `ATMUX_TMUX_CONF=<path>`. The 8-option baseline includes `automatic-rename off` — load-bearing for [ADR-135](adr/135-cockpit-naming-convention.md)'s `_-prefix` window-name contract.
 
-**Socket override:** `ATMUX_COCKPIT_SOCKET=<name>` (cockpit-tier only; per-team sockets are path-explicit by design per [ADR-058](adr/058-cage-tier-isolation.md)). Legacy operators can opt back into the default socket via `ATMUX_COCKPIT_SOCKET=default` for one more cycle while migrating.
+**Socket override:** `ATMUX_COCKPIT_SOCKET=<name>` (cockpit-tier only; per-team sockets are path-explicit by design per [ADR-018](adr/018-per-team-tmux-socket-isolation.md)). Legacy operators can opt back into the default socket via `ATMUX_COCKPIT_SOCKET=default` for one more cycle while migrating.
 
 **Migration from pre-ADR-162 setups:** `atmux cockpit migrate-socket` is the one-shot verb. Six phases (discovery → capture → recreate session on dedicated socket → recreate windows → scrollback breadcrumb → cleanup); idempotent; `--dry-run` previews; `--keep-legacy` preserves the old session. Process state is NOT transferred (tmux primitives can't re-bind PIDs across servers — see [ADR-162 §Amendment 2026-05-16](adr/162-atmux-owns-tmux-infrastructure.md#2026-05-16--decision-anchor-4-mechanism-graceful-recreate-not-pid-preservation-t-26346aef-tr3-impl)); operator re-invokes any in-pane process in the new panes. Cron-spawned roles re-establish on next tick. Full operator-facing details in [`docs/RUNBOOK-cockpit.md`](RUNBOOK-cockpit.md).
 
@@ -164,7 +182,7 @@ The lead does **not** decompose Tasks itself and does **not** `atmux dispatch` p
 2. Per-member pane: does `#{pane_current_command}` match the expected TUI binary?
 3. Per-member banners: `rate-limit`, `Compacting conversation`, `Press up to edit queued messages`.
    - **Modal cycling** (per ADR-142, module `src/core/modal-cycling-detector.ts`): ≥N distinct modal-prompts within `modalCycling.windowMin` AND 0 commits in `commitGracePeriodMin` → fires `[whip-modal-cycling]` Discord + clarifier dispatch + flag. Sits one layer above the existing static-stuck classifier (which catches *same prompt repeating*); modal-cycling catches *different prompts in rapid sequence*, the pattern §1c missed on 2026-05-14 whip-impl. State at `~/.atmux/state/modal-history-<member>.json` + `modal-cycling-dedup-state.json`.
-   - **Commit-cadence classifier** (per [ADR-148](adr/148-commit-cadence-truth-signal.md) §D2, module `src/core/cadence-classifier.ts` — landed by T5 / t-ac95b267, lifting the inline classifier T2 inlined in `src/verbs/status.ts`): pure `classifyCadence(logLines, nowSec, windowSec, thresholds)` + async wrapper `classifyMemberCadence(member, worktreePath, config, deps)` composing the canonical `git -C <path> log --since=<N>s --author=<member> --format=%H %ct` probe with classification. Emits four verdicts (`shipping` / `idle` / `dormant` / `ship-zero-window`) per ADR-148 §D2 table. Consumers: `atmux status` cadence column (T2), sentinel `Observation.members[].cadence` field (T5 — escalation classifier in `src/core/sentinel-escalation.ts` fires E6 on any member `ship-zero-window` verdict, alongside the pre-existing team-aggregate `commitCadence.last2hr === 0` path; renamed from "martinet" per ADR-158, legacy `martinet`-keyed configs still parse during grace cycle), Discord `[ship-zero-window]` template + medic event-driven pickup (deferred follow-up per ADR-140 chain).
+   - **Commit-cadence classifier** (per [ADR-148](adr/148-commit-cadence-truth-signal.md) §D2, module `src/core/cadence-classifier.ts` — landed by T5 / t-ac95b267, lifting the inline classifier T2 inlined in `src/verbs/status.ts`): pure `classifyCadence(logLines, nowSec, windowSec, thresholds)` + async wrapper `classifyMemberCadence(member, worktreePath, config, deps)` composing the canonical `git -C <path> log --since=<N>s --author=<member> --format=%H %ct` probe with classification. Emits four verdicts (`shipping` / `idle` / `dormant` / `ship-zero-window`) per ADR-148 §D2 table. Consumers: `atmux status` cadence column (T2), Discord `[ship-zero-window]` template + medic event-driven pickup (deferred follow-up per ADR-140 chain), future orchd event consumers per sibling EPIC e-a946af69.
 4. Per-member staleness: any `inProgress` tasks older than `ATMUX_STALE_MIN`?
 5. Lead uptime: has the lead been alive longer than `ATMUX_LEAD_MAX_MIN`? If so, recommend `atmux rotate-lead`.
 
@@ -219,7 +237,7 @@ The sentinel + cron pair is chosen over pure socket-pubsub (ADR-032) because med
 | Module | Purpose | Authoring ADR |
 |---|---|---|
 | `src/core/cage-state.ts` | Unified 4-state taxonomy (down/bootstrapping/active/wedged) for claude member panes. Replaces the `pane_current_command` proxy that mis-classified welcome-screen TUIs. | t-74273200 |
-| `src/core/cadence-classifier.ts` (T5 — pending) | Pure commit-cadence classifier consumed by status + sentinel (renamed from "martinet" per ADR-158). Today's inline impl lives at `src/verbs/status.ts::classifyCadence` until T5 extracts it. | [ADR-148](adr/148-commit-cadence-truth-signal.md) |
+| `src/core/cadence-classifier.ts` (T5) | Pure commit-cadence classifier consumed by status + future orchd event consumers (EPIC e-a946af69). | [ADR-148](adr/148-commit-cadence-truth-signal.md) |
 | `src/core/refusal-classifier.ts` | Pure pane-output refusal classifier. Four classes (soft / hard / role / meta) with regex primary + heuristic secondary. Sibling-not-extension of `safe-send.ts` (input-side refusal); ADR-139 §Grep findings audit covers the boundary. | [ADR-139](adr/139-refusal-pattern-auto-rotate.md) §D1 |
 | `src/core/refusal-threshold.ts` | Pure threshold gate over a refusal-event ledger. Decides whether accumulated detections cross the rotate threshold per ADR-139 §D3 (soft 3/30min, hard 2/10min, role 1/instant; meta never rotates). | [ADR-139](adr/139-refusal-pattern-auto-rotate.md) §D3 |
 | `src/core/fallback-brief.ts` | Pure-of-direct-IO Tier 2 fallback brief composer. Reads in-progress Task body + `templates/briefs/<role>.md` + `git log --oneline -10` + lead-outbox tail; writes assembled brief with Tier-2 guardrails preface to `<atmuxDir>/state/fallback-brief-<member>.md` for the cage spawn to pipe into `cursor-agent --print`. | [ADR-050](adr/050-fallback-chain.md) §Brief generator |

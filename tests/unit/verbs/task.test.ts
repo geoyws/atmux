@@ -270,6 +270,9 @@ describe("task verb — dispatch", () => {
       task(["add", "--team-dir", teamDir, "first task"]),
     );
     expect(exit).toBe(0);
+    // JSON-mode kanban (no state.db) stays on legacy hex IDs per
+    // ADR-202 §VIII fallback. SQLite-mode tests get the compound
+    // `t-N-<hash>` shape (see kanban-sqlite.test.ts).
     expect(out).toMatch(/^t-[0-9a-f]{8}\n$/);
     const k = await loadKanban(atmuxDir);
     expect(k.tasks).toHaveLength(1);
@@ -657,6 +660,76 @@ describe("task verb — dispatch", () => {
     await expect(
       task(["update", "t-missing0", "--body", "x", "--team-dir", teamDir]),
     ).rejects.toThrow(/no such task/);
+  });
+
+  // ---------- t-218b2c08: --owner / --unassign on `task update` ----------
+
+  test("'update' --owner reassigns to existing member", async () => {
+    const id = await addTask(atmuxDir, { subject: "phantom-owned" });
+    await captureStdout(() =>
+      task(["update", id, "--owner", "alpha", "--team-dir", teamDir]),
+    );
+    const after = await showTask(atmuxDir, id);
+    expect(after?.owner).toBe("alpha");
+  });
+
+  test("'update' --owner unknown member → ConfigError with valid-members hint", async () => {
+    const id = await addTask(atmuxDir, { subject: "x" });
+    await expect(
+      task(["update", id, "--owner", "ghost", "--team-dir", teamDir]),
+    ).rejects.toThrow(/not in team\.json/);
+  });
+
+  test("'update' --unassign sets owner to null (parking-lot pattern)", async () => {
+    const id = await addTask(atmuxDir, { subject: "x", assignee: "alpha" });
+    const before = await showTask(atmuxDir, id);
+    expect(before?.owner).toBe("alpha");
+    await captureStdout(() =>
+      task(["update", id, "--unassign", "--team-dir", teamDir]),
+    );
+    const after = await showTask(atmuxDir, id);
+    expect(after?.owner).toBeNull();
+  });
+
+  test("'update' --owner doesn't clobber body/deps (multi-flag)", async () => {
+    const id = await addTask(atmuxDir, {
+      subject: "x",
+      body: "preserve me",
+      deps: ["t-keep0001"],
+    });
+    await captureStdout(() =>
+      task(["update", id, "--owner", "alpha", "--team-dir", teamDir]),
+    );
+    const after = await showTask(atmuxDir, id);
+    expect(after?.owner).toBe("alpha");
+    expect(after?.body).toBe("preserve me");
+    expect(after?.deps).toEqual(["t-keep0001"]);
+  });
+
+  test("'update' --owner '' aliases --unassign (parking-lot pattern)", async () => {
+    const id = await addTask(atmuxDir, { subject: "x", assignee: "alpha" });
+    await captureStdout(() =>
+      task(["update", id, "--owner", "", "--team-dir", teamDir]),
+    );
+    const after = await showTask(atmuxDir, id);
+    expect(after?.owner).toBeNull();
+  });
+
+  test("'update' with only --owner is valid (no body/deps required)", async () => {
+    const id = await addTask(atmuxDir, { subject: "x" });
+    const { exit } = await captureStdout(() =>
+      task(["update", id, "--owner", "alpha", "--team-dir", teamDir]),
+    );
+    expect(exit).toBe(0);
+  });
+
+  test("'update' --owner without value → UsageError", async () => {
+    const id = await addTask(atmuxDir, { subject: "x" });
+    // --owner as last arg → parser sees rest[i+1]=undefined and refuses
+    // before getAtmuxDir runs. Ordered so --team-dir comes first.
+    await expect(
+      task(["update", id, "--team-dir", teamDir, "--owner"]),
+    ).rejects.toThrow(UsageError);
   });
 
   test("unknown subverb → UsageError", async () => {

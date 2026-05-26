@@ -3,9 +3,9 @@
 // The load-bearing truth signal for "is this member shipping?". T2
 // (t-1d370b04) inlined `classifyCadence` + `CadenceObservation` inside
 // `src/verbs/status.ts`; this module lifts them into a shared core
-// module so the sentinel observe() wiring (T5 §3 of task body) +
-// future consumers (medic event-driven pickup, doctor probes) all
-// consume the same contract.
+// module so future consumers (medic event-driven pickup, doctor probes,
+// orchd event consumers per EPIC e-a946af69) all consume the same
+// contract.
 //
 // Verdict semantics per ADR-148 §D2 table (verbatim):
 //
@@ -180,14 +180,13 @@ export function classifyCadence(
   };
 }
 
-// ---------- Async wrapper (T5 surface for sentinel observe()) ----------
+// ---------- Async wrapper ----------
 
 /**
  * Per-task-body `classifyMemberCadence(member, worktreePath, config,
  * deps)` async surface. Composes {@link GitLogFn} probe + the pure
- * {@link classifyCadence} step so sentinel observe() impls + medic
- * + future doctor probes call ONE function for the cadence
- * snapshot.
+ * {@link classifyCadence} step so medic + future doctor probes +
+ * orchd event consumers call ONE function for the cadence snapshot.
  *
  * `sinceSec` for the git-log probe is `max(windowSec, dormantMax)` —
  * the wider window so the classifier sees the actual last commit
@@ -220,8 +219,7 @@ export async function classifyMemberCadence(
  * Default `GitLogFn` impl — shells `git -C <path> log --since=<sec>s
  * --author=<author> --format=%H %ct`. Fail-soft on any error
  * (non-zero exit, spawn failure) → returns `[]`. This is the
- * production probe; status.ts's gather loop and sentinel observe()
- * compositions both wire through here.
+ * production probe; status.ts's gather loop wires through here.
  *
  * Lifted from status.ts's local `defaultGitLog` so the T2 + T5
  * paths share one canonical implementation — no risk of the two

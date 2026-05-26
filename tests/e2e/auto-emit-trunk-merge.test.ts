@@ -59,7 +59,7 @@
 //       assert the auto-emit row is queryable (cascade subscriber
 //       contract).
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -138,6 +138,7 @@ function seedStoryWithTasks(
       body: null,
       status: "in-progress",
       createdAt: Math.floor(Date.now() / 1000),
+      mergeMode: "feature-branch",
       ...(opts.branch !== undefined ? { branch: opts.branch } : {}),
     };
     repo.upsertStory(story);
@@ -173,14 +174,19 @@ function seedStoryWithTasks(
 /** Read every Task whose subject matches the auto-emit pattern.
  *  This is the cascade-subscriber contract: gitter (or any subscriber
  *  reacting to the ADR-032 task-done cascade) queries for these rows
- *  to pick up newly-filed trunk-merge work. */
+ *  to pick up newly-filed trunk-merge work.
+ *
+ *  The regex below (and at B7/B8 inline call-sites) mirrors
+ *  AUTO_EMIT_SUBJECT_RE in src/core/kanban.ts — accepts BOTH legacy
+ *  hex IDs (`t-3b017960`) and ADR-202 §VIII compound IDs
+ *  (`t-1-3b017960`). */
 function findAutoEmitTasks(fix: Fixture): KanbanTask[] {
   const db = openDatabase(fix.statePath, migrations);
   try {
     const repo = new KanbanRepo(db);
     return repo
       .listTasks()
-      .filter((t) => /^merge t-[0-9a-f]+ \(branch→trunk\):/.test(t.subject ?? ""));
+      .filter((t) => /^merge t-(?:[1-9][0-9]*-)?[0-9a-f]+ \(branch→trunk\):/.test(t.subject ?? ""));
   } finally {
     closeDatabase(db);
   }
@@ -229,7 +235,7 @@ describe("e2e auto-emit-trunk-merge (ADR-146 T3, t-51610d4e)", () => {
     if (auto === undefined) throw new Error("auto-emit Task missing");
 
     // §D2 subject pattern verbatim.
-    expect(auto.subject).toMatch(/^merge t-[0-9a-f]+ \(branch→trunk\): develop-be-1 → trunk$/);
+    expect(auto.subject).toMatch(/^merge t-(?:[1-9][0-9]*-)?[0-9a-f]+ \(branch→trunk\): develop-be-1 → trunk$/);
     // §D3 owner resolution — gitter member wins over fallbackAssignee.
     expect(auto.owner).toBe("gitter");
     expect(auto.status).toBe("todo");
@@ -323,7 +329,7 @@ describe("e2e auto-emit-trunk-merge (ADR-146 T3, t-51610d4e)", () => {
       expect(original?.status).toBe("done");
       const emitted = repo
         .listTasks()
-        .filter((t) => /^merge t-[0-9a-f]+ \(branch→trunk\):/.test(t.subject ?? ""));
+        .filter((t) => /^merge t-(?:[1-9][0-9]*-)?[0-9a-f]+ \(branch→trunk\):/.test(t.subject ?? ""));
       expect(emitted).toHaveLength(1);
     } finally {
       closeDatabase(db);
@@ -344,7 +350,7 @@ describe("e2e auto-emit-trunk-merge (ADR-146 T3, t-51610d4e)", () => {
     // observe exactly one new row, owned by gitter.
     const tasks = await listTasks(fix.atmuxDir);
     const subscriberCandidates = tasks.filter(
-      (t) => t.status === "todo" && /^merge t-[0-9a-f]+ \(branch→trunk\):/.test(t.subject ?? ""),
+      (t) => t.status === "todo" && /^merge t-(?:[1-9][0-9]*-)?[0-9a-f]+ \(branch→trunk\):/.test(t.subject ?? ""),
     );
     expect(subscriberCandidates).toHaveLength(1);
     expect(subscriberCandidates[0]?.owner).toBe("gitter");

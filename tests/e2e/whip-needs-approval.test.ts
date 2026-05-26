@@ -132,15 +132,15 @@ describe("e2e whip §2.5 needs-approval (ADR-085, t-3516d73a)", () => {
   let teamDir: string;
   let atmuxDir: string;
   let homeDir: string;
-  let stdoutBuf: string;
-  let stderrBuf: string;
+  let _stdoutBuf: string;
+  let _stderrBuf: string;
   let discordSent: DiscordSendOpts[];
 
   const stdout = (s: string): void => {
-    stdoutBuf += s;
+    _stdoutBuf += s;
   };
   const stderr = (s: string): void => {
-    stderrBuf += s;
+    _stderrBuf += s;
   };
   const discordSend = async (opts: DiscordSendOpts): Promise<void> => {
     discordSent.push(opts);
@@ -154,8 +154,8 @@ describe("e2e whip §2.5 needs-approval (ADR-085, t-3516d73a)", () => {
    *  the whip call. Restore in `finally` to keep tests isolated. */
   async function tick(nowMs: number): Promise<number> {
     discordSent = [];
-    stdoutBuf = "";
-    stderrBuf = "";
+    _stdoutBuf = "";
+    _stderrBuf = "";
     const priorAtmuxDir = process.env.ATMUX_DIR;
     const priorAtmuxTeamDir = process.env.ATMUX_TEAM_DIR;
     process.env.ATMUX_DIR = atmuxDir;

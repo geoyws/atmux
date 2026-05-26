@@ -75,7 +75,7 @@ export const TeamMember = z
     command: z.string().optional(),
     /** ADR-157 §D4 — explicit runtime selector for the per-member
      *  TUI flavor. When `"cursor"`, the member runs under Cursor CLI
-     *  (martinet path per ADR-132 + ADR-140) and `goal` (below) is a
+     *  and `goal` (below) is a
      *  WARN-not-refuse no-op: Cursor has no `/goal` skill equivalent,
      *  so the field is allowed for partial-migration scenarios but
      *  doesn't drive a self-nudge loop. Default-unset → falls back
@@ -222,8 +222,8 @@ export const TeamWhip = z
      *  (ADR-056 §"Lead/planner exclusion"). */
     accountSwapExcludeRoles: z.array(z.string()).default(["lead", "planner", "reviewer"]),
 
-    // ---------- ADR-087 velocity-gate cadence knobs ----------
-    /** ADR-087 §Spec. Per-team tunables for the whip velocity-gate
+    // ---------- ADR-177 velocity-gate cadence knobs ----------
+    /** ADR-177 §Spec. Per-team tunables for the whip velocity-gate
      *  classifier + strike counter. Operators rarely need to tune —
      *  the defaults match the operator-observed failure mode that
      *  drove the ADR (10 zero-commit heartbeats over 4.5h). The
@@ -493,13 +493,13 @@ export const TeamCrons = z
      *  Operators flip this off to halt lane-driven auto-claim without
      *  removing `.lane` annotations from `team.members[]`. */
     laneTickEnabled: z.boolean().default(true),
-    /** ADR-087 §Rollback. Velocity-gate kill-switch. When `false`,
+    /** ADR-177 §Rollback. Velocity-gate kill-switch. When `false`,
      *  whip skips ground-truth velocity classification + strike-counter
-     *  bumping entirely (effectively reverting to pre-ADR-087 fake-
+     *  bumping entirely (effectively reverting to pre-ADR-177 fake-
      *  liveness reliance on lead self-report). Default `true` — the
      *  gate is opt-OUT, not opt-in, because the operator-observed
      *  failure mode (10 zero-commit heartbeats over 4.5h) is what
-     *  ADR-087 was authored to prevent. Pairs with
+     *  ADR-177 was authored to prevent. Pairs with
      *  `whip.velocityGate` cadence knobs (window minute count + strike
      *  threshold); the kill-switch lives here for fleet-consistent
      *  shape with `laneTickEnabled`. */
@@ -598,13 +598,13 @@ export type TeamGitter = z.infer<typeof TeamGitter>;
  * (the same field shape is used to opt into expensive observability
  * paths without making them mandatory).
  */
-/** ADR-088 §Decision-2+3+6: per-member-branch fan-in policy ("merger"
+/** ADR-179 §Decision-2+3+6: per-member-branch fan-in policy ("merger"
  *  role). Worktree-isolated teams accumulate `<base>-<member>` branches
  *  whose commits never automatically return to `<base>`. Opt-in
  *  `team.merger.enabled` activates either a `merger` member role
  *  (Shape A) or driver-fired `atmux merge-cycle` verb (Shape B) — both
  *  consume the same effective config. Defaults preserve the
- *  pre-ADR-088 behaviour (operator-manual fan-in). */
+ *  pre-ADR-179 behaviour (operator-manual fan-in). */
 export const TeamMerger = z
   .object({
     /** When `true`, fan-in automation is enabled: a `merger` member
@@ -614,7 +614,7 @@ export const TeamMerger = z
     enabled: z.boolean().default(false),
     /** Branch to merge per-member branches into. Optional — when
      *  unset, `resolveMergerConfig` resolves it at read-time via
-     *  `git -C <repoPath> branch --show-current` (mirrors ADR-088
+     *  `git -C <repoPath> branch --show-current` (mirrors ADR-179
      *  §Decision-3 pseudocode). Explicit value useful when the team
      *  operates on a branch other than the parent worktree's current
      *  HEAD (e.g. cron-fired merges against a fixed `<product>-staging`
@@ -625,7 +625,7 @@ export const TeamMerger = z
      *  than this AND zero merge-back fires the probe. Default `24`
      *  (one-day fan-in cadence target). */
     stalenessHours: z.number().int().min(1).default(24),
-    /** ADR-088 §Decision-5 / W7 (t-2f12839e) — cron cadence for the
+    /** ADR-179 §Decision-5 / W7 (t-2f12839e) — cron cadence for the
      *  `atmux merge-cycle` line (added to the team's standard cron
      *  block only when `enabled === true`). Default `15` (minutes);
      *  must be one of cron's divisor-of-60 set (1, 2, 3, 4, 5, 6, 10,
@@ -639,20 +639,20 @@ export const TeamMerger = z
   .strict();
 export type TeamMerger = z.infer<typeof TeamMerger>;
 
-/** ADR-088 §Decision-5 / W7 default — used by `cron.ts::renderCronLines`
+/** ADR-179 §Decision-5 / W7 default — used by `cron.ts::renderCronLines`
  *  + `cron-install` verb when `team.merger.cycleIntervalMins` is unset.
  *  Matches the 15-min default the ADR specifies. */
 export const DEFAULT_MERGER_CYCLE_INTERVAL_MINS = 15;
 
 /** ADR-134 §Config: per-team auto-merger config (intra-team gitter
  *  event-driven + cron-backstop fan-in). Separate from {@link TeamMerger}
- *  (ADR-088 bulk-merge-cycle verb) — they target different scopes:
+ *  (ADR-179 bulk-merge-cycle verb) — they target different scopes:
  *  - `team.merger` — operator-fired `atmux merge-cycle` bulk pass,
- *    per ADR-088.
+ *    per ADR-179.
  *  - `team.autoMerge` — gitter member's event-driven auto-merge +
  *    cron-backstop sweep, per ADR-134.
  *
- *  The two can coexist: a team can opt into both ADR-088's hand-fired
+ *  The two can coexist: a team can opt into both ADR-179's hand-fired
  *  bulk pass AND ADR-134's continuous gitter auto-merge. They serialize
  *  through the same {@link MergerStateRepo} (ADR-091 + ADR-134 shared
  *  state machine), so concurrent firings are safe — BEGIN IMMEDIATE
@@ -740,58 +740,6 @@ export const TeamObservability = z
 export type TeamObservability = z.infer<typeof TeamObservability>;
 
 /**
- * `team.json::sentinel` enum — pluggable cockpit-W3 whip-manager impl
- * picked for this team. Two-impl set per the 2026-05-14 12:53 MYT
- * ADR-132 simplification (MiniMax + Kimi dropped as "unreliable and
- * not smart enough"; `claude` is the degenerate baseline, `cursor`
- * runs composer-2-fast as the production default).
- *
- * Adding a new backend requires extending this enum AND
- * `Sentinel["name"]` in `src/abstractions/sentinel.ts` in lockstep —
- * the runtime resolver (`resolveSentinel`) lives in
- * `src/core/sentinel-config.ts` and bridges schema-string to impl-
- * factory dispatch.
- */
-export const SentinelImpl = z.enum(["claude", "cursor"]);
-export type SentinelImpl = z.infer<typeof SentinelImpl>;
-
-/**
- * `team.json::sentinelOverrides` — per-team knobs that compose over
- * the impl-side defaults baked into each Sentinel factory. Both
- * fields opt-in; the resolver merges-by-key so explicit values win
- * over per-impl defaults.
- *
- * `.strict()` consistent with the surrounding sub-blocks — drift
- * detection requires unknown-key rejection (ADR-054 §D3).
- */
-export const TeamSentinelOverrides = z
-  .object({
-    /** Per-tick cadence in seconds. Per-impl defaults: `claude` 270s,
-     *  `cursor` 270s (per ADR-132 §D3 — both stay aligned with the
-     *  existing 270s whip cadence; tuned per-team only when commit
-     *  cadence pressure or budget pressure demands it). */
-    cadenceSec: z.number().int().positive().optional(),
-    /** Self-confidence floor (0.0-1.0) below which the non-Claude
-     *  Sentinel escalates instead of acting autonomously. Default
-     *  0.7 per ADR-132 §D5 E5. Ignored by ClaudeSentinel (the
-     *  degenerate impl has no self-confidence signal). */
-    escalationConfidenceThreshold: z.number().min(0).max(1).optional(),
-  })
-  .strict();
-export type TeamSentinelOverrides = z.infer<typeof TeamSentinelOverrides>;
-
-/** ADR-132 §D5 E5 default — non-Claude Sentinel's self-confidence
- *  floor. Below this, the impl escalates to the Claude lead instead
- *  of firing the action. Co-located with the schema so resolver
- *  call-sites share the constant. */
-export const DEFAULT_SENTINEL_ESCALATION_CONFIDENCE = 0.7;
-
-/** ADR-132 §D3 default — per-tick cadence in seconds for both
- *  shipping impls. ClaudeSentinel matches the legacy 270s whip
- *  cadence; CursorSentinel matches it for parity. */
-export const DEFAULT_SENTINEL_CADENCE_SEC = 270;
-
-/**
  * `team.json::ombudsman` sub-config — ADR-147 §D1 + §D2. Per-team
  * complaint adjudicator role. Sentinel + cron wake; opt-in (default
  * disabled). The cron tick line is gated on BOTH
@@ -826,8 +774,7 @@ export type TeamOmbudsman = z.infer<typeof TeamOmbudsman>;
  *  `atmux ombudsman tick` code path when
  *  `team.ombudsman.tickIntervalMins` is unset. Co-located with the
  *  schema so non-Zod call sites (cron renderer, tick verb) share the
- *  same constant — mirrors the
- *  {@link DEFAULT_MERGER_STALENESS_HOURS} / {@link DEFAULT_SENTINEL_CADENCE_SEC}
+ *  same constant — mirrors the {@link DEFAULT_MERGER_STALENESS_HOURS}
  *  precedent. */
 export const DEFAULT_OMBUDSMAN_TICK_INTERVAL_MINS = 15;
 
@@ -895,7 +842,7 @@ export const TeamEpic = z
     parentEpicKanbanId: z.string().min(1),
     /** Parent branch the epic-team will merge into. Used by ADR-091's
      *  auto-merge state machine + `dissolve-epic` cleanup. Example: `"main"`,
-     *  `"geoyws"`, `"sopx-geoyws"`. */
+     *  `"atmux-geoyws"`, `"sopx-geoyws"`. */
     parentBase: z.string().min(1),
     /** Merge mode for ADR-091 auto-merge state machine. `"auto"` runs the
      *  direct merge (default). `"pr"` is schema-accept-but-runtime-noop
@@ -962,6 +909,23 @@ export const TeamEpic = z
      *  variables `${product}`, `${dev-suffix}`, `${epic-name}` are
      *  expanded at deploy time by `scripts/deploy.sh`. */
     stagingUrlTemplate: z.string().nullable().default(null),
+    /** ADR-227 §D3: orchd auto-dissolve carve-out. When `true` (default),
+     *  orchd auto-dissolves the epic-team on `epic.pushed` (per ADR-229
+     *  §DA3 trigger amendment; pre-amendment was `epic.merged`). Operator
+     *  sets `false` at spawn time via `atmux team spawn-epic --no-auto-
+     *  dissolve` to keep the cage alive for post-merge inspection (e.g.
+     *  grepping `.atmux/logs/`, post-mortem on a failed deploy, etc.).
+     *  Manual `atmux team dissolve-epic <eid>` still works as the cleanup
+     *  path when autoDissolve was false. */
+    autoDissolve: z
+      .boolean()
+      .default(true)
+      .describe(
+        "ADR-227: when true (default), orchd auto-dissolves the epic-team " +
+          "on epic.pushed. Operator sets false at spawn time to keep the " +
+          "cage alive for post-merge inspection; manual `atmux team " +
+          "dissolve-epic <eid>` still works as the cleanup path.",
+      ),
   })
   .strict()
   .superRefine((data, ctx) => {
@@ -981,6 +945,131 @@ export const TeamEpic = z
     }
   });
 export type TeamEpic = z.infer<typeof TeamEpic>;
+
+/** `team.json::autoPush` — ADR-229 §DA-Gate-4 + §DA-Gate-7 (Phase 6
+ *  orchd auto-push opt-in config). All fields have defaults; the block
+ *  itself is `.optional()` so existing teams that never opt in carry
+ *  zero config-file footprint. `.strict()` per ADR-054 §D3 drift
+ *  detection — a typo on `enabld` / `cooldown` lands in the strict
+ *  rejection bucket rather than silently defaulting.
+ *
+ *  Default-`false` on `enabled` is deliberate per ADR-229 §DA5 "loud
+ *  opt-in" anchor: orchd-push refuses by default until the operator
+ *  flips `enabled: true` per team after dogfood. */
+export const TeamAutoPush = z
+  .object({
+    /** ADR-229 §DA-Gate-4: per-team opt-in. Default `false`. orchd-push
+     *  Gate-4 reads this; `false` → refuse + emit `epic.push-blocked`
+     *  with reason `"team.json::autoPush.enabled not set (opt-in only)"`. */
+    enabled: z.boolean().default(false),
+    /** ADR-229 §DA-Gate-3b: pre-flight typecheck command. Default
+     *  `"bun run typecheck"`. Empty string (`""`) → orchd-push Gate-3b
+     *  skips the subprocess invocation (for projects whose typecheck is
+     *  too slow OR runs in CI as the gate). Operator-overridable
+     *  per-team. */
+    typecheckCmd: z.string().default("bun run typecheck"),
+    /** ADR-229 §DA-Gate-7: in-memory cooldown window in seconds. After
+     *  a successful push to `<parentBase>`, no further push to the same
+     *  base from THIS daemon for `cooldownSec` seconds. Default 30.
+     *  Loop-prevention for cascade-drain scenarios. */
+    cooldownSec: z.number().int().positive().default(30),
+  })
+  .strict()
+  .describe(
+    "ADR-229: orchd Phase 6 auto-push opt-in config. Refuse-by-default until enabled is explicitly true.",
+  );
+export type TeamAutoPush = z.infer<typeof TeamAutoPush>;
+
+/** `team.json::autoSpawn` — ADR-231 §D3 + §D4 per-team auto-spawn config
+ *  for orchd's `spawn-epic` handler.
+ *
+ *  Two sub-fields:
+ *
+ *    - `defaults[]` — first-match-wins routing table. Each entry pairs a
+ *      regex (against the epic id / kanban label, evaluated by the
+ *      spawn-handler — implementation detail in T-S2.5) with a roster
+ *      preset + opt-in flag. Per-epic explicit `extra.autoSpawn.enabled`
+ *      always wins per ADR-231 §D3 resolution precedence; this array is
+ *      the operator's fallback default for "anything that matches X gets
+ *      auto-spawned with roster Y".
+ *
+ *    - `sweepCron` — override for the `atmux orchd --sweep` cadence
+ *      (ADR-231 §D4 OQ-C resolution). Default `'*' / 5 * * * *'` is
+ *      applied at the cron-emission site, NOT here — schema-level
+ *      validation is loose (5-field string presence only) so a misshapen
+ *      cron string surfaces at the sandwich-marker emission code's
+ *      richer parser rather than refusing the whole team.json parse.
+ *
+ *  The block is `.optional()` so existing teams that never opt in carry
+ *  zero config-file footprint. `.strict()` per ADR-054 §D3 drift
+ *  detection — typo'd keys (`defualts`, `sweep_cron`) surface as drift
+ *  findings rather than silently defaulting. */
+export const TeamAutoSpawnDefault = z
+  .object({
+    /** Regex source string, compiled at read time via `new RegExp(match)`
+     *  by the spawn-handler. Validated here via `z.string().refine` so an
+     *  unparseable pattern surfaces at schema-parse time rather than
+     *  crashing the handler's first-match-wins loop. Example: `'^demo-'`
+     *  matches any epic whose id starts with `demo-`. */
+    match: z
+      .string()
+      .min(1, "match: regex source string required")
+      .refine(
+        (s) => {
+          try {
+            new RegExp(s);
+            return true;
+          } catch {
+            return false;
+          }
+        },
+        { message: "match: invalid regex source — does not compile via new RegExp(match)" },
+      ),
+    /** Roster preset name (e.g. `"solo"`, `"backend-heavy"`). Looked up
+     *  by the spawn-handler against the roster registry (out of scope
+     *  here — schema accepts any non-empty string). */
+    roster: z.string().min(1, "roster: preset name required"),
+    /** Literal `true` — entries imply opt-in by inclusion. Authoring
+     *  `false` here is meaningless (just omit the entry); the literal
+     *  schema is a typo-catch for `autoSpawn: false` mistakenly typed
+     *  in a defaults entry. */
+    autoSpawn: z.literal(true),
+    /** When `true`, the spawn-handler passes `--force` to
+     *  `atmux team spawn-epic` — bypasses the ADR-225 eligibility
+     *  predicate. Use sparingly (per ADR-231 §D5 transient carve-outs
+     *  intentionally do NOT force; force-spawn defeats those checks). */
+    forceSpawn: z.boolean().optional(),
+  })
+  .strict();
+export type TeamAutoSpawnDefault = z.infer<typeof TeamAutoSpawnDefault>;
+
+/** ADR-231 §D4 sweepCron loose-validation: requires a 5-field
+ *  whitespace-separated string. Full cron-syntax validation lives in
+ *  the cron sandwich-marker emission code (per AC out-of-scope here).
+ *  This refine catches the obvious mistakes (3-field, empty, leading/
+ *  trailing whitespace pollution) without duplicating the parser. */
+const CRON_5_FIELD = /^\S+\s+\S+\s+\S+\s+\S+\s+\S+$/;
+
+export const TeamAutoSpawn = z
+  .object({
+    defaults: z.array(TeamAutoSpawnDefault).optional(),
+    sweepCron: z
+      .string()
+      .min(1, "sweepCron: cron expression required (5-field)")
+      .refine((s) => CRON_5_FIELD.test(s), {
+        message:
+          "sweepCron: expected 5-field cron expression " +
+          "(minute hour day-of-month month day-of-week); full validation in cron emission code",
+      })
+      .optional(),
+  })
+  .strict()
+  .describe(
+    "ADR-231 §D3 + §D4: per-team autoSpawn config. defaults[] is the " +
+      "first-match-wins routing table consumed by orchd's spawn handler; " +
+      "sweepCron overrides the default '*/5 * * * *' --sweep cadence.",
+  );
+export type TeamAutoSpawn = z.infer<typeof TeamAutoSpawn>;
 
 /** `team.json::modalCycling` — ADR-142 modal-cycling detector tunables.
  *  All fields optional; defaults applied at the call-site per ADR-142
@@ -1014,11 +1103,10 @@ export const TeamCadenceThresholds = z
     /** At or above this age AND zero commits in window → verdict
      *  `dormant`. Default 21600 (6h). */
     dormantMaxAgeSec: z.number().int().positive().optional(),
-    /** Escalation flag threshold per ADR-132 §E6 contract bullet —
-     *  zero commits AND age ≥ this → verdict `ship-zero-window`.
-     *  Default 7200 (2h). Subset of `dormant` when the dormant
-     *  threshold is higher; surfacing happens regardless of
-     *  Sentinel impl. */
+    /** Escalation flag threshold — zero commits AND age ≥ this →
+     *  verdict `ship-zero-window`. Default 7200 (2h). Subset of
+     *  `dormant` when the dormant threshold is higher; surfacing
+     *  happens at observer-call sites (medic / orchd EPIC e-a946af69). */
     shipZeroWindowSec: z.number().int().positive().optional(),
   })
   .strict();
@@ -1147,8 +1235,8 @@ export const DEFAULT_CADENCE_CONFIG = {
 export const TeamRefusalDetection = z
   .object({
     /** Master switch. Default `true` — enabled by default per
-     *  ADR-139 §Config. Set `false` to suppress both medic + sentinel
-     *  refusal scans for the team. */
+     *  ADR-139 §Config. Set `false` to suppress medic refusal scans
+     *  for the team. */
     enabled: z.boolean().optional(),
     /** Soft-class events within `windowMin` to fire rotate. Default
      *  3 per ADR-139 §D3. */
@@ -1206,8 +1294,8 @@ export interface ResolvedRefusalConfig {
 
 /** Apply defaults to the team's `refusalDetection` block (absent or
  *  partial → fully resolved config). Pure — no I/O. The trigger
- *  module + medic + sentinel all call this at the top of each tick
- *  so the threshold gate sees concrete numbers. */
+ *  module + medic call this at the top of each tick so the threshold
+ *  gate sees concrete numbers. */
 export function resolveRefusalConfig(
   block: TeamRefusalDetection | undefined,
 ): ResolvedRefusalConfig {
@@ -1252,7 +1340,7 @@ export const Team = z
      *  of the team's filesystem footprint. No-op when isolation is
      *  off. Use {@link DEFAULT_WORKTREE_ROOT} when reading. */
     worktreeRoot: z.string().optional(),
-    /** ADR-088: when `true` AND `worktreeIsolation === true`, `atmux start`
+    /** ADR-179: when `true` AND `worktreeIsolation === true`, `atmux start`
      *  passes `initSubmodules: true` through to `provisionWorktree`, which
      *  runs `git submodule update --init --recursive` inside each newly
      *  created worktree. Best-effort: a non-zero exit warns to stderr but
@@ -1306,14 +1394,14 @@ export const Team = z
     unblocker: TeamUnblocker.optional(),
     /** ADR-080 §B2: gitter-member knobs (auto-done scan repo path). */
     gitter: TeamGitter.optional(),
-    /** ADR-088 §Decision-2: per-member-branch fan-in policy (merger
+    /** ADR-179 §Decision-2: per-member-branch fan-in policy (merger
      *  role). Opt-in via `merger.enabled: true`; effective config
      *  resolved at read-time via {@link resolveMergerConfig} from
      *  `src/core/merger-config.ts`. */
     merger: TeamMerger.optional(),
     /** ADR-134 §Config: per-team intra-team auto-merger config
      *  (gitter event-driven + cron-backstop fan-in). Distinct from
-     *  {@link merger} (ADR-088 bulk-merge-cycle verb) — see
+     *  {@link merger} (ADR-179 bulk-merge-cycle verb) — see
      *  {@link TeamAutoMerge} JSDoc for the scope comparison. Opt-in;
      *  absent block keeps pre-ADR-134 manual fan-in. */
     autoMerge: TeamAutoMerge.optional(),
@@ -1355,22 +1443,22 @@ export const Team = z
      *        refuse (§Decision-anchor #9).
      *  Absent block keeps existing teams unchanged (additive). */
     epicTeam: TeamEpic.optional(),
+    /** ADR-229 §DA-Gate-4 + §DA-Gate-7: orchd Phase 6 auto-push opt-in
+     *  config. Absent → defaults applied (`enabled: false`, refuse-by-
+     *  default per loud-opt-in §DA5 anchor). See {@link TeamAutoPush}. */
+    autoPush: TeamAutoPush.optional(),
+    /** ADR-231 §D3 + §D4: per-team orchd auto-spawn config —
+     *  `defaults[]` is the first-match-wins routing table for the
+     *  spawn-handler; `sweepCron` overrides the `atmux orchd --sweep`
+     *  default cadence (every 5min) applied at the cron-emission site.
+     *  See {@link TeamAutoSpawn}. */
+    autoSpawn: TeamAutoSpawn.optional(),
     /** ADR-087: `atmux stop --soft` grace window between the per-member
      *  notify and the manifest write + session kill. Default 5 seconds
      *  when unset. Setting `0` collapses the grace to a single tick but
      *  does not disable the feature (use bare `stop` for the no-grace
      *  path). */
     softStopGraceSeconds: z.number().int().nonnegative().optional(),
-    /** ADR-132 §D6: pluggable cockpit-W3 whip-manager impl. Default-
-     *  unset resolves to `cockpit.json::defaultSentinel`, then to the
-     *  hard-coded `"claude"` baseline (preserves the pre-Sentinel
-     *  per-team whip codepath for existing rosters). Restart-to-swap
-     *  per OQ-1: changes require an `atmux cockpit rebuild` cycle. */
-    sentinel: SentinelImpl.optional(),
-    /** ADR-132 §D6: per-team knobs that compose over per-impl
-     *  defaults baked into each Sentinel factory. Resolver merges
-     *  by-key (explicit > per-impl default). */
-    sentinelOverrides: TeamSentinelOverrides.optional(),
     /** ADR-139 §Config: refusal-pattern auto-rotate config — see
      *  {@link TeamRefusalDetection}. Absent block → defaults via
      *  {@link resolveRefusalConfig} (enabled=true, soft=3, hard=2,
@@ -1433,7 +1521,7 @@ export type Team = z.infer<typeof Team>;
  *  W4 (stop), and W5 (doctor) share the same constant. */
 export const DEFAULT_WORKTREE_ROOT = ".atmux/worktrees";
 
-/** ADR-088 §Decision-3: default staleness window (hours) for the
+/** ADR-179 §Decision-3: default staleness window (hours) for the
  *  merger-branch-stale doctor probe + general merger heuristics. Mirrors
  *  the Zod `stalenessHours.default(24)` so non-Zod callers (W6 probe,
  *  brief docs) share the same constant. */

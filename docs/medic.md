@@ -1,5 +1,21 @@
 # medic
 
+> **2026-05-24 alignment** — Medic is **narrowed to on-demand**
+> per [ADR-212](./adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md).
+> The hourly cockpit-W2 scheduled-tick role retires once the
+> `e-honker-observation-watchdogs` consumer set ships stable ≥30 days
+> (cleanup-EPIC cutover). Until then medic continues running as the
+> safety net. Going forward operators invoke `atmux medic diagnose <team>`
+> directly when they want a diagnosis pass; routine observation +
+> rotation candidate emission migrates to lead-gated Honker consumers
+> (`member.context-high → tell-lead`, `complaint.filed → tell-lead`,
+> etc.) per [ADR-202](./adr/202-honker-in-db-messaging-substrate.md) /
+> [ADR-211](./adr/211-retire-sentinel-role-distribute-to-honker-consumers.md) /
+> [ADR-214](./adr/214-retire-ombudsman-lead-absorbs-complaint-adjudication-via-honker.md).
+> ADR-077's **probe substrate library** (`src/core/doctor-class.ts`,
+> doctor probe registry) PERSISTS — only the cockpit-tier scheduled-tick
+> role retires.
+
 > Operator reference for the cockpit-level self-healing role originally introduced as **`superdoctor`** in [ADR-077](./adr/077-superdoctor-cockpit-role.md) and renamed to **`medic`** on 2026-05-14 per [ADR-133](./adr/133-medic-rename.md). The role's design, authority surface, and complaint-box contract are canonical in ADR-077; only the role's *name* is superseded. **Storage-layer identifiers** (`superdoctor_attempts` table, `SuperdoctorAttemptsRepo`, member sentinel `__superdoctor__`, Discord dedup key `superdoctor-self-heal-escalation`) **remain unchanged** for the deprecation window per ADR-133 §Out of scope — table renames require a separate schema-migration ADR. The skill source (`~/.claude/skills/superdoctor/`) and Discord template prefix (`[superdoctor]`) rename land separately under EPIC `t-d25ff629` TR5 (plugin source) and follow-up work — until those ship, the operator-visible Discord prefix is `[superdoctor]` and the skill path stays put.
 
 ## What it is
@@ -13,7 +29,7 @@ A second Claude Opus session in the operator cockpit, sitting at window 2 (right
 | **Owns** | cross-team dispatch, ad-hoc decisions | diagnosis loop, complaint authoring, structural fixes | one team's coordination |
 | **Talks to operator via** | direct (it IS the REPL) | `pending-decisions.md` + Discord pings | driver-inbox + Discord |
 
-(Per [ADR-135](./adr/135-cockpit-naming.md) the cockpit session is `atmux_cockpit` post-rename; pre-ADR-135 deployments still see `atmux_teams`.)
+(Per [ADR-135](./adr/135-cockpit-naming-convention.md) the cockpit session is `atmux_cockpit` post-rename; pre-ADR-135 deployments still see `atmux_teams`.)
 
 ## When you want it
 
@@ -101,7 +117,7 @@ Hourly `/loop /whip` cycle, in order:
 6. **Author preventive ask** — every complaint includes a `preventive_ask` field. The point isn't fixing this incident; it's ensuring the next one doesn't happen.
 7. **Log everything** — every action medic takes is logged to its own complaint box first. Audit trail survives a misdiagnosis.
 
-> **Cheap-model-first interaction (per [ADR-140](./adr/140-cheap-model-first.md))**: post-ADR-140, the hourly *scan loop* described above moves to an **event-driven** model — medic no longer fires a periodic sweep; it wakes on events written to `~/.atmux/state/medic-events.log` by the [ADR-132](./adr/132-pluggable-martinet.md) martinet (Cursor composer-2-fast, cockpit W3). Medic's **rotation authority is narrowed to code-fix scenarios** post-ADR-140; routine rotation (uptime / refusal / dormancy) moves to martinet. ADR-143's cron-rotate stopgap covers routine lead-rotation until martinet's CursorMartinet impl ships. This page describes the pre-ADR-140 hourly cadence (still in effect at time of writing); transition is sequenced via ADR-131 / ADR-132 / ADR-139 impl waves.
+> **Cheap-model-first interaction (per [ADR-140](./adr/140-cheap-model-first.md))**: post-ADR-140, the hourly *scan loop* described above is intended to move to an **event-driven** model — medic wakes on events written to `~/.atmux/state/medic-events.log` by future Honker event consumers (orchd Phase 3-5, sibling EPIC e-a946af69). Until those consumers ship, medic stays on the hourly sweep described in this page; the legacy sentinel/martinet observer role that originally fed events to medic was decommissioned per EPIC e-be01fc89. ADR-143's cron-rotate covers routine lead-rotation. Transition is sequenced via ADR-131 / ADR-139 / EPIC e-a946af69.
 
 ## What its actions look like
 
@@ -267,13 +283,13 @@ Read via `SuperdoctorAttemptsRepo` (`src/core/repositories/superdoctor-attempts-
 - **`atmux whip watchdog` (verb)** — per-team liveness one-shot. Pane-state classifier + cage health. Medic sweeps watchdog output across all teams.
 - **per-team lead** — coordinator inside one team. Medic doesn't replace a lead; it watches across leads and addresses cross-team / structural issues that no single lead can see.
 - **`/whip` skill** — the cycle engine that drives the whip loop. Medic uses it the same way a team-lead does, with a different role brief (the deferred medic skill — formerly the `superdoctor` skill, renamed alongside plugin source under EPIC `t-d25ff629` TR5).
-- **martinet (cockpit W3, post-[ADR-132])** — sibling cockpit-level role. Cursor composer-2-fast at 270s; absorbs routine observation + nudging + rotation per [ADR-140] cheap-model-first principle. Medic and martinet split authority on rotation: martinet owns *routine* (uptime / refusal / dormancy threshold trips), medic retains *emergency* (broken claude proc requiring kill+respawn, code-fix scenarios).
+- **orchd event consumers (sibling EPIC e-a946af69 / Honker Phase 3-5)** — once shipped, will absorb routine observation + nudging + rotation per [ADR-140] cheap-model-first principle, leaving medic's residual scope at emergency / code-fix-class incidents. The legacy cockpit-W3 sentinel/martinet observer that previously held this scope was decommissioned per EPIC e-be01fc89.
 
 ## Status
 
 ADR-077 §D1 + §D2 (cockpit topology + schema), §F1 (skill brief in `~/.claude/skills/superdoctor/`), §F2 (complaint box SQLite + `atmux complaints` verb), §F3 (`atmux send __superdoctor__` validator), §F4 (P0 send-keys runbook), §F5 (status verb medic surface), and §F6 (self-escalation primitives — `superdoctor_attempts` table + `renderSelfHealFailed` Discord template) all ship. Setting `medic.enabled: true` (or legacy `superdoctor.enabled: true` during deprecation window per ADR-133) in `~/.atmux/cockpit.json` and running `atmux cockpit rebuild` spawns window 2 with a Claude Opus session that — when invoked as `/loop /medic` (or legacy `/loop /superdoctor` until plugin source TR5 lands) — runs the hourly diagnosis loop end-to-end.
 
-Post-[ADR-140] roadmap: the hourly scan loop converts to event-driven listening on `~/.atmux/state/medic-events.log`; routine rotation authority moves to martinet; medic's residual scope narrows to code-fix-class incidents. Sequenced via ADR-131 / ADR-132 / ADR-139 impl waves.
+Post-[ADR-140] roadmap: the hourly scan loop converts to event-driven listening on `~/.atmux/state/medic-events.log` once orchd event consumers ship (sibling EPIC e-a946af69); medic's residual scope narrows to code-fix-class incidents. Sequenced via ADR-131 / ADR-139 / EPIC e-a946af69.
 
 Open follow-ups (not blocking):
 

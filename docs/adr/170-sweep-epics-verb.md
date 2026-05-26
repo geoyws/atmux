@@ -1,6 +1,6 @@
 # ADR-170 — `atmux team sweep-epics` verb: enumerate + safely dissolve idle epic-teams
 
-Status: proposed
+Status: Accepted — ratified by driver 2026-05-21 (`atmux team sweep-epics [--apply] [--idle-hours N] [--parent T] [--json]` — 4-signal verdict; --apply dispatches dissolveEpic only on SAFE-DISSOLVE; §OQ recommendations as-written)
 Date: 2026-05-17
 
 ## Context
@@ -95,3 +95,7 @@ the operator decides.
   ADR-091 (committer) / ADR-161 (member move) territory.
 - Top-level team sweep — only `epic-team` nodes are candidates. Top-level
   teams require explicit `atmux stop`.
+
+## §see-also (2026-05-22)
+
+[ADR-222](222-cage-topography-read-only-verb-surface.md) §D6 unifies sweep-epics' enumeration with the fleet topology manifest — sweep-epics continues to own the per-epic verdict ladder (SAFE-DISSOLVE / STALE-IDLE / RISKY) while `topo --json` is the strict superset for raw fleet enumeration. ADR-223's `--reap` cascade leans on this verdict ladder for the dissolve-class reap path; sweep-epics itself doesn't compose into the reap orchestrator.

@@ -1,6 +1,6 @@
 # ADR-163: atmux bundles its own tmux binary — version-lock + config-pin
 
-**Status**: proposed
+**Status**: accepted
 **Date**: 2026-05-16
 **Driver-ref**: driver-inbox 16:57 MYT 2026-05-16 §2 (operator's bundled-tmux ask — *"can atmux just bring its own tmux? we should never trust the host tmux"*); slot-3 of lead's queue per driver-inbox line 5331.
 **Parent EPIC**: this ADR IS the umbrella; child Tasks filed in same session per [[feedback_decomp_same_session_with_deps]].
@@ -247,3 +247,10 @@ ADR-163 completes when ALL of:
 - Driver-inbox 16:57 MYT 2026-05-16 §2 (operator's bundled-tmux ask).
 - Project [CLAUDE.md](../../CLAUDE.md) §Docs Discipline (same-commit doc updates) + §Testing Discipline (CI matrix integration) + §Push Policy (postinstall download path is not a `staging` push so policy doesn't apply).
 - Memory [[project_atmux_install_topology]] — install path conventions consumed here.
+
+
+## §Amendment 2026-05-20 — promoted to accepted (status-drift audit T4)
+
+Promoted from `proposed` → `accepted` per [docs/audits/adr-status-drift-audit-2026-05-20.md](../audits/adr-status-drift-audit-2026-05-20.md) (sha=a6f1541). Code-refs + git-log refs both present at audit time confirming shipped + dogfooded status; the `proposed` marker was bookkeeping debt. Original Date preserved verbatim. Append-only — see Status field for the canonical flip; this §Amendment carries the audit traceability.
+
+**Filed via** t-45b401c3 (T4 sweep, 2026-05-20).

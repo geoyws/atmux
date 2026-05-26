@@ -98,9 +98,33 @@ export const DEFAULT_SUBMIT_VERIFY_RETRIES = 1;
  *  "Your role is lead" after rotate mis-resolved window 1). Recipient
  *  must `echo $ATMUX_MEMBER` first and abort + alert the operator on
  *  mismatch rather than silently bootstrap as the wrong member. The
- *  env var is set per-pane at spawn time + is not lying. */
+ *  env var is set per-pane at spawn time + is not lying.
+ *
+ *  Dead-file-reference strip (2026-05-22 update, t-f79db3b9). Prior
+ *  template instructed the recipient to "read /tmp/atmux-brief-
+ *  generic-{team}.md" as the first bootstrap artifact — but nothing
+ *  in the codebase ever wrote that file. `grep -rn 'atmux-brief-
+ *  generic' src/` returned only this one consumer line; no writer.
+ *  Bootstrapping members hit File-Not-Found and silently fell
+ *  through to reading CLAUDE.md + their role brief (the second half
+ *  of the prompt). The dead reference is removed; role brief +
+ *  project CLAUDE.md remain the canonical bootstrap sources.
+ *
+ *  The earlier "if your role appears in templates/briefs/" conditional
+ *  is also dropped (lead callout 3, 16:57 MYT). Every role atmux
+ *  spawns has a brief — `BRIEF_ALIASES` in `rotate.ts` + the
+ *  `member.md` fallback at `getBriefPath` make missing-brief structurally
+ *  impossible at the resolver layer. A missing brief at the recipient
+ *  side is a different failure class (operator-surface via flag /
+ *  inbox ask, NOT silent-skip — which is what the conditional was
+ *  encoding). Generic-brief surface, if ever resurfaced as a real
+ *  ask, belongs in `CLAUDE.md` (load-bearing for ALL roles, single
+ *  source) — not `/tmp/` ephemerals that don't survive reboot.
+ *
+ *  The `{team}` placeholder is unused as of this strip but kept in
+ *  `renderBootPrompt` for call-site ABI stability (no caller breakage). */
 const BOOT_PROMPT_TEMPLATE =
-  "First run `echo $ATMUX_MEMBER` — if it isn't `{member}`, this paste mis-targeted (alert operator + abort, do NOT bootstrap). Otherwise read /tmp/atmux-brief-generic-{team}.md and your role brief if your role appears in templates/briefs/, then bootstrap as {member}.";
+  "First run `echo $ATMUX_MEMBER` — if it isn't `{member}`, this paste mis-targeted (alert operator + abort, do NOT bootstrap). Otherwise read your role brief in templates/briefs/ + the project CLAUDE.md, then bootstrap as {member}.";
 
 /** Render the boot prompt for a (team, member) pair. Exported for
  *  unit tests + observability — the lead-outbox failure surface
@@ -127,12 +151,39 @@ const TUI_READY_RE = /❯|tokens/;
  *  `tokens · <int>%`, both shapes claude's status line uses. */
 const TOKENS_MOVED_RE = /(?<![0-9])\d+k\s*(?:tokens|↓)|tokens\s*·\s*\d+%/i;
 
+/** Sentinel: claude has entered an active thinking / extended-context
+ *  turn but hasn't yet emitted enough tokens for the `Nk tokens` footer
+ *  to render. Matches the `✻ Churned for Xm Ys` / `✻ Worked for Xm Ys`
+ *  / `✻ thinking with N` status-line shapes. Required because a member
+ *  spawned into a long-thinking-on-first-turn (>2 min on xhigh + dense
+ *  brief paste) can be genuinely alive + productive while the existing
+ *  `tokensMoved` check still reads false — observed 2026-05-20 on sopx
+ *  epic-team viewers (e-24b6b90d/planner, e-de96991b/fe-1) where medic
+ *  bootstrap-verify declared false-negative `failed` on alive members
+ *  (t-a1db24dd). Single-shot match — no cross-probe increment check
+ *  (parity with `tokensMoved` which also accepts any positive signal). */
+const THINKING_ACTIVE_RE = /[✻✶✽✺✷]\s*(?:Churned|Worked|thinking)\s+(?:for\s+\d+[hms]|with\s+\d+)/i;
+
 export function isTuiReady(captured: string): boolean {
   return TUI_READY_RE.test(captured);
 }
 
 export function tokensMoved(captured: string): boolean {
   return TOKENS_MOVED_RE.test(captured);
+}
+
+export function thinkingActive(captured: string): boolean {
+  return THINKING_ACTIVE_RE.test(captured);
+}
+
+/** Combined post-boot liveness predicate: tokens are flowing OR claude
+ *  is mid-thinking. Either signal proves the boot prompt landed + a
+ *  turn started; the difference is whether the turn is far enough
+ *  along to render the `Nk tokens` footer (`tokensMoved`) or still in
+ *  the thinking/agentic preamble (`thinkingActive`). Wraps both so the
+ *  pollUntil loop's single-predicate API stays clean. */
+export function bootSignalLive(captured: string): boolean {
+  return tokensMoved(captured) || thinkingActive(captured);
 }
 
 // ---------- bootClaudeMember ----------
@@ -332,7 +383,7 @@ export async function bootClaudeMember(opts: BootClaudeOpts): Promise<BootResult
       // retry the capture). Don't short-circuit; the pane may
       // recover momentarily.
     }
-    if (tokensMoved(initialCapture)) {
+    if (bootSignalLive(initialCapture)) {
       return { status: "already-booted", attempts: 0 };
     }
   }
@@ -447,7 +498,7 @@ export async function bootClaudeMember(opts: BootClaudeOpts): Promise<BootResult
     // Post-send: watch tokens. C-m verified to have cleared the
     // composer at this point; tokensMoved confirms claude actually
     // started a turn (vs. composer-cleared-but-then-stuck).
-    const moved = await pollUntil(tokensMoved, {
+    const moved = await pollUntil(bootSignalLive, {
       tmux: opts.tmux,
       target: opts.paneTargetString,
       intervalMs: postBootInterval,

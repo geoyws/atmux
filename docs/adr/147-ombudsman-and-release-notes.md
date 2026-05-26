@@ -1,8 +1,10 @@
 # ADR-147: Ombudsman role + release-notes layout — complaint adjudicator with durable response log
 
-**Status**: accepted
+**Status**: accepted (Ombudsman ROLE half SUPERSEDED 2026-05-21 by [ADR-214](./214-retire-ombudsman-lead-absorbs-complaint-adjudication-via-honker.md); release-notes layout half PERSISTS as operator-facing convention)
 **Date**: 2026-05-15
 **Accepted**: 2026-05-16 (T9 dogfood landed — atmux-team ombudsman pane alive, c-7a308f7f adjudicated via task t-82b6aed9, day-file `docs/release-notes/2026/05/2026-05-16.md` committed on `geoyws-ombudsman` @ b68f2b4)
+
+> **§Amendment 2026-05-21 — partial supersession by [ADR-214](./214-retire-ombudsman-lead-absorbs-complaint-adjudication-via-honker.md):** The **Ombudsman role** (per-team pane adjudicating complaints) retires entirely per ADR-214 §D1. Lead absorbs the adjudication function via Honker `complaint.filed` event → `atmux tell-lead` → Lead's Claude decides per ADR-214 §D2 (resolve / wontfix / promote-epic / dismiss / escalate). The **release-notes layout convention** described below (`docs/release-notes/YYYY/MM/YYYY-MM-DD.md` day-files with adjudication entries) **PERSISTS** as the operator-facing log surface — the file format + commit cadence stay; only the actor that writes them changes (lead instead of ombudsman). Complaint storage (`src/schema/complaints.ts` + `src/core/complaints.ts` + `atmux complaints file|list|resolve`) also PERSISTS — that's substrate, not the role. ADR-150 cross-team routing semantics PERSIST.
 **Author**: atmux team (driver — operator 09:46 MYT chat brainstorm: "ombudsman is supposed to sit in every team to go through the complaints and create epics to address those complaints and to also somehow log his response somehow… maybe we should have the response in release notes perhaps?")
 **Relates**: ADR-077 (medic / superdoctor cockpit role — files complaints), ADR-131 (superdoctor kanban-hygiene auto-fix), ADR-133 (medic rename), ADR-091 (epic-team auto-merge — sibling pattern), ADR-145 (gitter-does-merges), ADR-146 (kanban auto-files trunk-merge — event-driven sibling pattern).
 **Kanban**: closes t-441d6d4c (Ombudsman role — event-driven via sentinel file + cron wake-up).
@@ -17,7 +19,7 @@ The complaint surface already exists:
 - `src/verbs/complaints.ts` — `atmux complaints file|list|resolve` verbs.
 - `src/core/complaints.ts` — SQLite-backed store via `state.db` (ADR-060).
 - Medic / superdoctor files complaints on observed anomalies (per ADR-077 §D5 + §F2, ADR-131).
-- Whip + whip-velocity-gate file complaints on velocity stalls (per ADR-087).
+- Whip + whip-velocity-gate file complaints on velocity stalls (per ADR-177).
 - Operator + CLI file complaints manually.
 
 But there's no role that **adjudicates** open complaints. Today, `atmux complaints list --status open` returns rows that linger indefinitely:

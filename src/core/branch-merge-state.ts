@@ -83,10 +83,22 @@ export function isTerminalState(state: BranchMergeState): boolean {
  *  (intra-team-merge.ts for ADR-134, epic-merge.ts for ADR-091)
  *  share the same plumbing. */
 export interface PreMergeGateInput {
-  /** Tasks the branch's owner (member or epic-team) still has open
-   *  (`todo` or `in-progress`). Zero is the gate-pass condition for
-   *  the `ready_to_merge` transition per ADR-134 §triggers
-   *  §event-driven primary step #2. */
+  /** Number of tasks the branch's owner is *actively shipping*. Zero
+   *  is the gate-pass condition for the `ready_to_merge` transition
+   *  per ADR-134 §triggers §event-driven primary step #2.
+   *
+   *  Per-scope semantics:
+   *   - **intra-team** (`src/core/intra-team-merge-dispatcher.ts`,
+   *     §Amendment 2026-05-22) — counts `owner=<member>` rows with
+   *     `status='in-progress'` only. `todo` no longer counts; that
+   *     pre-amendment semantic structurally wedged long-lived parent-
+   *     team members (docs / lead / reviewer) who always carry forward
+   *     future todos. Safety intent ("don't fan in mid-active-work")
+   *     is preserved by `in-progress` + the worktree-clean gate.
+   *   - **epic-team** (`src/verbs/epic-merge.ts`) — unchanged: counts
+   *     ALL non-`done`/non-`wontfix` tasks in the epic-team's kanban.
+   *     For ephemeral epic-teams, all-tasks-done IS the epic-
+   *     complete signal that fan-in is appropriate. */
   ownerOpenTaskCount: number;
   /** True iff the worktree is clean (`git status --porcelain` empty).
    *  ADR-134 reviewer pre-flag #2 requires this gate before any
@@ -125,6 +137,8 @@ export interface PreMergeGateDecision {
  * Decision tree (priority order — first matching reason wins):
  *
  *   1. owner has open tasks         → stay `in_progress`
+ *      (intra-team: in-progress tasks > 0 per ADR-134 §Amendment
+ *       2026-05-22; epic-team: any non-done > 0)
  *   2. worktree dirty               → stay `in_progress`
  *   3. branch not ahead of base     → stay `in_progress`
  *   4. base moved during work       → transition `rebasing`
@@ -233,12 +247,19 @@ const FORWARD_TRANSITIONS: ReadonlyMap<BranchMergeState, ReadonlySet<BranchMerge
  *  in_progress is manual" and ADR-144 §test_failed recovery; everything
  *  else honors {@link FORWARD_TRANSITIONS}.
  *
- *  `merged → in_progress` is intentionally NOT permitted — once a
- *  branch's fan-in succeeds, the next iteration starts from a fresh
- *  `open` row after the branch is realigned to the new base (per
- *  ADR-134 §Per-member-branch lifecycle after success). */
+ *  `merged → open` is permitted per ADR-134 §Amendment 2026-05-22 (II)
+ *  (t-0542595c) — when a long-lived member ships additional commits
+ *  past a previous fan-in, the dispatcher auto-re-enters the state
+ *  machine by transitioning back to `open`. This is consistent with
+ *  the original spec phrase "fresh `open` row after the branch is
+ *  realigned to the new base" — pre-amendment, no caller actually
+ *  performed that reset, so the row stayed at `merged` and refused
+ *  every subsequent commit, requiring manual sqlite intervention. */
 export function isValidTransition(from: BranchMergeState, to: BranchMergeState): boolean {
   if ((from === "conflict" || from === "reverted") && to === "in_progress") {
+    return true;
+  }
+  if (from === "merged" && to === "open") {
     return true;
   }
   return FORWARD_TRANSITIONS.get(from)?.has(to) ?? false;

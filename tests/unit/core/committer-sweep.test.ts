@@ -309,7 +309,6 @@ describe("committerSweep — ahead-of-base check", () => {
 
 describe("committerSweep — in-flight state recognition", () => {
   test.each([
-    "ready_to_merge",
     "rebasing",
     "merging",
     "tested",
@@ -355,6 +354,29 @@ describe("committerSweep — in-flight state recognition", () => {
     expect(result.skipped).toBe(0);
     expect(result.entries[0]?.action).toBe("queued");
     expect(result.entries[0]?.observedState).toBe("in_progress");
+  });
+
+  test("state=ready_to_merge with commits ahead → queued (post-rebase-break recovery per ADR-134 §Amendment 2026-05-24)", async () => {
+    // Pre-fix: `ready_to_merge` was in IN_FLIGHT_STATES → branches the
+    // dispatcher rebased + left at `ready_to_merge` (per §Amendment
+    // 2026-05-18 t-2b7572d7 "one rebase per tick max — merge lands on
+    // NEXT cron tick") got self-skipped by every subsequent sweep.
+    // Without a `task.done` event to wake the daemon's dispatcher path,
+    // the merge step never landed; the only escape was operator state.db
+    // surgery. Post-fix: sweep re-enters; dispatcher walks
+    // `ready_to_merge → merging → tested` cleanly because the
+    // dispatcher-level CALLER_DRIVEN_STATES set never included
+    // `ready_to_merge`.
+    seedRepoRow("geoyws-fe-1", "ready_to_merge");
+    const deps = buildDeps({
+      branches: ["geoyws-fe-1"],
+      aheadBy: { "geoyws-fe-1": 2 },
+    });
+    const result = await committerSweep(deps);
+    expect(result.queued).toBe(1);
+    expect(result.skipped).toBe(0);
+    expect(result.entries[0]?.action).toBe("queued");
+    expect(result.entries[0]?.observedState).toBe("ready_to_merge");
   });
 
   test("state=in_progress + dispatcher refuses (gate-held) → queue-refused with reason", async () => {

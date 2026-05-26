@@ -1,6 +1,6 @@
 # ADR-171: Cage tmux user override conf — `~/.config/atmux/tmux.conf.local`
 
-**Status**: proposed
+**Status**: Accepted — ratified by driver 2026-05-21 (append `source-file -q ~/.config/atmux/tmux.conf.local` last; -q silent on absent; operator owns file; §OQ recommendations as-written)
 **Date**: 2026-05-18
 **Cross-refs**: ADR-162 (atmux owns tmux infrastructure — defers user-override to "ADR-163"), ADR-163 (bundles binary + reset-config verb — full implementation deferred).
 **Carve-out from ADR-163**: ADR-163 §Decision-anchor #2 specifies `${userConfigDir}/atmux/tmux.conf.local` as a user-override path loaded via `source-file -q` appended to the default conf. ADR-163 ALSO covers the bundled binary, `reset-config` / `print-config` verbs, install-path resolver, plugin code — heavyweight. This ADR ships the source-file line **early**, leaving the rest of ADR-163 deferred.

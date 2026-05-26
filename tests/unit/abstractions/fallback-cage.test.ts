@@ -346,7 +346,7 @@ interface SpawnCall {
 
 function makeSpawnRecorder(
   responses: ReadonlyArray<{
-    matchCmd?: string;
+    matchCmd?: string | RegExp;
     matchArgvIncludes?: string;
     exitCode?: number;
     stdout?: string;
@@ -367,7 +367,13 @@ function makeSpawnRecorder(
     };
     calls.push(call);
     const matched = responses.find((r) => {
-      if (r.matchCmd !== undefined && r.matchCmd !== opts.cmd) return false;
+      if (r.matchCmd !== undefined) {
+        if (typeof r.matchCmd === "string") {
+          if (r.matchCmd !== opts.cmd) return false;
+        } else if (!r.matchCmd.test(opts.cmd)) {
+          return false;
+        }
+      }
       if (r.matchArgvIncludes !== undefined) {
         const argv = opts.argv ?? [];
         if (!argv.some((a) => a.includes(r.matchArgvIncludes ?? ""))) return false;
@@ -712,7 +718,9 @@ describe("Lifecycle — destroyFallbackCage Tier 2", () => {
   test("captures pane content + writes session.log + kills session", async () => {
     const spawn = makeSpawnRecorder([
       {
-        matchCmd: "tmux",
+        // ADR-191: cmd is the resolveTmuxBin() result — could be literal
+        // "tmux" (PATH fallback) or an absolute path. Match either.
+        matchCmd: /(^|\/)tmux$/,
         matchArgvIncludes: "capture-pane",
         exitCode: 0,
         stdout: "captured pane content",
@@ -743,7 +751,15 @@ describe("Lifecycle — destroyFallbackCage Tier 2", () => {
       tmuxFactory: makeFakeTmuxFactory(tmuxState),
       nowSec: () => 1700_000_100,
     });
-    expect(spawn.calls.some((c) => c.cmd === "tmux" && c.argv.includes("capture-pane"))).toBe(true);
+    // ADR-191: cmd resolved via resolveTmuxBin() — accept either the
+    // literal "tmux" (system PATH fallback) or any absolute path
+    // ending in "/tmux" (vendored or operator override).
+    expect(
+      spawn.calls.some(
+        (c) =>
+          (c.cmd === "tmux" || /\/tmux$/.test(c.cmd)) && c.argv.includes("capture-pane"),
+      ),
+    ).toBe(true);
     const teeCall = spawn.calls.find(
       (c) =>
         c.cmd === "tee" &&
@@ -820,10 +836,15 @@ describe("Lifecycle — destroyFallbackCage Tier 3", () => {
         c.argv.some((a) => a.includes("/p/.atmux/tier3-handoff/archive/alpha-fe-1700000100/")),
     );
     expect(archiveRsync).toBeDefined();
-    // Sudo tmux kill-session.
+    // Sudo tmux kill-session. ADR-191: the literal `tmux` argv slot is
+    // populated by resolveTmuxBin() — match on the resolved-binary
+    // shape (literal "tmux" OR absolute path ending /tmux).
     expect(
       spawn.calls.some(
-        (c) => c.cmd === "sudo" && c.argv.includes("tmux") && c.argv.includes("kill-session"),
+        (c) =>
+          c.cmd === "sudo" &&
+          c.argv.some((a) => a === "tmux" || /\/tmux$/.test(a)) &&
+          c.argv.includes("kill-session"),
       ),
     ).toBe(true);
     // rm -rf the cage root.

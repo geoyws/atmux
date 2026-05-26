@@ -12,7 +12,7 @@ The cockpit binds to a dedicated named tmux socket: **`tmux -L atmux-cockpit`**.
 tmux -L atmux-cockpit attach -t atmux_cockpit
 ```
 
-The session name (`atmux_cockpit`) stays consistent with [ADR-135](adr/135-cockpit-naming-convention.md); only the socket moved. Per-team sockets remain on the cage-tier path (`-S <team-root>/.atmux/tmux/tmux-0/default`) per [ADR-058](adr/058-cage-tier-isolation.md) — that layer is untouched.
+The session name (`atmux_cockpit`) stays consistent with [ADR-135](adr/135-cockpit-naming-convention.md); only the socket moved. Per-team sockets remain on the cage-tier path (`-S <team-root>/.atmux/tmux/tmux-0/default`) per [ADR-018](adr/018-per-team-tmux-socket-isolation.md) — that layer is untouched.
 
 **Verify isolation:**
 
@@ -56,7 +56,7 @@ atmux cockpit migrate-socket --keep-legacy
 - **What's preserved:** window names, relative window order, [ADR-135](adr/135-cockpit-naming-convention.md) `_-prefix` convention, scrollback (as visual breadcrumb only).
 - **What's lost:** live process state in each pane (Claude conversation context, REPL state, mid-edit buffers).
 
-Cron-spawned cockpit roles (medic / martinet / sentinel) re-establish themselves on the next cron tick — they're stateless across ticks, no operator action needed. The only state-bearing panes are operator-driven (a `superdriver` Claude conversation, an ad-hoc shell). Operators re-invoke those in the new panes; the breadcrumb file gives them visual context to recover from.
+Cron-spawned cockpit roles (medic) re-establish themselves on the next cron tick — they're stateless across ticks, no operator action needed. The only state-bearing panes are operator-driven (a `superdriver` Claude conversation, an ad-hoc shell). Operators re-invoke those in the new panes; the breadcrumb file gives them visual context to recover from.
 
 **Idempotent.** Re-running `atmux cockpit migrate-socket` on an already-migrated cockpit returns 0 with the "no legacy cockpit on default socket" log. The doctor probe [`cockpit-on-default-socket`](#§4--doctor-probes) self-clears after migration completes.
 
@@ -103,6 +103,8 @@ Warn-class only — doesn't block atmux. Surfaces via `atmux doctor` (human) + `
 
 Both probes are warn-class — they don't block `atmux cockpit rebuild` or any verb. They surface drift; the operator decides when to act.
 
+> **Skill cross-link** (per [ADR-217](adr/217-atmux-skills-plugin-bundled-and-wizard-installed.md) §D7): for a fleet-wide sweep of these probes plus `atmux status --json` across every enabled team (with auto-complaint filing and the [ADR-198](adr/198-medic-host-pressure-playbook.md) host-pressure playbook as one trigger), invoke `/atmux:sweep` from Claude Code instead of running `atmux doctor` team-by-team.
+
 ## §5 — `ATMUX_COCKPIT_SOCKET` escape hatch
 
 The cockpit socket is resolved via `getCockpitSocketName()` in `src/core/tmux-paths.ts`. Resolution chain:
@@ -132,11 +134,10 @@ The override is per-invocation; agents that spawn atmux processes inherit the en
 
 ## §6 — Cockpit pane rotation (`atmux cockpit rotate`)
 
-Operator-fired rotation of a cockpit role pane — `medic`, `sentinel`, or a per-team driver pane. Closes the manual handoff + Ctrl-C + canonical-respawn protocol that previously lived in the `/bruh` skill §3a manual fallback. Per [ADR-167](adr/167-cockpit-rotate-verb.md) (Rung C of the `/bruh` escalation chain — Rung A = member rotate, Rung B = lead rotate via medic, Rung D = full cockpit rebuild).
+Operator-fired rotation of a cockpit role pane — `medic` or a per-team driver pane. Closes the manual handoff + Ctrl-C + canonical-respawn protocol that previously lived in the `/bruh` skill §3a manual fallback. Per [ADR-167](adr/167-cockpit-rotate-verb.md) (Rung C of the `/bruh` escalation chain — Rung A = member rotate, Rung B = lead rotate via medic, Rung D = full cockpit rebuild).
 
 ```bash
 atmux cockpit rotate medic    [--force]
-atmux cockpit rotate sentinel [--force]
 atmux cockpit rotate <team>   [--force]
 ```
 
@@ -146,7 +147,7 @@ atmux cockpit rotate <team>   [--force]
 
 - The cockpit role pane is wedged, looping, or rate-limited and you want a clean restart with a brief-paste-ready handoff.
 - You've already manually verified that letting the pane run further is worse than rotating it (uptime ≥ 60min default).
-- You're a driver — the verb is gated to `ATMUX_CALLER_SCOPE=driver` per [ADR-033](adr/033-caller-scope-gate.md).
+- You're a driver — the verb is gated to `ATMUX_CALLER_SCOPE=driver` per [ADR-033](adr/033-kanban-driver-only-flag.md).
 
 ### Pre-flight gates
 
@@ -167,12 +168,12 @@ Gate refusals fire the `cockpit-rotate-refused` Discord template; success rotati
 
 Per [ADR-167 §Per-role respawn matrix](adr/167-cockpit-rotate-verb.md):
 
-1. **Assemble + atomic-write handoff** to `~/.claude/teams/__cockpit__/<role>/handoff.md` — brief-paste-ready Markdown with role-specific sections (medic: diagnosis + complaints + recent rotations; sentinel: classifier state + NudgeAction history + escalations; team-driver: lead-outbox tail + outbox snapshot + recent rotations). 100KB soft cap with truncate-with-trailer per [§OQ-2](adr/167-cockpit-rotate-verb.md). Handoff write lands **before** Ctrl-C so the rotation is re-traceable if a later step crashes mid-flight.
+1. **Assemble + atomic-write handoff** to `~/.claude/teams/__cockpit__/<role>/handoff.md` — brief-paste-ready Markdown with role-specific sections (medic: diagnosis + complaints + recent rotations; team-driver: lead-outbox tail + outbox snapshot + recent rotations). 100KB soft cap with truncate-with-trailer per [§OQ-2](adr/167-cockpit-rotate-verb.md). Handoff write lands **before** Ctrl-C so the rotation is re-traceable if a later step crashes mid-flight.
 2. **Ctrl-C** the target pane via `safeSendKeysWithVerify` ([ADR-138](adr/138-verified-send-keys.md)) with a 3s grace + `claudeUiGoneVerifier` (no `❯` / `Cooked` / `Schlepping` / `Honking` / `Compacting` markers).
 3. **`tmux kill-window`** the target pane (SIGHUP fallback for C-c-resistant claude).
-4. **Resolve `claudeAccount` wrapper** via the [ADR-094](adr/094-c-alias-spawn-convention.md) c-alias table (`/root/.claude → claude`, `-unum → c-u`, `-icloud → c-ic`, `-ifca → c-i`, unknown → `ConfigError` exit 70). Load-bearing for medic + sentinel-claude; skipped for sentinel-cursor + team-driver (their spawn lines are not claude TUIs — see [ADR-167 §Amendment 2026-05-17](adr/167-cockpit-rotate-verb.md)).
+4. **Resolve `claudeAccount` wrapper** via the [ADR-094](adr/094-c-alias-spawn-convention.md) c-alias table (`/root/.claude → claude`, `-unum → c-u`, `-icloud → c-ic`, `-ifca → c-i`, unknown → `ConfigError` exit 70). Load-bearing for medic; skipped for team-driver (its spawn line is the cage retry loop, not a claude TUI).
 5. **`tmux new-window`** with the resolved respawn command.
-6. **Re-arm cadence** — medic gets `/loop /medic` via `autoStartSuperdoctorLoop`; sentinel-claude gets `/loop /sentinel` via `autoStartSentinelLoop`; sentinel-cursor + team-driver have no claude TUI to re-arm.
+6. **Re-arm cadence** — medic gets `/loop /medic` via `autoStartSuperdoctorLoop`; team-driver has no claude TUI to re-arm.
 7. **Append success audit row** to `~/.atmux/state/cockpit-rotate-audit.log` (NDJSON) with `outcome="success"` + `handoffPath`.
 
 ### Recovery — when a step fails
@@ -187,7 +188,7 @@ Per [ADR-167 §Per-role respawn matrix](adr/167-cockpit-rotate-verb.md):
 | `killWindow` throw | exit 70, `respawn-failed` audit row | Ctrl-C fired; kill failed (window may still exist — diagnose manually) |
 | `newWindow` throw | exit 70, `respawn-failed` audit row | window gone, no respawn (rare — tmux server unreachable) |
 | Ctrl-C verifier escalation | continues anyway (kill-window is destructive primitive) | rotated |
-| `autoStart` failure | continues (exit 0) | rotated but cadence un-armed — operator types `/loop /medic` or `/loop /sentinel` manually |
+| `autoStart` failure | continues (exit 0) | rotated but cadence un-armed — operator types `/loop /medic` manually |
 
 The verb favors **"either fully succeed or leave the pane intact"** over partial-state recovery. Handoff write success without respawn IS recoverable: the operator inspects `~/.claude/teams/__cockpit__/<role>/handoff.md`, fixes the underlying issue (typically wrapper resolution or tmux state), and re-runs the verb.
 
@@ -207,15 +208,146 @@ V1 has no rotation policy ([ADR-167 §OQ-6](adr/167-cockpit-rotate-verb.md) — 
 
 Leads live in per-team cages (per [ADR-162](adr/162-atmux-owns-tmux-infrastructure.md)) — `cockpit rotate` operates on the cockpit socket only. Use Rung B (medic's `/team rotate-lead`) for lead rotation.
 
+## §7 — On-demand observation (post-sentinel-decommission)
+
+The cockpit-W3 sentinel role retired per EPIC e-be01fc89 (2026-05-23) —
+mechanical observation distributes to Honker event consumers per
+sibling EPIC e-a946af69 (orchd Phase 3-5). Until those consumers ship,
+operators run on-demand audits via `atmux doctor` and the lead's
+self-driven whip cron (see `docs/RUNBOOK-on-demand-audit.md`). The
+historical sentinel install + recovery surface (W3 `_sentinel` window,
+`sentinel-state.json` state file, `cockpit-has-w3-sentinel` doctor
+probe, ADR-183 dynamic-discovery, ADR-185 epic-team scope) is fully
+retired; the cockpit-rebuild + doctor paths above no longer touch W3.
+
+## §8 — Release / deployment via `atmux release`
+
+Canonical deploy surface as of 2026-05-20. Replaces the 4-step manual
+flow (`npm version` + commit + `bun run build:install` + `git push`).
+
+```bash
+atmux release patch                  # 0.8.8 → 0.8.9
+atmux release minor                  # 0.8.8 → 0.9.0
+atmux release major                  # 0.8.8 → 1.0.0
+atmux release patch --dry-run        # print plan + exit 0 (no mutation)
+atmux release patch --allow-dirty    # skip tree-clean gate (uncommitted changes WILL ship)
+```
+
+**Exit codes**: `0` success / `64` usage / `65` dirty-or-no-op refused / `70` step failure (git / build / push).
+
+**What it does** (success path):
+
+1. Bump `package.json::version` (semver `patch` / `minor` / `major`).
+2. `git add package.json && git commit -m "chore(release): bump version to <new>"`.
+3. `bun run build:install` — builds + installs to `/opt/atmux/<new>/` with an atomic symlink swap (`/opt/atmux/current → /opt/atmux/<new>`).
+4. `git push origin <current-branch>` (the verb resolves the actual branch via `git rev-parse --abbrev-ref HEAD`; the 2026-05-20 fix in 58c6fed addressed an earlier bug that printed `$(git symbolic-ref ...)` unevaluated).
+
+**Safety gates** — refused unless `--allow-dirty`:
+
+- Working tree must be clean (no uncommitted source changes that would be omitted from the deploy).
+- HEAD must not equal the last `chore(release)` bump commit AND `/opt/atmux/current` version must differ from source `package.json` version (the "nothing to ship" gate — prevents empty deploys).
+
+**Manual 4-step fallback** (legacy / disaster):
+
+```bash
+npm version patch --no-git-tag-version
+git add package.json && git commit -m "chore(release): bump version to <new>"
+bun run build:install
+git push origin <branch>
+```
+
+Use only when `atmux release` itself is broken (`atmux` binary unbootable, `package.json` non-semver). Per the design intent the legacy form is deprecated for daily use — `atmux release` is the canonical surface.
+
+## §9 — Operator coordination skills (`/atmux:bau`, `/atmux:bruh`, `/atmux:whip`, `/atmux:team`, …)
+
+Atmux ships a Claude Code skills plugin at `plugins/atmux/` (in the atmux source tree) that wraps the cockpit-tier verbs as operator-facing `/slash-commands`. Per [ADR-217](adr/217-atmux-skills-plugin-bundled-and-wizard-installed.md), the plugin is installed by the first-run wizard (`atmux init` per [ADR-200](adr/200-install-wizard-guided-first-run-setup.md) §D5) and symlinked into Claude Code's plugin discovery path so skill upgrades ride atmux releases automatically. Operators who prefer their own dotfiles-resident variants can override by dropping a real directory at `~/.claude/plugins/atmux/` (the wizard preserves it).
+
+| When to run | Skill | What it does |
+|---|---|---|
+| Start-of-session, status snapshot | `/atmux:bau [hours]` | Commit cadence / rate-limits / kanban / churn per team. Default 24h window. Escalates Dormant teams to lead. |
+| Want autonomous-work nudge cadence | `/atmux:whip [verb]` | Autonomous-work nudge loop (run / cadence / watchdog). Pure-shell. |
+| End-of-day unblocker pass | `/atmux:bruh` | Sweeps pending decisions / blockers / flags / worktrees in one pass. |
+| Hands-off 15-min `/atmux:bruh` cadence | `/atmux:bruhloop` | Sugar wrapper that arms `/loop 15mins /atmux:bruh …` so the operator doesn't retype the chain. |
+| One-shot team lifecycle | `/atmux:team <verb>` | start / stop / add / clear / cleanup / bootstrap / rotate-lead / rotate-member. Calls `atmux team` verbs underneath. |
+| Session continuity (resume / handoff / preclear / stop) | `/atmux:session <verb>` | Reads / writes `handoff.md`, drives `/clear`-safe boundaries. |
+| Diagnostic across all Claude accounts | `/atmux:budget` | 5h + weekly rate-limit utilization + reset times. Pure-shell + Anthropic API. |
+| Driver → lead durable ask | `/atmux:tell-lead <msg>` | Writes to `.atmux/lead-inbox.md` + best-effort lead-pane wake-up. |
+| Lightweight teammate ping (atmux-injected) | `/atmux:heads-up <event>` | Silent acknowledgement of supervisor injections; folds into next idle turn. |
+| Mergeable epic-team branch sweep | `/atmux:ghostbuster [--dry-run] …` | Merges branches ahead of trunk, deletes fully-merged branches, leaves active worktrees alone. |
+| Full cockpit + cage rebuild | `/atmux:cockpit-rebuild [--no-cycle]` | Same verb as bare `atmux cockpit rebuild`; see §1 + §7 cross-links above. |
+| Fleet-wide diagnose + complain sweep | `/atmux:sweep [run\|once\|dry-run]` | Runs `atmux doctor` + `atmux status --json` across every enabled team, files complaints, takes structural fixes. Persisted host-pressure playbook from [ADR-198](adr/198-medic-host-pressure-playbook.md) is one trigger. |
+
+**Install via the wizard** (primary path, per ADR-217 §D5 / ADR-200 §D6):
+
+```bash
+atmux init                  # Step 6/N offers the skills plugin; accept default [Y]
+# OR re-install after manual deletion:
+atmux init --skills-only
+```
+
+The wizard symlinks `<atmux-source>/plugins/atmux/` → `~/.claude/plugins/atmux/`. A doctor probe (`atmux-skills-plugin`) surfaces yellow when the symlink is missing or `plugin.json` is malformed; info-level when the operator explicitly opted out via `~/.atmux/state/skills-plugin-opted-out`.
+
+**Override with your own dotfiles** (alternate path — operators who maintain customised skill bodies):
+
+Drop a real directory at `~/.claude/plugins/atmux/` instead of accepting the wizard's symlink. The wizard preserves it and prints a notice; your local copy wins. Tradeoff: you opt out of automatic skill-body refreshes on atmux upgrade. Per the `feedback_claude_skills_dotfiles_territory` memory, the dotfiles-resident variant remains the right home for operator-flavored bodies that reference personal hosts/paths/accounts; the bundled plugin is the *generalized* public surface.
+
+## §10 — Team rename (`atmux team rename`)
+
+Operator-side surface for renaming a team atomically across every place the team-name appears: `team.json:.name` + tmux session + cockpit team-viewer window + cron markers + the single-session capture file + the recursive `cockpit.json::sessions[]` tree. The verb is rollback-staged — any step ≥2 failure reverse-walks completed steps; partial-failure state captures at `<projectRoot>/.atmux/state/rename-rollback.log`. Sibling to `atmux team repair-rename` ([ADR-103](adr/103-team-repair-rename.md)) on the recovery side. Full spec: [ADR-027](adr/027-team-rename-verb-and-topology-invariant.md).
+
+### Pre-flight checklist
+
+1. **No in-progress kanban Tasks.** `atmux task list --status in-progress` → expect empty. Mid-flight work would land in indeterminate naming state. Pass `--force` to bypass if the operator accepts the risk; collision + invalid-name refusals stay hard (NOT `--force`-overridable).
+2. **New name doesn't collide.** Cockpit registry DFS-walks `sessions[]` for the proposed new name; any `type: "team"` hit refuses.
+3. **New name matches `[a-z0-9_-]+`.** Lowercase + digits + underscore + hyphen only.
+
+### Verb invocation
+
+```bash
+atmux team rename <new-name> \
+  [--from <old>]              # default: current team's name from team.json
+  [--session <new-session>]   # default: derived via cageSessionName(<new-name>)
+  [--dry-run]                 # print 10-step orchestration plan; no mutation
+  [--force]                   # bypass in-progress refuse only (collision + invalid stay hard)
+  [--force-branches]          # opt-in step 8: also rename <old>-<member> branches → <new>-<member>
+  [--socket <path>]           # cockpit socket override (default per ADR-162: -L atmux-cockpit)
+  [--team-dir <path>]         # project root override
+```
+
+### Convergence verification
+
+`atmux doctor` post-rename runs the [ADR-027 §Decision second half topology invariant check](adr/027-team-rename-verb-and-topology-invariant.md) (post-rename portion — `verifyConvergence` in `src/verbs/team-rename-convergence.ts`). The verb-internal post-rename check also fires automatically before exit; a non-converged result surfaces a row with the suggested fix:
+
+```bash
+atmux doctor
+# expected post-rename: green row for the new team name; no orphan cron block under the old marker.
+```
+
+### Failure recovery
+
+If `team rename` partial-failed AND rollback didn't fully restore state, the sibling recovery verb reconciles file-by-file against the cockpit registry:
+
+```bash
+atmux team repair-rename <name> [--from <last-known-good>]
+```
+
+Inspect `<projectRoot>/.atmux/state/rename-rollback.log` first to identify which orchestration step failed; pass `--from` to skip already-good steps. Do NOT delete the rollback log — it's the audit trail.
+
+### Dogfood reference
+
+End-to-end dogfood pattern on the atmux team itself shipped under EPIC e-1e223687 (T6). The pattern: pick a reversible target (e.g. `atmux` → `atmux-core` then `atmux-core` → `atmux`), capture before/after `tmux list-panes -F '#{pane_pid}'` for PID stability, run `top -b -n 30 -d 0.1 -p $(pgrep -f atmux)` to verify peak RSS during rename < baseline × 1.1, confirm idempotent round-trip.
+
 ## Cross-references
 
 - [ADR-167](adr/167-cockpit-rotate-verb.md) — cockpit rotate verb (Rung C); §Amendment 2026-05-17 documents wrapper-resolver asymmetry + handoff write-path semantics.
 - [ADR-162](adr/162-atmux-owns-tmux-infrastructure.md) — atmux owns its tmux infrastructure (cockpit socket isolation + canonical atmux.conf + version probes).
 - [ADR-135](adr/135-cockpit-naming-convention.md) — cockpit naming convention (`atmux_cockpit` session name, `_-prefix` for default-member windows).
-- [ADR-058](adr/058-cage-tier-isolation.md) — cage-tier isolation (per-team socket layer, unchanged by ADR-162).
+- [ADR-018](adr/018-per-team-tmux-socket-isolation.md) — per-team tmux socket isolation, the cage-tier layer (unchanged by ADR-162).
 - [ADR-047](adr/047-canonical-install-topology.md) — install topology (`/opt/atmux/<version>/templates/`).
 - [ADR-097](adr/097-tmux-abstraction.md) — `TmuxConfig` discriminated union (`socket` + `configFile` fields consumed here).
 - [ADR-163](adr/163-bundled-tmux-binary.md) — bundled tmux binary + version-lock v2 (forward-ref).
 - `templates/tmux/atmux.conf` — canonical 8-option baseline.
 - `src/core/tmux-paths.ts` — `getCockpitSocketName()` + `getAtmuxTmuxConfPath()` resolvers.
 - `src/verbs/cockpit.ts::cockpitMigrateSocket` — the migration verb implementation.
+- [ADR-217](adr/217-atmux-skills-plugin-bundled-and-wizard-installed.md) — atmux skills plugin bundled in `plugins/atmux/` and installed by `atmux init` wizard; defines the `/atmux:` skill namespace (§9 cross-links above).
+- [ADR-198](adr/198-medic-host-pressure-playbook.md) — host-pressure playbook (one trigger inside `/atmux:sweep`).

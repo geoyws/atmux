@@ -98,3 +98,9 @@ Items 1–9 from plan §"Deferred scope" — auto-promotion, `epic report`, whip
 - **Two-tier (Epic + Task only, no Story)** — Simpler schema, but loses the natural review unit. Stories are also optional in this design, so cost is zero if you don't use them.
 - **Three-tier with Sprints** — Adds a time-box layer. Rejected: atmux is event-driven, not time-boxed; sprints are cargo-culted from Scrum and don't fit the operator persona.
 - **SQLite backing store** — See "Data store" above + plan §"Data format". Deferred until profiling justifies.
+
+## Amendment 2026-05-18 — ADR-175 surfaces the §OQ2 reviewer-signoff CLI
+
+[ADR-175](175-story-signoff-verb-and-trunk-direct-merge-mode.md) (`atmux story signoff` verb + `trunk-direct` `mergeMode` field) makes the §OQ2 reviewer-signoff gate settable via CLI and introduces a `mergeMode` branching that skips the `merging` state for trunk-direct stories. The §OQ2 manual-discretion model (reviewer rejects when AC is empty) is unchanged — ADR-175 closes the missing CLI surface that previously forced reviewers to either rely on a planner-side hand-edit of `stories.review_signoff` or fall back to raw SQL bypass (observed on rentx E1, operator-authorized 2026-05-17 13:55 MYT for `s-425249d0` / `s-dc19b96e` / `s-f5797a08` / `s-cb99f131`). Cross-reference: [docs/adr/175-story-signoff-verb-and-trunk-direct-merge-mode.md](175-story-signoff-verb-and-trunk-direct-merge-mode.md).
+
+This is an **append-only amendment header** per the CLAUDE.md append-only ADR rule; the existing ADR-007 body above is canonical and unchanged.

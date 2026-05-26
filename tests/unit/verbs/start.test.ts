@@ -163,9 +163,6 @@ async function runStart(
     /** ADR-063 ergonomic fix (t-ab8df0b4): cockpit reconcile injection. */
     loadCockpitFn?: LoadCockpitFn;
     cockpitReconcileFn?: CockpitReconcileFn;
-    /** t-dcbff97c: inject the cron-install verb so unit tests never
-     *  touch the host crontab. Default = silent no-op (returns 0). */
-    cronInstallFn?: (argv: ReadonlyArray<string>) => Promise<number>;
     /** ADR-089 §D (t-7e7031dc): extra env keys merged on top of the
      *  default test env. Used to exercise ATMUX_NESTING_LEVEL / cockpit
      *  override / ATMUX_NO_CRON paths without polluting `process.env`. */
@@ -182,10 +179,6 @@ async function runStart(
     // dev host (varies per machine) and possibly succeed-with-noise.
     // Opt-in tests override `loadCockpitFn` to inject a fake roster.
     loadCockpitFn: async () => null,
-    // Default the cron-install hook to a silent no-op so legacy tests
-    // that don't care about cron don't shell out to the host crontab.
-    // Tests that DO care override via opts.cronInstallFn.
-    cronInstallFn: opts.cronInstallFn ?? (async () => 0),
   };
   if (opts.gitSpawn !== undefined) startOpts.gitSpawn = opts.gitSpawn;
   if (opts.briefsDir !== undefined) startOpts.briefsDir = opts.briefsDir;
@@ -427,12 +420,14 @@ describe("start — happy path", () => {
     // cockpit.ts and call it after session creation in start.ts.
     //
     // Post-ADR-089 §C (t-7e7031dc): prefix is level-driven, not hard-
-    // coded `C-\`. Without `ATMUX_NESTING_LEVEL` in env, level=1 →
-    // resolvePrefix(1) === "F1" via DEFAULT_PREFIX_CHAIN.
+    // coded `C-\`. Without `ATMUX_NESTING_LEVEL` in env, the default
+    // shifted 1→2 on 2026-05-24 (operator directive — "Fix code to
+    // match ADR §C table"). Standalone start = top-level team cage =
+    // L2 → resolvePrefix(2) === "F2" via DEFAULT_PREFIX_CHAIN.
     await writeTeamJson({ members: [{ name: "alice", role: "member" }] });
     await runStart([], { extraEnv: { ATMUX_NO_CRON: "1" } });
     const opts = await env.tmux.option.showOptions({ global: true });
-    expect(opts.prefix).toBe("F1");
+    expect(opts.prefix).toBe("F2");
   });
 
   test("cage prefix is applied on incremental-restart path too (idempotent) (ADR-089 §C)", async () => {
@@ -446,7 +441,8 @@ describe("start — happy path", () => {
     await env.tmux.option.setOption({ name: "prefix", value: "C-b", global: true });
     expect((await env.tmux.option.showOptions({ global: true })).prefix).toBe("C-b");
     await runStart([], { extraEnv: { ATMUX_NO_CRON: "1" } });
-    expect((await env.tmux.option.showOptions({ global: true })).prefix).toBe("F1");
+    // Default env (no ATMUX_NESTING_LEVEL) → L2 → F2 (see test above).
+    expect((await env.tmux.option.showOptions({ global: true })).prefix).toBe("F2");
   });
 
   test("cage prefix honours ATMUX_NESTING_LEVEL env (level=2 → F2)", async () => {
@@ -1618,133 +1614,6 @@ describe("start — ADR-063 cockpit auto-reconcile", () => {
   });
 });
 
-// ---------- t-dcbff97c: start fires cron-install unconditionally ----------
-
-describe("start — t-dcbff97c cron-install wiring", () => {
-  test("fires cron-install with --quiet + explicit --team-dir on a vanilla team", async () => {
-    await writeTeamJson({
-      members: [{ name: "alice", role: "team-lead" }],
-    });
-    const cronCalls: ReadonlyArray<string>[] = [];
-    const cronInstallFn = async (argv: ReadonlyArray<string>): Promise<number> => {
-      cronCalls.push(argv);
-      return 0;
-    };
-    // Override the harness-default ATMUX_NO_CRON='1' (set at line 79
-    // beforeEach to keep most start tests host-crontab-safe). The cron-
-    // install wiring tests EXPECT the gate to fire — empty string falls
-    // through shouldAutoInstallCron's `noCron !== ''` check at
-    // src/verbs/start.ts:989.
-    const exit = await runStart([], { cronInstallFn, extraEnv: { ATMUX_NO_CRON: "" } });
-    expect(exit).toBe(0);
-    expect(cronCalls).toHaveLength(1);
-    const args = cronCalls[0] ?? [];
-    expect(args).toContain("--quiet");
-    expect(args).toContain("--team-dir");
-    // The --team-dir value MUST be the project root (containing .atmux/),
-    // never the .atmux dir itself — otherwise cron-install would
-    // double-suffix `<atmuxDir>/.atmux/team.json`. Match the rule in
-    // start.ts:679 (`dirname(dir)`).
-    const idx = args.indexOf("--team-dir");
-    expect(idx).toBeGreaterThan(-1);
-    const projectRoot = args[idx + 1];
-    expect(projectRoot).toBeDefined();
-    expect(projectRoot).not.toMatch(/\.atmux\/?$/);
-  });
-
-  test("fires cron-install ALSO under worktreeIsolation=true (no silent skip)", async () => {
-    // Regression guard for t-dcbff97c: the 2026-05-13 overnight death
-    // hypothesised an isolation-gated skip. If a future commit re-adds
-    // such a gate, this test fails.
-    type GitSpawn = import("../../../src/abstractions/worktree.ts").GitSpawn;
-    type SpawnResult = import("../../../src/abstractions/spawn.ts").SpawnResult;
-    const ok = (stdout = ""): SpawnResult => ({
-      exitCode: 0,
-      stdout,
-      stderr: "",
-      argv: [],
-      cmd: "git",
-      signalled: null,
-      durationMs: 0,
-    });
-    const fail = (stderr: string, code = 128): SpawnResult => ({
-      exitCode: code,
-      stdout: "",
-      stderr,
-      argv: [],
-      cmd: "git",
-      signalled: null,
-      durationMs: 0,
-    });
-    await writeTeamJson({
-      members: [
-        { name: "alice", role: "team-lead" },
-        { name: "bob", role: "reviewer" },
-      ],
-      worktreeIsolation: true,
-    });
-    const gitSpawn: GitSpawn = async (argv) => {
-      if (argv.includes("--show-toplevel")) return ok("/srv/fake-repo\n");
-      if (argv.includes("--verify")) return fail("", 1);
-      if (argv.includes("branch")) return ok("geoyws\n");
-      if (argv.includes("list")) return ok("");
-      return ok("");
-    };
-    const cronCalls: ReadonlyArray<string>[] = [];
-    const cronInstallFn = async (argv: ReadonlyArray<string>): Promise<number> => {
-      cronCalls.push(argv);
-      return 0;
-    };
-    // ATMUX_NO_CRON='' overrides the harness default (see vanilla-team
-    // sibling test for context).
-    const exit = await runStart([], {
-      gitSpawn,
-      cronInstallFn,
-      extraEnv: { ATMUX_NO_CRON: "" },
-    });
-    expect(exit).toBe(0);
-    expect(cronCalls).toHaveLength(1);
-    expect(cronCalls[0]).toContain("--quiet");
-    expect(cronCalls[0]).toContain("--team-dir");
-  });
-
-  test("skipped when team.kanban.cronAutoInstall === false (explicit opt-out)", async () => {
-    // shouldAutoInstallCron honors the opt-out; the verb must not be
-    // invoked at all (not even with a no-op). Distinct from the
-    // ATMUX_NO_CRON path which is enforced inside cronInstall itself.
-    const body = {
-      name: env.team,
-      members: [{ name: "alice", role: "team-lead" }],
-      kanban: { cronAutoInstall: false },
-    };
-    await writeFile(join(env.atmuxDir, "team.json"), `${JSON.stringify(body, null, 2)}\n`, "utf8");
-    const cronCalls: ReadonlyArray<string>[] = [];
-    const cronInstallFn = async (argv: ReadonlyArray<string>): Promise<number> => {
-      cronCalls.push(argv);
-      return 0;
-    };
-    const exit = await runStart([], { cronInstallFn });
-    expect(exit).toBe(0);
-    expect(cronCalls).toEqual([]);
-  });
-
-  test("cron-install throw is swallowed — start still returns 0 + logs warn", async () => {
-    // Defense-in-depth: cronInstall is non-fatal internally, but if a
-    // future bug raises an unhandled error, start.ts wraps in try/catch.
-    await writeTeamJson({ members: [{ name: "alice", role: "team-lead" }] });
-    const cronInstallFn = async (): Promise<number> => {
-      throw new Error("simulated cron-install bug");
-    };
-    // ATMUX_NO_CRON='' overrides the harness default (see vanilla-team
-    // sibling test for context).
-    const exit = await runStart([], { cronInstallFn, extraEnv: { ATMUX_NO_CRON: "" } });
-    expect(exit).toBe(0);
-    expect(
-      env.logs.some((l) => l.kind === "warn" && l.msg.includes("cron-install fell through")),
-    ).toBe(true);
-  });
-});
-
 // ---------- t-eb0887fe: parallelized member spawn ----------
 
 import { resolveSpawnConcurrency, runWithConcurrency } from "../../../src/verbs/start.ts";
@@ -1974,7 +1843,6 @@ describe("start — t-eb0887fe parallelized member spawn", () => {
         cwd: env.atmuxDir,
         logger: env.logger,
         loadCockpitFn: async () => null,
-        cronInstallFn: async () => 0,
         briefsDir,
         spawnWaitMs: SLEEP_MS,
         spawnConcurrency: 1,

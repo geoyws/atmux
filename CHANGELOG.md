@@ -7,6 +7,473 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 📐 Architecture alignment — orchd + Honker is the runtime; cockpit roles trimmed (2026-05-24)
+
+Codebase-wide alignment pass after the orchd / Honker session shipped 7 epics:
+
+- **`atmux-orchd` (Rust, `rust/atmux-orchd/`) is the per-team runtime** with 10 in-process event consumers + 4 tickers (5min sweep-merges · 15min context-scan + budget-scan · hourly log-rotate · 24h housekeep). Replaces the legacy cron-fired sweep cadences. atmux NEVER writes to crontab per [ADR-233](docs/adr/233-cron-auto-install-disabled-trust-orchd.md); the source-side cron-install path was retired in commit `8e052e9`, with no-op shims at `src/abstractions/crontab.ts` / `src/core/cron.ts` / `src/verbs/cron-{install,remove}.ts` / `src/core/cursor-recipes/fix-cron-pollution.ts` kept for build-compile until importers migrate (commit `374ca7a`).
+- **Honker = in-DB messaging substrate** per [ADR-202](docs/adr/202-honker-in-db-messaging-substrate.md) + [ADR-203](docs/adr/203-event-topic-taxonomy.md). `emit(db, payload)` in `src/abstractions/events.ts` auto-detects honker-loaded state per the ADR-202 §Amendment 2026-05-24. Rust orchd dispatches via Bun `--handle-one --consumer-id <id> --topic <t>` per event; consumers register at `bootstrapOrchd` in `src/core/orchd-bootstrap.ts` (currently 10 entries).
+- **Cockpit roles trimmed (lead-gated retirements):**
+  - **Sentinel retired** per [ADR-211](docs/adr/211-retire-sentinel-role-distribute-to-honker-consumers.md) — orchd consumers absorb observation.
+  - **Medic narrowed to on-demand `atmux medic diagnose <team>`** per [ADR-212](docs/adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md) — routine rotation candidate emission flows as events to lead.
+  - **Jury retired** per [ADR-213](docs/adr/213-retire-jury-reviewer-absorbs-acceptance-criteria.md) — reviewer absorbs Acceptance-Criteria verification.
+  - **Ombudsman retired** per [ADR-214](docs/adr/214-retire-ombudsman-lead-absorbs-complaint-adjudication-via-honker.md) — `complaint.filed` → consumer → `tell-lead` → lead.
+  - Retired roles continue running as the safety net until the cleanup-EPIC cutover (≥30 days after `e-honker-observation-watchdogs` ships stable per ADR-212 §D5 / ADR-213 §D5 / ADR-214 §D7).
+- **New consumers shipped this session:**
+  - `atmux:complaint-consumer` (ADR-214 / e-92b8fa97, commit `079098c`) — wires `complaint.filed` → tell-lead.
+  - `atmux:rotation-consumer` (ADR-212 / e-cc3728bf, commit `89ebbc5`) — wires `member.context-high` → tell-lead.
+- **New orchd subverbs shipped this session:**
+  - `atmux orchd --sweep-merges` (e-11-446429c9, commit `dab3935`) — 5-min in-process backfill sweep.
+  - `atmux orchd --scan-context` (e-13-04c8b3bf, commit `72896a6`) — emits `member.context-high`.
+  - `atmux orchd --scan-budget` (e-14-0f156732, commit `e70ba9e`) — 15min consolidated band-warning + refresh-soon dedup.
+  - `atmux orchd --housekeep` (e-12-640853f3 §S4, commit `8980a3f`) — 24h events / offsets / logs / merger_state prune.
+- **Cross-cuts:** doc-side alignment notes added to `docs/PRD.md`, `docs/ARCHITECTURE.md`, `docs/medic.md`, `docs/RUNBOOK-stall-recovery.md`, `docs/RUNBOOK-team-of-teams.md`. Stale `cron-fired` / `Cron-fired` source-comment heads on `src/verbs/lane-stall-tick.ts`, `src/verbs/lane-drift-check.ts`, `src/verbs/discorder.ts`, `src/core/discorder.ts`, `src/core/queued-text-resubmit.ts`, `src/core/groom-archive.ts` re-pointed to orchd / operator-on-demand. `checkCronBlock` doctor probe in `src/verbs/doctor.ts` re-framed as legacy opt-in (zero cron blocks is now the canonical post-ADR-233 state). Cron-shim files NOT removed — load-bearing for build until importers (`src/verbs/{cockpit,topo-io,stop,team-rename,team-repair-rename,doctor,poke,start}.ts` + `src/core/{soft-stop,topo-aggregate,orchd-housekeep,orchd-merge-sweep}.ts`) migrate; that's its own cleanup-EPIC.
+
+### ✨ Added — `resolveTmuxBin()` 3-tier resolver + `vendored-tmux-binary` doctor probe (ADR-191, e-162046c7)
+
+First half of the vendored-tmux ship — the source-side resolution chain lands before the build-side install pipeline so the runtime is ready for the binary the moment `build:install` learns to ship it.
+
+- **Resolver helper**: new `src/core/resolve-tmux-bin.ts::resolveTmuxBin()` walks `ATMUX_TMUX_BIN` (operator override) → `/opt/atmux/current/bin/tmux` (vendored) → system `tmux` on PATH (warn-once on fallback). Per-process memoization avoids re-probing the filesystem on every tmux spawn; the warn-once dedup keeps the fallback message out of high-frequency call paths. Injectable env / existsSync / warn / state seams mirror `resolveDefaultListenerBinary` for test parity. 100% line + func coverage in `tests/unit/core/resolve-tmux-bin.test.ts`.
+- **Call-site migration**: every `cmd: "tmux"` literal in production code routed through `resolveTmuxBin()` — `src/abstractions/tmux.ts` (3 spawn primitives), `src/abstractions/fallback-cage.ts` (Tier-3+ sudo spawn + capture-pane + kill-session), `src/verbs/poke.ts` (paste-buffer load/paste), `src/verbs/doctor.ts` (tmux-version probe family), `src/core/cursor-recipes/fix-supervisor-missing.ts` (list-windows detect).
+- **Doctor probe** `checkVendoredTmuxBinary` (src/verbs/doctor.ts): yellow row `vendored-tmux-missing` when `/opt/atmux/current/bin/tmux` is absent (operators see the fallback signal explicitly) + `vendored-tmux-version-drift` when present-but-not-3.6a. Self-clearing post-install. 7 unit tests cover all branches.
+- **Operator-facing**: `ATMUX_TMUX_BIN` documented in README §Configuration. Build:install pipeline extension (DoD #1) lands separately — gated on operator/driver authorization since it sudo-touches `/opt/atmux/` on live deploys.
+
+Cross-refs: [ADR-191](docs/adr/191-vendored-tmux-binary.md) §Implementation status (this commit), [ADR-162](docs/adr/162-cockpit-socket-isolation.md) (complementary tmux-infra ownership), [ADR-163](docs/adr/163-bundled-tmux-3.6a.md) (pin reference).
+### ✨ Added — orchd Phase 2: auto-spawn loop + solo-worker auto-dissolve ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md), EPIC `e-60e16169` Story S3, t-18-b2ca7178)
+
+orchd Phase 2 wires three handlers on top of Phase 1's subscription seam ([ADR-224 §D6](docs/adr/224-orchd-rename-and-auto-spawn-loop.md)):
+
+- **spawn handler** subscribes to `epic.ready` + `epic.unblocked` (NOT `epic.added` — avoids eligibility-refusal burn); spawns the epic-team when `autoSpawn=true` AND `epicIsEligible` ([ADR-225](docs/adr/225-epic-dependencies-and-is-ready-toggle.md)) AND `spawned_at IS NULL`. Registers twice with distinct consumerIds (`atmux:orchd:spawn:on-ready` / `:on-unblocked`) so per-topic Honker offsets stay independent.
+- **solo-worker dissolve handler** subscribes to `task.done`; dissolves solo-worker teams ([ADR-221 §Phase 2](docs/adr/221-solo-worker-scope.md) close-out) when their only owned task transitions to `done`. Shares the `task.done` topic with auto-merge (ADR-226) — distinct consumerIds isolate offsets.
+- **`--sweep` cron backstop** (default `*/5 * * * *`, configurable via `team.json::autoSpawn.sweepCron`) walks eligible epics + solo-workers; reuses canonical handlers per ADR-231 §D4 (NOT duplicate logic).
+
+Per-epic config home: `epics.extra.autoSpawn = { enabled: boolean, roster?: string, forceSpawn?: boolean }`. Set via `atmux epic add --auto-spawn / --no-auto-spawn / --roster <r> / --force-spawn` flags. Per-team policy: `team.json::autoSpawn.defaults[]` regex-match against `epic.title`; per-epic explicit wins. Default: off.
+
+3-way failure classification per ADR-231 §D5: **hard** (flag p1 + `extra.spawnFailed` receipt + NO retry); **host-pressure transient** (counter on `extra.spawnPressureDeferred`; ≥3 → distinct `host-pressure-deferred` flag p1 — operator triages "wait for capacity" separately from "fix config"); **eligibility-race** (silent — next `epic.ready` / `epic.unblocked` event re-fires the handler).
+
+Phase 2 ships behind opt-in (autoSpawn default off) — no existing epic gets auto-spawned without explicit per-epic OR per-team opt-in. Operators continue running `atmux team spawn-epic` manually where autoSpawn=false. Rollback: drop entries from `ORCHD_SUBSCRIPTIONS` + restart orchd → relay-only behaviour; `epics.spawned_at` column stays in place (additive migration per [ADR-126](docs/adr/126-sqlite-state-store.md)).
+
+Per-Task ship trail (each linked below): t-6 (v15→v16 migration, dedup column), t-7 (Zod KanbanEpic.extra.autoSpawn sub-shape), t-8 (Zod team.json autoSpawn.defaults[] + sweepCron), t-9 (epic add CLI flags), t-10 (sweep walker scaffold), t-11 (`atmux orchd --sweep` subverb), t-12 (cron sandwich-marker line), t-13 (failure classifier), t-14 (spawn handler), t-15 (solo-worker dissolve handler), t-16 (S3.1 unit-test scaffolding), t-17 (S3.2 integration trigger matrix), t-18 (this docs sweep).
+
+### ✨ Added — `epics.spawned_at` v15→v16 SQLite migration ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D2 + §D7, EPIC `e-60e16169` Phase 2 Story S1, t-6-8db78adf)
+
+`ALTER TABLE epics ADD COLUMN spawned_at INTEGER` — the canonical dedup gate column read by `spawnEpicHandler` (§D2 step 2) so re-delivered events under at-least-once semantics short-circuit instead of double-spawning. Sequenced AFTER ADR-228 spawn_queue v14→v15 (sibling EPIC e-a946af69 fan-in 8d75360) per the single-ladder append-only invariant of [ADR-126](docs/adr/126-sqlite-state-store.md) — renumbered from the original v14→v15 at impl time. NULL = "never spawned"; positive integer = Unix-epoch seconds set on orchd spawn-success. Additive only; rollback is a no-op (handler skips on Phase 2 disable).
+
+### ✨ Added — Zod `KanbanEpic.extra.autoSpawn` + `spawnedAt` sub-shape ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D2 + §D3, EPIC `e-60e16169` Phase 2 Story S1, t-7-0ad1dfe3)
+
+Extends `src/schema/kanban.ts` `KanbanEpic` with the per-epic orchd auto-spawn config home + the dedup-gate timestamp mirror. `extra.autoSpawn = { enabled: boolean, roster?: string, forceSpawn?: boolean }` types the typed sub-shape inside the `extra` passthrough slot; outer `extra` stays `.passthrough()` for forward-compat sibling keys. Top-level `spawnedAt: z.number().int().nullable().optional()` mirrors the SQLite column from t-6's migration. 7 new schema tests; 100% line + funcs coverage on the kanban schema.
+
+### ✨ Added — `orchdSweep` walker scaffold + handler-reuse seam ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D4, EPIC `e-60e16169` Phase 2 Story S2, t-10-ab3815cf)
+
+`src/core/orchd-sweep.ts::orchdSweep(atmuxDir, deps)` — one-shot walker matching ADR-231 §D4's two-trigger model (event-driven primary via Honker subscriptions + cron-backstop secondary via this walker). Cheap pre-filter: `spawned_at IS NOT NULL` skip (§D2 dedup) → `effectiveAutoSpawn(epic) === false` skip (§D3) → `epicIsEligible().eligible === false` skip (ADR-225). Survivors hit the canonical `spawnEpicHandler` (NOT a re-implementation — invariant per the AC). Solo-worker walk reuses `dissolveSoloWorkerHandler` per epic team. Returns `{epicsConsidered, epicsSpawned, workersConsidered, workersDissolved}` counters surfacing walker observations + handler verdicts independently. Test-injection seam `OrchdSweepDeps` pins each surface for deterministic counter assertions.
+
+### ✨ Added — orchd Phase 2 unit-test scaffolding harness ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md), EPIC `e-60e16169` Phase 2 Story S3, t-16-27fdc08b)
+
+Four reusable test fixtures under `tests/helpers/` consumed by the Phase 2 handler unit tests (t-14 / t-15) and the integration trigger-matrix test (t-17):
+
+- `honker-mock.ts` — `HonkerMock` registers `OrchdSubscription` entries, publishes synthetic events, drains per-consumer with at-least-once semantics (offset advances ONLY on handler-success; throw → next drain re-delivers). Matches the real Honker subscription contract pinned by `src/core/orchd-registry.ts` (consumerId-based offsets, multi-handler-per-topic support).
+- `kanban-fixtures.ts` — `seedEpic({...})` + `seedTask({...})` builders round-trip through the real `KanbanEpic` / `KanbanTask` Zod schemas. `autoSpawn` rides under `extra.autoSpawn` (ADR-231 §D3 shape, t-7); `spawnedAt` at top level (ADR-231 §D2 dedup column, t-6). No test-only field shapes.
+- `spawn-epic-subprocess-stub.ts` — `createSpawnEpicStub()` intercepts `atmux team spawn-epic` invocations; default `SUCCESS_RESULT` (exit 0); polls to `HOST_PRESSURE_RESULT` / `ELIGIBILITY_RACE_RESULT` / `HARD_FAILURE_RESULT` with canonical stderr fixtures matching the t-13 classifier regexes verbatim. `setResultSequence()` for transient-then-success scenarios. Records every invocation in call order.
+- `atmux-flag-spy.ts` — `createFlagSpy()` captures `atmux flag add` calls with message + severity + needs + taskId. `findByMessage` (string / RegExp) for assertion against §D5 hard-failure + host-pressure-deferred flag paths.
+
+20 smoke tests verify each helper works in isolation under bun:test; 100% line coverage on the consumed schema surface.
+
+### ✨ Added — orchd Phase 2 integration trigger-matrix test ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md), EPIC `e-60e16169` Phase 2 Story S3, t-17-d41f607f)
+
+End-to-end integration coverage of the Phase 2 surface at `tests/integration/orchd-phase2-trigger-matrix.test.ts` — drives the full path Honker event (via `HonkerMock`) → production handler (`createSpawnEpicHandler` / `createDissolveSoloWorkerHandler` / `orchdSweep`) → SQLite mutation (`spawned_at`, `extra.spawnFailed`, `extra.spawnPressureDeferred`) → `atmux flag add` emission (via `FlagSpy`). Wires the S3.1 scaffolding (t-16) through a shared spawn router that dispatches `atmux team spawn-epic` → SpawnEpicStub, `atmux team dissolve-worker` → inline DissolveStub, `atmux flag add` → FlagSpy; an `unrouted` channel captures argv shapes the router doesn't recognise (regression guard for future subprocess additions).
+
+Per-scenario isolation: fresh in-memory SQLite + migrations + stub/spy instances per `beforeEach`. atmuxDir is a sentinel `mkdtemp` path; `listEpics` + `epicIsEligible` are dep-injected so nothing touches the host's real `.atmux/`. 21 tests / 96 assertions cover the 7 AC scenarios (event-only success, cron-only success, both-fire dedup, eligibility-race classifier, host-pressure deferred ≥3, hard failure, solo-worker dissolve) plus handler-level dedup, silent-skip branches (row-missing / autoSpawn-off / pre-spawn eligibility-held), forceSpawn bypass, spawn-throws hard-flag path, dissolve silent-skip (task-missing / non-solo / pending-work), and cross-class invariants confirming canonical stderr fixtures stay in sync with the t-13 classifier regexes. Coverage: spawn handler 90% lines, dissolve handler 68%, classifier 100%.
+
+### ✨ Added — orchd auto-spawn handler + effectiveAutoSpawn resolver ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D2 + §D3, EPIC `e-60e16169` Phase 2 Story S2, t-14-c27cdce1)
+
+New `src/core/orchd-spawn.ts` exports `createSpawnEpicHandler` + `effectiveAutoSpawn`. Implements the ADR-231 §D2 5-step algorithm: (1) load epic + row-missing skip; (2) `spawned_at IS NOT NULL` dedup gate; (3) `effectiveAutoSpawn(epic, team)` opt-in gate; (4) ADR-225 `epicIsEligible` predicate gate (bypassed by `forceSpawn=true`); (5) `atmux team spawn-epic <epicId> --from <parentTeam> [--roster X] [--force-spawn]` subprocess with 3-way result classification via `classifySpawnFailure` (t-13): exit 0 → stamp `spawned_at = unixepoch()`; hard → write `extra.spawnFailed = {at, stderrTail}` + `atmux flag add --severity p1 --needs unblock` + NO retry; host-pressure → increment `extra.spawnPressureDeferred`; emit `host-pressure-deferred` flag at ≥3; cron `--sweep` retries; eligibility-race → silent skip (next event re-fires).
+
+`effectiveAutoSpawn(epic, team)` implements §D3 precedence: per-epic explicit `extra.autoSpawn.enabled` (true OR false) wins → per-team `team.json::autoSpawn.defaults[]` first-match (regex tested against `epic.title`) → default off. Pure helper — no I/O, exported for the cron `--sweep` walker to consume (T-S2.1 stub replaceable).
+
+Wired into `src/core/orchd-bootstrap.ts`: TWO new subscriptions register on the same handler factory — `atmux:orchd:spawn:on-ready` (topic `epic.ready`) + `atmux:orchd:spawn:on-unblocked` (topic `epic.unblocked`). Per-topic consumerIds keep Honker offsets independent so a backlog on one topic doesn't shadow the other. `BootstrapOrchdDeps.spawnDeps` is the wire-up seam; absent → factory builds a stub returning `skipped-row-missing` (safe no-op pre-wire). Committer.ts `--drain` injection passes `{atmuxDir, team}` for the production path.
+
+Adjacent infrastructure fix: `src/core/repositories/kanban-repo.ts` extended to surface the `spawned_at` column (added in t-6's v15→v16 migration but missed from `EpicRow` + `epicFromRow` + `epicToRow` + `upsertEpic` SQL — `getEpic` would return `spawnedAt: undefined` defeating the §D2 step-2 dedup gate). Now read-write round-trips correctly; `KNOWN_EPIC_FIELDS` gains `spawnedAt` so it's NOT folded into `extra`.
+
+23 new unit tests at `tests/unit/core/orchd-spawn.test.ts` cover the full §D2 branch matrix (9 §D2 outcomes incl. spawn-throw + forceSpawn-bypasses-eligibility), §D3 precedence (per-epic-true wins, per-epic-false wins, per-team first-match, per-team second-entry, no-match-off, team-absent, empty-title, invalid-regex-graceful), and idempotency on re-delivery. 2 new bootstrap tests pin the 6-subscription canonical order + distinct spawn-handler consumerIds (was 4, +2 for spawn:on-ready + spawn:on-unblocked). 100% line coverage on the new handler module.
+
+### ✨ Added — `atmux orchd --sweep` cron-line emit ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D4, EPIC `e-60e16169` Phase 2 Story S2, t-12-f4c1becb)
+
+The team-cron sandwich-marker block ([ADR-026](docs/adr/026-tmux-session-and-cron-lifecycle.md) + [ADR-192](docs/adr/192-cron-arm-idempotency-contract.md)) now emits one new always-on line — `<cadence> atmux orchd --sweep` — between the existing `orchd --drain` and `epic-merge tick` lines. Wires the cron-backstop half of ADR-231's two-trigger model (event-driven primary via Honker `epic.ready` / `epic.unblocked` subscriptions; cron backstop for socket churn / NOTIFY gaps / orchd restart-induced wake loss). Cadence resolves from `team.json::autoSpawn.sweepCron` (schema-loose-validated 5-field cron string, t-8-3328eb57) with default `'*/5 * * * *'` — both standard `*/N` patterns and richer non-divisor expressions (`7,37 9-17 * * 1-5`) pass through verbatim since the cron line bypasses the divisor-restricted `cronEvery()` helper. `atmux start` writes the new line; `atmux stop` removes it via existing sandwich-marker semantics (no new cleanup code). 7 new unit tests at `tests/unit/core/cron.test.ts`: default cadence, sweepCron override, non-divisor patterns, fallback-without-sweepCron, env-prefix parity, renderCronBlock containment, ADR-192 idempotence. Golden file regenerated (`tests/golden/cron-block.txt`), `orderedVerbs` pin updated.
+
+### ✨ Added — `atmux orchd --sweep` CLI subverb ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D4, EPIC `e-60e16169` Phase 2 Story S2, t-11-84fced39)
+
+One-shot cron-backstop walker subverb on the `atmux orchd` CLI. Wraps `orchdSweep(atmuxDir)` from `src/core/orchd-sweep.ts` (sibling t-10) and prints the `{epicsConsidered, epicsSpawned, workersConsidered, workersDissolved}` counters JSON to stdout per ADR-231 §D4 cron-line + Discord summarization needs (T-S2.3). `--sweep` and the bare positional `sweep` both parse; `--once` reuses the existing flag (consistent with `--drain`). Exit code 0 on any clean sweep (counter values are walker observations, not failure conditions); non-zero only on unrecoverable setup throws (atmuxDir unresolvable, etc.) — the walker itself swallows per-handler errors per its own contract. 6 new unit tests at `tests/unit/verbs/orchd.test.ts` cover parser (`--sweep`, `sweep`, `--team-dir`, `--once`, last-wins-on-mixed-subverb) and dispatch routing (orchdSweep invoked with resolved atmuxDir, counters JSON written to stdout) via `bun:test`'s `mock.module` seam.
+
+### 🟢 Fixed — orchd cross-cage dispatcher seams (ADR-232 §D2.a + c477954 wire-up regression, t-20-91595e35 + t-21-8c0b2bfd)
+
+Sweep across all three dispatchers (`epic-merge`, `dissolve-epic`, `git-push`) to add the [ADR-232 §D2.a](docs/adr/232-orchd-cross-cage-dispatcher-seam.md) routing-semantics guards + heal the c477954 wire-up regression that reviewer flagged. Two-part fix:
+
+- **c477954 typecheck regression — 10 errors cleared in `src/core/orchd-dispatch/epic-merge.ts` + paired tests.** Dropped `DispatchEpicMergeResultSchema.parse(...)` wrapping on returns — output type was already enforced by the function return type, and the Zod parse adds `| undefined` to optional fields under `exactOptionalPropertyTypes:true` (5 src errors). Tests refactored to use a captured-object pattern (`const captured: {epicId?: string; cage?: CageInfo} = {}`) instead of `let x: T | null = null` closure mutation — Bun's TS narrowing collapses the latter to `null` literal at assertion sites (4 test errors). Removed the unused `@ts-expect-error` directive at the empty-string input boundary (the value is TS-valid but Zod-invalid; refine reject at runtime, no TS error to suppress).
+- **c477954 wire-up gap — `committer.ts:450` now injects `localTeamName: ctx.team.name`.** The default `resolveCage` still returns `null` (real cage-registry walker deferred), but the dispatcher's cage-not-found path is now QUIET — `skipped-not-mine` without `flag-add`. Pre-fix the dispatcher flag-spammed on every `task.done` event (because every invocation hit the unwired-resolveCage path), which was actively WORSE than the pre-c477954 silent-stub default. Regression-pinned at `tests/unit/core/orchd-dispatch/epic-merge.test.ts::"default resolveCage (unwired) → quiet skipped-not-mine on every event"`.
+- **ADR-232 §D2.a anti-pattern guard added to `dispatchEpicMerge` + `dispatchDissolveEpic`.** Refuses `targetCage` values matching the epicId shape `/^e-\d+-[0-9a-f]+$/` at the dispatcher boundary — catches the e874291-flagged anti-pattern of aliasing an epicId as a cage name. Returns `{state: "gate-held", reason: "...looks like an epic id..."}` (epic-merge) or `{state: "skipped-not-mine", reason: "..."}` (dissolve-epic) with explainers pointing to ADR-232 §D2.a so the operator immediately sees the intent. `dispatchGitPush` already takes `cage: string` (no `epicId` field) so it's structurally compliant without a new guard.
+- **ADR-232 §D2.a local-cage-skip guard added to `dispatchEpicMerge`.** When `cage.name === localTeamName`, dispatcher returns `{state: "skipped-not-mine", reason: "local-cage-already-owns..."}` immediately — prevents the self-dispatch loop the amendment forbids (the in-cage `atmux epic-merge tick` cron path is the canonical local invocation point per ADR-091; dispatcher's job is parent → child fan-out only). `dispatchDissolveEpic` + `dispatchGitPush` retain the existing local-fire semantic because they're the canonical impl invocation (no separate in-cage handler pre-fires) — noted in a per-dispatcher code comment so the reviewer sees the deliberate distinction.
+
+Test surface: 39 epic-merge tests (added §D2.a + cage-not-found regression coverage), 19+2 dissolve-epic tests (added anti-pattern + legitimate-cage-name §D2.a coverage). 100% line + funcs coverage on `src/core/orchd-dispatch/epic-merge.ts`. Typecheck globally green post fan-in with fe-2's tests/helpers fix at 5282fdc.
+
+### ✨ Added — `atmux epic add` auto-spawn CLI flags ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D3, EPIC `e-60e16169` Phase 2 Story S1, t-9-1060b4c7)
+
+Four new flags on `atmux epic add` populate the per-epic `extra.autoSpawn` Zod sub-shape landed in t-7-0ad1dfe3 (KanbanEpic schema, ADR-231 §D3 §Schema):
+
+| Flag | Effect |
+|---|---|
+| `--auto-spawn` | sets `extra.autoSpawn.enabled = true` (orchd will spawn this epic-team automatically once ADR-225's eligibility predicate flips) |
+| `--no-auto-spawn` | sets `extra.autoSpawn.enabled = false` (explicit opt-out — overrides per-team defaults match in T-S1.3) |
+| `--roster <name>` | sets `extra.autoSpawn.roster = <name>` (e.g. `solo`, `backend-heavy`); requires `--auto-spawn` |
+| `--force-spawn` | sets `extra.autoSpawn.forceSpawn = true` (passes `--force` to `atmux team spawn-epic` — bypasses ADR-225's eligibility predicate); requires `--auto-spawn` |
+
+Mutex enforcement at parse time (caller sees the error before any DB write):
+- `--no-auto-spawn` + `--force-spawn` → UsageError (mutually exclusive — `--no-auto-spawn` opts OUT of orchd spawn, `--force-spawn` opts IN bypassing predicates).
+- `--roster` without `--auto-spawn` → UsageError (roster picks the member set orchd spawns; with auto-spawn off it has no effect).
+- `--force-spawn` without `--auto-spawn` → UsageError (force only affects the orchd-driven spawn path).
+
+No flags → no `autoSpawn` key written; epic falls back to per-team defaults match (T-S1.3) OR off.
+
+Wire-up: `parseAddArgs` captures the flags + does the mutex walk; `epicAdd` plumbs through `AddEpicOpts.autoSpawn`; `addEpic` (src/core/epic.ts) folds the sub-shape into the inserted row's `extra.autoSpawn` slot. Round-trip through the kanban-repo's JSON-extra spillover bag stays forward-compatible with future per-epic config classes via `extra.passthrough()`.
+
+Tests: 11 new cases at `tests/unit/verbs/epic.test.ts` — 6 pure-parse (single flags, combo, no-flags-undefined) + 5 mutex-error + 1 missing-value + 5 verb-dispatch round-trip (CLI → showEpic readout). 80/80 epic tests green; 93.75% func / 87.48% line coverage on `src/verbs/epic.ts`.
+
+Out of scope (separate Tasks):
+- `team.json::autoSpawn.defaults[]` per-team fallback (T-S1.3 — already shipped per CHANGELOG entry below).
+- spawn-handler read-side that consults `extra.autoSpawn.enabled` + `spawnedAt IS NULL` (T-S2.5).
+
+### ✨ Added — `dissolveSoloWorkerHandler` + `isSoloWorkerTeamName` orchd auto-dissolve for solo workers ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D6 + [ADR-221](docs/adr/221-solo-worker-scope.md) §Phase 2, EPIC `e-60e16169` Phase 2 Story S2, t-15-6a65eadb)
+
+Closes ADR-221 §Phase 2 auto-dissolve. New `src/core/orchd-dissolve-solo-worker.ts` exports `dissolveSoloWorkerHandler` (created via `createDissolveSoloWorkerHandler({db, …})`) + `orchdDissolveSoloWorkerConsume` (consumer surface mirroring `orchd-merge.ts` + `orchd-dissolve.ts` so operators learn one factory shape). Subscribes to `task.done` with consumerId `atmux:orchd:dissolve-solo-worker` — distinct from parent's `atmux:orchd:auto-merge` (same topic, isolated by Honker per-consumer offsets per ADR-202 §VIII).
+
+Algorithm per ADR-231 §D6:
+1. Load task row defensively (race-deleted → `skipped-task-missing`).
+2. Classify owning team via `isSoloWorkerTeamName` (`team.name.startsWith("w-")` per ADR-221 §v2 line 72) — exported separately from `src/core/solo-worker.ts` so future tooling (status display, complaint adjudicator) reuses one canonical predicate.
+3. Enumerate the owning member's remaining open tasks — any pending → `skipped-pending-work`.
+4. Spawn `atmux team dissolve-worker <event.team>` — exit-0 → `dissolved`; non-zero or spawn-throw → `escalated` + `atmux flag add --severity p1 --needs unblock` with stderr tail (≤500 chars) in body. NO retry per ADR-231 anti-retry-storm doctrine.
+
+Bootstrap wire-up at `src/core/orchd-bootstrap.ts` registers the new subscription alongside the three existing (merge / dissolve / push); `BootstrapOrchdDeps.dissolveSoloWorkerDeps` is the test/operator override seam. 19 unit tests cover all 5 outcomes (incl. happy-path + 4 skip variants + escalated with stderr/stdout/throw/swallow-on-flag-fail), idempotency on re-delivery, and the consumer-surface (Honker kill-switch, default handler, escalated counter, custom consumerName). Bootstrap tests updated to expect 4 subscriptions (was 3) — including a regression check that `dissolve-solo-worker` shares `task.done` with auto-merge but has a distinct consumerId.
+
+ADR-231 §D6 + §D7 amended same-commit: §D6 step 4 corrected (`atmux team stop --team <name>` → `atmux team dissolve-worker <id>`; the original verb form doesn't exist in the codebase, per ADR-221 §v2 line 68 which always intended `dissolve-worker` for auto-dissolve); §D7 file-layout row renamed (`orchd-dissolve.ts` → `orchd-dissolve-solo-worker.ts` — sibling EPIC `e-a946af69` fan-in 8d75360 already shipped Phase 4 epic-team auto-dissolve at the original path, so this handler takes the `-solo-worker` suffix to avoid collision). 100% line + funcs coverage on the new handler module + classifier.
+
+### ✨ Added — `classifySpawnFailure` orchd spawn-epic recovery classifier ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D5 + [ADR-184](docs/adr/184-host-wide-epic-team-cap-queue-and-dormancy-audit.md), EPIC `e-60e16169` Phase 2 Story S2, t-13-2f8b0d92)
+
+New pure helper `src/core/orchd-spawn-classify.ts` exports `classifySpawnFailure(stderr): 'hard' | 'host-pressure' | 'eligibility-race'` — the 3-way result classifier the spawn handler (T-S2.5) consumes to decide recovery posture per ADR-231 §D5:
+
+- `host-pressure` (`/host-wide cap \(\d+\) reached/`) — ADR-184 refusal signature; handler increments `spawnPressureDeferred` and lets cron `--sweep` retry.
+- `eligibility-race` (`/eligible=false: /`) — ADR-225 predicate refusal signature; handler exits silently and the next `epic.ready` / `epic.unblocked` event re-fires.
+- `hard` (default) — any other non-zero exit; handler writes `epics.extra.spawnFailed` + raises `atmux flag add` + NO retry per ADR-231 anti-retry-storm rationale.
+
+Precedence: when BOTH transient signatures appear in the same stderr blob, host-pressure wins — the more severe operator signal, and the safer fallback when ambiguous (capacity exhaustion ought to surface louder than predicate refusal). Whitespace-tolerant between `host-wide`, `cap`, and the digit group so spawn-epic wrapper formatting drift doesn't silently degrade to `hard`. 16 unit tests cover each class, partial-match boundary cases, empty stderr, multiline blob, and the precedence ordering in both orders. 100% line + funcs coverage on the new module.
+
+### ✨ Added — `team.json::autoSpawn` Zod schema ([ADR-231](docs/adr/231-orchd-auto-spawn-and-solo-worker-dissolve.md) §D3 + §D4, EPIC `e-60e16169` Phase 2 Story S1, t-8-3328eb57)
+
+New optional `autoSpawn` block on the top-level Team schema (`src/schema/team.ts`) — config home for orchd's `spawn-epic` handler per ADR-231 §D3:
+
+- `defaults[]` — first-match-wins routing table; each entry is `{ match: string (regex source, validated via `new RegExp(match)` in a `z.string().refine` so unparseable patterns are caught at schema-parse time), roster: string, autoSpawn: literal true (typo-catch for opt-out-by-mistake), forceSpawn?: boolean }`. Per-epic explicit `extra.autoSpawn.enabled` always wins per ADR-231 §D3 resolution precedence; this array is the operator's fallback "anything matching X gets auto-spawned with roster Y".
+- `sweepCron` — operator override for the `atmux orchd --sweep` cadence (ADR-231 §D4 OQ-C). Default `*/5 * * * *` is applied at the cron-emission site, NOT here — schema validation is loose (5-field whitespace-separated string presence only) so misshapen cron strings surface at the sandwich-marker emission code's richer parser rather than refusing the whole team.json parse.
+
+Resolution-precedence logic (per-epic explicit > per-team defaults[] first-match > off) lives in `effectiveAutoSpawn()` (out of scope here — Task T-S2.5). Per-epic `epics.extra.autoSpawn` Zod schema lives on the kanban side (out of scope here).
+
+20 new unit tests at `tests/unit/schema/team.test.ts` cover: entry-shape (well-formed, optional forceSpawn, invalid regex, autoSpawn-false typo-catch, empty match/roster, strict unknown-keys); block-shape (empty, multi-entry order, sweepCron 5-field accept, 3-field reject, empty reject, whitespace-pollution reject, strict unknown-keys, invalid-entry-rejects-whole-block); Team-level integration (full-shape parse, back-compat absent, malformed regex via Team.parse, malformed cron via Team.parse, coexists with autoPush). 100% line + funcs coverage on `src/schema/team.ts`.
+
+### 🔄 Changed — orchd auto-dissolve subscriber now routes through `dispatchDissolveEpic` + `dissolveEpic` factored into `src/core/` ([ADR-232](docs/adr/232-orchd-cross-cage-dispatcher-seam.md) §D1, EPIC `e-60e16169` Phase 2 Story S0, t-4-d75fb776)
+
+Two-step landing:
+
+- **Factor.** `dissolveEpic` body extracted from `src/verbs/team/dissolve-epic.ts` into `src/core/dissolve-epic.ts::performDissolveEpic({epicId, skipChecks, forcePrune}, opts)` so the cross-cage dispatcher invokes the same pipeline without re-walking argv. Same factoring pattern as `performEpicMerge` per ADR-091. The CLI verb file shrinks to a thin wrapper (~98 lines from ~613) that parses argv + delegates; helper exports (`defaultCageTeardown`, `deleteMergedEpicBranch`, `DissolveEpicOpts`) re-export through the verb file so existing test imports stay unmodified — no behavior change to `atmux team dissolve-epic` CLI verb (same exit code, same stdout shape, same `ConfigError` throws).
+- **Wrap.** New `src/core/orchd-dispatch/dissolve-epic.ts` exports `dispatchDissolveEpic({ epicId, targetCage? })` — the cross-cage dispatcher seam consumed by parent's ADR-227 auto-dissolve subscriber. LOCAL route invokes `performDissolveEpic` directly with `callerScope: () => "driver"` injected per ADR-091 §state machine + ADR-227 §D1 (the orchd subscriber IS the legitimate driver). REMOTE route returns `{state: 'skipped-not-mine'}` per ADR-232 §D2 (v1 local-only; OQ-1 transport refinement deferred). Cage-not-found (targetCage absent from roster AND not local) raises `atmux flag add --severity p1` then returns `skipped-not-mine` so the subscriber advances the offset rather than retrying into a storm (ADR-232 OQ-3 + ADR-231 §D5). `performDissolveEpic` pre-flight refusals (open child tasks, dirty worktree, epic-team not in cockpit) → `{state: 'gate-held', reason}` so the subscriber emits `epic.dissolve-blocked` per ADR-227 §D6.
+
+Wire-up at `src/verbs/committer.ts::committerDrainVerb` injects `dispatchDissolveEpic` into `bootstrapOrchd({ dissolveDeps })` alongside the sibling `dispatchEpicMerge` (mergeDeps) + `dispatchGitPush` (pushDeps) closures. Stubbed `skipped-not-mine` default stays at the handler-factory layer as the ADR-232 §D3 safety net under at-least-once delivery. Zod-validated input (`DispatchDissolveEpicInputSchema`); 11-test unit suite at `tests/unit/core/orchd-dispatch/dissolve-epic.test.ts` covers LOCAL success, ConfigError → gate-held mapping, non-ConfigError re-propagation, REMOTE-deferred, cage-not-found flag + skipped-not-mine, targetCage default to epicId, local-cage override beating roster mismatch. 6 new tests at `tests/unit/core/dissolve-epic.test.ts` cover the structured-input entry point (Zod schema, caller-scope gate, topology not-found, happy path); the 22 pre-factor verb tests at `tests/unit/verbs/team/dissolve-epic.test.ts` continue to pass against the factored module unmodified (no regression on tracked-paths coverage per CLAUDE.md).
+
+### 🔄 Changed — orchd auto-merge subscriber now routes through `dispatchEpicMerge` ([ADR-232](docs/adr/232-orchd-cross-cage-dispatcher-seam.md), EPIC `e-60e16169` Phase 2 Story S0)
+
+New `src/core/orchd-dispatch/epic-merge.ts` exports `dispatchEpicMerge({ epicId, targetCage? })` — the cross-cage dispatcher seam consumed by parent's ADR-226 auto-merge subscriber. LOCAL route invokes `performEpicMerge` directly (zero-RPC); REMOTE route emits a Bun-subprocess dispatch per ADR-202 §IX-A lean-dispatch contract (path A per ADR-232 §D2; OQ-1 transport refinement deferred). Cage-not-found and remote-dispatch failure paths surface `atmux flag add` with epicId + target cage + stderr tail in the body. Wire-up at `src/verbs/committer.ts` injects the dispatcher into `bootstrapOrchd({ mergeDeps })`, replacing the stubbed default that returned `skipped-not-mine` (the stub stays as ADR-232 §D3's safety net — the auto-merge handler's `skipped-not-mine` switch case is unchanged). Zod-validated input/output; 30-test unit suite at `tests/unit/core/orchd-dispatch/epic-merge.test.ts` covers local-route, remote-route, route-failure-flag, cage-not-found, default impls, and pure `mapLocalResult` mapping.
+
+### ✨ Added — orchd Phase 3-5 lifecycle (EPIC `e-a946af69` close-out)
+
+End-to-end automation of epic-team lifecycle via the orchd event-
+router substrate. Three subscribers + spawn-queue land together,
+flipping atmux's coordination spine from cron-polled to event-driven:
+
+- **Phase 3 ([ADR-226](docs/adr/226-orchd-auto-merge-subscriber.md))** — `orchd-merge` consumer: `task.done` events fire `performEpicMerge` once an epic's last open task lands. Emits `epic.merged` on success or `epic.merge-blocked` on dispatcher gate-held / conflict. `ATMUX_HONKER` kill-switch + at-least-once `withIdempotency` wrapper.
+- **Phase 4 ([ADR-227](docs/adr/227-orchd-auto-dissolve-subscriber.md))** — `orchd-dissolve` consumer: `epic.pushed` events fire `dissolve-epic` (cage teardown + branch prune + cockpit registry cleanup). Operator opt-out via `team.json::epicTeam.autoDissolve=false`. Trigger flipped from the original `epic.merged` to `epic.pushed` per ADR-227 §Amendment 2026-05-23 — prevents Phase 4 dissolving the cage before Phase 6 pushes the merge commit (forensics-preserving).
+- **Phase 5a ([ADR-228 §D2](docs/adr/228-orchd-spawn-queue-pressure-monitor.md))** — `spawn_queue` SQLite table (v13→v14 migration) + `SpawnQueueRow` Zod schema + `SpawnQueueRepo` (CRUD + `dequeueHead` under `BEGIN IMMEDIATE`).
+- **Phase 5b ([ADR-228 §D1 / §D4 / §D7](docs/adr/228-orchd-spawn-queue-pressure-monitor.md))** — `src/core/spawn-queue.ts` exports `admit` / `enqueueIfPressured` / `pressureMonitorTick` / `resolveSpawnQueueLimits`. `spawn-epic` verb refuses → enqueues by default (per §OQ3 HIGH-REV `queue-default` decision); `--no-queue` flag preserves the original throw-on-pressure semantics for one-shot scripts. orchd `--start` installs a `setInterval` drain loop firing every `pressureCheckIntervalSec` (default 60s; tunable via `ATMUX_SPAWN_QUEUE_TICK_SEC`).
+- **Phase 6 ([ADR-229](docs/adr/229-orchd-auto-push-subscriber.md))** — `orchd-push` consumer: `epic.merged` events fire `git push origin <parentBase>` through 7 safety gates (kill-switch, opt-in, staging-refuse, cooldown, working-tree-clean, force-push-refusal, typecheck) in cheapest-first fire order. Emits `epic.pushed` / `epic.push-blocked` / `epic.push-conflict`.
+- **Wire-up ([ADR-224 §D6](docs/adr/224-orchd-multi-topic-event-router.md))** — `src/core/orchd-bootstrap.ts::bootstrapOrchd` registers all three subscribers against `ORCHD_SUBSCRIPTIONS`; `atmux orchd --drain` iterates the registry alongside the existing hardcoded `gitter` + `lane-router` consumers (single dispatch path per the driver P0 step 3/5 directive).
+
+Topic taxonomy ([ADR-203 §D2](docs/adr/203-event-topic-taxonomy.md)) grew by 3 entries (47 → 50 in `TOPICS`): `epic.spawn-queued`, `epic.spawn-abandoned`, `epic.added`. Discriminated union + Zod payloads in `src/schema/events.ts`.
+
+End-to-end dogfood (lifecycle + pressure-throttle) requires sibling EPIC `e-60e16169`'s dispatcher injection before any handler does work at the verb layer — until then, the registered handlers ship with `skipped-not-mine` stubs that are safe no-ops under at-least-once delivery. Run protocol for the post-`e-60e16169` operator-driven dogfood lives at [ADR-228 §Amendment 2026-05-23-rev2](docs/adr/228-orchd-spawn-queue-pressure-monitor.md).
+
+### ✨ Added — orchd cross-cage dispatcher seam: `dispatchGitPush` (Story s-4-a74c6fc1 / t-5)
+
+First of three dispatchers under [ADR-232 §D1](docs/adr/232-orchd-cross-cage-dispatcher-seam.md) — wraps `git push <remote> <branch>` for the parent ADR-229 auto-push handler. Local cage executes via `defaultGitSpawn` (fetch → upstream-advanced detect → push → resolve head SHA); remote cage stub returns `skipped-not-mine` per §D2 (transport choice OQ-1 deferred — local-only v1). Cage-not-found + fetch-failure + push-rejection paths raise `atmux flag add --severity p1` and return `skipped-not-mine` with no retry per §OQ-3 (mirrors ADR-231 §D5 anti-retry-storm).
+
+- **New** — `src/core/orchd-dispatch/git-push.ts` (Zod input + dispatch function + test-injection deps).
+- **New** — `tests/unit/core/orchd-dispatch/git-push.test.ts` (15 cases: schema validation, local happy path, upstream-advanced, remote-route deferred, cage-not-found, fetch-failure flag, push-rejection flag, no-retry assertion, rev-list parse fallbacks).
+- **Wired** — `src/verbs/committer.ts::committerDrainVerb` now injects `dispatchGitPush` into `bootstrapOrchd({ pushDeps })`, closing over `team.name` as the local cage identifier. Sibling dispatchers `dispatchEpicMerge` (t-3) and `dispatchDissolveEpic` (t-4) land in the same directory.
+
+### ✨ Added — `atmux topo` fleet observability + reap cascade (ADR-222 + ADR-223)
+
+One verb replaces today's N × N manual cleanup loop: enumerates the
+entire fleet (cockpit + parent teams + epic-teams + cage sockets +
+crontab marker blocks + worktrees + branches + kanban epic rows),
+classifies orphans against the [ADR-222 §D4](docs/adr/222-cage-topography-read-only-verb-surface.md)
+6-class taxonomy, and (with `--reap --apply`) composes the canonical
+per-class reap primitives behind a 4-gate safety ladder per
+[ADR-223 §D3](docs/adr/223-reap-cascade-semantics-and-safety.md).
+
+- **`atmux topo`** — flat / `--tree` / `--orphans` / `--json` / `--team` / `--since`
+  read-only manifest. JSON is `schema_version: 1` (cockpit-mirror
+  Rust crate at sibling EPIC pins on it).
+- **`atmux topo --reap`** — dry-run cascade. `--apply` runs the
+  destruction with per-orphan `[y]/[N]/[a]/[q]/[d]` confirmation
+  (Gate 4 deferred to the verb layer). `--yes` bypasses Gate 4 only.
+- **Safety gates** — Gate 1 (active-check, bypassed by
+  `--skip-checks`), Gate 2 (parent-kind, structural / never bypassed),
+  Gate 3 (merge-base, preserves [ADR-219 §D2](docs/adr/219-dissolve-epic-completeness.md)
+  invariant / never bypassed), Gate 4 (interactive, bypassed by `--yes`).
+- **Reap-log** at `~/.atmux/state/reap-log.jsonl` (one row per
+  reaped orphan; `schema_version: 1`).
+- **Composition map** — `tmux kill-server` / `cron-reaper` /
+  `git branch -D` / `rm -rf` (`reapZombieWorktree`) /
+  `removeRegistryEntry`. `dissolveEpic` is intentionally NOT in the
+  map for the `cage-tmux-without-registry` class (always refuses on
+  missing-registry per the 2026-05-22 amendment); two-pass cascade
+  re-classifies residue as `branch-without-row` + `worktree-without-cage`.
+- **Performance**: hax dogfood 2026-05-22 measured 441-449 ms on
+  the live 5T / 16E fleet (4.4× under the 2s budget).
+- **Operator runbook**: [`docs/RUNBOOK-topology.md`](docs/RUNBOOK-topology.md).
+
+### 🗑️ Removed — Sentinel substrate (EPIC e-be01fc89, 2026-05-23)
+
+The cron-polling sentinel mechanism documented in [ADR-132](docs/adr/132-pluggable-martinet.md) has been removed in entirety. Mechanical observation + Enter-push + `claim-next` re-fires distribute to Honker event consumers per sibling EPIC `e-a946af69` (orchd Phase 3-5; Phase 1 already merged at [f6b078b](https://github.com/geoyws/atmux/commit/f6b078b)).
+
+**Source surface deleted** (6 files, -1791 LOC in T1):
+
+- `src/abstractions/sentinel.ts` + `src/abstractions/sentinels/{claude,cursor}.ts`
+- `src/core/sentinel-config.ts` + `src/core/sentinel-escalation.ts`
+- `src/verbs/sentinel.ts` + CLI dispatch case at `src/cli.ts:287`
+
+**Cron + cockpit surface decommissioned**:
+
+- `src/core/cron.ts` — no sentinel emission branch (T3 regression assertions in `tests/unit/core/cron.test.ts`).
+- `src/verbs/cockpit.ts` — `buildSentinelWindowCommand`, `autoStartSentinelLoop`, W3 `_sentinel` provisioning in `reconcileCockpitSession` all removed.
+- `src/core/cockpit.ts` — `migrateMartinetBlockToSentinel` shim deleted (ADR-158 grace shim is moot post-deletion).
+- `src/verbs/doctor.ts` — `checkCockpitSentinelWindow` + `fixMissingSentinelWindow` probes removed.
+
+**Schema fields removed** (passthrough preserves legacy keys as inert data):
+
+- `team.sentinel` / `team.sentinelOverrides`
+- `cockpit.sentinel` / `cockpit.defaultSentinel`
+- `SentinelImpl`, `TeamSentinelOverrides`, `CockpitSentinel{Claude,Cursor}`, `CockpitDefaultSentinel`, `SentinelSession{T,}`, `DEFAULT_SENTINEL_CADENCE_SEC`, `DEFAULT_SENTINEL_ESCALATION_CONFIDENCE` types.
+
+**Test surface** (T2): 6 sentinel-only test files deleted (~2898 LOC); 10 test files migrated to drop sentinel-specific assertions.
+
+**Brief retired**: `templates/briefs/martinet.md` deleted.
+
+**ADR closure** (T8 + T7):
+
+- ADR-132 status flipped `Accepted` → `Superseded by e-be01fc89`; final §Amendment 2026-05-23 appended.
+- ADRs 158 / 183 / 185 / 206 / 207 marked `Superseded by e-be01fc89`.
+- ADR-211 marked `Implemented by e-be01fc89 + e-a946af69`.
+- ADR-189 §D2 updated: sentinel-cron-polling removal no longer "lean-mode opt-in" — sentinel is gone entirely.
+
+#### Migration notes
+
+- **Existing crontabs with sentinel blocks**: `atmux stop && atmux start` per team cycles the sandwich-marker block; no manual cleanup needed (per [ADR-202](docs/adr/202-honker-pubsub-substrate.md) §X cron decommission protocol).
+- **Stale `team.json` / `cockpit.json` keys** (`sentinel`, `sentinelOverrides`, `defaultSentinel`, legacy `martinet`): schema-removed; the deploy-team-start path silently drops them via `.passthrough()`.
+- **One-way door**: ADR-158 martinet→sentinel migration shim was deleted alongside the sentinel surface. Operators on pre-ADR-158 cockpit.json with top-level `martinet:` keys: rename to `sentinel:` (or delete the block entirely) before the next `atmux start` — the shim that previously rewrote `martinet` → `sentinel` is gone.
+
+#### Sibling-EPIC IOU — cadence-truth-signal restoration
+
+`tests/e2e/cadence-truth-signal.test.ts` B4+B5 sentinel-escalation contract beats were DELETED; B9+B10 escalation assertions were GUTTED (commit [d26855d](https://github.com/geoyws/atmux/commit/d26855d) — T2). Audit anchor lives in the test file itself as `TODO(e-a946af69)` markers (header line 18 + B4/B5 deletion site at line 294). Sibling EPIC e-a946af69 (orchd Phase 3-5 lifecycle) owes a "restore cadence-truth-signal coverage" Task that wires the orchd-escalation entrypoint + re-adds the gutted beats against the new contract. **NOT blocking e-be01fc89 done-state** — the TODO markers are sufficient audit anchor per ADR-148 contract preservation.
+
+### 🔄 Changed — `atmux relayd` → `atmux orchd` rename + Rust crate atmux-relayd → atmux-orchd (ADR-224 Phase 1)
+
+`relayd` (relay daemon) is misleading now that the daemon will also own auto-spawn (`epic.added`) and auto-dissolve (`task.done`) in Phase 2 per [ADR-224](docs/adr/224-orchd-rename-and-auto-spawn-loop.md). Phase 1 is a pure relabel — zero behavior change — landing before Phase 2 impl so the codebase doesn't carry a misleading symbol through that development window.
+
+- **Bun verb**: `atmux relayd` renamed to `atmux orchd` ([a9c17ab](https://github.com/geoyws/atmux/commit/a9c17ab)). Deprecation alias preserves `atmux relayd` for one release — emits stderr warning `[deprecated] 'atmux relayd' renamed to 'atmux orchd' (ADR-224); update callsites — alias removes next release` then delegates to the orchd handler (same exit code, same stdout shape).
+- **Rust crate**: `rust/atmux-relayd/` renamed to `rust/atmux-orchd/`; binary `atmux-relayd` → `atmux-orchd`; `build:relayd` → `build:orchd`; `/usr/local/bin/atmux-orchd` symlink ([e02ea2d](https://github.com/geoyws/atmux/commit/e02ea2d)).
+- **Subscription registry seam**: new `src/core/orchd-registry.ts` exporting `ORCHD_SUBSCRIPTIONS: OrchdSubscription[] = []` — zero-handler scaffold per [ADR-224 §D6](docs/adr/224-orchd-rename-and-auto-spawn-loop.md). Phase 2 wires the `epic.added` / `task.done` handlers; Phase 1 array is empty so no behavior change.
+- **Migration**: external callers should swap `atmux relayd` → `atmux orchd` and `atmux-relayd` binary references → `atmux-orchd` before the next release removes the alias.
+
+### ✨ Added — epic dependencies + `is_ready` toggle (ADR-225, EPIC e-cf8a6195)
+
+EPICs now carry `depends_on` (epic-id list) + `is_ready` (0/1 kick-off bit) — v13→v14 migration. `atmux team spawn-epic` consults an eligibility predicate (all deps `done` + `is_ready=1`) and refuses on unmet deps with a structured `--force` override + log to `~/.atmux/state/spawn-overrides.log`. New verbs: `epic ready` / `epic unready` / `epic set-depends-on` / `epic deps`; `epic list` gains `R` + `D=k/n` columns; `epic show` renders the dep chain. Two new event topics (`epic.unblocked`, `epic.ready`) ship per ADR-203 §D2 amendment. Cycle-detect + non-existent-dep refusal fire at add-time. Sibling EPIC e-60e16169 (orchd auto-spawn) is the primary substrate consumer. See [ADR-225](docs/adr/225-epic-dependencies-and-is-ready-toggle.md).
+
+### ⏳ Deprecated — `atmux epic-merge tick` cron (orchd Phase 3 supersedes; removal scheduled 2026-06-06)
+
+Per [ADR-226 §D4 + §DA3](docs/adr/226-orchd-auto-merge-subscriber.md) cron-backstop coordination + [ADR-202 §X](docs/adr/202-honker-in-db-messaging-substrate.md) cron-decommission protocol: now that orchd subscribes to `task.done` and dispatches `performEpicMerge` sub-second (commit `89fcab8`, 2026-05-23), the per-epic-team `epic-merge tick` cron is no longer the primary epic-merge trigger. It stays installed for **two weeks (until 2026-06-06)** as a defense-in-depth resilience fallback — the orchd primary path competes with the cron via the existing `merger_state` `BEGIN IMMEDIATE` serialization, so first-one-wins.
+
+**Decommission timeline**:
+
+- **2026-05-23** (T+0): orchd-merge primary path live (Phase 3 module ships at commit `89fcab8`). Cron + orchd both installed; either can drive the merge. CHANGELOG entry (this one).
+- **2026-06-06** (T+14): operator-verified orchd primary path stable via Honker event-log query (`SELECT COUNT(*) FROM events WHERE topic = 'epic.merged'` vs cron-attributed `merger_state` rows). Follow-up Task in **parent atmux kanban** removes the cron-block emit from `src/core/cron.ts` (search tag: `epic-merge tick`). Removal lands as a planner-filed Task at T+14 with cron-template-pruning commit + cockpit rebuild verification.
+- **2026-06-13** (T+21): orphan-cron sweep pass — `crontab -l | grep 'epic-merge tick'` on every team-host MUST return zero hits post-decommission. If any team's crontab still carries the line, file a follow-up complaint via medic.
+
+**Rollback path**: `ATMUX_HONKER=off` short-circuits the orchd-merge consumer; the cron-only path resumes. The cron template body lives in `src/core/cron.ts` near the existing `epic-merge tick` invocation; the removal Task at T+14 owns the prune.
+
+See also: [ADR-226 §D4](docs/adr/226-orchd-auto-merge-subscriber.md) (cron-backstop coordination), [ADR-226 §DA3](docs/adr/226-orchd-auto-merge-subscriber.md) (decision-anchor), [ADR-202 §X](docs/adr/202-honker-in-db-messaging-substrate.md) (cron-decommission protocol). Follow-up Task (parent atmux kanban, planner-filed at T+14): "Remove epic-merge tick cron template — orchd Phase 3 dogfood verified".
+
+### ✨ Added — solo-worker scope v1: 1-2 member roster presets for small standalone tasks (ADR-221, t-8c8ce51c)
+
+Fills the gap between "drop on long-lived member queue" (pollutes branch) and "spawn full 7-member epic-team" (wasteful for single commits). Two new roster presets under `templates/epic-rosters/`:
+
+- **`solo.json`** — 1 member (`solo`, role=member, lane=misc). For pure-docs / trivial fixes.
+- **`solo+committer.json`** — 2 members (solo + committer). For load-bearing changes where a separate review pass adds value.
+
+Spawn via existing verb: `ATMUX_CALLER_SCOPE=driver atmux team spawn-epic w-<task-id> --from <parent> --roster solo`. Convention: `w-` prefix distinguishes worker-teams in cockpit + epic-list enumeration.
+
+v1 ships the substrate only. v2 adds convenience verbs (`spawn-worker` / `dissolve-worker` / `list-workers`) + auto-dissolve on task.done via Honker subscription. Until then, operator manually dissolves with `atmux team dissolve-epic w-<task-id>`.
+
+See [ADR-221](docs/adr/221-solo-worker-scope.md) for the full design + v2 roadmap.
+
+### 🟢 Fixed — merger-state design-gap pair (long-lived members fan in autonomously) — t-9aa2f8cb + t-0542595c
+
+Two sibling dispatcher fixes shipped 2026-05-22 close the structural wedge that required manual `merger_state` sqlite resets every time a long-lived member shipped a commit.
+
+- **`fix(merger-gate)`** ([t-9aa2f8cb](docs/tasks/t-9aa2f8cb.md), c-6ca1ff2) — intra-team gate counts `in-progress` tasks only (was `todo + in-progress`). Closes the in_progress sink that wedged docs/lead/reviewer with forward-todo queues.
+- **`fix(merger-state)`** ([t-0542595c](docs/tasks/t-0542595c.md), c-baa0b8a) — auto-re-entry from `merged` when branch is ahead of base. Closes the merged-terminal wedge that required manual reset after every fan-in.
+
+Both shipped with [ADR-134 §Amendment 2026-05-22 (I + II)](docs/adr/134-in-team-auto-merger.md); live-validated on `atmux-geoyws-docs +1` immediately post-deploy.
+
+### 🟢 Fixed — hold-posture deadlock eliminated from lead bootstrap (ADR-210 §Tier 1, t-ef4bb453)
+
+Lead brief step 2 now does **kanban-first dispatch** instead of holding for planner refinement. Planner role re-framed as async-enriching (not gating). Closes the sopx 2026-05-21 deadlock class where lead + members + planner all idled waiting on each other.
+
+- **templates/briefs/lead.md** — new step 2 (kanban-first dispatch by role: fe-*/be-*/db/devops/reviewer); steps 3-9 renumbered. Cross-link to [ADR-210](docs/adr/210-eliminate-hold-posture-deadlock-structurally.md).
+- **templates/briefs/planner.md** — async-enrich-not-gating callout at top of §Your loop. Workers re-read Task bodies between turns and pick up planner refinements on subsequent dispatches.
+
+**Backport posture** (per ADR-210 §OQ1 driver preference): NEW spawn-epic invocations pick up the new brief automatically. **Existing teams need `/clear` on lead + planner panes to re-bootstrap from the updated brief**. Operator chooses which stuck teams to /clear; no automated backport sweep ships in Tier 1. If your team is currently in the hold-deadlock pattern, `/clear` the lead pane and re-spawn it via `/team rotate-lead` (or whichever rotation verb your topology uses).
+
+Tier 2 (member-side pull-protocol fallback) ships as a follow-up release once Tier 1 is verified in the field.
+
+### 🏷️ `atmux team rename` — forward-going verb (ADR-027 shipped, EPIC e-1e223687)
+
+Closes the 2026-04-27 gap: [ADR-027](docs/adr/027-team-rename-verb-and-topology-invariant.md) was accepted but never implemented. Sibling to `atmux team repair-rename` (recovery side, [ADR-103](docs/adr/103-team-repair-rename.md)). The verb renames a team atomically across every surface the team-name appears in — `team.json:.name`, tmux session + cockpit team-viewer window, cron markers, cockpit registry (`cockpit.json::sessions[]` DFS — superseded shape per [ADR-089](docs/adr/089-hierarchical-cockpit.md) §B), single-session capture file — with rollback-staged 10-step orchestration + refuse-gate preflight (in-progress kanban tasks soft-refuse; name collision + invalid charset hard-refuse).
+
+Implementation across 5 files per the shared-worktree commit-race split pattern (see [`docs/audit/2026-05-20-shared-index-swap.md`](docs/audit/2026-05-20-shared-index-swap.md) for the structural rationale):
+
+- [`src/verbs/team-rename.ts`](src/verbs/team-rename.ts) — pure helpers (`parseTeamRenameArgs`, `validateTeamName`, `runRefuseGates`, `RollbackStep` + `rollbackWalk`) + the top-level `teamRename` dispatcher wiring every sibling step (T1 + T2 + T6 wire-in).
+- [`src/verbs/team-rename-fs.ts`](src/verbs/team-rename-fs.ts) — file-state steps: `acquireRenameLock` (with `team.json.bak.<epoch>` snapshot), `mutateTeamJson`, `rewriteSessionAnchor`, `releaseRenameLock` (T3).
+- [`src/verbs/team-rename-cockpit.ts`](src/verbs/team-rename-cockpit.ts) — cockpit registry sync: `syncCockpitRegistry` DFS-walks `cockpit.json::sessions[]`; legacy flat `teams[]` rosters auto-lift via `migrateLegacyShape` (T4).
+- [`src/verbs/team-rename-tmux.ts`](src/verbs/team-rename-tmux.ts) — tmux + branch rename: `renameTeamViewerWindow` (cockpit team-viewer window only; per-member windows carry no team-name post-[ADR-135](docs/adr/135-cockpit-naming-convention.md)), `renamePerMemberBranches` (opt-in via `--force-branches`; atomic-multi-ref push with per-branch fallback) (T5).
+- [`src/verbs/team-rename-convergence.ts`](src/verbs/team-rename-convergence.ts) — post-rename invariant assertion (T6).
+
+Coverage: 100% line on each shipped surface; ≥89% function across the integration test surface.
+
+Known follow-up: cron-consumer rename-lock guards (ADR-027 §Consequences) are NOT YET wired in the bun port — `sentinel.ts` + `cron-orphans.ts` don't honor the lock; `whip.ts` + `decisions.ts` don't exist as standalone bun verbs. Race risk during in-flight renames; follow-up Task filed at T7 commit-time. T6's convergence helper asserts post-rename hygiene but does NOT cover mid-rename consumer-race.
+
+Operator runbook: [`docs/RUNBOOK-cockpit.md`](docs/RUNBOOK-cockpit.md) §7 — Team rename. Reviewer-relevant deviation notes inline in [ADR-027 §Deviations](docs/adr/027-team-rename-verb-and-topology-invariant.md#deviations-from-spec-added-at-shipping-time-2026-05-20).
+
+### 📐 Documented — `claudeAccount` inheritance contract for `spawn-epic` (ADR-090 §Amendment 2026-05-20, t-72f90a08)
+
+Retroactive coverage for the 2026-05-16 dogfood regression fix that landed at commit `2674670` ("fix(epic-team): two regressions caught by 2026-05-16 dogfood") without the same-commit unit test + ADR §Amendment its acceptance criteria required. Closes t-72f90a08 (P0).
+
+- **5 unit tests** in `tests/unit/verbs/team/spawn-epic.test.ts` (`describe spawnEpic — claudeAccount inheritance from parent`) covering all four rules of the inheritance contract: per-member name match, team-default fallback, roster-pin precedence, and no-account-parent no-op. All 20 tests in the file pass; spawn-epic.ts coverage advances per `inheritClaudeAccount` helper at lines 506–545.
+- **ADR-090 §Amendment 2026-05-20** documents the contract surface — gives future roster preset authors + reviewers a citable reference instead of relying on the helper's inline doc-comment.
+- Memory `feedback_spawn_epic_claude_account_inheritance_gap.md` remains the operator-workaround anchor; the §Amendment cross-refs it for traceability.
+
+Cross-refs: [ADR-090 §Amendment 2026-05-20](docs/adr/090-epic-team-lifecycle.md), `src/verbs/team/spawn-epic.ts::inheritClaudeAccount`, t-72f90a08.
+
+### 🟢 Shipped — sentinel epic-team coverage + atmux release verb + W3 self-heal + bounded tick concurrency (release sweep 2026-05-20, t-1fad1f12)
+
+Headline: **sentinel epic-team coverage (dynamic discovery to follow) + `atmux release` one-shot deploy verb + W3 self-heal in `atmux doctor --fix` + bounded sentinel tick concurrency**. Closes the ~30h gap between code-shipped and code-deployed that hid the original t-186d5910 silent-member-death class, plus adds the operator surface to keep that gap closed permanently.
+
+**Versions cut today**: `0.8.5 → 0.8.6 → 0.8.7 → 0.8.8`. The 0.8.6 cut dogfooded the manual 4-step deploy one last time; 0.8.7 cut after the `atmux release` verb landed (so 0.8.8 used the new verb to ship itself — closed-loop validation).
+
+- **`atmux release <patch|minor|major>`** ([3efd34b](src/verbs/release.ts), [58c6fed](src/verbs/release.ts), t-c3f4c418) — one-shot deploy replacing the 4-step `npm version` + commit + `bun run build:install` + `git push` flow that hid t-186d5910 for ~30h. Flags: `--dry-run` (print plan + exit 0), `--allow-dirty` (skip the tree-clean gate). Exit codes: `0` success / `64` usage / `65` dirty-or-no-op refused / `70` step failure (git / build / push). Branch-name fix in 58c6fed prints the actual branch instead of the unevaluated shell expression.
+- **Sentinel scope extended to epic-teams** ([3b92c9d](src/verbs/sentinel.ts), [ADR-183](docs/adr/183-sentinel-scope-includes-epic-teams.md), t-186d5910 Parts C + D) — closes the silent-member-death class. `sentinelTick` swaps `cockpit.teams ?? []` → `enabledTeams(cockpit)` (the post-ADR-089 flattener); cockpit-tier exclusions (medic / superdriver / sentinel itself) preserved via the flattener's discriminator filter. ADR-183 flipped proposed → accepted.
+- **`cockpit-has-w3-sentinel` doctor probe** (3b92c9d Part D) — surfaces the W3 sentinel install state. P1 fail when W3 absent so a regression on `atmux cockpit rebuild` doesn't silently drop the install.
+- **W3 self-heal in `atmux doctor --fix` + `deployed-binary-lag` probe** ([1dc83dd](src/verbs/doctor.ts), t-3234a084 + t-400a1cad) — doctor can now repair a missing W3 sentinel window in-place (no full cockpit rebuild required). The `deployed-binary-lag` probe catches the case where source HEAD is ahead of `/opt/atmux/current` symbol set (the code-shipped-not-deployed gap that originally hid t-186d5910).
+- **Sentinel tick parallelised** ([54a546e](src/core/sentinel-escalation.ts), t-70c8b562) — switches from serial per-team observation to `Promise.allSettled` per-team. Fleet-pass wallclock drops from ~36s (5 teams serial) to ~2s (parallel), keeping the 270s W3 loop cadence comfortably under budget as the epic-team scope expansion grows the team count.
+- **Bounded concurrency cap N=4** (aec82d5) — the parallelisation above is now capped at 4 concurrent observations per tick to protect CPU + RAM. Prevents the spike pattern that drove the earlier sentinel-cron backstop removal (see §Sentinel constraints below). First of the constraints folded in per the operator design call 2026-05-20 (`don't spike CPU+RAM`).
+- **Human-readable tick-duration logs** ([4fc3d36](src/core/sentinel-escalation.ts)) — sentinel tick logs now print `d/h/m/s/ms` units via `formatTickDuration` instead of raw milliseconds, so cron-log inspection doesn't require mental math.
+
+**Sentinel constraints folded in** (load-bearing non-functional requirements per operator design call 2026-05-20):
+
+1. **Epic-teams are dynamic** — created / dissolved often. They MUST be absent from `cockpit.json::sessions[]`. Sentinel discovers them at tick time. Follow-up impl: t-b51f085b (filed). The implication for ADR-183 is captured in its §Amendment 2026-05-20 + ADR-185 below.
+2. **Don't spike CPU+RAM** — sentinel-cron backstop was REMOVED earlier this cycle due to CPU sustain; all remaining sentinel paths respect bounded concurrency (aec82d5 above), per-team timeouts (t-ccf06b97 filed), and RAM-aware cursor-agent spawn caps. PRD §Sentinel updated to name this as a load-bearing NFR.
+
+**Cross-refs**:
+- [ADR-183 §Amendment 2026-05-20](docs/adr/183-sentinel-scope-includes-epic-teams.md) — supersedes the §D1 static-cockpit-roster assumption with the dynamic-discovery model.
+- [ADR-206](docs/adr/206-sentinel-dynamic-epic-discovery.md) — NEW proposed ADR for the dynamic-discovery follow-up (t-b51f085b is its impl Task).
+- [ADR-187](docs/adr/187-coordination-skills-plugin.md) — NEW proposed ADR documenting the sibling Claude Code skills plugin (`~/work/journals/.sb/claude-skills/plugins/coordination/`).
+- Filed-but-pending: t-b51f085b (sentinel dynamic epic-team discovery, P1) · t-ccf06b97 (sentinel per-tick token budget + per-team timeout, P2) · t-a0396228 (pre-commit hook: migration delete + ADR status downgrade, P2) · t-c0f0ff5a (MEMORY.md auto-archive, P3) · t-60031ded (`atmux bau` native verb, P3).
+
+### 📜 Doctrine — committer no-deploy + test-trust principle (t-afcc71af, ADR-091/134/144 §Amendment 2026-05-19)
+
+Driver finding 2026-05-19 06:30 MYT (operator: "make sure committers/gitters don't deploy… make sure they understand that if they are merging that means tests are already passing because the epic-team has already done the merge earlier and has run tests") surfaced two implicit doctrines worth making explicit before they drift:
+
+- **Committer scope is merge-and-push, NOT deploy** — `kubectl` / `helm` / `terraform` / pipeline-triggers / manifest edits / service restarts are all out-of-scope refusal-class. Codified in [`templates/briefs/committer.md`](templates/briefs/committer.md) §Deploy is out of scope + §Hard rules (both modes) (new bullet). Per [ADR-145](docs/adr/145-atmux-adopts-gitter.md) the committer role's scope was always merge-and-push, but the brief now names the deploy refusal-class explicitly so future agents can't drift into infra territory while looking adjacent to push semantics.
+
+- **Test-trust principle — tests fire ONCE at L1, fan-in trusts the verdict** — the intra-team merger ([ADR-134](docs/adr/134-in-team-auto-merger.md)) is the SOURCE-of-truth test layer (`autoMerge.testCommand` at `merging → tested`); the epic-team fan-in ([ADR-091](docs/adr/091-kanban-driven-auto-merge.md) via `atmux epic-merge tick`) **trusts** that verdict with `testGateMode: "skip"` default ([ADR-144](docs/adr/144-epic-team-test-gate.md) §Amendment 2026-05-19). The schema-level default (`src/schema/team.ts::TeamEpicSchema.testGateMode = "skip"`) and unit-test pin (`tests/unit/core/epic-merge.test.ts` "testGateMode unset (default) → skip semantics") were already in place; this Task makes the **doctrine** explicit across 3 ADR §Amendments + committer brief §Test-trust principle. `"cage"` / `"deployed"` are operator escape hatches for the rare case where L1 tests were knowingly incomplete; the default behavior is skip-and-trust.
+
+The change is **brief + ADR amendments only** — Part B of the originating Task (default-flip + unit test) was already satisfied at source; the ADR §Amendments codify the WHY behind the existing default. Reviewer surface for regressions: a re-test fire on default fan-in violates the principle and should land as `atmux flag add --severity high`.
+
+### 📐 ADR-186 — unified wedge-clearing mechanism (proposed; EPIC e-35dd6274 T1, t-73128937)
+
+Driver mechanism audit 2026-05-19 (5 wedges discovered in 1h of manual investigation, ~70 lines of orphan crontab hand-cleaned, 1 silent committer death uncaught for hours) framed the need: a single substrate for detecting + clearing wedges across all current + future failure modes. [ADR-186](docs/adr/186-wedge-clearing-mechanism.md) is the T1 spec.
+
+**Decision**: extend three existing mechanisms (no new cockpit-tier member):
+
+- **Doctor probe-class registry** (`src/core/doctor-probes/`) — typed `{id, severity, tier, describe, fingerprint, suggestResolution, probe}` contract per probe; ships 7 classes at T2 (`orphan-cron`, `husk-worktree`, `missing-viewer`, `default-sentinel`, `pane-death`, `partial-dissolve`, `code-shipped-not-wired`).
+- **Sentinel observe-pass invokes the registry** with `autoFile=true` per ADR-132 §D5 tick (T4 of the EPIC) — runner is the existing sentinel loop; cron backstop fires independently every 15min.
+- **`atmux wedges` operator surface** — `list / show / clear --tier / resolve / --json / --resolved`; cockpit-dashboard-friendly output.
+
+**Tiered auto-clear** per global CLAUDE.md destructive-actions rule: `safe` (auto-cleanup, e.g. orphan-cron) / `fix` (installer-class repair, e.g. missing-viewer) / `suggest` (operator-judgment path, e.g. pane-death) / `surface` (read-only meta-probes). Dedup via SHA256 fingerprint of `<probe-id>|<finding-stable-key>` matched against open Task body markers `auto-filed:<probe-id>:<fp>`. Backup-before-destructive at `/tmp/wedge-clear-backup-<ts>/`, retention 7d.
+
+Cross-refs: [ADR-027](docs/adr/027-doctor-self-diagnostics.md) (substrate), [ADR-132](docs/adr/132-pluggable-martinet.md)/[ADR-158](docs/adr/158-martinet-to-sentinel-rename.md) (runner), [ADR-140](docs/adr/140-cheap-model-first.md) (mechanical-fits-sentinel), [ADR-091](docs/adr/091-kanban-driven-auto-merge.md) (EPIC-done flow), [ADR-090](docs/adr/090-epic-team-lifecycle.md) (lifecycle seams), ADR-183 (deploy-completeness sibling), [ADR-178](docs/adr/178-test-cage-leak-reaper.md) (backup-on-clear convention), [ADR-184](docs/adr/184-host-wide-epic-team-cap-queue-and-dormancy-audit.md) (cluster-precondition).
+
+Out of scope: new cockpit-tier "wedge-clearer" member (rejected — sentinel covers loop, cron covers backstop); LLM-based wedge classification (defer — v1 is deterministic invariants); cross-team wedge correlation (defer to ADR-150).
+
+Status: proposed; reviewer flips to accepted per ADR-091 §EPIC-done #4 (trunk-signoff at `docs/reviews/t-73128937-trunk-signoff-<date>.md`) once the EPIC fan-in commit lands.
+
+### 🔤 Vocabulary / scope — medic vs sentinel boundary tightened (ADR-077 + ADR-132 §Amendment 2026-05-19)
+
+Driver mechanism audit (finding #2 against EPIC e-35dd6274) surfaced a coverage gap: medic (W2, [ADR-077](docs/adr/077-superdoctor-cockpit-role.md) / renamed via [ADR-133](docs/adr/133-medic-rename.md)) owned "health probes" and sentinel (W3, [ADR-132](docs/adr/132-pluggable-martinet.md) / renamed via [ADR-158](docs/adr/158-martinet-to-sentinel-rename.md)) owned "whip", but **pane-death detection / claude TUI wedge** sat in the seam. Today's silent gitter/committer death (TUI wedged but process alive; no `✻` activity, no commits, no operator response) went uncaught for hours because reviewer + driver triage couldn't point to which mechanism owned it.
+
+Two append-only §Amendment sections — one in each ADR — codify the boundary:
+
+- **Medic scope** (repository health): test/lint/build failures, schema drift, code-class probes; drives same-commit fixes. NOT pane-liveness.
+- **Sentinel scope** (pane liveness + mechanical nudges): TUI dead/wedged/rate-limited/refusing, enter-push, claim-next, modal-release, routine + emergency rotation. NOT code health.
+- **Doctor** stays shared probe substrate per [ADR-027](docs/adr/027-doctor-self-diagnostics.md); both callers invoke it.
+- **Cross-invocation**: sentinel routes code-class findings to medic via escalate-to-claude-lead; medic routes liveness-class findings via the shared probe library.
+
+Brief cross-link added at [`templates/briefs/martinet.md`](templates/briefs/martinet.md) §"Scope boundary vs medic". No `medic.md` / `sentinel.md` briefs exist today; the existing `martinet.md` (sentinel canonical pre-ADR-158 rename) carries the contract.
+
+No code changes — pure docs sweep. `rg -i 'medic vs sentinel|pane death' src/` returns zero hits, confirming no contradicting language remains.
+
+**Cross-refs**:
+
+- [ADR-077](docs/adr/077-superdoctor-cockpit-role.md) §Amendment 2026-05-19 — medic side.
+- [ADR-132](docs/adr/132-pluggable-martinet.md) §Amendment 2026-05-19 — sentinel side.
+- [ADR-027](docs/adr/027-doctor-self-diagnostics.md) — shared probe substrate.
+- [ADR-140](docs/adr/140-cheap-model-first.md) — sentinel = mechanical, medic = judgment-bearing.
+- EPIC e-35dd6274 — wedge-clearing mechanism (scope clarity is precondition for probe-class routing per ADR-186).
+- Task `t-c8be6daa` — this docs sweep.
+
+### 🏷️ Renamed — ADR-088 per-member-branch fan-in → ADR-179 (collision resolution, t-88da6978, 2026-05-18)
+
+Sibling pattern to the t-fe51cf64 ADR-087 renumber (same day). `docs/adr/088-per-member-branch-fan-in.md` (Accepted 2026-05-15) collided with `docs/adr/088-worktree-submodule-init.md` (accepted 2026-05-13). Per atmux ADR convention (monotonic, append-only, one ADR per number — CLAUDE.md §Source-of-truth chain), the older submodule-init ADR keeps the 088 number; the fan-in ADR moves to ADR-179. Both ADR-087 + ADR-088 collisions now closed; project is back to a single ADR per number. Convention precedent: b4d62da `docs(adr-176)` + 830e9fc `docs(adr-177)`.
+
+- **`git mv docs/adr/088-per-member-branch-fan-in.md → docs/adr/179-per-member-branch-fan-in.md`** — file body header `# ADR-088:` → `# ADR-179:`; new §Amendment 2026-05-18 (t-88da6978) at the top documents the renumber + source-commit history (W1 a37dacc, W2 086505c, W3 10dcf43, W7 191b721, W8 f4ea9a2).
+- **External fan-in refs swept** (~25 files): `src/abstractions/branch-merge.ts`, `src/verbs/merge-member.ts`, `src/verbs/merge-cycle.ts`, `src/verbs/committer.ts`, `src/verbs/cron-install.ts`, `src/verbs/doctor.ts`, `src/core/committer-sweep.ts`, `src/core/intra-team-merge-dispatcher.ts`, `src/core/merger-config.ts`, `src/core/sentinel-config.ts`, `src/core/cron.ts`, `src/core/kanban.ts`, `src/schema/team.ts` (all fan-in refs; no submodule-init refs in this file), `tests/e2e/merger.test.ts`, `tests/e2e/merger-fan-in.test.ts`, `tests/unit/abstractions/branch-merge.test.ts`, `tests/unit/core/merger-config.test.ts`, `tests/unit/verbs/cron-install.test.ts`, `tests/unit/verbs/doctor.test.ts`, `tests/unit/verbs/merge-member.test.ts`, `tests/unit/verbs/merge-cycle.test.ts`, `templates/briefs/merger.md`, `docs/adr/091-kanban-driven-auto-merge.md` (lines 182 + 232 — line 7 chain-shift preserved), `docs/adr/145-atmux-adopts-gitter.md`, `docs/adr/146-kanban-auto-files-trunk-merge.md`, `docs/reviews/ADR-134-planner-pair-review-2026-05-14.md`.
+- **Untouched** (refs are submodule-init, NOT fan-in): `docs/adr/088-worktree-submodule-init.md`, `src/abstractions/worktree.ts`, `tests/unit/abstractions/worktree.test.ts`, `tests/e2e/worktree-submodule.test.ts`, `src/verbs/start.ts`, `docs/adr/089-hierarchical-cockpit.md` (chain-shift only), `docs/adr/134-in-team-auto-merger.md` (chain reference only).
+- **ADR-090 line 369 misroute corrected**: was `[ADR-088](088-per-member-branch-fan-in.md) — initSubmodules primitive` (fan-in ADR never contained initSubmodules); retargeted to `088-worktree-submodule-init.md` with parenthetical noting the pre-existing typo + that the fan-in ADR is now ADR-179.
+- **ADR-090 line 370 + ADR-135 line 143** updated to past tense — both 087 + 088 collisions are now closed.
+
+### 🏷️ Renamed — ADR-087 whip-velocity-gate → ADR-177 (collision resolution, t-fe51cf64, 2026-05-18)
+
+`docs/adr/087-whip-velocity-gate.md` collided with `docs/adr/087-atmux-stop-soft.md` (Accepted 2026-05-13). Per atmux ADR convention (monotonic, append-only, one ADR per number — CLAUDE.md §Source-of-truth chain), the older soft-stop ADR keeps the 087 number; the velocity-gate ADR moves to ADR-177 (pre-flagged by the t-5d85dddb planner scope-refresh note). Convention precedent: b4d62da `docs(adr-176): renumber ADR-171 epic-aware-lane-drift-revert → ADR-176`. Source-commit history preserved across the rename: 2a7db33 (kernel), eb97ea6 (V1 wiring per ADR-177 §What V1 defers).
+
+- **`git mv docs/adr/087-whip-velocity-gate.md docs/adr/177-whip-velocity-gate.md`** — file body header updated `# ADR-087:` → `# ADR-177:`; new §Amendment 2026-05-18 (t-fe51cf64) at the top documents the renumber + collision context.
+- **External refs swept** — all `ADR-087` references in source / docs / tests that pointed at the velocity-gate retarget to `ADR-177`: `src/core/velocity.ts`, `src/core/whip-strikes.ts`, `src/core/whip-escalation.ts`, `src/core/complaints.ts`, `src/core/velocity-gate.ts`, `src/verbs/poke.ts`, `src/schema/team.ts` (velocity-gate cadence knobs + kill-switch fields only — soft-stop `softStopGraceSeconds` ref preserved), `tests/unit/core/velocity.test.ts`, `tests/unit/core/velocity-gate.test.ts`, `tests/unit/core/whip-strikes.test.ts`, `tests/unit/core/whip-escalation.test.ts`, `tests/unit/core/complaints.test.ts`, `docs/adr/139-refusal-pattern-auto-rotate.md`, `docs/adr/147-ombudsman-and-release-notes.md`, `README.md`, `docs/release-notes/2026/05/2026-05-16.md` (lines 18 + 21 + historical-note added).
+- **Untouched** (refs are soft-stop, NOT velocity-gate): `docs/adr/087-atmux-stop-soft.md`, `src/core/soft-stop.ts`, `src/verbs/stop.ts`, `src/verbs/start.ts`, `src/schema/resume.ts`, `tests/e2e/stop-soft.test.ts`, `tests/unit/core/soft-stop.test.ts`, `docs/adr/089-hierarchical-cockpit.md`, `docs/adr/090-epic-team-lifecycle.md`, `docs/adr/091-kanban-driven-auto-merge.md`, `docs/adr/134-in-team-auto-merger.md`, `src/verbs/help.ts`, prior CHANGELOG entries for soft-stop §D4 cron quiescence and stop-soft-resume-manifest sections.
+- **Tests** — no test behavior changed; ADR ID strings inside test docstrings updated to match the new number.
+
 ### 🟢 Fixed — self-heal shim for legacy default-member window names (EPIC e-a3077ca0, 2026-05-18)
 
 Cages continuously running across the ADR-161 default-member `_-prefix` deploy never saw an `atmux start` rename pass and stayed on pre-ADR-161 hyphen / no-separator window names indefinitely. Every addressing verb refused with `no tmux window for lead (is the team running?)` against such cages until an operator manually `tmux rename-window`'d each of the 6 coordination panes. Observed 2026-05-18 on the atmux parent cage (4-day uptime; `🧭-lead` / `🎯-planner` / `🔍-reviewer` / `🦦-docs` / `🌿-gitter` / `⚖️-ombudsman` all on hyphen form). Cross-format failure also caught at `src/verbs/lane-tick.ts` against the docs window: `lane-tick: docs: capture error — can't find window: 🦦docs` (no-separator pre-ADR-135 variant — captured by t-fabd2528 verify-poll while the actual pane was `🦦_docs`).
@@ -55,15 +522,30 @@ Decouples the `bootClaudeMember` already-booted sentinel from the rotate-after-`
 **Cross-refs**:
 
 - [ADR-138](docs/adr/138-verified-send-keys.md) §Amendment 2026-05-18 — annotates `detectAndResubmit` as the new downstream consumer + names the wiring sites.
-- [ADR-168](docs/adr/168-send-keys-failures-log.md) — escalation log target; `safeSendKeysWithVerify`'s built-in `onFail:"escalate"` path owns disk persistence (helper `failureLogFn` re-emits to verb stderr only).
+- [ADR-168](docs/adr/168-send-keys-log-rotation-policy.md) — escalation log target; `safeSendKeysWithVerify`'s built-in `onFail:"escalate"` path owns disk persistence (helper `failureLogFn` re-emits to verb stderr only).
 - memory `feedback_atmux_send_for_queued_panes` — revised: post-fix, cron-fired verbs auto-unstick queued panes; driver-side `atmux send <member>` is now a fallback for the rare verify-exhausted case, not the primary recovery path.
 - memory `feedback_shared_index_commit_race_hazard` (NEW, 2026-05-18 e-f28c2596) — observed-twice pattern in this EPIC: shared-worktree shared-index can absorb or swap staged files between concurrent commits (4133af1 pre-push absorption; 7cf5b02/1b6b111 post-push subject-content swap). Mandatory pre/post-commit `git diff --cached --stat` + `git show --stat HEAD` ritual mitigates.
 
 **EPIC commits**: T1 c24ee2b · T2 0d69bf3 · T3 23a33b1 · T4 490c0ec · T5 0505bb4 · T6 7cf5b02 · T7 1b6b111 · T8 e97c357 · T9 (this commit).
 
+### 🟢 Shipped — `atmux story signoff` / `unsignoff` verbs + `mergeMode` field (ADR-175, EPIC e-fa58a2f9, 2026-05-18)
+
+Closes two CLI gaps surfaced during rentx E1 reviewer signoff (operator-authorized raw SQL bypass on `s-425249d0` / `s-dc19b96e` / `s-f5797a08` / `s-cb99f131` at 2026-05-17 13:55 MYT). Per [ADR-175](docs/adr/175-story-signoff-verb-and-trunk-direct-merge-mode.md):
+
+- **`atmux story signoff <id> [--as <member>] [--note <text>]`** (NEW — [ADR-175 GAP 1](docs/adr/175-story-signoff-verb-and-trunk-direct-merge-mode.md)) — flips `stories.review_signoff = 1`. Refuses outside `status=review`. Caller-role gate: pass `--as` (operator override) OR be `role=reviewer` per `team.json`. Audit entry `{ signedOffBy, signedOffAt, note }` appended to `stories.extra.signoffAudit[]` (append-only, epoch-ms timestamps for sub-second ordering).
+- **`atmux story unsignoff <id> [--as <member>] [--note <text>]`** (NEW — ADR-175 GAP 1 reversal) — flips back to `0`. Refuses outside `status=review` AND refuses when `story.mergeTaskId` is set (signoff already consumed by gitter dispatch; use the merge-task abort flow instead — ADR-175 OQ-1). Counter-entry `{ unsignedBy, unsignedAt, note }` appended to the same audit array.
+- **`atmux story add --merge-mode feature-branch|trunk-direct`** (NEW flag — [ADR-175 GAP 2](docs/adr/175-story-signoff-verb-and-trunk-direct-merge-mode.md)) — opts a Story into one of two integration shapes. Default `feature-branch` preserves the existing state machine (`review → merging → done`, synthesizes the gitter merge-Task). `trunk-direct` skips `merging` entirely (`review → done` becomes legal; signoff bit still required — review gate intact). Suits platform / infra stories (submodule attach, nginx symlink, systemd unit, deploy provisioning) where there is no merge artifact.
+- **`KanbanStory.mergeMode`** schema field with trunk-direct state-machine branching at `src/core/story.ts::advanceStory`. Refuses `trunk-direct → merging` with explicit "no merging phase" error (foot-gun gate). Refuses `trunk-direct review → done` without signoff with the documented "reviewer signoff missing" error (matches the existing feature-branch `review → merging` gate verbatim).
+- **`stories.extra.signoffAudit[]`** audit trail — rides through the existing `extra` JSON column round-trip in [`src/core/repositories/kanban-repo.ts`](src/core/repositories/kanban-repo.ts) (NOT in `KNOWN_STORY_FIELDS`, per ADR-091's extra-JSON-append pattern). Zero new repo wiring; zero migration impact on the audit array itself.
+- **Migration v9 → v10** — `ALTER TABLE stories ADD COLUMN merge_mode TEXT DEFAULT 'feature-branch'` per ADR-126 / ADR-169 pattern. Permissive `TEXT` typing (no `CHECK` constraint); enum gated at the Zod layer + at the verb parser. Forward-compatible — a future third value (e.g. `'no-merge'` per ADR-175 OQ-3) lands additively. Existing rows backfill via the column default.
+- **Reviewer brief §6 "Decide"** ([`templates/briefs/reviewer.md`](templates/briefs/reviewer.md)) updated to the canonical 3-step path: `atmux story signoff` → `atmux story advance --to merging` → `atmux done <review-task-id>`. Documents the `--as <member>` operator override + the `--unsignoff` reversal gate.
+- **[ADR-007 §Amendment](docs/adr/007-pull-kanban.md)** (append-only) points at ADR-175 from the §OQ2 reviewer-signoff-gate origin.
+- **Tests** — 90 paired-test cases under [`tests/unit/verbs/story.test.ts`](tests/unit/verbs/story.test.ts) covering: parseAddArgs (`--merge-mode` happy + bogus enum), parseSignoffFlags (happy + dangling + unknown), `storySignoff` (bit flip + audit append + status gate + role gate + operator override + missing-member ConfigError + idempotent re-call + no-state.db ConfigError), `storyUnsignoff` (counter-entry + `mergeTaskId`-set refusal + status gate + role gate), full feature-branch state-machine via canonical signoff verb path, 4 rentx E1 trunk-direct shape repros (one parameterized test per `s-425249d0` / `s-dc19b96e` / `s-f5797a08` / `s-cb99f131`), feature-branch regression control, trunk-direct-without-signoff refusal, trunk-direct-to-merging foot-gun refusal, verb-layer `$ATMUX_MEMBER` threading. Coverage: `src/core/story.ts` 100% funcs / 95.52% lines; `src/schema/kanban.ts` 100% / 100%; `src/verbs/story.ts` 100% funcs / 82.45% lines. EPIC ships: T0 9551ebf (cherry-pick) / T1 f666ddd (be-1) / T2 13db114 (be-2) / T3 5573cf0 (be-1) / T4 this commit.
+- **Closes the rentx-driver SQL-bypass class** — no more `UPDATE stories SET status='done'` operator authorizations on the reviewer-signoff or merging-skip paths. ADR-175 status flip `proposed → accepted` pending reviewer-trunk-signoff (gated per ADR-091).
+
 ### 🟢 Shipped — `atmux cockpit rotate <session-name>` — Rung C canonical rotation verb (ADR-167, EPIC e-0b90d6ac, 2026-05-18)
 
-Operator-fired rotation of cockpit role panes (`medic`, `sentinel`, `<team-name>`) with brief-paste-ready handoff. Closes the previously manual `/bruh` skill §3a fallback (Rung C of the escalation chain — Rung A = member rotate, Rung B = lead rotate via medic, Rung D = full cockpit rebuild). Caller-scope=driver only per [ADR-033](docs/adr/033-caller-scope-gate.md). `superdriver` unconditionally refused (operator REPL pane).
+Operator-fired rotation of cockpit role panes (`medic`, `sentinel`, `<team-name>`) with brief-paste-ready handoff. Closes the previously manual `/bruh` skill §3a fallback (Rung C of the escalation chain — Rung A = member rotate, Rung B = lead rotate via medic, Rung D = full cockpit rebuild). Caller-scope=driver only per [ADR-033](docs/adr/033-kanban-driver-only-flag.md). `superdriver` unconditionally refused (operator REPL pane).
 
 - **[`src/verbs/cockpit-rotate.ts`](src/verbs/cockpit-rotate.ts)** (NEW) — full verb implementation. Argv parser + 4 pre-flight gates (user-not-typing on superdriver compose-box, pane-idle on target window, uptime ≥60min on per-role session-start marker, never-rotate-superdriver) + per-role respawn matrix (medic / sentinel-claude / sentinel-cursor / team-driver) + handoff write-path + audit log. Test seams exposed on `CockpitRotateOpts` for hermetic fixtures (`loadCockpit`, `safeSendKeysWithVerify`, `autoStartMedicLoop`, `autoStartSentinelLoop`, `readAuditLog`, `readLeadOutboxTail`, `atomicWrite`).
 - **[`src/abstractions/claude-account-wrapper.ts`](src/abstractions/claude-account-wrapper.ts)** (NEW) — pure resolver per [ADR-094](docs/adr/094-c-alias-spawn-convention.md) c-alias convention. Maps `claudeAccount.configDir` to the operator's shell wrapper name (`/root/.claude → claude`, `-unum → c-u`, `-icloud → c-ic`, `-ifca → c-i`); unknown configDirs throw `ConfigError` with the registered-set enumeration. Load-bearing for medic + sentinel-claude respawn lines; skipped for sentinel-cursor (no claude TUI) + team-driver (cageRetryLoop per [ADR-162](docs/adr/162-atmux-owns-tmux-infrastructure.md)).
@@ -612,7 +1094,7 @@ Operator-fired rotation of cockpit role panes (`medic`, `sentinel`, `<team-name>
 - **ADR-153: auto-promotion rules — kanban-blocked → complaint (24h) / driver-inbox → flag (12h) / lead-outbox → inbox_messages (6h) + `blocked_at` column (proposed)** ([docs/adr/153-auto-promotion-rules.md](docs/adr/153-auto-promotion-rules.md)). Three deterministic, idempotent, cron-driven rules that auto-promote stale signals from low-visibility to high-visibility surfaces. R1: kanban Tasks at `status=blocked` aged >24h auto-file a complaint with `blocker_class="dep-not-shipped"` default (override via `[blocker_class:X]` Task-body marker); auto-resolves when the Task transitions out of blocked. R2: driver-inbox rows with no triage glyph aged >12h auto-append a `[stale-inbox]` flag entry (one-shot, persists until manual `atmux flag resolve`). R3: lead-outbox `## Open` rows unacked >6h auto-emit a heads-up via `inbox_messages` (dedup'd by `relates_to_outbox` predicate; auto-archives via existing `atmux outbox --ack`). New `tasks.blocked_at INTEGER NULL` column set in same transaction as `status='blocked'` UPDATE; existing-row backfill heuristic `blocked_at = claimed_at` is an acknowledged cut-over compromise. Wires into existing whip cycle (extended turn appends `runGroomPass()` — no new cron line); standalone invocation via `atmux groom [--rules R1,R2,R3] [--dry-run]`. Thresholds configurable per-team via `team.json.groom.autoPromotionThresholds` (`r1Hours`/`r2Hours`/`r3Hours`), fleet-default via `cockpit.json`. Every rule carries a `NOT EXISTS (... opened_via=<rule-id> ...)` idempotence predicate — reviewer's load-bearing audit-row. All 8 §Decision-anchor pre-flags folded (default class + idempotence + cron-not-write-hook + flag-stays-one-cycle + backfill compromise + configurable thresholds + cross-team deferred + R3 dedup). Closes complaint `c-33475fd6` (originator: driver-claude-sopx /bruh sweep 2026-05-16 00:17 MYT). Kanban Task `t-28a75ee5` (T1 doc; T2–T7 staged impl). Temporal-overlay sibling of ADR-152; foundation freshness signal for ADR-151 (unblocker).
 
 ### 🟢 Shipped — proposed ADRs
-- **ADR-152: atmux blockers list unified verb (proposed)** ([docs/adr/152-atmux-blockers-list-unified-verb.md](docs/adr/152-atmux-blockers-list-unified-verb.md)). New `atmux blockers list [--json] [--class <c>] [--source <s>] [--max-age <duration>]` verb fans across the 7 coordination surfaces (kanban / complaints / flags / driver-inbox / lead-outbox / decisions / todo) and emits normalized rows `{id, source, opened_at, age, summary, blocker_class, suggested_action, related_task_id?}`. 8-value `blocker_class` closed enum: `decision-pending` / `member-stuck` / `cross-lane-WIP` / `tooling-broken` / `stale-claim` / `dep-not-shipped` / `review-pending` / `push-policy-gate`. READ-ONLY aggregation layer — markdown surfaces stay markdown; SQLite surfaces (kanban, complaints) gain one additive `blocker_class` column; works BEFORE AND AFTER ADR-154 storage port. Closes complaint `c-1d28fc72` (originator: driver-claude-sopx 2026-05-15). Kanban Task `t-94a1c95e` (T1 doc; T2–T6 staged impl). Foundation for ADR-151 (unblocker) + ADR-153 (auto-promotion) + ADR-154 (storage port).
+- **ADR-152: atmux blockers list unified verb (proposed)** ([docs/adr/152-blockers-list-unified-verb.md](docs/adr/152-blockers-list-unified-verb.md)). New `atmux blockers list [--json] [--class <c>] [--source <s>] [--max-age <duration>]` verb fans across the 7 coordination surfaces (kanban / complaints / flags / driver-inbox / lead-outbox / decisions / todo) and emits normalized rows `{id, source, opened_at, age, summary, blocker_class, suggested_action, related_task_id?}`. 8-value `blocker_class` closed enum: `decision-pending` / `member-stuck` / `cross-lane-WIP` / `tooling-broken` / `stale-claim` / `dep-not-shipped` / `review-pending` / `push-policy-gate`. READ-ONLY aggregation layer — markdown surfaces stay markdown; SQLite surfaces (kanban, complaints) gain one additive `blocker_class` column; works BEFORE AND AFTER ADR-154 storage port. Closes complaint `c-1d28fc72` (originator: driver-claude-sopx 2026-05-15). Kanban Task `t-94a1c95e` (T1 doc; T2–T6 staged impl). Foundation for ADR-151 (unblocker) + ADR-153 (auto-promotion) + ADR-154 (storage port).
 
 ### 📋 Proposed — ombudsman role + release-notes layout (ADR-147)
 
@@ -854,7 +1336,7 @@ Operator-fired rotation of cockpit role panes (`medic`, `sentinel`, `<team-name>
   in `state_kv` (feature `superdoctor-self-heal-escalation`, key per
   `complaint_id`, 1h re-fire window). Documented end-to-end in
   [`docs/superdoctor.md` § "Self-escalation when fixes keep failing"](docs/superdoctor.md).
-- **`atmux stop --soft` + resume manifest** ([ADR-087](docs/adr/087-stop-soft-resume-manifest.md)).
+- **`atmux stop --soft` + resume manifest** ([ADR-087](docs/adr/087-atmux-stop-soft.md)).
   Graceful counterpart to bare `stop`. Reads kanban for in-progress Tasks,
   sends a `# soft-stop incoming — finish current operation, no new claims`
   send-keys comment to each non-shell member pane (enter-false so it lands
@@ -875,7 +1357,7 @@ Operator-fired rotation of cockpit role panes (`medic`, `sentinel`, `<team-name>
   isolated (one exception doesn't poison the report); all three reads are
   LIVE per ADR-068 §HC#4. Unblocks the whip §2.5 wire (t-21c3aa64) and
   status-verb row (t-9281649f).
-- **`atmux groom` absorbs lane-drift-check** ([ADR-062](docs/adr/062-lane-claim-auto-pickup.md)
+- **`atmux groom` absorbs lane-drift-check** ([ADR-127](docs/adr/127-lane-claim-auto-pickup.md)
   §5). Daily 04:00 sweep gains a 6th sub-op — lane-drift detection across
   every team in the cockpit. Paired with the every-2-min cron lane-tick
   line (below) for fast-feedback drift detection inside the day; groom is
@@ -884,7 +1366,7 @@ Operator-fired rotation of cockpit role panes (`medic`, `sentinel`, `<team-name>
   a window). The standalone `atmux lane-drift-check` verb stays — useful
   for operator ad-hoc diagnosis.
 - **Cron emits `lane-tick` line + `crons.laneTickEnabled` kill-switch**
-  ([ADR-062](docs/adr/062-lane-claim-auto-pickup.md) §Decision 4).
+  ([ADR-127](docs/adr/127-lane-claim-auto-pickup.md) §Decision 4).
   `src/core/cron.ts::renderCronLines()` now emits a 7th line at end-of-
   block: `*/2 * * * * <baseEnv> lane-tick >> <atmuxDir>/logs/lane-tick.log
   2>&1`. Hardcoded `*/2` cadence per §OQ2 (tighter amplifies classifier
@@ -903,7 +1385,7 @@ Operator-fired rotation of cockpit role panes (`medic`, `sentinel`, `<team-name>
   runs via indexed query instead of grep. SQLite migration in
   `src/migrations/`.
 - **`atmux epic` + `atmux story` sub-verbs — bun port**
-  ([ADR-007](docs/adr/007-pull-model-kanban.md) hierarchy verbs).
+  ([ADR-007](docs/adr/007-pull-kanban.md) hierarchy verbs).
   Ports `lib/epic.sh` (318 LOC) + `lib/story.sh` (388 LOC) to TS. New
   `src/core/epic.ts` (state-machine + auto-dispatch summary on review
   entry) + `src/core/story.ts` (4 gates: non-test child tasks done →
@@ -991,7 +1473,7 @@ Operator-fired rotation of cockpit role panes (`medic`, `sentinel`, `<team-name>
   `-b <base>-<member>` per call; cockpit's `--force-cycle` safety gate
   prevents accidental cross-member branch overwrite.
 
-### ✨ Added — Driver-only Task refuse-gate ([ADR-033](docs/adr/033-driveronly-task-refuse-gate.md))
+### ✨ Added — Driver-only Task refuse-gate ([ADR-033](docs/adr/033-kanban-driver-only-flag.md))
 
 - **`Task.driverOnly: boolean`** schema field. `claim --next` skips
   driver-only Tasks during auto-pickup; explicit `atmux claim <id>` from
@@ -1030,7 +1512,7 @@ Operator-fired rotation of cockpit role panes (`medic`, `sentinel`, `<team-name>
   surface under `<atmuxDir>/logs/events.jsonl` (single line per state-
   mutating verb invocation; replaces ad-hoc per-verb logs).
 - **`fix(cron)` config-driven schedules** — see ADR-079 §A above.
-- **`fix(budget-probe)` opt-in OAuth refresh** ([ADR-078](docs/adr/078-budget-probe-oauth-refresh.md))
+- **`fix(budget-probe)` opt-in OAuth refresh** ([ADR-078](docs/adr/078-probe-budget-refresh-opt-in.md))
   — cockpit-rebuild TUI race resolved.
 
 ### ♻️ Changed — post-0.6.0

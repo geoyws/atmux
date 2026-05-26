@@ -165,6 +165,8 @@ overrideable until the relevant Task lands.
    fallback ON, the default); `crossLaneClaim=false` ≡
    `lanePickup.strict=true` (strict-lane mode). See
    `src/schema/team.ts::TeamKanban`.
+> ⚠️ AMENDED 2026-05-20 by ADR-176: criterion (d) added — skip revert when Task has progressing children. Append-only convention — body unchanged. See [§Amendment 2026-05-20 — partial supersession by ADR-176](#amendment-2026-05-20--partial-supersession-by-adr-176-oq5-gains-4th-criterion) below for the full §OQ5 → 4-criterion algorithm.
+
 5. **OQ5 — drift threshold**: stuck-claim revert criteria. **Default**:
    `claimedAt > 30min` AND pane non-READY > 5min AND no commit
    referencing `<task-id>` in last 30min → revert to `todo` + raise
@@ -174,3 +176,13 @@ overrideable until the relevant Task lands.
    positives during deep-thinking READY pauses; commit-reference
    check prevents reverting Tasks that ARE making progress but
    haven't called `done` yet.
+
+## §Amendment 2026-05-20 — partial supersession by ADR-176 (§OQ5 gains 4th criterion)
+
+§OQ5's 3-criterion stuck-claim revert algorithm (`claimedAt > 30min` AND pane non-READY > 5min AND no commit referencing `<task-id>` in last 30min) is extended by [ADR-176](./176-epic-aware-lane-drift-revert.md) (`Supersedes (in part): ADR-127 §OQ5 — the 3-criterion auto-revert algorithm gains a 4th criterion (epic-children-progressing). Original 3 criteria remain; this ADR tightens the algorithm, never relaxes it`).
+
+The supersession is **scoped to OQ5 only**. The original three criteria stand verbatim; ADR-176 adds a 4th — `epic-children-progressing` — that prevents reverting a parent EPIC-class Task while its child Tasks in the same Epic are still making commits. The 4-criterion algorithm is strictly **tighter** than the 3-criterion baseline: a Task that would have reverted under the 3-criterion check may now be held under the 4-criterion check if an epic-team child is still shipping. ADR-176 never relaxes a revert — only delays one when there's evidence the epic is still alive.
+
+All other §OQ resolutions (OQ1 ladder-mode rollback, OQ2 backoff-noise budget, OQ3 first-claim-wins race, OQ4 cross-lane fallback default) stand verbatim — ADR-176 doesn't touch them. The §Decision's lane-pickup core (worker-driven auto-claim + cross-lane fallback default + first-claim-wins) is unchanged.
+
+**Filed via** t-2d750500 (T2 sweep of [docs/audits/adr-supersession-audit-2026-05-20.md](../audits/adr-supersession-audit-2026-05-20.md) D1 drift #10, 2026-05-20).

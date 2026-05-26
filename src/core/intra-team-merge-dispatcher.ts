@@ -46,6 +46,7 @@ import type { GitSpawn } from "../abstractions/branch-merge.ts";
 import { type BranchMergeState, isTerminalState } from "./branch-merge-state.ts";
 import type { QueueMergeFn } from "./committer-sweep.ts";
 import { type IntraTeamMergeContext, performMerge } from "./intra-team-merge.ts";
+import { type IntraTeamRebaseContext, performRebase } from "./intra-team-rebase.ts";
 import {
   flipTasksMergedInRange,
   type PostMergeFlipOpts,
@@ -118,6 +119,16 @@ export interface ProductionDispatcherDeps {
     toSha: string,
     opts?: PostMergeFlipOpts,
   ) => Promise<PostMergeFlipResult>;
+  /** ADR-134 T3+T4 (t-2b7572d7): resolve the member's worktree
+   *  absolute path from the branch name. Called when the walk enters
+   *  `rebasing` state and the dispatcher dispatches
+   *  {@link performRebase}. Default reads `team.worktreeIsolation`
+   *  + `team.worktreeRoot` convention via the verb layer; the
+   *  dispatcher itself takes the resolver as an injection so tests
+   *  pin deterministic paths. Returns `null` when the worktree
+   *  can't be resolved — `performRebase` then transitions to
+   *  `conflict` with reason "missing worktree". */
+  resolveMemberWorktreePath?: (memberBranch: string) => Promise<string | null>;
 }
 
 const DEFAULT_MAX_ITERATIONS = 10;
@@ -135,7 +146,7 @@ const CALLER_DRIVEN_STATES: ReadonlySet<BranchMergeState> = new Set<BranchMergeS
 // ---------- Owner derivation ----------
 
 /** Derive the member-name from the `<base>-<member>` branch convention
- *  (per ADR-082 + ADR-088 + ADR-134). The base IS the prefix; the
+ *  (per ADR-082 + ADR-179 + ADR-134). The base IS the prefix; the
  *  remainder is the member.
  *
  *  Returns `null` when the branch doesn't match the convention
@@ -157,7 +168,17 @@ export function deriveMember(memberBranch: string, base: string): string | null 
  *  passed in, no module-level globals.
  *
  *  - **ownerOpenTaskCount** — kanban rows where `owner=<member>` AND
- *    `status` in {`todo`, `in-progress`}. Zero = gate clears.
+ *    `status='in-progress'`. Zero = gate clears. (§Amendment
+ *    2026-05-22 — `todo` tasks NO LONGER count: they represent
+ *    future work, not active blockers on the current commit set.
+ *    Pre-amendment semantics structurally wedged long-lived parent-
+ *    team members like docs / lead / reviewer who always carry
+ *    forward todos; manual sqlite reset required on every fan-in.
+ *    Original safety intent — "don't fan in mid-active-work" — is
+ *    preserved by `in-progress` alone, combined with the worktree-
+ *    clean gate. Epic-team fan-in uses a different gate semantic
+ *    (all-tasks-done = epic complete) in `verbs/epic-merge.ts` and
+ *    is NOT touched by this amendment.)
  *  - **worktreeIsClean** — `git status --porcelain` empty against
  *    `teamRoot`. The base worktree's cleanliness gates the
  *    destructive `git checkout <base>` inside `mergeMember`.
@@ -186,13 +207,15 @@ export async function resolvePreMergeGate(
   // intervenes. (We pick a finite sentinel — Number.MAX_SAFE_INTEGER
   // is overkill; the gate only checks `> 0`, so any positive value
   // suffices.)
+  // §Amendment 2026-05-22 — only `in-progress` tasks count as
+  // active blockers. `todo` is future work and does NOT gate fan-in
+  // (see jsdoc above for rationale + ADR-134 §Amendment 2026-05-22).
   let ownerOpenTaskCount = 0;
   if (member === null) {
     ownerOpenTaskCount = 1;
   } else {
-    const todoTasks = deps.kanbanRepo.listTasks({ owner: member, status: "todo" });
     const inProgressTasks = deps.kanbanRepo.listTasks({ owner: member, status: "in-progress" });
-    ownerOpenTaskCount = todoTasks.length + inProgressTasks.length;
+    ownerOpenTaskCount = inProgressTasks.length;
   }
 
   // Worktree cleanliness against teamRoot. Empty porcelain = clean.
@@ -278,21 +301,59 @@ export function productionQueueMergeAttempt(deps: ProductionDispatcherDeps): Que
 
     // Entry-state check — refuse fast on in-flight / terminal rows.
     const entryRow = deps.mergerRepo.getState(memberBranch);
-    const entryState: BranchMergeState = entryRow?.state ?? "open";
+    let entryState: BranchMergeState = entryRow?.state ?? "open";
     if (isTerminalState(entryState)) {
-      deps.logger.log(`[dispatcher] ${memberBranch}: refuse-terminal state='${entryState}'`);
-      return { queued: false, reason: `terminal: ${entryState}` };
+      // §Amendment 2026-05-22 (II) (t-0542595c) — auto-re-enter from
+      // `merged` when the member branch has shipped MORE commits past
+      // the previous fan-in. `aheadCount` is `git rev-list --count
+      // <base>..<branch>`; if it's >0, the branch tip has advanced
+      // beyond what was last merged into `<base>`, which is the
+      // signal that fan-in needs to re-run. Pre-amendment, `merged`
+      // was permanently terminal — long-lived members had to
+      // operator-reset `merger_state.state` manually after EVERY
+      // additional commit. `conflict` and `reverted` stay terminal
+      // (per ADR-134 §state-machine "From conflict or reverted,
+      // transition back to in_progress is manual — operator
+      // resolves"). Auto-resets row to `open` so the gate machinery
+      // takes the standard entry path; the in-walk loop below picks
+      // up from there.
+      if (entryState === "merged" && aheadCount > 0) {
+        deps.logger.log(
+          `[dispatcher] ${memberBranch}: auto-re-enter from merged (+${aheadCount} past prior fan-in)`,
+        );
+        deps.mergerRepo.transition({
+          memberBranch,
+          next: "open",
+          note: `auto-re-entry: +${aheadCount} new commits past prior fan-in (§Amendment 2026-05-22 II)`,
+          by: "cron",
+          transitionedAt: now(),
+        });
+        entryState = "open";
+      } else {
+        deps.logger.log(`[dispatcher] ${memberBranch}: refuse-terminal state='${entryState}'`);
+        return { queued: false, reason: `terminal: ${entryState}` };
+      }
     }
     if (CALLER_DRIVEN_STATES.has(entryState)) {
       deps.logger.log(`[dispatcher] ${memberBranch}: refuse-caller-driven state='${entryState}'`);
       return { queued: false, reason: `in-flight: ${entryState}` };
     }
-    // `rebasing` / `merging` are also in-flight (another tick is
-    // moving the row), but the sweep already filtered those at the
-    // eligibility step. Defense-in-depth: re-refuse here so a direct
-    // dispatcher invocation from T3 (post-pubsub) gets the same
-    // protection.
-    if (entryState === "rebasing" || entryState === "merging") {
+    // `merging` is in-flight (another tick / process is mid-merge).
+    // Defense-in-depth re-refuse so a direct dispatcher invocation
+    // from T3 (post-pubsub) gets the same protection the sweep
+    // eligibility step provides.
+    //
+    // `rebasing` is NOT refused here (was pre-T3+T4) — the dispatcher
+    // now drives the rebase via {@link performRebase} when the walk
+    // enters `rebasing`. A row sitting in `rebasing` at entry means a
+    // prior tick transitioned in_progress → rebasing but never
+    // executed the rebase (the pre-T3+T4 strand bug, or a process
+    // crash mid-rebase). Re-entry into the rebase path closes that
+    // strand at the cost of one extra `git rebase --abort` no-op
+    // if the prior tick succeeded but didn't get to write
+    // `ready_to_merge` (which the BEGIN IMMEDIATE wrap of repo
+    // .transition() shouldn't allow, but is defensive against).
+    if (entryState === "merging") {
       deps.logger.log(`[dispatcher] ${memberBranch}: refuse-in-flight state='${entryState}'`);
       return { queued: false, reason: `in-flight: ${entryState}` };
     }
@@ -357,6 +418,67 @@ export function productionQueueMergeAttempt(deps: ProductionDispatcherDeps): Que
       //     walk made no forward progress on this tick
       if (isTerminalState(r.state)) break;
       if (CALLER_DRIVEN_STATES.has(r.state)) break;
+
+      // ADR-134 T3+T4 (t-2b7572d7): rebasing → dispatcher drives the
+      // rebase, then breaks to enforce "one rebase per tick max" per
+      // the Task body. The merge step (ready_to_merge → tested) lands
+      // on the NEXT cron tick; rebase + merge in one invocation would
+      // double the wall-clock cost of an already expensive operation
+      // and defeat the cron-cadence-as-latency-floor design.
+      if (r.state === "rebasing") {
+        const worktreePath =
+          deps.resolveMemberWorktreePath !== undefined
+            ? await deps.resolveMemberWorktreePath(memberBranch)
+            : null;
+        if (worktreePath === null) {
+          // Resolver returned null — operator config or worktree-isolation
+          // disabled. Transition to terminal conflict with descriptive
+          // reason so the row doesn't sit in rebasing forever.
+          const reason = `cannot resolve worktree for ${memberBranch}`;
+          deps.mergerRepo.transition({
+            memberBranch,
+            next: "conflict",
+            note: reason,
+            by: "cron",
+            transitionedAt: now(),
+          });
+          deps.logger.log(`[dispatcher] ${memberBranch}: rebase-tick state='conflict' reason='${reason}'`);
+          lastState = "conflict";
+          lastReason = reason;
+          madeProgress = true;
+          break;
+        }
+        const rebaseCtx: IntraTeamRebaseContext = {
+          memberBranch,
+          base: deps.baseBranch,
+          memberWorktreePath: worktreePath,
+          repo: deps.mergerRepo,
+          by: "cron",
+          now,
+          git: deps.git,
+        };
+        if (deps.fetch !== undefined) rebaseCtx.fetch = deps.fetch;
+        try {
+          const rebaseResult = await performRebase(rebaseCtx);
+          deps.logger.log(
+            `[dispatcher] ${memberBranch}: rebase-tick state='${rebaseResult.state}' changed=${rebaseResult.changed} reason='${rebaseResult.reason}'`,
+          );
+          lastState = rebaseResult.state;
+          lastReason = rebaseResult.reason;
+          if (rebaseResult.changed) madeProgress = true;
+        } catch (e) {
+          // performRebase only throws on fetch failure or unexpected
+          // git breakage (rev-parse HEAD after clean rebase). Leave
+          // the row in `rebasing` for the next tick to retry — the
+          // alternative (forcing terminal) would surface a transient
+          // network blip as a permanent failure.
+          const msg = e instanceof Error ? e.message : String(e);
+          deps.logger.log(`[dispatcher] ${memberBranch}: rebase-tick threw (leaving in rebasing): ${msg}`);
+        }
+        // Break regardless of outcome — one rebase per cron tick max.
+        break;
+      }
+
       if (!r.changed) break;
     }
 

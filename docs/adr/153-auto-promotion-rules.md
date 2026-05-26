@@ -1,6 +1,6 @@
 # ADR-153: Auto-promotion rules — kanban-blocked → complaint (24h) / driver-inbox → flag (12h) / lead-outbox → inbox_messages (6h) + `blocked_at` column
 
-**Status**: proposed
+**Status**: Accepted — ratified by driver 2026-05-21 (3 idempotent threshold-keyed cron-driven rules: R1 kanban-blocked→complaint 24h, R2 driver-inbox→flag 12h, R3 lead-outbox→inbox_messages 6h; `blocked_at` column added; §OQ recommendations as-written)
 **Date**: 2026-05-16
 **Author**: atmux team (docs / t-28a75ee5)
 **Parent EPIC**: t-cc7e9ce2

@@ -145,7 +145,7 @@ One additional Claude Max seat (the gitter member). At Opus rates that's ~$15-30
 - **[ADR-082](082-worktree-isolation-per-member.md) + [ADR-084](084-worktree-per-member-branch-model.md)** — worktree-isolation substrate. atmux-team runs `worktreeIsolation: true` since 2026-05-12 (t-e82c1d11); gitter operates on those per-member branches.
 - **[ADR-032](032-socket-pubsub-messaging-layer.md)** — task-done cascade socket-pubsub. Gitter subscribes to atmux-team's own pubsub socket (per ADR-134 §Triggers + §"Reviewer pre-flag" #1 own-team only).
 - **[ADR-077](077-superdoctor-cockpit-role.md) + [ADR-133](133-medic-rename.md)** — medic. Medic's authority extends to rotating gitter if it goes wedged (same as any team member).
-- **[ADR-132](132-pluggable-martinet.md)** — martinet. Martinet observes gitter's pane like any team-member pane; same nudge / escalation policy.
+- **[ADR-132](132-pluggable-martinet.SUPERSEDED.md)** — martinet. Martinet observes gitter's pane like any team-member pane; same nudge / escalation policy.
 - **[ADR-007](007-pull-kanban.md)** — pull-model kanban. `atmux task move <id> done` cascade is the upstream trigger for the gitter's commit step.
 - **`templates/briefs/gitter.md`** — gitter brief v2 (~11kb). Operative when this gitter member spawns. No edits needed; the brief is policy-neutral about which team's gitter is running it.
 - **CLAUDE.md** "Lead is a thin relay" rule — reinforced by this ADR (lead doesn't do trunk merges; gitter does).
@@ -204,7 +204,7 @@ conflict-hint: <short prose>             # known collision surface (file paths, 
    against an active per-member branch. Body has source-branch / target /
    owning-lane / conflict-hint fields. Gitter:
      a. Read source Task body — note source-branch + conflict-hint.
-     b. Verify base worktree is clean (per ADR-088 §Decision-3 safeguard).
+     b. Verify base worktree is clean (per ADR-179 §Decision-3 safeguard).
      c. git -C <teamRoot> fetch origin
      d. git -C <teamRoot> checkout <base>
      e. git -C <teamRoot> merge --no-ff <source-branch>

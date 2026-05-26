@@ -1,4 +1,4 @@
-// ADR-087: Whip Velocity-Gate — strike counter state file.
+// ADR-177: Whip Velocity-Gate — strike counter state file.
 //
 // Pure module — IO is the only side effect, isolated behind two
 // readers (`readStrikes`, `readStrikeRecord`) + one writer
@@ -22,6 +22,7 @@
 // classifier-swallow) ship under the sibling T2 Task t-e91fec98 once
 // reply validation lands.
 
+import { createHash } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { atomicWrite, readTextOrNull } from "../abstractions/fs.ts";
@@ -45,6 +46,23 @@ export interface StrikeRecord {
   /** Last verdict reason that incremented the counter — surfaced as
    *  "observable-evidence" in the eventual complaint body. */
   lastReason: string | null;
+  /** ADR-177 §"What V1 defers" (Task t-5d85dddb §3 reply validation):
+   *  epoch seconds when the action-menu was last delivered to the lead
+   *  pane via `safeSendKeys`. Null when no menu is pending. Next tick
+   *  uses this to decide whether to enforce the `^[ABCD]:` reply marker
+   *  + whether to strike on missed-ETA / classifier-swallow.
+   *
+   *  Stored as an optional field for backward-compat with v1 strike files
+   *  written before the wire-up landed — readers default missing to null. */
+  menuSentAtSec?: number | null;
+  /** ADR-177 §"What V1 defers" (Task t-5d85dddb §3 reply validation):
+   *  sha-256 hash of the lead-pane capture text taken at menu-send
+   *  time. Lets the next tick distinguish "lead replied (pane changed,
+   *  inspect reply for marker)" from "classifier-swallow (pane
+   *  unchanged — keystroke dropped)" without re-capturing the original
+   *  text. Truncated to {@link HASH_HEX_LEN} hex chars for storage
+   *  economy. */
+  menuPaneHash?: string | null;
 }
 
 /** Full strikes file shape. Keyed by symptom hash. */
@@ -71,7 +89,32 @@ function emptyStrikesFile(): StrikesFile {
 
 /** Initial empty record. */
 function emptyStrikeRecord(): StrikeRecord {
-  return { count: 0, firstStrikeSec: null, lastStrikeSec: null, lastReason: null };
+  return {
+    count: 0,
+    firstStrikeSec: null,
+    lastStrikeSec: null,
+    lastReason: null,
+    menuSentAtSec: null,
+    menuPaneHash: null,
+  };
+}
+
+/** Pane-hash truncation length (hex chars). 16 chars = 64 bits — collision
+ *  probability negligible at the per-team-tick volume the menu state
+ *  sees (≤1 hash write per 5min tick). Storage economy: full sha256 hex
+ *  is 64 chars; truncating to 16 keeps the JSON file small without
+ *  meaningful collision risk for the pane-change-detection use case. */
+const HASH_HEX_LEN = 16;
+
+/** Compute a stable, short hash of a lead-pane capture text. Used by the
+ *  poke velocity-gate wiring (Task t-5d85dddb §3) to detect whether the
+ *  lead pane changed between the menu-send tick and the next tick:
+ *  - hash matches stored `menuPaneHash` → pane unchanged → classifier-
+ *    swallow (keystroke dropped, lead never saw the menu);
+ *  - hash differs → lead reacted (look for `^[ABCD]:` marker in the new
+ *    capture to decide whether the reply was compliant). */
+export function computePaneHash(text: string): string {
+  return createHash("sha256").update(text).digest("hex").slice(0, HASH_HEX_LEN);
 }
 
 /** Read the whole strikes file. Returns an empty in-memory record
@@ -100,6 +143,8 @@ export async function readStrikesFile(atmuxDir: string, teamName: string): Promi
             firstStrikeSec: typeof rec.firstStrikeSec === "number" ? rec.firstStrikeSec : null,
             lastStrikeSec: typeof rec.lastStrikeSec === "number" ? rec.lastStrikeSec : null,
             lastReason: typeof rec.lastReason === "string" ? rec.lastReason : null,
+            menuSentAtSec: typeof rec.menuSentAtSec === "number" ? rec.menuSentAtSec : null,
+            menuPaneHash: typeof rec.menuPaneHash === "string" ? rec.menuPaneHash : null,
           };
         }
       }
@@ -147,11 +192,17 @@ export async function incrementStrike(
 ): Promise<StrikeRecord> {
   const file = await readStrikesFile(atmuxDir, teamName);
   const existing = file.records[symptomHash] ?? emptyStrikeRecord();
+  // Bumping the counter must NOT wipe a pending menu — `recordMenuSent`
+  // owns the menu fields. Preserve `menuSentAtSec` + `menuPaneHash` so a
+  // sequence of (sendMenu → strikeOnNextTickForNoMarker) reads the same
+  // pending-menu state the caller stored on the prior tick.
   const next: StrikeRecord = {
     count: existing.count + 1,
     firstStrikeSec: existing.count === 0 ? nowSec : existing.firstStrikeSec,
     lastStrikeSec: nowSec,
     lastReason: reason,
+    menuSentAtSec: existing.menuSentAtSec ?? null,
+    menuPaneHash: existing.menuPaneHash ?? null,
   };
   file.records[symptomHash] = next;
   await writeStrikesFile(atmuxDir, teamName, file);
@@ -174,6 +225,53 @@ export async function resetStrikeRecord(
   await writeStrikesFile(atmuxDir, teamName, file);
 }
 
+/** Record that the action-menu was just delivered to the lead pane —
+ *  stores `menuSentAtSec` + `menuPaneHash` on the existing strike record
+ *  (or creates one with count=0 if no prior strike). Called by the poke
+ *  velocity-gate after `safeSendKeys` returns `sent`, so the next tick
+ *  can validate the reply via `^[ABCD]:` marker check + pane-change
+ *  detection (Task t-5d85dddb §3). Does NOT increment the counter —
+ *  strike accounting is `incrementStrike`'s responsibility. */
+export async function recordMenuSent(
+  atmuxDir: string,
+  teamName: string,
+  symptomHash: string,
+  paneHash: string,
+  nowSec: number,
+): Promise<void> {
+  const file = await readStrikesFile(atmuxDir, teamName);
+  const existing = file.records[symptomHash] ?? emptyStrikeRecord();
+  file.records[symptomHash] = {
+    ...existing,
+    menuSentAtSec: nowSec,
+    menuPaneHash: paneHash,
+  };
+  await writeStrikesFile(atmuxDir, teamName, file);
+}
+
+/** Clear the pending-menu fields on a strike record without touching
+ *  the count. Called by the poke velocity-gate AFTER it has consumed
+ *  the prior tick's pending-menu state (compliant reply found, OR
+ *  missing-marker strike fired, OR classifier-swallow strike fired) so
+ *  subsequent ticks don't re-validate the same delivery. Idempotent —
+ *  no-op when the record has no menu state OR no record exists. */
+export async function clearPendingMenu(
+  atmuxDir: string,
+  teamName: string,
+  symptomHash: string,
+): Promise<void> {
+  const file = await readStrikesFile(atmuxDir, teamName);
+  const existing = file.records[symptomHash];
+  if (existing === undefined) return;
+  if (existing.menuSentAtSec === null && existing.menuPaneHash === null) return;
+  file.records[symptomHash] = {
+    ...existing,
+    menuSentAtSec: null,
+    menuPaneHash: null,
+  };
+  await writeStrikesFile(atmuxDir, teamName, file);
+}
+
 /** Stable hash for the velocity-gate's "stalled" symptom. V1 has one
  *  symptom; T2 (t-e91fec98) extends with eta-lied / classifier-swallow
  *  / process-frozen variants. Centralized so the hash string is
@@ -182,7 +280,7 @@ export function velocityStalledSymptomHash(teamName: string): string {
   return `whip-${teamName}-velocity-stalled`;
 }
 
-// ---------- ADR-087 §T2 (Task t-e91fec98 §2) symptom hash variants ----------
+// ---------- ADR-177 §T2 (Task t-e91fec98 §2) symptom hash variants ----------
 //
 // Three failure modes the whip can recognize that warrant distinct
 // complaint rows — each gets its own dedup key so an alternating

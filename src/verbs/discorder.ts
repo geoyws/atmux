@@ -10,7 +10,8 @@
 //
 // Both subverbs read-only on kanban / git / decisions; never claim,
 // never plan. flock single-instance per subverb defends against
-// overlapping cron ticks (mirrors lib/whip.sh:53-59).
+// overlapping invocations (mirrors lib/whip.sh:53-59). Post-ADR-233
+// the cron-fired path is operator-on-demand / orchd-routed.
 //
 // Discord delivery via `whip-progress` / `whip-heartbeat` templates —
 // bash discorder literally renders `[whip-progress]` in the header,
@@ -46,6 +47,7 @@ import { defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { ConfigError, LockError, LockTimeoutError, UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
+import { isRenameInProgress } from "./team-rename-fs.ts";
 
 // ---------- Args ----------
 
@@ -241,6 +243,17 @@ export async function discorder(
     ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
   };
   const atmuxDir = opts.atmuxDir ?? (await getAtmuxDir(dirOpts));
+
+  // ADR-027 §Consequences — rename.lock guard. The digest aggregates
+  // commits + done Tasks via team.json + kanban reads; a rename mid-
+  // flight mutates team.json :.name + cron markers + session anchor,
+  // any of which could fold into the digest's header / footer and
+  // surface an indeterminate team-name in Discord. Skip silently;
+  // the next tick after release lands a coherent digest.
+  if (await isRenameInProgress(atmuxDir)) {
+    logger.log(`discorder ${parsed.sub}: skipping — rename.lock present (ADR-027)`);
+    return 0;
+  }
 
   // Per-subverb single-instance lock. Bash uses
   // `<atmuxDir>/state/discorder-progress.lock` — same path here.

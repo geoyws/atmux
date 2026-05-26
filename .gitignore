@@ -1,4 +1,5 @@
-.atmux/
+.atmux/*
+!.atmux/team.json
 .claude/team.json
 .claude/settings.json
 .claude/scheduled_tasks.lock
@@ -17,3 +18,9 @@ dist/
 
 # Local worktree caches
 .claude/worktrees/
+
+# Rust build artifacts (rust/atmux-listener/target)
+rust/*/target/
+
+# Local scratch dirs (test fixtures during dev)
+.scratch/

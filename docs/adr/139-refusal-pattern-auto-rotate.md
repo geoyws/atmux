@@ -30,7 +30,7 @@ These all share one fingerprint: **the agent is alive but the output stream cont
 Today's stack handles **adjacent** signal classes but not this one:
 
 - **Medic** ([ADR-077](077-superdoctor-cockpit-role.md) / [ADR-133](133-medic-rename.md)) — hourly diagnosis loop with rotation authority. Trigger heuristics are context-pressure based (token count, idle time, complaint patterns). **Doesn't scan pane content for refusal language.**
-- **Martinet** ([ADR-132](132-pluggable-martinet.md)) — 270s cadence pane-state observer + nudge fire. Currently scans pane-state for `paneState`, `ctxTokens`, `lastEnterPushable`, `queuedComposerText`. **Doesn't classify refusal-language; doesn't act on it.**
+- **Martinet** ([ADR-132](132-pluggable-martinet.SUPERSEDED.md)) — 270s cadence pane-state observer + nudge fire. Currently scans pane-state for `paneState`, `ctxTokens`, `lastEnterPushable`, `queuedComposerText`. **Doesn't classify refusal-language; doesn't act on it.**
 - **`safe-send.ts`** (post-[ADR-138] verified-send-keys, when it lands) — classifies pane states into `accepted-*` / `refused-shell` / `refused-modal` / `refused-rate-limit` / `refused-unknown`. **That's `KEYSTROKE refusal` (the pane won't accept input), not `agent refusal` (the agent produces refusal output).** Different signal class. Same auto-rotate target verb, but distinct trigger heuristic.
 - **Complaints** ([`src/schema/complaints.ts`](../../src/schema/complaints.ts)) — generic incident-report shape; `sourceKind` allowlist is `superdoctor | member | operator | cli | cron`; no `refusal` class today. Grep `src/verbs/complaints.ts` + `src/schema/complaints.ts` + `src/core/` confirms: **no existing refusal-language classifier**. T2 sibling new module (not extension of an existing surface).
 
@@ -64,7 +64,7 @@ Two scan sites, same classifier:
 | Tier | Cadence | Role |
 |---|---|---|
 | **Medic** (W2) | hourly | **Primary detector NOW** (pre-martinet-ship). Backstop after martinet ships. |
-| **Martinet** (W3) | 270s | **Primary detector POST-martinet-ship** ([ADR-132](132-pluggable-martinet.md) prerequisite). |
+| **Martinet** (W3) | 270s | **Primary detector POST-martinet-ship** ([ADR-132](132-pluggable-martinet.SUPERSEDED.md) prerequisite). |
 
 Both scan every team's every member-pane. Both record positive detections to a new SQLite table `refusal_events` at the team's `.atmux/state.db` (per-team residency mirrors [[project_kanban_storage_sqlite]] + [ADR-076](076-) inbox-in-tasks convention).
 
@@ -215,7 +215,7 @@ Storage: ~100 bytes/refusal_event × N positive detections per day. Even at 100 
 ## Cross-references
 
 - **[ADR-077](077-superdoctor-cockpit-role.md)** — Medic cockpit role. **Primary detector PRE-martinet-ship** (D2). Same authority bounds; no new tier carve-out needed. Medic post-T3 wiring lands in §Decision-D1 hourly sweep extension.
-- **[ADR-132](132-pluggable-martinet.md)** — Martinet pluggable cockpit role. **Primary detector POST-martinet-ship** (D2). Medic retains as hourly backstop. Refusal scan is one of martinet's pane-state observers per ADR-132 §D1 Observation shape — folds naturally into the existing `paneState` field as an enriched classification.
+- **[ADR-132](132-pluggable-martinet.SUPERSEDED.md)** — Martinet pluggable cockpit role. **Primary detector POST-martinet-ship** (D2). Medic retains as hourly backstop. Refusal scan is one of martinet's pane-state observers per ADR-132 §D1 Observation shape — folds naturally into the existing `paneState` field as an enriched classification.
 - **ADR-138** (verified send-keys — not yet shipped at file time) — Different signal class (KEYSTROKE refusal vs AGENT refusal — per §Grep findings) but **same auto-rotate target verb**. Both signals converge on `atmux rotate <member>` as the structural fix. ADR-139 does NOT subsume ADR-138 (or vice versa).
 - **[ADR-133](133-medic-rename.md)** — superdoctor → medic rename. D2 references "medic" terminology consistently; pre-ADR-133-acceptance readers may see "superdoctor" still in source comments — same role, renamed surface.
 - **[ADR-009](009-auto-rotation.md)** — `atmux rotate` verb mechanics. D3 fires this verb verbatim.
@@ -267,7 +267,7 @@ Reviewer flips this ADR Proposed → Accepted in a follow-up commit per the EPIC
 - **T3 shipped** (commit `83df0d7`, 2026-05-16): `atmux refusal-scan` verb + `src/core/refusal-scan.ts` + migration v6→v7 (`refusal_events` table) + medic invocation contract in ADR-077 §F7 + martinet forward-compat hook in ADR-132 §D1 / `templates/briefs/martinet.md` + 22 unit tests.
 - **T4 in flight** (this commit): `team.json::refusalDetection` Zod schema + `resolveRefusalConfig` defaults applier + `src/core/refusal-trigger.ts::runRefusalTriggerForTeam` (threshold gate + exempt + cap + rotate-fire + log + complaint) + `renderMemberRefusalRotate` Discord template + unit tests.
 
-The "post-rotate verification" path described in §D4 is intentionally deferred from T4 — T4 ships the immediate rotate-fire + cap-hit + complaint surfaces, but the T+5min re-scan is a scheduler concern that belongs in the medic's hourly tick loop or a dedicated cron, not in the trigger module itself. The T4 commit DOES file a `cap-hit` complaint when the day's rotation cap is saturated; if a 4th refusal lands on the same member same day, the same complaint row's `source_count` bumps (per the ADR-087 dedup contract) and the operator sees N+1 instead of a fresh row.
+The "post-rotate verification" path described in §D4 is intentionally deferred from T4 — T4 ships the immediate rotate-fire + cap-hit + complaint surfaces, but the T+5min re-scan is a scheduler concern that belongs in the medic's hourly tick loop or a dedicated cron, not in the trigger module itself. The T4 commit DOES file a `cap-hit` complaint when the day's rotation cap is saturated; if a 4th refusal lands on the same member same day, the same complaint row's `source_count` bumps (per the ADR-177 dedup contract) and the operator sees N+1 instead of a fresh row.
 
 ## Acceptance gates (per EPIC §Acceptance)
 
