@@ -47,6 +47,7 @@ import {
   checkSubmoduleIntegrity,
   checkTeam,
   checkTmuxVersionMismatch,
+  checkVendoredTmuxBinary,
   checkTuiCommandsClaudeOverride,
   checkTuis,
   checkWebhook,
@@ -1082,6 +1083,13 @@ describe("checkCronIntervalDivisors", () => {
 });
 
 // ---------- ADR-083 follow-up §DEFERRED row 2: checkCronOrphans ----------
+//
+// Post-ADR-233 the underlying `findCronOrphans` is a no-op shim that
+// always returns `[]` (cron auto-install retired; orchd is the runtime).
+// Every test below asserts the post-retire contract: regardless of
+// crontab content, the probe surfaces zero rows. Once the cron-shim
+// modules are deleted in cleanup-EPIC, this whole block goes with
+// them.
 
 describe("checkCronOrphans", () => {
   const fakeIO = (body: string | null, opts: { available?: boolean } = {}): CrontabIO => ({
@@ -1121,7 +1129,15 @@ describe("checkCronOrphans", () => {
     expect(rows).toEqual([]);
   });
 
-  test("orphan block (atmuxDir gone) → one yellow row with team+dir", async () => {
+  // Post-ADR-233 contract: `findCronOrphans` shim returns `[]` for
+  // every input — atmux no longer manages crontab blocks, so no
+  // marker-block can be orphaned. These two tests assert the
+  // post-retire behavior against the two fixture bodies that would
+  // have surfaced rows under the pre-ADR-233 impl. Once the cron-shim
+  // modules retire in cleanup-EPIC, the underlying probe + this whole
+  // describe block go with them.
+
+  test("(ADR-233) orphan-looking block → no rows (shim returns [])", async () => {
     const body = [
       "# >>> atmux:team=ghost — managed by atmux start; do not edit by hand",
       "*/5 * * * * ATMUX_DIR=/srv/ghost/.atmux /bin/atmux whip",
@@ -1131,17 +1147,10 @@ describe("checkCronOrphans", () => {
       crontab: fakeIO(body),
       dirExists: async () => false,
     });
-    expect(rows.length).toBe(1);
-    const r = rows[0];
-    expect(r?.status).toBe("yellow");
-    expect(r?.label).toBe("cron-config");
-    expect(r?.detail).toContain("ghost");
-    expect(r?.detail).toContain("/srv/ghost/.atmux");
-    expect(r?.detail).toContain("does not exist");
-    expect(r?.hint).toContain("crontab -e");
+    expect(rows).toEqual([]);
   });
 
-  test("mix of live + orphan blocks → only orphans surface", async () => {
+  test("(ADR-233) mix of live + orphan-looking blocks → no rows (shim returns [])", async () => {
     const body = [
       "# >>> atmux:team=alpha — managed by atmux start; do not edit by hand",
       "*/5 * * * * ATMUX_DIR=/srv/alpha/.atmux /bin/atmux whip",
@@ -1155,9 +1164,7 @@ describe("checkCronOrphans", () => {
       crontab: fakeIO(body),
       dirExists: async (p: string) => live.has(p),
     });
-    expect(rows.length).toBe(1);
-    expect(rows[0]?.detail).toContain("ghost");
-    expect(rows[0]?.detail).not.toContain("alpha");
+    expect(rows).toEqual([]);
   });
 });
 
@@ -4068,6 +4075,103 @@ describe("checkTmuxVersionMismatch", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.status).toBe("yellow");
     expect(rows[0]?.detail).toContain("failed to run");
+  });
+});
+
+describe("checkVendoredTmuxBinary", () => {
+  function tmuxOk(stdout: string): SpawnResult {
+    return {
+      exitCode: 0,
+      stdout,
+      stderr: "",
+      argv: ["-V"],
+      cmd: "/opt/atmux/current/bin/tmux",
+      signalled: null,
+      durationMs: 0,
+    };
+  }
+
+  test("vendored binary absent → yellow 'vendored-tmux-missing'", async () => {
+    const rows = await checkVendoredTmuxBinary({
+      existsSync: () => false,
+      tmux: async () => tmuxOk("tmux 3.6a"),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.label).toBe("vendored-tmux-missing");
+    expect(rows[0]?.detail).toContain("/opt/atmux/current/bin/tmux");
+    expect(rows[0]?.hint).toContain("build:install");
+    expect(rows[0]?.hint).toContain("ATMUX_TMUX_BIN");
+  });
+
+  test("vendored present + exact pinned version 3.6a → no rows", async () => {
+    const rows = await checkVendoredTmuxBinary({
+      existsSync: () => true,
+      tmux: async () => tmuxOk("tmux 3.6a"),
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("vendored present + version drift (3.6b) → yellow 'version-drift'", async () => {
+    const rows = await checkVendoredTmuxBinary({
+      existsSync: () => true,
+      tmux: async () => tmuxOk("tmux 3.6b"),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.label).toBe("vendored-tmux-version-drift");
+    expect(rows[0]?.detail).toContain("3.6b");
+    expect(rows[0]?.detail).toContain("3.6a");
+    expect(rows[0]?.hint).toContain("build:install");
+  });
+
+  test("vendored present + unparseable -V → yellow 'version-drift unparseable'", async () => {
+    const rows = await checkVendoredTmuxBinary({
+      existsSync: () => true,
+      tmux: async () => tmuxOk("tmux next-3.7"),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.label).toBe("vendored-tmux-version-drift");
+    expect(rows[0]?.detail).toContain("unparseable");
+  });
+
+  test("vendored present + tmux -V exits non-zero → yellow 'version-drift exited'", async () => {
+    const rows = await checkVendoredTmuxBinary({
+      existsSync: () => true,
+      tmux: async () => ({
+        exitCode: 2,
+        stdout: "",
+        stderr: "permission denied",
+        argv: ["-V"],
+        cmd: "/opt/atmux/current/bin/tmux",
+        signalled: null,
+        durationMs: 0,
+      }),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.label).toBe("vendored-tmux-version-drift");
+    expect(rows[0]?.detail).toContain("exited 2");
+  });
+
+  test("vendored present + spawn throws → yellow 'version-drift failed to run'", async () => {
+    const rows = await checkVendoredTmuxBinary({
+      existsSync: () => true,
+      tmux: async () => {
+        throw new Error("ENOENT");
+      },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.label).toBe("vendored-tmux-version-drift");
+    expect(rows[0]?.detail).toContain("failed to run");
+  });
+
+  test("custom vendoredPath + expectedVersion respected", async () => {
+    const rows = await checkVendoredTmuxBinary({
+      existsSync: (p) => p === "/custom/tmux",
+      tmux: async () => tmuxOk("tmux 3.5"),
+      vendoredPath: "/custom/tmux",
+      expectedVersion: "3.5",
+    });
+    expect(rows).toEqual([]);
   });
 });
 

@@ -1,5 +1,19 @@
 # Runbook — stall recovery (ADR-057 v1.1.x)
 
+> **2026-05-24 alignment** — atmux is event-driven via the Rust
+> `atmux-orchd` daemon + Honker substrate now. The cron-fired
+> `*/2 atmux watchdog` / `*/5 lane-stall-tick` lines referenced
+> below are operator-on-demand post-[ADR-233](adr/233-cron-auto-install-disabled-trust-orchd.md)
+> (cron auto-install retired; orchd is the runtime). Cockpit-W3
+> Sentinel was decommissioned per [ADR-211](adr/211-retire-sentinel-role-distribute-to-honker-consumers.md);
+> Ombudsman + Jury retired per [ADR-214](adr/214-retire-ombudsman-lead-absorbs-complaint-adjudication-via-honker.md)
+> + [ADR-213](adr/213-retire-jury-reviewer-absorbs-acceptance-criteria.md);
+> Medic narrowed to on-demand `atmux medic diagnose <team>` per
+> [ADR-212](adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md).
+> Routine observation + nudging migrates to orchd consumers
+> (`atmux:complaint-consumer`, `atmux:rotation-consumer`, the merge /
+> dissolve / push / spawn / dissolve-solo-worker handlers).
+
 **Audience:** operators reading a Discord ping or a flag entry from
 ADR-057's stall-prevention surfaces and needing to know what to do
 about it. Most pings represent auto-recovery already in progress —

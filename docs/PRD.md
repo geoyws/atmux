@@ -14,6 +14,23 @@
 > below describe the legacy JSON path; the bun port is dual-path with
 > `state.db` as source of truth when present.
 
+> **2026-05-24 architecture alignment.** atmux is now event-driven via the
+> Rust **`atmux-orchd`** daemon (per-team process, 10 in-process consumers + 4
+> tickers) backed by the **Honker** in-DB messaging substrate. atmux NEVER
+> writes to crontab — cron auto-install retired per [ADR-233](adr/233-cron-auto-install-disabled-trust-orchd.md);
+> orchd is the runtime. Cockpit roles trimmed: **Sentinel retired**
+> ([ADR-211](adr/211-retire-sentinel-role-distribute-to-honker-consumers.md)),
+> **Medic narrowed to on-demand `atmux medic diagnose <team>`**
+> ([ADR-212](adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md)),
+> **Jury retired** ([ADR-213](adr/213-retire-jury-reviewer-absorbs-acceptance-criteria.md);
+> reviewer absorbs acceptance criteria), **Ombudsman retired**
+> ([ADR-214](adr/214-retire-ombudsman-lead-absorbs-complaint-adjudication-via-honker.md);
+> `complaint.filed` → consumer → tell-lead). Retired roles ship as safety net
+> until cleanup-EPIC ≥30 days after e-honker-observation-watchdogs runs stable.
+> Honker topics live at `src/schema/events.ts::TOPICS`; emit via
+> `emit(db, payload)` in `src/abstractions/events.ts` (auto-detects honker-loaded
+> state per [ADR-202 §Amendment 2026-05-24](adr/202-honker-in-db-messaging-substrate.md)).
+
 ---
 
 ## 1. Vision

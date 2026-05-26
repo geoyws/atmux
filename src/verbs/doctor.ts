@@ -25,6 +25,7 @@
 //   the red row, and prunes phantom-inbox entries (other fix paths
 //   deferred per ADR-019).
 
+import { existsSync as fsExistsSync } from "node:fs";
 import { readlink as fsReadlink } from "node:fs/promises";
 import { join } from "node:path";
 import { type CrontabIO, defaultCrontabIO } from "../abstractions/crontab.ts";
@@ -83,6 +84,7 @@ import {
   probeDriverPane,
 } from "../core/driver-pane-health.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
+import { resolveTmuxBin } from "../core/resolve-tmux-bin.ts";
 import { inspectClaudeReadiness } from "../core/pane-readiness.ts";
 import { classifyText } from "../core/pane-state.ts";
 import {
@@ -1183,20 +1185,27 @@ export interface CheckCronBlockOpts {
  * but the cron block was absent; doctor missed it, so the only signal
  * was the silently-stalled lead the morning after.
  *
+ * **2026-05-24 post-ADR-233**: cron auto-install retired (orchd is the
+ * runtime via Honker substrate). The probe now expects ZERO cron blocks
+ * by default — `team.kanban.cronAutoInstall === false` is the canonical
+ * post-cutover state and this probe is silent. The check is retained
+ * for the deprecation window so teams that explicitly opt back in (via
+ * `atmux cron-install`) get the safety net.
+ *
  * Returns:
  * - `[]` when team is null (the team-shape row already surfaced).
- * - `[]` when `team.kanban.cronAutoInstall === false` — explicit opt-out;
- *    the operator manages cron some other way and the absence is intent.
+ * - `[]` when `team.kanban.cronAutoInstall === false` — explicit opt-out
+ *    (canonical post-ADR-233 state) or operator manages cron some other way.
  * - `[]` when `crontab` is not on the host (no PATH match); ADR-083
  *    posture is "skip gracefully on cron-less hosts."
  * - `[]` when the team's marker header (`# >>> atmux:team=<name> …`) is
  *    present anywhere in the current crontab.
- * - one RED row otherwise, hinting `atmux cron-install`.
+ * - one RED row otherwise, hinting `atmux cron-install` (legacy path).
  *
- * RED (not YELLOW) because the failure mode is overnight team death — a
- * GREEN doctor that hides a missing cron block is a worse outcome than
- * a noisy one. Operators who legitimately don't want a block set
- * `kanban.cronAutoInstall: false` and the row stays silent.
+ * RED (not YELLOW) because pre-ADR-233 the failure mode was overnight
+ * team death — a GREEN doctor that hid a missing cron block was worse
+ * than a noisy one. Post-ADR-233 the trigger is opt-in, so the row is
+ * actionable only for operators who explicitly armed cron.
  */
 export async function checkCronBlock(
   team: Team | null,
@@ -2558,7 +2567,7 @@ export function compareTmuxVersion(a: ParsedTmuxVersion, b: ParsedTmuxVersion): 
 export type TmuxSpawn = (argv: ReadonlyArray<string>) => Promise<SpawnResult>;
 
 const defaultTmuxSpawn: TmuxSpawn = (argv) =>
-  defaultSpawn({ cmd: "tmux", argv, expectExitCode: "any", timeoutMs: 5_000 });
+  defaultSpawn({ cmd: resolveTmuxBin(), argv, expectExitCode: "any", timeoutMs: 5_000 });
 
 export interface CheckTmuxVersionOpts {
   /** tmux spawn override. */
@@ -2657,6 +2666,106 @@ export async function checkTmuxVersionMismatch(
         label: "tmux-version-mismatch",
         detail: `host tmux ${actual} above tested ${TMUX_TESTED_VERSION}`,
         hint: "untested version; report regressions to atmux issues. Pin via ADR-163 bundled binary.",
+      },
+    ];
+  }
+  return [];
+}
+
+export interface CheckVendoredTmuxBinaryOpts {
+  /** Filesystem probe override (test seam). */
+  existsSync?: (path: string) => boolean;
+  /** tmux spawn override — invoked with the resolved binary as `cmd`. */
+  tmux?: TmuxSpawn;
+  /** Override the path probed for the vendored binary. */
+  vendoredPath?: string;
+  /** Override the version we expect the vendored binary to report. */
+  expectedVersion?: string;
+}
+
+/**
+ * ADR-191 probe — `vendored-tmux-binary`. Two yellow rows possible:
+ *
+ *   1. `vendored-tmux-missing` — `/opt/atmux/current/bin/tmux` absent.
+ *      Operators on dev builds (no `build:install` ever run) and
+ *      pre-ADR-191 deploys both land here. Self-clearing after the
+ *      build pipeline lands the binary.
+ *   2. `vendored-tmux-version-drift` — vendored binary present but
+ *      `tmux -V` against it doesn't match the ADR-191 pin (3.6a).
+ *      Indicates an out-of-date install or a hand-staged binary.
+ *
+ * Both rows are warn-class; atmux falls through to system tmux via
+ * `resolveTmuxBin()` so no behavior breaks. The probe gives the
+ * operator a discoverable signal that the resolution chain is on the
+ * fallback tier instead of the vendored tier.
+ */
+export async function checkVendoredTmuxBinary(
+  opts: CheckVendoredTmuxBinaryOpts = {},
+): Promise<DoctorRow[]> {
+  const exists = opts.existsSync ?? fsExistsSync;
+  const tmux = opts.tmux ?? defaultTmuxSpawn;
+  const vendoredPath = opts.vendoredPath ?? "/opt/atmux/current/bin/tmux";
+  const expected = opts.expectedVersion ?? TMUX_TESTED_VERSION;
+
+  if (!exists(vendoredPath)) {
+    return [
+      {
+        status: "yellow",
+        label: "vendored-tmux-missing",
+        detail: `${vendoredPath} not installed — resolveTmuxBin() falls through to system tmux`,
+        hint:
+          "ship the binary via `bun run build:install` (per ADR-191) or set " +
+          "ATMUX_TMUX_BIN to silence the fallback warning.",
+      },
+    ];
+  }
+
+  // Vendored binary present. Run `tmux -V` against the resolved binary
+  // (which is the vendored path when present) to confirm the pin.
+  let result: SpawnResult;
+  try {
+    result = await tmux(["-V"]);
+  } catch {
+    return [
+      {
+        status: "yellow",
+        label: "vendored-tmux-version-drift",
+        detail: `${vendoredPath} present but \`tmux -V\` failed to run`,
+        hint: `expected ${expected} per ADR-191; re-run build:install or check file mode.`,
+      },
+    ];
+  }
+  if (result.exitCode !== 0) {
+    return [
+      {
+        status: "yellow",
+        label: "vendored-tmux-version-drift",
+        detail: `${vendoredPath} present but \`tmux -V\` exited ${result.exitCode}`,
+        hint: `expected ${expected} per ADR-191; re-run build:install or check file mode.`,
+      },
+    ];
+  }
+  const parsed = parseTmuxVersion(result.stdout);
+  if (parsed === null) {
+    return [
+      {
+        status: "yellow",
+        label: "vendored-tmux-version-drift",
+        detail: `\`tmux -V\` output unparseable: ${result.stdout.trim().slice(0, 80)}`,
+        hint: `expected ${expected} per ADR-191; report regressions to atmux issues.`,
+      },
+    ];
+  }
+  const actual = `${parsed.major}.${parsed.minor}${parsed.suffix}`;
+  if (actual !== expected) {
+    return [
+      {
+        status: "yellow",
+        label: "vendored-tmux-version-drift",
+        detail: `vendored tmux reports ${actual}, expected ${expected}`,
+        hint:
+          "re-run `bun run build:install` to retarget /opt/atmux/current at the pinned version " +
+          "(ADR-191 §Decision).",
       },
     ];
   }
@@ -3088,6 +3197,10 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   // when a legacy cockpit lingers on the default socket. Self-clearing
   // post-migration. Never blocks.
   rows.push(...(await checkTmuxVersionMismatch()));
+  // ADR-191: vendored tmux at /opt/atmux/current/bin/tmux. Warn when
+  // absent (resolveTmuxBin() falls through to system tmux) or when
+  // present-but-version-drift. Self-clearing post-build:install.
+  rows.push(...(await checkVendoredTmuxBinary()));
   rows.push(...(await checkCockpitOnDefaultSocket()));
   // t-400a1cad: deployed-binary-lag — warn class.
   // t-400a1cad: deployed-binary-lag — warn class. Compares git HEAD +

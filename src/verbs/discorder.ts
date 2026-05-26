@@ -10,7 +10,8 @@
 //
 // Both subverbs read-only on kanban / git / decisions; never claim,
 // never plan. flock single-instance per subverb defends against
-// overlapping cron ticks (mirrors lib/whip.sh:53-59).
+// overlapping invocations (mirrors lib/whip.sh:53-59). Post-ADR-233
+// the cron-fired path is operator-on-demand / orchd-routed.
 //
 // Discord delivery via `whip-progress` / `whip-heartbeat` templates —
 // bash discorder literally renders `[whip-progress]` in the header,

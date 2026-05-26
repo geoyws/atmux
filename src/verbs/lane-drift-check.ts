@@ -18,8 +18,9 @@
 //     pre-formatted body from the helper.
 //
 // `--dry-run` (default OFF — caller must choose) prints the decisions
-// + flag bodies to stdout without mutating. Cron-fired invocation
-// passes `--reset`.
+// + flag bodies to stdout without mutating. Post-ADR-233 invocation is
+// operator-on-demand (or via a future orchd consumer); the prior
+// cron-fired path passed `--reset`.
 
 import { join } from "node:path";
 import { appendText } from "../abstractions/fs.ts";

@@ -29,6 +29,7 @@ import { closeDatabase, openDatabase } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts";
 import { probeHostPressure } from "../core/host-pressure.ts";
+import { invokeAutoMergeInCage } from "../core/auto-merge-invoke.ts";
 import { bootstrapOrchd } from "../core/orchd-bootstrap.ts";
 import { dispatchDissolveEpic as dispatchDissolveEpicImport } from "../core/orchd-dispatch/dissolve-epic.ts";
 import { dispatchEpicMerge as dispatchEpicMergeImport } from "../core/orchd-dispatch/epic-merge.ts";
@@ -87,7 +88,16 @@ export interface ParsedOrchdArgs {
    *                     subscriber offsets, recent event counts per
    *                     topic, last-handler-outcome. Operator runs it
    *                     instead of grepping logs. */
-  subverb: "start" | "drain" | "sweep" | "handle-one" | "status";
+  subverb:
+    | "start"
+    | "drain"
+    | "sweep"
+    | "handle-one"
+    | "status"
+    | "sweep-merges"
+    | "scan-context"
+    | "housekeep"
+    | "scan-budget";
   teamDir?: string;
   /** `--once`: exit after first batch (test ergonomics). */
   once?: boolean;
@@ -124,7 +134,17 @@ export interface ParsedOrchdArgs {
 }
 
 export function parseOrchdArgs(argv: ReadonlyArray<string>): ParsedOrchdArgs {
-  let subverb: "start" | "drain" | "sweep" | "handle-one" | "status" | undefined;
+  let subverb:
+    | "start"
+    | "drain"
+    | "sweep"
+    | "handle-one"
+    | "status"
+    | "sweep-merges"
+    | "scan-context"
+    | "housekeep"
+    | "scan-budget"
+    | undefined;
   let teamDir: string | undefined;
   let once = false;
   let maxEvents: number | undefined;
@@ -159,6 +179,26 @@ export function parseOrchdArgs(argv: ReadonlyArray<string>): ParsedOrchdArgs {
     }
     if (a === "--status" || a === "status") {
       subverb = "status";
+      i += 1;
+      continue;
+    }
+    if (a === "--sweep-merges" || a === "sweep-merges") {
+      subverb = "sweep-merges";
+      i += 1;
+      continue;
+    }
+    if (a === "--scan-context" || a === "scan-context") {
+      subverb = "scan-context";
+      i += 1;
+      continue;
+    }
+    if (a === "--housekeep" || a === "housekeep") {
+      subverb = "housekeep";
+      i += 1;
+      continue;
+    }
+    if (a === "--scan-budget" || a === "scan-budget") {
+      subverb = "scan-budget";
       i += 1;
       continue;
     }
@@ -353,6 +393,18 @@ export async function orchd(
   }
   if (parsed.subverb === "sweep") {
     return await orchdSweepCli(parsed);
+  }
+  if (parsed.subverb === "sweep-merges") {
+    return await orchdSweepMergesCli(parsed);
+  }
+  if (parsed.subverb === "scan-context") {
+    return await orchdScanContextCli(parsed);
+  }
+  if (parsed.subverb === "housekeep") {
+    return await orchdHousekeepCli(parsed);
+  }
+  if (parsed.subverb === "scan-budget") {
+    return await orchdScanBudgetCli(parsed);
   }
   // Adapt to ParsedCommitterArgs shape. The verb-layer functions
   // accept a superset that includes `--sweep`; we narrow to the
@@ -582,13 +634,26 @@ async function orchdHandleOneByConsumerId(
   const dbPath = join(atmuxDir, "state.db");
   const db = openDatabase(dbPath, migrations);
   try {
-    // Same dep wiring as committer.ts::committerDrainVerb so each
-    // handler dispatches against real implementations (not stubs).
+    // Same dep wiring as committer.ts::committerDrainVerb plus e-11-446429c9
+    // in-cage epic-merge invoker: when this cage IS an epic-team
+    // (team.epicTeam set), auto-merge dispatches via the in-cage
+    // `atmux epic-merge tick` verb spawn (replaces the retired
+    // ADR-091 cron tick). For parent cages without epicTeam set, the
+    // central dispatcher falls through to its safety-net
+    // skipped-not-mine (cross-cage routing is the deferred ADR-232
+    // §D2 OQ-1 work).
+    const epicRepoPath = atmuxDir.endsWith("/.atmux")
+      ? atmuxDir.slice(0, -"/.atmux".length)
+      : atmuxDir;
     bootstrapOrchd({
       db,
       mergeDeps: {
-        dispatchEpicMerge: async (epicId) =>
-          dispatchEpicMergeImport({ epicId }, { localTeamName: team.name }),
+        dispatchEpicMerge: async (epicId) => {
+          if (team.epicTeam !== undefined && team.epicTeam.parentEpicKanbanId === epicId) {
+            return await invokeAutoMergeInCage(epicRepoPath);
+          }
+          return await dispatchEpicMergeImport({ epicId }, { localTeamName: team.name });
+        },
       },
       dissolveDeps: {
         dispatchDissolveEpic: async (epicId) =>
@@ -678,6 +743,262 @@ async function orchdSweepCli(parsed: ParsedOrchdArgs): Promise<number> {
   const result = await orchdSweep(atmuxDir);
   process.stdout.write(`${JSON.stringify(result)}\n`);
   return 0;
+}
+
+/**
+ * `atmux orchd --sweep-merges` — e-11-446429c9 §S5.
+ *
+ * One-shot reconcile pass: walks epics, dispatches merge for
+ * unattended ready ones. Fires from the Rust orchd's 5-min in-process
+ * ticker (S6) — NOT a crontab entry, dies with the orchd process.
+ *
+ * Same dispatch closure as orchdHandleOneByConsumerId so event-driven
+ * + sweep paths share one code path. Writes JSON result to stdout
+ * for the Rust caller's log capture.
+ */
+/**
+ * `atmux orchd --scan-budget` — e-14-0f156732.
+ *
+ * Consolidates the existing budget pieces: probeBudget (per-account
+ * rate-limit probe), runBudgetCheck (orchestrator with band-warning
+ * dedup + refresh-soon dedup), discord.ts renderers (no-LLM
+ * templates per ADR-237). Fires from orchd's 15min in-process ticker
+ * alongside ctx-scan.
+ *
+ * Default behavior: probe every unique claudeAccount across team
+ * members, fire Discord band-warning when crossing thresholds
+ * (50% / 75% / 85% / 90% remaining → ping each band ONCE per epoch).
+ * Pause/fallback path remains opt-in via team.json::fallback.enabled.
+ *
+ * Dedup: budget-warning-state.ts already keys on (account, window,
+ * band) — operator's per-account dedup ask satisfied by existing
+ * mechanism.
+ */
+async function orchdScanBudgetCli(parsed: ParsedOrchdArgs): Promise<number> {
+  const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
+  const atmuxDir = await getAtmuxDir(dirOpts);
+  const team = await requireTeam(dirOpts);
+  try {
+    const { runBudgetCheck } = await import("../core/whip-budget-check.ts");
+    const { isoLocalTs } = await import("../core/orchd-log-fmt.ts");
+    const { send: discordSend } = await import("../abstractions/discord.ts");
+    const nowMs = Date.now();
+    const nowSec = Math.floor(nowMs / 1000);
+    const verdict = await runBudgetCheck(
+      {
+        atmuxDir,
+        nowMs,
+        nowSec,
+        team: {
+          name: team.name,
+          members: team.members.map((m) => {
+            const cb: { name: string; claudeAccount?: string } = { name: m.name };
+            if (m.claudeAccount !== undefined && m.claudeAccount !== null) {
+              cb.claudeAccount = m.claudeAccount;
+            }
+            return cb;
+          }),
+          // Fallback path stays opt-in — orchd's scan does NOT auto-spawn
+          // fallback cages; that requires team.fallback.enabled per ADR-058.
+          ...(team.fallback !== undefined ? { fallback: team.fallback } : {}),
+        },
+        config: {
+          // Defaults match whip-budget-check.ts production defaults.
+          budgetPauseThreshold: 90,
+          budgetResumeThreshold: 80,
+          budgetWarningBands: [0.5, 0.25, 0.15],
+          budgetRefreshLeadMins: 30,
+        },
+      },
+      { discordSend },
+    );
+    const ts = isoLocalTs();
+    const emoji = verdict === "active" ? "💰" : verdict.startsWith("paused") ? "🟡" : "💤";
+    process.stdout.write(
+      `[${ts}] ${emoji} budget-scan · verdict=${verdict} · accounts=${new Set(team.members.map((m) => m.claudeAccount).filter((a) => a !== undefined && a !== null && a !== "")).size}\n`,
+    );
+    return 0;
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    process.stderr.write(`[budget-scan] 🔴 errored: ${reason}\n`);
+    return 0; // non-fatal — sweep ticker continues
+  }
+}
+
+/**
+ * `atmux orchd --housekeep` — e-12-640853f3 §S4.
+ *
+ * Daily maintenance pass: prune old events table rows (where every
+ * consumer has progressed past them), drop stale subscriber_offsets
+ * for retired consumer-ids, unlink rotated log archives older than
+ * 30 days, drop merger_state terminal rows older than 30 days.
+ *
+ * Fires from the Rust orchd's 24h in-process ticker — NOT a crontab
+ * entry per operator stance.
+ */
+async function orchdHousekeepCli(parsed: ParsedOrchdArgs): Promise<number> {
+  const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
+  const atmuxDir = await getAtmuxDir(dirOpts);
+  const dbPath = join(atmuxDir, "state.db");
+  const db = openDatabase(dbPath, migrations);
+  try {
+    const { housekeep } = await import("../core/orchd-housekeep.ts");
+    const { isoLocalTs } = await import("../core/orchd-log-fmt.ts");
+    const {
+      ORCHD_MERGE_CONSUMER_ID,
+      ORCHD_DISSOLVE_CONSUMER_ID,
+      ORCHD_PUSH_CONSUMER_ID,
+      ORCHD_DISSOLVE_SOLO_WORKER_CONSUMER_ID,
+      ORCHD_SPAWN_ON_READY_CONSUMER_ID,
+      ORCHD_SPAWN_ON_UNBLOCKED_CONSUMER_ID,
+      ORCHD_COMPLAINT_CONSUMER_ID,
+      ORCHD_ROTATION_CONSUMER_ID,
+    } = await import("../core/orchd-bootstrap.ts");
+    const activeConsumerIds = [
+      "atmux:gitter",
+      "atmux:lane-router",
+      ORCHD_MERGE_CONSUMER_ID,
+      ORCHD_DISSOLVE_CONSUMER_ID,
+      ORCHD_PUSH_CONSUMER_ID,
+      ORCHD_DISSOLVE_SOLO_WORKER_CONSUMER_ID,
+      ORCHD_SPAWN_ON_READY_CONSUMER_ID,
+      ORCHD_SPAWN_ON_UNBLOCKED_CONSUMER_ID,
+      ORCHD_COMPLAINT_CONSUMER_ID,
+      ORCHD_ROTATION_CONSUMER_ID,
+    ];
+    const result = await housekeep({
+      db,
+      atmuxDir,
+      activeConsumerIds,
+      log: (msg) => process.stderr.write(`${msg}\n`),
+    });
+    const ts = isoLocalTs();
+    const errCount = result.errors.length;
+    const emoji = errCount > 0 ? "🔴" : "🧹";
+    process.stdout.write(
+      `[${ts}] ${emoji} housekeep · events=${result.eventsPruned} offsets=${result.offsetsPruned} ` +
+        `rotated-logs=${result.rotatedLogsPruned} merger-terminal=${result.mergerTerminalPruned} ` +
+        `errors=${errCount}\n`,
+    );
+    for (const err of result.errors) {
+      process.stderr.write(`[${ts}] 🔴 housekeep · ${err}\n`);
+    }
+    return 0;
+  } finally {
+    closeDatabase(db);
+  }
+}
+
+/**
+ * `atmux orchd --scan-context` — e-13-04c8b3bf §S4.
+ *
+ * Walks each member's pane, captures statusline, parses context-%,
+ * emits `member.context-high` event for members at/above threshold
+ * (default 40%, operator-overrideable via team.json::contextThreshold).
+ * Lead consumer (ADR-212 / e-cc3728bf) wakes + decides preclear /
+ * rotate / leave-alone.
+ *
+ * Fires from the Rust orchd's 15-min in-process ticker — NOT a
+ * crontab entry per operator stance.
+ */
+async function orchdScanContextCli(parsed: ParsedOrchdArgs): Promise<number> {
+  const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
+  const atmuxDir = await getAtmuxDir(dirOpts);
+  const team = await requireTeam(dirOpts);
+  const dbPath = join(atmuxDir, "state.db");
+  const db = openDatabase(dbPath, migrations);
+  try {
+    const { scanContextAcrossMembers } = await import("../core/orchd-context-scan.ts");
+    const { buildWindowName, getSessionName, resolveTeamSocket } = await import(
+      "../core/common.ts"
+    );
+    const { createTmux } = await import("../abstractions/tmux.ts");
+
+    const sessionName = await getSessionName({ ...dirOpts, team });
+    const socketPath = resolveTeamSocket(team);
+    const tmux = createTmux({ socketPath });
+
+    const threshold = Number.isFinite(Number(process.env.ATMUX_CONTEXT_THRESHOLD))
+      ? Number(process.env.ATMUX_CONTEXT_THRESHOLD)
+      : undefined;
+
+    const scanDeps: Parameters<typeof scanContextAcrossMembers>[0] = {
+      db,
+      team,
+      tmux,
+      sessionName,
+      resolveWindowTarget: (member) => {
+        const windowName = buildWindowName(member.name, member.emoji, member.label, member.role);
+        return `${sessionName}:${windowName}`;
+      },
+      log: (msg) => process.stderr.write(`${msg}\n`),
+    };
+    if (threshold !== undefined) scanDeps.threshold = threshold;
+    const result = await scanContextAcrossMembers(scanDeps);
+
+    // Human-readable summary line (mirrors sweep-merges shape).
+    const { isoLocalTs } = await import("../core/orchd-log-fmt.ts");
+    const ts = isoLocalTs();
+    const emoji = result.membersEmitted > 0 ? "📊" : "💤";
+    const verdict =
+      result.membersEmitted > 0
+        ? `${result.membersEmitted} over threshold → member.context-high emitted`
+        : result.membersOverThreshold > 0
+          ? `${result.membersOverThreshold} over threshold (deduped)`
+          : "all under threshold";
+    process.stdout.write(
+      `[${ts}] ${emoji} ctx-scan · ${result.membersConsidered} members · ${verdict} · ` +
+        `ok=${result.perMember.filter((m) => m.outcome === "ok").length} ` +
+        `unknown=${result.membersUnknown} errored=${result.membersErrored}\n`,
+    );
+    // Per-member emit lines (only when emitted, for operator scan).
+    for (const pm of result.perMember) {
+      if (pm.outcome === "over-threshold" && pm.emitted === true) {
+        process.stdout.write(
+          `[${ts}] 📊 ctx-scan:${pm.member} ${pm.percent}% (≥${threshold ?? 40}%) emitted\n`,
+        );
+      }
+    }
+    return 0;
+  } finally {
+    closeDatabase(db);
+  }
+}
+
+async function orchdSweepMergesCli(parsed: ParsedOrchdArgs): Promise<number> {
+  const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
+  const atmuxDir = await getAtmuxDir(dirOpts);
+  const team = await requireTeam(dirOpts);
+  const dbPath = join(atmuxDir, "state.db");
+  const db = openDatabase(dbPath, migrations);
+  try {
+    const { sweepMerges } = await import("../core/orchd-merge-sweep.ts");
+    const { formatSweepReport } = await import("../core/orchd-log-fmt.ts");
+    const epicRepoPath = atmuxDir.endsWith("/.atmux")
+      ? atmuxDir.slice(0, -"/.atmux".length)
+      : atmuxDir;
+    const result = await sweepMerges({
+      db,
+      dispatchEpicMerge: async (epicId) => {
+        if (team.epicTeam !== undefined && team.epicTeam.parentEpicKanbanId === epicId) {
+          return await invokeAutoMergeInCage(epicRepoPath);
+        }
+        return await dispatchEpicMergeImport({ epicId }, { localTeamName: team.name });
+      },
+      log: (msg) => process.stderr.write(`${msg}\n`),
+    });
+    // e-12-640853f3 §S2 — default render is human-readable summary
+    // (one header line + only-interesting per-epic verdicts). JSON form
+    // available via env override for machine consumers.
+    if (process.env.ATMUX_ORCHD_SWEEP_JSON === "1") {
+      process.stdout.write(`${JSON.stringify(result)}\n`);
+    } else {
+      process.stdout.write(`${formatSweepReport(result)}\n`);
+    }
+    return 0;
+  } finally {
+    closeDatabase(db);
+  }
 }
 
 async function orchdStatus(parsed: ParsedOrchdArgs): Promise<number> {

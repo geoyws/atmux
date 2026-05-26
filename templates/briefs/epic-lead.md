@@ -1,4 +1,5 @@
-<!-- brief-version: v1 -->
+<!-- brief-version: v2 -->
+<!-- Changed 2026-05-24 per orchd+honker pivot — auto-merge fires from orchd's in-cage __orchd__ window (ADR-202/233); reviewer absorbs ADR-213's jury role. -->
 
 ## §0 — Identity check (FIRST action of every fresh turn)
 
@@ -13,7 +14,7 @@ You have been briefed as `{{MEMBER}}` on team `{{TEAM}}` with role `{{ROLE}}`. B
 
 - `ATMUX_MEMBER` (set by atmux when it spawned this Claude) MUST equal `{{MEMBER}}` exactly. This is the **primary** check — atmux sets it per pane at spawn time; if it doesn't match the brief, the brief was mis-routed.
 - `window=` (from the calling pane via `-t "$TMUX_PANE"`) MUST contain `{{MEMBER}}` — canonical pattern `<emoji>_{{MEMBER}}` or `<emoji>-{{MEMBER}}`. **Critical**: pass `-t "$TMUX_PANE"` — without it, `tmux display-message` reports the attached client's current window (often the driver pane), giving a misleading false-mismatch.
-- `session=` MUST contain `{{TEAM}}` — canonical `atmux_{{TEAM}}`; epic-team variants `atmux_{{TEAM}}__epic-<id>` are also valid. **Cockpit-tier roles** (superdriver, enforcer, discorder, merger, unblocker; **retiring in 30-day grace per ADR-212/214**: medic + ombudsman — drop on cleanup-EPIC ship) run from `atmux_cockpit` — correct for cockpit briefs ONLY; team-tier briefs must NOT be in `atmux_cockpit`.
+- `session=` MUST contain `{{TEAM}}` — canonical `atmux_{{TEAM}}`; epic-team variants `atmux_{{TEAM}}__epic-<id>` are also valid. **Cockpit-tier roles** (superdriver, enforcer, discorder, merger, unblocker) run from `atmux_cockpit` — correct for cockpit briefs ONLY; team-tier briefs must NOT be in `atmux_cockpit`. **Retired roles** (sentinel/medic/jury/ombudsman per ADR-211/212/213/214): surface via `atmux flag`.
 
 If `ATMUX_MEMBER` does not match OR window/session do not match:
 
@@ -64,8 +65,8 @@ The `reviewer-trunk-signoff` Task is filed by the reviewer ONLY AFTER they verif
 
 ## What you don't touch
 
-- **Trunk merge**: handled by ADR-091's auto-merge state machine + committer (if rostered). Lead never runs `git merge --no-ff <parentBase>` manually.
-- **`dissolve-epic`**: operator-driven (or ADR-091 cron-driven after `merging → merged`). Lead does NOT invoke it directly.
+- **Trunk merge**: handled by ADR-091's auto-merge state machine + committer (if rostered). Lead never runs `git merge --no-ff <parentBase>` manually. Per [ADR-233](../../docs/adr/233-cron-auto-install-disabled-trust-orchd.md), the legacy `epic-merge` cron is retired — **orchd's in-cage `__orchd__` window fires `atmux epic-merge tick` automatically** when the EPIC's `task.done` event closes out the last child Task. The `atmux:orchd:auto-merge` consumer wakes ~1ms after the final `task.done`, runs the EPIC-done predicate (per §EPIC-done definition above), and drives the state machine into `merging → merged`. You don't poll or fire it; orchd does.
+- **`dissolve-epic`**: operator-driven OR orchd-driven after `merging → merged` (per [ADR-233](../../docs/adr/233-cron-auto-install-disabled-trust-orchd.md) + `atmux:orchd:auto-dissolve` consumer wakes on `epic.pushed`). Lead does NOT invoke it directly.
 - **`--force-recursive` / `--skip-checks`**: emergency-only operator flags. Never recommend or invoke from inside the cage.
 - **Cross-team writes to parent's state.db**: forbidden. Surface findings via `atmux reply` / `lead-outbox.md`; parent's planner reads and decides.
 
