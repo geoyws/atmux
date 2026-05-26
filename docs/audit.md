@@ -6,7 +6,7 @@ This file is the operator-facing companion to:
 
 - [ADR-038](adr/038-declarative-live-audit-model.md) — audit model + class taxonomy + per-class detector/fixer pair pattern.
 - [ADR-039](adr/039-enforcer-agent-role.md) — fleet-level enforcer agent that aggregates per-team audit findings.
-- [ADR-040](adr/040-whip-audit-integration.md) — whip's 5-min sub-pass that auto-fires safe classes.
+- [ADR-040](adr/040-audit-whip-integration.md) — whip's 5-min sub-pass that auto-fires safe classes.
 
 When a new drift class lands, the planner amends ADR-038's class table; this file's per-class runbook gets a new entry to match.
 
@@ -251,6 +251,6 @@ Per-class exemption (`auditExempt: ["F"]` to silence false-positive class F on a
 
 - [ADR-038](adr/038-declarative-live-audit-model.md) — audit model + class taxonomy + sources of truth.
 - [ADR-039](adr/039-enforcer-agent-role.md) — fleet-level enforcer agent.
-- [ADR-040](adr/040-whip-audit-integration.md) — whip's 5-min audit sub-pass.
+- [ADR-040](adr/040-audit-whip-integration.md) — whip's 5-min audit sub-pass.
 - [ADR-018](adr/018-per-team-tmux-socket-isolation.md) — original cage isolation design (class B's migration target).
 - [ADR-027 ADDENDUM 11](adr/027-team-rename-verb-and-topology-invariant.md) — atomic rename verb (class B's fix mechanism).

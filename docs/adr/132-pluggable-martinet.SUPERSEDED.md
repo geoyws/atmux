@@ -343,29 +343,6 @@ The role type identified as "martinet" throughout this ADR is renamed to "sentin
 
 Cross-refs: ADR-077 §Amendment 2026-05-19 (medic boundary side), ADR-027 (doctor framework — shared probe substrate), ADR-140 (cheap-model-first justification), ADR-184 (host-cap epic-team gate — sentinel iteration scope), ADR-185 (sentinel epic-team scope extension), EPIC e-35dd6274 (wedge-clearing mechanism), t-186d5910 (sentinel deploy — landing makes the boundary observable in production cockpit telemetry).
 
-### 2026-05-21 — Sentinel role retired entirely per ADR-211 (pluggable abstraction interface preserved one release)
-
-**Driver-ref 2026-05-21** — operator question *"do we really need the sentinel?"* after Honker substrate (ADR-202 + ADR-203) ships and event-driven wake replaces the polling-era observation premise. Decision: **the Sentinel role retires entirely**; observation functions distribute to Honker event consumers per [ADR-211](./211-retire-sentinel-role-distribute-to-honker-consumers.md) §D2.
-
-**What retires from this ADR:**
-
-- §D1 backend selection (`claude` baseline vs `cursor` composer-2-fast vs the broader pluggable enum) becomes moot — no role is shipped against the abstraction at the cockpit W3 tier.
-- §D2 pluggable abstraction interface is **preserved one release for back-compat** per ADR-211 §Status header — the Zod schema + `team.json::sentinel` field still parse during the grace cycle so existing rosters don't break on boot; cleanup-EPIC purges `src/abstractions/sentinel.ts` + `src/verbs/sentinel.ts` + the sentinel verb + sentinel-related cron entries after ≥30 days observed-stable.
-- §D6 (`team.sentinel` config field) + companion `team.sentinelOverrides` + `cockpit.json::sentinel` block: same one-release grace then removed.
-- Sibling sentinel-extension ADRs become **historical context only** per ADR-211 §Status header: ADR-158 (martinet→sentinel rename), ADR-183 (sentinel scope to epic-teams), ADR-185 (sentinel epic-team scope extension), ADR-206 (sentinel dynamic discovery), ADR-207 (Opus-sentinel supersedes cursor-sentinel — also gets its own §Amendment).
-
-**What persists:**
-
-- The **pluggable-impl design pattern** (Zod-validated backend interface + per-team config override + one-release migration shim) stands as design precedent for future role abstractions — the interface is preserved structurally, just unused.
-- §Amendment 2026-05-19's sentinel↔medic seam (pane-liveness vs code-health) is also reshaped by ADR-212 (medic retirement) — both observation functions land on Honker consumers under the lead-gated execution pattern per ADR-212 §D2.
-- ADR-186 wedge-clearing mechanism splits: probe-library half persists; sentinel-runner half migrates to a Honker consumer per ADR-211 §D2.
-
-**Sequencing:** substrate landing (ADR-202 Phase 1, shipped 2026-05-21) → sentinel-eventized consumer EPIC → ≥30 days observed-stable → cleanup-EPIC purges sentinel code surfaces. The `team.json::sentinel` / `cockpit.json::sentinel` configs continue to parse during the grace cycle; doctor probe `cockpit-has-w3-sentinel` (P1) is retired alongside the cleanup-EPIC.
-
-> **Update (2026-05-23, supersession):** the grace-cycle plan in this §Amendment was overtaken by EPIC `e-be01fc89` two days later — sentinel was deleted in entirety rather than preserved for one release. See §2026-05-23 below for the actual deletion record; this §Amendment is retained as the decision-moment artifact between the 2026-05-21 retirement call and the 2026-05-23 implementation.
-
-Cross-refs: [ADR-211](./211-retire-sentinel-role-distribute-to-honker-consumers.md) §D2 (Honker-consumer distribution of observation functions), [ADR-212](./212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md) §D4 (1-EPIC `e-honker-observation-watchdogs` collapse absorbing sentinel + medic functions), [ADR-202](./202-honker-in-db-messaging-substrate.md) §D12 (consumer EPIC sequence — amended by ADR-211/212), [ADR-186](./186-wedge-clearing-mechanism.md) (wedge-clearing — probe-library half persists), memory `feedback_opus_all_for_agile_flow` (operator stance — refreshed 2026-05-21).
-
 ### 2026-05-23 — final close: sentinel deleted in entirety; orchd assumes the role
 
 The cron-polling sentinel substrate documented by this ADR (§D1-D8) and amended 2026-05-20 has been removed from atmux as of EPIC e-be01fc89. The mechanism + cost-curve framing in §Amendment 2026-05-20 stands as the cost-curve evidence for the removal. This §Amendment closes the chapter; ADR status flips to **Superseded by e-be01fc89**.

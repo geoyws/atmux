@@ -1,6 +1,6 @@
 # ADR-098: JSON + locking model
 
-**Status:** accepted — **narrowed by [ADR-126](126-sqlite-state-store.md)**: kanban (`tasks/epics/stories`), inboxes, and per-feature state moved to `.atmux/state.db` (SQLite, WAL). This ADR remains authoritative for `team.json`, JSONL append-logs, the markdown surface, and bash atmux's full state surface.
+**Status:** accepted — **narrowed by [ADR-126](060-sqlite-state-store.md)**: kanban (`tasks/epics/stories`), inboxes, and per-feature state moved to `.atmux/state.db` (SQLite, WAL). This ADR remains authoritative for `team.json`, JSONL append-logs, the markdown surface, and bash atmux's full state surface.
 **Date:** 2026-05-04
 **Owner:** architect
 

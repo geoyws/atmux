@@ -72,7 +72,7 @@ Per the Task body, orphan-investigation is **NOT scoped to this Epic** — it sh
 | ADR-129 | 12 | `129-dogfood-meta-bundled.md` |
 | ADR-130 | 16 | `130-project-layout.md` |
 
-**Observation**: 22 of 23 orphans are in the ADR-096–130 range — the bash→bun-port consolidation cluster (per [ADR-093](../adr/093-adr-bun-to-adr-consolidation.md)). Most are likely class (b) — process / scope / phase decisions whose implementations don't grep-match the ADR id because the bun-port code paths landed under different conceptual names. The orphan-investigation Story should triage by (a/b/c) class before deciding action per ADR.
+**Observation**: 22 of 23 orphans are in the ADR-096–130 range — the bash→bun-port consolidation cluster (per [ADR-093](../adr/093-docs-consolidation-tombstone-and-renumber-map.md)). Most are likely class (b) — process / scope / phase decisions whose implementations don't grep-match the ADR id because the bun-port code paths landed under different conceptual names. The orphan-investigation Story should triage by (a/b/c) class before deciding action per ADR.
 
 ## Mark-deferred candidates (proposed >30d, no refs)
 

@@ -27,27 +27,19 @@
 
 import { existsSync as fsExistsSync } from "node:fs";
 import { readlink as fsReadlink } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { type CrontabIO, defaultCrontabIO } from "../abstractions/crontab.ts";
-import { announceHonkerState } from "../abstractions/events.ts";
-import {
-  bootHonker,
-  type HonkerHooks,
-  type HonkerRuntimeState,
-} from "../abstractions/honker.ts";
-import {
-  type HostPressureVerdict,
-  probeHostPressure,
-  type ProbeHostPressureDeps,
-} from "../core/host-pressure.ts";
 import { resolveWebhookUrl } from "../abstractions/discord.ts";
+import { announceHonkerState } from "../abstractions/events.ts";
 import { exists, readTextOrNull, removeFile, statOrNull, writeText } from "../abstractions/fs.ts";
+import { bootHonker, type HonkerHooks, type HonkerRuntimeState } from "../abstractions/honker.ts";
 import { probeStatus } from "../abstractions/http.ts";
 import { tryReadJson } from "../abstractions/json.ts";
-import { closeDatabase, openDatabase } from "../abstractions/sqlite.ts";
-import { migrations } from "../abstractions/sqlite-migrations.ts";
+import { isDefaultMemberRole } from "../abstractions/member-roles.ts";
 import { resolveDayFilePath } from "../abstractions/release-notes.ts";
 import { spawn as defaultSpawn, type SpawnResult } from "../abstractions/spawn.ts";
+import { closeDatabase, openDatabase } from "../abstractions/sqlite.ts";
+import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { mytDate, now } from "../abstractions/time.ts";
 import { createTmux } from "../abstractions/tmux.ts";
 import { resolveWorktreePath, sanitizeBranchSegment } from "../abstractions/worktree.ts";
@@ -57,8 +49,7 @@ import {
   probeCageState as defaultProbeCageState,
   STARVING_THRESHOLD_S as STARVING_THRESHOLD_S_LOCAL,
 } from "../core/cage-state.ts";
-import { isDefaultMemberRole } from "../abstractions/member-roles.ts";
-import { cageSessionName, type LoadedCockpit, loadCockpit } from "../core/cockpit.ts";
+import { type LoadedCockpit, loadCockpit, resolveCageSessionName } from "../core/cockpit.ts";
 import {
   buildWindowName,
   buildWindowNameLegacy,
@@ -71,8 +62,6 @@ import {
   teamJsonPath,
   tryLoadTeam,
 } from "../core/common.ts";
-import { loadInbox } from "../core/inbox.ts";
-import { KanbanRepo } from "../core/repositories/kanban-repo.ts";
 import { type CronBlockTarget, findCronOrphans } from "../core/cron.ts";
 import {
   type DriverInboxEntry,
@@ -83,8 +72,13 @@ import {
   type ProbeDriverPaneDeps,
   probeDriverPane,
 } from "../core/driver-pane-health.ts";
+import {
+  type HostPressureVerdict,
+  type ProbeHostPressureDeps,
+  probeHostPressure,
+} from "../core/host-pressure.ts";
+import { loadInbox } from "../core/inbox.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
-import { resolveTmuxBin } from "../core/resolve-tmux-bin.ts";
 import { inspectClaudeReadiness } from "../core/pane-readiness.ts";
 import { classifyText } from "../core/pane-state.ts";
 import {
@@ -92,6 +86,8 @@ import {
   formatPruneIso,
   prunePhantomInProgressClaims,
 } from "../core/phantom-prune.ts";
+import { KanbanRepo } from "../core/repositories/kanban-repo.ts";
+import { resolveTmuxBin } from "../core/resolve-tmux-bin.ts";
 import { DEFAULT_SEND_KEYS_FAILURES_LOG_REL } from "../core/safe-send.ts";
 import {
   composeCatastrophicDrift,
@@ -696,10 +692,7 @@ export function honkerStateRows(state: HonkerRuntimeState | null): DoctorRow[] {
  *  via the events bus, and surface the runtime state as a doctor row.
  *  Tolerant of missing state.db (returns info row) — first-run hosts
  *  don't fail this probe. */
-export async function checkHonker(
-  atmuxDir: string,
-  hooks: HonkerHooks = {},
-): Promise<DoctorRow[]> {
+export async function checkHonker(atmuxDir: string, hooks: HonkerHooks = {}): Promise<DoctorRow[]> {
   const stateDb = join(atmuxDir, "state.db");
   if (!(await exists(stateDb))) {
     return [
@@ -862,9 +855,7 @@ export interface CheckSkillsPluginOpts {
  *  opt-out marker first, then verifies the symlink + plugin.json. Returns
  *  the empty array when $HOME is unset (defensive — caller probably has
  *  bigger issues, no point emitting a doctor row about it). */
-export async function checkSkillsPlugin(
-  opts: CheckSkillsPluginOpts = {},
-): Promise<DoctorRow[]> {
+export async function checkSkillsPlugin(opts: CheckSkillsPluginOpts = {}): Promise<DoctorRow[]> {
   const home = opts.home ?? process.env.HOME;
   if (home === undefined || home.length === 0) return [];
 
@@ -952,10 +943,10 @@ export async function checkPhantomInboxes(atmuxDir: string): Promise<DoctorRow[]
  *
  *  Cage-only — singleSession teams short-circuit at the caller per
  *  ADR-026 (the deprecated mode isn't the prune target). */
-async function probeLiveMembers(team: Team): Promise<ReadonlySet<string>> {
+async function probeLiveMembers(team: Team, atmuxDir: string): Promise<ReadonlySet<string>> {
   try {
     const tmux = createTmux({ socketPath: resolveTeamSocket(team) });
-    const session = cageSessionName(team.name);
+    const session = await resolveCageSessionName({ name: team.name, root: dirname(atmuxDir) });
     if (!(await tmux.session.hasSession(session))) return new Set();
     const windows = await tmux.window.listWindows(session);
     const liveNames = new Set(windows.map((w) => w.name));
@@ -985,7 +976,7 @@ export async function checkPhantomInProgressClaims(
   const phantoms = await findPhantomInProgressClaims({
     atmuxDir,
     team,
-    liveMembers: () => probeLiveMembers(team),
+    liveMembers: () => probeLiveMembers(team, atmuxDir),
   });
   return phantoms.map((p) => ({
     status: "yellow" as const,
@@ -2822,7 +2813,6 @@ export async function checkCockpitOnDefaultSocket(
   ];
 }
 
-
 export interface CheckDeployedBinaryLagOpts {
   /** Git spawn override (test injection). Reads HEAD + the commit that
    *  last touched package.json. Defaults to `defaultGitSpawn`. */
@@ -3082,11 +3072,7 @@ export async function checkLegacyWindowNameFormat(
       if (hyphenForm !== canonical && windowNames.has(hyphenForm)) {
         offenders.push(hyphenForm);
       }
-      if (
-        legacyForm !== canonical &&
-        legacyForm !== hyphenForm &&
-        windowNames.has(legacyForm)
-      ) {
+      if (legacyForm !== canonical && legacyForm !== hyphenForm && windowNames.has(legacyForm)) {
         offenders.push(legacyForm);
       }
       for (const legacyName of offenders) {
@@ -3282,7 +3268,7 @@ export async function doctor(argv: ReadonlyArray<string>, opts: DoctorOpts = {})
       const phantoms = await findPhantomInProgressClaims({
         atmuxDir,
         team,
-        liveMembers: () => probeLiveMembers(team),
+        liveMembers: () => probeLiveMembers(team, atmuxDir),
       });
       if (phantoms.length > 0) {
         const asOfIso = formatPruneIso(Date.now());

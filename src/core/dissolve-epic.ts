@@ -43,16 +43,16 @@ import {
   isWorktreeDirty,
   pruneWorktree,
 } from "../abstractions/worktree.ts";
+import { ConfigError } from "../errors.ts";
+import { Team, type Team as TeamShape } from "../schema/team.ts";
 import {
-  cageSessionName,
   defaultCockpitConfigPath,
   removeEpicViewerFromParentCage,
+  resolveCageSessionName,
   resolveCageSocket,
 } from "./cockpit.ts";
 import { resolveCallerScope } from "./common.ts";
 import { softStop } from "./soft-stop.ts";
-import { ConfigError } from "../errors.ts";
-import { Team, type Team as TeamShape } from "../schema/team.ts";
 
 // ---------- Input shape ----------
 
@@ -91,10 +91,7 @@ export interface DissolveEpicOpts {
    *  applies the default in production and tests still override via this
    *  hook to bypass the cage teardown when they don't want to mock a
    *  full tmux. */
-  softStopHook?: (deps: {
-    epicRoot: string;
-    childTeam: TeamShape;
-  }) => Promise<void>;
+  softStopHook?: (deps: { epicRoot: string; childTeam: TeamShape }) => Promise<void>;
   /** Tmux factory. Defaults to {@link createTmux}. Tests injecting a
    *  custom `softStopHook` typically don't need this — it's only used
    *  by the default `softStopHook` path. */
@@ -433,7 +430,7 @@ export async function defaultCageTeardown(deps: {
   const teamName = deps.childTeam.name;
   const socket = await resolveCageSocket(teamName, deps.epicRoot);
   const tmux = deps.tmuxFactory({ socketPath: socket });
-  const sessionName = cageSessionName(teamName);
+  const sessionName = await resolveCageSessionName({ name: teamName, root: deps.epicRoot });
 
   // Probe — skip teardown when cage already down. Idempotent dissolve.
   let alive = false;

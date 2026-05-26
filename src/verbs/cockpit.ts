@@ -42,12 +42,12 @@ import {
   type TmuxNamespace,
 } from "../abstractions/tmux.ts";
 import {
-  cageSessionName,
   cageSocketPath,
   enabledTeams,
   type LoadCockpitOpts,
   loadCockpit,
   perTeamCageSocketPath,
+  resolveCageSessionName,
   resolveCageSocket,
   resolveCockpitConfigPath,
   resolvePrefix,
@@ -63,11 +63,7 @@ import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.t
 import { createLogger, type Logger } from "../core/tui.ts";
 import { resolveTuiCommand } from "../core/tui-cmd.ts";
 import { UsageError } from "../errors.ts";
-import type {
-  CockpitMedic,
-  CockpitSuperdoctor,
-  CockpitTeam,
-} from "../schema/cockpit.ts";
+import type { CockpitMedic, CockpitSuperdoctor, CockpitTeam } from "../schema/cockpit.ts";
 import { Team } from "../schema/team.ts";
 import { attachWithTmux } from "./attach.ts";
 import { cockpitRotate } from "./cockpit-rotate.ts";
@@ -185,7 +181,7 @@ export async function resolveTeamWindowMode(
   } catch {
     return "session-down";
   }
-  const session = cageSessionName(team.name);
+  const session = await resolveCageSessionName(team);
   try {
     if (!(await cageTmux.session.hasSession(session))) return "session-down";
     const wins = await cageTmux.window.listWindows(session);
@@ -223,10 +219,13 @@ function defaultCageTmuxFactory(socketPath: string): TmuxNamespace {
  * retry-loop derives BOTH paths internally from the team name + root,
  * so callers no longer need to thread a pre-resolved socketPath.
  */
-export function buildTeamWindowCommand(team: CockpitTeam, mode: TeamWindowMode): string {
+export async function buildTeamWindowCommand(
+  team: CockpitTeam,
+  mode: TeamWindowMode,
+): Promise<string> {
   switch (mode) {
     case "attach":
-      return cageRetryLoop(team);
+      return cageRetryLoop(team, await resolveCageSessionName(team));
     case "no-driver-config":
       return shellPlaceholder(
         `no driver configured for ${team.name} — set team.json::driverSession to enable`,
@@ -234,7 +233,7 @@ export function buildTeamWindowCommand(team: CockpitTeam, mode: TeamWindowMode):
     case "session-down": {
       const msg = `team ${team.name} session not running — atmux start ${team.name}`;
       const safe = msg.replace(/'/g, "'\\''");
-      return `printf '%s\\n' '${safe}'; ${cageRetryLoop(team)}`;
+      return `printf '%s\\n' '${safe}'; ${cageRetryLoop(team, await resolveCageSessionName(team))}`;
     }
   }
 }
@@ -243,11 +242,13 @@ export function buildTeamWindowCommand(team: CockpitTeam, mode: TeamWindowMode):
  *  modes. Tries the legacy `/tmp/atmux-<team>/sock` first (back-compat),
  *  falls through to the per-team `<root>/.atmux/tmux/tmux-<uid>/default`
  *  (current convention) inside ONE shell iteration, then sleeps 1s.
- *  Targets `<session>:driver` per OQ4. */
-function cageRetryLoop(team: CockpitTeam): string {
+ *  Targets `<session>:driver` per OQ4. Session name MUST be pre-resolved
+ *  via `resolveCageSessionName(team)` so anchor-bearing teams (whose
+ *  state/session.txt names a non-default session) attach to the actual
+ *  session `start.ts` created, not the underscore-form guess. */
+function cageRetryLoop(team: CockpitTeam, session: string): string {
   const legacy = cageSocketPath(team.name);
   const perTeam = perTeamCageSocketPath(team.root);
-  const session = cageSessionName(team.name);
   return (
     `while true; do ` +
     `tmux -S ${legacy} attach -t ${session}:driver 2>/dev/null ` +
@@ -1346,7 +1347,7 @@ export async function autolaunchTeam(
   logger: Logger,
   opts: AutolaunchOpts = {},
 ): Promise<AutolaunchSummary> {
-  const session = cageSessionName(team.name);
+  const session = await resolveCageSessionName(team);
   // Read the team.json to drive resolveTuiCommand per member. We re-read
   // here (not relying on phase-1's mutator return) so this helper stays
   // independently callable (test directness + the --no-cycle path).
@@ -1752,7 +1753,7 @@ export async function reconcileCockpitSession(
       continue;
     }
     const mode = await resolveTeamWindowMode(t, deps);
-    const cmd = buildTeamWindowCommand(t, mode);
+    const cmd = await buildTeamWindowCommand(t, mode);
     await cockpitTmux.window.newWindow({
       sessionName,
       name: t.name,
@@ -2212,4 +2213,3 @@ function paneIsReady(capture: string): boolean {
   }
   return false;
 }
-

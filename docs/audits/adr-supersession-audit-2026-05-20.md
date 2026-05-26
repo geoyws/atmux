@@ -148,6 +148,6 @@ Each amendment is purely additive (append-only ADR convention preserved); no §S
 
 - T1 spec: t-8dae73d2 (THIS audit deliverable).
 - Project [CLAUDE.md](../../CLAUDE.md) §Source-of-truth chain — append-only ADR rule.
-- [ADR-093](../adr/093-adr-bun-to-adr-consolidation.md) — precedent for an audit-style ADR-tree health check (the renumber-tombstone audit set the convention for `docs/audits/` reports).
+- [ADR-093](../adr/093-docs-consolidation-tombstone-and-renumber-map.md) — precedent for an audit-style ADR-tree health check (the renumber-tombstone audit set the convention for `docs/audits/` reports).
 - auto-memory `project_adr_collision_resolutions_2026_05_18` (older-keeps-the-number heuristic; relevant for the ADR-185 vs planner-draft collision documented in §Methodology staleness note).
 - auto-memory `feedback_pull_trunk_before_labeling_untracked` (2026-05-20) — same staleness class as observed here.
