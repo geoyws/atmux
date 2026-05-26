@@ -215,3 +215,24 @@ Same as the original §Rollback path. Revert the amendment commit; legacy `drive
 - **A-DA4 ↔ A4-OQ1-cap-10**: declarative cap — original OQ1 lean (planner pick within constraints)
 - **A-DA5 ↔ A4-OQ4-parity-holds**: epic-team + solo-worker same floor — original OQ4 lean
 - **A-DA6 ↔ A5**: launch via tmux new-window command-mode — derivative of D2 (no send-keys EVER includes spawn-time; the command-mode launch is the ONLY spawn path that satisfies the invariant)
+
+## Supplement-2026-05-26 — storage clarification: dotfile-tree, not in-tree
+
+**Driver-ref**: operator-direct 2026-05-26 ~18:25 MYT — "we best not let the other teams see that we're using atmux at all.... because each dev has their own atmux with their own set of epics and etc entirely separate from the next dev" + "make sure that git worktrees don't duplicate the atmux stuff".
+
+**Clarification (does NOT change A1-A7 design; clarifies storage location).** §A2 directs that every parent team.json is trimmed to the strict 5-name roster `{lead, planner, docs, reviewer, gitter}`. This supplement pins the STORAGE LOCATION:
+
+- **Source of truth**: `~/work/journals/.sb/_dotfiles/atmux/<repo-key>/team.json` (operator's personal dotfile tree).
+- **Symlink at consumption**: `<managed-repo>/.atmux/team.json` → the dotfile path. Atmux's existing `fs` read path follows symlinks transparently — no code change required.
+- **Git tracking**: each managed repo's `.gitignore` excludes ALL of `.atmux/` (no `!.atmux/team.json` carve-out). The symlink itself is gitignored.
+
+**Why this matters for §A1's per-driver worktrees**: when `.atmux/team.json` was tracked in-repo (the pre-supplement model), git worktree checkouts duplicated the file into every driver-N worktree at `.atmux/worktrees/driver-N/.atmux/team.json` — five drivers = five copies that could drift independently. Untracking + symlinking puts the file outside the git-managed tree entirely; worktrees can't duplicate what isn't tracked.
+
+**Bootstrapping a new managed repo**:
+
+1. Create `~/work/journals/.sb/_dotfiles/atmux/<repo-key>/team.json` with the desired content (use `templates/team.example.json` as the starting shape per §A1+§A2).
+2. Symlink: `ln -s ~/work/journals/.sb/_dotfiles/atmux/<repo-key>/team.json <repo>/.atmux/team.json`.
+3. Confirm `.gitignore` excludes `.atmux/*` (no `!.atmux/team.json` carve-out).
+4. Run `atmux start <team-name>` — should read team.json via the symlink without ceremony.
+
+**Out-of-scope for this supplement**: kanban.sqlite + decisions.md storage. Those follow the same dotfile-centric pattern per ADR-244 §Supersession-2026-05-26.

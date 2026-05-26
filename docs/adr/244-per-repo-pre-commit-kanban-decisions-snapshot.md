@@ -1,6 +1,7 @@
 # ADR-244: Per-repo pre-commit kanban + decisions snapshot — machine-death backup via git
 
-**Status**: Accepted — ratified by operator 2026-05-26 18:05 MYT (live operator-design session)
+**Status**: **SUPERSEDED 2026-05-26 18:30 MYT** by §Supersession-2026-05-26 below — operator reframed atmux state as "per-developer + private", which the per-repo in-tree carve-outs proposed here violate. New model: all atmux state lives in the operator's personal dotfile tree at `~/work/journals/.sb/_dotfiles/atmux/<repo-key>/`, symlinked into each managed repo's `.atmux/`. Snapshot mechanism collapses to `dotfiles push` (operator-driven cadence) — no per-repo pre-commit hook, no in-tree gitignore carve-outs, no script installation per repo. The original D1-D6 below remain HISTORICAL — they describe the design as proposed + briefly implemented, not the post-supersession state.
+~~Accepted — ratified by operator 2026-05-26 18:05 MYT (live operator-design session)~~
 **Date**: 2026-05-26
 **Driver-ref**: operator-direct 2026-05-26 — "i want a way to store snapshots of our kanban (like a json dump) so that we can persist our kanban on git just in case machines die... sqlite isn't git commited correct?" → iteration through cron / lefthook / husky / bare pre-commit → final ask: "then file that adr and do the recommends"
 **Cross-refs**: [ADR-008](008-decisions-add.md) (decisions log + digest), [ADR-060](060-kanban-sqlite-canonical.md) (kanban SQLite as source-of-truth), [ADR-079](079-cron-cadences.md) §A (daily `groom` cron — 30-day default cutoff keeps `.atmux/decisions.md` bounded), [ADR-202](202-honker-in-db-messaging-substrate.md) (DB messaging substrate — same `.atmux/state/` directory), [ADR-239](239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md) (5-driver floor — driver worktrees per repo, this ADR fires per-repo too)
@@ -133,3 +134,86 @@ Revert the commits that add the hook + gitignore carve-outs. Existing `.git/hook
 2. **OQ2**: Should other SQLite tables (complaints, refusal_events, merger_state) get the same carve-out? **Lean**: no — kanban is the load-bearing state operators actually want to recover; the others are mostly observability + reconcilable from kanban + decisions. Add carve-outs incrementally if + when a specific table's loss becomes a real recovery gap.
 3. **OQ3**: Should the hook also fire on `post-merge` (after `git pull`) to refresh the local kanban from a fresh remote snapshot? **Lean**: no — `atmux start` already reads `.atmux/state/kanban.sqlite` at cage bootstrap, so pulling + restarting picks it up naturally. Adding post-merge would create double-read paths.
 4. **OQ4**: Should the snapshot include a tiny `.atmux/snapshots/snapshot-meta.json` recording `{ snapshotted_at, sha_before_commit, atmux_version }`? **Lean**: yes for forensics (cheap addition) — deferred to follow-up so this ADR ships minimal-viable. Operator can ask later.
+
+## Supersession-2026-05-26 — dotfile-centric atmux state, no per-repo carve-outs
+
+**Driver-ref**: operator-direct 2026-05-26 ~18:25 MYT — verbatim: *"whoops i forgot that we can't commit our atmux files to some of these projects...actually... let's backtrack and save them to dotfiles instead? we best not let the other teams see that we're using atmux at all.... because each dev has their own atmux with their own set of epics and etc entirely separate from the next dev"* + immediately after: *"make sure that git worktrees don't duplicate the atmux stuff"*.
+
+**What changed in the operator's mental model.** ADR-244 + ADR-239 §A2 both assumed atmux state was an acceptable in-tree presence per managed repo — `.atmux/team.json` tracked, `.atmux/decisions.md` carved out for backup, `.atmux/state/kanban.sqlite` allowlisted for the pre-commit snapshot. The operator's 2026-05-26 reframing makes that wrong on two axes:
+
+1. **Privacy**: atmux usage is per-developer + private to the operator. Each developer running atmux on a shared product repo has their own roster, kanban, decisions, epics — entirely separate from any other dev on the same product. Tracking the operator's atmux state in the product repo (a) leaks atmux topology to other contributors, AND (b) implies a shared atmux model that doesn't exist.
+2. **Worktree duplication**: ADR-239 §A1 introduces per-driver git worktrees at `.atmux/worktrees/driver-N`. When `.atmux/team.json` (or `decisions.md`, or `kanban.sqlite`) is TRACKED in the repo, every driver-N worktree inherits its own copy as part of checkout. Five drivers = five copies of every "atmux state" file, drifting independently. The intent was always single-source-of-truth — tracked in-repo state physically can't satisfy that under ADR-239's worktree shape.
+
+### S1 — New shape: dotfile tree owns the state, symlinks bridge into each repo
+
+All atmux state lives under `~/work/journals/.sb/_dotfiles/atmux/` (the operator's existing dotfiles repo, already home to `cockpit.json` + `kanban.json` for global atmux state). Per-team subdirs:
+
+```
+~/work/journals/.sb/_dotfiles/atmux/
+├── cockpit.json              # global (pre-existing)
+├── kanban.json               # global (pre-existing)
+├── state/                    # global (pre-existing)
+├── atmux/                    # NEW — atmux dogfood team
+│   ├── team.json
+│   ├── decisions.md
+│   └── state/kanban.sqlite (when atmux's kanban materializes)
+├── sopx-root/                # NEW — sopx product team
+│   ├── team.json
+│   ├── decisions.md
+│   └── state/kanban.sqlite
+├── mx-root/
+│   …
+└── <repo-key>/               # one subdir per managed repo
+```
+
+Each managed repo's `.atmux/team.json` is a **symlink** into the corresponding dotfile path. Atmux's existing read path (Node `fs` operations follow symlinks transparently) needs no code change.
+
+### S2 — Repo `.gitignore` patterns collapse to "ignore all of .atmux/"
+
+The S1 model removes every reason to track anything under `.atmux/` in managed repos. The carve-outs ADR-244 added (`!.atmux/state/kanban.sqlite`, `!.atmux/decisions.md`, `!.atmux/decisions/`) are REMOVED. The legacy `!.atmux/team.json` carve-outs (which predated this ADR — operators had been tracking team.json historically) are ALSO removed across atmux + 5 product repos.
+
+Resulting `.gitignore` shape (uniform across atmux + product repos):
+
+```gitignore
+.atmux/*
+# operator-private atmux state lives in ~/work/journals/.sb/_dotfiles/atmux/<repo-key>/;
+# symlinked into .atmux/ at runtime. See ADR-244 §Supersession-2026-05-26.
+```
+
+That's it. No allowlists, no nested-pattern dance, no risk of accidental tracking.
+
+### S3 — Snapshot mechanism: `dotfiles push` (operator cadence)
+
+The pre-commit hook in §D1 is removed. There is no per-repo snapshot trigger. The operator's existing `dotfiles push` workflow is the snapshot mechanism — when the operator pushes their dotfiles repo, atmux state for every managed team lands in git history.
+
+**Implications:**
+
+- **Cadence is operator-driven, not commit-driven.** Operator runs `dotfiles push` when they want to checkpoint. Could be daily, weekly, end-of-session, whatever.
+- **Single source of truth.** Worktrees stop being a concern — there's no atmux state in any git-tracked tree, so worktree checkouts can't duplicate anything.
+- **Recovery on fresh machine.** `dotfiles pull` restores `~/work/journals/.sb/_dotfiles/atmux/` + the symlinks in each managed repo's `.atmux/` (operator re-runs whatever symlink-install step is part of dotfile bootstrap).
+- **No commit noise in product repos.** Reviewers in sopx/unum/rentx never see atmux changes drifting through PRs.
+
+### S4 — Removed implementation artifacts
+
+- `scripts/atmux-snapshot-pre-commit.sh` — REMOVED (dead per S3).
+- `scripts/install-hooks.sh` — REMOVED (dead per S3).
+- `.git/hooks/pre-commit` symlink in atmux's own repo — REMOVED (uninstalled at supersession time).
+- `.gitignore` carve-outs added by the original ADR-244 commit — REMOVED in the supersession commit.
+
+### S5 — ADR-239 §A2 still applies; storage location clarified
+
+The strict 5-name member roster sweep from ADR-239 §A2 still applies — `lead, planner, docs, reviewer, gitter` only. The CONTENT of each managed team's `team.json` reflects that trim. The STORAGE location is now `~/work/journals/.sb/_dotfiles/atmux/<repo-key>/team.json` instead of in-tree at `<repo>/.atmux/team.json`. See ADR-239 §Supplement-2026-05-26 (paired with this supersession).
+
+### S6 — Decision-anchors (supersession)
+
+- **S-DA1 ↔ S1**: dotfile-tree-owns-state — operator ask "save them to dotfiles instead"
+- **S-DA2 ↔ S1**: per-repo symlinks bridge to dotfile path — derivative: atmux's `fs` reads follow symlinks, no code change needed
+- **S-DA3 ↔ S2**: collapse gitignore patterns to bare `.atmux/*` — operator ask "we best not let the other teams see that we're using atmux at all"
+- **S-DA4 ↔ S3**: `dotfiles push` as snapshot, no hook — operator ask "i just don't want cron firing for all epic teams it'll be inefficient" + dotfile-tree-is-the-real-snapshot-home
+- **S-DA5 ↔ S4**: worktree non-duplication via untracking — operator ask "make sure that git worktrees don't duplicate the atmux stuff"
+
+### S7 — What this ADR's HISTORICAL content (§D1-§D6, §DA1-§DA6, §OQ1-§OQ4) records
+
+The original D-section design + decision-anchors above describe ADR-244 as briefly implemented (commit fbce8ae): pre-commit hook + carve-outs in atmux's own repo for ~25 minutes. They are kept INTACT for the historical record + as context for future readers asking "why did we ever consider per-repo carve-outs?". The supersession commit removes the implementation but leaves the design narrative readable.
+
+This makes ADR-244 a **two-act ADR**: Act 1 (D-sections) — the per-repo proposal, briefly tried; Act 2 (§Supersession-2026-05-26) — the dotfile-centric replacement that actually shipped. Both are part of the historical record.
