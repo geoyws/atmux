@@ -1,5 +1,4 @@
 .atmux/*
-!.atmux/team.json
 .claude/team.json
 .claude/settings.json
 .claude/scheduled_tasks.lock
