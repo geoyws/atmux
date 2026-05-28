@@ -9,6 +9,11 @@
 // Brief lives at ADR-057 §D1 (R57-T1). Pattern catalog +
 // retry/refusal policy live in src/core/pane-state.ts.
 
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { ensureDir } from "../abstractions/fs.ts";
+import { withLock } from "../abstractions/lock.ts";
+import { LockTimeoutError } from "../errors.ts";
 import { detectKnownModal, type KnownModalMatch } from "./known-modals.ts";
 import {
   type CaptureFn,
@@ -20,6 +25,89 @@ import {
   REFUSAL_SEVERITY,
   RETRY_POLICY,
 } from "./pane-state.ts";
+
+// ---------- Per-pane send-keys serialization (e-49, c-cb9561e0) ----------
+
+/** Per-pane lock dir. Locks live under `~/.atmux/state/pane-locks/`
+ *  (per-host singleton). Per-host because tmux sessions are scoped to
+ *  the host's tmux server; the same session:window pair never collides
+ *  with another team's pane. */
+const PANE_LOCK_DIR = join(homedir(), ".atmux", "state", "pane-locks");
+
+/** Default lock acquire-timeout. Long enough to absorb a slow paste
+ *  cycle (ADR-188 4-step canonical + ADR-205 §OQ 500ms settle), short
+ *  enough to surface a runaway holder. */
+export const PANE_SEND_LOCK_TIMEOUT_MS = 60_000;
+
+/** Sanitize a tmux target string (e.g. `atmux:lead`, `atmux:🧭_lead`)
+ *  into a filesystem-safe filename. Keeps alnum + dash + underscore;
+ *  replaces everything else with `_`. UTF-8 emoji code-points are not
+ *  filesystem-hostile on Linux but we strip them for cross-platform
+ *  symmetry + readability of the lock dir. */
+export function sanitizePaneLockKey(target: string): string {
+  return target.replace(/[^A-Za-z0-9_-]/g, "_");
+}
+
+/**
+ * Serialize concurrent send-keys writers against the same tmux target.
+ *
+ * Why: multiple atmux verbs (tell-lead, dispatch, rotation-consumer,
+ * complaint-pings) can fire near-simultaneously into one teammate
+ * pane. Without serialization, their bracketed-paste envelopes
+ * (`ESC[200~ … ESC[201~`) interleave; Enter-to-submit signals get
+ * eaten by an active paste-mode envelope opened by a different
+ * writer; composer accumulates tokens without ever submitting; lead
+ * pane wedges with N stacked notifications.
+ *
+ * Lock is per-target (sanitized session:window key), kernel-backed
+ * via `flock(2)` per ADR-005, auto-released on process death. Each
+ * writer's full cycle (open-paste → body → close-paste → Enter →
+ * settle) completes before the next writer's flock() unblocks.
+ *
+ * Fail-mode: on `LockTimeoutError` (60s default — longer than any
+ * legitimate paste cycle), the caller is allowed to proceed without
+ * the lock and the timeout is logged. Degraded > deadlocked: a slow
+ * pane-send loses serialization for that one call, but the fleet
+ * keeps moving.
+ *
+ * Cross-ref: e-49 (this fix), e-2ba5ae45 (bracketed-paste-default
+ * sibling fix), ADR-005 (flock primitive), ADR-188 (4-step
+ * canonical), ADR-205 (bracketed-paste-default + 500ms settle).
+ */
+export async function withPaneSendLock<T>(
+  target: string,
+  fn: () => Promise<T> | T,
+  opts?: {
+    /** Override the default `~/.atmux/state/pane-locks/` directory.
+     *  Tests pass a tmpdir; production leaves undefined. */
+    lockDir?: string;
+    /** Override `PANE_SEND_LOCK_TIMEOUT_MS`. */
+    timeoutMs?: number;
+    /** Logger sink — same shape as the rest of safe-send. */
+    log?: (msg: string) => void;
+  },
+): Promise<T> {
+  const lockDir = opts?.lockDir ?? PANE_LOCK_DIR;
+  const timeoutMs = opts?.timeoutMs ?? PANE_SEND_LOCK_TIMEOUT_MS;
+  const log = opts?.log ?? (() => {});
+  await ensureDir(lockDir);
+  const lockPath = join(lockDir, `${sanitizePaneLockKey(target)}.lock`);
+  try {
+    return await withLock(lockPath, fn, { timeoutMs });
+  } catch (e: unknown) {
+    if (e instanceof LockTimeoutError) {
+      // Fail-open: log + proceed without serialization. Degraded paste
+      // beats a frozen daemon. If this fires often, the holder is the
+      // real bug to chase.
+      log(
+        `withPaneSendLock: ${target} lock acquire timed out after ${timeoutMs}ms ` +
+          `at ${lockPath} — proceeding without serialization (fail-open)`,
+      );
+      return await fn();
+    }
+    throw e;
+  }
+}
 
 // ---------- Public types ----------
 
@@ -113,6 +201,16 @@ export interface SafePreflightResult {
  * (ADR-053 budget-pause path takes over).
  */
 export async function safeSendKeys(
+  target: string,
+  text: string,
+  opts: SafeSendOpts,
+): Promise<SafeSendResult> {
+  return withPaneSendLock(target, () => safeSendKeysInner(target, text, opts), {
+    log: opts.log,
+  });
+}
+
+async function safeSendKeysInner(
   target: string,
   text: string,
   opts: SafeSendOpts,
@@ -471,6 +569,14 @@ export const DEFAULT_VERIFY_RETRIES = 1;
  *      {@link SafeSendKeysError}.
  */
 export async function safeSendKeysWithVerify(
+  opts: SafeSendKeysWithVerifyOpts,
+): Promise<SafeSendKeysWithVerifyResult> {
+  return withPaneSendLock(opts.target, () => safeSendKeysWithVerifyInner(opts), {
+    log: opts.log,
+  });
+}
+
+async function safeSendKeysWithVerifyInner(
   opts: SafeSendKeysWithVerifyOpts,
 ): Promise<SafeSendKeysWithVerifyResult> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_VERIFY_TIMEOUT_MS;
