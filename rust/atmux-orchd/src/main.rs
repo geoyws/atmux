@@ -69,6 +69,49 @@ fn install_parent_death_signal() {
 #[cfg(not(target_os = "linux"))]
 fn install_parent_death_signal() {}
 
+/// ADR-249 — derive the singleton-lock path from the DB path. Canonicalize
+/// the DB's parent dir so relative (`.atmux/state.db`) and absolute argv
+/// variants of the SAME team's DB collide on one lockfile, while different
+/// teams' DBs (different parents) never collide. Best-effort canonicalize:
+/// if the parent can't be resolved (shouldn't happen — `.atmux/` exists by
+/// the time orchd runs), fall back to the parent as-given.
+fn singleton_lock_path(db_path: &str) -> String {
+    let p = Path::new(db_path);
+    let parent = p.parent().filter(|s| !s.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+    let canon_parent = fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
+    let fname = p.file_name().and_then(|s| s.to_str()).unwrap_or("state.db");
+    canon_parent
+        .join(format!("{}.orchd.lock", fname))
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// ADR-249 — acquire the exclusive, non-blocking advisory lock that makes
+/// orchd a singleton per team DB. Returns the held `File` on success (caller
+/// MUST keep it alive for the process lifetime — `flock` is released when the
+/// fd closes, i.e. on exit/crash, so no stale-lock cleanup is needed).
+/// `Ok(None)` on non-Linux = no guard (matches `install_parent_death_signal`).
+#[cfg(target_os = "linux")]
+fn acquire_singleton_lock(lock_path: &str) -> Result<Option<fs::File>, String> {
+    use std::os::unix::io::AsRawFd;
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(lock_path)
+        .map_err(|e| format!("open lock {}: {}", lock_path, e))?;
+    // LOCK_NB → fail immediately if another orchd holds it (don't block).
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc != 0 {
+        return Err(format!("another orchd holds {}", lock_path));
+    }
+    Ok(Some(file))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn acquire_singleton_lock(_lock_path: &str) -> Result<Option<fs::File>, String> {
+    Ok(None)
+}
+
 /// Subscriber-offset row schema mirrors the Bun-side
 /// `src/abstractions/events.ts::loadOffset/saveOffset` contract. Each
 /// consumer has its own offset so slow handlers don't starve fast ones.
@@ -403,6 +446,26 @@ fn main() -> ExitCode {
     });
     let atmux_bin = env::var("ATMUX_ORCHD_ATMUX_BIN").unwrap_or_else(|_| "atmux".to_string());
     let team_dir = env::var("ATMUX_ORCHD_TEAM_DIR").unwrap_or_else(|_| cwd.clone());
+
+    // ADR-249 — singleton guard. Take an exclusive advisory lock on a
+    // per-DB lockfile BEFORE the boot banner / Database::open so a second
+    // orchd against the same team's state.db refuses to start instead of
+    // double-dispatching every event + racing the spawn-dedup gate. The
+    // returned File is bound for the whole of main() (kernel releases the
+    // flock on exit/crash — no stale-lock cleanup). Different teams have
+    // different canonical DB parents → no false collision.
+    let lock_path = singleton_lock_path(&db_path);
+    let _orchd_lock = match acquire_singleton_lock(&lock_path) {
+        Ok(lock) => lock,
+        Err(e) => {
+            eprintln!(
+                "{} 🔴 orchd singleton guard · refusing to start — {} · another orchd already supervises this DB; exiting to avoid duplicate dispatch (ADR-249)",
+                now_ts(),
+                e
+            );
+            return ExitCode::from(5);
+        }
+    };
 
     // e-12-640853f3 §S5 — startup banner. Consumer list mirrors
     // src/core/orchd-bootstrap.ts; sweep cadence mirrors S6 ticker.
