@@ -274,9 +274,11 @@ describe("TOPICS registry + isKnownTopic", () => {
     //  +1 ADR-227 §D2: epic.dissolve-blocked;
     //  +3 ADR-229 §D3: epic.pushed/epic.push-blocked/epic.push-conflict;
     //  +3 ADR-228 §D5: epic.spawn-queued/epic.spawn-abandoned/epic.added)
-    // + 3 commit + 1 gitter + 3 pane + 4 coordination + 7 cockpit
-    // (sentinel.escalated removed per EPIC e-be01fc89) + 4 internal = 50.
-    expect(TOPICS.length).toBe(50);
+    // + 3 commit + 1 gitter + 3 pane + 4 coordination
+    // + 1 member.context-high (e-13-04c8b3bf — member context-saturation
+    //   signal) + 7 cockpit
+    // (sentinel.escalated removed per EPIC e-be01fc89) + 4 internal = 51.
+    expect(TOPICS.length).toBe(51);
   });
 
   test("known topics across each domain are present", () => {

@@ -15,7 +15,7 @@ import type { Database } from "bun:sqlite";
 import { emit } from "../abstractions/events.ts";
 import { capturePaneTail, parseContextPercent } from "./pane-statusline.ts";
 import type { Team, TeamMember } from "../schema/team.ts";
-import type { Tmux } from "../abstractions/tmux.ts";
+import type { TmuxNamespace } from "../abstractions/tmux.ts";
 
 /** Default threshold — operator's stated preference (40%). Overrideable
  *  via team.json::contextThreshold (read at call-site). */
@@ -48,7 +48,7 @@ export interface ContextScanResult {
 export interface ContextScanDeps {
   db: Database;
   team: Team;
-  tmux: Tmux;
+  tmux: TmuxNamespace;
   /** Session name (resolved from team.name + namespace conventions). */
   sessionName: string;
   /** Buildings the per-member window target string (window-name lookup

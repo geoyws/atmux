@@ -52,7 +52,6 @@ import {
 import { type LoadedCockpit, loadCockpit, resolveCageSessionName } from "../core/cockpit.ts";
 import {
   buildWindowName,
-  buildWindowName,
   buildWindowNameLegacy,
   defaultEmojiForRole,
   driverInboxPath,

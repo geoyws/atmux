@@ -1162,29 +1162,16 @@ export async function installCockpitCron(
     );
     return;
   }
-  const cockpitConfigPath = resolveCockpitConfigPath({ env });
-  const pulseIntervalMins = cockpit.pulse?.intervalMins;
-  const current = await crontab.read();
-  const installOpts: Parameters<typeof installCockpitCronBlock>[0] = {
-    atmuxBin,
-    cockpitConfigPath,
-    current,
-  };
-  if (pulseIntervalMins !== undefined) installOpts.pulseIntervalMins = pulseIntervalMins;
-  const next = installCockpitCronBlock(installOpts);
-  if (next === (current ?? "")) {
-    logger.log("  · cockpit cron: up to date (atmux:cockpit block already current)");
-    return;
-  }
-  try {
-    await crontab.write(next);
-    logger.log(
-      `  ✓ cockpit cron: installed atmux pulse (inspect: crontab -l | grep 'atmux:cockpit')`,
-    );
-  } catch (e) {
-    const cause = e instanceof Error ? e.message : String(e);
-    logger.warn(`cockpit cron: crontab swap failed — manual install required (${cause})`);
-  }
+  // ADR-233 §D2: cockpit-pulse cron install retired. `installCockpitCronBlock`
+  // is a no-op shim — the call is kept (behind the crontab-availability +
+  // atmux-bin guards above) so the legacy strip-only cleanup path stays
+  // reachable, but no `atmux:cockpit` sandwich block is written anymore.
+  void resolveCockpitConfigPath({ env });
+  void atmuxBin;
+  await installCockpitCronBlock({ io: crontab });
+  logger.log(
+    "  · cockpit cron: install retired (ADR-233 §D2) — re-run `atmux cockpit rebuild` if the cockpit dies",
+  );
 }
 
 function isTruthyEnv(v: string | undefined): boolean {

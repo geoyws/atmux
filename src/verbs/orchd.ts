@@ -793,7 +793,7 @@ async function orchdScanBudgetCli(parsed: ParsedOrchdArgs): Promise<number> {
           name: team.name,
           members: team.members.map((m) => {
             const cb: { name: string; claudeAccount?: string } = { name: m.name };
-            if (m.claudeAccount !== undefined && m.claudeAccount !== null) {
+            if (typeof m.claudeAccount === "string" && m.claudeAccount !== "") {
               cb.claudeAccount = m.claudeAccount;
             }
             return cb;

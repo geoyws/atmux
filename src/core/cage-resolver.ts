@@ -19,7 +19,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 import { walkSessions } from "./cockpit.ts";
-import type { CockpitShape, EpicTeamSessionT } from "../schema/cockpit.ts";
+import type { Cockpit as CockpitShape, EpicTeamSessionT } from "../schema/cockpit.ts";
 
 /** Resolved cage description — mirrors the `CageInfo` shape that the
  *  orchd dispatchers (epic-merge.ts, dissolve-epic.ts, git-push.ts)

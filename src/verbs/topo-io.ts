@@ -371,7 +371,7 @@ export function defaultReapDeps(): ReapDeps {
       if (body === null) return;
       const team = scope.startsWith("atmux:team=") ? scope.slice("atmux:team=".length) : scope;
       const cronModule = await import("../core/cron.ts");
-      const stripped = cronModule.stripBlockByTeam(body, team);
+      const stripped = cronModule.stripAtmuxBlock(body, team);
       if (stripped === body) return; // no-op idempotency
       await crontab.write(stripped);
     },

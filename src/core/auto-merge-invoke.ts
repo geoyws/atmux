@@ -116,7 +116,6 @@ function extractMergeSha(stdout: string): string | null {
 async function defaultSpawnEpicMergeTick(
   teamDir: string,
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-  // @ts-expect-error — Bun.spawn types vary across versions.
   const child = Bun.spawn({
     cmd: ["atmux", "epic-merge", "tick", "--team-dir", teamDir],
     stdout: "pipe",

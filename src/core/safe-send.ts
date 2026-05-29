@@ -205,9 +205,11 @@ export async function safeSendKeys(
   text: string,
   opts: SafeSendOpts,
 ): Promise<SafeSendResult> {
-  return withPaneSendLock(target, () => safeSendKeysInner(target, text, opts), {
-    log: opts.log,
-  });
+  return withPaneSendLock(
+    target,
+    () => safeSendKeysInner(target, text, opts),
+    opts.log !== undefined ? { log: opts.log } : {},
+  );
 }
 
 async function safeSendKeysInner(
@@ -571,9 +573,11 @@ export const DEFAULT_VERIFY_RETRIES = 1;
 export async function safeSendKeysWithVerify(
   opts: SafeSendKeysWithVerifyOpts,
 ): Promise<SafeSendKeysWithVerifyResult> {
-  return withPaneSendLock(opts.target, () => safeSendKeysWithVerifyInner(opts), {
-    log: opts.log,
-  });
+  return withPaneSendLock(
+    opts.target,
+    () => safeSendKeysWithVerifyInner(opts),
+    opts.log !== undefined ? { log: opts.log } : {},
+  );
 }
 
 async function safeSendKeysWithVerifyInner(
