@@ -51,7 +51,7 @@ import {
   resolveCageSessionName,
   resolveCageSocket,
 } from "./cockpit.ts";
-import { resolveCallerScope } from "./common.ts";
+import { resolveCallerScope, resolveTeamSocket } from "./common.ts";
 import { softStop } from "./soft-stop.ts";
 
 // ---------- Input shape ----------
@@ -428,7 +428,19 @@ export async function defaultCageTeardown(deps: {
   logger: { log: (m: string) => void; warn: (m: string) => void };
 }): Promise<void> {
   const teamName = deps.childTeam.name;
-  const socket = await resolveCageSocket(teamName, deps.epicRoot);
+  // ADR-251 — epic cages set `team.tmuxTmpdir` (`/tmp/atmux-<parent>/epics/
+  // <epicId>`) at spawn (spawn-epic.ts §S2). `resolveCageSocket(name, root)`
+  // can't reach that scheme — it guesses `/tmp/atmux-<epicId>/sock` and
+  // reports a LIVE epic cage as dead, so this probe's "skip when down"
+  // path silently skips killing a running cage (then prune + cockpit-mutate
+  // proceed against a live cage → orphaned zombie). `resolveTeamSocket` is
+  // the authoritative resolver when tmuxTmpdir is set (its own docs: "All
+  // sites read AND write MUST use this resolver"). Fall back only when the
+  // child team.json lacks tmuxTmpdir (corrupted/legacy remnant).
+  const socket =
+    typeof deps.childTeam.tmuxTmpdir === "string" && deps.childTeam.tmuxTmpdir.length > 0
+      ? resolveTeamSocket(deps.childTeam)
+      : await resolveCageSocket(teamName, deps.epicRoot);
   const tmux = deps.tmuxFactory({ socketPath: socket });
   const sessionName = await resolveCageSessionName({ name: teamName, root: deps.epicRoot });
 

@@ -16,7 +16,11 @@ import {
 const ATMUX_DIR = "/tmp/team/.atmux";
 
 function team(epicId: string): SpawnedEpicTeam {
-  return { epicId, cageSessionName: `atmux-${epicId}` };
+  return {
+    epicId,
+    cageSessionName: `atmux-${epicId}`,
+    cageSocket: `/tmp/atmux-parent/epics/${epicId}/tmux-0/default`,
+  };
 }
 
 describe("reapStaleEpicTeams — empty enumeration (no spawned epic-teams)", () => {

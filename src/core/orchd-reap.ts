@@ -30,11 +30,14 @@
 
 import { performDissolveEpic } from "./dissolve-epic.ts";
 
-/** One spawned epic-team the reaper may act on. `cageSessionName` is the
- *  tmux session name of the epic's cage (used by `isCageAlive`). */
+/** One spawned epic-team the reaper may act on. `cageSessionName` +
+ *  `cageSocket` together address the epic's tmux cage for the liveness
+ *  probe (a session name alone is ambiguous — each epic cage has its own
+ *  socket). */
 export interface SpawnedEpicTeam {
   epicId: string;
   cageSessionName: string;
+  cageSocket: string;
 }
 
 export type ReapOutcome =
@@ -74,7 +77,7 @@ export interface ReapStaleEpicTeamsDeps {
   listSpawnedEpicTeams?: (atmuxDir: string) => Promise<ReadonlyArray<SpawnedEpicTeam>>;
   /** True iff the epic's cage tmux session is live. Defaults to `true`
    *  (fail-closed: unknown liveness ⇒ never reap). */
-  isCageAlive?: (cageSessionName: string) => Promise<boolean>;
+  isCageAlive?: (team: SpawnedEpicTeam) => Promise<boolean>;
   /** For a LIVE cage: true iff it has made no progress past the staleness
    *  threshold. Defaults to `false` (never escalate spuriously). */
   isCageStaleIdle?: (team: SpawnedEpicTeam) => Promise<boolean>;
@@ -96,7 +99,7 @@ async function defaultListSpawnedEpicTeams(
   return [];
 }
 
-async function defaultIsCageAlive(_cageSessionName: string): Promise<boolean> {
+async function defaultIsCageAlive(_team: SpawnedEpicTeam): Promise<boolean> {
   // Fail CLOSED: when liveness can't be determined, treat the cage as ALIVE
   // so it is never reaped. A false-"dead" verdict would destroy a live cage.
   return true;
@@ -159,7 +162,7 @@ export async function reapStaleEpicTeams(
   for (const team of teams) {
     result.considered += 1;
     try {
-      const isAlive = await alive(team.cageSessionName);
+      const isAlive = await alive(team);
 
       if (!isAlive) {
         // ---------- dead-cage orphan ----------

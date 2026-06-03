@@ -530,6 +530,32 @@ describe("defaultCageTeardown — production cage reap", () => {
     expect(seen).toEqual(["=atmux-e-1"]);
   });
 
+  test("ADR-251: epic cage socket resolved via tmuxTmpdir (resolveTeamSocket), not the /tmp/atmux-<epicId> guess", async () => {
+    // Regression: resolveCageSocket(name, epicRoot) guesses
+    // /tmp/atmux-<epicId>/sock and reports a LIVE epic cage as dead.
+    // Epic cages set team.tmuxTmpdir at spawn; the teardown MUST resolve
+    // the socket from it so the liveness probe + killSession reach the
+    // real cage. Capture the socketPath the tmuxFactory receives.
+    let capturedSocket: string | undefined;
+    const childTeam = {
+      name: "e-1",
+      members: [],
+      worktreeIsolation: false,
+      tmuxTmpdir: "/tmp/atmux-parent/epics/e-1",
+    } as unknown as TeamShape;
+    await defaultCageTeardown({
+      epicRoot,
+      childTeam,
+      tmuxFactory: (config) => {
+        capturedSocket = (config as { socketPath?: string }).socketPath;
+        return mockTmux({ hasSessionResult: false });
+      },
+      logger: { log: () => undefined, warn: () => undefined },
+    });
+    const uid = process.getuid?.() ?? 0;
+    expect(capturedSocket).toBe(`/tmp/atmux-parent/epics/e-1/tmux-${uid}/default`);
+  });
+
   test("default path: dissolve-epic with no softStopHook still kills cage", async () => {
     // End-to-end test exercising the default cage teardown path
     // through dissolveEpic (no softStopHook injected). Uses
