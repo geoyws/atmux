@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ♻️ Fixed + Added — orchd RAM-leak cluster: singleton guard + stale-epic reaper + epic-cage socket fix (2026-06-04)
+
+Triage of "orchd is leaking, growing RAM" (2026-05-29) found orchd's own RSS steady (~4MB); the growth was **136 `claude` TUIs ≈ 43.6 GB** across epic-team cages that were spawned but never dissolved. Three structural fixes close the leak at its sources:
+
+- **Singleton guard** ([ADR-249](docs/adr/249-orchd-singleton-guard.md), `rust/atmux-orchd/src/main.rs`) — one supervisor per team DB via an advisory `flock` on `<db>.orchd.lock`. A second `atmux-orchd` for the same team fails fast (exit 5) instead of double-spawning epic-teams. Stops *duplicate* spawns at the source.
+- **Stale-epic-team reaper** ([ADR-250](docs/adr/250-orchd-stale-epic-reaper.md), `src/core/orchd-reap.ts`) — `reapStaleEpicTeams` walks spawned epic-teams + classifies by cage liveness: **dead-cage orphan → auto-reap** (`performDissolveEpic`); **live-but-idle → escalate** (never auto-kill); **live+active → skip**. Dep-injected with fail-closed safe defaults (`listSpawnedEpicTeams → []`, `isCageAlive → true`). Closes the spawn-without-reap asymmetry (spawn is automatic; reap was happy-path-only).
+- **Epic-cage socket resolution fix** ([ADR-251](docs/adr/251-epic-cage-socket-resolution.md), `src/core/dissolve-epic.ts::defaultCageTeardown`) — resolve the cage socket via `resolveTeamSocket(childTeam)` (authoritative `tmuxTmpdir`) instead of `resolveCageSocket(epicId, root)`, which guessed `/tmp/atmux-<epicId>/sock` and reported **live** epic cages as dead. The latent teardown bug skipped `killSession` on a live cage then pruned its worktree + cockpit entry → orphaned zombie (a leak source). Verified against 3 known-live sopx cages that the wrong resolver mis-reported dead.
+- **`atmux orchd --reap-stale [--team-dir <p>] [--dry-run]`** ([ADR-250](docs/adr/250-orchd-stale-epic-reaper.md) §D2, `src/verbs/orchd.ts` + `src/core/orchd-reap-enum.ts`) — wires the reaper's production enumerator (cockpit `sessions[]` walk for the team's epic-teams) + liveness probe (`tmuxTmpdir` → `resolveTeamSocket` → `has-session`, exact-match `=`, fail-closed on unknown socket / probe error per ADR-251). `--dry-run` classifies + prints the verdict without acting — the safe pass an operator runs before any destructive reap. Dead-cage reap inherits `performDissolveEpic`'s driver-scope gate + skip-on-dirty refuse (never force-prunes). Live-idle auto-kill stays gated off (ADR-250 §D1). Validated live: sopx 5 considered (4 live-active, 1 dead-cage orphan), unum 3 + mx 2 all live, errors=0.
+
 ### 📐 Architecture alignment — orchd + Honker is the runtime; cockpit roles trimmed (2026-05-24)
 
 Codebase-wide alignment pass after the orchd / Honker session shipped 7 epics:

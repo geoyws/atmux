@@ -53,3 +53,15 @@ The dead-cage reap calls `performDissolveEpic` with default checks. For a dead c
 - **Does NOT, by itself, free the live-idle RAM** (e.g. the 2026-05-29 sopx/mx/unum cages): those cages are alive, so the reaper escalates rather than kills. Immediate relief for already-accumulated live-idle cages is an operator-driven `atmux team dissolve-epic` per cage (cross-team → ping first).
 - **Code**: new `src/core/orchd-reap.ts` + `tests/unit/core/orchd-reap.test.ts`; new `--reap-stale` branch in `src/verbs/orchd.ts`. Rust supervisor tick deferred (D2).
 - **Out of scope**: auto-killing live cages (gated, off, future); reaping non-epic teams (regular-team decommission is [ADR-248](248-atmux-team-remove-verb.md)'s `atmux team remove`); cross-cage reaping ([ADR-232](232-cross-cage-dispatch.md) dispatcher territory).
+
+## Amendment 2026-06-04 — §D2 "Next wire" phase shipped (`--reap-stale` + real enumerator/liveness)
+
+The §D2 "Next wire" phase is now implemented (unblocked by [ADR-251](251-epic-cage-socket-resolution.md)'s socket-resolution fix):
+
+- **`atmux orchd --reap-stale [--team-dir <p>] [--dry-run]`** (`src/verbs/orchd.ts::orchdReapStaleCli`) — injects the production enumerator + liveness into `reapStaleEpicTeams`; `dissolve`/`escalate` keep the core defaults (`performDissolveEpic` / stderr-log).
+- **Production enumerator + liveness** (`src/core/orchd-reap-enum.ts`):
+  - `listSpawnedEpicTeamsForTeam(atmuxDir)` — derives the team's repo root from `atmuxDir`, walks the cockpit `sessions[]` for `type:"epic-team"` nodes whose nearest-ancestor team root matches, reads each child's `team.json` (`<root>-epics/<epicId>/.atmux/team.json`), and resolves `cageSocket` via `resolveTeamSocket(tmuxTmpdir)` (NEVER `resolveCageSocket` — ADR-251). `epicId` = cockpit node name (the id `performDissolveEpic` matches on). Absent/`tmuxTmpdir`-less team.json ⇒ `cageSocket = ""`.
+  - `isCageAliveForTeam(team)` — fail-closed: empty `cageSocket` ⇒ ALIVE (tmux never probed); a resolvable socket with no live session (`has-session` exits 1) ⇒ `false` (dead-cage); probe throw ⇒ ALIVE. The exact-match `=` prefix mirrors `defaultCageTeardown`.
+- **`--dry-run` validated live** (2026-06-04): atmux 0 (already clean), sopx 5 considered → 4 `live-active` (incl. the 3 ADR-251 cages the old resolver mis-reported dead) + 1 dead-cage orphan (`e-c632065e`), unum 3 + mx 2 all `live-active`, `errors=0`. Confirms the liveness verdict is correct against real cockpit + real sockets.
+- **Still deferred** (unchanged): the automatic Rust-supervisor `spawn_reap_stale` tick (§D2 final phase) — earns its place only after the manual CLI's dead-cage class has run clean for a cycle; and live-idle auto-kill (§D1, `ATMUX_ORCHD_REAP_LIVE_IDLE`, off).
+- **Tests**: `tests/unit/core/orchd-reap-enum.test.ts` (enumerator walk/filter/socket-resolution + fail-closed liveness, all IO seams injected); `--reap-stale`/`--dry-run` parser cases in `tests/unit/verbs/orchd.test.ts`.

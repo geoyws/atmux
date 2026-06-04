@@ -336,6 +336,38 @@ describe("parseOrchdArgs — --sweep subverb (ADR-231 §D4)", () => {
   });
 });
 
+// ---------- ADR-250 §D2 — --reap-stale subverb + --dry-run ----------
+
+describe("parseOrchdArgs — --reap-stale subverb (ADR-250 §D2)", () => {
+  test("--reap-stale parses as reap-stale sub-verb", () => {
+    expect(parseOrchdArgs(["--reap-stale"])).toEqual({ subverb: "reap-stale" });
+  });
+
+  test("'reap-stale' bare form parses identically", () => {
+    expect(parseOrchdArgs(["reap-stale"])).toEqual({ subverb: "reap-stale" });
+  });
+
+  test("--reap-stale --dry-run captures dryRun", () => {
+    expect(parseOrchdArgs(["--reap-stale", "--dry-run"])).toEqual({
+      subverb: "reap-stale",
+      dryRun: true,
+    });
+  });
+
+  test("--reap-stale --team-dir + --dry-run all captured", () => {
+    expect(parseOrchdArgs(["--reap-stale", "--team-dir", "/srv/demo", "--dry-run"])).toEqual({
+      subverb: "reap-stale",
+      teamDir: "/srv/demo",
+      dryRun: true,
+    });
+  });
+
+  test("--dry-run omitted ⇒ dryRun absent (not false) — clean exactOptional shape", () => {
+    const parsed = parseOrchdArgs(["--reap-stale"]);
+    expect("dryRun" in parsed).toBe(false);
+  });
+});
+
 // ---------- orchd() dispatch — sweep route ----------
 
 describe("orchd() dispatch — --sweep routes through orchdSweep + prints counters JSON", async () => {

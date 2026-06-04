@@ -26,7 +26,8 @@
 //   - `isCageStaleIdle` → `false` (never escalate spuriously).
 // Net shipped default = safe no-op; tests inject all seams to exercise
 // every branch; the CLI (`atmux orchd --reap-stale`) injects the real
-// enumerator + liveness once the per-epic-socket resolution lands.
+// enumerator + liveness from `orchd-reap-enum.ts` (per-epic-socket
+// resolution via tmuxTmpdir → resolveTeamSocket, ADR-251).
 
 import { performDissolveEpic } from "./dissolve-epic.ts";
 
