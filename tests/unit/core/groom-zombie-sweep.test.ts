@@ -279,7 +279,7 @@ describe("sweepZombieTmuxSockets", () => {
       nowMs: RUN_MS,
       killServer: stubKill(env),
     });
-    expect(r).toEqual({ scanned: 0, killed: 0, removed: 0, errors: [] });
+    expect(r).toEqual({ scanned: 0, killed: 0, removed: 0, skippedLiveChildren: 0, errors: [] });
   });
 
   test("skips file entries at tmpDir top (only directories matched)", async () => {
@@ -291,5 +291,98 @@ describe("sweepZombieTmuxSockets", () => {
       killServer: stubKill(env),
     });
     expect(r.scanned).toBe(0);
+  });
+
+  // ADR-252 (t-65bec10b) — structural live-epic-children guard.
+  test("SKIPS removal + bumps skippedLiveChildren when guard reports live children", async () => {
+    const dir = await makeFixtureDir("atmux-e2e-haslivekids-LIVE", {
+      ageMs: SIX_HOURS_MS + 1000,
+    });
+
+    const guardCalls: string[] = [];
+    const r = await sweepZombieTmuxSockets({
+      tmpDir: env.fakeTmp,
+      nowMs: RUN_MS,
+      killServer: stubKill(env),
+      hasLiveChildren: async (parentTmpdir) => {
+        guardCalls.push(parentTmpdir);
+        return true; // live epic child ⇒ refuse removal
+      },
+    });
+
+    // Counted as scanned (age + pattern matched) but neither killed nor
+    // removed — only skippedLiveChildren bumps.
+    expect(r.scanned).toBe(1);
+    expect(r.killed).toBe(0);
+    expect(r.removed).toBe(0);
+    expect(r.skippedLiveChildren).toBe(1);
+    expect(r.errors).toEqual([]);
+    // No kill attempted, and the dir survives untouched.
+    expect(env.killCalls).toEqual([]);
+    expect(await stat(dir)).toBeDefined();
+    // Guard was consulted with the parent tmpdir path.
+    expect(guardCalls).toEqual([dir]);
+  });
+
+  test("guard returning false ⇒ normal kill + remove (skippedLiveChildren stays 0)", async () => {
+    const dir = await makeFixtureDir("atmux-e2e-nokids-DEAD", {
+      ageMs: SIX_HOURS_MS + 1000,
+    });
+
+    const r = await sweepZombieTmuxSockets({
+      tmpDir: env.fakeTmp,
+      nowMs: RUN_MS,
+      killServer: stubKill(env),
+      hasLiveChildren: async () => false, // no live children ⇒ sweep proceeds
+    });
+
+    expect(r.scanned).toBe(1);
+    expect(r.killed).toBe(1);
+    expect(r.removed).toBe(1);
+    expect(r.skippedLiveChildren).toBe(0);
+    expect(await stat(dir).catch(() => null)).toBeNull();
+  });
+
+  test("dryRun never consults the guard (no removal to gate)", async () => {
+    await makeFixtureDir("atmux-e2e-dry-noguard-DRY", {
+      ageMs: SIX_HOURS_MS + 1000,
+    });
+
+    let guardCalled = false;
+    const r = await sweepZombieTmuxSockets({
+      tmpDir: env.fakeTmp,
+      nowMs: RUN_MS,
+      dryRun: true,
+      killServer: stubKill(env),
+      hasLiveChildren: async () => {
+        guardCalled = true;
+        return true;
+      },
+    });
+
+    expect(r.scanned).toBe(1);
+    expect(r.skippedLiveChildren).toBe(0);
+    expect(guardCalled).toBe(false);
+  });
+
+  test("real default guard (no injection): plain fixture dir has no epics/ ⇒ removed", async () => {
+    // No `hasLiveChildren` injection ⇒ the real hasLiveEpicChildren runs.
+    // The fixture dir has no `epics/` subdir → ENOENT → [] → false →
+    // removal proceeds. Guards against the default fail-safing the whole
+    // sweep into a no-op.
+    const dir = await makeFixtureDir("atmux-e2e-realdefault-RDF", {
+      ageMs: SIX_HOURS_MS + 1000,
+    });
+
+    const r = await sweepZombieTmuxSockets({
+      tmpDir: env.fakeTmp,
+      nowMs: RUN_MS,
+      killServer: stubKill(env),
+    });
+
+    expect(r.scanned).toBe(1);
+    expect(r.skippedLiveChildren).toBe(0);
+    expect(r.removed).toBe(1);
+    expect(await stat(dir).catch(() => null)).toBeNull();
   });
 });
