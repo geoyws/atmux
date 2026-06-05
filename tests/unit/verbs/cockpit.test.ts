@@ -1,7 +1,7 @@
 // Unit tests for src/verbs/cockpit.ts — ADR-063 cockpit verb.
 
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -437,10 +437,34 @@ function registerFixtureExitHook(): void {
   process.on("exit", tearDownFixtureSurvivors);
 }
 
+// ADR-178 §Decision "Sidecar file shape" — the in-memory registry above
+// (activeFixtureSockets / activeFixtureDirs + process.on('exit') + afterAll)
+// does NOT survive SIGKILL of the bun-test parent, which is the exact gap
+// ADR-178 §Context names. `spinTmux` writes a `<socketDir>/.leak-tracker.json`
+// sidecar synchronously (OQ2 — sync writeFileSync, one fewer await + closes the
+// crash-window race for free) right after `mkdtemp` and BEFORE `createTmux`, so
+// the out-of-process `atmux test-reaper` verb (T3) can identify cross-run
+// orphans without parsing live process state. `tearDownFixtureSurvivors`
+// rmSync's the dir recursively, which removes the sidecar alongside it on the
+// happy path — leaving no trail.
+const LEAK_TRACKER_FILENAME = ".leak-tracker.json";
+
 async function spinTmux(prefix: string): Promise<TmuxFixture> {
   registerFixtureExitHook();
   const socketDir = await mkdtemp(join(tmpdir(), `atmux-cockpit-${prefix}-`));
   const socketPath = join(socketDir, "sock");
+  writeFileSync(
+    join(socketDir, LEAK_TRACKER_FILENAME),
+    JSON.stringify({
+      tmuxSocket: socketPath,
+      socketDir,
+      parentPid: process.pid,
+      createdAt: Math.floor(Date.now() / 1000),
+      testFile: __filename,
+      testName: null,
+      prefix,
+    }),
+  );
   const tmux = createTmux({ socketPath, configFile: "/dev/null" });
   activeFixtureSockets.add(socketPath);
   activeFixtureDirs.add(socketDir);
@@ -461,6 +485,59 @@ beforeEach(() => {
 });
 afterEach(() => {
   if (priorTmux !== undefined) process.env.TMUX = priorTmux;
+});
+
+// ADR-178 §Decision "Sidecar file shape" — the leak-tracker sidecar is the
+// SIGKILL-survivable half of the cleanup contract: the in-memory registry +
+// userland exit hooks above die with the bun-test process, but the on-disk
+// `.leak-tracker.json` persists so the out-of-process reaper (T3) can find
+// orphans. These tests assert the real on-disk artifact: written on spawn with
+// the ADR-178 schema, and removed when the socket dir is torn down.
+describe("spinTmux leak-tracker sidecar (ADR-178)", () => {
+  test("writes a schema-correct .leak-tracker.json on spawn, removes it on teardown", async () => {
+    const fx = await spinTmux("leak-tracker-sidecar");
+    const sidecar = join(fx.socketDir, ".leak-tracker.json");
+    try {
+      // Written synchronously on spawn — survives SIGKILL of the test process.
+      expect(existsSync(sidecar)).toBe(true);
+      const parsed = JSON.parse(readFileSync(sidecar, "utf8")) as Record<string, unknown>;
+      // Exact ADR-178 §Decision schema — every field load-bearing for the reaper.
+      expect(parsed.tmuxSocket).toBe(fx.socketPath);
+      expect(parsed.socketDir).toBe(fx.socketDir);
+      expect(parsed.parentPid).toBe(process.pid);
+      expect(parsed.prefix).toBe("leak-tracker-sidecar");
+      expect(parsed.testFile).toBe(__filename);
+      expect(parsed.testName).toBeNull();
+      // createdAt is epoch SECONDS (not millis) — the reaper's max-age gate
+      // computes `now - max-age-min*60` in seconds, so a millis value here
+      // would make every fixture look freshly-created and never get reaped.
+      expect(typeof parsed.createdAt).toBe("number");
+      const createdAt = parsed.createdAt as number;
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      expect(createdAt).toBeLessThanOrEqual(nowSeconds);
+      expect(createdAt).toBeGreaterThan(nowSeconds - 60);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+    // Teardown (rm -rf of socketDir) takes the sidecar with it — happy-path
+    // runs leave no trail, per ADR-178 §Decision.
+    expect(existsSync(sidecar)).toBe(false);
+  });
+
+  test("tearDownFixtureSurvivors removes the sidecar via the registry sweep", async () => {
+    const fx = await spinTmux("leak-tracker-sweep");
+    const sidecar = join(fx.socketDir, ".leak-tracker.json");
+    expect(existsSync(sidecar)).toBe(true);
+    // The out-of-band sweep (afterAll / process.on('exit')) is the path that
+    // fires when a test's own try/finally is bypassed; it must remove the
+    // sidecar along with the dir.
+    tearDownFixtureSurvivors();
+    expect(existsSync(sidecar)).toBe(false);
+    expect(existsSync(fx.socketDir)).toBe(false);
+  });
 });
 
 describe("autolaunchTeam", () => {
