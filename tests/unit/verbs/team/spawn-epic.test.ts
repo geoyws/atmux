@@ -820,3 +820,139 @@ describe("spawnEpic — ADR-225 eligibility gate", () => {
     expect(onlySpawn.forceEligibility).toBe(false);
   });
 });
+
+// ---------- Parent-cage viewer window (ADR-089 §Pillar 1 §Amendment / t-2183f488) ----------
+
+// Fake tmux factory recording newWindow calls. Drives the
+// addEpicViewerToParentCage path in spawn-epic without a real tmux
+// server. `aliveSessions` controls whether the parent session is
+// reported running; `preexistingWindows` lets the idempotent test seed
+// a viewer window so the helper's window-name check fires.
+interface NewWindowCall {
+  sessionName: string;
+  name: string;
+  detached: boolean;
+  shellCommand: string;
+}
+function makeViewerTmuxFactory(cfg: {
+  aliveSessions: string[];
+  preexistingWindows?: Array<{ name: string; index: number }>;
+}): {
+  factory: NonNullable<SpawnEpicOpts["tmuxFactory"]>;
+  newWindowCalls: NewWindowCall[];
+} {
+  const newWindowCalls: NewWindowCall[] = [];
+  const windows = cfg.preexistingWindows ?? [{ name: "lead", index: 0 }];
+  const factory: NonNullable<SpawnEpicOpts["tmuxFactory"]> = () => ({
+    session: {
+      listSessions: async () => cfg.aliveSessions.map((name) => ({ name })),
+    },
+    window: {
+      listWindows: async () => windows,
+      newWindow: async (args: NewWindowCall) => {
+        newWindowCalls.push(args);
+        return { windowIndex: windows.length };
+      },
+    },
+  });
+  return { factory, newWindowCalls };
+}
+
+describe("spawnEpic — parent-cage viewer (ADR-089 §Pillar 1 §Amendment / t-2183f488)", () => {
+  test("running parent — adds 🌳-<epicId> window with retry-attach shell command into the nested epic cage", async () => {
+    // Parent session name resolves to `atmux-<parentName>` when no
+    // session-anchor file exists (the scratch parent has none).
+    const { factory, newWindowCalls } = makeViewerTmuxFactory({
+      aliveSessions: ["atmux-parent-team"],
+    });
+    const opts: SpawnEpicOpts = {
+      cockpitPath,
+      probeHostPressure: permissivePressure,
+      templatesDir,
+      callerScope: () => "driver",
+      eligibilityProbe: permissiveEligibility,
+      git: makeGitStub({ initialBranch: "main" }),
+      logger: { log: () => undefined, warn: () => undefined },
+      tmuxFactory: factory,
+    };
+    const rc = await spawnEpic(["e-viewer-01", "--from", "parent-team"], opts);
+    expect(rc).toBe(0);
+
+    // Exactly one viewer window was created in the parent session.
+    expect(newWindowCalls).toHaveLength(1);
+    const call = newWindowCalls[0]!;
+    expect(call.sessionName).toBe("atmux-parent-team");
+    expect(call.name).toBe("🌳-e-viewer-01");
+    expect(call.detached).toBe(true);
+
+    // The shell command is the 1s-retry attach loop into the CHILD cage's
+    // nested socket + session (so the viewer connects on later cage boot).
+    // epicSocket derives from childTeam.tmuxTmpdir per ADR-089 §Pillar 1:
+    // /tmp/atmux-<parent>/epics/<epicId>/tmux-<uid>/default.
+    const uid = process.getuid?.() ?? 0;
+    const expectedEpicSocket = `/tmp/atmux-parent-team/epics/e-viewer-01/tmux-${uid}/default`;
+    expect(call.shellCommand).toContain(`tmux -S ${expectedEpicSocket} attach -t atmux-e-viewer-01`);
+    expect(call.shellCommand).toContain("while true;");
+    expect(call.shellCommand).toContain("sleep 1");
+  });
+
+  test("parent cage NOT running — soft-fails (no window, spawn still returns 0)", async () => {
+    // listSessions returns the WRONG session name → helper sees the parent
+    // as down and skips the viewer add (warn-only). The spawn itself must
+    // still succeed: worktree + team.json + state.db + cockpit registration
+    // are all landed before the viewer step.
+    const { factory, newWindowCalls } = makeViewerTmuxFactory({
+      aliveSessions: ["some-other-session"],
+    });
+    const warnings: string[] = [];
+    const opts: SpawnEpicOpts = {
+      cockpitPath,
+      probeHostPressure: permissivePressure,
+      templatesDir,
+      callerScope: () => "driver",
+      eligibilityProbe: permissiveEligibility,
+      git: makeGitStub({ initialBranch: "main" }),
+      logger: { log: () => undefined, warn: (m) => warnings.push(m) },
+      tmuxFactory: factory,
+    };
+    const rc = await spawnEpic(["e-viewer-down", "--from", "parent-team"], opts);
+    expect(rc).toBe(0);
+
+    // No window created because the parent session wasn't alive.
+    expect(newWindowCalls).toHaveLength(0);
+    // The soft-fail warn surfaced (parent session not running).
+    expect(warnings.some((w) => /not running/.test(w))).toBe(true);
+
+    // The spawn's structural side-effects still landed — proves the viewer
+    // step is non-load-bearing (cockpit entry present).
+    const cockpitRaw = JSON.parse(await readFile(cockpitPath, "utf8"));
+    expect(cockpitRaw.sessions[0].sessions[0].name).toBe("e-viewer-down");
+  });
+
+  test("idempotent — viewer window already present → no duplicate newWindow call", async () => {
+    // Seed the parent's window list with the viewer window already there
+    // (the shape a re-spawn or a prior cold-boot start would leave). The
+    // helper's window-name check must short-circuit before newWindow.
+    const { factory, newWindowCalls } = makeViewerTmuxFactory({
+      aliveSessions: ["atmux-parent-team"],
+      preexistingWindows: [
+        { name: "lead", index: 0 },
+        { name: "🌳-e-viewer-dup", index: 1 },
+      ],
+    });
+    const opts: SpawnEpicOpts = {
+      cockpitPath,
+      probeHostPressure: permissivePressure,
+      templatesDir,
+      callerScope: () => "driver",
+      eligibilityProbe: permissiveEligibility,
+      git: makeGitStub({ initialBranch: "main" }),
+      logger: { log: () => undefined, warn: () => undefined },
+      tmuxFactory: factory,
+    };
+    const rc = await spawnEpic(["e-viewer-dup", "--from", "parent-team"], opts);
+    expect(rc).toBe(0);
+    // No new window — the existing one was detected by name.
+    expect(newWindowCalls).toHaveLength(0);
+  });
+});

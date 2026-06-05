@@ -326,3 +326,15 @@ Closes a gap exposed 2026-05-21 21:57 MYT on the operator's hax box (post seed-e
 **Cross-refs:** [ADR-162](162-atmux-owns-tmux-infrastructure.md) §Decision-anchor #1 (cockpit-on-dedicated-socket → enables the same-chord-no-collision argument); `b887009` (the Phase 3 cage-prefix wiring that this amendment extends).
 
 **Filed via** t-3fb7bc54 (docs role, 2026-05-22).
+
+## §Amendment 2026-06-05 — `spawn-epic` wires the parent-cage viewer (closes the spawn-side gap) (t-2183f488)
+
+§Pillar 1 §Amendment (t-2ea3bdb9, 2026-05-16) moved epic-team viewer placement to the parent cage via `addEpicViewerToParentCage` (`src/core/cockpit.ts`), and ADR-135 §D2 §Amendment (t-34fa0132) made the `🌳-<epicId>` window sit INSIDE the parent session. Call-site coverage was asymmetric: `atmux start` (`src/verbs/start.ts` §10b) added the viewer on cold boot, and `atmux team dissolve-epic` (`src/core/dissolve-epic.ts` §5a) removed it, but `atmux team spawn-epic` (`src/verbs/team/spawn-epic.ts`) registered the child in `cockpit.json::sessions[]` and never called the helper. Spawning an epic-team into a RUNNING parent therefore left the parent cage with no viewer window until the operator `atmux stop` + `atmux start`-ed the parent to re-hit the cold-boot path (operator-facing UX wedge — observed 2026-05-19: `atmux` cage had 7 windows, 0 `🌳-` viewers, despite a registered `e-13f311f5` child).
+
+**Wire-up** — `spawn-epic` step 9 (new, between the cockpit-registry write at step 8 and the success log now at step 10) calls `addEpicViewerToParentCage({ parentRoot, parentName, epicId, epicSocket: resolveTeamSocket(childTeam), epicSession, tmuxFactory, log, warn })`, mirroring `start.ts` §10b's call shape. `epicSocket`/`epicSession` derive from the synthesised `childTeam` (its `tmuxTmpdir` nests under the parent per §Pillar 1). Soft-fail: wrapped in try/catch + warn so a parent-cage/tmux hiccup never fails an otherwise-complete spawn.
+
+**Pre-cage timing is correct** — at `spawn-epic` time the child cage does NOT exist yet (its spawn is deferred to the operator's `atmux cockpit rebuild`). The helper soft-fails only on the PARENT session being down; when the parent is live it always creates the window, whose shell command is a 1s-retry attach loop (`while true; do tmux -S <epicSocket> attach -t <epicSession>; sleep 1; done`). The loop connects the moment the child cage boots, so adding the viewer before the cage exists is the intended behaviour — the retry loop bridges the gap. Idempotent: the helper's window-name check skips a duplicate add when re-spawned.
+
+**Test coverage** — `tests/unit/verbs/team/spawn-epic.test.ts` (describe block "spawnEpic — parent-cage viewer (ADR-089 §Pillar 1 §Amendment / t-2183f488)"): live-parent fixture asserts the `🌳-<epicId>` window is created with the correct retry-attach shell command + nested epic socket; down-parent fixture asserts soft-fail (no window, spawn still returns 0); idempotent fixture (window pre-present) asserts no duplicate `newWindow` call.
+
+**Filed via** t-2183f488 (up-impl lane, 2026-06-05).

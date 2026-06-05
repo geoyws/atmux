@@ -40,16 +40,26 @@
 //   8. Register child in parent's cockpit sessions[] (raw read +
 //      mutate + write back; loadCockpit's enriched legacy fields
 //      would round-trip lossy).
-//   9. Log "next: atmux cockpit rebuild" — child cage spawn is the
+//   9. Add the parent-cage viewer window via addEpicViewerToParentCage
+//      (ADR-089 §Pillar 1 §Amendment / t-2183f488): a `🌳-<epicId>`
+//      window inside the running parent cage that auto-attaches into
+//      the child's nested cage. Symmetric with `atmux start` (adds) +
+//      `dissolve-epic` (removes). Soft-fails when the parent cage is
+//      down. The child cage doesn't exist yet (step 10 hint); the
+//      window's retry-attach loop connects on later cage boot.
+//  10. Log "next: atmux cockpit rebuild" — child cage spawn is the
 //      operator's manual step in v1 (matches the existing cockpit
 //      verb pattern; auto-spawn lands as a follow-up Task).
 //
 // Rollback semantics (per Task pre-flag #1, transactional boundary):
 // failures in steps 6-8 attempt to undo the worktree (pruneWorktree
 // in `--force` mode is acceptable because we authored the worktree
-// in step 5 — operator never touched it). Step 9 failure is logged
-// + does NOT rollback (the registry append is the LAST mutation;
-// the verb exits non-zero with the partial state visible).
+// in step 5 — operator never touched it). The cockpit registry append
+// (step 8) is the LAST mutation that can fail the verb; its failure is
+// NOT rolled back (the verb exits non-zero with the partial state
+// visible). Step 9 (viewer-window add) is soft-fail only — wrapped in
+// try/catch + warn so a parent-cage/tmux hiccup never throws past it,
+// hence never rolls back an otherwise-successful spawn.
 //
 // Out of scope: child cage start (operator runs cockpit rebuild);
 // gh fail-fast assertions for pr-mode (§Decision-anchor #10 — pr-
@@ -64,6 +74,7 @@ import { exists, writeText } from "../../abstractions/fs.ts";
 import { readJson } from "../../abstractions/json.ts";
 import { closeDatabase, type Database, openDatabase } from "../../abstractions/sqlite.ts";
 import { migrations } from "../../abstractions/sqlite-migrations.ts";
+import { createTmux } from "../../abstractions/tmux.ts";
 import {
   defaultGitSpawn,
   type GitSpawn,
@@ -71,8 +82,12 @@ import {
   pruneWorktree,
 } from "../../abstractions/worktree.ts";
 import { type BudgetProbeState, loadBudgetMap, selectAccount } from "../../core/account-pool.ts";
-import { defaultCockpitConfigPath, migrateLegacyShape } from "../../core/cockpit.ts";
-import { resolveCallerScope } from "../../core/common.ts";
+import {
+  addEpicViewerToParentCage,
+  defaultCockpitConfigPath,
+  migrateLegacyShape,
+} from "../../core/cockpit.ts";
+import { resolveCallerScope, resolveTeamSocket } from "../../core/common.ts";
 import { epicIsEligible } from "../../core/epic.ts";
 import {
   formatPressureError,
@@ -321,6 +336,14 @@ export interface SpawnEpicOpts {
   /** ADR-225 §Eligibility consumers — override log opts (homeDir / now)
    *  forwarded to the default logger. Tests pin homeDir to scratch. */
   logSpawnOverrideOpts?: LogSpawnOverrideOpts;
+  /** Tmux factory (test injection). Forwarded to
+   *  {@link addEpicViewerToParentCage} at step 9 so the parent cage gains
+   *  the `🌳-<epicId>` viewer window the same verb call (ADR-089 §Pillar 1
+   *  §Amendment t-2ea3bdb9 / t-2183f488). Production default is
+   *  {@link createTmux}; tests inject a fake tmux that records
+   *  `newWindow` calls + a live parent session so the viewer-add path is
+   *  observable without a real tmux server. */
+  tmuxFactory?: Parameters<typeof addEpicViewerToParentCage>[0]["tmuxFactory"];
 }
 
 // ---------- Top-level dispatch ----------
@@ -659,7 +682,51 @@ export async function spawnEpic(
     appendChildToSessions(parentEntry, parsed);
     await writeText(cockpitPath, `${JSON.stringify(cockpitMigrated, null, 2)}\n`);
 
-    // 9. Success log + next-step hint.
+    // 9. Add the parent-cage viewer window. ADR-089 §Pillar 1 §Amendment
+    //    (t-2ea3bdb9) + ADR-135 §D2 §Amendment (t-34fa0132): a `🌳-<epicId>`
+    //    window inside the PARENT atmux cage that auto-attaches into this
+    //    epic-team's nested cage. Symmetric with `atmux start`
+    //    (src/verbs/start.ts §10b) + `atmux team dissolve-epic`
+    //    (src/core/dissolve-epic.ts §5a removes it). t-2183f488 closed the
+    //    spawn-side gap: previously the viewer only landed on a cold-boot
+    //    `atmux start`, so spawning into a RUNNING parent left it invisible
+    //    until restart.
+    //
+    //    The child cage does not exist yet (its spawn is deferred to the
+    //    operator's `atmux cockpit rebuild` below). The helper soft-fails
+    //    only on the PARENT session being down; it always creates the
+    //    window when the parent is live, and the window's shell command is
+    //    a 1s-retry attach loop (`while true; do tmux -S <epicSocket>
+    //    attach -t <epicSession>; sleep 1; done`) that connects the moment
+    //    the child cage boots. So adding it pre-cage is correct — the loop
+    //    bridges the gap. epicSocket/epicSession are derived from the
+    //    synthesised childTeam (its `tmuxTmpdir` nests under the parent per
+    //    ADR-089 §Pillar 1), mirroring start.ts's resolution.
+    //
+    //    Soft-fail (try/catch + warn): the viewer is a UX bridge, never a
+    //    load-bearing structural piece — a cockpit/tmux hiccup must not
+    //    fail an otherwise-successful spawn (the worktree + team.json +
+    //    state.db + cockpit registration have all landed by here).
+    try {
+      const tmuxFactory = opts.tmuxFactory ?? createTmux;
+      await addEpicViewerToParentCage({
+        parentRoot,
+        parentName: parsed.parentTeam,
+        epicId: parsed.epicId,
+        epicSocket: resolveTeamSocket(childTeam),
+        epicSession: childTeam.name.startsWith("atmux-")
+          ? childTeam.name
+          : `atmux-${childTeam.name}`,
+        tmuxFactory,
+        log: (m) => logger.log(`  ${m.replace(/^\s+/, "")}`),
+        warn: (m) => logger.warn(m),
+      });
+    } catch (e) {
+      const cause = e instanceof Error ? e.message : String(e);
+      logger.warn(`spawn-epic: epic-viewer bridge add failed — continuing (${cause})`);
+    }
+
+    // 10. Success log + next-step hint.
     logger.log(
       `epic-team spawned: ${parsed.epicId} at ${epicRoot} (parent=${parsed.parentTeam}, branch=${epicBranch})`,
     );
