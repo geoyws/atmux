@@ -2236,6 +2236,70 @@ function parsePorcelainWorktrees(stdout: string): PorcelainWorktree[] {
   return out;
 }
 
+// ---------- ADR-245 single-kanban invariant: nested-state.db probe ----------
+
+export interface CheckWorktreeNestedStateDbOpts {
+  /** Readdir override (test injection). Same shape as
+   *  `CheckWorktreeOpts.readWorktreeDir`: returns dir entries, or `null`
+   *  to simulate ENOENT (the `worktrees/` dir not existing yet). */
+  readWorktreeDir?: (
+    path: string,
+  ) => Promise<ReadonlyArray<{ name: string; isDirectory: boolean }> | null>;
+  /** `existsSync` override (test injection). Default `node:fs::existsSync`. */
+  existsSync?: (path: string) => boolean;
+}
+
+/**
+ * ADR-245 single-`.atmux`-per-project invariant — defensive doctor probe
+ * (#3 of the worktree single-kanban hook set; t-62-df4e59bd addendum).
+ *
+ * Architectural invariant (operator-direct 2026-05-26, t-62-df4e59bd):
+ * worktrees share the parent team's ONE kanban. A member worktree at
+ * `<team-root>/.atmux/worktrees/<member>/` MAY carry a per-worktree
+ * `team.json` (identity / cwd-pin) but MUST NOT contain a `state.db` —
+ * the kanban lives ONLY at the team root's `.atmux/state.db`. A nested
+ * `state.db` means some verb wrote a worktree-local kanban instead of
+ * resolving UP, splitting state across diverging databases.
+ *
+ * The four other invariant hooks (verb path resolution `getAtmuxDir`
+ * strip-back-before-walk, provisioning writing `team.json`-only, the
+ * orchd-window spawn guard, and `checkWorktreeIsolation`'s orphan walk)
+ * are preventive. This probe is the failsafe: it directly scans
+ * `<atmuxDir>/worktrees/*\/.atmux/state.db` and emits a RED fail row per
+ * planted nested db with an `rm <path>` cleanup hint, so a leaked stub
+ * surfaces even when every preventive hook was bypassed.
+ *
+ * Returns [] when `team === null` (checkTeam already surfaced the broken
+ * state) or when the `worktrees/` dir doesn't exist (no isolation in use).
+ */
+export async function checkWorktreeNestedStateDb(
+  team: Team | null,
+  atmuxDir: string,
+  opts: CheckWorktreeNestedStateDbOpts = {},
+): Promise<DoctorRow[]> {
+  if (team === null) return [];
+  const readDir = opts.readWorktreeDir ?? defaultReadWorktreeDir;
+  const existsSync = opts.existsSync ?? fsExistsSync;
+  const worktreesDir = join(atmuxDir, "worktrees");
+  const entries = await readDir(worktreesDir);
+  if (entries === null) return [];
+
+  const rows: DoctorRow[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory) continue;
+    const nested = join(worktreesDir, entry.name, ".atmux", "state.db");
+    if (existsSync(nested)) {
+      rows.push({
+        status: "red",
+        label: `worktree:nested-state-db:${entry.name}`,
+        detail: `nested kanban at ${nested} — worktrees MUST share the team-root kanban (ADR-245; t-62-df4e59bd)`,
+        hint: `rm ${nested} (then re-run verbs from the worktree — they resolve UP to <team-root>/.atmux/state.db)`,
+      });
+    }
+  }
+  return rows;
+}
+
 // ---------- ADR-179 W6: merger-fan-in probe class ----------
 
 /** ADR-179 §Decision-2+3+6: `team.merger` block, mirrored locally because
@@ -3163,6 +3227,13 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   // empty when team is null (checkTeam already surfaced the broken
   // state) or when isolation is off AND no leftover dirs exist.
   rows.push(...(await checkWorktreeIsolation(team, atmuxDir)));
+  // ADR-245 single-kanban invariant (#3 defensive probe; t-62-df4e59bd):
+  // RED per nested `<atmuxDir>/worktrees/*/.atmux/state.db`. Worktrees
+  // share the team-root kanban; a worktree-local state.db means a verb
+  // wrote a diverging kanban instead of resolving UP. Failsafe behind the
+  // four preventive hooks (getAtmuxDir strip-back, provisioning team.json-
+  // only, orchd-window spawn guard, checkWorktreeIsolation orphan walk).
+  rows.push(...(await checkWorktreeNestedStateDb(team, atmuxDir)));
   // ADR-136 TR4: member-label-collision — warn when 2+ members share
   // the same `(emoji, label-or-name)` display tuple. Pure (no I/O);
   // returns [] when team is null OR no collisions exist.
