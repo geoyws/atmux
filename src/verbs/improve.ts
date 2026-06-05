@@ -536,10 +536,20 @@ async function tickCycle(opts: TickCycleOpts): Promise<number> {
   const delta = Math.max(0, await tokensSpentForClose());
   const cur = state.currentCycle;
   const totalSpent = cur.tokensSpent + delta;
+  // isCycleClosable (above) guaranteed every dispatched Task is done in the
+  // kanban — record them in tasksDone so the history metric
+  // (cur.tasksDone.length) is accurate. Without this the array was never
+  // populated (markTaskDoneInCycle exists but was never wired into the tick
+  // loop), so every closed cycle reported tasksDone=0. Close is the single
+  // point where closability — hence the done set — is known.
+  const tasksDoneIds = cur.tasksDispatched.filter((id) => {
+    const t = tasks.find((k) => k.id === id);
+    return t !== undefined && t.status === "done";
+  });
   const closed = closeCycle(
     {
       ...state,
-      currentCycle: { ...cur, tokensSpent: totalSpent },
+      currentCycle: { ...cur, tokensSpent: totalSpent, tasksDone: tasksDoneIds },
     },
     nowSec,
   );
@@ -549,7 +559,7 @@ async function tickCycle(opts: TickCycleOpts): Promise<number> {
     closed,
     teamName,
     state.cycleN,
-    cur.tasksDone.length,
+    tasksDoneIds.length,
     totalSpent,
     discord,
     nowMs,
