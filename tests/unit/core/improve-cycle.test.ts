@@ -32,6 +32,7 @@ import {
   recordDone,
   recordLanded,
   resumeCycle,
+  selectLongstandingIssues,
   shouldTerminate,
   tickTokens,
 } from "../../../src/core/improve-cycle.ts";
@@ -83,16 +84,77 @@ describe("constants", () => {
   });
 });
 
-// ---------- buildArmMessage ----------
+// ---------- selectLongstandingIssues (ADR-257 §D1) ----------
+
+describe("selectLongstandingIssues", () => {
+  const NOW = 2_000_000;
+  test("ranks open todos oldest-first, tie-break by priority (lower=higher)", () => {
+    const tasks = [
+      task({ id: "t-new", status: "todo", createdAt: 1_900_000, priority: 0 }),
+      task({ id: "t-oldest", status: "todo", createdAt: 1_000_000, priority: 5 }),
+      task({ id: "t-mid", status: "todo", createdAt: 1_500_000, priority: 1 }),
+    ];
+    const out = selectLongstandingIssues(tasks, NOW);
+    expect(out.map((i) => i.id)).toEqual(["t-oldest", "t-mid", "t-new"]);
+    expect(out[0]?.ageSec).toBe(NOW - 1_000_000);
+  });
+
+  test("tie on createdAt → lower priority number wins", () => {
+    const tasks = [
+      task({ id: "t-lo", status: "todo", createdAt: 1_000_000, priority: 3 }),
+      task({ id: "t-hi", status: "todo", createdAt: 1_000_000, priority: 1 }),
+    ];
+    expect(selectLongstandingIssues(tasks, NOW).map((i) => i.id)).toEqual(["t-hi", "t-lo"]);
+  });
+
+  test("excludes non-todo, the improvement epic, and driverOnly Tasks", () => {
+    const tasks = [
+      task({ id: "t-done", status: "done", createdAt: 1_000_000 }),
+      task({ id: "t-inprog", status: "in-progress", createdAt: 1_000_000 }),
+      task({ id: "t-improve", status: "todo", createdAt: 1_000_000, epic: IMPROVEMENT_EPIC_ID }),
+      task({ id: "t-driver", status: "todo", createdAt: 1_000_000, driverOnly: true }),
+      task({ id: "t-ok", status: "todo", createdAt: 1_100_000 }),
+    ];
+    expect(selectLongstandingIssues(tasks, NOW).map((i) => i.id)).toEqual(["t-ok"]);
+  });
+
+  test("honors the limit (default 3)", () => {
+    const tasks = Array.from({ length: 6 }, (_, i) =>
+      task({ id: `t-${i}`, status: "todo", createdAt: 1_000_000 + i }),
+    );
+    expect(selectLongstandingIssues(tasks, NOW)).toHaveLength(3);
+    expect(selectLongstandingIssues(tasks, NOW, { limit: 2 })).toHaveLength(2);
+  });
+
+  test("empty backlog → empty selection (drives the net-new fallback directive)", () => {
+    expect(selectLongstandingIssues([], NOW)).toEqual([]);
+  });
+});
+
+// ---------- buildArmMessage (ADR-257 burndown-first) ----------
 
 describe("buildArmMessage", () => {
-  test("includes the cycle number + planner-routing prompt", () => {
+  test("no longstanding items → net-new fallback + worktree-isolation contract", () => {
     const msg = buildArmMessage(3);
     expect(msg).toContain("cycle 3 requested");
+    expect(msg).toContain("burndown-first");
+    expect(msg).toContain("No longstanding backlog");
     expect(msg).toContain("ask each lane member");
-    expect(msg).toContain("Route to planner");
-    expect(msg).toContain("dispatch normally");
+    expect(msg).toContain("spawn-epic"); // isolation contract present every cycle
+    expect(msg).toContain("committer");
     expect(msg.startsWith("🌱")).toBe(true);
+  });
+
+  test("longstanding items → names them oldest→newest, BEFORE net-new", () => {
+    const msg = buildArmMessage(4, [
+      { id: "t-old1", subject: "x", ageSec: 999, priority: 1 },
+      { id: "t-old2", subject: "y", ageSec: 50, priority: 2 },
+    ]);
+    expect(msg).toContain("LONGSTANDING ISSUES FIRST");
+    expect(msg).toContain("t-old1, t-old2");
+    expect(msg).not.toContain("ask each lane member"); // net-new suppressed when backlog present
+    expect(msg).toContain("spawn-epic");
+    expect(msg).toContain("verified");
   });
 });
 
