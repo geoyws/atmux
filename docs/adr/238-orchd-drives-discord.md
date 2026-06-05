@@ -1,6 +1,6 @@
 # ADR-238: orchd is the single Discord emitter — substrate events publish, orchd subscribes-and-renders
 
-**Status**: Proposed (operator-fired 2026-05-24 in same session as [ADR-236](236-three-tier-orchd-supervision.md) + [ADR-237](237-no-llm-discord-and-whip-removal.md); ship under driver as the architectural-funnel piece that makes the post-cron Discord surface coherent).
+**Status**: Proposed (operator-fired 2026-05-24 in same session as [ADR-236](236-three-tier-orchd-supervision.SUPERSEDED.md) + [ADR-237](237-no-llm-discord-and-whip-removal.md); ship under driver as the architectural-funnel piece that makes the post-cron Discord surface coherent).
 
 **Date**: 2026-05-24
 

@@ -198,7 +198,7 @@ ADR-161 completes when ALL of:
 - [ADR-135](135-cockpit-naming-convention.md) — D2 `_-prefix` pattern (cockpit-role); D3 uniform-hyphen-separator (in-team — SUPERSEDED for defaults by this ADR). Append a §Amendment annotation citing ADR-161.
 - [ADR-136](136-hot-rename-member-labels.md) — label vs id vs emoji split; ADR-161's prefix change lives in label layer.
 - [ADR-097](097-tmux-abstraction.md) — `tmux.window.moveWindow()` consumed by Part C verbs.
-- [ADR-158](158-*.md), [ADR-159](159-*.md), [ADR-160](160-*.md) — sibling vocabulary renames (committer rename + others); cross-coordinated with this ADR's default-member list.
+- [ADR-158](158-martinet-to-sentinel-rename.SUPERSEDED.md), [ADR-159](159-gitter-to-committer-rename.md), [ADR-160](160-whip-to-poke-rename.md) — sibling vocabulary renames (committer rename + others); cross-coordinated with this ADR's default-member list.
 - [ADR-162](162-atmux-owns-tmux-infrastructure.md) — `base-index 1` invariant referenced in §Open question #3.
 - Driver-ref: 2026-05-16 driver session — operator chat-time decision on default-member `_-prefix` + sort/move/swap verbs.
 - Memory [[project_member_hot_rename_adr_136]] — id vs label vs emoji split; ADR-161 lives in label layer.

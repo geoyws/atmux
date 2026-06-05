@@ -1,6 +1,6 @@
 # ADR Index
 
-> Generated 2026-05-24 (MYT). Live ADRs only; superseded ADRs at the bottom for trace.
+> Generated 2026-05-24, refreshed 2026-06-05 (MYT) — extended through ADR-256 + backfilled 222/223. Live ADRs only; superseded ADRs at the bottom for trace.
 
 ## Live ADRs
 
@@ -190,6 +190,8 @@
 | 219 | `dissolve-epic` completeness — cage `kill-server` + merged-branch `-D` + orphan-detection invariant | 2026-05-22 | Accepted — ratified by driver 2026-05-23 (impl shipped via Epic e-7a1014f9 + t |
 | 220 | Incremental-mode identity coherence — `ATMUX_MEMBER`-drift detection + auto-promote-to-force | 2026-05-22 | Accepted — ratified by driver 2026-05-23 (shipped via docs branch fan-in `b6b1 |
 | 221 | Solo-worker scope — small standalone tasks via 1-2 member epic-team |  |  |
+| 222 | `atmux topo` — read-only fleet-topology observability verb | 2026-05-22 | accepted (backfilled 2026-06-05 from as-built code; documents shipped surface) |
+| 223 | `atmux topo --reap` — orphan-reap cascade semantics + safety gates | 2026-05-22 | accepted (backfilled 2026-06-05; Gate-1 fail-closed contract ratified by ADR-253 §Amendment) |
 | 224 | `relayd` → `orchd` rename + auto-spawn / auto-dissolve orchestration loop | 2026-05-22 | Accepted (Phase 1) — ratified by driver 2026-05-23 (Phase 1 rename shipped via |
 | 225 | Epic dependencies + isReady toggle — orchd substrate | 2026-05-22 | proposed |
 | 226 | orchd auto-merge subscriber (Phase 3) — `task.done` → `atmux epic-merge` → `epic.merged` | 2026-05-23 | accepted |
@@ -201,11 +203,27 @@
 | 232 | orchd cross-cage dispatcher seam — `dispatchEpicMerge` / `dispatchDissolveEpic` / `dispatchGitPush` | 2026-05-23 | proposed (deferred: §D2.b transport choice still open per OQ-1; §D2.a routing  |
 | 233 | Disable cron auto-install — orchd is the runtime, not cron | 2026-05-24 | Proposed (operator-driver-fired 2026-05-24 post-boot-storm; ship under driver in |
 | 234 | 2026-05-24 hax boot-storm + sopx-team-death incident post-mortem | 2026-05-24 | Post-mortem (informational; corrective decisions tracked in [ADR-233](233-cron-a |
+| 235 | Cockpit verb-surface rationalization — `reconcile`/`doctor`/`up`/`start` orthogonality, cage-down banner, plain-English refusals | 2026-05-24 | proposed |
+| 237 | No LLM cadence into Discord — remove hourly whips, medic on-demand only | 2026-05-24 | Proposed (operator-fired 2026-05-24; ship under driver — surface spans member-skill + cockpit + Discord-template) |
+| 238 | orchd is the single Discord emitter — substrate events publish, orchd subscribes-and-renders | 2026-05-24 | Proposed (operator-fired 2026-05-24; architectural-funnel piece making the post-cron Discord surface coherent) |
 | 239 | Three-driver minimum per team + no-send-keys-to-drivers invariant — `drivers[]` schema, per-driver worktree, windows grouped at front | 2026-05-24 | Accepted (operator-direct 14:30 MYT; atmux team pilot landed 14:45 MYT; code-enforcement task t-51-576216b2; sibling teams pending op |
 | 240 | Drop superorchd — orchd self-supervises, bash supervisor retires (supersedes ADR-236) | 2026-05-24 | Accepted (operator-direct *"simpler is better"* 2026-05-24; D1 + D5 of ADR-236 preserved, D2/D3 dropped) |
 | 241 | `atmux start` preflight wizard — installs vendored deps on cold hosts | 2026-05-25 | Accepted (operator-direct *"let's do the recommended"* 2026-05-25; gated on ADR-191 §Pending `build:install` extension landing first) |
 | 242 | `atmux shutdown` — single-verb whole-fleet teardown (symmetric inverse of `atmux start`) | 2026-05-25 | Accepted (operator-direct *"let's do the recommended"* 2026-05-25) |
 | 243 | Runtime-configurable claude accounts — `~/.atmux/claude-accounts.json` replaces hardcoded `WRAPPER_TABLE` | 2026-05-25 | Accepted (operator-direct *"yes please"* 2026-05-25; bootstrap folds into ADR-241 wizard) |
+| 244 | Per-repo pre-commit kanban + decisions snapshot — machine-death backup via git | 2026-05-26 | superseded 2026-05-26 by its own §Supersession (state reframed per-developer/private → dotfile tree + `dotfiles push`) |
+| 245 | Singleton `.atmux/` per project — no nested atmux state | 2026-05-27 | Accepted — ratified by operator 2026-05-27 13:15 MYT |
+| 246 | Per-cage orchd autostart on `spawn-epic` and `atmux up` | 2026-05-28 | Proposed (operator-fired 2026-05-28; mx-root cross-cage complaint c-3787ee5c) |
+| 247 | Lead-stall watchdog — `story.ready` routable event + idle-lead wake substrate | 2026-05-28 | Proposed (operator-fired 2026-05-28; complaint c-b2c8418e) |
+| 248 | `atmux team remove` verb — symmetric decommission with safety gates + audit receipt | 2026-05-24 | proposed |
+| 249 | orchd singleton guard — one supervisor per team DB via advisory flock | 2026-05-29 | accepted |
+| 250 | orchd stale-epic-team reaper — close the spawn-without-reap leak | 2026-05-29 | accepted |
+| 251 | epic-cage liveness must resolve the socket via `tmuxTmpdir`, not `resolveCageSocket` | 2026-06-03 | accepted |
+| 252 | parent-tmpdir removal must never orphan live epic-team children — `hasLiveEpicChildren` structural guard | 2026-06-04 | accepted |
+| 253 | `atmux topo --reap --apply` fails CLOSED — driver-scope gate + presence-as-liveness + fail-closed probes | 2026-06-05 | accepted |
+| 254 | Coverage gate must diff the tracked-source universe, not iterate the lcov | 2026-06-05 | accepted |
+| 255 | auto-merge tick-result output contract + bounded subprocess wait | 2026-06-05 | accepted |
+| 256 | orchd Rust supervisor hardening — bounded subprocess waits, poison-event tripwire, test backfill | 2026-06-05 | accepted |
 
 ## Superseded (skip)
 

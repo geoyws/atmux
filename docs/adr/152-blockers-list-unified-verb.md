@@ -5,7 +5,7 @@
 **Author**: atmux team (driver complaint c-1d28fc72; impl by up-impl)
 **Parent task**: t-8f3061ef
 **Driver-ref**: complaint c-1d28fc72 (driver-claude-sopx /bruh sweep 2026-05-15) — *"build `atmux blockers list` unified verb that fans out across all 7 surfaces and returns normalized rows; don't move storage around — markdown stays where it is; one query joins everything"*. Filed under operator's *"fix all complaints"* directive 2026-05-16 00:17 MYT.
-**Relates**: ADR-060 (kanban SQLite canonical — surface 1+2), ADR-077 §F2 (complaints box — surface 3), ADR-134 (in-team auto-merger merger_state — surface 4), ADR-008 (decisions verb — surface 5), ADR-022 (flags surface — surface 6), ADR-057 §D2 (driver-inbox.md format — surface 7), ADR-151 (unblocker — primary downstream consumer of the JSON form).
+**Relates**: ADR-126 (kanban SQLite canonical — surface 1+2), ADR-077 §F2 (complaints box — surface 3), ADR-134 (in-team auto-merger merger_state — surface 4), ADR-008 (decisions verb — surface 5), ADR-022 (flags surface — surface 6), ADR-057 §D2 (driver-inbox.md format — surface 7), ADR-151 (unblocker — primary downstream consumer of the JSON form).
 
 ## Context
 
@@ -175,7 +175,7 @@ Same-commit doc per `/CLAUDE.md §Docs Discipline` — the verb is a documented 
 
 ## Cross-refs
 
-- [ADR-060](060-state-db-canonical.md) — kanban SQLite canonical (surface 1+2 substrate).
+- [ADR-126](126-sqlite-state-store.md) — kanban SQLite canonical (surface 1+2 substrate).
 - [ADR-077](077-superdoctor-cockpit-role.md) §F2 — complaints box schema (surface 3).
 - [ADR-134](134-in-team-auto-merger.md) — merger_state table (surface 4); revert vs conflict semantics drive the class derivation.
 - [ADR-008](008-decisions-verb.md) — decisions verb format (surface 5).

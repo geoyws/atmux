@@ -4,7 +4,7 @@
 ~~Accepted — ratified by operator 2026-05-26 18:05 MYT (live operator-design session)~~
 **Date**: 2026-05-26
 **Driver-ref**: operator-direct 2026-05-26 — "i want a way to store snapshots of our kanban (like a json dump) so that we can persist our kanban on git just in case machines die... sqlite isn't git commited correct?" → iteration through cron / lefthook / husky / bare pre-commit → final ask: "then file that adr and do the recommends"
-**Cross-refs**: [ADR-008](008-decisions-add.md) (decisions log + digest), [ADR-060](060-kanban-sqlite-canonical.md) (kanban SQLite as source-of-truth), [ADR-079](079-cron-cadences.md) §A (daily `groom` cron — 30-day default cutoff keeps `.atmux/decisions.md` bounded), [ADR-202](202-honker-in-db-messaging-substrate.md) (DB messaging substrate — same `.atmux/state/` directory), [ADR-239](239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md) (5-driver floor — driver worktrees per repo, this ADR fires per-repo too)
+**Cross-refs**: [ADR-008](008-decisions-add.md) (decisions log + digest), [ADR-126](126-sqlite-state-store.md) (kanban SQLite as source-of-truth), [ADR-079](079-cron-cadences.md) §A (daily `groom` cron — 30-day default cutoff keeps `.atmux/decisions.md` bounded), [ADR-202](202-honker-in-db-messaging-substrate.md) (DB messaging substrate — same `.atmux/state/` directory), [ADR-239](239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md) (5-driver floor — driver worktrees per repo, this ADR fires per-repo too)
 
 ## Context
 

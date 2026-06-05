@@ -1,6 +1,6 @@
 # ADR-237: No LLM cadence into Discord — remove hourly whips, medic on-demand only
 
-**Status**: Proposed (operator-fired 2026-05-24 in conversation immediately after [ADR-236](236-three-tier-orchd-supervision.md); ship under driver in a focused commit set since the surface spans member-skill + cockpit + Discord-template layers).
+**Status**: Proposed (operator-fired 2026-05-24 in conversation immediately after [ADR-236](236-three-tier-orchd-supervision.SUPERSEDED.md); ship under driver in a focused commit set since the surface spans member-skill + cockpit + Discord-template layers).
 
 **Date**: 2026-05-24
 
@@ -15,7 +15,7 @@ The token-burn framing is the load-bearing motivation. Every member running `/wh
 **Cross-refs**:
 - [ADR-202](202-honker-in-db-messaging-substrate.md) — Honker substrate; the event-driven primitives that replace whip's poll-and-summarize model.
 - [ADR-233](233-cron-auto-install-disabled-trust-orchd.md) — cron retirement. The crons that fired `discorder progress` / `discorder heartbeat` are already not auto-installed; this ADR formalizes that those subverbs are now operator-on-demand or substrate-event-triggered, never cron-fired.
-- [ADR-236](236-three-tier-orchd-supervision.md) — the supervision tier this ADR is a sibling to. D3 of ADR-236 depends on D1 of this ADR (Discord template is Rust-composed, deterministic, no LLM).
+- [ADR-236](236-three-tier-orchd-supervision.SUPERSEDED.md) — the supervision tier this ADR is a sibling to. D3 of ADR-236 depends on D1 of this ADR (Discord template is Rust-composed, deterministic, no LLM).
 - [ADR-077](077-superdoctor-cockpit-role.md) — medic's original spec. D2 of this ADR narrows medic's role to operator-on-demand invocation.
 - [ADR-133](133-medic-rename.md) — superdoctor → medic rename; storage-layer identifiers preserved.
 - [ADR-068](068-bash-to-ts-cutover.md) — `atmux discorder` subverb cutover (the deterministic kanban→Discord aggregator that stays).

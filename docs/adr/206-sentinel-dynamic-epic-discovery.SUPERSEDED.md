@@ -58,7 +58,7 @@ Four candidates were considered; one is selected as the v1 mechanism. The four:
 | (C) | Live tmux session enumeration — `tmux list-sessions` filtered by `atmux_<parent>__epic-` prefix per ADR-089 §F naming | ~10ms total (one tmux client call) | tmux-authoritative; matches running sessions | tmux server down → no epic-teams discovered |
 | (D) | Crontab walk — `crontab -l \| grep 'atmux:team=e-'` | ~5ms (one shell call) | Cron-authoritative; matches scheduled work | Stale crontab blocks (the drift symptom this ADR is dodging) yields phantoms anyway — kicks the can |
 
-**Primary**: (A) parent state.db epics table query. The kanban is the single source of truth for "what work exists" already (per ADR-076 + ADR-060); reading epic-team membership from the same store keeps the abstraction layer thin. Cost is well under budget. Failure mode (DB unreachable) is the rarest of the four.
+**Primary**: (A) parent state.db epics table query. The kanban is the single source of truth for "what work exists" already (per ADR-076 + ADR-126); reading epic-team membership from the same store keeps the abstraction layer thin. Cost is well under budget. Failure mode (DB unreachable) is the rarest of the four.
 
 **Rejected**:
 - (B) filesystem scan ships the second-worst failure mode (network FS / symlink loops are nondeterministic to debug) and double the cost.

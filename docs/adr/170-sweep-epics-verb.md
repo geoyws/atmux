@@ -98,4 +98,4 @@ the operator decides.
 
 ## §see-also (2026-05-22)
 
-[ADR-222](222-cage-topography-read-only-verb-surface.md) §D6 unifies sweep-epics' enumeration with the fleet topology manifest — sweep-epics continues to own the per-epic verdict ladder (SAFE-DISSOLVE / STALE-IDLE / RISKY) while `topo --json` is the strict superset for raw fleet enumeration. ADR-223's `--reap` cascade leans on this verdict ladder for the dissolve-class reap path; sweep-epics itself doesn't compose into the reap orchestrator.
+[ADR-222](222-topo-fleet-observability.md) §D6 unifies sweep-epics' enumeration with the fleet topology manifest — sweep-epics continues to own the per-epic verdict ladder (SAFE-DISSOLVE / STALE-IDLE / RISKY) while `topo --json` is the strict superset for raw fleet enumeration. ADR-223's `--reap` cascade leans on this verdict ladder for the dissolve-class reap path; sweep-epics itself doesn't compose into the reap orchestrator.
