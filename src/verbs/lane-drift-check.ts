@@ -7,11 +7,13 @@
 // §"BE lane"); ports as a stand-alone verb today so it's available
 // before groom lands.
 //
-// Loads in-progress Tasks via `core/kanban.listTasks`, builds a
-// classifyMember probe via the team-tmux abstraction (mirroring
-// `verbs/pane-state.ts::paneStateWithTmux`), fetches recent commits
-// via `git log`, calls the pure helper `core/lane-drift.checkLaneDrift`,
-// and acts on each "revert" decision IFF `--reset` is passed:
+// Loads in-progress Tasks via `core/kanban.listTasks`, ALSO loads all
+// Tasks to build the parentId→children map for ADR-176 criterion (d)
+// (`buildChildrenByParentId`), builds a classifyMember probe via the
+// team-tmux abstraction (mirroring `verbs/pane-state.ts::paneStateWithTmux`),
+// fetches recent commits via `git log`, calls the pure helper
+// `core/lane-drift.checkLaneDrift`, and acts on each "revert" decision
+// IFF `--reset` is passed:
 //
 //   - Mutate: `kanban.moveTask(id, "todo")`.
 //   - Surface: append a flag entry to `<atmuxDir>/flags.md` with the
@@ -78,6 +80,11 @@ export interface LaneDriftCheckDeps {
   /** Override `listTasks` — tests inject in-flight task fixtures
    *  without touching the kanban DB. */
   listInProgressTasks?: (atmuxDir: string) => Promise<ReadonlyArray<KanbanTask>>;
+  /** ADR-176 criterion (d): override the all-Tasks load used to build
+   *  the parentId→children map. Defaults to `core/kanban.listTasks`
+   *  (unfiltered). Tests inject the full fixture set so EPIC parents see
+   *  their children. */
+  listAllTasks?: (atmuxDir: string) => Promise<ReadonlyArray<KanbanTask>>;
   /** Logger; defaults to stderr. */
   log?: (msg: string) => void;
   /** Clock override (epoch seconds). Defaults to `Math.floor(Date.now()/1000)`. */
@@ -263,6 +270,16 @@ export async function runLaneDriftCheck(
       await listTasks(dir, { status: "in-progress" }));
   const inProgressTasks = await inFlightLister(atmuxDir);
 
+  // ADR-176 criterion (d): build the parentId→children map from ALL
+  // Tasks (not just in-progress) by indexing each Task on its `.epic`
+  // field. The pure helper uses it to hold reverts on EPIC parents whose
+  // children are still progressing. A failed/empty load yields an empty
+  // map — criterion (d) becomes a no-op (legacy 3-criterion behavior).
+  const allLister =
+    deps.listAllTasks ??
+    (async (dir: string): Promise<ReadonlyArray<KanbanTask>> => await listTasks(dir));
+  const childrenByParentId = buildChildrenByParentId(await allLister(atmuxDir));
+
   // Build classifyMember probe: pane-state via tmux, scoped to the
   // team session. Skips members not in team.json (returns null —
   // helper treats null as criterion-(b) fail). Mirrors lane-tick's
@@ -335,6 +352,7 @@ export async function runLaneDriftCheck(
     commitsScanned,
     nowSec: nowSec(),
     claimedAtThresholdMin: opts.thresholdMin,
+    childrenByParentId,
   });
 
   let reverted = 0;
@@ -368,6 +386,33 @@ export async function runLaneDriftCheck(
     flagsRaised,
     scanned: inProgressTasks.length,
   };
+}
+
+// ---------- Helpers ----------
+
+/**
+ * ADR-176 criterion (d): index all Tasks by their parent EPIC id. A
+ * Task is a child of `t.epic` when `t.epic` is a non-empty string.
+ * Returns `Map<parentTaskId, child[]>`; EPIC parents that have no
+ * children simply never appear as keys (criterion (d) no-ops for them).
+ *
+ * Exported for unit coverage of the indexing edge cases (null/empty
+ * epic, multiple children, ordering).
+ */
+export function buildChildrenByParentId(
+  tasks: ReadonlyArray<KanbanTask>,
+): ReadonlyMap<string, ReadonlyArray<KanbanTask>> {
+  const map = new Map<string, KanbanTask[]>();
+  for (const t of tasks) {
+    if (typeof t.epic !== "string" || t.epic.length === 0) continue;
+    const bucket = map.get(t.epic);
+    if (bucket === undefined) {
+      map.set(t.epic, [t]);
+    } else {
+      bucket.push(t);
+    }
+  }
+  return map;
 }
 
 // ---------- Defaults ----------

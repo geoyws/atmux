@@ -17,13 +17,21 @@
 //       with a 5-min-apart re-sample if false positives surface).
 //   (c) no commit in the last N commits (default 30, scanned by the
 //       verb) references the task's id pattern (`t-[0-9a-f]{8}`).
-//   (d) NEW per ADR-176 — epic-children-progressing: parent EPIC-class
-//       Task is held when its child Tasks in the same Epic are still
-//       making commits (additive tightening; (a)+(b)+(c) still required).
+//   (d) NEW per ADR-176 — epic-children-progressing: a parent EPIC-class
+//       Task (one whose `.id` is referenced by other Tasks' `.epic`) is
+//       HELD when any of its children is progressing. A child progresses
+//       iff its status is in {in-progress, review, testing, merging, done}
+//       OR a commit ref to the child's id appears in the same
+//       `recentCommitsText` window scanned for criterion (c). Additive
+//       tightening — (a)+(b)+(c) still all required; (d) only ever skips
+//       a revert, never causes one. Non-EPIC Tasks (no children) are
+//       unaffected. The verb pre-builds `childrenByParentId`; an
+//       empty/unset map preserves the legacy 3-criterion behavior.
 //
 // Pure / no-IO. Inputs: Tasks, a classifyMember probe (verb-injected),
-// the recent-commits text (verb fetches via `git log`), and the
-// thresholds. Output: per-task decisions describing action + evidence
+// the recent-commits text (verb fetches via `git log`), an optional
+// parentId→children map for criterion (d), and the thresholds. Output:
+// per-task decisions describing action + evidence
 // + (when action=="revert") a pre-formatted flag body for the verb to
 // raise.
 //
@@ -73,11 +81,14 @@ export interface DriftDecision {
   evidence: DriftEvidence;
   action: DriftAction;
   /** Why the helper chose `skip`. One of:
-   *    - `"no-owner"`            — Task has no owner to revert from
-   *    - `"claimed-recently"`    — criterion (a) false (`claimedAgoMin <= thresholdMin`)
-   *    - `"pane-unclassifiable"` — criterion (b) false because the probe returned null
-   *    - `"pane-ready"`          — criterion (b) false because pane state is READY
-   *    - `"commit-ref-found"`    — criterion (c) false (recent commit referenced the id)
+   *    - `"no-owner"`                  — Task has no owner to revert from
+   *    - `"claimed-recently"`          — criterion (a) false (`claimedAgoMin <= thresholdMin`)
+   *    - `"pane-unclassifiable"`       — criterion (b) false because the probe returned null
+   *    - `"pane-ready"`                — criterion (b) false because pane state is READY
+   *    - `"commit-ref-found"`          — criterion (c) false (recent commit referenced the id)
+   *    - `"epic-children-progressing"` — criterion (d) false (ADR-176): an EPIC
+   *                                      parent with a progressing child; the
+   *                                      EPIC is correctly in-progress.
    *  Set on action="skip" only. */
   reason?: string;
   /** Pre-formatted flag body per ADR-062 §OQ5 prescription. Set when
@@ -104,12 +115,65 @@ export interface CheckLaneDriftOpts {
   nowSec: number;
   /** Criterion (a) threshold in minutes. Default 30 per ADR-062 §OQ5. */
   claimedAtThresholdMin?: number;
+  /** ADR-176 criterion (d): map of parentTaskId → child Tasks for
+   *  EPIC-awareness. The verb pre-builds it by indexing all Tasks on
+   *  their `.epic` field. When a Task under evaluation appears as a key
+   *  AND any of its children is progressing (status in {in-progress,
+   *  review, testing, merging, done} OR a commit ref in
+   *  `recentCommitsText`), the revert is held with reason
+   *  `"epic-children-progressing"`. Empty / unset map → criterion (d)
+   *  is a no-op (legacy 3-criterion behavior). */
+  childrenByParentId?: ReadonlyMap<string, ReadonlyArray<KanbanTask>>;
 }
+
+/** ADR-176 §Decision: a child Task counts as "progressing" when its
+ *  status shows motion. `todo` and `blocked` do NOT count — decomp
+ *  existence is not progress (ADR-176 OQ1). */
+const PROGRESSING_STATUSES: ReadonlySet<string> = new Set([
+  "in-progress",
+  "review",
+  "testing",
+  "merging",
+  "done",
+]);
 
 // ---------- Public API ----------
 
 /** Default criterion-(a) threshold (minutes). ADR-062 §OQ5. */
 export const DEFAULT_CLAIMED_AT_THRESHOLD_MIN = 30;
+
+/**
+ * ADR-176 criterion (d) predicate. `true` when `taskId` is an EPIC
+ * parent (has entries in `childrenByParentId`) AND at least one child
+ * is "progressing": its `status` is in {in-progress, review, testing,
+ * merging, done} OR a commit ref to the child's id appears in
+ * `recentCommitsText` (the same window scanned for criterion (c)).
+ *
+ * Returns `false` for non-EPIC Tasks (no children) and for EPIC parents
+ * whose every child is `todo` / `blocked` with no commit ref — those
+ * remain revert-eligible (ADR-176 OQ1: stuck decomp SHOULD flag). When
+ * `childrenByParentId` is unset/empty the predicate is always `false`,
+ * preserving the legacy 3-criterion behavior.
+ *
+ * Exported for direct unit coverage of each progressing branch.
+ */
+export function hasProgressingChildren(
+  taskId: string,
+  childrenByParentId: ReadonlyMap<string, ReadonlyArray<KanbanTask>> | undefined,
+  recentCommitsText: string,
+): boolean {
+  const children = childrenByParentId?.get(taskId);
+  if (children === undefined || children.length === 0) return false;
+  for (const child of children) {
+    if (typeof child.status === "string" && PROGRESSING_STATUSES.has(child.status)) {
+      return true;
+    }
+    if (recentCommitsText.includes(child.id)) {
+      return true;
+    }
+  }
+  return false;
+}
 
 /**
  * Walk in-progress Tasks; emit one decision per task. Pure — never
@@ -165,8 +229,11 @@ export async function checkLaneDrift(opts: CheckLaneDriftOpts): Promise<DriftDec
     const bOk = pane !== null && pane.state !== "READY";
     // Criterion (c): no commit reference in last N commits.
     const cOk = !hasCommitRef;
+    // Criterion (d) — ADR-176: NOT an EPIC parent with a progressing
+    // child. Additive — only holds a revert, never causes one.
+    const dOk = !hasProgressingChildren(task.id, opts.childrenByParentId, opts.recentCommitsText);
 
-    if (aOk && bOk && cOk) {
+    if (aOk && bOk && cOk && dOk) {
       decisions.push({
         taskId: task.id,
         member,
@@ -182,8 +249,10 @@ export async function checkLaneDrift(opts: CheckLaneDriftOpts): Promise<DriftDec
       reason = "claimed-recently";
     } else if (!bOk) {
       reason = pane === null ? "pane-unclassifiable" : "pane-ready";
-    } else {
+    } else if (!cOk) {
       reason = "commit-ref-found";
+    } else {
+      reason = "epic-children-progressing";
     }
     decisions.push({
       taskId: task.id,
