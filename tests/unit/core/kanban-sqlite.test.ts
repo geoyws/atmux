@@ -235,14 +235,30 @@ describe("kanban (SQLite mode)", () => {
   });
 
   // t-381a6ea0: done-state refuse-gate (SQLite path). The gate fires
-  // INSIDE the BEGIN IMMEDIATE block via repo.getTask + status check
-  // before repo.upsertTask. Reviewer pre-flag: a concurrent done-flip
-  // can't slip between check and mutation because both run under the
-  // same SQLite transaction lock. Origin: docs auditor surfaced an
-  // anomaly 2026-05-13 — `atmux claim t-0c4e6397` against a done Task
-  // silently flipped done → in-progress (the 2026-05-12 in-progress
-  // gate's docstring explicitly allowed this as "idempotent"; that
-  // tolerance was the bug).
+  // via repo.getTask + status check before repo.upsertTask, INSIDE
+  // claimTask's `transactImmediate` block — i.e. `BEGIN IMMEDIATE`,
+  // which acquires the write lock at BEGIN (not at first write). That is
+  // what makes "a concurrent claimant can't slip between the check and
+  // the mutation" TRUE: a second writer's BEGIN IMMEDIATE blocks on
+  // busy_timeout until this transaction commits.
+  //
+  // HONEST CAVEAT (do NOT add a same-process Promise.all "concurrency"
+  // test here): bun:sqlite is SYNCHRONOUS, so two claimTask calls on one
+  // JS thread serialize regardless of BEGIN IMMEDIATE vs deferred — such
+  // a test would pass either way and prove nothing (a fake-green). The
+  // serialization guarantee rests on (a) claimTask/markTaskDone using
+  // transactImmediate (src/core/kanban.ts — verifiable by reading the
+  // code) and (b) the transactImmediate helper's own test. Genuine
+  // two-writer lock contention would need two OS processes; these unit
+  // tests instead pin the in-transaction CHECK ORDER + the observable
+  // refuse behavior below. (Earlier these paths used deferred `transact`
+  // while this comment claimed BEGIN IMMEDIATE — the claim-concurrency
+  // fix made the code match the comment rather than weaken it.)
+  //
+  // Origin: docs auditor surfaced an anomaly 2026-05-13 — `atmux claim
+  // t-0c4e6397` against a done Task silently flipped done → in-progress
+  // (the 2026-05-12 in-progress gate's docstring explicitly allowed this
+  // as "idempotent"; that tolerance was the bug).
   test("claimTask (SQLite path): refuses done-state Task with clear error", async () => {
     const id = await addTask(env.atmuxDir, { subject: "shipped already" });
     await claimTask(env.atmuxDir, id, "fe0");
