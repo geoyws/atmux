@@ -440,13 +440,22 @@ describe("maybeSpawnOrchdWindow — circuit-breaker backlog-restart tolerance (T
     const stubBash =
       `n=$(cat "${stubCounter}"); n=$((n + 1)); echo "$n" > "${stubCounter}"; ` +
       `if [[ "$n" -le 3 ]]; then exit 1; else exit 0; fi`;
-    // Replace BOTH the Rust-binary path and the Bun-fallback path with
-    // the stub — the supervisor's `command -v atmux-orchd` check will
-    // fail in this hermetic env (no atmux-orchd installed under tmpRoot),
-    // so the fallback path runs. Patching it is sufficient.
+    // Replace BOTH invocation paths with the stub. `command -v atmux-orchd`
+    // resolves against the REAL PATH (tmpRoot is prepended but the stub is
+    // NOT named atmux-orchd) — so on a host where atmux-orchd IS globally
+    // installed (any deployed machine) the Rust-binary branch runs, not the
+    // Bun fallback. Patching only the fallback made this test pass solely on
+    // hosts WITHOUT atmux-orchd on PATH (it ran the real binary otherwise →
+    // never the clean-exit-on-attempt-4 the assertions need). Stub BOTH
+    // branches so the loop is hermetic regardless of the host's install state.
+    const stubInvocation = `bash -c '${stubBash}' 2>&1 | tee -a .atmux/logs/orchd.log`;
+    cmd = cmd.replace(
+      'ATMUX_ORCHD_TEAM_DIR=$(pwd) atmux-orchd .atmux/state.db 2>&1 | tee -a .atmux/logs/orchd.log',
+      stubInvocation,
+    );
     cmd = cmd.replace(
       'atmux orchd --start 2>&1 | tee -a .atmux/logs/orchd.log',
-      `bash -c '${stubBash}' 2>&1 | tee -a .atmux/logs/orchd.log`,
+      stubInvocation,
     );
     // Tighten the inter-crash backoff so the test finishes well under
     // 60s — the bash supervisor sleeps 5s between restarts in prod,
@@ -508,10 +517,17 @@ describe("maybeSpawnOrchdWindow — circuit-breaker backlog-restart tolerance (T
     });
 
     let cmd = sendKeysCalls[0]?.keys ?? "";
-    // Always-fail stub.
+    // Always-fail stub on BOTH invocation paths (see the 3-crash test —
+    // the Rust-binary branch runs when atmux-orchd is on the host PATH, so
+    // stubbing only the Bun fallback leaves the real binary running here).
+    const failStub = `bash -c 'exit 1' 2>&1 | tee -a .atmux/logs/orchd.log`;
+    cmd = cmd.replace(
+      'ATMUX_ORCHD_TEAM_DIR=$(pwd) atmux-orchd .atmux/state.db 2>&1 | tee -a .atmux/logs/orchd.log',
+      failStub,
+    );
     cmd = cmd.replace(
       'atmux orchd --start 2>&1 | tee -a .atmux/logs/orchd.log',
-      `bash -c 'exit 1' 2>&1 | tee -a .atmux/logs/orchd.log`,
+      failStub,
     );
     cmd = cmd.replace("sleep 5", "sleep 0");
 
