@@ -17,7 +17,9 @@ import {
   buildTeamWindowCommand,
   type CapturedCockpitWindow,
   cageAlive,
+  cockpit,
   cockpitAttach,
+  COCKPIT_REBUILD_DEPRECATION_MSG,
   cockpitMigrateSocket,
   cockpitRebuild,
   LEGACY_COCKPIT_SESSION_NAMES,
@@ -50,6 +52,47 @@ describe("parseCockpitArgs", () => {
       dryRun: false,
       keepLegacy: false,
     });
+  });
+  // ADR-235 §D1: `reconcile` is the canonical name; `rebuild` is its
+  // deprecation alias. The parser accepts both — `reconcile` yields the
+  // SAME flag shape as `rebuild` (no behaviour change), distinguished only
+  // by the `subverb` discriminant the dispatcher branches on.
+  test("bare reconcile parses with all-false flags (canonical name)", () => {
+    const p = parseCockpitArgs(["reconcile"]);
+    expect(p).toEqual({
+      subverb: "reconcile",
+      noCycle: false,
+      forceCycle: false,
+      ackDangerous: false,
+      noLaunch: false,
+      yes: false,
+      dryRun: false,
+      keepLegacy: false,
+    });
+  });
+  test("reconcile honours the same flags as rebuild (alias parity)", () => {
+    expect(parseCockpitArgs(["reconcile", "--no-cycle"]).noCycle).toBe(true);
+    expect(parseCockpitArgs(["reconcile", "--no-launch"]).noLaunch).toBe(true);
+    expect(parseCockpitArgs(["reconcile", "--config", "/p"]).configPath).toBe("/p");
+    expect(parseCockpitArgs(["reconcile", "--yes"]).yes).toBe(true);
+    // Same destructive gate as rebuild: --force-cycle without the ack flag
+    // throws (if reconcile silently allowed it, this assertion would fail).
+    expect(() => parseCockpitArgs(["reconcile", "--force-cycle"])).toThrow(UsageError);
+    const forced = parseCockpitArgs([
+      "reconcile",
+      "--force-cycle",
+      "--acknowledge-dangerous-bau-interruption",
+      "--yes",
+    ]);
+    expect(forced.forceCycle).toBe(true);
+    expect(forced.ackDangerous).toBe(true);
+  });
+  test("reconcile + reconcile yields identical parse shape modulo subverb", () => {
+    const rec = parseCockpitArgs(["reconcile", "--no-cycle", "--config", "/x"]);
+    const reb = parseCockpitArgs(["rebuild", "--no-cycle", "--config", "/x"]);
+    expect({ ...rec, subverb: "X" }).toEqual({ ...reb, subverb: "X" });
+    expect(rec.subverb).toBe("reconcile");
+    expect(reb.subverb).toBe("rebuild");
   });
   test("each flag parses individually", () => {
     expect(parseCockpitArgs(["rebuild", "--no-cycle"]).noCycle).toBe(true);
@@ -134,6 +177,96 @@ describe("parseCockpitArgs", () => {
 
   test("rejects unknown flag", () => {
     expect(() => parseCockpitArgs(["rebuild", "--bogus"])).toThrow(UsageError);
+  });
+});
+
+// ---------- cockpit() dispatch — reconcile/rebuild alias (ADR-235 §D1/§OQ4)
+// ----------
+
+describe("cockpit() dispatch — reconcile canonical + rebuild deprecation alias", () => {
+  let homeDir: string;
+
+  beforeEach(async () => {
+    homeDir = await mkdtemp(join(tmpdir(), "atmux-cockpit-disp-home-"));
+    await mkdir(join(homeDir, ".atmux"), { recursive: true });
+    // Empty roster (every team disabled) — `cockpitRebuild` short-circuits
+    // with "no enabled teams" → exit 0 without touching tmux. Keeps the
+    // test focused on the dispatch surface (subverb routing + deprecation
+    // stderr), not the rebuild internals which have their own coverage.
+    await writeFile(
+      join(homeDir, ".atmux", "cockpit.json"),
+      JSON.stringify({ teams: [{ name: "x", root: "/x", enabled: false }] }),
+      "utf8",
+    );
+  });
+
+  afterEach(async () => {
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  const baseEnv = (): NodeJS.ProcessEnv => ({ HOME: homeDir, ATMUX_NO_CRON: "1" });
+
+  test("rebuild emits the verbatim ADR-235 deprecation line to stderr", async () => {
+    const errs: string[] = [];
+    const { logger } = makeLogger();
+    const code = await cockpit(["rebuild"], {
+      env: baseEnv(),
+      logger,
+      stderr: (c) => errs.push(c),
+    });
+    expect(code).toBe(0);
+    // Exact string assertion — not a fuzzy contains. If the wording drifts
+    // from the ADR-235 §OQ4 contract this fails loudly.
+    expect(errs).toEqual([`${COCKPIT_REBUILD_DEPRECATION_MSG}\n`]);
+    expect(COCKPIT_REBUILD_DEPRECATION_MSG).toBe(
+      "[deprecated] use atmux cockpit reconcile " +
+        "(rebuild will be removed in next release per ADR-235 §OQ4 + ADR-159 precedent)",
+    );
+  });
+
+  test("reconcile (canonical) emits NO deprecation warning", async () => {
+    const errs: string[] = [];
+    const { logger } = makeLogger();
+    const code = await cockpit(["reconcile"], {
+      env: baseEnv(),
+      logger,
+      stderr: (c) => errs.push(c),
+    });
+    expect(code).toBe(0);
+    // If reconcile leaked the deprecation line, this would be non-empty.
+    expect(errs).toEqual([]);
+  });
+
+  test("rebuild + reconcile dispatch to the identical implementation (parity)", async () => {
+    // Both subverbs route through cockpitRebuild. We assert parity by
+    // observing identical observable effects: same exit code AND the same
+    // "no enabled teams" warn surfacing through the injected logger. If
+    // rebuild were wired to a different code path this would diverge.
+    const recLog = makeLogger();
+    const recCode = await cockpit(["reconcile"], {
+      env: baseEnv(),
+      logger: recLog.logger,
+      stderr: () => {},
+    });
+    const rebLog = makeLogger();
+    const rebCode = await cockpit(["rebuild"], {
+      env: baseEnv(),
+      logger: rebLog.logger,
+      stderr: () => {},
+    });
+    expect(recCode).toBe(0);
+    expect(rebCode).toBe(0);
+    const noTeamsWarn = (logs: string[]): boolean =>
+      logs.some((l) => l.startsWith("warn:") && l.includes("no enabled teams"));
+    expect(noTeamsWarn(recLog.logs)).toBe(true);
+    expect(noTeamsWarn(rebLog.logs)).toBe(true);
+    // The ONLY observable difference is the deprecation stderr on rebuild,
+    // asserted separately above — the log streams themselves match.
+    expect(rebLog.logs).toEqual(recLog.logs);
+  });
+
+  test("unknown sub-verb still rejected (reconcile didn't loosen the guard)", () => {
+    expect(() => parseCockpitArgs(["frobnicate"])).toThrow(UsageError);
   });
 });
 
