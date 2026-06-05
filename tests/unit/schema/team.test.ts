@@ -11,6 +11,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { ZodError } from "zod";
 import {
   DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG,
   DEFAULT_CADENCE_CONFIG,
@@ -335,6 +336,56 @@ describe("Team schema — driverSession (ADR-044 + ADR-064 §5)", () => {
       driverSession: { tui: "shell" },
     });
     expect(team.driverSession).toEqual({ tui: "shell" });
+  });
+
+  test("Team.parse with driverSession.model=<str> parses cleanly (loose model pin)", () => {
+    const team = Team.parse({
+      name: "demo",
+      members: [],
+      driverSession: { tui: "shell", model: "cursor-fast" },
+    });
+    expect(team.driverSession).toEqual({ tui: "shell", model: "cursor-fast" });
+  });
+
+  test("Team.parse with driverSession.model=null is accepted (explicitly unset)", () => {
+    const team = Team.parse({
+      name: "demo",
+      members: [],
+      driverSession: { tui: "shell", model: null },
+    });
+    expect(team.driverSession).toEqual({ tui: "shell", model: null });
+  });
+
+  test("Team.parse with driverSession.model absent is accepted (backward compat)", () => {
+    const team = Team.parse({
+      name: "demo",
+      members: [],
+      driverSession: { tui: "shell" },
+    });
+    // Absent optional is omitted from the parsed output, not coerced to null.
+    expect(team.driverSession).toEqual({ tui: "shell" });
+    expect(team.driverSession?.model).toBeUndefined();
+  });
+
+  test("Team.parse REJECTS non-string driverSession.model (e.g. 123) with ZodError", () => {
+    let caught: unknown;
+    try {
+      // `.parse(data: unknown)` — no compile-time guard on the literal;
+      // the 123 is rejected at RUNTIME by the Zod string() schema below.
+      Team.parse({
+        name: "demo",
+        members: [],
+        driverSession: { tui: "shell", model: 123 },
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ZodError);
+    // Pinpoint the failing path so a future loosening can't silently pass.
+    expect((caught as ZodError).issues[0]?.path).toEqual([
+      "driverSession",
+      "model",
+    ]);
   });
 
   test("Team.parse with driverSession=null is accepted (explicitly disabled)", () => {

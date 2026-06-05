@@ -1367,6 +1367,13 @@ export const Team = z
     driverSession: z
       .object({
         tui: z.string().nullable().optional(),
+        /** ADR-239 §D7 lineage — loose model pin for the driver's TUI
+         *  (e.g. an operator-chosen cursor model identifier). Any string
+         *  accepted; atmux does NOT enforce a specific value set. `null`
+         *  / absent both mean "unset" — the spawn loop falls back to its
+         *  account-derived default. Sibling-consistent with `.tui`'s
+         *  `.nullable().optional()`. */
+        model: z.string().nullable().optional(),
       })
       .strict()
       .nullable()
