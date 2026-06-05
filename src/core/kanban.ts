@@ -1246,6 +1246,14 @@ export interface SelectNextOpts {
    *  pickup default). Tests / explicit driver callers pass `"driver"`
    *  to bypass the filter. Default at call sites: `"member"`. */
   callerScope?: CallerScope;
+  /** ADR-210 Tier-2 §73: explicit role-tag filter from `claim --next
+   *  --role <X>`. When set (non-empty), selection is restricted to Tasks
+   *  whose `.lane === roleFilter` and the `callerLane` / `crossLaneClaim`
+   *  lane passes are bypassed entirely — a hard filter, no lane-less
+   *  fallback or cross-lane. A role with no eligible Task returns null
+   *  (no-op), so a fe member passing `--role be` claims nothing unless a
+   *  BE-tagged Task is eligible. `undefined`/empty → legacy lane logic. */
+  roleFilter?: string;
 }
 
 /**
@@ -1283,6 +1291,17 @@ export function selectNextClaimable(
     if (pa !== pb) return pa - pb;
     return (a.createdAt ?? 0) - (b.createdAt ?? 0);
   };
+  // ADR-210 Tier-2 §73: explicit `--role <X>` is a hard lane filter that
+  // takes precedence over the callerLane/crossLaneClaim passes. Only
+  // Tasks whose `.lane === roleFilter` are eligible; no lane-less
+  // fallback, no cross-lane. A role with no eligible Task → null (no-op),
+  // so a fe member passing `--role be` claims nothing unless a BE Task is
+  // ready. Empty / undefined roleFilter falls through to legacy lane logic.
+  if (opts.roleFilter !== undefined && opts.roleFilter.length > 0) {
+    const roleLane = baseEligible.filter((t) => t.lane === opts.roleFilter);
+    if (roleLane.length === 0) return null;
+    return [...roleLane].sort(tiebreak)[0] ?? null;
+  }
   // First pass — own-lane only when caller has a lane.
   if (opts.callerLane !== null && opts.callerLane.length > 0) {
     const ownLane = baseEligible.filter((t) => t.lane === opts.callerLane);

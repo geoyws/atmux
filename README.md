@@ -683,7 +683,7 @@ atmux task rm <id>
 atmux dispatch <member> <task-id> [--no-ping]   # priority override only; default flow is pull
 atmux inbox <member> [--json]
 atmux claim <task-id> [--as <member>]            # blocked if deps unresolved
-atmux claim --next [--as <member>] [--lane <l>]  # pull-mode: pick next claimable Task in your lane
+atmux claim --next [--as <member>] [--role <fe|be|db|…>]  # pull-mode: next claimable Task in your lane; --role hard-filters to that lane (ADR-210 §73)
 atmux done  <task-id> [--as <member>] [--note <text>]   # auto-fires commit-Task on Epic-tagged Tasks
 
 📓 Decisions log
