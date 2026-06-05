@@ -199,7 +199,9 @@ describe("spawnEpic — host-pressure gate (ADR-184)", () => {
       git: makeGitStub({ initialBranch: "main" }),
       logger: { log: () => undefined, warn: () => undefined },
     };
-    await expect(spawnEpic(["e-aabb0001", "--from", "parent-team"], opts)).rejects.toThrow(
+    // ADR-228 §D1 made queue-on-pressure the default; --no-queue selects
+    // the original throw-on-pressure path this test asserts.
+    await expect(spawnEpic(["e-aabb0001", "--from", "parent-team", "--no-queue"], opts)).rejects.toThrow(
       /host under pressure/,
     );
   });
@@ -392,7 +394,7 @@ describe("spawnEpic — soft-warn at 20+ concurrent epics under same parent", ()
     };
     const rc = await spawnEpic(["e-new-spawn", "--from", "parent-team"], opts);
     expect(rc).toBe(0);
-    expect(warns.filter((w) => w.includes("sentinel coverage may saturate"))).toHaveLength(0);
+    expect(warns.filter((w) => w.includes("auto-merge queue depth may saturate"))).toHaveLength(0);
   });
 
   test("20 existing epic-teams under parent — soft-warn fires (at threshold)", async () => {
@@ -410,7 +412,7 @@ describe("spawnEpic — soft-warn at 20+ concurrent epics under same parent", ()
     const rc = await spawnEpic(["e-new-spawn", "--from", "parent-team"], opts);
     // Spawn still proceeds (warn, not refuse) per ADR-090 §Amendment.
     expect(rc).toBe(0);
-    const matched = warns.filter((w) => w.includes("sentinel coverage may saturate"));
+    const matched = warns.filter((w) => w.includes("auto-merge queue depth may saturate"));
     expect(matched).toHaveLength(1);
     expect(matched[0]).toContain("20 concurrent epic-team");
     expect(matched[0]).toContain("parent-team");
