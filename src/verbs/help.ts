@@ -65,10 +65,12 @@ Messaging:
 
 Task board (kanban):
   task add <subject> [--body <text>] [--assignee <member>] [--deps <id,id>] [--driver-only]
+           [--epic <eid>] [--story <sid>] [--deliverable <text>]
   task list [--status todo|in-progress|done|blocked] [--assignee <member>]
   task show <id>
   task move <id> <todo|in-progress|done|blocked>
-  task update <id> [--body <text>] [--deps <id,id>]
+  task update <id> [--body <text>] [--deps <id,id>] [--owner <member>|--unassign]
+              [--epic <eid|''>] [--story <sid|''>] [--deliverable <text|''>]
 
 Hierarchy (ADR-007):
   epic add <title> [--body <text>] [--driver-ref <ref>]

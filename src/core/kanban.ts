@@ -127,6 +127,15 @@ export interface AddTaskOpts {
    *  (`claim --next` / lane-tick cron) skips this Task unless the
    *  caller's scope is `driver` (env `ATMUX_CALLER_SCOPE=driver`). */
   driverOnly?: boolean;
+  /** ADR-193: parent epic id (`e-<id>`). Validated for shape at the
+   *  verb layer; NO existence check (§OQ1 — cross-worktree decomp may
+   *  file the epic in a sibling session). */
+  epic?: string;
+  /** ADR-193: parent story id (`s-<id>`). Same shape-only stance. */
+  story?: string;
+  /** ADR-193: free-form deliverable description (≤256 chars at the
+   *  verb layer — a path / artifact reference, e.g. `docs/adr/171-...md`). */
+  deliverable?: string;
 }
 
 export interface ListTasksFilter {
@@ -221,6 +230,12 @@ export async function addTask(atmuxDir: string, opts: AddTaskOpts): Promise<stri
           completedAt: null,
         };
         if (opts.driverOnly === true) task.driverOnly = true;
+        // ADR-193: epic/story/deliverable set only when supplied
+        // (mirrors the driverOnly minimal-footprint pattern — absent
+        // flag leaves the field undefined, which the repo binds NULL).
+        if (opts.epic !== undefined) task.epic = opts.epic;
+        if (opts.story !== undefined) task.story = opts.story;
+        if (opts.deliverable !== undefined) task.deliverable = opts.deliverable;
         repo.addTask(task);
         if (wantsUnclaimedEmit && team !== null) {
           tryEmitTaskUnclaimed({ db, task, team });
@@ -248,6 +263,10 @@ export async function addTask(atmuxDir: string, opts: AddTaskOpts): Promise<stri
     completedAt: null,
   };
   if (opts.driverOnly === true) task.driverOnly = true;
+  // ADR-193: epic/story/deliverable parity with the SQLite path above.
+  if (opts.epic !== undefined) task.epic = opts.epic;
+  if (opts.story !== undefined) task.story = opts.story;
+  if (opts.deliverable !== undefined) task.deliverable = opts.deliverable;
   await updateJson(
     kanbanJsonPath(atmuxDir),
     KanbanSchema,
@@ -705,6 +724,72 @@ export async function setTaskLane(
     return;
   }
   await updateTaskByIdOrThrow(atmuxDir, id, (t) => ({ ...t, lane }));
+}
+
+/** ADR-193: set/clear a task's parent epic id. `null` clears the link
+ *  (`task update --epic ''`). Shape-validated at the verb layer; this
+ *  setter is the no-existence-check write path (§OQ1). Throws
+ *  `ConfigError` on missing task id. */
+export async function setTaskEpic(
+  atmuxDir: string,
+  id: string,
+  epic: string | null,
+): Promise<void> {
+  if (await _useSqlite(atmuxDir)) {
+    await _withDb(atmuxDir, (db, repo) => {
+      transactImmediate(db, () => {
+        const cur = repo.getTask(id);
+        if (cur === null) throw new ConfigError({ what: `no such task: ${id}` });
+        repo.upsertTask({ ...cur, epic });
+      });
+    });
+    return;
+  }
+  await updateTaskByIdOrThrow(atmuxDir, id, (t) => ({ ...t, epic }));
+}
+
+/** ADR-193: set/clear a task's parent story id. `null` clears the link
+ *  (`task update --story ''`). Shape-validated at the verb layer.
+ *  Throws `ConfigError` on missing task id. */
+export async function setTaskStory(
+  atmuxDir: string,
+  id: string,
+  story: string | null,
+): Promise<void> {
+  if (await _useSqlite(atmuxDir)) {
+    await _withDb(atmuxDir, (db, repo) => {
+      transactImmediate(db, () => {
+        const cur = repo.getTask(id);
+        if (cur === null) throw new ConfigError({ what: `no such task: ${id}` });
+        repo.upsertTask({ ...cur, story });
+      });
+    });
+    return;
+  }
+  await updateTaskByIdOrThrow(atmuxDir, id, (t) => ({ ...t, story }));
+}
+
+/** ADR-193: set/clear a task's free-form deliverable description.
+ *  `null` / empty-string both clear it (`task update --deliverable ''`).
+ *  Length-capped (≤256) at the verb layer. Throws `ConfigError` on
+ *  missing task id. */
+export async function setTaskDeliverable(
+  atmuxDir: string,
+  id: string,
+  deliverable: string | null,
+): Promise<void> {
+  const normalized = deliverable === "" ? null : deliverable;
+  if (await _useSqlite(atmuxDir)) {
+    await _withDb(atmuxDir, (db, repo) => {
+      transactImmediate(db, () => {
+        const cur = repo.getTask(id);
+        if (cur === null) throw new ConfigError({ what: `no such task: ${id}` });
+        repo.upsertTask({ ...cur, deliverable: normalized });
+      });
+    });
+    return;
+  }
+  await updateTaskByIdOrThrow(atmuxDir, id, (t) => ({ ...t, deliverable: normalized }));
 }
 
 /** Update a task's priority (integer; lower = higher priority in

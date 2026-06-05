@@ -29,8 +29,11 @@ import {
   markTaskDone,
   moveTask,
   removeTask,
+  setTaskDeliverable,
+  setTaskEpic,
   setTaskLane,
   setTaskPriority,
+  setTaskStory,
   showTask,
 } from "../../../src/core/kanban.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
@@ -380,6 +383,52 @@ describe("kanban (SQLite mode)", () => {
 
   test("setTaskPriority: missing id throws ConfigError", async () => {
     await expect(setTaskPriority(env.atmuxDir, "t-deadbeef", 1)).rejects.toThrow(ConfigError);
+  });
+
+  // ---------- ADR-193: epic/story/deliverable (SQLite branch) ----------
+
+  test("addTask persists epic/story/deliverable in SQLite mode", async () => {
+    const id = await addTask(env.atmuxDir, {
+      subject: "child",
+      epic: "e-3b017960",
+      story: "s-c4e91c33",
+      deliverable: "docs/adr/171-x.md",
+    });
+    const t = await showTask(env.atmuxDir, id);
+    expect(t?.epic).toBe("e-3b017960");
+    expect(t?.story).toBe("s-c4e91c33");
+    expect(t?.deliverable).toBe("docs/adr/171-x.md");
+  });
+
+  test("setTaskEpic: re-parent existing task; null clears", async () => {
+    const id = await addTask(env.atmuxDir, { subject: "orphan" });
+    expect((await showTask(env.atmuxDir, id))?.epic).toBeNull();
+    await setTaskEpic(env.atmuxDir, id, "e-4976c457");
+    expect((await showTask(env.atmuxDir, id))?.epic).toBe("e-4976c457");
+    await setTaskEpic(env.atmuxDir, id, null);
+    expect((await showTask(env.atmuxDir, id))?.epic).toBeNull();
+  });
+
+  test("setTaskStory: set then null clears", async () => {
+    const id = await addTask(env.atmuxDir, { subject: "x" });
+    await setTaskStory(env.atmuxDir, id, "s-1203");
+    expect((await showTask(env.atmuxDir, id))?.story).toBe("s-1203");
+    await setTaskStory(env.atmuxDir, id, null);
+    expect((await showTask(env.atmuxDir, id))?.story).toBeNull();
+  });
+
+  test("setTaskDeliverable: set; empty-string normalizes to null", async () => {
+    const id = await addTask(env.atmuxDir, { subject: "x" });
+    await setTaskDeliverable(env.atmuxDir, id, "EPIC e-1 merged to main");
+    expect((await showTask(env.atmuxDir, id))?.deliverable).toBe("EPIC e-1 merged to main");
+    await setTaskDeliverable(env.atmuxDir, id, "");
+    expect((await showTask(env.atmuxDir, id))?.deliverable).toBeNull();
+  });
+
+  test("setTaskEpic/Story/Deliverable: missing id throws ConfigError", async () => {
+    await expect(setTaskEpic(env.atmuxDir, "t-deadbeef", "e-1")).rejects.toThrow(ConfigError);
+    await expect(setTaskStory(env.atmuxDir, "t-deadbeef", "s-1")).rejects.toThrow(ConfigError);
+    await expect(setTaskDeliverable(env.atmuxDir, "t-deadbeef", "x")).rejects.toThrow(ConfigError);
   });
 
   test("loadKanban: returns full snapshot in SQLite mode", async () => {

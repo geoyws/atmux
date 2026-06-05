@@ -164,7 +164,7 @@
 | 190 | tmux statusline scaling at multi-team-of-teams cages — zero-fork cage + TTL-cached operator-curated | 2026-05-20 | Accepted — ratified by driver 2026-05-21 (cage statusline zero-fork builtin-on |
 | 191 | atmux ships its own vendored tmux binary — version-pinning + behavior isolation + reproducibility | 2026-05-20 | Accepted — ratified by driver 2026-05-21 (vendored tmux at /opt/atmux/<v>/bin/ |
 | 192 | Cron-idempotency contract for "arm a cadence" verbs | 2026-05-20 | Accepted — ratified by driver 2026-05-21 (every /Xloop / arm-a-cadence verb ru |
-| 193 | Restore documented `atmux task add` flags — `--epic` / `--story` / `--deliverable` | 2026-05-18 | proposed (deferred: task add `--epic`/`--story`/`--deliverable` flags rejected b |
+| 193 | Restore documented `atmux task add` flags — `--epic` / `--story` / `--deliverable` | 2026-05-18 | accepted (impl shipped 2026-06-05) |
 | 194 | auto-push targets the just-done SHA, not branch tip — shared-worktree race mitigation | 2026-05-20 | Accepted — ratified by driver 2026-05-21 (push just-done SHA not branch tip; � |
 | 195 | epic-team EPIC-done — transfer follow-up Tasks to parent kanban before dissolve | 2026-05-20 | Accepted — ratified by driver 2026-05-21 (EPIC-done transfers follow-ups to pa |
 | 196 | `worktreeIsolation: true` as default for `spawn-epic` — structural fix for shared-index race class | 2026-05-20 | Accepted — ratified by driver 2026-05-21 (worktreeIsolation=true default for s |
