@@ -601,5 +601,44 @@ export async function storyUnsignoff(
   });
 }
 
+// ---------- e-407c6d53: story update — body / acceptanceCriteria edit ----------
+
+export interface UpdateStoryOpts {
+  /** New body prose. `null` clears the body (`--body ''` at the verb layer);
+   *  `undefined` leaves the existing value untouched. */
+  body?: string | null;
+  /** New acceptance-criteria prose. `null` clears it (`--ac ''`);
+   *  `undefined` leaves the existing value untouched. */
+  acceptanceCriteria?: string | null;
+}
+
+/** Edit a Story's `body` / `acceptanceCriteria` in place. Mirrors the
+ *  `advanceStory` / `storySignoff` `_withRepo` + `repo.upsertStory` pattern.
+ *  Throws `ConfigError` on a missing story id (or absent state.db). Only the
+ *  fields whose opt is not `undefined` are mutated; `null` clears the field. */
+export async function updateStory(
+  atmuxDir: string,
+  id: string,
+  opts: UpdateStoryOpts,
+): Promise<void> {
+  if (!(await exists(_stateDbPath(atmuxDir)))) {
+    throw new ConfigError({ what: `story update: no such story: ${id}` });
+  }
+  await _withRepo(atmuxDir, (repo, db) => {
+    const story = repo.getStory(id);
+    if (story === null) {
+      throw new ConfigError({ what: `story update: no such story: ${id}` });
+    }
+    transact(db, () => {
+      const updated: KanbanStory = { ...story };
+      if (opts.body !== undefined) updated.body = opts.body;
+      if (opts.acceptanceCriteria !== undefined) {
+        updated.acceptanceCriteria = opts.acceptanceCriteria;
+      }
+      repo.upsertStory(updated);
+    });
+  });
+}
+
 // Re-export schema types so the verb layer imports stay together.
 export type { KanbanStory };

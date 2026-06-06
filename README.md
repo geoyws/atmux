@@ -666,6 +666,7 @@ atmux story list --epic <eid> [--status <s>] [--json]
 atmux story show <id>
 atmux story advance <id> [--to <state>]             # feature-branch: planning→ready→in-progress→testing→review→merging→done
                                                     # trunk-direct:   planning→ready→in-progress→testing→review→done  (ADR-175)
+atmux story update    <id> [--body <text>] [--ac <criteria>]  # Edit body / acceptance-criteria in place (`''` clears)
 atmux story signoff   <id> [--as <m>] [--note <t>]  # Flip review-signoff bit + audit append (ADR-175 GAP 1)
 atmux story unsignoff <id> [--as <m>] [--note <t>]  # Revert review-signoff (pre-merging only; ADR-175 GAP 1)
 atmux task add <subject> [--body <txt>] [--epic <eid>] [--story <sid>] \
