@@ -196,7 +196,7 @@ Ships the **load-bearing** piece of ADR-199 — `claudeAccountPool[]` configured
 - CLI verbs (`atmux cockpit account-pool add/remove/list` — driver-scope-only per ADR-033)
 - Honker subscription to `budget.warning` / `budget.recovered` topics (event-driven re-weighting; currently selector re-reads probe state at each spawn-epic)
 - Cron-backstop 5min poll (defense-in-depth per ADR-202 §D6)
-- Doctor probe row `claudeAccountPool` (green when populated + non-stale; yellow on partial staleness)
+- ~~Doctor probe row `claudeAccountPool` (green when populated + non-stale; yellow on partial staleness)~~ **SHIPPED** (t-ffab45f9, e-7471f008 T5) — `src/verbs/doctor.ts::claudeAccountPoolRows()` (pure) + `checkClaudeAccountPool()` (wrapper): GREEN when pool populated + every entry has fresh budget probe data; YELLOW on partial staleness (selector falls back to weight + order per §Stale-grace contract); RED when pool empty AND a cockpit team has `claudeAccount` unset (the 401-on-bootstrap class); INFO when pool unconfigured but every team pins its own account.
 - Per-team override `team.json::epicSpawnPool[]` (cockpit-pool override scope)
 - `epic.spawn_blocked` event emission on exhaustion
 
