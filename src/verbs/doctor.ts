@@ -49,7 +49,6 @@ import {
   probeCageState as defaultProbeCageState,
   STARVING_THRESHOLD_S as STARVING_THRESHOLD_S_LOCAL,
 } from "../core/cage-state.ts";
-import { isDefaultMemberRole } from "../abstractions/member-roles.ts";
 import {
   type BudgetProbeState,
   DEFAULT_STALE_THRESHOLD_SEC,
