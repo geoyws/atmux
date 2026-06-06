@@ -140,12 +140,16 @@ async function storyShow(argv: ReadonlyArray<string>): Promise<number> {
   if (s.reviewSignoff === true) {
     lines.push("  signoff: ✅");
   }
+  // ADR-173 §69: explicit `(none)` empty marker, not silent omission,
+  // when the Tasks section header appears.
+  lines.push("");
+  lines.push("Tasks:");
   if (s.tasks.length > 0) {
-    lines.push("");
-    lines.push("Tasks:");
     for (const t of s.tasks) {
       lines.push(`  ${t.id} [${t.status ?? ""}] (${t.lane ?? "-"}) — ${t.subject ?? ""}`);
     }
+  } else {
+    lines.push("  (none)");
   }
   process.stdout.write(`${lines.join("\n")}\n`);
   return 0;

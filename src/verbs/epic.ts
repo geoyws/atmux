@@ -411,9 +411,12 @@ async function epicShow(argv: ReadonlyArray<string>): Promise<number> {
   if (deps.length > 0) {
     lines.push(`  depends_on: [${deps.join(", ")}]`);
   }
+  // ADR-173 §69: explicit `(none)` empty markers, not silent omission,
+  // when the section header appears. Absorbs `.epic: null` runtime
+  // (ADR-173 §139) — empty arrays render "(none)" cleanly.
+  lines.push("");
+  lines.push("Stories:");
   if (epic.storyRows.length > 0) {
-    lines.push("");
-    lines.push("Stories:");
     for (const s of epic.storyRows) {
       lines.push(`  ${s.id} [${s.status ?? ""}] — ${s.title ?? ""}`);
       const childTasks = epic.tasks.filter((t) => t.story === s.id);
@@ -423,16 +426,20 @@ async function epicShow(argv: ReadonlyArray<string>): Promise<number> {
         );
       }
     }
+  } else {
+    lines.push("  (none)");
   }
   const directTasks = epic.tasks.filter(
     (t) => t.story === null || t.story === undefined || t.story.length === 0,
   );
+  lines.push("");
+  lines.push("Direct tasks:");
   if (directTasks.length > 0) {
-    lines.push("");
-    lines.push("Direct tasks:");
     for (const t of directTasks) {
       lines.push(`  ${t.id} [${t.status ?? ""}] — ${t.subject ?? ""} ${taskRowSuffix(t)}`);
     }
+  } else {
+    lines.push("  (none)");
   }
   process.stdout.write(`${lines.join("\n")}\n`);
   return 0;
