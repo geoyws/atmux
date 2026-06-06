@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🟢 Fixed — `driverSession.model` no longer rejected by strict `team.json` validation ([ADR-239](docs/adr/239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md) §D7, e-d8e94413)
+
+Operators pinning a driver-TUI model in `team.json` (e.g. `driverSession: { tui: "shell", model: "cursor-fast" }`) previously tripped a `ZodError` — the `driverSession` sub-shape is `.strict()`, so any key beyond `tui` was rejected as unknown. `src/schema/team.ts:1376` now declares `model: z.string().nullable().optional()` inside that strict object: any string is accepted (atmux does NOT enforce a value set), `null` / absent both mean "unset" (spawn loop falls back to its account-derived default), sibling-consistent with `.tui`'s own `.nullable().optional()`. ADR-239 §D7 (driver-session schema shape) is the lineage; the field is purely additive so no ADR amendment is needed. 4 unit tests at `tests/unit/schema/team.test.ts` pin the surface — `model=<str>` parses cleanly, `=null` accepted, absent accepted (omitted, not coerced), non-string REJECTED with `ZodError`. Brief alignment confirmed: no `driverSession` / model-pin reference in `templates/briefs/` (nothing to re-point).
+
 ### ♻️ Fixed + Added — orchd RAM-leak cluster: singleton guard + stale-epic reaper + epic-cage socket fix (2026-06-04)
 
 Triage of "orchd is leaking, growing RAM" (2026-05-29) found orchd's own RSS steady (~4MB); the growth was **136 `claude` TUIs ≈ 43.6 GB** across epic-team cages that were spawned but never dissolved. Three structural fixes close the leak at its sources:
