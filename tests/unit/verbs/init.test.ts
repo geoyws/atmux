@@ -203,20 +203,30 @@ describe("init — template path (bash lib/init.sh:87-107 parity)", () => {
       expect(m.cwd).toBe(env.cwd);
     }
     // Template-shape sanity. Tracks `templates/team.example.json` —
-    // bump together when the shipped roster changes (last bumped to 11
-    // after fe-auth/be-auth/db-auth split landed).
-    expect(tj.members.length).toBe(11);
+    // bump together when the shipped roster changes. ADR-239 §A2
+    // (amendment 2026-05-26) trimmed every parent team to the strict
+    // 5-name roster {lead, planner, docs, reviewer, gitter}; the
+    // specialist seats (fe-auth/be-auth/db-auth/dba/ombudsman/…) were
+    // swept out in commit 5198e12.
+    expect(tj.members.length).toBe(5);
     expect(tj.members.filter((m) => m.role === "team-lead").length).toBe(1);
     expect(tj.members.filter((m) => m.role === "planner").length).toBe(1);
+    expect(tj.members.filter((m) => m.role === "docs").length).toBe(1);
     expect(tj.members.filter((m) => m.role === "reviewer").length).toBe(1);
-    // ADR-159 TR3: template's legacy `role: "gitter"` is coerced to
-    // canonical `"committer"` at init time via the TeamMember schema
-    // transform. New init runs always carry the canonical value on-
-    // disk; legacy team.json files with role: "gitter" parse to
-    // "committer" on next load.
+    // ADR-159 TR3: the `gitter` member carries the canonical
+    // `role: "committer"` (the template ships the canonical value; a
+    // legacy `role: "gitter"` would also coerce to "committer" via the
+    // TeamMember schema transform on load).
     expect(tj.members.filter((m) => m.role === "committer").length).toBe(1);
-    expect(tj.members.filter((m) => m.role === "dba").length).toBe(1);
-    expect(tj.members.find((m) => m.name === "fe-auth")).toBeDefined();
+    // The 5-name roster is exactly {lead, planner, docs, reviewer, gitter}
+    // — assert the named set so a future roster drift is caught.
+    expect(tj.members.map((m) => m.name).sort()).toEqual([
+      "docs",
+      "gitter",
+      "lead",
+      "planner",
+      "reviewer",
+    ]);
   });
 
   // t-3866c5b1 / ADR-094: --claude-account flag end-to-end
@@ -273,8 +283,10 @@ describe("init — template path (bash lib/init.sh:87-107 parity)", () => {
     );
     // Bash lib/init.sh:51 — `: > "$di"` produces a zero-byte file.
     expect(await readFile(join(dir, "driver-inbox.md"), "utf8")).toBe("");
-    // Bash lib/init.sh:59 — every member.name gets a stub inbox.
-    for (const m of ["lead", "planner", "reviewer", "gitter", "fe-auth"]) {
+    // Bash lib/init.sh:59 — every member.name gets a stub inbox. Roster
+    // is the ADR-239 §A2 strict 5-name set {lead, planner, docs,
+    // reviewer, gitter}; assert every one of them gets a stub.
+    for (const m of ["lead", "planner", "docs", "reviewer", "gitter"]) {
       expect(await readFile(join(dir, "inboxes", `${m}.json`), "utf8")).toBe(
         '{"pending":[],"inProgress":[],"done":[]}\n',
       );
@@ -488,9 +500,11 @@ describe("init — templates dir resolution", () => {
       members: unknown[];
     };
     expect(tj.name).toBe("default-tmpls");
-    // The shipped template has 11 members — sanity-pin tracks
-    // `templates/team.example.json`.
-    expect(tj.members.length).toBe(11);
+    // The shipped template has the ADR-239 §A2 strict 5-name roster —
+    // sanity-pin tracks `templates/team.example.json`. (This asserts the
+    // default-resolved template was loaded, not the injected one, since
+    // it carries the full shipped roster size.)
+    expect(tj.members.length).toBe(5);
   });
 });
 

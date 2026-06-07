@@ -412,20 +412,49 @@ describe("send() — integration", () => {
     expect(await Bun.file(join(atmuxDir, "logs", "send-beta.log")).exists()).toBe(true);
   });
 
-  test("broadcast --include-driver hits the driver member too", async () => {
+  test("broadcast --include-driver is refused by the ADR-239 §D2 send-keys guard", async () => {
+    // Pre-ADR-239 this flag delivered into the driver pane. ADR-239 §D2
+    // made driver panes operator-interactive ONLY: atmux NEVER sends
+    // keystrokes to a pane whose name matches /^driver(-N)?$/, and
+    // `src/abstractions/tmux.ts` enforces this at the lowest-level
+    // send-keys helper (`DriverSendKeysViolation`). So a `driver`-named
+    // member can no longer receive a broadcast even with --include-driver:
+    // the guard throws, broadcastSend absorbs it into the per-member warn
+    // bucket, sets anyFailed, and returns 1 (partial-failure). The driver
+    // log is NEVER written (the throw fires in safePreflight's sendKeys,
+    // before appendSendLog). The non-driver member (alpha) still delivers.
     await stageTeam([{ name: "driver" }, { name: "alpha" }]);
-    const exit = await send([
-      "--broadcast",
-      "--include-driver",
-      "--socket",
-      socketPath,
-      "--team-dir",
-      teamDir,
-      "--no-verify",
-      "ping",
-    ]);
-    expect(exit).toBe(0);
-    expect(await Bun.file(join(atmuxDir, "logs", "send-driver.log")).exists()).toBe(true);
+    let stderrBuf = "";
+    const origStderrWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((s: string | Uint8Array) => {
+      stderrBuf += typeof s === "string" ? s : new TextDecoder().decode(s);
+      return true;
+    }) as typeof process.stderr.write;
+    let exit: number;
+    try {
+      exit = await send([
+        "--broadcast",
+        "--include-driver",
+        "--socket",
+        socketPath,
+        "--team-dir",
+        teamDir,
+        "--no-verify",
+        "ping",
+      ]);
+    } finally {
+      process.stderr.write = origStderrWrite;
+    }
+    // Partial-failure exit: the driver delivery was refused.
+    expect(exit).toBe(1);
+    // The warn names the driver member AND cites the ADR-239 §D2 refusal —
+    // proves the failure is the driver-pane guard, not an unrelated error.
+    expect(stderrBuf).toContain("send to driver failed");
+    expect(stderrBuf).toContain("ADR-239 §D2 violation");
+    expect(stderrBuf).toContain("refused to send-keys into driver pane");
+    // Driver pane received NO keystrokes → no send-log was written for it.
+    expect(await Bun.file(join(atmuxDir, "logs", "send-driver.log")).exists()).toBe(false);
+    // The non-driver member still got its broadcast delivery.
     expect(await Bun.file(join(atmuxDir, "logs", "send-alpha.log")).exists()).toBe(true);
   });
 
