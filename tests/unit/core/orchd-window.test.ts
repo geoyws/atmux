@@ -1,8 +1,10 @@
-// Unit tests for src/core/orchd-window.ts (ADR-202 §Amendment 2026-05-22 II).
+// Unit tests for src/core/orchd-window.ts (ADR-202 §Amendment 2026-05-22 II;
+// committer-presence gate removed per ADR-259).
 //
 // Coverage:
-//   - Gate failures: autoMerge.enabled !== true, no committer/gitter,
-//     ATMUX_HONKER=off all return false without spawning.
+//   - Gate failures: autoMerge.enabled !== true, ATMUX_HONKER=off all return
+//     false without spawning. (No committer/gitter is NO LONGER a gate —
+//     ADR-259: orchd is the merger, committer member optional.)
 //   - Idempotency: window already present → skip spawn.
 //   - Success path: spawns window + sends supervisor wrapper command.
 //   - Failure isolation: tmux.window.newWindow throws → logged + returns
@@ -137,7 +139,9 @@ describe("maybeSpawnOrchdWindow — gating", () => {
     expect(newWindowCalls).toHaveLength(0);
   });
 
-  test("no committer/gitter role → returns false, no spawn", async () => {
+  test("no committer/gitter role + autoMerge.enabled → STILL spawns (committer optional, ADR-259)", async () => {
+    // ADR-259: orchd IS the merger; the human committer slot is optional.
+    // Spawn gates on autoMerge.enabled (+ honker), NOT committer-presence.
     const { tmux, newWindowCalls } = mockTmux({});
     const { logger } = makeLogger();
     const result = await maybeSpawnOrchdWindow({
@@ -153,11 +157,11 @@ describe("maybeSpawnOrchdWindow — gating", () => {
       logger,
       env: {},
     });
-    expect(result).toBe(false);
-    expect(newWindowCalls).toHaveLength(0);
+    expect(result).toBe(true);
+    expect(newWindowCalls).toHaveLength(1);
   });
 
-  test("legacy 'gitter' role accepted as committer-equivalent (ADR-159 grace)", async () => {
+  test("committer/gitter present + autoMerge.enabled → spawns (committer still allowed, ADR-259)", async () => {
     const { tmux, newWindowCalls } = mockTmux({});
     const { logger } = makeLogger();
     const result = await maybeSpawnOrchdWindow({

@@ -92,15 +92,15 @@ export async function maybeSpawnOrchdWindow(
   if (team.autoMerge?.enabled !== true) {
     return false;
   }
-  // Gate 2: member with committer / gitter role
-  const hasCommitter = team.members.some((m) => {
-    const role = (m as { role?: string }).role;
-    return role === "committer" || role === "gitter";
-  });
-  if (!hasCommitter) {
-    return false;
-  }
-  // Gate 3: ATMUX_HONKER not explicitly disabled. orchd's value
+  // (Former Gate 2 — committer/gitter-presence — REMOVED per ADR-259.)
+  //   orchd IS the merger (no-LLM, ADR-134/091/233); a human committer
+  //   member is optional. The merge state machine fans in every
+  //   `<base>-<member>` branch on `task.done` regardless of roster
+  //   composition, so gating spawn on a committer slot over-restricted
+  //   (forced a roster slot that did nothing orchd does not already do)
+  //   and blocked leaner teams (ADR-258 §D6a). Eligibility is now
+  //   autoMerge.enabled (above) + ATMUX_HONKER (below).
+  // Gate 2: ATMUX_HONKER not explicitly disabled. orchd's value
   //         proposition is the Honker NOTIFY/LISTEN wake; when off,
   //         the cron `committer --drain` handles event drain and we
   //         skip orchd to avoid spinning on poll-mode.
