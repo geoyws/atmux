@@ -18,6 +18,9 @@ import {
   EventPayload,
   GitterEscalatedPayload,
   isKnownTopic,
+  MemberOverloadedPayload,
+  MemberRateLimitedPayload,
+  MemberUsageSnapshotPayload,
   TaskClaimedPayload,
   TOPICS,
 } from "../../../src/schema/events.ts";
@@ -250,6 +253,210 @@ describe("EventPayload discriminated union", () => {
   });
 });
 
+describe("member-health telemetry (ADR-258 §D6b — emit-only, no Phase 1 consumer)", () => {
+  test("member.rate-limited parses a valid 429 payload via the union", () => {
+    const parsed = EventPayload.parse({
+      topic: "member.rate-limited",
+      eventId: SAMPLE_UUID7,
+      emittedAtSec: 1_700_000_000,
+      team: "atmux",
+      member: "be-1",
+      account: "claude-unum",
+      httpStatus: 429,
+      retryAfterSec: 30,
+      h5Util: 0.92,
+      wkUtil: 0.7,
+      capturedAtSec: 1_700_000_001,
+    });
+    expect(parsed.topic).toBe("member.rate-limited");
+    if (parsed.topic === "member.rate-limited") {
+      expect(parsed.httpStatus).toBe(429);
+      expect(parsed.retryAfterSec).toBe(30);
+      expect(parsed.h5Util).toBe(0.92);
+    }
+  });
+
+  test("member.rate-limited parses with optionals omitted", () => {
+    const parsed = MemberRateLimitedPayload.parse({
+      topic: "member.rate-limited",
+      eventId: SAMPLE_UUID7,
+      emittedAtSec: 1_700_000_000,
+      team: "atmux",
+      member: "be-1",
+      account: "claude-unum",
+      httpStatus: 429,
+      capturedAtSec: 1_700_000_001,
+      // retryAfterSec / h5Util / wkUtil omitted
+    });
+    expect(parsed.retryAfterSec).toBeUndefined();
+    expect(parsed.h5Util).toBeUndefined();
+  });
+
+  test("member.rate-limited rejects a malformed payload (missing required account)", () => {
+    expect(() =>
+      MemberRateLimitedPayload.parse({
+        topic: "member.rate-limited",
+        eventId: SAMPLE_UUID7,
+        emittedAtSec: 1_700_000_000,
+        team: "atmux",
+        member: "be-1",
+        // account missing
+        httpStatus: 429,
+        capturedAtSec: 1_700_000_001,
+      }),
+    ).toThrow();
+  });
+
+  test("member.rate-limited rejects out-of-range h5Util (>1)", () => {
+    expect(() =>
+      MemberRateLimitedPayload.parse({
+        topic: "member.rate-limited",
+        eventId: SAMPLE_UUID7,
+        emittedAtSec: 1_700_000_000,
+        team: "atmux",
+        member: "be-1",
+        account: "claude-unum",
+        httpStatus: 429,
+        h5Util: 1.5,
+        capturedAtSec: 1_700_000_001,
+      }),
+    ).toThrow();
+  });
+
+  test("member.overloaded parses a valid 529 payload via the union", () => {
+    const parsed = EventPayload.parse({
+      topic: "member.overloaded",
+      eventId: SAMPLE_UUID7,
+      emittedAtSec: 1_700_000_000,
+      team: "atmux",
+      member: "fe-2",
+      account: "claude-icloud",
+      httpStatus: 529,
+      retryAfterSec: 5,
+      capturedAtSec: 1_700_000_002,
+    });
+    expect(parsed.topic).toBe("member.overloaded");
+    if (parsed.topic === "member.overloaded") {
+      expect(parsed.httpStatus).toBe(529);
+      expect(parsed.retryAfterSec).toBe(5);
+    }
+  });
+
+  test("member.overloaded rejects a non-529 httpStatus (pinned literal)", () => {
+    expect(() =>
+      MemberOverloadedPayload.parse({
+        topic: "member.overloaded",
+        eventId: SAMPLE_UUID7,
+        emittedAtSec: 1_700_000_000,
+        team: "atmux",
+        member: "fe-2",
+        account: "claude-icloud",
+        httpStatus: 429, // wrong — overloaded is 529 only
+        capturedAtSec: 1_700_000_002,
+      }),
+    ).toThrow();
+  });
+
+  test("member.overloaded rejects a malformed payload (missing capturedAtSec)", () => {
+    expect(() =>
+      MemberOverloadedPayload.parse({
+        topic: "member.overloaded",
+        eventId: SAMPLE_UUID7,
+        emittedAtSec: 1_700_000_000,
+        team: "atmux",
+        member: "fe-2",
+        account: "claude-icloud",
+        httpStatus: 529,
+        // capturedAtSec missing
+      }),
+    ).toThrow();
+  });
+
+  test("member.usage-snapshot parses a valid payload via the union", () => {
+    const parsed = EventPayload.parse({
+      topic: "member.usage-snapshot",
+      eventId: SAMPLE_UUID7,
+      emittedAtSec: 1_700_000_000,
+      team: "atmux",
+      member: "be-3",
+      account: "claude-ifca",
+      inputTokens: 12_345,
+      outputTokens: 6_789,
+      estimatedUsd: 0.42,
+      h5Util: 0.5,
+      wkUtil: 0.33,
+      capturedAtSec: 1_700_000_003,
+    });
+    expect(parsed.topic).toBe("member.usage-snapshot");
+    if (parsed.topic === "member.usage-snapshot") {
+      expect(parsed.inputTokens).toBe(12_345);
+      expect(parsed.outputTokens).toBe(6_789);
+      expect(parsed.estimatedUsd).toBe(0.42);
+    }
+  });
+
+  test("member.usage-snapshot parses with optionals omitted", () => {
+    const parsed = MemberUsageSnapshotPayload.parse({
+      topic: "member.usage-snapshot",
+      eventId: SAMPLE_UUID7,
+      emittedAtSec: 1_700_000_000,
+      team: "atmux",
+      member: "be-3",
+      account: "claude-ifca",
+      inputTokens: 100,
+      outputTokens: 200,
+      capturedAtSec: 1_700_000_003,
+      // estimatedUsd / h5Util / wkUtil omitted
+    });
+    expect(parsed.estimatedUsd).toBeUndefined();
+    expect(parsed.h5Util).toBeUndefined();
+  });
+
+  test("member.usage-snapshot rejects a malformed payload (missing inputTokens)", () => {
+    expect(() =>
+      MemberUsageSnapshotPayload.parse({
+        topic: "member.usage-snapshot",
+        eventId: SAMPLE_UUID7,
+        emittedAtSec: 1_700_000_000,
+        team: "atmux",
+        member: "be-3",
+        account: "claude-ifca",
+        // inputTokens missing
+        outputTokens: 200,
+        capturedAtSec: 1_700_000_003,
+      }),
+    ).toThrow();
+  });
+
+  test("member.usage-snapshot rejects negative token counts", () => {
+    expect(() =>
+      MemberUsageSnapshotPayload.parse({
+        topic: "member.usage-snapshot",
+        eventId: SAMPLE_UUID7,
+        emittedAtSec: 1_700_000_000,
+        team: "atmux",
+        member: "be-3",
+        account: "claude-ifca",
+        inputTokens: -1,
+        outputTokens: 200,
+        capturedAtSec: 1_700_000_003,
+      }),
+    ).toThrow();
+  });
+
+  test("all three member-health topics are in TOPICS + isKnownTopic returns true", () => {
+    const set = new Set<string>(TOPICS);
+    for (const t of [
+      "member.rate-limited",
+      "member.overloaded",
+      "member.usage-snapshot",
+    ] as const) {
+      expect(set.has(t)).toBe(true);
+      expect(isKnownTopic(t)).toBe(true);
+    }
+  });
+});
+
 describe("passthrough for forward-compat", () => {
   test("unknown fields round-trip through parse (kanban precedent)", () => {
     const parsed = TaskClaimedPayload.parse({
@@ -276,9 +483,13 @@ describe("TOPICS registry + isKnownTopic", () => {
     //  +3 ADR-228 §D5: epic.spawn-queued/epic.spawn-abandoned/epic.added)
     // + 3 commit + 1 gitter + 3 pane + 4 coordination
     // + 1 member.context-high (e-13-04c8b3bf — member context-saturation
-    //   signal) + 7 cockpit
-    // (sentinel.escalated removed per EPIC e-be01fc89) + 4 internal = 51.
-    expect(TOPICS.length).toBe(51);
+    //   signal)
+    // + 3 member-health (ADR-258 §D6b Amendment 2026-06-08:
+    //   member.rate-limited / member.overloaded / member.usage-snapshot —
+    //   emit-only telemetry from the future claude-agent-sdk backend)
+    // + 7 cockpit
+    // (sentinel.escalated removed per EPIC e-be01fc89) + 4 internal = 54.
+    expect(TOPICS.length).toBe(54);
   });
 
   test("known topics across each domain are present", () => {

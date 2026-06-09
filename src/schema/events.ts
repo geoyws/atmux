@@ -409,6 +409,84 @@ export const MemberContextHighPayload = z
   })
   .passthrough();
 
+/**
+ * `member.rate-limited` — the claude-agent-sdk backend observed a 429
+ * (rate-limit / budget-cap) response on a member's turn. Per ADR-258
+ * §D6b (member-health telemetry, Amendment 2026-06-08) the SDK backend
+ * emits this so the cockpit budget-aware account-pool reroute (ADR-199
+ * §D6) and lead-visibility surfaces can react. Phase 1 has NO consumer
+ * — emit-only; the future SDK backend produces it.
+ *
+ * `httpStatus` is the observed status (429); `retryAfterSec` mirrors the
+ * server's `Retry-After` when present; `h5Util` / `wkUtil` are the 5-hour
+ * and weekly budget utilisations (0..1) when the SDK knows them.
+ */
+export const MemberRateLimitedPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("member.rate-limited"),
+    team: z.string(),
+    member: z.string(),
+    account: z.string(),
+    httpStatus: z.number().int(),
+    retryAfterSec: z.number().optional(),
+    h5Util: z.number().min(0).max(1).optional(),
+    wkUtil: z.number().min(0).max(1).optional(),
+    capturedAtSec: z.number(),
+  })
+  .passthrough();
+
+/**
+ * `member.overloaded` — the claude-agent-sdk backend observed a 529
+ * (transient upstream capacity / "Overloaded") response on a member's
+ * turn. Per ADR-258 §D6b (member-health telemetry, Amendment
+ * 2026-06-08). Distinct from `member.rate-limited` (429 budget) — 529 is
+ * a transient backend-capacity signal that warrants backoff-and-retry,
+ * not account reroute. Phase 1 has NO consumer — emit-only.
+ *
+ * `httpStatus` is pinned to 529; `retryAfterSec` mirrors the server's
+ * `Retry-After` when present.
+ */
+export const MemberOverloadedPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("member.overloaded"),
+    team: z.string(),
+    member: z.string(),
+    account: z.string(),
+    httpStatus: z.literal(529),
+    retryAfterSec: z.number().optional(),
+    capturedAtSec: z.number(),
+  })
+  .passthrough();
+
+/**
+ * `member.usage-snapshot` — per-turn-end usage telemetry from the
+ * claude-agent-sdk backend. Per ADR-258 §D6b (member-health telemetry,
+ * Amendment 2026-06-08). Carries token counts (+ optional cost estimate
+ * + budget utilisations) so cockpit-scope spend/throughput dashboards
+ * can aggregate without re-deriving from raw transcripts. Phase 1 has NO
+ * consumer — emit-only; the future SDK backend produces one per turn end.
+ *
+ * `estimatedUsd` is the SDK's best-effort cost estimate when known;
+ * `h5Util` / `wkUtil` are the 5-hour / weekly budget utilisations (0..1).
+ */
+export const MemberUsageSnapshotPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("member.usage-snapshot"),
+    team: z.string(),
+    member: z.string(),
+    account: z.string(),
+    inputTokens: z.number().int().min(0),
+    outputTokens: z.number().int().min(0),
+    estimatedUsd: z.number().optional(),
+    h5Util: z.number().min(0).max(1).optional(),
+    wkUtil: z.number().min(0).max(1).optional(),
+    capturedAtSec: z.number(),
+  })
+  .passthrough();
+
 // ---------- Discriminated union ----------
 
 /**
@@ -439,6 +517,9 @@ export const EventPayload = z.discriminatedUnion("topic", [
   EpicAddedPayload,
   ComplaintFiledPayload,
   MemberContextHighPayload,
+  MemberRateLimitedPayload,
+  MemberOverloadedPayload,
+  MemberUsageSnapshotPayload,
   InternalHonkerLoadedPayload,
   InternalHonkerFallbackPayload,
 ]);
@@ -463,6 +544,9 @@ export type EpicSpawnAbandonedPayload = z.infer<typeof EpicSpawnAbandonedPayload
 export type EpicAddedPayload = z.infer<typeof EpicAddedPayload>;
 export type ComplaintFiledPayload = z.infer<typeof ComplaintFiledPayload>;
 export type MemberContextHighPayload = z.infer<typeof MemberContextHighPayload>;
+export type MemberRateLimitedPayload = z.infer<typeof MemberRateLimitedPayload>;
+export type MemberOverloadedPayload = z.infer<typeof MemberOverloadedPayload>;
+export type MemberUsageSnapshotPayload = z.infer<typeof MemberUsageSnapshotPayload>;
 export type InternalHonkerLoadedPayload = z.infer<typeof InternalHonkerLoadedPayload>;
 export type InternalHonkerFallbackPayload = z.infer<typeof InternalHonkerFallbackPayload>;
 
@@ -537,6 +621,14 @@ export const TOPICS = [
   // e-13-04c8b3bf — member context-saturation signal (lead-gated
   // preclear/rotate consumer per ADR-212 / e-cc3728bf).
   "member.context-high",
+  // ADR-258 §D6b (Amendment 2026-06-08) — member-health telemetry from
+  // the future claude-agent-sdk backend. Emit-only in Phase 1 (no
+  // consumer yet): `member.rate-limited` = 429 / budget cap;
+  // `member.overloaded` = 529 transient upstream capacity;
+  // `member.usage-snapshot` = per-turn-end token/cost usage.
+  "member.rate-limited",
+  "member.overloaded",
+  "member.usage-snapshot",
   // Cockpit-scope (cross-team fanout)
   "team.idle",
   "team.recovered",
