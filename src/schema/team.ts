@@ -726,6 +726,47 @@ export type TeamAutoMerge = z.infer<typeof TeamAutoMerge>;
  *  renderer, T7 install) share the same constant. */
 export const DEFAULT_AUTO_MERGE_CRON_BACKSTOP_MIN = 10;
 
+/**
+ * `team.json::leadStallWatchdog` sub-config — ADR-247 §D6 operator-
+ * facing controls for the lead-stall watchdog (per-cage orchd consumer
+ * that converts ready-but-undispatched stories / unclaimed tasks into a
+ * concrete lead dispatch ping). The consumer (ADR-247 §D2) lands in
+ * Phase-1 task 2 and reads these fields; this commit ships the schema
+ * surface as the foundation.
+ *
+ * `.strict()` per the sibling-block precedent (whip / autoMerge /
+ * autoPush) — drift detection requires unknown-key rejection so a typo
+ * like `idleTresholdMin` surfaces as a refusal rather than a silent
+ * default (ADR-054 §D3). Every field has a default, so omitting the
+ * whole block is equivalent to the ADR-247 §D6 recommended values
+ * (`enabled: true`, 5 / 5 / 15 minute thresholds).
+ */
+export const TeamLeadStallWatchdog = z
+  .object({
+    /** ADR-247 §D6 off-switch. Default `true` — the watchdog is the
+     *  lead-stall closer the ADR was authored to ship; opt-OUT, not
+     *  opt-in. Operators on lean-mode (ADR-189) flip this off when a
+     *  cage intentionally idles. */
+    enabled: z.boolean().default(true),
+    /** ADR-247 §D3 W1/W2/W3 threshold (minutes) — a ready story with no
+     *  claimant (or an unclaimed task) must sit this long before the
+     *  watchdog pings. Default 5 (active-development cadence). Range
+     *  1..60; lean-mode cages raise it for "very lazy" profiles per
+     *  ADR-247 §D6. */
+    idleThresholdMin: z.number().int().min(1).max(60).default(5),
+    /** ADR-247 §D5 per-cage rate-limit (minutes) — at most one ping per
+     *  this window per cage, so the at-least-once event re-delivery
+     *  contract (ADR-202 §III) does not multiply pings. Default 5. */
+    rateLimitPerCageMin: z.number().int().min(1).max(60).default(5),
+    /** ADR-247 §D5 backoff-on-no-ack (minutes) — if the lead makes no
+     *  progress this long after a ping, escalate ONCE to the parent
+     *  driver-inbox via `atmux tell-lead --escalate`. Default 15.
+     *  Range 5..120. */
+    escalationDelayMin: z.number().int().min(5).max(120).default(15),
+  })
+  .strict();
+export type TeamLeadStallWatchdog = z.infer<typeof TeamLeadStallWatchdog>;
+
 export const TeamObservability = z
   .object({
     /** t-e89c03f7: when true, every UNKNOWN classification from
@@ -1504,6 +1545,12 @@ export const Team = z
      *  {@link resolveRefusalConfig} (enabled=true, soft=3, hard=2,
      *  role=1, windowMin=30, cap=3/day). */
     refusalDetection: TeamRefusalDetection.optional(),
+    /** ADR-247 §D6: lead-stall watchdog operator controls (per-cage
+     *  orchd consumer that pings the lead on ready-but-undispatched
+     *  stories / unclaimed tasks). Absent block → defaults applied
+     *  (`enabled: true`, 5/5/15-minute thresholds). See
+     *  {@link TeamLeadStallWatchdog}. */
+    leadStallWatchdog: TeamLeadStallWatchdog.optional(),
     /** Phase 2 sub-shapes — typed once verb porters land. */
     discord: z.unknown().optional(),
     tuiCommands: z.unknown().optional(),

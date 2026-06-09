@@ -30,6 +30,7 @@ import {
   TeamCrons,
   TeamEpic,
   TeamFallback,
+  TeamLeadStallWatchdog,
   TeamMember,
   TeamOmbudsman,
   TeamRefusalDetection,
@@ -1702,5 +1703,76 @@ describe("Team schema integrates TeamAutoSpawn cleanly (ADR-231 §D3 + §D4)", (
     });
     expect(team.autoSpawn?.sweepCron).toBe("0 * * * *");
     expect(team.autoPush?.enabled).toBe(true);
+  });
+});
+
+// ---------- TeamLeadStallWatchdog — ADR-247 §D6 ----------
+
+describe("TeamLeadStallWatchdog schema (ADR-247 §D6)", () => {
+  test("empty block parses with all ADR-247 §D6 recommended defaults", () => {
+    const cfg = TeamLeadStallWatchdog.parse({});
+    expect(cfg.enabled).toBe(true);
+    expect(cfg.idleThresholdMin).toBe(5);
+    expect(cfg.rateLimitPerCageMin).toBe(5);
+    expect(cfg.escalationDelayMin).toBe(15);
+  });
+
+  test("accepts operator overrides within range", () => {
+    const cfg = TeamLeadStallWatchdog.parse({
+      enabled: false,
+      idleThresholdMin: 30,
+      rateLimitPerCageMin: 10,
+      escalationDelayMin: 60,
+    });
+    expect(cfg.enabled).toBe(false);
+    expect(cfg.idleThresholdMin).toBe(30);
+    expect(cfg.rateLimitPerCageMin).toBe(10);
+    expect(cfg.escalationDelayMin).toBe(60);
+  });
+
+  test("rejects idleThresholdMin below 1", () => {
+    expect(() => TeamLeadStallWatchdog.parse({ idleThresholdMin: 0 })).toThrow(ZodError);
+  });
+
+  test("rejects idleThresholdMin above 60", () => {
+    expect(() => TeamLeadStallWatchdog.parse({ idleThresholdMin: 61 })).toThrow(ZodError);
+  });
+
+  test("rejects rateLimitPerCageMin out of 1..60 range", () => {
+    expect(() => TeamLeadStallWatchdog.parse({ rateLimitPerCageMin: 0 })).toThrow(ZodError);
+    expect(() => TeamLeadStallWatchdog.parse({ rateLimitPerCageMin: 61 })).toThrow(ZodError);
+  });
+
+  test("rejects escalationDelayMin below 5 (ADR-247 §D6 floor)", () => {
+    expect(() => TeamLeadStallWatchdog.parse({ escalationDelayMin: 4 })).toThrow(ZodError);
+  });
+
+  test("rejects escalationDelayMin above 120", () => {
+    expect(() => TeamLeadStallWatchdog.parse({ escalationDelayMin: 121 })).toThrow(ZodError);
+  });
+
+  test("rejects a non-integer idleThresholdMin", () => {
+    expect(() => TeamLeadStallWatchdog.parse({ idleThresholdMin: 5.5 })).toThrow(ZodError);
+  });
+
+  test("strict — rejects an unknown key (drift detection per ADR-054 §D3)", () => {
+    expect(() =>
+      TeamLeadStallWatchdog.parse({ idleTresholdMin: 5 }),
+    ).toThrow(ZodError);
+  });
+
+  test("Team.parse threads leadStallWatchdog through + back-compat when absent", () => {
+    const withBlock = Team.parse({
+      name: "demo",
+      members: [],
+      leadStallWatchdog: { idleThresholdMin: 10 },
+    });
+    expect(withBlock.leadStallWatchdog?.idleThresholdMin).toBe(10);
+    // defaults fill the rest of the block
+    expect(withBlock.leadStallWatchdog?.enabled).toBe(true);
+    expect(withBlock.leadStallWatchdog?.rateLimitPerCageMin).toBe(5);
+
+    const withoutBlock = Team.parse({ name: "demo", members: [] });
+    expect(withoutBlock.leadStallWatchdog).toBeUndefined();
   });
 });

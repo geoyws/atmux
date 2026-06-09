@@ -1,6 +1,6 @@
 # ADR-247: Lead-stall watchdog — `story.ready` routable event + idle-lead wake substrate
 
-**Status**: Proposed (operator-fired 2026-05-28 12:18 MYT in driver session after mx-root cross-cage complaint surfaced the gap; complaint c-b2c8418e)
+**Status**: accepted (proposed 2026-05-28 after mx-root cross-cage complaint c-b2c8418e surfaced the gap; **accepted 2026-06-09** — George directed Phase-1 implementation as an [ADR-258](258-vendor-agnostic-orchestration-agentbackend.md) §D6b "5-min health nudge" quick win. Phase-1 scope + deferrals + a §D4 verb correction in §Amendment 2026-06-09 below.)
 **Date**: 2026-05-28
 **Driver-ref**: 2026-05-28 — mx-driver filed c-b2c8418e (also filed locally as c-cd993df8 in mx-root before ADR-150 routing impl): agile loop stalls at the lead after planner decomposition. Stories advance `planning → ready` but leads then sit idle 10+ minutes with empty composers; no stall-watchdog wakes them. Members ping the lead with "kanban dry: 0 stories, 0 tasks for epic <eid>" — the message arrives in the lead's composer but the lead never processes it. Only operator-manual nudge with concrete story-ids + dispatch targets resumes flow. Verified mx-root today across e-4 / e-5 / e-6.
 
@@ -139,3 +139,22 @@ Bundled with [ADR-246](246-per-cage-orchd-autostart.md) in EPIC `e-cage-agile-se
 
 - **c-b2c8418e** (atmux DB) — operator-filed 2026-05-28 12:13 MYT. This ADR closes it.
 - **c-cd993df8** (mx-root DB) — mx-driver-filed 2026-05-28 11:42 MYT; resolved 12:05 MYT pointing to this ADR (misrouted into mx-root DB due to ADR-150 routing gap).
+
+## Amendment 2026-06-09 — Phase-1 implementation (accepted)
+
+Implemented as a [ADR-258](258-vendor-agnostic-orchestration-agentbackend.md) §D6b quick win (George 2026-06-09). The watchdog is a deterministic, no-LLM orchd consumer — it reuses the existing kanban + emit substrate and the `decide*`-pure-function pattern (sibling: `src/core/lane-stall.ts`).
+
+**Landed (Phase-1 scope):**
+- **D1 topics** — `story.ready` + `story.unclaimed` added to `src/schema/events.ts` (the closed v1 topic set + the discriminated union, per ADR-203 §D2). `story.advanced` deferred (D1 itself flags it observational/low-priority).
+- **D1 planner emitter** — `src/core/story.ts::advanceStory` emits `story.ready` once on the `planning → ready` transition (best-effort, post-commit, mirroring the `epic.ready` precedent in `src/core/epic.ts`). Once-per-transition is structural (the `cur === resolved` no-op early-return + the `cur === "planning"` gate).
+- **D2 consumer** — `src/core/lead-stall-watchdog.ts` (pure `decideLeadStall` + ping format + rate-limit state), registered in `src/core/orchd-bootstrap.ts` on `story.ready`/`story.unclaimed`/`task.unclaimed`, gated on `team.leadStallWatchdog?.enabled !== false`; production wiring in `src/verbs/orchd.ts`.
+- **D3 wake conditions** — W1 (ready story, no owner, idle ≥ `idleThresholdMin`) + W2 (unclaimed/lane-tagged-todo task, no owner, idle ≥ threshold). **W3 deferred** (composer-idle introspection is racy and has no clean pane-state seam in a consumer — ADR-155 §pane-state deferred).
+- **D4 ping** — concrete dispatch list with real kanban-sourced ids + lanes + lowest-indexed roster target.
+- **D5 rate-limit** — ≤ 1 ping per `rateLimitPerCageMin` via `<atmuxDir>/state/lead-stall-watchdog.json` (`lastPingSec`, recorded BEFORE send → fail toward fewer pings); at-least-once re-delivery within the window sends no second ping.
+- **D6 config** — `team.json::leadStallWatchdog` (`enabled`/`idleThresholdMin`/`rateLimitPerCageMin`/`escalationDelayMin`) added to the Team Zod schema.
+
+**§D4 verb correction:** D4's illustrative dispatch verb `atmux dispatch s-<id> --to be-1` does **not exist** — `src/verbs/dispatch.ts` is member-first: `atmux dispatch <member> <task-id>`. The implementation renders the real form (rendering D4's would emit an un-runnable command). D4's example above is illustrative-only; the shipped ping uses `atmux dispatch <member> <id>`.
+
+**Deferred to a follow-up (with code comments citing the section):** W3 (above); **D5 no-ack escalation** (`tell-lead --escalate` to the parent driver-inbox depends on ADR-150 cross-cage routing, not landed — watchdog stays single-tier); **D7 doctor probe** (depends on the ADR-246 cockpit registry to enumerate active cages).
+
+Verification: tsc 0; touched-test sweep + full suite green; `decideLeadStall`/rate-limit/ping are real (tests prove below-threshold does not fire, at/above does, and a second delivery within the rate-limit window emits no second ping — not no-op stubs).

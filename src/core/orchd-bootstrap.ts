@@ -53,6 +53,11 @@ import {
   createRotationConsumerHandler,
 } from "./rotation-consumer.ts";
 import {
+  createLeadStallWatchdogHandler,
+  type LeadStallWatchdogDeps,
+  type LeadStallWatchdogEvent,
+} from "./lead-stall-watchdog.ts";
+import {
   createDissolveSoloWorkerHandler,
   type DissolveSoloWorkerHandlerDeps,
 } from "./orchd-dissolve-solo-worker.ts";
@@ -92,6 +97,19 @@ export const ORCHD_COMPLAINT_CONSUMER_ID = "atmux:complaint-consumer";
  *  / `cage.starving` as their observers ship) and routes structured
  *  decision-matrix to lead's tell-lead inbox. */
 export const ORCHD_ROTATION_CONSUMER_ID = "atmux:rotation-consumer";
+/** ADR-247 §D2 — lead-stall watchdog. Subscribes to THREE topics
+ *  (`story.ready` / `story.unclaimed` / `task.unclaimed`) with distinct
+ *  consumerIds so each topic's per-consumer offset stays independent
+ *  (ADR-202 §VIII). All three share the SAME handler closure (one
+ *  factory). The shared `task.unclaimed` topic is a parallel
+ *  subscription to lane-router's — distinct consumerId, different
+ *  handler, per ADR-247 §D2. Registered only when
+ *  `team.leadStallWatchdog.enabled !== false`. */
+export const ORCHD_LEAD_STALL_ON_STORY_READY_CONSUMER_ID = "atmux:lead-stall-watchdog:story-ready";
+export const ORCHD_LEAD_STALL_ON_STORY_UNCLAIMED_CONSUMER_ID =
+  "atmux:lead-stall-watchdog:story-unclaimed";
+export const ORCHD_LEAD_STALL_ON_TASK_UNCLAIMED_CONSUMER_ID =
+  "atmux:lead-stall-watchdog:task-unclaimed";
 
 /** Topics — exported for the same reason. Mirrors each handler module's
  *  documented trigger:
@@ -112,6 +130,10 @@ export const ORCHD_COMPLAINT_TOPIC = "complaint.filed";
 /** ADR-212 / e-cc3728bf — rotation observer signal (v1: context-high
  *  only; future topics layer in additively). */
 export const ORCHD_ROTATION_TOPIC = "member.context-high";
+/** ADR-247 §D2 — lead-stall watchdog topics. */
+export const ORCHD_LEAD_STALL_ON_STORY_READY_TOPIC = "story.ready";
+export const ORCHD_LEAD_STALL_ON_STORY_UNCLAIMED_TOPIC = "story.unclaimed";
+export const ORCHD_LEAD_STALL_ON_TASK_UNCLAIMED_TOPIC = "task.unclaimed";
 
 /**
  * Per-handler dep overrides — partial of the underlying
@@ -154,6 +176,17 @@ export interface BootstrapOrchdDeps {
   /** ADR-212 / e-cc3728bf: optional overrides for the rotation
    *  consumer. Absent → real `atmux tell-lead` spawn. */
   rotationDeps?: RotationConsumerDeps;
+  /** ADR-247 §D2: deps for the lead-stall watchdog. REQUIRED for the
+   *  watchdog subscriptions to register — the factory needs `atmuxDir`
+   *  (rate-limit state + kanban read), `team` (roster + tell-lead
+   *  routing + the `leadStallWatchdog` config), and `loadSnapshot` (the
+   *  ping-time kanban read per ADR-247 §OQ3). When ABSENT, the three
+   *  watchdog subscriptions are NOT registered (no host wired) — safe
+   *  no-op. When PRESENT but `team.leadStallWatchdog.enabled === false`,
+   *  they are also skipped (operator off-switch per ADR-247 §D6).
+   *  Production wire-up (`verbs/orchd.ts`) passes the running cage's
+   *  atmuxDir + team + a `loadKanban`-backed snapshot reader. */
+  leadStallDeps?: LeadStallWatchdogDeps;
 }
 
 /** Per-subscription registration result for caller observability. */
@@ -285,6 +318,50 @@ export function bootstrapOrchd(deps: BootstrapOrchdDeps): BootstrapOrchdResult {
     },
   });
 
+  // ADR-247 §D2 — lead-stall watchdog. Registers THREE subscriptions
+  // (story.ready / story.unclaimed / task.unclaimed) sharing one handler
+  // closure, ONLY when deps are wired AND the operator hasn't disabled
+  // it (`team.leadStallWatchdog.enabled !== false` per ADR-247 §D6).
+  // Absent deps → no host → skip (the watchdog needs atmuxDir + team +
+  // a kanban-snapshot reader the bare bootstrap can't synthesize). The
+  // `task.unclaimed` topic is shared with lane-router; the distinct
+  // consumerId isolates the per-consumer offset (ADR-202 §VIII).
+  const leadStallEntries: OrchdRegistrationEntry[] = [];
+  if (
+    deps.leadStallDeps !== undefined &&
+    deps.leadStallDeps.team.leadStallWatchdog?.enabled !== false
+  ) {
+    const leadStallHandlerFn = createLeadStallWatchdogHandler(deps.leadStallDeps);
+    const watchdogSubs: ReadonlyArray<{ topic: string; consumerId: string }> = [
+      {
+        topic: ORCHD_LEAD_STALL_ON_STORY_READY_TOPIC,
+        consumerId: ORCHD_LEAD_STALL_ON_STORY_READY_CONSUMER_ID,
+      },
+      {
+        topic: ORCHD_LEAD_STALL_ON_STORY_UNCLAIMED_TOPIC,
+        consumerId: ORCHD_LEAD_STALL_ON_STORY_UNCLAIMED_CONSUMER_ID,
+      },
+      {
+        topic: ORCHD_LEAD_STALL_ON_TASK_UNCLAIMED_TOPIC,
+        consumerId: ORCHD_LEAD_STALL_ON_TASK_UNCLAIMED_CONSUMER_ID,
+      },
+    ];
+    for (const { topic, consumerId } of watchdogSubs) {
+      const isNew = registerOrchdSubscription({
+        topic,
+        consumerId,
+        handler: async (event: EventPayload) => {
+          // The watchdog re-reads the kanban at handle-time (ADR-247
+          // §OQ3); the event itself is just a wake nudge. Narrow to the
+          // slim {topic, team} the handler needs — all three subscribed
+          // topics carry `team`.
+          await leadStallHandlerFn(event as unknown as LeadStallWatchdogEvent);
+        },
+      });
+      leadStallEntries.push({ consumerId, topic, isNew });
+    }
+  }
+
   return {
     registered: [
       { consumerId: ORCHD_MERGE_CONSUMER_ID, topic: ORCHD_MERGE_TOPIC, isNew: mergeIsNew },
@@ -319,6 +396,9 @@ export function bootstrapOrchd(deps: BootstrapOrchdDeps): BootstrapOrchdResult {
         topic: ORCHD_ROTATION_TOPIC,
         isNew: rotationIsNew,
       },
+      // ADR-247 §D2 — zero entries when the watchdog deps are absent or
+      // the operator disabled it; three entries (one per topic) otherwise.
+      ...leadStallEntries,
     ],
   };
 }

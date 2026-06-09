@@ -31,6 +31,7 @@ import { getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts
 import { probeHostPressure } from "../core/host-pressure.ts";
 import { invokeAutoMergeInCage } from "../core/auto-merge-invoke.ts";
 import { bootstrapOrchd } from "../core/orchd-bootstrap.ts";
+import { loadKanban } from "../core/kanban.ts";
 import { dispatchDissolveEpic as dispatchDissolveEpicImport } from "../core/orchd-dispatch/dissolve-epic.ts";
 import { dispatchEpicMerge as dispatchEpicMergeImport } from "../core/orchd-dispatch/epic-merge.ts";
 import { dispatchGitPush as dispatchGitPushImport } from "../core/orchd-dispatch/git-push.ts";
@@ -688,6 +689,24 @@ async function orchdHandleOneByConsumerId(
       spawnDeps: {
         atmuxDir,
         team,
+      },
+      // ADR-247 §D2 — lead-stall watchdog. Reads the CURRENT kanban at
+      // ping-time (§OQ3) and rate-limits via the cage's state file.
+      // bootstrapOrchd skips registration when
+      // `team.leadStallWatchdog.enabled === false` (§D6 off-switch).
+      leadStallDeps: {
+        atmuxDir,
+        team: {
+          name: team.name,
+          members: team.members,
+          ...(team.leadStallWatchdog !== undefined
+            ? { leadStallWatchdog: team.leadStallWatchdog }
+            : {}),
+        },
+        loadSnapshot: async () => {
+          const kanban = await loadKanban(atmuxDir);
+          return { stories: kanban.stories ?? [], tasks: kanban.tasks };
+        },
       },
     });
     const subs = findOrchdSubscriptionsByTopic(topic).filter((s) => s.consumerId === consumerId);

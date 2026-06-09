@@ -21,6 +21,8 @@ import {
   MemberOverloadedPayload,
   MemberRateLimitedPayload,
   MemberUsageSnapshotPayload,
+  StoryReadyPayload,
+  StoryUnclaimedPayload,
   TaskClaimedPayload,
   TOPICS,
 } from "../../../src/schema/events.ts";
@@ -457,6 +459,172 @@ describe("member-health telemetry (ADR-258 §D6b — emit-only, no Phase 1 consu
   });
 });
 
+// ---------- ADR-247 §D1 story.ready / story.unclaimed ----------
+
+describe("story.ready / story.unclaimed payloads (ADR-247 §D1)", () => {
+  test("both new topics are in TOPICS + isKnownTopic returns true", () => {
+    const set = new Set<string>(TOPICS);
+    for (const t of ["story.ready", "story.unclaimed"] as const) {
+      expect(set.has(t)).toBe(true);
+      expect(isKnownTopic(t)).toBe(true);
+    }
+  });
+
+  test("story.ready parses a valid payload via the union", () => {
+    const parsed = EventPayload.parse({
+      topic: "story.ready",
+      eventId: SAMPLE_UUID7,
+      emittedAtSec: 1_700_000_000,
+      team: "atmux",
+      epicId: "e-1-abcd1234",
+      storyId: "s-abcd1234",
+      lane: "be",
+      assigneeHint: "be-1",
+      body: "Wire the dispatch ping",
+    });
+    expect(parsed.topic).toBe("story.ready");
+    if (parsed.topic === "story.ready") {
+      expect(parsed.storyId).toBe("s-abcd1234");
+      expect(parsed.epicId).toBe("e-1-abcd1234");
+      expect(parsed.lane).toBe("be");
+      expect(parsed.assigneeHint).toBe("be-1");
+      expect(parsed.body).toBe("Wire the dispatch ping");
+    }
+  });
+
+  test("story.ready parses with assigneeHint omitted (the common planner path)", () => {
+    const parsed = StoryReadyPayload.parse({
+      topic: "story.ready",
+      eventId: SAMPLE_UUID7,
+      emittedAtSec: 1_700_000_000,
+      team: "atmux",
+      epicId: "e-1-abcd1234",
+      storyId: "s-abcd1234",
+      lane: "misc",
+      body: "",
+      // assigneeHint omitted
+    });
+    expect(parsed.assigneeHint).toBeUndefined();
+  });
+
+  test("story.ready rejects a malformed payload (missing storyId)", () => {
+    expect(() =>
+      StoryReadyPayload.parse({
+        topic: "story.ready",
+        eventId: SAMPLE_UUID7,
+        emittedAtSec: 1_700_000_000,
+        team: "atmux",
+        epicId: "e-1-abcd1234",
+        // storyId missing
+        lane: "be",
+        body: "x",
+      }),
+    ).toThrow();
+  });
+
+  test("story.ready rejects a malformed payload (missing body)", () => {
+    expect(() =>
+      StoryReadyPayload.parse({
+        topic: "story.ready",
+        eventId: SAMPLE_UUID7,
+        emittedAtSec: 1_700_000_000,
+        team: "atmux",
+        epicId: "e-1-abcd1234",
+        storyId: "s-abcd1234",
+        lane: "be",
+        // body missing
+      }),
+    ).toThrow();
+  });
+
+  test("story.unclaimed parses a valid payload via the union", () => {
+    const parsed = EventPayload.parse({
+      topic: "story.unclaimed",
+      eventId: SAMPLE_UUID7,
+      emittedAtSec: 1_700_000_000,
+      team: "atmux",
+      epicId: "e-1-abcd1234",
+      storyId: "s-abcd1234",
+      lane: "fe",
+      readyForSec: 420,
+      capturedAtSec: 1_700_000_420,
+    });
+    expect(parsed.topic).toBe("story.unclaimed");
+    if (parsed.topic === "story.unclaimed") {
+      expect(parsed.readyForSec).toBe(420);
+      expect(parsed.capturedAtSec).toBe(1_700_000_420);
+      expect(parsed.lane).toBe("fe");
+    }
+  });
+
+  test("story.unclaimed rejects a malformed payload (missing readyForSec)", () => {
+    expect(() =>
+      StoryUnclaimedPayload.parse({
+        topic: "story.unclaimed",
+        eventId: SAMPLE_UUID7,
+        emittedAtSec: 1_700_000_000,
+        team: "atmux",
+        epicId: "e-1-abcd1234",
+        storyId: "s-abcd1234",
+        lane: "fe",
+        // readyForSec missing
+        capturedAtSec: 1_700_000_420,
+      }),
+    ).toThrow();
+  });
+
+  test("story.unclaimed rejects a non-numeric readyForSec", () => {
+    expect(() =>
+      StoryUnclaimedPayload.parse({
+        topic: "story.unclaimed",
+        eventId: SAMPLE_UUID7,
+        emittedAtSec: 1_700_000_000,
+        team: "atmux",
+        epicId: "e-1-abcd1234",
+        storyId: "s-abcd1234",
+        lane: "fe",
+        readyForSec: "soon", // wrong type
+        capturedAtSec: 1_700_000_420,
+      }),
+    ).toThrow();
+  });
+
+  test("union rejects story.ready fields under the wrong discriminator", () => {
+    // story.unclaimed-shaped fields under topic 'story.ready' must fail —
+    // the discriminated union pins each topic to its own payload (the
+    // load-bearing exhaustiveness property per ADR-203 §D1).
+    expect(() =>
+      EventPayload.parse({
+        topic: "story.ready",
+        eventId: SAMPLE_UUID7,
+        emittedAtSec: 1_700_000_000,
+        team: "atmux",
+        epicId: "e-1-abcd1234",
+        storyId: "s-abcd1234",
+        lane: "be",
+        readyForSec: 10, // story.unclaimed field, not story.ready
+        capturedAtSec: 1_700_000_010,
+        // body missing — story.ready requires it
+      }),
+    ).toThrow();
+  });
+
+  test("story.ready round-trips unknown fields (passthrough forward-compat)", () => {
+    const parsed = StoryReadyPayload.parse({
+      topic: "story.ready",
+      eventId: SAMPLE_UUID7,
+      emittedAtSec: 1_700_000_000,
+      team: "atmux",
+      epicId: "e-1-abcd1234",
+      storyId: "s-abcd1234",
+      lane: "be",
+      body: "x",
+      futureField: "anything goes",
+    });
+    expect((parsed as Record<string, unknown>).futureField).toBe("anything goes");
+  });
+});
+
 describe("passthrough for forward-compat", () => {
   test("unknown fields round-trip through parse (kanban precedent)", () => {
     const parsed = TaskClaimedPayload.parse({
@@ -475,8 +643,9 @@ describe("passthrough for forward-compat", () => {
 
 describe("TOPICS registry + isKnownTopic", () => {
   test("v1 closed topic set has the expected size (ADR-203 §D2 enumeration)", () => {
-    // is the reminder. Current closed set: 5 task + 8 story + 15 epic
-    // (4 base + 2 ADR-225 amendment: epic.unblocked/epic.ready;
+    // is the reminder. Current closed set: 5 task + 10 story + 15 epic
+    // (story: 8 base + 2 ADR-247 §D1: story.ready/story.unclaimed)
+    // (epic: 4 base + 2 ADR-225 amendment: epic.unblocked/epic.ready;
     //  +2 ADR-226 §D2: epic.merged/epic.merge-blocked;
     //  +1 ADR-227 §D2: epic.dissolve-blocked;
     //  +3 ADR-229 §D3: epic.pushed/epic.push-blocked/epic.push-conflict;
@@ -488,8 +657,8 @@ describe("TOPICS registry + isKnownTopic", () => {
     //   member.rate-limited / member.overloaded / member.usage-snapshot —
     //   emit-only telemetry from the future claude-agent-sdk backend)
     // + 7 cockpit
-    // (sentinel.escalated removed per EPIC e-be01fc89) + 4 internal = 54.
-    expect(TOPICS.length).toBe(54);
+    // (sentinel.escalated removed per EPIC e-be01fc89) + 4 internal = 56.
+    expect(TOPICS.length).toBe(56);
   });
 
   test("known topics across each domain are present", () => {

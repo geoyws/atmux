@@ -487,6 +487,62 @@ export const MemberUsageSnapshotPayload = z
   })
   .passthrough();
 
+/**
+ * `story.ready` — the planner advanced a story `planning → ready`.
+ * ADR-247 §D1. Fired ONCE per story-ready transition (the
+ * `planning → ready` edge only) — not re-fired on subsequent reads of
+ * the same row; idempotency invariant per ADR-202 §IX-A. The
+ * lead-stall watchdog (ADR-247 §D2, lands in Phase-1 task 2) consumes
+ * this to convert a ready-but-undispatched story into a concrete lead
+ * dispatch ping (§D3 W1 / §D4).
+ *
+ * `lane` is the story's lane hint at emit-time; per ADR-247 §OQ3 the
+ * watchdog does a ping-time kanban lookup for the authoritative lane,
+ * so this is advisory. `assigneeHint` is an optional pre-suggested
+ * member (rarely set by the planner; absent on the common path).
+ * `body` carries the story title/prose so the consumer can render a
+ * concrete dispatch line without a second DB read.
+ */
+export const StoryReadyPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("story.ready"),
+    team: z.string(),
+    epicId: z.string(),
+    storyId: z.string(),
+    lane: z.string(),
+    assigneeHint: z.string().optional(),
+    body: z.string(),
+    emittedAtSec: z.number(),
+  })
+  .passthrough();
+
+/**
+ * `story.unclaimed` — companion to {@link StoryReadyPayload} per
+ * ADR-247 §D1. Fired when a story has been `status = ready` with no
+ * claimant for ≥ N minutes (default N=5 per ADR-247 §D3 W1). The
+ * lead-stall watchdog (ADR-247 §D2) emits / consumes this as the
+ * aged-ready signal — distinct from `story.ready` (the fresh
+ * transition) so the consumer can rate-limit / escalate the
+ * still-unclaimed case differently per ADR-247 §D5.
+ *
+ * `readyForSec` is the elapsed time (seconds) the story has sat ready
+ * with no claimant; `capturedAtSec` is when the watchdog observed the
+ * condition.
+ */
+export const StoryUnclaimedPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("story.unclaimed"),
+    team: z.string(),
+    epicId: z.string(),
+    storyId: z.string(),
+    lane: z.string(),
+    readyForSec: z.number(),
+    capturedAtSec: z.number(),
+  })
+  .passthrough();
+
 // ---------- Discriminated union ----------
 
 /**
@@ -520,6 +576,8 @@ export const EventPayload = z.discriminatedUnion("topic", [
   MemberRateLimitedPayload,
   MemberOverloadedPayload,
   MemberUsageSnapshotPayload,
+  StoryReadyPayload,
+  StoryUnclaimedPayload,
   InternalHonkerLoadedPayload,
   InternalHonkerFallbackPayload,
 ]);
@@ -547,6 +605,8 @@ export type MemberContextHighPayload = z.infer<typeof MemberContextHighPayload>;
 export type MemberRateLimitedPayload = z.infer<typeof MemberRateLimitedPayload>;
 export type MemberOverloadedPayload = z.infer<typeof MemberOverloadedPayload>;
 export type MemberUsageSnapshotPayload = z.infer<typeof MemberUsageSnapshotPayload>;
+export type StoryReadyPayload = z.infer<typeof StoryReadyPayload>;
+export type StoryUnclaimedPayload = z.infer<typeof StoryUnclaimedPayload>;
 export type InternalHonkerLoadedPayload = z.infer<typeof InternalHonkerLoadedPayload>;
 export type InternalHonkerFallbackPayload = z.infer<typeof InternalHonkerFallbackPayload>;
 
@@ -578,6 +638,13 @@ export const TOPICS = [
   "story.jury.verdict",
   "story.jury.escalated",
   "story.merge-ready",
+  // ADR-247 §D1 (lead-stall watchdog): `story.ready` fires ONCE on the
+  // planner's `planning → ready` transition; `story.unclaimed` is its
+  // aged-no-claimant companion. Both feed the lead-stall watchdog
+  // consumer (ADR-247 §D2) which converts a ready-but-undispatched
+  // story into a concrete lead dispatch ping (§D3 / §D4).
+  "story.ready",
+  "story.unclaimed",
   // Epic lifecycle (team-scope + cockpit-mirror)
   "epic.created",
   "epic.dissolved",
