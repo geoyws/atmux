@@ -26,6 +26,16 @@
 > running as the safety net until the cleanup-EPIC cutover ≥30 days after
 > e-honker-observation-watchdogs ships stable).
 
+> **2026-06-12 — manual orchestration is the default** ([ADR-260](adr/260-manual-orchestration-mode-default.md)):
+> the orchd daemon described above spawns ONLY when `team.json::orchestration.mode`
+> is explicitly `"orchd"`. The default (absent block) is `"manual"` — no daemon, no
+> auto-merge/auto-spawn/watchdog; the member/lead LLMs manage the fleet themselves
+> (self-reported status via `atmux member status` → `<atmuxDir>/state/member-status/`,
+> manual kanban via `claim`/`done`/`task move`, manual fan-in + spawns). Rationale:
+> LLMs can manage their own fleet better than atmux's deterministic automation can
+> at the moment. Honker events are still emitted (audit trail + clean re-opt-in);
+> nothing consumes them in manual mode.
+
 ## Principles
 
 1. **tmux is the IPC.** atmux doesn't speak any AI provider API. It writes shell commands into tmux panes via `tmux send-keys` and reads responses by capturing pane output. That means it works with *any* interactive coding-agent TUI — Claude Code, Cursor, OpenCode, Kimi, or any future one.

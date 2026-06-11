@@ -224,6 +224,10 @@
 | 254 | Coverage gate must diff the tracked-source universe, not iterate the lcov | 2026-06-05 | accepted |
 | 255 | auto-merge tick-result output contract + bounded subprocess wait | 2026-06-05 | accepted |
 | 256 | orchd Rust supervisor hardening — bounded subprocess waits, poison-event tripwire, test backfill | 2026-06-05 | accepted |
+| 257 | Eternal-improvement = backlog-burndown-first + worktree-isolated, deferred verified merge | 2026-06-08 | accepted |
+| 258 | Vendor-agnostic orchestration — `AgentBackend` adapter, tmux demoted to an attach view | 2026-06-09 | accepted |
+| 259 | Committer member optional — orchd spawn gates on `autoMerge.enabled`, not committer-presence | 2026-06-09 | accepted |
+| 260 | Manual orchestration mode is the default — LLMs self-report status + drive the kanban; orchd opt-in | 2026-06-12 | accepted |
 
 ## Superseded (skip)
 

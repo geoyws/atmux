@@ -767,6 +767,47 @@ export const TeamLeadStallWatchdog = z
   .strict();
 export type TeamLeadStallWatchdog = z.infer<typeof TeamLeadStallWatchdog>;
 
+/**
+ * `team.json::orchestration` sub-config — ADR-260 §D1. Selects who
+ * orchestrates the team:
+ *
+ *  - `"manual"` (the default, including when the block is absent) —
+ *    NO orchd daemon window; the member/lead LLMs manage the fleet
+ *    themselves: self-report status via `atmux member status`, drive
+ *    the kanban via `claim`/`done`/`task move`, fan in + spawn by
+ *    hand. Rationale per ADR-260: LLMs can manage their own fleet
+ *    better than atmux's deterministic automation can at the moment.
+ *  - `"orchd"` — pre-ADR-260 behavior: `maybeSpawnOrchdWindow` runs
+ *    subject to the ADR-259 gates (autoMerge.enabled, ATMUX_HONKER).
+ *
+ * `.strict()` per the sibling-block precedent (whip / autoMerge /
+ * leadStallWatchdog) — a typo'd key surfaces as a refusal, not a
+ * silent default (ADR-054 §D3).
+ */
+export const TeamOrchestration = z
+  .object({
+    /** ADR-260 §D1 mode switch. Default `"manual"` — orchd and every
+     *  consumer it hosts (auto-merge / auto-push / auto-spawn /
+     *  lead-stall watchdog / scanners) are opt-in via `"orchd"`. */
+    mode: z.enum(["manual", "orchd"]).default("manual"),
+  })
+  .strict();
+export type TeamOrchestration = z.infer<typeof TeamOrchestration>;
+
+/** ADR-260 §D1 default — applied when the `orchestration` block (or its
+ *  `mode` field) is absent from team.json. */
+export const DEFAULT_ORCHESTRATION_MODE = "manual" as const;
+
+/** ADR-260 §D1 read-time resolver — the single place "absent block ⇒
+ *  manual" is encoded. Callers (orchd spawn gate, status renderer,
+ *  briefs tooling) MUST go through this instead of reading
+ *  `team.orchestration?.mode` directly so the default lives once. */
+export function resolveOrchestrationMode(
+  team: Pick<Team, "orchestration">,
+): "manual" | "orchd" {
+  return team.orchestration?.mode ?? DEFAULT_ORCHESTRATION_MODE;
+}
+
 export const TeamObservability = z
   .object({
     /** t-e89c03f7: when true, every UNKNOWN classification from
@@ -1551,6 +1592,10 @@ export const Team = z
      *  (`enabled: true`, 5/5/15-minute thresholds). See
      *  {@link TeamLeadStallWatchdog}. */
     leadStallWatchdog: TeamLeadStallWatchdog.optional(),
+    /** ADR-260 §D1: orchestration mode switch. Absent block ⇒
+     *  `"manual"` (no orchd; LLMs self-manage the fleet). See
+     *  {@link TeamOrchestration} + {@link resolveOrchestrationMode}. */
+    orchestration: TeamOrchestration.optional(),
     /** Phase 2 sub-shapes — typed once verb porters land. */
     discord: z.unknown().optional(),
     tuiCommands: z.unknown().optional(),

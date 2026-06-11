@@ -18,8 +18,10 @@ import {
   DEFAULT_CADENCE_THRESHOLDS,
   DEFAULT_LANE_TICK_CRON_MINS,
   DEFAULT_OMBUDSMAN_TICK_INTERVAL_MINS,
+  DEFAULT_ORCHESTRATION_MODE,
   DEFAULT_REFUSAL_DETECTION_CONFIG,
   DEFAULT_WORKTREE_ROOT,
+  resolveOrchestrationMode,
   resolveRefusalConfig,
   Team,
   TeamAutoEmitTrunkMerge,
@@ -33,6 +35,7 @@ import {
   TeamLeadStallWatchdog,
   TeamMember,
   TeamOmbudsman,
+  TeamOrchestration,
   TeamRefusalDetection,
   TeamWhip,
 } from "../../../src/schema/team.ts";
@@ -1774,5 +1777,55 @@ describe("TeamLeadStallWatchdog schema (ADR-247 §D6)", () => {
 
     const withoutBlock = Team.parse({ name: "demo", members: [] });
     expect(withoutBlock.leadStallWatchdog).toBeUndefined();
+  });
+});
+
+// ---------- TeamOrchestration (ADR-260 §D1) ----------
+
+describe("TeamOrchestration schema (ADR-260 §D1)", () => {
+  test("empty block parses with mode='manual' (the ADR-260 default)", () => {
+    const cfg = TeamOrchestration.parse({});
+    expect(cfg.mode).toBe("manual");
+  });
+
+  test("accepts both legal modes", () => {
+    expect(TeamOrchestration.parse({ mode: "manual" }).mode).toBe("manual");
+    expect(TeamOrchestration.parse({ mode: "orchd" }).mode).toBe("orchd");
+  });
+
+  test("rejects an unknown mode value", () => {
+    expect(() => TeamOrchestration.parse({ mode: "auto" })).toThrow(ZodError);
+  });
+
+  test("strict — rejects an unknown key (drift detection per ADR-054 §D3)", () => {
+    expect(() => TeamOrchestration.parse({ mod: "manual" })).toThrow(ZodError);
+  });
+
+  test("Team.parse threads orchestration through + back-compat when absent", () => {
+    const withBlock = Team.parse({
+      name: "demo",
+      members: [],
+      orchestration: { mode: "orchd" },
+    });
+    expect(withBlock.orchestration?.mode).toBe("orchd");
+
+    const withoutBlock = Team.parse({ name: "demo", members: [] });
+    expect(withoutBlock.orchestration).toBeUndefined();
+  });
+
+  test("DEFAULT_ORCHESTRATION_MODE is 'manual'", () => {
+    expect(DEFAULT_ORCHESTRATION_MODE).toBe("manual");
+  });
+
+  test("resolveOrchestrationMode — absent block ⇒ manual; explicit modes pass through", () => {
+    expect(resolveOrchestrationMode({ orchestration: undefined })).toBe("manual");
+    expect(resolveOrchestrationMode({ orchestration: { mode: "manual" } })).toBe("manual");
+    expect(resolveOrchestrationMode({ orchestration: { mode: "orchd" } })).toBe("orchd");
+  });
+
+  test("resolveOrchestrationMode on a parsed Team without the block ⇒ manual", () => {
+    const team = Team.parse({ name: "demo", members: [], autoMerge: { enabled: true } });
+    // autoMerge alone does NOT opt a team into orchd post-ADR-260.
+    expect(resolveOrchestrationMode(team)).toBe("manual");
   });
 });

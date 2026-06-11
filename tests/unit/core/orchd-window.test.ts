@@ -35,6 +35,10 @@ function team(overrides: Partial<Team> = {}): Team {
       { name: "committer", role: "committer", lane: "misc" },
     ],
     autoMerge: { enabled: true },
+    // ADR-260: fixture opts into orchd mode so the downstream gates
+    // (autoMerge / HONKER / idempotence / spawn) stay exercisable —
+    // the manual-mode default short-circuits before all of them.
+    orchestration: { mode: "orchd" },
     ...overrides,
   } as Team;
 }
@@ -124,6 +128,57 @@ function makeLogger(): { logger: { log: (s: string) => void; ok: (s: string) => 
 }
 
 describe("maybeSpawnOrchdWindow — gating", () => {
+  test("orchestration block absent (ADR-260 default=manual) → returns false, logs reason, no spawn", async () => {
+    // The manual-mode gate fires FIRST — before autoMerge / HONKER /
+    // the rename-probe listWindows call. listWindowsThrows proves the
+    // short-circuit: were the probe reached, the impl would warn +
+    // fall through to a spawn attempt.
+    const { tmux, newWindowCalls } = mockTmux({ listWindowsThrows: true });
+    const { logger, logs } = makeLogger();
+    const result = await maybeSpawnOrchdWindow({
+      team: team({ orchestration: undefined }),
+      session: "atmux::demo",
+      teamRoot: "/srv/demo",
+      tmux,
+      logger,
+      env: {},
+    });
+    expect(result).toBe(false);
+    expect(newWindowCalls).toHaveLength(0);
+    expect(logs.some((l) => l.includes("orchestration.mode=manual"))).toBe(true);
+    expect(logs.some((l) => l.includes("ADR-260"))).toBe(true);
+  });
+
+  test("orchestration.mode='manual' explicit → returns false even with autoMerge.enabled", async () => {
+    const { tmux, newWindowCalls } = mockTmux({});
+    const { logger } = makeLogger();
+    const result = await maybeSpawnOrchdWindow({
+      team: team({ orchestration: { mode: "manual" } }),
+      session: "atmux::demo",
+      teamRoot: "/srv/demo",
+      tmux,
+      logger,
+      env: {},
+    });
+    expect(result).toBe(false);
+    expect(newWindowCalls).toHaveLength(0);
+  });
+
+  test("orchestration.mode='orchd' → proceeds through remaining gates and spawns", async () => {
+    const { tmux, newWindowCalls } = mockTmux({});
+    const { logger } = makeLogger();
+    const result = await maybeSpawnOrchdWindow({
+      team: team({ orchestration: { mode: "orchd" } }),
+      session: "atmux::demo",
+      teamRoot: "/srv/demo",
+      tmux,
+      logger,
+      env: {},
+    });
+    expect(result).toBe(true);
+    expect(newWindowCalls).toHaveLength(1);
+  });
+
   test("autoMerge.enabled !== true → returns false, no spawn", async () => {
     const { tmux, newWindowCalls } = mockTmux({});
     const { logger } = makeLogger();

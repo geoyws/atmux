@@ -92,6 +92,9 @@ Dispatch + work:
   inbox <member>              Show member's inbox
   claim <task-id>             Claim a task from kanban (as a member)
   done <task-id>              Mark claimed task complete
+  member status <idle|working|blocked|rate-limited> [--as <m>] [--note <t>] [--task <id>]
+                              Self-report status (ADR-260 manual mode); working
+                              --task claims it, blocked --task blocks it
 
 Automation:
   report                      Post 30-min progress digest to Discord
