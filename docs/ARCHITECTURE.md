@@ -254,6 +254,7 @@ The sentinel + cron pair is chosen over pure socket-pubsub (ADR-032) because med
 | `src/core/lead-marker.ts` | I-1 (`lead-session-start.txt`) + I-2 (`lead-window-name.txt`) marker R/W. The rotation-gate canonical source per ADR-077 §lead-uptime-measurement — NEVER read `ps -o etime` for rotation decisions. | [ADR-077](adr/077-superdoctor-cockpit-role.md) §lead-uptime-measurement |
 | `src/core/branch-merge-state.ts` | Pure state machine for ADR-091 (epic-team) + ADR-134 (intra-team) auto-merger. 10-state lifecycle + pure transition function. | [ADR-091](adr/091-kanban-driven-auto-merge.md), [ADR-134](adr/134-in-team-auto-merger.md) |
 | `src/core/repositories/merger-state-repo.ts` | Typed CRUD over `merger_state` table; transactions wrap `BEGIN IMMEDIATE` to serialize concurrent ticks. | [ADR-134](adr/134-in-team-auto-merger.md) §state-machine |
+| `src/abstractions/issue-tracker.ts` | Types-only vendor-agnostic `IssueTracker` seam (`NormalizedIssue` / `IssueTrackerPage`) for **issue-sync** — external issue-tracker ingestion (GitHub / Azure DevOps) polled into the complaints substrate; config at `team.json::issueSync`. Phase 0: types + schema + [RUNBOOK-issue-sync](RUNBOOK-issue-sync.md) only; adapters + `atmux issues sync` land Phase 1. | [ADR-261](adr/261-issue-sync-external-tracker-ingestion.md) |
 
 ## Why `tmux send-keys` and not SDK API calls?
 

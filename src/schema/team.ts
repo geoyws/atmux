@@ -808,6 +808,87 @@ export function resolveOrchestrationMode(
   return team.orchestration?.mode ?? DEFAULT_ORCHESTRATION_MODE;
 }
 
+/**
+ * One polled tracker in `team.json::issueSync.trackers[]` — ADR-261
+ * §D2 (adapter ids) + §D7.2 (per-repo/per-project allowlist; there is
+ * no "discover everything the token can see" mode) + §D9 (targetTeam
+ * routing). Discriminated on the adapter `id` so each vendor carries
+ * exactly its own coordinates — a `github` entry with ADO fields (or
+ * vice versa) is refused, not silently ignored. Both arms `.strict()`
+ * per the sibling-block precedent (ADR-054 §D3).
+ */
+export const TeamIssueSyncTracker = z.discriminatedUnion("id", [
+  z
+    .object({
+      /** ADR-261 §D2 adapter id — GitHub adapter (Phase 1). */
+      id: z.literal("github"),
+      /** Repo allowlist, `owner/repo` entries (ADR-261 §D7.2). Required
+       *  and non-empty — a github tracker with nothing to poll is a
+       *  config mistake, not a no-op. */
+      repos: z.array(z.string().min(1)).min(1),
+      /** ADR-261 §D9 routing — the team whose lead adjudicates the
+       *  ingested issues. Absent ⇒ the polling team itself. Must
+       *  resolve to exactly ONE cockpit team — ambiguity is a refusal,
+       *  never a silent first-pick (ADR-150 §D5 semantics). */
+      targetTeam: z.string().min(1).optional(),
+      /** ADR-261 §D10 label→severity map (→ `extra.severity`, §D3).
+       *  Values are the binding `extractSeverity` vocabulary
+       *  (`src/core/complaints.ts`) — the one the complaint consumer
+       *  actually reads. */
+      labelSeverityMap: z
+        .record(z.string(), z.enum(["info", "warn", "urgent", "critical"]))
+        .optional(),
+      /** ADR-261 §D5b orchd ticker cadence (seconds). Used only on
+       *  `orchestration.mode: "orchd"` teams once the Phase 2 ticker
+       *  lands; the manual verb is on-demand and ignores it. */
+      pollIntervalSec: z.number().int().positive().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      /** ADR-261 §D2 adapter id — Azure DevOps adapter (Phase 2). */
+      id: z.literal("azure-devops"),
+      /** ADO organization name (first segment of the §D7.2 allowlist
+       *  coordinate `org/project`). */
+      org: z.string().min(1),
+      /** ADO project name (second segment of `org/project`). */
+      project: z.string().min(1),
+      /** ADR-261 §D9 routing — see the github arm. */
+      targetTeam: z.string().min(1).optional(),
+      /** ADR-261 §D10 label→severity map — see the github arm. */
+      labelSeverityMap: z
+        .record(z.string(), z.enum(["info", "warn", "urgent", "critical"]))
+        .optional(),
+      /** ADR-261 §D5b orchd ticker cadence (seconds) — see the github arm. */
+      pollIntervalSec: z.number().int().positive().optional(),
+    })
+    .strict(),
+]);
+export type TeamIssueSyncTracker = z.infer<typeof TeamIssueSyncTracker>;
+
+/**
+ * `team.json::issueSync` sub-config — ADR-261 §D10. issue-sync:
+ * external issue-tracker ingestion (GitHub / Azure DevOps) polled into
+ * the complaints substrate; the target team's lead adjudicates per
+ * ADR-214. **Optional** — absent block ⇒ issue-sync disabled; every
+ * pre-ADR-261 `team.json` parses unchanged.
+ *
+ * `.strict()` per the sibling-block precedent (orchestration / whip /
+ * autoMerge / leadStallWatchdog) — a typo'd key surfaces as a refusal,
+ * not a silent default (ADR-054 §D3).
+ */
+export const TeamIssueSync = z
+  .object({
+    /** Master switch. Default `false` — issue-sync is opt-in twice over
+     *  (absent block ⇒ disabled; present block still defaults off). */
+    enabled: z.boolean().default(false),
+    /** Polled trackers (the §D7.2 allowlist). Default `[]` — an enabled
+     *  block with no trackers is a no-op, not an error. */
+    trackers: z.array(TeamIssueSyncTracker).default([]),
+  })
+  .strict();
+export type TeamIssueSync = z.infer<typeof TeamIssueSync>;
+
 export const TeamObservability = z
   .object({
     /** t-e89c03f7: when true, every UNKNOWN classification from
@@ -1596,6 +1677,11 @@ export const Team = z
      *  `"manual"` (no orchd; LLMs self-manage the fleet). See
      *  {@link TeamOrchestration} + {@link resolveOrchestrationMode}. */
     orchestration: TeamOrchestration.optional(),
+    /** ADR-261 §D10: issue-sync — external issue-tracker ingestion
+     *  (GitHub / Azure DevOps → complaints → lead adjudication). Absent
+     *  block ⇒ disabled; every pre-ADR-261 team.json parses unchanged.
+     *  See {@link TeamIssueSync}. */
+    issueSync: TeamIssueSync.optional(),
     /** Phase 2 sub-shapes — typed once verb porters land. */
     discord: z.unknown().optional(),
     tuiCommands: z.unknown().optional(),

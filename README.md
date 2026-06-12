@@ -710,6 +710,8 @@ atmux watchdog [--no-discord]                # 2-min heartbeat staleness detecto
 atmux pulse [--json] [--ping] [--config <p>] # 5-min cockpit-wide verdict probe (ADR-086)
 atmux hygiene-tick [--team-dir <d>]          # superdoctor kanban-hygiene pass (ADR-131)
               [--no-json]                    #   one auto-fix per tick via severity/confidence ladder
+atmux issues sync                            # issue-sync: poll GitHub/Azure-DevOps issues → complaints → lead
+                                             #   (ADR-261; verb lands Phase 1 — see docs/RUNBOOK-issue-sync.md)
 
 🔧 Maintenance
 atmux rotate <member>

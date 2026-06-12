@@ -32,6 +32,7 @@ import {
   TeamCrons,
   TeamEpic,
   TeamFallback,
+  TeamIssueSync,
   TeamLeadStallWatchdog,
   TeamMember,
   TeamOmbudsman,
@@ -1827,5 +1828,113 @@ describe("TeamOrchestration schema (ADR-260 §D1)", () => {
     const team = Team.parse({ name: "demo", members: [], autoMerge: { enabled: true } });
     // autoMerge alone does NOT opt a team into orchd post-ADR-260.
     expect(resolveOrchestrationMode(team)).toBe("manual");
+  });
+});
+
+// ---------- TeamIssueSync (ADR-261 §D10) ----------
+
+describe("TeamIssueSync schema (ADR-261 §D10)", () => {
+  test("empty block parses with defaults (enabled=false, trackers=[])", () => {
+    const cfg = TeamIssueSync.parse({});
+    expect(cfg.enabled).toBe(false);
+    expect(cfg.trackers).toEqual([]);
+  });
+
+  test("Team.parse back-compat — absent issueSync parses unchanged + stays undefined", () => {
+    const withoutBlock = Team.parse({ name: "demo", members: [] });
+    expect(withoutBlock.issueSync).toBeUndefined();
+  });
+
+  test("a populated block round-trips through Team.parse", () => {
+    const block: TeamIssueSync = {
+      enabled: true,
+      trackers: [
+        {
+          id: "github",
+          repos: ["geoyws/atmux"],
+          targetTeam: "atmux",
+          labelSeverityMap: { p0: "critical", bug: "warn" },
+          pollIntervalSec: 900,
+        },
+        { id: "azure-devops", org: "ifca", project: "propertyx" },
+      ],
+    };
+    const team = Team.parse({ name: "demo", members: [], issueSync: block });
+    // Every key round-trips verbatim — defaults add nothing on a fully-
+    // populated github arm; the lean ADO arm keeps its optionals absent.
+    expect(team.issueSync).toEqual(block);
+    expect(team.issueSync?.trackers).toHaveLength(2);
+    expect(team.issueSync?.trackers[0]?.id).toBe("github");
+    expect(team.issueSync?.trackers[1]?.id).toBe("azure-devops");
+  });
+
+  test("strict — rejects an unknown key in the issueSync block (drift detection per ADR-054 §D3)", () => {
+    expect(() => TeamIssueSync.parse({ enabld: true })).toThrow(ZodError);
+  });
+
+  test("strict — rejects an unknown key inside a tracker entry", () => {
+    expect(() =>
+      TeamIssueSync.parse({
+        trackers: [{ id: "github", repos: ["geoyws/atmux"], repoz: ["typo"] }],
+      }),
+    ).toThrow(ZodError);
+  });
+
+  test("strict — Team.parse refuses an unknown key nested in issueSync", () => {
+    expect(() =>
+      Team.parse({
+        name: "demo",
+        members: [],
+        issueSync: { enabled: true, tracker: [] }, // typo'd `trackers`
+      }),
+    ).toThrow(ZodError);
+  });
+
+  test("rejects cross-vendor coordinates (github arm with ADO org/project)", () => {
+    expect(() =>
+      TeamIssueSync.parse({
+        trackers: [{ id: "github", repos: ["geoyws/atmux"], org: "ifca" }],
+      }),
+    ).toThrow(ZodError);
+  });
+
+  test("rejects an unknown tracker id (ADR-261 §D2 closed adapter set)", () => {
+    expect(() => TeamIssueSync.parse({ trackers: [{ id: "jira" }] })).toThrow(ZodError);
+  });
+
+  test("github arm requires a non-empty repos allowlist (ADR-261 §D7.2)", () => {
+    expect(() => TeamIssueSync.parse({ trackers: [{ id: "github" }] })).toThrow(ZodError);
+    expect(() => TeamIssueSync.parse({ trackers: [{ id: "github", repos: [] }] })).toThrow(
+      ZodError,
+    );
+  });
+
+  test("azure-devops arm requires org + project coordinates", () => {
+    expect(() =>
+      TeamIssueSync.parse({ trackers: [{ id: "azure-devops", org: "ifca" }] }),
+    ).toThrow(ZodError);
+  });
+
+  test("labelSeverityMap values constrained to the extractSeverity vocabulary", () => {
+    expect(() =>
+      TeamIssueSync.parse({
+        trackers: [
+          { id: "github", repos: ["geoyws/atmux"], labelSeverityMap: { p0: "high" } },
+        ],
+      }),
+    ).toThrow(ZodError);
+  });
+
+  test("pollIntervalSec must be a positive integer", () => {
+    expect(() =>
+      TeamIssueSync.parse({
+        trackers: [{ id: "github", repos: ["geoyws/atmux"], pollIntervalSec: 0 }],
+      }),
+    ).toThrow(ZodError);
+    expect(() =>
+      TeamIssueSync.parse({
+        trackers: [{ id: "github", repos: ["geoyws/atmux"], pollIntervalSec: 1.5 }],
+      }),
+    ).toThrow(ZodError);
   });
 });
