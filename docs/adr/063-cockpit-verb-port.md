@@ -61,7 +61,8 @@ Introduce an `atmux cockpit` verb family. Roster lives at `~/.atmux/cockpit.json
 ### D1 — Verb surface
 
 ```
-atmux cockpit rebuild [--no-cycle] [--force-cycle]   # idempotent ensure-up
+atmux cockpit reconcile [--no-cycle] [--force-cycle] # idempotent ensure-up (canonical)
+atmux cockpit rebuild [--no-cycle] [--force-cycle]   # DEPRECATED alias for reconcile
 atmux cockpit list                                    # show enabled/disabled teams
 atmux cockpit add <team> --root <path> --account <id> # append a team to cockpit.json
 atmux cockpit remove <team>                           # mark disabled (keeps config) or --hard to delete
@@ -69,7 +70,18 @@ atmux cockpit enable <team> | disable <team>          # toggle without re-typing
 atmux cockpit status                                  # cockpit session + per-cage liveness
 ```
 
-`rebuild` is the workhorse — does everything `cockpit-rebuild.sh` does today, plus:
+> **[ADR-235](235-cockpit-verb-surface-rationalization.md) §D1 amendment (2026-06-05, t-11-0e88ce87):** the workhorse verb is
+> renamed `rebuild → reconcile` (canonical). `rebuild` is retained as a
+> one-release **deprecation alias** — it dispatches to the identical
+> implementation and emits `[deprecated] use atmux cockpit reconcile`
+> to stderr on every call (ADR-235 §OQ4 + [ADR-159](159-gitter-to-committer-rename.md) gitter→committer
+> rename precedent). No behaviour change. **ADR-063 is NOT superseded** —
+> the verb-port design (own-verb-with-cockpit-config + reconcile-emits-the-
+> session + the cage-prefix dance) stands verbatim; only the canonical
+> verb name moved. Read every "`rebuild`" below as "`reconcile` (alias:
+> `rebuild`)".
+
+`rebuild` (now `reconcile`) is the workhorse — does everything `cockpit-rebuild.sh` does today, plus:
 
 - Honours atmux-bun's actual socket resolver (no path drift).
 - Pre-creates the socket parent dir (the `mkdir -p` we just patched into the script).

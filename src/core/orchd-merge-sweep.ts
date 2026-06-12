@@ -123,7 +123,11 @@ export async function sweepMerges(deps: SweepDeps): Promise<SweepResult> {
     const ready = await isEpicReady(deps.db, epic.id);
     if (!ready.ready) {
       result.epicsNotReady += 1;
-      result.perEpic.push({ epicId: epic.id, outcome: "skipped-not-ready", reason: ready.reason });
+      result.perEpic.push({
+        epicId: epic.id,
+        outcome: "skipped-not-ready",
+        ...(ready.reason !== undefined ? { reason: ready.reason } : {}),
+      });
       continue;
     }
 
@@ -131,7 +135,11 @@ export async function sweepMerges(deps: SweepDeps): Promise<SweepResult> {
     const att = await isEpicAttended(deps.db, epic.id, now, windowSec);
     if (att.attended) {
       result.epicsAttended += 1;
-      result.perEpic.push({ epicId: epic.id, outcome: "skipped-attended", reason: att.reason });
+      result.perEpic.push({
+        epicId: epic.id,
+        outcome: "skipped-attended",
+        ...(att.reason !== undefined ? { reason: att.reason } : {}),
+      });
       continue;
     }
 
@@ -153,14 +161,17 @@ export async function sweepMerges(deps: SweepDeps): Promise<SweepResult> {
           });
           break;
         case "skipped-not-mine":
-        case "already-merged":
+        case "already-merged": {
           result.epicsDispatchedSkipped += 1;
+          const skipReason =
+            dispatch.state === "skipped-not-mine" ? dispatch.reason : "already-merged";
           result.perEpic.push({
             epicId: epic.id,
             outcome: "dispatched-skipped",
-            reason: dispatch.state === "skipped-not-mine" ? dispatch.reason : "already-merged",
+            ...(skipReason !== undefined ? { reason: skipReason } : {}),
           });
           break;
+        }
       }
     } catch (e) {
       result.epicsErrored += 1;

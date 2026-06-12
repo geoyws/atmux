@@ -190,7 +190,7 @@ property is structurally preserved by the consolidated runTick loop.
 - [ADR-136](136-hot-rename-member-labels.md) — `whip-impl` label rename lives in label layer.
 - [ADR-139](139-refusal-pattern-auto-rotate.md) — refusal-pattern detection during whip-cadence; gets §Amendment.
 - [ADR-140](140-cheap-model-first.md) — cheap-model-first principle (sentinel handles whip-cadence under ADR-158); gets §Amendment.
-- [ADR-149](149-*.md) — whip-related (per EPIC body); gets §Amendment.
+- [ADR-149](149-eternal-improvement-gating.md) — whip-related (per EPIC body); gets §Amendment.
 - [ADR-157](157-goal-as-primary-drain.md) — `/goal` as primary drain for whip-cadence; gets §Amendment.
 - [ADR-158](158-martinet-to-sentinel-rename.SUPERSEDED.md) — sibling vocabulary rename.
 - [ADR-159](159-gitter-to-committer-rename.md) — sibling vocabulary rename.

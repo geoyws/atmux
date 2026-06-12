@@ -15,14 +15,14 @@ import type { SpawnResult } from "../../../../src/abstractions/spawn.ts";
 import { closeDatabase, openDatabase } from "../../../../src/abstractions/sqlite.ts";
 import { migrations } from "../../../../src/abstractions/sqlite-migrations.ts";
 import type { TmuxNamespace } from "../../../../src/abstractions/tmux.ts";
+import type { Team as TeamShape } from "../../../../src/schema/team.ts";
 import {
+  type DissolveEpicOpts,
   defaultCageTeardown,
   deleteMergedEpicBranch,
-  type DissolveEpicOpts,
   dissolveEpic,
   parseDissolveEpicArgs,
 } from "../../../../src/verbs/team/dissolve-epic.ts";
-import type { Team as TeamShape } from "../../../../src/schema/team.ts";
 
 let scratch: string;
 let cockpitPath: string;
@@ -509,7 +509,7 @@ describe("defaultCageTeardown — production cage reap", () => {
     expect(calls).not.toContain("killSession");
   });
 
-  test("session name uses ADR-161 cage form 'atmux_<name>'", async () => {
+  test("session name uses cage form 'atmux-<name>' when no state/session.txt anchor", async () => {
     const seen: string[] = [];
     await defaultCageTeardown({
       epicRoot,
@@ -523,9 +523,37 @@ describe("defaultCageTeardown — production cage reap", () => {
         }),
       logger: { log: () => undefined, warn: () => undefined },
     });
-    // cageSessionName('e-1') === 'atmux_e-1'; killSession receives
-    // the `=` exact-match prefix.
-    expect(seen).toEqual(["=atmux_e-1"]);
+    // resolveCageSessionName({name:'e-1', root: epicRoot}) → 'atmux-e-1'
+    // (no anchor in epic root + non-"atmux" team → hyphen-form default,
+    // matching what start.ts creates via getSessionName fallback).
+    // killSession receives the `=` exact-match prefix.
+    expect(seen).toEqual(["=atmux-e-1"]);
+  });
+
+  test("ADR-251: epic cage socket resolved via tmuxTmpdir (resolveTeamSocket), not the /tmp/atmux-<epicId> guess", async () => {
+    // Regression: resolveCageSocket(name, epicRoot) guesses
+    // /tmp/atmux-<epicId>/sock and reports a LIVE epic cage as dead.
+    // Epic cages set team.tmuxTmpdir at spawn; the teardown MUST resolve
+    // the socket from it so the liveness probe + killSession reach the
+    // real cage. Capture the socketPath the tmuxFactory receives.
+    let capturedSocket: string | undefined;
+    const childTeam = {
+      name: "e-1",
+      members: [],
+      worktreeIsolation: false,
+      tmuxTmpdir: "/tmp/atmux-parent/epics/e-1",
+    } as unknown as TeamShape;
+    await defaultCageTeardown({
+      epicRoot,
+      childTeam,
+      tmuxFactory: (config) => {
+        capturedSocket = (config as { socketPath?: string }).socketPath;
+        return mockTmux({ hasSessionResult: false });
+      },
+      logger: { log: () => undefined, warn: () => undefined },
+    });
+    const uid = process.getuid?.() ?? 0;
+    expect(capturedSocket).toBe(`/tmp/atmux-parent/epics/e-1/tmux-${uid}/default`);
   });
 
   test("default path: dissolve-epic with no softStopHook still kills cage", async () => {
@@ -582,9 +610,12 @@ describe("deleteMergedEpicBranch — merged-branch reaper", () => {
     });
     expect(warns).toEqual([]);
     expect(logs).toEqual([]);
-    // Only the show-ref probe should have fired.
-    expect(argvSeen).toHaveLength(1);
+    // Post-2026-05-26 double-e fix: probes BOTH the new (`<base>-epic-<id-without-e-prefix>`)
+    // and legacy (`<base>-epic-<id>`) branch shapes; both probe before
+    // bail. ADR-090 §Disk layout amendment back-compat window.
+    expect(argvSeen).toHaveLength(2);
     expect(argvSeen[0]).toContain("show-ref");
+    expect(argvSeen[1]).toContain("show-ref");
   });
 
   test("branch present + merged → git branch -D + green log", async () => {
@@ -608,7 +639,7 @@ describe("deleteMergedEpicBranch — merged-branch reaper", () => {
     });
     expect(warns).toEqual([]);
     expect(logs.some((m) => m.includes("deleted merged branch"))).toBe(true);
-    expect(logs.some((m) => m.includes("main-epic-e-1"))).toBe(true);
+    expect(logs.some((m) => m.includes("main-epic-1"))).toBe(true);
     // show-ref + merge-base + branch -D = 3 git calls
     expect(argvSeen).toHaveLength(3);
   });
@@ -636,7 +667,7 @@ describe("deleteMergedEpicBranch — merged-branch reaper", () => {
     expect(warns).toHaveLength(1);
     expect(warns[0]).toContain("unmerged commits");
     expect(warns[0]).toContain("git -C");
-    expect(warns[0]).toContain("branch -D main-epic-e-1");
+    expect(warns[0]).toContain("branch -D main-epic-1");
     expect(logs).toEqual([]);
   });
 

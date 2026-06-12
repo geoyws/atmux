@@ -195,6 +195,19 @@ Your pane may also receive a `⚙️ CONFIG RELOAD: your <field> changed: <old>�
 
 Per [ADR-233](../../docs/adr/233-cron-auto-install-disabled-trust-orchd.md), atmux no longer auto-installs the `*/5` whip cron — orchd's in-process tickers + event consumers replace it. `atmux whip` is still invokable on-demand any time to surface your state to the lead right now (e.g. pre-handoff after `atmux done` so the lead sees the unblock immediately). Cheap to invoke; honors the body-hash dedup so it won't re-ping if nothing changed. Default state is event-driven: your `atmux done` fires a `task.done` event that orchd's `atmux:gitter` + `atmux:lane-router` consumers pick up within ~1ms.
 
+## Manual orchestration mode (per [ADR-260](../../docs/adr/260-manual-orchestration-mode-default.md) — the default)
+
+Unless `team.json::orchestration.mode` is explicitly `"orchd"`, your team runs **without** the `__orchd__` daemon — no auto-merge, no auto-spawn, no lead-stall watchdog. Rationale (ADR-260): LLMs can manage their own fleet better than atmux's deterministic automation can at the moment. That means **you** keep the status surface and the kanban honest by hand:
+
+```
+atmux member status working --as {{MEMBER}} --task <task-id>   # on claim — also claims the task if you haven't yet
+atmux member status blocked --as {{MEMBER}} --task <task-id> --note "<why>"   # stuck — also moves the task to blocked
+atmux member status idle --as {{MEMBER}}                       # after atmux done — warns if you still own in-progress work
+atmux member status rate-limited --as {{MEMBER}} --note "<reset ETA>"
+```
+
+Protocol: set `working` when you start a Task, `idle` when your queue is dry, `blocked` (with a note) the moment you're stuck. Every self-report also refreshes your heartbeat, so manual-mode teams keep fresh ❤️ markers without the cron poke loop. The lead/driver reads `atmux status` (your report shows as `📍<status>(task, age)`) and does the orchestration orchd would have: fan-in merges, epic spawns, nudges. Kanban transitions stay on the verbs you already use — `claim` / `done` / `task move`. The self-report is advisory (nothing gates on it yet) but it sits next to the derived signals, so a stale `working` against a dormant cadence reads as exactly what it is.
+
 ## Trunk integration (per [ADR-137](../../docs/adr/137-merge-over-rebase.md))
 
 When your `<base>-<member>` branch falls behind `origin/<base>` (a sibling member's work landed on trunk), **integrate via `git merge`, NOT `git rebase`**:

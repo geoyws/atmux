@@ -4,6 +4,9 @@
 // the flag-emit + retry-policy paths from src/core/pane-state.ts.
 
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   agentThinking,
   composerEmpty,
@@ -15,6 +18,7 @@ import {
   KNOWN_MODAL_SETTLE_MS,
   MAX_KNOWN_MODAL_DISMISSALS,
   modalClosed,
+  PANE_SEND_LOCK_TIMEOUT_MS,
   type PaneVerifier,
   paneMatchesRegex,
   SafeSendKeysError,
@@ -24,7 +28,9 @@ import {
   safePreflight,
   safeSendKeys,
   safeSendKeysWithVerify,
+  sanitizePaneLockKey,
   verifierForTui,
+  withPaneSendLock,
 } from "../../../src/core/safe-send.ts";
 
 interface FlagCall {
@@ -1030,5 +1036,169 @@ describe("verifierForTui", () => {
     ["custom-launcher-x"],
   ])("'%s' tui → null (skip verify, falls back to legacy submitAfterPaste)", (tui) => {
     expect(verifierForTui(tui)).toBeNull();
+  });
+});
+
+// ---------- e-49 / c-cb9561e0: per-pane send-keys lock ----------
+
+describe("sanitizePaneLockKey", () => {
+  test("alnum + dash + underscore pass through unchanged", () => {
+    expect(sanitizePaneLockKey("atmux_lead-2")).toBe("atmux_lead-2");
+  });
+
+  test("colon (the canonical tmux session:window separator) becomes underscore", () => {
+    expect(sanitizePaneLockKey("atmux:lead")).toBe("atmux_lead");
+  });
+
+  test("emoji + multibyte unicode collapse to underscores", () => {
+    // 🧭_lead — emoji at start, ASCII rest. Each emoji code-point unit
+    // becomes _; the leading emoji is multi-byte so collapses to 4 _.
+    const out = sanitizePaneLockKey("🧭_lead");
+    expect(out.endsWith("_lead")).toBe(true);
+    expect(out.match(/^[A-Za-z0-9_-]+$/)).not.toBeNull();
+  });
+
+  test("path separators stripped (defense against target traversal)", () => {
+    expect(sanitizePaneLockKey("atmux:../etc/passwd")).toBe("atmux____etc_passwd");
+  });
+
+  test("default timeout is 60s", () => {
+    expect(PANE_SEND_LOCK_TIMEOUT_MS).toBe(60_000);
+  });
+});
+
+describe("withPaneSendLock", () => {
+  test("serializes concurrent writers against the same target", async () => {
+    const lockDir = mkdtempSync(join(tmpdir(), "pane-lock-test-"));
+    const target = "atmux:lead";
+
+    // Sequence-numbered work-units; each writer appends start+end
+    // markers around a 30ms async block. If the lock works, no
+    // start-marker is followed by another writer's start-marker before
+    // the holder's end-marker. If broken, starts interleave.
+    const ledger: string[] = [];
+    const writer = (id: number) =>
+      withPaneSendLock(
+        target,
+        async () => {
+          ledger.push(`start-${id}`);
+          await new Promise((r) => setTimeout(r, 30));
+          ledger.push(`end-${id}`);
+        },
+        { lockDir },
+      );
+
+    await Promise.all([writer(1), writer(2), writer(3), writer(4), writer(5)]);
+
+    // 5 writers × 2 markers = 10 entries.
+    expect(ledger).toHaveLength(10);
+    // Each start-N is immediately followed by end-N (serialized).
+    for (let i = 0; i < ledger.length; i += 2) {
+      const start = ledger[i] as string;
+      const end = ledger[i + 1] as string;
+      expect(start.startsWith("start-")).toBe(true);
+      expect(end.startsWith("end-")).toBe(true);
+      expect(start.slice(6)).toBe(end.slice(4));
+    }
+  });
+
+  test("different targets do NOT serialize against each other", async () => {
+    const lockDir = mkdtempSync(join(tmpdir(), "pane-lock-test-"));
+    const startedAt: Record<string, number> = {};
+    const endedAt: Record<string, number> = {};
+
+    const writer = (target: string) =>
+      withPaneSendLock(
+        target,
+        async () => {
+          startedAt[target] = Date.now();
+          await new Promise((r) => setTimeout(r, 50));
+          endedAt[target] = Date.now();
+        },
+        { lockDir },
+      );
+
+    const t0 = Date.now();
+    await Promise.all([writer("atmux:lead"), writer("atmux:planner"), writer("atmux:reviewer")]);
+    const totalMs = Date.now() - t0;
+
+    // 3 parallel writers × 50ms each. If serialized: ~150ms. Parallel:
+    // ~50ms. Give 80ms ceiling for CI noise — well under serialized.
+    expect(totalMs).toBeLessThan(120);
+    // All three started within ~5ms of each other (parallel).
+    const startTimes = Object.values(startedAt);
+    const startSpread = Math.max(...startTimes) - Math.min(...startTimes);
+    expect(startSpread).toBeLessThan(30);
+  });
+
+  test("fn's return value flows through the lock", async () => {
+    const lockDir = mkdtempSync(join(tmpdir(), "pane-lock-test-"));
+    const out = await withPaneSendLock("atmux:lead", () => Promise.resolve("payload"), {
+      lockDir,
+    });
+    expect(out).toBe("payload");
+  });
+
+  test("fn's thrown error releases the lock + propagates", async () => {
+    const lockDir = mkdtempSync(join(tmpdir(), "pane-lock-test-"));
+    await expect(
+      withPaneSendLock(
+        "atmux:lead",
+        () => {
+          throw new Error("boom");
+        },
+        { lockDir },
+      ),
+    ).rejects.toThrow("boom");
+
+    // Next acquire on the same target must succeed (lock released
+    // in finally{} even on throw).
+    let secondRan = false;
+    await withPaneSendLock(
+      "atmux:lead",
+      () => {
+        secondRan = true;
+      },
+      { lockDir },
+    );
+    expect(secondRan).toBe(true);
+  });
+
+  test("LockTimeoutError fail-open: log + proceed without serialization", async () => {
+    const lockDir = mkdtempSync(join(tmpdir(), "pane-lock-test-"));
+    const target = "atmux:lead";
+    const logged: string[] = [];
+
+    // Start a holder that takes longer than the 100ms timeout we pass.
+    const holderDone = (async () => {
+      await withPaneSendLock(
+        target,
+        async () => {
+          await new Promise((r) => setTimeout(r, 500));
+        },
+        { lockDir },
+      );
+    })();
+
+    // Give holder a moment to acquire.
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Second writer: 100ms timeout while holder still holds → must
+    // fail-open + run fn + log.
+    let secondRan = false;
+    const out = await withPaneSendLock(
+      target,
+      () => {
+        secondRan = true;
+        return "fail-open-payload";
+      },
+      { lockDir, timeoutMs: 100, log: (m) => logged.push(m) },
+    );
+
+    expect(out).toBe("fail-open-payload");
+    expect(secondRan).toBe(true);
+    expect(logged.some((l) => l.includes("timed out") && l.includes("fail-open"))).toBe(true);
+
+    await holderDone;
   });
 });

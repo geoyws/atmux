@@ -274,18 +274,97 @@ export function isDriverPreempt(
 
 // ---------- Lead-routing arm helpers ----------
 
-/** Build the lead-prompt body per ADR-052 §"Loop mechanics" step 1. */
-export function buildArmMessage(cycleN: number): string {
+/** One longstanding backlog item the cycle should burn down before any
+ *  net-new improvement (ADR-257). Oldest-first; `ageSec` + `priority`
+ *  carried for callers/tests (priority: lower = higher per kanban schema). */
+export interface LongstandingIssue {
+  id: string;
+  subject: string;
+  ageSec: number;
+  priority: number;
+}
+
+/**
+ * ADR-257 §D1 — burndown-first selection. Rank the team's OPEN backlog
+ * (`status: 'todo'`) oldest-first (longstanding = smallest `createdAt`),
+ * tie-breaking by priority (lower number = higher priority per the kanban
+ * schema). Excludes the improvement loop's OWN net-new Tasks
+ * (`epic === improvementEpicId`) so the loop burns down the real backlog
+ * rather than its own output, and excludes `driverOnly` Tasks (members
+ * working the cycle can't claim driver-scoped work). Returns the top
+ * `limit` (default 3, matching ADR-052's "top 1-3"). Pure.
+ */
+export function selectLongstandingIssues(
+  tasks: ReadonlyArray<KanbanTask>,
+  nowSec: number,
+  opts: { limit?: number; improvementEpicId?: string } = {},
+): LongstandingIssue[] {
+  const limit = opts.limit ?? 3;
+  const improvementEpicId = opts.improvementEpicId ?? IMPROVEMENT_EPIC_ID;
+  const candidates = tasks.filter(
+    (t) =>
+      t.status === "todo" &&
+      (t.epic ?? null) !== improvementEpicId &&
+      t.driverOnly !== true,
+  );
+  candidates.sort((a, b) => {
+    const ageA = a.createdAt ?? nowSec;
+    const ageB = b.createdAt ?? nowSec;
+    if (ageA !== ageB) return ageA - ageB; // older (smaller createdAt) first
+    // tie-break: lower priority number = higher priority → first.
+    const pa = a.priority ?? Number.MAX_SAFE_INTEGER;
+    const pb = b.priority ?? Number.MAX_SAFE_INTEGER;
+    return pa - pb;
+  });
+  return candidates.slice(0, limit).map((t) => ({
+    id: t.id,
+    subject: t.subject ?? "(no subject)",
+    ageSec: Math.max(0, nowSec - (t.createdAt ?? nowSec)),
+    priority: t.priority ?? -1,
+  }));
+}
+
+/**
+ * Build the lead-prompt body (ADR-052 §"Loop mechanics" step 1, reframed
+ * by ADR-257). Burndown-first: when `longstanding` is non-empty the
+ * directive names those oldest open Tasks to resolve FIRST (in order);
+ * an empty backlog falls back to net-new improvement candidates. Either
+ * way the work MUST happen in an isolated improvement epic-team worktree
+ * and reach trunk only via the verified committer (ADR-257 §D3).
+ */
+export function buildArmMessage(
+  cycleN: number,
+  longstanding: ReadonlyArray<LongstandingIssue> = [],
+): string {
+  const head = `🌱 eternal-improvement cycle ${cycleN} requested (ADR-257 burndown-first).`;
+  // Standing isolation contract — same every cycle (ADR-257 §D3).
+  const worktree =
+    ` Do ALL cycle work in an isolated improvement epic-team worktree ` +
+    `(\`atmux team spawn-epic\` — reuse the live improvement epic if present; ` +
+    `large items get NESTED worktrees branched from the epic base). Commit to ` +
+    `the epic branch; the ADR-134/091 committer fans it into trunk LATER, only ` +
+    `when verified green — never land unverified work on trunk.`;
+  if (longstanding.length > 0) {
+    const ids = longstanding.map((i) => i.id).join(", ");
+    return (
+      `${head} LONGSTANDING ISSUES FIRST — resolve these oldest open Tasks ` +
+      `(oldest→newest) before any net-new improvement: ${ids}.${worktree}`
+    );
+  }
   return (
-    `🌱 eternal-improvement cycle ${cycleN} requested. Route to planner ` +
-    `with: ask each lane member their top improvement candidate; score ` +
-    `by impact-vs-cost; land top 1-3 Tasks; dispatch normally.`
+    `${head} No longstanding backlog — ask each lane member their top ` +
+    `improvement candidate; score by impact-vs-cost; land top 1-3.${worktree}`
   );
 }
 
 export interface ArmCycleOpts {
   /** Override the timestamp string written to the directives file. */
   timestamp?: string;
+  /** ADR-257 burndown-first — the longstanding backlog items the planner
+   *  should resolve before net-new improvements. Computed by the caller
+   *  (which has the loaded kanban) via {@link selectLongstandingIssues};
+   *  defaults to `[]` (net-new fallback directive). */
+  longstanding?: ReadonlyArray<LongstandingIssue>;
 }
 
 /**
@@ -303,7 +382,7 @@ export async function armCycle(
   const path = improveDirectivesPath(atmuxDir);
   await ensureDir(atmuxDir);
   const ts = opts.timestamp ?? formatMyt();
-  const body = buildArmMessage(state.cycleN);
+  const body = buildArmMessage(state.cycleN, opts.longstanding ?? []);
 
   if (!(await exists(path))) {
     await appendFile(

@@ -84,7 +84,7 @@ Add a new probe to [ADR-077](077-superdoctor-cockpit-role.md) §doctor probes + 
 
 This closes the silent-accumulation class. The same invariant would have caught all 8 of the 2026-05-21 orphans before the host RAM pressure surfaced (the first cage went orphan ~13h before the 22:05 sweep; the doctor probe runs hourly via [ADR-077](077-superdoctor-cockpit-role.md) cadence, so the first ping would have hit ~12h earlier).
 
-**§see-also (2026-05-22)**: Topo's `--orphans` (per [ADR-222](222-cage-topography-read-only-verb-surface.md) §D4) supersedes this narrow probe with a unified manifest — every orphan class lives in one place + the same classifier output feeds doctor probes + the ADR-223 `--reap` cascade. This §D3 probe stays for one release window then collapses (per ADR-222 §OQ4 — lazy migration).
+**§see-also (2026-05-22)**: Topo's `--orphans` (per [ADR-222](222-topo-fleet-observability.md) §D4) supersedes this narrow probe with a unified manifest — every orphan class lives in one place + the same classifier output feeds doctor probes + the ADR-223 `--reap` cascade. This §D3 probe stays for one release window then collapses (per ADR-222 §OQ4 — lazy migration).
 
 ## Open Questions
 

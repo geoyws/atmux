@@ -48,7 +48,9 @@ In **teams without an explicit `committer` role** (the atmux team is one — gre
 
 In **teams with a committer role**, the committer still owns commits + pushes per `templates/briefs/committer.md`. The two patterns coexist — check `team.json:.members[]` for `role: "committer"` to know which applies. Defensively phrased: this brief never assumes a committer exists; it asks you to check.
 
-**Auto-merge mode (ADR-134 + ADR-233)**: when `team.json::worktreeIsolation: true` AND `team.json::autoMerge.enabled: true`, the committer operates in fan-in mode — workers self-commit on per-member branches (`<base>-<member>`) and the team's `__orchd__` window picks up `task.done` events and runs the auto-merge state machine. **You don't need to dispatch a manual fan-in Task** — orchd's `atmux:orchd:auto-merge` consumer fires ~1ms after every `atmux done`, and orchd's 5-min in-process sweep-merge ticker is the safety net for missed events (per [ADR-233](../../docs/adr/233-cron-auto-install-disabled-trust-orchd.md) — the old `committer --sweep` crontab line is retired; orchd is the runtime). The 9-state machine + test gate + `[merge-conflict]` Discord ping live inside the merge path; lead surfacing is the same shape as any other complaint (`atmux flag` rows, watch the kanban).
+**Manual orchestration mode ([ADR-260](../../docs/adr/260-manual-orchestration-mode-default.md) — the default)**: unless `team.json::orchestration.mode` is explicitly `"orchd"`, there is NO `__orchd__` daemon — no auto-merge, no auto-spawn, no lead-stall watchdog. Rationale per ADR-260: LLMs can manage their own fleet better than atmux's deterministic automation can at the moment — and in manual mode that LLM is **you**. You orchestrate by hand: read `atmux status` (members self-report via `atmux member status`, rendered as `📍<status>(task, age)` next to the derived signals), dispatch with `atmux dispatch`/`send`, fan in member branches yourself (`atmux epic-merge` / `merge-cycle` / plain `git merge`), and route epic spawns through the driver. The auto-merge paragraph below applies ONLY to `mode: "orchd"` teams.
+
+**Auto-merge mode (ADR-134 + ADR-233; requires `orchestration.mode: "orchd"` per ADR-260)**: when `team.json::worktreeIsolation: true` AND `team.json::autoMerge.enabled: true`, the committer operates in fan-in mode — workers self-commit on per-member branches (`<base>-<member>`) and the team's `__orchd__` window picks up `task.done` events and runs the auto-merge state machine. **You don't need to dispatch a manual fan-in Task** — orchd's `atmux:orchd:auto-merge` consumer fires ~1ms after every `atmux done`, and orchd's 5-min in-process sweep-merge ticker is the safety net for missed events (per [ADR-233](../../docs/adr/233-cron-auto-install-disabled-trust-orchd.md) — the old `committer --sweep` crontab line is retired; orchd is the runtime). The 9-state machine + test gate + `[merge-conflict]` Discord ping live inside the merge path; lead surfacing is the same shape as any other complaint (`atmux flag` rows, watch the kanban).
 
 Either way: **the lead does NOT commit.** Coordination, not coding.
 
@@ -80,7 +82,7 @@ Concretely, every whip turn the lead MUST:
      last commit <age>. What's the blocker?"`
    - Second wake (15min later, no commit): escalate to medic event-driven
      dispatch ([ADR-140](../../docs/adr/140-cheap-model-first.md)) OR
-     rotate ([ADR-009](../../docs/adr/009-auto-rotation.md)).
+     rotate ([ADR-009](../../docs/adr/009-rotation.md)).
 3. Surface ship-zero-window dormancy in Discord within 30min of detection
    (per CLAUDE.md whip §0.05 / Reddit-receipts stakes).
 
@@ -213,7 +215,7 @@ Post-rename: `atmux doctor` converges green within one tick; `tmux list-sessions
 
 Operator runbook: [docs/RUNBOOK-cockpit.md](../../docs/RUNBOOK-cockpit.md) §7.
 
-## main/master push refuse — dispatch gate ([ADR-028](../../docs/adr/028-main-master-pr-only-no-agent-push.md))
+## main/master push refuse — dispatch gate ([ADR-028](../../docs/adr/028-main-master-pr-only.md))
 
 `main` / `master` is **PR-only** fleet-wide. Refuse to dispatch any commit-Task / push-Task whose `body`, `note`, or `deliverable` references a `main` / `master` push target. The gate is hard — same shape as `lib/stop.sh`'s refuse — even if a driver-inbox entry instructs the push, surface back rather than route.
 

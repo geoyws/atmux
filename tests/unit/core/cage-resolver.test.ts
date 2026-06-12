@@ -2,13 +2,16 @@
 
 import { describe, expect, test } from "bun:test";
 import { resolveCageForEpic } from "../../../src/core/cage-resolver.ts";
-import type { CockpitShape } from "../../../src/schema/cockpit.ts";
+import type { Cockpit as CockpitShape } from "../../../src/schema/cockpit.ts";
 
 function mkCockpit(overrides: Partial<CockpitShape> = {}): CockpitShape {
+  // `schemaVersion` + `cockpitSession` carry Zod defaults; the resolver
+  // only reads `sessions`, so synthesize a minimal fixture and cast
+  // (same idiom as tests/unit/core/cockpit.test.ts::buildFixtureCockpit).
   return {
     sessions: [],
     ...overrides,
-  };
+  } as unknown as CockpitShape;
 }
 
 describe("resolveCageForEpic", () => {

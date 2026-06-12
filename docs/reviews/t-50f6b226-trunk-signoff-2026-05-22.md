@@ -4,7 +4,7 @@
 >
 > - **ADR-219 (cockpit-mirror) → ADR-230.** Renumbered 2026-05-23 in `f48bd88` to resolve collision with [ADR-219 dissolve-epic-completeness](../adr/219-dissolve-epic-completeness.md). Current canonical spec is [ADR-230](../adr/230-cockpit-mirror-rust-crate-fleet-event-consumer.md).
 > - **`atmux-relayd` → `atmux-orchd`.** Renamed 2026-05-23 in `f6b078b` (Phase 1 fan-in) per [ADR-224](../adr/224-orchd-rename-and-auto-spawn-loop.md) (accepted). Crate path is now `rust/atmux-orchd/`; Bun verb is `orchd`. References below retained as authored — orchd rename was post-this-signoff.
-> - **WRITER half (deferred)**: superseded by [ADR-226](../adr/226-orchd-auto-merge-subscriber.md) / [ADR-227](../adr/227-orchd-auto-dissolve-subscriber.md) / [ADR-228](../adr/228-orchd-spawn-queue-and-pressure-monitor.md) — orchd Phase 3-5 subscribers absorb the per-team WRITER + auto-merge + auto-dissolve roles the signoff projected onto a future EPIC.
+> - **WRITER half (deferred)**: superseded by [ADR-226](../adr/226-orchd-auto-merge-subscriber.md) / [ADR-227](../adr/227-orchd-auto-dissolve-subscriber.md) / [ADR-228](../adr/228-orchd-spawn-queue-pressure-monitor.md) — orchd Phase 3-5 subscribers absorb the per-team WRITER + auto-merge + auto-dissolve roles the signoff projected onto a future EPIC.
 > - **EPIC-done stamp obligation note**: the "bun-eval via openDatabase" workaround predates the kanban SQLite migration (`migration-state-sqlite.json`, 2026-05-07); current `atmux task update` path lands the `role: "reviewer-trunk-signoff"` marker directly per [ADR-091](../adr/091-kanban-driven-auto-merge.md) §Decision-anchor #3.
 
 **Status**: ✅ APPROVED for fan-in to `atmux-geoyws-honker-events` (parent EPIC trunk).

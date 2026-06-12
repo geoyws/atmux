@@ -8,6 +8,9 @@ import {
   type BudgetProbeState,
   loadBudgetMap,
   readBudgetProbe,
+  readRrCounter,
+  recordSpawn,
+  rrLastSpawnMap,
   selectAccount,
 } from "../../../src/core/account-pool.ts";
 import type { ClaudeAccountPoolEntry } from "../../../src/schema/cockpit.ts";
@@ -88,6 +91,92 @@ describe("selectAccount", () => {
       now: NOW,
     });
     expect(r.account?.label).toBe("alpha");
+  });
+
+  test("round-robin tiebreak: least-recently-spawned wins over array order", () => {
+    // All three tie on util AND weight, so without round-robin the
+    // first array entry ('alpha') would win. With a counter that says
+    // alpha+bravo were spawned recently but charlie longest ago,
+    // charlie should win.
+    const r = selectAccount({
+      pool: [entry("alpha"), entry("bravo"), entry("charlie")],
+      budgetByLabel: new Map([
+        ["alpha", probe(0.5)],
+        ["bravo", probe(0.5)],
+        ["charlie", probe(0.5)],
+      ]),
+      now: NOW,
+      lastSpawnByLabel: new Map([
+        ["alpha", 9],
+        ["bravo", 8],
+        ["charlie", 2], // least recently spawned
+      ]),
+    });
+    expect(r.account?.label).toBe("charlie");
+  });
+
+  test("round-robin tiebreak: never-spawned (absent) beats any spawned entry", () => {
+    // 'bravo' has no counter entry → ordinal -1 → most preferred, even
+    // though 'alpha' sits earlier in the array.
+    const r = selectAccount({
+      pool: [entry("alpha"), entry("bravo")],
+      budgetByLabel: new Map([
+        ["alpha", probe(0.2)],
+        ["bravo", probe(0.2)],
+      ]),
+      now: NOW,
+      lastSpawnByLabel: new Map([["alpha", 5]]),
+    });
+    expect(r.account?.label).toBe("bravo");
+  });
+
+  test("round-robin only fires on full tie — util still dominates", () => {
+    // 'alpha' was spawned least recently but has WORSE util; util wins.
+    const r = selectAccount({
+      pool: [entry("alpha"), entry("bravo")],
+      budgetByLabel: new Map([
+        ["alpha", probe(0.9)], // worse util
+        ["bravo", probe(0.1)], // better util
+      ]),
+      now: NOW,
+      lastSpawnByLabel: new Map([
+        ["alpha", 0],
+        ["bravo", 99],
+      ]),
+    });
+    expect(r.account?.label).toBe("bravo");
+  });
+
+  test("round-robin yields to weight — weight outranks last-spawn", () => {
+    // Tie on util; 'alpha' spawned less recently but 'bravo' has higher
+    // weight, which outranks the round-robin rung.
+    const r = selectAccount({
+      pool: [entry("alpha", 0.5), entry("bravo", 1.0)],
+      budgetByLabel: new Map([
+        ["alpha", probe(0.2)],
+        ["bravo", probe(0.2)],
+      ]),
+      now: NOW,
+      lastSpawnByLabel: new Map([
+        ["alpha", 0], // least recently spawned
+        ["bravo", 99],
+      ]),
+    });
+    expect(r.account?.label).toBe("bravo");
+  });
+
+  test("no lastSpawnByLabel supplied → falls through to array order", () => {
+    // Without the round-robin map, a full util+weight tie resolves by
+    // pool-array order (pre-existing behavior preserved).
+    const r = selectAccount({
+      pool: [entry("first"), entry("second")],
+      budgetByLabel: new Map([
+        ["first", probe(0.3)],
+        ["second", probe(0.3)],
+      ]),
+      now: NOW,
+    });
+    expect(r.account?.label).toBe("first");
   });
 
   test("throttled entries excluded when ANY entry is healthy", () => {
@@ -280,5 +369,84 @@ describe("readBudgetProbe + loadBudgetMap", () => {
   test("loadBudgetMap — empty pool yields empty map", async () => {
     const m = await loadBudgetMap([], scratch);
     expect(m.size).toBe(0);
+  });
+});
+
+// ---------- round-robin counter persistence (ADR-199 §D2 step 5) ----------
+
+describe("readRrCounter + recordSpawn + rrLastSpawnMap", () => {
+  let scratch: string;
+
+  beforeEach(async () => {
+    scratch = join(tmpdir(), `atmux-rr-${Date.now()}-${Math.random()}`);
+    await mkdir(join(scratch, ".atmux", "state"), { recursive: true });
+  });
+  afterEach(async () => {
+    await rm(scratch, { recursive: true, force: true });
+  });
+
+  test("readRrCounter — absent file → zeroed cold-start state", async () => {
+    const s = await readRrCounter(scratch);
+    expect(s.counter).toBe(0);
+    expect(s.lastSpawnByLabel).toEqual({});
+  });
+
+  test("recordSpawn — bumps counter and stamps the label", async () => {
+    const s = await recordSpawn("c-u", scratch);
+    expect(s.counter).toBe(1);
+    expect(s.lastSpawnByLabel["c-u"]).toBe(1);
+  });
+
+  test("recordSpawn — persists across reads (durable round-robin)", async () => {
+    await recordSpawn("c-u", scratch);
+    await recordSpawn("c-ic", scratch);
+    const reread = await readRrCounter(scratch);
+    expect(reread.counter).toBe(2);
+    expect(reread.lastSpawnByLabel["c-u"]).toBe(1);
+    expect(reread.lastSpawnByLabel["c-ic"]).toBe(2);
+  });
+
+  test("recordSpawn — re-spawning a label restamps it to the latest ordinal", async () => {
+    await recordSpawn("c-u", scratch); // c-u → 1
+    await recordSpawn("c-ic", scratch); // c-ic → 2
+    await recordSpawn("c-u", scratch); // c-u restamped → 3
+    const s = await readRrCounter(scratch);
+    expect(s.counter).toBe(3);
+    expect(s.lastSpawnByLabel["c-u"]).toBe(3);
+    expect(s.lastSpawnByLabel["c-ic"]).toBe(2);
+  });
+
+  test("rrLastSpawnMap — feeds selectAccount so spawn rotates away from last pick", async () => {
+    // Spawn c-u once, then select among {c-u, c-ic} tied on util:
+    // c-ic (never spawned, ordinal -1) must win the round-robin rung.
+    await recordSpawn("c-u", scratch);
+    const state = await readRrCounter(scratch);
+    const r = selectAccount({
+      pool: [entry("c-u"), entry("c-ic")],
+      budgetByLabel: new Map([
+        ["c-u", probe(0.3)],
+        ["c-ic", probe(0.3)],
+      ]),
+      now: NOW,
+      lastSpawnByLabel: rrLastSpawnMap(state),
+    });
+    expect(r.account?.label).toBe("c-ic");
+  });
+
+  test("readRrCounter — malformed JSON → zeroed state", async () => {
+    await writeFile(join(scratch, ".atmux", "state", "pool-rr-counter.json"), "{broken");
+    const s = await readRrCounter(scratch);
+    expect(s.counter).toBe(0);
+    expect(s.lastSpawnByLabel).toEqual({});
+  });
+
+  test("readRrCounter — strips non-numeric label ordinals from hand-edited junk", async () => {
+    await writeFile(
+      join(scratch, ".atmux", "state", "pool-rr-counter.json"),
+      JSON.stringify({ counter: 5, lastSpawnByLabel: { good: 3, bad: "nope", inf: null } }),
+    );
+    const s = await readRrCounter(scratch);
+    expect(s.counter).toBe(5);
+    expect(s.lastSpawnByLabel).toEqual({ good: 3 });
   });
 });

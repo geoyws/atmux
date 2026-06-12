@@ -86,7 +86,7 @@ After the 5 test fixes + ADR §Acceptance §1 amendment + doctor `--fix` doc bul
 
 ## References
 
-- ADR-154 §Phase 3 — `docs/adr/154-driver-inbox-lead-outbox-sqlite-migration.md` (post-hoc authored in eca6628; originally filed as ADR-076 — no 076 ever landed)
+- ADR-076 §Phase 3 — `docs/adr/076-inboxes-sqlite-migration.md` (post-hoc authored in eca6628)
 - templates/briefs/reviewer.md §Audit checklist + §Reject discipline
 - /CLAUDE.md §Docs Discipline (same-commit doc updates + ADR-pointer rule)
 - Memory `feedback_docs_reviews_for_signoff` — this verdict lands in `docs/reviews/` per ADR-091 §EPIC-done #4 convention

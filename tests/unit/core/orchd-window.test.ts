@@ -1,8 +1,10 @@
-// Unit tests for src/core/orchd-window.ts (ADR-202 §Amendment 2026-05-22 II).
+// Unit tests for src/core/orchd-window.ts (ADR-202 §Amendment 2026-05-22 II;
+// committer-presence gate removed per ADR-259).
 //
 // Coverage:
-//   - Gate failures: autoMerge.enabled !== true, no committer/gitter,
-//     ATMUX_HONKER=off all return false without spawning.
+//   - Gate failures: autoMerge.enabled !== true, ATMUX_HONKER=off all return
+//     false without spawning. (No committer/gitter is NO LONGER a gate —
+//     ADR-259: orchd is the merger, committer member optional.)
 //   - Idempotency: window already present → skip spawn.
 //   - Success path: spawns window + sends supervisor wrapper command.
 //   - Failure isolation: tmux.window.newWindow throws → logged + returns
@@ -33,6 +35,10 @@ function team(overrides: Partial<Team> = {}): Team {
       { name: "committer", role: "committer", lane: "misc" },
     ],
     autoMerge: { enabled: true },
+    // ADR-260: fixture opts into orchd mode so the downstream gates
+    // (autoMerge / HONKER / idempotence / spawn) stay exercisable —
+    // the manual-mode default short-circuits before all of them.
+    orchestration: { mode: "orchd" },
     ...overrides,
   } as Team;
 }
@@ -122,6 +128,57 @@ function makeLogger(): { logger: { log: (s: string) => void; ok: (s: string) => 
 }
 
 describe("maybeSpawnOrchdWindow — gating", () => {
+  test("orchestration block absent (ADR-260 default=manual) → returns false, logs reason, no spawn", async () => {
+    // The manual-mode gate fires FIRST — before autoMerge / HONKER /
+    // the rename-probe listWindows call. listWindowsThrows proves the
+    // short-circuit: were the probe reached, the impl would warn +
+    // fall through to a spawn attempt.
+    const { tmux, newWindowCalls } = mockTmux({ listWindowsThrows: true });
+    const { logger, logs } = makeLogger();
+    const result = await maybeSpawnOrchdWindow({
+      team: team({ orchestration: undefined }),
+      session: "atmux::demo",
+      teamRoot: "/srv/demo",
+      tmux,
+      logger,
+      env: {},
+    });
+    expect(result).toBe(false);
+    expect(newWindowCalls).toHaveLength(0);
+    expect(logs.some((l) => l.includes("orchestration.mode=manual"))).toBe(true);
+    expect(logs.some((l) => l.includes("ADR-260"))).toBe(true);
+  });
+
+  test("orchestration.mode='manual' explicit → returns false even with autoMerge.enabled", async () => {
+    const { tmux, newWindowCalls } = mockTmux({});
+    const { logger } = makeLogger();
+    const result = await maybeSpawnOrchdWindow({
+      team: team({ orchestration: { mode: "manual" } }),
+      session: "atmux::demo",
+      teamRoot: "/srv/demo",
+      tmux,
+      logger,
+      env: {},
+    });
+    expect(result).toBe(false);
+    expect(newWindowCalls).toHaveLength(0);
+  });
+
+  test("orchestration.mode='orchd' → proceeds through remaining gates and spawns", async () => {
+    const { tmux, newWindowCalls } = mockTmux({});
+    const { logger } = makeLogger();
+    const result = await maybeSpawnOrchdWindow({
+      team: team({ orchestration: { mode: "orchd" } }),
+      session: "atmux::demo",
+      teamRoot: "/srv/demo",
+      tmux,
+      logger,
+      env: {},
+    });
+    expect(result).toBe(true);
+    expect(newWindowCalls).toHaveLength(1);
+  });
+
   test("autoMerge.enabled !== true → returns false, no spawn", async () => {
     const { tmux, newWindowCalls } = mockTmux({});
     const { logger } = makeLogger();
@@ -137,7 +194,9 @@ describe("maybeSpawnOrchdWindow — gating", () => {
     expect(newWindowCalls).toHaveLength(0);
   });
 
-  test("no committer/gitter role → returns false, no spawn", async () => {
+  test("no committer/gitter role + autoMerge.enabled → STILL spawns (committer optional, ADR-259)", async () => {
+    // ADR-259: orchd IS the merger; the human committer slot is optional.
+    // Spawn gates on autoMerge.enabled (+ honker), NOT committer-presence.
     const { tmux, newWindowCalls } = mockTmux({});
     const { logger } = makeLogger();
     const result = await maybeSpawnOrchdWindow({
@@ -153,11 +212,11 @@ describe("maybeSpawnOrchdWindow — gating", () => {
       logger,
       env: {},
     });
-    expect(result).toBe(false);
-    expect(newWindowCalls).toHaveLength(0);
+    expect(result).toBe(true);
+    expect(newWindowCalls).toHaveLength(1);
   });
 
-  test("legacy 'gitter' role accepted as committer-equivalent (ADR-159 grace)", async () => {
+  test("committer/gitter present + autoMerge.enabled → spawns (committer still allowed, ADR-259)", async () => {
     const { tmux, newWindowCalls } = mockTmux({});
     const { logger } = makeLogger();
     const result = await maybeSpawnOrchdWindow({
@@ -440,13 +499,22 @@ describe("maybeSpawnOrchdWindow — circuit-breaker backlog-restart tolerance (T
     const stubBash =
       `n=$(cat "${stubCounter}"); n=$((n + 1)); echo "$n" > "${stubCounter}"; ` +
       `if [[ "$n" -le 3 ]]; then exit 1; else exit 0; fi`;
-    // Replace BOTH the Rust-binary path and the Bun-fallback path with
-    // the stub — the supervisor's `command -v atmux-orchd` check will
-    // fail in this hermetic env (no atmux-orchd installed under tmpRoot),
-    // so the fallback path runs. Patching it is sufficient.
+    // Replace BOTH invocation paths with the stub. `command -v atmux-orchd`
+    // resolves against the REAL PATH (tmpRoot is prepended but the stub is
+    // NOT named atmux-orchd) — so on a host where atmux-orchd IS globally
+    // installed (any deployed machine) the Rust-binary branch runs, not the
+    // Bun fallback. Patching only the fallback made this test pass solely on
+    // hosts WITHOUT atmux-orchd on PATH (it ran the real binary otherwise →
+    // never the clean-exit-on-attempt-4 the assertions need). Stub BOTH
+    // branches so the loop is hermetic regardless of the host's install state.
+    const stubInvocation = `bash -c '${stubBash}' 2>&1 | tee -a .atmux/logs/orchd.log`;
+    cmd = cmd.replace(
+      'ATMUX_ORCHD_TEAM_DIR=$(pwd) atmux-orchd .atmux/state.db 2>&1 | tee -a .atmux/logs/orchd.log',
+      stubInvocation,
+    );
     cmd = cmd.replace(
       'atmux orchd --start 2>&1 | tee -a .atmux/logs/orchd.log',
-      `bash -c '${stubBash}' 2>&1 | tee -a .atmux/logs/orchd.log`,
+      stubInvocation,
     );
     // Tighten the inter-crash backoff so the test finishes well under
     // 60s — the bash supervisor sleeps 5s between restarts in prod,
@@ -508,10 +576,17 @@ describe("maybeSpawnOrchdWindow — circuit-breaker backlog-restart tolerance (T
     });
 
     let cmd = sendKeysCalls[0]?.keys ?? "";
-    // Always-fail stub.
+    // Always-fail stub on BOTH invocation paths (see the 3-crash test —
+    // the Rust-binary branch runs when atmux-orchd is on the host PATH, so
+    // stubbing only the Bun fallback leaves the real binary running here).
+    const failStub = `bash -c 'exit 1' 2>&1 | tee -a .atmux/logs/orchd.log`;
+    cmd = cmd.replace(
+      'ATMUX_ORCHD_TEAM_DIR=$(pwd) atmux-orchd .atmux/state.db 2>&1 | tee -a .atmux/logs/orchd.log',
+      failStub,
+    );
     cmd = cmd.replace(
       'atmux orchd --start 2>&1 | tee -a .atmux/logs/orchd.log',
-      `bash -c 'exit 1' 2>&1 | tee -a .atmux/logs/orchd.log`,
+      failStub,
     );
     cmd = cmd.replace("sleep 5", "sleep 0");
 

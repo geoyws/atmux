@@ -50,6 +50,7 @@ import {
   requireTeam,
   resolveCallerScope,
 } from "../core/common.ts";
+import { serializeTickResult } from "../core/auto-merge-invoke.ts";
 import {
   type EpicMergeContext,
   type PerformEpicMergeResult,
@@ -865,16 +866,25 @@ async function defaultDispatchDissolve(epicId: string, by: string): Promise<bool
 
 // ---------- Result logging ----------
 
+// The printed line is produced by the SHARED `serializeTickResult`
+// (ADR-255 §D1) so the in-cage auto-merge consumer
+// (`src/core/auto-merge-invoke.ts::parseTickResult`) reads exactly what
+// this verb writes — producer + consumer cannot drift independently.
 function logTickResult(
   result: PerformEpicMergeResult,
   logger: Logger,
   teamName: string,
   parentBase: string,
 ): void {
-  const verdict = result.changed ? "advanced" : "no-op";
-  const sha = result.mergedSha !== undefined ? ` sha=${result.mergedSha}` : "";
-  const dispatched = result.dissolveDispatched ? " dissolve-dispatched" : "";
   logger.log(
-    `epic-merge tick: team='${teamName}' parentBase='${parentBase}' state='${result.state}' ${verdict}${sha}${dispatched} reason='${result.reason}'`,
+    serializeTickResult({
+      team: teamName,
+      parentBase,
+      state: result.state,
+      verdict: result.changed ? "advanced" : "no-op",
+      ...(result.mergedSha !== undefined ? { mergedSha: result.mergedSha } : {}),
+      dissolveDispatched: result.dissolveDispatched,
+      reason: result.reason,
+    }),
   );
 }

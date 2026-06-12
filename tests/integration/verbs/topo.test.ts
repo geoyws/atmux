@@ -1041,6 +1041,7 @@ describe("topo --reap --apply --yes — non-interactive batch", () => {
     const reap = makeStubReapDeps();
     const log = makeLogger();
     await topo(["--reap", "--apply", "--yes"], {
+      callerScope: () => "driver",
       io,
       seenState: pastGraceForKeys([
         "cron-block-without-worktree::atmux:team=a",
@@ -1061,6 +1062,7 @@ describe("topo --reap --apply --yes — non-interactive batch", () => {
     const reap = makeStubReapDeps();
     const log = makeLogger();
     await topo(["--reap", "--apply", "--yes", "--json"], {
+      callerScope: () => "driver",
       io,
       seenState: pastGraceForKeys(["cron-block-without-worktree::atmux:team=a"]),
       saveSeenState: async () => {},
@@ -1084,6 +1086,7 @@ describe("topo --reap --apply — interactive prompt", () => {
       responses[pIdx++] ?? "N";
     const log = makeLogger();
     await topo(["--reap", "--apply"], {
+      callerScope: () => "driver",
       io,
       seenState: pastGraceForKeys(["cron-block-without-worktree::atmux:team=a"]),
       saveSeenState: async () => {},
@@ -1100,6 +1103,7 @@ describe("topo --reap --apply — interactive prompt", () => {
     const prompt = async (): Promise<ReapPromptResponse> => "N";
     const log = makeLogger();
     await topo(["--reap", "--apply"], {
+      callerScope: () => "driver",
       io,
       seenState: pastGraceForKeys(["cron-block-without-worktree::atmux:team=a"]),
       saveSeenState: async () => {},
@@ -1125,6 +1129,7 @@ describe("topo --reap --apply — interactive prompt", () => {
     };
     const log = makeLogger();
     await topo(["--reap", "--apply"], {
+      callerScope: () => "driver",
       io,
       seenState: pastGraceForKeys([
         "cron-block-without-worktree::atmux:team=a",
@@ -1148,6 +1153,7 @@ describe("topo --reap --apply — interactive prompt", () => {
     const prompt = async (): Promise<ReapPromptResponse> => "q";
     const log = makeLogger();
     await topo(["--reap", "--apply"], {
+      callerScope: () => "driver",
       io,
       seenState: pastGraceForKeys([
         "cron-block-without-worktree::atmux:team=a",
@@ -1170,6 +1176,7 @@ describe("topo --reap --apply — interactive prompt", () => {
       responses[pIdx++] ?? "N";
     const log = makeLogger();
     await topo(["--reap", "--apply"], {
+      callerScope: () => "driver",
       io,
       seenState: pastGraceForKeys(["cron-block-without-worktree::atmux:team=a"]),
       saveSeenState: async () => {},
@@ -1192,6 +1199,7 @@ describe("topo --reap --class — filter", () => {
     const reap = makeStubReapDeps();
     const log = makeLogger();
     await topo(["--reap", "--apply", "--yes", "--class", "cron-block-without-worktree"], {
+      callerScope: () => "driver",
       io,
       seenState: pastGraceForKeys([
         "cron-block-without-worktree::atmux:team=a",
@@ -1227,6 +1235,7 @@ describe("topo --reap --apply — Gate failures route to refused[]", () => {
     });
     const log = makeLogger();
     await topo(["--reap", "--apply", "--yes", "--json"], {
+      callerScope: () => "driver",
       io: stubIO,
       seenState: pastGraceForKeys(["branch-without-row::atmux-geoyws-epic-e-stale"]),
       saveSeenState: async () => {},
@@ -1245,6 +1254,7 @@ describe("topo --reap --apply — Gate failures route to refused[]", () => {
     reap.deps.isCageActive = async () => true;
     const log = makeLogger();
     await topo(["--reap", "--apply", "--yes", "--json"], {
+      callerScope: () => "driver",
       io,
       seenState: pastGraceForKeys(["cage-tmux-without-registry::e-x"]),
       saveSeenState: async () => {},
@@ -1267,6 +1277,7 @@ describe("topo --reap human render — coverage of refused/failed/bypassed branc
     };
     const log = makeLogger();
     await topo(["--reap", "--apply", "--yes"], {
+      callerScope: () => "driver",
       io,
       seenState: pastGraceForKeys(["cron-block-without-worktree::atmux:team=a"]),
       saveSeenState: async () => {},
@@ -1284,6 +1295,7 @@ describe("topo --reap human render — coverage of refused/failed/bypassed branc
     reap.deps.isCageActive = async () => true;
     const log = makeLogger();
     await topo(["--reap", "--apply", "--yes"], {
+      callerScope: () => "driver",
       io,
       seenState: pastGraceForKeys(["cage-tmux-without-registry::e-x"]),
       saveSeenState: async () => {},
@@ -1301,6 +1313,7 @@ describe("topo --reap human render — coverage of refused/failed/bypassed branc
     reap.deps.isCageActive = async () => true;
     const log = makeLogger();
     await topo(["--reap", "--apply", "--yes", "--skip-checks"], {
+      callerScope: () => "driver",
       io,
       seenState: pastGraceForKeys(["cage-tmux-without-registry::e-x"]),
       saveSeenState: async () => {},
@@ -1340,6 +1353,7 @@ describe("topo --reap --json — coverage of skipped/failed JSON branches", () =
     };
     const log = makeLogger();
     await topo(["--reap", "--apply", "--yes", "--json"], {
+      callerScope: () => "driver",
       io,
       seenState: pastGraceForKeys(["cron-block-without-worktree::atmux:team=a"]),
       saveSeenState: async () => {},

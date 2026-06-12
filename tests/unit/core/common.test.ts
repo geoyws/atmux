@@ -109,6 +109,33 @@ describe("getAtmuxDir", () => {
     expect(got).toBe(join(root, ".atmux"));
   });
 
+  test("strip-back: cwd inside .atmux/worktrees/<m>/ resolves to canonical (t-62/t-63)", async () => {
+    // Simulates the lead-worktree-stub bug: project root has its own
+    // `.atmux/`; per-member worktrees live at `<root>/.atmux/worktrees/<m>/`
+    // and may carry their own stub `.atmux/`. Verbs run from the
+    // worktree subdir MUST resolve to the canonical project-root
+    // `.atmux/`, not the worktree stub.
+    const root = join(dir, "proj");
+    const canonical = join(root, ".atmux");
+    const worktreeStub = join(root, ".atmux", "worktrees", "lead", ".atmux");
+    await mkdir(canonical, { recursive: true });
+    await mkdir(worktreeStub, { recursive: true });
+    const leadCwd = join(root, ".atmux", "worktrees", "lead");
+    const got = await getAtmuxDir({ env: {}, cwd: leadCwd, stopAt: dir });
+    expect(got).toBe(canonical);
+  });
+
+  test("strip-back: cwd directly inside .atmux/ also resolves to canonical", async () => {
+    // The init-from-inside-.atmux/ footgun (per t-62 + adb0fa7
+    // orchd-window guard). Walk MUST find the parent's `.atmux/`, not
+    // try to scaffold a nested one.
+    const root = join(dir, "proj");
+    const canonical = join(root, ".atmux");
+    await mkdir(join(canonical, "logs"), { recursive: true });
+    const got = await getAtmuxDir({ env: {}, cwd: join(canonical, "logs"), stopAt: dir });
+    expect(got).toBe(canonical);
+  });
+
   test("falls back to cwd/.atmux when walk-up exhausted", async () => {
     const lonely = join(dir, "lonely");
     await mkdir(lonely, { recursive: true });

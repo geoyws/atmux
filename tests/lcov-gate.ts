@@ -49,6 +49,17 @@ export interface GateResult {
     found: number;
     pct: number;
   }>;
+  /**
+   * Tracked source files that the gate EXPECTED to see in the lcov but
+   * which had NO `SF:` record at all — i.e. fully-untested files (0%
+   * coverage). Bun emits no record for a file that no test ever loads,
+   * so these are invisible to the per-file `%%` checks above. Without
+   * this completeness diff a 0%-coverage daily-firing destructive file
+   * passes the gate silently (ADR-254 / finding
+   * `test-lcov-gate-blind-to-zero-coverage`). Empty array when no
+   * tracked universe was supplied (back-compat: lcov-only mode).
+   */
+  missing: ReadonlyArray<string>;
   trackedCount: number;
   ignoredCount: number;
 }
@@ -60,6 +71,17 @@ export interface GateOptions {
   ignorePatterns: ReadonlyArray<string>;
   /** Resolve relative paths against this dir (defaults to cwd). */
   cwd?: string;
+  /**
+   * The full universe of tracked source files the gate expects to see
+   * covered, expressed as cwd-relative POSIX paths (e.g.
+   * `src/core/foo.ts`). When supplied, the gate diffs this set against
+   * the `SF:` paths present in the lcov and FAILS for any tracked file
+   * absent from the lcov — closing the "0%-coverage file is invisible"
+   * blind spot (ADR-254). When omitted, the gate runs in legacy
+   * lcov-only mode (iterates only files present in the parsed lcov).
+   * `runCli` always supplies it via {@link enumerateTrackedSources}.
+   */
+  trackedUniverse?: ReadonlyArray<string>;
 }
 
 // ---------- LCOV parser ----------
@@ -160,6 +182,21 @@ export function extractIgnorePatterns(bunfigText: string): string[] {
 // ---------- Glob matching ----------
 
 /**
+ * Normalize a path to its cwd-relative form (POSIX separators, no
+ * leading slash). Absolute paths under `cwd` get the prefix stripped;
+ * paths already relative pass through unchanged. This is the canonical
+ * key the completeness diff (tracked-universe vs lcov-present) joins on
+ * — Bun emits cwd-relative `SF:` paths (`src/foo.ts`) while
+ * `Bun.Glob.scanSync({ absolute: true })` yields absolute paths, so
+ * both sides MUST be funneled through the same normalizer or every file
+ * would look "missing".
+ */
+export function toRelative(path: string, cwd: string): string {
+  const cwdNorm = cwd.endsWith("/") ? cwd : `${cwd}/`;
+  return path.startsWith(cwdNorm) ? path.slice(cwdNorm.length) : path;
+}
+
+/**
  * Test whether `path` matches any of the given globs. Uses Bun's native
  * `Bun.Glob` (`tests/**` style) and tries against both the raw path and
  * the cwd-relative path so absolute lcov paths still match patterns
@@ -170,12 +207,48 @@ export function isIgnored(
   patterns: ReadonlyArray<string>,
   cwd: string,
 ): boolean {
-  const rel = path.startsWith(cwd) ? path.slice(cwd.length).replace(/^\//, "") : path;
+  const rel = toRelative(path, cwd);
   for (const pattern of patterns) {
     const glob = new Bun.Glob(pattern);
     if (glob.match(path) || glob.match(rel)) return true;
   }
   return false;
+}
+
+// ---------- Tracked-universe enumeration ----------
+
+/**
+ * Enumerate the real tracked-source universe by scanning `src/**` /*.ts
+ * on disk, minus any file matching `coveragePathIgnorePatterns` (via the
+ * SAME {@link isIgnored} logic the gate uses for present-file
+ * exclusion — single source of truth, no divergent duplication).
+ * Returns cwd-relative POSIX paths suitable for the completeness diff in
+ * {@link evaluateGate}.
+ *
+ * Why this exists (ADR-254): Bun emits NO `SF:` record for a file that
+ * no test ever loads. `evaluateGate`'s per-file checks iterate ONLY
+ * files present in the parsed lcov, so a fully-untested file is
+ * invisible and the gate prints "✅" + exits 0. Enumerating the
+ * on-disk universe and diffing it against the lcov-present set is what
+ * makes a 0%-coverage file fail the gate instead of hiding.
+ *
+ * Scoped to `src/**` per CLAUDE.md filesystem-walker discipline (never
+ * rooted at `/`). `scanSync` is synchronous + fast for a few hundred
+ * files; the gate is a one-shot CLI, not a hot path.
+ */
+export function enumerateTrackedSources(
+  cwd: string,
+  ignorePatterns: ReadonlyArray<string>,
+): string[] {
+  const glob = new Bun.Glob("src/**/*.ts");
+  const out: string[] = [];
+  for (const abs of glob.scanSync({ cwd, absolute: true })) {
+    const rel = toRelative(abs, cwd);
+    if (isIgnored(abs, ignorePatterns, cwd)) continue;
+    out.push(rel);
+  }
+  out.sort();
+  return out;
 }
 
 // ---------- Gate ----------
@@ -192,6 +265,21 @@ export function evaluateGate(
     if (isIgnored(f.path, opts.ignorePatterns, cwdNorm)) ignored.push(f);
     else tracked.push(f);
   }
+  // Completeness diff (ADR-254): any tracked-universe file with NO SF:
+  // record in the lcov is a 0%-coverage breach Bun's per-file iteration
+  // can't see. Build the set of lcov-present paths (normalized to
+  // cwd-relative, the same key space the universe is expressed in) and
+  // subtract it from the supplied universe. Skipped entirely when no
+  // universe was supplied (legacy lcov-only mode).
+  const presentRel = new Set<string>(files.map((f) => toRelative(f.path, cwdNorm)));
+  const missing: string[] = [];
+  if (opts.trackedUniverse !== undefined) {
+    for (const rel of opts.trackedUniverse) {
+      if (!presentRel.has(rel)) missing.push(rel);
+    }
+    missing.sort();
+  }
+
   const failures: Array<GateResult["failures"][number]> = [];
   const min = opts.threshold;
   for (const f of tracked) {
@@ -236,8 +324,9 @@ export function evaluateGate(
     }
   }
   return {
-    ok: failures.length === 0,
+    ok: failures.length === 0 && missing.length === 0,
     failures,
+    missing,
     trackedCount: tracked.length,
     ignoredCount: ignored.length,
   };
@@ -253,9 +342,20 @@ export function formatGateReport(result: GateResult): string {
     );
     return `${lines.join("\n")}\n`;
   }
+  const breachCount = result.failures.length + result.missing.length;
   lines.push(
-    `lcov-gate: ❌ ${result.failures.length} coverage breach(es) across ${result.trackedCount} tracked file(s):`,
+    `lcov-gate: ❌ ${breachCount} coverage breach(es) across ${result.trackedCount} tracked file(s):`,
   );
+  // 0%-coverage breaches first (ADR-254) — a missing SF: record is the
+  // most severe class: the file is fired in prod but no test loads it.
+  if (result.missing.length > 0) {
+    lines.push(
+      `  ${result.missing.length} tracked file(s) with NO coverage record (0% — never loaded by any test):`,
+    );
+    for (const m of result.missing) {
+      lines.push(`  - ${m}  0% (no SF: record in lcov)`);
+    }
+  }
   for (const f of result.failures) {
     const pctStr = (f.pct * 100).toFixed(2);
     lines.push(`  - ${f.path}  ${f.dimension}: ${f.hit}/${f.found}  (${pctStr}%)`);
@@ -270,6 +370,13 @@ interface CliArgs {
   bunfigPath: string;
   threshold: number;
   quiet: boolean;
+  /**
+   * When `true`, skip the on-disk tracked-universe completeness diff
+   * (ADR-254) and run in legacy lcov-only mode. Off by default — the
+   * completeness check is the whole point of the gate fix. The escape
+   * hatch exists for scratch/CI experiments that point `--lcov` at a
+   * synthetic file with no matching `src/` tree on disk. */
+  noCompleteness: boolean;
 }
 
 export function parseArgs(argv: ReadonlyArray<string>): CliArgs {
@@ -278,6 +385,7 @@ export function parseArgs(argv: ReadonlyArray<string>): CliArgs {
     bunfigPath: "bunfig.toml",
     threshold: 1.0,
     quiet: false,
+    noCompleteness: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -298,6 +406,9 @@ export function parseArgs(argv: ReadonlyArray<string>): CliArgs {
       }
       case "--quiet":
         out.quiet = true;
+        break;
+      case "--no-completeness":
+        out.noCompleteness = true;
         break;
       default:
         // ignore unknown — keeps the script forgiving for CI experiments
@@ -327,7 +438,19 @@ export async function runCli(argv: ReadonlyArray<string>, cwd: string): Promise<
   }
   const ignorePatterns = extractIgnorePatterns(bunfigText);
   const files = parseLcov(lcovText);
-  const result = evaluateGate(files, { threshold: args.threshold, ignorePatterns, cwd });
+  // Enumerate the real on-disk tracked universe (ADR-254) unless the
+  // operator opted out. This is what makes a 0%-coverage file FAIL the
+  // gate instead of being invisible (Bun emits no SF: record for a file
+  // no test loads).
+  const trackedUniverse = args.noCompleteness
+    ? undefined
+    : enumerateTrackedSources(cwd, ignorePatterns);
+  const result = evaluateGate(files, {
+    threshold: args.threshold,
+    ignorePatterns,
+    cwd,
+    ...(trackedUniverse !== undefined ? { trackedUniverse } : {}),
+  });
   if (!result.ok || !args.quiet) {
     process.stdout.write(formatGateReport(result));
   }

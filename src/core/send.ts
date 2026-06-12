@@ -131,6 +131,28 @@ export interface SendOpts {
    * injection). Only honored when {@link expectVerifier} is set AND
    * {@link escalationLogPath} is not. */
   home?: string;
+  /**
+   * ADR-205 §D2 per-call escape hatch — bypass the bracketed-paste
+   * envelope and send the body via a literal `tmux send-keys -l`
+   * keystroke instead. Default `false` (bracketed-paste applies, per
+   * Option 2 of ADR-205).
+   *
+   * Reserve this for callers that genuinely need literal-keystroke
+   * semantics: control sequences, single-keystroke nav, copy-mode
+   * commands, raw key passthrough. For ALL ordinary message bodies
+   * leave it unset so the bracketed-paste envelope (ESC[200~ … ESC[201~)
+   * keeps slash-leading bodies from triggering the compose-box popup
+   * (the 2026-05-21 wedge ADR-205 closes).
+   *
+   * Mutually exclusive with {@link expectVerifier}: the verify-and-
+   * escalate path (ADR-138 T3b) wraps the C-m submit and is only
+   * meaningful for the bracketed-paste submit shape. When BOTH are set
+   * `rawSendKeys` wins and the verifier is ignored (the raw literal
+   * path has no separate C-m submit step to verify); callers should not
+   * combine them. The escape is explicit and grep-able — reviewer
+   * enforces during code-review (ADR-205 §D3).
+   */
+  rawSendKeys?: boolean;
 }
 
 /**
@@ -235,6 +257,7 @@ export async function sendToMember(
   const preSubmitDelayMs = opts?.preSubmitDelayMs ?? 300;
   const verifyDelayMs = opts?.verifyDelayMs ?? 2000;
   const bufferName = opts?.bufferName ?? defaultBufferName();
+  const rawSendKeys = opts?.rawSendKeys ?? false;
 
   // 1. Pre-send capture + classify (lib/send.sh:86-92).
   const preCapture = await tmux.pane.capturePane({
@@ -262,6 +285,39 @@ export async function sendToMember(
     },
     sleep,
   });
+
+  // 2r. ADR-205 §D2 raw escape hatch — bypass the bracketed-paste
+  //     envelope entirely and emit the body via a single literal
+  //     `tmux send-keys -l <msg> [Enter]`. This is the pre-ADR-205
+  //     legacy keystroke shape, reserved for callers that need
+  //     literal-keystroke semantics (control sequences, single-key
+  //     nav, copy-mode commands). The literal send carries its own
+  //     Enter (suppressed under --no-submit), so there is no separate
+  //     paste-buffer step, no settle floor, and no C-m submit; the
+  //     bracketed-paste-Enter-swallow bug only afflicts the paste path
+  //     this branch skips. `expectVerifier` is intentionally ignored
+  //     here — it verifies the bracketed-paste C-m submit that this
+  //     branch does not perform (SendOpts.rawSendKeys doc note).
+  if (rawSendKeys) {
+    await tmux.pane.sendKeys({
+      target: sendTarget,
+      keys: msg,
+      literal: true,
+      enter: !noSubmit,
+    });
+    if (noSubmit) {
+      return { kind: "queued", preSnapshot, preWarn, preflight };
+    }
+    await appendSendLog(atmuxDir, target.member, msg);
+    if (verify) {
+      await sleep(verifyDelayMs);
+      const post = await tmux.pane.capturePane({ target: target.target, start: -postLines });
+      if (looksLikeNotConsumed(post, msg)) {
+        return { kind: "warn-not-consumed", preSnapshot, preWarn, preflight };
+      }
+    }
+    return { kind: "ok", preSnapshot, preWarn, preflight };
+  }
 
   // 2. Load the body into a buffer + paste it into the target pane.
   //    Bash uses a tmpfile; we pipe directly via spawn's stdin (the

@@ -53,6 +53,7 @@ import {
   checkWebhook,
   checkWhipConfigDrift,
   checkWorktreeIsolation,
+  checkWorktreeNestedStateDb,
   collectSafeOrphanBranches,
   collectStarvingMembers,
   compareTmuxVersion,
@@ -2536,6 +2537,112 @@ describe("checkWorktreeIsolation", () => {
     const projectRoot = atmuxDir.replace(/\/?\.atmux\/?$/, "") || "/";
     return join(projectRoot, ".atmux", "worktrees", member);
   }
+});
+
+// ---------- ADR-245 single-kanban invariant: checkWorktreeNestedStateDb ----------
+
+describe("checkWorktreeNestedStateDb", () => {
+  let atmuxDir: string;
+  beforeEach(async () => {
+    atmuxDir = await mkdtemp(join(tmpdir(), "atmux-doctor-nested-db-"));
+  });
+  afterEach(async () => {
+    await rm(atmuxDir, { recursive: true, force: true });
+  });
+
+  function team(members: ReadonlyArray<{ name: string }>): Team {
+    return { name: "demo", members } as Team;
+  }
+  /** Plant a real (non-empty) stub state.db at
+   *  `<atmuxDir>/worktrees/<member>/.atmux/state.db`. Returns its path. */
+  async function plantNestedDb(member: string): Promise<string> {
+    const dbPath = join(atmuxDir, "worktrees", member, ".atmux", "state.db");
+    await mkdir(join(atmuxDir, "worktrees", member, ".atmux"), { recursive: true });
+    // A SQLite header byte-string so the file is plausibly a kanban, not
+    // an empty placeholder — the probe keys on existence, but this keeps
+    // the fixture honest about what leaked.
+    await writeFile(dbPath, "SQLite format 3 ");
+    return dbPath;
+  }
+
+  test("team === null → empty rows (checkTeam already surfaced the failure)", async () => {
+    expect(await checkWorktreeNestedStateDb(null, atmuxDir)).toEqual([]);
+  });
+
+  test("worktrees/ dir absent (ENOENT) → empty rows (no isolation in use)", async () => {
+    // atmuxDir exists but has no worktrees/ subdir → defaultReadWorktreeDir
+    // returns null. Must NOT crash and MUST emit no rows.
+    const rows = await checkWorktreeNestedStateDb(team([{ name: "alice" }]), atmuxDir);
+    expect(rows).toEqual([]);
+  });
+
+  test("worktree dir present but NO nested state.db → empty rows (the healthy case)", async () => {
+    // alice's worktree carries only a team.json (allowed per ADR-245) — no
+    // state.db. The probe must stay silent.
+    await mkdir(join(atmuxDir, "worktrees", "alice", ".atmux"), { recursive: true });
+    await writeFile(join(atmuxDir, "worktrees", "alice", ".atmux", "team.json"), "{}");
+    const rows = await checkWorktreeNestedStateDb(team([{ name: "alice" }]), atmuxDir);
+    expect(rows).toEqual([]);
+  });
+
+  test("planted nested state.db → RED fail row with `rm <path>` hint citing the invariant", async () => {
+    const dbPath = await plantNestedDb("alice");
+    const rows = await checkWorktreeNestedStateDb(team([{ name: "alice" }]), atmuxDir);
+    expect(rows).toHaveLength(1);
+    const row = rows[0];
+    expect(row?.status).toBe("red");
+    expect(row?.label).toBe("worktree:nested-state-db:alice");
+    // The detail must name the exact leaked path AND cite the invariant.
+    expect(row?.detail).toContain(dbPath);
+    expect(row?.detail).toContain("ADR-245");
+    expect(row?.detail).toContain("t-62-df4e59bd");
+    // The hint must be the actionable cleanup command for THIS path.
+    expect(row?.hint).toContain(`rm ${dbPath}`);
+  });
+
+  test("multiple worktrees with nested dbs → one RED row each, scoped to the offending dir", async () => {
+    const aliceDb = await plantNestedDb("alice");
+    const bobDb = await plantNestedDb("bob");
+    // carol's worktree is clean — present but no state.db.
+    await mkdir(join(atmuxDir, "worktrees", "carol", ".atmux"), { recursive: true });
+    await writeFile(join(atmuxDir, "worktrees", "carol", ".atmux", "team.json"), "{}");
+
+    const rows = await checkWorktreeNestedStateDb(
+      team([{ name: "alice" }, { name: "bob" }, { name: "carol" }]),
+      atmuxDir,
+    );
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r) => r.status === "red")).toBe(true);
+    const labels = rows.map((r) => r.label).sort();
+    expect(labels).toEqual([
+      "worktree:nested-state-db:alice",
+      "worktree:nested-state-db:bob",
+    ]);
+    const alice = rows.find((r) => r.label === "worktree:nested-state-db:alice");
+    const bob = rows.find((r) => r.label === "worktree:nested-state-db:bob");
+    expect(alice?.hint).toContain(`rm ${aliceDb}`);
+    expect(bob?.hint).toContain(`rm ${bobDb}`);
+    // carol leaked nothing → no row referencing her.
+    expect(rows.some((r) => r.label.includes("carol"))).toBe(false);
+  });
+
+  test("non-directory entry under worktrees/ is skipped (not probed)", async () => {
+    // A stray FILE named like a worktree must not be probed (join would
+    // be nonsensical, and existsSync would be false anyway — but the
+    // isDirectory guard is what we assert here). Injected readDir so we
+    // can mark the entry as a non-directory deterministically; the
+    // existsSync injection proves the guard short-circuits BEFORE probing.
+    let probed = false;
+    const rows = await checkWorktreeNestedStateDb(team([{ name: "alice" }]), atmuxDir, {
+      readWorktreeDir: async () => [{ name: "stray-file", isDirectory: false }],
+      existsSync: () => {
+        probed = true;
+        return true; // would emit a false RED if the guard were missing
+      },
+    });
+    expect(rows).toEqual([]);
+    expect(probed).toBe(false);
+  });
 });
 
 // ---------- ADR-084 W2: collectSafeOrphanBranches ----------

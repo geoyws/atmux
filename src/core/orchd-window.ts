@@ -21,12 +21,14 @@
 // when the orchd window already exists.
 //
 // Eligibility gate: orchd spawns ONLY when ALL of the following hold:
-//   1. team.autoMerge?.enabled === true                   (same gate as committer --sweep / --drain)
-//   2. team has a member with role ∈ {committer, gitter}  (someone for orchd to dispatch TO)
+//   1. resolveOrchestrationMode(team) === "orchd"         (ADR-260 — default is "manual": no orchd,
+//                                                          LLMs self-manage the fleet)
+//   2. team.autoMerge?.enabled === true                   (same gate as committer --sweep / --drain)
 //   3. env.ATMUX_HONKER is not explicitly "off"           (substrate kill-switch off → no NOTIFY path)
+// (Former committer/gitter-presence gate REMOVED per ADR-259.)
 
 import type { TmuxNamespace } from "../abstractions/tmux.ts";
-import type { Team } from "../schema/team.ts";
+import { resolveOrchestrationMode, type Team } from "../schema/team.ts";
 import type { Logger } from "./tui.ts";
 
 /** Per-team service window for orchd. The `__name__` brackets mark
@@ -67,18 +69,51 @@ export async function maybeSpawnOrchdWindow(
 ): Promise<boolean> {
   const { team, session, teamRoot, tmux, logger, env } = deps;
 
-  // Gate 1: autoMerge.enabled === true
+  // Gate 0: BAN nested .atmux paths (t-62-df4e59bd + operator-direct
+  // 2026-05-26 "BAN nested .atmux please"). The supervisor's
+  // `mkdir -p .atmux/logs` + relative `.atmux/state.db` arg below
+  // assume pwd is the project root; if pwd is already inside .atmux/,
+  // those paths resolve to .atmux/.atmux/, creating a parallel state.db
+  // that no atmux verb queries. Operator's invariant: a nested
+  // .atmux/.atmux/ must be impossible by construction.
+  const normalizedTeamRoot = teamRoot.replace(/\/+$/, "");
+  if (
+    normalizedTeamRoot.endsWith("/.atmux") ||
+    normalizedTeamRoot.includes("/.atmux/.atmux")
+  ) {
+    logger.warn(
+      `orchd: refusing to spawn — teamRoot '${teamRoot}' is or contains a nested .atmux path. ` +
+        `Invoke atmux from the project root (the dir holding .atmux/team.json), ` +
+        `not from inside .atmux/. Worktrees share the parent team's kanban; ` +
+        `they MUST NOT have their own state.db (see t-62-df4e59bd).`,
+    );
+    return false;
+  }
+
+  // Gate 1 (ADR-260): orchestration.mode must be explicitly "orchd".
+  // The default (absent block) is "manual" — the operator's standing
+  // assessment is that LLMs can manage their own fleet better than
+  // atmux's deterministic automation can at the moment, so orchd and
+  // every consumer it hosts are opt-in. Manual-mode teams run the
+  // fleet via `atmux member status` + claim/done/dispatch by hand.
+  if (resolveOrchestrationMode(team) !== "orchd") {
+    logger.log(
+      `orchd: '${team.name}' orchestration.mode=manual — skipping orchd window (ADR-260; set orchestration.mode="orchd" in team.json to opt back in)`,
+    );
+    return false;
+  }
+  // Gate 2: autoMerge.enabled === true
   if (team.autoMerge?.enabled !== true) {
     return false;
   }
-  // Gate 2: member with committer / gitter role
-  const hasCommitter = team.members.some((m) => {
-    const role = (m as { role?: string }).role;
-    return role === "committer" || role === "gitter";
-  });
-  if (!hasCommitter) {
-    return false;
-  }
+  // (Former Gate 2 — committer/gitter-presence — REMOVED per ADR-259.)
+  //   orchd IS the merger (no-LLM, ADR-134/091/233); a human committer
+  //   member is optional. The merge state machine fans in every
+  //   `<base>-<member>` branch on `task.done` regardless of roster
+  //   composition, so gating spawn on a committer slot over-restricted
+  //   (forced a roster slot that did nothing orchd does not already do)
+  //   and blocked leaner teams (ADR-258 §D6a). Eligibility is now
+  //   autoMerge.enabled (above) + ATMUX_HONKER (below).
   // Gate 3: ATMUX_HONKER not explicitly disabled. orchd's value
   //         proposition is the Honker NOTIFY/LISTEN wake; when off,
   //         the cron `committer --drain` handles event drain and we

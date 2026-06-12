@@ -260,7 +260,7 @@ Cross-refs: ADR-132 §Amendment 2026-05-19 (sentinel boundary side), ADR-027 (do
 
 ### 2026-05-22 — Doctor probes consume the fleet topo manifest
 
-Per [ADR-222](222-cage-topography-read-only-verb-surface.md) §D6, the fleet manifest + orphan classifier are consolidated under `atmux topo`. Doctor probes consume the same manifest rather than re-probing per-class — the cage-tmux-without-registry / cron-block-without-worktree / worktree-without-cage / branch-without-row probes now filter `topo --json`'s `orphans[]` array. ADR-219 §D3's narrow `dissolve-epic` probe stays for one release window then collapses into topo's unified view (per ADR-222 §OQ4).
+Per [ADR-222](222-topo-fleet-observability.md) §D6, the fleet manifest + orphan classifier are consolidated under `atmux topo`. Doctor probes consume the same manifest rather than re-probing per-class — the cage-tmux-without-registry / cron-block-without-worktree / worktree-without-cage / branch-without-row probes now filter `topo --json`'s `orphans[]` array. ADR-219 §D3's narrow `dissolve-epic` probe stays for one release window then collapses into topo's unified view (per ADR-222 §OQ4).
 
 ### 2026-05-23 — Sentinel role deleted per e-be01fc89; pane-liveness flows on-demand + orchd
 

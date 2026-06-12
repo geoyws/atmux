@@ -1,6 +1,6 @@
 # ADR-193: Restore documented `atmux task add` flags — `--epic` / `--story` / `--deliverable`
 
-**Status**: proposed (deferred: task add `--epic`/`--story`/`--deliverable` flags rejected by CLI as of 2026-05-22 audit — `atmux task add` USAGE line accepts only `--body|--assignee|--deps|--priority|--lane|--driver-only`; original ratification 2026-05-21 was bookkeeping — see §Amendment 2026-05-22 below.)
+**Status**: accepted (impl shipped 2026-06-05 — `atmux task add`/`task update` accept `--epic`/`--story`/`--deliverable`; see §Amendment 2026-06-05 for the impl receipt + two spec corrections. Prior `proposed (deferred:)` history retained in §Amendment 2026-05-22.)
 **Date**: 2026-05-18
 **Renumbered 2026-05-20**: originally drafted as ADR-172 (`d7586c4` on `geoyws-planner`). Trunk merge `fe8aea1` shipped `docs/adr/172-stop-github-ci-until-stabilise.md` between drafting and rename. Renumbered per "older keeps the number" heuristic (memory `project_adr_collision_resolutions_2026_05_18`). 193 chosen as next free across trunk + geoyws + planner refs.
 **Driver-ref**: ADR-176 §sibling-gap surface 2026-05-17 — criterion (d) in `src/core/lane-drift.ts` requires `.epic` populated on kanban Tasks; at runtime all tasks have `.epic: null` because there is no CLI path to set it.
@@ -119,3 +119,20 @@ Demoted from `Accepted — ratified by driver 2026-05-21` → `proposed (deferre
 **Cross-refs**: `t-b1bd0f9c` (Status-vs-Impl drift audit — this ADR is one of 4 in the Path B cluster post-correction; siblings ADR-173/174/178; ADR-183 was DROPPED from Path B after re-verification confirmed `src/verbs/sentinel.ts:367-381` ships ADR-183 §D1 epic-team scope); `d-7b8d444f-batch` (lead-recorded decision authorizing close-or-§Amendment per gap-class); CLAUDE.md §Source-of-truth chain (deferred-status escape hatch); `b6d634f` (the originating bookkeeping batch).
 
 **Filed as part of Path B cluster per d-7b8d444f-batch + t-b1bd0f9c (Status-vs-Impl audit).**
+
+## §Amendment 2026-06-05 — impl shipped; status flipped back to `accepted` (closes the deferral)
+
+Implemented in `src/verbs/task.ts` + `src/core/kanban.ts`. Flips Status `proposed (deferred:)` → `accepted` per CLAUDE.md §Source-of-truth chain — the impl now matches the documented planner-brief surface, so the §Amendment 2026-05-22 schedule-slip signal is discharged. Receipt:
+
+- **`atmux task add`** accepts `--epic <eid>` / `--story <sid>` / `--deliverable <text>` (`parseAddArgs` + `AddTaskOpts` + `addTask` sets all three in both the SQLite and JSON write paths).
+- **`atmux task update`** accepts the same three (`--epic '' / --story '' / --deliverable ''` clears, matching the verb's existing empty-string-clears convention for `--body`/`--deps`/`--owner`). New `kanban.setTaskEpic` / `setTaskStory` / `setTaskDeliverable` setters mirror `setTaskLane`. Re-parenting an in-progress task is ungated per §Decision.
+- **Tests**: `tests/unit/verbs/task.test.ts` (parser shape/length/empty + verb round-trip + clear + malformed-refuse + field-isolation) and `tests/unit/core/kanban-sqlite.test.ts` (SQLite-branch setter round-trips + missing-id ConfigError). 100% coverage on the new lines.
+
+Two spec corrections vs the 2026-05-18 §Decision — the substance held, two factual premises were stale:
+
+1. **No schema migration was needed.** §Consequences (db lane) + §OQ5 assumed `.deliverable` required `ALTER TABLE tasks ADD COLUMN deliverable`. It did not — the `tasks` table's v0→v1 base DDL (`src/abstractions/sqlite-migrations.ts:38`) **already declares `deliverable TEXT`**, and the Zod schema + repo (`kanban-repo.ts` TaskRow/COLUMNS/bind) already carry it end-to-end. The column was an orphan with no CLI writer. So this shipped as a pure CLI+opts+setter addition with **zero migration / zero schema-version bump** — strictly cheaper than the ADR estimated.
+2. **The id-shape regex was relaxed.** §Validation specified `e-[0-9a-f]{8}` / `s-[0-9a-f]{8}`. That predates the ADR-202 §Amendment-VIII running-number IDs (2026-05-22), under which SQLite-mode ids are `e-1` / `e-1203`. The literal hex8 regex would reject every running-number id. Shipped regex: `/^e-([0-9a-f]{8}|\d+)$/` (and `s-…`) — accepts both the legacy hex8 form and the running-number form. The §OQ1 **no-existence-check** stance is honored exactly: shape-only validation, write-without-existence intentional for cross-worktree decomp.
+
+**Closes kanban task `t-66746ab4`** (sopx driver 2026-05-17 — "task add/update: --epic + --story CLI flags"). That task's acceptance line asked for *existence validation* ("unknown epic id → UsageError"); this was **superseded** by ADR-193 §OQ1's ratified shape-only / no-existence stance (ADR wins over the task per the source-of-truth chain). The task did not name `--deliverable`; ADR-193 governs, so all three shipped together.
+
+**Forward enablement now live**: ADR-173's `atmux task add … --epic <eid>` → `atmux epic show <eid>` decomp-confirm pattern, and ADR-176 criterion (d)'s `.epic`-indexed children map, both had ADR-193 as their runtime prerequisite. The read-side `atmux task list --epic` filter (ADR-174) remains a separate sibling — out of scope here (§OQ4).

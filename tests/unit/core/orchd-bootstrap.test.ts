@@ -35,6 +35,9 @@ import {
   ORCHD_MERGE_TOPIC,
   ORCHD_PUSH_CONSUMER_ID,
   ORCHD_PUSH_TOPIC,
+  ORCHD_LEAD_STALL_ON_STORY_READY_CONSUMER_ID,
+  ORCHD_LEAD_STALL_ON_STORY_UNCLAIMED_CONSUMER_ID,
+  ORCHD_LEAD_STALL_ON_TASK_UNCLAIMED_CONSUMER_ID,
   ORCHD_ROTATION_CONSUMER_ID,
   ORCHD_ROTATION_TOPIC,
   ORCHD_SPAWN_ON_READY_CONSUMER_ID,
@@ -233,5 +236,74 @@ describe("bootstrapOrchd — dep injection threading", () => {
 
     expect(dispatchCalls).toBe(1);
     expect(seenEpicId).toBe(epicId);
+  });
+});
+
+// ADR-247 §D2 — lead-stall watchdog registration gating.
+describe("bootstrapOrchd — lead-stall watchdog (ADR-247 §D2)", () => {
+  const LEAD_STALL_IDS = [
+    ORCHD_LEAD_STALL_ON_STORY_READY_CONSUMER_ID,
+    ORCHD_LEAD_STALL_ON_STORY_UNCLAIMED_CONSUMER_ID,
+    ORCHD_LEAD_STALL_ON_TASK_UNCLAIMED_CONSUMER_ID,
+  ];
+
+  function leadStallDeps(enabled?: boolean) {
+    return {
+      atmuxDir: scratch,
+      team: {
+        name: "atmux",
+        members: [
+          { name: "lead" },
+          { name: "be-1", lane: "be" },
+        ] as never,
+        ...(enabled !== undefined ? { leadStallWatchdog: { enabled } } : {}),
+      },
+      loadSnapshot: async () => ({ stories: [], tasks: [] }),
+    };
+  }
+
+  test("does NOT register the watchdog when leadStallDeps is absent", () => {
+    bootstrapOrchd({ db });
+    for (const id of LEAD_STALL_IDS) {
+      expect(ORCHD_SUBSCRIPTIONS.find((s) => s.consumerId === id)).toBeUndefined();
+    }
+  });
+
+  test("registers all THREE watchdog subscriptions when deps wired + enabled omitted (default on)", () => {
+    const result = bootstrapOrchd({ db, leadStallDeps: leadStallDeps() });
+    const registeredIds = result.registered.map((r) => r.consumerId);
+    for (const id of LEAD_STALL_IDS) {
+      expect(registeredIds).toContain(id);
+      expect(ORCHD_SUBSCRIPTIONS.find((s) => s.consumerId === id)).toBeDefined();
+    }
+    // topics: story.ready / story.unclaimed / task.unclaimed
+    const topics = ORCHD_SUBSCRIPTIONS.filter((s) => LEAD_STALL_IDS.includes(s.consumerId)).map(
+      (s) => s.topic,
+    );
+    expect(topics.sort()).toEqual(["story.ready", "story.unclaimed", "task.unclaimed"]);
+  });
+
+  test("registers the watchdog when enabled === true", () => {
+    const result = bootstrapOrchd({ db, leadStallDeps: leadStallDeps(true) });
+    const registeredIds = result.registered.map((r) => r.consumerId);
+    for (const id of LEAD_STALL_IDS) expect(registeredIds).toContain(id);
+  });
+
+  test("does NOT register the watchdog when enabled === false (operator off-switch)", () => {
+    const result = bootstrapOrchd({ db, leadStallDeps: leadStallDeps(false) });
+    const registeredIds = result.registered.map((r) => r.consumerId);
+    for (const id of LEAD_STALL_IDS) {
+      expect(registeredIds).not.toContain(id);
+      expect(ORCHD_SUBSCRIPTIONS.find((s) => s.consumerId === id)).toBeUndefined();
+    }
+  });
+
+  test("re-bootstrap with the watchdog is idempotent (isNew flips false, no duplicates)", () => {
+    const first = bootstrapOrchd({ db, leadStallDeps: leadStallDeps() });
+    expect(first.registered.filter((r) => LEAD_STALL_IDS.includes(r.consumerId)).every((r) => r.isNew)).toBe(true);
+    const before = ORCHD_SUBSCRIPTIONS.length;
+    const second = bootstrapOrchd({ db, leadStallDeps: leadStallDeps() });
+    expect(second.registered.filter((r) => LEAD_STALL_IDS.includes(r.consumerId)).every((r) => !r.isNew)).toBe(true);
+    expect(ORCHD_SUBSCRIPTIONS.length).toBe(before);
   });
 });

@@ -20,7 +20,12 @@
 
 import { join } from "node:path";
 import { appendText, ensureDir } from "../abstractions/fs.ts";
-import { spawn as defaultSpawn, type SpawnResult } from "../abstractions/spawn.ts";
+import {
+  DEFAULT_GIT_SPAWN_TIMEOUT_MS,
+  spawn as defaultSpawn,
+  resolveGitTimeoutMs,
+  type SpawnResult,
+} from "../abstractions/spawn.ts";
 import { now } from "../abstractions/time.ts";
 import type { TeamWhip } from "../schema/team.ts";
 
@@ -88,15 +93,23 @@ export async function appendAuditEntry(atmuxDir: string, entry: AutoPushAuditEnt
 
 // ---------- Spawn-injected git wrappers ----------
 
-export type GitSpawn = (argv: ReadonlyArray<string>) => Promise<SpawnResult>;
+/** Injected `git <argv>` wrapper. Optional `opts.timeoutMs` overrides the
+ *  per-call timeout; omit for the {@link resolveGitTimeoutMs} default. */
+export type GitSpawn = (
+  argv: ReadonlyArray<string>,
+  opts?: { timeoutMs?: number },
+) => Promise<SpawnResult>;
 
 /** Default git spawner — wraps `abstractions/spawn.spawn` with `git`
- *  prefix + 30s timeout + accept-any-status (caller branches on rc). */
-export const defaultGitSpawn: GitSpawn = async (argv) =>
+ *  prefix + accept-any-status (caller branches on rc) and a
+ *  {@link resolveGitTimeoutMs}-resolved timeout (per-call
+ *  `opts.timeoutMs` > env `ATMUX_GIT_TIMEOUT_MS` >
+ *  {@link DEFAULT_GIT_SPAWN_TIMEOUT_MS}). */
+export const defaultGitSpawn: GitSpawn = async (argv, opts) =>
   await defaultSpawn({
     cmd: "git",
     argv,
-    timeoutMs: 30_000,
+    timeoutMs: resolveGitTimeoutMs(opts?.timeoutMs),
     expectExitCode: "any",
   });
 

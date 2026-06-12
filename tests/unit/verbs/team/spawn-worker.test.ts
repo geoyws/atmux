@@ -30,6 +30,18 @@ const permissivePressure: NonNullable<SpawnEpicOpts["probeHostPressure"]> = asyn
     skipped: true,
   }) satisfies HostPressureVerdict;
 
+// ADR-225 §Eligibility — spawn-worker delegates to spawnEpic, which gates
+// on epic eligibility (is_ready + deps done) against the parent state.db.
+// The happy-path tests use a scratch `.atmux/` with no state.db, so the
+// live `epicIsEligible` would refuse. Inject a permissive probe — mirrors
+// `spawn-epic.test.ts`'s `permissiveEligibility`. The eligibility gate is
+// an orthogonal precondition (exercised directly in spawn-epic.test.ts),
+// not the property these wrapper-epic tests claim to assert.
+const permissiveEligibility: NonNullable<SpawnEpicOpts["eligibilityProbe"]> = async () => ({
+  eligible: true,
+  blockers: [],
+});
+
 let scratch: string;
 let cockpitPath: string;
 let templatesDir: string;
@@ -207,6 +219,7 @@ describe("spawnWorker — happy path", () => {
       templatesDir,
       callerScope: () => "driver",
       git: makeGitStub({ initialBranch: "main" }),
+      eligibilityProbe: permissiveEligibility,
       logger: { log: () => undefined, warn: () => undefined },
       addEpic: async (atmuxDir, opts) => {
         epicCalls.push({ atmuxDir, opts });
@@ -247,6 +260,7 @@ describe("spawnWorker — happy path", () => {
       templatesDir,
       callerScope: () => "driver",
       git: makeGitStub({ initialBranch: "main" }),
+      eligibilityProbe: permissiveEligibility,
       logger: { log: () => undefined, warn: () => undefined },
       addEpic: async () => "e-mock456",
     };
@@ -275,6 +289,7 @@ describe("spawnWorker — happy path", () => {
       templatesDir,
       callerScope: () => "driver",
       git: makeGitStub({ initialBranch: "main" }),
+      eligibilityProbe: permissiveEligibility,
       logger: { log: () => undefined, warn: () => undefined },
       addEpic: async () => "e-mock789",
     };

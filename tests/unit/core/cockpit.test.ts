@@ -20,6 +20,7 @@ import {
   migrateSuperdoctorBlockToMedic,
   perTeamCageSocketPath,
   readNestingLevel,
+  resolveCageSessionName,
   resolveCageSocket,
   resolveCockpitConfigPath,
   resolvePrefix,
@@ -285,13 +286,59 @@ describe("resolveCageSocket (ADR-063 follow-up)", () => {
   });
 });
 
-describe("cageSessionName", () => {
+describe("cageSessionName (deprecated synchronous)", () => {
   test("atmux team uses bare 'atmux' session", () => {
     expect(cageSessionName("atmux")).toBe("atmux");
   });
   test("every other team uses 'atmux_<name>'", () => {
     expect(cageSessionName("sopx")).toBe("atmux_sopx");
     expect(cageSessionName("unum")).toBe("atmux_unum");
+  });
+});
+
+describe("resolveCageSessionName (anchor-aware)", () => {
+  // Regression: cockpit retry-loops + doctor probes targeted `atmux_<name>`
+  // (underscore) while start.ts created `atmux-<name>` (hyphen) for any
+  // team without a state/session.txt anchor. Bites every dash-bearing
+  // team (e.g. ifca-docs) and every fresh-start team without a rename
+  // history. Resolver below MUST match what start.ts actually creates.
+  let tmpDir: string;
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), "resolve-cage-session-"));
+  });
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  test("reads state/session.txt anchor when present (anchored team)", async () => {
+    await mkdir(join(tmpDir, ".atmux/state"), { recursive: true });
+    await writeFile(join(tmpDir, ".atmux/state/session.txt"), "atmux_unum\n");
+    expect(await resolveCageSessionName({ name: "unum", root: tmpDir })).toBe("atmux_unum");
+  });
+
+  test("falls back to atmux-<name> (hyphen) when anchor absent", async () => {
+    // No state/session.txt — must match getSessionName fallback from
+    // common.ts, which start.ts uses to actually create the session.
+    expect(await resolveCageSessionName({ name: "ifca-docs", root: tmpDir })).toBe(
+      "atmux-ifca-docs",
+    );
+    expect(await resolveCageSessionName({ name: "rentx", root: tmpDir })).toBe("atmux-rentx");
+  });
+
+  test("special-cases the 'atmux' team to bare 'atmux' when no anchor", async () => {
+    expect(await resolveCageSessionName({ name: "atmux", root: tmpDir })).toBe("atmux");
+  });
+
+  test("trims whitespace from anchor content", async () => {
+    await mkdir(join(tmpDir, ".atmux/state"), { recursive: true });
+    await writeFile(join(tmpDir, ".atmux/state/session.txt"), "  atmux_custom  \n\n");
+    expect(await resolveCageSessionName({ name: "x", root: tmpDir })).toBe("atmux_custom");
+  });
+
+  test("treats empty-string anchor as absent (falls back)", async () => {
+    await mkdir(join(tmpDir, ".atmux/state"), { recursive: true });
+    await writeFile(join(tmpDir, ".atmux/state/session.txt"), "   \n");
+    expect(await resolveCageSessionName({ name: "demo", root: tmpDir })).toBe("atmux-demo");
   });
 });
 

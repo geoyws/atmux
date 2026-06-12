@@ -12,7 +12,7 @@ The cockpit binds to a dedicated named tmux socket: **`tmux -L atmux-cockpit`**.
 tmux -L atmux-cockpit attach -t atmux_cockpit
 ```
 
-The session name (`atmux_cockpit`) stays consistent with [ADR-135](adr/135-cockpit-naming-convention.md); only the socket moved. Per-team sockets remain on the cage-tier path (`-S <team-root>/.atmux/tmux/tmux-0/default`) per [ADR-018](adr/018-per-team-tmux-socket-isolation.md) — that layer is untouched.
+The session name (`atmux_cockpit`) stays consistent with [ADR-135](adr/135-cockpit-naming-convention.md); only the socket moved. Per-team sockets remain on the cage-tier path (`-S <team-root>/.atmux/tmux/tmux-0/default`) per [ADR-058](adr/058-cage-tier-isolation.md) — that layer is untouched.
 
 **Verify isolation:**
 
@@ -147,7 +147,7 @@ atmux cockpit rotate <team>   [--force]
 
 - The cockpit role pane is wedged, looping, or rate-limited and you want a clean restart with a brief-paste-ready handoff.
 - You've already manually verified that letting the pane run further is worse than rotating it (uptime ≥ 60min default).
-- You're a driver — the verb is gated to `ATMUX_CALLER_SCOPE=driver` per [ADR-033](adr/033-kanban-driver-only-flag.md).
+- You're a driver — the verb is gated to `ATMUX_CALLER_SCOPE=driver` per [ADR-033](adr/033-caller-scope-gate.md).
 
 ### Pre-flight gates
 
@@ -342,7 +342,7 @@ End-to-end dogfood pattern on the atmux team itself shipped under EPIC e-1e22368
 - [ADR-167](adr/167-cockpit-rotate-verb.md) — cockpit rotate verb (Rung C); §Amendment 2026-05-17 documents wrapper-resolver asymmetry + handoff write-path semantics.
 - [ADR-162](adr/162-atmux-owns-tmux-infrastructure.md) — atmux owns its tmux infrastructure (cockpit socket isolation + canonical atmux.conf + version probes).
 - [ADR-135](adr/135-cockpit-naming-convention.md) — cockpit naming convention (`atmux_cockpit` session name, `_-prefix` for default-member windows).
-- [ADR-018](adr/018-per-team-tmux-socket-isolation.md) — per-team tmux socket isolation, the cage-tier layer (unchanged by ADR-162).
+- [ADR-058](adr/058-cage-tier-isolation.md) — cage-tier isolation (per-team socket layer, unchanged by ADR-162).
 - [ADR-047](adr/047-canonical-install-topology.md) — install topology (`/opt/atmux/<version>/templates/`).
 - [ADR-097](adr/097-tmux-abstraction.md) — `TmuxConfig` discriminated union (`socket` + `configFile` fields consumed here).
 - [ADR-163](adr/163-bundled-tmux-binary.md) — bundled tmux binary + version-lock v2 (forward-ref).
