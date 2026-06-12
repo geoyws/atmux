@@ -496,7 +496,13 @@ describe("migrate-hex-ids — flag parsing + side-channel mutations", () => {
     expect(code).toBe(0);
 
     const { stdout: branches } = await runGit(env.scratch, ["branch", "--list"]);
-    expect(branches).toContain("atmux-test-base-epic-e-1-3b017960");
+    // Post-2026-05-26 double-e fix (ADR-090 §Disk layout amendment):
+    // the compound branch is emitted WITHOUT the redundant `e-` prefix,
+    // so the rename target is `atmux-test-base-epic-1-3b017960`
+    // (no `epic-e-` doubling). The pre-existing legacy branch
+    // `atmux-test-base-epic-e-3b017960` was found via the back-compat
+    // fallback path in renameGitBranches and still gets removed.
+    expect(branches).toContain("atmux-test-base-epic-1-3b017960");
     expect(branches).not.toContain("atmux-test-base-epic-e-3b017960\n");
     expect(stdoutText()).toContain("renamed=1");
   });

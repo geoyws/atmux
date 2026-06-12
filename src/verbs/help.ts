@@ -29,11 +29,16 @@ Setup:
                               state/resume.json, NO worktree prune.
   attach                      tmux attach to the team session
   status                      Powerline team overview
-  cockpit rebuild [--no-cycle|--force-cycle] [--no-launch] [--config <p>]
-                              ADR-063: ensure-up the operator cockpit (cages +
-                              TUI auto-launch + cockpit session). Reads roster
-                              from ~/.atmux/cockpit.json (override via
+  cockpit reconcile [--no-cycle|--force-cycle] [--no-launch] [--config <p>]
+                              ADR-063 + ADR-235 §D1: ensure-up the operator
+                              cockpit (cages + TUI auto-launch + cockpit
+                              session) — bring live tmux into agreement with
+                              cockpit.json. Reads roster from
+                              ~/.atmux/cockpit.json (override via
                               ATMUX_COCKPIT_CONFIG or --config <p>).
+  cockpit rebuild ...         (deprecated alias) ADR-235 §OQ4: deprecation alias
+                              for \`cockpit reconcile\`; same flags + behaviour,
+                              removed next release. Use \`reconcile\`.
   cockpit attach [--config <p>] [--human]
                               tmux-attach to the cockpit session on its named
                               socket (\`tmux -L atmux-cockpit attach -t
@@ -65,10 +70,12 @@ Messaging:
 
 Task board (kanban):
   task add <subject> [--body <text>] [--assignee <member>] [--deps <id,id>] [--driver-only]
+           [--epic <eid>] [--story <sid>] [--deliverable <text>]
   task list [--status todo|in-progress|done|blocked] [--assignee <member>]
   task show <id>
   task move <id> <todo|in-progress|done|blocked>
-  task update <id> [--body <text>] [--deps <id,id>]
+  task update <id> [--body <text>] [--deps <id,id>] [--owner <member>|--unassign]
+              [--epic <eid|''>] [--story <sid|''>] [--deliverable <text|''>]
 
 Hierarchy (ADR-007):
   epic add <title> [--body <text>] [--driver-ref <ref>]
@@ -85,6 +92,9 @@ Dispatch + work:
   inbox <member>              Show member's inbox
   claim <task-id>             Claim a task from kanban (as a member)
   done <task-id>              Mark claimed task complete
+  member status <idle|working|blocked|rate-limited> [--as <m>] [--note <t>] [--task <id>]
+                              Self-report status (ADR-260 manual mode); working
+                              --task claims it, blocked --task blocks it
 
 Automation:
   report                      Post 30-min progress digest to Discord

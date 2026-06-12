@@ -6,7 +6,8 @@
 //   atmux epic add             <title> [--body T] [--driver-ref R] [--depends-on e-X,e-Y]
 //   atmux epic list            [--status S] [--json]   (table + R/D columns)
 //   atmux epic ls              ↔ list
-//   atmux epic show            <id> [--json]           (includes is_ready + depends_on)
+//   atmux epic show            <id> [--json]           (is_ready + depends_on; children tree
+//                                                        with owner/priority/deps inline — ADR-173)
 //   atmux epic get             ↔ show
 //   atmux epic advance         <id> [--to S]
 //   atmux epic adv             ↔ advance
@@ -25,7 +26,7 @@ import {
   showEpic,
 } from "../core/epic.ts";
 import { ConfigError, UsageError } from "../errors.ts";
-import type { KanbanEpic } from "../schema/kanban.ts";
+import type { KanbanEpic, KanbanTask } from "../schema/kanban.ts";
 
 const USAGE_HINT_ROOT =
   "atmux epic <add|list|show|advance|ready|unready|set-depends-on|deps> [args]";
@@ -347,6 +348,27 @@ function _buildDepCountMap(epics: ReadonlyArray<KanbanEpic>): Map<string, string
   return out;
 }
 
+// Per-task inline columns for the `epic show` text tree — owner / priority /
+// deps surfaced after the `[status] — subject` head so operators see the
+// routing inputs at a glance without a follow-up `atmux task show`. Format
+// follows ADR-173 §Render rules: owner is the assignee or `-` when null;
+// priority is `P<n>` or `P-` when null; deps render as `← deps: t-aaa,t-bbb`
+// appended only when `deps[]` is non-empty, with up to 3 ids inline + a
+// `(+N more)` overflow marker.
+function taskRowSuffix(t: KanbanTask): string {
+  const owner = t.owner !== null && t.owner !== undefined && t.owner.length > 0 ? t.owner : "-";
+  const prio =
+    t.priority !== null && t.priority !== undefined ? `P${String(t.priority)}` : "P-";
+  const deps = t.deps ?? [];
+  let depsCol = "";
+  if (deps.length > 0) {
+    const head = deps.slice(0, 3);
+    const overflow = deps.length > 3 ? ` (+${deps.length - 3} more)` : "";
+    depsCol = `  ← deps: ${head.join(",")}${overflow}`;
+  }
+  return `[${owner}, ${prio}]${depsCol}`;
+}
+
 async function epicShow(argv: ReadonlyArray<string>): Promise<number> {
   const { positional, rest } = splitFlagsAndPositionals(argv);
   const id = positional[0];
@@ -389,26 +411,35 @@ async function epicShow(argv: ReadonlyArray<string>): Promise<number> {
   if (deps.length > 0) {
     lines.push(`  depends_on: [${deps.join(", ")}]`);
   }
+  // ADR-173 §69: explicit `(none)` empty markers, not silent omission,
+  // when the section header appears. Absorbs `.epic: null` runtime
+  // (ADR-173 §139) — empty arrays render "(none)" cleanly.
+  lines.push("");
+  lines.push("Stories:");
   if (epic.storyRows.length > 0) {
-    lines.push("");
-    lines.push("Stories:");
     for (const s of epic.storyRows) {
       lines.push(`  ${s.id} [${s.status ?? ""}] — ${s.title ?? ""}`);
       const childTasks = epic.tasks.filter((t) => t.story === s.id);
       for (const t of childTasks) {
-        lines.push(`    task ${t.id} [${t.status ?? ""}] — ${t.subject ?? ""}`);
+        lines.push(
+          `    task ${t.id} [${t.status ?? ""}] — ${t.subject ?? ""} ${taskRowSuffix(t)}`,
+        );
       }
     }
+  } else {
+    lines.push("  (none)");
   }
   const directTasks = epic.tasks.filter(
     (t) => t.story === null || t.story === undefined || t.story.length === 0,
   );
+  lines.push("");
+  lines.push("Direct tasks:");
   if (directTasks.length > 0) {
-    lines.push("");
-    lines.push("Direct tasks:");
     for (const t of directTasks) {
-      lines.push(`  ${t.id} [${t.status ?? ""}] — ${t.subject ?? ""}`);
+      lines.push(`  ${t.id} [${t.status ?? ""}] — ${t.subject ?? ""} ${taskRowSuffix(t)}`);
     }
+  } else {
+    lines.push("  (none)");
   }
   process.stdout.write(`${lines.join("\n")}\n`);
   return 0;

@@ -19,16 +19,18 @@ import {
   showStory,
   storySignoff,
   storyUnsignoff,
+  updateStory,
 } from "../core/story.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 
 const USAGE_HINT_ROOT =
-  "atmux story <add|list|show|advance|signoff|unsignoff> [args]";
+  "atmux story <add|list|show|advance|update|signoff|unsignoff> [args]";
 const USAGE_ADD =
   "atmux story add <title> --epic <eid> [--ac C] [--body T] [--merge-mode feature-branch|trunk-direct]";
 const USAGE_LIST = "atmux story list --epic <eid> [--status S] [--json]";
 const USAGE_SHOW = "atmux story show <id> [--json]";
 const USAGE_ADV = "atmux story advance <id> [--to <state>]";
+const USAGE_UPDATE = "atmux story update <id> [--body <text>] [--ac <criteria>]";
 const USAGE_SIGNOFF = "atmux story signoff <id> [--as <member>] [--note <text>]";
 const USAGE_UNSIGNOFF = "atmux story unsignoff <id> [--as <member>] [--note <text>]";
 
@@ -36,7 +38,7 @@ export async function story(argv: ReadonlyArray<string>): Promise<number> {
   const first = argv[0];
   if (first === undefined) {
     throw new UsageError({
-      what: "story: missing verb (add|list|show|advance)",
+      what: "story: missing verb (add|list|show|advance|update)",
       hint: USAGE_HINT_ROOT,
     });
   }
@@ -53,13 +55,15 @@ export async function story(argv: ReadonlyArray<string>): Promise<number> {
     case "advance":
     case "adv":
       return await storyAdvance(rest);
+    case "update":
+      return await storyUpdate(rest);
     case "signoff":
       return await storySignoffVerb(rest);
     case "unsignoff":
       return await storyUnsignoffVerb(rest);
     default:
       throw new UsageError({
-        what: `story: unknown verb: ${first} (use add|list|show|advance|signoff|unsignoff)`,
+        what: `story: unknown verb: ${first} (use add|list|show|advance|update|signoff|unsignoff)`,
         hint: USAGE_HINT_ROOT,
       });
   }
@@ -136,12 +140,16 @@ async function storyShow(argv: ReadonlyArray<string>): Promise<number> {
   if (s.reviewSignoff === true) {
     lines.push("  signoff: ✅");
   }
+  // ADR-173 §69: explicit `(none)` empty marker, not silent omission,
+  // when the Tasks section header appears.
+  lines.push("");
+  lines.push("Tasks:");
   if (s.tasks.length > 0) {
-    lines.push("");
-    lines.push("Tasks:");
     for (const t of s.tasks) {
       lines.push(`  ${t.id} [${t.status ?? ""}] (${t.lane ?? "-"}) — ${t.subject ?? ""}`);
     }
+  } else {
+    lines.push("  (none)");
   }
   process.stdout.write(`${lines.join("\n")}\n`);
   return 0;
@@ -167,6 +175,85 @@ async function storyAdvance(argv: ReadonlyArray<string>): Promise<number> {
     process.stderr.write(`story: dispatched ${verb} task ${result.dispatchedTaskId}\n`);
   }
   return 0;
+}
+
+// ---------- e-407c6d53: story update ----------
+
+async function storyUpdate(argv: ReadonlyArray<string>): Promise<number> {
+  const { positional, rest } = splitFlagsAndPositionals(argv);
+  const id = positional[0];
+  if (id === undefined || id.length === 0) {
+    throw new UsageError({ what: "story update: <id> required", hint: USAGE_UPDATE });
+  }
+  const flags = parseUpdateFlags(rest);
+  if (flags.body === undefined && flags.ac === undefined) {
+    throw new UsageError({
+      what: "story update: at least one of --body / --ac required",
+      hint: USAGE_UPDATE,
+    });
+  }
+  const dirOpts: ResolveDirOpts = flags.teamDir !== undefined ? { teamDir: flags.teamDir } : {};
+  const atmuxDir = await getAtmuxDir(dirOpts);
+  // Triple-state per `task update --body`: `undefined` = no change,
+  // `''` = explicit clear (→ null), non-empty = set.
+  const opts: Parameters<typeof updateStory>[2] = {};
+  if (flags.body !== undefined) opts.body = flags.body.length === 0 ? null : flags.body;
+  if (flags.ac !== undefined) opts.acceptanceCriteria = flags.ac.length === 0 ? null : flags.ac;
+  await updateStory(atmuxDir, id, opts);
+  process.stdout.write(`story ${id} updated\n`);
+  return 0;
+}
+
+interface UpdateFlags {
+  body?: string;
+  ac?: string;
+  teamDir?: string;
+}
+
+export function parseUpdateFlags(argv: ReadonlyArray<string>): UpdateFlags {
+  let body: string | undefined;
+  let ac: string | undefined;
+  let teamDir: string | undefined;
+  let i = 0;
+  while (i < argv.length) {
+    const a = argv[i];
+    if (a === "--body") {
+      const v = argv[i + 1];
+      if (v === undefined) {
+        throw new UsageError({ what: "story update: --body requires a value", hint: USAGE_UPDATE });
+      }
+      body = v;
+      i += 2;
+      continue;
+    }
+    if (a === "--ac") {
+      const v = argv[i + 1];
+      if (v === undefined) {
+        throw new UsageError({ what: "story update: --ac requires a value", hint: USAGE_UPDATE });
+      }
+      ac = v;
+      i += 2;
+      continue;
+    }
+    if (a === "--team-dir") {
+      const v = argv[i + 1];
+      if (v === undefined) {
+        throw new UsageError({
+          what: "story update: --team-dir requires a value",
+          hint: USAGE_UPDATE,
+        });
+      }
+      teamDir = v;
+      i += 2;
+      continue;
+    }
+    throw new UsageError({ what: `story update: unknown flag: ${a ?? ""}`, hint: USAGE_UPDATE });
+  }
+  const out: UpdateFlags = {};
+  if (body !== undefined) out.body = body;
+  if (ac !== undefined) out.ac = ac;
+  if (teamDir !== undefined) out.teamDir = teamDir;
+  return out;
 }
 
 // ---------- Pure parsers ----------

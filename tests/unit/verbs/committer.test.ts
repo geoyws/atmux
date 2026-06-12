@@ -428,24 +428,30 @@ describe("committer --drain / --daemon integration", () => {
 
     // The drain log summary MUST surface orchd-* stats — drift detector
     // for step 3/5's contract. Phase 2 (ADR-231) added 3 consumers:
-    // dissolve-solo-worker + spawn:on-ready + spawn:on-unblocked.
+    // dissolve-solo-worker + spawn:on-ready + spawn:on-unblocked. Then
+    // ADR-214 §D2 added the complaint consumer and ADR-212 / e-cc3728bf
+    // added the rotation consumer, taking the canonical set to 8.
     const summary = logs.find((l) => l.includes("committer --drain: team="));
     expect(summary).toBeDefined();
-    expect(summary).toContain("orchd-subs=6");
+    expect(summary).toContain("orchd-subs=8");
     expect(summary).toContain("orchd-errors=0");
 
-    // Registry MUST have been populated with the six canonical consumer
+    // Registry MUST have been populated with the eight canonical consumer
     // IDs (idempotency means a sibling call wouldn't double-push these).
     // ADR-231 §D2/§D6 added the spawn + solo-worker-dissolve entries on
-    // top of parent's auto-merge/dissolve/push (ADR-226/227/229).
+    // top of parent's auto-merge/dissolve/push (ADR-226/227/229);
+    // ADR-214 §D2 added complaint-consumer and ADR-212 / e-cc3728bf added
+    // rotation-consumer.
     const consumerIds = ORCHD_SUBSCRIPTIONS.map((s) => s.consumerId).sort();
     expect(consumerIds).toEqual([
+      "atmux:complaint-consumer",
       "atmux:orchd:auto-dissolve",
       "atmux:orchd:auto-merge",
       "atmux:orchd:auto-push",
       "atmux:orchd:dissolve-solo-worker",
       "atmux:orchd:spawn:on-ready",
       "atmux:orchd:spawn:on-unblocked",
+      "atmux:rotation-consumer",
     ]);
 
     // Cleanup so sibling tests don't see leaked registry state.

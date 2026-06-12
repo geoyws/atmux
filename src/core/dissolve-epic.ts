@@ -43,16 +43,16 @@ import {
   isWorktreeDirty,
   pruneWorktree,
 } from "../abstractions/worktree.ts";
-import {
-  cageSessionName,
-  defaultCockpitConfigPath,
-  removeEpicViewerFromParentCage,
-  resolveCageSocket,
-} from "./cockpit.ts";
-import { resolveCallerScope } from "./common.ts";
-import { softStop } from "./soft-stop.ts";
 import { ConfigError } from "../errors.ts";
 import { Team, type Team as TeamShape } from "../schema/team.ts";
+import {
+  defaultCockpitConfigPath,
+  removeEpicViewerFromParentCage,
+  resolveCageSessionName,
+  resolveCageSocket,
+} from "./cockpit.ts";
+import { resolveCallerScope, resolveTeamSocket } from "./common.ts";
+import { softStop } from "./soft-stop.ts";
 
 // ---------- Input shape ----------
 
@@ -91,10 +91,7 @@ export interface DissolveEpicOpts {
    *  applies the default in production and tests still override via this
    *  hook to bypass the cage teardown when they don't want to mock a
    *  full tmux. */
-  softStopHook?: (deps: {
-    epicRoot: string;
-    childTeam: TeamShape;
-  }) => Promise<void>;
+  softStopHook?: (deps: { epicRoot: string; childTeam: TeamShape }) => Promise<void>;
   /** Tmux factory. Defaults to {@link createTmux}. Tests injecting a
    *  custom `softStopHook` typically don't need this — it's only used
    *  by the default `softStopHook` path. */
@@ -431,9 +428,21 @@ export async function defaultCageTeardown(deps: {
   logger: { log: (m: string) => void; warn: (m: string) => void };
 }): Promise<void> {
   const teamName = deps.childTeam.name;
-  const socket = await resolveCageSocket(teamName, deps.epicRoot);
+  // ADR-251 — epic cages set `team.tmuxTmpdir` (`/tmp/atmux-<parent>/epics/
+  // <epicId>`) at spawn (spawn-epic.ts §S2). `resolveCageSocket(name, root)`
+  // can't reach that scheme — it guesses `/tmp/atmux-<epicId>/sock` and
+  // reports a LIVE epic cage as dead, so this probe's "skip when down"
+  // path silently skips killing a running cage (then prune + cockpit-mutate
+  // proceed against a live cage → orphaned zombie). `resolveTeamSocket` is
+  // the authoritative resolver when tmuxTmpdir is set (its own docs: "All
+  // sites read AND write MUST use this resolver"). Fall back only when the
+  // child team.json lacks tmuxTmpdir (corrupted/legacy remnant).
+  const socket =
+    typeof deps.childTeam.tmuxTmpdir === "string" && deps.childTeam.tmuxTmpdir.length > 0
+      ? resolveTeamSocket(deps.childTeam)
+      : await resolveCageSocket(teamName, deps.epicRoot);
   const tmux = deps.tmuxFactory({ socketPath: socket });
-  const sessionName = cageSessionName(teamName);
+  const sessionName = await resolveCageSessionName({ name: teamName, root: deps.epicRoot });
 
   // Probe — skip teardown when cage already down. Idempotent dissolve.
   let alive = false;
@@ -514,23 +523,35 @@ export async function deleteMergedEpicBranch(deps: {
   git: GitSpawn;
   logger: { log: (m: string) => void; warn: (m: string) => void };
 }): Promise<void> {
-  const branch = `${deps.parentBase}-epic-${deps.epicId}`;
+  // Post-2026-05-26 double-e fix (ADR-090 §Disk layout amendment):
+  // new branches emit `<base>-epic-<id-without-e-prefix>`; legacy
+  // pre-fix branches kept the `<base>-epic-e-<id>` form. Probe both
+  // and use whichever exists on disk.
+  const epicIdStripped = deps.epicId.replace(/^e-/, "");
+  const branchNew = `${deps.parentBase}-epic-${epicIdStripped}`;
+  const branchLegacy = `${deps.parentBase}-epic-${deps.epicId}`;
 
-  // Probe — does the branch exist at all? Uses `git -C <root>` so the
-  // command targets the parent repo regardless of the caller's cwd.
-  let branchExists = false;
-  try {
-    const r = await deps.git([
-      "-C",
-      deps.parentRoot,
-      "show-ref",
-      "--verify",
-      "--quiet",
-      `refs/heads/${branch}`,
-    ]);
-    branchExists = r.exitCode === 0;
-  } catch {
-    branchExists = false;
+  async function probeRef(b: string): Promise<boolean> {
+    try {
+      const r = await deps.git([
+        "-C",
+        deps.parentRoot,
+        "show-ref",
+        "--verify",
+        "--quiet",
+        `refs/heads/${b}`,
+      ]);
+      return r.exitCode === 0;
+    } catch {
+      return false;
+    }
+  }
+
+  let branch = branchNew;
+  let branchExists = await probeRef(branchNew);
+  if (!branchExists) {
+    branchExists = await probeRef(branchLegacy);
+    if (branchExists) branch = branchLegacy;
   }
   if (!branchExists) return;
 

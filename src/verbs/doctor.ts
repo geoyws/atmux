@@ -27,27 +27,19 @@
 
 import { existsSync as fsExistsSync } from "node:fs";
 import { readlink as fsReadlink } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { type CrontabIO, defaultCrontabIO } from "../abstractions/crontab.ts";
-import { announceHonkerState } from "../abstractions/events.ts";
-import {
-  bootHonker,
-  type HonkerHooks,
-  type HonkerRuntimeState,
-} from "../abstractions/honker.ts";
-import {
-  type HostPressureVerdict,
-  probeHostPressure,
-  type ProbeHostPressureDeps,
-} from "../core/host-pressure.ts";
 import { resolveWebhookUrl } from "../abstractions/discord.ts";
+import { announceHonkerState } from "../abstractions/events.ts";
 import { exists, readTextOrNull, removeFile, statOrNull, writeText } from "../abstractions/fs.ts";
+import { bootHonker, type HonkerHooks, type HonkerRuntimeState } from "../abstractions/honker.ts";
 import { probeStatus } from "../abstractions/http.ts";
 import { tryReadJson } from "../abstractions/json.ts";
-import { closeDatabase, openDatabase } from "../abstractions/sqlite.ts";
-import { migrations } from "../abstractions/sqlite-migrations.ts";
+import { isDefaultMemberRole } from "../abstractions/member-roles.ts";
 import { resolveDayFilePath } from "../abstractions/release-notes.ts";
 import { spawn as defaultSpawn, type SpawnResult } from "../abstractions/spawn.ts";
+import { closeDatabase, openDatabase } from "../abstractions/sqlite.ts";
+import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { mytDate, now } from "../abstractions/time.ts";
 import { createTmux } from "../abstractions/tmux.ts";
 import { resolveWorktreePath, sanitizeBranchSegment } from "../abstractions/worktree.ts";
@@ -57,8 +49,12 @@ import {
   probeCageState as defaultProbeCageState,
   STARVING_THRESHOLD_S as STARVING_THRESHOLD_S_LOCAL,
 } from "../core/cage-state.ts";
-import { isDefaultMemberRole } from "../abstractions/member-roles.ts";
-import { cageSessionName, type LoadedCockpit, loadCockpit } from "../core/cockpit.ts";
+import {
+  type BudgetProbeState,
+  DEFAULT_STALE_THRESHOLD_SEC,
+  loadBudgetMap,
+} from "../core/account-pool.ts";
+import { type LoadedCockpit, loadCockpit, resolveCageSessionName } from "../core/cockpit.ts";
 import {
   buildWindowName,
   buildWindowNameLegacy,
@@ -71,8 +67,6 @@ import {
   teamJsonPath,
   tryLoadTeam,
 } from "../core/common.ts";
-import { loadInbox } from "../core/inbox.ts";
-import { KanbanRepo } from "../core/repositories/kanban-repo.ts";
 import { type CronBlockTarget, findCronOrphans } from "../core/cron.ts";
 import {
   type DriverInboxEntry,
@@ -83,8 +77,13 @@ import {
   type ProbeDriverPaneDeps,
   probeDriverPane,
 } from "../core/driver-pane-health.ts";
+import {
+  type HostPressureVerdict,
+  type ProbeHostPressureDeps,
+  probeHostPressure,
+} from "../core/host-pressure.ts";
+import { loadInbox } from "../core/inbox.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
-import { resolveTmuxBin } from "../core/resolve-tmux-bin.ts";
 import { inspectClaudeReadiness } from "../core/pane-readiness.ts";
 import { classifyText } from "../core/pane-state.ts";
 import {
@@ -92,6 +91,8 @@ import {
   formatPruneIso,
   prunePhantomInProgressClaims,
 } from "../core/phantom-prune.ts";
+import { KanbanRepo } from "../core/repositories/kanban-repo.ts";
+import { resolveTmuxBin } from "../core/resolve-tmux-bin.ts";
 import { DEFAULT_SEND_KEYS_FAILURES_LOG_REL } from "../core/safe-send.ts";
 import {
   composeCatastrophicDrift,
@@ -696,10 +697,7 @@ export function honkerStateRows(state: HonkerRuntimeState | null): DoctorRow[] {
  *  via the events bus, and surface the runtime state as a doctor row.
  *  Tolerant of missing state.db (returns info row) — first-run hosts
  *  don't fail this probe. */
-export async function checkHonker(
-  atmuxDir: string,
-  hooks: HonkerHooks = {},
-): Promise<DoctorRow[]> {
+export async function checkHonker(atmuxDir: string, hooks: HonkerHooks = {}): Promise<DoctorRow[]> {
   const stateDb = join(atmuxDir, "state.db");
   if (!(await exists(stateDb))) {
     return [
@@ -779,6 +777,161 @@ export async function checkHostPressure(
 ): Promise<DoctorRow[]> {
   const verdict = await probeFn({});
   return hostPressureRows(verdict);
+}
+
+// ---------- claudeAccountPool probe (ADR-199 §D1 / §Impl-status) ----------
+
+/** State-snapshot the pure mapper resolves to a doctor row. Built by the
+ *  verb-side wrapper from the cockpit + budget probe state; injected
+ *  directly in unit tests so every branch is reachable without I/O. */
+export interface ClaudeAccountPoolVerdict {
+  /** Number of entries in `cockpit.claudeAccountPool[]`. 0 = unconfigured. */
+  poolSize: number;
+  /** Pool labels whose budget probe data is fresh (probedAt within the
+   *  stale threshold). */
+  freshLabels: readonly string[];
+  /** Pool labels whose budget probe data is stale or missing entirely. */
+  staleLabels: readonly string[];
+  /** Names of cockpit teams whose `claudeAccount` is unset. Drives the
+   *  RED verdict when the pool is ALSO empty (spawn-epic has no account
+   *  source for these teams). */
+  teamsMissingAccount: readonly string[];
+}
+
+/**
+ * Pure mapping. State-snapshot → doctor row. ADR-199 §D1 final paragraph
+ * + §Impl-status deferred row:
+ *
+ *   - GREEN  — pool populated AND every entry has fresh (non-stale) budget
+ *              probe data (the selector can score every account).
+ *   - YELLOW — pool populated but SOME entries are stale/missing budget
+ *              data (selector falls back to weight + order for those; ADR-199
+ *              §"Stale-grace contract"). Partial staleness.
+ *   - RED    — pool EMPTY *and* a cockpit team has `claudeAccount` unset:
+ *              spawn-epic has no account source for that team (the 401-on-
+ *              bootstrap regression class ADR-199 closes).
+ *   - INFO   — pool empty but every team already pins its own
+ *              `claudeAccount` (pool is an optimisation, not load-bearing
+ *              here — spawn-epic falls back to the inheritance chain).
+ *
+ * Tests inject verdicts to hit every branch without filesystem I/O.
+ */
+export function claudeAccountPoolRows(verdict: ClaudeAccountPoolVerdict): DoctorRow[] {
+  if (verdict.poolSize === 0) {
+    if (verdict.teamsMissingAccount.length > 0) {
+      return [
+        {
+          status: "red",
+          label: "claudeAccountPool",
+          detail: `pool empty + ${verdict.teamsMissingAccount.length} team(s) without claudeAccount: ${verdict.teamsMissingAccount.join(", ")}`,
+          hint:
+            "populate cockpit.claudeAccountPool[] (ADR-199 §D1) so spawn-epic can draw a least-loaded account, " +
+            "or pin each team's claudeAccount explicitly — otherwise epic-team bootstrap 401s on a fresh OAuth login.",
+        },
+      ];
+    }
+    return [
+      {
+        status: "info",
+        label: "claudeAccountPool",
+        detail: "pool unconfigured; every team pins its own claudeAccount (spawn-epic uses the inheritance chain)",
+      },
+    ];
+  }
+  if (verdict.staleLabels.length === 0) {
+    return [
+      {
+        status: "green",
+        label: "claudeAccountPool",
+        detail: `${verdict.poolSize} account(s), all fresh budget data — ${verdict.freshLabels.join(", ")}`,
+      },
+    ];
+  }
+  return [
+    {
+      status: "yellow",
+      label: "claudeAccountPool",
+      detail: `${verdict.poolSize} account(s); ${verdict.staleLabels.length} with stale/missing budget data: ${verdict.staleLabels.join(", ")}`,
+      hint:
+        "run the budget probe (coordination:budget skill) to refresh ~/.atmux/state/budget-probe-<label>.json; " +
+        "stale entries fall back to weight + pool-array order in selectAccount() (ADR-199 §Stale-grace contract).",
+    },
+  ];
+}
+
+/** Dependencies for {@link checkClaudeAccountPool} — all injectable so
+ *  unit tests drive the full wrapper without touching the filesystem. */
+export interface CheckClaudeAccountPoolDeps {
+  /** Cockpit reader. Default loads `~/.atmux/cockpit.json`; returns `null`
+   *  on absence / unreadable so a first-run host emits a benign info row
+   *  rather than tanking the probe. */
+  loadCockpitFn?: () => Promise<LoadedCockpit | null>;
+  /** Budget-probe-state reader keyed by pool label. Default delegates to
+   *  `account-pool.ts::loadBudgetMap` against `home`. */
+  loadBudgetMapFn?: (
+    pool: readonly { label: string }[],
+    home: string,
+  ) => Promise<Map<string, BudgetProbeState | null>>;
+  /** Current epoch seconds for staleness. Defaults to `now() / 1000`. */
+  nowSec?: number;
+  /** Stale threshold in seconds. Defaults to {@link DEFAULT_STALE_THRESHOLD_SEC}. */
+  staleThresholdSec?: number;
+}
+
+/**
+ * Verb-side wrapper — loads the cockpit pool + per-label budget probe
+ * state, computes staleness, and delegates to {@link claudeAccountPoolRows}.
+ * Tolerant of a missing cockpit (returns the empty-pool branch) so a
+ * first-run host doesn't fail the probe. ADR-199 §Impl-status deferred row.
+ */
+export async function checkClaudeAccountPool(
+  home: string | undefined,
+  deps: CheckClaudeAccountPoolDeps = {},
+): Promise<DoctorRow[]> {
+  const loadCockpitFn =
+    deps.loadCockpitFn ??
+    (async () => {
+      try {
+        return await loadCockpit();
+      } catch {
+        // No cockpit / unreadable / schema error → benign (no pool).
+        return null;
+      }
+    });
+  const cockpit = await loadCockpitFn();
+  const pool = cockpit?.claudeAccountPool ?? [];
+  const teamsMissingAccount = (cockpit?.teams ?? [])
+    .filter((t) => t.claudeAccount === undefined)
+    .map((t) => t.name);
+
+  if (pool.length === 0) {
+    return claudeAccountPoolRows({
+      poolSize: 0,
+      freshLabels: [],
+      staleLabels: [],
+      teamsMissingAccount,
+    });
+  }
+
+  const loadBudgetMapFn = deps.loadBudgetMapFn ?? loadBudgetMap;
+  const budgetByLabel = await loadBudgetMapFn(pool, home ?? "");
+  const nowSec = deps.nowSec ?? Math.floor(now() / 1000);
+  const staleThresholdSec = deps.staleThresholdSec ?? DEFAULT_STALE_THRESHOLD_SEC;
+
+  const freshLabels: string[] = [];
+  const staleLabels: string[] = [];
+  for (const entry of pool) {
+    const state = budgetByLabel.get(entry.label) ?? null;
+    const stale = state === null || nowSec - state.probedAt > staleThresholdSec;
+    (stale ? staleLabels : freshLabels).push(entry.label);
+  }
+
+  return claudeAccountPoolRows({
+    poolSize: pool.length,
+    freshLabels,
+    staleLabels,
+    teamsMissingAccount,
+  });
 }
 
 // ---------- atmux-skills-plugin probe (ADR-217 §D5) ----------
@@ -862,9 +1015,7 @@ export interface CheckSkillsPluginOpts {
  *  opt-out marker first, then verifies the symlink + plugin.json. Returns
  *  the empty array when $HOME is unset (defensive — caller probably has
  *  bigger issues, no point emitting a doctor row about it). */
-export async function checkSkillsPlugin(
-  opts: CheckSkillsPluginOpts = {},
-): Promise<DoctorRow[]> {
+export async function checkSkillsPlugin(opts: CheckSkillsPluginOpts = {}): Promise<DoctorRow[]> {
   const home = opts.home ?? process.env.HOME;
   if (home === undefined || home.length === 0) return [];
 
@@ -952,10 +1103,10 @@ export async function checkPhantomInboxes(atmuxDir: string): Promise<DoctorRow[]
  *
  *  Cage-only — singleSession teams short-circuit at the caller per
  *  ADR-026 (the deprecated mode isn't the prune target). */
-async function probeLiveMembers(team: Team): Promise<ReadonlySet<string>> {
+async function probeLiveMembers(team: Team, atmuxDir: string): Promise<ReadonlySet<string>> {
   try {
     const tmux = createTmux({ socketPath: resolveTeamSocket(team) });
-    const session = cageSessionName(team.name);
+    const session = await resolveCageSessionName({ name: team.name, root: dirname(atmuxDir) });
     if (!(await tmux.session.hasSession(session))) return new Set();
     const windows = await tmux.window.listWindows(session);
     const liveNames = new Set(windows.map((w) => w.name));
@@ -985,7 +1136,7 @@ export async function checkPhantomInProgressClaims(
   const phantoms = await findPhantomInProgressClaims({
     atmuxDir,
     team,
-    liveMembers: () => probeLiveMembers(team),
+    liveMembers: () => probeLiveMembers(team, atmuxDir),
   });
   return phantoms.map((p) => ({
     status: "yellow" as const,
@@ -2245,6 +2396,70 @@ function parsePorcelainWorktrees(stdout: string): PorcelainWorktree[] {
   return out;
 }
 
+// ---------- ADR-245 single-kanban invariant: nested-state.db probe ----------
+
+export interface CheckWorktreeNestedStateDbOpts {
+  /** Readdir override (test injection). Same shape as
+   *  `CheckWorktreeOpts.readWorktreeDir`: returns dir entries, or `null`
+   *  to simulate ENOENT (the `worktrees/` dir not existing yet). */
+  readWorktreeDir?: (
+    path: string,
+  ) => Promise<ReadonlyArray<{ name: string; isDirectory: boolean }> | null>;
+  /** `existsSync` override (test injection). Default `node:fs::existsSync`. */
+  existsSync?: (path: string) => boolean;
+}
+
+/**
+ * ADR-245 single-`.atmux`-per-project invariant — defensive doctor probe
+ * (#3 of the worktree single-kanban hook set; t-62-df4e59bd addendum).
+ *
+ * Architectural invariant (operator-direct 2026-05-26, t-62-df4e59bd):
+ * worktrees share the parent team's ONE kanban. A member worktree at
+ * `<team-root>/.atmux/worktrees/<member>/` MAY carry a per-worktree
+ * `team.json` (identity / cwd-pin) but MUST NOT contain a `state.db` —
+ * the kanban lives ONLY at the team root's `.atmux/state.db`. A nested
+ * `state.db` means some verb wrote a worktree-local kanban instead of
+ * resolving UP, splitting state across diverging databases.
+ *
+ * The four other invariant hooks (verb path resolution `getAtmuxDir`
+ * strip-back-before-walk, provisioning writing `team.json`-only, the
+ * orchd-window spawn guard, and `checkWorktreeIsolation`'s orphan walk)
+ * are preventive. This probe is the failsafe: it directly scans
+ * `<atmuxDir>/worktrees/*\/.atmux/state.db` and emits a RED fail row per
+ * planted nested db with an `rm <path>` cleanup hint, so a leaked stub
+ * surfaces even when every preventive hook was bypassed.
+ *
+ * Returns [] when `team === null` (checkTeam already surfaced the broken
+ * state) or when the `worktrees/` dir doesn't exist (no isolation in use).
+ */
+export async function checkWorktreeNestedStateDb(
+  team: Team | null,
+  atmuxDir: string,
+  opts: CheckWorktreeNestedStateDbOpts = {},
+): Promise<DoctorRow[]> {
+  if (team === null) return [];
+  const readDir = opts.readWorktreeDir ?? defaultReadWorktreeDir;
+  const existsSync = opts.existsSync ?? fsExistsSync;
+  const worktreesDir = join(atmuxDir, "worktrees");
+  const entries = await readDir(worktreesDir);
+  if (entries === null) return [];
+
+  const rows: DoctorRow[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory) continue;
+    const nested = join(worktreesDir, entry.name, ".atmux", "state.db");
+    if (existsSync(nested)) {
+      rows.push({
+        status: "red",
+        label: `worktree:nested-state-db:${entry.name}`,
+        detail: `nested kanban at ${nested} — worktrees MUST share the team-root kanban (ADR-245; t-62-df4e59bd)`,
+        hint: `rm ${nested} (then re-run verbs from the worktree — they resolve UP to <team-root>/.atmux/state.db)`,
+      });
+    }
+  }
+  return rows;
+}
+
 // ---------- ADR-179 W6: merger-fan-in probe class ----------
 
 /** ADR-179 §Decision-2+3+6: `team.merger` block, mirrored locally because
@@ -2822,7 +3037,6 @@ export async function checkCockpitOnDefaultSocket(
   ];
 }
 
-
 export interface CheckDeployedBinaryLagOpts {
   /** Git spawn override (test injection). Reads HEAD + the commit that
    *  last touched package.json. Defaults to `defaultGitSpawn`. */
@@ -3082,11 +3296,7 @@ export async function checkLegacyWindowNameFormat(
       if (hyphenForm !== canonical && windowNames.has(hyphenForm)) {
         offenders.push(hyphenForm);
       }
-      if (
-        legacyForm !== canonical &&
-        legacyForm !== hyphenForm &&
-        windowNames.has(legacyForm)
-      ) {
+      if (legacyForm !== canonical && legacyForm !== hyphenForm && windowNames.has(legacyForm)) {
         offenders.push(legacyForm);
       }
       for (const legacyName of offenders) {
@@ -3126,6 +3336,13 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   // under threshold; yellow over (spawn-epic refuses); info on
   // non-Linux platforms.
   rows.push(...(await checkHostPressure()));
+  // ADR-199 §D1 / §Impl-status: claudeAccountPool probe. Green when the
+  // pool is populated + every entry has fresh budget probe data; yellow
+  // on partial staleness (selector falls back to weight + order for stale
+  // entries); red when the pool is empty AND a cockpit team has
+  // claudeAccount unset (spawn-epic 401-on-bootstrap class); info when
+  // the pool is unconfigured but every team pins its own account.
+  rows.push(...(await checkClaudeAccountPool(process.env.HOME)));
   // ADR-217 §D5: installed-state of the /atmux: skills plugin (12
   // cockpit-tier skills shipped via plugins/atmux/, installed by the
   // wizard step in `atmux init`). Green when symlink + plugin.json
@@ -3177,6 +3394,13 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   // empty when team is null (checkTeam already surfaced the broken
   // state) or when isolation is off AND no leftover dirs exist.
   rows.push(...(await checkWorktreeIsolation(team, atmuxDir)));
+  // ADR-245 single-kanban invariant (#3 defensive probe; t-62-df4e59bd):
+  // RED per nested `<atmuxDir>/worktrees/*/.atmux/state.db`. Worktrees
+  // share the team-root kanban; a worktree-local state.db means a verb
+  // wrote a diverging kanban instead of resolving UP. Failsafe behind the
+  // four preventive hooks (getAtmuxDir strip-back, provisioning team.json-
+  // only, orchd-window spawn guard, checkWorktreeIsolation orphan walk).
+  rows.push(...(await checkWorktreeNestedStateDb(team, atmuxDir)));
   // ADR-136 TR4: member-label-collision — warn when 2+ members share
   // the same `(emoji, label-or-name)` display tuple. Pure (no I/O);
   // returns [] when team is null OR no collisions exist.
@@ -3282,7 +3506,7 @@ export async function doctor(argv: ReadonlyArray<string>, opts: DoctorOpts = {})
       const phantoms = await findPhantomInProgressClaims({
         atmuxDir,
         team,
-        liveMembers: () => probeLiveMembers(team),
+        liveMembers: () => probeLiveMembers(team, atmuxDir),
       });
       if (phantoms.length > 0) {
         const asOfIso = formatPruneIso(Date.now());
@@ -3381,7 +3605,13 @@ async function fixStarvingMembers(
       continue;
     }
     const emoji = member.emoji ?? defaultEmojiForRole(member.role ?? "member");
-    const windowName = `${emoji}${member.name}`;
+    // Use the spawn-side window-name builder so re-paste targets the same
+    // window names start.ts created — honours ADR-135 (hyphen) for
+    // user-added members AND ADR-161 (`_`-prefix) for default-member roles
+    // (team-lead/planner/reviewer/ombudsman). The legacy `${emoji}${name}`
+    // shape predated both ADRs and silently no-ops on every modern team.
+    const memberLabel = (member as { label?: string }).label;
+    const windowName = buildWindowName(member.name, emoji, memberLabel, member.role);
     const target = `${sessionName}:${windowName}`;
     const role = typeof member.role === "string" ? member.role : "member";
     const sendTarget =

@@ -1,16 +1,17 @@
 # atmux skills — Claude Code plugin
 
-Cockpit-tier workflows for atmux team-of-teams, shipped as a Claude Code plugin in the atmux source tree. 12 skills wrap atmux verbs + cross-team workflows that the operator-facing CLI alone can't express in one breath.
+Cockpit-tier workflows for atmux team-of-teams, shipped as a Claude Code plugin in the atmux source tree. 13 skills wrap atmux verbs + cross-team workflows that the operator-facing CLI alone can't express in one breath.
 
 Per [ADR-217](../../docs/adr/217-atmux-skills-plugin-bundled-and-wizard-installed.md) §D6.
 
 ## What this plugin provides
 
-12 skills, all invoked as `/atmux:<skill>` (Claude Code's `plugin:skill` convention):
+13 skills, all invoked as `/atmux:<skill>` (Claude Code's `plugin:skill` convention):
 
 | Skill | One-line description |
 |---|---|
 | `/atmux:team` | Unified team lifecycle — start, stop, add, clear, cleanup, bootstrap, rotate-lead, rotate-member. |
+| `/atmux:driver` | Driver-1 consolidation — fetch + merge every sibling driver branch into the base branch. Verbs: `consolidate`, `status`. |
 | `/atmux:session` | Session continuity — preclear, handoff, cont, stop. |
 | `/atmux:tell-lead` | Driver→lead durable message via `atmux tell-lead` (file-backed + best-effort wake-up). |
 | `/atmux:heads-up` | Lightweight teammate ping — fold into next idle turn. |

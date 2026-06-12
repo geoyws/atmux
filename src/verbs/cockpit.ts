@@ -42,12 +42,12 @@ import {
   type TmuxNamespace,
 } from "../abstractions/tmux.ts";
 import {
-  cageSessionName,
   cageSocketPath,
   enabledTeams,
   type LoadCockpitOpts,
   loadCockpit,
   perTeamCageSocketPath,
+  resolveCageSessionName,
   resolveCageSocket,
   resolveCockpitConfigPath,
   resolvePrefix,
@@ -63,11 +63,7 @@ import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.t
 import { createLogger, type Logger } from "../core/tui.ts";
 import { resolveTuiCommand } from "../core/tui-cmd.ts";
 import { UsageError } from "../errors.ts";
-import type {
-  CockpitMedic,
-  CockpitSuperdoctor,
-  CockpitTeam,
-} from "../schema/cockpit.ts";
+import type { CockpitMedic, CockpitSuperdoctor, CockpitTeam } from "../schema/cockpit.ts";
 import { Team } from "../schema/team.ts";
 import { attachWithTmux } from "./attach.ts";
 import { cockpitRotate } from "./cockpit-rotate.ts";
@@ -185,7 +181,7 @@ export async function resolveTeamWindowMode(
   } catch {
     return "session-down";
   }
-  const session = cageSessionName(team.name);
+  const session = await resolveCageSessionName(team);
   try {
     if (!(await cageTmux.session.hasSession(session))) return "session-down";
     const wins = await cageTmux.window.listWindows(session);
@@ -223,10 +219,13 @@ function defaultCageTmuxFactory(socketPath: string): TmuxNamespace {
  * retry-loop derives BOTH paths internally from the team name + root,
  * so callers no longer need to thread a pre-resolved socketPath.
  */
-export function buildTeamWindowCommand(team: CockpitTeam, mode: TeamWindowMode): string {
+export async function buildTeamWindowCommand(
+  team: CockpitTeam,
+  mode: TeamWindowMode,
+): Promise<string> {
   switch (mode) {
     case "attach":
-      return cageRetryLoop(team);
+      return cageRetryLoop(team, await resolveCageSessionName(team));
     case "no-driver-config":
       return shellPlaceholder(
         `no driver configured for ${team.name} — set team.json::driverSession to enable`,
@@ -234,7 +233,7 @@ export function buildTeamWindowCommand(team: CockpitTeam, mode: TeamWindowMode):
     case "session-down": {
       const msg = `team ${team.name} session not running — atmux start ${team.name}`;
       const safe = msg.replace(/'/g, "'\\''");
-      return `printf '%s\\n' '${safe}'; ${cageRetryLoop(team)}`;
+      return `printf '%s\\n' '${safe}'; ${cageRetryLoop(team, await resolveCageSessionName(team))}`;
     }
   }
 }
@@ -243,11 +242,13 @@ export function buildTeamWindowCommand(team: CockpitTeam, mode: TeamWindowMode):
  *  modes. Tries the legacy `/tmp/atmux-<team>/sock` first (back-compat),
  *  falls through to the per-team `<root>/.atmux/tmux/tmux-<uid>/default`
  *  (current convention) inside ONE shell iteration, then sleeps 1s.
- *  Targets `<session>:driver` per OQ4. */
-function cageRetryLoop(team: CockpitTeam): string {
+ *  Targets `<session>:driver` per OQ4. Session name MUST be pre-resolved
+ *  via `resolveCageSessionName(team)` so anchor-bearing teams (whose
+ *  state/session.txt names a non-default session) attach to the actual
+ *  session `start.ts` created, not the underscore-form guess. */
+function cageRetryLoop(team: CockpitTeam, session: string): string {
   const legacy = cageSocketPath(team.name);
   const perTeam = perTeamCageSocketPath(team.root);
-  const session = cageSessionName(team.name);
   return (
     `while true; do ` +
     `tmux -S ${legacy} attach -t ${session}:driver 2>/dev/null ` +
@@ -269,14 +270,19 @@ function shellPlaceholder(msg: string): string {
 // ---------- Arg parsing ----------
 
 export interface ParsedCockpitArgs {
-  /** sub-verb. `reload` is a hot-reload alias for `rebuild --no-cycle
-   *  --no-launch` — applies cockpit.json topology changes (window
-   *  add/remove/move) without touching live cages or relaunching
-   *  TUIs. ADR-077 §D6 follow-on. `migrate-socket` is the ADR-162 TR3
-   *  one-shot verb that moves the cockpit session from the operator's
-   *  default tmux socket to the dedicated `atmux-cockpit` named socket
-   *  (per §Decision-anchor #1 + #4). */
-  subverb: "rebuild" | "reload" | "migrate-socket" | "attach";
+  /** sub-verb. `reconcile` is the canonical workhorse (ADR-235 §D1):
+   *  bring live tmux state into agreement with cockpit.json. `rebuild`
+   *  is its deprecation alias for one release cycle (ADR-235 §OQ4 +
+   *  ADR-159 gitter→committer precedent) — dispatches to the identical
+   *  implementation and emits a `[deprecated]` stderr warning. `reload`
+   *  is a hot-reload alias for `reconcile --no-cycle --no-launch` —
+   *  applies cockpit.json topology changes (window add/remove/move)
+   *  without touching live cages or relaunching TUIs. ADR-077 §D6
+   *  follow-on. `migrate-socket` is the ADR-162 TR3 one-shot verb that
+   *  moves the cockpit session from the operator's default tmux socket
+   *  to the dedicated `atmux-cockpit` named socket (per §Decision-anchor
+   *  #1 + #4). */
+  subverb: "reconcile" | "rebuild" | "reload" | "migrate-socket" | "attach";
   /** Skip the cage cycle phase (only normalise team.json + reconcile cockpit). */
   noCycle: boolean;
   /** Cycle every cage even if claude procs are running (DESTRUCTIVE — kills in-flight work). */
@@ -332,32 +338,42 @@ export interface ParsedCockpitArgs {
  * Parse `cockpit` argv. Throws UsageError on unknown subverb / flag.
  *
  * Usage:
- *   atmux cockpit rebuild [--no-cycle] [--force-cycle
+ *   atmux cockpit reconcile [--no-cycle] [--force-cycle
  *                         --acknowledge-dangerous-bau-interruption]
  *                         [--no-launch] [--config <path>]
+ *   atmux cockpit rebuild   # deprecated alias for reconcile (ADR-235 §OQ4)
  */
 export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs {
   if (args.length === 0) {
     throw new UsageError({
       what: "cockpit: missing sub-verb",
       hint:
-        "usage: atmux cockpit {rebuild | reload | migrate-socket | attach} " +
+        "usage: atmux cockpit {reconcile | reload | migrate-socket | attach} " +
         "[--no-cycle | --force-cycle --acknowledge-dangerous-bau-interruption] " +
-        "[--no-launch] [--config <path>] [--dry-run] [--keep-legacy]",
+        "[--no-launch] [--config <path>] [--dry-run] [--keep-legacy] " +
+        "(rebuild = deprecated alias for reconcile)",
     });
   }
   const sub = args[0];
-  if (sub !== "rebuild" && sub !== "reload" && sub !== "migrate-socket" && sub !== "attach") {
+  if (
+    sub !== "reconcile" &&
+    sub !== "rebuild" &&
+    sub !== "reload" &&
+    sub !== "migrate-socket" &&
+    sub !== "attach"
+  ) {
     throw new UsageError({
       what: `cockpit: unknown sub-verb: ${sub}`,
       hint:
-        "supported: 'rebuild' (full), 'reload' (hot-reload alias), " +
+        "supported: 'reconcile' (canonical workhorse — bring live tmux into agreement with cockpit.json), " +
+        "'rebuild' (deprecated alias for reconcile, removed next release per ADR-235 §OQ4), " +
+        "'reload' (hot-reload alias), " +
         "'migrate-socket' (ADR-162 TR3: move legacy cockpit-on-default-socket → atmux-cockpit), " +
         "or 'attach' (tmux-attach to the cockpit session on its named socket)",
     });
   }
 
-  // reload = rebuild + auto-set --no-cycle --no-launch. Operator can
+  // reload = reconcile + auto-set --no-cycle --no-launch. Operator can
   // still pass --config <path>, but cycle/launch flags are forbidden
   // (the whole point of the alias is "don't touch live cages or
   // relaunch claude — just apply the topology diff").
@@ -521,7 +537,7 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
   }
 
   const out: ParsedCockpitArgs = {
-    subverb: sub as "rebuild" | "reload" | "migrate-socket" | "attach",
+    subverb: sub as "reconcile" | "rebuild" | "reload" | "migrate-socket" | "attach",
     noCycle,
     forceCycle,
     ackDangerous,
@@ -561,7 +577,19 @@ export interface CockpitOpts {
   /** ADR-086: resolve the atmux binary path for the cron line. Default
    *  reads `ATMUX_BIN` env then falls back to `Bun.which("atmux")`. */
   resolveAtmuxBin?: () => string | null;
+  /** ADR-235 §D1: stderr sink for the `rebuild`→`reconcile` deprecation
+   *  warning. Default `process.stderr.write`. Test seam — fixtures pass
+   *  a capturing writer to assert the deprecation message verbatim. */
+  stderr?: (chunk: string) => void;
 }
+
+/** ADR-235 §D1 + §OQ4 deprecation message emitted on every `atmux cockpit
+ *  rebuild` call (the deprecated alias for `reconcile`). One-release
+ *  deprecation window per ADR-159 (gitter→committer) precedent. Exported
+ *  so the unit test asserts the exact string rather than a fuzzy match. */
+export const COCKPIT_REBUILD_DEPRECATION_MSG =
+  "[deprecated] use atmux cockpit reconcile " +
+  "(rebuild will be removed in next release per ADR-235 §OQ4 + ADR-159 precedent)";
 
 /** Top-level dispatch for `atmux cockpit <subverb>`. */
 export async function cockpit(
@@ -571,7 +599,7 @@ export async function cockpit(
   // ADR-167: `cockpit rotate` has its own argv parser (separate flag
   // set: `<session-name>` positional + `--force`) and dispatches via
   // src/verbs/cockpit-rotate.ts. Branch BEFORE parseCockpitArgs so
-  // that parser stays focused on rebuild / reload / migrate-socket.
+  // that parser stays focused on reconcile / rebuild / reload / migrate-socket.
   if (args[0] === "rotate") {
     const rotateOpts: { env?: NodeJS.ProcessEnv } = {};
     if (opts.env !== undefined) rotateOpts.env = opts.env;
@@ -579,10 +607,22 @@ export async function cockpit(
   }
   const parsed = parseCockpitArgs(args);
   switch (parsed.subverb) {
-    case "rebuild":
+    case "reconcile":
+      // ADR-235 §D1: canonical workhorse. Same implementation that has
+      // shipped under the `rebuild` name since ADR-063 — the rename is
+      // surface-only (no behaviour change).
       return await cockpitRebuild(parsed, opts);
+    case "rebuild": {
+      // ADR-235 §D1 + §OQ4: `rebuild` is a one-release deprecation alias
+      // for `reconcile` (ADR-159 gitter→committer precedent). Emit the
+      // deprecation warning to stderr on every call, then dispatch to the
+      // identical implementation — no behaviour change.
+      const stderr = opts.stderr ?? ((chunk: string) => process.stderr.write(chunk));
+      stderr(`${COCKPIT_REBUILD_DEPRECATION_MSG}\n`);
+      return await cockpitRebuild(parsed, opts);
+    }
     case "reload":
-      // Hot-reload: same flow as rebuild with --no-cycle --no-launch
+      // Hot-reload: same flow as reconcile with --no-cycle --no-launch
       // pre-applied (parseCockpitArgs already set those flags). Live
       // cages and member panes are never touched; only Phase 1
       // (team.json normalise — idempotent), Phase 3 (cage prefix —
@@ -1161,29 +1201,16 @@ export async function installCockpitCron(
     );
     return;
   }
-  const cockpitConfigPath = resolveCockpitConfigPath({ env });
-  const pulseIntervalMins = cockpit.pulse?.intervalMins;
-  const current = await crontab.read();
-  const installOpts: Parameters<typeof installCockpitCronBlock>[0] = {
-    atmuxBin,
-    cockpitConfigPath,
-    current,
-  };
-  if (pulseIntervalMins !== undefined) installOpts.pulseIntervalMins = pulseIntervalMins;
-  const next = installCockpitCronBlock(installOpts);
-  if (next === (current ?? "")) {
-    logger.log("  · cockpit cron: up to date (atmux:cockpit block already current)");
-    return;
-  }
-  try {
-    await crontab.write(next);
-    logger.log(
-      `  ✓ cockpit cron: installed atmux pulse (inspect: crontab -l | grep 'atmux:cockpit')`,
-    );
-  } catch (e) {
-    const cause = e instanceof Error ? e.message : String(e);
-    logger.warn(`cockpit cron: crontab swap failed — manual install required (${cause})`);
-  }
+  // ADR-233 §D2: cockpit-pulse cron install retired. `installCockpitCronBlock`
+  // is a no-op shim — the call is kept (behind the crontab-availability +
+  // atmux-bin guards above) so the legacy strip-only cleanup path stays
+  // reachable, but no `atmux:cockpit` sandwich block is written anymore.
+  void resolveCockpitConfigPath({ env });
+  void atmuxBin;
+  await installCockpitCronBlock({ io: crontab });
+  logger.log(
+    "  · cockpit cron: install retired (ADR-233 §D2) — re-run `atmux cockpit rebuild` if the cockpit dies",
+  );
 }
 
 function isTruthyEnv(v: string | undefined): boolean {
@@ -1346,7 +1373,7 @@ export async function autolaunchTeam(
   logger: Logger,
   opts: AutolaunchOpts = {},
 ): Promise<AutolaunchSummary> {
-  const session = cageSessionName(team.name);
+  const session = await resolveCageSessionName(team);
   // Read the team.json to drive resolveTuiCommand per member. We re-read
   // here (not relying on phase-1's mutator return) so this helper stays
   // independently callable (test directness + the --no-cycle path).
@@ -1752,7 +1779,7 @@ export async function reconcileCockpitSession(
       continue;
     }
     const mode = await resolveTeamWindowMode(t, deps);
-    const cmd = buildTeamWindowCommand(t, mode);
+    const cmd = await buildTeamWindowCommand(t, mode);
     await cockpitTmux.window.newWindow({
       sessionName,
       name: t.name,
@@ -2212,4 +2239,3 @@ function paneIsReady(capture: string): boolean {
   }
   return false;
 }
-

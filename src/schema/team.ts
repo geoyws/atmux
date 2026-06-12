@@ -726,6 +726,169 @@ export type TeamAutoMerge = z.infer<typeof TeamAutoMerge>;
  *  renderer, T7 install) share the same constant. */
 export const DEFAULT_AUTO_MERGE_CRON_BACKSTOP_MIN = 10;
 
+/**
+ * `team.json::leadStallWatchdog` sub-config — ADR-247 §D6 operator-
+ * facing controls for the lead-stall watchdog (per-cage orchd consumer
+ * that converts ready-but-undispatched stories / unclaimed tasks into a
+ * concrete lead dispatch ping). The consumer (ADR-247 §D2) lands in
+ * Phase-1 task 2 and reads these fields; this commit ships the schema
+ * surface as the foundation.
+ *
+ * `.strict()` per the sibling-block precedent (whip / autoMerge /
+ * autoPush) — drift detection requires unknown-key rejection so a typo
+ * like `idleTresholdMin` surfaces as a refusal rather than a silent
+ * default (ADR-054 §D3). Every field has a default, so omitting the
+ * whole block is equivalent to the ADR-247 §D6 recommended values
+ * (`enabled: true`, 5 / 5 / 15 minute thresholds).
+ */
+export const TeamLeadStallWatchdog = z
+  .object({
+    /** ADR-247 §D6 off-switch. Default `true` — the watchdog is the
+     *  lead-stall closer the ADR was authored to ship; opt-OUT, not
+     *  opt-in. Operators on lean-mode (ADR-189) flip this off when a
+     *  cage intentionally idles. */
+    enabled: z.boolean().default(true),
+    /** ADR-247 §D3 W1/W2/W3 threshold (minutes) — a ready story with no
+     *  claimant (or an unclaimed task) must sit this long before the
+     *  watchdog pings. Default 5 (active-development cadence). Range
+     *  1..60; lean-mode cages raise it for "very lazy" profiles per
+     *  ADR-247 §D6. */
+    idleThresholdMin: z.number().int().min(1).max(60).default(5),
+    /** ADR-247 §D5 per-cage rate-limit (minutes) — at most one ping per
+     *  this window per cage, so the at-least-once event re-delivery
+     *  contract (ADR-202 §III) does not multiply pings. Default 5. */
+    rateLimitPerCageMin: z.number().int().min(1).max(60).default(5),
+    /** ADR-247 §D5 backoff-on-no-ack (minutes) — if the lead makes no
+     *  progress this long after a ping, escalate ONCE to the parent
+     *  driver-inbox via `atmux tell-lead --escalate`. Default 15.
+     *  Range 5..120. */
+    escalationDelayMin: z.number().int().min(5).max(120).default(15),
+  })
+  .strict();
+export type TeamLeadStallWatchdog = z.infer<typeof TeamLeadStallWatchdog>;
+
+/**
+ * `team.json::orchestration` sub-config — ADR-260 §D1. Selects who
+ * orchestrates the team:
+ *
+ *  - `"manual"` (the default, including when the block is absent) —
+ *    NO orchd daemon window; the member/lead LLMs manage the fleet
+ *    themselves: self-report status via `atmux member status`, drive
+ *    the kanban via `claim`/`done`/`task move`, fan in + spawn by
+ *    hand. Rationale per ADR-260: LLMs can manage their own fleet
+ *    better than atmux's deterministic automation can at the moment.
+ *  - `"orchd"` — pre-ADR-260 behavior: `maybeSpawnOrchdWindow` runs
+ *    subject to the ADR-259 gates (autoMerge.enabled, ATMUX_HONKER).
+ *
+ * `.strict()` per the sibling-block precedent (whip / autoMerge /
+ * leadStallWatchdog) — a typo'd key surfaces as a refusal, not a
+ * silent default (ADR-054 §D3).
+ */
+export const TeamOrchestration = z
+  .object({
+    /** ADR-260 §D1 mode switch. Default `"manual"` — orchd and every
+     *  consumer it hosts (auto-merge / auto-push / auto-spawn /
+     *  lead-stall watchdog / scanners) are opt-in via `"orchd"`. */
+    mode: z.enum(["manual", "orchd"]).default("manual"),
+  })
+  .strict();
+export type TeamOrchestration = z.infer<typeof TeamOrchestration>;
+
+/** ADR-260 §D1 default — applied when the `orchestration` block (or its
+ *  `mode` field) is absent from team.json. */
+export const DEFAULT_ORCHESTRATION_MODE = "manual" as const;
+
+/** ADR-260 §D1 read-time resolver — the single place "absent block ⇒
+ *  manual" is encoded. Callers (orchd spawn gate, status renderer,
+ *  briefs tooling) MUST go through this instead of reading
+ *  `team.orchestration?.mode` directly so the default lives once. */
+export function resolveOrchestrationMode(
+  team: Pick<Team, "orchestration">,
+): "manual" | "orchd" {
+  return team.orchestration?.mode ?? DEFAULT_ORCHESTRATION_MODE;
+}
+
+/**
+ * One polled tracker in `team.json::issueSync.trackers[]` — ADR-261
+ * §D2 (adapter ids) + §D7.2 (per-repo/per-project allowlist; there is
+ * no "discover everything the token can see" mode) + §D9 (targetTeam
+ * routing). Discriminated on the adapter `id` so each vendor carries
+ * exactly its own coordinates — a `github` entry with ADO fields (or
+ * vice versa) is refused, not silently ignored. Both arms `.strict()`
+ * per the sibling-block precedent (ADR-054 §D3).
+ */
+export const TeamIssueSyncTracker = z.discriminatedUnion("id", [
+  z
+    .object({
+      /** ADR-261 §D2 adapter id — GitHub adapter (Phase 1). */
+      id: z.literal("github"),
+      /** Repo allowlist, `owner/repo` entries (ADR-261 §D7.2). Required
+       *  and non-empty — a github tracker with nothing to poll is a
+       *  config mistake, not a no-op. */
+      repos: z.array(z.string().min(1)).min(1),
+      /** ADR-261 §D9 routing — the team whose lead adjudicates the
+       *  ingested issues. Absent ⇒ the polling team itself. Must
+       *  resolve to exactly ONE cockpit team — ambiguity is a refusal,
+       *  never a silent first-pick (ADR-150 §D5 semantics). */
+      targetTeam: z.string().min(1).optional(),
+      /** ADR-261 §D10 label→severity map (→ `extra.severity`, §D3).
+       *  Values are the binding `extractSeverity` vocabulary
+       *  (`src/core/complaints.ts`) — the one the complaint consumer
+       *  actually reads. */
+      labelSeverityMap: z
+        .record(z.string(), z.enum(["info", "warn", "urgent", "critical"]))
+        .optional(),
+      /** ADR-261 §D5b orchd ticker cadence (seconds). Used only on
+       *  `orchestration.mode: "orchd"` teams once the Phase 2 ticker
+       *  lands; the manual verb is on-demand and ignores it. */
+      pollIntervalSec: z.number().int().positive().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      /** ADR-261 §D2 adapter id — Azure DevOps adapter (Phase 2). */
+      id: z.literal("azure-devops"),
+      /** ADO organization name (first segment of the §D7.2 allowlist
+       *  coordinate `org/project`). */
+      org: z.string().min(1),
+      /** ADO project name (second segment of `org/project`). */
+      project: z.string().min(1),
+      /** ADR-261 §D9 routing — see the github arm. */
+      targetTeam: z.string().min(1).optional(),
+      /** ADR-261 §D10 label→severity map — see the github arm. */
+      labelSeverityMap: z
+        .record(z.string(), z.enum(["info", "warn", "urgent", "critical"]))
+        .optional(),
+      /** ADR-261 §D5b orchd ticker cadence (seconds) — see the github arm. */
+      pollIntervalSec: z.number().int().positive().optional(),
+    })
+    .strict(),
+]);
+export type TeamIssueSyncTracker = z.infer<typeof TeamIssueSyncTracker>;
+
+/**
+ * `team.json::issueSync` sub-config — ADR-261 §D10. issue-sync:
+ * external issue-tracker ingestion (GitHub / Azure DevOps) polled into
+ * the complaints substrate; the target team's lead adjudicates per
+ * ADR-214. **Optional** — absent block ⇒ issue-sync disabled; every
+ * pre-ADR-261 `team.json` parses unchanged.
+ *
+ * `.strict()` per the sibling-block precedent (orchestration / whip /
+ * autoMerge / leadStallWatchdog) — a typo'd key surfaces as a refusal,
+ * not a silent default (ADR-054 §D3).
+ */
+export const TeamIssueSync = z
+  .object({
+    /** Master switch. Default `false` — issue-sync is opt-in twice over
+     *  (absent block ⇒ disabled; present block still defaults off). */
+    enabled: z.boolean().default(false),
+    /** Polled trackers (the §D7.2 allowlist). Default `[]` — an enabled
+     *  block with no trackers is a no-op, not an error. */
+    trackers: z.array(TeamIssueSyncTracker).default([]),
+  })
+  .strict();
+export type TeamIssueSync = z.infer<typeof TeamIssueSync>;
+
 export const TeamObservability = z
   .object({
     /** t-e89c03f7: when true, every UNKNOWN classification from
@@ -1367,9 +1530,49 @@ export const Team = z
     driverSession: z
       .object({
         tui: z.string().nullable().optional(),
+        /** ADR-239 §D7 lineage — loose model pin for the driver's TUI
+         *  (e.g. an operator-chosen cursor model identifier). Any string
+         *  accepted; atmux does NOT enforce a specific value set. `null`
+         *  / absent both mean "unset" — the spawn loop falls back to its
+         *  account-derived default. Sibling-consistent with `.tui`'s
+         *  `.nullable().optional()`. */
+        model: z.string().nullable().optional(),
       })
       .strict()
       .nullable()
+      .optional(),
+    /** ADR-239 §D7 + §A5 (amended 2026-05-26) — declarative driver roster.
+     *
+     *  When present + non-empty, supersedes the legacy `driverSession` /
+     *  `driverTui` fields and drives `atmux start`'s driver-spawn loop
+     *  per ADR-239 §A1. Operator-interactive ONLY — no send-keys EVER
+     *  (ADR-239 §D2), no pre-prompts / briefs (ADR-239 §D5 + §A3).
+     *
+     *  Conventions enforced at spawn time (not by schema):
+     *    - `drivers[0].name` SHOULD be `"driver"` (the trunk-worktree
+     *      driver; original singular driver under the legacy model);
+     *    - `drivers[N].name` for N>=1 SHOULD be `"driver-2"` … `"driver-N"`;
+     *    - `cwd` for `driver` defaults to `"."` (team root, trunk branch);
+     *    - `cwd` for `driver-N` (N>=2) is conventionally
+     *      `.atmux/worktrees/driver-N` and the spawn loop provisions a
+     *      worktree there on `<base>-driver-N` if missing.
+     *
+     *  Cap of 10 per ADR-239 §A4 OQ1-resolution — teams that legitimately
+     *  need more concurrent driver panes should cite a follow-up ADR
+     *  raising the cap, not silently exceed it. */
+    drivers: z
+      .array(
+        z
+          .object({
+            name: z.string().min(1),
+            tui: z.string().min(1),
+            cwd: z.string().min(1),
+            claudeAccount: z.string().optional(),
+          })
+          .passthrough(),
+      )
+      .min(1)
+      .max(10)
       .optional(),
     /** Member roster. Order is preserved (window layout depends on it). */
     members: z.array(TeamMember),
@@ -1464,6 +1667,21 @@ export const Team = z
      *  {@link resolveRefusalConfig} (enabled=true, soft=3, hard=2,
      *  role=1, windowMin=30, cap=3/day). */
     refusalDetection: TeamRefusalDetection.optional(),
+    /** ADR-247 §D6: lead-stall watchdog operator controls (per-cage
+     *  orchd consumer that pings the lead on ready-but-undispatched
+     *  stories / unclaimed tasks). Absent block → defaults applied
+     *  (`enabled: true`, 5/5/15-minute thresholds). See
+     *  {@link TeamLeadStallWatchdog}. */
+    leadStallWatchdog: TeamLeadStallWatchdog.optional(),
+    /** ADR-260 §D1: orchestration mode switch. Absent block ⇒
+     *  `"manual"` (no orchd; LLMs self-manage the fleet). See
+     *  {@link TeamOrchestration} + {@link resolveOrchestrationMode}. */
+    orchestration: TeamOrchestration.optional(),
+    /** ADR-261 §D10: issue-sync — external issue-tracker ingestion
+     *  (GitHub / Azure DevOps → complaints → lead adjudication). Absent
+     *  block ⇒ disabled; every pre-ADR-261 team.json parses unchanged.
+     *  See {@link TeamIssueSync}. */
+    issueSync: TeamIssueSync.optional(),
     /** Phase 2 sub-shapes — typed once verb porters land. */
     discord: z.unknown().optional(),
     tuiCommands: z.unknown().optional(),

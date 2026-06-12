@@ -22,11 +22,12 @@
 // Reads budget probe state from `~/.atmux/state/budget-probe-<label>.json`
 // per the existing budget skill convention. Selection picks the entry
 // with the lowest `h5_util` (5-hour utilization fraction). Ties broken
-// by `weight` (default 1.0) and finally by pool-array order.
+// by `weight` (default 1.0), then by **round-robin** on last-spawn
+// (ADR-199 §D2 step 5), and finally by pool-array order.
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { exists } from "../abstractions/fs.ts";
+import { atomicWrite, exists, readTextOrNull } from "../abstractions/fs.ts";
 import type { ClaudeAccountPoolEntry } from "../schema/cockpit.ts";
 
 /** Shape of `~/.atmux/state/budget-probe-<label>.json` per the existing
@@ -75,6 +76,16 @@ export interface SelectAccountDeps {
   now?: number;
   /** Stale threshold in seconds. Defaults to {@link DEFAULT_STALE_THRESHOLD_SEC}. */
   staleThresholdSec?: number;
+  /** Per-label last-spawn ordinal from the persisted round-robin counter
+   *  (`~/.atmux/state/pool-rr-counter.json`, see {@link readRrCounter}).
+   *  Used as the round-robin tiebreak (ADR-199 §D2 step 5): when two
+   *  entries tie on h5_util AND weight, the one spawned least recently
+   *  (lowest ordinal) wins, rotating load instead of hot-spotting the
+   *  first array entry. Labels absent from the map are treated as
+   *  "never spawned" (ordinal -1 → highest priority). Omitting the map
+   *  entirely disables the round-robin rung (falls through to pool-array
+   *  order, preserving the pre-ADR-199-§D2-step-5 behavior). */
+  lastSpawnByLabel?: ReadonlyMap<string, number>;
 }
 
 interface ScoredEntry {
@@ -83,6 +94,10 @@ interface ScoredEntry {
   h5Util: number | null;
   /** Effective weight. */
   weight: number;
+  /** Last-spawn ordinal from the round-robin counter. `-1` when the
+   *  label was never spawned (or no counter supplied) — lowest sorts
+   *  first, so never-spawned / least-recently-spawned wins the rung. */
+  lastSpawn: number;
   /** Position in original pool array — final tie-breaker. */
   index: number;
   /** `true` when budget probe says `throttled` (or any non-allowed status).
@@ -98,7 +113,9 @@ interface ScoredEntry {
  *   1. Exclude entries with `status: throttled` UNLESS all entries are throttled.
  *   2. Among the eligible set, prefer lower `h5_util` (most headroom).
  *   3. On tie, prefer higher `weight`.
- *   4. On further tie, preserve pool-array order.
+ *   4. On further tie, round-robin: prefer the entry spawned LEAST recently
+ *      (lowest `lastSpawnByLabel` ordinal; absent = never spawned = -1).
+ *   5. On further tie, preserve pool-array order.
  *
  * Stale / missing budget data is treated as h5_util=null and sorts
  * AFTER all entries with fresh data (so the selector prefers fresh
@@ -120,6 +137,7 @@ export function selectAccount(deps: SelectAccountDeps): SelectAccountResult {
       entry,
       h5Util: stale ? null : state.h5_util,
       weight: entry.weight ?? 1.0,
+      lastSpawn: deps.lastSpawnByLabel?.get(entry.label) ?? -1,
       index,
       throttled: state !== null && state.status !== "allowed",
     };
@@ -151,6 +169,9 @@ export function selectAccount(deps: SelectAccountDeps): SelectAccountResult {
     }
     // Tie on h5Util — higher weight wins.
     if (a.weight !== b.weight) return b.weight - a.weight;
+    // Tie on weight — round-robin: least-recently-spawned (lowest
+    // ordinal) wins, rotating load off whatever was picked last.
+    if (a.lastSpawn !== b.lastSpawn) return a.lastSpawn - b.lastSpawn;
     // Final: pool-array order.
     return a.index - b.index;
   });
@@ -211,4 +232,75 @@ export async function loadBudgetMap(
     }),
   );
   return m;
+}
+
+// ---------- Round-robin counter (ADR-199 §D2 step 5 / §Risk) ----------
+
+/** Persisted round-robin state at `~/.atmux/state/pool-rr-counter.json`.
+ *  `counter` is a monotonic spawn ordinal (incremented on every spawn);
+ *  `lastSpawnByLabel` stamps the counter value at which each label was
+ *  last selected. Durable so round-robin survives cockpit restarts
+ *  (ADR-199 Risk: "Round-robin counter desync across cockpit restarts"
+ *  → "counter persisted ... restart resumes from disk"). */
+export interface RrCounterState {
+  /** Monotonic spawn ordinal. Starts at 0; the first recorded spawn is 1. */
+  counter: number;
+  /** label → counter value at that label's most-recent spawn. */
+  lastSpawnByLabel: Record<string, number>;
+}
+
+function rrCounterPath(homeDir: string): string {
+  return join(homeDir, ".atmux", "state", "pool-rr-counter.json");
+}
+
+/** Read the round-robin counter. Returns a zeroed state when the file
+ *  is absent or unreadable/malformed — a missing counter means "no
+ *  spawns recorded yet", which is the correct cold-start default. */
+export async function readRrCounter(homeDir: string): Promise<RrCounterState> {
+  const empty: RrCounterState = { counter: 0, lastSpawnByLabel: {} };
+  const raw = await readTextOrNull(rrCounterPath(homeDir));
+  if (raw === null) return empty;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "counter" in parsed &&
+      typeof (parsed as { counter: unknown }).counter === "number" &&
+      "lastSpawnByLabel" in parsed &&
+      typeof (parsed as { lastSpawnByLabel: unknown }).lastSpawnByLabel === "object" &&
+      (parsed as { lastSpawnByLabel: unknown }).lastSpawnByLabel !== null
+    ) {
+      const p = parsed as RrCounterState;
+      // Keep only numeric label ordinals — defend against hand-edited junk.
+      const clean: Record<string, number> = {};
+      for (const [label, ord] of Object.entries(p.lastSpawnByLabel)) {
+        if (typeof ord === "number" && Number.isFinite(ord)) clean[label] = ord;
+      }
+      return { counter: p.counter, lastSpawnByLabel: clean };
+    }
+    return empty;
+  } catch {
+    return empty;
+  }
+}
+
+/** View of the round-robin state as the `Map` shape {@link selectAccount}
+ *  consumes for its tiebreak rung. */
+export function rrLastSpawnMap(state: RrCounterState): Map<string, number> {
+  return new Map(Object.entries(state.lastSpawnByLabel));
+}
+
+/** Record that `label` was just spawned: bump the monotonic counter and
+ *  stamp the label with the new value, then persist atomically. Returns
+ *  the written state. Call this AFTER a successful pool selection +
+ *  spawn so the NEXT selection rotates away from `label`. */
+export async function recordSpawn(label: string, homeDir: string): Promise<RrCounterState> {
+  const prev = await readRrCounter(homeDir);
+  const next: RrCounterState = {
+    counter: prev.counter + 1,
+    lastSpawnByLabel: { ...prev.lastSpawnByLabel, [label]: prev.counter + 1 },
+  };
+  await atomicWrite(rrCounterPath(homeDir), JSON.stringify(next, null, 2));
+  return next;
 }

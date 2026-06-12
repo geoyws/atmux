@@ -38,6 +38,7 @@ import {
 } from "../core/common.ts";
 import { type DriverPaneHealth, probeDriverPane } from "../core/driver-pane-health.ts";
 import { DEFAULT_HEARTBEAT_STALE_SEC, readHeartbeatAges } from "../core/heartbeat.ts";
+import { type MemberSelfStatus, readAllMemberStatuses } from "../core/member-status.ts";
 import { loadInbox } from "../core/inbox.ts";
 import { loadKanban } from "../core/kanban.ts";
 import { readLeadSessionStart, readLeadWindowName } from "../core/lead-marker.ts";
@@ -162,6 +163,20 @@ export interface MemberStatus {
    *  gatherStatus call re-reads. The producer (t-7e291a53) writes this
    *  from the cron-mediated poke tick per-member loop. */
   heartbeat_age_s: number | null;
+  /** ADR-260 §D5: the member's self-reported status (manual
+   *  orchestration mode's authoritative intent signal), sourced from
+   *  `<atmuxDir>/state/member-status/<member>.json` via
+   *  readAllMemberStatuses. Absent when the member has never
+   *  self-reported (or the file is unreadable) — key-presence
+   *  convention matches `contextPct`. Rendered alongside — not
+   *  instead of — the derived signals so a stale/dishonest
+   *  self-report is cross-checkable at a glance. */
+  selfStatus?: {
+    status: MemberSelfStatus;
+    note?: string;
+    taskId?: string;
+    ageSec: number;
+  };
 }
 
 /** ADR-148 §D2: cadence-classifier output for one member. T5
@@ -666,6 +681,22 @@ export async function gatherStatus(
     row.heartbeat_age_s = ageByName.get(row.name) ?? null;
   }
 
+  // ADR-260 §D5: batch-read the per-member self-reported status files.
+  // Key-presence convention matches contextPct — rows without a signal
+  // simply omit the field so JSON consumers gate cleanly.
+  const selfStatuses = await readAllMemberStatuses(atmuxDir, memberNames);
+  for (const row of members) {
+    const rec = selfStatuses.get(row.name);
+    if (rec !== undefined) {
+      row.selfStatus = {
+        status: rec.status,
+        ...(rec.note !== undefined ? { note: rec.note } : {}),
+        ...(rec.taskId !== undefined ? { taskId: rec.taskId } : {}),
+        ageSec: Math.max(0, nowSec - rec.updatedAtSec),
+      };
+    }
+  }
+
   const counts: KanbanCounts = { todo: 0, inProgress: 0, done: 0, blocked: 0 };
   // ADR-060 dual-path: load if EITHER the SQLite store or the legacy
   // JSON file exists. Pre-fix this gate only checked kanban.json, so
@@ -775,6 +806,7 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
           contextTs?: number;
           contextStale?: boolean;
           cadence?: CadenceObservation;
+          selfStatus?: MemberStatus["selfStatus"];
         } = {
           name: m.name,
           role: m.role,
@@ -793,6 +825,9 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
         if (m.contextTs !== undefined) row.contextTs = m.contextTs;
         if (m.contextStale !== undefined) row.contextStale = m.contextStale;
         if (m.cadence !== undefined) row.cadence = m.cadence;
+        // ADR-260 §D5: self-reported status — emitted only when the
+        // member has a readable status file (key-presence convention).
+        if (m.selfStatus !== undefined) row.selfStatus = m.selfStatus;
         return row;
       }),
       kanban: snap.kanban,
@@ -928,8 +963,14 @@ function renderTextStatus(snap: StatusSnapshot, staleSec: number): void {
     // ticked their first cron-mediated poke cycle.
     const hb = formatHeartbeatColumn(m, staleSec);
     const hbSuffix = hb === "—" ? "" : `  ${hb}`;
+    // ADR-260 §D5: self-reported status segment — appended after the
+    // heartbeat marker (same suffix pattern: omitted entirely when the
+    // member has never self-reported, so pre-ADR-260 rows are
+    // byte-identical).
+    const ss = formatSelfStatusColumn(m);
+    const ssSuffix = ss === "—" ? "" : `  ${ss}`;
     process.stdout.write(
-      `  ${emoji} ${name} ${role} ${tui} ${paneState} ${ctx} ${cadence} 🟡 ${m.inProgressCount} active  📌 ${m.pendingCount} todo${hbSuffix}\n`,
+      `  ${emoji} ${name} ${role} ${tui} ${paneState} ${ctx} ${cadence} 🟡 ${m.inProgressCount} active  📌 ${m.pendingCount} todo${hbSuffix}${ssSuffix}\n`,
     );
   }
   const k = snap.kanban;
@@ -1021,6 +1062,25 @@ function formatHeartbeatAge(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
   return `${Math.floor(seconds / 3600)}h`;
+}
+
+/** ADR-260 §D5: format the self-reported status segment for one member
+ *  row. Two states:
+ *    - Never self-reported (selfStatus absent)  → "—" (renderer omits)
+ *    - Self-reported                            → "📍working(t-xxx, 3m)"
+ *      (taskId parenthetical omitted when the report carried none).
+ *
+ *  Age reuses the heartbeat-age unit convention so the two trailing
+ *  markers read consistently. The note is NOT rendered in the row
+ *  (would wreck column alignment) — `--json` carries it. */
+export function formatSelfStatusColumn(m: MemberStatus): string {
+  const ss = m.selfStatus;
+  if (ss === undefined) return "—";
+  const inner =
+    ss.taskId !== undefined
+      ? `${ss.taskId}, ${formatHeartbeatAge(ss.ageSec)}`
+      : formatHeartbeatAge(ss.ageSec);
+  return `📍${ss.status}(${inner})`;
 }
 
 /** ADR-057 §D6c: read `team.json::whip.stallPrevention.heartbeatStaleSec`.

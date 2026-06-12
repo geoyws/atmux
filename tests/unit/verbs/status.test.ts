@@ -10,10 +10,12 @@ import { appendDispatched, appendPending } from "../../../src/core/inbox.ts";
 import { addTask, moveTask } from "../../../src/core/kanban.ts";
 import { UsageError } from "../../../src/errors.ts";
 import { writeHeartbeat } from "../../../src/core/heartbeat.ts";
+import { writeMemberStatus } from "../../../src/core/member-status.ts";
 import {
   defaultRoleEmoji,
   formatContextColumn,
   formatHeartbeatColumn,
+  formatSelfStatusColumn,
   gatherStatus,
   type MemberStatus,
   parseStatusArgs,
@@ -1513,3 +1515,127 @@ describe("gatherStatus — heartbeat surface", () => {
   });
 });
 
+
+// ---------- ADR-260 §D5: self-reported status ----------
+
+describe("gatherStatus — selfStatus populated from member-status files (ADR-260 §D5)", () => {
+  test("absent status file → row omits selfStatus (key-presence convention)", async () => {
+    const { sessionName } = await stageTeam(
+      [{ name: "alpha", emoji: "🐝", role: "member", tui: "claude" }],
+      false,
+    );
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Parameters<
+      typeof gatherStatus
+    >[1];
+    const snap = await gatherStatus(tmux, team, sessionName, atmuxDir, {
+      now: () => 1_715_000_500_000,
+    });
+    expect(snap.members[0]?.selfStatus).toBeUndefined();
+  });
+
+  test("written status file → row populates status/note/taskId + ageSec from injected clock", async () => {
+    const { sessionName } = await stageTeam(
+      [{ name: "alpha", emoji: "🐝", role: "member", tui: "claude" }],
+      false,
+    );
+    await writeMemberStatus(atmuxDir, {
+      member: "alpha",
+      status: "working",
+      note: "wiring ADR-260",
+      taskId: "t-12345678",
+      updatedAtSec: 1_715_000_380, // 120s before injected now
+    });
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Parameters<
+      typeof gatherStatus
+    >[1];
+    const snap = await gatherStatus(tmux, team, sessionName, atmuxDir, {
+      now: () => 1_715_000_500_000,
+    });
+    expect(snap.members[0]?.selfStatus).toEqual({
+      status: "working",
+      note: "wiring ADR-260",
+      taskId: "t-12345678",
+      ageSec: 120,
+    });
+  });
+
+  test("future-stamped record clamps ageSec to 0 (clock skew tolerance)", async () => {
+    const { sessionName } = await stageTeam(
+      [{ name: "alpha", emoji: "🐝", role: "member", tui: "claude" }],
+      false,
+    );
+    await writeMemberStatus(atmuxDir, {
+      member: "alpha",
+      status: "idle",
+      updatedAtSec: 1_715_000_999,
+    });
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Parameters<
+      typeof gatherStatus
+    >[1];
+    const snap = await gatherStatus(tmux, team, sessionName, atmuxDir, {
+      now: () => 1_715_000_500_000,
+    });
+    expect(snap.members[0]?.selfStatus?.ageSec).toBe(0);
+  });
+});
+
+describe("formatSelfStatusColumn — pure formatter (ADR-260 §D5)", () => {
+  const base: MemberStatus = {
+    name: "alpha",
+    role: "member",
+    tui: "claude",
+    paneCommand: "claude",
+    cageState: null,
+    pendingCount: 0,
+    inProgressCount: 0,
+    heartbeat_age_s: null,
+  };
+
+  test("never self-reported → '—' (renderer omits the segment)", () => {
+    expect(formatSelfStatusColumn(base)).toBe("—");
+  });
+
+  test("with taskId → '📍<status>(<taskId>, <age>)'", () => {
+    const m: MemberStatus = {
+      ...base,
+      selfStatus: { status: "working", taskId: "t-12345678", ageSec: 120 },
+    };
+    expect(formatSelfStatusColumn(m)).toBe("📍working(t-12345678, 2m)");
+  });
+
+  test("without taskId → '📍<status>(<age>)'", () => {
+    const m: MemberStatus = { ...base, selfStatus: { status: "idle", ageSec: 45 } };
+    expect(formatSelfStatusColumn(m)).toBe("📍idle(45s)");
+  });
+
+  test("hour-scale age uses the heartbeat unit convention", () => {
+    const m: MemberStatus = { ...base, selfStatus: { status: "blocked", ageSec: 7300 } };
+    expect(formatSelfStatusColumn(m)).toBe("📍blocked(2h)");
+  });
+});
+
+describe("status verb — selfStatus end-to-end (ADR-260 §D5)", () => {
+  test("--json emits selfStatus when the member has self-reported; text mode shows 📍 segment", async () => {
+    await stageTeam([{ name: "alpha" }], false);
+    await writeMemberStatus(atmuxDir, {
+      member: "alpha",
+      status: "working",
+      taskId: "t-12345678",
+      updatedAtSec: Math.floor(Date.now() / 1000) - 30,
+    });
+    const { out } = await captureStdout(() =>
+      status(["--json", "--socket", socketPath, "--team-dir", teamDir]),
+    );
+    const parsed = JSON.parse(out);
+    expect(parsed.members[0].selfStatus).toMatchObject({
+      status: "working",
+      taskId: "t-12345678",
+    });
+    expect(parsed.members[0].selfStatus.ageSec).toBeGreaterThanOrEqual(30);
+
+    const { out: text } = await captureStdout(() =>
+      status(["--socket", socketPath, "--team-dir", teamDir]),
+    );
+    expect(text).toContain("📍working(t-12345678,");
+  });
+});

@@ -5,8 +5,8 @@
 **Status**: Superseded by e-be01fc89 (sentinel deleted 2026-05-23 — Opus-sentinel impl-EPIC never ships per ADR-211 retire-sentinel; supersedence reason: sentinel role itself retires before this swap could land). Was: Accepted — ratified by driver 2026-05-21 (Opus-sentinel rolls back ADR-132 §D1 cursor backend; pluggable abstraction §D2 preserved; Zod transform shim for legacy `team.json::sentinel.name: "cursor"` migration with one-release deprecation grace; doctor probe surfaces config drift; ADR-140 burn-reduction projection forfeited at sentinel tier — Honker substrate ADR-202 is the replacement cost mitigation, NOT a model swap; adversarial-LLM-diversity now lives in role separation (planner/reviewer/jury/gitter different prompts + briefs) not model separation; sequencing constraint observed — substrate + sentinel-eventized EPIC before cursor.ts deletion; §OQ recommendations as-written). Runtime side already deployed 2026-05-21: `~/.atmux/cockpit.json::sentinel.impl` flipped cursor→claude + `enabled: false`; 4 IFCA team.json cursor members flipped to claude in same operator session.
 **Date**: 2026-05-21
 **Driver-ref**: 2026-05-21 ADR-201 rejection note — *"REMOVE cursor in favor of Opus across atmux — not just decline to add at member tier, but unwind cursor at sentinel (ADR-132) + cancel forthcoming jury cursor path. Reasoning: adversarial-LLM-diversity reframe is overridden by operator preference for Opus consistency across the chain."*
-**Supersedes (in part)**: [ADR-132](132-pluggable-martinet.md) §D1 (Cursor as the production Sentinel impl). Pluggable abstraction stays; cursor backend is rolled back. ADR-132 status remains `Accepted` (the architectural decision to make Sentinel pluggable was sound); this ADR narrows the impl set.
-**Cross-refs**: [ADR-132](132-pluggable-martinet.md) (pluggable Sentinel abstraction this narrows), [ADR-158](158-rename-martinet-to-sentinel.md) (martinet → sentinel rename), [ADR-140](140-cheap-model-first.md) (cheap-model-first principle this partially walks back), [ADR-201](201-cursor-cli-composer-25-as-first-class-member-tui.md) §Status (the rejection note that triggered this supersession), [ADR-204](204-jury-role-acceptance-criteria-contract.md) §Amendment 2026-05-21 (sibling rollback for `_jury`), memory `feedback_opus_all_for_agile_flow` (operator stance — refreshed 2026-05-21 in the same commit set).
+**Supersedes (in part)**: [ADR-132](132-pluggable-martinet.SUPERSEDED.md) §D1 (Cursor as the production Sentinel impl). Pluggable abstraction stays; cursor backend is rolled back. ADR-132 status remains `Accepted` (the architectural decision to make Sentinel pluggable was sound); this ADR narrows the impl set.
+**Cross-refs**: [ADR-132](132-pluggable-martinet.SUPERSEDED.md) (pluggable Sentinel abstraction this narrows), [ADR-158](158-martinet-to-sentinel-rename.SUPERSEDED.md) (martinet → sentinel rename), [ADR-140](140-cheap-model-first.md) (cheap-model-first principle this partially walks back), [ADR-201](201-cursor-cli-composer-25-as-first-class-member-tui.md) §Status (the rejection note that triggered this supersession), [ADR-204](204-jury-role-acceptance-criteria-contract.SUPERSEDED.md) §Amendment 2026-05-21 (sibling rollback for `_jury`), memory `feedback_opus_all_for_agile_flow` (operator stance — refreshed 2026-05-21 in the same commit set).
 
 ## Context
 
@@ -111,25 +111,3 @@ These are documentation sweeps; not a Zod-schema decision. Memory file refresh +
 - memory `project_martinet_pattern` — pluggable abstraction context (needs sweep per §D5)
 - memory `project_sentinel_rename_adr_158` — same
 - memory `project_cheap_model_first_adr_140` — same
-
-## §Amendment 2026-05-21 — Sentinel role retired entirely per ADR-211 (this ADR's load-bearing decision rendered moot)
-
-**Driver-ref 2026-05-21** — same operator session as the runtime flip below (`cockpit.json::sentinel.impl` cursor→claude + `enabled: false`). Operator question *"do we really need the sentinel?"* triggered [ADR-211](./211-retire-sentinel-role-distribute-to-honker-consumers.md), which retires the Sentinel role entirely (observation functions distribute to Honker event consumers per ADR-211 §D2).
-
-ADR-211 declares **`Supersedes (in scope): ADR-207`** — the Opus-sentinel decision this ADR made becomes moot when the role itself is retired. ADR-211 §Status header notes: *"ADR-207's impl-EPIC never ships per this ADR"*.
-
-**What stands from this ADR (historical record):**
-
-- The runtime flip already shipped 2026-05-21 in the same operator session — `~/.atmux/cockpit.json::sentinel.impl` flipped cursor→claude + `enabled: false`; 4 IFCA team.json cursor members flipped to claude. That config state is preserved; the impl-EPIC (cursor.ts deletion + Zod transform shim) never ships per ADR-211 — instead, the entire sentinel surface gets removed by ADR-211's cleanup-EPIC after ≥30 days observed-stable.
-- The §D2 pluggable-abstraction-preservation argument carries into ADR-211 §Status header (interface preserved one release for back-compat — see ADR-132 §Amendment 2026-05-21).
-- The §D5 sequencing constraint (substrate → sentinel-eventized → cursor.ts deletion) is honored by ADR-211 + ADR-202 §D12 — substrate landed 2026-05-21 Phase 1; sentinel-eventized consumer EPIC absorbs sentinel functions; cleanup-EPIC purges the code surface.
-
-**What becomes moot:**
-
-- The Opus-vs-cursor backend choice at the sentinel tier — no role ships at that tier post-ADR-211, so the choice doesn't apply.
-- The Zod transform shim for `team.json::sentinel.name: "cursor"` migration described in §D2 — instead, the entire `sentinel` field gets deprecation-warn-then-removed per ADR-211 cleanup-EPIC.
-- §"Out of scope" Re-adding cursor (or any non-Claude backend) — the abstraction itself retires; future non-Claude observation backends would land under the Honker-consumer pattern instead.
-
-**Adversarial-LLM-diversity sibling note:** ADR-204 §Amendment 2026-05-21 (referenced above) was the `_jury` rollback to Opus. That role retires entirely too per [ADR-213](./213-retire-jury-reviewer-absorbs-acceptance-criteria.md) — the same simplification arc that produced ADR-211/212/213/214 in one operator session ("atmux is getting too complex and we need to simplify").
-
-Cross-refs: [ADR-211](./211-retire-sentinel-role-distribute-to-honker-consumers.md) (sentinel retirement — this §Amendment's load-bearing supersession), [ADR-132 §Amendment 2026-05-21](./132-pluggable-martinet.md) (sibling §Amendment on the abstraction this ADR narrowed), [ADR-212](./212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md) + [ADR-213](./213-retire-jury-reviewer-absorbs-acceptance-criteria.md) + [ADR-214](./214-retire-ombudsman-lead-absorbs-complaint-adjudication-via-honker.md) (sibling simplification ADRs from the same operator session).

@@ -106,7 +106,7 @@ describe("probeCageState — pane-window-missing branch", () => {
       tmux,
     });
     expect(h.state).toBe("down");
-    expect(h.windowName).toBe("🐝alice");
+    expect(h.windowName).toBe("🐝-alice");
   });
 
   test("listPanes returns empty array → CageHealth.state='down'", async () => {
@@ -302,7 +302,7 @@ describe("probeCageState — active branch (no heartbeat file)", () => {
 // ---------- Composite invariants ----------
 
 describe("probeCageState — composite + invariants", () => {
-  test("windowName uses emoji + member name by default", async () => {
+  test("windowName uses ADR-135 hyphen separator for user-added members (role=member)", async () => {
     const tmux = tmuxStub({ paneText: "❯ ↑ 5k tokens" });
     const h = await probeCageState(
       makeTeam(),
@@ -313,7 +313,23 @@ describe("probeCageState — composite + invariants", () => {
         tmux,
       },
     );
-    expect(h.windowName).toBe("🧭lead");
+    expect(h.windowName).toBe("🧭-lead");
+  });
+
+  test("windowName uses ADR-161 _-prefix for default-member roles (team-lead/planner/reviewer/ombudsman)", async () => {
+    // The bug this test guards against: the probe used to manually build
+    // `${emoji}${name}` (no separator), so for a real `role: "team-lead"`
+    // member named `lead` with emoji `🧭` it would look up window `🧭lead`
+    // while spawn-side `start.ts` (via `buildWindowName`) wrote `🧭_lead`
+    // → probe reported `down` on a perfectly healthy pane.
+    const tmux = tmuxStub({ paneText: "❯ ↑ 5k tokens" });
+    const h = await probeCageState(
+      makeTeam({ name: "lead", role: "team-lead", emoji: "🧭" }),
+      makeMember({ name: "lead", role: "team-lead", emoji: "🧭" }),
+      "/tmp/x",
+      { ...DEFAULT_OPTS, tmux },
+    );
+    expect(h.windowName).toBe("🧭_lead");
   });
 
   test("windowName uses label override when member.label is set (ADR-136 TR4)", async () => {
@@ -324,7 +340,7 @@ describe("probeCageState — composite + invariants", () => {
       "/tmp/x",
       { ...DEFAULT_OPTS, tmux },
     );
-    expect(h.windowName).toBe("🐝renamed-alice");
+    expect(h.windowName).toBe("🐝-renamed-alice");
   });
 
   test("member without explicit emoji → defaultEmojiForRole picks one based on role", async () => {
@@ -378,7 +394,7 @@ describe("probeCageState — composite + invariants", () => {
       });
       expect(h.state).toBe(c.expected);
       expect(h.member).toBe("alice");
-      expect(h.windowName).toBe("🐝alice");
+      expect(h.windowName).toBe("🐝-alice");
       expect(typeof h.evidence).toBe("string");
       // paneUptimeSec may be null when /proc has no record for the
       // stub PID — accept null OR number.

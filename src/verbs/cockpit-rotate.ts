@@ -942,7 +942,7 @@ async function performRespawn(
         // claudeAccount field rides through cockpit.json for other
         // consumers (cockpit rebuild's lead-pane spawn inside the
         // cage) and is intentionally untouched here.
-        cmd = buildTeamWindowCommand(t, "attach");
+        cmd = await buildTeamWindowCommand(t, "attach");
         break;
       }
     }

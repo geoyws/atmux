@@ -26,6 +26,16 @@
 > running as the safety net until the cleanup-EPIC cutover ≥30 days after
 > e-honker-observation-watchdogs ships stable).
 
+> **2026-06-12 — manual orchestration is the default** ([ADR-260](adr/260-manual-orchestration-mode-default.md)):
+> the orchd daemon described above spawns ONLY when `team.json::orchestration.mode`
+> is explicitly `"orchd"`. The default (absent block) is `"manual"` — no daemon, no
+> auto-merge/auto-spawn/watchdog; the member/lead LLMs manage the fleet themselves
+> (self-reported status via `atmux member status` → `<atmuxDir>/state/member-status/`,
+> manual kanban via `claim`/`done`/`task move`, manual fan-in + spawns). Rationale:
+> LLMs can manage their own fleet better than atmux's deterministic automation can
+> at the moment. Honker events are still emitted (audit trail + clean re-opt-in);
+> nothing consumes them in manual mode.
+
 ## Principles
 
 1. **tmux is the IPC.** atmux doesn't speak any AI provider API. It writes shell commands into tmux panes via `tmux send-keys` and reads responses by capturing pane output. That means it works with *any* interactive coding-agent TUI — Claude Code, Cursor, OpenCode, Kimi, or any future one.
@@ -41,11 +51,11 @@ Per [ADR-162](adr/162-atmux-owns-tmux-infrastructure.md):
 | Tier     | Socket flag                                              | Session name      | What runs there                                                                            |
 |----------|----------------------------------------------------------|-------------------|--------------------------------------------------------------------------------------------|
 | Cockpit  | `tmux -L atmux-cockpit` (named socket, dedicated)        | `atmux_cockpit`   | Operator's window into every enabled team — `_superdriver`, `_medic`, per-team viewers ([ADR-135](adr/135-cockpit-naming-convention.md) `_-prefix` for default roles) |
-| Per-team | `tmux -S <team-root>/.atmux/tmux/tmux-0/default` (cage)  | `atmux-<team>`    | The team's members + lead + planner + reviewer panes (one window per role). Cage-tier per [ADR-018](adr/018-per-team-tmux-socket-isolation.md). |
+| Per-team | `tmux -S <team-root>/.atmux/tmux/tmux-0/default` (cage)  | `atmux-<team>`    | The team's members + lead + planner + reviewer panes (one window per role). Cage-tier per [ADR-058](adr/058-cage-tier-isolation.md). |
 
 **Config (both tiers):** every session is created with `-f <atmux.conf-path>` resolved by `getAtmuxTmuxConfPath()` in `src/core/tmux-paths.ts`. Default: `templates/tmux/atmux.conf` (installed under `/opt/atmux/<version>/templates/`). Operator override: `ATMUX_TMUX_CONF=<path>`. The 8-option baseline includes `automatic-rename off` — load-bearing for [ADR-135](adr/135-cockpit-naming-convention.md)'s `_-prefix` window-name contract.
 
-**Socket override:** `ATMUX_COCKPIT_SOCKET=<name>` (cockpit-tier only; per-team sockets are path-explicit by design per [ADR-018](adr/018-per-team-tmux-socket-isolation.md)). Legacy operators can opt back into the default socket via `ATMUX_COCKPIT_SOCKET=default` for one more cycle while migrating.
+**Socket override:** `ATMUX_COCKPIT_SOCKET=<name>` (cockpit-tier only; per-team sockets are path-explicit by design per [ADR-058](adr/058-cage-tier-isolation.md)). Legacy operators can opt back into the default socket via `ATMUX_COCKPIT_SOCKET=default` for one more cycle while migrating.
 
 **Migration from pre-ADR-162 setups:** `atmux cockpit migrate-socket` is the one-shot verb. Six phases (discovery → capture → recreate session on dedicated socket → recreate windows → scrollback breadcrumb → cleanup); idempotent; `--dry-run` previews; `--keep-legacy` preserves the old session. Process state is NOT transferred (tmux primitives can't re-bind PIDs across servers — see [ADR-162 §Amendment 2026-05-16](adr/162-atmux-owns-tmux-infrastructure.md#2026-05-16--decision-anchor-4-mechanism-graceful-recreate-not-pid-preservation-t-26346aef-tr3-impl)); operator re-invokes any in-pane process in the new panes. Cron-spawned roles re-establish on next tick. Full operator-facing details in [`docs/RUNBOOK-cockpit.md`](RUNBOOK-cockpit.md).
 
@@ -244,6 +254,7 @@ The sentinel + cron pair is chosen over pure socket-pubsub (ADR-032) because med
 | `src/core/lead-marker.ts` | I-1 (`lead-session-start.txt`) + I-2 (`lead-window-name.txt`) marker R/W. The rotation-gate canonical source per ADR-077 §lead-uptime-measurement — NEVER read `ps -o etime` for rotation decisions. | [ADR-077](adr/077-superdoctor-cockpit-role.md) §lead-uptime-measurement |
 | `src/core/branch-merge-state.ts` | Pure state machine for ADR-091 (epic-team) + ADR-134 (intra-team) auto-merger. 10-state lifecycle + pure transition function. | [ADR-091](adr/091-kanban-driven-auto-merge.md), [ADR-134](adr/134-in-team-auto-merger.md) |
 | `src/core/repositories/merger-state-repo.ts` | Typed CRUD over `merger_state` table; transactions wrap `BEGIN IMMEDIATE` to serialize concurrent ticks. | [ADR-134](adr/134-in-team-auto-merger.md) §state-machine |
+| `src/abstractions/issue-tracker.ts` | Types-only vendor-agnostic `IssueTracker` seam (`NormalizedIssue` / `IssueTrackerPage`) for **issue-sync** — external issue-tracker ingestion (GitHub / Azure DevOps) polled into the complaints substrate; config at `team.json::issueSync`. Phase 0: types + schema + [RUNBOOK-issue-sync](RUNBOOK-issue-sync.md) only; adapters + `atmux issues sync` land Phase 1. | [ADR-261](adr/261-issue-sync-external-tracker-ingestion.md) |
 
 ## Why `tmux send-keys` and not SDK API calls?
 

@@ -1,10 +1,11 @@
 {
   "name": "atmux",
   "version": "0.1.0",
-  "description": "Atmux skills — cockpit-tier workflows for atmux team-of-teams (12 skills: team lifecycle, session continuity, fleet sweeps, etc.) — per ADR-217 §D8.",
+  "description": "Atmux skills — cockpit-tier workflows for atmux team-of-teams (13 skills: team lifecycle, session continuity, fleet sweeps, driver consolidation, etc.) — per ADR-217 §D8.",
   "atmuxCompat": ">=0.8.10",
   "skills": [
     { "name": "team", "path": "skills/team/SKILL.md" },
+    { "name": "driver", "path": "skills/driver/SKILL.md" },
     { "name": "session", "path": "skills/session/SKILL.md" },
     { "name": "tell-lead", "path": "skills/tell-lead/SKILL.md" },
     { "name": "heads-up", "path": "skills/heads-up/SKILL.md" },

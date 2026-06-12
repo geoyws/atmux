@@ -1,3 +1,11 @@
+# ADR-239+ADR-244 amendment 2026-05-26 — atmux state is operator-private.
+# team.json + decisions.md + kanban state live in personal dotfiles
+# (~/work/journals/.sb/_dotfiles/atmux/<repo-key>/), symlinked back into
+# this tree at .atmux/. Tracking them here would (a) leak atmux topology
+# to other contributors who clone the repo, AND (b) duplicate state into
+# every driver-N git-worktree per ADR-239 §A1. Both unwanted.
+# Snapshot/backup mechanism: `dotfiles push` (operator-driven cadence)
+# replaces the per-repo pre-commit hook originally proposed in ADR-244.
 .atmux/*
 .claude/team.json
 .claude/settings.json

@@ -1,7 +1,7 @@
 // Unit tests for src/verbs/cockpit.ts — ADR-063 cockpit verb.
 
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,7 +17,9 @@ import {
   buildTeamWindowCommand,
   type CapturedCockpitWindow,
   cageAlive,
+  cockpit,
   cockpitAttach,
+  COCKPIT_REBUILD_DEPRECATION_MSG,
   cockpitMigrateSocket,
   cockpitRebuild,
   LEGACY_COCKPIT_SESSION_NAMES,
@@ -50,6 +52,47 @@ describe("parseCockpitArgs", () => {
       dryRun: false,
       keepLegacy: false,
     });
+  });
+  // ADR-235 §D1: `reconcile` is the canonical name; `rebuild` is its
+  // deprecation alias. The parser accepts both — `reconcile` yields the
+  // SAME flag shape as `rebuild` (no behaviour change), distinguished only
+  // by the `subverb` discriminant the dispatcher branches on.
+  test("bare reconcile parses with all-false flags (canonical name)", () => {
+    const p = parseCockpitArgs(["reconcile"]);
+    expect(p).toEqual({
+      subverb: "reconcile",
+      noCycle: false,
+      forceCycle: false,
+      ackDangerous: false,
+      noLaunch: false,
+      yes: false,
+      dryRun: false,
+      keepLegacy: false,
+    });
+  });
+  test("reconcile honours the same flags as rebuild (alias parity)", () => {
+    expect(parseCockpitArgs(["reconcile", "--no-cycle"]).noCycle).toBe(true);
+    expect(parseCockpitArgs(["reconcile", "--no-launch"]).noLaunch).toBe(true);
+    expect(parseCockpitArgs(["reconcile", "--config", "/p"]).configPath).toBe("/p");
+    expect(parseCockpitArgs(["reconcile", "--yes"]).yes).toBe(true);
+    // Same destructive gate as rebuild: --force-cycle without the ack flag
+    // throws (if reconcile silently allowed it, this assertion would fail).
+    expect(() => parseCockpitArgs(["reconcile", "--force-cycle"])).toThrow(UsageError);
+    const forced = parseCockpitArgs([
+      "reconcile",
+      "--force-cycle",
+      "--acknowledge-dangerous-bau-interruption",
+      "--yes",
+    ]);
+    expect(forced.forceCycle).toBe(true);
+    expect(forced.ackDangerous).toBe(true);
+  });
+  test("reconcile + reconcile yields identical parse shape modulo subverb", () => {
+    const rec = parseCockpitArgs(["reconcile", "--no-cycle", "--config", "/x"]);
+    const reb = parseCockpitArgs(["rebuild", "--no-cycle", "--config", "/x"]);
+    expect({ ...rec, subverb: "X" }).toEqual({ ...reb, subverb: "X" });
+    expect(rec.subverb).toBe("reconcile");
+    expect(reb.subverb).toBe("rebuild");
   });
   test("each flag parses individually", () => {
     expect(parseCockpitArgs(["rebuild", "--no-cycle"]).noCycle).toBe(true);
@@ -134,6 +177,96 @@ describe("parseCockpitArgs", () => {
 
   test("rejects unknown flag", () => {
     expect(() => parseCockpitArgs(["rebuild", "--bogus"])).toThrow(UsageError);
+  });
+});
+
+// ---------- cockpit() dispatch — reconcile/rebuild alias (ADR-235 §D1/§OQ4)
+// ----------
+
+describe("cockpit() dispatch — reconcile canonical + rebuild deprecation alias", () => {
+  let homeDir: string;
+
+  beforeEach(async () => {
+    homeDir = await mkdtemp(join(tmpdir(), "atmux-cockpit-disp-home-"));
+    await mkdir(join(homeDir, ".atmux"), { recursive: true });
+    // Empty roster (every team disabled) — `cockpitRebuild` short-circuits
+    // with "no enabled teams" → exit 0 without touching tmux. Keeps the
+    // test focused on the dispatch surface (subverb routing + deprecation
+    // stderr), not the rebuild internals which have their own coverage.
+    await writeFile(
+      join(homeDir, ".atmux", "cockpit.json"),
+      JSON.stringify({ teams: [{ name: "x", root: "/x", enabled: false }] }),
+      "utf8",
+    );
+  });
+
+  afterEach(async () => {
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  const baseEnv = (): NodeJS.ProcessEnv => ({ HOME: homeDir, ATMUX_NO_CRON: "1" });
+
+  test("rebuild emits the verbatim ADR-235 deprecation line to stderr", async () => {
+    const errs: string[] = [];
+    const { logger } = makeLogger();
+    const code = await cockpit(["rebuild"], {
+      env: baseEnv(),
+      logger,
+      stderr: (c) => errs.push(c),
+    });
+    expect(code).toBe(0);
+    // Exact string assertion — not a fuzzy contains. If the wording drifts
+    // from the ADR-235 §OQ4 contract this fails loudly.
+    expect(errs).toEqual([`${COCKPIT_REBUILD_DEPRECATION_MSG}\n`]);
+    expect(COCKPIT_REBUILD_DEPRECATION_MSG).toBe(
+      "[deprecated] use atmux cockpit reconcile " +
+        "(rebuild will be removed in next release per ADR-235 §OQ4 + ADR-159 precedent)",
+    );
+  });
+
+  test("reconcile (canonical) emits NO deprecation warning", async () => {
+    const errs: string[] = [];
+    const { logger } = makeLogger();
+    const code = await cockpit(["reconcile"], {
+      env: baseEnv(),
+      logger,
+      stderr: (c) => errs.push(c),
+    });
+    expect(code).toBe(0);
+    // If reconcile leaked the deprecation line, this would be non-empty.
+    expect(errs).toEqual([]);
+  });
+
+  test("rebuild + reconcile dispatch to the identical implementation (parity)", async () => {
+    // Both subverbs route through cockpitRebuild. We assert parity by
+    // observing identical observable effects: same exit code AND the same
+    // "no enabled teams" warn surfacing through the injected logger. If
+    // rebuild were wired to a different code path this would diverge.
+    const recLog = makeLogger();
+    const recCode = await cockpit(["reconcile"], {
+      env: baseEnv(),
+      logger: recLog.logger,
+      stderr: () => {},
+    });
+    const rebLog = makeLogger();
+    const rebCode = await cockpit(["rebuild"], {
+      env: baseEnv(),
+      logger: rebLog.logger,
+      stderr: () => {},
+    });
+    expect(recCode).toBe(0);
+    expect(rebCode).toBe(0);
+    const noTeamsWarn = (logs: string[]): boolean =>
+      logs.some((l) => l.startsWith("warn:") && l.includes("no enabled teams"));
+    expect(noTeamsWarn(recLog.logs)).toBe(true);
+    expect(noTeamsWarn(rebLog.logs)).toBe(true);
+    // The ONLY observable difference is the deprecation stderr on rebuild,
+    // asserted separately above — the log streams themselves match.
+    expect(rebLog.logs).toEqual(recLog.logs);
+  });
+
+  test("unknown sub-verb still rejected (reconcile didn't loosen the guard)", () => {
+    expect(() => parseCockpitArgs(["frobnicate"])).toThrow(UsageError);
   });
 });
 
@@ -304,10 +437,34 @@ function registerFixtureExitHook(): void {
   process.on("exit", tearDownFixtureSurvivors);
 }
 
+// ADR-178 §Decision "Sidecar file shape" — the in-memory registry above
+// (activeFixtureSockets / activeFixtureDirs + process.on('exit') + afterAll)
+// does NOT survive SIGKILL of the bun-test parent, which is the exact gap
+// ADR-178 §Context names. `spinTmux` writes a `<socketDir>/.leak-tracker.json`
+// sidecar synchronously (OQ2 — sync writeFileSync, one fewer await + closes the
+// crash-window race for free) right after `mkdtemp` and BEFORE `createTmux`, so
+// the out-of-process `atmux test-reaper` verb (T3) can identify cross-run
+// orphans without parsing live process state. `tearDownFixtureSurvivors`
+// rmSync's the dir recursively, which removes the sidecar alongside it on the
+// happy path — leaving no trail.
+const LEAK_TRACKER_FILENAME = ".leak-tracker.json";
+
 async function spinTmux(prefix: string): Promise<TmuxFixture> {
   registerFixtureExitHook();
   const socketDir = await mkdtemp(join(tmpdir(), `atmux-cockpit-${prefix}-`));
   const socketPath = join(socketDir, "sock");
+  writeFileSync(
+    join(socketDir, LEAK_TRACKER_FILENAME),
+    JSON.stringify({
+      tmuxSocket: socketPath,
+      socketDir,
+      parentPid: process.pid,
+      createdAt: Math.floor(Date.now() / 1000),
+      testFile: __filename,
+      testName: null,
+      prefix,
+    }),
+  );
   const tmux = createTmux({ socketPath, configFile: "/dev/null" });
   activeFixtureSockets.add(socketPath);
   activeFixtureDirs.add(socketDir);
@@ -328,6 +485,59 @@ beforeEach(() => {
 });
 afterEach(() => {
   if (priorTmux !== undefined) process.env.TMUX = priorTmux;
+});
+
+// ADR-178 §Decision "Sidecar file shape" — the leak-tracker sidecar is the
+// SIGKILL-survivable half of the cleanup contract: the in-memory registry +
+// userland exit hooks above die with the bun-test process, but the on-disk
+// `.leak-tracker.json` persists so the out-of-process reaper (T3) can find
+// orphans. These tests assert the real on-disk artifact: written on spawn with
+// the ADR-178 schema, and removed when the socket dir is torn down.
+describe("spinTmux leak-tracker sidecar (ADR-178)", () => {
+  test("writes a schema-correct .leak-tracker.json on spawn, removes it on teardown", async () => {
+    const fx = await spinTmux("leak-tracker-sidecar");
+    const sidecar = join(fx.socketDir, ".leak-tracker.json");
+    try {
+      // Written synchronously on spawn — survives SIGKILL of the test process.
+      expect(existsSync(sidecar)).toBe(true);
+      const parsed = JSON.parse(readFileSync(sidecar, "utf8")) as Record<string, unknown>;
+      // Exact ADR-178 §Decision schema — every field load-bearing for the reaper.
+      expect(parsed.tmuxSocket).toBe(fx.socketPath);
+      expect(parsed.socketDir).toBe(fx.socketDir);
+      expect(parsed.parentPid).toBe(process.pid);
+      expect(parsed.prefix).toBe("leak-tracker-sidecar");
+      expect(parsed.testFile).toBe(__filename);
+      expect(parsed.testName).toBeNull();
+      // createdAt is epoch SECONDS (not millis) — the reaper's max-age gate
+      // computes `now - max-age-min*60` in seconds, so a millis value here
+      // would make every fixture look freshly-created and never get reaped.
+      expect(typeof parsed.createdAt).toBe("number");
+      const createdAt = parsed.createdAt as number;
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      expect(createdAt).toBeLessThanOrEqual(nowSeconds);
+      expect(createdAt).toBeGreaterThan(nowSeconds - 60);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+    // Teardown (rm -rf of socketDir) takes the sidecar with it — happy-path
+    // runs leave no trail, per ADR-178 §Decision.
+    expect(existsSync(sidecar)).toBe(false);
+  });
+
+  test("tearDownFixtureSurvivors removes the sidecar via the registry sweep", async () => {
+    const fx = await spinTmux("leak-tracker-sweep");
+    const sidecar = join(fx.socketDir, ".leak-tracker.json");
+    expect(existsSync(sidecar)).toBe(true);
+    // The out-of-band sweep (afterAll / process.on('exit')) is the path that
+    // fires when a test's own try/finally is bypassed; it must remove the
+    // sidecar along with the dir.
+    tearDownFixtureSurvivors();
+    expect(existsSync(sidecar)).toBe(false);
+    expect(existsSync(fx.socketDir)).toBe(false);
+  });
 });
 
 describe("autolaunchTeam", () => {
@@ -375,9 +585,9 @@ describe("autolaunchTeam", () => {
         "utf8",
       );
       // Create the cage session with a window named after the member.
-      // Cage session name for "demo" is "atmux_demo" per cageSessionName().
+      // Cage session name for "demo" is "atmux-demo" per resolveCageSessionName() — hyphen-form fallback for unanchored teams (matches getSessionName).
       await fx.tmux.session.newSession({
-        name: "atmux_demo",
+        name: "atmux-demo",
         detached: true,
         windowName: "lead",
       });
@@ -418,7 +628,7 @@ describe("autolaunchTeam", () => {
         "utf8",
       );
       await fx.tmux.session.newSession({
-        name: "atmux_px",
+        name: "atmux-px",
         detached: true,
         windowName: "lead",
       });
@@ -444,7 +654,7 @@ describe("autolaunchTeam", () => {
       );
       expect(summary.launched).toBe(1);
       expect(summary.unbootstrapped).toEqual([]);
-      expect(probeCalls).toEqual(["lead@atmux_px:0"]);
+      expect(probeCalls).toEqual(["lead@atmux-px:0"]);
       // No warning lines emitted on the happy path.
       expect(logs.filter((l) => l.startsWith("warn:"))).toEqual([]);
     } finally {
@@ -471,7 +681,7 @@ describe("autolaunchTeam", () => {
         "utf8",
       );
       await fx.tmux.session.newSession({
-        name: "atmux_py",
+        name: "atmux-py",
         detached: true,
         windowName: "alpha",
       });
@@ -527,12 +737,12 @@ describe("autolaunchTeam", () => {
         "utf8",
       );
       await fx.tmux.session.newSession({
-        name: "atmux_pz",
+        name: "atmux-pz",
         detached: true,
         windowName: "alpha",
       });
       await fx.tmux.window.newWindow({
-        sessionName: "atmux_pz",
+        sessionName: "atmux-pz",
         name: "beta",
       });
       let calls = 0;
@@ -1526,8 +1736,8 @@ describe("buildTeamWindowCommand", () => {
   const team = { name: "demo", root: "/d", enabled: true } as CockpitTeam;
   const uid = process.getuid?.() ?? 0;
 
-  test("attach mode targets <session>:driver via the dual-socket retry loop", () => {
-    const cmd = buildTeamWindowCommand(team, "attach");
+  test("attach mode targets <session>:driver via the dual-socket retry loop", async () => {
+    const cmd = await buildTeamWindowCommand(team, "attach");
     expect(cmd).toContain("attach -t");
     expect(cmd).toContain(":driver");
     expect(cmd).toContain("while true");
@@ -1542,15 +1752,15 @@ describe("buildTeamWindowCommand", () => {
     expect(cmd).toContain("||");
   });
 
-  test("no-driver-config emits the 'set team.json::driverSession' guidance", () => {
-    const cmd = buildTeamWindowCommand(team, "no-driver-config");
+  test("no-driver-config emits the 'set team.json::driverSession' guidance", async () => {
+    const cmd = await buildTeamWindowCommand(team, "no-driver-config");
     expect(cmd).toContain("no driver configured for demo");
     expect(cmd).toContain("team.json::driverSession");
     expect(cmd).toContain("sleep infinity");
   });
 
-  test("session-down emits the 'atmux start' guidance + self-healing retry-loop", () => {
-    const cmd = buildTeamWindowCommand(team, "session-down");
+  test("session-down emits the 'atmux start' guidance + self-healing retry-loop", async () => {
+    const cmd = await buildTeamWindowCommand(team, "session-down");
     expect(cmd).toContain("session not running");
     expect(cmd).toContain("atmux start demo");
     // ADR-063 follow-up: replaced `sleep infinity` with a retry-loop so
@@ -1563,18 +1773,18 @@ describe("buildTeamWindowCommand", () => {
     expect(cmd).toContain(`/d/.atmux/tmux/tmux-${uid}/default`);
   });
 
-  test("placeholder shell-quoting survives team names with apostrophes", () => {
+  test("placeholder shell-quoting survives team names with apostrophes", async () => {
     const apostropheTeam = { name: "ali's-team", root: "/x", enabled: true } as CockpitTeam;
-    const cmd = buildTeamWindowCommand(apostropheTeam, "no-driver-config");
+    const cmd = await buildTeamWindowCommand(apostropheTeam, "no-driver-config");
     // Resulting shell string is single-quoted; the apostrophe in the
     // team name must be escaped via the POSIX `'\''` idiom so the
     // surrounding `printf` quoting doesn't break.
     expect(cmd).toContain("'\\''");
   });
 
-  test("session-down printf message is shell-safe for team names with apostrophes", () => {
+  test("session-down printf message is shell-safe for team names with apostrophes", async () => {
     const apostropheTeam = { name: "ali's-team", root: "/x", enabled: true } as CockpitTeam;
-    const cmd = buildTeamWindowCommand(apostropheTeam, "session-down");
+    const cmd = await buildTeamWindowCommand(apostropheTeam, "session-down");
     // The printf prelude single-quotes its message; the apostrophe in
     // "ali's-team" must be POSIX-escaped or the rest of the command
     // string breaks the shell parse.

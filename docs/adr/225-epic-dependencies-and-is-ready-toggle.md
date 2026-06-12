@@ -54,7 +54,7 @@ UPDATE epics SET is_ready = 1
 ```
 
 Epic B (events-prune) already took v12→v13 (commit f376665 wave). This EPIC
-takes v13→v14. Migration ladder is append-only per ADR-060 §D5.
+takes v13→v14. Migration ladder is append-only per ADR-126 §D5.
 
 `depends_on` is a JSON-array TEXT column for the same reason `tasks.deps` is —
 SQLite has no native array type, JSON serializes cleanly, and the cardinality

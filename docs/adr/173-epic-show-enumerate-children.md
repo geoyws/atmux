@@ -1,6 +1,6 @@
 # ADR-173: `atmux epic show <eid>` — enumerate child Stories + Tasks
 
-**Status**: proposed (deferred: epic show children block absent in `src/verbs/epic.ts` as of 2026-05-22 audit — `atmux epic show <eid>` still renders id/status/subject/body/ref only, no Stories+Tasks tree; original ratification 2026-05-21 was bookkeeping — see §Amendment 2026-05-22 below.)
+**Status**: accepted (re-promoted 2026-06-06 — impl shipped: Stories+Tasks tree in `src/verbs/epic.ts` per commits 183e4b7/cab723d, story-show Tasks tree in `src/verbs/story.ts`, and the §69 `(none)` empty-section markers landed via `t-8f31b5e6` under impl-EPIC e-290acb54 — see §Amendment 2026-06-06 below. Prior demote context in §Amendment 2026-05-22.)
 **Date**: 2026-05-18
 **Driver-ref**: ADR-193 §OQ-4 carve-out — read-side ergonomics deferred to a sibling ADR. ADR-176 §Consequences also references the gap implicitly (criterion (d) requires children-indexable data; the operator-facing view of those children is what ADR-173 surfaces).
 **Relates**: ADR-007 (Epic/Story/Task hierarchy original spec), ADR-193 (write-side `--epic`/`--story` flags — runtime prerequisite), ADR-176 (criterion (d) — same data path), ADR-165 (CLI-surface pattern reference).
@@ -156,3 +156,16 @@ Demoted from `Accepted — ratified by driver 2026-05-21` → `proposed (deferre
 **Cross-refs**: `t-b1bd0f9c` (Status-vs-Impl drift audit — this ADR is one of 5 in the Path B cluster; siblings ADR-174/178/183/193); `d-7b8d444f-batch` (lead-recorded decision authorizing close-or-§Amendment per gap-class); CLAUDE.md §Source-of-truth chain (deferred-status escape hatch); `b6d634f` (the originating bookkeeping batch).
 
 **Filed as part of Path B cluster per d-7b8d444f-batch + t-b1bd0f9c (Status-vs-Impl audit).**
+
+## §Amendment 2026-06-06 — re-promoted to `accepted` after impl shipped (impl-EPIC e-290acb54)
+
+Re-promoted from `proposed (deferred: impl not yet shipped)` → `accepted`. The 2026-05-22 demote (above) said "A future impl-EPIC will close the gap; flipping back to `accepted` happens THEN, not before." That impl-EPIC is **e-290acb54**, and the gap is now closed:
+
+- **Stories + Direct-tasks tree** renders on `atmux epic show <eid>` (`src/verbs/epic.ts`), per commits `183e4b7` / `cab723d` (inline owner/priority/deps on task rows).
+- **Tasks tree** renders on `atmux story show <sid>` (`src/verbs/story.ts`) — the story-show fast-follow §OQ recommendation.
+- **`(none)` empty-section markers** (§69 "explicit empty markers, not silent omission") landed via `t-8f31b5e6`: `epic show` emits `Stories:\n  (none)` / `Direct tasks:\n  (none)` and `story show` emits `Tasks:\n  (none)` when the respective arrays are empty, replacing the prior silent omission. This also satisfies §139's `.epic: null` absorption — a child-less epic (the runtime when ADR-193's `.epic` write-side is unused) renders cleanly with explicit markers rather than a bare body/ref view.
+- **JSON mode** (`--json`) carries the additive children keys (`stories`, `tasks`) on both verbs; the internal `storyRows` alias is stripped on the epic-show JSON output to match the bash `--json` shape.
+
+Coverage: `tests/unit/verbs/epic.show.children.test.ts` + `tests/unit/verbs/story.show.children.test.ts` (this commit) assert the `(none)` markers on empty parents, the nested tree on populated parents, the additive JSON keys, and the `.epic: null` non-leak. The §68 nuance (`Tasks (no story):` header when a Stories block is present vs plain `Tasks:` otherwise) is a follow-up render-polish item — current impl uses the stable `Direct tasks:` header unconditionally — and does not block this re-promotion; the substantive children-enumeration contract is satisfied.
+
+**Cross-refs**: `t-8f31b5e6` (§69 `(none)` markers — this commit); e-290acb54 (impl-EPIC); commits `183e4b7` / `cab723d` (tree render); §Amendment 2026-05-22 (the demote this reverses).

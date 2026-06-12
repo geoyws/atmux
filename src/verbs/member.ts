@@ -69,9 +69,25 @@ import {
   getSessionName,
   loadTeam,
   type ResolveDirOpts,
+  requireTeam,
+  resolveCallerScope,
   resolveTeamSocket,
   teamJsonPath,
 } from "../core/common.ts";
+import { writeHeartbeat } from "../core/heartbeat.ts";
+import { loadInbox, movePendingToInProgress } from "../core/inbox.ts";
+import {
+  claimTaskForMember,
+  markTaskBlockedWithNote,
+  nowEpoch,
+  showTask,
+} from "../core/kanban.ts";
+import {
+  isMemberSelfStatus,
+  MEMBER_SELF_STATUS_VALUES,
+  writeMemberStatus,
+} from "../core/member-status.ts";
+import { pickMemberName } from "./claim.ts";
 import type { Team as TeamShape } from "../schema/team.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { leadWindowNamePath } from "../core/lead-marker.ts";
@@ -1038,6 +1054,154 @@ export function mapWindowsToMemberIds(
   return ids;
 }
 
+// ---------- `member status` — ADR-260 §D3/§D4 self-reported status ----------
+
+const STATUS_USAGE =
+  `atmux member status <${MEMBER_SELF_STATUS_VALUES.join("|")}> ` +
+  `[--as <member>] [--note <text>] [--task <task-id>] [--team-dir <dir>]`;
+
+/**
+ * `atmux member status <status>` — ADR-260 §D3: the member LLM
+ * self-reports its status. The canonical status verb for manual
+ * orchestration mode (the default — no orchd daemon), where the
+ * agents ARE the orchestrator and this record is the authoritative
+ * intent signal `atmux status` renders next to the derived ones.
+ *
+ * Kanban coupling per ADR-260 §D4:
+ *   - `working --task <id>` claims the task when it isn't already
+ *     this member's (full claim gates: deps, driver-only, race).
+ *   - `blocked --task <id>` moves the task to `blocked` with the
+ *     `--note` text.
+ *   - `idle` never mutates the kanban but lists any in-progress
+ *     tasks still owned by the member with an `atmux done` hint —
+ *     going idle with a dangling in-progress row is usually a lie.
+ *   - `rate-limited` records `--task` as a reference only.
+ *
+ * Every write also touches the member's heartbeat file (a
+ * self-report is proof of liveness, ADR-260 §D3) so manual-mode
+ * teams keep fresh ❤️ markers without the cron poke loop.
+ */
+export async function memberStatusSet(
+  argv: ReadonlyArray<string>,
+  opts: MemberRenameOpts = {},
+): Promise<number> {
+  const stdout = opts.stdout ?? defaultStdoutWrite;
+  const env = opts.env ?? process.env;
+  const cwd = opts.cwd ?? process.cwd();
+
+  let status: string | undefined;
+  let who: string | undefined;
+  let note: string | undefined;
+  let taskId: string | undefined;
+  let teamDir: string | undefined;
+  let i = 0;
+  while (i < argv.length) {
+    const a = argv[i];
+    if (a === "--as" || a === "--note" || a === "--task" || a === "--team-dir") {
+      const v = argv[i + 1];
+      if (v === undefined) {
+        throw new UsageError({ what: `member status: ${a} requires a value`, hint: STATUS_USAGE });
+      }
+      if (a === "--as") who = v;
+      else if (a === "--note") note = v;
+      else if (a === "--task") taskId = v;
+      else teamDir = v;
+      i += 2;
+      continue;
+    }
+    if (a?.startsWith("--")) {
+      throw new UsageError({ what: `member status: unknown flag: ${a}`, hint: STATUS_USAGE });
+    }
+    if (status !== undefined) {
+      throw new UsageError({
+        what: `member status: unexpected extra argument: ${a}`,
+        hint: STATUS_USAGE,
+      });
+    }
+    status = a;
+    i += 1;
+  }
+  if (status === undefined || status.length === 0) {
+    throw new UsageError({ what: "member status: status value required", hint: STATUS_USAGE });
+  }
+  if (!isMemberSelfStatus(status)) {
+    throw new UsageError({
+      what: `member status: unknown status '${status}' (try: ${MEMBER_SELF_STATUS_VALUES.join(" | ")})`,
+      hint: STATUS_USAGE,
+    });
+  }
+
+  const dirOpts: ResolveDirOpts = teamDir !== undefined ? { teamDir } : {};
+  const team = await requireTeam(dirOpts);
+  const resolved = pickMemberName({ id: "", ...(who !== undefined ? { who } : {}) }, env, cwd, team.members);
+  if (resolved === undefined) {
+    throw new UsageError({
+      what: "member status: can't infer member — set ATMUX_MEMBER or pass --as <member>",
+      hint: STATUS_USAGE,
+    });
+  }
+  // Roster guard — a typo'd `--as` would otherwise mint a status file
+  // for a member that doesn't exist, which `atmux status` (keyed on
+  // team.members[]) would never render.
+  if (!team.members.some((m) => m.name === resolved)) {
+    throw new ConfigError({
+      what: `member status: no such member in team.json: ${resolved}`,
+    });
+  }
+  const atmuxDir = await getAtmuxDir(dirOpts);
+
+  // ADR-260 §D4 kanban coupling.
+  if (taskId !== undefined) {
+    const task = await showTask(atmuxDir, taskId);
+    if (task === null) {
+      throw new ConfigError({ what: `member status: no such task: ${taskId}` });
+    }
+    if (status === "working") {
+      const alreadyMine = task.status === "in-progress" && task.owner === resolved;
+      if (!alreadyMine) {
+        // Full claim gates apply (deps / driver-only / in-progress-other
+        // race refusal) — `member status working --task` is a claim,
+        // not a side-channel around it.
+        const callerScope = resolveCallerScope();
+        const { pre } = await claimTaskForMember(atmuxDir, taskId, resolved, { callerScope });
+        await movePendingToInProgress(atmuxDir, resolved, pre, nowEpoch());
+        stdout(`${resolved} claimed ${taskId}\n`);
+      }
+    } else if (status === "blocked") {
+      await markTaskBlockedWithNote(
+        atmuxDir,
+        taskId,
+        note ?? `blocked by ${resolved} via member status`,
+      );
+      stdout(`${taskId} → blocked\n`);
+    }
+    // idle / rate-limited: taskId recorded as a reference, no transition.
+  }
+
+  await writeMemberStatus(atmuxDir, {
+    member: resolved,
+    status,
+    ...(note !== undefined ? { note } : {}),
+    ...(taskId !== undefined ? { taskId } : {}),
+  });
+  await writeHeartbeat(atmuxDir, resolved);
+
+  stdout(`${resolved} status → ${status}${taskId !== undefined ? ` (${taskId})` : ""}\n`);
+
+  if (status === "idle") {
+    const ib = await loadInbox(atmuxDir, resolved);
+    if (ib.inProgress.length > 0) {
+      stdout(
+        `note: ${resolved} still owns ${ib.inProgress.length} in-progress task(s) — going idle with dangling work is usually a lie:\n`,
+      );
+      for (const t of ib.inProgress) {
+        stdout(`  ${t.id}  ${t.subject ?? ""}  → atmux done ${t.id}  (or atmux task move ${t.id} todo)\n`);
+      }
+    }
+  }
+  return 0;
+}
+
 // ---------- Sub-verb dispatcher (called from src/cli.ts) ----------
 
 /**
@@ -1051,7 +1215,7 @@ export async function dispatchMemberSubverb(
   opts: MemberRenameOpts = {},
 ): Promise<number> {
   const sub = argv[0];
-  const knownSubs = "rename | move | swap | sort";
+  const knownSubs = "rename | move | swap | sort | status";
   if (sub === undefined || sub === "") {
     throw new UsageError({
       what: `member: subverb required (try: ${knownSubs})`,
@@ -1067,6 +1231,9 @@ export async function dispatchMemberSubverb(
       return memberSwap(argv.slice(1), opts);
     case "sort":
       return memberSort(argv.slice(1), opts);
+    case "status":
+      // ADR-260 §D3: member self-reported status (manual-mode canonical).
+      return memberStatusSet(argv.slice(1), opts);
     default:
       throw new UsageError({
         what: `member: unknown subverb '${sub}' (try: ${knownSubs})`,

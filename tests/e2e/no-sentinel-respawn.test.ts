@@ -31,7 +31,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTmux, type TmuxNamespace } from "../../src/abstractions/tmux.ts";
 import { loadCockpit } from "../../src/core/cockpit.ts";
-import { renderCronLines } from "../../src/core/cron.ts";
+import * as cronModule from "../../src/core/cron.ts";
 import { Team } from "../../src/schema/team.ts";
 import { reconcileCockpitSession } from "../../src/verbs/cockpit.ts";
 import type { Logger } from "../../src/core/tui.ts";
@@ -121,37 +121,33 @@ describe("e2e: no-sentinel-respawn regression (EPIC e-be01fc89 T4)", () => {
     expect(parsed.members.length).toBe(1);
   });
 
-  test("renderCronLines emits ZERO sentinel cron lines for vanilla team", () => {
-    const team = Team.parse({
-      name: "regression-team",
-      members: [{ name: "be-1", role: "member" }],
-    });
-    const lines = renderCronLines({
-      team,
-      atmuxDir,
-      atmuxBin: "/usr/local/bin/atmux",
-    });
-    for (const p of SENTINEL_PATTERNS) {
-      expect(lines.some((l) => p.test(l))).toBe(false);
-    }
+  test("cron-line emission vector is retired (ADR-233) — no renderCronLines export", () => {
+    // ADR-233 deleted the cron-source surface; `src/core/cron.ts` is a
+    // no-op shim. The pre-ADR-233 regression guard asserted that
+    // `renderCronLines` emitted ZERO sentinel cron lines. Post-retire
+    // there is no cron-line renderer at all, so the sentinel-via-cron
+    // re-spawn vector is structurally impossible. Assert the renderer
+    // is gone (the honest successor to "emits zero sentinel lines").
+    expect((cronModule as Record<string, unknown>).renderCronLines).toBeUndefined();
+    expect((cronModule as Record<string, unknown>).renderCronBlock).toBeUndefined();
   });
 
-  test("renderCronLines STILL emits zero sentinel lines when legacy keys present", () => {
+  test("surviving cron shim (stripAtmuxBlock) emits no sentinel artifacts even with legacy keys", () => {
     // Operator's stale team.json carries removed keys via passthrough;
-    // emission MUST stay sentinel-free.
+    // the only surviving cron surface is the strip-only no-op shim,
+    // which returns its input body unchanged and never synthesizes any
+    // sentinel cron line.
     const team = Team.parse({
       name: "regression-team",
       members: [{ name: "be-1", role: "member" }],
       sentinel: "cursor",
       sentinelOverrides: { cadenceSec: 60 },
     });
-    const lines = renderCronLines({
-      team,
-      atmuxDir,
-      atmuxBin: "/usr/local/bin/atmux",
-    });
+    expect(team.name).toBe("regression-team");
+    const body = "# unrelated existing crontab line\n*/5 * * * * /usr/bin/true\n";
+    const stripped = cronModule.stripAtmuxBlock(body, team.name);
     for (const p of SENTINEL_PATTERNS) {
-      expect(lines.some((l) => p.test(l))).toBe(false);
+      expect(stripped.split("\n").some((l: string) => p.test(l))).toBe(false);
     }
   });
 

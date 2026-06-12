@@ -195,8 +195,8 @@ ADR-158 completes when ALL of:
 - [ADR-135](135-cockpit-naming-convention.md) — D4 in-place window rename pattern.
 - [ADR-139](139-refusal-pattern-auto-rotate.md) — refusal-pattern detection (consumed by sentinel; identifier renames cascade).
 - [ADR-140](140-cheap-model-first.md) — cheap-model-first principle (sentinel runs on cheap models; identifier renames cascade).
-- [ADR-159](159-*.md) — gitter → committer (sibling vocabulary rename).
-- [ADR-160](160-*.md) — whip → poke (sibling vocabulary rename).
+- [ADR-159](159-gitter-to-committer-rename.md) — gitter → committer (sibling vocabulary rename).
+- [ADR-160](160-whip-to-poke-rename.md) — whip → poke (sibling vocabulary rename).
 - [ADR-161](161-default-member-prefix-and-sort-verbs.md) — `_-prefix` convention (sibling sweep cosmetic; cockpit-role `_sentinel` aligns).
 - Driver-ref: 2026-05-16 driver session — SV/Reddit-eng register sweep.
 - Memory [[project_martinet_pattern]] — gets body-update + cite of new identifier.
