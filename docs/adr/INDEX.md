@@ -228,6 +228,7 @@
 | 258 | Vendor-agnostic orchestration — `AgentBackend` adapter, tmux demoted to an attach view | 2026-06-09 | accepted |
 | 259 | Committer member optional — orchd spawn gates on `autoMerge.enabled`, not committer-presence | 2026-06-09 | accepted |
 | 260 | Manual orchestration mode is the default — LLMs self-report status + drive the kanban; orchd opt-in | 2026-06-12 | accepted |
+| 261 | issue-sync — external issue-tracker ingestion (GitHub / Azure DevOps): poll → complaints → lead adjudication | 2026-06-12 | proposed |
 
 ## Superseded (skip)
 
