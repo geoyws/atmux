@@ -1,6 +1,6 @@
 # ADR Index
 
-> Generated 2026-05-24, refreshed 2026-06-05 (MYT) — extended through ADR-256 + backfilled 222/223. Live ADRs only; superseded ADRs at the bottom for trace.
+> Generated 2026-05-24, refreshed 2026-06-13 (MYT) — extended through ADR-262. Live ADRs only; superseded ADRs at the bottom for trace.
 
 ## Live ADRs
 
@@ -178,14 +178,14 @@
 | 205 | Bracketed-paste mode as default for send-keys body content — slash-leading wedge fix | 2026-05-21 | Accepted — ratified by driver 2026-05-21 (Option 2 default + `rawSendKeys` per |
 | 208 | Deploy-completeness probe class — extends ADR-027 doctor framework | 2026-05-19 | Accepted — ratified by driver 2026-05-21 (deploy-completeness probe-class exte |
 | 209 | Epic-team hold-posture deadlock + cage-state probe false-negative + sweep `lastCommitHoursAgo` semantic | 2026-05-21 | Proposed — filed by driver 2026-05-21 during sopx epic-dissolve sweep; diagnos |
-| 210 | Eliminate hold-posture deadlock structurally — lead brief fix + pull-protocol dispatch | 2026-05-21 | Proposed — filed by driver 2026-05-21 immediately after ADR-209 correction |
+| 210 | Eliminate hold-posture deadlock structurally — lead brief fix + pull-protocol dispatch | 2026-05-21 | accepted (lead brief shipped; pull-protocol dispatch landed) |
 | 211 | Retire the Sentinel role — observation functions distributed to Honker event consumers | 2026-05-21 | Implemented by e-be01fc89 (sentinel deleted in entirety 2026-05-23; honker-subst |
 | 212 | Retire Medic role — lead-gated rotation pattern; fold ADR-211's 4-EPIC sentinel-split back into one watchdogs EPIC (simplification pass) | 2026-05-21 | Accepted — ratified by driver 2026-05-21 (Medic role retires at cockpit W2; AD |
 | 213 | Retire `_jury` role — Reviewer absorbs Acceptance-Criteria verification | 2026-05-21 | Accepted — ratified by driver 2026-05-21 (Jury role retires entirely; ADR-204  |
 | 214 | Retire Ombudsman role — Lead absorbs complaint adjudication via Honker push | 2026-05-21 | Accepted — ratified by driver 2026-05-21 (Ombudsman role retires entirely; ADR |
 | 215 | Multi-driver support per atmux team — ordinal driver-N identity, default count 3, shared inbox with identity-prefix | 2026-05-21 | Accepted — ratified by driver 2026-05-21 (multi-instance the existing driver c |
 | 216 | Retire the default-member `_`-prefix convention — ADR-161 superseded; member IDs drop the underscore going forward | 2026-05-21 | Accepted — ratified by driver 2026-05-21 (ADR-161 default-member `_`-prefix co |
-| 217 | Bundle atmux skills as a Claude Code plugin shipped with the source tree + installed by the first-run wizard | 2026-05-21 | Proposed |
+| 217 | Bundle atmux skills as a Claude Code plugin shipped with the source tree + installed by the first-run wizard | 2026-05-21 | accepted (shipped — `plugins/atmux/`) |
 | 218 | `atmux team auto-fold-in` verb + lead-role auto-drive + sweep-epics chaining — closes the SAFE-DISSOLVE-to-merged gap | 2026-05-21 | proposed |
 | 219 | `dissolve-epic` completeness — cage `kill-server` + merged-branch `-D` + orphan-detection invariant | 2026-05-22 | Accepted — ratified by driver 2026-05-23 (impl shipped via Epic e-7a1014f9 + t |
 | 220 | Incremental-mode identity coherence — `ATMUX_MEMBER`-drift detection + auto-promote-to-force | 2026-05-22 | Accepted — ratified by driver 2026-05-23 (shipped via docs branch fan-in `b6b1 |
@@ -193,7 +193,7 @@
 | 222 | `atmux topo` — read-only fleet-topology observability verb | 2026-05-22 | accepted (backfilled 2026-06-05 from as-built code; documents shipped surface) |
 | 223 | `atmux topo --reap` — orphan-reap cascade semantics + safety gates | 2026-05-22 | accepted (backfilled 2026-06-05; Gate-1 fail-closed contract ratified by ADR-253 §Amendment) |
 | 224 | `relayd` → `orchd` rename + auto-spawn / auto-dissolve orchestration loop | 2026-05-22 | Accepted (Phase 1) — ratified by driver 2026-05-23 (Phase 1 rename shipped via |
-| 225 | Epic dependencies + isReady toggle — orchd substrate | 2026-05-22 | proposed |
+| 225 | Epic dependencies + isReady toggle — orchd substrate | 2026-05-22 | accepted (shipped — `epic advance`, `isReady`, `dependsOn`) |
 | 226 | orchd auto-merge subscriber (Phase 3) — `task.done` → `atmux epic-merge` → `epic.merged` | 2026-05-23 | accepted |
 | 227 | orchd auto-dissolve subscriber (Phase 4) — `epic.merged` → `atmux team dissolve-epic` → `epic.dissolved` | 2026-05-23 | accepted |
 | 228 | orchd spawn queue + pressure-monitor loop (Phase 5) — refuse → enqueue → drain on load drop | 2026-05-23 | accepted |
@@ -201,11 +201,11 @@
 | 230 | `atmux-cockpit-mirror` Rust crate — fleet-wide event consumer | 2026-05-22 | proposed (deferred: pending crate scaffold + cockpit-events.db schema bootstrap  |
 | 231 | orchd auto-spawn + solo-worker dissolve loop semantics — Honker consumer of ADR-224 §D6 registry + ADR-225 eligibility substrate | 2026-05-23 | Accepted (Phase 2 shipped) — ratified by reviewer 2026-05-23 (Phase 2 substrat |
 | 232 | orchd cross-cage dispatcher seam — `dispatchEpicMerge` / `dispatchDissolveEpic` / `dispatchGitPush` | 2026-05-23 | proposed (deferred: §D2.b transport choice still open per OQ-1; §D2.a routing  |
-| 233 | Disable cron auto-install — orchd is the runtime, not cron | 2026-05-24 | Proposed (operator-driver-fired 2026-05-24 post-boot-storm; ship under driver in |
+| 233 | Disable cron auto-install — orchd is the runtime, not cron | 2026-05-24 | accepted (shipped — atmux NEVER writes to crontab) |
 | 234 | 2026-05-24 hax boot-storm + sopx-team-death incident post-mortem | 2026-05-24 | Post-mortem (informational; corrective decisions tracked in [ADR-233](233-cron-a |
 | 235 | Cockpit verb-surface rationalization — `reconcile`/`doctor`/`up`/`start` orthogonality, cage-down banner, plain-English refusals | 2026-05-24 | proposed |
-| 237 | No LLM cadence into Discord — remove hourly whips, medic on-demand only | 2026-05-24 | Proposed (operator-fired 2026-05-24; ship under driver — surface spans member-skill + cockpit + Discord-template) |
-| 238 | orchd is the single Discord emitter — substrate events publish, orchd subscribes-and-renders | 2026-05-24 | Proposed (operator-fired 2026-05-24; architectural-funnel piece making the post-cron Discord surface coherent) |
+| 237 | No LLM cadence into Discord — remove hourly whips, medic on-demand only | 2026-05-24 | accepted (shipped — whip/report cron-auto removed) |
+| 238 | orchd is the single Discord emitter — substrate events publish, orchd subscribes-and-renders | 2026-05-24 | accepted (shipped — orchd drives Discord pings via Honker) |
 | 239 | Three-driver minimum per team + no-send-keys-to-drivers invariant — `drivers[]` schema, per-driver worktree, windows grouped at front | 2026-05-24 | Accepted (operator-direct 14:30 MYT; atmux team pilot landed 14:45 MYT; code-enforcement task t-51-576216b2; sibling teams pending op |
 | 240 | Drop superorchd — orchd self-supervises, bash supervisor retires (supersedes ADR-236) | 2026-05-24 | Accepted (operator-direct *"simpler is better"* 2026-05-24; D1 + D5 of ADR-236 preserved, D2/D3 dropped) |
 | 241 | `atmux start` preflight wizard — installs vendored deps on cold hosts | 2026-05-25 | Accepted (operator-direct *"let's do the recommended"* 2026-05-25; gated on ADR-191 §Pending `build:install` extension landing first) |
@@ -225,10 +225,12 @@
 | 255 | auto-merge tick-result output contract + bounded subprocess wait | 2026-06-05 | accepted |
 | 256 | orchd Rust supervisor hardening — bounded subprocess waits, poison-event tripwire, test backfill | 2026-06-05 | accepted |
 | 257 | Eternal-improvement = backlog-burndown-first + worktree-isolated, deferred verified merge | 2026-06-08 | accepted |
-| 258 | Vendor-agnostic orchestration — `AgentBackend` adapter, tmux demoted to an attach view | 2026-06-09 | accepted |
+| 258 | Vendor-agnostic orchestration — `AgentBackend` adapter, tmux demoted to an attach view | 2026-06-09 | superseded by [ADR-263](./263-great-simplification-tmux-harness-and-task-feed.md) (§D5 — one backend: tmux + Claude) |
 | 259 | Committer member optional — orchd spawn gates on `autoMerge.enabled`, not committer-presence | 2026-06-09 | accepted |
 | 260 | Manual orchestration mode is the default — LLMs self-report status + drive the kanban; orchd opt-in | 2026-06-12 | accepted |
-| 261 | issue-sync — external issue-tracker ingestion (GitHub / Azure DevOps): poll → complaints → lead adjudication | 2026-06-12 | proposed |
+| 261 | issue-sync — external issue-tracker ingestion (GitHub / Azure DevOps): poll → complaints → lead adjudication | 2026-06-12 | proposed; **re-pointed by [ADR-263](./263-great-simplification-tmux-harness-and-task-feed.md) §D3** (poll → tasks, not complaints; `IssueTracker` seam kept) |
+| 262 | atmux as an OpenCode plugin + headless Rust daemon — two-layer plugin+daemon architecture replacing tmux | 2026-06-13 | superseded by [ADR-263](./263-great-simplification-tmux-harness-and-task-feed.md) (§D5 — one backend: tmux + Claude) |
+| 263 | The great simplification — atmux is a tmux harness + git/sqlite task feed; retire the fleet-coordination layer | 2026-06-19 | proposed |
 
 ## Superseded (skip)
 
