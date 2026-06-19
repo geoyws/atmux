@@ -35,12 +35,22 @@
 > LLMs can manage their own fleet better than atmux's deterministic automation can
 > at the moment. Honker events are still emitted (audit trail + clean re-opt-in);
 > nothing consumes them in manual mode.
+>
+> **2026-06-13 — AgentBackend adapter model replaces tmux-as-IPC** ([ADR-258](adr/258-vendor-agnostic-orchestration-agentbackend.md),
+> [ADR-262](adr/262-atmux-opencode-plugin-and-daemon.md)). Principle #1 (tmux is the IPC)
+> is being superseded: a team member is becoming an agent *session* behind a uniform
+> `AgentBackend` interface, not a TUI we type into. The `opencode-server` backend
+> ([ADR-262](adr/262-atmux-opencode-plugin-and-daemon.md)) splits this into a thin
+> OpenCode plugin (TypeScript bridge) + Rust daemon (brain), eliminating tmux from
+> the critical path. The tmux-claude backend remains the fallback until the Phase-3
+> default-flip gates clear per ADR-258. The Principle #1 text below documents the
+> pre-ADR-258 model and will be rewritten when the Phase-3 flip lands.
 
 ## Principles
 
 1. **tmux is the IPC.** atmux doesn't speak any AI provider API. It writes shell commands into tmux panes via `tmux send-keys` and reads responses by capturing pane output. That means it works with *any* interactive coding-agent TUI — Claude Code, Cursor, OpenCode, Kimi, or any future one.
 2. **State lives on disk** — SQLite (`state.db`) for the kanban + inboxes + per-feature state per ADR-060; markdown for human-edited files (`HANDOFF.md`, `decisions.md`, `flags.md`, driver-inbox/lead-outbox); JSONL for append-only logs. `.atmux/` survives tmux restarts.
-3. **No daemon.** Every verb is idempotent. `whip` and `report` run on cron.
+3. **No daemon (legacy; superseded by ADR-260 manual-mode + ADR-233 orchd).** Every verb is idempotent. The orchd daemon runs only when `team.json::orchestration.mode` is explicitly `"orchd"` (ADR-260); Honker events emit but no consumers run in manual mode.
 4. **Driver is external.** atmux is launched from the driver's shell. The driver does NOT run inside the tmux session — it's a separate process that fires atmux commands.
 5. **atmux owns its tmux infrastructure** ([ADR-162](adr/162-atmux-owns-tmux-infrastructure.md)). The cockpit binds to a dedicated `atmux-cockpit` named socket — not the operator's default socket. Every cockpit + per-team session loads a canonical `templates/tmux/atmux.conf` via `-f`, ignoring `~/.tmux.conf`. Doctor probes warn on tmux version drift + legacy-cockpit-on-default-socket residue. See §Tmux topology below.
 
@@ -96,8 +106,8 @@ The pull model defines each role by what it *doesn't* do — narrow surfaces, no
 | `devops`    | 5      | claude      | Deploy / env / CI/CD / infra Tasks.                                                                                                                     |
 | `dba`       | 6      | claude      | Schema + migrations + SQL (optional).                                                                                                                   |
 | `member`    | 7…n    | any         | Lane workers — pull next claimable Task in their lane via `atmux claim --next`. **FE workers also own the TEST-lane capstone for UI Stories.**          |
-| `ombudsman` | (event-driven) | claude (opt) | **Per-team complaint adjudicator** per [ADR-147](adr/147-ombudsman-and-release-notes.md). Reads `atmux complaints list --status open`, picks one of {file-epic, file-task, wontfix, already-addressed, defer} per complaint, appends day-file entry to `docs/release-notes/<Y>/<M>/<Y-M-D>.md` under `## Complaints adjudicated`. Wake via sentinel `.atmux/state/ombudsman-pending.json` + 15min `atmux ombudsman tick` cron line — NOT in whip cadence (ADR-147 §D2). |
-| `whip`      | (cron) | —           | 5-min watchdog: pane state, rate-limits, stale Tasks, lead uptime. Escalates to the lead only when auto-recovery fails.                                 |
+| `ombudsman` | — | — | **RETIRED per ADR-214.** Lead absorbs complaint adjudication via Honker events. Tombstone brief at `templates/briefs/ombudsman.md`. |
+| `whip`      | — | — | **RETIRED per ADR-237.** `atmux whip` verb survives as on-demand only; no cron auto-fire. |
 
 ## Pull coordination
 
@@ -184,7 +194,9 @@ The lead does **not** decompose Tasks itself and does **not** `atmux dispatch` p
 3. **Workers self-pull** via `atmux claim --next`. No manual dispatch by default; `atmux dispatch <member> <task-id>` is reserved for explicit driver-requested priority overrides.
 4. **Decisions log**: `atmux decisions add "<question>" --default "<answer>" --reversibility low|medium|high` for any non-trivial auto-mode resolution. Logs to `.atmux/decisions.md` AND pings Discord. See [ADR-008](adr/008-decisions-verb.md).
 
-## Whip (watchdog) — every 5 min
+## Whip (watchdog) — on-demand only (ADR-237)
+
+> **2026-06-13:** Whip no longer runs on cron per ADR-237. `atmux whip` is an on-demand verb. The detection machinery described below still runs when invoked manually. The cron auto-fire (every 5 min) was removed.
 
 `atmux whip` checks:
 
@@ -198,7 +210,9 @@ The lead does **not** decompose Tasks itself and does **not** `atmux dispatch` p
 
 Findings are appended to `.atmux/logs/whip.log`. Non-empty findings also get pinged to Discord (`ATMUX_DISCORD_WEBHOOK` or `DISCORD_WHIP_WEBHOOK`).
 
-## Report (digest) — every 30 min
+## Report (digest) — on-demand only (ADR-237)
+
+> **2026-06-13:** Report no longer runs on cron per ADR-237. `atmux report` is an on-demand verb.
 
 `atmux report` produces:
 
@@ -232,7 +246,9 @@ Every day-file follows a skeleton with append-only sections, each owned by a spe
 
 **Doctor backstop**: probe `release-note-missing` (warn-class, NOT block) fires when today has ≥1 trunk commit AND today's day-file doesn't exist — backfill cue for ombudsman or hygiene-tick (ADR-147 §D5).
 
-## Ombudsman wake — sentinel + cron (event-driven)
+## Ombudsman wake — RETIRED (ADR-214)
+
+> **2026-06-13:** Ombudsman role retired per ADR-214. Lead absorbs complaint adjudication via Honker events. The sentinel + cron mechanism below is retained for historical trace only.
 
 Per [ADR-147](adr/147-ombudsman-and-release-notes.md) §D2, the ombudsman role wakes on **events**, not whip cadence. Two writers + one reader define the protocol:
 
@@ -243,6 +259,10 @@ Per [ADR-147](adr/147-ombudsman-and-release-notes.md) §D2, the ombudsman role w
 The sentinel + cron pair is chosen over pure socket-pubsub (ADR-032) because medic + whip-velocity-gate can file 5–10 complaints in a burst; batching the wake gives ombudsman the chance to drain in one session rather than wake-process-sleep × N. This matches the `groom-pending-judgment.json` pattern from the supergroomer parking-lot task (ADR-147 §D2 tradeoff section).
 
 ## Module map (selected — health + observability)
+
+> **ADR-258 §D5 obsoleted modules** (Phase-4 deletion candidates, still live for `tmux-claude` fallback): `boot-claude.ts`, `safe-send.ts`, `known-modals.ts`, `modal-cycling-detector.ts`, `paste-submit.ts`, `pane-readiness.ts`, `queued-text-resubmit.ts`. **Retained, re-pointed** (carry forward to new backends): `budget-probe.ts` (rate-limit sidecar), `refusal-classifier.ts` / `refusal-threshold.ts` (NL-output property), `pane-state.ts` / `cage-state.ts` (until `status()` parity).
+>
+> **ADR-262 new modules** (not yet implemented): `plugins/atmux-opencode/` (TS plugin bridge), `rust/atmuxd/` (Rust daemon).
 
 | Module | Purpose | Authoring ADR |
 |---|---|---|
@@ -258,20 +278,20 @@ The sentinel + cron pair is chosen over pure socket-pubsub (ADR-032) because med
 
 ## Why `tmux send-keys` and not SDK API calls?
 
+> **2026-06-13:** This section documents the pre-ADR-258 rationale. Under ADR-258 (AgentBackend adapter model) and ADR-262 (opencode-plugin+daemon), the tmux control plane is being superseded by programmatic backends. The reasoning below remains valid for the `tmux-claude` fallback backend but does not apply to the `claude-agent-sdk` or `opencode-server` paths.
+
 - **Works with any TUI** — we don't depend on a model-provider SDK. Cursor's CLI, Kimi's CLI, OpenCode, Claude Code all just get shell input.
 - **Zero drift between human + agent view** — what atmux sees is exactly what the human sees in `tmux attach`.
 - **No auth plumbing** — whatever auth the TUI itself uses, atmux inherits for free.
 - **Robust to provider outages** — if one TUI's API is down, other TUIs keep working.
 
-## Why bash + jq?
+## Why bash + jq? (legacy — Bun/TypeScript since 2026-05)
 
-- **Shareable** — `curl | bash` install, no compile step, no language runtime to pin.
-- **tmux-native** — the whole tool is tmux-wrapper-shaped; bash is the natural language.
-- **jq is the best JSON tool for shell scripts.** Atomic `jq … > file.tmp && mv` writes.
-
-Tradeoff: less type safety than TypeScript. Mitigated by bats-core unit tests.
+> **2026-06-13:** This section documents the original bash-based atmux. The project was ported to Bun/TypeScript in 2026-05 (see `package.json`, `src/cli.ts`). The rationale below is retained for historical trace.
 
 ## Non-goals
+
+> **2026-06-13:** The "no server, no accounts" non-goal is being relaxed by ADR-258 (AgentBackend programmatic backends) and ADR-262 (opencode-plugin+daemon with HTTP API). OpenCode `serve` mode IS a local server. The daemon's HTTP API IS a local server. The non-goal below documents the original scope.
 
 - Hosted service. atmux is a local CLI. No server, no accounts.
 - Sandbox. If you let Claude run `rm -rf` in a member's pane, it'll run. Use `--permission-mode` / the TUI's own guardrails.

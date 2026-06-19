@@ -948,7 +948,7 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
 
   // t-eb0887fe: lead-first sequential, then teammates fan out. The
   // lead's brief sets the team-wide contract that teammates' briefs
-  // reference (per `templates/briefs/team-lead.md` D5 + ADR-044), so we
+  // reference (per `templates/briefs/lead.md` D5 + ADR-044; team-lead role aliases to lead.md per ADR-216), so we
   // do NOT race the lead handshake with teammate spawns. After the
   // lead's `bootClaudeMember` returns (booted | already-booted |
   // failed), the remaining members spawn in parallel up to the

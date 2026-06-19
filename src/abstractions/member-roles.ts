@@ -23,7 +23,13 @@
 
 /** Closed set of canonical role literals atmux ships out-of-the-box.
  *  Defaults render `_-prefix`; user-added (role = "member") keeps the
- *  ADR-135 hyphen form. */
+ *  ADR-135 hyphen form.
+ *
+ *  NOTE 2026-06-13: `ombudsman` retained in the list for rendering
+ *  consistency (legacy teams may still carry an ombudsman member in
+ *  team.json). The ROLE is retired per ADR-214 — no new ombudsman
+ *  members should be spawned; existing ones will self-flag on boot
+ *  (tombstone brief at `templates/briefs/ombudsman.md`). */
 export const DEFAULT_MEMBER_ROLES = ["team-lead", "planner", "reviewer", "ombudsman"] as const;
 
 /** Union of the canonical default role literals. */

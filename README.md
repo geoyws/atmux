@@ -14,7 +14,7 @@
 > Operators upgrading run `atmux migrate-state` once per team root — see
 > §State layout for the migration runbook.
 
-A tmux-native multi-TUI agent orchestrator. Runs a fleet of coding-agent terminals (Claude Code, Cursor, OpenCode, Kimi) in parallel, with a kanban task board, per-member inboxes, a 5-minute whip watchdog, and a 30-minute progress digest to Discord.
+A tmux-native multi-TUI agent orchestrator. Runs a fleet of coding-agent terminals (Claude Code, Cursor, OpenCode, Kimi) in parallel, with a kanban task board, per-member inboxes, and on-demand whip/status probes.
 
 **Why not just Claude Code everywhere?** Because Claude is expensive and not every task needs it. With atmux, the **staff** (lead, planner, reviewer, committer, devops, dba) stay on Claude because they need the reasoning, while **workers can be Cursor Composer 2, MiniMax, or Kimi** for cheaper parallel throughput per feature lane. The driver (you, in a Claude Code REPL) talks to the lead; the lead routes to the planner (decomposition); workers **pull** their next Task from the kanban; committer commits; the reviewer signs off Stories; the lead writes the Epic summary back to the driver.
 
@@ -78,10 +78,10 @@ See [docs/adr/007-pull-kanban.md](docs/adr/007-pull-kanban.md) for the full ADR 
 │  Final Task done → epic auto-flips → "draft Epic summary" → 🧭 lead   │
 │  shared state: .atmux/{team.json,state.db,decisions.md,lead-outbox.md}│
 └───────────────────────────────────────────────────────────────────────┘
-               │ every 5 min                     every 30 min
+               │ on-demand (ADR-237)              on-demand (ADR-237)
                ▼                                 ▼
          atmux whip                        atmux report
-         (stale panes? rate limits?)       (Discord digest)
+         (on-demand watchdog)              (on-demand digest)
 ```
 
 **Read this diagram top-to-bottom**: the driver hands the lead an Epic-shaped ask; the lead routes it to the planner via `atmux send planner`; the planner runs `atmux epic add` + (optional) `atmux story add` + `atmux task add --epic <eid> --lane <lane> --deps …` to lay the work onto the kanban; FE / BE / DB / TEST workers then pull whatever's claimable in their lane via `atmux claim --next`. The lead doesn't dispatch per-Task — that's a relic of the push model; the kanban routes itself.
@@ -106,22 +106,15 @@ atmux tell-lead "build a /healthz endpoint with 100% test coverage"
 atmux status                  # team pulse + commit-cadence column (ADR-148)
 atmux outbox                  # read lead's async replies
 
-# 4. Automation is wired for you.
-# `atmux start` automatically installs three crontab entries scoped per team
-# via marker comments (`# >>> atmux:team=<name>` … `# <<< atmux:team=<name>`):
-#   */5  * * * * atmux whip              # watchdog: stale panes, blockers, delta
-#   */30 * * * * atmux report            # digest: progress to Discord
-#   0 */4 * * * atmux decisions digest   # consolidates low/medium decision pings
-# `atmux stop` removes the block (idempotent — safe to re-run). Inspect with
-# `crontab -l | grep atmux:team=<your-team>`.
-#
-# Disable auto-install via team.json (then manage cron yourself):
-#   { "kanban": { "cronAutoInstall": false } }
-#
-# Run `atmux whip` manually any time to fire a tick immediately — same code
-# path as the 5-min cron. Useful when investigating an in-flight blocker or
-# right after a known event (deploy, rotate, etc.) without waiting for the
-# next scheduled tick.
+# 4. Run on-demand probes as needed.
+# Per ADR-233 (cron auto-install disabled) + ADR-237 (no LLM cadence),
+# whip/report no longer auto-fire on cron. Run manually when needed:
+atmux whip                     # on-demand watchdog: stale panes, blockers
+atmux status                   # team pulse + commit-cadence (ADR-148)
+# In manual orchestration mode (the default per ADR-260), members
+# self-report status: atmux member status idle|working|blocked|rate-limited
+# In orchd mode (opt-in via team.json::orchestration.mode="orchd"),
+# the daemon handles auto-merge/push/spawn without cron.
 
 # 5. When done:
 atmux stop
@@ -164,7 +157,7 @@ By default every atmux team shares the user's main tmux server at `/tmp/tmux-$UI
 **What changes when set:**
 
 - `bin/atmux` exports `TMUX_TMPDIR=<value>` immediately on entry — every subsequent `tmux` call routes to the isolated socket. The directory is auto-created (`mkdir -p`). Existing `$TMUX_TMPDIR` env wins over the team.json value.
-- `lib/cron.sh` prepends `TMUX_TMPDIR=<value>` to every emitted `whip` / `report` / `decisions digest` cron line — without this the cron jobs would look at the wrong server and report session DOWN forever.
+- `lib/cron.sh` prepends `TMUX_TMPDIR=<value>` to every emitted `whip` / `report` / `decisions digest` cron line — without this the cron jobs would look at the wrong server and report session DOWN forever. *(Note: cron auto-install disabled per ADR-233; on-demand invocations handle `TMUX_TMPDIR` via the Bun/TS entrypoint.)*
 - Bare `tmux attach` no longer reaches the team. Use either:
 
   ```bash
@@ -391,7 +384,12 @@ The legacy `atmux report` cron line — pre-discorder, lead-composed report — 
 
 **See also**: [ADR-022](docs/adr/022-discorder-role.md) (role rationale + ownership split + open questions); `templates/briefs/discorder.md` (canonical brief loaded at spawn time); [ADR-024](docs/adr/024-per-member-model-selection.md) (per-member model + the discorder Sonnet carve-out).
 
-### Ombudsman role
+### Ombudsman role (RETIRED — ADR-214)
+
+> **This role is retired per [ADR-214](docs/adr/214-retire-ombudsman-lead-absorbs-complaint-adjudication-via-honker.md).** The lead absorbs complaint adjudication via Honker events. The ombudsman role brief (`templates/briefs/ombudsman.md`) is a self-destruct tombstone — it instructs any agent spawned as ombudsman to `atmux flag` itself. The documentation below is retained for historical trace.
+
+<details>
+<summary>Legacy ombudsman role docs (click to expand)</summary>
 
 Optional per-team complaint-adjudicator member, spawned at `role=ombudsman, lane=misc` (emoji `⚖️`). Per [ADR-147](docs/adr/147-ombudsman-and-release-notes.md) §D1, reads open complaints (filed by medic / whip-velocity-gate / operator / CLI), triages each into one of five outcomes (file epic / file task / wontfix / already-addressed / defer), and writes its adjudication entry to the day's release-notes file. Surface-only on the code side — never claims code Tasks, never plans, only writes kanban + complaint resolutions.
 
@@ -410,6 +408,8 @@ atmux add-member ombudsman --role ombudsman --tui claude --lane misc --cwd "$PWD
 ```
 
 **See also**: [ADR-147](docs/adr/147-ombudsman-and-release-notes.md) (role rationale + release-notes layout + sub-task decomposition); `templates/briefs/ombudsman.md` (canonical brief, ships with ADR-147 T4); `docs/release-notes/README.md` (the layout convention this role writes to per ADR-147 §D4 Discovery).
+
+</details>
 
 ### Enforcer role
 
@@ -697,19 +697,12 @@ atmux cost [--member <m>] [--since <ts>] [--json]
 atmux pause <member>                         # dispatch/claim refuse
 atmux resume <member>
 
-🤖 Automation
-atmux whip                                   # 5-min watchdog (cron)
-atmux report [--no-discord]                  # 30-min digest (cron)
+🤖 Automation (on-demand verbs; cron auto-fire removed per ADR-233/237)
+atmux whip                                   # on-demand watchdog (was: 5-min cron)
+atmux report [--no-discord]                  # on-demand digest (was: 30-min cron)
 atmux improve [--budget <spec>] [--status]   # eternal-improvement loop (ADR-052)
               [--dry-run] [--default-budget]
               [--idle-fallback] [--force]
-atmux whip-resume-check [--no-discord]       # 1-min auto-resume cron precision (ADR-053)
-              [--team-dir <dir>]
-atmux watchdog [--no-discord]                # 2-min heartbeat staleness detector (ADR-057 §D6b)
-              [--team-dir <dir>]
-atmux pulse [--json] [--ping] [--config <p>] # 5-min cockpit-wide verdict probe (ADR-086)
-atmux hygiene-tick [--team-dir <d>]          # superdoctor kanban-hygiene pass (ADR-131)
-              [--no-json]                    #   one auto-fix per tick via severity/confidence ladder
 atmux issues sync                            # issue-sync: poll GitHub/Azure-DevOps issues → complaints → lead
                                              #   (ADR-261; verb lands Phase 1 — see docs/RUNBOOK-issue-sync.md)
 

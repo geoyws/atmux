@@ -423,18 +423,19 @@ describe("e2e: ADR-148 cadence-truth-signal (1x cold-start+walk)", () => {
   });
 
   test("B8. lead wake-nudge brief shape per T4 (D5)", async () => {
-    // T4 brief lands at templates/briefs/team-lead.md; verify the
-    // canonical wake-nudge sentence is present so a lead bootstrapping
+    // T4 brief lands at templates/briefs/lead.md (team-lead aliases to lead.md
+    // per ADR-216; team-lead.md was a duplicate, deleted 2026-06-13).
+    // Verify the canonical wake-nudge sentence is present so a lead bootstrapping
     // off the brief produces the exact `atmux send` argv the runbook
     // expects. CLAUDE.md "pair runbook beats with rehearsal spec
     // steps" — the brief sentence IS the runbook beat for D5.
-    const _briefPath = join(teamDir, "..", "..", "..", "templates", "briefs", "team-lead.md");
+    const _briefPath = join(teamDir, "..", "..", "..", "templates", "briefs", "lead.md");
     // Resolve relative to the repo root: this test sits at
     // <repo>/tests/e2e/cadence-truth-signal.test.ts; brief at
-    // <repo>/templates/briefs/team-lead.md. import.meta.url gives the
+    // <repo>/templates/briefs/lead.md. import.meta.url gives the
     // test file URL we can step back from for the canonical path.
     const here = new URL(".", import.meta.url).pathname;
-    const repoBriefPath = join(here, "..", "..", "templates", "briefs", "team-lead.md");
+    const repoBriefPath = join(here, "..", "..", "templates", "briefs", "lead.md");
     const brief = await readFile(repoBriefPath, "utf8");
 
     await step("brief carries the cadence wake-nudge sentence verbatim", async () => {
