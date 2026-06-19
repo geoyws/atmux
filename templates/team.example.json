@@ -1,83 +1,34 @@
 {
   "name": "my-team",
   "description": "atmux team — edit this to match your project",
+  "_comment_adr263": "ADR-263 (the great simplification): a team is just a name + a list of panes. The fleet-coordination config sub-blocks (whip / report / autoMerge / orchestration / issueSync / discord-as-fleet / etc.) were deleted with their verbs. Panes are FLAT — plain Claude (or any TUI) sessions the operator drives; no roles, no briefs, no lead/planner/reviewer distinction. The optional task feed (atmux task / claim / done / issues sync) is off the critical path.",
   "tmuxTmpdir": "/tmp/atmux-tmux_my-team",
-  "_comment_singleSession": "Default false (2026-04-30 reversal of ADR-026) — cage isolation per ADR-018 is the safe path; singleSession opts out of it on the daily-driver socket and reintroduces the side-channel pollution class (cage-prefix leak, cross-socket spawn, partial-rename mess). Launcher sessions (atmux_<team> created by atmux doctor --fix) preserve the at-a-glance benefit while keeping isolation. Set true ONLY for non-human-driven teams or detached observer setups (declared escape hatch).",
+  "_comment_singleSession": "Default false — cage isolation per ADR-018 is the safe path. Set true ONLY for non-human-driven teams or detached observer setups (declared escape hatch).",
   "singleSession": false,
-  "_comment_drivers": "ADR-239 (amended 2026-05-26): five drivers minimum per parent team, named driver / driver-2 / driver-3 / driver-4 / driver-5. Each is operator-interactive ONLY — atmux NEVER sends keystrokes to driver panes (no claim-next dispatch, no whip poke, no orchd unblock). NO PRE-PROMPTS, no brief paste, no role anchor — drivers start fresh and the operator types whatever they want. Each driver-N (N>=2) gets its own git worktree at .atmux/worktrees/driver-N on branch <base>-driver-N. driver (the original) lives at team root on the primary base branch (e.g. atmux-geoyws). Operator merges trunk into driver-N branches at their own discretion (no auto-merge cron for drivers). Drivers grouped at windows 1-5 in the cage tmux session, members follow at 6+.",
-  "drivers": [
-    { "name": "driver", "tui": "claude", "cwd": "." },
-    { "name": "driver-2", "tui": "claude", "cwd": ".atmux/worktrees/driver-2" },
-    { "name": "driver-3", "tui": "claude", "cwd": ".atmux/worktrees/driver-3" },
-    { "name": "driver-4", "tui": "claude", "cwd": ".atmux/worktrees/driver-4" },
-    { "name": "driver-5", "tui": "claude", "cwd": ".atmux/worktrees/driver-5" }
-  ],
-  "_comment_driverTui": "DEPRECATED per ADR-239 §D7 — superseded by drivers[]. Read as fallback when drivers[] is absent for one release cycle (legacy single-driver synthesis). New teams should use drivers[] above.",
-  "driverTui": "claude",
   "tuiCommands": {
     "_comment": "Per-team TUI launch aliases. If set, the prefix here replaces the built-in default for that TUI type. atmux appends --model <model> unless the prefix already has one. Example: \"claude\": \"claude --plugin-dir=$HOME/work/journals/.sb/claude-skills\""
   },
   "emojis": {
     "mode": "random"
   },
-  "_comment_claudeAccount": "Per-member Claude config-dir isolation. Valid values: 'default' (host default — Claude reads its standard config dir), 'personal', 'icloud', 'ifca', 'unum', OR any custom suffix the operator maintains. When set + != 'default', spawn prefixes 'CLAUDE_CONFIG_DIR=<HOME>/.claude-<value>' so the member's nested-shell `claude` invocations inherit an account-isolated config tree (no OAuth cross-pollination, no fresh-spawn re-auth dance). Per ADR-024 spawn-account-matching + ADR-094 c-alias spawn convention. Field lives at the MEMBER level (per-member override); template's lead carries an example string below.",
-  "_comment_members": "ADR-239 §A2 (amended 2026-05-26): strict 5-name member roster across every parent team — keep only members named {lead, planner, docs, reviewer, gitter}. Specialist seats (ombudsman, unblocker, discorder, devops, dba, tester, fe-auth, be-auth, db-auth, etc.) were swept out in the 2026-05-26 trim. Operator may re-add seats per-team but the template ships the lean default.",
+  "_comment_members": "Flat pane list per ADR-263 §D1. Each entry is one tmux window running its `tui` (claude/opencode/shell/...). `cwd` is the working dir; `lane` is an optional task-feed affinity tag for `atmux claim --next`. `claudeAccount` (optional, per-member) isolates the Claude config dir (e.g. 'personal' → CLAUDE_CONFIG_DIR=$HOME/.claude-personal).",
   "members": [
     {
-      "name": "lead",
-      "role": "team-lead",
-      "lane": "misc",
-      "tui": "claude",
-      "model": "default",
-      "cwd": ".",
-      "claudeAccount": "personal"
-    },
-    {
-      "name": "planner",
-      "role": "planner",
-      "lane": "misc",
+      "name": "pane-1",
       "tui": "claude",
       "model": "default",
       "cwd": "."
     },
     {
-      "name": "docs",
-      "role": "docs",
-      "lane": "misc",
+      "name": "pane-2",
       "tui": "claude",
       "model": "default",
       "cwd": "."
     },
     {
-      "name": "reviewer",
-      "role": "reviewer",
-      "lane": "review",
-      "tui": "claude",
-      "model": "default",
-      "cwd": "."
-    },
-    {
-      "name": "gitter",
-      "role": "committer",
-      "lane": "misc",
-      "tui": "claude",
-      "model": "default",
+      "name": "shell",
+      "tui": "shell",
       "cwd": "."
     }
-  ],
-  "whip": {
-    "intervalMins": 5,
-    "staleMin": 90,
-    "leadMaxMin": 60,
-    "autoRotate": true
-  },
-  "report": {
-    "intervalMins": 30
-  },
-  "_comment_discord": "Optional. webhook = pings target (env ATMUX_DISCORD_WEBHOOK overrides). color = hex override for embed (auto-derived from team-name hash if absent, see ADR-019 §16-color palette). emoji = leading title glyph (defaults to 🤖). Strip any field to fall back to defaults.",
-  "discord": {
-    "webhook": "https://discord.com/api/webhooks/REPLACE_ME",
-    "color": "#7287fd",
-    "emoji": "🌊"
-  }
+  ]
 }

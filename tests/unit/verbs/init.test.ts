@@ -207,30 +207,16 @@ describe("init — template path (bash lib/init.sh:87-107 parity)", () => {
       expect(m.cwd).toBe(env.cwd);
     }
     // Template-shape sanity. Tracks `templates/team.example.json` —
-    // bump together when the shipped roster changes. ADR-239 §A2
-    // (amendment 2026-05-26) trimmed every parent team to the strict
-    // 5-name roster {lead, planner, docs, reviewer, gitter}; the
-    // specialist seats (fe-auth/be-auth/db-auth/dba/ombudsman/…) were
-    // swept out in commit 5198e12.
-    expect(tj.members.length).toBe(5);
-    expect(tj.members.filter((m) => m.role === "team-lead").length).toBe(1);
-    expect(tj.members.filter((m) => m.role === "planner").length).toBe(1);
-    expect(tj.members.filter((m) => m.role === "docs").length).toBe(1);
-    expect(tj.members.filter((m) => m.role === "reviewer").length).toBe(1);
-    // ADR-159 TR3: the `gitter` member carries the canonical
-    // `role: "committer"` (the template ships the canonical value; a
-    // legacy `role: "gitter"` would also coerce to "committer" via the
-    // TeamMember schema transform on load).
-    expect(tj.members.filter((m) => m.role === "committer").length).toBe(1);
-    // The 5-name roster is exactly {lead, planner, docs, reviewer, gitter}
-    // — assert the named set so a future roster drift is caught.
-    expect(tj.members.map((m) => m.name).sort()).toEqual([
-      "docs",
-      "gitter",
-      "lead",
-      "planner",
-      "reviewer",
-    ]);
+    // bump together when the shipped roster changes. ADR-263 §D1 cut the
+    // fleet roster down to a FLAT pane list (no roles): the template now
+    // ships {pane-1, pane-2, shell}. Assert the named set so a future
+    // template drift is caught.
+    expect(tj.members.length).toBe(3);
+    expect(tj.members.map((m) => m.name).sort()).toEqual(["pane-1", "pane-2", "shell"]);
+    // Flat panes carry no `role` field per ADR-263 §D1.
+    for (const m of tj.members) {
+      expect(m.role).toBeUndefined();
+    }
   });
 
   // t-3866c5b1 / ADR-094: --claude-account flag end-to-end
@@ -265,17 +251,14 @@ describe("init — template path (bash lib/init.sh:87-107 parity)", () => {
     const tj = JSON.parse(await readFile(join(env.cwd, ".atmux", "team.json"), "utf8")) as {
       members: { name: string; claudeAccount?: string }[];
     };
-    // The lead entry in templates/team.example.json carries a
-    // demonstration `claudeAccount: "personal"` field (added by
-    // t-bd618833). When --claude-account is unset, the template's
-    // value passes through verbatim — operator gets the template's
-    // example unless they override.
-    const lead = tj.members.find((m) => m.name === "lead");
-    expect(lead?.claudeAccount).toBe("personal");
-    // Other members in the template don't carry the field, so they
-    // stay undefined post-init.
-    const planner = tj.members.find((m) => m.name === "planner");
-    expect(planner?.claudeAccount).toBeUndefined();
+    // The ADR-263 lean template (templates/team.example.json) ships no
+    // claudeAccount on any pane. When --claude-account is unset, init
+    // copies the template verbatim — so the property under test is that
+    // init injects NO claudeAccount of its own: every pane stays
+    // undefined (template carries none → none on disk).
+    for (const m of tj.members) {
+      expect(m.claudeAccount).toBeUndefined();
+    }
   });
 
   test("seeds kanban.json (tasks-only) and seeds NO fleet inbox files", async () => {
@@ -495,11 +478,11 @@ describe("init — templates dir resolution", () => {
       members: unknown[];
     };
     expect(tj.name).toBe("default-tmpls");
-    // The shipped template has the ADR-239 §A2 strict 5-name roster —
+    // The shipped lean template (ADR-263 §D1) carries 3 flat panes —
     // sanity-pin tracks `templates/team.example.json`. (This asserts the
     // default-resolved template was loaded, not the injected one, since
     // it carries the full shipped roster size.)
-    expect(tj.members.length).toBe(5);
+    expect(tj.members.length).toBe(3);
   });
 });
 
