@@ -9,169 +9,43 @@
 // Args are accepted but ignored (parity with bash, which routes
 // `help|--help|-h` to `usage; exit 0` without inspecting `$2..`).
 
-const USAGE = `atmux — agent teams multiplexer.
+const USAGE = `atmux — tmux agent harness + task feed (ADR-263).
 
 Usage: atmux <verb> [args]
        atmux                        One-stop: wizard (if new) → doctor → start → attach
 
 Setup:
-  up                          Same as bare \`atmux\`: bring a team all the way up
+  up                          Same as bare \`atmux\`: bring the team all the way up
   init [--name <team>]        Scaffold .atmux/team.json in current dir
-  start                       Create tmux session, spawn all members. Also
-                              auto-adds the team's cockpit viewer window if
-                              this team is rostered + enabled in
-                              ~/.atmux/cockpit.json (ADR-063 ergonomic fix —
-                              additive, sibling windows untouched; un-
-                              rostered + disabled teams silent-skip).
-  stop [--force|--soft]       Kill tmux session, archive state.
-                              --soft (ADR-087): graceful path — notice every
-                              pane, grace window, write resume manifest at
-                              state/resume.json, NO worktree prune.
+  start                       Create the tmux session, spawn all panes
+  stop [--force|--soft]       Kill the tmux session, archive state
   attach                      tmux attach to the team session
-  status                      Powerline team overview
-  cockpit reconcile [--no-cycle|--force-cycle] [--no-launch] [--config <p>]
-                              ADR-063 + ADR-235 §D1: ensure-up the operator
-                              cockpit (cages + TUI auto-launch + cockpit
-                              session) — bring live tmux into agreement with
-                              cockpit.json. Reads roster from
-                              ~/.atmux/cockpit.json (override via
-                              ATMUX_COCKPIT_CONFIG or --config <p>).
-  cockpit rebuild ...         (deprecated alias) ADR-235 §OQ4: deprecation alias
-                              for \`cockpit reconcile\`; same flags + behaviour,
-                              removed next release. Use \`reconcile\`.
-  cockpit attach [--config <p>] [--human]
-                              tmux-attach to the cockpit session on its named
-                              socket (\`tmux -L atmux-cockpit attach -t
-                              atmux_cockpit\`). Socket + session name resolved
-                              dynamically via getCockpitSocketName +
-                              cockpit.json so the verb stays correct across
-                              renames + ATMUX_COCKPIT_SOCKET overrides.
-                              \`--human\` (ADR-180): route through tty-inherit
-                              spawn so the caller's controlling terminal
-                              reaches tmux. Default (agent path) uses piped
-                              stdio and exits 1 on no-tty — the intended
-                              shape for headless probes.
-  cockpit rotate <session-name> [--force]
-                              ADR-167 Rung C: canonical rotation of a cockpit-
-                              level role pane — \`medic\` (W2) or \`<team-name>\`
-                              (W3+ driver pane). Refuses \`superdriver\`
-                              unconditionally; four pre-flight gates
-                              (user-not-typing / pane-idle / uptime /
-                              never-rotate-superdriver) protect against
-                              accidental rotation. Driver-only via
-                              ATMUX_CALLER_SCOPE=driver.
+  status                      Team / pane overview
 
-Messaging:
-  send <member> <msg...>      tmux send-keys to a member's pane
-  broadcast <msg...>          Send to every member except the driver
-  tell-lead <msg...>          Driver-only: send to lead + append to driver-inbox.md
-  reply <msg...>              Member → driver: write to lead-outbox.md
-  outbox [--ack] [--json]     Driver: read lead-outbox.md (--ack archives)
+Panes:
+  send <pane> <msg...>        tmux send-keys to a pane
+  broadcast <msg...>          Send to every pane
 
-Task board (kanban):
-  task add <subject> [--body <text>] [--assignee <member>] [--deps <id,id>] [--driver-only]
-           [--epic <eid>] [--story <sid>] [--deliverable <text>]
-  task list [--status todo|in-progress|done|blocked] [--assignee <member>]
+Task feed (optional, ADR-263 §D2):
+  task add <subject> [--body <text>] [--assignee <pane>] [--deps <id,id>]
+  task list [--status todo|in-progress|done|blocked] [--assignee <pane>]
   task show <id>
   task move <id> <todo|in-progress|done|blocked>
-  task update <id> [--body <text>] [--deps <id,id>] [--owner <member>|--unassign]
-              [--epic <eid|''>] [--story <sid|''>] [--deliverable <text|''>]
-
-Hierarchy (ADR-007):
-  epic add <title> [--body <text>] [--driver-ref <ref>]
-  epic list [--status <s>] [--json]
-  epic show <id> [--json]
-  epic advance <id> [--to <state>]    States: planning→ready→in-progress→review→done
-  story add <title> --epic <eid> [--ac <criteria>] [--body <text>]
-  story list --epic <eid> [--status <s>] [--json]
-  story show <id> [--json]
-  story advance <id> [--to <state>]   States: planning→ready→in-progress→testing→review→merging→done
-
-Dispatch + work:
-  dispatch <member> <task-id> Push task to member's inbox + ping them
-  inbox <member>              Show member's inbox
-  claim <task-id>             Claim a task from kanban (as a member)
-  done <task-id>              Mark claimed task complete
-  member status <idle|working|blocked|rate-limited> [--as <m>] [--note <t>] [--task <id>]
-                              Self-report status (ADR-260 manual mode); working
-                              --task claims it, blocked --task blocks it
-
-Automation:
-  report                      Post 30-min progress digest to Discord
-  whip                        Run 5-min watchdog (idle / blocker / budget / clear)
-  improve [--budget <spec>] [--status] [--dry-run]  Arm eternal-improvement loop (ADR-052)
-  cost [--member <m>] [--since <t>] [--json]  Per-member USD + token usage
-  rotate <member>             /clear the member and re-brief
-  rotate-lead                 /clear the lead and re-bootstrap
-  handoff <from> <to>         Move in-flight work from one member to another
-  pause <member>              Mark member paused (dispatch refuses to queue)
-  resume <member>             Unpause
+  task update <id> [--body <text>] [--deps <id,id>] [--owner <pane>|--unassign]
+  claim <task-id>             Claim the next/given task
+  done <task-id>              Mark a claimed task complete
+                              (git source — \`issues sync\` — lands in ADR-263 P3)
 
 Maintenance:
-  add-member <name> --role <r> --tui <t> [--model <m>] [--cwd <d>] [--command <c>]
-  member rename <id> --label <new>          Hot-rename display label (ADR-136)
-  member move <id> --to <position>          Relocate member's tmux window (ADR-161 §C)
-  member swap <id-a> <id-b>                 Pairwise window swap (ADR-161 §C)
-  member sort [--defaults-first]            Canonical reorder (ADR-161 §C)
-  team spawn-epic <epicId> --from <parent> [--roster <preset>|--roster-file <p>]
-                              ADR-090: spawn an ephemeral epic-team child of
-                              <parent>. Worktree at <parentRoot>-epics/<epicId>
-                              on branch <parentBase>-epic-<epicId>; cockpit
-                              entry appended under the parent. Requires
-                              ATMUX_CALLER_SCOPE=driver.
-  team dissolve-epic <epicId> [--skip-checks] [--force-prune]
-                              ADR-090: tear down an epic-team spawned via
-                              spawn-epic. Soft-stop + prune worktree + remove
-                              cockpit entry + mark parent kanban EPIC done.
-                              --skip-checks bypasses the all-tasks-done +
-                              clean-worktree gates (lead-override).
-  team sweep-epics [--apply] [--idle-hours N] [--parent <team>] [--json]
-                              ADR-170: enumerate every enabled epic-team and
-                              classify each (DRAIN/SAFE-DISSOLVE/STALE-IDLE/
-                              RISKY/MISSING). Read-only by default; --apply
-                              dissolves only SAFE-DISSOLVE candidates (0 open
-                              tasks + clean worktree + branch pushed to
-                              origin) via the ADR-090 dissolve-epic pipeline.
-  team spawn-worker <task-id> --from <parent> [--roster <preset>] [--parent-base <b>]
-                              ADR-221 §v2: thin wrapper around spawn-epic for
-                              single-task worker-teams. Derives worker-id from
-                              task-id (\`t-x\` / \`x\` / \`w-x\` → \`w-x\`), auto-
-                              creates a wrapper kanban EPIC in the parent, and
-                              defaults --roster=solo. Driver-scope only.
-  team dissolve-worker <worker-id-or-task-id> [--skip-checks] [--force-prune]
-                              ADR-221 §v2: dissolve-epic counterpart for
-                              worker-teams. Refuses generic \`e-\` epic ids;
-                              normalises \`t-\` / bare / \`w-\` forms to \`w-<tail>\`
-                              before delegating. Driver-scope only.
-  team list-workers [--parent <team>] [--json]
-                              ADR-221 §v2: enumerate enabled worker-teams in
-                              the cockpit (epic-teams with \`w-\` prefix). Read-
-                              only — for housekeeping use \`sweep-epics\`.
-  reconfigure                 Re-run wizard against an existing team.json
-  dashboard [--interval <s>]  Live full-screen status panel
-  doctor [--fix] [--json]     Check deps, team.json, TUI PATH, webhook reachability
-  health [--json|--text] [--budget] [--stale-sec <N>]
-                              SPEC-066: composed read-only diagnostic snapshot —
-                              status + inbox + task + heartbeat (+ optional budget).
-                              JSON-first, foundational for fleet dashboards.
-  groom [--dry-run] [--quiet] [--kanban-days N] [--decisions-days N] [--keep-bak N]
-                              Daily 04:00 cron sweep — flush archive sections, age
-                              out done/cancelled cards, cull stale .bak files.
-  cleanup <logs|inboxes|all> [--max-size <bytes>] [--max-age-days <N>] [--purge-legacy] [--dry-run]
-                              Rotate big *.log files; prune old .done[] in
-                              member inboxes, or --purge-legacy to delete
-                              stale .atmux/inboxes/*.json on SQL teams.
-  discorder <progress|heartbeat>
-                              ADR-022 Discord cron pings. progress = 30-min
-                              digest; heartbeat = hourly state-of-team.
-                              Read-only on kanban/git/decisions.
-
-Misc:
+  reconfigure                 Re-run the wizard against an existing team.json
+  doctor [--fix] [--json]     Check deps, team.json, TUI PATH
+  cleanup <logs|all> [--max-size <bytes>] [--max-age-days <N>] [--dry-run]
+                              Rotate big *.log files
+  sync <sub>                  Sync derived state (e.g. claude-team-json, ADR-164)
   version
   help | --help | -h
 
 Environment:
-  ATMUX_DISCORD_WEBHOOK   Discord webhook URL for whip/report escalations
   ATMUX_DIR               Override state dir (default: ./.atmux)
   ATMUX_TEAM              Override team name (otherwise read from team.json)
 

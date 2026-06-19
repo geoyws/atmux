@@ -1,104 +1,40 @@
 // ADR-010: CLI dispatcher.
 // ADR-006: top-level error mapping (tag → BSD sysexits).
+// ADR-263: lean keep-set — atmux is a tmux harness + a task feed. The
+// fleet-coordination verbs (orchd, cockpit, lanes, epics/stories, whip,
+// auto-merge, roles, budget, refusal, …) were removed per ADR-263 §D4.
+// Surviving verbs: lifecycle (init/start/stop/status/attach/up) · panes
+// (send/broadcast) · maintenance (cleanup/reconfigure/doctor/sync/
+// version/help) · the optional task feed (task/claim/done). The git task
+// source (`issues sync`) lands in ADR-263 P3.
 //
-// Phase-1 minimal: routes the `version` verb (smallest state, first
-// parity-harness verb per task #4). Unknown verbs throw `UsageError`,
-// caught by the top-level handler which maps it to exit 64 (EX_USAGE)
-// with a two-line bash-format stderr matching `bin/atmux:324-328`:
+// Unknown verbs throw `UsageError`, caught by the top-level handler which
+// maps it to exit 64 (EX_USAGE). `reportError` covers every ADR-006 error
+// class so verbs that throw typed errors get correct sysexits.
 //
-//   atmux: unknown verb: <verb>
-//     run 'atmux help' for the list of verbs
-//
-// (Note on hint indent: bash uses 2-space; ADR-006 §"Top-level catch"
-// sketches 7-space — bash parity wins here. The ADR's sketch was not
-// strict, just illustrative; nothing else relies on the indent width.)
-//
-// `reportError` covers every ADR-006 error class so Phase 2 verbs that
-// throw typed errors (FsError, TmuxError, etc.) get correct sysexits
-// without further dispatcher work. Exported for direct unit testing
-// (test naming convention: function exported AS-IS rather than `_`-
-// prefixed because future verbs may legitimately call it for re-raise
-// formatting; not test-only).
-//
-// Phase 2 expands the dispatch switch as porters land additional
-// verbs; alias routing follows per ADR-014.
-//
-// **Pure library** — no module-level side effects. The TS entrypoint
-// is `bin/atmux-bun` (excluded from the coverage denominator per its
-// `bin/` path); running `bun run src/cli.ts <verb>` directly is NOT
+// **Pure library** — no module-level side effects. The TS entrypoint is
+// `bin/atmux-bun`; running `bun run src/cli.ts <verb>` directly is NOT
 // supported. This keeps `src/cli.ts` 100% unit-testable per ADR-009 §2.
 
 import { exists } from "./abstractions/fs.ts";
 import { getAtmuxDir, teamJsonPath, tryLoadTeam } from "./core/common.ts";
 import { safeAppendVerbEvent, type VerbEvent } from "./core/events-log.ts";
 import { AtmuxError, exitCodeForTag, formatErrorChain, UsageError } from "./errors.ts";
-import { addMember } from "./verbs/add-member.ts";
 import { attach } from "./verbs/attach.ts";
-import { audit } from "./verbs/audit.ts";
-import { blockers } from "./verbs/blockers.ts";
 import { claim, done } from "./verbs/claim.ts";
 import { cleanup } from "./verbs/cleanup.ts";
-import { cockpit } from "./verbs/cockpit.ts";
-import { cockpitMirror } from "./verbs/cockpit-mirror.ts";
-import { committer } from "./verbs/committer.ts";
-import { complaints } from "./verbs/complaints.ts";
-import { cost } from "./verbs/cost.ts";
-import { dashboard } from "./verbs/dashboard.ts";
-import { discorder } from "./verbs/discorder.ts";
-import { dispatch as dispatchVerb } from "./verbs/dispatch.ts";
 import { doctor } from "./verbs/doctor.ts";
-import { driverInbox } from "./verbs/driver-inbox.ts";
-import { epic } from "./verbs/epic.ts";
-import { epicMerge } from "./verbs/epic-merge.ts";
-import { groom } from "./verbs/groom.ts";
-import { handoff } from "./verbs/handoff.ts";
-import { health } from "./verbs/health.ts";
-import { heartbeat } from "./verbs/heartbeat.ts";
 import { help } from "./verbs/help.ts";
-import { hygieneTick } from "./verbs/hygiene-tick.ts";
-import { improve } from "./verbs/improve.ts";
-import { inbox } from "./verbs/inbox.ts";
 import { init } from "./verbs/init.ts";
-import { laneDriftCheck } from "./verbs/lane-drift-check.ts";
-import { laneStallTick } from "./verbs/lane-stall-tick.ts";
-import { laneTick } from "./verbs/lane-tick.ts";
-import { dispatchMemberSubverb } from "./verbs/member.ts";
-import { mergeCycle } from "./verbs/merge-cycle.ts";
-import { mergeMember } from "./verbs/merge-member.ts";
-import { migrateHexIds } from "./verbs/migrate-hex-ids.ts";
-import { migrateState } from "./verbs/migrate-state.ts";
-import { ombudsman } from "./verbs/ombudsman.ts";
-import { pause, resume } from "./verbs/pause.ts";
-import { poke } from "./verbs/poke.ts";
-import { pokeResumeCheck } from "./verbs/poke-resume-check.ts";
-import { pulse } from "./verbs/pulse.ts";
 import { reconfigure } from "./verbs/reconfigure.ts";
-import { orchd } from "./verbs/orchd.ts";
-import { refusalScan } from "./verbs/refusal-scan.ts";
-import { release } from "./verbs/release.ts";
-import { outbox, reply } from "./verbs/reply.ts";
-import { report } from "./verbs/report.ts";
-import { rotate, rotateLead } from "./verbs/rotate.ts";
 import { send } from "./verbs/send.ts";
 import { start } from "./verbs/start.ts";
 import { status } from "./verbs/status.ts";
 import { stop } from "./verbs/stop.ts";
-import { story } from "./verbs/story.ts";
 import { dispatchSyncSubverb } from "./verbs/sync.ts";
 import { task } from "./verbs/task.ts";
-import { dissolveEpic } from "./verbs/team/dissolve-epic.ts";
-import { dissolveWorker } from "./verbs/team/dissolve-worker.ts";
-import { listWorkers } from "./verbs/team/list-workers.ts";
-import { spawnEpic } from "./verbs/team/spawn-epic.ts";
-import { spawnWorker } from "./verbs/team/spawn-worker.ts";
-import { sweepEpics } from "./verbs/team/sweep-epics.ts";
-import { teamRename } from "./verbs/team-rename.ts";
-import { teamRepairRename } from "./verbs/team-repair-rename.ts";
-import { tellLead } from "./verbs/tell-lead.ts";
-import { topo } from "./verbs/topo.ts";
 import { up } from "./verbs/up.ts";
 import { version } from "./verbs/version.ts";
-import { watchdog } from "./verbs/watchdog.ts";
 
 /**
  * Entry point — process argv (sliced past binary + script name) and
@@ -110,9 +46,7 @@ import { watchdog } from "./verbs/watchdog.ts";
  * Wraps the dispatch call in an events-log envelope (t-91cd050f): every
  * verb invocation appends one JSONL line to
  * `<atmuxDir>/logs/<YYYY>/<MM>/events.jsonl` with timing + outcome +
- * exit code. The append is best-effort — any failure (no team yet,
- * disk full, race on parent dir) is swallowed by `safeAppendVerbEvent`
- * with a stderr WARN. Events are observability, not load-bearing state.
+ * exit code. The append is best-effort.
  */
 export async function main(argv: ReadonlyArray<string>): Promise<number> {
   const startMs = Date.now();
@@ -141,13 +75,11 @@ interface LogVerbEventOpts {
 /**
  * Best-effort events-log append for `main()`'s envelope. Skipped when
  * `<atmuxDir>` doesn't exist on disk (first run / `init` against an
- * empty cwd) — no point creating `logs/` next to a not-yet-initialised
- * team. Team name is read from team.json when present, empty string
+ * empty cwd). Team name is read from team.json when present, empty string
  * otherwise (schema-tolerant for pre-init partial states).
  *
  * Internal — exported only via the test re-import in
- * `tests/unit/cli.test.ts` for direct coverage. Production calls come
- * exclusively from `main()` above.
+ * `tests/unit/cli.test.ts` for direct coverage.
  */
 export async function logVerbEvent(opts: LogVerbEventOpts): Promise<void> {
   // Skip `--version` / `-V` / `--help` / `-h` aliases entirely — those
@@ -210,181 +142,28 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return status(argv.slice(1));
     case "attach":
       return attach(argv.slice(1));
-    case "audit":
-      return audit(argv.slice(1));
-    case "add-member":
-      return addMember(argv.slice(1));
-    case "reply":
-      return reply(argv.slice(1));
-    case "outbox":
-      return outbox(argv.slice(1));
     case "send":
       return send(argv.slice(1));
     case "broadcast":
       return send(["--broadcast", ...argv.slice(1)]);
     case "task":
       return task(argv.slice(1));
-    case "epic":
-      return epic(argv.slice(1));
-    case "story":
-      return story(argv.slice(1));
-    case "team":
-      return dispatchTeamSubverb(argv.slice(1));
-    case "topo":
-      return topo(argv.slice(1));
-    case "member":
-      return dispatchMemberSubverb(argv.slice(1));
-    case "sync":
-      return dispatchSyncSubverb(argv.slice(1));
-    case "release":
-      return release(argv.slice(1));
-    case "tell-lead":
-      return tellLead(argv.slice(1));
     case "claim":
       return claim(argv.slice(1));
     case "done":
       return done(argv.slice(1));
-    case "dispatch":
-      return dispatchVerb(argv.slice(1));
-    case "inbox":
-      return inbox(argv.slice(1));
-    case "lane-tick":
-      return laneTick(argv.slice(1));
-    case "lane-stall-tick":
-      return laneStallTick(argv.slice(1));
-    case "lane-drift-check":
-      return laneDriftCheck(argv.slice(1));
-    case "refusal-scan":
-      return refusalScan(argv.slice(1));
-    case "merge-cycle":
-      return mergeCycle(argv.slice(1));
-    case "merge-member":
-      return mergeMember(argv.slice(1));
-    case "pause":
-      return pause(argv.slice(1));
-    case "resume":
-      return resume(argv.slice(1));
-    case "dashboard":
-      return dashboard(argv.slice(1));
-    case "reconfigure":
-      return reconfigure(argv.slice(1));
-    case "rotate":
-      return rotate(argv.slice(1));
-    case "rotate-lead":
-      return rotateLead(argv.slice(1));
-    case "handoff":
-      return handoff(argv.slice(1));
-    case "report":
-      return report(argv.slice(1));
-    case "cost":
-      return cost(argv.slice(1));
-    case "cockpit":
-      return cockpit(argv.slice(1));
-    case "ombudsman":
-      return ombudsman(argv.slice(1));
-    case "committer":
-      return committer(argv.slice(1));
-    case "gitter":
-      // ADR-159 TR2 legacy alias — `atmux gitter` retained for one
-      // release cycle; emit a deprecation-warn so cron + operator
-      // scripts surface the rename ask. TR3+ amendment removes the
-      // alias.
-      process.stderr.write(
-        "atmux: 'gitter' verb is deprecated — use 'committer' per ADR-159. " +
-          "Accepting this release; will fail next release.\n",
-      );
-      return committer(argv.slice(1));
-    case "orchd":
-      // ADR-224 §D1 — `orchd` (orchestrator daemon) is the canonical
-      // event-router persona/verb. Renamed from `relayd` 2026-05-22 to
-      // honestly cover the expanding lifecycle responsibilities (Phase 2
-      // adds auto-spawn / auto-dissolve subscribers per §D4). Subscribes
-      // to multi-topic via atmux-listener Rust kernel-blocked NOTIFY/
-      // LISTEN and dispatches to handler-per-topic. Sub-verbs: --start
-      // (long-lived), --drain (one-shot cron-backstop), --handle-one
-      // (per-event dispatch), --status (diagnostic).
-      return orchd(argv.slice(1));
-    case "relayd":
-      // ADR-224 §D1 — `atmux relayd` is the deprecation alias for one
-      // release post-rename. Emits a single-line stderr warning then
-      // delegates to the orchd handler with same exit code + stdout
-      // shape (scripts that pipe / parse stdout keep working). Removed
-      // next release.
-      process.stderr.write(
-        "[deprecated] 'atmux relayd' renamed to 'atmux orchd' (ADR-224); " +
-          "update callsites — alias removes next release\n",
-      );
-      return orchd(argv.slice(1));
-    case "cockpit-mirror":
-      // ADR-230 — cockpit-scope event dispatcher. Per-event Bun handler
-      // spawned by the Rust `atmux-cockpit-mirror` binary
-      // (`--handle-one --event-id X --topic T`); 7-topic whitelist per
-      // ADR-230 §D3 (epic.merge_ready / epic.spawn_blocked / team.spawned
-      // / team.dissolved / budget.warning / budget.recovered /
-      // gitter.escalated). Per-topic real handlers are follow-up Tasks;
-      // MVP scaffold logs + advances offset.
-      return cockpitMirror(argv.slice(1));
-    case "epic-merge":
-      return epicMerge(argv.slice(1));
-    case "complaints":
-      return complaints(argv.slice(1));
-    case "blockers":
-      return blockers(argv.slice(1));
-    case "doctor":
-      return doctor(argv.slice(1));
-    case "health":
-      return health(argv.slice(1));
-    case "driver-inbox":
-      return driverInbox(argv.slice(1));
-    case "poke":
-      return poke(argv.slice(1));
-    case "poke-resume-check":
-      return pokeResumeCheck(argv.slice(1));
-    // ADR-160: legacy `whip` + `whip-resume-check` surfaces retained for
-    // one release cycle with stderr deprecation-warn. Operator cron lines
-    // continue invoking the canonical `poke` handler via this alias;
-    // post-cycle the alias is removed and stale cron entries get a
-    // refusal hint citing ADR-160.
-    case "whip":
-      process.stderr.write(
-        "atmux: 'atmux whip' is deprecated and renamed to 'atmux poke' per ADR-160; routing to canonical handler. Update cron lines + scripts before the next release.\n",
-      );
-      return poke(argv.slice(1));
-    case "whip-resume-check":
-      process.stderr.write(
-        "atmux: 'atmux whip-resume-check' is deprecated and renamed to 'atmux poke-resume-check' per ADR-160; routing to canonical handler. Update cron lines + scripts before the next release.\n",
-      );
-      return pokeResumeCheck(argv.slice(1));
-    case "watchdog":
-      return watchdog(argv.slice(1));
-    case "heartbeat":
-      return heartbeat(argv.slice(1));
-    case "pulse":
-      return pulse(argv.slice(1));
-    case "improve":
-      return improve(argv.slice(1));
-    case "groom":
-      return groom(argv.slice(1));
-    case "hygiene-tick": {
-      // ADR-131 T3 (t-247b4b35): superdoctor's kanban-hygiene pass.
-      // hygieneTick returns a DrainTickResult; the CLI dispatcher
-      // discards it and returns exit code 0 unless an exception
-      // bubbles up.
-      await hygieneTick(argv.slice(1));
-      return 0;
-    }
+    case "sync":
+      return dispatchSyncSubverb(argv.slice(1));
     case "cleanup":
       return cleanup(argv.slice(1));
-    case "discorder":
-      return discorder(argv.slice(1));
-    case "migrate-hex-ids":
-      return migrateHexIds(argv.slice(1));
-    case "migrate-state":
-      return migrateState(argv.slice(1));
+    case "reconfigure":
+      return reconfigure(argv.slice(1));
+    case "doctor":
+      return doctor(argv.slice(1));
     case "up":
       return up(argv.slice(1));
     case "":
-      // bin/atmux:91 — bare `atmux` aliases to `up` (ADR-014).
+      // bare `atmux` aliases to `up` (ADR-014).
       return up([]);
     default:
       throw new UsageError({
@@ -395,59 +174,18 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
 }
 
 /**
- * `atmux team <sub> [args]` — bash spec routes `rename` + `repair-rename`
- * here. V1 ports `repair-rename` only; `rename` still pending (lib/
- * team-rename.sh @ 398 LOC). Unknown sub-verbs throw UsageError so the
- * exit code matches bash bin-atmux:295 (echo + exit 64).
- */
-export async function dispatchTeamSubverb(argv: ReadonlyArray<string>): Promise<number> {
-  const sub = argv[0];
-  if (sub === undefined || sub === "") {
-    throw new UsageError({
-      what: "team: subverb required (try: rename | repair-rename | spawn-epic | dissolve-epic | sweep-epics | spawn-worker | dissolve-worker | list-workers)",
-      hint: "run 'atmux help' for the list of verbs",
-    });
-  }
-  switch (sub) {
-    case "rename":
-      return teamRename(argv.slice(1));
-    case "repair-rename":
-      return teamRepairRename(argv.slice(1));
-    case "spawn-epic":
-      return spawnEpic(argv.slice(1));
-    case "dissolve-epic":
-      return dissolveEpic(argv.slice(1));
-    case "sweep-epics":
-      return sweepEpics(argv.slice(1));
-    case "spawn-worker":
-      return spawnWorker(argv.slice(1));
-    case "dissolve-worker":
-      return dissolveWorker(argv.slice(1));
-    case "list-workers":
-      return listWorkers(argv.slice(1));
-    default:
-      throw new UsageError({
-        what: `team: unknown subverb '${sub}' (try: rename | repair-rename | spawn-epic | dissolve-epic | sweep-epics | spawn-worker | dissolve-worker | list-workers)`,
-        hint: "run 'atmux help' for the list of verbs",
-      });
-  }
-}
-
-/**
  * Map an error to stderr output + exit code per ADR-006 §"Top-level
  * catch":
  *
  * - `UsageError` → `atmux: <what>` + 2-space-indented hint (if any),
- *   exit 64. Byte-matches bash `bin/atmux:324-328`.
+ *   exit 64.
  * - Other `AtmuxError` → `atmux: <tag>: <message>`, exit per
  *   `exitCodeForTag`. With `ATMUX_DEBUG=1` the full `cause` chain
  *   follows on stderr (per `formatErrorChain`).
  * - Anything else (programmer error / non-Error throw) →
  *   `atmux: internal error` + stack (or `String(err)`), exit 99.
  *
- * Exported so each branch can be unit-tested directly without wiring
- * a fake verb that throws each error type — every Phase 2 verb that
- * throws an `AtmuxError` exercises the same paths via `main()`.
+ * Exported so each branch can be unit-tested directly.
  */
 export function reportError(err: unknown): number {
   if (err instanceof UsageError) {
