@@ -89,7 +89,7 @@ atmux ships pointed at Claude; the tmux-is-IPC principle means any interactive T
 ├── team.json          # source of truth — team name + pane list (drivers[]/members[] collapse to flat panes)
 ├── state.db           # SQLite — the task feed (ADR-060/126). Tasks only; epics/stories/complaints/inboxes/merger-state tables dropped.
 ├── logs/              # verb-event JSONL audit (events-log.ts) + per-pane send logs
-├── tmux/              # per-team cage socket dir (ADR-058/162)
+├── tmux/              # per-team cage socket dir (ADR-018/162)
 └── archive/<ts>/      # created on atmux stop
 ```
 
@@ -103,7 +103,7 @@ Dropped vs. the fat layout: `kanban.json` legacy, inboxes, driver-inbox / lead-o
 
 ## 4. Architecture
 
-The harness spine: `up` → wizard-if-new → `doctor` preflight → `start` (idempotent session + one window per pane on the cage socket) → `attach`. See `docs/ARCHITECTURE.md` §Tmux topology (ADR-162/058). `send` / `broadcast` write to panes via verified `send-keys`. `stop` tears down + archives.
+The harness spine: `up` → wizard-if-new → `doctor` preflight → `start` (idempotent session + one window per pane on the cage socket) → `attach`. See `docs/ARCHITECTURE.md` §Tmux topology (ADR-162/018). `send` / `broadcast` write to panes via verified `send-keys`. `stop` tears down + archives.
 
 The task feed: `state.db` holds a single `tasks` table (`todo → in-progress → done | blocked`). `claim --next` selects by `priority asc, createdAt asc`, skipping tasks with unmet deps. `issues sync` upserts git issues/PRs as tasks, deduped on `sourceId` (ADR-263 §D3). No auto-dispatch side-effects on `done` — the fan-out/commit-task machinery of the old kanban (ARCHITECTURE.md §Auto-dispatch) is retired.
 

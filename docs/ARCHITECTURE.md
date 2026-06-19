@@ -1,298 +1,85 @@
 # atmux architecture
 
-> **Storage in atmux-bun.** Per [ADR-060](adr/126-sqlite-state-store.md), kanban
-> (tasks/epics/stories), inboxes, and per-feature state moved to **`.atmux/state.db`**
-> (SQLite, WAL). The text below referencing `.atmux/kanban.json` describes the legacy
-> JSON model — still accurate for bash atmux and for teams not yet migrated, but on the
-> bun port the DB is the source of truth. Markdown files (`team.json` excepted as JSON,
-> `decisions.md`, `flags.md`, `driver-inbox.md`, `lead-outbox.md`, `HANDOFF.md`) and
-> append-only JSONL logs stay as files.
+> **Re-scoped 2026-06-19 by [ADR-263](adr/263-great-simplification-tmux-harness-and-task-feed.md)** — "the great simplification." atmux is a **tmux harness + an optional task feed**, nothing more. The fleet-coordination layer (orchd daemon, Honker messaging, cockpit, lanes, epics/stories, roles + briefs, whip/report/pulse/watchdog, auto-merge, budget, refusal-rotation, complaints/ombudsman, the AgentBackend/opencode-daemon direction) is retired per ADR-263 §D4. This document describes the lean surface only. Where it and an ADR disagree, the ADR wins.
 
-> **2026-05-24 architecture alignment** — atmux ships an event-driven core now: the
-> Rust **`atmux-orchd`** daemon (`rust/atmux-orchd/`) runs one process per team with
-> 10 in-process consumers + 4 tickers (5min sweep-merges · 15min context-scan +
-> budget-scan · hourly log-rotate · 24h housekeep) per [ADR-233](adr/233-cron-auto-install-disabled-trust-orchd.md).
-> The **Honker** in-DB messaging substrate ([ADR-202](adr/202-honker-in-db-messaging-substrate.md),
-> [ADR-203](adr/203-event-topic-taxonomy.md)) replaces cron polling — `emit(db, payload)`
-> in `src/abstractions/events.ts` auto-detects honker-loaded state and the Rust orchd
-> spawns Bun `--handle-one --consumer-id <id> --topic <t>` per event. Several cockpit
-> roles have been retired in favor of lead-gated honker consumers — **Sentinel
-> retired** ([ADR-211](adr/211-retire-sentinel-role-distribute-to-honker-consumers.md)),
-> **Medic narrowed to on-demand** ([ADR-212](adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md)),
-> **Jury retired** ([ADR-213](adr/213-retire-jury-reviewer-absorbs-acceptance-criteria.md)),
-> **Ombudsman retired** ([ADR-214](adr/214-retire-ombudsman-lead-absorbs-complaint-adjudication-via-honker.md)).
-> Some role/cron references in the sections below describe the pre-retirement shape;
-> they remain accurate for teams that haven't cut over yet (retired roles stay
-> running as the safety net until the cleanup-EPIC cutover ≥30 days after
-> e-honker-observation-watchdogs ships stable).
+## Principles (ADR-263 §D1, §D5)
 
-> **2026-06-12 — manual orchestration is the default** ([ADR-260](adr/260-manual-orchestration-mode-default.md)):
-> the orchd daemon described above spawns ONLY when `team.json::orchestration.mode`
-> is explicitly `"orchd"`. The default (absent block) is `"manual"` — no daemon, no
-> auto-merge/auto-spawn/watchdog; the member/lead LLMs manage the fleet themselves
-> (self-reported status via `atmux member status` → `<atmuxDir>/state/member-status/`,
-> manual kanban via `claim`/`done`/`task move`, manual fan-in + spawns). Rationale:
-> LLMs can manage their own fleet better than atmux's deterministic automation can
-> at the moment. Honker events are still emitted (audit trail + clean re-opt-in);
-> nothing consumes them in manual mode.
->
-> **2026-06-13 — AgentBackend adapter model replaces tmux-as-IPC** ([ADR-258](adr/258-vendor-agnostic-orchestration-agentbackend.md),
-> [ADR-262](adr/262-atmux-opencode-plugin-and-daemon.md)). Principle #1 (tmux is the IPC)
-> is being superseded: a team member is becoming an agent *session* behind a uniform
-> `AgentBackend` interface, not a TUI we type into. The `opencode-server` backend
-> ([ADR-262](adr/262-atmux-opencode-plugin-and-daemon.md)) splits this into a thin
-> OpenCode plugin (TypeScript bridge) + Rust daemon (brain), eliminating tmux from
-> the critical path. The tmux-claude backend remains the fallback until the Phase-3
-> default-flip gates clear per ADR-258. The Principle #1 text below documents the
-> pre-ADR-258 model and will be rewritten when the Phase-3 flip lands.
+1. **tmux is the IPC.** atmux speaks no AI-provider API. It writes input to a pane via `tmux send-keys` and reads output via `tmux capture-pane`. That means it works with *any* interactive coding-agent TUI; it ships pointed at Claude. (ADR-263 §D5 re-commits to this and supersedes the ADR-258/262 programmatic-backend direction.)
+2. **State lives on disk.** `state.db` (SQLite, WAL — [ADR-060](adr/126-sqlite-state-store.md)) holds the task feed; `team.json` holds the team name + flat pane list; JSONL under `logs/` is the append-only verb-event audit. `.atmux/` survives tmux restart.
+3. **No daemon.** Every verb is idempotent and operator-invoked. No orchd, no cron LLM cycle, no background process. The operator (and the Claude panes they run) own all coordination.
 
-## Principles
+## Flat panes (ADR-263 §D1)
 
-1. **tmux is the IPC.** atmux doesn't speak any AI provider API. It writes shell commands into tmux panes via `tmux send-keys` and reads responses by capturing pane output. That means it works with *any* interactive coding-agent TUI — Claude Code, Cursor, OpenCode, Kimi, or any future one.
-2. **State lives on disk** — SQLite (`state.db`) for the kanban + inboxes + per-feature state per ADR-060; markdown for human-edited files (`HANDOFF.md`, `decisions.md`, `flags.md`, driver-inbox/lead-outbox); JSONL for append-only logs. `.atmux/` survives tmux restarts.
-3. **No daemon (legacy; superseded by ADR-260 manual-mode + ADR-233 orchd).** Every verb is idempotent. The orchd daemon runs only when `team.json::orchestration.mode` is explicitly `"orchd"` (ADR-260); Honker events emit but no consumers run in manual mode.
-4. **Driver is external.** atmux is launched from the driver's shell. The driver does NOT run inside the tmux session — it's a separate process that fires atmux commands.
-5. **atmux owns its tmux infrastructure** ([ADR-162](adr/162-atmux-owns-tmux-infrastructure.md)). The cockpit binds to a dedicated `atmux-cockpit` named socket — not the operator's default socket. Every cockpit + per-team session loads a canonical `templates/tmux/atmux.conf` via `-f`, ignoring `~/.tmux.conf`. Doctor probes warn on tmux version drift + legacy-cockpit-on-default-socket residue. See §Tmux topology below.
+Panes are **flat**: plain Claude (or any TUI) sessions the operator drives. There are no `lead` / `planner` / `reviewer` / `committer` roles, no role-briefs, no driver-vs-member distinction. `team.json` is just a name plus a list of panes; `atmux start` brings up one tmux window per pane. The harness (`up` / `start` / `stop` / `attach` / `send` / `broadcast`) never requires any task state (ADR-263 §D6).
 
 ## Tmux topology
 
-Per [ADR-162](adr/162-atmux-owns-tmux-infrastructure.md):
+Per [ADR-162](adr/162-atmux-owns-tmux-infrastructure.md) + [ADR-018](adr/018-per-team-tmux-socket-isolation.md), atmux owns its tmux infrastructure and never clobbers the operator's default tmux:
 
-| Tier     | Socket flag                                              | Session name      | What runs there                                                                            |
-|----------|----------------------------------------------------------|-------------------|--------------------------------------------------------------------------------------------|
-| Cockpit  | `tmux -L atmux-cockpit` (named socket, dedicated)        | `atmux_cockpit`   | Operator's window into every enabled team — `_superdriver`, `_medic`, per-team viewers ([ADR-135](adr/135-cockpit-naming-convention.md) `_-prefix` for default roles) |
-| Per-team | `tmux -S <team-root>/.atmux/tmux/tmux-0/default` (cage)  | `atmux-<team>`    | The team's members + lead + planner + reviewer panes (one window per role). Cage-tier per [ADR-058](adr/058-cage-tier-isolation.md). |
+- **Cage socket.** Every team operation runs through a dedicated per-team socket at `tmux -S <team-root>/.atmux/tmux/tmux-0/default` (cage-tier isolation, ADR-018). Operations against `team-foo` cannot touch a session belonging to `team-bar` or to the operator's personal tmux server. Session name: `atmux-<team>`. The operator views the panes with plain `tmux attach` (or `atmux attach`).
+- **Pinned conf.** Every session is created with `-f <atmux.conf-path>` resolved by `getAtmuxTmuxConfPath()` in `src/core/tmux-paths.ts`; the operator's `~/.tmux.conf` is never loaded. Default: `templates/tmux/atmux.conf` (installed under `/opt/atmux/<version>/templates/`). Operator override: `ATMUX_TMUX_CONF=<path>`. The baseline (ADR-162 §Decision-anchor #3) sets `status on`, `mouse on`, `history-limit 100000` (capture-pane scrollback), `default-terminal tmux-256color`, `allow-rename off` + `automatic-rename off`, `base-index 1`, `escape-time 50`, and keeps the default `C-b` prefix.
+- **Version probe.** `doctor` warns on tmux below min 3.2 or above the tested-against 3.6a — the `capture-pane` / `display-message` formats atmux relies on have drifted across tmux 3.x.
 
-**Config (both tiers):** every session is created with `-f <atmux.conf-path>` resolved by `getAtmuxTmuxConfPath()` in `src/core/tmux-paths.ts`. Default: `templates/tmux/atmux.conf` (installed under `/opt/atmux/<version>/templates/`). Operator override: `ATMUX_TMUX_CONF=<path>`. The 8-option baseline includes `automatic-rename off` — load-bearing for [ADR-135](adr/135-cockpit-naming-convention.md)'s `_-prefix` window-name contract.
+## Task feed (optional — ADR-263 §D2, §D6)
 
-**Socket override:** `ATMUX_COCKPIT_SOCKET=<name>` (cockpit-tier only; per-team sockets are path-explicit by design per [ADR-058](adr/058-cage-tier-isolation.md)). Legacy operators can opt back into the default socket via `ATMUX_COCKPIT_SOCKET=default` for one more cycle while migrating.
+The task feed is opt-in: the harness works with zero tasks, and `doctor` does not red-row a team for having none. When used, one `tasks` table in `state.db` is the source of truth.
 
-**Migration from pre-ADR-162 setups:** `atmux cockpit migrate-socket` is the one-shot verb. Six phases (discovery → capture → recreate session on dedicated socket → recreate windows → scrollback breadcrumb → cleanup); idempotent; `--dry-run` previews; `--keep-legacy` preserves the old session. Process state is NOT transferred (tmux primitives can't re-bind PIDs across servers — see [ADR-162 §Amendment 2026-05-16](adr/162-atmux-owns-tmux-infrastructure.md#2026-05-16--decision-anchor-4-mechanism-graceful-recreate-not-pid-preservation-t-26346aef-tr3-impl)); operator re-invokes any in-pane process in the new panes. Cron-spawned roles re-establish on next tick. Full operator-facing details in [`docs/RUNBOOK-cockpit.md`](RUNBOOK-cockpit.md).
-
-**Doctor probes (warn-class):**
-
-- `tmux-version-mismatch` — host tmux below min 3.2 or untested above tested-against 3.6a.
-- `cockpit-on-default-socket` — legacy `atmux_cockpit` / `atmux_teams` session residue on the default socket. Self-clearing post-migration.
-
-**Member window-name format (per [ADR-161](adr/161-default-member-prefix-and-sort-verbs.md) §Part B):** in-team windows split by role class. `buildWindowName(name, emoji, label, role)` in `src/core/common.ts` picks the format:
-
-- **Default members** (`role` in `{team-lead, planner, reviewer, ombudsman}`; `committer` joins per ADR-159) render `${emoji}_${label}` — underscore as both prefix marker and separator. Mirrors the cockpit-tier `_-prefix` convention from [ADR-135](adr/135-cockpit-naming-convention.md) §D2.
-- **User-added members** (any other role, typically `"member"`) render `${emoji}-${label}` — hyphen separator per ADR-135 §D3 (still operative for the non-default branch).
-
-`tmux list-windows` for a typical team renders `driver / 🧭_lead / 🗺️_planner / 🔍_reviewer / 🛠️-be-1 / 🛠️-fe-1` — defaults grouped at the top by canonical order, user-added below.
-
-**Topographic-normalization verbs (per ADR-161 §Part C):** four `atmux member <sub>` verbs operate on the team layer (cockpit refused). Each uses `tmux move-window` / `tmux swap-window` primitives — pane PIDs, attached clients, and the running claude-process state are preserved across reorders.
-
-| Verb | Effect | Idempotent on |
-|---|---|---|
-| `atmux member rename <id> --label <new>` | Hot-rename display label (ADR-136); no window-index change. | Label already matches. |
-| `atmux member move <id> --to <position>` | Relocate one member's window to absolute 1-indexed slot. Auto-picks `swap-window` when target occupied (preserves occupant's PIDs), `move-window` when empty. | Source already at `<position>`. |
-| `atmux member swap <id-a> <id-b>` | Pairwise atomic exchange via `tmux swap-window`. TmuxError-fallback to a three-move temp-index dance. | `idA === idB` refused at parse. |
-| `atmux member sort [--defaults-first]` | One-shot canonical normalize: defaults by §Decision-anchor #4 order, user-added in existing relative order. | Already-sorted team. |
-
-Every successful run rewrites `team.json::members[]` via `updateJson(Team)` under flock; ordering is derived from a post-mutation `listWindows` snapshot (authoritative — avoids hand-computed shifts).
-
-## Roles
-
-The pull model defines each role by what it *doesn't* do — narrow surfaces, no overlap. See [ADR-007](adr/007-pull-kanban.md) for the full spec.
-
-| Role        | Window | Default TUI | What it does (post pull-model)                                                                                                                          |
-|-------------|--------|-------------|---------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `driver`    | —      | (any)       | Relays human intent via `atmux tell-lead` + `atmux send`. Never inside the tmux session.                                                                |
-| `team-lead` | 1      | claude      | **Routes** Epic-shaped asks to the planner; composes Epic summary at end via `atmux epic show` + `git log`. **Never decomposes. Never dispatches per-Task.** |
-| `planner`   | 2      | claude      | **Owns decomposition**: Epic → (optional Stories) → Tasks, with `--lane`, `--deps`, `--deliverable`. Writes ADRs in `docs/adr/`. **Never dispatches.**  |
-| `reviewer`  | 3      | claude      | **Story-level signoff** on cumulative diff (not per-commit). Empty `acceptanceCriteria` is automatic REJECT. Never commits.                             |
-| `committer`    | 4      | claude      | Commits on Task `done` via auto-dispatched commit-Tasks. Finalizes Stories on `merging`. Only member that commits. **Never pushes by default.**         |
-| `devops`    | 5      | claude      | Deploy / env / CI/CD / infra Tasks.                                                                                                                     |
-| `dba`       | 6      | claude      | Schema + migrations + SQL (optional).                                                                                                                   |
-| `member`    | 7…n    | any         | Lane workers — pull next claimable Task in their lane via `atmux claim --next`. **FE workers also own the TEST-lane capstone for UI Stories.**          |
-| `ombudsman` | — | — | **RETIRED per ADR-214.** Lead absorbs complaint adjudication via Honker events. Tombstone brief at `templates/briefs/ombudsman.md`. |
-| `whip`      | — | — | **RETIRED per ADR-237.** `atmux whip` verb survives as on-demand only; no cron auto-fire. |
-
-## Pull coordination
-
-The kanban — `.atmux/kanban.json` — is the source of truth for work. Three top-level arrays:
-
-```json
-{
-  "epics":   [ { "id": "e-…", "title", "body?", "driverRef?", "status",
-                 "stories": [], "tasks": [], "createdAt", "completedAt?" } ],
-  "stories": [ { "id": "s-…", "epic": "e-…", "title", "body?",
-                 "acceptanceCriteria", "status", "reviewSignoff",
-                 "mergeTaskId?", "createdAt", "completedAt?" } ],
-  "tasks":   [ { "id": "t-…", "subject", "body", "status", "owner", "deps",
-                 "priority", "epic?", "story?", "lane?", "deliverable?",
-                 "createdAt", "claimedAt?", "completedAt?", "note?" } ]
-}
-```
-
-`atmux::kanban_normalize` (in `lib/common.sh`) idempotently ensures `epics`/`stories`/`tasks` exist; legacy kanbans get the new arrays added on first mutation. `epic`/`story`/`lane`/`deliverable` on a Task are optional — missing reads as `null`.
-
-### State machines
-
-**Epic**: `planning → ready → in-progress → review → done`. The Epic auto-flips `in-progress → review` when its last child Task reaches `done` (storyless Epics) — and a `draft Epic summary` Task lands in the lead's inbox.
-
-**Story**: `planning → ready → in-progress → testing → review → merging → done`. A Story auto-flips `testing → review` when its last open child Task is `done` AND that Task is in the `test` lane (TEST capstone). Reviewer advances `review → merging`; committer advances `merging → done` once the commit chain is clean.
-
-**Task**: `todo → in-progress → done` (or `blocked`). Tasks with non-`done` deps are filtered out of `claim --next` automatically.
-
-### Pull selection
-
-Workers run `atmux claim --next [--as <member>] [--lane <lane>]`. Selection (lib/claim.sh):
-
-1. Filter Tasks: `status=todo`, `owner=null`, `deps - done_ids = []`.
-2. First pass: `lane == caller's lane`. Sort by `priority asc, createdAt asc`. Pick first.
-3. If empty AND `team.kanban.crossLaneClaim != false`: any lane, same sort.
-4. Atomic claim: `jq_update` flips `owner`/`status`/`claimedAt` only if `owner` is still `null` post-read; race-aware with 3 retries.
-
-Lane vocabulary: `fe` / `be` / `db` / `ops` / `test` / `review` / `misc`. UPPER-CASE in prose ("FE worker"), lowercase in JSON / `--lane` args.
-
-### Auto-dispatch on Task done
-
-When `atmux task move <id> done` lands (or `atmux done <id>`), `lib/kanban.sh` decides side-effects atomically inside one `jq_update`:
-
-- **Always**: if the source Task has `.epic` set, append a new `commit <id>` Task targeting committer (`owner=committer`, `status=in-progress`, `lane=misc`, `claimedAt=now`, `epic=null` to prevent recursion). Mirror to `inboxes/committer.json`.
-- **Story testing → review flip**: if the moved Task is the last open child of its Story AND its lane is `test` AND the Story is currently `testing`, set `story.status=review`.
-- **Storyless-Epic in-progress → review flip**: if the Epic has zero Stories AND the moved Task is the last open child of the Epic AND the Epic is `in-progress`, set `epic.status=review` AND append a `draft Epic summary <eid>` Task to the lead's inbox.
-
-Each side-effect is gated by a flag computed before the write, so the filter stays read-only when the gate is off — idempotent on `done → done`.
+**Task shape** (`todo → in-progress → done | blocked`):
 
 ```
-                  ┌────────────────────────────────────┐
-   member runs    │ atmux done t-aaa --note "feat: …"  │
-                  └─────────────┬──────────────────────┘
-                                │ kanban.json (atomic jq_update)
-                                ▼
-        ┌───────────────────────────────────────────────┐
-        │ tasks[t-aaa].status = done                     │
-        │ if .epic   → tasks += [commit-Task → committer]  │
-        │ if last test-lane child of testing Story      │
-        │            → stories[s].status = review       │
-        │ if last child of storyless in-progress Epic   │
-        │            → epics[e].status = review +       │
-        │              tasks += [Epic summary → lead]   │
-        └───────────────────────────────────────────────┘
-                                │
-                                ▼
-        committer / reviewer / lead inbox updates land via
-        _atmux_kanban_push_inbox (mirrors kanban → inbox)
+id        t-…            uuidv7
+subject   string         short title
+body      string         detail (issue body + URL for git-sourced tasks)
+status    todo|in-progress|done|blocked
+owner     pane | null    who claimed it
+deps      [t-…]          unmet deps filter the task out of `claim --next`
+priority  int            lower = sooner
+createdAt / claimedAt? / completedAt? / note?
 ```
 
-## Driver → Lead routing
+**The work loop** is the entire coordination model (ADR-263 §D1): a pane runs `atmux claim --next`, works the task, runs `atmux done`. `claim --next` selects by `priority asc, createdAt asc`, skipping any task whose `deps` are not all `done`; the claim is atomic (flips `owner`/`status`/`claimedAt` only if `owner` is still `null` post-read, race-aware with retries). **There are no auto-dispatch side-effects on `done`** — the fan-out/commit-task/story-flip machinery of the old kanban is gone (ADR-263 §D4). Task CRUD lives in `src/core/kanban.ts`; the `task` / `claim` / `done` verbs route through it with no inbox or member-status coupling.
 
-Two paths; use both:
+### Git task source — planned (ADR-263 P3)
 
-1. **Durable**: `atmux tell-lead "..."` appends to `.atmux/driver-inbox.md`. Lead reads this first on every whip turn. Survives `/clear`, survives tmux restart.
-2. **Immediate**: the same command also fires a short heads-up via `tmux send-keys` to the lead's pane. Gives the lead a nudge to check the inbox.
+A second feed source is **planned, not yet built**: `atmux issues sync` will poll a watched git repo's issues/PRs and upsert each as a task. The ingestion seam exists today (`src/abstractions/issue-tracker.ts` — the types-only vendor-agnostic `IssueTracker` interface from [ADR-261](adr/261-issue-sync-external-tracker-ingestion.md)); ADR-263 §D3 re-points its **output** from the (now-deleted) complaints path to the task table. Contract: `poll → upsert Task`, deduped on `sourceId` (e.g. `github:owner/repo#123`); provenance (`sourceKind` / `sourceId`) is carried on the task row; config under `team.json::taskSources` (`{ provider, scope, labels, state, pollIntervalMins }`); HTTP via `http.ts`. **Feed-only** — no complaints, no Honker, no lead, no auto-dispatch; a Claude pane picks the task up via `claim --next`. No write-back to the tracker. Polling is operator/cron-invoked; there is no daemon.
 
-## Lead → Planner routing (pull model)
+> **Residual risk (ADR-263 §D3):** ingested public issue/PR bodies are attacker-controllable text that flows into task bodies a Claude pane will read. The body is data, not instructions — documented, not solved.
 
-The lead does **not** decompose Tasks itself and does **not** `atmux dispatch` per-Task as the default flow:
+## State layout
 
-1. **Lead reads `driver-inbox.md`**, decides Epic-shaped asks → `atmux send planner "<verbatim ask + driver-ref>"`.
-2. **Planner runs `atmux epic add` → `atmux story add` (optional) → `atmux task add --epic <eid> --lane <lane> --deps …`**, then `atmux reply` to the lead with task IDs + dependency notes.
-3. **Workers self-pull** via `atmux claim --next`. No manual dispatch by default; `atmux dispatch <member> <task-id>` is reserved for explicit driver-requested priority overrides.
-4. **Decisions log**: `atmux decisions add "<question>" --default "<answer>" --reversibility low|medium|high` for any non-trivial auto-mode resolution. Logs to `.atmux/decisions.md` AND pings Discord. See [ADR-008](adr/008-decisions-verb.md).
+```
+.atmux/
+├── team.json          # source of truth — team name + flat pane list
+├── state.db           # SQLite — the task feed (ADR-060/126). Tasks only.
+├── logs/              # verb-event JSONL audit (events-log.ts) + per-pane send logs
+├── tmux/              # per-team cage socket dir (ADR-018/162)
+└── archive/<ts>/      # created on `atmux stop`
+```
 
-## Whip (watchdog) — on-demand only (ADR-237)
+## Verb surface (ADR-263 §D2)
 
-> **2026-06-13:** Whip no longer runs on cron per ADR-237. `atmux whip` is an on-demand verb. The detection machinery described below still runs when invoked manually. The cron auto-fire (every 5 min) was removed.
+The complete dispatcher (`src/cli.ts`); `atmux help` prints the canonical usage.
 
-`atmux whip` checks:
+| Bucket | Verbs |
+|--------|-------|
+| Lifecycle | `up` (bare `atmux` alias) · `init` · `start` · `stop` · `attach` · `status` |
+| Panes | `send` · `broadcast` |
+| Task feed (optional) | `task add/list/show/move/update` · `claim` · `done` |
+| Maintenance | `reconfigure` · `doctor` · `cleanup` · `sync` ([ADR-164](adr/164-sync-claude-team-json.md) claude-team-json) · `version` · `help` |
 
-1. Session liveness (is the tmux session up?).
-2. Per-member pane: does `#{pane_current_command}` match the expected TUI binary?
-3. Per-member banners: `rate-limit`, `Compacting conversation`, `Press up to edit queued messages`.
-   - **Modal cycling** (per ADR-142, module `src/core/modal-cycling-detector.ts`): ≥N distinct modal-prompts within `modalCycling.windowMin` AND 0 commits in `commitGracePeriodMin` → fires `[whip-modal-cycling]` Discord + clarifier dispatch + flag. Sits one layer above the existing static-stuck classifier (which catches *same prompt repeating*); modal-cycling catches *different prompts in rapid sequence*, the pattern §1c missed on 2026-05-14 whip-impl. State at `~/.atmux/state/modal-history-<member>.json` + `modal-cycling-dedup-state.json`.
-   - **Commit-cadence classifier** (per [ADR-148](adr/148-commit-cadence-truth-signal.md) §D2, module `src/core/cadence-classifier.ts` — landed by T5 / t-ac95b267, lifting the inline classifier T2 inlined in `src/verbs/status.ts`): pure `classifyCadence(logLines, nowSec, windowSec, thresholds)` + async wrapper `classifyMemberCadence(member, worktreePath, config, deps)` composing the canonical `git -C <path> log --since=<N>s --author=<member> --format=%H %ct` probe with classification. Emits four verdicts (`shipping` / `idle` / `dormant` / `ship-zero-window`) per ADR-148 §D2 table. Consumers: `atmux status` cadence column (T2), Discord `[ship-zero-window]` template + medic event-driven pickup (deferred follow-up per ADR-140 chain), future orchd event consumers per sibling EPIC e-a946af69.
-4. Per-member staleness: any `inProgress` tasks older than `ATMUX_STALE_MIN`?
-5. Lead uptime: has the lead been alive longer than `ATMUX_LEAD_MAX_MIN`? If so, recommend `atmux rotate-lead`.
-
-Findings are appended to `.atmux/logs/whip.log`. Non-empty findings also get pinged to Discord (`ATMUX_DISCORD_WEBHOOK` or `DISCORD_WHIP_WEBHOOK`).
-
-## Report (digest) — on-demand only (ADR-237)
-
-> **2026-06-13:** Report no longer runs on cron per ADR-237. `atmux report` is an on-demand verb.
-
-`atmux report` produces:
-
-- **Shipped** (tasks completed since last report)
-- **In-progress** (current assignments per member)
-- **Blocked**
-- **Open driver-inbox asks**
-
-Pinged to Discord.
-
-## Release notes layout — `docs/release-notes/<Y>/<M>/<Y-M-D>.md`
-
-Per [ADR-147](adr/147-ombudsman-and-release-notes.md) §D4, atmux ships a per-day release-notes file at `docs/release-notes/<YYYY>/<MM>/<YYYY-MM-DD>.md`. Year and month folders give navigability (`ls docs/release-notes/2026/05/` = month view); one file per day with append-only sections keeps cross-team writes conflict-free.
-
-Every day-file follows a skeleton with append-only sections, each owned by a specific agent:
-
-| Section                       | Written by                                                       |
-|-------------------------------|------------------------------------------------------------------|
-| `## Shipped (kanban→done)`    | committer post-fan-in (or hygiene-tick backstop) per ADR-147 §D4    |
-| `## Merges (branch→trunk)`    | committer post-trunk-merge per ADR-145 + ADR-146                    |
-| `## ADRs landed`              | hygiene-tick on detecting new `docs/adr/*.md`, or ADR author     |
-| `## Complaints adjudicated`   | ombudsman per ADR-147 §D3                                        |
-| `## Doctor regressions`       | medic on red-row escalation (optional; empty most days)          |
-| `## Notes`                    | operator-curated narrative (optional; empty most days)           |
-
-**Auto-create + idempotency**: the first writer of the day creates the file with all skeleton sections empty; subsequent writers append to their own section. No locking — section headers act as natural insertion anchors. The append-only invariant lets multiple agents write the same day-file safely (per ADR-147 §D4).
-
-**Discovery**: `docs/release-notes/README.md` is the entry-point, documenting the layout convention + browsing pattern + auto-generated 30-day TOC (ADR-147 §D4).
-
-**Cross-team monorepos** (ADR-090 epic-team scope, future): same physical file at repo root; each team writes only to its `### <team>` sub-section within `## Complaints adjudicated` to keep appends conflict-free (ADR-147 §D6).
-
-**Doctor backstop**: probe `release-note-missing` (warn-class, NOT block) fires when today has ≥1 trunk commit AND today's day-file doesn't exist — backfill cue for ombudsman or hygiene-tick (ADR-147 §D5).
-
-## Ombudsman wake — RETIRED (ADR-214)
-
-> **2026-06-13:** Ombudsman role retired per ADR-214. Lead absorbs complaint adjudication via Honker events. The sentinel + cron mechanism below is retained for historical trace only.
-
-Per [ADR-147](adr/147-ombudsman-and-release-notes.md) §D2, the ombudsman role wakes on **events**, not whip cadence. Two writers + one reader define the protocol:
-
-- **Sentinel file** — `.atmux/state/ombudsman-pending.json`: an array of complaint IDs (`c-xxxxxxxx`) awaiting first adjudication.
-- **Write-through**: `atmux complaints file` appends the new `c-id` to the sentinel (same transaction as the DB insert, ADR-091 pre-flag #1 pattern). `atmux complaints resolve` removes the `c-id` (whether ombudsman wrote the resolution or operator manual-resolved).
-- **Cron tick**: `atmux ombudsman tick --team <team>` runs every `team.ombudsman.tickIntervalMins` (default 15min). Fast-path no-op when sentinel is empty; wakes the ombudsman pane via `safeSendKeysWithVerify` ([ADR-138](adr/138-verified-send-keys.md)) with `atmux ombudsman work` when non-empty.
-
-The sentinel + cron pair is chosen over pure socket-pubsub (ADR-032) because medic + whip-velocity-gate can file 5–10 complaints in a burst; batching the wake gives ombudsman the chance to drain in one session rather than wake-process-sleep × N. This matches the `groom-pending-judgment.json` pattern from the supergroomer parking-lot task (ADR-147 §D2 tradeoff section).
-
-## Module map (selected — health + observability)
-
-> **ADR-258 §D5 obsoleted modules** (Phase-4 deletion candidates, still live for `tmux-claude` fallback): `boot-claude.ts`, `safe-send.ts`, `known-modals.ts`, `modal-cycling-detector.ts`, `paste-submit.ts`, `pane-readiness.ts`, `queued-text-resubmit.ts`. **Retained, re-pointed** (carry forward to new backends): `budget-probe.ts` (rate-limit sidecar), `refusal-classifier.ts` / `refusal-threshold.ts` (NL-output property), `pane-state.ts` / `cage-state.ts` (until `status()` parity).
->
-> **ADR-262 new modules** (not yet implemented): `plugins/atmux-opencode/` (TS plugin bridge), `rust/atmuxd/` (Rust daemon).
-
-| Module | Purpose | Authoring ADR |
-|---|---|---|
-| `src/core/cage-state.ts` | Unified 4-state taxonomy (down/bootstrapping/active/wedged) for claude member panes. Replaces the `pane_current_command` proxy that mis-classified welcome-screen TUIs. | t-74273200 |
-| `src/core/cadence-classifier.ts` (T5) | Pure commit-cadence classifier consumed by status + future orchd event consumers (EPIC e-a946af69). | [ADR-148](adr/148-commit-cadence-truth-signal.md) |
-| `src/core/refusal-classifier.ts` | Pure pane-output refusal classifier. Four classes (soft / hard / role / meta) with regex primary + heuristic secondary. Sibling-not-extension of `safe-send.ts` (input-side refusal); ADR-139 §Grep findings audit covers the boundary. | [ADR-139](adr/139-refusal-pattern-auto-rotate.md) §D1 |
-| `src/core/refusal-threshold.ts` | Pure threshold gate over a refusal-event ledger. Decides whether accumulated detections cross the rotate threshold per ADR-139 §D3 (soft 3/30min, hard 2/10min, role 1/instant; meta never rotates). | [ADR-139](adr/139-refusal-pattern-auto-rotate.md) §D3 |
-| `src/core/fallback-brief.ts` | Pure-of-direct-IO Tier 2 fallback brief composer. Reads in-progress Task body + `templates/briefs/<role>.md` + `git log --oneline -10` + lead-outbox tail; writes assembled brief with Tier-2 guardrails preface to `<atmuxDir>/state/fallback-brief-<member>.md` for the cage spawn to pipe into `cursor-agent --print`. | [ADR-050](adr/050-fallback-chain.md) §Brief generator |
-| `src/core/lead-marker.ts` | I-1 (`lead-session-start.txt`) + I-2 (`lead-window-name.txt`) marker R/W. The rotation-gate canonical source per ADR-077 §lead-uptime-measurement — NEVER read `ps -o etime` for rotation decisions. | [ADR-077](adr/077-superdoctor-cockpit-role.md) §lead-uptime-measurement |
-| `src/core/branch-merge-state.ts` | Pure state machine for ADR-091 (epic-team) + ADR-134 (intra-team) auto-merger. 10-state lifecycle + pure transition function. | [ADR-091](adr/091-kanban-driven-auto-merge.md), [ADR-134](adr/134-in-team-auto-merger.md) |
-| `src/core/repositories/merger-state-repo.ts` | Typed CRUD over `merger_state` table; transactions wrap `BEGIN IMMEDIATE` to serialize concurrent ticks. | [ADR-134](adr/134-in-team-auto-merger.md) §state-machine |
-| `src/abstractions/issue-tracker.ts` | Types-only vendor-agnostic `IssueTracker` seam (`NormalizedIssue` / `IssueTrackerPage`) for **issue-sync** — external issue-tracker ingestion (GitHub / Azure DevOps) polled into the complaints substrate; config at `team.json::issueSync`. Phase 0: types + schema + [RUNBOOK-issue-sync](RUNBOOK-issue-sync.md) only; adapters + `atmux issues sync` land Phase 1. | [ADR-261](adr/261-issue-sync-external-tracker-ingestion.md) |
+Unknown verbs throw `UsageError` → exit 64 (EX_USAGE). The git task source (`issues sync`) is planned for ADR-263 P3 and is not in the dispatcher yet.
 
 ## Why `tmux send-keys` and not SDK API calls?
 
-> **2026-06-13:** This section documents the pre-ADR-258 rationale. Under ADR-258 (AgentBackend adapter model) and ADR-262 (opencode-plugin+daemon), the tmux control plane is being superseded by programmatic backends. The reasoning below remains valid for the `tmux-claude` fallback backend but does not apply to the `claude-agent-sdk` or `opencode-server` paths.
-
-- **Works with any TUI** — we don't depend on a model-provider SDK. Cursor's CLI, Kimi's CLI, OpenCode, Claude Code all just get shell input.
+- **Works with any TUI** — no dependence on a model-provider SDK. Whatever interactive coding-agent TUI the operator runs just gets shell input.
 - **Zero drift between human + agent view** — what atmux sees is exactly what the human sees in `tmux attach`.
 - **No auth plumbing** — whatever auth the TUI itself uses, atmux inherits for free.
-- **Robust to provider outages** — if one TUI's API is down, other TUIs keep working.
+- **Robust to provider outages** — atmux never holds an API session that can expire mid-run.
 
-## Why bash + jq? (legacy — Bun/TypeScript since 2026-05)
+## Non-goals (ADR-263 §2.3)
 
-> **2026-06-13:** This section documents the original bash-based atmux. The project was ported to Bun/TypeScript in 2026-05 (see `package.json`, `src/cli.ts`). The rationale below is retained for historical trace.
-
-## Non-goals
-
-> **2026-06-13:** The "no server, no accounts" non-goal is being relaxed by ADR-258 (AgentBackend programmatic backends) and ADR-262 (opencode-plugin+daemon with HTTP API). OpenCode `serve` mode IS a local server. The daemon's HTTP API IS a local server. The non-goal below documents the original scope.
-
-- Hosted service. atmux is a local CLI. No server, no accounts.
-- Sandbox. If you let Claude run `rm -rf` in a member's pane, it'll run. Use `--permission-mode` / the TUI's own guardrails.
-- Cross-machine orchestration. Everything is a single tmux server = single host.
+- **Fleet coordination.** No orchd, lanes, epics, stories, reviewers, committers, auto-merge, auto-spawn, rotation, watchdogs, budget-pause, cockpit.
+- **Vendor-agnostic backends / daemon.** No `AgentBackend` abstraction, no OpenCode plugin, no Rust daemon. One path: tmux + Claude (ADR-263 §D5, supersedes ADR-258/262).
+- **Cross-host coordination.** Single tmux server = single host.
+- **Hosted service / web UI / accounts.** Local CLI only.
+- **Upstream write-back to the issue tracker.** The planned git source is read-only ingestion.
