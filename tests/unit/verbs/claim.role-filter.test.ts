@@ -15,10 +15,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadInbox } from "../../../src/core/inbox.ts";
 import { addTask, loadKanban } from "../../../src/core/kanban.ts";
 import { UsageError } from "../../../src/errors.ts";
-import type { InboxEntry } from "../../../src/schema/inbox.ts";
 import { claim, parseClaimDoneArgs } from "../../../src/verbs/claim.ts";
 
 let teamDir: string;
@@ -110,8 +108,8 @@ describe("claim --next --role — integration", () => {
     // BE ticket untouched.
     expect(k.tasks.find((t) => t.id === beId)?.owner).toBeNull();
     expect(k.tasks.find((t) => t.id === beId)?.status).toBe("todo");
-    const inbox = await loadInbox(atmuxDir, "worker");
-    expect(inbox.inProgress.map((t: InboxEntry) => t.id)).toContain(feId);
+    // NOTE: no inbox-mirror assertion — ADR-263 cut fleet coordination, so
+    // `claim --next` is plain task CRUD with no inbox/member-status coupling.
   });
 
   test("--role be claims only the BE-lane ticket", async () => {

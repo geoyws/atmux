@@ -9,8 +9,6 @@
 // "tests/unit/schema/team.test.ts (extend)".
 
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { ZodError } from "zod";
 import {
   DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG,
@@ -387,10 +385,7 @@ describe("Team schema — driverSession (ADR-044 + ADR-064 §5)", () => {
     }
     expect(caught).toBeInstanceOf(ZodError);
     // Pinpoint the failing path so a future loosening can't silently pass.
-    expect((caught as ZodError).issues[0]?.path).toEqual([
-      "driverSession",
-      "model",
-    ]);
+    expect((caught as ZodError).issues[0]?.path).toEqual(["driverSession", "model"]);
   });
 
   test("Team.parse with driverSession=null is accepted (explicitly disabled)", () => {
@@ -1312,69 +1307,6 @@ describe("Team superRefine — ADR-090 cross-field gates", () => {
   });
 });
 
-// ---------- templates/epic-rosters/default.json — ADR-090 §Roster preset ----------
-
-describe("templates/epic-rosters/default.json — ADR-090 §Roster preset", () => {
-  /** Resolve the on-disk roster relative to repo root.
-   *  Test file: tests/unit/schema/team.test.ts → ../../.. → repo root. */
-  const rosterPath = resolve(
-    import.meta.dir,
-    "..",
-    "..",
-    "..",
-    "templates",
-    "epic-rosters",
-    "default.json",
-  );
-
-  test("file parses as JSON without error", () => {
-    const raw = readFileSync(rosterPath, "utf-8");
-    expect(() => JSON.parse(raw)).not.toThrow();
-  });
-
-  test("ADR-090 §Roster preset: seven members in the required role+lane shape", () => {
-    const raw = readFileSync(rosterPath, "utf-8");
-    const parsed = JSON.parse(raw) as { members?: unknown };
-    expect(Array.isArray(parsed.members)).toBe(true);
-    // Each member entry passes TeamMember validation.
-    const members = (parsed.members as unknown[]).map((m) => TeamMember.parse(m));
-    // ADR-090: lead + planner + reviewer + 2 fe + 2 be.
-    expect(members).toHaveLength(7);
-    const roles = members.map((m) => m.role);
-    expect(roles).toEqual(["lead", "planner", "reviewer", "member", "member", "member", "member"]);
-    // fe / be lanes split 2+2.
-    const lanes = members.map((m) => m.lane);
-    expect(lanes).toEqual([undefined, undefined, undefined, "fe", "fe", "be", "be"]);
-    // Every member ships with tui=claude (Opus-all-the-way per CLAUDE.md
-    // §Model Selection).
-    for (const m of members) {
-      expect(m.tui).toBe("claude");
-    }
-  });
-
-  test("roster member shape composes into a synthesised Team that passes ADR-090 cross-field gates", () => {
-    // Simulates spawn-epic's synth pass: roster.members[] + an epicTeam
-    // block + worktreeIsolation:false → loadTeam must accept.
-    const raw = readFileSync(rosterPath, "utf-8");
-    const parsed = JSON.parse(raw) as { members: unknown[] };
-    const team = Team.parse({
-      name: "checkout-flow",
-      members: parsed.members,
-      worktreeIsolation: false,
-      worktreeInitSubmodules: true,
-      epicTeam: {
-        parent: "sopx-geoyws",
-        parentEpicKanbanId: "e-1a2b3c4d",
-        parentBase: "sopx-geoyws",
-      },
-    });
-    expect(team.members).toHaveLength(7);
-    expect(team.epicTeam?.parent).toBe("sopx-geoyws");
-    expect(team.worktreeIsolation).toBe(false);
-    expect(team.worktreeInitSubmodules).toBe(true);
-  });
-});
-
 // ---------- ADR-157 §D6: TeamCrons.laneTickMins ----------
 
 describe("TeamCrons.laneTickMins (ADR-157 §D6)", () => {
@@ -1639,9 +1571,7 @@ describe("TeamAutoSpawn — block shape", () => {
   });
 
   test("strict mode rejects unknown top-level keys", () => {
-    expect(() =>
-      TeamAutoSpawn.parse({ defualts: [] }),
-    ).toThrow();
+    expect(() => TeamAutoSpawn.parse({ defualts: [] })).toThrow();
   });
 
   test("invalid entry inside defaults[] rejects the whole block", () => {
@@ -1760,9 +1690,7 @@ describe("TeamLeadStallWatchdog schema (ADR-247 §D6)", () => {
   });
 
   test("strict — rejects an unknown key (drift detection per ADR-054 §D3)", () => {
-    expect(() =>
-      TeamLeadStallWatchdog.parse({ idleTresholdMin: 5 }),
-    ).toThrow(ZodError);
+    expect(() => TeamLeadStallWatchdog.parse({ idleTresholdMin: 5 })).toThrow(ZodError);
   });
 
   test("Team.parse threads leadStallWatchdog through + back-compat when absent", () => {
@@ -1910,17 +1838,15 @@ describe("TeamIssueSync schema (ADR-261 §D10)", () => {
   });
 
   test("azure-devops arm requires org + project coordinates", () => {
-    expect(() =>
-      TeamIssueSync.parse({ trackers: [{ id: "azure-devops", org: "ifca" }] }),
-    ).toThrow(ZodError);
+    expect(() => TeamIssueSync.parse({ trackers: [{ id: "azure-devops", org: "ifca" }] })).toThrow(
+      ZodError,
+    );
   });
 
   test("labelSeverityMap values constrained to the extractSeverity vocabulary", () => {
     expect(() =>
       TeamIssueSync.parse({
-        trackers: [
-          { id: "github", repos: ["geoyws/atmux"], labelSeverityMap: { p0: "high" } },
-        ],
+        trackers: [{ id: "github", repos: ["geoyws/atmux"], labelSeverityMap: { p0: "high" } }],
       }),
     ).toThrow(ZodError);
   });

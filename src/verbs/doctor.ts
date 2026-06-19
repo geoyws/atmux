@@ -25,12 +25,7 @@
 import { join } from "node:path";
 import { removeFile, statOrNull, writeText } from "../abstractions/fs.ts";
 import { spawn as defaultSpawn, type SpawnResult } from "../abstractions/spawn.ts";
-import {
-  getAtmuxDir,
-  type ResolveDirOpts,
-  teamJsonPath,
-  tryLoadTeam,
-} from "../core/common.ts";
+import { getAtmuxDir, type ResolveDirOpts, teamJsonPath, tryLoadTeam } from "../core/common.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { resolveTmuxBin } from "../core/resolve-tmux-bin.ts";
 import { UsageError } from "../errors.ts";
@@ -490,6 +485,18 @@ export interface ParsedTmuxVersion {
   suffix: string;
 }
 
+/** Pre-parsed form of {@link TMUX_MIN_VERSION} ("3.2"). Hardcoded so the
+ *  version probe never carries a runtime "constant unparseable" guard —
+ *  the constants are compile-time literals. The colocated unit test
+ *  `parseTmuxVersion('tmux ' + TMUX_MIN_VERSION)` deep-equals this value,
+ *  which is the maintainer-safety net (a malformed string constant fails
+ *  the test, not a never-reached runtime branch). */
+export const TMUX_MIN_PARSED: ParsedTmuxVersion = { major: 3, minor: 2, suffix: "" };
+
+/** Pre-parsed form of {@link TMUX_TESTED_VERSION} ("3.6a"). See
+ *  {@link TMUX_MIN_PARSED} for the test-time parity guarantee. */
+export const TMUX_TESTED_PARSED: ParsedTmuxVersion = { major: 3, minor: 6, suffix: "a" };
+
 /**
  * Parse `tmux -V` stdout into a structured version. tmux prints lines
  * like `tmux 3.6a` (release) or `tmux next-3.7` (pre-release); also
@@ -540,26 +547,18 @@ export interface CheckTmuxVersionOpts {
  * Unparseable output (`tmux next-3.7`, `tmux master`, missing tmux)
  * collapses to a yellow row so the operator still sees something
  * instead of a silent skip.
+ *
+ * The bounds are the pre-parsed compile-time literals
+ * {@link TMUX_MIN_PARSED} / {@link TMUX_TESTED_PARSED} — there is no
+ * runtime "constant unparseable" branch; constant integrity is enforced
+ * at test time (see the parity test in tests/unit/verbs/doctor.test.ts).
  */
 export async function checkTmuxVersionMismatch(
   opts: CheckTmuxVersionOpts = {},
 ): Promise<DoctorRow[]> {
   const tmux = opts.tmux ?? defaultTmuxSpawn;
-  const min = parseTmuxVersion(`tmux ${TMUX_MIN_VERSION}`);
-  const tested = parseTmuxVersion(`tmux ${TMUX_TESTED_VERSION}`);
-  if (min === null || tested === null) {
-    // Defensive — the embedded constants must parse. If a maintainer
-    // sets a malformed constant the probe surfaces it on every doctor
-    // run rather than failing silently.
-    return [
-      {
-        status: "yellow",
-        label: "tmux-version-mismatch",
-        detail: "internal — TMUX_MIN_VERSION / TMUX_TESTED_VERSION constant unparseable",
-        hint: "report a bug; ADR-162 §Decision-anchor #5",
-      },
-    ];
-  }
+  const min = TMUX_MIN_PARSED;
+  const tested = TMUX_TESTED_PARSED;
   let result: SpawnResult;
   try {
     result = await tmux(["-V"]);

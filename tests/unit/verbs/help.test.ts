@@ -24,7 +24,9 @@ describe("verbs/help", () => {
     // Defence-in-depth alongside the byte-exact match: spot-check the
     // top + bottom of the block so a future refactor that splits the
     // string into pieces can't accidentally drop the header / footer.
-    expect(ATMUX_USAGE.startsWith("atmux — agent teams multiplexer.\n")).toBe(true);
+    expect(ATMUX_USAGE.startsWith("atmux — tmux agent harness + task feed (ADR-263).\n")).toBe(
+      true,
+    );
     expect(ATMUX_USAGE).toContain("Docs:  https://github.com/geoyws/atmux\n");
   });
 

@@ -1,17 +1,22 @@
-// Unit tests for src/verbs/init.ts (Phase 2 lifecycle MVP — bash port).
+// Unit tests for src/verbs/init.ts (lean lifecycle — bash port,
+// slimmed per ADR-263 §D4 fleet-code cut).
 //
 // Strategy: spin per-test tmpdir as `cwd`, point `templatesDir` at the
 // real worktree templates dir, exercise the verb's observable side-
-// effects (`.atmux/` scaffold, team.json contents, kanban + driver-inbox
-// + per-member inbox seeds), capture the injected logger + stdout sink.
+// effects (`.atmux/` scaffold, team.json contents, kanban seed),
+// capture the injected logger + stdout sink.
+//
+// Per ADR-263 §D4 the fleet messaging layer is cut: init no longer
+// scaffolds an `inboxes/` dir, no longer seeds `driver-inbox.md`, and no
+// longer seeds per-member inbox stubs. kanban.json is kept (ADR-263 §D6)
+// but seeds `tasks` only (`epics`/`stories` arrays are cut per §D4).
 //
 // 100% narrowed coverage (ADR-009 §2): every branch of `parseInitArgs`,
 // every branch of `init` body — happy path with --name, default-name
 // (basename of cwd), --force overwrite, refuse-overwrite, --wizard
-// refuse, idempotent re-seeding (kanban / driver-inbox / inbox files
-// preserved on --force), missing-name-value, unknown arg, --force when
-// no team.json yet, the --force backup best-effort swallow path
-// (read-failure on the source).
+// refuse, idempotent re-seeding (kanban preserved on --force),
+// missing-name-value, unknown arg, --force when no team.json yet, the
+// --force backup best-effort swallow path (read-failure on the source).
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -181,10 +186,13 @@ describe("init — template path (bash lib/init.sh:87-107 parity)", () => {
 
     const dir = join(env.cwd, ".atmux");
     expect((await stat(dir)).isDirectory()).toBe(true);
-    expect((await stat(join(dir, "inboxes"))).isDirectory()).toBe(true);
+    // Per ADR-263 §D4 the lean harness scaffolds logs / state / archive
+    // only — the fleet `inboxes/` messaging dir is cut.
     expect((await stat(join(dir, "logs"))).isDirectory()).toBe(true);
     expect((await stat(join(dir, "state"))).isDirectory()).toBe(true);
     expect((await stat(join(dir, "archive"))).isDirectory()).toBe(true);
+    // The `inboxes/` dir is NOT created (ADR-263 §D4 fleet-code cut).
+    await expect(stat(join(dir, "inboxes"))).rejects.toThrow();
 
     const tj = JSON.parse(await readFile(join(dir, "team.json"), "utf8")) as {
       name: string;
@@ -270,22 +278,18 @@ describe("init — template path (bash lib/init.sh:87-107 parity)", () => {
     expect(planner?.claudeAccount).toBeUndefined();
   });
 
-  test("seeds kanban.json + driver-inbox.md + per-member inbox files (byte-exact)", async () => {
+  test("seeds kanban.json (tasks-only) and seeds NO fleet inbox files", async () => {
     await runInit(["--name", "h"]);
     const dir = join(env.cwd, ".atmux");
-    // Bash lib/init.sh:50 emits the literal compact form via `echo`.
-    expect(await readFile(join(dir, "kanban.json"), "utf8")).toBe(
-      '{"tasks":[],"epics":[],"stories":[]}\n',
-    );
-    // Bash lib/init.sh:51 — `: > "$di"` produces a zero-byte file.
-    expect(await readFile(join(dir, "driver-inbox.md"), "utf8")).toBe("");
-    // Bash lib/init.sh:59 — every member.name gets a stub inbox. Roster
-    // is the ADR-239 §A2 strict 5-name set {lead, planner, docs,
-    // reviewer, gitter}; assert every one of them gets a stub.
+    // Per ADR-263 §D6 kanban is kept but §D4 cut the fleet `epics` /
+    // `stories` arrays — init seeds a `tasks`-only feed (src/verbs/
+    // init.ts:318, byte-exact compact form).
+    expect(await readFile(join(dir, "kanban.json"), "utf8")).toBe('{"tasks":[]}\n');
+    // Per ADR-263 §D4 the fleet messaging layer is cut: init seeds
+    // NEITHER driver-inbox.md NOR per-member inbox stubs.
+    await expect(stat(join(dir, "driver-inbox.md"))).rejects.toThrow();
     for (const m of ["lead", "planner", "docs", "reviewer", "gitter"]) {
-      expect(await readFile(join(dir, "inboxes", `${m}.json`), "utf8")).toBe(
-        '{"pending":[],"inProgress":[],"done":[]}\n',
-      );
+      await expect(stat(join(dir, "inboxes", `${m}.json`))).rejects.toThrow();
     }
   });
 
@@ -313,18 +317,17 @@ describe("init — template path (bash lib/init.sh:87-107 parity)", () => {
     expect(env.logs.length).toBe(1);
     expect(env.logs[0]).toMatchObject({ kind: "ok" });
     expect(env.logs[0]?.msg).toBe(`initialized atmux team 'hello' at ${join(env.cwd, ".atmux")}`);
-    // stdout matches bash :80-84 + the ADR-217 §D5 skills-install render
-    // line that precedes it. Test harness passes `env: {}` so the helper
-    // short-circuits with `{kind: "skipped", reason: "$HOME unset"}`.
+    // Per ADR-263 §D4 the bundled /atmux: skills-plugin install step is
+    // cut (no preceding "skills plugin install" render line), and the
+    // fleet `tell-lead` Next step is gone — the lean "Next:" block is
+    // exactly the leading blank line + two steps (src/verbs/init.ts:340-343).
     const stdout = env.stdoutBuf.join("");
     expect(stdout).toBe(
       [
-        "· skills plugin install skipped ($HOME unset)\n",
         "\n",
         "Next:\n",
         `  1. review ${join(env.cwd, ".atmux", "team.json")}\n`,
         "  2. atmux start\n",
-        "  3. atmux tell-lead 'build feature X'\n",
       ].join(""),
     );
   });
@@ -401,22 +404,18 @@ describe("init — overwrite gating (bash lib/init.sh:30-32, :40-42)", () => {
     expect(tj2.name).toBe("b");
   });
 
-  test("--force preserves existing kanban.json + per-member inbox content", async () => {
+  test("--force preserves existing kanban.json content (idempotent re-seed)", async () => {
     await runInit(["--name", "a"]);
     const dir = join(env.cwd, ".atmux");
     const k = join(dir, "kanban.json");
-    const drv = join(dir, "driver-inbox.md");
-    const ib = join(dir, "inboxes", "lead.json");
-    // Mutate kanban + driver-inbox + lead's inbox to verify they survive
-    // a re-init (bash idempotent guard: `[[ -f ... ]] || ...`).
-    await writeFile(k, '{"tasks":[{"id":"t-1"}],"epics":[],"stories":[]}\n');
-    await writeFile(drv, "carry-me-over\n");
-    await writeFile(ib, '{"pending":[{"id":"x"}],"inProgress":[],"done":[]}\n');
+    // Mutate kanban to verify it survives a re-init (idempotent guard at
+    // src/verbs/init.ts:317 — only seeds when absent). Per ADR-263 §D4
+    // the driver-inbox.md / per-member inbox preservation cases are gone:
+    // init no longer seeds OR touches those files.
+    await writeFile(k, '{"tasks":[{"id":"t-1"}]}\n');
 
     await runInit(["--name", "b", "--force"]);
-    expect(await readFile(k, "utf8")).toBe('{"tasks":[{"id":"t-1"}],"epics":[],"stories":[]}\n');
-    expect(await readFile(drv, "utf8")).toBe("carry-me-over\n");
-    expect(await readFile(ib, "utf8")).toBe('{"pending":[{"id":"x"}],"inProgress":[],"done":[]}\n');
+    expect(await readFile(k, "utf8")).toBe('{"tasks":[{"id":"t-1"}]}\n');
   });
 });
 
@@ -534,7 +533,8 @@ describe("init — default stdout sink (no opts.stdout)", () => {
     expect(captured).toContain("Next:");
     expect(captured).toContain("1. review");
     expect(captured).toContain("2. atmux start");
-    expect(captured).toContain("3. atmux tell-lead");
+    // Per ADR-263 §D4 the fleet `3. atmux tell-lead` Next step is cut.
+    expect(captured).not.toContain("tell-lead");
   });
 });
 

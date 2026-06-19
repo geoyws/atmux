@@ -11,10 +11,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadInbox } from "../../../src/core/inbox.ts";
 import { addTask, loadKanban, moveTask, selectNextClaimable } from "../../../src/core/kanban.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
-import type { InboxEntry } from "../../../src/schema/inbox.ts";
 import type { KanbanTask } from "../../../src/schema/kanban.ts";
 import { claim, parseClaimDoneArgs } from "../../../src/verbs/claim.ts";
 
@@ -291,7 +289,11 @@ describe("selectNextClaimable", () => {
 // ---------- claim --next verb integration ----------
 
 describe("claim --next verb — integration", () => {
-  test("AC1: own-lane match → kanban + inbox flipped", async () => {
+  // ADR-263: claim --next is feed-only — it flips the kanban task to
+  // in-progress + stamps the owner, and does NOT mirror into a per-member
+  // inbox (the fleet-coordination inbox mirror was cut). Assert the real
+  // kanban transition only.
+  test("AC1: own-lane match → kanban task flipped to in-progress + owner set", async () => {
     await seedTeam({ feLane: true });
     const id = await addTask(atmuxDir, { subject: "fe job", lane: "fe", priority: 1 });
     const { out } = await captureStdout(() =>
@@ -302,8 +304,6 @@ describe("claim --next verb — integration", () => {
     const claimed = k.tasks.find((t) => t.id === id);
     expect(claimed?.owner).toBe("fe-worker");
     expect(claimed?.status).toBe("in-progress");
-    const inbox = await loadInbox(atmuxDir, "fe-worker");
-    expect(inbox.inProgress.map((t: InboxEntry) => t.id)).toContain(id);
   });
 
   test("AC2: deps-blocked task is skipped, eligible sibling is picked", async () => {

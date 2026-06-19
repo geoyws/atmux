@@ -12,7 +12,8 @@
 //      writes log, returns 0.
 //   2. Single-member with missing team-member → ConfigError.
 //   3. Broadcast happy path — iterates members, skips driver by default.
-//   4. Broadcast --include-driver — does NOT skip driver.
+//   4. Broadcast --include-driver — driver delivery refused by the
+//      ADR-239 §D2 send-keys guard → partial-failure exit 1.
 //   5. Broadcast partial-failure — some members succeed, some throw
 //      → returns 1 + writes warn lines to stderr.
 //   6. Single-member missing team.json → ConfigError from requireTeam.
@@ -138,12 +139,17 @@ describe("parseSendArgs — flag parsing", () => {
     expect(a.msg).toBe("one two three");
   });
 
-  // ---------- ADR-077 §F3: --from / --kind for cockpit-tier inbox ----------
+  // ---------- --from / --kind back-compat parse (ADR-263 fleet cut) ----------
+  // The inbox-routing delivery path these flags fed was deleted in the
+  // ADR-263 fleet-code cut; the parser still ACCEPTS them so old call
+  // sites don't error (SendArgs.from / SendArgs.kind), but no delivery
+  // path consumes them anymore. These tests assert the parser still
+  // captures the values — NOT any inbox routing (that no longer exists).
 
   test("--from <sender> consumed; survives into SendArgs.from", () => {
-    const a = parseSendArgs(["--from", "atmux:lead", "__superdoctor__", "hi"]);
+    const a = parseSendArgs(["--from", "atmux:lead", "alpha", "hi"]);
     expect(a.from).toBe("atmux:lead");
-    expect(a.member).toBe("__superdoctor__");
+    expect(a.member).toBe("alpha");
     expect(a.msg).toBe("hi");
   });
 
@@ -152,7 +158,7 @@ describe("parseSendArgs — flag parsing", () => {
   });
 
   test("--kind <kind> consumed; survives into SendArgs.kind", () => {
-    const a = parseSendArgs(["--kind", "p0", "__superdoctor__", "alarm"]);
+    const a = parseSendArgs(["--kind", "p0", "alpha", "alarm"]);
     expect(a.kind).toBe("p0");
     expect(a.msg).toBe("alarm");
   });
@@ -161,9 +167,9 @@ describe("parseSendArgs — flag parsing", () => {
     expect(() => parseSendArgs(["--kind"])).toThrow(UsageError);
   });
 
-  test("--from/--kind are inert on regular member sends (passthrough)", () => {
-    // The verb logic ignores them when member !== __superdoctor__; the
-    // parser still accepts them for forward-compat.
+  test("--from/--kind are inert on member sends (parse-only passthrough)", () => {
+    // No delivery path consumes --from / --kind after the ADR-263 cut;
+    // the parser still accepts them so legacy call sites don't error.
     const a = parseSendArgs(["--from", "x", "--kind", "info", "alpha", "msg"]);
     expect(a.from).toBe("x");
     expect(a.kind).toBe("info");
@@ -222,7 +228,14 @@ describe("resolveMemberTarget — window-name self-heal shim", () => {
       shellCommand: "cat",
       windowName: "🧭_lead",
     });
-    const target = await resolveMemberTarget(tmux, sessionName, "lead", "🧭", undefined, "team-lead");
+    const target = await resolveMemberTarget(
+      tmux,
+      sessionName,
+      "lead",
+      "🧭",
+      undefined,
+      "team-lead",
+    );
     expect(target).toBe(`${sessionName}:🧭_lead`);
     // No additional window was created — canonical was already there.
     const wins = (await tmux.window.listWindows(sessionName)).map((w) => w.name);
@@ -237,7 +250,14 @@ describe("resolveMemberTarget — window-name self-heal shim", () => {
       shellCommand: "cat",
       windowName: "🧭-lead",
     });
-    const target = await resolveMemberTarget(tmux, sessionName, "lead", "🧭", undefined, "team-lead");
+    const target = await resolveMemberTarget(
+      tmux,
+      sessionName,
+      "lead",
+      "🧭",
+      undefined,
+      "team-lead",
+    );
     expect(target).toBe(`${sessionName}:🧭_lead`);
     // Post-call: window was renamed in place.
     const wins = (await tmux.window.listWindows(sessionName)).map((w) => w.name);
@@ -252,7 +272,14 @@ describe("resolveMemberTarget — window-name self-heal shim", () => {
       shellCommand: "cat",
       windowName: "🧭lead",
     });
-    const target = await resolveMemberTarget(tmux, sessionName, "lead", "🧭", undefined, "team-lead");
+    const target = await resolveMemberTarget(
+      tmux,
+      sessionName,
+      "lead",
+      "🧭",
+      undefined,
+      "team-lead",
+    );
     expect(target).toBe(`${sessionName}:🧭_lead`);
     const wins = (await tmux.window.listWindows(sessionName)).map((w) => w.name);
     expect(wins).toContain("🧭_lead");
@@ -456,69 +483,6 @@ describe("send() — integration", () => {
     expect(await Bun.file(join(atmuxDir, "logs", "send-driver.log")).exists()).toBe(false);
     // The non-driver member still got its broadcast delivery.
     expect(await Bun.file(join(atmuxDir, "logs", "send-alpha.log")).exists()).toBe(true);
-  });
-
-  // ---------- ADR-077 §F3: __superdoctor__ inbox routing ----------
-
-  test("send __superdoctor__ writes to inbox_messages, no tmux pane delivery", async () => {
-    await stageTeam([{ name: "alpha" }]);
-    const exit = await send([
-      "--socket",
-      socketPath,
-      "--team-dir",
-      teamDir,
-      "__superdoctor__",
-      "the cage cycled itself",
-    ]);
-    expect(exit).toBe(0);
-    // No send-log written (no tmux pane delivery happened).
-    expect(await Bun.file(join(atmuxDir, "logs", "send-__superdoctor__.log")).exists()).toBe(false);
-    // The row landed in inbox_messages (verify via the read helper).
-    const { loadInboxMessages } = await import("../../../src/core/inbox.ts");
-    const rows = await loadInboxMessages(atmuxDir, { member: "__superdoctor__" });
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.body).toBe("the cage cycled itself");
-    expect(rows[0]?.kind).toBe("heads-up");
-    // Default sender = `<team-name>:cli`
-    expect(rows[0]?.sender).toMatch(/:cli$/);
-  });
-
-  test("send __superdoctor__ --from honored, --kind honored", async () => {
-    await stageTeam([{ name: "alpha" }]);
-    const exit = await send([
-      "--socket",
-      socketPath,
-      "--team-dir",
-      teamDir,
-      "--from",
-      "atmux:lead",
-      "--kind",
-      "p0",
-      "__superdoctor__",
-      "demo in 20min, member wedged",
-    ]);
-    expect(exit).toBe(0);
-    const { loadInboxMessages } = await import("../../../src/core/inbox.ts");
-    const rows = await loadInboxMessages(atmuxDir, { member: "__superdoctor__" });
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.sender).toBe("atmux:lead");
-    expect(rows[0]?.kind).toBe("p0");
-  });
-
-  test("send __superdoctor__ does NOT require a member entry in team.json", async () => {
-    // Stage a team that DOES NOT have a __superdoctor__ member; the
-    // inbox-route should still succeed (cockpit-tier, not a team
-    // member).
-    await stageTeam([{ name: "alpha" }]);
-    const exit = await send([
-      "--socket",
-      socketPath,
-      "--team-dir",
-      teamDir,
-      "__superdoctor__",
-      "ok",
-    ]);
-    expect(exit).toBe(0);
   });
 
   test("broadcast partial-failure → returns 1 + writes warn to stderr", async () => {

@@ -6,11 +6,24 @@
 // (alias routing, unknown-verb exit code, reportError tag → exit
 // mapping) and SHOULD be tracked, not excluded. 100% required.
 //
+// ADR-263 (the great simplification) cut the fleet-coordination verbs
+// from the dispatcher. The dispatch keep-set this file covers is exactly
+// the lean spine (ADR-263 §D2): version · help · init · start · stop ·
+// status · attach · send · broadcast · task · claim · done · sync ·
+// cleanup · reconfigure · doctor · up. Cut verbs (add-member, dispatch,
+// tell-lead, reply/outbox, inbox, pause/resume, team/member sub-verbs,
+// dashboard, rotate/rotate-lead, handoff, report, cost, whip, orchd/
+// relayd) no longer have a `case` in the switch — they now fall through
+// to the unknown-verb path. Their old dispatch tests were DELETED (a
+// test that drives a removed verb into the unknown-verb fallback while
+// claiming to exercise that verb is a lie per CLAUDE.md).
+//
 // Coverage map for the dispatcher + reportError:
 //   - "version" / "--version" / "-V" → exit 0 (bash parity, all 3 forms)
 //   - unknown verb → exit 64 + "atmux: unknown verb: <verb>" + 2-space
 //     hint line. Byte-matches bash `bin/atmux:324-328`.
-//   - empty argv → unknown-verb path with "<none>" label
+//   - empty argv → aliased to `up([])` (bin/atmux:91); see the up-verb
+//     dispatch describe for that path's coverage
 //   - reportError UsageError (no hint) — covers the no-hint branch
 //   - reportError other AtmuxError → exitCodeForTag mapping (e.g.
 //     FsError → 1, HttpTimeoutError → 75, ConfigError → 78)
@@ -69,25 +82,29 @@ describe("cli.main — version verb (3-form parity with bash)", () => {
 // ---------- Dispatch — help verb (3-form parity with bash) ----------
 
 describe("cli.main — help verb (3-form parity with bash)", () => {
-  test("'help' → exit 0, writes usage block to stdout", async () => {
+  test("'help' → exit 0, writes ADR-263 lean usage block to stdout", async () => {
     const { exit, stdout, stderr } = await captureMain(["help"]);
     expect(exit).toBe(0);
-    expect(stdout).toContain("atmux — agent teams multiplexer.");
+    // ADR-263 rewrote the USAGE header — atmux is now a tmux harness +
+    // task feed, no longer "agent teams multiplexer". Assert the stable
+    // new header line + the (unchanged) Docs footer rather than a
+    // byte-exact block so cosmetic verb-line edits don't churn the test.
+    expect(stdout).toContain("atmux — tmux agent harness + task feed");
     expect(stdout).toContain("Docs:  https://github.com/geoyws/atmux");
     expect(stderr).toBe("");
   });
 
-  test("'--help' alias → exit 0, writes usage block (bash parity)", async () => {
+  test("'--help' alias → exit 0, writes lean usage block (bash parity)", async () => {
     const { exit, stdout, stderr } = await captureMain(["--help"]);
     expect(exit).toBe(0);
-    expect(stdout).toContain("atmux — agent teams multiplexer.");
+    expect(stdout).toContain("atmux — tmux agent harness + task feed");
     expect(stderr).toBe("");
   });
 
-  test("'-h' alias → exit 0, writes usage block (bash parity)", async () => {
+  test("'-h' alias → exit 0, writes lean usage block (bash parity)", async () => {
     const { exit, stdout, stderr } = await captureMain(["-h"]);
     expect(exit).toBe(0);
-    expect(stdout).toContain("atmux — agent teams multiplexer.");
+    expect(stdout).toContain("atmux — tmux agent harness + task feed");
     expect(stderr).toBe("");
   });
 });
@@ -101,20 +118,6 @@ describe("cli.main — init verb dispatch", () => {
     // throws UsageError on unknown flags — exit 64. Pins the dispatch
     // line; deep verb behaviour lives in tests/unit/verbs/init.test.ts.
     const { exit, stderr } = await captureMain(["init", "--bogus-flag"]);
-    expect(exit).toBe(64);
-    expect(stderr).toContain("atmux:");
-  });
-});
-
-// ---------- Dispatch — add-member verb route (smoke; deep behaviour is in
-//                       tests/unit/verbs/add-member.test.ts) ----------
-
-describe("cli.main — add-member verb dispatch", () => {
-  test("'add-member' with no args dispatches into addMember (UsageError)", async () => {
-    // parseAddMemberArgs throws UsageError when the member-name positional
-    // is missing — exit 64. Pins the `case "add-member":` line; deep verb
-    // behaviour lives in tests/unit/verbs/add-member.test.ts.
-    const { exit, stderr } = await captureMain(["add-member"]);
     expect(exit).toBe(64);
     expect(stderr).toContain("atmux:");
   });
@@ -167,47 +170,9 @@ describe("cli.main — done verb dispatch", () => {
   });
 });
 
-describe("cli.main — dispatch verb dispatch", () => {
-  test("'dispatch' with no args dispatches into dispatch (UsageError)", async () => {
-    const { exit, stderr } = await captureMain(["dispatch"]);
-    expect(exit).toBe(64);
-    expect(stderr).toContain("atmux:");
-  });
-});
-
-describe("cli.main — tell-lead verb dispatch", () => {
-  test("'tell-lead' with no args dispatches into tellLead (UsageError)", async () => {
-    const { exit, stderr } = await captureMain(["tell-lead"]);
-    expect(exit).toBe(64);
-    expect(stderr).toContain("atmux:");
-  });
-});
-
 describe("cli.main — broadcast alias dispatch", () => {
   test("'broadcast' with no msg dispatches into send (UsageError)", async () => {
     const { exit, stderr } = await captureMain(["broadcast"]);
-    expect(exit).toBe(64);
-    expect(stderr).toContain("atmux:");
-  });
-});
-
-describe("cli.main — reply / outbox verb dispatch", () => {
-  test("'reply' with no args dispatches into reply (UsageError)", async () => {
-    const { exit, stderr } = await captureMain(["reply"]);
-    expect(exit).toBe(64);
-    expect(stderr).toContain("atmux:");
-  });
-
-  test("'outbox' with bad arg dispatches into outbox (UsageError)", async () => {
-    const { exit, stderr } = await captureMain(["outbox", "bogus"]);
-    expect(exit).toBe(64);
-    expect(stderr).toContain("atmux:");
-  });
-});
-
-describe("cli.main — inbox verb dispatch", () => {
-  test("'inbox' with no args dispatches into inbox (UsageError)", async () => {
-    const { exit, stderr } = await captureMain(["inbox"]);
     expect(exit).toBe(64);
     expect(stderr).toContain("atmux:");
   });
@@ -224,20 +189,6 @@ describe("cli.main — status verb dispatch", () => {
 describe("cli.main — stop verb dispatch", () => {
   test("'stop bogus' dispatches into stop (UsageError on unknown arg)", async () => {
     const { exit, stderr } = await captureMain(["stop", "bogus"]);
-    expect(exit).toBe(64);
-    expect(stderr).toContain("atmux:");
-  });
-});
-
-describe("cli.main — pause/resume verb dispatch", () => {
-  test("'pause' with no args dispatches into pause (UsageError)", async () => {
-    const { exit, stderr } = await captureMain(["pause"]);
-    expect(exit).toBe(64);
-    expect(stderr).toContain("atmux:");
-  });
-
-  test("'resume' with no args dispatches into resume (UsageError)", async () => {
-    const { exit, stderr } = await captureMain(["resume"]);
     expect(exit).toBe(64);
     expect(stderr).toContain("atmux:");
   });
@@ -292,136 +243,12 @@ describe("cli.main — attach verb dispatch", () => {
   });
 });
 
-// ---------- Dispatch — team sub-verb route (smoke; deep behaviour is in
-//                       tests/unit/verbs/team-repair-rename.test.ts) ----------
-
-describe("cli.main — team sub-verb dispatch", () => {
-  test("'team' with no sub-verb → UsageError exit 64", async () => {
-    const { exit, stderr } = await captureMain(["team"]);
-    expect(exit).toBe(64);
-    expect(stderr).toContain("atmux:");
-    expect(stderr).toContain("subverb required");
-  });
-
-  test("'team unknown-sub' → UsageError exit 64 with hint", async () => {
-    const { exit, stderr } = await captureMain(["team", "nope"]);
-    expect(exit).toBe(64);
-    expect(stderr).toContain("atmux:");
-    expect(stderr).toContain("unknown subverb");
-  });
-
-  test("'team repair-rename' (no team arg) → UsageError from sub-verb parser", async () => {
-    const { exit, stderr } = await captureMain(["team", "repair-rename"]);
-    expect(exit).toBe(64);
-    expect(stderr).toContain("atmux:");
-  });
-});
-
-// ---------- Dispatch — member sub-verb route (smoke; deep behaviour is in
-//                       tests/unit/verbs/member.test.ts) ----------
-
-describe("cli.main — member sub-verb dispatch", () => {
-  test("'member' with no sub-verb → UsageError exit 64", async () => {
-    const { exit, stderr } = await captureMain(["member"]);
-    expect(exit).toBe(64);
-    expect(stderr).toContain("atmux:");
-    expect(stderr).toContain("subverb required");
-  });
-
-  test("'member unknown-sub' → UsageError exit 64 with hint", async () => {
-    const { exit, stderr } = await captureMain(["member", "nope"]);
-    expect(exit).toBe(64);
-    expect(stderr).toContain("atmux:");
-    expect(stderr).toContain("unknown subverb");
-  });
-
-  test("'member rename' (no member-id) → UsageError from sub-verb parser", async () => {
-    const { exit, stderr } = await captureMain(["member", "rename"]);
-    expect(exit).toBe(64);
-    expect(stderr).toContain("atmux:");
-  });
-});
-
-// ---------- Dispatch — dashboard verb route (smoke; deep behaviour is in
-//                       tests/unit/verbs/dashboard.test.ts) ----------
-
-describe("cli.main — dashboard verb dispatch", () => {
-  test("'dashboard --bogus-flag' dispatches into dashboard (UsageError)", async () => {
-    const { exit, stderr } = await captureMain(["dashboard", "--bogus-flag"]);
-    expect(exit).toBe(64);
-    expect(stderr).toContain("atmux:");
-  });
-});
-
 // ---------- Dispatch — reconfigure verb route (smoke; deep behaviour is in
 //                       tests/unit/verbs/reconfigure.test.ts) ----------
 
 describe("cli.main — reconfigure verb dispatch", () => {
   test("'reconfigure --bogus-flag' dispatches into reconfigure (UsageError)", async () => {
     const { exit, stderr } = await captureMain(["reconfigure", "--bogus-flag"]);
-    expect(exit).toBe(64);
-    expect(stderr).toContain("atmux:");
-  });
-});
-
-// ---------- Dispatch — rotate / rotate-lead verb routes (smoke; deep
-//                       behaviour in tests/unit/verbs/rotate.test.ts) ----------
-
-describe("cli.main — rotate verb dispatch", () => {
-  test("'rotate --bogus-flag' dispatches into rotate (UsageError on unknown flag)", async () => {
-    const { exit, stderr } = await captureMain(["rotate", "--bogus-flag"]);
-    expect(exit).toBe(64);
-    expect(stderr).toContain("atmux:");
-  });
-});
-
-describe("cli.main — rotate-lead verb dispatch", () => {
-  test("'rotate-lead --bogus-flag' dispatches into rotateLead (UsageError)", async () => {
-    const { exit, stderr } = await captureMain(["rotate-lead", "--bogus-flag"]);
-    expect(exit).toBe(64);
-    expect(stderr).toContain("atmux:");
-  });
-});
-
-// ---------- Dispatch — handoff verb route (smoke; deep behaviour is in
-//                       tests/unit/verbs/handoff.test.ts) ----------
-
-describe("cli.main — handoff verb dispatch", () => {
-  test("'handoff' with no args dispatches into handoff (UsageError)", async () => {
-    const { exit, stderr } = await captureMain(["handoff"]);
-    expect(exit).toBe(64);
-    expect(stderr).toContain("atmux:");
-  });
-});
-
-// ---------- Dispatch — report verb route (smoke; deep behaviour is in
-//                       tests/unit/verbs/report.test.ts) ----------
-
-describe("cli.main — report verb dispatch", () => {
-  test("'report --bogus-flag' dispatches into report (UsageError)", async () => {
-    const { exit, stderr } = await captureMain(["report", "--bogus-flag"]);
-    expect(exit).toBe(64);
-    expect(stderr).toContain("atmux:");
-  });
-});
-
-// ---------- Dispatch — cost verb route (smoke; deep behaviour is in
-//                       tests/unit/verbs/cost.test.ts) ----------
-
-describe("cli.main — cost verb dispatch", () => {
-  test("'cost --bogus-flag' dispatches into cost (UsageError)", async () => {
-    const { exit, stderr } = await captureMain(["cost", "--bogus-flag"]);
-    expect(exit).toBe(64);
-    expect(stderr).toContain("atmux:");
-  });
-});
-
-// ---------- Dispatch — whip verb route (smoke; deep behaviour is in
-//                       tests/unit/verbs/whip.test.ts) ----------
-
-describe("cli.main — whip verb dispatch", () => {
-  test("'whip --bogus-flag' dispatches into whip (UsageError)", async () => {
-    const { exit, stderr } = await captureMain(["whip", "--bogus-flag"]);
     expect(exit).toBe(64);
     expect(stderr).toContain("atmux:");
   });
@@ -743,9 +570,12 @@ describe("logVerbEvent — events-log envelope", () => {
     const { join } = await import("node:path");
     await writeFile(join(atmuxDir, "team.json"), JSON.stringify({ name: "acme", members: [] }));
     const { logVerbEvent } = await import("../../src/cli.ts");
+    // Use a kept verb (claim) for the envelope example — ADR-263 cut the
+    // old `dispatch` verb. The envelope round-trip is verb-agnostic; this
+    // just keeps the sample shape coherent with the lean surface.
     await logVerbEvent({
-      verb: "dispatch",
-      args: ["alpha", "t-123"],
+      verb: "claim",
+      args: ["t-123", "--as", "alpha"],
       startMs: Date.now() - 25,
       exit: 0,
       outcome: "ok",
@@ -760,8 +590,8 @@ describe("logVerbEvent — events-log envelope", () => {
     const eventsPath = join(logsRoot, year, months[0] ?? "", "events.jsonl");
     const body = await readFile(eventsPath, "utf8");
     const parsed = JSON.parse(body.trim());
-    expect(parsed.verb).toBe("dispatch");
-    expect(parsed.args).toEqual(["alpha", "t-123"]);
+    expect(parsed.verb).toBe("claim");
+    expect(parsed.args).toEqual(["t-123", "--as", "alpha"]);
     expect(parsed.outcome).toBe("ok");
     expect(parsed.exit).toBe(0);
     expect(parsed.team).toBe("acme");
@@ -837,54 +667,5 @@ describe("logVerbEvent — events-log envelope", () => {
     const parsed = JSON.parse(body.trim());
     expect(parsed.outcome).toBe("warn");
     expect(parsed.exit).toBe(64);
-  });
-});
-
-// ---------- ADR-224 §D1 — orchd primary + relayd deprecation alias ----------
-//
-// `atmux relayd` is the one-release deprecation alias; emits stderr warn
-// then delegates to the orchd handler with same exit code + stdout shape.
-// The full live-daemon "--start exits 0 + stdout-matches" assertion
-// requires integration-test infra (DB+tmux); these unit tests cover the
-// alias-prefix + drop-in-error-shape invariants which are sufficient to
-// guard the dispatch surface.
-
-describe("cli.main — atmux orchd / relayd alias (ADR-224 §D1)", () => {
-  test("'orchd' (no subverb) → exit 64 + 'atmux: orchd: no sub-verb specified' on stderr", async () => {
-    const { exit, stderr } = await captureMain(["orchd"]);
-    expect(exit).toBe(64);
-    expect(stderr).toContain("orchd: no sub-verb specified");
-  });
-
-  test("'relayd' alias → stderr starts with deprecation line", async () => {
-    const { stderr } = await captureMain(["relayd"]);
-    expect(stderr.startsWith("[deprecated] 'atmux relayd' renamed to 'atmux orchd'")).toBe(true);
-  });
-
-  test("'relayd' alias delegates to orchd — same exit code + same tail-of-stderr as 'orchd'", async () => {
-    // Drop-in equivalence: for the no-subverb error path, the alias should
-    // produce the deprecation prefix + the SAME error output as 'orchd'.
-    // ADR-224 §D1 binding: "same exit code, same stdout shape" — exit
-    // codes must match; stderr matches everything AFTER the deprecation
-    // prefix line.
-    const alias = await captureMain(["relayd"]);
-    const primary = await captureMain(["orchd"]);
-    expect(alias.exit).toBe(primary.exit);
-    expect(alias.stdout).toBe(primary.stdout);
-    const aliasStderrAfterPrefix = alias.stderr.replace(
-      /^\[deprecated\] 'atmux relayd' renamed to 'atmux orchd' \(ADR-224\); update callsites — alias removes next release\n/,
-      "",
-    );
-    expect(aliasStderrAfterPrefix).toBe(primary.stderr);
-  });
-
-  test("'relayd' alias deprecation line matches exact AC literal", async () => {
-    // ADR-224 §D1 + Task body: literal stderr must be
-    //   [deprecated] 'atmux relayd' renamed to 'atmux orchd' (ADR-224); update callsites — alias removes next release
-    const { stderr } = await captureMain(["relayd"]);
-    const firstLine = stderr.split("\n")[0] ?? "";
-    expect(firstLine).toBe(
-      "[deprecated] 'atmux relayd' renamed to 'atmux orchd' (ADR-224); update callsites — alias removes next release",
-    );
   });
 });
