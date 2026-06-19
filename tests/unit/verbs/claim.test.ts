@@ -8,14 +8,7 @@ import { join } from "node:path";
 import { addTask, loadKanban, moveTask } from "../../../src/core/kanban.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
 import type { TeamMember } from "../../../src/schema/team.ts";
-import {
-  appendDispatched,
-  claim,
-  done,
-  loadInbox,
-  parseClaimDoneArgs,
-  pickMemberName,
-} from "../../../src/verbs/claim.ts";
+import { claim, done, parseClaimDoneArgs, pickMemberName } from "../../../src/verbs/claim.ts";
 
 let teamDir: string;
 let atmuxDir: string;
@@ -142,16 +135,13 @@ describe("pickMemberName", () => {
 // ---------- claim verb integration ----------
 
 describe("claim verb — integration", () => {
-  test("claim: assigns owner + status + writes inbox mirror", async () => {
+  test("claim: assigns owner + status", async () => {
     const id = await addTask(atmuxDir, { subject: "x" });
     const { out } = await captureStdout(() => claim([id, "--as", "alpha", "--team-dir", teamDir]));
     expect(out).toContain(`alpha claimed ${id}`);
     const k = await loadKanban(atmuxDir);
     expect(k.tasks[0]?.owner).toBe("alpha");
     expect(k.tasks[0]?.status).toBe("in-progress");
-    const inbox = await loadInbox(atmuxDir, "alpha");
-    expect(inbox.inProgress).toHaveLength(1);
-    expect(inbox.inProgress[0]?.id).toBe(id);
   });
 
   test("claim with $ATMUX_MEMBER infers member", async () => {
@@ -177,19 +167,6 @@ describe("claim verb — integration", () => {
     await expect(claim(["t-deadbeef", "--as", "alpha", "--team-dir", teamDir])).rejects.toThrow(
       ConfigError,
     );
-  });
-
-  test("claim is idempotent on inbox.inProgress (bash claim.sh:92 parity)", async () => {
-    // Prior dispatch already pushed the task to inbox.inProgress.
-    // Member then runs `atmux claim` — kanban update happens, but
-    // inbox shouldn't double-up.
-    const id = await addTask(atmuxDir, { subject: "x" });
-    const task = (await loadKanban(atmuxDir)).tasks[0];
-    if (task === undefined) throw new Error("setup fail");
-    await appendDispatched(atmuxDir, "alpha", task, 1);
-    await captureStdout(() => claim([id, "--as", "alpha", "--team-dir", teamDir]));
-    const inbox = await loadInbox(atmuxDir, "alpha");
-    expect(inbox.inProgress).toHaveLength(1);
   });
 
   // ADR-033 explicit-id claim refuse-gate (t-9fb3858f, sibling to
@@ -321,20 +298,14 @@ describe("done verb — ADR-033 driver-only refuse-gate", () => {
 // ---------- done verb integration ----------
 
 describe("done verb — integration", () => {
-  test("done: marks task done + writes inbox mirror", async () => {
+  test("done: marks task done", async () => {
     const id = await addTask(atmuxDir, { subject: "x" });
-    const task = (await loadKanban(atmuxDir)).tasks[0];
-    if (task === undefined) throw new Error("setup fail");
-    await appendDispatched(atmuxDir, "alpha", task, 1);
     await moveTask(atmuxDir, id, "in-progress");
     const { out } = await captureStdout(() => done([id, "--as", "alpha", "--team-dir", teamDir]));
     expect(out).toContain(`alpha completed ${id}`);
     const k = await loadKanban(atmuxDir);
     expect(k.tasks[0]?.status).toBe("done");
     expect(k.tasks[0]?.completedAt).toBeGreaterThan(0);
-    const inbox = await loadInbox(atmuxDir, "alpha");
-    expect(inbox.done).toHaveLength(1);
-    expect(inbox.inProgress).toHaveLength(0);
   });
 
   test("done with --note persists note on the task", async () => {

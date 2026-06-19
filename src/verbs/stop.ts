@@ -26,7 +26,6 @@
 import { copyFile, mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { exists } from "../abstractions/fs.ts";
-import type { TmuxNamespace } from "../abstractions/tmux.ts";
 import { createTmux, type SendTarget } from "../abstractions/tmux.ts";
 import {
   defaultGitSpawn,
@@ -48,26 +47,15 @@ import {
   requireTeam,
   resolveTeamSocket,
 } from "../core/common.ts";
-import {
-  findPhantomInProgressClaims,
-  formatPruneIso,
-  prunePhantomInProgressClaims,
-} from "../core/phantom-prune.ts";
-import { quiesceCron, softStop } from "../core/soft-stop.ts";
 import { UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
-import { cronRemove } from "./cron-remove.ts";
 
-const USAGE = "atmux stop [--force|-f] [--soft] [--no-archive] [--prune-branch]";
+const USAGE = "atmux stop [--force|-f] [--no-archive] [--prune-branch]";
 
 /** Parsed `stop` argv. */
 export interface StopArgs {
   force: boolean;
   archive: boolean;
-  /** ADR-087: soft-stop path. Mutually exclusive with `--force` — the
-   *  former is a graceful "finish in flight + capture state" path, the
-   *  latter is an immediate teardown. Bare `stop` is unchanged. */
-  soft: boolean;
   /** ADR-084 OQ2 opt-in: after `git worktree remove` succeeds for a
    *  member, also run `git branch -d <base>-<member>` to delete the
    *  orphan per-member branch. Requires `--force` (the layered opt-in
@@ -81,7 +69,6 @@ export interface StopArgs {
 export function parseStopArgs(argv: ReadonlyArray<string>): StopArgs {
   let force = false;
   let archive = true;
-  let soft = false;
   let pruneBranch = false;
   let socketPath: string | undefined;
   let teamDir: string | undefined;
@@ -90,11 +77,6 @@ export function parseStopArgs(argv: ReadonlyArray<string>): StopArgs {
     const a = argv[i];
     if (a === "--force" || a === "-f") {
       force = true;
-      i += 1;
-      continue;
-    }
-    if (a === "--soft") {
-      soft = true;
       i += 1;
       continue;
     }
@@ -128,12 +110,6 @@ export function parseStopArgs(argv: ReadonlyArray<string>): StopArgs {
     }
     throw new UsageError({ what: `stop: unknown arg: ${a ?? ""}`, hint: USAGE });
   }
-  if (force && soft) {
-    throw new UsageError({
-      what: "stop: --force and --soft are mutually exclusive",
-      hint: "pick one — `--force` for immediate teardown, `--soft` for graceful in-flight capture",
-    });
-  }
   // Layered opt-in: --prune-branch requires --force, same posture as
   // pruneWorktree's `dirty: 'force'`. Without --force the prune step
   // doesn't run at all (worktrees survive normal stop+start cycles per
@@ -144,7 +120,7 @@ export function parseStopArgs(argv: ReadonlyArray<string>): StopArgs {
       hint: USAGE,
     });
   }
-  const out: StopArgs = { force, archive, soft, pruneBranch };
+  const out: StopArgs = { force, archive, pruneBranch };
   if (socketPath !== undefined) out.socketPath = socketPath;
   if (teamDir !== undefined) out.teamDir = teamDir;
   return out;
@@ -167,11 +143,6 @@ export function archiveTimestamp(epochMs: number): string {
 
 /** `atmux stop [--force] [--no-archive]`. Returns 0. */
 export interface StopOpts {
-  /** ADR-083 follow-up: inject the cron-remove verb for tests so `stop`
-   *  never touches the host crontab. Default = the real verb; tests
-   *  pass a no-op or recorder. Production callers (CLI dispatch) omit
-   *  the opts and get the real impl. */
-  cronRemoveFn?: (argv: ReadonlyArray<string>) => Promise<number>;
   /** ADR-082 W4: inject the git spawner for the per-member worktree
    *  prune step. Default = the real `git` via `defaultGitSpawn` from
    *  `abstractions/worktree.ts`. Tests pass a mock so the prune path
@@ -198,59 +169,12 @@ export async function stop(argv: ReadonlyArray<string>, opts: StopOpts = {}): Pr
     return 0;
   }
 
-  // ADR-087: soft-stop replaces the bare-stop C-c interrupt with a
-  // graceful "finish in flight + capture state" path. The soft-stop
-  // core sends a comment-prefixed notice (NOT C-c), waits the
-  // configurable grace window (`team.softStopGraceSeconds`, default 5s),
-  // and writes `<atmuxDir>/state/resume.json` for the next `atmux start`
-  // to surface. Hard-stop paths (bare + --force) keep their existing
-  // semantics; the mutual-exclusion gate in parseStopArgs prevents
-  // `--force --soft` ambiguity.
-  if (parsed.soft) {
-    // ADR-087 §D4 (t-ccabd763): quiesce this team's whip + watchdog
-    // cron lines BEFORE softStop() runs. Closes the race where a
-    // mid-teardown cron tick re-pokes panes / re-spawns members /
-    // fires Discord pings against a stopping team. Non-fatal — a
-    // crontab swap failure here surfaces as a warn + soft-stop
-    // proceeds (the in-flight race risk degrades to today's bare
-    // soft-stop, not worse).
-    try {
-      const q = await quiesceCron({ atmuxDir });
-      if (q.suspended > 0 || q.alreadySuspended > 0) {
-        process.stdout.write(
-          `cron-quiesce: suspended ${q.suspended} new line(s)` +
-            (q.alreadySuspended > 0 ? `, ${q.alreadySuspended} already suspended` : "") +
-            "\n",
-        );
-      }
-    } catch (e) {
-      const cause = e instanceof Error ? e.message : String(e);
-      process.stderr.write(`atmux: warn: cron-quiesce fell through: ${cause}\n`);
-    }
-    const result = await softStop({
-      team,
-      atmuxDir,
-      sessionName,
-      tmux,
-      reason: "soft-stop",
-    });
-    process.stdout.write(
-      `soft-stop: notified ${result.notifiedCount}/${team.members.length} member panes; ` +
-        `${result.inFlightCount} in-flight task${result.inFlightCount === 1 ? "" : "s"} captured to ${result.manifestPath}\n`,
-    );
-  } else if (!parsed.force) {
+  // Bare stop: send C-c to each live pane + a short grace window so any
+  // in-flight foreground work can wrap up before teardown. `--force`
+  // skips the interrupt entirely and goes straight to archive + kill.
+  if (!parsed.force) {
     await sendCancelToMembers(tmux, sessionName, team);
     await sleep(2000);
-  }
-
-  // t-af159454: prune phantom in-progress claims BEFORE archive so the
-  // snapshot captures the post-prune state (operator-visible audit trail
-  // for what session-stop flipped). Best-effort: errors during probe or
-  // prune are surfaced as warnings, not fatal — the rest of teardown
-  // (archive + killSession) MUST still complete. Cage-only — singleSession
-  // teams skip per ADR-026.
-  if (team.singleSession !== true) {
-    await runStopPhantomPrune(tmux, sessionName, team, atmuxDir);
   }
 
   if (parsed.archive) {
@@ -276,80 +200,10 @@ export async function stop(argv: ReadonlyArray<string>, opts: StopOpts = {}): Pr
   }
   process.stdout.write(`session ${sessionName} stopped\n`);
 
-  // ADR-083 follow-up: drop the team's marker-fenced crontab block. The
-  // verb is unconditionally fired; its own internal strip is a free
-  // no-op when no block exists (matches bash lib/stop.sh:115 — operators
-  // who opted out of auto-install have no block to strip). Non-fatal:
-  // the verb itself swallows every install failure path.
-  const cronFn = opts.cronRemoveFn ?? cronRemove;
-  const cronArgs: string[] = ["--quiet"];
-  if (parsed.teamDir !== undefined) cronArgs.push("--team-dir", parsed.teamDir);
-  try {
-    await cronFn(cronArgs);
-  } catch (e) {
-    // Defense in depth: cronRemove is non-fatal internally, but if a
-    // future bug raised an unhandled error we'd rather warn than fail
-    // `stop`. Mirrors bash's `if atmux::cron_remove ...` guard at
-    // lib/stop.sh:115.
-    const cause = e instanceof Error ? e.message : String(e);
-    process.stderr.write(`atmux: warn: cron-remove fell through: ${cause}\n`);
-  }
-
   return 0;
 }
 
 // ---------- Internals ----------
-
-/** t-af159454: probe live windows + prune any in-progress kanban rows
- *  whose owner has no live pane. Best-effort — every failure path
- *  warns + continues so teardown's killSession is reached.
- *
- *  Note operators: the C-c + 2s sleep above gives wrap-up time for
- *  members actively running `atmux done`; anything still in-progress
- *  at this point is genuinely stale. We probe the live window set
- *  one more time (rather than blanket-pruning) so a member that
- *  raced + committed during the sleep keeps its claim intact. */
-async function runStopPhantomPrune(
-  tmux: TmuxNamespace,
-  sessionName: string,
-  team: Team,
-  atmuxDir: string,
-): Promise<void> {
-  try {
-    const phantoms = await findPhantomInProgressClaims({
-      atmuxDir,
-      team,
-      liveMembers: async () => {
-        if (!(await tmux.session.hasSession(`=${sessionName}`))) return new Set();
-        const windows = await tmux.window.listWindows(sessionName);
-        const liveNames = new Set(windows.map((w) => w.name));
-        const live = new Set<string>();
-        for (const m of team.members) {
-          // ADR-161 TR2: role-aware expected name.
-          const expected = buildWindowName(m.name, m.emoji, m.label, m.role);
-          if (liveNames.has(expected)) live.add(m.name);
-        }
-        return live;
-      },
-    });
-    if (phantoms.length === 0) return;
-    const asOfIso = formatPruneIso(Date.now());
-    const result = await prunePhantomInProgressClaims({
-      atmuxDir,
-      phantoms,
-      asOfIso,
-      source: "session-stop",
-    });
-    if (result.prunedIds.length > 0) {
-      process.stdout.write(
-        `stop: auto-pruned ${result.prunedIds.length} phantom in-progress claim(s) @ ${asOfIso}\n`,
-      );
-    }
-  } catch (e) {
-    const cause = e instanceof Error ? e.message : String(e);
-    process.stderr.write(`atmux: warn: phantom-prune fell through: ${cause}\n`);
-  }
-}
 
 /**
  * ADR-082 W4: per-member worktree prune. Resolves repo root via

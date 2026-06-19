@@ -16,9 +16,8 @@
 //   Path B — never accepts. Synthetic agent never produces the
 //     expected post-send state (verifier always returns false).
 //     Asserts attempts=retries+1 + success=false + escalation log
-//     entry written + `checkSendKeysFailureRecent` doctor probe
-//     surfaces the YELLOW row + `renderSendKeysFailureWarning`
-//     Discord template renders cleanly.
+//     entry written + `renderSendKeysFailureWarning` Discord
+//     template renders cleanly.
 //
 //   Path C — happy. Synthetic agent accepts immediately (verifier
 //     returns true on the first poll). Asserts attempts=1 +
@@ -49,7 +48,6 @@ import {
   type PaneVerifier,
   safeSendKeysWithVerify,
 } from "../../src/core/safe-send.ts";
-import { checkSendKeysFailureRecent } from "../../src/verbs/doctor.ts";
 
 setDefaultTimeout(30_000);
 
@@ -133,12 +131,12 @@ describe("ADR-138 send-keys reliability — 3-path e2e", () => {
     await expect(stat(logPath)).rejects.toThrow();
   });
 
-  test("Path B — never accepts: escalation log + doctor probe + Discord render", async () => {
+  test("Path B — never accepts: escalation log + Discord render", async () => {
     // Verifier always returns false. After retries+1 attempts (2
     // total at default retries=1), the function escalates: writes
     // the escalation log + returns success=false. We then walk
-    // through the post-hoc surfaces (doctor probe + Discord
-    // render) to prove the end-to-end observability chain.
+    // through the post-hoc surface (Discord render) to prove the
+    // end-to-end observability chain.
     const result = await safeSendKeysWithVerify({
       target,
       keys: "C-m",
@@ -168,23 +166,9 @@ describe("ADR-138 send-keys reliability — 3-path e2e", () => {
     expect(logText).toContain("postCapture:");
     expect(logText).toContain("---");
 
-    // 2. Doctor probe surfaces a YELLOW row for the recent entry.
-    //    Pin the probe's `now` clock to a value just-after the
-    //    entry's timestamp so the 1h window catches it
-    //    regardless of test machine wall-clock skew.
-    const rows = await checkSendKeysFailureRecent({ logPath });
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({
-      status: "yellow",
-      label: "send-keys-failure-recent",
-    });
-    expect(rows[0]?.detail).toContain("1 send-keys failure in last hour");
-    expect(rows[0]?.detail).toContain(target);
-    expect(rows[0]?.hint).toContain("ADR-138");
-
-    // 3. Discord template renders cleanly from the probe's
-    //    output — surfaces the count + target + fix-bullet shape
-    //    a Discord-aware caller would emit on probe trip.
+    // 2. Discord template renders cleanly from the escalation
+    //    log's facts — surfaces the count + target + fix-bullet
+    //    shape a Discord-aware caller would emit on trip.
     const discordOpts = renderSendKeysFailureWarning({
       team: "skr",
       failureCount: 1,

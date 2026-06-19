@@ -108,8 +108,6 @@ describe("parseInitArgs", () => {
       name: "alpha",
       force: false,
       wizard: false,
-      noSkills: false,
-      skillsOnly: false,
     });
   });
 
@@ -134,8 +132,6 @@ describe("parseInitArgs", () => {
       name: "x",
       force: true,
       wizard: false,
-      noSkills: false,
-      skillsOnly: false,
     });
   });
 

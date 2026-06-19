@@ -13,14 +13,12 @@
 //   2. If `--as` not given, infer member from `$ATMUX_MEMBER` env, else
 //      from cwd lookup against team.json members[].cwd. If neither
 //      yields a name, throw UsageError.
-//   3. Delegate to core/kanban.ts::claimTask (deps-gated) or
-//      markTaskDone, then mirror to the member's inbox via
-//      core/inbox.ts::movePendingToInProgress / moveInProgressToDone.
+//   3. Delegate to core/kanban.ts::claimTaskForMember (deps-gated) or
+//      markTaskDone — plain task CRUD, no inbox/member-status coupling
+//      (per ADR-263: fleet coordination removed, feed-only task model).
 //
-// Bash uses `atmux::ok` to print "$who claimed $id" / "$who completed
-// $id"; TS prints to stdout for byte-parity at the verb layer.
+// Prints "$who claimed $id" / "$who completed $id" to stdout.
 
-import { readAutoPushOptsFromTeam, runAutoPush } from "../core/auto-push.ts";
 import {
   getAtmuxDir,
   type ResolveDirOpts,
@@ -28,16 +26,9 @@ import {
   resolveCallerScope,
 } from "../core/common.ts";
 import {
-  appendDispatched,
-  loadInbox,
-  moveInProgressToDone,
-  movePendingToInProgress,
-} from "../core/inbox.ts";
-import {
   claimTaskForMember,
   listTasks,
   markTaskDone,
-  nowEpoch,
   selectNextClaimable,
   showTask,
 } from "../core/kanban.ts";
@@ -196,18 +187,11 @@ export async function claim(argv: ReadonlyArray<string>): Promise<number> {
   }
   const { who, dirOpts, atmuxDir } = await resolveContext(parsed, "claim");
 
-  const claimedAt = nowEpoch();
   // claimTaskForMember enforces deps + ADR-033 driver-only refuse-gate
   // + the 2026-05-12 race-condition gate (refuses claim of an in-progress
-  // task owned by a different member). Returns BOTH pre-mutation +
-  // post-mutation snapshots per ADR-029 §F1 — bash lib/claim.sh:35
-  // captures `task` BEFORE the jq_update at line 53, so the inbox-move
-  // at line 58 carries the ORIGINAL task shape + only `claimedAt`, not
-  // the post-mutation owner/status/claimedAt triple. Use `pre` for the
-  // inbox-mirror write.
+  // task owned by a different member).
   const callerScope = resolveCallerScope();
-  const { pre } = await claimTaskForMember(atmuxDir, parsed.id, who, { callerScope });
-  await movePendingToInProgress(atmuxDir, who, pre, claimedAt);
+  await claimTaskForMember(atmuxDir, parsed.id, who, { callerScope });
 
   process.stdout.write(`${who} claimed ${parsed.id}\n`);
   // Suppress unused-var warning — dirOpts is only needed to thread
@@ -229,8 +213,8 @@ export async function claim(argv: ReadonlyArray<string>): Promise<number> {
  *   5. Strict-lane refusal (`crossLaneClaim=false` AND no own-lane work) is
  *      surfaced as `ConfigError` with a clear "no work in <LANE> lane" body
  *      so workers see why the tick refused.
- *   6. On match, delegate to `claimTask` (deps re-checked atomically) +
- *      mirror to inbox.
+ *   6. On match, delegate to `claimTaskForMember` (deps re-checked
+ *      atomically). No inbox mirror (ADR-263: fleet coordination removed).
  */
 async function claimNext(parsed: ClaimDoneArgs): Promise<number> {
   const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
@@ -277,12 +261,10 @@ async function claimNext(parsed: ClaimDoneArgs): Promise<number> {
     return 0;
   }
 
-  const claimedAt = nowEpoch();
   // claim --next is also member-initiated; route through the gated
   // wrapper so a concurrent member who claimed this candidate between
   // selectNextClaimable + claim still loses the race cleanly.
-  const { pre } = await claimTaskForMember(atmuxDir, candidate.id, who);
-  await movePendingToInProgress(atmuxDir, who, pre, claimedAt);
+  await claimTaskForMember(atmuxDir, candidate.id, who);
 
   process.stdout.write(`${who} claimed ${candidate.id}\n`);
   return 0;
@@ -304,57 +286,22 @@ export async function done(argv: ReadonlyArray<string>): Promise<number> {
   const parsed = parseClaimDoneArgs(argv, "done");
   const { who, atmuxDir } = await resolveContext(parsed, "done");
 
-  // Bash done flow does NOT enforce deps (lib/claim.sh:61-69). We
-  // also need the pre-mutation task body for the inbox mirror — read
-  // BEFORE markTaskDone in case the schema strips fields.
+  // Guard: surface a clear "no such task" before attempting the
+  // transition (markTaskDone would otherwise no-op silently on a
+  // missing id).
   const pre = await showTask(atmuxDir, parsed.id);
   if (pre === null) {
     throw new ConfigError({ what: `done: no such task: ${parsed.id}` });
   }
 
-  const completedAt = nowEpoch();
   // ADR-033 driver-only refuse-gate. markTaskDone enforces the same
   // predicate as taskMove `done` transitions inside its transaction.
   const callerScope = resolveCallerScope();
   await markTaskDone(atmuxDir, parsed.id, parsed.note, { callerScope });
 
-  // Inbox mirror: bash does this only if the task is already in the
-  // member's inbox.inProgress; if missing, it's a no-op-on-pending +
-  // append-to-done. Mirror exactly.
-  await moveInProgressToDone(atmuxDir, who, pre, completedAt);
-
   process.stdout.write(`${who} completed ${parsed.id}\n`);
 
-  // ADR-057 §D7 R57-T7 — auto-push on done. Best-effort: failures are
-  // logged + flagged but DO NOT block the done transition (which has
-  // already succeeded above). Reads opts from team.json::whip.
-  // stallPrevention; defaults to enabled per ADR.
-  try {
-    const team = await loadTeamForAutoPush(parsed);
-    const apOpts = readAutoPushOptsFromTeam(team);
-    await runAutoPush(atmuxDir, {
-      enabled: apOpts.enabled,
-      rebase: apOpts.rebase,
-      allowedPushBranches: apOpts.allowedPushBranches,
-    });
-  } catch (e) {
-    // Final defensive guard — even if auto-push throws unexpectedly,
-    // the done transition stays committed. Audit happens inside
-    // runAutoPush; here we just don't crash.
-    process.stderr.write(
-      `auto-push: unexpected error: ${e instanceof Error ? e.message : String(e)}\n`,
-    );
-  }
-
   return 0;
-}
-
-/** Re-load the team for auto-push reading (cheap; cached at the
- *  filesystem layer). Kept private so the verb's main flow stays
- *  resilient to team-load errors during the auto-push leg. */
-async function loadTeamForAutoPush(parsed: ClaimDoneArgs): Promise<Team> {
-  const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
-  return await requireTeam(dirOpts);
 }
 
 // ---------- Internals ----------
@@ -375,8 +322,3 @@ async function resolveContext(
   const atmuxDir = await getAtmuxDir(dirOpts);
   return { who, dirOpts, atmuxDir };
 }
-
-// Re-export inbox helper for tests that want to stage a "task already
-// in inbox" state without going through dispatch verb. Keeps the test
-// file from importing two paths for what's conceptually one helper.
-export { appendDispatched, loadInbox };

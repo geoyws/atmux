@@ -149,23 +149,16 @@ async function writeTeamJson(opts: {
  *  Optional `opts` lets ADR-082 W3 tests inject a `gitSpawn` mock so
  *  the worktree-provisioning path never shells out to the live repo. */
 type StartOpts = NonNullable<Parameters<typeof start>[1]>;
-type LoadCockpitFn = NonNullable<StartOpts["loadCockpitFn"]>;
-type CockpitReconcileFn = NonNullable<StartOpts["cockpitReconcileFn"]>;
 
 async function runStart(
   args: ReadonlyArray<string>,
   opts: {
     gitSpawn?: import("../../../src/abstractions/worktree.ts").GitSpawn;
-    /** ADR-081 §C: brief-paste knobs — defaulted to fast/no-op for unit tests. */
-    briefsDir?: string;
-    spawnWaitMs?: number;
-    sleep?: (ms: number) => Promise<void>;
-    /** ADR-063 ergonomic fix (t-ab8df0b4): cockpit reconcile injection. */
-    loadCockpitFn?: LoadCockpitFn;
-    cockpitReconcileFn?: CockpitReconcileFn;
+    /** t-eb0887fe: cap on concurrent member spawns. */
+    spawnConcurrency?: number;
     /** ADR-089 §D (t-7e7031dc): extra env keys merged on top of the
-     *  default test env. Used to exercise ATMUX_NESTING_LEVEL / cockpit
-     *  override / ATMUX_NO_CRON paths without polluting `process.env`. */
+     *  default test env. Used to exercise ATMUX_NESTING_LEVEL /
+     *  ATMUX_NO_CRON paths without polluting `process.env`. */
     extraEnv?: Record<string, string>;
   } = {},
 ): Promise<number> {
@@ -173,19 +166,9 @@ async function runStart(
     env: { ...process.env, ATMUX_DIR: env.atmuxDir, ...(opts.extraEnv ?? {}) },
     cwd: env.atmuxDir,
     logger: env.logger,
-    // ADR-063 default for the test harness: skip the cockpit reconcile
-    // path UNLESS the test explicitly opts in. Without this, every
-    // existing test would try to load `~/.atmux/cockpit.json` on the
-    // dev host (varies per machine) and possibly succeed-with-noise.
-    // Opt-in tests override `loadCockpitFn` to inject a fake roster.
-    loadCockpitFn: async () => null,
   };
   if (opts.gitSpawn !== undefined) startOpts.gitSpawn = opts.gitSpawn;
-  if (opts.briefsDir !== undefined) startOpts.briefsDir = opts.briefsDir;
-  if (opts.spawnWaitMs !== undefined) startOpts.spawnWaitMs = opts.spawnWaitMs;
-  if (opts.sleep !== undefined) startOpts.sleep = opts.sleep;
-  if (opts.loadCockpitFn !== undefined) startOpts.loadCockpitFn = opts.loadCockpitFn;
-  if (opts.cockpitReconcileFn !== undefined) startOpts.cockpitReconcileFn = opts.cockpitReconcileFn;
+  if (opts.spawnConcurrency !== undefined) startOpts.spawnConcurrency = opts.spawnConcurrency;
   return await start([...args, "--socket-path", env.socketPath], startOpts);
 }
 
@@ -412,49 +395,32 @@ describe("start — happy path", () => {
     expect(wins.map((w) => w.name)).toEqual([`__${env.team}__home`]);
   });
 
-  test("applies the level-resolved cage prefix globally on the tmux server (ADR-089 §C)", async () => {
+  test("applies the fixed cage prefix (C-\\) globally on the tmux server (ADR-263 §D1)", async () => {
     // 2026-05-09 bisection — standalone `atmux start <team>` was NOT
-    // applying the cage prefix that nested-tmux topology requires;
-    // only `atmux cockpit rebuild` Phase 3 was. unum cages started
-    // outside cockpit landed on default C-b. Fix: lift the helper from
-    // cockpit.ts and call it after session creation in start.ts.
-    //
-    // Post-ADR-089 §C (t-7e7031dc): prefix is level-driven, not hard-
-    // coded `C-\`. Without `ATMUX_NESTING_LEVEL` in env, the default
-    // shifted 1→2 on 2026-05-24 (operator directive — "Fix code to
-    // match ADR §C table"). Standalone start = top-level team cage =
-    // L2 → resolvePrefix(2) === "F2" via DEFAULT_PREFIX_CHAIN.
+    // applying the cage prefix that nested-tmux topology requires.
+    // ADR-263 §D1 slimmed the cockpit-derived prefix-chain ladder down
+    // to the historical hardcoded `C-\`; the level-resolved chain
+    // (F1/F2/...) is gone with the cockpit. Standalone start must still
+    // override the default C-b so the nested cage prefix never collides
+    // with the operator's outer-tmux prefix.
     await writeTeamJson({ members: [{ name: "alice", role: "member" }] });
     await runStart([], { extraEnv: { ATMUX_NO_CRON: "1" } });
     const opts = await env.tmux.option.showOptions({ global: true });
-    expect(opts.prefix).toBe("F2");
+    expect(opts.prefix).toBe("C-\\");
   });
 
-  test("cage prefix is applied on incremental-restart path too (idempotent) (ADR-089 §C)", async () => {
+  test("cage prefix is applied on incremental-restart path too (idempotent) (ADR-263 §D1)", async () => {
     // The prefix-set is server-level; re-running start against an
     // existing session must not regress the prefix. Belt-and-braces
-    // assertion that the helper runs in the warn-keep branch (no
-    // --force, session already exists).
+    // assertion that the prefix override runs in the warn-keep branch
+    // (no --force, session already exists).
     await writeTeamJson({ members: [{ name: "alice", role: "member" }] });
     await runStart([], { extraEnv: { ATMUX_NO_CRON: "1" } });
     // Manually clobber the prefix to verify the second start re-applies.
     await env.tmux.option.setOption({ name: "prefix", value: "C-b", global: true });
     expect((await env.tmux.option.showOptions({ global: true })).prefix).toBe("C-b");
     await runStart([], { extraEnv: { ATMUX_NO_CRON: "1" } });
-    // Default env (no ATMUX_NESTING_LEVEL) → L2 → F2 (see test above).
-    expect((await env.tmux.option.showOptions({ global: true })).prefix).toBe("F2");
-  });
-
-  test("cage prefix honours ATMUX_NESTING_LEVEL env (level=2 → F2)", async () => {
-    // ADR-089 §D: env-driven level selection. Child cages spawned by
-    // a future spawn-epic verb will export ATMUX_NESTING_LEVEL=2 (via
-    // childNestingEnv from src/core/cockpit.ts); start.ts must pick up
-    // F2 from the default chain when that var is set.
-    await writeTeamJson({ members: [{ name: "alice", role: "member" }] });
-    await runStart([], {
-      extraEnv: { ATMUX_NO_CRON: "1", ATMUX_NESTING_LEVEL: "2" },
-    });
-    expect((await env.tmux.option.showOptions({ global: true })).prefix).toBe("F2");
+    expect((await env.tmux.option.showOptions({ global: true })).prefix).toBe("C-\\");
   });
 
   test("bug t-4d2936ac — start scrubs ANTHROPIC_API_KEY / AUTH_TOKEN / CLAUDE_CONFIG_DIR from the session env", async () => {
@@ -628,20 +594,23 @@ describe("start — incremental restart skips existing windows", () => {
   });
 });
 
-// ---------- start verb — ADR-044 driverSession topology ----------
+// ---------- start verb — ADR-263 §D1 flat-pane model (driverSession ignored) ----------
 //
-// Bash parity: tests/unit/start_driver_session.bats covers the same
-// matrix in the bash port. The bun port consumes `team.driverSession`
-// to spawn `driver` as window 1 in place of the `__home` placeholder;
-// members append as windows 2..N+1 via the existing loop.
+// The ADR-044 driver-fan-out topology is GONE per ADR-263 §D1: `atmux
+// start` always seeds the `__<team>__home` placeholder and populates one
+// window per `team.members[]` entry — there is no driver-at-window-1
+// path, no role-based ordering. The `driverSession` field still parses in
+// the team schema but `start` ignores it. These tests assert that the
+// flat-pane behaviour holds regardless of `driverSession`.
 
-describe("start — ADR-044 driverSession topology", () => {
-  test("configured: driver is window 1 in declarative order, no __home placeholder", async () => {
+describe("start — ADR-263 §D1 flat-pane model (driverSession ignored)", () => {
+  test("driverSession configured → NO driver window; flat member panes only", async () => {
     await writeTeamJson({
       members: [
         { name: "alpha", role: "team-lead", tui: "shell" },
         { name: "bee", role: "member", tui: "shell" },
       ],
+      // ADR-263 §D1: driverSession is IGNORED — no driver window spawns.
       driverSession: { tui: "shell" },
     });
 
@@ -650,49 +619,23 @@ describe("start — ADR-044 driverSession topology", () => {
 
     const session = `atmux-${env.team}`;
     const wins = await env.tmux.window.listWindows(session);
-    // Sort by index to assert positional order — listWindows returns
-    // the natural tmux order but tests are clearer with explicit sort.
-    const ordered = [...wins].sort((a, b) => a.index - b.index);
-    expect(ordered[0]?.name).toBe("driver");
+    // No driver window — the fan-out is gone.
+    expect(wins.some((w) => w.name === "driver")).toBe(false);
     // Members emoji-prefixed by role: team-lead → 🧭, member → 🐝.
-    expect(ordered[1]?.name).toBe("🧭_alpha");
-    expect(ordered[2]?.name).toBe("🐝-bee");
-    // No __home placeholder ever created.
+    const names = wins.map((w) => w.name).sort();
+    expect(names).toContain("🧭_alpha");
+    expect(names).toContain("🐝-bee");
+    // __home placeholder cleaned up once members spawn.
     expect(wins.some((w) => w.name === `__${env.team}__home`)).toBe(false);
-
-    // Logger surfaces the driver-at-window-1 marker for parity with bash
-    // `lib/start.sh:203` ("driver at window 1, <tui>").
-    expect(
-      env.logs.some(
-        (l) => l.kind === "ok" && l.msg.includes("driver at window 1") && l.msg.includes("shell"),
-      ),
-    ).toBe(true);
+    // No driver-at-window-1 log line — the path is gone.
+    expect(env.logs.some((l) => l.msg.includes("driver at window 1"))).toBe(false);
   });
 
-  test("configured: tui falls back to driverTui when driverSession.tui is null", async () => {
-    await writeTeamJson({
-      members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
-      // driverSession is configured (truthy) but its tui is null —
-      // resolution drops to driverTui (legacy field).
-      driverSession: { tui: null },
-      driverTui: "shell",
-    });
-
-    const exit = await runStart([]);
-    expect(exit).toBe(0);
-
-    expect(
-      env.logs.some(
-        (l) => l.kind === "ok" && l.msg.includes("driver at window 1") && l.msg.includes("shell"),
-      ),
-    ).toBe(true);
-  });
-
-  test("explicitly disabled: driverSession=null falls through to legacy __home", async () => {
+  test("driverSession=null falls through to legacy __home", async () => {
     await writeTeamJson({
       members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
       // Matches the wizard's "explicitly disabled" output. The field is
-      // present but null — must NOT trigger the driver-initial path.
+      // present but null — flat-pane model unaffected.
       driverSession: null,
     });
 
@@ -709,8 +652,7 @@ describe("start — ADR-044 driverSession topology", () => {
 
   test("absent: legacy __home placeholder path is unchanged", async () => {
     // Regression guard: zero-member team.json without driverSession must
-    // still leave the __home placeholder, matching the pre-ADR-044
-    // "happy path: zero-member team" assertion.
+    // still leave the __home placeholder.
     await writeTeamJson({ members: [] });
     const exit = await runStart([]);
     expect(exit).toBe(0);
@@ -718,43 +660,7 @@ describe("start — ADR-044 driverSession topology", () => {
     expect(wins.map((w) => w.name)).toEqual([`__${env.team}__home`]);
   });
 
-  test("unknown tui: driver window still created, warn surfaces, pane lands in shell", async () => {
-    // ADR-239 §A1 (amended 2026-05-26) behavior change vs original
-    // ADR-044: when resolveTuiCommand throws on an unknown tui, the
-    // driver window IS still created (cwd + name), but with NO
-    // shellCommand — the pane lands in the default $SHELL. Operator
-    // can launch the TUI manually. This is the same fall-through as
-    // shell-kind TUIs (no command, just a shell pane).
-    await writeTeamJson({
-      members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
-      driverSession: { tui: "this-tui-does-not-exist-anywhere" },
-    });
-
-    const exit = await runStart([]);
-    expect(exit).toBe(0);
-
-    const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
-    // Driver window IS present — the resolve-failure does NOT block
-    // session creation under ADR-239 §A1.
-    expect(wins.some((w) => w.name === "driver")).toBe(true);
-    // No __home placeholder either — driver creates the session.
-    expect(wins.some((w) => w.name === `__${env.team}__home`)).toBe(false);
-    // Warn line surfaces the resolve-failure reason for operator
-    // observability.
-    expect(
-      env.logs.some(
-        (l) =>
-          l.kind === "warn" &&
-          l.msg.includes("driver") &&
-          l.msg.includes("could not resolve command"),
-      ),
-    ).toBe(true);
-  });
-
-  test("incremental: existing session without driver is left alone (ADR-044 D3)", async () => {
-    // ADR-044 D3 explicitly forbids retroactively inserting a driver into
-    // an existing session — that would shift member window indices and
-    // disrupt operator state on attached sessions.
+  test("incremental: adding driverSession to a live session never inserts a driver window", async () => {
     await writeTeamJson({
       members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
     });
@@ -776,10 +682,9 @@ describe("start — ADR-044 driverSession topology", () => {
   });
 
   test("member with non-shell tui: send-keys fires after newWindow", async () => {
-    // Closes the pre-ADR-044 coverage gap on the member spawn loop's
-    // send-keys branch (start.ts:466,471-480). Uses team.tuiCommands to
-    // register a benign no-op so resolveTuiCommand returns a valid
-    // command for a non-built-in tui kind.
+    // Exercises the member spawn loop's send-keys branch. Uses
+    // team.tuiCommands to register a benign no-op so resolveTuiCommand
+    // returns a valid command for a non-built-in tui kind.
     const body = {
       name: env.team,
       members: [{ name: "alpha", role: "team-lead", tui: "fake-member-tui" }],
@@ -787,78 +692,15 @@ describe("start — ADR-044 driverSession topology", () => {
     };
     await writeFile(join(env.atmuxDir, "team.json"), `${JSON.stringify(body, null, 2)}\n`, "utf8");
 
-    // ADR-081 §C: default briefsDir resolves to the repo's
-    // templates/briefs/lead.md which exists — without the no-op sleep
-    // override, every existing non-shell-tui test would now block 6s
-    // on the brief paste settle. The send-keys assertion below doesn't
-    // care about brief paste; opt out via spawnWaitMs:0 + no-op sleep.
-    const exit = await runStart([], {
-      spawnWaitMs: 0,
-      sleep: async () => {},
-    });
+    // ADR-263 §D4: brief paste is gone from the start path — the spawn
+    // loop just send-keys the resolved TUI command. The assertion below
+    // only checks the member window was created.
+    const exit = await runStart([]);
     expect(exit).toBe(0);
 
     // Member window present — the send-keys path didn't throw.
     const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
     expect(wins.map((w) => w.name)).toContain("🧭_alpha");
-  });
-
-  test("non-shell tui: shellCommand-mode launch keeps the pane alive after TUI exits (ADR-239 §A5 wrap)", async () => {
-    // Under ADR-239 §A5 the legacy send-keys-after-newSession path is
-    // GONE — replaced with shellCommand-mode launch on `tmux new-session`.
-    // For non-shell TUIs the resolved cmd is wrapped via
-    // `sh -c '<cmd>; exec $SHELL -i'` so the pane drops to an
-    // interactive shell when the TUI exits (otherwise the pane would
-    // die when `true` returns, killing the session before members can
-    // attach).
-    const body = {
-      name: env.team,
-      members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
-      driverSession: { tui: "fake-driver" },
-      tuiCommands: { "fake-driver": "true" },
-    };
-    await writeFile(join(env.atmuxDir, "team.json"), `${JSON.stringify(body, null, 2)}\n`, "utf8");
-
-    const exit = await runStart([]);
-    expect(exit).toBe(0);
-
-    const session = `atmux-${env.team}`;
-    const wins = await env.tmux.window.listWindows(session);
-    const ordered = [...wins].sort((a, b) => a.index - b.index);
-    expect(ordered[0]?.name).toBe("driver");
-    // The driver-at-window-1 marker still surfaces with the fake tui.
-    expect(
-      env.logs.some(
-        (l) =>
-          l.kind === "ok" && l.msg.includes("driver at window 1") && l.msg.includes("fake-driver"),
-      ),
-    ).toBe(true);
-    // Member window also survived — proves the driver pane didn't die
-    // and take the session with it (the wrap kept the shell alive).
-    expect(wins.map((w) => w.name)).toContain("🧭_alpha");
-  });
-
-  test("--force with driverSession: driver-initial path runs after kill", async () => {
-    await writeTeamJson({
-      members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
-    });
-    // First start without driverSession — legacy __home path.
-    expect(await runStart([])).toBe(0);
-
-    // Add driverSession then --force restart — kill + recreate hits the
-    // driver-initial branch.
-    await writeTeamJson({
-      members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
-      driverSession: { tui: "shell" },
-    });
-    env.logs.length = 0;
-    expect(await runStart(["--force"])).toBe(0);
-
-    const session = `atmux-${env.team}`;
-    const wins = await env.tmux.window.listWindows(session);
-    const ordered = [...wins].sort((a, b) => a.index - b.index);
-    expect(ordered[0]?.name).toBe("driver");
-    expect(ordered[1]?.name).toBe("🧭_alpha");
   });
 });
 
@@ -1098,537 +940,6 @@ describe("resolveSpawnWaitMs", () => {
   });
 });
 
-// ---------- start — ADR-081 §C brief-paste ----------
-
-describe("start — ADR-081 §C brief-paste", () => {
-  /** Seed a temp briefs directory with the canonical files. Returns the path. */
-  async function seedBriefsDir(files: Record<string, string>): Promise<string> {
-    const dir = await mkdtemp(join(tmpdir(), "atmux-briefs-"));
-    for (const [name, content] of Object.entries(files)) {
-      await writeFile(join(dir, name), content, "utf8");
-    }
-    return dir;
-  }
-
-  /** Capture-pane helper — concatenates the visible buffer of a window. */
-  async function capture(session: string, win: string): Promise<string> {
-    return await env.tmux.pane.capturePane({
-      target: `${session}:${win}`,
-      start: -200,
-    });
-  }
-
-  test("happy path: brief renders + paste-buffer + C-m submit lands in pane", async () => {
-    // Use `cat` as the TUI so the brief gets echoed back into the pane —
-    // that's the cheapest way to assert the paste-buffer + C-m chain
-    // actually delivered bytes through tmux. Real TUIs (claude, opencode)
-    // would render their own UI which is unobservable; `cat` is a
-    // transparent passthrough.
-    const briefsDir = await seedBriefsDir({
-      "member.md": "Hello {{MEMBER}} on team {{TEAM}} (role={{ROLE}}, dir={{ATMUX_DIR}})\n",
-    });
-    try {
-      const body = {
-        name: env.team,
-        members: [{ name: "alpha", role: "member", tui: "fake-tui" }],
-        tuiCommands: { "fake-tui": "cat" },
-      };
-      await writeFile(
-        join(env.atmuxDir, "team.json"),
-        `${JSON.stringify(body, null, 2)}\n`,
-        "utf8",
-      );
-
-      const exit = await runStart([], {
-        briefsDir,
-        spawnWaitMs: 50, // brief settle for cat to be reading stdin
-        sleep: async (ms) =>
-          new Promise<void>((res) => {
-            setTimeout(res, ms);
-          }),
-      });
-      expect(exit).toBe(0);
-
-      // Allow C-m + cat's echo to make it to the pane buffer.
-      await new Promise<void>((res) => setTimeout(res, 200));
-      const pane = await capture(`atmux-${env.team}`, "🐝-alpha");
-      expect(pane).toContain("Hello alpha on team");
-      expect(pane).toContain(env.team);
-      expect(pane).toContain("role=member");
-      expect(pane).toContain(env.atmuxDir);
-
-      // Logger surfaces a per-member paste line for observability.
-      expect(
-        env.logs.some(
-          (l) => l.kind === "log" && l.msg.includes("alpha:") && l.msg.includes("brief pasted"),
-        ),
-      ).toBe(true);
-    } finally {
-      await rm(briefsDir, { recursive: true, force: true });
-    }
-  });
-
-  test("alias map: role=team-lead resolves to lead.md (not team-lead.md)", async () => {
-    // §B BRIEF_ALIASES — role-canonical → file-canonical. Lead reads from
-    // lead.md even if `team-lead.md` is missing. Reuse §B's existing
-    // alias coverage so the §C port doesn't regress the alias chain.
-    const briefsDir = await seedBriefsDir({
-      "lead.md": "LEAD-BRIEF-FOR-{{MEMBER}}\n",
-      "member.md": "MEMBER-BRIEF-FOR-{{MEMBER}}\n",
-    });
-    try {
-      const body = {
-        name: env.team,
-        members: [{ name: "lead1", role: "team-lead", tui: "fake-tui" }],
-        tuiCommands: { "fake-tui": "cat" },
-      };
-      await writeFile(
-        join(env.atmuxDir, "team.json"),
-        `${JSON.stringify(body, null, 2)}\n`,
-        "utf8",
-      );
-
-      await runStart([], {
-        briefsDir,
-        spawnWaitMs: 50,
-        sleep: async (ms) =>
-          new Promise<void>((res) => {
-            setTimeout(res, ms);
-          }),
-      });
-      await new Promise<void>((res) => setTimeout(res, 200));
-      const pane = await capture(`atmux-${env.team}`, "🧭_lead1");
-      expect(pane).toContain("LEAD-BRIEF-FOR-lead1");
-      expect(pane).not.toContain("MEMBER-BRIEF-FOR-lead1");
-    } finally {
-      await rm(briefsDir, { recursive: true, force: true });
-    }
-  });
-
-  test("missing role brief falls back to member.md", async () => {
-    // No `unblocker.md` in the briefs dir → role=unblocker reads member.md
-    // (parity with rotate.getBriefPath fallback).
-    const briefsDir = await seedBriefsDir({
-      "member.md": "FALLBACK-FOR-{{ROLE}}\n",
-    });
-    try {
-      const body = {
-        name: env.team,
-        members: [{ name: "u1", role: "unblocker", tui: "fake-tui" }],
-        tuiCommands: { "fake-tui": "cat" },
-      };
-      await writeFile(
-        join(env.atmuxDir, "team.json"),
-        `${JSON.stringify(body, null, 2)}\n`,
-        "utf8",
-      );
-
-      await runStart([], {
-        briefsDir,
-        spawnWaitMs: 50,
-        sleep: async (ms) =>
-          new Promise<void>((res) => {
-            setTimeout(res, ms);
-          }),
-      });
-      await new Promise<void>((res) => setTimeout(res, 200));
-      // unblocker pool starts with 🔓 (common.ts:ROLE_EMOJI_POOLS).
-      // ADR-135 §D3: hyphen separator between emoji and member name.
-      const pane = await capture(`atmux-${env.team}`, "🔓-u1");
-      expect(pane).toContain("FALLBACK-FOR-unblocker");
-    } finally {
-      await rm(briefsDir, { recursive: true, force: true });
-    }
-  });
-
-  test("brief-paste skipped silently when both role + member.md are missing", async () => {
-    // Empty briefs dir → getBriefPath returns <briefsDir>/member.md which
-    // doesn't exist. Per parity with bash (`[[ -f "$brief" ]]` guard) we
-    // skip silently — no warn, no throw. The pane should still be alive.
-    const briefsDir = await seedBriefsDir({});
-    try {
-      const body = {
-        name: env.team,
-        members: [{ name: "alpha", role: "member", tui: "fake-tui" }],
-        tuiCommands: { "fake-tui": "cat" },
-      };
-      await writeFile(
-        join(env.atmuxDir, "team.json"),
-        `${JSON.stringify(body, null, 2)}\n`,
-        "utf8",
-      );
-
-      const exit = await runStart([], {
-        briefsDir,
-        spawnWaitMs: 0,
-        sleep: async () => {},
-      });
-      expect(exit).toBe(0);
-      // No "brief pasted" log, no warn line about paste failing.
-      expect(env.logs.some((l) => l.msg.includes("brief pasted"))).toBe(false);
-      expect(env.logs.some((l) => l.kind === "warn" && l.msg.includes("brief paste failed"))).toBe(
-        false,
-      );
-      // Pane still exists — team didn't wedge from the no-op brief path.
-      const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
-      expect(wins.map((w) => w.name)).toContain("🐝-alpha");
-    } finally {
-      await rm(briefsDir, { recursive: true, force: true });
-    }
-  });
-
-  test("shell-only TUI: brief is NOT pasted (bash parity for tui=shell)", async () => {
-    // Bash `_atmux_spawn_member` gates the brief paste on `tui != shell`.
-    // Same gate in TS — driver-shell teams never see a brief in the pane.
-    const briefsDir = await seedBriefsDir({
-      "member.md": "SHELL-BRIEF-FOR-{{MEMBER}}\n",
-    });
-    try {
-      await writeTeamJson({
-        members: [{ name: "alpha", role: "member", tui: "shell" }],
-      });
-
-      const exit = await runStart([], {
-        briefsDir,
-        spawnWaitMs: 0,
-        sleep: async () => {},
-      });
-      expect(exit).toBe(0);
-      expect(env.logs.some((l) => l.msg.includes("brief pasted"))).toBe(false);
-    } finally {
-      await rm(briefsDir, { recursive: true, force: true });
-    }
-  });
-
-  test("per-member best-effort: one member's brief failure does NOT wedge the others", async () => {
-    // Failure surface: read-error inside pasteBriefForMember — simulate
-    // by giving one member a tui that resolves but pointing briefsDir at
-    // a path containing a brief file with restricted perms. Cheapest
-    // simulation: stage a member.md that's a directory, not a file →
-    // `Bun.file().text()` throws. The OTHER member should still get
-    // paste + log.
-    const briefsDir = await mkdtemp(join(tmpdir(), "atmux-briefs-"));
-    try {
-      // For alpha (role=team-lead) we want a working lead.md.
-      await writeFile(join(briefsDir, "lead.md"), "LEAD-BRIEF-FOR-{{MEMBER}}\n", "utf8");
-      // For bob (role=member) we point member.md at a DIRECTORY so the
-      // read throws. The §C catch-and-warn must absorb it.
-      await mkdir(join(briefsDir, "member.md"), { recursive: true });
-
-      const body = {
-        name: env.team,
-        members: [
-          { name: "alpha", role: "team-lead", tui: "fake-tui" },
-          { name: "bob", role: "member", tui: "fake-tui" },
-        ],
-        tuiCommands: { "fake-tui": "cat" },
-      };
-      await writeFile(
-        join(env.atmuxDir, "team.json"),
-        `${JSON.stringify(body, null, 2)}\n`,
-        "utf8",
-      );
-
-      const exit = await runStart([], {
-        briefsDir,
-        spawnWaitMs: 50,
-        sleep: async (ms) =>
-          new Promise<void>((res) => {
-            setTimeout(res, ms);
-          }),
-      });
-      expect(exit).toBe(0);
-
-      // Lead's brief landed.
-      await new Promise<void>((res) => setTimeout(res, 200));
-      const leadPane = await capture(`atmux-${env.team}`, "🧭_alpha");
-      expect(leadPane).toContain("LEAD-BRIEF-FOR-alpha");
-
-      // Bob's brief failed → warn line.
-      const warns = env.logs.filter((l) => l.kind === "warn");
-      expect(warns.some((l) => l.msg.includes("bob") && l.msg.includes("brief paste failed"))).toBe(
-        true,
-      );
-
-      // Both panes exist — team didn't half-spawn.
-      const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
-      const names = wins.map((w) => w.name);
-      expect(names).toContain("🧭_alpha");
-      expect(names).toContain("🐝-bob");
-    } finally {
-      await rm(briefsDir, { recursive: true, force: true });
-    }
-  });
-
-  test("incremental restart: existing windows are NOT re-pasted (skip-existing)", async () => {
-    // Brief paste is gated inside the `existingNames.has(win)` continue
-    // branch — re-running start against a live session must not double-
-    // paste briefs into already-spawned panes.
-    const briefsDir = await seedBriefsDir({
-      "member.md": "BRIEF-FOR-{{MEMBER}}\n",
-    });
-    try {
-      const body = {
-        name: env.team,
-        members: [{ name: "alpha", role: "member", tui: "fake-tui" }],
-        tuiCommands: { "fake-tui": "cat" },
-      };
-      await writeFile(
-        join(env.atmuxDir, "team.json"),
-        `${JSON.stringify(body, null, 2)}\n`,
-        "utf8",
-      );
-
-      // First run — brief paste happens.
-      const firstExit = await runStart([], {
-        briefsDir,
-        spawnWaitMs: 0,
-        sleep: async () => {},
-      });
-      expect(firstExit).toBe(0);
-      const firstPasted = env.logs.filter((l) => l.msg.includes("brief pasted")).length;
-      expect(firstPasted).toBe(1);
-
-      // Second run — incremental, no --force. Window exists, brief NOT
-      // re-pasted.
-      env.logs.length = 0;
-      const secondExit = await runStart([], {
-        briefsDir,
-        spawnWaitMs: 0,
-        sleep: async () => {},
-      });
-      expect(secondExit).toBe(0);
-      const secondPasted = env.logs.filter((l) => l.msg.includes("brief pasted")).length;
-      expect(secondPasted).toBe(0);
-      expect(env.logs.some((l) => l.msg.includes("window exists, skipping"))).toBe(true);
-    } finally {
-      await rm(briefsDir, { recursive: true, force: true });
-    }
-  });
-
-  test("zero spawnWaitMs: brief paste fires immediately (test-fast path)", async () => {
-    // Verifies the test injection actually skips the 6s default — important
-    // because every other test in the §C suite uses 0 or 50ms. Regression
-    // guard against accidentally reverting the override to "always sleep".
-    const briefsDir = await seedBriefsDir({
-      "member.md": "FAST-{{MEMBER}}\n",
-    });
-    try {
-      const body = {
-        name: env.team,
-        members: [{ name: "alpha", role: "member", tui: "fake-tui" }],
-        tuiCommands: { "fake-tui": "cat" },
-      };
-      await writeFile(
-        join(env.atmuxDir, "team.json"),
-        `${JSON.stringify(body, null, 2)}\n`,
-        "utf8",
-      );
-      const t0 = Date.now();
-      await runStart([], {
-        briefsDir,
-        spawnWaitMs: 0,
-        sleep: async () => {},
-      });
-      const elapsed = Date.now() - t0;
-      // Generous bound — real tmux ops + bun startup eat ~hundreds of
-      // ms, but nothing close to 6s should happen here.
-      expect(elapsed).toBeLessThan(3000);
-    } finally {
-      await rm(briefsDir, { recursive: true, force: true });
-    }
-  });
-});
-
-// ---------- ADR-063 ergonomic fix: auto-reconcile cockpit (t-ab8df0b4) ----------
-
-describe("start — ADR-063 cockpit auto-reconcile", () => {
-  // Type aliases for the reconcile recorder.
-  type ReconcileRecord = {
-    sessionName: string;
-    teamNames: string[];
-    onlyTeam: string | undefined;
-  };
-  type Cockpit = Awaited<ReturnType<LoadCockpitFn>>;
-
-  function makeReconcileRecorder(): {
-    fn: CockpitReconcileFn;
-    calls: ReconcileRecord[];
-  } {
-    const calls: ReconcileRecord[] = [];
-    const fn: CockpitReconcileFn = async (
-      _tmux,
-      sessionName,
-      teams,
-      _logger,
-      _deps,
-      _superdoctor,
-      _yes,
-      reconcileOpts,
-    ) => {
-      calls.push({
-        sessionName,
-        teamNames: teams.map((t) => t.name),
-        onlyTeam: reconcileOpts?.onlyTeam,
-      });
-    };
-    return { fn, calls };
-  }
-
-  function fakeCockpit(opts: {
-    teams: Array<{ name: string; enabled: boolean }>;
-    cockpitSession?: string;
-  }): Cockpit {
-    // Per ADR-089 §B the canonical cockpit shape is `sessions: [...]`
-    // (hierarchical, discriminated union). The real loader (`loadCockpit`)
-    // runs `migrateLegacyShape` to lift legacy flat `teams[]` into
-    // `sessions[]` BEFORE parsing — so post-loader cockpit objects always
-    // carry `sessions[]`. The fake bypasses the loader, so it emits
-    // `sessions[]` directly to match what consumers (e.g. `enabledTeams`
-    // via `walkSessions`) actually iterate. The legacy duck-typed `teams`
-    // field is also populated for back-compat readers that still see the
-    // post-enrichment synthesised array.
-    const teamEntries = opts.teams.map((t) => ({
-      type: "team" as const,
-      name: t.name,
-      root: `/tmp/${t.name}-root`,
-      enabled: t.enabled,
-      sessions: [] as never[],
-    }));
-    return {
-      cockpitSession: opts.cockpitSession ?? "atmux_teams",
-      sessions: teamEntries,
-      teams: teamEntries.map(({ name, root, enabled }) => ({ name, root, enabled })),
-    } as unknown as Cockpit;
-  }
-
-  test("(a) rostered + enabled team → reconcile called with onlyTeam scope", async () => {
-    await writeTeamJson({
-      members: [{ name: "alice", role: "team-lead" }],
-    });
-    const { fn: reconcileFn, calls } = makeReconcileRecorder();
-    const loadCockpitFn = async () => fakeCockpit({ teams: [{ name: env.team, enabled: true }] });
-
-    const exit = await runStart([], { loadCockpitFn, cockpitReconcileFn: reconcileFn });
-    expect(exit).toBe(0);
-    expect(calls).toHaveLength(1);
-    expect(calls[0]!.onlyTeam).toBe(env.team);
-    expect(calls[0]!.teamNames).toEqual([env.team]);
-    expect(calls[0]!.sessionName).toBe("atmux_teams");
-    // ✓ log line emitted on success.
-    expect(env.logs.some((l) => l.msg.includes("cockpit window") && l.msg.includes(env.team))).toBe(
-      true,
-    );
-  });
-
-  test("(b) team NOT in roster → reconcile NOT called (silent skip)", async () => {
-    await writeTeamJson({
-      members: [{ name: "alice", role: "team-lead" }],
-    });
-    const { fn: reconcileFn, calls } = makeReconcileRecorder();
-    // Roster has a different team name; our cwd team is un-rostered.
-    const loadCockpitFn = async () =>
-      fakeCockpit({ teams: [{ name: "some-other-team", enabled: true }] });
-
-    const exit = await runStart([], { loadCockpitFn, cockpitReconcileFn: reconcileFn });
-    expect(exit).toBe(0);
-    expect(calls).toHaveLength(0);
-    // No WARN, no cockpit log line — silent skip.
-    expect(env.logs.some((l) => l.kind === "warn" && l.msg.includes("cockpit"))).toBe(false);
-  });
-
-  test("(c) cockpit.json missing (loader returns null) → reconcile NOT called", async () => {
-    await writeTeamJson({
-      members: [{ name: "alice", role: "team-lead" }],
-    });
-    const { fn: reconcileFn, calls } = makeReconcileRecorder();
-    const loadCockpitFn = async () => null;
-
-    const exit = await runStart([], { loadCockpitFn, cockpitReconcileFn: reconcileFn });
-    expect(exit).toBe(0);
-    expect(calls).toHaveLength(0);
-    // No WARN — missing config is silent skip per the behaviour matrix.
-    expect(env.logs.some((l) => l.kind === "warn" && l.msg.includes("cockpit"))).toBe(false);
-  });
-
-  test("(d) team rostered but enabled:false → reconcile NOT called (silent skip)", async () => {
-    await writeTeamJson({
-      members: [{ name: "alice", role: "team-lead" }],
-    });
-    const { fn: reconcileFn, calls } = makeReconcileRecorder();
-    const loadCockpitFn = async () => fakeCockpit({ teams: [{ name: env.team, enabled: false }] });
-
-    const exit = await runStart([], { loadCockpitFn, cockpitReconcileFn: reconcileFn });
-    expect(exit).toBe(0);
-    expect(calls).toHaveLength(0);
-  });
-
-  test("(e) cockpit loader throws (malformed) → reconcile NOT called, WARN logged", async () => {
-    await writeTeamJson({
-      members: [{ name: "alice", role: "team-lead" }],
-    });
-    const { fn: reconcileFn, calls } = makeReconcileRecorder();
-    const loadCockpitFn = async () => {
-      throw new Error("cockpit.json: unexpected token at line 5");
-    };
-
-    const exit = await runStart([], { loadCockpitFn, cockpitReconcileFn: reconcileFn });
-    expect(exit).toBe(0);
-    expect(calls).toHaveLength(0);
-    // WARN emitted — distinct from silent skip.
-    expect(env.logs.some((l) => l.kind === "warn" && l.msg.includes("loader threw"))).toBe(true);
-  });
-
-  test("reconcile throw is non-fatal — start still returns 0 with WARN", async () => {
-    await writeTeamJson({
-      members: [{ name: "alice", role: "team-lead" }],
-    });
-    const loadCockpitFn = async () => fakeCockpit({ teams: [{ name: env.team, enabled: true }] });
-    const cockpitReconcileFn: CockpitReconcileFn = async () => {
-      throw new Error("tmux server unreachable on default socket");
-    };
-
-    const exit = await runStart([], { loadCockpitFn, cockpitReconcileFn });
-    expect(exit).toBe(0);
-    expect(
-      env.logs.some(
-        (l) =>
-          l.kind === "warn" &&
-          l.msg.includes("cockpit reconcile failed") &&
-          l.msg.includes(env.team),
-      ),
-    ).toBe(true);
-  });
-
-  test("default loadCockpitFn (production path) — no cockpit.json on dev host → silent skip", async () => {
-    // The harness defaults loadCockpitFn to `async () => null` to keep
-    // existing tests host-independent; this test asserts the real
-    // default is host-agnostic too (no cockpit.json should mean silent
-    // skip, not a thrown error).
-    await writeTeamJson({
-      members: [{ name: "alice", role: "team-lead" }],
-    });
-    const { fn: reconcileFn, calls } = makeReconcileRecorder();
-    // Force ATMUX_COCKPIT_CONFIG to a non-existent path so loadCockpit
-    // hits its ConfigError branch → null.
-    const exit = await start(["--socket-path", env.socketPath], {
-      env: {
-        ...process.env,
-        ATMUX_DIR: env.atmuxDir,
-        ATMUX_COCKPIT_CONFIG: "/tmp/atmux-nonexistent-cockpit-config.json",
-      },
-      cwd: env.atmuxDir,
-      logger: env.logger,
-      cockpitReconcileFn: reconcileFn,
-    });
-    expect(exit).toBe(0);
-    expect(calls).toHaveLength(0);
-    expect(env.logs.some((l) => l.kind === "warn" && l.msg.includes("cockpit"))).toBe(false);
-  });
-});
-
-// ---------- t-eb0887fe: parallelized member spawn ----------
-
 import { resolveSpawnConcurrency, runWithConcurrency } from "../../../src/verbs/start.ts";
 
 describe("resolveSpawnConcurrency", () => {
@@ -1732,193 +1043,5 @@ describe("runWithConcurrency", () => {
         if (item === 2) throw new Error("boom on 2");
       }),
     ).rejects.toThrow(/boom on 2/);
-  });
-});
-
-describe("start — t-eb0887fe parallelized member spawn", () => {
-  test("lead spawns sequentially FIRST; teammates fan out in parallel", async () => {
-    // Wire an instrumented sleep so we can observe parallelism. The
-    // brief-paste path awaits `sleep(spawnWaitMs)` exactly once per
-    // non-shell member — we hook that to record (member, ts) at the
-    // sleep boundary AND track max in-flight via a counter that
-    // increments on entry + decrements on exit. The lead's slot
-    // must complete BEFORE any teammate's slot starts.
-    const events: Array<{ member: string; kind: "enter" | "exit"; t: number }> = [];
-    const t0 = Date.now();
-    let inFlight = 0;
-    let maxInFlight = 0;
-    const SLEEP_MS = 80;
-
-    // Pull the member name out of the `cwd` we set per-member. The
-    // brief-paste path calls sleep with the spawnWaitMs constant, not
-    // the member name — but the closure runs in member-spawn order
-    // so we trace by call-sequence + the most recent log line.
-    const nextMember = "";
-    const trace = async (ms: number): Promise<void> => {
-      // tag this sleep call with the current "in-flight" member by
-      // peeking at the latest "spawned window <emoji>-<name>" log line.
-      const latest = env.logs[env.logs.length - 1];
-      // ADR-161 TR2: default-role members render `_-prefix`; user-added
-      // members keep hyphen. Match either separator.
-      const winLine = latest?.msg.match(/spawned window 🐝[-_](\S+)/);
-      const member = winLine?.[1] ?? nextMember;
-      events.push({ member, kind: "enter", t: Date.now() - t0 });
-      inFlight += 1;
-      maxInFlight = Math.max(maxInFlight, inFlight);
-      await new Promise<void>((res) => setTimeout(res, ms));
-      inFlight -= 1;
-      events.push({ member, kind: "exit", t: Date.now() - t0 });
-    };
-
-    const briefsDir = await mkdtemp(join(tmpdir(), "atmux-briefs-par-"));
-    await writeFile(join(briefsDir, "lead.md"), "lead {{MEMBER}}\n", "utf8");
-    await writeFile(join(briefsDir, "member.md"), "member {{MEMBER}}\n", "utf8");
-
-    try {
-      const body = {
-        name: env.team,
-        members: [
-          { name: "alpha", role: "team-lead", emoji: "🐝", tui: "fake-tui" },
-          { name: "beta", role: "member", emoji: "🐝", tui: "fake-tui" },
-          { name: "gamma", role: "member", emoji: "🐝", tui: "fake-tui" },
-          { name: "delta", role: "member", emoji: "🐝", tui: "fake-tui" },
-          { name: "epsilon", role: "member", emoji: "🐝", tui: "fake-tui" },
-        ],
-        tuiCommands: { "fake-tui": "cat" },
-      };
-      await writeFile(
-        join(env.atmuxDir, "team.json"),
-        `${JSON.stringify(body, null, 2)}\n`,
-        "utf8",
-      );
-
-      const exit = await runStart([], {
-        briefsDir,
-        spawnWaitMs: SLEEP_MS,
-        sleep: trace,
-      });
-      expect(exit).toBe(0);
-    } finally {
-      await rm(briefsDir, { recursive: true, force: true });
-    }
-
-    // Six sleep entries: one per non-shell member spawn-wait + one
-    // per post-paste settle inside submitAfterPaste (per ADR-081 §A).
-    // Just check the parallelism shape: at least 2 sleeps overlapped.
-    expect(maxInFlight).toBeGreaterThanOrEqual(2);
-
-    // Lead's spawn-wait MUST exit before the second teammate enters
-    // its spawn-wait — proves the lead-first-sequential contract.
-    const leadExit = events.find((e) => e.member === "alpha" && e.kind === "exit");
-    expect(leadExit).toBeDefined();
-    const teammateEntries = events.filter(
-      (e) => e.kind === "enter" && e.member !== "alpha" && e.member !== "",
-    );
-    // Every teammate's enter happens AT OR AFTER the lead's exit time.
-    for (const ent of teammateEntries) {
-      expect(ent.t).toBeGreaterThanOrEqual(leadExit!.t - 1); // -1ms timing slack
-    }
-  });
-
-  test("opts.spawnConcurrency=1 restores legacy sequential behaviour", async () => {
-    // Verify the cap-of-1 escape hatch via runWithConcurrency: when
-    // tests / operators need byte-equivalent legacy ordering, cap=1
-    // serializes the fan-out. We observe via the same sleep trace.
-    let inFlight = 0;
-    let maxInFlight = 0;
-    const SLEEP_MS = 40;
-
-    const briefsDir = await mkdtemp(join(tmpdir(), "atmux-briefs-seq-"));
-    await writeFile(join(briefsDir, "lead.md"), "lead\n", "utf8");
-    await writeFile(join(briefsDir, "member.md"), "member\n", "utf8");
-
-    try {
-      const body = {
-        name: env.team,
-        members: [
-          { name: "alpha", role: "team-lead", emoji: "🐝", tui: "fake-tui" },
-          { name: "beta", role: "member", emoji: "🐝", tui: "fake-tui" },
-          { name: "gamma", role: "member", emoji: "🐝", tui: "fake-tui" },
-        ],
-        tuiCommands: { "fake-tui": "cat" },
-      };
-      await writeFile(
-        join(env.atmuxDir, "team.json"),
-        `${JSON.stringify(body, null, 2)}\n`,
-        "utf8",
-      );
-
-      // Pass spawnConcurrency=1 via StartOpts. runStart wraps args
-      // but doesn't forward arbitrary opts; we mirror the wrap-path
-      // by calling start() directly with the per-test socket flag.
-      const exit = await start(["--socket-path", env.socketPath], {
-        env: { ...process.env, ATMUX_DIR: env.atmuxDir },
-        cwd: env.atmuxDir,
-        logger: env.logger,
-        loadCockpitFn: async () => null,
-        briefsDir,
-        spawnWaitMs: SLEEP_MS,
-        spawnConcurrency: 1,
-        sleep: async (ms) => {
-          inFlight += 1;
-          maxInFlight = Math.max(maxInFlight, inFlight);
-          await new Promise<void>((res) => setTimeout(res, ms));
-          inFlight -= 1;
-        },
-      });
-      expect(exit).toBe(0);
-    } finally {
-      await rm(briefsDir, { recursive: true, force: true });
-    }
-    // Under cap=1 the teammate fan-out collapses back to one-at-a-
-    // time; combined with the always-sequential lead phase, max
-    // in-flight stays at 1 across the entire spawn loop.
-    expect(maxInFlight).toBe(1);
-  });
-
-  test("lead-less team → all members fan out from the start", async () => {
-    // No `team-lead` role anywhere — the `leadMember = ...find(...)`
-    // returns undefined, the sequential prelude is skipped, and the
-    // entire roster spawns through `runWithConcurrency`.
-    let inFlight = 0;
-    let maxInFlight = 0;
-    const SLEEP_MS = 50;
-
-    const briefsDir = await mkdtemp(join(tmpdir(), "atmux-briefs-leadless-"));
-    await writeFile(join(briefsDir, "member.md"), "member\n", "utf8");
-
-    try {
-      const body = {
-        name: env.team,
-        members: [
-          { name: "alpha", role: "member", emoji: "🐝", tui: "fake-tui" },
-          { name: "beta", role: "member", emoji: "🐝", tui: "fake-tui" },
-          { name: "gamma", role: "member", emoji: "🐝", tui: "fake-tui" },
-          { name: "delta", role: "member", emoji: "🐝", tui: "fake-tui" },
-        ],
-        tuiCommands: { "fake-tui": "cat" },
-      };
-      await writeFile(
-        join(env.atmuxDir, "team.json"),
-        `${JSON.stringify(body, null, 2)}\n`,
-        "utf8",
-      );
-
-      const exit = await runStart([], {
-        briefsDir,
-        spawnWaitMs: SLEEP_MS,
-        sleep: async (ms) => {
-          inFlight += 1;
-          maxInFlight = Math.max(maxInFlight, inFlight);
-          await new Promise<void>((res) => setTimeout(res, ms));
-          inFlight -= 1;
-        },
-      });
-      expect(exit).toBe(0);
-    } finally {
-      await rm(briefsDir, { recursive: true, force: true });
-    }
-    // Default cap is 6; all 4 members fit and fan out together.
-    expect(maxInFlight).toBeGreaterThanOrEqual(2);
   });
 });

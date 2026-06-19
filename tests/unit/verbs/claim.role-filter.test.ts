@@ -15,9 +15,11 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { loadInbox } from "../../../src/core/inbox.ts";
 import { addTask, loadKanban } from "../../../src/core/kanban.ts";
 import { UsageError } from "../../../src/errors.ts";
-import { claim, loadInbox, parseClaimDoneArgs } from "../../../src/verbs/claim.ts";
+import type { InboxEntry } from "../../../src/schema/inbox.ts";
+import { claim, parseClaimDoneArgs } from "../../../src/verbs/claim.ts";
 
 let teamDir: string;
 let atmuxDir: string;
@@ -109,7 +111,7 @@ describe("claim --next --role — integration", () => {
     expect(k.tasks.find((t) => t.id === beId)?.owner).toBeNull();
     expect(k.tasks.find((t) => t.id === beId)?.status).toBe("todo");
     const inbox = await loadInbox(atmuxDir, "worker");
-    expect(inbox.inProgress.map((t) => t.id)).toContain(feId);
+    expect(inbox.inProgress.map((t: InboxEntry) => t.id)).toContain(feId);
   });
 
   test("--role be claims only the BE-lane ticket", async () => {

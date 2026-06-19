@@ -11,10 +11,12 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { loadInbox } from "../../../src/core/inbox.ts";
 import { addTask, loadKanban, moveTask, selectNextClaimable } from "../../../src/core/kanban.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
+import type { InboxEntry } from "../../../src/schema/inbox.ts";
 import type { KanbanTask } from "../../../src/schema/kanban.ts";
-import { claim, loadInbox, parseClaimDoneArgs } from "../../../src/verbs/claim.ts";
+import { claim, parseClaimDoneArgs } from "../../../src/verbs/claim.ts";
 
 let teamDir: string;
 let atmuxDir: string;
@@ -301,7 +303,7 @@ describe("claim --next verb — integration", () => {
     expect(claimed?.owner).toBe("fe-worker");
     expect(claimed?.status).toBe("in-progress");
     const inbox = await loadInbox(atmuxDir, "fe-worker");
-    expect(inbox.inProgress.map((t) => t.id)).toContain(id);
+    expect(inbox.inProgress.map((t: InboxEntry) => t.id)).toContain(id);
   });
 
   test("AC2: deps-blocked task is skipped, eligible sibling is picked", async () => {

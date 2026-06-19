@@ -1,7 +1,0 @@
-{
-  "_comment": "ADR-221 §Worker scope (v1) — 2-member worker: solo + committer. For small tasks that touch load-bearing code (dispatcher, schema, security gates) where a separate committer review pass is valued. Solo does the work; committer reviews + drives the fan-in merge. Spawn via `atmux team spawn-epic <eid> --from <parent> --roster solo+committer`. For pure-docs or trivial fixes, the lighter `solo` preset is sufficient. Auto-dissolve lands in v2.",
-  "members": [
-    { "name": "solo",      "role": "member",    "lane": "misc", "tui": "claude" },
-    { "name": "committer", "role": "committer", "lane": "misc", "tui": "claude" }
-  ]
-}

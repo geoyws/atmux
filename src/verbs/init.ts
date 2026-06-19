@@ -63,12 +63,8 @@ import { basename, join } from "node:path";
 import { ensureDir, exists, readText, writeText } from "../abstractions/fs.ts";
 import { readJson } from "../abstractions/json.ts";
 import { now } from "../abstractions/time.ts";
-import { driverInboxPath, getAtmuxDir, inboxPathFor, kanbanJsonPath } from "../core/common.ts";
+import { getAtmuxDir, kanbanJsonPath } from "../core/common.ts";
 import { defaultStdoutWrite, type Writer } from "../core/io.ts";
-import {
-  installSkillsPlugin,
-  renderSkillsInstallResult,
-} from "../core/skills-plugin-install.ts";
 import { resolveTemplatesDir } from "../core/templates-dir.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { ConfigError, UsageError } from "../errors.ts";
@@ -90,13 +86,6 @@ export interface ParsedInitArgs {
    *  unset (schema-default applies). Operators run `atmux reconfigure`
    *  to override per-member after init. */
   claudeAccount?: string;
-  /** ADR-217 §D5: --no-skills skips the bundled /atmux: skills plugin
-   *  install step (default behavior is to install). */
-  noSkills: boolean;
-  /** ADR-217 §D5: --skills-only runs ONLY the skills-plugin install
-   *  step, skipping the team.json scaffold. Re-install path post manual
-   *  delete; valid even on an already-initialized team. */
-  skillsOnly: boolean;
 }
 
 /**
@@ -114,11 +103,9 @@ export function parseInitArgs(args: ReadonlyArray<string>): ParsedInitArgs {
   let force = false;
   let wizard = false;
   let claudeAccount: string | undefined;
-  let noSkills = false;
-  let skillsOnly = false;
 
   const usageHint =
-    "usage: atmux init [--name <team>] [--force|-f] [--no-skills|--skills-only] [--claude-account <suffix>]";
+    "usage: atmux init [--name <team>] [--force|-f] [--claude-account <suffix>]";
 
   let i = 0;
   while (i < args.length) {
@@ -146,14 +133,6 @@ export function parseInitArgs(args: ReadonlyArray<string>): ParsedInitArgs {
         wizard = true;
         i += 1;
         break;
-      case "--no-skills":
-        noSkills = true;
-        i += 1;
-        break;
-      case "--skills-only":
-        skillsOnly = true;
-        i += 1;
-        break;
       case "--claude-account": {
         // t-3866c5b1 / ADR-094: non-interactive twin of the wizard's
         // team-wide claudeAccount prompt. Validation is value-shape
@@ -178,19 +157,10 @@ export function parseInitArgs(args: ReadonlyArray<string>): ParsedInitArgs {
         });
     }
   }
-  // ADR-217 §D5: --no-skills and --skills-only are mutually exclusive.
-  // Refusing surfaces the conflict at parse time rather than at runtime
-  // (skills-only would silently win since it short-circuits the install).
-  if (noSkills && skillsOnly) {
-    throw new UsageError({
-      what: "init: --no-skills and --skills-only cannot be combined",
-      hint: usageHint,
-    });
-  }
   // exactOptionalPropertyTypes: only set keys when defined (an explicit
   // `name: undefined` is not the same as an absent key under the strict
   // tsconfig). Build the shape conditionally.
-  const out: ParsedInitArgs = { force, wizard, noSkills, skillsOnly };
+  const out: ParsedInitArgs = { force, wizard };
   if (name !== undefined) out.name = name;
   if (claudeAccount !== undefined) out.claudeAccount = claudeAccount;
   return out;
@@ -254,16 +224,6 @@ export async function init(argv: ReadonlyArray<string>, opts: InitOptions = {}):
   const env = opts.env ?? process.env;
   const stdout = opts.stdout ?? defaultStdoutWrite;
 
-  // ADR-217 §D5: --skills-only short-circuits scaffold entirely. The
-  // re-install path post-manual-delete should NOT require the team.json
-  // to be absent (--force) nor risk overwriting it (no --force). Run the
-  // plugin step + return.
-  if (parsed.skillsOnly) {
-    const result = await installSkillsPlugin({ env, force: parsed.force });
-    stdout(renderSkillsInstallResult(result));
-    return 0;
-  }
-
   const cwd = opts.cwd ?? process.cwd();
   const teamName =
     parsed.name !== undefined && parsed.name.length > 0 ? parsed.name : basename(cwd);
@@ -286,8 +246,8 @@ export async function init(argv: ReadonlyArray<string>, opts: InitOptions = {}):
     });
   }
 
-  // Scaffold dirs (bash :34: mkdir -p $dir/{inboxes,logs,state,archive}).
-  await ensureDir(join(dir, "inboxes"));
+  // Scaffold dirs. Per ADR-263 §D4 the fleet `inboxes/` messaging dir is
+  // cut; the lean harness needs only logs / state / archive.
   await ensureDir(join(dir, "logs"));
   await ensureDir(join(dir, "state"));
   await ensureDir(join(dir, "archive"));
@@ -346,42 +306,20 @@ export async function init(argv: ReadonlyArray<string>, opts: InitOptions = {}):
   // jq (sorted) and JSON.stringify (insertion-order) is absorbed there.
   await writeText(tj, `${JSON.stringify(rendered, null, 2)}\n`);
 
-  // Seed kanban.json + driver-inbox.md if absent. Bash :50-51 uses
-  // `$(atmux::kanban_json)` / `$(atmux::driver_inbox)` which respect
-  // $ATMUX_DIR. Match by routing through `getAtmuxDir` (which has the
-  // same resolution order). After the scaffold mkdir above, the walk-up
-  // path also lands on `<cwd>/.atmux` so all three resolution paths
-  // (env-override / walk-up-find-just-created / fallback) coincide.
+  // Seed kanban.json if absent. The task feed (ADR-007 pull-kanban) is
+  // kept but optional per ADR-263 §D6; seeding an empty task list keeps
+  // `task`/`claim`/`done` working out of the box. The fleet `epics` /
+  // `stories` arrays are cut (ADR-263 §D4) — seed `tasks` only.
+  // `getAtmuxDir` resolves to `<cwd>/.atmux` here (the scaffold dir was
+  // just created above), matching env-override / walk-up / fallback.
   const atmuxDir = await getAtmuxDir({ cwd, env });
   const kanban = kanbanJsonPath(atmuxDir);
-  const drvInbox = driverInboxPath(atmuxDir);
   if (!(await exists(kanban))) {
-    // Bash literal: `echo '{"tasks":[],"epics":[],"stories":[]}' > "$kj"`.
-    // writeText to byte-match (compact, single-line, trailing newline).
-    await writeText(kanban, '{"tasks":[],"epics":[],"stories":[]}\n');
-  }
-  if (!(await exists(drvInbox))) {
-    // Bash literal: `: > "$di"` — empty file, zero bytes.
-    await writeText(drvInbox, "");
+    await writeText(kanban, '{"tasks":[]}\n');
   }
 
-  // Per-member inbox files (bash :56-60). Iterate over members from the
-  // rendered team object directly — equivalent to bash's
-  // `jq -r '.members[].name'` re-read of the just-written team.json.
-  // The bash side defensively skips empty names (`[[ -z "$m" ]] &&
-  // continue`); the TS port's `Team` schema enforces `members[].name`
-  // is non-empty (src/schema/team.ts:27 — `z.string().min(1)`), so the
-  // empty-name branch is statically unreachable here.
-  for (const member of rendered.members) {
-    const ib = inboxPathFor(dir, member.name);
-    if (!(await exists(ib))) {
-      // Bash literal: `echo '{"pending":[],"inProgress":[],"done":[]}' > "$ib"`.
-      await writeText(ib, '{"pending":[],"inProgress":[],"done":[]}\n');
-    }
-  }
-
-  // (Skipped per header comment: bash :70-77 atmux::registry_upsert.
-  // Registry abstraction lands in a follow-up; no fsState divergence.)
+  // (Per ADR-263 §D4 the driver-inbox.md + per-member inbox stubs of the
+  // fleet messaging layer are cut; no inbox seeding in the lean harness.)
 
   // Output. Bash :79-84:
   //   atmux::ok "initialized atmux team '$team_name' at $dir"   → stderr
@@ -389,7 +327,6 @@ export async function init(argv: ReadonlyArray<string>, opts: InitOptions = {}):
   //   echo "Next:"                                               → stdout
   //   echo "  1. review $tj"                                     → stdout
   //   echo "  2. atmux start"                                    → stdout
-  //   echo "  3. atmux tell-lead 'build feature X'"              → stdout
   //
   // Under the parity harness `NO_COLOR=1` + non-TTY, both bash + TS
   // emit color-stripped output (bash via `[[ -t 1 ]]`; TS via
@@ -397,24 +334,13 @@ export async function init(argv: ReadonlyArray<string>, opts: InitOptions = {}):
   const logger = opts.logger ?? createLogger();
   logger.ok(`initialized atmux team '${teamName}' at ${dir}`);
 
-  // ADR-217 §D5: install the bundled /atmux: skills plugin by
-  // symlinking ~/.claude/plugins/atmux/ → <atmux-source>/plugins/atmux/.
-  // Default-install; --no-skills opts out. Real-directory override
-  // preserved + opt-out marker honoured + idempotent on already-correct
-  // symlink. Output goes to stdout alongside the "Next:" lines so the
-  // operator sees the full picture in one block.
-  const skillsResult = await installSkillsPlugin({
-    env,
-    noSkills: parsed.noSkills,
-    force: parsed.force,
-  });
-  stdout(renderSkillsInstallResult(skillsResult));
+  // (Per ADR-263 §D4 the bundled /atmux: skills-plugin install step is
+  // cut along with the fleet-coordination skills it shipped.)
 
   stdout("\n");
   stdout("Next:\n");
   stdout(`  1. review ${tj}\n`);
   stdout("  2. atmux start\n");
-  stdout("  3. atmux tell-lead 'build feature X'\n");
 
   return 0;
 }

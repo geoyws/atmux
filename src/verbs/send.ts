@@ -37,16 +37,12 @@ import {
   buildWindowNameLegacy,
   getAtmuxDir,
   getSessionName,
-  isMedicInboxKey,
-  MEDIC_INBOX_KEY,
   type ResolveDirOpts,
   requireTeam,
   resolveTeamSocket,
   resolveWindowWithRenameShim,
-  SUPERDOCTOR_INBOX_KEY,
   type WindowShimOps,
 } from "../core/common.ts";
-import { appendInboxMessage } from "../core/inbox.ts";
 import { verifierForTui } from "../core/safe-send.ts";
 import { type SendOpts, sendToMember } from "../core/send.ts";
 import { ConfigError, UsageError } from "../errors.ts";
@@ -70,12 +66,11 @@ export interface SendArgs {
   socketPath?: string;
   /** `--team-dir <dir>` override; otherwise getAtmuxDir() walks cwd. */
   teamDir?: string;
-  /** ADR-077 §F3: `--from <sender>` override for cockpit-tier inbox
-   *  writes (only meaningful when `member === SUPERDOCTOR_INBOX_KEY`).
-   *  Default sender is `<team-name>:cli`. */
+  /** `--from <sender>` override (parsed for back-compat; no longer
+   *  consumed by a delivery path after the ADR-263 fleet cut). */
   from?: string;
-  /** ADR-077 §F3: `--kind <kind>` override for cockpit-tier inbox
-   *  writes — `heads-up` (default) | `p0` | `info`. */
+  /** `--kind <kind>` override (parsed for back-compat; no longer
+   *  consumed by a delivery path after the ADR-263 fleet cut). */
   kind?: string;
 }
 
@@ -302,18 +297,6 @@ export async function send(argv: ReadonlyArray<string>): Promise<number> {
 
   const team = await requireTeam(dirOpts);
 
-  // ADR-077 §F3 / ADR-133: cockpit-tier inbox key short-circuit. When
-  // the target is `__medic__` (canonical) or `__superdoctor__` (the
-  // deprecated alias accepted during the one-release-cycle window),
-  // write to the team's `inbox_messages` table and skip the entire
-  // tmux pane delivery path. Medic is not a member of any team.json —
-  // it lives at the cockpit tier and reads inbox_messages on its
-  // hourly whip turn. Broadcast + a cockpit-tier key is rejected
-  // (broadcast iterates team.members; the cockpit-tier key isn't one).
-  if (!parsed.broadcast && isMedicInboxKey(parsed.member)) {
-    return await sendToMedicInbox(team, parsed, dirOpts);
-  }
-
   const sessionName = await getSessionName({ ...dirOpts, team });
   // t-f786031f: honour team.tmuxTmpdir for the cage socket. Pre-fix
   // pinned `/tmp/atmux-<team>/sock` unconditionally, breaking lead→
@@ -345,7 +328,7 @@ export async function send(argv: ReadonlyArray<string>): Promise<number> {
   if (memberEntry === undefined) {
     throw new ConfigError({
       what: `send: no such member in team.json: ${memberName}`,
-      hint: `run 'atmux status' to list members (or use '${MEDIC_INBOX_KEY}' / legacy '${SUPERDOCTOR_INBOX_KEY}' for the cockpit-tier medic inbox)`,
+      hint: "run 'atmux status' to list panes",
     });
   }
   const target = await resolveMemberTarget(
@@ -429,47 +412,4 @@ async function broadcastSend(
     }
   }
   return anyFailed ? 1 : 0;
-}
-
-/**
- * ADR-077 §F3 / ADR-133: cockpit-tier inbox writer. `atmux send
- * __medic__ "<msg>"` (canonical) or `atmux send __superdoctor__
- * "<msg>"` (deprecated alias) from a team's cwd writes a row to that
- * team's `inbox_messages` SQLite table instead of attempting tmux pane
- * delivery. Medic (cockpit window 2) reads matching rows on its
- * hourly whip turn — its reader coalesces both keys during the
- * deprecation window.
- *
- * Storage policy: the row is written under whichever inbox key the
- * caller passed (preserves in-flight `__superdoctor__` rows for read
- * consumers). New tooling should pass `__medic__`.
- *
- * Sender defaults to `<team-name>:cli`; override via `--from <sender>`
- * (convention: `<team>:<member>` when a specific lead/member is
- * attributing). Kind defaults to `heads-up`; override via `--kind`.
- *
- * Honors `--no-submit` as a structural no-op (the row is still
- * written; there's no tmux Enter to suppress). `--no-verify` and the
- * tmux-pane-delivery flags do not apply here.
- */
-async function sendToMedicInbox(
-  team: Team,
-  parsed: SendArgs,
-  dirOpts: ResolveDirOpts,
-): Promise<number> {
-  const atmuxDir = await getAtmuxDir(dirOpts);
-  const sender = parsed.from ?? `${team.name}:cli`;
-  const kind = parsed.kind ?? "heads-up";
-  // Caller already passed an inbox key matching `isMedicInboxKey` so
-  // `parsed.member` is one of `__medic__` / `__superdoctor__`. Default
-  // to the canonical key only if (defensively) something stripped it.
-  const memberKey = parsed.member ?? MEDIC_INBOX_KEY;
-  const opts: Parameters<typeof appendInboxMessage>[1] = {
-    member: memberKey,
-    sender,
-    body: parsed.msg,
-    kind,
-  };
-  await appendInboxMessage(atmuxDir, opts);
-  return 0;
 }

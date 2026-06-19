@@ -35,7 +35,9 @@
 // - Cage tmux prefix override (lib/start.sh:206-236) — `C-\` global
 //   prefix on the cage server so the operator's outer-tmux prefix
 //   (typically C-b/C-a) doesn't conflict with the nested cage tmux
-//   inside `atmux attach`. Reuses `applyCagePrefix` from cockpit.ts.
+//   inside `atmux attach`. ADR-263 §D4: applied inline via
+//   `tmux.option.setOption` (the cockpit prefix-chain ladder is gone
+//   with the cockpit).
 //   Origin: 2026-05-09 bisection — `atmux start unum` produced a cage
 //   on default `C-b` because only `atmux cockpit rebuild` Phase 3 was
 //   applying the prefix; standalone `atmux start <team>` skipped it.
@@ -88,9 +90,8 @@
 // question listed in `src/core/common.ts` §"Socket resolver" + ADR-004
 // amend Consequences §Phase 2.
 
-import { rename } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { appendText, ensureDir, exists, readTextOrNull, writeText } from "../abstractions/fs.ts";
+import { ensureDir, exists, writeText } from "../abstractions/fs.ts";
 import { now } from "../abstractions/time.ts";
 import {
   createTmux,
@@ -109,15 +110,7 @@ import {
   type BootClaudeOpts,
   type BootResult,
   bootClaudeMember,
-  renderBootFailureNotice,
 } from "../core/boot-claude.ts";
-import {
-  addEpicViewerToParentCage,
-  enabledTeams,
-  loadCockpit,
-  readNestingLevel,
-  resolvePrefix,
-} from "../core/cockpit.ts";
 import {
   buildWindowName,
   buildWindowNameLegacy,
@@ -126,32 +119,24 @@ import {
   getAtmuxDir,
   getDefaultSocket,
   getSessionName,
-  leadOutboxPath,
   loadTeam,
   resolveTeamSocket,
   stateDir,
   teamJsonPath,
 } from "../core/common.ts";
-import {
-  type DriverSession,
-  isTrunkDriver,
-  resolveDriverCwd,
-  resolveDriversList,
-} from "../core/drivers.ts";
-import { injectGoalIfActive } from "../core/goal-injection.ts";
 import { submitAfterPaste } from "../core/paste-submit.ts";
-import { maybeSpawnOrchdWindow } from "../core/orchd-window.ts";
-import { consumedManifestPath, resumeManifestPath } from "../core/soft-stop.ts";
-import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.ts";
+import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { CLAUDE_TUI_SCRUB_VARS, resolveTuiCommand } from "../core/tui-cmd.ts";
 import { ConfigError, UsageError } from "../errors.ts";
-import { ResumeManifest } from "../schema/resume.ts";
 import type { Team } from "../schema/team.ts";
-import { applyCagePrefix, reconcileCockpitSession } from "./cockpit.ts";
 // ADR-233 §D1: cron auto-install retired; the `cronInstall` import is gone.
 //   Operators who want crons run `atmux cron-install` explicitly.
-import { defaultBriefsDir, getBriefPath, renderBrief } from "./rotate.ts";
+// ADR-263 §D4: brief paste removed from the start path; `getBriefPath` /
+//   `renderBrief` are retained ONLY because the exported
+//   `pasteBriefForMember` helper (consumed by doctor.ts via dynamic
+//   import) still uses them. New start panes are flat — no brief.
+import { getBriefPath, renderBrief } from "./rotate.ts";
 
 // ---------- Arg parsing ----------
 
@@ -280,18 +265,6 @@ export interface StartOpts {
    *  `abstractions/worktree.ts`. Tests pass a mock so the start path
    *  doesn't shell out to git against the live repo. */
   gitSpawn?: GitSpawn;
-  /** ADR-081 §C: override the briefs directory. Default =
-   *  `defaultBriefsDir()` which resolves to `<repo>/templates/briefs/`.
-   *  Tests inject a temp dir seeded with role-specific brief files. */
-  briefsDir?: string;
-  /** ADR-081 §C: override the spawn-wait between TUI launch and brief
-   *  paste, in ms. Default = `ATMUX_SPAWN_WAIT` env (seconds) or 6000ms.
-   *  Tests pass `0` to skip waiting on a real claude welcome screen. */
-  spawnWaitMs?: number;
-  /** ADR-081 §C: sleep override (test injection). Used for both the
-   *  spawn-wait and the post-paste settle inside `submitAfterPaste`.
-   *  Default = `setTimeout`-backed. Tests pass a no-op. */
-  sleep?: (ms: number) => Promise<void>;
   /** ADR-081 §C completion (t-94d7ad60): override the boot-claude
    *  knobs for claude-TUI members. Tests inject a no-op
    *  sleep + a fake capture-pane via a wrapped tmux to keep the
@@ -300,23 +273,10 @@ export interface StartOpts {
    *  by start.ts — the override is just for the tunable subset
    *  (timeouts, sleep, etc.). */
   bootClaude?: Partial<BootClaudeOpts>;
-  /** ADR-063 ergonomic fix (t-ab8df0b4): inject the cockpit loader for
-   *  the post-bring-up reconcile hook. Default = the real
-   *  `loadCockpit` from `core/cockpit.ts`. Tests pass a no-cockpit
-   *  fixture or a stub roster to drive every branch (rostered+enabled,
-   *  un-rostered, enabled:false, missing-config). Return `null` to
-   *  signal a graceful skip (matches the missing-config silent path). */
-  loadCockpitFn?: () => Promise<Awaited<ReturnType<typeof loadCockpit>> | null>;
-  /** ADR-063 ergonomic fix: inject the cockpit reconcile primitive
-   *  itself for tests so they can assert per-team scope without
-   *  shelling out to a real tmux server. Default = real
-   *  `reconcileCockpitSession`. */
-  cockpitReconcileFn?: typeof reconcileCockpitSession;
-  /** t-eb0887fe: cap on concurrent non-lead member spawns. Lead is
-   *  always spawned sequentially first; teammates fan out via
+  /** t-eb0887fe: cap on concurrent member spawns. Panes fan out via
    *  `Promise.all` honouring this cap (default 6, env override via
-   *  `ATMUX_SPAWN_CONCURRENCY`). Tests pass `1` to force the legacy
-   *  serial behaviour or a larger value to exercise N-in-flight. */
+   *  `ATMUX_SPAWN_CONCURRENCY`). Tests pass `1` to force serial
+   *  behaviour or a larger value to exercise N-in-flight. */
   spawnConcurrency?: number;
 }
 
@@ -334,17 +294,6 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   const parsed = parseStartArgs(args, env);
   const logger = opts.logger ?? createLogger();
   const factory = opts.tmuxFactory ?? createTmux;
-  // ADR-081 §C: resolve brief-paste knobs once. `sleep` defaults to a
-  // setTimeout-backed promise; tests pass a no-op. `spawnWaitMs` defaults
-  // to `ATMUX_SPAWN_WAIT` env (seconds, bash parity) or 6000ms when unset.
-  const briefSleep =
-    opts.sleep ??
-    ((ms: number) =>
-      new Promise<void>((res) => {
-        setTimeout(res, ms);
-      }));
-  const spawnWaitMs = resolveSpawnWaitMs(opts.spawnWaitMs, env);
-  const briefsDir = opts.briefsDir ?? defaultBriefsDir();
 
   // 1. Load team + ensure standard dirs (lib/start.sh:12-14).
   // exactOptionalPropertyTypes: build the resolve-opts conditionally so
@@ -425,169 +374,21 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
 
   // 7. Create session if missing.
   //
-  //    Default path (lib/start.sh:156, 200-204): seed with the
-  //    `__<team>__home` placeholder window and let the member loop
-  //    populate, then kill `__home` once any real window exists.
-  //
-  //    ADR-044 path (lib/start.sh:177-214): when `team.driverSession`
-  //    is configured, seed the session with a `driver` window at index 1
-  //    running the resolved TUI command instead of the placeholder.
-  //    Members append after as windows 2..N+1, matching the bash
-  //    `driver → lead → members` declarative topology. The legacy
-  //    `__home` cleanup in step 9 is skipped when this path fires
-  //    (no placeholder was ever created).
-  //
-  //    `team.driverSession === null` is treated the same as missing —
-  //    matches the existing wizard's "explicitly disabled" output and
-  //    keeps `null` round-trip-safe for teams that opted out.
+  //    ADR-263 §D1: flat-pane model — the session seeds with the
+  //    `__<team>__home` placeholder window and the member loop (step 8)
+  //    populates one window per `team.members[]` entry, then `__home` is
+  //    killed once any real window exists. There is no driver fan-out,
+  //    no role-based topology, no lead-first ordering — panes are a plain
+  //    list the operator drives.
   const homeWin = `__${team.name}__home`;
   const stillExists = sessionExisted && !parsed.force;
-  const projectRoot = dirname(dir);
-  // ADR-239 §A1 + §A5 — resolve the declarative driver roster. Falls back
-  // to a single-element list synthesized from the legacy `driverSession`
-  // / `driverTui` fields (ADR-239 §D7 deprecation window).
-  const drivers = resolveDriversList(team as Parameters<typeof resolveDriversList>[0]);
-  let driverInitial = false;
   if (!stillExists) {
-    if (drivers.length > 0) {
-      // ---------- ADR-239 §A1/§A5 driver-spawn loop ----------
-      //
-      // Each driver pane launches via tmux command-mode (shellCommand on
-      // new-session for the first driver, new-window for the rest). NEVER
-      // routes through pane.sendKeys — ADR-239 §D2 no-send-keys-EVER
-      // invariant is satisfied at spawn time by construction.
-      //
-      // Worktree provisioning for driver-N (N>=2) happens inline: the cwd
-      // convention `.atmux/worktrees/driver-N` triggers a provisionWorktree
-      // call against `<base>-driver-N` off `origin/<base>` (ADR-082/-084
-      // pattern, mirrored from the member-worktree loop below).
-      const gitSpawn = opts.gitSpawn ?? defaultGitSpawn;
-      const rootR = await gitSpawn(["-C", projectRoot, "rev-parse", "--show-toplevel"]);
-      const branchR = await gitSpawn(["-C", projectRoot, "branch", "--show-current"]);
-      const repoPath = rootR.exitCode === 0 ? rootR.stdout.trim() : projectRoot;
-      const baseBranch = branchR.exitCode === 0 ? branchR.stdout.trim() : "";
-      // Worktree provisioning fails closed: an empty baseBranch (detached
-      // HEAD) or non-zero git rev-parse means driver-N panes land on the
-      // shared trunk path instead of an isolated worktree. Logged once.
-      let canProvisionDriverWorktrees = baseBranch.length > 0 && rootR.exitCode === 0;
-      if (!canProvisionDriverWorktrees && drivers.some((d) => !isTrunkDriver(d))) {
-        logger.warn(
-          "driver worktree: cannot detect repo root or base branch — driver-N panes will land on the shared trunk cwd (fix git state to re-enable per-driver worktrees)",
-        );
-      }
-
-      // ADR-239 §A5 — command-mode launch: the resolved TUI cmd runs as
-      // the pane's PID 0. To preserve the "pane stays a usable shell
-      // after the TUI exits" property that the legacy send-keys path
-      // gave for free, non-shell TUIs are wrapped with `sh -c '<cmd>;
-      // exec $SHELL -i'` so the pane drops back to an interactive shell
-      // when the TUI quits. Shell-kind TUIs already ARE a shell — no
-      // wrap (and no command at all; the pane starts in $SHELL by
-      // default per tmux's new-session/new-window semantics).
-      const isShellOnlyTui = (tui: string): boolean =>
-        tui === "shell" || tui === "bash" || tui === "zsh";
-
-      const wrapForShellFallback = (cmd: string): string =>
-        `sh -c ${JSON.stringify(`${cmd}; exec $SHELL -i`)}`;
-
-      const resolveCmd = (drv: DriverSession, cwd: string): string | undefined => {
-        if (isShellOnlyTui(drv.tui)) return undefined;
-        const synth = {
-          name: drv.name,
-          role: "driver",
-          tui: drv.tui,
-          model: "default",
-          cwd,
-          ...(drv.claudeAccount !== undefined ? { claudeAccount: drv.claudeAccount } : {}),
-        };
-        try {
-          const raw = resolveTuiCommand(synth, team, { env, cwd });
-          return wrapForShellFallback(raw);
-        } catch (err) {
-          logger.warn(
-            `driver ${drv.name}: could not resolve command for tui='${drv.tui}' — pane will land in shell (${err instanceof Error ? err.message : String(err)})`,
-          );
-          return undefined;
-        }
-      };
-
-      const ensureDriverWorktree = async (
-        drv: DriverSession,
-        configuredCwd: string,
-      ): Promise<string> => {
-        if (isTrunkDriver(drv) || !canProvisionDriverWorktrees) return configuredCwd;
-        // Per ADR-239 §A1 worktree path: `.atmux/worktrees/driver-N`.
-        // We resolve against the worktree config (DEFAULT_WORKTREE_ROOT
-        // = ".atmux/worktrees") rather than honoring an arbitrary cwd —
-        // operators who diverge from the convention get the explicit
-        // cwd back, no provisioning fired.
-        const conventionalCwd = join(projectRoot, ".atmux", "worktrees", drv.name);
-        if (configuredCwd !== conventionalCwd) return configuredCwd;
-        const wtBranch = `${baseBranch}-${drv.name}`;
-        try {
-          const r = await provisionWorktree(repoPath, baseBranch, wtBranch, conventionalCwd, {
-            git: gitSpawn,
-            ...(team.worktreeInitSubmodules === true ? { initSubmodules: true } : {}),
-          });
-          logger.log(
-            `  · driver worktree ${r.created ? "created" : "reused"}: ${drv.name} → ${conventionalCwd} [${wtBranch}]`,
-          );
-          return conventionalCwd;
-        } catch (err) {
-          logger.warn(
-            `driver worktree: ${drv.name} provision failed — falling back to shared trunk cwd (${err instanceof Error ? err.message : String(err)})`,
-          );
-          canProvisionDriverWorktrees = false;
-          return projectRoot;
-        }
-      };
-
-      // First driver creates the session (window 1). Subsequent drivers
-      // attach as windows 2..N. Window order is driver-N at slots 1..N
-      // per ADR-239 §D3; members follow at N+1.
-      const firstDriver = drivers[0];
-      if (firstDriver !== undefined) {
-        const firstCwd0 = resolveDriverCwd(firstDriver, projectRoot);
-        const firstCwd = await ensureDriverWorktree(firstDriver, firstCwd0);
-        const firstCmd = resolveCmd(firstDriver, firstCwd);
-        const newSessionOpts: Parameters<typeof tmux.session.newSession>[0] = {
-          name: session,
-          windowName: firstDriver.name,
-          cwd: firstCwd,
-        };
-        if (firstCmd !== undefined) newSessionOpts.shellCommand = firstCmd;
-        await tmux.session.newSession(newSessionOpts);
-        logger.ok(
-          `created tmux session: ${session} (${firstDriver.name} at window 1, ${firstDriver.tui})`,
-        );
-        driverInitial = true;
-      }
-
-      for (let i = 1; i < drivers.length; i++) {
-        const drv = drivers[i];
-        if (drv === undefined) continue;
-        const cwd0 = resolveDriverCwd(drv, projectRoot);
-        const cwd = await ensureDriverWorktree(drv, cwd0);
-        const cmd = resolveCmd(drv, cwd);
-        const newWindowOpts: Parameters<typeof tmux.window.newWindow>[0] = {
-          sessionName: session,
-          name: drv.name,
-          cwd,
-          detached: true,
-        };
-        if (cmd !== undefined) newWindowOpts.shellCommand = cmd;
-        await tmux.window.newWindow(newWindowOpts);
-        logger.log(`  · driver pane: ${drv.name} at window ${i + 1} (${drv.tui}) cwd=${cwd}`);
-      }
-    }
-    if (!driverInitial) {
-      await tmux.session.newSession({
-        name: session,
-        windowName: homeWin,
-        cwd: opts.cwd ?? process.cwd(),
-      });
-      logger.ok(`created tmux session: ${session}`);
-    }
+    await tmux.session.newSession({
+      name: session,
+      windowName: homeWin,
+      cwd: opts.cwd ?? process.cwd(),
+    });
+    logger.ok(`created tmux session: ${session}`);
   }
 
   // 7-env-scrub. Strip operator-shell artefacts from the cage tmux
@@ -613,28 +414,18 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
     }
   }
 
-  // 7a. ADR-089 §C — apply the level-resolved prefix on the cage tmux
-  //     server. Reads `ATMUX_NESTING_LEVEL` from env (default 1 for
-  //     top-level cockpit / standalone start) and resolves the prefix
-  //     from the operator-supplied `cockpit.prefixChain` if a cockpit
-  //     config exists, falling back to the {@link DEFAULT_PREFIX_CHAIN}.
-  //
-  //     Pre-ADR-089 behaviour was a hardcoded `C-\` (cosmetic, chosen to
-  //     avoid collision with operator-bound outer-tmux prefixes). The
-  //     new path keeps the same fall-through best-effort semantics —
-  //     failures swallow inside `applyCagePrefix` (the prefix is
-  //     cosmetic, not a precondition for cage operation) — but when the
-  //     resolved prefix is available, nested cages chain unambiguously
-  //     per the F-key ladder.
-  //
-  //     Loading the cockpit is best-effort too: standalone `atmux start`
-  //     runs against teams that may not be in any cockpit roster, and
-  //     missing / unparseable cockpit.json should NOT block the start.
-  //     The fall-back chain still produces a valid prefix per level.
-  const nestingLevel = readNestingLevel(env);
-  const cagePrefix = await resolveCagePrefixBestEffort(nestingLevel, opts, logger);
-  await applyCagePrefix(tmux, cagePrefix);
-  logger.log(`cage prefix: level=${nestingLevel} prefix=${cagePrefix}`);
+  // 7a. ADR-263 §D1 (slimmed from ADR-089 §C): apply a fixed cage prefix
+  //     on the cage tmux server so the nested cage's prefix never
+  //     collides with the operator's outer-tmux prefix (typically
+  //     C-b/C-a). The cockpit-derived prefix-chain ladder is gone with
+  //     the cockpit; the harness uses the historical hardcoded `C-\`.
+  //     Best-effort/cosmetic — a setOption failure never wedges start.
+  try {
+    await tmux.option.setOption({ name: "prefix", value: "C-\\", global: true });
+    logger.log("cage prefix: C-\\");
+  } catch {
+    // ignored — cage prefix is cosmetic, not a precondition for operation
+  }
 
   // 7b. ADR-082 W3 — per-member git worktree provisioning. Only fires
   //     when team.json sets `worktreeIsolation: true`; legacy teams take
@@ -842,13 +633,11 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
         keys: cmd,
         enter: true,
       });
-      // ADR-081 §C completion (t-94d7ad60): claude TUIs go through
-      // the readiness-poll + single-line boot-prompt path so a
-      // slow cold-start doesn't drop the brief into the spinner.
-      // Non-claude TUIs (kimi, cursor) keep the legacy
-      // paste-buffer flow — different welcome rendering, no
-      // bracketed-paste hazard, the fixed-sleep is still adequate
-      // there.
+      // ADR-263 §D1: claude TUIs go through the readiness-poll +
+      // single-line boot-prompt path (boot-claude) so a slow cold-start
+      // settles before the operator drives the pane. There is no brief
+      // paste and no /goal injection — panes are flat. Non-claude TUIs
+      // just launch via the send-keys above with no follow-up.
       if (tuiKind === "claude") {
         const bootOpts: BootClaudeOpts = {
           tmux,
@@ -876,118 +665,16 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
           logger.warn(
             `  · ${member.name}: bootstrap FAILED after ${bootResult.attempts} attempt(s) (${bootResult.reason ?? "?"})`,
           );
-          // Best-effort: surface to lead-outbox.md so the operator
-          // sees an undead pane on the next review. Non-fatal.
-          try {
-            const nowIso = new Date().toISOString();
-            await appendText(
-              leadOutboxPath(dir),
-              renderBootFailureNotice({
-                team: team.name,
-                member: member.name,
-                result: bootResult,
-                nowIso,
-              }),
-            );
-          } catch (e) {
-            const cause = e instanceof Error ? e.message : String(e);
-            logger.warn(`  · ${member.name}: failed to write boot-failure notice (${cause})`);
-          }
-        }
-      } else {
-        // ADR-081 §C: paste the role brief after the TUI has time
-        // to come up. Per-member best-effort: a paste failure on
-        // one member must not wedge the rest of the team spawn.
-        // Iteration order is declarative (team.members[]) — lead
-        // conventionally first per ADR-044, so the lead's brief
-        // lands first by construction.
-        await pasteBriefForMember({
-          tmux,
-          target: memberTarget,
-          member: member.name,
-          role,
-          team: team.name,
-          atmuxDir: dir,
-          briefsDir,
-          spawnWaitMs,
-          sleep: briefSleep,
-          logger,
-        });
-      }
-
-      // ADR-157 T3: /goal injection AFTER brief lands (either via
-      // bootClaudeMember or pasteBriefForMember above). NO-OPs on
-      // cursor runtime (§D4) or no-goal-resolved. Best-effort — a
-      // verify-failed injection escalates to send-keys-failures.log
-      // per ADR-138 but does NOT abort the per-member bring-up. Only
-      // fires on `tui: "claude"` — other TUIs have no /goal skill.
-      if (tuiKind === "claude") {
-        const briefPath = await getBriefPath(role, briefsDir);
-        const goalOpts: Parameters<typeof injectGoalIfActive>[0] = {
-          tmux,
-          sendTarget: memberTarget,
-          paneTargetString: `${session}:${win}`,
-          member,
-          logger: {
-            log: (s) => logger.log(`  · ${s}`),
-            warn: (s) => logger.warn(`  · ${s}`),
-          },
-        };
-        if (briefPath.length > 0) goalOpts.briefPath = briefPath;
-        try {
-          await injectGoalIfActive(goalOpts);
-        } catch (e) {
-          const reason = e instanceof Error ? e.message : String(e);
-          logger.warn(
-            `  · ${member.name}: /goal injection threw (${reason}); lane-tick backstop applies`,
-          );
         }
       }
     }
   };
 
-  // t-eb0887fe: lead-first sequential, then teammates fan out. The
-  // lead's brief sets the team-wide contract that teammates' briefs
-  // reference (per `templates/briefs/lead.md` D5 + ADR-044; team-lead role aliases to lead.md per ADR-216), so we
-  // do NOT race the lead handshake with teammate spawns. After the
-  // lead's `bootClaudeMember` returns (booted | already-booted |
-  // failed), the remaining members spawn in parallel up to the
+  // ADR-263 §D1: flat-pane spawn — no lead-first ordering, no role-based
+  // sequencing. Every member is just a pane; they fan out up to the
   // configured concurrency cap.
-  const leadMember = team.members.find((m) => m.role === "team-lead");
-  const teammates = team.members.filter((m) => m !== leadMember);
-  if (leadMember !== undefined) {
-    await spawnOneMember(leadMember);
-  }
   const spawnCap = resolveSpawnConcurrency(opts.spawnConcurrency, env);
-  await runWithConcurrency(teammates, spawnCap, spawnOneMember);
-
-  // 8b. ADR-202 §Amendment 2026-05-22 (II) — daemon supervisor window.
-  //     When the team has a committer/gitter role AND autoMerge is
-  //     enabled AND Honker is not explicitly disabled, spawn a service
-  //     window running `atmux committer --daemon` with auto-restart.
-  //     The daemon uses the atmux-listener Rust subprocess for
-  //     kernel-blocked NOTIFY/LISTEN wake (~60ms). Cron --drain stays
-  //     installed as the safety net — if the daemon window dies and
-  //     stays dead until the next `atmux start`, the drain catches
-  //     events within 1min.
-  //
-  //     Idempotent: skipped when the supervisor window already exists
-  //     (e.g. `atmux start` re-run on an already-up team).
-  // `dir` is the `.atmux/` directory (per getAtmuxDir contract,
-  // common.ts:58 — "Resolve the .atmux/ directory path"). orchd-window
-  // expects the PROJECT ROOT (parent of .atmux/) so its supervisor's
-  // `mkdir -p .atmux/logs` + `atmux-orchd .atmux/state.db` relative
-  // paths resolve correctly. Pass dirname(dir) — orchd-window self-heals
-  // anyway via resolveCanonicalTeamRoot, but passing the right thing
-  // here avoids the heal-path log noise.
-  await maybeSpawnOrchdWindow({
-    team,
-    session,
-    teamRoot: dirname(dir),
-    tmux,
-    logger,
-    env,
-  });
+  await runWithConcurrency(team.members, spawnCap, spawnOneMember);
 
   // 9. Close the `__<team>__home` placeholder if any members spawned
   //    AND non-placeholder windows now exist (lib/start.sh:288-294).
@@ -1020,193 +707,20 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   const startSeconds = Math.floor(now() / 1000);
   await writeText(join(stateDir(dir), "session-start.txt"), `${startSeconds}\n`);
 
-  // 10a. ADR-087: surface the resume manifest from the most recent
-  //      soft-stop, if any. Pure informational — kanban + worktree
-  //      already preserve in-flight state across stop+start, so this
-  //      hook does NOT auto-restore claims. Failures (parse error /
-  //      rename collision / clock drift) degrade silently to "no hint
-  //      surfaced" — never wedge the start path on a manifest hiccup.
-  try {
-    await surfaceResumeManifest(dir, startSeconds, logger);
-  } catch (e) {
-    const cause = e instanceof Error ? e.message : String(e);
-    logger.warn(`resume-hint: surface failed — continuing without hint (${cause})`);
-  }
+  // 10a. ADR-263 §D4: cron auto-install, resume-manifest surfacing,
+  //      epic-viewer bridge, and cockpit reconcile are all gone with the
+  //      fleet-coordination layer. `atmux start` writes ZERO crontab
+  //      lines, does not auto-restore claims, and never touches a cockpit
+  //      session. The harness's job ends once the panes are up.
 
   logger.ok(`team '${team.name}' is up. attach with: atmux attach`);
-
-  // 10b. ADR-089 §Pillar 1 §Amendment (t-2ea3bdb9, 2026-05-16): when this
-  //      team is an epic-team child (team.epicTeam !== undefined), add a
-  //      viewer-window to the PARENT atmux cage that auto-attaches into
-  //      this epic-team's nested cage. Operator-experience: paging
-  //      through parent's window list, the epic-team appears as a
-  //      sibling node at the end, opening directly into the epic-team
-  //      when selected.
-  //
-  //      Soft-fails if the parent cage isn't running OR cockpit
-  //      resolution can't find the parent — the viewer is a UX bridge,
-  //      not a load-bearing structural piece, and never wedges epic-team
-  //      start.
-  if (team.epicTeam !== undefined) {
-    try {
-      const cockpitForViewer = await loadCockpit({ env: opts.env ?? process.env });
-      const parentName = team.epicTeam.parent;
-      const parentEntry = enabledTeams(cockpitForViewer).find(
-        (t) => t.type === "team" && t.name === parentName,
-      );
-      if (parentEntry === undefined || parentEntry.root === "") {
-        logger.warn(
-          `epic-viewer: parent team '${parentName}' not found in cockpit roster — skipping viewer add (run cockpit reload + atmux start again)`,
-        );
-      } else {
-        // Honour the epic team.json's `tmuxTmpdir` (ADR-089 §Pillar 1
-        // nests epic cages under `<parent-tmpdir>/epics/<epicId>`, NOT
-        // under the epic's project root — so `perTeamCageSocketPath`
-        // would target the wrong path). `resolveTeamSocket` falls back
-        // to the legacy `/tmp/atmux-<name>/sock` when tmuxTmpdir is
-        // null, matching `addEpicViewerToParentCage`'s parent-side
-        // resolution via `resolveCageSocket`.
-        await addEpicViewerToParentCage({
-          parentRoot: parentEntry.root,
-          parentName,
-          epicId: team.name,
-          epicSocket: resolveTeamSocket(team),
-          epicSession: team.name.startsWith("atmux-") ? team.name : `atmux-${team.name}`,
-          tmuxFactory: factory as Parameters<typeof addEpicViewerToParentCage>[0]["tmuxFactory"],
-          log: (m) => logger.log(`  ${m.replace(/^\s+/, "")}`),
-          warn: (m) => logger.warn(m),
-        });
-      }
-    } catch (e) {
-      const cause = e instanceof Error ? e.message : String(e);
-      logger.warn(`epic-viewer: bridge add failed — continuing (${cause})`);
-    }
-  }
-
-  // 11. ADR-233 §D1 (supersedes ADR-083 §IN §4): cron auto-install
-  //     retired. `atmux start` writes ZERO crontab lines. orchd handles
-  //     event-driven work via the Honker substrate (ADR-202) and dies
-  //     with its tmux pane via PR_SET_PDEATHSIG (ADR-224). If an
-  //     operator wants the legacy poke / report / decisions / groom
-  //     crons, they run `atmux cron-install` explicitly. The
-  //     `kanban.cronAutoInstall` schema field stays for back-compat but
-  //     is no longer read at runtime.
-
-  // 12. ADR-063 ergonomic fix (t-ab8df0b4): auto-reconcile the cockpit
-  //     viewer window when this team is rostered + enabled in
-  //     `~/.atmux/cockpit.json`. Operators previously had to remember
-  //     the two-verb dance (`atmux start` then `atmux cockpit rebuild`);
-  //     this hook folds the per-team viewer-window add into start's
-  //     tail.
-  //
-  //     Scope: ADDITIVE only — `onlyTeam` mode in
-  //     `reconcileCockpitSession` skips orphan removal + superdoctor
-  //     relocation. Un-rostered teams + cockpit.json-missing + team-
-  //     rostered-but-disabled all silent-skip (no auto-rostering — that
-  //     stays operator-explicit).
-  //
-  //     Non-fatal: any cockpit.json read failure or tmux error from the
-  //     reconcile is logged at WARN and the verb still returns 0. Team-
-  //     side bring-up has already succeeded by this point; a cockpit
-  //     hiccup shouldn't fail `start`.
-  await autoReconcileCockpitForTeam(team, factory, logger, opts);
 
   return 0;
 }
 
-/** ADR-063 ergonomic fix (t-ab8df0b4): folded into `start.run()` tail.
- *
- *  Loads `~/.atmux/cockpit.json` (best-effort), checks whether the cwd
- *  team is rostered + enabled, and calls `reconcileCockpitSession` with
- *  `onlyTeam` scope so just this team's viewer window is added (if
- *  missing) without disturbing sibling windows. Every failure mode is
- *  silent-skip or stderr-WARN — never aborts `start`.
- *
- *  Behaviour matrix (matches `atmux start --help` line):
- *
- *    | cockpit.json | team rostered | team.enabled | action                            |
- *    | ------------ | ------------- | ------------ | --------------------------------- |
- *    | missing      | n/a           | n/a          | silent skip                       |
- *    | malformed    | n/a           | n/a          | stderr WARN, skip                 |
- *    | present      | no            | n/a          | silent skip (un-rostered teams    |
- *    |              |               |              |   keep the two-verb separation)   |
- *    | present      | yes           | false        | silent skip (disabled-by-operator |
- *    |              |               |              |   intent honoured)                |
- *    | present      | yes           | true         | reconcile this team's viewer only |
- */
-async function autoReconcileCockpitForTeam(
-  team: Team,
-  factory: (cfg: TmuxConfig) => TmuxNamespace,
-  logger: Logger,
-  opts: StartOpts,
-): Promise<void> {
-  const load =
-    opts.loadCockpitFn ??
-    (async (): Promise<Awaited<ReturnType<typeof loadCockpit>> | null> => {
-      try {
-        return await loadCockpit();
-      } catch (e) {
-        // ConfigError on missing file is the silent-skip path. Schema
-        // errors (malformed JSON) surface as WARN. Distinguish via
-        // error name; anything else is also a WARN (defensive).
-        const isMissingConfig =
-          e instanceof Error && e.name === "ConfigError" && /no cockpit config/i.test(e.message);
-        if (isMissingConfig) return null;
-        const cause = e instanceof Error ? e.message : String(e);
-        logger.warn(`cockpit reconcile skipped: cannot load cockpit.json (${cause})`);
-        return null;
-      }
-    });
-
-  let cockpit: Awaited<ReturnType<typeof loadCockpit>> | null;
-  try {
-    cockpit = await load();
-  } catch (e) {
-    // Defense in depth — the default `load` already handles this, but a
-    // test-injected `loadCockpitFn` that throws should NOT take `start`
-    // down with it.
-    const cause = e instanceof Error ? e.message : String(e);
-    logger.warn(`cockpit reconcile skipped: loader threw (${cause})`);
-    return;
-  }
-  if (cockpit === null) return; // silent skip — missing cockpit.json
-
-  const matched = enabledTeams(cockpit).find((t) => t.name === team.name);
-  if (matched === undefined) {
-    // Either un-rostered OR rostered-but-`enabled: false` — both
-    // silent-skip per the ADR-063 ergonomic fix's behaviour matrix.
-    return;
-  }
-
-  const reconcile = opts.cockpitReconcileFn ?? reconcileCockpitSession;
-  // ADR-162 §Decision-anchor #1: cockpit binds the dedicated
-  // `atmux-cockpit` socket (`ATMUX_COCKPIT_SOCKET` legacy escape hatch).
-  // §Decision-anchor #2: thread the canonical atmux.conf via `-f` so
-  // window-naming + key-rebinds match ADR-135's contract regardless of
-  // the operator's personal config.
-  const cockpitTmux = factory({
-    socket: getCockpitSocketName(),
-    configFile: getAtmuxTmuxConfPath(),
-  });
-  try {
-    await reconcile(
-      cockpitTmux,
-      cockpit.cockpitSession,
-      [matched],
-      logger,
-      {},
-      cockpit.superdoctor,
-      false,
-      { onlyTeam: matched.name },
-    );
-    logger.log(
-      `  ✓ cockpit window for '${matched.name}' reconciled (cockpit:${cockpit.cockpitSession})`,
-    );
-  } catch (e) {
-    const cause = e instanceof Error ? e.message : String(e);
-    logger.warn(`cockpit reconcile failed for '${matched.name}': ${cause}`);
-  }
-}
+// ADR-263 §D4: `autoReconcileCockpitForTeam` removed with the cockpit.
+//   `atmux start` brings up the team's panes and stops — it never
+//   reconciles a cockpit viewer session.
 
 // ADR-083 §IN §4 (superseded by ADR-233 §D1): the `shouldAutoInstallCron`
 // helper is gone. `atmux start` no longer auto-installs crons; the
@@ -1388,106 +902,7 @@ export async function pasteBriefForMember(args: PasteBriefArgs): Promise<void> {
   }
 }
 
-/**
- * ADR-087: read `<atmuxDir>/state/resume.json` if a prior soft-stop
- * wrote one, log a one-line resume summary plus a per-member breakdown
- * for entries with `lastClaim !== null`, then rename the manifest to
- * `state/resume.json.<startSeconds>.consumed` so subsequent starts
- * don't re-surface it.
- *
- * No-op when the file is absent (the common case). Failures are
- * swallowed by the caller's outer try/catch — the start path must not
- * wedge on a malformed manifest.
- */
-async function surfaceResumeManifest(
-  atmuxDir: string,
-  startSeconds: number,
-  logger: Logger,
-): Promise<void> {
-  const manifestPath = resumeManifestPath(atmuxDir);
-  const raw = await readTextOrNull(manifestPath);
-  if (raw === null) return;
-  // Parse defensively — a corrupt manifest must not block start. Zod's
-  // strict mode catches unknown keys + missing fields; either path
-  // surfaces as a single warn line and the manifest stays in place for
-  // operator inspection.
-  let parsed: ResumeManifest;
-  try {
-    parsed = ResumeManifest.parse(JSON.parse(raw));
-  } catch (e) {
-    const cause = e instanceof Error ? e.message : String(e);
-    logger.warn(`resume-hint: manifest at ${manifestPath} unparseable — ${cause}`);
-    return;
-  }
-  const inFlight = parsed.members.filter((m) => m.lastClaim !== null);
-  if (inFlight.length === 0) {
-    logger.log(
-      `resume: prior ${parsed.reason} captured at ${parsed.ts} — no members had in-flight Tasks`,
-    );
-  } else {
-    logger.log(
-      `resume: ${inFlight.length} member${inFlight.length === 1 ? "" : "s"} had in-flight Tasks at ${parsed.reason} (ts=${parsed.ts}) — see ${manifestPath}`,
-    );
-    for (const m of inFlight) {
-      const ageSeconds =
-        m.claimedAt !== null && m.claimedAt > 0 ? Math.max(0, startSeconds - m.claimedAt) : null;
-      const ageHint = ageSeconds !== null ? ` (claimed ${formatAge(ageSeconds)} ago)` : "";
-      logger.log(`  · ${m.name}: ${m.lastClaim}${ageHint}`);
-    }
-  }
-  // Rename so the next start doesn't re-surface the same manifest.
-  // Best-effort: if the rename fails (cross-device, permission), leave
-  // the manifest in place — better to re-surface than to lose forensic
-  // trail.
-  try {
-    await rename(manifestPath, consumedManifestPath(atmuxDir, startSeconds));
-  } catch (e) {
-    const cause = e instanceof Error ? e.message : String(e);
-    logger.warn(`resume-hint: could not archive consumed manifest — ${cause}`);
-  }
-}
-
-/** Compact age formatter matching CLAUDE.md §"Duration formatting":
- *  <60s → `<1min`; <60m → `Nmin`; ≥60m → `HhMm` or `Hh` on the hour. */
-function formatAge(seconds: number): string {
-  if (seconds < 60) return "<1min";
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}min`;
-  const hours = Math.floor(minutes / 60);
-  const rem = minutes % 60;
-  return rem === 0 ? `${hours}h` : `${hours}h${rem}m`;
-}
-
-/**
- * ADR-089 §C — best-effort prefix resolution for the cage tmux
- * server. Loads `cockpit.json` to pick up an operator-supplied
- * `prefixChain`; falls back to the default F-key chain when:
- *
- *   - No cockpit config is present (standalone team not in any cockpit).
- *   - Cockpit config exists but `prefixChain` is unset.
- *   - Cockpit load fails (malformed config) — surface a warn, keep
- *     starting the cage on the default chain so a broken cockpit
- *     doesn't wedge `atmux start`.
- *
- * The level itself is read upstream from `ATMUX_NESTING_LEVEL` via
- * `readNestingLevel(env)` and threaded in.
- */
-async function resolveCagePrefixBestEffort(
-  level: number,
-  opts: StartOpts,
-  logger: Logger,
-): Promise<string> {
-  try {
-    const cockpit = await loadCockpit({ env: opts.env ?? process.env });
-    return resolvePrefix(level, cockpit.prefixChain);
-  } catch (e) {
-    const cause = e instanceof Error ? e.message : String(e);
-    // Cockpit absent / malformed is the common case for teams that
-    // aren't in a cockpit roster. Surface as a single log line at the
-    // verbose tier (logger.log, not warn) — operator already sees the
-    // resolved prefix in the next log line; this just explains the
-    // fallback path.
-    logger.log(`cockpit prefix-chain unavailable (${cause}) — using default F-key chain`);
-    return resolvePrefix(level);
-  }
-}
+// ADR-263 §D4: `surfaceResumeManifest` / `formatAge` (soft-stop resume
+//   hint) and `resolveCagePrefixBestEffort` (cockpit prefix-chain) are
+//   removed with the fleet layer. The cage prefix is a fixed `C-\`
+//   applied inline in `start`; there is no resume manifest to surface.
