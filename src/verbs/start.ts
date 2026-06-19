@@ -124,7 +124,6 @@ import {
   stateDir,
   teamJsonPath,
 } from "../core/common.ts";
-import { submitAfterPaste } from "../core/paste-submit.ts";
 import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { CLAUDE_TUI_SCRUB_VARS, resolveTuiCommand } from "../core/tui-cmd.ts";
@@ -132,11 +131,9 @@ import { ConfigError, UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
 // ADR-233 §D1: cron auto-install retired; the `cronInstall` import is gone.
 //   Operators who want crons run `atmux cron-install` explicitly.
-// ADR-263 §D4: brief paste removed from the start path; `getBriefPath` /
-//   `renderBrief` are retained ONLY because the exported
-//   `pasteBriefForMember` helper (consumed by doctor.ts via dynamic
-//   import) still uses them. New start panes are flat — no brief.
-import { getBriefPath, renderBrief } from "./rotate.ts";
+// ADR-263 §D4: brief paste fully removed — start panes are flat (no roles,
+//   no briefs). `pasteBriefForMember` + the rotate.ts brief renderer + the
+//   paste-submit helper are gone with the fleet layer.
 
 // ---------- Arg parsing ----------
 
@@ -818,91 +815,9 @@ export function resolveSpawnWaitMs(override: number | undefined, env: NodeJS.Pro
   return 6000;
 }
 
-/** ADR-081 §C / §D: arguments for {@link pasteBriefForMember}. Exported
- *  so ADR-081 §D's `doctor --fix` path can re-paste the brief on a
- *  starving member without duplicating the spawn-time logic. */
-export interface PasteBriefArgs {
-  tmux: TmuxNamespace;
-  target: SendTarget;
-  member: string;
-  role: string;
-  team: string;
-  atmuxDir: string;
-  briefsDir: string;
-  spawnWaitMs: number;
-  sleep: (ms: number) => Promise<void>;
-  logger: Logger;
-}
-
-/** ADR-081 §C: settle for the TUI welcome screen, render the role brief,
- *  load it into a per-member tmux buffer, paste it, and fire the C-m
- *  submit cascade (per §A's `submitAfterPaste`). Failures are caught and
- *  warned — the next member's spawn must still proceed.
- *
- *  Bash mirror: `_atmux_paste_brief` at
- *  `.archive-bash-atmux-20260507/lib/start.sh:468-481`. Differences:
- *  - We route the submit through `submitAfterPaste` (§A C-m, not Enter)
- *    so bracketed-paste-mode under claude doesn't swallow the trailing
- *    newline. Bash sent `Enter` and silently starved 11/12 panes on
- *    2026-05-12 — see ADR-081 §Audit trail.
- *  - Missing brief file is a silent skip (parity with bash:
- *    `[[ -f "$brief" ]] && _atmux_paste_brief ...`). Other failures
- *    (read, render, tmux load/paste) surface as a warn line.
- */
-export async function pasteBriefForMember(args: PasteBriefArgs): Promise<void> {
-  const { tmux, target, member, role, team, atmuxDir, briefsDir, spawnWaitMs, sleep, logger } =
-    args;
-  // 1. Resolve brief BEFORE the spawn-wait — if there's nothing to paste,
-  //    there's no reason to block 6s for a TUI we'll never speak to.
-  //    `getBriefPath` is alias-aware via the §B BRIEF_ALIASES map
-  //    (rotate.ts) and falls back to `member.md` when no role-specific
-  //    brief exists. Both resolutions land here in O(1) fs.stat.
-  let briefPath: string;
-  try {
-    briefPath = await getBriefPath(role, briefsDir);
-    if (!(await exists(briefPath))) {
-      // Silent skip — bash also no-ops here. Operator observability is
-      // by deliberate absence: a brief-less role surfaces as "ctx==0"
-      // on the next `atmux doctor` tick (§D), which is the correct
-      // place to surface the absence.
-      return;
-    }
-  } catch (e) {
-    const cause = e instanceof Error ? e.message : String(e);
-    logger.warn(`  · ${member}: brief paste failed (${cause})`);
-    return;
-  }
-  // 2. Settle: let the TUI welcome screen render before the paste lands,
-  //    otherwise the brief content arrives BEFORE the compose box is
-  //    ready and the bytes scroll past into the TUI's startup output.
-  if (spawnWaitMs > 0) await sleep(spawnWaitMs);
-  try {
-    const tpl = await Bun.file(briefPath).text();
-    const body = renderBrief(tpl, {
-      team,
-      member,
-      role,
-      atmuxDir,
-    });
-    const bufferName = `atmux_brief_${member}`;
-    await tmux.buffer.loadBuffer({ name: bufferName, data: body });
-    await tmux.buffer.pasteBuffer({
-      name: bufferName,
-      target,
-      deleteAfter: true,
-    });
-    // 3. Settle + C-m submit per §A. The default 500ms floor lives in
-    //    `submitAfterPaste`; injecting our test-sleep keeps unit tests
-    //    fast while production gets the real timer.
-    await submitAfterPaste(tmux, target, { sleep });
-    logger.log(`  · ${member}: brief pasted from ${briefPath}`);
-  } catch (e) {
-    const cause = e instanceof Error ? e.message : String(e);
-    logger.warn(`  · ${member}: brief paste failed (${cause})`);
-  }
-}
-
-// ADR-263 §D4: `surfaceResumeManifest` / `formatAge` (soft-stop resume
+// ADR-263 §D4: `pasteBriefForMember` / `PasteBriefArgs` removed — start
+//   panes are flat (no role briefs). `surfaceResumeManifest` / `formatAge`
+//   (soft-stop resume
 //   hint) and `resolveCagePrefixBestEffort` (cockpit prefix-chain) are
 //   removed with the fleet layer. The cage prefix is a fixed `C-\`
 //   applied inline in `start`; there is no resume manifest to surface.
