@@ -9,7 +9,7 @@
 atmux's scope is exactly three things (ADR-263 §D1):
 
 1. **tmux harness** — idempotent bring-up of agent panes in a repo on a dedicated cage socket, plus attach / send / teardown. Panes are **flat**: plain Claude (or any TUI) sessions you drive. No roles, no role-briefs, no lead/planner/reviewer.
-2. **task feed** (optional) — one task list in `.atmux/state.db`, fed by `atmux task add` / `claim` / `done`. Planned: a watched-git-repo source that turns issues/PRs into tasks (ADR-263 P3, not built yet).
+2. **task feed** (optional) — one task list in `.atmux/state.db`, fed two ways: manual `atmux task add` / `claim` / `done`, and a watched-git-repo source (`atmux issues sync`) that turns a repo's issues/PRs into tasks (ADR-263 §D3, feed-only).
 3. **the work loop** — a pane runs `atmux claim --next`, works the task, runs `atmux done`. That is the entire coordination model.
 
 It is **not** a fleet orchestrator. There is no daemon, no auto-dispatch, no auto-merge, no cockpit, no budget pause, no agent roles. Frontier 1M-context models, Claude Workflows, and Claude Code's built-in `/goal` / plan-mode / subagents now do the decomposition and autonomous drive the old fleet layer was built for. (ADR-263 §Context.)
@@ -94,6 +94,11 @@ Task feed (optional):
   claim <task-id>             Claim the next/given task
   done <task-id>              Mark a claimed task complete
 
+Git task source (ADR-263 §D3):
+  issues sync [--source <owner/repo>] [--dry-run]
+                              Poll team.json::taskSources (GitHub) → upsert
+                              matching issues/PRs as tasks (deduped on sourceId)
+
 Maintenance:
   reconfigure                 Re-run the wizard against an existing team.json
   doctor [--fix] [--json]     Check deps, team.json, TUI PATH
@@ -106,7 +111,7 @@ Maintenance:
 
 `claim --next [--as <pane>]` auto-selects the next claimable task (priority ascending, then creation order), skipping tasks with unmet `--deps`. The pane is inferred from `--as`, then `$ATMUX_MEMBER`, then the caller's cwd matched against `team.json`.
 
-The **git task source** (`atmux issues sync` — poll a watched repo's issues/PRs and upsert them as tasks) is **planned (ADR-263 P3)**, not yet present in the dispatcher.
+The **git task source** (`atmux issues sync`) polls a watched repo's issues/PRs and upserts them as tasks, deduped on the canonical `sourceId` (`github:owner/repo#123`). It is **feed-only** (ADR-263 §D3): the task lands in the feed and a Claude pane (or you) picks it up via `claim --next` — there is no auto-dispatch, no auto-spawn, no lead. See [Git task source](#git-task-source) below.
 
 ## team.json
 
@@ -128,7 +133,7 @@ Optional fields:
 
 - `tmuxTmpdir` — puts the team on its own tmux socket (default `/tmp/atmux-tmux_<name>`). See [Tmux topology](#tmux-topology).
 - `tuiCommands` — per-team launch-command overrides keyed by TUI name, e.g. `{ "claude": "claude --plugin-dir=…" }`. A per-pane `command` field overrides everything for that pane.
-- `taskSources` — **planned (ADR-263 P3)**: a git source block (`{ provider, scope, labels, state, pollIntervalMins }`) the `issues sync` poller will read.
+- `taskSources` — git sources `atmux issues sync` polls (ADR-263 §D3). An array of `{ provider: "github", scope: "owner/repo", labels?: [...], state?: "open"|"closed"|"all", onClose?: "done"|"leave", lane?, priority?, token? }`. See [Git task source](#git-task-source).
 
 ## Task feed
 
@@ -141,6 +146,52 @@ The task feed is a single `tasks` table in `.atmux/state.db` (SQLite, WAL). It i
 - **Inspect / edit:** `atmux task list`, `task show <id>`, `task move <id> <status>`, `task update <id> …`.
 
 Tasks are plain data — `done` has no side effects beyond the status flip. There is no auto-dispatch, no commit-task fan-out, no epic/story machinery.
+
+## Git task source
+
+`atmux issues sync` turns a watched repo's issues/PRs into tasks (ADR-263 §D3). It is **feed-only** — the poller files tasks; a Claude pane (or you) works them via `claim --next`. No auto-dispatch, no auto-spawn, no lead, no write-back to the tracker.
+
+Configure sources under `team.json::taskSources`:
+
+```json
+{
+  "name": "my-team",
+  "members": [ { "name": "worker-1", "tui": "claude", "cwd": "." } ],
+  "taskSources": [
+    {
+      "provider": "github",
+      "scope": "owner/repo",
+      "labels": ["bug"],
+      "state": "open",
+      "onClose": "done",
+      "lane": "be",
+      "priority": 2
+    }
+  ]
+}
+```
+
+- `provider` — `github` (the only adapter today; the seam is vendor-agnostic).
+- `scope` — `owner/repo`.
+- `labels` — optional; only issues carrying **all** of these labels (GitHub's native `labels` AND filter). Omit for all matching-state issues + PRs.
+- `state` — `open` (default), `closed`, or `all`. Use `all` if you want close reconciliation.
+- `onClose` — `done` (default) moves a still-`todo` task to `done` when its issue closes upstream (needs `state: "all"`/`"closed"` to see closes); never yanks an in-progress task. `leave` never auto-mutates.
+- `lane` / `priority` — optional stamps applied to created tasks.
+- `token` — optional GitHub token literal (prefer the env var or file below).
+
+Run it by hand or from cron (no daemon):
+
+```bash
+atmux issues sync                 # poll every configured source
+atmux issues sync --source owner/repo   # just one
+atmux issues sync --dry-run       # fetch + report counts, write nothing
+```
+
+Each issue/PR upserts a task deduped on its canonical `sourceId` (`github:owner/repo#123`) — re-polls update the same row, never duplicate. A per-source watermark (stored in `state_kv`) makes subsequent polls incremental.
+
+**GitHub token** (optional — public repos work unauthenticated at 60 req/hr; a token raises the limit + reads private repos). Resolution order: `ATMUX_GITHUB_TOKEN` env var → `team.json::taskSources[].token` literal → `~/.config/atmux/github-token` file. Tokens are never passed on argv. A read-only fine-grained token (Issues: read) is sufficient.
+
+> **Prompt-injection note (ADR-263 §D3):** public issue/PR bodies are attacker-controllable text that flows into task bodies a Claude pane reads. The body is fenced under an explicit "UNTRUSTED" banner — treat it as data, not instructions. This is a documented residual risk, not a solved one.
 
 ## Tmux topology
 
@@ -161,6 +212,7 @@ The cage server uses a `C-\` prefix so the nested cage tmux inside `atmux attach
 | `ATMUX_DIR` | Override the state dir (default `./.atmux`, walked up). |
 | `ATMUX_TEAM` | Override the team name (otherwise read from `team.json`). |
 | `ATMUX_MEMBER` | Default pane name for `claim` / `done` when `--as` is omitted. |
+| `ATMUX_GITHUB_TOKEN` | GitHub token for `issues sync` (optional; raises the rate limit + reads private repos). |
 | `ATMUX_CLAUDE_BIN` / `ATMUX_TMUX_BIN` | Override the resolved `claude` / `tmux` binaries. |
 | `ATMUX_SPAWN_TIMEOUT_MS` | Bump the tmux/buffered-spawn timeout (default 30s) for slow cold starts. |
 | `ATMUX_GIT_TIMEOUT_MS` | Bump the git-wrapper timeout (default 30s) for large packs / cold submodules. |

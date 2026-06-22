@@ -1,6 +1,6 @@
 # atmux — Product Requirements Document
 
-> **Status:** living document. **Re-scoped 2026-06-19 by [ADR-263](adr/263-great-simplification-tmux-harness-and-task-feed.md)** — "the great simplification." atmux is being cut from a multi-agent fleet orchestrator down to a **tmux harness + a git/sqlite task feed**. This PRD describes the **target** product. The fleet-coordination layer (orchd, lanes, epics, cockpit, whip, auto-merge, roles, …) is retired per ADR-263 §D4; its removal is staged (ADR-263 §D7, phases P1–P4), so HEAD still carries the fat surface until those phases land. Where this PRD and an ADR diverge, **the ADR wins**.
+> **Status:** living document. **Re-scoped 2026-06-19 by [ADR-263](adr/263-great-simplification-tmux-harness-and-task-feed.md)** — "the great simplification." atmux was cut from a multi-agent fleet orchestrator down to a **tmux harness + a git/sqlite task feed**. The fleet-coordination layer (orchd, lanes, epics, cockpit, whip, auto-merge, roles, …) is retired per ADR-263 §D4; the staged cut (ADR-263 §D7, phases P0–P4) and the git task source (P3) have **landed** — `src/` is down to the lean keep-set. Where this PRD and an ADR diverge, **the ADR wins**.
 >
 > **Lineage:** this completes the retreat begun by [ADR-260](adr/260-manual-orchestration-mode-default.md) (manual mode default). The pre-2026-06-19 PRD (the fleet-orchestrator vision) is preserved in git history.
 
@@ -111,17 +111,17 @@ The task feed: `state.db` holds a single `tasks` table (`todo → in-progress �
 
 ## 5. Roadmap
 
-Per ADR-263 §D7 — the decision is recorded; the cut is staged in reviewable phases, recoverable via the `pre-adr-263-simplification` git tag.
+Per ADR-263 §D7 — the decision was recorded first; the cut landed in reviewable phases, recoverable via the `pre-adr-263-simplification` git tag.
 
 | Phase | Deliverable | Status |
 |-------|-------------|--------|
-| **P0 — decision** | ADR-263 + this PRD rewrite + INDEX row + ADR-261 re-point banner | ✅ this commit |
-| **P1 — unwire** | Drop cut verbs from `cli.ts` + `help`; stop orchd/cockpit spawn in `start`; stop role-brief paste; collapse panes to flat | ⏳ |
-| **P2 — delete** | Remove cut `src/verbs/*`, `src/core/*`, `rust/*`, `plugins/*`, `templates/briefs/*`, tests, RUNBOOKs, dead schema; move superseded ADR rows in INDEX | ⏳ |
-| **P3 — git source** | Implement `issues sync → task` (github adapter → tasks table; drop complaints path) | ⏳ |
-| **P4 — docs sweep** | ARCHITECTURE.md / README.md / GETTING_STARTED.md / CHANGELOG.md reflect lean surface | ⏳ |
+| **P0 — decision** | ADR-263 + this PRD rewrite + INDEX row + ADR-261 re-point banner | ✅ landed |
+| **P1 — unwire** | Drop cut verbs from `cli.ts` + `help`; stop orchd/cockpit spawn in `start`; stop role-brief paste; collapse panes to flat | ✅ landed |
+| **P2 — delete** | Remove cut `src/verbs/*`, `src/core/*`, `rust/*`, `plugins/*`, `templates/briefs/*`, tests, RUNBOOKs, dead schema; move superseded ADR rows in INDEX | ✅ landed (`src/` 282→61 files) |
+| **P3 — git source** | Implement `issues sync → task` (github adapter → tasks table; drop complaints path) | ✅ landed (`issues sync`, sqlite v17, feed-only) |
+| **P4 — docs sweep** | ARCHITECTURE.md / README.md / GETTING_STARTED.md / CHANGELOG.md reflect lean surface | ✅ landed |
 
-P1–P4 are a good fit for a Workflow (fan-out deletion across independent file sets; verify typecheck + tests green per phase).
+The P1–P2 cut was executed via a Claude Workflow (fan-out deletion across independent file sets; typecheck + tests green per phase); P3 was a coherent inline feature build.
 
 ---
 

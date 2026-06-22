@@ -39,6 +39,9 @@ interface TaskRow {
   claimed_from: string | null;
   created_from: string | null;
   note: string | null;
+  // ADR-263 §D3 (sqlite-migrations v16→v17): git task-source provenance.
+  source_kind: string | null;
+  source_id: string | null;
   extra: string | null;
 }
 
@@ -125,6 +128,9 @@ const KNOWN_TASK_FIELDS = new Set([
   "claimedFrom",
   "createdFrom",
   "note",
+  // ADR-263 §D3: top-level columns, not extra-JSON (dedup index target).
+  "sourceKind",
+  "sourceId",
 ]);
 
 export function taskFromRow(row: TaskRow): KanbanTask {
@@ -149,6 +155,8 @@ export function taskFromRow(row: TaskRow): KanbanTask {
     claimedFrom: _maybeParseJsonValue(row.claimed_from),
     createdFrom: _maybeParseJsonValue(row.created_from),
     note: row.note,
+    sourceKind: row.source_kind,
+    sourceId: row.source_id,
     ...extra,
   };
   return KanbanTaskSchema.parse(candidate);
@@ -179,6 +187,8 @@ export function taskToRow(task: KanbanTask): TaskRow {
     claimed_from: _maybeStringifyValue(task.claimedFrom),
     created_from: _maybeStringifyValue(task.createdFrom),
     note: task.note ?? null,
+    source_kind: task.sourceKind ?? null,
+    source_id: task.sourceId ?? null,
     extra: Object.keys(extra).length > 0 ? JSON.stringify(extra) : null,
   };
 }
@@ -350,11 +360,11 @@ export class KanbanRepo {
         `INSERT INTO tasks (id, subject, body, status, owner, deps, priority,
 				                    epic, story, lane, deliverable, stale_min, driver_only,
 				                    created_at, claimed_at, completed_at, claimed_from,
-				                    created_from, note, extra)
+				                    created_from, note, source_kind, source_id, extra)
 				 VALUES ($id, $subject, $body, $status, $owner, $deps, $priority,
 				         $epic, $story, $lane, $deliverable, $stale_min, $driver_only,
 				         $created_at, $claimed_at, $completed_at, $claimed_from,
-				         $created_from, $note, $extra)`,
+				         $created_from, $note, $source_kind, $source_id, $extra)`,
       )
       .run(bind(row));
   }
@@ -366,11 +376,11 @@ export class KanbanRepo {
         `INSERT INTO tasks (id, subject, body, status, owner, deps, priority,
 				                    epic, story, lane, deliverable, stale_min, driver_only,
 				                    created_at, claimed_at, completed_at, claimed_from,
-				                    created_from, note, extra)
+				                    created_from, note, source_kind, source_id, extra)
 				 VALUES ($id, $subject, $body, $status, $owner, $deps, $priority,
 				         $epic, $story, $lane, $deliverable, $stale_min, $driver_only,
 				         $created_at, $claimed_at, $completed_at, $claimed_from,
-				         $created_from, $note, $extra)
+				         $created_from, $note, $source_kind, $source_id, $extra)
 				 ON CONFLICT(id) DO UPDATE SET
 				   subject=excluded.subject, body=excluded.body, status=excluded.status,
 				   owner=excluded.owner, deps=excluded.deps, priority=excluded.priority,
@@ -379,7 +389,8 @@ export class KanbanRepo {
 				   driver_only=excluded.driver_only, created_at=excluded.created_at,
 				   claimed_at=excluded.claimed_at, completed_at=excluded.completed_at,
 				   claimed_from=excluded.claimed_from, created_from=excluded.created_from,
-				   note=excluded.note, extra=excluded.extra`,
+				   note=excluded.note, source_kind=excluded.source_kind,
+				   source_id=excluded.source_id, extra=excluded.extra`,
       )
       .run(bind(row));
   }
@@ -389,6 +400,28 @@ export class KanbanRepo {
       .query("SELECT * FROM tasks WHERE id = $id")
       .get({ $id: id }) as TaskRow | null;
     return row ? taskFromRow(row) : null;
+  }
+
+  /** ADR-263 §D3: dedup lookup for `atmux issues sync` — find the task
+   *  ingested from a given external identity (`github:owner/repo#123`).
+   *  Backed by the partial-unique `idx_tasks_source_id` index. Returns
+   *  `null` when no task carries that `sourceId` yet (→ insert a fresh
+   *  one). */
+  getTaskBySourceId(sourceId: string): KanbanTask | null {
+    const row = this.db
+      .query("SELECT * FROM tasks WHERE source_id = $sourceId")
+      .get({ $sourceId: sourceId }) as TaskRow | null;
+    return row ? taskFromRow(row) : null;
+  }
+
+  /** ADR-263 §D3: list tasks ingested from a given source scope, e.g.
+   *  `github:owner/repo#` (the canonical `sourceId` prefix). Used by the
+   *  sync engine's close-reconciliation pass. */
+  listTasksBySourcePrefix(prefix: string): KanbanTask[] {
+    const rows = this.db
+      .query("SELECT * FROM tasks WHERE source_id LIKE $prefix ORDER BY created_at ASC, id ASC")
+      .all({ $prefix: `${prefix}%` }) as TaskRow[];
+    return rows.map(taskFromRow);
   }
 
   listTasks(filter: TaskFilter = {}): KanbanTask[] {

@@ -1,122 +1,116 @@
-# RUNBOOK — issue-sync (external issue-tracker ingestion)
+# RUNBOOK — issue-sync (git task source)
 
-Operator-facing reference for **issue-sync** — polling external issue trackers (GitHub Issues; Azure DevOps work items) into the complaints substrate so the target team's lead adjudicates them like every other complaint. See [ADR-261](adr/261-issue-sync-external-tracker-ingestion.md) for the full design; this runbook tracks its phasing.
+Operator-facing reference for **`atmux issues sync`** — polling a watched git repo's issues/PRs into the task feed. See [ADR-263 §D3](adr/263-great-simplification-tmux-harness-and-task-feed.md) for the live design and [ADR-261](adr/261-issue-sync-external-tracker-ingestion.md) for the original ingestion seam (its complaints-routed downstream was retired by ADR-263; the `IssueTracker` seam survives).
+
+> **Re-pointed 2026-06-19 (ADR-263 §D3).** The old contract was `poll → complaint → lead adjudication`. The new contract is **`poll → upsert Task`** — feed-only. There is no complaints substrate, no Honker, no lead, no auto-dispatch. A task lands in the feed; a Claude pane (or you) picks it up via `atmux claim --next`.
 
 > **Name discipline:** the feature is `issue-sync` — never "bugbot". [ADR-184](adr/184-host-wide-epic-team-cap-queue-and-dormancy-audit.md) lists `bugbot` as a separate project on the hax host; reusing the name is forbidden ambiguity.
 
 ## §1 — What issue-sync is
 
-A deterministic poll → file → notify pipeline (no LLM in the loop until the lead reads its inbox, per [ADR-237](adr/237-no-llm-discord-and-whip-removal.md) §D1):
+A deterministic **poll → upsert** pipeline (no LLM in the loop; no daemon):
 
-1. **Poll** the configured trackers' REST APIs through `src/abstractions/http.ts` (ADR-261 §D1 — no inbound HTTP, no webhooks, no `gh`/`az` shell-outs) via the vendor-agnostic `IssueTracker` adapters (`src/abstractions/issue-tracker.ts`, §D2).
-2. **Reconcile** against the `issue_sync` ledger (§D4) — long-horizon idempotency keyed on the canonical `sourceId` (`github:owner/repo#123`, `ado:org/project/42`).
-3. **File** new open issues as complaints via `fileDedupedComplaint`, row residing in the **target** team's `state.db` (§D9, ADR-150 §D1).
-4. **Notify** the target team's lead: `complaint.filed` → `atmux:complaint-consumer` on orchd-mode teams; the verb's inline `tell-lead --team` leg on manual-mode teams (§D5a). The lead adjudicates per [ADR-214](adr/214-retire-ombudsman-lead-absorbs-complaint-adjudication-via-honker.md) — promote-epic / file-task / wontfix / already-addressed / escalate. issue-sync never auto-converts an issue into kanban work (§D6).
+1. **Poll** the configured repos' REST APIs through `src/abstractions/http.ts` (no inbound HTTP, no webhooks, no `gh`/`az` shell-outs) via the vendor-agnostic `IssueTracker` adapter (`src/abstractions/issue-tracker.ts` + `src/abstractions/trackers/github.ts`).
+2. **Upsert** each matching issue/PR as a task in the team's `state.db`, deduped on the canonical `sourceId` (`github:owner/repo#123`). Re-polls update the same row; they never duplicate. A per-source watermark (max upstream `updatedAt`) is checkpointed in `state_kv` so subsequent polls are incremental.
+3. **Reconcile closes** (when `state: "all"`/`"closed"` and `onClose: "done"`): a still-`todo` task whose issue closed upstream is moved to `done`. An in-progress / blocked / already-done task a pane owns is never yanked.
 
-**Phasing** (ADR-261 §D11):
+That's it. The task is now in the feed; the work loop (`atmux claim --next` → work → `atmux done`) takes over. issue-sync never spawns a pane, never assigns work, never writes back to the tracker.
+
+**Phasing** (ADR-263 §D3):
 
 | Phase | Ships | Status |
 |---|---|---|
-| 0 | This runbook + `IssueTracker` types + `team.json::issueSync` schema | **landed — no behavior yet** |
-| 1 | GitHub adapter + `atmux issues sync` verb + backfill flood control + `issue_sync` ledger | not landed |
-| 2 | Azure DevOps adapter + orchd `--poll-issues` ticker | not landed |
+| 1 | GitHub adapter + `atmux issues sync` verb + dedup + watermark + close-reconcile | **landed (P3)** |
+| 2 | Azure DevOps adapter (the `TrackerId` union + `ado:` prefix are already reserved in the seam) | not landed |
 | 3 | Upstream write-back (close/comment on the tracker) | **deferred — own future ADR** |
 
 ## §2 — Configuration
 
-### `team.json::issueSync` (strict, optional)
+### `team.json::taskSources` (optional, strict per-entry)
 
-Absent block ⇒ issue-sync disabled; every existing `team.json` parses unchanged. Schema: `TeamIssueSync` in `src/schema/team.ts` (ADR-261 §D10). Unknown keys are refused, not ignored (ADR-054 §D3 sibling precedent).
+Absent ⇒ no git source (sqlite tasks only); every existing `team.json` parses unchanged. Schema: `TaskSource` in `src/schema/team.ts`. Unknown keys are refused, not ignored.
 
-```jsonc
-"issueSync": {
-  "enabled": true,                            // default false
-  "trackers": [
-    {
-      "id": "github",                         // adapter id (ADR-261 §D2)
-      "repos": ["geoyws/atmux"],              // allowlist — ONLY these repos are polled (§D7.2)
-      "targetTeam": "atmux",                  // optional — default: the polling team (§D9)
-      "labelSeverityMap": { "p0": "critical", "bug": "warn" },  // → extra.severity (§D3)
-      "pollIntervalSec": 900                  // orchd ticker cadence, Phase 2 (§D5b)
-    },
-    {
-      "id": "azure-devops",                   // Phase 2 adapter
-      "org": "ifca",
-      "project": "propertyx"
-    }
-  ]
-}
+```json
+"taskSources": [
+  {
+    "provider": "github",
+    "scope": "owner/repo",
+    "labels": ["bug"],
+    "state": "open",
+    "onClose": "done",
+    "lane": "be",
+    "priority": 2
+  }
+]
 ```
 
-`targetTeam` must resolve to exactly ONE cockpit team — a repo mapped to two teams or an ambiguous team name is a **refusal with a clear error**, never a silent first-pick (§D9, ADR-150 §D5). `labelSeverityMap` values use the binding severity vocabulary `info | warn | urgent | critical` (the one `extractSeverity` in `src/core/complaints.ts` actually reads — not whip's `high`, not the CLI's `low/medium/high`).
+| Field | Meaning |
+|---|---|
+| `provider` | Tracker adapter. `github` only today (the seam is vendor-agnostic). |
+| `scope` | `owner/repo`. |
+| `labels` | Optional. Only issues carrying **all** of these labels (GitHub's native `labels` AND filter). Omit for all matching-state issues + PRs. The common case is one label. |
+| `state` | `open` (default), `closed`, or `all`. Use `all` to see closes (for `onClose`). |
+| `onClose` | `done` (default): move a still-`todo` task to `done` when its issue closes (requires a state that sees closes). `leave`: never auto-mutate. |
+| `lane` | Optional lane stamped on created tasks. |
+| `priority` | Optional integer priority stamped on created tasks (lower = higher). |
+| `token` | Optional GitHub token literal (least-preferred tier — see below). |
 
-### Token cascade (ADR-261 §D7.4)
+### GitHub token (optional)
 
-Per-tracker token resolution, first hit wins (pattern: `resolveWebhookUrl` in `src/abstractions/discord.ts`):
+Public repos work unauthenticated (60 req/hr). A token raises the limit to 5000/hr and reads private repos. A **read-only fine-grained token** (Issues: read) is sufficient. Resolution order (first hit wins):
 
-| Tier | GitHub | Azure DevOps |
-|---|---|---|
-| 1 — env | `ATMUX_GITHUB_TOKEN` | `ATMUX_ADO_TOKEN` |
-| 2 — team.json | token field in the team config | token field in the team config |
-| 3 — file | `${XDG_CONFIG_HOME:-~/.config}/atmux/github-token` | `${XDG_CONFIG_HOME:-~/.config}/atmux/azure-devops-token` |
+1. `ATMUX_GITHUB_TOKEN` environment variable;
+2. `team.json::taskSources[].token` literal;
+3. `~/.config/atmux/github-token` (or `$XDG_CONFIG_HOME/atmux/github-token`), contents trimmed.
 
-Token rules (binding, §D7):
+Tokens are **never** passed on argv (tmux pane capture records command lines).
 
-- **Read-only scopes.** GitHub: a **fine-grained** token with read-only Issues permission (classic tokens are coarse `repo`/`public_repo` with no read-only-issues variant — discouraged). ADO: work-items read. v1 has no write path; a leaked token caps at read.
-- **Never on argv.** tmux pane capture records command lines; pane-state redaction is observability, not a security boundary. Tokens pass via env or config file only.
+## §3 — Running
 
-## §3 — Running a sync: `atmux issues sync`
-
-> **Phase 1 — the verb has NOT landed yet.** This section documents the contract it ships against (ADR-261 §D5a) so operators know what to expect; running it today is a usage error.
+No daemon — run it by hand or from cron (OS crontab; see [ADR-192](adr/192-cron-arm-idempotency-contract.md) for arm idempotency).
 
 ```bash
-# One-shot manual sync — works on EVERY team regardless of orchestration mode:
-atmux issues sync
+atmux issues sync                      # poll every configured source
+atmux issues sync --source owner/repo  # poll just one (by scope)
+atmux issues sync --dry-run            # fetch + report counts, write NOTHING
+atmux issues sync --team-dir /path     # explicit project root
 ```
 
-- Works on manual-mode teams (the fleet default per [ADR-260](adr/260-manual-orchestration-mode-default.md)) — the verb performs the consumer-equivalent lead routing itself (inline `atmux tell-lead --team <target>`) because the `atmux:complaint-consumer` is only registered under orchd. On orchd-mode targets the verb skips inline delivery and lets the event consumer fire — never both, no double-ping.
-- **No OS crontab entry, ever** (§D5). The recurring home is the Phase 2 orchd in-process ticker (orchd-mode teams only); on manual-mode teams the verb is on-demand — lead/driver/operator fires it when they want fresh tracker state.
-- The poll is deterministic end-to-end; the only LLM involvement is the lead reading its inbox on its own turn.
+Output is one summary line per source:
 
-## §4 — Backfill (first sync of a populated repo)
+```
+synced github:owner/repo — fetched 12, created 3, updated 1, closed 2
+```
 
-Ships **with** the verb in Phase 1, not after it (ADR-261 §D8 — the first sync of any nontrivial repo IS the backfill case):
+`--dry-run` prints `would sync …` and persists nothing (no task rows, no watermark) — the safe first pass.
 
-- **First-sync guard (default-on):** the verb refuses to file more than K new complaints in one sync (K configurable via `issueSync`, default 10) — it prints the count and exits non-zero. An unguarded first run can never flood the lead.
-- **`--backfill` quiet mode:** files all rows + ledger entries normally but suppresses per-row lead routing, then sends **ONE** summary tell-lead: `issue-sync backfill: N issues from <repo> filed as complaints — atmux complaints list --source-kind github`.
+### Cron example (every 15 min)
 
-Never work around the guard by looping the verb; that re-creates exactly the N-tell-lead flood the guard exists to prevent (ADR-214 §D2's 1-complaint/min intent — the shipped consumer has no rate limiter of its own).
+```cron
+*/15 * * * * cd /path/to/project && /root/.bun/bin/atmux issues sync >> ~/.atmux/issue-sync.log 2>&1
+```
 
-## §5 — Troubleshooting
+## §4 — Behavior details
 
-**Dedup vs ledger — two different mechanisms, know which one you're debugging.**
+- **Dedup** is keyed on `sourceId` (`github:owner/repo#123`), backed by the partial-unique `idx_tasks_source_id` index (sqlite-migrations v16→v17). The index binds only sourced tasks; manual tasks (NULL `source_id`) are unconstrained.
+- **Created** tasks start `todo`, unowned, with `sourceKind`/`sourceId` set and a body that carries provenance (url, labels, author) plus the upstream body fenced under an `UNTRUSTED` banner.
+- **Refresh:** an open issue whose title/body changed upstream refreshes the task's subject/body. Status, owner, lane, and priority are preserved — your claim is authoritative. A `done` task is never refreshed or re-opened.
+- **Closes** are reconciled only when the configured `state` lets the poll see closed issues (`all` / `closed`) and `onClose: "done"`. Only `todo` tasks are auto-closed.
+- **PRs** are kept (a GitHub PR is an issue with a `pull_request` marker) and flagged `pull-request` in the task body.
+- **Per-issue errors** (e.g. a corrupt pre-existing row) are non-fatal: the sync records the error, prints it as a stderr `! …` warning, and continues. The verb still exits 0 on a completed run.
+- **Pagination** walks every page (GitHub `Link` header), capped at 500 pages as a runaway backstop (a cap hit is reported as a warning).
 
-| Mechanism | Window | Keyed on | Purpose |
-|---|---|---|---|
-| `fileDedupedComplaint` dedup | 1h (`DEFAULT_DEDUP_WINDOW_SEC`, `src/core/complaints.ts`) | open complaint w/ same `sourceId` | intra-burst coalescing (bumps `extra.source_count`) |
-| `issue_sync` ledger (§D4, Phase 1) | forever | `source_id` PK in the **polling** team's `state.db` | long-horizon idempotency + sync-state matrix |
+## §5 — Security: prompt injection (residual risk)
 
-A still-open external issue re-polled after >1h would duplicate without the ledger — the ledger, not the dedup window, is what makes daily polling safe. Key matrix behaviors:
+Public issue/PR bodies are **attacker-controllable text** that flows into task bodies a Claude pane will read (ADR-263 §D3). The sync engine fences the upstream body under an explicit `UNTRUSTED` banner — it is data, not instructions — but a pane's prompt must treat ingested bodies accordingly. This is a **documented, unsolved residual risk**. Point `taskSources` at public repos with that in mind; a follow-up ADR may harden it.
 
-- **Lead-authored `resolve`/`wontfix` is never re-litigated** — the ledger records the resolution provenance; subsequent polls of the still-open upstream issue do NOT re-file.
-- **Tracker auto-resolve is symmetric**: upstream close ⇒ complaint auto-resolved with `resolvedBy: "tracker:<id>"`; upstream REOPEN of a tracker-auto-resolved issue ⇒ re-filed/reopened + tell-lead. Note `tracker:<id>` is the first non-actor `resolvedBy` in the complaints table — it mirrors upstream fact, not judgment.
-- **Stale inbox line after auto-resolve (known race, harmless):** the tell-lead line from filing survives a later tracker auto-resolve, so a lead may open an already-resolved complaint. Resolve is idempotent and `atmux complaints show` displays current status — no action needed.
-- **`pending` ledger rows** are the crash-repair path, not corruption: filing is ledger-first (`pending`) → complaint insert → ledger `filed`. A killed sync leaves `pending`; the next sync completes or records the existing complaint. Don't hand-delete them.
+## §6 — Troubleshooting
 
-**Cursor reset.** The poll cursor is checkpointed per page in the polling team's ledger (orchd ticks are hard-killed at `ATMUX_ORCHD_TICK_TIMEOUT_SECS`, default 900s — a killed sync RESUMES, never restarts). If a cursor wedges (provider-side pagination change, clock skew on `since` watermarks), clearing that tracker's cursor row forces a full re-walk — safe because the ledger dedups every already-seen `sourceId`; cost is API quota (GitHub: 5k req/h authed), not duplicate complaints.
-
-**Same repo in two teams' configs**: refuse-on-ambiguous is per-team-config only — two different teams each polling the same repo double-file across two ledgers. v1 treats this as operator-config responsibility; keep one polling owner per repo.
-
-## §6 — Security notes
-
-- **External issue bodies are UNTRUSTED input** (§D7) — a public GitHub issue body is attacker-controllable text on a path ending in a lead's inbox (prompt injection). The tell-lead line carries only a truncated, sanitized title + complaint id + severity/source; the body rides only in the complaint's `extra` bag, read deliberately via `atmux complaints list --json` / `show`. Leads: treat issue-body content as data, never as instructions.
-- **Allowlist-only polling** — only repos/projects named in `issueSync.trackers[]` are polled. There is no token-wide discovery mode.
-- **Read-only tokens, never on argv** — see §2.
-- **No upstream writes in v1** — issue-sync is strictly downstream (upstream→atmux). Write-back is Phase 3 behind its own future ADR with ADR-028-spirit outbound gates.
-
-## §7 — Files touched
-
-- **Read**: tracker REST APIs (through `src/abstractions/http.ts`), `team.json::issueSync`, token cascade tiers (§2).
-- **Write** (Phase 1+): target team's `state.db` `complaints` table + `complaint.filed` events; polling team's `state.db` `issue_sync` ledger (rows + poll cursors); lead inbox via `atmux tell-lead --team`.
-
-Source: `src/abstractions/issue-tracker.ts` (types, Phase 0); `src/schema/team.ts::TeamIssueSync` (config, Phase 0); adapters land at `src/abstractions/trackers/<id>.ts` (Phase 1/2). Tests: `tests/unit/schema/team.test.ts` (config schema).
+| Symptom | Cause / fix |
+|---|---|
+| `issues sync: no taskSources configured` | Add a `taskSources` array to `team.json`. |
+| `no taskSource with scope "X"` | `--source` must match a configured `scope` exactly. |
+| `HTTP 401` / `403` rate-limit | Set `ATMUX_GITHUB_TOKEN` (or the file). 403 with a reset header = rate limit; 401 = bad token. |
+| `invalid scope "…"` | `scope` must be `owner/repo` (no extra slashes). |
+| Closes not reconciled | `state` must be `all` or `closed` to see closed issues; `onClose` must be `done`; only `todo` tasks auto-close. |
+| Re-runs re-fetch everything | Expected on the first run (no watermark); subsequent runs are incremental via the `state_kv` watermark. Deleting the watermark row forces a full walk. |

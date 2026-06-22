@@ -115,6 +115,16 @@ export const KanbanTask = z
       .optional(),
     /** Closing note from `done <id> --note <text>` per `claim.sh`. */
     note: z.string().nullable().optional(),
+    /** ADR-263 §D3: git task-source provenance — adapter id of the
+     *  external tracker this task was ingested from (`"github"`). `null` /
+     *  absent on manually-filed tasks. Pairs with {@link sourceId}. */
+    sourceKind: z.string().nullable().optional(),
+    /** ADR-263 §D3: canonical external identity (`github:owner/repo#123`).
+     *  The dedup key for `atmux issues sync` — re-polls upsert the same
+     *  row, never duplicate. Backed by a dedicated `source_id` column +
+     *  partial-unique index (sqlite-migrations v16→v17); `null` / absent
+     *  on manually-filed tasks. */
+    sourceId: z.string().nullable().optional(),
     /** ADR-090 §Decision-anchor #1: canonical marker for the EPIC-done
      *  trunk-signoff gate consumed by ADR-091's auto-merge state machine.
      *  The reserved value `"reviewer-trunk-signoff"` names the Task that

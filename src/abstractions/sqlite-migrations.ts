@@ -755,4 +755,38 @@ export const migrations: readonly Migration[] = [
       db.exec("ALTER TABLE epics ADD COLUMN spawned_at INTEGER");
     },
   },
+  // ---------- v16 → v17 ----------
+  // ADR-263 §D3 (git task source) — `tasks.source_kind` + `tasks.source_id`
+  // provenance columns for `atmux issues sync`. Master decision: ADR-263.
+  //
+  // Schema purpose: the git poller (`src/core/issue-sync.ts`) upserts a
+  // watched repo's issues/PRs as tasks, deduped on the canonical external
+  // identity (`github:owner/repo#123`). Dedup needs an indexed lookup by
+  // that identity; a dedicated column + partial-unique index is the
+  // prod-worthy choice over JSON-scanning the `extra` bag on every poll.
+  //   - `source_kind` — adapter id (`"github"`). NULL on manually-filed
+  //                     tasks.
+  //   - `source_id`   — canonical external identity. NULL on manual tasks.
+  //
+  // The index is PARTIAL (`WHERE source_id IS NOT NULL`) so the uniqueness
+  // constraint binds only sourced tasks — manual tasks (the overwhelming
+  // majority, all NULL) are not forced unique-on-NULL and don't bloat the
+  // index. Re-polls hit `ON CONFLICT`-free upsert via the repo's
+  // `getTaskBySourceId` → update path; the unique index is belt-and-
+  // suspenders against a concurrent double-insert.
+  //
+  // Backfill: columns ADDed with no DEFAULT → every existing row gets
+  // NULL, the correct historical answer (no task predating ADR-263 came
+  // from a git source). Forward-only.
+  {
+    from: 16,
+    to: 17,
+    up: (db) => {
+      db.exec("ALTER TABLE tasks ADD COLUMN source_kind TEXT");
+      db.exec("ALTER TABLE tasks ADD COLUMN source_id TEXT");
+      db.exec(
+        "CREATE UNIQUE INDEX idx_tasks_source_id ON tasks(source_id) WHERE source_id IS NOT NULL",
+      );
+    },
+  },
 ];

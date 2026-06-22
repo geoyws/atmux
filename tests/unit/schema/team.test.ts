@@ -14,6 +14,7 @@ import { ZodError } from "zod";
 import {
   DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG,
   DEFAULT_WORKTREE_ROOT,
+  TaskSource,
   Team,
   TeamAutoEmitTrunkMerge,
   TeamMember,
@@ -434,5 +435,84 @@ describe("DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG constant (ADR-146 §D7)", () => {
     expect(DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG.enabled).toBe(true);
     expect(DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG.fallbackAssignee).toBeNull();
     expect(DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG.shortCircuitOnSharedBase).toBe(true);
+  });
+});
+
+// ---------- taskSources — ADR-263 §D3 (the git task source) ----------
+
+describe("TaskSource schema (ADR-263 §D3)", () => {
+  test("minimal source parses with state/onClose defaults applied", () => {
+    const s = TaskSource.parse({ provider: "github", scope: "owner/repo" });
+    expect(s.state).toBe("open");
+    expect(s.onClose).toBe("done");
+    expect(s.labels).toBeUndefined();
+  });
+
+  test("full source parses (labels / state / onClose / lane / priority / token)", () => {
+    const s = TaskSource.parse({
+      provider: "github",
+      scope: "o/r",
+      labels: ["bug", "p1"],
+      state: "all",
+      onClose: "leave",
+      lane: "be",
+      priority: 2,
+      token: "ghp_x",
+    });
+    expect(s).toMatchObject({ state: "all", onClose: "leave", lane: "be", priority: 2 });
+  });
+
+  test("rejects an unknown provider", () => {
+    expect(() => TaskSource.parse({ provider: "jira", scope: "o/r" })).toThrow(ZodError);
+  });
+
+  test("rejects an empty scope", () => {
+    expect(() => TaskSource.parse({ provider: "github", scope: "" })).toThrow(ZodError);
+  });
+
+  test("strict: an unknown key is rejected (typo catch)", () => {
+    expect(() => TaskSource.parse({ provider: "github", scope: "o/r", labelz: ["bug"] })).toThrow(
+      ZodError,
+    );
+  });
+
+  test("rejects an invalid state / onClose enum value", () => {
+    expect(() => TaskSource.parse({ provider: "github", scope: "o/r", state: "stale" })).toThrow(
+      ZodError,
+    );
+    expect(() => TaskSource.parse({ provider: "github", scope: "o/r", onClose: "delete" })).toThrow(
+      ZodError,
+    );
+  });
+});
+
+describe("Team.taskSources (ADR-263 §D3)", () => {
+  test("Team.parse with taskSources applies per-source defaults", () => {
+    const team = Team.parse({
+      name: "demo",
+      members: [],
+      taskSources: [{ provider: "github", scope: "owner/repo", labels: ["bug"] }],
+    });
+    expect(team.taskSources).toHaveLength(1);
+    expect(team.taskSources?.[0]).toMatchObject({
+      scope: "owner/repo",
+      state: "open",
+      onClose: "done",
+    });
+  });
+
+  test("Team.parse without taskSources leaves the field undefined", () => {
+    const team = Team.parse({ name: "demo", members: [] });
+    expect(team.taskSources).toBeUndefined();
+  });
+
+  test("a malformed taskSources entry rejects through Team.parse", () => {
+    expect(() =>
+      Team.parse({
+        name: "demo",
+        members: [],
+        taskSources: [{ provider: "github" }],
+      }),
+    ).toThrow();
   });
 });

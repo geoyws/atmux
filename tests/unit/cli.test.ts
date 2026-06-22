@@ -178,6 +178,17 @@ describe("cli.main — broadcast alias dispatch", () => {
   });
 });
 
+// ---------- Dispatch — issues verb route (smoke; deep behaviour is in
+//                       tests/unit/verbs/issues.test.ts) — ADR-263 §D3 ----------
+
+describe("cli.main — issues verb dispatch", () => {
+  test("'issues' with no subverb dispatches into issues (UsageError)", async () => {
+    const { exit, stderr } = await captureMain(["issues"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("atmux:");
+  });
+});
+
 describe("cli.main — status verb dispatch", () => {
   test("'status bogus' dispatches into status (UsageError)", async () => {
     const { exit, stderr } = await captureMain(["status", "bogus"]);

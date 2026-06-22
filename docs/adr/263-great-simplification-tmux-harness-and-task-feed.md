@@ -93,6 +93,8 @@ Per the binding discipline (ADR before code), this ADR + the PRD rewrite land **
 
 P1–P4 are a natural fit for a Workflow (fan-out deletion across independent file sets, verify typecheck/test green per phase).
 
+**Implementation status (2026-06-22):** all phases landed on branch `atmux-geoyws-driver-2`. P0–P2 + P4 cut `src/` from 282 → 61 non-test files (recovery tag `pre-adr-263-simplification`). **P3 (this update)** shipped the git task source per §D3: restored `src/abstractions/http.ts` + the re-pointed `src/abstractions/issue-tracker.ts` seam, added the `github` adapter (`src/abstractions/trackers/github.ts`), the sync engine (`src/core/issue-sync.ts`), the `issues sync` verb, the `team.json::taskSources` schema block, and sqlite-migrations **v16→v17** (`tasks.source_kind` + `tasks.source_id` + the partial-unique `idx_tasks_source_id` dedup index). Feed-only, dedup on `sourceId`, per-source watermark in `state_kv`, `onClose` close-reconciliation that never yanks an in-progress task. The prompt-injection residual (§D3) is mitigated by fencing ingested bodies under an explicit "UNTRUSTED" banner but remains a documented, unsolved risk. 100% unit coverage on every new file.
+
 ## Consequences
 
 - **atmux becomes ~20% of its current size** — a tmux harness + a task feed + a git poller. Far less to maintain, reason about, or break.

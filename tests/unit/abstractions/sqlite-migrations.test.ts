@@ -30,7 +30,7 @@ afterEach(async () => {
 });
 
 describe("sqlite-migrations live ladder", () => {
-  test("opening with the full ladder advances user_version to the tail (v16)", () => {
+  test("opening with the full ladder advances user_version to the tail (v17)", () => {
     // Bump this when a new migration lands. Failing here is the
     // intentional reminder to confirm the new migration's tests cover
     // the new table or column.
@@ -50,7 +50,49 @@ describe("sqlite-migrations live ladder", () => {
     //   - v15→v16 added epics.spawned_at for orchd auto-spawn dedup gate
     //             (ADR-231 §D2, t-6-8db78adf) — renumbered from v14→v15
     //             at impl time since v14→v15 was claimed by ADR-228
-    expect(readUserVersion(db)).toBe(16);
+    //   - v16→v17 added tasks.source_kind + tasks.source_id + the
+    //             partial-unique idx_tasks_source_id for the git task
+    //             source (ADR-263 §D3, P3)
+    expect(readUserVersion(db)).toBe(17);
+  });
+});
+
+describe("v16 → v17: tasks git-source provenance (ADR-263 §D3)", () => {
+  test("source_kind + source_id columns exist on tasks", () => {
+    const cols = db.prepare("PRAGMA table_info(tasks)").all() as Array<{
+      name: string;
+      type: string;
+    }>;
+    const byName = new Map(cols.map((c) => [c.name, c.type]));
+    expect(byName.get("source_kind")).toBe("TEXT");
+    expect(byName.get("source_id")).toBe("TEXT");
+  });
+
+  test("a partial-unique index keys dedup on non-null source_id only", () => {
+    const idx = db.prepare("PRAGMA index_list(tasks)").all() as Array<{
+      name: string;
+      unique: number;
+    }>;
+    const dedup = idx.find((i) => i.name === "idx_tasks_source_id");
+    expect(dedup).toBeDefined();
+    expect(dedup?.unique).toBe(1);
+    // The partial predicate is recorded in sqlite_master's CREATE INDEX SQL.
+    const ddl = db
+      .prepare("SELECT sql FROM sqlite_master WHERE name = 'idx_tasks_source_id'")
+      .get() as { sql: string } | null;
+    expect(ddl?.sql).toContain("WHERE source_id IS NOT NULL");
+  });
+
+  test("two non-null duplicate source_ids are rejected; many nulls allowed", () => {
+    db.prepare("INSERT INTO tasks (id, source_id) VALUES ('t-1', 'github:o/r#1')").run();
+    expect(() =>
+      db.prepare("INSERT INTO tasks (id, source_id) VALUES ('t-2', 'github:o/r#1')").run(),
+    ).toThrow();
+    // NULL source_id rows are unconstrained.
+    db.prepare("INSERT INTO tasks (id) VALUES ('t-n1')").run();
+    db.prepare("INSERT INTO tasks (id) VALUES ('t-n2')").run();
+    const n = db.prepare("SELECT COUNT(*) AS c FROM tasks").get() as { c: number };
+    expect(n.c).toBe(3);
   });
 });
 
@@ -423,7 +465,7 @@ describe("v13 → v14: backfill semantics on a pre-existing v13 DB", () => {
     // settles at the tail; v13→v14 backfill semantics still apply to
     // the rows seeded above since the column-set is additive.
     const full = openDatabase(path, migrations);
-    expect(readUserVersion(full)).toBe(16);
+    expect(readUserVersion(full)).toBe(17);
 
     const seen = full
       .prepare("SELECT id, status, depends_on, is_ready FROM epics ORDER BY id")
@@ -737,15 +779,18 @@ describe("v15 → v16: epics.spawned_at (ADR-231 §D2, t-6-8db78adf)", () => {
       "todo",
       1,
     );
-    db.prepare(
-      `INSERT INTO epics (id, status, created_at, spawned_at) VALUES (?, ?, ?, ?)`,
-    ).run("e-live", "in-progress", 1, 1_700_000_500);
-    const skipped = db
-      .prepare(`SELECT id FROM epics WHERE spawned_at IS NOT NULL`)
-      .all() as Array<{ id: string }>;
-    const eligible = db
-      .prepare(`SELECT id FROM epics WHERE spawned_at IS NULL`)
-      .all() as Array<{ id: string }>;
+    db.prepare(`INSERT INTO epics (id, status, created_at, spawned_at) VALUES (?, ?, ?, ?)`).run(
+      "e-live",
+      "in-progress",
+      1,
+      1_700_000_500,
+    );
+    const skipped = db.prepare(`SELECT id FROM epics WHERE spawned_at IS NOT NULL`).all() as Array<{
+      id: string;
+    }>;
+    const eligible = db.prepare(`SELECT id FROM epics WHERE spawned_at IS NULL`).all() as Array<{
+      id: string;
+    }>;
     expect(skipped.map((r) => r.id)).toEqual(["e-live"]);
     expect(eligible.map((r) => r.id)).toEqual(["e-pending"]);
   });

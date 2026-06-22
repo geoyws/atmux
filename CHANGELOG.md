@@ -7,7 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🔥 Changed — the great simplification: atmux is a tmux harness + a git/sqlite task feed ([ADR-263](docs/adr/263-great-simplification-tmux-harness-and-task-feed.md))
+
+**Breaking.** atmux was cut from a multi-agent fleet orchestrator down to three things (ADR-263 §D1): a **tmux harness** (`init`/`start`/`stop`/`status`/`attach`/`up`/`send`/`broadcast`), an **optional task feed** (`task`/`claim`/`done` over `state.db`), and **maintenance** (`doctor`/`cleanup`/`reconfigure`/`sync`/`version`/`help`). The entire fleet-coordination layer — orchd daemon + consumers/tickers, Honker messaging, lanes, epics/stories, epic-teams + mergers, cockpit, whip/poke/report/pulse/heartbeat/watchdog, refusal-rotate, auto-merge, budget-pause, roles + briefs, discorder, complaints/ombudsman — was **deleted with its config schema** (ADR-263 §D4). `src/` dropped from 282 → 61 non-test files. Recoverable via the `pre-adr-263-simplification` git tag. **Supersedes** [ADR-258](docs/adr/258-vendor-agnostic-orchestration-agentbackend.md) + [ADR-262](docs/adr/262-atmux-opencode-plugin-and-daemon.md) (one backend: tmux + Claude, §D5); completes the [ADR-260](docs/adr/260-manual-orchestration-mode-default.md) retreat.
+
+### 🏗️ Added — git task source: `atmux issues sync` ([ADR-263](docs/adr/263-great-simplification-tmux-harness-and-task-feed.md) §D3, P3)
+
+The watched-repo → task path the simplification was aimed at. `atmux issues sync [--source <owner/repo>] [--dry-run]` polls each `team.json::taskSources` entry's tracker and upserts matching issues/PRs as tasks in `state.db` — **feed-only**: deduped on the canonical `sourceId` (`github:owner/repo#123`), no complaints, no lead, no auto-dispatch (a Claude pane pulls via `claim --next`). New: re-pointed `IssueTracker` seam + restored `http.ts` (`src/abstractions/issue-tracker.ts`, `src/abstractions/http.ts`); GitHub adapter (`src/abstractions/trackers/github.ts` — paginated, label/state filter, token via `ATMUX_GITHUB_TOKEN` env → team.json literal → `~/.config/atmux/github-token`, never on argv); sync engine (`src/core/issue-sync.ts` — per-source `state_kv` watermark, `onClose` close-reconciliation that never yanks an in-progress task); `team.json::taskSources` schema block (`src/schema/team.ts`); `tasks.source_kind` + `tasks.source_id` columns + the partial-unique `idx_tasks_source_id` dedup index (sqlite-migrations **v16→v17**). Ingested bodies are fenced under an `UNTRUSTED` banner (prompt-injection residual, ADR-263 §D3). 100% unit coverage on every new file. Docs: `docs/RUNBOOK-issue-sync.md` (rewritten for the feed-only model), README "Git task source".
+
 ### 🏗️ Added — issue-sync Phase 0: types + schema ([ADR-261](docs/adr/261-issue-sync-external-tracker-ingestion.md))
+
+> **Superseded downstream / re-pointed by ADR-263 §D3** — the `IssueTracker` seam below survives (re-aimed at `poll → task`); its complaints-routed downstream is gone. See the ADR-263 entries above for the shipped feature.
+
 
 `IssueTracker` interface seam (`src/abstractions/issue-tracker.ts`) — vendor-agnostic adapter pattern (mirrors `AgentBackend` house pattern). `team.json::issueSync` sub-block schema (`src/schema/team.ts`): poll providers (GitHub / Azure DevOps), `createdAt` horizon, `complaintThreshold` (individual + batch). No tracker adapters implemented yet (Phase 0 = types only). Docs: `docs/RUNBOOK-issue-sync.md`.
 

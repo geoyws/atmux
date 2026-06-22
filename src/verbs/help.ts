@@ -34,7 +34,12 @@ Task feed (optional, ADR-263 §D2):
   task update <id> [--body <text>] [--deps <id,id>] [--owner <pane>|--unassign]
   claim <task-id>             Claim the next/given task
   done <task-id>              Mark a claimed task complete
-                              (git source — \`issues sync\` — lands in ADR-263 P3)
+
+Git task source (ADR-263 §D3):
+  issues sync [--source <owner/repo>] [--dry-run]
+                              Poll team.json::taskSources (GitHub) → upsert
+                              matching issues/PRs as tasks (deduped on
+                              sourceId; feed-only — no auto-dispatch)
 
 Maintenance:
   reconfigure                 Re-run the wizard against an existing team.json

@@ -124,6 +124,27 @@ describe("KanbanTask", () => {
     expect(parsed.claimedFrom).toBeNull();
   });
 
+  test("ADR-263 §D3: git-source provenance fields (sourceKind / sourceId) parse", () => {
+    const sourced = KanbanTask.parse({
+      id: "t-1",
+      subject: "Bug from upstream",
+      status: "todo",
+      sourceKind: "github",
+      sourceId: "github:owner/repo#123",
+    });
+    expect(sourced.sourceKind).toBe("github");
+    expect(sourced.sourceId).toBe("github:owner/repo#123");
+  });
+
+  test("ADR-263 §D3: provenance fields accept null (manual task) + omit (legacy)", () => {
+    const nulled = KanbanTask.parse({ id: "t-2", sourceKind: null, sourceId: null });
+    expect(nulled.sourceKind).toBeNull();
+    expect(nulled.sourceId).toBeNull();
+    const omitted = KanbanTask.parse({ id: "t-3" });
+    expect(omitted.sourceKind).toBeUndefined();
+    expect(omitted.sourceId).toBeUndefined();
+  });
+
   test("nulls accepted on every nullable field (bash writes literal null)", () => {
     const allNulls = {
       id: "t-null0000",

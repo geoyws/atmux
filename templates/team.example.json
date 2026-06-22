@@ -11,6 +11,7 @@
   "emojis": {
     "mode": "random"
   },
+  "_comment_taskSources": "ADR-263 §D3 — optional git task sources for `atmux issues sync` (feed-only: poll a repo's issues/PRs → upsert as tasks, deduped on sourceId; no auto-dispatch). Add a `taskSources` array to enable. Each entry: { provider: 'github', scope: 'owner/repo', labels?: ['bug'] (GitHub AND filter), state?: 'open'|'closed'|'all', onClose?: 'done'|'leave', lane?, priority?, token? }. Token resolution: ATMUX_GITHUB_TOKEN env -> entry.token -> ~/.config/atmux/github-token. Example: \"taskSources\": [{ \"provider\": \"github\", \"scope\": \"geoyws/atmux\", \"labels\": [\"bug\"], \"state\": \"open\" }]",
   "_comment_members": "Flat pane list per ADR-263 §D1. Each entry is one tmux window running its `tui` (claude/opencode/shell/...). `cwd` is the working dir; `lane` is an optional task-feed affinity tag for `atmux claim --next`. `claudeAccount` (optional, per-member) isolates the Claude config dir (e.g. 'personal' → CLAUDE_CONFIG_DIR=$HOME/.claude-personal).",
   "members": [
     {

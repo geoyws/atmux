@@ -26,6 +26,7 @@ import { cleanup } from "./verbs/cleanup.ts";
 import { doctor } from "./verbs/doctor.ts";
 import { help } from "./verbs/help.ts";
 import { init } from "./verbs/init.ts";
+import { issues } from "./verbs/issues.ts";
 import { reconfigure } from "./verbs/reconfigure.ts";
 import { send } from "./verbs/send.ts";
 import { start } from "./verbs/start.ts";
@@ -152,6 +153,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return claim(argv.slice(1));
     case "done":
       return done(argv.slice(1));
+    case "issues":
+      return issues(argv.slice(1));
     case "sync":
       return dispatchSyncSubverb(argv.slice(1));
     case "cleanup":

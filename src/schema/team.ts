@@ -295,6 +295,48 @@ export const DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG = {
   shortCircuitOnSharedBase: true,
 } as const;
 
+/**
+ * ADR-263 §D3 — one git task source. `atmux issues sync` polls each
+ * configured source's tracker and upserts matching issues/PRs as tasks in
+ * `state.db`, deduped on the canonical `sourceId`. Feed-only: no
+ * complaints, no lead, no auto-dispatch. `.strict()` so a typo'd key
+ * trips validation rather than silently doing nothing.
+ */
+export const TaskSource = z
+  .object({
+    /** Tracker adapter id. Phase 1 ships `github` only; the union widens
+     *  when the `azure-devops` adapter lands (the seam already carries
+     *  the `TrackerId` type). */
+    provider: z.enum(["github"]),
+    /** Adapter scope string — `owner/repo` for github. */
+    scope: z.string().min(1),
+    /** Label filter — only issues carrying ALL of these labels become
+     *  tasks (GitHub's native `labels` AND semantics). Omit / empty for no
+     *  label filter (all matching-state issues + PRs). The common case is
+     *  a single label (e.g. `["bug"]`). */
+    labels: z.array(z.string()).optional(),
+    /** Which upstream states to ingest. Default `open` (the watched-repo
+     *  bug/PR queue). `all` additionally reconciles closes (see `onClose`);
+     *  `closed` ingests closed issues only (rare). */
+    state: z.enum(["open", "closed", "all"]).default("open"),
+    /** What to do when an ingested issue is observed CLOSED upstream
+     *  (requires `state: "all"` or `"closed"` to see closes). `done` moves
+     *  the task to `done` — but only when it is still `todo` (an
+     *  in-progress / blocked task a pane owns is never yanked). `leave`
+     *  never auto-mutates task state from upstream. Default `done`. */
+    onClose: z.enum(["done", "leave"]).default("done"),
+    /** Lane to tag synced tasks with (optional — flat by default). */
+    lane: z.string().optional(),
+    /** Priority to stamp on synced tasks (optional; lower = higher). */
+    priority: z.number().int().optional(),
+    /** Tier-2 token literal (prefer the `ATMUX_GITHUB_TOKEN` env var or
+     *  the `~/.config/atmux/github-token` file — a literal in team.json is
+     *  the least-preferred tier, per the seam's auth contract). */
+    token: z.string().optional(),
+  })
+  .strict();
+export type TaskSource = z.infer<typeof TaskSource>;
+
 /** `.atmux/team.json` — the team's durable identity + roster. */
 export const Team = z
   .object({
@@ -398,6 +440,10 @@ export const Team = z
     /** Per-team TUI launch-command aliases. Read by `src/core/tui-cmd.ts`,
      *  `src/verbs/reconfigure.ts`, `src/verbs/doctor.ts`. */
     tuiCommands: z.unknown().optional(),
+    /** ADR-263 §D3: git task sources — repos whose issues/PRs `atmux
+     *  issues sync` ingests as tasks. Optional + feed-only; absent means
+     *  the team has no git source (sqlite tasks only). */
+    taskSources: z.array(TaskSource).optional(),
   })
   .passthrough();
 export type Team = z.infer<typeof Team>;
