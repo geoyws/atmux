@@ -789,4 +789,31 @@ export const migrations: readonly Migration[] = [
       );
     },
   },
+  // ---------- v17 → v18 ----------
+  // ADR-264 (completes ADR-263 §D4): the Epic / Story tiers are cut —
+  // Task is the sole persistent work unit. Drop the dead `epics` /
+  // `stories` tables and the vestigial `tasks.epic` / `tasks.story`
+  // columns + their indexes.
+  //
+  // Order matters: SQLite refuses to `DROP COLUMN` a column that an
+  // index references, so the two task indexes go FIRST, then the
+  // columns. The `stories` table's own index (`idx_stories_epic`) is
+  // dropped implicitly by `DROP TABLE stories`, so no explicit DROP is
+  // needed for it.
+  //
+  // Forward-only + irrecoverable on a live DB (the rows are gone) — but
+  // by ADR-264 no live code reads them, and the broader fleet history is
+  // recoverable from the `pre-adr-263-simplification` git tag.
+  {
+    from: 17,
+    to: 18,
+    up: (db) => {
+      db.exec("DROP INDEX IF EXISTS idx_tasks_epic");
+      db.exec("DROP INDEX IF EXISTS idx_tasks_story");
+      db.exec("ALTER TABLE tasks DROP COLUMN epic");
+      db.exec("ALTER TABLE tasks DROP COLUMN story");
+      db.exec("DROP TABLE IF EXISTS stories");
+      db.exec("DROP TABLE IF EXISTS epics");
+    },
+  },
 ];

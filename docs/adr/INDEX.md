@@ -1,6 +1,6 @@
 # ADR Index
 
-> Generated 2026-05-24, refreshed 2026-06-13 (MYT) — extended through ADR-262. Live ADRs only; superseded ADRs at the bottom for trace.
+> Generated 2026-05-24, refreshed 2026-06-23 (MYT) — extended through ADR-264. Live ADRs only; superseded ADRs at the bottom for trace.
 
 ## Live ADRs
 
@@ -230,7 +230,8 @@
 | 260 | Manual orchestration mode is the default — LLMs self-report status + drive the kanban; orchd opt-in | 2026-06-12 | accepted |
 | 261 | issue-sync — external issue-tracker ingestion (GitHub / Azure DevOps): poll → complaints → lead adjudication | 2026-06-12 | proposed; **re-pointed by [ADR-263](./263-great-simplification-tmux-harness-and-task-feed.md) §D3** (poll → tasks, not complaints; `IssueTracker` seam kept) |
 | 262 | atmux as an OpenCode plugin + headless Rust daemon — two-layer plugin+daemon architecture replacing tmux | 2026-06-13 | superseded by [ADR-263](./263-great-simplification-tmux-harness-and-task-feed.md) (§D5 — one backend: tmux + Claude) |
-| 263 | The great simplification — atmux is a tmux harness + git/sqlite task feed; retire the fleet-coordination layer | 2026-06-19 | proposed |
+| 263 | The great simplification — atmux is a tmux harness + git/sqlite task feed; retire the fleet-coordination layer | 2026-06-19 | accepted (residual Epic/Story data-model cut completed by [ADR-264](./264-tasks-drive-development-headless-drivers.md)) |
+| 264 | Tasks drive development — headless drivers run Workflows in git worktrees; epics/stories fully cut | 2026-06-23 | accepted |
 
 ## Superseded (skip)
 

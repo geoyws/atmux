@@ -88,14 +88,12 @@ describe("InboxEntry", () => {
   test("fully-populated entry parses (every documented field)", () => {
     const fullEntry = {
       id: "t-864cc7fd",
-      subject: "[E1/S1] BE: Extend kanban.json schema",
+      subject: "BE: Extend kanban.json schema",
       body: "long body prose",
       status: "in-progress",
       owner: "gitter",
       deps: ["t-aaa00001"],
       priority: 1,
-      epic: "e-cafef00d",
-      story: "s-12345678",
       lane: "be",
       deliverable: "ADR-005",
       staleMin: 60,
@@ -121,9 +119,9 @@ describe("InboxEntry", () => {
   });
 
   test("dispatchedAt set on dispatch-pushed inbox entry (lib/dispatch.sh:95 + siblings)", () => {
-    // Inbox-only field — bash stamps it on inbox-push by 4 dispatch
-    // sites (dispatch.sh:95, epic.sh:314, story.sh:384, kanban.sh:679).
-    // Load-bearing for whip's stale-min anchor at whip.sh:283:
+    // Inbox-only field — bash stamps it on inbox-push by the dispatch
+    // sites (dispatch.sh:95, kanban.sh:679). Load-bearing for whip's
+    // stale-min anchor at whip.sh:283:
     //   (.claimedAt // .dispatchedAt // 0) as $base
     const dispatched = { id: "t-dispatched", dispatchedAt: 1777200000 };
     expect(InboxEntry.parse(dispatched).dispatchedAt).toBe(1777200000);
@@ -144,8 +142,6 @@ describe("InboxEntry", () => {
       body: null,
       owner: null,
       priority: null,
-      epic: null,
-      story: null,
       lane: null,
       deliverable: null,
       staleMin: null,
@@ -220,8 +216,8 @@ describe("realistic inbox.json (parity-style integration)", () => {
       done: [
         {
           id: "t-864cc7fd",
-          subject: "[E1/S1] BE: Extend kanban.json schema",
-          body: "**LANE**: BE  ·  **STORY**: S1 schema foundations",
+          subject: "BE: Extend kanban.json schema",
+          body: "**LANE**: BE  ·  schema foundations",
           status: "in-progress",
           owner: "gitter",
           deps: [],
@@ -229,7 +225,7 @@ describe("realistic inbox.json (parity-style integration)", () => {
           createdAt: 1777088467,
           claimedAt: 1777097207,
           completedAt: 1777102739,
-          note: "feat(kanban): extend schema with epics/stories arrays",
+          note: "feat(kanban): extend the task schema",
         },
         {
           id: "t-2nd00001",

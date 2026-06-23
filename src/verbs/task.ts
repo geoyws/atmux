@@ -5,8 +5,7 @@
 //
 //   atmux task add    <subject> [--body T] [--assignee M] [--deps a,b]
 //                                [--priority N | --prio N] [--lane L]
-//                                [--driver-only]
-//                                [--epic <eid>] [--story <sid>] [--deliverable T]
+//                                [--driver-only] [--deliverable T]
 //   atmux task list   [--status S] [--assignee M] [--json]
 //   atmux task ls     ↔ list
 //   atmux task show   <id>
@@ -15,13 +14,13 @@
 //   atmux task mv     ↔ move
 //   atmux task assign <id> <member>
 //   atmux task update <id> [--body T] [--deps a,b] [--owner M|--unassign]
-//                          [--epic <eid|''>] [--story <sid|''>] [--deliverable <T|''>]
+//                          [--deliverable <T|''>]
 //   atmux task rm     <id>
 //   atmux task remove ↔ rm
 //
-// ADR-193: --epic/--story/--deliverable restore the documented planner
-// brief surface. Shape-validated (no existence check, §OQ1); `''` clears
-// on update.
+// ADR-193 / ADR-264: --deliverable is the surviving planner-brief flag
+// (the Epic / Story tiers are cut — Task is the sole work unit). `''`
+// clears it on update.
 //
 // Bash defaults to `list` when no subverb given (lib/kanban.sh:16).
 // Mirror.
@@ -42,10 +41,8 @@ import {
   setTaskBody,
   setTaskDeliverable,
   setTaskDeps,
-  setTaskEpic,
   setTaskLane,
   setTaskPriority,
-  setTaskStory,
   showTask,
 } from "../core/kanban.ts";
 import { ConfigError, UsageError } from "../errors.ts";
@@ -62,53 +59,19 @@ const USAGE_HINT_ROOT =
   "(see 'atmux task' for per-subverb help)";
 
 const USAGE_ADD =
-  "atmux task add <subject> [--body T] [--assignee M] [--deps a,b] [--priority N] [--lane L] [--driver-only] [--epic <eid>] [--story <sid>] [--deliverable <text>]";
+  "atmux task add <subject> [--body T] [--assignee M] [--deps a,b] [--priority N] [--lane L] [--driver-only] [--deliverable <text>]";
 const USAGE_LIST = "atmux task list [--status S] [--assignee M] [--lane L] [--json]";
 const USAGE_MOVE = "atmux task move <id> <todo|in-progress|done|blocked>";
 const USAGE_LANE = "atmux task lane <id> <fe|be|db|ops|test|review|misc|git|docs|->";
 const USAGE_PRIORITY = "atmux task priority <id> <N|->";
 const USAGE_UPDATE =
-  "atmux task update <id> [--body <text>] [--deps <a,b>] [--owner <member>|--unassign] [--epic <eid|''>] [--story <sid|''>] [--deliverable <text|''>]";
+  "atmux task update <id> [--body <text>] [--deps <a,b>] [--owner <member>|--unassign] [--deliverable <text|''>]";
 
 const VALID_STATUSES = new Set(["todo", "in-progress", "done", "blocked"]);
 
-// ADR-193 §Validation: epic/story id SHAPE check — NO existence check
-// (§OQ1: cross-worktree decomp may file the epic in a sibling session;
-// operators run `atmux epic show <eid>` if they want a real check).
-// Accepts BOTH the legacy hex8 form (`e-3b017960`, genEpicId) AND the
-// ADR-202 §Amendment-VIII running-number form (`e-1`, `e-1203`). The
-// ADR's original `e-[0-9a-f]{8}`-only regex predated the running-number
-// migration (2026-05-22) and would reject every SQLite-mode id; relaxed
-// here per ADR-193 §Amendment 2026-06-05.
-const EPIC_ID_RE = /^e-([0-9a-f]{8}|\d+)$/;
-const STORY_ID_RE = /^s-([0-9a-f]{8}|\d+)$/;
 /** ADR-193 §OQ2: free-form deliverable string, capped to match the
  *  body-field policy. Over-length → exit 64 (UsageError). */
 const DELIVERABLE_MAX = 256;
-
-/** ADR-193: validate a non-empty `--epic` value's shape. Throws
- *  `UsageError` (exit 64) on a malformed id; returns the value
- *  unchanged on success. Shared by `task add` + `task update`. */
-function assertEpicShape(v: string, hint: string): string {
-  if (!EPIC_ID_RE.test(v)) {
-    throw new UsageError({
-      what: `--epic must match e-<8hex> or e-<int> (got: ${v})`,
-      hint,
-    });
-  }
-  return v;
-}
-
-/** ADR-193: validate a non-empty `--story` value's shape. */
-function assertStoryShape(v: string, hint: string): string {
-  if (!STORY_ID_RE.test(v)) {
-    throw new UsageError({
-      what: `--story must match s-<8hex> or s-<int> (got: ${v})`,
-      hint,
-    });
-  }
-  return v;
-}
 
 /** ADR-193 §OQ2: enforce the deliverable length cap. */
 function assertDeliverableLen(v: string, hint: string): string {
@@ -260,8 +223,6 @@ async function taskAdd(argv: ReadonlyArray<string>): Promise<number> {
   if (parsed.priority !== undefined) opts.priority = parsed.priority;
   if (parsed.lane !== undefined) opts.lane = parsed.lane;
   if (parsed.driverOnly === true) opts.driverOnly = true;
-  if (parsed.epic !== undefined) opts.epic = parsed.epic;
-  if (parsed.story !== undefined) opts.story = parsed.story;
   if (parsed.deliverable !== undefined) opts.deliverable = parsed.deliverable;
   const id = await addTask(atmuxDir, opts);
   process.stdout.write(`${id}\n`);
@@ -364,10 +325,8 @@ async function taskUpdate(argv: ReadonlyArray<string>): Promise<number> {
   // `owner` triple-state: `undefined` = no change, `null` = explicit unassign
   // (parking-lot), `string` = reassign to named member.
   let owner: string | null | undefined;
-  // ADR-193: epic/story/deliverable triple-state — `undefined` = no
-  // change, `null` = explicit clear (`--epic ''`), `string` = set.
-  let epic: string | null | undefined;
-  let story: string | null | undefined;
+  // ADR-193: deliverable triple-state — `undefined` = no change,
+  // `null` = explicit clear (`--deliverable ''`), `string` = set.
   let deliverable: string | null | undefined;
   let teamDir: string | undefined;
   let i = 0;
@@ -418,25 +377,6 @@ async function taskUpdate(argv: ReadonlyArray<string>): Promise<number> {
       i += 1;
       continue;
     }
-    if (a === "--epic") {
-      const v = rest[i + 1];
-      if (v === undefined) {
-        throw new UsageError({ what: "task update: --epic requires a value", hint: USAGE_UPDATE });
-      }
-      // ADR-193: `--epic ''` clears the link (null); non-empty → shape-validate.
-      epic = v.length === 0 ? null : assertEpicShape(v, USAGE_UPDATE);
-      i += 2;
-      continue;
-    }
-    if (a === "--story") {
-      const v = rest[i + 1];
-      if (v === undefined) {
-        throw new UsageError({ what: "task update: --story requires a value", hint: USAGE_UPDATE });
-      }
-      story = v.length === 0 ? null : assertStoryShape(v, USAGE_UPDATE);
-      i += 2;
-      continue;
-    }
     if (a === "--deliverable") {
       const v = rest[i + 1];
       if (v === undefined) {
@@ -470,12 +410,10 @@ async function taskUpdate(argv: ReadonlyArray<string>): Promise<number> {
     body === undefined &&
     deps === undefined &&
     owner === undefined &&
-    epic === undefined &&
-    story === undefined &&
     deliverable === undefined
   ) {
     throw new UsageError({
-      what: "task update: at least one of --body / --deps / --owner / --unassign / --epic / --story / --deliverable required",
+      what: "task update: at least one of --body / --deps / --owner / --unassign / --deliverable required",
       hint: USAGE_UPDATE,
     });
   }
@@ -504,15 +442,8 @@ async function taskUpdate(argv: ReadonlyArray<string>): Promise<number> {
   if (owner !== undefined) {
     await assignTask(atmuxDir, id, owner);
   }
-  // ADR-193: epic/story/deliverable mutations. Each setter throws
-  // ConfigError on a missing task id; re-parenting an in-progress task
-  // is intentionally ungated (§Decision — decomp restructuring).
-  if (epic !== undefined) {
-    await setTaskEpic(atmuxDir, id, epic);
-  }
-  if (story !== undefined) {
-    await setTaskStory(atmuxDir, id, story);
-  }
+  // ADR-193: deliverable mutation. The setter throws ConfigError on a
+  // missing task id.
   if (deliverable !== undefined) {
     await setTaskDeliverable(atmuxDir, id, deliverable);
   }
@@ -663,10 +594,6 @@ interface ParsedAddArgs {
    *  (`claim --next` / lane-tick cron) skips it unless caller scope
    *  is `driver`. */
   driverOnly?: boolean;
-  /** ADR-193: parent epic id (shape-validated, no existence check). */
-  epic?: string;
-  /** ADR-193: parent story id (shape-validated, no existence check). */
-  story?: string;
   /** ADR-193: free-form deliverable description (≤256 chars). */
   deliverable?: string;
   teamDir?: string;
@@ -685,8 +612,6 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
   let priority: number | undefined;
   let lane: string | undefined;
   let driverOnly: boolean | undefined;
-  let epic: string | undefined;
-  let story: string | undefined;
   let deliverable: string | undefined;
   let teamDir: string | undefined;
 
@@ -776,25 +701,6 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
       i += 1;
       continue;
     }
-    if (a === "--epic") {
-      const v = argv[i + 1];
-      if (v === undefined) {
-        throw new UsageError({ what: "task add: --epic requires a value", hint: USAGE_ADD });
-      }
-      // ADR-193: empty value on add = unset (no epic); non-empty → shape-validate.
-      if (v.length > 0) epic = assertEpicShape(v, USAGE_ADD);
-      i += 2;
-      continue;
-    }
-    if (a === "--story") {
-      const v = argv[i + 1];
-      if (v === undefined) {
-        throw new UsageError({ what: "task add: --story requires a value", hint: USAGE_ADD });
-      }
-      if (v.length > 0) story = assertStoryShape(v, USAGE_ADD);
-      i += 2;
-      continue;
-    }
     if (a === "--deliverable") {
       const v = argv[i + 1];
       if (v === undefined) {
@@ -829,8 +735,6 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
   if (priority !== undefined) out.priority = priority;
   if (lane !== undefined) out.lane = lane;
   if (driverOnly !== undefined) out.driverOnly = driverOnly;
-  if (epic !== undefined) out.epic = epic;
-  if (story !== undefined) out.story = story;
   if (deliverable !== undefined) out.deliverable = deliverable;
   if (teamDir !== undefined) out.teamDir = teamDir;
   return out;

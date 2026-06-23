@@ -4,7 +4,7 @@
 // One describe block per helper file. Smoke-level only — exhaustive
 // behavioural coverage lives in the Phase 2 handler tests that consume
 // these helpers (T-S2.5 / T-S2.6 / T-S3.2). Goal here is to fail loudly
-// if a helper's contract drifts (e.g. seedEpic stops parsing through
+// if a helper's contract drifts (e.g. seedTask stops parsing through
 // the real Zod schema).
 
 import { describe, expect, test } from "bun:test";
@@ -12,7 +12,7 @@ import {
   createFlagSpy,
   type FlagAddArgs,
 } from "./atmux-flag-spy.ts";
-import { seedEpic, seedTask } from "./kanban-fixtures.ts";
+import { seedTask } from "./kanban-fixtures.ts";
 import {
   CANONICAL_ELIGIBILITY_RACE_STDERR,
   CANONICAL_HARD_FAILURE_STDERR,
@@ -26,40 +26,7 @@ import {
 
 // ---------- kanban-fixtures.ts ----------
 
-describe("kanban-fixtures — seedEpic + seedTask", () => {
-  test("seedEpic defaults: ready, no deps, never-spawned, valid Zod parse", () => {
-    const epic = seedEpic();
-    expect(epic.id).toMatch(/^e-[0-9a-f]{8}$/);
-    expect(epic.isReady).toBe(true);
-    expect(epic.dependsOn).toEqual([]);
-    expect((epic as { spawnedAt?: number | null }).spawnedAt).toBeUndefined();
-  });
-
-  test("seedEpic propagates autoSpawn under extra (ADR-231 §D3)", () => {
-    const epic = seedEpic({
-      autoSpawn: { enabled: true, roster: "solo", forceSpawn: false },
-    });
-    const extra = (epic as { extra?: { autoSpawn?: { enabled?: boolean; roster?: string } } }).extra;
-    expect(extra?.autoSpawn?.enabled).toBe(true);
-    expect(extra?.autoSpawn?.roster).toBe("solo");
-  });
-
-  test("seedEpic propagates spawnedAt at top level (ADR-231 §D2 dedup col)", () => {
-    const epic = seedEpic({ spawnedAt: 1779540000 });
-    expect((epic as { spawnedAt?: number | null }).spawnedAt).toBe(1779540000);
-  });
-
-  test("seedEpic respects explicit id + dependsOn + isReady=false", () => {
-    const epic = seedEpic({
-      id: "e-deadbeef",
-      dependsOn: ["e-aaaaaaaa", "e-bbbbbbbb"],
-      isReady: false,
-    });
-    expect(epic.id).toBe("e-deadbeef");
-    expect(epic.dependsOn).toEqual(["e-aaaaaaaa", "e-bbbbbbbb"]);
-    expect(epic.isReady).toBe(false);
-  });
-
+describe("kanban-fixtures — seedTask", () => {
   test("seedTask defaults: todo + unclaimed + valid Zod parse", () => {
     const task = seedTask();
     expect(task.id).toMatch(/^t-[0-9a-f]{8}$/);

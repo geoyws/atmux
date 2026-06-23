@@ -9,10 +9,6 @@
 
 import type { Database } from "bun:sqlite";
 import {
-  type KanbanEpic,
-  KanbanEpic as KanbanEpicSchema,
-  type KanbanStory,
-  KanbanStory as KanbanStorySchema,
   type KanbanTask,
   KanbanTask as KanbanTaskSchema,
 } from "../../schema/kanban.ts";
@@ -27,8 +23,6 @@ interface TaskRow {
   owner: string | null;
   deps: string | null;
   priority: number | null;
-  epic: string | null;
-  story: string | null;
   lane: string | null;
   deliverable: string | null;
   stale_min: number | null;
@@ -42,43 +36,6 @@ interface TaskRow {
   // ADR-263 §D3 (sqlite-migrations v16→v17): git task-source provenance.
   source_kind: string | null;
   source_id: string | null;
-  extra: string | null;
-}
-
-interface EpicRow {
-  id: string;
-  title: string | null;
-  body: string | null;
-  status: string | null;
-  driver_ref: string | null;
-  created_at: number | null;
-  completed_at: number | null;
-  stories: string | null;
-  // ADR-225 (sqlite-migrations v13→v14): JSON array of upstream epic
-  // ids + 0/1 ready bit. NOT NULL with defaults at the storage layer;
-  // see schema migration for backfill semantics.
-  depends_on: string;
-  is_ready: number;
-  // ADR-231 §D2 §Schema (sqlite-migrations v15→v16, t-6-8db78adf):
-  // unix-epoch timestamp set by orchd auto-spawn (NULL = not yet
-  // spawned). Drives the §D2 step-2 dedup gate.
-  spawned_at: number | null;
-  extra: string | null;
-}
-
-interface StoryRow {
-  id: string;
-  epic: string | null;
-  title: string | null;
-  body: string | null;
-  acceptance_criteria: string | null;
-  status: string | null;
-  created_at: number | null;
-  completed_at: number | null;
-  advanced_at: number | null;
-  review_signoff: number | null;
-  merge_task_id: string | null;
-  merge_mode: string | null;
   extra: string | null;
 }
 
@@ -116,8 +73,6 @@ const KNOWN_TASK_FIELDS = new Set([
   "owner",
   "deps",
   "priority",
-  "epic",
-  "story",
   "lane",
   "deliverable",
   "staleMin",
@@ -143,8 +98,6 @@ export function taskFromRow(row: TaskRow): KanbanTask {
     owner: row.owner,
     deps: row.deps ? JSON.parse(row.deps) : undefined,
     priority: row.priority,
-    epic: row.epic,
-    story: row.story,
     lane: row.lane,
     deliverable: row.deliverable,
     staleMin: row.stale_min,
@@ -175,8 +128,6 @@ export function taskToRow(task: KanbanTask): TaskRow {
     owner: task.owner ?? null,
     deps: task.deps ? JSON.stringify(task.deps) : null,
     priority: task.priority ?? null,
-    epic: task.epic ?? null,
-    story: task.story ?? null,
     lane: task.lane ?? null,
     deliverable: task.deliverable ?? null,
     stale_min: task.staleMin ?? null,
@@ -193,138 +144,6 @@ export function taskToRow(task: KanbanTask): TaskRow {
   };
 }
 
-const KNOWN_EPIC_FIELDS = new Set([
-  "id",
-  "title",
-  "body",
-  "status",
-  "driverRef",
-  "createdAt",
-  "completedAt",
-  "stories",
-  // ADR-225 (sqlite-migrations v13→v14): top-level columns, not extra-JSON.
-  "dependsOn",
-  "isReady",
-  // ADR-231 §D2 (sqlite-migrations v15→v16): top-level column for the
-  // orchd auto-spawn dedup gate.
-  "spawnedAt",
-]);
-
-export function epicFromRow(row: EpicRow): KanbanEpic {
-  const extra = row.extra ? (JSON.parse(row.extra) as Record<string, unknown>) : {};
-  // ADR-225: depends_on is JSON-array TEXT; legacy rows from a v13 DB
-  // walking the v13→v14 step get `'[]'` via the column DEFAULT, so a
-  // truthy guard suffices (the empty-string case shouldn't occur, but
-  // fall back to [] for belt-and-suspenders).
-  const dependsOn = row.depends_on ? (JSON.parse(row.depends_on) as string[]) : [];
-  // is_ready coerces INTEGER 0/1 ↔ boolean. SQLite returns the raw
-  // number; the schema-side TS type is `boolean`.
-  const isReady = row.is_ready === 1;
-  return KanbanEpicSchema.parse({
-    id: row.id,
-    title: row.title ?? undefined,
-    body: row.body,
-    status: row.status ?? undefined,
-    driverRef: row.driver_ref,
-    createdAt: row.created_at ?? undefined,
-    completedAt: row.completed_at,
-    stories: row.stories ? JSON.parse(row.stories) : undefined,
-    dependsOn,
-    isReady,
-    // ADR-231 §D2 §Schema: surface spawned_at as nullable. SQLite
-    // returns null when the column wasn't stamped yet (orchd hasn't
-    // spawned this epic-team) — propagated to the schema's
-    // `.nullable().optional()` shape.
-    spawnedAt: row.spawned_at,
-    ...extra,
-  });
-}
-
-export function epicToRow(epic: KanbanEpic): EpicRow {
-  const extra: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(epic)) {
-    if (!KNOWN_EPIC_FIELDS.has(k)) extra[k] = v;
-  }
-  return {
-    id: epic.id,
-    title: epic.title ?? null,
-    body: epic.body ?? null,
-    status: epic.status ?? null,
-    driver_ref: epic.driverRef ?? null,
-    created_at: epic.createdAt ?? null,
-    completed_at: epic.completedAt ?? null,
-    stories: epic.stories ? JSON.stringify(epic.stories) : null,
-    // ADR-225: serialize dependsOn → JSON; coerce isReady boolean → 0/1.
-    // Schema `.default([])` / `.default(false)` guarantee these are set
-    // post-parse, but null-coalesce keeps the write path defensive.
-    depends_on: JSON.stringify(epic.dependsOn ?? []),
-    is_ready: epic.isReady ? 1 : 0,
-    // ADR-231 §D2 §Schema: spawned_at is nullable + optional in the
-    // schema — undefined → null on write.
-    spawned_at: epic.spawnedAt ?? null,
-    extra: Object.keys(extra).length > 0 ? JSON.stringify(extra) : null,
-  };
-}
-
-const KNOWN_STORY_FIELDS = new Set([
-  "id",
-  "epic",
-  "title",
-  "body",
-  "acceptanceCriteria",
-  "status",
-  "createdAt",
-  "completedAt",
-  "advancedAt",
-  "reviewSignoff",
-  "mergeTaskId",
-  "mergeMode",
-]);
-
-export function storyFromRow(row: StoryRow): KanbanStory {
-  const extra = row.extra ? (JSON.parse(row.extra) as Record<string, unknown>) : {};
-  return KanbanStorySchema.parse({
-    id: row.id,
-    epic: row.epic,
-    title: row.title ?? undefined,
-    body: row.body,
-    acceptanceCriteria: row.acceptance_criteria,
-    status: row.status ?? undefined,
-    createdAt: row.created_at ?? undefined,
-    completedAt: row.completed_at,
-    advancedAt: row.advanced_at,
-    reviewSignoff: row.review_signoff === null ? undefined : row.review_signoff === 1,
-    mergeTaskId: row.merge_task_id,
-    // ADR-175 GAP 2: NULL column → undefined → Zod `.default('feature-branch')`.
-    // Pre-v10 rows + freshly-INSERTed rows that did not pass merge_mode
-    // both land here as NULL; Zod default backfills both paths.
-    mergeMode: row.merge_mode ?? undefined,
-    ...extra,
-  });
-}
-
-export function storyToRow(story: KanbanStory): StoryRow {
-  const extra: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(story)) {
-    if (!KNOWN_STORY_FIELDS.has(k)) extra[k] = v;
-  }
-  return {
-    id: story.id,
-    epic: story.epic ?? null,
-    title: story.title ?? null,
-    body: story.body ?? null,
-    acceptance_criteria: story.acceptanceCriteria ?? null,
-    status: story.status ?? null,
-    created_at: story.createdAt ?? null,
-    completed_at: story.completedAt ?? null,
-    advanced_at: story.advancedAt ?? null,
-    review_signoff: story.reviewSignoff === undefined ? null : story.reviewSignoff ? 1 : 0,
-    merge_task_id: story.mergeTaskId ?? null,
-    merge_mode: story.mergeMode ?? null,
-    extra: Object.keys(extra).length > 0 ? JSON.stringify(extra) : null,
-  };
-}
-
 // ---------- Bind-param helper ----------
 
 /** bun:sqlite named-bind expects keys prefixed with `$` (matches the SQL
@@ -332,7 +151,7 @@ export function storyToRow(story: KanbanStory): StoryRow {
  *  helper prefixes at the call site. Return type narrowed to the
  *  `SQLQueryBindings` value union bun:sqlite accepts. */
 type BindValue = string | number | null;
-function bind(row: TaskRow | EpicRow | StoryRow): Record<string, BindValue> {
+function bind(row: TaskRow): Record<string, BindValue> {
   const out: Record<string, BindValue> = {};
   for (const [k, v] of Object.entries(row)) out[`$${k}`] = v as BindValue;
   return out;
@@ -344,8 +163,6 @@ export interface TaskFilter {
   owner?: string;
   status?: string;
   lane?: string;
-  epic?: string;
-  story?: string;
 }
 
 export class KanbanRepo {
@@ -358,11 +175,11 @@ export class KanbanRepo {
     this.db
       .query(
         `INSERT INTO tasks (id, subject, body, status, owner, deps, priority,
-				                    epic, story, lane, deliverable, stale_min, driver_only,
+				                    lane, deliverable, stale_min, driver_only,
 				                    created_at, claimed_at, completed_at, claimed_from,
 				                    created_from, note, source_kind, source_id, extra)
 				 VALUES ($id, $subject, $body, $status, $owner, $deps, $priority,
-				         $epic, $story, $lane, $deliverable, $stale_min, $driver_only,
+				         $lane, $deliverable, $stale_min, $driver_only,
 				         $created_at, $claimed_at, $completed_at, $claimed_from,
 				         $created_from, $note, $source_kind, $source_id, $extra)`,
       )
@@ -374,17 +191,17 @@ export class KanbanRepo {
     this.db
       .query(
         `INSERT INTO tasks (id, subject, body, status, owner, deps, priority,
-				                    epic, story, lane, deliverable, stale_min, driver_only,
+				                    lane, deliverable, stale_min, driver_only,
 				                    created_at, claimed_at, completed_at, claimed_from,
 				                    created_from, note, source_kind, source_id, extra)
 				 VALUES ($id, $subject, $body, $status, $owner, $deps, $priority,
-				         $epic, $story, $lane, $deliverable, $stale_min, $driver_only,
+				         $lane, $deliverable, $stale_min, $driver_only,
 				         $created_at, $claimed_at, $completed_at, $claimed_from,
 				         $created_from, $note, $source_kind, $source_id, $extra)
 				 ON CONFLICT(id) DO UPDATE SET
 				   subject=excluded.subject, body=excluded.body, status=excluded.status,
 				   owner=excluded.owner, deps=excluded.deps, priority=excluded.priority,
-				   epic=excluded.epic, story=excluded.story, lane=excluded.lane,
+				   lane=excluded.lane,
 				   deliverable=excluded.deliverable, stale_min=excluded.stale_min,
 				   driver_only=excluded.driver_only, created_at=excluded.created_at,
 				   claimed_at=excluded.claimed_at, completed_at=excluded.completed_at,
@@ -439,14 +256,6 @@ export class KanbanRepo {
       where.push("lane = $lane");
       params.$lane = filter.lane;
     }
-    if (filter.epic !== undefined) {
-      where.push("epic = $epic");
-      params.$epic = filter.epic;
-    }
-    if (filter.story !== undefined) {
-      where.push("story = $story");
-      params.$story = filter.story;
-    }
     const sql = `SELECT * FROM tasks${where.length > 0 ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at ASC, id ASC`;
     const rows = this.db.query(sql).all(params) as TaskRow[];
     return rows.map(taskFromRow);
@@ -455,80 +264,5 @@ export class KanbanRepo {
   deleteTask(id: string): boolean {
     const result = this.db.query("DELETE FROM tasks WHERE id = $id").run({ $id: id });
     return result.changes > 0;
-  }
-
-  // ----- epic CRUD -----
-
-  upsertEpic(epic: KanbanEpic): void {
-    const row = epicToRow(epic);
-    this.db
-      .query(
-        `INSERT INTO epics (id, title, body, status, driver_ref, created_at,
-				                    completed_at, stories, depends_on, is_ready,
-				                    spawned_at, extra)
-				 VALUES ($id, $title, $body, $status, $driver_ref, $created_at,
-				         $completed_at, $stories, $depends_on, $is_ready,
-				         $spawned_at, $extra)
-				 ON CONFLICT(id) DO UPDATE SET
-				   title=excluded.title, body=excluded.body, status=excluded.status,
-				   driver_ref=excluded.driver_ref, created_at=excluded.created_at,
-				   completed_at=excluded.completed_at, stories=excluded.stories,
-				   depends_on=excluded.depends_on, is_ready=excluded.is_ready,
-				   spawned_at=excluded.spawned_at, extra=excluded.extra`,
-      )
-      .run(bind(row));
-  }
-
-  getEpic(id: string): KanbanEpic | null {
-    const row = this.db
-      .query("SELECT * FROM epics WHERE id = $id")
-      .get({ $id: id }) as EpicRow | null;
-    return row ? epicFromRow(row) : null;
-  }
-
-  listEpics(): KanbanEpic[] {
-    const rows = this.db
-      .query("SELECT * FROM epics ORDER BY created_at ASC, id ASC")
-      .all() as EpicRow[];
-    return rows.map(epicFromRow);
-  }
-
-  // ----- story CRUD -----
-
-  upsertStory(story: KanbanStory): void {
-    const row = storyToRow(story);
-    this.db
-      .query(
-        `INSERT INTO stories (id, epic, title, body, acceptance_criteria, status,
-				                      created_at, completed_at, advanced_at, review_signoff,
-				                      merge_task_id, merge_mode, extra)
-				 VALUES ($id, $epic, $title, $body, $acceptance_criteria, $status,
-				         $created_at, $completed_at, $advanced_at, $review_signoff,
-				         $merge_task_id, $merge_mode, $extra)
-				 ON CONFLICT(id) DO UPDATE SET
-				   epic=excluded.epic, title=excluded.title, body=excluded.body,
-				   acceptance_criteria=excluded.acceptance_criteria, status=excluded.status,
-				   created_at=excluded.created_at, completed_at=excluded.completed_at,
-				   advanced_at=excluded.advanced_at, review_signoff=excluded.review_signoff,
-				   merge_task_id=excluded.merge_task_id, merge_mode=excluded.merge_mode,
-				   extra=excluded.extra`,
-      )
-      .run(bind(row));
-  }
-
-  getStory(id: string): KanbanStory | null {
-    const row = this.db
-      .query("SELECT * FROM stories WHERE id = $id")
-      .get({ $id: id }) as StoryRow | null;
-    return row ? storyFromRow(row) : null;
-  }
-
-  listStories(filter: { epic?: string } = {}): KanbanStory[] {
-    const sql = filter.epic
-      ? "SELECT * FROM stories WHERE epic = $epic ORDER BY created_at ASC, id ASC"
-      : "SELECT * FROM stories ORDER BY created_at ASC, id ASC";
-    const params = filter.epic ? { $epic: filter.epic } : {};
-    const rows = this.db.query(sql).all(params) as StoryRow[];
-    return rows.map(storyFromRow);
   }
 }

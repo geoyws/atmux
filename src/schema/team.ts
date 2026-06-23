@@ -8,10 +8,10 @@
 // issueSync / …). Passthrough lets those old configs still load while
 // the slimmed schema only models the fields a kept verb actually reads.
 //
-// ADR-263 §D1/§D2/§D4 — the great simplification: the fleet-coordination
-// config sub-blocks were deleted with their verbs/core. What remains is
-// the harness identity (name + panes + tmux knobs) plus the optional
-// task-feed knobs (kanban / autoEmitTrunkMerge / merger) and forensic
+// ADR-263 §D1/§D2/§D4 + ADR-264 — the great simplification: the
+// fleet-coordination config sub-blocks were deleted with their
+// verbs/core. What remains is the harness identity (name + panes +
+// tmux knobs) plus the optional task-feed knobs and forensic
 // observability toggles that kept code still reads.
 //
 // References: ADR-005 (JSON+lock), ADR-003 (schemas import zod only),
@@ -261,40 +261,6 @@ export const TeamModalCycling = z
   .strict();
 export type TeamModalCycling = z.infer<typeof TeamModalCycling>;
 
-/** ADR-146 §D7: per-team `autoEmitTrunkMerge` config — governs whether
- *  `moveTask` auto-files a `merge t-xxx (branch→trunk)` Task when the
- *  last leaf of a per-Story-branch task chain lands done. Read by
- *  `src/core/kanban.ts`. Defaults applied per
- *  {@link DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG} when the block is
- *  absent. */
-export const TeamAutoEmitTrunkMerge = z
-  .object({
-    /** Master switch. ADR-146 §D7 narrative: default `true` when
-     *  `worktreeIsolation: true`, `false` otherwise. The resolver in
-     *  `src/core/kanban.ts` reads `team.worktreeIsolation` to compute the
-     *  effective default when this field is unset. */
-    enabled: z.boolean().optional(),
-    /** Owner for the auto-emitted Task when the team has no `gitter`
-     *  member. `null` (default) leaves the Task unassigned for any
-     *  member to claim via `atmux claim --next`. */
-    fallbackAssignee: z.string().nullable().optional(),
-    /** When `true`, skip auto-emit when `Story.branch ===
-     *  <team-base-branch>`. Default `true`. */
-    shortCircuitOnSharedBase: z.boolean().optional(),
-  })
-  .strict();
-export type TeamAutoEmitTrunkMerge = z.infer<typeof TeamAutoEmitTrunkMerge>;
-
-/** ADR-146 §D7 defaults — used by the moveTask hook in
- *  `src/core/kanban.ts` when the `autoEmitTrunkMerge` block is absent OR
- *  individual fields are unset. Co-located with the schema so non-Zod
- *  call sites share the same constants. */
-export const DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG = {
-  enabled: true,
-  fallbackAssignee: null as string | null,
-  shortCircuitOnSharedBase: true,
-} as const;
-
 /**
  * ADR-263 §D3 — one git task source. `atmux issues sync` polls each
  * configured source's tracker and upserts matching issues/PRs as tasks in
@@ -427,10 +393,6 @@ export const Team = z
     observability: TeamObservability.optional(),
     /** ADR-142: modal-cycling detector tunables. */
     modalCycling: TeamModalCycling.optional(),
-    /** ADR-146 §D7: per-team `autoEmitTrunkMerge` config. Read by
-     *  `src/core/kanban.ts`. Absent block uses
-     *  {@link DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG}. */
-    autoEmitTrunkMerge: TeamAutoEmitTrunkMerge.optional(),
     /** ADR-087: `atmux stop --soft` grace window between the per-member
      *  notify and the manifest write + session kill. Default 5 seconds
      *  when unset. */

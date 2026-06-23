@@ -1,5 +1,7 @@
 # AGENTS.md — using atmux as an agent
 
+> **⚠️ SUPERSEDED — pre-[ADR-263](adr/263-great-simplification-tmux-harness-and-task-feed.md) / [ADR-264](adr/264-tasks-drive-development-headless-drivers.md).** This document describes the retired *fleet* model — orchd, epic-teams, lanes, roles (lead/planner/reviewer/committer), and the **Epic / Story** kanban tiers, including verbs like `atmux epic add` / `atmux story add` that **no longer exist**. atmux is now a tmux harness + a flat **Task** feed: `claim --next` → work → `done`. There is no Epic/Story decomposition (a headless driver Claude fans out via Workflows instead). For the current model read [docs/PRD.md](PRD.md) + [docs/ARCHITECTURE.md](ARCHITECTURE.md). The fleet prose below is kept only as historical context pending a full rewrite.
+
 You are reading this because you're a coding agent (Claude Code, Cursor, OpenCode, Kimi) spawned inside an atmux team, OR you're a driver-side agent that talks to a team. This doc is the one-stop synthesis of the *current* atmux model and the verbs you'll touch. It replaces three things you'd otherwise have to assemble yourself: scattered ADRs, per-role briefs, and the README's product-side overview.
 
 > **Canonical sources.** When this doc disagrees with [docs/PRD.md](PRD.md), [docs/ARCHITECTURE.md](ARCHITECTURE.md), or the ADRs cited inline, the ADR wins. The role briefs at [`templates/briefs/*.md`](../templates/briefs/) are the contract for what each role actually does — re-read your own brief on every fresh spawn or `/clear`.

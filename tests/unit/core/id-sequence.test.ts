@@ -44,12 +44,11 @@ describe("nextId — compound allocation", () => {
     expect(new Set(ids).size).toBe(3);
   });
 
-  test("scopes are independent", () => {
+  test("task scope counter is monotonic", () => {
+    // ADR-264: Task is the sole id scope (story / epic retired).
     expect(nextId(db, "t")).toMatch(/^t-1-/);
-    expect(nextId(db, "e")).toMatch(/^e-1-/);
-    expect(nextId(db, "s")).toMatch(/^s-1-/);
     expect(nextId(db, "t")).toMatch(/^t-2-/);
-    expect(nextId(db, "e")).toMatch(/^e-2-/);
+    expect(nextId(db, "t")).toMatch(/^t-3-/);
   });
 
   test("counter survives reopen of same DB", () => {
@@ -83,8 +82,8 @@ describe("peekId — read without increment", () => {
 describe("format detection", () => {
   test("isCompoundId — t-N-hash with 8 hex chars", () => {
     expect(isCompoundId("t-1-3b017960")).toBe(true);
-    expect(isCompoundId("s-1203-abc12345")).toBe(true);
-    expect(isCompoundId("e-120339-deadbeef")).toBe(true);
+    expect(isCompoundId("t-1203-abc12345")).toBe(true);
+    expect(isCompoundId("t-120339-deadbeef")).toBe(true);
   });
 
   test("isCompoundId rejects malformed", () => {
@@ -93,20 +92,25 @@ describe("format detection", () => {
     expect(isCompoundId("t-0-deadbeef")).toBe(false); // leading zero
     expect(isCompoundId("t-1-deadbee")).toBe(false); // short hash
     expect(isCompoundId("x-1-deadbeef")).toBe(false); // bad prefix
+    // ADR-264: story / epic scopes are retired — only `t` parses.
+    expect(isCompoundId("s-1203-abc12345")).toBe(false);
+    expect(isCompoundId("e-120339-deadbeef")).toBe(false);
   });
 
   test("isSequenceId — intermediate t-N format", () => {
     expect(isSequenceId("t-1")).toBe(true);
-    expect(isSequenceId("e-1203")).toBe(true);
+    expect(isSequenceId("t-1203")).toBe(true);
     expect(isSequenceId("t-0")).toBe(false);
     expect(isSequenceId("t-1-abc")).toBe(false);
+    expect(isSequenceId("e-1203")).toBe(false); // ADR-264: epic scope retired
   });
 
   test("isHexId — legacy t-hex format", () => {
     expect(isHexId("t-3b017960")).toBe(true);
-    expect(isHexId("s-c4e91c33")).toBe(true);
-    expect(isHexId("e-7a1014f9")).toBe(true);
     expect(isHexId("t-1-3b017960")).toBe(false);
+    // ADR-264: story / epic scopes are retired — only `t` parses.
+    expect(isHexId("s-c4e91c33")).toBe(false);
+    expect(isHexId("e-7a1014f9")).toBe(false);
   });
 
   test("isAnyId — accepts all three shapes", () => {
@@ -125,7 +129,7 @@ describe("matchesIdPrefix — partial lookup", () => {
 
   test("running-number prefix matches compound ID", () => {
     expect(matchesIdPrefix("t-1203-abc12345", "t-1203")).toBe(true);
-    expect(matchesIdPrefix("e-1-3b017960", "e-1")).toBe(true);
+    expect(matchesIdPrefix("t-1-3b017960", "t-1")).toBe(true);
   });
 
   test("partial hash also matches", () => {

@@ -22,9 +22,9 @@
 //     `dispatchedAt` on inbox-push) that bash adds at write time.
 //
 // **Asymmetry vs KanbanTask.** Inbox entries carry `dispatchedAt`
-// (stamped at the moment of inbox-push by `lib/dispatch.sh:95`,
-// `lib/epic.sh:314`, `lib/story.sh:384`, `lib/kanban.sh:679`) but
-// `KanbanTask` does NOT — `dispatchedAt` is an inbox-only field.
+// (stamped at the moment of inbox-push by `lib/dispatch.sh:95` +
+// `lib/kanban.sh:679`) but `KanbanTask` does NOT — `dispatchedAt`
+// is an inbox-only field.
 // whip's stale-min anchor at `lib/whip.sh:283` falls back
 // `claimedAt // dispatchedAt // 0`, so a dispatched-but-unclaimed
 // task in an inProgress section uses `dispatchedAt` for staleness.
@@ -67,8 +67,6 @@ export const InboxEntry = z
     /** Task IDs this task depends on. */
     deps: z.array(z.string()).optional(),
     priority: z.number().nullable().optional(),
-    epic: z.string().nullable().optional(),
-    story: z.string().nullable().optional(),
     /** Lane string — usually `KanbanLane` enum at write but read-permissive. */
     lane: z.string().nullable().optional(),
     deliverable: z.string().nullable().optional(),
@@ -80,12 +78,10 @@ export const InboxEntry = z
     claimedAt: z.number().int().nullable().optional(),
     /** Set by `_atmux_inbox_move` on `inProgress->done` transition. */
     completedAt: z.number().int().nullable().optional(),
-    /** Set on inbox-push by 4 dispatch sites:
-     *    `lib/dispatch.sh:95` (verb dispatch), `lib/epic.sh:314`
-     *    (epic dispatch), `lib/story.sh:384` (story dispatch),
-     *    `lib/kanban.sh:679` (task move dispatch). NOT present on
-     *    `kanban.tasks[]` — inbox-only field. Load-bearing for whip's
-     *    stale-min anchor at `lib/whip.sh:283`:
+    /** Set on inbox-push by the dispatch sites: `lib/dispatch.sh:95`
+     *    (verb dispatch) + `lib/kanban.sh:679` (task move dispatch).
+     *    NOT present on `kanban.tasks[]` — inbox-only field.
+     *    Load-bearing for whip's stale-min anchor at `lib/whip.sh:283`:
      *      `(.claimedAt // .dispatchedAt // 0) as $base`
      *    whip falls back through them in order, so a dispatched-but-
      *    not-yet-claimed task uses dispatchedAt as the staleness anchor. */

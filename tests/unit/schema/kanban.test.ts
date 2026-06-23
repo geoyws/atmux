@@ -10,65 +10,42 @@
 //   - KanbanTask: minimal (id only), fully-populated (every field), legacy
 //     shapes (missing fields), forward-compat (extra unknown keys via
 //     .passthrough()), null-coalesce on every nullable field
-//   - KanbanEpic: minimal, fully-populated
-//   - KanbanStory: minimal, fully-populated
+//   (ADR-264: the Epic / Story schemas are cut — Task is the sole unit)
 //   - KanbanLane enum: write-side validation accepts allowed lanes,
 //     rejects unknowns (used by core helpers / verbs at write boundary)
 
 import { describe, expect, test } from "bun:test";
-import {
-  Kanban,
-  KanbanEpic,
-  KanbanLane,
-  KanbanSchema,
-  KanbanStory,
-  KanbanTask,
-} from "../../../src/schema/kanban.ts";
+import { Kanban, KanbanLane, KanbanSchema, KanbanTask } from "../../../src/schema/kanban.ts";
 
 // ---------- Top-level ----------
 
 describe("Kanban (top-level)", () => {
   test("normalized empty shape parses cleanly", () => {
-    const empty = { tasks: [], epics: [], stories: [] };
+    // ADR-264: `tasks` is the only top-level array.
+    const empty = { tasks: [] };
     const parsed = Kanban.parse(empty);
     expect(parsed.tasks).toEqual([]);
-    expect(parsed.epics).toEqual([]);
-    expect(parsed.stories).toEqual([]);
   });
 
   test("KanbanSchema is an alias for Kanban (ergonomic import)", () => {
     expect(KanbanSchema).toBe(Kanban);
   });
 
-  test("populated shape with one of each parses cleanly", () => {
+  test("populated shape with one task parses cleanly", () => {
     const populated = {
       tasks: [{ id: "t-deadbeef" }],
-      epics: [{ id: "e-cafef00d" }],
-      stories: [{ id: "s-12345678" }],
     };
     const parsed = Kanban.parse(populated);
     expect(parsed.tasks).toHaveLength(1);
-    expect(parsed.epics).toHaveLength(1);
-    expect(parsed.stories).toHaveLength(1);
   });
 
   test("missing tasks array fails parse (normalize must run first)", () => {
-    expect(() => Kanban.parse({ epics: [], stories: [] })).toThrow();
-  });
-
-  test("missing epics array fails parse", () => {
-    expect(() => Kanban.parse({ tasks: [], stories: [] })).toThrow();
-  });
-
-  test("missing stories array fails parse", () => {
-    expect(() => Kanban.parse({ tasks: [], epics: [] })).toThrow();
+    expect(() => Kanban.parse({})).toThrow();
   });
 
   test("passthrough preserves unknown top-level keys (forward-compat)", () => {
     const input = {
       tasks: [],
-      epics: [],
-      stories: [],
       // Hypothetical Phase-2 future field bash adds before TS catches up:
       futureBashAddedField: "preserved",
     };
@@ -96,14 +73,12 @@ describe("KanbanTask", () => {
   test("fully-populated bash-on-disk shape parses (every documented field)", () => {
     const fullTask = {
       id: "t-f5bf6722",
-      subject: "EPIC: Decompose pull-based kanban expansion",
+      subject: "Decompose pull-based kanban expansion",
       body: "long body prose here",
       status: "done",
       owner: "planner",
       deps: ["t-aaa00001", "t-aaa00002"],
       priority: 1,
-      epic: "e-cafef00d",
-      story: "s-12345678",
       lane: "be",
       deliverable: "ADR-007 + 27 Tasks",
       staleMin: 60,
@@ -113,7 +88,7 @@ describe("KanbanTask", () => {
       completedAt: 1777088527,
       claimedFrom: null,
       createdFrom: "commit",
-      note: "27 Tasks across 9 Stories landed",
+      note: "27 Tasks landed",
     };
     const parsed = KanbanTask.parse(fullTask);
     expect(parsed.subject).toBe(fullTask.subject);
@@ -151,8 +126,6 @@ describe("KanbanTask", () => {
       body: null,
       owner: null,
       priority: null,
-      epic: null,
-      story: null,
       lane: null,
       deliverable: null,
       staleMin: null,
@@ -205,214 +178,6 @@ describe("KanbanTask", () => {
   });
 });
 
-// ---------- KanbanEpic ----------
-
-describe("KanbanEpic", () => {
-  test("minimal: only id", () => {
-    expect(KanbanEpic.parse({ id: "e-abc12345" }).id).toBe("e-abc12345");
-  });
-
-  test("rejects empty id", () => {
-    expect(() => KanbanEpic.parse({ id: "" })).toThrow();
-  });
-
-  test("fully-populated shape parses", () => {
-    const epic = {
-      id: "e-cafef00d",
-      title: "Pull-based kanban",
-      body: "the master epic",
-      status: "in-progress",
-      driverRef: "/root/.claude/plans/x.md",
-      createdAt: 1777087700,
-      completedAt: null,
-      stories: ["s-aaaa1111", "s-bbbb2222"],
-    };
-    const parsed = KanbanEpic.parse(epic);
-    expect(parsed.title).toBe("Pull-based kanban");
-    expect(parsed.stories).toEqual(["s-aaaa1111", "s-bbbb2222"]);
-  });
-
-  test("passthrough preserves unknown keys", () => {
-    const withExtra = { id: "e-x", futureField: "x" };
-    const parsed = KanbanEpic.parse(withExtra) as unknown as { futureField: string };
-    expect(parsed.futureField).toBe("x");
-  });
-
-  test("driverRef nullable", () => {
-    const e = KanbanEpic.parse({ id: "e-x", driverRef: null });
-    expect(e.driverRef).toBeNull();
-  });
-
-  // ADR-225 §Schema (sqlite-migrations v13→v14): dependsOn + isReady.
-  test("dependsOn + isReady: explicit values round-trip cleanly", () => {
-    const parsed = KanbanEpic.parse({
-      id: "e-225a",
-      dependsOn: ["e-up1", "e-up2"],
-      isReady: true,
-    });
-    expect(parsed.dependsOn).toEqual(["e-up1", "e-up2"]);
-    expect(parsed.isReady).toBe(true);
-  });
-
-  test("dependsOn + isReady: defaults apply when fields omitted", () => {
-    // Models the legacy-row case (NULL → coerced default by epicFromRow,
-    // or simply omitted by a caller building a fresh epic literal).
-    const parsed = KanbanEpic.parse({ id: "e-225b" });
-    expect(parsed.dependsOn).toEqual([]);
-    expect(parsed.isReady).toBe(false);
-  });
-
-  test("dependsOn: rejects non-array shape", () => {
-    expect(() => KanbanEpic.parse({ id: "e-225c", dependsOn: "e-up1" })).toThrow();
-  });
-
-  test("dependsOn: rejects non-string elements", () => {
-    expect(() => KanbanEpic.parse({ id: "e-225d", dependsOn: [1, 2] })).toThrow();
-  });
-
-  test("isReady: rejects non-boolean", () => {
-    expect(() => KanbanEpic.parse({ id: "e-225e", isReady: "yes" })).toThrow();
-    expect(() => KanbanEpic.parse({ id: "e-225f", isReady: 1 })).toThrow();
-  });
-
-  // ADR-231 §D2 + §D3 §Schema (sqlite-migrations v15→v16,
-  // t-6-8db78adf migration + t-7-0ad1dfe3 Zod): spawnedAt + extra.autoSpawn.
-  test("extra.autoSpawn: full shape parses + round-trips", () => {
-    const parsed = KanbanEpic.parse({
-      id: "e-231a",
-      extra: {
-        autoSpawn: {
-          enabled: true,
-          roster: "backend-heavy",
-          forceSpawn: false,
-        },
-      },
-    });
-    expect(parsed.extra?.autoSpawn?.enabled).toBe(true);
-    expect(parsed.extra?.autoSpawn?.roster).toBe("backend-heavy");
-    expect(parsed.extra?.autoSpawn?.forceSpawn).toBe(false);
-  });
-
-  test("extra.autoSpawn: minimal (just enabled) parses; optional fields absent", () => {
-    const parsed = KanbanEpic.parse({
-      id: "e-231b",
-      extra: { autoSpawn: { enabled: false } },
-    });
-    expect(parsed.extra?.autoSpawn?.enabled).toBe(false);
-    expect(parsed.extra?.autoSpawn?.roster).toBeUndefined();
-    expect(parsed.extra?.autoSpawn?.forceSpawn).toBeUndefined();
-  });
-
-  test("extra: absent autoSpawn handled gracefully (extra itself optional)", () => {
-    const parsedNoExtra = KanbanEpic.parse({ id: "e-231c" });
-    expect(parsedNoExtra.extra).toBeUndefined();
-    const parsedEmptyExtra = KanbanEpic.parse({ id: "e-231d", extra: {} });
-    expect(parsedEmptyExtra.extra?.autoSpawn).toBeUndefined();
-  });
-
-  test("extra: passthrough preserves unknown sibling keys (forward-compat for future per-epic config)", () => {
-    const parsed = KanbanEpic.parse({
-      id: "e-231e",
-      extra: {
-        autoSpawn: { enabled: true },
-        futureFeatureBag: { foo: "bar" },
-      },
-    }) as unknown as { extra: { futureFeatureBag: { foo: string } } };
-    expect(parsed.extra.futureFeatureBag.foo).toBe("bar");
-  });
-
-  test("extra.autoSpawn.enabled: rejects non-boolean", () => {
-    expect(() =>
-      KanbanEpic.parse({
-        id: "e-231f",
-        extra: { autoSpawn: { enabled: "true" } },
-      }),
-    ).toThrow();
-    expect(() =>
-      KanbanEpic.parse({
-        id: "e-231g",
-        extra: { autoSpawn: { enabled: 1 } },
-      }),
-    ).toThrow();
-  });
-
-  test("spawnedAt: accepts null (not yet spawned) AND positive integer (unix-epoch)", () => {
-    const fresh = KanbanEpic.parse({ id: "e-231h", spawnedAt: null });
-    expect(fresh.spawnedAt).toBeNull();
-    const spawned = KanbanEpic.parse({ id: "e-231i", spawnedAt: 1_700_000_500 });
-    expect(spawned.spawnedAt).toBe(1_700_000_500);
-    const omitted = KanbanEpic.parse({ id: "e-231j" });
-    expect(omitted.spawnedAt).toBeUndefined();
-  });
-
-  test("spawnedAt: rejects non-numeric / float / string shapes", () => {
-    expect(() => KanbanEpic.parse({ id: "e-231k", spawnedAt: "1700000500" })).toThrow();
-    expect(() => KanbanEpic.parse({ id: "e-231l", spawnedAt: 1700000500.5 })).toThrow();
-  });
-});
-
-// ---------- KanbanStory ----------
-
-describe("KanbanStory", () => {
-  test("minimal: only id", () => {
-    expect(KanbanStory.parse({ id: "s-abc12345" }).id).toBe("s-abc12345");
-  });
-
-  test("rejects empty id", () => {
-    expect(() => KanbanStory.parse({ id: "" })).toThrow();
-  });
-
-  test("fully-populated story (review-signoff workflow)", () => {
-    const story = {
-      id: "s-12345678",
-      epic: "e-cafef00d",
-      title: "Add lane enum",
-      body: "scope: be-kanban + bats",
-      acceptanceCriteria: "all bats pass under shellcheck",
-      status: "merging",
-      createdAt: 1777087800,
-      completedAt: null,
-      advancedAt: 1777088000,
-      reviewSignoff: true,
-      mergeTaskId: "t-merge0001",
-    };
-    const parsed = KanbanStory.parse(story);
-    expect(parsed.reviewSignoff).toBe(true);
-    expect(parsed.mergeTaskId).toBe("t-merge0001");
-  });
-
-  test("orphaned story (no parent epic) parses with epic=null", () => {
-    const orphan = { id: "s-orphan", epic: null };
-    expect(KanbanStory.parse(orphan).epic).toBeNull();
-  });
-
-  test("passthrough preserves unknown keys", () => {
-    const withExtra = { id: "s-x", futureField: true };
-    const parsed = KanbanStory.parse(withExtra) as unknown as { futureField: boolean };
-    expect(parsed.futureField).toBe(true);
-  });
-
-  test("ADR-146 §D4: branch field round-trips", () => {
-    const story = KanbanStory.parse({
-      id: "s-aaaaa111",
-      branch: "geoyws-whip-impl",
-    });
-    expect(story.branch).toBe("geoyws-whip-impl");
-  });
-
-  test("ADR-146 §D4: branch accepts null (Story not yet backfilled)", () => {
-    const story = KanbanStory.parse({ id: "s-aaaaa222", branch: null });
-    expect(story.branch).toBeNull();
-  });
-
-  test("ADR-146 §D4: branch is optional (existing Stories pre-backfill)", () => {
-    const story = KanbanStory.parse({ id: "s-aaaaa333" });
-    expect(story.branch).toBeUndefined();
-  });
-});
-
-// ---------- KanbanLane (write-side enum) ----------
-
 describe("KanbanLane (write-side enum, per kanban.sh:84)", () => {
   test.each([
     "fe",
@@ -447,13 +212,11 @@ describe("realistic kanban.json (parity-style integration)", () => {
       tasks: [
         {
           id: "t-f5bf6722",
-          subject: "EPIC: Decompose plan",
+          subject: "Decompose plan",
           status: "done",
           owner: "planner",
           deps: [],
           priority: null,
-          epic: "e-aaaa0001",
-          story: null,
           lane: null,
           createdAt: 1777087756,
           claimedAt: 1777087762,
@@ -474,132 +237,12 @@ describe("realistic kanban.json (parity-style integration)", () => {
           driverOnly: false,
         },
       ],
-      epics: [
-        {
-          id: "e-aaaa0001",
-          title: "Decompose pull-based kanban",
-          status: "done",
-          createdAt: 1777087700,
-          completedAt: 1777088600,
-          stories: ["s-bbbb0001"],
-        },
-      ],
-      stories: [
-        {
-          id: "s-bbbb0001",
-          epic: "e-aaaa0001",
-          title: "Schema additions",
-          status: "done",
-          createdAt: 1777087800,
-          completedAt: 1777088400,
-          reviewSignoff: true,
-        },
-      ],
     };
     const parsed = Kanban.parse(realistic);
     expect(parsed.tasks).toHaveLength(2);
-    expect(parsed.epics[0]?.stories).toEqual(["s-bbbb0001"]);
-    expect(parsed.stories[0]?.reviewSignoff).toBe(true);
     // Both tasks parsed: one done with note, one fresh todo with nulls.
     expect(parsed.tasks[0]?.status).toBe("done");
     expect(parsed.tasks[1]?.owner).toBeNull();
   });
 });
 
-// ---------- ADR-090 §Schema additions ----------
-
-describe("KanbanTask.role — ADR-090 §Decision-anchor #1", () => {
-  test("reviewer-trunk-signoff marker parses on a Task", () => {
-    const t = KanbanTask.parse({
-      id: "t-abcd0001",
-      subject: "trunk signoff: checkout-flow epic",
-      role: "reviewer-trunk-signoff",
-      status: "done",
-    });
-    expect(t.role).toBe("reviewer-trunk-signoff");
-  });
-
-  test("role accepts arbitrary strings (forward-compat for future markers)", () => {
-    // §Decision-anchor #1 reserves `reviewer-trunk-signoff` as the v1
-    // marker. Schema-permissive z.string() so future role-markers land
-    // without schema churn.
-    const t = KanbanTask.parse({
-      id: "t-abcd0002",
-      role: "epic-ship-gate",
-    });
-    expect(t.role).toBe("epic-ship-gate");
-  });
-
-  test("role is nullable + optional (legacy Tasks pre-ADR-090)", () => {
-    // Legacy Tasks (no role field) AND nullable-explicit (role:null) both
-    // parse — ADR-091's state-machine treats absent + null identically
-    // (neither matches the reviewer-trunk-signoff predicate).
-    const tLegacy = KanbanTask.parse({ id: "t-abcd0003" });
-    expect(tLegacy.role).toBeUndefined();
-    const tNull = KanbanTask.parse({ id: "t-abcd0004", role: null });
-    expect(tNull.role).toBeNull();
-  });
-});
-
-describe("KanbanEpic — ADR-090 §Schema additions (epicTeamName/Root/prNumber/prState/note)", () => {
-  test("epic-team-attached Epic carries epicTeamName + epicTeamRoot", () => {
-    const e = KanbanEpic.parse({
-      id: "e-1a2b3c4d",
-      title: "Checkout flow rewrite",
-      status: "in-progress",
-      epicTeamName: "checkout-flow",
-      epicTeamRoot: "/root/work/ifca/src/sopx-epics/checkout-flow",
-    });
-    expect(e.epicTeamName).toBe("checkout-flow");
-    expect(e.epicTeamRoot).toBe("/root/work/ifca/src/sopx-epics/checkout-flow");
-  });
-
-  test("legacy / shared-team Epic (no epicTeam attached) parses with the new fields null/absent", () => {
-    const eLegacy = KanbanEpic.parse({ id: "e-legacy01", status: "in-progress" });
-    expect(eLegacy.epicTeamName).toBeUndefined();
-    expect(eLegacy.epicTeamRoot).toBeUndefined();
-
-    const eNull = KanbanEpic.parse({
-      id: "e-legacy02",
-      epicTeamName: null,
-      epicTeamRoot: null,
-    });
-    expect(eNull.epicTeamName).toBeNull();
-    expect(eNull.epicTeamRoot).toBeNull();
-  });
-
-  test("forward-ref pr-mode fields parse (deferred runtime)", () => {
-    // §Decision-anchor #6: schema-accept-runtime-noop. Tests pin the
-    // schema shape so ADR-091's pr-mode runtime can land without
-    // changing the schema.
-    const e = KanbanEpic.parse({
-      id: "e-pr0001",
-      epicTeamName: "checkout-flow",
-      epicTeamRoot: "/p",
-      prNumber: 1234,
-      prState: "open",
-    });
-    expect(e.prNumber).toBe(1234);
-    expect(e.prState).toBe("open");
-  });
-
-  test("note field captures merge-state annotations (e.g. conflict at <SHA>)", () => {
-    const e = KanbanEpic.parse({
-      id: "e-conflict01",
-      epicTeamName: "checkout-flow",
-      epicTeamRoot: "/p",
-      note: "conflict at 12345abc",
-    });
-    expect(e.note).toBe("conflict at 12345abc");
-  });
-
-  test("KanbanEpic.passthrough() preserves forward-compat with unknown keys", () => {
-    // Pin the .passthrough() posture — adding a new bash-side field
-    // must NOT break the TS parser before TS catches up.
-    const e = KanbanEpic.parse({
-      id: "e-future01",
-      futureField: "should-passthrough",
-    });
-    expect((e as unknown as Record<string, unknown>).futureField).toBe("should-passthrough");
-  });
-});

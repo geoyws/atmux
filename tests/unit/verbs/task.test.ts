@@ -133,35 +133,10 @@ describe("parseAddArgs", () => {
     expect(parseAddArgs(["subj"]).driverOnly).toBeUndefined();
   });
 
-  // ---------- ADR-193: --epic / --story / --deliverable ----------
-  test("ADR-193: --epic / --story / --deliverable consumed (legacy hex8 ids)", () => {
-    const a = parseAddArgs([
-      "subj",
-      "--epic",
-      "e-3b017960",
-      "--story",
-      "s-c4e91c33",
-      "--deliverable",
-      "docs/adr/171-x.md",
-    ]);
-    expect(a.epic).toBe("e-3b017960");
-    expect(a.story).toBe("s-c4e91c33");
+  // ---------- ADR-193: --deliverable (ADR-264 cut --epic / --story) ----------
+  test("ADR-193: --deliverable consumed", () => {
+    const a = parseAddArgs(["subj", "--deliverable", "docs/adr/171-x.md"]);
     expect(a.deliverable).toBe("docs/adr/171-x.md");
-  });
-
-  test("ADR-193: running-number ids accepted (ADR-202 §VIII — e-1 / s-1203)", () => {
-    const a = parseAddArgs(["subj", "--epic", "e-1", "--story", "s-1203"]);
-    expect(a.epic).toBe("e-1");
-    expect(a.story).toBe("s-1203");
-  });
-
-  test("ADR-193: malformed --epic → UsageError (shape check, exit 64)", () => {
-    expect(() => parseAddArgs(["subj", "--epic", "e-zzz"])).toThrow(UsageError);
-    expect(() => parseAddArgs(["subj", "--epic", "nope"])).toThrow(UsageError);
-  });
-
-  test("ADR-193: malformed --story → UsageError", () => {
-    expect(() => parseAddArgs(["subj", "--story", "e-1"])).toThrow(UsageError);
   });
 
   test("ADR-193: --deliverable over 256 chars → UsageError", () => {
@@ -172,14 +147,13 @@ describe("parseAddArgs", () => {
     expect(parseAddArgs(["subj", "--deliverable", "x".repeat(256)]).deliverable).toHaveLength(256);
   });
 
-  test("ADR-193: empty --epic on add = unset (no validation, field absent)", () => {
-    expect(parseAddArgs(["subj", "--epic", ""]).epic).toBeUndefined();
+  test("ADR-193: --deliverable without value → UsageError", () => {
+    expect(() => parseAddArgs(["subj", "--deliverable"])).toThrow(UsageError);
   });
 
-  test("ADR-193: --epic / --story / --deliverable without value → UsageError", () => {
-    expect(() => parseAddArgs(["subj", "--epic"])).toThrow(UsageError);
-    expect(() => parseAddArgs(["subj", "--story"])).toThrow(UsageError);
-    expect(() => parseAddArgs(["subj", "--deliverable"])).toThrow(UsageError);
+  test("ADR-264: --epic / --story are no longer recognized flags", () => {
+    expect(() => parseAddArgs(["subj", "--epic", "e-1"])).toThrow(UsageError);
+    expect(() => parseAddArgs(["subj", "--story", "s-1"])).toThrow(UsageError);
   });
 });
 
@@ -781,107 +755,77 @@ describe("task verb — dispatch", () => {
     ).rejects.toThrow(UsageError);
   });
 
-  // ---------- ADR-193: task add/update --epic / --story / --deliverable ----------
+  // ---------- ADR-193 / ADR-264: task add/update --deliverable ----------
 
-  test("ADR-193: 'add --epic --story --deliverable' persists all three", async () => {
+  test("ADR-193: 'add --deliverable' persists the field", async () => {
     await captureStdout(() =>
       task([
         "add",
         "--team-dir",
         teamDir,
-        "--epic",
-        "e-3b017960",
-        "--story",
-        "s-c4e91c33",
         "--deliverable",
         "docs/adr/171-x.md",
         "decomp child T1",
       ]),
     );
     const k = await loadKanban(atmuxDir);
-    const t = k.tasks[0];
-    expect(t?.epic).toBe("e-3b017960");
-    expect(t?.story).toBe("s-c4e91c33");
-    expect(t?.deliverable).toBe("docs/adr/171-x.md");
+    expect(k.tasks[0]?.deliverable).toBe("docs/adr/171-x.md");
   });
 
-  test("ADR-193: 'add' without epic/story leaves fields absent (no forced null)", async () => {
+  test("ADR-193: 'add' without --deliverable leaves the field absent", async () => {
     await captureStdout(() => task(["add", "--team-dir", teamDir, "plain"]));
     const k = await loadKanban(atmuxDir);
-    expect(k.tasks[0]?.epic).toBeUndefined();
-    expect(k.tasks[0]?.story).toBeUndefined();
+    expect(k.tasks[0]?.deliverable).toBeUndefined();
   });
 
-  test("ADR-193: 'add --epic <malformed>' → UsageError (shape gate)", async () => {
+  test("ADR-264: 'add --epic' / 'add --story' are unknown flags → UsageError", async () => {
     await expect(
-      task(["add", "--team-dir", teamDir, "--epic", "garbage", "subj"]),
+      task(["add", "--team-dir", teamDir, "--epic", "e-1", "subj"]),
+    ).rejects.toThrow(UsageError);
+    await expect(
+      task(["add", "--team-dir", teamDir, "--story", "s-1", "subj"]),
     ).rejects.toThrow(UsageError);
   });
 
-  test("ADR-193: 'update --epic' re-parents an existing task", async () => {
+  test("ADR-193: 'update --deliverable' sets it", async () => {
     const id = await addTask(atmuxDir, { subject: "orphan" });
     await captureStdout(() =>
-      task(["update", id, "--epic", "e-4976c457", "--team-dir", teamDir]),
+      task(["update", id, "--deliverable", "shipped to main", "--team-dir", teamDir]),
     );
-    expect((await showTask(atmuxDir, id))?.epic).toBe("e-4976c457");
+    expect((await showTask(atmuxDir, id))?.deliverable).toBe("shipped to main");
   });
 
-  test("ADR-193: 'update --epic ''' clears the link (null)", async () => {
-    const id = await addTask(atmuxDir, { subject: "parented", epic: "e-4976c457" });
-    expect((await showTask(atmuxDir, id))?.epic).toBe("e-4976c457");
-    await captureStdout(() => task(["update", id, "--epic", "", "--team-dir", teamDir]));
-    expect((await showTask(atmuxDir, id))?.epic).toBeNull();
+  test("ADR-193: 'update --deliverable ''' clears it", async () => {
+    const id = await addTask(atmuxDir, { subject: "x", deliverable: "old" });
+    await captureStdout(() => task(["update", id, "--deliverable", "", "--team-dir", teamDir]));
+    expect((await showTask(atmuxDir, id))?.deliverable).toBeNull();
   });
 
-  test("ADR-193: 'update --story ''' and '--deliverable ''' clear", async () => {
-    const id = await addTask(atmuxDir, {
-      subject: "x",
-      story: "s-c4e91c33",
-      deliverable: "old",
-    });
-    await captureStdout(() =>
-      task(["update", id, "--story", "", "--deliverable", "", "--team-dir", teamDir]),
-    );
-    const after = await showTask(atmuxDir, id);
-    expect(after?.story).toBeNull();
-    expect(after?.deliverable).toBeNull();
-  });
-
-  test("ADR-193: 'update --epic <malformed>' → UsageError (no mutation)", async () => {
-    const id = await addTask(atmuxDir, { subject: "x" });
-    await expect(
-      task(["update", id, "--epic", "bad", "--team-dir", teamDir]),
-    ).rejects.toThrow(UsageError);
-  });
-
-  test("ADR-193: 'update' with only --epic is valid (counts toward the gate)", async () => {
-    const id = await addTask(atmuxDir, { subject: "x" });
-    const { exit } = await captureStdout(() =>
-      task(["update", id, "--epic", "e-00000001", "--team-dir", teamDir]),
-    );
-    expect(exit).toBe(0);
-  });
-
-  test("ADR-193: 'update --epic' doesn't clobber body (multi-field isolation)", async () => {
+  test("ADR-193: 'update --deliverable' doesn't clobber body (multi-field isolation)", async () => {
     const id = await addTask(atmuxDir, { subject: "x", body: "keep me" });
     await captureStdout(() =>
-      task(["update", id, "--epic", "e-12345678", "--team-dir", teamDir]),
+      task(["update", id, "--deliverable", "ship", "--team-dir", teamDir]),
     );
     const after = await showTask(atmuxDir, id);
-    expect(after?.epic).toBe("e-12345678");
+    expect(after?.deliverable).toBe("ship");
     expect(after?.body).toBe("keep me");
   });
 
-  test("ADR-193: 'update --epic/--story/--deliverable' without value → UsageError", async () => {
+  test("ADR-193: 'update --deliverable' without value → UsageError", async () => {
     const id = await addTask(atmuxDir, { subject: "x" });
-    // Flag last → parser sees rest[i+1]=undefined; --team-dir comes first.
-    await expect(task(["update", id, "--team-dir", teamDir, "--epic"])).rejects.toThrow(UsageError);
-    await expect(task(["update", id, "--team-dir", teamDir, "--story"])).rejects.toThrow(
-      UsageError,
-    );
     await expect(task(["update", id, "--team-dir", teamDir, "--deliverable"])).rejects.toThrow(
       UsageError,
     );
+  });
+
+  test("ADR-264: 'update --epic' / 'update --story' are unknown flags → UsageError", async () => {
+    const id = await addTask(atmuxDir, { subject: "x" });
+    await expect(
+      task(["update", id, "--epic", "e-1", "--team-dir", teamDir]),
+    ).rejects.toThrow(UsageError);
+    await expect(
+      task(["update", id, "--story", "s-1", "--team-dir", teamDir]),
+    ).rejects.toThrow(UsageError);
   });
 
   test("ADR-193: 'update --deliverable <over 256>' → UsageError", async () => {

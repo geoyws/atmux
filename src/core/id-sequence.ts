@@ -2,17 +2,18 @@
 // generators.
 //
 // Format: `<scope>-<N>-<hash>` where:
-//   - `<scope>` is `t` / `s` / `e` (task / story / epic)
+//   - `<scope>` is `t` (task) — the sole work unit per ADR-264; the
+//     legacy `s` (story) / `e` (epic) scopes are retired.
 //   - `<N>` is a per-team monotonic positive integer starting at 1
 //   - `<hash>` is 8 hex chars random (same generator as legacy)
 //
-// Example: `e-1-3b017960`, `t-1203-a1b2c3d4`, `s-7-deadbeef`.
+// Example: `t-1203-a1b2c3d4`, `t-47-deadbeef`.
 //
 // Operator rationale (2026-05-22):
 //
-//   1. **Easier to remember.** "Epic 1 / Epic 1203" beats "Epic e-7a1014f9".
+//   1. **Easier to remember.** "Task 1 / Task 1203" beats "Task t-7a1014f9".
 //      The running-number gives human recall + reads naturally in
-//      reviews ("the 12th epic", "task 47 of 50").
+//      reviews ("task 47 of 50").
 //
 //   2. **Easier to grep.** `grep e-1 logs/*.log` matches too many things
 //      (every event-id starting with e-1...). `grep e-1-3b017960`
@@ -43,8 +44,9 @@
 import { randomBytes } from "node:crypto";
 import type { Database } from "../abstractions/sqlite.ts";
 
-/** Single-character prefix discriminator for the sequence scope. */
-export type IdScope = "t" | "s" | "e";
+/** Single-character prefix discriminator for the sequence scope. Task is
+ *  the only persistent work unit (ADR-264); story / epic scopes retired. */
+export type IdScope = "t";
 
 /**
  * Atomically allocate the next compound ID for `scope` in `db`.
@@ -132,10 +134,10 @@ export function assignSequenceToLegacyId(
 
 /**
  * Compound format (current): `<scope>-<N>-<hash>` where N is a positive
- * integer and hash is 8 hex chars. Example: `e-1-3b017960`.
+ * integer and hash is 8 hex chars. Example: `t-1-3b017960`.
  */
 export function isCompoundId(id: string): boolean {
-  return /^[tse]-[1-9][0-9]*-[0-9a-f]{8}$/.test(id);
+  return /^t-[1-9][0-9]*-[0-9a-f]{8}$/.test(id);
 }
 
 /**
@@ -145,13 +147,13 @@ export function isCompoundId(id: string): boolean {
  * in-flight reference; never emitted.
  */
 export function isSequenceId(id: string): boolean {
-  return /^[tse]-[1-9][0-9]*$/.test(id);
+  return /^t-[1-9][0-9]*$/.test(id);
 }
 
 /** Legacy hex format: `<scope>-<hash>` (8 hex chars, no running
  *  number). Pre-§VIII IDs. Stays valid forever via string equality. */
 export function isHexId(id: string): boolean {
-  return /^[tse]-[0-9a-f]{8}$/.test(id);
+  return /^t-[0-9a-f]{8}$/.test(id);
 }
 
 /** Detect any valid atmux ID shape — compound, sequence, or legacy hex. */
@@ -168,7 +170,7 @@ export function isAnyId(id: string): boolean {
  *
  * Rules:
  *  - Empty query never matches.
- *  - Query must include the scope prefix (`t-` / `s-` / `e-`).
+ *  - Query must include the scope prefix (`t-`).
  *  - Exact equality is also a prefix match (trivially).
  *  - Hex-format candidates (no running number) require exact match —
  *    `t-3b01` against `t-3b017960` is ambiguous in legacy land so we

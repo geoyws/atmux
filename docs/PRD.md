@@ -87,7 +87,7 @@ atmux ships pointed at Claude; the tmux-is-IPC principle means any interactive T
 ```
 .atmux/
 ├── team.json          # source of truth — team name + pane list (drivers[]/members[] collapse to flat panes)
-├── state.db           # SQLite — the task feed (ADR-060/126). Tasks only; epics/stories/complaints/inboxes/merger-state tables dropped.
+├── state.db           # SQLite — the task feed (ADR-060/126). Tasks only; epics/stories tables + tasks.epic/story columns dropped by migration v18 (ADR-264); complaints/inboxes/merger-state tables dropped.
 ├── logs/              # verb-event JSONL audit (events-log.ts) + per-pane send logs
 ├── tmux/              # per-team cage socket dir (ADR-018/162)
 └── archive/<ts>/      # created on atmux stop

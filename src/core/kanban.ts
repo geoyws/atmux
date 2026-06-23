@@ -14,9 +14,10 @@
 // for serialization; the TS port adds an explicit flock per ADR-005).
 //
 // Schema. The on-disk shape is `Kanban` from `src/schema/kanban.ts`
-// (`{tasks, epics?, stories?}` top-level). Bash creates an empty
-// `{"tasks": []}` file via `[[ -f $k ]] || echo … > $k` (lib/kanban.sh:14)
-// — the TS port mirrors this via `updateJson({initial: emptyKanban()})`.
+// (`{tasks}` top-level — ADR-264 makes Task the sole work unit). Bash
+// creates an empty `{"tasks": []}` file via `[[ -f $k ]] || echo … > $k`
+// (lib/kanban.sh:14) — the TS port mirrors this via
+// `updateJson({initial: emptyKanban()})`.
 //
 // Parity with bash @ worktree-frozen:
 //
@@ -57,13 +58,8 @@ import {
 import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { now } from "../abstractions/time.ts";
 import { ConfigError, UsageError } from "../errors.ts";
-import {
-  type Kanban,
-  Kanban as KanbanSchema,
-  type KanbanStory,
-  type KanbanTask,
-} from "../schema/kanban.ts";
-import { DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG, type Team } from "../schema/team.ts";
+import { type Kanban, Kanban as KanbanSchema, type KanbanTask } from "../schema/kanban.ts";
+import type { Team } from "../schema/team.ts";
 import { type CallerScope, kanbanJsonPath, tryLoadTeam } from "./common.ts";
 import { nextId } from "./id-sequence.ts";
 import { KanbanRepo } from "./repositories/kanban-repo.ts";
@@ -127,12 +123,6 @@ export interface AddTaskOpts {
    *  (`claim --next` / lane-tick cron) skips this Task unless the
    *  caller's scope is `driver` (env `ATMUX_CALLER_SCOPE=driver`). */
   driverOnly?: boolean;
-  /** ADR-193: parent epic id (`e-<id>`). Validated for shape at the
-   *  verb layer; NO existence check (§OQ1 — cross-worktree decomp may
-   *  file the epic in a sibling session). */
-  epic?: string;
-  /** ADR-193: parent story id (`s-<id>`). Same shape-only stance. */
-  story?: string;
   /** ADR-193: free-form deliverable description (≤256 chars at the
    *  verb layer — a path / artifact reference, e.g. `docs/adr/171-...md`). */
   deliverable?: string;
@@ -155,8 +145,6 @@ export async function loadKanban(atmuxDir: string): Promise<Kanban> {
   if (await _useSqlite(atmuxDir)) {
     return await _withDb(atmuxDir, (_db, repo) => ({
       tasks: repo.listTasks(),
-      epics: repo.listEpics(),
-      stories: repo.listStories(),
     }));
   }
   // updateJson under a no-op mutator gives us "load with schema validation"
@@ -230,11 +218,9 @@ export async function addTask(atmuxDir: string, opts: AddTaskOpts): Promise<stri
           completedAt: null,
         };
         if (opts.driverOnly === true) task.driverOnly = true;
-        // ADR-193: epic/story/deliverable set only when supplied
-        // (mirrors the driverOnly minimal-footprint pattern — absent
-        // flag leaves the field undefined, which the repo binds NULL).
-        if (opts.epic !== undefined) task.epic = opts.epic;
-        if (opts.story !== undefined) task.story = opts.story;
+        // ADR-193: deliverable set only when supplied (mirrors the
+        // driverOnly minimal-footprint pattern — absent flag leaves the
+        // field undefined, which the repo binds NULL).
         if (opts.deliverable !== undefined) task.deliverable = opts.deliverable;
         repo.addTask(task);
         if (wantsUnclaimedEmit && team !== null) {
@@ -263,9 +249,7 @@ export async function addTask(atmuxDir: string, opts: AddTaskOpts): Promise<stri
     completedAt: null,
   };
   if (opts.driverOnly === true) task.driverOnly = true;
-  // ADR-193: epic/story/deliverable parity with the SQLite path above.
-  if (opts.epic !== undefined) task.epic = opts.epic;
-  if (opts.story !== undefined) task.story = opts.story;
+  // ADR-193: deliverable parity with the SQLite path above.
   if (opts.deliverable !== undefined) task.deliverable = opts.deliverable;
   await updateJson(
     kanbanJsonPath(atmuxDir),
@@ -306,8 +290,6 @@ function tryEmitTaskUnclaimed(args: {
       ...(task.priority !== null && task.priority !== undefined
         ? { priority: task.priority }
         : {}),
-      ...(typeof task.story === "string" ? { storyId: task.story } : {}),
-      ...(typeof task.epic === "string" ? { epicId: task.epic } : {}),
     });
   } catch {
     // Best-effort: missing events table or Zod failure must not break
@@ -322,7 +304,7 @@ function tryEmitTaskUnclaimed(args: {
 export async function listTasks(atmuxDir: string, filter?: ListTasksFilter): Promise<KanbanTask[]> {
   if (await _useSqlite(atmuxDir)) {
     return await _withDb(atmuxDir, (_db, repo) => {
-      // KanbanRepo.listTasks accepts {owner, status, lane, epic, story};
+      // KanbanRepo.listTasks accepts {owner, status, lane};
       // map verb-side {assignee} → repo {owner}.
       const repoFilter: Parameters<KanbanRepo["listTasks"]>[0] = {};
       if (filter?.status !== undefined) repoFilter.status = filter.status;
@@ -388,15 +370,11 @@ export async function moveTask(
   // bookkeeping moves stay allowed regardless of scope.
   const statusGated = DRIVER_ONLY_MOVE_BLOCKED_STATUSES.includes(status);
   const refuseMsg = `task move: ${id} is a driver-only Task — only the driver scope can move it to '${status}'. Driver pane should have ATMUX_CALLER_SCOPE=driver set; if you ARE the driver, export ATMUX_CALLER_SCOPE=driver and retry.`;
-  // ADR-146 T2: pre-load team config when this is a done-transition.
-  // The auto-emit hook fires only on `done` and only when a Story
-  // branch is set; loading the team out-of-band keeps file I/O off
-  // the write-lock-held transaction body. tryLoadTeam returns null
-  // on absent team.json (JSON-only kanbans / tests that don't stage
-  // a team) — auto-emit silently skips in that case.
-  //
-  // ADR-202/203: also pre-load team for status transitions that emit
-  // events (claimed / done) — payload carries team.name as scope.
+  // ADR-202/203: pre-load team for status transitions that emit events
+  // (claimed / done) — the payload carries team.name as scope. Loading
+  // out-of-band keeps file I/O off the write-lock-held transaction body.
+  // tryLoadTeam returns null on absent team.json (JSON-only kanbans /
+  // tests that don't stage a team) — emit silently skips in that case.
   const eventStatuses = new Set(["done", "in-progress"]);
   const team: Team | null =
     status === "done" || eventStatuses.has(status)
@@ -405,10 +383,8 @@ export async function moveTask(
   const emit = opts.emit ?? defaultEmit;
   if (await _useSqlite(atmuxDir)) {
     await _withDb(atmuxDir, (db, repo) => {
-      // ADR-146 §Atomic: BEGIN IMMEDIATE so the upsert + the auto-
-      // emit addTask either both land or both roll back. The
-      // immediate lock acquisition also serializes concurrent
-      // ticks that could otherwise race the sibling-count read.
+      // ADR-202/203 §Atomic: BEGIN IMMEDIATE so the task upsert + the
+      // lifecycle-event emit either both land or both roll back.
       transactImmediate(db, () => {
         const cur = repo.getTask(id);
         if (cur === null) throw new ConfigError({ what: `no such task: ${id}` });
@@ -418,12 +394,6 @@ export async function moveTask(
         const next: KanbanTask = { ...cur, status };
         if (completedAt !== undefined) next.completedAt = completedAt;
         repo.upsertTask(next);
-        // ADR-146 §D1 hook: post-transition auto-emit. Same-tx so
-        // gitter's task-done cascade (ADR-032) wakes only after
-        // both rows commit — no false-positive idle nudge.
-        if (status === "done" && team !== null) {
-          tryAutoEmitTrunkMerge(repo, next, team, db);
-        }
         // ADR-202/203 §D2: task-lifecycle event emission, same-tx so
         // event durability matches the kanban row. Honker NOTIFY (if
         // loaded) fires inside emit() via honker_stream_publish; the
@@ -484,8 +454,6 @@ function tryEmitTaskLifecycle(args: {
         member: prev.owner ?? next.owner ?? "",
         team: team.name,
         doneAtSec: doneAt,
-        ...(typeof next.story === "string" ? { storyId: next.story } : {}),
-        ...(typeof next.epic === "string" ? { epicId: next.epic } : {}),
       });
       return;
     }
@@ -495,8 +463,6 @@ function tryEmitTaskLifecycle(args: {
         taskId: next.id,
         member: next.owner ?? prev.owner ?? "",
         team: team.name,
-        ...(typeof next.story === "string" ? { storyId: next.story } : {}),
-        ...(typeof next.epic === "string" ? { epicId: next.epic } : {}),
       });
     }
   } catch {
@@ -504,167 +470,6 @@ function tryEmitTaskLifecycle(args: {
     // failure must not break task move. The kanban row is the
     // load-bearing side effect.
   }
-}
-
-// ---------- ADR-146 T2: trunk-merge auto-emit hook ----------
-
-/** Resolve the effective `team.autoEmitTrunkMerge` config — fills
- *  missing keys from {@link DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG}
- *  and computes the team-wide `enabled` default from
- *  `team.worktreeIsolation` per ADR-146 §D7 ("default `true` when
- *  `worktreeIsolation: true`, `false` otherwise"). */
-export function resolveAutoEmitTrunkMergeConfig(team: Team): {
-  enabled: boolean;
-  fallbackAssignee: string | null;
-  shortCircuitOnSharedBase: boolean;
-} {
-  const block = team.autoEmitTrunkMerge;
-  // Default `enabled` flips per worktreeIsolation per ADR-146 §D7.
-  const defaultEnabled = team.worktreeIsolation === true;
-  return {
-    enabled: block?.enabled ?? defaultEnabled,
-    fallbackAssignee:
-      block?.fallbackAssignee ?? DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG.fallbackAssignee,
-    shortCircuitOnSharedBase:
-      block?.shortCircuitOnSharedBase ??
-      DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG.shortCircuitOnSharedBase,
-  };
-}
-
-/** Resolve the auto-Task's owner per ADR-146 §D3: prefer a member
- *  with `role === "committer"` (canonical post-ADR-159 TR3; legacy
- *  `role === "gitter"` still accepted during grace cycle — schema
- *  transforms to canonical, but Zod-bypassed in-memory objects may
- *  carry the legacy value), or `name === "gitter"` for the legacy
- *  no-role-set case, else fall back to
- *  `autoEmitTrunkMerge.fallbackAssignee` (null = unassigned). */
-function resolveAutoEmitOwner(team: Team, fallbackAssignee: string | null): string | null {
-  const gitter = team.members.find(
-    (m) => m.role === "committer" || m.role === "gitter" || m.name === "gitter",
-  );
-  if (gitter !== undefined) return gitter.name;
-  return fallbackAssignee;
-}
-
-/** ADR-146 §D2 subject pattern. Loop-prevention §D5 matches against
- *  this exact shape so an auto-emit Task doesn't re-trigger itself
- *  if its own status flips. */
-// Loop-prevention: matches BOTH legacy hex IDs (`t-3b017960`) and the
-// ADR-202 §VIII compound IDs (`t-1-3b017960`). Either form may appear
-// on disk as the subject prefix.
-const AUTO_EMIT_SUBJECT_RE =
-  /^merge t-(?:[1-9][0-9]*-)?[0-9a-f]+ \(branch→trunk\):/;
-
-/** ADR-146 §D5 + §D1 + §D2: emit a `merge t-xxx (branch→trunk)`
- *  Task when ALL of these hold for the just-done Task:
- *
- *    1. The done Task has a parent Story (`task.story` set)
- *    2. The parent Story has a `branch` field set (per ADR-146 §D4)
- *    3. Team `autoEmitTrunkMerge.enabled` resolves true
- *    4. Team has `worktreeIsolation: true` (§D5 row)
- *    5. The Story's branch is NOT the team's base branch when
- *       `shortCircuitOnSharedBase` is on
- *    6. Zero remaining non-done sibling Tasks under the same Story
- *    7. The done Task itself isn't an auto-emit merge Task
- *       (loop-prevention §D5 last row)
- *
- *  Returns the new auto-emit Task's id when fired, null on any
- *  short-circuit. All work happens inside the caller's
- *  transactImmediate wrap — no separate transaction needed. */
-export function tryAutoEmitTrunkMerge(
-  repo: KanbanRepo,
-  doneTask: KanbanTask,
-  team: Team,
-  /** ADR-202 §VIII — Database handle for running-number ID
-   *  allocation via `id_sequences` table. The function is called
-   *  inside an open transactImmediate scope so the sequence increment
-   *  and the auto-emit task insert are atomic. */
-  db: Database,
-): string | null {
-  // (1) Storyless Tasks never emit. One-off branches / hot-fixes
-  //     remain manual per ADR-146 §"Storyless trunk-merges".
-  if (doneTask.story === undefined || doneTask.story === null) return null;
-  // (7) Loop-prevention: an auto-emit Task transitioning to done
-  //     would otherwise re-trigger emission against the same Story.
-  //     Subject-pattern check matches §D5 last row.
-  if (doneTask.subject !== undefined && AUTO_EMIT_SUBJECT_RE.test(doneTask.subject)) {
-    return null;
-  }
-
-  const cfg = resolveAutoEmitTrunkMergeConfig(team);
-  // (3) Master switch.
-  if (!cfg.enabled) return null;
-  // (4) Worktree-isolation gate per ADR-146 §D5 row 3. Shared-cwd
-  //     teams don't fan-in.
-  if (team.worktreeIsolation !== true) return null;
-
-  // (2) Parent Story must exist + carry a branch field.
-  const story = repo.getStory(doneTask.story);
-  if (story === null) return null;
-  // The `branch` field rides through `extra` JSON on the
-  // KanbanStory row (no DB column added). storyFromRow spreads
-  // `extra` last so `story.branch` is populated when present.
-  const sourceBranch = (story as KanbanStory).branch;
-  if (sourceBranch === undefined || sourceBranch === null || sourceBranch.length === 0) {
-    return null;
-  }
-
-  // (5) Shared-base short-circuit per §D5 row 2. Compare against
-  //     the team's `merger.baseBranch` (when set) — see ADR-179.
-  //     The resolver in `src/core/merger-config.ts` is the strict
-  //     resolver, but the kanban hook intentionally stays config-
-  //     local to avoid pulling in the merger resolver's git-probe
-  //     side-effects.
-  if (cfg.shortCircuitOnSharedBase) {
-    const baseBranch = team.merger?.baseBranch;
-    if (baseBranch !== undefined && baseBranch.length > 0 && sourceBranch === baseBranch) {
-      return null;
-    }
-  }
-
-  // (6) Zero remaining non-done siblings.
-  const siblings = repo.listTasks({ story: doneTask.story });
-  for (const s of siblings) {
-    if (s.id === doneTask.id) continue;
-    if (s.status !== "done") return null;
-  }
-
-  // All gates passed — build + insert the auto-emit Task per
-  // ADR-146 §D2 shape verbatim. Body is YAML-flavored markdown
-  // so gitter's brief (subject-pattern + body grep) parses the
-  // source-branch + target identically to a manually-filed Task.
-  const owner = resolveAutoEmitOwner(team, cfg.fallbackAssignee);
-  const emittedAt = nowEpoch();
-  // ADR-202 §VIII — running-number ID. Inside the caller's
-  // transactImmediate so atomicity matches the row insert.
-  const autoId = nextId(db, "t");
-  // Owning-lane derive per §D2: read the done Task's lane (proxy
-  // for "Story's task chain primary lane"). Fall back to "misc"
-  // when the done Task is laneless.
-  const owningLane = doneTask.lane ?? "misc";
-  const body =
-    `source-branch: ${sourceBranch}\n` +
-    `target: trunk\n` +
-    `owning-lane: ${owningLane}\n` +
-    "conflict-hint: \n" +
-    `parent-story: ${story.id}\n` +
-    "auto-emitted: true\n" +
-    `emitted-at: ${emittedAt}\n`;
-  const autoTask: KanbanTask = {
-    id: autoId,
-    subject: `merge ${autoId} (branch→trunk): ${sourceBranch} → trunk`,
-    body,
-    status: "todo",
-    owner,
-    deps: [],
-    priority: null,
-    lane: "misc",
-    createdAt: emittedAt,
-    claimedAt: null,
-    completedAt: null,
-  };
-  repo.addTask(autoTask);
-  return autoId;
 }
 
 /** Per t-af159454: flip a task to `blocked` with an audit note in a
@@ -724,49 +529,6 @@ export async function setTaskLane(
     return;
   }
   await updateTaskByIdOrThrow(atmuxDir, id, (t) => ({ ...t, lane }));
-}
-
-/** ADR-193: set/clear a task's parent epic id. `null` clears the link
- *  (`task update --epic ''`). Shape-validated at the verb layer; this
- *  setter is the no-existence-check write path (§OQ1). Throws
- *  `ConfigError` on missing task id. */
-export async function setTaskEpic(
-  atmuxDir: string,
-  id: string,
-  epic: string | null,
-): Promise<void> {
-  if (await _useSqlite(atmuxDir)) {
-    await _withDb(atmuxDir, (db, repo) => {
-      transactImmediate(db, () => {
-        const cur = repo.getTask(id);
-        if (cur === null) throw new ConfigError({ what: `no such task: ${id}` });
-        repo.upsertTask({ ...cur, epic });
-      });
-    });
-    return;
-  }
-  await updateTaskByIdOrThrow(atmuxDir, id, (t) => ({ ...t, epic }));
-}
-
-/** ADR-193: set/clear a task's parent story id. `null` clears the link
- *  (`task update --story ''`). Shape-validated at the verb layer.
- *  Throws `ConfigError` on missing task id. */
-export async function setTaskStory(
-  atmuxDir: string,
-  id: string,
-  story: string | null,
-): Promise<void> {
-  if (await _useSqlite(atmuxDir)) {
-    await _withDb(atmuxDir, (db, repo) => {
-      transactImmediate(db, () => {
-        const cur = repo.getTask(id);
-        if (cur === null) throw new ConfigError({ what: `no such task: ${id}` });
-        repo.upsertTask({ ...cur, story });
-      });
-    });
-    return;
-  }
-  await updateTaskByIdOrThrow(atmuxDir, id, (t) => ({ ...t, story }));
 }
 
 /** ADR-193: set/clear a task's free-form deliverable description.
@@ -1348,12 +1110,10 @@ export function nowEpoch(): number {
 }
 
 /** Shape used as the `initial` for `updateJson` when the kanban.json
- *  doesn't exist yet. Bash creates `{"tasks": []}` — the TS Kanban
- *  schema requires all three top-level arrays to land schema-strict,
- *  so we materialize empty `epics` and `stories` here. Equivalent
- *  on-disk shape vs bash; reads don't differ. */
+ *  doesn't exist yet. Bash creates `{"tasks": []}`; ADR-264 makes
+ *  `tasks` the only top-level array, matching that shape exactly. */
 export function emptyKanban(): Kanban {
-  return { tasks: [], epics: [], stories: [] };
+  return { tasks: [] };
 }
 
 // ---------- Internals ----------
