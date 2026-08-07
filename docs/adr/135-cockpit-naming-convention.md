@@ -147,6 +147,10 @@ Same idempotent-rewrite pattern as ADR-133 TR6 (`superdoctor → medic` cron lin
 
 ## Amendments
 
+### 2026-07-28 — §D1 superseded: session literal `atmux_cockpit` → `atx` (ADR-264)
+
+[ADR-264](264-cockpit-session-atx-rename.md) supersedes this ADR's §D1 session-name literal: the canonical cockpit tmux session is now **`atx`** (the prose term "cockpit" and the `atmux-cockpit` socket name are unchanged). The migration machinery this ADR established is reused one generation up — §D5's coercion shim now covers *both* legacy literals (`atmux_teams`, `atmux_cockpit` → `atx`), and §D4's in-place `rename-session` shim renames either legacy session to `atx`. §D2 (`_-prefix` cockpit windows) and §D3 (`<emoji>-<member>` format, as amended by ADR-161) remain operative and untouched.
+
 ### 2026-05-16 — Socket isolation added (ADR-162)
 
 [ADR-162](162-atmux-owns-tmux-infrastructure.md) extends the cockpit naming convention from **session-name isolation** to **socket isolation**. The cockpit moves from the operator's default tmux socket (`tmux ...`) to a dedicated named socket (`tmux -L atmux-cockpit ...`). The `cockpitSession: "atmux_cockpit"` session name (this ADR's §Decision) is unchanged — `atmux-cockpit` becomes the SOCKET name AND `atmux_cockpit` stays the SESSION name on that socket.

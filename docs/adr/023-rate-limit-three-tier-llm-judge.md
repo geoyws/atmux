@@ -84,3 +84,15 @@ The judge prompt template lives in `templates/prompts/rate-limit-judge.md` (new)
 3. **OQ E3: cost ledger schema?** Resolved: JSONL at `.atmux/state/llm-judge-cost.jsonl` with `{ts, member, caller, model, input_chars, output_chars, decision, reason}`. Append-only. (low-rev — schema additions are non-breaking.)
 
 All resolutions logged to `.atmux/decisions.md`.
+
+## Amendments
+
+### 2026-08-07 — `AUTO-PRECLEAR` reads `AUTO-HANDOFF`; "preclear path" reads "handoff path" (ADR-263)
+
+[ADR-263](263-merge-session-preclear-into-handoff.md) merges the `/session preclear` verb into `/session handoff` — one mode-aware verb, no `preclear` alias. Three references above read `handoff`:
+
+- **§Context, failure modes** — "a test fixture mentioning rate-limit pings AUTO-PRECLEAR" reads **AUTO-HANDOFF**.
+- **§Context, decomposition split** — "Whip's preclear path becomes tier-aware" reads "Whip's **handoff** path becomes tier-aware".
+- **§Decision** — "replace the regex-only AUTO-PRECLEAR block" reads "the regex-only **AUTO-HANDOFF** block".
+
+The three-tier classification, the Sonnet (`claude-sonnet-4-6`) judge pick, the `lib/llm-judge.sh` contract, the JSONL cost ledger at `.atmux/state/llm-judge-cost.jsonl`, and the 5-min cron debounce floor are all unchanged.

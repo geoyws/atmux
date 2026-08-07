@@ -236,3 +236,9 @@ Same as the original §Rollback path. Revert the amendment commit; legacy `drive
 4. Run `atmux start <team-name>` — should read team.json via the symlink without ceremony.
 
 **Out-of-scope for this supplement**: kanban.sqlite + decisions.md storage. Those follow the same dotfile-centric pattern per ADR-244 §Supersession-2026-05-26.
+
+## Amendments
+
+### 2026-08-07 — D5 "`/clear` or `/preclear`" reads "`/clear` or `/handoff`" (ADR-263)
+
+[ADR-263](263-merge-session-preclear-into-handoff.md) merges the `/session preclear` verb into `/session handoff` — one mode-aware verb, no `preclear` alias. D5's "No rotation" bullet — "Operator chooses when to `/clear` or `/preclear`" — reads **"`/clear` or `/handoff`"**. The invariant is unchanged: drivers never auto-rotate, orchd's 15min context scan still skips them, and the operator still manages their own context by hand.
