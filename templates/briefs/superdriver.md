@@ -14,7 +14,7 @@ You have been briefed as `{{MEMBER}}` on team `{{TEAM}}` with role `{{ROLE}}`. B
 
 - `ATMUX_MEMBER` (set by atmux when it spawned this Claude) MUST equal `{{MEMBER}}` exactly. This is the **primary** check — atmux sets it per pane at spawn time; if it doesn't match the brief, the brief was mis-routed.
 - `window=` (from the calling pane via `-t "$TMUX_PANE"`) MUST contain `{{MEMBER}}` — canonical pattern `<emoji>_{{MEMBER}}` or `<emoji>-{{MEMBER}}`. **Critical**: pass `-t "$TMUX_PANE"` — without it, `tmux display-message` reports the attached client's current window (often the driver pane), giving a misleading false-mismatch.
-- `session=` MUST contain `{{TEAM}}` — canonical `atmux_{{TEAM}}`; epic-team variants `atmux_{{TEAM}}__epic-<id>` are also valid. **Cockpit-tier roles** (superdriver, enforcer, discorder, merger, unblocker) run from `atmux_cockpit` — correct for cockpit briefs ONLY; team-tier briefs must NOT be in `atmux_cockpit`. **Retired roles** (sentinel ADR-211, medic ADR-212, jury ADR-213, ombudsman ADR-214): surface via `atmux flag` if you find yourself spawned into one.
+- `session=` MUST contain `{{TEAM}}` — canonical `atmux_{{TEAM}}`; epic-team variants `atmux_{{TEAM}}__epic-<id>` are also valid. **Cockpit-tier roles** (superdriver, enforcer, discorder, merger, unblocker) run from `atx` — correct for cockpit briefs ONLY; team-tier briefs must NOT be in `atx`. **Retired roles** (sentinel ADR-211, medic ADR-212, jury ADR-213, ombudsman ADR-214): surface via `atmux flag` if you find yourself spawned into one.
 
 If `ATMUX_MEMBER` does not match OR window/session do not match:
 
@@ -104,13 +104,13 @@ Per [ADR-042 §Phase 2B](../../docs/adr/042-superdriver-phase-2-implementation.m
 ## Discipline (Phase 1 hard rules)
 
 - **Read-only on cross-team kanban + lead-outbox + git state.** You may `cat`, `jq`, `git log`, `tmux capture-pane -p` against any registered team. You may NOT edit those files.
-- **NO direct writes to other teams' `kanban.json`.** Every cross-team write goes through `super-tell`. Bypassing the kanban write API skips the flock guard, the audit trail, and the schema validators — same foot-gun as bare `jq + mv` on shared state.
+- **NO direct writes to other teams' `state.db`** (the canonical kanban store per ADR-126)**.** Every cross-team write goes through `super-tell`. Bypassing the kanban write API skips the flock guard, the audit trail, and the schema validators — same foot-gun as a bare `sqlite3 UPDATE` on shared state.
 - **NO direct `tmux send-keys` to other teams' panes outside `super-tell`.** `super-tell` is the only sanctioned cross-team keystroke channel because it honors pane-state preflight; raw `tmux send-keys` does not.
 - **NO bypass of the `tell-lead` chain.** If the target team's lead is the natural router for an ask, route via `super-tell <team> lead "..."`. Don't shortcut to a member because "the lead is busy" — that creates two truth-sources for what the team is doing.
 
 ## Phase 2 carve-out — log bypasses, do NOT execute them
 
-When you find yourself wanting to bypass `tell-lead` (push a Task directly into a team's kanban; arbitrate a cross-team conflict by editing both teams' state; write a cross-team Epic that spans multiple `kanban.json` files), **DO NOT do it**. Instead:
+When you find yourself wanting to bypass `tell-lead` (push a Task directly into a team's kanban; arbitrate a cross-team conflict by editing both teams' state; write a cross-team Epic that spans multiple teams' `state.db` stores), **DO NOT do it**. Instead:
 
 1. **Log the incident** in `~/.claude/teams/superdriver-bypass-log.md`. Free-form, but include: timestamp (`TZ='Asia/Kuala_Lumpur' date +'%Y-%m-%d %H:%M MYT'`), the situation that prompted the bypass instinct, what you wanted to bypass, and **why the `tell-lead` chain was insufficient**. The "why" is the load-bearing field — Phase 2 commit is gated on real reasons, not aesthetic preference.
 2. **Surface to driver via `super-tell`** to a team that can route the incident into `driver-inbox.md`. Phrase it as a Phase-2-trigger candidate, not a routine ask.
