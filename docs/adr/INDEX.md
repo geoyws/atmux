@@ -1,6 +1,6 @@
 # ADR Index
 
-> Generated 2026-05-24, refreshed 2026-06-05 (MYT) — extended through ADR-256 + backfilled 222/223. Live ADRs only; superseded ADRs at the bottom for trace.
+> Generated 2026-05-24, refreshed 2026-06-05 (MYT) — extended through ADR-256 + backfilled 222/223. Refreshed again 2026-08-06 — extended through ADR-269: backfilled the five missing rows 262–266 (the index stopped at 261) and added the 2026-08-06 operator-ask batch (267 continuity / 268 managed-repo state isolation / 269 recursive branch ledger). Live ADRs only; superseded ADRs at the bottom for trace.
 
 ## Live ADRs
 
@@ -229,6 +229,14 @@
 | 259 | Committer member optional — orchd spawn gates on `autoMerge.enabled`, not committer-presence | 2026-06-09 | accepted |
 | 260 | Manual orchestration mode is the default — LLMs self-report status + drive the kanban; orchd opt-in | 2026-06-12 | accepted |
 | 261 | issue-sync — external issue-tracker ingestion (GitHub / Azure DevOps): poll → complaints → lead adjudication | 2026-06-12 | proposed |
+| 262 | `opencode` headless AgentBackend — flat cheap-model members, capability contract + MCP tool injection; plugin-orch safety ported as policy | 2026-06-12 | proposed |
+| 263 | Merge session `preclear` verb into `handoff` (one mode-aware verb, no alias) | 2026-06-26 | accepted |
+| 264 | Cockpit tmux session renamed `atmux_cockpit` → `atx` — "cockpit" stays the prose name | 2026-07-28 | accepted |
+| 265 | `atx` is the canonical shorthand for atmux — prose-only; machine-facing names stay `atmux` | 2026-07-28 | accepted |
+| 266 | Shim sunset policy + first expired-shim sweep and retired-role dead-code removal | 2026-07-28 | accepted |
+| 267 | Durable agent-continuity contract — plan/intent is written as you go, not captured on the death-bed | 2026-08-06 | proposed |
+| 268 | Managed-repo state isolation — enforce the dotfile-tree invariant in code, not in operator memory | 2026-08-06 | proposed |
+| 269 | Recursive branch ledger — per-repo branch state across a monorepo's nested submodules | 2026-08-06 | proposed |
 
 ## Superseded (skip)
 
