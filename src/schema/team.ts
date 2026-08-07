@@ -47,23 +47,15 @@ export const TeamMember = z
         message: "label cannot contain ':' or '.' (tmux separator chars)",
       })
       .optional(),
-    /** ADR-159 TR3 (2026-05-16): role-value shim — `"gitter"` is the
-     *  legacy alias for the new canonical `"committer"`. At Zod parse
-     *  time the transform coerces the legacy value to canonical so
-     *  downstream consumers see one shape regardless of which value the
-     *  operator's team.json declared. The shim is intentionally
-     *  open-string (does NOT tighten to a closed enum) — current rosters
-     *  use a wide variety of role values (docs / devops / dba / discorder
-     *  / unblocker / etc.); tightening to enum here would break working
-     *  teams. The role-enum closure is deferred to a follow-up ADR.
-     *  Legacy `gitter` parse triggers no in-schema warn — the doctor
-     *  probe `team-legacy-gitter-role` (registered separately) surfaces
-     *  the deprecation. Removal: one release cycle per ADR-159 §Removal
-     *  timeline. */
-    role: z
-      .string()
-      .transform((value) => (value === "gitter" ? "committer" : value))
-      .optional(),
+    /** Free-form role string (intentionally NOT a closed enum) — current
+     *  rosters use a wide variety of role values (docs / devops / dba /
+     *  discorder / unblocker / etc.); tightening to enum here would break
+     *  working teams. The role-enum closure is deferred to a follow-up
+     *  ADR. The ADR-159 TR3 `"gitter"` → `"committer"` coercion shim was
+     *  removed per ADR-266 §D2 (window long past) — a literal `"gitter"`
+     *  now parses as-is (open string); the canonical role is
+     *  `"committer"`. */
+    role: z.string().optional(),
     lane: z.string().optional(),
     tui: TuiKind.optional(),
     model: z.string().optional(),
@@ -1513,14 +1505,18 @@ export const Team = z
     /** Single-session opt-in (default `false` per 2026-04-30 reversal,
      *  see templates/team.example.json comment). */
     singleSession: z.boolean().optional(),
-    /** TUI to auto-spawn in the cage's driver window on `atmux start`. */
-    driverTui: z.string().nullable().optional(),
-    /** ADR-044: when set, the team session is created with `driver` as
-     *  window 1 (in place of the `__home` placeholder). Members spawn as
-     *  windows 2..N+1 in declarative order. `null` is accepted as
-     *  "explicitly disabled" (matches existing wizard output). Resolution
-     *  order for the TUI command: `driverSession.tui` → `driverTui` →
-     *  `"claude"`.
+    /** ADR-044: when set, marks the team as driver-opted-in — the
+     *  cockpit viewer window + driver-pane health probe read this
+     *  field's presence. `null` is accepted as "explicitly disabled"
+     *  (matches existing wizard output).
+     *
+     *  NOTE (ADR-266 §D2): the legacy single-driver spawn fallback that
+     *  resolved the driver TUI from `driverSession.tui` → `driverTui`
+     *  (ADR-239 §D7 deprecation window) was removed — the `atmux start`
+     *  driver-spawn loop reads ONLY `drivers[]` now. This block remains
+     *  as the opt-in marker for the cockpit/health readers; the bare
+     *  top-level `driverTui` field was dropped from the schema (it
+     *  passthrough-parses harmlessly but is ignored).
      *
      *  ADR-064 §5 + §OQ5: `command` field dropped 2026-05-08 — verified
      *  zero call sites pre-edit; no consumer ever read it (only `.tui`

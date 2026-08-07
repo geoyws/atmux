@@ -2,7 +2,7 @@
 //
 // Walks each team member's pane, captures statusline, parses
 // context-%, emits member.context-high event when >= threshold.
-// Lead consumer (ADR-212 / e-cc3728bf) wakes and decides preclear /
+// Lead consumer (ADR-212 / e-cc3728bf) wakes and decides handoff /
 // rotate-member / leave-alone.
 //
 // Cadence: every 15min from Rust orchd's in-process ticker (the

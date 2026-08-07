@@ -12,8 +12,6 @@
     { "name": "driver-4", "tui": "claude", "cwd": ".atmux/worktrees/driver-4" },
     { "name": "driver-5", "tui": "claude", "cwd": ".atmux/worktrees/driver-5" }
   ],
-  "_comment_driverTui": "DEPRECATED per ADR-239 §D7 — superseded by drivers[]. Read as fallback when drivers[] is absent for one release cycle (legacy single-driver synthesis). New teams should use drivers[] above.",
-  "driverTui": "claude",
   "tuiCommands": {
     "_comment": "Per-team TUI launch aliases. If set, the prefix here replaces the built-in default for that TUI type. atmux appends --model <model> unless the prefix already has one. Example: \"claude\": \"claude --plugin-dir=$HOME/work/journals/.sb/claude-skills\""
   },

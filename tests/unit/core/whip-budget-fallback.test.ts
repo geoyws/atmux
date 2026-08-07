@@ -11,7 +11,6 @@ import {
   type CageHandle,
   type FallbackTier,
   FallbackUserMissingError,
-  Tier4NotAvailableError,
 } from "../../../src/abstractions/fallback-cage.ts";
 import {
   dispatchFallbackOnPause,
@@ -166,7 +165,7 @@ describe("dispatchFallbackOnPause — tier selection", () => {
         tiersTried.push(opts.tier);
         if (opts.tier === 2) throw new FallbackUserMissingError("operator");
         if (opts.tier === 3) throw new FallbackUserMissingError("kimi-agent");
-        throw new Tier4NotAvailableError();
+        throw new FallbackUserMissingError("minimax-agent");
       },
     });
 

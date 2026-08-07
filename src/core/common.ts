@@ -831,7 +831,7 @@ export function isCompacting(state: string): boolean {
 }
 
 /** Claude Code auto-/clear recovery banner. Triggers brief re-paste in
- *  bash dispatch.sh's AUTO-PRECLEAR path. */
+ *  bash dispatch.sh's AUTO-HANDOFF path. */
 export function isContextCleared(state: string): boolean {
   return /Context cleared\.\s*Ready for/i.test(state);
 }

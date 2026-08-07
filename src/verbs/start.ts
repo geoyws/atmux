@@ -443,9 +443,9 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   const homeWin = `__${team.name}__home`;
   const stillExists = sessionExisted && !parsed.force;
   const projectRoot = dirname(dir);
-  // ADR-239 §A1 + §A5 — resolve the declarative driver roster. Falls back
-  // to a single-element list synthesized from the legacy `driverSession`
-  // / `driverTui` fields (ADR-239 §D7 deprecation window).
+  // ADR-239 §A1 + §A5 — resolve the declarative driver roster. (The
+  // legacy `driverSession` / `driverTui` synthesis was removed per
+  // ADR-266 §D2 — only `drivers[]` drives the spawn loop now.)
   const drivers = resolveDriversList(team as Parameters<typeof resolveDriversList>[0]);
   let driverInitial = false;
   if (!stillExists) {
@@ -1195,7 +1195,7 @@ async function autoReconcileCockpitForTeam(
       [matched],
       logger,
       {},
-      cockpit.superdoctor,
+      cockpit.medic,
       false,
       { onlyTeam: matched.name },
     );

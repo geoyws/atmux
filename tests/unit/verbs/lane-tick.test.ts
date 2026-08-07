@@ -454,7 +454,7 @@ describe("runLaneTick — edge cases", () => {
 // Helper: lead pane fixture at a given ctx-pct via the canonical
 // `tok N/M` shape `parseLeadCtxPct` reads. Pre-fix lead-tick injected
 // `claim --next` regardless of ctx; the operator-observed failure
-// (sopx 67%/100 with queued claim defeating /session preclear) drove
+// (sopx 67%/100 with queued claim defeating /session handoff) drove
 // this gate. § A2 reuses § A1's parser (whip.ts::parseLeadCtxPct).
 //
 // `tok 80k/100` → ctx-pct 80; `tok 50k/100` → 50; etc. Wrapped in the

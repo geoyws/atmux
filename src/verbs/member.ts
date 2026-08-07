@@ -99,10 +99,13 @@ const MOVE_USAGE = "atmux member move <member-id> --to <position>";
 const SWAP_USAGE = "atmux member swap <member-id-a> <member-id-b>";
 const SORT_USAGE = "atmux member sort [--defaults-first]";
 
-/** Cockpit session-name reserved literal (per ADR-135 D1 + cockpit.ts
+/** Cockpit session-name reserved literals — canonical `atx` per
+ *  ADR-264 plus both legacy literals (per ADR-135 D1 + cockpit.ts
  *  migration shim). ADR-161 Part C §item 5: `atmux member` operates at
  *  the team layer; refuse in cockpit context. */
-const COCKPIT_RESERVED_NAMES: ReadonlyArray<string> = ["atmux_cockpit", "atmux_teams"];
+// SUNSET(v0.9.0): ADR-264 legacy-literal shim — the `atmux_cockpit` / `atmux_teams`
+// entries are legacy acceptance; drop them after v0.9.0 ships (ADR-266 §D1). `atx` stays.
+const COCKPIT_RESERVED_NAMES: ReadonlyArray<string> = ["atx", "atmux_cockpit", "atmux_teams"];
 
 function isCockpitContext(teamName: string): boolean {
   return COCKPIT_RESERVED_NAMES.includes(teamName);
@@ -399,8 +402,9 @@ export async function memberRenameInternal(
 // tmux call AND the JSON rewrite.
 //
 // Cockpit refusal (§Part C item 5): if the resolved team-name
-// matches the cockpit reserved literals (`atmux_cockpit` /
-// legacy `atmux_teams`), all three verbs refuse with a hint.
+// matches the cockpit reserved literals (`atx` per ADR-264 /
+// legacy `atmux_cockpit` / `atmux_teams`), all three verbs
+// refuse with a hint.
 // In practice the cockpit lives on its own socket and has no
 // team.json, so this is defense-in-depth.
 

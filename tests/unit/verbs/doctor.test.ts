@@ -4295,7 +4295,7 @@ describe("checkCockpitOnDefaultSocket", () => {
     };
   }
 
-  test("default socket has no atmux_cockpit session → no rows", async () => {
+  test("default socket has no cockpit sessions → no rows", async () => {
     const rows = await checkCockpitOnDefaultSocket({
       tmux: async () => tmuxOk("personal\nwork\n"),
     });
@@ -4319,6 +4319,28 @@ describe("checkCockpitOnDefaultSocket", () => {
     expect(rows[0]?.detail).toContain("atmux_cockpit");
     expect(rows[0]?.hint).toContain("migrate-socket");
     expect(rows[0]?.hint).toContain("ADR-162");
+  });
+
+  test("default socket has canonical 'atx' session → yellow (ADR-264 §D5 covers all three literals)", async () => {
+    const rows = await checkCockpitOnDefaultSocket({
+      tmux: async () => tmuxOk("personal\natx\nwork\n"),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.label).toBe("cockpit-on-default-socket");
+    expect(rows[0]?.detail).toContain("atx");
+    expect(rows[0]?.hint).toContain("migrate-socket");
+  });
+
+  test("multiple cockpit literals on default socket → one yellow row per found session", async () => {
+    const rows = await checkCockpitOnDefaultSocket({
+      tmux: async () => tmuxOk("atx\natmux_cockpit\natmux_teams\npersonal\n"),
+    });
+    expect(rows).toHaveLength(3);
+    const details = rows.map((r) => r.detail ?? "");
+    expect(details.some((d) => d.includes("'atx'"))).toBe(true);
+    expect(details.some((d) => d.includes("'atmux_cockpit'"))).toBe(true);
+    expect(details.some((d) => d.includes("'atmux_teams'"))).toBe(true);
   });
 
   test("custom cockpitSession opt — looks for the override name", async () => {

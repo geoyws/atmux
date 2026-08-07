@@ -27,40 +27,28 @@ export interface DriverSession {
   claudeAccount?: string;
 }
 
-/** Legacy fields the synthesizer reads when `drivers[]` is absent. */
-interface LegacyDriverTeam {
+/** Input shape for {@link resolveDriversList}. */
+interface DriverRosterTeam {
   drivers?: DriverSession[];
-  driverSession?: { tui?: string | null } | null;
-  driverTui?: string | null;
 }
 
 /**
- * Resolve the effective driver list for a team per ADR-239 §A1 + §D7.
+ * Resolve the effective driver list for a team per ADR-239 §A1.
  *
- * Precedence:
  *   1. `team.drivers[]` if present + non-empty → return as-is.
- *   2. Legacy fallback — synthesize a single-element array from
- *      `team.driverSession` / `team.driverTui` (deprecation window
- *      per ADR-239 §D7). The synthesized entry uses `cwd: "."`
- *      (team root, trunk branch) and inherits the legacy TUI.
- *   3. Neither present → empty array (caller falls back to the
+ *   2. Otherwise → empty array (caller falls back to the
  *      `__home` placeholder window per existing start.ts behavior).
+ *
+ * ADR-266 §D2: the ADR-239 §D7 legacy `driverSession` / `driverTui`
+ * single-driver synthesis was removed (deprecation window expired) —
+ * operator configs still on the legacy fields must migrate to
+ * `drivers[]`.
  *
  * Pure. No I/O.
  */
-export function resolveDriversList(team: LegacyDriverTeam): DriverSession[] {
+export function resolveDriversList(team: DriverRosterTeam): DriverSession[] {
   if (Array.isArray(team.drivers) && team.drivers.length > 0) {
     return team.drivers;
-  }
-  // Legacy synthesis: driverSession (object) wins over bare driverTui.
-  const ds = team.driverSession;
-  if (ds !== undefined && ds !== null) {
-    const tui = (typeof ds.tui === "string" && ds.tui.length > 0 ? ds.tui : null) ?? team.driverTui;
-    if (typeof tui === "string" && tui.length > 0) {
-      return [{ name: "driver", tui, cwd: "." }];
-    }
-  } else if (typeof team.driverTui === "string" && team.driverTui.length > 0) {
-    return [{ name: "driver", tui: team.driverTui, cwd: "." }];
   }
   return [];
 }

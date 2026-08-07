@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# Unit tests for whip's autoRotate-gated banner preclear (E2/S3 t-50ca6f09).
+# Unit tests for whip's autoRotate-gated banner handoff (E2/S3 t-50ca6f09).
 # Covers TEST task t-aada3e45.
 #
 # When AUTO_ROTATE=true and a per-member pane shows a rotation-trigger
@@ -63,13 +63,13 @@ _set_auto_rotate() {
 
 # ---------- core branches ----------
 
-@test "preclear: Compacting banner + autoRotate=true ⇒ AUTO-PRECLEAR worker + epoch refreshed" {
+@test "handoff: Compacting banner + autoRotate=true ⇒ AUTO-HANDOFF worker + epoch refreshed" {
   _inject_banner "Compacting conversation"
   local before; before=$(date +%s)
 
   run "$ATMUX_BIN" whip
   [ "$status" -eq 0 ]
-  [[ "$output" =~ "AUTO-PRECLEAR worker" ]]
+  [[ "$output" =~ "AUTO-HANDOFF worker" ]]
   [[ "$output" =~ "compacting" ]]
   # rotate verb must have written a fresh epoch.
   [ -f .atmux/state/worker-rotated.epoch ]
@@ -77,23 +77,23 @@ _set_auto_rotate() {
   [ "$epoch" -ge "$before" ]
 }
 
-@test "preclear: rate-limit banner + autoRotate=true ⇒ AUTO-PRECLEAR + banner=rate-limited" {
+@test "handoff: rate-limit banner + autoRotate=true ⇒ AUTO-HANDOFF + banner=rate-limited" {
   _inject_banner "You hit your limit"
   run "$ATMUX_BIN" whip
   [ "$status" -eq 0 ]
-  [[ "$output" =~ "AUTO-PRECLEAR worker" ]]
+  [[ "$output" =~ "AUTO-HANDOFF worker" ]]
   [[ "$output" =~ "rate-limited" ]]
 }
 
-@test "preclear: approaching-limit banner + autoRotate=true ⇒ AUTO-PRECLEAR + banner=approaching-limit" {
+@test "handoff: approaching-limit banner + autoRotate=true ⇒ AUTO-HANDOFF + banner=approaching-limit" {
   _inject_banner "approaching usage limit"
   run "$ATMUX_BIN" whip
   [ "$status" -eq 0 ]
-  [[ "$output" =~ "AUTO-PRECLEAR worker" ]]
+  [[ "$output" =~ "AUTO-HANDOFF worker" ]]
   [[ "$output" =~ "approaching-limit" ]]
 }
 
-@test "preclear: autoRotate=false ⇒ banner finding present but no AUTO-PRECLEAR + no epoch" {
+@test "handoff: autoRotate=false ⇒ banner finding present but no AUTO-HANDOFF + no epoch" {
   _set_auto_rotate false
   _inject_banner "Compacting conversation"
 
@@ -102,21 +102,21 @@ _set_auto_rotate() {
   # The compacting info finding still surfaces.
   [[ "$output" =~ "compacting" ]]
   # But the rotate execution must NOT fire.
-  ! [[ "$output" =~ "AUTO-PRECLEAR" ]]
+  ! [[ "$output" =~ "AUTO-HANDOFF" ]]
   [ ! -f .atmux/state/worker-rotated.epoch ]
 }
 
-@test "preclear: no banner + autoRotate=true ⇒ no preclear (silent on healthy panes)" {
+@test "handoff: no banner + autoRotate=true ⇒ no handoff (silent on healthy panes)" {
   # Don't inject anything. Pane is a fresh shell.
   run "$ATMUX_BIN" whip
   [ "$status" -eq 0 ]
-  ! [[ "$output" =~ "AUTO-PRECLEAR" ]]
+  ! [[ "$output" =~ "AUTO-HANDOFF" ]]
   [ ! -f .atmux/state/worker-rotated.epoch ]
 }
 
 # ---------- debounce ----------
 
-@test "preclear: rotated <5min ago + banner ⇒ debounce, no re-fire" {
+@test "handoff: rotated <5min ago + banner ⇒ debounce, no re-fire" {
   # Pre-stamp epoch as 60s ago — well under the 300s debounce.
   local now; now=$(date +%s)
   echo $(( now - 60 )) > .atmux/state/worker-rotated.epoch
@@ -124,13 +124,13 @@ _set_auto_rotate() {
 
   run "$ATMUX_BIN" whip
   [ "$status" -eq 0 ]
-  ! [[ "$output" =~ "AUTO-PRECLEAR" ]]
+  ! [[ "$output" =~ "AUTO-HANDOFF" ]]
   # Epoch unchanged (debounce held).
   local cur; cur=$(cat .atmux/state/worker-rotated.epoch)
   [ "$cur" = "$(( now - 60 ))" ]
 }
 
-@test "preclear: rotated >5min ago + banner ⇒ re-fires (debounce expired)" {
+@test "handoff: rotated >5min ago + banner ⇒ re-fires (debounce expired)" {
   local now; now=$(date +%s)
   # Stamp 6 minutes ago — past the 300s window.
   echo $(( now - 360 )) > .atmux/state/worker-rotated.epoch
@@ -138,7 +138,7 @@ _set_auto_rotate() {
 
   run "$ATMUX_BIN" whip
   [ "$status" -eq 0 ]
-  [[ "$output" =~ "AUTO-PRECLEAR worker" ]]
+  [[ "$output" =~ "AUTO-HANDOFF worker" ]]
   # Epoch refreshed.
   local cur; cur=$(cat .atmux/state/worker-rotated.epoch)
   [ "$cur" -ge "$now" ]
@@ -146,11 +146,11 @@ _set_auto_rotate() {
 
 # ---------- queued-message banner is NOT a rotation trigger ----------
 
-@test "preclear: queued-messages banner ⇒ info-only finding, no rotation" {
+@test "handoff: queued-messages banner ⇒ info-only finding, no rotation" {
   _inject_banner "Press up to edit queued messages"
   run "$ATMUX_BIN" whip
   [ "$status" -eq 0 ]
   [[ "$output" =~ "queued" ]]
-  ! [[ "$output" =~ "AUTO-PRECLEAR" ]]
+  ! [[ "$output" =~ "AUTO-HANDOFF" ]]
   [ ! -f .atmux/state/worker-rotated.epoch ]
 }

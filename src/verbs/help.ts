@@ -36,13 +36,10 @@ Setup:
                               cockpit.json. Reads roster from
                               ~/.atmux/cockpit.json (override via
                               ATMUX_COCKPIT_CONFIG or --config <p>).
-  cockpit rebuild ...         (deprecated alias) ADR-235 §OQ4: deprecation alias
-                              for \`cockpit reconcile\`; same flags + behaviour,
-                              removed next release. Use \`reconcile\`.
   cockpit attach [--config <p>] [--human]
                               tmux-attach to the cockpit session on its named
                               socket (\`tmux -L atmux-cockpit attach -t
-                              atmux_cockpit\`). Socket + session name resolved
+                              atx\`). Socket + session name resolved
                               dynamically via getCockpitSocketName +
                               cockpit.json so the verb stays correct across
                               renames + ATMUX_COCKPIT_SOCKET overrides.
@@ -98,7 +95,6 @@ Dispatch + work:
 
 Automation:
   report                      Post 30-min progress digest to Discord
-  whip                        Run 5-min watchdog (idle / blocker / budget / clear)
   improve [--budget <spec>] [--status] [--dry-run]  Arm eternal-improvement loop (ADR-052)
   cost [--member <m>] [--since <t>] [--json]  Per-member USD + token usage
   rotate <member>             /clear the member and re-brief

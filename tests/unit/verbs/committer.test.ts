@@ -21,6 +21,7 @@ import {
   parseCommitterArgs,
   recordingQueueMergeAttempt,
 } from "../../../src/verbs/committer.ts";
+import { orchd } from "../../../src/verbs/orchd.ts";
 
 // ---------- parseCommitterArgs ----------
 
@@ -55,35 +56,35 @@ describe("parseCommitterArgs", () => {
     expect(() => parseCommitterArgs(["--sweep", "extra"])).toThrow(UsageError);
   });
 
-  test("--drain parses as drain sub-verb", () => {
-    expect(parseCommitterArgs(["--drain"])).toEqual({ subverb: "drain" });
+  test("--drain alias removed per ADR-266 §D2 → UsageError naming orchd --drain", () => {
+    expect(() => parseCommitterArgs(["--drain"])).toThrow(UsageError);
+    expect(() => parseCommitterArgs(["--drain"])).toThrow(/ADR-266.*orchd --drain/);
   });
-  test("'drain' bare form parses the same", () => {
-    expect(parseCommitterArgs(["drain"])).toEqual({ subverb: "drain" });
+  test("'drain' bare form likewise rejected", () => {
+    expect(() => parseCommitterArgs(["drain"])).toThrow(UsageError);
   });
-  test("--daemon parses as daemon sub-verb", () => {
-    expect(parseCommitterArgs(["--daemon"])).toEqual({ subverb: "daemon" });
+  test("--daemon alias removed per ADR-266 §D2 → UsageError naming orchd --start", () => {
+    expect(() => parseCommitterArgs(["--daemon"])).toThrow(UsageError);
+    expect(() => parseCommitterArgs(["--daemon"])).toThrow(/ADR-266.*orchd --start/);
   });
-  test("--daemon --once flag honored", () => {
-    expect(parseCommitterArgs(["--daemon", "--once"])).toEqual({
-      subverb: "daemon",
+  test("'daemon' bare form likewise rejected", () => {
+    expect(() => parseCommitterArgs(["daemon"])).toThrow(UsageError);
+  });
+  test("--once / --max-events still parse alongside --sweep (harmless no-op knobs)", () => {
+    expect(parseCommitterArgs(["--sweep", "--once", "--max-events", "5"])).toEqual({
+      subverb: "sweep",
       once: true,
-    });
-  });
-  test("--daemon --max-events N captured", () => {
-    expect(parseCommitterArgs(["--daemon", "--max-events", "5"])).toEqual({
-      subverb: "daemon",
       maxEvents: 5,
     });
   });
   test("--max-events 0 throws UsageError (must be positive)", () => {
-    expect(() => parseCommitterArgs(["--daemon", "--max-events", "0"])).toThrow(UsageError);
+    expect(() => parseCommitterArgs(["--sweep", "--max-events", "0"])).toThrow(UsageError);
   });
   test("--max-events without value throws", () => {
-    expect(() => parseCommitterArgs(["--daemon", "--max-events"])).toThrow(UsageError);
+    expect(() => parseCommitterArgs(["--sweep", "--max-events"])).toThrow(UsageError);
   });
   test("--max-events non-numeric throws", () => {
-    expect(() => parseCommitterArgs(["--daemon", "--max-events", "abc"])).toThrow(UsageError);
+    expect(() => parseCommitterArgs(["--sweep", "--max-events", "abc"])).toThrow(UsageError);
   });
 });
 
@@ -355,9 +356,12 @@ describe("committer() top-level dispatch", () => {
   });
 });
 
-// ---------- committer --drain / --daemon (ADR-202/203 event-driven) ----------
+// ---------- orchd --drain / --start (ADR-202/203 event-driven) ----------
+// These exercise the committerDrainVerb / committerDaemonVerb bodies via
+// the canonical orchd surface; the `committer --drain` / `--daemon`
+// aliases were removed per ADR-266 §D2.
 
-describe("committer --drain / --daemon integration", () => {
+describe("orchd --drain / --start integration (committer bodies)", () => {
   let scratch: string;
   let atmuxDir: string;
   beforeEach(async () => {
@@ -391,7 +395,7 @@ describe("committer --drain / --daemon integration", () => {
       warn: () => {},
       err: () => {},
     };
-    const rc = await committer(["--drain", "--team-dir", scratch], {
+    const rc = await orchd(["--drain", "--team-dir", scratch], {
       logger,
       git: async () => fakeSpawnResult("main\n", 0),
     });
@@ -420,7 +424,7 @@ describe("committer --drain / --daemon integration", () => {
       warn: () => {},
       err: () => {},
     };
-    const rc = await committer(["--drain", "--team-dir", scratch], {
+    const rc = await orchd(["--drain", "--team-dir", scratch], {
       logger,
       git: async () => fakeSpawnResult("main\n", 0),
     });
@@ -458,7 +462,7 @@ describe("committer --drain / --daemon integration", () => {
     ORCHD_SUBSCRIPTIONS.length = 0;
   });
 
-  test("--daemon --once with empty events exits 0 cleanly", async () => {
+  test("--start --once with empty events exits 0 cleanly", async () => {
     const logs: string[] = [];
     const logger = {
       log: (s: string) => logs.push(s),
@@ -475,8 +479,8 @@ describe("committer --drain / --daemon integration", () => {
     // headroom for the watcher's own init.
     const timer = setTimeout(() => process.emit("SIGTERM"), 1500);
     try {
-      const rc = await committer(
-        ["--daemon", "--team-dir", scratch, "--once", "--max-events", "1"],
+      const rc = await orchd(
+        ["--start", "--team-dir", scratch, "--once", "--max-events", "1"],
         {
           logger,
           git: async () => fakeSpawnResult("main\n", 0),

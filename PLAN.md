@@ -169,7 +169,7 @@ Verb-IDs are **stable across `/clear` cycles** — referenced by HANDOFF.md and 
 | V-23 | `rotate` / `rotate-lead` | `lib/rotate.sh` | 81 | ✅ shipped |
 | V-24 | `doctor` | `lib/doctor.sh` | 355 | ✅ shipped (in-scope subset per ADR-019) |
 | V-25 | `whip` | `lib/whip.sh` | 218 | ✅ shipped (in-scope subset per ADR-022) |
-| V-26 | `session` (sub-verbs: cont / preclear / handoff / stop) | `~/.claude/skills/coordination/skills/session/SKILL.md` | TBD | ⏳ pending (Phase 4 per ADR-021) |
+| V-26 | `session` (sub-verbs: cont / handoff / stop) | `~/.claude/skills/coordination/skills/session/SKILL.md` | TBD | ⏳ pending (Phase 4 per ADR-021) |
 | V-27 | `team` (sub-verbs: start / stop / add / clear / cleanup / bootstrap / rotate-lead / rotate-member) | `~/.claude/skills/coordination/skills/team/SKILL.md` | TBD | ⏳ pending (Phase 4 per ADR-021) |
 
 **Cross-cutting refactor IDs** (R-* — interleave with porting):
