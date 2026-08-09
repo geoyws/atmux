@@ -15,7 +15,9 @@ holds; no work has happened in between.** Measured, not assumed:
 
 - `git log db910ce..HEAD` → **empty**. No commits in two days.
 - `git status --porcelain` → **empty**. Working tree clean.
-- `AHEAD=6, BEHIND=0` against `origin/atmux-geoyws` — **the push still has not happened.**
+- ~~`AHEAD=6, BEHIND=0` — the push still has not happened.~~ **RESOLVED 2026-08-09**: the operator
+  pushed `223e5e9..05c19bd`. Now `AHEAD=0, BEHIND=0`, origin tip `05c19bd` == local. All seven
+  commits (ADRs, BRD, PRD corrections, issue-sync landing, both handoffs) are on origin.
 - The P0 bug is still live: `rg -c 'state\.db|openDatabase|bun:sqlite' src/verbs/handoff.ts` → **0**;
   `kanbanJsonPath` still imported at `:33` and written at `:243`.
 - Budget epic `e-50-666140ed`: all six stories still `planning`. Story `s-52` title now correctly
@@ -23,21 +25,14 @@ holds; no work has happened in between.** Measured, not assumed:
 - ADR tail is 269 + 271. **270 is still reserved and unwritten** — that is intentional (it belongs
   to `s-52`), not an oversight.
 
-**The unpushed branch is the real blocker and it gates everything else.** Six commits of ADRs,
-BRD, PRD corrections and the issue-sync landing exist only on this box. A fresh agent cannot rely
-on `origin` reflecting any of it, and no other machine can see it. Push before starting new work:
+**Origin is now current — start from a clean fetch.** The push landed 2026-08-09, so `origin` has
+everything and the tree is in sync. Nothing is stranded on this box any more.
 
-```
-git -C /root/work/src/atmux push origin atmux-geoyws
-```
-
-If it is blocked by the permission classifier again (it was, twice, on 2026-08-07), the operator
-runs it directly with `! git push origin atmux-geoyws`.
-
-**Suggested order for the next session:** (1) push; (2) fix the P0 handoff bug — it is small,
-self-contained, and it is the capability the operator actually asked for; (3) get reviewer signoff
-on ADR-271, since its dual-path retirement subsumes the three sibling JSON-only bugs; (4) the
-23 test failures; (5) hygiene.
+**Suggested order for the next session:** (1) fix the P0 handoff bug — small, self-contained, and
+it is the capability the operator actually asked for; (2) get reviewer signoff on ADR-271, since
+its dual-path retirement subsumes the three sibling JSON-only bugs; (3) the 23 test failures;
+(4) hygiene. Two other repos still have unpushed/unhomed commits — see "pushes not completed"
+below; those are unchanged.
 
 ### Closed since 2026-08-07
 
@@ -175,9 +170,11 @@ Explicitly dropped: private per-project AGENTS.md memory storage in atmux — se
 
 ### P2 — pushes not completed
 
-- **`atmux-geoyws` is 5 commits AHEAD, unpushed.** `git push origin atmux-geoyws` was blocked twice
-  by the Claude Code permission classifier (transient stage-2 error, then a hard block) in the
-  session that created the commits. BEHIND was 0 at the time. Operator can run it directly.
+- ~~**`atmux-geoyws` unpushed**~~ — **DONE 2026-08-09**, operator pushed `223e5e9..05c19bd`.
+  (Historical note worth keeping: the agent's own `git push` was blocked twice by the Claude Code
+  permission classifier — one transient stage-2 error, then a hard block — while pushes to four
+  other repos in the same session succeeded. If it recurs, the operator runs
+  `! git push origin <branch>` directly rather than the agent retrying.)
 - **`opencode-plugin-orch` is 1 commit ahead on `master`, deliberately unpushed** — ADR-028 forbids
   agent pushes to main/master. `git -C /root/work/src/opencode-plugin-orch push origin master`.
 - **`/root/work/hig` has no git remote configured at all** — its commit is local-only. Decide
