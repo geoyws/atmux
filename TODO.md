@@ -8,6 +8,47 @@ capability the operator explicitly asked for; `P1` = real defect, not blocking; 
 
 ---
 
+## Handoff 2026-08-09 — status check, nothing moved
+
+Re-verified the 2026-08-07 handoff below against the repo on 2026-08-09. **Every claim in it still
+holds; no work has happened in between.** Measured, not assumed:
+
+- `git log db910ce..HEAD` → **empty**. No commits in two days.
+- `git status --porcelain` → **empty**. Working tree clean.
+- `AHEAD=6, BEHIND=0` against `origin/atmux-geoyws` — **the push still has not happened.**
+- The P0 bug is still live: `rg -c 'state\.db|openDatabase|bun:sqlite' src/verbs/handoff.ts` → **0**;
+  `kanbanJsonPath` still imported at `:33` and written at `:243`.
+- Budget epic `e-50-666140ed`: all six stories still `planning`. Story `s-52` title now correctly
+  reads "ADR-270: design record".
+- ADR tail is 269 + 271. **270 is still reserved and unwritten** — that is intentional (it belongs
+  to `s-52`), not an oversight.
+
+**The unpushed branch is the real blocker and it gates everything else.** Six commits of ADRs,
+BRD, PRD corrections and the issue-sync landing exist only on this box. A fresh agent cannot rely
+on `origin` reflecting any of it, and no other machine can see it. Push before starting new work:
+
+```
+git -C /root/work/src/atmux push origin atmux-geoyws
+```
+
+If it is blocked by the permission classifier again (it was, twice, on 2026-08-07), the operator
+runs it directly with `! git push origin atmux-geoyws`.
+
+**Suggested order for the next session:** (1) push; (2) fix the P0 handoff bug — it is small,
+self-contained, and it is the capability the operator actually asked for; (3) get reviewer signoff
+on ADR-271, since its dual-path retirement subsumes the three sibling JSON-only bugs; (4) the
+23 test failures; (5) hygiene.
+
+### Closed since 2026-08-07
+
+- **Private AGENTS.md memory storage — resolved, and NOT in atmux.** The operator redirected this
+  to the dotfiles on 2026-08-07 ("i'll get dotfiles to be the place to store AGENTS.md and not
+  atmux") and it has since shipped there as the `/dotfiles-agents` (alias `/dotfa`) skill at
+  `~/work/journals/.sb/_dotfiles/agents/skills/dotfiles-agents/SKILL.md`. Nothing for atmux to
+  build. Do not resurrect it here.
+
+---
+
 ## Handoff 2026-08-07 — agent-continuity docs batch (George's main-loop session)
 
 Operator asks that produced this batch:
@@ -115,16 +156,22 @@ per-test and cannot preempt a runaway loop).
 
 ### P1 — needs an operator decision
 
-**Do git remotes + branch purpose annotations live in atmux or in the dotfiles?** On 2026-08-07
-George asked for atmux to store "git remotes and git branches and details about what they do and
-their purpose", then immediately redirected the *AGENTS.md-memory* half to the dotfiles
-("i'll get dotfiles to be the place to store AGENTS.md and not atmux"). The remotes/branches half
-was not explicitly reassigned. Working assumption: it stays in atmux as a small extension to
-ADR-269's ledger, which already records per-repo branch, HEAD sha, dirty flag and ahead/behind —
-adding remote URL plus a purpose string is additive. **Confirm before building.**
+**Do git remotes + branch purpose annotations live in atmux or in the dotfiles?** STILL OPEN as of
+2026-08-09. On 2026-08-07 George asked for atmux to store "git remotes and git branches and details
+about what they do and their purpose", then immediately redirected the *AGENTS.md-memory* half to
+the dotfiles. The remotes/branches half was never explicitly reassigned.
 
-Explicitly dropped: private per-project AGENTS.md memory storage in atmux. Nothing was written;
-that capability belongs to the dotfiles tree.
+Checked 2026-08-09: the shipped `/dotfiles-agents` skill covers AGENTS.md guidance only — it says
+nothing about remotes, branches, or their purpose — so it did NOT absorb this half by default.
+
+Working assumption: it stays in atmux as a small extension to
+[ADR-269](docs/adr/269-recursive-branch-ledger.md)'s ledger, which already records per-repo branch,
+HEAD sha, dirty flag and ahead/behind. Adding a remote URL plus a purpose string is additive and
+needs no new subsystem. **Confirm with the operator before building** — if it goes to the dotfiles
+instead, ADR-269 needs an amendment saying so, since its ledger is the obvious home.
+
+Explicitly dropped: private per-project AGENTS.md memory storage in atmux — see "Closed since
+2026-08-07" at the top of this file.
 
 ### P2 — pushes not completed
 
