@@ -529,24 +529,22 @@ describe("TeamMember — label field (ADR-136 Option B)", () => {
   });
 });
 
-// ---------- ADR-159 TR3: TeamMember.role gitter → committer shim ----------
+// ---------- ADR-159 TR3 shim removed (ADR-266 §D2): role is open-string ----------
 
-describe("TeamMember — role gitter→committer accept-both shim (ADR-159 TR3)", () => {
-  test('legacy `role: "gitter"` value coerces to canonical `"committer"` on parse', () => {
+describe("TeamMember — role field (ADR-159 TR3 shim removed per ADR-266 §D2)", () => {
+  test('literal `role: "gitter"` no longer coerces — parses as-is (shim expired)', () => {
     const m = TeamMember.parse({ name: "g", role: "gitter" });
-    expect(m.role).toBe("committer");
+    expect(m.role).toBe("gitter");
   });
 
-  test('canonical `role: "committer"` parses unchanged (idempotent)', () => {
+  test('canonical `role: "committer"` parses unchanged', () => {
     const m = TeamMember.parse({ name: "c", role: "committer" });
     expect(m.role).toBe("committer");
   });
 
-  test("other role values pass through unchanged (open-string shim — does NOT tighten enum)", () => {
+  test("other role values pass through unchanged (open-string field — NOT a closed enum)", () => {
     // Current rosters use a wide variety of roles (docs / devops / dba /
-    // unblocker / discorder). Closing the enum here would break them;
-    // the shim coerces ONLY the gitter→committer value, leaves
-    // everything else alone.
+    // unblocker / discorder). Closing the enum here would break them.
     for (const role of [
       "team-lead",
       "planner",

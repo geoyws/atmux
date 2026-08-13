@@ -284,19 +284,9 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return ombudsman(argv.slice(1));
     case "committer":
       return committer(argv.slice(1));
-    case "gitter":
-      // ADR-159 TR2 legacy alias — `atmux gitter` retained for one
-      // release cycle; emit a deprecation-warn so cron + operator
-      // scripts surface the rename ask. TR3+ amendment removes the
-      // alias.
-      process.stderr.write(
-        "atmux: 'gitter' verb is deprecated — use 'committer' per ADR-159. " +
-          "Accepting this release; will fail next release.\n",
-      );
-      return committer(argv.slice(1));
     case "orchd":
       // ADR-224 §D1 — `orchd` (orchestrator daemon) is the canonical
-      // event-router persona/verb. Renamed from `relayd` 2026-05-22 to
+      // event-router persona/verb. Renamed 2026-05-22 to
       // honestly cover the expanding lifecycle responsibilities (Phase 2
       // adds auto-spawn / auto-dissolve subscribers per §D4). Subscribes
       // to multi-topic via atmux-listener Rust kernel-blocked NOTIFY/
@@ -304,25 +294,14 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       // (long-lived), --drain (one-shot cron-backstop), --handle-one
       // (per-event dispatch), --status (diagnostic).
       return orchd(argv.slice(1));
-    case "relayd":
-      // ADR-224 §D1 — `atmux relayd` is the deprecation alias for one
-      // release post-rename. Emits a single-line stderr warning then
-      // delegates to the orchd handler with same exit code + stdout
-      // shape (scripts that pipe / parse stdout keep working). Removed
-      // next release.
-      process.stderr.write(
-        "[deprecated] 'atmux relayd' renamed to 'atmux orchd' (ADR-224); " +
-          "update callsites — alias removes next release\n",
-      );
-      return orchd(argv.slice(1));
     case "cockpit-mirror":
       // ADR-230 — cockpit-scope event dispatcher. Per-event Bun handler
       // spawned by the Rust `atmux-cockpit-mirror` binary
       // (`--handle-one --event-id X --topic T`); 7-topic whitelist per
       // ADR-230 §D3 (epic.merge_ready / epic.spawn_blocked / team.spawned
       // / team.dissolved / budget.warning / budget.recovered /
-      // gitter.escalated). Per-topic real handlers are follow-up Tasks;
-      // MVP scaffold logs + advances offset.
+      // the ADR-212 commit-escalation topic). Per-topic real handlers
+      // are follow-up Tasks; MVP scaffold logs + advances offset.
       return cockpitMirror(argv.slice(1));
     case "epic-merge":
       return epicMerge(argv.slice(1));
@@ -339,21 +318,6 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
     case "poke":
       return poke(argv.slice(1));
     case "poke-resume-check":
-      return pokeResumeCheck(argv.slice(1));
-    // ADR-160: legacy `whip` + `whip-resume-check` surfaces retained for
-    // one release cycle with stderr deprecation-warn. Operator cron lines
-    // continue invoking the canonical `poke` handler via this alias;
-    // post-cycle the alias is removed and stale cron entries get a
-    // refusal hint citing ADR-160.
-    case "whip":
-      process.stderr.write(
-        "atmux: 'atmux whip' is deprecated and renamed to 'atmux poke' per ADR-160; routing to canonical handler. Update cron lines + scripts before the next release.\n",
-      );
-      return poke(argv.slice(1));
-    case "whip-resume-check":
-      process.stderr.write(
-        "atmux: 'atmux whip-resume-check' is deprecated and renamed to 'atmux poke-resume-check' per ADR-160; routing to canonical handler. Update cron lines + scripts before the next release.\n",
-      );
       return pokeResumeCheck(argv.slice(1));
     case "watchdog":
       return watchdog(argv.slice(1));

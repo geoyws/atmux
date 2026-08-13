@@ -257,3 +257,9 @@ EPIC scope size: substantial (~12 SKILL.md generalizations × ~100-line bodies +
 - ADR-087 — soft-stop (`/atmux:session` consumer)
 - memory `feedback_reload_plugins_before_assuming_skill_missing` — plugin-schema drift cautionary
 - memory `feedback_claude_skills_dotfiles_territory` — operator-dotfiles vs atmux-bundle distinction
+
+## Amendments
+
+### 2026-08-07 — §D2's `/atmux:session` verb list is `cont` / `handoff` / `stop` (ADR-263)
+
+[ADR-263](263-merge-session-preclear-into-handoff.md) merges the `/session preclear` verb into `/session handoff` — one mode-aware verb, no `preclear` alias. §D2's carve-set table row `coordination/session` → `/atmux:session` reads **"cont / handoff / stop"** (3 verbs, not the 4 listed above). The 1:1 preservation contract, the bundled-name mapping, §D4's generalization pass, and §D5's wizard install step are unchanged. Per ADR-263 §Consequences, the bundled plugin needs a reinstall/sync for the `SKILL.md` verb change to reach already-installed copies.

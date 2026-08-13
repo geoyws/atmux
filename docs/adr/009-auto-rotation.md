@@ -473,3 +473,20 @@ This is the cleanup gate for "atmux start moved my project, then I deleted the o
 - Should `kanban.cronAutoInstall` move to `whip.cronAutoInstall` for naming consistency with the rest of the whip-cron coupling? Defer — the schedule lines cover whip + report + decisions-digest (three verbs, two of which aren't whip), so `kanban.*` is the closer fit. Revisit only if a future opt-out wants to disable a subset.
 - Should `atmux start` warn when `cronAutoInstall=true` but `crontab` is unavailable on the host? Today `atmux::cron_install` warns + bails silently. Consider promoting to a yellow doctor row. Defer until a real install hits this path.
 - Should the cron schedules be configurable per-team via `team.json` (`whip.cronInterval: "*/2"`)? Defer per "what we give up" above — wait for a real demand.
+
+## Amendments
+
+### 2026-08-07 — `preclear` vocabulary throughout reads `handoff` (ADR-263)
+
+[ADR-263](263-merge-session-preclear-into-handoff.md) merges the `/session preclear` verb into `/session handoff` — one mode-aware verb, no `preclear` alias. Every `preclear` in the body above is superseded by `handoff`. The decisions themselves are untouched: D3 still gates BOTH the uptime threshold AND banner detection behind the single `autoRotate` flag, and D4 still debounces at 5 min via `<member>-rotated.epoch`.
+
+Identifier-level consequences, for grep:
+
+- **D3 heading** — "Banner preclear gated by the same `autoRotate` flag" reads "Banner **handoff** gated by…".
+- **D3 §Why** — the rejected second flag is `autoHandoff`, not `autoPreclear` (both occurrences).
+- **D4 heading + prose** — "Banner-preclear debounce" reads "Banner-**handoff** debounce"; "suppress further banner-preclear for that member" reads banner-**handoff**; "at most one preclear per cron tick per member" reads one **handoff** per tick.
+- **§Consequences, test file** — `tests/unit/whip_preclear.bats` is `tests/unit/whip_handoff.bats` per ADR-263 §3.
+- **§Consequences, brief update** — `templates/briefs/member.md` (new §Auto-preclear) reads §**Auto-handoff**.
+- **§Consequences → "What we give up"** — 'Per-banner-type configurability (e.g. "preclear on usage-limit but not Compacting")' reads **handoff**.
+- **§Open questions deferred to future Epics** — the deferred per-banner-type config keys read `autoHandoffCompacting` / `autoHandoffUsageLimit`.
+- **§Context and §S11 Addendum → Context** — "Banner-driven preclear (Compacting / …)" and "no banner-driven preclear, no stale-task surfacing" read banner-driven **handoff**.

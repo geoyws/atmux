@@ -1,7 +1,8 @@
 // ADR-239 — unit tests for src/core/drivers.ts.
 //
-// Pure-fn coverage for resolveDriversList (drivers[] precedence + legacy
-// synthesis + empty fallthrough), resolveDriverCwd (relative / absolute /
+// Pure-fn coverage for resolveDriversList (drivers[] precedence + empty
+// fallthrough; the legacy driverSession/driverTui synthesis was removed
+// per ADR-266 §D2), resolveDriverCwd (relative / absolute /
 // "."), isDriverPaneName (driver / driver-N / non-driver), and
 // canonicalDriverName (index → name).
 
@@ -15,7 +16,7 @@ import {
   resolveDriversList,
 } from "../../../src/core/drivers.ts";
 
-describe("resolveDriversList — ADR-239 §A1 + §D7 precedence", () => {
+describe("resolveDriversList — ADR-239 §A1 (post ADR-266 §D2)", () => {
   test("drivers[] present + non-empty → returns as-is", () => {
     const drivers: DriverSession[] = [
       { name: "driver", tui: "claude", cwd: "." },
@@ -24,49 +25,12 @@ describe("resolveDriversList — ADR-239 §A1 + §D7 precedence", () => {
     expect(resolveDriversList({ drivers })).toEqual(drivers);
   });
 
-  test("drivers[] empty → falls through to legacy synthesis", () => {
-    expect(resolveDriversList({ drivers: [], driverSession: { tui: "claude" } })).toEqual([
-      { name: "driver", tui: "claude", cwd: "." },
-    ]);
+  test("drivers[] empty → empty array (no legacy synthesis post-ADR-266)", () => {
+    expect(resolveDriversList({ drivers: [] })).toEqual([]);
   });
 
-  test("legacy driverSession.tui → single-element synthesis", () => {
-    expect(resolveDriversList({ driverSession: { tui: "claude" } })).toEqual([
-      { name: "driver", tui: "claude", cwd: "." },
-    ]);
-  });
-
-  test("legacy driverSession.tui = cursor → synthesis carries the TUI", () => {
-    expect(resolveDriversList({ driverSession: { tui: "cursor" } })).toEqual([
-      { name: "driver", tui: "cursor", cwd: "." },
-    ]);
-  });
-
-  test("legacy driverTui (no driverSession block) → single-element synthesis", () => {
-    expect(resolveDriversList({ driverTui: "opencode" })).toEqual([
-      { name: "driver", tui: "opencode", cwd: "." },
-    ]);
-  });
-
-  test("driverSession present but .tui null → falls through to driverTui", () => {
-    expect(
-      resolveDriversList({ driverSession: { tui: null }, driverTui: "claude" }),
-    ).toEqual([{ name: "driver", tui: "claude", cwd: "." }]);
-  });
-
-  test("driverSession = null + no driverTui → empty array", () => {
-    expect(resolveDriversList({ driverSession: null })).toEqual([]);
-  });
-
-  test("neither drivers[] nor legacy fields → empty array", () => {
+  test("no drivers[] → empty array (caller falls back to __home placeholder)", () => {
     expect(resolveDriversList({})).toEqual([]);
-  });
-
-  test("drivers[] takes precedence over legacy fields", () => {
-    const drivers: DriverSession[] = [{ name: "driver", tui: "cursor", cwd: "." }];
-    expect(
-      resolveDriversList({ drivers, driverSession: { tui: "claude" }, driverTui: "opencode" }),
-    ).toEqual(drivers);
   });
 });
 

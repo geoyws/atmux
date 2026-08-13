@@ -1,6 +1,6 @@
 ---
 name: session
-description: Unified session-continuity skill. Verbs — cont, preclear, handoff, stop. Replaces cont, preclear, handoff, full-stop. Use /atmux:session <verb> [args].
+description: Unified session-continuity skill. Verbs — cont, handoff, stop. Use /atmux:session <verb> [args].
 argument-hint: <verb> [verb-args…]
 ---
 
@@ -15,13 +15,12 @@ Single dispatcher for all session-lifecycle actions — resuming, preparing, han
 | Verb | Summary |
 |---|---|
 | `cont` | Resume work after `/clear`. Auto-detects mode (driver / lead-window / solo / no-team). Reads handoff.md + dispatches resume tasks. |
-| `preclear` | Prepare the CURRENT session for `/clear` — save handoff + memory + tasks. Never touches the team. Mode-aware (driver = sanity+exit; solo/lead = full save). |
-| `handoff` | Write a forward-going brief for a fresh claude spawned in a new worktree / branch / tmux session. Distinct from `preclear` (which is for same-session `/clear`). |
+| `handoff` | Write a handoff.md at a context boundary. Two modes, auto-detected: **same-session** (prep the CURRENT session for `/clear` — save handoff + memory + tasks; never touches the team; mode-aware driver/solo/lead) and **forward** (brief for a fresh claude in a new worktree / branch / tmux session; optional spawn). |
 | `stop` | End-of-day: destructive team shutdown + final `[FULL-STOP]` handoff. Composite of `/atmux:team stop` + `/atmux:team cleanup` + handoff write. |
 
 ## Shared preamble (runs for every verb)
 
-1. **Parse verb.** First arg = verb. Unknown → error `"Usage: /atmux:session <verb> [args]. Verbs: cont|preclear|handoff|stop"`.
+1. **Parse verb.** First arg = verb. Unknown → error `"Usage: /atmux:session <verb> [args]. Verbs: cont|handoff|stop"`.
 2. **Detect harness** (dual-harness routing):
    - If `orch_create` / `orch_spawn` / `orch_shutdown` / `orch_memo` tools are available → **orch path** (OpenCode+plugin-orch).
    - Otherwise → **Claude + tmux** (default).
@@ -131,7 +130,7 @@ Prefer the project-slug copy if multiple exist (Claude-side canonical).
 If none exist, fall back to reading `todo/<branch>/` for checklists / notes. Ask user whether to proceed without a handoff.
 
 Pay attention to:
-- "In-flight at moment of /preclear" — who was doing what
+- "In-flight at moment of /handoff" — who was doing what
 - "Open questions / decisions needed" — unresolved user-facing calls
 - "Next-session first actions" — your starting dispatch list
 - "Standing decisions" — DO NOT relitigate
@@ -182,35 +181,40 @@ After dispatching, wait for teammates to report first-action status.
 
 ### Cont notes
 
-- Counterpart to `preclear` and `stop`. If there's no handoff, most likely neither was run.
-- `/atmux:team start` only when the previous session ended with `stop` (handoff H1 will show `[FULL-STOP]`). After plain `preclear`, teammates are alive.
+- Counterpart to `handoff` and `stop`. If there's no handoff, most likely neither was run.
+- `/atmux:team start` only when the previous session ended with `stop` (handoff H1 will show `[FULL-STOP]`). After plain `handoff`, teammates are alive.
 - Do NOT re-dispatch completed work. Check `TaskList` status first.
 - Resume messages should be tight — one teammate should NOT get a 2000-word briefing. Extract the relevant slice.
 
 ---
 
-## Verb — `preclear`
+## Verb — `handoff`
 
-`preclear` prepares **the session it's invoked from** for a `/clear`. Never stops the team. Never disturbs other sessions.
+`handoff` writes a `handoff.md` at a context boundary. **Two modes, auto-detected:** a fresh target (a worktree/branch arg, or `--fresh`) selects **forward** mode; otherwise **same-session** mode (the default).
+
+- **Same-session** — prepare the session it's invoked from for a `/clear`; saves handoff + memory + tasks. Never stops the team, never disturbs other sessions. Paired with `cont`. This is the phase-boundary verb. (Detailed immediately below.)
+- **Forward** — a brief for a *fresh* claude in a new worktree / branch / tmux session; optional auto-spawn. (See "Forward variant" near the end of this section.)
+
+Both modes write to the same canonical `handoff.md` (see path convention above).
 
 ### What "the current session" means
 
-| Mode | Current session | `preclear` does |
+| Mode | Current session | `handoff` does |
 |---|---|---|
 | **driver** (dedicated lead window alive; invoked from driver's REPL) | the driver | Sanity check + exit. Driver has no coordination state — lead owns handoff, memory, tasks, dispatches, team-log. `/clear` the driver is free. |
 | **solo** (no dedicated lead window; user's REPL is both user and lead) | the lead-in-disguise | Save everything — handoff + memory + task cleanup. `/clear` wipes lead context, so it must land on disk first. |
 | **lead** (invoked from inside the dedicated `__{team}__team-lead` window) | the lead | Save everything — same as solo. |
 
-**Lead vs `/atmux:team rotate-lead`:** `preclear` from the lead is the state-save **primitive**. `/atmux:team rotate-lead` is the composite that does `preclear`'s state-save PLUS `/clear` PLUS auto-pasting a re-bootstrap brief back into the lead pane. Use `/atmux:team rotate-lead` for the normal rotation loop; use `preclear` from the lead when you want state on disk without the auto-reboot.
+**Lead vs `/atmux:team rotate-lead`:** `handoff` from the lead is the state-save **primitive**. `/atmux:team rotate-lead` is the composite that does `handoff`'s state-save PLUS `/clear` PLUS auto-pasting a re-bootstrap brief back into the lead pane. Use `/atmux:team rotate-lead` for the normal rotation loop; use `handoff` from the lead when you want state on disk without the auto-reboot.
 
-In all modes the team stays alive. `preclear` does not kill teammates, ever. For actual shutdown, use `/atmux:session stop`.
+In all modes the team stays alive. `handoff` does not kill teammates, ever. For actual shutdown, use `/atmux:session stop`.
 
 ### Step 1 — Sanity check + mode detection
 
 ```bash
 TEAM="$(jq -r .name .claude/team.json 2>/dev/null || echo '')"
 if [ -z "$TEAM" ]; then
-  echo "ERROR: no .claude/team.json team name resolvable — aborting preclear"
+  echo "ERROR: no .claude/team.json team name resolvable — aborting handoff"
   exit 1
 fi
 
@@ -272,7 +276,7 @@ pgrep -laf "agent-id .*@${TEAM}" | awk '{print "   "$NF, "✅"}' || echo "   ❌
 Driver has no coordination state: no handoff, no memory-to-save, no tasks (TaskList is lead-scoped), no team-log ownership. `/clear` on the driver is a plain context flush.
 
 ```
-✅ /atmux:session preclear (driver) — ready for /clear
+✅ /atmux:session handoff (driver) — ready for /clear
 
 Pre-flight:
   1. lead marker: <value> (<${COORDINATION_TZ_SUFFIX:-${user_config.COORDINATION_TZ_SUFFIX}} time>), uptime <N>min
@@ -289,7 +293,7 @@ Done. No file writes. Exit.
 
 #### `MODE=solo` OR `MODE=lead` — save everything
 
-Invoking session holds coordination state. `/clear` will wipe it. `preclear` lands it on disk first.
+Invoking session holds coordination state. `/clear` will wipe it. `handoff` lands it on disk first.
 
 **Step 2.1 — Write handoff.md**
 
@@ -305,7 +309,7 @@ Structure — briefing for your future self post-`/clear` with zero prior contex
 ## What shipped this session
 - Committed chains, task numbers, landed artifacts. Include SHAs.
 
-## In-flight at moment of /preclear
+## In-flight at moment of /handoff
 - For each teammate: what they were doing, what's committed, what's uncommitted, what they're waiting on.
 - Surface holds, STOPs, or crisis states.
 - Pending decisions needing user's call.
@@ -334,7 +338,7 @@ Structure — briefing for your future self post-`/clear` with zero prior contex
 **Step 2.3 — Report**
 
 ```
-✅ /atmux:session preclear (${MODE}) — ready for /clear
+✅ /atmux:session handoff (${MODE}) — ready for /clear
 
 Handoff: <path> (<size>)
 Memory updates: <summary or "none">
@@ -345,21 +349,19 @@ Next session: run /atmux:session cont to resume (or /atmux:team bootstrap if you
 and about to re-bootstrap manually).
 ```
 
-### Preclear notes
+### Handoff notes
 
-- Never runs `/clear` itself — user does that after `preclear` reports ready.
-- Do NOT commit/push during `preclear`. Handoff + memory live outside the git tree.
+- Never runs `/clear` itself — user does that after `handoff` reports ready.
+- Do NOT commit/push during `handoff`. Handoff + memory live outside the git tree.
 - **End-of-day full shutdown?** Use `/atmux:session stop` — destructive path.
-- **Lead context heavy, want to reboot?** Use `/atmux:team rotate-lead` from the lead — `preclear` + `/clear` + auto-re-bootstrap in one shot. Under Driver Mode the lead self-rotates at ≥60min via `/atmux:whip §0.3`.
-- **Lead wants state on disk without auto-reboot?** Use `preclear` from the lead window; then manually `/clear` when ready.
+- **Lead context heavy, want to reboot?** Use `/atmux:team rotate-lead` from the lead — `handoff` + `/clear` + auto-re-bootstrap in one shot. Under Driver Mode the lead self-rotates at ≥60min via `/atmux:whip §0.3`.
+- **Lead wants state on disk without auto-reboot?** Use `handoff` from the lead window; then manually `/clear` when ready.
 
----
+### Forward variant — brief for a fresh claude
 
-## Verb — `handoff`
+Write a forward-going brief for a fresh claude spawned in a new worktree / branch / tmux session. Triggered by a fresh target (a worktree/branch arg, or `--fresh`).
 
-Write a forward-going brief for a fresh claude spawned in a new worktree / branch / tmux session.
-
-**Distinct from `preclear`** — `preclear` writes a session-continuity handoff for `cont` to restart the SAME session on the SAME branch. `handoff` is **forward-going** — a brief for someone about to do something new.
+**vs same-session mode** — same-session writes a continuity handoff for `cont` to restart the SAME session on the SAME branch; the forward variant briefs someone about to do something *new* elsewhere.
 
 ### Step 1 — Gather the brief
 
@@ -426,13 +428,13 @@ find ~/.claude/projects -name 'handoff.md' -mtime +7 -printf '%T@ %p\n' | sort -
 
 Anything older than 7 days is probably stale — spike completed (delete) or stalled (resume or drop). Same rule for `tasks-from-*.md` inheritance files.
 
-`preclear` handoffs in the same tree self-overwrite (one per branch), so they don't need special cleanup — but the `find` above covers them if genuinely stale.
+Same-session handoffs in the same tree self-overwrite (one per branch), so they don't need special cleanup — but the `find` above covers them if genuinely stale.
 
 ### Handoff notes
 
 - **Why global path, not in-repo `.claude/HANDOFF.md`?** Three problems: (1) easy to `git add .` accidentally, (2) needs per-repo gitignore, (3) orphans on `git worktree prune`. Global has none. Zero ergonomic cost — fresh claude can `cat ~/.claude/projects/.../handoff.md` just as easily.
-- **What NOT to use `handoff` for:**
-  - Session-continuity after `/clear` → that's `preclear` + `cont`.
+- **What NOT to use the forward variant for:**
+  - Same-session continuity after `/clear` → that's `handoff` (same-session mode) + `cont`.
   - Long-term docs (ADRs, design docs, READMEs) → live in the repo's `docs/` tree.
   - Task lists for the current session → use `TaskCreate` / `TaskUpdate`.
 
@@ -440,14 +442,14 @@ Anything older than 7 days is probably stale — spike completed (delete) or sta
 
 ## Verb — `stop`
 
-Destructive counterpart to `preclear`. Kills the alive team cleanly and writes a final handoff for the next session. Dual-harness.
+Destructive counterpart to `handoff`. Kills the alive team cleanly and writes a final handoff for the next session. Dual-harness.
 
 **When to use:** actual end-of-day, you're done working, want everything clean for tomorrow.
 
 **When NOT to use:**
 - Intra-session context reset on the driver → just `/clear` the driver.
 - Lead context reset → use `/atmux:team rotate-lead` (keeps teammates alive).
-- Checkpointing state without killing → use `/atmux:session preclear`.
+- Checkpointing state without killing → use `/atmux:session handoff`.
 
 ### Step 0 — Pre-flight sanity
 
@@ -489,7 +491,7 @@ echo "Spawned processes:"
 pgrep -laf "agent-id .*@${TEAM}" || echo "  (none — team may already be stopped)"
 ```
 
-**Confirm with user:** `"This will kill the live team for ${TEAM}. Continue? (end-of-day shutdown; use /atmux:session preclear for non-destructive checkpoint.)"`
+**Confirm with user:** `"This will kill the live team for ${TEAM}. Continue? (end-of-day shutdown; use /atmux:session handoff for non-destructive checkpoint.)"`
 
 Skip confirmation if user invoked with `force`, or if context makes intent explicit (e.g., "let's wrap for the day").
 
@@ -547,7 +549,7 @@ Mark as `[FULL-STOP]` in H1 so tomorrow's `cont` knows to re-start the team:
 
 ### Step 4 — Sync tasks + memory
 
-Same as `preclear`:
+Same as `handoff`:
 1. Task list audit — update `in_progress` descriptions to be self-contained.
 2. Delete `completed` tasks. Keep `in_progress` + `pending`.
 3. Memory check — save new feedback / project / references. Update `MEMORY.md`.
@@ -606,14 +608,14 @@ Every session verb ends with a one-block summary the operator reads to decide wh
 **Per-verb verdict-derivation rules:**
 
 - **`cont`** — ✅ when team-start succeeded (if needed), all in-flight tasks have a teammate assigned, and no pending decisions need operator. ⚠ when team alive but some resume dispatches couldn't fire (member pane wedged, inbox locked). 🔴 when team-start itself failed or handoff.md is missing/corrupt.
-- **`preclear`** — ✅ when handoff written, memory landed, task list cleaned, ready-for-/clear. ⚠ when partial (memory wrote but task cleanup hit a lock, etc.) — operator can still `/clear` but should know what didn't land. 🔴 when handoff couldn't be written (path missing, disk full, lock contention).
-- **`handoff`** — ✅ when brief written + (optionally) fresh claude spawned + kickoff fired. ⚠ when brief written but spawn skipped/failed — operator must manually kickoff. 🔴 when brief itself couldn't be written.
+- **`handoff` (same-session)** — ✅ when handoff written, memory landed, task list cleaned, ready-for-/clear. ⚠ when partial (memory wrote but task cleanup hit a lock, etc.) — operator can still `/clear` but should know what didn't land. 🔴 when handoff couldn't be written (path missing, disk full, lock contention).
+- **`handoff` (forward)** — ✅ when brief written + (optionally) fresh claude spawned + kickoff fired. ⚠ when brief written but spawn skipped/failed — operator must manually kickoff. 🔴 when brief itself couldn't be written.
 - **`stop`** — ✅ when ALL teammates stopped cleanly, zombies reaped, handoff marked `[FULL-STOP]`. ⚠ when some force-killed (count them out). 🔴 when stop aborted (hold-outs declined, partial state — team still alive).
 
 **Examples (drop-in for existing verb summaries):**
 
 ```
-✅ /atmux:session preclear (lead) — ready for /clear
+✅ /atmux:session handoff (lead) — ready for /clear
 Handoff: ~/.claude/projects/foo/todo/bar/handoff.md (4.2k)
 Memory updates: 2 (feedback_X.md, project_Y.md)
 Task list: 3 in_progress, 5 pending, completed cleared

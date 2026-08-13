@@ -1,13 +1,13 @@
 // Unit tests for src/schema/cockpit.ts — ADR-089 recursive sessions[]
 // schema (replaces ADR-063 flat teams[]).
 // Covers:
-//   - discriminatedUnion across team / epic-team / superdriver / superdoctor
+//   - discriminatedUnion across team / epic-team / superdriver / medic
 //   - .strict() leaf rejection of unknown keys
 //   - .strict() rejection of unknown `type` discriminator values
 //   - recursive nesting via z.lazy
 //   - schemaVersion default + cockpitSession default + prefixChain pass-through
-//   - legacy back-compat fields (`teams`, `superdoctor`) accepted as optional
-//     so the loader's enrichment pass round-trips them
+//   - legacy back-compat field (`teams`) accepted as optional
+//     so the loader's enrichment pass round-trips it
 //
 // Migration-shim + DFS-walk + flattener tests live in
 // tests/unit/core/cockpit.test.ts.
@@ -17,9 +17,7 @@ import {
   Cockpit,
   CockpitMedic,
   CockpitSession,
-  CockpitSuperdoctor,
   EpicTeamSession,
-  SuperdoctorSession,
   SuperdriverSession,
   TeamSession,
 } from "../../../src/schema/cockpit.ts";
@@ -116,15 +114,10 @@ describe("EpicTeamSession — leaf shape", () => {
   });
 });
 
-describe("SuperdriverSession + SuperdoctorSession — leaf shape", () => {
+describe("SuperdriverSession — leaf shape", () => {
   test("Superdriver — minimal entry", () => {
     const s = SuperdriverSession.parse({ type: "superdriver", name: "superdriver" });
     expect(s.type).toBe("superdriver");
-    expect(s.enabled).toBe(true);
-  });
-  test("Superdoctor — minimal entry", () => {
-    const s = SuperdoctorSession.parse({ type: "superdoctor", name: "superdoctor" });
-    expect(s.type).toBe("superdoctor");
     expect(s.enabled).toBe(true);
   });
   test("Superdriver rejects unknown leaf keys (.strict)", () => {
@@ -154,9 +147,8 @@ describe("CockpitSession discriminated union", () => {
     const s = CockpitSession.parse({ type: "superdriver", name: "x" });
     expect(s.type).toBe("superdriver");
   });
-  test("dispatches to SuperdoctorSession on type=superdoctor", () => {
-    const s = CockpitSession.parse({ type: "superdoctor", name: "x" });
-    expect(s.type).toBe("superdoctor");
+  test("rejects legacy type=superdoctor (ADR-133 shim removed per ADR-266 §D2)", () => {
+    expect(() => CockpitSession.parse({ type: "superdoctor", name: "x" })).toThrow();
   });
   test("rejects unknown `type` discriminator value (reviewer pre-flag)", () => {
     expect(() => CockpitSession.parse({ type: "rogue-type", name: "x" })).toThrow();
@@ -238,10 +230,10 @@ describe("CockpitSession — recursive nesting", () => {
       name: "outer-epic",
       parent: "p",
       epicId: "e-1",
-      sessions: [{ type: "superdoctor", name: "epic-superdoctor" }],
+      sessions: [{ type: "medic", name: "epic-medic" }],
     });
     expect(parsed.sessions).toHaveLength(1);
-    expect(parsed.sessions[0]?.type).toBe("superdoctor");
+    expect(parsed.sessions[0]?.type).toBe("medic");
   });
 });
 
@@ -251,11 +243,11 @@ describe("Cockpit — top-level shape + defaults", () => {
   test("empty object parses to schema defaults", () => {
     const c = Cockpit.parse({});
     expect(c.schemaVersion).toBe(1);
-    // ADR-135 §D1: default cockpitSession is `atmux_cockpit` (was
-    // `atmux_teams` pre-rename). Legacy literal is coerced at load
-    // time via the migrateCockpitSessionLegacyLiteral shim; the schema
-    // default itself has flipped to the canonical form.
-    expect(c.cockpitSession).toBe("atmux_cockpit");
+    // ADR-264 §D1: default cockpitSession is `atx` (was `atmux_cockpit`
+    // per ADR-135, `atmux_teams` pre-ADR-135). Both legacy literals are
+    // coerced at load time via the migrateCockpitSessionLegacyLiteral
+    // shim; the schema default itself has flipped to the canonical form.
+    expect(c.cockpitSession).toBe("atx");
     expect(c.sessions).toEqual([]);
   });
   test("parses a typical recursive cockpit", () => {
@@ -264,7 +256,7 @@ describe("Cockpit — top-level shape + defaults", () => {
       cockpitSession: "atmux_teams",
       sessions: [
         { type: "superdriver", name: "superdriver" },
-        { type: "superdoctor", name: "superdoctor" },
+        { type: "medic", name: "medic" },
         {
           type: "team",
           name: "sopx",
@@ -315,44 +307,25 @@ describe("Cockpit — top-level shape + defaults", () => {
     expect(() => Cockpit.parse({ sessions: [{ type: "rogue", name: "x" }] })).toThrow();
   });
 
-  // ADR-133 TR2: medic / superdoctor top-level keys coexist during
-  // the deprecation window. The schema accepts both shapes; the
-  // loader's `migrateSuperdoctorBlockToMedic` pre-parse shim resolves
-  // precedence + warns (covered in tests/unit/core/cockpit.test.ts).
-  test("accepts top-level `medic` block (ADR-133 new canonical key)", () => {
+  // ADR-133: `medic` is the canonical top-level key. The deprecated
+  // `superdoctor` key was removed per ADR-266 §D2 — the loader
+  // hard-fails on it before parse (covered in
+  // tests/unit/core/cockpit.test.ts).
+  test("accepts top-level `medic` block (ADR-133 canonical key)", () => {
     const c = Cockpit.parse({
       sessions: [],
       medic: { enabled: true },
     });
     expect(c.medic?.enabled).toBe(true);
-    expect(c.superdoctor).toBeUndefined();
-  });
-  test("accepts top-level `superdoctor` block (deprecated; back-compat)", () => {
-    const c = Cockpit.parse({
-      sessions: [],
-      superdoctor: { enabled: true },
-    });
-    expect(c.superdoctor?.enabled).toBe(true);
-    expect(c.medic).toBeUndefined();
-  });
-  test("accepts BOTH `medic` AND `superdoctor` top-level blocks (precedence in loader, not schema)", () => {
-    const c = Cockpit.parse({
-      sessions: [],
-      medic: { enabled: true },
-      superdoctor: { enabled: false },
-    });
-    expect(c.medic?.enabled).toBe(true);
-    expect(c.superdoctor?.enabled).toBe(false);
   });
 });
 
-// ---------- ADR-133 TR2: CockpitMedic schema alias ----------
+// ---------- ADR-133: CockpitMedic schema (re-anchored per ADR-266 §D2) ----------
 
-describe("CockpitMedic — ADR-133 alias of CockpitSuperdoctor", () => {
-  test("parses the same shape as CockpitSuperdoctor", () => {
-    const sd = CockpitSuperdoctor.parse({ enabled: true });
+describe("CockpitMedic — canonical singleton shape", () => {
+  test("parses a minimal block", () => {
     const m = CockpitMedic.parse({ enabled: true });
-    expect(m).toEqual(sd);
+    expect(m.enabled).toBe(true);
   });
   test("inherits tuiOverrides + claudeAccount + autoStart fields", () => {
     const m = CockpitMedic.parse({

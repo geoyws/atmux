@@ -20,6 +20,7 @@ import {
   SpawnError,
   SpawnTimeoutError,
   TmuxError,
+  TrackerRateLimitError,
   UsageError,
 } from "../../src/errors.ts";
 
@@ -159,6 +160,37 @@ describe("AtmuxError subclasses", () => {
     expect(e.message).toBe("http GET https://x/y timed out after 5000ms");
   });
 
+  test("TrackerRateLimitError carries trackerId + resetAtSec + status", () => {
+    const e = new TrackerRateLimitError({
+      trackerId: "github",
+      url: "https://api.github.com/repos/a/b/issues",
+      status: 403,
+      resetAtSec: 1765432100,
+    });
+    expect(e.tag).toBe("tracker-rate-limit");
+    expect(e.trackerId).toBe("github");
+    expect(e.resetAtSec).toBe(1765432100);
+    expect(e.message).toBe(
+      "github rate limit exhausted (HTTP 403 from https://api.github.com/repos/a/b/issues, resets at epoch 1765432100)",
+    );
+    expect(e instanceof AtmuxError).toBe(true);
+  });
+
+  test("TrackerRateLimitError omits the reset tail when resetAtSec is null", () => {
+    const cause = new Error("upstream");
+    const e = new TrackerRateLimitError({
+      trackerId: "github",
+      url: "https://api.github.com/x",
+      status: 429,
+      resetAtSec: null,
+      cause,
+    });
+    expect(e.resetAtSec).toBeNull();
+    expect(e.message).toBe("github rate limit exhausted (HTTP 429 from https://api.github.com/x)");
+    expect(e.message).not.toContain("resets at epoch");
+    expect(e.cause).toBe(cause);
+  });
+
   test("DiscordWebhookError adds HTTP status when provided", () => {
     const e = new DiscordWebhookError({ template: "whip-progress", statusCode: 429 });
     expect(e.tag).toBe("discord");
@@ -209,6 +241,7 @@ describe("exitCodeForTag", () => {
     ["lock-timeout", 75],
     ["spawn-timeout", 75],
     ["http-timeout", 75],
+    ["tracker-rate-limit", 75],
     ["schema", 65],
     ["tmux", 1],
     ["spawn", 1],

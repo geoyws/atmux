@@ -139,3 +139,15 @@ Tempting (full alignment in one shot) but rejected. V-25 (whip) is the primary c
 - `/coordination:session` skill source — `~/.claude/skills/coordination/session/SKILL.md` (mode detection at Step 0, marker read at preclear Step 1).
 - `/coordination:whip` skill source — `~/.claude/skills/coordination/whip/whip-prompt.md` § 0.3 (60-min auto-rotation reads `lead-session-start.txt`).
 - PLAN.md §6.3 — integration tasks I-1..I-4.
+
+## Amendments
+
+### 2026-08-07 — `/session preclear` references read `/session handoff` (ADR-263)
+
+[ADR-263](263-merge-session-preclear-into-handoff.md) merges the `/session preclear` verb into `/session handoff` — one mode-aware verb, no `preclear` alias. This ADR's three `preclear` references read `handoff`:
+
+- **§Context** — "`/session preclear` skips the lead-uptime informational line (no marker file)" reads **`/session handoff`**.
+- **§Consequences → Positive** — "preclear's informational uptime line populates" reads **handoff's**.
+- **§References** — "`~/.claude/skills/coordination/session/SKILL.md` (mode detection at Step 0, marker read at preclear Step 1)" reads **handoff Step 1**.
+
+I-1 (the `lead-session-start.txt` uptime marker) and I-2 (window-name detection + `atmux which lead-window`) are unchanged — the marker is simply read by `handoff` in its same-session mode rather than by a separate `preclear` verb.

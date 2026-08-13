@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # E2E: rotation infrastructure round-trip — manual rotate-lead + autoRotate
-# gate + banner-preclear all firing against a live tmux session.
+# gate + banner-handoff all firing against a live tmux session.
 # Coverage for TEST task t-011f3b03 (E2/S5).
 #
 # No AI API calls — every member is tui=shell so paste/send-keys side-
@@ -87,9 +87,9 @@ teardown() {
   [ "$refreshed" -ge "$now" ]
 }
 
-# ---------- step 4: banner-preclear ----------
+# ---------- step 4: banner-handoff ----------
 
-@test "e2e rotation: Compacting banner + autoRotate=true ⇒ AUTO-PRECLEAR fires + worker epoch written" {
+@test "e2e rotation: Compacting banner + autoRotate=true ⇒ AUTO-HANDOFF fires + worker epoch written" {
   jq '.whip.autoRotate = true' .atmux/team.json > .atmux/team.json.tmp \
     && mv .atmux/team.json.tmp .atmux/team.json
 
@@ -106,16 +106,16 @@ teardown() {
   local before; before=$(date +%s)
   run "$ATMUX_BIN" whip
   [ "$status" -eq 0 ]
-  [[ "$output" =~ "AUTO-PRECLEAR worker" ]]
+  [[ "$output" =~ "AUTO-HANDOFF worker" ]]
   [[ "$output" =~ "compacting" ]]
   [ -f .atmux/state/worker-rotated.epoch ]
   local epoch; epoch=$(< .atmux/state/worker-rotated.epoch)
   [ "$epoch" -ge "$before" ]
 }
 
-# ---------- combined: rotation+preclear in one round-trip ----------
+# ---------- combined: rotation+handoff in one round-trip ----------
 
-@test "e2e rotation: full round-trip — rotate-lead + autoRotate gate + banner preclear in one session" {
+@test "e2e rotation: full round-trip — rotate-lead + autoRotate gate + banner handoff in one session" {
   jq '.whip.autoRotate = true' .atmux/team.json > .atmux/team.json.tmp \
     && mv .atmux/team.json.tmp .atmux/team.json
 
@@ -137,7 +137,7 @@ teardown() {
   [ "$status" -eq 0 ]
   [[ "$output" =~ "AUTO-ROTATED lead" ]]
 
-  # Phase C: inject banner on worker, run again ⇒ preclear fires.
+  # Phase C: inject banner on worker, run again ⇒ handoff fires.
   local target="$ATMUX_SESSION:__rote2e__worker"
   tmux send-keys -t "$target" "echo 'Compacting conversation'" Enter 2>/dev/null \
     || tmux send-keys -t "$ATMUX_SESSION:worker" "echo 'Compacting conversation'" Enter
@@ -145,5 +145,5 @@ teardown() {
   rm -f .atmux/state/worker-rotated.epoch .atmux/state/whip-last.hash
   run "$ATMUX_BIN" whip
   [ "$status" -eq 0 ]
-  [[ "$output" =~ "AUTO-PRECLEAR worker" ]]
+  [[ "$output" =~ "AUTO-HANDOFF worker" ]]
 }

@@ -12,7 +12,7 @@
 #   1. Direct `_atmux_whip_pane_busy` helper unit-test via source-and-call
 #      (canned strings, no tmux). Same pattern as whip.bats.
 #   2. End-to-end: sandbox tmux session, inject pane state via send-keys,
-#      run whip, assert findings. Same pattern as whip_preclear.bats.
+#      run whip, assert findings. Same pattern as whip_handoff.bats.
 
 load '../helpers/setup'
 

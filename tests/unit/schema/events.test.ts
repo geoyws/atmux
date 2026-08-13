@@ -643,8 +643,9 @@ describe("passthrough for forward-compat", () => {
 
 describe("TOPICS registry + isKnownTopic", () => {
   test("v1 closed topic set has the expected size (ADR-203 §D2 enumeration)", () => {
-    // is the reminder. Current closed set: 5 task + 10 story + 15 epic
-    // (story: 8 base + 2 ADR-247 §D1: story.ready/story.unclaimed)
+    // is the reminder. Current closed set: 5 task + 6 story + 15 epic
+    // (story: 4 base + 2 ADR-247 §D1: story.ready/story.unclaimed;
+    //  the 4 orphan story.jury.* topics were removed per ADR-266 §D3 / ADR-213 §D5)
     // (epic: 4 base + 2 ADR-225 amendment: epic.unblocked/epic.ready;
     //  +2 ADR-226 §D2: epic.merged/epic.merge-blocked;
     //  +1 ADR-227 §D2: epic.dissolve-blocked;
@@ -657,15 +658,15 @@ describe("TOPICS registry + isKnownTopic", () => {
     //   member.rate-limited / member.overloaded / member.usage-snapshot —
     //   emit-only telemetry from the future claude-agent-sdk backend)
     // + 7 cockpit
-    // (sentinel.escalated removed per EPIC e-be01fc89) + 4 internal = 56.
-    expect(TOPICS.length).toBe(56);
+    // (sentinel.escalated removed per EPIC e-be01fc89) + 4 internal = 52.
+    expect(TOPICS.length).toBe(52);
   });
 
   test("known topics across each domain are present", () => {
     const set = new Set<string>(TOPICS);
     // sample one from each domain to assert the registry isn't a stub
     expect(set.has("task.claimed")).toBe(true);
-    expect(set.has("story.jury.ratified")).toBe(true);
+    expect(set.has("story.merge-ready")).toBe(true);
     expect(set.has("epic.merge-ready")).toBe(true);
     expect(set.has("commit.landed")).toBe(true);
     expect(set.has("gitter.escalated")).toBe(true);

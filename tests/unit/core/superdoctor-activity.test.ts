@@ -14,7 +14,6 @@ import { join } from "node:path";
 import { closeDatabase, openDatabase } from "../../../src/abstractions/sqlite.ts";
 import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
 import { ComplaintsRepo } from "../../../src/core/repositories/complaints-repo.ts";
-import { SuperdoctorAttemptsRepo } from "../../../src/core/repositories/superdoctor-attempts-repo.ts";
 import {
   decideMetaWatchdogFire,
   gatherSuperdoctorActivity,
@@ -65,18 +64,15 @@ function seedTeam(
         extra: {},
       });
     }
-    const ar = new SuperdoctorAttemptsRepo(db);
+    // Seed attempt rows via raw SQL — mirrors the live reader path in
+    // src/core/superdoctor-activity.ts (the typed attempts repository
+    // was deleted per ADR-266 §D3; the SQL table stays).
+    const insertAttempt = db.prepare(
+      "INSERT INTO superdoctor_attempts (complaint_id, attempt_n, outcome, attempted_at, action, note, extra) VALUES (?, ?, ?, ?, NULL, NULL, '{}')",
+    );
     let n = 1;
     for (const a of attempts) {
-      ar.insert({
-        complaintId: a.complaintId,
-        attemptN: n++,
-        outcome: a.outcome,
-        attemptedAt: a.attemptedAt,
-        action: null,
-        note: null,
-        extra: {},
-      });
+      insertAttempt.run(a.complaintId, n++, a.outcome, a.attemptedAt);
     }
   } finally {
     closeDatabase(db);

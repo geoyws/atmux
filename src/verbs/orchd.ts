@@ -13,10 +13,10 @@
 //     --once    (test ergonomics — exit after first batch)
 //     --max-events N (test ergonomics — exit after N events)
 //
-// The legacy `committer --daemon` / `committer --drain` invocations
-// remain as deprecated aliases for one release, emitting a deprecation
-// warn so cron lines + operator scripts surface the rename ask.
-// Removed cleanly next release.
+// The legacy `committer --daemon` / `committer --drain` invocations were
+// ADR-224 deprecation aliases for this verb; they were removed per
+// ADR-266 §D2 (window expired) — invoking them now fails with an
+// actionable error pointing here.
 //
 // Implementation re-uses the existing `committerDaemonVerb` /
 // `committerDrainVerb` bodies — this verb is just a renamed entry
@@ -986,7 +986,7 @@ async function orchdHousekeepCli(parsed: ParsedOrchdArgs): Promise<number> {
  * Walks each member's pane, captures statusline, parses context-%,
  * emits `member.context-high` event for members at/above threshold
  * (default 40%, operator-overrideable via team.json::contextThreshold).
- * Lead consumer (ADR-212 / e-cc3728bf) wakes + decides preclear /
+ * Lead consumer (ADR-212 / e-cc3728bf) wakes + decides handoff /
  * rotate / leave-alone.
  *
  * Fires from the Rust orchd's 15-min in-process ticker — NOT a

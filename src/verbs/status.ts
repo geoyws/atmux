@@ -195,31 +195,26 @@ export interface KanbanCounts {
 }
 
 /** ADR-077 §F5 / ADR-133: cockpit medic presence/health snapshot
- *  (formerly named `SuperdoctorState`; renamed per ADR-133, alias
- *  preserved below). Surfaced in `atmux status` so the operator can
- *  verify a `cockpit rebuild` actually took effect. */
+ *  (formerly named `SuperdoctorState`; renamed per ADR-133 — the
+ *  `SuperdoctorState` alias was removed per ADR-266 §D2). Surfaced in
+ *  `atmux status` so the operator can
+ *  verify a `cockpit reconcile` actually took effect. */
 export interface MedicState {
-  /** True iff `~/.atmux/cockpit.json` exists AND has a `medic` block
-   *  (or the deprecated `superdoctor` block, which the loader coerces
-   *  to medic semantics per ADR-133 §D2). False when no cockpit is
-   *  configured at all (silent — most per-team status calls won't
-   *  have one). */
+  /** True iff `~/.atmux/cockpit.json` exists AND has a `medic` block.
+   *  False when no cockpit is configured at all (silent — most per-team
+   *  status calls won't have one). */
   configured: boolean;
-  /** True iff `medic.enabled === true` (or legacy `superdoctor.enabled`)
-   *  in cockpit.json. */
+  /** True iff `medic.enabled === true` in cockpit.json. */
   enabled: boolean;
   /** True iff the cockpit tmux session exists on the operator's
    *  default socket. Probed only when `enabled === true`. */
   sessionAlive: boolean;
-  /** True iff a window named `medic` (canonical) OR `superdoctor`
-   *  (deprecated alias accepted during the rename window) exists in
-   *  the cockpit session. Probed only when `sessionAlive === true`. */
+  /** True iff a window named `_medic` (canonical) OR `medic` /
+   *  `superdoctor` (legacy names, still live in unreconciled cockpits)
+   *  exists in the cockpit session. Probed only when
+   *  `sessionAlive === true`. */
   windowAlive: boolean;
 }
-
-/** @deprecated ADR-133 — use {@link MedicState}. Kept as a type alias
- *  for importers during the one-release-cycle deprecation window. */
-export type SuperdoctorState = MedicState;
 
 /** ADR-077 §lead-uptime-measurement (t-6d950ffd / preventive for
  *  superdoctor complaint c-06dabd47): explicit-naming snapshot for
@@ -280,15 +275,8 @@ export interface StatusSnapshot {
    *  renderer skips display when `configured=false`. */
   driverPane: DriverPaneHealth;
   /** ADR-077 §F5 / ADR-133: cockpit medic snapshot. Always populated;
-   *  renderer skips display when `configured=false`. The deprecated
-   *  `superdoctor` field below mirrors this same data during the
-   *  rename window — both keys appear in `--json` output. */
+   *  renderer skips display when `configured=false`. */
   medic: MedicState;
-  /** @deprecated ADR-133 — mirror of {@link StatusSnapshot.medic}.
-   *  Retained for one release cycle so JSON consumers reading
-   *  `snap.superdoctor` (per ADR-077 §F5) continue working
-   *  unchanged. Removed once the deprecation window closes. */
-  superdoctor: MedicState;
   /** ADR-085 §Three surfaces #1: approval-debt scan across ADRs +
    *  driver-inbox + blocked kanban. Live per ADR-068 §HC#4 — no cache;
    *  re-run every `gatherStatus` invocation. */
@@ -391,7 +379,7 @@ export async function probeMedic(deps: GatherStatusDeps = {}): Promise<MedicStat
   } catch {
     return { configured: false, enabled: false, sessionAlive: false, windowAlive: false };
   }
-  const m = cockpit.medic ?? cockpit.superdoctor;
+  const m = cockpit.medic;
   if (m === undefined) {
     return { configured: false, enabled: false, sessionAlive: false, windowAlive: false };
   }
@@ -426,11 +414,6 @@ export async function probeMedic(deps: GatherStatusDeps = {}): Promise<MedicStat
   }
   return { configured: true, enabled: true, sessionAlive, windowAlive };
 }
-
-/** @deprecated ADR-133 — use {@link probeMedic}. Thin wrapper retained
- *  for the deprecation window so callers reaching for the legacy
- *  symbol keep working unchanged. */
-export const probeSuperdoctor = probeMedic;
 
 /** ADR-077 §lead-uptime-measurement (t-6d950ffd): parse the
  *  `[[DD-]HH:]MM:SS` etime format that `ps -o etime=` emits into
@@ -755,9 +738,6 @@ export async function gatherStatus(
     driverInboxOpen,
     driverPane,
     medic,
-    // ADR-133 deprecation alias — same data, retained for one cycle
-    // so JSON consumers reading `snap.superdoctor` keep working.
-    superdoctor: medic,
     needsApproval,
     lead,
   };
@@ -833,11 +813,7 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
       kanban: snap.kanban,
       driverInboxOpen: snap.driverInboxOpen,
       driverPane: snap.driverPane,
-      // ADR-133: emit BOTH `medic` (canonical) AND `superdoctor`
-      // (deprecated alias, same data) during the rename window so JSON
-      // consumers continue working. `superdoctor` drops next release.
       medic: snap.medic,
-      superdoctor: snap.superdoctor,
       needsApproval: snap.needsApproval,
       // ADR-077 §lead-uptime-measurement (t-6d950ffd): explicit-naming
       // uptime snapshot. Two distinct numbers, two distinct sources —

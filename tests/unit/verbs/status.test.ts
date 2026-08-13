@@ -311,29 +311,31 @@ describe("status verb — integration", () => {
     expect(out).toContain("🌟");
   });
 
-  // ---------- ADR-077 §F5: superdoctor cockpit-state surface ----------
+  // ---------- ADR-077 §F5 / ADR-133: medic cockpit-state surface ----------
 
-  test("no cockpit.json → snapshot.superdoctor.configured=false; text omits the row", async () => {
+  test("no cockpit.json → snapshot.medic.configured=false; text omits the row", async () => {
     await stageTeam([{ name: "alpha" }], false);
     // beforeEach pinned ATMUX_COCKPIT_CONFIG at a path that doesn't exist.
     const { out } = await captureStdout(() =>
       status(["--socket", socketPath, "--team-dir", teamDir]),
     );
-    expect(out).not.toContain("📋 superdoctor");
+    expect(out).not.toContain("📋 medic");
 
     const { out: jsonOut } = await captureStdout(() =>
       status(["--json", "--socket", socketPath, "--team-dir", teamDir]),
     );
     const parsed = JSON.parse(jsonOut);
-    expect(parsed.superdoctor).toEqual({
+    expect(parsed.medic).toEqual({
       configured: false,
       enabled: false,
       sessionAlive: false,
       windowAlive: false,
     });
+    // ADR-266 §D2: the deprecated `superdoctor` JSON mirror was removed.
+    expect(parsed.superdoctor).toBeUndefined();
   });
 
-  test("cockpit.json without superdoctor block → configured=false (silent)", async () => {
+  test("cockpit.json without medic block → configured=false (silent)", async () => {
     await stageTeam([{ name: "alpha" }], false);
     await writeFile(
       cockpitConfigPath,
@@ -346,16 +348,16 @@ describe("status verb — integration", () => {
       status(["--json", "--socket", socketPath, "--team-dir", teamDir]),
     );
     const parsed = JSON.parse(out);
-    expect(parsed.superdoctor.configured).toBe(false);
+    expect(parsed.medic.configured).toBe(false);
   });
 
-  test("superdoctor block disabled → configured=true, enabled=false; text shows ⚪ disabled", async () => {
+  test("medic block disabled → configured=true, enabled=false; text shows ⚪ disabled", async () => {
     await stageTeam([{ name: "alpha" }], false);
     await writeFile(
       cockpitConfigPath,
       JSON.stringify({
         cockpitSession: "atmux_teams",
-        superdoctor: { enabled: false },
+        medic: { enabled: false },
         teams: [{ name: "alpha", root: "/a", enabled: true }],
       }),
     );
@@ -369,7 +371,7 @@ describe("status verb — integration", () => {
       status(["--json", "--socket", socketPath, "--team-dir", teamDir]),
     );
     const parsed = JSON.parse(jsonOut);
-    expect(parsed.superdoctor).toEqual({
+    expect(parsed.medic).toEqual({
       configured: true,
       enabled: false,
       sessionAlive: false,
@@ -377,13 +379,13 @@ describe("status verb — integration", () => {
     });
   });
 
-  test("superdoctor enabled but cockpit session down → text shows 🔴 cockpit-down", async () => {
+  test("medic enabled but cockpit session down → text shows 🔴 cockpit-down", async () => {
     await stageTeam([{ name: "alpha" }], false);
     await writeFile(
       cockpitConfigPath,
       JSON.stringify({
         cockpitSession: "non-existent-session-for-test",
-        superdoctor: { enabled: true },
+        medic: { enabled: true },
         teams: [{ name: "alpha", root: "/a", enabled: true }],
       }),
     );

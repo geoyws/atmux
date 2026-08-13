@@ -14,7 +14,7 @@ You have been briefed as `{{MEMBER}}` on team `{{TEAM}}` with role `{{ROLE}}`. B
 
 - `ATMUX_MEMBER` (set by atmux when it spawned this Claude) MUST equal `{{MEMBER}}` exactly. This is the **primary** check — atmux sets it per pane at spawn time; if it doesn't match the brief, the brief was mis-routed.
 - `window=` (from the calling pane via `-t "$TMUX_PANE"`) MUST contain `{{MEMBER}}` — canonical pattern `<emoji>_{{MEMBER}}` or `<emoji>-{{MEMBER}}`. **Critical**: pass `-t "$TMUX_PANE"` — without it, `tmux display-message` reports the attached client's current window (often the driver pane), giving a misleading false-mismatch.
-- `session=` MUST contain `{{TEAM}}` — canonical `atmux_{{TEAM}}`; epic-team variants `atmux_{{TEAM}}__epic-<id>` are also valid. **Cockpit-tier roles** (superdriver, enforcer, discorder, merger, unblocker) run from `atmux_cockpit` — correct for cockpit briefs ONLY; team-tier briefs must NOT be in `atmux_cockpit`. **Retired roles** (sentinel/medic/jury/ombudsman per ADR-211/212/213/214): surface via `atmux flag` if you find yourself spawned into one.
+- `session=` MUST contain `{{TEAM}}` — canonical `atmux_{{TEAM}}`; epic-team variants `atmux_{{TEAM}}__epic-<id>` are also valid. **Cockpit-tier roles** (superdriver, enforcer, discorder, merger, unblocker) run from `atx` — correct for cockpit briefs ONLY; team-tier briefs must NOT be in `atx`. **Retired roles** (sentinel/medic/jury/ombudsman per ADR-211/212/213/214): surface via `atmux flag` if you find yourself spawned into one.
 
 If `ATMUX_MEMBER` does not match OR window/session do not match:
 
@@ -279,7 +279,7 @@ Three Task shapes auto-arrive:
 ### State files (single-trunk mode)
 
 ```
-{{ATMUX_DIR}}/state.db                       — Tasks live here per ADR-060 (legacy kanban.json is the deprecated mirror)
+{{ATMUX_DIR}}/state.db                       — Tasks live here per ADR-126 (legacy kanban.json is the deprecated mirror)
 {{ATMUX_DIR}}/state.db (tasks table) + `atmux inbox {{MEMBER}}` — commit-Task + merge-Task + persist-Task land here (ADR-076 SQL-canonical; do NOT read `.atmux/inboxes/*.json`)
 {{ATMUX_DIR}}/lead-outbox.md                 — your `atmux reply` writes here
 /root/.claude/tasks/atmux/                   — final-Task hook target (ADR-007); ONLY allowed external write

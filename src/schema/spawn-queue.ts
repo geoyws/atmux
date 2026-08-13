@@ -20,7 +20,7 @@
 // reject unknown states at write time.
 //
 // `.passthrough()` mirrors the row-schema convention from sibling files
-// (`src/schema/complaints.ts`, `src/schema/superdoctor-attempts.ts`):
+// (`src/schema/complaints.ts`):
 // forward-compat with future column additions matters more than
 // strict-rejection. SQLite-row schemas omit `schemaVersion` (the README
 // `schemaVersion` rule scopes to JSON-file schemas only — SQLite
@@ -87,7 +87,7 @@ export type SpawnQueueId = z.infer<typeof SpawnQueueId>;
  * | state                 | state                | 'queued'       | 'queued'      |
  *
  * `.passthrough()` for forward-compat (sibling-pattern with
- * `Complaint`, `SuperdoctorAttempt`).
+ * `Complaint`).
  */
 export const SpawnQueueRow = z
   .object({

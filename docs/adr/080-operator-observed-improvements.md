@@ -302,3 +302,9 @@ This ADR addresses **rotation policy + kanban hygiene + injection guards + CLI p
 | §E      | read-only       | parity-read-impl   | W9     | `src/verbs/task.ts:167`, `src/core/kanban.ts` (if repro on bun) | —          |
 
 **Parallel-safe bands**: {§A1, §B1, §C, §D, §E} can dispatch in parallel (no cross-deps). {§A2, §B2} dispatch after their respective §X1 lands. up-impl owns 3 sections (§A2, §B2, §C); §C is independent so up-impl can pick it up first while waiting on §A1 + §B1.
+
+## Amendments
+
+### 2026-08-07 — §Context incident text names the then-current verb `/session preclear` (ADR-263)
+
+[ADR-263](263-merge-session-preclear-into-handoff.md) merges the `/session preclear` verb into `/session handoff` — one mode-aware verb, no `preclear` alias. §Context → "Operator pain (verbatim from sopx-driver)" records the lane-tick incident **as observed on 2026-05-09**, when the lead was mid-`/session preclear` and a queued `atmux claim --next` defeated the rotation. That verbatim record stands; the equivalent invocation today is **`/session handoff`** (same-session mode). §A2's decision — lane-tick must refuse to inject a claim into a pane over the ctx threshold — is unchanged.

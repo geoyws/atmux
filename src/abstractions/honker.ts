@@ -11,7 +11,7 @@
 //
 // Phase-1 substrate scope per ADR-202 §D12 e-honker-substrate:
 //   load helper + kill-switch + smoke probe + doctor probe surface.
-//   No consumers wired here. Each consumer EPIC (jury, gitter, etc.)
+//   No consumers wired here. Each consumer EPIC (commit, etc.)
 //   owns its own subscribe call sites + idempotency tracking.
 //
 // **Extension binary not yet distributed.** Until the install wizard

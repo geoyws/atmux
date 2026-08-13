@@ -952,7 +952,7 @@ fn main() -> ExitCode {
     // context saturation every 15m instead of 5m"). Captures each
     // member's pane statusline; emits member.context-high events
     // for over-threshold members. Lead consumer (e-cc3728bf) wakes
-    // and decides preclear/rotate.
+    // and decides handoff/rotate.
     let context_scan_interval = Duration::from_secs(15 * 60);
     let mut last_context_scan_at = Instant::now();
     // e-12-640853f3 §S4 — housekeep tick (every 24h). Prunes old

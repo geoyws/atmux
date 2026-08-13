@@ -179,7 +179,7 @@ export async function writeOptOutMarker(
  *  interactive wizard prompt + plugins/atmux/README.md cross-link. */
 export const SKILLS_TABLE: ReadonlyArray<{ name: string; desc: string }> = [
   { name: "/atmux:team", desc: "unified team lifecycle (start/stop/add/clear/cleanup/bootstrap/rotate)" },
-  { name: "/atmux:session", desc: "session continuity (cont/preclear/handoff/stop)" },
+  { name: "/atmux:session", desc: "session continuity (cont/handoff/stop)" },
   { name: "/atmux:tell-lead", desc: "driver→lead durable message" },
   { name: "/atmux:heads-up", desc: "lightweight teammate ping" },
   { name: "/atmux:bruh", desc: "sweep blockers/flags/worktrees in one pass" },

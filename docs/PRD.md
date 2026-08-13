@@ -10,7 +10,7 @@
 >
 > **State storage (atmux-bun, post-merge 2026-05-08).** Kanban + inboxes +
 > per-feature state moved to **`.atmux/state.db`** (SQLite, WAL) per
-> [ADR-060](adr/126-sqlite-state-store.md). References to `kanban.json`
+> [ADR-126](adr/126-sqlite-state-store.md). References to `kanban.json`
 > below describe the legacy JSON path; the bun port is dual-path with
 > `state.db` as source of truth when present.
 
@@ -30,6 +30,36 @@
 > Honker topics live at `src/schema/events.ts::TOPICS`; emit via
 > `emit(db, payload)` in `src/abstractions/events.ts` (auto-detects honker-loaded
 > state per [ADR-202 §Amendment 2026-05-24](adr/202-honker-in-db-messaging-substrate.md)).
+>
+> ⚠ **The 2026-05-24 note above is superseded on the daemon question.** ADR-260
+> (accepted 2026-06-12) made **manual orchestration the fleet default** and orchd
+> **opt-in**. See §1.2 principle 3, corrected 2026-08-06, for the current position
+> and the full position history.
+
+> **2026-08-06 — business-intent document upstream of this PRD.**
+> [docs/brd/atmux.md](brd/atmux.md) is atmux's **Business Requirements Document**:
+> it records WHY atmux exists, who pays when it does not work, what outcome counts
+> as the problem being solved, and what atmux refuses to become. Its organising
+> thesis is the operator's 2026-08-06 sentence — *"atmux is meant to assist in
+> agentic dev."*
+>
+> **Authority order: BRD → PRD → ADR wins on decisions.** Read that as three
+> distinct jobs, not a strict ranking of trust:
+> - The **BRD** is the *intent of record*. When this PRD and the BRD disagree about
+>   why something exists or for whom, the BRD is right and this PRD is stale — file
+>   the PRD correction.
+> - This **PRD** is the *map* of shipped + planned surface. It never re-decides
+>   mechanism.
+> - An **accepted ADR** in `docs/adr/` **overrides both** on any question of
+>   mechanism or decision — the pre-existing rule at the top of this header stands
+>   unchanged. A business requirement that conflicts with an accepted ADR is
+>   resolved by filing a **new superseding ADR** citing the BRD as its driver-ref,
+>   never by editing the ADR's Decision section (the tree is append-only) and never
+>   by ignoring it.
+>
+> A BR is not self-executing: business intent becomes binding on the fleet only
+> once an ADR ratifies a mechanism and this PRD / a `RUNBOOK-*.md` documents the
+> surface. See [docs/brd/atmux.md](brd/atmux.md) §1.2.
 
 ---
 
@@ -46,29 +76,152 @@ that can't fan out per feature lane.
 
 ### 1.2 Solution
 
-**atmux** is a tmux-native multi-TUI agent orchestrator. One tmux session
-per project team, one tmux window per agent, all coordination state on
-disk in greppable JSON / markdown. No daemon. No provider API. State
+**atmux** is a tmux-native multi-TUI agent orchestrator for agentic
+development. One tmux session per project team, one tmux window per agent, all
+coordination state on disk — canonically SQLite at `.atmux/state.db`
+([ADR-126](adr/126-sqlite-state-store.md)), operator-private and symlinked out
+of the product repo
+([ADR-244](adr/244-per-repo-pre-commit-kanban-decisions-snapshot.md)
+§Supersession-2026-05-26). No provider API. No long-lived process required —
+manual orchestration is the fleet default and the `atmux-orchd` daemon is
+opt-in ([ADR-260](adr/260-manual-orchestration-mode-default.md)). State
 survives tmux restarts; restarts survive `/clear` cycles; durable by
 construction.
+
+*(Paragraph corrected 2026-08-06. It previously read "all coordination state on
+disk in greppable JSON / markdown. No daemon." — both clauses were stale in the
+same two ways as principles 2 and 3 below, which carry the full correction and
+the position history. The clause corrected here and the principles below now
+state one position, not three.)*
 
 Three durable principles (see `docs/ARCHITECTURE.md`):
 
 1. **tmux is the IPC.** `tmux send-keys` writes shell input; `tmux
    capture-pane` reads response. Works with any interactive coding-agent
    TUI, present or future.
-2. **State lives on disk in JSON / markdown.** `.atmux/` is greppable,
-   diffable, survives tmux restart, replays on `atmux start`.
-3. **No daemon.** Every verb is idempotent. `whip` (15min default per
-   `team.whip.intervalMins`, bumped from 5min in t-dcbff97c to dial back
-   the per-tick LLM burn) and `report` (30min) run on cron; nothing
-   long-lived.
+2. **State lives on disk, outside every agent process.** *(Corrected
+   2026-08-06 — the durability claim still holds; the storage details in the
+   original wording were stale.)* **Still true:** no coordination item — task,
+   epic, story, claim, dependency, inbox message, decision — exists only inside
+   an agent process, a tmux pane's scrollback, or a chat transcript. State
+   survives tmux restart and replays on `atmux start`. **Two corrections:**
+   (a) the canonical store is **SQLite at `.atmux/state.db`** (WAL) per
+   [ADR-126](adr/126-sqlite-state-store.md), not JSON / markdown — JSON is
+   archive-only, so `.atmux/` is queried with `sqlite3` rather than being
+   greppable end-to-end (`decisions.md`, `flags.md`, and the rendered inbox
+   markdown views do remain plain text and diffable). Verified on disk
+   2026-08-06: the DB is `.atmux/state.db`, resolved by
+   `src/core/kanban.ts:89` (`join(atmuxDir, "state.db")`) — **not**
+   `.atmux/state/state.db`. (b) the durable artifacts are **operator-private
+   and live outside the product repo**: `.atmux/team.json`,
+   `.atmux/decisions.md`, and `.atmux/state.db` belong in the operator's
+   dotfile tree at `~/work/journals/.sb/_dotfiles/atmux/<repo-key>/` and are
+   symlinked into `.atmux/`, with the managed repo ignoring all of `.atmux/`
+   and no `!.atmux/team.json` carve-out
+   ([ADR-239](adr/239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md)
+   §Supplement-2026-05-26,
+   [ADR-244](adr/244-per-repo-pre-commit-kanban-decisions-snapshot.md)
+   §Supersession-2026-05-26). Node `fs` follows symlinks transparently, so no
+   code changed. Snapshot cadence is `dotfiles push`, operator-driven —
+   isolation protects teammates from the operator's artifacts; only
+   `dotfiles push` protects the operator from machine death. Enforcement of
+   that layout in code is proposed, not shipped — see §3.6 (R2) and
+   [ADR-268](adr/268-managed-repo-state-isolation-enforcement.md).
+3. **Every verb is idempotent, and no long-lived process is required.**
+   *(Corrected 2026-08-06 — the position on daemons moved twice. Both moves are
+   recorded below rather than erased, because this PRD previously carried all
+   three positions simultaneously with no way to tell which was current.)*
+   **Current position (read this one):** manual orchestration is the **fleet
+   default** per [ADR-260](adr/260-manual-orchestration-mode-default.md)
+   (accepted 2026-06-12). `team.json::orchestration.mode` defaults to
+   `"manual"` — an absent block resolves to `"manual"` (ADR-260 §D1) — and in
+   manual mode **no `atmux-orchd` window is spawned at all** (ADR-260 §D2
+   Gate-1). The lead / driver LLM drives the kanban by hand with the existing
+   verbs (`claim` / `done` / `task move` / `dispatch` / `epic-merge` /
+   `team spawn-epic`), and members self-report liveness and intent via
+   `atmux member status <idle|working|blocked|rate-limited>` (ADR-260 §D3–§D5).
+   The Rust **`atmux-orchd`** daemon is **opt-in**: it spawns only for a team
+   that explicitly sets `"orchestration": { "mode": "orchd" }`, and even then
+   every orchd consumer (auto-merge, auto-push, auto-spawn, solo-worker
+   dissolve, lead-stall watchdog, context/budget scanners) becomes opt-in with
+   it. `atmux orchd --start / --drain / --sweep` remains manually invocable in
+   any mode. The operator's recorded rationale is verbatim in ADR-260: *"LLMs
+   can manage their own fleet better than atmux can at the moment."* atmux
+   still **NEVER** writes to crontab
+   ([ADR-233](adr/233-cron-auto-install-disabled-trust-orchd.md)).
+   **Position history, kept deliberately:** (i) **2026-05-06 original** — "No
+   daemon"; `whip` (15min default per `team.whip.intervalMins`, bumped from
+   5min in `t-dcbff97c` to dial back per-tick LLM burn) and `report` (30min)
+   ran on cron, nothing long-lived. (ii) **2026-05-24** — cron auto-install was
+   retired and orchd became "the runtime" (ADR-233; see the 2026-05-24 header
+   note above), and the hourly LLM whip cadence into Discord was removed by
+   [ADR-237](adr/237-no-llm-discord-and-whip-removal.md). (iii) **2026-06-12** —
+   ADR-260 reversed the default: manual is the default, orchd is opt-in. Rollback
+   in either direction is one line per team; no state migration either way.
 
 ### 1.3 Why now
 
-The multi-TUI agent ecosystem has crossed the threshold where parallel,
-mixed-capability worker fleets beat any single-model approach for
-throughput-per-dollar:
+> **Rewritten 2026-08-06.** This section previously argued that
+> "mixed-capability worker fleets beat any single-model approach for
+> throughput-per-dollar," naming *Cursor Composer 2 + OpenCode (MiniMax) + Kimi*
+> as parallel worker lanes with *Claude Opus 4.7* anchoring the staff. **That
+> tiering is not the shipped stance and has not been since 2026-05-21.** §1.1's
+> "Cursor / OpenCode / Kimi / MiniMax for parallel cheap workers" phrasing is
+> stale in exactly the same way and should be read as history, not as current
+> staffing. The original pitch is preserved in the bullet list at the end of this
+> section.
+
+**Every member role runs Claude Opus.** The project `CLAUDE.md` §"Spawning +
+model selection" is binding: team members, driver, and lead always run Opus
+(`claude-opus-4-7`) with `CLAUDE_CODE_EFFORT_LEVEL=xhigh`, and **"Never Sonnet
+for member roles."** Cheaper models are permitted only for **read-only**
+sub-agents (Explore, general-purpose); a sub-agent that writes code runs Opus.
+
+The cheap-worker tiering was unwound decision by decision, and each step is on
+the record:
+
+- [ADR-201](adr/201-cursor-cli-composer-25-as-first-class-member-tui.md) proposed
+  a first-class cursor-cli composer-2.5 **member** TUI and was **Rejected** by
+  driver verdict 2026-05-21. The verdict is not a mere decline-to-add — it states
+  the direction as *"REMOVE cursor in favor of Opus across atmux — not just
+  decline to add at member tier, but unwind cursor at sentinel (ADR-132) + cancel
+  forthcoming jury cursor path."*
+- [ADR-207](adr/207-opus-sentinel-supersedes-cursor-sentinel-adr-132.SUPERSEDED.md)
+  executed the first half — an Opus sentinel replaced the cursor sentinel of
+  [ADR-132](adr/132-pluggable-martinet.SUPERSEDED.md).
+- [ADR-211](adr/211-retire-sentinel-role-distribute-to-honker-consumers.md) then
+  retired the Sentinel role entirely. That matters here because
+  [ADR-140](adr/140-cheap-model-first.md)'s cheap-model-first principle was
+  attached to the sentinel role — with the role gone, that principle has **no
+  live consumer at the member tier**.
+- [ADR-213](adr/213-retire-jury-reviewer-absorbs-acceptance-criteria.md) retired
+  the `_jury` role, cancelling the other planned cursor-based gate; the reviewer
+  absorbed acceptance-criteria verification.
+
+**What the multi-backend surface is actually for.** atmux stays vendor-agnostic
+at the **seam**, not at the member tier. tmux is the IPC (§1.2 principle 1), and
+[ADR-258](adr/258-vendor-agnostic-orchestration-agentbackend.md) puts an
+`AgentBackend` adapter behind it, demoting tmux to an attach view — so atmux can
+drive any interactive coding-agent TUI, including ones that do not exist yet.
+The §3.2 TUI matrix therefore documents what atmux **can launch**, not what the
+operator's teams **run**.
+[ADR-262](adr/262-opencode-headless-backend-port-plugin-orch-safety.md)
+(`opencode` headless backend, Status: **proposed**) is the live proposal in that
+space and is scoped to a *separate* flat cheap-model-member topology — it does
+not reinstate mixed-tier staffing inside an Opus team.
+
+**So "why now", restated to match what ships.** The case for atmux is not
+throughput-per-dollar from model mixing. It is that **one operator can drive many
+parallel Opus lanes only if each lane's coordination state — plans, todos, claims,
+branches — is durable outside every agent process.** Otherwise the operator
+becomes the fleet's only durable memory, and therefore its throughput ceiling:
+N lanes cost O(N) operator re-explanations, and that number does not grow when the
+fleet grows (see [docs/brd/atmux.md](brd/atmux.md) §2.2 items 3–4). tmux + a CLI +
+on-disk state is the substrate that makes that cheap, inspectable, and familiar —
+no new infrastructure to learn.
+
+**Original 2026-05-06 pitch, retained for trace (superseded — do not staff from
+this):**
 
 - Claude Opus 4.7 anchors the staff (lead / planner / reviewer / committer
   / devops / dba) — reasoning + judgment + ADR authorship.
@@ -77,9 +230,9 @@ throughput-per-dollar:
 - Bash + tmux gives operators a deeply familiar substrate; no new infra
   to learn.
 
-atmux is the orchestration layer that makes these tiers compose, with
-budget pressure (ADR-049) and per-tier isolation (kanban task
-`t-706655ee` — multi-tier fallback chain) handled deterministically.
+The multi-tier fallback chain that made that pitch operational (budget pressure
+per ADR-049; per-tier isolation per kanban task `t-706655ee`) is still described
+in §5.3 as planned scope, and remains unbuilt as of 2026-08-06.
 
 ---
 
@@ -131,6 +284,10 @@ Per `PLAN.md` §15:
 
 ## 3. Scope (current shipped surface)
 
+> §3.1–§3.5 describe **shipped** surface. §3.6, added 2026-08-06, describes three
+> requirement areas that are **ADR-proposed and NOT shipped** — every verb, flag,
+> table, and probe named there is a proposal, not an available command.
+
 ### 3.1 Verbs (30, including aliases)
 
 Source: `bin/atmux` dispatcher + `lib/*.sh` per `PLAN.md` §6.2.
@@ -153,8 +310,8 @@ Source: `bin/atmux` dispatcher + `lib/*.sh` per `PLAN.md` §6.2.
 
 #### Cockpit topology (ADR-063 + ADR-077 + ADR-133 + ADR-135)
 
-The operator cockpit session (`atmux_cockpit` by default, was
-`atmux_teams` pre-ADR-135) carries the following window order — opt-in
+The operator cockpit session (`atx` by default per ADR-264, was
+`atmux_cockpit` per ADR-135 and `atmux_teams` pre-ADR-135) carries the following window order — opt-in
 surface (`_medic`) is gated by a `cockpit.json` block, per-team viewers
 shift down by one when enabled. Cockpit-level system roles carry a
 single-underscore prefix (sorts before plain team names in `tmux
@@ -206,7 +363,7 @@ Custom launch commands via `team.json:.tuiCommands` map per `README.md`
 ```
 .atmux/
 ├── team.json                  # source of truth (members, roles, TUIs, models)
-├── state.db                   # SQLite canonical store (ADR-060 + ADR-076):
+├── state.db                   # SQLite canonical store (ADR-126 + ADR-076):
 │                              #   tasks (Epics + Stories + Tasks), inbox_messages
 │                              #   (per-member), complaints, handoff state.
 ├── kanban.json                # legacy deprecation stub on post-cutover teams;
@@ -273,6 +430,165 @@ Source: [ADR-217](adr/217-atmux-skills-plugin-bundled-and-wizard-installed.md).
 For the full skill list + per-skill invocation reference + uninstall
 instructions, see `plugins/atmux/README.md`.
 
+### 3.6 PLANNED — 2026-08-06 operator ask (R1 / R2 / R3). ADR-proposed, NOT shipped.
+
+> ⚠ **Nothing in §3.6 exists yet.** All three ADRs below carry **Status:
+> proposed** as of 2026-08-06 and none has reviewer signoff or a
+> driver `decisions-add` ratification (project `CLAUDE.md` §Binding-discipline 4).
+> Verbs, flags, tables, sub-ops, and probes named here are **proposals**. Running
+> them today produces `unknown verb` / `unknown flag`. Business intent for all
+> three is in [docs/brd/atmux.md](brd/atmux.md) (BR1, BR4–BR7); the requirement
+> decomposition R1 / R2 / R3 traces to one operator ask on 2026-08-06.
+
+Operator ask, 2026-08-06 (verbatim): *"i need atmux to track plans and todos so
+that they're never lost even if agents run out of tokens and then another agent
+can easily take the previous agent's place. i need agents to always use atmux as
+a way to track todos and to update work done and to keep all plans and intents in
+atmux so that the git repo can be clean of our artifacts and my team members
+won't need to see my todo artifacts. and i need atmux to note the branches that
+we're working with across monorepos recursively as well."*
+
+| Area | Requirement | ADR (proposed) | BRD |
+|---|---|---|---|
+| **R1** | Continuity — plans / todos / intent survive agent token exhaustion; a replacement agent resumes with no operator re-explanation | [ADR-267](adr/267-durable-agent-continuity-contract.md) | [BR1](brd/atmux.md) |
+| **R2** | Host-repo cleanliness — atmux artifacts never enter a managed product repo's git history, established and verified by machine rather than operator memory | [ADR-268](adr/268-managed-repo-state-isolation-enforcement.md) | BR4 + BR5 |
+| **R3** | Recursive branch ledger — atmux records which branch every repo in a monorepo (root + nested submodules, recursively) is working on, and detects drift | [ADR-269](adr/269-recursive-branch-ledger.md) | BR6 + BR7 |
+
+#### 3.6.1 R1 — durable agent continuity ([ADR-267](adr/267-durable-agent-continuity-contract.md), proposed)
+
+**What is already shipped and needs nothing:** kanban rows are on disk in
+`.atmux/state.db` ([ADR-126](adr/126-sqlite-state-store.md)), so *what* was
+claimed survives any agent death by construction; a fresh agent self-serves work
+via `atmux claim --next --as <member>`
+([ADR-007](adr/007-pull-kanban.md)) with no dispatcher; standing decisions live
+in `.atmux/decisions.md` ([ADR-008](adr/008-decisions-verb.md)); `atmux handoff`
+and `/atmux:session cont` exist
+([ADR-263](adr/263-merge-session-preclear-into-handoff.md)).
+
+**The gap ADR-267 addresses:** the *reason* for the rows is not durable. atmux's
+only narrative-capture mechanism is `atmux handoff`, which is death-bed and
+best-effort — it asks the dying pane for a summary and polls
+`ATMUX_HANDOFF_WAIT` seconds (default 30), falls back to a `tmux capture-pane`
+tail of `ATMUX_HANDOFF_LINES` lines (default 500), and writes a
+`(no pane to capture)` stub when the source window is already gone. And there is
+**no append-only progress-note seam**: `atmux task update --body` *replaces* the
+body (`--body ""` clears it), and no `--note` flag exists on `atmux task update`
+at all.
+
+**Proposed, not shipped** (ADR-267 §D1–§D4):
+
+- `atmux task note <task-id> "<text>" [--as <member>] [--kind plan|progress|blocker|decision|done]`
+  plus a read-only `atmux task notes <task-id>`, backed by a new append-only
+  `task_notes` table on the next free rung of the
+  `src/abstractions/sqlite-migrations.ts` ladder. Append-only by construction —
+  no `--edit`, no `--rm`. `tasks.note` and `atmux done --note` are untouched.
+- `atmux task show <id>` gains a `notes` array, oldest-first.
+- A sixth `atmux groom` sub-op `archiveTaskNotes`, reusing `--kanban-days`, with
+  the hard invariant that **notes on a non-`done` Task are never archived at any
+  age**.
+- A claim→plan obligation in `templates/briefs/member.md`, enforced as a
+  **detectable proxy and deliberately not a hard block** — a sixth kanban-hygiene
+  detector `plan-missing` in the existing
+  [ADR-131](adr/131-superdoctor-kanban-hygiene.md) family, drained by the
+  existing `atmux hygiene-tick`, stored in the existing `superdoctor_hygiene`
+  table (no extra migration), always `escalate` and never auto-fixed.
+- The resume invariant, stated so it is measurable: *every Task in status
+  `in-progress` carries at least one `plan` note, so a cold agent resumes without
+  reading pane scrollback* — which holds exactly when `plan-missing` reports zero.
+
+**No new daemon, ticker, cron arm, or event topic** — ADR-267 §D4(c) declines all
+four, consistent with §1.2 principle 3 as corrected above.
+
+#### 3.6.2 R2 — managed-repo state isolation ([ADR-268](adr/268-managed-repo-state-isolation-enforcement.md), proposed)
+
+**Already decided, not re-decided:** all atmux state lives in the operator's
+dotfile tree and is symlinked into each managed repo's `.atmux/`
+([ADR-239](adr/239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md)
+§Supplement-2026-05-26,
+[ADR-244](adr/244-per-repo-pre-commit-kanban-decisions-snapshot.md)
+§Supersession-2026-05-26). See §1.2 principle 2 as corrected.
+
+**The gap:** that guarantee is carried by a four-step **manual operator recipe**
+and zero lines of code. `src/verbs/init.ts` scaffolds `.atmux/` and writes a real
+`.atmux/team.json`; it never touches an ignore file and never creates the dotfiles
+symlink. ADR-268 records a fleet audit of the 13 `type: "team"` roots in
+`~/.atmux/cockpit.json`: **5 of 13 do not ignore `.atmux/team.json` at all**, and
+**1 (`/root/work/ifca/src/tx-root`) has already committed and pushed
+`.atmux/team.json`** to an IFCA-org remote — a topology disclosure that no ignore
+line can undo, because gitignore has no effect on already-tracked paths.
+
+**Proposed, not shipped** (ADR-268 §D1–§D4):
+
+- An idempotent **isolation step inside `atmux init`**: derive `<repo-key>` from
+  the repo-root basename with an inadmissible set forcing `--state-key`, record it
+  in a manifest at `~/.atmux/state-keys.json`, and symlink exactly three entries
+  — `team.json`, `decisions.md`, `state.db` — into the dotfile tree. `.atmux/`
+  itself **stays a real directory** (measured 144 MB `worktrees/` + 184 MB
+  `logs/`; a whole-directory symlink would put product-repo git worktrees inside
+  the dotfiles repo). **Fails closed** (exit 78) when the dotfile tree is absent —
+  it never falls back to writing state into the repo.
+- The ignore pattern goes to the **machine-global** `${XDG_CONFIG_HOME}/git/ignore`,
+  **not** a product repo's tracked `.gitignore` — because a `.atmux/` line in a
+  tracked ignore file is itself a committed, teammate-visible statement that the
+  operator runs atmux. `.git/info/exclude` is rejected: verified 2026-08-06 not to
+  propagate into linked worktrees, which is exactly where the drivers work.
+- A doctor probe **`managed-repo-state-untracked`** in `src/verbs/doctor/git.ts`,
+  sibling to `checkWorktreeNestedStateDb`, with two assertions —
+  `git check-ignore -q -- .atmux/team.json` exits 0 (asserted on a **concrete
+  child path**, never bare `.atmux`, which the shipped `.atmux/*` pattern does not
+  match) and `git ls-files -- .atmux` is empty.
+- `atmux doctor --sweep-isolation` (read-only, `--apply` to fix), enumerating team
+  roots from `~/.atmux/cockpit.json` — explicitly **not**
+  `~/.claude/teams/registry.json`, which is stale at 2 entries because
+  `init.ts` never upserts it.
+
+#### 3.6.3 R3 — recursive branch ledger ([ADR-269](adr/269-recursive-branch-ledger.md), proposed)
+
+**Already shipped:** the recursive *ops* — `scripts/recursive-{checkout,pull,push,reset}.sh`
+surfaced as the `/rcheckout` `/rpull` `/rpush` `/rreset` skills.
+
+**The gap, diagnosed but not filled by
+[ADR-035](adr/035-per-member-branch-recursive-ops.md) (accepted 2026-04-29):**
+ADR-035 §1 makes `<branch>` mandatory on every recursive script, and its
+§Context failure-mode 2 rejects `.gitmodules` as the working-state source of
+truth — *"`.gitmodules` cannot capture which member is currently working — it's
+a fixed declaration"* — with §4 demoting `branch = ` to a remote-tracking hint
+for `git submodule update --remote` SHA bumps, never a checkout target. And then
+it **names no replacement**. Confirmed absent 2026-08-06: nothing in `src/schema/` or
+`src/core/` records a per-submodule branch. The working state lives in the
+operator's head plus the branch string typed into `/rcheckout`.
+
+**Proposed, not shipped** (ADR-269 §D1–§D6):
+
+- Two STRICT tables in the team's `.atmux/state.db` — `branch_ledger` (per-repo
+  **observation**: root-relative `repo_path`, `depth`, `head_state` ∈
+  `{attached, detached, unborn, uninitialised, absent}`, `branch`, `head_sha`,
+  `dirty`, `upstream`, `ahead`/`behind`, `observed_at_sec`) and
+  `branch_ledger_intent` (per-lane **intent**: `intended_branch` +
+  `trunk_branch`, written only from an explicit source). Current-state upsert, not
+  a history log.
+- `atmux branches record | show | verify`. `verify`'s exit code is the **number of
+  drifting repos**; six named drift classes with `missing-branch` highest, because
+  that is the silent one the shipped scripts report as one `WARN:` line inside a
+  17-repo sweep and then forget.
+- **Detached HEAD is a first-class recorded state, not an error** — ADR-035 §3 is
+  explicit that detached-at-the-pinned-SHA after
+  `git submodule update --init --recursive` is the *correct* read-only state.
+  Detachment is drift only against a recorded intent.
+- Write points at the moments branch state actually changes: the four recursive
+  scripts (guarded, unable to change their exit code) and after
+  `provisionWorktree` in `src/verbs/start.ts` / `spawn-epic.ts` — in the **verb**
+  layer, never inside `src/abstractions/worktree.ts`
+  ([ADR-096](adr/096-module-taxonomy.md) layering).
+- **The anti-inference rule:** the ledger records observations and **never infers
+  a checkout target.** No read path from the ledger into any recursive op;
+  `<branch>` stays mandatory; replay is deferred to its own decision.
+- Naming rule, adopted to avoid load-bearing ambiguity: the new failure class is
+  **"branch drift"**, never "lane drift" — `atmux lane-drift-check`
+  ([ADR-176](adr/176-epic-aware-lane-drift-revert.md)) is a *different* failure
+  class (claimed-but-not-progressing kanban lanes, root-repo-only). The ledger
+  sits beside it and does not extend it.
+
 ---
 
 ## 4. MVP shipped (v1 = bash atmux pre-cutover)
@@ -325,7 +641,7 @@ satisfaction.
 | **2 — Verb porting (parallel, 1:1 parity)** | porter-A + porter-B + reviewer + tester | All 23 domain verbs ported with identical names + args + behaviour. **✅ shipped.** |
 | **3 — Functional parity validation** | tester + auditor + lead | Parity harness green across cron-fired + interactive verbs. **🚧 in progress (Phase 3 iter-2 closed; Phase 4 RUSH expansion underway across 5 lanes).** |
 | **4a — Phase 3 close (parity matrix expansion)** | 5 lane porters | ADRs 028–032 scoped; rows landing per-lane. **🚧 in progress.** |
-| **4b — V-26 + V-27 ports** | session-impl + team-impl | `session` (cont/preclear/handoff/stop) + `team` (start/stop/add/clear/cleanup/bootstrap/rotate-lead/rotate-member). **⏳ pending Phase 4a close.** |
+| **4b — V-26 + V-27 ports** | session-impl + team-impl | `session` (cont/handoff/stop) + `team` (start/stop/add/clear/cleanup/bootstrap/rotate-lead/rotate-member). **⏳ pending Phase 4a close.** |
 | **4c — Cutover** | lead, driver mechanical              | `atmux-bun` → `atmux` rename, bash → `atmux-legacy`, all 4 teams' cron updated, CHANGELOG + Discord announce. **v1 ships here.** |
 | **5 — WIP catch-up** | foundation porter + porter-A       | Port super-*, drive, team-migrate-to-cage, repair-rename, tmux-conf-restore, socket-pubsub. |
 | **6 — v2 verb redesign** | architect + porter-A + porter-B + reviewer | Per ADR-014: subcommand structure (`task <sub>`, `member <sub>`), `member rm/rename` (closes API gap), drop `up` / `reconfigure`, deprecation aliases for ~3 months, then removal in v3. **v2 ships here.** |
@@ -387,6 +703,39 @@ porter; not docs-lane.
 - Phase 6: v2 verb redesign per ADR-014. Subcommand structure;
   `member rm/rename` (closes API gap); deprecation aliases for 3 months
   before removal in v3.
+
+### 5.5 2026-08-06 operator ask — R1 / R2 / R3 (ADR-proposed; not phase-gated)
+
+Added 2026-08-06. These three items do **not** sit in the Phase 0–6 ladder above
+— that ladder tracks the bash → Bun port, which is orthogonal. They are
+requirement areas from a single operator ask on 2026-08-06, each with its own
+ADR at **Status: proposed**. Surface detail is in §3.6; business intent is in
+[docs/brd/atmux.md](brd/atmux.md); open questions are in §10.5–§10.7.
+
+| Item | Deliverable | ADR | Status 2026-08-06 |
+|---|---|---|---|
+| **R1 — durable agent continuity** | `atmux task note` + `task_notes` table + `notes` in `task show` + `archiveTaskNotes` groom sub-op + `plan-missing` hygiene detector + brief/skill amendments | [ADR-267](adr/267-durable-agent-continuity-contract.md) | **proposed.** No reviewer signoff. ADR-267 phases the instruction leg (brief text, zero code) ahead of the schema + detector legs. Blocked on OQ-7 (epic-team cages own their own `state.db`, so the detector would emit false `plan-missing` findings on parent-team Tasks whose work happens in a child cage) — that must be decided before the detector ships. |
+| **R2 — managed-repo state isolation** | `atmux init` isolation step + machine-global excludes patterns + `managed-repo-state-untracked` doctor probe + `atmux doctor --sweep-isolation` | [ADR-268](adr/268-managed-repo-state-isolation-enforcement.md) | **proposed.** No reviewer signoff. Carries one **realized leak** to remediate independently of the code: `/root/work/ifca/src/tx-root` has `.atmux/team.json` committed in `c82add0` and pushed to an IFCA-org remote. `git rm -r --cached .atmux` + commit stops future tracking; the blob stays in pushed history, and rewriting a pushed IFCA-org branch is out of scope and needs explicit operator authorization under the push policy. |
+| **R3 — recursive branch ledger** | `branch_ledger` + `branch_ledger_intent` tables + `atmux branches record\|show\|verify` + `checkBranchLedgerDrift` doctor probe + write hooks in the four recursive scripts and after `provisionWorktree` | [ADR-269](adr/269-recursive-branch-ledger.md) | **proposed.** No reviewer signoff. ADR-269 §Phasing: Phase 0 is the ADR + `docs/RUNBOOK-branch-ledger.md` + pure types/functions only (no migration, no verb, no behaviour); Phase 1 is the migration + verb + probe + write points, with traversal wall-clock measured on `ix-root` (39 repos — 38 declared submodules + root — at depth 3, the fleet worst case per ADR-269 §OQ-1) **before** any cadence is armed. ADR-269 §Phasing rules `property-root` out as a measurement target: 14 submodules, recursive count equal to top-level, i.e. depth 1. |
+
+**Two cross-cutting sequencing facts, stated once so neither is discovered late:**
+
+1. **Migration-rung collision.** ADR-267 (`task_notes`) and ADR-269
+   (`branch_ledger` + `branch_ledger_intent`) both add rungs to the single
+   append-only ladder in `src/abstractions/sqlite-migrations.ts`, whose highest
+   landed rung as of 2026-08-06 is `to: 17`. Both ADRs explicitly yield to
+   whichever lands first and take the next free pair. The ladder stays monotonic;
+   no landed `up` body is ever edited. Re-derive the rung at implementation time
+   with one `rg` — do not trust a number pinned in an ADR written before its
+   sibling landed.
+2. **R2 is a prerequisite for R3's output being safe, and R3 needs nothing new
+   for it.** ADR-269's ledger rows spell out lane topology and cross-product
+   branch names (`px-crm-geoyws-driver-2`, sibling-product submodule paths) —
+   precisely the artifact class BR4 forbids a teammate cloning `property-root`
+   from seeing. Because the ledger lives in `.atmux/state.db`, it inherits the
+   ADR-239 / ADR-244 operator-private residency with **zero new mechanism**. R2's
+   enforcement work is therefore what makes R3's output safe by construction
+   rather than by convention.
 
 ---
 
@@ -572,6 +921,164 @@ build pipeline cron-pulled from main HEAD. Awaiting lead green-light;
 DNS / TLS / nginx commands driver-coordinated (per docs-lane guardrails:
 no flarectl / certbot / nginx without explicit ack).
 
+### 10.5 R1 — how strongly can the claim→plan obligation be enforced? (open)
+
+*Added 2026-08-06 from [ADR-267](adr/267-durable-agent-continuity-contract.md).*
+
+**The core question, unresolved by design in v1:** atmux can create a durable,
+cheap plan-recording seam. It **cannot compel an agent to write to it.** ADR-267
+§D2 therefore rejects a hard gate on `atmux claim` / `atmux task move <id>
+in-progress` outright — not deferred, rejected — for three reasons: (a) a gate
+that requires *a* note is satisfied by *any* note, which is Goodhart, the same
+move as raising a coverage threshold to meet coverage; (b) blocking a claim wedges
+the [ADR-007](adr/007-pull-kanban.md) pull model, and a dormant member is strictly
+worse than an unplanned claim; (c) some claims fire before any agent is in the
+loop (first-turn bootstrap, lane-tick), where there is nobody present to author a
+note. What ships instead is a **detectable proxy** — the `plan-missing` hygiene
+finding — plus a **reviewer comment**, explicitly *not* a third fail-state
+alongside code-without-tests and code-without-doc-update.
+
+Still open:
+
+1. **Does detection-plus-surfacing actually change behaviour?** The named failure
+   mode is a *silent* regression: nothing errors, and the only symptom is a rising
+   `plan-missing` count. ADR-267 §Consequences states the sharp version — *"if the
+   surfacing leg is skipped, this ADR ships a metric nobody reads and the
+   operator's original problem is unfixed while appearing addressed."* The finding
+   must reach a lead via the existing
+   [ADR-010](adr/010-atmux-flag.md) → [ADR-214](adr/214-retire-ombudsman-lead-absorbs-complaint-adjudication-via-honker.md)
+   path, not merely land in `superdoctor_hygiene`. **This is the implementation
+   step most likely to be dropped and most damaging to drop.**
+2. **`planGraceSec`** — recommended 900 (15 min) as the age gate before
+   `plan-missing` trips. Untested; measure real claim→first-note latency on a live
+   team before pinning.
+3. **Goodhart on note *content* has no v1 mitigation.**
+   `atmux task note t-x --kind plan "will fix it"` satisfies the detector, which
+   counts rows and cannot judge content. LLM scoring of note quality is out of
+   scope ([ADR-237](adr/237-no-llm-discord-and-whip-removal.md) forbids
+   time-driven LLM cycles, and a quality judge is the next thing to be gamed). The
+   reviewer reading the note is the only quality signal, and it is a comment.
+4. **Epic-team cages own their own `state.db`** (ADR-267 OQ-7) — so a parent-team
+   Task whose work happens in a child cage shows **zero** notes in the parent, and
+   the first `hygiene-tick` run would emit false `plan-missing` findings on every
+   such parent Task. Needs a decision — parent Task exempt while a child cage owns
+   it, versus fan-in writing a summarising note back — **before the detector
+   ships**. This is an implementation blocker, not a nice-to-have.
+5. **Two disjoint handoff artifacts exist today.** `atmux handoff` writes
+   `.atmux/handoff/<from>-to-<to>-<ts>.md` (singular `handoff`; verified on disk
+   2026-08-06 — `.atmux/handoffs` does not exist), while `/atmux:session cont`
+   reads `~/.claude/projects/<project-slug>/todo/<branch>/handoff.md`. Neither path
+   probes the other, so **the resume path never reads the handoff verb's output.**
+   ADR-267 §D3a proposes a one-line skill amendment with no code change; until it
+   lands, the gap stands.
+6. **Per-Task note soft cap** — recommended 50, warning-only and never a refusal
+   (refusing the append is refusing the durability). Should exceeding 3× the cap
+   escalate to its own hygiene finding, or stay advisory forever?
+
+### 10.6 R2 — whole `.atmux/` or individual files symlinked into managed repos? (proposed answer: individual)
+
+*Added 2026-08-06 from [ADR-268](adr/268-managed-repo-state-isolation-enforcement.md).*
+
+[ADR-239](adr/239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md)
+§Supplement-2026-05-26 left this explicitly out of scope
+(*"Out-of-scope for this supplement: kanban.sqlite + decisions.md storage"*).
+ADR-268 §D1b proposes resolving it as **per-entry symlinks over a frozen
+three-entry set** — `team.json`, `decisions.md`, `state.db` — with `.atmux/`
+itself remaining a **real directory**. The reasoning is measured, not aesthetic:
+in atmux's own `.atmux/` on 2026-08-06, `worktrees/` is **144 MB** and `logs/` is
+**184 MB**, so a whole-directory symlink would place full product-repo git
+worktrees *inside the dotfiles git repo* (nested checkouts that `dotfiles push`
+would then try to commit) and push roughly 330 MB of churn per team into the
+snapshot path. Lock files are machine-local mutexes and must not be shared across
+machines through a synced tree.
+
+Still open:
+
+1. **Does the operator's `dotfiles push` bootstrap already deploy
+   `_dotfiles/git/ignore` to `${XDG_CONFIG_HOME}/git/ignore`?** ADR-268 §D1d makes
+   the machine-global excludes file the load-bearing mechanism (verified
+   2026-08-06 to propagate into linked worktrees, where `.git/info/exclude`
+   verifiably does **not**), and relocates it into the dotfile tree so it is
+   snapshotted. Verified 2026-08-06: `/root/.config/git/ignore` is a plain local
+   file, not a symlink, and not tracked in the dotfiles repo — so today the whole
+   guarantee dies with the box. If the bootstrap has no hook for `_dotfiles/git/`,
+   that is a dotfiles-side change the operator owns, and `atmux init` must degrade
+   to warning that the excludes file is not snapshotted rather than silently
+   depending on it. **Untested — verify.**
+2. **WAL / SHM sidecars for a symlinked `state.db`.** `state.db-wal` and
+   `state.db-shm` follow the resolved symlink target and materialize inside the
+   dotfile tree. Does a `PRAGMA wal_checkpoint(TRUNCATE)` need to run before
+   `dotfiles push`, and does the dotfiles repo already ignore `*-wal` / `*-shm`?
+   A push taken mid-write otherwise snapshots a DB whose latest pages exist only
+   in an uncommitted WAL. **Untested — verify.**
+3. **Explicit `atmux start` is not gated by the probe.** Bare `atmux` / `atmux up`
+   runs `doctor --quiet` and throws before starting, so a red isolation row stops
+   that path — but `atmux start`'s doctor preflight body is deferred and runs no
+   probes. An operator who always types `atmux start` will not see the probe until
+   they run `atmux doctor` or the sweep. Wiring that body changes the start path
+   for every existing team and ADR-268 declares it out of scope, so it needs its
+   own decision.
+4. **`dotfiles push` remains the only snapshot cadence and nothing verifies it
+   ran.** Isolation protects teammates from the operator's artifacts; only
+   `dotfiles push` protects the operator from machine death. No §6 success measure
+   in [docs/brd/atmux.md](brd/atmux.md) currently observes snapshot freshness —
+   BRD §7.4 records that as a gap, not a solved problem.
+5. **A diverged real-file-vs-dotfiles pair is refused, not auto-resolved.**
+   Verified 2026-08-06 on atmux's own team: in-repo `.atmux/team.json` (mtime
+   2026-07-28, 3 drivers) versus `~/.atmux/atmux/team.json` (mtime 2026-06-12, 5
+   drivers). Two sources of truth six weeks apart, with the live one being the copy
+   `dotfiles push` does *not* snapshot. ADR-268 refuses and prints both paths
+   rather than picking, because an automated pick silently discards six weeks of
+   roster edits — so **this one needs an operator action, not a code path.**
+
+### 10.7 R3 — ledger staleness: an observation is not a lock (open)
+
+*Added 2026-08-06 from [ADR-269](adr/269-recursive-branch-ledger.md).*
+
+**The structural limit, stated so nobody designs against a stronger claim:** the
+branch ledger records an **observation**, never a lock. Nothing stops a bare
+`git checkout` in one submodule one second after `atmux branches record`. The
+ledger makes drift *detectable*; it never *prevents* it. Consequently
+`observed_at_sec` is **mandatory reading for every consumer** — any code path that
+treats a `branch_ledger` row as current state without checking its age is wrong.
+[docs/brd/atmux.md](brd/atmux.md) non-goal 7 is the governing principle: if the
+ledger and `git` disagree, **git is right and the ledger is stale by definition**;
+a ledger trusted as authoritative-by-write becomes a confident liar.
+
+Still open:
+
+1. **What staleness threshold makes the doctor row useful rather than noisy?**
+   ADR-269 §D6 splits the surfaces deliberately — the doctor probe
+   `checkBranchLedgerDrift` **reads the ledger only and does not re-walk** (keeping
+   doctor cheap), and emits a YELLOW *"ledger stale — run `atmux branches
+   record`"* row past a threshold; the expensive live re-walk stays
+   `atmux branches verify`'s explicit job. The threshold value is unset.
+2. **Traversal wall-clock is unmeasured.** A 17-submodule monorepo is 18 repos ×
+   roughly four `git -C` spawns ≈ **72 process spawns** per `record` or `verify`.
+   This is the direct reason v1 arms **no cadence** (no orchd ticker, no cron) —
+   [ADR-260](adr/260-manual-orchestration-mode-default.md) makes manual the
+   default anyway. Measure on `property-root` before arming anything; if it
+   exceeds a few seconds, `record` grows a `--shallow` mode recording branch + SHA
+   only. **Untested — verify.**
+3. **`ahead` / `behind` are fetch-stale by construction** — `record` deliberately
+   performs no `git fetch`. The numbers are relative to whenever that repo last
+   fetched, which the ledger does not currently record, so the `unpushed` drift
+   class is warn-only. Should the ledger record a per-repo `last_fetch_sec` so
+   those numbers carry their own staleness? One extra call per repo for a real
+   honesty gain; ADR-269 leans yes but defers it out of Phase 1.
+4. **Script-copy drift silently disables the write points.** Per ADR-035 §2 the
+   four `scripts/recursive-*.sh` are **copied per-team** into each managed
+   project's `scripts/`, so ADR-269's record hook reaches `property-root` /
+   `crm-react` / `sopx` only when the operator re-copies them. Until then that
+   repo's `/rcheckout` records nothing and its ledger goes stale silently — the
+   staleness doctor row is the *only* signal. A probe diffing a managed repo's
+   scripts against the atmux canon would catch it, but ADR-035 §2 deliberately
+   permits per-team script adaptation, so a naive hash comparison false-positives.
+   Needs its own small decision.
+5. **`lane` for work done directly in a team-root repo with no worktree
+   isolation** — the literal `operator` sentinel is proposed. Confirm against how
+   the operator actually works in `crm-react` before Phase 1 freezes it.
+
 ---
 
 ## Appendix A: ADR index
@@ -615,6 +1122,34 @@ Critical ADRs with active behavior:
 - **ADR-055** — Cursor self-heal (recipe-driven; v1 recipes: `fix:team-json-schema-drift` / `fix:cron-pollution` / `fix:supervisor-missing`). R1-T8 chain landed (`0fa4572` → `80d628e` → `9554f70` → `f50e751` → `1ce71c3`). Reviewer-gate, no auto-commit.
 - **ADR-056** — Account-swap (preemptive handoff at 75% used; lead/planner excluded; sequential per-team flock; OQ-3 = post-resume reconciliation deferred). R1-T10/T11/T12 landed (`f99519f` / `ffa2bd5` / `22ac16b` / `83115ec`).
 
+### 2026-08-06 operator-ask batch (Status: proposed — surface in §3.6, roadmap in §5.5, open questions in §10.5–§10.7)
+
+- **[ADR-267](adr/267-durable-agent-continuity-contract.md)** — Durable
+  agent-continuity contract: plan/intent is written as you go, not captured on the
+  death-bed. Adds `atmux task note` + an append-only `task_notes` table, a `notes`
+  array on `atmux task show`, an `archiveTaskNotes` groom sub-op (with the
+  invariant that a non-`done` Task's notes are never archived), and a sixth
+  kanban-hygiene detector `plan-missing` — escalate-only, never auto-fixed, and
+  deliberately **not** a claim gate. Requirement R1.
+- **[ADR-268](adr/268-managed-repo-state-isolation-enforcement.md)** —
+  Managed-repo state isolation: enforce the ADR-239 / ADR-244 dotfile-tree
+  invariant in code instead of operator memory. Adds an idempotent isolation step
+  to `atmux init` (three per-entry symlinks; `.atmux/` stays a real directory;
+  fails closed when the dotfile tree is absent), writes ignore patterns to the
+  machine-global excludes file rather than a product repo's tracked `.gitignore`,
+  and adds the `managed-repo-state-untracked` doctor probe plus
+  `atmux doctor --sweep-isolation`. Requirement R2.
+- **[ADR-269](adr/269-recursive-branch-ledger.md)** — Recursive branch ledger:
+  per-repo branch state across a monorepo root and every nested submodule, plus an
+  explicitly-supplied per-lane intent, so intended-vs-actual is a diff rather than
+  a memory. Adds `branch_ledger` + `branch_ledger_intent` tables,
+  `atmux branches record|show|verify`, and a `checkBranchLedgerDrift` doctor probe.
+  Fills the replacement [ADR-035](adr/035-per-member-branch-recursive-ops.md)
+  §Context failure-mode 2 identified and never named, while preserving ADR-035 §1
+  (branch arg mandatory + no `.gitmodules` "smart default"), §3 (detached HEAD is
+  correct, not drift) and §4 (`.gitmodules` `branch = ` is a remote-tracking hint,
+  not a checkout target) intact. Requirement R3.
+
 ### Planned
 
 - **ADR-050** — Multi-tier fallback chain (per kanban `t-706655ee`).
@@ -627,6 +1162,8 @@ Critical ADRs with active behavior:
 
 | Topic | Source of truth |
 |-------|-----------------|
+| Business intent — why atmux exists, who pays, non-goals, success measures (added 2026-08-06) | [docs/brd/atmux.md](brd/atmux.md) |
+| ADR roster + status at a glance | [docs/adr/INDEX.md](adr/INDEX.md) |
 | Verbs reference | `README.md` "Commands" |
 | State layout | `README.md` "State layout" |
 | Configuration env vars | `README.md` "Configuration" |

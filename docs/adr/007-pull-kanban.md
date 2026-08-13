@@ -104,3 +104,9 @@ Items 1–9 from plan §"Deferred scope" — auto-promotion, `epic report`, whip
 [ADR-175](175-story-signoff-verb-and-trunk-direct-merge-mode.md) (`atmux story signoff` verb + `trunk-direct` `mergeMode` field) makes the §OQ2 reviewer-signoff gate settable via CLI and introduces a `mergeMode` branching that skips the `merging` state for trunk-direct stories. The §OQ2 manual-discretion model (reviewer rejects when AC is empty) is unchanged — ADR-175 closes the missing CLI surface that previously forced reviewers to either rely on a planner-side hand-edit of `stories.review_signoff` or fall back to raw SQL bypass (observed on rentx E1, operator-authorized 2026-05-17 13:55 MYT for `s-425249d0` / `s-dc19b96e` / `s-f5797a08` / `s-cb99f131`). Cross-reference: [docs/adr/175-story-signoff-verb-and-trunk-direct-merge-mode.md](175-story-signoff-verb-and-trunk-direct-merge-mode.md).
 
 This is an **append-only amendment header** per the CLAUDE.md append-only ADR rule; the existing ADR-007 body above is canonical and unchanged.
+
+## Amendments
+
+### 2026-08-07 — Deferred item "token-aware preclear" reads "token-aware handoff" (ADR-263)
+
+[ADR-263](263-merge-session-preclear-into-handoff.md) merges the `/session preclear` verb into `/session handoff` — one mode-aware verb, no `preclear` alias. §Consequences → "What we explicitly defer" lists nine deferred items; item 5, **"token-aware preclear"**, reads as **"token-aware `handoff`"**. The deferral itself is unchanged — only the verb it names. Nothing else in this ADR is affected.

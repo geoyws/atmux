@@ -227,3 +227,16 @@ This ADR addresses **emit-side** noise (validator allowlist, schedule cadence, t
 | §D      | error-class     | whip-impl          | W5     | `src/core/whip-finding-state.ts` (new), `src/verbs/whip.ts:1463,:1473,:1485` | —          |
 
 **Parallel-safe**: all four sections dispatch in parallel (no cross-deps). parity-read-impl owns two adjacent investigation/lint tasks (§B + §C); recommend §B first as larger, §C as quick follow-up. whip-impl owns §D solo (the heaviest individual ticket — biggest leverage per sopx measurement).
+
+## Amendments
+
+### 2026-08-07 — "auto-preclear-failed" reads "auto-handoff-failed" (ADR-263)
+
+[ADR-263](263-merge-session-preclear-into-handoff.md) merges the `/session preclear` verb into `/session handoff` — one mode-aware verb, no `preclear` alias. The re-fire loop that §D's transitions-only gate subsumes is named **auto-handoff-failed**; four references above read `handoff`:
+
+- **§Context → "What's still bleeding noise", Finding #5** — 'Subsumes the "auto-preclear-failed re-fires every 5min" loop noise' reads **auto-handoff-failed**.
+- **§D prose** — "Subsumes the auto-preclear-failed re-fire loop naturally" reads **auto-handoff-failed**.
+- **§D Tests** — the regression case "Auto-preclear-failed regression: 12 consecutive ticks…" reads **Auto-handoff-failed regression**.
+- **§Test plan summary** — "§D: … + 1 auto-preclear regression = 7 unit tests" reads **1 auto-handoff regression**.
+
+The `shouldFireFinding` signature, the hash-gate semantics (transition / suppress / heartbeat), the `src/core/whip-finding-state.ts` shape, and the §D test count are unchanged.

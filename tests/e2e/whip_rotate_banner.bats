@@ -18,7 +18,7 @@
 # ACTUALLY SHIPPED — not the AC's literal wording — and pin the literal
 # banner strings so future banner-text drift in Claude Code surfaces as a
 # failing test. tests/e2e/rotation.bats already covers the Compacting +
-# AUTO-PRECLEAR happy path; this file fills the rotate-refusal case.
+# AUTO-HANDOFF happy path; this file fills the rotate-refusal case.
 #
 # Per memory feedback_orphan_test_staging.md: no parent BE Task — gate
 # already shipped; safe to git add when worker stages.
@@ -185,36 +185,36 @@ _inject() {
   [ -f .atmux/state/worker-rotated.epoch ]
 }
 
-# ---------- 3. e2e: whip-driven AUTO-PRECLEAR honors the gate ----------
+# ---------- 3. e2e: whip-driven AUTO-HANDOFF honors the gate ----------
 
-@test "rotate banner gate (whip e2e): mid-turn pane with rate-limited banner ⇒ auto-preclear FAILS" {
+@test "rotate banner gate (whip e2e): mid-turn pane with rate-limited banner ⇒ auto-handoff FAILS" {
   # autoRotate=true + a rotation-trigger banner (rate-limited) sets
-  # preclear_banner, which makes whip call `atmux rotate <member>`.
+  # handoff_banner, which makes whip call `atmux rotate <member>`.
   # If the pane simultaneously shows mid-turn ('thinking with'), the
   # rotate.sh pre-flight refuses, and whip emits the
-  # '⚠️ auto-preclear … attempted but failed' finding rather than the
-  # success '♻️ AUTO-PRECLEAR' finding.
+  # '⚠️ auto-handoff … attempted but failed' finding rather than the
+  # success '♻️ AUTO-HANDOFF' finding.
   jq '.whip.autoRotate = true' .atmux/team.json > .atmux/team.json.tmp \
     && mv .atmux/team.json.tmp .atmux/team.json
   _start_session
 
   # Inject BOTH a rotation-eligible banner AND a mid-turn marker —
-  # whip's preclear_banner regex matches the rate-limited substring,
+  # whip's handoff_banner regex matches the rate-limited substring,
   # but rotate.sh sees mid-turn and refuses.
   _inject "rate-limit hit · thinking with sonnet"
   rm -f .atmux/state/worker-rotated.epoch .atmux/state/whip-last.hash
 
   run "$ATMUX_BIN" whip
   [ "$status" -eq 0 ]
-  [[ "$output" =~ "auto-preclear" ]] && [[ "$output" =~ "failed" ]]
-  ! [[ "$output" =~ "AUTO-PRECLEAR worker" ]]
+  [[ "$output" =~ "auto-handoff" ]] && [[ "$output" =~ "failed" ]]
+  ! [[ "$output" =~ "AUTO-HANDOFF worker" ]]
   [ ! -f .atmux/state/worker-rotated.epoch ]
 }
 
-@test "rotate banner gate (whip e2e): Compacting alone ⇒ AUTO-PRECLEAR succeeds (no false-block)" {
+@test "rotate banner gate (whip e2e): Compacting alone ⇒ AUTO-HANDOFF succeeds (no false-block)" {
   # Pin: Compacting alone never blocks rotation. This guards against a
   # future regression that lumps Compacting into the blocker set —
-  # which would silently break whip's AUTO-PRECLEAR for the very banner
+  # which would silently break whip's AUTO-HANDOFF for the very banner
   # rotation is supposed to cure.
   jq '.whip.autoRotate = true' .atmux/team.json > .atmux/team.json.tmp \
     && mv .atmux/team.json.tmp .atmux/team.json
@@ -224,6 +224,6 @@ _inject() {
 
   run "$ATMUX_BIN" whip
   [ "$status" -eq 0 ]
-  [[ "$output" =~ "AUTO-PRECLEAR worker" ]]
+  [[ "$output" =~ "AUTO-HANDOFF worker" ]]
   [ -f .atmux/state/worker-rotated.epoch ]
 }

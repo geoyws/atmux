@@ -1,8 +1,13 @@
 // ADR-134 T4 (t-64e52aac): committer CLI verb — cron-fired sweep
-// entry-point. Renamed from `gitter` per ADR-159 (TR2); legacy verb
-// name `atmux gitter` retained as alias for one release cycle at
-// the dispatcher layer (src/cli.ts).
+// entry-point. Renamed from `gitter` per ADR-159 (TR2); the legacy
+// verb-name alias was removed per ADR-266 §D2 (window expired).
 //
+// NOTE: `committer --daemon` / `committer --drain` were ADR-224
+// deprecation aliases for `orchd --start` / `orchd --drain`; they were
+// removed per ADR-266 §D2. The daemon/drain BODIES stay here (orchd
+// delegates to committerDaemonVerb / committerDrainVerb — single source
+// of truth per ADR-202 §V) but the committer verb surface no longer
+// accepts those sub-verbs.
 // Hosts the `atmux committer --sweep` sub-verb that the per-team cron
 // backstop fires (per ADR-134 §triggers §cron-backstop-secondary). The
 // sweep walks per-member branches, consults the merger_state table,
@@ -87,8 +92,7 @@ import { UsageError } from "../errors.ts";
 import type { Team as TeamShape } from "../schema/team.ts";
 import { runLaneTick as runLaneTickImport } from "./lane-tick.ts";
 
-const USAGE =
-  "atmux committer <--sweep|--daemon|--drain> [--team-dir <path>] [--once] [--max-events N]";
+const USAGE = "atmux committer <--sweep> [--team-dir <path>]";
 
 // ---------- Arg parsing ----------
 
@@ -99,7 +103,11 @@ export interface ParsedCommitterArgs {
    *                gitterConsume — drains pending `task.done` events
    *                via the offset table, exits 0).
    *   - `daemon` : ADR-202/203 long-lived NOTIFY/LISTEN consumer
-   *                (watchEvents loop; runs until SIGINT/SIGTERM). */
+   *                (watchEvents loop; runs until SIGINT/SIGTERM).
+   *  Only `sweep` is parseable from the `atmux committer` CLI surface;
+   *  `drain` / `daemon` are constructed internally by `orchd.ts` which
+   *  owns the canonical `--drain` / `--start` surface (ADR-224; the
+   *  committer-side aliases were removed per ADR-266 §D2). */
   subverb: "sweep" | "drain" | "daemon";
   /** Override the team-dir for `requireTeam` (test injection +
    *  cross-team invocation from the cockpit shell). */
@@ -128,15 +136,14 @@ export function parseCommitterArgs(argv: ReadonlyArray<string>): ParsedCommitter
       i += 1;
       continue;
     }
-    if (a === "--drain" || a === "drain") {
-      subverb = "drain";
-      i += 1;
-      continue;
-    }
-    if (a === "--daemon" || a === "daemon") {
-      subverb = "daemon";
-      i += 1;
-      continue;
+    if (a === "--drain" || a === "drain" || a === "--daemon" || a === "daemon") {
+      // ADR-266 §D2: the ADR-224 deprecation aliases expired — hard,
+      // actionable error naming the canonical orchd surface.
+      const canonical = a === "--daemon" || a === "daemon" ? "orchd --start" : "orchd --drain";
+      throw new UsageError({
+        what: `committer: '${a}' alias removed per ADR-266 §D2 (ADR-224 deprecation window expired) — use 'atmux ${canonical}'`,
+        hint: USAGE,
+      });
     }
     if (a === "--once") {
       once = true;

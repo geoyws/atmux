@@ -3,7 +3,7 @@
 // Captures the last N lines of a member pane via tmux capture-pane,
 // then parses the Claude Code TUI statusline for the context-used
 // percentage. Used by `atmux orchd --scan-context` every 15min to
-// detect members approaching preclear-worthy saturation.
+// detect members approaching handoff-worthy saturation.
 //
 // Claude statusline shape (sampled 2026-05-24):
 //

@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🗑️ Removed — ADR-266 shim sunset policy + first expired-shim sweep ([ADR-266](docs/adr/266-shim-sunset-policy-and-first-sweep.md))
+
+**Breaking for configs/aliases past their promised expiry — by design; each removal's error or this line names the ADR.** Deprecation shims that shipped with "accepting this release; will fail next release" contracts (written 2026-05-14→24, ~8–25 releases past expiry) are executed, and audit-verified dead modules are deleted outright.
+
+- **Sunset policy (D1):** every future deprecation shim MUST ship a `SUNSET(<version>):` marker comment with an explicit expiry; the ADR-264 `atx` shims are the first to carry one (`SUNSET(v0.9.0)` at `migrateCockpitSessionLegacyLiteral`, `LEGACY_COCKPIT_SESSION_NAMES` + the rename-session migration shim, `COCKPIT_RESERVED_NAMES`, and the doctor `cockpit-on-default-socket` probe literals).
+- **CLI aliases removed:** `atmux gitter` (ADR-159), `atmux relayd` (ADR-224), `atmux whip` + `atmux whip-resume-check` (ADR-160) dropped from `src/cli.ts` (now unknown-verb exit 64); the `whip` row dropped from `atmux help`.
+- **`committer --daemon` / `--drain` aliases removed** (ADR-224 window): invoking them fails with an actionable error pointing at `atmux orchd --start` / `atmux orchd --drain`; the daemon/drain bodies stay in `src/verbs/committer.ts` (orchd delegates to them).
+- **`cockpit rebuild` alias removed** (ADR-235 §OQ4): invoking it fails with an actionable error naming the canonical `atmux cockpit reconcile`; help row dropped.
+- **ADR-133 superdoctor→medic shims removed:** `migrateSuperdoctorBlockToMedic` + the dual-key legacy-shape branch (`src/core/cockpit.ts`), `SuperdoctorSession` / `CockpitSuperdoctor` / `Cockpit.superdoctor` (`src/schema/cockpit.ts` — `CockpitMedic` re-anchored to the medic shape directly), and the `status.ts` `superdoctor` JSON mirror / `SuperdoctorState` / `probeSuperdoctor` aliases. The live readers (`start.ts`, `status.ts`) drop the `?? superdoctor` fallback. **A cockpit.json still carrying a `superdoctor` block (top-level key or `type: "superdoctor"` sessions[] entry) now fails at load with a `ConfigError` naming ADR-266 + the rename instructions** — the failure the expired contract promised.
+- **`gitter`→`committer` role-literal Zod transform removed** (`src/schema/team.ts`, ADR-159): a literal `role: "gitter"` now parses as-is (open-string field); canonical value is `"committer"`.
+- **`Tier4NotAvailableError` removed** (`src/abstractions/fallback-cage.ts`, ADR-050 one-cycle retention expired); the `instanceof` cascade branch in `src/core/whip-budget-fallback.ts` goes with it (`FallbackTierDroppedError` remains the tier gate).
+- **Legacy `driverSession`/`driverTui` spawn fallback removed** (`src/core/drivers.ts`, `src/verbs/start.ts`, ADR-239 §D7): `atmux start` reads ONLY `drivers[]` for the driver-spawn loop; the bare `driverTui` field dropped from the schema (passthrough-ignored if present). `team.driverSession` STAYS as the opt-in marker read by the cockpit viewer window + driver-pane health probe. Teams still on the legacy fields must migrate to `drivers[]`.
+- **Dead code deleted (zero live importers):** `src/core/whip-escalation.ts`, `src/core/superdoctor-cage-verdict.ts`, `src/core/repositories/superdoctor-attempts-repo.ts` + `src/schema/superdoctor-attempts.ts` (SQL tables stay — live raw-SQL readers), and the four orphan jury event topics `story.jury.ratified|pending|verdict|escalated` (`src/schema/events.ts`, ADR-213 §D5; closed topic set now 52).
+- **Doc drift (D5):** the `[Unreleased]` cockpit-roles entry claiming "Medic narrowed to on-demand `atmux medic diagnose <team>` per ADR-212" was corrected — that code was never implemented; the `_medic` window stays live pending the ADR-212 cutover gate.
+- **Kept (audit-verified load-bearing, NOT touched):** live `whip-*` core modules (poke/orchd/doctor), `_medic` window + `medic` config + medic paths in `cockpit-rotate.ts` + `probeMedic`, ombudsman verb + schema, superdoctor storage tables + hygiene + activity, `__superdoctor__` inbox alias (data-coupled), `--by superdoctor` historic-row literal, `src/core/common.ts` window-name legacy forms (separate review), all ADR-264 atx shims (sunset v0.9.0).
+
+### 🔄 Changed — cockpit tmux session literal renamed `atmux_cockpit` → `atx` ([ADR-264](docs/adr/264-cockpit-session-atx-rename.md))
+
+Third-generation session-name rename (`atmux_teams` → `atmux_cockpit` → `atx`); the prose word "cockpit", the `atmux cockpit` verb group, and the `atmux-cockpit` SOCKET name are all unchanged. Operator attach flow becomes `tmux -L atmux-cockpit attach -t atx`. `cockpit.json::cockpitSession` default flips to `atx` (`src/schema/cockpit.ts`); the load-time coercion shim `migrateCockpitSessionLegacyLiteral` (`src/core/cockpit.ts`) now accepts BOTH legacy literals (`atmux_cockpit`, `atmux_teams`) and coerces them to `atx` with a one-line deprecation warning — operator-chosen arbitrary names pass through untouched (§D3). `reconcileCockpitSession` (`src/verbs/cockpit.ts`) generalizes the ADR-135 §D4 shim one generation: when the resolved target is `atx`, a live legacy session is renamed in place via `tmux rename-session` (pane PIDs, attached clients, scroll history preserved; idempotent), warning when a legacy session and `atx` coexist (§D4). `LEGACY_COCKPIT_SESSION_NAMES` is now all-legacy (`["atmux_cockpit", "atmux_teams"]`) and the `atmux cockpit migrate-socket` target literal is `atx`; the `atmux doctor` `cockpit-on-default-socket` probe flags any of the three literals on the default socket (§D5); `COCKPIT_SESSION_DEFAULT` in `src/verbs/cockpit-rotate.ts` flips to `atx`. Templates (`templates/briefs/*.md`) and docs (RUNBOOK-cockpit, ARCHITECTURE, PRD, medic, RUNBOOK-migrate-to-honker) updated at machine-target granularity — prose "cockpit" stays.
+
 ### 🔄 Changed — manual orchestration mode is the DEFAULT; orchd is opt-in ([ADR-260](docs/adr/260-manual-orchestration-mode-default.md))
 
 **Breaking for orchd-reliant teams.** New `team.json::orchestration.mode` (`"manual"` | `"orchd"`, strict block). Default — including when the block is absent — is `"manual"`: `maybeSpawnOrchdWindow` gains a Gate-1 mode check ahead of the ADR-259 gates, so NO `__orchd__` daemon spawns (no auto-merge, auto-push, auto-spawn, solo-worker dissolve, lead-stall watchdog, context/budget scanners) until a team explicitly sets `"orchd"`. Rationale recorded in the ADR per operator directive: **LLMs can manage their own fleet better than atmux's deterministic automation can at the moment** — the member/lead LLMs run the fleet by hand. New member verb for that: `atmux member status <idle|working|blocked|rate-limited> [--as <m>] [--note <t>] [--task <id>]` — self-reported status persisted to `<atmuxDir>/state/member-status/<member>.json` (`src/core/member-status.ts`, heartbeat-family file signal), with kanban coupling per ADR-260 §D4 (`working --task` claims via the full `claimTaskForMember` gate chain; `blocked --task` runs `markTaskBlockedWithNote`; `idle` lists dangling in-progress tasks with an `atmux done` hint) and a heartbeat touch on every report. `atmux status` renders the self-report as a trailing `📍<status>(task, age)` segment (text) / `selfStatus` key (JSON, key-presence convention). Schema helper `resolveOrchestrationMode()` is the single absent-block⇒manual resolution point. Briefs updated (member + lead manual-mode protocol). Tests: `tests/unit/core/member-status.test.ts`, `tests/unit/verbs/member-status.test.ts`, mode-gate cases in `tests/unit/core/orchd-window.test.ts`, schema cases in `tests/unit/schema/team.test.ts`, selfStatus cases in `tests/unit/verbs/status.test.ts`.
@@ -33,7 +53,7 @@ Codebase-wide alignment pass after the orchd / Honker session shipped 7 epics:
 - **Honker = in-DB messaging substrate** per [ADR-202](docs/adr/202-honker-in-db-messaging-substrate.md) + [ADR-203](docs/adr/203-event-topic-taxonomy.md). `emit(db, payload)` in `src/abstractions/events.ts` auto-detects honker-loaded state per the ADR-202 §Amendment 2026-05-24. Rust orchd dispatches via Bun `--handle-one --consumer-id <id> --topic <t>` per event; consumers register at `bootstrapOrchd` in `src/core/orchd-bootstrap.ts` (currently 10 entries).
 - **Cockpit roles trimmed (lead-gated retirements):**
   - **Sentinel retired** per [ADR-211](docs/adr/211-retire-sentinel-role-distribute-to-honker-consumers.md) — orchd consumers absorb observation.
-  - **Medic narrowed to on-demand `atmux medic diagnose <team>`** per [ADR-212](docs/adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md) — routine rotation candidate emission flows as events to lead.
+  - **Medic retirement planned but NOT executed** per [ADR-212](docs/adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md) — correction: an earlier revision of this entry claimed "Medic narrowed to on-demand `atmux medic diagnose <team>`"; that code was never implemented (`src/verbs/medic.ts` does not exist). Actual state: the `_medic` cockpit window + `medic` cockpit.json block + `autoStartSuperdoctorLoop` remain live and unchanged; only the `atmux:rotation-consumer` event flow (`member.context-high` → tell-lead) shipped. The ADR-212 cutover awaits its §D5 gate (corrected here per ADR-266 §D5 doc-drift fix).
   - **Jury retired** per [ADR-213](docs/adr/213-retire-jury-reviewer-absorbs-acceptance-criteria.md) — reviewer absorbs Acceptance-Criteria verification.
   - **Ombudsman retired** per [ADR-214](docs/adr/214-retire-ombudsman-lead-absorbs-complaint-adjudication-via-honker.md) — `complaint.filed` → consumer → `tell-lead` → lead.
   - Retired roles continue running as the safety net until the cleanup-EPIC cutover (≥30 days after `e-honker-observation-watchdogs` ships stable per ADR-212 §D5 / ADR-213 §D5 / ADR-214 §D7).
@@ -1185,7 +1205,7 @@ Operator-fired rotation of cockpit role panes (`medic`, `sentinel`, `<team-name>
 > (`--context` / `--option` ×5 / `--impact` / `--decided-by`) with section-
 > aware multi-message Discord chunking + `[N/M]` headers; plus **auto-rotation
 > infrastructure** (ADR-009 §S1–§S5) — opt-in `team.whip.autoRotate` flag,
-> per-member rotated.epoch anchor, banner preclear; plus **`atmux flag` verb**
+> per-member rotated.epoch anchor, banner handoff; plus **`atmux flag` verb**
 > (Epic 4, see ADR-010) — member→lead structured issue surfacing with p0
 > Discord gating + `--task --needs unblock` atomic blocked-state mutation;
 > plus **hot reload** (Epic 3, see ADR-011) — `atmux brief-reload`,
@@ -1442,7 +1462,7 @@ Operator-fired rotation of cockpit role panes (`medic`, `sentinel`, `<team-name>
   literal; the compile-time invariant prevents bun-emit of bare `[whip]`.
 - **§D — per-finding hash dedup + transitions-only emit** (highest
   leverage). Whip's per-member previous-state hash gates re-posting; only
-  state transitions emit to Discord. Subsumes the auto-preclear-failed
+  state transitions emit to Discord. Subsumes the auto-handoff-failed
   loop noise. ~70% reduction observed pre-demo-week.
 
 ### ✨ Added — Operator-observed improvements bundle (0.6.0, [ADR-080](docs/adr/080-operator-observed-improvements.md))
@@ -1613,12 +1633,12 @@ Operator-fired rotation of cockpit role panes (`medic`, `sentinel`, `<team-name>
   session-anchored to rotation-anchored, falls back to session-start
   when the anchor file is absent so existing teams see zero
   behavioural change until their first rotation lands). Banner
-  preclear gated by the same flag and debounced 5 min via the same
+  handoff gated by the same flag and debounced 5 min via the same
   `<member>-rotated.epoch` so a persistent banner doesn't re-rotate
   every cron tick. Discord finding `♻️ AUTO-ROTATED <member> at <ts>`
   fires on every auto-rotation so the driver knows their pane just
   got `/clear`'d. Brief updates: `templates/briefs/lead.md`
-  §Auto-rotation rewrite + `templates/briefs/member.md` §Auto-preclear
+  §Auto-rotation rewrite + `templates/briefs/member.md` §Auto-handoff
   callout. (`lib/rotate.sh`, `lib/whip.sh`, `templates/team.example.json`,
   `templates/briefs/lead.md`, `templates/briefs/member.md`.)
 

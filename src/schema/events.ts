@@ -3,13 +3,13 @@
 //
 // Phase-1 substrate scope: BasePayloadFields shell + the discriminated-
 // union skeleton. Topic-specific payloads land additively as consumer
-// EPICs ship (e-honker-jury, e-honker-gitter, etc.) — each consumer's
+// EPICs ship (e-honker-commit, etc.) — each consumer's
 // commit adds the topic schemas it needs to this union. The closed v1
 // topic set is enumerated in ADR-203 §D2.
 //
 // Pinned conventions per ADR-203 §D1/§D3:
 //   - Topic names are lowercase dotted hierarchical past-tense:
-//     `task.claimed`, `story.jury.ratified`, `epic.merge-ready`.
+//     `task.claimed`, `story.merge-ready`, `epic.merge-ready`.
 //   - Every payload extends BasePayloadFields (topic discriminator,
 //     UUIDv7 event_id, emittedAtSec, schemaVersion).
 //   - `.passthrough()` for forward-compat with unknown fields per the
@@ -391,7 +391,7 @@ export const ComplaintFiledPayload = z
  * (e-13-04c8b3bf) detected a member pane whose Claude TUI statusline
  * reports context-used percent at or above the team's threshold
  * (default 40%). Lead consumer (ADR-212 / e-cc3728bf) wakes and
- * decides: preclear / rotate-member / leave-alone.
+ * decides: handoff / rotate-member / leave-alone.
  *
  * Not autonomous — lead-gated per ADR-212. The event is a signal,
  * not an instruction.
@@ -633,10 +633,6 @@ export const TOPICS = [
   "story.created",
   "story.tested",
   "story.test-failed",
-  "story.jury.ratified",
-  "story.jury.pending",
-  "story.jury.verdict",
-  "story.jury.escalated",
   "story.merge-ready",
   // ADR-247 §D1 (lead-stall watchdog): `story.ready` fires ONCE on the
   // planner's `planning → ready` transition; `story.unclaimed` is its
@@ -686,7 +682,7 @@ export const TOPICS = [
   "decision.added",
   "hygiene.violated",
   // e-13-04c8b3bf — member context-saturation signal (lead-gated
-  // preclear/rotate consumer per ADR-212 / e-cc3728bf).
+  // handoff/rotate consumer per ADR-212 / e-cc3728bf).
   "member.context-high",
   // ADR-258 §D6b (Amendment 2026-06-08) — member-health telemetry from
   // the future claude-agent-sdk backend. Emit-only in Phase 1 (no

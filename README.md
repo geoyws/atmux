@@ -787,7 +787,7 @@ Everything lives in `.atmux/` at the project root (or wherever `ATMUX_DIR` point
 ├── team.json              # source of truth: members, roles, TUIs, models
 ├── state.db               # SQLite canonical store: Epics + Stories + Tasks +
 │                          #   per-member inbox messages + complaints + handoff
-│                          #   state (ADR-060 + ADR-076)
+│                          #   state (ADR-126 + ADR-076)
 ├── decisions.md           # append-only auto-mode-resolution log (markdown)
 ├── flags.md               # member → lead structured issues (markdown)
 ├── lead-outbox.md         # member → driver (`atmux reply` writes; markdown)
@@ -871,7 +871,7 @@ atmux ships with a Claude Code plugin bundling 12 cockpit-tier skills (`/atmux:b
 | `/atmux:cockpit-rebuild`    | Deterministically (re)build the cockpit + every per-team cage.            | `atmux cockpit rebuild`       |
 | `/atmux:ghostbuster`        | Sweep mergeable epic-team branches; merge what's ahead, prune stale.      | `atmux epic-merge / git`      |
 | `/atmux:heads-up <msg>`     | Lightweight nudge to teammates about new tasks / cascade unblocks.        | `atmux send`                  |
-| `/atmux:session`            | Session continuity (cont / preclear / handoff / stop) at phase boundaries.| `atmux handoff`               |
+| `/atmux:session`            | Session continuity (cont / handoff / stop) at phase boundaries.| `atmux handoff`               |
 | `/atmux:sweep`              | Cockpit-level self-healing diagnosis-and-prevention sweep.                | `atmux doctor / status`       |
 | `/atmux:team`               | Team lifecycle (start / stop / add / clear / cleanup / rotate-lead).      | `atmux team / start / stop`   |
 | `/atmux:tell-lead <msg>`    | Driver → lead durable ask with best-effort pane wake-up.                  | `atmux tell-lead`             |

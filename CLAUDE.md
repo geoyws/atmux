@@ -50,7 +50,7 @@ Pair runbook beats with e2e step labels — beat name = `test.step()` label verb
 
 ## Session lifecycle
 
-Preclear at every phase boundary — phase = "shipped X end-to-end" (committed + pushed + smoked/typechecked/deployed green). Memory + handoff + task-list land while context is fresh. Driver itself = no-op preclear (no coordination state); lead in dedicated window preclears at boundaries.
+Handoff at every phase boundary — phase = "shipped X end-to-end" (committed + pushed + smoked/typechecked/deployed green). Memory + handoff + task-list land while context is fresh. Driver itself = no-op handoff (no coordination state); lead in dedicated window handoffs at boundaries.
 
 ## Migrators
 
