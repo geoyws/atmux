@@ -22,6 +22,7 @@ import {
   TmuxError,
   TrackerRateLimitError,
   UsageError,
+  VoiceProviderError,
 } from "../../src/errors.ts";
 
 describe("AtmuxError subclasses", () => {
@@ -232,6 +233,25 @@ describe("AtmuxError subclasses", () => {
     const e = new UsageError({ what: "missing arg" });
     expect(e.message).toBe("missing arg");
   });
+
+  test("VoiceProviderError formats provider + what + detail", () => {
+    const e = new VoiceProviderError({
+      what: "session died",
+      provider: "openai-realtime",
+      detail: "code 1006",
+    });
+    expect(e.tag).toBe("voice-provider");
+    expect(e.message).toBe("voice provider (openai-realtime): session died — code 1006");
+    expect(e instanceof AtmuxError).toBe(true);
+    expect(e.context.provider).toBe("openai-realtime");
+  });
+
+  test("VoiceProviderError omits provider + detail when absent, preserves cause", () => {
+    const cause = new Error("ECONNRESET");
+    const e = new VoiceProviderError({ what: "websocket connection failed", cause });
+    expect(e.message).toBe("voice provider: websocket connection failed");
+    expect(e.cause).toBe(cause);
+  });
 });
 
 describe("exitCodeForTag", () => {
@@ -242,6 +262,7 @@ describe("exitCodeForTag", () => {
     ["spawn-timeout", 75],
     ["http-timeout", 75],
     ["tracker-rate-limit", 75],
+    ["voice-provider", 75],
     ["schema", 65],
     ["tmux", 1],
     ["spawn", 1],
@@ -251,6 +272,10 @@ describe("exitCodeForTag", () => {
     ["lock", 1],
   ])("tag %s → exit %d", (tag, expected) => {
     expect(exitCodeForTag(tag)).toBe(expected);
+  });
+
+  test("exhaustiveness guard throws on an impossible tag", () => {
+    expect(() => exitCodeForTag("bogus" as never)).toThrow("unreachable: bogus");
   });
 });
 

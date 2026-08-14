@@ -24,6 +24,7 @@ export type AtmuxErrorTag =
   | "issue-sync-target"
   | "issue-sync-kguard"
   | "discord"
+  | "voice-provider"
   | "config"
   | "usage";
 
@@ -302,6 +303,22 @@ export class DiscordWebhookError extends AtmuxError {
   }
 }
 
+/** Realtime voice-provider failure (ADR-272): WebSocket connect/send on the
+ *  voice transport, or a provider-protocol breach. Maps to EX_TEMPFAIL (75) —
+ *  a provider outage is transient; callers retry cleanly. `provider` names the
+ *  adapter ("openai-realtime" / "gemini-live") when known. */
+export class VoiceProviderError extends AtmuxError {
+  readonly tag = "voice-provider" as const;
+  constructor(opts: { what: string; provider?: string; detail?: string; cause?: unknown }) {
+    const scope = opts.provider !== undefined ? ` (${opts.provider})` : "";
+    const tail = opts.detail !== undefined ? ` — ${opts.detail}` : "";
+    super(`voice provider${scope}: ${opts.what}${tail}`, {
+      cause: opts.cause,
+      context: { ...opts },
+    });
+  }
+}
+
 /** Configuration / environment is wrong (missing team.json, bad env var, etc.). */
 export class ConfigError extends AtmuxError {
   readonly tag = "config" as const;
@@ -335,6 +352,7 @@ export function exitCodeForTag(tag: AtmuxErrorTag): number {
     case "spawn-timeout":
     case "http-timeout":
     case "tracker-rate-limit":
+    case "voice-provider": // voice: provider outage retries cleanly (ADR-272)
       return 75; // EX_TEMPFAIL — try again later (after the provider's reset)
     case "schema":
       return 65; // EX_DATAERR
