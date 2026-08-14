@@ -68,12 +68,12 @@ import { mergeMember } from "./verbs/merge-member.ts";
 import { migrateHexIds } from "./verbs/migrate-hex-ids.ts";
 import { migrateState } from "./verbs/migrate-state.ts";
 import { ombudsman } from "./verbs/ombudsman.ts";
+import { orchd } from "./verbs/orchd.ts";
 import { pause, resume } from "./verbs/pause.ts";
 import { poke } from "./verbs/poke.ts";
 import { pokeResumeCheck } from "./verbs/poke-resume-check.ts";
 import { pulse } from "./verbs/pulse.ts";
 import { reconfigure } from "./verbs/reconfigure.ts";
-import { orchd } from "./verbs/orchd.ts";
 import { refusalScan } from "./verbs/refusal-scan.ts";
 import { release } from "./verbs/release.ts";
 import { outbox, reply } from "./verbs/reply.ts";
@@ -98,6 +98,7 @@ import { tellLead } from "./verbs/tell-lead.ts";
 import { topo } from "./verbs/topo.ts";
 import { up } from "./verbs/up.ts";
 import { version } from "./verbs/version.ts";
+import { voice } from "./verbs/voice.ts";
 import { watchdog } from "./verbs/watchdog.ts";
 
 /**
@@ -345,6 +346,13 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return migrateHexIds(argv.slice(1));
     case "migrate-state":
       return migrateState(argv.slice(1));
+    case "voice":
+      // ADR-272 — spoken operator interface. `--serve` binds the WS +
+      // PWA server; `--supervise` / `--status` / `--stop` drive the
+      // dedicated `atmux-voice` tmux session on the default socket
+      // (§D10). Every voice tool is an atmux verb invocation (§D2), and
+      // the server runs as the driver (§D3).
+      return voice(argv.slice(1));
     case "up":
       return up(argv.slice(1));
     case "":

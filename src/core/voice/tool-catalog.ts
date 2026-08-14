@@ -71,6 +71,40 @@ const TEAM_PARAM = z
   .optional()
   .describe("Team name; defaults to the session's current team");
 
+/**
+ * A value that lands in a POSITIONAL argv slot must not be able to pose
+ * as a flag (ADR-272 D2 — a transcript must never become a shell token,
+ * and a CLI flag is that same problem one layer up).
+ *
+ * Two concrete escapes this closes, both reachable from a spoken phrase:
+ *   claim_task(task_id: "--next", member: "x")
+ *     → argv ["--next", "--as", "x"] → claims whatever is NEXT in the
+ *       lane, not the task the operator named.
+ *   dispatch_task(member: "--socket", task_id: "/tmp/x")
+ *     → argv ["--socket", "/tmp/x"] → dispatch aimed at an arbitrary
+ *       tmux socket.
+ *
+ * Why a regex and not a `--` terminator: VERIFIED against both target
+ * parsers — neither `parseDispatchArgs` (src/verbs/dispatch.ts) nor
+ * `parseClaimDoneArgs` (src/verbs/claim.ts) implements `--`. Both treat
+ * ANY `-`-prefixed token as a flag and `dispatch` genuinely accepts
+ * `--socket` / `--team-dir` / `--no-ping`, which is what makes the second
+ * escape work. Adding `--` would be inert there, so the guard lives here
+ * where it holds regardless of what a downstream parser does.
+ * (`tell_lead` and `add_task` DO terminate with `--`, which is why their
+ * free-text params need no such rule.)
+ */
+const NO_LEADING_DASH = /^[^-]/;
+
+/** Id / name param that reaches a positional argv slot. */
+function positionalParam(description: string): z.ZodString {
+  return z
+    .string()
+    .min(1)
+    .regex(NO_LEADING_DASH, "must not start with '-' (it would be read as a CLI flag)")
+    .describe(description);
+}
+
 /** ADR-272 D7: the shared optional confirm_token param — the ONE place
  *  it is declared. Applied only to confirm-gated entries. */
 function withConfirmToken<T extends z.ZodRawShape>(
@@ -162,7 +196,7 @@ export const VOICE_TOOL_CATALOG: ReadonlyArray<VoiceToolEntry> = Object.freeze([
     description: "Read one member's pane state (READY, TYPING, RATE-LIMIT, COMPACTING, ...).",
     params: z.object({
       team: TEAM_PARAM,
-      member: z.string().min(1).describe("Member name as listed in team status"),
+      member: positionalParam("Member name as listed in team status"),
     }),
     mutating: false,
     confirm: false,
@@ -243,8 +277,8 @@ export const VOICE_TOOL_CATALOG: ReadonlyArray<VoiceToolEntry> = Object.freeze([
     description: "Assign a task to a named member. Confirmation is required before it runs.",
     params: withConfirmToken({
       team: TEAM_PARAM,
-      task_id: z.string().min(1).describe("Task id (full id or as read back)"),
-      member: z.string().min(1).optional().describe("Member to dispatch to"),
+      task_id: positionalParam("Task id (full id or as read back)"),
+      member: positionalParam("Member to dispatch to").optional(),
     }),
     mutating: true,
     confirm: true,
@@ -261,8 +295,8 @@ export const VOICE_TOOL_CATALOG: ReadonlyArray<VoiceToolEntry> = Object.freeze([
       "Claim a task for a member (changes ownership). Confirmation is required before it runs.",
     params: withConfirmToken({
       team: TEAM_PARAM,
-      task_id: z.string().min(1).describe("Task id (full id or as read back)"),
-      member: z.string().min(1).describe("Member who takes ownership"),
+      task_id: positionalParam("Task id (full id or as read back)"),
+      member: positionalParam("Member who takes ownership"),
     }),
     mutating: true,
     confirm: true,

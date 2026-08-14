@@ -162,6 +162,24 @@ Maintenance:
                               digest; heartbeat = hourly state-of-team.
                               Read-only on kanban/git/decisions.
 
+Voice (ADR-272):
+  voice [--serve] [--port <n>] [--provider <p>] [--model <m>] [--readonly]
+        [--max-frames <n>] [--print-assets-dir]
+                              Spoken operator interface. --serve binds the
+                              WebSocket + PWA server on
+                              ATMUX_VOICE_HOST:ATMUX_VOICE_PORT (default
+                              127.0.0.1:4390). Every voice tool is an atmux
+                              verb invocation and the server runs as the
+                              driver (ADR-272 D2/D3). Refuses to start
+                              without ATMUX_VOICE_TOKEN (>=32 chars) and the
+                              provider's API key.
+  voice --supervise           Idempotent detached tmux session \`atmux-voice\`
+                              on the DEFAULT socket, running --serve under a
+                              crash-loop wrapper (5s backoff, breaker at 5
+                              restarts in 60s). ADR-272 D10.
+  voice --status              Session up? /healthz reachable? provider + mode.
+  voice --stop                Graceful: SIGINT the server, then kill-session.
+
 Misc:
   version
   help | --help | -h
@@ -170,6 +188,9 @@ Environment:
   ATMUX_DISCORD_WEBHOOK   Discord webhook URL for whip/report escalations
   ATMUX_DIR               Override state dir (default: ./.atmux)
   ATMUX_TEAM              Override team name (otherwise read from team.json)
+  ATMUX_VOICE_TOKEN       Required by \`voice\` — shared secret, >=32 chars
+  ATMUX_VOICE_ORIGINS     Required by \`voice\` — comma-separated Origin allowlist
+                          (the CSRF defense; see docs/RUNBOOK-voice.md §3)
 
 Docs:  https://github.com/geoyws/atmux
 `;

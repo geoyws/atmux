@@ -372,3 +372,71 @@ describe("param validation shapes", () => {
     expect(parsed).toMatchObject({ limit: 10 });
   });
 });
+
+describe("argv hygiene — a spoken value may not pose as a CLI flag", () => {
+  // ADR-272 D2 promises a transcript never becomes a shell token. A CLI
+  // flag is that same problem one layer up: both target parsers treat any
+  // `-`-prefixed token as a flag, and NEITHER implements a `--`
+  // terminator (verified in src/verbs/dispatch.ts + src/verbs/claim.ts),
+  // so the guard has to live in the schema.
+
+  test("claim_task rejects task_id '--next' (would claim the wrong task)", () => {
+    const parsed = entry("claim_task").params.safeParse({ task_id: "--next", member: "be-1" });
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(JSON.stringify(parsed.error.issues)).toContain("CLI flag");
+    }
+  });
+
+  test("dispatch_task rejects member '--socket' (would retarget the tmux socket)", () => {
+    const parsed = entry("dispatch_task").params.safeParse({
+      member: "--socket",
+      task_id: "/tmp/x",
+    });
+    expect(parsed.success).toBe(false);
+  });
+
+  test("every positional param refuses a leading dash", () => {
+    const cases: Array<[string, Record<string, unknown>]> = [
+      ["claim_task", { task_id: "--next", member: "be-1" }],
+      ["claim_task", { task_id: "t-1234", member: "--as" }],
+      ["dispatch_task", { task_id: "--team-dir", member: "be-1" }],
+      ["dispatch_task", { task_id: "t-1234", member: "--no-ping" }],
+      ["member_pane", { member: "--member" }],
+    ];
+    for (const [tool, args] of cases) {
+      expect(
+        entry(tool).params.safeParse(args).success,
+        `${tool} accepted ${JSON.stringify(args)}`,
+      ).toBe(false);
+    }
+  });
+
+  test("ordinary ids and member names still pass", () => {
+    expect(
+      entry("claim_task").params.safeParse({ task_id: "t-4a2f", member: "be-1" }).success,
+    ).toBe(true);
+    expect(
+      entry("dispatch_task").params.safeParse({ task_id: "t-4a2f", member: "fe-2" }).success,
+    ).toBe(true);
+    expect(entry("member_pane").params.safeParse({ member: "be-1" }).success).toBe(true);
+    // dispatch_task.member stays OPTIONAL after the guard.
+    expect(entry("dispatch_task").params.safeParse({ task_id: "t-4a2f" }).success).toBe(true);
+  });
+
+  test("a dash INSIDE the value is fine — only a LEADING dash is a flag", () => {
+    expect(
+      entry("claim_task").params.safeParse({ task_id: "t-4a2f", member: "px-crm-1" }).success,
+    ).toBe(true);
+  });
+
+  test("the guard survives into the provider-facing JSON schema as a plain string", () => {
+    // The flat-schema contract admits no regex/pattern key, so the guard
+    // must not leak a non-flat property to the provider.
+    const schema = toolJsonSchema(entry("claim_task"));
+    expect(schema.properties.task_id).toEqual({
+      type: "string",
+      description: "Task id (full id or as read back)",
+    });
+  });
+});

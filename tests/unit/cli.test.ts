@@ -353,6 +353,29 @@ describe("cli.main — dashboard verb dispatch", () => {
   });
 });
 
+// ---------- Dispatch — voice verb route (ADR-272; smoke — deep behaviour
+//                       is in tests/unit/verbs/voice.test.ts) ----------
+
+describe("cli.main — voice verb dispatch", () => {
+  test("'voice --bogus-flag' dispatches into voice (UsageError → 64)", async () => {
+    const { exit, stderr } = await captureMain(["voice", "--bogus-flag"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("voice: unknown arg: --bogus-flag");
+  });
+
+  test("'voice --status' with no token is a ConfigError → 78, not a crash", async () => {
+    const saved = process.env.ATMUX_VOICE_TOKEN;
+    delete process.env.ATMUX_VOICE_TOKEN;
+    try {
+      const { exit, stderr } = await captureMain(["voice", "--status"]);
+      expect(exit).toBe(78);
+      expect(stderr).toContain("ATMUX_VOICE_TOKEN is required");
+    } finally {
+      if (saved !== undefined) process.env.ATMUX_VOICE_TOKEN = saved;
+    }
+  });
+});
+
 // ---------- Dispatch — reconfigure verb route (smoke; deep behaviour is in
 //                       tests/unit/verbs/reconfigure.test.ts) ----------
 

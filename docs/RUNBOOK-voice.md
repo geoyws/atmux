@@ -2,7 +2,9 @@
 
 Operator-facing reference for **`atmux voice`** — the mobile-PWA voice assistant for the fleet. Design and rationale live in [ADR-272](adr/272-voice-operator-interface.md); this runbook is the operating surface and the acceptance checklist.
 
-> **Status: skeleton.** The feature ships in phases P1–P7. Every section below is marked with the phase that fills it in. A section marked **lands in P\<n\>** documents the contract the implementation ships against — running the commands in it before that phase is a usage error, not a bug.
+> **Status: P1–P5 landed; not yet deployed.** The feature ships in phases P1–P7. §3–§6 describe shipped behaviour. A section still marked **lands in P\<n\>** documents the contract the implementation ships against — running the commands in it before that phase is a usage error, not a bug.
+>
+> 🔴 **No part of this has run against a real provider or a real phone yet.** P4's automated coverage exercises the transport, the auth layers and the session state machine against a *fake* provider. §7 marks every row honestly; read it before believing the feature works.
 
 > **Name discipline:** the feature is `voice` / `atmux voice`. Not "Jarvis" — that is how the ask was phrased, not what the thing is called. Not "convoke" — `/root/work/src/convoke` is an abandoned predecessor and reusing the name would be forbidden ambiguity.
 
@@ -72,7 +74,7 @@ Numeric knobs **fail closed to their default** on a non-numeric, non-positive, o
 | `ATMUX_VOICE_MODEL` | provider adapter's default | no | Provider-specific realtime model id. |
 | `ATMUX_VOICE_PORT` | `4390` | no | Listen port. |
 | `ATMUX_VOICE_HOST` | `127.0.0.1` | no | Bind address. **Binding `0.0.0.0` needs its own ADR** — it removes the assumption every other auth layer is designed against (ADR-272 §Security layer 4). |
-| `ATMUX_VOICE_ORIGINS` | — none — | **yes** | Comma-separated `Origin` allowlist. This is the **CSRF** defense: browsers do not apply same-origin policy to WebSocket handshakes, so without it any page the operator visits can ride his O2 session cookie into a driver-scope socket. |
+| `ATMUX_VOICE_ORIGINS` | — none — | **in practice, yes** | Comma-separated `Origin` allowlist. This is the **CSRF** defense: browsers do not apply same-origin policy to WebSocket handshakes, so without it any page the operator visits can ride his O2 session cookie into a driver-scope socket. ⚠️ **The server does NOT refuse to start without it** (only `ATMUX_VOICE_TOKEN` does that). An empty allowlist means every *present* `Origin` is rejected — so the PWA cannot connect at all — while a request with **no** `Origin` header is allowed through to the token check (`checkOrigin` in `src/core/voice/auth.ts`: native apps and `scripts/voice-probe.ts` send none). Set it before the PWA is expected to work. |
 | `ATMUX_VOICE_TOOL_TIMEOUT_MS` | `20000` | no | Per-tool wall-clock deadline. A tool that exceeds it returns a spoken error; it does not hang the session. |
 | `ATMUX_VOICE_MAX_RESULT_CHARS` | `2000` | no | Truncation ceiling for a tool result before it reaches the model. Voice results are **spoken**, so a 40 KB pane dump is both expensive and useless. |
 | `ATMUX_VOICE_READONLY` | unset | no | `1` ⇒ only the 10 read tools exist; the 4 messaging tools are **absent from the catalog**, not merely refused at call time. **This is the setting the feature first ships in.** Carries a `SUNSET` marker per [ADR-266](adr/266-shim-sunset-policy-and-first-sweep.md) §D1; cleared in P7. |
@@ -86,7 +88,7 @@ Numeric knobs **fail closed to their default** on a non-numeric, non-positive, o
 
 ## §4 — Start / stop
 
-> **lands in P4** (`--serve`, `--status`, `--stop`) and **P4/P7** (`--supervise`).
+> **Shipped in P4** — `src/verbs/voice.ts`.
 
 ```bash
 atmux voice --serve       # foreground; the development and first-deploy form
@@ -94,6 +96,23 @@ atmux voice --supervise   # detached tmux session `atmux-voice`, crash-loop wrap
 atmux voice --status      # is it running, which provider, session state
 atmux voice --stop        # stop the server and tear down the supervised session
 ```
+
+**Flags** (all actions default to `--serve`; two *different* action flags in one invocation is a usage error, never a silent last-wins):
+
+| Flag | Meaning |
+|---|---|
+| `--port <n>` | Listen port override (flag > `ATMUX_VOICE_PORT` > 4390). Must be a positive integer. |
+| `--provider <p>` | `openai` \| `openai-realtime` \| `gemini` \| `gemini-live`. |
+| `--model <m>` | Realtime model id; defaults to the adapter's (`factory.ts::defaultModelFor`). |
+| `--readonly` | Force readonly. Removes the 4 messaging tools from the catalog the model receives. |
+| `--max-frames <n>` | Exit 0 after `n` **binary** phone frames are processed. The bound that makes a serve scriptable in a probe or e2e run; JSON control frames do not count. |
+| `--print-assets-dir` | Print the resolved PWA assets dir and exit 0. The dev-vs-`$bunfs`-compiled verification hook (V-1). Does **not** require an API key. |
+
+**Exit codes.** `--serve` returns 0 on SIGINT / SIGTERM / frame budget. `--status` returns **0 only when the session is up AND `/healthz` answers**, else 1 — so it is usable directly in a shell conditional. Bad argv is `UsageError` → 64; a missing `ATMUX_VOICE_TOKEN` or provider API key is `ConfigError` → 78, raised **before anything binds a port**.
+
+**Boot order is fail-closed and deliberate** (`buildVoiceDeps`): token → provider kind → API key → team index → catalog → bridge → registry → provider. A missing key is a startup refusal naming the variable, not a spoken error on the first tool call.
+
+**Output discipline.** Everything the running server says goes to **stderr**. `process.stdout` is capture-owned while a tool's verb runs (`src/core/verb-capture.ts`), so a stdout write would be spliced into a spoken tool result. Only `--print-assets-dir` and `--status` — one-shot reads that exit before any capture exists — write to stdout. The startup banner prints host, port, provider, model, readonly and the assets dir, and **never** the token or an API key.
 
 **`--supervise` creates (or idempotently re-attaches to) a detached tmux session named `atmux-voice` on the default socket** and runs the server under a crash-loop wrapper: `trap` on exit, 5-second backoff, and a **circuit breaker at 5 restarts inside 60 seconds** that stops retrying and leaves the failure readable in the pane instead of hiding it in a restart loop.
 
@@ -107,7 +126,7 @@ Why that shape, and not the three obvious alternatives (full reasoning in [ADR-2
 
 ## §5 — nginx (phases O1 → O2)
 
-> **lands in P4.** The repo example is **`docs/deploy/atmux.geoy.ws.conf.example`** — *placeholder: that file does not exist yet and lands with P4.* Do not treat its absence as a missing dependency; treat a reference to it before P4 as unwritten.
+> **Shipped in P4.** The repo example is **[`docs/deploy/atmux.geoy.ws.conf.example`](deploy/atmux.geoy.ws.conf.example)**. It contains **two files** separated by a banner comment — `limit_req_zone` / `map` live in an `http{}`-context `conf.d` snippet, the vhost in `sites-available`; nginx will not accept them concatenated. Install both, then `nginx -t && systemctl reload nginx`.
 
 The vhost lives on `geoy.ws` (personal infra — `ifca.app` and `ifca.dev` are IFCA-only per `CLAUDE.md` §DNS).
 
@@ -122,9 +141,27 @@ The vhost lives on `geoy.ws` (personal infra — `ifca.app` and `ifca.dev` are I
 
 ## §6 — Probe
 
-> **lands in P4.** `scripts/voice-probe.ts` — *placeholder: not yet written.*
+> **Shipped in P4.** `scripts/voice-probe.ts` — a thin shim; the logic lives in `src/core/voice/probe.ts` (so it sits inside the `src/**` coverage universe, the same split `scripts/lint-socket-resolver.ts` already uses).
 
-A headless client that connects, authenticates, streams a short synthetic PCM utterance, and asserts on the responses. It is what makes V-3, V-5, and V-7 runnable without a phone, and what a future regression is caught by.
+A headless client that connects, authenticates, streams a short synthetic PCM utterance, and reports on the responses. It is what makes V-3, V-5 and V-7 runnable without a phone, and what a future regression is caught by.
+
+```bash
+bun scripts/voice-probe.ts --url ws://127.0.0.1:4390/ws --token "$ATMUX_VOICE_TOKEN"
+bun scripts/voice-probe.ts --url wss://atmux.geoy.ws/ws --token "$T" --seconds 12
+bun scripts/voice-probe.ts --url ws://127.0.0.1:4390/ws --token "$T" --text "fleet status"
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--url` | — required — | `ws://` or `wss://` endpoint, including `/ws`. |
+| `--token` | — required — | Sent **twice**: as an `Authorization: Bearer` header on the upgrade request (the pre-upgrade gate) and again in the `hello` frame (the post-upgrade re-assert). You do **not** need `?token=` in the URL — the header is preferred precisely because a query parameter would land in nginx access logs, shell history and `ps` output. |
+| `--seconds` | `8` | Collect window after the burst. Also bounds the `ready` wait. |
+| `--tone <hz>` | `440` | Sine frequency. The tone is synthesized in TypeScript — **no ffmpeg dependency** — as 2s of PCM16LE mono 24 kHz, i.e. 50 frames of 1920 bytes. |
+| `--text <s>` | — | Send one `text` frame **instead of** the audio burst. |
+
+**Behaviour.** Connects via the `connectWebSocket` abstraction (never a raw socket) carrying `Authorization: Bearer <token>` so the **pre-upgrade** gate passes, sends `hello{v:1,token,mode:"ptt"}` for the post-upgrade re-assert, waits for `ready` and prints it, then streams the tone as 40 ms frames **at real-time pace** with correct sequence numbers and `TURN_END` on the last frame. A server that only works when fed faster than real time is not working. It then collects for `--seconds`, counting downlink binary frames/bytes and recording every JSON frame type seen.
+
+**Exit 0 iff** `ready` arrived **and** the socket did not close with an error code (1000 and still-open both pass). All output is on **stderr**, so stdout stays clean for piping. A connect failure is reported as a non-zero exit with a `failure=` reason — never an unhandled throw.
 
 It is **not** a substitute for the phone checks. Two of convoke's four fatal defects (advisory `sampleRate`, `AudioContext` outside a user gesture) are iOS-specific and would pass any headless suite. See the warning at the head of §7.
 
@@ -136,16 +173,20 @@ It is **not** a substitute for the phone checks. Two of convoke's four fatal def
 
 ### Headless (V-1 … V-8) — lands in P4
 
+> **Status vocabulary.** ✅ **headless-verified** = a command was run and its outcome recorded here. ⚠️ **partial** = the mechanism is verified, but a leg of the check needs the deploy host or a real provider account. ⏳ **operator step** = nothing in this repo can close it; it needs hax, nginx, a real API key, or a phone.
+>
+> A green automated suite is evidence about the *transport and the state machine*, not about the *provider*. Every row below that says "fake provider" means exactly that: the OpenAI Realtime API was never dialled during P4. **The first real-API call happens on the deploy operator's first `--serve`.**
+
 | ID | Check | Pass criteria | Status |
 |---|---|---|---|
-| V-1 | Assets resolve in **both** modes | `ATMUX_VOICE_ASSETS_DIR` unset: dev-mode resolves `<repo>/templates/voice`, compiled resolves `/opt/atmux/<v>/templates/voice`. Both serve `index.html`. | placeholder |
-| V-2 | HTTP asset surface | `200` + correct `Content-Type` for `.html` / `.js` / `.css` / `.webmanifest`; `401` without a valid token; `404` on a `../` traversal attempt; `Cache-Control: no-store` on `app.js`; **no API key in any response body or header**. | placeholder |
-| V-3 | Probe through **loopback** | `scripts/voice-probe.ts` against `127.0.0.1:4390` completes a full auth → audio → transcript → tool-call → result round trip. | placeholder |
-| V-4 | Probe through **nginx + TLS** | Same probe against the public `wss://` URL. Catches upgrade-header and `proxy_read_timeout` misconfiguration that loopback hides. | placeholder |
-| V-5 | Negative auth matrix | Each of: no token · wrong token · right token + **disallowed `Origin`** · valid upgrade but missing/mismatched `hello.token` — is **rejected**, and rejected at the documented layer. | placeholder |
-| V-6 | Token absent from logs | After V-4, `grep` the nginx access log for the token value → **no match** (`access_log off` in effect). | placeholder |
-| V-7 | **Provider swap, zero client diff** | Flip `ATMUX_VOICE_PROVIDER` `openai-realtime` → `gemini-live`, restart, re-run V-3. Passes with **byte-identical client assets**. Any required client change means the D4 seam leaked. | placeholder |
-| V-8 | Confirm-token enforcement (D7) | A confirm-gated tool: (a) does **not** execute on first call, (b) executes on redemption, (c) is **refused on a second redemption** (single-use), (d) is **refused after `ATMUX_VOICE_CONFIRM_TTL_MS`**, (e) is **refused when redeemed with mutated arguments** (argument-binding). All five, server-side. | placeholder |
+| V-1 | Assets resolve in **both** modes | `ATMUX_VOICE_ASSETS_DIR` unset: dev-mode resolves `<repo>/templates/voice`, compiled resolves `/opt/atmux/<v>/templates/voice`. Both serve `index.html`. | ⚠️ **partial** — dev-mode verified: `atmux voice --print-assets-dir` prints `<repo>/templates/voice`, and a test now drives **every key of the `VOICE_ROUTES` map** (all 11, including `js/protocol.js`, `js/audio.js` and `worklet/capture.js`), asserting 200 + the declared mime + the declared cache-control + a non-empty body for each. **Compiled mode is an operator step** — it needs `build:install` + the `/opt/atmux/<v>` binary; run `atmux voice --print-assets-dir` from the installed binary and expect `/opt/atmux/<v>/templates/voice`. |
+| V-2 | HTTP asset surface | `200` + correct `Content-Type` for `.html` / `.js` / `.css` / `.webmanifest`; **`401` on `/ws` without a valid token** (the PWA shell itself is served unauthenticated in O1 by design — only the WebSocket is token-gated); `404` on a `../` traversal attempt; `Cache-Control: no-store` on `app.js`; **no API key in any response body or header**. | ✅ **headless-verified** — `bun test ./tests/unit/verbs/voice.test.ts`. Asserts the four content-types + `no-store` on html/css/js/manifest and `immutable` on icons; `/ws` without a token → 401; six traversal/prototype shapes (`/../etc/passwd`, `/%2e%2e/...`, `/js/../../../etc/passwd`, `/toString`, `/constructor`, `/nope.html`) → 404; and that no served body or header contains the api key or the token. Traversal is structurally impossible: `VOICE_ROUTES` is an exact-key map with no filesystem lookup. |
+| V-3 | Probe through **loopback** | `scripts/voice-probe.ts` against `127.0.0.1:4390` completes a full auth → audio → transcript → tool-call → result round trip. | ⚠️ **partial** — the full round trip is verified against a **real `Bun.serve` with a FAKE provider** (`bun test ./tests/unit/core/voice/probe.test.ts`): hello (authenticating at the **pre-upgrade** gate via `Authorization: Bearer`) → ready → all 50 tone frames arrive at the provider leg, reassembled and compared **byte-for-byte against the synthesized PCM** with one `TURN_END` → downlink audio frames + `transcript.assistant` return to the client. **Not yet run against a real provider or a real listening `--serve`** — that is the operator's first-deploy step: `atmux voice --serve` in one shell, then `bun scripts/voice-probe.ts --url ws://127.0.0.1:4390/ws --token "$ATMUX_VOICE_TOKEN"`. |
+| V-4 | Probe through **nginx + TLS** | Same probe against the public `wss://` URL. Catches upgrade-header and `proxy_read_timeout` misconfiguration that loopback hides. | ⏳ **operator step** — install `docs/deploy/atmux.geoy.ws.conf.example` (both files), then `bun scripts/voice-probe.ts --url wss://atmux.geoy.ws/ws --token "$T" --seconds 12`. |
+| V-5 | Negative auth matrix | Each of: no token · wrong token · right token + **disallowed `Origin`** · valid upgrade but missing/mismatched `hello.token` — is **rejected**, and rejected at the documented layer. | ✅ **headless-verified** — `bun test ./tests/unit/verbs/voice.test.ts` + `./tests/unit/core/voice/session.test.ts`. All four, each at its documented layer: no token → HTTP **401**; wrong token → **401**; right token + disallowed `Origin` → HTTP **403** (and wrong-origin-*and*-no-token also reads 403 — the CSRF verdict wins, per the ordering pin in `auth.ts`); valid upgrade + bad `hello.token` → WS close **4401**. Plus: no `hello` within 3s → **4408**, pre-hello garbage → **4400**. |
+| V-6 | Token absent from logs | After V-4, `grep` the nginx access log for the token value → **no match** (`access_log off` in effect). | ⏳ **operator step** — needs a live nginx. The example conf sets `access_log off` on both `/ws` and `/healthz`; after V-4 run `grep -F "$ATMUX_VOICE_TOKEN" /var/log/nginx/access.log` and expect no match. |
+| V-7 | **Provider swap, zero client diff** | Flip `ATMUX_VOICE_PROVIDER` `openai-realtime` → `gemini-live`, restart, re-run V-3. Passes with **byte-identical client assets**. Any required client change means the D4 seam leaked. | ⏳ **blocked on P6** — `createVoiceProvider("gemini-live")` currently throws `ConfigError("gemini-live adapter lands in P6")` by design. The seam itself is exercised: `--provider` parsing, per-kind default models, and per-kind API-key selection (`GEMINI_API_KEY` vs `OPENAI_API_KEY`) all have tests. |
+| V-8 | Confirm-token enforcement (D7) | A confirm-gated tool: (a) does **not** execute on first call, (b) executes on redemption, (c) is **refused on a second redemption** (single-use), (d) is **refused after `ATMUX_VOICE_CONFIRM_TTL_MS`**, (e) is **refused when redeemed with mutated arguments** (argument-binding). All five, server-side. | ⚠️ **partial** — all five are enforced and unit-tested server-side in P3 (`tests/unit/core/voice/confirm.test.ts` + `tool-bridge.test.ts`). P4 adds the relay half: a `needs_confirmation` envelope sets the pinned snake_case `needs_confirmation` flag on `tool.done` and the **full envelope** reaches the provider verbatim (`session.test.ts`). **End-to-end through a live model is an operator step** — ask the assistant to dispatch a task and confirm the preview is read back verbatim before anything runs. |
 
 ### Phone (V-9 … V-17) — lands in P5
 
@@ -173,13 +214,23 @@ It is **not** a substitute for the phone checks. Two of convoke's four fatal def
 
 | Symptom | Likely cause | Check |
 |---|---|---|
-| Connection closes immediately, no audio | Token rejected before upgrade, or `Origin` not in `ATMUX_VOICE_ORIGINS` | *stub — P4* |
+| Server refuses to start, exit 78 | Missing `ATMUX_VOICE_TOKEN` (or <32 chars), or the provider's API key | The stderr line names the exact variable. `openssl rand -hex 32` for the token; source the API key from the git-crypt'd dotfiles env, never argv. |
+| HTTP 401 on `/ws` | Token missing or wrong at the **pre-upgrade** gate | Token precedence is `Authorization: Bearer` → `?token=` → `atmux_voice` cookie (`src/core/voice/auth.ts::extractToken`). Confirm the URL actually carries `?token=`. |
+| HTTP 403 on `/ws` | `Origin` present but not in `ATMUX_VOICE_ORIGINS` | Origin is checked **before** the token, so a 403 means CSRF, not credentials — even when the token is also absent. Confirm nginx passes `Origin` through unmodified (the example conf sets `proxy_set_header Origin $http_origin`). |
+| Socket opens then closes 4408 | No valid `hello` within 3s | The client connected but never sent `hello` — usually a client-side JS error before the first send. Check the browser console. |
+| Socket closes 4401 after opening | `hello.token` mismatched | The pre-upgrade token and the `hello.token` are checked separately; both must be the same secret. |
+| Socket closes 4001 | Another device claimed the session | Latest-wins by design (ADR-272 D8). The displaced client receives a `takeover` frame first. |
+| Socket closes 4500 | Provider dial exhausted 5 attempts (250ms→4s backoff) | Check the API key and provider reachability from hax. The server sends `error{code:"provider-unrecoverable",fatal:true}` before closing. An attempt fails on either a refused socket **or** a socket that opens and never answers with `session-ready` within `SESSION_READY_TIMEOUT_MS` (12s) — see the next row. |
+| Long pause, then 4500, with no obvious network fault | The provider opened its socket and went quiet — no `session-ready` | `connectWebSocket` bounds only the WS *handshake* (10s); `session-ready` arrives afterwards from an inbound provider frame (OpenAI `session.created`, Gemini `setupComplete`). A provider that accepts the socket then stalls — or sends a frame its adapter cannot parse — is caught by the 12s `SESSION_READY_TIMEOUT_MS` budget and retried. Worst case is ~68s before 4500, deliberately inside the 120s idle close so the cause is reported honestly rather than as an idle timeout. Check provider status and the adapter's frame parsing. |
+| Session drops after ~60 s of silence | nginx `proxy_read_timeout` shorter than a realistic pause | The example conf sets `proxy_read_timeout 3600s` on `/ws`. A 60s drop means the default is still in effect — you edited the wrong server block. |
+| Session closes 1000 after ~2 min idle | `IDLE_CLOSE_MS` (120s, no phone frames of any kind) | By design; the session is **parked**, not destroyed. Reconnect with `hello.resume=<sessionId>` inside `ATMUX_VOICE_RESUME_GRACE_MS`. |
+| Assistant says it cannot send messages | `ATMUX_VOICE_READONLY=1` | Intended for O1. The 4 messaging tools are **absent from the catalog**, so the model is telling the truth. `/healthz` reports `readonly`. |
+| Tool call times out | `ATMUX_VOICE_TOOL_TIMEOUT_MS` exceeded | The timeout bounds the **response**, not the execution — the verb keeps running under the mutex and the next tool queues behind it. A slow `topo` on a large fleet is the usual cause. |
+| Tool answers about the wrong team | Team resolution walked to a different cockpit entry | Resolution is a ladder (exact → case-fold → suffix-strip → unique prefix → Levenshtein ≤2); an ambiguous utterance returns `ambiguous_team` with candidates rather than guessing. `atmux voice --status` shows the provider; `list_teams` shows what the index actually holds. |
+| Supervised server flapping | Circuit breaker tripped (5 restarts in 60 s) | `tmux -L default attach -t atmux-voice` — the wrapper stops respawning and drops to a shell so the real error stays on screen. |
+| `--supervise` says "already running" but nothing answers | Session alive, server dead inside it | `atmux voice --status` distinguishes the two (`session=up healthz=unreachable`). Attach to read the pane, then `atmux voice --stop` and re-supervise. |
 | Reply audio is slow and deep-pitched | Sample-rate mismatch — the client is shipping 48 kHz labelled 24 kHz (convoke defect 2) | *stub — P5* |
 | No audio at all, no error in the UI | `AudioContext` suspended — created outside a user gesture (convoke defect 4) | *stub — P5* |
-| Session drops after ~60 s of silence | nginx `proxy_read_timeout` shorter than a realistic pause | *stub — P4* |
-| Assistant describes a tool it cannot run | `ATMUX_VOICE_READONLY=1` still set, or the catalog and the instructions disagree | *stub — P4* |
-| Tool call times out | `ATMUX_VOICE_TOOL_TIMEOUT_MS` exceeded — a verb is slow, or the team resolution walked to the wrong `.atmux` | *stub — P4* |
-| Supervised server flapping | Circuit breaker tripped (5 restarts in 60 s) — the pane holds the real error | *stub — P4* |
 
 ## §9 — Related
 
