@@ -2,11 +2,11 @@
 //
 // The single place operator input (`ATMUX_VOICE_PROVIDER`) becomes a
 // `VoiceProviderKind`, per-kind default models live, and adapters are
-// constructed. The gemini-live branch throws until its adapter lands in P6 —
-// P6 replaces that branch, nothing else.
+// constructed.
 
 import { assertNever, ConfigError } from "../../errors.ts";
 import type { VoiceProvider, VoiceProviderKind } from "../voice-provider.ts";
+import { geminiLiveProvider } from "./gemini-live.ts";
 import { openaiRealtimeProvider } from "./openai-realtime.ts";
 
 /**
@@ -49,11 +49,7 @@ export function createVoiceProvider(kind: VoiceProviderKind): VoiceProvider {
     case "openai-realtime":
       return openaiRealtimeProvider;
     case "gemini-live":
-      // P6 replaces this branch with the Gemini Live adapter.
-      throw new ConfigError({
-        what: "gemini-live adapter lands in P6",
-        hint: "set ATMUX_VOICE_PROVIDER=openai-realtime",
-      });
+      return geminiLiveProvider;
     default:
       return assertNever(kind);
   }

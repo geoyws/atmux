@@ -6,6 +6,7 @@ import {
   defaultModelFor,
   parseProviderKind,
 } from "../../../../src/abstractions/voice/factory.ts";
+import { geminiLiveProvider } from "../../../../src/abstractions/voice/gemini-live.ts";
 import { openaiRealtimeProvider } from "../../../../src/abstractions/voice/openai-realtime.ts";
 import { ConfigError } from "../../../../src/errors.ts";
 
@@ -56,15 +57,10 @@ describe("createVoiceProvider", () => {
     expect(provider.kind).toBe("openai-realtime");
   });
 
-  test("gemini-live throws ConfigError until the P6 adapter lands", () => {
-    let caught: ConfigError | null = null;
-    try {
-      createVoiceProvider("gemini-live");
-    } catch (e) {
-      if (e instanceof ConfigError) caught = e;
-    }
-    expect(caught?.message).toContain("gemini-live adapter lands in P6");
-    expect(caught?.message).toContain("set ATMUX_VOICE_PROVIDER=openai-realtime");
+  test("gemini-live returns the adapter singleton", () => {
+    const provider = createVoiceProvider("gemini-live");
+    expect(provider).toBe(geminiLiveProvider);
+    expect(provider.kind).toBe("gemini-live");
   });
 
   test("exhaustiveness guard throws on an impossible kind", () => {

@@ -68,7 +68,7 @@ Numeric knobs **fail closed to their default** on a non-numeric, non-positive, o
 | Variable | Default | Required | Meaning |
 |---|---|---|---|
 | `ATMUX_VOICE_TOKEN` | — none — | **yes** | Shared secret, **minimum 32 characters**. The server **refuses to start** without it: no default, no generated-and-printed fallback. Checked timing-safely before the WebSocket upgrade, then re-asserted in `hello.token`. |
-| `ATMUX_VOICE_PROVIDER` | `openai-realtime` | no | Adapter id. `openai-realtime` \| `gemini-live` (P6). Resolved **once, at session construction** — no hot-swap, no mid-session failover (ADR-272 §D4). |
+| `ATMUX_VOICE_PROVIDER` | `openai-realtime` | no | Adapter id. `openai-realtime` \| `gemini-live` — both adapters shipped. Resolved **once, at session construction** — no hot-swap, no mid-session failover (ADR-272 §D4). |
 | `ATMUX_VOICE_MODEL` | provider adapter's default | no | Provider-specific realtime model id. |
 | `ATMUX_VOICE_PORT` | `4390` | no | Listen port. |
 | `ATMUX_VOICE_HOST` | `127.0.0.1` | no | Bind address. **Binding `0.0.0.0` needs its own ADR** — it removes the assumption every other auth layer is designed against (ADR-272 §Security layer 4). |
