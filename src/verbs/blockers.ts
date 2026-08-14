@@ -12,8 +12,12 @@
 //
 // Sub-verbs:
 //
-//   atmux blockers list [--json] [--class <c>] [--source <s>] [--max-age <duration>]
+//   atmux blockers list [--json] [--class <c>] [--source <s>] [--max-age <duration>] [--team-dir <dir>]
 //       — fan out across 7 surfaces; print rows.
+//
+//   `--team-dir` (ADR-272 P3, ADR-152 §Amendment 2026-08-14) is the
+//   sibling-verb project-root override (`ResolveDirOpts.teamDir`,
+//   status.ts pattern); it wins over caller-provided dirOpts.
 //
 //   `--max-age` accepts the suffix-form (`30m`, `2h`, `7d`); rows
 //   strictly older than the duration are filtered out. Bare integers
@@ -41,7 +45,8 @@ function stateDbPath(atmuxDir: string): string {
   return join(atmuxDir, "state.db");
 }
 
-const USAGE = "atmux blockers list [--json] [--class <c>] [--source <s>] [--max-age <duration>]";
+const USAGE =
+  "atmux blockers list [--json] [--class <c>] [--source <s>] [--max-age <duration>] [--team-dir <dir>]";
 
 export interface ParsedBlockersArgs {
   subverb: "list";
@@ -49,6 +54,10 @@ export interface ParsedBlockersArgs {
   class?: BlockerClass;
   source?: BlockerSource;
   maxAgeSec?: number;
+  /** ADR-272 P3: project-root override (`ResolveDirOpts.teamDir`),
+   *  mirroring the sibling-verb `--team-dir` pattern (status.ts) so the
+   *  voice tool bridge can scope the read without a cwd. */
+  teamDir?: string;
 }
 
 /** Parse `30s` / `2h` / `7d` / `1234` (bare = seconds). Returns null on
@@ -135,6 +144,14 @@ export function parseBlockersArgs(argv: ReadonlyArray<string>): ParsedBlockersAr
         out.maxAgeSec = sec;
         break;
       }
+      case "--team-dir": {
+        const v = argv[++i];
+        if (!v) {
+          throw new UsageError({ what: "blockers: --team-dir requires a value", hint: USAGE });
+        }
+        out.teamDir = v;
+        break;
+      }
       default:
         throw new UsageError({
           what: `blockers list: unknown arg: ${arg}`,
@@ -192,8 +209,12 @@ export async function blockers(
 ): Promise<number> {
   const parsed = parseBlockersArgs(argv);
   if (parsed.subverb !== "list") return 64;
-  await requireTeam(dirOpts);
-  const atmuxDir = await getAtmuxDir(dirOpts);
+  // ADR-272 P3: the explicit `--team-dir` flag wins over the caller-
+  // provided dirOpts (flag is the operator's word; the param is wiring).
+  const resolvedDirOpts: ResolveDirOpts = { ...dirOpts };
+  if (parsed.teamDir !== undefined) resolvedDirOpts.teamDir = parsed.teamDir;
+  await requireTeam(resolvedDirOpts);
+  const atmuxDir = await getAtmuxDir(resolvedDirOpts);
   const db = openDatabase(stateDbPath(atmuxDir), migrations);
   try {
     const all = await queryAllBlockers(atmuxDir, db);

@@ -1,0 +1,714 @@
+// Unit tests for src/core/voice/tool-bridge.ts — ADR-272 enforcement
+// pipeline (D2 verb-only, D3 caution, D6 surface, D7 confirmation).
+//
+// Pins:
+//   - executeTool NEVER throws — every failure (including an internal
+//     bug in an injected dep) renders as a typed envelope.
+//   - EVERY error code is driven: bad_args, unknown_team,
+//     ambiguous_team, no_default_team, readonly_mode,
+//     needs_confirmation, confirm_expired, tool_timeout, verb_failed,
+//     verb_output_unparseable.
+//   - Confirm lifecycle: issue → redeem-ok → replay (fresh token) →
+//     expired, via fake clock; the binding hashes the args WITH
+//     confirm_token stripped, so same-args-±-token redeems and
+//     changed-args re-issues.
+//   - Mutex: two executeTool calls never interleave their captures; the
+//     timeout bounds the RESPONSE, not the execution — the next tool
+//     queues behind the still-running one.
+//   - The WHOLE envelope stays ≤ maxResultChars, JSON always valid.
+
+import { describe, expect, test } from "bun:test";
+import { createVerbMutex } from "../../../../src/core/verb-capture.ts";
+import { createConfirmStore } from "../../../../src/core/voice/confirm.ts";
+import type { VoiceTeamIndex } from "../../../../src/core/voice/team-context.ts";
+import {
+  buildConfirmPreview,
+  createToolBridge,
+  type ToolBridgeDeps,
+} from "../../../../src/core/voice/tool-bridge.ts";
+import { VOICE_TOOL_CATALOG } from "../../../../src/core/voice/tool-catalog.ts";
+
+const INDEX: VoiceTeamIndex = {
+  teams: [
+    { name: "atmux", root: "/w/atmux", type: "team" },
+    { name: "alpha-one", root: "/w/a1", type: "team" },
+    { name: "alpha-two", root: "/w/a2", type: "team" },
+  ],
+};
+
+interface Harness {
+  bridge: ReturnType<typeof createToolBridge>;
+  deps: ToolBridgeDeps;
+  setNow: (ms: number) => void;
+  calls: Array<{ key: string; argv: ReadonlyArray<string> }>;
+}
+
+/** Build a bridge with recording runners + fake clock. Overrides merge
+ *  into the default deps. */
+function makeHarness(overrides: Partial<ToolBridgeDeps> = {}): Harness {
+  let now = 1_000;
+  const calls: Array<{ key: string; argv: ReadonlyArray<string> }> = [];
+  const mkRunner =
+    (key: string, out = `${key}-output\n`, exit = 0) =>
+    async (argv: ReadonlyArray<string>) => {
+      calls.push({ key, argv });
+      process.stdout.write(out);
+      return exit;
+    };
+  const deps: ToolBridgeDeps = {
+    catalog: VOICE_TOOL_CATALOG,
+    runners: {
+      topo: mkRunner("topo"),
+      status: mkRunner("status"),
+      health: mkRunner("health"),
+      task: mkRunner("task"),
+      paneState: mkRunner("paneState"),
+      driverInbox: mkRunner("driverInbox"),
+      outbox: mkRunner("outbox"),
+      cost: mkRunner("cost"),
+      blockers: mkRunner("blockers"),
+      tellLead: mkRunner("tellLead"),
+      dispatch: mkRunner("dispatch"),
+      claim: mkRunner("claim"),
+    },
+    teamIndex: INDEX,
+    confirmStore: createConfirmStore({ clock: () => now, ttlMs: 120_000 }),
+    mutex: createVerbMutex(),
+    config: { readonly: false, toolTimeoutMs: 20_000, maxResultChars: 2000 },
+    clock: () => now,
+    // Default: the timeout never fires (tests that need it inject one).
+    sleep: () => new Promise<never>(() => {}),
+    ...overrides,
+  };
+  return { bridge: createToolBridge(deps), deps, setNow: (ms) => (now = ms), calls };
+}
+
+function parseEnvelope(json: string): Record<string, unknown> {
+  return JSON.parse(json) as Record<string, unknown>;
+}
+
+const SESSION = { sessionId: "sess-1", currentTeam: null as string | null };
+
+describe("bad_args", () => {
+  test("unknown tool", async () => {
+    const { bridge } = makeHarness();
+    const out = await bridge.executeTool({ ...SESSION, name: "rm_rf", argsJson: "{}" });
+    expect(parseEnvelope(out.envelopeJson)).toMatchObject({
+      ok: false,
+      tool: "rm_rf",
+      error: "bad_args",
+    });
+  });
+
+  test("malformed argsJson", async () => {
+    const { bridge } = makeHarness();
+    const out = await bridge.executeTool({ ...SESSION, name: "list_teams", argsJson: "{nope" });
+    expect(parseEnvelope(out.envelopeJson)).toMatchObject({ ok: false, error: "bad_args" });
+  });
+
+  test.each([
+    ["[1,2]"],
+    ['"str"'],
+    ["null"],
+    ["42"],
+  ])("non-object argsJson %s", async (argsJson) => {
+    const { bridge } = makeHarness();
+    const out = await bridge.executeTool({ ...SESSION, name: "list_teams", argsJson });
+    expect(parseEnvelope(out.envelopeJson)).toMatchObject({ ok: false, error: "bad_args" });
+  });
+
+  test("Zod reject carries a short issue summary naming the field", async () => {
+    const { bridge } = makeHarness();
+    const out = await bridge.executeTool({
+      ...SESSION,
+      name: "member_pane",
+      currentTeam: "atmux",
+      argsJson: "{}",
+    });
+    const env = parseEnvelope(out.envelopeJson);
+    expect(env).toMatchObject({ ok: false, tool: "member_pane", error: "bad_args" });
+    expect(String(env.message)).toContain("member");
+  });
+
+  test("empty argsJson reads as {} (provider dialects send it)", async () => {
+    const { bridge } = makeHarness();
+    const out = await bridge.executeTool({ ...SESSION, name: "list_teams", argsJson: "" });
+    expect(parseEnvelope(out.envelopeJson)).toMatchObject({ ok: true, tool: "list_teams" });
+  });
+});
+
+describe("team resolution", () => {
+  test("no_default_team: team-scoped tool, no team arg, currentTeam null", async () => {
+    const { bridge, calls } = makeHarness();
+    const out = await bridge.executeTool({ ...SESSION, name: "team_status", argsJson: "{}" });
+    expect(parseEnvelope(out.envelopeJson)).toMatchObject({
+      ok: false,
+      tool: "team_status",
+      error: "no_default_team",
+    });
+    expect(calls).toEqual([]);
+  });
+
+  test("unknown_team echoes the spoken name", async () => {
+    const { bridge } = makeHarness();
+    const out = await bridge.executeTool({
+      ...SESSION,
+      name: "team_status",
+      argsJson: '{"team":"zzzzzzzz"}',
+    });
+    expect(parseEnvelope(out.envelopeJson)).toMatchObject({
+      ok: false,
+      error: "unknown_team",
+      team: "zzzzzzzz",
+    });
+  });
+
+  test("ambiguous_team carries the candidates", async () => {
+    const { bridge } = makeHarness();
+    const out = await bridge.executeTool({
+      ...SESSION,
+      name: "team_status",
+      argsJson: '{"team":"alpha"}',
+    });
+    expect(parseEnvelope(out.envelopeJson)).toMatchObject({
+      ok: false,
+      error: "ambiguous_team",
+      team: "alpha",
+      candidates: ["alpha-one", "alpha-two"],
+    });
+  });
+
+  test("currentTeam is the default; explicit team arg wins over it", async () => {
+    const { bridge, calls } = makeHarness();
+    const a = await bridge.executeTool({
+      name: "team_status",
+      argsJson: "{}",
+      sessionId: "s",
+      currentTeam: "atmux",
+    });
+    expect(parseEnvelope(a.envelopeJson)).toMatchObject({ ok: true, team: "atmux" });
+    expect(calls[0]).toEqual({ key: "status", argv: ["--team-dir", "/w/atmux"] });
+    const b = await bridge.executeTool({
+      name: "team_status",
+      argsJson: '{"team":"alpha-one"}',
+      sessionId: "s",
+      currentTeam: "atmux",
+    });
+    expect(parseEnvelope(b.envelopeJson)).toMatchObject({ ok: true, team: "alpha-one" });
+    expect(calls[1]).toEqual({ key: "status", argv: ["--team-dir", "/w/a1"] });
+  });
+
+  test("ASR-tolerant: spoken 'ATMUX' resolves to atmux", async () => {
+    const { bridge } = makeHarness();
+    const out = await bridge.executeTool({
+      ...SESSION,
+      name: "team_status",
+      argsJson: '{"team":"ATMUX"}',
+    });
+    expect(parseEnvelope(out.envelopeJson)).toMatchObject({ ok: true, team: "atmux" });
+  });
+});
+
+describe("list_teams (core-direct, no runner)", () => {
+  test("served from the index — names + types, runner map may be empty", async () => {
+    const { bridge } = makeHarness({ runners: {} });
+    const out = await bridge.executeTool({ ...SESSION, name: "list_teams", argsJson: "{}" });
+    const env = parseEnvelope(out.envelopeJson);
+    expect(env).toMatchObject({ ok: true, tool: "list_teams", team: null, truncated: false });
+    expect(env.data).toBe("atmux (team)\nalpha-one (team)\nalpha-two (team)");
+  });
+
+  test("empty index reads as (no teams)", async () => {
+    const { bridge } = makeHarness({ runners: {}, teamIndex: { teams: [] } });
+    const out = await bridge.executeTool({ ...SESSION, name: "list_teams", argsJson: "{}" });
+    expect(parseEnvelope(out.envelopeJson)).toMatchObject({ ok: true, data: "(no teams)" });
+  });
+});
+
+describe("readonly gate", () => {
+  test("mutating tool in readonly → readonly_mode, runner untouched", async () => {
+    const { bridge, calls } = makeHarness({
+      config: { readonly: true, toolTimeoutMs: 20_000, maxResultChars: 2000 },
+    });
+    const out = await bridge.executeTool({
+      ...SESSION,
+      name: "tell_lead",
+      currentTeam: "atmux",
+      argsJson: '{"message":"hi"}',
+    });
+    expect(parseEnvelope(out.envelopeJson)).toMatchObject({
+      ok: false,
+      tool: "tell_lead",
+      error: "readonly_mode",
+    });
+    expect(calls).toEqual([]);
+  });
+
+  test("read tools still work in readonly", async () => {
+    const { bridge } = makeHarness({
+      config: { readonly: true, toolTimeoutMs: 20_000, maxResultChars: 2000 },
+    });
+    const out = await bridge.executeTool({
+      ...SESSION,
+      name: "team_status",
+      currentTeam: "atmux",
+      argsJson: "{}",
+    });
+    expect(parseEnvelope(out.envelopeJson)).toMatchObject({ ok: true });
+  });
+});
+
+describe("confirm lifecycle (ADR-272 D7)", () => {
+  const DISPATCH = {
+    name: "dispatch_task",
+    argsJson: '{"task_id":"t-abc12345","member":"driver-2"}',
+    sessionId: "sess-1",
+    currentTeam: "atmux",
+  };
+
+  test("no token → needs_confirmation with token + preview; runner untouched", async () => {
+    const { bridge, calls } = makeHarness();
+    const out = await bridge.executeTool(DISPATCH);
+    const env = parseEnvelope(out.envelopeJson);
+    expect(env).toMatchObject({ ok: false, tool: "dispatch_task", error: "needs_confirmation" });
+    expect(String(env.token)).toMatch(/^[0-9a-f]{32}$/);
+    expect(String(env.preview)).toContain("dispatch task");
+    expect(String(env.preview)).toContain("t-abc12345");
+    expect(String(env.preview)).toContain("driver-2");
+    expect(String(env.preview)).toContain("atmux");
+    expect(out.needsConfirmation).toEqual({
+      token: String(env.token),
+      preview: String(env.preview),
+    });
+    expect(calls).toEqual([]);
+  });
+
+  test("issue → redeem-ok executes (same args ± confirm_token binding)", async () => {
+    const { bridge, calls } = makeHarness();
+    const issued = await bridge.executeTool(DISPATCH);
+    const token = issued.needsConfirmation?.token ?? "";
+    const out = await bridge.executeTool({
+      ...DISPATCH,
+      argsJson: `{"task_id":"t-abc12345","member":"driver-2","confirm_token":"${token}"}`,
+    });
+    expect(parseEnvelope(out.envelopeJson)).toMatchObject({ ok: true, tool: "dispatch_task" });
+    // confirm_token stripped before argv: the verb sees only its args.
+    expect(calls).toEqual([
+      { key: "dispatch", argv: ["driver-2", "t-abc12345", "--team-dir", "/w/atmux"] },
+    ]);
+  });
+
+  test("replay of a redeemed token → needs_confirmation with a FRESH token", async () => {
+    const { bridge, calls } = makeHarness();
+    const issued = await bridge.executeTool(DISPATCH);
+    const token = issued.needsConfirmation?.token ?? "";
+    const withToken = {
+      ...DISPATCH,
+      argsJson: `{"task_id":"t-abc12345","member":"driver-2","confirm_token":"${token}"}`,
+    };
+    await bridge.executeTool(withToken); // redeems + executes
+    const replay = await bridge.executeTool(withToken);
+    const env = parseEnvelope(replay.envelopeJson);
+    expect(env).toMatchObject({ ok: false, error: "needs_confirmation" });
+    expect(String(env.token)).not.toBe(token);
+    expect(calls.length).toBe(1); // no second execution
+  });
+
+  test("changed args under a valid token → fresh needs_confirmation (mismatch burns)", async () => {
+    const { bridge, calls } = makeHarness();
+    const issued = await bridge.executeTool(DISPATCH);
+    const token = issued.needsConfirmation?.token ?? "";
+    const out = await bridge.executeTool({
+      ...DISPATCH,
+      argsJson: `{"task_id":"t-abc12345","member":"driver-3","confirm_token":"${token}"}`,
+    });
+    expect(parseEnvelope(out.envelopeJson)).toMatchObject({
+      ok: false,
+      error: "needs_confirmation",
+    });
+    expect(calls).toEqual([]);
+  });
+
+  test("expired token → confirm_expired (fake clock)", async () => {
+    const h = makeHarness();
+    const issued = await h.bridge.executeTool(DISPATCH);
+    const token = issued.needsConfirmation?.token ?? "";
+    h.setNow(1_000 + 120_000); // at TTL boundary → expired
+    const out = await h.bridge.executeTool({
+      ...DISPATCH,
+      argsJson: `{"task_id":"t-abc12345","member":"driver-2","confirm_token":"${token}"}`,
+    });
+    expect(parseEnvelope(out.envelopeJson)).toMatchObject({
+      ok: false,
+      tool: "dispatch_task",
+      error: "confirm_expired",
+    });
+    expect(h.calls).toEqual([]);
+  });
+
+  test("claim_task is confirm-gated too", async () => {
+    const { bridge, calls } = makeHarness();
+    const first = await bridge.executeTool({
+      name: "claim_task",
+      argsJson: '{"task_id":"t-9","member":"driver-4"}',
+      sessionId: "s",
+      currentTeam: "atmux",
+    });
+    expect(parseEnvelope(first.envelopeJson)).toMatchObject({ error: "needs_confirmation" });
+    const token = first.needsConfirmation?.token ?? "";
+    const second = await bridge.executeTool({
+      name: "claim_task",
+      argsJson: `{"task_id":"t-9","member":"driver-4","confirm_token":"${token}"}`,
+      sessionId: "s",
+      currentTeam: "atmux",
+    });
+    expect(parseEnvelope(second.envelopeJson)).toMatchObject({ ok: true });
+    expect(calls).toEqual([
+      { key: "claim", argv: ["t-9", "--as", "driver-4", "--team-dir", "/w/atmux"] },
+    ]);
+  });
+
+  test("a token from another session cannot redeem (binding includes sessionId)", async () => {
+    const { bridge } = makeHarness();
+    const issued = await bridge.executeTool(DISPATCH);
+    const token = issued.needsConfirmation?.token ?? "";
+    const out = await bridge.executeTool({
+      ...DISPATCH,
+      sessionId: "sess-EVIL",
+      argsJson: `{"task_id":"t-abc12345","member":"driver-2","confirm_token":"${token}"}`,
+    });
+    expect(parseEnvelope(out.envelopeJson)).toMatchObject({
+      ok: false,
+      error: "needs_confirmation",
+    });
+  });
+
+  test("buildConfirmPreview: no team + no args degrade cleanly", () => {
+    expect(buildConfirmPreview("claim_task", {}, null)).toBe(
+      "Confirm claim task. Say yes to proceed.",
+    );
+  });
+});
+
+describe("execution + failure envelopes", () => {
+  test("ok envelope shape: exactly ok/tool/team/ms/truncated/data; ms from clock delta", async () => {
+    let now = 5_000;
+    const h = makeHarness({
+      clock: () => now,
+      capture: async () => {
+        now += 123;
+        return { stdout: "fine\n", exitCode: 0 };
+      },
+    });
+    const out = await h.bridge.executeTool({
+      ...SESSION,
+      name: "team_status",
+      currentTeam: "atmux",
+      argsJson: "{}",
+    });
+    const env = parseEnvelope(out.envelopeJson);
+    expect(Object.keys(env).sort()).toEqual(["data", "ms", "ok", "team", "tool", "truncated"]);
+    expect(env).toEqual({
+      ok: true,
+      tool: "team_status",
+      team: "atmux",
+      ms: 123,
+      truncated: false,
+      data: "fine",
+    });
+  });
+
+  test("missing runner → verb_failed naming the key", async () => {
+    const { bridge } = makeHarness({ runners: {} });
+    const out = await bridge.executeTool({
+      ...SESSION,
+      name: "team_status",
+      currentTeam: "atmux",
+      argsJson: "{}",
+    });
+    const env = parseEnvelope(out.envelopeJson);
+    expect(env).toMatchObject({ ok: false, error: "verb_failed" });
+    expect(String(env.message)).toContain("status");
+  });
+
+  test("nonzero exit → verb_failed with exitCode + summarized output", async () => {
+    const h = makeHarness();
+    h.deps.runners.status = async () => {
+      process.stdout.write("boom table\n");
+      return 2;
+    };
+    const out = await h.bridge.executeTool({
+      ...SESSION,
+      name: "team_status",
+      currentTeam: "atmux",
+      argsJson: "{}",
+    });
+    expect(parseEnvelope(out.envelopeJson)).toMatchObject({
+      ok: false,
+      error: "verb_failed",
+      exitCode: 2,
+      data: "boom table",
+    });
+  });
+
+  test("thrown verb → verb_failed with errorMessage, exitCode null", async () => {
+    const h = makeHarness();
+    h.deps.runners.status = async () => {
+      throw new Error("no team.json found");
+    };
+    const out = await h.bridge.executeTool({
+      ...SESSION,
+      name: "team_status",
+      currentTeam: "atmux",
+      argsJson: "{}",
+    });
+    expect(parseEnvelope(out.envelopeJson)).toMatchObject({
+      ok: false,
+      error: "verb_failed",
+      exitCode: null,
+      message: "no team.json found",
+    });
+  });
+
+  test("verb_output_unparseable: exit 0 with empty output", async () => {
+    const h = makeHarness();
+    h.deps.runners.status = async () => 0;
+    const out = await h.bridge.executeTool({
+      ...SESSION,
+      name: "team_status",
+      currentTeam: "atmux",
+      argsJson: "{}",
+    });
+    expect(parseEnvelope(out.envelopeJson)).toMatchObject({
+      ok: false,
+      tool: "team_status",
+      error: "verb_output_unparseable",
+    });
+  });
+
+  test("internal dep bug still answers the turn (never throws)", async () => {
+    const h = makeHarness({
+      capture: async () => {
+        throw new Error("kaboom in capture");
+      },
+    });
+    const out = await h.bridge.executeTool({
+      ...SESSION,
+      name: "team_status",
+      currentTeam: "atmux",
+      argsJson: "{}",
+    });
+    const env = parseEnvelope(out.envelopeJson);
+    expect(env).toMatchObject({ ok: false, error: "verb_failed" });
+    expect(String(env.message)).toContain("kaboom in capture");
+  });
+
+  test("list_tasks caps output to header + limit rows before summarizing", async () => {
+    const h = makeHarness();
+    h.deps.runners.task = async () => {
+      const rows = Array.from({ length: 20 }, (_, i) => `t-${i} todo row`);
+      process.stdout.write(`ID STATUS SUBJECT\n${rows.join("\n")}\n`);
+      return 0;
+    };
+    const out = await h.bridge.executeTool({
+      ...SESSION,
+      name: "list_tasks",
+      currentTeam: "atmux",
+      argsJson: '{"limit":3}',
+    });
+    const env = parseEnvelope(out.envelopeJson);
+    expect(env).toMatchObject({ ok: true, truncated: true });
+    const lines = String(env.data).split("\n");
+    expect(lines[0]).toBe("ID STATUS SUBJECT");
+    expect(lines.length).toBe(5); // header + 3 rows + marker
+    expect(lines[4]).toBe("… (+17 more lines)");
+  });
+});
+
+describe("timeout (response-bound, execution continues)", () => {
+  test("tool_timeout envelope returns; the verb finishes later and the next tool queues behind it", async () => {
+    const log: string[] = [];
+    let releaseFirst!: () => void;
+    const firstDone = new Promise<void>((r) => (releaseFirst = r));
+    let sleepFired = false;
+    const h = makeHarness({
+      sleep: async () => {
+        sleepFired = true; // fires immediately → instant timeout
+      },
+      capture: async (_verb, argv) => {
+        log.push(`start:${argv.join(" ")}`);
+        await firstDone;
+        log.push(`end:${argv.join(" ")}`);
+        return { stdout: "late\n", exitCode: 0 };
+      },
+    });
+    const out = await h.bridge.executeTool({
+      ...SESSION,
+      name: "team_status",
+      currentTeam: "atmux",
+      argsJson: "{}",
+    });
+    expect(sleepFired).toBe(true);
+    const env = parseEnvelope(out.envelopeJson);
+    expect(env).toMatchObject({ ok: false, tool: "team_status", error: "tool_timeout" });
+    expect(env.timeoutMs).toBe(20_000);
+    expect(log).toEqual(["start:--team-dir /w/atmux"]);
+
+    // Second tool queues BEHIND the still-running capture: give it a
+    // non-firing sleep and a fast capture; it must not start until the
+    // first releases its mutex slot.
+    h.deps.sleep = () => new Promise<never>(() => {});
+    const secondDone = h.bridge.executeTool({
+      ...SESSION,
+      name: "lead_outbox",
+      currentTeam: "atmux",
+      argsJson: "{}",
+    });
+    await Bun.sleep(10);
+    expect(log).toEqual(["start:--team-dir /w/atmux"]); // second not started
+    releaseFirst();
+    const second = await secondDone;
+    expect(parseEnvelope(second.envelopeJson)).toMatchObject({ ok: true, tool: "lead_outbox" });
+    expect(log).toEqual([
+      "start:--team-dir /w/atmux",
+      "end:--team-dir /w/atmux",
+      "start:--team-dir /w/atmux",
+      "end:--team-dir /w/atmux",
+    ]);
+  });
+});
+
+describe("late rejection after timeout", () => {
+  test("a capture that REJECTS after the timeout is swallowed (no unhandled rejection)", async () => {
+    let rejectLate!: (e: Error) => void;
+    const h = makeHarness({
+      sleep: async () => {}, // instant timeout
+      capture: () =>
+        new Promise((_resolve, reject) => {
+          rejectLate = reject;
+        }),
+    });
+    const out = await h.bridge.executeTool({
+      ...SESSION,
+      name: "team_status",
+      currentTeam: "atmux",
+      argsJson: "{}",
+    });
+    expect(parseEnvelope(out.envelopeJson)).toMatchObject({ ok: false, error: "tool_timeout" });
+    // The late rejection must be swallowed by the bridge's catch guard —
+    // reaching the end of the test without an unhandled-rejection crash
+    // is the assertion.
+    rejectLate(new Error("late failure"));
+    await Bun.sleep(5);
+  });
+});
+
+describe("mutex serialization", () => {
+  test("two executeTool calls interleave nothing", async () => {
+    const log: string[] = [];
+    const gate = { release: () => {} };
+    const h = makeHarness({
+      capture: async (_verb, argv) => {
+        const tag = argv.includes("--text") ? "health" : "status";
+        log.push(`${tag}-start`);
+        if (tag === "status") await new Promise<void>((r) => (gate.release = r));
+        log.push(`${tag}-end`);
+        return { stdout: `${tag}\n`, exitCode: 0 };
+      },
+    });
+    const p1 = h.bridge.executeTool({
+      ...SESSION,
+      name: "team_status",
+      currentTeam: "atmux",
+      argsJson: "{}",
+    });
+    const p2 = h.bridge.executeTool({
+      ...SESSION,
+      name: "team_health",
+      currentTeam: "atmux",
+      argsJson: "{}",
+    });
+    await Bun.sleep(0);
+    expect(log).toEqual(["status-start"]);
+    gate.release();
+    await Promise.all([p1, p2]);
+    expect(log).toEqual(["status-start", "status-end", "health-start", "health-end"]);
+  });
+});
+
+describe("envelope budget", () => {
+  test("whole envelope ≤ maxResultChars via structural re-truncation; JSON stays valid", async () => {
+    const h = makeHarness({
+      config: { readonly: false, toolTimeoutMs: 20_000, maxResultChars: 300 },
+    });
+    h.deps.runners.status = async () => {
+      for (let i = 0; i < 200; i += 1) process.stdout.write(`row-${i}-abcdefghijklmnop\n`);
+      return 0;
+    };
+    const out = await h.bridge.executeTool({
+      ...SESSION,
+      name: "team_status",
+      currentTeam: "atmux",
+      argsJson: "{}",
+    });
+    expect(out.envelopeJson.length).toBeLessThanOrEqual(300);
+    const env = parseEnvelope(out.envelopeJson);
+    expect(env).toMatchObject({ ok: true, truncated: true });
+    const lines = String(env.data).split("\n");
+    expect(lines[lines.length - 1]).toMatch(/^… \(\+\d+ more lines\)$/);
+    for (const l of lines.slice(0, -1)) expect(l).toMatch(/^row-\d+-abcdefghijklmnop$/);
+  });
+
+  test("verb_failed envelope also respects the budget", async () => {
+    const h = makeHarness({
+      config: { readonly: false, toolTimeoutMs: 20_000, maxResultChars: 250 },
+    });
+    h.deps.runners.status = async () => {
+      for (let i = 0; i < 100; i += 1) process.stdout.write(`err-${i}-xxxxxxxxxxxxxxxx\n`);
+      return 1;
+    };
+    const out = await h.bridge.executeTool({
+      ...SESSION,
+      name: "team_status",
+      currentTeam: "atmux",
+      argsJson: "{}",
+    });
+    expect(out.envelopeJson.length).toBeLessThanOrEqual(250);
+    expect(parseEnvelope(out.envelopeJson)).toMatchObject({ ok: false, error: "verb_failed" });
+  });
+
+  test("tiny budget degrades to marker-only data, still valid JSON", async () => {
+    const h = makeHarness({
+      config: { readonly: false, toolTimeoutMs: 20_000, maxResultChars: 90 },
+    });
+    h.deps.runners.status = async () => {
+      process.stdout.write(`${"x".repeat(500)}\n${"y".repeat(500)}\n`);
+      return 0;
+    };
+    const out = await h.bridge.executeTool({
+      ...SESSION,
+      name: "team_status",
+      currentTeam: "atmux",
+      argsJson: "{}",
+    });
+    const env = parseEnvelope(out.envelopeJson);
+    expect(env.ok).toBe(true);
+    expect(String(env.data)).toMatch(/^… \(\+\d+ more lines\)$/);
+  });
+});
+
+describe("end-to-end through the REAL capture (no injected capture)", () => {
+  test("runner stdout is captured, not printed; envelope carries it", async () => {
+    const h = makeHarness();
+    const out = await h.bridge.executeTool({
+      ...SESSION,
+      name: "cost_report",
+      currentTeam: "atmux",
+      argsJson: "{}",
+    });
+    const env = parseEnvelope(out.envelopeJson);
+    expect(env).toMatchObject({ ok: true, tool: "cost_report", team: "atmux" });
+    expect(env.data).toBe("cost-output");
+    expect(h.calls).toEqual([{ key: "cost", argv: ["--team-dir", "/w/atmux"] }]);
+  });
+});

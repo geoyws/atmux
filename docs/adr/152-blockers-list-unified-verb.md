@@ -190,3 +190,7 @@ Same-commit doc per `/CLAUDE.md §Docs Discipline` — the verb is a documented 
 Promoted from `proposed` → `accepted` per [docs/audits/adr-status-drift-audit-2026-05-20.md](../audits/adr-status-drift-audit-2026-05-20.md) (sha=a6f1541). Code-refs + git-log refs both present at audit time confirming shipped + dogfooded status; the `proposed` marker was bookkeeping debt. Original Date preserved verbatim. Append-only — see Status field for the canonical flip; this §Amendment carries the audit traceability.
 
 **Filed via** t-45b401c3 (T4 sweep, 2026-05-20).
+
+## §Amendment 2026-08-14 — `--team-dir <dir>` flag (ADR-272 P3)
+
+`atmux blockers list` gains `--team-dir <dir>` — the sibling-verb project-root override (`ResolveDirOpts.teamDir`, same pattern as `status` / `health` / `cost`). Additive; every existing invocation is unchanged. The explicit flag wins over caller-provided `dirOpts`. Motivation: the [ADR-272](272-voice-operator-interface.md) D2 voice tool bridge invokes every verb with an explicit `--team-dir` (no cwd context inside the voice server), and `blockers` was the one catalog verb missing the flag.
