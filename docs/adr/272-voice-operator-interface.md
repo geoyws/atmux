@@ -141,6 +141,10 @@ This is a correctness decision, not a UX one. Instructing a model to "always con
 
 Spawn/stop, when they land, use **this** machinery plus a second factor (§Deferred) — the confirmation layer is built once, here, and inherited.
 
+**Clarification (2026-08-14, from the P4 adversarial review).** The heading is broader than what the server actually enforces, so be precise about which half is a constraint and which is still a request. **Server-enforced:** the token's existence, its argument/tool/session binding, its TTL, its single-use burn, and the refusal to execute a gated tool without a valid token. Those cannot be talked around — verified under mutation, where removing the burn, the binding check, the TTL check, the session component, or the gate itself each failed a test. **Not server-enforced:** the *affirmation* itself. Step 3 and the "clear affirmative" judgment in step 4 are the model's — the token is handed to the model inside the preview envelope, and nothing server-side observes the operator saying yes. A model that redeemed its own token without speaking the preview would not be stopped by the server; it would only be stopped by the fact that the operator never heard a preview and would notice.
+
+This is the same deliberate split as D4's provider-side tool-call judgment: the model decides *whether* to act, the server decides *what is permitted*. Recorded because "enforced by the server" invites a reader to assume the affirmation is a hard gate. It is not, and the difference matters when P7 clears `ATMUX_VOICE_READONLY` and the mutating tools become reachable — at that point the operator's ear is the only check on step 3.
+
 ### D8 — One session, latest-wins takeover, 90-second resume park
 
 **Exactly one active voice session per server.** No multi-session, no queue. Two live sessions would let two conversational contexts issue driver-scope mutations with no serialization between them, and the operator is one person.
