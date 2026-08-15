@@ -1,0 +1,44 @@
+# atmux voice — oauth2-proxy (ADR-272 §Security phase O2)
+#
+# Mirrors /opt/unum-identity-staging/dash-pilot/compose.yml, the working
+# dash.geoy.ws deployment, deliberately: same pinned image digest, same
+# hardening (read-only rootfs, non-root uid, all caps dropped,
+# no-new-privileges), same secret-file mounts.
+#
+# Two things MUST differ from dash and are the usual source of a broken
+# install:
+#   - the bind port is 14181, not 14180 (dash owns 14180)
+#   - the network subnet is its own, NOT shared with dash. Sharing it would
+#     put two proxies on one broadcast domain and make trusted_proxy_ips
+#     ambiguous.
+#
+# Secrets are host files mounted in, never baked into the image and never
+# committed. See ../O2-oauth2-runbook.md.
+
+name: atmux-voice-oauth2
+
+services:
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy@sha256:10a1165743a192e1940b4708fb9647027185ce11a681a1c5519b442ff7f1f561
+    user: "65532:65532"
+    restart: unless-stopped
+    command: ["--config=/etc/oauth2-proxy/oauth2-proxy.cfg"]
+    ports:
+      - "127.0.0.1:${VOICE_OIDC_PROXY_BIND_PORT:-14181}:14181"
+    volumes:
+      - ./oauth2-proxy.example.cfg:/etc/oauth2-proxy/oauth2-proxy.cfg:ro
+      - ${VOICE_OIDC_CLIENT_SECRET_FILE:?set an absolute host secret file}:/run/secrets/voice_oidc_client_secret:ro
+      - ${VOICE_OIDC_COOKIE_SECRET_FILE:?set an absolute host secret file}:/run/secrets/voice_oidc_cookie_secret:ro
+    networks: [voice-auth]
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1770
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+
+networks:
+  voice-auth:
+    ipam:
+      config:
+        - subnet: ${VOICE_OIDC_NETWORK_SUBNET:?set a dedicated private subnet — NOT dash's}
+          gateway: ${VOICE_OIDC_NETWORK_GATEWAY:?set its exact gateway}
