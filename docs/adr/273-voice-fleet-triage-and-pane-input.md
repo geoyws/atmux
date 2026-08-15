@@ -262,3 +262,37 @@ The reason **names the action** — `atmux team dissolve-epic <name>` — becaus
 **What that costs, plainly:** an epic-team that *should* be running right now and whose cage just died is reported on the unreadable line rather than as an acute `dead` item. It is still named on every sweep — never omitted — but ranked as bookkeeping. Everything short of total cage death (wedged, rate-limited, crashed, refusing panes) reaches the operator through the normal classes, because a live epic cage is swept in full. `cageIsAbsent` recognises total absence from the probe's own evidence (every observation carrying `sessionUp: false`) rather than from a second source of truth, and guards the empty-list case explicitly — `[].every()` is vacuously true, so without it a probe that found nothing would report a dead cage.
 
 **Measured on the live fleet (hax, 20 cockpit entries):** five `epic-team` entries, three under `unum` with no cage root at all and two under `mx` whose sibling worktrees survive with no running server. Before: five names and an unactionable reason on every sweep. After: one clause, one action, and the attention list unchanged — same top five as before the change, which is the point.
+
+## Supplement-4 — §S2's deferral closed: the doctor's last two `atmux-<team>` literals (2026-08-17)
+
+§S2 left two sites in `src/verbs/doctor/cockpit.ts` building the session name by hand and said fixing them "changes which doctor rows appear for which teams, which is a behaviour change in a different verb and belongs in its own change with its own doc update". This is that change.
+
+### V1 — Two probes, two resolvers, and why it is not one
+
+Both sites now go through one helper, `probeSessionName(team, source)`, whose two arms are a decision rather than a convenience:
+
+- **`checkMemberCageStates`** gated its *entire* check on `hasSession('atmux-<team>')` and returned `[]` on a miss — blind rather than lying, which is why it survived longer than the `cage-state.ts` twin that reported false `down` rows. It already receives `atmuxDir`, so it resolves through `getSessionName({ dir: atmuxDir, team })` — the same anchor-aware resolver `gatherStatus` uses, `ATMUX_SESSION` pin included, which is correct for a check scoped to the current team.
+- **`checkLegacyWindowNameFormat`** walks *many* teams, so it resolves through `resolveCageSessionName({ name, root })` — the anchor-only resolver, deliberately **not** `getSessionName`. `ATMUX_SESSION` is a process-level pin for the CURRENT team; honouring it inside a cockpit walk would point every team's probe at whichever cage the operator's shell happened to be pinned to. The cockpit root each target came from is now carried for exactly this purpose. Its `currentTeam` fallback (cockpit absent or team unregistered) keeps `getSessionName`, where the pin does refer to that team. Both directions are pinned by tests using one env var and asserting opposite answers.
+
+Resolution **fails soft** to the old literal: `getSessionName` throws `ConfigError` for a `singleSession` team with no anchor, and one misconfigured team must not take down the whole `atmux doctor` run.
+
+ADR-161's "cages whose canonical session name isn't on the socket silently skip (out of scope for this warn)" carve-out is therefore **removed** — see ADR-161 §Amendment 2026-08-17.
+
+**Not in scope, and correct as it stands:** `checkOrphanSessions` also builds `atmux-<team>` by hand. That literal is the point of the check — it looks for the LEGACY session lingering beside a `singleSession` team — so resolving it through the anchor would break it.
+
+### V2 — What changes on the live fleet: nothing today, and that is the finding
+
+Measured, not asserted: both checks were run against the real cockpit before and after, and the output is **byte-identical** — `dash` emits its same five `member-cage-state` rows, every other team emits none, and `legacy-window-name-format` emits none either way.
+
+That is not evidence the fix did nothing. The mechanism is broken exactly as §S2 described, and it is provable directly:
+
+```
+tmux -S <atmux cage socket> has-session -t atmux        → exit 0
+tmux -S <atmux cage socket> has-session -t atmux-atmux  → exit 1, can't find session
+tmux -S <unum cage socket>  has-session -t atmux_unum   → exit 0
+tmux -S <unum cage socket>  has-session -t atmux-unum   → exit 1, can't find session
+```
+
+The gate really was unreachable for both anchored teams. No row appears today because **both are driver-only** (`members: []`, per the 2026-05-16 decomposition recorded in §S3.1) and both checks are member-scoped — `checkMemberCageStates` returns at its empty-roster guard before the session name is even resolved, and `checkLegacyWindowNameFormat`'s inner loop is over `team.members`. `dash` is the only team on the fleet with a roster, and it carries no anchor, so its name resolves to the same `atmux-dash` both ways.
+
+So the change is **strictly additive and currently latent**: no row disappears (a blind check emits nothing to lose), and the rows that were structurally unreachable for `unum` and `atmux` become reachable the moment either team regains members. Reporting this as "N new rows appeared" would have been the lie; reporting a silent probe as proof of nothing would have been the other one.
