@@ -97,7 +97,7 @@ Delivery is **verified** — the tool reports what the pane looked like after th
 
 ## Supplement — what the survey half actually built (2026-08-16)
 
-Records the shipped half of D1–D3 (`fleet_attention` + `fleet_quiet`), the decisions this ADR left open that implementation forced, and the OQ-3 measurement. D4/D5 (pane input) are **not** built; OQ-1 remains an operator decision.
+Records the shipped half of D1–D3 (`fleet_attention` + `fleet_quiet`), the `ATMUX_VOICE_BIN` override, the decisions this ADR left open that implementation forced, and the OQ-3 measurement. D4/D5 (pane input) are **not** built; OQ-1 remains an operator decision.
 
 ### S1 — Shipped surface
 
@@ -148,7 +148,21 @@ The cache *shape* is nonetheless honoured in the contract rather than left to be
 
 **Caveat on the number**: 47 panes, not the ~100 the ADR sizes for, and every team was on the same box. A fleet of ~100 panes should be expected to land near 250 ms at the same concurrency, still comfortably conversational. The 15 s default `--timeout-ms` is therefore ~100× headroom, chosen so the bound only ever fires on a genuinely hung tmux server.
 
-### S5 — Not built
+### S5 — `ATMUX_VOICE_BIN` (not in the original decisions)
+
+`--supervise` was unusable in the deployed posture, which is why it is documented as never having been run live. `resolveAtmuxBin()` finds `/usr/local/bin/atmux` → `/opt/atmux/0.8.30`, an installed release that **predates the `voice` verb**, so the crash-loop wrapper ran `/opt/atmux/0.8.30 voice --serve`, got `unknown verb: voice` and exit 64, and looped — observed live going restart 1/5 → 3/5 before the circuit breaker correctly stopped respawning.
+
+`bun run build:install` would fix it by swapping the atmux CLI **fleet-wide for every team on the box**, which is a release decision, not a supervision detail. Instead the already-existing internal `binPath` override is exposed as `ATMUX_VOICE_BIN`:
+
+```bash
+ATMUX_VOICE_BIN=$PWD/bin/atmux-bun atmux voice --supervise
+```
+
+Precedence is per-call override > `ATMUX_VOICE_BIN` > `resolveAtmuxBin()`, and **both override layers fail closed**: an empty or whitespace-only value falls through rather than producing a wrapper that execs `''`. This mirrors `resolveVoiceConfig` and `resolveGitTimeoutMs` — a fat-fingered export degrades to current behaviour, never to a broken one. Documented in RUNBOOK-voice.md §3 and in `atmux voice`'s own usage line.
+
+This keeps a repo-checkout deploy first-class instead of forcing a fleet-wide release just to use supervision.
+
+### S6 — Not built
 
 - **D4 / D5 — `pane_nudge` and `pane_send`.** Absent from the catalog entirely. `pane_send` still needs the **OQ-1 operator decision** on a second factor before it can ship; `pane_nudge` does not depend on it and can go first.
 - **OQ-2 (push rather than pull)** — untouched, still noted-not-decided.

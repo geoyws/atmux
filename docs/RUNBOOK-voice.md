@@ -83,6 +83,7 @@ Numeric knobs **fail closed to their default** on a non-numeric, non-positive, o
 | `ATMUX_VOICE_RESUME_GRACE_MS` | `90000` | no | How long a dropped phone's **provider leg is parked** for `hello.resume` (ADR-272 §D8 — the walking-into-a-lift case). |
 | `ATMUX_VOICE_CONFIRM_TTL_MS` | `120000` | no | Lifetime of a D7 confirmation token. Single-use, and bound to `sha256(tool ‖ canonical_json(args) ‖ session_id)`. |
 | `ATMUX_VOICE_ASSETS_DIR` | `resolveTemplatesDir()/voice` | no | Override for the client asset root. The default resolves install-mode `/opt/atmux/<v>/templates/voice` and dev-mode `<repo>/templates/voice` through `src/core/templates-dir.ts` — V-1 checks both. |
+| `ATMUX_VOICE_BIN` | the `atmux` on `PATH` | no | The atmux binary **`--supervise`** re-execs in its crash-loop wrapper. Precedence: per-call override > this > `resolveAtmuxBin()` (`Bun.which("atmux")` → `process.execPath`). **Fails closed** — an empty or whitespace-only value falls through to the next layer rather than producing a wrapper that execs `''`. Set it when supervising from a **repo checkout**: the installed `/usr/local/bin/atmux` → `/opt/atmux/<v>` may predate the `voice` verb, in which case the wrapper prints `unknown verb: voice`, exits 64, and crash-loops until the breaker trips (observed live 2026-08-15). The alternative — `bun run build:install` — swaps the atmux CLI **fleet-wide** for every team on the box, which is a release, not a supervision detail. See [ADR-273](adr/273-voice-fleet-triage-and-pane-input.md) §Supplement. |
 
 ### Provider API keys
 

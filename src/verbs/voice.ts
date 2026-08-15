@@ -72,7 +72,8 @@ import { ConfigError, UsageError } from "../errors.ts";
 import { VOICE_CLOSE } from "../schema/voice.ts";
 
 const USAGE =
-  "atmux voice [--serve|--supervise|--status|--stop] [--port <n>] [--provider <p>] [--model <m>] [--readonly] [--max-frames <n>] [--print-assets-dir]";
+  "atmux voice [--serve|--supervise|--status|--stop] [--port <n>] [--provider <p>] [--model <m>] [--readonly] [--max-frames <n>] [--print-assets-dir]\n" +
+  "  env: ATMUX_VOICE_BIN=<path>  — the atmux binary --supervise re-execs (default: the one on PATH)";
 
 /** Detached tmux session `--supervise` owns (ADR-272 §D10). */
 export const VOICE_TMUX_SESSION = "atmux-voice";
@@ -728,6 +729,44 @@ export function resolveAtmuxBin(deps?: {
 }
 
 /**
+ * The `atmux` binary `--supervise`'s crash-loop wrapper re-execs, with
+ * `ATMUX_VOICE_BIN` as the operator override.
+ *
+ * Why the override has to exist. `resolveAtmuxBin` finds whatever is on
+ * `PATH`, which on this box is `/usr/local/bin/atmux` →
+ * `/opt/atmux/0.8.30` — an INSTALLED release that predates the `voice`
+ * verb. `--supervise` therefore starts a wrapper that runs
+ * `/opt/atmux/0.8.30 voice --serve`, gets `unknown verb: voice` and exit
+ * 64, and loops: observed live going restart 1/5 → 3/5 before the
+ * circuit breaker (correctly) stopped it.
+ *
+ * The obvious fix — `bun run build:install` — swaps the atmux CLI
+ * FLEET-WIDE for every team on the box, which is a release, not a
+ * supervision detail. Exposing the already-existing internal `binPath`
+ * override as an env var keeps a repo-checkout deploy first-class:
+ *
+ *     ATMUX_VOICE_BIN=$PWD/bin/atmux-bun atmux voice --supervise
+ *
+ * Precedence: explicit per-call override > `ATMUX_VOICE_BIN` >
+ * {@link resolveAtmuxBin}. Both override layers FAIL CLOSED — an empty or
+ * whitespace-only value falls through to the next layer rather than
+ * producing a wrapper that execs `'' voice --serve`. This mirrors the
+ * `resolveVoiceConfig` / `resolveGitTimeoutMs` posture: a fat-fingered
+ * export degrades to the current behaviour, never to a broken one.
+ */
+export function resolveSuperviseBin(opts: {
+  override?: string;
+  env?: NodeJS.ProcessEnv;
+  resolve?: () => string;
+}): string {
+  const override = opts.override;
+  if (override !== undefined && override.trim().length > 0) return override;
+  const fromEnv = (opts.env ?? process.env).ATMUX_VOICE_BIN;
+  if (fromEnv !== undefined && fromEnv.trim().length > 0) return fromEnv;
+  return (opts.resolve ?? resolveAtmuxBin)();
+}
+
+/**
  * The crash-loop wrapper `--supervise` runs as the tmux session's
  * command (ADR-272 §D10): re-exec with a 5s backoff and a circuit
  * breaker at 5 restarts inside 60s. When the breaker trips it STOPS
@@ -915,9 +954,11 @@ export async function voice(
   const tmux = overrides.tmux ?? createTmux({ socket: VOICE_TMUX_SOCKET });
 
   if (args.action === "supervise") {
+    const binOpts: Parameters<typeof resolveSuperviseBin>[0] = {};
+    if (overrides.binPath !== undefined) binOpts.override = overrides.binPath;
     return await superviseVoice({
       tmux,
-      binPath: overrides.binPath ?? resolveAtmuxBin(),
+      binPath: resolveSuperviseBin(binOpts),
       log,
     });
   }

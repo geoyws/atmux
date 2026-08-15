@@ -187,6 +187,13 @@ Voice (ADR-272):
                               on the DEFAULT socket, running --serve under a
                               crash-loop wrapper (5s backoff, breaker at 5
                               restarts in 60s). ADR-272 D10.
+                              env ATMUX_VOICE_BIN=<path> overrides which atmux
+                              binary the wrapper re-execs (precedence:
+                              per-call > env > the atmux on PATH; empty value
+                              falls through). Set it when supervising from a
+                              repo checkout — the installed /opt/atmux/<v> may
+                              predate the voice verb and crash-loop on
+                              "unknown verb: voice". ADR-273 Supplement S5.
   voice --status              Session up? /healthz reachable? provider + mode.
   voice --stop                Graceful: SIGINT the server, then kill-session.
 

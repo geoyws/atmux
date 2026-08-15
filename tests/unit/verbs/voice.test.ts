@@ -27,6 +27,7 @@ import {
   phoneLegFor,
   requireApiKey,
   resolveAtmuxBin,
+  resolveSuperviseBin,
   resolveVoiceAssetsDir,
   SUPERVISE_BACKOFF_SEC,
   SUPERVISE_BREAKER_RESTARTS,
@@ -1219,6 +1220,99 @@ describe("supervise", () => {
       "/opt/atmux/0.9/bin/atmux",
     );
     expect(resolveAtmuxBin({ which: () => "", execPath: "/fallback" })).toBe("/fallback");
+  });
+});
+
+// ---------------------------------------------------------------------
+// ATMUX_VOICE_BIN — the override that makes --supervise usable from a
+// repo checkout (ADR-273 §Supplement).
+// ---------------------------------------------------------------------
+
+describe("resolveSuperviseBin — precedence and fail-closed behaviour", () => {
+  const PATH_BIN = "/opt/atmux/0.8.30";
+  const REPO_BIN = "/root/work/src/atmux/bin/atmux-bun";
+  const resolve = (): string => PATH_BIN;
+
+  test("with nothing set it is exactly resolveAtmuxBin — unchanged behaviour", () => {
+    expect(resolveSuperviseBin({ env: {}, resolve })).toBe(PATH_BIN);
+  });
+
+  test("ATMUX_VOICE_BIN beats the PATH resolution", () => {
+    // The live failure this exists for: PATH resolves an INSTALLED
+    // release that predates the `voice` verb, so the supervisor's wrapper
+    // prints `unknown verb: voice`, exits 64, and crash-loops.
+    expect(resolveSuperviseBin({ env: { ATMUX_VOICE_BIN: REPO_BIN }, resolve })).toBe(REPO_BIN);
+  });
+
+  test("an explicit per-call override beats the env var", () => {
+    expect(
+      resolveSuperviseBin({
+        override: "/explicit/atmux",
+        env: { ATMUX_VOICE_BIN: REPO_BIN },
+        resolve,
+      }),
+    ).toBe("/explicit/atmux");
+  });
+
+  test("an EMPTY or whitespace-only value falls through — fails CLOSED", () => {
+    // A fat-fingered `export ATMUX_VOICE_BIN=` must degrade to the
+    // current behaviour, never produce a wrapper that execs `'' voice`.
+    for (const bad of ["", "   ", "\t", "\n"]) {
+      expect(resolveSuperviseBin({ env: { ATMUX_VOICE_BIN: bad }, resolve }), bad).toBe(PATH_BIN);
+      expect(resolveSuperviseBin({ override: bad, env: {}, resolve }), bad).toBe(PATH_BIN);
+    }
+  });
+
+  test("an empty OVERRIDE still lets a good env var win — each layer is independent", () => {
+    expect(
+      resolveSuperviseBin({ override: "  ", env: { ATMUX_VOICE_BIN: REPO_BIN }, resolve }),
+    ).toBe(REPO_BIN);
+  });
+
+  test("with no env seam it reads the real process.env", () => {
+    const prior = process.env.ATMUX_VOICE_BIN;
+    process.env.ATMUX_VOICE_BIN = "/probe/atmux";
+    try {
+      expect(resolveSuperviseBin({ resolve })).toBe("/probe/atmux");
+    } finally {
+      if (prior === undefined) delete process.env.ATMUX_VOICE_BIN;
+      else process.env.ATMUX_VOICE_BIN = prior;
+    }
+  });
+
+  test("with no resolve seam it falls through to the real resolveAtmuxBin", () => {
+    expect(resolveSuperviseBin({ env: {} })).toBe(resolveAtmuxBin());
+  });
+});
+
+describe("voice --supervise honours ATMUX_VOICE_BIN end to end", () => {
+  test("the crash-loop script re-execs the overridden binary", async () => {
+    const spy = tmuxSpy();
+    const prior = process.env.ATMUX_VOICE_BIN;
+    process.env.ATMUX_VOICE_BIN = "/root/work/src/atmux/bin/atmux-bun";
+    try {
+      expect(await voice(["--supervise"], { tmux: spy.tmux, log: () => {} })).toBe(0);
+    } finally {
+      if (prior === undefined) delete process.env.ATMUX_VOICE_BIN;
+      else process.env.ATMUX_VOICE_BIN = prior;
+    }
+    const script = String((spy.created[0] as Record<string, unknown>).shellCommand);
+    expect(script).toContain("'/root/work/src/atmux/bin/atmux-bun' voice --serve");
+  });
+
+  test("an explicit binPath override still wins over the env var", async () => {
+    const spy = tmuxSpy();
+    const prior = process.env.ATMUX_VOICE_BIN;
+    process.env.ATMUX_VOICE_BIN = "/from/env";
+    try {
+      await voice(["--supervise"], { tmux: spy.tmux, log: () => {}, binPath: "/from/flag" });
+    } finally {
+      if (prior === undefined) delete process.env.ATMUX_VOICE_BIN;
+      else process.env.ATMUX_VOICE_BIN = prior;
+    }
+    expect(String((spy.created[0] as Record<string, unknown>).shellCommand)).toContain(
+      "'/from/flag' voice --serve",
+    );
   });
 });
 
