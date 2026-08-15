@@ -11,6 +11,11 @@
 //     errorMessage with exitCode null and is NOT appended to stdout.
 //   - createVerbMutex is strict FIFO under interleaved async and a
 //     rejection does not poison the queue.
+//   - The queue is BOUNDED (VERB_MUTEX_MAX_QUEUE) and carries an abandon
+//     deadline: a caller past the cap is refused immediately with the
+//     holder NAMED, and a caller whose deadline elapsed while queued is
+//     SKIPPED rather than run late. Both are ADR-272 §Supplement-P7 §R2,
+//     which reverses this module's earlier "deliberately uncapped".
 //   - createVerbMutex.state() reports the CURRENT holder, when it
 //     acquired, and how many callers are queued behind it — the
 //     observability a wedged voice tool bridge is detected through.
@@ -21,8 +26,10 @@ import {
   captureVerbRun,
   captureVerbStdout,
   createVerbMutex,
+  VERB_MUTEX_MAX_QUEUE,
   VERB_MUTEX_UNLABELLED,
 } from "../../../src/core/verb-capture.ts";
+import { VerbMutexError } from "../../../src/errors.ts";
 import { captureVerbStdout as fromDashboard } from "../../../src/verbs/dashboard.ts";
 
 /** A deferred the tests resolve by hand. */
@@ -258,11 +265,12 @@ describe("createVerbMutex", () => {
   });
 });
 
-// The mutex is observable because it is UNCAPPED and has no abandon path
-// (both deliberate — see the header on VerbMutexState). A holder that
-// never returns is therefore permanent, and invisible unless the mutex
-// reports it. These tests drive exactly that: a function that never
-// resolves, and the state readings taken while it holds the lock.
+// A holder that never returns is permanent — the capture wrapper cannot
+// run two verbs at once — and invisible unless the mutex reports it.
+// These tests drive exactly that: a function that never resolves, and the
+// state readings taken while it holds the lock. `holder` + `heldSince`
+// are the whole of the wedge verdict, which is why bounding the QUEUE
+// (below) costs that verdict nothing.
 describe("createVerbMutex — state()", () => {
   test("an untouched mutex reads idle", () => {
     expect(createVerbMutex().state()).toEqual({
@@ -303,7 +311,7 @@ describe("createVerbMutex — state()", () => {
     await p;
   });
 
-  test("queueDepth counts the WAITERS, never the holder, and is uncapped", async () => {
+  test("queueDepth counts the WAITERS, never the holder, up to the cap", async () => {
     const mutex = createVerbMutex();
     const gate = deferred();
     const held = mutex.run(async () => {
@@ -313,15 +321,19 @@ describe("createVerbMutex — state()", () => {
     await Bun.sleep(0);
     expect(mutex.state()).toMatchObject({ holder: "stuck", queueDepth: 0 });
 
-    const waiters = Array.from({ length: 7 }, (_, i) => mutex.run(async () => i, `waiter-${i}`));
+    const waiters = Array.from({ length: VERB_MUTEX_MAX_QUEUE }, (_, i) =>
+      mutex.run(async () => i, `waiter-${i}`),
+    );
     await Bun.sleep(0);
-    // Nothing was refused or dropped: all seven are still queued, and the
-    // holder is unchanged. Capping here would hide a wedge.
-    expect(mutex.state()).toMatchObject({ holder: "stuck", queueDepth: 7 });
+    // Every one inside the cap is still queued, and the holder is
+    // unchanged — the wedge is as visible as it ever was.
+    expect(mutex.state()).toMatchObject({ holder: "stuck", queueDepth: VERB_MUTEX_MAX_QUEUE });
 
     gate.resolve();
     await held;
-    await Promise.all(waiters);
+    expect(await Promise.all(waiters)).toEqual(
+      Array.from({ length: VERB_MUTEX_MAX_QUEUE }, (_, i) => i),
+    );
     expect(mutex.state()).toEqual({ holder: null, heldSince: null, queueDepth: 0 });
   });
 
@@ -350,5 +362,237 @@ describe("createVerbMutex — state()", () => {
     await Bun.sleep(0);
     expect(mutex.state().queueDepth).toBe(1);
     expect(mutex.state().holder).toBe("never_returns");
+  });
+});
+
+// ADR-272 §Supplement-P7 §R2 — the lane must RECOVER, not only confess.
+//
+// Before this, `createVerbMutex` had no cap and no abandon path: a verb
+// that never returned meant every later call queued forever, and when a
+// merely-slow verb finally finished, the whole backlog then EXECUTED —
+// answers nobody was waiting for, and (once P7 enables the mutating
+// tools) a `dispatch_task` firing minutes after the operator was told it
+// timed out. These tests drive both halves: nothing grows without bound,
+// and nothing runs after its deadline.
+describe("createVerbMutex — bounded queue", () => {
+  test("a caller past the cap is refused IMMEDIATELY, with the holder named", async () => {
+    const mutex = createVerbMutex({ maxQueueDepth: 2, clock: () => 500 });
+    const gate = deferred();
+    const held = mutex.run(async () => {
+      await gate.promise;
+      return 0;
+    }, "team_status");
+    await Bun.sleep(0);
+    const queued = [mutex.run(async () => 1, "a"), mutex.run(async () => 2, "b")];
+    await Bun.sleep(0);
+    expect(mutex.state().queueDepth).toBe(2);
+
+    let ran = false;
+    const refused = mutex.run(async () => {
+      ran = true;
+      return 3;
+    }, "team_health");
+    await expect(refused).rejects.toThrow(VerbMutexError);
+    // NOT RUN — the whole point of refusing rather than accepting.
+    expect(ran).toBe(false);
+
+    const e = (await refused.catch((x: unknown) => x)) as VerbMutexError;
+    expect(e.reason).toBe("queue_full");
+    expect(e.blockedBy).toBe("team_status"); // the actionable half
+    expect(e.queueDepth).toBe(2);
+    expect(e.queueCap).toBe(2);
+    expect(e.waitedMs).toBe(0);
+    expect(e.tag).toBe("verb-mutex");
+    expect(e.message).toContain("team_health");
+    expect(e.message).toContain("team_status");
+
+    gate.resolve();
+    await held;
+    expect(await Promise.all(queued)).toEqual([1, 2]);
+  });
+
+  test("the queue cannot grow without limit, however many callers arrive", async () => {
+    const mutex = createVerbMutex({ maxQueueDepth: 3 });
+    const gate = deferred();
+    const held = mutex.run(async () => {
+      await gate.promise;
+      return 0;
+    }, "stuck");
+    await Bun.sleep(0);
+
+    let refusals = 0;
+    const all = Array.from({ length: 50 }, (_, i) =>
+      mutex
+        .run(async () => i, `c${i}`)
+        .catch((e: unknown) => {
+          if (e instanceof VerbMutexError) refusals += 1;
+          return -1;
+        }),
+    );
+    await Bun.sleep(0);
+    expect(mutex.state().queueDepth).toBe(3);
+    expect(refusals).toBe(47);
+
+    gate.resolve();
+    await held;
+    await Promise.all(all);
+    expect(mutex.state().queueDepth).toBe(0);
+  });
+
+  test("a refusal consumes no slot — the accepted callers still run, in order", async () => {
+    const mutex = createVerbMutex({ maxQueueDepth: 1 });
+    const order: string[] = [];
+    const gate = deferred();
+    const held = mutex.run(async () => {
+      await gate.promise;
+      order.push("holder");
+      return 0;
+    }, "holder");
+    await Bun.sleep(0);
+    const accepted = mutex.run(async () => {
+      order.push("accepted");
+      return 1;
+    }, "accepted");
+    await Bun.sleep(0);
+    await expect(mutex.run(async () => 2, "refused")).rejects.toThrow(VerbMutexError);
+    gate.resolve();
+    await held;
+    await accepted;
+    expect(order).toEqual(["holder", "accepted"]);
+    // The refusal did not leave a phantom waiter behind.
+    expect(mutex.state()).toEqual({ holder: null, heldSince: null, queueDepth: 0 });
+  });
+
+  test("the shipped default cap is 8", () => {
+    expect(VERB_MUTEX_MAX_QUEUE).toBe(8);
+  });
+});
+
+describe("createVerbMutex — abandon path", () => {
+  test("a caller whose deadline elapsed while queued is SKIPPED, not run late", async () => {
+    let now = 0;
+    const mutex = createVerbMutex({ clock: () => now });
+    const gate = deferred();
+    let lateRan = false;
+    const held = mutex.run(async () => {
+      await gate.promise;
+      return 0;
+    }, "slow_verb");
+    await Bun.sleep(0);
+
+    const late = mutex.run(
+      async () => {
+        lateRan = true;
+        return 1;
+      },
+      "dispatch_task",
+      { abandonAfterMs: 20_000 },
+    );
+    // The holder takes 30s — well past the queued caller's deadline.
+    now = 30_000;
+    gate.resolve();
+    await held;
+
+    await expect(late).rejects.toThrow(VerbMutexError);
+    // The one that matters: a mutating verb must NOT fire minutes after
+    // the operator was told it timed out.
+    expect(lateRan).toBe(false);
+    const e = (await late.catch((x: unknown) => x)) as VerbMutexError;
+    expect(e.reason).toBe("abandoned");
+    expect(e.waitedMs).toBe(30_000);
+    expect(e.blockedBy).toBe("slow_verb");
+    expect(e.message).toContain("abandoned after waiting 30000ms");
+  });
+
+  test("the deadline boundary: waiting exactly the budget still runs, one ms past does not", async () => {
+    async function waitedThenRan(waitMs: number): Promise<boolean> {
+      let now = 0;
+      const mutex = createVerbMutex({ clock: () => now });
+      const gate = deferred();
+      let ran = false;
+      const held = mutex.run(async () => {
+        await gate.promise;
+        return 0;
+      }, "holder");
+      await Bun.sleep(0);
+      const queued = mutex.run(
+        async () => {
+          ran = true;
+          return 1;
+        },
+        "queued",
+        { abandonAfterMs: 1_000 },
+      );
+      now = waitMs;
+      gate.resolve();
+      await held;
+      await queued.catch(() => undefined);
+      return ran;
+    }
+    expect(await waitedThenRan(1_000)).toBe(true);
+    expect(await waitedThenRan(1_001)).toBe(false);
+  });
+
+  test("without a deadline, a long wait still runs — the historical behaviour", async () => {
+    let now = 0;
+    const mutex = createVerbMutex({ clock: () => now });
+    const gate = deferred();
+    let ran = false;
+    const held = mutex.run(async () => {
+      await gate.promise;
+      return 0;
+    }, "holder");
+    await Bun.sleep(0);
+    const queued = mutex.run(async () => {
+      ran = true;
+      return 1;
+    }, "patient");
+    now = 10 * 60_000;
+    gate.resolve();
+    await held;
+    expect(await queued).toBe(1);
+    expect(ran).toBe(true);
+  });
+
+  test("the queue DRAINS when a stuck holder finally returns", async () => {
+    // The recovery property, end to end: a backlog of expired callers is
+    // discarded in one pass and the lane is immediately usable again —
+    // rather than the lane grinding through work nobody is waiting for.
+    let now = 0;
+    const mutex = createVerbMutex({ clock: () => now });
+    const gate = deferred();
+    const ran: string[] = [];
+    const held = mutex.run(async () => {
+      ran.push("stuck");
+      await gate.promise;
+      return 0;
+    }, "stuck");
+    await Bun.sleep(0);
+
+    const stale = Array.from({ length: 5 }, (_, i) =>
+      mutex
+        .run(
+          async () => {
+            ran.push(`stale-${i}`);
+            return i;
+          },
+          `stale-${i}`,
+          { abandonAfterMs: 20_000 },
+        )
+        .catch(() => -1),
+    );
+    await Bun.sleep(0);
+    expect(mutex.state().queueDepth).toBe(5);
+
+    now = 120_000;
+    gate.resolve();
+    await held;
+    expect(await Promise.all(stale)).toEqual([-1, -1, -1, -1, -1]);
+    expect(ran).toEqual(["stuck"]); // not one stale verb executed
+
+    // And the lane is healthy again for the NEXT thing the operator says.
+    expect(mutex.state()).toEqual({ holder: null, heldSince: null, queueDepth: 0 });
+    expect(await mutex.run(async () => "fresh", "team_status")).toBe("fresh");
+    expect(ran).toEqual(["stuck"]);
   });
 });

@@ -368,6 +368,29 @@ Three properties the resolved text did not specify, each chosen the conservative
 
 A write failure (full disk, read-only `$HOME`) is swallowed and logged **once** per session — a sink that could throw would take down a live call to protect a log file — and a prune failure is counted, never raised, for the same reason at boot.
 
+### R2 — the tool-bridge queue is now CAPPED, reversing §D6-era "reported, never capped"
+
+`/healthz` reports a wedged bridge honestly, but the only recovery was `atmux voice --stop`. `createVerbMutex` had no queue cap and no abandon path, and `src/core/verb-capture.ts`'s own header defended that: *"Capping it would hide a wedge behind a cheerful rejection."* [docs/RUNBOOK-voice.md](../RUNBOOK-voice.md) §`/healthz` said the same in stronger words. **That reasoning was right about a cap alone and wrong about a cap plus a named error**, and it is superseded here.
+
+- **The wedge verdict never depended on queue depth.** `health().wedged` is derived from `heldMs` against `wedgeThresholdMs`, and `stuckTool` from the holder's label. Both are untouched, so the honest `/healthz` signal is exactly as loud as before; only the number in `queueDepth` stops growing without bound.
+- **A refusal is not silence when it names the fault.** A capped-out call answers `tool_timeout` carrying `stuckTool`, `heldMs` and `queueDepth` — strictly more diagnosis than the bare `tool_timeout` a queued caller used to get after burning its full deadline. The failure mode the old comment feared was a *cheerful* rejection; this one is not cheerful.
+- **The abandon path is the actual recovery.** A queued call whose own response deadline has already passed is skipped rather than executed when its turn arrives, so when a stuck verb finally returns the queue **drains** instead of grinding through a backlog whose results nobody will read. For the mutating tools P7 enables, that also stops a `dispatch_task` firing minutes after the operator asked for it and long after he was told it timed out — a late mutation is worse than no mutation.
+
+Recovery is bounded, not total: a verb that never returns still holds the lock, because the stdout-capture wrapper cannot run two verbs at once (`src/core/verb-capture.ts` header). What changes is that the service **survives and drains** instead of only confessing.
+
+Shape, so the reversal is auditable rather than implied:
+
+| | Before | After |
+|---|---|---|
+| Queue depth | unbounded | capped at `VERB_MUTEX_MAX_QUEUE` (8) |
+| Past the cap | queued, then a bare `tool_timeout` after the full deadline | refused immediately, `reason:"queue_full"`, **not run**, holder named |
+| `tool_timeout` body | `timeoutMs` + one sentence | adds `reason` (`still_running` \| `queued_behind` \| `queue_full` \| `abandoned`), `stuckTool`, `heldMs`/`waitedMs`, `queueDepth` |
+| A queued call whose deadline passed | ran anyway, minutes late | skipped, `reason:"abandoned"` |
+| `/healthz` shape and verdict | `ok` from `heldMs` | **unchanged** |
+| `ToolErrorCode` set | 10 codes | **unchanged** — `reason` is a field, not a new code |
+
+The refusal is a typed `VerbMutexError` (`src/errors.ts`, tag `verb-mutex`, EX_TEMPFAIL) rather than a string the bridge pattern-matches, so the conversion into a spoken envelope is checked by the type system. It is not expected to reach the CLI: `createToolBridge` converts it, and anything that is *not* one still renders as an internal `verb_failed`.
+
 ## Decision-anchors
 
 Every row verified against disk on **2026-08-14** unless dated otherwise.

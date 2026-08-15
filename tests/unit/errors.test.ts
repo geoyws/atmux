@@ -22,6 +22,7 @@ import {
   TmuxError,
   TrackerRateLimitError,
   UsageError,
+  VerbMutexError,
   VoiceProviderError,
 } from "../../src/errors.ts";
 
@@ -252,6 +253,64 @@ describe("AtmuxError subclasses", () => {
     expect(e.message).toBe("voice provider: websocket connection failed");
     expect(e.cause).toBe(cause);
   });
+
+  test("VerbMutexError (queue_full) names the holder and says nothing ran", () => {
+    const e = new VerbMutexError({
+      reason: "queue_full",
+      label: "team_health",
+      blockedBy: "team_status",
+      waitedMs: 0,
+      queueDepth: 8,
+      queueCap: 8,
+    });
+    expect(e.tag).toBe("verb-mutex");
+    expect(e.message).toBe(
+      "verb lane full behind 'team_status': 8/8 queued — 'team_health' was not run",
+    );
+    expect(e instanceof AtmuxError).toBe(true);
+    expect(e.reason).toBe("queue_full");
+    expect(e.blockedBy).toBe("team_status");
+    expect(e.queueDepth).toBe(8);
+    expect(e.queueCap).toBe(8);
+    expect(e.waitedMs).toBe(0);
+  });
+
+  test("VerbMutexError (abandoned) reports the wait it gave up after", () => {
+    const e = new VerbMutexError({
+      reason: "abandoned",
+      label: "dispatch_task",
+      blockedBy: "team_status",
+      waitedMs: 45_000,
+      queueDepth: 2,
+      queueCap: 8,
+    });
+    expect(e.message).toBe(
+      "verb lane: 'dispatch_task' abandoned after waiting 45000ms behind 'team_status'",
+    );
+    expect(e.reason).toBe("abandoned");
+    expect(e.waitedMs).toBe(45_000);
+  });
+
+  test("VerbMutexError with no holder omits the 'behind' clause rather than naming null", () => {
+    const full = new VerbMutexError({
+      reason: "queue_full",
+      label: "a",
+      blockedBy: null,
+      waitedMs: 0,
+      queueDepth: 1,
+      queueCap: 1,
+    });
+    expect(full.message).toBe("verb lane full: 1/1 queued — 'a' was not run");
+    const abandoned = new VerbMutexError({
+      reason: "abandoned",
+      label: "b",
+      blockedBy: null,
+      waitedMs: 5,
+      queueDepth: 0,
+      queueCap: 1,
+    });
+    expect(abandoned.message).toBe("verb lane: 'b' abandoned after waiting 5ms");
+  });
 });
 
 describe("exitCodeForTag", () => {
@@ -263,6 +322,7 @@ describe("exitCodeForTag", () => {
     ["http-timeout", 75],
     ["tracker-rate-limit", 75],
     ["voice-provider", 75],
+    ["verb-mutex", 75],
     ["schema", 65],
     ["tmux", 1],
     ["spawn", 1],
