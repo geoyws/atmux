@@ -112,9 +112,19 @@ export type VoiceEvent =
   | { type: "speech-started" }
   /** The assistant's turn finished (response fully generated). */
   | { type: "turn-complete" }
-  /** Provider-reported error. `fatal: true` means the session is dead and a
-   *  `closed` event follows; `fatal: false` is advisory — keep streaming. */
-  | { type: "provider-error"; message: string; fatal: boolean }
+  /**
+   * Provider-reported error. `fatal: true` means the session is dead and a
+   * `closed` event follows; `fatal: false` is advisory — keep streaming.
+   *
+   * `code` is the provider's own machine-readable error code when it sends
+   * one (OpenAI Realtime's `error.code`), else an ADAPTER-assigned code for
+   * a fault the adapter itself detected. It is the single most diagnostic
+   * field on this union: the 2026-08-15 first-dial failure was
+   * `beta_api_shape_disabled`, and carrying only `message` would have left
+   * the server's log without the one token that names the fault class.
+   * Absent only when neither the provider nor the adapter has a code.
+   */
+  | { type: "provider-error"; message: string; fatal: boolean; code?: string }
   /** The transport closed; terminal — `events()` ends after this. `code` is
    *  the WS close code, or null when the provider has no such concept. */
   | { type: "closed"; code: number | null; reason: string };

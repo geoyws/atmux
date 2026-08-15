@@ -193,6 +193,8 @@ export interface VoiceServerCtx {
    * gate pass every test while the documented commands 401'd in reality.
    */
   wsUrlNoToken: string;
+  /** What the server wrote to its (redacting) stderr sink. */
+  logSink: LogSink;
 }
 
 export interface WithVoiceServerOpts {
@@ -203,14 +205,55 @@ export interface WithVoiceServerOpts {
   runners?: Partial<Record<VoiceRunnerKey, VerbFn>>;
   maxFrames?: number;
   log?: (line: string) => void;
+  /** Leave `createVoiceLogger`'s sink at its PRODUCTION default
+   *  (`process.stderr`) instead of routing it into `logSink` — for the
+   *  tests that assert the default wiring itself. */
+  logToStderr?: boolean;
+}
+
+/**
+ * Captures what the server would write to stderr.
+ *
+ * Deliberately hooks the RAW BYTE SINK under `createVoiceLogger` rather
+ * than replacing `deps.log`: the redactor stays in the path, so a test
+ * asserting a secret is absent is asserting it about production's own
+ * code, not about a stand-in that happens to be safe.
+ */
+export class LogSink {
+  /** Every chunk exactly as it would have hit stderr (newline included). */
+  readonly chunks: string[] = [];
+
+  readonly write = (chunk: string): void => {
+    this.chunks.push(chunk);
+  };
+
+  /** Chunks with their trailing newline stripped. */
+  get lines(): string[] {
+    return this.chunks.map((c) => c.replace(/\n$/, ""));
+  }
+
+  /** Everything written, concatenated — for absence assertions. */
+  get text(): string {
+    return this.chunks.join("");
+  }
+
+  find(substr: string): string | undefined {
+    return this.lines.find((l) => l.includes(substr));
+  }
+
+  matching(substr: string): string[] {
+    return this.lines.filter((l) => l.includes(substr));
+  }
 }
 
 /** Build deps for a test server: real config resolution + a fake provider. */
 export async function buildTestDeps(opts: WithVoiceServerOpts = {}): Promise<{
   deps: VoiceServeDeps;
   provider: FakeProvider;
+  logSink: LogSink;
 }> {
   const provider = opts.provider ?? new FakeProvider();
+  const logSink = new LogSink();
   const env: NodeJS.ProcessEnv = {
     ATMUX_VOICE_TOKEN: TEST_VOICE_TOKEN,
     OPENAI_API_KEY: TEST_OPENAI_KEY,
@@ -222,8 +265,9 @@ export async function buildTestDeps(opts: WithVoiceServerOpts = {}): Promise<{
     loadTeamIndex: async () => opts.teamIndex ?? TEST_TEAM_INDEX,
     makeProvider: () => provider,
     ...(opts.runners !== undefined ? { runners: opts.runners } : {}),
+    ...(opts.logToStderr === true ? {} : { logWrite: logSink.write }),
   });
-  return { deps, provider };
+  return { deps, provider, logSink };
 }
 
 /**
@@ -234,7 +278,7 @@ export async function withVoiceServer(
   opts: WithVoiceServerOpts,
   body: (ctx: VoiceServerCtx) => Promise<void>,
 ): Promise<void> {
-  const { deps, provider } = await buildTestDeps(opts);
+  const { deps, provider, logSink } = await buildTestDeps(opts);
   // See the port note in the file header.
   deps.config.port = 0;
   const handle = startVoiceServer({
@@ -252,6 +296,7 @@ export async function withVoiceServer(
     baseUrl,
     wsUrl: `ws://127.0.0.1:${handle.port}/ws?token=${encodeURIComponent(token)}`,
     wsUrlNoToken: `ws://127.0.0.1:${handle.port}/ws`,
+    logSink,
   };
   try {
     await body(ctx);

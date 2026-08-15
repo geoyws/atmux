@@ -27,7 +27,12 @@
 // Secrets: the startup banner prints host, port, provider, model,
 // readonly and the assets dir — never the token, never an API key
 // (ADR-272 §Security; the `ready`-frame key-set test pins the same
-// property on the wire).
+// property on the wire). Beyond the banner, `buildVoiceDeps` builds
+// `deps.log` through `createVoiceLogger` with the API key and the voice
+// token as known secrets, and EVERY server-side diagnostic line —
+// including the per-session provider-dial lines — goes through it. The
+// redaction is therefore structural rather than a discipline each
+// callsite has to remember.
 
 import { isReachable } from "../abstractions/http.ts";
 import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
@@ -47,6 +52,7 @@ import { resolveVoiceAsset } from "../core/voice/assets.ts";
 import { authorizeUpgrade } from "../core/voice/auth.ts";
 import { resolveVoiceConfig, type VoiceConfig, type VoiceFlags } from "../core/voice/config.ts";
 import { createConfirmStore } from "../core/voice/confirm.ts";
+import { createVoiceLogger, type VoiceLog } from "../core/voice/log.ts";
 import {
   createVoiceSession,
   createVoiceSharedState,
@@ -293,6 +299,9 @@ export interface VoiceServeDeps {
   timers: VoiceTimers;
   uuid: () => string;
   assetsDir: string;
+  /** Redacting stderr diagnostics sink — see the module header. Every
+   *  running-server line (banner, dial story, shutdown) goes through it. */
+  log: VoiceLog;
 }
 
 export interface BuildVoiceDepsOpts {
@@ -306,6 +315,15 @@ export interface BuildVoiceDepsOpts {
   timers?: VoiceTimers;
   uuid?: () => string;
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Raw byte sink under the redactor (default: `process.stderr`).
+   *
+   * Deliberately NOT a `log?: (line) => void` seam: a test that could
+   * inject a whole logger could inject one that does not redact, and the
+   * redaction test would then prove nothing about production. Tests get
+   * the sink; the redactor is always in the path.
+   */
+  logWrite?: (chunk: string) => void;
 }
 
 const realTimers: VoiceTimers = {
@@ -383,6 +401,12 @@ export async function buildVoiceDeps(opts: BuildVoiceDepsOpts = {}): Promise<Voi
     timers,
     uuid: opts.uuid ?? ((): string => uuidv7()),
     assetsDir: resolveVoiceAssetsDir(config),
+    log: createVoiceLogger({
+      // Both secrets the server holds. `createVoiceLogger` also applies
+      // shape-based patterns for credentials it was never told about.
+      secrets: [apiKey, config.token],
+      ...(opts.logWrite !== undefined ? { write: opts.logWrite } : {}),
+    }),
   };
 }
 
@@ -500,7 +524,9 @@ export interface StartVoiceServerOpts {
   deps: VoiceServeDeps;
   /** Exit 0 after this many binary phone frames are processed. */
   maxFrames?: number;
-  /** Diagnostics sink — stderr in production. */
+  /** Diagnostics-sink override. Defaults to `deps.log` (the redacting
+   *  stderr logger) — NOT to a no-op: a silent server is the exact
+   *  failure this logging exists to prevent. */
   log?: (line: string) => void;
 }
 
@@ -511,7 +537,7 @@ export interface StartVoiceServerOpts {
  */
 export function startVoiceServer(opts: StartVoiceServerOpts): VoiceServerHandle {
   const { deps } = opts;
-  const log = opts.log ?? ((): void => {});
+  const log = opts.log ?? deps.log;
   const fetchHandler = buildFetchHandler(deps);
   const { promise: done, resolve: finish } = Promise.withResolvers<number>();
   let binaryFrames = 0;
@@ -535,6 +561,7 @@ export function startVoiceServer(opts: StartVoiceServerOpts): VoiceServerHandle 
           clock: deps.clock,
           timers: deps.timers,
           uuid: deps.uuid,
+          log,
         });
       },
       async message(ws, message): Promise<void> {
@@ -605,11 +632,7 @@ export function startupBanner(deps: VoiceServeDeps, handle: VoiceServerHandle): 
  * normal close path) before the listener stops.
  */
 export async function serveVoice(opts: ServeVoiceOpts): Promise<number> {
-  const log =
-    opts.log ??
-    ((line: string): void => {
-      process.stderr.write(`${line}\n`);
-    });
+  const log = opts.log ?? opts.deps.log;
   const handle = startVoiceServer({ ...opts, log });
   log(startupBanner(opts.deps, handle));
 
@@ -870,7 +893,10 @@ export async function voice(
     })
   )();
   const deps = await (overrides.buildDeps ?? buildVoiceDeps)({ flags });
-  const serveOpts: ServeVoiceOpts = { deps, log };
+  // `deps.log` (redacting) is the default for the serve path — the local
+  // `log` above is the plain stderr sink the no-secrets actions use.
+  const serveOpts: ServeVoiceOpts = { deps };
+  if (overrides.log !== undefined) serveOpts.log = overrides.log;
   if (args.maxFrames !== undefined) serveOpts.maxFrames = args.maxFrames;
   if (overrides.signal !== undefined) serveOpts.signal = overrides.signal;
   return await serveVoice(serveOpts);

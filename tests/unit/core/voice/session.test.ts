@@ -34,6 +34,8 @@ import {
   HELLO_TIMEOUT_MS,
   IDLE_CLOSE_MS,
   type PhoneLeg,
+  PROVIDER_ERROR_LOG_CAP,
+  PROVIDER_ERROR_LOG_MAX_CHARS,
   REDIAL_BACKOFF_MAX_MS,
   REDIAL_MAX_ATTEMPTS,
   redialBackoffMs,
@@ -301,6 +303,8 @@ interface Harness {
   bridge: ToolBridge;
   session: ReturnType<typeof createVoiceSession>;
   deps: VoiceSessionDeps;
+  /** Every diagnostics line the session emitted, in order. */
+  logs: string[];
 }
 
 function makeHarness(
@@ -312,6 +316,8 @@ function makeHarness(
     bridge?: ToolBridge;
     uuid?: () => string;
     nowMyt?: () => string;
+    /** Omit the `log` dep entirely — exercises the no-op default. */
+    noLog?: boolean;
   } = {},
 ): Harness {
   const timers = over.timers ?? new FakeTimers();
@@ -331,6 +337,7 @@ function makeHarness(
     }),
   };
   let n = 0;
+  const logs: string[] = [];
   const deps: VoiceSessionDeps = {
     phone,
     provider,
@@ -349,6 +356,7 @@ function makeHarness(
         return `sess-${n}`;
       }),
     ...(over.nowMyt !== undefined ? { nowMyt: over.nowMyt } : {}),
+    ...(over.noLog === true ? {} : { log: (line: string): void => void logs.push(line) }),
   };
   return {
     phone,
@@ -359,6 +367,7 @@ function makeHarness(
     bridge,
     session: createVoiceSession(deps),
     deps,
+    logs,
   };
 }
 
@@ -1368,6 +1377,365 @@ describe("provider redial", () => {
     await flush();
     await h.timers.advance(30_000);
     expect(h.provider.connectCalls).toBe(1);
+  });
+});
+
+// ---------- dial diagnostics ----------
+//
+// THE INCIDENT THIS PINS. On the first live dial (2026-08-15) the OpenAI
+// adapter was still speaking the retired Realtime BETA shape. Every one of
+// the 5 attempts failed, the phone was closed 4500, and the entire server
+// log held nothing but the startup banner — while the provider had said,
+// on the wire, `beta_api_shape_disabled: "The Realtime Beta API is no
+// longer supported."` Diagnosing it took hand-written throwaway WebSocket
+// probes against the live API.
+//
+// So these tests are not "logging exists" tests. Each one asserts that a
+// specific, load-bearing FACT reaches the log: the provider's error code,
+// the attempt counter, WHICH of the three dial faults occurred, and the
+// elapsed budget at exhaustion. If the logging regressed to a bare
+// "dial failed", every test below fails.
+
+describe("dial diagnostics", () => {
+  /** The exact frame OpenAI answered with on 2026-08-15. */
+  const BETA_ERROR = {
+    type: "provider-error" as const,
+    code: "beta_api_shape_disabled",
+    message:
+      "The Realtime Beta API is no longer supported. Please use /v1/realtime for the GA API.",
+    fatal: false,
+  };
+
+  /** Reproduce the incident: the leg opens, answers with the provider's
+   *  error, then hangs up — never sending `session-ready`. */
+  function emitBetaFailure(h: Harness, closeCode = 4000): void {
+    h.provider.lastLeg.emit(BETA_ERROR);
+    h.provider.lastLeg.emit({ type: "closed", code: closeCode, reason: "beta shape" });
+  }
+
+  test("the happy path is ONE line, and it names provider, model and attempt", async () => {
+    const h = makeHarness();
+    await live(h);
+    expect(h.logs).toEqual([
+      `voice: provider ready — openai-realtime/gpt-realtime attempt 1/${REDIAL_MAX_ATTEMPTS} in 0ms`,
+    ]);
+  });
+
+  test("a failed attempt logs the PROVIDER'S OWN error code and message", async () => {
+    const h = makeHarness();
+    h.provider.emitSessionReady = false;
+    const p = h.session.handlePhoneMessage(hello());
+    await flush();
+    emitBetaFailure(h);
+    await flush();
+
+    const failure = h.logs.find((l) => l.includes("dial attempt 1/"));
+    expect(failure).toBeDefined();
+    // The load-bearing half: the code names the fault CLASS.
+    expect(failure).toContain("beta_api_shape_disabled");
+    expect(failure).toContain("The Realtime Beta API is no longer supported");
+    expect(failure).toContain(`dial attempt 1/${REDIAL_MAX_ATTEMPTS}`);
+    expect(failure).toContain("openai-realtime/gpt-realtime");
+    // ...and the backoff about to be waited.
+    expect(failure).toContain(`retrying in ${redialBackoffMs(1)}ms`);
+
+    await h.timers.advance(60_000);
+    await p;
+  });
+
+  test("the provider-error event is itself logged with its code, before the attempt fails", async () => {
+    const h = makeHarness();
+    h.provider.emitSessionReady = false;
+    const p = h.session.handlePhoneMessage(hello());
+    await flush();
+    h.provider.lastLeg.emit(BETA_ERROR);
+    await flush();
+
+    const errLine = h.logs.find((l) => l.includes("provider error"));
+    expect(errLine).toBe(
+      "voice: provider error (openai-realtime/gpt-realtime) [beta_api_shape_disabled] The Realtime Beta API is no longer supported. Please use /v1/realtime for the GA API.",
+    );
+    // Drain: every attempt here is a full SESSION_READY_TIMEOUT_MS wait
+    // (the leg never closes), so the budget must clear 5×12s + backoffs.
+    await h.timers.advance(120_000);
+    await p;
+  });
+
+  test("a HANDSHAKE TIMEOUT is labelled distinctly from a refused socket", async () => {
+    const quiet = makeHarness();
+    quiet.provider.emitSessionReady = false; // socket opens, provider goes silent
+    const pq = quiet.session.handlePhoneMessage(hello());
+    await flush();
+    await quiet.timers.advance(SESSION_READY_TIMEOUT_MS);
+    const quietLine = quiet.logs.find((l) => l.includes("dial attempt 1/"));
+    expect(quietLine).toContain(`no session-ready within ${SESSION_READY_TIMEOUT_MS}ms`);
+    expect(quietLine).toContain("socket opened, provider handshake never completed");
+
+    const refused = makeHarness();
+    refused.provider.failures = 1; // connect() itself throws
+    const pr = refused.session.handlePhoneMessage(hello());
+    await flush();
+    const refusedLine = refused.logs.find((l) => l.includes("dial attempt 1/"));
+    expect(refusedLine).toContain("connect failed —");
+    // The two faults must NOT read the same: "the socket opened and the
+    // provider went quiet" is a different bug from "the socket was refused".
+    expect(refusedLine).not.toContain("no session-ready within");
+    expect(quietLine).not.toContain("connect failed");
+
+    await quiet.timers.advance(60_000);
+    await refused.timers.advance(60_000);
+    await Promise.all([pq, pr]);
+  });
+
+  test("a leg that hangs up before session-ready reports the CLOSE CODE", async () => {
+    const h = makeHarness();
+    h.provider.emitSessionReady = false;
+    const p = h.session.handlePhoneMessage(hello());
+    await flush();
+    emitBetaFailure(h, 4000);
+    await flush();
+
+    const failure = h.logs.find((l) => l.includes("dial attempt 1/"));
+    expect(failure).toContain("provider closed before session-ready");
+    expect(failure).toContain("code=4000");
+    expect(failure).toContain("reason=beta shape");
+    await h.timers.advance(60_000);
+    await p;
+  });
+
+  test("exhaustion states the attempts made, the elapsed time, and the 4500 close", async () => {
+    const h = makeHarness();
+    h.provider.emitSessionReady = false;
+    const p = h.session.handlePhoneMessage(hello());
+    await flush();
+    // Each attempt: leg opens, provider complains, leg hangs up.
+    for (let i = 0; i < REDIAL_MAX_ATTEMPTS; i += 1) {
+      emitBetaFailure(h);
+      await flush();
+      await h.timers.advance(redialBackoffMs(i + 1));
+    }
+    await p;
+
+    expect(h.phone.closes).toEqual([
+      { code: VOICE_CLOSE.PROVIDER, reason: "provider unrecoverable" },
+    ]);
+    const exhausted = h.logs.find((l) => l.includes("dial exhausted"));
+    expect(exhausted).toBeDefined();
+    expect(exhausted).toContain(`${REDIAL_MAX_ATTEMPTS} attempts`);
+    expect(exhausted).toContain(`closing phone ${VOICE_CLOSE.PROVIDER}`);
+    expect(exhausted).toContain("provider-unrecoverable");
+    // Elapsed is a real measurement off the injected clock, not a constant:
+    // 250+500+1000+2000 of backoff elapsed across the five attempts.
+    const elapsed = Number(/ in (\d+)ms/.exec(exhausted as string)?.[1]);
+    expect(elapsed).toBe(
+      redialBackoffMs(1) + redialBackoffMs(2) + redialBackoffMs(3) + redialBackoffMs(4),
+    );
+    // And it still names the cause — the single most important fact.
+    expect(exhausted).toContain("beta_api_shape_disabled");
+  });
+
+  test("the last-attempt line says there are no attempts left, not 'retrying'", async () => {
+    const h = makeHarness();
+    h.provider.failures = REDIAL_MAX_ATTEMPTS;
+    const p = h.session.handlePhoneMessage(hello());
+    await flush();
+    await h.timers.advance(60_000);
+    await p;
+    const last = h.logs.filter((l) => l.includes("dial attempt")).pop();
+    expect(last).toContain(`dial attempt ${REDIAL_MAX_ATTEMPTS}/${REDIAL_MAX_ATTEMPTS}`);
+    expect(last).toContain("no attempts left");
+    expect(last).not.toContain("retrying in");
+  });
+
+  test("a mid-session provider close logs the redial WITH its close code", async () => {
+    const h = makeHarness();
+    await live(h);
+    h.logs.length = 0;
+    h.provider.lastLeg.emit({ type: "closed", code: 1006, reason: "network" });
+    await flush();
+    await h.timers.advance(redialBackoffMs(0));
+
+    const redial = h.logs.find((l) => l.includes("closed mid-session"));
+    expect(redial).toBe(
+      "voice: provider closed mid-session (openai-realtime/gpt-realtime) code=1006 reason=network — redialing",
+    );
+  });
+
+  test("a close with no reason renders the code alone, not a dangling 'reason='", async () => {
+    const h = makeHarness();
+    await live(h);
+    h.logs.length = 0;
+    h.provider.lastLeg.emit({ type: "closed", code: 1006, reason: "" });
+    await flush();
+    expect(h.logs.find((l) => l.includes("closed mid-session"))).toBe(
+      "voice: provider closed mid-session (openai-realtime/gpt-realtime) code=1006 — redialing",
+    );
+  });
+
+  test("provider errors are CAPPED per leg — one suppression notice, then silence", async () => {
+    const h = makeHarness();
+    await live(h);
+    h.logs.length = 0;
+    const total = PROVIDER_ERROR_LOG_CAP + 4;
+    for (let i = 0; i < total; i += 1) {
+      h.provider.lastLeg.emit({ type: "provider-error", message: `blip ${i}`, fatal: false });
+    }
+    await flush();
+
+    const errLines = h.logs.filter(
+      (l) => l.includes("provider error") && !l.includes("suppressed"),
+    );
+    expect(errLines).toHaveLength(PROVIDER_ERROR_LOG_CAP);
+    expect(h.logs.filter((l) => l.includes("suppressed"))).toHaveLength(1);
+    // A per-frame provider error must not become a per-frame log line.
+    expect(h.logs.length).toBe(PROVIDER_ERROR_LOG_CAP + 1);
+    // The phone still gets EVERY one — the cap is on the log, not the wire.
+    expect(h.phone.ofType("error")).toHaveLength(total);
+  });
+
+  test("the cap resets per leg, so a later attempt's errors are not silenced by an earlier one's", async () => {
+    const h = makeHarness();
+    h.provider.emitSessionReady = false;
+    const p = h.session.handlePhoneMessage(hello());
+    await flush();
+    for (let i = 0; i < PROVIDER_ERROR_LOG_CAP + 2; i += 1) {
+      h.provider.lastLeg.emit({ type: "provider-error", message: `leg1-${i}`, fatal: false });
+    }
+    h.provider.lastLeg.emit({ type: "closed", code: 4000, reason: "" });
+    await flush();
+    await h.timers.advance(redialBackoffMs(1));
+    // Attempt 2's leg — its first error must be logged again.
+    h.provider.lastLeg.emit({ type: "provider-error", message: "leg2-first", fatal: false });
+    await flush();
+    expect(h.logs.some((l) => l.includes("leg2-first"))).toBe(true);
+
+    await h.timers.advance(60_000);
+    await p;
+  });
+
+  test("an attempt's failure line never quotes the PREVIOUS attempt's provider error", async () => {
+    const h = makeHarness();
+    h.provider.emitSessionReady = false;
+    const p = h.session.handlePhoneMessage(hello());
+    await flush();
+    h.provider.lastLeg.emit({
+      type: "provider-error",
+      message: "stale-from-attempt-1",
+      fatal: false,
+    });
+    h.provider.lastLeg.emit({ type: "closed", code: 4000, reason: "" });
+    await flush();
+    await h.timers.advance(redialBackoffMs(1));
+    // Attempt 2 says nothing before timing out.
+    await h.timers.advance(SESSION_READY_TIMEOUT_MS);
+
+    const second = h.logs.find((l) => l.includes("dial attempt 2/"));
+    expect(second).toBeDefined();
+    expect(second).not.toContain("stale-from-attempt-1");
+    expect(second).not.toContain("last provider error");
+
+    await h.timers.advance(60_000);
+    await p;
+  });
+
+  test("a fatal provider error is marked fatal in the log", async () => {
+    const h = makeHarness();
+    await live(h);
+    h.logs.length = 0;
+    h.provider.lastLeg.emit({ type: "provider-error", message: "session died", fatal: true });
+    await flush();
+    expect(h.logs[0]).toContain("provider error (fatal)");
+  });
+
+  test("a codeless provider error logs the message alone, with no empty bracket", async () => {
+    const h = makeHarness();
+    await live(h);
+    h.logs.length = 0;
+    h.provider.lastLeg.emit({ type: "provider-error", message: "rate limited", fatal: false });
+    await flush();
+    expect(h.logs[0]).toBe("voice: provider error (openai-realtime/gpt-realtime) rate limited");
+  });
+
+  test("an oversized provider message is truncated before it reaches the log", async () => {
+    const h = makeHarness();
+    await live(h);
+    h.logs.length = 0;
+    const huge = "x".repeat(PROVIDER_ERROR_LOG_MAX_CHARS * 3);
+    h.provider.lastLeg.emit({ type: "provider-error", message: huge, fatal: false });
+    await flush();
+    const xs = /x+/.exec(h.logs[0] as string)?.[0] ?? "";
+    expect(xs).toHaveLength(PROVIDER_ERROR_LOG_MAX_CHARS);
+  });
+
+  // ---- NO SPEECH (ADR-272 OQ-4) ----
+
+  test("NOTHING the operator said reaches this log — no transcripts, no tool args", async () => {
+    const h = makeHarness();
+    await live(h);
+    h.logs.length = 0;
+    const leg = h.provider.lastLeg;
+    leg.emit({
+      type: "transcript",
+      role: "user",
+      id: "u1",
+      text: "cancel the deploy to production immediately",
+      final: true,
+    });
+    leg.emit({
+      type: "transcript",
+      role: "assistant",
+      id: "a1",
+      text: "understood, cancelling the deploy",
+      final: false,
+    });
+    leg.emit({
+      type: "tool-call",
+      id: "c1",
+      name: "tell_lead",
+      argsJson: JSON.stringify({ team: "atmux", message: "stand down, we are reverting" }),
+    });
+    leg.emit({ type: "speech-started" });
+    leg.emit({ type: "turn-complete" });
+    await flush();
+
+    // The phone DID receive the transcripts — the events were really live.
+    expect(h.phone.ofType("transcript.user")).toHaveLength(1);
+    expect(h.phone.ofType("tool.start")).toHaveLength(1);
+    // ...and the server log stayed empty. Transcripts are the sensitive
+    // payload bounded by ADR-272 OQ-4; this sink is protocol events only.
+    expect(h.logs).toEqual([]);
+  });
+
+  test("a session built WITHOUT a log sink stays silent instead of guessing one", async () => {
+    const h = makeHarness({ noLog: true });
+    h.provider.failures = REDIAL_MAX_ATTEMPTS;
+    const p = h.session.handlePhoneMessage(hello());
+    await flush();
+    await h.timers.advance(60_000);
+    await p;
+    // The dial really did run and really did exhaust...
+    expect(h.provider.connectCalls).toBe(REDIAL_MAX_ATTEMPTS);
+    expect(h.phone.closes).toEqual([
+      { code: VOICE_CLOSE.PROVIDER, reason: "provider unrecoverable" },
+    ]);
+    // ...with no sink to write to, and no crash.
+    expect(h.logs).toEqual([]);
+  });
+
+  test("a teardown mid-handshake is not reported as a dial failure", async () => {
+    const h = makeHarness();
+    h.provider.emitSessionReady = false;
+    const p = h.session.handlePhoneMessage(hello());
+    await flush();
+    h.logs.length = 0;
+    // Takeover displaces this session while it waits for session-ready.
+    h.shared.registry.claim({ sessionId: "other", onTakeover: () => {} });
+    await flush();
+    await h.timers.advance(60_000);
+    await p;
+    // Our own teardown is not a provider fault and must not be logged as one.
+    expect(h.logs.filter((l) => l.includes("dial attempt"))).toEqual([]);
+    expect(h.logs.filter((l) => l.includes("dial exhausted"))).toEqual([]);
   });
 });
 

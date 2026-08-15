@@ -841,6 +841,7 @@ describe("inbound mapping", () => {
         { type: "session-ready" },
         {
           type: "provider-error",
+          code: "go_away",
           message: "provider goAway — connection closing soon",
           fatal: false,
         },
@@ -909,11 +910,13 @@ describe("inbound mapping", () => {
       expect(events).toEqual([
         {
           type: "provider-error",
+          code: "go_away",
           message: "provider goAway — connection closing soon (timeLeft 10s)",
           fatal: false,
         },
         {
           type: "provider-error",
+          code: "go_away",
           message: "provider goAway — connection closing soon",
           fatal: false,
         },
@@ -938,11 +941,14 @@ describe("inbound mapping", () => {
       );
       expect(events[0]?.type).toBe("provider-error");
       expect((events[0] as { message: string }).message).toContain("unparseable provider frame");
+      expect((events[0] as { code?: string }).code).toBe("adapter_unparseable_frame");
       expect(events[1]).toEqual({ type: "session-ready" });
       expect(events[2]?.type).toBe("provider-error");
       expect((events[2] as { message: string }).message).toContain("unparseable provider frame");
+      expect((events[2] as { code?: string }).code).toBe("adapter_unparseable_frame");
       expect(events[3]).toEqual({
         type: "provider-error",
+        code: "adapter_undecodable_binary_frame",
         message: "unparseable binary provider frame (invalid UTF-8)",
         fatal: false,
       });

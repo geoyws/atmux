@@ -131,7 +131,10 @@ const inboundFrameSchema = z.object({
   call_id: z.string().optional(),
   name: z.string().optional(),
   arguments: z.string().optional(),
-  error: z.object({ message: z.string().optional() }).optional(),
+  // `error.code` is what named the retired-beta failure on 2026-08-15
+  // (`beta_api_shape_disabled`) — it is forwarded onto the neutral event
+  // so the server can log the fault CLASS, not just its prose.
+  error: z.object({ message: z.string().optional(), code: z.string().optional() }).optional(),
 });
 type InboundFrame = z.infer<typeof inboundFrameSchema>;
 
@@ -217,7 +220,12 @@ class OpenAiRealtimeSession implements VoiceSession {
       // The Realtime protocol is JSON-text; a binary frame is a protocol
       // breach worth surfacing, but not worth killing the session over.
       return [
-        { type: "provider-error", message: "unexpected binary frame from provider", fatal: false },
+        {
+          type: "provider-error",
+          code: "adapter_unexpected_binary_frame",
+          message: "unexpected binary frame from provider",
+          fatal: false,
+        },
       ];
     }
     const msg = tryParseJsonString(frame, inboundFrameSchema);
@@ -225,6 +233,7 @@ class OpenAiRealtimeSession implements VoiceSession {
       return [
         {
           type: "provider-error",
+          code: "adapter_unparseable_frame",
           message: `unparseable provider frame: ${frame.slice(0, 120)}`,
           fatal: false,
         },
@@ -262,14 +271,19 @@ class OpenAiRealtimeSession implements VoiceSession {
         return [{ type: "speech-started" }];
       case "response.done":
         return [{ type: "turn-complete" }];
-      case "error":
+      case "error": {
+        // `code` is omitted (not defaulted) when the provider sends none —
+        // an invented code would read as a real fault class in the log.
+        const code = msg.error?.code;
         return [
           {
             type: "provider-error",
+            ...(code !== undefined ? { code } : {}),
             message: msg.error?.message ?? "provider error (no message)",
             fatal: false,
           },
         ];
+      }
       default:
         return []; // unknown event type → deliberately ignored (see header)
     }

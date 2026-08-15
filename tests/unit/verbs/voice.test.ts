@@ -709,6 +709,102 @@ describe("WebSocket surface (real Bun.serve)", () => {
   });
 });
 
+// ---------- dial diagnostics reach the real server's stderr ----------
+//
+// `session.test.ts` proves the session EMITS these lines; this proves the
+// production wiring actually carries them out of a real `Bun.serve`
+// process — the gap the 2026-08-15 incident fell through, where a server
+// that had every fact logged nothing at all.
+
+describe("server diagnostics (real Bun.serve, real stderr sink)", () => {
+  test("a provider dial failure reaches the server's log with the provider's error code", async () => {
+    const provider = new FakeProvider();
+    provider.emitSessionReady = false; // socket opens, provider never answers
+    await withVoiceServer({ provider }, async (ctx) => {
+      const c = openClient(ctx.wsUrl);
+      await c.opened;
+      c.ws.send(JSON.stringify({ type: "hello", v: 1, token: ctx.token, mode: "ptt" }));
+      expect(await waitFor(() => ctx.provider.legs.length > 0)).toBe(true);
+      ctx.provider.lastLeg.emit({
+        type: "provider-error",
+        code: "beta_api_shape_disabled",
+        message: "The Realtime Beta API is no longer supported.",
+        fatal: false,
+      });
+      ctx.provider.lastLeg.emit({ type: "closed", code: 4000, reason: "beta shape" });
+
+      expect(await waitFor(() => ctx.logSink.find("dial attempt 1/") !== undefined)).toBe(true);
+      const line = ctx.logSink.find("dial attempt 1/") as string;
+      expect(line).toContain("beta_api_shape_disabled");
+      expect(line).toContain("provider closed before session-ready");
+      expect(line).toContain("code=4000");
+      c.ws.close();
+    });
+  });
+
+  // THE REDACTION TEST the security model rests on. The provider error is
+  // adversarial: its message embeds the raw API key AND the voice token,
+  // exactly as a provider echoing back a URL or an auth header would. The
+  // path is production's: session → `deps.log` → `createVoiceLogger` →
+  // stderr sink. Nothing here stands in for the redactor.
+  test("a provider error carrying the API KEY and the TOKEN is redacted before it is written", async () => {
+    const provider = new FakeProvider();
+    provider.emitSessionReady = false;
+    await withVoiceServer({ provider }, async (ctx) => {
+      const c = openClient(ctx.wsUrl);
+      await c.opened;
+      c.ws.send(JSON.stringify({ type: "hello", v: 1, token: ctx.token, mode: "ptt" }));
+      expect(await waitFor(() => ctx.provider.legs.length > 0)).toBe(true);
+      ctx.provider.lastLeg.emit({
+        type: "provider-error",
+        code: "invalid_api_key",
+        message:
+          `rejected upgrade to wss://api.openai.com/v1/realtime?key=${TEST_OPENAI_KEY}` +
+          ` (Authorization: Bearer ${TEST_OPENAI_KEY}; session token ${TEST_VOICE_TOKEN})`,
+        fatal: false,
+      });
+
+      expect(await waitFor(() => ctx.logSink.find("invalid_api_key") !== undefined)).toBe(true);
+      const written = ctx.logSink.text;
+      // 1 — neither secret survived, anywhere in the whole log.
+      expect(written).not.toContain(TEST_OPENAI_KEY);
+      expect(written).not.toContain(TEST_VOICE_TOKEN);
+      // 2 — and the line is still diagnostic. Without this half, a
+      // redactor that emitted "" would pass assertion 1 outright.
+      const line = ctx.logSink.find("invalid_api_key") as string;
+      expect(line).toContain("[invalid_api_key]");
+      expect(line).toContain("rejected upgrade to wss://api.openai.com/v1/realtime");
+      expect(line).toContain("<redacted>");
+      c.ws.close();
+    });
+  });
+
+  test("a successful dial writes exactly one line, and no speech ever reaches the log", async () => {
+    await withVoiceServer({}, async (ctx) => {
+      const c = openClient(ctx.wsUrl);
+      await c.opened;
+      c.ws.send(JSON.stringify({ type: "hello", v: 1, token: ctx.token, mode: "ptt" }));
+      expect(await waitFor(() => framesOf(c.texts, "ready").length > 0)).toBe(true);
+      ctx.provider.lastLeg.emit({
+        type: "transcript",
+        role: "user",
+        id: "u1",
+        text: "stop the production deploy",
+        final: true,
+      });
+      expect(await waitFor(() => framesOf(c.texts, "transcript.user").length > 0)).toBe(true);
+
+      // The banner, then one line for the dial. Nothing else, and above
+      // all not the transcript — ADR-272 OQ-4 keeps speech out of here.
+      const dialLines = ctx.logSink.matching("provider ready");
+      expect(dialLines).toHaveLength(1);
+      expect(dialLines[0]).toContain("openai-realtime/gpt-realtime");
+      expect(ctx.logSink.text).not.toContain("stop the production deploy");
+      c.ws.close();
+    });
+  });
+});
+
 // ---------- serveVoice ----------
 
 describe("serveVoice", () => {
@@ -1156,7 +1252,10 @@ describe("default output sinks", () => {
   }
 
   test("serveVoice defaults log→stderr and registers REAL process signal handlers", async () => {
-    const { deps } = await buildTestDeps();
+    // `logToStderr` leaves `createVoiceLogger`'s sink at its production
+    // default, so this really does exercise the stderr wiring rather than
+    // the test harness's capture sink.
+    const { deps } = await buildTestDeps({ logToStderr: true });
     deps.config.port = 0;
     const abort = new AbortController();
     const before = process.listenerCount("SIGINT");

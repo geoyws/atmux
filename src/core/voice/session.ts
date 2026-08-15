@@ -27,7 +27,22 @@
 //     subsequent audio; provider audio still streaming from the
 //     cancelled response is suppressed until the turn boundary.
 //   - No stdout writes anywhere (stdout is capture-owned while a verb
-//     runs); this module emits nothing.
+//     runs). Diagnostics go through the injected `log` seam, which the
+//     verb layer points at stderr behind a redactor
+//     (`src/core/voice/log.ts`). Default is a no-op, so a session built
+//     without one stays silent rather than guessing a sink.
+//   - What `log` carries, and what it MUST NOT. It carries the
+//     provider-dial story — attempt N of MAX, provider kind + model, the
+//     provider's error CODE and message, handshake-timeout vs
+//     socket-refused, mid-session redials, and exhaustion with attempts +
+//     elapsed. That set exists because the first live dial (2026-08-15)
+//     failed all 5 attempts and closed 4500 with NOTHING in the server
+//     log but the startup banner, while the provider had plainly said
+//     `beta_api_shape_disabled`. It carries NO SPEECH: no transcript
+//     text, no tool arguments, nothing the operator said — transcripts
+//     are the sensitive payload bounded by ADR-272 OQ-4 (local-only,
+//     7-day retention), and these are protocol events. Tool NAMES are
+//     fine; tool ARGUMENTS are not.
 //   - Frames arriving while `dialing` are ignored; binary before hello
 //     (or any pre-hello garbage) closes 4400.
 //   - Client-frame + provider-event switches are EXHAUSTIVE (no
@@ -111,9 +126,60 @@ export const SERVER_VAD_TUNINGS = Object.freeze({
   silenceDurationMs: 400,
 } as const);
 
+/**
+ * Non-fatal `provider-error` events LOGGED per provider leg before the
+ * sink goes quiet for that leg.
+ *
+ * Provider errors are advisory and can repeat per frame; logging every
+ * one would drown the dial story this logging exists to tell, and could
+ * write a line per audio frame under a misbehaving provider. The cap
+ * keeps the first few (which is where the diagnosis is), then emits ONE
+ * suppression notice so a reader knows the tail was dropped rather than
+ * absent. The counter resets on every new dial attempt.
+ */
+export const PROVIDER_ERROR_LOG_CAP = 3;
+/** Provider error messages are truncated to this before logging — a
+ *  provider echoing a whole frame must not blow up a log line. */
+export const PROVIDER_ERROR_LOG_MAX_CHARS = 300;
+
 /** Backoff for redial attempt N (0-based). */
 export function redialBackoffMs(attempt: number): number {
   return Math.min(REDIAL_BACKOFF_BASE_MS * 2 ** attempt, REDIAL_BACKOFF_MAX_MS);
+}
+
+/**
+ * How a pending `awaitSessionReady` settled. The three failure arms are
+ * NOT interchangeable in a log: "the socket opened and the provider went
+ * quiet" (`timeout`) is a different fault from "the provider hung up
+ * before answering" (`provider-closed`), which is different again from
+ * "we tore the session down while waiting" (`aborted`, never a dial
+ * failure). Collapsing them to a boolean is what made the 2026-08-15
+ * exhaustion unreadable.
+ */
+export type SessionReadyOutcome = "ready" | "timeout" | "provider-closed" | "aborted";
+
+/** A provider-reported fault, kept for the dial-failure line. */
+interface ProviderErrorNote {
+  code: string | null;
+  message: string;
+}
+
+/** Render a provider error as `[code] message`, or bare message when the
+ *  provider sent no code. */
+export function formatProviderError(note: ProviderErrorNote): string {
+  return note.code !== null ? `[${note.code}] ${note.message}` : note.message;
+}
+
+/** Render a WS close as `code=<n> reason=<r>`; `code` is null when the
+ *  provider has no such concept, and an empty reason is elided. */
+export function formatCloseInfo(code: number | null, reason: string): string {
+  const codePart = `code=${code === null ? "none" : code}`;
+  return reason === "" ? codePart : `${codePart} reason=${reason}`;
+}
+
+/** Message text of an unknown thrown value. */
+function errorText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
 }
 
 // ---------- Seams ----------
@@ -231,6 +297,14 @@ export interface VoiceSessionDeps {
   uuid: () => string;
   /** Pre-formatted MYT timestamp for the instructions builder. */
   nowMyt?: () => string;
+  /**
+   * Diagnostics sink — one call per line, newline added by the sink.
+   * Production points this at stderr through `createVoiceLogger`, which
+   * redacts secrets structurally. Defaults to a no-op.
+   *
+   * NO SPEECH may be passed here (see the module header).
+   */
+  log?: (line: string) => void;
 }
 
 export interface VoiceSessionStats {
@@ -267,6 +341,7 @@ export function firstLine(s: string): string {
 
 class VoiceServerSessionImpl implements VoiceServerSession {
   private readonly deps: VoiceSessionDeps;
+  private readonly log: (line: string) => void;
   private phase: Phase = "awaiting-hello";
   private phoneOpen = true;
   private sessionId = ""; // empty until hello; set exactly once per fresh/resume
@@ -283,7 +358,14 @@ class VoiceServerSessionImpl implements VoiceServerSession {
   private parkTimer: unknown = null;
   /** Pending `session-ready` wait (see SESSION_READY_TIMEOUT_MS). */
   private sessionReadyTimer: unknown = null;
-  private sessionReadyResolve: ((ok: boolean) => void) | null = null;
+  private sessionReadyResolve: ((outcome: SessionReadyOutcome) => void) | null = null;
+  /** Last provider-reported fault on the CURRENT leg — the payload the
+   *  dial-failure and exhaustion lines carry. Reset per attempt. */
+  private lastProviderError: ProviderErrorNote | null = null;
+  /** provider-error events seen on the current leg (drives the log cap). */
+  private providerErrorsSeen = 0;
+  /** How the current leg closed — for `provider-closed` failure text. */
+  private lastCloseInfo: { code: number | null; reason: string } | null = null;
   /** True while `dialLoop` is running — blocks a re-entrant redial. */
   private dialInFlight = false;
   private badBinaryFrames = 0;
@@ -292,6 +374,7 @@ class VoiceServerSessionImpl implements VoiceServerSession {
 
   constructor(deps: VoiceSessionDeps) {
     this.deps = deps;
+    this.log = deps.log ?? ((): void => {});
     this.helloTimer = deps.timers.setTimeout(() => {
       this.helloTimer = null;
       this.endPreHello(VOICE_CLOSE.HELLO_TIMEOUT, "hello timeout");
@@ -480,16 +563,31 @@ class VoiceServerSessionImpl implements VoiceServerSession {
   /** Dial (or redial) the provider with backoff. Initial dials attempt
    *  immediately; redials wait first. Returns false when the session
    *  ended mid-loop or the budget is exhausted (which errors + closes
-   *  4500). */
+   *  4500).
+   *
+   *  LOGGING SHAPE — one line per ATTEMPT, carrying the outcome. A
+   *  successful dial is therefore a single line (the "provider ready"
+   *  one), which is what keeps the happy path quiet; a failed attempt is
+   *  a single line naming the provider, the model, attempt N of MAX, the
+   *  distinguishable failure reason, the provider's own error code +
+   *  message, and the backoff about to be waited. Emitting a
+   *  before-the-attempt line as well would double every session's dial
+   *  chatter to buy nothing: `connectWebSocket` bounds the handshake at
+   *  10s and `SESSION_READY_TIMEOUT_MS` bounds the wait after it, so an
+   *  attempt cannot hang without producing its outcome line. */
   private async dialLoop(redial: boolean): Promise<boolean> {
     // Re-entrancy guard: a leg that dies mid-dial delivers `closed`, and
     // without this the handler would start a SECOND concurrent dialLoop
     // (each with its own 5-attempt budget) racing to own `this.conn`.
     this.dialInFlight = true;
+    const dialStart = this.deps.clock();
+    let lastFailure = "no attempt completed";
     try {
       for (let attempt = 0; attempt < REDIAL_MAX_ATTEMPTS; attempt += 1) {
         if (redial || attempt > 0) await this.wait(redialBackoffMs(attempt));
         if (this.isEnded()) return false;
+        this.resetLegDiagnostics();
+        let failure: string;
         try {
           const leg = await this.deps.provider.connect(
             this.deps.providerCfg,
@@ -509,14 +607,38 @@ class VoiceServerSessionImpl implements VoiceServerSession {
           // The socket is up, but the provider is NOT configured until
           // `session-ready`. Streaming audio before that is discarded by
           // the provider, so the dial is not complete until it lands.
-          if (await this.awaitSessionReady()) return true;
+          const outcome = await this.awaitSessionReady();
+          if (outcome === "ready") {
+            this.log(
+              `voice: provider ready — ${this.providerTag()} attempt ${attempt + 1}/${REDIAL_MAX_ATTEMPTS} in ${this.deps.clock() - dialStart}ms`,
+            );
+            return true;
+          }
+          failure = this.describeReadyFailure(outcome);
           // Quiet (or unparseable) provider — discard this leg and spend
           // the next attempt on a fresh one.
           this.discardConn();
-        } catch {
+        } catch (e) {
           // expected: transport failure — retry with backoff
+          failure = `connect failed — ${errorText(e)}`;
+        }
+        lastFailure = failure;
+        // A teardown mid-attempt is not a dial failure; the next loop
+        // head returns false. Control flow is unchanged either way — only
+        // the log line is suppressed.
+        if (!this.isEnded()) {
+          const next =
+            attempt + 1 < REDIAL_MAX_ATTEMPTS
+              ? `retrying in ${redialBackoffMs(attempt + 1)}ms`
+              : "no attempts left";
+          this.log(
+            `voice: dial attempt ${attempt + 1}/${REDIAL_MAX_ATTEMPTS} failed (${this.providerTag()}) — ${failure}${this.providerErrorSuffix()}; ${next}`,
+          );
         }
       }
+      this.log(
+        `voice: dial exhausted — ${REDIAL_MAX_ATTEMPTS} attempts in ${this.deps.clock() - dialStart}ms (${this.providerTag()}); closing phone ${VOICE_CLOSE.PROVIDER} provider-unrecoverable; last failure: ${lastFailure}${this.providerErrorSuffix()}`,
+      );
       this.sendJson({ type: "error", code: "provider-unrecoverable", fatal: true });
       this.phoneOpen = false;
       this.deps.phone.close(VOICE_CLOSE.PROVIDER, "provider unrecoverable");
@@ -527,29 +649,71 @@ class VoiceServerSessionImpl implements VoiceServerSession {
     }
   }
 
+  /** `<provider-kind>/<model>` — every dial line carries both, because
+   *  "which provider and which model was it dialling?" is the first
+   *  question asked of a dial failure. */
+  private providerTag(): string {
+    return `${this.deps.provider.kind}/${this.deps.providerCfg.model}`;
+  }
+
+  /** Clear per-leg diagnostics at the head of each dial attempt, so an
+   *  attempt's failure line can never quote the PREVIOUS attempt's
+   *  provider error. */
+  private resetLegDiagnostics(): void {
+    this.lastProviderError = null;
+    this.providerErrorsSeen = 0;
+    this.lastCloseInfo = null;
+  }
+
+  /** `; last provider error [code] message`, or "" when the provider
+   *  reported nothing on this leg. */
+  private providerErrorSuffix(): string {
+    const note = this.lastProviderError;
+    return note === null ? "" : `; last provider error ${formatProviderError(note)}`;
+  }
+
+  /** Turn a non-ready `awaitSessionReady` outcome into the failure text.
+   *  The `timeout` arm is deliberately explicit that the SOCKET opened —
+   *  that is the whole difference from a refused dial. */
+  private describeReadyFailure(outcome: Exclude<SessionReadyOutcome, "ready">): string {
+    switch (outcome) {
+      case "timeout":
+        return `no session-ready within ${SESSION_READY_TIMEOUT_MS}ms (socket opened, provider handshake never completed)`;
+      case "provider-closed": {
+        const info = this.lastCloseInfo;
+        const tag = info === null ? "no close info" : formatCloseInfo(info.code, info.reason);
+        return `provider closed before session-ready (${tag})`;
+      }
+      case "aborted":
+        return "session ended before session-ready";
+    }
+  }
+
   /** Wait for `session-ready` on the freshly-attached leg, bounded by
-   *  {@link SESSION_READY_TIMEOUT_MS}. Resolves false on expiry or on the
-   *  leg closing underneath us. */
-  private awaitSessionReady(): Promise<boolean> {
-    return new Promise<boolean>((resolve) => {
+   *  {@link SESSION_READY_TIMEOUT_MS}. The resolved {@link
+   *  SessionReadyOutcome} distinguishes the three non-ready endings so
+   *  the failure line can name the actual fault. */
+  private awaitSessionReady(): Promise<SessionReadyOutcome> {
+    return new Promise<SessionReadyOutcome>((resolve) => {
       this.sessionReadyResolve = resolve;
       this.sessionReadyTimer = this.deps.timers.setTimeout(() => {
         this.sessionReadyTimer = null;
-        this.settleSessionReady(false);
+        this.settleSessionReady("timeout");
       }, SESSION_READY_TIMEOUT_MS);
     });
   }
 
   /** Settle a pending {@link awaitSessionReady}. Idempotent — every
-   *  teardown path calls it so a dial promise can never be stranded. */
-  private settleSessionReady(ok: boolean): void {
+   *  teardown path calls it (with `"aborted"`) so a dial promise can
+   *  never be stranded. */
+  private settleSessionReady(outcome: SessionReadyOutcome): void {
     if (this.sessionReadyTimer !== null) {
       this.deps.timers.clearTimeout(this.sessionReadyTimer);
       this.sessionReadyTimer = null;
     }
     const resolve = this.sessionReadyResolve;
     this.sessionReadyResolve = null;
-    if (resolve !== null) resolve(ok);
+    if (resolve !== null) resolve(outcome);
   }
 
   /** Detach + hang up the current leg without touching session phase.
@@ -690,7 +854,7 @@ class VoiceServerSessionImpl implements VoiceServerSession {
       case "session-ready":
         // Dial completion — nothing user-visible, but it is what
         // releases `awaitSessionReady` and makes the dial succeed.
-        this.settleSessionReady(true);
+        this.settleSessionReady("ready");
         return;
       case "audio-out":
         this.onAudioOut(ev.pcm);
@@ -717,10 +881,11 @@ class VoiceServerSessionImpl implements VoiceServerSession {
         this.sendStatus("idle");
         return;
       case "provider-error":
+        this.noteProviderError(ev);
         this.sendJson({ type: "error", code: "provider", fatal: false, message: ev.message });
         return;
       case "closed":
-        await this.onProviderClosed();
+        await this.onProviderClosed(ev.code, ev.reason);
         return;
     }
   }
@@ -786,12 +951,38 @@ class VoiceServerSessionImpl implements VoiceServerSession {
     }
   }
 
-  private async onProviderClosed(): Promise<void> {
+  /**
+   * Record a provider-reported fault, and log it — capped per leg (see
+   * {@link PROVIDER_ERROR_LOG_CAP}). The RECORD is always kept even once
+   * the log goes quiet, because the dial-failure line quotes it and that
+   * line is the one the 2026-08-15 incident needed.
+   */
+  private noteProviderError(ev: { message: string; fatal: boolean; code?: string }): void {
+    const note: ProviderErrorNote = {
+      code: ev.code ?? null,
+      message: ev.message.slice(0, PROVIDER_ERROR_LOG_MAX_CHARS),
+    };
+    this.lastProviderError = note;
+    this.providerErrorsSeen += 1;
+    if (this.providerErrorsSeen === PROVIDER_ERROR_LOG_CAP + 1) {
+      this.log(
+        `voice: further provider errors on this leg suppressed (logged ${PROVIDER_ERROR_LOG_CAP})`,
+      );
+      return;
+    }
+    if (this.providerErrorsSeen > PROVIDER_ERROR_LOG_CAP) return;
+    this.log(
+      `voice: provider error${ev.fatal ? " (fatal)" : ""} (${this.providerTag()}) ${formatProviderError(note)}`,
+    );
+  }
+
+  private async onProviderClosed(code: number | null, reason: string): Promise<void> {
     this.conn = null;
+    this.lastCloseInfo = { code, reason };
     // A leg that dies while we are still waiting for its `session-ready`
     // fails THAT dial attempt; `dialLoop` owns the retry from here, so
     // this handler must not start a second one.
-    this.settleSessionReady(false);
+    this.settleSessionReady("provider-closed");
     if (this.dialInFlight) return;
     if (this.phase === "parked") {
       // Provider died while parked — dissolve the park now; a later
@@ -803,6 +994,9 @@ class VoiceServerSessionImpl implements VoiceServerSession {
     if (this.phase !== "live" || !this.phoneOpen) return;
     // Unexpected close with the phone still live → REDIAL (fresh
     // provider context — history resume across redial is deferred).
+    this.log(
+      `voice: provider closed mid-session (${this.providerTag()}) ${formatCloseInfo(code, reason)}${this.providerErrorSuffix()} — redialing`,
+    );
     this.sendStatus("thinking");
     await this.dialLoop(true);
   }
@@ -847,7 +1041,7 @@ class VoiceServerSessionImpl implements VoiceServerSession {
   /** Tear a parked session fully down (grace expiry, or the provider
    *  leg dying mid-park). */
   private dissolvePark(): void {
-    this.settleSessionReady(false);
+    this.settleSessionReady("aborted");
     const sessionId = this.sessionId;
     this.deps.shared.parked.delete(sessionId);
     this.deps.shared.owners.delete(sessionId);
@@ -864,7 +1058,7 @@ class VoiceServerSessionImpl implements VoiceServerSession {
   /** Latest-wins displacement (ADR-272 D8): a newer claim owns the slot;
    *  this session announces, closes 4001, and tears its leg down. */
   private teardownForTakeover(): void {
-    this.settleSessionReady(false);
+    this.settleSessionReady("aborted");
     if (this.phase === "ended") return;
     this.sendJson({ type: "takeover" });
     if (this.phoneOpen) {
@@ -887,7 +1081,7 @@ class VoiceServerSessionImpl implements VoiceServerSession {
   }
 
   private fullTeardown(): void {
-    this.settleSessionReady(false);
+    this.settleSessionReady("aborted");
     this.clearHelloTimer();
     this.clearIdleTimer();
     this.clearParkTimer();
@@ -904,7 +1098,7 @@ class VoiceServerSessionImpl implements VoiceServerSession {
   }
 
   private endPreHello(code: number, reason: string): void {
-    this.settleSessionReady(false);
+    this.settleSessionReady("aborted");
     this.clearHelloTimer();
     this.phoneOpen = false;
     this.deps.phone.close(code, reason);

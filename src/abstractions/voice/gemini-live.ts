@@ -360,6 +360,7 @@ class GeminiLiveSession implements VoiceSession {
       return [
         {
           type: "provider-error",
+          code: "adapter_undecodable_binary_frame",
           message: "unparseable binary provider frame (invalid UTF-8)",
           fatal: false,
         },
@@ -370,6 +371,7 @@ class GeminiLiveSession implements VoiceSession {
       return [
         {
           type: "provider-error",
+          code: "adapter_unparseable_frame",
           message: `unparseable provider frame: ${text.slice(0, 120)}`,
           fatal: false,
         },
@@ -447,6 +449,7 @@ class GeminiLiveSession implements VoiceSession {
       const timeLeft = pick(msg.goAway, goAwaySchema)?.timeLeft;
       events.push({
         type: "provider-error",
+        code: "go_away",
         message:
           timeLeft !== undefined
             ? `provider goAway — connection closing soon (timeLeft ${timeLeft})`

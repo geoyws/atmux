@@ -549,6 +549,56 @@ describe("inbound mapping", () => {
     }
   });
 
+  // The 2026-08-15 first-dial failure regression pin. The provider named
+  // the fault class in `error.code`; the adapter used to drop it, and the
+  // server's log was left with nothing that identified the cause. This
+  // asserts the code REACHES the neutral event — with the real frame
+  // OpenAI actually sent, verbatim.
+  test("error.code is forwarded onto the neutral event (beta_api_shape_disabled)", async () => {
+    const fx = startWsFixture();
+    try {
+      const events = withoutClosed(
+        await collectSessionEvents(fx, [
+          JSON.stringify({
+            type: "error",
+            error: {
+              code: "beta_api_shape_disabled",
+              message:
+                "The Realtime Beta API is no longer supported. Please use /v1/realtime for the GA API.",
+            },
+          }),
+        ]),
+      );
+      expect(events).toEqual([
+        {
+          type: "provider-error",
+          code: "beta_api_shape_disabled",
+          message:
+            "The Realtime Beta API is no longer supported. Please use /v1/realtime for the GA API.",
+          fatal: false,
+        },
+      ]);
+    } finally {
+      await fx.stop();
+    }
+  });
+
+  test("a codeless provider error omits `code` rather than inventing one", async () => {
+    const fx = startWsFixture();
+    try {
+      const events = withoutClosed(
+        await collectSessionEvents(fx, [
+          JSON.stringify({ type: "error", error: { message: "rate limited" } }),
+        ]),
+      );
+      // A defaulted code (e.g. "unknown") would read in the log as a real
+      // fault class the provider never reported.
+      expect(Object.hasOwn(events[0] as object, "code")).toBe(false);
+    } finally {
+      await fx.stop();
+    }
+  });
+
   test("unknown event types are ignored", async () => {
     const fx = startWsFixture();
     try {
@@ -574,8 +624,12 @@ describe("inbound mapping", () => {
       );
       expect(events[0]?.type).toBe("provider-error");
       expect((events[0] as { message: string }).message).toContain("unparseable provider frame");
+      // Adapter-detected faults carry an ADAPTER-assigned code, so a log
+      // reader can tell "the provider complained" from "our parser choked".
+      expect((events[0] as { code?: string }).code).toBe("adapter_unparseable_frame");
       expect(events[1]).toEqual({
         type: "provider-error",
+        code: "adapter_unexpected_binary_frame",
         message: "unexpected binary frame from provider",
         fatal: false,
       });
