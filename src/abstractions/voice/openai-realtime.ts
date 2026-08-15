@@ -1,16 +1,31 @@
-// ADR-272: voice operator interface — OpenAI Realtime adapter.
+// ADR-272: voice operator interface — OpenAI Realtime adapter (GA API).
 //
-// Implements `VoiceProvider` over the OpenAI Realtime WebSocket API. We pin
-// the BETA interface via the `OpenAI-Beta: realtime=v1` header (so the
-// session.update payload uses the beta/legacy shape), but the inbound mapper
-// accepts BOTH legacy and GA event names — OpenAI renamed the audio/transcript
-// deltas between revisions and a pinned header is not a guarantee the server
-// won't speak the newer vocabulary. Unknown inbound event types are IGNORED
-// by design (the provider adds types freely; an unknown frame is not an
-// error). All wire transport goes through `connectWebSocket`
-// (src/abstractions/websocket.ts) — no raw `new WebSocket()` here — and all
-// frame parsing goes through `json.ts::tryParseJsonString` (R3: json.ts is
-// the only module allowed to call `JSON.parse`).
+// Implements `VoiceProvider` over the OpenAI Realtime WebSocket **GA** API.
+//
+// The Realtime BETA API is RETIRED. Opting into it — via either the
+// `OpenAI-Beta: realtime=v1` header OR the `openai-beta.realtime-v1`
+// subprotocol element — makes the server answer the very first frame with
+// `{"type":"error","error":{"code":"beta_api_shape_disabled", ...}}` and close
+// with code 4000. Both opt-ins are therefore ABSENT here, deliberately; do not
+// reintroduce either. (Verified live 2026-08-15 against
+// wss://api.openai.com/v1/realtime.)
+//
+// The GA `session.update` nests differently from the beta shape it replaced:
+// audio config moved under `session.audio.{input,output}` (format /
+// transcription / turn_detection / voice), `session.modalities` became
+// `session.output_modalities` and accepts ONLY `["text"]` or `["audio"]` —
+// the beta-era `["text","audio"]` is rejected `invalid_value`. `tools` and
+// `tool_choice` stay at the top level of `session`. See
+// `sessionUpdatePayload` for the exact accepted shape.
+//
+// The inbound mapper accepts BOTH the legacy and GA event names. GA emits only
+// the `output_audio*` spellings (verified live); the legacy aliases are
+// retained purely as tolerance, since a pinned vocabulary is not a guarantee.
+// Unknown inbound event types are IGNORED by design (the provider adds types
+// freely; an unknown frame is not an error). All wire transport goes through
+// `connectWebSocket` (src/abstractions/websocket.ts) — no raw `new WebSocket()`
+// here — and all frame parsing goes through `json.ts::tryParseJsonString`
+// (R3: json.ts is the only module allowed to call `JSON.parse`).
 
 import { z } from "zod";
 import { tryParseJsonString } from "../json.ts";
@@ -26,8 +41,15 @@ import { type ConnectWebSocketOpts, connectWebSocket, type WsHandle } from "../w
 /** Production endpoint; tests override via `VoiceProviderConfig.baseUrl`. */
 export const OPENAI_REALTIME_BASE_URL = "wss://api.openai.com/v1/realtime";
 
-/** Beta voice default — used when `VoiceSessionOpts.voice` is omitted. */
+/** Voice default — used when `VoiceSessionOpts.voice` is omitted. */
 const DEFAULT_VOICE = "alloy";
+
+/** GA audio format descriptor — PCM16LE at the canonical 24kHz (see
+ *  `VoiceEvent.audio-out`). Both directions use it. */
+const PCM24K = { type: "audio/pcm", rate: 24_000 } as const;
+
+/** Input-transcription model for user-side transcripts. */
+const TRANSCRIPTION_MODEL = "whisper-1";
 
 // ---------- Wire helpers ----------
 
@@ -36,27 +58,45 @@ export function realtimeUrl(cfg: Pick<VoiceProviderConfig, "baseUrl" | "model">)
   return `${cfg.baseUrl ?? OPENAI_REALTIME_BASE_URL}?model=${encodeURIComponent(cfg.model)}`;
 }
 
-/** The `session.update` frame sent on open (beta/legacy shape — see header). */
+/**
+ * The `session.update` frame sent on open — GA shape (see header).
+ *
+ * Every key below was accepted by the live GA endpoint and echoed back
+ * verbatim in the resulting `session.updated` frame (verified 2026-08-15).
+ * Notably `output_modalities` is `["audio"]` and NOT `["text","audio"]`: GA
+ * rejects the pair with `invalid_value` ("Supported combinations are:
+ * ['text'] and ['audio']").
+ */
 export function sessionUpdatePayload(opts: VoiceSessionOpts): Record<string, unknown> {
   const td = opts.turnDetection;
   return {
     type: "session.update",
     session: {
-      modalities: ["text", "audio"],
+      type: "realtime",
+      output_modalities: ["audio"],
       instructions: opts.instructions,
-      voice: opts.voice ?? DEFAULT_VOICE,
-      input_audio_format: "pcm16",
-      output_audio_format: "pcm16",
-      input_audio_transcription: { model: "whisper-1" },
-      turn_detection:
-        td.mode === "server-vad"
-          ? {
-              type: "server_vad",
-              threshold: td.threshold,
-              prefix_padding_ms: td.prefixPaddingMs,
-              silence_duration_ms: td.silenceDurationMs,
-            }
-          : null,
+      audio: {
+        input: {
+          format: PCM24K,
+          transcription: { model: TRANSCRIPTION_MODEL },
+          // `null` = push-to-talk: the operator ends turns via `endTurn()`.
+          turn_detection:
+            td.mode === "server-vad"
+              ? {
+                  type: "server_vad",
+                  threshold: td.threshold,
+                  prefix_padding_ms: td.prefixPaddingMs,
+                  silence_duration_ms: td.silenceDurationMs,
+                }
+              : null,
+        },
+        output: {
+          format: PCM24K,
+          voice: opts.voice ?? DEFAULT_VOICE,
+        },
+      },
+      // Tools stay at the TOP level of `session` under GA — not nested in
+      // `audio`. The per-tool shape is unchanged from beta.
       tools: opts.tools.map((t) => ({
         type: "function",
         name: t.name,
@@ -196,14 +236,14 @@ class OpenAiRealtimeSession implements VoiceSession {
         this.sessionReadySeen = true;
         return [{ type: "session-ready" }];
       }
-      case "response.audio.delta": // legacy
-      case "response.output_audio.delta": // GA
+      case "response.audio.delta": // legacy alias (tolerance only)
+      case "response.output_audio.delta": // GA — verified live
         return [{ type: "audio-out", pcm: fromBase64(msg.delta ?? "") }];
-      case "response.audio_transcript.delta": // legacy
-      case "response.output_audio_transcript.delta": // GA
+      case "response.audio_transcript.delta": // legacy alias (tolerance only)
+      case "response.output_audio_transcript.delta": // GA — verified live
         return [transcriptEvent(msg, "assistant", false)];
-      case "response.audio_transcript.done": // legacy
-      case "response.output_audio_transcript.done": // GA
+      case "response.audio_transcript.done": // legacy alias (tolerance only)
+      case "response.output_audio_transcript.done": // GA — verified live
         return [transcriptEvent(msg, "assistant", true)];
       case "conversation.item.input_audio_transcription.delta":
         return [transcriptEvent(msg, "user", false)];
@@ -253,18 +293,15 @@ export const openaiRealtimeProvider: VoiceProvider = {
     const wsOpts: ConnectWebSocketOpts =
       authStyle === "headers"
         ? {
-            headers: {
-              Authorization: `Bearer ${cfg.apiKey}`,
-              "OpenAI-Beta": "realtime=v1",
-            },
+            // Bearer only — NO `OpenAI-Beta` header (see file header: the beta
+            // opt-in is fatal under GA).
+            headers: { Authorization: `Bearer ${cfg.apiKey}` },
           }
         : {
             // Browser-style fallback: credentials ride the subprotocol list.
-            protocols: [
-              "realtime",
-              `openai-insecure-api-key.${cfg.apiKey}`,
-              "openai-beta.realtime-v1",
-            ],
+            // Two elements only — the third, `openai-beta.realtime-v1`, opts
+            // into the retired beta shape and is just as fatal as the header.
+            protocols: ["realtime", `openai-insecure-api-key.${cfg.apiKey}`],
           };
     if (cfg.wsFactory !== undefined) wsOpts.factory = cfg.wsFactory;
     const ws = await connectWebSocket(realtimeUrl(cfg), wsOpts);

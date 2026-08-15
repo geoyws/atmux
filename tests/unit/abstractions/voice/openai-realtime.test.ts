@@ -5,6 +5,17 @@
 // real credentials. Wire shapes are asserted deeply (byte shape of
 // session.update and every outbound verb); inbound mapping is driven with
 // both legacy and GA event names.
+//
+// GA PROVENANCE — every outbound shape asserted below was replayed against the
+// live endpoint (wss://api.openai.com/v1/realtime?model=gpt-realtime) on
+// 2026-08-15 and accepted; the beta-era shapes were replayed and REJECTED:
+//   - `OpenAI-Beta: realtime=v1` header  → error beta_api_shape_disabled, close 4000
+//   - `openai-beta.realtime-v1` protocol → error beta_api_shape_disabled, close 4000
+//   - `session.modalities`               → error unknown_parameter
+//   - `output_modalities: ["text","audio"]` → error invalid_value
+// The beta-shape assertions here are therefore REGRESSION PINS (asserting the
+// absence of a shape that provably kills a real session), not style choices.
+// If you are tempted to "restore" any of them, re-read this block first.
 
 import { describe, expect, test } from "bun:test";
 import {
@@ -92,7 +103,9 @@ describe("handshake", () => {
       const conn = fx.connections[0];
       expect(conn?.url).toContain("?model=gpt-realtime");
       expect(conn?.headers.authorization).toBe(`Bearer ${FAKE_KEY}`);
-      expect(conn?.headers["openai-beta"]).toBe("realtime=v1");
+      // Regression pin: the beta opt-in header is FATAL under GA (the live
+      // server answers beta_api_shape_disabled and closes 4000).
+      expect(conn?.headers["openai-beta"]).toBeUndefined();
       expect(conn?.protocols).toEqual([]);
       await session.close();
     } finally {
@@ -100,17 +113,17 @@ describe("handshake", () => {
     }
   });
 
-  test("authStyle subprotocol sends the three-element protocol list instead of headers", async () => {
+  test("authStyle subprotocol sends the two-element protocol list instead of headers", async () => {
     const fx = startWsFixture();
     try {
       const provider = openaiRealtimeProvider;
       const session = await provider.connect(cfgFor(fx, { authStyle: "subprotocol" }), PTT_OPTS);
       const conn = fx.connections[0];
-      expect(conn?.protocols).toEqual([
-        "realtime",
-        `openai-insecure-api-key.${FAKE_KEY}`,
-        "openai-beta.realtime-v1",
-      ]);
+      // Two elements, NOT three: `openai-beta.realtime-v1` is a second,
+      // independent beta opt-in and is just as fatal as the header (verified
+      // live — same beta_api_shape_disabled error, same 4000 close).
+      expect(conn?.protocols).toEqual(["realtime", `openai-insecure-api-key.${FAKE_KEY}`]);
+      expect(conn?.protocols).not.toContain("openai-beta.realtime-v1");
       expect(conn?.headers.authorization).toBeUndefined();
       await session.close();
     } finally {
@@ -124,16 +137,25 @@ describe("handshake", () => {
       const provider = openaiRealtimeProvider;
       const session = await provider.connect(cfgFor(fx), PTT_OPTS);
       await fx.waitForReceived(1);
+      // This exact object was accepted by the live GA endpoint and echoed back
+      // in `session.updated` (2026-08-15).
       expect(JSON.parse(fx.received[0] as string)).toEqual({
         type: "session.update",
         session: {
-          modalities: ["text", "audio"],
+          type: "realtime",
+          output_modalities: ["audio"],
           instructions: "You are the atmux voice operator.",
-          voice: "alloy",
-          input_audio_format: "pcm16",
-          output_audio_format: "pcm16",
-          input_audio_transcription: { model: "whisper-1" },
-          turn_detection: null,
+          audio: {
+            input: {
+              format: { type: "audio/pcm", rate: 24000 },
+              transcription: { model: "whisper-1" },
+              turn_detection: null,
+            },
+            output: {
+              format: { type: "audio/pcm", rate: 24000 },
+              voice: "alloy",
+            },
+          },
           tools: [
             {
               type: "function",
@@ -175,15 +197,21 @@ describe("handshake", () => {
       });
       await fx.waitForReceived(1);
       const sent = JSON.parse(fx.received[0] as string) as {
-        session: { turn_detection: unknown; voice: string; tools: unknown[] };
+        session: {
+          audio: { input: { turn_detection: unknown }; output: { voice: string } };
+          tools: unknown[];
+        };
       };
-      expect(sent.session.turn_detection).toEqual({
+      // GA nests turn_detection under session.audio.input. These exact
+      // tunings were echoed back verbatim by the live endpoint.
+      expect(sent.session.audio.input.turn_detection).toEqual({
         type: "server_vad",
         threshold: 0.7,
         prefix_padding_ms: 220,
         silence_duration_ms: 400,
       });
-      expect(sent.session.voice).toBe("verse");
+      // …and voice under session.audio.output.
+      expect(sent.session.audio.output.voice).toBe("verse");
       expect(sent.session.tools).toEqual([]);
       await session.close();
     } finally {
@@ -192,9 +220,43 @@ describe("handshake", () => {
   });
 
   test("sessionUpdatePayload is a pure function of opts (unit shape check)", () => {
-    const payload = sessionUpdatePayload(PTT_OPTS) as { type: string; session: { voice: string } };
+    const payload = sessionUpdatePayload(PTT_OPTS) as {
+      type: string;
+      session: { type: string; audio: { output: { voice: string } } };
+    };
     expect(payload.type).toBe("session.update");
-    expect(payload.session.voice).toBe("alloy");
+    expect(payload.session.type).toBe("realtime");
+    expect(payload.session.audio.output.voice).toBe("alloy");
+  });
+
+  test("no beta-era key survives anywhere in session.update (regression pin)", () => {
+    // Each key below was live-rejected by the GA endpoint; `session.type` is
+    // live-REQUIRED (its absence is `missing_required_parameter`). This test
+    // is the guard against silently regressing to the retired beta shape.
+    const payload = sessionUpdatePayload({
+      instructions: "i",
+      tools: [RUN_VERB_TOOL],
+      turnDetection: {
+        mode: "server-vad",
+        threshold: 0.7,
+        prefixPaddingMs: 220,
+        silenceDurationMs: 400,
+      },
+      voice: "verse",
+    });
+    const wire = JSON.stringify(payload);
+    for (const deadKey of [
+      '"modalities"',
+      '"input_audio_format"',
+      '"output_audio_format"',
+      '"input_audio_transcription"',
+    ]) {
+      expect(wire).not.toContain(deadKey);
+    }
+    // `output_modalities` must be audio-only — GA rejects ["text","audio"].
+    const session = (payload as { session: { output_modalities: string[]; type: string } }).session;
+    expect(session.output_modalities).toEqual(["audio"]);
+    expect(session.type).toBe("realtime");
   });
 
   test("wsFactory seam is honored (no real socket constructed)", async () => {
@@ -223,6 +285,14 @@ describe("handshake", () => {
   });
 });
 
+// Every frame asserted in this block was replayed against the live GA
+// endpoint and accepted (2026-08-15): `input_audio_buffer.append` + `.commit`
+// produced `input_audio_buffer.committed`; `conversation.item.create`
+// (input_text) and (function_call_output) were both echoed back in
+// `conversation.item.added`; `response.create` produced `response.created`;
+// `response.cancel` cancelled an in-flight response
+// (`response.done` status="cancelled", reason="client_cancelled").
+// These shapes are UNCHANGED from beta — only session.update moved.
 describe("outbound verbs — wire shapes", () => {
   test("every verb serializes to its exact Realtime frame", async () => {
     const fx = startWsFixture();
@@ -290,6 +360,11 @@ describe("inbound mapping", () => {
     }
   });
 
+  // Live GA emits ONLY the `output_audio*` spellings (observed 2026-08-15:
+  // response.output_audio.delta / response.output_audio_transcript.delta /
+  // .done). The legacy `response.audio*` aliases are kept as inbound
+  // tolerance and are asserted here to pin that tolerance, not because GA
+  // sends them.
   test("legacy AND GA audio delta names decode to identical audio-out bytes", async () => {
     const fx = startWsFixture();
     try {
