@@ -25,6 +25,7 @@ import {
   buildConfirmPreview,
   createToolBridge,
   type ToolBridgeDeps,
+  WEDGE_THRESHOLD_MULTIPLE,
 } from "../../../../src/core/voice/tool-bridge.ts";
 import { VOICE_TOOL_CATALOG } from "../../../../src/core/voice/tool-catalog.ts";
 
@@ -73,7 +74,9 @@ function makeHarness(overrides: Partial<ToolBridgeDeps> = {}): Harness {
     },
     teamIndex: INDEX,
     confirmStore: createConfirmStore({ clock: () => now, ttlMs: 120_000 }),
-    mutex: createVerbMutex(),
+    // Same fake clock the bridge uses, so `health()`'s held-duration is
+    // driveable from `setNow` (a real clock here would make it untestable).
+    mutex: createVerbMutex({ clock: () => now }),
     config: { readonly: false, toolTimeoutMs: 20_000, maxResultChars: 2000 },
     clock: () => now,
     // Default: the timeout never fires (tests that need it inject one).
@@ -694,6 +697,158 @@ describe("envelope budget", () => {
     const env = parseEnvelope(out.envelopeJson);
     expect(env.ok).toBe(true);
     expect(String(env.data)).toMatch(/^… \(\+\d+ more lines\)$/);
+  });
+});
+
+// ---------- bridge health (the wedge) ----------
+//
+// THE DEFECT THIS PINS. `executeTool` queues on the verb mutex BEFORE
+// racing the timeout, and the mutex has no queue cap and no abandon path.
+// So a wired verb that never returns holds the lock forever: every later
+// tool call answers `tool_timeout`, permanently, and none of the 12 wired
+// verbs calls `process.exit` — the server wedges rather than crashing.
+// `/healthz` answered `{"ok":true}` throughout, which for an unattended
+// detached-tmux service is worse than having no health check at all.
+//
+// Every test below drives a verb that genuinely never resolves and
+// asserts the health signal changed. A test that only exercised the happy
+// path would not cover the defect at all.
+
+describe("bridge health", () => {
+  /** A verb that never returns — the wedge, reproduced exactly. */
+  function neverReturns(): () => Promise<number> {
+    return () => new Promise<number>(() => {});
+  }
+
+  test("an idle bridge is healthy, with nothing held and nothing queued", () => {
+    const h = makeHarness();
+    expect(h.bridge.health()).toEqual({
+      wedged: false,
+      stuckTool: null,
+      heldMs: null,
+      queueDepth: 0,
+      wedgeThresholdMs: 20_000 * WEDGE_THRESHOLD_MULTIPLE,
+    });
+  });
+
+  test("a briefly-running tool is NOT wedged — slow is not stuck", async () => {
+    const h = makeHarness();
+    h.deps.runners.status = neverReturns();
+    void h.bridge.executeTool({
+      ...SESSION,
+      name: "team_status",
+      currentTeam: "atmux",
+      argsJson: "{}",
+    });
+    await Bun.sleep(0); // let it acquire the mutex
+    h.setNow(1_000 + 20_000); // exactly the tool timeout — still just slow
+    const health = h.bridge.health();
+    expect(health.heldMs).toBe(20_000);
+    expect(health.wedged).toBe(false);
+  });
+
+  test("holding exactly the threshold is not wedged; one ms past it is", async () => {
+    const h = makeHarness();
+    h.deps.runners.status = neverReturns();
+    void h.bridge.executeTool({
+      ...SESSION,
+      name: "team_status",
+      currentTeam: "atmux",
+      argsJson: "{}",
+    });
+    await Bun.sleep(0);
+    const threshold = 20_000 * WEDGE_THRESHOLD_MULTIPLE;
+    h.setNow(1_000 + threshold);
+    expect(h.bridge.health().wedged).toBe(false);
+    h.setNow(1_000 + threshold + 1);
+    expect(h.bridge.health().wedged).toBe(true);
+  });
+
+  test("a verb that never returns wedges the bridge and NAMES the stuck tool", async () => {
+    // `sleep` resolves immediately, so every call answers `tool_timeout` —
+    // the observable symptom the operator actually got.
+    const h = makeHarness({ sleep: async () => {} });
+    h.deps.runners.status = neverReturns();
+
+    const first = await h.bridge.executeTool({
+      ...SESSION,
+      name: "team_status",
+      currentTeam: "atmux",
+      argsJson: "{}",
+    });
+    expect(parseEnvelope(first.envelopeJson)).toMatchObject({ error: "tool_timeout" });
+
+    h.setNow(1_000 + 20_000 * WEDGE_THRESHOLD_MULTIPLE + 1);
+    const health = h.bridge.health();
+    expect(health.wedged).toBe(true);
+    expect(health.stuckTool).toBe("team_status");
+    expect(health.heldMs).toBe(20_000 * WEDGE_THRESHOLD_MULTIPLE + 1);
+  });
+
+  test("later tool calls pile up behind the stuck verb, and the depth is REPORTED not capped", async () => {
+    const h = makeHarness({ sleep: async () => {} });
+    h.deps.runners.status = neverReturns();
+    void h.bridge.executeTool({
+      ...SESSION,
+      name: "team_status",
+      currentTeam: "atmux",
+      argsJson: "{}",
+    });
+    await Bun.sleep(0);
+    expect(h.bridge.health().queueDepth).toBe(0); // the holder is not queued
+
+    for (let i = 0; i < 4; i += 1) {
+      void h.bridge.executeTool({
+        ...SESSION,
+        name: "team_health",
+        currentTeam: "atmux",
+        argsJson: "{}",
+      });
+    }
+    await Bun.sleep(0);
+    // No cap: every one of them is still waiting, and health says so.
+    // Capping would hide the wedge behind a cheerful rejection.
+    expect(h.bridge.health().queueDepth).toBe(4);
+    expect(h.bridge.health().stuckTool).toBe("team_status");
+  });
+
+  test("a tool that COMPLETES leaves the bridge healthy — the signal is not sticky", async () => {
+    const h = makeHarness();
+    await h.bridge.executeTool({
+      ...SESSION,
+      name: "team_status",
+      currentTeam: "atmux",
+      argsJson: "{}",
+    });
+    h.setNow(1_000 + 10 * 60_000); // long after, in case anything latched
+    expect(h.bridge.health()).toMatchObject({
+      wedged: false,
+      stuckTool: null,
+      heldMs: null,
+      queueDepth: 0,
+    });
+  });
+
+  test("the threshold derives from the CONFIGURED tool timeout, not a constant", () => {
+    const h = makeHarness({
+      config: { readonly: false, toolTimeoutMs: 5_000, maxResultChars: 2000 },
+    });
+    expect(h.bridge.health().wedgeThresholdMs).toBe(5_000 * WEDGE_THRESHOLD_MULTIPLE);
+  });
+
+  test("the mutex label is the tool NAME — never its arguments (they reach /healthz)", async () => {
+    const h = makeHarness({ sleep: async () => {} });
+    h.deps.runners.tellLead = neverReturns();
+    void h.bridge.executeTool({
+      ...SESSION,
+      name: "tell_lead",
+      currentTeam: "atmux",
+      argsJson: JSON.stringify({ message: "revert the production deploy now" }),
+    });
+    await Bun.sleep(0);
+    expect(h.bridge.health().stuckTool).toBe("tell_lead");
+    // Arguments carry what the operator SAID; a label is served publicly.
+    expect(JSON.stringify(h.bridge.health())).not.toContain("revert the production deploy");
   });
 });
 

@@ -91,9 +91,46 @@ export async function captureVerbRun(
   return await runRedirected(verb, args);
 }
 
+/**
+ * What the mutex is doing right now.
+ *
+ * WHY IT IS OBSERVABLE. The queue has no cap and no abandon path by
+ * design — the tool timeout bounds the RESPONSE, not the execution, so a
+ * verb that never returns keeps its slot forever and every later tool
+ * call queues behind it and times out. That is a wedge, not a stall, and
+ * the only recovery is `atmux voice --stop`. Nothing about it is visible
+ * from outside unless the mutex says so, which is exactly how `/healthz`
+ * came to answer `{"ok":true}` for a functionally dead service. This
+ * struct is what makes the wedge reportable.
+ */
+export interface VerbMutexState {
+  /** Label of the function currently holding the lock; null when idle. */
+  holder: string | null;
+  /** Clock value at which the current holder acquired; null when idle. */
+  heldSince: number | null;
+  /** Functions queued and not yet started (excludes the holder). */
+  queueDepth: number;
+}
+
+/** Label used when `run` is called without one. */
+export const VERB_MUTEX_UNLABELLED = "(unlabelled)";
+
 /** Strict-FIFO async mutex — see file header for why it exists. */
 export interface VerbMutex {
-  run<T>(fn: () => Promise<T>): Promise<T>;
+  /** Queue `fn`. `label` names the work for {@link VerbMutex.state} — the
+   *  voice bridge passes the tool name so a wedge can be attributed. */
+  run<T>(fn: () => Promise<T>, label?: string): Promise<T>;
+  /** Current holder + queue depth. Cheap; safe to call per health probe. */
+  state(): VerbMutexState;
+}
+
+export interface CreateVerbMutexOpts {
+  /**
+   * Clock stamped onto `heldSince`. MUST be the same clock the consumer
+   * compares against, or the held-duration it computes is meaningless.
+   * Defaults to `Date.now`.
+   */
+  clock?: () => number;
 }
 
 /**
@@ -102,23 +139,40 @@ export interface VerbMutex {
  * / rejects with `fn`'s own outcome. A rejection does NOT poison the
  * queue: the slot is released in `finally`, so the next queued function
  * still runs.
+ *
+ * The queue is deliberately UNCAPPED. Capping it would hide a wedge
+ * behind a cheerful rejection; reporting it (see {@link VerbMutexState})
+ * surfaces the real fault instead.
  */
-export function createVerbMutex(): VerbMutex {
+export function createVerbMutex(opts: CreateVerbMutexOpts = {}): VerbMutex {
+  const clock = opts.clock ?? ((): number => Date.now());
   let tail: Promise<void> = Promise.resolve();
+  let holder: string | null = null;
+  let heldSince: number | null = null;
+  let queueDepth = 0;
   return {
-    run<T>(fn: () => Promise<T>): Promise<T> {
+    run<T>(fn: () => Promise<T>, label: string = VERB_MUTEX_UNLABELLED): Promise<T> {
       const prev = tail;
       let release!: () => void;
       tail = new Promise<void>((resolve) => {
         release = resolve;
       });
+      queueDepth += 1;
       return prev.then(async () => {
+        queueDepth -= 1;
+        holder = label;
+        heldSince = clock();
         try {
           return await fn();
         } finally {
+          holder = null;
+          heldSince = null;
           release();
         }
       });
+    },
+    state(): VerbMutexState {
+      return { holder, heldSince, queueDepth };
     },
   };
 }

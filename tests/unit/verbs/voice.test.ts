@@ -11,6 +11,7 @@ import { resolve } from "node:path";
 import type { SendTarget, TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import { VOICE_ROUTES } from "../../../src/core/voice/assets.ts";
 import { encodeFrame, VOICE_FLAG_TURN_END } from "../../../src/core/voice/frame.ts";
+import { WEDGE_THRESHOLD_MULTIPLE } from "../../../src/core/voice/tool-bridge.ts";
 import { VOICE_TOOL_CATALOG, type VoiceRunnerKey } from "../../../src/core/voice/tool-catalog.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
 import {
@@ -53,6 +54,7 @@ import {
   flush,
   TEST_OPENAI_KEY,
   TEST_VOICE_TOKEN,
+  type VoiceServerCtx,
   waitFor,
   withVoiceServer,
 } from "../../helpers/voice-server.ts";
@@ -344,10 +346,54 @@ describe("server helpers", () => {
   test("healthzBody reports provider + readonly, and carries NO secret", async () => {
     const { deps } = await buildTestDeps();
     const body = healthzBody(deps);
-    expect(body).toEqual({ ok: true, provider: "openai-realtime", readonly: false });
+    expect(body).toEqual({
+      ok: true,
+      provider: "openai-realtime",
+      readonly: false,
+      degraded: null,
+      bridge: {
+        wedged: false,
+        stuckTool: null,
+        heldMs: null,
+        queueDepth: 0,
+        wedgeThresholdMs: 20_000 * WEDGE_THRESHOLD_MULTIPLE,
+      },
+    });
     const json = JSON.stringify(body);
     expect(json).not.toContain(TEST_OPENAI_KEY);
     expect(json).not.toContain(TEST_VOICE_TOKEN);
+  });
+
+  // A wedged bridge is what `/healthz` used to answer `{"ok":true}` for.
+  // The bridge here is a hand-built fake reporting the wedge, so this
+  // test pins the RENDERING; the wedge DETECTION is pinned end-to-end in
+  // "tool bridge wedge" below, against a real verb that never returns.
+  test("healthzBody reports ok:false and names the stuck tool when the bridge is wedged", async () => {
+    const { deps } = await buildTestDeps();
+    deps.bridge = {
+      executeTool: deps.bridge.executeTool.bind(deps.bridge),
+      health: () => ({
+        wedged: true,
+        stuckTool: "team_status",
+        heldMs: 61_000,
+        queueDepth: 3,
+        wedgeThresholdMs: 60_000,
+      }),
+    };
+    const body = healthzBody(deps);
+    expect(body.ok).toBe(false);
+    expect(body.degraded).toBe("tool-bridge-wedged");
+    expect(body.bridge).toEqual({
+      wedged: true,
+      stuckTool: "team_status",
+      heldMs: 61_000,
+      queueDepth: 3,
+      wedgeThresholdMs: 60_000,
+    });
+    // The pre-existing keys keep their meaning and position — a reader
+    // that only knows `ok`/`provider`/`readonly` still works.
+    expect(body.provider).toBe("openai-realtime");
+    expect(body.readonly).toBe(false);
   });
 
   test("upgradeRefusal maps the close code to the right HTTP status", async () => {
@@ -405,6 +451,14 @@ describe("HTTP surface (real Bun.serve)", () => {
         ok: true,
         provider: "openai-realtime",
         readonly: false,
+        degraded: null,
+        bridge: {
+          wedged: false,
+          stuckTool: null,
+          heldMs: null,
+          queueDepth: 0,
+          wedgeThresholdMs: 20_000 * WEDGE_THRESHOLD_MULTIPLE,
+        },
       });
     });
   });
@@ -706,6 +760,192 @@ describe("WebSocket surface (real Bun.serve)", () => {
     handle.stop();
     handle.stop();
     expect(await handle.done).toBe(0);
+  });
+});
+
+// ---------- /healthz tells the truth about a wedged tool bridge ----------
+//
+// THE DEFECT. `executeTool` queues on the verb mutex BEFORE racing the
+// timeout, and the mutex has no queue cap and no abandon path. A wired
+// verb that never returns therefore holds it forever: every later tool
+// call answers `tool_timeout`, permanently. None of the 12 wired verbs
+// calls `process.exit`, so the process wedges rather than crashing, and
+// the only recovery is `atmux voice --stop`. Throughout all of that,
+// `/healthz` answered `{"ok":true,...}`.
+//
+// Voice runs unattended in a detached tmux session, so a health check
+// that reports green while the service is functionally dead is worse than
+// no health check — whatever reads it stops looking. These tests drive a
+// REAL server, over a REAL WebSocket, with a runner that genuinely never
+// resolves, and read `/healthz` over HTTP.
+
+describe("healthz vs a wedged tool bridge (real Bun.serve, real HTTP)", () => {
+  /** 30ms tool timeout ⇒ a 90ms wedge threshold, so the test is fast
+   *  without loosening anything: the threshold is still exactly
+   *  `WEDGE_THRESHOLD_MULTIPLE × toolTimeoutMs`. */
+  const FAST_TIMEOUT_ENV = { ATMUX_VOICE_TOOL_TIMEOUT_MS: "30" };
+
+  async function healthzOf(baseUrl: string): Promise<Record<string, unknown>> {
+    const res = await fetch(`${baseUrl}/healthz`);
+    return (await res.json()) as Record<string, unknown>;
+  }
+
+  /** Drive one tool call in through the provider, as the model would. */
+  async function callTool(ctx: VoiceServerCtx, c: ReturnType<typeof openClient>, name: string) {
+    c.ws.send(JSON.stringify({ type: "hello", v: 1, token: ctx.token, mode: "ptt" }));
+    expect(await waitFor(() => framesOf(c.texts, "ready").length > 0)).toBe(true);
+    ctx.provider.lastLeg.emit({
+      type: "tool-call",
+      id: "call-1",
+      name,
+      argsJson: JSON.stringify({ team: "atmux" }),
+    });
+  }
+
+  test("a verb that NEVER returns makes /healthz stop claiming ok", async () => {
+    await withVoiceServer(
+      {
+        env: FAST_TIMEOUT_ENV,
+        // The wedge, exactly: a wired verb with no return path.
+        runners: { status: () => new Promise<number>(() => {}) },
+      },
+      async (ctx) => {
+        // Healthy before the wedge — so the flip below is caused by it.
+        expect(await healthzOf(ctx.baseUrl)).toMatchObject({ ok: true, degraded: null });
+
+        const c = openClient(ctx.wsUrl);
+        await c.opened;
+        await callTool(ctx, c, "team_status");
+
+        // The operator's symptom: the tool answers tool_timeout...
+        expect(await waitFor(() => framesOf(c.texts, "tool.done").length > 0)).toBe(true);
+        const done = framesOf(c.texts, "tool.done")[0] as Record<string, unknown>;
+        expect(done.ok).toBe(false);
+
+        // ...and once the holder is past the threshold, /healthz says so.
+        expect(await waitFor(async () => (await healthzOf(ctx.baseUrl)).ok === false, 3000)).toBe(
+          true,
+        );
+        const body = await healthzOf(ctx.baseUrl);
+        expect(body.ok).toBe(false);
+        expect(body.degraded).toBe("tool-bridge-wedged");
+        expect(body.bridge).toMatchObject({ wedged: true, stuckTool: "team_status" });
+        expect(Number((body.bridge as Record<string, unknown>).heldMs)).toBeGreaterThan(90);
+        c.ws.close();
+      },
+    );
+  });
+
+  test("later calls queue behind the wedge, and /healthz reports the depth", async () => {
+    await withVoiceServer(
+      {
+        env: FAST_TIMEOUT_ENV,
+        runners: {
+          status: () => new Promise<number>(() => {}),
+          // `team_health` needs a WIRED runner: an unwired one short-
+          // circuits to `verb_failed` without ever touching the mutex,
+          // and the queue this test is about would never form.
+          health: async () => 0,
+        },
+      },
+      async (ctx) => {
+        const c = openClient(ctx.wsUrl);
+        await c.opened;
+        await callTool(ctx, c, "team_status");
+        await waitFor(() => framesOf(c.texts, "tool.done").length > 0);
+        for (let i = 0; i < 3; i += 1) {
+          ctx.provider.lastLeg.emit({
+            type: "tool-call",
+            id: `later-${i}`,
+            name: "team_health",
+            argsJson: JSON.stringify({ team: "atmux" }),
+          });
+        }
+        expect(
+          await waitFor(async () => {
+            const b = await healthzOf(ctx.baseUrl);
+            return Number((b.bridge as Record<string, unknown>).queueDepth) >= 3;
+          }, 3000),
+        ).toBe(true);
+        c.ws.close();
+      },
+    );
+  });
+
+  test("a normal tool call leaves /healthz healthy, before, during and after", async () => {
+    // The control. Without it, "ok:false when wedged" could be produced
+    // by a /healthz that is simply always false.
+    await withVoiceServer(
+      {
+        env: FAST_TIMEOUT_ENV,
+        runners: {
+          status: async () => {
+            process.stdout.write("all green\n");
+            return 0;
+          },
+        },
+      },
+      async (ctx) => {
+        expect(await healthzOf(ctx.baseUrl)).toMatchObject({ ok: true, degraded: null });
+        const c = openClient(ctx.wsUrl);
+        await c.opened;
+        await callTool(ctx, c, "team_status");
+        expect(await waitFor(() => framesOf(c.texts, "tool.done").length > 0)).toBe(true);
+        expect(framesOf(c.texts, "tool.done")[0]).toMatchObject({ ok: true });
+
+        // Well past the wedge threshold for a tool that already finished.
+        await Bun.sleep(150);
+        const body = await healthzOf(ctx.baseUrl);
+        expect(body.ok).toBe(true);
+        expect(body.degraded).toBeNull();
+        expect(body.bridge).toMatchObject({ wedged: false, stuckTool: null, queueDepth: 0 });
+        c.ws.close();
+      },
+    );
+  });
+
+  test("/healthz stays HTTP 200 while wedged — the body carries the verdict", async () => {
+    // `atmux voice --status` probes via `isReachable`, which treats any
+    // non-2xx as UNREACHABLE. A wedged-but-listening server is a
+    // different fault from an absent one, and conflating them would make
+    // `--status` less informative, not more.
+    await withVoiceServer(
+      {
+        env: FAST_TIMEOUT_ENV,
+        runners: { status: () => new Promise<number>(() => {}) },
+      },
+      async (ctx) => {
+        const c = openClient(ctx.wsUrl);
+        await c.opened;
+        await callTool(ctx, c, "team_status");
+        expect(await waitFor(async () => (await healthzOf(ctx.baseUrl)).ok === false, 3000)).toBe(
+          true,
+        );
+        const res = await fetch(`${ctx.baseUrl}/healthz`);
+        expect(res.status).toBe(200);
+        expect(((await res.json()) as { ok: boolean }).ok).toBe(false);
+        c.ws.close();
+      },
+    );
+  });
+
+  test("/healthz never carries a secret, wedged or healthy", async () => {
+    await withVoiceServer(
+      {
+        env: FAST_TIMEOUT_ENV,
+        runners: { status: () => new Promise<number>(() => {}) },
+      },
+      async (ctx) => {
+        const c = openClient(ctx.wsUrl);
+        await c.opened;
+        await callTool(ctx, c, "team_status");
+        await waitFor(async () => (await healthzOf(ctx.baseUrl)).ok === false, 3000);
+        const body = await (await fetch(`${ctx.baseUrl}/healthz`)).text();
+        expect(body).not.toContain(TEST_OPENAI_KEY);
+        expect(body).not.toContain(TEST_VOICE_TOKEN);
+        c.ws.close();
+      },
+    );
   });
 });
 

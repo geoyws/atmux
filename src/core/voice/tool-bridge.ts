@@ -17,6 +17,20 @@
 // finishes (stdout restore is guaranteed by the capture's `finally`),
 // and the next tool simply queues behind it.
 //
+// The wedge, and why `health()` exists. The timeout above bounds the
+// RESPONSE, not the EXECUTION — deliberately, so a slow verb does not get
+// its stdout capture abandoned mid-monkeypatch. The cost is that a verb
+// which NEVER returns holds the mutex forever: every later tool call
+// queues behind it and answers `tool_timeout`, permanently. None of the
+// 12 wired verbs calls `process.exit`, so the process does not crash — it
+// wedges, and the only recovery is `atmux voice --stop`.
+//
+// Voice is meant to run unattended in a detached tmux session, so the
+// service being functionally dead while `/healthz` answered `{"ok":true}`
+// was worse than having no health check: it actively misled whatever read
+// it. `health()` is the honest signal. It reports rather than caps —
+// capping the queue would swap a visible wedge for an invisible one.
+//
 // Logging discipline: nothing in a voice path may write to
 // `process.stdout` (it is capture-owned while a verb runs); any
 // diagnostics belong on `process.stderr`. This module emits none.
@@ -71,8 +85,40 @@ export interface ExecuteToolOutput {
   needsConfirmation?: { token: string; preview: string };
 }
 
+/**
+ * Multiple of `toolTimeoutMs` a verb may hold the mutex before the bridge
+ * is called WEDGED.
+ *
+ * A tool that has held the lock past its own response deadline is merely
+ * slow — that case is normal and already reported to the operator as a
+ * `tool_timeout`. Holding it three times past that deadline is not slow;
+ * nothing in the 12 wired verbs legitimately runs for a minute at the
+ * default 20s timeout, and by then every later tool call has already been
+ * answering `tool_timeout` for two full deadlines. Low enough to catch a
+ * real wedge inside a minute; high enough that a genuinely slow `topo` on
+ * a large fleet never trips it.
+ */
+export const WEDGE_THRESHOLD_MULTIPLE = 3;
+
+/** Liveness of the verb-execution lane behind the bridge. */
+export interface ToolBridgeHealth {
+  /** The current mutex holder has exceeded {@link wedgeThresholdMs}. */
+  wedged: boolean;
+  /** The tool whose verb is stuck — null when nothing holds the mutex. */
+  stuckTool: string | null;
+  /** How long the current holder has held it (ms); null when idle. */
+  heldMs: number | null;
+  /** Tool calls queued behind the holder. Reported, never capped. */
+  queueDepth: number;
+  /** The threshold `heldMs` is compared against. */
+  wedgeThresholdMs: number;
+}
+
 export interface ToolBridge {
   executeTool(input: ExecuteToolInput): Promise<ExecuteToolOutput>;
+  /** Is the verb lane healthy? Cheap + synchronous — `/healthz` calls it
+   *  per probe. See the file header for what a wedge is. */
+  health(): ToolBridgeHealth;
 }
 
 /** Error codes — the closed set every failure maps to. */
@@ -264,7 +310,10 @@ export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
     }
     const argv = entry.argv(strippedArgs, teamRoot);
     const start = deps.clock();
-    const capturePromise = deps.mutex.run(() => capture(runner, argv));
+    // Labelled with the TOOL NAME (not its arguments — a label reaches
+    // `/healthz`, and arguments carry what the operator said). This is
+    // what lets a wedge be attributed instead of merely detected.
+    const capturePromise = deps.mutex.run(() => capture(runner, argv), name);
     const raced = await Promise.race([
       capturePromise.then((r) => ({ kind: "done" as const, r })),
       deps.sleep(deps.config.toolTimeoutMs).then(() => ({ kind: "timeout" as const })),
@@ -324,6 +373,8 @@ export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
     return { envelopeJson };
   }
 
+  const wedgeThresholdMs = deps.config.toolTimeoutMs * WEDGE_THRESHOLD_MULTIPLE;
+
   return {
     async executeTool(input: ExecuteToolInput): Promise<ExecuteToolOutput> {
       try {
@@ -334,6 +385,18 @@ export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
         const msg = e instanceof Error ? e.message : String(e);
         return errorEnvelope(input.name, "verb_failed", { message: `internal error: ${msg}` });
       }
+    },
+
+    health(): ToolBridgeHealth {
+      const state = deps.mutex.state();
+      const heldMs = state.heldSince === null ? null : deps.clock() - state.heldSince;
+      return {
+        wedged: heldMs !== null && heldMs > wedgeThresholdMs,
+        stuckTool: state.holder,
+        heldMs,
+        queueDepth: state.queueDepth,
+        wedgeThresholdMs,
+      };
     },
   };
 }

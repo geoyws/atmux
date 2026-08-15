@@ -11,6 +11,9 @@
 //     errorMessage with exitCode null and is NOT appended to stdout.
 //   - createVerbMutex is strict FIFO under interleaved async and a
 //     rejection does not poison the queue.
+//   - createVerbMutex.state() reports the CURRENT holder, when it
+//     acquired, and how many callers are queued behind it — the
+//     observability a wedged voice tool bridge is detected through.
 //   - src/verbs/dashboard.ts still exports the same function object.
 
 import { describe, expect, test } from "bun:test";
@@ -18,6 +21,7 @@ import {
   captureVerbRun,
   captureVerbStdout,
   createVerbMutex,
+  VERB_MUTEX_UNLABELLED,
 } from "../../../src/core/verb-capture.ts";
 import { captureVerbStdout as fromDashboard } from "../../../src/verbs/dashboard.ts";
 
@@ -251,5 +255,100 @@ describe("createVerbMutex", () => {
     const [ra, rb] = await Promise.all([a, b]);
     expect(ra.stdout).toBe("A1\nA2\n");
     expect(rb.stdout).toBe("B1\n");
+  });
+});
+
+// The mutex is observable because it is UNCAPPED and has no abandon path
+// (both deliberate — see the header on VerbMutexState). A holder that
+// never returns is therefore permanent, and invisible unless the mutex
+// reports it. These tests drive exactly that: a function that never
+// resolves, and the state readings taken while it holds the lock.
+describe("createVerbMutex — state()", () => {
+  test("an untouched mutex reads idle", () => {
+    expect(createVerbMutex().state()).toEqual({
+      holder: null,
+      heldSince: null,
+      queueDepth: 0,
+    });
+  });
+
+  test("reports the holder's LABEL and acquisition time from the injected clock", async () => {
+    let now = 500;
+    const mutex = createVerbMutex({ clock: () => now });
+    const gate = deferred();
+    const p = mutex.run(async () => {
+      await gate.promise;
+      return 1;
+    }, "team_status");
+    await Bun.sleep(0);
+    expect(mutex.state()).toEqual({ holder: "team_status", heldSince: 500, queueDepth: 0 });
+    // The clock moving does not move heldSince — it is the ACQUISITION
+    // stamp, which is what makes a held-duration computable.
+    now = 90_000;
+    expect(mutex.state().heldSince).toBe(500);
+    gate.resolve();
+    await p;
+  });
+
+  test("an unlabelled run is still attributable, not blank", async () => {
+    const mutex = createVerbMutex();
+    const gate = deferred();
+    const p = mutex.run(async () => {
+      await gate.promise;
+      return 0;
+    });
+    await Bun.sleep(0);
+    expect(mutex.state().holder).toBe(VERB_MUTEX_UNLABELLED);
+    gate.resolve();
+    await p;
+  });
+
+  test("queueDepth counts the WAITERS, never the holder, and is uncapped", async () => {
+    const mutex = createVerbMutex();
+    const gate = deferred();
+    const held = mutex.run(async () => {
+      await gate.promise;
+      return 0;
+    }, "stuck");
+    await Bun.sleep(0);
+    expect(mutex.state()).toMatchObject({ holder: "stuck", queueDepth: 0 });
+
+    const waiters = Array.from({ length: 7 }, (_, i) => mutex.run(async () => i, `waiter-${i}`));
+    await Bun.sleep(0);
+    // Nothing was refused or dropped: all seven are still queued, and the
+    // holder is unchanged. Capping here would hide a wedge.
+    expect(mutex.state()).toMatchObject({ holder: "stuck", queueDepth: 7 });
+
+    gate.resolve();
+    await held;
+    await Promise.all(waiters);
+    expect(mutex.state()).toEqual({ holder: null, heldSince: null, queueDepth: 0 });
+  });
+
+  test("the holder is cleared even when its function REJECTS", async () => {
+    const mutex = createVerbMutex();
+    await expect(
+      mutex.run(async () => {
+        throw new Error("boom");
+      }, "explodes"),
+    ).rejects.toThrow("boom");
+    // A rejection that left `holder` set would read as a permanent wedge
+    // for a tool that actually finished.
+    expect(mutex.state()).toEqual({ holder: null, heldSince: null, queueDepth: 0 });
+  });
+
+  test("a function that NEVER resolves holds the lock indefinitely — the wedge", async () => {
+    let now = 0;
+    const mutex = createVerbMutex({ clock: () => now });
+    void mutex.run(() => new Promise<number>(() => {}), "never_returns");
+    await Bun.sleep(0);
+    now = 10 * 60_000;
+    // Ten minutes on, still held by the same label with nothing releasing
+    // it. This is the state `/healthz` must not report as ok.
+    expect(mutex.state()).toMatchObject({ holder: "never_returns", heldSince: 0 });
+    void mutex.run(async () => 1, "queued-behind");
+    await Bun.sleep(0);
+    expect(mutex.state().queueDepth).toBe(1);
+    expect(mutex.state().holder).toBe("never_returns");
   });
 });

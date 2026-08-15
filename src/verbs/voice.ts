@@ -379,7 +379,9 @@ export async function buildVoiceDeps(opts: BuildVoiceDepsOpts = {}): Promise<Voi
     runners: opts.runners ?? makeLazyRunners(),
     teamIndex,
     confirmStore: createConfirmStore({ clock, ttlMs: config.confirmTtlMs }),
-    mutex: createVerbMutex(),
+    // Same `clock` the bridge's `health()` compares `heldSince` against —
+    // two different clocks would make the held-duration meaningless.
+    mutex: createVerbMutex({ clock }),
     config: {
       readonly: config.readonly,
       toolTimeoutMs: config.toolTimeoutMs,
@@ -448,13 +450,61 @@ export function phoneLegFor(ws: MinimalServerWebSocket): PhoneLeg {
   };
 }
 
-/** Body of the `/healthz` response — open by design (nginx exposes it). */
-export function healthzBody(deps: VoiceServeDeps): {
+/** Machine-readable degradation reasons. One member today; a union so a
+ *  later reason lands as a new value rather than a reshaped field. */
+export type VoiceDegradedReason = "tool-bridge-wedged";
+
+export interface VoiceHealthzBody {
+  /** False whenever the service cannot actually do its job. */
   ok: boolean;
   provider: string;
   readonly: boolean;
-} {
-  return { ok: true, provider: deps.provider.kind, readonly: deps.config.readonly };
+  /** Why `ok` is false, or null when healthy. */
+  degraded: VoiceDegradedReason | null;
+  /** The verb-execution lane behind the tool bridge. */
+  bridge: {
+    wedged: boolean;
+    /** Which tool's verb is stuck — the actionable half of the signal. */
+    stuckTool: string | null;
+    heldMs: number | null;
+    queueDepth: number;
+    wedgeThresholdMs: number;
+  };
+}
+
+/**
+ * Body of the `/healthz` response — open by design (nginx exposes it).
+ *
+ * `ok` used to be the literal `true`, which meant the probe answered
+ * green while the tool bridge was wedged and every voice tool call had
+ * been failing for minutes. Voice runs unattended in a detached tmux
+ * session; a health check that lies is worse than none, because whatever
+ * reads it stops looking. `ok` now tracks the one condition that makes
+ * the service functionally dead.
+ *
+ * Shape discipline: `ok` / `provider` / `readonly` keep their meaning and
+ * position, so an existing reader does not break; `degraded` and `bridge`
+ * are ADDED. The HTTP status stays **200** — `isReachable` (which
+ * `--status` uses) treats a non-2xx as "unreachable", and a wedged server
+ * that is still listening and still answering is a different fault from
+ * one that is gone. The body carries the verdict; the status carries
+ * reachability.
+ */
+export function healthzBody(deps: VoiceServeDeps): VoiceHealthzBody {
+  const bridge = deps.bridge.health();
+  return {
+    ok: !bridge.wedged,
+    provider: deps.provider.kind,
+    readonly: deps.config.readonly,
+    degraded: bridge.wedged ? "tool-bridge-wedged" : null,
+    bridge: {
+      wedged: bridge.wedged,
+      stuckTool: bridge.stuckTool,
+      heldMs: bridge.heldMs,
+      queueDepth: bridge.queueDepth,
+      wedgeThresholdMs: bridge.wedgeThresholdMs,
+    },
+  };
 }
 
 /** The upgrade-refusal response. WS close codes apply POST-upgrade only,

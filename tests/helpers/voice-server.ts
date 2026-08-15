@@ -37,14 +37,23 @@ export async function flush(times = 4): Promise<void> {
   }
 }
 
-/** Poll `cond` until true or the budget elapses. Returns whether it held. */
-export async function waitFor(cond: () => boolean, timeoutMs = 2000): Promise<boolean> {
+/**
+ * Poll `cond` until true or the budget elapses. Returns whether it held.
+ *
+ * The condition may be async (an HTTP probe, say) and the result is
+ * AWAITED — a bare `if (cond())` on a promise is always truthy, which
+ * would make every such wait pass instantly and assert nothing.
+ */
+export async function waitFor(
+  cond: () => boolean | Promise<boolean>,
+  timeoutMs = 2000,
+): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (cond()) return true;
+    if (await cond()) return true;
     await new Promise<void>((r) => setTimeout(r, 5));
   }
-  return cond();
+  return await cond();
 }
 
 /** A scriptable provider leg: records every outbound verb, emits inbound

@@ -110,6 +110,28 @@ atmux voice --stop        # stop the server and tear down the supervised session
 
 **Exit codes.** `--serve` returns 0 on SIGINT / SIGTERM / frame budget. `--status` returns **0 only when the session is up AND `/healthz` answers**, else 1 — so it is usable directly in a shell conditional. Bad argv is `UsageError` → 64; a missing `ATMUX_VOICE_TOKEN` or provider API key is `ConfigError` → 78, raised **before anything binds a port**.
 
+### `/healthz`
+
+Open by design (nginx exposes it for probes). **`ok` is a real verdict, not a constant.**
+
+```json
+{ "ok": true,  "provider": "openai-realtime", "readonly": false, "degraded": null,
+  "bridge": { "wedged": false, "stuckTool": null, "heldMs": null, "queueDepth": 0, "wedgeThresholdMs": 60000 } }
+```
+
+```json
+{ "ok": false, "provider": "openai-realtime", "readonly": false, "degraded": "tool-bridge-wedged",
+  "bridge": { "wedged": true, "stuckTool": "team_status", "heldMs": 184213, "queueDepth": 6, "wedgeThresholdMs": 60000 } }
+```
+
+**Why `ok` can be false.** Every voice tool serializes through one verb mutex (`src/core/verb-capture.ts`) because the stdout-capture wrapper cannot run two verbs concurrently. The tool timeout bounds the **response**, not the **execution** — so a wired verb that never returns holds that mutex forever, every later tool call answers `tool_timeout` permanently, and none of the 12 wired verbs calls `process.exit`, so the process **wedges rather than crashing**. The only recovery is `atmux voice --stop`. Voice runs unattended in a detached tmux session, so a probe reporting green through all of that is worse than no probe at all.
+
+- `wedgeThresholdMs` = `WEDGE_THRESHOLD_MULTIPLE` (3) × `ATMUX_VOICE_TOOL_TIMEOUT_MS`. Past its own response deadline a tool is merely **slow** — already reported to the operator as a `tool_timeout`. Three deadlines in, it is **stuck**.
+- `stuckTool` is the tool **name** only. Arguments are never put here: `/healthz` is unauthenticated, and arguments carry what the operator said.
+- `queueDepth` is **reported, never capped**. Capping would swap a visible wedge for an invisible one; the whole point is to surface it.
+- The HTTP status stays **200** while wedged. `--status` probes via `isReachable`, which reads any non-2xx as *unreachable* — and a wedged-but-listening server is a different fault from an absent one. The status carries reachability; the body carries the verdict.
+- The keys `ok` / `provider` / `readonly` are unchanged in meaning and position, so an existing reader keeps working; `degraded` and `bridge` are additions.
+
 **Boot order is fail-closed and deliberate** (`buildVoiceDeps`): token → provider kind → API key → team index → catalog → bridge → registry → provider. A missing key is a startup refusal naming the variable, not a spoken error on the first tool call.
 
 **Output discipline.** Everything the running server says goes to **stderr**. `process.stdout` is capture-owned while a tool's verb runs (`src/core/verb-capture.ts`), so a stdout write would be spliced into a spoken tool result. Only `--print-assets-dir` and `--status` — one-shot reads that exit before any capture exists — write to stdout. The startup banner prints host, port, provider, model, readonly and the assets dir, and **never** the token or an API key.
@@ -251,7 +273,11 @@ It is **not** a substitute for the phone checks. Two of convoke's four fatal def
 | Session drops after ~60 s of silence | nginx `proxy_read_timeout` shorter than a realistic pause | The example conf sets `proxy_read_timeout 3600s` on `/ws`. A 60s drop means the default is still in effect — you edited the wrong server block. |
 | Session closes 1000 after ~2 min idle | `IDLE_CLOSE_MS` (120s, no phone frames of any kind) | By design; the session is **parked**, not destroyed. Reconnect with `hello.resume=<sessionId>` inside `ATMUX_VOICE_RESUME_GRACE_MS`. |
 | Assistant says it cannot send messages | `ATMUX_VOICE_READONLY=1` | Intended for O1. The 4 messaging tools are **absent from the catalog**, so the model is telling the truth. `/healthz` reports `readonly`. |
-| Tool call times out | `ATMUX_VOICE_TOOL_TIMEOUT_MS` exceeded | The timeout bounds the **response**, not the execution — the verb keeps running under the mutex and the next tool queues behind it. A slow `topo` on a large fleet is the usual cause. |
+| Tool call times out | `ATMUX_VOICE_TOOL_TIMEOUT_MS` exceeded | The timeout bounds the **response**, not the execution — the verb keeps running under the mutex and the next tool queues behind it. A slow `topo` on a large fleet is the usual cause. If it happens **once**, that is all it is; if **every** tool call times out from then on, read the next row. |
+| **Every** tool call answers `tool_timeout` from some point onward, and the assistant otherwise sounds fine | The tool bridge is **wedged** — a verb never returned and still holds the verb mutex | `curl -s localhost:4390/healthz \| jq`. `ok:false` with `degraded:"tool-bridge-wedged"` confirms it, and `bridge.stuckTool` names the verb. There is **no self-recovery**: the mutex has no abandon path, and no wired verb calls `process.exit`, so the process stays up and useless. Recovery is `atmux voice --stop` then `--supervise`. Capture `bridge.stuckTool` + `bridge.heldMs` first — that pair is the whole bug report. |
+| `/healthz` says `ok:true` but voice does nothing | Pre-2026-08-15 build, or a fault outside the bridge | `ok` became a real verdict on 2026-08-15; before that it was the literal `true` and a wedged bridge reported green. Check the deployed version first. If `ok:true` is current and correct, the bridge is fine — look at the provider dial (§8 rows above) instead. |
+| `bridge.queueDepth` is large and growing | Tool calls piling up behind a stuck (or very slow) verb | Depth is reported rather than capped, deliberately: a cap would answer each call cheerfully and hide the wedge. A rising depth alongside `wedged:false` means genuinely slow verbs; alongside `wedged:true` it means the wedge above. |
+| `atmux voice --status` says `healthz=ok` while the bridge is wedged | Expected — they measure different things | `--status` probes reachability (`isReachable`, any 2xx). `/healthz` stays **200** while wedged on purpose, so a wedged-but-listening server is distinguishable from an absent one. **Read the body, not the status**, when you care about function rather than presence. |
 | Tool answers about the wrong team | Team resolution walked to a different cockpit entry | Resolution is a ladder (exact → case-fold → suffix-strip → unique prefix → Levenshtein ≤2); an ambiguous utterance returns `ambiguous_team` with candidates rather than guessing. `atmux voice --status` shows the provider; `list_teams` shows what the index actually holds. |
 | Supervised server flapping | Circuit breaker tripped (5 restarts in 60 s) | `tmux -L default attach -t atmux-voice` — the wrapper stops respawning and drops to a shell so the real error stays on screen. |
 | `--supervise` says "already running" but nothing answers | Session alive, server dead inside it | `atmux voice --status` distinguishes the two (`session=up healthz=unreachable`). Attach to read the pane, then `atmux voice --stop` and re-supervise. |

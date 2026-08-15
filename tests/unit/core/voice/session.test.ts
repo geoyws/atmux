@@ -51,6 +51,7 @@ import type {
   ExecuteToolInput,
   ExecuteToolOutput,
   ToolBridge,
+  ToolBridgeHealth,
 } from "../../../../src/core/voice/tool-bridge.ts";
 import { VOICE_TOOL_CATALOG } from "../../../../src/core/voice/tool-catalog.ts";
 import { VoiceProviderError } from "../../../../src/errors.ts";
@@ -278,6 +279,16 @@ const TEAM_INDEX: VoiceTeamIndex = {
   ],
 };
 
+/** The session never consults bridge health — that is `/healthz`'s
+ *  concern — so every fake bridge here shares one idle stub. */
+const IDLE_BRIDGE_HEALTH = (): ToolBridgeHealth => ({
+  wedged: false,
+  stuckTool: null,
+  heldMs: null,
+  queueDepth: 0,
+  wedgeThresholdMs: 60_000,
+});
+
 function baseConfig(over: Partial<VoiceConfig> = {}): VoiceConfig {
   return {
     token: TOKEN,
@@ -328,6 +339,7 @@ function makeHarness(
     over.shared ??
     createVoiceSharedState({ clock: () => timers.now, graceMs: config.resumeGraceMs });
   const bridge: ToolBridge = over.bridge ?? {
+    health: IDLE_BRIDGE_HEALTH,
     executeTool: async (): Promise<ExecuteToolOutput> => ({
       envelopeJson: JSON.stringify({
         ok: true,
@@ -1021,6 +1033,7 @@ describe("downlink", () => {
 describe("tool calls", () => {
   function bridgeReturning(out: ExecuteToolOutput, seen: ExecuteToolInput[] = []): ToolBridge {
     return {
+      health: IDLE_BRIDGE_HEALTH,
       executeTool: async (input): Promise<ExecuteToolOutput> => {
         seen.push(input);
         return out;
@@ -1089,6 +1102,7 @@ describe("tool calls", () => {
     });
     const h = makeHarness({
       bridge: {
+        health: IDLE_BRIDGE_HEALTH,
         executeTool: async (): Promise<ExecuteToolOutput> => ({
           envelopeJson,
           needsConfirmation: { token: "tok", preview: "Confirm dispatch task…" },
@@ -1141,6 +1155,7 @@ describe("tool calls", () => {
     const h = makeHarness({
       timers,
       bridge: {
+        health: IDLE_BRIDGE_HEALTH,
         executeTool: async (): Promise<ExecuteToolOutput> => {
           timers.now += 1234;
           return { envelopeJson: JSON.stringify({ ok: true, data: "done" }) };
