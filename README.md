@@ -731,6 +731,15 @@ atmux topo [--tree] [--orphans] [--json]                  # read-only fleet mani
 atmux topo --reap [--apply] [--yes] [--class <name>]      # destructive — dry-run by default
            [--skip-checks] [--json]                       # see docs/RUNBOOK-topology.md
 
+🎙️ Voice operator interface (ADR-272 — see docs/RUNBOOK-voice.md)
+atmux voice [--serve] [--port <n>]           # WebSocket voice server (default 127.0.0.1:4390)
+            [--provider <p>] [--model <m>]   #   provider: openai-realtime | gemini-live
+            [--readonly]                     #   readonly: expose ONLY the 10 read tools
+atmux voice --supervise                      # idempotent detached `atmux-voice` tmux session
+                                             #   (default socket) under a crash-loop wrapper
+atmux voice --status                         # session up? /healthz reachable? provider + mode
+atmux voice --stop                           # SIGINT the server, then kill-session
+
 🚢 Release
 atmux release <patch|minor|major>            # one-shot deploy: bump package.json + commit
               [--dry-run] [--allow-dirty]    # + bun run build:install + git push (ADR-183 sibling — t-c3f4c418)
@@ -909,6 +918,17 @@ See [`plugins/atmux/README.md`](plugins/atmux/README.md) for the full per-skill 
 | `ATMUX_CURSOR_ARGS_EXTRA`            | _(empty)_                                    | Extra args appended after `--model`                   |
 | `ATMUX_KIMI_BIN`                     | `kimi`                                       | Kimi CLI binary                                     |
 | `ATMUX_TMUX_BIN`                     | `/opt/atmux/current/bin/tmux` → system `tmux` | Override the tmux binary every atmux call spawns (ADR-191). Vendored default lives next to `atmux`; falls back to system `tmux` on PATH (warn-once) when absent. Operators pinning a different tmux version (testing, local dev build, CI override) set this to win the resolution chain. |
+| `ATMUX_VOICE_TOKEN`                  | **(required)**                               | `atmux voice` shared secret, **≥32 chars** — the server refuses to start without one. Compared timing-safely *before* the WebSocket upgrade. Reaching that socket means acting as the driver, so treat it as a credential (ADR-272 §Security). |
+| `ATMUX_VOICE_ORIGINS`                | **(required)**                               | Comma-separated `Origin` allowlist — the CSRF defense, since browsers do not apply same-origin policy to WebSocket handshakes |
+| `ATMUX_VOICE_PROVIDER`               | `openai-realtime`                            | Realtime adapter: `openai-realtime` \| `gemini-live`. Resolved once at session construction — no hot-swap, no mid-session failover |
+| `ATMUX_VOICE_READONLY`               | (unset)                                      | `1`/`true` → expose ONLY the 10 read tools; the 4 messaging tools are absent from the catalog, not merely refused. **The posture the feature ships in** |
+| `ATMUX_VOICE_HOST` / `_PORT`         | `127.0.0.1` / `4390`                         | Bind address + port. Loopback by default so only nginx can reach it; binding `0.0.0.0` needs its own ADR |
+| `ATMUX_VOICE_MODEL`                  | per-provider default                         | Provider-model override (`gpt-realtime` for OpenAI) |
+| `ATMUX_VOICE_CONFIRM_TTL_MS`         | `120000`                                     | Lifetime of a single-use mutation-confirmation token (ADR-272 §D7) |
+| `ATMUX_VOICE_RESUME_GRACE_MS`        | `90000`                                      | How long a dropped phone's provider leg is parked before teardown (ADR-272 §D8) |
+
+Full voice reference — env vars, nginx, start/stop, and the V-1…V-18 acceptance
+checklist — in [`docs/RUNBOOK-voice.md`](docs/RUNBOOK-voice.md).
 
 ## Dependencies
 
