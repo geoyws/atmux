@@ -289,6 +289,44 @@ Explicitly out of v1. Each names what it needs, so a future implementer does not
 
 ---
 
+## Supplement — model-pin drift guard + the opt-in live smoke (2026-08-16)
+
+Records two additions that are not decisions D1–D11 anticipated, and the reasoning that makes them safe. Neither changes the tool surface or any wire contract; both are diagnostics.
+
+### M1 — The failure being closed
+
+§Consequences already records "provider dependency is real even behind the seam". The concrete instance was worse than that sentence: the OpenAI adapter was built against a **retired** API shape, and the fault only surfaced on the first live dial as close code **4500 after roughly 68 seconds** of retries — the least diagnosable failure this feature can produce.
+
+**The class is not closed, it is loaded and aimed.** `factory.ts::defaultModelFor("gemini-live")` pins `gemini-2.5-flash-native-audio-preview-09-2025`: a **dated preview id**, retired on a schedule nobody in this repo controls. When it goes, the symptom will be the same silent 4500 — and the operator will be on a phone, away from a laptop, which is the exact situation D1 says this feature exists for.
+
+### M2 — The guard: a model-list GET at boot, that is allowed to be wrong
+
+`atmux voice --serve` checks the configured model against the provider's model index **after the listener binds**, and prints a verdict. `ok` is one quiet line; `missing` is a multi-line banner naming the consequence, the closest available ids, and the fix.
+
+Four properties, each chosen against a specific way this kind of check goes bad:
+
+1. **A network failure is `unreachable`, never `missing`.** An unreachable provider at boot is a different fault from a bad model id. Reporting an egress hiccup as drift would send the operator hunting a model that is fine — and after two of those he stops reading the warning, which is how a guard dies while still technically running. An unrecognised response *shape* is `unreachable` too, for the same reason: a provider changing its envelope must not print a confident, wrong drift claim.
+2. **It cannot block or fail the boot.** Failing closed here would make the voice server refuse to start whenever egress hiccups — trading a rare loud problem for a common total one. Even an internal bug in the checker degrades to one line. The check is a READ; it can never change what the server does.
+3. **Bounded and skippable.** 3s timeout, **zero retries** (the only cost this check has is boot latency, and a retry multiplies exactly that), and `ATMUX_VOICE_SKIP_MODEL_CHECK=1` for offline / dev — with the skip itself logged loudly, because a skipped check is a check that will not catch a retired id.
+4. **The key never appears.** It rides an auth **header** (`Authorization: Bearer` / `x-goog-api-key`) rather than a query parameter — Gemini's REST API accepts `?key=`, and a URL lands in logs, shell history and `ps` — on top of §Security's redacting logger. Three layers, because a boot banner is exactly the kind of output that gets pasted into a chat.
+
+A `401`/`403` is reported as *the provider rejected the API key*, not as drift: it is actionable, and it is a different problem.
+
+### M3 — Why the guard is not sufficient, and the live smoke is opt-in
+
+The guard answers *"does this model id exist?"*. It does **not** answer *"will a realtime session with it open, negotiate and return audio?"* — and the 2026-08-15 failure was the second question, since `gpt-realtime` was a perfectly real id and the **session-frame shape** was what had been retired. A model-list GET would not have caught it.
+
+`scripts/voice-live-smoke.ts` dials a real provider and asserts **two** things: a `session-ready` event **and a non-zero downlink byte count**. Bytes rather than "an event arrived", because a provider that accepts the socket, negotiates and then goes quiet is a real observed fault class — the one the `no session-ready within 12000ms` log line exists for, one step later. A smoke that accepted `session-ready` alone would be green for a broken adapter.
+
+**It stays opt-in and out of `bun test` deliberately.** It bills per minute, it needs keys that live only in the operator's git-crypt'd dotfiles, and it goes red on a provider outage — and a test that goes red for reasons unrelated to the change is a test people learn to ignore, which is worse than not having it. The *orchestration* is unit-tested against a fake provider, so the logic carries the same 100% gate as everything else under `src/**`; only the shim dials.
+
+**When to run it: before a deploy, and after any provider or model bump.** Those are the two moments an adapter's assumptions can go stale without a line of atmux changing.
+
+### M4 — Not done
+
+- **No automatic remediation.** The guard names the closest ids; it does not switch the pin. Silently dialling a model the operator did not choose is a worse failure than a loud one he can fix in one export.
+- **Gemini's model list is fetched as ONE page of 1000.** The API caps `pageSize` there and defaults to 50 — far under the live catalog, which would make a present model look absent. A `nextPageToken` loop is not built; if Google ever ships more than 1000 models, the symptom is a short list, and that is the signal to build it.
+
 ## Decision-anchors
 
 Every row verified against disk on **2026-08-14** unless dated otherwise.

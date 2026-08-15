@@ -83,6 +83,7 @@ Numeric knobs **fail closed to their default** on a non-numeric, non-positive, o
 | `ATMUX_VOICE_RESUME_GRACE_MS` | `90000` | no | How long a dropped phone's **provider leg is parked** for `hello.resume` (ADR-272 §D8 — the walking-into-a-lift case). |
 | `ATMUX_VOICE_CONFIRM_TTL_MS` | `120000` | no | Lifetime of a D7 confirmation token. Single-use, and bound to `sha256(tool ‖ canonical_json(args) ‖ session_id)`. |
 | `ATMUX_VOICE_ASSETS_DIR` | `resolveTemplatesDir()/voice` | no | Override for the client asset root. The default resolves install-mode `/opt/atmux/<v>/templates/voice` and dev-mode `<repo>/templates/voice` through `src/core/templates-dir.ts` — V-1 checks both. |
+| `ATMUX_VOICE_SKIP_MODEL_CHECK` | unset | no | `1`/`true` ⇒ skip the boot-time **model-pin drift check** (§6.7). For offline and dev use. The startup line says loudly that it was skipped, because a retired model id will then not be caught until a call fails with 4500. |
 | `ATMUX_VOICE_BIN` | the `atmux` on `PATH` | no | The atmux binary **`--supervise`** re-execs in its crash-loop wrapper. Precedence: per-call override > this > `resolveAtmuxBin()` (`Bun.which("atmux")` → `process.execPath`). **Fails closed** — an empty or whitespace-only value falls through to the next layer rather than producing a wrapper that execs `''`. Set it when supervising from a **repo checkout**: the installed `/usr/local/bin/atmux` → `/opt/atmux/<v>` may predate the `voice` verb, in which case the wrapper prints `unknown verb: voice`, exits 64, and crash-loops until the breaker trips (observed live 2026-08-15). The alternative — `bun run build:install` — swaps the atmux CLI **fleet-wide** for every team on the box, which is a release, not a supervision detail. See [ADR-273](adr/273-voice-fleet-triage-and-pane-input.md) §Supplement. |
 
 ### Provider API keys
@@ -339,6 +340,62 @@ atmux send --submit-only <member>     # single-member only; takes NO message
 
 It is refused with a usage error when combined with a message body, with `--no-submit`, with `--broadcast`, or with the cockpit-tier `__medic__` key — each of those would silently drop something you asked for, or write an empty inbox row and call it success.
 
+## §6.7 — Model-pin drift guard + the opt-in live smoke
+
+> **Shipped alongside [ADR-272](adr/272-voice-operator-interface.md) §Supplement.** Guard: `src/core/voice/model-check.ts` + `src/abstractions/voice/model-catalog.ts`. Smoke: `scripts/voice-live-smoke.ts` (shim) → `src/core/voice/live-smoke.ts`.
+
+The OpenAI adapter was built against a **retired API** and nobody knew until a live dial. The same class is already loaded again: `factory.ts::defaultModelFor("gemini-live")` pins `gemini-2.5-flash-native-audio-preview-09-2025` — a **dated preview id**, which by construction will be retired. When it goes, the operator's whole experience of the fault is a phone call that goes quiet and closes **4500 after roughly 68 seconds** of dial retries.
+
+### The guard (always on, at boot)
+
+`atmux voice --serve` GETs the provider's model index **after the listener binds** and prints one verdict. Good pin — one quiet line:
+
+```
+voice: model check ok — gemini-live/gemini-2.5-flash-native-audio-preview-09-2025 is in the provider's list of 312 models
+```
+
+Retired pin — a banner you cannot skim past:
+
+```
+voice: ########################################################################
+voice: ## MODEL PIN DRIFT — 'gemini-2.5-flash-native-audio-preview-09-2025' is NOT in gemini-live's model list (312 models)
+voice: ## The server WILL start, and every dial will fail with close code 4500.
+voice: ## A retired or renamed dated-preview id is the usual cause.
+voice: ## Closest available: gemini-2.5-flash-native-audio-latest, gemini-2.5-flash-preview-native-audio-dialog
+voice: ## Fix: export ATMUX_VOICE_MODEL=<id>, or pass --model <id>.
+voice: ## Skip this check with ATMUX_VOICE_SKIP_MODEL_CHECK=1 (offline / dev only).
+voice: ########################################################################
+```
+
+Four properties, each with the failure it prevents:
+
+| Property | Why |
+|---|---|
+| **A network failure is `unreachable`, never `missing`** | An unreachable provider at boot is a different fault from a bad model id. Reporting an egress hiccup as DRIFT sends you hunting a model that is fine, and after two of those the warning gets ignored — which is how the guard dies. |
+| **It never blocks or fails the boot** | Failing closed here would make the voice server refuse to start whenever the box's egress hiccups: a rare loud problem traded for a common total one. It warns and serves. Even a bug inside the checker degrades to one line. |
+| **Bounded and skippable** | 3s timeout, **no retries** (the only cost is boot latency, and a retry multiplies exactly that); `ATMUX_VOICE_SKIP_MODEL_CHECK=1` for offline. |
+| **The key never appears** | It rides an auth **header** (`Authorization: Bearer` / `x-goog-api-key`), never a query parameter — so it stays out of logs, shell history and `ps` — and every server line goes through the redacting `createVoiceLogger` on top of that. |
+
+A `401`/`403` is reported as its own thing (`the provider rejected the API key`) rather than as drift: it is actionable, and it is not a model problem.
+
+### The live smoke (opt-in — it costs money)
+
+The guard answers *"does this model id exist?"*. It does **not** answer *"will a realtime session with it actually open, negotiate and return audio?"* — and the 2026-08-15 failure was the second question, since `gpt-realtime` was a perfectly real id and the session-frame SHAPE was retired. A model-list GET would not have caught it. A dial would.
+
+```bash
+OPENAI_API_KEY=… bun scripts/voice-live-smoke.ts
+GEMINI_API_KEY=… bun scripts/voice-live-smoke.ts --provider gemini
+GEMINI_API_KEY=… bun scripts/voice-live-smoke.ts --provider gemini --model gemini-2.5-flash-native-audio-latest
+```
+
+It dials a real provider and asserts **two** things: a `session-ready` event **and a non-zero downlink byte count**. Bytes rather than "an event arrived", because a provider that accepts the socket, negotiates and then says nothing is a real observed fault class — a smoke that passed on the event alone would be green for it.
+
+**It is deliberately NOT part of `bun test`.** It bills per minute, it needs keys that live only in the git-crypt'd dotfiles, and it goes red on a provider outage — a CI failure that says nothing about the commit is one people learn to ignore. The orchestration it drives is unit-tested against a fake provider, so the logic is covered without a network; only the shim dials.
+
+**Run it: before a deploy, and after ANY provider or model bump.** Those are the two moments the adapter's assumptions can go stale without a line of atmux changing.
+
+The key comes from the **environment**, never argv (a tmux pane capture records command lines). Exit 0 iff both assertions hold; all output is on stderr.
+
 ## §7 — Verification checklist (V-1 … V-18)
 
 > **Filled in progressively: V-1…V-8 in P4, V-9…V-17 in P5, V-18 in P7.** Every row starts as a placeholder. A row is marked done only with a **receipt** — a command and its output, a paste-id, or a screenshot — never "looks fine". **A row goes green because the underlying thing became true, never because the wording was loosened.**
@@ -403,6 +460,10 @@ It is refused with a usage error when combined with a message body, with `--no-s
 | 4500 and the server log is EMPTY except the banner | Pre-2026-08-15 build | This was the original defect: the dial had every fact and discarded all of them, so a 5-attempt exhaustion diagnosed only by hand-probing the live provider API. If the log is still silent on a failed dial, the running binary predates the fix — check `atmux --version` against the deployed `/opt/atmux/current`. |
 | Long pause, then 4500, with no obvious network fault | The provider opened its socket and went quiet — no `session-ready` | The log says so explicitly: `no session-ready within 12000ms (socket opened, provider handshake never completed)`. `connectWebSocket` bounds only the WS *handshake* (10s); `session-ready` arrives afterwards from an inbound provider frame (OpenAI `session.created`, Gemini `setupComplete`). A provider that accepts the socket then stalls — or sends a frame its adapter cannot parse — is caught by the 12s `SESSION_READY_TIMEOUT_MS` budget and retried. Worst case is ~68s before 4500, deliberately inside the 120s idle close so the cause is reported honestly rather than as an idle timeout. |
 | Log says `connect failed — …` rather than `no session-ready …` | The socket was **refused**, not stalled | A different fault from the row above, and deliberately worded differently: nothing opened. Check DNS, egress, and provider status from hax. |
+| 4500 on every call, and the boot log printed **MODEL PIN DRIFT** | The pinned model id no longer exists at the provider | The banner names the closest available ids. `export ATMUX_VOICE_MODEL=<id>` (or `--model <id>`) and restart. This is the whole reason §6.7's guard exists: before it, a retired dated-preview id presented only as a silent 4500 about 68 seconds into a call. |
+| Boot says `model check could not run — …` | The model list could not be fetched: egress, DNS, TLS, or a provider 5xx | **Not** a model problem — the pin is simply UNVERIFIED and the server is serving normally. If the detail says `rejected the API key`, that IS the problem: the same credential is about to fail the dial too. |
+| Boot says `model check SKIPPED` | `ATMUX_VOICE_SKIP_MODEL_CHECK` is set | Intended for offline / dev. Unset it on any box that actually takes calls, or a retired id will only surface as a 4500. |
+| A model id looks right but the dial still fails | The id exists; the session-frame SHAPE is what drifted | The model-list check cannot see this — it is exactly the 2026-08-15 fault. Run the opt-in live smoke (§6.7): `bun scripts/voice-live-smoke.ts`. |
 | 4500 immediately, log shows `[beta_api_shape_disabled]` | Something reintroduced an **OpenAI Realtime BETA opt-in** | The beta API is retired: the server rejects the first frame with `error{code:"beta_api_shape_disabled"}` and closes **4000**. There are two independent opt-ins and either one is fatal — the `OpenAI-Beta: realtime=v1` **header** and the `openai-beta.realtime-v1` **subprotocol** element. Neither belongs in `src/abstractions/voice/openai-realtime.ts`; the GA dial is Bearer-only (or a two-element protocol list). See that file's header for the GA `session.update` nesting. |
 | Log shows `further provider errors on this leg suppressed` | A provider is erroring repeatedly on one leg | Expected, not a fault in itself: the log caps non-fatal provider errors at 3 per leg so a per-frame error cannot flood stderr. The first 3 carry the diagnosis; the eventual `dial attempt` / `dial exhausted` line still quotes the last one. |
 | A log line shows `<redacted>` where a URL or header should be | Working as designed | `createVoiceLogger` redacts the API key, the voice token, and anything shaped like a credential (`?key=`, `Bearer …`, `sk-…`) before the line is written. If you need the raw value, read it from the dotfiles env — it is deliberately not recoverable from a log. |

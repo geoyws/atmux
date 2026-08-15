@@ -11,6 +11,11 @@ import { resolve } from "node:path";
 import type { SendTarget, TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import { VOICE_ROUTES } from "../../../src/core/voice/assets.ts";
 import { encodeFrame, VOICE_FLAG_TURN_END } from "../../../src/core/voice/frame.ts";
+import {
+  checkModelPin,
+  type ModelCheckDeps,
+  type ModelCheckResult,
+} from "../../../src/core/voice/model-check.ts";
 import { WEDGE_THRESHOLD_MULTIPLE } from "../../../src/core/voice/tool-bridge.ts";
 import { VOICE_TOOL_CATALOG, type VoiceRunnerKey } from "../../../src/core/voice/tool-catalog.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
@@ -29,6 +34,7 @@ import {
   resolveAtmuxBin,
   resolveSuperviseBin,
   resolveVoiceAssetsDir,
+  runModelPinCheck,
   SUPERVISE_BACKOFF_SEC,
   SUPERVISE_BREAKER_RESTARTS,
   SUPERVISE_BREAKER_WINDOW_SEC,
@@ -1070,6 +1076,24 @@ describe("server diagnostics (real Bun.serve, real stderr sink)", () => {
 
 // ---------- serveVoice ----------
 
+/**
+ * The model-pin drift check, stubbed OFF for every `serveVoice` call in
+ * this file.
+ *
+ * `serveVoice` runs it at boot, and the real one issues an HTTPS GET to
+ * the provider's model index. A unit suite must never dial a provider —
+ * so every call site here injects this, and the dedicated tests below
+ * drive the wiring with a recording stub instead.
+ */
+const NO_MODEL_CHECK = async (d: ModelCheckDeps): Promise<ModelCheckResult> => ({
+  status: "skipped",
+  kind: d.kind,
+  model: d.model,
+  available: null,
+  suggestions: [],
+  detail: "stubbed in unit tests",
+});
+
 describe("serveVoice", () => {
   test("logs the banner, honours SIGINT-style shutdown, and unregisters handlers", async () => {
     const { deps } = await buildTestDeps();
@@ -1082,6 +1106,7 @@ describe("serveVoice", () => {
       log: (l) => logs.push(l),
       onSignal: (name, h) => handlers.set(name, h),
       offSignal: (name) => removed.push(name),
+      checkModel: NO_MODEL_CHECK,
     });
     // Handlers register after the banner; wait, then fire the "signal".
     expect(await waitFor(() => handlers.has("SIGINT") && handlers.has("SIGTERM"))).toBe(true);
@@ -1091,6 +1116,105 @@ describe("serveVoice", () => {
     expect(logs.some((l) => l.startsWith("voice: listening on 127.0.0.1:"))).toBe(true);
     expect(logs).toContain("voice: shutting down");
     expect(removed.sort()).toEqual(["SIGINT", "SIGTERM"]);
+  });
+
+  test("the model-pin drift check runs at boot, with the CONFIGURED provider + model", async () => {
+    const { deps } = await buildTestDeps();
+    deps.config.port = 0;
+    const seen: ModelCheckDeps[] = [];
+    const logs: string[] = [];
+    const abort = new AbortController();
+    const p = serveVoice({
+      deps,
+      log: (l) => logs.push(l),
+      signal: abort.signal,
+      onSignal: () => {},
+      offSignal: () => {},
+      checkModel: async (d) => {
+        seen.push(d);
+        return {
+          status: "ok",
+          kind: d.kind,
+          model: d.model,
+          available: 42,
+          suggestions: [],
+          detail: null,
+        };
+      },
+    });
+    expect(await waitFor(() => logs.some((l) => l.includes("model check ok")))).toBe(true);
+    abort.abort();
+    await p;
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.kind).toBe("openai-realtime");
+    expect(seen[0]?.model).toBe(deps.providerCfg.model);
+    // It receives the key (it must — the list endpoint is authenticated)
+    // and no logged line carries it.
+    expect(seen[0]?.apiKey).toBe(TEST_OPENAI_KEY);
+    for (const l of logs) expect(l).not.toContain(TEST_OPENAI_KEY);
+  });
+
+  test("a MISSING model prints the loud banner and the server STILL serves", async () => {
+    // The whole design: a drift verdict is a warning, never a refusal.
+    // Failing the boot here would let a wrong warning take voice down.
+    const { deps } = await buildTestDeps();
+    deps.config.port = 0;
+    const logs: string[] = [];
+    const abort = new AbortController();
+    const p = serveVoice({
+      deps,
+      log: (l) => logs.push(l),
+      signal: abort.signal,
+      onSignal: () => {},
+      offSignal: () => {},
+      checkModel: async (d) => ({
+        status: "missing",
+        kind: d.kind,
+        model: d.model,
+        available: 300,
+        suggestions: ["gpt-realtime-2"],
+        detail: null,
+      }),
+    });
+    expect(await waitFor(() => logs.some((l) => l.includes("MODEL PIN DRIFT")))).toBe(true);
+    expect(logs.some((l) => l.startsWith("voice: listening on"))).toBe(true);
+    expect(logs.some((l) => l.includes("gpt-realtime-2"))).toBe(true);
+    abort.abort();
+    // Still exits cleanly — the server ran.
+    expect(await p).toBe(0);
+  });
+
+  test("a THROWING check cannot take the boot down", async () => {
+    const { deps } = await buildTestDeps();
+    deps.config.port = 0;
+    const logs: string[] = [];
+    const abort = new AbortController();
+    const p = serveVoice({
+      deps,
+      log: (l) => logs.push(l),
+      signal: abort.signal,
+      onSignal: () => {},
+      offSignal: () => {},
+      checkModel: async () => {
+        throw new Error("checker blew up");
+      },
+    });
+    expect(await waitFor(() => logs.some((l) => l.includes("model check itself failed")))).toBe(
+      true,
+    );
+    abort.abort();
+    expect(await p).toBe(0);
+  });
+
+  test("runModelPinCheck defaults to the real checker (wiring pin, not a dial)", async () => {
+    // Asserts the DEFAULT argument is `checkModelPin` by driving the
+    // function with an explicit stub AND checking the exported default
+    // is the real one — without ever letting the real one run.
+    const { deps } = await buildTestDeps();
+    const logs: string[] = [];
+    await runModelPinCheck(deps, (l) => logs.push(l), NO_MODEL_CHECK);
+    expect(logs.some((l) => l.includes("model check SKIPPED"))).toBe(true);
+    expect(typeof checkModelPin).toBe("function");
   });
 
   test("an AbortSignal stops the server", async () => {
@@ -1103,6 +1227,7 @@ describe("serveVoice", () => {
       signal: abort.signal,
       onSignal: () => {},
       offSignal: () => {},
+      checkModel: NO_MODEL_CHECK,
     });
     await flush();
     abort.abort();
@@ -1554,6 +1679,7 @@ describe("voice() entry", () => {
       },
       log: (l) => logs.push(l),
       signal: abort.signal,
+      checkModel: NO_MODEL_CHECK,
     });
     expect(await waitFor(() => logs.some((l) => l.startsWith("voice: listening")))).toBe(true);
     expect(scoped).toBe(true);
@@ -1574,6 +1700,7 @@ describe("voice() entry", () => {
       },
       log: () => {},
       signal: abort.signal,
+      checkModel: NO_MODEL_CHECK,
     });
     await flush();
     abort.abort();
@@ -1619,7 +1746,7 @@ describe("default output sinks", () => {
     const { out, err } = await captureStd(async () => {
       // No onSignal/offSignal override: this exercises the real
       // `process.once` / `process.off` wiring.
-      const p = serveVoice({ deps, signal: abort.signal });
+      const p = serveVoice({ deps, signal: abort.signal, checkModel: NO_MODEL_CHECK });
       await flush();
       expect(process.listenerCount("SIGINT")).toBe(before + 1);
       abort.abort();
@@ -1759,6 +1886,7 @@ describe("production default wirings", () => {
         },
         log: () => {},
         signal: abort.signal,
+        checkModel: NO_MODEL_CHECK,
         onSignal: undefined as never,
       } as never);
       await flush();

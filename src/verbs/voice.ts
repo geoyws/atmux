@@ -16,6 +16,12 @@
 //      not a spoken error on the first tool call. Fail closed, early.
 //   3. `ATMUX_CALLER_SCOPE=driver` — the D3 privilege grant, applied
 //      once at serve time. Whoever reaches the socket IS the driver.
+//   4. AFTER the listener binds: the model-pin drift check
+//      (`runModelPinCheck`, ADR-272 §Supplement). Deliberately NOT
+//      fail-closed like steps 1–2 — a bad model id and an unreachable
+//      provider are different faults, and refusing to boot on the second
+//      would make an egress hiccup take voice down entirely. It warns
+//      loudly and serves.
 //
 // Logging discipline: EVERY line this verb emits about the running
 // server goes to `process.stderr`. `process.stdout` is capture-owned
@@ -53,6 +59,12 @@ import { authorizeUpgrade } from "../core/voice/auth.ts";
 import { resolveVoiceConfig, type VoiceConfig, type VoiceFlags } from "../core/voice/config.ts";
 import { createConfirmStore } from "../core/voice/confirm.ts";
 import { createVoiceLogger, type VoiceLog } from "../core/voice/log.ts";
+import {
+  checkModelPin,
+  formatModelCheck,
+  type ModelCheckDeps,
+  type ModelCheckResult,
+} from "../core/voice/model-check.ts";
 import {
   createVoiceSession,
   createVoiceSharedState,
@@ -664,6 +676,39 @@ export interface ServeVoiceOpts extends StartVoiceServerOpts {
   /** Signal-handler registration seam. */
   onSignal?: (name: "SIGINT" | "SIGTERM", handler: () => void) => void;
   offSignal?: (name: "SIGINT" | "SIGTERM", handler: () => void) => void;
+  /** Model-pin drift check seam (ADR-272 §Supplement). Defaults to the
+   *  real one; tests inject so the unit suite never dials a provider. */
+  checkModel?: (deps: ModelCheckDeps) => Promise<ModelCheckResult>;
+}
+
+/**
+ * Run the model-pin drift check and log its verdict. ADR-272 §Supplement.
+ *
+ * **Never throws, never blocks the boot.** The whole point is to turn a
+ * mystifying 4500-after-68-seconds into a loud line at startup; a check
+ * that could itself refuse the boot would trade a rare loud problem for a
+ * common total one (an egress hiccup would stop the server starting).
+ * Even an internal bug in the checker degrades to one line here.
+ *
+ * The API key reaches it as an argument and never reaches a message: it
+ * rides an auth HEADER in `model-catalog.ts`, nothing formats it, and
+ * `log` is the redacting `createVoiceLogger` on top of that.
+ */
+export async function runModelPinCheck(
+  deps: VoiceServeDeps,
+  log: (line: string) => void,
+  check: (d: ModelCheckDeps) => Promise<ModelCheckResult> = checkModelPin,
+): Promise<void> {
+  try {
+    const result = await check({
+      kind: deps.provider.kind,
+      model: deps.providerCfg.model,
+      apiKey: deps.providerCfg.apiKey,
+    });
+    for (const line of formatModelCheck(result)) log(line);
+  } catch (e) {
+    log(`voice: model check itself failed (${e instanceof Error ? e.message : String(e)})`);
+  }
 }
 
 /** Startup banner — host/port/provider/model/readonly/assets. NEVER the
@@ -688,6 +733,10 @@ export async function serveVoice(opts: ServeVoiceOpts): Promise<number> {
   const log = opts.log ?? opts.deps.log;
   const handle = startVoiceServer({ ...opts, log });
   log(startupBanner(opts.deps, handle));
+  // AFTER the listener is up, so a slow provider never delays binding —
+  // and awaited, so its verdict lands next to the banner rather than
+  // interleaved with the first session's dial story.
+  await runModelPinCheck(opts.deps, log, opts.checkModel ?? checkModelPin);
 
   const on =
     opts.onSignal ??
@@ -919,6 +968,10 @@ export interface VoiceEntryOverrides {
   signal?: AbortSignal;
   sleep?: (ms: number) => Promise<void>;
   applyScope?: () => void;
+  /** Model-pin drift check seam (ADR-272 §Supplement). Threaded to
+   *  `serveVoice`; a test MUST inject it, since the real one issues an
+   *  HTTPS GET to the provider's model index. */
+  checkModel?: (deps: ModelCheckDeps) => Promise<ModelCheckResult>;
 }
 
 /**
@@ -992,5 +1045,6 @@ export async function voice(
   if (overrides.log !== undefined) serveOpts.log = overrides.log;
   if (args.maxFrames !== undefined) serveOpts.maxFrames = args.maxFrames;
   if (overrides.signal !== undefined) serveOpts.signal = overrides.signal;
+  if (overrides.checkModel !== undefined) serveOpts.checkModel = overrides.checkModel;
   return await serveVoice(serveOpts);
 }
