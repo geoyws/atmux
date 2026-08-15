@@ -1038,6 +1038,122 @@ describe("barge-in (cancel)", () => {
   });
 });
 
+// ---------- barge-in, provider side (ADR-272 §Supplement-P7 §R4) ----------
+//
+// `cancel` (phone-side barge-in) set `suppressAudio`; `speech-started`
+// (provider-side barge-in) sent `audio.clear` and did NOT — so a straggler
+// `audio-out` from the response being interrupted could land AFTER the
+// clear and the assistant would talk over the operator. Reachable only in
+// mode:"vad", which `ready` still pins vad:false, so it goes live exactly
+// when P7 enables VAD (OQ-3).
+//
+// Both tests assert the ORDER, not merely that both things happened: a
+// clear that arrives after the audio it was supposed to flush is not a
+// barge-in, it is a glitch.
+
+describe("barge-in (provider speech-started)", () => {
+  test("audio.clear precedes any later audio, and the interrupted response is suppressed", async () => {
+    const h = makeHarness();
+    await live(h);
+    const leg = h.provider.lastLeg;
+
+    // The assistant IS speaking — stragglers are possible.
+    leg.emit({ type: "audio-out", pcm: new Uint8Array([1, 1]) });
+    await flush();
+    expect(h.phone.binaries).toHaveLength(1);
+
+    leg.emit({ type: "speech-started" });
+    await flush();
+    const clearIdx = h.phone.wireIndexOfType("audio.clear");
+    expect(clearIdx).toBeGreaterThan(-1);
+
+    // Audio still streaming from the interrupted response must not reach
+    // the phone. Without the fix these two land after the clear.
+    leg.emit({ type: "audio-out", pcm: new Uint8Array([2, 2]) });
+    leg.emit({ type: "audio-out", pcm: new Uint8Array([3, 3]) });
+    await flush();
+    expect(h.phone.binaries).toHaveLength(1);
+    expect(h.session.stats().droppedDownlinkFrames).toBe(2);
+    // THE ORDERING ASSERTION: nothing binary appears after the clear.
+    expect(h.phone.firstBinaryWireIndex(clearIdx)).toBe(-1);
+
+    // The gate lifts at the turn boundary, and the next turn's audio then
+    // sits strictly AFTER the clear in the wire log.
+    leg.emit({ type: "turn-complete" });
+    await flush();
+    leg.emit({ type: "audio-out", pcm: new Uint8Array([4, 4]) });
+    await flush();
+    expect(h.phone.binaries).toHaveLength(2);
+    expect(h.phone.firstBinaryWireIndex(clearIdx)).toBeGreaterThan(clearIdx);
+  });
+
+  test("it matches the phone-side `cancel` path frame for frame", async () => {
+    async function bargeIn(via: "cancel" | "speech-started"): Promise<number[]> {
+      const h = makeHarness();
+      await live(h);
+      const leg = h.provider.lastLeg;
+      leg.emit({ type: "audio-out", pcm: new Uint8Array([1, 1]) });
+      await flush();
+      if (via === "cancel") {
+        await h.session.handlePhoneMessage(JSON.stringify({ type: "cancel" }));
+      } else {
+        leg.emit({ type: "speech-started" });
+        await flush();
+      }
+      leg.emit({ type: "audio-out", pcm: new Uint8Array([2, 2]) });
+      await flush();
+      return [
+        h.phone.binaries.length,
+        h.session.stats().droppedDownlinkFrames,
+        h.phone.ofType("audio.clear").length,
+      ];
+    }
+    // Same suppression, same drop count, same single clear — the two
+    // barge-in paths are one behaviour with two triggers.
+    expect(await bargeIn("speech-started")).toEqual(await bargeIn("cancel"));
+  });
+
+  test("when the assistant was NOT speaking, the next response is NOT swallowed", async () => {
+    // The regression this guard exists for. `openai-realtime.ts` maps EVERY
+    // `input_audio_buffer.speech_started`, including ones with no response
+    // in flight; `gemini-live.ts` emits the event only for `interrupted`.
+    // Suppressing unconditionally would latch with nothing to suppress and,
+    // since the gate lifts only on `turn-complete`, drop the whole next
+    // response — total silence on the default provider.
+    const h = makeHarness();
+    await live(h);
+    const leg = h.provider.lastLeg;
+
+    leg.emit({ type: "speech-started" }); // operator speaks; nothing playing
+    await flush();
+    expect(h.phone.ofType("audio.clear")).toHaveLength(1);
+
+    // The answer to what he just said must be audible.
+    leg.emit({ type: "audio-out", pcm: new Uint8Array([7, 7]) });
+    leg.emit({ type: "audio-out", pcm: new Uint8Array([8, 8]) });
+    await flush();
+    expect(h.phone.binaries).toHaveLength(2);
+    expect(h.session.stats().droppedDownlinkFrames).toBe(0);
+    expect(h.phone.ofType("status").filter((s) => s.state === "speaking")).toHaveLength(1);
+  });
+
+  test("a second speech-started mid-suppression does not un-suppress", async () => {
+    const h = makeHarness();
+    await live(h);
+    const leg = h.provider.lastLeg;
+    leg.emit({ type: "audio-out", pcm: new Uint8Array([1, 1]) });
+    await flush();
+    leg.emit({ type: "speech-started" }); // suppression on
+    leg.emit({ type: "speech-started" }); // now `speakingAnnounced` is false
+    await flush();
+    leg.emit({ type: "audio-out", pcm: new Uint8Array([2, 2]) });
+    await flush();
+    // The second event must not read "nothing was speaking, so lift it".
+    expect(h.phone.binaries).toHaveLength(1);
+    expect(h.session.stats().droppedDownlinkFrames).toBe(1);
+  });
+});
+
 // ---------- downlink ----------
 
 describe("downlink", () => {
@@ -1107,13 +1223,18 @@ describe("downlink", () => {
     expect(h.phone.ofType("status").pop()).toEqual({ type: "status", state: "listening" });
   });
 
-  test("speech-started re-arms the speaking announcement for the next chunk", async () => {
+  test("speech-started re-arms the speaking announcement for the NEXT turn", async () => {
+    // Rewritten with ADR-272 §Supplement-P7 §R4: audio arriving between
+    // the barge-in and the turn boundary is now suppressed, so the re-arm
+    // is proved on the next TURN rather than on a straggler.
     const h = makeHarness();
     await live(h);
     const leg = h.provider.lastLeg;
     leg.emit({ type: "audio-out", pcm: new Uint8Array([1, 1]) });
     await flush();
     leg.emit({ type: "speech-started" });
+    await flush();
+    leg.emit({ type: "turn-complete" });
     await flush();
     leg.emit({ type: "audio-out", pcm: new Uint8Array([2, 2]) });
     await flush();

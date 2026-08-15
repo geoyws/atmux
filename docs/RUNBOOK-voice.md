@@ -424,7 +424,7 @@ It dials a real provider and asserts **two** things: a `session-ready` event **a
 
 The key comes from the **environment**, never argv (a tmux pane capture records command lines). Exit 0 iff both assertions hold; all output is on stderr.
 
-## §7 — Verification checklist (V-1 … V-18)
+## §7 — Verification checklist (V-1 … V-19)
 
 > **Filled in progressively: V-1…V-8 in P4, V-9…V-17 in P5, V-18 in P7.** Every row starts as a placeholder. A row is marked done only with a **receipt** — a command and its output, a paste-id, or a screenshot — never "looks fine". **A row goes green because the underlying thing became true, never because the wording was loosened.**
 
@@ -466,11 +466,12 @@ The key comes from the **environment**, never argv (a tmux pane capture records 
 | V-16 | Tool chips land on **real** tmux | A spoken `tell_lead` appears in the target team's real lead inbox; a spoken `list_tasks` matches what `atmux task list` prints. The end-to-end proof that the bridge reaches the fleet, not a mock. | placeholder |
 | V-17 | Read-only kill switch | With `ATMUX_VOICE_READONLY=1`, the 4 messaging tools are **absent from the catalog the model receives** — not merely refused on call. Ask the assistant to send a message: it reports it has no such capability. | placeholder |
 
-### Hardening (V-18) — lands in P7
+### Hardening (V-18 … V-19) — lands in P7
 
 | ID | Check | Pass criteria | Status |
 |---|---|---|---|
 | V-18 | Echo-runaway breaker | With the speaker on and any VAD-style turn detection enabled (OQ-3), the assistant's **own downlink must not re-trigger its input**. A runaway is detected and broken automatically; it must never be left to the operator to notice a self-sustaining loop that is billing per minute. | placeholder |
+| V-19 | VAD barge-in cuts the assistant off | With VAD enabled, speak over the assistant mid-sentence: playback stops at once and **no straggler audio** follows the cut — the provider-side barge-in now suppresses the interrupted response exactly like the phone-side `cancel` ([ADR-272](adr/272-voice-operator-interface.md) §Supplement-P7 §R4). Then, on a turn where the assistant was **silent**, speak and confirm the reply is fully audible — that half is the regression guard, because suppressing unconditionally would swallow the whole next response on OpenAI. | placeholder |
 
 ## §8 — Troubleshooting
 

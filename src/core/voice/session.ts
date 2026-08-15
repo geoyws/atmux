@@ -25,7 +25,9 @@
 //     buffered unboundedly.
 //   - Barge-in ordering invariant: `audio.clear` is sent BEFORE any
 //     subsequent audio; provider audio still streaming from the
-//     cancelled response is suppressed until the turn boundary.
+//     cancelled response is suppressed until the turn boundary. BOTH
+//     barge-in paths obey it — the phone's `cancel` and the provider's
+//     `speech-started` (ADR-272 §Supplement-P7 §R4).
 //   - No stdout writes anywhere (stdout is capture-owned while a verb
 //     runs). Diagnostics go through the injected `log` seam, which the
 //     verb layer points at stderr behind a redactor
@@ -908,11 +910,42 @@ class VoiceServerSessionImpl implements VoiceServerSession {
           final: ev.final,
         });
         return;
-      case "speech-started":
+      case "speech-started": {
+        // PROVIDER-SIDE BARGE-IN, and it must behave like the phone-side
+        // one (`cancel`): flush the client queue, and SUPPRESS the audio
+        // still streaming from the response being interrupted — otherwise
+        // a straggler `audio-out` lands after the clear and the operator
+        // hears the assistant talk over him. Ordering is the invariant:
+        // `audio.clear` goes out BEFORE any later audio can be sent.
+        //
+        // The condition is load-bearing, not caution. The two adapters do
+        // not agree on when this event fires: `gemini-live.ts` emits it
+        // only for `interrupted: true` (a response WAS in flight), while
+        // `openai-realtime.ts` maps every `input_audio_buffer.speech_started`
+        // — which fires whether or not the assistant is mid-response.
+        // Suppressing unconditionally would therefore latch on OpenAI when
+        // nothing was speaking, and since the gate only lifts on
+        // `turn-complete`, the ENTIRE NEXT RESPONSE would be dropped:
+        // silence, on the provider this feature ships as its default.
+        // `speakingAnnounced` is true exactly when assistant audio is in
+        // flight for the current turn, which is precisely when stragglers
+        // exist — so this makes OpenAI behave like Gemini's already-correct
+        // signal. Reachable only in `mode:"vad"` today (OQ-3 keeps `ready`
+        // at `vad:false`), i.e. latent until P7 turns VAD on.
+        //
+        // RESIDUAL RISK (P7 hardening, ADR-272 §Supplement-P7 §R4): the
+        // gate lifts on `turn-complete`, and gemini-live.ts notes that
+        // native-audio models are widely reported to DROP `turnComplete`
+        // after an interrupt. A provider that does would leave this armed
+        // and silence the next response. Not new and not specific to this
+        // arm — `cancel` has had the same dependency since P4, and in PTT
+        // the phone's own TURN_END clears it. V-19 checks it on hardware.
+        if (this.speakingAnnounced) this.suppressAudio = true;
         this.speakingAnnounced = false;
         this.sendJson({ type: "audio.clear", reason: "speech-started" });
         this.sendStatus("listening");
         return;
+      }
       case "tool-call":
         await this.onToolCall(ev);
         return;
