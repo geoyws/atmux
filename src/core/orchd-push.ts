@@ -36,7 +36,8 @@
 // `geoy.ws` allowlist carve-out).
 
 import type { Database } from "bun:sqlite";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import { emit as defaultEmit, withIdempotency } from "../abstractions/events.ts";
 import { isHonkerEnabled } from "../abstractions/honker.ts";
 import type { EpicMergedPayload } from "../schema/events.ts";
@@ -125,8 +126,31 @@ export interface OrchdPushAuditRow {
  * Append one JSONL row to the audit log. Synchronous fs.appendFileSync
  * — audit-log append must complete before the consumer advances the
  * offset (async write could lose the row on crash).
+ *
+ * Creates the parent directory (`mkdir -p`) before appending. This is
+ * load-bearing, NOT convenience: {@link createAutoPushHandler}'s
+ * default `auditLogPath` is the RELATIVE `.atmux/logs/orchd-push.jsonl`
+ * and neither production call-site (`verbs/orchd.ts::bootstrapOrchd`,
+ * `verbs/committer.ts::committerDrainVerb`) overrides it, so the path
+ * resolves against the daemon's cwd. A missing `.atmux/logs/` made
+ * `appendFileSync` throw ENOENT out of the handler, and
+ * `withIdempotency` (`abstractions/events.ts`) `break`s the drain
+ * WITHOUT saving the offset on a handler throw — so a non-transient
+ * missing directory permanently wedged the `atmux:orchd:auto-push`
+ * consumer, head-of-line-blocking every later `epic.merged`. The
+ * wedge fired on the DEFAULT refusal path (Gate-4 loud-opt-in), i.e.
+ * every cage that has not opted into auto-push. Only `--start` wired
+ * the `mkdir -p .atmux/logs` (see `core/orchd-window.ts`); the cron
+ * `--drain` and `--handle-one` entry points did not.
+ *
+ * Mirrors `abstractions/fs.ts::appendText`, which likewise ensures the
+ * parent dir. Real write failures (permissions, disk full) still throw
+ * — the retry-on-throw contract is correct for those, and swallowing
+ * them would silently break ADR-229 §DA-Gate-6's "every push attempt
+ * appends one row" invariant.
  */
 export function appendOrchdPushAuditRow(logPath: string, row: OrchdPushAuditRow): void {
+  mkdirSync(dirname(logPath), { recursive: true });
   appendFileSync(logPath, `${JSON.stringify(row)}\n`, "utf8");
 }
 
