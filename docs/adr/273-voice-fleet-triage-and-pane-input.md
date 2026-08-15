@@ -122,7 +122,7 @@ Closed three ways: (a) `probeCageState` gained a `sessionName` opt — the defau
 ### S3 — Decisions the ADR left open
 
 1. **Panes are enumerated from tmux windows, not the roster.** D1 says "every pane across every team" without saying how one is found. The roster is the obvious answer and it is wrong here: 14 of the 15 enabled teams carry `members: []` (driver-only, per the 2026-05-16 decomposition) while their sessions hold live `driver` / `driver-2` / `driver-3` windows. A roster-driven sweep answers "0 panes, all clear" across a fleet of working agents — the exact failure this ADR is written against. The roster is now enrichment (member labels); tmux is the truth. ADR-089 viewer windows are excluded structurally (`pane_current_command === "tmux"`) because they mirror another session's pane.
-2. **Epic-teams are reported UNREADABLE.** A cockpit `epic-team` entry inherits the *parent's* root (ADR-089 shared worktree), so neither its roster nor its session anchor is resolvable from the entry — probing one would read the parent's cage and report a confident wrong answer. Reported with the reason rather than skipped, since "never silently omitted" is the load-bearing rule. Five such entries exist on the fleet today, all from dissolved epics.
+2. **Epic-teams are reported UNREADABLE.** A cockpit `epic-team` entry inherits the *parent's* root (ADR-089 shared worktree), so neither its roster nor its session anchor is resolvable from the entry — probing one would read the parent's cage and report a confident wrong answer. Reported with the reason rather than skipped, since "never silently omitted" is the load-bearing rule. Five such entries exist on the fleet today, all from dissolved epics. — **Superseded by §Supplement-3 (2026-08-17): the claim "not resolvable" was wrong, and the resulting per-sweep noise was the tool's worst quality problem.**
 3. **`dormant` is chronic, and ranked last.** D3 lists "dormant" among the attention classes, but on the live fleet it is 28 of 45 findings — a merely-parked fleet would make every team non-nominal and drown the acute findings. It stays an attention class (silence is not health) but ranks below everything acute, so it normally reaches the operator inside the "+N more" count, and `fleet_quiet` counts it on its own line so the all-clear stays meaningful.
 4. **Same-class findings on one team collapse into one spoken entry.** D2 caps *items*; seven `dash` panes blocked on the same modal would have consumed the whole budget for one fact. Collapsing preserves rank order (a group takes its first member's position) and the remainder count still counts items.
 5. **Classification reads only the pane TAIL (25 lines).** `capture-pane -S -40` returns scrollback *plus* the whole visible screen, so classifying over all of it made an `Error:` printed an hour ago read as a crash. Trailing blank rows are dropped before the tail is taken — without that, a short TUI's unpainted rows made a live Kimi pane classify as "blank" while its own gist printed the footer.
@@ -231,7 +231,34 @@ and submit it. Say yes to proceed.
 
 **A hazard worth stating plainly:** `submit` on a `permission-prompt` accepts that modal's **default selection**. That is the behaviour the operator wants at 2am and it is still a real grant of authority, made by a keystroke he confirmed by voice. The preview says "submit whatever is already sitting in that pane's composer", which is true of a modal too; the operator is expected to have heard the finding from `fleet_attention` first.
 
-### T7 — Not built, still
+### T7 — Not built, still (as of Supplement-2)
 
 - **`pane_send`.** Unchanged: it needs the **OQ-1 operator decision** on a second factor. A test asserts it is absent from the catalog, so it cannot arrive by drift on `pane_nudge`'s coat-tails.
 - **OQ-2 (push rather than pull)** — untouched.
+
+## Supplement-3 — epic-teams are swept, not written off (2026-08-17)
+
+A correction to §S3.2: the survey told the operator something unactionable on every single call, and the claim underneath it was false.
+
+### U1 — §S3.2 was wrong: an epic-team's cage IS resolvable
+
+§S3.2 recorded "neither its roster nor its session anchor is resolvable from the entry" and reported every `epic-team` as UNREADABLE. That was true of the cockpit *entry* and false of the *cage*. `spawn-epic` gives an epic-team a root of its own, carrying its own `team.json` (hence its own `tmuxTmpdir`, hence its own socket) and its own session anchor. Only the pointer is missing from the entry, and this repo already knew how to rebuild it: `src/core/cage-resolver.ts::resolveCageForEpic` has resolved exactly this since e-11-446429c9, against two on-disk conventions —
+
+1. **ADR-089 §F, in-parent** — `<parentRoot>/.atmux/worktrees/<name>`
+2. **ADR-090 §Disk layout, sibling** — `<parentRoot>-epics/<epicId>` (what `spawn-epic` writes today)
+
+Both are live on the fleet, so a consumer knowing only one silently misses half the cages. The pair is now a single exported helper, `epicCageRootCandidates` / `resolveEpicCageRoot`, and `resolveCageForEpic` was refactored onto it — one source of truth rather than a third copy of the convention.
+
+The sweep now **rewrites the entry's `root` to the epic-team's own cage before probing**. That is the whole fix, and it needs no epic-specific branch in `probeTeamLive`: everything that function reads — `tryLoadTeam`, `resolveTeamSocket`, `resolveCageSessionName`, `readTeamAsks` — already keys off the root. A live epic-team is therefore swept in full: panes, classification, gists, driver-inbox and flag asks.
+
+### U2 — Why "no live cage" is one compact line and not a `dead` item
+
+An epic-team with no live cage stays on the UNREADABLE line, under **one shared reason** (`EPIC_TEAM_NO_CAGE_REASON`) covering both cases the operator cannot tell apart and would not act on differently: the cage root is gone from disk, or the root survives but no tmux server does. One constant rather than two is what lets `renderUnreadable`'s group-by-reason collapse the whole set into a single spoken clause.
+
+The reason **names the action** — `atmux team dissolve-epic <name>` — because the old text named none. That is the substance of the fix, not cosmetics: §D3's own argument is that an item the operator cannot verify or act on is a black box, and a black box that cries wolf gets ignored. A reason whose action removes the row permanently stops being noise the first time he acts on it.
+
+**The asymmetry, stated rather than hidden.** A *top-level* team whose session is absent is a `dead` attention item; an *epic-team* in the same state is not. This rests on what the two cockpit entries mean. A top-level entry is a standing declaration that the team should be up (`atmux start` maintains it, cron re-arms it), so its session being absent is news. An epic-team is ephemeral by construction — spawned per epic, `autoDissolve` on fan-in — so its cage ending is its **normal terminal state**, and its entry outliving it is bookkeeping. Ranking chronic state below news is the same call §S3.3 already made for `dormant`, for the same reason, and it was measured rather than assumed: promoting the two resolvable entries to `dead` took **two of the five spoken slots** on the live fleet and pushed `hx`'s crashed panes and `atmux`'s 1255 unread driver-inbox asks into the remainder count — permanently, for epics dissolved in May.
+
+**What that costs, plainly:** an epic-team that *should* be running right now and whose cage just died is reported on the unreadable line rather than as an acute `dead` item. It is still named on every sweep — never omitted — but ranked as bookkeeping. Everything short of total cage death (wedged, rate-limited, crashed, refusing panes) reaches the operator through the normal classes, because a live epic cage is swept in full. `cageIsAbsent` recognises total absence from the probe's own evidence (every observation carrying `sessionUp: false`) rather than from a second source of truth, and guards the empty-list case explicitly — `[].every()` is vacuously true, so without it a probe that found nothing would report a dead cage.
+
+**Measured on the live fleet (hax, 20 cockpit entries):** five `epic-team` entries, three under `unum` with no cage root at all and two under `mx` whose sibling worktrees survive with no running server. Before: five names and an unactionable reason on every sweep. After: one clause, one action, and the attention list unchanged — same top five as before the change, which is the point.

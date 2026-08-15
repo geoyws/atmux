@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🐛 Fixed — `atmux fleet` sweeps epic-teams instead of writing them off ([ADR-273](docs/adr/273-voice-fleet-triage-and-pane-input.md) §Supplement-3 U1/U2)
+
+**Five of twenty teams reported UNREADABLE on every single sweep, with a reason naming no action.** ADR-273 §S3.2 claimed an `epic-team`'s cage "is not resolvable from the cockpit entry". That was true of the *entry* and false of the *cage*: `spawn-epic` gives an epic-team a root of its own carrying its own `team.json`, socket and session anchor — and this repo already knew how to find it, in `src/core/cage-resolver.ts`. The two on-disk conventions (ADR-089 in-parent `<parent>/.atmux/worktrees/<name>`, ADR-090 sibling `<parent>-epics/<epicId>`) are now one shared helper, `epicCageRootCandidates` / `resolveEpicCageRoot`, that `resolveCageForEpic` was refactored onto.
+
+- **The sweep rewrites the entry's root to the epic-team's own cage before probing**, so a live epic-team is swept in full — panes, classes, gists, driver-inbox and flag asks. No epic-specific branch was needed in `probeTeamLive`: everything it reads already keys off the root.
+- **Only an epic-team with no live cage stays unreadable**, under one shared reason that names `atmux team dissolve-epic` — an action that removes the row permanently. One constant, not two, so `renderUnreadable`'s group-by-reason collapses the whole set into a single spoken clause.
+- **Deliberate asymmetry, measured not assumed**: an epic-team with no cage is *not* a `dead` attention item the way a top-level team is. Epic-teams are ephemeral by construction, so a cage that ended is bookkeeping, not news — the same call §S3.3 made for `dormant`. Promoting them took **two of the five spoken slots** on the live fleet and pushed `hx`'s crashed panes and `atmux`'s unread asks into the remainder count, permanently, for epics dissolved in May. The cost is stated in the ADR rather than hidden: a live epic cage that just died is named on the unreadable line rather than ranked acute.
+
 ### ✨ Added — `atmux voice`: a spoken operator interface for the fleet ([ADR-272](docs/adr/272-voice-operator-interface.md))
 
 **Shipped across six phases and deployed read-only.** The operator can now read the fleet from a phone — walking, in a lift, in a car — over a chain of **PWA → WebSocket relay → realtime provider → `atmux` verbs**. Motivation is coordination, not convenience: under manual orchestration ([ADR-260](docs/adr/260-manual-orchestration-mode-default.md)) the operator and the lead LLMs *are* the scheduler, so an unreachable operator is a missing scheduler. Product framing in `docs/PRD.md` §3.7, architecture in `docs/ARCHITECTURE.md` §Voice subsystem, operating surface + V-1…V-18 acceptance checklist in [docs/RUNBOOK-voice.md](docs/RUNBOOK-voice.md).

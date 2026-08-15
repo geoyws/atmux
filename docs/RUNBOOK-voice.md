@@ -259,6 +259,7 @@ Quiet classes — `working`, `compacting`, `starting up`, `idle and clear` — a
 - **A live-turn marker is corroborated against tmux's own activity clock**, which is not derived from the pane text. A spinner that has not repainted in 5 min is `frozen`, not `working`.
 - **Panes are enumerated from tmux windows, not the roster.** Most teams on this fleet carry `members: []` while their sessions hold live `driver` windows; a roster-driven sweep would report "0 panes, all clear" across working agents.
 - **A team that cannot be read is reported as UNREADABLE, never omitted.** Rows are grouped by reason so five teams sharing one cause cost one clause, not five.
+- **Epic-teams are swept, not written off.** A cockpit `epic-team` entry carries the *parent's* root, so it is first resolved to the epic-team's own cage (`<parent>/.atmux/worktrees/<name>`, else `<parent>-epics/<epicId>`) and then swept exactly like any other team — panes, classes, asks. Only an epic-team with **no live cage** stays on the UNREADABLE line, under one shared reason naming `atmux team dissolve-epic`. See [ADR-273 §Supplement-3](adr/273-voice-fleet-triage-and-pane-input.md).
 - **Session names are resolved through the anchor** (`.atmux/state/session.txt` via `resolveCageSessionName`), never rebuilt as `atmux-<team>`. On this fleet `unum` anchors to `atmux_unum` and `atmux` to bare `atmux`; the rebuilt form names no session at all and reported every member of a healthy team as down.
 
 ### Speech budget
