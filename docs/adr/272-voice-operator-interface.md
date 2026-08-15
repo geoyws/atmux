@@ -152,6 +152,23 @@ bytes 4+  payload   PCM16LE mono 24 kHz
 
 **No `spawn`, `stop`, `kill`, or any git verb in v1.** These are the operations where a misheard word is unrecoverable, and they are the ones a phone is worst at confirming. They are deferred to their own ADR, which inherits D7's confirmation machinery rather than inventing a second one (§Deferred).
 
+#### D6 §Supplement-2026-08-16 — the frozen `required` list was adjusted: `dispatch_task.member` is now REQUIRED
+
+**What changed.** `dispatch_task` declared `member` as `.optional()`. It is now required, so `toolJsonSchema(dispatch_task).required` moves from `["task_id"]` to `["task_id", "member"]`. This is an amendment to D6's frozen v1 surface and is recorded rather than done quietly, because "frozen" is only meaningful if every adjustment is visible.
+
+**Why.** The schema was promising something the verb cannot deliver. `parseDispatchArgs` (`src/verbs/dispatch.ts`) demands **both** positionals and throws `UsageError` when either is empty. So every `dispatch_task` call that omitted `member` — which the schema told the model was legal — built `["t-abc123", "--team-dir", <root>]`, slid the **task id into the member slot**, left the id empty, and failed. Not intermittently: **always**. The operator heard a `verb_failed` whose message named a member he never said.
+
+A model reading the catalog schema will believe an optional field is optional and will call it that way; that is what a schema is for. The tool surface was therefore lying, and D2's "the blast radius is enumerable by reading one file" is weakened whenever the file describes something other than what runs.
+
+**Rejected alternative: teach `parseDispatchArgs` to accept a missing member** (dispatch to the lane's next member, or to the task's existing assignee). Rejected on two grounds.
+
+1. **Blast radius.** `dispatch` is a verb the whole team system drives; changing what a one-argument invocation *means* changes behaviour for every existing caller, cron line and brief — to fix a defect that only exists on the voice surface. That is the same reasoning D2 §Supplement used when it refused to teach `parseDispatchArgs` and `parseClaimDoneArgs` the `--` terminator: the regression risk dominates what it buys.
+2. **It is the wrong semantics for a SPOKEN interface.** "Dispatch task 4a2f" with an implied target is precisely the utterance a confirmation gate exists to catch. D6 gates `dispatch_task` because it "changes what a member does next" and is "wrong under a misheard member name"; a mode where the member is inferred rather than spoken makes the D7 preview weaker exactly where it matters most.
+
+**Which would I have preferred, in the abstract?** The parser change — an inferred assignee is genuinely more useful at 2am than being made to name a member, and it is what a person would do. **It is still the wrong call here**, because the useful version needs a decision about *what* it infers (lane-next? task's current assignee? lead?), that decision belongs to the `dispatch` verb rather than to the voice catalog, and it would land as a behaviour change in a verb the fleet depends on, dressed as a voice bug fix. Requiring the field costs the operator one extra word and converts a guaranteed confusing runtime failure into a clean `bad_args` at validation. If the inference is ever wanted, it should arrive as its own change to `dispatch`, with its own ADR, and `dispatch_task` can relax then.
+
+**Consequence.** The catalog test's `required` assertion and the test that documented the old failure mode are updated in the same commit — the latter rewritten to assert the new behaviour, and joined by a test that drives the **real** `parseDispatchArgs` with the one-argument argv the old schema could produce, so the schema and the verb stay provably in agreement rather than merely in agreement today.
+
 ### D7 — Mutation confirmation is enforced by the **server**, not by prompt instruction
 
 This is a correctness decision, not a UX one. Instructing a model to "always confirm before mutating" is a request, not a constraint: it degrades under a long session, an adversarial transcript, or a provider-side prompt change. The mechanism:

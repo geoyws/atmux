@@ -49,8 +49,11 @@ import {
   resolveTeamSocket,
 } from "../core/common.ts";
 import { isDriverPaneName } from "../core/drivers.ts";
-import type { PaneObservation, PaneVerdict } from "../core/voice/fleet.ts";
-import { classifyPaneObservation } from "../core/voice/fleet.ts";
+import {
+  classifyPaneObservation,
+  type PaneObservation,
+  type PaneVerdict,
+} from "../core/voice/fleet.ts";
 import {
   classifyAfterNudge,
   isNudgeAction,
@@ -276,6 +279,13 @@ export async function observePane(opts: {
     team: opts.team,
     member: opts.member,
     windowName: opts.windowName,
+    // Both TRUE by construction rather than by observation:
+    // `resolveMemberTarget` already threw if neither the canonical nor
+    // any legacy window existed, so reaching here means the window was
+    // there. If it vanishes between the two reads, `capturePane` throws,
+    // `capture` is null, and the classifier reports `unreadable` — so
+    // the shortcut can never manufacture a healthy verdict, only lose
+    // the more specific `dead` label for a pane that died mid-nudge.
     sessionUp: true,
     windowPresent: true,
     capture,

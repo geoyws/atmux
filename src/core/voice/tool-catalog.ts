@@ -374,16 +374,29 @@ export const VOICE_TOOL_CATALOG: ReadonlyArray<VoiceToolEntry> = Object.freeze([
   {
     name: "dispatch_task",
     description: "Assign a task to a named member. Confirmation is required before it runs.",
+    // `member` is REQUIRED (ADR-272 D6 §Supplement-2026-08-16). It was
+    // `.optional()`, and that was a schema promising something the verb
+    // cannot deliver: `parseDispatchArgs` demands BOTH positionals, so a
+    // call that omitted `member` slid `task_id` into the member slot,
+    // left the id empty, and threw `UsageError` — a guaranteed
+    // `verb_failed` for a call the model had every reason to believe was
+    // legal, and whose spoken error names a member the operator never
+    // said. Required makes the same mistake a clean `bad_args` at
+    // validation, before any argv exists.
     params: withConfirmToken({
       team: TEAM_PARAM,
       task_id: positionalParam("Task id (full id or as read back)"),
-      member: positionalParam("Member to dispatch to").optional(),
+      member: positionalParam("Member to dispatch to"),
     }),
     mutating: true,
     confirm: true,
     runnerKey: "dispatch",
+    // Both positionals are unconditional now that `member` is required.
+    // The old `typeof args.member === "string" ? … : []` shape is gone
+    // with the optionality it existed for: keeping it would leave a
+    // branch that can only fire on args the schema has already rejected.
     argv: (args, teamRoot) => [
-      ...(typeof args.member === "string" ? [args.member] : []),
+      asString(args.member),
       asString(args.task_id),
       ...teamDirArgs(teamRoot),
     ],

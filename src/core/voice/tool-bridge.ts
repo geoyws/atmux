@@ -22,7 +22,7 @@
 // its stdout capture abandoned mid-monkeypatch. The cost is that a verb
 // which NEVER returns holds the mutex forever: every later tool call
 // queues behind it and answers `tool_timeout`, permanently. None of the
-// 12 wired verbs calls `process.exit`, so the process does not crash — it
+// 14 wired verbs calls `process.exit`, so the process does not crash — it
 // wedges, and the only recovery is `atmux voice --stop`.
 //
 // Voice is meant to run unattended in a detached tmux session, so the
@@ -92,7 +92,7 @@ export interface ExecuteToolOutput {
  * A tool that has held the lock past its own response deadline is merely
  * slow — that case is normal and already reported to the operator as a
  * `tool_timeout`. Holding it three times past that deadline is not slow;
- * nothing in the 12 wired verbs legitimately runs for a minute at the
+ * nothing in the 14 wired verbs legitimately runs for a minute at the
  * default 20s timeout, and by then every later tool call has already been
  * answering `tool_timeout` for two full deadlines. Low enough to catch a
  * real wedge inside a minute; high enough that a genuinely slow `topo` on

@@ -261,7 +261,9 @@ describe("flat-schema guard — EVERY entry derives a flat provider schema", () 
   test("required lists exactly the mandatory params", () => {
     expect(toolJsonSchema(entry("member_pane")).required).toEqual(["member"]);
     expect(toolJsonSchema(entry("claim_task")).required).toEqual(["task_id", "member"]);
-    expect(toolJsonSchema(entry("dispatch_task")).required).toEqual(["task_id"]);
+    // ADR-272 D6 §Supplement-2026-08-16: `member` is REQUIRED. It was
+    // optional, which promised the model something the verb refuses.
+    expect(toolJsonSchema(entry("dispatch_task")).required).toEqual(["task_id", "member"]);
     expect(toolJsonSchema(entry("add_task")).required).toEqual(["title"]);
     expect(toolJsonSchema(entry("tell_lead")).required).toEqual(["message"]);
     // `action` carries a default → optional for the model (io: "input").
@@ -432,10 +434,36 @@ describe("argv shapes parse against the REAL verb parsers", () => {
     });
   });
 
-  test("dispatch_task without member: the verb's own parser refuses with usage (documented failure mode)", () => {
-    const argv = entry("dispatch_task").argv({ task_id: "t-abc123" }, ROOT);
-    expect(argv).toEqual(["t-abc123", "--team-dir", ROOT]);
-    expect(() => parseDispatchArgs(argv)).toThrow(UsageError);
+  test("dispatch_task without member is refused at VALIDATION, before any argv exists", () => {
+    // This test previously documented the failure mode: the schema
+    // accepted `{task_id}` alone, `argv` built `["t-abc123", "--team-dir",
+    // ROOT]`, `task_id` slid into the member slot, the id came out empty,
+    // and `parseDispatchArgs` threw — a guaranteed `verb_failed` for a
+    // call the schema had told the model was legal, whose spoken error
+    // named a member the operator never said.
+    //
+    // The schema now refuses it, so the model gets a clean `bad_args`
+    // naming the missing field. The regression this pins is the schema
+    // and the verb agreeing about what is required.
+    const parsed = entry("dispatch_task").params.safeParse({ task_id: "t-abc123" });
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(JSON.stringify(parsed.error.issues)).toContain("member");
+    }
+    // And the argv the entry builds for a VALID call parses cleanly —
+    // the verb's own parser is the authority both sides now match.
+    expect(
+      parseDispatchArgs(entry("dispatch_task").argv({ task_id: "t-abc123", member: "be-1" }, ROOT)),
+    ).toMatchObject({ member: "be-1", id: "t-abc123" });
+  });
+
+  test("the verb's parser is why: it demands BOTH positionals (the fact the schema now matches)", () => {
+    // Derived, not asserted: drive the real parser with the one-arg argv
+    // the OLD schema could produce. If `parseDispatchArgs` ever learned
+    // to accept a missing member, this goes red and the schema's
+    // `required` list should be revisited rather than left stricter than
+    // the verb.
+    expect(() => parseDispatchArgs(["t-abc123", "--team-dir", ROOT])).toThrow(UsageError);
   });
 
   test("claim_task → claim <task-id> --as <member> --team-dir", () => {
@@ -528,8 +556,9 @@ describe("argv hygiene — a spoken value may not pose as a CLI flag", () => {
       entry("dispatch_task").params.safeParse({ task_id: "t-4a2f", member: "fe-2" }).success,
     ).toBe(true);
     expect(entry("member_pane").params.safeParse({ member: "be-1" }).success).toBe(true);
-    // dispatch_task.member stays OPTIONAL after the guard.
-    expect(entry("dispatch_task").params.safeParse({ task_id: "t-4a2f" }).success).toBe(true);
+    // dispatch_task.member is REQUIRED (ADR-272 D6 §Supplement-2026-08-16)
+    // — it was optional, and the verb never accepted that.
+    expect(entry("dispatch_task").params.safeParse({ task_id: "t-4a2f" }).success).toBe(false);
   });
 
   test("a dash INSIDE the value is fine — only a LEADING dash is a flag", () => {
