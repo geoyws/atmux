@@ -113,6 +113,23 @@ export interface ProbeCageStateOpts {
    *  Allows tests to simulate heartbeat staleness without writing
    *  files. */
   readHeartbeat?: (atmuxDir: string, member: string) => Promise<number | null>;
+  /**
+   * The team's ACTUAL tmux session name (ADR-273 D3 trap 1).
+   *
+   * Without it the probe falls back to `atmux-<team.name>`, which is only
+   * right for a team that has no `.atmux/state/session.txt` anchor. Teams
+   * DO anchor: on the live fleet `unum` anchors to `atmux_unum`
+   * (underscore) and `atmux` to bare `atmux`, so the fallback names a
+   * session that does not exist and step (1) below reports every member
+   * of a healthy team as `down`.
+   *
+   * Reporting a live team as dead is exactly the failure that trains an
+   * operator to ignore the tool, so callers that can resolve the name —
+   * `getSessionName` for a single team, `resolveCageSessionName` for a
+   * cockpit entry — MUST pass it. The default is kept only so existing
+   * callers keep compiling; it is not correct, merely unchanged.
+   */
+  sessionName?: string;
 }
 
 /**
@@ -142,7 +159,9 @@ export async function probeCageState(
   opts: ProbeCageStateOpts = {},
 ): Promise<CageHealth> {
   const socketPath = resolveTeamSocket(team);
-  const sessionName = `atmux-${team.name}`;
+  // ADR-273 D3 trap 1 — the anchor-aware name when the caller could
+  // resolve one, else the legacy fallback. See `ProbeCageStateOpts`.
+  const sessionName = opts.sessionName ?? `atmux-${team.name}`;
   const tmux = opts.tmux ?? createTmux({ socketPath });
   const hasSession =
     opts.hasSession ?? (async (name: string, _sock: string) => tmux.session.hasSession(name));

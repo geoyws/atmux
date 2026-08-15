@@ -38,10 +38,10 @@ import {
 } from "../core/common.ts";
 import { type DriverPaneHealth, probeDriverPane } from "../core/driver-pane-health.ts";
 import { DEFAULT_HEARTBEAT_STALE_SEC, readHeartbeatAges } from "../core/heartbeat.ts";
-import { type MemberSelfStatus, readAllMemberStatuses } from "../core/member-status.ts";
 import { loadInbox } from "../core/inbox.ts";
 import { loadKanban } from "../core/kanban.ts";
 import { readLeadSessionStart, readLeadWindowName } from "../core/lead-marker.ts";
+import { type MemberSelfStatus, readAllMemberStatuses } from "../core/member-status.ts";
 import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.ts";
 import { UsageError } from "../errors.ts";
 import { type NeedsApprovalReport, scanNeedsApproval } from "../lib/needs-approval.ts";
@@ -317,6 +317,11 @@ export interface GatherStatusDeps {
    *  the `[[DD-]HH:]MM:SS` format. Returns null when the PID is
    *  not running OR the ps call fails. */
   psEtime?: (pid: number) => Promise<number | null>;
+  /** ADR-273 D3 trap 1 injection seam: the per-member cage probe.
+   *  Default {@link probeCageState}. Exists so a test can assert WHICH
+   *  session name the probe is handed — the argument whose absence made
+   *  every anchored team (`atmux_unum`, bare `atmux`) report as down. */
+  probeCage?: typeof probeCageState;
 }
 
 /** Per-task t-d98b2bd6 (whip-side signal shape). Mirrors the on-disk
@@ -577,7 +582,14 @@ export async function gatherStatus(
     let cageState: CageState | null = null;
     if (sessionState === "up" && (m.tui ?? "claude") === "claude") {
       try {
-        const health: CageHealth = await probeCageState(team, m, atmuxDir, { tmux });
+        // ADR-273 D3 trap 1: pass the RESOLVED session name. `gatherStatus`
+        // already has it (from `getSessionName`, anchor-aware); without it
+        // the probe rebuilds `atmux-<team>` and reports every member of an
+        // anchored team (`atmux_unum`, bare `atmux`) as `down`.
+        const health: CageHealth = await (deps.probeCage ?? probeCageState)(team, m, atmuxDir, {
+          tmux,
+          sessionName,
+        });
         cageState = health.state;
       } catch {
         // Probe failure → leave cageState null; the legacy paneCommand

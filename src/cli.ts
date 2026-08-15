@@ -50,6 +50,7 @@ import { doctor } from "./verbs/doctor.ts";
 import { driverInbox } from "./verbs/driver-inbox.ts";
 import { epic } from "./verbs/epic.ts";
 import { epicMerge } from "./verbs/epic-merge.ts";
+import { fleet } from "./verbs/fleet.ts";
 import { groom } from "./verbs/groom.ts";
 import { handoff } from "./verbs/handoff.ts";
 import { health } from "./verbs/health.ts";
@@ -233,6 +234,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return dispatchTeamSubverb(argv.slice(1));
     case "topo":
       return topo(argv.slice(1));
+    case "fleet":
+      return fleet(argv.slice(1));
     case "member":
       return dispatchMemberSubverb(argv.slice(1));
     case "sync":

@@ -15,6 +15,7 @@ import { describe, expect, test } from "bun:test";
 import {
   capLinesStructural,
   MEMBER_PANE_LAST_LINE_CAP,
+  paneGist,
   stripAnsi,
   summarizeTool,
 } from "../../../../src/core/voice/summarize.ts";
@@ -186,5 +187,47 @@ describe("capLinesStructural (the bridge's limit cap)", () => {
 
   test("trailing newline does not count as a line", () => {
     expect(capLinesStructural("a\nb\n", 2)).toEqual({ text: "a\nb", dropped: 0 });
+  });
+});
+
+// ---------------------------------------------------------------------
+// paneGist — ADR-273 D2's "a gist per pane, not a transcript dump"
+// ---------------------------------------------------------------------
+
+describe("paneGist", () => {
+  test("takes the LAST meaningful lines, in reading order", () => {
+    expect(paneGist("first\nsecond\nthird\nfourth", { maxLines: 2, maxChars: 200 })).toBe(
+      "third / fourth",
+    );
+  });
+
+  test("skips blank lines rather than counting them as content", () => {
+    expect(paneGist("real line\n\n   \n\n", { maxLines: 2, maxChars: 200 })).toBe("real line");
+  });
+
+  test("strips ANSI, box borders, the composer glyph and spinner glyphs", () => {
+    const capture = "[32m│ ❯ [0mclaim --next\n│  ✻ Worked for 22s  │";
+    expect(paneGist(capture, { maxLines: 2, maxChars: 200 })).toBe("claim --next / Worked for 22s");
+  });
+
+  test("hard-truncates past maxChars with an ellipsis", () => {
+    const gist = paneGist("x".repeat(500), { maxLines: 1, maxChars: 20 });
+    expect(gist.length).toBe(20);
+    expect(gist.endsWith("…")).toBe(true);
+  });
+
+  test("a capture with nothing meaningful yields the empty string", () => {
+    // The caller decides whether that absence is itself the finding —
+    // paneGist does not invent evidence.
+    expect(paneGist("\n\n  │  \n", { maxLines: 2, maxChars: 200 })).toBe("");
+    expect(paneGist("", { maxLines: 2, maxChars: 200 })).toBe("");
+  });
+
+  test("maxLines is a ceiling, not a requirement", () => {
+    expect(paneGist("only one", { maxLines: 5, maxChars: 200 })).toBe("only one");
+  });
+
+  test("maxChars 0 collapses to the ellipsis rather than throwing", () => {
+    expect(paneGist("something", { maxLines: 1, maxChars: 0 })).toBe("…");
   });
 });

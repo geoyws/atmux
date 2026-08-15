@@ -82,6 +82,38 @@ function fitWithinChars(lines: string[], maxChars: number): { data: string; drop
 /** `member_pane` last-line cap (chars). */
 export const MEMBER_PANE_LAST_LINE_CAP = 160;
 
+/** Prompt chrome + spinner glyphs a pane gist must not carry into speech
+ *  (ADR-273 D2: "a gist per pane, not a transcript dump"). Box-drawing
+ *  borders, the composer glyph, the spinner glyphs — all are visual TUI
+ *  furniture that reads as noise when spoken. */
+const PANE_CHROME_RE = /^[\s│┃|>❯✻✶✽·•⏵]+|[\s│┃|]+$/g;
+
+/**
+ * Last meaningful line(s) of a pane capture, shaped for speech.
+ *
+ * Composed from this module's existing primitives rather than a fresh
+ * truncator: {@link stripAnsi} for escapes, `splitTrimmedLines` for the
+ * trailing-blank rule, and the same `… (+N)`-free hard cap the
+ * `member_pane` carve-out uses. "Meaningful" = non-blank once chrome is
+ * stripped, taken from the END of the capture (the newest output is what
+ * the operator wants) and returned in reading order.
+ *
+ * Returns `""` for a capture with nothing meaningful in it — the caller
+ * decides whether that absence is itself the finding.
+ */
+export function paneGist(capture: string, opts: { maxLines: number; maxChars: number }): string {
+  const lines = splitTrimmedLines(stripAnsi(capture));
+  const kept: string[] = [];
+  for (let i = lines.length - 1; i >= 0 && kept.length < opts.maxLines; i -= 1) {
+    const cleaned = (lines[i] ?? "").replace(PANE_CHROME_RE, "").trim();
+    if (cleaned.length === 0) continue;
+    kept.unshift(cleaned);
+  }
+  const joined = kept.join(" / ");
+  if (joined.length <= opts.maxChars) return joined;
+  return `${joined.slice(0, Math.max(0, opts.maxChars - 1))}…`;
+}
+
 /** Lines that read as problems in `health --text` output: a stale
  *  heartbeat marker or a down session. */
 const HEALTH_NON_OK_RE = /STALE|\[down\]/;

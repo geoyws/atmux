@@ -216,6 +216,7 @@ export function voiceArgsToFlags(args: VoiceArgs): Partial<VoiceFlags> {
 export const VOICE_RUNNER_IMPORTERS: Readonly<Record<VoiceRunnerKey, () => Promise<VerbFn>>> =
   Object.freeze({
     topo: async () => (await import("./topo.ts")).topo,
+    fleet: async () => (await import("./fleet.ts")).fleet,
     status: async () => (await import("./status.ts")).status,
     health: async () => (await import("./health.ts")).health,
     task: async () => (await import("./task.ts")).task,

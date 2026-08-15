@@ -20,11 +20,11 @@ import {
 import type { Team, TeamMember } from "../../schema/team.ts";
 import {
   type DoctorRow,
-  type GitSpawn,
   defaultGitSpawn,
-  truncateEvidence,
-  type TmuxSpawn,
   defaultTmuxSpawn,
+  type GitSpawn,
+  type TmuxSpawn,
+  truncateEvidence,
 } from "./types.ts";
 
 // ---------- Check 7: orphan-sessions ----------
@@ -233,13 +233,15 @@ export async function checkMemberCageStates(
 const defaultProbeMemberCage = async (
   team: Team,
   member: TeamMember,
-  _sessionName: string,
+  sessionName: string,
   _socketPath: string,
 ): Promise<MemberCageHealth | null> => {
-  // The shared probe re-derives sessionName + socketPath from the team
-  // config, so we don't need to pass them through. Tests inject the
+  // The shared probe re-derives socketPath from the team config, so that
+  // one need not be threaded. `sessionName` IS threaded (ADR-273 D3 trap
+  // 1): letting the probe rebuild `atmux-<team>` makes it disagree with
+  // the caller that just resolved the name, and an anchored team
+  // (`atmux_unum`, bare `atmux`) then probes as down. Tests inject the
   // probe directly via opts.probe and bypass this default.
-  void _sessionName;
   void _socketPath;
   // `atmuxDir` is needed for heartbeat reads in the wedged ladder.
   // checkMemberCageStates threads it in via the outer scope; the
@@ -247,7 +249,7 @@ const defaultProbeMemberCage = async (
   // from common.ts. Best-effort: heartbeat absence collapses to the
   // pane-only signal path.
   const atmuxDir = await getAtmuxDir();
-  return defaultProbeCageState(team, member, atmuxDir);
+  return defaultProbeCageState(team, member, atmuxDir, { sessionName });
 };
 
 export interface CheckCockpitOnDefaultSocketOpts {

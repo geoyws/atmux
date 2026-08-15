@@ -29,6 +29,16 @@ Setup:
                               state/resume.json, NO worktree prune.
   attach                      tmux attach to the team session
   status                      Powerline team overview
+  fleet [--attention|--quiet] [--top <n>] [--json] [--timeout-ms <n>]
+        [--concurrency <n>]   ADR-273 D1: fleet triage across EVERY team.
+                              --attention (default) ranks every pane that
+                              needs you, most urgent first, with the evidence
+                              for each; --top bounds how many are spoken
+                              (1..15, default 5) and the rest become a count.
+                              --quiet is the aggregated all-clear — counts and
+                              team rollups only, never a pane list. Read-only.
+                              A team that cannot be read is reported as
+                              unreadable, never silently dropped.
   cockpit reconcile [--no-cycle|--force-cycle] [--no-launch] [--config <p>]
                               ADR-063 + ADR-235 §D1: ensure-up the operator
                               cockpit (cages + TUI auto-launch + cockpit

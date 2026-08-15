@@ -6,11 +6,11 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTmux, type TmuxNamespace } from "../../../src/abstractions/tmux.ts";
+import { writeHeartbeat } from "../../../src/core/heartbeat.ts";
 import { appendDispatched, appendPending } from "../../../src/core/inbox.ts";
 import { addTask, moveTask } from "../../../src/core/kanban.ts";
-import { UsageError } from "../../../src/errors.ts";
-import { writeHeartbeat } from "../../../src/core/heartbeat.ts";
 import { writeMemberStatus } from "../../../src/core/member-status.ts";
+import { UsageError } from "../../../src/errors.ts";
 import {
   defaultRoleEmoji,
   formatContextColumn,
@@ -857,17 +857,17 @@ describe("gatherStatus — member ctx fields populated from JSON", () => {
 // ---------- ADR-148 T2: cadence column ----------
 
 import {
-  classifyCadence,
-  type CadenceObservation,
-  formatCadenceColumn,
-  formatDurationShort,
-  resolveCadenceConfig,
-} from "../../../src/verbs/status.ts";
-import {
   DEFAULT_CADENCE_CONFIG,
   DEFAULT_CADENCE_THRESHOLDS,
   type Team,
 } from "../../../src/schema/team.ts";
+import {
+  type CadenceObservation,
+  classifyCadence,
+  formatCadenceColumn,
+  formatDurationShort,
+  resolveCadenceConfig,
+} from "../../../src/verbs/status.ts";
 
 describe("classifyCadence — verdict branches (ADR-148 §D2)", () => {
   const T = DEFAULT_CADENCE_THRESHOLDS;
@@ -988,12 +988,10 @@ describe("formatCadenceColumn — verdict-to-display", () => {
       lastCommitSha: "abc1234",
       ageOfLastCommitSec: 300,
     };
-    expect(formatCadenceColumn({ ...base, verdict: "shipping" })).toBe(
-      "🟢 shipping (5min)",
+    expect(formatCadenceColumn({ ...base, verdict: "shipping" })).toBe("🟢 shipping (5min)");
+    expect(formatCadenceColumn({ ...base, ageOfLastCommitSec: 3600, verdict: "idle" })).toBe(
+      "🟡 idle (1h)",
     );
-    expect(
-      formatCadenceColumn({ ...base, ageOfLastCommitSec: 3600, verdict: "idle" }),
-    ).toBe("🟡 idle (1h)");
     expect(
       formatCadenceColumn({
         ...base,
@@ -1033,19 +1031,13 @@ describe("resolveCadenceConfig — defaults + per-team overrides", () => {
     const r = resolveCadenceConfig(makeTeam({ windowSec: 600 }));
     expect(r.windowSec).toBe(600);
     expect(r.enabled).toBe(DEFAULT_CADENCE_CONFIG.enabled);
-    expect(r.thresholds.shippingMaxAgeSec).toBe(
-      DEFAULT_CADENCE_THRESHOLDS.shippingMaxAgeSec,
-    );
+    expect(r.thresholds.shippingMaxAgeSec).toBe(DEFAULT_CADENCE_THRESHOLDS.shippingMaxAgeSec);
   });
 
   test("partial thresholds → unset threshold keys fall back to defaults", () => {
-    const r = resolveCadenceConfig(
-      makeTeam({ thresholds: { dormantMaxAgeSec: 3600 } }),
-    );
+    const r = resolveCadenceConfig(makeTeam({ thresholds: { dormantMaxAgeSec: 3600 } }));
     expect(r.thresholds.dormantMaxAgeSec).toBe(3600);
-    expect(r.thresholds.shippingMaxAgeSec).toBe(
-      DEFAULT_CADENCE_THRESHOLDS.shippingMaxAgeSec,
-    );
+    expect(r.thresholds.shippingMaxAgeSec).toBe(DEFAULT_CADENCE_THRESHOLDS.shippingMaxAgeSec);
     expect(r.thresholds.idleMaxAgeSec).toBe(DEFAULT_CADENCE_THRESHOLDS.idleMaxAgeSec);
   });
 
@@ -1122,12 +1114,12 @@ describe("gatherStatus — cadence column integration", () => {
 
 // ---------- ADR-077 §lead-uptime-measurement (t-6d950ffd) ----------
 
+import { writeLeadSessionStart } from "../../../src/core/lead-marker.ts";
 import {
+  type LeadUptimeSnapshot,
   parsePsEtime,
   probeLeadUptime,
-  type LeadUptimeSnapshot,
 } from "../../../src/verbs/status.ts";
-import { writeLeadSessionStart } from "../../../src/core/lead-marker.ts";
 
 describe("parsePsEtime — '[[DD-]HH:]MM:SS' parsing", () => {
   test("MM:SS form", () => {
@@ -1168,13 +1160,9 @@ describe("probeLeadUptime — ADR-077 §lead-uptime-measurement", () => {
   test("no team-lead role configured → configured: false, all fields null", async () => {
     const { sessionName } = await stageTeam([{ name: "alpha" }], false);
     const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Team;
-    const snap: LeadUptimeSnapshot = await probeLeadUptime(
-      tmux,
-      team,
-      sessionName,
-      false,
-      { home: homeDir },
-    );
+    const snap: LeadUptimeSnapshot = await probeLeadUptime(tmux, team, sessionName, false, {
+      home: homeDir,
+    });
     expect(snap.configured).toBe(false);
     expect(snap.leadMember).toBeNull();
     expect(snap.lead_session_uptime_s).toBeNull();
@@ -1204,10 +1192,7 @@ describe("probeLeadUptime — ADR-077 §lead-uptime-measurement", () => {
   });
 
   test("marker absent → lead_session_uptime_s null even with team-lead role", async () => {
-    const { sessionName } = await stageTeam(
-      [{ name: "lead-alpha", role: "team-lead" }],
-      false,
-    );
+    const { sessionName } = await stageTeam([{ name: "lead-alpha", role: "team-lead" }], false);
     const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Team;
     const snap = await probeLeadUptime(tmux, team, sessionName, false, {
       home: homeDir,
@@ -1274,15 +1259,8 @@ describe("gatherStatus / status verb — lead block surfaces in JSON", () => {
   });
 
   test("--json output includes 'lead' top-level block", async () => {
-    const { teamName } = await stageTeam(
-      [{ name: "lead-alpha", role: "team-lead" }],
-      false,
-    );
-    await writeLeadSessionStart(
-      teamName,
-      Math.floor(Date.now() / 1000) - 180,
-      { home: homeDir },
-    );
+    const { teamName } = await stageTeam([{ name: "lead-alpha", role: "team-lead" }], false);
+    await writeLeadSessionStart(teamName, Math.floor(Date.now() / 1000) - 180, { home: homeDir });
     const priorHome = process.env.HOME;
     process.env.HOME = homeDir;
     try {
@@ -1304,15 +1282,8 @@ describe("gatherStatus / status verb — lead block surfaces in JSON", () => {
   });
 
   test("text mode emits '🧭 lead' row with session_uptime label", async () => {
-    const { teamName } = await stageTeam(
-      [{ name: "lead-alpha", role: "team-lead" }],
-      false,
-    );
-    await writeLeadSessionStart(
-      teamName,
-      Math.floor(Date.now() / 1000) - 600,
-      { home: homeDir },
-    );
+    const { teamName } = await stageTeam([{ name: "lead-alpha", role: "team-lead" }], false);
+    await writeLeadSessionStart(teamName, Math.floor(Date.now() / 1000) - 600, { home: homeDir });
     const priorHome = process.env.HOME;
     process.env.HOME = homeDir;
     try {
@@ -1517,7 +1488,6 @@ describe("gatherStatus — heartbeat surface", () => {
   });
 });
 
-
 // ---------- ADR-260 §D5: self-reported status ----------
 
 describe("gatherStatus — selfStatus populated from member-status files (ADR-260 §D5)", () => {
@@ -1639,5 +1609,46 @@ describe("status verb — selfStatus end-to-end (ADR-260 §D5)", () => {
       status(["--socket", socketPath, "--team-dir", teamDir]),
     );
     expect(text).toContain("📍working(t-12345678,");
+  });
+});
+
+// ---------- ADR-273 D3 trap 1 ----------
+
+describe("gatherStatus — the cage probe gets the RESOLVED session name", () => {
+  test("the probe is handed the same session name gatherStatus was given", async () => {
+    // `status()` resolves the name through `getSessionName` (anchor-aware),
+    // then hands it to `gatherStatus`. Before this fix the probe threw
+    // that away and rebuilt `atmux-<team>`, which names no session at all
+    // for an anchored team — so every member of a live `unum`
+    // (`atmux_unum`) or `atmux` (bare `atmux`) reported as `down`.
+    const anchored = `${sessionPrefix}_anchored`;
+    const { teamName } = await stageTeam(
+      [{ name: "alpha", emoji: "🐝", role: "member", tui: "claude" }],
+      false,
+    );
+    await tmux.session.newSession({ name: anchored, shellCommand: "cat", windowName: "🐝alpha" });
+    await new Promise((r) => setTimeout(r, 80));
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Parameters<
+      typeof gatherStatus
+    >[1];
+    const seen: Array<string | undefined> = [];
+    const snap = await gatherStatus(tmux, team, anchored, atmuxDir, {
+      probeCage: async (_t, m, _dir, opts) => {
+        seen.push(opts?.sessionName);
+        return {
+          member: m.name,
+          windowName: "🐝alpha",
+          state: "active",
+          paneUptimeSec: 10,
+          evidence: "",
+          heartbeatAgeSec: null,
+        };
+      },
+    });
+    expect(snap.team).toBe(teamName);
+    expect(seen).toEqual([anchored]);
+    // …and it must NOT be the rebuilt legacy form.
+    expect(seen).not.toContain(`atmux-${teamName}`);
+    expect(snap.members[0]?.cageState).toBe("active");
   });
 });

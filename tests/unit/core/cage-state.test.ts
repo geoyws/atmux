@@ -403,3 +403,83 @@ describe("probeCageState — composite + invariants", () => {
     }
   });
 });
+
+// ---------- ADR-273 D3 trap 1: the session name is not `atmux-<team>` ----------
+
+describe("probeCageState — sessionName override (ADR-273 D3 trap 1)", () => {
+  /** Capture whatever session name the probe actually asks tmux about. */
+  function nameSpy(): {
+    asked: string[];
+    opts: { hasSession: (n: string) => Promise<boolean> };
+  } {
+    const asked: string[] = [];
+    return {
+      asked,
+      opts: {
+        hasSession: async (n: string) => {
+          asked.push(n);
+          return false;
+        },
+      },
+    };
+  }
+
+  test("without the override it still asks for the legacy `atmux-<team>` form", async () => {
+    // Pins the fallback as UNCHANGED, so callers that have not been
+    // updated behave exactly as they did before this seam landed.
+    const spy = nameSpy();
+    await probeCageState(makeTeam(), makeMember(), "/tmp/x", { ...DEFAULT_OPTS, ...spy.opts });
+    expect(spy.asked).toEqual(["atmux-demo"]);
+  });
+
+  test("the override is what tmux is asked about — the anchored name wins", async () => {
+    // The live failure: `unum` anchors its session to `atmux_unum`
+    // (underscore) and `atmux` to bare `atmux`. Rebuilding `atmux-<team>`
+    // names a session that does not exist, so step (1) reports every
+    // member of a healthy team as `down`.
+    for (const anchored of ["atmux_unum", "atmux"]) {
+      const spy = nameSpy();
+      await probeCageState(makeTeam(), makeMember(), "/tmp/x", {
+        ...DEFAULT_OPTS,
+        ...spy.opts,
+        sessionName: anchored,
+      });
+      expect(spy.asked).toEqual([anchored]);
+      expect(spy.asked).not.toContain("atmux-demo");
+    }
+  });
+
+  test("with the resolved name a LIVE team stops being reported as down", async () => {
+    // Same team, same probe, same tmux — only the resolved name differs,
+    // and the verdict flips from `down` to a real state. This is the bug
+    // ADR-273 D3 trap 1 names, reproduced and then closed.
+    const liveSessions = new Set(["atmux_unum"]);
+    const tmux = {
+      session: {
+        async hasSession(n: string) {
+          return liveSessions.has(n);
+        },
+      },
+      pane: {
+        async listPanes() {
+          return [{ pid: 4242 }];
+        },
+        async capturePane() {
+          return "42k tokens · esc to interrupt";
+        },
+      },
+    } as unknown as TmuxNamespace;
+    const opts = {
+      ...DEFAULT_OPTS,
+      tmux,
+      hasSession: async (n: string) => liveSessions.has(n),
+    };
+    const wrong = await probeCageState(makeTeam(), makeMember(), "/tmp/x", opts);
+    expect(wrong.state).toBe("down");
+    const right = await probeCageState(makeTeam(), makeMember(), "/tmp/x", {
+      ...opts,
+      sessionName: "atmux_unum",
+    });
+    expect(right.state).toBe("active");
+  });
+});

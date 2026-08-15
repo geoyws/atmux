@@ -8,6 +8,7 @@
 // verb module mapping (what P4 wires):
 //
 //   topo        → src/verbs/topo.ts::topo
+//   fleet       → src/verbs/fleet.ts::fleet   (ADR-273 D1 triage sweep)
 //   status      → src/verbs/status.ts::status
 //   health      → src/verbs/health.ts::health
 //   task        → src/verbs/task.ts::task
@@ -39,6 +40,7 @@ import { ConfigError } from "../../errors.ts";
 /** Injected-runner keys — see the module-map in the file header. */
 export type VoiceRunnerKey =
   | "topo"
+  | "fleet"
   | "status"
   | "health"
   | "task"
@@ -183,6 +185,45 @@ export const VOICE_TOOL_CATALOG: ReadonlyArray<VoiceToolEntry> = Object.freeze([
     confirm: false,
     runnerKey: "topo",
     argv: () => [],
+  },
+  {
+    // ADR-273 D1 — the two triage tools, split by ATTENTION rather than
+    // by team. Both are read-only, so both survive
+    // `ATMUX_VOICE_READONLY=1`; that is why the survey half ships first.
+    name: "fleet_attention",
+    description:
+      "What needs the operator across the WHOLE fleet, most urgent first, with the evidence for each. Use this for 'what needs me', 'anything stuck', 'how is everything'. One call replaces a per-team sweep.",
+    // `top` is an integer, so it cannot carry a flag into the argv it
+    // renders into (`auditArgvSlots` skips non-string args by
+    // construction, and `String(3)` can never start with a dash). The
+    // tool declares NO free-text argument at all — deliberately: a fleet
+    // survey has nothing an operator's transcript needs to name.
+    params: z.object({
+      top: z
+        .number()
+        .int()
+        .min(1)
+        .max(15)
+        .default(5)
+        .describe("How many items to speak in full before the rest become a count (1-15)"),
+    }),
+    mutating: false,
+    confirm: false,
+    runnerKey: "fleet",
+    argv: (args) => [
+      "--attention",
+      ...(typeof args.top === "number" ? ["--top", String(args.top)] : []),
+    ],
+  },
+  {
+    name: "fleet_quiet",
+    description:
+      "The complement of fleet_attention: an aggregated all-clear across the fleet — team and pane counts only, never a list. Use it to confirm an empty attention list actually means everything is fine.",
+    params: z.object({}),
+    mutating: false,
+    confirm: false,
+    runnerKey: "fleet",
+    argv: () => ["--quiet"],
   },
   {
     name: "team_status",

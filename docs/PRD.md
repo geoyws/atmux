@@ -617,17 +617,29 @@ coordination, not convenience: under manual orchestration
 lead LLMs *are* the scheduler, so an operator who cannot be reached is a
 missing scheduler rather than a missing luxury.
 
-**What it can do today.** The v1 catalog is **14 tools — 10 read + 4
-messaging** (§D6):
+**What it can do today.** The catalog is **16 tools — 12 read + 4
+messaging** (§D6 plus [ADR-273](adr/273-voice-fleet-triage-and-pane-input.md) D1):
 
 | Class | Tools | Gate |
 |---|---|---|
-| Read (10) | `list_teams` · `fleet_overview` · `team_status` · `team_health` · `list_tasks` · `member_pane` · `driver_inbox` · `lead_outbox` · `cost_report` · `list_blockers` | none — no side effects |
+| Read (12) | `list_teams` · `fleet_overview` · **`fleet_attention`** · **`fleet_quiet`** · `team_status` · `team_health` · `list_tasks` · `member_pane` · `driver_inbox` · `lead_outbox` · `cost_report` · `list_blockers` | none — no side effects |
 | Messaging (2) | `tell_lead` · `add_task` | none — append-only and visible |
 | Messaging (2) | `dispatch_task` · `claim_task` | **confirm-gated** (§D7) |
 
+**The triage pair is what makes it usable day to day.** The other reads answer
+*point* questions; the operator's actual question — "what needs my attention
+across everything, and what doesn't?" — used to cost roughly twenty teams times
+several panes in spoken round trips, and still came back as state labels rather
+than what an agent is stuck on. `fleet_attention` returns every pane that needs
+him, ranked, each carrying the evidence that classified it; `fleet_quiet`
+returns the aggregated all-clear, which exists so an empty attention list is
+*checkable* rather than indistinguishable from a broken sweep. Both are
+read-only, so both survive the read-only deployment below — that is why the
+survey half ships before any ability to type into a pane. A full sweep of the
+real fleet takes about a tenth of a second.
+
 **What it cannot do today — the deployed posture is read-only.** The live
-deployment runs with `ATMUX_VOICE_READONLY=1`, so **only the 10 read tools
+deployment runs with `ATMUX_VOICE_READONLY=1`, so **only the 12 read tools
 exist as far as the model is concerned**: the 4 messaging tools are filtered
 out of the catalog handed to the provider (`src/verbs/voice.ts`), and the tool
 bridge independently refuses any mutating call with a `readonly_mode` error
@@ -660,16 +672,17 @@ the server inside a dedicated detached `atmux-voice` tmux session under a
 crash-loop wrapper with a circuit breaker; it is operator-started and starts
 nothing at boot ([ADR-233](adr/233-cron-auto-install-disabled-trust-orchd.md)).
 
-**Not shipped — [ADR-273](adr/273-voice-fleet-triage-and-pane-input.md) is
-PROPOSED and unbuilt.** It would add fleet triage (`fleet_attention` /
-`fleet_quiet` — "what needs me across everything?") and pane input
-(`pane_nudge` / `pane_send` — typing into a wedged agent's pane), taking the
-catalog from 14 to 18. **None of those four tools exist in the catalog today**,
-and both input tools would in any case be absent under the read-only flag.
-`pane_send` additionally carries an undecided open question (whether it needs a
-second factor) that ADR-273 marks as required before it can ship — typing
-arbitrary text into an agent with full tool access is an unbounded capability,
-unlike every bounded mutating tool in v1.
+**Half of [ADR-273](adr/273-voice-fleet-triage-and-pane-input.md) is shipped.**
+Its survey half — fleet triage (`fleet_attention` / `fleet_quiet`) — is in the
+catalog, taking it from 14 to 16; both are read-only, so both work under the
+read-only flag, which is why that half went first.
+
+**Not shipped — pane input.** `pane_nudge` / `pane_send` (typing into a wedged
+agent's pane) do not exist in the catalog, and would in any case be absent under
+the read-only flag. `pane_send` additionally carries an undecided open question
+(whether it needs a second factor) that ADR-273 marks as required before it can
+ship — typing arbitrary text into an agent with full tool access is an unbounded
+capability, unlike every bounded mutating tool in v1.
 
 ---
 
@@ -1245,13 +1258,17 @@ Critical ADRs with active behavior:
   local-only, 7-day retention) and OQ-5 (`voice` stands as a top-level verb) are
   resolved.
 - **[ADR-273](adr/273-voice-fleet-triage-and-pane-input.md)** — Voice fleet
-  triage + pane input ("what needs me?" + "type that"). Would add
-  `fleet_attention` / `fleet_quiet` and `pane_nudge` / `pane_send`, taking the
-  catalog from 14 to 18, with attention classified server-side from evidence and
-  input routed through the verified `atmux send` path rather than raw
-  `tmux send-keys` ([ADR-138](adr/138-verified-send-keys.md)).
-  **Status: proposed — NOT built.** OQ-1 (does `pane_send` need a second
-  factor?) is an operator decision required before it can ship.
+  triage + pane input ("what needs me?" + "type that"). **D1–D3 (the survey
+  half) are BUILT**: `fleet_attention` / `fleet_quiet` take the catalog from 14
+  to 16, with attention classified server-side from evidence and every item
+  carrying the marker + pane gist that produced it, bounded in wall-clock, and a
+  team that cannot be read reported as unreadable rather than dropped. §Supplement
+  records what shipped, the three classifier traps as found live, and the OQ-3
+  measurement (~110 ms per sweep — no cache needed). **D4/D5 (`pane_nudge` /
+  `pane_send`) are NOT built**; OQ-1 (does `pane_send` need a second factor?) is
+  an operator decision required before either can ship, and input would route
+  through the verified `atmux send` path rather than raw `tmux send-keys`
+  ([ADR-138](adr/138-verified-send-keys.md)).
 
 ### Planned
 

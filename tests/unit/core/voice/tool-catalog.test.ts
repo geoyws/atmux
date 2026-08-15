@@ -34,6 +34,7 @@ import { parseClaimDoneArgs } from "../../../../src/verbs/claim.ts";
 import { parseCostArgs } from "../../../../src/verbs/cost.ts";
 import { parseDispatchArgs } from "../../../../src/verbs/dispatch.ts";
 import { parseDriverInboxArgs } from "../../../../src/verbs/driver-inbox.ts";
+import { parseFleetArgs } from "../../../../src/verbs/fleet.ts";
 import { parseHealthArgs } from "../../../../src/verbs/health.ts";
 import { parsePaneStateArgs } from "../../../../src/verbs/pane-state.ts";
 import { parseOutboxArgs } from "../../../../src/verbs/reply.ts";
@@ -51,10 +52,12 @@ function entry(name: string): VoiceToolEntry {
 }
 
 describe("catalog surface (ADR-272 D6, frozen)", () => {
-  test("exactly the 14 v1 tools, in a stable order", () => {
+  test("exactly the 16 tools (D6's 14 + ADR-273's 2), in a stable order", () => {
     expect(VOICE_TOOL_CATALOG.map((t) => t.name)).toEqual([
       "list_teams",
       "fleet_overview",
+      "fleet_attention",
+      "fleet_quiet",
       "team_status",
       "team_health",
       "list_tasks",
@@ -96,6 +99,8 @@ describe("catalog surface (ADR-272 D6, frozen)", () => {
     expect(map).toEqual({
       list_teams: null,
       fleet_overview: "topo",
+      fleet_attention: "fleet",
+      fleet_quiet: "fleet",
       team_status: "status",
       team_health: "health",
       list_tasks: "task",
@@ -111,9 +116,12 @@ describe("catalog surface (ADR-272 D6, frozen)", () => {
     });
   });
 
-  test("team-scoped = every tool except list_teams + fleet_overview", () => {
-    const fleet = VOICE_TOOL_CATALOG.filter((t) => !isTeamScoped(t)).map((t) => t.name);
-    expect(fleet).toEqual(["list_teams", "fleet_overview"]);
+  test("team-scoped = every tool except the four fleet-wide reads", () => {
+    // ADR-273 D1: triage is split by ATTENTION, not by team, so neither
+    // new tool takes a `team` param — a fleet survey that needed one
+    // would be the N x M call pattern the ADR exists to replace.
+    const fleetWide = VOICE_TOOL_CATALOG.filter((t) => !isTeamScoped(t)).map((t) => t.name);
+    expect(fleetWide).toEqual(["list_teams", "fleet_overview", "fleet_attention", "fleet_quiet"]);
   });
 
   test("confirm_token is declared on exactly the confirm-gated tools", () => {
@@ -122,11 +130,24 @@ describe("catalog surface (ADR-272 D6, frozen)", () => {
     }
   });
 
-  test("descriptions are voice-oriented: non-empty, ≤2 sentences", () => {
+  test("descriptions are voice-oriented: non-empty, ≤3 sentences", () => {
+    // Was ≤2. Raised to 3 for exactly one reason: the two ADR-273 tools
+    // must tell the model WHEN to reach for them ("what needs me", "is
+    // it really all clear") on top of what they do, and a model that
+    // picks `team_status` twenty times instead of `fleet_attention` once
+    // has defeated D1. Still a hard cap — a paragraph read aloud is not
+    // a tool description.
     for (const t of VOICE_TOOL_CATALOG) {
       expect(t.description.length).toBeGreaterThan(0);
       const sentences = t.description.split(/[.!?]+\s/).filter((s) => s.trim().length > 0);
-      expect(sentences.length).toBeLessThanOrEqual(2);
+      expect(sentences.length).toBeLessThanOrEqual(3);
+    }
+    // The pre-ADR-273 twelve stay at ≤2 — the raise is not a licence to
+    // let every description grow.
+    for (const t of VOICE_TOOL_CATALOG) {
+      if (t.name === "fleet_attention" || t.name === "fleet_quiet") continue;
+      const sentences = t.description.split(/[.!?]+\s/).filter((s) => s.trim().length > 0);
+      expect(sentences.length, `${t.name} grew past 2 sentences`).toBeLessThanOrEqual(2);
     }
   });
 
@@ -498,6 +519,8 @@ describe("argv hygiene — a spoken value may not pose as a CLI flag", () => {
 const SAMPLES: Record<string, Record<string, unknown>> = {
   list_teams: {},
   fleet_overview: {},
+  fleet_attention: { top: 5 },
+  fleet_quiet: {},
   team_status: { team: "atmux" },
   team_health: { team: "atmux" },
   list_tasks: { team: "atmux", limit: 5 },
@@ -523,6 +546,8 @@ const NEVER_REACHES_ARGV = new Set(["confirm_token"]);
 const EXPECTED_SLOTS: Record<string, Record<string, ArgvSlot>> = {
   list_teams: {},
   fleet_overview: {},
+  fleet_attention: {},
+  fleet_quiet: {},
   team_status: { team: "absent" },
   team_health: { team: "absent" },
   list_tasks: { team: "absent" },
@@ -546,6 +571,7 @@ const EXPECTED_SLOTS: Record<string, Record<string, ArgvSlot>> = {
  */
 const RUNNER_PARSERS: Record<VoiceRunnerKey, (argv: ReadonlyArray<string>) => unknown> = {
   topo: (a) => parseTopoArgs(a),
+  fleet: (a) => parseFleetArgs(a),
   status: (a) => parseStatusArgs(a),
   health: (a) => parseHealthArgs(a),
   task: (a) => {
@@ -635,11 +661,12 @@ describe("structural argv-slot gate (ADR-272 D2 §Supplement)", () => {
       }
     }
     // Ratio pinned so a shrinking sweep is visible: 3 of the catalog's
-    // 24 arguments reach a bare positional slot.
+    // 25 arguments reach a bare positional slot. ADR-273's two tools add
+    // ZERO free-text arguments, so the exposed set is unchanged.
     expect(positionalArgs).toBe(3);
   });
 
-  test("coverage ratio: all 14 tools, all 24 arguments, none unclassified", () => {
+  test("coverage ratio: all 16 tools, all 25 arguments, none unclassified", () => {
     let argCount = 0;
     let classified = 0;
     for (const t of VOICE_TOOL_CATALOG) {
@@ -656,9 +683,11 @@ describe("structural argv-slot gate (ADR-272 D2 §Supplement)", () => {
         else if (key in slots) classified += 1;
       }
     }
-    expect(VOICE_TOOL_CATALOG.length).toBe(14);
-    expect(argCount).toBe(24);
-    expect(classified).toBe(24);
+    expect(VOICE_TOOL_CATALOG.length).toBe(16);
+    // 24 + `fleet_attention.top` (an integer, so it classifies via the
+    // non-string route); `fleet_quiet` declares none.
+    expect(argCount).toBe(25);
+    expect(classified).toBe(25);
   });
 
   test("a `--` terminator is emitted ONLY for runners whose real parser honours it", () => {
@@ -680,6 +709,7 @@ describe("structural argv-slot gate (ADR-272 D2 §Supplement)", () => {
     // lost it, this flips and the catalog's routing must be revisited.
     const probeArgv: Record<VoiceRunnerKey, string[]> = {
       topo: ["--", "-x"],
+      fleet: ["--", "-x"],
       status: ["--", "-x"],
       health: ["--", "-x"],
       task: ["add", "--", "-x"],

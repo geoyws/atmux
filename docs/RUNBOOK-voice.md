@@ -79,7 +79,7 @@ Numeric knobs **fail closed to their default** on a non-numeric, non-positive, o
 | `ATMUX_VOICE_ORIGINS` | — none — | **in practice, yes** | Comma-separated `Origin` allowlist. This is the **CSRF** defense: browsers do not apply same-origin policy to WebSocket handshakes, so without it any page the operator visits can ride his O2 session cookie into a driver-scope socket. ⚠️ **The server does NOT refuse to start without it** (only `ATMUX_VOICE_TOKEN` does that). An empty allowlist means every *present* `Origin` is rejected — so the PWA cannot connect at all — while a request with **no** `Origin` header is allowed through to the token check (`checkOrigin` in `src/core/voice/auth.ts`: native apps and `scripts/voice-probe.ts` send none). Set it before the PWA is expected to work. |
 | `ATMUX_VOICE_TOOL_TIMEOUT_MS` | `20000` | no | Per-tool wall-clock deadline. A tool that exceeds it returns a spoken error; it does not hang the session. |
 | `ATMUX_VOICE_MAX_RESULT_CHARS` | `2000` | no | Truncation ceiling for a tool result before it reaches the model. Voice results are **spoken**, so a 40 KB pane dump is both expensive and useless. |
-| `ATMUX_VOICE_READONLY` | unset | no | `1` ⇒ only the 10 read tools exist; the 4 messaging tools are **absent from the catalog**, not merely refused at call time. **This is the setting the feature first ships in.** Carries a `SUNSET` marker per [ADR-266](adr/266-shim-sunset-policy-and-first-sweep.md) §D1; cleared in P7. |
+| `ATMUX_VOICE_READONLY` | unset | no | `1` ⇒ only the 12 read tools exist; the 4 messaging tools are **absent from the catalog**, not merely refused at call time. **This is the setting the feature first ships in.** Carries a `SUNSET` marker per [ADR-266](adr/266-shim-sunset-policy-and-first-sweep.md) §D1; cleared in P7. |
 | `ATMUX_VOICE_RESUME_GRACE_MS` | `90000` | no | How long a dropped phone's **provider leg is parked** for `hello.resume` (ADR-272 §D8 — the walking-into-a-lift case). |
 | `ATMUX_VOICE_CONFIRM_TTL_MS` | `120000` | no | Lifetime of a D7 confirmation token. Single-use, and bound to `sha256(tool ‖ canonical_json(args) ‖ session_id)`. |
 | `ATMUX_VOICE_ASSETS_DIR` | `resolveTemplatesDir()/voice` | no | Override for the client asset root. The default resolves install-mode `/opt/atmux/<v>/templates/voice` and dev-mode `<repo>/templates/voice` through `src/core/templates-dir.ts` — V-1 checks both. |
@@ -126,7 +126,7 @@ Open by design (nginx exposes it for probes). **`ok` is a real verdict, not a co
   "bridge": { "wedged": true, "stuckTool": "team_status", "heldMs": 184213, "queueDepth": 6, "wedgeThresholdMs": 60000 } }
 ```
 
-**Why `ok` can be false.** Every voice tool serializes through one verb mutex (`src/core/verb-capture.ts`) because the stdout-capture wrapper cannot run two verbs concurrently. The tool timeout bounds the **response**, not the **execution** — so a wired verb that never returns holds that mutex forever, every later tool call answers `tool_timeout` permanently, and none of the 12 wired verbs calls `process.exit`, so the process **wedges rather than crashing**. The only recovery is `atmux voice --stop`. Voice runs unattended in a detached tmux session, so a probe reporting green through all of that is worse than no probe at all.
+**Why `ok` can be false.** Every voice tool serializes through one verb mutex (`src/core/verb-capture.ts`) because the stdout-capture wrapper cannot run two verbs concurrently. The tool timeout bounds the **response**, not the **execution** — so a wired verb that never returns holds that mutex forever, every later tool call answers `tool_timeout` permanently, and none of the 13 wired verbs calls `process.exit`, so the process **wedges rather than crashing**. The only recovery is `atmux voice --stop`. Voice runs unattended in a detached tmux session, so a probe reporting green through all of that is worse than no probe at all.
 
 - `wedgeThresholdMs` = `WEDGE_THRESHOLD_MULTIPLE` (3) × `ATMUX_VOICE_TOOL_TIMEOUT_MS`. Past its own response deadline a tool is merely **slow** — already reported to the operator as a `tool_timeout`. Three deadlines in, it is **stuck**.
 - `stuckTool` is the tool **name** only. Arguments are never put here: `/healthz` is unauthenticated, and arguments carry what the operator said.
@@ -208,6 +208,60 @@ bun scripts/voice-probe.ts --url ws://127.0.0.1:4390/ws --token "$T" --text "fle
 **Exit 0 iff** `ready` arrived **and** the socket did not close with an error code (1000 and still-open both pass). All output is on **stderr**, so stdout stays clean for piping. A connect failure is reported as a non-zero exit with a `failure=` reason — never an unhandled throw.
 
 It is **not** a substitute for the phone checks. Two of convoke's four fatal defects (advisory `sampleRate`, `AudioContext` outside a user gesture) are iOS-specific and would pass any headless suite. See the warning at the head of §7.
+
+## §6.5 — Fleet triage: `fleet_attention` + `fleet_quiet`
+
+> **Shipped alongside [ADR-273](adr/273-voice-fleet-triage-and-pane-input.md) D1–D3.** Classifier + renderer: `src/core/voice/fleet.ts`. Sweep: `src/verbs/fleet.ts`, also reachable as the CLI verb `atmux fleet`.
+
+The operator's actual question is not per-team — it is **"what needs my attention across everything, and what doesn't?"**. Answering that with the per-team reads costs `list_teams` + `team_status` × N + `member_pane` × N × M: roughly twenty teams times several panes, each one a spoken round trip. These two tools replace that with one call each.
+
+Both are **read-only** (`mutating: false`, `confirm: false`), so both work under `ATMUX_VOICE_READONLY=1`. That is deliberate: the survey half is useful on its own and ships before any input capability.
+
+```bash
+atmux fleet --attention            # ranked, most urgent first (default)
+atmux fleet --attention --top 3    # speak fewer; 1..15, default 5
+atmux fleet --quiet                # the aggregated all-clear
+atmux fleet --json                 # the full verdict, nothing elided
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--attention` / `--quiet` | `--attention` | Which view. Last flag wins. |
+| `--top <n>` | `5` | How many entries are spoken in full before the rest become a count. **1..15**; outside that is a usage error, never a silent clamp. |
+| `--json` | off | The whole verdict — every finding, the quiet list, the unreadable teams, the timing. What the speech elides on purpose. |
+| `--timeout-ms <n>` | `15000` | Wall-clock bound for the whole sweep. |
+| `--concurrency <n>` | `8` | Teams read in parallel. |
+
+### What counts as needing you
+
+Classification is **server-side and evidence-bearing** (D3): the model receives a verdict plus the marker and the pane gist that produced it, never a pane dump to judge for itself. Ranked most-urgent first:
+
+| Class | Spoken as | Fires on |
+|---|---|---|
+| `permission-prompt` | waiting on a permission prompt | A modal has stopped the agent — it waits forever. Includes Claude Code's trust-folder prompt (`Enter to confirm`). |
+| `rate-limited` | rate-limited | The assertive limit banner. **Not** the standing tip that merely mentions the limit. |
+| `refusal` | refusing the work | An [ADR-139](adr/139-refusal-pattern-detection.md) refusal phrase in the pane tail. |
+| `dead` | session is down | The team's tmux session, or the member's window, is absent under its **resolved** name. |
+| `crashed` | no agent running in the pane | tmux reports the pane process exited, or there is no agent chrome and the pane is a shell. |
+| `frozen` | spinner stalled | A live-turn marker on screen while the window's tmux activity clock has not moved for 5 min. |
+| `unresponsive` | no agent output at all | No recognizable agent chrome — blank, or something that is not a TUI. |
+| `idle-residue` | idle with unsubmitted text | The wedge class: text sitting in the composer, no active turn, and the window has been still for over a minute. |
+| `lead-ask` | asks waiting for you | Unread `driver-inbox.md` entries and/or open `flags.md` rows. Team-level, not per-pane. |
+| `dormant` | parked with nothing queued | Agent chrome, empty composer, no output for over an hour. **Chronic, not news** — ranked last, and `fleet_quiet` counts it separately so a merely-parked fleet still reports as nominal. |
+
+Quiet classes — `working`, `compacting`, `starting up`, `idle and clear` — are counted, never enumerated.
+
+### The rules that keep it honest
+
+- **A pane joins the quiet set only on POSITIVE evidence** — a live-turn marker, a compaction banner, or agent chrome with an empty composer. Absence of anything bad is never enough.
+- **A live-turn marker is corroborated against tmux's own activity clock**, which is not derived from the pane text. A spinner that has not repainted in 5 min is `frozen`, not `working`.
+- **Panes are enumerated from tmux windows, not the roster.** Most teams on this fleet carry `members: []` while their sessions hold live `driver` windows; a roster-driven sweep would report "0 panes, all clear" across working agents.
+- **A team that cannot be read is reported as UNREADABLE, never omitted.** Rows are grouped by reason so five teams sharing one cause cost one clause, not five.
+- **Session names are resolved through the anchor** (`.atmux/state/session.txt` via `resolveCageSessionName`), never rebuilt as `atmux-<team>`. On this fleet `unum` anchors to `atmux_unum` and `atmux` to bare `atmux`; the rebuilt form names no session at all and reported every member of a healthy team as down.
+
+### Speech budget
+
+`fleet_attention` speaks at most `top` entries. Same-class findings on the same team **collapse into one entry** (`dash — 7 panes (docs, driver, driver-2 +4)`) so one team's single cause cannot eat the whole budget. Everything beyond the budget becomes a count with a reason breakdown. `fleet_quiet` never names a pane.
 
 ## §7 — Verification checklist (V-1 … V-18)
 
