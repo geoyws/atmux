@@ -79,7 +79,7 @@ Numeric knobs **fail closed to their default** on a non-numeric, non-positive, o
 | `ATMUX_VOICE_ORIGINS` | — none — | **in practice, yes** | Comma-separated `Origin` allowlist. This is the **CSRF** defense: browsers do not apply same-origin policy to WebSocket handshakes, so without it any page the operator visits can ride his O2 session cookie into a driver-scope socket. ⚠️ **The server does NOT refuse to start without it** (only `ATMUX_VOICE_TOKEN` does that). An empty allowlist means every *present* `Origin` is rejected — so the PWA cannot connect at all — while a request with **no** `Origin` header is allowed through to the token check (`checkOrigin` in `src/core/voice/auth.ts`: native apps and `scripts/voice-probe.ts` send none). Set it before the PWA is expected to work. |
 | `ATMUX_VOICE_TOOL_TIMEOUT_MS` | `20000` | no | Per-tool wall-clock deadline. A tool that exceeds it returns a spoken error; it does not hang the session. |
 | `ATMUX_VOICE_MAX_RESULT_CHARS` | `2000` | no | Truncation ceiling for a tool result before it reaches the model. Voice results are **spoken**, so a 40 KB pane dump is both expensive and useless. |
-| `ATMUX_VOICE_READONLY` | unset | no | `1` ⇒ only the 12 read tools exist; the 4 messaging tools are **absent from the catalog**, not merely refused at call time. **This is the setting the feature first ships in.** Carries a `SUNSET` marker per [ADR-266](adr/266-shim-sunset-policy-and-first-sweep.md) §D1; cleared in P7. |
+| `ATMUX_VOICE_READONLY` | unset | no | `1` ⇒ only the 12 read tools exist; the 4 messaging tools **and `pane_nudge`** are **absent from the catalog**, not merely refused at call time. **This is the setting the feature first ships in**, which is why `pane_nudge` is unreachable until P7 despite being built. Carries a `SUNSET` marker per [ADR-266](adr/266-shim-sunset-policy-and-first-sweep.md) §D1; cleared in P7. |
 | `ATMUX_VOICE_RESUME_GRACE_MS` | `90000` | no | How long a dropped phone's **provider leg is parked** for `hello.resume` (ADR-272 §D8 — the walking-into-a-lift case). |
 | `ATMUX_VOICE_CONFIRM_TTL_MS` | `120000` | no | Lifetime of a D7 confirmation token. Single-use, and bound to `sha256(tool ‖ canonical_json(args) ‖ session_id)`. |
 | `ATMUX_VOICE_ASSETS_DIR` | `resolveTemplatesDir()/voice` | no | Override for the client asset root. The default resolves install-mode `/opt/atmux/<v>/templates/voice` and dev-mode `<repo>/templates/voice` through `src/core/templates-dir.ts` — V-1 checks both. |
@@ -263,6 +263,81 @@ Quiet classes — `working`, `compacting`, `starting up`, `idle and clear` — a
 ### Speech budget
 
 `fleet_attention` speaks at most `top` entries. Same-class findings on the same team **collapse into one entry** (`dash — 7 panes (docs, driver, driver-2 +4)`) so one team's single cause cannot eat the whole budget. Everything beyond the budget becomes a count with a reason breakdown. `fleet_quiet` never names a pane.
+
+## §6.6 — Pane input: `pane_nudge` / `atmux nudge`
+
+> **Shipped alongside [ADR-273](adr/273-voice-fleet-triage-and-pane-input.md) D4 (`pane_nudge` half) + D5.** Allow-list, after-state classifier and receipt renderer: `src/core/voice/nudge.ts`. IO: `src/verbs/nudge.ts`, also reachable as the CLI verb `atmux nudge`. **`pane_send` is NOT shipped** — it is still gated on ADR-273 OQ-1.
+
+The overnight case `fleet_attention` finds and could not act on: a pane wedged with unsubmitted text that needs one keystroke.
+
+```bash
+atmux nudge --member be-1                       # press Enter on what the composer holds
+atmux nudge --member be-1 --action continue     # type the single word "continue" and submit
+atmux nudge --member be-1 --json                # the structured receipt
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--member <name>` | — required — | Roster member whose pane to nudge. **Not** an arbitrary tmux window — see the two limits below. |
+| `--action <a>` | `submit` | `submit` \| `continue`. The allow-list is **fixed in code**; anything else is a usage error. |
+| `--team-dir <dir>` | cwd walk-up | Team root. |
+| `--socket <path>` | `resolveTeamSocket(team)` | Cage socket override. |
+| `--settle-ms <n>` | `1500` | Wait between delivery and the after-read, so a TUI repaint is not mistaken for "unchanged". |
+| `--json` | off | The receipt as JSON — both verdicts with their evidence. |
+
+**Exit codes carry the verdict, not merely that a send went out.** `0` = delivered and the pane moved. `1` = delivered and the pane is in the same classified state it was in before — *the nudge did not take*. `64` = bad argv or an action outside the allow-list. `78` = a driver pane, or a member the roster does not carry.
+
+### It never sends operator text — that is the whole reason it can ship
+
+`pane_send` (free text into an agent with full tool access) inherits [ADR-272](adr/272-voice-operator-interface.md) §Deferred's **second-factor** requirement and is still an operator decision. `pane_nudge` does not, because three separate things bound it:
+
+1. `action` is a **zod enum**, so a transcript *selects* an action and can never *author* one.
+2. The word pasted is a **compile-time constant** looked up from that enum name. The model's string never reaches the pane.
+3. The tool declares **no free-text parameter at all** — a unit test fails if one ever appears, because that is exactly what `pane_nudge` becoming `pane_send` looks like.
+
+| Action | Sends | Use it for |
+|---|---|---|
+| `submit` | **nothing** — a bare verified submit | `idle-residue` (the wedge) and `permission-prompt`. Pastes nothing, so it cannot corrupt the residue it is submitting. |
+| `continue` | the single word `continue` | `dormant` / `frozen` — a pane that stopped with an **empty** composer. Never use it on residue: it would concatenate. |
+
+⚠️ **`submit` on a permission prompt accepts that modal's default selection.** That is the intended 2am behaviour and it is still a real grant of authority. Hear the finding from `fleet_attention` first.
+
+### Two limits you will hit immediately
+
+- **Driver panes are refused, by rule.** [ADR-239](adr/239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md) §D2: atmux never sends keystrokes into a `driver` / `driver-N` pane. Most `idle-residue` findings on this fleet are on driver windows, so this is the first thing you will try. The refusal is raised up front and names the ADR; press Enter yourself.
+- **The member must be in `team.json`.** Delivery goes through `atmux send`, which addresses roster members. The sweep enumerates from **tmux windows** (most teams carry `members: []`), so a pane can be *reported* and not be *nudgeable*. Closing the gap would mean either a roster-driven sweep — which reports "all clear" across a working fleet — or a delivery path that is not `atmux send`, which D5 forbids. The gap is documented, not hidden.
+
+### The receipt
+
+Delivery is **verified**: the pane is read before, delivered to, then read again and classified with the same fleet classifier the survey uses.
+
+```
+NUDGE atmux/be-1 (window ⚙-be-1) — pressed Enter to submit what was already in the composer
+before: idle with unsubmitted text — unsubmitted: claim --next
+after: working
+the composer cleared and the agent is now working
+```
+
+…and when it does not work, it says so and exits 1:
+
+```
+NUDGE atmux/be-1 (window ⚙-be-1) — pressed Enter to submit what was already in the composer
+before: idle with unsubmitted text — unsubmitted: claim --next
+after: idle with unsubmitted text — still unsubmitted: claim --next
+the pane is unchanged — the nudge did not take
+```
+
+The after-read deliberately **does not** use the survey classifier's "residue plus recent activity means someone is typing" rule: the recent activity is our own paste, and honouring it would report a failed nudge as "idle and clear". See ADR-273 §Supplement-2 T4.
+
+### `atmux send --submit-only`
+
+The delivery primitive `submit` uses, and the only new capability in the send path: skip the buffer/paste pair and run the **same** settle + `C-m` + [ADR-138](adr/138-verified-send-keys.md) verify-and-retry step the paste path runs.
+
+```bash
+atmux send --submit-only <member>     # single-member only; takes NO message
+```
+
+It is refused with a usage error when combined with a message body, with `--no-submit`, with `--broadcast`, or with the cockpit-tier `__medic__` key — each of those would silently drop something you asked for, or write an empty inbox row and call it success.
 
 ## §7 — Verification checklist (V-1 … V-18)
 

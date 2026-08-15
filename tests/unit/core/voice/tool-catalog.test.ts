@@ -14,6 +14,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
+import { NUDGE_ACTIONS } from "../../../../src/core/voice/nudge.ts";
 import {
   ARGV_PROBE,
   type ArgvSlot,
@@ -36,6 +37,7 @@ import { parseDispatchArgs } from "../../../../src/verbs/dispatch.ts";
 import { parseDriverInboxArgs } from "../../../../src/verbs/driver-inbox.ts";
 import { parseFleetArgs } from "../../../../src/verbs/fleet.ts";
 import { parseHealthArgs } from "../../../../src/verbs/health.ts";
+import { parseNudgeArgs } from "../../../../src/verbs/nudge.ts";
 import { parsePaneStateArgs } from "../../../../src/verbs/pane-state.ts";
 import { parseOutboxArgs } from "../../../../src/verbs/reply.ts";
 import { parseStatusArgs } from "../../../../src/verbs/status.ts";
@@ -52,7 +54,7 @@ function entry(name: string): VoiceToolEntry {
 }
 
 describe("catalog surface (ADR-272 D6, frozen)", () => {
-  test("exactly the 16 tools (D6's 14 + ADR-273's 2), in a stable order", () => {
+  test("exactly the 17 tools (D6's 14 + ADR-273's 2 reads + ADR-273 D4's pane_nudge), in a stable order", () => {
     expect(VOICE_TOOL_CATALOG.map((t) => t.name)).toEqual([
       "list_teams",
       "fleet_overview",
@@ -70,17 +72,24 @@ describe("catalog surface (ADR-272 D6, frozen)", () => {
       "add_task",
       "dispatch_task",
       "claim_task",
+      "pane_nudge",
     ]);
   });
 
-  test("mutating on exactly the 4 messaging tools", () => {
+  test("mutating on exactly the 4 messaging tools + pane_nudge", () => {
     const mutating = VOICE_TOOL_CATALOG.filter((t) => t.mutating).map((t) => t.name);
-    expect(mutating).toEqual(["tell_lead", "add_task", "dispatch_task", "claim_task"]);
+    expect(mutating).toEqual([
+      "tell_lead",
+      "add_task",
+      "dispatch_task",
+      "claim_task",
+      "pane_nudge",
+    ]);
   });
 
-  test("confirm on exactly dispatch_task + claim_task", () => {
+  test("confirm on exactly dispatch_task + claim_task + pane_nudge", () => {
     const confirm = VOICE_TOOL_CATALOG.filter((t) => t.confirm).map((t) => t.name);
-    expect(confirm).toEqual(["dispatch_task", "claim_task"]);
+    expect(confirm).toEqual(["dispatch_task", "claim_task", "pane_nudge"]);
   });
 
   test("every confirm tool is also mutating", () => {
@@ -113,6 +122,7 @@ describe("catalog surface (ADR-272 D6, frozen)", () => {
       add_task: "task",
       dispatch_task: "dispatch",
       claim_task: "claim",
+      pane_nudge: "nudge",
     });
   });
 
@@ -156,6 +166,74 @@ describe("catalog surface (ADR-272 D6, frozen)", () => {
   });
 });
 
+describe("pane_nudge (ADR-273 D4) — the bound that lets it ship without OQ-1", () => {
+  test("action is an ENUM over the in-code allow-list — a transcript SELECTS, never authors", () => {
+    const schema = toolJsonSchema(entry("pane_nudge"));
+    expect(schema.properties.action).toEqual({
+      type: "string",
+      enum: [...NUDGE_ACTIONS],
+      description: expect.any(String) as unknown as string,
+    });
+  });
+
+  test("free text is rejected by the schema before any argv exists", () => {
+    const p = entry("pane_nudge").params;
+    expect(p.safeParse({ member: "be-1", action: "rm -rf /" }).success).toBe(false);
+    expect(p.safeParse({ member: "be-1", action: "run the migration" }).success).toBe(false);
+    expect(p.safeParse({ member: "be-1", action: "submit" }).success).toBe(true);
+    expect(p.safeParse({ member: "be-1", action: "continue" }).success).toBe(true);
+  });
+
+  test("action defaults to submit when the model omits it", () => {
+    expect(entry("pane_nudge").params.parse({ member: "be-1" })).toMatchObject({
+      action: "submit",
+    });
+  });
+
+  test("member still refuses a leading dash (defence in depth on a flag-value slot)", () => {
+    expect(entry("pane_nudge").params.safeParse({ member: "--socket" }).success).toBe(false);
+    expect(entry("pane_nudge").params.safeParse({ member: " --socket" }).success).toBe(false);
+    expect(entry("pane_nudge").params.safeParse({ member: "be-1" }).success).toBe(true);
+  });
+
+  test("the catalog declares NO free-text parameter at all", () => {
+    // Every string argument is either the guarded member name or the
+    // enum. If a `text` / `message` / `body` parameter ever appears here,
+    // pane_nudge has silently become pane_send and ADR-273 OQ-1 applies.
+    const props = toolJsonSchema(entry("pane_nudge")).properties;
+    const freeText = Object.entries(props).filter(
+      ([k, v]) => v.type === "string" && v.enum === undefined && k !== "member" && k !== "team",
+    );
+    expect(freeText.map(([k]) => k)).toEqual(["confirm_token"]);
+  });
+
+  test("argv → the nudge verb's own parser, with the enum NAME not a phrase", () => {
+    const argv = entry("pane_nudge").argv({ member: "be-1", action: "continue" }, ROOT);
+    expect(argv).toEqual(["--member", "be-1", "--action", "continue", "--team-dir", ROOT]);
+    expect(parseNudgeArgs(argv)).toMatchObject({
+      member: "be-1",
+      action: "continue",
+      teamDir: ROOT,
+    });
+  });
+
+  test("it declares a per-tool confirm preview naming target AND action", () => {
+    const e = entry("pane_nudge");
+    expect(typeof e.preview).toBe("function");
+    const line = e.preview?.({ member: "be-1", action: "submit" }, "atmux") ?? "";
+    expect(line).toContain("be-1");
+    expect(line).toContain("atmux");
+    expect(line).toContain("press Enter");
+  });
+
+  test("no OTHER catalog entry declares a preview — the hook stayed narrow", () => {
+    const withPreview = VOICE_TOOL_CATALOG.filter((t) => t.preview !== undefined).map(
+      (t) => t.name,
+    );
+    expect(withPreview).toEqual(["pane_nudge"]);
+  });
+});
+
 describe("flat-schema guard — EVERY entry derives a flat provider schema", () => {
   const SCALARS = ["string", "number", "integer", "boolean"];
 
@@ -186,6 +264,8 @@ describe("flat-schema guard — EVERY entry derives a flat provider schema", () 
     expect(toolJsonSchema(entry("dispatch_task")).required).toEqual(["task_id"]);
     expect(toolJsonSchema(entry("add_task")).required).toEqual(["title"]);
     expect(toolJsonSchema(entry("tell_lead")).required).toEqual(["message"]);
+    // `action` carries a default → optional for the model (io: "input").
+    expect(toolJsonSchema(entry("pane_nudge")).required).toEqual(["member"]);
     expect(toolJsonSchema(entry("list_teams")).required).toBeUndefined();
     // `limit` has a default → optional for the model (io: "input").
     expect(toolJsonSchema(entry("list_tasks")).required).toBeUndefined();
@@ -533,6 +613,7 @@ const SAMPLES: Record<string, Record<string, unknown>> = {
   add_task: { team: "atmux", title: "check the deploy", body: "see hig", priority: 2 },
   dispatch_task: { team: "atmux", task_id: "t-abc123", member: "be-1" },
   claim_task: { team: "atmux", task_id: "t-abc123", member: "be-1" },
+  pane_nudge: { team: "atmux", member: "be-1", action: "submit" },
 };
 
 /** The bridge strips `confirm_token` BEFORE calling `entry.argv`
@@ -560,6 +641,10 @@ const EXPECTED_SLOTS: Record<string, Record<string, ArgvSlot>> = {
   add_task: { team: "absent", title: "terminated", body: "flag-value" },
   dispatch_task: { team: "absent", task_id: "positional", member: "positional" },
   claim_task: { team: "absent", task_id: "positional", member: "flag-value" },
+  // ADR-273 D4: NEITHER argument reaches a bare positional slot. The
+  // canned text is a compile-time constant looked up from `action`, so
+  // no operator-supplied string ever becomes a spoken word in a pane.
+  pane_nudge: { team: "absent", member: "flag-value", action: "flag-value" },
 };
 
 /**
@@ -588,6 +673,7 @@ const RUNNER_PARSERS: Record<VoiceRunnerKey, (argv: ReadonlyArray<string>) => un
   tellLead: (a) => parseTellLeadArgs(a),
   dispatch: (a) => parseDispatchArgs(a),
   claim: (a) => parseClaimDoneArgs(a, "claim"),
+  nudge: (a) => parseNudgeArgs(a),
 };
 
 /** True when SOME own property of the parse result is EXACTLY `value` —
@@ -661,12 +747,15 @@ describe("structural argv-slot gate (ADR-272 D2 §Supplement)", () => {
       }
     }
     // Ratio pinned so a shrinking sweep is visible: 3 of the catalog's
-    // 25 arguments reach a bare positional slot. ADR-273's two tools add
-    // ZERO free-text arguments, so the exposed set is unchanged.
+    // 29 arguments reach a bare positional slot. ADR-273's two READ
+    // tools add ZERO free-text arguments, and D4's `pane_nudge` routes
+    // both of its strings into flag-value slots, so the exposed set is
+    // unchanged at the same 3 (dispatch_task.task_id, dispatch_task.member,
+    // claim_task.task_id).
     expect(positionalArgs).toBe(3);
   });
 
-  test("coverage ratio: all 16 tools, all 25 arguments, none unclassified", () => {
+  test("coverage ratio: all 17 tools, all 29 arguments, none unclassified", () => {
     let argCount = 0;
     let classified = 0;
     for (const t of VOICE_TOOL_CATALOG) {
@@ -683,11 +772,12 @@ describe("structural argv-slot gate (ADR-272 D2 §Supplement)", () => {
         else if (key in slots) classified += 1;
       }
     }
-    expect(VOICE_TOOL_CATALOG.length).toBe(16);
+    expect(VOICE_TOOL_CATALOG.length).toBe(17);
     // 24 + `fleet_attention.top` (an integer, so it classifies via the
-    // non-string route); `fleet_quiet` declares none.
-    expect(argCount).toBe(25);
-    expect(classified).toBe(25);
+    // non-string route); `fleet_quiet` declares none; ADR-273 D4's
+    // `pane_nudge` adds 4 (team, member, action, confirm_token).
+    expect(argCount).toBe(29);
+    expect(classified).toBe(29);
   });
 
   test("a `--` terminator is emitted ONLY for runners whose real parser honours it", () => {
@@ -721,6 +811,7 @@ describe("structural argv-slot gate (ADR-272 D2 §Supplement)", () => {
       tellLead: ["--", "-x"],
       dispatch: ["--", "-x"],
       claim: ["--", "-x"],
+      nudge: ["--", "-x"],
     };
     for (const [key, argv] of Object.entries(probeArgv) as Array<[VoiceRunnerKey, string[]]>) {
       let honours = false;

@@ -2,7 +2,7 @@
 
 Status: proposed
 Date: 2026-08-15
-Implementation: **D1–D3 built 2026-08-16** (`fleet_attention` + `fleet_quiet`); **D4–D5 not built** (pane input, gated on OQ-1). See §Supplement. Status stays `proposed` pending reviewer signoff — an ADR is not accepted by being implemented.
+Implementation: **D1–D3 built 2026-08-16** (`fleet_attention` + `fleet_quiet`); **D4's `pane_nudge` + D5 built 2026-08-16** (see §Supplement-2); **`pane_send` still not built** — it remains gated on OQ-1. Status stays `proposed` pending reviewer signoff — an ADR is not accepted by being implemented.
 Extends: [ADR-272](272-voice-operator-interface.md) (voice operator interface)
 Related: [ADR-138](138-verified-send-keys.md) (verified send-keys), [ADR-139](139-refusal-pattern-detection.md) (refusal detection), [ADR-140](140-cheap-model-first.md) (cheap-model-first observation loops)
 
@@ -164,5 +164,74 @@ This keeps a repo-checkout deploy first-class instead of forcing a fleet-wide re
 
 ### S6 — Not built
 
-- **D4 / D5 — `pane_nudge` and `pane_send`.** Absent from the catalog entirely. `pane_send` still needs the **OQ-1 operator decision** on a second factor before it can ship; `pane_nudge` does not depend on it and can go first.
+- **D4 / D5 — `pane_nudge` and `pane_send`.** Absent from the catalog entirely. `pane_send` still needs the **OQ-1 operator decision** on a second factor before it can ship; `pane_nudge` does not depend on it and can go first. — **`pane_nudge` superseded by §Supplement-2 (2026-08-16); `pane_send` still stands.**
 - **OQ-2 (push rather than pull)** — untouched, still noted-not-decided.
+
+## Supplement-2 — `pane_nudge` as built (2026-08-16)
+
+Records the shipped half of D4 and all of D5. **`pane_send` is still not built and OQ-1 is still an open operator decision** — nothing here is precedent for it.
+
+### T1 — Shipped surface
+
+- **`pane_nudge`** — catalog entry 17, `mutating: true`, `confirm: true`. Both flags are load-bearing: `confirm` puts it behind D7's server-enforced token, and `mutating` makes it **absent** from the catalog under `ATMUX_VOICE_READONLY=1`. It is therefore unreachable until P7 clears readonly, which is the correct order and is pinned by a test rather than left as an intention.
+- **`atmux nudge --member <name> [--action submit|continue]`** — a first-class CLI verb, same shape as `atmux fleet` for D1. Allow-list + after-state classifier + receipt renderer in `src/core/voice/nudge.ts` (pure); IO in `src/verbs/nudge.ts`.
+- **`atmux send --submit-only <member>`** — a new flag on the existing send verb, and the only new capability in the delivery path. See T3.
+
+### T2 — The bound that lets it ship without OQ-1, stated structurally
+
+D4 says `pane_nudge` "sends only a submit, or one canned resume string from a fixed allow-list". As built that is not a convention, it is three independent structural facts:
+
+1. The catalog declares `action` as a **zod enum** over `NUDGE_ACTIONS`, so a transcript can *select* an action and can never *author* one. Free text fails validation as `bad_args` before any argv exists.
+2. The word actually pasted is a **compile-time constant** looked up from that enum name in `NUDGE_ACTION_SPECS`. The enum value reaches argv as `--action submit`; the *text* never comes from the model at all.
+3. `pane_nudge` declares **no free-text parameter of any kind** — a test enumerates its schema and fails if a `text` / `message` / `body` property ever appears, because that is the exact shape of `pane_nudge` silently becoming `pane_send`.
+
+**The allow-list is two entries, and each exists because a `fleet_attention` class exists that it answers** — an action nothing on the fleet asks for would be unbounded capability bought for nothing:
+
+| Action | Sends | Answers |
+|---|---|---|
+| `submit` | **nothing** — a bare verified submit | `idle-residue` (the overnight wedge) and `permission-prompt` (Claude Code's modals take the default selection on Enter) |
+| `continue` | the single word `continue` | `dormant` / `frozen` — a pane that stopped with an EMPTY composer |
+
+They are two actions rather than one with an optional string precisely because pasting onto residue **concatenates**: `continue` into a composer holding `claim --next` submits `claim --nextcontinue`. `submit` pasting nothing is what makes the wedge case safe.
+
+### T3 — D5 as built, and the one new capability it needed
+
+Delivery is `src/verbs/nudge.ts` building an argv and calling the **`send` verb**, not `sendToMember` and not tmux. Going through the verb means the nudge path inherits the member lookup, the ADR-135/ADR-161 window-rename shim, the ADR-025 driver-pane type gate, the safe-send modal preflight, the bracketed-paste envelope and ADR-138's verify-and-retry — the same argument ADR-272 D2 makes for the whole bridge, applied one layer down. A test injects a tmux namespace whose every input-injection method **throws**, so a hand-rolled `send-keys` creeping in later is a red suite rather than a silent regression.
+
+**`atmux send` gained `--submit-only`, and it had to.** A bare Enter is not expressible as a message: `send <member> ""` is a usage error, and `send <member> "continue"` pastes onto the residue it is meant to submit. So `SendOpts.submitOnly` skips the load-buffer / paste-buffer pair and runs the **same** settle + `C-m` + ADR-138 verify step the paste path runs — extracted into one shared `submitStep`, so there is no second implementation to drift. Three combinations are **refused** rather than silently resolved, because each silent resolution would drop something the operator asked for: `--submit-only` with a message body, with `--no-submit`, and with `--broadcast`. The post-send `looksLikeNotConsumed` heuristic is skipped on this path — with no message its snippet is the empty string, which every capture contains, so it would report `warn-not-consumed` on every good submit; the ADR-138 verifier is the verification instead.
+
+### T4 — The receipt, and the lie it was one line away from telling
+
+D5's "delivery is verified" is implemented as: read the pane, deliver, read the pane again, classify both with the fleet classifier, speak the pair plus a verdict sentence. **Ordering and dependence are both tested** — a call log pins that the second read follows the send, and the *same* delivery against a pane that did not move produces a different receipt and **exit 1**. A hard-coded "the composer cleared" cannot survive both.
+
+**The one place the fleet classifier is NOT reused verbatim, and why.** `classifyPaneObservation` treats composer residue in a window tmux saw activity in within `RESIDUE_FRESH_SEC` (60s) as *someone is typing* and files it under `quiet: idle`. For a survey that is correct — it stops the tool reporting the pane the operator is mid-sentence in. For an after-nudge read it is exactly wrong: **the recent activity is our own paste, one second ago.** Left alone, a nudge that changed nothing at all would be reported as "idle and clear" — the tool announcing success for a failure, which is the precise thing D5 exists to prevent. `classifyAfterNudge` therefore overrides `quiet: idle` back to `idle-residue` when residue is still in the composer, and the override is deliberately narrow to that one bucket so a genuinely working pane (whose tail can carry a stale `❯` line) is never demoted. Both directions are pinned, including a test asserting the bare survey classifier really does disagree — the bug is demonstrated, not merely described.
+
+### T5 — Driver panes cannot be nudged, and this is the biggest practical limit
+
+**ADR-239 §D2 is absolute: atmux never sends keystrokes into a driver pane**, enforced at the lowest level by `DriverSendKeysViolation` in `tmux.pane.sendKeys`. On the live fleet most `idle-residue` findings sit on `driver` / `driver-N` windows (§S3.1: 14 of 15 enabled teams carry `members: []` while their sessions hold live driver windows), so **the most common finding `fleet_attention` reports is one `pane_nudge` structurally cannot act on.**
+
+Two consequences, both deliberate:
+
+- The refusal is raised **up front**, by the same `isDriverPaneName` predicate the runtime guard uses, so the operator hears a rule ("that pane is yours, I will not type into it") instead of a deep abstraction throw that reads like a bug. The `member` parameter's own description says so, so the model can decline before calling.
+- `pane_nudge` addresses **roster members**, because `atmux send` does. A tmux window the roster never heard of is reported by the sweep and is not nudgeable. That asymmetry is real and is not papered over: the sweep enumerates from tmux by design (§S3.1) while delivery goes through the roster by design (D5). Closing it would mean either a roster-driven sweep (which reports "all clear" across a working fleet) or a non-`send` delivery path (which D5 forbids). **Neither is acceptable, so the gap stays and is documented rather than hidden.**
+
+### T6 — The confirm preview is per-tool now
+
+`VoiceToolEntry` gained an optional `preview(args, team)` hook, used by the bridge instead of the generic `<key> <value>` rendering when present. `pane_nudge` is the only entry that declares one, and a test pins that it stayed the only one. The generic line is adequate for `dispatch_task` (the arguments *are* the action) and inadequate here, where the danger is in what the action *means* — D4 requires the preview to name the exact target and the exact action because the failure it guards is a misheard member name nudging the wrong agent. What the operator hears:
+
+```
+Confirm nudge: driver-2 on team atmux — press Enter to submit whatever is already
+sitting in that pane's composer; nothing is typed. Say yes to proceed.
+```
+
+```
+Confirm nudge: be-1 on team atmux — type the single word "continue" into that pane
+and submit it. Say yes to proceed.
+```
+
+**A hazard worth stating plainly:** `submit` on a `permission-prompt` accepts that modal's **default selection**. That is the behaviour the operator wants at 2am and it is still a real grant of authority, made by a keystroke he confirmed by voice. The preview says "submit whatever is already sitting in that pane's composer", which is true of a modal too; the operator is expected to have heard the finding from `fleet_attention` first.
+
+### T7 — Not built, still
+
+- **`pane_send`.** Unchanged: it needs the **OQ-1 operator decision** on a second factor. A test asserts it is absent from the catalog, so it cannot arrive by drift on `pane_nudge`'s coat-tails.
+- **OQ-2 (push rather than pull)** — untouched.

@@ -71,6 +71,7 @@ function makeHarness(overrides: Partial<ToolBridgeDeps> = {}): Harness {
       tellLead: mkRunner("tellLead"),
       dispatch: mkRunner("dispatch"),
       claim: mkRunner("claim"),
+      nudge: mkRunner("nudge"),
     },
     teamIndex: INDEX,
     confirmStore: createConfirmStore({ clock: () => now, ttlMs: 120_000 }),
@@ -258,6 +259,85 @@ describe("readonly gate", () => {
       argsJson: "{}",
     });
     expect(parseEnvelope(out.envelopeJson)).toMatchObject({ ok: true });
+  });
+});
+
+describe("per-tool confirm preview (ADR-273 D4)", () => {
+  const NUDGE = {
+    name: "pane_nudge",
+    argsJson: '{"member":"be-1","action":"submit"}',
+    sessionId: "sess-1",
+    currentTeam: "atmux",
+  };
+
+  test("pane_nudge uses its OWN preview, not the generic key/value rendering", async () => {
+    const { bridge, calls } = makeHarness();
+    const out = await bridge.executeTool(NUDGE);
+    const env = parseEnvelope(out.envelopeJson);
+    expect(env).toMatchObject({ ok: false, tool: "pane_nudge", error: "needs_confirmation" });
+    const preview = String(env.preview);
+    // Names the exact target AND the exact action — ADR-273 D4.
+    expect(preview).toContain("be-1");
+    expect(preview).toContain("atmux");
+    expect(preview).toContain("press Enter");
+    expect(preview).toContain("nothing is typed");
+    // ...and is NOT what the generic builder would have produced.
+    expect(preview).not.toBe(
+      buildConfirmPreview("pane_nudge", { member: "be-1", action: "submit" }, "atmux"),
+    );
+    expect(calls).toEqual([]);
+  });
+
+  test("a different action yields a different preview, so the operator hears which one", async () => {
+    const { bridge } = makeHarness();
+    const submit = await bridge.executeTool(NUDGE);
+    const cont = await bridge.executeTool({
+      ...NUDGE,
+      argsJson: '{"member":"be-1","action":"continue"}',
+    });
+    expect(submit.needsConfirmation?.preview).not.toBe(cont.needsConfirmation?.preview);
+    expect(String(cont.needsConfirmation?.preview)).toContain('"continue"');
+  });
+
+  test("the token still binds the ARGS — a submit token cannot redeem a continue", async () => {
+    const { bridge, calls } = makeHarness();
+    const issued = await bridge.executeTool(NUDGE);
+    const token = issued.needsConfirmation?.token ?? "";
+    const swapped = await bridge.executeTool({
+      ...NUDGE,
+      argsJson: `{"member":"be-1","action":"continue","confirm_token":"${token}"}`,
+    });
+    expect(parseEnvelope(swapped.envelopeJson)).toMatchObject({ error: "needs_confirmation" });
+    expect(calls).toEqual([]);
+  });
+
+  test("redeeming runs the nudge verb with the flag argv the catalog builds", async () => {
+    const { bridge, calls } = makeHarness();
+    const issued = await bridge.executeTool(NUDGE);
+    const token = issued.needsConfirmation?.token ?? "";
+    const out = await bridge.executeTool({
+      ...NUDGE,
+      argsJson: `{"member":"be-1","action":"submit","confirm_token":"${token}"}`,
+    });
+    expect(parseEnvelope(out.envelopeJson)).toMatchObject({ ok: true, tool: "pane_nudge" });
+    expect(calls).toEqual([
+      {
+        key: "nudge",
+        argv: ["--member", "be-1", "--action", "submit", "--team-dir", "/w/atmux"],
+      },
+    ]);
+  });
+
+  test("readonly hides it from the catalog the bridge is built with", async () => {
+    const { bridge } = makeHarness({
+      catalog: VOICE_TOOL_CATALOG.filter((e) => !e.mutating),
+    });
+    const out = await bridge.executeTool(NUDGE);
+    expect(parseEnvelope(out.envelopeJson)).toMatchObject({
+      ok: false,
+      error: "bad_args",
+      message: "unknown tool: pane_nudge",
+    });
   });
 });
 

@@ -305,9 +305,31 @@ describe("boot wiring", () => {
     expect(full).toHaveLength(VOICE_TOOL_CATALOG.length);
     expect(ro).toHaveLength(VOICE_TOOL_CATALOG.filter((e) => !e.mutating).length);
     expect(ro.some((e) => e.mutating)).toBe(false);
-    // The 4 messaging tools are the ones removed (ADR-272 D6).
+    // The 4 messaging tools (ADR-272 D6) plus ADR-273 D4's pane_nudge.
     const removed = full.filter((e) => !ro.includes(e)).map((e) => e.name);
-    expect(removed.sort()).toEqual(["add_task", "claim_task", "dispatch_task", "tell_lead"]);
+    expect(removed.sort()).toEqual([
+      "add_task",
+      "claim_task",
+      "dispatch_task",
+      "pane_nudge",
+      "tell_lead",
+    ]);
+  });
+
+  test("pane_nudge is ABSENT under readonly — the input tool is unreachable until P7", () => {
+    // ADR-273 §Consequences: both input tools are absent entirely under
+    // ATMUX_VOICE_READONLY=1, so the survey half can ship first. This is
+    // the pin that the ordering actually holds, rather than being a
+    // sentence in an ADR.
+    expect(visibleCatalog(true).some((e) => e.name === "pane_nudge")).toBe(false);
+    expect(visibleCatalog(false).some((e) => e.name === "pane_nudge")).toBe(true);
+  });
+
+  test("pane_send is NOT in the catalog — OQ-1 is still an operator decision", () => {
+    // ADR-273 D4 splits pane input by blast radius; the free-text half
+    // inherits ADR-272 §Deferred's second-factor requirement and must
+    // not appear because `pane_nudge` shipped.
+    expect(VOICE_TOOL_CATALOG.some((e) => e.name === "pane_send")).toBe(false);
   });
 
   test("readonly deps carry the filtered catalog through to the session", async () => {

@@ -264,7 +264,13 @@ export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
       };
       const issueFresh = (): ExecuteToolOutput => {
         const issued = deps.confirmStore.issue(binding);
-        const preview = buildConfirmPreview(name, strippedArgs, teamName);
+        // Per-tool preview when the entry declares one (ADR-273 D4's
+        // `pane_nudge` does — a preview that says only "confirm pane
+        // nudge" would let a misheard member name through unnoticed);
+        // the generic `<key> <value>` rendering otherwise.
+        const preview =
+          entry.preview?.(strippedArgs, teamName) ??
+          buildConfirmPreview(name, strippedArgs, teamName);
         const out = errorEnvelope(name, "needs_confirmation", {
           token: issued.token,
           preview,

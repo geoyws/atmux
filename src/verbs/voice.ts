@@ -229,6 +229,7 @@ export const VOICE_RUNNER_IMPORTERS: Readonly<Record<VoiceRunnerKey, () => Promi
     tellLead: async () => (await import("./tell-lead.ts")).tellLead,
     dispatch: async () => (await import("./dispatch.ts")).dispatch,
     claim: async () => (await import("./claim.ts")).claim,
+    nudge: async () => (await import("./nudge.ts")).nudge,
   });
 
 /**

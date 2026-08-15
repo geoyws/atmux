@@ -21,6 +21,7 @@
 //   tellLead    → src/verbs/tell-lead.ts::tellLead
 //   dispatch    → src/verbs/dispatch.ts::dispatch
 //   claim       → src/verbs/claim.ts::claim
+//   nudge       → src/verbs/nudge.ts::nudge   (ADR-273 D4 pane input)
 //
 // `list_teams` is the ONE core-direct read: it has NO runner
 // (`runnerKey: null`) and is served straight from the team index by the
@@ -36,6 +37,7 @@
 
 import { z } from "zod";
 import { ConfigError } from "../../errors.ts";
+import { NUDGE_ACTIONS, nudgeConfirmPreview } from "./nudge.ts";
 
 /** Injected-runner keys — see the module-map in the file header. */
 export type VoiceRunnerKey =
@@ -51,7 +53,8 @@ export type VoiceRunnerKey =
   | "blockers"
   | "tellLead"
   | "dispatch"
-  | "claim";
+  | "claim"
+  | "nudge";
 
 /** One catalog entry. `argv` receives the VALIDATED args (post-Zod,
  *  `confirm_token` already stripped) plus the resolved team root
@@ -65,6 +68,19 @@ export interface VoiceToolEntry {
   /** `null` ONLY for `list_teams` — served core-direct from the index. */
   runnerKey: VoiceRunnerKey | null;
   argv(args: Record<string, unknown>, teamRoot: string | null): string[];
+  /**
+   * Optional per-tool confirm preview (ADR-272 D7), used INSTEAD of the
+   * bridge's generic `buildConfirmPreview` when present.
+   *
+   * The generic line renders each argument as `<key> <value>`, which is
+   * adequate for `dispatch_task` (the arguments ARE the action) and
+   * inadequate for a tool whose danger is in what the action MEANS —
+   * ADR-273 D4 requires the preview to name the exact target and the
+   * exact action, because the failure it guards is a misheard member
+   * name nudging the wrong agent. Receives the validated args with
+   * `confirm_token` already stripped, plus the resolved team name.
+   */
+  preview?(args: Record<string, unknown>, team: string | null): string;
 }
 
 const TEAM_PARAM = z
@@ -388,6 +404,48 @@ export const VOICE_TOOL_CATALOG: ReadonlyArray<VoiceToolEntry> = Object.freeze([
       asString(args.task_id),
       "--as",
       asString(args.member),
+      ...teamDirArgs(teamRoot),
+    ],
+  },
+  {
+    // ADR-273 D4/D5 — the BOUNDED half of pane input. `pane_send` (free
+    // text) is NOT here and cannot be added without ADR-272 §Deferred's
+    // second-factor decision (ADR-273 OQ-1).
+    //
+    // `action` is a zod ENUM over the frozen in-code allow-list
+    // (`NUDGE_ACTION_SPECS`), so a transcript SELECTS an action, never
+    // authors one. The word actually pasted is a compile-time constant
+    // the verb looks up from that name; the enum value itself lands in a
+    // `--action` FLAG-VALUE slot, which every parser in the runner map
+    // reads as data (`auditArgvSlots` derives and the catalog test pins
+    // both facts). `member` carries `positionalParam` as defence in
+    // depth for the same reason `member_pane` does — it is one argv
+    // shape change away from becoming positional, and a leading dash is
+    // never a real member name.
+    name: "pane_nudge",
+    description:
+      "Unstick ONE member's pane: press Enter on the text already in its composer, or send one canned resume word. Confirmation is required, and no operator-supplied text is ever typed into the pane.",
+    params: withConfirmToken({
+      team: TEAM_PARAM,
+      member: positionalParam(
+        "Member whose pane to nudge, as named by fleet_attention. Driver panes (driver, driver-2, ...) cannot be nudged — ADR-239 forbids atmux typing into them.",
+      ),
+      action: z
+        .enum(NUDGE_ACTIONS)
+        .default("submit")
+        .describe(
+          "submit = press Enter on whatever is already in the composer (the wedged-pane case, and permission prompts); continue = type the single word 'continue' and submit it (a pane that stopped with an empty composer)",
+        ),
+    }),
+    mutating: true,
+    confirm: true,
+    runnerKey: "nudge",
+    preview: nudgeConfirmPreview,
+    argv: (args, teamRoot) => [
+      "--member",
+      asString(args.member),
+      "--action",
+      asString(args.action),
       ...teamDirArgs(teamRoot),
     ],
   },

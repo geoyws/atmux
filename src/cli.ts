@@ -68,6 +68,7 @@ import { mergeCycle } from "./verbs/merge-cycle.ts";
 import { mergeMember } from "./verbs/merge-member.ts";
 import { migrateHexIds } from "./verbs/migrate-hex-ids.ts";
 import { migrateState } from "./verbs/migrate-state.ts";
+import { nudge } from "./verbs/nudge.ts";
 import { ombudsman } from "./verbs/ombudsman.ts";
 import { orchd } from "./verbs/orchd.ts";
 import { pause, resume } from "./verbs/pause.ts";
@@ -236,6 +237,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return topo(argv.slice(1));
     case "fleet":
       return fleet(argv.slice(1));
+    case "nudge":
+      return nudge(argv.slice(1));
     case "member":
       return dispatchMemberSubverb(argv.slice(1));
     case "sync":
