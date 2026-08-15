@@ -79,6 +79,37 @@ export function resolveDefaultTimeoutMs(): number {
 const DEFAULT_TIMEOUT_MS = resolveDefaultTimeoutMs();
 const SIGKILL_GRACE_MS = 1_000;
 
+/** Default hard timeout for shell-out-to-`git` wrappers
+ *  (`worktree.ts` / `auto-done.ts` / `auto-push.ts` `defaultGitSpawn`).
+ *  A distinct seam from {@link resolveDefaultTimeoutMs}'s
+ *  `ATMUX_SPAWN_TIMEOUT_MS` (the tmux/cold-submodule-init spawn default):
+ *  git plumbing calls (`worktree add`, `rev-parse`, `status`) are normally
+ *  sub-second, but cold submodule fetch over a slow link or a large pack
+ *  can blow past 30s. Operators bump `ATMUX_GIT_TIMEOUT_MS` per
+ *  e-268447e2 T1 (t-e32bdf73). */
+export const DEFAULT_GIT_SPAWN_TIMEOUT_MS = 30_000;
+
+/**
+ * Resolve the git-spawn timeout with precedence:
+ *   `optTimeoutMs` (per-call) > env `ATMUX_GIT_TIMEOUT_MS` > {@link DEFAULT_GIT_SPAWN_TIMEOUT_MS}.
+ *
+ * Both the per-call override and the env value fail closed to the default
+ * when non-finite or non-positive (mirrors {@link resolveDefaultTimeoutMs}):
+ * a `0`, negative, `NaN`, or `Infinity` value is treated as "unset" rather
+ * than disabling the timeout, so a fat-fingered export can't strand a git
+ * call forever.
+ */
+export function resolveGitTimeoutMs(optTimeoutMs?: number): number {
+  if (optTimeoutMs !== undefined && Number.isFinite(optTimeoutMs) && optTimeoutMs > 0) {
+    return optTimeoutMs;
+  }
+  const raw = process.env.ATMUX_GIT_TIMEOUT_MS;
+  if (raw === undefined || raw === "") return DEFAULT_GIT_SPAWN_TIMEOUT_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_GIT_SPAWN_TIMEOUT_MS;
+  return parsed;
+}
+
 /**
  * Spawn `cmd argv` and resolve with full `SpawnResult` once the child
  * exits within `timeoutMs`. Validates exit code against `expectExitCode`.

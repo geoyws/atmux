@@ -2,7 +2,7 @@
 
 > **⚠ SUPERSEDED by [ADR-233](233-cron-auto-install-disabled-trust-orchd.md) — 2026-05-24. Read ADR-233 instead; this file is kept for trace only.**
 
-**Status**: Accepted (2026-05-15, operator-batch-flip)
+**Status**: superseded by [ADR-233](233-cron-auto-install-disabled-trust-orchd.md) (2026-05-24). Was: Accepted (2026-05-15, operator-batch-flip)
 **Date**: 2026-05-13
 
 > **Naming note 2026-05-14**: the cockpit-tier hourly role this ADR compares against (named `superdoctor` in §Context "complementary at hourly LLM tier" bullet + §Cross-refs) is now called **medic** per [ADR-133](133-medic-rename.md). Supersession is naming-only — design canonical per ADR-077.

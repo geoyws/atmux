@@ -24,15 +24,15 @@
 
 import { join } from "node:path";
 import { exists } from "../../abstractions/fs.ts";
+import type { SpawnResult } from "../../abstractions/spawn.ts";
 import { closeDatabase, type Database, openDatabase } from "../../abstractions/sqlite.ts";
 import { migrations } from "../../abstractions/sqlite-migrations.ts";
 import { defaultGitSpawn, type GitSpawn, isWorktreeDirty } from "../../abstractions/worktree.ts";
-import { enabledTeams, loadCockpit, type LoadedCockpit } from "../../core/cockpit.ts";
+import { enabledTeams, type LoadedCockpit, loadCockpit } from "../../core/cockpit.ts";
 import { UsageError } from "../../errors.ts";
-import { dissolveEpic, type DissolveEpicOpts } from "./dissolve-epic.ts";
+import { type DissolveEpicOpts, dissolveEpic } from "./dissolve-epic.ts";
 
-const USAGE =
-  "atmux team sweep-epics [--apply] [--idle-hours N] [--parent <team>] [--json]";
+const USAGE = "atmux team sweep-epics [--apply] [--idle-hours N] [--parent <team>] [--json]";
 
 // ---------- Arg parsing ----------
 
@@ -276,7 +276,12 @@ async function classifyEpic(
   }
   if (lastCommitHoursAgo !== null && lastCommitHoursAgo >= deps.idleHours) {
     base.verdict = "STALE-IDLE";
-    base.reason = `0 open tasks · ${lastCommitHoursAgo}h since last commit · NOT pushed`;
+    // ADR-209 §1 — a 0-ahead branch surfaces the no-progress sentinel; report
+    // it as "never progressed" rather than the misleading literal hour count.
+    base.reason =
+      lastCommitHoursAgo === NO_BRANCH_PROGRESS_SENTINEL_HOURS
+        ? "0 open tasks · no branch-local commits since spawn · NOT pushed"
+        : `0 open tasks · ${lastCommitHoursAgo}h since last commit · NOT pushed`;
     return base;
   }
   base.verdict = "RISKY";
@@ -284,18 +289,89 @@ async function classifyEpic(
   return base;
 }
 
+/**
+ * Explicit "no branch-local progress" sentinel per ADR-209 §1. A branch
+ * with 0 commits past its merge-base with trunk has shipped nothing since
+ * spawn; reporting the trunk merge-base's recent date (Bug 1) mislabels it
+ * as freshly active. The sentinel is large enough to always exceed any
+ * `--idle-hours` value, so the verdict ladder classifies a 0-ahead branch
+ * as STALE-IDLE (idle, never progressed) rather than "recently active".
+ */
+export const NO_BRANCH_PROGRESS_SENTINEL_HOURS = 99999;
+
+/**
+ * Last-commit age in hours, measured against the branch's own commits — not
+ * the branch tip (ADR-209 §1, Bug 1). Counts commits the epic branch carries
+ * past its merge-base with trunk via `git rev-list --count <trunk>..<branch>`;
+ * 0 means no work since spawn and returns the no-progress sentinel.
+ *
+ * The trunk reference is derived from the epic branch name
+ * (`<parentBase>-epic-<epicId>` per ADR-090): strip the `-epic-…` suffix to
+ * recover `<parentBase>`, then prefer `origin/<parentBase>` (matches ADR-209
+ * §Evidence) falling back to a local `<parentBase>` ref. When neither trunk
+ * ref resolves (non-conventional branch / detached HEAD), fall back to the
+ * branch-tip date so the metric still reports something.
+ */
 async function readLastCommitHoursAgo(
   repo: string,
   git: GitSpawn,
   now: () => number,
 ): Promise<number | null> {
-  const r = await git(["-C", repo, "log", "-1", "--format=%ct"]);
+  const branchR = await git(["-C", repo, "branch", "--show-current"]);
+  const branch = branchR.exitCode === 0 ? branchR.stdout.trim() : "";
+
+  const trunk = branch === "" ? null : await resolveTrunkRef(repo, branch, git);
+  if (trunk !== null) {
+    const countR = await git(["-C", repo, "rev-list", "--count", `${trunk}..${branch}`]);
+    if (countR.exitCode === 0) {
+      const commitsAhead = Number.parseInt(countR.stdout.trim(), 10);
+      if (Number.isFinite(commitsAhead) && commitsAhead === 0) {
+        return NO_BRANCH_PROGRESS_SENTINEL_HOURS;
+      }
+      // N-ahead → age of the most recent branch-local commit in range.
+      const rangeR = await git(["-C", repo, "log", "-1", "--format=%ct", `${trunk}..${branch}`]);
+      const hours = commitAgeHours(rangeR, now);
+      if (hours !== null) return hours;
+    }
+  }
+
+  // Fallback — no resolvable trunk; report branch-tip date as before.
+  const tipR = await git(["-C", repo, "log", "-1", "--format=%ct"]);
+  return commitAgeHours(tipR, now);
+}
+
+/** Parse a `git log -1 --format=%ct` result into whole hours since `now`. */
+function commitAgeHours(r: SpawnResult, now: () => number): number | null {
   if (r.exitCode !== 0) return null;
   const trimmed = r.stdout.trim();
   if (trimmed === "") return null;
   const epochSec = Number.parseInt(trimmed, 10);
   if (!Number.isFinite(epochSec)) return null;
   return Math.floor((now() / 1000 - epochSec) / 3600);
+}
+
+/**
+ * Resolve the trunk ref an epic branch was forked from. Epic branches are
+ * `<parentBase>-epic-<epicId>` (ADR-090); strip the `-epic-…` suffix to
+ * recover `<parentBase>`, then probe `origin/<parentBase>` then the local
+ * `<parentBase>`. Returns the first ref that `git rev-parse --verify`
+ * accepts, or null when the branch is not epic-conventional / no trunk ref
+ * exists.
+ */
+async function resolveTrunkRef(
+  repo: string,
+  branch: string,
+  git: GitSpawn,
+): Promise<string | null> {
+  const marker = branch.lastIndexOf("-epic-");
+  if (marker <= 0) return null;
+  const parentBase = branch.slice(0, marker);
+  if (parentBase === "") return null;
+  for (const candidate of [`origin/${parentBase}`, parentBase]) {
+    const verifyR = await git(["-C", repo, "rev-parse", "--verify", "--quiet", candidate]);
+    if (verifyR.exitCode === 0 && verifyR.stdout.trim() !== "") return candidate;
+  }
+  return null;
 }
 
 async function isBranchPushed(repo: string, git: GitSpawn): Promise<boolean> {
@@ -321,7 +397,12 @@ function renderTable(verdicts: ReadonlyArray<EpicVerdict>, idleHours: number): s
   lines.push("| verdict | parent | epicId | open | last-commit | clean | pushed | reason |");
   lines.push("|---|---|---|---|---|---|---|---|");
   for (const v of verdicts) {
-    const age = v.lastCommitHoursAgo === null ? "?" : `${v.lastCommitHoursAgo}h`;
+    const age =
+      v.lastCommitHoursAgo === null
+        ? "?"
+        : v.lastCommitHoursAgo === NO_BRANCH_PROGRESS_SENTINEL_HOURS
+          ? "none"
+          : `${v.lastCommitHoursAgo}h`;
     lines.push(
       `| ${v.verdict} | ${v.parent} | ${v.epicId} | ${v.openTasks} | ${age} | ${v.worktreeClean ? "y" : "n"} | ${v.branchPushed ? "y" : "n"} | ${v.reason} |`,
     );

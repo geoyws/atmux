@@ -2,7 +2,7 @@
 //
 // CRUD + transactional dequeue for the v14 `spawn_queue` table
 // (`src/abstractions/sqlite-migrations.ts:651` — TODO_FAN_IN_RENUMBER).
-// Pattern mirrors `complaints-repo.ts` / `superdoctor-attempts-repo.ts`:
+// Pattern mirrors `complaints-repo.ts`:
 // row interface (snake_case SQL columns), row↔domain bridges
 // (camelCase TS), CRUD methods on the repo class. Writes assume a
 // caller-validated `SpawnQueueRow`; reads `.parse()` every row through

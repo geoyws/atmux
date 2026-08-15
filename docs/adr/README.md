@@ -13,7 +13,7 @@ Format inspired by Michael Nygard's ADR template, kept deliberately short.
 - [ADR-005: `atmux doctor` + silent start preflight](005-doctor-preflight.md)
 - [ADR-006: Bare `atmux` as one-stop bring-up](006-bare-atmux.md)
 
-Index above is illustrative — `ls docs/adr/` enumerates the full set. Non-contiguous gaps in the number range reflect in-flight reservations and ad-hoc carve-outs (e.g. the 087-092 team-of-teams block from [ADR-093](093-adr-bun-to-adr-consolidation.md)'s consolidation era); the tree is append-only but not gap-free.
+Index above is illustrative — `ls docs/adr/` enumerates the full set (001 through 130 + the 087-092 team-of-teams reservation).
 
 ## Historical context — bun port era (2026-04 → 2026-05)
 

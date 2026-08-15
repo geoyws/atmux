@@ -78,10 +78,17 @@ const COMPOSER_LINE_RE = /❯\s*(.*?)\s*$/;
 
 /**
  * Active-turn indicators — presence of any of these in the capture means the
- * agent is mid-turn (or freshly finished within the spinner's visible window).
- * We intentionally include the spinner glyphs `✻`/`✶`/`✽` per the EPIC fix
- * sketch + T5 test contract — the helper treats glyph-presence as a recency
- * marker and skips firing.
+ * agent is mid-turn. Matched on present-tense thinking verbs (`Cooking…`,
+ * `Brewing…`, …) suffixed by `...`/`…`, plus the bare elapsed marker `… (Ns)`.
+ *
+ * We deliberately do NOT match the bare spinner glyphs `✻`/`✶`/`✽`. The glyph
+ * persists in PAST-tense, idle displays too (`✻ Brewed for 1m 56s`,
+ * `✻ Worked for 22s`) — matching it caused `detectAndResubmit` to `skip` idle
+ * panes whose composers had stuck queued text, silently strangling
+ * team-of-teams throughput on the default idle tick (t-408a3c75 / the
+ * 2026-05-19 unum 7/7-wedged incident). The present-tense verbs already cover
+ * the genuinely-active case; the staleness `within-30s` glyph discriminator
+ * originally specced was never implemented and is moot.
  *
  * NOTE: this is intentionally divergent from `safe-send.ts::AGENT_THINKING_RE`,
  * which also matches PAST-tense markers (`Worked`/`Cooked`/`Crunched`) for use
@@ -90,7 +97,7 @@ const COMPOSER_LINE_RE = /❯\s*(.*?)\s*$/;
  * we want to fire.
  */
 const ACTIVE_TURN_RE =
-  /(?:Cooking|Schlepping|Honking|Crunching|Cogitating|Brewing|Effecting|Imagining|Sautéeing|Kneading|Misting|Puttering|Grooving|Ruminating)(?:\.{3}|…)|… \(\d+m?s\)|[✻✶✽]/;
+  /(?:Cooking|Schlepping|Honking|Crunching|Cogitating|Brewing|Effecting|Imagining|Sautéeing|Kneading|Misting|Puttering|Grooving|Ruminating)(?:\.{3}|…)|… \(\d+m?s\)/;
 
 /**
  * Detect a stuck-text condition in `paneCapture` and (when safe) resubmit via

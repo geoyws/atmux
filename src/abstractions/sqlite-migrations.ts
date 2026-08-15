@@ -755,4 +755,91 @@ export const migrations: readonly Migration[] = [
       db.exec("ALTER TABLE epics ADD COLUMN spawned_at INTEGER");
     },
   },
+  // ---------- v16 → v17 ----------
+  // ADR-261 §D4 (issue-sync external tracker ingestion): the
+  // `issue_sync` ledger + per-tracker/per-scope poll cursor. Both live
+  // in the POLLING team's state.db (§D4 residency) — the complaint row
+  // itself goes to the TARGET team's state.db per ADR-150 §D1, so
+  // `complaint_id` is a cross-DB back-pointer with no shared
+  // transaction.
+  //
+  //   - `issue_sync`        — long-horizon idempotency ledger, one row
+  //                           per canonical external issue identity
+  //                           (`source_id`: `github:owner/repo#123` /
+  //                           `ado:org/project/42`, §D3). The built-in
+  //                           1h complaint dedup window only handles
+  //                           intra-burst coalescing; this table is
+  //                           what makes a daily re-poll of a
+  //                           still-open issue a no-op instead of a
+  //                           duplicate complaint.
+  //                           `filing_state` is the §D4 ledger-first
+  //                           crash-window flag: filing is (1) INSERT
+  //                           ledger row `pending`, (2) file the
+  //                           complaint in the target DB, (3) UPDATE
+  //                           ledger to `filed` + `complaint_id`. A
+  //                           tick/verb kill between steps leaves a
+  //                           `pending` row the next sync repairs
+  //                           deterministically. `local_resolution`
+  //                           records resolution PROVENANCE
+  //                           (`tracker:<id>` mirror vs lead-authored)
+  //                           — it drives the §D4 reopen-symmetry
+  //                           matrix: tracker-mirrored auto-resolves
+  //                           re-surface on upstream reopen;
+  //                           lead-authored wontfixes are never
+  //                           re-litigated by a poll.
+  //   - `issue_sync_cursor` — opaque adapter-owned resume token per
+  //                           (tracker_id, scope), checkpointed PER
+  //                           PAGE: orchd ticks are hard-killed at
+  //                           `ATMUX_ORCHD_TICK_TIMEOUT_SECS` (900s
+  //                           default), so a killed paginating sync
+  //                           must RESUME from the last checkpoint,
+  //                           not restart (§D4). `cursor` NULL =
+  //                           listing exhausted / start from the top.
+  //
+  // Permissive TEXT typing for `upstream_state` ('open'|'closed' at
+  // the verb layer) and `filing_state` ('pending'|'filed') — no CHECK
+  // constraints, matching the house passthrough posture (this file's
+  // header §) so future literals (e.g. a 'skipped' filing state for
+  // the §D4 absent+closed "record only, never file" arm) land without
+  // an ALTER.
+  //
+  // Indexes:
+  //   - `(tracker_id, scope)` — the per-scope reconcile walk ("every
+  //     ledger row for repo X") + the §D9 doctor probe surface.
+  //   - `filing_state`        — the crash-repair scan's hot path
+  //     (`WHERE filing_state = 'pending'` at sync start).
+  {
+    from: 16,
+    to: 17,
+    up: (db) => {
+      db.exec(`
+				CREATE TABLE issue_sync (
+					source_id TEXT PRIMARY KEY NOT NULL,
+					tracker_id TEXT NOT NULL,
+					scope TEXT NOT NULL,
+					complaint_id TEXT,
+					target_team TEXT,
+					upstream_state TEXT NOT NULL,
+					upstream_updated_at_sec INTEGER NOT NULL,
+					local_resolution TEXT,
+					filing_state TEXT NOT NULL DEFAULT 'pending',
+					first_seen_sec INTEGER NOT NULL,
+					last_synced_sec INTEGER NOT NULL,
+					extra TEXT                 -- JSON; passthrough for unknown fields
+				) STRICT;
+			`);
+      db.exec("CREATE INDEX idx_issue_sync_tracker_scope ON issue_sync(tracker_id, scope)");
+      db.exec("CREATE INDEX idx_issue_sync_filing_state ON issue_sync(filing_state)");
+
+      db.exec(`
+				CREATE TABLE issue_sync_cursor (
+					tracker_id TEXT NOT NULL,
+					scope TEXT NOT NULL,
+					cursor TEXT,
+					updated_at_sec INTEGER NOT NULL,
+					PRIMARY KEY (tracker_id, scope)
+				) STRICT;
+			`);
+    },
+  },
 ];

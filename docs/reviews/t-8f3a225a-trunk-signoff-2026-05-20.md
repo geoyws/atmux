@@ -150,8 +150,8 @@ Committer should pick up the parent-trunk merge per ADR-091 §Decision-anchor #5
 - [ADR-027](../adr/027-team-rename-verb-and-topology-invariant.md) — the spec; §Deviations + §Implementation pointer block are post-T7 current.
 - [docs/audit/2026-05-20-shared-index-swap.md](../audit/2026-05-20-shared-index-swap.md) — canonical SHA→Task content map for the 3 scrambled commits.
 - [ADR-091 §Decision-anchor #5](../adr/091-) — epic-team fan-in auto-merge state machine; consumes `reviewer-trunk-signoff` magic value.
-- [ADR-089 §B](../adr/089-hierarchical-cockpit.md) — recursive `sessions[]` schema (registry shape supersession of ADR-027 §Decision step 6).
+- [ADR-089 §B](../adr/089-recursive-cockpit-sessions.md) — recursive `sessions[]` schema (registry shape supersession of ADR-027 §Decision step 6).
 - [ADR-135](../adr/135-cockpit-naming-convention.md) — cockpit window naming convention (supersedes ADR-027 §Decision step 3 `__<team>__*` literal).
-- [ADR-162](../adr/162-atmux-owns-tmux-infrastructure.md) — cockpit socket isolation (cockpit-tier tmux ops go through `atmux-cockpit` socket).
+- [ADR-162](../adr/162-cockpit-socket-isolation.md) — cockpit socket isolation (cockpit-tier tmux ops go through `atmux-cockpit` socket).
 - [ADR-186](../adr/186-wedge-clearing-mechanism.md) — adjacent surface for the deferred startup-preflight refuse-gate (§Deviation 9).
 - [templates/briefs/reviewer.md](../../templates/briefs/reviewer.md) §Audit bar + §EPIC-done signoff convention — the gate this signoff enforces.

@@ -1,7 +1,7 @@
 // Unit tests for src/verbs/cockpit.ts — ADR-063 cockpit verb.
 
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,6 +17,7 @@ import {
   buildTeamWindowCommand,
   type CapturedCockpitWindow,
   cageAlive,
+  cockpit,
   cockpitAttach,
   cockpitMigrateSocket,
   cockpitRebuild,
@@ -38,10 +39,17 @@ describe("parseCockpitArgs", () => {
   test("rejects unknown sub-verb", () => {
     expect(() => parseCockpitArgs(["frobnicate"])).toThrow(UsageError);
   });
-  test("bare rebuild parses with all-false flags", () => {
-    const p = parseCockpitArgs(["rebuild"]);
+  test("rebuild alias removed per ADR-266 §D2 → UsageError naming reconcile", () => {
+    expect(() => parseCockpitArgs(["rebuild"])).toThrow(UsageError);
+    expect(() => parseCockpitArgs(["rebuild"])).toThrow(/ADR-266.*cockpit reconcile/);
+  });
+  // ADR-235 §D1: `reconcile` is the canonical name. (`rebuild`, its
+  // ADR-235 §OQ4 deprecation alias, was removed per ADR-266 §D2 — the
+  // parser now rejects it with an actionable error, asserted above.)
+  test("bare reconcile parses with all-false flags (canonical name)", () => {
+    const p = parseCockpitArgs(["reconcile"]);
     expect(p).toEqual({
-      subverb: "rebuild",
+      subverb: "reconcile",
       noCycle: false,
       forceCycle: false,
       ackDangerous: false,
@@ -51,26 +59,43 @@ describe("parseCockpitArgs", () => {
       keepLegacy: false,
     });
   });
+  test("reconcile honours the full flag set", () => {
+    expect(parseCockpitArgs(["reconcile", "--no-cycle"]).noCycle).toBe(true);
+    expect(parseCockpitArgs(["reconcile", "--no-launch"]).noLaunch).toBe(true);
+    expect(parseCockpitArgs(["reconcile", "--config", "/p"]).configPath).toBe("/p");
+    expect(parseCockpitArgs(["reconcile", "--yes"]).yes).toBe(true);
+    // Destructive gate: --force-cycle without the ack flag
+    // throws (if reconcile silently allowed it, this assertion would fail).
+    expect(() => parseCockpitArgs(["reconcile", "--force-cycle"])).toThrow(UsageError);
+    const forced = parseCockpitArgs([
+      "reconcile",
+      "--force-cycle",
+      "--acknowledge-dangerous-bau-interruption",
+      "--yes",
+    ]);
+    expect(forced.forceCycle).toBe(true);
+    expect(forced.ackDangerous).toBe(true);
+  });
   test("each flag parses individually", () => {
-    expect(parseCockpitArgs(["rebuild", "--no-cycle"]).noCycle).toBe(true);
+    expect(parseCockpitArgs(["reconcile", "--no-cycle"]).noCycle).toBe(true);
     expect(
       parseCockpitArgs([
-        "rebuild",
+        "reconcile",
         "--force-cycle",
         "--acknowledge-dangerous-bau-interruption",
         "--yes",
       ]).forceCycle,
     ).toBe(true);
-    expect(parseCockpitArgs(["rebuild", "--no-launch"]).noLaunch).toBe(true);
+    expect(parseCockpitArgs(["reconcile", "--no-launch"]).noLaunch).toBe(true);
   });
   test("--config requires a value", () => {
-    expect(() => parseCockpitArgs(["rebuild", "--config"])).toThrow(UsageError);
-    expect(parseCockpitArgs(["rebuild", "--config", "/p"]).configPath).toBe("/p");
+    expect(() => parseCockpitArgs(["reconcile", "--config"])).toThrow(UsageError);
+    expect(parseCockpitArgs(["reconcile", "--config", "/p"]).configPath).toBe("/p");
   });
   test("--no-cycle and --force-cycle are mutually exclusive", () => {
     expect(() =>
       parseCockpitArgs([
-        "rebuild",
+        "reconcile",
         "--no-cycle",
         "--force-cycle",
         "--acknowledge-dangerous-bau-interruption",
@@ -82,11 +107,11 @@ describe("parseCockpitArgs", () => {
   // paths and inadvertently nuked ~30 members' claude TUI contexts across
   // atmux + sopx. The ack-flag is the safety gate.
   test("--force-cycle without ack flag throws (operator must acknowledge)", () => {
-    expect(() => parseCockpitArgs(["rebuild", "--force-cycle"])).toThrow(UsageError);
+    expect(() => parseCockpitArgs(["reconcile", "--force-cycle"])).toThrow(UsageError);
   });
   test("--force-cycle with ack flag parses + both fields set", () => {
     const p = parseCockpitArgs([
-      "rebuild",
+      "reconcile",
       "--force-cycle",
       "--acknowledge-dangerous-bau-interruption",
       "--yes",
@@ -95,7 +120,7 @@ describe("parseCockpitArgs", () => {
     expect(p.ackDangerous).toBe(true);
   });
   test("--acknowledge-dangerous-bau-interruption alone (without --force-cycle) is harmless", () => {
-    const p = parseCockpitArgs(["rebuild", "--acknowledge-dangerous-bau-interruption"]);
+    const p = parseCockpitArgs(["reconcile", "--acknowledge-dangerous-bau-interruption"]);
     expect(p.forceCycle).toBe(false);
     expect(p.ackDangerous).toBe(true);
   });
@@ -133,7 +158,54 @@ describe("parseCockpitArgs", () => {
   });
 
   test("rejects unknown flag", () => {
-    expect(() => parseCockpitArgs(["rebuild", "--bogus"])).toThrow(UsageError);
+    expect(() => parseCockpitArgs(["reconcile", "--bogus"])).toThrow(UsageError);
+  });
+});
+
+// ---------- cockpit() dispatch — reconcile canonical (ADR-235 §D1;
+// rebuild alias removed per ADR-266 §D2) ----------
+
+describe("cockpit() dispatch — reconcile canonical", () => {
+  let homeDir: string;
+
+  beforeEach(async () => {
+    homeDir = await mkdtemp(join(tmpdir(), "atmux-cockpit-disp-home-"));
+    await mkdir(join(homeDir, ".atmux"), { recursive: true });
+    // Empty roster (every team disabled) — `cockpitRebuild` short-circuits
+    // with "no enabled teams" → exit 0 without touching tmux. Keeps the
+    // test focused on the dispatch surface (subverb routing + deprecation
+    // stderr), not the rebuild internals which have their own coverage.
+    await writeFile(
+      join(homeDir, ".atmux", "cockpit.json"),
+      JSON.stringify({ teams: [{ name: "x", root: "/x", enabled: false }] }),
+      "utf8",
+    );
+  });
+
+  afterEach(async () => {
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  const baseEnv = (): NodeJS.ProcessEnv => ({ HOME: homeDir, ATMUX_NO_CRON: "1" });
+
+  test("reconcile (canonical) dispatches to cockpitRebuild", async () => {
+    const { logger } = makeLogger();
+    const code = await cockpit(["reconcile"], {
+      env: baseEnv(),
+      logger,
+    });
+    expect(code).toBe(0);
+  });
+
+  test("rebuild alias removed per ADR-266 §D2 → UsageError (dispatch refuses)", async () => {
+    await expect(cockpit(["rebuild"], { env: baseEnv(), logger: makeLogger().logger })).rejects
+      .toThrow(UsageError);
+    await expect(cockpit(["rebuild"], { env: baseEnv(), logger: makeLogger().logger })).rejects
+      .toThrow(/ADR-266.*cockpit reconcile/);
+  });
+
+  test("unknown sub-verb still rejected (reconcile didn't loosen the guard)", () => {
+    expect(() => parseCockpitArgs(["frobnicate"])).toThrow(UsageError);
   });
 });
 
@@ -304,10 +376,34 @@ function registerFixtureExitHook(): void {
   process.on("exit", tearDownFixtureSurvivors);
 }
 
+// ADR-178 §Decision "Sidecar file shape" — the in-memory registry above
+// (activeFixtureSockets / activeFixtureDirs + process.on('exit') + afterAll)
+// does NOT survive SIGKILL of the bun-test parent, which is the exact gap
+// ADR-178 §Context names. `spinTmux` writes a `<socketDir>/.leak-tracker.json`
+// sidecar synchronously (OQ2 — sync writeFileSync, one fewer await + closes the
+// crash-window race for free) right after `mkdtemp` and BEFORE `createTmux`, so
+// the out-of-process `atmux test-reaper` verb (T3) can identify cross-run
+// orphans without parsing live process state. `tearDownFixtureSurvivors`
+// rmSync's the dir recursively, which removes the sidecar alongside it on the
+// happy path — leaving no trail.
+const LEAK_TRACKER_FILENAME = ".leak-tracker.json";
+
 async function spinTmux(prefix: string): Promise<TmuxFixture> {
   registerFixtureExitHook();
   const socketDir = await mkdtemp(join(tmpdir(), `atmux-cockpit-${prefix}-`));
   const socketPath = join(socketDir, "sock");
+  writeFileSync(
+    join(socketDir, LEAK_TRACKER_FILENAME),
+    JSON.stringify({
+      tmuxSocket: socketPath,
+      socketDir,
+      parentPid: process.pid,
+      createdAt: Math.floor(Date.now() / 1000),
+      testFile: __filename,
+      testName: null,
+      prefix,
+    }),
+  );
   const tmux = createTmux({ socketPath, configFile: "/dev/null" });
   activeFixtureSockets.add(socketPath);
   activeFixtureDirs.add(socketDir);
@@ -328,6 +424,59 @@ beforeEach(() => {
 });
 afterEach(() => {
   if (priorTmux !== undefined) process.env.TMUX = priorTmux;
+});
+
+// ADR-178 §Decision "Sidecar file shape" — the leak-tracker sidecar is the
+// SIGKILL-survivable half of the cleanup contract: the in-memory registry +
+// userland exit hooks above die with the bun-test process, but the on-disk
+// `.leak-tracker.json` persists so the out-of-process reaper (T3) can find
+// orphans. These tests assert the real on-disk artifact: written on spawn with
+// the ADR-178 schema, and removed when the socket dir is torn down.
+describe("spinTmux leak-tracker sidecar (ADR-178)", () => {
+  test("writes a schema-correct .leak-tracker.json on spawn, removes it on teardown", async () => {
+    const fx = await spinTmux("leak-tracker-sidecar");
+    const sidecar = join(fx.socketDir, ".leak-tracker.json");
+    try {
+      // Written synchronously on spawn — survives SIGKILL of the test process.
+      expect(existsSync(sidecar)).toBe(true);
+      const parsed = JSON.parse(readFileSync(sidecar, "utf8")) as Record<string, unknown>;
+      // Exact ADR-178 §Decision schema — every field load-bearing for the reaper.
+      expect(parsed.tmuxSocket).toBe(fx.socketPath);
+      expect(parsed.socketDir).toBe(fx.socketDir);
+      expect(parsed.parentPid).toBe(process.pid);
+      expect(parsed.prefix).toBe("leak-tracker-sidecar");
+      expect(parsed.testFile).toBe(__filename);
+      expect(parsed.testName).toBeNull();
+      // createdAt is epoch SECONDS (not millis) — the reaper's max-age gate
+      // computes `now - max-age-min*60` in seconds, so a millis value here
+      // would make every fixture look freshly-created and never get reaped.
+      expect(typeof parsed.createdAt).toBe("number");
+      const createdAt = parsed.createdAt as number;
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      expect(createdAt).toBeLessThanOrEqual(nowSeconds);
+      expect(createdAt).toBeGreaterThan(nowSeconds - 60);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+    // Teardown (rm -rf of socketDir) takes the sidecar with it — happy-path
+    // runs leave no trail, per ADR-178 §Decision.
+    expect(existsSync(sidecar)).toBe(false);
+  });
+
+  test("tearDownFixtureSurvivors removes the sidecar via the registry sweep", async () => {
+    const fx = await spinTmux("leak-tracker-sweep");
+    const sidecar = join(fx.socketDir, ".leak-tracker.json");
+    expect(existsSync(sidecar)).toBe(true);
+    // The out-of-band sweep (afterAll / process.on('exit')) is the path that
+    // fires when a test's own try/finally is bypassed; it must remove the
+    // sidecar along with the dir.
+    tearDownFixtureSurvivors();
+    expect(existsSync(sidecar)).toBe(false);
+    expect(existsSync(fx.socketDir)).toBe(false);
+  });
 });
 
 describe("autolaunchTeam", () => {
@@ -375,9 +524,9 @@ describe("autolaunchTeam", () => {
         "utf8",
       );
       // Create the cage session with a window named after the member.
-      // Cage session name for "demo" is "atmux_demo" per cageSessionName().
+      // Cage session name for "demo" is "atmux-demo" per resolveCageSessionName() — hyphen-form fallback for unanchored teams (matches getSessionName).
       await fx.tmux.session.newSession({
-        name: "atmux_demo",
+        name: "atmux-demo",
         detached: true,
         windowName: "lead",
       });
@@ -418,7 +567,7 @@ describe("autolaunchTeam", () => {
         "utf8",
       );
       await fx.tmux.session.newSession({
-        name: "atmux_px",
+        name: "atmux-px",
         detached: true,
         windowName: "lead",
       });
@@ -444,7 +593,7 @@ describe("autolaunchTeam", () => {
       );
       expect(summary.launched).toBe(1);
       expect(summary.unbootstrapped).toEqual([]);
-      expect(probeCalls).toEqual(["lead@atmux_px:0"]);
+      expect(probeCalls).toEqual(["lead@atmux-px:0"]);
       // No warning lines emitted on the happy path.
       expect(logs.filter((l) => l.startsWith("warn:"))).toEqual([]);
     } finally {
@@ -471,7 +620,7 @@ describe("autolaunchTeam", () => {
         "utf8",
       );
       await fx.tmux.session.newSession({
-        name: "atmux_py",
+        name: "atmux-py",
         detached: true,
         windowName: "alpha",
       });
@@ -527,12 +676,12 @@ describe("autolaunchTeam", () => {
         "utf8",
       );
       await fx.tmux.session.newSession({
-        name: "atmux_pz",
+        name: "atmux-pz",
         detached: true,
         windowName: "alpha",
       });
       await fx.tmux.window.newWindow({
-        sessionName: "atmux_pz",
+        sessionName: "atmux-pz",
         name: "beta",
       });
       let calls = 0;
@@ -1158,7 +1307,7 @@ describe("reconcileCockpitSession", () => {
     // TUI loss; --yes layers the cockpit-reconcile destructive-op gate.
     expect(() =>
       parseCockpitArgs([
-        "rebuild",
+        "reconcile",
         "--force-cycle",
         "--acknowledge-dangerous-bau-interruption",
         // intentionally missing --yes
@@ -1166,7 +1315,7 @@ describe("reconcileCockpitSession", () => {
     ).toThrow(UsageError);
     // With --yes added, the parse succeeds.
     const p = parseCockpitArgs([
-      "rebuild",
+      "reconcile",
       "--force-cycle",
       "--acknowledge-dangerous-bau-interruption",
       "--yes",
@@ -1177,9 +1326,107 @@ describe("reconcileCockpitSession", () => {
   });
 
   test("t-8b0e077e: --yes / -y both parse", () => {
-    expect(parseCockpitArgs(["rebuild", "--yes"]).yes).toBe(true);
-    expect(parseCockpitArgs(["rebuild", "-y"]).yes).toBe(true);
+    expect(parseCockpitArgs(["reconcile", "--yes"]).yes).toBe(true);
+    expect(parseCockpitArgs(["reconcile", "-y"]).yes).toBe(true);
     expect(parseCockpitArgs(["reload", "--yes"]).yes).toBe(true);
+  });
+});
+
+// ---------- ADR-264 §D4: legacy session-literal in-place rename shim ----------
+
+describe("reconcileCockpitSession — ADR-264 §D4 legacy session rename shim", () => {
+  test("renames live 'atmux_cockpit' session in place → 'atx'", async () => {
+    const fx = await spinTmux("cockpit-rename-shim-135");
+    try {
+      const { logger, logs } = makeLogger();
+      await fx.tmux.session.newSession({
+        name: "atmux_cockpit",
+        detached: true,
+        windowName: "_superdriver",
+      });
+      await reconcileCockpitSession(fx.tmux, "atx", [], logger);
+      expect(await fx.tmux.session.hasSession("atx")).toBe(true);
+      expect(await fx.tmux.session.hasSession("atmux_cockpit")).toBe(false);
+      expect(logs.join("\n")).toContain("renamed session 'atmux_cockpit' → 'atx'");
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("renames live 'atmux_teams' session in place → 'atx'", async () => {
+    const fx = await spinTmux("cockpit-rename-shim-teams");
+    try {
+      const { logger, logs } = makeLogger();
+      await fx.tmux.session.newSession({
+        name: "atmux_teams",
+        detached: true,
+        windowName: "_superdriver",
+      });
+      await reconcileCockpitSession(fx.tmux, "atx", [], logger);
+      expect(await fx.tmux.session.hasSession("atx")).toBe(true);
+      expect(await fx.tmux.session.hasSession("atmux_teams")).toBe(false);
+      expect(logs.join("\n")).toContain("renamed session 'atmux_teams' → 'atx'");
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("legacy + 'atx' coexisting warns (ambiguous); operator kills legacy manually", async () => {
+    const fx = await spinTmux("cockpit-rename-shim-ambig");
+    try {
+      const { logger, logs } = makeLogger();
+      await fx.tmux.session.newSession({
+        name: "atx",
+        detached: true,
+        windowName: "_superdriver",
+      });
+      await fx.tmux.session.newSession({
+        name: "atmux_cockpit",
+        detached: true,
+        windowName: "_superdriver",
+      });
+      await reconcileCockpitSession(fx.tmux, "atx", [], logger);
+      // No rename happened — both sessions survive.
+      expect(await fx.tmux.session.hasSession("atx")).toBe(true);
+      expect(await fx.tmux.session.hasSession("atmux_cockpit")).toBe(true);
+      expect(logs.join("\n")).toContain(
+        "both 'atmux_cockpit' and 'atx' sessions exist — ADR-264 migration ambiguous",
+      );
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("operator-chosen session names never trigger the shim", async () => {
+    const fx = await spinTmux("cockpit-rename-shim-custom");
+    try {
+      const { logger, logs } = makeLogger();
+      await fx.tmux.session.newSession({
+        name: "atmux_cockpit",
+        detached: true,
+        windowName: "_superdriver",
+      });
+      // Target is an operator-chosen name, not the canonical `atx` —
+      // the legacy session must be left untouched.
+      await reconcileCockpitSession(fx.tmux, "geoyws_cockpit", [], logger);
+      expect(await fx.tmux.session.hasSession("atmux_cockpit")).toBe(true);
+      expect(await fx.tmux.session.hasSession("geoyws_cockpit")).toBe(true);
+      expect(logs.join("\n")).not.toContain("renamed session");
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -1526,8 +1773,8 @@ describe("buildTeamWindowCommand", () => {
   const team = { name: "demo", root: "/d", enabled: true } as CockpitTeam;
   const uid = process.getuid?.() ?? 0;
 
-  test("attach mode targets <session>:driver via the dual-socket retry loop", () => {
-    const cmd = buildTeamWindowCommand(team, "attach");
+  test("attach mode targets <session>:driver via the dual-socket retry loop", async () => {
+    const cmd = await buildTeamWindowCommand(team, "attach");
     expect(cmd).toContain("attach -t");
     expect(cmd).toContain(":driver");
     expect(cmd).toContain("while true");
@@ -1542,15 +1789,15 @@ describe("buildTeamWindowCommand", () => {
     expect(cmd).toContain("||");
   });
 
-  test("no-driver-config emits the 'set team.json::driverSession' guidance", () => {
-    const cmd = buildTeamWindowCommand(team, "no-driver-config");
+  test("no-driver-config emits the 'set team.json::driverSession' guidance", async () => {
+    const cmd = await buildTeamWindowCommand(team, "no-driver-config");
     expect(cmd).toContain("no driver configured for demo");
     expect(cmd).toContain("team.json::driverSession");
     expect(cmd).toContain("sleep infinity");
   });
 
-  test("session-down emits the 'atmux start' guidance + self-healing retry-loop", () => {
-    const cmd = buildTeamWindowCommand(team, "session-down");
+  test("session-down emits the 'atmux start' guidance + self-healing retry-loop", async () => {
+    const cmd = await buildTeamWindowCommand(team, "session-down");
     expect(cmd).toContain("session not running");
     expect(cmd).toContain("atmux start demo");
     // ADR-063 follow-up: replaced `sleep infinity` with a retry-loop so
@@ -1563,18 +1810,18 @@ describe("buildTeamWindowCommand", () => {
     expect(cmd).toContain(`/d/.atmux/tmux/tmux-${uid}/default`);
   });
 
-  test("placeholder shell-quoting survives team names with apostrophes", () => {
+  test("placeholder shell-quoting survives team names with apostrophes", async () => {
     const apostropheTeam = { name: "ali's-team", root: "/x", enabled: true } as CockpitTeam;
-    const cmd = buildTeamWindowCommand(apostropheTeam, "no-driver-config");
+    const cmd = await buildTeamWindowCommand(apostropheTeam, "no-driver-config");
     // Resulting shell string is single-quoted; the apostrophe in the
     // team name must be escaped via the POSIX `'\''` idiom so the
     // surrounding `printf` quoting doesn't break.
     expect(cmd).toContain("'\\''");
   });
 
-  test("session-down printf message is shell-safe for team names with apostrophes", () => {
+  test("session-down printf message is shell-safe for team names with apostrophes", async () => {
     const apostropheTeam = { name: "ali's-team", root: "/x", enabled: true } as CockpitTeam;
-    const cmd = buildTeamWindowCommand(apostropheTeam, "session-down");
+    const cmd = await buildTeamWindowCommand(apostropheTeam, "session-down");
     // The printf prelude single-quotes its message; the apostrophe in
     // "ali's-team" must be POSIX-escaped or the rest of the command
     // string breaks the shell parse.
@@ -1723,7 +1970,7 @@ describe("cockpitRebuild", () => {
       const { logger } = makeLogger();
       const code = await cockpitRebuild(
         {
-          subverb: "rebuild",
+          subverb: "reconcile",
           noCycle: true,
           forceCycle: false,
           ackDangerous: false,
@@ -1775,7 +2022,7 @@ describe("cockpitRebuild", () => {
       const { logger } = makeLogger();
       const code = await cockpitRebuild(
         {
-          subverb: "rebuild",
+          subverb: "reconcile",
           noCycle: false,
           forceCycle: false,
           ackDangerous: false,
@@ -1816,7 +2063,7 @@ describe("cockpitRebuild", () => {
       const { logger } = makeLogger();
       await cockpitRebuild(
         {
-          subverb: "rebuild",
+          subverb: "reconcile",
           noCycle: false,
           forceCycle: true,
           ackDangerous: true,
@@ -1851,7 +2098,7 @@ describe("cockpitRebuild", () => {
     const { logger, logs } = makeLogger();
     const code = await cockpitRebuild(
       {
-        subverb: "rebuild",
+        subverb: "reconcile",
         noCycle: true,
         forceCycle: false,
         ackDangerous: false,
@@ -1864,10 +2111,10 @@ describe("cockpitRebuild", () => {
     expect(logs.some((l) => l.startsWith("warn:") && l.includes("no enabled teams"))).toBe(true);
   });
 
-  // ADR-077: rebuild emits a manual-start nudge when superdoctor is
+  // ADR-077: rebuild emits a manual-start nudge when medic is
   // enabled. Auto-firing /loop /superdoctor would re-fire on every
   // idempotent rebuild — keep rebuild topological, nudge the operator.
-  test("ADR-077: superdoctor enabled → success message includes /loop /superdoctor nudge", async () => {
+  test("ADR-077: medic enabled → success message includes /loop nudge", async () => {
     await writeFile(
       join(homeDir, ".atmux", "cockpit.json"),
       JSON.stringify({
@@ -1876,7 +2123,7 @@ describe("cockpitRebuild", () => {
         // contract (t-22453c1e's auto-start path has its own coverage;
         // mixing them here would deadline-hang on the live capture-pane
         // poll since the CI tmux pane never reaches a Claude prompt).
-        superdoctor: { enabled: true, autoStart: false },
+        medic: { enabled: true, autoStart: false },
         teams: [{ name: "demo", root: projRoot, enabled: true }],
       }),
       "utf8",
@@ -1886,7 +2133,7 @@ describe("cockpitRebuild", () => {
       const { logger, logs } = makeLogger();
       const code = await cockpitRebuild(
         {
-          subverb: "rebuild",
+          subverb: "reconcile",
           noCycle: true,
           forceCycle: false,
           ackDangerous: false,
@@ -1912,10 +2159,10 @@ describe("cockpitRebuild", () => {
     }
   });
 
-  // ADR-133 TR2: top-level `medic` block resolves the same way as the
-  // deprecated `superdoctor` block. Window name stays "superdoctor"
-  // until TR3 ships the verb / window / skill renames.
-  test("ADR-133 TR2: top-level `medic` block enables the W2 medic window + nudge", async () => {
+  // ADR-133: top-level `medic` block is the canonical key (the legacy
+  // `superdoctor` key was removed per ADR-266 §D2 — see the hard-fail
+  // test below).
+  test("ADR-133: top-level `medic` block enables the W2 medic window + nudge", async () => {
     await writeFile(
       join(homeDir, ".atmux", "cockpit.json"),
       JSON.stringify({
@@ -1931,7 +2178,7 @@ describe("cockpitRebuild", () => {
       const { logger, logs } = makeLogger();
       const code = await cockpitRebuild(
         {
-          subverb: "rebuild",
+          subverb: "reconcile",
           noCycle: true,
           forceCycle: false,
           ackDangerous: false,
@@ -1964,9 +2211,9 @@ describe("cockpitRebuild", () => {
     }
   });
 
-  // ADR-133 TR2: top-level `superdoctor` block (recursive sessions[]
-  // shape, NOT legacy flat) — shim lifts to medic + warns.
-  test("ADR-133 TR2: top-level `superdoctor` on new-shape config → medic resolves + deprecation warn fires", async () => {
+  // ADR-266 §D2: top-level `superdoctor` block (recursive sessions[]
+  // shape) — the ADR-133 shim expired; load now hard-fails.
+  test("ADR-266 §D2: top-level `superdoctor` on new-shape config → ConfigError naming ADR-266", async () => {
     await writeFile(
       join(homeDir, ".atmux", "cockpit.json"),
       JSON.stringify({
@@ -1977,12 +2224,11 @@ describe("cockpitRebuild", () => {
       }),
       "utf8",
     );
-    const fx = await spinTmux("cockpit-reb-sd-depr");
-    try {
-      const { logger, logs } = makeLogger();
-      const code = await cockpitRebuild(
+    const { logger } = makeLogger();
+    await expect(
+      cockpitRebuild(
         {
-          subverb: "rebuild",
+          subverb: "reconcile",
           noCycle: true,
           forceCycle: false,
           ackDangerous: false,
@@ -1991,31 +2237,17 @@ describe("cockpitRebuild", () => {
         },
         {
           env: { HOME: homeDir, ATMUX_NO_CRON: "1" },
-          tmuxFactory: () => fx.tmux,
           logger,
           startFn: async () => 0,
         },
-      );
-      expect(code).toBe(0);
-      const joined = logs.join("\n");
-      // Nudge fires (medic resolved post-shim).
-      expect(joined).toContain("/loop /superdoctor");
-      // Deprecation warning surfaces via stderr (default warn sink) —
-      // not captured by `logs[]` since logger isn't passed to
-      // loadCockpit's warn. The W2 window still provisions, named
-      // canonically as `_medic` post-ADR-133 + ADR-135 §D2 `_` prefix.
-      const wins = await fx.tmux.window.listWindows("test_cockpit_sd_depr");
-      expect(wins.map((w) => w.name)).toContain("_medic");
-    } finally {
-      try {
-        await fx.tmux.server.killServer();
-      } catch {}
-      await rm(fx.socketDir, { recursive: true, force: true });
-    }
+      ),
+    ).rejects.toThrow(/ADR-266/);
   });
 
-  // ADR-133 TR2: BOTH `medic` and `superdoctor` set — medic wins.
-  test("ADR-133 TR2: both `medic` and `superdoctor` set → medic wins; superdoctor stripped pre-parse", async () => {
+  // ADR-266 §D2: BOTH `medic` and `superdoctor` set — the legacy key
+  // must be dropped; load hard-fails rather than silently preferring
+  // medic (the expired contract promised exactly this failure).
+  test("ADR-266 §D2: both `medic` and `superdoctor` set → ConfigError naming ADR-266", async () => {
     await writeFile(
       join(homeDir, ".atmux", "cockpit.json"),
       JSON.stringify({
@@ -2027,12 +2259,11 @@ describe("cockpitRebuild", () => {
       }),
       "utf8",
     );
-    const fx = await spinTmux("cockpit-reb-both");
-    try {
-      const { logger, logs } = makeLogger();
-      const code = await cockpitRebuild(
+    const { logger } = makeLogger();
+    await expect(
+      cockpitRebuild(
         {
-          subverb: "rebuild",
+          subverb: "reconcile",
           noCycle: true,
           forceCycle: false,
           ackDangerous: false,
@@ -2041,22 +2272,11 @@ describe("cockpitRebuild", () => {
         },
         {
           env: { HOME: homeDir, ATMUX_NO_CRON: "1" },
-          tmuxFactory: () => fx.tmux,
           logger,
           startFn: async () => 0,
         },
-      );
-      expect(code).toBe(0);
-      const joined = logs.join("\n");
-      // medic.enabled=true wins; nudge fires. superdoctor.enabled=false
-      // would have suppressed the nudge if it had won.
-      expect(joined).toContain("/loop /superdoctor");
-    } finally {
-      try {
-        await fx.tmux.server.killServer();
-      } catch {}
-      await rm(fx.socketDir, { recursive: true, force: true });
-    }
+      ),
+    ).rejects.toThrow(/ADR-266/);
   });
 
   // ADR-133 TR2: neither key set — no nudge.
@@ -2075,7 +2295,7 @@ describe("cockpitRebuild", () => {
       const { logger, logs } = makeLogger();
       const code = await cockpitRebuild(
         {
-          subverb: "rebuild",
+          subverb: "reconcile",
           noCycle: true,
           forceCycle: false,
           ackDangerous: false,
@@ -2115,7 +2335,7 @@ describe("cockpitRebuild", () => {
       const { logger, logs } = makeLogger();
       const code = await cockpitRebuild(
         {
-          subverb: "rebuild",
+          subverb: "reconcile",
           noCycle: true,
           forceCycle: false,
           ackDangerous: false,
@@ -2166,8 +2386,8 @@ describe("parseCockpitArgs — migrate-socket subverb (ADR-162 TR3)", () => {
     expect(p.keepLegacy).toBe(true);
   });
 
-  test("--dry-run rejected on rebuild (subverb-scoped flag)", () => {
-    expect(() => parseCockpitArgs(["rebuild", "--dry-run"])).toThrow(UsageError);
+  test("--dry-run rejected on reconcile (subverb-scoped flag)", () => {
+    expect(() => parseCockpitArgs(["reconcile", "--dry-run"])).toThrow(UsageError);
   });
 
   test("--keep-legacy rejected on reload (subverb-scoped flag)", () => {
@@ -2198,9 +2418,9 @@ describe("buildMigrationBreadcrumb (ADR-162 TR3 — Phase 5)", () => {
       },
       { sessionName: "atmux_cockpit", index: 2, name: "_medic", scrollback: "medic tail" },
     ];
-    const out = buildMigrationBreadcrumb(captured, "atmux_cockpit", "atmux-cockpit");
+    const out = buildMigrationBreadcrumb(captured, "atx", "atmux-cockpit");
     expect(out).toContain("atmux cockpit migrate-socket breadcrumb");
-    expect(out).toContain("tmux -L atmux-cockpit attach -t atmux_cockpit");
+    expect(out).toContain("tmux -L atmux-cockpit attach -t atx");
     expect(out).toContain("## atmux_cockpit:1 '_superdriver'");
     expect(out).toContain("line A\nline B");
     expect(out).toContain("## atmux_cockpit:2 '_medic'");
@@ -2212,12 +2432,12 @@ describe("buildMigrationBreadcrumb (ADR-162 TR3 — Phase 5)", () => {
     const captured: CapturedCockpitWindow[] = [
       { sessionName: "atmux_teams", index: 1, name: "_superdriver", scrollback: "" },
     ];
-    const out = buildMigrationBreadcrumb(captured, "atmux_cockpit", "atmux-cockpit");
+    const out = buildMigrationBreadcrumb(captured, "atx", "atmux-cockpit");
     expect(out).toContain("(scrollback empty or capture failed)");
   });
 
   test("empty captured list still emits header (zero-window edge)", () => {
-    const out = buildMigrationBreadcrumb([], "atmux_cockpit", "atmux-cockpit");
+    const out = buildMigrationBreadcrumb([], "atx", "atmux-cockpit");
     expect(out).toContain("Captured 0 window(s)");
   });
 });
@@ -2331,7 +2551,7 @@ function migrateOpts(overrides: Partial<ParsedCockpitArgs> = {}): ParsedCockpitA
 }
 
 describe("cockpitMigrateSocket (ADR-162 TR3) — mock-driven flow", () => {
-  test("LEGACY_COCKPIT_SESSION_NAMES covers both ADR-135 canonical + pre-135 legacy", () => {
+  test("LEGACY_COCKPIT_SESSION_NAMES covers both legacy literals (canonical is `atx` per ADR-264)", () => {
     expect(LEGACY_COCKPIT_SESSION_NAMES).toEqual(["atmux_cockpit", "atmux_teams"]);
   });
 
@@ -2431,10 +2651,10 @@ describe("cockpitMigrateSocket (ADR-162 TR3) — mock-driven flow", () => {
     // Phase 6 — both legacy sessions killed
     expect(defaultState.ops).toContain("default:killSession(atmux_cockpit)");
     expect(defaultState.ops).toContain("default:killSession(atmux_teams)");
-    // Phase 3 — target session created on cockpit socket
-    expect(cockpitState.sessions.has("atmux_cockpit")).toBe(true);
+    // Phase 3 — target session created on cockpit socket (canonical `atx` per ADR-264)
+    expect(cockpitState.sessions.has("atx")).toBe(true);
     // Phase 4 — windows recreated by name (relative order preserved)
-    const newWins = cockpitState.sessions.get("atmux_cockpit")?.windows ?? [];
+    const newWins = cockpitState.sessions.get("atx")?.windows ?? [];
     const names = newWins.map((w) => w.name);
     expect(names).toContain("_superdriver");
     expect(names).toContain("_medic");
@@ -2502,7 +2722,7 @@ describe("cockpitMigrateSocket (ADR-162 TR3) — mock-driven flow", () => {
     expect(code).toBe(0);
     expect(defaultState.sessions.has("atmux_cockpit")).toBe(true); // legacy preserved
     expect(defaultState.ops).not.toContain("default:killSession(atmux_cockpit)");
-    expect(cockpitState.sessions.has("atmux_cockpit")).toBe(true); // new still created
+    expect(cockpitState.sessions.has("atx")).toBe(true); // new still created
     expect(logs.join("\n")).toContain("--keep-legacy set");
   });
 
@@ -2525,9 +2745,7 @@ describe("cockpitMigrateSocket (ADR-162 TR3) — mock-driven flow", () => {
     };
     // Pre-existing target session has _superdriver but not _medic
     const cockpitState: MockTmuxState = {
-      sessions: new Map([
-        ["atmux_cockpit", { windows: [{ index: 1, name: "_superdriver" }], createdAt: 0 }],
-      ]),
+      sessions: new Map([["atx", { windows: [{ index: 1, name: "_superdriver" }], createdAt: 0 }]]),
       scrollback: new Map(),
       ops: [],
     };
@@ -2541,7 +2759,7 @@ describe("cockpitMigrateSocket (ADR-162 TR3) — mock-driven flow", () => {
           : makeMockTmux("cockpit", cockpitState),
     });
     expect(code).toBe(0);
-    const names = cockpitState.sessions.get("atmux_cockpit")?.windows.map((w) => w.name) ?? [];
+    const names = cockpitState.sessions.get("atx")?.windows.map((w) => w.name) ?? [];
     // _superdriver kept (already there), _medic added
     expect(names).toContain("_superdriver");
     expect(names).toContain("_medic");
@@ -2625,7 +2843,7 @@ describe("cockpitMigrateSocket (ADR-162 TR3) — mock-driven flow", () => {
     });
     // Migration completes despite capture failure
     expect(code).toBe(0);
-    expect(cockpitState.sessions.has("atmux_cockpit")).toBe(true);
+    expect(cockpitState.sessions.has("atx")).toBe(true);
   });
 });
 
@@ -2673,8 +2891,8 @@ describe("parseCockpitArgs — attach subverb", () => {
     expect(p.configPath).toBe("/tmp/c.json");
   });
 
-  test("rebuild rejects --human (attach-only flag)", () => {
-    expect(() => parseCockpitArgs(["rebuild", "--human"])).toThrow(UsageError);
+  test("reconcile rejects --human (attach-only flag)", () => {
+    expect(() => parseCockpitArgs(["reconcile", "--human"])).toThrow(UsageError);
   });
 
   test("reload rejects --human (attach-only flag)", () => {
@@ -2792,7 +3010,7 @@ describe("cockpitAttach — isolated (stubbed tmux + temp cockpit.json)", () => 
       cockpitJson,
       JSON.stringify({
         schemaVersion: 1,
-        cockpitSession: "atmux_cockpit",
+        cockpitSession: "atx",
         sessions: [],
       }),
     );
@@ -2813,7 +3031,7 @@ describe("cockpitAttach — isolated (stubbed tmux + temp cockpit.json)", () => 
     expect(exit).toBe(0);
     expect(capturedSocket).toBe("atmux-cockpit");
     // attachWithTmux uses exactSessionTarget(=<name>) for the hasSession probe.
-    expect(capturedTarget).toBe("=atmux_cockpit");
+    expect(capturedTarget).toBe("=atx");
   });
 
   test("honours ATMUX_COCKPIT_SOCKET escape hatch (ADR-162 legacy operators)", async () => {
@@ -2821,7 +3039,7 @@ describe("cockpitAttach — isolated (stubbed tmux + temp cockpit.json)", () => 
       cockpitJson,
       JSON.stringify({
         schemaVersion: 1,
-        cockpitSession: "atmux_cockpit",
+        cockpitSession: "atx",
         sessions: [],
       }),
     );
@@ -2837,7 +3055,7 @@ describe("cockpitAttach — isolated (stubbed tmux + temp cockpit.json)", () => 
     expect(capturedSocket).toBe("default");
   });
 
-  test("uses cockpitSession from cockpit.json (ADR-135 canonical field)", async () => {
+  test("uses cockpitSession from cockpit.json (operator-chosen name passes through per ADR-264 §D3)", async () => {
     await writeFile(
       cockpitJson,
       JSON.stringify({
@@ -2865,7 +3083,7 @@ describe("cockpitAttach — isolated (stubbed tmux + temp cockpit.json)", () => 
       cockpitJson,
       JSON.stringify({
         schemaVersion: 1,
-        cockpitSession: "atmux_cockpit",
+        cockpitSession: "atx",
         sessions: [],
       }),
     );
@@ -2888,7 +3106,7 @@ describe("cockpitAttach — isolated (stubbed tmux + temp cockpit.json)", () => 
       cockpitJson,
       JSON.stringify({
         schemaVersion: 1,
-        cockpitSession: "atmux_cockpit",
+        cockpitSession: "atx",
         sessions: [],
       }),
     );
@@ -2906,12 +3124,12 @@ describe("cockpitAttach — isolated (stubbed tmux + temp cockpit.json)", () => 
     expect(capturedPath).toBe("inherit");
   });
 
-  test("missing-session surfaces ConfigError (run 'atmux cockpit rebuild' hint)", async () => {
+  test("missing-session surfaces ConfigError (run 'atmux cockpit reconcile' hint)", async () => {
     await writeFile(
       cockpitJson,
       JSON.stringify({
         schemaVersion: 1,
-        cockpitSession: "atmux_cockpit",
+        cockpitSession: "atx",
         sessions: [],
       }),
     );

@@ -148,3 +148,9 @@ Reviewer flips proposed → accepted on signoff. No code changes; no test change
 ## Open questions
 
 None at write time. The ownership boundary is well-established (memory rule from 2026-05-15); the architectural pairing is now documented; reviewer-discipline catches drift via §D4. If verb-signature drift produces a real bug in production, revisit with the automated-lint candidate from §Consequences-Negative.
+
+## Amendments
+
+### 2026-08-07 — D1's `/session` verb set is `cont` / `handoff` / `stop` (ADR-263)
+
+[ADR-263](263-merge-session-preclear-into-handoff.md) merges the `/session preclear` verb into `/session handoff` — one mode-aware verb, no `preclear` alias. D1's skill ↔ atmux verb mapping row for `/session [verb]` reads **"Session continuity (`cont` / `handoff` / `stop`)"** — 4 verbs collapse to 3. The row's atmux-verb backing (`atmux handoff` + native shell) and every other row in the 9-skill mapping are unchanged. This amendment is itself the D4 discipline in action: the skill's verb surface changed, so the canonical mapping is updated in the same wave.

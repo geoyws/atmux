@@ -26,6 +26,18 @@ doctor.ts
 
 `watchdog.ts` is the ADR-057 §D6b heartbeat-staleness detector — a separate `*/2` cron line independent of whip's body-hash logic so a stuck whip doesn't blind the watchdog. On each tick it reads `<atmuxDir>/heartbeats/<member>.epoch`, flags members whose heartbeat is older than `team.whip.stallPrevention.heartbeatStaleSec` (default 300s), fires a 24h-deduped 🛑 `[whip-watchdog]` Discord ping, and audit-logs to `.atmux/logs/watchdog.log`. USAGE: `atmux watchdog [--no-discord] [--team-dir <dir>]`. See [ADR-057 §D6](../../docs/adr/057-stall-prevention.md) and the [stall-recovery runbook](../../docs/RUNBOOK-stall-recovery.md).
 
+`voice.ts` is the [ADR-272](../../docs/adr/272-voice-operator-interface.md) spoken operator interface — the boot wiring for the WebSocket + PWA server, and the only file that connects `src/core/voice/**` to the verbs the tool bridge invokes. USAGE: `atmux voice [--serve|--supervise|--status|--stop] [--port <n>] [--provider <p>] [--model <m>] [--readonly] [--max-frames <n>] [--print-assets-dir]`.
+
+Three properties are load-bearing and enforced here rather than downstream:
+
+- **Verb-only capability (§D2).** The tool bridge never imports from `src/verbs/**`; `VOICE_RUNNER_IMPORTERS` lazy-imports each verb module and injects the function downward. Deleting the voice server removes a microphone, not a power.
+- **Driver scope (§D3).** `--serve` sets `ATMUX_CALLER_SCOPE=driver` (`applyDriverScope`) before binding. Whoever reaches the WebSocket **is** the driver — which is why `buildVoiceDeps` fails closed on a missing `ATMUX_VOICE_TOKEN` (≥32 chars) or provider API key *before* a port is bound, and why `--readonly` removes the 4 messaging tools from the catalog rather than refusing them at call time.
+- **Default-socket supervision (§D10).** `--supervise` owns a detached tmux session `atmux-voice` on the **default** socket (`createTmux({ socket: "default" })`) — not a cockpit window (the reconcile pass prunes orphans), not a cage (per-team lifecycle), not systemd ([ADR-233](../../docs/adr/233-cron-auto-install-disabled-trust-orchd.md)).
+
+All server-side diagnostics go to `process.stderr`: `process.stdout` is capture-owned while a tool's verb runs (`src/core/verb-capture.ts`), so a stray stdout write would land inside a spoken tool result. Operating surface + the V-1…V-18 acceptance checklist live in [docs/RUNBOOK-voice.md](../../docs/RUNBOOK-voice.md).
+
+A dial is not complete when the socket opens — it completes on the provider's `session-ready`. `src/core/voice/session.ts` bounds that wait with `SESSION_READY_TIMEOUT_MS` (12s) and treats expiry as a **failed dial attempt**, so a provider that accepts the socket and then goes quiet inherits the ordinary redial backoff and the 5-attempt → 4500 exhaustion path instead of hanging forever (`connectWebSocket` bounds only the WS handshake; `session-ready` arrives afterwards from an inbound frame).
+
 ## Cursor self-heal recipes (`src/core/cursor-recipes/`)
 
 Per ADR-055 — recipe-driven `cursor-agent` invocations for whitelisted problem classes. NOT verbs (no CLI surface); they're orchestration objects consumed by the whip-tick self-heal pass (`9554f70`). Each recipe at `src/core/cursor-recipes/<recipe>.ts` exports a `CursorRecipe` (`detect → propose → verify`) with `tokenCap` (default 5_000) + `fileAllowlist` (e.g. `["team.json", ".atmux/state/*"]`).

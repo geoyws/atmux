@@ -52,7 +52,7 @@ export interface VerifyConvergenceInput {
   cockpitTmux: TmuxNamespace;
   /** Cage tmux namespace pinned to the team's socket. */
   cageTmux: TmuxNamespace;
-  /** Cockpit session name (default `"atmux_cockpit"` per ADR-135). */
+  /** Cockpit session name (default `"atx"` per ADR-264). */
   cockpitSession: string;
   /** Cockpit.json path; defaults to `<home>/.atmux/cockpit.json`. */
   cockpitPath?: string;

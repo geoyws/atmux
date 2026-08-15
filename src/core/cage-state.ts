@@ -34,7 +34,7 @@ import { spawn as defaultSpawn } from "../abstractions/spawn.ts";
 import { now } from "../abstractions/time.ts";
 import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
 import type { Team, TeamMember } from "../schema/team.ts";
-import { defaultEmojiForRole, resolveTeamSocket } from "./common.ts";
+import { buildWindowName, defaultEmojiForRole, resolveTeamSocket } from "./common.ts";
 import { readHeartbeat } from "./heartbeat.ts";
 import { classifyText } from "./pane-state.ts";
 
@@ -113,6 +113,23 @@ export interface ProbeCageStateOpts {
    *  Allows tests to simulate heartbeat staleness without writing
    *  files. */
   readHeartbeat?: (atmuxDir: string, member: string) => Promise<number | null>;
+  /**
+   * The team's ACTUAL tmux session name (ADR-273 D3 trap 1).
+   *
+   * Without it the probe falls back to `atmux-<team.name>`, which is only
+   * right for a team that has no `.atmux/state/session.txt` anchor. Teams
+   * DO anchor: on the live fleet `unum` anchors to `atmux_unum`
+   * (underscore) and `atmux` to bare `atmux`, so the fallback names a
+   * session that does not exist and step (1) below reports every member
+   * of a healthy team as `down`.
+   *
+   * Reporting a live team as dead is exactly the failure that trains an
+   * operator to ignore the tool, so callers that can resolve the name —
+   * `getSessionName` for a single team, `resolveCageSessionName` for a
+   * cockpit entry — MUST pass it. The default is kept only so existing
+   * callers keep compiling; it is not correct, merely unchanged.
+   */
+  sessionName?: string;
 }
 
 /**
@@ -142,7 +159,9 @@ export async function probeCageState(
   opts: ProbeCageStateOpts = {},
 ): Promise<CageHealth> {
   const socketPath = resolveTeamSocket(team);
-  const sessionName = `atmux-${team.name}`;
+  // ADR-273 D3 trap 1 — the anchor-aware name when the caller could
+  // resolve one, else the legacy fallback. See `ProbeCageStateOpts`.
+  const sessionName = opts.sessionName ?? `atmux-${team.name}`;
   const tmux = opts.tmux ?? createTmux({ socketPath });
   const hasSession =
     opts.hasSession ?? (async (name: string, _sock: string) => tmux.session.hasSession(name));
@@ -151,10 +170,15 @@ export async function probeCageState(
   const readHb = opts.readHeartbeat ?? readHeartbeat;
 
   const emoji = member.emoji ?? defaultEmojiForRole(member.role ?? "member");
-  // ADR-135 + ADR-136: hyphen-separator window name with label override.
-  const label = (member as { label?: string }).label;
-  const windowSuffix = typeof label === "string" && label.length > 0 ? label : member.name;
-  const windowName = `${emoji}${windowSuffix}`;
+  // Match the spawn-side construction in start.ts:
+  //   buildWindowName(member.name, emoji, member.label, member.role)
+  // which honours ADR-135 (hyphen separator for user-added members) AND
+  // ADR-161 (`_`-prefix for default-member roles: team-lead, planner,
+  // reviewer, ombudsman). Manually building `${emoji}${name}` here as the
+  // probe target produces the legacy pre-ADR-135 no-separator form and
+  // mismatches every live window — the probe then reports `down` on
+  // panes that are actually healthy (false negative).
+  const windowName = buildWindowName(member.name, emoji, member.label, member.role);
   const target = `${sessionName}:${windowName}`;
 
   // (1) session present?

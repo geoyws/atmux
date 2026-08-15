@@ -9,9 +9,9 @@
 #   - `atmux::llm_judge` cost-ledger schema
 #
 # This avoids the flaky `atmux start` spawn path that gets clobbered by
-# parallel test contention on the shared tmux server (whip_preclear.bats
+# parallel test contention on the shared tmux server (whip_handoff.bats
 # documented the same constraint). Integration of the full whip tick with
-# real spawn is covered by whip_preclear.bats's pre-existing cells; this
+# real spawn is covered by whip_handoff.bats's pre-existing cells; this
 # file focuses on the new SOFT-tier judge wiring per t-cc4064a9.
 #
 # Per CLAUDE.md feedback_orphan_test_staging.md: BE deps t-cc4064a9

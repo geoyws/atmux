@@ -31,7 +31,14 @@
 import { exists } from "../abstractions/fs.ts";
 import { driverInboxPath, getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts";
 import { type DriverPaneHealth, probeDriverPane } from "../core/driver-pane-health.ts";
+import { captureVerbStdout } from "../core/verb-capture.ts";
 import { UsageError } from "../errors.ts";
+
+// ADR-272: `captureVerbStdout` moved to `src/core/verb-capture.ts` so
+// the voice tool bridge (core) can share it without importing from
+// `src/verbs/**`. Re-exported here for existing importers (tests +
+// historical callsites); behavior is identical.
+export { captureVerbStdout } from "../core/verb-capture.ts";
 
 const USAGE = "atmux dashboard [--interval <s>]";
 
@@ -292,40 +299,6 @@ export function makeRealCollect(
     if (driverPane !== undefined) out.driverPane = driverPane;
     return out;
   };
-}
-
-/**
- * Run an in-process verb function with `process.stdout.write` and
- * `console.log` redirected to a buffer. Returns the captured text.
- * Errors thrown by the verb are caught and re-rendered as a single
- * line `"<verb-name>: <message>\n"` — bash dashboard.sh swallows the
- * whole call via `|| true`, mirror.
- */
-export async function captureVerbStdout(
-  verb: (a: ReadonlyArray<string>) => Promise<number>,
-  args: ReadonlyArray<string>,
-  label: string,
-): Promise<string> {
-  let buf = "";
-  const origStdoutWrite = process.stdout.write.bind(process.stdout);
-  const origLog = console.log;
-  process.stdout.write = ((s: string | Uint8Array) => {
-    buf += typeof s === "string" ? s : new TextDecoder().decode(s);
-    return true;
-  }) as typeof process.stdout.write;
-  console.log = (msg: unknown) => {
-    buf += `${String(msg)}\n`;
-  };
-  try {
-    await verb(args);
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    buf += `${label}: ${msg}\n`;
-  } finally {
-    process.stdout.write = origStdoutWrite;
-    console.log = origLog;
-  }
-  return buf;
 }
 
 // ---------- Public verb entry ----------

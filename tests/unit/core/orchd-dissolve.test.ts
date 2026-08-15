@@ -134,6 +134,52 @@ describe("appendOrchdDissolveAuditRow JSONL writer (ADR-227 §D4)", () => {
     expect(rows.length).toBe(1);
     expect(rows[0]).toEqual(row);
   });
+
+  test("creates a missing parent directory instead of throwing ENOENT", async () => {
+    // Regression, sibling of the orchd-push fix: the default
+    // `auditLogPath` is the RELATIVE `.atmux/logs/orchd-dissolve.log`
+    // and no production call-site overrides it. On a cage whose cwd
+    // has no `.atmux/logs/`, the bare appendFileSync threw ENOENT out
+    // of the handler; `withIdempotency` breaks the drain WITHOUT
+    // advancing the offset on a throw, so the non-transient ENOENT
+    // permanently wedged the `atmux:orchd:auto-dissolve` consumer.
+    // Reached in production via the `autoDissolve: false` opt-out row.
+    const nestedPath = join(scratch, "no", "such", "dir", "orchd-dissolve.log");
+    appendOrchdDissolveAuditRow(nestedPath, {
+      at: "2026-08-15T09:00:00Z",
+      epicId: "e-nodir02",
+      outcome: "opt-out",
+      reason: "team.json::epicTeam.autoDissolve=false",
+      mergedSha: null,
+      dissolvedSha: null,
+    });
+    const written = JSON.parse(
+      (await readFile(nestedPath, "utf8")).trim(),
+    ) as OrchdDissolveAuditRow;
+    expect(written.epicId).toBe("e-nodir02");
+    expect(written.outcome).toBe("opt-out");
+  });
+
+  test("handler's DEFAULT audit path survives a cwd with no .atmux/logs (wedge regression)", async () => {
+    // End-to-end shape: opt-out path + a cwd with no `.atmux/logs/`.
+    // Before the fix this rejected instead of returning the outcome.
+    const priorCwd = process.cwd();
+    process.chdir(scratch);
+    try {
+      const handler = createAutoDissolveHandler({
+        db,
+        resolveAutoDissolveSetting: async () => false,
+      });
+      const outcome = await handler(buildPushedEvent(1, { epicId: "e-wedge02" }));
+      expect(outcome).toBe("skipped-operator-opt-out");
+      const body = await readFile(join(scratch, ".atmux", "logs", "orchd-dissolve.log"), "utf8");
+      const row = JSON.parse(body.trim()) as OrchdDissolveAuditRow;
+      expect(row.epicId).toBe("e-wedge02");
+      expect(row.outcome).toBe("opt-out");
+    } finally {
+      process.chdir(priorCwd);
+    }
+  });
 });
 
 // ---------- createAutoDissolveHandler outcome paths ----------

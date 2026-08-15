@@ -253,7 +253,7 @@ atmux team rename <old> <new> [--session <new-session>] [--migrate-session] [--f
 3. `tmux rename-window` for the cockpit team-viewer window matching the bare `<old>` name → `<new>` (per [ADR-135](docs/adr/135-cockpit-naming-convention.md) §window-naming: cockpit team-viewer carries the team name; per-member `<emoji>-<member>` + cockpit-role `_<role>` + epic-viewer `🌳-<eid>` windows do NOT carry team-name and are NOT touched). If `--session <new-session>` differs from the current session name, `tmux rename-session` runs too.
 4. Rewrite `state/session.txt` for single-session teams.
 5. **Cron re-install with NEW marker first, then remove the OLD marker.** Install-new-then-remove-old is the explicit ordering — avoids any window where the team has zero cron coverage (per ADR-027 OQ H3). Brief overlap of two markers is harmless; whip is flock-guarded so duplicate fires no-op.
-6. Cockpit registry update: DFS-walk `cockpit.json::sessions[]` (per [ADR-089](docs/adr/089-hierarchical-cockpit.md) §B) for the `type: "team"` node matching `<old>`; mutate `.name = <new>` in place. Legacy flat `teams[]` rosters auto-lift to the canonical `sessions[]` shape on first rename via `migrateLegacyShape`. Child epic-team nodes' `.name` fields are NOT touched — only the renamed team's own `.name` is mutated.
+6. Cockpit registry update: DFS-walk `cockpit.json::sessions[]` (per [ADR-089](docs/adr/089-recursive-cockpit-sessions.md) §B) for the `type: "team"` node matching `<old>`; mutate `.name = <new>` in place. Legacy flat `teams[]` rosters auto-lift to the canonical `sessions[]` shape on first rename via `migrateLegacyShape`. Child epic-team nodes' `.name` fields are NOT touched — only the renamed team's own `.name` is mutated.
 7. Clear `rename.lock`.
 8. Return success.
 
@@ -294,14 +294,14 @@ atmux audit --dry-run             # print fix plan, no mutations (default for bl
 **When to invoke.**
 
 - **Ad-hoc**: after a fleet-wide convention shift (an ADR amendment, a rename burst, a manual `tmux` op that touched topology) — `atmux audit` shows the drift inventory; pick fixes class-by-class.
-- **Whip auto** (per [ADR-040](docs/adr/040-whip-audit-integration.md)): every 5-min whip tick invokes `atmux audit --quiet --fix` as a sub-pass; low-blast classes auto-fire, medium gates on idle, high surfaces. Zero operator action required for D/E/F drift.
+- **Whip auto** (per [ADR-040](docs/adr/040-audit-whip-integration.md)): every 5-min whip tick invokes `atmux audit --quiet --fix` as a sub-pass; low-blast classes auto-fire, medium gates on idle, high surfaces. Zero operator action required for D/E/F drift.
 - **Daily backstop**: a once-a-day cron (operator opt-in) ensures classes that whip might have skipped (target pane busy all day) eventually surface. Phase 2 of the enforcer agent (ADR-039) may take this over fleet-wide.
 
 **Fleet scope.** Per-team is the default invocation. Fleet aggregation walks `~/.claude/teams/registry.json`, runs the per-team audit on each entry, and rolls up findings — that's the **enforcer** role's job ([ADR-039](docs/adr/039-enforcer-agent-role.md)). Cross-team patterns (≥2 teams hitting the same class = convention shift, not 3 independent bugs) become visible at fleet scope.
 
 **Convergence with ELEVATION.** When the ELEVATION manifest + reconciler ships, `atmux audit` becomes a thin wrapper around `atmux diff --class drift` (detect) + `atmux apply --selected-class <a|b|c|d|e|f>` (fix). The class taxonomy migrates verbatim; gating policy survives. The class vocabulary (A–F + future additions) is the durable artifact.
 
-**See also**: [ADR-038](docs/adr/038-declarative-live-audit-model.md) (audit model + sources of truth + class taxonomy + per-class detector/fixer pair pattern); [ADR-039](docs/adr/039-enforcer-agent-role.md) (fleet-level enforcer agent that aggregates per-team audit findings); [ADR-040](docs/adr/040-whip-audit-integration.md) (whip sub-pass that auto-fires safe classes); `docs/audit.md` (operator guide — runbooks per class).
+**See also**: [ADR-038](docs/adr/038-declarative-live-audit-model.md) (audit model + sources of truth + class taxonomy + per-class detector/fixer pair pattern); [ADR-039](docs/adr/039-enforcer-agent-role.md) (fleet-level enforcer agent that aggregates per-team audit findings); [ADR-040](docs/adr/040-audit-whip-integration.md) (whip sub-pass that auto-fires safe classes); `docs/audit.md` (operator guide — runbooks per class).
 
 ### Preset modes
 
@@ -666,6 +666,7 @@ atmux story list --epic <eid> [--status <s>] [--json]
 atmux story show <id>
 atmux story advance <id> [--to <state>]             # feature-branch: planning→ready→in-progress→testing→review→merging→done
                                                     # trunk-direct:   planning→ready→in-progress→testing→review→done  (ADR-175)
+atmux story update    <id> [--body <text>] [--ac <criteria>]  # Edit body / acceptance-criteria in place (`''` clears)
 atmux story signoff   <id> [--as <m>] [--note <t>]  # Flip review-signoff bit + audit append (ADR-175 GAP 1)
 atmux story unsignoff <id> [--as <m>] [--note <t>]  # Revert review-signoff (pre-merging only; ADR-175 GAP 1)
 atmux task add <subject> [--body <txt>] [--epic <eid>] [--story <sid>] \
@@ -683,7 +684,7 @@ atmux task rm <id>
 atmux dispatch <member> <task-id> [--no-ping]   # priority override only; default flow is pull
 atmux inbox <member> [--json]
 atmux claim <task-id> [--as <member>]            # blocked if deps unresolved
-atmux claim --next [--as <member>] [--lane <l>]  # pull-mode: pick next claimable Task in your lane
+atmux claim --next [--as <member>] [--role <fe|be|db|…>]  # pull-mode: next claimable Task in your lane; --role hard-filters to that lane (ADR-210 §73)
 atmux done  <task-id> [--as <member>] [--note <text>]   # auto-fires commit-Task on Epic-tagged Tasks
 
 📓 Decisions log
@@ -709,6 +710,8 @@ atmux watchdog [--no-discord]                # 2-min heartbeat staleness detecto
 atmux pulse [--json] [--ping] [--config <p>] # 5-min cockpit-wide verdict probe (ADR-086)
 atmux hygiene-tick [--team-dir <d>]          # superdoctor kanban-hygiene pass (ADR-131)
               [--no-json]                    #   one auto-fix per tick via severity/confidence ladder
+atmux issues sync                            # issue-sync: poll GitHub/Azure-DevOps issues → complaints → lead
+                                             #   (ADR-261; verb lands Phase 1 — see docs/RUNBOOK-issue-sync.md)
 
 🔧 Maintenance
 atmux rotate <member>
@@ -727,6 +730,15 @@ atmux topo [--tree] [--orphans] [--json]                  # read-only fleet mani
            [--team <name>] [--since <iso>]                # scope filters
 atmux topo --reap [--apply] [--yes] [--class <name>]      # destructive — dry-run by default
            [--skip-checks] [--json]                       # see docs/RUNBOOK-topology.md
+
+🎙️ Voice operator interface (ADR-272 — see docs/RUNBOOK-voice.md)
+atmux voice [--serve] [--port <n>]           # WebSocket voice server (default 127.0.0.1:4390)
+            [--provider <p>] [--model <m>]   #   provider: openai-realtime | gemini-live
+            [--readonly]                     #   readonly: expose ONLY the 10 read tools
+atmux voice --supervise                      # idempotent detached `atmux-voice` tmux session
+                                             #   (default socket) under a crash-loop wrapper
+atmux voice --status                         # session up? /healthz reachable? provider + mode
+atmux voice --stop                           # SIGINT the server, then kill-session
 
 🚢 Release
 atmux release <patch|minor|major>            # one-shot deploy: bump package.json + commit
@@ -773,7 +785,7 @@ JSON output (`atmux status --json`) gains `members[].cadence` with the full obse
 
 ## 🌱 Eternal-improvement (ADR-052)
 
-`atmux improve` — kanban-empty fallback to autonomous self-improvement loop. See [`docs/adr/052-eternal-improvement-loop.md`](docs/adr/052-eternal-improvement-loop.md). When the team's kanban hits empty, instead of `atmux stop` firing the cage dies, `atmux improve` decomposes "what can we improve on?" into kanban Tasks, dispatches them, loops cycles bounded by a token budget (default `30%-wk`), and only stops when the budget is exhausted AND kanban is still empty. Two modes share one implementation: **Mode A** (user-invoked — driver runs `atmux improve [--budget <spec>]` any time) and **Mode B** (idle-fallback — whip's ADR-043 hook intercepts the auto-stop with `--idle-fallback --default-budget`). Today's `kanban-empty → auto-stop → manual restart` becomes `kanban-empty → improve cycles → auto-stop`. State at `.atmux/state/eternal-improvement.json`.
+`atmux improve` — kanban-empty fallback to autonomous self-improvement loop. See [`docs/adr/052-eternal-improvement.md`](docs/adr/052-eternal-improvement.md). When the team's kanban hits empty, instead of `atmux stop` firing the cage dies, `atmux improve` decomposes "what can we improve on?" into kanban Tasks, dispatches them, loops cycles bounded by a token budget (default `30%-wk`), and only stops when the budget is exhausted AND kanban is still empty. Two modes share one implementation: **Mode A** (user-invoked — driver runs `atmux improve [--budget <spec>]` any time) and **Mode B** (idle-fallback — whip's ADR-043 hook intercepts the auto-stop with `--idle-fallback --default-budget`). Today's `kanban-empty → auto-stop → manual restart` becomes `kanban-empty → improve cycles → auto-stop`. State at `.atmux/state/eternal-improvement.json`.
 
 ## State layout
 
@@ -784,7 +796,7 @@ Everything lives in `.atmux/` at the project root (or wherever `ATMUX_DIR` point
 ├── team.json              # source of truth: members, roles, TUIs, models
 ├── state.db               # SQLite canonical store: Epics + Stories + Tasks +
 │                          #   per-member inbox messages + complaints + handoff
-│                          #   state (ADR-060 + ADR-076)
+│                          #   state (ADR-126 + ADR-076)
 ├── decisions.md           # append-only auto-mode-resolution log (markdown)
 ├── flags.md               # member → lead structured issues (markdown)
 ├── lead-outbox.md         # member → driver (`atmux reply` writes; markdown)
@@ -868,7 +880,7 @@ atmux ships with a Claude Code plugin bundling 12 cockpit-tier skills (`/atmux:b
 | `/atmux:cockpit-rebuild`    | Deterministically (re)build the cockpit + every per-team cage.            | `atmux cockpit rebuild`       |
 | `/atmux:ghostbuster`        | Sweep mergeable epic-team branches; merge what's ahead, prune stale.      | `atmux epic-merge / git`      |
 | `/atmux:heads-up <msg>`     | Lightweight nudge to teammates about new tasks / cascade unblocks.        | `atmux send`                  |
-| `/atmux:session`            | Session continuity (cont / preclear / handoff / stop) at phase boundaries.| `atmux handoff`               |
+| `/atmux:session`            | Session continuity (cont / handoff / stop) at phase boundaries.| `atmux handoff`               |
 | `/atmux:sweep`              | Cockpit-level self-healing diagnosis-and-prevention sweep.                | `atmux doctor / status`       |
 | `/atmux:team`               | Team lifecycle (start / stop / add / clear / cleanup / rotate-lead).      | `atmux team / start / stop`   |
 | `/atmux:tell-lead <msg>`    | Driver → lead durable ask with best-effort pane wake-up.                  | `atmux tell-lead`             |
@@ -906,6 +918,17 @@ See [`plugins/atmux/README.md`](plugins/atmux/README.md) for the full per-skill 
 | `ATMUX_CURSOR_ARGS_EXTRA`            | _(empty)_                                    | Extra args appended after `--model`                   |
 | `ATMUX_KIMI_BIN`                     | `kimi`                                       | Kimi CLI binary                                     |
 | `ATMUX_TMUX_BIN`                     | `/opt/atmux/current/bin/tmux` → system `tmux` | Override the tmux binary every atmux call spawns (ADR-191). Vendored default lives next to `atmux`; falls back to system `tmux` on PATH (warn-once) when absent. Operators pinning a different tmux version (testing, local dev build, CI override) set this to win the resolution chain. |
+| `ATMUX_VOICE_TOKEN`                  | **(required)**                               | `atmux voice` shared secret, **≥32 chars** — the server refuses to start without one. Compared timing-safely *before* the WebSocket upgrade. Reaching that socket means acting as the driver, so treat it as a credential (ADR-272 §Security). |
+| `ATMUX_VOICE_ORIGINS`                | **(required)**                               | Comma-separated `Origin` allowlist — the CSRF defense, since browsers do not apply same-origin policy to WebSocket handshakes |
+| `ATMUX_VOICE_PROVIDER`               | `openai-realtime`                            | Realtime adapter: `openai-realtime` \| `gemini-live`. Resolved once at session construction — no hot-swap, no mid-session failover |
+| `ATMUX_VOICE_READONLY`               | (unset)                                      | `1`/`true` → expose ONLY the 10 read tools; the 4 messaging tools are absent from the catalog, not merely refused. **The posture the feature ships in** |
+| `ATMUX_VOICE_HOST` / `_PORT`         | `127.0.0.1` / `4390`                         | Bind address + port. Loopback by default so only nginx can reach it; binding `0.0.0.0` needs its own ADR |
+| `ATMUX_VOICE_MODEL`                  | per-provider default                         | Provider-model override (`gpt-realtime` for OpenAI) |
+| `ATMUX_VOICE_CONFIRM_TTL_MS`         | `120000`                                     | Lifetime of a single-use mutation-confirmation token (ADR-272 §D7) |
+| `ATMUX_VOICE_RESUME_GRACE_MS`        | `90000`                                      | How long a dropped phone's provider leg is parked before teardown (ADR-272 §D8) |
+
+Full voice reference — env vars, nginx, start/stop, and the V-1…V-18 acceptance
+checklist — in [`docs/RUNBOOK-voice.md`](docs/RUNBOOK-voice.md).
 
 ## Dependencies
 

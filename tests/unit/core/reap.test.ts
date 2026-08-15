@@ -39,6 +39,7 @@
 //     - empty path / "/" / $HOME / non-atmux-epics path refused
 
 import { describe, expect, test } from "bun:test";
+import type { GitSpawn } from "../../../src/abstractions/worktree.ts";
 import {
   makeReapZombieWorktree,
   type OrphanClass,
@@ -48,6 +49,7 @@ import {
   reapOrphans,
   type TopoOrphan,
 } from "../../../src/core/reap.ts";
+import { isCageActiveWith, isWorktreeActiveWith } from "../../../src/verbs/topo-io.ts";
 
 // ---------- Mock deps ----------
 
@@ -597,5 +599,102 @@ describe("unknown class", () => {
     expect(result.reaped).toEqual([]);
     expect(result.skipped).toEqual([]);
     expect(result.failed).toEqual([]);
+  });
+});
+
+// ---------- Gate-1 fail-CLOSED (ADR-253 §Defect 3) ----------
+//
+// These DO NOT stub the liveness function under test. They wire the
+// REAL production predicates (isCageActiveWith / isWorktreeActiveWith
+// from topo-io.ts) into the orchestrator's Gate-1 deps with a THROWING
+// probe, proving the end-to-end chain: probe throws ⇒ predicate returns
+// active (fail-closed) ⇒ orchestrator REFUSES ⇒ destructive primitive
+// NEVER runs. Pre-ADR-253 these probes caught the throw and returned
+// `false` (fail-OPEN), so a cage whose socket was momentarily
+// unreadable would have been kill-server'd.
+
+describe("Gate-1 fail-CLOSED with real liveness predicates (ADR-253)", () => {
+  test("throwing cage probe ⇒ refused, NOT reaped (no kill-server)", async () => {
+    const socket = "/tmp/atmux-atmux/epics/e-1/tmux-0/default";
+    const r = makeDeps();
+    // Real predicate over a throwing session-lister (socket unreadable).
+    r.deps.isCageActive = (s) => {
+      expect(s).toBe(socket);
+      return isCageActiveWith(async () => {
+        throw new Error("no server running on socket");
+      });
+    };
+    const orphans = [makeOrphan("cage-tmux-without-registry", "e-1")];
+    const result = await reapOrphans(orphans, makeOpts(r.deps));
+    expect(r.killCageServerCalls).toEqual([]);
+    expect(result.reaped).toEqual([]);
+    expect(result.refused).toHaveLength(1);
+    expect(result.refused[0]?.reason).toContain("gate-1-active-check");
+  });
+
+  test("empty cage session list ⇒ inactive ⇒ reaped (genuinely-clean signal)", async () => {
+    const r = makeDeps();
+    r.deps.isCageActive = () => isCageActiveWith(async () => []);
+    const orphans = [makeOrphan("cage-tmux-without-registry", "e-1")];
+    const result = await reapOrphans(orphans, makeOpts(r.deps));
+    expect(r.killCageServerCalls).toHaveLength(1);
+    expect(result.reaped).toHaveLength(1);
+  });
+
+  test("throwing worktree git probe ⇒ refused, NOT reaped (no rm)", async () => {
+    const wtPath = "/srv/atmux-epics/e-2";
+    const throwingGit: GitSpawn = async () => {
+      throw new Error("fatal: not a git repository");
+    };
+    const r = makeDeps();
+    r.deps.isWorktreeActive = (p) => {
+      expect(p).toBe(wtPath);
+      return isWorktreeActiveWith(throwingGit, p);
+    };
+    const orphans = [makeOrphan("worktree-without-cage", "e-2")];
+    const result = await reapOrphans(orphans, makeOpts(r.deps));
+    expect(r.rmZombieWorktreeCalls).toEqual([]);
+    expect(result.reaped).toEqual([]);
+    expect(result.refused).toHaveLength(1);
+    expect(result.refused[0]?.reason).toContain("gate-1-active-check");
+  });
+
+  test("git status rc!=0 ⇒ fail-closed active ⇒ worktree refused, NOT reaped", async () => {
+    const rcFailGit: GitSpawn = async (argv) => ({
+      cmd: "git",
+      argv,
+      exitCode: 128,
+      signalled: null,
+      stdout: "",
+      stderr: "fatal: not a git repository",
+      durationMs: 1,
+    });
+    const r = makeDeps();
+    r.deps.isWorktreeActive = (p) => isWorktreeActiveWith(rcFailGit, p);
+    const orphans = [makeOrphan("worktree-without-cage", "e-2")];
+    const result = await reapOrphans(orphans, makeOpts(r.deps));
+    expect(r.rmZombieWorktreeCalls).toEqual([]);
+    expect(result.refused).toHaveLength(1);
+    expect(result.refused[0]?.reason).toContain("gate-1-active-check");
+  });
+
+  test("clean + old worktree ⇒ inactive ⇒ reaped (genuinely-clean signal)", async () => {
+    const oldTs = Math.floor(new Date("2026-05-23T00:00:00.000Z").getTime() / 1000) - 60 * 60;
+    const cleanOldGit: GitSpawn = async (argv) => ({
+      cmd: "git",
+      argv,
+      exitCode: 0,
+      signalled: null,
+      stdout: argv.includes("log") ? `${oldTs}\n` : "",
+      stderr: "",
+      durationMs: 1,
+    });
+    const r = makeDeps();
+    r.deps.isWorktreeActive = (p) =>
+      isWorktreeActiveWith(cleanOldGit, p, () => new Date("2026-05-23T00:00:00.000Z"));
+    const orphans = [makeOrphan("worktree-without-cage", "e-2")];
+    const result = await reapOrphans(orphans, makeOpts(r.deps));
+    expect(r.rmZombieWorktreeCalls).toHaveLength(1);
+    expect(result.reaped).toHaveLength(1);
   });
 });

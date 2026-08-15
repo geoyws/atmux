@@ -54,6 +54,10 @@ function team(overrides: Partial<Team> = {}): Team {
       { name: "committer", role: "committer", lane: "misc" },
     ],
     autoMerge: { enabled: true },
+    // ADR-260: fixture opts into orchd mode so the downstream gates
+    // (autoMerge / HONKER / idempotence / spawn) stay exercisable —
+    // the manual-mode default short-circuits before all of them.
+    orchestration: { mode: "orchd" },
     ...overrides,
   } as Team;
 }

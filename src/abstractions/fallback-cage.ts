@@ -141,22 +141,6 @@ export class FallbackTierDroppedError extends Error {
   }
 }
 
-/** @deprecated ADR-050 v1 + Task t-706655ee scope reduction (2026-05-14)
- *  — Tier 4 (MiniMax) is permanently dropped, not "not GA". Use
- *  {@link FallbackTierDroppedError} instead. This class is retained
- *  for one release cycle so existing instanceof callers + tests in
- *  the wider codebase keep loading; new callers MUST NOT throw it. */
-export class Tier4NotAvailableError extends Error {
-  constructor() {
-    super(
-      "Tier 4 (MiniMax) CLI is permanently dropped per ADR-050 v1 + " +
-        "Task t-706655ee (2026-05-14 operator scope reduction). " +
-        "Use Tier 2 (Cursor) — the only accepted fallback in v1.",
-    );
-    this.name = "Tier4NotAvailableError";
-  }
-}
-
 /** Thrown when a Tier 3+ provisioned user is missing — operator must run
  *  scripts/provision-fallback-user.sh first per ADR-058 §D2. */
 export class FallbackUserMissingError extends Error {
@@ -509,9 +493,7 @@ export async function createFallbackCage(opts: CreateFallbackCageOpts): Promise<
   const tier = opts.tier;
   // ADR-050 v1 + Task t-706655ee — refuse-at-entry for dropped tiers.
   // No env override (operator's "permanently out" is binding); legacy
-  // MINIMAX_CLI_AVAILABLE env is intentionally ignored. The previous
-  // tier=4-only gate via Tier4NotAvailableError is superseded by this
-  // tier!=2 gate.
+  // MINIMAX_CLI_AVAILABLE env is intentionally ignored.
   if (tier !== 2) {
     throw new FallbackTierDroppedError(tier);
   }

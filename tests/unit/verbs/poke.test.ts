@@ -2228,8 +2228,8 @@ describe("poke() — public verb", () => {
       expect(sent.filter((s) => s.template === "whip-overdue").length).toBe(2);
     });
 
-    test("auto-preclear regression: 12 consecutive ticks with identical hash → 1 emit", async () => {
-      // Sopx-driver 2026-05-08 17:07 MYT bundle: auto-preclear-failed
+    test("auto-handoff regression: 12 consecutive ticks with identical hash → 1 emit", async () => {
+      // Sopx-driver 2026-05-08 17:07 MYT bundle: auto-handoff-failed
       // re-fires every 5min with identical bullet text. Pin: 12 ticks
       // (1h of 5-min ticks) with same hash → exactly 1 emit per template.
       await seedTeam(atmuxDir, {

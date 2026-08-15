@@ -93,11 +93,12 @@ export type CockpitTuiOverrides = z.infer<typeof CockpitTuiOverrides>;
  *     expected, presence is benign. Medic skips socket-presence checks
  *     entirely (green).
  *   - `paused` — the team is intentionally down today, expected to be
- *     rebuilt on the next `atmux cockpit rebuild`. Medic shows a
+ *     rebuilt on the next `atmux cockpit reconcile`. Medic shows a
  *     yellow / informational row but does NOT escalate.
  *
- * Consumer logic lives in `src/core/superdoctor-cage-verdict.ts` —
- * `verdictForCage(cageMode, sessionAlive) → CageVerdict`.
+ * NOTE: this field is currently inert — no consumer reads it (the
+ * former consumer was removed in the ADR-266 sweep). Kept so existing
+ * cockpit.json files carrying `cageMode` still parse.
  */
 export const CockpitTeamCageMode = z.enum(["autonomous", "direct", "paused"]);
 export type CockpitTeamCageMode = z.infer<typeof CockpitTeamCageMode>;
@@ -171,28 +172,10 @@ export interface SuperdriverSessionT {
   tuiOverrides?: CockpitTuiOverrides;
 }
 
-export interface SuperdoctorSessionT {
-  type: "superdoctor";
-  name: string;
-  enabled: boolean;
-  prefixChain?: string[];
-  claudeAccount?: CockpitClaudeAccount;
-  tuiOverrides?: CockpitTuiOverrides;
-  /** t-22453c1e: parity with legacy `CockpitSuperdoctor.autoStart` so the
-   *  migration shim's spread-into-sessions[] doesn't strip a field the
-   *  reconcile-side check still reads. */
-  autoStart?: boolean;
-  /** t-22453c1e: parity with legacy `CockpitSuperdoctor.autoStartTimeoutSec`. */
-  autoStartTimeoutSec?: number;
-}
-
-/** Cockpit window 2 (post-ADR-133) — fleet self-healing role. Same
- *  shape as `SuperdoctorSessionT` (ADR-133 §D1 is naming-only; design
- *  decisions in ADR-077 are canonical under the new name). The
- *  loader's enrichment pass coerces legacy `superdoctor` entries to
- *  `medic` semantics so callers reading `cockpit.medic` see a
- *  consistent shape regardless of which discriminator the operator's
- *  cockpit.json used. */
+/** Cockpit window 2 — fleet self-healing role (ADR-077 design, renamed
+ *  from `superdoctor` per ADR-133; the legacy `superdoctor` discriminator
+ *  was removed per ADR-266 §D2 — configs still carrying it fail at load
+ *  with an actionable error). */
 export interface MedicSessionT {
   type: "medic";
   name: string;
@@ -200,14 +183,15 @@ export interface MedicSessionT {
   prefixChain?: string[];
   claudeAccount?: CockpitClaudeAccount;
   tuiOverrides?: CockpitTuiOverrides;
+  /** t-22453c1e: parity with the top-level `CockpitMedic.autoStart` so
+   *  the legacy-shape lift's spread-into-sessions[] doesn't strip a
+   *  field the reconcile-side check still reads. */
+  autoStart?: boolean;
+  /** t-22453c1e: parity with the top-level `CockpitMedic.autoStartTimeoutSec`. */
+  autoStartTimeoutSec?: number;
 }
 
-export type CockpitSessionT =
-  | TeamSessionT
-  | EpicTeamSessionT
-  | SuperdriverSessionT
-  | SuperdoctorSessionT
-  | MedicSessionT;
+export type CockpitSessionT = TeamSessionT | EpicTeamSessionT | SuperdriverSessionT | MedicSessionT;
 
 // ---------- Concrete leaf schemas ----------
 
@@ -242,25 +226,14 @@ export const SuperdriverSession: z.ZodType<SuperdriverSessionT> = z.lazy(() =>
   }).strict(),
 ) as z.ZodType<SuperdriverSessionT>;
 
-/** Cockpit window 2 — the ADR-077 superdoctor role (legacy literal,
- *  ADR-133 renamed to `medic`). Singleton in practice (matches the
- *  legacy `Cockpit.superdoctor` shape) but lifted into `sessions[]`
- *  per ADR-089. Loader coerces this entry to `medic` semantics during
- *  the deprecation window. */
-export const SuperdoctorSession: z.ZodType<SuperdoctorSessionT> = z.lazy(() =>
-  CockpitSessionBase.extend({
-    type: z.literal("superdoctor"),
-    autoStart: z.boolean().optional(),
-    autoStartTimeoutSec: z.number().int().positive().optional(),
-  }).strict(),
-) as z.ZodType<SuperdoctorSessionT>;
-
-/** Cockpit window 2 (post-ADR-133) — canonical fleet self-healing
- *  role. Same shape as `SuperdoctorSession`; discriminator renamed
- *  per ADR-133 §D1. */
+/** Cockpit window 2 — canonical fleet self-healing role (ADR-077 design;
+ *  discriminator renamed from `superdoctor` to `medic` per ADR-133 §D1;
+ *  the legacy `SuperdoctorSession` leaf was removed per ADR-266 §D2). */
 export const MedicSession: z.ZodType<MedicSessionT> = z.lazy(() =>
   CockpitSessionBase.extend({
     type: z.literal("medic"),
+    autoStart: z.boolean().optional(),
+    autoStartTimeoutSec: z.number().int().positive().optional(),
   }).strict(),
 ) as z.ZodType<MedicSessionT>;
 
@@ -272,16 +245,14 @@ export const MedicSession: z.ZodType<MedicSessionT> = z.lazy(() =>
  *  shape is correct; TS can't infer the recursive `CockpitSessionT`
  *  through `z.lazy` without help.
  *
- *  Discriminator literals retained for back-compat during the
- *  ADR-133 deprecation window: `superdoctor` + `medic` both accepted.
- *  The loader coerces `superdoctor` entries to `medic` semantics so
- *  duck-typed consumers reading `cockpit.medic` see one shape. */
+ *  Discriminator literals: `superdoctor` was accepted during the
+ *  ADR-133 deprecation window; that window closed and the literal was
+ *  removed per ADR-266 §D2 — only `medic` parses now. */
 export const CockpitSession = z.lazy(() =>
   z.discriminatedUnion("type", [
     TeamSession as unknown as z.ZodObject,
     EpicTeamSession as unknown as z.ZodObject,
     SuperdriverSession as unknown as z.ZodObject,
-    SuperdoctorSession as unknown as z.ZodObject,
     MedicSession as unknown as z.ZodObject,
   ]),
 ) as unknown as z.ZodType<CockpitSessionT>;
@@ -312,22 +283,14 @@ export const CockpitTeam = z
 export type CockpitTeam = z.infer<typeof CockpitTeam>;
 
 /**
- * Legacy singleton superdoctor — pre-ADR-089 + pre-ADR-133. Synthesized
- * by `loadCockpit` from the first `type: "superdoctor"` OR `type: "medic"`
- * entry in `sessions[]` (post-ADR-133 the loader coerces both to
- * medic-shape; this type aliases continue to surface for back-compat).
- *
- * @deprecated v2-bump per ADR-133. Drop in favour of `MedicSession` from
- *   `sessions[]` OR read `cockpit.medic` directly — same Zod shape,
- *   canonical name. The legacy `cockpit.superdoctor` key is accepted
- *   during the one-release deprecation window; loader coerces it to
- *   `medic` semantics with a stderr warning. Once the window closes
- *   (v2 schema bump), schema-load on a config carrying `superdoctor`
- *   soft-fails with an actionable error pointing at ADR-133. This
- *   export stays through the window so existing consumers (status.ts,
- *   audit.ts) don't churn.
+ * ADR-133: canonical name for the cockpit health-check singleton (was
+ * `CockpitSuperdoctor` pre-ADR-133; the deprecated alias + the legacy
+ * `cockpit.superdoctor` key were removed per ADR-266 §D2 — configs still
+ * carrying a `superdoctor` block fail at load with an actionable error
+ * naming ADR-266). Operator-visible config key is `cockpit.medic`.
+ * New code reads `cockpit.medic` directly.
  */
-export const CockpitSuperdoctor = z
+export const CockpitMedic = z
   .object({
     enabled: z.boolean().default(false),
     claudeAccount: CockpitClaudeAccount.optional(),
@@ -348,18 +311,6 @@ export const CockpitSuperdoctor = z
     autoStartTimeoutSec: z.number().int().positive().optional(),
   })
   .strict();
-export type CockpitSuperdoctor = z.infer<typeof CockpitSuperdoctor>;
-
-/**
- * ADR-133: new canonical name for the cockpit health-check singleton.
- * Same shape as the deprecated {@link CockpitSuperdoctor} — the rename
- * is naming-only at the config + process surface to avoid collision
- * with the `atmux doctor` verb. Operator-visible config key is
- * `cockpit.medic`. Loader coerces legacy `cockpit.superdoctor` to
- * `medic` semantics with a stderr warning during the deprecation
- * window per ADR-133 §D2.
- */
-export const CockpitMedic = CockpitSuperdoctor;
 export type CockpitMedic = z.infer<typeof CockpitMedic>;
 
 /** ADR-086 §Phase 1.5: verdict literal keys for the per-verdict dedup
@@ -415,16 +366,14 @@ export const Cockpit = z
      *  `1` = recursive native; `2+` reserved for shim removal. */
     schemaVersion: z.number().int().default(1),
     /** tmux session name on the operator's default socket. Default
-     *  `atmux_cockpit` per ADR-135 (was `atmux_teams` pre-ADR-135 per
-     *  ADR-046 / ADR-050). Legacy literal `atmux_teams` is still
-     *  accepted at parse time during the deprecation window — the
-     *  string-level value passes Zod validation unchanged; the
-     *  deprecation warning is emitted by `loadCockpit` when the field
-     *  matches the legacy literal, and `cockpit rebuild` applies the
-     *  in-place `tmux rename-session atmux_teams → atmux_cockpit`
-     *  shim (ADR-135 §D4). After one semver bump, the legacy literal
-     *  becomes a hard error pointing at ADR-135. */
-    cockpitSession: z.string().min(1).default("atmux_cockpit"),
+     *  `atx` per ADR-264 (was `atmux_cockpit` per ADR-135, `atmux_teams`
+     *  pre-ADR-135). Both legacy literals are still accepted at parse
+     *  time during the deprecation window — the string-level value
+     *  passes Zod validation unchanged; the deprecation warning is
+     *  emitted by `loadCockpit` when the field matches a legacy
+     *  literal, and `cockpit reconcile` applies the in-place
+     *  `tmux rename-session <legacy> → atx` shim (ADR-264 §D4). */
+    cockpitSession: z.string().min(1).default("atx"),
     /** ADR-089 §Pillar 1: recursive session tree. DFS-ordered; window
      *  order matches DFS traversal. */
     sessions: z.array(CockpitSession).default([]),
@@ -437,26 +386,11 @@ export const Cockpit = z
      *  should walk `sessions[]` directly.
      *  @deprecated v2-bump per ADR-089 §F. */
     teams: z.array(CockpitTeam).optional(),
-    /** Legacy singleton superdoctor — populated by `loadCockpit`
-     *  post-parse from the first `type: "superdoctor"` entry in
-     *  `sessions[]`. New code should walk `sessions[]` directly or read
-     *  `cockpit.medic` (canonical alias per ADR-133).
-     *
-     *  ADR-133 deprecation window: when `superdoctor` is present and
-     *  `medic` is not, the loader coerces this to medic semantics and
-     *  emits a deprecation warning. When both are present, `medic`
-     *  wins (loader warns + ignores `superdoctor`). Once the window
-     *  closes (v2 schema bump), this field is removed; configs still
-     *  carrying `superdoctor` fail-soft with an actionable error
-     *  pointing at ADR-133.
-     *
-     *  @deprecated v2-bump per ADR-089 §F + ADR-133. */
-    superdoctor: CockpitSuperdoctor.optional(),
     /** ADR-133 canonical singleton — fleet self-healing role (was
-     *  `superdoctor`). Same struct as `superdoctor`; loader synthesizes
-     *  this from either the `medic` block (canonical) or the legacy
-     *  `superdoctor` block (deprecated). New code reads `cockpit.medic`
-     *  directly. */
+     *  `superdoctor` pre-ADR-133; the legacy `superdoctor` key was
+     *  removed per ADR-266 §D2 — configs still carrying it fail at
+     *  load with an actionable error naming ADR-266). New code reads
+     *  `cockpit.medic` directly. */
     medic: CockpitMedic.optional(),
     /** Optional ADR-086 pulse probe tunables. Omit for defaults. */
     pulse: CockpitPulse.optional(),

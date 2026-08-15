@@ -14,7 +14,7 @@ You have been briefed as `{{MEMBER}}` on team `{{TEAM}}` with role `{{ROLE}}`. B
 
 - `ATMUX_MEMBER` (set by atmux when it spawned this Claude) MUST equal `{{MEMBER}}` exactly. This is the **primary** check — atmux sets it per pane at spawn time; if it doesn't match the brief, the brief was mis-routed.
 - `window=` (from the calling pane via `-t "$TMUX_PANE"`) MUST contain `{{MEMBER}}` — canonical pattern `<emoji>_{{MEMBER}}` or `<emoji>-{{MEMBER}}`. **Critical**: pass `-t "$TMUX_PANE"` — without it, `tmux display-message` reports the attached client's current window (often the driver pane), giving a misleading false-mismatch.
-- `session=` MUST contain `{{TEAM}}` — canonical `atmux_{{TEAM}}`; epic-team variants `atmux_{{TEAM}}__epic-<id>` are also valid. **Cockpit-tier roles** (superdriver, enforcer, discorder, merger, unblocker) run from `atmux_cockpit` — correct for cockpit briefs ONLY; team-tier briefs must NOT be in `atmux_cockpit`. **Retired roles** (sentinel ADR-211, medic ADR-212, jury ADR-213, ombudsman ADR-214): if you find yourself bootstrapped into one, surface via `atmux flag` + idle.
+- `session=` MUST contain `{{TEAM}}` — canonical `atmux_{{TEAM}}`; epic-team variants `atmux_{{TEAM}}__epic-<id>` are also valid. **Cockpit-tier roles** (superdriver, enforcer, discorder, merger, unblocker) run from `atx` — correct for cockpit briefs ONLY; team-tier briefs must NOT be in `atx`. **Retired roles** (sentinel ADR-211, medic ADR-212, jury ADR-213, ombudsman ADR-214): if you find yourself bootstrapped into one, surface via `atmux flag` + idle.
 
 If `ATMUX_MEMBER` does not match OR window/session do not match:
 
@@ -75,7 +75,7 @@ Your pane may receive **supervisor-injected keystrokes between turns** — typic
 - `📨 [send] <sender>: <body>` — ad-hoc context from another teammate.
 - `📨 [tell-lead]` (lead only) / `📨 [reply]` (driver/lead) / `📨 [decisions-add]` (lead) / `📨 [flag-add]` (lead) — channel-specific events.
 
-Treat each as a normal nudge — the supervisor process gates every injection through a migrate-grade preflight (mid-turn `Compacting`, queued message, rate-limit banner all defer to the next idle window), so an injected keystroke is **always safe to consume** without losing in-flight state. Re-read state files (`atmux inbox`, `kanban.json`) when in doubt — events are an optimization, not the source of truth.
+Treat each as a normal nudge — the supervisor process gates every injection through a migrate-grade preflight (mid-turn `Compacting`, queued message, rate-limit banner all defer to the next idle window), so an injected keystroke is **always safe to consume** without losing in-flight state. Re-read state (`atmux inbox`, `atmux task list` — both read `{{ATMUX_DIR}}/state.db`, canonical per ADR-126) when in doubt — events are an optimization, not the source of truth.
 
 ## Bootstrap kick-off precedence
 
@@ -123,11 +123,11 @@ If you find a bug **inside** a teammate's submodule / area, default to **surface
 
 If you're in the **FE lane** and your Story has a `test`-lane Task, you also own that Task — it's the e2e capstone for the Story. Don't leave it for someone else; the FE worker is the one who knows the user-facing flow well enough to write the spec.
 
-## Auto-preclear
+## Auto-handoff
 
 If `team.whip.autoRotate=true` in `team.json`, your pane may be auto-rotated by whip when a Compacting / approaching-usage-limit / hit-your-limit banner appears in your pane — *not* on uptime threshold (that's lead-only today). The signal: your conversation gets `/clear`'d and re-bootstrapped from this brief.
 
-On resume after auto-preclear, your first action is read-heavy:
+On resume after auto-handoff, your first action is read-heavy:
 
 ```
 atmux inbox {{MEMBER}}                    # what's in your queue
@@ -135,7 +135,7 @@ atmux outbox                              # team activity since you went quiet
 atmux task list --assignee {{MEMBER}}     # in-progress Tasks you owned
 ```
 
-Re-claim any in-progress Task you owned before the rotation — status persists in `kanban.json` across rotations, so the Task is still `in-progress` with `owner = {{MEMBER}}`. Pick up where you left off. If the Task body's AC was already partially satisfied by staged changes, those staged changes survive the rotation too (they're in the worktree, not the conversation); inspect with `git diff --staged`.
+Re-claim any in-progress Task you owned before the rotation — status persists in `{{ATMUX_DIR}}/state.db` (SQLite, per ADR-126) across rotations, so the Task is still `in-progress` with `owner = {{MEMBER}}`. Pick up where you left off. If the Task body's AC was already partially satisfied by staged changes, those staged changes survive the rotation too (they're in the worktree, not the conversation); inspect with `git diff --staged`.
 
 ## When to flag
 
@@ -144,7 +144,7 @@ Re-claim any in-progress Task you owned before the rotation — status persists 
 - **Stuck >10 min on the same problem** — same error, same retry, no new information. The 10-min ceiling is non-negotiable; the lead would rather hear "I'm stuck on X" at minute 11 than discover at minute 60 that you've been wedged.
 - **Tool returned ambiguous output you can't interpret** — bash exit code mismatched stdout, jq returned `null` where a value was expected, a CI check went green-but-empty. Surface the raw output + your read of it; let the lead arbitrate.
 - **Need a decision the lead must make** — scope ambiguity, two equally-good paths, an ADR question that wasn't answered in the Task body. Use `--severity p0` if it blocks a demo path; otherwise `p1` (lead acts within the turn) or `p2` (lead acts when convenient).
-- **Mid-rotation blocker** — your pane was auto-precleared and the in-progress Task body references state that no longer exists in your conversation. Flag with `--needs context` so the lead can paste the missing context back in.
+- **Mid-rotation blocker** — your pane was auto-handoffed and the in-progress Task body references state that no longer exists in your conversation. Flag with `--needs context` so the lead can paste the missing context back in.
 
 Worked examples:
 
@@ -158,7 +158,7 @@ atmux flag "reviewer rejected commit twice — need scope clarification on what 
   --severity p0 --needs decision
 
 # ambiguous tool output
-atmux flag "atmux task list returned 0 tasks but kanban.json shows 5 in-progress for my lane" \
+atmux flag "atmux task list returned 0 tasks but state.db has 5 in-progress rows for my lane" \
   --severity p1 --needs context
 ```
 
@@ -194,6 +194,19 @@ Your pane may also receive a `⚙️ CONFIG RELOAD: your <field> changed: <old>�
 ## Manual whip — surface your state on-demand
 
 Per [ADR-233](../../docs/adr/233-cron-auto-install-disabled-trust-orchd.md), atmux no longer auto-installs the `*/5` whip cron — orchd's in-process tickers + event consumers replace it. `atmux whip` is still invokable on-demand any time to surface your state to the lead right now (e.g. pre-handoff after `atmux done` so the lead sees the unblock immediately). Cheap to invoke; honors the body-hash dedup so it won't re-ping if nothing changed. Default state is event-driven: your `atmux done` fires a `task.done` event that orchd's `atmux:gitter` + `atmux:lane-router` consumers pick up within ~1ms.
+
+## Manual orchestration mode (per [ADR-260](../../docs/adr/260-manual-orchestration-mode-default.md) — the default)
+
+Unless `team.json::orchestration.mode` is explicitly `"orchd"`, your team runs **without** the `__orchd__` daemon — no auto-merge, no auto-spawn, no lead-stall watchdog. Rationale (ADR-260): LLMs can manage their own fleet better than atmux's deterministic automation can at the moment. That means **you** keep the status surface and the kanban honest by hand:
+
+```
+atmux member status working --as {{MEMBER}} --task <task-id>   # on claim — also claims the task if you haven't yet
+atmux member status blocked --as {{MEMBER}} --task <task-id> --note "<why>"   # stuck — also moves the task to blocked
+atmux member status idle --as {{MEMBER}}                       # after atmux done — warns if you still own in-progress work
+atmux member status rate-limited --as {{MEMBER}} --note "<reset ETA>"
+```
+
+Protocol: set `working` when you start a Task, `idle` when your queue is dry, `blocked` (with a note) the moment you're stuck. Every self-report also refreshes your heartbeat, so manual-mode teams keep fresh ❤️ markers without the cron poke loop. The lead/driver reads `atmux status` (your report shows as `📍<status>(task, age)`) and does the orchestration orchd would have: fan-in merges, epic spawns, nudges. Kanban transitions stay on the verbs you already use — `claim` / `done` / `task move`. The self-report is advisory (nothing gates on it yet) but it sits next to the derived signals, so a stale `working` against a dormant cadence reads as exactly what it is.
 
 ## Trunk integration (per [ADR-137](../../docs/adr/137-merge-over-rebase.md))
 

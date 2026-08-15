@@ -2,7 +2,7 @@
 
 > **⚠ SUPERSEDED by [ADR-233](233-cron-auto-install-disabled-trust-orchd.md) — 2026-05-24. Read ADR-233 instead; this file is kept for trace only.**
 
-**Status:** accepted
+**Status:** superseded by [ADR-233](233-cron-auto-install-disabled-trust-orchd.md) (2026-05-24). Was: accepted
 **Date:** 2026-05-12
 **Owner:** parity-cron-impl
 

@@ -43,7 +43,7 @@ import { join } from "node:path";
 import type { CursorInvokeResult } from "../../src/abstractions/cursor.ts";
 import type { DiscordSendOpts } from "../../src/abstractions/discord.ts";
 import { atomicWrite } from "../../src/abstractions/fs.ts";
-import { makeFixCronPollutionRecipe } from "../../src/core/cursor-recipes/fix-cron-pollution.ts";
+import { fixCronPollutionRecipe } from "../../src/core/cursor-recipes/fix-cron-pollution.ts";
 import { makeFixSupervisorMissingRecipe } from "../../src/core/cursor-recipes/fix-supervisor-missing.ts";
 import { fixTeamJsonSchemaDriftRecipe } from "../../src/core/cursor-recipes/fix-team-json-schema-drift.ts";
 import type { CursorJob } from "../../src/core/cursor-recipes/types.ts";
@@ -81,19 +81,11 @@ function driftedTeamJson(): string {
   });
 }
 
-function malformedCron(): string {
-  return [
-    `# >>> atmux:team=${TEAM} — managed by atmux start; do not edit by hand`,
-    `*/5 * * * * /usr/local/bin/atmux whip`,
-    `# <<< atmux:team=${TEAM}`,
-    `# <<< atmux:team=${TEAM}`, // duplicate end marker → triggers detect
-  ].join("\n");
-}
 
 interface FakeCursorOpts {
   /** When true, return a non-empty patch touching team.json. */
   patchTeamJson?: boolean;
-  /** When true, return an empty patch (matches cron + supervisor recipes). */
+  /** When true, return an empty patch (matches the supervisor recipe). */
   emptyPatch?: boolean;
 }
 
@@ -181,17 +173,17 @@ describe("e2e cursor-self-heal pass walk (ADR-055 §D2)", () => {
       reviewerName: "reviewer",
       recipes: [
         fixTeamJsonSchemaDriftRecipe,
-        makeFixCronPollutionRecipe({
-          readCrontab: async () => null, // no crontab installed
-          atmuxBin: "/usr/local/bin/atmux",
-        }),
+        // ADR-233 §retired — cron-pollution self-heal is now a no-op
+        // shim (detect always returns null). Still registered to assert
+        // the orchestrator skips it cleanly.
+        fixCronPollutionRecipe,
         makeFixSupervisorMissingRecipe({
           listWindows: async () => null, // tmux unreachable
         }),
       ],
       enabledRecipeIds: [
         "fix:team-json-schema-drift",
-        "fix:cron-pollution",
+        "fix-cron-pollution",
         "fix:supervisor-missing",
       ],
       send,
@@ -370,7 +362,7 @@ describe("e2e cursor-self-heal pass walk (ADR-055 §D2)", () => {
 
   // ---------- Beat 5: multi-recipe drift in one pass ----------
 
-  test("beat 5 — all 3 recipes fire in a single pass; state + dispatches all land", async () => {
+  test("beat 5 — the 2 live recipes fire in a single pass; retired cron recipe skips; state + dispatches land", async () => {
     // Drift in team.json.
     await writeFile(join(atmuxDir, "team.json"), driftedTeamJson());
 
@@ -383,10 +375,9 @@ describe("e2e cursor-self-heal pass walk (ADR-055 §D2)", () => {
       reviewerName: "reviewer",
       recipes: [
         fixTeamJsonSchemaDriftRecipe,
-        makeFixCronPollutionRecipe({
-          readCrontab: async () => malformedCron(),
-          atmuxBin: "/usr/local/bin/atmux",
-        }),
+        // ADR-233 §retired — no-op shim; detect returns null so this
+        // recipe is skipped (skipped-no-detect), never attempted.
+        fixCronPollutionRecipe,
         makeFixSupervisorMissingRecipe({
           // Session exists, lead present, supervisor missing.
           listWindows: async () => ["lead", "alpha"],
@@ -394,7 +385,7 @@ describe("e2e cursor-self-heal pass walk (ADR-055 §D2)", () => {
       ],
       enabledRecipeIds: [
         "fix:team-json-schema-drift",
-        "fix:cron-pollution",
+        "fix-cron-pollution",
         "fix:supervisor-missing",
       ],
       send,
@@ -402,7 +393,7 @@ describe("e2e cursor-self-heal pass walk (ADR-055 §D2)", () => {
       invokeCursorFn: async (job: CursorJob): Promise<CursorInvokeResult> => {
         // For the team.json recipe, fix the file on disk so verify
         // sees a clean post-cursor state. For the empty-allowlist
-        // recipes (cron + supervisor), return empty patch.
+        // supervisor recipe, return empty patch.
         const isTeamJsonRecipe = job.fileAllowlist.includes("team.json");
         if (isTeamJsonRecipe) {
           await writeFile(join(atmuxDir, "team.json"), validTeamJson());
@@ -429,21 +420,24 @@ describe("e2e cursor-self-heal pass walk (ADR-055 §D2)", () => {
       },
     });
 
-    expect(summary.attempted).toBe(3);
-    expect(summary.succeeded).toBe(3);
+    // Only the 2 live recipes fire; the retired cron recipe skips.
+    expect(summary.attempted).toBe(2);
+    expect(summary.succeeded).toBe(2);
     expect(summary.failed).toBe(0);
+    expect(summary.skipped).toBe(1); // fix-cron-pollution skipped-no-detect
 
-    // 6 Discord pings: 3 attempts + 3 results (one per recipe).
-    expect(sends.filter((s) => s.template === "whip-self-heal-attempt")).toHaveLength(3);
-    expect(sends.filter((s) => s.template === "whip-self-heal-result")).toHaveLength(3);
+    // 4 Discord pings: 2 attempts + 2 results (one per firing recipe).
+    expect(sends.filter((s) => s.template === "whip-self-heal-attempt")).toHaveLength(2);
+    expect(sends.filter((s) => s.template === "whip-self-heal-result")).toHaveLength(2);
 
-    // Dedup state has all 3 recipe ids.
+    // Dedup state has the 2 firing recipe ids; the retired cron recipe
+    // never fired so it records no dedup stamp.
     const persisted = await loadSelfHealState(atmuxDir);
     expect(persisted["fix:team-json-schema-drift"]).toBe(NOW);
-    expect(persisted["fix:cron-pollution"]).toBe(NOW);
+    expect(persisted["fix-cron-pollution"]).toBeUndefined();
     expect(persisted["fix:supervisor-missing"]).toBe(NOW);
 
-    // 3 reviewer Tasks dispatched.
+    // 2 reviewer Tasks dispatched.
     const kanbanText = await readFile(join(atmuxDir, "kanban.json"), "utf8");
     const kanban = JSON.parse(kanbanText);
     const tasks = kanban.tasks as Array<{
@@ -452,7 +446,7 @@ describe("e2e cursor-self-heal pass walk (ADR-055 §D2)", () => {
       priority: number | null;
     }>;
     const reviewTasks = tasks.filter((t) => t.subject.startsWith("cursor self-heal review:"));
-    expect(reviewTasks).toHaveLength(3);
+    expect(reviewTasks).toHaveLength(2);
     for (const t of reviewTasks) {
       expect(t.owner).toBe("reviewer");
       expect(t.priority).toBe(2);

@@ -2449,7 +2449,7 @@ async function emitFindings(
   // "tick happened". Soft / informational signals ride here. Same
   // dedup gate — counts are the body, so identical counts + identical
   // info bullets across ticks → suppress (e.g., 12 consecutive
-  // auto-preclear-failed ticks → 1 emit + 1 hourly heartbeat).
+  // auto-handoff-failed ticks → 1 emit + 1 hourly heartbeat).
   {
     const bullets = [
       bullet80(

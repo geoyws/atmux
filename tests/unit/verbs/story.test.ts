@@ -19,12 +19,14 @@ import {
   storyNextState,
   storySignoff,
   storyUnsignoff,
+  updateStory,
 } from "../../../src/core/story.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
 import {
   parseAddArgs,
   parseListArgs,
   parseSignoffFlags,
+  parseUpdateFlags,
   story,
 } from "../../../src/verbs/story.ts";
 
@@ -1169,5 +1171,170 @@ describe("ADR-175 rentx E1 capstone — 4 trunk-direct story shapes", () => {
     await expect(advanceStory(atmuxDir, sid, "merging")).rejects.toThrow(
       /trunk-direct.*has no merging phase/,
     );
+  });
+});
+
+// ---------- e-407c6d53: story update — body / acceptanceCriteria edit ----------
+
+describe("parseUpdateFlags", () => {
+  test("empty argv → all undefined", () => {
+    const f = parseUpdateFlags([]);
+    expect(f.body).toBeUndefined();
+    expect(f.ac).toBeUndefined();
+    expect(f.teamDir).toBeUndefined();
+  });
+
+  test("--body + --ac + --team-dir captured", () => {
+    const f = parseUpdateFlags(["--body", "new body", "--ac", "user can Y", "--team-dir", "/x"]);
+    expect(f.body).toBe("new body");
+    expect(f.ac).toBe("user can Y");
+    expect(f.teamDir).toBe("/x");
+  });
+
+  test("empty-string values are captured (clear semantics, not dropped)", () => {
+    const f = parseUpdateFlags(["--body", "", "--ac", ""]);
+    expect(f.body).toBe("");
+    expect(f.ac).toBe("");
+  });
+
+  test("dangling --body → UsageError", () => {
+    expect(() => parseUpdateFlags(["--body"])).toThrow(UsageError);
+  });
+
+  test("dangling --ac → UsageError", () => {
+    expect(() => parseUpdateFlags(["--ac"])).toThrow(UsageError);
+  });
+
+  test("unknown flag → UsageError", () => {
+    expect(() => parseUpdateFlags(["--bogus", "x"])).toThrow(UsageError);
+  });
+});
+
+describe("updateStory (core)", () => {
+  test("sets body + acceptanceCriteria on an existing story", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    await updateStory(atmuxDir, sid, { body: "edited body", acceptanceCriteria: "user can Z" });
+    const row = getStoryRow(sid);
+    expect(row?.body).toBe("edited body");
+    expect(row?.acceptanceCriteria).toBe("user can Z");
+  });
+
+  test("overwrites a previously-set body verbatim", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid, body: "original" });
+    await updateStory(atmuxDir, sid, { body: "rewritten" });
+    expect(getStoryRow(sid)?.body).toBe("rewritten");
+  });
+
+  test("null clears the body field (value → null round-trip)", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid, body: "to be cleared" });
+    expect(getStoryRow(sid)?.body).toBe("to be cleared");
+    await updateStory(atmuxDir, sid, { body: null });
+    expect(getStoryRow(sid)?.body ?? null).toBeNull();
+  });
+
+  test("null clears acceptanceCriteria field", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid, acceptanceCriteria: "ac here" });
+    await updateStory(atmuxDir, sid, { acceptanceCriteria: null });
+    expect(getStoryRow(sid)?.acceptanceCriteria ?? null).toBeNull();
+  });
+
+  test("undefined opt leaves the field untouched (no-change)", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, {
+      title: "S",
+      epic: eid,
+      body: "keep body",
+      acceptanceCriteria: "keep ac",
+    });
+    // Only update body; acceptanceCriteria opt omitted → must persist.
+    await updateStory(atmuxDir, sid, { body: "changed" });
+    const row = getStoryRow(sid);
+    expect(row?.body).toBe("changed");
+    expect(row?.acceptanceCriteria).toBe("keep ac");
+  });
+
+  test("does not flip story status / other fields", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid, mergeMode: "trunk-direct" });
+    await advanceStory(atmuxDir, sid, "ready");
+    await updateStory(atmuxDir, sid, { body: "mid-flight edit" });
+    const row = getStoryRow(sid);
+    expect(row?.status).toBe("ready");
+    expect(row?.title).toBe("S");
+    expect(row?.epic).toBe(eid);
+    expect(row?.mergeMode).toBe("trunk-direct");
+    expect(row?.body).toBe("mid-flight edit");
+  });
+
+  test("missing story → ConfigError", async () => {
+    await expect(
+      updateStory(atmuxDir, "s-deadbeef", { body: "x" }),
+    ).rejects.toThrow(ConfigError);
+  });
+
+  test("no state.db → ConfigError", async () => {
+    const freshDir = join(teamDir, "fresh-no-db-update");
+    await mkdir(freshDir, { recursive: true });
+    await expect(
+      updateStory(freshDir, "s-anything", { body: "x" }),
+    ).rejects.toThrow(ConfigError);
+  });
+});
+
+describe("story verb — update dispatch", () => {
+  test("story update missing id → UsageError", async () => {
+    await expect(story(["update", "--team-dir", teamDir])).rejects.toThrow(UsageError);
+  });
+
+  test("story update with no flags → UsageError (nothing to update)", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    await expect(story(["update", sid, "--team-dir", teamDir])).rejects.toThrow(
+      /at least one of --body \/ --ac/,
+    );
+  });
+
+  test("story update applies body + ac via verb path", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid });
+    const { out, result } = await captureStdout(() =>
+      story([
+        "update",
+        sid,
+        "--body",
+        "verb body",
+        "--ac",
+        "verb ac",
+        "--team-dir",
+        teamDir,
+      ]),
+    );
+    expect(result).toBe(0);
+    expect(out).toContain(`story ${sid} updated`);
+    const row = getStoryRow(sid);
+    expect(row?.body).toBe("verb body");
+    expect(row?.acceptanceCriteria).toBe("verb ac");
+  });
+
+  test("story update --body '' clears via verb path", async () => {
+    const eid = await addEpic(atmuxDir, { title: "E" });
+    const sid = await addStory(atmuxDir, { title: "S", epic: eid, body: "had body" });
+    const rc = await story(["update", sid, "--body", "", "--team-dir", teamDir]);
+    expect(rc).toBe(0);
+    expect(getStoryRow(sid)?.body ?? null).toBeNull();
+  });
+
+  test("story update missing story → ConfigError via verb path", async () => {
+    await expect(
+      story(["update", "s-bogus", "--body", "x", "--team-dir", teamDir]),
+    ).rejects.toThrow(ConfigError);
+  });
+
+  test("unknown verb hint mentions update", async () => {
+    await expect(story(["bogus", "--team-dir", teamDir])).rejects.toThrow(/update/);
   });
 });

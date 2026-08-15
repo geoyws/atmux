@@ -1,0 +1,188 @@
+# ADR-272 / docs/RUNBOOK-voice.md §5 — nginx vhost for `atmux voice`, phase O1.
+#
+# TWO FILES ARE SHOWN BELOW, separated by a banner comment. Install them
+# separately — nginx will not accept them concatenated, because
+# `limit_req_zone` is an http{}-level directive and `server{}` is not.
+#
+#   FILE 1 → /etc/nginx/conf.d/atmux-voice-ratelimit.conf   (http{} context)
+#   FILE 2 → /etc/nginx/sites-available/atmux.geoy.ws       (server{} context)
+#              + symlink into sites-enabled/
+#
+# Then: nginx -t && systemctl reload nginx
+#
+# PHASE O1 IS TOKEN-ONLY. The single credential reaching Bun is
+# `ATMUX_VOICE_TOKEN`, and the server is expected to run with
+# `ATMUX_VOICE_READONLY=1` for this phase (ADR-272 §Security layer 5).
+# Phase O2 adds oauth2-proxy in front — see the commented block at the
+# bottom of FILE 2. "Voice is behind OAuth" is only TRUE after O2.
+#
+# Host is `geoy.ws` deliberately: personal infra. `ifca.app` / `ifca.dev`
+# are IFCA-only (global CLAUDE.md §DNS) and must never carry this vhost.
+
+
+# ============================================================================
+# FILE 1 — /etc/nginx/conf.d/atmux-voice-ratelimit.conf   (http{} context)
+# ============================================================================
+
+# Rate-limit zones. `$binary_remote_addr` keys on the client IP; 10m holds
+# roughly 160k distinct addresses, which is far more than this vhost will
+# ever see.
+#
+# ws-zone   30 r/m — a legitimate client opens ONE socket and keeps it. A
+#                    burst above this is a reconnect storm or a probe loop.
+# page-zone 60 r/m — the PWA shell is ~8 requests (html, css, 3 js, worklet,
+#                    manifest, icon) and then cached in-memory by the tab.
+limit_req_zone $binary_remote_addr zone=atmux_voice_ws:10m  rate=30r/m;
+limit_req_zone $binary_remote_addr zone=atmux_voice_page:10m rate=60r/m;
+
+# Map the Upgrade header to the Connection value nginx must send upstream.
+# A plain request sends `Connection: close`; a WebSocket upgrade sends
+# `Connection: upgrade`. Hard-coding `Connection "upgrade"` on the location
+# breaks non-upgrade requests to the same path.
+map $http_upgrade $atmux_voice_connection {
+    default upgrade;
+    ''      close;
+}
+
+
+# ============================================================================
+# FILE 2 — /etc/nginx/sites-available/atmux.geoy.ws        (server{} context)
+# ============================================================================
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name atmux.geoy.ws;
+
+    # ACME challenges stay on :80; everything else is redirected. The PWA
+    # requires a secure context for getUserMedia — plain HTTP is useless
+    # here, not merely insecure.
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    # NO `http2 on;` and NO `listen ... http2`. hax runs nginx/1.24.0
+    # (Ubuntu); the standalone `http2` directive only arrived in 1.25.1,
+    # so either form fails `nginx -t` with
+    #   [emerg] unknown directive "http2"
+    # and `systemctl reload nginx` then refuses the ENTIRE config — taking
+    # every other vhost on the box down with it, not just this one. The
+    # existing vhosts (paste.conf, 33dmg.geoy.ws.conf) all use bare
+    # `listen 443 ssl;`. Match them. HTTP/1.1 is correct here anyway: the
+    # payload is one long-lived WebSocket, which gains nothing from h2.
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name atmux.geoy.ws;
+
+    # Wildcard geoy.ws certificate (personal infra).
+    ssl_certificate     /etc/letsencrypt/live/geoy.ws/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/geoy.ws/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_session_cache   shared:atmux_voice_ssl:10m;
+    ssl_session_timeout 1d;
+
+    # The uplink is 40ms frames of PCM16; nothing here is a large POST.
+    client_max_body_size 1m;
+
+    # --- WebSocket ---------------------------------------------------------
+    #
+    # `access_log off` is LOAD-BEARING, not stylistic: the token arrives as
+    # a `?token=` query parameter, so without this every connection writes
+    # the shared secret to disk in cleartext. RUNBOOK-voice §5 requirement 1;
+    # V-6 greps the access log for the token and asserts no match.
+    # EXACT match (`= /ws`), not a prefix. A bare `location /ws` also
+    # captures `/wsfoo`, `/ws-admin`, and anything else sharing the
+    # prefix — every one of them proxied into the driver-scope upgrade
+    # endpoint. The socket lives at exactly one path; say so.
+    location = /ws {
+        access_log off;
+
+        limit_req zone=atmux_voice_ws burst=5 nodelay;
+
+        proxy_pass http://127.0.0.1:4390;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection $atmux_voice_connection;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Origin must reach Bun intact — it is the CSRF check
+        # (`ATMUX_VOICE_ORIGINS`). Browsers do NOT apply same-origin policy
+        # to WebSocket handshakes, so stripping or rewriting this header
+        # disables the defense silently.
+        proxy_set_header Origin $http_origin;
+
+        # Audio must not be buffered — buffering adds latency to a live
+        # conversation and defeats barge-in.
+        proxy_buffering off;
+
+        # A realistic silent pause (thinking, a long tool call, the operator
+        # putting the phone down) must not be read as a dead upstream. The
+        # default 60s cuts live calls mid-conversation — RUNBOOK-voice §8.
+        proxy_read_timeout  3600s;
+        proxy_send_timeout  3600s;
+    }
+
+    # --- Health ------------------------------------------------------------
+    #
+    # Open by design (no auth, no rate limit): it carries no secret — only
+    # `{ok, provider, readonly}` — and an uptime probe must not need the
+    # token. `atmux voice --status` hits this on loopback.
+    location = /healthz {
+        access_log off;
+        proxy_pass http://127.0.0.1:4390;
+        proxy_set_header Host $host;
+    }
+
+    # --- PWA shell ---------------------------------------------------------
+    #
+    # Served by Bun from `templates/voice/` via the exact-key route map in
+    # `src/core/voice/assets.ts` (no filesystem surface, so traversal is
+    # structurally impossible — a non-route pathname is simply a 404).
+    # Cache-Control comes from that map; do NOT add `expires` here or it
+    # will fight the `no-store` the shell needs to pick up server upgrades.
+    location / {
+        limit_req zone=atmux_voice_page burst=20 nodelay;
+
+        proxy_pass http://127.0.0.1:4390;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # --- PHASE O2 (NOT ENABLED IN O1) --------------------------------------
+    #
+    # Add oauth2-proxy so an unauthenticated request never reaches Bun.
+    # Only after this block is live is "voice is behind OAuth" a true
+    # statement. `ATMUX_VOICE_READONLY` is cleared in P7 — AFTER O2, never
+    # before (ADR-272 §Security).
+    #
+    # location /oauth2/ {
+    #     proxy_pass       http://127.0.0.1:4180;
+    #     proxy_set_header Host             $host;
+    #     proxy_set_header X-Real-IP        $remote_addr;
+    #     proxy_set_header X-Forwarded-Proto $scheme;
+    #     proxy_set_header X-Auth-Request-Redirect $request_uri;
+    # }
+    #
+    # location = /oauth2/auth {
+    #     proxy_pass       http://127.0.0.1:4180;
+    #     proxy_set_header Host             $host;
+    #     proxy_set_header X-Real-IP        $remote_addr;
+    #     proxy_set_header X-Forwarded-Proto $scheme;
+    #     proxy_set_header Content-Length   "";
+    #     proxy_pass_request_body off;
+    # }
+    #
+    # Then add to BOTH `/` and `/ws` above:
+    #     auth_request /oauth2/auth;
+    #     error_page 401 = /oauth2/sign_in;
+}

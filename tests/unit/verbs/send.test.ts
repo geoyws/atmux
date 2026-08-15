@@ -70,6 +70,37 @@ describe("parseSendArgs — flag parsing", () => {
     expect(a.noVerify).toBe(true);
   });
 
+  test("--submit-only sets submitOnly and needs NO message (ADR-273 D5)", () => {
+    const a = parseSendArgs(["--submit-only", "alpha"]);
+    expect(a.submitOnly).toBe(true);
+    expect(a.member).toBe("alpha");
+    expect(a.msg).toBe("");
+  });
+
+  test("submitOnly is false on every ordinary invocation", () => {
+    expect(parseSendArgs(["alpha", "msg"]).submitOnly).toBe(false);
+    expect(parseSendArgs(["--broadcast", "msg"]).submitOnly).toBe(false);
+  });
+
+  test("--submit-only WITH a message is refused, never silently dropped", () => {
+    // Silently dropping it would send a keystroke while the operator
+    // believed he had sent words.
+    expect(() => parseSendArgs(["--submit-only", "alpha", "hello"])).toThrow(UsageError);
+  });
+
+  test("--submit-only + --no-submit is refused (they are opposites)", () => {
+    expect(() => parseSendArgs(["--submit-only", "--no-submit", "alpha"])).toThrow(UsageError);
+  });
+
+  test("--submit-only + --broadcast is refused (a keystroke is not a broadcast)", () => {
+    expect(() => parseSendArgs(["--broadcast", "--submit-only"])).toThrow(UsageError);
+  });
+
+  test("an ordinary send with an empty message is STILL a usage error", () => {
+    // The empty-message relaxation is scoped to --submit-only only.
+    expect(() => parseSendArgs(["alpha"])).toThrow(UsageError);
+  });
+
   test("--socket <path> consumed; survives into SendArgs.socketPath", () => {
     const a = parseSendArgs(["--socket", "/tmp/sock", "alpha", "msg"]);
     expect(a.socketPath).toBe("/tmp/sock");
@@ -222,7 +253,14 @@ describe("resolveMemberTarget — window-name self-heal shim", () => {
       shellCommand: "cat",
       windowName: "🧭_lead",
     });
-    const target = await resolveMemberTarget(tmux, sessionName, "lead", "🧭", undefined, "team-lead");
+    const target = await resolveMemberTarget(
+      tmux,
+      sessionName,
+      "lead",
+      "🧭",
+      undefined,
+      "team-lead",
+    );
     expect(target).toBe(`${sessionName}:🧭_lead`);
     // No additional window was created — canonical was already there.
     const wins = (await tmux.window.listWindows(sessionName)).map((w) => w.name);
@@ -237,7 +275,14 @@ describe("resolveMemberTarget — window-name self-heal shim", () => {
       shellCommand: "cat",
       windowName: "🧭-lead",
     });
-    const target = await resolveMemberTarget(tmux, sessionName, "lead", "🧭", undefined, "team-lead");
+    const target = await resolveMemberTarget(
+      tmux,
+      sessionName,
+      "lead",
+      "🧭",
+      undefined,
+      "team-lead",
+    );
     expect(target).toBe(`${sessionName}:🧭_lead`);
     // Post-call: window was renamed in place.
     const wins = (await tmux.window.listWindows(sessionName)).map((w) => w.name);
@@ -252,7 +297,14 @@ describe("resolveMemberTarget — window-name self-heal shim", () => {
       shellCommand: "cat",
       windowName: "🧭lead",
     });
-    const target = await resolveMemberTarget(tmux, sessionName, "lead", "🧭", undefined, "team-lead");
+    const target = await resolveMemberTarget(
+      tmux,
+      sessionName,
+      "lead",
+      "🧭",
+      undefined,
+      "team-lead",
+    );
     expect(target).toBe(`${sessionName}:🧭_lead`);
     const wins = (await tmux.window.listWindows(sessionName)).map((w) => w.name);
     expect(wins).toContain("🧭_lead");
@@ -380,6 +432,28 @@ describe("send() — integration", () => {
     expect(teamName).toContain(sessionPrefix);
   });
 
+  test("--submit-only delivers a keystroke and writes the action to the log", async () => {
+    await stageTeam([{ name: "alpha" }]);
+    const exit = await send([
+      "--socket",
+      socketPath,
+      "--team-dir",
+      teamDir,
+      "--submit-only",
+      "alpha",
+    ]);
+    expect(exit).toBe(0);
+    const log = await Bun.file(join(atmuxDir, "logs", "send-alpha.log")).text();
+    expect(log).toContain("submit-only");
+  });
+
+  test("--submit-only against the cockpit-tier inbox key is refused (no pane to submit into)", async () => {
+    await stageTeam([{ name: "alpha" }]);
+    await expect(
+      send(["--socket", socketPath, "--team-dir", teamDir, "--submit-only", "__medic__"]),
+    ).rejects.toThrow(UsageError);
+  });
+
   test("single-member with non-existent name → ConfigError", async () => {
     await stageTeam([{ name: "alpha" }]);
     await expect(
@@ -412,20 +486,49 @@ describe("send() — integration", () => {
     expect(await Bun.file(join(atmuxDir, "logs", "send-beta.log")).exists()).toBe(true);
   });
 
-  test("broadcast --include-driver hits the driver member too", async () => {
+  test("broadcast --include-driver is refused by the ADR-239 §D2 send-keys guard", async () => {
+    // Pre-ADR-239 this flag delivered into the driver pane. ADR-239 §D2
+    // made driver panes operator-interactive ONLY: atmux NEVER sends
+    // keystrokes to a pane whose name matches /^driver(-N)?$/, and
+    // `src/abstractions/tmux.ts` enforces this at the lowest-level
+    // send-keys helper (`DriverSendKeysViolation`). So a `driver`-named
+    // member can no longer receive a broadcast even with --include-driver:
+    // the guard throws, broadcastSend absorbs it into the per-member warn
+    // bucket, sets anyFailed, and returns 1 (partial-failure). The driver
+    // log is NEVER written (the throw fires in safePreflight's sendKeys,
+    // before appendSendLog). The non-driver member (alpha) still delivers.
     await stageTeam([{ name: "driver" }, { name: "alpha" }]);
-    const exit = await send([
-      "--broadcast",
-      "--include-driver",
-      "--socket",
-      socketPath,
-      "--team-dir",
-      teamDir,
-      "--no-verify",
-      "ping",
-    ]);
-    expect(exit).toBe(0);
-    expect(await Bun.file(join(atmuxDir, "logs", "send-driver.log")).exists()).toBe(true);
+    let stderrBuf = "";
+    const origStderrWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((s: string | Uint8Array) => {
+      stderrBuf += typeof s === "string" ? s : new TextDecoder().decode(s);
+      return true;
+    }) as typeof process.stderr.write;
+    let exit: number;
+    try {
+      exit = await send([
+        "--broadcast",
+        "--include-driver",
+        "--socket",
+        socketPath,
+        "--team-dir",
+        teamDir,
+        "--no-verify",
+        "ping",
+      ]);
+    } finally {
+      process.stderr.write = origStderrWrite;
+    }
+    // Partial-failure exit: the driver delivery was refused.
+    expect(exit).toBe(1);
+    // The warn names the driver member AND cites the ADR-239 §D2 refusal —
+    // proves the failure is the driver-pane guard, not an unrelated error.
+    expect(stderrBuf).toContain("send to driver failed");
+    expect(stderrBuf).toContain("ADR-239 §D2 violation");
+    expect(stderrBuf).toContain("refused to send-keys into driver pane");
+    // Driver pane received NO keystrokes → no send-log was written for it.
+    expect(await Bun.file(join(atmuxDir, "logs", "send-driver.log")).exists()).toBe(false);
+    // The non-driver member still got its broadcast delivery.
     expect(await Bun.file(join(atmuxDir, "logs", "send-alpha.log")).exists()).toBe(true);
   });
 

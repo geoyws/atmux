@@ -33,6 +33,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { ensureDir, exists } from "../abstractions/fs.ts";
+import { type CallerScope, resolveCallerScope } from "../core/common.ts";
 import { classifyOrphans, emptySeenState, type SeenState } from "../core/orphan-detector.ts";
 import { type OrphanClass, type ReapDeps, type ReapResult, reapOrphans } from "../core/reap.ts";
 import {
@@ -44,7 +45,7 @@ import {
   type TopoOrphan,
   type TopoTeam,
 } from "../core/topo-aggregate.ts";
-import { UsageError } from "../errors.ts";
+import { ConfigError, UsageError } from "../errors.ts";
 import { defaultDiscoveryIO, defaultReapDeps, defaultReapPrompt } from "./topo-io.ts";
 
 const USAGE =
@@ -227,6 +228,14 @@ export interface TopoOpts {
   /** Test seam — injects the Gate-4 prompt function. Default reads
    *  stdin via readline; tests pass a canned-response stub. */
   prompt?: ReapPromptFn;
+  /** Test seam for the ADR-253 driver-scope gate. Production omits →
+   *  resolves via {@link resolveCallerScope} against `process.env`
+   *  (ADR-033 §Caller-scope detection). Tests inject a fixed scope to
+   *  exercise the gate without mutating `ATMUX_CALLER_SCOPE`. */
+  callerScope?: () => CallerScope;
+  /** Test seam — override `process.env` read by the default
+   *  {@link callerScope} resolver. Ignored when `callerScope` is set. */
+  env?: NodeJS.ProcessEnv;
 }
 
 /** Gate-4 prompt response codes per ADR-223 §D3 (verb-layer Gate 4). */
@@ -290,6 +299,24 @@ async function reapSubflow(
   opts: TopoOpts,
   logger: { log: (m: string) => void },
 ): Promise<number> {
+  // ADR-253 §Defect 1 — driver-scope gate. `topo --reap --apply` is the
+  // most destructive entry point in the tree (kill-server + rm -rf
+  // worktree + git branch -D, enumerated SYSTEM-WIDE across every team's
+  // cages, branches, and crontab blocks). Mirror dissolve-epic's gate
+  // (ADR-033 §Caller-scope gate) so a non-driver member can NEVER trip a
+  // fleet-wide teardown. Fires ONLY on the mutating path: read-only topo
+  // and dry-run `--reap` (without `--apply`) stay UNGATED so members can
+  // still inspect what WOULD be reaped.
+  if (parsed.apply) {
+    const callerScope = opts.callerScope ?? (() => resolveCallerScope({ env: opts.env ?? process.env }));
+    if (callerScope() !== "driver") {
+      throw new ConfigError({
+        what: "topo --reap --apply: refused — caller scope is not 'driver'. This is a SYSTEM-WIDE destructive sweep (kill-server + rm -rf worktree + git branch -D across all teams); only the driver may apply it (ADR-253 §Defect 1 / ADR-033 §Caller-scope gate).",
+        hint: "from a driver pane: ATMUX_CALLER_SCOPE=driver atmux topo --reap --apply ...  (or run `atmux topo --reap` without --apply for a read-only dry-run)",
+      });
+    }
+  }
+
   const orphans = manifest.orphans;
   const deps = opts.reapDeps ?? defaultReapDeps();
   const prompt = opts.prompt ?? defaultReapPrompt;
@@ -627,4 +654,4 @@ export async function saveSeenState(state: SeenState): Promise<void> {
 
 // ---------- Re-exports for verb-test convenience ----------
 
-export type { DiscoveryIO, SeenState, TopoManifest };
+export type { CallerScope, DiscoveryIO, SeenState, TopoManifest };

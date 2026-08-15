@@ -50,7 +50,18 @@ export interface ResolveDirOpts {
  *   3. opts.teamDir + "/.atmux"
  *   4. env.ATMUX_TEAM_DIR + "/.atmux"    (cron-friendly project root pin)
  *   5. walk up from cwd until a `.atmux/` directory is found
+ *      (with the strip-back below if cwd is inside one already)
  *   6. cwd + "/.atmux"                   (last-resort fallback; may not exist)
+ *
+ * §Strip-back-before-walk (2026-05-26 amendment — t-62/t-63 nested-
+ * state.db bug): if cwd is already INSIDE a `.atmux/` (member-worktree
+ * subdir, init-from-inside-.atmux footgun, etc.), strip the path back
+ * to the segment BEFORE the first `/.atmux/` occurrence and walk up
+ * from there. Without this, the verb invoked from
+ * `<root>/.atmux/worktrees/<m>/` would resolve to the worktree's stub
+ * `.atmux/` instead of the canonical `<root>/.atmux/`, splitting state
+ * across diverging databases (per operator complaints t-62-df4e59bd +
+ * t-63-7ab429d5; symmetric to orchd-window.ts::resolveCanonicalTeamRoot).
  *
  * Path-only — does NOT verify existence. Callers that need existence
  * use `hasTeam()` or `requireTeam()`.
@@ -65,7 +76,12 @@ export async function getAtmuxDir(opts: ResolveDirOpts = {}): Promise<string> {
   if (envTeamDir !== undefined && envTeamDir.length > 0) {
     return join(stripTrailingSlash(envTeamDir), ".atmux");
   }
-  const start = resolve(opts.cwd ?? process.cwd());
+  const startRaw = resolve(opts.cwd ?? process.cwd());
+  // Strip-back-before-walk: if startRaw is inside a `.atmux/` dir,
+  // restart the walk from outside it (the segment before the first
+  // `/.atmux/` occurrence). See JSDoc §Strip-back-before-walk above.
+  const atmuxIdx = startRaw.indexOf("/.atmux/");
+  const start = atmuxIdx >= 0 ? startRaw.slice(0, atmuxIdx) || "/" : startRaw;
   const stopAt = opts.stopAt !== undefined ? resolve(opts.stopAt) : undefined;
   let cur = start;
   while (true) {
@@ -815,7 +831,7 @@ export function isCompacting(state: string): boolean {
 }
 
 /** Claude Code auto-/clear recovery banner. Triggers brief re-paste in
- *  bash dispatch.sh's AUTO-PRECLEAR path. */
+ *  bash dispatch.sh's AUTO-HANDOFF path. */
 export function isContextCleared(state: string): boolean {
   return /Context cleared\.\s*Ready for/i.test(state);
 }

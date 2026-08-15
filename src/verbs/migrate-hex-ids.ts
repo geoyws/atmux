@@ -355,14 +355,31 @@ async function renameGitBranches(
   let skipped = 0;
   for (const m of mappings) {
     if (m.scope !== "e") continue; // only epic branches use the `-epic-<id>` shape
-    const legacyBranch = `${base}-epic-${m.legacyId}`;
-    const compoundBranch = `${base}-epic-${m.compoundId}`;
+    // Post-2026-05-26 double-e fix: strip the `e-` scope prefix before
+    // interpolating into the branch token so we don't emit `epic-e-`.
+    // legacyId / compoundId both carry the prefix natively (e.g.
+    // `e-c43a8e81` / `e-26-c43a8e81`) — strip exactly one leading `e-`.
+    // Pre-fix branches (created before this amendment) keep the
+    // double-e form on disk; this migrate verb renames them to the
+    // new clean form using both old + new candidate names.
+    const legacyIdStripped = m.legacyId.replace(/^e-/, "");
+    const compoundIdStripped = m.compoundId.replace(/^e-/, "");
+    const legacyBranch = `${base}-epic-${legacyIdStripped}`;
+    const legacyBranchPreFix = `${base}-epic-${m.legacyId}`;
+    const compoundBranch = `${base}-epic-${compoundIdStripped}`;
     try {
-      await runGit(["branch", "-m", legacyBranch, compoundBranch]);
+      try {
+        await runGit(["branch", "-m", legacyBranch, compoundBranch]);
+      } catch {
+        // Pre-fix branches (created before 2026-05-26 double-e amendment)
+        // carried the `epic-e-<id>` form on disk; fall back to that
+        // shape so the migrate verb still finds + renames them.
+        await runGit(["branch", "-m", legacyBranchPreFix, compoundBranch]);
+      }
       renamed += 1;
     } catch (e) {
       logger.warn(
-        `migrate-hex-ids: branch rename skip — ${legacyBranch} → ${compoundBranch}: ${(e as Error).message}`,
+        `migrate-hex-ids: branch rename skip — ${legacyBranch} (or ${legacyBranchPreFix}) → ${compoundBranch}: ${(e as Error).message}`,
       );
       skipped += 1;
     }

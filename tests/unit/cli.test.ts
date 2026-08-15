@@ -353,6 +353,29 @@ describe("cli.main — dashboard verb dispatch", () => {
   });
 });
 
+// ---------- Dispatch — voice verb route (ADR-272; smoke — deep behaviour
+//                       is in tests/unit/verbs/voice.test.ts) ----------
+
+describe("cli.main — voice verb dispatch", () => {
+  test("'voice --bogus-flag' dispatches into voice (UsageError → 64)", async () => {
+    const { exit, stderr } = await captureMain(["voice", "--bogus-flag"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("voice: unknown arg: --bogus-flag");
+  });
+
+  test("'voice --status' with no token is a ConfigError → 78, not a crash", async () => {
+    const saved = process.env.ATMUX_VOICE_TOKEN;
+    delete process.env.ATMUX_VOICE_TOKEN;
+    try {
+      const { exit, stderr } = await captureMain(["voice", "--status"]);
+      expect(exit).toBe(78);
+      expect(stderr).toContain("ATMUX_VOICE_TOKEN is required");
+    } finally {
+      if (saved !== undefined) process.env.ATMUX_VOICE_TOKEN = saved;
+    }
+  });
+});
+
 // ---------- Dispatch — reconfigure verb route (smoke; deep behaviour is in
 //                       tests/unit/verbs/reconfigure.test.ts) ----------
 
@@ -416,12 +439,12 @@ describe("cli.main — cost verb dispatch", () => {
   });
 });
 
-// ---------- Dispatch — whip verb route (smoke; deep behaviour is in
-//                       tests/unit/verbs/whip.test.ts) ----------
+// ---------- Dispatch — poke verb route (smoke; deep behaviour is in
+//                       tests/unit/verbs/poke.test.ts) ----------
 
-describe("cli.main — whip verb dispatch", () => {
-  test("'whip --bogus-flag' dispatches into whip (UsageError)", async () => {
-    const { exit, stderr } = await captureMain(["whip", "--bogus-flag"]);
+describe("cli.main — poke verb dispatch", () => {
+  test("'poke --bogus-flag' dispatches into poke (UsageError)", async () => {
+    const { exit, stderr } = await captureMain(["poke", "--bogus-flag"]);
     expect(exit).toBe(64);
     expect(stderr).toContain("atmux:");
   });
@@ -840,51 +863,15 @@ describe("logVerbEvent — events-log envelope", () => {
   });
 });
 
-// ---------- ADR-224 §D1 — orchd primary + relayd deprecation alias ----------
+// ---------- ADR-224 §D1 — orchd primary ----------
 //
-// `atmux relayd` is the one-release deprecation alias; emits stderr warn
-// then delegates to the orchd handler with same exit code + stdout shape.
-// The full live-daemon "--start exits 0 + stdout-matches" assertion
-// requires integration-test infra (DB+tmux); these unit tests cover the
-// alias-prefix + drop-in-error-shape invariants which are sufficient to
-// guard the dispatch surface.
+// The `atmux relayd` deprecation alias was removed per ADR-266 §D2
+// (expiry long past). Only the canonical orchd dispatch remains.
 
-describe("cli.main — atmux orchd / relayd alias (ADR-224 §D1)", () => {
+describe("cli.main — atmux orchd (ADR-224 §D1)", () => {
   test("'orchd' (no subverb) → exit 64 + 'atmux: orchd: no sub-verb specified' on stderr", async () => {
     const { exit, stderr } = await captureMain(["orchd"]);
     expect(exit).toBe(64);
     expect(stderr).toContain("orchd: no sub-verb specified");
-  });
-
-  test("'relayd' alias → stderr starts with deprecation line", async () => {
-    const { stderr } = await captureMain(["relayd"]);
-    expect(stderr.startsWith("[deprecated] 'atmux relayd' renamed to 'atmux orchd'")).toBe(true);
-  });
-
-  test("'relayd' alias delegates to orchd — same exit code + same tail-of-stderr as 'orchd'", async () => {
-    // Drop-in equivalence: for the no-subverb error path, the alias should
-    // produce the deprecation prefix + the SAME error output as 'orchd'.
-    // ADR-224 §D1 binding: "same exit code, same stdout shape" — exit
-    // codes must match; stderr matches everything AFTER the deprecation
-    // prefix line.
-    const alias = await captureMain(["relayd"]);
-    const primary = await captureMain(["orchd"]);
-    expect(alias.exit).toBe(primary.exit);
-    expect(alias.stdout).toBe(primary.stdout);
-    const aliasStderrAfterPrefix = alias.stderr.replace(
-      /^\[deprecated\] 'atmux relayd' renamed to 'atmux orchd' \(ADR-224\); update callsites — alias removes next release\n/,
-      "",
-    );
-    expect(aliasStderrAfterPrefix).toBe(primary.stderr);
-  });
-
-  test("'relayd' alias deprecation line matches exact AC literal", async () => {
-    // ADR-224 §D1 + Task body: literal stderr must be
-    //   [deprecated] 'atmux relayd' renamed to 'atmux orchd' (ADR-224); update callsites — alias removes next release
-    const { stderr } = await captureMain(["relayd"]);
-    const firstLine = stderr.split("\n")[0] ?? "";
-    expect(firstLine).toBe(
-      "[deprecated] 'atmux relayd' renamed to 'atmux orchd' (ADR-224); update callsites — alias removes next release",
-    );
   });
 });

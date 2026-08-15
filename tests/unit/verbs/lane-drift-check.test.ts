@@ -21,6 +21,7 @@ import { UsageError } from "../../../src/errors.ts";
 import type { KanbanTask } from "../../../src/schema/kanban.ts";
 import type { Team } from "../../../src/schema/team.ts";
 import {
+  buildChildrenByParentId,
   laneDriftCheck,
   parseLaneDriftCheckArgs,
   runLaneDriftCheck,
@@ -507,6 +508,163 @@ describe("runLaneDriftCheck — verb-side dry-run / reset / report-only", () => 
       },
     );
     expect(result.decisions[0]?.evidence.commitsScanned).toBe(3);
+  });
+});
+
+// ---------- buildChildrenByParentId (ADR-176 criterion (d) indexing) ----------
+
+describe("buildChildrenByParentId", () => {
+  test("indexes children by their .epic parent id", () => {
+    const tasks: KanbanTask[] = [
+      { id: "t-parent", status: "in-progress" },
+      { id: "t-c1", epic: "t-parent", status: "in-progress" },
+      { id: "t-c2", epic: "t-parent", status: "todo" },
+      { id: "t-c3", epic: "t-other", status: "done" },
+    ];
+    const map = buildChildrenByParentId(tasks);
+    expect(map.get("t-parent")?.map((t) => t.id)).toEqual(["t-c1", "t-c2"]);
+    expect(map.get("t-other")?.map((t) => t.id)).toEqual(["t-c3"]);
+    // The parent itself is not a key (it has no `.epic`).
+    expect(map.has("t-c1")).toBe(false);
+  });
+
+  test("skips tasks with null / empty / absent epic", () => {
+    const tasks: KanbanTask[] = [
+      { id: "t-a", status: "todo" },
+      { id: "t-b", epic: null, status: "todo" },
+      { id: "t-c", epic: "", status: "todo" },
+      { id: "t-d", epic: "t-p", status: "todo" },
+    ];
+    const map = buildChildrenByParentId(tasks);
+    expect(map.size).toBe(1);
+    expect(map.get("t-p")?.map((t) => t.id)).toEqual(["t-d"]);
+  });
+
+  test("empty input → empty map", () => {
+    expect(buildChildrenByParentId([]).size).toBe(0);
+  });
+});
+
+describe("runLaneDriftCheck — ADR-176 criterion (d) threaded end-to-end", () => {
+  const NOW_SEC = 1_700_000_000;
+  const TEAM2: Team = {
+    name: "demo",
+    members: [{ name: "planner", role: "planner", tui: "claude" }],
+  } as unknown as Team;
+
+  let teamDir: string;
+  let atmuxDir: string;
+
+  beforeEach(async () => {
+    teamDir = await mkdtemp(join(tmpdir(), "atmux-drift-d-"));
+    atmuxDir = join(teamDir, ".atmux");
+    await mkdir(join(atmuxDir, "state"), { recursive: true });
+    await writeFile(join(atmuxDir, "state", "session.txt"), "test-sess\n");
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      JSON.stringify({ name: TEAM2.name, members: TEAM2.members }),
+    );
+  });
+
+  afterEach(async () => {
+    await rm(teamDir, { recursive: true, force: true });
+  });
+
+  /** EPIC parent that would revert under the 3-criterion algorithm
+   *  (claimed 60min ago, pane COMPACTING, no commit ref to its own id). */
+  const parent: KanbanTask = {
+    id: "t-parent01",
+    owner: "planner",
+    status: "in-progress",
+    claimedAt: NOW_SEC - 60 * 60,
+  };
+  const classifyPlanner = async (m: string): Promise<PaneClassification | null> =>
+    m === "planner"
+      ? { state: "COMPACTING", evidence: "Compacting", capturedAt: NOW_SEC * 1000 }
+      : null;
+  const gitNoRefs = async (_argv: ReadonlyArray<string>): Promise<SpawnResult> => ({
+    cmd: "git",
+    argv: ["log"],
+    exitCode: 0,
+    signalled: null,
+    stdout: "abc1234\nfeat(unrelated): nothing\n\n--END--\n",
+    stderr: "",
+    durationMs: 1,
+  });
+
+  test("EPIC parent with progressing child → skip (no revert) even under --reset", async () => {
+    const moveCalls: string[] = [];
+    const result = await runLaneDriftCheck(
+      atmuxDir,
+      TEAM2,
+      { thresholdMin: 30, commits: 30, reset: true, dryRun: false },
+      {
+        listInProgressTasks: async () => [parent],
+        listAllTasks: async () => [
+          parent,
+          { id: "t-child01", epic: "t-parent01", status: "in-progress" },
+        ],
+        classifyMember: classifyPlanner,
+        git: gitNoRefs,
+        moveTask: async (_dir: string, id: string) => {
+          moveCalls.push(id);
+        },
+        raiseFlag: async () => {},
+        nowSec: () => NOW_SEC,
+        log: () => {},
+      },
+    );
+    expect(result.decisions[0]?.action).toBe("skip");
+    expect(result.decisions[0]?.reason).toBe("epic-children-progressing");
+    expect(result.reverted).toBe(0);
+    expect(moveCalls).toEqual([]); // criterion (d) prevented the revert.
+  });
+
+  test("EPIC parent with all-todo children → STILL reverts (todo doesn't count)", async () => {
+    const moveCalls: string[] = [];
+    const result = await runLaneDriftCheck(
+      atmuxDir,
+      TEAM2,
+      { thresholdMin: 30, commits: 30, reset: true, dryRun: false },
+      {
+        listInProgressTasks: async () => [parent],
+        listAllTasks: async () => [
+          parent,
+          { id: "t-child01", epic: "t-parent01", status: "todo" },
+        ],
+        classifyMember: classifyPlanner,
+        git: gitNoRefs,
+        moveTask: async (_dir: string, id: string) => {
+          moveCalls.push(id);
+        },
+        raiseFlag: async () => {},
+        nowSec: () => NOW_SEC,
+        log: () => {},
+      },
+    );
+    expect(result.decisions[0]?.action).toBe("revert");
+    expect(result.reverted).toBe(1);
+    expect(moveCalls).toEqual(["t-parent01"]);
+  });
+
+  test("default listAllTasks load is wired (no override) — reads real kanban DB without throwing", async () => {
+    // No listAllTasks override: exercises the default listTasks(atmuxDir)
+    // path. The temp atmuxDir has no kanban rows, so the children map is
+    // empty → criterion (d) no-ops → the drifty parent reverts (report-only
+    // here so no DB write is attempted).
+    const result = await runLaneDriftCheck(
+      atmuxDir,
+      TEAM2,
+      { thresholdMin: 30, commits: 30, reset: false, dryRun: false },
+      {
+        listInProgressTasks: async () => [parent],
+        classifyMember: classifyPlanner,
+        git: gitNoRefs,
+        nowSec: () => NOW_SEC,
+        log: () => {},
+      },
+    );
+    expect(result.decisions[0]?.action).toBe("revert");
   });
 });
 

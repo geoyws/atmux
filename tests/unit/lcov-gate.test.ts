@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  enumerateTrackedSources,
   evaluateGate,
   extractIgnorePatterns,
   formatGateReport,
@@ -12,6 +13,7 @@ import {
   parseArgs,
   parseLcov,
   runCli,
+  toRelative,
 } from "../lcov-gate.ts";
 
 describe("parseLcov", () => {
@@ -286,6 +288,164 @@ describe("evaluateGate", () => {
     });
     expect(result.trackedCount).toBe(1);
   });
+
+  test("no trackedUniverse supplied → missing is empty (legacy lcov-only mode)", () => {
+    const result = evaluateGate([trackedFile("/repo/src/a.ts")], {
+      threshold: 1.0,
+      ignorePatterns: [],
+      cwd: "/repo",
+    });
+    expect(result.missing).toEqual([]);
+    expect(result.ok).toBe(true);
+  });
+});
+
+describe("evaluateGate — completeness diff (ADR-254 / the gate blind spot)", () => {
+  const fullFile = (path: string): import("../lcov-gate.ts").FileCoverage => ({
+    path,
+    linesFound: 10,
+    linesHit: 10,
+    functionsFound: 2,
+    functionsHit: 2,
+    branchesFound: 0,
+    branchesHit: 0,
+  });
+
+  // THE blind-spot regression: a tracked file present in the on-disk
+  // universe but with NO SF: record in the lcov (0% coverage, Bun emits
+  // nothing for a file no test loads) MUST fail the gate. Pre-ADR-254
+  // the gate iterated only lcov-present files, so this exact shape
+  // printed "✅" + exited 0 (finding test-lcov-gate-blind-to-zero-coverage).
+  test("FAILS when a tracked-universe file is absent from the lcov (0% coverage)", () => {
+    const lcovPresent = [fullFile("src/core/covered.ts")];
+    const universe = ["src/core/covered.ts", "src/core/orchd-housekeep.ts"];
+    const result = evaluateGate(lcovPresent, {
+      threshold: 1.0,
+      ignorePatterns: [],
+      cwd: "/repo",
+      trackedUniverse: universe,
+    });
+    // If the feature were broken, this would be `true` (the old blind
+    // spot) — so the assertion bottom-up answer is NO.
+    expect(result.ok).toBe(false);
+    expect(result.missing).toEqual(["src/core/orchd-housekeep.ts"]);
+    // The covered file is NOT flagged missing.
+    expect(result.missing).not.toContain("src/core/covered.ts");
+    // The missing filename surfaces in the formatted report.
+    const report = formatGateReport(result);
+    expect(report).toContain("src/core/orchd-housekeep.ts");
+    expect(report).toContain("0%");
+  });
+
+  test("multiple missing files all reported, sorted", () => {
+    const result = evaluateGate([fullFile("src/a.ts")], {
+      threshold: 1.0,
+      ignorePatterns: [],
+      cwd: "/repo",
+      trackedUniverse: ["src/a.ts", "src/z.ts", "src/m.ts"],
+    });
+    expect(result.ok).toBe(false);
+    expect(result.missing).toEqual(["src/m.ts", "src/z.ts"]);
+  });
+
+  test("green when the lcov covers the entire tracked universe", () => {
+    const result = evaluateGate([fullFile("src/a.ts"), fullFile("src/b.ts")], {
+      threshold: 1.0,
+      ignorePatterns: [],
+      cwd: "/repo",
+      trackedUniverse: ["src/a.ts", "src/b.ts"],
+    });
+    expect(result.ok).toBe(true);
+    expect(result.missing).toEqual([]);
+  });
+
+  test("absolute lcov SF paths normalize to match a cwd-relative universe", () => {
+    // Bun emits cwd-relative SF paths, but the diff must not break if a
+    // caller feeds absolute SF paths — toRelative funnels both sides to
+    // the same key space.
+    const result = evaluateGate([fullFile("/repo/src/a.ts")], {
+      threshold: 1.0,
+      ignorePatterns: [],
+      cwd: "/repo",
+      trackedUniverse: ["src/a.ts"],
+    });
+    expect(result.missing).toEqual([]);
+    expect(result.ok).toBe(true);
+  });
+
+  test("a partial-coverage breach AND a missing file both fail together", () => {
+    const partial: import("../lcov-gate.ts").FileCoverage = {
+      path: "src/a.ts",
+      linesFound: 10,
+      linesHit: 5,
+      functionsFound: 2,
+      functionsHit: 2,
+      branchesFound: 0,
+      branchesHit: 0,
+    };
+    const result = evaluateGate([partial], {
+      threshold: 1.0,
+      ignorePatterns: [],
+      cwd: "/repo",
+      trackedUniverse: ["src/a.ts", "src/b.ts"],
+    });
+    expect(result.ok).toBe(false);
+    expect(result.failures.some((f) => f.path === "src/a.ts")).toBe(true);
+    expect(result.missing).toEqual(["src/b.ts"]);
+  });
+});
+
+describe("toRelative", () => {
+  test("strips a cwd prefix (with trailing slash) from an absolute path", () => {
+    expect(toRelative("/repo/src/a.ts", "/repo")).toBe("src/a.ts");
+  });
+
+  test("strips a cwd prefix when cwd already has a trailing slash", () => {
+    expect(toRelative("/repo/src/a.ts", "/repo/")).toBe("src/a.ts");
+  });
+
+  test("passes an already-relative path through unchanged", () => {
+    expect(toRelative("src/a.ts", "/repo")).toBe("src/a.ts");
+  });
+
+  test("leaves a path outside cwd unchanged", () => {
+    expect(toRelative("/other/src/a.ts", "/repo")).toBe("/other/src/a.ts");
+  });
+});
+
+describe("enumerateTrackedSources (scans the real worktree src/ tree)", () => {
+  // This file (tests/lcov-gate.ts is excluded via tests/**, but its
+  // SUBJECT modules live under src/). We scan the real repo so the
+  // assertion is grounded in actual on-disk truth, not a fixture.
+  const repoRoot = join(import.meta.dir, "..", "..");
+
+  test("includes known tracked src files and excludes ignored ones", () => {
+    const ignore = ["src/types/generated/**", "**/index.ts", "tests/**", "**/*.fixtures.ts"];
+    const tracked = enumerateTrackedSources(repoRoot, ignore);
+    // Real destructive modules ADR-254 cares about must be in-universe.
+    expect(tracked).toContain("src/core/orchd-housekeep.ts");
+    expect(tracked).toContain("src/core/orchd-context-scan.ts");
+    // Paths are cwd-relative, POSIX, no leading slash.
+    for (const p of tracked) {
+      expect(p.startsWith("/")).toBe(false);
+      expect(p.startsWith("src/")).toBe(true);
+      expect(p.endsWith(".ts")).toBe(true);
+    }
+    // Sorted ascending.
+    const sorted = [...tracked].sort();
+    expect(tracked).toEqual(sorted);
+  });
+
+  test("honors ignore patterns — barrels (**/index.ts) are excluded", () => {
+    const withIgnore = enumerateTrackedSources(repoRoot, ["**/index.ts"]);
+    expect(withIgnore.some((p) => p.endsWith("/index.ts"))).toBe(false);
+  });
+
+  test("empty ignore list still scans (no file excluded by patterns)", () => {
+    const all = enumerateTrackedSources(repoRoot, []);
+    expect(all.length).toBeGreaterThan(0);
+    expect(all).toContain("src/core/orchd-housekeep.ts");
+  });
 });
 
 describe("formatGateReport", () => {
@@ -293,6 +453,7 @@ describe("formatGateReport", () => {
     const out = formatGateReport({
       ok: true,
       failures: [],
+      missing: [],
       trackedCount: 4,
       ignoredCount: 2,
     });
@@ -313,6 +474,7 @@ describe("formatGateReport", () => {
           pct: 0.9,
         },
       ],
+      missing: [],
       trackedCount: 1,
       ignoredCount: 0,
     });
@@ -320,6 +482,43 @@ describe("formatGateReport", () => {
     expect(out).toContain("/repo/src/a.ts");
     expect(out).toContain("line: 9/10");
     expect(out).toContain("90.00%");
+  });
+
+  test("red report lists 0%-coverage (missing) files with the filename + count", () => {
+    const out = formatGateReport({
+      ok: false,
+      failures: [],
+      missing: ["src/core/orchd-housekeep.ts", "src/core/orchd-context-scan.ts"],
+      trackedCount: 5,
+      ignoredCount: 0,
+    });
+    expect(out).toContain("❌");
+    // The breach count combines failures + missing.
+    expect(out).toContain("2 coverage breach(es)");
+    // Both untested filenames must appear by name (the operator needs
+    // to know WHICH file is uncovered — ADR-254).
+    expect(out).toContain("src/core/orchd-housekeep.ts");
+    expect(out).toContain("src/core/orchd-context-scan.ts");
+    // Explicitly labels them 0% / no-record so the breach class is
+    // unambiguous vs a partial-coverage failure.
+    expect(out).toContain("0%");
+    expect(out).toContain("no SF: record");
+  });
+
+  test("red report counts BOTH partial-coverage and missing breaches", () => {
+    const out = formatGateReport({
+      ok: false,
+      failures: [
+        { path: "src/core/a.ts", dimension: "line", hit: 9, found: 10, pct: 0.9 },
+      ],
+      missing: ["src/core/b.ts"],
+      trackedCount: 2,
+      ignoredCount: 0,
+    });
+    // 1 partial + 1 missing = 2 total breaches.
+    expect(out).toContain("2 coverage breach(es)");
+    expect(out).toContain("src/core/a.ts");
+    expect(out).toContain("src/core/b.ts");
   });
 });
 
@@ -330,6 +529,13 @@ describe("parseArgs", () => {
     expect(a.bunfigPath).toBe("bunfig.toml");
     expect(a.threshold).toBe(1.0);
     expect(a.quiet).toBe(false);
+    // Completeness diff is ON by default — opting out is explicit only.
+    expect(a.noCompleteness).toBe(false);
+  });
+
+  test("--no-completeness opts out of the tracked-universe diff", () => {
+    const a = parseArgs(["--no-completeness"]);
+    expect(a.noCompleteness).toBe(true);
   });
 
   test("override flags", () => {
@@ -443,6 +649,76 @@ describe("runCli (integration)", () => {
       "utf8",
     );
     const exit = await runCli(["--lcov", "alt.lcov", "--quiet"], dir);
+    // alt.lcov references /repo/src/a.ts, but the completeness diff
+    // scans `dir/src/**` which is empty → no missing files (universe is
+    // empty) → green. Confirms the completeness pass doesn't false-fail
+    // when the on-disk universe is empty.
+    expect(exit).toBe(0);
+  });
+
+  // ADR-254 end-to-end: a real on-disk src/ tree where one file has NO
+  // SF: record in the lcov MUST fail the gate (exit 1) and name the
+  // uncovered file in the report. This is the runCli-level guard against
+  // the blind spot — the per-function evaluateGate tests above prove the
+  // diff; this proves runCli wires enumerateTrackedSources into it.
+  test("FAILS (exit 1) when a real src/ file is absent from the lcov, naming it", async () => {
+    await mkdir(join(dir, "src", "core"), { recursive: true });
+    await writeFile(join(dir, "src", "core", "covered.ts"), "export const a = 1;\n", "utf8");
+    await writeFile(join(dir, "src", "core", "untested.ts"), "export const b = 2;\n", "utf8");
+    // lcov covers ONLY covered.ts — untested.ts is the 0%-coverage file.
+    await writeFile(
+      join(dir, "coverage/lcov.info"),
+      "SF:src/core/covered.ts\nFNF:1\nFNH:1\nLF:1\nLH:1\nend_of_record\n",
+      "utf8",
+    );
+    await writeFile(join(dir, "bunfig.toml"), "", "utf8");
+
+    const chunks: string[] = [];
+    const orig = process.stdout.write.bind(process.stdout);
+    // Narrow capture override (restored in finally). The cast funnels
+    // the single-arg test stub through the real multi-overload signature.
+    process.stdout.write = ((s: string | Uint8Array): boolean => {
+      chunks.push(typeof s === "string" ? s : new TextDecoder().decode(s));
+      return true;
+    }) as typeof process.stdout.write;
+    let exit: number;
+    try {
+      exit = await runCli([], dir);
+    } finally {
+      process.stdout.write = orig;
+    }
+    const out = chunks.join("");
+    expect(exit).toBe(1);
+    expect(out).toContain("src/core/untested.ts");
+    expect(out).toContain("0%");
+    // The covered file is NOT named as a breach.
+    expect(out).not.toContain("src/core/covered.ts  0%");
+  });
+
+  test("--no-completeness restores legacy lcov-only mode (no false-fail on untested src)", async () => {
+    await mkdir(join(dir, "src", "core"), { recursive: true });
+    await writeFile(join(dir, "src", "core", "untested.ts"), "export const b = 2;\n", "utf8");
+    await writeFile(
+      join(dir, "coverage/lcov.info"),
+      "SF:src/core/covered.ts\nLF:1\nLH:1\nend_of_record\n",
+      "utf8",
+    );
+    await writeFile(join(dir, "bunfig.toml"), "", "utf8");
+    // With completeness ON this would be exit 1; --no-completeness opts out.
+    const exit = await runCli(["--no-completeness", "--quiet"], dir);
+    expect(exit).toBe(0);
+  });
+
+  test("green when the real src/ tree is fully covered by the lcov", async () => {
+    await mkdir(join(dir, "src", "core"), { recursive: true });
+    await writeFile(join(dir, "src", "core", "only.ts"), "export const a = 1;\n", "utf8");
+    await writeFile(
+      join(dir, "coverage/lcov.info"),
+      "SF:src/core/only.ts\nFNF:1\nFNH:1\nLF:1\nLH:1\nend_of_record\n",
+      "utf8",
+    );
+    await writeFile(join(dir, "bunfig.toml"), "", "utf8");
+    const exit = await runCli(["--quiet"], dir);
     expect(exit).toBe(0);
   });
 });

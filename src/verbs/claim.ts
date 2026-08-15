@@ -56,10 +56,15 @@ export interface ClaimDoneArgs {
    *  Task in the caller's lane (no positional id required). Only valid
    *  for `claim`; rejected on `done`. */
   next?: boolean;
+  /** ADR-210 Tier-2 §73: explicit role-tag filter for `claim --next
+   *  --role <X>`. Restricts auto-selection to Tasks whose `.lane === X`
+   *  (a hard filter — no lane-less fallback / cross-lane). Only valid
+   *  with `--next`; rejected otherwise. */
+  role?: string;
 }
 
 const USAGE_CLAIM =
-  "atmux claim <task-id> [--as <member>]\n       atmux claim --next [--as <member>]";
+  "atmux claim <task-id> [--as <member>]\n       atmux claim --next [--as <member>] [--role <fe|be|db|...>]";
 const USAGE_DONE = "atmux done <task-id> [--as <member>] [--note <text>]";
 
 /**
@@ -77,6 +82,7 @@ export function parseClaimDoneArgs(
   let note: string | undefined;
   let teamDir: string | undefined;
   let next = false;
+  let role: string | undefined;
   const usage = verb === "claim" ? USAGE_CLAIM : USAGE_DONE;
   let i = 0;
   while (i < argv.length) {
@@ -116,6 +122,18 @@ export function parseClaimDoneArgs(
       i += 1;
       continue;
     }
+    if (a === "--role") {
+      if (verb !== "claim") {
+        throw new UsageError({ what: `${verb}: --role is only valid with claim`, hint: usage });
+      }
+      const v = argv[i + 1];
+      if (v === undefined || v.length === 0) {
+        throw new UsageError({ what: `${verb}: --role requires a value`, hint: usage });
+      }
+      role = v;
+      i += 2;
+      continue;
+    }
     if (a?.startsWith("-")) {
       throw new UsageError({ what: `${verb}: unknown flag: ${a}`, hint: usage });
     }
@@ -135,11 +153,18 @@ export function parseClaimDoneArgs(
   } else if (id.length === 0) {
     throw new UsageError({ what: `usage: atmux ${verb} <task-id> [--as <member>]`, hint: usage });
   }
+  // ADR-210 §73: --role is a role-tag filter for the auto-select path,
+  // so it's meaningless without --next (manual `claim <id>` already names
+  // its target). Reject early rather than silently ignore.
+  if (role !== undefined && !next) {
+    throw new UsageError({ what: `${verb}: --role requires --next`, hint: usage });
+  }
   const out: ClaimDoneArgs = { id };
   if (who !== undefined) out.who = who;
   if (note !== undefined) out.note = note;
   if (teamDir !== undefined) out.teamDir = teamDir;
   if (next) out.next = true;
+  if (role !== undefined) out.role = role;
   return out;
 }
 
@@ -225,15 +250,24 @@ async function claimNext(parsed: ClaimDoneArgs): Promise<number> {
 
   const tasks = await listTasks(atmuxDir);
   const callerScope = resolveCallerScope();
+  // ADR-210 Tier-2 §73: explicit `--role <X>` is a hard lane filter that
+  // bypasses callerLane / crossLaneClaim. Pass it through so selection
+  // only considers Tasks whose `.lane === role`.
+  const roleFilter =
+    parsed.role !== undefined && parsed.role.length > 0 ? parsed.role : undefined;
   const candidate = selectNextClaimable(tasks, {
     callerLane,
     crossLaneClaim,
     caller: who,
     callerScope,
+    ...(roleFilter !== undefined ? { roleFilter } : {}),
   });
 
   if (candidate === null) {
-    if (callerLane !== null && !crossLaneClaim) {
+    // Under an explicit --role filter, the strict-lane refusal doesn't
+    // apply — a dry role queue is a benign no-op (the role just has no
+    // ready work), matching the lane-tick no-match semantics.
+    if (roleFilter === undefined && callerLane !== null && !crossLaneClaim) {
       throw new ConfigError({
         what: `claim --next: no work in ${callerLane.toUpperCase()} lane (crossLaneClaim=false)`,
       });

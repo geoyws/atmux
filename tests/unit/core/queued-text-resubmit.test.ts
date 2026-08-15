@@ -107,10 +107,12 @@ describe("detectAndResubmit — 4 state branches per T5 contract", () => {
     expect(fx.failureLogCalls).toHaveLength(0);
   });
 
-  test("(b) queued + ✻ glyph (active spinner) → skip mid-turn; sendKeysFn NOT called", async () => {
+  test("(b) queued + present-tense `Cooking…` (active spinner line) → skip mid-turn; sendKeysFn NOT called", async () => {
     const fx = buildFixture();
     const capture = paneCapture({
       composerText: "claim --next",
+      // Active turn: the present-tense `Cooking…` verb (not the bare glyph) is
+      // what marks this mid-turn per t-408a3c75.
       thinkingMarker: "✻ Cooking… (12s)",
     });
     const action = await detectAndResubmit(capture, fx.sendKeysFn, fx.clockFn, fx.failureLogFn);
@@ -165,21 +167,39 @@ describe("detectAndResubmit — 4 state branches per T5 contract", () => {
     expect(fx.sendKeysCalls).toHaveLength(0);
   });
 
-  test("(c) queued + no active indicator → fire; sendKeysFn called ONCE with the captured text", async () => {
+  test("(c) queued + past-tense glyph in scrollback (idle) → fire; sendKeysFn called ONCE with the captured text", async () => {
     const fx = buildFixture({ sendKeysResult: { success: true, attempts: 1 } });
     const capture = paneCapture({
       composerText: "claim --next",
-      // No thinking marker; scrollback contains only a post-turn idle line.
+      // No active thinking marker; the `✻ Worked for 22s` line is a PAST-tense,
+      // idle display — the turn has finished. Per t-408a3c75 the bare glyph is
+      // no longer an active-turn indicator, so this MUST fire (the 2026-05-19
+      // unum incident: 7/7 panes wedged exactly because this skipped).
       scrollback: ["✻ Worked for 22s", "(post-turn idle, no active indicator)"],
     });
     const action = await detectAndResubmit(capture, fx.sendKeysFn, fx.clockFn, fx.failureLogFn);
-    // Note: this case intentionally exercises a `✻` glyph in scrollback. The
-    // current helper is conservative — glyph anywhere in capture → skip. The
-    // T5 contract spec lists `✻/✶/✽ within 30s` as the discriminator, so the
-    // helper's bias toward false-negative-skip is the documented choice.
-    expect(action.kind).toBe("skip");
+    expect(action.kind).toBe("fire");
     expect(action.text).toBe("claim --next");
-    expect(fx.sendKeysCalls).toHaveLength(0);
+    expect(fx.sendKeysCalls).toHaveLength(1);
+    expect(fx.sendKeysCalls[0]?.text).toBe("claim --next");
+    expect(fx.failureLogCalls).toHaveLength(0);
+  });
+
+  test("(c-regress) queued + `✻ Brewed for 1m 56s` past-tense glyph (idle) → fire (t-408a3c75 regression-guard)", async () => {
+    const fx = buildFixture({ sendKeysResult: { success: true, attempts: 1 } });
+    const capture = paneCapture({
+      composerText: "/loop /whip",
+      // Regression-guard for the 2026-05-19 unum wedge: a past-tense `✻ Brewed
+      // for 1m 56s` display contains the spinner glyph but the agent is idle.
+      // The bare glyph MUST NOT re-introduce a skip here.
+      scrollback: ["✻ Brewed for 1m 56s"],
+    });
+    const action = await detectAndResubmit(capture, fx.sendKeysFn, fx.clockFn, fx.failureLogFn);
+    expect(action.kind).toBe("fire");
+    expect(action.text).toBe("/loop /whip");
+    expect(fx.sendKeysCalls).toHaveLength(1);
+    expect(fx.sendKeysCalls[0]?.text).toBe("/loop /whip");
+    expect(fx.failureLogCalls).toHaveLength(0);
   });
 
   test("(c') queued + truly empty scrollback → fire; sendKeysFn called ONCE with the captured text", async () => {

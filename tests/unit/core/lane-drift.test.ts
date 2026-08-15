@@ -17,6 +17,7 @@ import {
   type DriftDecision,
   formatDurationCompact,
   formatFlagBody,
+  hasProgressingChildren,
 } from "../../../src/core/lane-drift.ts";
 import type { PaneClassification } from "../../../src/core/pane-state.ts";
 import type { KanbanTask } from "../../../src/schema/kanban.ts";
@@ -385,5 +386,168 @@ describe("formatDurationCompact — CLAUDE.md global convention", () => {
     expect(formatDurationCompact(165)).toBe("2h45m");
     expect(formatDurationCompact(405)).toBe("6h45m");
     expect(formatDurationCompact(1549)).toBe("25h49m");
+  });
+});
+
+// ---------- ADR-176 criterion (d): epic-children-progressing ----------
+
+/** A child Task under EPIC parent `epicId` with the given status. */
+function child(id: string, epicId: string, status: string): KanbanTask {
+  return { id, epic: epicId, status };
+}
+
+/** Map<parentId, child[]> as the verb pre-builds. */
+function childrenMap(
+  pairs: ReadonlyArray<[string, ReadonlyArray<KanbanTask>]>,
+): ReadonlyMap<string, ReadonlyArray<KanbanTask>> {
+  return new Map(pairs);
+}
+
+describe("hasProgressingChildren — ADR-176 criterion (d) predicate", () => {
+  const PARENT = "t-parent01";
+
+  // The four progressing statuses each individually flip the predicate.
+  for (const status of ["in-progress", "review", "testing", "merging", "done"] as const) {
+    test(`child status="${status}" → progressing (true)`, () => {
+      const map = childrenMap([[PARENT, [child("t-child001", PARENT, status)]]]);
+      expect(hasProgressingChildren(PARENT, map, "no commit refs")).toBe(true);
+    });
+  }
+
+  // Non-progressing statuses do NOT flip it (no commit ref either).
+  for (const status of ["todo", "blocked"] as const) {
+    test(`child status="${status}" with no commit ref → NOT progressing (false)`, () => {
+      const map = childrenMap([[PARENT, [child("t-child001", PARENT, status)]]]);
+      expect(hasProgressingChildren(PARENT, map, "unrelated commit text")).toBe(false);
+    });
+  }
+
+  test("commit-ref-in-window branch: todo child whose id appears in commits → progressing (true)", () => {
+    const map = childrenMap([[PARENT, [child("t-child9f", PARENT, "todo")]]]);
+    // Status is todo (would be false on status alone) but a commit
+    // references the child id → progressing via the commit-ref branch.
+    expect(hasProgressingChildren(PARENT, map, "feat(scope): work on t-child9f")).toBe(true);
+  });
+
+  test("no children entry (non-EPIC Task) → false", () => {
+    const map = childrenMap([[PARENT, [child("t-child001", PARENT, "done")]]]);
+    expect(hasProgressingChildren("t-someleaf", map, "")).toBe(false);
+  });
+
+  test("empty children array → false", () => {
+    const map = childrenMap([[PARENT, []]]);
+    expect(hasProgressingChildren(PARENT, map, "")).toBe(false);
+  });
+
+  test("undefined map → false (legacy 3-criterion no-op)", () => {
+    expect(hasProgressingChildren(PARENT, undefined, "")).toBe(false);
+  });
+
+  test("multiple children, all todo, none referenced → false; one flips it → true", () => {
+    const allTodo = childrenMap([
+      [
+        PARENT,
+        [
+          child("t-c1", PARENT, "todo"),
+          child("t-c2", PARENT, "todo"),
+          child("t-c3", PARENT, "blocked"),
+        ],
+      ],
+    ]);
+    expect(hasProgressingChildren(PARENT, allTodo, "no refs")).toBe(false);
+    const oneMoving = childrenMap([
+      [
+        PARENT,
+        [
+          child("t-c1", PARENT, "todo"),
+          child("t-c2", PARENT, "in-progress"),
+          child("t-c3", PARENT, "blocked"),
+        ],
+      ],
+    ]);
+    expect(hasProgressingChildren(PARENT, oneMoving, "no refs")).toBe(true);
+  });
+});
+
+describe("checkLaneDrift — ADR-176 criterion (d) gates the revert", () => {
+  // Base scenario: a/b/c all satisfied (would revert under the legacy
+  // 3-criterion algorithm). Criterion (d) is the only variable.
+  const PARENT = "t-parent01";
+  function parentTask(): KanbanTask {
+    return task({ id: PARENT, owner: "planner", claimedAgoMin: 120 });
+  }
+  async function run(
+    childrenByParentId?: ReadonlyMap<string, ReadonlyArray<KanbanTask>>,
+    recentCommitsText = "unrelated work elsewhere",
+  ): Promise<DriftDecision[]> {
+    return await checkLaneDrift({
+      inProgressTasks: [parentTask()],
+      classifyMember: fixedClassify({ planner: paneCompacting() }),
+      recentCommitsText,
+      commitsScanned: 30,
+      nowSec: NOW_SEC,
+      claimedAtThresholdMin: THRESHOLD_MIN,
+      ...(childrenByParentId !== undefined ? { childrenByParentId } : {}),
+    });
+  }
+
+  test("a/b/c hold + NO children map → REVERT (legacy behavior preserved)", async () => {
+    const decisions = await run(undefined);
+    expect(decisions[0]?.action).toBe("revert");
+  });
+
+  test("EPIC parent with one in-progress child → skip:epic-children-progressing", async () => {
+    const map = childrenMap([[PARENT, [child("t-childaa", PARENT, "in-progress")]]]);
+    const decisions = await run(map);
+    expect(decisions[0]?.action).toBe("skip");
+    expect(decisions[0]?.reason).toBe("epic-children-progressing");
+  });
+
+  test("EPIC parent with all-todo children (no ref) → REVERT (todo doesn't count)", async () => {
+    const map = childrenMap([
+      [PARENT, [child("t-childaa", PARENT, "todo"), child("t-childbb", PARENT, "blocked")]],
+    ]);
+    const decisions = await run(map);
+    expect(decisions[0]?.action).toBe("revert");
+  });
+
+  test("EPIC parent with done child past threshold → skip (done counts as progressing)", async () => {
+    const map = childrenMap([[PARENT, [child("t-childaa", PARENT, "done")]]]);
+    const decisions = await run(map);
+    expect(decisions[0]?.action).toBe("skip");
+    expect(decisions[0]?.reason).toBe("epic-children-progressing");
+  });
+
+  test("EPIC parent with todo child whose id is in the commit window → skip (commit-ref branch)", async () => {
+    const map = childrenMap([[PARENT, [child("t-childcc", PARENT, "todo")]]]);
+    const decisions = await run(map, "feat(be): landed t-childcc");
+    expect(decisions[0]?.action).toBe("skip");
+    expect(decisions[0]?.reason).toBe("epic-children-progressing");
+  });
+
+  test("criterion (d) is additive: a-fail still wins over progressing children", async () => {
+    // claimedAgoMin below threshold → (a) fails first; reason stays
+    // claimed-recently even though children are progressing.
+    const map = childrenMap([[PARENT, [child("t-childaa", PARENT, "in-progress")]]]);
+    const decisions = await checkLaneDrift({
+      inProgressTasks: [task({ id: PARENT, owner: "planner", claimedAgoMin: 5 })],
+      classifyMember: fixedClassify({ planner: paneCompacting() }),
+      recentCommitsText: "unrelated",
+      commitsScanned: 30,
+      nowSec: NOW_SEC,
+      claimedAtThresholdMin: THRESHOLD_MIN,
+      childrenByParentId: map,
+    });
+    expect(decisions[0]?.action).toBe("skip");
+    expect(decisions[0]?.reason).toBe("claimed-recently");
+  });
+
+  test("commit-ref-found (c) takes precedence over epic-children-progressing in reason", async () => {
+    // Parent's OWN id appears in commits → (c) fails → reason
+    // commit-ref-found, checked before (d).
+    const map = childrenMap([[PARENT, [child("t-childaa", PARENT, "in-progress")]]]);
+    const decisions = await run(map, `feat: parent ${PARENT} touched`);
+    expect(decisions[0]?.action).toBe("skip");
+    expect(decisions[0]?.reason).toBe("commit-ref-found");
   });
 });

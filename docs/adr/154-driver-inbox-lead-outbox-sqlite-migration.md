@@ -3,14 +3,14 @@
 **Status**: accepted
 **Date**: 2026-05-15
 **Author**: atmux team (driver-claude-sopx complaint c-96e5a8f2, 2026-05-15 /bruh sweep 00:17 MYT)
-**Relates**: [ADR-060](./060-kanban-sqlite-canonical.md) (kanban SQLite canonical store), [ADR-076](./076-inboxes-sqlite-migration.md) (member inboxes → SQLite tasks-table; ELIMINATED `.atmux/inboxes/<m>.json`), [ADR-152] (blockers list — consumes these tables), [ADR-153] (auto-promotion inbox→flag at 12h — needs DB-indexable timestamps), [ADR-155] (pane-state verb — sibling drafting), [ADR-151] (unblocker role — consumer).
+**Relates**: [ADR-126](126-sqlite-state-store.md) (kanban SQLite canonical store), [ADR-076](./076-inboxes-sqlite-migration.md) (member inboxes → SQLite tasks-table; ELIMINATED `.atmux/inboxes/<m>.json`), [ADR-152] (blockers list — consumes these tables), [ADR-153] (auto-promotion inbox→flag at 12h — needs DB-indexable timestamps), [ADR-155] (pane-state verb — sibling drafting), [ADR-151] (unblocker role — consumer).
 **Kanban**: closes EPIC `t-2298cbb0`; T1-of-N decomposition (this commit drafts only). Closes complaint `c-96e5a8f2`.
 
 ## Context
 
 ### The two coordination surfaces atmux still keeps in markdown
 
-Two structured messaging surfaces remain markdown-canonical post-ADR-060 / ADR-076:
+Two structured messaging surfaces remain markdown-canonical post-ADR-126 / ADR-076:
 
 - **`.atmux/driver-inbox.md`** — lead → driver. Written by `atmux tell-lead` (driver hand) and by lead's whip pipeline when surfacing decisions / blockers. Read by driver between turns to triage.
 - **`.atmux/lead-outbox.md`** — member → driver. Written by `atmux reply` from every team member. Read by driver via `atmux outbox [--ack]`.
@@ -30,7 +30,7 @@ Both files carry **inline triage glyphs** the driver and lead post on read:
 
 Pre-ADR-076 the entire kanban + inbox surface lived in JSON files; markdown was the human-legibility add-on for the two surfaces the *operator* reads, not the bot. The flock-guarded read-modify-write pattern (`.lock` sidecar files) handled the small write volume. Triage glyphs gave a low-friction way to post triage state inline without a schema.
 
-That tradeoff is no longer optimal. Adjacent surfaces (`kanban` per ADR-060, member inboxes per ADR-076, complaints) are SQLite-canonical and the markdown surfaces have started to **drift** in ways the structured paths don't:
+That tradeoff is no longer optimal. Adjacent surfaces (`kanban` per ADR-126, member inboxes per ADR-076, complaints) are SQLite-canonical and the markdown surfaces have started to **drift** in ways the structured paths don't:
 
 - **No structured aging.** ADR-153 (auto-promotion inbox→flag at 12h) and the planned ADR-152 blockers list both want queries like *"any outbox entry older than 6h that's still pending?"*. With markdown, every consumer re-parses the file, re-walks date headers, and re-extracts glyphs — three independent parsers diverging silently.
 - **Triage glyphs as inline text are unqueryable.** A `triage=📤` row is grepable; an `age(triage=📤) > 6h` is not without parsing.
@@ -54,7 +54,7 @@ If we do the schema for ADR-152 / ADR-153 / ADR-151 each separately, we end up w
 
 Both surfaces become **rows in `state.db`**. Markdown becomes a *render* of those rows via verb, not the source of truth. The flip is **single-cutover**, not gradual: new writes go to SQLite only; legacy `.md` files are retained as **read-only archive** for ≥1 minor release post-cut (deprecation window per §D7).
 
-Per `[[project_kanban_storage_sqlite]]` memory + ADR-060 + ADR-076 precedent — the codebase already treats `state.db` as the canonical multi-surface store. Adding two more tables matches the established pattern; introducing a second canonical-write path (markdown still authoritative for some subset) would re-fragment the storage layer.
+Per `[[project_kanban_storage_sqlite]]` memory + ADR-126 + ADR-076 precedent — the codebase already treats `state.db` as the canonical multi-surface store. Adding two more tables matches the established pattern; introducing a second canonical-write path (markdown still authoritative for some subset) would re-fragment the storage layer.
 
 ### (D2) Schema shape — UNIFIED `coordination_messages` table with `direction` column
 
@@ -244,7 +244,7 @@ Reviewer / operator: any non-default flips `Status: proposed → accepted`.
 ## Acceptance (T1 commit)
 
 - [x] ADR-154 Status: `proposed`, ready for reviewer pre-flag
-- [x] Cross-refs ADR-060 (kanban SQLite canonical), ADR-076 (inboxes migration precedent), ADR-152 / ADR-153 / ADR-155 (consumer drafts; same /bruh sweep), ADR-151 (unblocker consumer)
+- [x] Cross-refs ADR-126 (kanban SQLite canonical), ADR-076 (inboxes migration precedent), ADR-152 / ADR-153 / ADR-155 (consumer drafts; same /bruh sweep), ADR-151 (unblocker consumer)
 - [x] §Decision documents both table shape (unified) + indices + `extra` JSON convention
 - [x] §Migration documents one-shot script + idempotence audit row + one-release deprecation window
 - [x] §Verbs documents the show / watch / add / triage / archive API surface
@@ -263,7 +263,7 @@ Reviewer / operator: any non-default flips `Status: proposed → accepted`.
 
 ## Related work + sibling patterns
 
-- **ADR-060** — kanban SQLite canonical. Sibling pattern: `state.db` already hosts `tasks`, `epics`, `stories`. Adding `coordination_messages` to the same DB co-locates all coordination state for atomic cross-table reads (e.g. blockers list joining tasks + coordination_messages).
+- **ADR-126** — kanban SQLite canonical. Sibling pattern: `state.db` already hosts `tasks`, `epics`, `stories`. Adding `coordination_messages` to the same DB co-locates all coordination state for atomic cross-table reads (e.g. blockers list joining tasks + coordination_messages).
 - **ADR-076** — member inboxes → SQLite (post-cutover, `.atmux/inboxes/<m>.json` frozen). Direct precedent for "markdown / JSON surface → SQLite canonical + verb-rendered view". This ADR is ADR-076's natural successor for the remaining two surfaces.
 - **ADR-152 / ADR-153** — direct downstream consumers; the SQL view paths they need land in this ADR's schema.
 - **CLAUDE.md driver-inbox triage convention** — the ✅ / 📤 / ⏳ / ❌ glyph set is preserved in the markdown render (D4 table) so operator muscle-memory survives the cut.

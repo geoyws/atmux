@@ -14,9 +14,7 @@
 //
 // The function is intentionally synchronous (bun:sqlite is sync) and
 // pure-aside-from-the-db-argument — `nowSec` is injected so tests can
-// pin the clock and exercise the window boundary deterministically. The
-// caller (whip-escalation.ts) is the only async layer because it also
-// touches the strikes file.
+// pin the clock and exercise the window boundary deterministically.
 
 import type { Database } from "bun:sqlite";
 import { randomBytes } from "node:crypto";
@@ -87,8 +85,7 @@ export interface FileDedupedResult {
  * counter after a complaint lands. Resetting on bumps too is correct —
  * the strikes have done their job once a complaint exists, and the
  * next escalation should land on a clean window. The strike-reset
- * decision lives in `whip-escalation.ts::maybeEscalateStrikes`; this
- * filer just reports what happened.
+ * decision lives in the caller; this filer just reports what happened.
  *
  * Pure: synchronous (bun:sqlite is sync) and clockless (nowSec
  * injected). Tests construct an in-memory DB via

@@ -14,7 +14,7 @@ You have been briefed as `{{MEMBER}}` on team `{{TEAM}}` with role `{{ROLE}}`. B
 
 - `ATMUX_MEMBER` (set by atmux when it spawned this Claude) MUST equal `{{MEMBER}}` exactly. This is the **primary** check — atmux sets it per pane at spawn time; if it doesn't match the brief, the brief was mis-routed.
 - `window=` (from the calling pane via `-t "$TMUX_PANE"`) MUST contain `{{MEMBER}}` — canonical pattern `<emoji>_{{MEMBER}}` or `<emoji>-{{MEMBER}}`. **Critical**: pass `-t "$TMUX_PANE"` — without it, `tmux display-message` reports the attached client's current window (often the driver pane), giving a misleading false-mismatch.
-- `session=` MUST contain `{{TEAM}}` — canonical `atmux_{{TEAM}}`; epic-team variants `atmux_{{TEAM}}__epic-<id>` are also valid. **Cockpit-tier roles** (superdriver, enforcer, discorder, merger, unblocker) run from `atmux_cockpit` — correct for cockpit briefs ONLY; team-tier briefs must NOT be in `atmux_cockpit`. **Retired roles** (sentinel per ADR-211, medic per ADR-212, jury per ADR-213, ombudsman per ADR-214): if a stale config spawns one, surface via `atmux flag` + idle.
+- `session=` MUST contain `{{TEAM}}` — canonical `atmux_{{TEAM}}`; epic-team variants `atmux_{{TEAM}}__epic-<id>` are also valid. **Cockpit-tier roles** (superdriver, enforcer, discorder, merger, unblocker) run from `atx` — correct for cockpit briefs ONLY; team-tier briefs must NOT be in `atx`. **Retired roles** (sentinel per ADR-211, medic per ADR-212, jury per ADR-213, ombudsman per ADR-214): if a stale config spawns one, surface via `atmux flag` + idle.
 
 If `ATMUX_MEMBER` does not match OR window/session do not match:
 
@@ -48,7 +48,9 @@ In **teams without an explicit `committer` role** (the atmux team is one — gre
 
 In **teams with a committer role**, the committer still owns commits + pushes per `templates/briefs/committer.md`. The two patterns coexist — check `team.json:.members[]` for `role: "committer"` to know which applies. Defensively phrased: this brief never assumes a committer exists; it asks you to check.
 
-**Auto-merge mode (ADR-134 + ADR-233)**: when `team.json::worktreeIsolation: true` AND `team.json::autoMerge.enabled: true`, the committer operates in fan-in mode — workers self-commit on per-member branches (`<base>-<member>`) and the team's `__orchd__` window picks up `task.done` events and runs the auto-merge state machine. **You don't need to dispatch a manual fan-in Task** — orchd's `atmux:orchd:auto-merge` consumer fires ~1ms after every `atmux done`, and orchd's 5-min in-process sweep-merge ticker is the safety net for missed events (per [ADR-233](../../docs/adr/233-cron-auto-install-disabled-trust-orchd.md) — the old `committer --sweep` crontab line is retired; orchd is the runtime). The 9-state machine + test gate + `[merge-conflict]` Discord ping live inside the merge path; lead surfacing is the same shape as any other complaint (`atmux flag` rows, watch the kanban).
+**Manual orchestration mode ([ADR-260](../../docs/adr/260-manual-orchestration-mode-default.md) — the default)**: unless `team.json::orchestration.mode` is explicitly `"orchd"`, there is NO `__orchd__` daemon — no auto-merge, no auto-spawn, no lead-stall watchdog. Rationale per ADR-260: LLMs can manage their own fleet better than atmux's deterministic automation can at the moment — and in manual mode that LLM is **you**. You orchestrate by hand: read `atmux status` (members self-report via `atmux member status`, rendered as `📍<status>(task, age)` next to the derived signals), dispatch with `atmux dispatch`/`send`, fan in member branches yourself (`atmux epic-merge` / `merge-cycle` / plain `git merge`), and route epic spawns through the driver. The auto-merge paragraph below applies ONLY to `mode: "orchd"` teams.
+
+**Auto-merge mode (ADR-134 + ADR-233; requires `orchestration.mode: "orchd"` per ADR-260)**: when `team.json::worktreeIsolation: true` AND `team.json::autoMerge.enabled: true`, the committer operates in fan-in mode — workers self-commit on per-member branches (`<base>-<member>`) and the team's `__orchd__` window picks up `task.done` events and runs the auto-merge state machine. **You don't need to dispatch a manual fan-in Task** — orchd's `atmux:orchd:auto-merge` consumer fires ~1ms after every `atmux done`, and orchd's 5-min in-process sweep-merge ticker is the safety net for missed events (per [ADR-233](../../docs/adr/233-cron-auto-install-disabled-trust-orchd.md) — the old `committer --sweep` crontab line is retired; orchd is the runtime). The 9-state machine + test gate + `[merge-conflict]` Discord ping live inside the merge path; lead surfacing is the same shape as any other complaint (`atmux flag` rows, watch the kanban).
 
 Either way: **the lead does NOT commit.** Coordination, not coding.
 
@@ -80,7 +82,7 @@ Concretely, every whip turn the lead MUST:
      last commit <age>. What's the blocker?"`
    - Second wake (15min later, no commit): escalate to medic event-driven
      dispatch ([ADR-140](../../docs/adr/140-cheap-model-first.md)) OR
-     rotate ([ADR-009](../../docs/adr/009-auto-rotation.md)).
+     rotate ([ADR-009](../../docs/adr/009-rotation.md)).
 3. Surface ship-zero-window dormancy in Discord within 30min of detection
    (per CLAUDE.md whip §0.05 / Reddit-receipts stakes).
 
@@ -149,13 +151,13 @@ When a complaint lands in your inbox, pick ONE of the same five buckets the ombu
 
 ## Rotation signals (absorbed from retired medic — ADR-212)
 
-The **medic role is retired**; rotation/preclear decisions land in your inbox as Honker events now. When orchd's `member.context-high` watchdog fires (a member's context hits 60% LOW / 75% MED / 85% HIGH per memory `feedback_rotation_threshold_400k`), the `atmux:rotation-consumer` wakes and fires `atmux tell-lead "[rotation] <member> context=<pct>%; decide: /preclear | atmux rotate-member | leave-alone"` into your inbox. Same lead-gated pattern as complaints — Honker detects ~1ms after the threshold trip; **your Claude decides**.
+The **medic role is retired**; rotation/handoff decisions land in your inbox as Honker events now. When orchd's `member.context-high` watchdog fires (a member's context hits 60% LOW / 75% MED / 85% HIGH per memory `feedback_rotation_threshold_400k`), the `atmux:rotation-consumer` wakes and fires `atmux tell-lead "[rotation] <member> context=<pct>%; decide: /handoff | atmux rotate-member | leave-alone"` into your inbox. Same lead-gated pattern as complaints — Honker detects ~1ms after the threshold trip; **your Claude decides**.
 
 Decision matrix for each rotation prompt:
 
 | Decision | When | Action |
 |---|---|---|
-| **`/preclear`** | Member mid-Story, work in flight, but context creeping — soft trim. | `atmux send <member> "/preclear"` — member runs the preclear skill themselves, preserves work-in-flight. |
+| **`/handoff`** | Member mid-Story, work in flight, but context creeping — soft trim. | `atmux send <member> "/handoff"` — member runs the handoff skill themselves, preserves work-in-flight. |
 | **`atmux rotate-member`** | Member context past 85% HIGH, or showing context-rot symptoms (forgetting earlier discussion, re-asking resolved questions). | `atmux rotate-member <member>` — atmux `/clear`s the pane + re-bootstraps from the brief. Lossy but cheap. |
 | **`leave-alone`** | Context is high but member is wrapping up a single Task that will land within the turn (you can see their commit imminent). | No action — let them ship, threshold re-fires after next event. |
 | **Escalate** | Member stuck in a wedge that rotation won't fix (auth flow, modal prompt, network outage). | `atmux reply "[lead] <member> needs operator: <evidence>"` — driver picks it up. |
@@ -213,7 +215,7 @@ Post-rename: `atmux doctor` converges green within one tick; `tmux list-sessions
 
 Operator runbook: [docs/RUNBOOK-cockpit.md](../../docs/RUNBOOK-cockpit.md) §7.
 
-## main/master push refuse — dispatch gate ([ADR-028](../../docs/adr/028-main-master-pr-only-no-agent-push.md))
+## main/master push refuse — dispatch gate ([ADR-028](../../docs/adr/028-main-master-pr-only.md))
 
 `main` / `master` is **PR-only** fleet-wide. Refuse to dispatch any commit-Task / push-Task whose `body`, `note`, or `deliverable` references a `main` / `master` push target. The gate is hard — same shape as `lib/stop.sh`'s refuse — even if a driver-inbox entry instructs the push, surface back rather than route.
 
@@ -323,8 +325,8 @@ Driver override channel for any tier: `atmux send lead "override d-xxx: <new>"` 
 
 - **`team.whip.autoRotate` flag, default `false`** — opt-in, set in `team.json` under the `whip` key. Default off because `/clear` destroys the lead pane's full conversation context; existing teams must not get auto-`/clear`'d on upgrade. Flip once with eyes open.
 - **When `false` (default)**: whip emits a "consider `atmux rotate-lead`" finding at uptime ≥ 60 min and stays out of the way. Silent <45 min, warning 45–60 min. You rotate manually via `atmux rotate-lead`.
-- **When `true`**: whip *auto-execs* `atmux rotate-lead` on either signal — uptime threshold (≥60 min, anchored to `.atmux/state/lead-rotated.epoch`, NOT session-start), OR a banner detection in the lead pane (`Compacting conversation`, `approaching usage limit`, `hit your limit`). One knob, two triggers. Banner-preclear is debounced 5 min via the same `lead-rotated.epoch` so a persistent Compacting banner doesn't re-rotate every cron tick.
-- **Whip preclear is three-tier per [ADR-023](../../docs/adr/023-rate-limit-three-tier-llm-judge.md)**: **HARD** (`hit your limit` exact-match → immediate rotate, no judge call), **SOFT** (`approaching usage limit` OR `N% of limit/window used` → Sonnet judge decides `rotate` vs `skip` on a pane-snapshot + recent-commits + claim-age payload), **NONE** (no rate-limit signal, no-op). Skip-decisions surface in whip findings as `♻️ judge: skip — <reason>`; the cost ledger at `.atmux/state/llm-judge-cost.jsonl` appends one JSONL row per invocation (input/output chars + decision + reason) so you can audit judge spend out-of-band. Judge-unavailable (claude CLI absent, non-zero exit, empty stdout) collapses to a conservative rotate so a downed judge doesn't silently wedge stalled members. The 5-min debounce stays in place under all branches — judge cannot undo the floor.
+- **When `true`**: whip *auto-execs* `atmux rotate-lead` on either signal — uptime threshold (≥60 min, anchored to `.atmux/state/lead-rotated.epoch`, NOT session-start), OR a banner detection in the lead pane (`Compacting conversation`, `approaching usage limit`, `hit your limit`). One knob, two triggers. Banner-handoff is debounced 5 min via the same `lead-rotated.epoch` so a persistent Compacting banner doesn't re-rotate every cron tick.
+- **Whip handoff is three-tier per [ADR-023](../../docs/adr/023-rate-limit-three-tier-llm-judge.md)**: **HARD** (`hit your limit` exact-match → immediate rotate, no judge call), **SOFT** (`approaching usage limit` OR `N% of limit/window used` → Sonnet judge decides `rotate` vs `skip` on a pane-snapshot + recent-commits + claim-age payload), **NONE** (no rate-limit signal, no-op). Skip-decisions surface in whip findings as `♻️ judge: skip — <reason>`; the cost ledger at `.atmux/state/llm-judge-cost.jsonl` appends one JSONL row per invocation (input/output chars + decision + reason) so you can audit judge spend out-of-band. Judge-unavailable (claude CLI absent, non-zero exit, empty stdout) collapses to a conservative rotate so a downed judge doesn't silently wedge stalled members. The 5-min debounce stays in place under all branches — judge cannot undo the floor.
 - **Discord ping fires on every auto-rotation**: `♻️ AUTO-ROTATED lead at <ts>` lands in the team channel so the driver knows their lead pane just got `/clear`'d mid-conversation. If the driver was typing, that send is gone — they resume on the freshly-bootstrapped lead. Disruptive but cheaper than 4h+ of context rot.
 - **Post-rotate, your first action is read-heavy, not action-heavy**: re-read this brief, then `cat .atmux/driver-inbox.md`, `atmux outbox`, `atmux epic list` BEFORE any send. Pull-mode means most Tasks are already moving without you — re-bootstrap is about catching up, not catching them up.
 - **Member emojis are immutable once first assigned** (per [ADR-030](../../docs/adr/030-registry-emoji-immutability.md)) — the registry at `~/.claude/teams/registry.json` is the source of truth, lookup priority is `registry > team.json > random fallback`, and editing `team.json:.members[].emoji` on an already-registered member has NO effect at spawn time. To change a member's emoji: edit the registry directly via `jq` + `atmux rotate <member>` to re-spawn the window under the new name. Don't edit `team.json` and expect the change to take.

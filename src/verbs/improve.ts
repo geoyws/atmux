@@ -44,6 +44,7 @@ import {
   isDriverPreempt,
   openCycle,
   pauseCycle,
+  selectLongstandingIssues,
   shouldTerminate,
 } from "../core/improve-cycle.ts";
 import { defaultStdoutWrite, type Writer } from "../core/io.ts";
@@ -308,7 +309,12 @@ export async function improve(
   // lib/improve.sh sends the actual tmux keystroke; the TS verb writes
   // the durable file entry only — keeps the verb spawn-free + safely
   // testable end-to-end without a live tmux.
-  await armCycle(atmuxDir, written);
+  // ADR-257 burndown-first — surface the oldest open backlog into the arm
+  // directive so the cycle resolves longstanding issues before net-new work.
+  const armKanban = await loadKanban(atmuxDir);
+  await armCycle(atmuxDir, written, {
+    longstanding: selectLongstandingIssues(armKanban.tasks, nowSec),
+  });
 
   // Fire 🌱 [eternal-improvement-start] Discord ping (best-effort —
   // any send failure soft-degrades via `safeFireDiscord` with stderr WARN).
@@ -536,10 +542,20 @@ async function tickCycle(opts: TickCycleOpts): Promise<number> {
   const delta = Math.max(0, await tokensSpentForClose());
   const cur = state.currentCycle;
   const totalSpent = cur.tokensSpent + delta;
+  // isCycleClosable (above) guaranteed every dispatched Task is done in the
+  // kanban — record them in tasksDone so the history metric
+  // (cur.tasksDone.length) is accurate. Without this the array was never
+  // populated (markTaskDoneInCycle exists but was never wired into the tick
+  // loop), so every closed cycle reported tasksDone=0. Close is the single
+  // point where closability — hence the done set — is known.
+  const tasksDoneIds = cur.tasksDispatched.filter((id) => {
+    const t = tasks.find((k) => k.id === id);
+    return t !== undefined && t.status === "done";
+  });
   const closed = closeCycle(
     {
       ...state,
-      currentCycle: { ...cur, tokensSpent: totalSpent },
+      currentCycle: { ...cur, tokensSpent: totalSpent, tasksDone: tasksDoneIds },
     },
     nowSec,
   );
@@ -549,7 +565,7 @@ async function tickCycle(opts: TickCycleOpts): Promise<number> {
     closed,
     teamName,
     state.cycleN,
-    cur.tasksDone.length,
+    tasksDoneIds.length,
     totalSpent,
     discord,
     nowMs,
@@ -567,7 +583,12 @@ async function tickCycle(opts: TickCycleOpts): Promise<number> {
   // Re-arm: open the next cycle + write + arm directive + start ping.
   const next = openCycle(closed, nowSec);
   await writeState(atmuxDir, next);
-  await armCycle(atmuxDir, next);
+  // ADR-257 burndown-first — re-arm the next cycle with the current
+  // longstanding backlog (the `tasks` snapshot already excludes the just-
+  // closed done Tasks, so they won't be re-selected).
+  await armCycle(atmuxDir, next, {
+    longstanding: selectLongstandingIssues(tasks, nowSec),
+  });
   await firePingStart(next, teamName, discord, nowMs, stderr);
   return 0;
 }

@@ -37,11 +37,15 @@ const CARVE_OUT_FILES = new Set([
   // dismissal keystrokes (single chars: "0", "1", "Escape).
   "core/safe-send.ts",
   // sendToMember's preflight uses safe-send pattern (same modal-
-  // dismissal carve-out as core/safe-send.ts above). The final
-  // text-body submit on the trunk path of sendToMember IS via
-  // paste-submit (loadBuffer + pasteBuffer + submitAfterPaste); the
-  // raw sendKeys callsite at line 257 is only for safePreflight's
-  // modal-dismiss inner callback.
+  // dismissal carve-out as core/safe-send.ts above). The trunk path
+  // text-body submit IS via paste-submit (loadBuffer + pasteBuffer +
+  // submitAfterPaste). Two raw sendKeys callsites live here, both
+  // intentional: (1) safePreflight's modal-dismiss inner callback, and
+  // (2) the ADR-205 §D2 `opts.rawSendKeys=true` per-call escape hatch —
+  // a deliberate literal `send-keys -l <msg>` body emit for callers
+  // that need legacy keystroke semantics (control sequences, single-key
+  // nav). The escape is opt-in + grep-able; reviewer enforces per
+  // ADR-205 §D3.
   "core/send.ts",
   // boot-claude.ts uses pasteAndSubmit for the brief text body
   // (post-T3b3). Raw send-keys remains only on the C-m emit inside

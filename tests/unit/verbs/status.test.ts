@@ -6,14 +6,16 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTmux, type TmuxNamespace } from "../../../src/abstractions/tmux.ts";
+import { writeHeartbeat } from "../../../src/core/heartbeat.ts";
 import { appendDispatched, appendPending } from "../../../src/core/inbox.ts";
 import { addTask, moveTask } from "../../../src/core/kanban.ts";
+import { writeMemberStatus } from "../../../src/core/member-status.ts";
 import { UsageError } from "../../../src/errors.ts";
-import { writeHeartbeat } from "../../../src/core/heartbeat.ts";
 import {
   defaultRoleEmoji,
   formatContextColumn,
   formatHeartbeatColumn,
+  formatSelfStatusColumn,
   gatherStatus,
   type MemberStatus,
   parseStatusArgs,
@@ -309,29 +311,31 @@ describe("status verb — integration", () => {
     expect(out).toContain("🌟");
   });
 
-  // ---------- ADR-077 §F5: superdoctor cockpit-state surface ----------
+  // ---------- ADR-077 §F5 / ADR-133: medic cockpit-state surface ----------
 
-  test("no cockpit.json → snapshot.superdoctor.configured=false; text omits the row", async () => {
+  test("no cockpit.json → snapshot.medic.configured=false; text omits the row", async () => {
     await stageTeam([{ name: "alpha" }], false);
     // beforeEach pinned ATMUX_COCKPIT_CONFIG at a path that doesn't exist.
     const { out } = await captureStdout(() =>
       status(["--socket", socketPath, "--team-dir", teamDir]),
     );
-    expect(out).not.toContain("📋 superdoctor");
+    expect(out).not.toContain("📋 medic");
 
     const { out: jsonOut } = await captureStdout(() =>
       status(["--json", "--socket", socketPath, "--team-dir", teamDir]),
     );
     const parsed = JSON.parse(jsonOut);
-    expect(parsed.superdoctor).toEqual({
+    expect(parsed.medic).toEqual({
       configured: false,
       enabled: false,
       sessionAlive: false,
       windowAlive: false,
     });
+    // ADR-266 §D2: the deprecated `superdoctor` JSON mirror was removed.
+    expect(parsed.superdoctor).toBeUndefined();
   });
 
-  test("cockpit.json without superdoctor block → configured=false (silent)", async () => {
+  test("cockpit.json without medic block → configured=false (silent)", async () => {
     await stageTeam([{ name: "alpha" }], false);
     await writeFile(
       cockpitConfigPath,
@@ -344,16 +348,16 @@ describe("status verb — integration", () => {
       status(["--json", "--socket", socketPath, "--team-dir", teamDir]),
     );
     const parsed = JSON.parse(out);
-    expect(parsed.superdoctor.configured).toBe(false);
+    expect(parsed.medic.configured).toBe(false);
   });
 
-  test("superdoctor block disabled → configured=true, enabled=false; text shows ⚪ disabled", async () => {
+  test("medic block disabled → configured=true, enabled=false; text shows ⚪ disabled", async () => {
     await stageTeam([{ name: "alpha" }], false);
     await writeFile(
       cockpitConfigPath,
       JSON.stringify({
         cockpitSession: "atmux_teams",
-        superdoctor: { enabled: false },
+        medic: { enabled: false },
         teams: [{ name: "alpha", root: "/a", enabled: true }],
       }),
     );
@@ -367,7 +371,7 @@ describe("status verb — integration", () => {
       status(["--json", "--socket", socketPath, "--team-dir", teamDir]),
     );
     const parsed = JSON.parse(jsonOut);
-    expect(parsed.superdoctor).toEqual({
+    expect(parsed.medic).toEqual({
       configured: true,
       enabled: false,
       sessionAlive: false,
@@ -375,13 +379,13 @@ describe("status verb — integration", () => {
     });
   });
 
-  test("superdoctor enabled but cockpit session down → text shows 🔴 cockpit-down", async () => {
+  test("medic enabled but cockpit session down → text shows 🔴 cockpit-down", async () => {
     await stageTeam([{ name: "alpha" }], false);
     await writeFile(
       cockpitConfigPath,
       JSON.stringify({
         cockpitSession: "non-existent-session-for-test",
-        superdoctor: { enabled: true },
+        medic: { enabled: true },
         teams: [{ name: "alpha", root: "/a", enabled: true }],
       }),
     );
@@ -853,17 +857,17 @@ describe("gatherStatus — member ctx fields populated from JSON", () => {
 // ---------- ADR-148 T2: cadence column ----------
 
 import {
-  classifyCadence,
-  type CadenceObservation,
-  formatCadenceColumn,
-  formatDurationShort,
-  resolveCadenceConfig,
-} from "../../../src/verbs/status.ts";
-import {
   DEFAULT_CADENCE_CONFIG,
   DEFAULT_CADENCE_THRESHOLDS,
   type Team,
 } from "../../../src/schema/team.ts";
+import {
+  type CadenceObservation,
+  classifyCadence,
+  formatCadenceColumn,
+  formatDurationShort,
+  resolveCadenceConfig,
+} from "../../../src/verbs/status.ts";
 
 describe("classifyCadence — verdict branches (ADR-148 §D2)", () => {
   const T = DEFAULT_CADENCE_THRESHOLDS;
@@ -984,12 +988,10 @@ describe("formatCadenceColumn — verdict-to-display", () => {
       lastCommitSha: "abc1234",
       ageOfLastCommitSec: 300,
     };
-    expect(formatCadenceColumn({ ...base, verdict: "shipping" })).toBe(
-      "🟢 shipping (5min)",
+    expect(formatCadenceColumn({ ...base, verdict: "shipping" })).toBe("🟢 shipping (5min)");
+    expect(formatCadenceColumn({ ...base, ageOfLastCommitSec: 3600, verdict: "idle" })).toBe(
+      "🟡 idle (1h)",
     );
-    expect(
-      formatCadenceColumn({ ...base, ageOfLastCommitSec: 3600, verdict: "idle" }),
-    ).toBe("🟡 idle (1h)");
     expect(
       formatCadenceColumn({
         ...base,
@@ -1029,19 +1031,13 @@ describe("resolveCadenceConfig — defaults + per-team overrides", () => {
     const r = resolveCadenceConfig(makeTeam({ windowSec: 600 }));
     expect(r.windowSec).toBe(600);
     expect(r.enabled).toBe(DEFAULT_CADENCE_CONFIG.enabled);
-    expect(r.thresholds.shippingMaxAgeSec).toBe(
-      DEFAULT_CADENCE_THRESHOLDS.shippingMaxAgeSec,
-    );
+    expect(r.thresholds.shippingMaxAgeSec).toBe(DEFAULT_CADENCE_THRESHOLDS.shippingMaxAgeSec);
   });
 
   test("partial thresholds → unset threshold keys fall back to defaults", () => {
-    const r = resolveCadenceConfig(
-      makeTeam({ thresholds: { dormantMaxAgeSec: 3600 } }),
-    );
+    const r = resolveCadenceConfig(makeTeam({ thresholds: { dormantMaxAgeSec: 3600 } }));
     expect(r.thresholds.dormantMaxAgeSec).toBe(3600);
-    expect(r.thresholds.shippingMaxAgeSec).toBe(
-      DEFAULT_CADENCE_THRESHOLDS.shippingMaxAgeSec,
-    );
+    expect(r.thresholds.shippingMaxAgeSec).toBe(DEFAULT_CADENCE_THRESHOLDS.shippingMaxAgeSec);
     expect(r.thresholds.idleMaxAgeSec).toBe(DEFAULT_CADENCE_THRESHOLDS.idleMaxAgeSec);
   });
 
@@ -1118,12 +1114,12 @@ describe("gatherStatus — cadence column integration", () => {
 
 // ---------- ADR-077 §lead-uptime-measurement (t-6d950ffd) ----------
 
+import { writeLeadSessionStart } from "../../../src/core/lead-marker.ts";
 import {
+  type LeadUptimeSnapshot,
   parsePsEtime,
   probeLeadUptime,
-  type LeadUptimeSnapshot,
 } from "../../../src/verbs/status.ts";
-import { writeLeadSessionStart } from "../../../src/core/lead-marker.ts";
 
 describe("parsePsEtime — '[[DD-]HH:]MM:SS' parsing", () => {
   test("MM:SS form", () => {
@@ -1164,13 +1160,9 @@ describe("probeLeadUptime — ADR-077 §lead-uptime-measurement", () => {
   test("no team-lead role configured → configured: false, all fields null", async () => {
     const { sessionName } = await stageTeam([{ name: "alpha" }], false);
     const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Team;
-    const snap: LeadUptimeSnapshot = await probeLeadUptime(
-      tmux,
-      team,
-      sessionName,
-      false,
-      { home: homeDir },
-    );
+    const snap: LeadUptimeSnapshot = await probeLeadUptime(tmux, team, sessionName, false, {
+      home: homeDir,
+    });
     expect(snap.configured).toBe(false);
     expect(snap.leadMember).toBeNull();
     expect(snap.lead_session_uptime_s).toBeNull();
@@ -1200,10 +1192,7 @@ describe("probeLeadUptime — ADR-077 §lead-uptime-measurement", () => {
   });
 
   test("marker absent → lead_session_uptime_s null even with team-lead role", async () => {
-    const { sessionName } = await stageTeam(
-      [{ name: "lead-alpha", role: "team-lead" }],
-      false,
-    );
+    const { sessionName } = await stageTeam([{ name: "lead-alpha", role: "team-lead" }], false);
     const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Team;
     const snap = await probeLeadUptime(tmux, team, sessionName, false, {
       home: homeDir,
@@ -1270,15 +1259,8 @@ describe("gatherStatus / status verb — lead block surfaces in JSON", () => {
   });
 
   test("--json output includes 'lead' top-level block", async () => {
-    const { teamName } = await stageTeam(
-      [{ name: "lead-alpha", role: "team-lead" }],
-      false,
-    );
-    await writeLeadSessionStart(
-      teamName,
-      Math.floor(Date.now() / 1000) - 180,
-      { home: homeDir },
-    );
+    const { teamName } = await stageTeam([{ name: "lead-alpha", role: "team-lead" }], false);
+    await writeLeadSessionStart(teamName, Math.floor(Date.now() / 1000) - 180, { home: homeDir });
     const priorHome = process.env.HOME;
     process.env.HOME = homeDir;
     try {
@@ -1300,15 +1282,8 @@ describe("gatherStatus / status verb — lead block surfaces in JSON", () => {
   });
 
   test("text mode emits '🧭 lead' row with session_uptime label", async () => {
-    const { teamName } = await stageTeam(
-      [{ name: "lead-alpha", role: "team-lead" }],
-      false,
-    );
-    await writeLeadSessionStart(
-      teamName,
-      Math.floor(Date.now() / 1000) - 600,
-      { home: homeDir },
-    );
+    const { teamName } = await stageTeam([{ name: "lead-alpha", role: "team-lead" }], false);
+    await writeLeadSessionStart(teamName, Math.floor(Date.now() / 1000) - 600, { home: homeDir });
     const priorHome = process.env.HOME;
     process.env.HOME = homeDir;
     try {
@@ -1513,3 +1488,167 @@ describe("gatherStatus — heartbeat surface", () => {
   });
 });
 
+// ---------- ADR-260 §D5: self-reported status ----------
+
+describe("gatherStatus — selfStatus populated from member-status files (ADR-260 §D5)", () => {
+  test("absent status file → row omits selfStatus (key-presence convention)", async () => {
+    const { sessionName } = await stageTeam(
+      [{ name: "alpha", emoji: "🐝", role: "member", tui: "claude" }],
+      false,
+    );
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Parameters<
+      typeof gatherStatus
+    >[1];
+    const snap = await gatherStatus(tmux, team, sessionName, atmuxDir, {
+      now: () => 1_715_000_500_000,
+    });
+    expect(snap.members[0]?.selfStatus).toBeUndefined();
+  });
+
+  test("written status file → row populates status/note/taskId + ageSec from injected clock", async () => {
+    const { sessionName } = await stageTeam(
+      [{ name: "alpha", emoji: "🐝", role: "member", tui: "claude" }],
+      false,
+    );
+    await writeMemberStatus(atmuxDir, {
+      member: "alpha",
+      status: "working",
+      note: "wiring ADR-260",
+      taskId: "t-12345678",
+      updatedAtSec: 1_715_000_380, // 120s before injected now
+    });
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Parameters<
+      typeof gatherStatus
+    >[1];
+    const snap = await gatherStatus(tmux, team, sessionName, atmuxDir, {
+      now: () => 1_715_000_500_000,
+    });
+    expect(snap.members[0]?.selfStatus).toEqual({
+      status: "working",
+      note: "wiring ADR-260",
+      taskId: "t-12345678",
+      ageSec: 120,
+    });
+  });
+
+  test("future-stamped record clamps ageSec to 0 (clock skew tolerance)", async () => {
+    const { sessionName } = await stageTeam(
+      [{ name: "alpha", emoji: "🐝", role: "member", tui: "claude" }],
+      false,
+    );
+    await writeMemberStatus(atmuxDir, {
+      member: "alpha",
+      status: "idle",
+      updatedAtSec: 1_715_000_999,
+    });
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Parameters<
+      typeof gatherStatus
+    >[1];
+    const snap = await gatherStatus(tmux, team, sessionName, atmuxDir, {
+      now: () => 1_715_000_500_000,
+    });
+    expect(snap.members[0]?.selfStatus?.ageSec).toBe(0);
+  });
+});
+
+describe("formatSelfStatusColumn — pure formatter (ADR-260 §D5)", () => {
+  const base: MemberStatus = {
+    name: "alpha",
+    role: "member",
+    tui: "claude",
+    paneCommand: "claude",
+    cageState: null,
+    pendingCount: 0,
+    inProgressCount: 0,
+    heartbeat_age_s: null,
+  };
+
+  test("never self-reported → '—' (renderer omits the segment)", () => {
+    expect(formatSelfStatusColumn(base)).toBe("—");
+  });
+
+  test("with taskId → '📍<status>(<taskId>, <age>)'", () => {
+    const m: MemberStatus = {
+      ...base,
+      selfStatus: { status: "working", taskId: "t-12345678", ageSec: 120 },
+    };
+    expect(formatSelfStatusColumn(m)).toBe("📍working(t-12345678, 2m)");
+  });
+
+  test("without taskId → '📍<status>(<age>)'", () => {
+    const m: MemberStatus = { ...base, selfStatus: { status: "idle", ageSec: 45 } };
+    expect(formatSelfStatusColumn(m)).toBe("📍idle(45s)");
+  });
+
+  test("hour-scale age uses the heartbeat unit convention", () => {
+    const m: MemberStatus = { ...base, selfStatus: { status: "blocked", ageSec: 7300 } };
+    expect(formatSelfStatusColumn(m)).toBe("📍blocked(2h)");
+  });
+});
+
+describe("status verb — selfStatus end-to-end (ADR-260 §D5)", () => {
+  test("--json emits selfStatus when the member has self-reported; text mode shows 📍 segment", async () => {
+    await stageTeam([{ name: "alpha" }], false);
+    await writeMemberStatus(atmuxDir, {
+      member: "alpha",
+      status: "working",
+      taskId: "t-12345678",
+      updatedAtSec: Math.floor(Date.now() / 1000) - 30,
+    });
+    const { out } = await captureStdout(() =>
+      status(["--json", "--socket", socketPath, "--team-dir", teamDir]),
+    );
+    const parsed = JSON.parse(out);
+    expect(parsed.members[0].selfStatus).toMatchObject({
+      status: "working",
+      taskId: "t-12345678",
+    });
+    expect(parsed.members[0].selfStatus.ageSec).toBeGreaterThanOrEqual(30);
+
+    const { out: text } = await captureStdout(() =>
+      status(["--socket", socketPath, "--team-dir", teamDir]),
+    );
+    expect(text).toContain("📍working(t-12345678,");
+  });
+});
+
+// ---------- ADR-273 D3 trap 1 ----------
+
+describe("gatherStatus — the cage probe gets the RESOLVED session name", () => {
+  test("the probe is handed the same session name gatherStatus was given", async () => {
+    // `status()` resolves the name through `getSessionName` (anchor-aware),
+    // then hands it to `gatherStatus`. Before this fix the probe threw
+    // that away and rebuilt `atmux-<team>`, which names no session at all
+    // for an anchored team — so every member of a live `unum`
+    // (`atmux_unum`) or `atmux` (bare `atmux`) reported as `down`.
+    const anchored = `${sessionPrefix}_anchored`;
+    const { teamName } = await stageTeam(
+      [{ name: "alpha", emoji: "🐝", role: "member", tui: "claude" }],
+      false,
+    );
+    await tmux.session.newSession({ name: anchored, shellCommand: "cat", windowName: "🐝alpha" });
+    await new Promise((r) => setTimeout(r, 80));
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Parameters<
+      typeof gatherStatus
+    >[1];
+    const seen: Array<string | undefined> = [];
+    const snap = await gatherStatus(tmux, team, anchored, atmuxDir, {
+      probeCage: async (_t, m, _dir, opts) => {
+        seen.push(opts?.sessionName);
+        return {
+          member: m.name,
+          windowName: "🐝alpha",
+          state: "active",
+          paneUptimeSec: 10,
+          evidence: "",
+          heartbeatAgeSec: null,
+        };
+      },
+    });
+    expect(snap.team).toBe(teamName);
+    expect(seen).toEqual([anchored]);
+    // …and it must NOT be the rebuilt legacy form.
+    expect(seen).not.toContain(`atmux-${teamName}`);
+    expect(snap.members[0]?.cageState).toBe("active");
+  });
+});

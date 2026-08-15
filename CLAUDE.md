@@ -50,7 +50,7 @@ Pair runbook beats with e2e step labels — beat name = `test.step()` label verb
 
 ## Session lifecycle
 
-Preclear at every phase boundary — phase = "shipped X end-to-end" (committed + pushed + smoked/typechecked/deployed green). Memory + handoff + task-list land while context is fresh. Driver itself = no-op preclear (no coordination state); lead in dedicated window preclears at boundaries.
+Handoff at every phase boundary — phase = "shipped X end-to-end" (committed + pushed + smoked/typechecked/deployed green). Memory + handoff + task-list land while context is fresh. Driver itself = no-op handoff (no coordination state); lead in dedicated window handoffs at boundaries.
 
 ## Migrators
 
@@ -59,6 +59,8 @@ Roster lives at `.atmux/team.json`; sync to legacy `.claude/team.json` via `atmu
 ## Spawn timeout — `ATMUX_SPAWN_TIMEOUT_MS`
 
 Default `spawn()` timeout is 30s (`src/abstractions/spawn.ts::DEFAULT_TIMEOUT_MS`). Submodule-heavy projects (e.g. sopx — nested aix-root / std-root chains) regularly need >30s for cold submodule init, surfacing as `SpawnTimeoutError` mid-`spawn-epic` worktree provisioning. Operators export `ATMUX_SPAWN_TIMEOUT_MS=<ms>` (e.g. `120000`) at team-start. Parsing fails closed: non-numeric / non-positive / non-finite → 30_000ms silently. Per-call `opts.timeoutMs` continues to take precedence. Source: t-681e5b91 (sopx cross-repo dispatch, FIX-A3 Gap #1).
+
+`ATMUX_GIT_TIMEOUT_MS` is the **distinct** sibling seam for the shell-out-to-`git` wrappers (`defaultGitSpawn` in `src/abstractions/worktree.ts` / `src/core/auto-done.ts` / `src/core/auto-push.ts`). Default is `src/abstractions/spawn.ts::DEFAULT_GIT_SPAWN_TIMEOUT_MS` (30_000); resolution via `resolveGitTimeoutMs()` with precedence per-call `opts.timeoutMs` > env `ATMUX_GIT_TIMEOUT_MS` > default, both override layers failing closed to the default on non-numeric / non-positive / non-finite values. Bump when cold submodule fetch / large-pack `worktree add` blows past 30s. Source: t-e32bdf73 (e-268447e2 T1). NOT the same knob as `ATMUX_SPAWN_TIMEOUT_MS` — that governs the buffered/tmux-spawn default, this governs only the git plumbing wrappers.
 
 ## Cron discipline
 

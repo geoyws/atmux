@@ -14,7 +14,7 @@ You have been briefed as `{{MEMBER}}` on team `{{TEAM}}` with role `{{ROLE}}`. B
 
 - `ATMUX_MEMBER` (set by atmux when it spawned this Claude) MUST equal `{{MEMBER}}` exactly. This is the **primary** check — atmux sets it per pane at spawn time; if it doesn't match the brief, the brief was mis-routed.
 - `window=` (from the calling pane via `-t "$TMUX_PANE"`) MUST contain `{{MEMBER}}` — canonical pattern `<emoji>_{{MEMBER}}` or `<emoji>-{{MEMBER}}`. **Critical**: pass `-t "$TMUX_PANE"` — without it, `tmux display-message` reports the attached client's current window (often the driver pane), giving a misleading false-mismatch.
-- `session=` MUST contain `{{TEAM}}` — canonical `atmux_{{TEAM}}`; epic-team variants `atmux_{{TEAM}}__epic-<id>` are also valid. **Cockpit-tier roles** (superdriver, enforcer, discorder, merger, unblocker) run from `atmux_cockpit` — correct for cockpit briefs ONLY; team-tier briefs must NOT be in `atmux_cockpit`. **Retired roles** (sentinel ADR-211, medic ADR-212, jury ADR-213, ombudsman ADR-214): surface via `atmux flag` if you find yourself spawned into one.
+- `session=` MUST contain `{{TEAM}}` — canonical `atmux_{{TEAM}}`; epic-team variants `atmux_{{TEAM}}__epic-<id>` are also valid. **Cockpit-tier roles** (superdriver, enforcer, discorder, merger, unblocker) run from `atx` — correct for cockpit briefs ONLY; team-tier briefs must NOT be in `atx`. **Retired roles** (sentinel ADR-211, medic ADR-212, jury ADR-213, ombudsman ADR-214): surface via `atmux flag` if you find yourself spawned into one.
 
 If `ATMUX_MEMBER` does not match OR window/session do not match:
 
@@ -100,7 +100,7 @@ The 4-step per-tick loop:
 
 When a tick lands you a fresh ask in `{{ATMUX_DIR}}/inboxes/{{MEMBER}}.json` (lead dispatched a triage Task explicitly), reply via `atmux done <task-id> --note "<classification + action taken>"`.
 
-## Pane detection — git-state escalation ([ADR-028](../../docs/adr/028-main-master-pr-only-no-agent-push.md))
+## Pane detection — git-state escalation ([ADR-028](../../docs/adr/028-main-master-pr-only.md))
 
 When inspecting a wedged pane, also peek at `cd <member-cwd> && git rev-parse --abbrev-ref HEAD` + `git log @{u}..HEAD --oneline 2>/dev/null` (where `<member-cwd>` comes from `team.json:.members[].cwd`). Two anomaly shapes need ESCALATION, not auto-fix:
 
@@ -136,7 +136,7 @@ For both shapes, the unblocker does NOT execute pushes, NOT propose pushes in `a
 ## Shared state
 
 ```
-{{ATMUX_DIR}}/kanban.json                       — read for blocked + stale-in-progress Tasks
+{{ATMUX_DIR}}/state.db                          — read for blocked + stale-in-progress Tasks (canonical per ADR-126)
 {{ATMUX_DIR}}/inboxes/{{MEMBER}}.json           — explicit unblock asks from lead land here
 {{ATMUX_DIR}}/lead-outbox.md                    — your `atmux reply` surfaces land here
 {{ATMUX_DIR}}/driver-inbox.md                   — escalation surface for git-state anomalies + driver-needed wedges

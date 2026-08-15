@@ -20,7 +20,9 @@ import {
   SpawnError,
   SpawnTimeoutError,
   TmuxError,
+  TrackerRateLimitError,
   UsageError,
+  VoiceProviderError,
 } from "../../src/errors.ts";
 
 describe("AtmuxError subclasses", () => {
@@ -159,6 +161,37 @@ describe("AtmuxError subclasses", () => {
     expect(e.message).toBe("http GET https://x/y timed out after 5000ms");
   });
 
+  test("TrackerRateLimitError carries trackerId + resetAtSec + status", () => {
+    const e = new TrackerRateLimitError({
+      trackerId: "github",
+      url: "https://api.github.com/repos/a/b/issues",
+      status: 403,
+      resetAtSec: 1765432100,
+    });
+    expect(e.tag).toBe("tracker-rate-limit");
+    expect(e.trackerId).toBe("github");
+    expect(e.resetAtSec).toBe(1765432100);
+    expect(e.message).toBe(
+      "github rate limit exhausted (HTTP 403 from https://api.github.com/repos/a/b/issues, resets at epoch 1765432100)",
+    );
+    expect(e instanceof AtmuxError).toBe(true);
+  });
+
+  test("TrackerRateLimitError omits the reset tail when resetAtSec is null", () => {
+    const cause = new Error("upstream");
+    const e = new TrackerRateLimitError({
+      trackerId: "github",
+      url: "https://api.github.com/x",
+      status: 429,
+      resetAtSec: null,
+      cause,
+    });
+    expect(e.resetAtSec).toBeNull();
+    expect(e.message).toBe("github rate limit exhausted (HTTP 429 from https://api.github.com/x)");
+    expect(e.message).not.toContain("resets at epoch");
+    expect(e.cause).toBe(cause);
+  });
+
   test("DiscordWebhookError adds HTTP status when provided", () => {
     const e = new DiscordWebhookError({ template: "whip-progress", statusCode: 429 });
     expect(e.tag).toBe("discord");
@@ -200,6 +233,25 @@ describe("AtmuxError subclasses", () => {
     const e = new UsageError({ what: "missing arg" });
     expect(e.message).toBe("missing arg");
   });
+
+  test("VoiceProviderError formats provider + what + detail", () => {
+    const e = new VoiceProviderError({
+      what: "session died",
+      provider: "openai-realtime",
+      detail: "code 1006",
+    });
+    expect(e.tag).toBe("voice-provider");
+    expect(e.message).toBe("voice provider (openai-realtime): session died — code 1006");
+    expect(e instanceof AtmuxError).toBe(true);
+    expect(e.context.provider).toBe("openai-realtime");
+  });
+
+  test("VoiceProviderError omits provider + detail when absent, preserves cause", () => {
+    const cause = new Error("ECONNRESET");
+    const e = new VoiceProviderError({ what: "websocket connection failed", cause });
+    expect(e.message).toBe("voice provider: websocket connection failed");
+    expect(e.cause).toBe(cause);
+  });
 });
 
 describe("exitCodeForTag", () => {
@@ -209,6 +261,8 @@ describe("exitCodeForTag", () => {
     ["lock-timeout", 75],
     ["spawn-timeout", 75],
     ["http-timeout", 75],
+    ["tracker-rate-limit", 75],
+    ["voice-provider", 75],
     ["schema", 65],
     ["tmux", 1],
     ["spawn", 1],
@@ -218,6 +272,10 @@ describe("exitCodeForTag", () => {
     ["lock", 1],
   ])("tag %s → exit %d", (tag, expected) => {
     expect(exitCodeForTag(tag)).toBe(expected);
+  });
+
+  test("exhaustiveness guard throws on an impossible tag", () => {
+    expect(() => exitCodeForTag("bogus" as never)).toThrow("unreachable: bogus");
   });
 });
 

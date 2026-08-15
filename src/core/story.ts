@@ -15,6 +15,7 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { exists } from "../abstractions/fs.ts";
 import { closeDatabase, type Database, openDatabase, transact, transactImmediate } from "../abstractions/sqlite.ts";
+import { emit } from "../abstractions/events.ts";
 import { nextId } from "./id-sequence.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { ConfigError, UsageError } from "../errors.ts";
@@ -325,6 +326,16 @@ export async function advanceStory(
     const now = nowEpoch();
     let parentEpicFlipped = false;
     let dispatchedTaskId: string | null = null;
+    // ADR-247 §D1: fire `story.ready` ONCE on the `planning → ready`
+    // transition (the planner's hand-off edge). Captured here, emitted
+    // after the transaction returns — mirrors the `epic.ready` precedent
+    // in `src/core/epic.ts` (events INSERT lands outside the parent
+    // transaction's lock window; BEGIN IMMEDIATE serializes them safely).
+    // Guarded on cur === "planning" so a `--to ready` no-op re-issue on an
+    // already-ready story never re-fires (the cur === resolved early-return
+    // above already handles the pure no-op; this is belt-and-suspenders for
+    // any future non-canonical entry into ready).
+    const shouldEmitStoryReady = cur === "planning" && resolved === "ready";
     // Apply mutations inside a single DB transaction so concurrent readers
     // see either pre- or post-state, never partial. Bash's lib/story.sh
     // jq_update is a single atomic file write; transact() is the SQL
@@ -403,6 +414,42 @@ export async function advanceStory(
       }
       repo.upsertStory(updatedStory);
     });
+    // ADR-247 §D1: emit `story.ready` on the planning→ready edge, after
+    // the transaction commits. Best-effort — a missing events table
+    // (pre-migration cage) or a Zod hiccup must NOT break `story advance`;
+    // the kanban row is the load-bearing side effect (same contract as
+    // `tryEmitTaskLifecycle` in src/core/kanban.ts). Honker NOTIFY fires
+    // inside emit() automatically when the substrate is loaded
+    // (getHonkerState auto-detect per ADR-202 §Amendment 2026-05-24).
+    if (shouldEmitStoryReady) {
+      try {
+        // Stories have no first-class `lane` column; the lane hint rides
+        // the passthrough `extra` JSON when set (ADR-247 §OQ3 makes this
+        // advisory — the watchdog re-derives the authoritative lane from
+        // kanban at ping-time). Fall back to "misc" when unset.
+        const storyExtra = story as Record<string, unknown>;
+        const laneHint =
+          typeof storyExtra.lane === "string" ? storyExtra.lane : "misc";
+        const assigneeHint =
+          typeof storyExtra.owner === "string" && storyExtra.owner.length > 0
+            ? storyExtra.owner
+            : undefined;
+        emit(db, {
+          topic: "story.ready",
+          team: team?.name ?? "",
+          epicId: eid ?? "",
+          storyId: id,
+          lane: laneHint,
+          ...(assigneeHint !== undefined ? { assigneeHint } : {}),
+          body: story.title ?? story.body ?? "",
+          emittedAtSec: now,
+        });
+      } catch {
+        // Best-effort: missing events table or programmer-introduced Zod
+        // failure must not break `story advance`. The kanban row already
+        // committed above is the load-bearing side effect.
+      }
+    }
     return { from: cur, to: resolved, parentEpicFlipped, dispatchedTaskId, noop: false };
   });
 }
@@ -598,6 +645,45 @@ export async function storyUnsignoff(
       };
     });
     return result;
+  });
+}
+
+// ---------- e-407c6d53: story update — body / acceptanceCriteria edit ----------
+
+export interface UpdateStoryOpts {
+  /** New body prose. `null` clears the body (`--body ''` at the verb layer);
+   *  `undefined` leaves the existing value untouched. */
+  body?: string | null;
+  /** New acceptance-criteria prose. `null` clears it (`--ac ''`);
+   *  `undefined` leaves the existing value untouched. */
+  acceptanceCriteria?: string | null;
+}
+
+/** Edit a Story's `body` / `acceptanceCriteria` in place. Mirrors the
+ *  `advanceStory` / `storySignoff` `_withRepo` + `repo.upsertStory` pattern.
+ *  Throws `ConfigError` on a missing story id (or absent state.db). Only the
+ *  fields whose opt is not `undefined` are mutated; `null` clears the field. */
+export async function updateStory(
+  atmuxDir: string,
+  id: string,
+  opts: UpdateStoryOpts,
+): Promise<void> {
+  if (!(await exists(_stateDbPath(atmuxDir)))) {
+    throw new ConfigError({ what: `story update: no such story: ${id}` });
+  }
+  await _withRepo(atmuxDir, (repo, db) => {
+    const story = repo.getStory(id);
+    if (story === null) {
+      throw new ConfigError({ what: `story update: no such story: ${id}` });
+    }
+    transact(db, () => {
+      const updated: KanbanStory = { ...story };
+      if (opts.body !== undefined) updated.body = opts.body;
+      if (opts.acceptanceCriteria !== undefined) {
+        updated.acceptanceCriteria = opts.acceptanceCriteria;
+      }
+      repo.upsertStory(updated);
+    });
   });
 }
 

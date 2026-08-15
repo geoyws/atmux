@@ -98,3 +98,9 @@ Every `templates/briefs/*.md` gets a first-line marker. HTML comment so the mark
 - TUI swap (verb 3). **Recommended E5.**
 - Erlang per-claim brief snapshot (verb 6). **Recommended E5.**
 - Brief diff renderer (`atmux brief-diff <role>` shows v1→v2 changes). Nice-to-have; defer until needed.
+
+## Amendments
+
+### 2026-08-07 — §Consequences "banner preclear" reads "banner handoff" (ADR-263)
+
+[ADR-263](263-merge-session-preclear-into-handoff.md) merges the `/session preclear` verb into `/session handoff` — one mode-aware verb, no `preclear` alias. §Consequences → "Cross-Epic relationship" names `lib/whip.sh`'s four touching Tasks; **E2/T3.1 (banner preclear)** reads as **E2/T3.1 (banner handoff)**. The underlying decision lives in [ADR-009](009-auto-rotation.md) D3/D4 (see its own §Amendments); the commit-ordering guidance here is unchanged.

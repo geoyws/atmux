@@ -11,14 +11,17 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { ZodError } from "zod";
 import {
   DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG,
   DEFAULT_CADENCE_CONFIG,
   DEFAULT_CADENCE_THRESHOLDS,
   DEFAULT_LANE_TICK_CRON_MINS,
   DEFAULT_OMBUDSMAN_TICK_INTERVAL_MINS,
+  DEFAULT_ORCHESTRATION_MODE,
   DEFAULT_REFUSAL_DETECTION_CONFIG,
   DEFAULT_WORKTREE_ROOT,
+  resolveOrchestrationMode,
   resolveRefusalConfig,
   Team,
   TeamAutoEmitTrunkMerge,
@@ -29,8 +32,11 @@ import {
   TeamCrons,
   TeamEpic,
   TeamFallback,
+  TeamIssueSync,
+  TeamLeadStallWatchdog,
   TeamMember,
   TeamOmbudsman,
+  TeamOrchestration,
   TeamRefusalDetection,
   TeamWhip,
 } from "../../../src/schema/team.ts";
@@ -337,6 +343,56 @@ describe("Team schema — driverSession (ADR-044 + ADR-064 §5)", () => {
     expect(team.driverSession).toEqual({ tui: "shell" });
   });
 
+  test("Team.parse with driverSession.model=<str> parses cleanly (loose model pin)", () => {
+    const team = Team.parse({
+      name: "demo",
+      members: [],
+      driverSession: { tui: "shell", model: "cursor-fast" },
+    });
+    expect(team.driverSession).toEqual({ tui: "shell", model: "cursor-fast" });
+  });
+
+  test("Team.parse with driverSession.model=null is accepted (explicitly unset)", () => {
+    const team = Team.parse({
+      name: "demo",
+      members: [],
+      driverSession: { tui: "shell", model: null },
+    });
+    expect(team.driverSession).toEqual({ tui: "shell", model: null });
+  });
+
+  test("Team.parse with driverSession.model absent is accepted (backward compat)", () => {
+    const team = Team.parse({
+      name: "demo",
+      members: [],
+      driverSession: { tui: "shell" },
+    });
+    // Absent optional is omitted from the parsed output, not coerced to null.
+    expect(team.driverSession).toEqual({ tui: "shell" });
+    expect(team.driverSession?.model).toBeUndefined();
+  });
+
+  test("Team.parse REJECTS non-string driverSession.model (e.g. 123) with ZodError", () => {
+    let caught: unknown;
+    try {
+      // `.parse(data: unknown)` — no compile-time guard on the literal;
+      // the 123 is rejected at RUNTIME by the Zod string() schema below.
+      Team.parse({
+        name: "demo",
+        members: [],
+        driverSession: { tui: "shell", model: 123 },
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ZodError);
+    // Pinpoint the failing path so a future loosening can't silently pass.
+    expect((caught as ZodError).issues[0]?.path).toEqual([
+      "driverSession",
+      "model",
+    ]);
+  });
+
   test("Team.parse with driverSession=null is accepted (explicitly disabled)", () => {
     const team = Team.parse({
       name: "demo",
@@ -473,24 +529,22 @@ describe("TeamMember — label field (ADR-136 Option B)", () => {
   });
 });
 
-// ---------- ADR-159 TR3: TeamMember.role gitter → committer shim ----------
+// ---------- ADR-159 TR3 shim removed (ADR-266 §D2): role is open-string ----------
 
-describe("TeamMember — role gitter→committer accept-both shim (ADR-159 TR3)", () => {
-  test('legacy `role: "gitter"` value coerces to canonical `"committer"` on parse', () => {
+describe("TeamMember — role field (ADR-159 TR3 shim removed per ADR-266 §D2)", () => {
+  test('literal `role: "gitter"` no longer coerces — parses as-is (shim expired)', () => {
     const m = TeamMember.parse({ name: "g", role: "gitter" });
-    expect(m.role).toBe("committer");
+    expect(m.role).toBe("gitter");
   });
 
-  test('canonical `role: "committer"` parses unchanged (idempotent)', () => {
+  test('canonical `role: "committer"` parses unchanged', () => {
     const m = TeamMember.parse({ name: "c", role: "committer" });
     expect(m.role).toBe("committer");
   });
 
-  test("other role values pass through unchanged (open-string shim — does NOT tighten enum)", () => {
+  test("other role values pass through unchanged (open-string field — NOT a closed enum)", () => {
     // Current rosters use a wide variety of roles (docs / devops / dba /
-    // unblocker / discorder). Closing the enum here would break them;
-    // the shim coerces ONLY the gitter→committer value, leaves
-    // everything else alone.
+    // unblocker / discorder). Closing the enum here would break them.
     for (const role of [
       "team-lead",
       "planner",
@@ -1651,5 +1705,234 @@ describe("Team schema integrates TeamAutoSpawn cleanly (ADR-231 §D3 + §D4)", (
     });
     expect(team.autoSpawn?.sweepCron).toBe("0 * * * *");
     expect(team.autoPush?.enabled).toBe(true);
+  });
+});
+
+// ---------- TeamLeadStallWatchdog — ADR-247 §D6 ----------
+
+describe("TeamLeadStallWatchdog schema (ADR-247 §D6)", () => {
+  test("empty block parses with all ADR-247 §D6 recommended defaults", () => {
+    const cfg = TeamLeadStallWatchdog.parse({});
+    expect(cfg.enabled).toBe(true);
+    expect(cfg.idleThresholdMin).toBe(5);
+    expect(cfg.rateLimitPerCageMin).toBe(5);
+    expect(cfg.escalationDelayMin).toBe(15);
+  });
+
+  test("accepts operator overrides within range", () => {
+    const cfg = TeamLeadStallWatchdog.parse({
+      enabled: false,
+      idleThresholdMin: 30,
+      rateLimitPerCageMin: 10,
+      escalationDelayMin: 60,
+    });
+    expect(cfg.enabled).toBe(false);
+    expect(cfg.idleThresholdMin).toBe(30);
+    expect(cfg.rateLimitPerCageMin).toBe(10);
+    expect(cfg.escalationDelayMin).toBe(60);
+  });
+
+  test("rejects idleThresholdMin below 1", () => {
+    expect(() => TeamLeadStallWatchdog.parse({ idleThresholdMin: 0 })).toThrow(ZodError);
+  });
+
+  test("rejects idleThresholdMin above 60", () => {
+    expect(() => TeamLeadStallWatchdog.parse({ idleThresholdMin: 61 })).toThrow(ZodError);
+  });
+
+  test("rejects rateLimitPerCageMin out of 1..60 range", () => {
+    expect(() => TeamLeadStallWatchdog.parse({ rateLimitPerCageMin: 0 })).toThrow(ZodError);
+    expect(() => TeamLeadStallWatchdog.parse({ rateLimitPerCageMin: 61 })).toThrow(ZodError);
+  });
+
+  test("rejects escalationDelayMin below 5 (ADR-247 §D6 floor)", () => {
+    expect(() => TeamLeadStallWatchdog.parse({ escalationDelayMin: 4 })).toThrow(ZodError);
+  });
+
+  test("rejects escalationDelayMin above 120", () => {
+    expect(() => TeamLeadStallWatchdog.parse({ escalationDelayMin: 121 })).toThrow(ZodError);
+  });
+
+  test("rejects a non-integer idleThresholdMin", () => {
+    expect(() => TeamLeadStallWatchdog.parse({ idleThresholdMin: 5.5 })).toThrow(ZodError);
+  });
+
+  test("strict — rejects an unknown key (drift detection per ADR-054 §D3)", () => {
+    expect(() =>
+      TeamLeadStallWatchdog.parse({ idleTresholdMin: 5 }),
+    ).toThrow(ZodError);
+  });
+
+  test("Team.parse threads leadStallWatchdog through + back-compat when absent", () => {
+    const withBlock = Team.parse({
+      name: "demo",
+      members: [],
+      leadStallWatchdog: { idleThresholdMin: 10 },
+    });
+    expect(withBlock.leadStallWatchdog?.idleThresholdMin).toBe(10);
+    // defaults fill the rest of the block
+    expect(withBlock.leadStallWatchdog?.enabled).toBe(true);
+    expect(withBlock.leadStallWatchdog?.rateLimitPerCageMin).toBe(5);
+
+    const withoutBlock = Team.parse({ name: "demo", members: [] });
+    expect(withoutBlock.leadStallWatchdog).toBeUndefined();
+  });
+});
+
+// ---------- TeamOrchestration (ADR-260 §D1) ----------
+
+describe("TeamOrchestration schema (ADR-260 §D1)", () => {
+  test("empty block parses with mode='manual' (the ADR-260 default)", () => {
+    const cfg = TeamOrchestration.parse({});
+    expect(cfg.mode).toBe("manual");
+  });
+
+  test("accepts both legal modes", () => {
+    expect(TeamOrchestration.parse({ mode: "manual" }).mode).toBe("manual");
+    expect(TeamOrchestration.parse({ mode: "orchd" }).mode).toBe("orchd");
+  });
+
+  test("rejects an unknown mode value", () => {
+    expect(() => TeamOrchestration.parse({ mode: "auto" })).toThrow(ZodError);
+  });
+
+  test("strict — rejects an unknown key (drift detection per ADR-054 §D3)", () => {
+    expect(() => TeamOrchestration.parse({ mod: "manual" })).toThrow(ZodError);
+  });
+
+  test("Team.parse threads orchestration through + back-compat when absent", () => {
+    const withBlock = Team.parse({
+      name: "demo",
+      members: [],
+      orchestration: { mode: "orchd" },
+    });
+    expect(withBlock.orchestration?.mode).toBe("orchd");
+
+    const withoutBlock = Team.parse({ name: "demo", members: [] });
+    expect(withoutBlock.orchestration).toBeUndefined();
+  });
+
+  test("DEFAULT_ORCHESTRATION_MODE is 'manual'", () => {
+    expect(DEFAULT_ORCHESTRATION_MODE).toBe("manual");
+  });
+
+  test("resolveOrchestrationMode — absent block ⇒ manual; explicit modes pass through", () => {
+    expect(resolveOrchestrationMode({ orchestration: undefined })).toBe("manual");
+    expect(resolveOrchestrationMode({ orchestration: { mode: "manual" } })).toBe("manual");
+    expect(resolveOrchestrationMode({ orchestration: { mode: "orchd" } })).toBe("orchd");
+  });
+
+  test("resolveOrchestrationMode on a parsed Team without the block ⇒ manual", () => {
+    const team = Team.parse({ name: "demo", members: [], autoMerge: { enabled: true } });
+    // autoMerge alone does NOT opt a team into orchd post-ADR-260.
+    expect(resolveOrchestrationMode(team)).toBe("manual");
+  });
+});
+
+// ---------- TeamIssueSync (ADR-261 §D10) ----------
+
+describe("TeamIssueSync schema (ADR-261 §D10)", () => {
+  test("empty block parses with defaults (enabled=false, trackers=[])", () => {
+    const cfg = TeamIssueSync.parse({});
+    expect(cfg.enabled).toBe(false);
+    expect(cfg.trackers).toEqual([]);
+  });
+
+  test("Team.parse back-compat — absent issueSync parses unchanged + stays undefined", () => {
+    const withoutBlock = Team.parse({ name: "demo", members: [] });
+    expect(withoutBlock.issueSync).toBeUndefined();
+  });
+
+  test("a populated block round-trips through Team.parse", () => {
+    const block: TeamIssueSync = {
+      enabled: true,
+      trackers: [
+        {
+          id: "github",
+          repos: ["geoyws/atmux"],
+          targetTeam: "atmux",
+          labelSeverityMap: { p0: "critical", bug: "warn" },
+          pollIntervalSec: 900,
+        },
+        { id: "azure-devops", org: "ifca", project: "propertyx" },
+      ],
+    };
+    const team = Team.parse({ name: "demo", members: [], issueSync: block });
+    // Every key round-trips verbatim — defaults add nothing on a fully-
+    // populated github arm; the lean ADO arm keeps its optionals absent.
+    expect(team.issueSync).toEqual(block);
+    expect(team.issueSync?.trackers).toHaveLength(2);
+    expect(team.issueSync?.trackers[0]?.id).toBe("github");
+    expect(team.issueSync?.trackers[1]?.id).toBe("azure-devops");
+  });
+
+  test("strict — rejects an unknown key in the issueSync block (drift detection per ADR-054 §D3)", () => {
+    expect(() => TeamIssueSync.parse({ enabld: true })).toThrow(ZodError);
+  });
+
+  test("strict — rejects an unknown key inside a tracker entry", () => {
+    expect(() =>
+      TeamIssueSync.parse({
+        trackers: [{ id: "github", repos: ["geoyws/atmux"], repoz: ["typo"] }],
+      }),
+    ).toThrow(ZodError);
+  });
+
+  test("strict — Team.parse refuses an unknown key nested in issueSync", () => {
+    expect(() =>
+      Team.parse({
+        name: "demo",
+        members: [],
+        issueSync: { enabled: true, tracker: [] }, // typo'd `trackers`
+      }),
+    ).toThrow(ZodError);
+  });
+
+  test("rejects cross-vendor coordinates (github arm with ADO org/project)", () => {
+    expect(() =>
+      TeamIssueSync.parse({
+        trackers: [{ id: "github", repos: ["geoyws/atmux"], org: "ifca" }],
+      }),
+    ).toThrow(ZodError);
+  });
+
+  test("rejects an unknown tracker id (ADR-261 §D2 closed adapter set)", () => {
+    expect(() => TeamIssueSync.parse({ trackers: [{ id: "jira" }] })).toThrow(ZodError);
+  });
+
+  test("github arm requires a non-empty repos allowlist (ADR-261 §D7.2)", () => {
+    expect(() => TeamIssueSync.parse({ trackers: [{ id: "github" }] })).toThrow(ZodError);
+    expect(() => TeamIssueSync.parse({ trackers: [{ id: "github", repos: [] }] })).toThrow(
+      ZodError,
+    );
+  });
+
+  test("azure-devops arm requires org + project coordinates", () => {
+    expect(() =>
+      TeamIssueSync.parse({ trackers: [{ id: "azure-devops", org: "ifca" }] }),
+    ).toThrow(ZodError);
+  });
+
+  test("labelSeverityMap values constrained to the extractSeverity vocabulary", () => {
+    expect(() =>
+      TeamIssueSync.parse({
+        trackers: [
+          { id: "github", repos: ["geoyws/atmux"], labelSeverityMap: { p0: "high" } },
+        ],
+      }),
+    ).toThrow(ZodError);
+  });
+
+  test("pollIntervalSec must be a positive integer", () => {
+    expect(() =>
+      TeamIssueSync.parse({
+        trackers: [{ id: "github", repos: ["geoyws/atmux"], pollIntervalSec: 0 }],
+      }),
+    ).toThrow(ZodError);
+    expect(() =>
+      TeamIssueSync.parse({
+        trackers: [{ id: "github", repos: ["geoyws/atmux"], pollIntervalSec: 1.5 }],
+      }),
+    ).toThrow(ZodError);
   });
 });

@@ -4,8 +4,14 @@
   "tmuxTmpdir": "/tmp/atmux-tmux_my-team",
   "_comment_singleSession": "Default false (2026-04-30 reversal of ADR-026) — cage isolation per ADR-018 is the safe path; singleSession opts out of it on the daily-driver socket and reintroduces the side-channel pollution class (cage-prefix leak, cross-socket spawn, partial-rename mess). Launcher sessions (atmux_<team> created by atmux doctor --fix) preserve the at-a-glance benefit while keeping isolation. Set true ONLY for non-human-driven teams or detached observer setups (declared escape hatch).",
   "singleSession": false,
-  "_comment_driverTui": "TUI to auto-spawn in the cage's driver window on `atmux start`. Defaults to claude. Set null to skip auto-spawn (operator runs whatever they want manually after attach).",
-  "driverTui": "claude",
+  "_comment_drivers": "ADR-239 (amended 2026-05-26): five drivers minimum per parent team, named driver / driver-2 / driver-3 / driver-4 / driver-5. Each is operator-interactive ONLY — atmux NEVER sends keystrokes to driver panes (no claim-next dispatch, no whip poke, no orchd unblock). NO PRE-PROMPTS, no brief paste, no role anchor — drivers start fresh and the operator types whatever they want. Each driver-N (N>=2) gets its own git worktree at .atmux/worktrees/driver-N on branch <base>-driver-N. driver (the original) lives at team root on the primary base branch (e.g. atmux-geoyws). Operator merges trunk into driver-N branches at their own discretion (no auto-merge cron for drivers). Drivers grouped at windows 1-5 in the cage tmux session, members follow at 6+.",
+  "drivers": [
+    { "name": "driver", "tui": "claude", "cwd": "." },
+    { "name": "driver-2", "tui": "claude", "cwd": ".atmux/worktrees/driver-2" },
+    { "name": "driver-3", "tui": "claude", "cwd": ".atmux/worktrees/driver-3" },
+    { "name": "driver-4", "tui": "claude", "cwd": ".atmux/worktrees/driver-4" },
+    { "name": "driver-5", "tui": "claude", "cwd": ".atmux/worktrees/driver-5" }
+  ],
   "tuiCommands": {
     "_comment": "Per-team TUI launch aliases. If set, the prefix here replaces the built-in default for that TUI type. atmux appends --model <model> unless the prefix already has one. Example: \"claude\": \"claude --plugin-dir=$HOME/work/journals/.sb/claude-skills\""
   },
@@ -13,6 +19,7 @@
     "mode": "random"
   },
   "_comment_claudeAccount": "Per-member Claude config-dir isolation. Valid values: 'default' (host default — Claude reads its standard config dir), 'personal', 'icloud', 'ifca', 'unum', OR any custom suffix the operator maintains. When set + != 'default', spawn prefixes 'CLAUDE_CONFIG_DIR=<HOME>/.claude-<value>' so the member's nested-shell `claude` invocations inherit an account-isolated config tree (no OAuth cross-pollination, no fresh-spawn re-auth dance). Per ADR-024 spawn-account-matching + ADR-094 c-alias spawn convention. Field lives at the MEMBER level (per-member override); template's lead carries an example string below.",
+  "_comment_members": "ADR-239 §A2 (amended 2026-05-26): strict 5-name member roster across every parent team — keep only members named {lead, planner, docs, reviewer, gitter}. Specialist seats (ombudsman, unblocker, discorder, devops, dba, tester, fe-auth, be-auth, db-auth, etc.) were swept out in the 2026-05-26 trim. Operator may re-add seats per-team but the template ships the lean default.",
   "members": [
     {
       "name": "lead",
@@ -32,6 +39,14 @@
       "cwd": "."
     },
     {
+      "name": "docs",
+      "role": "docs",
+      "lane": "misc",
+      "tui": "claude",
+      "model": "default",
+      "cwd": "."
+    },
+    {
       "name": "reviewer",
       "role": "reviewer",
       "lane": "review",
@@ -41,65 +56,9 @@
     },
     {
       "name": "gitter",
-      "role": "gitter",
+      "role": "committer",
       "lane": "misc",
       "tui": "claude",
-      "model": "default",
-      "cwd": "."
-    },
-    {
-      "name": "devops",
-      "role": "devops",
-      "lane": "ops",
-      "tui": "claude",
-      "model": "default",
-      "cwd": "."
-    },
-    {
-      "name": "dba",
-      "role": "dba",
-      "lane": "db",
-      "tui": "claude",
-      "model": "default",
-      "cwd": "."
-    },
-    {
-      "name": "unblocker",
-      "role": "unblocker",
-      "lane": "misc",
-      "tui": "claude",
-      "model": "default",
-      "cwd": "."
-    },
-    {
-      "name": "discorder",
-      "role": "discorder",
-      "lane": "misc",
-      "tui": "claude",
-      "model": "claude-sonnet-4-6",
-      "cwd": "."
-    },
-    {
-      "name": "fe-auth",
-      "role": "member",
-      "lane": "fe",
-      "tui": "claude",
-      "model": "default",
-      "cwd": "."
-    },
-    {
-      "name": "be-auth",
-      "role": "member",
-      "lane": "be",
-      "tui": "cursor",
-      "model": "default",
-      "cwd": "."
-    },
-    {
-      "name": "db-auth",
-      "role": "member",
-      "lane": "db",
-      "tui": "opencode",
       "model": "default",
       "cwd": "."
     }

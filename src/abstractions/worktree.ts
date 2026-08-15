@@ -30,21 +30,34 @@ import { join } from "node:path";
 import { ConfigError } from "../errors.ts";
 import { DEFAULT_WORKTREE_ROOT, type Team } from "../schema/team.ts";
 import { exists } from "./fs.ts";
-import { spawn as defaultSpawn, type SpawnResult } from "./spawn.ts";
+import {
+  DEFAULT_GIT_SPAWN_TIMEOUT_MS,
+  spawn as defaultSpawn,
+  resolveGitTimeoutMs,
+  type SpawnResult,
+} from "./spawn.ts";
 
 // ---------- Spawn-injected git wrapper ----------
 
-export type GitSpawn = (argv: ReadonlyArray<string>) => Promise<SpawnResult>;
+/** Injected `git <argv>` wrapper. `timeoutMs` (optional) overrides the
+ *  per-call timeout; omit for the {@link resolveGitTimeoutMs} default
+ *  (env `ATMUX_GIT_TIMEOUT_MS` ?? {@link DEFAULT_GIT_SPAWN_TIMEOUT_MS}). */
+export type GitSpawn = (
+  argv: ReadonlyArray<string>,
+  opts?: { timeoutMs?: number },
+) => Promise<SpawnResult>;
 
-/** Default git spawner — `git <argv>` with 30s timeout + accept-any-rc
- *  (callers branch on exit code). Mirrors `auto-done.ts::defaultGitSpawn`
- *  / `auto-push.ts::defaultGitSpawn` so the codebase carries one shape
- *  for "shell out to git" across helpers. */
-export const defaultGitSpawn: GitSpawn = async (argv) =>
+/** Default git spawner — `git <argv>` with accept-any-rc (callers branch
+ *  on exit code) and a {@link resolveGitTimeoutMs}-resolved timeout
+ *  (per-call `opts.timeoutMs` > env `ATMUX_GIT_TIMEOUT_MS` >
+ *  {@link DEFAULT_GIT_SPAWN_TIMEOUT_MS}). Mirrors
+ *  `auto-done.ts::defaultGitSpawn` / `auto-push.ts::defaultGitSpawn` so
+ *  the codebase carries one shape for "shell out to git" across helpers. */
+export const defaultGitSpawn: GitSpawn = async (argv, opts) =>
   await defaultSpawn({
     cmd: "git",
     argv,
-    timeoutMs: 30_000,
+    timeoutMs: resolveGitTimeoutMs(opts?.timeoutMs),
     expectExitCode: "any",
   });
 

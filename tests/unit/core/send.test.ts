@@ -14,7 +14,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTmux, type TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import { classifyPaneState, logsDir } from "../../../src/core/common.ts";
-import { isPreSendWarn, looksLikeNotConsumed, sendToMember } from "../../../src/core/send.ts";
+import {
+  isPreSendWarn,
+  looksLikeNotConsumed,
+  SUBMIT_ONLY_LOG_BODY,
+  sendToMember,
+} from "../../../src/core/send.ts";
 
 const NO_SLEEP = (_ms: number): Promise<void> => Promise.resolve();
 
@@ -537,5 +542,116 @@ describe("sendToMember — expectVerifier (T3b compose path)", () => {
     } finally {
       await rm(home, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------
+// ADR-273 §D5 — submit-only
+// ---------------------------------------------------------------------
+
+describe("sendToMember — submitOnly (ADR-273 D5)", () => {
+  test("pastes NOTHING — the residue it submits cannot be concatenated onto", async () => {
+    // The pane runs `cat`, so anything pasted would be echoed back into
+    // the capture. Nothing is, because nothing was pasted.
+    const { target } = await spinCatSession(`${sessionPrefix}_so_nopaste`);
+    const marker = "PRE-EXISTING-COMPOSER-TEXT";
+    // Seed the pane with text through a normal send, WITHOUT submitting,
+    // so `cat` still holds it on its input line.
+    await sendToMember(tmux, atmuxDir, { target, member: "so-seed", team: "test-team" }, marker, {
+      sleep: NO_SLEEP,
+      noSubmit: true,
+    });
+    const out = await sendToMember(
+      tmux,
+      atmuxDir,
+      { target, member: "so-nopaste", team: "test-team" },
+      "THIS MESSAGE MUST BE IGNORED",
+      { sleep: NO_SLEEP, submitOnly: true, verify: false },
+    );
+    expect(out.kind).toBe("ok");
+    const capture = await tmux.pane.capturePane({ target, start: -20 });
+    // `cat` echoed the seeded line back once the submit fired...
+    expect(capture).toContain(marker);
+    // ...and the message argument never reached the pane at all.
+    expect(capture).not.toContain("THIS MESSAGE MUST BE IGNORED");
+  });
+
+  test("logs the ACTION, not an empty message body", async () => {
+    const { target } = await spinCatSession(`${sessionPrefix}_so_log`);
+    await sendToMember(tmux, atmuxDir, { target, member: "so-log", team: "test-team" }, "", {
+      sleep: NO_SLEEP,
+      submitOnly: true,
+      verify: false,
+    });
+    const log = await readFile(join(logsDir(atmuxDir), "send-so-log.log"), "utf8");
+    expect(log).toContain(SUBMIT_ONLY_LOG_BODY);
+    expect(log).toContain("sent:");
+  });
+
+  test("runs the SAME ADR-138 verify step the paste path runs", async () => {
+    const { target } = await spinCatSession(`${sessionPrefix}_so_verify`);
+    const out = await sendToMember(
+      tmux,
+      atmuxDir,
+      { target, member: "so-verify", team: "test-team" },
+      "",
+      {
+        sleep: NO_SLEEP,
+        submitOnly: true,
+        verify: false,
+        expectVerifier: () => true,
+        verifyTimeoutMs: 2000,
+      },
+    );
+    expect(out.verifyResult).toBeDefined();
+    expect(out.verifyResult?.success).toBe(true);
+    expect(out.verifyResult?.attempts).toBe(1);
+  });
+
+  test("a failing verifier still surfaces success=false rather than a silent ok", async () => {
+    const { target } = await spinCatSession(`${sessionPrefix}_so_vfail`);
+    const captured: string[] = [];
+    const out = await sendToMember(
+      tmux,
+      atmuxDir,
+      { target, member: "so-vfail", team: "test-team" },
+      "",
+      {
+        sleep: NO_SLEEP,
+        submitOnly: true,
+        verify: false,
+        expectVerifier: () => false,
+        verifyTimeoutMs: 50,
+        escalationLogPath: "/tmp/atmux-submit-only-esc.log",
+        appendLog: async (path, content) => {
+          captured.push(`${path}::${content.slice(0, 32)}`);
+        },
+      },
+    );
+    expect(out.kind).toBe("ok");
+    expect(out.verifyResult?.success).toBe(false);
+    expect(captured).toHaveLength(1);
+  });
+
+  test("the msg-echo heuristic is SKIPPED — it would report warn-not-consumed on every submit", async () => {
+    // `looksLikeNotConsumed(post, "")` is true whenever the last line
+    // looks like a prompt, because every string contains the empty
+    // snippet. Leaving the heuristic on would make submit-only report a
+    // warning on a perfectly good keystroke.
+    const { target } = await spinCatSession(`${sessionPrefix}_so_heur`);
+    await tmux.pane.sendKeys({
+      target: { kind: "member", member: "so-heur", team: "test-team", target },
+      keys: "❯ ",
+      literal: true,
+      enter: false,
+    });
+    const out = await sendToMember(
+      tmux,
+      atmuxDir,
+      { target, member: "so-heur", team: "test-team" },
+      "",
+      { sleep: NO_SLEEP, submitOnly: true, verify: true },
+    );
+    expect(out.kind).toBe("ok");
   });
 });
