@@ -48,6 +48,11 @@
 //     absent unless the operator set `ATMUX_VOICE_TRANSCRIPTS=1`. The
 //     two sinks are disjoint by design — `log` carries protocol events
 //     and no speech; the transcript sink carries speech and nothing else.
+//   - A tool result is bound to the leg that ISSUED the call. A call id
+//     is meaningful only inside the provider session that minted it, so a
+//     redial during a slow tool means the result is DROPPED (with a log
+//     line) rather than delivered to a leg that never asked
+//     (ADR-272 §Supplement-P7 §R3).
 //   - Frames arriving while `dialing` are ignored; binary before hello
 //     (or any pre-hello garbage) closes 4400.
 //   - Client-frame + provider-event switches are EXHAUSTIVE (no
@@ -956,6 +961,11 @@ class VoiceServerSessionImpl implements VoiceServerSession {
       args: ev.argsJson.slice(0, TOOL_ARGS_PREVIEW_MAX_CHARS),
     });
     this.sendStatus("working");
+    // The leg that ISSUED this call, captured before the await. A tool
+    // call id is meaningful only within the provider session that minted
+    // it, so a result must go back to that leg or nowhere — see the drop
+    // below.
+    const issuedBy = this.conn;
     const start = this.deps.clock();
     const out = await this.deps.bridge.executeTool({
       name: ev.name,
@@ -975,15 +985,30 @@ class VoiceServerSessionImpl implements VoiceServerSession {
     const needs = out.needsConfirmation !== undefined || envelope?.error === "needs_confirmation";
     const done: ToolDoneFrame = { type: "tool.done", id: ev.id, ok, summary, ms };
     if (needs) done.needs_confirmation = true;
+    // The phone gets the outcome either way — it is the operator's own
+    // view of a tool HE asked for, and it does not depend on any provider
+    // leg still being up.
     this.sendJson(done);
-    const conn = this.conn;
-    if (conn !== null) {
-      try {
-        conn.leg.sendToolResult(ev.id, out.envelopeJson);
-        this.suppressAudio = false;
-      } catch (e) {
-        if (!(e instanceof VoiceProviderError)) throw e;
-      }
+    // The provider half does. `this.conn` is re-read here, and if a
+    // redial happened while the tool ran it now points at a DIFFERENT
+    // leg — one that never issued `ev.id`. Handing it this result is a
+    // foreign call id on a live conversation: ignored at best, a protocol
+    // error at worst, and either way the fresh leg is left waiting for a
+    // tool turn that has already been answered elsewhere. The window was
+    // narrow only because read tools return in milliseconds; P7's
+    // mutating tools make slow tools ordinary.
+    if (this.conn === null || this.conn !== issuedBy) {
+      // Tool NAME only — this sink carries no speech (see module header).
+      this.log(
+        `voice: dropping tool result for '${ev.name}' — the provider leg that issued it is gone (redial during execution)`,
+      );
+      return;
+    }
+    try {
+      issuedBy.leg.sendToolResult(ev.id, out.envelopeJson);
+      this.suppressAudio = false;
+    } catch (e) {
+      if (!(e instanceof VoiceProviderError)) throw e;
     }
   }
 

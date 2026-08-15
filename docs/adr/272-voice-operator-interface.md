@@ -391,6 +391,16 @@ Shape, so the reversal is auditable rather than implied:
 
 The refusal is a typed `VerbMutexError` (`src/errors.ts`, tag `verb-mutex`, EX_TEMPFAIL) rather than a string the bridge pattern-matches, so the conversion into a spoken envelope is checked by the type system. It is not expected to reach the CLI: `createToolBridge` converts it, and anything that is *not* one still renders as an internal `verb_failed`.
 
+### R3 — a tool result is bound to the leg that issued the call
+
+`session.ts` re-read `this.conn` *after* awaiting `executeTool`, so a redial during a slow tool delivered `sendToolResult(id, …)` to a leg that never issued that id. Providers key tool results by call id within a session; a foreign id is at best ignored and at worst a protocol error on a leg the operator is mid-sentence with. The result is now bound to the connection captured **before** the await, and a result whose leg is gone is dropped with a log line naming the tool (never its arguments — §Security's no-speech rule covers this sink).
+
+The window was small only because the mutating tools are absent: read tools return in milliseconds. Clearing `ATMUX_VOICE_READONLY` makes slow tools ordinary, which is what moves this from theoretical to reachable.
+
+The phone half is deliberately NOT bound the same way: `tool.done` is the operator's own view of a tool **he** asked for, so it is sent whether or not any provider leg survived. Only the provider half depends on leg identity.
+
+Reachable how, concretely — because "a redial cannot land mid-tool, the pump is serialized" is the obvious objection and it is nearly right. One pump processes one leg's events in order, so a leg cannot deliver its own `closed` while its own tool call is still awaiting. The path that does reach it runs across TWO legs: a mid-session redial attaches leg B, leg B issues a tool call, and leg B's handshake then expires against `SESSION_READY_TIMEOUT_MS` — which is owned by the *dial loop*, not by leg B's pump — so leg B is discarded and leg C dials successfully while the tool is still running. That is the sequence the test drives, and reverting the binding makes it fail by delivering the stale id to leg C.
+
 ## Decision-anchors
 
 Every row verified against disk on **2026-08-14** unless dated otherwise.

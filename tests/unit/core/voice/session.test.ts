@@ -1315,6 +1315,82 @@ describe("tool calls", () => {
   });
 });
 
+// ---------- stale tool results (ADR-272 §Supplement-P7 §R3) ----------
+//
+// THE DEFECT. `onToolCall` re-read `this.conn` AFTER awaiting the bridge.
+// A tool call id is meaningful only inside the provider session that
+// minted it, so if a redial lands during a slow tool the result used to be
+// handed to a leg that never issued it — a foreign call id on a live
+// conversation, and a fresh leg left waiting for a tool turn that was
+// answered somewhere else. Today's read tools return in milliseconds;
+// P7's mutating tools make slow tools ordinary.
+//
+// Driving it needs a redial that is NOT serialized behind the tool call
+// itself: a leg whose handshake never completes gets discarded by
+// SESSION_READY_TIMEOUT_MS while its own pump is still awaiting the tool.
+
+describe("tool result vs. provider leg identity", () => {
+  test("a redial during a slow tool DROPS the result — the fresh leg gets nothing", async () => {
+    let resolveTool!: (out: ExecuteToolOutput) => void;
+    const toolPending = new Promise<ExecuteToolOutput>((r) => {
+      resolveTool = r;
+    });
+    const h = makeHarness({
+      bridge: { health: IDLE_BRIDGE_HEALTH, executeTool: () => toolPending },
+    });
+    await live(h);
+    const legA = h.provider.lastLeg;
+
+    // Mid-session provider death → redial. The next leg opens its socket
+    // but never completes the handshake, so the dial is still in flight.
+    h.provider.emitSessionReady = false;
+    legA.emit({ type: "closed", code: 1006, reason: "network" });
+    await flush();
+    await h.timers.advance(redialBackoffMs(0));
+    const legB = h.provider.lastLeg;
+    expect(legB).not.toBe(legA);
+
+    // The tool call arrives ON LEG B, and the bridge hangs.
+    legB.emit({ type: "tool-call", id: "call_stale", name: "team_status", argsJson: "{}" });
+    await flush();
+    expect(h.phone.ofType("tool.start")).toHaveLength(1);
+
+    // Leg B's handshake budget expires: it is discarded and a THIRD leg
+    // dials successfully — all while the tool is still running.
+    h.provider.emitSessionReady = true;
+    await h.timers.advance(SESSION_READY_TIMEOUT_MS + redialBackoffMs(1) + 10);
+    const legC = h.provider.lastLeg;
+    expect(legC).not.toBe(legB);
+    expect(h.phone.ofType("ready")).toHaveLength(1); // the dial completed
+
+    // Now the tool finally answers.
+    resolveTool({ envelopeJson: JSON.stringify({ ok: true, tool: "team_status", data: "green" }) });
+    await flush();
+
+    // THE ASSERTION: the fresh leg received NOTHING for the stale id.
+    expect(legC.toolResults).toEqual([]);
+    expect(legB.toolResults).toEqual([]);
+    expect(legA.toolResults).toEqual([]);
+    // ...and the drop is visible, naming the tool and no speech.
+    const dropped = h.logs.filter((l) => l.includes("dropping tool result"));
+    expect(dropped).toHaveLength(1);
+    expect(dropped[0]).toContain("team_status");
+    // The operator still saw the outcome of the tool HE asked for.
+    expect(h.phone.ofType("tool.done")[0]).toMatchObject({ id: "call_stale", ok: true });
+  });
+
+  test("the SAME leg still receives its own result — the guard is identity, not a ban", async () => {
+    const h = makeHarness();
+    await live(h);
+    const leg = h.provider.lastLeg;
+    leg.emit({ type: "tool-call", id: "call_ok", name: "team_status", argsJson: "{}" });
+    await flush();
+    expect(leg.toolResults).toHaveLength(1);
+    expect(leg.toolResults[0]?.callId).toBe("call_ok");
+    expect(h.logs.filter((l) => l.includes("dropping tool result"))).toEqual([]);
+  });
+});
+
 // ---------- redial ----------
 
 describe("provider redial", () => {
