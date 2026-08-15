@@ -43,6 +43,11 @@
 //     are the sensitive payload bounded by ADR-272 OQ-4 (local-only,
 //     7-day retention), and these are protocol events. Tool NAMES are
 //     fine; tool ARGUMENTS are not.
+//   - Speech has exactly ONE persistence path: the optional
+//     `openTranscript` sink (`src/core/voice/transcript.ts`), which is
+//     absent unless the operator set `ATMUX_VOICE_TRANSCRIPTS=1`. The
+//     two sinks are disjoint by design — `log` carries protocol events
+//     and no speech; the transcript sink carries speech and nothing else.
 //   - Frames arriving while `dialing` are ignored; binary before hello
 //     (or any pre-hello garbage) closes 4400.
 //   - Client-frame + provider-event switches are EXHAUSTIVE (no
@@ -87,6 +92,7 @@ import { createSessionRegistry, type SessionRegistry } from "./registry.ts";
 import { resolveTeamName, type VoiceTeamIndex } from "./team-context.ts";
 import type { ToolBridge } from "./tool-bridge.ts";
 import { toolJsonSchema, type VoiceToolEntry } from "./tool-catalog.ts";
+import type { VoiceTranscriptSink } from "./transcript.ts";
 
 // ---------- Tunables (wire contract — tests pin these) ----------
 
@@ -305,6 +311,16 @@ export interface VoiceSessionDeps {
    * NO SPEECH may be passed here (see the module header).
    */
   log?: (line: string) => void;
+  /**
+   * Per-session transcript sink factory (ADR-272 OQ-4). ABSENT unless the
+   * operator opted in with `ATMUX_VOICE_TRANSCRIPTS=1` — a session built
+   * without it records nothing, which is the shipped default and the
+   * reason this is an optional dep rather than a flag read in here.
+   *
+   * Called once, with the session id, as soon as that id exists (fresh
+   * dial or resumed park), so one file carries one session.
+   */
+  openTranscript?: (sessionId: string) => VoiceTranscriptSink;
 }
 
 export interface VoiceSessionStats {
@@ -345,6 +361,9 @@ class VoiceServerSessionImpl implements VoiceServerSession {
   private phase: Phase = "awaiting-hello";
   private phoneOpen = true;
   private sessionId = ""; // empty until hello; set exactly once per fresh/resume
+  /** Transcript sink for this session, or null when recording is off
+   *  (the default — ADR-272 OQ-4 ships transcripts opt-in). */
+  private transcript: VoiceTranscriptSink | null = null;
   private conn: ProviderConn | null = null;
   private currentTeam: string | null = null;
   private mode: "ptt" | "vad" = "ptt";
@@ -523,10 +542,20 @@ class VoiceServerSessionImpl implements VoiceServerSession {
     await this.freshSession(hello);
   }
 
+  /** Open this session's transcript sink, if recording is enabled. No-op
+   *  otherwise — `this.transcript` stays null and nothing is ever
+   *  written (ADR-272 OQ-4 §off-by-default). */
+  private openTranscript(sessionId: string): void {
+    this.transcript = this.deps.openTranscript?.(sessionId) ?? null;
+  }
+
   private adopt(sessionId: string, entry: ParkedLeg): void {
     this.deps.timers.clearTimeout(entry.timer);
     this.deps.shared.parked.delete(sessionId);
     this.sessionId = sessionId;
+    // Same id → same transcript file: a resume APPENDS to the record the
+    // pre-drop half of the conversation started (ADR-272 D8 + OQ-4).
+    this.openTranscript(sessionId);
     this.conn = entry.conn;
     this.currentTeam = entry.currentTeam;
     this.seq = entry.seq;
@@ -541,6 +570,7 @@ class VoiceServerSessionImpl implements VoiceServerSession {
   private async freshSession(hello: HelloFrame): Promise<void> {
     const sessionId = this.deps.uuid();
     this.sessionId = sessionId;
+    this.openTranscript(sessionId);
     this.deps.shared.registry.claim({
       sessionId,
       onTakeover: () => {
@@ -860,6 +890,12 @@ class VoiceServerSessionImpl implements VoiceServerSession {
         this.onAudioOut(ev.pcm);
         return;
       case "transcript":
+        // FINALS ONLY (ADR-272 OQ-4). `final: true` closes an utterance
+        // id, so the finals ARE the conversation; recording the partial
+        // deltas as well would write the same sentence a dozen times in
+        // pieces. Off unless the operator opted in — `transcript` is null
+        // by default, and the phone still gets every partial either way.
+        if (ev.final) this.transcript?.record({ role: ev.role, text: ev.text });
         this.sendJson({
           type: ev.role === "user" ? "transcript.user" : "transcript.assistant",
           id: ev.id,

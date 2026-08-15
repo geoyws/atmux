@@ -301,6 +301,7 @@ Explicitly out of v1. Each names what it needs, so a future implementer does not
    - **Retention:** 7 days, pruned on server start and daily thereafter. Chosen as the shortest window that still lets the operator debug "what did I say that made it do that?" the morning after. Operator may shorten it; lengthening it should come with a reason.
    - **Scope:** transcripts are the sensitive payload. Connection and protocol events (frame counts, close codes, dial failures, tool names) carry no speech and are not what this bounds — and note the first real deploy found the server logging *nothing* on a failed dial, so the protocol-event side needs more logging, not less.
    - **Not decided here:** whether transcripts are written at all by default. The safest posture is off-by-default with an explicit opt-in flag, since a transcript file is the one artifact that turns a voice session into a durable record of everything said near the microphone. If P7 ships them on by default, that is its own decision to argue.
+   - **IMPLEMENTED 2026-08-15** — `src/core/voice/transcript.ts`, wired in `src/verbs/voice.ts` + `src/core/voice/session.ts`. Off by default behind `ATMUX_VOICE_TRANSCRIPTS`; the P7 default is **not** argued and stays off. See §Supplement — P7 prerequisites §R1.
    - **Why this shape:** the recording is the risk, not the disk. Anything that leaves the box — a log shipper, a crash reporter, a synced directory — converts a local convenience into an exfiltration path for the operator's speech, so the decision is deliberately "local-only" rather than "local-first".
 5. **OQ-5 — is `atmux voice` the right verb name, or should it be a subverb of an operator-surface family?** Cosmetic today; renaming a shipped verb costs an [ADR-266](266-shim-sunset-policy-and-first-sweep.md) shim, so the question is worth asking before P4 rather than after. **RESOLVED 2026-08-14 (operator): `voice` stands as a top-level verb.** Asked and answered before P4 landed, so no shim is owed. Reopening this after P4 ships costs an ADR-266 shim by definition — treat it as closed.
 
@@ -343,6 +344,29 @@ The guard answers *"does this model id exist?"*. It does **not** answer *"will a
 
 - **No automatic remediation.** The guard names the closest ids; it does not switch the pin. Silently dialling a model the operator did not choose is a worse failure than a loud one he can fix in one export.
 - **Gemini's model list is fetched as ONE page of 1000.** The API caps `pageSize` there and defaults to 50 — far under the live catalog, which would make a present model look absent. A `nextPageToken` loop is not built; if Google ever ships more than 1000 models, the symptom is a short list, and that is the signal to build it.
+
+## Supplement — P7 prerequisites (2026-08-15)
+
+Changes that are each **latent today and live the moment `ATMUX_VOICE_READONLY` clears**. None changes the tool surface or a wire contract; each is the difference between "the mutating surface is reachable" and "the mutating surface is reachable *safely*". Recorded here rather than in commit messages because some of them REVERSE a decision this ADR already states, and a reversal that is not written down reads later as drift.
+
+### R1 — OQ-4 is implemented, and its "not decided" half is still not decided
+
+OQ-4 was **resolved but unimplemented**: nothing wrote to `~/.atmux/voice-logs/` and the ADR owed the code at P7. Since transcripts hold everything the operator says, the rule had to exist in code *before* mutation was enabled, not alongside it. `src/core/voice/transcript.ts` implements exactly the resolved text and nothing beyond it.
+
+| OQ-4 clause | How it is enforced |
+|---|---|
+| Location `~/.atmux/voice-logs/` | Derived from `$HOME`; **no env override for the directory exists**, so no operator can point it into a product checkout (ADR-268) or a synced path. The only knobs are the boolean and the retention window. |
+| Retention 7 days, pruned at start and daily | `pruneTranscripts` at boot in `serveVoice`, re-armed on a 24h loop that `stop()`s with the server. Boundary is `age > retentionMs`, so a file exactly 7 days old is KEPT. |
+| Off by default, explicit opt-in | `ATMUX_VOICE_TRANSCRIPTS=1`. With it unset, `buildVoiceDeps` hands the session `openTranscript: null` — the session has no sink to write to, so "nothing is written" is structural rather than a flag re-read at event time. |
+| Local-only, never local-first | One `appendFileSync` to one path under `$HOME`, file `0600` inside a `0700` directory. Nothing ships, syncs, or forwards. |
+
+Three properties the resolved text did not specify, each chosen the conservative way:
+
+1. **Finals only.** Providers emit incremental transcript deltas; `final: true` closes an utterance id, so the finals *are* the conversation and the partials are the same sentence in pieces. Recording partials would multiply both the disk writes and the number of copies of a half-heard sentence.
+2. **Lazy file creation.** The file appears on the first recorded line, so a session in which nobody spoke leaves nothing behind.
+3. **Pruning runs even when recording is OFF.** The sweep only ever deletes; an operator who turns recording back off must not be left with last month's transcripts on disk forever.
+
+A write failure (full disk, read-only `$HOME`) is swallowed and logged **once** per session — a sink that could throw would take down a live call to protect a log file — and a prune failure is counted, never raised, for the same reason at boot.
 
 ## Decision-anchors
 

@@ -12,6 +12,8 @@
 // built object — a test-only poke at a plain field, not a production
 // path.
 
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
   VoiceEvent,
   VoiceProvider,
@@ -174,6 +176,16 @@ export class FakeProvider implements VoiceProvider {
   }
 }
 
+/**
+ * `$HOME` every test server resolves its transcript directory against
+ * (ADR-272 OQ-4). NEVER the real one: `serveVoice` runs a retention sweep
+ * at boot, and a unit suite that swept the operator's actual
+ * `~/.atmux/voice-logs/` would delete real recordings. Nothing creates
+ * this path, so the sweep finds no directory and does nothing — which is
+ * also the shape the "absent directory is not an error" case needs.
+ */
+export const TEST_VOICE_HOME = join(tmpdir(), "atmux-voice-test-home");
+
 export const TEST_VOICE_TOKEN = "v".repeat(40);
 export const TEST_OPENAI_KEY = "sk-test-key-must-never-reach-the-client";
 
@@ -266,6 +278,7 @@ export async function buildTestDeps(opts: WithVoiceServerOpts = {}): Promise<{
   const env: NodeJS.ProcessEnv = {
     ATMUX_VOICE_TOKEN: TEST_VOICE_TOKEN,
     OPENAI_API_KEY: TEST_OPENAI_KEY,
+    HOME: TEST_VOICE_HOME,
     ...opts.env,
   };
   const deps = await buildVoiceDeps({

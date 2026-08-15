@@ -54,6 +54,10 @@ import type {
   ToolBridgeHealth,
 } from "../../../../src/core/voice/tool-bridge.ts";
 import { VOICE_TOOL_CATALOG } from "../../../../src/core/voice/tool-catalog.ts";
+import type {
+  VoiceTranscriptEvent,
+  VoiceTranscriptSink,
+} from "../../../../src/core/voice/transcript.ts";
 import { VoiceProviderError } from "../../../../src/errors.ts";
 import { VOICE_CLOSE } from "../../../../src/schema/voice.ts";
 
@@ -301,6 +305,8 @@ function baseConfig(over: Partial<VoiceConfig> = {}): VoiceConfig {
     readonly: false,
     resumeGraceMs: 90_000,
     confirmTtlMs: 120_000,
+    transcripts: false,
+    transcriptRetentionDays: 7,
     ...over,
   };
 }
@@ -329,6 +335,9 @@ function makeHarness(
     nowMyt?: () => string;
     /** Omit the `log` dep entirely — exercises the no-op default. */
     noLog?: boolean;
+    /** Transcript sink factory (ADR-272 OQ-4). Absent = the shipped
+     *  default, where the session records nothing. */
+    openTranscript?: (sessionId: string) => VoiceTranscriptSink;
   } = {},
 ): Harness {
   const timers = over.timers ?? new FakeTimers();
@@ -369,6 +378,7 @@ function makeHarness(
       }),
     ...(over.nowMyt !== undefined ? { nowMyt: over.nowMyt } : {}),
     ...(over.noLog === true ? {} : { log: (line: string): void => void logs.push(line) }),
+    ...(over.openTranscript !== undefined ? { openTranscript: over.openTranscript } : {}),
   };
   return {
     phone,
@@ -836,6 +846,120 @@ describe("control frames", () => {
     await h.session.handlePhoneMessage(JSON.stringify({ type: "ping", t: 1234 }));
     await h.session.handlePhoneMessage(JSON.stringify({ type: "ping" }));
     expect(h.phone.ofType("pong")).toEqual([{ type: "pong", t: 1234 }, { type: "pong" }]);
+  });
+});
+
+// ---------- transcripts (ADR-272 OQ-4) ----------
+//
+// The session is the only place speech becomes a durable record, so these
+// pin exactly what reaches the sink: the finals, with their role and text,
+// once per session — and NOTHING at all when the operator has not opted
+// in. (The on-disk half — path, content, absence — lives in
+// tests/unit/core/voice/transcript.test.ts and the end-to-end verbs test.)
+
+describe("transcript recording", () => {
+  interface Recorder {
+    openTranscript: (sessionId: string) => VoiceTranscriptSink;
+    /** Session ids the factory was asked for, in order. */
+    readonly opened: string[];
+    /** Everything recorded, tagged with the session it was recorded under. */
+    readonly recorded: Array<VoiceTranscriptEvent & { session: string }>;
+  }
+
+  function recorder(): Recorder {
+    const opened: string[] = [];
+    const recorded: Array<VoiceTranscriptEvent & { session: string }> = [];
+    return {
+      opened,
+      recorded,
+      openTranscript: (sessionId: string): VoiceTranscriptSink => {
+        opened.push(sessionId);
+        return {
+          path: `/scratch/voice-${sessionId}.jsonl`,
+          record: (ev): void => void recorded.push({ ...ev, session: sessionId }),
+        };
+      },
+    };
+  }
+
+  test("records FINAL transcripts only, with role + text, under the session id", async () => {
+    const rec = recorder();
+    const h = makeHarness({ openTranscript: rec.openTranscript });
+    await live(h);
+    expect(rec.opened).toEqual(["sess-1"]); // one sink, opened once
+
+    const leg = h.provider.lastLeg;
+    leg.emit({ type: "transcript", role: "user", id: "u1", text: "fleet st", final: false });
+    leg.emit({ type: "transcript", role: "user", id: "u1", text: "fleet status", final: true });
+    leg.emit({ type: "transcript", role: "assistant", id: "a1", text: "All", final: false });
+    leg.emit({ type: "transcript", role: "assistant", id: "a1", text: "All green.", final: true });
+    await flush();
+
+    // Partials are the SAME sentence in pieces; recording them would write
+    // it a dozen times. The finals are the conversation.
+    expect(rec.recorded).toEqual([
+      { role: "user", text: "fleet status", session: "sess-1" },
+      { role: "assistant", text: "All green.", session: "sess-1" },
+    ]);
+    // The phone still gets every partial — recording is not filtering.
+    expect(h.phone.ofType("transcript.user")).toHaveLength(2);
+    expect(h.phone.ofType("transcript.assistant")).toHaveLength(2);
+  });
+
+  test("with no sink factory — the shipped default — the session records NOTHING", async () => {
+    const h = makeHarness(); // no `openTranscript` dep at all
+    await live(h);
+    const leg = h.provider.lastLeg;
+    leg.emit({ type: "transcript", role: "user", id: "u1", text: "revert prod", final: true });
+    await flush();
+    // Speech still reaches the phone, and nothing anywhere persisted it:
+    // there is no sink to persist it TO.
+    expect(h.phone.ofType("transcript.user")).toEqual([
+      { type: "transcript.user", id: "u1", text: "revert prod", final: true },
+    ]);
+    // And the diagnostics sink stayed speech-free (ADR-272 OQ-4 §Scope).
+    expect(h.logs.join("\n")).not.toContain("revert prod");
+  });
+
+  test("a RESUMED session keeps recording under the same session id", async () => {
+    const rec = recorder();
+    const shared = createVoiceSharedState({ clock: () => 0, graceMs: 90_000 });
+    const first = makeHarness({ shared, openTranscript: rec.openTranscript });
+    await live(first);
+    first.provider.lastLeg.emit({
+      type: "transcript",
+      role: "user",
+      id: "u1",
+      text: "before the lift",
+      final: true,
+    });
+    await flush();
+    first.session.handlePhoneClose(1006); // dropped phone → parked leg
+
+    const second = makeHarness({
+      shared,
+      provider: first.provider,
+      timers: first.timers,
+      openTranscript: rec.openTranscript,
+    });
+    await second.session.handlePhoneMessage(hello({ resume: "sess-1" }));
+    await flush();
+    expect(second.phone.ofType("ready")[0]).toMatchObject({ resumed: true, sessionId: "sess-1" });
+    first.provider.lastLeg.emit({
+      type: "transcript",
+      role: "user",
+      id: "u2",
+      text: "after the lift",
+      final: true,
+    });
+    await flush();
+
+    // Same id both sides of the drop → one continuous record, not two.
+    expect(rec.opened).toEqual(["sess-1", "sess-1"]);
+    expect(rec.recorded).toEqual([
+      { role: "user", text: "before the lift", session: "sess-1" },
+      { role: "user", text: "after the lift", session: "sess-1" },
+    ]);
   });
 });
 

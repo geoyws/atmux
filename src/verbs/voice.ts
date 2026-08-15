@@ -80,6 +80,15 @@ import {
   type VoiceRunnerKey,
   type VoiceToolEntry,
 } from "../core/voice/tool-catalog.ts";
+import {
+  createTranscriptSink,
+  formatPruneResult,
+  pruneTranscripts,
+  resolveTranscriptDir,
+  retentionMsForDays,
+  startTranscriptPruneLoop,
+  type VoiceTranscriptSink,
+} from "../core/voice/transcript.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import { VOICE_CLOSE } from "../schema/voice.ts";
 
@@ -317,6 +326,19 @@ export interface VoiceServeDeps {
   /** Redacting stderr diagnostics sink — see the module header. Every
    *  running-server line (banner, dial story, shutdown) goes through it. */
   log: VoiceLog;
+  /** `~/.atmux/voice-logs` — where transcripts live AND where the
+   *  retention sweep runs (ADR-272 OQ-4). Resolved once at boot. */
+  transcriptDir: string;
+  /** Retention window in ms, from `ATMUX_VOICE_TRANSCRIPT_RETENTION_DAYS`. */
+  transcriptRetentionMs: number;
+  /**
+   * Per-session transcript sink factory, or **null when recording is
+   * off** — which is the shipped default (ADR-272 OQ-4). Null here is
+   * what makes "nothing is written" structural: the session cannot
+   * record without a factory, so there is no flag left to misread at
+   * event time.
+   */
+  openTranscript: ((sessionId: string) => VoiceTranscriptSink) | null;
 }
 
 export interface BuildVoiceDepsOpts {
@@ -388,6 +410,16 @@ export async function buildVoiceDeps(opts: BuildVoiceDepsOpts = {}): Promise<Voi
   const clock = opts.clock ?? ((): number => Date.now());
   const timers = opts.timers ?? realTimers;
   const catalog = visibleCatalog(config.readonly);
+  // ADR-272 OQ-4. The directory is derived from `$HOME`, never from an
+  // operator-settable path — an override is how a transcript ends up
+  // inside a product checkout (ADR-268) or on a synced path.
+  const transcriptDir = resolveTranscriptDir({ env });
+  const logger = createVoiceLogger({
+    // Both secrets the server holds. `createVoiceLogger` also applies
+    // shape-based patterns for credentials it was never told about.
+    secrets: [apiKey, config.token],
+    ...(opts.logWrite !== undefined ? { write: opts.logWrite } : {}),
+  });
 
   const bridge = createToolBridge({
     catalog,
@@ -418,12 +450,13 @@ export async function buildVoiceDeps(opts: BuildVoiceDepsOpts = {}): Promise<Voi
     timers,
     uuid: opts.uuid ?? ((): string => uuidv7()),
     assetsDir: resolveVoiceAssetsDir(config),
-    log: createVoiceLogger({
-      // Both secrets the server holds. `createVoiceLogger` also applies
-      // shape-based patterns for credentials it was never told about.
-      secrets: [apiKey, config.token],
-      ...(opts.logWrite !== undefined ? { write: opts.logWrite } : {}),
-    }),
+    log: logger,
+    transcriptDir,
+    transcriptRetentionMs: retentionMsForDays(config.transcriptRetentionDays),
+    openTranscript: config.transcripts
+      ? (sessionId: string): VoiceTranscriptSink =>
+          createTranscriptSink({ sessionId, dir: transcriptDir, clock, log: logger })
+      : null,
   };
 }
 
@@ -627,6 +660,8 @@ export function startVoiceServer(opts: StartVoiceServerOpts): VoiceServerHandle 
           timers: deps.timers,
           uuid: deps.uuid,
           log,
+          // Absent unless the operator opted in — see VoiceServeDeps.
+          ...(deps.openTranscript !== null ? { openTranscript: deps.openTranscript } : {}),
         });
       },
       async message(ws, message): Promise<void> {
@@ -711,14 +746,44 @@ export async function runModelPinCheck(
   }
 }
 
-/** Startup banner — host/port/provider/model/readonly/assets. NEVER the
- *  token or an API key (ADR-272 §Security). */
+/**
+ * Run one transcript retention sweep and log the result. ADR-272 OQ-4.
+ *
+ * **Runs whether or not recording is enabled**, because it only ever
+ * DELETES: an operator who turns `ATMUX_VOICE_TRANSCRIPTS` back off must
+ * not be left with last month's transcripts sitting on disk forever.
+ *
+ * **Never throws** (`pruneTranscripts` swallows every per-file fault and
+ * returns counts), so a read-only `$HOME` or one undeletable file costs a
+ * log line, never the voice server. That is the whole reason the sweep is
+ * awaited here rather than fired into the background: the outcome is
+ * reportable, and it still cannot fail the boot.
+ */
+export async function runTranscriptPrune(
+  deps: VoiceServeDeps,
+  log: (line: string) => void,
+): Promise<void> {
+  const result = await pruneTranscripts({
+    dir: deps.transcriptDir,
+    retentionMs: deps.transcriptRetentionMs,
+    now: deps.clock,
+  });
+  log(formatPruneResult(deps.transcriptDir, result));
+}
+
+/** Startup banner — host/port/provider/model/readonly/transcripts/assets.
+ *  NEVER the token or an API key (ADR-272 §Security).
+ *
+ *  `transcripts=` is on the banner deliberately: recording the operator's
+ *  speech is the one server setting he must be able to see is ON without
+ *  reading his own env, and a banner is what he looks at. */
 export function startupBanner(deps: VoiceServeDeps, handle: VoiceServerHandle): string {
   return [
     `voice: listening on ${handle.hostname}:${handle.port}`,
     `provider=${deps.provider.kind}`,
     `model=${deps.providerCfg.model}`,
     `readonly=${deps.config.readonly}`,
+    `transcripts=${deps.config.transcripts}`,
     `assets=${deps.assetsDir}`,
   ].join("  ");
 }
@@ -737,6 +802,12 @@ export async function serveVoice(opts: ServeVoiceOpts): Promise<number> {
   // and awaited, so its verdict lands next to the banner rather than
   // interleaved with the first session's dial story.
   await runModelPinCheck(opts.deps, log, opts.checkModel ?? checkModelPin);
+  // ADR-272 OQ-4: "pruned on server start and daily thereafter".
+  await runTranscriptPrune(opts.deps, log);
+  const stopPrune = startTranscriptPruneLoop({
+    timers: opts.deps.timers,
+    run: () => runTranscriptPrune(opts.deps, log),
+  });
 
   const on =
     opts.onSignal ??
@@ -760,6 +831,8 @@ export async function serveVoice(opts: ServeVoiceOpts): Promise<number> {
   } finally {
     off("SIGINT", shutdown);
     off("SIGTERM", shutdown);
+    // A live 24h timer would hold the event loop open past shutdown.
+    stopPrune();
   }
 }
 

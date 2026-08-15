@@ -82,6 +82,10 @@ describe("defaults (no env, no flags)", () => {
     expect(cfg.readonly).toBe(false);
     expect(cfg.resumeGraceMs).toBe(90_000);
     expect(cfg.confirmTtlMs).toBe(120_000);
+    // ADR-272 OQ-4: recording the operator's speech is OFF unless asked
+    // for, and the window is 7 days when it is on.
+    expect(cfg.transcripts).toBe(false);
+    expect(cfg.transcriptRetentionDays).toBe(7);
     expect(cfg.model).toBeUndefined();
     expect(cfg.assetsDir).toBeUndefined();
     expect("model" in cfg).toBe(false);
@@ -260,5 +264,63 @@ describe("parseBooleanEnv (readonly)", () => {
   test("readonly flag=false beats env=1", () => {
     const cfg = resolveVoiceConfig(env({ ATMUX_VOICE_READONLY: "1" }), { readonly: false });
     expect(cfg.readonly).toBe(false);
+  });
+});
+
+// ---------- transcripts (ADR-272 OQ-4) ----------
+
+describe("transcripts", () => {
+  test("OFF unless the operator opts in — the shipped posture", () => {
+    expect(resolveVoiceConfig(env()).transcripts).toBe(false);
+    expect(resolveVoiceConfig(env({ ATMUX_VOICE_TRANSCRIPTS: "" })).transcripts).toBe(false);
+    expect(resolveVoiceConfig(env({ ATMUX_VOICE_TRANSCRIPTS: "0" })).transcripts).toBe(false);
+    // Anything that is not an affirmative reads as OFF, so a typo cannot
+    // silently start recording.
+    expect(resolveVoiceConfig(env({ ATMUX_VOICE_TRANSCRIPTS: "yes" })).transcripts).toBe(false);
+    expect(resolveVoiceConfig(env({ ATMUX_VOICE_TRANSCRIPTS: "on" })).transcripts).toBe(false);
+  });
+
+  test.each([["1"], ["true"], ["TRUE"], [" true "]])("%j opts in", (raw) => {
+    expect(resolveVoiceConfig(env({ ATMUX_VOICE_TRANSCRIPTS: raw })).transcripts).toBe(true);
+  });
+
+  test("the flag layer wins in both directions", () => {
+    expect(resolveVoiceConfig(env(), { transcripts: true }).transcripts).toBe(true);
+    expect(
+      resolveVoiceConfig(env({ ATMUX_VOICE_TRANSCRIPTS: "1" }), { transcripts: false }).transcripts,
+    ).toBe(false);
+  });
+
+  test("retention: env shortens it, flag beats env", () => {
+    expect(
+      resolveVoiceConfig(env({ ATMUX_VOICE_TRANSCRIPT_RETENTION_DAYS: "2" }))
+        .transcriptRetentionDays,
+    ).toBe(2);
+    expect(
+      resolveVoiceConfig(env({ ATMUX_VOICE_TRANSCRIPT_RETENTION_DAYS: "2" }), {
+        transcriptRetentionDays: 5,
+      }).transcriptRetentionDays,
+    ).toBe(5);
+  });
+
+  test.each([
+    ["nope"],
+    ["0"],
+    ["-3"],
+    ["NaN"],
+    [""],
+  ])("retention %j fails CLOSED to 7 days, never to zero", (raw) => {
+    // Failing open here would mean "delete everything on the next
+    // sweep" — the one direction a bad export must never take.
+    expect(
+      resolveVoiceConfig(env({ ATMUX_VOICE_TRANSCRIPT_RETENTION_DAYS: raw }))
+        .transcriptRetentionDays,
+    ).toBe(VOICE_DEFAULTS.transcriptRetentionDays);
+  });
+
+  test("a non-positive retention FLAG also falls through to the default", () => {
+    expect(resolveVoiceConfig(env(), { transcriptRetentionDays: 0 }).transcriptRetentionDays).toBe(
+      7,
+    );
   });
 });
