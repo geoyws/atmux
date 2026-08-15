@@ -73,35 +73,64 @@ const TEAM_PARAM = z
 
 /**
  * A value that lands in a POSITIONAL argv slot must not be able to pose
- * as a flag (ADR-272 D2 — a transcript must never become a shell token,
- * and a CLI flag is that same problem one layer up).
+ * as a flag (ADR-272 D2 §Supplement — a transcript must never become a
+ * shell token, and a CLI flag is that same problem one layer up).
  *
  * Two concrete escapes this closes, both reachable from a spoken phrase:
  *   claim_task(task_id: "--next", member: "x")
- *     → argv ["--next", "--as", "x"] → claims whatever is NEXT in the
- *       lane, not the task the operator named.
- *   dispatch_task(member: "--socket", task_id: "/tmp/x")
- *     → argv ["--socket", "/tmp/x"] → dispatch aimed at an arbitrary
- *       tmux socket.
+ *     → argv ["--next", "--as", "x"] → `parseClaimDoneArgs` sets
+ *       next=true and `claim` routes to `claimNext()` — it claims
+ *       whatever is NEXT in the lane, not the task the operator named.
+ *   dispatch_task(member: "be-1", task_id: "--socket")
+ *     → argv ["be-1", "--socket", "--team-dir", "<root>"] →
+ *       `parseDispatchArgs` eats "--team-dir" as the socket VALUE, so
+ *       the dispatch runs against an attacker-named tmux socket AND
+ *       loses its `--team-dir`, silently retargeting the voice server's
+ *       cwd team instead of the team the operator named.
  *
- * Why a regex and not a `--` terminator: VERIFIED against both target
- * parsers — neither `parseDispatchArgs` (src/verbs/dispatch.ts) nor
- * `parseClaimDoneArgs` (src/verbs/claim.ts) implements `--`. Both treat
- * ANY `-`-prefixed token as a flag and `dispatch` genuinely accepts
- * `--socket` / `--team-dir` / `--no-ping`, which is what makes the second
- * escape work. Adding `--` would be inert there, so the guard lives here
- * where it holds regardless of what a downstream parser does.
- * (`tell_lead` and `add_task` DO terminate with `--`, which is why their
- * free-text params need no such rule.)
+ * Why a regex and not a `--` terminator — RE-VERIFIED 2026-08-15 by
+ * reading both parsers, not by inheriting the prior claim:
+ *   - `parseDispatchArgs` (src/verbs/dispatch.ts:92) and
+ *     `parseClaimDoneArgs` (src/verbs/claim.ts:137) each end their flag
+ *     chain with `if (a?.startsWith("-")) throw UsageError` and neither
+ *     has a `--` case. A `--` we appended would not be inert — it would
+ *     HARD-FAIL every call with `unknown flag: --`.
+ *   - Teaching those two parsers `--` is a change to verbs the whole
+ *     team system drives (`claim --next` is the pull model's core loop),
+ *     so the regression risk dominates the redundancy it would buy.
+ *     Decision: keep the schema guard as the complete fix for these two
+ *     parsers; do NOT touch them. See ADR-272 D2 §Supplement.
+ *   - `parseTellLeadArgs` (src/verbs/tell-lead.ts:96) and `parseAddArgs`
+ *     (src/verbs/task.ts:810) DO honour `--`, which is why `tell_lead`
+ *     and `add_task` route their free text through it and may keep
+ *     accepting a leading dash (an operator genuinely says "-urgent").
+ *     {@link TERMINATOR_HONOURING_RUNNERS} pins that set; the catalog
+ *     test proves it by running the real parsers.
+ *
+ * The head class is `[^\s-]`, not `[^-]`: leading whitespace is never a
+ * spoken id or member name, and admitting it would hand any parser that
+ * ever learns to `.trim()` its argv a way straight around the dash
+ * check. No parser trims today — this closes the bypass before one does.
  */
-const NO_LEADING_DASH = /^[^-]/;
+const ARGV_SAFE_HEAD = /^[^\s-]/;
 
-/** Id / name param that reaches a positional argv slot. */
-function positionalParam(description: string): z.ZodString {
+/**
+ * THE shared validator for a free-text catalog argument that reaches a
+ * bare positional argv slot. Every such argument must carry it; the
+ * catalog test enumerates the catalog, derives each argument's real
+ * argv slot via {@link auditArgvSlots}, and fails if a positional one
+ * does not reject a leading dash.
+ *
+ * The guard is a `.regex()`, and `pattern` is NOT a legal key in the
+ * flat provider schema — {@link toolJsonSchema} drops it in its
+ * whitelist post-pass, and the flat-schema test pins that for every
+ * entry. Adding a guard here can never widen the provider-facing shape.
+ */
+export function positionalParam(description: string): z.ZodString {
   return z
     .string()
     .min(1)
-    .regex(NO_LEADING_DASH, "must not start with '-' (it would be read as a CLI flag)")
+    .regex(ARGV_SAFE_HEAD, "must not start with '-' or whitespace (it would be read as a CLI flag)")
     .describe(description);
 }
 
@@ -194,6 +223,12 @@ export const VOICE_TOOL_CATALOG: ReadonlyArray<VoiceToolEntry> = Object.freeze([
   {
     name: "member_pane",
     description: "Read one member's pane state (READY, TYPING, RATE-LIMIT, COMPACTING, ...).",
+    // `member` lands in a `--member` VALUE slot, which
+    // `parsePaneStateArgs` consumes unconditionally, so this guard is
+    // defence in depth rather than a closed escape — the honest reading
+    // of the 2026-08-15 audit, which found no live flag-injection here.
+    // Kept because a leading dash is never a real member name and the
+    // slot is one argv-shape change away from becoming positional.
     params: z.object({
       team: TEAM_PARAM,
       member: positionalParam("Member name as listed in team status"),
@@ -254,6 +289,13 @@ export const VOICE_TOOL_CATALOG: ReadonlyArray<VoiceToolEntry> = Object.freeze([
   {
     name: "add_task",
     description: "Add a kanban task to a team. Append-only; the task stays visible and editable.",
+    // `title` lands AFTER `--` and `body` lands in a `--body` VALUE
+    // slot, both of which `parseAddArgs` reads as data — so neither is
+    // dash-guarded on purpose ("-- rewrite the seed script" is a real
+    // thing an operator says). The catalog test re-derives both slots
+    // from this argv builder and drives `parseAddArgs` for real, so a
+    // shape change here that moves either into a positional slot fails
+    // the gate instead of shipping.
     params: z.object({
       team: TEAM_PARAM,
       title: z.string().min(1).max(200).describe("Task subject line"),
@@ -373,4 +415,126 @@ export function toolJsonSchema(entry: VoiceToolEntry): FlatToolSchema {
   const schema: FlatToolSchema = { type: "object", properties };
   if (required.length > 0) schema.required = required;
   return schema;
+}
+
+// ---------- argv-slot audit (ADR-272 D2 §Supplement) ----------
+//
+// The structural half of the flag-injection guard. A reject-list of
+// today's known-bad strings stops today's bug and nothing else; what
+// stops the NEXT one is deriving, from the argv builder itself, WHERE a
+// given argument actually lands — and then demanding the guard of every
+// argument that lands somewhere a flag would be read.
+//
+// This is why `member_pane` was found: nobody reported it, but a
+// slot-by-slot sweep names it without being told to look.
+
+/**
+ * Where an argument's value lands in the argv an entry builds:
+ *
+ * - `positional` — a bare token. Every parser in the runner map treats
+ *   a `-`-prefixed bare token as a FLAG, so this slot demands
+ *   {@link positionalParam}.
+ * - `flag-value` — the token right after a `-`-prefixed flag. Every
+ *   parser in the runner map takes `argv[i + 1]` unconditionally, so a
+ *   dash-led value here is read as the VALUE, not a flag. Safe — and
+ *   the catalog test re-proves it against the real parsers rather than
+ *   trusting this sentence.
+ * - `terminated` — after a `--` token. Safe only when the runner's
+ *   parser honours `--`; see {@link TERMINATOR_HONOURING_RUNNERS}.
+ * - `absent` — never reaches argv (e.g. `team`, which resolves through
+ *   the team index into a trusted root, and `limit`, which the bridge
+ *   consumes to cap output lines).
+ */
+export type ArgvSlot = "positional" | "flag-value" | "terminated" | "absent";
+
+/** Sentinel substituted for one argument at a time when probing. NUL
+ *  padding so it can never collide with a real spoken value. */
+export const ARGV_PROBE = "\u0000atmux-argv-probe\u0000";
+
+/**
+ * Runners whose verb parser implements a `--` terminator, so an argument
+ * placed after `--` is read as data no matter what it starts with.
+ *
+ * Verified in-source: `parseTellLeadArgs` (src/verbs/tell-lead.ts:96)
+ * and `parseAddArgs` (src/verbs/task.ts:810). Every OTHER runner throws
+ * `unknown flag: --` on the token, so emitting `--` for them would break
+ * the call outright — the catalog test drives the real parsers to keep
+ * this set honest.
+ */
+export const TERMINATOR_HONOURING_RUNNERS: ReadonlySet<VoiceRunnerKey> = new Set<VoiceRunnerKey>([
+  "tellLead",
+  "task",
+]);
+
+/** Worst-first ranking — an argument is judged by the most dangerous
+ *  slot it can reach across the arg combinations probed. */
+const SLOT_RANK: Record<ArgvSlot, number> = {
+  absent: 0,
+  terminated: 1,
+  "flag-value": 2,
+  positional: 3,
+};
+
+/** Classify where {@link ARGV_PROBE} (or any sentinel) sits in an argv. */
+export function classifyArgvSlot(argv: ReadonlyArray<string>, probe: string): ArgvSlot {
+  const idx = argv.indexOf(probe);
+  if (idx === -1) return "absent";
+  if (argv.slice(0, idx).includes("--")) return "terminated";
+  // At idx 0 there is no preceding token, so `argv[-1]` is undefined and
+  // the value is a bare positional — the most dangerous slot.
+  if (argv[idx - 1]?.startsWith("-") === true) return "flag-value";
+  return "positional";
+}
+
+/**
+ * Derive the real argv slot of every STRING argument of an entry, by
+ * substituting a sentinel and reading the argv the entry itself builds.
+ *
+ * Probed across several arg combinations, because an OPTIONAL argument
+ * that is absent SHIFTS the positional slots after it — `dispatch_task`
+ * is exactly that shape (`[member?, task_id, ...]`), so `task_id` sits
+ * at index 1 with a member and index 0 without. Judging only the full
+ * arg set would misread a slot that a real call can still reach. The
+ * strictest verdict across variants wins.
+ *
+ * Non-string arguments are skipped: they cannot carry a flag (`limit`
+ * and `priority` are bounded integers, rendered via `String()`).
+ */
+export function auditArgvSlots(
+  entry: VoiceToolEntry,
+  sampleArgs: Readonly<Record<string, unknown>>,
+  teamRoot: string | null,
+): Record<string, ArgvSlot> {
+  const required = new Set(toolJsonSchema(entry).required ?? []);
+  const keys = Object.keys(sampleArgs);
+  const optional = keys.filter((k) => !required.has(k));
+  const out: Record<string, ArgvSlot> = {};
+  for (const key of keys) {
+    if (typeof sampleArgs[key] !== "string") continue;
+    // Variants: the full sample; the sample minus each OTHER optional
+    // argument (one at a time); and the required-only floor.
+    const variants: Array<Record<string, unknown>> = [{ ...sampleArgs }];
+    for (const drop of optional) {
+      if (drop === key) continue;
+      const variant = { ...sampleArgs };
+      delete variant[drop];
+      variants.push(variant);
+    }
+    const floor: Record<string, unknown> = {};
+    for (const k of keys) {
+      if (required.has(k) || k === key) floor[k] = sampleArgs[k];
+    }
+    variants.push(floor);
+
+    let worst: ArgvSlot = "absent";
+    for (const variant of variants) {
+      const slot = classifyArgvSlot(
+        entry.argv({ ...variant, [key]: ARGV_PROBE }, teamRoot),
+        ARGV_PROBE,
+      );
+      if (SLOT_RANK[slot] > SLOT_RANK[worst]) worst = slot;
+    }
+    out[key] = worst;
+  }
+  return out;
 }

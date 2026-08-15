@@ -64,6 +64,30 @@ The tool bridge does not import `src/core/kanban.ts`, does not open a `Database`
 
 **Delete `src/core/voice/**` and the operator loses a microphone, not a power.** Every capability voice exposes is reachable from the operator's terminal today and remains so.
 
+#### D2 §Supplement — a CLI flag is a shell token one layer up (2026-08-15)
+
+"No shell interpolation" closes the shell. It does **not** close the CLI. An argv array is safe from `sh`, but `atmux`'s own `parse*Args` functions read a `-`-prefixed token as a **flag**, so a model-supplied string dropped into a bare positional slot is reinterpreted exactly the way a shell metacharacter would be. Two escapes were live and are the reason this supplement exists:
+
+| Spoken call | argv built | What the verb actually did |
+|---|---|---|
+| `claim_task(task_id="--next", member="x")` | `["--next", "--as", "x", …]` | `parseClaimDoneArgs` sets `next=true`; `claim` routes to `claimNext()` and claims **whatever is next in the lane**, not the task the operator named. |
+| `dispatch_task(member="be-1", task_id="--socket")` | `["be-1", "--socket", "--team-dir", "<root>"]` | `parseDispatchArgs` eats `--team-dir` as the **socket value** — the dispatch is aimed at an attacker-named tmux socket **and** silently loses its team scope, falling back to the voice server's cwd team. |
+
+**The invariant.** Every catalog argument is classified by the argv slot it can reach, and each slot carries an obligation:
+
+| Slot | Obligation | Why it holds |
+|---|---|---|
+| **positional** (bare token) | MUST use the shared `positionalParam` validator, which rejects a leading `-` **or leading whitespace** | Every parser in the runner map treats a bare `-`-prefixed token as a flag. Whitespace is rejected too so that a parser which ever learns to `.trim()` cannot route around the dash check; none trims today. |
+| **flag-value** (after `--flag`) | No dash guard required | Every parser takes `argv[i + 1]` unconditionally, so a dash-led value is read as data. Re-proved against the real parsers by test, not assumed. |
+| **terminated** (after `--`) | Runner's parser MUST honour `--` | True of `parseTellLeadArgs` and `parseAddArgs` only. Free text stays free there — an operator genuinely says "-urgent". |
+| **absent** | none | `team` resolves through the team index to a trusted root; `limit` is consumed by the bridge; `confirm_token` is stripped before argv. |
+
+**`--` is not added to `parseDispatchArgs` / `parseClaimDoneArgs`, and this is a decision, not an omission.** Both end their flag chain with `if (a?.startsWith("-")) throw UsageError` and have no `--` case, so an appended `--` would not be inert — it would hard-fail every call with `unknown flag: --`. Teaching them the terminator is a change to verbs the entire team system drives (`claim --next` is the pull model's core loop), and that regression risk dominates the redundancy it would buy. The schema guard is therefore the **complete** fix for those two parsers.
+
+**The guard is structural, not a reject-list.** `auditArgvSlots` derives each argument's real slot from the entry's own argv builder — probing the full arg set *and* the reduced sets, because an absent optional argument shifts the positional slots after it (`dispatch_task` is `[member?, task_id, …]`). The catalog test enumerates the catalog, demands a sample for every tool and every string argument, and fails if any argument reaching a positional slot lacks the guard. A future tool cannot reintroduce the class by being added; it fails the gate on the way in. This is how `member_pane` was found — nobody reported it, and the sweep named it anyway.
+
+**The guard cannot leak into the provider schema.** `positionalParam` is a `.regex()`, which raw JSON Schema renders as `pattern` — not a legal key in D6's flat contract. `toolJsonSchema`'s whitelist post-pass drops it, and a test asserts no `pattern` survives for any entry.
+
 ### D3 — The server runs as the driver, and that is a real privilege grant
 
 The voice server sets `ATMUX_CALLER_SCOPE=driver` in the environment of every verb it invokes. This is stated in the Decision section, not buried in an implementation note, because it is the single most consequential line in the feature.

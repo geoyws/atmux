@@ -15,10 +15,17 @@
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 import {
+  ARGV_PROBE,
+  type ArgvSlot,
+  auditArgvSlots,
+  classifyArgvSlot,
   findTool,
   isTeamScoped,
+  positionalParam,
+  TERMINATOR_HONOURING_RUNNERS,
   toolJsonSchema,
   VOICE_TOOL_CATALOG,
+  type VoiceRunnerKey,
   type VoiceToolEntry,
 } from "../../../../src/core/voice/tool-catalog.ts";
 import { ConfigError, UsageError } from "../../../../src/errors.ts";
@@ -437,6 +444,385 @@ describe("argv hygiene — a spoken value may not pose as a CLI flag", () => {
     expect(schema.properties.task_id).toEqual({
       type: "string",
       description: "Task id (full id or as read back)",
+    });
+  });
+
+  test("NO guarded entry leaks a `pattern` key into any provider schema", () => {
+    // Generalizes the pin above across the whole catalog: `.regex()` maps
+    // to `pattern` in raw JSON Schema, and a single leak breaks the flat
+    // contract both provider dialects depend on.
+    for (const t of VOICE_TOOL_CATALOG) {
+      expect(JSON.stringify(toolJsonSchema(t))).not.toContain("pattern");
+    }
+  });
+
+  test("the shared validator itself rejects a dash OR a leading space, and accepts a real id", () => {
+    // positionalParam is THE validator the structural gate below demands.
+    // If it stopped rejecting, every dependent assertion would be hollow.
+    const p = positionalParam("probe");
+    expect(p.safeParse("--next").success).toBe(false);
+    expect(p.safeParse("-x").success).toBe(false);
+    expect(p.safeParse(" --next").success).toBe(false);
+    expect(p.safeParse("\t-x").success).toBe(false);
+    expect(p.safeParse("").success).toBe(false);
+    expect(p.safeParse("t-4a2f").success).toBe(true);
+    expect(p.safeParse("px-crm-1").success).toBe(true);
+  });
+
+  test("leading whitespace can no longer smuggle a flag past the dash check", () => {
+    // Pre-hardening the class was /^[^-]/, so " --next" passed. No parser
+    // trims its argv today; this closes the bypass before one does.
+    for (const [tool, args] of [
+      ["claim_task", { task_id: " --next", member: "be-1" }],
+      ["dispatch_task", { task_id: " --socket", member: "be-1" }],
+      ["member_pane", { member: " --json" }],
+    ] as Array<[string, Record<string, unknown>]>) {
+      expect(
+        entry(tool).params.safeParse(args).success,
+        `${tool} accepted ${JSON.stringify(args)}`,
+      ).toBe(false);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------
+// Structural gate — the half that stops the NEXT flag-injection, not the
+// last one. Every assertion below is DERIVED (from the argv builders, or
+// by running the real verb parsers), never from a hand-kept list of
+// known-bad strings.
+// ---------------------------------------------------------------------
+
+/** One representative arg set per tool. The enumeration guards below
+ *  fail if a new tool, or a new string arg on an existing tool, is not
+ *  represented here — so the sweep cannot silently go stale. */
+const SAMPLES: Record<string, Record<string, unknown>> = {
+  list_teams: {},
+  fleet_overview: {},
+  team_status: { team: "atmux" },
+  team_health: { team: "atmux" },
+  list_tasks: { team: "atmux", limit: 5 },
+  member_pane: { team: "atmux", member: "be-1" },
+  driver_inbox: { team: "atmux" },
+  lead_outbox: { team: "atmux" },
+  cost_report: { team: "atmux" },
+  list_blockers: { team: "atmux" },
+  tell_lead: { team: "atmux", message: "deploy is green" },
+  add_task: { team: "atmux", title: "check the deploy", body: "see hig", priority: 2 },
+  dispatch_task: { team: "atmux", task_id: "t-abc123", member: "be-1" },
+  claim_task: { team: "atmux", task_id: "t-abc123", member: "be-1" },
+};
+
+/** The bridge strips `confirm_token` BEFORE calling `entry.argv`
+ *  (tool-bridge.ts step 4), so it never reaches an argv slot and is
+ *  deliberately absent from every sample. */
+const NEVER_REACHES_ARGV = new Set(["confirm_token"]);
+
+/** Every argument's real argv slot — the audit table, pinned. A shape
+ *  change to any argv builder shows up here as a diff instead of as a
+ *  silent new exposure. */
+const EXPECTED_SLOTS: Record<string, Record<string, ArgvSlot>> = {
+  list_teams: {},
+  fleet_overview: {},
+  team_status: { team: "absent" },
+  team_health: { team: "absent" },
+  list_tasks: { team: "absent" },
+  member_pane: { team: "absent", member: "flag-value" },
+  driver_inbox: { team: "absent" },
+  lead_outbox: { team: "absent" },
+  cost_report: { team: "absent" },
+  list_blockers: { team: "absent" },
+  tell_lead: { team: "absent", message: "terminated" },
+  add_task: { team: "absent", title: "terminated", body: "flag-value" },
+  dispatch_task: { team: "absent", task_id: "positional", member: "positional" },
+  claim_task: { team: "absent", task_id: "positional", member: "flag-value" },
+};
+
+/**
+ * Mirror of `task()`'s subverb split (src/verbs/task.ts:214-217) so a
+ * probe reaches the same parser a real invocation would, then the real
+ * parser for every runner in the map. These are the ACTUAL verb parsers
+ * — the point of the gate is that the catalog's safety claims are
+ * checked against them, not against a description of them.
+ */
+const RUNNER_PARSERS: Record<VoiceRunnerKey, (argv: ReadonlyArray<string>) => unknown> = {
+  topo: (a) => parseTopoArgs(a),
+  status: (a) => parseStatusArgs(a),
+  health: (a) => parseHealthArgs(a),
+  task: (a) => {
+    const first = a[0];
+    const isFlag = first?.startsWith("-") === true;
+    const rest = first === undefined || isFlag ? a : a.slice(1);
+    return first === "add" ? parseAddArgs(rest) : parseListArgs(rest);
+  },
+  paneState: (a) => parsePaneStateArgs(a),
+  driverInbox: (a) => parseDriverInboxArgs(a),
+  outbox: (a) => parseOutboxArgs(a),
+  cost: (a) => parseCostArgs(a),
+  blockers: (a) => parseBlockersArgs(a),
+  tellLead: (a) => parseTellLeadArgs(a),
+  dispatch: (a) => parseDispatchArgs(a),
+  claim: (a) => parseClaimDoneArgs(a, "claim"),
+};
+
+/** True when SOME own property of the parse result is EXACTLY `value` —
+ *  i.e. the hostile string arrived as data, not as a flag, and was not
+ *  mangled, joined, split, or dropped along the way. */
+function parsedCarriesExactly(parsed: unknown, value: string): boolean {
+  if (typeof parsed !== "object" || parsed === null) return false;
+  return Object.values(parsed as Record<string, unknown>).some((v) => v === value);
+}
+
+/** String-typed argument names of an entry that can reach argv. */
+function stringArgNames(t: VoiceToolEntry): string[] {
+  return Object.entries(toolJsonSchema(t).properties)
+    .filter(([k, p]) => p.type === "string" && !NEVER_REACHES_ARGV.has(k))
+    .map(([k]) => k);
+}
+
+describe("structural argv-slot gate (ADR-272 D2 §Supplement)", () => {
+  test("the sample table covers EXACTLY the catalog — a new tool fails here first", () => {
+    expect(Object.keys(SAMPLES).sort()).toEqual(VOICE_TOOL_CATALOG.map((t) => t.name).sort());
+    expect(Object.keys(EXPECTED_SLOTS).sort()).toEqual(
+      VOICE_TOOL_CATALOG.map((t) => t.name).sort(),
+    );
+  });
+
+  test("every string argument of every tool is sampled WITH A STRING", () => {
+    // Key presence alone is not enough: `auditArgvSlots` skips
+    // non-string sample values, so a string argument sampled with a
+    // number would silently drop out of the sweep.
+    for (const t of VOICE_TOOL_CATALOG) {
+      const sample = SAMPLES[t.name] ?? {};
+      for (const key of stringArgNames(t)) {
+        expect(Object.keys(sample), `${t.name}.${key} is unsampled`).toContain(key);
+        expect(typeof sample[key], `${t.name}.${key} sampled with a non-string`).toBe("string");
+      }
+    }
+  });
+
+  test.each(
+    VOICE_TOOL_CATALOG.map((t) => [t.name, t] as const),
+  )("%s — every argument's argv slot matches the audited table (both with and without a team root)", (name, t) => {
+    const sample = SAMPLES[name] ?? {};
+    for (const teamRoot of [ROOT, null]) {
+      expect(auditArgvSlots(t, sample, teamRoot)).toEqual(EXPECTED_SLOTS[name] ?? {});
+    }
+  });
+
+  test("EVERY argument reaching a POSITIONAL slot rejects a leading dash", () => {
+    // The gate proper. Not a list of known-bad strings: the slot is
+    // derived from the entry's own argv builder, so a future entry that
+    // routes a new free-text arg into a positional slot without
+    // positionalParam fails right here.
+    let positionalArgs = 0;
+    for (const t of VOICE_TOOL_CATALOG) {
+      const slots = auditArgvSlots(t, SAMPLES[t.name] ?? {}, ROOT);
+      for (const [key, slot] of Object.entries(slots)) {
+        if (slot !== "positional") continue;
+        positionalArgs += 1;
+        const schema = t.params.shape[key] as z.ZodType | undefined;
+        expect(schema, `${t.name}.${key} has no schema`).toBeDefined();
+        for (const hostile of ["--next", "-x", " --socket", "\t-y"]) {
+          expect(
+            schema?.safeParse(hostile).success,
+            `${t.name}.${key} accepted ${JSON.stringify(hostile)} into a POSITIONAL argv slot`,
+          ).toBe(false);
+        }
+        // ...and still accepts what an operator actually says.
+        expect(schema?.safeParse("t-4a2f").success, `${t.name}.${key} rejects a real id`).toBe(
+          true,
+        );
+      }
+    }
+    // Ratio pinned so a shrinking sweep is visible: 3 of the catalog's
+    // 24 arguments reach a bare positional slot.
+    expect(positionalArgs).toBe(3);
+  });
+
+  test("coverage ratio: all 14 tools, all 24 arguments, none unclassified", () => {
+    let argCount = 0;
+    let classified = 0;
+    for (const t of VOICE_TOOL_CATALOG) {
+      const props = Object.keys(toolJsonSchema(t).properties);
+      argCount += props.length;
+      const slots = auditArgvSlots(t, SAMPLES[t.name] ?? {}, ROOT);
+      // Classified = audited string args + non-string args + the
+      // stripped confirm_token, i.e. every declared argument is
+      // accounted for by exactly one of the three routes.
+      for (const key of props) {
+        const isString = toolJsonSchema(t).properties[key]?.type === "string";
+        if (NEVER_REACHES_ARGV.has(key)) classified += 1;
+        else if (!isString) classified += 1;
+        else if (key in slots) classified += 1;
+      }
+    }
+    expect(VOICE_TOOL_CATALOG.length).toBe(14);
+    expect(argCount).toBe(24);
+    expect(classified).toBe(24);
+  });
+
+  test("a `--` terminator is emitted ONLY for runners whose real parser honours it", () => {
+    for (const t of VOICE_TOOL_CATALOG) {
+      const argv = t.argv(SAMPLES[t.name] ?? {}, ROOT);
+      if (!argv.includes("--")) continue;
+      expect(t.runnerKey, `${t.name} emits -- with no runner`).not.toBeNull();
+      expect(
+        TERMINATOR_HONOURING_RUNNERS.has(t.runnerKey as VoiceRunnerKey),
+        `${t.name} emits -- to runner '${t.runnerKey}', which does not honour it`,
+      ).toBe(true);
+    }
+  });
+
+  test("TERMINATOR_HONOURING_RUNNERS is TRUE of the real parsers, not just asserted", () => {
+    // Drives every runner's actual parser with a `--` followed by a
+    // dash-led token. Honouring = accepts it and carries it verbatim.
+    // If dispatch/claim ever learned `--`, or tell-lead/task-add ever
+    // lost it, this flips and the catalog's routing must be revisited.
+    const probeArgv: Record<VoiceRunnerKey, string[]> = {
+      topo: ["--", "-x"],
+      status: ["--", "-x"],
+      health: ["--", "-x"],
+      task: ["add", "--", "-x"],
+      paneState: ["--member", "be-1", "--", "-x"],
+      driverInbox: ["--", "-x"],
+      outbox: ["--", "-x"],
+      cost: ["--", "-x"],
+      blockers: ["list", "--", "-x"],
+      tellLead: ["--", "-x"],
+      dispatch: ["--", "-x"],
+      claim: ["--", "-x"],
+    };
+    for (const [key, argv] of Object.entries(probeArgv) as Array<[VoiceRunnerKey, string[]]>) {
+      let honours = false;
+      try {
+        honours = parsedCarriesExactly(RUNNER_PARSERS[key](argv), "-x");
+      } catch {
+        honours = false;
+      }
+      expect(honours, `runner '${key}': observed -- support ${honours}`).toBe(
+        TERMINATOR_HONOURING_RUNNERS.has(key),
+      );
+    }
+    expect([...TERMINATOR_HONOURING_RUNNERS].sort()).toEqual(["task", "tellLead"]);
+  });
+
+  test.each([
+    ["terminated" as ArgvSlot, "after `--` did not arrive as data"],
+    ["flag-value" as ArgvSlot, "in a flag-value slot was read as a flag"],
+  ])("a %s argument survives a hostile dash-led value through the REAL parser", (slotKind, why) => {
+    // Pins the property that makes each safe slot safe — terminated:
+    // the parser honours `--`; flag-value: the parser takes argv[i+1]
+    // unconditionally. A parser that ever starts peeking at the next
+    // token turns these into positional exposures, and this goes red
+    // the moment it does.
+    //
+    // `--no-ping` is the collision-free probe: it is a real boolean flag
+    // in `dispatch` and an unknown flag everywhere else, and NO parser
+    // field can legitimately hold it as a value — so a parser that mis-
+    // read it could not accidentally satisfy the round-trip via some
+    // other field. `--team-dir` is probed too because it is the token
+    // that reproduces the live dispatch escape.
+    for (const t of VOICE_TOOL_CATALOG) {
+      const slots = auditArgvSlots(t, SAMPLES[t.name] ?? {}, ROOT);
+      for (const [key, slot] of Object.entries(slots)) {
+        if (slot !== slotKind) continue;
+        for (const hostile of ["--no-ping", "--team-dir"]) {
+          const argv = t.argv({ ...SAMPLES[t.name], [key]: hostile }, ROOT);
+          const parsed = RUNNER_PARSERS[t.runnerKey as VoiceRunnerKey](argv);
+          expect(
+            parsedCarriesExactly(parsed, hostile),
+            `${t.name}.${key}: '${hostile}' ${why}`,
+          ).toBe(true);
+        }
+      }
+    }
+  });
+
+  test("the escapes the guard closes are REAL against the live parsers (regression pin)", () => {
+    // Proves the bug rather than only the fix: with the guard bypassed,
+    // the raw argv these values build really does reach the wrong
+    // behaviour in the verb's own parser.
+    const claimArgv = entry("claim_task").argv({ task_id: "--next", member: "be-1" }, ROOT);
+    expect(parseClaimDoneArgs(claimArgv, "claim")).toMatchObject({ next: true, who: "be-1" });
+
+    const dispatchArgv = entry("dispatch_task").argv({ task_id: "--socket", member: "be-1" }, ROOT);
+    const hijacked = parseDispatchArgs(dispatchArgv);
+    // --team-dir got eaten as the socket VALUE: the dispatch is aimed at
+    // an attacker-named socket AND has lost its team scope entirely.
+    expect(hijacked.socketPath).toBe("--team-dir");
+    expect(hijacked.teamDir).toBeUndefined();
+
+    // ...and the schema now makes both argvs unbuildable.
+    expect(
+      entry("claim_task").params.safeParse({ task_id: "--next", member: "be-1" }).success,
+    ).toBe(false);
+    expect(
+      entry("dispatch_task").params.safeParse({ task_id: "--socket", member: "be-1" }).success,
+    ).toBe(false);
+  });
+});
+
+describe("classifyArgvSlot", () => {
+  test("absent when the probe never reaches argv", () => {
+    expect(classifyArgvSlot(["--team-dir", "/w"], ARGV_PROBE)).toBe("absent");
+  });
+
+  test("terminated when any `--` precedes the probe", () => {
+    expect(classifyArgvSlot(["--team-dir", "/w", "--", ARGV_PROBE], ARGV_PROBE)).toBe("terminated");
+  });
+
+  test("flag-value when the preceding token is a flag", () => {
+    expect(classifyArgvSlot(["--member", ARGV_PROBE], ARGV_PROBE)).toBe("flag-value");
+  });
+
+  test("positional at index 0 (no preceding token at all)", () => {
+    expect(classifyArgvSlot([ARGV_PROBE, "--team-dir", "/w"], ARGV_PROBE)).toBe("positional");
+  });
+
+  test("positional when the preceding token is a bare word", () => {
+    expect(classifyArgvSlot(["be-1", ARGV_PROBE], ARGV_PROBE)).toBe("positional");
+  });
+
+  test("a `--` AFTER the probe does not make it terminated", () => {
+    expect(classifyArgvSlot([ARGV_PROBE, "--"], ARGV_PROBE)).toBe("positional");
+  });
+});
+
+describe("auditArgvSlots — the optional-argument shift it exists to catch", () => {
+  test("an optional argument that vanishes promotes the next one to positional", () => {
+    // dispatch_task in miniature: with `member` present the probe sits at
+    // index 1 behind a bare word; with it absent the probe IS index 0.
+    // Auditing only the full arg set would read 'positional' either way
+    // here, so use a shape where the full set looks SAFE and the
+    // reduced set does not — that is the miss the multi-variant probe
+    // exists to prevent.
+    const shifty: VoiceToolEntry = {
+      name: "shifty",
+      description: "test-only.",
+      params: z.object({
+        flagged: z.string().optional(),
+        value: z.string(),
+      }),
+      mutating: false,
+      confirm: false,
+      runnerKey: "topo",
+      argv: (args) =>
+        typeof args.flagged === "string" ? ["--flagged", String(args.value)] : [String(args.value)],
+    };
+    // Full sample alone would classify `value` as flag-value (safe).
+    expect(
+      classifyArgvSlot(shifty.argv({ flagged: "y", value: ARGV_PROBE }, null), ARGV_PROBE),
+    ).toBe("flag-value");
+    // The audit probes the reduced set too and returns the worst.
+    expect(auditArgvSlots(shifty, { flagged: "y", value: "v" }, null)).toEqual({
+      flagged: "absent",
+      value: "positional",
+    });
+  });
+
+  test("non-string arguments are skipped (they cannot carry a flag)", () => {
+    expect(auditArgvSlots(entry("list_tasks"), SAMPLES.list_tasks ?? {}, ROOT)).toEqual({
+      team: "absent",
     });
   });
 });
