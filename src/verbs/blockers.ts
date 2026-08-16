@@ -39,6 +39,7 @@ import {
   queryAllBlockers,
 } from "../core/blockers.ts";
 import { getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts";
+import { loadKanban } from "../core/kanban.ts";
 import { UsageError } from "../errors.ts";
 
 function stateDbPath(atmuxDir: string): string {
@@ -217,7 +218,7 @@ export async function blockers(
   const atmuxDir = await getAtmuxDir(resolvedDirOpts);
   const db = openDatabase(stateDbPath(atmuxDir), migrations);
   try {
-    const all = await queryAllBlockers(atmuxDir, db);
+    const all = await queryAllBlockers(atmuxDir, db, { tasks: (await loadKanban(atmuxDir)).tasks });
     const filtered = applyFilters(all, parsed);
     if (parsed.json) {
       process.stdout.write(`${JSON.stringify(filtered, null, 2)}\n`);
