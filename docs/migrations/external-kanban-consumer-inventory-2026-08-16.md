@@ -4,13 +4,13 @@ This is the removal checklist for ADR-275. It is a source inventory, not a cutov
 
 ## Current receipts
 
-- Kanban authority branch: `/root/work/src/kanban`, `main` at `0105017` (local only).
-- atmux migration branch: `atmux-kanban-cutover` at `d5d4879` (local isolated worktree only).
-- Kanban gate: 26 tests pass, 133 assertions, TypeScript clean.
+- Kanban authority branch: `/root/work/src/kanban`, `main` at `12e8d49` (local only).
+- atmux migration is fast-forwarded into local `atmux-geoyws` through `82f2766`; it is not pushed or activated.
+- Kanban gate: 27 tests pass, 137 assertions, TypeScript clean.
 - atmux focused adapter, orchestration, projection, and lifecycle suites pass; the latest projection batch passed 416 tests and the lifecycle batch passed 127 focused tests. TypeScript is clean.
 - Full-suite receipt is not green: tmux integration fixtures cannot create sockets in the current sandbox, and `epic-auto-merge` has an independent spawn-eligibility fixture failure (`is_ready=0`) before the migrated merge gate.
 - Read-only production import probe: 114 epics, 91 stories, 1,138 tasks; one preserved dangling dependency and no missing parents.
-- Production activation, merge, push, dual writes, and legacy deletion: not performed.
+- Production activation, push, dual writes, and legacy deletion: not performed. Three live atmux panes were observed, so the stopped-writer acknowledgement could not honestly be supplied.
 
 ## Real preparation receipt
 
@@ -37,13 +37,16 @@ The non-activating preparation completed at `2026-08-16T03:00:35.756Z`:
 - `init`, `stop`, and `groom` lifecycle fences: external mode does not seed, archive, summarize, delete, cull recovery backups, or archive rows from legacy Kanban state.
 - Legacy `atmux handoff` is refused in external mode because it cannot atomically checkpoint, release, and transfer a lease; the error routes agents to `kanban handoff create/accept`.
 - Durable private marker discovery and `atmux migrate-kanban status`.
+- Receipt-gated `activate` and no-data-loss `rollback`: activation requires an unchanged, integrity-checked source backup, exact task/epic/story ID parity, a healthy external board, and an explicit stopped-writer acknowledgement. Rollback refuses once the external board has changed.
+- Automatic preparation and activation parity checks for both SQLite-backed and JSON-only legacy projects. JSON imports preserve task-to-story-to-epic hierarchy rather than flattening tasks.
 - Installed-CLI integration and proof that focused external writes do not create `.atmux/state.db`.
 
 ## Known parity gaps
 
 - Epic review summary dispatch and legacy event emissions are not yet parity-complete.
 - Task removal needs an explicit archive/history policy; it must not silently destroy the durable ledger.
-- Durable prepare and status exist. Activate and rollback remain deliberately unimplemented until the remaining production bypass audit and a stopped-writer/restart protocol are complete.
+- Activate and rollback are implemented and fixture-tested, but neither has been exercised against the live fleet. A stopped-writer/restart protocol and per-project receipts remain required.
+- Fleet inventory and migration orchestration remain incomplete. At least one observed project (`auditx-root`) is JSON-only, so the old SQLite-only preparation receipt is not fleet evidence.
 - External-mode integration still needs a broad no-legacy-work-state-write receipt, including daemon restart behavior.
 - Legacy fallback implementations remain compiled for rollback and must not be deleted before activation, observation, and rollback receipts.
 
