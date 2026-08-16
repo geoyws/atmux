@@ -30,9 +30,10 @@ import { exists, readTextOrNull } from "../abstractions/fs.ts";
 import { tryReadJson } from "../abstractions/json.ts";
 import { defaultGitSpawn, type GitSpawn } from "../abstractions/worktree.ts";
 import { enabledTeams, loadCockpit } from "../core/cockpit.ts";
-import { driverInboxPath, kanbanJsonPath, teamJsonPath } from "../core/common.ts";
+import { driverInboxPath, teamJsonPath } from "../core/common.ts";
 import { parseEntries } from "../core/driver-inbox.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
+import { kanbanWorkStateAvailable } from "../core/kanban-backend.ts";
 import { loadKanban } from "../core/kanban.ts";
 import {
   DEFAULT_PULSE_DEDUP_LADDER,
@@ -189,9 +190,7 @@ export async function gatherTeamInputs(
   //    JSON-fallback path's atomicWrite-on-read would create a stub.
   let inProgressCount = 0;
   let todoCount = 0;
-  const hasSqlite = await exists(join(atmuxDir, "state.db"));
-  const hasJsonKanban = await exists(kanbanJsonPath(atmuxDir));
-  if ((hasSqlite || hasJsonKanban) && (await exists(atmuxDir))) {
+  if ((await kanbanWorkStateAvailable(atmuxDir)) && (await exists(atmuxDir))) {
     try {
       const k = await loadKanban(atmuxDir);
       for (const t of k.tasks) {

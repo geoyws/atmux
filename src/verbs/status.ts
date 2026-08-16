@@ -31,7 +31,6 @@ import {
   driverInboxPath,
   getAtmuxDir,
   getSessionName,
-  kanbanJsonPath,
   type ResolveDirOpts,
   requireTeam,
   resolveTeamSocket,
@@ -39,6 +38,7 @@ import {
 import { type DriverPaneHealth, probeDriverPane } from "../core/driver-pane-health.ts";
 import { DEFAULT_HEARTBEAT_STALE_SEC, readHeartbeatAges } from "../core/heartbeat.ts";
 import { loadInbox } from "../core/inbox.ts";
+import { kanbanWorkStateAvailable } from "../core/kanban-backend.ts";
 import { loadKanban } from "../core/kanban.ts";
 import { readLeadSessionStart, readLeadWindowName } from "../core/lead-marker.ts";
 import { type MemberSelfStatus, readAllMemberStatuses } from "../core/member-status.ts";
@@ -696,9 +696,7 @@ export async function gatherStatus(
   // ADR-060 dual-path: load if EITHER the SQLite store or the legacy
   // JSON file exists. Pre-fix this gate only checked kanban.json, so
   // post-migration teams (state.db only) reported counts=0.
-  const hasSqlite = await exists(join(atmuxDir, "state.db"));
-  const hasJson = await exists(kanbanJsonPath(atmuxDir));
-  if (hasSqlite || hasJson) {
+  if (await kanbanWorkStateAvailable(atmuxDir)) {
     const k = await loadKanban(atmuxDir);
     for (const t of k.tasks) {
       if (t.status === "todo") counts.todo += 1;

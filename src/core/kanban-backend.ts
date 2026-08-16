@@ -1,6 +1,6 @@
 import { chmod, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { atomicWrite } from "../abstractions/fs.ts";
+import { atomicWrite, exists } from "../abstractions/fs.ts";
 
 export type KanbanBackend = "legacy" | "external";
 
@@ -48,6 +48,18 @@ export async function externalKanbanEnabled(
   if (env.ATMUX_KANBAN_BACKEND === "external") return true;
   if (env.ATMUX_KANBAN_BACKEND === "legacy") return false;
   return (await readKanbanBackendMarker(atmuxDir))?.backend === "external";
+}
+
+/** True when a work-state authority is configured without creating a
+ * legacy JSON stub as a side effect of a read-only probe. */
+export async function kanbanWorkStateAvailable(
+  atmuxDir: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<boolean> {
+  if (await externalKanbanEnabled(atmuxDir, env)) return true;
+  return (
+    (await exists(join(atmuxDir, "state.db"))) || (await exists(join(atmuxDir, "kanban.json")))
+  );
 }
 
 export async function writeKanbanBackendMarker(
