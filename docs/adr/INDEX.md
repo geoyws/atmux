@@ -240,6 +240,7 @@
 | 271 | SQLite is the sole coordination store (retire `kanban.json`); Rust `atmux-orchd` coordinates by default | 2026-08-07 | proposed |
 | 272 | `atmux voice` — spoken operator interface (mobile PWA + provider-neutral realtime seam + verb-only tool bridge) | 2026-08-14 | proposed |
 | 273 | Voice fleet triage + pane input ("what needs me?" + "type that") — extends ADR-272 | 2026-08-15 | proposed |
+| 275 | External private Kanban is the sole work-state authority | 2026-08-16 | accepted (operator-direct) |
 
 ## Superseded (skip)
 
@@ -256,4 +257,3 @@ Retained for historical trace only. Skip unless investigating supersession histo
 - [206](206-sentinel-dynamic-epic-discovery.SUPERSEDED.md) — Sentinel dynamic epic-team discovery — drop the cockpit.json registration requirement — superseded by ADR-211
 - [207](207-opus-sentinel-supersedes-cursor-sentinel-adr-132.SUPERSEDED.md) — Opus-sentinel supersedes cursor-sentinel — rolls back ADR-132 §D1 cursor backend per ADR-201 rejection — superseded by ADR-211
 - [236](236-three-tier-orchd-supervision.SUPERSEDED.md) — Three-tier orchd supervision (D1 internal retry + D2 cockpit superorchd + D3 Discord escalation) — superseded by ADR-240 (D2/D3 dropped, D1+D5 preserved)
-
