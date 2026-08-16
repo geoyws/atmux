@@ -24,14 +24,11 @@ import type { KanbanEpic, KanbanStory, KanbanTask } from "../schema/kanban.ts";
 import { tryLoadTeam } from "./common.ts";
 import { nextId } from "./id-sequence.ts";
 import { nowEpoch } from "./kanban.ts";
+import { externalKanbanEnabled } from "./kanban-backend.ts";
 import { KanbanRepo } from "./repositories/kanban-repo.ts";
 
 const STATES = ["planning", "ready", "in-progress", "review", "done"] as const;
 const externalKanban = new KanbanCliAdapter();
-
-function useExternalKanban(): boolean {
-  return process.env.ATMUX_KANBAN_BACKEND === "external";
-}
 
 function externalTaskStatus(status: EpicState): string {
   if (status === "planning") return "backlog";
@@ -130,7 +127,7 @@ export async function addEpic(atmuxDir: string, opts: AddEpicOpts): Promise<stri
   if (title.length === 0) {
     throw new UsageError({ what: "epic add: <title> required" });
   }
-  if (useExternalKanban()) {
+  if (await externalKanbanEnabled(atmuxDir)) {
     const id = await externalKanban.addTask(atmuxDir, {
       type: "epic",
       subject: title,
@@ -284,7 +281,7 @@ export async function setEpicReady(
   id: string,
   ready: boolean,
 ): Promise<{ from: boolean; to: boolean; noop: boolean }> {
-  if (useExternalKanban()) {
+  if (await externalKanbanEnabled(atmuxDir)) {
     const epic = (await externalKanban.loadKanban(atmuxDir)).epics.find((item) => item.id === id);
     if (!epic) throw new ConfigError({ what: `epic ready: no such epic: ${id}` });
     if (epic.status === "done") {
@@ -356,7 +353,7 @@ export async function setEpicDependsOn(
   id: string,
   deps: readonly string[],
 ): Promise<void> {
-  if (useExternalKanban()) {
+  if (await externalKanbanEnabled(atmuxDir)) {
     const epics = (await externalKanban.loadKanban(atmuxDir)).epics;
     const epic = epics.find((item) => item.id === id);
     if (!epic) throw new ConfigError({ what: `epic set-depends-on: no such epic: ${id}` });
@@ -392,7 +389,7 @@ export async function setEpicDependsOn(
  *  Used by both cycle-detect (internal) AND the `epic deps` render
  *  verb (T4). Dangling refs are silently skipped. */
 export async function epicTransitiveDeps(atmuxDir: string, id: string): Promise<string[]> {
-  if (useExternalKanban()) {
+  if (await externalKanbanEnabled(atmuxDir)) {
     const epics = (await externalKanban.loadKanban(atmuxDir)).epics;
     const byID = new Map(epics.map((epic) => [epic.id, epic]));
     const seen = new Set<string>();
@@ -434,7 +431,7 @@ export interface EpicEligibility {
  *  human-readable refusal reasons so the spawn-epic gate can render
  *  an actionable message. */
 export async function epicIsEligible(atmuxDir: string, id: string): Promise<EpicEligibility> {
-  if (useExternalKanban()) {
+  if (await externalKanbanEnabled(atmuxDir)) {
     const epics = (await externalKanban.loadKanban(atmuxDir)).epics;
     const epic = epics.find((item) => item.id === id);
     if (!epic) return { eligible: false, blockers: [`epic ${id}: not found`] };
@@ -480,7 +477,7 @@ export async function listEpics(
   atmuxDir: string,
   filter: ListEpicsFilter = {},
 ): Promise<KanbanEpic[]> {
-  if (useExternalKanban()) {
+  if (await externalKanbanEnabled(atmuxDir)) {
     const epics = (await externalKanban.loadKanban(atmuxDir)).epics;
     return filter.status ? epics.filter((epic) => epic.status === filter.status) : epics;
   }
@@ -505,7 +502,7 @@ export interface EpicWithChildren extends KanbanEpic {
 }
 
 export async function showEpic(atmuxDir: string, id: string): Promise<EpicWithChildren | null> {
-  if (useExternalKanban()) {
+  if (await externalKanbanEnabled(atmuxDir)) {
     const board = await externalKanban.loadKanban(atmuxDir);
     const epic = board.epics.find((item) => item.id === id);
     if (!epic) return null;
@@ -531,7 +528,7 @@ export async function showEpic(atmuxDir: string, id: string): Promise<EpicWithCh
 /** Comma-joined ids of stories + direct-tasks-with-no-story that are
  *  not yet `done`. Empty string means safe to advance to review/done. */
 export async function epicBlockingChildren(atmuxDir: string, id: string): Promise<string[]> {
-  if (useExternalKanban()) {
+  if (await externalKanbanEnabled(atmuxDir)) {
     const shown = await showEpic(atmuxDir, id);
     if (!shown) return [];
     return [
@@ -567,7 +564,7 @@ export async function advanceEpic(
   id: string,
   target?: string,
 ): Promise<AdvanceEpicResult> {
-  if (useExternalKanban()) {
+  if (await externalKanbanEnabled(atmuxDir)) {
     const epic = await showEpic(atmuxDir, id);
     if (!epic) throw new ConfigError({ what: `epic advance: no such epic: ${id}` });
     const cur = epic.status ?? "planning";

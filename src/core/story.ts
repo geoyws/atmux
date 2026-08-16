@@ -29,6 +29,7 @@ import type { KanbanStory, KanbanTask } from "../schema/kanban.ts";
 import { tryLoadTeam } from "./common.ts";
 import { nextId } from "./id-sequence.ts";
 import { nowEpoch } from "./kanban.ts";
+import { externalKanbanEnabled } from "./kanban-backend.ts";
 import { KanbanRepo } from "./repositories/kanban-repo.ts";
 
 const STATES = [
@@ -42,9 +43,6 @@ const STATES = [
 ] as const;
 const externalKanban = new KanbanCliAdapter();
 
-function useExternalKanban(): boolean {
-  return process.env.ATMUX_KANBAN_BACKEND === "external";
-}
 export type StoryState = (typeof STATES)[number];
 
 export function genStoryId(): string {
@@ -109,7 +107,7 @@ export async function addStory(atmuxDir: string, opts: AddStoryOpts): Promise<st
   if (opts.epic.length === 0) {
     throw new UsageError({ what: "story add: --epic <epic-id> required" });
   }
-  if (useExternalKanban()) {
+  if (await externalKanbanEnabled(atmuxDir)) {
     const parent = (await externalKanban.loadKanban(atmuxDir)).epics.find(
       (epic) => epic.id === opts.epic,
     );
@@ -180,7 +178,7 @@ export async function listStories(
   atmuxDir: string,
   filter: ListStoriesFilter,
 ): Promise<KanbanStory[]> {
-  if (useExternalKanban()) {
+  if (await externalKanbanEnabled(atmuxDir)) {
     const stories = (await externalKanban.loadKanban(atmuxDir)).stories.filter(
       (story) => story.epic === filter.epic,
     );
@@ -202,7 +200,7 @@ export interface StoryWithChildren extends KanbanStory {
 }
 
 export async function showStory(atmuxDir: string, id: string): Promise<StoryWithChildren | null> {
-  if (useExternalKanban()) {
+  if (await externalKanbanEnabled(atmuxDir)) {
     const board = await externalKanban.loadKanban(atmuxDir);
     const story = board.stories.find((item) => item.id === id);
     return story ? { ...story, tasks: board.tasks.filter((task) => task.story === id) } : null;
@@ -233,7 +231,7 @@ export async function advanceStory(
   id: string,
   target?: string,
 ): Promise<AdvanceStoryResult> {
-  if (useExternalKanban()) {
+  if (await externalKanbanEnabled(atmuxDir)) {
     const team = await tryLoadTeam({ dir: atmuxDir });
     const reviewer = team?.members.find((member) => member.role === "reviewer")?.name;
     const committer = team?.members.find(
@@ -598,7 +596,7 @@ export async function storySignoff(
   id: string,
   opts: SignoffOpts = {},
 ): Promise<SignoffResult> {
-  if (useExternalKanban()) {
+  if (await externalKanbanEnabled(atmuxDir)) {
     const team = await tryLoadTeam({ dir: atmuxDir });
     const member = _resolveSignoffMember(team, opts, "story signoff");
     const result = await externalKanban.setStorySignoff(atmuxDir, id, member, true, opts.note);
@@ -663,7 +661,7 @@ export async function storyUnsignoff(
   id: string,
   opts: SignoffOpts = {},
 ): Promise<UnsignoffResult> {
-  if (useExternalKanban()) {
+  if (await externalKanbanEnabled(atmuxDir)) {
     const team = await tryLoadTeam({ dir: atmuxDir });
     const member = _resolveSignoffMember(team, opts, "story unsignoff");
     const result = await externalKanban.setStorySignoff(atmuxDir, id, member, false, opts.note);
@@ -750,7 +748,7 @@ export async function updateStory(
   id: string,
   opts: UpdateStoryOpts,
 ): Promise<void> {
-  if (useExternalKanban()) {
+  if (await externalKanbanEnabled(atmuxDir)) {
     const story = await showStory(atmuxDir, id);
     if (!story) throw new ConfigError({ what: `story update: no such story: ${id}` });
     if (opts.body !== undefined) {

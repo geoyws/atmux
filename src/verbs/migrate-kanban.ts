@@ -1,13 +1,44 @@
 import { resolve } from "node:path";
 import { getAtmuxDir, type ResolveDirOpts } from "../core/common.ts";
 import { prepareExternalKanbanCutover } from "../core/external-kanban-cutover.ts";
+import { kanbanBackendMarkerPath, readKanbanBackendMarker } from "../core/kanban-backend.ts";
 import { UsageError } from "../errors.ts";
 
 export async function migrateKanban(argv: ReadonlyArray<string>): Promise<number> {
+  if (argv[0] === "status") {
+    let teamDir: string | undefined;
+    let json = false;
+    for (let index = 1; index < argv.length; index += 1) {
+      const flag = argv[index];
+      if (flag === "--json") {
+        json = true;
+        continue;
+      }
+      if (flag !== "--team-dir" || !argv[index + 1]) {
+        throw new UsageError({ what: `migrate-kanban status: unknown or incomplete flag ${flag}` });
+      }
+      teamDir = argv[index + 1];
+      index += 1;
+    }
+    const atmuxDir = await getAtmuxDir(teamDir ? { teamDir } : {});
+    const marker = await readKanbanBackendMarker(atmuxDir);
+    const status = {
+      backend: marker?.backend ?? "legacy",
+      durableMarker: marker,
+      markerPath: kanbanBackendMarkerPath(atmuxDir),
+      environmentOverride: process.env.ATMUX_KANBAN_BACKEND ?? null,
+    };
+    process.stdout.write(
+      json
+        ? `${JSON.stringify(status, null, 2)}\n`
+        : `Kanban backend: ${status.environmentOverride ?? status.backend}\nMarker: ${marker ? status.markerPath : "absent"}\n`,
+    );
+    return 0;
+  }
   if (argv[0] !== "prepare") {
     throw new UsageError({
-      what: "migrate-kanban: only the non-activating 'prepare' stage is currently available",
-      hint: "atmux migrate-kanban prepare --as <actor> [--team-dir <root>] [--receipt-root <path>] [--json]",
+      what: "migrate-kanban: available stages are 'prepare' and 'status'; activation remains gated",
+      hint: "atmux migrate-kanban status [--team-dir <root>] [--json]",
     });
   }
   let actor: string | undefined;

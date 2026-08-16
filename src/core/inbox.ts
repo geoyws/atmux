@@ -32,6 +32,7 @@ import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { type Inbox, type InboxEntry, Inbox as InboxSchema } from "../schema/inbox.ts";
 import { inboxPathFor } from "./common.ts";
 import { listTasks } from "./kanban.ts";
+import { externalKanbanEnabled } from "./kanban-backend.ts";
 
 // ---------- SQL helper (ADR-076) ----------
 
@@ -100,7 +101,7 @@ export function emptyInbox(): Inbox {
  * "empty inbox").
  */
 export async function loadInbox(atmuxDir: string, member: string): Promise<Inbox> {
-  if (process.env.ATMUX_KANBAN_BACKEND === "external" || (await exists(_stateDbPath(atmuxDir)))) {
+  if ((await externalKanbanEnabled(atmuxDir)) || (await exists(_stateDbPath(atmuxDir)))) {
     return await _loadInboxFromTasks(atmuxDir, member);
   }
   return await updateJson(inboxPathFor(atmuxDir, member), InboxSchema, (i) => i, {

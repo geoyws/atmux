@@ -50,6 +50,7 @@ import {
   createComplaintConsumerHandler,
 } from "./complaint-consumer.ts";
 import { listTasks, showTask } from "./kanban.ts";
+import { externalKanbanEnabled } from "./kanban-backend.ts";
 import {
   createLeadStallWatchdogHandler,
   type LeadStallWatchdogDeps,
@@ -68,6 +69,7 @@ import { type AutoMergeHandlerDeps, createAutoMergeHandler } from "./orchd-merge
 import { type AutoPushHandlerDeps, createAutoPushHandler } from "./orchd-push.ts";
 import { registerOrchdSubscription } from "./orchd-registry.ts";
 import { createSpawnEpicHandler, type SpawnEpicHandlerDeps } from "./orchd-spawn.ts";
+import { KanbanRepo } from "./repositories/kanban-repo.ts";
 import { createRotationConsumerHandler, type RotationConsumerDeps } from "./rotation-consumer.ts";
 
 /** Consumer IDs — exported so step 3/5's drain iterator + tests can
@@ -259,11 +261,7 @@ export function bootstrapOrchd(deps: BootstrapOrchdDeps): BootstrapOrchdResult {
       ? createSpawnEpicHandler({
           db: deps.db,
           ...deps.spawnDeps,
-          ...(process.env.ATMUX_KANBAN_BACKEND === "external"
-            ? {
-                epicStore: externalEpicStore(deps.spawnDeps.atmuxDir),
-              }
-            : {}),
+          epicStore: backendAwareEpicStore(deps.spawnDeps.atmuxDir, deps.db),
         })
       : async (_event: { epicId: string }) => "skipped-row-missing" as const;
   // ADR-214 §D2 — complaint consumer. Always builds; deps optional
@@ -426,12 +424,22 @@ async function loadKanbanTasks(atmuxDir: string) {
   return (await import("./kanban.ts")).loadKanban(atmuxDir).then((kanban) => kanban.tasks);
 }
 
-function externalEpicStore(atmuxDir: string): NonNullable<SpawnEpicHandlerDeps["epicStore"]> {
+function backendAwareEpicStore(
+  atmuxDir: string,
+  db: Database,
+): NonNullable<SpawnEpicHandlerDeps["epicStore"]> {
   const adapter = new KanbanCliAdapter();
+  const legacy = new KanbanRepo(db);
   return {
-    getEpic: async (id) =>
-      (await adapter.loadKanban(atmuxDir)).epics.find((epic) => epic.id === id) ?? null,
+    getEpic: async (id) => {
+      if (!(await externalKanbanEnabled(atmuxDir))) return legacy.getEpic(id);
+      return (await adapter.loadKanban(atmuxDir)).epics.find((epic) => epic.id === id) ?? null;
+    },
     saveEpic: async (epic) => {
+      if (!(await externalKanbanEnabled(atmuxDir))) {
+        legacy.upsertEpic(epic);
+        return;
+      }
       const extra = epic.extra ?? {};
       await adapter.patchMetadata(atmuxDir, epic.id, "atmux", {
         workflowStatus: epic.status ?? null,

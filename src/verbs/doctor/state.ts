@@ -11,6 +11,7 @@ import {
 } from "../../core/common.ts";
 import { loadInbox } from "../../core/inbox.ts";
 import { listTasks } from "../../core/kanban.ts";
+import { externalKanbanEnabled } from "../../core/kanban-backend.ts";
 import { findPhantomInProgressClaims } from "../../core/phantom-prune.ts";
 import { Kanban } from "../../schema/kanban.ts";
 import type { Team } from "../../schema/team.ts";
@@ -93,7 +94,7 @@ export async function findPhantomInboxes(atmuxDir: string): Promise<PhantomEntry
   if (team === null) return [];
 
   const liveIds = new Set<string>();
-  if (process.env.ATMUX_KANBAN_BACKEND === "external" || (await exists(stateDb))) {
+  if ((await externalKanbanEnabled(atmuxDir)) || (await exists(stateDb))) {
     for (const task of await listTasks(atmuxDir)) liveIds.add(task.id);
   } else {
     const kanban = await tryReadJson(kanbanJsonPath(atmuxDir), Kanban);

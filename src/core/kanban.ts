@@ -67,6 +67,7 @@ import {
 import { DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG, type Team } from "../schema/team.ts";
 import { type CallerScope, kanbanJsonPath, tryLoadTeam } from "./common.ts";
 import { nextId } from "./id-sequence.ts";
+import { externalKanbanEnabled } from "./kanban-backend.ts";
 import { KanbanRepo } from "./repositories/kanban-repo.ts";
 
 // ---------- Storage routing (ADR-060) ----------
@@ -91,10 +92,6 @@ function _stateDbPath(atmuxDir: string): string {
 }
 
 const externalKanban = new KanbanCliAdapter();
-
-function _useExternalKanban(): boolean {
-  return process.env.ATMUX_KANBAN_BACKEND === "external";
-}
 
 async function _useSqlite(atmuxDir: string): Promise<boolean> {
   return await exists(_stateDbPath(atmuxDir));
@@ -159,7 +156,7 @@ export interface ListTasksFilter {
  * the operator misconfiguration earlier).
  */
 export async function loadKanban(atmuxDir: string): Promise<Kanban> {
-  if (_useExternalKanban()) return externalKanban.loadKanban(atmuxDir);
+  if (await externalKanbanEnabled(atmuxDir)) return externalKanban.loadKanban(atmuxDir);
   if (await _useSqlite(atmuxDir)) {
     return await _withDb(atmuxDir, (_db, repo) => ({
       tasks: repo.listTasks(),
@@ -202,7 +199,8 @@ export async function addTask(atmuxDir: string, opts: AddTaskOpts): Promise<stri
   if (subject.length === 0) {
     throw new UsageError({ what: "task add: <subject> required" });
   }
-  if (_useExternalKanban()) return externalKanban.addTask(atmuxDir, { ...opts, subject });
+  if (await externalKanbanEnabled(atmuxDir))
+    return externalKanban.addTask(atmuxDir, { ...opts, subject });
   const createdAt = nowEpoch();
   // ADR-202 §Amendment 2026-05-22 (IV) — task.unclaimed event-emit gate.
   // Fire when ALL of: status='todo' (always true here) AND lane is set
@@ -322,7 +320,7 @@ function tryEmitTaskUnclaimed(args: { db: Database; task: KanbanTask; team: Team
  * + render. Bash's tabular output lives in the verb (lib/kanban.sh:91-98).
  */
 export async function listTasks(atmuxDir: string, filter?: ListTasksFilter): Promise<KanbanTask[]> {
-  if (_useExternalKanban()) {
+  if (await externalKanbanEnabled(atmuxDir)) {
     return externalKanban.listTasks(atmuxDir, {
       ...(filter?.status !== undefined ? { status: filter.status } : {}),
       ...(filter?.assignee !== undefined ? { assignee: filter.assignee } : {}),
@@ -361,7 +359,7 @@ export async function listTasks(atmuxDir: string, filter?: ListTasksFilter): Pro
  *  jq output on miss; we surface as null so callers can choose how to
  *  surface "not found"). */
 export async function showTask(atmuxDir: string, id: string): Promise<KanbanTask | null> {
-  if (_useExternalKanban()) return externalKanban.showTask(atmuxDir, id);
+  if (await externalKanbanEnabled(atmuxDir)) return externalKanban.showTask(atmuxDir, id);
   if (await _useSqlite(atmuxDir)) {
     return await _withDb(atmuxDir, (_db, repo) => repo.getTask(id));
   }
@@ -398,7 +396,7 @@ export async function moveTask(
   // bookkeeping moves stay allowed regardless of scope.
   const statusGated = DRIVER_ONLY_MOVE_BLOCKED_STATUSES.includes(status);
   const refuseMsg = `task move: ${id} is a driver-only Task — only the driver scope can move it to '${status}'. Driver pane should have ATMUX_CALLER_SCOPE=driver set; if you ARE the driver, export ATMUX_CALLER_SCOPE=driver and retry.`;
-  if (_useExternalKanban()) {
+  if (await externalKanbanEnabled(atmuxDir)) {
     const current = await externalKanban.showTask(atmuxDir, id);
     if (current === null) throw new ConfigError({ what: `no such task: ${id}` });
     if (statusGated && isDriverOnlyBlocked(current, opts.callerScope)) {
@@ -698,7 +696,7 @@ export async function markTaskBlockedWithNote(
   id: string,
   note: string,
 ): Promise<boolean> {
-  if (_useExternalKanban()) {
+  if (await externalKanbanEnabled(atmuxDir)) {
     const current = await externalKanban.showTask(atmuxDir, id);
     if (current === null) throw new ConfigError({ what: `no such task: ${id}` });
     await externalKanban.addNote(atmuxDir, id, current.owner ?? "atmux", "blocker", note);
@@ -736,7 +734,7 @@ export async function setTaskLane(
   id: string,
   lane: string | null,
 ): Promise<void> {
-  if (_useExternalKanban()) {
+  if (await externalKanbanEnabled(atmuxDir)) {
     await externalKanban.updateTask(atmuxDir, id, "atmux", { lane });
     return;
   }
@@ -762,7 +760,7 @@ export async function setTaskEpic(
   id: string,
   epic: string | null,
 ): Promise<void> {
-  if (_useExternalKanban()) {
+  if (await externalKanbanEnabled(atmuxDir)) {
     const current = await externalKanban.showTask(atmuxDir, id);
     if (current === null) throw new ConfigError({ what: `no such task: ${id}` });
     await externalKanban.updateTask(atmuxDir, current.story ?? id, "atmux", { parentID: epic });
@@ -789,7 +787,7 @@ export async function setTaskStory(
   id: string,
   story: string | null,
 ): Promise<void> {
-  if (_useExternalKanban()) {
+  if (await externalKanbanEnabled(atmuxDir)) {
     const current = await externalKanban.showTask(atmuxDir, id);
     if (current === null) throw new ConfigError({ what: `no such task: ${id}` });
     await externalKanban.updateTask(atmuxDir, id, "atmux", {
@@ -820,7 +818,7 @@ export async function setTaskDeliverable(
   deliverable: string | null,
 ): Promise<void> {
   const normalized = deliverable === "" ? null : deliverable;
-  if (_useExternalKanban()) {
+  if (await externalKanbanEnabled(atmuxDir)) {
     await externalKanban.updateTask(atmuxDir, id, "atmux", { deliverable: normalized });
     return;
   }
@@ -846,7 +844,7 @@ export async function setTaskPriority(
   id: string,
   priority: number | null,
 ): Promise<void> {
-  if (_useExternalKanban()) {
+  if (await externalKanbanEnabled(atmuxDir)) {
     await externalKanban.updateTask(atmuxDir, id, "atmux", { priority: priority ?? 3 });
     return;
   }
@@ -871,7 +869,7 @@ export async function setTaskBody(
   body: string | null,
 ): Promise<void> {
   const normalized = body === "" ? null : body;
-  if (_useExternalKanban()) {
+  if (await externalKanbanEnabled(atmuxDir)) {
     await externalKanban.updateTask(atmuxDir, id, "atmux", { body: normalized ?? "" });
     return;
   }
@@ -895,7 +893,7 @@ export async function setTaskDeps(
   id: string,
   deps: ReadonlyArray<string>,
 ): Promise<void> {
-  if (_useExternalKanban()) {
+  if (await externalKanbanEnabled(atmuxDir)) {
     await externalKanban.updateTask(atmuxDir, id, "atmux", { dependencies: deps });
     return;
   }
@@ -926,7 +924,7 @@ export async function setTaskDriverOnly(
   id: string,
   driverOnly: boolean,
 ): Promise<void> {
-  if (_useExternalKanban()) {
+  if (await externalKanbanEnabled(atmuxDir)) {
     await externalKanban.updateTask(atmuxDir, id, "atmux", { driverOnly });
     return;
   }
@@ -971,7 +969,7 @@ export async function assignTask(
   id: string,
   owner: string | null,
 ): Promise<void> {
-  if (_useExternalKanban()) {
+  if (await externalKanbanEnabled(atmuxDir)) {
     await externalKanban.updateTask(atmuxDir, id, "atmux", { assignee: owner });
     return;
   }
@@ -1035,7 +1033,7 @@ export async function claimTask(
   who: string,
   opts: { callerScope?: CallerScope; refuseInProgressOther?: boolean } = {},
 ): Promise<{ pre: KanbanTask; post: KanbanTask }> {
-  if (_useExternalKanban()) {
+  if (await externalKanbanEnabled(atmuxDir)) {
     const pre = await externalKanban.showTask(atmuxDir, id);
     if (pre === null) throw new ConfigError({ what: `no such task: ${id}` });
     const post = await externalKanban.claimTask(atmuxDir, id, who, {
@@ -1230,7 +1228,7 @@ export async function markTaskDone(
   note?: string,
   opts: { callerScope?: CallerScope } = {},
 ): Promise<KanbanTask> {
-  if (_useExternalKanban()) {
+  if (await externalKanbanEnabled(atmuxDir)) {
     const current = await externalKanban.showTask(atmuxDir, id);
     if (current === null) throw new ConfigError({ what: `no such task: ${id}` });
     if (isDriverOnlyBlocked(current, opts.callerScope)) {
