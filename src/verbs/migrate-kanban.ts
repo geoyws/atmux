@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { getAtmuxDir, type ResolveDirOpts } from "../core/common.ts";
 import {
   activateExternalKanbanCutover,
+  observeExternalKanbanCutover,
   prepareExternalKanbanCutover,
   rollbackExternalKanbanCutover,
 } from "../core/external-kanban-cutover.ts";
@@ -36,6 +37,34 @@ export async function migrateKanban(argv: ReadonlyArray<string>): Promise<number
       json
         ? `${JSON.stringify(status, null, 2)}\n`
         : `Kanban backend: ${status.environmentOverride ?? status.backend}\nMarker: ${marker ? status.markerPath : "absent"}\n`,
+    );
+    return 0;
+  }
+  if (argv[0] === "observe") {
+    let actor: string | undefined;
+    let teamDir: string | undefined;
+    let json = false;
+    for (let index = 1; index < argv.length; index += 1) {
+      const flag = argv[index];
+      if (flag === "--json") {
+        json = true;
+        continue;
+      }
+      const value = argv[index + 1];
+      if (!value)
+        throw new UsageError({ what: `migrate-kanban observe: ${flag} requires a value` });
+      if (flag === "--as") actor = value;
+      else if (flag === "--team-dir") teamDir = value;
+      else throw new UsageError({ what: `migrate-kanban observe: unknown flag ${flag}` });
+      index += 1;
+    }
+    if (!actor) throw new UsageError({ what: "migrate-kanban observe: --as <actor> is required" });
+    const atmuxDir = await getAtmuxDir(teamDir ? { teamDir } : {});
+    const receipt = await observeExternalKanbanCutover(atmuxDir, { actor });
+    process.stdout.write(
+      json
+        ? `${JSON.stringify(receipt, null, 2)}\n`
+        : `External Kanban observation passed; receipt: ${receipt.receiptPath}\n`,
     );
     return 0;
   }
@@ -97,18 +126,28 @@ export async function migrateKanban(argv: ReadonlyArray<string>): Promise<number
   }
   if (argv[0] !== "prepare") {
     throw new UsageError({
-      what: "migrate-kanban: available stages are 'prepare', 'activate', 'status', and 'rollback'",
+      what: "migrate-kanban: available stages are 'prepare', 'activate', 'observe', 'status', and 'rollback'",
       hint: "atmux migrate-kanban status [--team-dir <root>] [--json]",
     });
   }
   let actor: string | undefined;
   let teamDir: string | undefined;
   let receiptRoot: string | undefined;
+  let reconcile = false;
+  let writersStopped = false;
   let json = false;
   for (let index = 1; index < argv.length; index += 1) {
     const flag = argv[index];
     if (flag === "--json") {
       json = true;
+      continue;
+    }
+    if (flag === "--reconcile") {
+      reconcile = true;
+      continue;
+    }
+    if (flag === "--writers-stopped") {
+      writersStopped = true;
       continue;
     }
     const value = argv[index + 1];
@@ -120,10 +159,17 @@ export async function migrateKanban(argv: ReadonlyArray<string>): Promise<number
     index += 1;
   }
   if (!actor) throw new UsageError({ what: "migrate-kanban prepare: --as <actor> is required" });
+  if (reconcile && !writersStopped) {
+    throw new UsageError({
+      what: "migrate-kanban prepare: --reconcile requires --writers-stopped",
+    });
+  }
   const dirOptions: ResolveDirOpts = teamDir ? { teamDir } : {};
   const atmuxDir = await getAtmuxDir(dirOptions);
   const receipt = await prepareExternalKanbanCutover(atmuxDir, {
     actor,
+    reconcile,
+    writersStopped,
     ...(receiptRoot ? { receiptRoot } : {}),
   });
   if (json) process.stdout.write(`${JSON.stringify(receipt, null, 2)}\n`);

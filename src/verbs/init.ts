@@ -60,6 +60,7 @@
 // [--name <team>] [--force|-f]`) is the contract.
 
 import { basename, join } from "node:path";
+import { KanbanCliAdapter } from "../adapters/kanban-cli.ts";
 import { ensureDir, exists, readText, writeText } from "../abstractions/fs.ts";
 import { readJson } from "../abstractions/json.ts";
 import { now } from "../abstractions/time.ts";
@@ -225,6 +226,8 @@ export interface InitOptions {
   logger?: Logger;
   /** stdout sink override (test injection); defaults to `process.stdout.write`. */
   stdout?: Writer;
+  /** External work-ledger adapter override (test injection). */
+  kanbanAdapter?: Pick<KanbanCliAdapter, "initialize">;
 }
 
 /**
@@ -353,7 +356,10 @@ export async function init(argv: ReadonlyArray<string>, opts: InitOptions = {}):
   const atmuxDir = await getAtmuxDir({ cwd, env });
   const kanban = kanbanJsonPath(atmuxDir);
   const drvInbox = driverInboxPath(atmuxDir);
-  if (!(await externalKanbanEnabled(atmuxDir, env)) && !(await exists(kanban))) {
+  if (await externalKanbanEnabled(atmuxDir, env)) {
+    const adapter = opts.kanbanAdapter ?? new KanbanCliAdapter({ env });
+    await adapter.initialize(atmuxDir, teamName);
+  } else if (!(await exists(kanban))) {
     // Bash literal: `echo '{"tasks":[],"epics":[],"stories":[]}' > "$kj"`.
     // writeText to byte-match (compact, single-line, trailing newline).
     await writeText(kanban, '{"tasks":[],"epics":[],"stories":[]}\n');

@@ -988,6 +988,10 @@ export async function assignTask(
 
 /** Remove a task by id. Throws `ConfigError` on miss. */
 export async function removeTask(atmuxDir: string, id: string): Promise<void> {
+  if (await externalKanbanEnabled(atmuxDir)) {
+    await externalKanban.removeTask(atmuxDir, id);
+    return;
+  }
   if (await _useSqlite(atmuxDir)) {
     await _withDb(atmuxDir, (_db, repo) => {
       const removed = repo.deleteTask(id);

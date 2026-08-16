@@ -35,6 +35,14 @@ Removal proceeds only through these stages:
 5. Observe real use with integrity checks and no legacy writes.
 6. Remove atmux Kanban tables, repository code, verbs that merely duplicate Kanban, and compatibility shims only after the observation receipt passes.
 
+The implemented refresh path is deliberately explicit: `migrate-kanban
+prepare --reconcile --writers-stopped` atomically refreshes an already imported
+board and emits new source/board receipts. After activation and real external
+use, `migrate-kanban observe --as <actor>` fingerprints only the legacy
+task/epic/story rows, checks the external board, and refuses the deletion gate
+if any legacy work-state row changed. Non-Kanban changes elsewhere in
+`state.db` do not create a false failure.
+
 The legacy database remains rollback material during stages 2–5. Activation is not authorization to delete it.
 
 ### D5 — Handoffs are Kanban records

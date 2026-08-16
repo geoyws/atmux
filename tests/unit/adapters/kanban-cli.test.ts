@@ -14,6 +14,7 @@ import {
 } from "../../../src/core/epic.ts";
 import {
   activateExternalKanbanCutover,
+  observeExternalKanbanCutover,
   prepareExternalKanbanCutover,
   rollbackExternalKanbanCutover,
 } from "../../../src/core/external-kanban-cutover.ts";
@@ -25,6 +26,7 @@ import {
   listTasks as coreListTasks,
   loadKanban as coreLoadKanban,
   markTaskDone as coreMarkTaskDone,
+  removeTask as coreRemoveTask,
   setTaskDeps as coreSetTaskDeps,
   setTaskDriverOnly as coreSetTaskDriverOnly,
   setTaskEpic as coreSetTaskEpic,
@@ -177,6 +179,8 @@ describe("external Kanban CLI adapter", () => {
     expect(
       (await coreMarkTaskDone(atmuxDir, consumer, "complete", { callerScope: "driver" })).status,
     ).toBe("done");
+    await coreRemoveTask(atmuxDir, consumer);
+    expect(await coreShowTask(atmuxDir, consumer)).toBeNull();
     expect(existsSync(join(atmuxDir, "state.db"))).toBe(false);
   });
 
@@ -327,6 +331,69 @@ describe("external Kanban CLI adapter", () => {
     expect((await adapter.showTask(atmuxDir, "t-json"))?.story).toBe("s-json");
   });
 
+  test("reconciles a prepared board only with stopped-writer acknowledgement", async () => {
+    const { root, atmuxDir, adapter } = fixture();
+    const source = join(atmuxDir, "state.db");
+    let db = openDatabase(source, migrations);
+    new KanbanRepo(db).addTask({
+      id: "t-reconcile",
+      subject: "Before",
+      body: "",
+      status: "todo",
+      owner: null,
+      deps: [],
+      priority: 2,
+      lane: null,
+      createdAt: 1_700_000_000,
+      claimedAt: null,
+      completedAt: null,
+    });
+    closeDatabase(db);
+    process.env.KANBAN_DATA_DIR = join(root, "private-kanban");
+    await prepareExternalKanbanCutover(atmuxDir, {
+      actor: "operator",
+      receiptRoot: join(root, "receipts"),
+      adapter,
+    });
+    db = openDatabase(source, migrations);
+    new KanbanRepo(db).upsertTask({
+      id: "t-reconcile",
+      subject: "After",
+      body: "",
+      status: "blocked",
+      owner: null,
+      deps: [],
+      priority: 2,
+      lane: null,
+      createdAt: 1_700_000_000,
+      claimedAt: null,
+      completedAt: null,
+    });
+    closeDatabase(db);
+
+    await expect(
+      prepareExternalKanbanCutover(atmuxDir, {
+        actor: "operator",
+        receiptRoot: join(root, "receipts"),
+        reconcile: true,
+        writersStopped: false,
+        adapter,
+      }),
+    ).rejects.toThrow("stopped writers");
+    const prepared = await prepareExternalKanbanCutover(atmuxDir, {
+      actor: "operator",
+      receiptRoot: join(root, "receipts"),
+      reconcile: true,
+      writersStopped: true,
+      adapter,
+    });
+    expect((prepared.importReceipt as { updated: number }).updated).toBe(1);
+    expect(await adapter.showTask(atmuxDir, "t-reconcile")).toMatchObject({
+      subject: "After",
+      status: "blocked",
+    });
+  });
+
   test("activates only a matching stopped-writer receipt and permits rollback before a write", async () => {
     const { root, atmuxDir, adapter } = fixture();
     const source = join(atmuxDir, "state.db");
@@ -390,5 +457,64 @@ describe("external Kanban CLI adapter", () => {
         adapter,
       }),
     ).rejects.toThrow("board changed after activation");
+  });
+
+  test("observation proves external progress without legacy work-state writes", async () => {
+    const { root, atmuxDir, adapter } = fixture();
+    const source = join(atmuxDir, "state.db");
+    let db = openDatabase(source, migrations);
+    new KanbanRepo(db).addTask({
+      id: "t-observe",
+      subject: "Observe me",
+      body: "",
+      status: "todo",
+      owner: null,
+      deps: [],
+      priority: 1,
+      lane: null,
+      createdAt: 1_700_000_000,
+      claimedAt: null,
+      completedAt: null,
+    });
+    closeDatabase(db);
+    process.env.KANBAN_DATA_DIR = join(root, "private-kanban");
+    const prepared = await prepareExternalKanbanCutover(atmuxDir, {
+      actor: "operator",
+      receiptRoot: join(root, "receipts"),
+      adapter,
+    });
+    await activateExternalKanbanCutover(atmuxDir, {
+      actor: "operator",
+      preparationReceipt: prepared.receiptPath,
+      writersStopped: true,
+      adapter,
+    });
+    await adapter.addTask(atmuxDir, { subject: "External progress" });
+    const observed = await observeExternalKanbanCutover(atmuxDir, {
+      actor: "operator",
+      adapter,
+    });
+    expect(observed.legacyWritesObserved).toBe(false);
+    expect(observed.externalWritesObserved).toBe(true);
+    expect(existsSync(observed.receiptPath)).toBe(true);
+
+    db = openDatabase(source, migrations);
+    new KanbanRepo(db).upsertTask({
+      id: "t-observe",
+      subject: "Legacy writer returned",
+      body: "",
+      status: "todo",
+      owner: null,
+      deps: [],
+      priority: 1,
+      lane: null,
+      createdAt: 1_700_000_000,
+      claimedAt: null,
+      completedAt: null,
+    });
+    closeDatabase(db);
+    await expect(
+      observeExternalKanbanCutover(atmuxDir, { actor: "operator", adapter }),
+    ).rejects.toThrow("legacy work state changed");
   });
 });

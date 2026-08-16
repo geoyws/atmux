@@ -257,26 +257,26 @@ export class KanbanCliAdapter {
     });
   }
 
-  async importState(atmuxDir: string, stateDbPath: string, actor: string): Promise<unknown> {
-    return this.run(atmuxDir, [
-      "import",
-      "atmux-sqlite",
-      resolve(stateDbPath),
-      "--as",
-      actor,
-      "--json",
-    ]);
+  async importState(
+    atmuxDir: string,
+    stateDbPath: string,
+    actor: string,
+    reconcile = false,
+  ): Promise<unknown> {
+    const args = ["import", "atmux-sqlite", resolve(stateDbPath), "--as", actor, "--json"];
+    if (reconcile) args.push("--reconcile");
+    return this.run(atmuxDir, args);
   }
 
-  async importJson(atmuxDir: string, kanbanJsonPath: string, actor: string): Promise<unknown> {
-    return this.run(atmuxDir, [
-      "import",
-      "atmux-json",
-      resolve(kanbanJsonPath),
-      "--as",
-      actor,
-      "--json",
-    ]);
+  async importJson(
+    atmuxDir: string,
+    kanbanJsonPath: string,
+    actor: string,
+    reconcile = false,
+  ): Promise<unknown> {
+    const args = ["import", "atmux-json", resolve(kanbanJsonPath), "--as", actor, "--json"];
+    if (reconcile) args.push("--reconcile");
+    return this.run(atmuxDir, args);
   }
 
   async doctor(atmuxDir: string): Promise<unknown> {
@@ -351,6 +351,10 @@ export class KanbanCliAdapter {
     if (parent) args.push("--parent", parent);
     const raw = (await this.run(atmuxDir, args)) as { id: string };
     return raw.id;
+  }
+
+  async removeTask(atmuxDir: string, id: string, actor = "atmux"): Promise<void> {
+    await this.run(atmuxDir, ["task", "remove", id, "--as", actor, "--json"]);
   }
 
   async moveTask(atmuxDir: string, id: string, status: string, actor: string): Promise<KanbanTask> {

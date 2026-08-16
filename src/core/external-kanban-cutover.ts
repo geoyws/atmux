@@ -31,6 +31,8 @@ export interface ExternalKanbanCutoverReceipt {
 export interface PrepareExternalKanbanOptions {
   actor: string;
   receiptRoot?: string;
+  reconcile?: boolean;
+  writersStopped?: boolean;
   adapter?: KanbanCliAdapter;
 }
 
@@ -49,6 +51,12 @@ export async function prepareExternalKanbanCutover(
   }
   const actor = options.actor.trim();
   if (!actor) throw new ConfigError({ what: "external Kanban prepare: actor is required" });
+  if (options.reconcile && !options.writersStopped) {
+    throw new ConfigError({
+      what: "external Kanban prepare: --reconcile requires stopped writers",
+      hint: "stop atmux/orchd writers, then pass --writers-stopped with --reconcile",
+    });
+  }
 
   const stamp = new Date().toISOString().replaceAll(":", "-");
   const receiptRoot = resolve(options.receiptRoot ?? join(atmuxDir, "backups", "kanban-cutover"));
@@ -95,8 +103,8 @@ export async function prepareExternalKanbanCutover(
   await adapter.initialize(atmuxDir);
   const importReceipt =
     sourceKind === "sqlite"
-      ? await adapter.importState(atmuxDir, source, actor)
-      : await adapter.importJson(atmuxDir, source, actor);
+      ? await adapter.importState(atmuxDir, source, actor, options.reconcile === true)
+      : await adapter.importJson(atmuxDir, source, actor, options.reconcile === true);
   const doctorReceipt = await adapter.doctor(atmuxDir);
   const boardBackupDirectory = join(receiptDirectory, "kanban-board");
   await adapter.backup(atmuxDir, boardBackupDirectory);
@@ -131,6 +139,7 @@ export interface ExternalKanbanActivationReceipt {
   actor: string;
   preparationReceipt: string;
   sourceSha256: string;
+  sourceWorkStateFingerprint: string;
   boardFingerprint: string;
   counts: { tasks: number; epics: number; stories: number };
   doctorReceipt: unknown;
@@ -173,6 +182,48 @@ function boardFingerprint(board: Awaited<ReturnType<KanbanCliAdapter["loadKanban
       stories: [...board.stories].sort((a, b) => a.id.localeCompare(b.id)),
     }),
   );
+}
+
+function sortedRecords(value: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(value)) return [];
+  return [...(value as Array<Record<string, unknown>>)].sort((a, b) =>
+    String(a.id ?? "").localeCompare(String(b.id ?? "")),
+  );
+}
+
+async function sourceWorkStateFingerprint(
+  source: string,
+  sourceKind: "sqlite" | "json",
+): Promise<string> {
+  if (sourceKind === "json") {
+    const parsed = JSON.parse(await readFile(source, "utf8")) as Record<string, unknown>;
+    return sha256(
+      JSON.stringify({
+        tasks: sortedRecords(parsed.tasks),
+        epics: sortedRecords(parsed.epics),
+        stories: sortedRecords(parsed.stories),
+      }),
+    );
+  }
+  const db = new Database(source, { readonly: true });
+  try {
+    const tables = new Set(
+      (
+        db.query("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{
+          name: string;
+        }>
+      ).map((row) => row.name),
+    );
+    const rows = (table: "tasks" | "epics" | "stories"): Array<Record<string, unknown>> =>
+      tables.has(table)
+        ? (db.query(`SELECT * FROM ${table} ORDER BY id`).all() as Array<Record<string, unknown>>)
+        : [];
+    return sha256(
+      JSON.stringify({ tasks: rows("tasks"), epics: rows("epics"), stories: rows("stories") }),
+    );
+  } finally {
+    db.close();
+  }
 }
 
 export async function activateExternalKanbanCutover(
@@ -266,6 +317,7 @@ export async function activateExternalKanbanCutover(
     actor,
     preparationReceipt,
     sourceSha256: prepared.sourceSha256,
+    sourceWorkStateFingerprint: await sourceWorkStateFingerprint(source, sourceKind),
     boardFingerprint: boardFingerprint(board),
     counts: {
       tasks: board.tasks.length,
@@ -286,6 +338,84 @@ export async function activateExternalKanbanCutover(
     preparationReceipt,
   };
   await writeKanbanBackendMarker(atmuxDir, marker);
+  return receipt;
+}
+
+export interface ExternalKanbanObservationReceipt {
+  version: 1;
+  status: "observed";
+  observedAt: string;
+  actor: string;
+  activationReceipt: string;
+  sourceWorkStateFingerprint: string;
+  boardFingerprint: string;
+  externalWritesObserved: boolean;
+  legacyWritesObserved: false;
+  doctorReceipt: unknown;
+  receiptPath: string;
+}
+
+export interface ObserveExternalKanbanOptions {
+  actor: string;
+  adapter?: KanbanCliAdapter;
+}
+
+export async function observeExternalKanbanCutover(
+  atmuxDir: string,
+  options: ObserveExternalKanbanOptions,
+): Promise<ExternalKanbanObservationReceipt> {
+  const actor = options.actor.trim();
+  if (!actor) throw new ConfigError({ what: "external Kanban observe: actor is required" });
+  const marker = await readKanbanBackendMarker(atmuxDir);
+  if (marker?.backend !== "external") {
+    throw new ConfigError({ what: "external Kanban observe: external backend is not active" });
+  }
+  const activationReceipt = join(dirname(marker.preparationReceipt), "activation.json");
+  const activation = JSON.parse(
+    await readFile(activationReceipt, "utf8"),
+  ) as ExternalKanbanActivationReceipt;
+  if (!activation.sourceWorkStateFingerprint) {
+    throw new ConfigError({
+      what: "external Kanban observe: activation predates work-state fingerprints",
+      hint: "prepare and activate again before beginning the observation window",
+    });
+  }
+  const prepared = JSON.parse(
+    await readFile(marker.preparationReceipt, "utf8"),
+  ) as ExternalKanbanCutoverReceipt;
+  const currentSourceFingerprint = await sourceWorkStateFingerprint(
+    prepared.source,
+    prepared.sourceKind,
+  );
+  if (currentSourceFingerprint !== activation.sourceWorkStateFingerprint) {
+    throw new ConfigError({
+      what: "external Kanban observe: legacy work state changed after activation",
+      hint: "a legacy writer is still active; do not delete atmux work-state storage",
+    });
+  }
+  const adapter = options.adapter ?? new KanbanCliAdapter();
+  const doctorReceipt = await adapter.doctor(atmuxDir);
+  const currentBoardFingerprint = boardFingerprint(await adapter.loadKanban(atmuxDir));
+  const observedAt = new Date().toISOString();
+  const receiptPath = join(
+    dirname(marker.preparationReceipt),
+    `observation-${observedAt.replaceAll(":", "-")}.json`,
+  );
+  const receipt: ExternalKanbanObservationReceipt = {
+    version: 1,
+    status: "observed",
+    observedAt,
+    actor,
+    activationReceipt,
+    sourceWorkStateFingerprint: currentSourceFingerprint,
+    boardFingerprint: currentBoardFingerprint,
+    externalWritesObserved: currentBoardFingerprint !== activation.boardFingerprint,
+    legacyWritesObserved: false,
+    doctorReceipt,
+    receiptPath,
+  };
+  await atomicWrite(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600 });
+  await chmod(receiptPath, 0o600);
   return receipt;
 }
 

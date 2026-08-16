@@ -180,13 +180,20 @@ describe("parseInitArgs", () => {
 
 describe("init — template path (bash lib/init.sh:87-107 parity)", () => {
   test("external backend does not seed a duplicate kanban.json", async () => {
+    const initialized: Array<{ atmuxDir: string; name?: string }> = [];
     await init(["--name", "external"], {
       cwd: env.cwd,
       templatesDir: env.templatesDir,
       env: { ATMUX_KANBAN_BACKEND: "external" },
       logger: env.logger,
       stdout: env.stdout,
+      kanbanAdapter: {
+        initialize: async (atmuxDir, name) => {
+          initialized.push({ atmuxDir, ...(name === undefined ? {} : { name }) });
+        },
+      },
     });
+    expect(initialized).toEqual([{ atmuxDir: join(env.cwd, ".atmux"), name: "external" }]);
     expect(await Bun.file(join(env.cwd, ".atmux", "kanban.json")).exists()).toBe(false);
     expect(await Bun.file(join(env.cwd, ".atmux", "driver-inbox.md")).exists()).toBe(true);
   });
