@@ -38,6 +38,24 @@ function workflowStatus(task: ExternalTaskRecord, fallback: string): string {
 }
 
 function epicFromExternal(task: ExternalTaskRecord): KanbanEpic {
+  const legacyExtra =
+    task.metadata.atmuxExtra !== null && typeof task.metadata.atmuxExtra === "object"
+      ? (task.metadata.atmuxExtra as Record<string, unknown>)
+      : {};
+  const extra: Record<string, unknown> = { ...legacyExtra };
+  const autoSpawn = task.metadata.autoSpawn;
+  if (
+    autoSpawn !== null &&
+    typeof autoSpawn === "object" &&
+    "enabled" in autoSpawn &&
+    typeof autoSpawn.enabled === "boolean"
+  ) {
+    extra.autoSpawn = autoSpawn;
+  }
+  if (task.metadata.spawnFailed !== undefined) extra.spawnFailed = task.metadata.spawnFailed;
+  if (task.metadata.spawnPressureDeferred !== undefined) {
+    extra.spawnPressureDeferred = task.metadata.spawnPressureDeferred;
+  }
   return {
     id: task.id,
     title: task.title,
@@ -52,10 +70,7 @@ function epicFromExternal(task: ExternalTaskRecord): KanbanEpic {
     dependsOn: task.dependencies ?? [],
     isReady: task.metadata.isReady === true,
     spawnedAt: typeof task.metadata.spawnedAt === "number" ? task.metadata.spawnedAt : null,
-    extra:
-      task.metadata.atmuxExtra !== null && typeof task.metadata.atmuxExtra === "object"
-        ? (task.metadata.atmuxExtra as Record<string, unknown>)
-        : undefined,
+    extra: Object.keys(extra).length ? (extra as NonNullable<KanbanEpic["extra"]>) : undefined,
   };
 }
 

@@ -46,11 +46,11 @@
 
 import type { Database } from "bun:sqlite";
 import { spawn as defaultSpawn, type SpawnResult } from "../abstractions/spawn.ts";
+import type { KanbanEpic } from "../schema/kanban.ts";
+import type { Team, TeamAutoSpawnDefault } from "../schema/team.ts";
 import { epicIsEligible as defaultEpicIsEligible } from "./epic.ts";
 import { classifySpawnFailure, type SpawnFailureClass } from "./orchd-spawn-classify.ts";
 import { KanbanRepo } from "./repositories/kanban-repo.ts";
-import type { KanbanEpic } from "../schema/kanban.ts";
-import type { Team, TeamAutoSpawnDefault } from "../schema/team.ts";
 
 // ---------- effectiveAutoSpawn (§D3) ----------
 
@@ -158,6 +158,10 @@ export interface SpawnEpicHandlerDeps {
   /** Open per-team Database (state.db) — handler uses it for the dedup
    *  gate read AND the spawn-success UPDATE. */
   db: Database;
+  epicStore?: {
+    getEpic(id: string): KanbanEpic | null | Promise<KanbanEpic | null>;
+    saveEpic(epic: KanbanEpic): void | Promise<void>;
+  };
   /** Absolute path to the team's `.atmux/` dir — required for the
    *  eligibility probe and surfaced into `--team-dir` if needed. */
   atmuxDir: string;
@@ -211,9 +215,15 @@ export function createSpawnEpicHandler(
 
   return async (event) => {
     const repo = new KanbanRepo(deps.db);
+    const epicStore =
+      deps.epicStore ??
+      ({
+        getEpic: (id: string) => repo.getEpic(id),
+        saveEpic: (epic: KanbanEpic) => repo.upsertEpic(epic),
+      } as const);
 
     // (1) Load epic.
-    const epic = repo.getEpic(event.epicId);
+    const epic = await epicStore.getEpic(event.epicId);
     if (epic === null) {
       logger.info(`orchd-spawn: epic=${event.epicId} row missing — skip`);
       return "skipped-row-missing";
@@ -221,9 +231,7 @@ export function createSpawnEpicHandler(
 
     // (2) Dedup gate.
     if (epic.spawnedAt !== null && epic.spawnedAt !== undefined) {
-      logger.info(
-        `orchd-spawn: epic=${event.epicId} already spawned at ${epic.spawnedAt} — skip`,
-      );
+      logger.info(`orchd-spawn: epic=${event.epicId} already spawned at ${epic.spawnedAt} — skip`);
       return "skipped-already-spawned";
     }
 
@@ -257,16 +265,8 @@ export function createSpawnEpicHandler(
     //     the prefix here. Caught by 2026-05-23 dogfood gate when
     //     spawn-epic received `e-3-6134ed37` and looked up
     //     `e-e-3-6134ed37` (not found).
-    const shortEpicId = event.epicId.startsWith("e-")
-      ? event.epicId.slice(2)
-      : event.epicId;
-    const argv: string[] = [
-      "team",
-      "spawn-epic",
-      shortEpicId,
-      "--from",
-      deps.team.name,
-    ];
+    const shortEpicId = event.epicId.startsWith("e-") ? event.epicId.slice(2) : event.epicId;
+    const argv: string[] = ["team", "spawn-epic", shortEpicId, "--from", deps.team.name];
     if (decision.roster !== undefined && decision.roster.length > 0) {
       argv.push("--roster", decision.roster);
     }
@@ -300,13 +300,13 @@ export function createSpawnEpicHandler(
         env: { ATMUX_CALLER_SCOPE: "driver" },
         expectExitCode: "any",
         timeoutMs: 120_000, // submodule init + worktree provision can
-                           // take >30s on sopx-style trees per
-                           // ATMUX_SPAWN_TIMEOUT_MS rationale.
+        // take >30s on sopx-style trees per
+        // ATMUX_SPAWN_TIMEOUT_MS rationale.
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       logger.warn(`orchd-spawn: epic=${event.epicId} spawn threw: ${msg} — raising hard flag`);
-      await writeSpawnFailedExtra(repo, epic, nowSec(), `spawn threw: ${msg}`);
+      await writeSpawnFailedExtra(epicStore, epic, nowSec(), `spawn threw: ${msg}`);
       await raiseHardFlag(spawnFn, event.epicId, `spawn threw: ${msg}`);
       return "flag-raised";
     }
@@ -316,7 +316,7 @@ export function createSpawnEpicHandler(
       //      gate. Bun:sqlite parameter is the unix-epoch-seconds
       //      computed from `nowSec()` for test reproducibility.
       const t = nowSec();
-      deps.db.prepare("UPDATE epics SET spawned_at = ? WHERE id = ?").run(t, event.epicId);
+      await epicStore.saveEpic({ ...epic, spawnedAt: t });
       logger.info(`orchd-spawn: epic=${event.epicId} spawned at ${t}`);
       return "spawned";
     }
@@ -333,7 +333,7 @@ export function createSpawnEpicHandler(
 
     if (failClass === "host-pressure") {
       // (6b) Increment spawnPressureDeferred counter; emit flag at ≥3.
-      const counter = await incrementSpawnPressureDeferred(repo, epic);
+      const counter = await incrementSpawnPressureDeferred(epicStore, epic);
       logger.info(
         `orchd-spawn: epic=${event.epicId} host-pressure deferred (counter=${counter}/${HOST_PRESSURE_DEFERRED_FLAG_THRESHOLD}); cron --sweep retries`,
       );
@@ -344,7 +344,7 @@ export function createSpawnEpicHandler(
     }
 
     // (6c) Hard failure — write spawnFailed extra + flag + NO retry.
-    await writeSpawnFailedExtra(repo, epic, nowSec(), stderrTail);
+    await writeSpawnFailedExtra(epicStore, epic, nowSec(), stderrTail);
     await raiseHardFlag(spawnFn, event.epicId, stderrTail);
     logger.warn(
       `orchd-spawn: epic=${event.epicId} HARD failure (exit=${result.exitCode}) — flag raised, no retry`,
@@ -359,7 +359,7 @@ export function createSpawnEpicHandler(
  *  hard-failure column. Reads + merges the existing `extra` object to
  *  preserve sibling keys (`autoSpawn`, future per-epic config). */
 async function writeSpawnFailedExtra(
-  repo: KanbanRepo,
+  store: NonNullable<SpawnEpicHandlerDeps["epicStore"]>,
   epic: KanbanEpic,
   atSec: number,
   stderrTail: string,
@@ -368,14 +368,14 @@ async function writeSpawnFailedExtra(
     ...(epic.extra ?? {}),
     spawnFailed: { at: atSec, stderrTail },
   };
-  repo.upsertEpic({ ...epic, extra: nextExtra });
+  await store.saveEpic({ ...epic, extra: nextExtra });
 }
 
 /** Persist `extra.spawnPressureDeferred += 1` per ADR-231 §D5
  *  transient-host-pressure counter. Returns the post-increment value
  *  so callers can compare against the flag threshold. */
 async function incrementSpawnPressureDeferred(
-  repo: KanbanRepo,
+  store: NonNullable<SpawnEpicHandlerDeps["epicStore"]>,
   epic: KanbanEpic,
 ): Promise<number> {
   const existing = epic.extra ?? {};
@@ -383,7 +383,7 @@ async function incrementSpawnPressureDeferred(
     typeof existing.spawnPressureDeferred === "number" ? existing.spawnPressureDeferred : 0;
   const nextCounter = existingCounter + 1;
   const nextExtra = { ...existing, spawnPressureDeferred: nextCounter };
-  repo.upsertEpic({ ...epic, extra: nextExtra });
+  await store.saveEpic({ ...epic, extra: nextExtra });
   return nextCounter;
 }
 

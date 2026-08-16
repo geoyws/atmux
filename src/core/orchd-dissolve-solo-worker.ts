@@ -41,10 +41,11 @@
 // silent-no-op outcome.
 
 import type { Database } from "bun:sqlite";
-import { spawn as defaultSpawn, type SpawnResult } from "../abstractions/spawn.ts";
 import { withIdempotency } from "../abstractions/events.ts";
 import { isHonkerEnabled } from "../abstractions/honker.ts";
+import { spawn as defaultSpawn, type SpawnResult } from "../abstractions/spawn.ts";
 import type { TaskDonePayload } from "../schema/events.ts";
+import type { KanbanTask } from "../schema/kanban.ts";
 import { KanbanRepo } from "./repositories/kanban-repo.ts";
 import { isSoloWorkerTeamName } from "./solo-worker.ts";
 
@@ -80,6 +81,10 @@ export interface DissolveSoloWorkerHandlerDeps {
    *  `tasks` to (a) confirm the just-done task row still exists and
    *  (b) enumerate the member's remaining open tasks. */
   db: Database;
+  taskReader?: {
+    showTask(id: string): KanbanTask | null | Promise<KanbanTask | null>;
+    listTasks(filter: { owner: string }): KanbanTask[] | Promise<KanbanTask[]>;
+  };
   /** Solo-worker classifier override (test seam). Defaults to
    *  {@link isSoloWorkerTeamName} from `solo-worker.ts`. */
   isSoloWorker?: (teamName: string) => boolean;
@@ -128,7 +133,13 @@ export function createDissolveSoloWorkerHandler(
   return async (event) => {
     // Step 1 — load task row (defensive existence check per ADR-231 §D6 step 1).
     const repo = new KanbanRepo(deps.db);
-    const task = repo.getTask(event.taskId);
+    const taskReader =
+      deps.taskReader ??
+      ({
+        showTask: (id: string) => repo.getTask(id),
+        listTasks: (filter: { owner: string }) => repo.listTasks(filter),
+      } as const);
+    const task = await taskReader.showTask(event.taskId);
     if (task === null) {
       logger.info(
         `orchd-dissolve-solo-worker: task.done taskId=${event.taskId} — row missing (race-deleted); skip`,
@@ -153,7 +164,9 @@ export function createDissolveSoloWorkerHandler(
     // ALL tasks owned by this member in the local state.db — solo-
     // worker cages have their own state.db scoped to the worker, so
     // this naturally restricts the query to that worker's tasks.
-    const pending = repo.listTasks({ owner: event.member }).filter((t) => t.status !== "done");
+    const pending = (await taskReader.listTasks({ owner: event.member })).filter(
+      (item) => item.status !== "done",
+    );
     if (pending.length > 0) {
       logger.info(
         `orchd-dissolve-solo-worker: worker-team='${event.team}' member='${event.member}' has ${pending.length} pending task(s); skip dissolve`,
@@ -211,8 +224,7 @@ async function raiseFailureFlag(
   logger: Logger,
 ): Promise<void> {
   const body =
-    `orchd: dissolve failed for worker-team ${workerTeam}\n` +
-    `stderr tail:\n${stderrTail}`;
+    `orchd: dissolve failed for worker-team ${workerTeam}\n` + `stderr tail:\n${stderrTail}`;
   try {
     await spawnFn({
       cmd: "atmux",

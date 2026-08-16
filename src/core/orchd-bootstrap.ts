@@ -35,6 +35,7 @@
 // bootstrap stays purely about population.
 
 import type { Database } from "bun:sqlite";
+import { KanbanCliAdapter } from "../adapters/kanban-cli.ts";
 import type {
   ComplaintFiledPayload,
   EpicMergedPayload,
@@ -48,28 +49,26 @@ import {
   type ComplaintConsumerDeps,
   createComplaintConsumerHandler,
 } from "./complaint-consumer.ts";
-import {
-  type RotationConsumerDeps,
-  createRotationConsumerHandler,
-} from "./rotation-consumer.ts";
+import { listTasks, showTask } from "./kanban.ts";
 import {
   createLeadStallWatchdogHandler,
   type LeadStallWatchdogDeps,
   type LeadStallWatchdogEvent,
 } from "./lead-stall-watchdog.ts";
 import {
-  createDissolveSoloWorkerHandler,
-  type DissolveSoloWorkerHandlerDeps,
-} from "./orchd-dissolve-solo-worker.ts";
-import {
   type AutoDissolveHandlerDeps,
   createAutoDissolveHandler,
   type DissolveTriggerPayload,
 } from "./orchd-dissolve.ts";
+import {
+  createDissolveSoloWorkerHandler,
+  type DissolveSoloWorkerHandlerDeps,
+} from "./orchd-dissolve-solo-worker.ts";
 import { type AutoMergeHandlerDeps, createAutoMergeHandler } from "./orchd-merge.ts";
 import { type AutoPushHandlerDeps, createAutoPushHandler } from "./orchd-push.ts";
 import { registerOrchdSubscription } from "./orchd-registry.ts";
 import { createSpawnEpicHandler, type SpawnEpicHandlerDeps } from "./orchd-spawn.ts";
+import { createRotationConsumerHandler, type RotationConsumerDeps } from "./rotation-consumer.ts";
 
 /** Consumer IDs — exported so step 3/5's drain iterator + tests can
  *  reference the canonical strings without typos. Per ADR-224 §D6
@@ -235,8 +234,18 @@ export function bootstrapOrchd(deps: BootstrapOrchdDeps): BootstrapOrchdResult {
     db: deps.db,
     ...(deps.pushDeps ?? {}),
   });
+  const workAtmuxDir = deps.spawnDeps?.atmuxDir;
   const dissolveSoloWorkerHandlerFn = createDissolveSoloWorkerHandler({
     db: deps.db,
+    ...(workAtmuxDir
+      ? {
+          taskReader: {
+            showTask: (id: string) => showTask(workAtmuxDir, id),
+            listTasks: (filter: { owner: string }) =>
+              listTasks(workAtmuxDir, { assignee: filter.owner }),
+          },
+        }
+      : {}),
     ...(deps.dissolveSoloWorkerDeps ?? {}),
   });
   // ADR-231 §D2 — spawn handler. When `spawnDeps` is absent (no caller
@@ -244,9 +253,18 @@ export function bootstrapOrchd(deps: BootstrapOrchdDeps): BootstrapOrchdResult {
   // event — safe no-op under at-least-once delivery + matches the
   // pre-T-S2.5 behavior. Production callers (committer.ts) pass
   // atmuxDir + team config so the real factory builds.
-  const spawnHandlerFn = deps.spawnDeps !== undefined
-    ? createSpawnEpicHandler({ db: deps.db, ...deps.spawnDeps })
-    : async (_event: { epicId: string }) => "skipped-row-missing" as const;
+  const spawnHandlerFn =
+    deps.spawnDeps !== undefined
+      ? createSpawnEpicHandler({
+          db: deps.db,
+          ...deps.spawnDeps,
+          ...(process.env.ATMUX_KANBAN_BACKEND === "external"
+            ? {
+                epicStore: externalEpicStore(deps.spawnDeps.atmuxDir),
+              }
+            : {}),
+        })
+      : async (_event: { epicId: string }) => "skipped-row-missing" as const;
   // ADR-214 §D2 — complaint consumer. Always builds; deps optional
   // (defaults to real-process spawn of `atmux tell-lead`).
   const complaintHandlerFn = createComplaintConsumerHandler(deps.complaintDeps ?? {});
@@ -400,5 +418,26 @@ export function bootstrapOrchd(deps: BootstrapOrchdDeps): BootstrapOrchdResult {
       // the operator disabled it; three entries (one per topic) otherwise.
       ...leadStallEntries,
     ],
+  };
+}
+
+function externalEpicStore(atmuxDir: string): NonNullable<SpawnEpicHandlerDeps["epicStore"]> {
+  const adapter = new KanbanCliAdapter();
+  return {
+    getEpic: async (id) =>
+      (await adapter.loadKanban(atmuxDir)).epics.find((epic) => epic.id === id) ?? null,
+    saveEpic: async (epic) => {
+      const extra = epic.extra ?? {};
+      await adapter.patchMetadata(atmuxDir, epic.id, "atmux", {
+        workflowStatus: epic.status ?? null,
+        driverRef: epic.driverRef ?? null,
+        isReady: epic.isReady,
+        spawnedAt: epic.spawnedAt ?? null,
+        autoSpawn: extra.autoSpawn ?? null,
+        spawnFailed: extra.spawnFailed ?? null,
+        spawnPressureDeferred: extra.spawnPressureDeferred ?? null,
+        atmuxExtra: extra,
+      });
+    },
   };
 }
