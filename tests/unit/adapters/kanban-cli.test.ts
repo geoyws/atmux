@@ -12,7 +12,12 @@ import {
   setEpicReady as coreSetEpicReady,
   showEpic as coreShowEpic,
 } from "../../../src/core/epic.ts";
-import { prepareExternalKanbanCutover } from "../../../src/core/external-kanban-cutover.ts";
+import {
+  activateExternalKanbanCutover,
+  prepareExternalKanbanCutover,
+  rollbackExternalKanbanCutover,
+} from "../../../src/core/external-kanban-cutover.ts";
+import { readKanbanBackendMarker } from "../../../src/core/kanban-backend.ts";
 import {
   addTask as coreAddTask,
   assignTask as coreAssignTask,
@@ -284,5 +289,70 @@ describe("external Kanban CLI adapter", () => {
     expect(existsSync(join(receipt.boardBackupDirectory, "registry.db"))).toBe(true);
     expect((await adapter.showTask(atmuxDir, "t-source"))?.subject).toBe("Preserve me");
     expect(process.env.ATMUX_KANBAN_BACKEND).toBeUndefined();
+  });
+
+  test("activates only a matching stopped-writer receipt and permits rollback before a write", async () => {
+    const { root, atmuxDir, adapter } = fixture();
+    const source = join(atmuxDir, "state.db");
+    const db = openDatabase(source, migrations);
+    new KanbanRepo(db).addTask({
+      id: "t-activate",
+      subject: "Activate me",
+      body: "",
+      status: "todo",
+      owner: null,
+      deps: [],
+      priority: 1,
+      lane: null,
+      createdAt: 1_700_000_000,
+      claimedAt: null,
+      completedAt: null,
+    });
+    closeDatabase(db);
+    process.env.KANBAN_DATA_DIR = join(root, "private-kanban");
+    const prepared = await prepareExternalKanbanCutover(atmuxDir, {
+      actor: "operator",
+      receiptRoot: join(root, "receipts"),
+      adapter,
+    });
+
+    await expect(
+      activateExternalKanbanCutover(atmuxDir, {
+        actor: "operator",
+        preparationReceipt: prepared.receiptPath,
+        writersStopped: false,
+        adapter,
+      }),
+    ).rejects.toThrow("writers-stopped");
+    const activated = await activateExternalKanbanCutover(atmuxDir, {
+      actor: "operator",
+      preparationReceipt: prepared.receiptPath,
+      writersStopped: true,
+      adapter,
+    });
+    expect(activated.counts.tasks).toBe(1);
+    expect((await readKanbanBackendMarker(atmuxDir))?.backend).toBe("external");
+
+    const rolledBack = await rollbackExternalKanbanCutover(atmuxDir, {
+      actor: "operator",
+      writersStopped: true,
+      adapter,
+    });
+    expect(rolledBack.backend).toBe("legacy");
+
+    await activateExternalKanbanCutover(atmuxDir, {
+      actor: "operator",
+      preparationReceipt: prepared.receiptPath,
+      writersStopped: true,
+      adapter,
+    });
+    await adapter.addTask(atmuxDir, { subject: "Post-cutover durable work" });
+    await expect(
+      rollbackExternalKanbanCutover(atmuxDir, {
+        actor: "operator",
+        writersStopped: true,
+        adapter,
+      }),
+    ).rejects.toThrow("board changed after activation");
   });
 });
