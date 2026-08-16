@@ -27,14 +27,16 @@ import { join } from "node:path";
 import { loadEventById, saveOffset } from "../abstractions/events.ts";
 import { closeDatabase, openDatabase } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
+import { invokeAutoMergeInCage } from "../core/auto-merge-invoke.ts";
 import { getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts";
 import { probeHostPressure } from "../core/host-pressure.ts";
-import { invokeAutoMergeInCage } from "../core/auto-merge-invoke.ts";
-import { bootstrapOrchd } from "../core/orchd-bootstrap.ts";
 import { loadKanban } from "../core/kanban.ts";
+import { bootstrapOrchd } from "../core/orchd-bootstrap.ts";
 import { dispatchDissolveEpic as dispatchDissolveEpicImport } from "../core/orchd-dispatch/dissolve-epic.ts";
 import { dispatchEpicMerge as dispatchEpicMergeImport } from "../core/orchd-dispatch/epic-merge.ts";
 import { dispatchGitPush as dispatchGitPushImport } from "../core/orchd-dispatch/git-push.ts";
+import { reapStaleEpicTeams } from "../core/orchd-reap.ts";
+import { isCageAliveForTeam, listSpawnedEpicTeamsForTeam } from "../core/orchd-reap-enum.ts";
 // ADR-224 §D6 — orchd subscription registry seam (Phase 1 zero-handler).
 // Re-exported from this verb module so Phase 2 + sibling EPIC e-a946af69
 // callers can register against the same canonical surface they see in
@@ -47,8 +49,6 @@ import {
   ORCHD_SUBSCRIPTIONS,
   visitOrchdSubscriptions,
 } from "../core/orchd-registry.ts";
-import { isCageAliveForTeam, listSpawnedEpicTeamsForTeam } from "../core/orchd-reap-enum.ts";
-import { reapStaleEpicTeams } from "../core/orchd-reap.ts";
 import { orchdSweep } from "../core/orchd-sweep.ts";
 import { pressureMonitorTick, resolveSpawnQueueLimits } from "../core/spawn-queue.ts";
 import { ConfigError, UsageError } from "../errors.ts";
@@ -684,7 +684,10 @@ async function orchdHandleOneByConsumerId(
       },
       pushDeps: {
         dispatchGitPush: async (parentBase) =>
-          dispatchGitPushImport({ cage: team.name, branch: parentBase }, { localCageName: team.name }),
+          dispatchGitPushImport(
+            { cage: team.name, branch: parentBase },
+            { localCageName: team.name },
+          ),
       },
       spawnDeps: {
         atmuxDir,
@@ -1070,6 +1073,7 @@ async function orchdSweepMergesCli(parsed: ParsedOrchdArgs): Promise<number> {
       : atmuxDir;
     const result = await sweepMerges({
       db,
+      loadKanban: () => loadKanban(atmuxDir),
       dispatchEpicMerge: async (epicId) => {
         if (team.epicTeam !== undefined && team.epicTeam.parentEpicKanbanId === epicId) {
           return await invokeAutoMergeInCage(epicRepoPath);

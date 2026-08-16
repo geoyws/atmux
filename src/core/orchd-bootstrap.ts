@@ -222,8 +222,10 @@ export interface BootstrapOrchdResult {
  * which subscriptions were newly added vs already-present.
  */
 export function bootstrapOrchd(deps: BootstrapOrchdDeps): BootstrapOrchdResult {
+  const workAtmuxDir = deps.spawnDeps?.atmuxDir;
   const mergeHandlerFn = createAutoMergeHandler({
     db: deps.db,
+    ...(workAtmuxDir ? { loadTasks: async () => await loadKanbanTasks(workAtmuxDir) } : {}),
     ...(deps.mergeDeps ?? {}),
   });
   const dissolveHandlerFn = createAutoDissolveHandler({
@@ -234,7 +236,6 @@ export function bootstrapOrchd(deps: BootstrapOrchdDeps): BootstrapOrchdResult {
     db: deps.db,
     ...(deps.pushDeps ?? {}),
   });
-  const workAtmuxDir = deps.spawnDeps?.atmuxDir;
   const dissolveSoloWorkerHandlerFn = createDissolveSoloWorkerHandler({
     db: deps.db,
     ...(workAtmuxDir
@@ -419,6 +420,10 @@ export function bootstrapOrchd(deps: BootstrapOrchdDeps): BootstrapOrchdResult {
       ...leadStallEntries,
     ],
   };
+}
+
+async function loadKanbanTasks(atmuxDir: string) {
+  return (await import("./kanban.ts")).loadKanban(atmuxDir).then((kanban) => kanban.tasks);
 }
 
 function externalEpicStore(atmuxDir: string): NonNullable<SpawnEpicHandlerDeps["epicStore"]> {

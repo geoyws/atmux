@@ -30,6 +30,7 @@ import type { Database } from "bun:sqlite";
 import { emit as defaultEmit, withIdempotency } from "../abstractions/events.ts";
 import { isHonkerEnabled } from "../abstractions/honker.ts";
 import type { TaskDonePayload } from "../schema/events.ts";
+import type { KanbanTask } from "../schema/kanban.ts";
 
 /**
  * Result the injected dispatcher returns from one merge attempt.
@@ -180,6 +181,9 @@ const DEFAULT_DISPATCH_STUB = async (_epicId: string): Promise<DispatchEpicMerge
 export interface AutoMergeHandlerDeps {
   /** Open Database (per-team `state.db`). */
   db: Database;
+  /** Adapter-aware task snapshot. Production bootstrap supplies this so
+   *  external mode never falls back to the legacy `tasks` table. */
+  loadTasks?: () => ReadonlyArray<KanbanTask> | Promise<ReadonlyArray<KanbanTask>>;
   /** Real merge dispatcher. Default returns `skipped-not-mine`; sibling
    *  EPIC `e-60e16169` injects a closure that builds `EpicMergeContext`
    *  and calls `performEpicMerge` from `src/core/epic-merge.ts`. */
@@ -224,14 +228,18 @@ export function createAutoMergeHandler(
   const nowSec = deps.nowSec ?? (() => Math.floor(Date.now() / 1000));
 
   return async (event) => {
-    const epicId = resolveEpicId(event, deps.db);
+    const tasks = deps.loadTasks ? await deps.loadTasks() : null;
+    const epicId =
+      tasks === null ? resolveEpicId(event, deps.db) : resolveEpicIdFromTasks(event, tasks);
     if (epicId === null) {
       logger.info(
         `orchd-merge: task.done taskId=${event.taskId} — no epic resolved (3-stage miss)`,
       );
       return "skipped-no-epic";
     }
-    if (!isEpicComplete(deps.db, epicId)) {
+    if (
+      !(tasks === null ? isEpicComplete(deps.db, epicId) : isEpicCompleteFromTasks(tasks, epicId))
+    ) {
       logger.info(
         `orchd-merge: epic=${epicId} not complete (open tasks remain) — skipped-epic-not-complete`,
       );
@@ -280,6 +288,34 @@ export function createAutoMergeHandler(
       }
     }
   };
+}
+
+function resolveEpicIdFromTasks(
+  event: TaskDonePayload,
+  tasks: ReadonlyArray<KanbanTask>,
+): string | null {
+  if (typeof event.epicId === "string" && event.epicId.length > 0) return event.epicId;
+  const task = tasks.find((item) => item.id === event.taskId);
+  if (!task) return null;
+  if (typeof task.epic === "string" && task.epic.length > 0) return task.epic;
+  const subject = task.subject ?? "";
+  const match = SUBJECT_EPIC_PREFIX_RE.exec(subject);
+  return match ? `e-${match[1]}` : null;
+}
+
+function isEpicCompleteFromTasks(tasks: ReadonlyArray<KanbanTask>, epicId: string): boolean {
+  const bracket = `[${epicId}]`;
+  return !tasks.some((task) => {
+    const subject = task.subject ?? "";
+    const bound =
+      task.epic === epicId ||
+      subject === bracket ||
+      subject.startsWith(`${bracket} `) ||
+      subject.startsWith(`[${epicId}/`);
+    return (
+      bound && task.status !== "done" && task.status !== "wontfix" && task.status !== "cancelled"
+    );
+  });
 }
 
 // ---------- Consumer surface (mirrors gitter-consumer.ts exactly) ----------
