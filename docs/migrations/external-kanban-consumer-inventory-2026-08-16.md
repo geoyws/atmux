@@ -11,6 +11,19 @@ This is the removal checklist for ADR-275. It is a source inventory, not a cutov
 - Read-only production import probe: 114 epics, 91 stories, 1,138 tasks; one preserved dangling dependency and no missing parents.
 - Production activation, merge, push, dual writes, and legacy deletion: not performed.
 
+## Real preparation receipt
+
+The non-activating preparation completed at `2026-08-16T03:00:35.756Z`:
+
+- source `/root/work/src/atmux/.atmux/state.db` remained at its original mtime and SHA-256 `2cd08b599507e0658155b47c888b8999250dd6a83b04d1ad3f9ec7b301e77fd5`;
+- the serialized source backup has the same SHA-256 and mode `0600`;
+- the private receipt is `/root/work/src/atmux/.atmux/backups/kanban-cutover/2026-08-16T03-00-35.340Z/receipt.json`, mode `0600`;
+- the private atmux board is `/root/.local/share/kanban/boards/a876a3a6-8d19-4aa0-aeb0-98badd242565.db`;
+- registry and both private boards report SQLite integrity `ok`;
+- 1,343 rows imported: 114 epics, 91 stories, and 1,138 tasks;
+- one dangling legacy dependency was preserved as warning metadata; no parents were missing;
+- activation remains explicitly `not-activated`.
+
 ## Migrated behind `ATMUX_KANBAN_BACKEND=external`
 
 - Task list/show/add/move/update, dependencies, assignment, lane, deliverable, driver-only, claim, done, and blocker notes.
