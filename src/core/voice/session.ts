@@ -25,7 +25,9 @@
 //     buffered unboundedly.
 //   - Barge-in ordering invariant: `audio.clear` is sent BEFORE any
 //     subsequent audio; provider audio still streaming from the
-//     cancelled response is suppressed until the turn boundary.
+//     cancelled response is suppressed until the turn boundary. BOTH
+//     barge-in paths obey it — the phone's `cancel` and the provider's
+//     `speech-started` (ADR-272 §Supplement-P7 §R4).
 //   - No stdout writes anywhere (stdout is capture-owned while a verb
 //     runs). Diagnostics go through the injected `log` seam, which the
 //     verb layer points at stderr behind a redactor
@@ -43,6 +45,16 @@
 //     are the sensitive payload bounded by ADR-272 OQ-4 (local-only,
 //     7-day retention), and these are protocol events. Tool NAMES are
 //     fine; tool ARGUMENTS are not.
+//   - Speech has exactly ONE persistence path: the optional
+//     `openTranscript` sink (`src/core/voice/transcript.ts`), which is
+//     absent unless the operator set `ATMUX_VOICE_TRANSCRIPTS=1`. The
+//     two sinks are disjoint by design — `log` carries protocol events
+//     and no speech; the transcript sink carries speech and nothing else.
+//   - A tool result is bound to the leg that ISSUED the call. A call id
+//     is meaningful only inside the provider session that minted it, so a
+//     redial during a slow tool means the result is DROPPED (with a log
+//     line) rather than delivered to a leg that never asked
+//     (ADR-272 §Supplement-P7 §R3).
 //   - Frames arriving while `dialing` are ignored; binary before hello
 //     (or any pre-hello garbage) closes 4400.
 //   - Client-frame + provider-event switches are EXHAUSTIVE (no
@@ -87,6 +99,7 @@ import { createSessionRegistry, type SessionRegistry } from "./registry.ts";
 import { resolveTeamName, type VoiceTeamIndex } from "./team-context.ts";
 import type { ToolBridge } from "./tool-bridge.ts";
 import { toolJsonSchema, type VoiceToolEntry } from "./tool-catalog.ts";
+import type { VoiceTranscriptSink } from "./transcript.ts";
 
 // ---------- Tunables (wire contract — tests pin these) ----------
 
@@ -305,6 +318,16 @@ export interface VoiceSessionDeps {
    * NO SPEECH may be passed here (see the module header).
    */
   log?: (line: string) => void;
+  /**
+   * Per-session transcript sink factory (ADR-272 OQ-4). ABSENT unless the
+   * operator opted in with `ATMUX_VOICE_TRANSCRIPTS=1` — a session built
+   * without it records nothing, which is the shipped default and the
+   * reason this is an optional dep rather than a flag read in here.
+   *
+   * Called once, with the session id, as soon as that id exists (fresh
+   * dial or resumed park), so one file carries one session.
+   */
+  openTranscript?: (sessionId: string) => VoiceTranscriptSink;
 }
 
 export interface VoiceSessionStats {
@@ -345,6 +368,9 @@ class VoiceServerSessionImpl implements VoiceServerSession {
   private phase: Phase = "awaiting-hello";
   private phoneOpen = true;
   private sessionId = ""; // empty until hello; set exactly once per fresh/resume
+  /** Transcript sink for this session, or null when recording is off
+   *  (the default — ADR-272 OQ-4 ships transcripts opt-in). */
+  private transcript: VoiceTranscriptSink | null = null;
   private conn: ProviderConn | null = null;
   private currentTeam: string | null = null;
   private mode: "ptt" | "vad" = "ptt";
@@ -523,10 +549,20 @@ class VoiceServerSessionImpl implements VoiceServerSession {
     await this.freshSession(hello);
   }
 
+  /** Open this session's transcript sink, if recording is enabled. No-op
+   *  otherwise — `this.transcript` stays null and nothing is ever
+   *  written (ADR-272 OQ-4 §off-by-default). */
+  private openTranscript(sessionId: string): void {
+    this.transcript = this.deps.openTranscript?.(sessionId) ?? null;
+  }
+
   private adopt(sessionId: string, entry: ParkedLeg): void {
     this.deps.timers.clearTimeout(entry.timer);
     this.deps.shared.parked.delete(sessionId);
     this.sessionId = sessionId;
+    // Same id → same transcript file: a resume APPENDS to the record the
+    // pre-drop half of the conversation started (ADR-272 D8 + OQ-4).
+    this.openTranscript(sessionId);
     this.conn = entry.conn;
     this.currentTeam = entry.currentTeam;
     this.seq = entry.seq;
@@ -541,6 +577,7 @@ class VoiceServerSessionImpl implements VoiceServerSession {
   private async freshSession(hello: HelloFrame): Promise<void> {
     const sessionId = this.deps.uuid();
     this.sessionId = sessionId;
+    this.openTranscript(sessionId);
     this.deps.shared.registry.claim({
       sessionId,
       onTakeover: () => {
@@ -860,6 +897,12 @@ class VoiceServerSessionImpl implements VoiceServerSession {
         this.onAudioOut(ev.pcm);
         return;
       case "transcript":
+        // FINALS ONLY (ADR-272 OQ-4). `final: true` closes an utterance
+        // id, so the finals ARE the conversation; recording the partial
+        // deltas as well would write the same sentence a dozen times in
+        // pieces. Off unless the operator opted in — `transcript` is null
+        // by default, and the phone still gets every partial either way.
+        if (ev.final) this.transcript?.record({ role: ev.role, text: ev.text });
         this.sendJson({
           type: ev.role === "user" ? "transcript.user" : "transcript.assistant",
           id: ev.id,
@@ -867,11 +910,42 @@ class VoiceServerSessionImpl implements VoiceServerSession {
           final: ev.final,
         });
         return;
-      case "speech-started":
+      case "speech-started": {
+        // PROVIDER-SIDE BARGE-IN, and it must behave like the phone-side
+        // one (`cancel`): flush the client queue, and SUPPRESS the audio
+        // still streaming from the response being interrupted — otherwise
+        // a straggler `audio-out` lands after the clear and the operator
+        // hears the assistant talk over him. Ordering is the invariant:
+        // `audio.clear` goes out BEFORE any later audio can be sent.
+        //
+        // The condition is load-bearing, not caution. The two adapters do
+        // not agree on when this event fires: `gemini-live.ts` emits it
+        // only for `interrupted: true` (a response WAS in flight), while
+        // `openai-realtime.ts` maps every `input_audio_buffer.speech_started`
+        // — which fires whether or not the assistant is mid-response.
+        // Suppressing unconditionally would therefore latch on OpenAI when
+        // nothing was speaking, and since the gate only lifts on
+        // `turn-complete`, the ENTIRE NEXT RESPONSE would be dropped:
+        // silence, on the provider this feature ships as its default.
+        // `speakingAnnounced` is true exactly when assistant audio is in
+        // flight for the current turn, which is precisely when stragglers
+        // exist — so this makes OpenAI behave like Gemini's already-correct
+        // signal. Reachable only in `mode:"vad"` today (OQ-3 keeps `ready`
+        // at `vad:false`), i.e. latent until P7 turns VAD on.
+        //
+        // RESIDUAL RISK (P7 hardening, ADR-272 §Supplement-P7 §R4): the
+        // gate lifts on `turn-complete`, and gemini-live.ts notes that
+        // native-audio models are widely reported to DROP `turnComplete`
+        // after an interrupt. A provider that does would leave this armed
+        // and silence the next response. Not new and not specific to this
+        // arm — `cancel` has had the same dependency since P4, and in PTT
+        // the phone's own TURN_END clears it. V-19 checks it on hardware.
+        if (this.speakingAnnounced) this.suppressAudio = true;
         this.speakingAnnounced = false;
         this.sendJson({ type: "audio.clear", reason: "speech-started" });
         this.sendStatus("listening");
         return;
+      }
       case "tool-call":
         await this.onToolCall(ev);
         return;
@@ -920,6 +994,11 @@ class VoiceServerSessionImpl implements VoiceServerSession {
       args: ev.argsJson.slice(0, TOOL_ARGS_PREVIEW_MAX_CHARS),
     });
     this.sendStatus("working");
+    // The leg that ISSUED this call, captured before the await. A tool
+    // call id is meaningful only within the provider session that minted
+    // it, so a result must go back to that leg or nowhere — see the drop
+    // below.
+    const issuedBy = this.conn;
     const start = this.deps.clock();
     const out = await this.deps.bridge.executeTool({
       name: ev.name,
@@ -939,15 +1018,30 @@ class VoiceServerSessionImpl implements VoiceServerSession {
     const needs = out.needsConfirmation !== undefined || envelope?.error === "needs_confirmation";
     const done: ToolDoneFrame = { type: "tool.done", id: ev.id, ok, summary, ms };
     if (needs) done.needs_confirmation = true;
+    // The phone gets the outcome either way — it is the operator's own
+    // view of a tool HE asked for, and it does not depend on any provider
+    // leg still being up.
     this.sendJson(done);
-    const conn = this.conn;
-    if (conn !== null) {
-      try {
-        conn.leg.sendToolResult(ev.id, out.envelopeJson);
-        this.suppressAudio = false;
-      } catch (e) {
-        if (!(e instanceof VoiceProviderError)) throw e;
-      }
+    // The provider half does. `this.conn` is re-read here, and if a
+    // redial happened while the tool ran it now points at a DIFFERENT
+    // leg — one that never issued `ev.id`. Handing it this result is a
+    // foreign call id on a live conversation: ignored at best, a protocol
+    // error at worst, and either way the fresh leg is left waiting for a
+    // tool turn that has already been answered elsewhere. The window was
+    // narrow only because read tools return in milliseconds; P7's
+    // mutating tools make slow tools ordinary.
+    if (this.conn === null || this.conn !== issuedBy) {
+      // Tool NAME only — this sink carries no speech (see module header).
+      this.log(
+        `voice: dropping tool result for '${ev.name}' — the provider leg that issued it is gone (redial during execution)`,
+      );
+      return;
+    }
+    try {
+      issuedBy.leg.sendToolResult(ev.id, out.envelopeJson);
+      this.suppressAudio = false;
+    } catch (e) {
+      if (!(e instanceof VoiceProviderError)) throw e;
     }
   }
 

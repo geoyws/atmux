@@ -15,10 +15,14 @@
 //   - Mutex: two executeTool calls never interleave their captures; the
 //     timeout bounds the RESPONSE, not the execution — the next tool
 //     queues behind the still-running one.
+//   - Lane recovery (ADR-272 §Supplement-P7 §R2): the queue is bounded,
+//     every tool_timeout NAMES the stuck verb, and a wedge DRAINS when
+//     its holder returns instead of executing a backlog of expired
+//     calls.
 //   - The WHOLE envelope stays ≤ maxResultChars, JSON always valid.
 
 import { describe, expect, test } from "bun:test";
-import { createVerbMutex } from "../../../../src/core/verb-capture.ts";
+import { createVerbMutex, VERB_MUTEX_MAX_QUEUE } from "../../../../src/core/verb-capture.ts";
 import { createConfirmStore } from "../../../../src/core/voice/confirm.ts";
 import type { VoiceTeamIndex } from "../../../../src/core/voice/team-context.ts";
 import {
@@ -865,7 +869,7 @@ describe("bridge health", () => {
     expect(health.heldMs).toBe(20_000 * WEDGE_THRESHOLD_MULTIPLE + 1);
   });
 
-  test("later tool calls pile up behind the stuck verb, and the depth is REPORTED not capped", async () => {
+  test("later tool calls pile up behind the stuck verb, and health reports the depth", async () => {
     const h = makeHarness({ sleep: async () => {} });
     h.deps.runners.status = neverReturns();
     void h.bridge.executeTool({
@@ -886,10 +890,12 @@ describe("bridge health", () => {
       });
     }
     await Bun.sleep(0);
-    // No cap: every one of them is still waiting, and health says so.
-    // Capping would hide the wedge behind a cheerful rejection.
     expect(h.bridge.health().queueDepth).toBe(4);
+    // The wedge verdict comes from the HOLDER, never from the depth —
+    // which is why bounding the queue (below) costs this signal nothing.
     expect(h.bridge.health().stuckTool).toBe("team_status");
+    h.setNow(1_000 + 20_000 * WEDGE_THRESHOLD_MULTIPLE + 1);
+    expect(h.bridge.health().wedged).toBe(true);
   });
 
   test("a tool that COMPLETES leaves the bridge healthy — the signal is not sticky", async () => {
@@ -945,5 +951,252 @@ describe("end-to-end through the REAL capture (no injected capture)", () => {
     expect(env).toMatchObject({ ok: true, tool: "cost_report", team: "atmux" });
     expect(env.data).toBe("cost-output");
     expect(h.calls).toEqual([{ key: "cost", argv: ["--team-dir", "/w/atmux"] }]);
+  });
+});
+
+// ---------- lane recovery (ADR-272 §Supplement-P7 §R2) ----------
+//
+// `/healthz` made a wedge VISIBLE; these pin that it is now SURVIVABLE.
+// The distinction each test draws is the one the operator needs: "my verb
+// is slow" and "the lane is stuck behind someone else's verb" used to
+// produce the identical bare `tool_timeout`.
+
+describe("tool_timeout names the stuck verb", () => {
+  function neverReturns(): () => Promise<number> {
+    return () => new Promise<number>(() => {});
+  }
+
+  test("our OWN slow verb reports still_running and names itself", async () => {
+    const h = makeHarness({ sleep: async () => {} });
+    h.deps.runners.status = neverReturns();
+    const out = await h.bridge.executeTool({
+      ...SESSION,
+      name: "team_status",
+      currentTeam: "atmux",
+      argsJson: "{}",
+    });
+    const env = parseEnvelope(out.envelopeJson);
+    expect(env).toMatchObject({
+      ok: false,
+      error: "tool_timeout",
+      reason: "still_running",
+      stuckTool: "team_status",
+      timeoutMs: 20_000,
+      queueDepth: 0,
+    });
+    expect(env.heldMs).toBe(0); // clock has not moved in this harness
+  });
+
+  test("a call that never STARTED reports queued_behind and names the holder", async () => {
+    const h = makeHarness({ sleep: async () => {} });
+    h.deps.runners.status = neverReturns();
+    void h.bridge.executeTool({
+      ...SESSION,
+      name: "team_status",
+      currentTeam: "atmux",
+      argsJson: "{}",
+    });
+    await Bun.sleep(0);
+    h.setNow(1_000 + 45_000);
+
+    const out = await h.bridge.executeTool({
+      ...SESSION,
+      name: "team_health",
+      currentTeam: "atmux",
+      argsJson: "{}",
+    });
+    const env = parseEnvelope(out.envelopeJson);
+    // The whole point: the operator learns WHICH verb is stuck and for how
+    // long, from a call that is not the stuck one.
+    expect(env).toMatchObject({
+      error: "tool_timeout",
+      reason: "queued_behind",
+      stuckTool: "team_status",
+      heldMs: 45_000,
+    });
+    expect(String(env.message)).toContain("team_status");
+  });
+
+  test("the envelope carries the tool NAME and never its arguments", async () => {
+    const h = makeHarness({ sleep: async () => {} });
+    h.deps.runners.tellLead = neverReturns();
+    void h.bridge.executeTool({
+      ...SESSION,
+      name: "tell_lead",
+      currentTeam: "atmux",
+      argsJson: JSON.stringify({ message: "revert the production deploy now" }),
+    });
+    await Bun.sleep(0);
+    const out = await h.bridge.executeTool({
+      ...SESSION,
+      name: "team_health",
+      currentTeam: "atmux",
+      argsJson: "{}",
+    });
+    // A tool_timeout envelope is SPOKEN. Arguments carry what the operator
+    // said about a different tool call entirely.
+    expect(out.envelopeJson).toContain("tell_lead");
+    expect(out.envelopeJson).not.toContain("revert the production deploy");
+  });
+});
+
+describe("bounded queue", () => {
+  function neverReturns(): () => Promise<number> {
+    return () => new Promise<number>(() => {});
+  }
+
+  /** Wedge the lane and fill the queue to its cap. */
+  async function wedgeAndFill(h: Harness): Promise<void> {
+    h.deps.runners.status = neverReturns();
+    void h.bridge.executeTool({
+      ...SESSION,
+      name: "team_status",
+      currentTeam: "atmux",
+      argsJson: "{}",
+    });
+    await Bun.sleep(0);
+    for (let i = 0; i < VERB_MUTEX_MAX_QUEUE; i += 1) {
+      void h.bridge.executeTool({
+        ...SESSION,
+        name: "team_health",
+        currentTeam: "atmux",
+        argsJson: "{}",
+      });
+    }
+    await Bun.sleep(0);
+  }
+
+  test("past the cap the call is REFUSED without running, and says which verb is stuck", async () => {
+    const h = makeHarness({ sleep: async () => {} });
+    await wedgeAndFill(h);
+    expect(h.bridge.health().queueDepth).toBe(VERB_MUTEX_MAX_QUEUE);
+    const before = h.calls.length;
+
+    const out = await h.bridge.executeTool({
+      ...SESSION,
+      name: "lead_outbox",
+      currentTeam: "atmux",
+      argsJson: "{}",
+    });
+    const env = parseEnvelope(out.envelopeJson);
+    expect(env).toMatchObject({
+      ok: false,
+      tool: "lead_outbox",
+      error: "tool_timeout",
+      reason: "queue_full",
+      stuckTool: "team_status",
+      queueDepth: VERB_MUTEX_MAX_QUEUE,
+      queueCap: VERB_MUTEX_MAX_QUEUE,
+      waitedMs: 0,
+    });
+    expect(String(env.message)).toContain("NOT run");
+    // Refused means refused: the verb never fired.
+    expect(h.calls.length).toBe(before);
+  });
+
+  test("the queue does not grow without limit, however many calls arrive", async () => {
+    const h = makeHarness({ sleep: async () => {} });
+    await wedgeAndFill(h);
+    for (let i = 0; i < 40; i += 1) {
+      await h.bridge.executeTool({
+        ...SESSION,
+        name: "team_health",
+        currentTeam: "atmux",
+        argsJson: "{}",
+      });
+    }
+    expect(h.bridge.health().queueDepth).toBe(VERB_MUTEX_MAX_QUEUE);
+    // Still honestly wedged — the cap did not silence the signal.
+    h.setNow(1_000 + 20_000 * WEDGE_THRESHOLD_MULTIPLE + 1);
+    expect(h.bridge.health()).toMatchObject({ wedged: true, stuckTool: "team_status" });
+  });
+});
+
+describe("the wedge DRAINS instead of persisting", () => {
+  test("expired calls are skipped and the lane is usable again", async () => {
+    // This is the recovery claim, driven end to end through the REAL
+    // capture: one verb wedges, the operator keeps talking, and when the
+    // verb finally returns the backlog is discarded rather than executed —
+    // then the very next thing he says works.
+    const h = makeHarness({ sleep: async () => {} });
+    let releaseStuck!: () => void;
+    const stuck = new Promise<void>((r) => {
+      releaseStuck = r;
+    });
+    const ran: string[] = [];
+    h.deps.runners.status = async () => {
+      ran.push("status");
+      await stuck;
+      process.stdout.write("late status\n");
+      return 0;
+    };
+    h.deps.runners.health = async () => {
+      ran.push("health");
+      process.stdout.write("health ok\n");
+      return 0;
+    };
+
+    const first = await h.bridge.executeTool({
+      ...SESSION,
+      name: "team_status",
+      currentTeam: "atmux",
+      argsJson: "{}",
+    });
+    expect(parseEnvelope(first.envelopeJson)).toMatchObject({ error: "tool_timeout" });
+
+    // Three more tool calls while it is stuck; each answers tool_timeout.
+    for (let i = 0; i < 3; i += 1) {
+      const out = await h.bridge.executeTool({
+        ...SESSION,
+        name: "team_health",
+        currentTeam: "atmux",
+        argsJson: "{}",
+      });
+      expect(parseEnvelope(out.envelopeJson)).toMatchObject({ error: "tool_timeout" });
+    }
+    expect(h.bridge.health().queueDepth).toBe(3);
+
+    // Time passes well beyond every queued call's own deadline...
+    h.setNow(1_000 + 300_000);
+    releaseStuck();
+    await Bun.sleep(5);
+
+    // ...and NOT ONE of them ran. Before this change all three would have
+    // executed here, minutes after the operator was told they timed out.
+    expect(ran).toEqual(["status"]);
+    expect(h.bridge.health()).toMatchObject({ queueDepth: 0, stuckTool: null, wedged: false });
+
+    // The lane works for the next thing he says — no --stop required.
+    h.setNow(1_000);
+    h.deps.sleep = () => new Promise<never>(() => {});
+    const after = await h.bridge.executeTool({
+      ...SESSION,
+      name: "team_health",
+      currentTeam: "atmux",
+      argsJson: "{}",
+    });
+    expect(parseEnvelope(after.envelopeJson)).toMatchObject({
+      ok: true,
+      tool: "team_health",
+      data: "ok — health ok",
+    });
+    expect(ran).toEqual(["status", "health"]);
+  });
+
+  test("a non-lane rejection is still an internal error, not a lane refusal", async () => {
+    // The `instanceof VerbMutexError` guard: only the lane's own refusals
+    // render as tool_timeout. Anything else must keep reporting as a bug.
+    const h = makeHarness({
+      capture: () => Promise.reject(new Error("capture exploded")),
+    });
+    const out = await h.bridge.executeTool({
+      ...SESSION,
+      name: "team_status",
+      currentTeam: "atmux",
+      argsJson: "{}",
+    });
+    const env = parseEnvelope(out.envelopeJson);
+    expect(env).toMatchObject({ ok: false, error: "verb_failed" });
+    expect(String(env.message)).toContain("internal error: capture exploded");
   });
 });

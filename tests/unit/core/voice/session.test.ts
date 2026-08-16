@@ -54,6 +54,10 @@ import type {
   ToolBridgeHealth,
 } from "../../../../src/core/voice/tool-bridge.ts";
 import { VOICE_TOOL_CATALOG } from "../../../../src/core/voice/tool-catalog.ts";
+import type {
+  VoiceTranscriptEvent,
+  VoiceTranscriptSink,
+} from "../../../../src/core/voice/transcript.ts";
 import { VoiceProviderError } from "../../../../src/errors.ts";
 import { VOICE_CLOSE } from "../../../../src/schema/voice.ts";
 
@@ -301,6 +305,8 @@ function baseConfig(over: Partial<VoiceConfig> = {}): VoiceConfig {
     readonly: false,
     resumeGraceMs: 90_000,
     confirmTtlMs: 120_000,
+    transcripts: false,
+    transcriptRetentionDays: 7,
     ...over,
   };
 }
@@ -329,6 +335,9 @@ function makeHarness(
     nowMyt?: () => string;
     /** Omit the `log` dep entirely — exercises the no-op default. */
     noLog?: boolean;
+    /** Transcript sink factory (ADR-272 OQ-4). Absent = the shipped
+     *  default, where the session records nothing. */
+    openTranscript?: (sessionId: string) => VoiceTranscriptSink;
   } = {},
 ): Harness {
   const timers = over.timers ?? new FakeTimers();
@@ -369,6 +378,7 @@ function makeHarness(
       }),
     ...(over.nowMyt !== undefined ? { nowMyt: over.nowMyt } : {}),
     ...(over.noLog === true ? {} : { log: (line: string): void => void logs.push(line) }),
+    ...(over.openTranscript !== undefined ? { openTranscript: over.openTranscript } : {}),
   };
   return {
     phone,
@@ -839,6 +849,120 @@ describe("control frames", () => {
   });
 });
 
+// ---------- transcripts (ADR-272 OQ-4) ----------
+//
+// The session is the only place speech becomes a durable record, so these
+// pin exactly what reaches the sink: the finals, with their role and text,
+// once per session — and NOTHING at all when the operator has not opted
+// in. (The on-disk half — path, content, absence — lives in
+// tests/unit/core/voice/transcript.test.ts and the end-to-end verbs test.)
+
+describe("transcript recording", () => {
+  interface Recorder {
+    openTranscript: (sessionId: string) => VoiceTranscriptSink;
+    /** Session ids the factory was asked for, in order. */
+    readonly opened: string[];
+    /** Everything recorded, tagged with the session it was recorded under. */
+    readonly recorded: Array<VoiceTranscriptEvent & { session: string }>;
+  }
+
+  function recorder(): Recorder {
+    const opened: string[] = [];
+    const recorded: Array<VoiceTranscriptEvent & { session: string }> = [];
+    return {
+      opened,
+      recorded,
+      openTranscript: (sessionId: string): VoiceTranscriptSink => {
+        opened.push(sessionId);
+        return {
+          path: `/scratch/voice-${sessionId}.jsonl`,
+          record: (ev): void => void recorded.push({ ...ev, session: sessionId }),
+        };
+      },
+    };
+  }
+
+  test("records FINAL transcripts only, with role + text, under the session id", async () => {
+    const rec = recorder();
+    const h = makeHarness({ openTranscript: rec.openTranscript });
+    await live(h);
+    expect(rec.opened).toEqual(["sess-1"]); // one sink, opened once
+
+    const leg = h.provider.lastLeg;
+    leg.emit({ type: "transcript", role: "user", id: "u1", text: "fleet st", final: false });
+    leg.emit({ type: "transcript", role: "user", id: "u1", text: "fleet status", final: true });
+    leg.emit({ type: "transcript", role: "assistant", id: "a1", text: "All", final: false });
+    leg.emit({ type: "transcript", role: "assistant", id: "a1", text: "All green.", final: true });
+    await flush();
+
+    // Partials are the SAME sentence in pieces; recording them would write
+    // it a dozen times. The finals are the conversation.
+    expect(rec.recorded).toEqual([
+      { role: "user", text: "fleet status", session: "sess-1" },
+      { role: "assistant", text: "All green.", session: "sess-1" },
+    ]);
+    // The phone still gets every partial — recording is not filtering.
+    expect(h.phone.ofType("transcript.user")).toHaveLength(2);
+    expect(h.phone.ofType("transcript.assistant")).toHaveLength(2);
+  });
+
+  test("with no sink factory — the shipped default — the session records NOTHING", async () => {
+    const h = makeHarness(); // no `openTranscript` dep at all
+    await live(h);
+    const leg = h.provider.lastLeg;
+    leg.emit({ type: "transcript", role: "user", id: "u1", text: "revert prod", final: true });
+    await flush();
+    // Speech still reaches the phone, and nothing anywhere persisted it:
+    // there is no sink to persist it TO.
+    expect(h.phone.ofType("transcript.user")).toEqual([
+      { type: "transcript.user", id: "u1", text: "revert prod", final: true },
+    ]);
+    // And the diagnostics sink stayed speech-free (ADR-272 OQ-4 §Scope).
+    expect(h.logs.join("\n")).not.toContain("revert prod");
+  });
+
+  test("a RESUMED session keeps recording under the same session id", async () => {
+    const rec = recorder();
+    const shared = createVoiceSharedState({ clock: () => 0, graceMs: 90_000 });
+    const first = makeHarness({ shared, openTranscript: rec.openTranscript });
+    await live(first);
+    first.provider.lastLeg.emit({
+      type: "transcript",
+      role: "user",
+      id: "u1",
+      text: "before the lift",
+      final: true,
+    });
+    await flush();
+    first.session.handlePhoneClose(1006); // dropped phone → parked leg
+
+    const second = makeHarness({
+      shared,
+      provider: first.provider,
+      timers: first.timers,
+      openTranscript: rec.openTranscript,
+    });
+    await second.session.handlePhoneMessage(hello({ resume: "sess-1" }));
+    await flush();
+    expect(second.phone.ofType("ready")[0]).toMatchObject({ resumed: true, sessionId: "sess-1" });
+    first.provider.lastLeg.emit({
+      type: "transcript",
+      role: "user",
+      id: "u2",
+      text: "after the lift",
+      final: true,
+    });
+    await flush();
+
+    // Same id both sides of the drop → one continuous record, not two.
+    expect(rec.opened).toEqual(["sess-1", "sess-1"]);
+    expect(rec.recorded).toEqual([
+      { role: "user", text: "before the lift", session: "sess-1" },
+      { role: "user", text: "after the lift", session: "sess-1" },
+    ]);
+  });
+});
+
 // ---------- barge-in ----------
 
 describe("barge-in (cancel)", () => {
@@ -914,6 +1038,122 @@ describe("barge-in (cancel)", () => {
   });
 });
 
+// ---------- barge-in, provider side (ADR-272 §Supplement-P7 §R4) ----------
+//
+// `cancel` (phone-side barge-in) set `suppressAudio`; `speech-started`
+// (provider-side barge-in) sent `audio.clear` and did NOT — so a straggler
+// `audio-out` from the response being interrupted could land AFTER the
+// clear and the assistant would talk over the operator. Reachable only in
+// mode:"vad", which `ready` still pins vad:false, so it goes live exactly
+// when P7 enables VAD (OQ-3).
+//
+// Both tests assert the ORDER, not merely that both things happened: a
+// clear that arrives after the audio it was supposed to flush is not a
+// barge-in, it is a glitch.
+
+describe("barge-in (provider speech-started)", () => {
+  test("audio.clear precedes any later audio, and the interrupted response is suppressed", async () => {
+    const h = makeHarness();
+    await live(h);
+    const leg = h.provider.lastLeg;
+
+    // The assistant IS speaking — stragglers are possible.
+    leg.emit({ type: "audio-out", pcm: new Uint8Array([1, 1]) });
+    await flush();
+    expect(h.phone.binaries).toHaveLength(1);
+
+    leg.emit({ type: "speech-started" });
+    await flush();
+    const clearIdx = h.phone.wireIndexOfType("audio.clear");
+    expect(clearIdx).toBeGreaterThan(-1);
+
+    // Audio still streaming from the interrupted response must not reach
+    // the phone. Without the fix these two land after the clear.
+    leg.emit({ type: "audio-out", pcm: new Uint8Array([2, 2]) });
+    leg.emit({ type: "audio-out", pcm: new Uint8Array([3, 3]) });
+    await flush();
+    expect(h.phone.binaries).toHaveLength(1);
+    expect(h.session.stats().droppedDownlinkFrames).toBe(2);
+    // THE ORDERING ASSERTION: nothing binary appears after the clear.
+    expect(h.phone.firstBinaryWireIndex(clearIdx)).toBe(-1);
+
+    // The gate lifts at the turn boundary, and the next turn's audio then
+    // sits strictly AFTER the clear in the wire log.
+    leg.emit({ type: "turn-complete" });
+    await flush();
+    leg.emit({ type: "audio-out", pcm: new Uint8Array([4, 4]) });
+    await flush();
+    expect(h.phone.binaries).toHaveLength(2);
+    expect(h.phone.firstBinaryWireIndex(clearIdx)).toBeGreaterThan(clearIdx);
+  });
+
+  test("it matches the phone-side `cancel` path frame for frame", async () => {
+    async function bargeIn(via: "cancel" | "speech-started"): Promise<number[]> {
+      const h = makeHarness();
+      await live(h);
+      const leg = h.provider.lastLeg;
+      leg.emit({ type: "audio-out", pcm: new Uint8Array([1, 1]) });
+      await flush();
+      if (via === "cancel") {
+        await h.session.handlePhoneMessage(JSON.stringify({ type: "cancel" }));
+      } else {
+        leg.emit({ type: "speech-started" });
+        await flush();
+      }
+      leg.emit({ type: "audio-out", pcm: new Uint8Array([2, 2]) });
+      await flush();
+      return [
+        h.phone.binaries.length,
+        h.session.stats().droppedDownlinkFrames,
+        h.phone.ofType("audio.clear").length,
+      ];
+    }
+    // Same suppression, same drop count, same single clear — the two
+    // barge-in paths are one behaviour with two triggers.
+    expect(await bargeIn("speech-started")).toEqual(await bargeIn("cancel"));
+  });
+
+  test("when the assistant was NOT speaking, the next response is NOT swallowed", async () => {
+    // The regression this guard exists for. `openai-realtime.ts` maps EVERY
+    // `input_audio_buffer.speech_started`, including ones with no response
+    // in flight; `gemini-live.ts` emits the event only for `interrupted`.
+    // Suppressing unconditionally would latch with nothing to suppress and,
+    // since the gate lifts only on `turn-complete`, drop the whole next
+    // response — total silence on the default provider.
+    const h = makeHarness();
+    await live(h);
+    const leg = h.provider.lastLeg;
+
+    leg.emit({ type: "speech-started" }); // operator speaks; nothing playing
+    await flush();
+    expect(h.phone.ofType("audio.clear")).toHaveLength(1);
+
+    // The answer to what he just said must be audible.
+    leg.emit({ type: "audio-out", pcm: new Uint8Array([7, 7]) });
+    leg.emit({ type: "audio-out", pcm: new Uint8Array([8, 8]) });
+    await flush();
+    expect(h.phone.binaries).toHaveLength(2);
+    expect(h.session.stats().droppedDownlinkFrames).toBe(0);
+    expect(h.phone.ofType("status").filter((s) => s.state === "speaking")).toHaveLength(1);
+  });
+
+  test("a second speech-started mid-suppression does not un-suppress", async () => {
+    const h = makeHarness();
+    await live(h);
+    const leg = h.provider.lastLeg;
+    leg.emit({ type: "audio-out", pcm: new Uint8Array([1, 1]) });
+    await flush();
+    leg.emit({ type: "speech-started" }); // suppression on
+    leg.emit({ type: "speech-started" }); // now `speakingAnnounced` is false
+    await flush();
+    leg.emit({ type: "audio-out", pcm: new Uint8Array([2, 2]) });
+    await flush();
+    // The second event must not read "nothing was speaking, so lift it".
+    expect(h.phone.binaries).toHaveLength(1);
+    expect(h.session.stats().droppedDownlinkFrames).toBe(1);
+  });
+});
+
 // ---------- downlink ----------
 
 describe("downlink", () => {
@@ -983,13 +1223,18 @@ describe("downlink", () => {
     expect(h.phone.ofType("status").pop()).toEqual({ type: "status", state: "listening" });
   });
 
-  test("speech-started re-arms the speaking announcement for the next chunk", async () => {
+  test("speech-started re-arms the speaking announcement for the NEXT turn", async () => {
+    // Rewritten with ADR-272 §Supplement-P7 §R4: audio arriving between
+    // the barge-in and the turn boundary is now suppressed, so the re-arm
+    // is proved on the next TURN rather than on a straggler.
     const h = makeHarness();
     await live(h);
     const leg = h.provider.lastLeg;
     leg.emit({ type: "audio-out", pcm: new Uint8Array([1, 1]) });
     await flush();
     leg.emit({ type: "speech-started" });
+    await flush();
+    leg.emit({ type: "turn-complete" });
     await flush();
     leg.emit({ type: "audio-out", pcm: new Uint8Array([2, 2]) });
     await flush();
@@ -1188,6 +1433,82 @@ describe("tool calls", () => {
     await flush();
     expect(h.phone.ofType("tool.done")).toHaveLength(1);
     await h.timers.advance(30_000);
+  });
+});
+
+// ---------- stale tool results (ADR-272 §Supplement-P7 §R3) ----------
+//
+// THE DEFECT. `onToolCall` re-read `this.conn` AFTER awaiting the bridge.
+// A tool call id is meaningful only inside the provider session that
+// minted it, so if a redial lands during a slow tool the result used to be
+// handed to a leg that never issued it — a foreign call id on a live
+// conversation, and a fresh leg left waiting for a tool turn that was
+// answered somewhere else. Today's read tools return in milliseconds;
+// P7's mutating tools make slow tools ordinary.
+//
+// Driving it needs a redial that is NOT serialized behind the tool call
+// itself: a leg whose handshake never completes gets discarded by
+// SESSION_READY_TIMEOUT_MS while its own pump is still awaiting the tool.
+
+describe("tool result vs. provider leg identity", () => {
+  test("a redial during a slow tool DROPS the result — the fresh leg gets nothing", async () => {
+    let resolveTool!: (out: ExecuteToolOutput) => void;
+    const toolPending = new Promise<ExecuteToolOutput>((r) => {
+      resolveTool = r;
+    });
+    const h = makeHarness({
+      bridge: { health: IDLE_BRIDGE_HEALTH, executeTool: () => toolPending },
+    });
+    await live(h);
+    const legA = h.provider.lastLeg;
+
+    // Mid-session provider death → redial. The next leg opens its socket
+    // but never completes the handshake, so the dial is still in flight.
+    h.provider.emitSessionReady = false;
+    legA.emit({ type: "closed", code: 1006, reason: "network" });
+    await flush();
+    await h.timers.advance(redialBackoffMs(0));
+    const legB = h.provider.lastLeg;
+    expect(legB).not.toBe(legA);
+
+    // The tool call arrives ON LEG B, and the bridge hangs.
+    legB.emit({ type: "tool-call", id: "call_stale", name: "team_status", argsJson: "{}" });
+    await flush();
+    expect(h.phone.ofType("tool.start")).toHaveLength(1);
+
+    // Leg B's handshake budget expires: it is discarded and a THIRD leg
+    // dials successfully — all while the tool is still running.
+    h.provider.emitSessionReady = true;
+    await h.timers.advance(SESSION_READY_TIMEOUT_MS + redialBackoffMs(1) + 10);
+    const legC = h.provider.lastLeg;
+    expect(legC).not.toBe(legB);
+    expect(h.phone.ofType("ready")).toHaveLength(1); // the dial completed
+
+    // Now the tool finally answers.
+    resolveTool({ envelopeJson: JSON.stringify({ ok: true, tool: "team_status", data: "green" }) });
+    await flush();
+
+    // THE ASSERTION: the fresh leg received NOTHING for the stale id.
+    expect(legC.toolResults).toEqual([]);
+    expect(legB.toolResults).toEqual([]);
+    expect(legA.toolResults).toEqual([]);
+    // ...and the drop is visible, naming the tool and no speech.
+    const dropped = h.logs.filter((l) => l.includes("dropping tool result"));
+    expect(dropped).toHaveLength(1);
+    expect(dropped[0]).toContain("team_status");
+    // The operator still saw the outcome of the tool HE asked for.
+    expect(h.phone.ofType("tool.done")[0]).toMatchObject({ id: "call_stale", ok: true });
+  });
+
+  test("the SAME leg still receives its own result — the guard is identity, not a ban", async () => {
+    const h = makeHarness();
+    await live(h);
+    const leg = h.provider.lastLeg;
+    leg.emit({ type: "tool-call", id: "call_ok", name: "team_status", argsJson: "{}" });
+    await flush();
+    expect(leg.toolResults).toHaveLength(1);
+    expect(leg.toolResults[0]?.callId).toBe("call_ok");
+    expect(h.logs.filter((l) => l.includes("dropping tool result"))).toEqual([]);
   });
 });
 

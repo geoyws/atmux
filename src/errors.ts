@@ -25,6 +25,7 @@ export type AtmuxErrorTag =
   | "issue-sync-kguard"
   | "discord"
   | "voice-provider"
+  | "verb-mutex"
   | "config"
   | "usage";
 
@@ -319,6 +320,56 @@ export class VoiceProviderError extends AtmuxError {
   }
 }
 
+/**
+ * The verb-execution lane refused this call (ADR-272 §Supplement-P7 §R2).
+ *
+ * Two reasons, both meaning "the lane is occupied", never "the verb
+ * failed": `queue_full` (the bounded queue was already at its cap, so
+ * NOTHING was run) and `abandoned` (the caller's own response deadline
+ * passed while it waited, so running it now would act on a request that
+ * already timed out). `blockedBy` names the tool holding the lane — the
+ * actionable half, and the reason this carries fields rather than a
+ * message alone.
+ *
+ * EX_TEMPFAIL (75): a busy lane is transient by definition — the same
+ * call succeeds once the holder returns. In practice this never reaches
+ * the CLI: `createToolBridge` converts it into a `tool_timeout` envelope
+ * so the model can speak it. The tag exists so the conversion is checked
+ * against a typed error rather than a string match.
+ */
+export class VerbMutexError extends AtmuxError {
+  readonly tag = "verb-mutex" as const;
+  readonly reason: "queue_full" | "abandoned";
+  /** Label of the function holding the lane, or null if it was idle. */
+  readonly blockedBy: string | null;
+  /** How long this caller waited before being refused (0 for queue_full). */
+  readonly waitedMs: number;
+  /** Callers queued at the moment of refusal. */
+  readonly queueDepth: number;
+  /** The cap `queueDepth` is measured against. */
+  readonly queueCap: number;
+  constructor(opts: {
+    reason: "queue_full" | "abandoned";
+    label: string;
+    blockedBy: string | null;
+    waitedMs: number;
+    queueDepth: number;
+    queueCap: number;
+  }) {
+    const behind = opts.blockedBy !== null ? ` behind '${opts.blockedBy}'` : "";
+    const what =
+      opts.reason === "queue_full"
+        ? `verb lane full${behind}: ${opts.queueDepth}/${opts.queueCap} queued — '${opts.label}' was not run`
+        : `verb lane: '${opts.label}' abandoned after waiting ${opts.waitedMs}ms${behind}`;
+    super(what, { context: { ...opts } });
+    this.reason = opts.reason;
+    this.blockedBy = opts.blockedBy;
+    this.waitedMs = opts.waitedMs;
+    this.queueDepth = opts.queueDepth;
+    this.queueCap = opts.queueCap;
+  }
+}
+
 /** Configuration / environment is wrong (missing team.json, bad env var, etc.). */
 export class ConfigError extends AtmuxError {
   readonly tag = "config" as const;
@@ -353,6 +404,7 @@ export function exitCodeForTag(tag: AtmuxErrorTag): number {
     case "http-timeout":
     case "tracker-rate-limit":
     case "voice-provider": // voice: provider outage retries cleanly (ADR-272)
+    case "verb-mutex": // voice: the verb lane is busy, not broken (ADR-272 §R2)
       return 75; // EX_TEMPFAIL — try again later (after the provider's reset)
     case "schema":
       return 65; // EX_DATAERR

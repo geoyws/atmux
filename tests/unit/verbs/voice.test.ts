@@ -7,7 +7,9 @@
 // the tmux namespace are faked.
 
 import { describe, expect, test } from "bun:test";
-import { resolve } from "node:path";
+import { mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import type { SendTarget, TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import { VOICE_ROUTES } from "../../../src/core/voice/assets.ts";
 import { encodeFrame, VOICE_FLAG_TURN_END } from "../../../src/core/voice/frame.ts";
@@ -18,6 +20,11 @@ import {
 } from "../../../src/core/voice/model-check.ts";
 import { WEDGE_THRESHOLD_MULTIPLE } from "../../../src/core/voice/tool-bridge.ts";
 import { VOICE_TOOL_CATALOG, type VoiceRunnerKey } from "../../../src/core/voice/tool-catalog.ts";
+import {
+  DEFAULT_TRANSCRIPT_RETENTION_DAYS,
+  TRANSCRIPT_PRUNE_INTERVAL_MS,
+  VOICE_TRANSCRIPT_DIR_REL,
+} from "../../../src/core/voice/transcript.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
 import {
   apiKeyEnvVarFor,
@@ -35,6 +42,7 @@ import {
   resolveSuperviseBin,
   resolveVoiceAssetsDir,
   runModelPinCheck,
+  runTranscriptPrune,
   SUPERVISE_BACKOFF_SEC,
   SUPERVISE_BREAKER_RESTARTS,
   SUPERVISE_BREAKER_WINDOW_SEC,
@@ -363,6 +371,8 @@ describe("boot wiring", () => {
         readonly: false,
         resumeGraceMs: 1,
         confirmTtlMs: 1,
+        transcripts: false,
+        transcriptRetentionDays: 7,
         assetsDir: "/somewhere/else",
       }),
     ).toBe("/somewhere/else");
@@ -1074,6 +1084,173 @@ describe("server diagnostics (real Bun.serve, real stderr sink)", () => {
   });
 });
 
+// ---------- transcripts (ADR-272 OQ-4) ----------
+//
+// OQ-4 resolved WHERE a transcript may live, for HOW LONG, and that
+// writing it is OFF unless the operator opts in. These tests drive the
+// whole path — real `Bun.serve`, real WebSocket, real session, real
+// filesystem — because the property that matters is what ends up ON DISK,
+// not what a config object says. A scratch `$HOME` per test keeps the
+// operator's own `~/.atmux/voice-logs/` out of the suite entirely.
+
+/** A scratch `$HOME`, its transcript dir, and a cleanup. */
+async function scratchHome(): Promise<{ home: string; dir: string; cleanup: () => Promise<void> }> {
+  const home = await mkdtemp(join(tmpdir(), "atmux-voice-home-"));
+  return {
+    home,
+    dir: join(home, VOICE_TRANSCRIPT_DIR_REL),
+    cleanup: async (): Promise<void> => {
+      await rm(home, { recursive: true, force: true });
+    },
+  };
+}
+
+describe("transcript wiring", () => {
+  test("OFF by default — buildVoiceDeps hands the session NO sink factory", async () => {
+    const { deps } = await buildTestDeps({ env: { HOME: "/home/op" } });
+    expect(deps.config.transcripts).toBe(false);
+    // Null, not "a factory that checks a flag": the session physically
+    // cannot record, so there is no flag left to misread at event time.
+    expect(deps.openTranscript).toBeNull();
+    expect(deps.transcriptDir).toBe(`/home/op/${VOICE_TRANSCRIPT_DIR_REL}`);
+    expect(deps.transcriptRetentionMs).toBe(DEFAULT_TRANSCRIPT_RETENTION_DAYS * 86_400_000);
+  });
+
+  test("ATMUX_VOICE_TRANSCRIPTS=1 builds a per-session factory under ~/.atmux/voice-logs", async () => {
+    const { deps } = await buildTestDeps({
+      env: { HOME: "/home/op", ATMUX_VOICE_TRANSCRIPTS: "1" },
+    });
+    expect(deps.config.transcripts).toBe(true);
+    const sink = deps.openTranscript?.("sess-xyz");
+    expect(sink?.path).toBe(`/home/op/${VOICE_TRANSCRIPT_DIR_REL}/voice-sess-xyz.jsonl`);
+  });
+
+  test("the retention window follows ATMUX_VOICE_TRANSCRIPT_RETENTION_DAYS", async () => {
+    const { deps } = await buildTestDeps({
+      env: { ATMUX_VOICE_TRANSCRIPT_RETENTION_DAYS: "2" },
+    });
+    expect(deps.config.transcriptRetentionDays).toBe(2);
+    expect(deps.transcriptRetentionMs).toBe(2 * 86_400_000);
+  });
+
+  test("the banner says whether speech is being recorded", async () => {
+    const off = await buildTestDeps();
+    const on = await buildTestDeps({ env: { ATMUX_VOICE_TRANSCRIPTS: "1" } });
+    const handle = { port: 4390, hostname: "127.0.0.1", done: Promise.resolve(0), stop: () => {} };
+    expect(startupBanner(off.deps, handle)).toContain("transcripts=false");
+    expect(startupBanner(on.deps, handle)).toContain("transcripts=true");
+    // Still no secret on the banner.
+    expect(startupBanner(on.deps, handle)).not.toContain(TEST_OPENAI_KEY);
+    expect(startupBanner(on.deps, handle)).not.toContain(TEST_VOICE_TOKEN);
+  });
+});
+
+describe("transcripts on disk (end to end)", () => {
+  /** Drive one real session that speaks; returns its session id. */
+  async function speak(ctx: VoiceServerCtx): Promise<string> {
+    const c = openClient(ctx.wsUrl);
+    await c.opened;
+    c.ws.send(JSON.stringify({ type: "hello", v: 1, token: ctx.token, mode: "ptt" }));
+    expect(await waitFor(() => framesOf(c.texts, "ready").length > 0)).toBe(true);
+    const sessionId = String((framesOf(c.texts, "ready")[0] as { sessionId: string }).sessionId);
+    const leg = ctx.provider.lastLeg;
+    leg.emit({ type: "transcript", role: "user", id: "u1", text: "partial fle", final: false });
+    leg.emit({ type: "transcript", role: "user", id: "u1", text: "fleet status", final: true });
+    leg.emit({
+      type: "transcript",
+      role: "assistant",
+      id: "a1",
+      text: "four members up",
+      final: true,
+    });
+    expect(await waitFor(() => framesOf(c.texts, "transcript.assistant").length > 0)).toBe(true);
+    await flush();
+    c.ws.close();
+    return sessionId;
+  }
+
+  test("opted IN: the operator's speech lands in ~/.atmux/voice-logs, finals only", async () => {
+    const scratch = await scratchHome();
+    try {
+      let sessionId = "";
+      await withVoiceServer(
+        { env: { HOME: scratch.home, ATMUX_VOICE_TRANSCRIPTS: "1" } },
+        async (ctx) => {
+          sessionId = await speak(ctx);
+        },
+      );
+      const file = join(scratch.dir, `voice-${sessionId}.jsonl`);
+      expect(await readdir(scratch.dir)).toEqual([`voice-${sessionId}.jsonl`]);
+      const raw = await readFile(file, "utf8");
+      const rows = raw
+        .trim()
+        .split("\n")
+        .map((l) => JSON.parse(l) as Record<string, unknown>);
+      // CONTENT, not "a file exists": both finals, in order, attributed —
+      // and the partial delta absent.
+      expect(rows.map((r) => [r.role, r.text])).toEqual([
+        ["user", "fleet status"],
+        ["assistant", "four members up"],
+      ]);
+      expect(rows.every((r) => r.session === sessionId)).toBe(true);
+      expect(raw).not.toContain("partial fle");
+      // A transcript file must never carry a credential.
+      expect(raw).not.toContain(TEST_VOICE_TOKEN);
+      expect(raw).not.toContain(TEST_OPENAI_KEY);
+    } finally {
+      await scratch.cleanup();
+    }
+  });
+
+  test("opted OUT (the shipped default): NOTHING is written — no file, no directory", async () => {
+    const scratch = await scratchHome();
+    try {
+      await withVoiceServer({ env: { HOME: scratch.home } }, async (ctx) => {
+        // The exact same conversation as the opt-in test above.
+        await speak(ctx);
+      });
+      // Not an empty directory: no directory at all.
+      await expect(stat(scratch.dir)).rejects.toThrow();
+      expect(await readdir(scratch.home)).toEqual([]);
+    } finally {
+      await scratch.cleanup();
+    }
+  });
+});
+
+describe("runTranscriptPrune", () => {
+  test("reports the sweep on the log sink", async () => {
+    const scratch = await scratchHome();
+    try {
+      const { deps } = await buildTestDeps({ env: { HOME: scratch.home } });
+      const logs: string[] = [];
+      await runTranscriptPrune(deps, (l) => logs.push(l));
+      expect(logs).toEqual([
+        `voice: transcript prune ${scratch.dir} — removed 0, kept 0, skipped 0, errors 0`,
+      ]);
+    } finally {
+      await scratch.cleanup();
+    }
+  });
+
+  test("an unreachable transcript directory costs a log line, never the boot", async () => {
+    // `$HOME` pointed at a FILE: the sweep cannot list it, and the server
+    // must still come up. A sweep that could refuse the boot would trade a
+    // private log file for the whole voice interface.
+    const scratch = await scratchHome();
+    try {
+      const file = join(scratch.home, "not-a-dir");
+      await Bun.write(file, "x");
+      const { deps } = await buildTestDeps({ env: { HOME: file } });
+      const logs: string[] = [];
+      await expect(runTranscriptPrune(deps, (l) => logs.push(l))).resolves.toBeUndefined();
+      expect(logs[0]).toContain("transcript prune");
+    } finally {
+      await scratch.cleanup();
+    }
+  });
+});
+
 // ---------- serveVoice ----------
 
 /**
@@ -1095,6 +1272,48 @@ const NO_MODEL_CHECK = async (d: ModelCheckDeps): Promise<ModelCheckResult> => (
 });
 
 describe("serveVoice", () => {
+  test("sweeps transcripts at boot, arms the DAILY sweep, and clears it on shutdown", async () => {
+    // ADR-272 OQ-4: "pruned on server start and daily thereafter". The
+    // armed timer is asserted by its interval, and the shutdown assertion
+    // is why a 24h timer cannot hold the process open after `--stop`.
+    const scratch = await scratchHome();
+    try {
+      const { deps } = await buildTestDeps({ env: { HOME: scratch.home } });
+      deps.config.port = 0;
+      const armed: number[] = [];
+      let pending = 0;
+      deps.timers = {
+        setTimeout: (fn, ms) => {
+          armed.push(ms);
+          pending += 1;
+          return setTimeout(fn, ms);
+        },
+        clearTimeout: (h) => {
+          pending -= 1;
+          clearTimeout(h as ReturnType<typeof setTimeout>);
+        },
+      };
+      const logs: string[] = [];
+      const abort = new AbortController();
+      const p = serveVoice({
+        deps,
+        log: (l) => logs.push(l),
+        signal: abort.signal,
+        onSignal: () => {},
+        offSignal: () => {},
+        checkModel: NO_MODEL_CHECK,
+      });
+      expect(await waitFor(() => logs.some((l) => l.includes("transcript prune")))).toBe(true);
+      expect(logs.some((l) => l.includes(scratch.dir))).toBe(true);
+      expect(armed).toEqual([TRANSCRIPT_PRUNE_INTERVAL_MS]);
+      abort.abort();
+      expect(await p).toBe(0);
+      expect(pending).toBe(0);
+    } finally {
+      await scratch.cleanup();
+    }
+  });
+
   test("logs the banner, honours SIGINT-style shutdown, and unregisters handlers", async () => {
     const { deps } = await buildTestDeps();
     deps.config.port = 0;
@@ -1475,6 +1694,8 @@ describe("status", () => {
     readonly: false,
     resumeGraceMs: 1,
     confirmTtlMs: 1,
+    transcripts: false,
+    transcriptRetentionDays: 7,
   };
 
   test("reports session + healthz state and probes the right URL", async () => {
@@ -1831,6 +2052,8 @@ describe("production default wirings", () => {
         readonly: false,
         resumeGraceMs: 1,
         confirmTtlMs: 1,
+        transcripts: false,
+        transcriptRetentionDays: 7,
       },
     });
     expect(report).toMatchObject({ sessionExists: false, healthy: false });

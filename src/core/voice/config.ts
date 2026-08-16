@@ -18,6 +18,7 @@
 // generated-and-printed fallback.
 
 import { ConfigError } from "../../errors.ts";
+import { DEFAULT_TRANSCRIPT_RETENTION_DAYS } from "./transcript.ts";
 
 /** CLI-flag overrides (P4 wires these from `atmux voice` argv). Every
  *  field optional at the callsite via `Partial<VoiceFlags>`. */
@@ -34,6 +35,8 @@ export interface VoiceFlags {
   resumeGraceMs: number;
   confirmTtlMs: number;
   assetsDir: string;
+  transcripts: boolean;
+  transcriptRetentionDays: number;
 }
 
 /** Resolved voice-server configuration. */
@@ -62,6 +65,17 @@ export interface VoiceConfig {
   confirmTtlMs: number;
   /** ATMUX_VOICE_ASSETS_DIR — optional PWA-assets dir override. */
   assetsDir?: string;
+  /**
+   * ATMUX_VOICE_TRANSCRIPTS — "1"/"true" ⇒ write session transcripts to
+   * `~/.atmux/voice-logs/`. **Default false** (ADR-272 OQ-4: a transcript
+   * is a durable record of everything said near the microphone, so the
+   * operator opts IN). Note this gates WRITING only — the retention sweep
+   * runs either way, since it only deletes.
+   */
+  transcripts: boolean;
+  /** ATMUX_VOICE_TRANSCRIPT_RETENTION_DAYS — default 7 (ADR-272 OQ-4).
+   *  Shortening is the operator's call; lengthening wants a reason. */
+  transcriptRetentionDays: number;
 }
 
 /** Shipped defaults (ADR-272 D6/D7/D8 + OQ-1 provider recommendation). */
@@ -73,6 +87,7 @@ export const VOICE_DEFAULTS = Object.freeze({
   maxResultChars: 2000,
   resumeGraceMs: 90_000,
   confirmTtlMs: 120_000,
+  transcriptRetentionDays: DEFAULT_TRANSCRIPT_RETENTION_DAYS,
 } as const);
 
 /** Minimum accepted token length (ADR-272 §Security layer 2). */
@@ -182,6 +197,13 @@ export function resolveVoiceConfig(
       flags?.confirmTtlMs,
       env.ATMUX_VOICE_CONFIRM_TTL_MS,
       VOICE_DEFAULTS.confirmTtlMs,
+    ),
+    // OFF unless the operator says otherwise (ADR-272 OQ-4).
+    transcripts: flags?.transcripts ?? parseBooleanEnv(env.ATMUX_VOICE_TRANSCRIPTS),
+    transcriptRetentionDays: resolveNumber(
+      flags?.transcriptRetentionDays,
+      env.ATMUX_VOICE_TRANSCRIPT_RETENTION_DAYS,
+      VOICE_DEFAULTS.transcriptRetentionDays,
     ),
   };
   if (model !== undefined) out.model = model;

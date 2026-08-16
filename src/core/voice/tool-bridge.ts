@@ -17,19 +17,33 @@
 // finishes (stdout restore is guaranteed by the capture's `finally`),
 // and the next tool simply queues behind it.
 //
-// The wedge, and why `health()` exists. The timeout above bounds the
-// RESPONSE, not the EXECUTION — deliberately, so a slow verb does not get
-// its stdout capture abandoned mid-monkeypatch. The cost is that a verb
-// which NEVER returns holds the mutex forever: every later tool call
-// queues behind it and answers `tool_timeout`, permanently. None of the
-// 14 wired verbs calls `process.exit`, so the process does not crash — it
-// wedges, and the only recovery is `atmux voice --stop`.
+// The wedge, why `health()` exists, and how the lane now RECOVERS. The
+// timeout above bounds the RESPONSE, not the EXECUTION — deliberately, so
+// a slow verb does not get its stdout capture abandoned mid-monkeypatch.
+// The cost is that a verb which NEVER returns holds the mutex: none of
+// the wired verbs calls `process.exit`, so the process does not crash.
 //
-// Voice is meant to run unattended in a detached tmux session, so the
-// service being functionally dead while `/healthz` answered `{"ok":true}`
-// was worse than having no health check: it actively misled whatever read
-// it. `health()` is the honest signal. It reports rather than caps —
-// capping the queue would swap a visible wedge for an invisible one.
+// Voice runs unattended in a detached tmux session, so the service being
+// functionally dead while `/healthz` answered `{"ok":true}` was worse than
+// having no health check: it actively misled whatever read it. `health()`
+// is that honest signal, and it is UNCHANGED — `wedged` still comes from
+// how long the holder has held, `stuckTool` still names it.
+//
+// What changed (ADR-272 §Supplement-P7 §R2) is that reporting is no longer
+// the ONLY outcome. The lane's queue is bounded and carries an abandon
+// deadline, so:
+//   - a caller past the cap is refused immediately, with the stuck verb
+//     NAMED — more diagnosis than the bare timeout it used to get;
+//   - every `tool_timeout` now carries `reason` + `stuckTool`, so "my verb
+//     is slow" and "the lane is stuck" stop looking identical;
+//   - a caller whose deadline passed while queued is SKIPPED rather than
+//     run late, so the queue drains the moment a stuck verb returns
+//     instead of grinding through answers nobody is waiting for. For the
+//     mutating tools P7 enables, that also prevents a `dispatch_task`
+//     firing minutes after the operator was told it timed out.
+// A verb that never returns at all still holds the lane — the capture
+// wrapper cannot run two verbs concurrently — so `atmux voice --stop`
+// remains the cure for that. Everything behind it now survives.
 //
 // Logging discipline: nothing in a voice path may write to
 // `process.stdout` (it is capture-owned while a verb runs); any
@@ -41,11 +55,13 @@
 
 import { z } from "zod";
 import { tryParseJsonString } from "../../abstractions/json.ts";
+import { VerbMutexError } from "../../errors.ts";
 import {
   type CaptureVerbRunResult,
   captureVerbRun,
   type VerbFn,
   type VerbMutex,
+  type VerbMutexState,
 } from "../verb-capture.ts";
 import type { ConfirmStore } from "./confirm.ts";
 import { capLinesStructural, summarizeTool } from "./summarize.ts";
@@ -108,7 +124,10 @@ export interface ToolBridgeHealth {
   stuckTool: string | null;
   /** How long the current holder has held it (ms); null when idle. */
   heldMs: number | null;
-  /** Tool calls queued behind the holder. Reported, never capped. */
+  /** Tool calls queued behind the holder. Bounded by
+   *  `VERB_MUTEX_MAX_QUEUE` since ADR-272 §Supplement-P7 §R2 — the wedge
+   *  verdict above comes from `heldMs`, never from this number, so the
+   *  bound costs the signal nothing. */
   queueDepth: number;
   /** The threshold `heldMs` is compared against. */
   wedgeThresholdMs: number;
@@ -140,6 +159,71 @@ function errorEnvelope(
   extras: Record<string, unknown> = {},
 ): ExecuteToolOutput {
   return { envelopeJson: JSON.stringify({ ok: false, tool, error, ...extras }) };
+}
+
+/**
+ * Why a `tool_timeout` envelope was produced. All four are the SAME error
+ * code — the closed set in {@link ToolErrorCode} is unchanged — because
+ * from the model's side they mean one thing: "this did not answer in
+ * time". The distinction is for the operator, who needs to know whether
+ * his tool is slow or the lane is stuck, and which verb is stuck.
+ */
+export type ToolTimeoutReason =
+  /** Our own verb holds the lane and has not returned yet. */
+  | "still_running"
+  /** We never started: another tool still holds the lane. */
+  | "queued_behind"
+  /** The lane was at its queue cap — nothing was run at all. */
+  | "queue_full"
+  /** We waited past our own deadline and were skipped rather than run late. */
+  | "abandoned";
+
+/** Envelope for a lane refusal ({@link VerbMutexError}). The stuck verb is
+ *  NAMED — that is the actionable half, and the difference between a
+ *  bridge that confesses and one the operator can act on. */
+function laneRefusalEnvelope(
+  tool: string,
+  e: VerbMutexError,
+  timeoutMs: number,
+): ExecuteToolOutput {
+  const message =
+    e.reason === "queue_full"
+      ? `the verb lane is full (${e.queueDepth}/${e.queueCap} queued${e.blockedBy !== null ? ` behind '${e.blockedBy}'` : ""}) — this tool was NOT run; the lane is stuck, not slow`
+      : `waited ${e.waitedMs}ms${e.blockedBy !== null ? ` behind '${e.blockedBy}'` : ""} without starting, so this tool was skipped rather than run after its deadline`;
+  return errorEnvelope(tool, "tool_timeout", {
+    reason: e.reason satisfies ToolTimeoutReason,
+    timeoutMs,
+    stuckTool: e.blockedBy,
+    waitedMs: e.waitedMs,
+    queueDepth: e.queueDepth,
+    queueCap: e.queueCap,
+    message,
+  });
+}
+
+/** Envelope for the response deadline elapsing while the call is still
+ *  live — either running (ours) or waiting (someone else's). */
+function timeoutEnvelope(
+  tool: string,
+  started: boolean,
+  state: VerbMutexState,
+  now: number,
+  config: { toolTimeoutMs: number },
+): ExecuteToolOutput {
+  const heldMs = state.heldSince === null ? null : now - state.heldSince;
+  const reason: ToolTimeoutReason = started ? "still_running" : "queued_behind";
+  const message = started
+    ? "the tool is still running — this bounds the response, not the execution; the next tool queues behind it"
+    : `never started — '${state.holder ?? "another tool"}' still holds the verb lane${heldMs !== null ? ` (${heldMs}ms)` : ""}; this call will be abandoned rather than run late`;
+  return errorEnvelope(tool, "tool_timeout", {
+    reason,
+    timeoutMs: config.toolTimeoutMs,
+    // The stuck verb, NAMED. Never its arguments: this envelope is spoken.
+    stuckTool: state.holder,
+    heldMs,
+    queueDepth: state.queueDepth,
+    message,
+  });
 }
 
 /** Human preview line for a confirm-gated call — the model reads this
@@ -319,20 +403,38 @@ export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
     // Labelled with the TOOL NAME (not its arguments — a label reaches
     // `/healthz`, and arguments carry what the operator said). This is
     // what lets a wedge be attributed instead of merely detected.
-    const capturePromise = deps.mutex.run(() => capture(runner, argv), name);
+    //
+    // `started` distinguishes "our verb is slow" from "we never got the
+    // lane", which are different faults and must not share one message.
+    let started = false;
+    const capturePromise = deps.mutex.run(
+      () => {
+        started = true;
+        return capture(runner, argv);
+      },
+      name,
+      // A call whose response deadline has passed must not run late — see
+      // VerbMutexRunOpts.abandonAfterMs.
+      { abandonAfterMs: deps.config.toolTimeoutMs },
+    );
     const raced = await Promise.race([
-      capturePromise.then((r) => ({ kind: "done" as const, r })),
+      capturePromise.then(
+        (r) => ({ kind: "done" as const, r }),
+        (e: unknown) => ({ kind: "rejected" as const, e }),
+      ),
       deps.sleep(deps.config.toolTimeoutMs).then(() => ({ kind: "timeout" as const })),
     ]);
+    if (raced.kind === "rejected") {
+      // Only the lane's own refusals are rendered here. Anything else is
+      // an internal bug and belongs in the outer catch, which says so.
+      if (!(raced.e instanceof VerbMutexError)) throw raced.e;
+      return laneRefusalEnvelope(name, raced.e, deps.config.toolTimeoutMs);
+    }
     if (raced.kind === "timeout") {
       // Swallow the eventual settle so a late rejection can't surface
       // as an unhandled rejection; the mutex still serializes.
       capturePromise.catch(() => {});
-      return errorEnvelope(name, "tool_timeout", {
-        timeoutMs: deps.config.toolTimeoutMs,
-        message:
-          "the tool is still running — this bounds the response, not the execution; the next tool queues behind it",
-      });
+      return timeoutEnvelope(name, started, deps.mutex.state(), deps.clock(), deps.config);
     }
     const result = raced.r;
     const ms = deps.clock() - start;
