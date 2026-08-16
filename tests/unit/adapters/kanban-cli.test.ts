@@ -26,8 +26,10 @@ import {
 } from "../../../src/core/kanban.ts";
 import {
   addStory as coreAddStory,
+  advanceStory as coreAdvanceStory,
   listStories as coreListStories,
   showStory as coreShowStory,
+  storySignoff as coreStorySignoff,
   updateStory as coreUpdateStory,
 } from "../../../src/core/story.ts";
 
@@ -225,5 +227,22 @@ describe("external Kanban CLI adapter", () => {
       body: "Updated",
       acceptanceCriteria: null,
     });
+    expect((await coreAdvanceStory(atmuxDir, story)).to).toBe("ready");
+    expect((await coreAdvanceStory(atmuxDir, story)).to).toBe("in-progress");
+    expect((await coreAdvanceStory(atmuxDir, story)).to).toBe("testing");
+    expect(
+      (await adapter.advanceStory(atmuxDir, story, "driver", { reviewer: "reviewer" })).to,
+    ).toBe("review");
+    expect((await coreStorySignoff(atmuxDir, story, { as: "reviewer" })).signedOffBy).toBe(
+      "reviewer",
+    );
+    const merging = await adapter.advanceStory(atmuxDir, story, "driver", {
+      committer: "committer",
+    });
+    expect(merging.to).toBe("merging");
+    expect(merging.dispatchedTaskID).not.toBeNull();
+    if (!merging.dispatchedTaskID) throw new Error("missing merge task");
+    await adapter.markTaskDone(atmuxDir, merging.dispatchedTaskID, "committer");
+    expect((await adapter.advanceStory(atmuxDir, story, "driver")).to).toBe("done");
   });
 });

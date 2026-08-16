@@ -233,6 +233,26 @@ export async function advanceStory(
   id: string,
   target?: string,
 ): Promise<AdvanceStoryResult> {
+  if (useExternalKanban()) {
+    const team = await tryLoadTeam({ dir: atmuxDir });
+    const reviewer = team?.members.find((member) => member.role === "reviewer")?.name;
+    const committer = team?.members.find(
+      (member) =>
+        member.role === "committer" || member.role === "gitter" || member.name === "gitter",
+    )?.name;
+    const result = await externalKanban.advanceStory(atmuxDir, id, "atmux", {
+      ...(target ? { target } : {}),
+      ...(reviewer ? { reviewer } : {}),
+      ...(committer ? { committer } : {}),
+    });
+    return {
+      from: result.from,
+      to: result.to,
+      parentEpicFlipped: result.parentEpicFlipped,
+      dispatchedTaskId: result.dispatchedTaskID,
+      noop: result.noop,
+    };
+  }
   if (!(await exists(_stateDbPath(atmuxDir)))) {
     throw new ConfigError({ what: `story advance: no such story: ${id}` });
   }
@@ -578,6 +598,17 @@ export async function storySignoff(
   id: string,
   opts: SignoffOpts = {},
 ): Promise<SignoffResult> {
+  if (useExternalKanban()) {
+    const team = await tryLoadTeam({ dir: atmuxDir });
+    const member = _resolveSignoffMember(team, opts, "story signoff");
+    const result = await externalKanban.setStorySignoff(atmuxDir, id, member, true, opts.note);
+    return {
+      storyId: result.storyID,
+      signedOffBy: result.actor,
+      signedOffAt: result.at,
+      noteApplied: result.note,
+    };
+  }
   if (!(await exists(_stateDbPath(atmuxDir)))) {
     throw new ConfigError({ what: `story signoff: no such story: ${id}` });
   }
@@ -632,6 +663,17 @@ export async function storyUnsignoff(
   id: string,
   opts: SignoffOpts = {},
 ): Promise<UnsignoffResult> {
+  if (useExternalKanban()) {
+    const team = await tryLoadTeam({ dir: atmuxDir });
+    const member = _resolveSignoffMember(team, opts, "story unsignoff");
+    const result = await externalKanban.setStorySignoff(atmuxDir, id, member, false, opts.note);
+    return {
+      storyId: result.storyID,
+      unsignedBy: result.actor,
+      unsignedAt: result.at,
+      noteApplied: result.note,
+    };
+  }
   if (!(await exists(_stateDbPath(atmuxDir)))) {
     throw new ConfigError({ what: `story unsignoff: no such story: ${id}` });
   }

@@ -92,6 +92,14 @@ export interface KanbanCliAdapterOptions {
   runner?: KanbanCliRunner;
 }
 
+export interface ExternalAdvanceStoryResult {
+  from: string;
+  to: string;
+  parentEpicFlipped: boolean;
+  dispatchedTaskID: string | null;
+  noop: boolean;
+}
+
 const TO_EXTERNAL_STATUS: Record<string, string> = {
   backlog: "backlog",
   todo: "todo",
@@ -361,6 +369,36 @@ export class KanbanCliAdapter {
       JSON.stringify(patch),
       "--json",
     ]);
+  }
+
+  async advanceStory(
+    atmuxDir: string,
+    id: string,
+    actor: string,
+    options: { target?: string; reviewer?: string; committer?: string } = {},
+  ): Promise<ExternalAdvanceStoryResult> {
+    const args = ["story", "advance", id, "--as", actor, "--json"];
+    if (options.target) args.push("--to", options.target);
+    if (options.reviewer) args.push("--reviewer", options.reviewer);
+    if (options.committer) args.push("--committer", options.committer);
+    return (await this.run(atmuxDir, args)) as ExternalAdvanceStoryResult;
+  }
+
+  async setStorySignoff(
+    atmuxDir: string,
+    id: string,
+    actor: string,
+    signed: boolean,
+    note?: string,
+  ): Promise<{ storyID: string; actor: string; at: number; note: string | null }> {
+    const args = ["story", signed ? "signoff" : "unsignoff", id, "--as", actor, "--json"];
+    if (note) args.push("--note", note);
+    return (await this.run(atmuxDir, args)) as {
+      storyID: string;
+      actor: string;
+      at: number;
+      note: string | null;
+    };
   }
 
   async updateTask(
