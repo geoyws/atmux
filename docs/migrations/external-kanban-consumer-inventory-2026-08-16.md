@@ -4,10 +4,11 @@ This is the removal checklist for ADR-275. It is a source inventory, not a cutov
 
 ## Current receipts
 
-- Kanban authority branch: `/root/work/src/kanban`, `main` at `f95675b` (local only).
-- atmux migration branch: `atmux-kanban-cutover` at `00094cc` (local isolated worktree only).
-- Kanban gate: 25 tests pass, TypeScript clean.
-- atmux adapter gate: 7 focused tests pass, 34 assertions, TypeScript clean.
+- Kanban authority branch: `/root/work/src/kanban`, `main` at `0105017` (local only).
+- atmux migration branch: `atmux-kanban-cutover` at `d5d4879` (local isolated worktree only).
+- Kanban gate: 26 tests pass, 133 assertions, TypeScript clean.
+- atmux focused adapter, orchestration, projection, and lifecycle suites pass; the latest projection batch passed 416 tests and the lifecycle batch passed 127 focused tests. TypeScript is clean.
+- Full-suite receipt is not green: tmux integration fixtures cannot create sockets in the current sandbox, and `epic-auto-merge` has an independent spawn-eligibility fixture failure (`is_ready=0`) before the migrated merge gate.
 - Read-only production import probe: 114 epics, 91 stories, 1,138 tasks; one preserved dangling dependency and no missing parents.
 - Production activation, merge, push, dual writes, and legacy deletion: not performed.
 
@@ -24,39 +25,49 @@ The non-activating preparation completed at `2026-08-16T03:00:35.756Z`:
 - one dangling legacy dependency was preserved as warning metadata; no parents were missing;
 - activation remains explicitly `not-activated`.
 
-## Migrated behind `ATMUX_KANBAN_BACKEND=external`
+## Migrated behind the durable backend marker
 
 - Task list/show/add/move/update, dependencies, assignment, lane, deliverable, driver-only, claim, done, and blocker notes.
 - Normalized task-to-story-to-epic hierarchy updates.
 - Epic add/list/show/readiness/dependencies/eligibility/basic advance.
 - Story add/list/show/body/acceptance-criteria update.
+- Atomic story advance/signoff/reviewer dispatch/merge dispatch/parent-epic completion.
+- Orchd task reads, epic spawn state, merge reads, unattended merge sweep, blocker projections, merge gates, dissolve gates, and epic sweep reads.
+- Topology, dashboard, status, report, doctor inbox marks, pulse, and Discord progress/heartbeat projections.
+- `init`, `stop`, and `groom` lifecycle fences: external mode does not seed, archive, summarize, delete, cull recovery backups, or archive rows from legacy Kanban state.
+- Legacy `atmux handoff` is refused in external mode because it cannot atomically checkpoint, release, and transfer a lease; the error routes agents to `kanban handoff create/accept`.
+- Durable private marker discovery and `atmux migrate-kanban status`.
 - Installed-CLI integration and proof that focused external writes do not create `.atmux/state.db`.
 
 ## Known parity gaps
 
-- Story advance, signoff/unsignoff, reviewer dispatch, merge dispatch, and parent-epic flip need one Kanban transaction.
 - Epic review summary dispatch and legacy event emissions are not yet parity-complete.
 - Task removal needs an explicit archive/history policy; it must not silently destroy the durable ledger.
-- Durable prepare/activate/status/rollback commands and an observation-period no-legacy-write receipt do not exist yet.
-- Secondary automation readers and writers below still require conversion or retirement.
+- Durable prepare and status exist. Activate and rollback remain deliberately unimplemented until the remaining production bypass audit and a stopped-writer/restart protocol are complete.
+- External-mode integration still needs a broad no-legacy-work-state-write receipt, including daemon restart behavior.
+- Legacy fallback implementations remain compiled for rollback and must not be deleted before activation, observation, and rollback receipts.
 
-## Direct `KanbanRepo` consumers (15 files)
+## Remaining direct `KanbanRepo` references (10 files)
 
 - `src/core/epic.ts`
-- `src/core/gitter-merge-handler.ts`
-- `src/core/inbox.ts`
-- `src/core/intra-team-merge-dispatcher.ts`
 - `src/core/kanban.ts`
+- `src/core/orchd-bootstrap.ts`
 - `src/core/orchd-dispatch/epic-merge.ts`
 - `src/core/orchd-dissolve-solo-worker.ts`
 - `src/core/orchd-spawn.ts`
 - `src/core/release-notes-sweep.ts`
 - `src/core/repositories/kanban-repo.ts`
 - `src/core/story.ts`
-- `src/verbs/committer.ts`
-- `src/verbs/doctor/state.ts`
-- `src/verbs/hygiene-tick.ts`
 - `src/verbs/migrate-state.ts`
+
+Most of these are the centralized legacy fallback, injected orchd fallback stores, a type-only documentation reference, or migration-only code. They remain a deletion gate until external activation and rollback are observed.
+
+## Remaining direct work-state SQL
+
+- `src/core/blockers.ts`, `src/core/orchd-merge.ts`, `src/core/orchd-merge-sweep.ts`, and `src/core/dissolve-epic.ts` retain guarded legacy fallback queries.
+- `src/core/repositories/kanban-repo.ts` is the centralized legacy implementation.
+- `src/verbs/migrate-state.ts` and `src/verbs/migrate-hex-ids.ts` are migration-only.
+- Other `state.db` consumers store non-Kanban atmux state such as events, complaints, merge state, refusal telemetry, and inbox transport; they are not automatically candidates for deletion with the work-state tables.
 
 ## Indirect import surface
 
