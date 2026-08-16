@@ -86,3 +86,62 @@ nginx -t && systemctl reload nginx
 Clear `ATMUX_VOICE_READONLY`. The four messaging tools and `pane_nudge` become reachable.
 
 Note what that does **not** give you: ADR-272 D7's affirmation half is still model-side (see the D7 clarification). The server enforces the token's binding, TTL and single use; it does **not** observe the operator saying yes. After readonly clears, the operator's ear is the only check on that step.
+
+---
+
+# Alternative: nginx basic auth (no Keycloak)
+
+Everything above assumes OIDC. It does not have to be. **What ADR-272 §Security actually requires is that an unauthenticated request never reaches the Bun server** — OIDC is one way to satisfy that, and `auth_basic` is another. This alternative exists because the OIDC path has a long-lead prerequisite (a Keycloak client, a group, two secret files, a compose stack) and this one is a single command.
+
+It is already a house pattern on this box, not an improvisation: `33dmg.geoy.ws.conf` uses `auth_basic`, and there are three htpasswd files under `/etc/nginx` (`dash-break-glass/htpasswd`, `htpasswd.chartdb`, `htpasswd.dash`). `htpasswd` is installed.
+
+## Why it may actually fit better here
+
+It **dissolves the `/ws` dilemma** that OIDC creates. oauth2-proxy in front of `/ws` breaks `scripts/voice-probe.ts`, which authenticates with a bearer token and holds no cookie — and that probe is how V-3/V-4 are verified on every deploy. Basic auth works for both sides without an exemption:
+
+- the PWA gets a browser prompt, saved once in the phone's keychain
+- the probe sends `Authorization: Basic …` alongside its existing bearer token
+
+So the endpoint that can actually drive agents gets a second layer, and deploy verification keeps working. That is the combination option B could not give without carving a hole in itself.
+
+## What it costs — state this plainly, it is a real downgrade
+
+Basic auth is **weaker than OIDC**: no SSO, no group-based revocation (revoking means editing the htpasswd file), no MFA, no session expiry, and the credential is typed into a browser prompt rather than federated. If the phone is lost, the remedy is rotating the file rather than disabling an account.
+
+The honest framing is not "as good as OIDC". It is: **a second layer today beats a stronger second layer whenever the Keycloak client happens to get made.** If OIDC lands later, this comes out in one edit.
+
+## Install
+
+```sh
+# one operator-chosen credential
+sudo htpasswd -B -c /etc/nginx/htpasswd.atmux-voice geoyws
+sudo chmod 640 /etc/nginx/htpasswd.atmux-voice
+sudo chown root:www-data /etc/nginx/htpasswd.atmux-voice
+```
+
+Record it the same way as `ATMUX_VOICE_TOKEN`: **value in the git-crypt'd dotfiles, a pointer row in `keys/KEYS.md`, never in this repo.**
+
+Then in `/etc/nginx/sites-enabled/atmux.geoy.ws`, inside **both** `location = /ws` and the page `location /`:
+
+```nginx
+    auth_basic            "atmux voice";
+    auth_basic_user_file  /etc/nginx/htpasswd.atmux-voice;
+```
+
+Leave `location = /healthz` **without** it — monitoring depends on that staying open, and it discloses nothing sensitive.
+
+```sh
+nginx -t && systemctl reload nginx
+```
+
+`nginx -t` before reload is doing real work: a bad vhost makes nginx refuse the **entire** config and takes every other site on this box down with it. That exact failure was caught once already here (an `http2 on;` directive nginx 1.24.0 does not support).
+
+## Verify before clearing readonly
+
+1. `curl -sI https://atmux.geoy.ws/` → **401**, and the body is nginx's, not the PWA shell.
+2. `curl -sI -u geoyws:<pw> https://atmux.geoy.ws/` → 200.
+3. `/healthz` still answers with **no** credentials.
+4. Probe with both credentials → still `ok=true`. If this fails, stop: you have just broken deploy verification.
+5. The PWA prompts on the phone, and the mic still works after authenticating.
+
+Then, and only then, clear `ATMUX_VOICE_READONLY` — with the same D7 caveat as above: the server enforces the token's binding, TTL and single use, but nothing server-side observes the operator saying yes.
