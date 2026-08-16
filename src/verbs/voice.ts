@@ -23,6 +23,13 @@
 //      would make an egress hiccup take voice down entirely. It warns
 //      loudly and serves.
 //
+// Status discipline: `--status` reports the RUNNING SERVER, parsed out
+// of the `/healthz` body — never this process's own resolved config.
+// Local config is not a fallback for a reachable server, and when
+// `/healthz` cannot be read the report says the server state is UNKNOWN
+// and labels the local values as local. See `voiceStatus` /
+// `formatStatusReport`.
+//
 // Logging discipline: EVERY line this verb emits about the running
 // server goes to `process.stderr`. `process.stdout` is capture-owned
 // while a tool's verb runs (`src/core/verb-capture.ts`), so a stray
@@ -40,7 +47,9 @@
 // redaction is therefore structural rather than a discipline each
 // callsite has to remember.
 
-import { isReachable } from "../abstractions/http.ts";
+import { z } from "zod";
+import { HttpError, HttpTimeoutError, request } from "../abstractions/http.ts";
+import { tryParseJsonString } from "../abstractions/json.ts";
 import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
 import { uuidv7 } from "../abstractions/uuidv7.ts";
 import {
@@ -498,9 +507,11 @@ export function phoneLegFor(ws: MinimalServerWebSocket): PhoneLeg {
   };
 }
 
-/** Machine-readable degradation reasons. One member today; a union so a
- *  later reason lands as a new value rather than a reshaped field. */
-export type VoiceDegradedReason = "tool-bridge-wedged";
+/** Machine-readable degradation reasons. One member today; a tuple so a
+ *  later reason lands as a new value rather than a reshaped field — and
+ *  so the wire schema below and the type stay ONE declaration. */
+export const VOICE_DEGRADED_REASONS = ["tool-bridge-wedged"] as const;
+export type VoiceDegradedReason = (typeof VOICE_DEGRADED_REASONS)[number];
 
 export interface VoiceHealthzBody {
   /** False whenever the service cannot actually do its job. */
@@ -553,6 +564,49 @@ export function healthzBody(deps: VoiceServeDeps): VoiceHealthzBody {
       wedgeThresholdMs: bridge.wedgeThresholdMs,
     },
   };
+}
+
+/**
+ * The PARSE side of the same contract {@link healthzBody} produces —
+ * what `--status` validates a fetched `/healthz` body against before it
+ * reports a single field as the running server's state.
+ *
+ * Non-strict on purpose (zod strips unknown keys): a NEWER server that
+ * has added a field must still be readable by an OLDER `atmux voice
+ * --status`, which is exactly the deployment shape here — the installed
+ * `/opt/atmux/current` shim routinely lags the repo checkout that is
+ * actually serving.
+ *
+ * Drift guard: {@link parseHealthzBody} declares its return type as
+ * {@link VoiceHealthzBody}, so a schema that stops matching the produced
+ * shape fails `bun run typecheck` rather than silently parsing to `null`
+ * in production.
+ */
+export const VoiceHealthzBodySchema = z.object({
+  ok: z.boolean(),
+  provider: z.string(),
+  readonly: z.boolean(),
+  degraded: z.enum(VOICE_DEGRADED_REASONS).nullable(),
+  bridge: z.object({
+    wedged: z.boolean(),
+    stuckTool: z.string().nullable(),
+    heldMs: z.number().nullable(),
+    queueDepth: z.number(),
+    wedgeThresholdMs: z.number(),
+  }),
+});
+
+/**
+ * Validate a `/healthz` body. Returns `null` on malformed JSON, on a
+ * bare JSON scalar, or on any body that is not a healthz body — and
+ * NEVER throws. The command whose job is to diagnose a broken server
+ * must not be the second thing that breaks.
+ *
+ * `JSON.parse` is reached through `tryParseJsonString` to honour R3
+ * (only `src/abstractions/json.ts` may call it — see ADR-006).
+ */
+export function parseHealthzBody(text: string): VoiceHealthzBody | null {
+  return tryParseJsonString(text, VoiceHealthzBodySchema);
 }
 
 /** The upgrade-refusal response. WS close codes apply POST-upgrade only,
@@ -958,45 +1012,150 @@ export async function superviseVoice(deps: SuperviseDeps): Promise<number> {
   return 0;
 }
 
-export interface VoiceStatusReport {
-  sessionExists: boolean;
-  healthy: boolean;
-  url: string;
+/** How long `--status` waits for `/healthz`. This is an interactive
+ *  read, and a server that cannot answer a static JSON probe inside 5s
+ *  is not a server the operator should be told is fine. */
+export const HEALTHZ_PROBE_TIMEOUT_MS = 5_000;
+
+/**
+ * GET `/healthz` and keep the BODY. `null` means the server could not be
+ * reached at all — refused, DNS failure, non-2xx, or timeout.
+ *
+ * This replaces an `isReachable` probe that threw the body away. With the
+ * body gone, `--status` printed `deps.config.provider` /
+ * `deps.config.readonly` in its place — i.e. the INVOKING SHELL's env,
+ * labelled as the server's state. Observed live: a server running
+ * `readonly=true` reported `readonly=false` purely because the shell
+ * running `--status` had not exported the flag. The inverse is the
+ * dangerous one: a shell that DOES export `ATMUX_VOICE_READONLY=1`
+ * would report `readonly=true` about a server on which every mutating
+ * tool is live — a false all-clear on the exact check an operator runs
+ * before trusting a deployment. The body is the only thing that knows.
+ */
+export async function fetchHealthzText(url: string): Promise<string | null> {
+  try {
+    const r = await request({ url, method: "GET", timeoutMs: HEALTHZ_PROBE_TIMEOUT_MS });
+    return r.body;
+  } catch (e) {
+    // Expected up/down outcomes — all of them mean "no server state".
+    if (e instanceof HttpError) return null;
+    if (e instanceof HttpTimeoutError) return null;
+    throw e; // ConfigError (malformed URL) is a caller bug, not a verdict.
+  }
+}
+
+/** Why the running server's state is unavailable. `unreachable` = the
+ *  probe got nothing; `malformed` = it got something that was not a
+ *  `/healthz` body (wrong service on the port, truncated reply, an
+ *  HTML error page). Both are reported, never papered over. */
+export type VoiceStatusUnavailable = "unreachable" | "malformed";
+
+/** The INVOKING PROCESS's resolved config. Kept in its own field, under
+ *  its own name, so it can never be mistaken for {@link
+ *  VoiceStatusReport.server} at a callsite or in the output. */
+export interface VoiceStatusLocalConfig {
   provider: string;
   readonly: boolean;
+}
+
+export interface VoiceStatusReport {
+  sessionExists: boolean;
+  url: string;
+  /** The RUNNING SERVER's state, parsed from `/healthz`. `null` when it
+   *  could not be obtained — and then nothing in this report describes
+   *  the server. */
+  server: VoiceHealthzBody | null;
+  /** Set exactly when `server` is null. */
+  unavailable: VoiceStatusUnavailable | null;
+  /** This shell's config. NOT a fallback for `server`. */
+  local: VoiceStatusLocalConfig;
 }
 
 export interface StatusDeps {
   tmux: TmuxNamespace;
   config: VoiceConfig;
-  reachable?: (url: string) => Promise<boolean>;
+  /** Probe seam — returns the raw `/healthz` body, or `null` when the
+   *  server did not answer. Tests inject; production uses
+   *  {@link fetchHealthzText}. */
+  fetchHealthz?: (url: string) => Promise<string | null>;
 }
 
-/** `--status`: is the supervised session up, and does `/healthz` answer? */
+/**
+ * `--status`: is the supervised session up, and what does the RUNNING
+ * SERVER say about itself?
+ *
+ * The only fields taken from local config are the ones that describe
+ * *what was probed* (host + port → `url`) and the explicitly-labelled
+ * `local` block. Everything that describes the server comes out of the
+ * `/healthz` body or is reported as unknown.
+ */
 export async function voiceStatus(deps: StatusDeps): Promise<VoiceStatusReport> {
   const url = `http://${deps.config.host}:${deps.config.port}/healthz`;
-  const probe = deps.reachable ?? ((u: string): Promise<boolean> => isReachable(u));
-  const [sessionExists, healthy] = await Promise.all([
+  const probe = deps.fetchHealthz ?? fetchHealthzText;
+  const [sessionExists, text] = await Promise.all([
     deps.tmux.session.hasSession(VOICE_TMUX_SESSION),
     probe(url),
   ]);
+  const server = text === null ? null : parseHealthzBody(text);
   return {
     sessionExists,
-    healthy,
     url,
-    provider: deps.config.provider,
-    readonly: deps.config.readonly,
+    server,
+    unavailable: unavailableReason(text, server),
+    local: { provider: deps.config.provider, readonly: deps.config.readonly },
   };
 }
 
-/** Render the `--status` report. Stdout: this is a one-shot read that
- *  exits before any verb capture exists. */
+function unavailableReason(
+  text: string | null,
+  server: VoiceHealthzBody | null,
+): VoiceStatusUnavailable | null {
+  if (server !== null) return null;
+  return text === null ? "unreachable" : "malformed";
+}
+
+/**
+ * Exit code for `--status`: 0 only when the session is up AND `/healthz`
+ * answered with a body we could read.
+ *
+ * Deliberately unchanged in meaning by the body-parsing rework: a
+ * wedged-but-answering server still exits 0, because the exit code
+ * carries REACHABILITY and the body carries the VERDICT (RUNBOOK-voice
+ * §4). What changed is that the wedge is now printed, so an operator
+ * reading the output cannot miss it.
+ */
+export function voiceStatusExitCode(r: VoiceStatusReport): number {
+  return r.sessionExists && r.server !== null ? 0 : 1;
+}
+
+/**
+ * Render the `--status` report. Stdout: this is a one-shot read that
+ * exits before any verb capture exists.
+ *
+ * Two shapes, and they are not confusable:
+ *   - server known → every `voice: server:` line is parsed `/healthz`.
+ *   - server unknown → NO server line at all; the local config appears
+ *     once, under an explicit "local config (NOT the server)" label.
+ */
 export function formatStatusReport(r: VoiceStatusReport): string {
   const session = r.sessionExists ? "up" : "down";
-  const health = r.healthy ? "ok" : "unreachable";
+  if (r.server === null) {
+    const malformed = r.unavailable === "malformed";
+    return [
+      `voice: session=${session}  healthz=${malformed ? "malformed" : "unreachable"}  ${r.url}`,
+      `voice: server state UNKNOWN — ${
+        malformed
+          ? "/healthz answered with a body atmux could not parse"
+          : "/healthz did not answer"
+      }`,
+      `voice: local config (NOT the server): provider=${r.local.provider}  readonly=${r.local.readonly}`,
+    ].join("\n");
+  }
+  const b = r.server.bridge;
   return [
-    `voice: session=${session}  healthz=${health}  ${r.url}`,
-    `voice: provider=${r.provider}  readonly=${r.readonly}`,
+    `voice: session=${session}  healthz=${r.server.ok ? "ok" : "degraded"}  ${r.url}`,
+    `voice: server: provider=${r.server.provider}  readonly=${r.server.readonly}  degraded=${r.server.degraded ?? "none"}`,
+    `voice: server: bridge=${b.wedged ? "WEDGED" : "ok"}  stuckTool=${b.stuckTool ?? "none"}  heldMs=${b.heldMs ?? "-"}  queueDepth=${b.queueDepth}  wedgeThresholdMs=${b.wedgeThresholdMs}`,
   ].join("\n");
 }
 
@@ -1037,7 +1196,8 @@ export interface VoiceEntryOverrides {
   binPath?: string;
   log?: (line: string) => void;
   out?: (line: string) => void;
-  reachable?: (url: string) => Promise<boolean>;
+  /** `--status` probe seam — see {@link StatusDeps.fetchHealthz}. */
+  fetchHealthz?: (url: string) => Promise<string | null>;
   signal?: AbortSignal;
   sleep?: (ms: number) => Promise<void>;
   applyScope?: () => void;
@@ -1098,10 +1258,10 @@ export async function voice(
 
   if (args.action === "status") {
     const statusDeps: StatusDeps = { tmux, config: resolveVoiceConfig(process.env, flags) };
-    if (overrides.reachable !== undefined) statusDeps.reachable = overrides.reachable;
+    if (overrides.fetchHealthz !== undefined) statusDeps.fetchHealthz = overrides.fetchHealthz;
     const report = await voiceStatus(statusDeps);
     out(formatStatusReport(report));
-    return report.sessionExists && report.healthy ? 0 : 1;
+    return voiceStatusExitCode(report);
   }
 
   // `--serve`.

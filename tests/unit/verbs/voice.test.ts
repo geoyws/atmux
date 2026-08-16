@@ -31,10 +31,12 @@ import {
   applyDriverScope,
   buildCrashLoopScript,
   buildVoiceDeps,
+  fetchHealthzText,
   formatStatusReport,
   healthzBody,
   type MinimalServerWebSocket,
   makeLazyRunners,
+  parseHealthzBody,
   parseVoiceArgs,
   phoneLegFor,
   requireApiKey,
@@ -57,11 +59,14 @@ import {
   VOICE_TMUX_SESSION,
   VOICE_TMUX_SOCKET,
   type VoiceAction,
+  type VoiceHealthzBody,
   type VoiceServeDeps,
+  type VoiceStatusReport,
   visibleCatalog,
   voice,
   voiceArgsToFlags,
   voiceStatus,
+  voiceStatusExitCode,
 } from "../../../src/verbs/voice.ts";
 import {
   buildTestDeps,
@@ -944,10 +949,11 @@ describe("healthz vs a wedged tool bridge (real Bun.serve, real HTTP)", () => {
   });
 
   test("/healthz stays HTTP 200 while wedged — the body carries the verdict", async () => {
-    // `atmux voice --status` probes via `isReachable`, which treats any
-    // non-2xx as UNREACHABLE. A wedged-but-listening server is a
-    // different fault from an absent one, and conflating them would make
-    // `--status` less informative, not more.
+    // `atmux voice --status` treats any non-2xx as UNREACHABLE. A
+    // wedged-but-listening server is a different fault from an absent
+    // one, and conflating them would make `--status` less informative,
+    // not more — so the body (which `--status` now parses and prints)
+    // carries the wedge, while the HTTP status carries presence.
     await withVoiceServer(
       {
         env: FAST_TIMEOUT_ENV,
@@ -1309,6 +1315,51 @@ describe("serveVoice", () => {
       abort.abort();
       expect(await p).toBe(0);
       expect(pending).toBe(0);
+    } finally {
+      await scratch.cleanup();
+    }
+  });
+
+  test("the DAILY tick actually re-runs the prune, and re-arms — ADR-272 OQ-4", async () => {
+    // The sibling test above proves a timer is ARMED at the right
+    // interval. It cannot prove the timer's callback DOES anything: the
+    // interval is 24h, so with a real `setTimeout` nothing ever fires
+    // inside a unit run and "daily thereafter" is asserted only as an
+    // integer. Capture the armed callback and fire it.
+    const scratch = await scratchHome();
+    try {
+      const { deps } = await buildTestDeps({ env: { HOME: scratch.home } });
+      deps.config.port = 0;
+      const armedFns: Array<() => void> = [];
+      deps.timers = {
+        setTimeout: (fn) => {
+          armedFns.push(fn as () => void);
+          return armedFns.length;
+        },
+        clearTimeout: () => {},
+      };
+      const logs: string[] = [];
+      const pruneLines = (): string[] => logs.filter((l) => l.includes("transcript prune"));
+      const abort = new AbortController();
+      const p = serveVoice({
+        deps,
+        log: (l) => logs.push(l),
+        signal: abort.signal,
+        onSignal: () => {},
+        offSignal: () => {},
+        checkModel: NO_MODEL_CHECK,
+      });
+      expect(await waitFor(() => pruneLines().length === 1)).toBe(true);
+      expect(armedFns.length).toBe(1);
+
+      // Fire the day-later tick.
+      (armedFns[0] as () => void)();
+      expect(await waitFor(() => pruneLines().length === 2)).toBe(true);
+      // …and it re-arms, so the sweep is daily rather than once-then-never.
+      expect(await waitFor(() => armedFns.length === 2)).toBe(true);
+
+      abort.abort();
+      expect(await p).toBe(0);
     } finally {
       await scratch.cleanup();
     }
@@ -1683,9 +1734,15 @@ describe("voice --supervise honours ATMUX_VOICE_BIN end to end", () => {
 });
 
 describe("status", () => {
+  // The LOCAL config every test below invokes `--status` with. Its
+  // `provider` / `readonly` values are the WRONG ANSWER on purpose:
+  // every server fixture in this block disagrees with them, so any
+  // assertion that passes can only be reading the `/healthz` body. A
+  // fixture where both sources agree would prove nothing — that is
+  // exactly how the original bug survived its own test suite.
   const cfg = {
     token: TEST_VOICE_TOKEN,
-    provider: "openai-realtime",
+    provider: "gemini-live",
     port: 4390,
     host: "127.0.0.1",
     origins: [],
@@ -1698,55 +1755,252 @@ describe("status", () => {
     transcriptRetentionDays: 7,
   };
 
-  test("reports session + healthz state and probes the right URL", async () => {
-    const spy = tmuxSpy([VOICE_TMUX_SESSION]);
+  /** A `/healthz` body as the wire carries it. Defaults are healthy. */
+  const serverBody = (over: Partial<VoiceHealthzBody> = {}): string =>
+    JSON.stringify({
+      ok: true,
+      provider: "openai-realtime",
+      readonly: true,
+      degraded: null,
+      bridge: {
+        wedged: false,
+        stuckTool: null,
+        heldMs: null,
+        queueDepth: 0,
+        wedgeThresholdMs: 60_000,
+      },
+      ...over,
+    });
+
+  const statusOf = async (
+    body: string | null,
+    over: Partial<typeof cfg> = {},
+  ): Promise<VoiceStatusReport> =>
+    await voiceStatus({
+      tmux: tmuxSpy([VOICE_TMUX_SESSION]).tmux,
+      config: { ...cfg, ...over },
+      fetchHealthz: async () => body,
+    });
+
+  const lineOf = (out: string, prefix: string): string =>
+    out.split("\n").find((l) => l.startsWith(prefix)) ?? "";
+
+  test("probes the right URL and reports the SERVER's fields, not its own config", async () => {
     const probed: string[] = [];
     const report = await voiceStatus({
-      tmux: spy.tmux,
+      tmux: tmuxSpy([VOICE_TMUX_SESSION]).tmux,
+      // Local config says gemini-live + readonly=false …
       config: cfg,
-      reachable: async (u) => {
+      fetchHealthz: async (u) => {
         probed.push(u);
-        return true;
+        // … the server says openai-realtime + readonly=true.
+        return serverBody();
       },
     });
     expect(probed).toEqual(["http://127.0.0.1:4390/healthz"]);
-    expect(report).toEqual({
-      sessionExists: true,
-      healthy: true,
-      url: "http://127.0.0.1:4390/healthz",
-      provider: "openai-realtime",
-      readonly: false,
-    });
+    expect(report.server).toMatchObject({ provider: "openai-realtime", readonly: true });
+    expect(report.unavailable).toBeNull();
+    // The local values are still carried — but only under `local`, never
+    // as the server's state.
+    expect(report.local).toEqual({ provider: "gemini-live", readonly: false });
+    expect(formatStatusReport(report)).toContain(
+      "voice: server: provider=openai-realtime  readonly=true",
+    );
   });
 
-  test("a session with no healthz is reported as unreachable", async () => {
-    const spy = tmuxSpy([VOICE_TMUX_SESSION]);
-    const report = await voiceStatus({ tmux: spy.tmux, config: cfg, reachable: async () => false });
-    expect(report).toMatchObject({ sessionExists: true, healthy: false });
+  test("SECURITY: server readonly=false wins over a shell that exports readonly=true", async () => {
+    // The dangerous direction. A shell with ATMUX_VOICE_READONLY=1
+    // querying a server on which every mutating tool is LIVE must not be
+    // told mutation is disabled.
+    const report = await statusOf(serverBody({ readonly: false }), { readonly: true });
+    expect(report.server?.readonly).toBe(false);
+    const out = formatStatusReport(report);
+    expect(lineOf(out, "voice: server: provider=")).toContain("readonly=false");
+    expect(out).not.toContain("readonly=true");
   });
 
-  test("formatStatusReport renders both states without leaking the token", () => {
-    const up = formatStatusReport({
-      sessionExists: true,
-      healthy: true,
-      url: "http://127.0.0.1:4390/healthz",
-      provider: "openai-realtime",
-      readonly: false,
-    });
-    expect(up).toContain("session=up");
-    expect(up).toContain("healthz=ok");
-    expect(up).not.toContain(TEST_VOICE_TOKEN);
+  test("server readonly=true wins over a shell that did not export the flag", async () => {
+    // The direction observed live: `--status` printed readonly=false
+    // about an emphatically readonly server.
+    const report = await statusOf(serverBody({ readonly: true }), { readonly: false });
+    expect(report.server?.readonly).toBe(true);
+    expect(lineOf(formatStatusReport(report), "voice: server: provider=")).toContain(
+      "readonly=true",
+    );
+  });
 
-    const down = formatStatusReport({
-      sessionExists: false,
-      healthy: false,
-      url: "http://127.0.0.1:4390/healthz",
+  test("provider comes from the server in BOTH directions of disagreement", async () => {
+    const a = await statusOf(serverBody({ provider: "openai-realtime" }), {
       provider: "gemini-live",
-      readonly: true,
     });
-    expect(down).toContain("session=down");
-    expect(down).toContain("healthz=unreachable");
-    expect(down).toContain("readonly=true");
+    expect(lineOf(formatStatusReport(a), "voice: server: provider=")).toContain(
+      "provider=openai-realtime",
+    );
+    expect(formatStatusReport(a)).not.toContain("provider=gemini-live");
+
+    const b = await statusOf(serverBody({ provider: "gemini-live" }), {
+      provider: "openai-realtime",
+    });
+    expect(lineOf(formatStatusReport(b), "voice: server: provider=")).toContain(
+      "provider=gemini-live",
+    );
+    expect(formatStatusReport(b)).not.toContain("provider=openai-realtime");
+  });
+
+  test("a wedged bridge is visible from --status, not only from a raw curl", async () => {
+    const report = await statusOf(
+      serverBody({
+        ok: false,
+        degraded: "tool-bridge-wedged",
+        bridge: {
+          wedged: true,
+          stuckTool: "team_status",
+          heldMs: 184_213,
+          queueDepth: 6,
+          wedgeThresholdMs: 60_000,
+        },
+      }),
+    );
+    const out = formatStatusReport(report);
+    expect(out).toContain("healthz=degraded");
+    expect(out).toContain("degraded=tool-bridge-wedged");
+    expect(out).toContain("bridge=WEDGED");
+    expect(out).toContain("stuckTool=team_status");
+    expect(out).toContain("heldMs=184213");
+    expect(out).toContain("queueDepth=6");
+    expect(out).toContain("wedgeThresholdMs=60000");
+    // Reachability is unchanged by a wedge — the session is up and the
+    // probe answered, so the shell conditional still says 0.
+    expect(voiceStatusExitCode(report)).toBe(0);
+  });
+
+  test("a healthy bridge renders the same block with the healthy values", async () => {
+    const out = formatStatusReport(await statusOf(serverBody()));
+    expect(out).toContain("healthz=ok");
+    expect(out).toContain("degraded=none");
+    expect(out).toContain("bridge=ok");
+    expect(out).toContain("stuckTool=none");
+    expect(out).toContain("heldMs=-");
+    expect(out).toContain("queueDepth=0");
+  });
+
+  test("UNREACHABLE: local config is never asserted as the server's state", async () => {
+    // Both local values are set and both are wrong for the server we
+    // cannot reach. Nothing here may present them as fact.
+    const report = await statusOf(null, { provider: "openai-realtime", readonly: true });
+    expect(report.server).toBeNull();
+    expect(report.unavailable).toBe("unreachable");
+
+    const out = formatStatusReport(report);
+    expect(out).toContain("healthz=unreachable");
+    expect(out).toContain("voice: server state UNKNOWN — /healthz did not answer");
+    // No line claims to describe the server …
+    expect(out).not.toContain("voice: server: ");
+    // … and the only line carrying the local values says so, loudly.
+    expect(lineOf(out, "voice: local config (NOT the server):")).toBe(
+      "voice: local config (NOT the server): provider=openai-realtime  readonly=true",
+    );
+    expect(voiceStatusExitCode(report)).toBe(1);
+  });
+
+  test("MALFORMED: a body that is not a healthz body is reported, not crashed on", async () => {
+    for (const body of [
+      "not json at all",
+      "null",
+      '{"ok":true}', // partial — no provider / readonly / bridge
+      '{"ok":true,"provider":"openai-realtime","readonly":true,"degraded":null,"bridge":{"wedged":false}}',
+      '{"ok":"yes","provider":"openai-realtime","readonly":true,"degraded":null,"bridge":{"wedged":false,"stuckTool":null,"heldMs":null,"queueDepth":0,"wedgeThresholdMs":1}}',
+      '{"ok":true,"provider":"openai-realtime","readonly":true,"degraded":"who-knows","bridge":{"wedged":false,"stuckTool":null,"heldMs":null,"queueDepth":0,"wedgeThresholdMs":1}}',
+      "<html>502 Bad Gateway</html>",
+    ]) {
+      const report = await statusOf(body, { provider: "openai-realtime", readonly: true });
+      expect(report.server).toBeNull();
+      expect(report.unavailable).toBe("malformed");
+      const out = formatStatusReport(report);
+      expect(out).toContain("healthz=malformed");
+      expect(out).toContain("body atmux could not parse");
+      expect(out).not.toContain("voice: server: ");
+      expect(out).toContain("voice: local config (NOT the server):");
+      expect(voiceStatusExitCode(report)).toBe(1);
+    }
+  });
+
+  test("a NEWER server's extra healthz fields parse rather than reading as malformed", async () => {
+    // Forward-compat: the installed shim routinely lags the checkout
+    // that is serving. An added field must not turn every `--status`
+    // into "malformed".
+    const body = JSON.parse(serverBody()) as Record<string, unknown>;
+    body.futureField = { anything: true };
+    const report = await statusOf(JSON.stringify(body));
+    expect(report.unavailable).toBeNull();
+    expect(report.server).toMatchObject({ provider: "openai-realtime", readonly: true });
+  });
+
+  test("session down + server reachable still renders the server's state", async () => {
+    const report = await voiceStatus({
+      tmux: tmuxSpy().tmux, // no session
+      config: cfg,
+      fetchHealthz: async () => serverBody(),
+    });
+    const out = formatStatusReport(report);
+    expect(out).toContain("session=down");
+    expect(out).toContain("readonly=true");
+    // Session absent ⇒ non-zero even though /healthz answered.
+    expect(voiceStatusExitCode(report)).toBe(1);
+  });
+
+  test("no line of any status report leaks the token", async () => {
+    for (const body of [serverBody(), null, "garbage"]) {
+      expect(formatStatusReport(await statusOf(body))).not.toContain(TEST_VOICE_TOKEN);
+    }
+  });
+
+  test("parseHealthzBody accepts what healthzBody produces — the drift guard", async () => {
+    // The producer and the parser are one contract. Round-trip the REAL
+    // producer output rather than a hand-written fixture, so a field
+    // added on one side and forgotten on the other fails here.
+    const { deps } = await buildTestDeps({});
+    const produced = healthzBody(deps);
+    expect(parseHealthzBody(JSON.stringify(produced))).toEqual(produced);
+  });
+
+  test("fetchHealthzText returns null for a dead port and rethrows a bad URL", async () => {
+    // Nothing listens on loopback:1 — the real probe must resolve to
+    // null rather than hang or throw.
+    expect(await fetchHealthzText("http://127.0.0.1:1/healthz")).toBeNull();
+    // A malformed URL is the caller's bug, not a server verdict.
+    await expect(fetchHealthzText("not-a-url")).rejects.toThrow(ConfigError);
+  });
+
+  test("fetchHealthzText keeps the body of a live 200 and drops a non-2xx", async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch: (req) =>
+        new URL(req.url).pathname === "/healthz"
+          ? new Response(serverBody(), { headers: { "content-type": "application/json" } })
+          : new Response("nope", { status: 503 }),
+    });
+    try {
+      const base = `http://127.0.0.1:${server.port}`;
+      const text = await fetchHealthzText(`${base}/healthz`);
+      expect(text).not.toBeNull();
+      expect(parseHealthzBody(text as string)).toMatchObject({ readonly: true });
+      expect(await fetchHealthzText(`${base}/boom`)).toBeNull();
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("voiceStatus with no probe seam uses the real HTTP fetch", async () => {
+    const report = await voiceStatus({
+      tmux: tmuxSpy().tmux,
+      // Port 1 on loopback: nothing listens, so the real probe must
+      // resolve to unreachable rather than hang or throw.
+      config: { ...cfg, port: 1 },
+    });
+    expect(report.url).toBe("http://127.0.0.1:1/healthz");
+    expect(report.server).toBeNull();
+    expect(report.unavailable).toBe("unreachable");
   });
 });
 
@@ -1864,7 +2118,20 @@ describe("voice() entry", () => {
         await voice(["--status"], {
           tmux: tmuxSpy([VOICE_TMUX_SESSION]).tmux,
           out: (l) => out.push(l),
-          reachable: async () => true,
+          fetchHealthz: async () =>
+            JSON.stringify({
+              ok: true,
+              provider: "openai-realtime",
+              readonly: true,
+              degraded: null,
+              bridge: {
+                wedged: false,
+                stuckTool: null,
+                heldMs: null,
+                queueDepth: 0,
+                wedgeThresholdMs: 60_000,
+              },
+            }),
         }),
       ).toBe(0);
       expect(out[0]).toContain("session=up");
@@ -1873,12 +2140,81 @@ describe("voice() entry", () => {
         await voice(["--status"], {
           tmux: tmuxSpy().tmux,
           out: () => {},
-          reachable: async () => false,
+          fetchHealthz: async () => null,
         }),
       ).toBe(1);
     } finally {
       if (saved === undefined) delete env.ATMUX_VOICE_TOKEN;
       else env.ATMUX_VOICE_TOKEN = saved;
+    }
+  });
+
+  test("--status end-to-end reports the SERVER, even when the shell's env disagrees", async () => {
+    // The live-observed defect, at the verb boundary: the invoking shell
+    // sets `--readonly` and a provider; the server says the opposite.
+    // Every printed field must come from the server.
+    const saved = { tok: env.ATMUX_VOICE_TOKEN, ro: env.ATMUX_VOICE_READONLY };
+    env.ATMUX_VOICE_TOKEN = TEST_VOICE_TOKEN;
+    env.ATMUX_VOICE_READONLY = "1";
+    try {
+      const out: string[] = [];
+      const code = await voice(["--status", "--provider", "gemini-live"], {
+        tmux: tmuxSpy([VOICE_TMUX_SESSION]).tmux,
+        out: (l) => out.push(l),
+        fetchHealthz: async () =>
+          JSON.stringify({
+            ok: true,
+            provider: "openai-realtime",
+            readonly: false,
+            degraded: null,
+            bridge: {
+              wedged: false,
+              stuckTool: null,
+              heldMs: null,
+              queueDepth: 0,
+              wedgeThresholdMs: 60_000,
+            },
+          }),
+      });
+      expect(code).toBe(0);
+      const text = out.join("\n");
+      expect(text).toContain("voice: server: provider=openai-realtime  readonly=false");
+      expect(text).not.toContain("gemini-live");
+      expect(text).not.toContain("readonly=true");
+    } finally {
+      if (saved.tok === undefined) delete env.ATMUX_VOICE_TOKEN;
+      else env.ATMUX_VOICE_TOKEN = saved.tok;
+      if (saved.ro === undefined) delete env.ATMUX_VOICE_READONLY;
+      else env.ATMUX_VOICE_READONLY = saved.ro;
+    }
+  });
+
+  test("--status with an unreachable server does not print the shell's env as fact", async () => {
+    const saved = { tok: env.ATMUX_VOICE_TOKEN, ro: env.ATMUX_VOICE_READONLY };
+    env.ATMUX_VOICE_TOKEN = TEST_VOICE_TOKEN;
+    env.ATMUX_VOICE_READONLY = "1";
+    try {
+      const out: string[] = [];
+      const code = await voice(["--status"], {
+        tmux: tmuxSpy([VOICE_TMUX_SESSION]).tmux,
+        out: (l) => out.push(l),
+        fetchHealthz: async () => null,
+      });
+      expect(code).toBe(1);
+      const text = out.join("\n");
+      expect(text).toContain("voice: server state UNKNOWN");
+      expect(text).not.toContain("voice: server: ");
+      // `readonly=true` appears exactly once, and only after the label
+      // that says it is NOT the server.
+      expect(text).toContain("voice: local config (NOT the server): ");
+      expect(text.indexOf("readonly=true")).toBeGreaterThan(
+        text.indexOf("voice: local config (NOT the server): "),
+      );
+    } finally {
+      if (saved.tok === undefined) delete env.ATMUX_VOICE_TOKEN;
+      else env.ATMUX_VOICE_TOKEN = saved.tok;
+      if (saved.ro === undefined) delete env.ATMUX_VOICE_READONLY;
+      else env.ATMUX_VOICE_READONLY = saved.ro;
     }
   });
 
@@ -2033,31 +2369,6 @@ describe("production default wirings", () => {
     // Either the PATH shim or the execPath fallback — never empty, and
     // always absolute (it is interpolated into the supervisor script).
     expect(bin.startsWith("/")).toBe(true);
-  });
-
-  test("voiceStatus with no probe seam uses the real HTTP reachability check", async () => {
-    const spy = tmuxSpy();
-    const report = await voiceStatus({
-      tmux: spy.tmux,
-      config: {
-        token: TEST_VOICE_TOKEN,
-        provider: "openai-realtime",
-        // Port 1 on loopback: nothing listens, so the real probe must
-        // resolve false rather than hang or throw.
-        port: 1,
-        host: "127.0.0.1",
-        origins: [],
-        toolTimeoutMs: 1,
-        maxResultChars: 1,
-        readonly: false,
-        resumeGraceMs: 1,
-        confirmTtlMs: 1,
-        transcripts: false,
-        transcriptRetentionDays: 7,
-      },
-    });
-    expect(report).toMatchObject({ sessionExists: false, healthy: false });
-    expect(report.url).toBe("http://127.0.0.1:1/healthz");
   });
 
   test("buildVoiceDeps with no loadTeamIndex seam reads the real cockpit roster", async () => {

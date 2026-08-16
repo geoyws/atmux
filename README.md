@@ -737,7 +737,9 @@ atmux voice [--serve] [--port <n>]           # WebSocket voice server (default 1
             [--readonly]                     #   readonly: expose ONLY the 10 read tools
 atmux voice --supervise                      # idempotent detached `atmux-voice` tmux session
                                              #   (default socket) under a crash-loop wrapper
-atmux voice --status                         # session up? /healthz reachable? provider + mode
+atmux voice --status                         # session up? /healthz reachable? + the RUNNING SERVER's
+                                             #   provider / readonly / bridge, parsed from its
+                                             #   /healthz body — never this shell's own config
 atmux voice --stop                           # SIGINT the server, then kill-session
 
 🚢 Release

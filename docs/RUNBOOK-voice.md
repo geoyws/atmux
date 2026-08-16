@@ -99,7 +99,7 @@ Numeric knobs **fail closed to their default** on a non-numeric, non-positive, o
 ```bash
 atmux voice --serve       # foreground; the development and first-deploy form
 atmux voice --supervise   # detached tmux session `atmux-voice`, crash-loop wrapper
-atmux voice --status      # is it running, which provider, session state
+atmux voice --status      # is it running, and what the RUNNING SERVER says it is doing
 atmux voice --stop        # stop the server and tear down the supervised session
 ```
 
@@ -114,7 +114,46 @@ atmux voice --stop        # stop the server and tear down the supervised session
 | `--max-frames <n>` | Exit 0 after `n` **binary** phone frames are processed. The bound that makes a serve scriptable in a probe or e2e run; JSON control frames do not count. |
 | `--print-assets-dir` | Print the resolved PWA assets dir and exit 0. The dev-vs-`$bunfs`-compiled verification hook (V-1). Does **not** require an API key. |
 
-**Exit codes.** `--serve` returns 0 on SIGINT / SIGTERM / frame budget. `--status` returns **0 only when the session is up AND `/healthz` answers**, else 1 — so it is usable directly in a shell conditional. Bad argv is `UsageError` → 64; a missing `ATMUX_VOICE_TOKEN` or provider API key is `ConfigError` → 78, raised **before anything binds a port**.
+**Exit codes.** `--serve` returns 0 on SIGINT / SIGTERM / frame budget. `--status` returns **0 only when the session is up AND `/healthz` answered with a readable body**, else 1 — so it is usable directly in a shell conditional. Bad argv is `UsageError` → 64; a missing `ATMUX_VOICE_TOKEN` or provider API key is `ConfigError` → 78, raised **before anything binds a port**. (`--status` needs the token only because it resolves the same config object for the host and port; it never sends it.)
+
+### `--status` output — the SERVER's state, never yours
+
+**Every `voice: server:` field is parsed out of the fetched `/healthz` body.** The local environment of the shell you typed the command in is *not* a fallback: it appears only under an explicit `local config (NOT the server)` label, and only when the server could not be read at all.
+
+Why the rule is spelled out this way: until 2026-08-16 `--status` fetched `/healthz`, threw the body away, and printed its own `deps.config.provider` / `deps.config.readonly` in its place. Observed live against `atmux.geoy.ws` — the server was `readonly:true`, `--status` said `readonly=false`, purely because the invoking shell had not exported the flag. **The inverse is the dangerous one**: a shell that *does* export `ATMUX_VOICE_READONLY=1` would have reported `readonly=true` about a server on which every mutating tool was live — a false all-clear on the exact check an operator runs before trusting a deployment.
+
+Reachable and healthy — three lines; every field on lines 2 and 3 came out of the server's `/healthz` body:
+
+```
+voice: session=up  healthz=ok  http://127.0.0.1:4390/healthz
+voice: server: provider=openai-realtime  readonly=true  degraded=none
+voice: server: bridge=ok  stuckTool=none  heldMs=-  queueDepth=0  wedgeThresholdMs=60000
+```
+
+Reachable but wedged — the whole `bridge` block is visible here now, not only from a raw `curl`:
+
+```
+voice: session=up  healthz=degraded  http://127.0.0.1:4390/healthz
+voice: server: provider=openai-realtime  readonly=true  degraded=tool-bridge-wedged
+voice: server: bridge=WEDGED  stuckTool=team_status  heldMs=184213  queueDepth=6  wedgeThresholdMs=60000
+```
+
+Unreachable — **no `voice: server:` line exists**, and the local values are labelled as local:
+
+```
+voice: session=up  healthz=unreachable  http://127.0.0.1:4390/healthz
+voice: server state UNKNOWN — /healthz did not answer
+voice: local config (NOT the server): provider=openai-realtime  readonly=true
+```
+
+A body that is not a `/healthz` body (wrong service on the port, truncated reply, an HTML 502 page) reads `healthz=malformed` with `server state UNKNOWN — /healthz answered with a body atmux could not parse`, and is treated as unreachable for the exit code. Unknown *extra* keys are fine — the parse is non-strict on purpose, so an older installed `atmux` can still read a newer server's `/healthz`.
+
+| Line-1 word | Meaning |
+|---|---|
+| `healthz=ok` | Body read; the server reports `ok:true`. |
+| `healthz=degraded` | Body read; the server reports `ok:false` — read line 3 for which lane is stuck. Still **exit 0**: the exit code carries reachability, the body carries the verdict. |
+| `healthz=unreachable` | Nothing answered (refused / DNS / non-2xx / timeout ≥ 5s). **Exit 1.** |
+| `healthz=malformed` | Something answered, but not a `/healthz` body. **Exit 1.** |
 
 ### `/healthz`
 
@@ -144,7 +183,7 @@ Open by design (nginx exposes it for probes). **`ok` is a real verdict, not a co
 - `wedgeThresholdMs` = `WEDGE_THRESHOLD_MULTIPLE` (3) × `ATMUX_VOICE_TOOL_TIMEOUT_MS`. Past its own response deadline a tool is merely **slow** — already reported to the operator as a `tool_timeout`. Three deadlines in, it is **stuck**.
 - `stuckTool` is the tool **name** only. Arguments are never put here: `/healthz` is unauthenticated, and arguments carry what the operator said.
 - `queueDepth` is reported **and bounded** at `VERB_MUTEX_MAX_QUEUE` (8) since 2026-08-15 — this reverses the earlier "never capped" ([ADR-272](adr/272-voice-operator-interface.md) §Supplement-P7 §R2). The cap costs the signal nothing because `wedged` and `stuckTool` come from the **holder**, not the depth; and a call refused at the cap is answered with `reason:"queue_full"` **naming the stuck verb**, which is more than the bare timeout it used to get after waiting out its full deadline.
-- The HTTP status stays **200** while wedged. `--status` probes via `isReachable`, which reads any non-2xx as *unreachable* — and a wedged-but-listening server is a different fault from an absent one. The status carries reachability; the body carries the verdict.
+- The HTTP status stays **200** while wedged. `--status` reads any non-2xx as *unreachable* — and a wedged-but-listening server is a different fault from an absent one. The status carries reachability; the body carries the verdict. `--status` fetches and **parses** this body, so the wedge shows up as `healthz=degraded` + `bridge=WEDGED` in its output without exiting non-zero.
 - The keys `ok` / `provider` / `readonly` are unchanged in meaning and position, so an existing reader keeps working; `degraded` and `bridge` are additions.
 
 **Boot order is fail-closed and deliberate** (`buildVoiceDeps`): token → provider kind → API key → team index → catalog → bridge → registry → provider. A missing key is a startup refusal naming the variable, not a spoken error on the first tool call.
@@ -507,9 +546,10 @@ The key comes from the **environment**, never argv (a tmux pane capture records 
 | **Every** tool call answers `tool_timeout` from some point onward, and the assistant otherwise sounds fine | The tool bridge is **wedged** — a verb never returned and still holds the verb mutex | `curl -s localhost:4390/healthz \| jq`. `ok:false` with `degraded:"tool-bridge-wedged"` confirms it, and `bridge.stuckTool` names the verb — as does the `stuckTool` on each `tool_timeout` envelope. If the verb ever returns, the lane **drains by itself** and the next tool call works; if it never does, recovery is `atmux voice --stop` then `--supervise`. Capture `bridge.stuckTool` + `bridge.heldMs` first — that pair is the whole bug report. |
 | `/healthz` says `ok:true` but voice does nothing | Pre-2026-08-15 build, or a fault outside the bridge | `ok` became a real verdict on 2026-08-15; before that it was the literal `true` and a wedged bridge reported green. Check the deployed version first. If `ok:true` is current and correct, the bridge is fine — look at the provider dial (§8 rows above) instead. |
 | `bridge.queueDepth` sits at 8 and tools answer `queue_full` | The lane is at its cap behind a stuck (or very slow) verb | 8 is `VERB_MUTEX_MAX_QUEUE`, so the depth stops there by design — the wedge verdict is `wedged` + `stuckTool`, which are unaffected. A depth of 8 alongside `wedged:false` means genuinely slow verbs; alongside `wedged:true` it is the wedge above. Refused calls were **not run**. |
-| `atmux voice --status` says `healthz=ok` while the bridge is wedged | Expected — they measure different things | `--status` probes reachability (`isReachable`, any 2xx). `/healthz` stays **200** while wedged on purpose, so a wedged-but-listening server is distinguishable from an absent one. **Read the body, not the status**, when you care about function rather than presence. |
+| `atmux voice --status` **exits 0** while the bridge is wedged | Expected — the exit code and the body measure different things | `/healthz` stays **200** while wedged on purpose, so a wedged-but-listening server is distinguishable from an absent one, and the exit code follows reachability. The wedge is not hidden: the printed report says `healthz=degraded` and `bridge=WEDGED  stuckTool=… heldMs=…`. Read the lines, not just `$?`. |
+| `--status` reports a `provider` / `readonly` you did not expect | It is telling you what the **server** is running | Since 2026-08-16 every `voice: server:` field is parsed from the fetched `/healthz` body, not from your shell. A mismatch with your own env means the running server was started from a different environment — that is a real finding, not a display bug. Before that date `--status` printed its own config here and this row read the other way round. |
 | `dispatch_task` answers `bad_args: member` | The member was not spoken | **`member` is required** (ADR-272 D6 §Supplement-2026-08-16). It used to be optional in the schema and never optional in the verb, so omitting it was a guaranteed `verb_failed` whose message named a member you never said. Say the member; there is no inferred assignee. |
-| Tool answers about the wrong team | Team resolution walked to a different cockpit entry | Resolution is a ladder (exact → case-fold → suffix-strip → unique prefix → Levenshtein ≤2); an ambiguous utterance returns `ambiguous_team` with candidates rather than guessing. `atmux voice --status` shows the provider; `list_teams` shows what the index actually holds. |
+| Tool answers about the wrong team | Team resolution walked to a different cockpit entry | Resolution is a ladder (exact → case-fold → suffix-strip → unique prefix → Levenshtein ≤2); an ambiguous utterance returns `ambiguous_team` with candidates rather than guessing. `atmux voice --status` shows the provider the running server actually dialled; `list_teams` shows what the index actually holds. |
 | Supervised server flapping | Circuit breaker tripped (5 restarts in 60 s) | `tmux -L default attach -t atmux-voice` — the wrapper stops respawning and drops to a shell so the real error stays on screen. |
 | `--supervise` says "already running" but nothing answers | Session alive, server dead inside it | `atmux voice --status` distinguishes the two (`session=up healthz=unreachable`). Attach to read the pane, then `atmux voice --stop` and re-supervise. |
 | Reply audio is slow and deep-pitched | Sample-rate mismatch — the client is shipping 48 kHz labelled 24 kHz (convoke defect 2) | *stub — P5* |
