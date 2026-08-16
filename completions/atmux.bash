@@ -14,7 +14,7 @@ _atmux_complete() {
     cword=$COMP_CWORD
   }
 
-  local verbs="up init start stop attach status send broadcast tell-lead reply outbox task epic story decisions dispatch inbox claim done report whip cost rotate rotate-lead handoff pause resume add-member reconfigure doctor dashboard voice version help"
+  local verbs="up init start stop attach status send broadcast tell-lead reply outbox task epic story decisions dispatch inbox claim done report whip cost rotate rotate-lead handoff pause resume add-member reconfigure doctor dashboard vox version help"
 
   if [[ $cword -eq 1 ]]; then
     COMPREPLY=( $(compgen -W "$verbs" -- "$cur") )
@@ -143,7 +143,7 @@ _atmux_complete() {
         return 0
       fi
       ;;
-    voice)
+    vox)
       if [[ "$prev" == "--provider" ]]; then
         COMPREPLY=( $(compgen -W "openai openai-realtime gemini gemini-live" -- "$cur") )
         return 0

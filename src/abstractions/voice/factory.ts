@@ -1,6 +1,6 @@
 // ADR-272: voice operator interface — provider kind parsing + construction.
 //
-// The single place operator input (`ATMUX_VOICE_PROVIDER`) becomes a
+// The single place operator input (`ATMUX_VOX_PROVIDER`) becomes a
 // `VoiceProviderKind`, per-kind default models live, and adapters are
 // constructed.
 

@@ -1,6 +1,6 @@
 # O2 — putting `atmux.geoy.ws` behind oauth2-proxy
 
-Phase O2 of [ADR-272](../adr/272-voice-operator-interface.md) §Security. **This is the gate on clearing `ATMUX_VOICE_READONLY=1`**, because layer 5 (readonly) is what currently closes the O1 gap of token-only auth. Clear readonly before O2 lands and a single bearer token is the only thing between the public internet and tools that drive the operator's tmux agents.
+Phase O2 of [ADR-272](../adr/272-voice-operator-interface.md) §Security. **This is the gate on clearing `ATMUX_VOX_READONLY=1`**, because layer 5 (readonly) is what currently closes the O1 gap of token-only auth. Clear readonly before O2 lands and a single bearer token is the only thing between the public internet and tools that drive the operator's tmux agents.
 
 Modelled on the working `dash.geoy.ws` deployment (`/opt/unum-identity-staging/dash-pilot`), which is the house pattern — same image pin, same hardening, same realm.
 
@@ -10,7 +10,7 @@ Modelled on the working `dash.geoy.ws` deployment (`/opt/unum-identity-staging/d
 
 **Does oauth2 cover `/ws`, or only the page routes?**
 
-ADR-272 §Security layer 1 says the vhost sits behind the proxy "so an unauthenticated request never reaches the Bun server at all". Taken literally that includes `/ws`. But `/ws` is authenticated by a **bearer token**, and the headless probe (`scripts/voice-probe.ts`) sends exactly that and nothing else. If oauth2 fronts `/ws`, **the probe stops working** — and the probe is how V-3/V-4 are verified before and after every deploy.
+ADR-272 §Security layer 1 says the vhost sits behind the proxy "so an unauthenticated request never reaches the Bun server at all". Taken literally that includes `/ws`. But `/ws` is authenticated by a **bearer token**, and the headless probe (`scripts/vox-probe.ts`) sends exactly that and nothing else. If oauth2 fronts `/ws`, **the probe stops working** — and the probe is how V-3/V-4 are verified before and after every deploy.
 
 Two coherent options. Pick one deliberately; do not let it be decided by whichever config gets pasted first.
 
@@ -32,7 +32,7 @@ Whichever is chosen, record it as an ADR-272 §Security amendment. Right now the
 ## Prerequisites — operator only, cannot be automated
 
 1. **A Keycloak client** in realm `unum` at `https://id-staging.u-n-u-m.com`:
-   - Client ID: `atmux-voice`
+   - Client ID: `atmux-vox`
    - Access type: confidential (client authentication ON)
    - Standard flow ON, Direct access grants OFF
    - Valid redirect URI: `https://atmux.geoy.ws/oauth2/callback`
@@ -46,14 +46,14 @@ Whichever is chosen, record it as an ADR-272 §Security amendment. Right now the
 
 ## Install
 
-Both files live in `docs/deploy/atmux-voice-oauth2/`. Copy the directory to `/opt/atmux-voice-oauth2/`, then:
+Both files live in `docs/deploy/atmux-vox-oauth2/`. Copy the directory to `/opt/atmux-vox-oauth2/`, then:
 
 ```sh
-cd /opt/atmux-voice-oauth2
-export VOICE_OIDC_CLIENT_SECRET_FILE=/etc/atmux-voice/oidc_client_secret
-export VOICE_OIDC_COOKIE_SECRET_FILE=/etc/atmux-voice/oidc_cookie_secret
-export VOICE_OIDC_NETWORK_SUBNET=172.31.241.0/24   # NOT dash's subnet
-export VOICE_OIDC_NETWORK_GATEWAY=172.31.241.1
+cd /opt/atmux-vox-oauth2
+export VOX_OIDC_CLIENT_SECRET_FILE=/etc/atmux-vox/oidc_client_secret
+export VOX_OIDC_COOKIE_SECRET_FILE=/etc/atmux-vox/oidc_cookie_secret
+export VOX_OIDC_NETWORK_SUBNET=172.31.241.0/24   # NOT dash's subnet
+export VOX_OIDC_NETWORK_GATEWAY=172.31.241.1
 docker compose up -d
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:14181/ping   # expect 200
 ```
@@ -79,11 +79,11 @@ nginx -t && systemctl reload nginx
 3. Log in as yourself → the PWA loads.
 4. `/healthz` still answers **without** auth (monitoring depends on it, and it holds nothing sensitive).
 5. Probe still works per the option chosen — under B, via the exemption; under A, unchanged.
-6. `grep -F "$ATMUX_VOICE_TOKEN" /var/log/nginx/*.log` → no match. Verify the check itself with a planted control first, or a clean result proves nothing.
+6. `grep -F "$ATMUX_VOX_TOKEN" /var/log/nginx/*.log` → no match. Verify the check itself with a planted control first, or a clean result proves nothing.
 
 ## Only then
 
-Clear `ATMUX_VOICE_READONLY`. The four messaging tools and `pane_nudge` become reachable.
+Clear `ATMUX_VOX_READONLY`. The four messaging tools and `pane_nudge` become reachable.
 
 Note what that does **not** give you: ADR-272 D7's affirmation half is still model-side (see the D7 clarification). The server enforces the token's binding, TTL and single use; it does **not** observe the operator saying yes. After readonly clears, the operator's ear is the only check on that step.
 
@@ -97,7 +97,7 @@ It is already a house pattern on this box, not an improvisation: `33dmg.geoy.ws.
 
 ## Why it may actually fit better here
 
-It **dissolves the `/ws` dilemma** that OIDC creates. oauth2-proxy in front of `/ws` breaks `scripts/voice-probe.ts`, which authenticates with a bearer token and holds no cookie — and that probe is how V-3/V-4 are verified on every deploy. Basic auth works for both sides without an exemption:
+It **dissolves the `/ws` dilemma** that OIDC creates. oauth2-proxy in front of `/ws` breaks `scripts/vox-probe.ts`, which authenticates with a bearer token and holds no cookie — and that probe is how V-3/V-4 are verified on every deploy. Basic auth works for both sides without an exemption:
 
 - the PWA gets a browser prompt, saved once in the phone's keychain
 - the probe sends `Authorization: Basic …` alongside its existing bearer token
@@ -114,18 +114,18 @@ The honest framing is not "as good as OIDC". It is: **a second layer today beats
 
 ```sh
 # one operator-chosen credential
-sudo htpasswd -B -c /etc/nginx/htpasswd.atmux-voice geoyws
-sudo chmod 640 /etc/nginx/htpasswd.atmux-voice
-sudo chown root:www-data /etc/nginx/htpasswd.atmux-voice
+sudo htpasswd -B -c /etc/nginx/htpasswd.atmux-vox geoyws
+sudo chmod 640 /etc/nginx/htpasswd.atmux-vox
+sudo chown root:www-data /etc/nginx/htpasswd.atmux-vox
 ```
 
-Record it the same way as `ATMUX_VOICE_TOKEN`: **value in the git-crypt'd dotfiles, a pointer row in `keys/KEYS.md`, never in this repo.**
+Record it the same way as `ATMUX_VOX_TOKEN`: **value in the git-crypt'd dotfiles, a pointer row in `keys/KEYS.md`, never in this repo.**
 
 Then in `/etc/nginx/sites-enabled/atmux.geoy.ws`, inside **both** `location = /ws` and the page `location /`:
 
 ```nginx
-    auth_basic            "atmux voice";
-    auth_basic_user_file  /etc/nginx/htpasswd.atmux-voice;
+    auth_basic            "atmux vox";
+    auth_basic_user_file  /etc/nginx/htpasswd.atmux-vox;
 ```
 
 Leave `location = /healthz` **without** it — monitoring depends on that staying open, and it discloses nothing sensitive.
@@ -144,4 +144,4 @@ nginx -t && systemctl reload nginx
 4. Probe with both credentials → still `ok=true`. If this fails, stop: you have just broken deploy verification.
 5. The PWA prompts on the phone, and the mic still works after authenticating.
 
-Then, and only then, clear `ATMUX_VOICE_READONLY` — with the same D7 caveat as above: the server enforces the token's binding, TTL and single use, but nothing server-side observes the operator saying yes.
+Then, and only then, clear `ATMUX_VOX_READONLY` — with the same D7 caveat as above: the server enforces the token's binding, TTL and single use, but nothing server-side observes the operator saying yes.

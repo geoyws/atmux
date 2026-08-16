@@ -1,18 +1,27 @@
-# ADR-272 / docs/RUNBOOK-voice.md §5 — nginx vhost for `atmux voice`, phase O1.
+# ADR-272 / docs/RUNBOOK-vox.md §5 — nginx vhost for `atmux vox`, phase O1.
 #
 # TWO FILES ARE SHOWN BELOW, separated by a banner comment. Install them
 # separately — nginx will not accept them concatenated, because
 # `limit_req_zone` is an http{}-level directive and `server{}` is not.
 #
-#   FILE 1 → /etc/nginx/conf.d/atmux-voice-ratelimit.conf   (http{} context)
+#   FILE 1 → /etc/nginx/conf.d/atmux-vox-ratelimit.conf   (http{} context)
 #   FILE 2 → /etc/nginx/sites-available/atmux.geoy.ws       (server{} context)
 #              + symlink into sites-enabled/
+#
+# ⚠ ADR-274 RENAMED FILE 1. If this vhost is already installed, FILE 1 is on
+# the box as `atmux-voice-ratelimit.conf`. DELETE the old file when you install
+# the new one — nginx includes `conf.d/*.conf`, so leaving both defines
+# `limit_req_zone atmux_voice_ws` twice and `nginx -t` fails with "the size
+# ... is already bound". The zone NAMES below deliberately keep their
+# `atmux_voice_*` spelling: they are nginx-internal identifiers on a LIVE
+# vhost, renaming them buys nothing, and the hostname is not renamed either
+# (ADR-274 D1, "NOT renamed, deliberately").
 #
 # Then: nginx -t && systemctl reload nginx
 #
 # PHASE O1 IS TOKEN-ONLY. The single credential reaching Bun is
-# `ATMUX_VOICE_TOKEN`, and the server is expected to run with
-# `ATMUX_VOICE_READONLY=1` for this phase (ADR-272 §Security layer 5).
+# `ATMUX_VOX_TOKEN`, and the server is expected to run with
+# `ATMUX_VOX_READONLY=1` for this phase (ADR-272 §Security layer 5).
 # Phase O2 adds oauth2-proxy in front — see the commented block at the
 # bottom of FILE 2. "Voice is behind OAuth" is only TRUE after O2.
 #
@@ -21,7 +30,7 @@
 
 
 # ============================================================================
-# FILE 1 — /etc/nginx/conf.d/atmux-voice-ratelimit.conf   (http{} context)
+# FILE 1 — /etc/nginx/conf.d/atmux-vox-ratelimit.conf   (http{} context)
 # ============================================================================
 
 # Rate-limit zones. `$binary_remote_addr` keys on the client IP; 10m holds
@@ -93,7 +102,7 @@ server {
     #
     # `access_log off` is LOAD-BEARING, not stylistic: the token arrives as
     # a `?token=` query parameter, so without this every connection writes
-    # the shared secret to disk in cleartext. RUNBOOK-voice §5 requirement 1;
+    # the shared secret to disk in cleartext. RUNBOOK-vox §5 requirement 1;
     # V-6 greps the access log for the token and asserts no match.
     # EXACT match (`= /ws`), not a prefix. A bare `location /ws` also
     # captures `/wsfoo`, `/ws-admin`, and anything else sharing the
@@ -114,7 +123,7 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
 
         # Origin must reach Bun intact — it is the CSRF check
-        # (`ATMUX_VOICE_ORIGINS`). Browsers do NOT apply same-origin policy
+        # (`ATMUX_VOX_ORIGINS`). Browsers do NOT apply same-origin policy
         # to WebSocket handshakes, so stripping or rewriting this header
         # disables the defense silently.
         proxy_set_header Origin $http_origin;
@@ -125,7 +134,7 @@ server {
 
         # A realistic silent pause (thinking, a long tool call, the operator
         # putting the phone down) must not be read as a dead upstream. The
-        # default 60s cuts live calls mid-conversation — RUNBOOK-voice §8.
+        # default 60s cuts live calls mid-conversation — RUNBOOK-vox §8.
         proxy_read_timeout  3600s;
         proxy_send_timeout  3600s;
     }
@@ -134,7 +143,7 @@ server {
     #
     # Open by design (no auth, no rate limit): it carries no secret — only
     # `{ok, provider, readonly}` — and an uptime probe must not need the
-    # token. `atmux voice --status` hits this on loopback.
+    # token. `atmux vox --status` hits this on loopback.
     location = /healthz {
         access_log off;
         proxy_pass http://127.0.0.1:4390;
@@ -143,8 +152,8 @@ server {
 
     # --- PWA shell ---------------------------------------------------------
     #
-    # Served by Bun from `templates/voice/` via the exact-key route map in
-    # `src/core/voice/assets.ts` (no filesystem surface, so traversal is
+    # Served by Bun from `templates/vox/` via the exact-key route map in
+    # `src/core/vox/assets.ts` (no filesystem surface, so traversal is
     # structurally impossible — a non-route pathname is simply a 404).
     # Cache-Control comes from that map; do NOT add `expires` here or it
     # will fight the `no-store` the shell needs to pick up server upgrades.
@@ -162,7 +171,7 @@ server {
     #
     # Add oauth2-proxy so an unauthenticated request never reaches Bun.
     # Only after this block is live is "voice is behind OAuth" a true
-    # statement. `ATMUX_VOICE_READONLY` is cleared in P7 — AFTER O2, never
+    # statement. `ATMUX_VOX_READONLY` is cleared in P7 — AFTER O2, never
     # before (ADR-272 §Security).
     #
     # location /oauth2/ {

@@ -353,26 +353,67 @@ describe("cli.main — dashboard verb dispatch", () => {
   });
 });
 
-// ---------- Dispatch — voice verb route (ADR-272; smoke — deep behaviour
-//                       is in tests/unit/verbs/voice.test.ts) ----------
+// ---------- Dispatch — vox verb route (ADR-272/ADR-274; smoke — deep
+//                       behaviour is in tests/unit/verbs/vox.test.ts) ----------
 
-describe("cli.main — voice verb dispatch", () => {
-  test("'voice --bogus-flag' dispatches into voice (UsageError → 64)", async () => {
-    const { exit, stderr } = await captureMain(["voice", "--bogus-flag"]);
+/** Both token names must be cleared: ADR-274 D2 makes `ATMUX_VOICE_TOKEN`
+ *  a live fallback, so deleting only the canonical name would let an
+ *  operator's exported legacy token satisfy a "no token" test. */
+async function withNoToken<T>(fn: () => Promise<T>): Promise<T> {
+  const saved = {
+    vox: process.env.ATMUX_VOX_TOKEN,
+    legacy: process.env.ATMUX_VOICE_TOKEN,
+  };
+  delete process.env.ATMUX_VOX_TOKEN;
+  delete process.env.ATMUX_VOICE_TOKEN;
+  try {
+    return await fn();
+  } finally {
+    if (saved.vox !== undefined) process.env.ATMUX_VOX_TOKEN = saved.vox;
+    if (saved.legacy !== undefined) process.env.ATMUX_VOICE_TOKEN = saved.legacy;
+  }
+}
+
+describe("cli.main — vox verb dispatch", () => {
+  test("'vox --bogus-flag' dispatches into vox (UsageError → 64)", async () => {
+    const { exit, stderr } = await captureMain(["vox", "--bogus-flag"]);
     expect(exit).toBe(64);
-    expect(stderr).toContain("voice: unknown arg: --bogus-flag");
+    expect(stderr).toContain("vox: unknown arg: --bogus-flag");
   });
 
-  test("'voice --status' with no token is a ConfigError → 78, not a crash", async () => {
-    const saved = process.env.ATMUX_VOICE_TOKEN;
-    delete process.env.ATMUX_VOICE_TOKEN;
-    try {
-      const { exit, stderr } = await captureMain(["voice", "--status"]);
-      expect(exit).toBe(78);
-      expect(stderr).toContain("ATMUX_VOICE_TOKEN is required");
-    } finally {
-      if (saved !== undefined) process.env.ATMUX_VOICE_TOKEN = saved;
-    }
+  test("'vox --status' with no token is a ConfigError → 78, not a crash", async () => {
+    const { exit, stderr } = await withNoToken(() => captureMain(["vox", "--status"]));
+    expect(exit).toBe(78);
+    expect(stderr).toContain("ATMUX_VOX_TOKEN is required");
+  });
+});
+
+// SUNSET(v0.9.1): ADR-274 D2 — the deprecated `voice` verb name still
+// routes. These assert the alias reaches the SAME code path, and that it
+// says so; a test that only checked the exit code would pass against a
+// build where `voice` had been silently re-pointed at anything.
+describe("cli.main — deprecated `voice` verb still dispatches (ADR-274)", () => {
+  test("'voice --bogus-flag' reaches vox's parser — same UsageError → 64", async () => {
+    const { exit, stderr } = await captureMain(["voice", "--bogus-flag"]);
+    expect(exit).toBe(64);
+    // The error text is vox's, proving the alias delegates rather than
+    // carrying a parser of its own.
+    expect(stderr).toContain("vox: unknown arg: --bogus-flag");
+  });
+
+  test("'voice ...' prints the deprecation notice; 'vox ...' does not", async () => {
+    const viaAlias = await captureMain(["voice", "--bogus-flag"]);
+    const viaCanonical = await captureMain(["vox", "--bogus-flag"]);
+    expect(viaAlias.stderr).toContain("renamed to `atmux vox`");
+    expect(viaAlias.stderr).toContain("ADR-274");
+    expect(viaCanonical.stderr).not.toContain("renamed to `atmux vox`");
+    expect(viaCanonical.exit).toBe(viaAlias.exit);
+  });
+
+  test("a near-miss verb is still unknown — the alias did not open a wildcard", async () => {
+    const { stderr } = await captureMain(["voix", "--bogus-flag"]);
+    expect(stderr).toContain("unknown verb");
+    expect(stderr).not.toContain("vox: unknown arg");
   });
 });
 

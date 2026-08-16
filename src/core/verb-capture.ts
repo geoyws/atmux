@@ -3,7 +3,7 @@
 //
 // `captureVerbStdout` is lifted verbatim from `src/verbs/dashboard.ts`
 // (which now re-imports it from here) so that core code — the voice
-// tool bridge (`src/core/voice/tool-bridge.ts`) — can capture verb
+// tool bridge (`src/core/vox/tool-bridge.ts`) — can capture verb
 // output without importing from `src/verbs/**`. The dependency
 // direction stays verbs→core: the verb function itself always arrives
 // as an argument.
