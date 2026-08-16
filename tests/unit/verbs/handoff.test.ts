@@ -493,6 +493,7 @@ describe("handoff() — public verb", () => {
   let priorAtmuxDriverSession: string | undefined;
   let priorWait: string | undefined;
   let priorLines: string | undefined;
+  let priorKanbanBackend: string | undefined;
 
   beforeEach(async () => {
     scratch = await mkdtemp(join(tmpdir(), "atmux-handoff-"));
@@ -502,12 +503,14 @@ describe("handoff() — public verb", () => {
     priorAtmuxDriverSession = process.env.ATMUX_DRIVER_SESSION;
     priorWait = process.env.ATMUX_HANDOFF_WAIT;
     priorLines = process.env.ATMUX_HANDOFF_LINES;
+    priorKanbanBackend = process.env.ATMUX_KANBAN_BACKEND;
     delete process.env.ATMUX_DIR;
     delete process.env.ATMUX_TEAM_DIR;
     delete process.env.ATMUX_SESSION;
     delete process.env.ATMUX_DRIVER_SESSION;
     delete process.env.ATMUX_HANDOFF_WAIT;
     delete process.env.ATMUX_HANDOFF_LINES;
+    delete process.env.ATMUX_KANBAN_BACKEND;
   });
 
   afterEach(async () => {
@@ -517,6 +520,7 @@ describe("handoff() — public verb", () => {
     delete process.env.ATMUX_DRIVER_SESSION;
     delete process.env.ATMUX_HANDOFF_WAIT;
     delete process.env.ATMUX_HANDOFF_LINES;
+    delete process.env.ATMUX_KANBAN_BACKEND;
     if (priorAtmuxDir !== undefined) process.env.ATMUX_DIR = priorAtmuxDir;
     if (priorAtmuxTeamDir !== undefined) process.env.ATMUX_TEAM_DIR = priorAtmuxTeamDir;
     if (priorAtmuxSession !== undefined) process.env.ATMUX_SESSION = priorAtmuxSession;
@@ -524,6 +528,7 @@ describe("handoff() — public verb", () => {
       process.env.ATMUX_DRIVER_SESSION = priorAtmuxDriverSession;
     if (priorWait !== undefined) process.env.ATMUX_HANDOFF_WAIT = priorWait;
     if (priorLines !== undefined) process.env.ATMUX_HANDOFF_LINES = priorLines;
+    if (priorKanbanBackend !== undefined) process.env.ATMUX_KANBAN_BACKEND = priorKanbanBackend;
     await rm(scratch, { recursive: true, force: true });
   });
 
@@ -560,6 +565,14 @@ describe("handoff() — public verb", () => {
     await seedTeam({ name: "t", members: [{ name: "alpha" }] });
     await expect(handoff(["--team-dir", scratch, "alpha", "ghost"])).rejects.toBeInstanceOf(
       ConfigError,
+    );
+  });
+
+  test("external mode refuses the non-atomic legacy handoff", async () => {
+    await seedTeam({ name: "t", members: [{ name: "alpha" }, { name: "bravo" }] });
+    process.env.ATMUX_KANBAN_BACKEND = "external";
+    await expect(handoff(["--team-dir", scratch, "alpha", "bravo"])).rejects.toThrow(
+      "cannot transfer leases atomically",
     );
   });
 
