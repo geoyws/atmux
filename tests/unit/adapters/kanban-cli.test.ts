@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { closeDatabase, openDatabase } from "../../../src/abstractions/sqlite.ts";
+import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
 import { KanbanCliAdapter } from "../../../src/adapters/kanban-cli.ts";
 import {
   addEpic as coreAddEpic,
@@ -10,6 +12,7 @@ import {
   setEpicReady as coreSetEpicReady,
   showEpic as coreShowEpic,
 } from "../../../src/core/epic.ts";
+import { prepareExternalKanbanCutover } from "../../../src/core/external-kanban-cutover.ts";
 import {
   addTask as coreAddTask,
   assignTask as coreAssignTask,
@@ -24,6 +27,7 @@ import {
   setTaskStory as coreSetTaskStory,
   showTask as coreShowTask,
 } from "../../../src/core/kanban.ts";
+import { KanbanRepo } from "../../../src/core/repositories/kanban-repo.ts";
 import {
   addStory as coreAddStory,
   advanceStory as coreAdvanceStory,
@@ -244,5 +248,41 @@ describe("external Kanban CLI adapter", () => {
     if (!merging.dispatchedTaskID) throw new Error("missing merge task");
     await adapter.markTaskDone(atmuxDir, merging.dispatchedTaskID, "committer");
     expect((await adapter.advanceStory(atmuxDir, story, "driver")).to).toBe("done");
+  });
+
+  test("prepares a read-only migration with private source and board receipts", async () => {
+    const { root, atmuxDir, adapter } = fixture();
+    const source = join(atmuxDir, "state.db");
+    const db = openDatabase(source, migrations);
+    new KanbanRepo(db).addTask({
+      id: "t-source",
+      subject: "Preserve me",
+      body: "",
+      status: "todo",
+      owner: null,
+      deps: [],
+      priority: 2,
+      lane: null,
+      createdAt: 1_700_000_000,
+      claimedAt: null,
+      completedAt: null,
+    });
+    closeDatabase(db);
+    process.env.KANBAN_DATA_DIR = join(root, "private-kanban");
+
+    const receipt = await prepareExternalKanbanCutover(atmuxDir, {
+      actor: "operator",
+      receiptRoot: join(root, "receipts"),
+      adapter,
+    });
+
+    expect(receipt.status).toBe("prepared");
+    expect(receipt.activation).toBe("not-activated");
+    expect(receipt.sourceIntegrity).toBe("ok");
+    expect(existsSync(receipt.sourceBackup)).toBe(true);
+    expect(statSync(receipt.sourceBackup).mode & 0o777).toBe(0o600);
+    expect(existsSync(join(receipt.boardBackupDirectory, "registry.db"))).toBe(true);
+    expect((await adapter.showTask(atmuxDir, "t-source"))?.subject).toBe("Preserve me");
+    expect(process.env.ATMUX_KANBAN_BACKEND).toBeUndefined();
   });
 });

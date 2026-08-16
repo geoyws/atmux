@@ -67,6 +67,7 @@ import { dispatchMemberSubverb } from "./verbs/member.ts";
 import { mergeCycle } from "./verbs/merge-cycle.ts";
 import { mergeMember } from "./verbs/merge-member.ts";
 import { migrateHexIds } from "./verbs/migrate-hex-ids.ts";
+import { migrateKanban } from "./verbs/migrate-kanban.ts";
 import { migrateState } from "./verbs/migrate-state.ts";
 import { nudge } from "./verbs/nudge.ts";
 import { ombudsman } from "./verbs/ombudsman.ts";
@@ -352,6 +353,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return migrateHexIds(argv.slice(1));
     case "migrate-state":
       return migrateState(argv.slice(1));
+    case "migrate-kanban":
+      return migrateKanban(argv.slice(1));
     case "voice":
       // ADR-272 — spoken operator interface. `--serve` binds the WS +
       // PWA server; `--supervise` / `--status` / `--stop` drive the

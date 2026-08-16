@@ -253,6 +253,14 @@ export class KanbanCliAdapter {
     ]);
   }
 
+  async doctor(atmuxDir: string): Promise<unknown> {
+    return this.run(atmuxDir, ["doctor", "--json"]);
+  }
+
+  async backup(atmuxDir: string, outputDirectory: string): Promise<unknown> {
+    return this.run(atmuxDir, ["backup", "--output", resolve(outputDirectory), "--json"]);
+  }
+
   async listTasks(
     atmuxDir: string,
     filter: { status?: string; assignee?: string; lane?: string } = {},

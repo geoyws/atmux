@@ -114,6 +114,10 @@ Automation:
   resume <member>             Unpause
 
 Maintenance:
+  migrate-kanban prepare --as <actor> [--team-dir <root>] [--receipt-root <path>] [--json]
+                              Snapshot legacy state, import it read-only into
+                              private Kanban, verify integrity, and write
+                              rollback receipts. Does not activate or delete.
   add-member <name> --role <r> --tui <t> [--model <m>] [--cwd <d>] [--command <c>]
   member rename <id> --label <new>          Hot-rename display label (ADR-136)
   member move <id> --to <position>          Relocate member's tmux window (ADR-161 §C)
