@@ -463,6 +463,85 @@ It dials a real provider and asserts **two** things: a `session-ready` event **a
 
 The key comes from the **environment**, never argv (a tmux pane capture records command lines). Exit 0 iff both assertions hold; all output is on stderr.
 
+## §6.8 — The behavioural e2e harness (opt-in — it costs money)
+
+The live smoke answers *"does a session open and return audio?"*. It does **not** answer *"did the assistant understand the question and answer it correctly?"* — a session that opens, negotiates, and confidently reports a team that does not exist passes the smoke. `scripts/voice-e2e.ts` is the gate for the second question.
+
+```bash
+ENV=~/work/journals/.sb/_dotfiles/.devcontainer/env/shared.env
+# NOTE the [^ #] class: these lines carry trailing "# [PERSONAL]" comments, and a
+# naive `cut -d= -f2-` swallows the comment into the value — a malformed key and a
+# mystifying failure on every dial.
+export OPENAI_API_KEY=$(sed -n 's/^OPENAI_API_KEY=\([^ #][^ #]*\).*/\1/p' "$ENV")
+export ANTHROPIC_API_KEY=$(sed -n 's/^ANTHROPIC_API_KEY=\([^ #][^ #]*\).*/\1/p' "$ENV")
+
+unset TMUX
+bun scripts/voice-e2e.ts                     # every scenario
+bun scripts/voice-e2e.ts --scenario attention
+bun scripts/voice-e2e.ts --list
+bun scripts/voice-e2e.ts --keep-temp          # leave the cage on disk to inspect
+```
+
+### What it actually does
+
+Real speech in, real provider, throwaway cage, independent judge:
+
+1. **A fake cage.** A `mkdtemp` root gets its own `cockpit.json`, one live team (`voice-e2e-alpha`) and one deliberately-absent one (`voice-e2e-ghost`). The live team's tmux session holds four fixture pane states — a pane blocked on a permission prompt, a pane idle with unsubmitted composer text (the wedge class), a pane working normally, and the ghost team's missing session. Those fixtures are checked against the **real** `classifyPaneObservation` by the unit suite, so the ground truth the judge grades against cannot silently drift.
+2. **TTS.** The utterance is synthesized to PCM16 mono 24 kHz — the wire format, so no resampling — and cached on disk by (model, voice, text). Re-runs are free and byte-identical.
+3. **A real session.** The harness connects through the same `connectWebSocket` abstraction the PWA uses, `hello`s, streams the speech as 40 ms frames at real-time pace, sets `TURN_END`, and collects the transcript, `tool.start`/`tool.done`, downlink audio bytes, and close code.
+4. **Two gates per scenario.** A **mechanical** one — did the assistant invoke a tool this question should route to, read straight off the `tool.start` frames — and a **judge** one.
+5. **The judge is Claude, not the model under test.** Grading OpenAI Realtime with OpenAI Realtime measures self-consistency, not correctness, and a shared failure mode cancels into a green run. The verdict is structured: pass/fail plus reasoning per named criterion, plus an explicit list of any team or pane the assistant invented. **Its own `overall_pass` is recomputed** from the criteria — a judge that fails three criteria and then reports "overall: pass" is a real failure mode.
+
+### Safety — why this cannot touch the real fleet
+
+The operator's fleet is 20+ live teams on the **default tmux socket**. The harness is *structurally* unable to address them, and refuses to start unless it can prove it:
+
+- `ATMUX_COCKPIT_CONFIG` and `HOME` are pinned into the temp dir on `process.env` (the fleet verbs resolve the cockpit at **call** time, so an env object passed downward would leave the real path live).
+- Each fake team carries its own `tmuxTmpdir`, so `resolveTeamSocket` — the same function the live sweep uses — yields a socket under the temp dir.
+- `assertIsolated` then refuses, with a `ConfigError`, unless: the cockpit path is under the temp root and is not `$HOME/.atmux/cockpit.json`; the cockpit lists **exactly** the teams the harness created (set equality, not a blocklist — a blocklist rots as the fleet grows); every root and socket is under the temp root; no socket equals the default tmux socket; and no fake name collides with a name in the operator's real cockpit (read read-only, purely as extra evidence).
+- The gate runs **after** the cage is on disk and **before** the server starts or a provider is dialed. Teardown asserts which socket it is killing before killing it.
+
+Point it at a real-looking cockpit and it aborts; `tests/unit/core/voice/e2e/isolation.test.ts` proves that rather than asserting the happy path.
+
+It also never touches `atmux.geoy.ws` — it binds its own server on an ephemeral loopback port (`port: 0`), read-only, with a per-run random token.
+
+### The residue wait
+
+One fixture needs the tmux activity clock to be older than `RESIDUE_FRESH_SEC` (60 s), because residue in a freshly-touched window is someone **typing**, not a wedge — the classifier is right to distinguish them. The harness therefore tops up to 70 s from when the panes were painted, crediting the time spent on TTS and boot. On a warm cache expect a ~70 s wait on the first scenario and none afterwards.
+
+### Cost and when to run it
+
+Roughly **$0.05–0.15 per full three-scenario run**: a few seconds of realtime audio each way, ~3 short TTS syntheses (free after the first run — they cache), and three Opus-tier judge calls of a few thousand tokens. Wall clock is ~2–4 minutes, most of it the residue wait and the realtime turns.
+
+**It is deliberately NOT part of `bun test`** — same reasoning as the live smoke: it bills, it needs three real keys, and it goes red on a provider outage. Everything under `src/core/voice/e2e/**` is unit-tested against fakes at 100%, so the logic is covered without a network; only the shim dials.
+
+**Run it: after any change to the tool catalog, the instructions, the fleet classifier, or the provider/model pin.** Those are the four places where the server keeps working and the *answers* quietly get worse — exactly what no other gate in this runbook checks.
+
+### Known failing scenario — `drilldown` (a TRUE positive, 2026-08-16)
+
+On the first full run, `attention` and `all_ok` passed and **`drilldown` failed**. It is left failing on purpose: the fault is in `team_status`, not in the harness, and loosening the scenario to make the suite green is exactly the move that turns a gate into decoration.
+
+The assistant said, of `voice-e2e-alpha`: *"three members: be-1, fe-1, and docs, all panes down, and no active or pending tasks … 19 ADRs and over a thousand inbox items."* The judge scored that as hallucination against the fixture ground truth (be-1 blocked, fe-1 wedged, docs working). But the model was relaying the tool faithfully — running `status --team-dir <fake team>` against the same cage prints, verbatim:
+
+```
+🟢 🧭 TEAM voice-e2e-alpha  session=atmux-voice-e2e-alpha [up]
+  🐝 be-1   member  claude  down  …
+  🐝 fe-1   member  claude  down  …
+  🐝 docs   member  claude  down  …
+📝 NEEDS APPROVAL: 19 ADRs / 1157 inbox / 2 kanban
+```
+
+Two separate faults, both in `status`, both invisible until something asked the question out loud:
+
+1. **`pane-state=down` for three demonstrably live panes.** The session is reported `[up]` on the same line, and `fleet_attention` classifies all three panes correctly from the same tmux socket — so the pane-state column disagrees with the sweep about panes it can evidently see.
+2. **The approval row is not team-scoped.** A team rooted in a `mkdtemp` directory cannot have 19 ADRs or 1157 inbox entries; those counts are the *harness's own repo*. Asking about one team can therefore report another's approval debt.
+
+`fleet_attention` and `fleet_quiet` are unaffected — they were exactly right on the same cage, which is what makes the contrast diagnostic rather than ambiguous.
+
+### What it does not prove
+
+It is not a phone: no microphone, no browser audio pipeline, no PWA. It exercises the read-only half of the catalog only — the mutating verbs are never invoked, and confirmation flows are untested here. And a passing run is evidence about these fixtures and these three questions, not a general claim about the assistant's judgement.
+
 ## §7 — Verification checklist (V-1 … V-20)
 
 > **Filled in progressively: V-1…V-8 in P4, V-9…V-17 in P5, V-18…V-19 in P7, V-20 alongside [ADR-273](adr/273-voice-fleet-triage-and-pane-input.md).** Every row starts as a placeholder. A row is marked done only with a **receipt** — a command and its output, a paste-id, or a screenshot — never "looks fine". **A row goes green because the underlying thing became true, never because the wording was loosened.**

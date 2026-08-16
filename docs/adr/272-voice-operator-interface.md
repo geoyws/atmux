@@ -345,6 +345,72 @@ The guard answers *"does this model id exist?"*. It does **not** answer *"will a
 - **No automatic remediation.** The guard names the closest ids; it does not switch the pin. Silently dialling a model the operator did not choose is a worse failure than a loud one he can fix in one export.
 - **Gemini's model list is fetched as ONE page of 1000.** The API caps `pageSize` there and defaults to 50 — far under the live catalog, which would make a present model look absent. A `nextPageToken` loop is not built; if Google ever ships more than 1000 models, the symptom is a short list, and that is the signal to build it.
 
+## Supplement — the opt-in behavioural e2e harness (2026-08-16)
+
+Records a third diagnostic, alongside M2's drift guard and M3's live smoke. It changes no tool surface and no wire contract. It is the first gate in this feature that checks **answers** rather than **plumbing**, and the first that needs an isolation argument to be safe to run at all.
+
+### E1 — The gap the smoke leaves open
+
+M3's live smoke asserts a `session-ready` event and non-zero downlink bytes. Both can hold while the assistant is useless: a session that opens, negotiates, streams audio, and then tells the operator that a team which does not exist needs his attention passes every existing gate. Nothing between the model and the operator's ear checks whether the answer was **true**.
+
+That gap is widest exactly where this feature is most load-bearing. §D1's premise is an operator away from a laptop, taking the answer at face value because he cannot cheaply verify it. A confidently wrong fleet report is therefore not a cosmetic failure — it is the failure mode with the worst consequences and the least chance of being noticed.
+
+`scripts/voice-e2e.ts` speaks a real synthesized utterance into a real provider against a **throwaway** cage whose state is known, then has a **different model** grade the answer against that known state.
+
+### E2 — The judge is a different model, and its own verdict is not trusted
+
+Grading OpenAI Realtime with OpenAI Realtime measures self-consistency, not correctness: a shared mis-hearing or a shared plausible invention cancels into a green run. The judge is therefore Claude (`claude-opus-5`), via `ANTHROPIC_API_KEY`.
+
+Two further properties, each aimed at a specific way LLM-as-judge goes bad:
+
+1. **The verdict is structured, not scored.** One explicit pass/fail plus reasoning per *named* criterion, plus a separate list of any team or pane the assistant invented — enforced by a strict JSON schema. A single 1-to-10 number cannot say which property broke, and a harness whose failure output is "6/10" is one nobody debugs.
+2. **`overall_pass` is recomputed from the criteria, never believed.** A judge that marks three criteria failed and then reports "overall: pass" is a real, observed failure mode; so is one that silently drops the hardest criterion. Both are counted as failures — dropping a criterion is otherwise the cheapest way to pass.
+
+Tool choice is *not* left to the judge. "Did it call `fleet_attention`" is a fact, read directly off the `tool.start` frames, and facts should not be graded by a language model when they can be observed. A scenario passes only if both gates hold.
+
+### E3 — Isolation is structural, not careful
+
+The operator's fleet is 20+ live teams with real agents doing real work, on the **default tmux socket**. A test that nudges, dispatches to, or merely wedges one of those panes is far worse than no test at all — so the harness is built to be *incapable* of addressing them, and refuses to run unless it can prove it.
+
+The seam already exists and is load-bearing elsewhere: `ATMUX_COCKPIT_CONFIG` overrides the cockpit path, and each entry's socket is resolved from that team's own `team.json` `tmuxTmpdir` via `resolveTeamSocket`. A temp-dir cockpit listing one fake team, rooted under the temp dir, with its own `tmuxTmpdir`, therefore gets its own socket.
+
+`assertIsolated` refuses — `ConfigError`, `EX_CONFIG` — unless **all** of: `HOME` and the cockpit override are pinned under the temp root; the cockpit path is not `$HOME/.atmux/cockpit.json`; the cockpit lists **exactly** the teams the harness created; every root, `tmuxTmpdir` and resolved socket is under the temp root; no socket equals the default tmux socket; and no fake name collides with the operator's real roster.
+
+Three choices in there are deliberate:
+
+- **Set equality, not a blocklist.** A blocklist has to enumerate the real fleet to be safe, and silently rots the moment a team is added. Equality against the harness's own list cannot rot.
+- **The gate reads the cockpit back off disk**, not the plan it just built. What protects the fleet is what is actually on disk.
+- **It runs after the cage is built and before the server starts.** Nothing has been addressed by then, because materializing the cage only ever touches sockets under the temp root; and the properties being checked (file contents, per-team `tmuxTmpdir`) do not exist before the files do.
+
+Teardown carries the same discipline in reverse: it asserts which socket it is about to kill. A stray session on a stray socket is untidy; a kill aimed at the default socket would end live agent sessions.
+
+`process.env` is mutated rather than an env object passed downward, and that is required rather than convenient: the fleet verbs resolve the cockpit at **call** time, so a scoped env would leave the real path live for every tool the model invokes.
+
+### E4 — Why it stays out of `bun test`
+
+Same reasoning as M3, and it compounds: three API surfaces bill per run (realtime, TTS, judge), it needs three real keys from the git-crypt'd dotfiles, and any one provider's outage turns it red for reasons unrelated to the commit. Roughly $0.05–0.15 and 2–4 minutes per full run. Everything under `src/core/voice/e2e/**` is unit-tested against fakes at the usual 100% line+function gate, so the logic is covered without a network; only the shim dials. **No `coveragePathIgnorePatterns` entry was added** — the count stays at 4 (§D9).
+
+**When to run it: after any change to the tool catalog, the instructions, the fleet classifier, or the provider/model pin.** Those are the four places where the plumbing keeps working and the answers quietly get worse.
+
+### E4a — First run: two real faults, in a verb nobody was looking at
+
+The harness earned its keep on its first full run. `attention` and `all_ok` passed; `drilldown` failed, and the failure was a **true positive** in `status`, not in the harness or the model.
+
+The assistant relayed `team_status` accurately. `team_status` was wrong: it reported `pane-state=down` for three panes it had just described the session of as `[up]` — panes `fleet_attention` classified correctly from the same socket — and it printed `NEEDS APPROVAL: 19 ADRs / 1157 inbox`, counts that cannot belong to a team rooted in a `mkdtemp` directory and therefore belong to whichever repo the process happened to be run from.
+
+Two consequences worth recording. First, **the fault was reachable only by asking**: every existing gate — typecheck, the 100% unit suite, the model-pin guard, the live smoke — was green throughout, because none of them compares what a tool *says* to what is *true*. Second, the scenario is **left failing**. Loosening a criterion to green the suite is the same move as raising a coverage threshold to meet coverage, and it is forbidden for the same reason: the gate would then be measuring its own settings rather than the system.
+
+### E5 — What it does NOT cover
+
+Stated plainly, because a behavioural gate invites more confidence than it has earned:
+
+- **It is not a phone.** No microphone, no browser capture, no audio worklet, no PWA, no barge-in from a real speaker. It exercises the server and the model, not the client — V-9…V-17 remain the only evidence for that half.
+- **It is read-only.** Only the read-only half of the catalog is invoked. The mutating verbs, the confirmation round-trip (`confirm.ts`), and the `ATMUX_VOICE_READONLY=0` posture are all untested here — and those are the tools where a wrong answer *does* something.
+- **It is three questions against four fixture panes**, not a general claim about the assistant's judgement. It can show a regression; it cannot show correctness.
+- **A judge is a model.** It can be wrong in both directions. The structured verdict and the recomputed aggregate bound how wrong it can be *quietly*, not how wrong it can be.
+- **`dormant` is not exercised** — it needs an activity clock older than an hour, which no reasonable harness will wait for.
+- **Nothing here checks the fixtures against a live pane.** The fixtures are checked against the real `classifyPaneObservation`, which is the strongest available proxy, but a change in how tmux renders a real Claude TUI would not be caught.
+
 ## Supplement — P7 prerequisites (2026-08-15)
 
 Changes that are each **latent today and live the moment `ATMUX_VOICE_READONLY` clears**. None changes the tool surface or a wire contract; each is the difference between "the mutating surface is reachable" and "the mutating surface is reachable *safely*". Recorded here rather than in commit messages because some of them REVERSE a decision this ADR already states, and a reversal that is not written down reads later as drift.

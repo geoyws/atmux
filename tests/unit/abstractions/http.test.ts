@@ -47,6 +47,12 @@ beforeAll(() => {
           return Response.json({ a: 1, b: "two" });
         case "/echo":
           return new Response(body, { status: 200 });
+        case "/pcm": {
+          // Bytes that are NOT valid UTF-8 — a real PCM16 payload is full
+          // of them. 0xff 0xfe 0x80 0x00 decodes to U+FFFD replacement
+          // characters, which is exactly the corruption `bytes` avoids.
+          return new Response(new Uint8Array([0xff, 0xfe, 0x80, 0x00, 0x7f]), { status: 200 });
+        }
         case "/404":
           return new Response("not found", { status: 404 });
         case "/500":
@@ -96,6 +102,24 @@ describe("request — happy path", () => {
     await request({ url: server.url("/ok") });
     const got = server.recordedRequests.find((r) => r.path === "/ok");
     expect(got?.method).toBe("GET");
+  });
+
+  test("bytes carries the raw octets that `body` would corrupt", async () => {
+    // The reason `bytes` exists: OpenAI's speech endpoint answers with raw
+    // PCM16, and UTF-8-decoding it replaces every invalid sequence with
+    // U+FFFD. If this ever regresses, synthesized audio becomes noise while
+    // every status check still reports success.
+    const r = await request({ url: server.url("/pcm") });
+    expect(Array.from(r.bytes)).toEqual([0xff, 0xfe, 0x80, 0x00, 0x7f]);
+    expect(r.body).toContain("�");
+    expect(r.bytes.byteLength).toBe(5);
+  });
+
+  test("bytes is present and empty for an empty body", async () => {
+    // `/echo` returns the request body, which is empty for a GET.
+    const r = await request({ url: server.url("/echo") });
+    expect(r.bytes.byteLength).toBe(0);
+    expect(r.body).toBe("");
   });
 
   test("expectStatus array accepts unusual statuses", async () => {
