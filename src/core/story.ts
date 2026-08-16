@@ -13,14 +13,21 @@
 
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { exists } from "../abstractions/fs.ts";
-import { closeDatabase, type Database, openDatabase, transact, transactImmediate } from "../abstractions/sqlite.ts";
 import { emit } from "../abstractions/events.ts";
-import { nextId } from "./id-sequence.ts";
+import { exists } from "../abstractions/fs.ts";
+import {
+  closeDatabase,
+  type Database,
+  openDatabase,
+  transact,
+  transactImmediate,
+} from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
+import { KanbanCliAdapter } from "../adapters/kanban-cli.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { KanbanStory, KanbanTask } from "../schema/kanban.ts";
 import { tryLoadTeam } from "./common.ts";
+import { nextId } from "./id-sequence.ts";
 import { nowEpoch } from "./kanban.ts";
 import { KanbanRepo } from "./repositories/kanban-repo.ts";
 
@@ -33,6 +40,11 @@ const STATES = [
   "merging",
   "done",
 ] as const;
+const externalKanban = new KanbanCliAdapter();
+
+function useExternalKanban(): boolean {
+  return process.env.ATMUX_KANBAN_BACKEND === "external";
+}
 export type StoryState = (typeof STATES)[number];
 
 export function genStoryId(): string {
@@ -97,6 +109,25 @@ export async function addStory(atmuxDir: string, opts: AddStoryOpts): Promise<st
   if (opts.epic.length === 0) {
     throw new UsageError({ what: "story add: --epic <epic-id> required" });
   }
+  if (useExternalKanban()) {
+    const parent = (await externalKanban.loadKanban(atmuxDir)).epics.find(
+      (epic) => epic.id === opts.epic,
+    );
+    if (!parent) throw new ConfigError({ what: `story add: no such epic: ${opts.epic}` });
+    const id = await externalKanban.addTask(atmuxDir, {
+      type: "story",
+      subject: title,
+      epic: opts.epic,
+      ...(opts.body ? { body: opts.body } : {}),
+    });
+    await externalKanban.patchMetadata(atmuxDir, id, "atmux", {
+      workflowStatus: "planning",
+      acceptanceCriteria: opts.acceptanceCriteria ?? null,
+      reviewSignoff: false,
+      mergeMode: opts.mergeMode ?? "feature-branch",
+    });
+    return id;
+  }
   if (!(await exists(_stateDbPath(atmuxDir)))) {
     throw new ConfigError({
       what: `story add: ${_stateDbPath(atmuxDir)} not initialized; run \`atmux init\` first`,
@@ -149,6 +180,12 @@ export async function listStories(
   atmuxDir: string,
   filter: ListStoriesFilter,
 ): Promise<KanbanStory[]> {
+  if (useExternalKanban()) {
+    const stories = (await externalKanban.loadKanban(atmuxDir)).stories.filter(
+      (story) => story.epic === filter.epic,
+    );
+    return filter.status ? stories.filter((story) => story.status === filter.status) : stories;
+  }
   if (!(await exists(_stateDbPath(atmuxDir)))) return [];
   return await _withRepo(atmuxDir, (repo) => {
     let stories = repo.listStories({ epic: filter.epic });
@@ -165,6 +202,11 @@ export interface StoryWithChildren extends KanbanStory {
 }
 
 export async function showStory(atmuxDir: string, id: string): Promise<StoryWithChildren | null> {
+  if (useExternalKanban()) {
+    const board = await externalKanban.loadKanban(atmuxDir);
+    const story = board.stories.find((item) => item.id === id);
+    return story ? { ...story, tasks: board.tasks.filter((task) => task.story === id) } : null;
+  }
   if (!(await exists(_stateDbPath(atmuxDir)))) return null;
   return await _withRepo(atmuxDir, (repo) => {
     const story = repo.getStory(id);
@@ -232,8 +274,7 @@ export async function advanceStory(
     // merging-specific signoff gate below — but we want a clearer
     // error for that explicit foot-gun, so the merging branch checks
     // mergeMode too.
-    const trunkDirectReviewToDone =
-      trunkDirect && cur === "review" && resolved === "done";
+    const trunkDirectReviewToDone = trunkDirect && cur === "review" && resolved === "done";
     if (!trunkDirectReviewToDone && !storyLegalTransition(cur, resolved)) {
       throw new UsageError({
         what:
@@ -428,8 +469,7 @@ export async function advanceStory(
         // advisory — the watchdog re-derives the authoritative lane from
         // kanban at ping-time). Fall back to "misc" when unset.
         const storyExtra = story as Record<string, unknown>;
-        const laneHint =
-          typeof storyExtra.lane === "string" ? storyExtra.lane : "misc";
+        const laneHint = typeof storyExtra.lane === "string" ? storyExtra.lane : "misc";
         const assigneeHint =
           typeof storyExtra.owner === "string" && storyExtra.owner.length > 0
             ? storyExtra.owner
@@ -668,6 +708,19 @@ export async function updateStory(
   id: string,
   opts: UpdateStoryOpts,
 ): Promise<void> {
+  if (useExternalKanban()) {
+    const story = await showStory(atmuxDir, id);
+    if (!story) throw new ConfigError({ what: `story update: no such story: ${id}` });
+    if (opts.body !== undefined) {
+      await externalKanban.updateTask(atmuxDir, id, "atmux", { body: opts.body ?? "" });
+    }
+    if (opts.acceptanceCriteria !== undefined) {
+      await externalKanban.patchMetadata(atmuxDir, id, "atmux", {
+        acceptanceCriteria: opts.acceptanceCriteria,
+      });
+    }
+    return;
+  }
   if (!(await exists(_stateDbPath(atmuxDir)))) {
     throw new ConfigError({ what: `story update: no such story: ${id}` });
   }

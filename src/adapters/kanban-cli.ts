@@ -76,6 +76,9 @@ function storyFromExternal(task: ExternalTaskRecord): KanbanStory {
     reviewSignoff: task.metadata.reviewSignoff === true,
     mergeTaskId: typeof task.metadata.mergeTaskID === "string" ? task.metadata.mergeTaskID : null,
     mergeMode: task.metadata.mergeMode === "trunk-direct" ? "trunk-direct" : "feature-branch",
+    signoffAudit: Array.isArray(task.metadata.signoffAudit)
+      ? (task.metadata.signoffAudit as Record<string, unknown>[])
+      : null,
     extra:
       task.metadata.atmuxExtra !== null && typeof task.metadata.atmuxExtra === "object"
         ? (task.metadata.atmuxExtra as Record<string, unknown>)

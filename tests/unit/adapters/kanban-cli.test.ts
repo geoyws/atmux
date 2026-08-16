@@ -24,6 +24,12 @@ import {
   setTaskStory as coreSetTaskStory,
   showTask as coreShowTask,
 } from "../../../src/core/kanban.ts";
+import {
+  addStory as coreAddStory,
+  listStories as coreListStories,
+  showStory as coreShowStory,
+  updateStory as coreUpdateStory,
+} from "../../../src/core/story.ts";
 
 const roots: string[] = [];
 
@@ -193,5 +199,31 @@ describe("external Kanban CLI adapter", () => {
     expect((await coreSetEpicReady(atmuxDir, epic, true)).to).toBe(true);
     expect((await coreAdvanceEpic(atmuxDir, epic)).to).toBe("ready");
     expect((await coreAdvanceEpic(atmuxDir, epic)).to).toBe("in-progress");
+  });
+
+  test("routes atmux story CRUD through the normalized hierarchy", async () => {
+    const { root, atmuxDir, adapter } = fixture();
+    await adapter.initialize(atmuxDir);
+    process.env.KANBAN_DATA_DIR = join(root, "private-kanban");
+    process.env.ATMUX_KANBAN_BACKEND = "external";
+
+    const epic = await coreAddEpic(atmuxDir, { title: "Parent" });
+    const story = await coreAddStory(atmuxDir, {
+      title: "External story",
+      epic,
+      body: "Initial",
+      acceptanceCriteria: "Observed",
+    });
+    expect((await coreListStories(atmuxDir, { epic })).map((item) => item.id)).toEqual([story]);
+    expect(await coreShowStory(atmuxDir, story)).toMatchObject({
+      epic,
+      body: "Initial",
+      acceptanceCriteria: "Observed",
+    });
+    await coreUpdateStory(atmuxDir, story, { body: "Updated", acceptanceCriteria: null });
+    expect(await coreShowStory(atmuxDir, story)).toMatchObject({
+      body: "Updated",
+      acceptanceCriteria: null,
+    });
   });
 });
