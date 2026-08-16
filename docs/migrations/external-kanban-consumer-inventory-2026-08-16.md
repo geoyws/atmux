@@ -4,12 +4,12 @@ This is the removal checklist for ADR-275. It is a source inventory, not a cutov
 
 ## Current receipts
 
-- Kanban authority branch: `/root/work/src/kanban`, `main` at `12e8d49` (local only).
+- Kanban authority branch: `/root/work/src/kanban`, `main` at `4f029a0` (local only).
 - atmux migration is fast-forwarded into local `atmux-geoyws` through `82f2766`; it is not pushed or activated.
-- Kanban gate: 27 tests pass, 137 assertions, TypeScript clean.
+- Kanban gate: 29 tests pass, 140 assertions, TypeScript clean.
 - atmux focused adapter, orchestration, projection, and lifecycle suites pass; the latest projection batch passed 416 tests and the lifecycle batch passed 127 focused tests. TypeScript is clean.
 - Full-suite receipt is not green: tmux integration fixtures cannot create sockets in the current sandbox, and `epic-auto-merge` has an independent spawn-eligibility fixture failure (`is_ready=0`) before the migrated merge gate.
-- Read-only production import probe: 114 epics, 91 stories, 1,138 tasks; one preserved dangling dependency and no missing parents.
+- Fleet preparation imported 3,042 rows across seven non-empty legacy projects into healthy private boards. This includes one JSON-only project; preserved warnings cover four dangling dependencies and eight missing legacy parent references.
 - Production activation, push, dual writes, and legacy deletion: not performed. Three live atmux panes were observed, so the stopped-writer acknowledgement could not honestly be supplied.
 
 ## Real preparation receipt
@@ -24,6 +24,10 @@ The non-activating preparation completed at `2026-08-16T03:00:35.756Z`:
 - 1,343 rows imported: 114 epics, 91 stories, and 1,138 tasks;
 - one dangling legacy dependency was preserved as warning metadata; no parents were missing;
 - activation remains explicitly `not-activated`.
+
+Six additional non-activating project receipts and the private dashboard receipt
+are recorded in `/root/work/src/kanban/docs/migrations/atmux-fleet-preparation-2026-08-16.md`.
+All seven sources remain legacy-authoritative and all backend markers remain absent.
 
 ## Migrated behind the durable backend marker
 
