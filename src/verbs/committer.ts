@@ -79,13 +79,13 @@ import {
   gitterConsume as gitterConsumeImport,
 } from "../core/gitter-consumer.ts";
 import { productionQueueMergeAttempt } from "../core/intra-team-merge-dispatcher.ts";
+import { listTasks as listKanbanTasks } from "../core/kanban.ts";
 import { resolveMergerConfig } from "../core/merger-config.ts";
 import { bootstrapOrchd as bootstrapOrchdImport } from "../core/orchd-bootstrap.ts";
 import { dispatchDissolveEpic as dispatchDissolveEpicImport } from "../core/orchd-dispatch/dissolve-epic.ts";
 import { dispatchEpicMerge as dispatchEpicMergeImport } from "../core/orchd-dispatch/epic-merge.ts";
 import { dispatchGitPush as dispatchGitPushImport } from "../core/orchd-dispatch/git-push.ts";
 import { ORCHD_SUBSCRIPTIONS as ORCHD_SUBSCRIPTIONS_IMPORT } from "../core/orchd-registry.ts";
-import { KanbanRepo } from "../core/repositories/kanban-repo.ts";
 import { MergerStateRepo } from "../core/repositories/merger-state-repo.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { UsageError } from "../errors.ts";
@@ -349,7 +349,14 @@ export async function committerSweepVerb(
         teamRoot,
         baseBranch,
         mergerRepo: repo,
-        kanbanRepo: new KanbanRepo(db),
+        kanbanRepo: {
+          listTasks: async (filter = {}) =>
+            listKanbanTasks(atmuxDir, {
+              ...(filter.owner ? { assignee: filter.owner } : {}),
+              ...(filter.status ? { status: filter.status } : {}),
+              ...(filter.lane ? { lane: filter.lane } : {}),
+            }),
+        },
         git,
         logger,
         // ADR-160 candidate (t-f8beb03b): post-merge done-flip hook
@@ -470,10 +477,7 @@ export async function committerDrainVerb(
     },
     dissolveDeps: {
       dispatchDissolveEpic: async (epicId) =>
-        dispatchDissolveEpicImport(
-          { epicId },
-          { localCageName: ctx.team.name },
-        ),
+        dispatchDissolveEpicImport({ epicId }, { localCageName: ctx.team.name }),
     },
     pushDeps: {
       dispatchGitPush: async (parentBase) =>
@@ -730,7 +734,14 @@ export async function buildEventDrivenContext(
     baseBranch,
     git,
     mergerRepo: new MergerStateRepo(db),
-    kanbanRepo: new KanbanRepo(db),
+    kanbanRepo: {
+      listTasks: async (filter = {}) =>
+        listKanbanTasks(atmuxDir, {
+          ...(filter.owner ? { assignee: filter.owner } : {}),
+          ...(filter.status ? { status: filter.status } : {}),
+          ...(filter.lane ? { lane: filter.lane } : {}),
+        }),
+    },
     logger: consumerLogger,
     resolveMemberWorktreePath,
     emit: emitImport,
