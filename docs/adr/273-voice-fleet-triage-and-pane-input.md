@@ -296,3 +296,7 @@ tmux -S <unum cage socket>  has-session -t atmux-unum   → exit 1, can't find s
 The gate really was unreachable for both anchored teams. No row appears today because **both are driver-only** (`members: []`, per the 2026-05-16 decomposition recorded in §S3.1) and both checks are member-scoped — `checkMemberCageStates` returns at its empty-roster guard before the session name is even resolved, and `checkLegacyWindowNameFormat`'s inner loop is over `team.members`. `dash` is the only team on the fleet with a roster, and it carries no anchor, so its name resolves to the same `atmux-dash` both ways.
 
 So the change is **strictly additive and currently latent**: no row disappears (a blind check emits nothing to lose), and the rows that were structurally unreachable for `unum` and `atmux` become reachable the moment either team regains members. Reporting this as "N new rows appeared" would have been the lie; reporting a silent probe as proof of nothing would have been the other one.
+
+## Acceptance
+
+`fleet_attention` / `fleet_quiet` are covered by **[RUNBOOK-voice.md](../RUNBOOK-voice.md) §7 V-20** (added 2026-08-16 — until then the daily-use half of the voice surface had no acceptance row at all). Four legs: the sweep is bounded, unreadable teams are reported rather than omitted, the attention list honours the top-N speech budget, and `fleet_quiet` aggregates without naming a pane. All four are headless-verified and confirmed by a live CLI sweep; the **voice tool path** around the shared classifier is explicitly recorded there as unproven.
