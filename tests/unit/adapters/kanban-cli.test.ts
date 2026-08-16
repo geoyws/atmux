@@ -291,6 +291,42 @@ describe("external Kanban CLI adapter", () => {
     expect(process.env.ATMUX_KANBAN_BACKEND).toBeUndefined();
   });
 
+  test("prepares and activates a JSON-only atmux hierarchy", async () => {
+    const { root, atmuxDir, adapter } = fixture();
+    await Bun.write(
+      join(atmuxDir, "kanban.json"),
+      JSON.stringify({
+        epics: [{ id: "e-json", title: "JSON epic", status: "in-progress", isReady: true }],
+        stories: [{ id: "s-json", epic: "e-json", title: "JSON story", status: "testing" }],
+        tasks: [
+          {
+            id: "t-json",
+            epic: "e-json",
+            story: "s-json",
+            subject: "JSON task",
+            status: "todo",
+          },
+        ],
+      }),
+    );
+    process.env.KANBAN_DATA_DIR = join(root, "private-kanban");
+
+    const prepared = await prepareExternalKanbanCutover(atmuxDir, {
+      actor: "operator",
+      receiptRoot: join(root, "receipts"),
+      adapter,
+    });
+    expect(prepared.sourceKind).toBe("json");
+    const activated = await activateExternalKanbanCutover(atmuxDir, {
+      actor: "operator",
+      preparationReceipt: prepared.receiptPath,
+      writersStopped: true,
+      adapter,
+    });
+    expect(activated.counts).toEqual({ tasks: 1, epics: 1, stories: 1 });
+    expect((await adapter.showTask(atmuxDir, "t-json"))?.story).toBe("s-json");
+  });
+
   test("activates only a matching stopped-writer receipt and permits rollback before a write", async () => {
     const { root, atmuxDir, adapter } = fixture();
     const source = join(atmuxDir, "state.db");

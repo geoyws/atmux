@@ -16,6 +16,7 @@ export interface ExternalKanbanCutoverReceipt {
   status: "prepared";
   preparedAt: string;
   source: string;
+  sourceKind: "sqlite" | "json";
   sourceBackup: string;
   sourceSha256: string;
   sourceIntegrity: string;
@@ -37,9 +38,14 @@ export async function prepareExternalKanbanCutover(
   atmuxDir: string,
   options: PrepareExternalKanbanOptions,
 ): Promise<ExternalKanbanCutoverReceipt> {
-  const source = resolve(atmuxDir, "state.db");
+  const sqliteSource = resolve(atmuxDir, "state.db");
+  const jsonSource = resolve(atmuxDir, "kanban.json");
+  const sourceKind = (await exists(sqliteSource)) ? "sqlite" : "json";
+  const source = sourceKind === "sqlite" ? sqliteSource : jsonSource;
   if (!(await exists(source))) {
-    throw new ConfigError({ what: `external Kanban prepare: ${source} does not exist` });
+    throw new ConfigError({
+      what: `external Kanban prepare: neither ${sqliteSource} nor ${jsonSource} exists`,
+    });
   }
   const actor = options.actor.trim();
   if (!actor) throw new ConfigError({ what: "external Kanban prepare: actor is required" });
@@ -50,32 +56,47 @@ export async function prepareExternalKanbanCutover(
   await mkdir(receiptDirectory, { recursive: true, mode: 0o700 });
   await chmod(receiptDirectory, 0o700);
 
-  const sourceDatabase = new Database(source, { readonly: true });
   let serialized: Uint8Array;
   let sourceIntegrity: string;
-  try {
-    sourceIntegrity = String(
-      (sourceDatabase.query("PRAGMA integrity_check").get() as Record<string, unknown>)
-        .integrity_check,
-    );
-    serialized = sourceDatabase.serialize();
-  } finally {
-    sourceDatabase.close();
+  if (sourceKind === "sqlite") {
+    const sourceDatabase = new Database(source, { readonly: true });
+    try {
+      sourceIntegrity = String(
+        (sourceDatabase.query("PRAGMA integrity_check").get() as Record<string, unknown>)
+          .integrity_check,
+      );
+      serialized = sourceDatabase.serialize();
+    } finally {
+      sourceDatabase.close();
+    }
+  } else {
+    serialized = await readFile(source);
+    const parsed = JSON.parse(new TextDecoder().decode(serialized)) as Record<string, unknown>;
+    if (!Array.isArray(parsed.tasks)) {
+      throw new ConfigError({ what: "external Kanban prepare: kanban.json has no tasks array" });
+    }
+    sourceIntegrity = "valid-json";
   }
-  if (sourceIntegrity !== "ok") {
+  if (sourceIntegrity !== "ok" && sourceIntegrity !== "valid-json") {
     throw new ConfigError({
       what: `external Kanban prepare: source integrity is ${sourceIntegrity}`,
     });
   }
 
-  const sourceBackup = join(receiptDirectory, "atmux-state.db");
+  const sourceBackup = join(
+    receiptDirectory,
+    sourceKind === "sqlite" ? "atmux-state.db" : "atmux-kanban.json",
+  );
   await writeFile(sourceBackup, serialized, { mode: 0o600 });
   await chmod(sourceBackup, 0o600);
   const sourceSha256 = createHash("sha256").update(serialized).digest("hex");
 
   const adapter = options.adapter ?? new KanbanCliAdapter();
   await adapter.initialize(atmuxDir);
-  const importReceipt = await adapter.importState(atmuxDir, source, actor);
+  const importReceipt =
+    sourceKind === "sqlite"
+      ? await adapter.importState(atmuxDir, source, actor)
+      : await adapter.importJson(atmuxDir, source, actor);
   const doctorReceipt = await adapter.doctor(atmuxDir);
   const boardBackupDirectory = join(receiptDirectory, "kanban-board");
   await adapter.backup(atmuxDir, boardBackupDirectory);
@@ -86,6 +107,7 @@ export async function prepareExternalKanbanCutover(
     status: "prepared",
     preparedAt: new Date().toISOString(),
     source,
+    sourceKind,
     sourceBackup,
     sourceSha256,
     sourceIntegrity,
@@ -169,7 +191,8 @@ export async function activateExternalKanbanCutover(
   const prepared = JSON.parse(
     await readFile(preparationReceipt, "utf8"),
   ) as ExternalKanbanCutoverReceipt;
-  const source = resolve(atmuxDir, "state.db");
+  const sourceKind = prepared.sourceKind ?? "sqlite";
+  const source = resolve(atmuxDir, sourceKind === "sqlite" ? "state.db" : "kanban.json");
   if (
     prepared.version !== 1 ||
     prepared.status !== "prepared" ||
@@ -188,24 +211,41 @@ export async function activateExternalKanbanCutover(
     });
   }
 
-  const sourceDb = new Database(source, { readonly: true });
   let sourceTasks: string[];
   let sourceEpics: string[];
   let sourceStories: string[];
-  try {
-    const integrity = String(
-      (sourceDb.query("PRAGMA integrity_check").get() as Record<string, unknown>).integrity_check,
-    );
-    if (integrity !== "ok") {
-      throw new ConfigError({ what: `external Kanban activate: source integrity is ${integrity}` });
+  if (sourceKind === "sqlite") {
+    const sourceDb = new Database(source, { readonly: true });
+    try {
+      const integrity = String(
+        (sourceDb.query("PRAGMA integrity_check").get() as Record<string, unknown>).integrity_check,
+      );
+      if (integrity !== "ok") {
+        throw new ConfigError({
+          what: `external Kanban activate: source integrity is ${integrity}`,
+        });
+      }
+      sourceTasks = sortedIDs(
+        sourceDb.query("SELECT id FROM tasks").all() as Array<{ id: string }>,
+      );
+      sourceEpics = sortedIDs(
+        sourceDb.query("SELECT id FROM epics").all() as Array<{ id: string }>,
+      );
+      sourceStories = sortedIDs(
+        sourceDb.query("SELECT id FROM stories").all() as Array<{ id: string }>,
+      );
+    } finally {
+      sourceDb.close();
     }
-    sourceTasks = sortedIDs(sourceDb.query("SELECT id FROM tasks").all() as Array<{ id: string }>);
-    sourceEpics = sortedIDs(sourceDb.query("SELECT id FROM epics").all() as Array<{ id: string }>);
-    sourceStories = sortedIDs(
-      sourceDb.query("SELECT id FROM stories").all() as Array<{ id: string }>,
-    );
-  } finally {
-    sourceDb.close();
+  } else {
+    const parsed = JSON.parse(await readFile(source, "utf8")) as {
+      tasks?: Array<{ id: string }>;
+      epics?: Array<{ id: string }>;
+      stories?: Array<{ id: string }>;
+    };
+    sourceTasks = sortedIDs(parsed.tasks ?? []);
+    sourceEpics = sortedIDs(parsed.epics ?? []);
+    sourceStories = sortedIDs(parsed.stories ?? []);
   }
 
   const adapter = options.adapter ?? new KanbanCliAdapter();

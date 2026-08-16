@@ -268,6 +268,17 @@ export class KanbanCliAdapter {
     ]);
   }
 
+  async importJson(atmuxDir: string, kanbanJsonPath: string, actor: string): Promise<unknown> {
+    return this.run(atmuxDir, [
+      "import",
+      "atmux-json",
+      resolve(kanbanJsonPath),
+      "--as",
+      actor,
+      "--json",
+    ]);
+  }
+
   async doctor(atmuxDir: string): Promise<unknown> {
     return this.run(atmuxDir, ["doctor", "--json"]);
   }
