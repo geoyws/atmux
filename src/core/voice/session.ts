@@ -155,6 +155,51 @@ export const PROVIDER_ERROR_LOG_CAP = 3;
  *  provider echoing a whole frame must not blow up a log line. */
 export const PROVIDER_ERROR_LOG_MAX_CHARS = 300;
 
+/**
+ * Tool NAMES are truncated to this before they reach a log line.
+ *
+ * A tool name looks like server-controlled data and is not: it arrives on
+ * the provider's tool-call frame, so a hallucinating model can put an
+ * arbitrary string there. The catalog's longest name is 15 characters
+ * (`fleet_attention`), so
+ * this never touches a real one — it only bounds what an invented name can
+ * write, which is the same NO-SPEECH property `log.ts` exists to protect.
+ * Applied by {@link VoiceServerSessionImpl.toolLabel} at every callsite
+ * that logs a name, including the stale-result drop line.
+ */
+export const TOOL_NAME_LOG_MAX_CHARS = 64;
+/**
+ * Tool failure CLASSES are truncated to this before they reach a log line.
+ *
+ * The class is `envelope.error`, and the bridge only ever writes one of
+ * the closed `ToolErrorCode` set there — the longest is 23 chars
+ * (`verb_output_unparseable`).
+ * The cap is for the envelope the bridge did NOT write: a garbled or
+ * hand-injected one, where `error` is whatever it happens to be. Same
+ * reasoning as the name cap; the log's no-speech guarantee should not
+ * depend on a producer staying well-behaved.
+ */
+export const TOOL_ERROR_CLASS_LOG_MAX_CHARS = 48;
+/** Failure class logged when the envelope was unparseable — the bridge
+ *  answered with something that is not our envelope shape at all. */
+export const TOOL_ERROR_CLASS_UNPARSEABLE = "unparseable-envelope";
+/** Failure class logged when the envelope parsed but named no error. */
+export const TOOL_ERROR_CLASS_UNSPECIFIED = "unspecified";
+
+/** Probe for the presence of a `confirm_token` on a tool call. Presence
+ *  ONLY — the value is a credential and the arguments are speech; neither
+ *  is read out of this, and neither is logged (ADR-272 OQ-4). */
+const ConfirmTokenProbeSchema = z.object({ confirm_token: z.string().optional() }).passthrough();
+
+/**
+ * Which side of the D7 round trip a confirm-gated call landed on.
+ *
+ * `null` for an ungated tool, and for a gated one that never reached the
+ * gate (bad args, unknown team, readonly) — claiming either of the two
+ * stages there would be a lie about what happened.
+ */
+export type ConfirmStage = "previewed" | "redeemed";
+
 /** Backoff for redial attempt N (0-based). */
 export function redialBackoffMs(attempt: number): number {
   return Math.min(REDIAL_BACKOFF_BASE_MS * 2 ** attempt, REDIAL_BACKOFF_MAX_MS);
@@ -986,13 +1031,115 @@ class VoiceServerSessionImpl implements VoiceServerSession {
     this.deps.phone.sendBinary(frame);
   }
 
+  /**
+   * A tool name, bounded and quoted, ready to drop into a log line. The
+   * ONE place a tool name is rendered for the log — see
+   * {@link TOOL_NAME_LOG_MAX_CHARS} for why the bound exists.
+   */
+  private toolLabel(name: string): string {
+    return `'${name.slice(0, TOOL_NAME_LOG_MAX_CHARS)}'`;
+  }
+
+  /**
+   * ONE LINE IN. Emitted where `tool.start` is, and says the two things
+   * that cannot be recovered afterwards: WHICH tool the model chose, and
+   * whether that tool is behind the D7 confirmation gate — which is what
+   * makes the closing line's `previewed` / `redeemed` readable.
+   *
+   * A name the catalog does not hold is called out as such rather than
+   * reported as ungated: an invented tool is not an ungated tool, and
+   * under `ATMUX_VOICE_READONLY=1` the messaging tools are genuinely
+   * absent from the catalog, so this arm is how "the model tried to
+   * mutate while readonly" looks in the log.
+   *
+   * NAME ONLY — never `ev.argsJson`, which is the operator's speech
+   * rendered as arguments (ADR-272 OQ-4; see `log.ts` property 3).
+   */
+  private logToolInvoked(entry: VoiceToolEntry | undefined, name: string): void {
+    const gate =
+      entry === undefined
+        ? "not in catalog"
+        : entry.confirm
+          ? "confirm-gated"
+          : "no confirmation gate";
+    this.log(`voice: tool ${this.toolLabel(name)} invoked (${gate})`);
+  }
+
+  /**
+   * ONE LINE OUT. Outcome, duration, and — when it failed — the failure
+   * CLASS, which is `envelope.error`: a closed set of codes, never the
+   * spoken summary and never the arguments.
+   *
+   * `previewed` gets its own sentence because it is not an outcome of the
+   * tool at all: nothing ran. Distinguishing it from `redeemed` is the
+   * point of logging the gate — "the model previewed and never came back"
+   * and "the model never tried" are the same silence otherwise, and once
+   * `ATMUX_VOICE_READONLY` is cleared that difference is how a refusal is
+   * told apart from an outage.
+   */
+  private logToolDone(
+    name: string,
+    ok: boolean,
+    ms: number,
+    stage: ConfirmStage | null,
+    errorClass: string,
+  ): void {
+    const label = this.toolLabel(name);
+    if (stage === "previewed") {
+      this.log(
+        `voice: tool ${label} previewed in ${ms}ms — NOT executed, awaiting the operator's confirmation`,
+      );
+      return;
+    }
+    const notes: string[] = [];
+    if (!ok) notes.push(errorClass.slice(0, TOOL_ERROR_CLASS_LOG_MAX_CHARS));
+    if (stage === "redeemed") notes.push("confirmation redeemed");
+    const suffix = notes.length > 0 ? ` (${notes.join(", ")})` : "";
+    this.log(`voice: tool ${label} ${ok ? "ok" : "failed"} in ${ms}ms${suffix}`);
+  }
+
+  /**
+   * Which side of D7's round trip this call landed on, decided from what
+   * the bridge actually did rather than from what the model intended.
+   *
+   * - `previewed` — the bridge answered `needs_confirmation`, so nothing
+   *   ran. A mismatched or unknown token re-previews, and that IS a
+   *   preview: the action still did not happen.
+   * - `redeemed` — a `confirm_token` was offered AND the bridge did not
+   *   bounce it, so the gate opened and the verb ran. `confirm_expired`
+   *   is excluded because the token was offered and refused; that call
+   *   reports the expiry as its failure class, which is the true story.
+   * - `null` — ungated, or gated and rejected before the gate (bad args,
+   *   unknown team, readonly). Neither stage is claimable there.
+   *
+   * The token is probed for PRESENCE only. Its value is a credential and
+   * the rest of the arguments are speech; nothing here reads either, and
+   * nothing here is logged.
+   */
+  private confirmStage(
+    entry: VoiceToolEntry | undefined,
+    argsJson: string,
+    needs: boolean,
+    error: string | undefined,
+  ): ConfirmStage | null {
+    if (entry === undefined || !entry.confirm) return null;
+    if (needs) return "previewed";
+    if (error === "confirm_expired") return null;
+    const probed = tryParseJsonString(argsJson, ConfirmTokenProbeSchema);
+    return probed?.confirm_token === undefined ? null : "redeemed";
+  }
+
   private async onToolCall(ev: { id: string; name: string; argsJson: string }): Promise<void> {
+    // The catalog the MODEL was given (readonly-filtered upstream), so
+    // `undefined` means the model named something it was never offered.
+    const entry = this.deps.catalog.find((t) => t.name === ev.name);
     this.sendJson({
       type: "tool.start",
       id: ev.id,
       name: ev.name,
       args: ev.argsJson.slice(0, TOOL_ARGS_PREVIEW_MAX_CHARS),
     });
+    this.logToolInvoked(entry, ev.name);
     this.sendStatus("working");
     // The leg that ISSUED this call, captured before the await. A tool
     // call id is meaningful only within the provider session that minted
@@ -1022,6 +1169,15 @@ class VoiceServerSessionImpl implements VoiceServerSession {
     // view of a tool HE asked for, and it does not depend on any provider
     // leg still being up.
     this.sendJson(done);
+    this.logToolDone(
+      ev.name,
+      ok,
+      ms,
+      this.confirmStage(entry, ev.argsJson, needs, envelope?.error),
+      envelope === null
+        ? TOOL_ERROR_CLASS_UNPARSEABLE
+        : (envelope.error ?? TOOL_ERROR_CLASS_UNSPECIFIED),
+    );
     // The provider half does. `this.conn` is re-read here, and if a
     // redial happened while the tool ran it now points at a DIFFERENT
     // leg — one that never issued `ev.id`. Handing it this result is a
@@ -1033,7 +1189,7 @@ class VoiceServerSessionImpl implements VoiceServerSession {
     if (this.conn === null || this.conn !== issuedBy) {
       // Tool NAME only — this sink carries no speech (see module header).
       this.log(
-        `voice: dropping tool result for '${ev.name}' — the provider leg that issued it is gone (redial during execution)`,
+        `voice: dropping tool result for ${this.toolLabel(ev.name)} — the provider leg that issued it is gone (redial during execution)`,
       );
       return;
     }

@@ -411,6 +411,31 @@ The fix is conditional, and the condition is load-bearing. **Suppression is arme
 
 The ordering invariant is asserted as an **order**, not as a pair of facts: the tests read the phone's interleaved wire log and assert that no binary frame appears after the `audio.clear` index, then that the next turn's audio appears strictly after it. "Both frames were sent" would pass on a clear that arrives after the audio it was supposed to flush, which is a glitch rather than a barge-in. A third test drives the two barge-in triggers side by side and asserts identical frame counts, drop counts and clear counts, so the paths cannot drift apart later.
 
+## Supplement — tool calls are logged, name-only (2026-08-16)
+
+### T1 — the gap
+
+A live session was asked *"what needs my attention across the fleet"*. The wire showed the whole loop working — `frameTypes=[ready,status,transcript.assistant,tool.start,tool.done]`, 1,135,200 bytes of spoken audio — and **the server log said nothing whatsoever about the tool call**. Which tool ran could not be determined server-side at all.
+
+This is the same silence class as the retired-beta dial failure `log.ts` was written for, and it is the same shape: the facts existed (`tool.start` / `tool.done` are constructed and sent to the phone) and were then discarded. The cost is identical too — with the log mute, "the model called `fleet_attention` and it failed" and "the model called something else entirely" are one observation.
+
+### T2 — what is logged, and the bound on it
+
+Exactly **one line in and one line out per tool call**, emitted from `session.ts::onToolCall` at the two points the frames are sent, through the existing `createVoiceLogger` sink (so redaction is structural — `log.ts` property 2).
+
+| Line | Carries |
+|---|---|
+| in | tool **name** · which of three gate states it is in — `confirm-gated` / `no confirmation gate` / `not in catalog` |
+| out | name · `ok` \| `failed` \| `previewed` · duration · on failure, the error **class** (`envelope.error`, a closed set) · on a gated call that ran, `confirmation redeemed` |
+
+**`previewed` vs `redeemed` is the reason the gate state is logged at all.** A D7 preview does not execute; the model is then expected to speak the preview and come back with the token. With only "a gated tool was called", *"the model previewed and never redeemed"* and *"the model never tried"* are the same silence — and once `ATMUX_VOICE_READONLY` is cleared, that is precisely the difference between a refusal and an outage. `redeemed` is claimed only when a token was offered **and** the bridge did not bounce it; `confirm_expired` is reported as its own failure class, not as a redemption.
+
+**NAME ONLY — never arguments, never the summary, never the preview, never the token.** OQ-4 makes transcripts opt-in specifically so speech does not land in a general always-on sink, and a tool's *arguments are speech*: "dispatch task 4a2f to driver-2" is a sentence the operator said. `/healthz`'s wedge reporting already set this precedent (`tool-bridge.ts` labels the mutex with the tool name and says why). Two structural bounds back the rule rather than trusting the producer: the **name** arrives on a provider frame, so a hallucinating model owns that string, and the failure **class** comes from an envelope this code did not have to have written — both are truncated at one shared rendering point (`toolLabel`, which the pre-existing stale-result drop line now also routes through). A test asserts that a call whose arguments carry a distinctive phrase does not put that phrase in the log, and that the line remains diagnostically useful.
+
+**Proportionality is part of the decision.** Two lines per call, never per frame. The provider-error cap (§`PROVIDER_ERROR_LOG_CAP`) exists because an advisory event can repeat per audio frame; a tool call cannot, so it needs no cap — but it does need to stay at two lines, or the dial story this sink exists to tell drowns.
+
+**Rejected: log the arguments behind a flag.** It reintroduces exactly the decision OQ-4 already made, in a second place, with a second flag to get wrong. The operator who needs the arguments turns on transcripts, which is the sink that was designed to hold speech and carries the retention rule.
+
 ## Decision-anchors
 
 Every row verified against disk on **2026-08-14** unless dated otherwise.

@@ -42,6 +42,8 @@ import {
   SERVER_VAD_TUNINGS,
   SESSION_READY_TIMEOUT_MS,
   TOOL_ARGS_PREVIEW_MAX_CHARS,
+  TOOL_ERROR_CLASS_LOG_MAX_CHARS,
+  TOOL_NAME_LOG_MAX_CHARS,
   type VoiceSessionDeps,
   type VoiceSharedState,
   type VoiceTimers,
@@ -1436,6 +1438,312 @@ describe("tool calls", () => {
   });
 });
 
+// ---------- tool-call logging ----------
+//
+// THE DEFECT. A live session on 2026-08-16 was asked "what needs my
+// attention across the fleet". The wire showed the whole loop working —
+// `frameTypes=[ready,status,transcript.assistant,tool.start,tool.done]`,
+// 1,135,200 bytes of spoken audio — and the SERVER LOG said nothing
+// whatsoever about the tool call. Which tool ran could not be determined
+// server-side at all. Same silence class as the retired-beta dial bug
+// (`log.ts` header): the facts were constructed, sent to the phone, and
+// discarded.
+//
+// The bound on the fix is as load-bearing as the fix. `log.ts` property 3
+// and ADR-272 OQ-4 keep speech out of this always-on sink, and a tool's
+// ARGUMENTS are speech — "dispatch task 4a2f to driver-2" is a sentence
+// the operator said. So: name, gate, outcome, duration, failure class.
+// Never arguments, never the summary, never the confirm token.
+
+describe("tool-call logging", () => {
+  /** A distinctive phrase standing in for spoken content, in each of the
+   *  three places speech can reach `onToolCall`. */
+  const SPOKEN = "the-heron-has-landed-in-kuala-lumpur";
+
+  function loggingHarness(out: ExecuteToolOutput): Harness {
+    return makeHarness({
+      bridge: {
+        health: IDLE_BRIDGE_HEALTH,
+        executeTool: async (): Promise<ExecuteToolOutput> => out,
+      },
+    });
+  }
+
+  function okEnvelope(data = "atmux: 4 members up"): ExecuteToolOutput {
+    return { envelopeJson: JSON.stringify({ ok: true, tool: "team_status", data }) };
+  }
+
+  /** The tool lines only — the dial/provider lines are another story. */
+  function toolLines(h: Harness): string[] {
+    return h.logs.filter((l) => l.startsWith("voice: tool "));
+  }
+
+  async function callTool(
+    h: Harness,
+    over: { name?: string; argsJson?: string } = {},
+  ): Promise<void> {
+    h.provider.lastLeg.emit({
+      type: "tool-call",
+      id: "call_1",
+      name: over.name ?? "team_status",
+      argsJson: over.argsJson ?? '{"team":"atmux"}',
+    });
+    await flush();
+  }
+
+  test("a successful ungated call logs exactly one line in and one line out", async () => {
+    const timers = new FakeTimers();
+    const h = makeHarness({
+      timers,
+      bridge: {
+        health: IDLE_BRIDGE_HEALTH,
+        executeTool: async (): Promise<ExecuteToolOutput> => {
+          timers.now += 412;
+          return okEnvelope().valueOf() as ExecuteToolOutput;
+        },
+      },
+    });
+    await live(h);
+    await callTool(h);
+    // Proportionality is the requirement, not a nicety: this sink must not
+    // become per-frame chatter. Exactly two lines, in order.
+    expect(toolLines(h)).toEqual([
+      "voice: tool 'team_status' invoked (no confirmation gate)",
+      "voice: tool 'team_status' ok in 412ms",
+    ]);
+  });
+
+  test("a failed call names the failure CLASS, not the failure text", async () => {
+    const h = loggingHarness({
+      envelopeJson: JSON.stringify({
+        ok: false,
+        tool: "team_status",
+        error: "unknown_team",
+        // Free text the bridge attaches — an echo of what was SAID.
+        message: `no team named ${SPOKEN}`,
+      }),
+    });
+    await live(h);
+    await callTool(h);
+    expect(toolLines(h)[1]).toBe("voice: tool 'team_status' failed in 0ms (unknown_team)");
+    expect(h.logs.join("\n")).not.toContain(SPOKEN);
+  });
+
+  test("a confirm-gated tool logs its gate on the way in, and 'previewed' on the way out", async () => {
+    const h = loggingHarness({
+      envelopeJson: JSON.stringify({
+        ok: false,
+        tool: "dispatch_task",
+        error: "needs_confirmation",
+        token: "tok-9f3a",
+        preview: `Confirm dispatch task: task_id 4a2f, member ${SPOKEN}. Say yes to proceed.`,
+      }),
+      needsConfirmation: { token: "tok-9f3a", preview: `… ${SPOKEN} …` },
+    });
+    await live(h);
+    await callTool(h, {
+      name: "dispatch_task",
+      argsJson: '{"task_id":"4a2f","member":"driver-2"}',
+    });
+    expect(toolLines(h)).toEqual([
+      "voice: tool 'dispatch_task' invoked (confirm-gated)",
+      "voice: tool 'dispatch_task' previewed in 0ms — NOT executed, awaiting the operator's confirmation",
+    ]);
+    // The preview and the token are both in the envelope; neither is ours
+    // to write down. The preview is spoken text; the token is a credential.
+    expect(h.logs.join("\n")).not.toContain(SPOKEN);
+    expect(h.logs.join("\n")).not.toContain("tok-9f3a");
+  });
+
+  test("redemption is distinguishable from the preview that preceded it", async () => {
+    const h = loggingHarness(okEnvelope("dispatched t-4a2f to driver-2"));
+    await live(h);
+    await callTool(h, {
+      name: "dispatch_task",
+      argsJson: '{"task_id":"4a2f","member":"driver-2","confirm_token":"tok-9f3a"}',
+    });
+    // THE POINT OF THE WHOLE STAGE FIELD. Without this line, a preview
+    // with no redemption after it and a model that never tried are the
+    // same silence — and after readonly clears, that difference is how a
+    // refusal is told apart from an outage.
+    expect(toolLines(h)[1]).toBe("voice: tool 'dispatch_task' ok in 0ms (confirmation redeemed)");
+  });
+
+  test("a redeemed call that then FAILS carries both the class and the redemption", async () => {
+    const h = loggingHarness({
+      envelopeJson: JSON.stringify({ ok: false, tool: "dispatch_task", error: "verb_failed" }),
+    });
+    await live(h);
+    await callTool(h, {
+      name: "dispatch_task",
+      argsJson: '{"task_id":"4a2f","member":"driver-2","confirm_token":"tok"}',
+    });
+    // "the verb blew up AFTER the operator confirmed" is a different
+    // incident from "it was refused at the gate", and must read that way.
+    expect(toolLines(h)[1]).toBe(
+      "voice: tool 'dispatch_task' failed in 0ms (verb_failed, confirmation redeemed)",
+    );
+  });
+
+  test("an EXPIRED token is not reported as a redemption", async () => {
+    const h = loggingHarness({
+      envelopeJson: JSON.stringify({ ok: false, tool: "dispatch_task", error: "confirm_expired" }),
+    });
+    await live(h);
+    await callTool(h, {
+      name: "dispatch_task",
+      argsJson: '{"task_id":"4a2f","member":"driver-2","confirm_token":"stale"}',
+    });
+    // A token was offered and REFUSED. Nothing ran, so claiming the gate
+    // opened would be a lie; the expiry class already tells the story.
+    expect(toolLines(h)[1]).toBe("voice: tool 'dispatch_task' failed in 0ms (confirm_expired)");
+  });
+
+  test("a gated tool rejected BEFORE the gate claims neither stage", async () => {
+    const h = loggingHarness({
+      envelopeJson: JSON.stringify({ ok: false, tool: "dispatch_task", error: "bad_args" }),
+    });
+    await live(h);
+    await callTool(h, { name: "dispatch_task", argsJson: '{"task_id":"4a2f"}' });
+    expect(toolLines(h)[1]).toBe("voice: tool 'dispatch_task' failed in 0ms (bad_args)");
+  });
+
+  test("a tool the catalog does not hold is called out as such, not as ungated", async () => {
+    const h = loggingHarness({
+      envelopeJson: JSON.stringify({ ok: false, tool: "kill_team", error: "bad_args" }),
+    });
+    await live(h);
+    await callTool(h, { name: "kill_team", argsJson: "{}" });
+    // Under ATMUX_VOICE_READONLY the messaging tools are ABSENT from the
+    // catalog, so this arm is also what "the model reached for a mutation
+    // while readonly" looks like. An invented tool is not an ungated one.
+    expect(toolLines(h)[0]).toBe("voice: tool 'kill_team' invoked (not in catalog)");
+  });
+
+  test("an unparseable envelope logs a class rather than logging nothing", async () => {
+    const h = loggingHarness({ envelopeJson: "<<<not json>>>" });
+    await live(h);
+    await callTool(h);
+    expect(toolLines(h)[1]).toBe("voice: tool 'team_status' failed in 0ms (unparseable-envelope)");
+  });
+
+  test("an envelope that parses but names no error still logs a class", async () => {
+    const h = loggingHarness({ envelopeJson: JSON.stringify({ ok: false, tool: "team_status" }) });
+    await live(h);
+    await callTool(h);
+    expect(toolLines(h)[1]).toBe("voice: tool 'team_status' failed in 0ms (unspecified)");
+  });
+
+  // ---- the no-speech property, asserted directly ----
+
+  test("ARGUMENTS never reach the log — and the line is still diagnostic", async () => {
+    const h = loggingHarness(okEnvelope());
+    await live(h);
+    await callTool(h, {
+      name: "tell_lead",
+      argsJson: JSON.stringify({ team: "atmux", message: SPOKEN }),
+    });
+    const joined = h.logs.join("\n");
+    // (1) the phrase the operator SAID is nowhere in the log …
+    expect(joined).not.toContain(SPOKEN);
+    expect(joined).not.toContain("heron");
+    // (2) … and yet the log still answers "which tool ran, and did it
+    // work?" — the redaction tests' own standard: bounded, not blank.
+    expect(toolLines(h)).toEqual([
+      "voice: tool 'tell_lead' invoked (no confirmation gate)",
+      "voice: tool 'tell_lead' ok in 0ms",
+    ]);
+    // (3) and the phone DID get the args — this is a logging bound, not a
+    // capability regression.
+    expect(h.phone.ofType("tool.start")[0]).toMatchObject({
+      args: expect.stringContaining(SPOKEN),
+    });
+  });
+
+  test("the spoken SUMMARY never reaches the log", async () => {
+    const h = loggingHarness(okEnvelope(`fleet is clear except ${SPOKEN}`));
+    await live(h);
+    await callTool(h);
+    expect(h.logs.join("\n")).not.toContain(SPOKEN);
+    // The summary went to the phone; only the log is bounded.
+    expect(h.phone.ofType("tool.done")[0]).toMatchObject({
+      summary: `fleet is clear except ${SPOKEN}`,
+    });
+  });
+
+  test("an invented tool NAME cannot write an unbounded log line", async () => {
+    const absurd = `fleet_${SPOKEN.repeat(20)}`;
+    const h = loggingHarness({ envelopeJson: JSON.stringify({ ok: true, tool: "x", data: "d" }) });
+    await live(h);
+    await callTool(h, { name: absurd, argsJson: "{}" });
+    // The name arrives on a PROVIDER frame, so a hallucinating model owns
+    // that string. Bounded at the one place a name is rendered for a log.
+    expect(toolLines(h)[0]).toBe(
+      `voice: tool '${absurd.slice(0, TOOL_NAME_LOG_MAX_CHARS)}' invoked (not in catalog)`,
+    );
+    expect(toolLines(h)[0]?.length ?? Infinity).toBeLessThan(120);
+  });
+
+  test("a garbled failure CLASS cannot write an unbounded log line", async () => {
+    const h = loggingHarness({
+      envelopeJson: JSON.stringify({ ok: false, tool: "team_status", error: SPOKEN.repeat(10) }),
+    });
+    await live(h);
+    await callTool(h);
+    expect(toolLines(h)[1]).toBe(
+      `voice: tool 'team_status' failed in 0ms (${SPOKEN.repeat(10).slice(0, TOOL_ERROR_CLASS_LOG_MAX_CHARS)})`,
+    );
+    // Bounded means bounded: 360 characters of injected text write 48.
+    expect(toolLines(h)[1]?.length ?? Infinity).toBeLessThan(100);
+    expect(toolLines(h)[1]).not.toContain(SPOKEN.repeat(2));
+  });
+
+  test("the stale-result drop line shares the same name bound", async () => {
+    const absurd = `team_status_${SPOKEN.repeat(20)}`;
+    let resolveTool!: (out: ExecuteToolOutput) => void;
+    const toolPending = new Promise<ExecuteToolOutput>((r) => {
+      resolveTool = r;
+    });
+    const h = makeHarness({
+      bridge: { health: IDLE_BRIDGE_HEALTH, executeTool: () => toolPending },
+    });
+    await live(h);
+    // The R3 redial dance: leg A dies, leg B takes the call and stalls its
+    // handshake, leg C replaces it — all while the tool is still running.
+    const legA = h.provider.lastLeg;
+    h.provider.emitSessionReady = false;
+    legA.emit({ type: "closed", code: 1006, reason: "network" });
+    await flush();
+    await h.timers.advance(redialBackoffMs(0));
+    h.provider.lastLeg.emit({ type: "tool-call", id: "call_stale", name: absurd, argsJson: "{}" });
+    await flush();
+    h.provider.emitSessionReady = true;
+    await h.timers.advance(SESSION_READY_TIMEOUT_MS + redialBackoffMs(1) + 10);
+    resolveTool(okEnvelope());
+    await flush();
+    const drop = h.logs.find((l) => l.startsWith("voice: dropping tool result"));
+    // One helper caps every name that reaches a log line — the fix is at
+    // the shared rendering point, not per-callsite.
+    expect(drop).toBe(
+      `voice: dropping tool result for '${absurd.slice(0, TOOL_NAME_LOG_MAX_CHARS)}' — the provider leg that issued it is gone (redial during execution)`,
+    );
+  });
+
+  test("with no log dep wired, tool calls still complete", async () => {
+    const h = makeHarness({
+      noLog: true,
+      bridge: {
+        health: IDLE_BRIDGE_HEALTH,
+        executeTool: async (): Promise<ExecuteToolOutput> => okEnvelope(),
+      },
+    });
+    await live(h);
+    await callTool(h);
+    expect(h.phone.ofType("tool.done")).toHaveLength(1);
+    expect(h.logs).toEqual([]);
+  });
+});
+
 // ---------- stale tool results (ADR-272 §Supplement-P7 §R3) ----------
 //
 // THE DEFECT. `onToolCall` re-read `this.conn` AFTER awaiting the bridge.
@@ -2037,9 +2345,25 @@ describe("dial diagnostics", () => {
     // The phone DID receive the transcripts — the events were really live.
     expect(h.phone.ofType("transcript.user")).toHaveLength(1);
     expect(h.phone.ofType("tool.start")).toHaveLength(1);
-    // ...and the server log stayed empty. Transcripts are the sensitive
-    // payload bounded by ADR-272 OQ-4; this sink is protocol events only.
-    expect(h.logs).toEqual([]);
+    // ...and NOTHING said reached the log. This used to read
+    // `expect(h.logs).toEqual([])`, which was a proxy for the property
+    // rather than the property: it passed because the tool call logged
+    // nothing AT ALL, which is the observability gap closed on 2026-08-16.
+    // The bound is on SPEECH, so it is speech the assertion names.
+    for (const said of [
+      "cancel the deploy to production immediately",
+      "understood, cancelling the deploy",
+      "stand down, we are reverting",
+      "atmux", // the spoken team argument
+    ]) {
+      expect(h.logs.join("\n")).not.toContain(said);
+    }
+    // Transcripts remain wholly absent (ADR-272 OQ-4); the tool call is
+    // present, as name + gate + outcome and nothing more.
+    expect(h.logs).toEqual([
+      "voice: tool 'tell_lead' invoked (no confirmation gate)",
+      "voice: tool 'tell_lead' ok in 0ms",
+    ]);
   });
 
   test("a session built WITHOUT a log sink stays silent instead of guessing one", async () => {
