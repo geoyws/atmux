@@ -64,11 +64,9 @@ import { ensureDir, exists, readText, writeText } from "../abstractions/fs.ts";
 import { readJson } from "../abstractions/json.ts";
 import { now } from "../abstractions/time.ts";
 import { driverInboxPath, getAtmuxDir, inboxPathFor, kanbanJsonPath } from "../core/common.ts";
+import { externalKanbanEnabled } from "../core/kanban-backend.ts";
 import { defaultStdoutWrite, type Writer } from "../core/io.ts";
-import {
-  installSkillsPlugin,
-  renderSkillsInstallResult,
-} from "../core/skills-plugin-install.ts";
+import { installSkillsPlugin, renderSkillsInstallResult } from "../core/skills-plugin-install.ts";
 import { resolveTemplatesDir } from "../core/templates-dir.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { ConfigError, UsageError } from "../errors.ts";
@@ -355,7 +353,7 @@ export async function init(argv: ReadonlyArray<string>, opts: InitOptions = {}):
   const atmuxDir = await getAtmuxDir({ cwd, env });
   const kanban = kanbanJsonPath(atmuxDir);
   const drvInbox = driverInboxPath(atmuxDir);
-  if (!(await exists(kanban))) {
+  if (!(await externalKanbanEnabled(atmuxDir, env)) && !(await exists(kanban))) {
     // Bash literal: `echo '{"tasks":[],"epics":[],"stories":[]}' > "$kj"`.
     // writeText to byte-match (compact, single-line, trailing newline).
     await writeText(kanban, '{"tasks":[],"epics":[],"stories":[]}\n');
