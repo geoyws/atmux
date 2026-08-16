@@ -1,7 +1,7 @@
 // ADR-272: voice operator interface — Zod schemas for the JSON control
 // frames exchanged as WebSocket TEXT frames between the phone PWA and the
 // voice server (binary audio frames are handled by
-// `src/core/voice/frame.ts`, not here).
+// `src/core/vox/frame.ts`, not here).
 //
 // Conventions per the events.ts precedent (ADR-203 §D1/§D3):
 //   - Discriminated union on the `type` field; wrong type + valid fields
@@ -179,7 +179,7 @@ export const ToolStartFrame = z
 /**
  * Tool call finished. `needs_confirmation` (pinned snake_case — see file
  * header) flags a mutation held for server-enforced confirmation
- * (`src/core/voice/confirm.ts`).
+ * (`src/core/vox/confirm.ts`).
  */
 export const ToolDoneFrame = z
   .object({

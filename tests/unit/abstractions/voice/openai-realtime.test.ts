@@ -47,7 +47,7 @@ const RUN_VERB_TOOL = {
 } as const;
 
 const PTT_OPTS: VoiceSessionOpts = {
-  instructions: "You are the atmux voice operator.",
+  instructions: "You are the atmux vox operator.",
   tools: [RUN_VERB_TOOL],
   turnDetection: { mode: "ptt" },
 };
@@ -144,7 +144,7 @@ describe("handshake", () => {
         session: {
           type: "realtime",
           output_modalities: ["audio"],
-          instructions: "You are the atmux voice operator.",
+          instructions: "You are the atmux vox operator.",
           audio: {
             input: {
               format: { type: "audio/pcm", rate: 24000 },

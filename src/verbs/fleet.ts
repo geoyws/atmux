@@ -1,7 +1,7 @@
 // ADR-273 D1/D2/D3: `atmux fleet --attention | --quiet` — the fleet
 // triage sweep behind the `fleet_attention` / `fleet_quiet` voice tools.
 //
-// The classifier and the spoken shape live in `src/core/voice/fleet.ts`
+// The classifier and the spoken shape live in `src/core/vox/fleet.ts`
 // (pure, fixture-testable). THIS file is the IO half: enumerate teams
 // from the cockpit, read every pane, and hand the observations over.
 //
@@ -77,8 +77,8 @@ import {
   renderQuiet,
   type TeamAsks,
   type UnreadableTeam,
-} from "../core/voice/fleet.ts";
-import { paneGist } from "../core/voice/summarize.ts";
+} from "../core/vox/fleet.ts";
+import { paneGist } from "../core/vox/summarize.ts";
 import { UsageError } from "../errors.ts";
 
 const USAGE =

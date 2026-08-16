@@ -23,7 +23,7 @@ import type {
   VoiceSessionOpts,
 } from "../../../../src/abstractions/voice-provider.ts";
 import { DEFAULT_OPEN_TIMEOUT_MS } from "../../../../src/abstractions/websocket.ts";
-import { createDecimator24to16 } from "../../../../src/core/voice/audio.ts";
+import { createDecimator24to16 } from "../../../../src/core/vox/audio.ts";
 import { VoiceProviderError } from "../../../../src/errors.ts";
 import { FakeWebSocket, startWsFixture, type WsFixture } from "../../../helpers/ws-fixture.ts";
 
@@ -64,7 +64,7 @@ const CLEAN_DECLARATION = {
 };
 
 const PTT_OPTS: VoiceSessionOpts = {
-  instructions: "You are the atmux voice operator.",
+  instructions: "You are the atmux vox operator.",
   tools: [DIRTY_TOOL],
   turnDetection: { mode: "ptt" },
 };
@@ -212,7 +212,7 @@ describe("handshake", () => {
         setup: {
           model: `models/${MODEL}`,
           generationConfig: { responseModalities: ["AUDIO"] },
-          systemInstruction: { parts: [{ text: "You are the atmux voice operator." }] },
+          systemInstruction: { parts: [{ text: "You are the atmux vox operator." }] },
           tools: [{ functionDeclarations: [CLEAN_DECLARATION] }],
           realtimeInputConfig: { automaticActivityDetection: { disabled: true } },
           inputAudioTranscription: {},

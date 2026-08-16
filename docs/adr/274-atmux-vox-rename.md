@@ -52,6 +52,8 @@ Precedence where both are set: `ATMUX_VOX_*` wins, and the presence of the old o
 
 Both shims are removed in the **release after next**, and carry `SUNSET` markers per ADR-266 §D1 naming that release. An undated shim is a permanent second code path pretending to be temporary — ADR-266 exists because this repo has had those before.
 
+**That release is `v0.9.1`, and every shim site carries a `SUNSET(v0.9.1):` marker.** ADR-266 §D1 requires a number rather than "a release or two", so: current is `0.8.30`, and the ADR-264 `atx` shims already in this tree are marked `SUNSET(v0.9.0)`. Pinning v0.9.1 puts these shims one train *after* that sweep on purpose — a single release is not asked to retire the `atx` shims and these at once, and a sweep that removes half a batch is how a shim survives its own expiry.
+
 The dotfiles and `keys/KEYS.md` are updated to `ATMUX_VOX_TOKEN` in the same change that lands the fallback, so the fallback exists for *other* people's stale shells and open sessions, not as the operator's permanent configuration.
 
 ## Consequences

@@ -18,7 +18,7 @@
 //     unparseable frame surfaces as a non-fatal provider-error.
 //   - There is no client-side response-cancel: `interrupt()` is a documented
 //     no-op (the client stops downlink playback locally on barge-in without
-//     a server round trip — RUNBOOK-voice.md V-11).
+//     a server round trip — RUNBOOK-vox.md V-11).
 //   - A tool reply's `FunctionResponse` carries a REQUIRED `name` beside the
 //     call id, while the neutral `sendToolResult(callId, …)` seam carries only
 //     the id — so each inbound `toolCall` records its id→name pairing and the
@@ -33,7 +33,7 @@
 // parsing through `json.ts::tryParseJsonString` (R3).
 
 import { z } from "zod";
-import { b64decodeToBytes, b64encodeBytes, createDecimator24to16 } from "../../core/voice/audio.ts";
+import { b64decodeToBytes, b64encodeBytes, createDecimator24to16 } from "../../core/vox/audio.ts";
 import { VoiceProviderError } from "../../errors.ts";
 import { tryParseJsonString } from "../json.ts";
 import type {
@@ -293,7 +293,7 @@ class GeminiLiveSession implements VoiceSession {
   /** NO-OP by design: Gemini Live has no client-side response-cancel frame —
    *  barge-in arrives as `serverContent.interrupted`, and the client stops
    *  downlink playback locally without a server round trip
-   *  (docs/RUNBOOK-voice.md V-11, "Local barge-in"). */
+   *  (docs/RUNBOOK-vox.md V-11, "Local barge-in"). */
   interrupt(): void {
     // deliberately empty (see doc comment)
   }

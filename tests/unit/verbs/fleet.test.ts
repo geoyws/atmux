@@ -1,6 +1,6 @@
 // Unit tests for src/verbs/fleet.ts — ADR-273 D1 sweep IO.
 //
-// The classifier's own tests live in tests/unit/core/voice/fleet.test.ts.
+// The classifier's own tests live in tests/unit/core/vox/fleet.test.ts.
 // What is tested HERE is everything the sweep is responsible for:
 // argument parsing, the wall-clock bound, the concurrency cap, the
 // never-silently-omit contract, window enumeration, and the tmux probe
@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import type { FlattenedTeamEntry } from "../../../src/core/cockpit.ts";
-import { type PaneObservation, renderUnreadable } from "../../../src/core/voice/fleet.ts";
+import { type PaneObservation, renderUnreadable } from "../../../src/core/vox/fleet.ts";
 import { UsageError } from "../../../src/errors.ts";
 import {
   CAPTURE_LINES,

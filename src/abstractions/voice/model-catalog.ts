@@ -3,7 +3,7 @@
 //
 // Why this file exists at all: the OpenAI adapter was built against a
 // RETIRED API and nobody knew until a live dial (ADR-272 §Consequences /
-// RUNBOOK-voice §8, `beta_api_shape_disabled`). The same class of fault
+// RUNBOOK-vox §8, `beta_api_shape_disabled`). The same class of fault
 // is already loaded and aimed — `defaultModelFor("gemini-live")` pins
 // `gemini-2.5-flash-native-audio-preview-09-2025`, a **dated preview id**
 // that will be retired on a schedule nobody in this repo controls. When
@@ -79,7 +79,7 @@ const geminiListSchema = z.object({
 });
 
 /** Strip Google's `models/` resource prefix so both providers yield the
- *  same vocabulary the operator pins in `ATMUX_VOICE_MODEL`. */
+ *  same vocabulary the operator pins in `ATMUX_VOX_MODEL`. */
 export function stripGeminiPrefix(name: string): string {
   return name.startsWith("models/") ? name.slice("models/".length) : name;
 }

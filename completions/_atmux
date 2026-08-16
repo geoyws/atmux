@@ -39,7 +39,7 @@ _atmux() {
     'reconfigure:Re-run wizard against existing team.json'
     'doctor:Check deps, team.json, TUI PATH, webhook reachability'
     'dashboard:Live full-screen status panel'
-    'voice:Spoken operator interface — WS + PWA server (ADR-272)'
+    'vox:Spoken operator interface — WS + PWA server (ADR-272)'
     'version:Print version'
     'help:Print help'
   )
@@ -173,10 +173,10 @@ _atmux() {
             '--name[Team name]:name:' \
             '--wizard[Interactive setup]' \
             '--force[Overwrite existing team.json]' ;;
-        voice)
+        vox)
           _arguments \
             '--serve[Run the WS + PWA server in the foreground (default)]' \
-            '--supervise[Idempotent detached atmux-voice tmux session]' \
+            '--supervise[Idempotent detached atmux-vox tmux session]' \
             '--status[Session state + /healthz probe]' \
             '--stop[Graceful stop of the supervised session]' \
             '--port[Listen port]:port:' \
