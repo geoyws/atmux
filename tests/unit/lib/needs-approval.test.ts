@@ -20,6 +20,7 @@ import {
   defaultScanFs,
   defaultScanKanban,
   type NeedsApprovalReport,
+  projectRootFromAtmuxDir,
   type ScanFs,
   type ScanKanban,
   scanBlockedTasks,
@@ -618,5 +619,58 @@ describe("ADR-085 acceptance — needsApprovalEnabled gate is caller-side", () =
     });
     expect(report).not.toBeNull();
     expect(report.total).toBe(0);
+  });
+});
+
+// The seam that lets a caller holding a team's `atmuxDir` scope the scan
+// to THAT team instead of to whatever repo it happens to be standing in —
+// which is how `atmux status --team-dir <other>` came to report the
+// caller's own ADR / inbox backlog as the other team's.
+describe("projectRootFromAtmuxDir — the dir that OWNS an .atmux", () => {
+  test("strips the trailing .atmux segment", () => {
+    expect(projectRootFromAtmuxDir("/work/src/atmux/.atmux")).toBe("/work/src/atmux");
+  });
+
+  test("tolerates a trailing slash", () => {
+    expect(projectRootFromAtmuxDir("/tmp/scratch/.atmux/")).toBe("/tmp/scratch");
+  });
+
+  test("an .atmux at the filesystem root yields '/', never the empty string", () => {
+    // An empty root would make every `join(projectRoot, "docs/adr")` a
+    // RELATIVE path and hand the scan back to the process cwd — the exact
+    // leak this helper exists to close.
+    expect(projectRootFromAtmuxDir("/.atmux")).toBe("/");
+  });
+
+  test("a path that is not an .atmux dir is returned unchanged", () => {
+    expect(projectRootFromAtmuxDir("/work/src/atmux")).toBe("/work/src/atmux");
+  });
+
+  test("omitting projectRoot still falls back to the cwd walk (documented default)", async () => {
+    // Both production callers now pass `projectRoot` explicitly, so the
+    // cwd-walk default would otherwise go unexercised — and it is part of
+    // the published `ScanDeps` contract, not dead code. Assert it is
+    // still reached AND that it resolves somewhere real, by recording the
+    // directory the scan actually asked for.
+    const asked: string[] = [];
+    const fs: ScanFs = {
+      async listDir(path: string) {
+        asked.push(path);
+        return null;
+      },
+      async readText() {
+        return null;
+      },
+      async mtimeSec() {
+        return null;
+      },
+    };
+    const report = await scanNeedsApproval({ fs, kanban: fakeKanban([]), clock: () => NOW });
+    expect(report.total).toBe(0);
+    // It asked for `<someRoot>/docs/adr` — an absolute path, not a
+    // relative one, which is what a failed resolution would produce.
+    expect(asked.length).toBeGreaterThan(0);
+    expect(asked[0]?.startsWith("/")).toBe(true);
+    expect(asked[0]?.endsWith("/docs/adr")).toBe(true);
   });
 });
