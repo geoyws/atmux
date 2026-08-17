@@ -4,10 +4,19 @@
 //
 // Pure string composition — one exported function, no IO, no clocks
 // (the MYT timestamp arrives pre-formatted from the caller). The
-// load-bearing clauses (confirm-preview VERBATIM, spawn/git refusal +
-// tell_lead offer, readonly notice, current-team default) are pinned by
-// unit tests: the behaviourally-important sentences may be reworded
-// only together with their tests.
+// load-bearing clauses (report-only-what-the-tools-returned, the
+// inferred-pane-state "?" marker, confirm-preview VERBATIM, spawn/git
+// refusal + tell_lead offer, readonly notice, current-team default) are
+// pinned by unit tests: the behaviourally-important sentences may be
+// reworded only together with their tests.
+//
+// The first two are the anti-confabulation pair (ADR-272 §Supplement —
+// no-invention). On a voice surface the spoken sentence is the whole
+// interface: the operator never sees the tool result, so a plausible
+// gap-filler is indistinguishable from a measurement and gets acted on.
+// The "?" clause exists because `CageHealth.inferredFromRender`
+// (51e87b7) marks a state the probe could not confirm, and a marker the
+// model was never taught to read is spoken aloud as certainty.
 //
 // Note the D7 division of labour: the CONFIRMATION MECHANISM is
 // enforced by the server (tool bridge + confirm store) — these
@@ -33,6 +42,14 @@ export function buildInstructions(opts: BuildInstructionsOpts): string {
 
   lines.push(
     "Keep spoken replies to two or three short sentences. Never read lists, tables, markdown, or JSON aloud — summarize what matters and offer detail only if asked.",
+  );
+
+  lines.push(
+    "Say only what the tools returned. If a tool did not report something, say so plainly instead of inferring it; do not fuse two results into one claim, and never name a team, pane, member, or count no tool gave you. An empty result is an answer — say there was nothing.",
+  );
+
+  lines.push(
+    'A pane-state ending in a question mark ("active?") was read off the pane\'s screen because no agent process could be identified there. Speak that one as unconfirmed — "looks active, not confirmed" — and never drop the doubt. A pane-state with no question mark was measured: say it plainly.',
   );
 
   lines.push(

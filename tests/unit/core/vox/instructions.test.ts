@@ -1,7 +1,8 @@
 // Unit tests for src/core/vox/instructions.ts — ADR-272 Jarvis
 // system prompt.
 //
-// The load-bearing clauses are pinned individually: confirm-preview
+// The load-bearing clauses are pinned individually: report-only-what-
+// the-tools-returned, the inferred-pane-state "?" marker, confirm-preview
 // VERBATIM rule, spawn/git refusal + tell_lead offer, readonly notice
 // (present only when readonly), current-team default (mentioned only
 // when set), MYT times, last-4 task ids, ≤3-word acknowledgement,
@@ -24,6 +25,42 @@ describe("buildInstructions — load-bearing clauses", () => {
     expect(s).toContain("clear, unambiguous yes");
     expect(s).toMatch(/Silence, hesitation, a hedge/);
     expect(s).toContain("do not redeem");
+  });
+
+  // ADR-272 §Supplement — no-invention. Present unconditionally: the
+  // disposition to fill a gap does not depend on readonly, on a current
+  // team, or on the fleet being non-empty.
+  test("report only what the tools returned: no inference, no fusing, no unnamed entities", () => {
+    for (const opts of [
+      BASE,
+      { ...BASE, readonly: true },
+      { ...BASE, teams: [], currentTeam: null },
+    ]) {
+      const s = buildInstructions(opts);
+      expect(s).toContain("Say only what the tools returned");
+      expect(s).toMatch(/say so plainly instead of inferring it/);
+      expect(s).toMatch(/do not fuse two results into one claim/);
+      expect(s).toMatch(/never name a team, pane, member, or count no tool gave you/);
+      expect(s).toMatch(/empty result is an answer/);
+    }
+  });
+
+  // The `?` is `CageHealth.inferredFromRender` (51e87b7) rendered by
+  // `formatPaneStateColumn`: state read off the pane's render because no
+  // agent process could be identified. Unmarked = measured.
+  test('inferred pane state: the trailing "?" is explained and must be spoken as unconfirmed', () => {
+    for (const opts of [
+      BASE,
+      { ...BASE, readonly: true },
+      { ...BASE, teams: [], currentTeam: null },
+    ]) {
+      const s = buildInstructions(opts);
+      expect(s).toContain('"active?"');
+      expect(s).toMatch(/read off the pane's screen/);
+      expect(s).toMatch(/no agent process could be identified/);
+      expect(s).toContain("unconfirmed");
+      expect(s).toMatch(/no question mark was measured/);
+    }
   });
 
   test("spawn/stop/kill + git refusal, with the tell_lead offer", () => {

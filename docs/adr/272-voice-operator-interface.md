@@ -515,6 +515,48 @@ Exactly **one line in and one line out per tool call**, emitted from `session.ts
 
 **Rejected: log the arguments behind a flag.** It reintroduces exactly the decision OQ-4 already made, in a second place, with a second flag to get wrong. The operator who needs the arguments turns on transcripts, which is the sink that was designed to hold speech and carries the retention rule.
 
+## Supplement — the prompt now forbids invention, and teaches the one uncertainty marker it can see (2026-08-17)
+
+Two clauses added to `src/core/vox/instructions.ts`, each pinned by its own test in `tests/unit/core/vox/instructions.test.ts` per this module's stated contract. They join the load-bearing set: reword only together with the pin.
+
+### N1 — why a prompt clause, on a surface that already enforces its safety in the server
+
+D7 draws the line correctly for *mutation*: the confirmation mechanism is enforced by the server, so a model that ignores its instructions still cannot change anything. **Truthfulness has no such server-side enforcement and cannot have one** — nothing between the tool result and the operator's ear can tell a summary from an embellishment. On a voice surface the spoken sentence *is* the whole interface: the operator never sees the tool output, so a plausible gap-filler is indistinguishable from a measurement, and it gets acted on. That is the asymmetry that makes "I don't know" the strictly better answer here, and it is why this is a prompt clause rather than a code change.
+
+The disposition is observed, not hypothesized. §E4a and §E4b both failed `drilldown` on `no_hallucination` against the live provider, with three distinct confabulations:
+
+| Spoken | What was actually true |
+|---|---|
+| *"There are 21 ADRs and a large inbox needing approval"* | ambient counts leaking from the real repository into a `mkdtemp` cage — **bad tool data**, fixed in `51e87b7` |
+| *"All panes are active, and no tasks are in progress or blocked"* | invented, and contradicting the fixture's pane blocked on a permission prompt |
+| *"the kanban is clear and needs approval"* | two unrelated rows of one table fused into a single self-contradicting claim |
+
+Only the first was a data fault. `51e87b7` fixed the data; **the disposition to fill a gap was untouched**, and nothing in the prompt discouraged it.
+
+### N2 — clause 1: report only what the tools returned
+
+> Say only what the tools returned. If a tool did not report something, say so plainly instead of inferring it; do not fuse two results into one claim, and never name a team, pane, member, or count no tool gave you. An empty result is an answer — say there was nothing.
+
+Three failures, one clause: inference where a tool was silent, fusion of separate results, and naming an entity no tool produced. The last sentence is there because "nothing came back" is the answer an assistant is most tempted to dress up, and dressing it up is precisely how row 3 of the table happened.
+
+It **subsumes nothing already in the prompt**. The existing `ambiguous_team` / `unknown_team` line is a narrower, more actionable instance of the same principle — say what the tool actually returned, then ask — and is kept for its concrete script; it is not a contradiction and was not rewritten.
+
+### N3 — clause 2: the "?" marker means unconfirmed, and must be spoken that way
+
+> A pane-state ending in a question mark ("active?") was read off the pane's screen because no agent process could be identified there. Speak that one as unconfirmed — "looks active, not confirmed" — and never drop the doubt. A pane-state with no question mark was measured: say it plainly.
+
+The wording tracks the rendered column, not the field name: `team_status` runs `atmux status` **without** `--json`, so what reaches the model is the text table whose header is literally `pane-state` and whose cell is `active?`. An instruction phrased in terms of `inferredFromRender` would name something the model never sees.
+
+`51e87b7` added `CageHealth.inferredFromRender` and `formatPaneStateColumn`'s trailing `?` ([ADR-273](273-voice-fleet-triage-and-pane-input.md) §Supplement-5): the state was believed off the pane's **render** because the `ps` probe could not identify the occupant. It is set only on non-`down` rows — a `down` row is the two signals *agreeing*, which is a conclusion rather than a hedge.
+
+**The marker was added for a voice tool and the voice model was never told what it means.** An unexplained `?` in a tool result is worse than no marker: it costs a character in the payload and buys nothing, because the model reads `active?` aloud as "active" and the operator hears certainty the probe does not have. The clause closes that loop, and its second half is load-bearing in the other direction — if every state were hedged, the hedge would carry no information, so an unmarked state is stated as a positive claim.
+
+### N4 — honest bound: what these clauses do and do not close
+
+Clause 1 addresses rows 2 and 3 directly: both are inventions on top of a tool that did not say the thing. Row 1 it addresses only *partially* — the numbers **were** in the tool output, so an obedient model relaying them is not violating the clause; that was a data fault and `51e87b7` is its fix. What the clause adds there is the refusal to characterize (*"a large inbox needing approval"*) beyond what the row said.
+
+Neither clause is a guarantee. A prompt shapes disposition; it does not enforce. The gate that measures the result is the §E-harness `drilldown` scenario, which stays failing until it passes on its own terms — no criterion was touched here.
+
 ## Decision-anchors
 
 Every row verified against disk on **2026-08-14** unless dated otherwise.
