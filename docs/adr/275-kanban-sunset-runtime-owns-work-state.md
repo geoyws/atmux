@@ -2,6 +2,7 @@
 
 Status: proposed
 Date: 2026-08-16
+**Runtime version this was written against: `@geoyws/kanban` at the Bun implementation, pre-`414bfdd`. SUPERSEDED WITHIN A DAY — see §Amendment 2026-08-17 before implementing anything below.**
 Supersedes in effect: [ADR-060](060-kanban-storage-sqlite.md) (kanban in `state.db`), [ADR-076](076-inbox-in-tasks-table.md) (inbox as a tasks view), and the orchd phase ADRs — [ADR-202](202-orchd-event-loop.md), [ADR-203](203-event-topic-taxonomy.md), [ADR-226](226-orchd-auto-merge.md), [ADR-227](227-orchd-auto-dissolve.md), [ADR-229](229-orchd-auto-push.md), [ADR-250](250-orchd-stale-epic-team-reaper.md)
 Relates: [ADR-267](267-agent-continuity-contract.md) (the continuity contract atmux specified and never built), [ADR-219](219-cockpit-mirror.md) (a bus consumer that SURVIVES this), [ADR-266](266-shim-sunset-policy-and-first-sweep.md), [ADR-271](271-sqlite-sole-store-rust-orchd-coordinator.md)
 
@@ -85,3 +86,27 @@ Most of that is TUI-fleet machinery and is obsolete under the current model. Aut
 - **The epic/story state machines are not a ledger concern.** `epic advance/ready/unready`, `story advance/signoff`, and the `review → merging` hook that synthesises a gitter merge-Task are workflow, and the runtime has no concept of them. They stay in atmux over `metadata.workflowStatus`, or they go — not decided here.
 - **Flags, decisions and the lead-outbox** are markdown appends with no table and no runtime equivalent (~8 MB fleet-wide). Out of scope; they are prose, not work state.
 - **[ADR-271](271-sqlite-sole-store-rust-orchd-coordinator.md) plans to delete the `kanban.json` path.** It must land before or with this, or two backends get migrated instead of one — and per D5 item 1, the JSON path is the one holding a team that sqlite cannot see.
+
+---
+
+## Amendment 2026-08-17 — the runtime was rewritten in Rust; the D5 hazards were fixed upstream
+
+**Read this before acting on anything above.** `@geoyws/kanban` moved to `414bfdd feat!: replace Bun runtime with Rust ledger` (v0.3.0). `src/store.ts`, `src/import-atmux.ts`, `src/cli.ts` and `src/db.ts` **no longer exist**. Every file-and-line citation in D5 and in the audit this ADR was built on describes an implementation that has been replaced.
+
+**The three D5 hazards appear to have been fixed upstream, by the team working in that repo:**
+
+| Hazard | Upstream commit |
+|---|---|
+| D5.2 silent `completed_at` drop | `ec1a73d` — *fix: preserve anomalous legacy completion times* |
+| D5.1 `auditx-root` JSON-only, no `state.db` | `12e8d49` — *feat: import json-only atmux hierarchies* |
+| The 7-state workflow collapse | `0105017`, `f95675b` — atomic story + workflow-metadata transitions |
+
+There is also `4f029a0 docs: record atmux fleet preparation`: that team is actively preparing for this migration.
+
+**Those are commit subjects, not verified behaviour.** They must be confirmed against the running implementation before D5 is treated as closed — a subject line is a claim, and the whole point of D5 was that one of these failure modes *reports success*.
+
+**What does not change:** D1 (runtime owns the ledger, atmux keeps the verbs), D2 (orchd retired), D3 (the task-topic bus is orphaned because orchd is its only consumer, and `atmux-cockpit-mirror` reads a different database and survives), and D4 (additive, reversible). Those rest on facts about **atmux**, which are unaffected by a rewrite on the other side.
+
+**Operational constraint, added here because it is easy to get wrong:** `/root/work/src/kanban` has a **live atmux cage working in it** (session `atmux-kanban`, driver and driver-2). Do not edit that repo as part of this migration — read it, run it, but coordinate rather than commit into another team's tree.
+
+**Standing lesson, third occurrence:** the audit behind this ADR warned *"pin a commit before writing the ADR"* after watching the repo move twice mid-investigation. It then moved a third time, with a breaking rewrite, within a day of the ADR being written. **Anything written about this runtime must name the commit it was true for**, and any plan built on its internals should assume a shelf life measured in days until it stabilises.
