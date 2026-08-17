@@ -357,7 +357,11 @@ export async function init(argv: ReadonlyArray<string>, opts: InitOptions = {}):
   const kanban = kanbanJsonPath(atmuxDir);
   const drvInbox = driverInboxPath(atmuxDir);
   if (await externalKanbanEnabled(atmuxDir, env)) {
-    const adapter = opts.kanbanAdapter ?? new KanbanCliAdapter({ env });
+    // Deliberately NOT `{ env }`: here `env` is `process.env`, and handing it
+    // to the adapter as an explicit env would re-admit the ambient
+    // `KANBAN_DB` / `KANBAN_DATA_DIR` the adapter strips, at the one call site
+    // that creates the board. The adapter inherits the environment itself.
+    const adapter = opts.kanbanAdapter ?? new KanbanCliAdapter();
     await adapter.initialize(atmuxDir, teamName);
   } else if (!(await exists(kanban))) {
     // Bash literal: `echo '{"tasks":[],"epics":[],"stories":[]}' > "$kj"`.

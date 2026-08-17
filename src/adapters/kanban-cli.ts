@@ -200,14 +200,49 @@ function taskFromExternal(
   };
 }
 
+/** Runtime environment variables that outrank the cwd this adapter pins when
+ *  the `kanban` binary resolves its board. At runtime commit `414bfdd`:
+ *  `KANBAN_DB` (rust/main.rs `store_path`) short-circuits board discovery
+ *  outright, and `KANBAN_DATA_DIR` (rust/registry.rs `data_root`) relocates
+ *  the registry that the cwd walk-up consults. Either one exported in an
+ *  operator's shell would silently redirect every atmux work-state read and
+ *  write to a different board while this adapter believes it pinned the
+ *  project root — the two-authorities failure ADR-275 D1/D3 forbids. */
+export const BOARD_SELECTING_ENV_VARS = ["KANBAN_DB", "KANBAN_DATA_DIR"] as const;
+
+/** Merge `explicit` over `ambient`, dropping any board-selecting variable that
+ *  reached us only by ambient inheritance. A caller that names one in its own
+ *  `options.env` means it, and keeps it; `process.env` never does. */
+export function sanitizeKanbanEnv(
+  ambient: Record<string, string | undefined>,
+  explicit: Record<string, string | undefined> = {},
+): { env: Record<string, string | undefined>; stripped: string[] } {
+  const env: Record<string, string | undefined> = { ...ambient, ...explicit };
+  const stripped: string[] = [];
+  for (const name of BOARD_SELECTING_ENV_VARS) {
+    if (Object.hasOwn(explicit, name)) continue;
+    if (ambient[name] === undefined) continue;
+    delete env[name];
+    stripped.push(name);
+  }
+  return { env, stripped };
+}
+
 async function defaultRunner(
   binary: string,
   args: readonly string[],
   options: KanbanCliRunOptions,
+  warned: Set<string>,
 ): Promise<unknown> {
+  const { env, stripped } = sanitizeKanbanEnv(process.env, options.env ?? {});
+  for (const name of stripped) {
+    if (warned.has(name)) continue;
+    warned.add(name);
+    console.error(`atmux: ignoring inherited ${name}; kanban board selected by cwd ${options.cwd}`);
+  }
   const proc = Bun.spawn([binary, ...args], {
     cwd: options.cwd,
-    env: { ...process.env, ...options.env },
+    env,
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -227,12 +262,16 @@ export class KanbanCliAdapter {
   readonly binary: string;
   private readonly env: Record<string, string | undefined>;
   private readonly runner: KanbanCliRunner;
+  /** Board-selecting variables already reported by this adapter, so a stripped
+   *  ambient value is named once rather than on every subprocess call. */
+  private readonly warnedEnvVars = new Set<string>();
 
   constructor(options: KanbanCliAdapterOptions = {}) {
     this.binary = options.binary ?? process.env.KANBAN_BIN ?? "kanban";
     this.env = options.env ?? {};
     this.runner =
-      options.runner ?? ((args, runOptions) => defaultRunner(this.binary, args, runOptions));
+      options.runner ??
+      ((args, runOptions) => defaultRunner(this.binary, args, runOptions, this.warnedEnvVars));
   }
 
   private projectRoot(atmuxDir: string): string {
@@ -251,7 +290,16 @@ export class KanbanCliAdapter {
 
   async initialize(atmuxDir: string, name?: string): Promise<void> {
     const root = this.projectRoot(atmuxDir);
-    await this.runner(["init", "--workspace", root, "--name", name ?? basename(root), "--json"], {
+    // No `--workspace`. At runtime commit `414bfdd` exactly two verbs read it —
+    // `init` (rust/main.rs:217) and `workspace attach` (:232), the two that
+    // mutate the registry. Every other verb resolves its board through
+    // `store_path` (:145-158) and never consults the flag, so it is accepted
+    // and ignored there. Of those two, this adapter calls only `init`, and it
+    // already pins cwd to the same directory. Stating the flag anyway would
+    // model a selector that is real on one of the adapter's verbs and inert on
+    // the rest, and the next reader who reaches for it somewhere cwd is not
+    // also pinned writes to another operator's board with a clean receipt.
+    await this.runner(["init", "--name", name ?? basename(root), "--json"], {
       cwd: root,
       env: this.env,
     });
