@@ -38,7 +38,7 @@ export interface RenameTeamViewerWindowOpts {
    *  `createTmux({ socket: "atmux-cockpit" })`). */
   tmux: TmuxNamespace;
   /** Cockpit session name (from `cockpit.json :: cockpitSession`,
-   *  typically `"atmux_cockpit"`). */
+   *  typically `"atx"`). */
   cockpitSession: string;
   oldName: string;
   newName: string;

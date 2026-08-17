@@ -98,9 +98,10 @@ export interface ParsedCockpitRotateArgs {
  *  would kill the interactive session. */
 const RESERVED_NEVER_ROTATE: ReadonlySet<string> = new Set(["superdriver"]);
 
-/** Default cockpit session-name (ADR-135 §D5 post-`atmux_teams` rename).
- *  Operators with bespoke names pass `cockpitSessionName` opt. */
-const COCKPIT_SESSION_DEFAULT = "atmux_cockpit";
+/** Default cockpit session-name (ADR-264 §D5; was `atmux_cockpit`
+ *  per ADR-135). Operators with bespoke names pass
+ *  `cockpitSessionName` opt. */
+const COCKPIT_SESSION_DEFAULT = "atx";
 
 /** Pre-flight gate 3 minimum uptime — `<60min` since the per-role
  *  session-start marker means "rotated too soon after spawn, lost
@@ -300,7 +301,7 @@ export interface CockpitRotateOpts {
   homeDir?: string;
   /** Cockpit session-name; gate-1 reads `<session>:_superdriver` and
    *  gate-2 reads `<session>:<target-window>`. Default
-   *  `atmux_cockpit` (ADR-135 §D5 post-rename canonical). */
+   *  `atx` (ADR-264 §D5 canonical). */
   cockpitSessionName?: string;
   /** Cockpit tmux socket name (used by `createTmux({socket})`). Default
    *  resolves via `getCockpitSocketName(env)` per ADR-162. */
@@ -942,7 +943,7 @@ async function performRespawn(
         // claudeAccount field rides through cockpit.json for other
         // consumers (cockpit rebuild's lead-pane spawn inside the
         // cage) and is intentionally untouched here.
-        cmd = buildTeamWindowCommand(t, "attach");
+        cmd = await buildTeamWindowCommand(t, "attach");
         break;
       }
     }

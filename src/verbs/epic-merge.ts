@@ -37,6 +37,7 @@ import {
 import { closeDatabase, type Database, openDatabase } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { defaultGitSpawn, type GitSpawn } from "../abstractions/worktree.ts";
+import { serializeTickResult } from "../core/auto-merge-invoke.ts";
 import type { PreMergeGateInput } from "../core/branch-merge-state.ts";
 import {
   BRANCH_MERGE_STATES,
@@ -57,6 +58,7 @@ import {
 } from "../core/epic-merge.ts";
 import { expandCagePath, runCageTestGate } from "../core/epic-test-cage.ts";
 import { composeStagingUrl, runDeployedTestGate } from "../core/epic-test-deploy.ts";
+import { loadKanban } from "../core/kanban.ts";
 import { MergerStateRepo } from "../core/repositories/merger-state-repo.ts";
 import { logTestGateBypass } from "../core/test-gate-bypass.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
@@ -707,15 +709,9 @@ async function defaultResolveGate(deps: {
   gate: PreMergeGateInput;
   hasReviewerTrunkSignoff: boolean;
 }> {
-  // 1. ownerOpenTaskCount — count Tasks NOT in `done` state. The
-  // epic-team's kanban lives at `<epicRepoPath>/.atmux/state.db` —
-  // the same DB handle the verb opened above (caller passed it in).
-  const openTasksRow = deps.db
-    .query<{ n: number }, []>(
-      `SELECT COUNT(*) AS n FROM tasks WHERE status NOT IN ('done', 'wontfix')`,
-    )
-    .get();
-  const ownerOpenTaskCount = openTasksRow?.n ?? 0;
+  const { ownerOpenTaskCount, hasReviewerTrunkSignoff } = await readKanbanGateFacts(
+    join(deps.epicRepoPath, ".atmux"),
+  );
 
   // 2. hasReviewerTrunkSignoff — is there a done Task with
   // role='reviewer-trunk-signoff'? §Decision-anchor #1 + #5.
@@ -729,14 +725,6 @@ async function defaultResolveGate(deps: {
   // here at merge time to the trunk's json_extract form — `->>` is the
   // newer SQLite JSON1 shorthand but the explicit json_extract reads more
   // portably).
-  const signoffRow = deps.db
-    .query<{ n: number }, []>(
-      `SELECT COUNT(*) AS n FROM tasks
-       WHERE status = 'done' AND json_extract(extra, '$.role') = 'reviewer-trunk-signoff'`,
-    )
-    .get();
-  const hasReviewerTrunkSignoff = (signoffRow?.n ?? 0) > 0;
-
   // 3. worktreeIsClean — `git -C parentRepoPath status --porcelain`
   // empty? Run on PARENT's worktree because that's where the merge
   // lands; an unclean parent would refuse the merge regardless of
@@ -780,6 +768,21 @@ async function defaultResolveGate(deps: {
       baseHasMoved,
     },
     hasReviewerTrunkSignoff,
+  };
+}
+
+export async function readKanbanGateFacts(atmuxDir: string): Promise<{
+  ownerOpenTaskCount: number;
+  hasReviewerTrunkSignoff: boolean;
+}> {
+  const kanban = await loadKanban(atmuxDir);
+  return {
+    ownerOpenTaskCount: kanban.tasks.filter(
+      (task) => task.status !== "done" && task.status !== "wontfix" && task.status !== "cancelled",
+    ).length,
+    hasReviewerTrunkSignoff: kanban.tasks.some(
+      (task) => task.status === "done" && task.role === "reviewer-trunk-signoff",
+    ),
   };
 }
 
@@ -865,16 +868,25 @@ async function defaultDispatchDissolve(epicId: string, by: string): Promise<bool
 
 // ---------- Result logging ----------
 
+// The printed line is produced by the SHARED `serializeTickResult`
+// (ADR-255 §D1) so the in-cage auto-merge consumer
+// (`src/core/auto-merge-invoke.ts::parseTickResult`) reads exactly what
+// this verb writes — producer + consumer cannot drift independently.
 function logTickResult(
   result: PerformEpicMergeResult,
   logger: Logger,
   teamName: string,
   parentBase: string,
 ): void {
-  const verdict = result.changed ? "advanced" : "no-op";
-  const sha = result.mergedSha !== undefined ? ` sha=${result.mergedSha}` : "";
-  const dispatched = result.dissolveDispatched ? " dissolve-dispatched" : "";
   logger.log(
-    `epic-merge tick: team='${teamName}' parentBase='${parentBase}' state='${result.state}' ${verdict}${sha}${dispatched} reason='${result.reason}'`,
+    serializeTickResult({
+      team: teamName,
+      parentBase,
+      state: result.state,
+      verdict: result.changed ? "advanced" : "no-op",
+      ...(result.mergedSha !== undefined ? { mergedSha: result.mergedSha } : {}),
+      dissolveDispatched: result.dissolveDispatched,
+      reason: result.reason,
+    }),
   );
 }

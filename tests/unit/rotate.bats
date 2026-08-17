@@ -206,12 +206,12 @@ EOF
 # rotate.sh refuses to /clear a pane that's mid-turn or has queued
 # input — those states would lose user-visible work. Rate-limit /
 # approaching-limit / Compacting banners DON'T block rotation (whip's
-# AUTO-PRECLEAR path uses those as the trigger TO rotate). --force
+# AUTO-HANDOFF path uses those as the trigger TO rotate). --force
 # overrides the pre-flight unconditionally.
 #
 # Tests use the shell-tui sandbox + inject the literal banner string
 # via `echo` so capture-pane picks it up — same pattern as
-# whip_preclear.bats. The blocker patterns are specific enough not to
+# whip_handoff.bats. The blocker patterns are specific enough not to
 # appear in legitimate shell scrollback, so the check works uniformly
 # across TUIs.
 
@@ -243,7 +243,7 @@ EOF
 
 @test "rotate pre-flight: rate-limit banner does NOT block (rotation-eligible)" {
   # Rate-limit / approaching-limit / Compacting are the SIGNALS that
-  # whip's AUTO-PRECLEAR uses to fire rotation — blocking on them
+  # whip's AUTO-HANDOFF uses to fire rotation — blocking on them
   # would defeat the feature.
   _start_session
   tmux send-keys -t "$ATMUX_SESSION:__rot__worker" \
@@ -256,7 +256,7 @@ EOF
   [ -f .atmux/state/worker-rotated.epoch ]
 }
 
-@test "rotate pre-flight: Compacting banner does NOT block (AUTO-PRECLEAR trigger)" {
+@test "rotate pre-flight: Compacting banner does NOT block (AUTO-HANDOFF trigger)" {
   _start_session
   tmux send-keys -t "$ATMUX_SESSION:__rot__worker" \
     "echo 'Compacting conversation'" Enter

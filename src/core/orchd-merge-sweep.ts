@@ -29,6 +29,7 @@
 //   - no attended signal above
 
 import type { Database } from "bun:sqlite";
+import type { Kanban } from "../schema/kanban.ts";
 
 import type { DispatchEpicMergeResult } from "./orchd-merge.ts";
 
@@ -63,6 +64,9 @@ export interface SweepResult {
 export interface SweepDeps {
   /** Open per-team state.db. */
   db: Database;
+  /** Adapter-aware snapshot. Production supplies this; `db` remains for
+   *  event/idempotency state and as the legacy-mode test seam. */
+  loadKanban?: () => Kanban | Promise<Kanban>;
   /** Wall-clock seconds — injected for tests. */
   nowSec?: () => number;
   /** Attended lookback window. Default 300s. */
@@ -100,18 +104,26 @@ export async function sweepMerges(deps: SweepDeps): Promise<SweepResult> {
   // Pull every epic + its derived status. We do per-epic SQL queries
   // for ready + attended (one or two cheap queries each; epic counts
   // are O(10s) in practice — measured in fleet today).
-  const epicRows = deps.db
-    .prepare(
-      `SELECT id, status, extra FROM epics WHERE status != 'done' OR id IN
-        (SELECT id FROM epics WHERE json_extract(extra, '$.mergedAt') IS NULL)`,
-    )
-    .all() as Array<{ id: string; status: string; extra: string | null }>;
+  const snapshot = deps.loadKanban ? await deps.loadKanban() : null;
+  const epicRows = snapshot
+    ? (snapshot.epics ?? []).map((epic) => ({
+        id: epic.id,
+        status: epic.status,
+        extra: epic.extra ?? {},
+      }))
+    : (deps.db
+        .prepare(
+          `SELECT id, status, extra FROM epics WHERE status != 'done' OR id IN
+            (SELECT id FROM epics WHERE json_extract(extra, '$.mergedAt') IS NULL)`,
+        )
+        .all() as Array<{ id: string; status: string; extra: string | null }>);
 
   const now = nowSec();
   for (const epic of epicRows) {
     result.epicsConsidered += 1;
 
-    const extra = parseExtra(epic.extra);
+    const extra =
+      typeof epic.extra === "string" || epic.extra === null ? parseExtra(epic.extra) : epic.extra;
     if (extra.mergedAt != null) {
       result.epicsAlreadyMerged += 1;
       result.perEpic.push({ epicId: epic.id, outcome: "skipped-already-merged" });
@@ -120,18 +132,30 @@ export async function sweepMerges(deps: SweepDeps): Promise<SweepResult> {
 
     // Ready check — every story done OR every task done (treat
     // story-less epics as task-direct).
-    const ready = await isEpicReady(deps.db, epic.id);
+    const ready = snapshot
+      ? isEpicReadyFromSnapshot(snapshot, epic.id)
+      : await isEpicReady(deps.db, epic.id);
     if (!ready.ready) {
       result.epicsNotReady += 1;
-      result.perEpic.push({ epicId: epic.id, outcome: "skipped-not-ready", reason: ready.reason });
+      result.perEpic.push({
+        epicId: epic.id,
+        outcome: "skipped-not-ready",
+        ...(ready.reason !== undefined ? { reason: ready.reason } : {}),
+      });
       continue;
     }
 
     // Attended check — work-in-flight signal blocks dispatch.
-    const att = await isEpicAttended(deps.db, epic.id, now, windowSec);
+    const att = snapshot
+      ? isEpicAttendedFromSnapshot(snapshot, epic.id, now, windowSec)
+      : await isEpicAttended(deps.db, epic.id, now, windowSec);
     if (att.attended) {
       result.epicsAttended += 1;
-      result.perEpic.push({ epicId: epic.id, outcome: "skipped-attended", reason: att.reason });
+      result.perEpic.push({
+        epicId: epic.id,
+        outcome: "skipped-attended",
+        ...(att.reason !== undefined ? { reason: att.reason } : {}),
+      });
       continue;
     }
 
@@ -153,14 +177,17 @@ export async function sweepMerges(deps: SweepDeps): Promise<SweepResult> {
           });
           break;
         case "skipped-not-mine":
-        case "already-merged":
+        case "already-merged": {
           result.epicsDispatchedSkipped += 1;
+          const skipReason =
+            dispatch.state === "skipped-not-mine" ? dispatch.reason : "already-merged";
           result.perEpic.push({
             epicId: epic.id,
             outcome: "dispatched-skipped",
-            reason: dispatch.state === "skipped-not-mine" ? dispatch.reason : "already-merged",
+            ...(skipReason !== undefined ? { reason: skipReason } : {}),
           });
           break;
+        }
       }
     } catch (e) {
       result.epicsErrored += 1;
@@ -171,6 +198,44 @@ export async function sweepMerges(deps: SweepDeps): Promise<SweepResult> {
   }
 
   return result;
+}
+
+function isEpicReadyFromSnapshot(
+  kanban: Kanban,
+  epicId: string,
+): { ready: boolean; reason?: string } {
+  const stories = (kanban.stories ?? []).filter((story) => story.epic === epicId);
+  const tasks = kanban.tasks.filter((task) => task.epic === epicId);
+  const openStory = stories.find((story) => story.status !== "done");
+  if (openStory) return { ready: false, reason: `story status=${openStory.status}` };
+  if (tasks.length === 0 && stories.length === 0)
+    return { ready: false, reason: "no tasks or stories" };
+  const openTask = tasks.find(
+    (task) => task.status !== "done" && task.status !== "wontfix" && task.status !== "cancelled",
+  );
+  return openTask ? { ready: false, reason: `task status=${openTask.status}` } : { ready: true };
+}
+
+function isEpicAttendedFromSnapshot(
+  kanban: Kanban,
+  epicId: string,
+  nowSec: number,
+  windowSec: number,
+): { attended: boolean; reason?: string } {
+  const tasks = kanban.tasks.filter((task) => task.epic === epicId);
+  const inProgress = tasks.filter((task) => task.status === "in-progress").length;
+  if (inProgress > 0) return { attended: true, reason: `${inProgress} in-progress task(s)` };
+  const since = nowSec - windowSec;
+  const recentDone = tasks.filter(
+    (task) =>
+      task.status === "done" && typeof task.completedAt === "number" && task.completedAt >= since,
+  ).length;
+  return recentDone > 0
+    ? {
+        attended: true,
+        reason: `${recentDone} task(s) done in last ${windowSec}s — leaving grace window`,
+      }
+    : { attended: false };
 }
 
 function parseExtra(raw: string | null): { mergedAt?: number | null; [k: string]: unknown } {
@@ -188,15 +253,15 @@ async function isEpicReady(
   db: Database,
   epicId: string,
 ): Promise<{ ready: boolean; reason?: string }> {
-  const storyRows = db
-    .prepare("SELECT status FROM stories WHERE epic = ?")
-    .all(epicId) as Array<{ status: string }>;
+  const storyRows = db.prepare("SELECT status FROM stories WHERE epic = ?").all(epicId) as Array<{
+    status: string;
+  }>;
   for (const s of storyRows) {
     if (s.status !== "done") return { ready: false, reason: `story status=${s.status}` };
   }
-  const taskRows = db
-    .prepare("SELECT status FROM tasks WHERE epic = ?")
-    .all(epicId) as Array<{ status: string }>;
+  const taskRows = db.prepare("SELECT status FROM tasks WHERE epic = ?").all(epicId) as Array<{
+    status: string;
+  }>;
   if (taskRows.length === 0 && storyRows.length === 0) {
     return { ready: false, reason: "no tasks or stories" };
   }

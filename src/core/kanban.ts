@@ -52,11 +52,11 @@ import {
   closeDatabase,
   type Database,
   openDatabase,
-  transact,
   transactImmediate,
 } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { now } from "../abstractions/time.ts";
+import { KanbanCliAdapter } from "../adapters/kanban-cli.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import {
   type Kanban,
@@ -67,6 +67,7 @@ import {
 import { DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG, type Team } from "../schema/team.ts";
 import { type CallerScope, kanbanJsonPath, tryLoadTeam } from "./common.ts";
 import { nextId } from "./id-sequence.ts";
+import { externalKanbanEnabled } from "./kanban-backend.ts";
 import { KanbanRepo } from "./repositories/kanban-repo.ts";
 
 // ---------- Storage routing (ADR-060) ----------
@@ -89,6 +90,8 @@ import { KanbanRepo } from "./repositories/kanban-repo.ts";
 function _stateDbPath(atmuxDir: string): string {
   return join(atmuxDir, "state.db");
 }
+
+const externalKanban = new KanbanCliAdapter();
 
 async function _useSqlite(atmuxDir: string): Promise<boolean> {
   return await exists(_stateDbPath(atmuxDir));
@@ -128,6 +131,15 @@ export interface AddTaskOpts {
    *  (`claim --next` / lane-tick cron) skips this Task unless the
    *  caller's scope is `driver` (env `ATMUX_CALLER_SCOPE=driver`). */
   driverOnly?: boolean;
+  /** ADR-193: parent epic id (`e-<id>`). Validated for shape at the
+   *  verb layer; NO existence check (§OQ1 — cross-worktree decomp may
+   *  file the epic in a sibling session). */
+  epic?: string;
+  /** ADR-193: parent story id (`s-<id>`). Same shape-only stance. */
+  story?: string;
+  /** ADR-193: free-form deliverable description (≤256 chars at the
+   *  verb layer — a path / artifact reference, e.g. `docs/adr/171-...md`). */
+  deliverable?: string;
 }
 
 export interface ListTasksFilter {
@@ -144,6 +156,7 @@ export interface ListTasksFilter {
  * the operator misconfiguration earlier).
  */
 export async function loadKanban(atmuxDir: string): Promise<Kanban> {
+  if (await externalKanbanEnabled(atmuxDir)) return externalKanban.loadKanban(atmuxDir);
   if (await _useSqlite(atmuxDir)) {
     return await _withDb(atmuxDir, (_db, repo) => ({
       tasks: repo.listTasks(),
@@ -186,6 +199,8 @@ export async function addTask(atmuxDir: string, opts: AddTaskOpts): Promise<stri
   if (subject.length === 0) {
     throw new UsageError({ what: "task add: <subject> required" });
   }
+  if (await externalKanbanEnabled(atmuxDir))
+    return externalKanban.addTask(atmuxDir, { ...opts, subject });
   const createdAt = nowEpoch();
   // ADR-202 §Amendment 2026-05-22 (IV) — task.unclaimed event-emit gate.
   // Fire when ALL of: status='todo' (always true here) AND lane is set
@@ -197,8 +212,7 @@ export async function addTask(atmuxDir: string, opts: AddTaskOpts): Promise<stri
   const lane = opts.lane ?? null;
   const ownerCandidate =
     opts.assignee !== undefined && opts.assignee.length > 0 ? opts.assignee : null;
-  const wantsUnclaimedEmit =
-    typeof lane === "string" && lane.length > 0 && ownerCandidate === null;
+  const wantsUnclaimedEmit = typeof lane === "string" && lane.length > 0 && ownerCandidate === null;
   const team = wantsUnclaimedEmit ? await tryLoadTeam({ dir: atmuxDir }) : null;
   if (await _useSqlite(atmuxDir)) {
     let assignedId = "";
@@ -222,6 +236,12 @@ export async function addTask(atmuxDir: string, opts: AddTaskOpts): Promise<stri
           completedAt: null,
         };
         if (opts.driverOnly === true) task.driverOnly = true;
+        // ADR-193: epic/story/deliverable set only when supplied
+        // (mirrors the driverOnly minimal-footprint pattern — absent
+        // flag leaves the field undefined, which the repo binds NULL).
+        if (opts.epic !== undefined) task.epic = opts.epic;
+        if (opts.story !== undefined) task.story = opts.story;
+        if (opts.deliverable !== undefined) task.deliverable = opts.deliverable;
         repo.addTask(task);
         if (wantsUnclaimedEmit && team !== null) {
           tryEmitTaskUnclaimed({ db, task, team });
@@ -249,6 +269,10 @@ export async function addTask(atmuxDir: string, opts: AddTaskOpts): Promise<stri
     completedAt: null,
   };
   if (opts.driverOnly === true) task.driverOnly = true;
+  // ADR-193: epic/story/deliverable parity with the SQLite path above.
+  if (opts.epic !== undefined) task.epic = opts.epic;
+  if (opts.story !== undefined) task.story = opts.story;
+  if (opts.deliverable !== undefined) task.deliverable = opts.deliverable;
   await updateJson(
     kanbanJsonPath(atmuxDir),
     KanbanSchema,
@@ -265,11 +289,7 @@ export async function addTask(atmuxDir: string, opts: AddTaskOpts): Promise<stri
  * or missing events table is swallowed (the kanban write is load-
  * bearing; the event is observability/coordination plumbing).
  */
-function tryEmitTaskUnclaimed(args: {
-  db: Database;
-  task: KanbanTask;
-  team: Team;
-}): void {
+function tryEmitTaskUnclaimed(args: { db: Database; task: KanbanTask; team: Team }): void {
   const { db, task, team } = args;
   // Narrow the lane to the ADR-203 v1 enum. The kanban-side `lane`
   // field is a string; the event schema is a closed enum. If the
@@ -285,9 +305,7 @@ function tryEmitTaskUnclaimed(args: {
       taskId: task.id,
       team: team.name,
       lane: task.lane as "fe" | "be" | "db" | "ops" | "test" | "review" | "misc",
-      ...(task.priority !== null && task.priority !== undefined
-        ? { priority: task.priority }
-        : {}),
+      ...(task.priority !== null && task.priority !== undefined ? { priority: task.priority } : {}),
       ...(typeof task.story === "string" ? { storyId: task.story } : {}),
       ...(typeof task.epic === "string" ? { epicId: task.epic } : {}),
     });
@@ -302,6 +320,13 @@ function tryEmitTaskUnclaimed(args: {
  * + render. Bash's tabular output lives in the verb (lib/kanban.sh:91-98).
  */
 export async function listTasks(atmuxDir: string, filter?: ListTasksFilter): Promise<KanbanTask[]> {
+  if (await externalKanbanEnabled(atmuxDir)) {
+    return externalKanban.listTasks(atmuxDir, {
+      ...(filter?.status !== undefined ? { status: filter.status } : {}),
+      ...(filter?.assignee !== undefined ? { assignee: filter.assignee } : {}),
+      ...(filter?.lane !== undefined ? { lane: filter.lane } : {}),
+    });
+  }
   if (await _useSqlite(atmuxDir)) {
     return await _withDb(atmuxDir, (_db, repo) => {
       // KanbanRepo.listTasks accepts {owner, status, lane, epic, story};
@@ -334,6 +359,7 @@ export async function listTasks(atmuxDir: string, filter?: ListTasksFilter): Pro
  *  jq output on miss; we surface as null so callers can choose how to
  *  surface "not found"). */
 export async function showTask(atmuxDir: string, id: string): Promise<KanbanTask | null> {
+  if (await externalKanbanEnabled(atmuxDir)) return externalKanban.showTask(atmuxDir, id);
   if (await _useSqlite(atmuxDir)) {
     return await _withDb(atmuxDir, (_db, repo) => repo.getTask(id));
   }
@@ -370,6 +396,15 @@ export async function moveTask(
   // bookkeeping moves stay allowed regardless of scope.
   const statusGated = DRIVER_ONLY_MOVE_BLOCKED_STATUSES.includes(status);
   const refuseMsg = `task move: ${id} is a driver-only Task — only the driver scope can move it to '${status}'. Driver pane should have ATMUX_CALLER_SCOPE=driver set; if you ARE the driver, export ATMUX_CALLER_SCOPE=driver and retry.`;
+  if (await externalKanbanEnabled(atmuxDir)) {
+    const current = await externalKanban.showTask(atmuxDir, id);
+    if (current === null) throw new ConfigError({ what: `no such task: ${id}` });
+    if (statusGated && isDriverOnlyBlocked(current, opts.callerScope)) {
+      throw new ConfigError({ what: refuseMsg });
+    }
+    await externalKanban.moveTask(atmuxDir, id, status, current.owner ?? "atmux");
+    return;
+  }
   // ADR-146 T2: pre-load team config when this is a done-transition.
   // The auto-emit hook fires only on `done` and only when a Story
   // branch is set; loading the team out-of-band keeps file I/O off
@@ -381,9 +416,7 @@ export async function moveTask(
   // events (claimed / done) — payload carries team.name as scope.
   const eventStatuses = new Set(["done", "in-progress"]);
   const team: Team | null =
-    status === "done" || eventStatuses.has(status)
-      ? await tryLoadTeam({ dir: atmuxDir })
-      : null;
+    status === "done" || eventStatuses.has(status) ? await tryLoadTeam({ dir: atmuxDir }) : null;
   const emit = opts.emit ?? defaultEmit;
   if (await _useSqlite(atmuxDir)) {
     await _withDb(atmuxDir, (db, repo) => {
@@ -534,8 +567,7 @@ function resolveAutoEmitOwner(team: Team, fallbackAssignee: string | null): stri
 // Loop-prevention: matches BOTH legacy hex IDs (`t-3b017960`) and the
 // ADR-202 §VIII compound IDs (`t-1-3b017960`). Either form may appear
 // on disk as the subject prefix.
-const AUTO_EMIT_SUBJECT_RE =
-  /^merge t-(?:[1-9][0-9]*-)?[0-9a-f]+ \(branch→trunk\):/;
+const AUTO_EMIT_SUBJECT_RE = /^merge t-(?:[1-9][0-9]*-)?[0-9a-f]+ \(branch→trunk\):/;
 
 /** ADR-146 §D5 + §D1 + §D2: emit a `merge t-xxx (branch→trunk)`
  *  Task when ALL of these hold for the just-done Task:
@@ -664,9 +696,16 @@ export async function markTaskBlockedWithNote(
   id: string,
   note: string,
 ): Promise<boolean> {
+  if (await externalKanbanEnabled(atmuxDir)) {
+    const current = await externalKanban.showTask(atmuxDir, id);
+    if (current === null) throw new ConfigError({ what: `no such task: ${id}` });
+    await externalKanban.addNote(atmuxDir, id, current.owner ?? "atmux", "blocker", note);
+    await externalKanban.moveTask(atmuxDir, id, "blocked", current.owner ?? "atmux");
+    return true;
+  }
   if (await _useSqlite(atmuxDir)) {
     return await _withDb(atmuxDir, (db, repo) => {
-      return transact(db, () => {
+      return transactImmediate(db, () => {
         const cur = repo.getTask(id);
         if (cur === null) throw new ConfigError({ what: `no such task: ${id}` });
         if (cur.status === "blocked" && (cur.note ?? "").startsWith("auto-pruned")) {
@@ -695,9 +734,13 @@ export async function setTaskLane(
   id: string,
   lane: string | null,
 ): Promise<void> {
+  if (await externalKanbanEnabled(atmuxDir)) {
+    await externalKanban.updateTask(atmuxDir, id, "atmux", { lane });
+    return;
+  }
   if (await _useSqlite(atmuxDir)) {
     await _withDb(atmuxDir, (db, repo) => {
-      transact(db, () => {
+      transactImmediate(db, () => {
         const cur = repo.getTask(id);
         if (cur === null) throw new ConfigError({ what: `no such task: ${id}` });
         repo.upsertTask({ ...cur, lane });
@@ -706,6 +749,90 @@ export async function setTaskLane(
     return;
   }
   await updateTaskByIdOrThrow(atmuxDir, id, (t) => ({ ...t, lane }));
+}
+
+/** ADR-193: set/clear a task's parent epic id. `null` clears the link
+ *  (`task update --epic ''`). Shape-validated at the verb layer; this
+ *  setter is the no-existence-check write path (§OQ1). Throws
+ *  `ConfigError` on missing task id. */
+export async function setTaskEpic(
+  atmuxDir: string,
+  id: string,
+  epic: string | null,
+): Promise<void> {
+  if (await externalKanbanEnabled(atmuxDir)) {
+    const current = await externalKanban.showTask(atmuxDir, id);
+    if (current === null) throw new ConfigError({ what: `no such task: ${id}` });
+    await externalKanban.updateTask(atmuxDir, current.story ?? id, "atmux", { parentID: epic });
+    return;
+  }
+  if (await _useSqlite(atmuxDir)) {
+    await _withDb(atmuxDir, (db, repo) => {
+      transactImmediate(db, () => {
+        const cur = repo.getTask(id);
+        if (cur === null) throw new ConfigError({ what: `no such task: ${id}` });
+        repo.upsertTask({ ...cur, epic });
+      });
+    });
+    return;
+  }
+  await updateTaskByIdOrThrow(atmuxDir, id, (t) => ({ ...t, epic }));
+}
+
+/** ADR-193: set/clear a task's parent story id. `null` clears the link
+ *  (`task update --story ''`). Shape-validated at the verb layer.
+ *  Throws `ConfigError` on missing task id. */
+export async function setTaskStory(
+  atmuxDir: string,
+  id: string,
+  story: string | null,
+): Promise<void> {
+  if (await externalKanbanEnabled(atmuxDir)) {
+    const current = await externalKanban.showTask(atmuxDir, id);
+    if (current === null) throw new ConfigError({ what: `no such task: ${id}` });
+    await externalKanban.updateTask(atmuxDir, id, "atmux", {
+      parentID: story ?? current.epic ?? null,
+    });
+    return;
+  }
+  if (await _useSqlite(atmuxDir)) {
+    await _withDb(atmuxDir, (db, repo) => {
+      transactImmediate(db, () => {
+        const cur = repo.getTask(id);
+        if (cur === null) throw new ConfigError({ what: `no such task: ${id}` });
+        repo.upsertTask({ ...cur, story });
+      });
+    });
+    return;
+  }
+  await updateTaskByIdOrThrow(atmuxDir, id, (t) => ({ ...t, story }));
+}
+
+/** ADR-193: set/clear a task's free-form deliverable description.
+ *  `null` / empty-string both clear it (`task update --deliverable ''`).
+ *  Length-capped (≤256) at the verb layer. Throws `ConfigError` on
+ *  missing task id. */
+export async function setTaskDeliverable(
+  atmuxDir: string,
+  id: string,
+  deliverable: string | null,
+): Promise<void> {
+  const normalized = deliverable === "" ? null : deliverable;
+  if (await externalKanbanEnabled(atmuxDir)) {
+    await externalKanban.updateTask(atmuxDir, id, "atmux", { deliverable: normalized });
+    return;
+  }
+  if (await _useSqlite(atmuxDir)) {
+    await _withDb(atmuxDir, (db, repo) => {
+      transactImmediate(db, () => {
+        const cur = repo.getTask(id);
+        if (cur === null) throw new ConfigError({ what: `no such task: ${id}` });
+        repo.upsertTask({ ...cur, deliverable: normalized });
+      });
+    });
+    return;
+  }
+  await updateTaskByIdOrThrow(atmuxDir, id, (t) => ({ ...t, deliverable: normalized }));
 }
 
 /** Update a task's priority (integer; lower = higher priority in
@@ -717,9 +844,13 @@ export async function setTaskPriority(
   id: string,
   priority: number | null,
 ): Promise<void> {
+  if (await externalKanbanEnabled(atmuxDir)) {
+    await externalKanban.updateTask(atmuxDir, id, "atmux", { priority: priority ?? 3 });
+    return;
+  }
   if (await _useSqlite(atmuxDir)) {
     await _withDb(atmuxDir, (db, repo) => {
-      transact(db, () => {
+      transactImmediate(db, () => {
         const cur = repo.getTask(id);
         if (cur === null) throw new ConfigError({ what: `no such task: ${id}` });
         repo.upsertTask({ ...cur, priority });
@@ -738,9 +869,13 @@ export async function setTaskBody(
   body: string | null,
 ): Promise<void> {
   const normalized = body === "" ? null : body;
+  if (await externalKanbanEnabled(atmuxDir)) {
+    await externalKanban.updateTask(atmuxDir, id, "atmux", { body: normalized ?? "" });
+    return;
+  }
   if (await _useSqlite(atmuxDir)) {
     await _withDb(atmuxDir, (db, repo) => {
-      transact(db, () => {
+      transactImmediate(db, () => {
         const cur = repo.getTask(id);
         if (cur === null) throw new ConfigError({ what: `no such task: ${id}` });
         repo.upsertTask({ ...cur, body: normalized });
@@ -758,9 +893,13 @@ export async function setTaskDeps(
   id: string,
   deps: ReadonlyArray<string>,
 ): Promise<void> {
+  if (await externalKanbanEnabled(atmuxDir)) {
+    await externalKanban.updateTask(atmuxDir, id, "atmux", { dependencies: deps });
+    return;
+  }
   if (await _useSqlite(atmuxDir)) {
     await _withDb(atmuxDir, (db, repo) => {
-      transact(db, () => {
+      transactImmediate(db, () => {
         const cur = repo.getTask(id);
         if (cur === null) throw new ConfigError({ what: `no such task: ${id}` });
         repo.upsertTask({ ...cur, deps: [...deps] });
@@ -785,9 +924,13 @@ export async function setTaskDriverOnly(
   id: string,
   driverOnly: boolean,
 ): Promise<void> {
+  if (await externalKanbanEnabled(atmuxDir)) {
+    await externalKanban.updateTask(atmuxDir, id, "atmux", { driverOnly });
+    return;
+  }
   if (await _useSqlite(atmuxDir)) {
     await _withDb(atmuxDir, (db, repo) => {
-      transact(db, () => {
+      transactImmediate(db, () => {
         const cur = repo.getTask(id);
         if (cur === null) throw new ConfigError({ what: `no such task: ${id}` });
         // Setting false collapses to omitted (consistent with task add's
@@ -826,9 +969,13 @@ export async function assignTask(
   id: string,
   owner: string | null,
 ): Promise<void> {
+  if (await externalKanbanEnabled(atmuxDir)) {
+    await externalKanban.updateTask(atmuxDir, id, "atmux", { assignee: owner });
+    return;
+  }
   if (await _useSqlite(atmuxDir)) {
     await _withDb(atmuxDir, (db, repo) => {
-      transact(db, () => {
+      transactImmediate(db, () => {
         const cur = repo.getTask(id);
         if (cur === null) throw new ConfigError({ what: `no such task: ${id}` });
         repo.upsertTask({ ...cur, owner });
@@ -841,6 +988,10 @@ export async function assignTask(
 
 /** Remove a task by id. Throws `ConfigError` on miss. */
 export async function removeTask(atmuxDir: string, id: string): Promise<void> {
+  if (await externalKanbanEnabled(atmuxDir)) {
+    await externalKanban.removeTask(atmuxDir, id);
+    return;
+  }
   if (await _useSqlite(atmuxDir)) {
     await _withDb(atmuxDir, (_db, repo) => {
       const removed = repo.deleteTask(id);
@@ -884,18 +1035,43 @@ export async function claimTask(
   atmuxDir: string,
   id: string,
   who: string,
-  opts: { callerScope?: CallerScope } = {},
+  opts: { callerScope?: CallerScope; refuseInProgressOther?: boolean } = {},
 ): Promise<{ pre: KanbanTask; post: KanbanTask }> {
+  if (await externalKanbanEnabled(atmuxDir)) {
+    const pre = await externalKanban.showTask(atmuxDir, id);
+    if (pre === null) throw new ConfigError({ what: `no such task: ${id}` });
+    const post = await externalKanban.claimTask(atmuxDir, id, who, {
+      ...(opts.callerScope === "driver"
+        ? { callerScope: "driver" as const }
+        : { callerScope: "member" as const }),
+      allowReassign: opts.refuseInProgressOther !== true,
+    });
+    return { pre, post };
+  }
   const claimedAt = nowEpoch();
   // ADR-033 driver-only refuse message — quoted verbatim so the bash
   // and TS surfaces print the same string (audit + grep parity).
   const driverOnlyRefuse = `claim: ${id} is a driver-only Task — only the driver scope can claim it. Driver pane should have ATMUX_CALLER_SCOPE=driver set; if you ARE the driver, export ATMUX_CALLER_SCOPE=driver and retry.`;
   if (await _useSqlite(atmuxDir)) {
     return await _withDb(atmuxDir, (db, repo) =>
-      transact(db, () => {
+      transactImmediate(db, () => {
         const task = repo.getTask(id);
         if (task === null) {
           throw new ConfigError({ what: `no such task: ${id}` });
+        }
+        // ADR-085 member-claim gate (folded in from claimTaskForMember so
+        // the in-progress-owner read + the ownership flip run under ONE
+        // BEGIN IMMEDIATE — no concurrent claimant can interleave between
+        // the check and the write). Bare claimTask (dispatch path) leaves
+        // the flag off → owner override stays allowed.
+        if (
+          opts.refuseInProgressOther === true &&
+          task.status === "in-progress" &&
+          task.owner !== null &&
+          task.owner !== undefined &&
+          task.owner !== who
+        ) {
+          throw new ConfigError({ what: inProgressOtherRefuseMessage(id, task.owner) });
         }
         if (task.status === "done") {
           throw new ConfigError({ what: doneRefuseMessage(task) });
@@ -926,6 +1102,18 @@ export async function claimTask(
       const task = k.tasks.find((t) => t.id === id);
       if (task === undefined) {
         throw new ConfigError({ what: `no such task: ${id}` });
+      }
+      // ADR-085 member-claim gate (parity with the SQLite path above —
+      // updateJson serializes via the file lock, so the read + flip are
+      // already atomic here; gated by the same flag for behavior parity).
+      if (
+        opts.refuseInProgressOther === true &&
+        task.status === "in-progress" &&
+        task.owner !== null &&
+        task.owner !== undefined &&
+        task.owner !== who
+      ) {
+        throw new ConfigError({ what: inProgressOtherRefuseMessage(id, task.owner) });
       }
       if (task.status === "done") {
         throw new ConfigError({ what: doneRefuseMessage(task) });
@@ -984,6 +1172,27 @@ export function doneRefuseMessage(task: KanbanTask): string {
 }
 
 /**
+ * ADR-085 — refuse message when a member-initiated claim hits a task
+ * already in-progress under a DIFFERENT owner. Built here so the SQLite
+ * + JSON `claimTask` paths print it identically. The check that uses it
+ * fires INSIDE `claimTask`'s BEGIN IMMEDIATE transaction (gated by
+ * `opts.refuseInProgressOther`) — folded in from the former
+ * `claimTaskForMember` pre-check, which read the owner OUTSIDE any
+ * transaction (a check-then-act TOCTOU two racing members could slip
+ * through). Exported for direct message-format testing.
+ */
+export function inProgressOtherRefuseMessage(id: string, owner: string): string {
+  return (
+    `claim: ${id} already in-progress under '${owner}'; refuse — ` +
+    `pick a different task or coordinate with lead to reassign. ` +
+    `If '${owner}' has stalled, lead can ` +
+    `\`atmux task move ${id} todo\` (un-claim) and you can re-claim cleanly. ` +
+    `Force-override is intentionally unavailable; the silent duplication ` +
+    `this gate prevents costs more than a one-line lead nudge.`
+  );
+}
+
+/**
  * 2026-05-12 race-condition gate — refuse a member-initiated claim when
  * the task is already in-progress under a DIFFERENT owner.
  *
@@ -997,8 +1206,10 @@ export function doneRefuseMessage(task: KanbanTask): string {
  * re-claiming a `done` / `blocked` / `cancelled` task or re-claiming
  * your own in-progress task is allowed (idempotent + recovery paths).
  *
- * Implementation routes through `claimTask` after the precheck, so the
- * deps + driver-only gates still fire in their normal order.
+ * Implementation routes through `claimTask` with `refuseInProgressOther`,
+ * so the in-progress-owner check runs INSIDE claimTask's BEGIN IMMEDIATE
+ * transaction (atomic with the ownership flip) — no separate pre-read.
+ * The deps + driver-only gates still fire in their normal order.
  */
 export async function claimTaskForMember(
   atmuxDir: string,
@@ -1006,25 +1217,7 @@ export async function claimTaskForMember(
   who: string,
   opts: { callerScope?: CallerScope } = {},
 ): Promise<{ pre: KanbanTask; post: KanbanTask }> {
-  const existing = await showTask(atmuxDir, id);
-  if (
-    existing !== null &&
-    existing.status === "in-progress" &&
-    existing.owner !== null &&
-    existing.owner !== undefined &&
-    existing.owner !== who
-  ) {
-    throw new ConfigError({
-      what:
-        `claim: ${id} already in-progress under '${existing.owner}'; refuse — ` +
-        `pick a different task or coordinate with lead to reassign. ` +
-        `If '${existing.owner}' has stalled, lead can ` +
-        `\`atmux task move ${id} todo\` (un-claim) and you can re-claim cleanly. ` +
-        `Force-override is intentionally unavailable; the silent duplication ` +
-        `this gate prevents costs more than a one-line lead nudge.`,
-    });
-  }
-  return claimTask(atmuxDir, id, who, opts);
+  return claimTask(atmuxDir, id, who, { ...opts, refuseInProgressOther: true });
 }
 
 /**
@@ -1039,6 +1232,16 @@ export async function markTaskDone(
   note?: string,
   opts: { callerScope?: CallerScope } = {},
 ): Promise<KanbanTask> {
+  if (await externalKanbanEnabled(atmuxDir)) {
+    const current = await externalKanban.showTask(atmuxDir, id);
+    if (current === null) throw new ConfigError({ what: `no such task: ${id}` });
+    if (isDriverOnlyBlocked(current, opts.callerScope)) {
+      throw new ConfigError({
+        what: `done: ${id} is a driver-only Task — only the driver scope can move it to 'done'. Driver pane should have ATMUX_CALLER_SCOPE=driver set; if you ARE the driver, export ATMUX_CALLER_SCOPE=driver and retry.`,
+      });
+    }
+    return externalKanban.markTaskDone(atmuxDir, id, current.owner ?? "atmux", note);
+  }
   const completedAt = nowEpoch();
   // ADR-033 driver-only refuse-gate. `done` is just `task move ... done`
   // with implicit assignee, so the message matches taskMove's `done`
@@ -1046,7 +1249,7 @@ export async function markTaskDone(
   const refuseMsg = `done: ${id} is a driver-only Task — only the driver scope can move it to 'done'. Driver pane should have ATMUX_CALLER_SCOPE=driver set; if you ARE the driver, export ATMUX_CALLER_SCOPE=driver and retry.`;
   if (await _useSqlite(atmuxDir)) {
     return await _withDb(atmuxDir, (db, repo) =>
-      transact(db, () => {
+      transactImmediate(db, () => {
         const task = repo.getTask(id);
         if (task === null) {
           throw new ConfigError({ what: `no such task: ${id}` });
@@ -1131,6 +1334,14 @@ export interface SelectNextOpts {
    *  pickup default). Tests / explicit driver callers pass `"driver"`
    *  to bypass the filter. Default at call sites: `"member"`. */
   callerScope?: CallerScope;
+  /** ADR-210 Tier-2 §73: explicit role-tag filter from `claim --next
+   *  --role <X>`. When set (non-empty), selection is restricted to Tasks
+   *  whose `.lane === roleFilter` and the `callerLane` / `crossLaneClaim`
+   *  lane passes are bypassed entirely — a hard filter, no lane-less
+   *  fallback or cross-lane. A role with no eligible Task returns null
+   *  (no-op), so a fe member passing `--role be` claims nothing unless a
+   *  BE-tagged Task is eligible. `undefined`/empty → legacy lane logic. */
+  roleFilter?: string;
 }
 
 /**
@@ -1168,6 +1379,17 @@ export function selectNextClaimable(
     if (pa !== pb) return pa - pb;
     return (a.createdAt ?? 0) - (b.createdAt ?? 0);
   };
+  // ADR-210 Tier-2 §73: explicit `--role <X>` is a hard lane filter that
+  // takes precedence over the callerLane/crossLaneClaim passes. Only
+  // Tasks whose `.lane === roleFilter` are eligible; no lane-less
+  // fallback, no cross-lane. A role with no eligible Task → null (no-op),
+  // so a fe member passing `--role be` claims nothing unless a BE Task is
+  // ready. Empty / undefined roleFilter falls through to legacy lane logic.
+  if (opts.roleFilter !== undefined && opts.roleFilter.length > 0) {
+    const roleLane = baseEligible.filter((t) => t.lane === opts.roleFilter);
+    if (roleLane.length === 0) return null;
+    return [...roleLane].sort(tiebreak)[0] ?? null;
+  }
   // First pass — own-lane only when caller has a lane.
   if (opts.callerLane !== null && opts.callerLane.length > 0) {
     const ownLane = baseEligible.filter((t) => t.lane === opts.callerLane);

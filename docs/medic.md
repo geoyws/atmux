@@ -24,12 +24,12 @@ A second Claude Opus session in the operator cockpit, sitting at window 2 (right
 
 | | superdriver (window 1) | medic (window 2) | per-team lead |
 |---|---|---|---|
-| **Lives at** | cockpit `atmux_cockpit:1` | cockpit `atmux_cockpit:2` | each team's cage `:driver` window |
+| **Lives at** | cockpit `atx:1` | cockpit `atx:2` | each team's cage `:driver` window |
 | **Cadence** | operator-driven (interactive REPL) | own `/loop /whip`, hourly | per-team whip (270s default) |
 | **Owns** | cross-team dispatch, ad-hoc decisions | diagnosis loop, complaint authoring, structural fixes | one team's coordination |
 | **Talks to operator via** | direct (it IS the REPL) | `pending-decisions.md` + Discord pings | driver-inbox + Discord |
 
-(Per [ADR-135](./adr/135-cockpit-naming-convention.md) the cockpit session is `atmux_cockpit` post-rename; pre-ADR-135 deployments still see `atmux_teams`.)
+(Per [ADR-264](./adr/264-cockpit-session-atx-rename.md) the cockpit session is `atx`; pre-ADR-264 deployments still see `atmux_cockpit` or, pre-ADR-135, `atmux_teams`.)
 
 ## When you want it
 
@@ -51,7 +51,7 @@ Add a `medic` block to `~/.atmux/cockpit.json` (the legacy `superdoctor` key is 
 
 ```jsonc
 {
-  "cockpitSession": "atmux_cockpit",
+  "cockpitSession": "atx",
   "medic": {
     "enabled": true,
     "claudeAccount": {

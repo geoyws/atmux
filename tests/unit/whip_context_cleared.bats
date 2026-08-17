@@ -4,11 +4,11 @@
 # `● Context cleared. Ready for your next instruction.` which wipes
 # the role brief. Whip's snapshot stays unchanged tick after tick
 # (same N stale teammates → rising quiet_count, no rotate). Detector
-# arms preclear_banner=context-cleared so AUTO-PRECLEAR re-pastes the
+# arms handoff_banner=context-cleared so AUTO-HANDOFF re-pastes the
 # brief via the same path used for compacting / rate-limit signals.
 #
 # Regex-only cells — no tmux needed. The integration path (real pane
-# + actual rotate) is exercised by whip_preclear.bats.
+# + actual rotate) is exercised by whip_handoff.bats.
 
 load '../helpers/setup'
 
@@ -76,9 +76,9 @@ teardown() {
 @test "lib/whip.sh: Context cleared detector is wired" {
   # Defense-in-depth — the regex test cells above prove the pattern
   # works in isolation, but whip.sh must actually invoke it. Grep
-  # the file for both the regex literal AND the preclear_banner=
+  # the file for both the regex literal AND the handoff_banner=
   # assignment so a future refactor that breaks the wiring can't
   # silently regress.
   grep -q "Context cleared\\\\\\.\\\\s\\*Ready for" "$ATMUX_LIB_DIR/whip.sh"
-  grep -qE "preclear_banner=.*context-cleared" "$ATMUX_LIB_DIR/whip.sh"
+  grep -qE "handoff_banner=.*context-cleared" "$ATMUX_LIB_DIR/whip.sh"
 }

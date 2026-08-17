@@ -106,7 +106,7 @@ describe("probeCageState — pane-window-missing branch", () => {
       tmux,
     });
     expect(h.state).toBe("down");
-    expect(h.windowName).toBe("🐝alice");
+    expect(h.windowName).toBe("🐝-alice");
   });
 
   test("listPanes returns empty array → CageHealth.state='down'", async () => {
@@ -302,7 +302,7 @@ describe("probeCageState — active branch (no heartbeat file)", () => {
 // ---------- Composite invariants ----------
 
 describe("probeCageState — composite + invariants", () => {
-  test("windowName uses emoji + member name by default", async () => {
+  test("windowName uses ADR-135 hyphen separator for user-added members (role=member)", async () => {
     const tmux = tmuxStub({ paneText: "❯ ↑ 5k tokens" });
     const h = await probeCageState(
       makeTeam(),
@@ -313,7 +313,23 @@ describe("probeCageState — composite + invariants", () => {
         tmux,
       },
     );
-    expect(h.windowName).toBe("🧭lead");
+    expect(h.windowName).toBe("🧭-lead");
+  });
+
+  test("windowName uses ADR-161 _-prefix for default-member roles (team-lead/planner/reviewer/ombudsman)", async () => {
+    // The bug this test guards against: the probe used to manually build
+    // `${emoji}${name}` (no separator), so for a real `role: "team-lead"`
+    // member named `lead` with emoji `🧭` it would look up window `🧭lead`
+    // while spawn-side `start.ts` (via `buildWindowName`) wrote `🧭_lead`
+    // → probe reported `down` on a perfectly healthy pane.
+    const tmux = tmuxStub({ paneText: "❯ ↑ 5k tokens" });
+    const h = await probeCageState(
+      makeTeam({ name: "lead", role: "team-lead", emoji: "🧭" }),
+      makeMember({ name: "lead", role: "team-lead", emoji: "🧭" }),
+      "/tmp/x",
+      { ...DEFAULT_OPTS, tmux },
+    );
+    expect(h.windowName).toBe("🧭_lead");
   });
 
   test("windowName uses label override when member.label is set (ADR-136 TR4)", async () => {
@@ -324,7 +340,7 @@ describe("probeCageState — composite + invariants", () => {
       "/tmp/x",
       { ...DEFAULT_OPTS, tmux },
     );
-    expect(h.windowName).toBe("🐝renamed-alice");
+    expect(h.windowName).toBe("🐝-renamed-alice");
   });
 
   test("member without explicit emoji → defaultEmojiForRole picks one based on role", async () => {
@@ -378,12 +394,92 @@ describe("probeCageState — composite + invariants", () => {
       });
       expect(h.state).toBe(c.expected);
       expect(h.member).toBe("alice");
-      expect(h.windowName).toBe("🐝alice");
+      expect(h.windowName).toBe("🐝-alice");
       expect(typeof h.evidence).toBe("string");
       // paneUptimeSec may be null when /proc has no record for the
       // stub PID — accept null OR number.
       expect(h.paneUptimeSec === null || typeof h.paneUptimeSec === "number").toBe(true);
       expect(h.heartbeatAgeSec === null || typeof h.heartbeatAgeSec === "number").toBe(true);
     }
+  });
+});
+
+// ---------- ADR-273 D3 trap 1: the session name is not `atmux-<team>` ----------
+
+describe("probeCageState — sessionName override (ADR-273 D3 trap 1)", () => {
+  /** Capture whatever session name the probe actually asks tmux about. */
+  function nameSpy(): {
+    asked: string[];
+    opts: { hasSession: (n: string) => Promise<boolean> };
+  } {
+    const asked: string[] = [];
+    return {
+      asked,
+      opts: {
+        hasSession: async (n: string) => {
+          asked.push(n);
+          return false;
+        },
+      },
+    };
+  }
+
+  test("without the override it still asks for the legacy `atmux-<team>` form", async () => {
+    // Pins the fallback as UNCHANGED, so callers that have not been
+    // updated behave exactly as they did before this seam landed.
+    const spy = nameSpy();
+    await probeCageState(makeTeam(), makeMember(), "/tmp/x", { ...DEFAULT_OPTS, ...spy.opts });
+    expect(spy.asked).toEqual(["atmux-demo"]);
+  });
+
+  test("the override is what tmux is asked about — the anchored name wins", async () => {
+    // The live failure: `unum` anchors its session to `atmux_unum`
+    // (underscore) and `atmux` to bare `atmux`. Rebuilding `atmux-<team>`
+    // names a session that does not exist, so step (1) reports every
+    // member of a healthy team as `down`.
+    for (const anchored of ["atmux_unum", "atmux"]) {
+      const spy = nameSpy();
+      await probeCageState(makeTeam(), makeMember(), "/tmp/x", {
+        ...DEFAULT_OPTS,
+        ...spy.opts,
+        sessionName: anchored,
+      });
+      expect(spy.asked).toEqual([anchored]);
+      expect(spy.asked).not.toContain("atmux-demo");
+    }
+  });
+
+  test("with the resolved name a LIVE team stops being reported as down", async () => {
+    // Same team, same probe, same tmux — only the resolved name differs,
+    // and the verdict flips from `down` to a real state. This is the bug
+    // ADR-273 D3 trap 1 names, reproduced and then closed.
+    const liveSessions = new Set(["atmux_unum"]);
+    const tmux = {
+      session: {
+        async hasSession(n: string) {
+          return liveSessions.has(n);
+        },
+      },
+      pane: {
+        async listPanes() {
+          return [{ pid: 4242 }];
+        },
+        async capturePane() {
+          return "42k tokens · esc to interrupt";
+        },
+      },
+    } as unknown as TmuxNamespace;
+    const opts = {
+      ...DEFAULT_OPTS,
+      tmux,
+      hasSession: async (n: string) => liveSessions.has(n),
+    };
+    const wrong = await probeCageState(makeTeam(), makeMember(), "/tmp/x", opts);
+    expect(wrong.state).toBe("down");
+    const right = await probeCageState(makeTeam(), makeMember(), "/tmp/x", {
+      ...opts,
+      sessionName: "atmux_unum",
+    });
+    expect(right.state).toBe("active");
   });
 });

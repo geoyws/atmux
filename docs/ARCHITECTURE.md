@@ -1,6 +1,6 @@
 # atmux architecture
 
-> **Storage in atmux-bun.** Per [ADR-060](adr/126-sqlite-state-store.md), kanban
+> **Storage in atmux-bun.** Per [ADR-126](adr/126-sqlite-state-store.md), kanban
 > (tasks/epics/stories), inboxes, and per-feature state moved to **`.atmux/state.db`**
 > (SQLite, WAL). The text below referencing `.atmux/kanban.json` describes the legacy
 > JSON model — still accurate for bash atmux and for teams not yet migrated, but on the
@@ -26,11 +26,21 @@
 > running as the safety net until the cleanup-EPIC cutover ≥30 days after
 > e-honker-observation-watchdogs ships stable).
 
+> **2026-06-12 — manual orchestration is the default** ([ADR-260](adr/260-manual-orchestration-mode-default.md)):
+> the orchd daemon described above spawns ONLY when `team.json::orchestration.mode`
+> is explicitly `"orchd"`. The default (absent block) is `"manual"` — no daemon, no
+> auto-merge/auto-spawn/watchdog; the member/lead LLMs manage the fleet themselves
+> (self-reported status via `atmux member status` → `<atmuxDir>/state/member-status/`,
+> manual kanban via `claim`/`done`/`task move`, manual fan-in + spawns). Rationale:
+> LLMs can manage their own fleet better than atmux's deterministic automation can
+> at the moment. Honker events are still emitted (audit trail + clean re-opt-in);
+> nothing consumes them in manual mode.
+
 ## Principles
 
-1. **tmux is the IPC.** atmux doesn't speak any AI provider API. It writes shell commands into tmux panes via `tmux send-keys` and reads responses by capturing pane output. That means it works with *any* interactive coding-agent TUI — Claude Code, Cursor, OpenCode, Kimi, or any future one.
-2. **State lives on disk** — SQLite (`state.db`) for the kanban + inboxes + per-feature state per ADR-060; markdown for human-edited files (`HANDOFF.md`, `decisions.md`, `flags.md`, driver-inbox/lead-outbox); JSONL for append-only logs. `.atmux/` survives tmux restarts.
-3. **No daemon.** Every verb is idempotent. `whip` and `report` run on cron.
+1. **tmux is the IPC.** atmux doesn't speak any AI provider API. It writes shell commands into tmux panes via `tmux send-keys` and reads responses by capturing pane output. That means it works with *any* interactive coding-agent TUI — Claude Code, Cursor, OpenCode, Kimi, or any future one. *(Clarified 2026-08-06 — that is a claim about the **seam**, not about staffing.)* Every member role runs Claude Opus (`claude-opus-4-7` at `CLAUDE_CODE_EFFORT_LEVEL=xhigh`) per `CLAUDE.md` §"Spawning + model selection" — never Sonnet for member roles — and [ADR-201](adr/201-cursor-cli-composer-25-as-first-class-member-tui.md) (cursor-cli composer-2.5 as a first-class member TUI) was **Rejected** by driver verdict 2026-05-21. Cheaper models are permitted only for **read-only** sub-agents. The TUI list above is what atmux **can launch**, not what the operator's teams **run** — see `docs/PRD.md` §1.3. *(One carve-out, 2026-08-14 — read it together with this principle so the apparent contradiction is not re-litigated: [ADR-272](adr/272-voice-operator-interface.md) §D1 adds `atmux vox`, which does speak a provider's realtime API. The principle is a claim about the **orchestration** seam — how atmux drives agents — and voice sits on the other side of it as an **operator** seam: the provider orchestrates nothing, spawns no member, appears in no brief, and is invisible to every team. It is a transducer between the operator's voice and the CLI, in the same category as his terminal emulator. The carve-out is bounded by an enforced import fence — `src/abstractions/voice/**` is importable only from `src/core/vox/**` and `src/verbs/vox.ts`, and no orchestration module may import it, directly or transitively. A provider call on the orchestration path remains [ADR-258](adr/258-vendor-agnostic-orchestration-agentbackend.md)'s business and needs its own ADR; this is not a precedent for one.)*
+2. **State lives on disk, outside every agent process.** *(Corrected 2026-08-06 — the durability claim still holds; the storage details in the previous wording were stale.)* **Still true:** no coordination item — task, epic, story, claim, dependency, inbox message, decision — exists only inside an agent process, a tmux pane's scrollback, or a chat transcript. `.atmux/` survives tmux restarts and state replays on `atmux start`. **Two corrections:** (a) the canonical store is **SQLite at `.atmux/state.db`** (WAL) per [ADR-126](adr/126-sqlite-state-store.md) — resolved by `src/core/kanban.ts:89` (`join(atmuxDir, "state.db")`), **not** `.atmux/state/state.db` — so `.atmux/` is queried with `sqlite3` rather than being greppable end-to-end, and JSON is archive-only. Markdown stays plain text and diffable (`HANDOFF.md`, `decisions.md`, `flags.md`, driver-inbox/lead-outbox), as do the append-only JSONL logs. (b) the durable artifacts are **operator-private and live outside the product repo**: `.atmux/team.json`, `.atmux/decisions.md`, and `.atmux/state.db` belong in the operator's dotfile tree at `~/work/journals/.sb/_dotfiles/atmux/<repo-key>/` and are symlinked into `.atmux/`, with the managed repo gitignoring all of `.atmux/` and no `!.atmux/team.json` carve-out ([ADR-239](adr/239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md) §Supplement-2026-05-26, [ADR-244](adr/244-per-repo-pre-commit-kanban-decisions-snapshot.md) §Supersession-2026-05-26). Node `fs` follows symlinks transparently, so no code changed. Enforcement of that layout in code is **proposed, not shipped** — [ADR-268](adr/268-managed-repo-state-isolation-enforcement.md).
+3. **Every verb is idempotent, and no long-lived process is required.** *(Corrected 2026-08-06 — the position on daemons moved twice; both moves are recorded here rather than erased, because this file previously carried only the 2026-05-06 wording while the header notes above carried two later ones.)* **Current position (read this one):** manual orchestration is the **fleet default** per [ADR-260](adr/260-manual-orchestration-mode-default.md) (accepted 2026-06-12) — `team.json::orchestration.mode` defaults to `"manual"`, an absent block resolves to `"manual"` (§D1), and in manual mode **no `atmux-orchd` window is spawned at all** (§D2 Gate-1). The lead / driver LLM drives the kanban by hand with the existing verbs (`claim` / `done` / `task move` / `dispatch` / `epic-merge` / `team spawn-epic`), and members self-report liveness and intent via `atmux member status <idle|working|blocked|rate-limited>` (§D3–§D5). The Rust **`atmux-orchd`** daemon is **opt-in** — it spawns only for a team that explicitly sets `"orchestration": { "mode": "orchd" }`, and every orchd consumer (auto-merge, auto-push, auto-spawn, solo-worker dissolve, lead-stall watchdog, context/budget scanners) becomes opt-in with it; `atmux orchd --start / --drain / --sweep` stays manually invocable in any mode. Operator rationale, verbatim in ADR-260: *"LLMs can manage their own fleet better than atmux can at the moment."* **Position history, kept deliberately:** (i) **2026-05-06 original** — "No daemon"; `whip` (15min) and `report` (30min) ran on cron. (ii) **2026-05-24** — cron auto-install was retired and orchd became "the runtime" ([ADR-233](adr/233-cron-auto-install-disabled-trust-orchd.md) §D1 — `atmux start` writes zero crontab lines), and the hourly LLM whip cadence into Discord was removed ([ADR-237](adr/237-no-llm-discord-and-whip-removal.md)). (iii) **2026-06-12** — ADR-260 reversed the default: manual is the default, orchd is opt-in. Rollback is one line per team in either direction; no state migration either way. The `whip` **verb** itself no longer exists: renamed to `poke` by [ADR-160](adr/160-whip-to-poke-rename.md), and the `whip` alias removed from `src/cli.ts` by [ADR-266](adr/266-shim-sunset-policy-and-first-sweep.md) §D2 (verified 2026-08-06: `rg -i whip src/cli.ts` returns no match). `atmux report` and `atmux hygiene-tick` remain on-demand verbs.
 4. **Driver is external.** atmux is launched from the driver's shell. The driver does NOT run inside the tmux session — it's a separate process that fires atmux commands.
 5. **atmux owns its tmux infrastructure** ([ADR-162](adr/162-atmux-owns-tmux-infrastructure.md)). The cockpit binds to a dedicated `atmux-cockpit` named socket — not the operator's default socket. Every cockpit + per-team session loads a canonical `templates/tmux/atmux.conf` via `-f`, ignoring `~/.tmux.conf`. Doctor probes warn on tmux version drift + legacy-cockpit-on-default-socket residue. See §Tmux topology below.
 
@@ -40,19 +50,20 @@ Per [ADR-162](adr/162-atmux-owns-tmux-infrastructure.md):
 
 | Tier     | Socket flag                                              | Session name      | What runs there                                                                            |
 |----------|----------------------------------------------------------|-------------------|--------------------------------------------------------------------------------------------|
-| Cockpit  | `tmux -L atmux-cockpit` (named socket, dedicated)        | `atmux_cockpit`   | Operator's window into every enabled team — `_superdriver`, `_medic`, per-team viewers ([ADR-135](adr/135-cockpit-naming-convention.md) `_-prefix` for default roles) |
-| Per-team | `tmux -S <team-root>/.atmux/tmux/tmux-0/default` (cage)  | `atmux-<team>`    | The team's members + lead + planner + reviewer panes (one window per role). Cage-tier per [ADR-018](adr/018-per-team-tmux-socket-isolation.md). |
+| Cockpit  | `tmux -L atmux-cockpit` (named socket, dedicated)        | `atx`   | Operator's window into every enabled team — `_superdriver`, `_medic`, per-team viewers ([ADR-135](adr/135-cockpit-naming-convention.md) `_-prefix` for default roles) |
+| Per-team | `tmux -S <team-root>/.atmux/tmux/tmux-0/default` (cage)  | `atmux-<team>`    | The team's members + lead + planner + reviewer panes (one window per role). Cage-tier per [ADR-058](adr/058-cage-tier-isolation.md). |
+| Voice    | `tmux -L default` (the operator's **default** socket)     | `atmux-vox`     | The `atmux vox` WebSocket server under a crash-loop wrapper, when started with `--supervise` ([ADR-272](adr/272-voice-operator-interface.md) §D10). Fleet-wide operator infrastructure belonging to no team — a sibling of the driver's own shell ([ADR-044](adr/044-driver-session-on-default-socket.md)), deliberately **not** a cockpit window (the reconcile pass would prune it as an orphan) and **not** a cage window (`atmux stop` on an unrelated team would end the call). |
 
 **Config (both tiers):** every session is created with `-f <atmux.conf-path>` resolved by `getAtmuxTmuxConfPath()` in `src/core/tmux-paths.ts`. Default: `templates/tmux/atmux.conf` (installed under `/opt/atmux/<version>/templates/`). Operator override: `ATMUX_TMUX_CONF=<path>`. The 8-option baseline includes `automatic-rename off` — load-bearing for [ADR-135](adr/135-cockpit-naming-convention.md)'s `_-prefix` window-name contract.
 
-**Socket override:** `ATMUX_COCKPIT_SOCKET=<name>` (cockpit-tier only; per-team sockets are path-explicit by design per [ADR-018](adr/018-per-team-tmux-socket-isolation.md)). Legacy operators can opt back into the default socket via `ATMUX_COCKPIT_SOCKET=default` for one more cycle while migrating.
+**Socket override:** `ATMUX_COCKPIT_SOCKET=<name>` (cockpit-tier only; per-team sockets are path-explicit by design per [ADR-058](adr/058-cage-tier-isolation.md)). Legacy operators can opt back into the default socket via `ATMUX_COCKPIT_SOCKET=default` for one more cycle while migrating.
 
 **Migration from pre-ADR-162 setups:** `atmux cockpit migrate-socket` is the one-shot verb. Six phases (discovery → capture → recreate session on dedicated socket → recreate windows → scrollback breadcrumb → cleanup); idempotent; `--dry-run` previews; `--keep-legacy` preserves the old session. Process state is NOT transferred (tmux primitives can't re-bind PIDs across servers — see [ADR-162 §Amendment 2026-05-16](adr/162-atmux-owns-tmux-infrastructure.md#2026-05-16--decision-anchor-4-mechanism-graceful-recreate-not-pid-preservation-t-26346aef-tr3-impl)); operator re-invokes any in-pane process in the new panes. Cron-spawned roles re-establish on next tick. Full operator-facing details in [`docs/RUNBOOK-cockpit.md`](RUNBOOK-cockpit.md).
 
 **Doctor probes (warn-class):**
 
 - `tmux-version-mismatch` — host tmux below min 3.2 or untested above tested-against 3.6a.
-- `cockpit-on-default-socket` — legacy `atmux_cockpit` / `atmux_teams` session residue on the default socket. Self-clearing post-migration.
+- `cockpit-on-default-socket` — legacy cockpit session residue (`atx`, `atmux_cockpit`, or `atmux_teams`) on the default socket. Self-clearing post-migration.
 
 **Member window-name format (per [ADR-161](adr/161-default-member-prefix-and-sort-verbs.md) §Part B):** in-team windows split by role class. `buildWindowName(name, emoji, label, role)` in `src/core/common.ts` picks the format:
 
@@ -244,6 +255,109 @@ The sentinel + cron pair is chosen over pure socket-pubsub (ADR-032) because med
 | `src/core/lead-marker.ts` | I-1 (`lead-session-start.txt`) + I-2 (`lead-window-name.txt`) marker R/W. The rotation-gate canonical source per ADR-077 §lead-uptime-measurement — NEVER read `ps -o etime` for rotation decisions. | [ADR-077](adr/077-superdoctor-cockpit-role.md) §lead-uptime-measurement |
 | `src/core/branch-merge-state.ts` | Pure state machine for ADR-091 (epic-team) + ADR-134 (intra-team) auto-merger. 10-state lifecycle + pure transition function. | [ADR-091](adr/091-kanban-driven-auto-merge.md), [ADR-134](adr/134-in-team-auto-merger.md) |
 | `src/core/repositories/merger-state-repo.ts` | Typed CRUD over `merger_state` table; transactions wrap `BEGIN IMMEDIATE` to serialize concurrent ticks. | [ADR-134](adr/134-in-team-auto-merger.md) §state-machine |
+| `src/abstractions/issue-tracker.ts` | Types-only vendor-agnostic `IssueTracker` seam (`NormalizedIssue` / `IssueTrackerPage`) for **issue-sync** — external issue-tracker ingestion (GitHub / Azure DevOps) polled into the complaints substrate; config at `team.json::issueSync`. Phase 0: types + schema + [RUNBOOK-issue-sync](RUNBOOK-issue-sync.md) only; adapters + `atmux issues sync` land Phase 1. | [ADR-261](adr/261-issue-sync-external-tracker-ingestion.md) |
+
+## Voice subsystem (`atmux vox`)
+
+Per [ADR-272](adr/272-voice-operator-interface.md). The operator's spoken
+interface to the fleet: **phone PWA → WebSocket relay → realtime provider →
+`atmux` verbs**. Operating surface in [`docs/RUNBOOK-vox.md`](RUNBOOK-vox.md);
+product framing in `docs/PRD.md` §3.7.
+
+**Consistency with §Principles.** Principle 1 (*"atmux doesn't speak any AI
+provider API"*) governs the **orchestration** seam; voice is an **operator**
+seam and is the single carve-out, bounded by the import fence recorded inline in
+that principle above. The other four principles hold unchanged, and two hold
+*because* of specific design choices rather than by accident:
+
+- **Principle 2 (state on disk, outside every agent process)** — voice adds no
+  store. Session state is in-memory and dies with the session; the tool bridge
+  never opens a `Database`, which is also what makes [ADR-271](adr/271-sqlite-sole-store-rust-orchd-coordinator.md)
+  §D3's `{ create: true }` auto-create footgun structurally unreachable from this
+  path. No voice artifact is written into any managed product repo
+  ([ADR-268](adr/268-managed-repo-state-isolation-enforcement.md)).
+- **Principle 3 (no long-lived process required)** — the server is one, but it is
+  **operator-started and starts nothing at boot** ([ADR-233](adr/233-cron-auto-install-disabled-trust-orchd.md)),
+  dies with its tmux pane, and is not a cron arm ([ADR-192](adr/192-cron-arm-idempotency-contract.md)
+  governs cadences; a supervised process is not one).
+- **Principle 4 (driver is external)** — unchanged, and sharpened: the server
+  invokes verbs with `ATMUX_CALLER_SCOPE=driver`, so the same gates that apply to
+  the operator's own shell apply here, rather than a parallel implementation that
+  can drift.
+
+The one honest tension is with §Non-goals: atmux gains a **listening socket**,
+which is the property [ADR-261](adr/261-issue-sync-external-tracker-ingestion.md)
+§Context previously paid to avoid. It is bound to loopback by default, reachable
+only through nginx, and is an operator surface — not a hosted service, not
+accounts, not cross-machine orchestration. See §Non-goals below.
+
+### Layering
+
+Each layer knows only the layer beneath it. Reading top-down is reading the path
+a spoken sentence takes.
+
+| Layer | Modules | Responsibility |
+|---|---|---|
+| **PWA client** | `templates/vox/` (`index.html`, `js/`, `worklet/`, `manifest.webmanifest`) | Vanilla ESM, **no build step, no service worker** (§D11). Captures mic in an `AudioWorklet` on the audio render thread, decimates 48 kHz → 24 kHz at an exact 2:1 ratio, plays raw PCM downlink. Push-to-talk. Staged by the existing `templates/` copy in `build:install` and located at runtime by `resolveTemplatesDir()`, so it sits outside the `src/**` coverage universe by construction rather than by exclusion (§D9). |
+| **Serve verb** | `src/verbs/vox.ts` | `--serve` / `--supervise` / `--status` / `--stop`. Owns the detached `atmux-vox` tmux session, the crash-loop wrapper and its circuit breaker, and applies the read-only catalog filter. |
+| **Session state machine** | `src/core/vox/session.ts` | One active session (§D8): hello/auth handshake, latest-wins takeover, the 90-second resume park, provider dial with a bounded `session-ready` budget, and the relay between phone frames and provider events. |
+| **Tool bridge** | `src/core/vox/{tool-bridge,tool-catalog,config,team-context,summarize,instructions,fleet}.ts` | Turns a model tool call into an **argv array** for the `atmux` CLI — never a shell string (§D2). Per-tool Zod validation before the argv is built; result summarization back to speech-sized text. `fleet.ts` is the ADR-273 D1–D3 triage classifier + renderer behind `fleet_attention` / `fleet_quiet` — pure, no IO, with the sweep itself in `src/verbs/fleet.ts`. |
+| **Provider seam** | `src/abstractions/voice-provider.ts` (types-only) · `src/abstractions/voice/{factory,openai-realtime,gemini-live}.ts` | `VoiceProvider.connect(config) → VoiceSession`. Translates provider-native frames into neutral events. See below. |
+| **Protocol** | `src/core/vox/{frame,audio,auth,confirm,registry,assets,probe}.ts` · `src/schema/voice.ts` | Binary frame codec (4-byte header: magic `0xA1`, flags incl. `TURN_END`, `uint16` seq; payload PCM16LE mono 24 kHz, 40 ms = 1924 bytes/frame), JSON control schema, timing-safe pre-upgrade token auth, and the confirmation-token store. Audio and control never mix: audio is binary frames, control is JSON text frames. |
+
+**Canonical audio is PCM16LE mono 24 kHz in both directions** (§D5), chosen so
+the *irreversible* quality decision never happens on the phone: 48 → 24 is an
+exact halving, OpenAI is passthrough on both legs, and Gemini's 24 → 16 uplink
+resample happens **server-side** where CPU is free.
+
+### Why the provider seam exists
+
+This is [ADR-272](adr/272-voice-operator-interface.md) §D4, and it is the
+architectural decision in the subsystem worth understanding before changing
+anything in it.
+
+**atmux does not speak any one AI provider's API — not even here.**
+`src/abstractions/voice-provider.ts` declares two types and nothing else
+(types-only, zero runtime), following the `AgentBackend` precedent set by
+[ADR-258](adr/258-vendor-agnostic-orchestration-agentbackend.md). **No
+provider-native frame shape crosses the adapter boundary in either direction:**
+OpenAI's `response.output_audio.delta` and Gemini's `serverContent.modelTurn`
+are both translated *inside* their adapter into the same neutral event before
+anything else sees them. The core, the tool bridge, the wire protocol and the
+client know only the neutral shape.
+
+The test of the decision is behavioural, not stylistic: **swapping
+`ATMUX_VOX_PROVIDER` from `openai-realtime` to `gemini-live` must require zero
+client-side diff.** A second adapter (Gemini Live — a different handshake, a
+different audio rate, a different tool-call shape carrying a required `name`
+beside the id, and a different turn-detection model) landed behind the seam with
+`voice-provider.ts` untouched and no client change. That is the seam holding.
+If a client change is ever needed for a provider swap, the seam has leaked and
+the adapter is wrong.
+
+Provider selection resolves **once, at session construction**. There is no
+hot-swap and no mid-session failover: reconciling two conversation-history
+models and two audio negotiations mid-sentence is worse than the honest failure
+of ending the session and redialing.
+
+**Both adapters are live-verified against their real providers**, and V-7 — the
+acceptance test for this seam — is closed **live** rather than on a fixture:
+flipping `ATMUX_VOX_PROVIDER` to `gemini-live` and re-running the probe against
+the real Google endpoint reached `session-ready`, streamed 50 uplink frames, and
+returned 14 downlink frames (71,040 bytes) with user and assistant transcripts
+and a clean `1000` close — with byte-identical client assets. Receipt in
+`CHANGELOG.md`.
+
+**The path each adapter took to get there differs, and that asymmetry is the
+instructive part.** `openai-realtime` needed a **GA port** before it worked at
+all: it had been written against the retired Realtime beta API, and every one of
+its tests passed against a fixture that encoded our model of the API rather than
+the API. `gemini-live` was **correct as written** and verified without code
+changes. The general lesson is not that one adapter was better authored than the
+other — it is that **neither was proven until someone dialled the real
+endpoint**, and one of the two turned out to be entirely broken at that moment.
+A green fixture suite is not evidence that an integration works; see
+`CHANGELOG.md` for the full account.
 
 ## Why `tmux send-keys` and not SDK API calls?
 

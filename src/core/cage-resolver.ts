@@ -17,9 +17,8 @@
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-
+import type { Cockpit as CockpitShape, EpicTeamSessionT } from "../schema/cockpit.ts";
 import { walkSessions } from "./cockpit.ts";
-import type { CockpitShape, EpicTeamSessionT } from "../schema/cockpit.ts";
 
 /** Resolved cage description — mirrors the `CageInfo` shape that the
  *  orchd dispatchers (epic-merge.ts, dissolve-epic.ts, git-push.ts)
@@ -42,6 +41,54 @@ export interface ResolvedCage {
   epicId: string;
   /** Level in the cockpit tree (0 = top-level under root sessions[]). */
   level: number;
+}
+
+/**
+ * The two on-disk conventions an epic-team's OWN worktree can live at,
+ * in precedence order.
+ *
+ *   1. ADR-089 §F, in-parent — `<parentRoot>/.atmux/worktrees/<name>`
+ *   2. ADR-090 §Disk layout, sibling — `<parentRoot>-epics/<epicId>`
+ *
+ * Both are live on the fleet (the sibling form is what `spawn-epic`
+ * actually writes today — see `verbs/team/spawn-epic.ts` §3), so a
+ * consumer that knows only one of them silently misses half the cages.
+ * The pair lives HERE, once, because three consumers now need it: the
+ * dispatcher resolver below, `atmux fleet`'s sweep, and `dissolve-epic`.
+ *
+ * Pure — returns candidates, touches no disk. {@link resolveEpicCageRoot}
+ * is the disk-aware half.
+ */
+export function epicCageRootCandidates(
+  parentRoot: string,
+  teamName: string,
+  epicId: string,
+): [string, string] {
+  return [join(parentRoot, ".atmux", "worktrees", teamName), `${parentRoot}-epics/${epicId}`];
+}
+
+/**
+ * An epic-team's OWN root on disk, or `null` when neither convention's
+ * path exists.
+ *
+ * `null` is a real answer, not a failure: it means the epic-team's cage
+ * is GONE while its cockpit entry survives — a stale registration the
+ * operator prunes, not a probe that went wrong. Callers must not paper
+ * over it with a best-guess path, because probing a guessed path reads
+ * the PARENT's cage and reports a confident wrong answer about a team
+ * that no longer exists.
+ */
+export function resolveEpicCageRoot(
+  parentRoot: string,
+  teamName: string,
+  epicId: string,
+  opts: { existsSync?: (p: string) => boolean } = {},
+): string | null {
+  const existsFn = opts.existsSync ?? existsSync;
+  for (const candidate of epicCageRootCandidates(parentRoot, teamName, epicId)) {
+    if (existsFn(candidate)) return candidate;
+  }
+  return null;
 }
 
 /** Resolve which cage (epic-team) in the loaded cockpit owns `epicId`.
@@ -69,24 +116,16 @@ export function resolveCageForEpic(
       return;
     }
 
-    // Resolve epic-team's worktree path. ADR-089 §F places it inside
-    // the parent at `.atmux/worktrees/<name>`. ADR-090's deprecated
-    // sibling convention `<parentRoot>-epics/<epicId>` is the fallback
-    // when the in-parent path is missing — covers older cages that
-    // haven't migrated yet.
-    const inParent = join(parentRoot, ".atmux", "worktrees", et.name);
-    const sibling = `${parentRoot}-epics/${epicId}`;
-    let epicRoot: string;
-    if (exists(inParent)) {
-      epicRoot = inParent;
-    } else if (exists(sibling)) {
-      epicRoot = sibling;
-    } else {
-      // Disk-layout drift — neither convention's path exists. Caller
-      // (dispatcher) treats this as skipped-not-mine; operator
-      // diagnoses via `atmux team list` + `ls`.
-      epicRoot = inParent; // best guess for the reason string
-    }
+    // Resolve epic-team's worktree path through the shared candidate
+    // list so this resolver and `atmux fleet`'s sweep can never disagree
+    // about where a cage lives.
+    const [inParent] = epicCageRootCandidates(parentRoot, et.name, epicId);
+    // Disk-layout drift — neither convention's path exists. Caller
+    // (dispatcher) treats this as skipped-not-mine; operator diagnoses
+    // via `atmux team list` + `ls`. The in-parent form is the best guess
+    // for the reason string.
+    const epicRoot =
+      resolveEpicCageRoot(parentRoot, et.name, epicId, { existsSync: exists }) ?? inParent;
 
     found = {
       name: et.name,

@@ -14,7 +14,7 @@ You have been briefed as `{{MEMBER}}` on team `{{TEAM}}` with role `{{ROLE}}`. B
 
 - `ATMUX_MEMBER` (set by atmux when it spawned this Claude) MUST equal `{{MEMBER}}` exactly. This is the **primary** check — atmux sets it per pane at spawn time; if it doesn't match the brief, the brief was mis-routed.
 - `window=` (from the calling pane via `-t "$TMUX_PANE"`) MUST contain `{{MEMBER}}` — canonical pattern `<emoji>_{{MEMBER}}` or `<emoji>-{{MEMBER}}`. **Critical**: pass `-t "$TMUX_PANE"` — without it, `tmux display-message` reports the attached client's current window (often the driver pane), giving a misleading false-mismatch.
-- `session=` MUST contain `{{TEAM}}` — canonical `atmux_{{TEAM}}`; epic-team variants `atmux_{{TEAM}}__epic-<id>` are also valid. **Cockpit-tier roles** (superdriver, enforcer, discorder, merger, unblocker) run from `atmux_cockpit` — correct for cockpit briefs ONLY; team-tier briefs must NOT be in `atmux_cockpit`. **Retired roles** (sentinel/medic/jury/ombudsman per ADR-211/212/213/214): surface via `atmux flag` if you find yourself in one.
+- `session=` MUST contain `{{TEAM}}` — canonical `atmux_{{TEAM}}`; epic-team variants `atmux_{{TEAM}}__epic-<id>` are also valid. **Cockpit-tier roles** (superdriver, enforcer, discorder, merger, unblocker) run from `atx` — correct for cockpit briefs ONLY; team-tier briefs must NOT be in `atx`. **Retired roles** (sentinel/medic/jury/ombudsman per ADR-211/212/213/214): surface via `atmux flag` if you find yourself in one.
 
 If `ATMUX_MEMBER` does not match OR window/session do not match:
 
@@ -59,13 +59,13 @@ When no discorder member is present in `team.json`, the lead owns ALL categories
 
 **Progress tick** (`atmux discorder progress`, orchd ticker every 30 min):
 
-1. Read the cursor: `.atmux/state/discorder-progress-cursor.json` records last-tick `kanban.json` SHA + git-log HEAD.
+1. Read the cursor: `.atmux/state/discorder-progress-cursor.json` records last-tick `state.db` SHA (the canonical kanban store per ADR-126) + git-log HEAD.
 2. Diff kanban + commits since cursor: `git log <last-cursor-sha>..HEAD --oneline`; kanban diff yields Tasks completed/claimed/blocked since last tick.
 3. Read decisions added since last tick from `{{ATMUX_DIR}}/decisions.md` (cursor field).
 4. Read active blockers from `{{ATMUX_DIR}}/flags.md` — **mention inline as a bullet, do NOT escalate as a separate `whip-blocker` ping** (that belongs to the lead).
 5. Compose a `[whip-progress]` Discord body per the canonical voice (see §Composition voice below).
 6. Send via `~/.claude/skills/whip/scripts/ping-discord.sh` (thin webhook passthrough).
-7. Update cursor: write current `kanban.json` SHA + git HEAD to `.atmux/state/discorder-progress-cursor.json`.
+7. Update cursor: write current `state.db` SHA + git HEAD to `.atmux/state/discorder-progress-cursor.json`.
 
 **Heartbeat tick** (`atmux discorder heartbeat`, orchd ticker every hour at `:00`):
 
@@ -149,7 +149,7 @@ Every send routes through `~/.claude/skills/whip/scripts/ping-discord.sh`; never
 ## Shared state
 
 ```
-{{ATMUX_DIR}}/kanban.json                                  — read for Task state diff
+{{ATMUX_DIR}}/state.db                                     — read for Task state diff (canonical per ADR-126)
 {{ATMUX_DIR}}/decisions.md                                 — read for decisions since cursor
 {{ATMUX_DIR}}/flags.md                                     — read for active blockers (mention inline)
 {{ATMUX_DIR}}/state/discorder-progress-cursor.json          — YOUR cursor: last-tick kanban SHA + git HEAD

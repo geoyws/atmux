@@ -22,11 +22,11 @@ import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { defaultCrontabIO } from "../abstractions/crontab.ts";
 import { ensureDir, exists } from "../abstractions/fs.ts";
-import { closeDatabase, type Database, openDatabase } from "../abstractions/sqlite.ts";
-import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { createTmux } from "../abstractions/tmux.ts";
 import { defaultGitSpawn, type GitSpawn } from "../abstractions/worktree.ts";
 import { loadCockpit, resolveCockpitConfigPath } from "../core/cockpit.ts";
+import { loadKanban } from "../core/kanban.ts";
+import { externalKanbanEnabled } from "../core/kanban-backend.ts";
 import { makeReapZombieWorktree, type ReapDeps, type ReapLogEntry } from "../core/reap.ts";
 import type {
   BranchOnParent,
@@ -156,8 +156,15 @@ export function defaultDiscoveryIO(): DiscoveryIO {
         for (const line of r.stdout.split("\n")) {
           const trimmed = line.trim();
           if (trimmed.length === 0) continue;
-          const eid = trimmed.slice(`${base}-epic-`.length);
-          if (eid.length === 0) continue;
+          const tail = trimmed.slice(`${base}-epic-`.length);
+          if (tail.length === 0) continue;
+          // Reconstruct epicId. Post-2026-05-26 double-e fix: new
+          // branches emit `<base>-epic-<id-without-e-prefix>` so we
+          // re-add the `e-` to recover the canonical epicId. Legacy
+          // branches emitted as `<base>-epic-e-<id>` (double-e form);
+          // their `tail` already starts with `e-` so we keep it
+          // verbatim. Back-compat for the migration window.
+          const eid = tail.startsWith("e-") ? tail : `e-${tail}`;
           out.push({ parent: parentName, branch: trimmed, eid });
         }
         return out;
@@ -178,67 +185,40 @@ export function defaultDiscoveryIO(): DiscoveryIO {
 
 async function probeKanban(atmuxDir: string, parent: boolean): Promise<KanbanProbe | null> {
   const dbPath = join(atmuxDir, "state.db");
-  if (!(await exists(dbPath))) return null;
-  let db: Database | null = null;
+  if (!(await externalKanbanEnabled(atmuxDir)) && !(await exists(dbPath))) return null;
   try {
-    db = openDatabase(dbPath, migrations);
-    const openRow = db
-      .query<{ n: number }, []>("SELECT COUNT(*) AS n FROM tasks WHERE status != 'done'")
-      .get();
-    const doneRow = db
-      .query<{ n: number }, []>("SELECT COUNT(*) AS n FROM tasks WHERE status = 'done'")
-      .get();
-    const maxRow = db
-      .query<{ max_updated: number | null }, []>("SELECT MAX(updated_at) AS max_updated FROM tasks")
-      .get();
-    const lastIso =
-      maxRow?.max_updated === null || maxRow?.max_updated === undefined
-        ? null
-        : new Date(maxRow.max_updated * 1000).toISOString();
+    const kanban = await loadKanban(atmuxDir);
+    const activity = kanban.tasks.flatMap((task) =>
+      [task.createdAt, task.claimedAt, task.completedAt].filter(
+        (value): value is number => typeof value === "number",
+      ),
+    );
+    const lastIso = activity.length ? new Date(Math.max(...activity) * 1000).toISOString() : null;
     const out: KanbanProbe = {
-      tasks_open: openRow?.n ?? 0,
-      tasks_done: doneRow?.n ?? 0,
+      tasks_open: kanban.tasks.filter((task) => task.status !== "done").length,
+      tasks_done: kanban.tasks.filter((task) => task.status === "done").length,
       last_activity: lastIso,
     };
     if (parent) {
-      const epicRows = db.query<{ id: string }, []>("SELECT id FROM epics").all();
-      out.epics = epicRows.length;
-      out.epic_ids = epicRows.map((r) => r.id);
+      out.epics = kanban.epics.length;
+      out.epic_ids = kanban.epics.map((epic) => epic.id);
     }
     return out;
   } catch {
     return null;
-  } finally {
-    if (db !== null) {
-      try {
-        closeDatabase(db);
-      } catch {
-        // best-effort
-      }
-    }
   }
 }
 
 async function probeKanbanEpicRows(atmuxDir: string): Promise<KanbanEpicRow[] | null> {
   const dbPath = join(atmuxDir, "state.db");
-  if (!(await exists(dbPath))) return null;
-  let db: Database | null = null;
+  if (!(await externalKanbanEnabled(atmuxDir)) && !(await exists(dbPath))) return null;
   try {
-    db = openDatabase(dbPath, migrations);
-    const rows = db
-      .query<{ id: string; status: string | null }, []>("SELECT id, status FROM epics")
-      .all();
-    return rows.map((r) => ({ eid: r.id, status: r.status ?? "" }));
+    return (await loadKanban(atmuxDir)).epics.map((epic) => ({
+      eid: epic.id,
+      status: epic.status ?? "",
+    }));
   } catch {
     return null;
-  } finally {
-    if (db !== null) {
-      try {
-        closeDatabase(db);
-      } catch {
-        // best-effort
-      }
-    }
   }
 }
 
@@ -338,6 +318,96 @@ function defaultReapLogPath(): string {
   return join(home, ".atmux", "state", "reap-log.jsonl");
 }
 
+// ---------- Gate-1 liveness predicates (ADR-253 §Defect 2 + §Defect 3) ----------
+//
+// These two predicates back the reap cascade's Gate 1 (never-reap-
+// active, ADR-223 §D3). They are extracted from `defaultReapDeps` and
+// take injectable probes so the REAL fail-closed logic is unit-tested
+// against constructed tmux/git states without touching the host (per
+// CLAUDE.md "unit tests must NEVER touch real tmux/sqlite/git").
+//
+// FAIL-CLOSED contract (ADR-253): uncertainty ⇒ treat as ACTIVE ⇒
+// REFUSE reap. Only a genuinely-clean signal (empty session list, or a
+// clean + old git status) returns `false`. A throwing/erroring probe
+// returns `true` — we never destroy on a signal we could not read.
+
+/** A single tmux session as surfaced by `listSessions()`. Mirrors the
+ *  tmux abstraction's session-list row shape. */
+export interface CageSessionInfo {
+  name: string;
+  windows: number;
+  created: number;
+}
+
+/**
+ * Cage-liveness predicate for Gate 1. Presence-as-liveness: ANY session
+ * on the socket ⇒ active (ADR-253 §Defect 2). The prior implementation
+ * gated on `session.created` being within the last 5 minutes, which
+ * read every long-running cage (the common case — cages live for hours)
+ * as "not active" and so DEFEATED Gate 1 entirely. `session.created` is
+ * the session START time, not last-activity, so it can never be a
+ * recency signal. We mirror the on-disk cage-socket enumeration's signal
+ * ({@link isLiveCageSocket}: `hasServer()` ⇒ alive) — server present
+ * with sessions ⇒ active.
+ *
+ * FAIL-CLOSED (ADR-253 §Defect 3): a throwing `listSessions` (socket
+ * unreadable / tmux error) returns `true` — we cannot confirm the cage
+ * is dead, so we refuse to reap it. Only an empty session list (server
+ * answered, zero sessions) returns `false`.
+ */
+export async function isCageActiveWith(
+  listSessions: () => Promise<ReadonlyArray<CageSessionInfo>>,
+): Promise<boolean> {
+  try {
+    const sessions = await listSessions();
+    // Empty list = server answered with zero sessions = genuinely idle.
+    // Any session present = active. No `created`-recency gate: presence
+    // IS the liveness signal (a cage created hours ago is still active).
+    return sessions.length > 0;
+  } catch {
+    // Uncertain — socket gone / tmux error / permission denied. We could
+    // NOT confirm the cage is dead. Fail CLOSED: treat as active so the
+    // gate REFUSES. Operator can pass --skip-checks to override.
+    return true;
+  }
+}
+
+/**
+ * Worktree-liveness predicate for Gate 1. Active iff the worktree is
+ * dirty (uncommitted changes) OR its last commit is within the recency
+ * window (default 5 minutes). `now` is injectable for deterministic
+ * tests.
+ *
+ * FAIL-CLOSED (ADR-253 §Defect 3): a non-zero exit from `git status`
+ * (not a repo / corrupt index / locked) OR a thrown error returns
+ * `true` — we cannot confirm the worktree is quiescent, so we refuse to
+ * `rm -rf` it. A non-zero exit from the follow-up `git log` (e.g. a
+ * fresh worktree with zero commits but a clean status) also fails CLOSED
+ * to `true`: we have a clean status but could not read commit recency,
+ * so we do not destroy. Only a clean status + a parseable, old commit
+ * timestamp returns `false`.
+ */
+export async function isWorktreeActiveWith(
+  git: GitSpawn,
+  worktreePath: string,
+  now: () => Date = () => new Date(),
+  recencyWindowSec = 5 * 60,
+): Promise<boolean> {
+  try {
+    const status = await git(["-C", worktreePath, "status", "--porcelain"]);
+    if (status.exitCode !== 0) return true; // FAIL-CLOSED: status unreadable
+    if (status.stdout.trim().length > 0) return true; // dirty ⇒ active
+    const commitTime = await git(["-C", worktreePath, "log", "-1", "--format=%ct"]);
+    if (commitTime.exitCode !== 0) return true; // FAIL-CLOSED: recency unreadable
+    const ts = Number.parseInt(commitTime.stdout.trim(), 10);
+    if (!Number.isFinite(ts)) return true; // FAIL-CLOSED: unparseable timestamp
+    return ts > now().getTime() / 1000 - recencyWindowSec;
+  } catch {
+    // Uncertain — git threw. Fail CLOSED: treat as active.
+    return true;
+  }
+}
+
 /** Production-default {@link ReapDeps}. Tests inject their own; this
  *  default is used by the verb when `opts.reapDeps` is omitted.
  *
@@ -364,7 +434,7 @@ export function defaultReapDeps(): ReapDeps {
       if (body === null) return;
       const team = scope.startsWith("atmux:team=") ? scope.slice("atmux:team=".length) : scope;
       const cronModule = await import("../core/cron.ts");
-      const stripped = cronModule.stripBlockByTeam(body, team);
+      const stripped = cronModule.stripAtmuxBlock(body, team);
       if (stripped === body) return; // no-op idempotency
       await crontab.write(stripped);
     },
@@ -391,34 +461,19 @@ export function defaultReapDeps(): ReapDeps {
       await atomicWrite(path, `${JSON.stringify(cockpit, null, 2)}\n`);
     },
     async isCageActive(socket) {
-      try {
+      // Presence-as-liveness + fail-CLOSED per ADR-253 §Defect 2/§Defect
+      // 3. Delegates to the unit-tested predicate; the only production
+      // wiring is the real tmux session-lister.
+      return isCageActiveWith(() => {
         const tx = createTmux({ socketPath: socket });
-        const sessions = await tx.session.listSessions();
-        if (sessions.length === 0) return false;
-        // Conservative: any session present + recent (within 5min)
-        // counts as active. Without attached-clients introspection
-        // (tmux abstraction doesn't expose it on the session-list
-        // surface), treat session presence as a stop-sign — operator
-        // can pass --skip-checks to override.
-        const fiveMinAgo = Date.now() / 1000 - 5 * 60;
-        return sessions.some((s) => s.created > fiveMinAgo);
-      } catch {
-        return false; // socket gone is not "active"
-      }
+        return tx.session.listSessions();
+      });
     },
     async isWorktreeActive(worktreePath) {
-      try {
-        const status = await git(["-C", worktreePath, "status", "--porcelain"]);
-        if (status.exitCode !== 0) return false;
-        if (status.stdout.trim().length > 0) return true; // dirty
-        const commitTime = await git(["-C", worktreePath, "log", "-1", "--format=%ct"]);
-        if (commitTime.exitCode !== 0) return false;
-        const ts = Number.parseInt(commitTime.stdout.trim(), 10);
-        if (!Number.isFinite(ts)) return false;
-        return ts > Date.now() / 1000 - 5 * 60;
-      } catch {
-        return false;
-      }
+      // Fail-CLOSED per ADR-253 §Defect 3 — uncertainty ⇒ active ⇒
+      // refuse. Delegates to the unit-tested predicate with the real git
+      // spawn + live clock.
+      return isWorktreeActiveWith(git, worktreePath);
     },
     async isBranchMerged(repoPath, base, branch) {
       try {

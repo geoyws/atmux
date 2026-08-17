@@ -48,6 +48,7 @@ import {
   requireTeam,
   resolveTeamSocket,
 } from "../core/common.ts";
+import { externalKanbanEnabled } from "../core/kanban-backend.ts";
 import {
   findPhantomInProgressClaims,
   formatPruneIso,
@@ -511,7 +512,10 @@ async function sendCancelToMembers(
  * to `.atmux/archive/<ts>/` if present. Best-effort — bash mirrors
  * the same `2>/dev/null || true` pattern (lib/stop.sh:47-49).
  */
-async function archiveState(atmuxDir: string): Promise<void> {
+export async function archiveState(
+  atmuxDir: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
   const ts = archiveTimestamp(Date.now());
   const dest = join(archiveDir(atmuxDir), ts);
   await mkdir(dest, { recursive: true });
@@ -531,12 +535,14 @@ async function archiveState(atmuxDir: string): Promise<void> {
   }
 
   // kanban.json → archive/<ts>/kanban.json
-  const srcKanban = kanbanJsonPath(atmuxDir);
-  if (await exists(srcKanban)) {
-    try {
-      await copyFile(srcKanban, join(dest, "kanban.json"));
-    } catch {
-      // expected: best-effort.
+  if (!(await externalKanbanEnabled(atmuxDir, env))) {
+    const srcKanban = kanbanJsonPath(atmuxDir);
+    if (await exists(srcKanban)) {
+      try {
+        await copyFile(srcKanban, join(dest, "kanban.json"));
+      } catch {
+        // expected: best-effort.
+      }
     }
   }
 

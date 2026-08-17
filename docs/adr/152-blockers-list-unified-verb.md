@@ -5,7 +5,7 @@
 **Author**: atmux team (driver complaint c-1d28fc72; impl by up-impl)
 **Parent task**: t-8f3061ef
 **Driver-ref**: complaint c-1d28fc72 (driver-claude-sopx /bruh sweep 2026-05-15) — *"build `atmux blockers list` unified verb that fans out across all 7 surfaces and returns normalized rows; don't move storage around — markdown stays where it is; one query joins everything"*. Filed under operator's *"fix all complaints"* directive 2026-05-16 00:17 MYT.
-**Relates**: ADR-060 (kanban SQLite canonical — surface 1+2), ADR-077 §F2 (complaints box — surface 3), ADR-134 (in-team auto-merger merger_state — surface 4), ADR-008 (decisions verb — surface 5), ADR-022 (flags surface — surface 6), ADR-057 §D2 (driver-inbox.md format — surface 7), ADR-151 (unblocker — primary downstream consumer of the JSON form).
+**Relates**: ADR-126 (kanban SQLite canonical — surface 1+2), ADR-077 §F2 (complaints box — surface 3), ADR-134 (in-team auto-merger merger_state — surface 4), ADR-008 (decisions verb — surface 5), ADR-022 (flags surface — surface 6), ADR-057 §D2 (driver-inbox.md format — surface 7), ADR-151 (unblocker — primary downstream consumer of the JSON form).
 
 ## Context
 
@@ -175,7 +175,7 @@ Same-commit doc per `/CLAUDE.md §Docs Discipline` — the verb is a documented 
 
 ## Cross-refs
 
-- [ADR-060](060-state-db-canonical.md) — kanban SQLite canonical (surface 1+2 substrate).
+- [ADR-126](126-sqlite-state-store.md) — kanban SQLite canonical (surface 1+2 substrate).
 - [ADR-077](077-superdoctor-cockpit-role.md) §F2 — complaints box schema (surface 3).
 - [ADR-134](134-in-team-auto-merger.md) — merger_state table (surface 4); revert vs conflict semantics drive the class derivation.
 - [ADR-008](008-decisions-verb.md) — decisions verb format (surface 5).
@@ -190,3 +190,7 @@ Same-commit doc per `/CLAUDE.md §Docs Discipline` — the verb is a documented 
 Promoted from `proposed` → `accepted` per [docs/audits/adr-status-drift-audit-2026-05-20.md](../audits/adr-status-drift-audit-2026-05-20.md) (sha=a6f1541). Code-refs + git-log refs both present at audit time confirming shipped + dogfooded status; the `proposed` marker was bookkeeping debt. Original Date preserved verbatim. Append-only — see Status field for the canonical flip; this §Amendment carries the audit traceability.
 
 **Filed via** t-45b401c3 (T4 sweep, 2026-05-20).
+
+## §Amendment 2026-08-14 — `--team-dir <dir>` flag (ADR-272 P3)
+
+`atmux blockers list` gains `--team-dir <dir>` — the sibling-verb project-root override (`ResolveDirOpts.teamDir`, same pattern as `status` / `health` / `cost`). Additive; every existing invocation is unchanged. The explicit flag wins over caller-provided `dirOpts`. Motivation: the [ADR-272](272-voice-operator-interface.md) D2 voice tool bridge invokes every verb with an explicit `--team-dir` (no cwd context inside the voice server), and `blockers` was the one catalog verb missing the flag.

@@ -314,7 +314,7 @@ Reviewer-gated at each Task per the standing reviewer audit-bar.
 - **[ADR-007](007-kanban-design.md)** — kanban pull-model + `blocked` lifecycle state. R1 measures time-in-blocked.
 - **[ADR-008](008-decisions-verb.md)** — decisions verb; the `🔵 Decisions Needed` surface that ADR-152 catalogs.
 - **[ADR-010](010-atmux-flag.md)** — `atmux flag` + `.atmux/flags.md` lifecycle. R2 emits into this surface.
-- **[ADR-060](060-state-sqlite-port.md)** — `.atmux/state.db` SQLite canonical store.
+- **[ADR-126](126-sqlite-state-store.md)** — `.atmux/state.db` SQLite canonical store.
 - **[ADR-076](076-sql-canonical-inbox.md)** — `inbox_messages` table. R3 emits into this surface.
 - **[ADR-077](077-superdoctor-cockpit-role.md)** + **[ADR-133](133-medic-rename.md)** — medic + complaints substrate. R1 emits into `complaints` table.
 - **[ADR-147](147-ombudsman-and-release-notes.md)** — ombudsman adjudicates the open `complaints` set, including auto-promoted ones (drains R1's output).

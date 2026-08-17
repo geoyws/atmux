@@ -17,6 +17,10 @@ export const fixCronPollutionRecipe: CursorRecipe = {
     throw new Error("ADR-233: fix-cron-pollution recipe retired");
   },
   async verify() {
-    return { ok: false, reasons: ["ADR-233: fix-cron-pollution recipe retired"] };
+    return {
+      ok: false,
+      reasons: ["ADR-233: fix-cron-pollution recipe retired"],
+      patchSummary: "",
+    };
   },
 };

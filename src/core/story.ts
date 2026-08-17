@@ -13,14 +13,23 @@
 
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
+import { emit } from "../abstractions/events.ts";
 import { exists } from "../abstractions/fs.ts";
-import { closeDatabase, type Database, openDatabase, transact, transactImmediate } from "../abstractions/sqlite.ts";
-import { nextId } from "./id-sequence.ts";
+import {
+  closeDatabase,
+  type Database,
+  openDatabase,
+  transact,
+  transactImmediate,
+} from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
+import { KanbanCliAdapter } from "../adapters/kanban-cli.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { KanbanStory, KanbanTask } from "../schema/kanban.ts";
 import { tryLoadTeam } from "./common.ts";
+import { nextId } from "./id-sequence.ts";
 import { nowEpoch } from "./kanban.ts";
+import { externalKanbanEnabled } from "./kanban-backend.ts";
 import { KanbanRepo } from "./repositories/kanban-repo.ts";
 
 const STATES = [
@@ -32,6 +41,8 @@ const STATES = [
   "merging",
   "done",
 ] as const;
+const externalKanban = new KanbanCliAdapter();
+
 export type StoryState = (typeof STATES)[number];
 
 export function genStoryId(): string {
@@ -96,6 +107,25 @@ export async function addStory(atmuxDir: string, opts: AddStoryOpts): Promise<st
   if (opts.epic.length === 0) {
     throw new UsageError({ what: "story add: --epic <epic-id> required" });
   }
+  if (await externalKanbanEnabled(atmuxDir)) {
+    const parent = (await externalKanban.loadKanban(atmuxDir)).epics.find(
+      (epic) => epic.id === opts.epic,
+    );
+    if (!parent) throw new ConfigError({ what: `story add: no such epic: ${opts.epic}` });
+    const id = await externalKanban.addTask(atmuxDir, {
+      type: "story",
+      subject: title,
+      epic: opts.epic,
+      ...(opts.body ? { body: opts.body } : {}),
+    });
+    await externalKanban.patchMetadata(atmuxDir, id, "atmux", {
+      workflowStatus: "planning",
+      acceptanceCriteria: opts.acceptanceCriteria ?? null,
+      reviewSignoff: false,
+      mergeMode: opts.mergeMode ?? "feature-branch",
+    });
+    return id;
+  }
   if (!(await exists(_stateDbPath(atmuxDir)))) {
     throw new ConfigError({
       what: `story add: ${_stateDbPath(atmuxDir)} not initialized; run \`atmux init\` first`,
@@ -148,6 +178,12 @@ export async function listStories(
   atmuxDir: string,
   filter: ListStoriesFilter,
 ): Promise<KanbanStory[]> {
+  if (await externalKanbanEnabled(atmuxDir)) {
+    const stories = (await externalKanban.loadKanban(atmuxDir)).stories.filter(
+      (story) => story.epic === filter.epic,
+    );
+    return filter.status ? stories.filter((story) => story.status === filter.status) : stories;
+  }
   if (!(await exists(_stateDbPath(atmuxDir)))) return [];
   return await _withRepo(atmuxDir, (repo) => {
     let stories = repo.listStories({ epic: filter.epic });
@@ -164,6 +200,11 @@ export interface StoryWithChildren extends KanbanStory {
 }
 
 export async function showStory(atmuxDir: string, id: string): Promise<StoryWithChildren | null> {
+  if (await externalKanbanEnabled(atmuxDir)) {
+    const board = await externalKanban.loadKanban(atmuxDir);
+    const story = board.stories.find((item) => item.id === id);
+    return story ? { ...story, tasks: board.tasks.filter((task) => task.story === id) } : null;
+  }
   if (!(await exists(_stateDbPath(atmuxDir)))) return null;
   return await _withRepo(atmuxDir, (repo) => {
     const story = repo.getStory(id);
@@ -190,6 +231,26 @@ export async function advanceStory(
   id: string,
   target?: string,
 ): Promise<AdvanceStoryResult> {
+  if (await externalKanbanEnabled(atmuxDir)) {
+    const team = await tryLoadTeam({ dir: atmuxDir });
+    const reviewer = team?.members.find((member) => member.role === "reviewer")?.name;
+    const committer = team?.members.find(
+      (member) =>
+        member.role === "committer" || member.role === "gitter" || member.name === "gitter",
+    )?.name;
+    const result = await externalKanban.advanceStory(atmuxDir, id, "atmux", {
+      ...(target ? { target } : {}),
+      ...(reviewer ? { reviewer } : {}),
+      ...(committer ? { committer } : {}),
+    });
+    return {
+      from: result.from,
+      to: result.to,
+      parentEpicFlipped: result.parentEpicFlipped,
+      dispatchedTaskId: result.dispatchedTaskID,
+      noop: result.noop,
+    };
+  }
   if (!(await exists(_stateDbPath(atmuxDir)))) {
     throw new ConfigError({ what: `story advance: no such story: ${id}` });
   }
@@ -231,8 +292,7 @@ export async function advanceStory(
     // merging-specific signoff gate below — but we want a clearer
     // error for that explicit foot-gun, so the merging branch checks
     // mergeMode too.
-    const trunkDirectReviewToDone =
-      trunkDirect && cur === "review" && resolved === "done";
+    const trunkDirectReviewToDone = trunkDirect && cur === "review" && resolved === "done";
     if (!trunkDirectReviewToDone && !storyLegalTransition(cur, resolved)) {
       throw new UsageError({
         what:
@@ -325,6 +385,16 @@ export async function advanceStory(
     const now = nowEpoch();
     let parentEpicFlipped = false;
     let dispatchedTaskId: string | null = null;
+    // ADR-247 §D1: fire `story.ready` ONCE on the `planning → ready`
+    // transition (the planner's hand-off edge). Captured here, emitted
+    // after the transaction returns — mirrors the `epic.ready` precedent
+    // in `src/core/epic.ts` (events INSERT lands outside the parent
+    // transaction's lock window; BEGIN IMMEDIATE serializes them safely).
+    // Guarded on cur === "planning" so a `--to ready` no-op re-issue on an
+    // already-ready story never re-fires (the cur === resolved early-return
+    // above already handles the pure no-op; this is belt-and-suspenders for
+    // any future non-canonical entry into ready).
+    const shouldEmitStoryReady = cur === "planning" && resolved === "ready";
     // Apply mutations inside a single DB transaction so concurrent readers
     // see either pre- or post-state, never partial. Bash's lib/story.sh
     // jq_update is a single atomic file write; transact() is the SQL
@@ -403,6 +473,41 @@ export async function advanceStory(
       }
       repo.upsertStory(updatedStory);
     });
+    // ADR-247 §D1: emit `story.ready` on the planning→ready edge, after
+    // the transaction commits. Best-effort — a missing events table
+    // (pre-migration cage) or a Zod hiccup must NOT break `story advance`;
+    // the kanban row is the load-bearing side effect (same contract as
+    // `tryEmitTaskLifecycle` in src/core/kanban.ts). Honker NOTIFY fires
+    // inside emit() automatically when the substrate is loaded
+    // (getHonkerState auto-detect per ADR-202 §Amendment 2026-05-24).
+    if (shouldEmitStoryReady) {
+      try {
+        // Stories have no first-class `lane` column; the lane hint rides
+        // the passthrough `extra` JSON when set (ADR-247 §OQ3 makes this
+        // advisory — the watchdog re-derives the authoritative lane from
+        // kanban at ping-time). Fall back to "misc" when unset.
+        const storyExtra = story as Record<string, unknown>;
+        const laneHint = typeof storyExtra.lane === "string" ? storyExtra.lane : "misc";
+        const assigneeHint =
+          typeof storyExtra.owner === "string" && storyExtra.owner.length > 0
+            ? storyExtra.owner
+            : undefined;
+        emit(db, {
+          topic: "story.ready",
+          team: team?.name ?? "",
+          epicId: eid ?? "",
+          storyId: id,
+          lane: laneHint,
+          ...(assigneeHint !== undefined ? { assigneeHint } : {}),
+          body: story.title ?? story.body ?? "",
+          emittedAtSec: now,
+        });
+      } catch {
+        // Best-effort: missing events table or programmer-introduced Zod
+        // failure must not break `story advance`. The kanban row already
+        // committed above is the load-bearing side effect.
+      }
+    }
     return { from: cur, to: resolved, parentEpicFlipped, dispatchedTaskId, noop: false };
   });
 }
@@ -491,6 +596,17 @@ export async function storySignoff(
   id: string,
   opts: SignoffOpts = {},
 ): Promise<SignoffResult> {
+  if (await externalKanbanEnabled(atmuxDir)) {
+    const team = await tryLoadTeam({ dir: atmuxDir });
+    const member = _resolveSignoffMember(team, opts, "story signoff");
+    const result = await externalKanban.setStorySignoff(atmuxDir, id, member, true, opts.note);
+    return {
+      storyId: result.storyID,
+      signedOffBy: result.actor,
+      signedOffAt: result.at,
+      noteApplied: result.note,
+    };
+  }
   if (!(await exists(_stateDbPath(atmuxDir)))) {
     throw new ConfigError({ what: `story signoff: no such story: ${id}` });
   }
@@ -545,6 +661,17 @@ export async function storyUnsignoff(
   id: string,
   opts: SignoffOpts = {},
 ): Promise<UnsignoffResult> {
+  if (await externalKanbanEnabled(atmuxDir)) {
+    const team = await tryLoadTeam({ dir: atmuxDir });
+    const member = _resolveSignoffMember(team, opts, "story unsignoff");
+    const result = await externalKanban.setStorySignoff(atmuxDir, id, member, false, opts.note);
+    return {
+      storyId: result.storyID,
+      unsignedBy: result.actor,
+      unsignedAt: result.at,
+      noteApplied: result.note,
+    };
+  }
   if (!(await exists(_stateDbPath(atmuxDir)))) {
     throw new ConfigError({ what: `story unsignoff: no such story: ${id}` });
   }
@@ -598,6 +725,58 @@ export async function storyUnsignoff(
       };
     });
     return result;
+  });
+}
+
+// ---------- e-407c6d53: story update — body / acceptanceCriteria edit ----------
+
+export interface UpdateStoryOpts {
+  /** New body prose. `null` clears the body (`--body ''` at the verb layer);
+   *  `undefined` leaves the existing value untouched. */
+  body?: string | null;
+  /** New acceptance-criteria prose. `null` clears it (`--ac ''`);
+   *  `undefined` leaves the existing value untouched. */
+  acceptanceCriteria?: string | null;
+}
+
+/** Edit a Story's `body` / `acceptanceCriteria` in place. Mirrors the
+ *  `advanceStory` / `storySignoff` `_withRepo` + `repo.upsertStory` pattern.
+ *  Throws `ConfigError` on a missing story id (or absent state.db). Only the
+ *  fields whose opt is not `undefined` are mutated; `null` clears the field. */
+export async function updateStory(
+  atmuxDir: string,
+  id: string,
+  opts: UpdateStoryOpts,
+): Promise<void> {
+  if (await externalKanbanEnabled(atmuxDir)) {
+    const story = await showStory(atmuxDir, id);
+    if (!story) throw new ConfigError({ what: `story update: no such story: ${id}` });
+    if (opts.body !== undefined) {
+      await externalKanban.updateTask(atmuxDir, id, "atmux", { body: opts.body ?? "" });
+    }
+    if (opts.acceptanceCriteria !== undefined) {
+      await externalKanban.patchMetadata(atmuxDir, id, "atmux", {
+        acceptanceCriteria: opts.acceptanceCriteria,
+      });
+    }
+    return;
+  }
+  if (!(await exists(_stateDbPath(atmuxDir)))) {
+    throw new ConfigError({ what: `story update: no such story: ${id}` });
+  }
+  await _withRepo(atmuxDir, (repo, db) => {
+    const story = repo.getStory(id);
+    if (story === null) {
+      throw new ConfigError({ what: `story update: no such story: ${id}` });
+    }
+    transact(db, () => {
+      const updated: KanbanStory = { ...story };
+      if (opts.body !== undefined) updated.body = opts.body;
+      if (opts.acceptanceCriteria !== undefined) {
+        updated.acceptanceCriteria = opts.acceptanceCriteria;
+      }
+      repo.upsertStory(updated);
+    });
   });
 }
 

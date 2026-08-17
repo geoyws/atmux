@@ -50,6 +50,7 @@ import { doctor } from "./verbs/doctor.ts";
 import { driverInbox } from "./verbs/driver-inbox.ts";
 import { epic } from "./verbs/epic.ts";
 import { epicMerge } from "./verbs/epic-merge.ts";
+import { fleet } from "./verbs/fleet.ts";
 import { groom } from "./verbs/groom.ts";
 import { handoff } from "./verbs/handoff.ts";
 import { health } from "./verbs/health.ts";
@@ -66,14 +67,16 @@ import { dispatchMemberSubverb } from "./verbs/member.ts";
 import { mergeCycle } from "./verbs/merge-cycle.ts";
 import { mergeMember } from "./verbs/merge-member.ts";
 import { migrateHexIds } from "./verbs/migrate-hex-ids.ts";
+import { migrateKanban } from "./verbs/migrate-kanban.ts";
 import { migrateState } from "./verbs/migrate-state.ts";
+import { nudge } from "./verbs/nudge.ts";
 import { ombudsman } from "./verbs/ombudsman.ts";
+import { orchd } from "./verbs/orchd.ts";
 import { pause, resume } from "./verbs/pause.ts";
 import { poke } from "./verbs/poke.ts";
 import { pokeResumeCheck } from "./verbs/poke-resume-check.ts";
 import { pulse } from "./verbs/pulse.ts";
 import { reconfigure } from "./verbs/reconfigure.ts";
-import { orchd } from "./verbs/orchd.ts";
 import { refusalScan } from "./verbs/refusal-scan.ts";
 import { release } from "./verbs/release.ts";
 import { outbox, reply } from "./verbs/reply.ts";
@@ -98,6 +101,7 @@ import { tellLead } from "./verbs/tell-lead.ts";
 import { topo } from "./verbs/topo.ts";
 import { up } from "./verbs/up.ts";
 import { version } from "./verbs/version.ts";
+import { voice, vox } from "./verbs/vox.ts";
 import { watchdog } from "./verbs/watchdog.ts";
 
 /**
@@ -232,6 +236,10 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return dispatchTeamSubverb(argv.slice(1));
     case "topo":
       return topo(argv.slice(1));
+    case "fleet":
+      return fleet(argv.slice(1));
+    case "nudge":
+      return nudge(argv.slice(1));
     case "member":
       return dispatchMemberSubverb(argv.slice(1));
     case "sync":
@@ -284,19 +292,9 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return ombudsman(argv.slice(1));
     case "committer":
       return committer(argv.slice(1));
-    case "gitter":
-      // ADR-159 TR2 legacy alias — `atmux gitter` retained for one
-      // release cycle; emit a deprecation-warn so cron + operator
-      // scripts surface the rename ask. TR3+ amendment removes the
-      // alias.
-      process.stderr.write(
-        "atmux: 'gitter' verb is deprecated — use 'committer' per ADR-159. " +
-          "Accepting this release; will fail next release.\n",
-      );
-      return committer(argv.slice(1));
     case "orchd":
       // ADR-224 §D1 — `orchd` (orchestrator daemon) is the canonical
-      // event-router persona/verb. Renamed from `relayd` 2026-05-22 to
+      // event-router persona/verb. Renamed 2026-05-22 to
       // honestly cover the expanding lifecycle responsibilities (Phase 2
       // adds auto-spawn / auto-dissolve subscribers per §D4). Subscribes
       // to multi-topic via atmux-listener Rust kernel-blocked NOTIFY/
@@ -304,25 +302,14 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       // (long-lived), --drain (one-shot cron-backstop), --handle-one
       // (per-event dispatch), --status (diagnostic).
       return orchd(argv.slice(1));
-    case "relayd":
-      // ADR-224 §D1 — `atmux relayd` is the deprecation alias for one
-      // release post-rename. Emits a single-line stderr warning then
-      // delegates to the orchd handler with same exit code + stdout
-      // shape (scripts that pipe / parse stdout keep working). Removed
-      // next release.
-      process.stderr.write(
-        "[deprecated] 'atmux relayd' renamed to 'atmux orchd' (ADR-224); " +
-          "update callsites — alias removes next release\n",
-      );
-      return orchd(argv.slice(1));
     case "cockpit-mirror":
       // ADR-230 — cockpit-scope event dispatcher. Per-event Bun handler
       // spawned by the Rust `atmux-cockpit-mirror` binary
       // (`--handle-one --event-id X --topic T`); 7-topic whitelist per
       // ADR-230 §D3 (epic.merge_ready / epic.spawn_blocked / team.spawned
       // / team.dissolved / budget.warning / budget.recovered /
-      // gitter.escalated). Per-topic real handlers are follow-up Tasks;
-      // MVP scaffold logs + advances offset.
+      // the ADR-212 commit-escalation topic). Per-topic real handlers
+      // are follow-up Tasks; MVP scaffold logs + advances offset.
       return cockpitMirror(argv.slice(1));
     case "epic-merge":
       return epicMerge(argv.slice(1));
@@ -339,21 +326,6 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
     case "poke":
       return poke(argv.slice(1));
     case "poke-resume-check":
-      return pokeResumeCheck(argv.slice(1));
-    // ADR-160: legacy `whip` + `whip-resume-check` surfaces retained for
-    // one release cycle with stderr deprecation-warn. Operator cron lines
-    // continue invoking the canonical `poke` handler via this alias;
-    // post-cycle the alias is removed and stale cron entries get a
-    // refusal hint citing ADR-160.
-    case "whip":
-      process.stderr.write(
-        "atmux: 'atmux whip' is deprecated and renamed to 'atmux poke' per ADR-160; routing to canonical handler. Update cron lines + scripts before the next release.\n",
-      );
-      return poke(argv.slice(1));
-    case "whip-resume-check":
-      process.stderr.write(
-        "atmux: 'atmux whip-resume-check' is deprecated and renamed to 'atmux poke-resume-check' per ADR-160; routing to canonical handler. Update cron lines + scripts before the next release.\n",
-      );
       return pokeResumeCheck(argv.slice(1));
     case "watchdog":
       return watchdog(argv.slice(1));
@@ -381,6 +353,20 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return migrateHexIds(argv.slice(1));
     case "migrate-state":
       return migrateState(argv.slice(1));
+    case "migrate-kanban":
+      return migrateKanban(argv.slice(1));
+    case "vox":
+      // ADR-272 — spoken operator interface, named `vox` per ADR-274.
+      // `--serve` binds the WS + PWA server; `--supervise` / `--status` /
+      // `--stop` drive the dedicated `atmux-vox` tmux session on the
+      // default socket (§D10). Every vox tool is an atmux verb invocation
+      // (§D2), and the server runs as the driver (§D3).
+      return vox(argv.slice(1));
+    // SUNSET(v0.9.1): ADR-274 D2 — the pre-rename verb name, still
+    // dispatching to the same entry point and warning on stderr. Delete
+    // this case (and `voice` in `src/verbs/vox.ts`) after v0.9.1 ships.
+    case "voice":
+      return voice(argv.slice(1));
     case "up":
       return up(argv.slice(1));
     case "":

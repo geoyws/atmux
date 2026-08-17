@@ -3,7 +3,7 @@
 // Captures the last N lines of a member pane via tmux capture-pane,
 // then parses the Claude Code TUI statusline for the context-used
 // percentage. Used by `atmux orchd --scan-context` every 15min to
-// detect members approaching preclear-worthy saturation.
+// detect members approaching handoff-worthy saturation.
 //
 // Claude statusline shape (sampled 2026-05-24):
 //
@@ -14,7 +14,7 @@
 // (rate-limit windows) don't false-match. Defensive: when no bar+%
 // segment is found, returns null and the caller skips the emit.
 
-import type { Tmux } from "../abstractions/tmux.ts";
+import type { TmuxNamespace } from "../abstractions/tmux.ts";
 
 /** Default lookback for capture-pane. 12 lines is enough to capture
  *  the statusline + a couple of preceding lines for context, without
@@ -59,7 +59,7 @@ export function parseContextPercent(rawCapture: string): ContextUsage | null {
  *  (caller's scan-context handler catches per-member errors so one
  *  bad pane doesn't halt the sweep). */
 export async function capturePaneTail(
-  tmux: Tmux,
+  tmux: TmuxNamespace,
   target: string,
   lines: number = DEFAULT_CAPTURE_LINES,
 ): Promise<string> {

@@ -514,6 +514,58 @@ describe("epic verb — ADR-225 dispatch", () => {
     expect(out).toContain(`depends_on: [${a}]`);
   });
 
+  test("`epic show` text view renders owner/priority/deps inline on task rows (ADR-173)", async () => {
+    const eid = await addEpic(atmuxDir, { title: "T" });
+    const sid = await addStory(atmuxDir, { title: "child story", epic: eid });
+    // An upstream blocker task (epic-direct, unowned, no priority).
+    const blocker = await addTask(atmuxDir, { subject: "blocker" });
+    // Epic-direct task: owned by alpha, priority 2, depends on the blocker.
+    const direct = await addTask(atmuxDir, {
+      subject: "direct task",
+      assignee: "alpha",
+      priority: 2,
+      deps: [blocker],
+    });
+    // Story-child task: owned by reviewer, priority 5, no deps.
+    const childTask = await addTask(atmuxDir, {
+      subject: "story child task",
+      assignee: "reviewer",
+      priority: 5,
+    });
+    // Link epic/story via the repo (addTask has no --epic/--story surface).
+    {
+      const db = openDatabase(join(atmuxDir, "state.db"), migrations);
+      const repo = new KanbanRepo(db);
+      for (const id of [blocker, direct]) {
+        const t = repo.getTask(id);
+        if (t !== null) repo.upsertTask({ ...t, epic: eid });
+      }
+      const ct = repo.getTask(childTask);
+      if (ct !== null) repo.upsertTask({ ...ct, epic: eid, story: sid });
+      closeDatabase(db);
+    }
+    const { out } = await captureStdout(async () => {
+      return await epic(["show", eid, "--team-dir", teamDir]);
+    });
+    // Locate the epic-direct task row and assert owner + priority + deps
+    // all render inline on that single line (not a global `toContain`,
+    // which could pass off another row's substring).
+    const directLine = out.split("\n").find((l) => l.includes(direct));
+    expect(directLine).toBeDefined();
+    expect(directLine).toContain("[alpha, P2]");
+    expect(directLine).toContain(`← deps: ${blocker}`);
+    // The unowned, no-priority blocker renders the `-` / `P-` placeholders
+    // and no deps trailer (empty deps[] omits the marker entirely).
+    const blockerLine = out.split("\n").find((l) => l.includes(blocker) && !l.includes(direct));
+    expect(blockerLine).toBeDefined();
+    expect(blockerLine).toContain("[-, P-]");
+    expect(blockerLine).not.toContain("← deps:");
+    // The story-child task row carries its own owner/priority inline.
+    const childLine = out.split("\n").find((l) => l.includes(childTask));
+    expect(childLine).toBeDefined();
+    expect(childLine).toContain("[reviewer, P5]");
+  });
+
   test("`epic list` table includes R + D columns", async () => {
     const a = await addEpic(atmuxDir, { title: "A" });
     // Walk a to done so its dep counts as `done`.

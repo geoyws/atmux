@@ -16,22 +16,35 @@
 // `defaultGitSpawn` reusable across helpers; tests pass mocks.
 
 import { statOrNull } from "../abstractions/fs.ts";
-import { spawn as defaultSpawn, type SpawnResult } from "../abstractions/spawn.ts";
+import {
+  DEFAULT_GIT_SPAWN_TIMEOUT_MS,
+  spawn as defaultSpawn,
+  resolveGitTimeoutMs,
+  type SpawnResult,
+} from "../abstractions/spawn.ts";
 import { ConfigError } from "../errors.ts";
 
 // ---------- Spawn-injected git wrapper ----------
 
-export type GitSpawn = (argv: ReadonlyArray<string>) => Promise<SpawnResult>;
+/** Injected `git <argv>` wrapper. Optional `opts.timeoutMs` overrides the
+ *  per-call timeout; omit for the {@link resolveGitTimeoutMs} default. */
+export type GitSpawn = (
+  argv: ReadonlyArray<string>,
+  opts?: { timeoutMs?: number },
+) => Promise<SpawnResult>;
 
 /** Default git spawner — wraps `abstractions/spawn.spawn` with `git`
- *  prefix + 30s timeout + accept-any-status (caller branches on rc).
- *  Mirrors `auto-push.ts::defaultGitSpawn` to keep the two helpers
- *  symmetric (one closes kanban, the other pushes after close). */
-export const defaultGitSpawn: GitSpawn = async (argv) =>
+ *  prefix + accept-any-status (caller branches on rc) and a
+ *  {@link resolveGitTimeoutMs}-resolved timeout (per-call
+ *  `opts.timeoutMs` > env `ATMUX_GIT_TIMEOUT_MS` >
+ *  {@link DEFAULT_GIT_SPAWN_TIMEOUT_MS}). Mirrors
+ *  `auto-push.ts::defaultGitSpawn` to keep the two helpers symmetric
+ *  (one closes kanban, the other pushes after close). */
+export const defaultGitSpawn: GitSpawn = async (argv, opts) =>
   await defaultSpawn({
     cmd: "git",
     argv,
-    timeoutMs: 30_000,
+    timeoutMs: resolveGitTimeoutMs(opts?.timeoutMs),
     expectExitCode: "any",
   });
 

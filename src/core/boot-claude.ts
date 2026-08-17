@@ -98,33 +98,9 @@ export const DEFAULT_SUBMIT_VERIFY_RETRIES = 1;
  *  "Your role is lead" after rotate mis-resolved window 1). Recipient
  *  must `echo $ATMUX_MEMBER` first and abort + alert the operator on
  *  mismatch rather than silently bootstrap as the wrong member. The
- *  env var is set per-pane at spawn time + is not lying.
- *
- *  Dead-file-reference strip (2026-05-22 update, t-f79db3b9). Prior
- *  template instructed the recipient to "read /tmp/atmux-brief-
- *  generic-{team}.md" as the first bootstrap artifact — but nothing
- *  in the codebase ever wrote that file. `grep -rn 'atmux-brief-
- *  generic' src/` returned only this one consumer line; no writer.
- *  Bootstrapping members hit File-Not-Found and silently fell
- *  through to reading CLAUDE.md + their role brief (the second half
- *  of the prompt). The dead reference is removed; role brief +
- *  project CLAUDE.md remain the canonical bootstrap sources.
- *
- *  The earlier "if your role appears in templates/briefs/" conditional
- *  is also dropped (lead callout 3, 16:57 MYT). Every role atmux
- *  spawns has a brief — `BRIEF_ALIASES` in `rotate.ts` + the
- *  `member.md` fallback at `getBriefPath` make missing-brief structurally
- *  impossible at the resolver layer. A missing brief at the recipient
- *  side is a different failure class (operator-surface via flag /
- *  inbox ask, NOT silent-skip — which is what the conditional was
- *  encoding). Generic-brief surface, if ever resurfaced as a real
- *  ask, belongs in `CLAUDE.md` (load-bearing for ALL roles, single
- *  source) — not `/tmp/` ephemerals that don't survive reboot.
- *
- *  The `{team}` placeholder is unused as of this strip but kept in
- *  `renderBootPrompt` for call-site ABI stability (no caller breakage). */
+ *  env var is set per-pane at spawn time + is not lying. */
 const BOOT_PROMPT_TEMPLATE =
-  "First run `echo $ATMUX_MEMBER` — if it isn't `{member}`, this paste mis-targeted (alert operator + abort, do NOT bootstrap). Otherwise read your role brief in templates/briefs/ + the project CLAUDE.md, then bootstrap as {member}.";
+  "First run `echo $ATMUX_MEMBER` — if it isn't `{member}`, this paste mis-targeted (alert operator + abort, do NOT bootstrap). Otherwise read /tmp/atmux-brief-generic-{team}.md and your role brief if your role appears in templates/briefs/, then bootstrap as {member}.";
 
 /** Render the boot prompt for a (team, member) pair. Exported for
  *  unit tests + observability — the lead-outbox failure surface

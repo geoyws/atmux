@@ -146,3 +146,26 @@ LOC estimates deferred to implementation. The bash skill is ~600 LOC but TS port
 
 - If skill ergonomics demand a different sub-verb shape (e.g. `/team start --rotate-existing` flag), atmux verb gains the same flag. The contract is "skill arg shape == atmux arg shape" with no translation layer beyond the dispatcher.
 - Future skills (`/coordination:heads-up`, `/coordination:tell-lead`, `/coordination:whip`) are out of ADR-114's immediate scope — most already use existing atmux verbs (`tell-lead`, `report`, etc.) and don't need new verb-IDs. Whip's runtime side is V-25 (already scheduled). The pattern from ADR-114 generalizes if any future skill needs additional atmux backing.
+
+## Amendments
+
+### 2026-08-07 — §1's `preclear` sub-verb merged into `handoff`; verb set is `cont` / `handoff` / `stop` (ADR-263)
+
+[ADR-263](263-merge-session-preclear-into-handoff.md) supersedes this ADR's `atmux session` sub-verb set. §1's table above defines four sub-verbs (`cont` / `preclear` / `handoff` / `stop`); **ADR-263 merges the `preclear` row into the `handoff` row**, leaving three. The `preclear` row above is retained as the record of what that verb did — its behaviour was not dropped, it became `handoff`'s **same-session** mode:
+
+- **same-session** (default) — the former `preclear`: save the current session's coordination state (handoff + memory + tasks). Callable in every mode (driver / solo / lead / no-team), mode-aware per §4, never destructive.
+- **forward** — the former `handoff`: write a forward-going brief for a fresh claude in a new worktree/branch; optional spawn. Selected by a fresh target (worktree/branch arg, or `--fresh`).
+
+There is **no `preclear` alias** — `/session preclear` no longer exists and breaks loudly rather than aliasing silently (ADR-263 §2). No state or wire migration was needed: `preclear` was never a persisted identifier.
+
+Consequent re-readings of the body above:
+
+- **§Context item 2** — "the missing pieces are session-lifecycle (preclear / cont)" reads "(handoff / cont)".
+- **§1, `atmux team <verb>` table, `rotate-lead` row** — "Composite of `preclear` + `/clear` + bootstrap" reads "Composite of **`handoff`** + `/clear` + bootstrap".
+- **§2, the shim `case` block** — the `preclear) atmux session preclear "$@" ;;` arm is dropped; the dispatcher carries `cont` / `handoff` / `stop`. "Slash-command discoverability (LLM sees `/session preclear`)" reads **`/session handoff`**.
+- **§4** — "Both `cont` and `preclear` are callable in every mode" reads "Both `cont` and **`handoff`**"; the matrix's "`preclear` behavior" column is the "**`handoff`** behavior" column. Every per-mode cell behaviour is unchanged.
+- **§4, driver-mode prose** — "Driver-mode preclear matters even though it's a no-op for state-save" reads "Driver-mode **handoff** …"; the audit line `📋 [preclear-driver]` is **`📋 [handoff-driver]`**; "`preclear` already wraps it" reads **`handoff`**; the closing "So `preclear` is the canonical pre-`/clear` ritual in every mode — never 'skip preclear because I'm the driver'" reads **handoff** in both places.
+- **§5 NOT in scope** — "intra-session checkpointing → `preclear`" reads "→ **`handoff`**".
+- **§Schedule** — "V-26 `session` (sub-verbs: cont / preclear / handoff / stop)" reads "(sub-verbs: **cont / handoff / stop**)".
+
+§3's path canonicalization (handoff.md / memory / marker paths) is unchanged — both modes write the same `handoff.md` artifact, which is why the two verbs collapsed.

@@ -14,7 +14,7 @@ You have been briefed as `{{MEMBER}}` on team `{{TEAM}}` with role `{{ROLE}}`. B
 
 - `ATMUX_MEMBER` (set by atmux when it spawned this Claude) MUST equal `{{MEMBER}}` exactly. This is the **primary** check — atmux sets it per pane at spawn time; if it doesn't match the brief, the brief was mis-routed.
 - `window=` (from the calling pane via `-t "$TMUX_PANE"`) MUST contain `{{MEMBER}}` — canonical pattern `<emoji>_{{MEMBER}}` or `<emoji>-{{MEMBER}}`. **Critical**: pass `-t "$TMUX_PANE"` — without it, `tmux display-message` reports the attached client's current window (often the driver pane), giving a misleading false-mismatch.
-- `session=` MUST contain `{{TEAM}}` — canonical `atmux_{{TEAM}}`; epic-team variants `atmux_{{TEAM}}__epic-<id>` are also valid. **Cockpit-tier roles** (superdriver, enforcer, discorder, merger, unblocker) run from `atmux_cockpit` — correct for cockpit briefs ONLY; team-tier briefs must NOT be in `atmux_cockpit`. **Retired roles** (sentinel ADR-211, medic ADR-212, jury ADR-213, ombudsman ADR-214): surface via `atmux flag` if you find yourself spawned into one — the work absorbed into you (acceptance-criteria adjudication, per ADR-213) or into lead (complaint adjudication + rotation signals).
+- `session=` MUST contain `{{TEAM}}` — canonical `atmux_{{TEAM}}`; epic-team variants `atmux_{{TEAM}}__epic-<id>` are also valid. **Cockpit-tier roles** (superdriver, enforcer, discorder, merger, unblocker) run from `atx` — correct for cockpit briefs ONLY; team-tier briefs must NOT be in `atx`. **Retired roles** (sentinel ADR-211, medic ADR-212, jury ADR-213, ombudsman ADR-214): surface via `atmux flag` if you find yourself spawned into one — the work absorbed into you (acceptance-criteria adjudication, per ADR-213) or into lead (complaint adjudication + rotation signals).
 
 If `ATMUX_MEMBER` does not match OR window/session do not match:
 
@@ -154,7 +154,7 @@ Discipline.
 
 `<surface>` cites the inventory category (verb signature / brief vocabulary / state-file shape / cron template / event schema / ADR-named invariant) so the member can find the right doc to update without re-deriving it.
 
-## main/master push refuse — AC scope-check ([ADR-028](../../docs/adr/028-main-master-pr-only-no-agent-push.md))
+## main/master push refuse — AC scope-check ([ADR-028](../../docs/adr/028-main-master-pr-only.md))
 
 `main` / `master` is **PR-only** fleet-wide. REJECT signoff on any Story whose `acceptanceCriteria` (or any child Task body / deliverable) contains the prohibited push phrasing — even when surrounded by qualifications. The reviewer is the AC-level scope-check; committer / lead enforce at dispatch + commit time.
 
@@ -197,7 +197,7 @@ A bug-fix Task that arrives in review with `note: "fix Y; merge to main"` reads 
 ## Shared state
 
 ```
-{{ATMUX_DIR}}/kanban.json                — Stories + Tasks (read for AC, child Task statuses)
+{{ATMUX_DIR}}/state.db                   — Stories + Tasks (read for AC, child Task statuses; canonical per ADR-126)
 {{ATMUX_DIR}}/inboxes/{{MEMBER}}.json     — review Tasks land here
 {{ATMUX_DIR}}/lead-outbox.md              — your `atmux reply` writes here
 docs/adr/                                — planner ADRs (read before signoff if Story references one)

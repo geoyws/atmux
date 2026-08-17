@@ -514,9 +514,9 @@ export async function teamRename(
   }
 
   // Resolve cockpit metadata up-front — used by plan rendering + live
-  // orchestration. Cockpit session defaults to `atmux_cockpit` per
-  // ADR-135 §D1; cockpit path defaults to `<home>/.atmux/cockpit.json`.
-  const cockpitSessionName = cockpit.cockpitSession ?? "atmux_cockpit";
+  // orchestration. Cockpit session defaults to `atx` per
+  // ADR-264 §D1; cockpit path defaults to `<home>/.atmux/cockpit.json`.
+  const cockpitSessionName = cockpit.cockpitSession ?? "atx";
   const cockpitPath = opts.cockpitPath ?? defaultCockpitConfigPath(process.env.HOME ?? "/root");
 
   if (parsed.dryRun) {

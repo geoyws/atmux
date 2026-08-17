@@ -219,6 +219,22 @@ export class ComplaintsRepo {
     return complaintFromRow(row);
   }
 
+  /** ADR-261 §D4 refresh arm: shallow-merge `patch` over an existing
+   *  complaint's `extra`, preserving every unpatched key — notably the
+   *  filer-owned `source_count` / `last_seen`. Used by the issue-sync
+   *  engine when a known-still-open upstream issue carries a newer
+   *  `updatedAt` (refresh URL / labels / upstream_state in place — no
+   *  new row, no event, no new tell-lead). Returns true on update,
+   *  false when no row matched the id. */
+  mergeExtra(id: string, patch: Record<string, unknown>): boolean {
+    const cur = this.getById(id);
+    if (cur === null) return false;
+    const merged: Record<string, unknown> = { ...cur.extra, ...patch };
+    const extraStr = Object.keys(merged).length > 0 ? JSON.stringify(merged) : null;
+    this.db.prepare("UPDATE complaints SET extra = ? WHERE id = ?").run(extraStr, id);
+    return true;
+  }
+
   /** Bump `extra.source_count` + `extra.last_seen` on an existing complaint
    *  row, preserving every other field (status / opened_at / preventive_ask
    *  unchanged). Used by the dedup-aware filer when a re-file lands within

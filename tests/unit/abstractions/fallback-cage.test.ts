@@ -24,7 +24,6 @@ import {
   FallbackUserMissingError,
   TIER_AGENT,
   TIER3_RSYNC_EXCLUDES,
-  Tier4NotAvailableError,
   tier3WorkDir,
 } from "../../../src/abstractions/fallback-cage.ts";
 import type { SpawnOpts, SpawnResult } from "../../../src/abstractions/spawn.ts";
@@ -156,28 +155,6 @@ describe("cageArchivePath", () => {
     expect(cageArchivePath("/p/.atmux", 2, "t", "l", 100)).toBe(
       "/p/.atmux/tier2-handoff/archive/t-l-100",
     );
-  });
-});
-
-describe("Tier4NotAvailableError", () => {
-  test("error message references the ADR-050 v1 scope reduction", () => {
-    // Class is @deprecated post-ADR-050 v1 + Task t-706655ee
-    // (2026-05-14): Tier 4 (MiniMax) is permanently dropped, not
-    // "not GA". Message rewritten to cite the dropping ADR; the
-    // older ADR-058 §OQ6 reference no longer applies. t-475f9571
-    // sibling-F.
-    const e = new Tier4NotAvailableError();
-    expect(e.message).toContain("Tier 4 (MiniMax)");
-    expect(e.message).toContain("ADR-050");
-    expect(e.message).toContain("permanently dropped");
-  });
-
-  test("name property is 'Tier4NotAvailableError'", () => {
-    expect(new Tier4NotAvailableError().name).toBe("Tier4NotAvailableError");
-  });
-
-  test("instanceof Error", () => {
-    expect(new Tier4NotAvailableError() instanceof Error).toBe(true);
   });
 });
 
@@ -654,7 +631,7 @@ describe("Lifecycle — createFallbackCage Tier 3+ refused (ADR-050 v1)", () => 
     }
   });
 
-  test("Tier 4 without MINIMAX_CLI_AVAILABLE → also FallbackTierDroppedError (not legacy Tier4NotAvailableError)", async () => {
+  test("Tier 4 without MINIMAX_CLI_AVAILABLE → also FallbackTierDroppedError", async () => {
     const ORIG_ENV = process.env.MINIMAX_CLI_AVAILABLE;
     delete process.env.MINIMAX_CLI_AVAILABLE;
     try {
@@ -683,10 +660,6 @@ describe("Lifecycle — createFallbackCage Tier 3+ refused (ADR-050 v1)", () => 
       // The new hard gate supersedes the old MINIMAX_CLI_AVAILABLE
       // check — both env states route through FallbackTierDroppedError.
       expect(caught instanceof FallbackTierDroppedError).toBe(true);
-      // And the legacy Tier4NotAvailableError class is NOT thrown by
-      // createFallbackCage anymore (still exported for in-flight
-      // instanceof checks at call sites that haven't migrated yet).
-      expect(caught instanceof Tier4NotAvailableError).toBe(false);
       expect(spawn.calls.length).toBe(0);
     } finally {
       if (ORIG_ENV === undefined) delete process.env.MINIMAX_CLI_AVAILABLE;

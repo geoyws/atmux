@@ -36,6 +36,7 @@ import {
   resolveTeamSocket,
 } from "../core/common.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
+import { externalKanbanEnabled } from "../core/kanban-backend.ts";
 import { pauseMember } from "../core/pause.ts";
 import { sendToMember } from "../core/send.ts";
 import { ConfigError, UsageError } from "../errors.ts";
@@ -403,6 +404,12 @@ export async function handoff(
   }
 
   const atmuxDir = await getAtmuxDir(dirOpts);
+  if (await externalKanbanEnabled(atmuxDir)) {
+    throw new ConfigError({
+      what: "atmux handoff is retired in external Kanban mode because it cannot transfer leases atomically",
+      hint: "use `kanban handoff create <task-id> --lease <token> --as <agent> --summary <text> --intent <text> --next-action <text>`; the replacement accepts it with `kanban handoff accept <handoff-id> --as <agent>`",
+    });
+  }
   const sessionName = await getSessionName({ ...dirOpts, team });
   const socketPath = parsed.socketPath ?? resolveTeamSocket(team);
   const tmux = (opts.buildTmux ?? defaultBuildTmux)(socketPath);

@@ -1,6 +1,6 @@
 # ADR-237: No LLM cadence into Discord — remove hourly whips, medic on-demand only
 
-**Status**: Proposed (operator-fired 2026-05-24 in conversation immediately after [ADR-236](236-three-tier-orchd-supervision.md); ship under driver in a focused commit set since the surface spans member-skill + cockpit + Discord-template layers).
+**Status**: Proposed (operator-fired 2026-05-24 in conversation immediately after [ADR-236](236-three-tier-orchd-supervision.SUPERSEDED.md); ship under driver in a focused commit set since the surface spans member-skill + cockpit + Discord-template layers).
 
 **Date**: 2026-05-24
 
@@ -15,7 +15,7 @@ The token-burn framing is the load-bearing motivation. Every member running `/wh
 **Cross-refs**:
 - [ADR-202](202-honker-in-db-messaging-substrate.md) — Honker substrate; the event-driven primitives that replace whip's poll-and-summarize model.
 - [ADR-233](233-cron-auto-install-disabled-trust-orchd.md) — cron retirement. The crons that fired `discorder progress` / `discorder heartbeat` are already not auto-installed; this ADR formalizes that those subverbs are now operator-on-demand or substrate-event-triggered, never cron-fired.
-- [ADR-236](236-three-tier-orchd-supervision.md) — the supervision tier this ADR is a sibling to. D3 of ADR-236 depends on D1 of this ADR (Discord template is Rust-composed, deterministic, no LLM).
+- [ADR-236](236-three-tier-orchd-supervision.SUPERSEDED.md) — the supervision tier this ADR is a sibling to. D3 of ADR-236 depends on D1 of this ADR (Discord template is Rust-composed, deterministic, no LLM).
 - [ADR-077](077-superdoctor-cockpit-role.md) — medic's original spec. D2 of this ADR narrows medic's role to operator-on-demand invocation.
 - [ADR-133](133-medic-rename.md) — superdoctor → medic rename; storage-layer identifiers preserved.
 - [ADR-068](068-bash-to-ts-cutover.md) — `atmux discorder` subverb cutover (the deterministic kanban→Discord aggregator that stays).
@@ -90,7 +90,7 @@ Medic stays available as a cockpit pane (`_medic` window at cockpit window 2 per
 No hourly cadence. **Medic posting LLM-composed output to Discord during an on-demand invocation IS allowed** per the operator clarification *"medic LLM -> discord is fine"* — the prohibited shape is auto-cadence LLM→Discord, not all LLM→Discord. Each operator-fired `atmux medic diagnose <team>` produces at most one Claude turn whose output may include a Discord-posted summary; the cost is bounded to the invocation and the operator deliberately chose to pay it.
 
 `docs/medic.md` updates in the same commit as D2 implementation:
-- §"When you want it" — strike "Running ≥2 atmux teams concurrently" justification (no longer auto-loop-driven); add "After superorchd escalation: read the `[orchd-supervision-failure]` Discord ping and the `superdoctor_attempts` payload, run `atmux medic diagnose <team>`".
+- §"When you want it" — strike "Running ≥2 atmux teams concurrently" justification (no longer auto-loop-driven); add "When the operator spots a dead `__orchd__` pane on cockpit-attach (per ADR-240's drop of superorchd auto-restart), run `atmux medic diagnose <team>` for AI-reasoned post-mortem over `.atmux/logs/orchd.log` + `state.db`." Note: the `[orchd-supervision-failure]` Discord ping and `superdoctor_attempts` supervisor-write paths from the original ADR-236 §D3 were dropped by ADR-240; no automatic ping fires on orchd death.
 - §"When you don't want it" — drop the cost-conscious mention ("medic is one extra Opus + xhigh session running a whip cycle every hour") since the always-on cost is gone.
 - §"Enabling it" — the `medic` cockpit.json block stays the same shape, but `autoStart` is no longer honored (schema-dropped); add a one-line callout.
 
@@ -159,7 +159,7 @@ Crontab grep validation after this ADR lands: `crontab -l 2>/dev/null | grep -E 
 - **Token spend drops dramatically.** Per-host baseline: zero Claude turns/day spent on whip cycles or medic hourly diagnosis. A 5-team × 7-members-each setup goes from ~11,000+ daily orientation turns to ~0; medic goes from 24/day to 0/day baseline + N/day on operator invocation.
 - **Discord noise drops.** Per-team `[whip-progress]` LLM-summaries (every 270s, every member) go away. Only the deterministic discorder hourly heartbeat + 30-min progress remain — and even those are now operator-on-demand or substrate-event-triggered (no auto cron).
 - **Medic becomes a tool, not a service.** `docs/medic.md` updates reflect "on-demand only" framing. `atmux medic diagnose <team>` is the operator-fired entry point. Pane stays warm at idle (skill loaded) for fast invocation.
-- **Substrate-event-triggered Discord becomes more important.** With whip's auto-cadence-summary gone, anomaly visibility depends on the deterministic-event paths (refusal-trigger, account-swap, watchdog, superorchd escalation per ADR-236 §D3). Those paths need to be reliable + cover the operator-visible failure modes that whip used to surface incidentally.
+- **Substrate-event-triggered Discord becomes more important.** With whip's auto-cadence-summary gone, anomaly visibility depends on the deterministic-event paths (refusal-trigger, account-swap, watchdog). Those paths need to be reliable + cover the operator-visible failure modes that whip used to surface incidentally. (Note: the superorchd-escalation path from ADR-236 §D3 was dropped by ADR-240 — orchd death is operator-visible via the dead `__orchd__` pane on cockpit-attach, not via Discord auto-ping.)
 - **No Claude-composed CADENCE Discord messages exist after this ADR.** Whip-driven and medic-auto-loop-driven posts go away. On-demand medic posts (operator-fired) may still include LLM-composed Discord output — that is allowed per operator clarification. The architectural shift is "no time-driven LLM→Discord", not "no LLM→Discord at all".
 - **Tests update.** Whip-related test files (`tests/unit/core/whip-*.test.ts`, `tests/unit/verbs/whip*.test.ts`, `tests/e2e/whip-*.test.ts`) flip to assert deprecation log paths for one release, then are deleted. New tests for `atmux medic diagnose <team>` cover the diagnose-paste flow. Template-header dual-emit (D4) gets a one-release-window test that asserts both `[whip-progress]` and `[progress]` are emitted under the `DISCORD_TEMPLATE_DUAL_EMIT=1` env path.
 - **Doc updates.** `docs/medic.md` (D2). `docs/PRD.md` and `docs/ARCHITECTURE.md` whip sections strike the auto-cadence text. `CHANGELOG.md` calls out the user-visible removal. Same-commit-as-code per atmux convention.

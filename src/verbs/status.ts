@@ -31,7 +31,6 @@ import {
   driverInboxPath,
   getAtmuxDir,
   getSessionName,
-  kanbanJsonPath,
   type ResolveDirOpts,
   requireTeam,
   resolveTeamSocket,
@@ -39,8 +38,10 @@ import {
 import { type DriverPaneHealth, probeDriverPane } from "../core/driver-pane-health.ts";
 import { DEFAULT_HEARTBEAT_STALE_SEC, readHeartbeatAges } from "../core/heartbeat.ts";
 import { loadInbox } from "../core/inbox.ts";
+import { kanbanWorkStateAvailable } from "../core/kanban-backend.ts";
 import { loadKanban } from "../core/kanban.ts";
 import { readLeadSessionStart, readLeadWindowName } from "../core/lead-marker.ts";
+import { type MemberSelfStatus, readAllMemberStatuses } from "../core/member-status.ts";
 import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.ts";
 import { UsageError } from "../errors.ts";
 import { type NeedsApprovalReport, scanNeedsApproval } from "../lib/needs-approval.ts";
@@ -162,6 +163,20 @@ export interface MemberStatus {
    *  gatherStatus call re-reads. The producer (t-7e291a53) writes this
    *  from the cron-mediated poke tick per-member loop. */
   heartbeat_age_s: number | null;
+  /** ADR-260 §D5: the member's self-reported status (manual
+   *  orchestration mode's authoritative intent signal), sourced from
+   *  `<atmuxDir>/state/member-status/<member>.json` via
+   *  readAllMemberStatuses. Absent when the member has never
+   *  self-reported (or the file is unreadable) — key-presence
+   *  convention matches `contextPct`. Rendered alongside — not
+   *  instead of — the derived signals so a stale/dishonest
+   *  self-report is cross-checkable at a glance. */
+  selfStatus?: {
+    status: MemberSelfStatus;
+    note?: string;
+    taskId?: string;
+    ageSec: number;
+  };
 }
 
 /** ADR-148 §D2: cadence-classifier output for one member. T5
@@ -180,31 +195,26 @@ export interface KanbanCounts {
 }
 
 /** ADR-077 §F5 / ADR-133: cockpit medic presence/health snapshot
- *  (formerly named `SuperdoctorState`; renamed per ADR-133, alias
- *  preserved below). Surfaced in `atmux status` so the operator can
- *  verify a `cockpit rebuild` actually took effect. */
+ *  (formerly named `SuperdoctorState`; renamed per ADR-133 — the
+ *  `SuperdoctorState` alias was removed per ADR-266 §D2). Surfaced in
+ *  `atmux status` so the operator can
+ *  verify a `cockpit reconcile` actually took effect. */
 export interface MedicState {
-  /** True iff `~/.atmux/cockpit.json` exists AND has a `medic` block
-   *  (or the deprecated `superdoctor` block, which the loader coerces
-   *  to medic semantics per ADR-133 §D2). False when no cockpit is
-   *  configured at all (silent — most per-team status calls won't
-   *  have one). */
+  /** True iff `~/.atmux/cockpit.json` exists AND has a `medic` block.
+   *  False when no cockpit is configured at all (silent — most per-team
+   *  status calls won't have one). */
   configured: boolean;
-  /** True iff `medic.enabled === true` (or legacy `superdoctor.enabled`)
-   *  in cockpit.json. */
+  /** True iff `medic.enabled === true` in cockpit.json. */
   enabled: boolean;
   /** True iff the cockpit tmux session exists on the operator's
    *  default socket. Probed only when `enabled === true`. */
   sessionAlive: boolean;
-  /** True iff a window named `medic` (canonical) OR `superdoctor`
-   *  (deprecated alias accepted during the rename window) exists in
-   *  the cockpit session. Probed only when `sessionAlive === true`. */
+  /** True iff a window named `_medic` (canonical) OR `medic` /
+   *  `superdoctor` (legacy names, still live in unreconciled cockpits)
+   *  exists in the cockpit session. Probed only when
+   *  `sessionAlive === true`. */
   windowAlive: boolean;
 }
-
-/** @deprecated ADR-133 — use {@link MedicState}. Kept as a type alias
- *  for importers during the one-release-cycle deprecation window. */
-export type SuperdoctorState = MedicState;
 
 /** ADR-077 §lead-uptime-measurement (t-6d950ffd / preventive for
  *  superdoctor complaint c-06dabd47): explicit-naming snapshot for
@@ -265,15 +275,8 @@ export interface StatusSnapshot {
    *  renderer skips display when `configured=false`. */
   driverPane: DriverPaneHealth;
   /** ADR-077 §F5 / ADR-133: cockpit medic snapshot. Always populated;
-   *  renderer skips display when `configured=false`. The deprecated
-   *  `superdoctor` field below mirrors this same data during the
-   *  rename window — both keys appear in `--json` output. */
+   *  renderer skips display when `configured=false`. */
   medic: MedicState;
-  /** @deprecated ADR-133 — mirror of {@link StatusSnapshot.medic}.
-   *  Retained for one release cycle so JSON consumers reading
-   *  `snap.superdoctor` (per ADR-077 §F5) continue working
-   *  unchanged. Removed once the deprecation window closes. */
-  superdoctor: MedicState;
   /** ADR-085 §Three surfaces #1: approval-debt scan across ADRs +
    *  driver-inbox + blocked kanban. Live per ADR-068 §HC#4 — no cache;
    *  re-run every `gatherStatus` invocation. */
@@ -314,6 +317,11 @@ export interface GatherStatusDeps {
    *  the `[[DD-]HH:]MM:SS` format. Returns null when the PID is
    *  not running OR the ps call fails. */
   psEtime?: (pid: number) => Promise<number | null>;
+  /** ADR-273 D3 trap 1 injection seam: the per-member cage probe.
+   *  Default {@link probeCageState}. Exists so a test can assert WHICH
+   *  session name the probe is handed — the argument whose absence made
+   *  every anchored team (`atmux_unum`, bare `atmux`) report as down. */
+  probeCage?: typeof probeCageState;
 }
 
 /** Per-task t-d98b2bd6 (whip-side signal shape). Mirrors the on-disk
@@ -376,7 +384,7 @@ export async function probeMedic(deps: GatherStatusDeps = {}): Promise<MedicStat
   } catch {
     return { configured: false, enabled: false, sessionAlive: false, windowAlive: false };
   }
-  const m = cockpit.medic ?? cockpit.superdoctor;
+  const m = cockpit.medic;
   if (m === undefined) {
     return { configured: false, enabled: false, sessionAlive: false, windowAlive: false };
   }
@@ -411,11 +419,6 @@ export async function probeMedic(deps: GatherStatusDeps = {}): Promise<MedicStat
   }
   return { configured: true, enabled: true, sessionAlive, windowAlive };
 }
-
-/** @deprecated ADR-133 — use {@link probeMedic}. Thin wrapper retained
- *  for the deprecation window so callers reaching for the legacy
- *  symbol keep working unchanged. */
-export const probeSuperdoctor = probeMedic;
 
 /** ADR-077 §lead-uptime-measurement (t-6d950ffd): parse the
  *  `[[DD-]HH:]MM:SS` etime format that `ps -o etime=` emits into
@@ -579,7 +582,14 @@ export async function gatherStatus(
     let cageState: CageState | null = null;
     if (sessionState === "up" && (m.tui ?? "claude") === "claude") {
       try {
-        const health: CageHealth = await probeCageState(team, m, atmuxDir, { tmux });
+        // ADR-273 D3 trap 1: pass the RESOLVED session name. `gatherStatus`
+        // already has it (from `getSessionName`, anchor-aware); without it
+        // the probe rebuilds `atmux-<team>` and reports every member of an
+        // anchored team (`atmux_unum`, bare `atmux`) as `down`.
+        const health: CageHealth = await (deps.probeCage ?? probeCageState)(team, m, atmuxDir, {
+          tmux,
+          sessionName,
+        });
         cageState = health.state;
       } catch {
         // Probe failure → leave cageState null; the legacy paneCommand
@@ -666,13 +676,27 @@ export async function gatherStatus(
     row.heartbeat_age_s = ageByName.get(row.name) ?? null;
   }
 
+  // ADR-260 §D5: batch-read the per-member self-reported status files.
+  // Key-presence convention matches contextPct — rows without a signal
+  // simply omit the field so JSON consumers gate cleanly.
+  const selfStatuses = await readAllMemberStatuses(atmuxDir, memberNames);
+  for (const row of members) {
+    const rec = selfStatuses.get(row.name);
+    if (rec !== undefined) {
+      row.selfStatus = {
+        status: rec.status,
+        ...(rec.note !== undefined ? { note: rec.note } : {}),
+        ...(rec.taskId !== undefined ? { taskId: rec.taskId } : {}),
+        ageSec: Math.max(0, nowSec - rec.updatedAtSec),
+      };
+    }
+  }
+
   const counts: KanbanCounts = { todo: 0, inProgress: 0, done: 0, blocked: 0 };
   // ADR-060 dual-path: load if EITHER the SQLite store or the legacy
   // JSON file exists. Pre-fix this gate only checked kanban.json, so
   // post-migration teams (state.db only) reported counts=0.
-  const hasSqlite = await exists(join(atmuxDir, "state.db"));
-  const hasJson = await exists(kanbanJsonPath(atmuxDir));
-  if (hasSqlite || hasJson) {
+  if (await kanbanWorkStateAvailable(atmuxDir)) {
     const k = await loadKanban(atmuxDir);
     for (const t of k.tasks) {
       if (t.status === "todo") counts.todo += 1;
@@ -724,9 +748,6 @@ export async function gatherStatus(
     driverInboxOpen,
     driverPane,
     medic,
-    // ADR-133 deprecation alias — same data, retained for one cycle
-    // so JSON consumers reading `snap.superdoctor` keep working.
-    superdoctor: medic,
     needsApproval,
     lead,
   };
@@ -775,6 +796,7 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
           contextTs?: number;
           contextStale?: boolean;
           cadence?: CadenceObservation;
+          selfStatus?: MemberStatus["selfStatus"];
         } = {
           name: m.name,
           role: m.role,
@@ -793,16 +815,15 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
         if (m.contextTs !== undefined) row.contextTs = m.contextTs;
         if (m.contextStale !== undefined) row.contextStale = m.contextStale;
         if (m.cadence !== undefined) row.cadence = m.cadence;
+        // ADR-260 §D5: self-reported status — emitted only when the
+        // member has a readable status file (key-presence convention).
+        if (m.selfStatus !== undefined) row.selfStatus = m.selfStatus;
         return row;
       }),
       kanban: snap.kanban,
       driverInboxOpen: snap.driverInboxOpen,
       driverPane: snap.driverPane,
-      // ADR-133: emit BOTH `medic` (canonical) AND `superdoctor`
-      // (deprecated alias, same data) during the rename window so JSON
-      // consumers continue working. `superdoctor` drops next release.
       medic: snap.medic,
-      superdoctor: snap.superdoctor,
       needsApproval: snap.needsApproval,
       // ADR-077 §lead-uptime-measurement (t-6d950ffd): explicit-naming
       // uptime snapshot. Two distinct numbers, two distinct sources —
@@ -928,8 +949,14 @@ function renderTextStatus(snap: StatusSnapshot, staleSec: number): void {
     // ticked their first cron-mediated poke cycle.
     const hb = formatHeartbeatColumn(m, staleSec);
     const hbSuffix = hb === "—" ? "" : `  ${hb}`;
+    // ADR-260 §D5: self-reported status segment — appended after the
+    // heartbeat marker (same suffix pattern: omitted entirely when the
+    // member has never self-reported, so pre-ADR-260 rows are
+    // byte-identical).
+    const ss = formatSelfStatusColumn(m);
+    const ssSuffix = ss === "—" ? "" : `  ${ss}`;
     process.stdout.write(
-      `  ${emoji} ${name} ${role} ${tui} ${paneState} ${ctx} ${cadence} 🟡 ${m.inProgressCount} active  📌 ${m.pendingCount} todo${hbSuffix}\n`,
+      `  ${emoji} ${name} ${role} ${tui} ${paneState} ${ctx} ${cadence} 🟡 ${m.inProgressCount} active  📌 ${m.pendingCount} todo${hbSuffix}${ssSuffix}\n`,
     );
   }
   const k = snap.kanban;
@@ -1021,6 +1048,25 @@ function formatHeartbeatAge(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
   return `${Math.floor(seconds / 3600)}h`;
+}
+
+/** ADR-260 §D5: format the self-reported status segment for one member
+ *  row. Two states:
+ *    - Never self-reported (selfStatus absent)  → "—" (renderer omits)
+ *    - Self-reported                            → "📍working(t-xxx, 3m)"
+ *      (taskId parenthetical omitted when the report carried none).
+ *
+ *  Age reuses the heartbeat-age unit convention so the two trailing
+ *  markers read consistently. The note is NOT rendered in the row
+ *  (would wreck column alignment) — `--json` carries it. */
+export function formatSelfStatusColumn(m: MemberStatus): string {
+  const ss = m.selfStatus;
+  if (ss === undefined) return "—";
+  const inner =
+    ss.taskId !== undefined
+      ? `${ss.taskId}, ${formatHeartbeatAge(ss.ageSec)}`
+      : formatHeartbeatAge(ss.ageSec);
+  return `📍${ss.status}(${inner})`;
 }
 
 /** ADR-057 §D6c: read `team.json::whip.stallPrevention.heartbeatStaleSec`.

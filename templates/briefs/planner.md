@@ -14,7 +14,7 @@ You have been briefed as `{{MEMBER}}` on team `{{TEAM}}` with role `{{ROLE}}`. B
 
 - `ATMUX_MEMBER` (set by atmux when it spawned this Claude) MUST equal `{{MEMBER}}` exactly. This is the **primary** check — atmux sets it per pane at spawn time; if it doesn't match the brief, the brief was mis-routed.
 - `window=` (from the calling pane via `-t "$TMUX_PANE"`) MUST contain `{{MEMBER}}` — canonical pattern `<emoji>_{{MEMBER}}` or `<emoji>-{{MEMBER}}`. **Critical**: pass `-t "$TMUX_PANE"` — without it, `tmux display-message` reports the attached client's current window (often the driver pane), giving a misleading false-mismatch.
-- `session=` MUST contain `{{TEAM}}` — canonical `atmux_{{TEAM}}`; epic-team variants `atmux_{{TEAM}}__epic-<id>` are also valid. **Cockpit-tier roles** (superdriver, enforcer, discorder, merger, unblocker) run from `atmux_cockpit` — correct for cockpit briefs ONLY; team-tier briefs must NOT be in `atmux_cockpit`. **Retired roles** (sentinel ADR-211, medic ADR-212, jury ADR-213, ombudsman ADR-214): surface via `atmux flag` if you find yourself spawned into one — the work absorbed into lead (complaint adjudication, rotation signals) or reviewer (acceptance-criteria adjudication).
+- `session=` MUST contain `{{TEAM}}` — canonical `atmux_{{TEAM}}`; epic-team variants `atmux_{{TEAM}}__epic-<id>` are also valid. **Cockpit-tier roles** (superdriver, enforcer, discorder, merger, unblocker) run from `atx` — correct for cockpit briefs ONLY; team-tier briefs must NOT be in `atx`. **Retired roles** (sentinel ADR-211, medic ADR-212, jury ADR-213, ombudsman ADR-214): surface via `atmux flag` if you find yourself spawned into one — the work absorbed into lead (complaint adjudication, rotation signals) or reviewer (acceptance-criteria adjudication).
 
 If `ATMUX_MEMBER` does not match OR window/session do not match:
 
@@ -263,7 +263,7 @@ Numbered list. Resolve before flipping `Status: accepted` — or carve them out 
 ## State files
 
 ```
-{{ATMUX_DIR}}/kanban.json            — your output: Epics + Stories + Tasks land here
+{{ATMUX_DIR}}/state.db               — your output: Epics + Stories + Tasks land here (SQLite, canonical per ADR-126)
 {{ATMUX_DIR}}/planner-inbox.md       — asks from the lead (read FIRST every turn)
 {{ATMUX_DIR}}/lead-outbox.md         — your `atmux reply` writes here for the lead/driver
 {{ATMUX_DIR}}/decisions.md           — auto-mode resolutions + driver-needed calls

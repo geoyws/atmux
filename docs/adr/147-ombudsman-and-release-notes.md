@@ -17,7 +17,7 @@ The complaint surface already exists:
 
 - `src/schema/complaints.ts` — `Complaint` Zod schema (id `c-xxxxxxxx`, openedBy, summary, rootCause, ask, status `open|resolved|wontfix`, sourceKind `medic|operator|whip|whip-velocity-gate|cli|cron|member`).
 - `src/verbs/complaints.ts` — `atmux complaints file|list|resolve` verbs.
-- `src/core/complaints.ts` — SQLite-backed store via `state.db` (ADR-060).
+- `src/core/complaints.ts` — SQLite-backed store via `state.db` (ADR-126).
 - Medic / superdoctor files complaints on observed anomalies (per ADR-077 §D5 + §F2, ADR-131).
 - Whip + whip-velocity-gate file complaints on velocity stalls (per ADR-177).
 - Operator + CLI file complaints manually.

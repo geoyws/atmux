@@ -20,7 +20,10 @@ import {
   SpawnError,
   SpawnTimeoutError,
   TmuxError,
+  TrackerRateLimitError,
   UsageError,
+  VerbMutexError,
+  VoiceProviderError,
 } from "../../src/errors.ts";
 
 describe("AtmuxError subclasses", () => {
@@ -159,6 +162,37 @@ describe("AtmuxError subclasses", () => {
     expect(e.message).toBe("http GET https://x/y timed out after 5000ms");
   });
 
+  test("TrackerRateLimitError carries trackerId + resetAtSec + status", () => {
+    const e = new TrackerRateLimitError({
+      trackerId: "github",
+      url: "https://api.github.com/repos/a/b/issues",
+      status: 403,
+      resetAtSec: 1765432100,
+    });
+    expect(e.tag).toBe("tracker-rate-limit");
+    expect(e.trackerId).toBe("github");
+    expect(e.resetAtSec).toBe(1765432100);
+    expect(e.message).toBe(
+      "github rate limit exhausted (HTTP 403 from https://api.github.com/repos/a/b/issues, resets at epoch 1765432100)",
+    );
+    expect(e instanceof AtmuxError).toBe(true);
+  });
+
+  test("TrackerRateLimitError omits the reset tail when resetAtSec is null", () => {
+    const cause = new Error("upstream");
+    const e = new TrackerRateLimitError({
+      trackerId: "github",
+      url: "https://api.github.com/x",
+      status: 429,
+      resetAtSec: null,
+      cause,
+    });
+    expect(e.resetAtSec).toBeNull();
+    expect(e.message).toBe("github rate limit exhausted (HTTP 429 from https://api.github.com/x)");
+    expect(e.message).not.toContain("resets at epoch");
+    expect(e.cause).toBe(cause);
+  });
+
   test("DiscordWebhookError adds HTTP status when provided", () => {
     const e = new DiscordWebhookError({ template: "whip-progress", statusCode: 429 });
     expect(e.tag).toBe("discord");
@@ -200,6 +234,83 @@ describe("AtmuxError subclasses", () => {
     const e = new UsageError({ what: "missing arg" });
     expect(e.message).toBe("missing arg");
   });
+
+  test("VoiceProviderError formats provider + what + detail", () => {
+    const e = new VoiceProviderError({
+      what: "session died",
+      provider: "openai-realtime",
+      detail: "code 1006",
+    });
+    expect(e.tag).toBe("voice-provider");
+    expect(e.message).toBe("voice provider (openai-realtime): session died — code 1006");
+    expect(e instanceof AtmuxError).toBe(true);
+    expect(e.context.provider).toBe("openai-realtime");
+  });
+
+  test("VoiceProviderError omits provider + detail when absent, preserves cause", () => {
+    const cause = new Error("ECONNRESET");
+    const e = new VoiceProviderError({ what: "websocket connection failed", cause });
+    expect(e.message).toBe("voice provider: websocket connection failed");
+    expect(e.cause).toBe(cause);
+  });
+
+  test("VerbMutexError (queue_full) names the holder and says nothing ran", () => {
+    const e = new VerbMutexError({
+      reason: "queue_full",
+      label: "team_health",
+      blockedBy: "team_status",
+      waitedMs: 0,
+      queueDepth: 8,
+      queueCap: 8,
+    });
+    expect(e.tag).toBe("verb-mutex");
+    expect(e.message).toBe(
+      "verb lane full behind 'team_status': 8/8 queued — 'team_health' was not run",
+    );
+    expect(e instanceof AtmuxError).toBe(true);
+    expect(e.reason).toBe("queue_full");
+    expect(e.blockedBy).toBe("team_status");
+    expect(e.queueDepth).toBe(8);
+    expect(e.queueCap).toBe(8);
+    expect(e.waitedMs).toBe(0);
+  });
+
+  test("VerbMutexError (abandoned) reports the wait it gave up after", () => {
+    const e = new VerbMutexError({
+      reason: "abandoned",
+      label: "dispatch_task",
+      blockedBy: "team_status",
+      waitedMs: 45_000,
+      queueDepth: 2,
+      queueCap: 8,
+    });
+    expect(e.message).toBe(
+      "verb lane: 'dispatch_task' abandoned after waiting 45000ms behind 'team_status'",
+    );
+    expect(e.reason).toBe("abandoned");
+    expect(e.waitedMs).toBe(45_000);
+  });
+
+  test("VerbMutexError with no holder omits the 'behind' clause rather than naming null", () => {
+    const full = new VerbMutexError({
+      reason: "queue_full",
+      label: "a",
+      blockedBy: null,
+      waitedMs: 0,
+      queueDepth: 1,
+      queueCap: 1,
+    });
+    expect(full.message).toBe("verb lane full: 1/1 queued — 'a' was not run");
+    const abandoned = new VerbMutexError({
+      reason: "abandoned",
+      label: "b",
+      blockedBy: null,
+      waitedMs: 5,
+      queueDepth: 0,
+      queueCap: 1,
+    });
+    expect(abandoned.message).toBe("verb lane: 'b' abandoned after waiting 5ms");
+  });
 });
 
 describe("exitCodeForTag", () => {
@@ -209,6 +320,9 @@ describe("exitCodeForTag", () => {
     ["lock-timeout", 75],
     ["spawn-timeout", 75],
     ["http-timeout", 75],
+    ["tracker-rate-limit", 75],
+    ["voice-provider", 75],
+    ["verb-mutex", 75],
     ["schema", 65],
     ["tmux", 1],
     ["spawn", 1],
@@ -218,6 +332,10 @@ describe("exitCodeForTag", () => {
     ["lock", 1],
   ])("tag %s → exit %d", (tag, expected) => {
     expect(exitCodeForTag(tag)).toBe(expected);
+  });
+
+  test("exhaustiveness guard throws on an impossible tag", () => {
+    expect(() => exitCodeForTag("bogus" as never)).toThrow("unreachable: bogus");
   });
 });
 

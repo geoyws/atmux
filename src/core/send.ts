@@ -131,6 +131,61 @@ export interface SendOpts {
    * injection). Only honored when {@link expectVerifier} is set AND
    * {@link escalationLogPath} is not. */
   home?: string;
+  /**
+   * ADR-205 §D2 per-call escape hatch — bypass the bracketed-paste
+   * envelope and send the body via a literal `tmux send-keys -l`
+   * keystroke instead. Default `false` (bracketed-paste applies, per
+   * Option 2 of ADR-205).
+   *
+   * Reserve this for callers that genuinely need literal-keystroke
+   * semantics: control sequences, single-keystroke nav, copy-mode
+   * commands, raw key passthrough. For ALL ordinary message bodies
+   * leave it unset so the bracketed-paste envelope (ESC[200~ … ESC[201~)
+   * keeps slash-leading bodies from triggering the compose-box popup
+   * (the 2026-05-21 wedge ADR-205 closes).
+   *
+   * Mutually exclusive with {@link expectVerifier}: the verify-and-
+   * escalate path (ADR-138 T3b) wraps the C-m submit and is only
+   * meaningful for the bracketed-paste submit shape. When BOTH are set
+   * `rawSendKeys` wins and the verifier is ignored (the raw literal
+   * path has no separate C-m submit step to verify); callers should not
+   * combine them. The escape is explicit and grep-able — reviewer
+   * enforces during code-review (ADR-205 §D3).
+   */
+  rawSendKeys?: boolean;
+  /**
+   * ADR-273 §D5 (`pane_nudge`): submit ONLY — no buffer, no paste, no
+   * message. Press the submit key on whatever the composer ALREADY
+   * holds.
+   *
+   * This exists because the overnight wedge class is a pane with
+   * unsubmitted residue: the fix is one keystroke, and pasting anything
+   * at all first would CONCATENATE onto the residue and submit a
+   * corrupted line. `atmux send <member> "continue"` is the wrong tool
+   * for that pane, and a raw `tmux send-keys Enter` is the wrong tool
+   * for any pane — on wedged panes bare Enter, triple-Enter, `C-m` and
+   * bracketed paste all failed, and the paste-and-submit path's verified
+   * `C-m` was the only thing that worked.
+   *
+   * So this branch reuses the SAME settle + `C-m` + ADR-138
+   * verify-and-retry step the paste path uses ({@link SendOpts.expectVerifier}
+   * still applies and still escalates) — it only skips the load-buffer /
+   * paste-buffer pair. There is no second implementation to drift.
+   *
+   * Two deliberate consequences:
+   * - `msg` is IGNORED. The verb layer refuses `--submit-only` together
+   *   with a message rather than silently dropping it.
+   * - The post-send `looksLikeNotConsumed` heuristic is SKIPPED. It
+   *   greps the pane for a snippet of the message; with no message its
+   *   snippet is the empty string, which every capture contains, so it
+   *   would report `warn-not-consumed` on a perfectly good submit. The
+   *   ADR-138 verifier is the verification on this path.
+   *
+   * Wins over {@link SendOpts.noSubmit} (which is its exact opposite)
+   * and over {@link SendOpts.rawSendKeys} (which has no separate submit
+   * step). The verb layer rejects both combinations up front.
+   */
+  submitOnly?: boolean;
 }
 
 /**
@@ -235,6 +290,7 @@ export async function sendToMember(
   const preSubmitDelayMs = opts?.preSubmitDelayMs ?? 300;
   const verifyDelayMs = opts?.verifyDelayMs ?? 2000;
   const bufferName = opts?.bufferName ?? defaultBufferName();
+  const rawSendKeys = opts?.rawSendKeys ?? false;
 
   // 1. Pre-send capture + classify (lib/send.sh:86-92).
   const preCapture = await tmux.pane.capturePane({
@@ -263,6 +319,64 @@ export async function sendToMember(
     sleep,
   });
 
+  // 2r. ADR-205 §D2 raw escape hatch — bypass the bracketed-paste
+  //     envelope entirely and emit the body via a single literal
+  //     `tmux send-keys -l <msg> [Enter]`. This is the pre-ADR-205
+  //     legacy keystroke shape, reserved for callers that need
+  //     literal-keystroke semantics (control sequences, single-key
+  //     nav, copy-mode commands). The literal send carries its own
+  //     Enter (suppressed under --no-submit), so there is no separate
+  //     paste-buffer step, no settle floor, and no C-m submit; the
+  //     bracketed-paste-Enter-swallow bug only afflicts the paste path
+  //     this branch skips. `expectVerifier` is intentionally ignored
+  //     here — it verifies the bracketed-paste C-m submit that this
+  //     branch does not perform (SendOpts.rawSendKeys doc note).
+  if (rawSendKeys) {
+    await tmux.pane.sendKeys({
+      target: sendTarget,
+      keys: msg,
+      literal: true,
+      enter: !noSubmit,
+    });
+    if (noSubmit) {
+      return { kind: "queued", preSnapshot, preWarn, preflight };
+    }
+    await appendSendLog(atmuxDir, target.member, msg);
+    if (verify) {
+      await sleep(verifyDelayMs);
+      const post = await tmux.pane.capturePane({ target: target.target, start: -postLines });
+      if (looksLikeNotConsumed(post, msg)) {
+        return { kind: "warn-not-consumed", preSnapshot, preWarn, preflight };
+      }
+    }
+    return { kind: "ok", preSnapshot, preWarn, preflight };
+  }
+
+  // 2s. ADR-273 §D5 submit-only — press the submit key on what the
+  //     composer ALREADY holds. No buffer, no paste, no message, so
+  //     nothing can be concatenated onto the residue being submitted.
+  //     The settle + `C-m` + ADR-138 verify-and-retry step is the SAME
+  //     one the paste path runs (`submitStep` below) — this branch only
+  //     skips the two buffer calls above it. See `SendOpts.submitOnly`
+  //     for why the `looksLikeNotConsumed` heuristic is skipped here
+  //     (its snippet would be the empty string, which every capture
+  //     contains) and why the verifier is the verification instead.
+  if (opts?.submitOnly === true) {
+    const submitOnlyVerify = await submitStep({
+      tmux,
+      sendTarget,
+      targetStr: target.target,
+      preSubmitDelayMs,
+      postLines,
+      sleep,
+      opts,
+    });
+    await appendSendLog(atmuxDir, target.member, SUBMIT_ONLY_LOG_BODY);
+    const submitOnlyOutcome: SendOutcome = { kind: "ok", preSnapshot, preWarn, preflight };
+    if (submitOnlyVerify !== undefined) submitOnlyOutcome.verifyResult = submitOnlyVerify;
+    return submitOnlyOutcome;
+  }
+
   // 2. Load the body into a buffer + paste it into the target pane.
   //    Bash uses a tmpfile; we pipe directly via spawn's stdin (the
   //    tmux abstraction's `loadBuffer({ data })` shape from ADR-004
@@ -280,70 +394,20 @@ export async function sendToMember(
     return { kind: "queued", preSnapshot, preWarn, preflight };
   }
 
-  // 4. Settle + C-m submit.
-  //
-  // Two paths depending on `expectVerifier`:
-  //
-  //   (a) ADR-138 T3b compose path — wraps the C-m submit in
-  //       `safeSendKeysWithVerify` for post-send verification +
-  //       escalation logging. Retries pinned to 0 (re-firing C-m
-  //       on non-empty composer is exactly the failure mode ADR-138
-  //       §"Why not blanket-3x Enter" enumerates). The pre-C-m
-  //       settle delay still runs (PASTE_SUBMIT_SETTLE_FLOOR_MS
-  //       floor honored), just inline before calling the verify
-  //       wrapper.
-  //
-  //   (b) Legacy path — `submitAfterPaste` does the settle + C-m
-  //       send unchanged. Zero observable change for callsites
-  //       that don't opt in.
-  //
-  // In both paths the post-send `looksLikeNotConsumed` heuristic (step
-  // 6) runs on top — defense-in-depth, NOT removed by T3b. ADR-081 §A:
-  // the bracketed-paste envelope that wraps `paste-buffer -d` eats a
-  // trailing Enter as a newline inside the pasted message; `C-m`
-  // (literal carriage return) bypasses that interpretation.
-  // `submitAfterPaste` clamps below-
-  //    floor settle values up to PASTE_SUBMIT_SETTLE_FLOOR_MS (500ms).
-  let verifyResult: SafeSendKeysWithVerifyResult | undefined;
-  if (opts?.expectVerifier !== undefined) {
-    // (a) Verify-and-escalate path. Settle floor clamping mirrors the
-    //     legacy `submitAfterPaste` ladder so the bracketed-paste-mode
-    //     timing invariants stay intact regardless of which path runs.
-    const settleRequested = preSubmitDelayMs;
-    const settle =
-      settleRequested >= PASTE_SUBMIT_SETTLE_FLOOR_MS
-        ? settleRequested
-        : PASTE_SUBMIT_SETTLE_FLOOR_MS;
-    await sleep(settle);
-    const verifyOpts: Parameters<typeof safeSendKeysWithVerify>[0] = {
-      target: target.target,
-      keys: "C-m",
-      expectVerifier: opts.expectVerifier,
-      // Retries pinned to 0 — re-firing C-m on a non-empty composer
-      // is the ADR-138 §"Why not blanket-3x Enter" failure mode.
-      retries: 0,
-      timeoutMs: opts.verifyTimeoutMs ?? 3000,
-      capture: (t) => tmux.pane.capturePane({ target: t, start: -postLines }),
-      sendKeys: async (t, keys) => {
-        await tmux.pane.sendKeys({ target: sendTarget, keys, enter: false });
-        // `t` is the same `target.target` we pass via `target` above;
-        // serializer needs it via the `sendTarget` discriminated union
-        // (compile-time driver-pane gate), not the raw string param.
-        void t;
-      },
-      sleep,
-    };
-    if (opts.escalationLogPath !== undefined) verifyOpts.escalationLogPath = opts.escalationLogPath;
-    if (opts.appendLog !== undefined) verifyOpts.appendLog = opts.appendLog;
-    if (opts.home !== undefined) verifyOpts.home = opts.home;
-    verifyResult = await safeSendKeysWithVerify(verifyOpts);
-  } else {
-    // (b) Legacy path. Behavior identical to pre-T3b — bash-faithful.
-    await submitAfterPaste(tmux, sendTarget, {
-      settleMs: preSubmitDelayMs,
-      sleep,
-    });
-  }
+  // 4. Settle + C-m submit — see {@link submitStep} for the two
+  //    `expectVerifier` branches and the ADR-081 §A `C-m`-not-`Enter`
+  //    rationale. On THIS path the post-send `looksLikeNotConsumed`
+  //    heuristic (step 6) runs on top of whichever branch fired —
+  //    defense-in-depth, NOT removed by ADR-138 T3b.
+  const verifyResult = await submitStep({
+    tmux,
+    sendTarget,
+    targetStr: target.target,
+    preSubmitDelayMs,
+    postLines,
+    sleep,
+    opts,
+  });
 
   // 5. Append to the per-member log (lib/send.sh:136-145).
   await appendSendLog(atmuxDir, target.member, msg);
@@ -368,6 +432,87 @@ export async function sendToMember(
 }
 
 // ---------- Internals ----------
+
+/**
+ * ADR-273 §D5: what the per-member send log records for a submit-only
+ * delivery. There is no message body to indent, and writing an empty
+ * one would make the log read as "sent: <nothing>" — which is the same
+ * shape a bug produces. Naming the action instead keeps the log
+ * honest about what actually happened.
+ */
+export const SUBMIT_ONLY_LOG_BODY = "(submit-only: Enter on existing composer contents)";
+
+interface SubmitStepCtx {
+  tmux: TmuxNamespace;
+  sendTarget: SendTarget;
+  /** Raw target string for the capture / verify calls (the discriminated
+   *  union carries the compile-time driver-pane gate for the SENDS). */
+  targetStr: string;
+  preSubmitDelayMs: number;
+  postLines: number;
+  sleep: (ms: number) => Promise<void>;
+  opts: SendOpts | undefined;
+}
+
+/**
+ * Settle + `C-m` submit — the ONE implementation, shared by the paste
+ * path (step 4) and the ADR-273 submit-only path (step 2s).
+ *
+ * Two branches depending on `expectVerifier`:
+ *
+ *   (a) ADR-138 T3b compose path — wraps the `C-m` submit in
+ *       `safeSendKeysWithVerify` for post-send verification + escalation
+ *       logging. Retries pinned to 0 (re-firing `C-m` on a non-empty
+ *       composer is exactly the failure mode ADR-138 §"Why not
+ *       blanket-3x Enter" enumerates). The pre-`C-m` settle delay still
+ *       runs, with the `PASTE_SUBMIT_SETTLE_FLOOR_MS` floor honoured.
+ *
+ *   (b) Legacy path — `submitAfterPaste` does the settle + `C-m` send
+ *       unchanged, and clamps below-floor settle values itself.
+ *
+ * ADR-081 §A is why it is `C-m` and not `Enter`: the bracketed-paste
+ * envelope that wraps `paste-buffer -d` eats a trailing Enter as a
+ * newline INSIDE the pasted message; a literal carriage return bypasses
+ * that interpretation.
+ */
+async function submitStep(ctx: SubmitStepCtx): Promise<SafeSendKeysWithVerifyResult | undefined> {
+  const { tmux, sendTarget, targetStr, preSubmitDelayMs, postLines, sleep, opts } = ctx;
+  if (opts?.expectVerifier === undefined) {
+    // (b) Legacy path. Behavior identical to pre-T3b — bash-faithful.
+    await submitAfterPaste(tmux, sendTarget, { settleMs: preSubmitDelayMs, sleep });
+    return undefined;
+  }
+  // (a) Verify-and-escalate path. Settle floor clamping mirrors the
+  //     legacy `submitAfterPaste` ladder so the bracketed-paste-mode
+  //     timing invariants stay intact regardless of which path runs.
+  const settle =
+    preSubmitDelayMs >= PASTE_SUBMIT_SETTLE_FLOOR_MS
+      ? preSubmitDelayMs
+      : PASTE_SUBMIT_SETTLE_FLOOR_MS;
+  await sleep(settle);
+  const verifyOpts: Parameters<typeof safeSendKeysWithVerify>[0] = {
+    target: targetStr,
+    keys: "C-m",
+    expectVerifier: opts.expectVerifier,
+    // Retries pinned to 0 — re-firing C-m on a non-empty composer
+    // is the ADR-138 §"Why not blanket-3x Enter" failure mode.
+    retries: 0,
+    timeoutMs: opts.verifyTimeoutMs ?? 3000,
+    capture: (t) => tmux.pane.capturePane({ target: t, start: -postLines }),
+    sendKeys: async (t, keys) => {
+      await tmux.pane.sendKeys({ target: sendTarget, keys, enter: false });
+      // `t` is the same string we pass via `target` above; the serializer
+      // needs it via the `sendTarget` discriminated union (compile-time
+      // driver-pane gate), not the raw string param.
+      void t;
+    },
+    sleep,
+  };
+  if (opts.escalationLogPath !== undefined) verifyOpts.escalationLogPath = opts.escalationLogPath;
+  if (opts.appendLog !== undefined) verifyOpts.appendLog = opts.appendLog;
+  if (opts.home !== undefined) verifyOpts.home = opts.home;
+  return await safeSendKeysWithVerify(verifyOpts);
+}
 
 /**
  * True when the pre-send snapshot indicates the pane is in a state

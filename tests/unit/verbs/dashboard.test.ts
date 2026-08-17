@@ -499,6 +499,46 @@ describe("dashboard() — public verb wiring", () => {
     await expect(dashboard(["--team-dir", dir])).rejects.toBeInstanceOf(ConfigError);
   });
 
+  test("happy path: renders ONE real frame (driver-pane collector closure runs) then exits on SIGINT", async () => {
+    // Covers the `() => probeDriverPane(team, atmuxDir)` closure the
+    // verb hands to buildLoopDeps — reachable only by letting the loop
+    // render a real frame. The fixture team has no driverSession, so
+    // probeDriverPane returns `configured: false` without tmux IO; the
+    // three real verbs run against the fixture and any errors they
+    // throw are swallowed by captureVerbStdout into the frame body.
+    const dir = await mkdtemp(join(tmpdir(), "atmux-dash-frame-"));
+    const atmuxDir = join(dir, ".atmux");
+    await mkdir(atmuxDir, { recursive: true });
+    await writeFile(join(atmuxDir, "team.json"), JSON.stringify({ name: "x", members: [] }));
+
+    let sigintHandler: (() => void) | null = null;
+    const origOnce = process.once.bind(process);
+    process.once = ((event: string | symbol, handler: (...a: unknown[]) => void) => {
+      if (event === "SIGINT" && sigintHandler === null) sigintHandler = handler;
+      return origOnce(event, handler);
+    }) as typeof process.once;
+
+    const origStdoutWrite = process.stdout.write.bind(process.stdout);
+    let frames = 0;
+    process.stdout.write = ((s: string | Uint8Array) => {
+      if (typeof s === "string" && s.startsWith(CLEAR_AND_HOME)) {
+        frames += 1;
+        // Abort after the first rendered frame; the loop's next
+        // isAborted() check returns 0.
+        sigintHandler?.();
+      }
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      const exit = await dashboard(["--team-dir", dir, "--interval", "0.001"]);
+      expect(exit).toBe(0);
+      expect(frames).toBe(1);
+    } finally {
+      process.stdout.write = origStdoutWrite;
+      process.once = origOnce;
+    }
+  });
+
   test("happy path: signal pre-aborted → returns 0 without rendering", async () => {
     // Stage a minimal .atmux/team.json so requireTeam succeeds. We
     // then mock global setTimeout so the loop's sleep resolves

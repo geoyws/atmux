@@ -316,3 +316,15 @@ Initial 16 entries (driver supplied 11 in 12:48 MYT addendum; planner adds 5 —
 - **OQ-7 (high)**: Release-cut block teeth — soft warning vs hard non-zero exit. → **hard non-zero exit on `atmux release-cut --check`; CI gate**. Driver may want soft-warning at first ramp; flagged HIGH for explicit override.
 
 — planner, 2026-05-08
+
+## Amendments
+
+### 2026-08-07 — D9 glossary: `preclear` entry merges into `handoff`; 16 entries → 15 (ADR-263)
+
+[ADR-263](263-merge-session-preclear-into-handoff.md) merges the `/session preclear` verb into `/session handoff` — one mode-aware verb, no `preclear` alias. D9's glossary table above retains its separate `handoff` and `preclear` rows as the record of the vocabulary as first specified; **as of ADR-263 those two rows collapse into one**, so the shipped `docs/glossary.md` carries **15 initial entries** (planner-added vocabulary drops to 4 — `ask`, `event`, `task`, `handoff`), not the 16 / 5 stated above. The merged row reads:
+
+| Term | Tone | Behaviour |
+|------|------|-----------|
+| `handoff` | The "I'm leaving but here's everything you need" doc. | Save-before-close ritual flushing memory + handoff + tasks to disk before `/clear` (same-session), or a forward brief for a fresh claude in a new worktree/branch (forward). |
+
+D9's dual-tone entry format (`**Tone:**` line + canonical behaviour body), the single-glossary-at-`docs/glossary.md` decision, the tone-strippability property, and all other terms are unchanged.

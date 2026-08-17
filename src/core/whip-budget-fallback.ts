@@ -32,7 +32,6 @@ import {
   destroyFallbackCage as defaultDestroyFallbackCage,
   type FallbackTier,
   FallbackUserMissingError,
-  Tier4NotAvailableError,
 } from "../abstractions/fallback-cage.ts";
 import { atomicWrite, readTextOrNull, removeFile } from "../abstractions/fs.ts";
 import type { KanbanTask } from "../schema/kanban.ts";
@@ -231,7 +230,7 @@ interface CascadeOpts {
 }
 
 /** Walk tier preference; first successful create wins. Recoverable errors
- *  (Tier4NotAvailableError, FallbackUserMissingError) cascade to the
+ *  (FallbackUserMissingError) cascade to the
  *  next tier; non-recoverable errors stop the cascade for this task. */
 async function tryCreateCascade(opts: CascadeOpts): Promise<CageHandle | null> {
   for (const tier of opts.tiers) {
@@ -247,7 +246,6 @@ async function tryCreateCascade(opts: CascadeOpts): Promise<CageHandle | null> {
       return handle;
     } catch (e) {
       opts.log(`whip: fallback: tier ${tier} unavailable for ${opts.taskId}: ${stringifyErr(e)}`);
-      if (e instanceof Tier4NotAvailableError) continue;
       if (e instanceof FallbackUserMissingError) continue;
       // Unknown errors halt the cascade — surfaces operator misconfig
       // (e.g. rsync missing, sudo password prompt) instead of masking

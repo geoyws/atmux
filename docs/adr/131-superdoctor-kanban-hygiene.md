@@ -84,7 +84,7 @@ CREATE UNIQUE INDEX idx_hygiene_unique
 
 Idempotence: re-detecting an existing (task_id, fingerprint_class) pair bumps `last_seen_at` without duplicating rows. The unique index enforces this at the SQL layer.
 
-Why per-team (not shared `~/.atmux/state/superdoctor-hygiene.db`): per-team is the existing canonical residency for kanban data per ADR-060; sharing would split the audit trail across two stores and require a JOIN across files for `atmux doctor` integrity checks. Trade-off captured in §OQ-2.
+Why per-team (not shared `~/.atmux/state/superdoctor-hygiene.db`): per-team is the existing canonical residency for kanban data per ADR-126; sharing would split the audit trail across two stores and require a JOIN across files for `atmux doctor` integrity checks. Trade-off captured in §OQ-2.
 
 ### (D5) Discord surfacing — `[hygiene-blocker]` template
 
@@ -154,7 +154,7 @@ Each detector is a single `SELECT … FROM tasks` query with an index on `status
 - **ADR-082** — per-member worktree isolation. The 9 lane=null orphans observed in SOPX correlate with worktree-isolated teams where dispatch routing is per-lane; lane=null orphans become functionally invisible to the lane-affinity matcher.
 - **ADR-084** — per-member-branch model. Members' natural-lane resolution (used by deterministic-pick) reads from `team.members[].lane` introduced alongside this ADR's tier.
 - **ADR-076** — SQL-canonical inbox. Hygiene fingerprints live in the same `state.db` per the same residency pattern.
-- **ADR-060** — kanban storage in `state.db`. The tasks table this ADR audits.
+- **ADR-126** — kanban storage in `state.db`. The tasks table this ADR audits.
 - **ADR-049** — budget-pause. Medic's hourly cadence respects budget windows; hygiene pass skips when team is paused (no point fixing wedge fingerprints during a pause that already wedges everything).
 - **CLAUDE.md** "Don't make a dormant team look like a working team" + whip §0.05 — the operator-side rule this ADR makes structurally enforced.
 - **`feedback_overnight_reddit_stakes`** — the operator-stated stake for not letting deterministic fixes get blocked on operator round-trips.
@@ -169,9 +169,9 @@ Each detector is a single `SELECT … FROM tasks` query with an index on `status
 
 **OQ-2 — Hygiene-DB residency: per-team `.atmux/state.db` or shared `~/.atmux/state/superdoctor-hygiene.db`?**
 
-Per-team is the existing canonical residency for kanban data (ADR-060 + ADR-076). Shared would centralise the audit trail across all teams medic monitors but split the residency model (kanban here, hygiene there).
+Per-team is the existing canonical residency for kanban data (ADR-126 + ADR-076). Shared would centralise the audit trail across all teams medic monitors but split the residency model (kanban here, hygiene there).
 
-**Recommended default**: per-team `.atmux/state.db` (matches existing ADR-060/076 pattern; no residency drift; cross-team aggregation composable via `UNION ALL` query if needed; survives team archival as part of the team's own state). Override = move to shared store when medic needs to correlate hygiene patterns across teams (e.g. "ghost-owner spikes after every cockpit rebuild" — a cross-team signal). Until that signal exists, per-team is cheaper.
+**Recommended default**: per-team `.atmux/state.db` (matches existing ADR-126/076 pattern; no residency drift; cross-team aggregation composable via `UNION ALL` query if needed; survives team archival as part of the team's own state). Override = move to shared store when medic needs to correlate hygiene patterns across teams (e.g. "ghost-owner spikes after every cockpit rebuild" — a cross-team signal). Until that signal exists, per-team is cheaper.
 
 ## Implementation plan
 

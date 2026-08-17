@@ -65,7 +65,7 @@ On `atmux team spawn-epic <eid>`:
 2. Filter to `enabled: true` entries.
 3. Read each entry's `budget-probe-<account>.json` cache (or subscribe to `budget.warning`/`budget.recovered` events via Honker once the substrate ships).
 4. Compute `available_5h_pct = (limit_5h - used_5h) / limit_5h` for each entry.
-5. Pick the entry with the **highest `available_5h_pct`**. Ties broken by **round-robin** using a counter persisted at `~/.atmux/state/pool-rr-counter.json` (incremented on every spawn).
+5. Pick the entry with the **highest `available_5h_pct`**. Ties broken by **round-robin** using a counter persisted at `~/.atmux/state/pool-rr-counter.json` (incremented on every spawn). **Shipped** in `src/core/account-pool.ts`: the round-robin rung sits between the `weight` tiebreak and the final pool-array-order tiebreak — on a full util+weight tie, the entry spawned least recently (lowest `lastSpawnByLabel` ordinal; absent label = never spawned = highest priority) wins. The counter file shape is `{ counter: number, lastSpawnByLabel: Record<label, ordinal> }`; `readRrCounter()` reads it (zeroed cold-start default), `recordSpawn(label, home)` bumps `counter` + restamps the label after a successful spawn, and `rrLastSpawnMap()` adapts it to the `Map` `selectAccount({ lastSpawnByLabel })` consumes.
 6. Inject the selected `claudeAccount` into every member entry in the new team.json. **Per-team assignment**, not per-member — matches current `team.claudeAccount` semantics and simplifies routing.
 
 ### D3 — Exhaustion behavior
@@ -196,7 +196,7 @@ Ships the **load-bearing** piece of ADR-199 — `claudeAccountPool[]` configured
 - CLI verbs (`atmux cockpit account-pool add/remove/list` — driver-scope-only per ADR-033)
 - Honker subscription to `budget.warning` / `budget.recovered` topics (event-driven re-weighting; currently selector re-reads probe state at each spawn-epic)
 - Cron-backstop 5min poll (defense-in-depth per ADR-202 §D6)
-- Doctor probe row `claudeAccountPool` (green when populated + non-stale; yellow on partial staleness)
+- ~~Doctor probe row `claudeAccountPool` (green when populated + non-stale; yellow on partial staleness)~~ **SHIPPED** (t-ffab45f9, e-7471f008 T5) — `src/verbs/doctor.ts::claudeAccountPoolRows()` (pure) + `checkClaudeAccountPool()` (wrapper): GREEN when pool populated + every entry has fresh budget probe data; YELLOW on partial staleness (selector falls back to weight + order per §Stale-grace contract); RED when pool empty AND a cockpit team has `claudeAccount` unset (the 401-on-bootstrap class); INFO when pool unconfigured but every team pins its own account.
 - Per-team override `team.json::epicSpawnPool[]` (cockpit-pool override scope)
 - `epic.spawn_blocked` event emission on exhaustion
 

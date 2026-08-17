@@ -29,8 +29,11 @@ import {
   markTaskDone,
   moveTask,
   removeTask,
+  setTaskDeliverable,
+  setTaskEpic,
   setTaskLane,
   setTaskPriority,
+  setTaskStory,
   showTask,
 } from "../../../src/core/kanban.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
@@ -235,14 +238,30 @@ describe("kanban (SQLite mode)", () => {
   });
 
   // t-381a6ea0: done-state refuse-gate (SQLite path). The gate fires
-  // INSIDE the BEGIN IMMEDIATE block via repo.getTask + status check
-  // before repo.upsertTask. Reviewer pre-flag: a concurrent done-flip
-  // can't slip between check and mutation because both run under the
-  // same SQLite transaction lock. Origin: docs auditor surfaced an
-  // anomaly 2026-05-13 — `atmux claim t-0c4e6397` against a done Task
-  // silently flipped done → in-progress (the 2026-05-12 in-progress
-  // gate's docstring explicitly allowed this as "idempotent"; that
-  // tolerance was the bug).
+  // via repo.getTask + status check before repo.upsertTask, INSIDE
+  // claimTask's `transactImmediate` block — i.e. `BEGIN IMMEDIATE`,
+  // which acquires the write lock at BEGIN (not at first write). That is
+  // what makes "a concurrent claimant can't slip between the check and
+  // the mutation" TRUE: a second writer's BEGIN IMMEDIATE blocks on
+  // busy_timeout until this transaction commits.
+  //
+  // HONEST CAVEAT (do NOT add a same-process Promise.all "concurrency"
+  // test here): bun:sqlite is SYNCHRONOUS, so two claimTask calls on one
+  // JS thread serialize regardless of BEGIN IMMEDIATE vs deferred — such
+  // a test would pass either way and prove nothing (a fake-green). The
+  // serialization guarantee rests on (a) claimTask/markTaskDone using
+  // transactImmediate (src/core/kanban.ts — verifiable by reading the
+  // code) and (b) the transactImmediate helper's own test. Genuine
+  // two-writer lock contention would need two OS processes; these unit
+  // tests instead pin the in-transaction CHECK ORDER + the observable
+  // refuse behavior below. (Earlier these paths used deferred `transact`
+  // while this comment claimed BEGIN IMMEDIATE — the claim-concurrency
+  // fix made the code match the comment rather than weaken it.)
+  //
+  // Origin: docs auditor surfaced an anomaly 2026-05-13 — `atmux claim
+  // t-0c4e6397` against a done Task silently flipped done → in-progress
+  // (the 2026-05-12 in-progress gate's docstring explicitly allowed this
+  // as "idempotent"; that tolerance was the bug).
   test("claimTask (SQLite path): refuses done-state Task with clear error", async () => {
     const id = await addTask(env.atmuxDir, { subject: "shipped already" });
     await claimTask(env.atmuxDir, id, "fe0");
@@ -364,6 +383,52 @@ describe("kanban (SQLite mode)", () => {
 
   test("setTaskPriority: missing id throws ConfigError", async () => {
     await expect(setTaskPriority(env.atmuxDir, "t-deadbeef", 1)).rejects.toThrow(ConfigError);
+  });
+
+  // ---------- ADR-193: epic/story/deliverable (SQLite branch) ----------
+
+  test("addTask persists epic/story/deliverable in SQLite mode", async () => {
+    const id = await addTask(env.atmuxDir, {
+      subject: "child",
+      epic: "e-3b017960",
+      story: "s-c4e91c33",
+      deliverable: "docs/adr/171-x.md",
+    });
+    const t = await showTask(env.atmuxDir, id);
+    expect(t?.epic).toBe("e-3b017960");
+    expect(t?.story).toBe("s-c4e91c33");
+    expect(t?.deliverable).toBe("docs/adr/171-x.md");
+  });
+
+  test("setTaskEpic: re-parent existing task; null clears", async () => {
+    const id = await addTask(env.atmuxDir, { subject: "orphan" });
+    expect((await showTask(env.atmuxDir, id))?.epic).toBeNull();
+    await setTaskEpic(env.atmuxDir, id, "e-4976c457");
+    expect((await showTask(env.atmuxDir, id))?.epic).toBe("e-4976c457");
+    await setTaskEpic(env.atmuxDir, id, null);
+    expect((await showTask(env.atmuxDir, id))?.epic).toBeNull();
+  });
+
+  test("setTaskStory: set then null clears", async () => {
+    const id = await addTask(env.atmuxDir, { subject: "x" });
+    await setTaskStory(env.atmuxDir, id, "s-1203");
+    expect((await showTask(env.atmuxDir, id))?.story).toBe("s-1203");
+    await setTaskStory(env.atmuxDir, id, null);
+    expect((await showTask(env.atmuxDir, id))?.story).toBeNull();
+  });
+
+  test("setTaskDeliverable: set; empty-string normalizes to null", async () => {
+    const id = await addTask(env.atmuxDir, { subject: "x" });
+    await setTaskDeliverable(env.atmuxDir, id, "EPIC e-1 merged to main");
+    expect((await showTask(env.atmuxDir, id))?.deliverable).toBe("EPIC e-1 merged to main");
+    await setTaskDeliverable(env.atmuxDir, id, "");
+    expect((await showTask(env.atmuxDir, id))?.deliverable).toBeNull();
+  });
+
+  test("setTaskEpic/Story/Deliverable: missing id throws ConfigError", async () => {
+    await expect(setTaskEpic(env.atmuxDir, "t-deadbeef", "e-1")).rejects.toThrow(ConfigError);
+    await expect(setTaskStory(env.atmuxDir, "t-deadbeef", "s-1")).rejects.toThrow(ConfigError);
+    await expect(setTaskDeliverable(env.atmuxDir, "t-deadbeef", "x")).rejects.toThrow(ConfigError);
   });
 
   test("loadKanban: returns full snapshot in SQLite mode", async () => {

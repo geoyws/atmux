@@ -3,7 +3,7 @@
 // Wakes on observation events from orchd's scanners + emits a
 // tell-lead message so the lead's Claude adjudicates the rotation
 // decision. Lead-gated per ADR-212: detection is automated (events),
-// destructive action (rotate / preclear / clear) is lead's call.
+// destructive action (rotate / handoff / clear) is lead's call.
 //
 // v1 topic: member.context-high (from e-13-04c8b3bf context-scan).
 // Future v2 topics layer on as their observers ship:
@@ -67,7 +67,7 @@ export function createRotationConsumerHandler(
 export function formatRotationMessage(event: MemberContextHighPayload): string {
   return (
     `📊 [ctx-high] member=${event.member} at ${event.percent}% context (≥${event.threshold}%). ` +
-    `Decide: (a) /preclear (compact + reset, keeps role + brief); ` +
+    `Decide: (a) /handoff (compact + reset, keeps role + brief); ` +
     `(b) atmux rotate-member ${event.member} (rotate to fresh window with same role); ` +
     `(c) leave-alone (member is mid-turn or near-end; recheck next scan). ` +
     `Statusline: ${event.matchedSegment.trim()}`

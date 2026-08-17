@@ -26,9 +26,61 @@
 // captures a stable binary path; the rest of this module remains
 // argv-shape-only.
 
+import { isDriverPaneName } from "../core/drivers.ts";
 import { resolveTmuxBin } from "../core/resolve-tmux-bin.ts";
 import { TmuxError } from "../errors.ts";
 import { type ExpectExitCode, spawn, spawnInheritStdio } from "./spawn.ts";
+
+// ---------- ADR-239 §D2 + §A5 — no-send-keys-to-drivers runtime guard ----------
+
+/** Thrown when any caller attempts to send-keys / paste-buffer into a
+ *  driver pane. Type-level guard (ADR-025) is the first line of defense;
+ *  this runtime guard catches synth-bypass patterns where a caller
+ *  manually builds `{ kind: "member", member: "driver", ... }` to bypass
+ *  the discriminated union. Refusal lives in the lowest-level helper so
+ *  every consumer (verbs, core, abstractions) is covered without a
+ *  per-call audit. */
+export class DriverSendKeysViolation extends Error {
+  constructor(targetStr: string, paneName: string) {
+    super(
+      `ADR-239 §D2 violation: refused to send-keys into driver pane '${paneName}' ` +
+        `(resolved target='${targetStr}'). Drivers are operator-interactive only — ` +
+        `atmux NEVER sends keystrokes to driver panes. Launch via tmux new-session / ` +
+        `new-window 'shellCommand' (command-mode), or address a member/lead/service pane instead.`,
+    );
+    this.name = "DriverSendKeysViolation";
+  }
+}
+
+/** Parse the window-name segment from a serialized tmux target string.
+ *  Returns `null` when the segment looks like a numeric index (e.g.
+ *  `session:2.0`) or when the format doesn't match the expected
+ *  `session:<window>[.<pane>]` shape. Pure. Exported for direct
+ *  unit-testing of the parse + classify chain. */
+export function extractWindowNameFromTargetString(targetStr: string): string | null {
+  // `session:<window>[.<pane>]` — split on first `:`, then strip any
+  // trailing `.<pane>` segment. The window portion is either a name
+  // (alpha) or a numeric index — we only classify it as a driver when
+  // it's a name match.
+  const colon = targetStr.indexOf(":");
+  if (colon < 0) return null;
+  const after = targetStr.slice(colon + 1);
+  const dot = after.indexOf(".");
+  const winSeg = dot < 0 ? after : after.slice(0, dot);
+  if (winSeg.length === 0) return null;
+  // Numeric index → not a name to classify.
+  if (/^[0-9]+$/.test(winSeg)) return null;
+  return winSeg;
+}
+
+/** Assert that the serialized target does NOT resolve to a driver pane.
+ *  Pure (apart from the throw). */
+function assertNotDriverTarget(targetStr: string): void {
+  const winName = extractWindowNameFromTargetString(targetStr);
+  if (winName !== null && isDriverPaneName(winName)) {
+    throw new DriverSendKeysViolation(targetStr, winName);
+  }
+}
 
 // ---------- Target IDs ----------
 
@@ -563,9 +615,14 @@ export function createTmux(config: TmuxConfig): TmuxNamespace {
 
     pane: {
       /** `tmux send-keys -t <target> [-l] <keys> [Enter]`.
-       *  `target: SendTarget` — driver pane is type-banned per ADR-025. */
+       *  `target: SendTarget` — driver pane is type-banned per ADR-025
+       *  AND runtime-guarded per ADR-239 §D2 + §A5 (any serialized
+       *  target whose window-name matches `^driver(-[0-9]+)?$` throws
+       *  `DriverSendKeysViolation` before tmux is touched). */
       async sendKeys(opts) {
-        const argv = ["send-keys", "-t", serializeSendTarget(opts.target)];
+        const targetStr = serializeSendTarget(opts.target);
+        assertNotDriverTarget(targetStr);
+        const argv = ["send-keys", "-t", targetStr];
         if (opts.literal) argv.push("-l");
         argv.push(opts.keys);
         if (opts.enter ?? true) argv.push("Enter");
@@ -671,12 +728,17 @@ export function createTmux(config: TmuxConfig): TmuxNamespace {
       },
 
       /** `tmux paste-buffer [-b <name>] [-d] -t <target>`.
-       *  `target: SendTarget` — driver pane is type-banned per ADR-025. */
+       *  `target: SendTarget` — driver pane is type-banned per ADR-025
+       *  AND runtime-guarded per ADR-239 §D2 + §A5. paste-buffer is the
+       *  same input-injection hazard as send-keys; the guard fires
+       *  symmetrically. */
       async pasteBuffer(opts) {
+        const targetStr = serializeSendTarget(opts.target);
+        assertNotDriverTarget(targetStr);
         const argv = ["paste-buffer"];
         if (opts.name) argv.push("-b", opts.name);
         if (opts.deleteAfter) argv.push("-d");
-        argv.push("-t", serializeSendTarget(opts.target));
+        argv.push("-t", targetStr);
         await tmuxRun(argv);
       },
 
