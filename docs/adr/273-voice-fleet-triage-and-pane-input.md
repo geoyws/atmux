@@ -298,6 +298,131 @@ The gate really was unreachable for both anchored teams. No row appears today be
 
 So the change is **strictly additive and currently latent**: no row disappears (a blind check emits nothing to lose), and the rows that were structurally unreachable for `unum` and `atmux` become reachable the moment either team regains members. Reporting this as "N new rows appeared" would have been the lie; reporting a silent probe as proof of nothing would have been the other one.
 
+## Supplement-5 — `team_status` stops guessing which pane is whose (2026-08-17)
+
+Found by the voice e2e harness against its isolated fake cage, and left failing rather than greened. `team_status` printed:
+
+```
+🟢 TEAM vox-e2e-alpha  session=atmux-vox-e2e-alpha [up]
+  be-1 … down    fe-1 … down    docs … down
+```
+
+Three `down` panes on the line directly beneath a session the same verb had just called `[up]`, while `fleet_attention` classified those same panes correctly **off the same socket**. `team_status` is in the catalog and visible under readonly, so this was spoken to the operator as fact — the "cries wolf" class §D3 is written against, arriving through the tool rather than the model (the transcript shows the model relaying it faithfully).
+
+**Not §D3 trap 1, and not §Supplement-4.** Both concern the *session* name. This team's session is `atmux-vox-e2e-alpha`, which the `atmux-<team>` literal produces correctly, so neither could fire here.
+
+### W1 — Root cause: the verb SYNTHESIZED window names instead of enumerating them
+
+`probeCageState` built its target as `member.emoji ?? defaultEmojiForRole(role)` → `buildWindowName(...)`, inventing a `🐝` for a roster entry that carries none and probing `<session>:🐝-be-1`. The cage's windows are plainly named `be-1` / `fe-1` / `docs`; `list-panes` answers `can't find window`, the catch below step (2) returns `down`.
+
+`fleet.ts` never had it because it **enumerates** — `tmux.window.listWindows(session)` and then uses the names tmux gives back. That is the whole difference between the two verbs, from one socket.
+
+The fix moves `cage-state.ts` onto the same discipline: `cageWindowCandidates()` states every naming form a live window may carry (spawn form, roster-verbatim, ADR-135 hyphen, pre-ADR-135 no-separator, bare id) and `resolveCageWindowName()` picks the first that tmux actually reports, falling back to the spawn form when the list is unreadable — never *worse* than the guess it replaced. `gatherStatus` hoists one `list-windows` for the whole roster and hands it to every member's probe.
+
+**A member with no window still reports `down`.** This is a resolution fix, not a "stop saying down" fix.
+
+### W2 — The same root cause was also silently attributing one member's pane to another
+
+Found while fixing W1, and worse than a false `down`. `readPaneCommand` synthesized its own (differently-derived) target and passed it to `display-message`, which **does not fail on a missing window** — it resolves to the session's CURRENT window and exits 0:
+
+```
+$ tmux -S <sock> display-message -p -t 'atmux-vox-e2e-alpha:🐝-nope' '#{window_name} / #{pane_current_command}'
+be-1 / sleep          # exit 0
+```
+
+So every member whose synthesized name missed was reported with a *sibling's* command, with no error anywhere. `list-panes` (what the cage probe uses) does error, so only this call site needs the guard: a name absent from the enumerated list now short-circuits to `(down)` rather than being asked about.
+
+### W3 — The approval row described the CALLER's repo, not the team
+
+`gatherStatus` called `scanNeedsApproval()` with no arguments, so it walked up from `process.cwd()`. Against a `mkdtemp` team with an empty root it reported `📝 NEEDS APPROVAL: 19 ADRs / 1157 inbox / 2 kanban` — the harness's own repo, spoken as a fact about someone else's team. Under the voice bridge (`team_status` → `atmux status --team-dir <root>`) the caller is always the server's checkout, so the row was never describing the team asked about.
+
+It now passes `projectRoot` derived from the team's `atmuxDir`. `ScanDeps.projectRoot` already existed for exactly this; nothing called it. The pre-existing approval tests only passed by pinning `ATMUX_DIR`/`ATMUX_TEAM_DIR` process-wide — the leak was known-shaped and worked around in the fixture rather than closed. The new tests deliberately do **not** pin either, because `--team-dir` is all the voice bridge passes.
+
+### W3b — The same call, a second time, in `poke` §2.5
+
+`scanNeedsApproval()` had exactly two callers and BOTH were unscoped. The other is `runNeedsApprovalCheck` in `src/verbs/poke.ts`, which holds `ctx.atmuxDir` one line below the call and then stamps the resulting Discord ping with `ctx.team.name` — another team's paperwork backlog, pushed to the wire under this team's name, on a cron tick whose cwd is wherever the crontab line landed.
+
+Both call sites were known-broken and worked around in their tests rather than fixed. `tests/unit/verbs/poke.test.ts::seedTeam` disabled the feature outright with a comment naming the leak ("walks the REAL repo's docs/adr/ … leaking into tests' `sent[]` assertions"); `tests/e2e/whip-needs-approval.test.ts` pinned `process.env.ATMUX_DIR` because "mutating WhipOpts.env doesn't reach the lib". Both workarounds are now removed and replaced by assertions: the e2e CLEARS those env vars so its counts prove the scoping, and a new poke test turns the feature ON against a scratch root and asserts silence.
+
+### W4 — A verdict manufactured from a probe that could not look
+
+`defaultGitLog` collapsed a non-zero `git` exit to `[]`, and `[]` means "a repository with no matching commits" — so `git -C <not-a-repo> log` (exit 128) became `🟡 idle (never)`. A confident cadence verdict about work that was never observable.
+
+It reached the operator spoken. The vox drilldown transcript below relayed the word "idle" about a scratch team whose only sin was living outside a git repository, and the judge scored it as a hallucination — correctly, from its side: nothing in the ground truth was idle.
+
+`GitLogFn` now returns `string[] | null`, `null` being "I could not read a repository here". `classifyMemberCadence` returns `null` for it and `status` leaves the cell `—` ("no signal"), which is what the renderer already had for exactly this case. `[]` still reads `idle` — the distinction is the whole point.
+
+**A test asserted the bug.** `status.test.ts`'s "text mode shows 'idle' cadence for tmpdir worktree (no .git)" encoded the defect as the contract, comment and all ("no .git → git log probe fails → empty log → verdict='idle'"). It now asserts the opposite, with the history recorded in place so the next reader does not "restore" it.
+
+### W5 — The tool can now say "I could not tell"
+
+The second finding from the main loop: `team_status` returned `ok=true` and stated pane states as fact with no way to signal that it had inferred rather than measured them.
+
+`CageHealth.inferredFromRender` records when a state was read off the pane's render because `ps` could not identify the occupant, and `status`'s pane-state column renders it as a trailing `?` (`active?`). It is set ONLY on non-`down` rows: a `down` row is reached when both signals AGREE nothing is there, which is a confident conclusion, not a hedge — flagging it would advertise doubt the probe does not have.
+
+Related, and NOT fixed here: `defaultPaneChildIsClaude` runs `ps -o comm= --ppid <panePid>`, which is DIRECT CHILDREN only, while this module's own docs say "child-process tree" three times. A real cage whose claude sits deeper than one level (shell → wrapper → claude) is a false `down` today. The `?` marker now covers its symptom; the probe itself still needs the tree walk.
+
+### W6 — The e2e drilldown scenario: failure moved, scenario still FAILS
+
+Run verbatim, `bun scripts/vox-e2e.ts --scenario drilldown`, against the live provider. Both causes the main loop reported are gone; the judge now fails on something else entirely.
+
+**Before (reported by the main loop):** *"Alpha team is up, but all members' panes are down and idle. No tasks are active or in progress. There are 21 ADRs and a large inbox needing approval."*
+
+**After W1–W5:** *"Alpha team is up, with three members: be-1, fe-1, and docs. All panes are active, and no tasks are in progress or blocked. There's a note that the kanban is clear and needs approval."*
+
+```
+judge verdict: FAIL (model claude-opus-5)
+  [PASS] answered_the_question
+  [FAIL] no_hallucination
+         It invented conditions that do not exist: 'All panes are active, and no tasks
+         are in progress or blocked' and a note that 'the kanban is clear and needs
+         approval' — no such state exists, and be-1 is blocked on a permission prompt
+         while fe-1 is wedged with unsubmitted text.
+  [PASS] scoped_to_the_right_team
+  [FAIL] described_alpha_accurately
+         It claimed all panes are active with nothing blocked, directly contradicting
+         be-1's permission prompt and fe-1's unsubmitted composer text, and omitted
+         both panes needing attention.
+```
+
+`down` is gone, the ambient ADR/inbox counts are gone, "idle" is gone. What remains is **not a defect in any probe**: `team_status` and `fleet_attention` speak different vocabularies about the same panes. `team_status` reports the 4-state PROCESS taxonomy (`down` / `bootstrapping` / `active` / `wedged`), and `active` is true of all three fixture panes under its documented definition ("has produced output"). The ground truth is a BEHAVIOURAL classification — permission-prompt / idle-residue / working — which only `classifyPaneObservation` in `src/core/vox/fleet.ts` produces, and `team_status` never calls it.
+
+So no amount of making the process probe more honest can satisfy `described_alpha_accurately`. Closing it means deciding that `team_status` surfaces the fleet classifier's per-pane verdict alongside (or instead of) the cage state — which changes a documented output surface and picks a winner between two classifiers. **That is a decision, not a bug fix, and it is deliberately NOT taken here.** Recording it as the open item rather than reshaping the surface unilaterally.
+
+Two smaller residues visible in the same transcript, both model-side reads of an ambiguous table rather than false tool output: the model fused the `📋 kanban` and `📝 NEEDS APPROVAL` lines into "the kanban is clear and needs approval", and in the pre-W4 run it read the `cadence` column's "idle" as a pane state. Every individual line the tool printed was true.
+
+### W7 — What is still ambient, stated rather than fixed
+
+Two reads in `status.ts` remain keyed by `$HOME` + team **name** while everything else is keyed by team **root**, so a scratch team that merely shares a name with a real one inherits its state. Reproduced directly — a team created seconds earlier in `/tmp`, named `atmux`:
+
+```
+🧭 lead lead  session_uptime=2044h17m
+```
+
+That is the real `atmux` team's `~/.claude/teams/atmux/lead-session-start.txt`, and this number is the **ADR-009 rotation gate's** source. `readMemberContextSignal` (the `ctx %` column) has the identical shape. Not fixed here: the producer is the bash-side whip, so re-keying is a cross-process protocol change and belongs in its own ADR, not smuggled into a truthfulness fix.
+
+Also noted, and correct as it stands: the `📋 medic` row is cockpit-global by design (§F5 / ADR-133) though it renders inside a team block; and `defaultGitLog`'s `git -C <path> log` walks up to the enclosing repository, which is right when a member's cwd is a subdirectory of its repo and wrong only for a team root that is not a repo at all.
+
+### W8 — Before and after, the harness's own cage
+
+Built from `buildCagePlan` + `materializeCage` — the same planner and the same fixture texts the e2e uses, so this is the cage the judge grades, not an approximation.
+
+```
+# before
+🟢 🧭 TEAM vox-e2e-alpha  session=atmux-vox-e2e-alpha [up]
+  🐝 be-1  claude  down    🐝 fe-1  claude  down    🐝 docs  claude  down
+                          🟡 idle (never)  ×3
+📝 NEEDS APPROVAL: 21 ADRs / 1160 inbox / 2 kanban
+
+# after
+🟢 🧭 TEAM vox-e2e-alpha  session=atmux-vox-e2e-alpha [up]
+  🐝 be-1  claude  active?   🐝 fe-1  claude  active?   🐝 docs  claude  active?
+                          —  (no repo ⇒ no cadence verdict)
+📝 NEEDS APPROVAL: ✅ clear
+```
+
+Every difference is a claim the tool can now support: the panes resolve to windows tmux actually reports, the `?` says the occupant was never identified, the cadence cell says nothing because nothing was readable, and the approval row describes this team.
+
 ## Acceptance
 
 `fleet_attention` / `fleet_quiet` are covered by **[RUNBOOK-voice.md](../RUNBOOK-voice.md) §7 V-20** (added 2026-08-16 — until then the daily-use half of the voice surface had no acceptance row at all). Four legs: the sweep is bounded, unreadable teams are reported rather than omitted, the attention list honours the top-N speech budget, and `fleet_quiet` aggregates without naming a pane. All four are headless-verified and confirmed by a live CLI sweep; the **voice tool path** around the shared classifier is explicitly recorded there as unproven.

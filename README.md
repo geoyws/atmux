@@ -765,7 +765,11 @@ atmux release <patch|minor|major>            # one-shot deploy: bump package.jso
 
 Per-member exemption (planners during long decomp passes, reviewers during multi-commit audit reviews) lands in `team.json::cadence.exemptMembers`; those rows render `(exempt)`.
 
+A member whose worktree holds **no readable git repository** (missing path, not a repo, `git` unavailable) gets **no verdict at all** — the cell renders `—`. That is distinct from a repo with no matching commits, which is a real `idle`. Per [ADR-273](docs/adr/273-voice-fleet-triage-and-pane-input.md) §Supplement-5 W4: the probe used to collapse "I could not look" into "no commits", and `atmux status` then printed `🟡 idle (never)` about work that was never observable.
+
 Cadence is the truth signal — **pane-state is the proxy.** The companion `pane-state` column (formerly `state`) shows the cage-state taxonomy (`active`/`wedged`/`bootstrapping`/`down`); use it for "is the process running?" diagnostics, NOT for "is work happening?" verdicts.
+
+A trailing **`?`** on the pane-state cell (`active?`) means the state was read off the pane's **render** because no `claude` process could be identified in its tree — the pane is unmistakably an agent TUI, but nothing confirmed who is in it. A bare cell is a positive claim that `ps` named the occupant. `down` never carries the marker: it is reached only when the process probe and the render agree, which is a confident conclusion rather than a hedge. JSON exposes it as `members[].cageInferredFromRender` (key-presence). Per ADR-273 §Supplement-5 W5 — `team_status` is a voice tool, and one that cannot say "I could not tell" is one an operator stops trusting.
 
 Config under `team.json::cadence` — all fields optional, defaults applied per ADR-148 §D7:
 

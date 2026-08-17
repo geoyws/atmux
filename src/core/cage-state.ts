@@ -34,9 +34,14 @@ import { spawn as defaultSpawn } from "../abstractions/spawn.ts";
 import { now } from "../abstractions/time.ts";
 import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
 import type { Team, TeamMember } from "../schema/team.ts";
-import { buildWindowName, defaultEmojiForRole, resolveTeamSocket } from "./common.ts";
+import {
+  buildWindowName,
+  buildWindowNameLegacy,
+  defaultEmojiForRole,
+  resolveTeamSocket,
+} from "./common.ts";
 import { readHeartbeat } from "./heartbeat.ts";
-import { classifyText } from "./pane-state.ts";
+import { classifyText, type PaneState } from "./pane-state.ts";
 
 // ---------- Public type ----------
 
@@ -91,6 +96,27 @@ export interface CageHealth {
    *  the heartbeat file is absent or unparseable. Surface this for
    *  the operator-visible "why is it wedged" line. */
   heartbeatAgeSec: number | null;
+  /**
+   * True when this `state` was read off the pane's RENDER without ever
+   * identifying a `claude` process in its tree — the ladder believed the
+   * screen because `ps` had nothing to say.
+   *
+   * This is the probe's own uncertainty, exposed rather than hidden. It is
+   * set ONLY on non-`down` rows, and deliberately so: a `down` row is
+   * reached when the process probe and the pane render AGREE that nothing
+   * is there, which is a confident conclusion, not a hedge. Flagging it
+   * would advertise doubt that the probe does not have.
+   *
+   * Callers that SPEAK their output must surface it. `team_status` is a
+   * voice tool: an operator hearing "docs is working" deserves to know
+   * whether that was measured or inferred, and a tool with no way to say
+   * "I could not tell" is one that eventually gets ignored (ADR-273 §D3).
+   *
+   * Optional so the many injected probe stubs across the suite stay valid;
+   * {@link probeCageState} sets it on every path it applies to. Absent
+   * means "this state was not inferred" — never "unknown".
+   */
+  inferredFromRender?: boolean;
 }
 
 // ---------- Public API ----------
@@ -130,6 +156,101 @@ export interface ProbeCageStateOpts {
    * callers keep compiling; it is not correct, merely unchanged.
    */
   sessionName?: string;
+  /**
+   * The window names tmux ACTUALLY reports on `sessionName`.
+   *
+   * This probe used to SYNTHESIZE its target window name and never check
+   * it against reality: it took `member.emoji ?? defaultEmojiForRole(...)`
+   * and built `🐝-be-1` for a roster entry carrying no emoji at all. On a
+   * cage whose windows are plainly named `be-1` / `fe-1` / `docs`,
+   * `list-panes -t <session>:🐝-be-1` answers `can't find window` and step
+   * (2) below reports a live, working pane as `down` — on the line under a
+   * session it has just called `[up]`.
+   *
+   * `atmux fleet` never had the bug because it ENUMERATES: it reads the
+   * window list off the same socket and uses the names tmux gives it. This
+   * seam brings the same discipline here — see
+   * {@link resolveCageWindowName} for the resolution order and
+   * {@link cageWindowCandidates} for the forms it accepts.
+   *
+   * Defaults to `tmux.window.listWindows(sessionName)`. Callers probing a
+   * whole roster should hoist ONE call and hand the same names to every
+   * member rather than paying a `list-windows` per member.
+   */
+  listWindowNames?: (sessionName: string) => Promise<ReadonlyArray<string>>;
+}
+
+/**
+ * Every window name a member's pane could legitimately be sitting under,
+ * most-canonical first.
+ *
+ * `canonical` is what `start.ts` WOULD have spawned — the roster's pinned
+ * emoji when it has one, else the role default — so an unresolvable probe
+ * keeps naming the shape the operator would go looking for. `all` adds the
+ * forms a window can carry when this process did not create it:
+ *
+ *   - the roster read VERBATIM. A roster with no `emoji` names a BARE
+ *     window (`be-1`), which is what any cage built outside `atmux start`
+ *     has — the voice e2e harness, a hand-made session, a team whose
+ *     `start.ts` emoji write-back never landed.
+ *   - the ADR-135 hyphen form, for default-role members spawned before
+ *     ADR-161 flipped them to `_`.
+ *   - the pre-ADR-135 no-separator form.
+ *   - the bare member id, for a labelled member whose window predates the
+ *     ADR-136 label.
+ *
+ * Pure: this is the whole naming contract in one testable list.
+ */
+export function cageWindowCandidates(member: TeamMember): {
+  canonical: string;
+  all: ReadonlyArray<string>;
+} {
+  const role = member.role ?? "member";
+  const rosterEmoji = member.emoji;
+  const spawnEmoji = rosterEmoji ?? defaultEmojiForRole(role);
+  const label = member.label;
+  const canonical = buildWindowName(member.name, spawnEmoji, label, role);
+  const all = [
+    canonical,
+    buildWindowName(member.name, rosterEmoji, label, role),
+    buildWindowName(member.name, spawnEmoji, label),
+    buildWindowName(member.name, rosterEmoji, label),
+    buildWindowNameLegacy(member.name, spawnEmoji),
+    buildWindowNameLegacy(member.name, rosterEmoji),
+    member.name,
+  ];
+  // `member.name` is schema-non-empty, so every form above is too — no
+  // empty-string filter, which would only ever be dead defensive code.
+  return { canonical, all: [...new Set(all)] };
+}
+
+/**
+ * Pick the window this member's pane is actually in.
+ *
+ * First candidate present in the live window list wins; ordering therefore
+ * only decides ties, and a tie means both an atmux-spawned window and a
+ * legacy one exist — in which case the atmux-spawned one is the right
+ * answer. When the list cannot be read at all, fall back to `canonical`:
+ * the caller is about to report `down` anyway, and naming the form it
+ * would have spawned is the message an operator can act on.
+ */
+export async function resolveCageWindowName(
+  sessionName: string,
+  member: TeamMember,
+  listWindowNames: (sessionName: string) => Promise<ReadonlyArray<string>>,
+): Promise<string> {
+  const { canonical, all } = cageWindowCandidates(member);
+  let live: ReadonlyArray<string>;
+  try {
+    live = await listWindowNames(sessionName);
+  } catch {
+    return canonical;
+  }
+  const set = new Set(live);
+  for (const candidate of all) {
+    if (set.has(candidate)) return candidate;
+  }
+  return canonical;
 }
 
 /**
@@ -169,29 +290,31 @@ export async function probeCageState(
   const nowSec = opts.nowSec ?? (() => Math.floor(now() / 1000));
   const readHb = opts.readHeartbeat ?? readHeartbeat;
 
-  const emoji = member.emoji ?? defaultEmojiForRole(member.role ?? "member");
-  // Match the spawn-side construction in start.ts:
-  //   buildWindowName(member.name, emoji, member.label, member.role)
-  // which honours ADR-135 (hyphen separator for user-added members) AND
-  // ADR-161 (`_`-prefix for default-member roles: team-lead, planner,
-  // reviewer, ombudsman). Manually building `${emoji}${name}` here as the
-  // probe target produces the legacy pre-ADR-135 no-separator form and
-  // mismatches every live window — the probe then reports `down` on
-  // panes that are actually healthy (false negative).
-  const windowName = buildWindowName(member.name, emoji, member.label, member.role);
-  const target = `${sessionName}:${windowName}`;
+  // The spawn-side form (`start.ts` builds the same string) is only a
+  // GUESS about a cage this process may not have created. It is the
+  // fallback, not the target — see `cageWindowCandidates`.
+  const { canonical } = cageWindowCandidates(member);
 
   // (1) session present?
   if (!(await hasSession(sessionName, socketPath))) {
     return {
       member: member.name,
-      windowName,
+      windowName: canonical,
       state: "down",
       paneUptimeSec: null,
       evidence: "",
       heartbeatAgeSec: null,
     };
   }
+
+  // The window the member's pane is ACTUALLY in, read off the same socket
+  // rather than assumed. Guessing here is what made `atmux status` call
+  // live panes `down` one line under a session it called `[up]`.
+  const listWindows =
+    opts.listWindowNames ??
+    (async (s: string) => (await tmux.window.listWindows(s)).map((w) => w.name));
+  const windowName = await resolveCageWindowName(sessionName, member, listWindows);
+  const target = `${sessionName}:${windowName}`;
 
   // (2) pane window present + pane PID?
   let panePid: number | null = null;
@@ -224,32 +347,52 @@ export async function probeCageState(
   try {
     hasClaude = await childIsClaude(panePid);
   } catch {
-    // `ps`/`pgrep` failure → treat as down rather than risking false
-    // active / wedged labels on a member whose process tree is opaque.
+    // `ps`/`pgrep` failure → not confirmed. Whether that becomes `down`
+    // is decided below, against the pane's own render.
     hasClaude = false;
-  }
-  if (!hasClaude) {
-    const text = await tryCapture(tmux, target);
-    return {
-      member: member.name,
-      windowName,
-      state: "down",
-      paneUptimeSec: await readPaneUptimeSec(panePid),
-      evidence: text.slice(-200),
-      heartbeatAgeSec: null,
-    };
   }
 
   // Capture pane text once for classifier + tokens-moved detection.
   const text = await tryCapture(tmux, target);
   const paneUptimeSec = await readPaneUptimeSec(panePid);
   const evidence = text.slice(-200);
+  const classification = classifyText(text);
+
+  // (3b) POSITIVE EVIDENCE OUTRANKS ABSENCE OF EVIDENCE.
+  //
+  // A failed child probe used to return `down` outright, ahead of every
+  // text-based rung below. That let the weakest signal in the ladder veto
+  // the strongest ones: `ps` returning nothing is *absence of evidence*
+  // (it walks one level of children, it can be denied, and a TUI that
+  // `exec`s over its shell leaves no child at all), while a pane
+  // rendering a permission modal or a live-turn spinner is *direct
+  // evidence* that an agent is sitting there. Every other observer in
+  // this codebase — `vox/fleet.ts`, `pane-state.ts`, whip, lane-tick —
+  // reads that render and believes it. This probe was the lone dissenter,
+  // and it dissented with the most alarming word it has.
+  //
+  // So `down` now requires the two signals to AGREE: no identifiable
+  // claude process AND nothing agent-shaped on screen. When they
+  // disagree, the ladder continues and `inferredFromRender` records that
+  // the occupant was never identified — see {@link CageHealth}. That is
+  // the difference between "I looked and it is dead" and "I could not
+  // tell", which a voice tool must be able to say out loud.
+  if (!hasClaude && !isAgentPane(classification.state)) {
+    return {
+      member: member.name,
+      windowName,
+      state: "down",
+      paneUptimeSec,
+      evidence,
+      heartbeatAgeSec: null,
+    };
+  }
+  const inferredFromRender = !hasClaude;
 
   // (4) rate-limit pane → wedged. The classifier's RATE-LIMIT pattern
   // hits "hit your limit" / "You've hit your limit" — both are
   // deterministic markers of a stuck claude that won't make forward
   // progress until budget reset.
-  const classification = classifyText(text);
   if (classification.state === "RATE-LIMIT") {
     const hbEpoch = await readHb(atmuxDir, member.name);
     const heartbeatAgeSec = hbEpoch !== null ? Math.max(0, nowSec() - hbEpoch) : null;
@@ -260,12 +403,25 @@ export async function probeCageState(
       paneUptimeSec,
       evidence,
       heartbeatAgeSec,
+      inferredFromRender,
     };
   }
 
   // (5) tokens not moved → bootstrapping. Same regex as ADR-081 §C
   // boot-claude module — `<int>k tokens` / `tokens · <int>%`.
-  if (!TOKENS_MOVED_RE.test(text)) {
+  //
+  // `TOKENS_MOVED_RE` reads the STATUS-LINE FOOTER, which is one proxy for
+  // "this session has produced output" and a leaky one: a permission modal
+  // or a long tool trace pushes the footer out of the captured window, and
+  // the pane then reads `bootstrapping` — "claude alive but tokens have
+  // never moved" — about a session that has demonstrably been working. The
+  // classifier holds the other proof: BUSY / MODAL / TYPING / COMPACTING
+  // are renderings the TUI only draws AFTER a turn has begun. READY is
+  // deliberately excluded — a bare compose prompt is what a genuinely
+  // bootstrapping pane looks like.
+  //
+  // Same principle as (3b): positive evidence outranks a missing proxy.
+  if (!TOKENS_MOVED_RE.test(text) && !hasProducedOutput(classification.state)) {
     return {
       member: member.name,
       windowName,
@@ -273,6 +429,7 @@ export async function probeCageState(
       paneUptimeSec,
       evidence,
       heartbeatAgeSec: null,
+      inferredFromRender,
     };
   }
 
@@ -291,6 +448,7 @@ export async function probeCageState(
         paneUptimeSec,
         evidence,
         heartbeatAgeSec: ageSec,
+        inferredFromRender,
       };
     }
     return {
@@ -300,6 +458,7 @@ export async function probeCageState(
       paneUptimeSec,
       evidence,
       heartbeatAgeSec: ageSec,
+      inferredFromRender,
     };
   }
 
@@ -311,10 +470,45 @@ export async function probeCageState(
     paneUptimeSec,
     evidence,
     heartbeatAgeSec: null,
+    inferredFromRender,
   };
 }
 
 // ---------- Internals ----------
+
+/**
+ * Does this pane's own render show a Claude Code TUI?
+ *
+ * `SHELL` (the TUI died back to a prompt) and `UNKNOWN` (nothing matched)
+ * are the two states that carry NO agent signal — everything else in the
+ * catalog is a shape only the TUI draws. Deliberately expressed as "which
+ * states mean no agent" rather than "which mean agent": a new state added
+ * to `PaneState` is far more likely to be another TUI rendering than
+ * another way of being empty, and this way it defaults to counting as
+ * evidence rather than being silently ignored.
+ */
+export function isAgentPane(state: PaneState): boolean {
+  return state !== "SHELL" && state !== "UNKNOWN";
+}
+
+/**
+ * Does this pane's render prove a turn has already run?
+ *
+ * These four are drawn only AFTER the session has begun doing something: a
+ * spinner or interrupt banner (BUSY), a tool asking permission mid-turn
+ * (MODAL), queued follow-up messages (TYPING), a context compaction
+ * (COMPACTING — it needs history to compact). Any one of them is direct
+ * proof of the thing `TOKENS_MOVED_RE` only infers from a footer that a
+ * modal box readily scrolls away.
+ *
+ * READY is excluded ON PURPOSE, and it is the whole reason this is an
+ * allow-list rather than the complement of `isAgentPane`: a bare compose
+ * prompt with no token footer is EXACTLY what a bootstrapping pane looks
+ * like, and swallowing it here would delete the `bootstrapping` state.
+ */
+export function hasProducedOutput(state: PaneState): boolean {
+  return state === "BUSY" || state === "MODAL" || state === "TYPING" || state === "COMPACTING";
+}
 
 /** Matches the `<int>k tokens` / `tokens · <int>%` status-line shape
  *  claude renders once a turn has produced output. Identical to

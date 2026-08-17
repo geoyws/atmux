@@ -247,6 +247,11 @@ describe("e2e: ADR-148 cadence-truth-signal (1x cold-start+walk)", () => {
       { windowSec: 1800, thresholds: DEFAULT_THRESHOLDS },
       { gitLog: fixtureGitLog, nowSec: () => NOW_SEC },
     );
+    // `classifyMemberCadence` returns null when the probe could not read a
+    // repository at all; a fixture gitLog always can, so a null here would
+    // mean the seam broke rather than that the member is quiet.
+    expect(obs).not.toBeNull();
+    if (obs === null) throw new Error("cadence probe returned null");
     expect(obs.verdict).toBe("shipping");
     expect(obs.commitsInWindow).toBe(1);
     expect(obs.ageOfLastCommitSec).toBe(300);
@@ -260,6 +265,11 @@ describe("e2e: ADR-148 cadence-truth-signal (1x cold-start+walk)", () => {
       { windowSec: 1800, thresholds: DEFAULT_THRESHOLDS },
       { gitLog: fixtureGitLog, nowSec: () => NOW_SEC },
     );
+    // `classifyMemberCadence` returns null when the probe could not read a
+    // repository at all; a fixture gitLog always can, so a null here would
+    // mean the seam broke rather than that the member is quiet.
+    expect(obs).not.toBeNull();
+    if (obs === null) throw new Error("cadence probe returned null");
     expect(obs.verdict).toBe("idle");
     expect(obs.commitsInWindow).toBe(0);
     expect(obs.ageOfLastCommitSec).toBe(3600);
@@ -273,6 +283,11 @@ describe("e2e: ADR-148 cadence-truth-signal (1x cold-start+walk)", () => {
       { windowSec: 1800, thresholds: DEFAULT_THRESHOLDS },
       { gitLog: fixtureGitLog, nowSec: () => NOW_SEC },
     );
+    // `classifyMemberCadence` returns null when the probe could not read a
+    // repository at all; a fixture gitLog always can, so a null here would
+    // mean the seam broke rather than that the member is quiet.
+    expect(obs).not.toBeNull();
+    if (obs === null) throw new Error("cadence probe returned null");
     expect(obs.verdict).toBe("ship-zero-window");
     expect(obs.commitsInWindow).toBe(0);
     expect(obs.ageOfLastCommitSec).toBe(3 * 3600);

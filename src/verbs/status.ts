@@ -23,7 +23,13 @@ import {
   classifyCadence,
   defaultGitLog,
 } from "../core/cadence-classifier.ts";
-import { type CageHealth, type CageState, probeCageState } from "../core/cage-state.ts";
+import {
+  type CageHealth,
+  type CageState,
+  type ProbeCageStateOpts,
+  probeCageState,
+  resolveCageWindowName,
+} from "../core/cage-state.ts";
 import { type LoadCockpitOpts, loadCockpit } from "../core/cockpit.ts";
 import {
   buildWindowName,
@@ -38,14 +44,23 @@ import {
 import { type DriverPaneHealth, probeDriverPane } from "../core/driver-pane-health.ts";
 import { DEFAULT_HEARTBEAT_STALE_SEC, readHeartbeatAges } from "../core/heartbeat.ts";
 import { loadInbox } from "../core/inbox.ts";
-import { kanbanWorkStateAvailable } from "../core/kanban-backend.ts";
 import { loadKanban } from "../core/kanban.ts";
+import { kanbanWorkStateAvailable } from "../core/kanban-backend.ts";
 import { readLeadSessionStart, readLeadWindowName } from "../core/lead-marker.ts";
 import { type MemberSelfStatus, readAllMemberStatuses } from "../core/member-status.ts";
 import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.ts";
 import { UsageError } from "../errors.ts";
-import { type NeedsApprovalReport, scanNeedsApproval } from "../lib/needs-approval.ts";
-import { DEFAULT_CADENCE_CONFIG, DEFAULT_CADENCE_THRESHOLDS, type Team } from "../schema/team.ts";
+import {
+  type NeedsApprovalReport,
+  projectRootFromAtmuxDir,
+  scanNeedsApproval,
+} from "../lib/needs-approval.ts";
+import {
+  DEFAULT_CADENCE_CONFIG,
+  DEFAULT_CADENCE_THRESHOLDS,
+  type Team,
+  type TeamMember,
+} from "../schema/team.ts";
 import { collectOpenEntries } from "./reply.ts";
 
 const USAGE = "atmux status [--json]";
@@ -115,6 +130,13 @@ export interface MemberStatus {
    *  pane's child tree); non-claude TUIs are read via the legacy
    *  `paneCommand` field above. */
   cageState: CageState | null;
+  /** ADR-273 §Supplement-5: true when `cageState` was read off the pane's
+   *  RENDER alone because no `claude` process could be identified in its
+   *  tree. Absent when the state was not inferred (process identified,
+   *  session down, non-claude TUI, injected test probe). Rendered as a
+   *  trailing `?` on the pane-state column so a spoken answer can hedge
+   *  instead of asserting — see {@link formatPaneStateColumn}. */
+  cageInferredFromRender?: boolean;
   /** Tasks owned by this member with status='todo'. Pre-ADR-076 this
    *  came from the JSON inbox `pending` bucket; post-cutover it's a
    *  direct query against the tasks table via `loadInbox`. Surfaced in
@@ -310,7 +332,10 @@ export interface GatherStatusDeps {
    *  --author=<author> --format=%H %ct`. Tests pin to deterministic
    *  output without touching disk. Returns the raw stdout lines
    *  (`"<sha> <epoch-sec>"` per line). */
-  gitLog?: (worktreePath: string, sinceSec: number, author: string) => Promise<string[]>;
+  /** Returns `null` when no repository could be read at that path —
+   *  distinct from `[]` ("a repo with no matching commits"). Only the
+   *  latter supports a cadence verdict. */
+  gitLog?: (worktreePath: string, sinceSec: number, author: string) => Promise<string[] | null>;
   /** ADR-077 §lead-uptime-measurement (t-6d950ffd) injection seam:
    *  given a process PID, return its elapsed-time-since-start in
    *  seconds. Default shells `ps -o etime= -p <pid>` and parses
@@ -572,14 +597,35 @@ export async function gatherStatus(
   const gitLog = deps.gitLog ?? defaultGitLog;
   const exemptSet = new Set(cadenceCfg.exemptMembers);
 
+  // The windows tmux ACTUALLY reports for this session — read ONCE and
+  // shared by every member's cage probe (the probe would otherwise pay a
+  // `list-windows` per member). This is the same discipline `fleet.ts`
+  // uses, and the reason it classified panes correctly off this very
+  // socket while `status` was calling them `down`: names get ENUMERATED,
+  // never assumed. See `cageWindowCandidates`.
+  const liveWindowNames =
+    sessionState === "up" ? await listSessionWindowNames(tmux, sessionName) : null;
+  // Handed to the cage probe only when it is real evidence. Omitted when
+  // the list is unreadable so the probe falls back exactly as it did
+  // before this seam existed.
+  const cageWindowOpt: Pick<ProbeCageStateOpts, "listWindowNames"> =
+    liveWindowNames === null ? {} : { listWindowNames: async () => liveWindowNames };
+
   const members: MemberStatus[] = [];
   for (const m of team.members) {
-    const paneCommand = await readPaneCommand(tmux, sessionName, m, sessionState === "up");
+    const paneCommand = await readPaneCommand(
+      tmux,
+      sessionName,
+      m,
+      sessionState === "up",
+      liveWindowNames,
+    );
     // t-74273200 / c-8ecd3a61: cage-state probe for claude TUI members
     // — replaces the pane_current_command proxy which mis-reported
     // welcome-screen claude TUIs as `(down)`. Non-claude TUIs skip the
     // probe (cage taxonomy is claude-specific) and surface state=null.
     let cageState: CageState | null = null;
+    let cageInferred: boolean | undefined;
     if (sessionState === "up" && (m.tui ?? "claude") === "claude") {
       try {
         // ADR-273 D3 trap 1: pass the RESOLVED session name. `gatherStatus`
@@ -589,8 +635,10 @@ export async function gatherStatus(
         const health: CageHealth = await (deps.probeCage ?? probeCageState)(team, m, atmuxDir, {
           tmux,
           sessionName,
+          ...cageWindowOpt,
         });
         cageState = health.state;
+        cageInferred = health.inferredFromRender;
       } catch {
         // Probe failure → leave cageState null; the legacy paneCommand
         // proxy still gives the operator something to look at.
@@ -619,6 +667,7 @@ export async function gatherStatus(
     };
     if (m.emoji !== undefined && m.emoji.length > 0) row.emoji = m.emoji;
     if (m.label !== undefined && m.label.length > 0) row.label = m.label;
+    if (cageInferred !== undefined) row.cageInferredFromRender = cageInferred;
     // Per-task t-d98b2bd6: read the whip-side context signal when home
     // is resolvable. Skip silently when $HOME is unset (atmux running
     // under an unusual env — the row just shows no ctx data).
@@ -657,7 +706,20 @@ export async function gatherStatus(
           // git log time without affecting the verdict.
           const sinceSec = Math.max(cadenceCfg.windowSec, cadenceCfg.thresholds.dormantMaxAgeSec);
           const lines = await gitLog(wt, sinceSec, m.name);
-          row.cadence = classifyCadence(lines, nowSec, cadenceCfg.windowSec, cadenceCfg.thresholds);
+          // `null` = the probe could not read a repository at `wt` at all
+          // (missing path, not a git repo, spawn failure). Leaving
+          // `row.cadence` undefined renders `—` ("no signal"), which is
+          // the truth. Collapsing it to `[]` produced `🟡 idle (never)` —
+          // a confident verdict about work that was never observable, and
+          // one that `team_status` then SPOKE as "all idle".
+          if (lines !== null) {
+            row.cadence = classifyCadence(
+              lines,
+              nowSec,
+              cadenceCfg.windowSec,
+              cadenceCfg.thresholds,
+            );
+          }
         }
       }
     }
@@ -727,7 +789,18 @@ export async function gatherStatus(
   // failure isolation lives inside `scanNeedsApproval` — a corrupt
   // ADR / missing inbox / kanban absence degrades to an empty bucket
   // rather than failing the whole status snapshot.
-  const needsApproval = await scanNeedsApproval();
+  //
+  // `projectRoot` is passed EXPLICITLY. Left to its own default the scan
+  // walks up from `process.cwd()`, which is whatever directory the caller
+  // happens to be standing in — not the team being reported on. Under the
+  // voice bridge (`team_status` → `atmux status --team-dir <root>`) that
+  // meant a scratch team with an empty root was spoken as "19 ADRs / 1157
+  // inbox / 2 kanban": the SERVER's repo, attributed to a team that has no
+  // paperwork at all. `atmuxDir` is the one directory that is definitely
+  // this team's, so the row is derived from it.
+  const needsApproval = await scanNeedsApproval({
+    projectRoot: projectRootFromAtmuxDir(atmuxDir),
+  });
 
   // ADR-077 §lead-uptime-measurement (t-6d950ffd): two-source uptime
   // snapshot. configured=false when the team has no team-lead role;
@@ -788,6 +861,7 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
           tui: string;
           paneCommand: string;
           cageState: CageState | null;
+          cageInferredFromRender?: boolean;
           pendingCount: number;
           inProgressCount: number;
           heartbeat_age_s: number | null;
@@ -811,6 +885,11 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
           heartbeat_age_s: m.heartbeat_age_s,
         };
         if (m.label !== undefined && m.label.length > 0) row.label = m.label;
+        // ADR-273 §Supplement-5: emitted only when the probe made a claim
+        // (key-presence convention, same as contextPct below).
+        if (m.cageInferredFromRender !== undefined) {
+          row.cageInferredFromRender = m.cageInferredFromRender;
+        }
         if (m.contextPct !== undefined) row.contextPct = m.contextPct;
         if (m.contextTs !== undefined) row.contextTs = m.contextTs;
         if (m.contextStale !== undefined) row.contextStale = m.contextStale;
@@ -840,22 +919,51 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
 
 // ---------- Internals ----------
 
+/** The window names live on `sessionName`, or `null` when tmux could not
+ *  be asked.
+ *
+ *  `null` is distinct from `[]` and the distinction is load-bearing: an
+ *  empty list is evidence the member has no window (report it down), while
+ *  an unreadable list is evidence of nothing at all (fall back to the name
+ *  the old code synthesized, so a tmux hiccup can never make resolution
+ *  WORSE than the guess it replaced). */
+async function listSessionWindowNames(
+  tmux: TmuxNamespace,
+  sessionName: string,
+): Promise<ReadonlyArray<string> | null> {
+  try {
+    return (await tmux.window.listWindows(sessionName)).map((w) => w.name);
+  } catch {
+    return null;
+  }
+}
+
 async function readPaneCommand(
   tmux: TmuxNamespace,
   sessionName: string,
-  member: {
-    name: string;
-    emoji?: string | undefined;
-    label?: string | undefined;
-    role?: string | undefined;
-  },
+  member: TeamMember,
   sessionUp: boolean,
+  liveWindowNames: ReadonlyArray<string> | null,
 ): Promise<string> {
   if (!sessionUp) return "(down)";
-  // ADR-135 + ADR-136 TR4: canonical hyphen-separator window name with
-  // label-fallback when the member has been hot-renamed.
-  // ADR-161 TR2: role-aware — default-role members render `_-prefix`.
-  const winName = buildWindowName(member.name, member.emoji, member.label, member.role);
+  // Resolved against the live window list, NOT synthesized — the same
+  // resolution the cage probe uses, so the `pane-state` and `paneCommand`
+  // columns of one status row cannot contradict each other about which
+  // window a member is in. (They did: this function read the roster's
+  // emoji verbatim while the cage probe substituted a role default, so on
+  // an emoji-less roster one found the pane and the other did not.)
+  const winName = await resolveCageWindowName(sessionName, member, async () => {
+    if (liveWindowNames === null) throw new Error("window list unavailable");
+    return liveWindowNames;
+  });
+  // A name tmux does not list means this member has no pane — and asking
+  // anyway is NOT safe. `display-message -t <session>:<missing-window>`
+  // does not fail: it silently answers about the session's CURRENT window
+  // and exits 0. That is how this column came to report one member's
+  // command as another member's, with no error to notice. `list-panes`
+  // (which the cage probe uses) does error, so only this call site needs
+  // the guard.
+  if (liveWindowNames !== null && !liveWindowNames.includes(winName)) return "(down)";
   const target = `${sessionName}:${winName}`;
   try {
     // Bash lib/status.sh:55 reads `#{pane_current_command}` via
@@ -933,7 +1041,7 @@ function renderTextStatus(snap: StatusSnapshot, staleSec: number): void {
     // fall back to the legacy pane_current_command (the cage taxonomy
     // doesn't apply — non-claude TUIs don't have claude in their child
     // process tree by definition).
-    const paneState = (m.cageState ?? m.paneCommand).padEnd(14);
+    const paneState = formatPaneStateColumn(m).padEnd(14);
     // Per-task t-d98b2bd6: ctx % column rendered as "8.4%" /
     // "(stale)" / "—". Width pinned to 8 chars so the trailing
     // tasks block stays column-aligned across heterogeneous teams.
@@ -1007,6 +1115,25 @@ function renderTextStatus(snap: StatusSnapshot, staleSec: number): void {
     const stateEmoji = stateLabel === "alive" ? "🟢" : stateLabel === "disabled" ? "⚪" : "🔴";
     process.stdout.write(`📋 medic  ${stateEmoji} ${stateLabel}\n`);
   }
+}
+
+/**
+ * ADR-273 §Supplement-5: the `pane-state` cell, with the probe's own
+ * confidence attached.
+ *
+ * A trailing `?` means the state was read off the pane's RENDER because no
+ * `claude` process could be identified in its tree — the pane is
+ * unmistakably an agent TUI, but nothing confirmed WHO. `team_status` is a
+ * voice tool; without this the operator hears "docs is working" in exactly
+ * the same words whether it was measured or inferred, and a tool that
+ * cannot say "I could not tell" is one that eventually gets ignored.
+ *
+ * Bare state (no marker) is therefore a positive claim, not merely a
+ * default: it means `ps` named the occupant.
+ */
+export function formatPaneStateColumn(m: MemberStatus): string {
+  const base = m.cageState ?? m.paneCommand;
+  return m.cageInferredFromRender === true ? `${base}?` : base;
 }
 
 /** Per-task t-d98b2bd6: format the `ctx %` column for a member row.
