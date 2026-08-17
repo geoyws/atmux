@@ -110,3 +110,70 @@ There is also `4f029a0 docs: record atmux fleet preparation`: that team is activ
 **Operational constraint, added here because it is easy to get wrong:** `/root/work/src/kanban` has a **live atmux cage working in it** (session `atmux-kanban`, driver and driver-2). Do not edit that repo as part of this migration — read it, run it, but coordinate rather than commit into another team's tree.
 
 **Standing lesson, third occurrence:** the audit behind this ADR warned *"pin a commit before writing the ADR"* after watching the repo move twice mid-investigation. It then moved a third time, with a breaking rewrite, within a day of the ADR being written. **Anything written about this runtime must name the commit it was true for**, and any plan built on its internals should assume a shelf life measured in days until it stabilises.
+
+---
+
+## Amendment 2026-08-17-b — Phase 1: the D5 hazards were measured, not taken on trust
+
+The amendment above said the upstream fixes were *"commit subjects, not verified behaviour"* and had to be confirmed against the running implementation. They now have been.
+
+**Method:** every import was run against `/root/atmux-worksnap-2026-08-17`, the Phase 0 archive (18 `VACUUM INTO` snapshots + 16 `kanban.json`, 2,591 tasks), into throwaway boards — **never against a live `state.db` or a live board**. Runtime: `kanban` on `PATH` at `/root/.local/bin/kanban`. The scratch boards and their registry rows were removed afterwards.
+
+### The three D5 hazards
+
+| | Claim | Verified behaviour |
+|---|---|---|
+| **D5.1** `auditx-root` JSON-only | sqlite-only migration drops the team and reports success | **Fixed.** `kanban import atmux-json` produced `{epics:2, stories:5, tasks:50}`, 57 created, and all 57 read back with correct `type` and `parentID`. |
+| **D5.2** `completed_at` nulled on 11 rows | silent loss, no line in the receipt | **Fixed, and better than D5.2 asked for** — see below. |
+| **D5.3** `ifca-docs` two disagreeing boards | "migrating either loses what the other holds; reconcile before" | **Not a conflict at all** — see below. |
+
+**D5.2 — the fix is better than the ask, and a careless check reports it as broken.** The `completedAt` *column* still reads null on all 11 rows. That is correct, not a defect: the column means "this task is done", and writing a completion time onto a `todo` row would corrupt it. The value is preserved in two places — `metadata.legacyCompletedAt` (purpose-named) and `metadata.atmuxExtra.completed_at` (the entire original row, verbatim) — and all 11 ids are named in the import receipt under `warnings.nonterminalCompletions`, with the exact timestamps, seconds correctly widened to milliseconds. Recording this because reading only the column produces a confident false negative; the first readback in this investigation did exactly that.
+
+**D5.3 — the two boards share zero ids.** They are not two versions of one board; they are two disjoint generations. The DB holds 24 tasks, all `done`, all documentation-sweep work, no epics or stories. The JSON holds a *different* 20 tasks — 6 of them still `todo` — under epic `e-392dc1ac` with 5 stories. Intersection: **0**. So there is nothing to reconcile; the union is simply correct. Verified by importing both into one board: 44 tasks + 1 epic + 5 stories, `updated=0` on the second import (no collisions), 6 open tasks preserved.
+
+**The workflow collapse is near-zero exposure.** Fleet-wide, across all 18 databases and 16 JSON boards, exactly **one** row is in `testing` or `merging` (a single `rentx-root` story). The lossy 7→6 state collapse is real and costs one row.
+
+### Fleet-wide, the JSON hazard is bounded to two teams
+
+18 teams have a `state.db`, 16 have a `kanban.json`, 12 have both. Only **two** teams hold JSON content the sqlite path cannot see:
+
+| Team | Rows only in JSON | Open |
+|---|---|---|
+| `auditx-root` | 50 tasks (no `state.db` at all) | 3 |
+| `ifca-docs` | 20 tasks + 1 epic + 5 stories | 6 |
+
+Every other team's JSON is empty or absent. **Total exposure of a sqlite-only migration: 70 tasks, 9 of them open work.** That converts D5.1 and D5.3 from two narrative hazards into one mechanical rule: import JSON for those two teams, sqlite for the rest, both for `ifca-docs`.
+
+### D5.4 (NEW, and the most dangerous item now) — `--workspace` is silently ignored; cwd decides the board
+
+`kanban` resolves the target board from the **current working directory**, not from `--workspace`. The flag is accepted, reported in `--help`, and does nothing.
+
+Reproduced with a single-row control: from `cwd=<docs board>`, `kanban task add … --workspace <auditx board>` landed the row in the **docs** board (1393 → 1394) and left the auditx board untouched (57 → 57). Earlier in the same session it silently redirected a 1,343-row atmux import into the ifca-docs board, which is how it was noticed.
+
+This is **D5.1's failure class exactly**: an operation that reports success while doing the wrong thing. A migration driven the obvious way —
+
+```sh
+for t in "${teams[@]}"; do kanban import atmux-sqlite "$db" --workspace "$dir"; done
+```
+
+— from one fixed cwd pours **all 2,591 tasks into whichever single board the loop happened to start in**, printing a clean receipt at every step. **Mitigation until upstream fixes it: `cd` into the target root before every `kanban` invocation and never pass `--workspace`**, then assert the row delta landed in the expected board file before moving to the next team.
+
+### D5.5 — one dangling dependency, warned and non-fatal
+
+`t-ca78326b` depends on `t-be01fc89`, which does not exist. It appears in `warnings.danglingDependencies` and does not abort the transaction. One row, fleet-wide.
+
+### What the runtime gets right, recorded because it removes work
+
+Re-import is **guarded, not silently duplicating**. A plain second import refuses:
+
+> `Error: import overlaps 57 existing task(s), including e-7c591557, … ; rerun with --reconcile only after source writers are stopped`
+
+— naming the overlap count, sample ids, and the precondition. With `--reconcile` it is idempotent: `created=0, updated=57`, row count unchanged. D4's "reversible by construction" holds.
+
+### One live consequence, actionable now
+
+The kanban team has already pre-imported 8 teams (`4f029a0 docs: record atmux fleet preparation`). Their `auditx-root` board is correct at 57 rows via the JSON path. **Their `ifca-docs` board holds 24 rows — the sqlite side only.** The JSON side is absent, so `e-392dc1ac`, its 5 stories, and these 6 open tasks are currently missing from the prepared board:
+
+`t-747e405a` · `t-f109324d` · `t-bb7484f7` · `t-028e6d63` · `t-e281276a` · `t-3d6e21ac`
+
+Fixing it is one command from `/root/work/ifca/src/ifca-docs`. Per the operational constraint above, that is a hand-off to whoever owns that board, not an edit made from here.
