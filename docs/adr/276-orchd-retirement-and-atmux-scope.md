@@ -104,15 +104,33 @@ The DB holds 24 tasks, all `done`, all documentation-sweep work, no epics or sto
 
 Every other team's JSON is empty or absent. **Total exposure of a sqlite-only migration: 70 tasks, 9 of them open work.** One mechanical rule replaces two narrative hazards: JSON for those two teams, sqlite for the rest, both for `ifca-docs`.
 
-### H4 — `--workspace` is silently ignored; cwd decides the board
+### H4 — `--workspace` works on two verbs and is silently ignored by the rest; cwd decides the board
 
-The most dangerous item found, and it is not in either ADR. `kanban` resolves its target board from the **current working directory**. `--workspace` is accepted, documented in `--help`, and does nothing.
+The most dangerous item found, and it is not in either ADR.
 
-Reproduced with a single-row control: from `cwd=<board A>`, `kanban task add … --workspace <board B>` landed the row in **A** (1393→1394) and left **B** untouched (57→57).
+**Corrected 2026-08-17 — the first version of this section said `--workspace` "is accepted, documented in `--help`, and does nothing". That is an overstatement, and the truth is worse.** At `414bfdd` the flag is real for exactly two verbs and inert for every other:
+
+| Verb | `--workspace` | Source |
+|---|---|---|
+| `init` | **honoured** | `rust/main.rs:217` — `args.one("workspace")…unwrap_or(cwd()?)` |
+| `workspace attach` | **honoured** | `rust/main.rs:232` — same shape |
+| `task *`, `import *`, `story *`, `dashboard`, `context`, … | **accepted and ignored** — board resolved from cwd | `rust/main.rs:157` |
+
+Both halves verified by control, not by reading:
+
+- `kanban init --name h4b-probe --workspace <target>` run from `<here>` registered **`<target>`**. The flag works.
+- `kanban task add … --workspace <board B>` run from `cwd=<board A>` added the row to **A** (1393→1394) and left **B** untouched (57→57). The flag does nothing.
+
+**A flag that works at two call sites and is silently inert at the rest is more dangerous than one that never works**, because the operator learns it works and then reaches for it where it does not. That is not hypothetical: this investigation used `init --workspace`, watched it succeed, then passed `--workspace` to `import` — and 1,343 rows landed in a different board than the one named, with a clean success receipt. The error was found only by counting rows in the board files directly.
 
 Two env vars outrank cwd — `KANBAN_DB` (`rust/main.rs:149`) and `KANBAN_DATA_DIR` (`rust/registry.rs:19`) — so an ambient export silently redirects every call.
 
-**This lands directly on ADR-275's shipped adapter.** `src/adapters/kanban-cli.ts` pins `cwd` correctly on its calls, but (a) `initialize()` passes `--workspace root`, expressing an intent the runtime does not honour, and (b) `defaultRunner` forwards the whole ambient `process.env`, so an operator with `KANBAN_DB` exported redirects every atmux work-state read and write to a foreign board while the adapter believes it pinned the project root. Under ADR-275 D1 ("one authority") and D3 ("no dual writes") that is exactly the forbidden failure. Both are being fixed in the adapter.
+**This lands directly on ADR-275's shipped adapter.** `src/adapters/kanban-cli.ts` pins `cwd` correctly on its calls, but:
+
+1. **`initialize()` passes `--workspace root`.** That one call is *correct* — `init` is one of the two verbs that honours the flag. It is removed anyway, because the call also pins `cwd: root` and so does not need it, and leaving it there models a selector that is real at exactly one call site. The next reader who reaches for `--workspace` somewhere `cwd` is not also pinned writes to another operator's board with a clean receipt — which is precisely how this investigation lost 1,343 rows.
+2. **`defaultRunner` forwards the whole ambient `process.env`.** `KANBAN_DB` (`rust/main.rs:149`) and `KANBAN_DATA_DIR` (`rust/registry.rs:19`) both outrank cwd, so an operator with either exported redirects every atmux work-state read and write to a foreign board while the adapter believes it pinned the project root. Under ADR-275 D1 ("one authority") and D3 ("no dual writes") that is exactly the forbidden failure.
+
+Both are fixed in the adapter: the flag is dropped with a comment naming why, and the two board-selecting variables are stripped from the inherited environment with a warning when either was present.
 
 ### H5 — one dangling dependency
 
