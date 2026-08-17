@@ -401,6 +401,18 @@ The assistant relayed `team_status` accurately. `team_status` was wrong: it repo
 
 Two consequences worth recording. First, **the fault was reachable only by asking**: every existing gate — typecheck, the 100% unit suite, the model-pin guard, the live smoke — was green throughout, because none of them compares what a tool *says* to what is *true*. Second, the scenario is **left failing**. Loosening a criterion to green the suite is the same move as raising a coverage threshold to meet coverage, and it is forbidden for the same reason: the gate would then be measuring its own settings rather than the system.
 
+### E4b — Second run (2026-08-17, post-`vox` rename): same verdict, and the leak is now measured rather than inferred
+
+Re-run after [ADR-274](274-atmux-vox-rename.md)'s rename, against the live provider: `attention` PASS, `all_ok` PASS, `drilldown` FAIL — identical to E4a. Two things this buys that the first run could not.
+
+**The rename did not regress the harness.** Same three scenarios, same two passes, same single failure with the same two failing criteria (`no_hallucination`, `described_alpha_accurately`). A rename touching 22 files, 20 modules and 36 test paths is exactly the change that silently breaks a behavioural harness; it did not.
+
+**E4a inferred that the bogus counts "belong to whichever repo the process happened to be run from". That is now measured.** The first run reported `19 ADRs`; this run reported `21 ADRs`. The harness's cage is a fresh `mkdtemp` with no ADRs at all, so a count that *moves between runs* cannot be coming from the cage — it is tracking live state in the real repository. An invented-but-constant number would have left the source ambiguous; a number that drifts identifies it.
+
+**The secondary fault E4a did not name:** `team_status` returned `ok=true` in 91ms. It did not degrade, warn, or signal partial knowledge — it reported unresolvable panes as *down*, which is a different claim, and the model then confabulated on top of a confident-looking answer ("a large inbox needing approval"). The session-name fix addresses the wrong answer. It does not address a voice tool that cannot distinguish **"I probed and the pane is down"** from **"I could not resolve this team's socket"**. The first is data; the second is a failure wearing data's clothes, and on a spoken interface the operator has no way to tell them apart. Worth closing in the same change.
+
+The scenario stays failing until the fix lands, per E4a.
+
 ### E5 — What it does NOT cover
 
 Stated plainly, because a behavioural gate invites more confidence than it has earned:
