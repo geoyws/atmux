@@ -40,6 +40,7 @@ import {
   resolveEpicId,
 } from "../../../src/core/orchd-merge.ts";
 import type { TaskDonePayload } from "../../../src/schema/events.ts";
+import type { KanbanTask } from "../../../src/schema/kanban.ts";
 
 let scratch: string;
 let db: Database;
@@ -332,6 +333,39 @@ describe("isEpicComplete (subject-prefix-aware per ADR-226 §D1 step 3)", () => 
 // ---------- createAutoMergeHandler outcome paths ----------
 
 describe("createAutoMergeHandler (6 outcomes)", () => {
+  test("adapter snapshot is authoritative when supplied", async () => {
+    insertTask("t-legacy-open", { epic: "e-aaa", status: "todo" });
+    let dispatchCount = 0;
+    const externalTask = {
+      id: "t-external-done",
+      subject: "[e-aaa] external task",
+      status: "done",
+      epic: "e-aaa",
+    } as KanbanTask;
+    const handler = createAutoMergeHandler({
+      db,
+      loadTasks: async () => [externalTask],
+      dispatchEpicMerge: async () => {
+        dispatchCount += 1;
+        return { state: "skipped-not-mine" };
+      },
+    });
+
+    expect(
+      await handler({
+        topic: "task.done",
+        taskId: externalTask.id,
+        member: "be-1",
+        team: "atmux",
+        doneAtSec: 1,
+        eventId: fakeId(1),
+        emittedAtSec: 1,
+        schemaVersion: 1,
+      }),
+    ).toBe("skipped-not-mine");
+    expect(dispatchCount).toBe(1);
+  });
+
   test("skipped-no-epic when resolveEpicId returns null + no dispatch + no emit", async () => {
     insertTask("t-00000001", { subject: "no prefix here" });
     let dispatchCount = 0;

@@ -44,6 +44,8 @@ describe("classifyCadence — verdict matrix", () => {
       1800,
       DEFAULT_THRESHOLDS,
     );
+    expect(out).not.toBeNull();
+    if (out === null) throw new Error("cadence probe returned null");
     expect(out.verdict).toBe("shipping");
     expect(out.commitsInWindow).toBe(1);
     expect(out.ageOfLastCommitSec).toBe(300);
@@ -58,6 +60,8 @@ describe("classifyCadence — verdict matrix", () => {
       1800,
       DEFAULT_THRESHOLDS,
     );
+    expect(out).not.toBeNull();
+    if (out === null) throw new Error("cadence probe returned null");
     expect(out.verdict).toBe("shipping");
     expect(out.commitsInWindow).toBe(3);
     // Most-recent commit wins for sha/at.
@@ -68,6 +72,8 @@ describe("classifyCadence — verdict matrix", () => {
     // Most-recent commit at 5000s ago (within shipZero-7200 window
     // floor → falls to idle path because age < idleMax=7200).
     const out = classifyCadence([logLine("ddddddd1234", 5000)], NOW_SEC, 1800, DEFAULT_THRESHOLDS);
+    expect(out).not.toBeNull();
+    if (out === null) throw new Error("cadence probe returned null");
     expect(out.verdict).toBe("idle");
     expect(out.commitsInWindow).toBe(0);
     expect(out.ageOfLastCommitSec).toBe(5000);
@@ -80,6 +86,8 @@ describe("classifyCadence — verdict matrix", () => {
       1800,
       DEFAULT_THRESHOLDS,
     );
+    expect(out).not.toBeNull();
+    if (out === null) throw new Error("cadence probe returned null");
     expect(out.verdict).toBe("ship-zero-window");
     expect(out.commitsInWindow).toBe(0);
     expect(out.ageOfLastCommitSec).toBe(10_000);
@@ -92,6 +100,8 @@ describe("classifyCadence — verdict matrix", () => {
       1800,
       DEFAULT_THRESHOLDS,
     );
+    expect(out).not.toBeNull();
+    if (out === null) throw new Error("cadence probe returned null");
     expect(out.verdict).toBe("dormant");
     expect(out.ageOfLastCommitSec).toBe(30_000);
   });
@@ -101,6 +111,8 @@ describe("classifyCadence — verdict matrix", () => {
     // requires non-null, so this falls to the idle branch via the
     // `null < idleMax` path in the classifier.
     const out = classifyCadence([], NOW_SEC, 1800, DEFAULT_THRESHOLDS);
+    expect(out).not.toBeNull();
+    if (out === null) throw new Error("cadence probe returned null");
     expect(out.verdict).toBe("idle");
     expect(out.commitsInWindow).toBe(0);
     expect(out.lastCommitAt).toBeNull();
@@ -123,6 +135,8 @@ describe("classifyCadence — verdict matrix", () => {
       1800,
       wideThresholds,
     );
+    expect(out).not.toBeNull();
+    if (out === null) throw new Error("cadence probe returned null");
     expect(out.verdict).toBe("ship-zero-window");
   });
 
@@ -134,6 +148,8 @@ describe("classifyCadence — verdict matrix", () => {
       shipZeroWindowSec: 7200,
     };
     const out = classifyCadence([logLine("hhhhhhh1234", 100_000)], NOW_SEC, 1800, wideThresholds);
+    expect(out).not.toBeNull();
+    if (out === null) throw new Error("cadence probe returned null");
     expect(out.verdict).toBe("dormant");
   });
 
@@ -186,6 +202,8 @@ describe("classifyCadence — verdict matrix", () => {
     // commitsInWindow=1, age=0 → shipping.
     expect(out.ageOfLastCommitSec).toBe(0);
     expect(out.commitsInWindow).toBe(1);
+    expect(out).not.toBeNull();
+    if (out === null) throw new Error("cadence probe returned null");
     expect(out.verdict).toBe("shipping");
   });
 
@@ -223,6 +241,8 @@ describe("classifyMemberCadence — async wrapper", () => {
     expect(calls[0]?.author).toBe("fe-1");
     // max(windowSec=1800, dormantMax=21600) = 21600
     expect(calls[0]?.sinceSec).toBe(21_600);
+    expect(out).not.toBeNull();
+    if (out === null) throw new Error("cadence probe returned null");
     expect(out.verdict).toBe("shipping");
   });
 
@@ -256,6 +276,8 @@ describe("classifyMemberCadence — async wrapper", () => {
       },
       { gitLog },
     );
+    expect(out).not.toBeNull();
+    if (out === null) throw new Error("cadence probe returned null");
     expect(out.verdict).toBe("idle");
   });
 
@@ -266,8 +288,27 @@ describe("classifyMemberCadence — async wrapper", () => {
       { windowSec: 1800, thresholds: DEFAULT_THRESHOLDS },
       { gitLog: async () => [], nowSec: () => NOW_SEC },
     );
+    expect(out).not.toBeNull();
+    if (out === null) throw new Error("cadence probe returned null");
     expect(out.verdict).toBe("idle");
     expect(out.lastCommitAt).toBeNull();
+  });
+
+  test("gitLog returning null → NO verdict at all (could not read a repo)", async () => {
+    // The distinction this whole seam exists for. `[]` above means "a
+    // repository with no matching commits" and legitimately reads `idle`.
+    // `null` means "I could not look" — a missing path, a directory that
+    // is not a git repo, a spawn failure. Turning that into `idle (never)`
+    // is a confident verdict about work that was never observable, and
+    // `atmux status` handed it to `team_status`, which SPOKE it: the vox
+    // drilldown transcript reported a scratch team's panes as "all idle".
+    const out = await classifyMemberCadence(
+      "fe-1",
+      "/not-a-repo",
+      { windowSec: 1800, thresholds: DEFAULT_THRESHOLDS },
+      { gitLog: async () => null, nowSec: () => NOW_SEC },
+    );
+    expect(out).toBeNull();
   });
 
   test("gitLog returning ship-zero-window-fixture → escalation verdict", async () => {
@@ -280,6 +321,8 @@ describe("classifyMemberCadence — async wrapper", () => {
         nowSec: () => NOW_SEC,
       },
     );
+    expect(out).not.toBeNull();
+    if (out === null) throw new Error("cadence probe returned null");
     expect(out.verdict).toBe("ship-zero-window");
     expect(out.ageOfLastCommitSec).toBe(8000);
   });

@@ -151,6 +151,31 @@ describe("groomDisabledByEnv", () => {
 // ---------- groom body ----------
 
 describe("groom verb", () => {
+  test("external backend preserves legacy work-state files and backups", async () => {
+    const legacy = join(env.atmuxDir, "kanban.json");
+    const legacyBackup = join(env.atmuxDir, "kanban.json.bak.1");
+    const stateDb = join(env.atmuxDir, "state.db");
+    await writeFile(
+      legacy,
+      '{"tasks":[{"id":"t-old","status":"done","completedAt":1}],"epics":[],"stories":[]}',
+    );
+    await writeFile(legacyBackup, "recovery");
+    await writeFile(stateDb, "recovery-db");
+
+    const rc = await groom(["--no-reconcile", "--archive"], {
+      atmuxDir: env.atmuxDir,
+      env: { ATMUX_KANBAN_BACKEND: "external", ATMUX_DEBUG: "1" },
+      logger: env.logger,
+      nowMs: RUN_MS,
+    });
+
+    expect(rc).toBe(0);
+    expect(await readFile(legacy, "utf8")).toContain("t-old");
+    expect(await readFile(legacyBackup, "utf8")).toBe("recovery");
+    expect(await readFile(stateDb, "utf8")).toBe("recovery-db");
+    expect(env.logs.some((row) => row.msg.includes("external authority"))).toBe(true);
+  });
+
   test("--help prints usage to stdout + exits 0", async () => {
     const rc = await groom(["--help"], {
       atmuxDir: env.atmuxDir,

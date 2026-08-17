@@ -70,6 +70,37 @@ describe("parseSendArgs — flag parsing", () => {
     expect(a.noVerify).toBe(true);
   });
 
+  test("--submit-only sets submitOnly and needs NO message (ADR-273 D5)", () => {
+    const a = parseSendArgs(["--submit-only", "alpha"]);
+    expect(a.submitOnly).toBe(true);
+    expect(a.member).toBe("alpha");
+    expect(a.msg).toBe("");
+  });
+
+  test("submitOnly is false on every ordinary invocation", () => {
+    expect(parseSendArgs(["alpha", "msg"]).submitOnly).toBe(false);
+    expect(parseSendArgs(["--broadcast", "msg"]).submitOnly).toBe(false);
+  });
+
+  test("--submit-only WITH a message is refused, never silently dropped", () => {
+    // Silently dropping it would send a keystroke while the operator
+    // believed he had sent words.
+    expect(() => parseSendArgs(["--submit-only", "alpha", "hello"])).toThrow(UsageError);
+  });
+
+  test("--submit-only + --no-submit is refused (they are opposites)", () => {
+    expect(() => parseSendArgs(["--submit-only", "--no-submit", "alpha"])).toThrow(UsageError);
+  });
+
+  test("--submit-only + --broadcast is refused (a keystroke is not a broadcast)", () => {
+    expect(() => parseSendArgs(["--broadcast", "--submit-only"])).toThrow(UsageError);
+  });
+
+  test("an ordinary send with an empty message is STILL a usage error", () => {
+    // The empty-message relaxation is scoped to --submit-only only.
+    expect(() => parseSendArgs(["alpha"])).toThrow(UsageError);
+  });
+
   test("--socket <path> consumed; survives into SendArgs.socketPath", () => {
     const a = parseSendArgs(["--socket", "/tmp/sock", "alpha", "msg"]);
     expect(a.socketPath).toBe("/tmp/sock");
@@ -222,7 +253,14 @@ describe("resolveMemberTarget — window-name self-heal shim", () => {
       shellCommand: "cat",
       windowName: "🧭_lead",
     });
-    const target = await resolveMemberTarget(tmux, sessionName, "lead", "🧭", undefined, "team-lead");
+    const target = await resolveMemberTarget(
+      tmux,
+      sessionName,
+      "lead",
+      "🧭",
+      undefined,
+      "team-lead",
+    );
     expect(target).toBe(`${sessionName}:🧭_lead`);
     // No additional window was created — canonical was already there.
     const wins = (await tmux.window.listWindows(sessionName)).map((w) => w.name);
@@ -237,7 +275,14 @@ describe("resolveMemberTarget — window-name self-heal shim", () => {
       shellCommand: "cat",
       windowName: "🧭-lead",
     });
-    const target = await resolveMemberTarget(tmux, sessionName, "lead", "🧭", undefined, "team-lead");
+    const target = await resolveMemberTarget(
+      tmux,
+      sessionName,
+      "lead",
+      "🧭",
+      undefined,
+      "team-lead",
+    );
     expect(target).toBe(`${sessionName}:🧭_lead`);
     // Post-call: window was renamed in place.
     const wins = (await tmux.window.listWindows(sessionName)).map((w) => w.name);
@@ -252,7 +297,14 @@ describe("resolveMemberTarget — window-name self-heal shim", () => {
       shellCommand: "cat",
       windowName: "🧭lead",
     });
-    const target = await resolveMemberTarget(tmux, sessionName, "lead", "🧭", undefined, "team-lead");
+    const target = await resolveMemberTarget(
+      tmux,
+      sessionName,
+      "lead",
+      "🧭",
+      undefined,
+      "team-lead",
+    );
     expect(target).toBe(`${sessionName}:🧭_lead`);
     const wins = (await tmux.window.listWindows(sessionName)).map((w) => w.name);
     expect(wins).toContain("🧭_lead");
@@ -378,6 +430,28 @@ describe("send() — integration", () => {
     expect(log).toContain("hello world");
     // teamName is interpolated into the session — sanity rail.
     expect(teamName).toContain(sessionPrefix);
+  });
+
+  test("--submit-only delivers a keystroke and writes the action to the log", async () => {
+    await stageTeam([{ name: "alpha" }]);
+    const exit = await send([
+      "--socket",
+      socketPath,
+      "--team-dir",
+      teamDir,
+      "--submit-only",
+      "alpha",
+    ]);
+    expect(exit).toBe(0);
+    const log = await Bun.file(join(atmuxDir, "logs", "send-alpha.log")).text();
+    expect(log).toContain("submit-only");
+  });
+
+  test("--submit-only against the cockpit-tier inbox key is refused (no pane to submit into)", async () => {
+    await stageTeam([{ name: "alpha" }]);
+    await expect(
+      send(["--socket", socketPath, "--team-dir", teamDir, "--submit-only", "__medic__"]),
+    ).rejects.toThrow(UsageError);
   });
 
   test("single-member with non-existent name → ConfigError", async () => {

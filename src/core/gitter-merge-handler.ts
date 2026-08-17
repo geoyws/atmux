@@ -36,10 +36,10 @@ import type { emit } from "../abstractions/events.ts";
 import type { TaskDonePayload } from "../schema/events.ts";
 import type { HandlerOutcome, Logger } from "./gitter-consumer.ts";
 import {
-  productionQueueMergeAttempt,
+  type KanbanTaskReader,
   type ProductionDispatcherDeps,
+  productionQueueMergeAttempt,
 } from "./intra-team-merge-dispatcher.ts";
-import type { KanbanRepo } from "./repositories/kanban-repo.ts";
 import type { MergerStateRepo } from "./repositories/merger-state-repo.ts";
 
 /** Test-injection seam — production callers thread real impls. */
@@ -54,7 +54,7 @@ export interface GitterMergeHandlerDeps {
   /** Repo handle for `merger_state` reads — written by the dispatcher. */
   mergerRepo: MergerStateRepo;
   /** Kanban repo threaded into the dispatcher for owner-task gating. */
-  kanbanRepo: KanbanRepo;
+  kanbanRepo: KanbanTaskReader;
   /** Logger surface (info/warn/error) — adapted to the dispatcher's
    *  tui.Logger shape internally. */
   logger: Logger;
@@ -70,7 +70,9 @@ export interface GitterMergeHandlerDeps {
   roster: ReadonlyArray<string>;
   /** Test-injection seam for the dispatcher factory. Defaults to
    *  `productionQueueMergeAttempt`. */
-  dispatcherFactory?: (deps: ProductionDispatcherDeps) => (input: {
+  dispatcherFactory?: (
+    deps: ProductionDispatcherDeps,
+  ) => (input: {
     memberBranch: string;
     aheadCount: number;
   }) => Promise<{ queued: boolean; reason?: string }>;
@@ -160,13 +162,7 @@ async function resolveMemberBranch(
   // Fallback — git branch --contains gives every branch reachable from
   // the SHA. Take the first <base>-<member> hit where <member> is in
   // the roster.
-  const r = await deps.git([
-    "-C",
-    deps.teamRoot,
-    "branch",
-    "--contains",
-    event.commitSha,
-  ]);
+  const r = await deps.git(["-C", deps.teamRoot, "branch", "--contains", event.commitSha]);
   if (r.exitCode !== 0) return null;
   const prefix = `${deps.baseBranch}-`;
   for (const raw of (r.stdout ?? "").split("\n")) {

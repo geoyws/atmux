@@ -31,7 +31,8 @@
 // + writes the opt-out row to the audit log + skips dispatch.
 
 import type { Database } from "bun:sqlite";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import { emit as defaultEmit, withIdempotency } from "../abstractions/events.ts";
 import { isHonkerEnabled } from "../abstractions/honker.ts";
 import type { EpicMergedPayload } from "../schema/events.ts";
@@ -114,16 +115,28 @@ export interface OrchdDissolveAuditRow {
 }
 
 /**
- * Append one JSONL row to the audit log. File is created if missing;
- * parent directory is the caller's concern (must already exist —
- * `.atmux/logs/` is created by `atmux init` / team-spawn flow).
+ * Append one JSONL row to the audit log. File AND its parent directory
+ * are created if missing (`mkdir -p`) — the earlier contract ("parent
+ * directory is the caller's concern; `.atmux/logs/` is created by
+ * `atmux init` / team-spawn flow") did not hold: the default
+ * `auditLogPath` is the RELATIVE `.atmux/logs/orchd-dissolve.log`, no
+ * production call-site overrides it, and only the `--start` path ran
+ * `mkdir -p .atmux/logs` (`core/orchd-window.ts`). A missing directory
+ * threw ENOENT out of the handler, and `withIdempotency` breaks the
+ * drain WITHOUT advancing the offset on a throw — permanently wedging
+ * the consumer on a condition that never self-heals. Reached here via
+ * the `autoDissolve: false` opt-out row + the dissolved / gate-held
+ * rows. Sibling fix: `core/orchd-push.ts::appendOrchdPushAuditRow`.
  *
  * Exported so the factory + tests share one append implementation.
  * Synchronous fs.appendFileSync is intentional — audit-log appends
  * must complete before the consumer advances the offset; an async
  * write that races the offset commit could lose the row on crash.
+ * Real write failures (permissions, disk full) still throw, so the
+ * retry-on-throw path stays intact for genuinely transient faults.
  */
 export function appendOrchdDissolveAuditRow(logPath: string, row: OrchdDissolveAuditRow): void {
+  mkdirSync(dirname(logPath), { recursive: true });
   appendFileSync(logPath, `${JSON.stringify(row)}\n`, "utf8");
 }
 

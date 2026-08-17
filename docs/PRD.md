@@ -287,6 +287,8 @@ Per `PLAN.md` §15:
 > §3.1–§3.5 describe **shipped** surface. §3.6, added 2026-08-06, describes three
 > requirement areas that are **ADR-proposed and NOT shipped** — every verb, flag,
 > table, and probe named there is a proposal, not an available command.
+> §3.7, added 2026-08-15, returns to **shipped** surface: the vox operator
+> interface, live and deployed in a deliberately reduced read-only posture.
 
 ### 3.1 Verbs (30, including aliases)
 
@@ -588,6 +590,117 @@ operator's head plus the branch string typed into `/rcheckout`.
   ([ADR-176](adr/176-epic-aware-lane-drift-revert.md)) is a *different* failure
   class (claimed-but-not-progressing kanban lanes, root-repo-only). The ledger
   sits beside it and does not extend it.
+
+### 3.7 Vox operator interface — `atmux vox` (SHIPPED; deployed read-only)
+
+Design and rationale: [ADR-272](adr/272-voice-operator-interface.md) (Status:
+proposed). The name is [ADR-274](adr/274-atmux-vox-rename.md): the feature
+shipped as `atmux voice` and was renamed to **vox** on 2026-08-16, which is why
+ADR-272 and ADR-273 still carry the old word in their titles — the ADR tree is
+append-only and an ADR is named for what it decided when it decided it.
+Operating surface + acceptance checklist:
+[docs/RUNBOOK-vox.md](RUNBOOK-vox.md).
+
+**What it is.** A spoken operator interface for the fleet. The chain is
+**phone PWA → WebSocket relay on the operator's box → realtime AI provider →
+`atmux` verbs**. The provider is a transducer between speech and the CLI: it
+holds the conversation and decides *which* tool to call, and the server decides
+what is permitted and runs it. Every tool the model can call is an `atmux` verb
+invocation built as an argv array — never a composed shell string, never
+`sh -c`, and there is no `run_command` or `eval` in the catalog ([ADR-272](adr/272-voice-operator-interface.md)
+§D2). Deleting the vox subsystem removes a microphone, not a capability:
+everything it exposes is already reachable from the operator's terminal.
+
+**Who it is for.** One person — the operator — away from the desk, often
+one-handed: walking, in a lift, in a car. It is deliberately not a multi-user
+surface. Exactly one vox session is active at a time, takeover is
+latest-wins, and a dropped phone parks the provider leg for 90 seconds so
+walking into a lift does not end the conversation (§D8). The motivation is
+coordination, not convenience: under manual orchestration
+([ADR-260](adr/260-manual-orchestration-mode-default.md)) the operator and the
+lead LLMs *are* the scheduler, so an operator who cannot be reached is a
+missing scheduler rather than a missing luxury.
+
+**What it can do today.** The catalog is **16 tools — 12 read + 4
+messaging** (§D6 plus [ADR-273](adr/273-voice-fleet-triage-and-pane-input.md) D1):
+
+| Class | Tools | Gate |
+|---|---|---|
+| Read (12) | `list_teams` · `fleet_overview` · **`fleet_attention`** · **`fleet_quiet`** · `team_status` · `team_health` · `list_tasks` · `member_pane` · `driver_inbox` · `lead_outbox` · `cost_report` · `list_blockers` | none — no side effects |
+| Messaging (2) | `tell_lead` · `add_task` | none — append-only and visible |
+| Messaging (2) | `dispatch_task` · `claim_task` | **confirm-gated** (§D7) |
+
+**The triage pair is what makes it usable day to day.** The other reads answer
+*point* questions; the operator's actual question — "what needs my attention
+across everything, and what doesn't?" — used to cost roughly twenty teams times
+several panes in spoken round trips, and still came back as state labels rather
+than what an agent is stuck on. `fleet_attention` returns every pane that needs
+him, ranked, each carrying the evidence that classified it; `fleet_quiet`
+returns the aggregated all-clear, which exists so an empty attention list is
+*checkable* rather than indistinguishable from a broken sweep. Both are
+read-only, so both survive the read-only deployment below — that is why the
+survey half ships before any ability to type into a pane. A full sweep of the
+real fleet takes about a tenth of a second.
+
+**What it cannot do today — the deployed posture is read-only.** The live
+deployment runs with `ATMUX_VOX_READONLY=1`, so **only the 12 read tools
+exist as far as the model is concerned**: the 4 messaging tools are filtered
+out of the catalog handed to the provider (`src/verbs/vox.ts`), and the tool
+bridge independently refuses any mutating call with a `readonly_mode` error
+(`src/core/vox/tool-bridge.ts`) as a second layer. **Vox can therefore read
+the fleet and change nothing.** Clearing the flag is phase P7 and is a
+deliberate, separate step — the flag carries an [ADR-266](adr/266-shim-sunset-policy-and-first-sweep.md)
+sunset marker.
+
+Also absent by design in v1: **no `spawn` / `stop` / `kill` and no git verb**
+(a misheard word there is unrecoverable — deferred to their own ADR with a
+second factor); **no wake word** — turn-taking is **push-to-talk**, not
+continuous VAD, so the microphone is not always-on; **no proactive narration**
+— the assistant speaks when spoken to; **no service worker**, so the PWA
+installs to the home screen but has no offline mode (§D11 — a cached client
+speaking a stale binary protocol is the failure it refuses to buy).
+
+**Privilege, stated plainly.** The server sets `ATMUX_CALLER_SCOPE=driver` on
+every verb it invokes (§D3), so **whoever reaches the WebSocket is the
+driver.** That is why authentication is layered — an `oauth2-proxy` vhost, a
+`≥32`-char `ATMUX_VOX_TOKEN` compared timing-safely *before* the WebSocket
+upgrade, a `hello` re-assertion plus an `Origin` allowlist (the CSRF defense —
+browsers do not apply same-origin policy to WebSocket handshakes), a loopback
+bind so only nginx can reach the port, and the read-only kill switch above.
+API keys never leave the box: the transport is a server-side relay
+specifically so provider credentials are never placed on a phone.
+
+**Verb surface.** `atmux vox [--serve|--supervise|--status|--stop]
+[--port <n>] [--provider <p>] [--model <m>] [--readonly]`. `--supervise` runs
+the server inside a dedicated detached `atmux-vox` tmux session under a
+crash-loop wrapper with a circuit breaker; it is operator-started and starts
+nothing at boot ([ADR-233](adr/233-cron-auto-install-disabled-trust-orchd.md)).
+
+**Both pre-rename names still work for one release, and they warn**
+([ADR-274](adr/274-atmux-vox-rename.md) §D2–§D3, per
+[ADR-266](adr/266-shim-sunset-policy-and-first-sweep.md) §D1). `atmux voice` is
+a working alias for `atmux vox` that prints a deprecation line to stderr, and
+`ATMUX_VOICE_*` is still read as a **fallback** wherever the `ATMUX_VOX_*`
+equivalent is unset, also warning; `ATMUX_VOX_*` wins when both are set. Both
+carry `SUNSET(v0.9.1)` markers and go in that release. The env fallback is the
+load-bearing half — `ATMUX_VOICE_TOKEN` is exported in shells that are already
+open, so without it the first launch after the rename fails with
+`ATMUX_VOX_TOKEN is required`, a message that does not name its own cause.
+Deliberately *not* renamed: the hostname `atmux.geoy.ws` (the host name is not
+the feature name) and the token's value (rotating a working credential during a
+rename makes a failure ambiguous).
+
+**Half of [ADR-273](adr/273-voice-fleet-triage-and-pane-input.md) is shipped.**
+Its survey half — fleet triage (`fleet_attention` / `fleet_quiet`) — is in the
+catalog, taking it from 14 to 16; both are read-only, so both work under the
+read-only flag, which is why that half went first.
+
+**Not shipped — pane input.** `pane_nudge` / `pane_send` (typing into a wedged
+agent's pane) do not exist in the catalog, and would in any case be absent under
+the read-only flag. `pane_send` additionally carries an undecided open question
+(whether it needs a second factor) that ADR-273 marks as required before it can
+ship — typing arbitrary text into an agent with full tool access is an unbounded
+capability, unlike every bounded mutating tool in v1.
 
 ---
 
@@ -1149,6 +1262,31 @@ Critical ADRs with active behavior:
   (branch arg mandatory + no `.gitmodules` "smart default"), §3 (detached HEAD is
   correct, not drift) and §4 (`.gitmodules` `branch = ` is a remote-tracking hint,
   not a checkout target) intact. Requirement R3.
+
+### 2026-08-14 voice batch (surface in §3.7)
+
+- **[ADR-272](adr/272-voice-operator-interface.md)** — `atmux vox`, a spoken
+  operator interface: mobile PWA → WebSocket relay → provider-neutral realtime
+  seam → verb-only tool bridge. **Shipped and deployed read-only**
+  (`ATMUX_VOX_READONLY=1`), Status: proposed. Carves out
+  `docs/ARCHITECTURE.md` §Principles item 1 for the *operator* seam only, behind
+  an enforced import fence (§D1); every tool is an argv-built `atmux` verb call
+  (§D2); the server acts with driver scope (§D3); mutation confirmation is
+  server-enforced via argument-bound single-use tokens (§D7). OQ-4 (transcripts
+  local-only, 7-day retention) and OQ-5 (`voice` stands as a top-level verb) are
+  resolved.
+- **[ADR-273](adr/273-voice-fleet-triage-and-pane-input.md)** — Voice fleet
+  triage + pane input ("what needs me?" + "type that"). **D1–D3 (the survey
+  half) are BUILT**: `fleet_attention` / `fleet_quiet` take the catalog from 14
+  to 16, with attention classified server-side from evidence and every item
+  carrying the marker + pane gist that produced it, bounded in wall-clock, and a
+  team that cannot be read reported as unreadable rather than dropped. §Supplement
+  records what shipped, the three classifier traps as found live, and the OQ-3
+  measurement (~110 ms per sweep — no cache needed). **D4/D5 (`pane_nudge` /
+  `pane_send`) are NOT built**; OQ-1 (does `pane_send` need a second factor?) is
+  an operator decision required before either can ship, and input would route
+  through the verified `atmux send` path rather than raw `tmux send-keys`
+  ([ADR-138](adr/138-verified-send-keys.md)).
 
 ### Planned
 

@@ -25,10 +25,9 @@
 import { join } from "node:path";
 import { exists } from "../../abstractions/fs.ts";
 import type { SpawnResult } from "../../abstractions/spawn.ts";
-import { closeDatabase, type Database, openDatabase } from "../../abstractions/sqlite.ts";
-import { migrations } from "../../abstractions/sqlite-migrations.ts";
 import { defaultGitSpawn, type GitSpawn, isWorktreeDirty } from "../../abstractions/worktree.ts";
 import { enabledTeams, type LoadedCockpit, loadCockpit } from "../../core/cockpit.ts";
+import { loadKanban } from "../../core/kanban.ts";
 import { UsageError } from "../../errors.ts";
 import { type DissolveEpicOpts, dissolveEpic } from "./dissolve-epic.ts";
 
@@ -115,8 +114,6 @@ export interface EpicVerdict {
 export interface SweepEpicsOpts {
   git?: GitSpawn;
   loadCockpitFn?: () => Promise<LoadedCockpit>;
-  openDb?: (path: string) => Database;
-  closeDb?: (db: Database) => void;
   /** Test seam — defaults to ADR-090 dissolveEpic. */
   dissolve?: (argv: ReadonlyArray<string>, opts: DissolveEpicOpts) => Promise<number>;
   /** Test seam — defaults to fs.exists. */
@@ -136,8 +133,6 @@ export async function sweepEpics(
   const parsed = parseSweepEpicsArgs(argv);
   const git = opts.git ?? defaultGitSpawn;
   const load = opts.loadCockpitFn ?? (() => loadCockpit());
-  const openDb = opts.openDb ?? ((p: string) => openDatabase(p, migrations));
-  const closeDb = opts.closeDb ?? closeDatabase;
   const dissolve = opts.dissolve ?? dissolveEpic;
   const pathExists = opts.pathExists ?? exists;
   const now = opts.now ?? Date.now;
@@ -157,8 +152,6 @@ export async function sweepEpics(
     verdicts.push(
       await classifyEpic(entry.epicId, entry.parent, entry.root, {
         git,
-        openDb,
-        closeDb,
         pathExists,
         now,
         idleHours: parsed.idleHours,
@@ -195,8 +188,6 @@ export async function sweepEpics(
 
 interface ClassifyDeps {
   git: GitSpawn;
-  openDb: (path: string) => Database;
-  closeDb: (db: Database) => void;
   pathExists: (p: string) => Promise<boolean>;
   now: () => number;
   idleHours: number;
@@ -230,24 +221,19 @@ async function classifyEpic(
   }
 
   // 1. Open-tasks count from the epic-team's own kanban.
-  const dbPath = join(canonicalEpicRoot, ".atmux", "state.db");
+  const childAtmuxDir = join(canonicalEpicRoot, ".atmux");
   let openTasks = 0;
-  if (await deps.pathExists(dbPath)) {
-    const db = deps.openDb(dbPath);
+  if (await deps.pathExists(childAtmuxDir)) {
     try {
-      const row = db
-        .query<{ n: number }, []>(
-          `SELECT COUNT(*) AS n FROM tasks WHERE status NOT IN ('done', 'wontfix')`,
-        )
-        .get();
-      openTasks = row?.n ?? 0;
+      openTasks = (await loadKanban(childAtmuxDir)).tasks.filter(
+        (task) =>
+          task.status !== "done" && task.status !== "wontfix" && task.status !== "cancelled",
+      ).length;
     } catch {
       // tasks table may be absent on a partially-bootstrapped epic-team;
       // treat as 0 open tasks (errs toward DRAIN-via-empty-kanban →
       // STALE-IDLE classification downstream, which is read-only).
       openTasks = 0;
-    } finally {
-      deps.closeDb(db);
     }
   }
   base.openTasks = openTasks;
@@ -384,7 +370,14 @@ async function isBranchPushed(repo: string, git: GitSpawn): Promise<boolean> {
   const headR = await git(["-C", repo, "rev-parse", "HEAD"]);
   if (headR.exitCode !== 0) return false;
   const head = headR.stdout.trim();
-  const ancestorR = await git(["-C", repo, "merge-base", "--is-ancestor", head, `origin/${branch}`]);
+  const ancestorR = await git([
+    "-C",
+    repo,
+    "merge-base",
+    "--is-ancestor",
+    head,
+    `origin/${branch}`,
+  ]);
   return ancestorR.exitCode === 0;
 }
 

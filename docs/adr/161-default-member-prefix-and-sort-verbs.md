@@ -267,3 +267,15 @@ Observed 2026-05-18 on the atmux parent cage (4-day uptime; `🧭-lead` / `🎯-
 Promoted from `proposed` → `accepted` per [docs/audits/adr-status-drift-audit-2026-05-20.md](../audits/adr-status-drift-audit-2026-05-20.md) (sha=a6f1541). Code-refs + git-log refs both present at audit time confirming shipped + dogfooded status; the `proposed` marker was bookkeeping debt. Original Date preserved verbatim. Append-only — see Status field for the canonical flip; this §Amendment carries the audit traceability.
 
 **Filed via** t-45b401c3 (T4 sweep, 2026-05-20).
+
+## §Amendment 2026-08-17 — the `legacy-window-name-format` probe resolves the session name from the anchor
+
+The **Doctor probe** paragraph above says the probe "lists windows on `atmux-<team.name>` session" and carves out "cages whose canonical session name isn't on the socket silently skip (out of scope)". **Both statements are superseded.**
+
+`atmux-<team.name>` is not the session name. Teams anchor their session in `.atmux/state/session.txt`, and on the live fleet `unum` anchors to `atmux_unum` (underscore) and `atmux` to bare `atmux` — neither producible from that form. Proven directly: `tmux -S <cage socket> has-session -t atmux-unum` exits 1 while `-t atmux_unum` exits 0. The "out of scope" carve-out was therefore not a scoping decision at all; it was the probe silently skipping every anchored cage on the fleet.
+
+`checkLegacyWindowNameFormat` (now `src/verbs/doctor/cockpit.ts`) resolves each cockpit target through `resolveCageSessionName({ name, root })`, keyed on the root the cockpit entry carries — deliberately **not** `getSessionName`, whose `ATMUX_SESSION` env pin is a process-level override for the *current* team and would name one team's session for every team inside a multi-team walk. The `currentTeam` fallback keeps `getSessionName`, where the pin does refer to that team.
+
+Consequences for this ADR: the carve-out list loses its session-name entry, and the `tmux rename-window` hint now names the session that actually exists — so an operator's copy-paste of it works on an anchored cage, where before the probe never got far enough to emit one.
+
+**Filed with** [ADR-273](273-voice-fleet-triage-and-pane-input.md) §Supplement-4, which closes the deferral ADR-273 §S2 recorded. Append-only — the original Doctor-probe paragraph is preserved verbatim above.

@@ -43,6 +43,7 @@
 // machine logic.
 
 import type { GitSpawn } from "../abstractions/branch-merge.ts";
+import type { KanbanTask } from "../schema/kanban.ts";
 import { type BranchMergeState, isTerminalState } from "./branch-merge-state.ts";
 import type { QueueMergeFn } from "./committer-sweep.ts";
 import { type IntraTeamMergeContext, performMerge } from "./intra-team-merge.ts";
@@ -52,7 +53,6 @@ import {
   type PostMergeFlipOpts,
   type PostMergeFlipResult,
 } from "./post-merge-task-flip.ts";
-import type { KanbanRepo } from "./repositories/kanban-repo.ts";
 import type { MergerStateRepo } from "./repositories/merger-state-repo.ts";
 import type { Logger } from "./tui.ts";
 
@@ -78,7 +78,7 @@ export interface ProductionDispatcherDeps {
   /** Kanban repo for resolving the branch owner's open-task count
    *  (input to the pre-merge gate). Owner is derived from the
    *  `<base>-<member>` branch convention. */
-  kanbanRepo: KanbanRepo;
+  kanbanRepo: KanbanTaskReader;
   /** `git` spawn shim. Defaulted at the verb layer to
    *  `defaultGitSpawn`; tests inject deterministic responders. */
   git: GitSpawn;
@@ -129,6 +129,14 @@ export interface ProductionDispatcherDeps {
    *  can't be resolved — `performRebase` then transitions to
    *  `conflict` with reason "missing worktree". */
   resolveMemberWorktreePath?: (memberBranch: string) => Promise<string | null>;
+}
+
+export interface KanbanTaskReader {
+  listTasks(filter?: {
+    owner?: string;
+    status?: string;
+    lane?: string;
+  }): KanbanTask[] | Promise<KanbanTask[]>;
 }
 
 const DEFAULT_MAX_ITERATIONS = 10;
@@ -214,7 +222,10 @@ export async function resolvePreMergeGate(
   if (member === null) {
     ownerOpenTaskCount = 1;
   } else {
-    const inProgressTasks = deps.kanbanRepo.listTasks({ owner: member, status: "in-progress" });
+    const inProgressTasks = await deps.kanbanRepo.listTasks({
+      owner: member,
+      status: "in-progress",
+    });
     ownerOpenTaskCount = inProgressTasks.length;
   }
 
@@ -442,7 +453,9 @@ export function productionQueueMergeAttempt(deps: ProductionDispatcherDeps): Que
             by: "cron",
             transitionedAt: now(),
           });
-          deps.logger.log(`[dispatcher] ${memberBranch}: rebase-tick state='conflict' reason='${reason}'`);
+          deps.logger.log(
+            `[dispatcher] ${memberBranch}: rebase-tick state='conflict' reason='${reason}'`,
+          );
           lastState = "conflict";
           lastReason = reason;
           madeProgress = true;
@@ -473,7 +486,9 @@ export function productionQueueMergeAttempt(deps: ProductionDispatcherDeps): Que
           // alternative (forcing terminal) would surface a transient
           // network blip as a permanent failure.
           const msg = e instanceof Error ? e.message : String(e);
-          deps.logger.log(`[dispatcher] ${memberBranch}: rebase-tick threw (leaving in rebasing): ${msg}`);
+          deps.logger.log(
+            `[dispatcher] ${memberBranch}: rebase-tick threw (leaving in rebasing): ${msg}`,
+          );
         }
         // Break regardless of outcome — one rebase per cron tick max.
         break;

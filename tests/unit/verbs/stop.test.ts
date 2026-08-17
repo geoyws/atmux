@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTmux, type TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import { UsageError } from "../../../src/errors.ts";
-import { archiveTimestamp, parseStopArgs, stop } from "../../../src/verbs/stop.ts";
+import { archiveState, archiveTimestamp, parseStopArgs, stop } from "../../../src/verbs/stop.ts";
 
 let socketDir: string;
 let socketPath: string;
@@ -173,6 +173,21 @@ describe("archiveTimestamp — bash date -u +%Y%m%dT%H%M%SZ parity", () => {
   test("zero-pads month/day/hour/minute/second", () => {
     const epoch = Date.UTC(2026, 0, 1, 1, 2, 3);
     expect(archiveTimestamp(epoch)).toBe("20260101T010203Z");
+  });
+});
+
+describe("archiveState external authority", () => {
+  test("archives inbox state without copying legacy kanban.json", async () => {
+    await writeFile(join(atmuxDir, "kanban.json"), "legacy");
+    await writeFile(join(atmuxDir, "driver-inbox.md"), "inbox");
+
+    await archiveState(atmuxDir, { ATMUX_KANBAN_BACKEND: "external" });
+
+    const snapshots = await readdir(join(atmuxDir, "archive"));
+    expect(snapshots).toHaveLength(1);
+    const snapshot = join(atmuxDir, "archive", snapshots[0] ?? "");
+    expect(await Bun.file(join(snapshot, "kanban.json")).exists()).toBe(false);
+    expect(await Bun.file(join(snapshot, "driver-inbox.md")).text()).toBe("inbox");
   });
 });
 

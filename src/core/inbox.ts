@@ -31,7 +31,8 @@ import { closeDatabase, openDatabase } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { type Inbox, type InboxEntry, Inbox as InboxSchema } from "../schema/inbox.ts";
 import { inboxPathFor } from "./common.ts";
-import { KanbanRepo } from "./repositories/kanban-repo.ts";
+import { listTasks } from "./kanban.ts";
+import { externalKanbanEnabled } from "./kanban-backend.ts";
 
 // ---------- SQL helper (ADR-076) ----------
 
@@ -42,39 +43,33 @@ function _stateDbPath(atmuxDir: string): string {
 /** SQL-backed loadInbox. Queries `tasks` table for member-owned rows
  *  and buckets by status. KanbanTask → InboxEntry is essentially identity
  *  (the schemas mirror each other per src/schema/inbox.ts header). */
-function _loadInboxFromTasks(atmuxDir: string, member: string): Inbox {
-  const db = openDatabase(_stateDbPath(atmuxDir), migrations);
-  try {
-    const repo = new KanbanRepo(db);
-    const tasks = repo.listTasks({ owner: member });
-    const pending: InboxEntry[] = [];
-    const inProgress: InboxEntry[] = [];
-    const done: InboxEntry[] = [];
-    for (const t of tasks) {
-      // KanbanTask is shape-compatible with InboxEntry (passthrough).
-      // Cast through unknown to satisfy the structural check.
-      const entry = t as unknown as InboxEntry;
-      switch (t.status) {
-        case "todo":
-          pending.push(entry);
-          break;
-        case "in-progress":
-          inProgress.push(entry);
-          break;
-        case "done":
-          done.push(entry);
-          break;
-        // "blocked", "cancelled", and other statuses are intentionally
-        // omitted — pre-ADR-076 JSON inbox didn't track them either
-        // (claim.sh moved blocked tasks to pending, cancelled tasks to
-        // done; both behaviors fold into the SQL view via the kanban
-        // status column without bucket promotion).
-      }
+async function _loadInboxFromTasks(atmuxDir: string, member: string): Promise<Inbox> {
+  const tasks = await listTasks(atmuxDir, { assignee: member });
+  const pending: InboxEntry[] = [];
+  const inProgress: InboxEntry[] = [];
+  const done: InboxEntry[] = [];
+  for (const t of tasks) {
+    // KanbanTask is shape-compatible with InboxEntry (passthrough).
+    // Cast through unknown to satisfy the structural check.
+    const entry = t as unknown as InboxEntry;
+    switch (t.status) {
+      case "todo":
+        pending.push(entry);
+        break;
+      case "in-progress":
+        inProgress.push(entry);
+        break;
+      case "done":
+        done.push(entry);
+        break;
+      // "blocked", "cancelled", and other statuses are intentionally
+      // omitted — pre-ADR-076 JSON inbox didn't track them either
+      // (claim.sh moved blocked tasks to pending, cancelled tasks to
+      // done; both behaviors fold into the SQL view via the kanban
+      // status column without bucket promotion).
     }
-    return { pending, inProgress, done };
-  } finally {
-    closeDatabase(db);
   }
+  return { pending, inProgress, done };
 }
 
 // ---------- Public API ----------
@@ -106,8 +101,8 @@ export function emptyInbox(): Inbox {
  * "empty inbox").
  */
 export async function loadInbox(atmuxDir: string, member: string): Promise<Inbox> {
-  if (await exists(_stateDbPath(atmuxDir))) {
-    return _loadInboxFromTasks(atmuxDir, member);
+  if ((await externalKanbanEnabled(atmuxDir)) || (await exists(_stateDbPath(atmuxDir)))) {
+    return await _loadInboxFromTasks(atmuxDir, member);
   }
   return await updateJson(inboxPathFor(atmuxDir, member), InboxSchema, (i) => i, {
     initial: emptyInbox(),

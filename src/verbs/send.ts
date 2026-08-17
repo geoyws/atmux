@@ -66,6 +66,13 @@ export interface SendArgs {
   noSubmit: boolean;
   /** Flip for `--no-verify` (default false; bash default verifies). */
   noVerify: boolean;
+  /** ADR-273 §D5 `--submit-only`: press the submit key on what the
+   *  composer already holds; paste nothing. Single-member only, and
+   *  mutually exclusive with `--no-submit` and with a message body —
+   *  both combinations are refused in {@link parseSendArgs} rather than
+   *  silently resolved, because either silent resolution drops something
+   *  the operator typed. */
+  submitOnly: boolean;
   /** `--socket <path>` override; otherwise defaultSocketPath(team). */
   socketPath?: string;
   /** `--team-dir <dir>` override; otherwise getAtmuxDir() walks cwd. */
@@ -79,7 +86,9 @@ export interface SendArgs {
   kind?: string;
 }
 
-const USAGE_HINT_SINGLE = "atmux send [--no-submit] [--no-verify] <member> <msg...>";
+const USAGE_HINT_SINGLE =
+  "atmux send [--no-submit] [--no-verify] <member> <msg...>\n" +
+  "       atmux send --submit-only <member>   # ADR-273: Enter on existing composer text, paste nothing";
 const USAGE_HINT_BROADCAST =
   "atmux send --broadcast [--include-driver] [--no-submit] [--no-verify] <msg...>";
 
@@ -104,6 +113,7 @@ export function parseSendArgs(argv: ReadonlyArray<string>): SendArgs {
   let includeDriver = false;
   let noSubmit = false;
   let noVerify = false;
+  let submitOnly = false;
   let socketPath: string | undefined;
   let teamDir: string | undefined;
   let from: string | undefined;
@@ -125,6 +135,11 @@ export function parseSendArgs(argv: ReadonlyArray<string>): SendArgs {
     }
     if (a === "--no-verify") {
       noVerify = true;
+      i += 1;
+      continue;
+    }
+    if (a === "--submit-only") {
+      submitOnly = true;
       i += 1;
       continue;
     }
@@ -191,6 +206,25 @@ export function parseSendArgs(argv: ReadonlyArray<string>): SendArgs {
     break;
   }
 
+  // ADR-273 §D5 — the three `--submit-only` refusals. Each is a
+  // UsageError rather than a silent precedence rule, because every
+  // silent resolution here would DROP something the operator asked for:
+  // a message body, the no-submit intent, or the single-pane scope.
+  if (submitOnly) {
+    if (noSubmit) {
+      throw new UsageError({
+        what: "send: --submit-only and --no-submit are opposites",
+        hint: USAGE_HINT_SINGLE,
+      });
+    }
+    if (broadcast) {
+      throw new UsageError({
+        what: "send: --submit-only is single-member only (it is a keystroke, not a message)",
+        hint: USAGE_HINT_SINGLE,
+      });
+    }
+  }
+
   let member: string | undefined;
   if (!broadcast) {
     member = argv[i];
@@ -204,7 +238,13 @@ export function parseSendArgs(argv: ReadonlyArray<string>): SendArgs {
   }
 
   const msg = argv.slice(i).join(" ");
-  if (msg.length === 0) {
+  if (submitOnly && msg.length > 0) {
+    throw new UsageError({
+      what: "send: --submit-only takes no message — it submits what the composer already holds",
+      hint: USAGE_HINT_SINGLE,
+    });
+  }
+  if (!submitOnly && msg.length === 0) {
     throw new UsageError({
       what: "send: empty message",
       hint: broadcast ? USAGE_HINT_BROADCAST : USAGE_HINT_SINGLE,
@@ -217,6 +257,7 @@ export function parseSendArgs(argv: ReadonlyArray<string>): SendArgs {
     includeDriver,
     noSubmit,
     noVerify,
+    submitOnly,
   };
   if (member !== undefined) out.member = member;
   if (socketPath !== undefined) out.socketPath = socketPath;
@@ -311,6 +352,15 @@ export async function send(argv: ReadonlyArray<string>): Promise<number> {
   // hourly whip turn. Broadcast + a cockpit-tier key is rejected
   // (broadcast iterates team.members; the cockpit-tier key isn't one).
   if (!parsed.broadcast && isMedicInboxKey(parsed.member)) {
+    // ADR-273 §D5: submit-only is a KEYSTROKE into a pane. The
+    // cockpit-tier inbox has no pane, so this combination would write an
+    // empty inbox row and report success — refuse instead.
+    if (parsed.submitOnly) {
+      throw new UsageError({
+        what: `send: --submit-only cannot target the cockpit-tier inbox key '${parsed.member}' — there is no pane to submit into`,
+        hint: USAGE_HINT_SINGLE,
+      });
+    }
     return await sendToMedicInbox(team, parsed, dirOpts);
   }
 
@@ -329,6 +379,9 @@ export async function send(argv: ReadonlyArray<string>): Promise<number> {
     verify: !parsed.noVerify,
     noSubmit: parsed.noSubmit,
   };
+  // ADR-273 §D5. Set only when true so every existing callsite's opts
+  // object is byte-identical to what it was before this flag existed.
+  if (parsed.submitOnly) sendOpts.submitOnly = true;
 
   if (parsed.broadcast) {
     return await broadcastSend(tmux, team, sessionName, parsed, sendOpts);
@@ -407,14 +460,7 @@ async function broadcastSend(
       // variant exists — that's the self-heal shim's miss path. Catch
       // here so per-member resolve failures absorb into the same warn
       // bucket as paste-buffer/sendToMember failures (bash parity).
-      const target = await resolveMemberTarget(
-        tmux,
-        sessionName,
-        m.name,
-        m.emoji,
-        m.label,
-        m.role,
-      );
+      const target = await resolveMemberTarget(tmux, sessionName, m.name, m.emoji, m.label, m.role);
       await sendToMember(
         tmux,
         atmuxDir,

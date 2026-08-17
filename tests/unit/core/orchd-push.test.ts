@@ -153,6 +153,57 @@ describe("appendOrchdPushAuditRow JSONL writer (§DA-Gate-6)", () => {
     expect(rows[1]?.outcome).toBe("blocked");
     expect(rows[1]?.gateBlocked).toBe("2");
   });
+
+  test("creates a missing parent directory instead of throwing ENOENT", async () => {
+    // Regression: the default `auditLogPath` is the RELATIVE
+    // `.atmux/logs/orchd-push.jsonl` and no production call-site
+    // overrides it, so on a cage whose cwd has no `.atmux/logs/` the
+    // bare appendFileSync threw ENOENT straight out of the handler.
+    // `withIdempotency` breaks the drain WITHOUT advancing the offset
+    // on a handler throw, so that non-transient ENOENT permanently
+    // wedged the `atmux:orchd:auto-push` consumer. Assert the row
+    // actually lands, not merely that the call didn't throw.
+    const nestedPath = join(scratch, "no", "such", "dir", "orchd-push.jsonl");
+    appendOrchdPushAuditRow(nestedPath, {
+      at: "2026-08-15T09:00:00Z",
+      epicId: "e-nodir01",
+      base: "atmux-geoyws",
+      outcome: "blocked",
+      gateBlocked: "4",
+      reason: "team.json::autoPush.enabled not set (opt-in only)",
+      headSha: null,
+      beforeSha: null,
+      gatesPassed: ["5"],
+    });
+    const written = JSON.parse((await readFile(nestedPath, "utf8")).trim()) as OrchdPushAuditRow;
+    expect(written.epicId).toBe("e-nodir01");
+    expect(written.gateBlocked).toBe("4");
+  });
+
+  test("handler's DEFAULT audit path survives a cwd with no .atmux/logs (wedge regression)", async () => {
+    // End-to-end shape of the bug: stubbed-default deps + a cwd that
+    // has no `.atmux/logs/`. Gate-4 refuses (autoPush is loud-opt-in,
+    // disabled by default) and `block()` writes the audit row through
+    // the RELATIVE default path. Before the fix this rejected.
+    const priorCwd = process.cwd();
+    process.chdir(scratch);
+    try {
+      const handler = createAutoPushHandler({ db, env: HONKER_ON });
+      const outcome = await handler(
+        buildMergedEvent(1, { epicId: "e-wedge01", base: "atmux-geoyws" }),
+      );
+      expect(outcome).toBe("skipped-not-opted-in");
+      // The ADR-229 §DA-Gate-6 invariant — "every push attempt appends
+      // one row" — must actually hold, so read the row back.
+      const body = await readFile(join(scratch, ".atmux", "logs", "orchd-push.jsonl"), "utf8");
+      const row = JSON.parse(body.trim()) as OrchdPushAuditRow;
+      expect(row.epicId).toBe("e-wedge01");
+      expect(row.outcome).toBe("blocked");
+      expect(row.gateBlocked).toBe("4");
+    } finally {
+      process.chdir(priorCwd);
+    }
+  });
 });
 
 // ---------- Happy path: 7 gates pass ----------

@@ -54,16 +54,32 @@ import type {
 
 let scratch: string;
 let db: Database;
+let priorCwd: string;
 
 beforeEach(async () => {
   scratch = await mkdtemp(join(tmpdir(), "atmux-orchd-bootstrap-"));
   db = openDatabase(join(scratch, "state.db"), migrations);
   ORCHD_SUBSCRIPTIONS.length = 0;
+  // Hermeticity: the handler factories' default audit-log paths are
+  // RELATIVE (`.atmux/logs/orchd-push.jsonl` /
+  // `.atmux/logs/orchd-dissolve.log`), so under stubbed defaults they
+  // resolve against process.cwd(). Left at the repo root this suite
+  // appended a fake `e-deadbeef` row into the LIVE team's audit trail,
+  // and — worse — its own result depended on whether some earlier
+  // suite had happened to create `./.atmux/logs/` as a side effect
+  // (`tests/unit/cli.test.ts` drives `cli.ts::main()` with no
+  // ATMUX_DIR override, whose events-log envelope mkdir -p's
+  // `./.atmux/logs/<yyyy>/<mm>/`). That made the full-suite green a
+  // FALSE green while the standalone run failed. Anchoring cwd to the
+  // per-test scratch dir makes the outcome identical in both modes.
+  priorCwd = process.cwd();
+  process.chdir(scratch);
 });
 
 afterEach(async () => {
   ORCHD_SUBSCRIPTIONS.length = 0;
   db.close();
+  process.chdir(priorCwd);
   await rm(scratch, { recursive: true, force: true });
 });
 

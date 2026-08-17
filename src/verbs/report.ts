@@ -11,19 +11,19 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { type DiscordSection, send as discordSend } from "../abstractions/discord.ts";
 import { exists } from "../abstractions/fs.ts";
-import { tryReadJson } from "../abstractions/json.ts";
 import { formatMyt } from "../abstractions/time.ts";
 import {
   driverInboxPath,
   getAtmuxDir,
-  kanbanJsonPath,
   type ResolveDirOpts,
   requireTeam,
   stateDir,
 } from "../core/common.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
+import { kanbanWorkStateAvailable } from "../core/kanban-backend.ts";
+import { loadKanban } from "../core/kanban.ts";
 import { ConfigError, UsageError } from "../errors.ts";
-import { Kanban as KanbanSchema, type KanbanTask } from "../schema/kanban.ts";
+import type { KanbanTask } from "../schema/kanban.ts";
 
 const USAGE = "atmux report [--no-discord] [--team-dir <dir>]";
 
@@ -263,8 +263,9 @@ export async function report(argv: ReadonlyArray<string>, opts: ReportOpts = {})
   const nowSec = Math.floor(nowMs / 1000);
   const ts = formatMyt(nowMs);
 
-  const kanban = await tryReadJson(kanbanJsonPath(atmuxDir), KanbanSchema);
-  const tasks = kanban?.tasks ?? [];
+  const tasks = (await kanbanWorkStateAvailable(atmuxDir))
+    ? (await loadKanban(atmuxDir)).tasks
+    : [];
   const shipped = selectShipped(tasks, last);
   const inProgress = selectInProgress(tasks);
   const blocked = selectBlocked(tasks);

@@ -9,22 +9,23 @@ import {
   probeCageState as defaultProbeCageState,
   STARVING_THRESHOLD_S as STARVING_THRESHOLD_S_LOCAL,
 } from "../../core/cage-state.ts";
-import { type LoadedCockpit, loadCockpit } from "../../core/cockpit.ts";
+import { type LoadedCockpit, loadCockpit, resolveCageSessionName } from "../../core/cockpit.ts";
 import {
   buildWindowName,
   buildWindowNameLegacy,
   getAtmuxDir,
+  getSessionName,
   resolveTeamSocket,
   tryLoadTeam,
 } from "../../core/common.ts";
 import type { Team, TeamMember } from "../../schema/team.ts";
 import {
   type DoctorRow,
-  type GitSpawn,
   defaultGitSpawn,
-  truncateEvidence,
-  type TmuxSpawn,
   defaultTmuxSpawn,
+  type GitSpawn,
+  type TmuxSpawn,
+  truncateEvidence,
 } from "./types.ts";
 
 // ---------- Check 7: orphan-sessions ----------
@@ -62,6 +63,61 @@ export async function checkOrphanSessions(
     });
   }
   return rows;
+}
+
+// ---------- Session-name resolution for cage probes ----------
+
+/**
+ * Where a doctor probe should read a cage's tmux session name FROM.
+ *
+ * The two arms exist because the two probes have different scope, and
+ * the difference is load-bearing rather than cosmetic — see
+ * {@link probeSessionName}.
+ */
+export type SessionNameSource = { root: string } | { atmuxDir?: string };
+
+/**
+ * The tmux session name a doctor probe should target for `team`
+ * (ADR-273 §Supplement-4 V1).
+ *
+ * Never `atmux-<team>` built by hand. Teams anchor their session in
+ * `.atmux/state/session.txt`, and on the live fleet `unum` anchors to
+ * `atmux_unum` (underscore) and `atmux` to bare `atmux` — neither
+ * producible from the literal. `cage-state.ts` carried the same bug and
+ * reported every member of both live teams as `down`; here it was worse
+ * in one sense and better in another, since a probe that GATES on the
+ * literal emits nothing at all rather than a false row. Blind, not
+ * lying — but blind on exactly the teams that need looking at.
+ *
+ * **Which resolver, and why it is not one:**
+ *
+ * - `{ root }` — a COCKPIT WALK. Resolves through
+ *   `resolveCageSessionName`, which reads only that team's anchor.
+ *   Deliberately NOT `getSessionName`: it honours the `ATMUX_SESSION`
+ *   env pin, which is a process-level override for the CURRENT team, so
+ *   inside a multi-team walk it would name one team's session for every
+ *   team on the fleet.
+ * - `{ atmuxDir }` (or nothing) — the CURRENT team. Resolves through
+ *   `getSessionName`, the same resolver `gatherStatus` uses, env pin
+ *   included — correct here, because the pin does refer to this team.
+ *   With no `atmuxDir` it walks up from cwd, which for a current-team
+ *   probe is that team's own directory.
+ *
+ * Fails soft to the legacy literal. `getSessionName` throws
+ * `ConfigError` for a `singleSession` team with no anchor; one
+ * misconfigured team must not take down the whole `atmux doctor` run,
+ * and the literal is exactly what the probe used before this fix.
+ */
+export async function probeSessionName(team: Team, src: SessionNameSource): Promise<string> {
+  try {
+    if ("root" in src) return await resolveCageSessionName({ name: team.name, root: src.root });
+    return await getSessionName({
+      ...(src.atmuxDir === undefined ? {} : { dir: src.atmuxDir }),
+      team,
+    });
+  } catch {
+    return `atmux-${team.name}`;
+  }
 }
 
 // ---------- ADR-081 §D: member cage-state ----------
@@ -124,6 +180,12 @@ export interface CheckMemberCageStatesOpts {
  *   - `team === null` (other checks already flagged the broken state)
  *   - team session doesn't exist (the session-down state is surfaced
  *     by other checks; per-member rows would just duplicate the noise)
+ *
+ * ADR-273 §Supplement-4 V1: "session doesn't exist" now means the
+ * session under its RESOLVED name. Until that fix the name was rebuilt
+ * as `atmux-<team>`, which names no session at all for an anchored team
+ * — so this check skipped `unum` and `atmux` entirely rather than
+ * reporting on them.
  */
 
 export async function checkMemberCageStates(
@@ -135,7 +197,12 @@ export async function checkMemberCageStates(
   if (team.members.length === 0) return [];
 
   const socketPath = resolveTeamSocket(team);
-  const sessionName = `atmux-${team.name}`;
+  // ADR-273 §Supplement-4 V1. This name GATES the whole check below, so
+  // the hand-built `atmux-<team>` form did not merely mislabel a row —
+  // it returned zero rows for every anchored team (`atmux_unum`, bare
+  // `atmux`), silently. `atmuxDir` is already in hand, so the anchor is
+  // one call away.
+  const sessionName = await probeSessionName(team, { atmuxDir });
   const threshold = opts.starvingThresholdSec ?? STARVING_THRESHOLD_S;
 
   // Skip when the session is down — other checks already cover that.
@@ -233,13 +300,15 @@ export async function checkMemberCageStates(
 const defaultProbeMemberCage = async (
   team: Team,
   member: TeamMember,
-  _sessionName: string,
+  sessionName: string,
   _socketPath: string,
 ): Promise<MemberCageHealth | null> => {
-  // The shared probe re-derives sessionName + socketPath from the team
-  // config, so we don't need to pass them through. Tests inject the
+  // The shared probe re-derives socketPath from the team config, so that
+  // one need not be threaded. `sessionName` IS threaded (ADR-273 D3 trap
+  // 1): letting the probe rebuild `atmux-<team>` makes it disagree with
+  // the caller that just resolved the name, and an anchored team
+  // (`atmux_unum`, bare `atmux`) then probes as down. Tests inject the
   // probe directly via opts.probe and bypass this default.
-  void _sessionName;
   void _socketPath;
   // `atmuxDir` is needed for heartbeat reads in the wedged ladder.
   // checkMemberCageStates threads it in via the outer scope; the
@@ -247,7 +316,7 @@ const defaultProbeMemberCage = async (
   // from common.ts. Best-effort: heartbeat absence collapses to the
   // pane-only signal path.
   const atmuxDir = await getAtmuxDir();
-  return defaultProbeCageState(team, member, atmuxDir);
+  return defaultProbeCageState(team, member, atmuxDir, { sessionName });
 };
 
 export interface CheckCockpitOnDefaultSocketOpts {
@@ -477,8 +546,14 @@ export interface CheckLegacyWindowNameFormatOpts {
  *   - User-added member names without a default-member role — hyphen
  *     is their canonical (per ADR-161 §D2).
  *   - Cages whose socket file isn't present (cage not running).
- *   - Cages whose `atmux-<team.name>` session isn't on the socket
- *     (non-canonical session name; out of scope for this warn).
+ *   - Cages whose session isn't on the socket under its RESOLVED name.
+ *
+ * The old "non-canonical session name is out of scope" carve-out is
+ * GONE (ADR-273 §Supplement-4 V1 / ADR-161 §Amendment 2026-08-17): the
+ * name is now read from each team's own anchor via
+ * {@link probeSessionName}, so an anchored cage (`atmux_unum`, bare
+ * `atmux`) is walked like any other instead of being skipped for having
+ * a name this probe could not build.
  *
  * Driver-ref: 2026-05-18 atmux parent cage (4-day uptime, 6 windows
  * still hyphenated, `rotate-lead` refused with `no tmux window for
@@ -516,7 +591,12 @@ export async function checkLegacyWindowNameFormat(
   // Build the probe target set: cockpit teams (when loadable) ∪ currentTeam.
   // Dedup by team name so a current-team that's also in cockpit isn't
   // probed twice (would emit duplicate yellow rows per flagged window).
-  const targets: Array<{ team: Team }> = [];
+  //
+  // The cockpit ROOT is carried alongside each team (ADR-273
+  // §Supplement-4 V1): it is what lets the session name be resolved from
+  // that team's own anchor instead of rebuilt as `atmux-<team>`. The
+  // currentTeam fallback carries none, and resolves from cwd instead.
+  const targets: Array<{ team: Team; source: SessionNameSource }> = [];
   const seenNames = new Set<string>();
   const cockpit = await loadCockpitFn();
   if (cockpit !== null) {
@@ -525,19 +605,19 @@ export async function checkLegacyWindowNameFormat(
       if (t === null) continue;
       if (seenNames.has(t.name)) continue;
       seenNames.add(t.name);
-      targets.push({ team: t });
+      targets.push({ team: t, source: { root: ct.root } });
     }
   }
   if (currentTeam !== null && !seenNames.has(currentTeam.name)) {
     seenNames.add(currentTeam.name);
-    targets.push({ team: currentTeam });
+    targets.push({ team: currentTeam, source: {} });
   }
 
   const rows: DoctorRow[] = [];
-  for (const { team } of targets) {
+  for (const { team, source } of targets) {
     const socket = resolveTeamSocket(team);
     if (!(await socketExistsFn(socket))) continue; // cage not running
-    const sessionName = `atmux-${team.name}`;
+    const sessionName = await probeSessionName(team, source);
     let result: SpawnResult;
     try {
       result = await tmux([

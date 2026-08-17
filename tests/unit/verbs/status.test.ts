@@ -6,15 +6,16 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTmux, type TmuxNamespace } from "../../../src/abstractions/tmux.ts";
+import { writeHeartbeat } from "../../../src/core/heartbeat.ts";
 import { appendDispatched, appendPending } from "../../../src/core/inbox.ts";
 import { addTask, moveTask } from "../../../src/core/kanban.ts";
-import { UsageError } from "../../../src/errors.ts";
-import { writeHeartbeat } from "../../../src/core/heartbeat.ts";
 import { writeMemberStatus } from "../../../src/core/member-status.ts";
+import { UsageError } from "../../../src/errors.ts";
 import {
   defaultRoleEmoji,
   formatContextColumn,
   formatHeartbeatColumn,
+  formatPaneStateColumn,
   formatSelfStatusColumn,
   gatherStatus,
   type MemberStatus,
@@ -215,14 +216,14 @@ describe("status verb — integration", () => {
       pendingCount: 0,
       inProgressCount: 0,
     });
-    expect(parsed.members[0].cadence).toEqual({
-      windowSec: 1800,
-      commitsInWindow: 0,
-      lastCommitAt: null,
-      lastCommitSha: null,
-      ageOfLastCommitSec: null,
-      verdict: "idle",
-    });
+    // The stage's teamDir is a bare `mkdtemp` with no repository, so the
+    // cadence probe has nothing to read and the key is omitted entirely
+    // (key-presence convention). It previously asserted a full
+    // `verdict: "idle"` object here — a verdict manufactured from a git
+    // probe that could not look. The deterministic cadence SHAPE is
+    // covered where a repo actually answers: see the sibling test that
+    // injects `gitLog: async () => []`.
+    expect(parsed.members[0].cadence).toBeUndefined();
     expect(parsed.kanban).toEqual({ todo: 0, inProgress: 0, done: 0, blocked: 0 });
     expect(parsed.driverInboxOpen).toBe(0);
   });
@@ -857,17 +858,17 @@ describe("gatherStatus — member ctx fields populated from JSON", () => {
 // ---------- ADR-148 T2: cadence column ----------
 
 import {
-  classifyCadence,
-  type CadenceObservation,
-  formatCadenceColumn,
-  formatDurationShort,
-  resolveCadenceConfig,
-} from "../../../src/verbs/status.ts";
-import {
   DEFAULT_CADENCE_CONFIG,
   DEFAULT_CADENCE_THRESHOLDS,
   type Team,
 } from "../../../src/schema/team.ts";
+import {
+  type CadenceObservation,
+  classifyCadence,
+  formatCadenceColumn,
+  formatDurationShort,
+  resolveCadenceConfig,
+} from "../../../src/verbs/status.ts";
 
 describe("classifyCadence — verdict branches (ADR-148 §D2)", () => {
   const T = DEFAULT_CADENCE_THRESHOLDS;
@@ -988,12 +989,10 @@ describe("formatCadenceColumn — verdict-to-display", () => {
       lastCommitSha: "abc1234",
       ageOfLastCommitSec: 300,
     };
-    expect(formatCadenceColumn({ ...base, verdict: "shipping" })).toBe(
-      "🟢 shipping (5min)",
+    expect(formatCadenceColumn({ ...base, verdict: "shipping" })).toBe("🟢 shipping (5min)");
+    expect(formatCadenceColumn({ ...base, ageOfLastCommitSec: 3600, verdict: "idle" })).toBe(
+      "🟡 idle (1h)",
     );
-    expect(
-      formatCadenceColumn({ ...base, ageOfLastCommitSec: 3600, verdict: "idle" }),
-    ).toBe("🟡 idle (1h)");
     expect(
       formatCadenceColumn({
         ...base,
@@ -1033,19 +1032,13 @@ describe("resolveCadenceConfig — defaults + per-team overrides", () => {
     const r = resolveCadenceConfig(makeTeam({ windowSec: 600 }));
     expect(r.windowSec).toBe(600);
     expect(r.enabled).toBe(DEFAULT_CADENCE_CONFIG.enabled);
-    expect(r.thresholds.shippingMaxAgeSec).toBe(
-      DEFAULT_CADENCE_THRESHOLDS.shippingMaxAgeSec,
-    );
+    expect(r.thresholds.shippingMaxAgeSec).toBe(DEFAULT_CADENCE_THRESHOLDS.shippingMaxAgeSec);
   });
 
   test("partial thresholds → unset threshold keys fall back to defaults", () => {
-    const r = resolveCadenceConfig(
-      makeTeam({ thresholds: { dormantMaxAgeSec: 3600 } }),
-    );
+    const r = resolveCadenceConfig(makeTeam({ thresholds: { dormantMaxAgeSec: 3600 } }));
     expect(r.thresholds.dormantMaxAgeSec).toBe(3600);
-    expect(r.thresholds.shippingMaxAgeSec).toBe(
-      DEFAULT_CADENCE_THRESHOLDS.shippingMaxAgeSec,
-    );
+    expect(r.thresholds.shippingMaxAgeSec).toBe(DEFAULT_CADENCE_THRESHOLDS.shippingMaxAgeSec);
     expect(r.thresholds.idleMaxAgeSec).toBe(DEFAULT_CADENCE_THRESHOLDS.idleMaxAgeSec);
   });
 
@@ -1122,12 +1115,12 @@ describe("gatherStatus — cadence column integration", () => {
 
 // ---------- ADR-077 §lead-uptime-measurement (t-6d950ffd) ----------
 
+import { writeLeadSessionStart } from "../../../src/core/lead-marker.ts";
 import {
+  type LeadUptimeSnapshot,
   parsePsEtime,
   probeLeadUptime,
-  type LeadUptimeSnapshot,
 } from "../../../src/verbs/status.ts";
-import { writeLeadSessionStart } from "../../../src/core/lead-marker.ts";
 
 describe("parsePsEtime — '[[DD-]HH:]MM:SS' parsing", () => {
   test("MM:SS form", () => {
@@ -1168,13 +1161,9 @@ describe("probeLeadUptime — ADR-077 §lead-uptime-measurement", () => {
   test("no team-lead role configured → configured: false, all fields null", async () => {
     const { sessionName } = await stageTeam([{ name: "alpha" }], false);
     const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Team;
-    const snap: LeadUptimeSnapshot = await probeLeadUptime(
-      tmux,
-      team,
-      sessionName,
-      false,
-      { home: homeDir },
-    );
+    const snap: LeadUptimeSnapshot = await probeLeadUptime(tmux, team, sessionName, false, {
+      home: homeDir,
+    });
     expect(snap.configured).toBe(false);
     expect(snap.leadMember).toBeNull();
     expect(snap.lead_session_uptime_s).toBeNull();
@@ -1204,10 +1193,7 @@ describe("probeLeadUptime — ADR-077 §lead-uptime-measurement", () => {
   });
 
   test("marker absent → lead_session_uptime_s null even with team-lead role", async () => {
-    const { sessionName } = await stageTeam(
-      [{ name: "lead-alpha", role: "team-lead" }],
-      false,
-    );
+    const { sessionName } = await stageTeam([{ name: "lead-alpha", role: "team-lead" }], false);
     const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Team;
     const snap = await probeLeadUptime(tmux, team, sessionName, false, {
       home: homeDir,
@@ -1274,15 +1260,8 @@ describe("gatherStatus / status verb — lead block surfaces in JSON", () => {
   });
 
   test("--json output includes 'lead' top-level block", async () => {
-    const { teamName } = await stageTeam(
-      [{ name: "lead-alpha", role: "team-lead" }],
-      false,
-    );
-    await writeLeadSessionStart(
-      teamName,
-      Math.floor(Date.now() / 1000) - 180,
-      { home: homeDir },
-    );
+    const { teamName } = await stageTeam([{ name: "lead-alpha", role: "team-lead" }], false);
+    await writeLeadSessionStart(teamName, Math.floor(Date.now() / 1000) - 180, { home: homeDir });
     const priorHome = process.env.HOME;
     process.env.HOME = homeDir;
     try {
@@ -1304,15 +1283,8 @@ describe("gatherStatus / status verb — lead block surfaces in JSON", () => {
   });
 
   test("text mode emits '🧭 lead' row with session_uptime label", async () => {
-    const { teamName } = await stageTeam(
-      [{ name: "lead-alpha", role: "team-lead" }],
-      false,
-    );
-    await writeLeadSessionStart(
-      teamName,
-      Math.floor(Date.now() / 1000) - 600,
-      { home: homeDir },
-    );
+    const { teamName } = await stageTeam([{ name: "lead-alpha", role: "team-lead" }], false);
+    await writeLeadSessionStart(teamName, Math.floor(Date.now() / 1000) - 600, { home: homeDir });
     const priorHome = process.env.HOME;
     process.env.HOME = homeDir;
     try {
@@ -1350,15 +1322,22 @@ describe("text mode — pane-state column rename + cadence column", () => {
     expect(out).toContain("cadence");
   });
 
-  test("text mode shows 'idle' cadence for tmpdir worktree (no .git)", async () => {
+  test("text mode shows NO cadence for a tmpdir worktree (no .git)", async () => {
+    // This test previously asserted the opposite — "no .git → git log
+    // probe fails → empty log → verdict='idle'" — and so encoded the bug
+    // as the contract. A directory with no repository supports no verdict
+    // about commit cadence; `—` ("no signal") is the honest cell, and
+    // `🟡 idle (never)` was a confident claim about work that was never
+    // observable. It reached the operator SPOKEN through `team_status`:
+    // the vox drilldown transcript reported a scratch team's panes as
+    // "all idle" (ADR-273 §Supplement-5 W6).
     await stageTeam([{ name: "alpha" }], false);
     const { out } = await captureStdout(() =>
       status(["--socket", socketPath, "--team-dir", teamDir]),
     );
-    // No .git in the stage's teamDir → git log probe fails → empty
-    // log → verdict='idle' with null age. formatCadenceColumn renders
-    // "🟡 idle (never)".
-    expect(out).toMatch(/🟡 idle \(never\)/);
+    expect(out).not.toMatch(/idle \(never\)/);
+    // The row is still rendered — the column just carries no verdict.
+    expect(out).toContain("alpha");
   });
 });
 
@@ -1517,7 +1496,6 @@ describe("gatherStatus — heartbeat surface", () => {
   });
 });
 
-
 // ---------- ADR-260 §D5: self-reported status ----------
 
 describe("gatherStatus — selfStatus populated from member-status files (ADR-260 §D5)", () => {
@@ -1639,5 +1617,410 @@ describe("status verb — selfStatus end-to-end (ADR-260 §D5)", () => {
       status(["--socket", socketPath, "--team-dir", teamDir]),
     );
     expect(text).toContain("📍working(t-12345678,");
+  });
+});
+
+// ---------- ADR-273 D3 trap 1 ----------
+
+describe("gatherStatus — the cage probe gets the RESOLVED session name", () => {
+  test("the probe is handed the same session name gatherStatus was given", async () => {
+    // `status()` resolves the name through `getSessionName` (anchor-aware),
+    // then hands it to `gatherStatus`. Before this fix the probe threw
+    // that away and rebuilt `atmux-<team>`, which names no session at all
+    // for an anchored team — so every member of a live `unum`
+    // (`atmux_unum`) or `atmux` (bare `atmux`) reported as `down`.
+    const anchored = `${sessionPrefix}_anchored`;
+    const { teamName } = await stageTeam(
+      [{ name: "alpha", emoji: "🐝", role: "member", tui: "claude" }],
+      false,
+    );
+    await tmux.session.newSession({ name: anchored, shellCommand: "cat", windowName: "🐝alpha" });
+    await new Promise((r) => setTimeout(r, 80));
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Parameters<
+      typeof gatherStatus
+    >[1];
+    const seen: Array<string | undefined> = [];
+    const snap = await gatherStatus(tmux, team, anchored, atmuxDir, {
+      probeCage: async (_t, m, _dir, opts) => {
+        seen.push(opts?.sessionName);
+        return {
+          member: m.name,
+          windowName: "🐝alpha",
+          state: "active",
+          paneUptimeSec: 10,
+          evidence: "",
+          heartbeatAgeSec: null,
+        };
+      },
+    });
+    expect(snap.team).toBe(teamName);
+    expect(seen).toEqual([anchored]);
+    // …and it must NOT be the rebuilt legacy form.
+    expect(seen).not.toContain(`atmux-${teamName}`);
+    expect(snap.members[0]?.cageState).toBe("active");
+  });
+});
+
+// ---------- Member panes are ENUMERATED, not guessed ----------
+//
+// `atmux status` printed a team's session as `[up]` and, on the very next
+// lines, every one of its panes as `down`. The two halves disagreed
+// because status SYNTHESIZED each member's window name — the cage probe
+// substituted a role-default emoji the roster never carried, producing
+// `🐝-be-1` for a window plainly named `be-1` — while `atmux fleet`,
+// reading the SAME socket, enumerated the window list and classified the
+// same panes correctly.
+//
+// `team_status` is a voice tool, so those `down` rows were spoken to the
+// operator as fact about healthy panes: the "cries wolf" class ADR-273 D3
+// is written against.
+
+describe("gatherStatus — panes resolve against the LIVE window list", () => {
+  test("each member is read from its OWN window, not the session's current one", async () => {
+    // The windows here carry the pre-ADR-135 `<emoji><name>` form while
+    // the synthesized target is the ADR-135 `<emoji>-<name>` one, so every
+    // synthesized target misses. tmux does not error on a missed
+    // `display-message` target — it answers about the session's CURRENT
+    // window — so pre-fix BOTH members reported that one window's command.
+    //
+    // The two panes therefore run DIFFERENT commands: `cat` and `sleep`.
+    // A test where both ran `cat` would pass on the wrong answer.
+    const teamName = `${sessionPrefix}-team`;
+    const sessionName = `atmux-${teamName}`;
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      JSON.stringify({
+        name: teamName,
+        members: [
+          { name: "alpha", emoji: "🐝", tui: "cursor" },
+          { name: "beta", emoji: "🐝", tui: "cursor" },
+        ],
+      }),
+    );
+    await tmux.session.newSession({
+      name: sessionName,
+      shellCommand: "cat",
+      windowName: "🐝alpha",
+    });
+    await tmux.window.newWindow({
+      sessionName,
+      name: "🐝beta",
+      shellCommand: "sleep 100",
+    });
+    await new Promise((r) => setTimeout(r, 120));
+
+    const { out } = await captureStdout(() =>
+      status(["--json", "--socket", socketPath, "--team-dir", teamDir]),
+    );
+    const parsed = JSON.parse(out);
+    expect(parsed.sessionState).toBe("up");
+    const alpha = parsed.members.find((m: { name: string }) => m.name === "alpha");
+    const beta = parsed.members.find((m: { name: string }) => m.name === "beta");
+    expect(alpha.paneCommand).toBe("cat");
+    expect(beta.paneCommand).toBe("sleep");
+    // Neither is `(down)`, and neither has borrowed the other's command.
+    expect(alpha.paneCommand).not.toBe(beta.paneCommand);
+  });
+
+  test("a member with no window at all reads (down), not a SIBLING pane's command", async () => {
+    // The complement, and a bug in its own right. `display-message -t
+    // <session>:<missing-window>` does not fail — tmux resolves it to the
+    // session's CURRENT window and exits 0. So a member with no pane used
+    // to be reported with whatever `alpha` happened to be running.
+    const { teamName } = await stageTeam([{ name: "alpha", emoji: "🐝", tui: "cursor" }], true);
+    // `ghost` joins the roster AFTER staging, so it has no window at all.
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      JSON.stringify({
+        name: teamName,
+        members: [
+          { name: "alpha", emoji: "🐝", tui: "cursor" },
+          { name: "ghost", emoji: "🐝", tui: "cursor" },
+        ],
+      }),
+    );
+    const { out } = await captureStdout(() =>
+      status(["--json", "--socket", socketPath, "--team-dir", teamDir]),
+    );
+    const parsed = JSON.parse(out);
+    const alpha = parsed.members.find((m: { name: string }) => m.name === "alpha");
+    const ghost = parsed.members.find((m: { name: string }) => m.name === "ghost");
+    expect(alpha.paneCommand).toBe("cat");
+    expect(ghost.paneCommand).toBe("(down)");
+    // The precise lie this closes: ghost must not inherit alpha's command.
+    expect(ghost.paneCommand).not.toBe("cat");
+  });
+
+  test("the cage probe is handed the REAL window names, read once for the whole roster", async () => {
+    // Two properties in one: (1) the names the probe gets are the ones
+    // tmux reports — an empty or synthesized list is what produced the
+    // false `down`s; (2) they are read ONCE, not once per member.
+    await stageTeam(
+      [
+        { name: "alpha", emoji: "🐝" },
+        { name: "beta", emoji: "🐝" },
+      ],
+      true,
+    );
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Parameters<
+      typeof gatherStatus
+    >[1];
+    let listWindowsCalls = 0;
+    const counting = {
+      ...tmux,
+      window: {
+        ...tmux.window,
+        async listWindows(s: string) {
+          listWindowsCalls += 1;
+          return await tmux.window.listWindows(s);
+        },
+      },
+    } as unknown as TmuxNamespace;
+    const handed: Array<ReadonlyArray<string>> = [];
+    await gatherStatus(counting, team, `atmux-${team.name}`, atmuxDir, {
+      probeCage: async (_t, m, _dir, opts) => {
+        handed.push(await (opts?.listWindowNames?.(`atmux-${team.name}`) ?? Promise.resolve([])));
+        return {
+          member: m.name,
+          windowName: m.name,
+          state: "active",
+          paneUptimeSec: 1,
+          evidence: "",
+          heartbeatAgeSec: null,
+        };
+      },
+    });
+    expect(handed).toHaveLength(2);
+    for (const names of handed) {
+      expect([...names].sort()).toEqual(["🐝alpha", "🐝beta"]);
+    }
+    // One list-windows for the whole roster — plus the one readPaneCommand
+    // shares. Never one per member.
+    expect(listWindowsCalls).toBe(1);
+  });
+
+  test("session down → no window list is read and every pane reads (down)", async () => {
+    await stageTeam([{ name: "alpha", emoji: "🐝" }], false);
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Parameters<
+      typeof gatherStatus
+    >[1];
+    let listWindowsCalls = 0;
+    const counting = {
+      ...tmux,
+      window: {
+        ...tmux.window,
+        async listWindows(s: string) {
+          listWindowsCalls += 1;
+          return await tmux.window.listWindows(s);
+        },
+      },
+    } as unknown as TmuxNamespace;
+    const snap = await gatherStatus(counting, team, `atmux-${team.name}`, atmuxDir);
+    expect(snap.sessionState).toBe("down");
+    expect(snap.members[0]?.paneCommand).toBe("(down)");
+    expect(listWindowsCalls).toBe(0);
+  });
+
+  test("a worktree that is not a git repo reports NO cadence, not 'idle (never)'", async () => {
+    // `atmux status` rendered `🟡 idle (never)` for a member whose
+    // worktree has no repository at all — a verdict about work that was
+    // never observable. `team_status` then spoke it: the vox drilldown
+    // transcript said a scratch team's panes were "all idle".
+    await stageTeam([{ name: "alpha", emoji: "🐝" }], false);
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Parameters<
+      typeof gatherStatus
+    >[1];
+    const snap = await gatherStatus(tmux, team, `atmux-${team.name}`, atmuxDir, {
+      // null = "could not read a repository here", what the real probe
+      // now returns for a non-repo path.
+      gitLog: async () => null,
+    });
+    expect(snap.members[0]?.cadence).toBeUndefined();
+    const { out } = await captureStdout(() =>
+      status(["--socket", socketPath, "--team-dir", teamDir]),
+    );
+    expect(out).not.toContain("idle (never)");
+  });
+
+  test("a real repo with no matching commits still reports idle — the complement", async () => {
+    // The distinction must not collapse the other way: `[]` is evidence
+    // (a repo that has no commits by this author), and `idle` is the
+    // correct verdict for it.
+    await stageTeam([{ name: "alpha", emoji: "🐝" }], false);
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Parameters<
+      typeof gatherStatus
+    >[1];
+    const snap = await gatherStatus(tmux, team, `atmux-${team.name}`, atmuxDir, {
+      gitLog: async () => [],
+    });
+    expect(snap.members[0]?.cadence?.verdict).toBe("idle");
+  });
+
+  test("an unreadable window list degrades to the pre-existing guess, never worse", async () => {
+    // A tmux hiccup is evidence of nothing, so it must not be read as
+    // "this member has no window". Resolution falls back to the name the
+    // old code synthesized and the column behaves exactly as it did
+    // before the seam existed — no new false `down`s.
+    await stageTeam([{ name: "alpha", emoji: "🐝", tui: "cursor" }], true);
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Parameters<
+      typeof gatherStatus
+    >[1];
+    const broken = {
+      ...tmux,
+      window: {
+        ...tmux.window,
+        async listWindows() {
+          throw new Error("tmux server gone");
+        },
+      },
+    } as unknown as TmuxNamespace;
+    const snap = await gatherStatus(broken, team, `atmux-${team.name}`, atmuxDir);
+    expect(snap.sessionState).toBe("up");
+    // Pre-seam behaviour verbatim: the synthesized target is asked, and
+    // tmux answers about the current window rather than erroring.
+    expect(snap.members[0]?.paneCommand).toBe("cat");
+  });
+});
+
+// ---------- The pane-state column can say "I could not tell" ----------
+//
+// ADR-273 §Supplement-5 / the coordinator's second finding: the tool
+// returned ok=true and reported pane states as fact with no way to signal
+// that it had inferred rather than measured them, and the model then
+// confabulated on top of a confident wrong answer. A voice tool that
+// cannot say "I don't know" is one an operator cannot trust.
+
+describe("formatPaneStateColumn — inferred states are marked, measured ones are not", () => {
+  const base: MemberStatus = {
+    name: "alpha",
+    role: "member",
+    tui: "claude",
+    paneCommand: "claude",
+    cageState: "active",
+    pendingCount: 0,
+    inProgressCount: 0,
+    heartbeat_age_s: null,
+  };
+
+  test("a measured state renders bare — no marker means the process was identified", () => {
+    expect(formatPaneStateColumn({ ...base, cageInferredFromRender: false })).toBe("active");
+  });
+
+  test("a state read off the pane's render carries a trailing ?", () => {
+    expect(formatPaneStateColumn({ ...base, cageInferredFromRender: true })).toBe("active?");
+  });
+
+  test("no claim at all renders bare (non-claude TUI, session down, stubbed probe)", () => {
+    expect(formatPaneStateColumn(base)).toBe("active");
+  });
+
+  test("a down row never carries the marker — two agreeing signals are not a hedge", () => {
+    expect(formatPaneStateColumn({ ...base, cageState: "down" })).toBe("down");
+  });
+
+  test("non-claude TUIs still fall back to paneCommand", () => {
+    expect(formatPaneStateColumn({ ...base, cageState: null, paneCommand: "cat" })).toBe("cat");
+  });
+});
+
+describe("status — an inferred pane state is marked in BOTH text and JSON", () => {
+  /** A live window whose pane text is an unmistakable Claude Code modal
+   *  but which holds no `claude` process — the vox e2e cage's exact
+   *  shape, and the case where the probe must hedge rather than assert. */
+  async function stageAgentLookingPane(): Promise<void> {
+    const teamName = `${sessionPrefix}-team`;
+    const sessionName = `atmux-${teamName}`;
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      JSON.stringify({ name: teamName, members: [{ name: "alpha", tui: "claude" }] }),
+    );
+    const textPath = join(teamDir, "pane.txt");
+    await writeFile(textPath, "● Read 240 lines\n\n│ Do you want to make this edit?\n│ ❯ 1. Yes\n");
+    await tmux.session.newSession({
+      name: sessionName,
+      windowName: "alpha",
+      shellCommand: `cat ${textPath}; exec sleep 60`,
+    });
+    await new Promise((r) => setTimeout(r, 200));
+  }
+
+  test("JSON carries cageInferredFromRender and text carries the trailing ?", async () => {
+    await stageAgentLookingPane();
+    const { out } = await captureStdout(() =>
+      status(["--json", "--socket", socketPath, "--team-dir", teamDir]),
+    );
+    const parsed = JSON.parse(out);
+    const alpha = parsed.members[0];
+    // Not `down` — the pane is plainly an agent TUI…
+    expect(alpha.cageState).not.toBe("down");
+    // …but nothing identified the process, and the row says so.
+    expect(alpha.cageInferredFromRender).toBe(true);
+
+    const { out: text } = await captureStdout(() =>
+      status(["--socket", socketPath, "--team-dir", teamDir]),
+    );
+    expect(text).toMatch(new RegExp(`${alpha.cageState}\\?`));
+  });
+});
+
+// ---------- The approval row describes THIS team, not the caller ----------
+//
+// `📝 NEEDS APPROVAL: 19 ADRs / 1157 inbox / 2 kanban` was reported for a
+// `mkdtemp` team that could not possibly have any: `scanNeedsApproval` was
+// called with no arguments, so it walked up from `process.cwd()` and
+// scanned whatever repo the CALLER was standing in. Under the voice
+// bridge (`team_status` → `atmux status --team-dir <root>`) that is the
+// server's own repo, spoken as a fact about someone else's team.
+//
+// These tests deliberately do NOT pin `ATMUX_DIR` / `ATMUX_TEAM_DIR` — the
+// escape hatch the older approval tests use. The scoping has to come from
+// `--team-dir` alone, because that is all the voice bridge passes.
+
+describe("status — NEEDS APPROVAL is scoped to the team, not the ambient repo", () => {
+  let priorAtmuxDir: string | undefined;
+  let priorAtmuxTeamDir: string | undefined;
+
+  beforeEach(() => {
+    priorAtmuxDir = process.env.ATMUX_DIR;
+    priorAtmuxTeamDir = process.env.ATMUX_TEAM_DIR;
+    delete process.env.ATMUX_DIR;
+    delete process.env.ATMUX_TEAM_DIR;
+  });
+
+  afterEach(() => {
+    if (priorAtmuxDir !== undefined) process.env.ATMUX_DIR = priorAtmuxDir;
+    if (priorAtmuxTeamDir !== undefined) process.env.ATMUX_TEAM_DIR = priorAtmuxTeamDir;
+  });
+
+  test("a scratch team with an empty root reports zeros, not the surrounding repo's debt", async () => {
+    // cwd during this run is the atmux repo, which carries a real backlog
+    // of proposed ADRs and driver-inbox asks. None of them belong to this
+    // team, so none of them may appear.
+    await stageTeam([{ name: "alpha" }], false);
+    const { out } = await captureStdout(() =>
+      status(["--socket", socketPath, "--team-dir", teamDir]),
+    );
+    expect(out).toContain("📝 NEEDS APPROVAL: ✅ clear");
+    expect(out).not.toMatch(/NEEDS APPROVAL: \d+ ADRs/);
+  });
+
+  test("it counts the TEAM's own paperwork — one proposed ADR under the team root reads as 1", async () => {
+    // The load-bearing half: this cannot pass vacuously. If the scan were
+    // still walking up from cwd it would report the repo's double-digit
+    // ADR backlog here, not 1.
+    await stageTeam([{ name: "alpha" }], false);
+    const adrDir = join(teamDir, "docs", "adr");
+    await mkdir(adrDir, { recursive: true });
+    await writeFile(join(adrDir, "900-scoped.md"), "# Scoped\n\n**Status**: proposed\n");
+
+    const { out } = await captureStdout(() =>
+      status(["--json", "--socket", socketPath, "--team-dir", teamDir]),
+    );
+    const parsed = JSON.parse(out);
+    expect(parsed.needsApproval.adr).toHaveLength(1);
+    expect(parsed.needsApproval.adr[0].id).toBe("900-scoped");
+    expect(parsed.needsApproval.adr[0].path).toContain(teamDir);
+    expect(parsed.needsApproval.inbox).toHaveLength(0);
+    expect(parsed.needsApproval.total).toBe(1);
   });
 });

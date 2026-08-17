@@ -29,6 +29,16 @@ Setup:
                               state/resume.json, NO worktree prune.
   attach                      tmux attach to the team session
   status                      Powerline team overview
+  fleet [--attention|--quiet] [--top <n>] [--json] [--timeout-ms <n>]
+        [--concurrency <n>]   ADR-273 D1: fleet triage across EVERY team.
+                              --attention (default) ranks every pane that
+                              needs you, most urgent first, with the evidence
+                              for each; --top bounds how many are spoken
+                              (1..15, default 5) and the rest become a count.
+                              --quiet is the aggregated all-clear — counts and
+                              team rollups only, never a pane list. Read-only.
+                              A team that cannot be read is reported as
+                              unreadable, never silently dropped.
   cockpit reconcile [--no-cycle|--force-cycle] [--no-launch] [--config <p>]
                               ADR-063 + ADR-235 §D1: ensure-up the operator
                               cockpit (cages + TUI auto-launch + cockpit
@@ -104,6 +114,10 @@ Automation:
   resume <member>             Unpause
 
 Maintenance:
+  migrate-kanban prepare --as <actor> [--team-dir <root>] [--receipt-root <path>] [--json]
+                              Snapshot legacy state, import it read-only into
+                              private Kanban, verify integrity, and write
+                              rollback receipts. Does not activate or delete.
   add-member <name> --role <r> --tui <t> [--model <m>] [--cwd <d>] [--command <c>]
   member rename <id> --label <new>          Hot-rename display label (ADR-136)
   member move <id> --to <position>          Relocate member's tmux window (ADR-161 §C)
@@ -162,6 +176,34 @@ Maintenance:
                               digest; heartbeat = hourly state-of-team.
                               Read-only on kanban/git/decisions.
 
+Vox (ADR-272):
+  vox [--serve] [--port <n>] [--provider <p>] [--model <m>] [--readonly]
+      [--max-frames <n>] [--print-assets-dir]
+                              Spoken operator interface. --serve binds the
+                              WebSocket + PWA server on
+                              ATMUX_VOX_HOST:ATMUX_VOX_PORT (default
+                              127.0.0.1:4390). Every vox tool is an atmux
+                              verb invocation and the server runs as the
+                              driver (ADR-272 D2/D3). Refuses to start
+                              without ATMUX_VOX_TOKEN (>=32 chars) and the
+                              provider's API key.
+  vox --supervise             Idempotent detached tmux session \`atmux-vox\`
+                              on the DEFAULT socket, running --serve under a
+                              crash-loop wrapper (5s backoff, breaker at 5
+                              restarts in 60s). ADR-272 D10.
+                              env ATMUX_VOX_BIN=<path> overrides which atmux
+                              binary the wrapper re-execs (precedence:
+                              per-call > env > the atmux on PATH; empty value
+                              falls through). Set it when supervising from a
+                              repo checkout — the installed /opt/atmux/<v> may
+                              predate the vox verb and crash-loop on
+                              "unknown verb: vox". ADR-273 Supplement S5.
+  vox --status                Session up? /healthz reachable? provider + mode.
+  vox --stop                  Graceful: SIGINT the server, then kill-session.
+  voice ...                   DEPRECATED alias for \`vox\` (ADR-274). Same
+                              flags and exit codes, plus a stderr notice.
+                              Removed in v0.9.1.
+
 Misc:
   version
   help | --help | -h
@@ -170,6 +212,12 @@ Environment:
   ATMUX_DISCORD_WEBHOOK   Discord webhook URL for whip/report escalations
   ATMUX_DIR               Override state dir (default: ./.atmux)
   ATMUX_TEAM              Override team name (otherwise read from team.json)
+  ATMUX_VOX_TOKEN         Required by \`vox\` — shared secret, >=32 chars
+  ATMUX_VOX_ORIGINS       Required by \`vox\` — comma-separated Origin allowlist
+                          (the CSRF defense; see docs/RUNBOOK-vox.md §3)
+                          ATMUX_VOICE_* is still read as a deprecated
+                          fallback when the ATMUX_VOX_* name is unset
+                          (ADR-274; removed in v0.9.1)
 
 Docs:  https://github.com/geoyws/atmux
 `;

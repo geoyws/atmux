@@ -52,6 +52,9 @@ import {
   resolveCageSocket,
 } from "./cockpit.ts";
 import { resolveCallerScope, resolveTeamSocket } from "./common.ts";
+import { advanceEpic } from "./epic.ts";
+import { loadKanban } from "./kanban.ts";
+import { externalKanbanEnabled } from "./kanban-backend.ts";
 import { softStop } from "./soft-stop.ts";
 
 // ---------- Input shape ----------
@@ -348,23 +351,16 @@ async function assertPreflightGates(deps: {
 }): Promise<void> {
   // (a) all-tasks-done.
   const dbPath = join(deps.childAtmuxDir, "state.db");
-  if (await exists(dbPath)) {
-    const db = deps.openDb(dbPath);
-    try {
-      const row = db
-        .query<{ n: number }, []>(
-          `SELECT COUNT(*) AS n FROM tasks WHERE status NOT IN ('done', 'wontfix')`,
-        )
-        .get();
-      const open = row?.n ?? 0;
-      if (open > 0) {
-        throw new ConfigError({
-          what: `dissolve-epic: refused — epic-team has ${open} open task${open === 1 ? "" : "s"} (status not in done/wontfix)`,
-          hint: "finish or wontfix the open tasks, OR re-run with --skip-checks (ADR-090 resolved-open #5)",
-        });
-      }
-    } finally {
-      deps.closeDb(db);
+  if ((await externalKanbanEnabled(deps.childAtmuxDir)) || (await exists(dbPath))) {
+    const tasks = (await loadKanban(deps.childAtmuxDir)).tasks;
+    const open = tasks.filter(
+      (task) => task.status !== "done" && task.status !== "wontfix" && task.status !== "cancelled",
+    ).length;
+    if (open > 0) {
+      throw new ConfigError({
+        what: `dissolve-epic: refused — epic-team has ${open} open task${open === 1 ? "" : "s"} (status not in done/wontfix)`,
+        hint: "finish or wontfix the open tasks, OR re-run with --skip-checks (ADR-090 resolved-open #5)",
+      });
     }
   }
   // (b) clean worktree.
@@ -383,6 +379,12 @@ async function markParentEpicDone(
   closeDb: (db: Database) => void,
   logger: { log: (m: string) => void; warn: (m: string) => void },
 ): Promise<void> {
+  const parentAtmuxDir = join(parentRoot, ".atmux");
+  if (await externalKanbanEnabled(parentAtmuxDir)) {
+    await advanceEpic(parentAtmuxDir, parentEpicKanbanId, "done");
+    logger.log(`dissolve-epic: marked parent EPIC ${parentEpicKanbanId} done`);
+    return;
+  }
   const parentDbPath = join(parentRoot, ".atmux", "state.db");
   if (!(await exists(parentDbPath))) {
     logger.warn(

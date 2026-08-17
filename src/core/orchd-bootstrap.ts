@@ -35,6 +35,7 @@
 // bootstrap stays purely about population.
 
 import type { Database } from "bun:sqlite";
+import { KanbanCliAdapter } from "../adapters/kanban-cli.ts";
 import type {
   ComplaintFiledPayload,
   EpicMergedPayload,
@@ -48,28 +49,28 @@ import {
   type ComplaintConsumerDeps,
   createComplaintConsumerHandler,
 } from "./complaint-consumer.ts";
-import {
-  type RotationConsumerDeps,
-  createRotationConsumerHandler,
-} from "./rotation-consumer.ts";
+import { listTasks, showTask } from "./kanban.ts";
+import { externalKanbanEnabled } from "./kanban-backend.ts";
 import {
   createLeadStallWatchdogHandler,
   type LeadStallWatchdogDeps,
   type LeadStallWatchdogEvent,
 } from "./lead-stall-watchdog.ts";
 import {
-  createDissolveSoloWorkerHandler,
-  type DissolveSoloWorkerHandlerDeps,
-} from "./orchd-dissolve-solo-worker.ts";
-import {
   type AutoDissolveHandlerDeps,
   createAutoDissolveHandler,
   type DissolveTriggerPayload,
 } from "./orchd-dissolve.ts";
+import {
+  createDissolveSoloWorkerHandler,
+  type DissolveSoloWorkerHandlerDeps,
+} from "./orchd-dissolve-solo-worker.ts";
 import { type AutoMergeHandlerDeps, createAutoMergeHandler } from "./orchd-merge.ts";
 import { type AutoPushHandlerDeps, createAutoPushHandler } from "./orchd-push.ts";
 import { registerOrchdSubscription } from "./orchd-registry.ts";
 import { createSpawnEpicHandler, type SpawnEpicHandlerDeps } from "./orchd-spawn.ts";
+import { KanbanRepo } from "./repositories/kanban-repo.ts";
+import { createRotationConsumerHandler, type RotationConsumerDeps } from "./rotation-consumer.ts";
 
 /** Consumer IDs — exported so step 3/5's drain iterator + tests can
  *  reference the canonical strings without typos. Per ADR-224 §D6
@@ -223,8 +224,10 @@ export interface BootstrapOrchdResult {
  * which subscriptions were newly added vs already-present.
  */
 export function bootstrapOrchd(deps: BootstrapOrchdDeps): BootstrapOrchdResult {
+  const workAtmuxDir = deps.spawnDeps?.atmuxDir;
   const mergeHandlerFn = createAutoMergeHandler({
     db: deps.db,
+    ...(workAtmuxDir ? { loadTasks: async () => await loadKanbanTasks(workAtmuxDir) } : {}),
     ...(deps.mergeDeps ?? {}),
   });
   const dissolveHandlerFn = createAutoDissolveHandler({
@@ -237,6 +240,15 @@ export function bootstrapOrchd(deps: BootstrapOrchdDeps): BootstrapOrchdResult {
   });
   const dissolveSoloWorkerHandlerFn = createDissolveSoloWorkerHandler({
     db: deps.db,
+    ...(workAtmuxDir
+      ? {
+          taskReader: {
+            showTask: (id: string) => showTask(workAtmuxDir, id),
+            listTasks: (filter: { owner: string }) =>
+              listTasks(workAtmuxDir, { assignee: filter.owner }),
+          },
+        }
+      : {}),
     ...(deps.dissolveSoloWorkerDeps ?? {}),
   });
   // ADR-231 §D2 — spawn handler. When `spawnDeps` is absent (no caller
@@ -244,9 +256,14 @@ export function bootstrapOrchd(deps: BootstrapOrchdDeps): BootstrapOrchdResult {
   // event — safe no-op under at-least-once delivery + matches the
   // pre-T-S2.5 behavior. Production callers (committer.ts) pass
   // atmuxDir + team config so the real factory builds.
-  const spawnHandlerFn = deps.spawnDeps !== undefined
-    ? createSpawnEpicHandler({ db: deps.db, ...deps.spawnDeps })
-    : async (_event: { epicId: string }) => "skipped-row-missing" as const;
+  const spawnHandlerFn =
+    deps.spawnDeps !== undefined
+      ? createSpawnEpicHandler({
+          db: deps.db,
+          ...deps.spawnDeps,
+          epicStore: backendAwareEpicStore(deps.spawnDeps.atmuxDir, deps.db),
+        })
+      : async (_event: { epicId: string }) => "skipped-row-missing" as const;
   // ADR-214 §D2 — complaint consumer. Always builds; deps optional
   // (defaults to real-process spawn of `atmux tell-lead`).
   const complaintHandlerFn = createComplaintConsumerHandler(deps.complaintDeps ?? {});
@@ -400,5 +417,40 @@ export function bootstrapOrchd(deps: BootstrapOrchdDeps): BootstrapOrchdResult {
       // the operator disabled it; three entries (one per topic) otherwise.
       ...leadStallEntries,
     ],
+  };
+}
+
+async function loadKanbanTasks(atmuxDir: string) {
+  return (await import("./kanban.ts")).loadKanban(atmuxDir).then((kanban) => kanban.tasks);
+}
+
+function backendAwareEpicStore(
+  atmuxDir: string,
+  db: Database,
+): NonNullable<SpawnEpicHandlerDeps["epicStore"]> {
+  const adapter = new KanbanCliAdapter();
+  const legacy = new KanbanRepo(db);
+  return {
+    getEpic: async (id) => {
+      if (!(await externalKanbanEnabled(atmuxDir))) return legacy.getEpic(id);
+      return (await adapter.loadKanban(atmuxDir)).epics.find((epic) => epic.id === id) ?? null;
+    },
+    saveEpic: async (epic) => {
+      if (!(await externalKanbanEnabled(atmuxDir))) {
+        legacy.upsertEpic(epic);
+        return;
+      }
+      const extra = epic.extra ?? {};
+      await adapter.patchMetadata(atmuxDir, epic.id, "atmux", {
+        workflowStatus: epic.status ?? null,
+        driverRef: epic.driverRef ?? null,
+        isReady: epic.isReady,
+        spawnedAt: epic.spawnedAt ?? null,
+        autoSpawn: extra.autoSpawn ?? null,
+        spawnFailed: extra.spawnFailed ?? null,
+        spawnPressureDeferred: extra.spawnPressureDeferred ?? null,
+        atmuxExtra: extra,
+      });
+    },
   };
 }

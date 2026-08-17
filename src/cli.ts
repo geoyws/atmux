@@ -50,6 +50,7 @@ import { doctor } from "./verbs/doctor.ts";
 import { driverInbox } from "./verbs/driver-inbox.ts";
 import { epic } from "./verbs/epic.ts";
 import { epicMerge } from "./verbs/epic-merge.ts";
+import { fleet } from "./verbs/fleet.ts";
 import { groom } from "./verbs/groom.ts";
 import { handoff } from "./verbs/handoff.ts";
 import { health } from "./verbs/health.ts";
@@ -66,14 +67,16 @@ import { dispatchMemberSubverb } from "./verbs/member.ts";
 import { mergeCycle } from "./verbs/merge-cycle.ts";
 import { mergeMember } from "./verbs/merge-member.ts";
 import { migrateHexIds } from "./verbs/migrate-hex-ids.ts";
+import { migrateKanban } from "./verbs/migrate-kanban.ts";
 import { migrateState } from "./verbs/migrate-state.ts";
+import { nudge } from "./verbs/nudge.ts";
 import { ombudsman } from "./verbs/ombudsman.ts";
+import { orchd } from "./verbs/orchd.ts";
 import { pause, resume } from "./verbs/pause.ts";
 import { poke } from "./verbs/poke.ts";
 import { pokeResumeCheck } from "./verbs/poke-resume-check.ts";
 import { pulse } from "./verbs/pulse.ts";
 import { reconfigure } from "./verbs/reconfigure.ts";
-import { orchd } from "./verbs/orchd.ts";
 import { refusalScan } from "./verbs/refusal-scan.ts";
 import { release } from "./verbs/release.ts";
 import { outbox, reply } from "./verbs/reply.ts";
@@ -98,6 +101,7 @@ import { tellLead } from "./verbs/tell-lead.ts";
 import { topo } from "./verbs/topo.ts";
 import { up } from "./verbs/up.ts";
 import { version } from "./verbs/version.ts";
+import { voice, vox } from "./verbs/vox.ts";
 import { watchdog } from "./verbs/watchdog.ts";
 
 /**
@@ -232,6 +236,10 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return dispatchTeamSubverb(argv.slice(1));
     case "topo":
       return topo(argv.slice(1));
+    case "fleet":
+      return fleet(argv.slice(1));
+    case "nudge":
+      return nudge(argv.slice(1));
     case "member":
       return dispatchMemberSubverb(argv.slice(1));
     case "sync":
@@ -345,6 +353,20 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return migrateHexIds(argv.slice(1));
     case "migrate-state":
       return migrateState(argv.slice(1));
+    case "migrate-kanban":
+      return migrateKanban(argv.slice(1));
+    case "vox":
+      // ADR-272 — spoken operator interface, named `vox` per ADR-274.
+      // `--serve` binds the WS + PWA server; `--supervise` / `--status` /
+      // `--stop` drive the dedicated `atmux-vox` tmux session on the
+      // default socket (§D10). Every vox tool is an atmux verb invocation
+      // (§D2), and the server runs as the driver (§D3).
+      return vox(argv.slice(1));
+    // SUNSET(v0.9.1): ADR-274 D2 — the pre-rename verb name, still
+    // dispatching to the same entry point and warning on stderr. Delete
+    // this case (and `voice` in `src/verbs/vox.ts`) after v0.9.1 ships.
+    case "voice":
+      return voice(argv.slice(1));
     case "up":
       return up(argv.slice(1));
     case "":

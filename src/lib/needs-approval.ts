@@ -372,12 +372,25 @@ export function defaultClock(): number {
   return Math.floor(Date.now() / 1000);
 }
 
-/** Walk up from cwd, locate the project root (the dir CONTAINING
- *  `.atmux/`). Strips the trailing `/.atmux` from `getAtmuxDir`'s result.
- *  Falls back to `"/"` when the strip would yield empty. */
+/**
+ * The project root that owns an `.atmux` directory — i.e. the directory
+ * CONTAINING it. Falls back to `"/"` when the strip would yield empty.
+ *
+ * Exported because callers that already hold the team's `atmuxDir` must
+ * pass `projectRoot` in rather than let {@link resolveProjectRoot} guess:
+ * the guess walks up from `process.cwd()` and so describes whoever is
+ * CALLING, not the team being scanned. `atmux status --team-dir <other>`
+ * is exactly that case.
+ */
+export function projectRootFromAtmuxDir(atmuxDir: string): string {
+  return atmuxDir.replace(/\/?\.atmux\/?$/, "") || "/";
+}
+
+/** Walk up from cwd, locate the project root. Only correct when the caller
+ *  IS standing in the team it is asking about — callers holding an
+ *  `atmuxDir` pass `deps.projectRoot` instead. */
 async function resolveProjectRoot(): Promise<string> {
-  const dir = await getAtmuxDir();
-  return dir.replace(/\/?\.atmux\/?$/, "") || "/";
+  return projectRootFromAtmuxDir(await getAtmuxDir());
 }
 
 // ---------- Internals ----------

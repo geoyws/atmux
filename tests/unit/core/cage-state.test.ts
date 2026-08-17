@@ -4,7 +4,11 @@ import { describe, expect, test } from "bun:test";
 import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import {
   type CageHealth,
+  cageWindowCandidates,
+  hasProducedOutput,
+  isAgentPane,
   probeCageState,
+  resolveCageWindowName,
   STARVING_THRESHOLD_S,
   WEDGED_HEARTBEAT_STALE_SEC,
 } from "../../../src/core/cage-state.ts";
@@ -401,5 +405,433 @@ describe("probeCageState — composite + invariants", () => {
       expect(h.paneUptimeSec === null || typeof h.paneUptimeSec === "number").toBe(true);
       expect(h.heartbeatAgeSec === null || typeof h.heartbeatAgeSec === "number").toBe(true);
     }
+  });
+});
+
+// ---------- ADR-273 D3 trap 1: the session name is not `atmux-<team>` ----------
+
+describe("probeCageState — sessionName override (ADR-273 D3 trap 1)", () => {
+  /** Capture whatever session name the probe actually asks tmux about. */
+  function nameSpy(): {
+    asked: string[];
+    opts: { hasSession: (n: string) => Promise<boolean> };
+  } {
+    const asked: string[] = [];
+    return {
+      asked,
+      opts: {
+        hasSession: async (n: string) => {
+          asked.push(n);
+          return false;
+        },
+      },
+    };
+  }
+
+  test("without the override it still asks for the legacy `atmux-<team>` form", async () => {
+    // Pins the fallback as UNCHANGED, so callers that have not been
+    // updated behave exactly as they did before this seam landed.
+    const spy = nameSpy();
+    await probeCageState(makeTeam(), makeMember(), "/tmp/x", { ...DEFAULT_OPTS, ...spy.opts });
+    expect(spy.asked).toEqual(["atmux-demo"]);
+  });
+
+  test("the override is what tmux is asked about — the anchored name wins", async () => {
+    // The live failure: `unum` anchors its session to `atmux_unum`
+    // (underscore) and `atmux` to bare `atmux`. Rebuilding `atmux-<team>`
+    // names a session that does not exist, so step (1) reports every
+    // member of a healthy team as `down`.
+    for (const anchored of ["atmux_unum", "atmux"]) {
+      const spy = nameSpy();
+      await probeCageState(makeTeam(), makeMember(), "/tmp/x", {
+        ...DEFAULT_OPTS,
+        ...spy.opts,
+        sessionName: anchored,
+      });
+      expect(spy.asked).toEqual([anchored]);
+      expect(spy.asked).not.toContain("atmux-demo");
+    }
+  });
+
+  test("with the resolved name a LIVE team stops being reported as down", async () => {
+    // Same team, same probe, same tmux — only the resolved name differs,
+    // and the verdict flips from `down` to a real state. This is the bug
+    // ADR-273 D3 trap 1 names, reproduced and then closed.
+    const liveSessions = new Set(["atmux_unum"]);
+    const tmux = {
+      session: {
+        async hasSession(n: string) {
+          return liveSessions.has(n);
+        },
+      },
+      pane: {
+        async listPanes() {
+          return [{ pid: 4242 }];
+        },
+        async capturePane() {
+          return "42k tokens · esc to interrupt";
+        },
+      },
+    } as unknown as TmuxNamespace;
+    const opts = {
+      ...DEFAULT_OPTS,
+      tmux,
+      hasSession: async (n: string) => liveSessions.has(n),
+    };
+    const wrong = await probeCageState(makeTeam(), makeMember(), "/tmp/x", opts);
+    expect(wrong.state).toBe("down");
+    const right = await probeCageState(makeTeam(), makeMember(), "/tmp/x", {
+      ...opts,
+      sessionName: "atmux_unum",
+    });
+    expect(right.state).toBe("active");
+  });
+});
+
+// ---------- Window resolution: probe the window that EXISTS ----------
+//
+// The defect these cover, in full: `probeCageState` SYNTHESIZED its target
+// window name. It took `member.emoji ?? defaultEmojiForRole(role)` — so a
+// roster entry carrying no emoji had a `🐝` invented for it — and probed
+// `<session>:🐝-be-1`. A cage whose windows are plainly named `be-1` /
+// `fe-1` / `docs` answers `can't find window`, the catch under step (2)
+// returns `down`, and `atmux status` prints three `down` panes on the line
+// directly beneath a session it has just called `[up]`.
+//
+// `atmux fleet` never had it, off the very same socket, because it
+// ENUMERATES windows instead of guessing their names. These tests pin that
+// discipline here: the probe must target a window tmux actually reports.
+
+/** A tmux stub that owns a window LIST and records every `listPanes`
+ *  target, so a test can assert WHICH window was probed — not merely which
+ *  verdict came back. `listPanes` answers only for windows that exist,
+ *  exactly as tmux does. */
+function windowedTmux(opts: { windows: ReadonlyArray<string>; paneText?: string }): {
+  tmux: TmuxNamespace;
+  targets: string[];
+} {
+  const targets: string[] = [];
+  const live = new Set(opts.windows);
+  const tmux = {
+    session: {
+      async hasSession() {
+        return true;
+      },
+    },
+    window: {
+      async listWindows() {
+        return opts.windows.map((name, index) => ({ index, id: `@${index}`, name, active: false }));
+      },
+    },
+    pane: {
+      async listPanes(target: string) {
+        targets.push(target);
+        const win = target.slice(target.indexOf(":") + 1);
+        if (!live.has(win)) throw new Error(`can't find window: ${win}`);
+        return [{ pid: 4242 }];
+      },
+      async capturePane() {
+        return opts.paneText ?? "42k tokens · esc to interrupt";
+      },
+    },
+  } as unknown as TmuxNamespace;
+  return { tmux, targets };
+}
+
+describe("isAgentPane / hasProducedOutput — which renders count as evidence", () => {
+  test("only SHELL and UNKNOWN carry no agent signal", () => {
+    for (const s of ["BUSY", "MODAL", "TYPING", "COMPACTING", "RATE-LIMIT", "READY"] as const) {
+      expect(isAgentPane(s)).toBe(true);
+    }
+    expect(isAgentPane("SHELL")).toBe(false);
+    expect(isAgentPane("UNKNOWN")).toBe(false);
+  });
+
+  test("READY is NOT proof of output — a bare compose prompt IS bootstrapping", () => {
+    // The load-bearing exclusion: fold READY in here and the
+    // `bootstrapping` state stops existing.
+    expect(hasProducedOutput("READY")).toBe(false);
+    expect(hasProducedOutput("SHELL")).toBe(false);
+    expect(hasProducedOutput("UNKNOWN")).toBe(false);
+    expect(hasProducedOutput("RATE-LIMIT")).toBe(false);
+  });
+
+  test("a spinner, a modal, queued text or a compaction all prove a turn ran", () => {
+    for (const s of ["BUSY", "MODAL", "TYPING", "COMPACTING"] as const) {
+      expect(hasProducedOutput(s)).toBe(true);
+    }
+  });
+});
+
+describe("probeCageState — a working session is not called 'bootstrapping'", () => {
+  test("a modal pane with no token footer reads active, not bootstrapping", async () => {
+    // `TOKENS_MOVED_RE` reads the status-line footer, and a permission
+    // modal pushes it out of the captured window. The session has plainly
+    // produced output; calling it "tokens have never moved" is false.
+    const { tmux } = windowedTmux({
+      windows: ["alice"],
+      paneText: "● Read 240 lines\n\n│ Do you want to make this edit?\n│ ❯ 1. Yes\n",
+    });
+    const h = await probeCageState(makeTeam(), makeMember(), "/tmp/x", { ...DEFAULT_OPTS, tmux });
+    expect(h.state).toBe("active");
+  });
+
+  test("a genuine welcome banner still reads bootstrapping", async () => {
+    // The complement: no footer AND no proof-of-output render.
+    const { tmux } = windowedTmux({
+      windows: ["alice"],
+      paneText: "Welcome to Claude Code\n❯ (try a prompt)",
+    });
+    const h = await probeCageState(makeTeam(), makeMember(), "/tmp/x", { ...DEFAULT_OPTS, tmux });
+    expect(h.state).toBe("bootstrapping");
+  });
+});
+
+describe("cageWindowCandidates — the naming forms a live window may carry", () => {
+  test("an emoji-less roster offers the BARE window name, not only an invented-emoji one", () => {
+    const { canonical, all } = cageWindowCandidates(makeMember({ name: "be-1", emoji: undefined }));
+    // Canonical stays the form `start.ts` would have spawned…
+    expect(canonical).toBe("🐝-be-1");
+    // …but the bare name the roster literally describes is offered too.
+    // Its absence was the whole bug: nothing ever probed `be-1`.
+    expect(all).toContain("be-1");
+    expect(all[0]).toBe("🐝-be-1");
+  });
+
+  test("a pinned roster emoji offers canonical, ADR-135 hyphen and pre-ADR-135 legacy forms", () => {
+    const { canonical, all } = cageWindowCandidates(
+      makeMember({ name: "lead", role: "team-lead", emoji: "🧭" }),
+    );
+    expect(canonical).toBe("🧭_lead"); // ADR-161 `_` for default roles
+    expect(all).toContain("🧭-lead"); // ADR-135 hyphen
+    expect(all).toContain("🧭lead"); // pre-ADR-135 no separator
+    expect(all).toContain("lead"); // bare id
+  });
+
+  test("a hot-renamed member (ADR-136 label) still offers its immutable id", () => {
+    const { canonical, all } = cageWindowCandidates(
+      makeMember({ name: "be-1", label: "backend", emoji: "🐝" }),
+    );
+    expect(canonical).toBe("🐝-backend");
+    expect(all).toContain("be-1");
+  });
+
+  test("candidates are deduped — one form is never offered twice", () => {
+    const { all } = cageWindowCandidates(makeMember({ name: "alice", emoji: "🐝" }));
+    expect(new Set(all).size).toBe(all.length);
+  });
+
+  test("a roster entry with no role at all falls back to the default-member shape", () => {
+    // `role` is optional in the schema; an entry omitting it must not be
+    // read as a default-member role (which would render `_`, not `-`).
+    const { canonical, all } = cageWindowCandidates(
+      makeMember({ name: "solo", role: undefined, emoji: undefined }),
+    );
+    expect(canonical).toBe("🐝-solo");
+    expect(all).toContain("solo");
+  });
+});
+
+describe("resolveCageWindowName — first LIVE candidate wins", () => {
+  test("resolves the bare window an emoji-less roster actually occupies", async () => {
+    const name = await resolveCageWindowName(
+      "atmux-vox",
+      makeMember({ name: "be-1", emoji: undefined }),
+      async () => ["be-1", "fe-1", "docs"],
+    );
+    expect(name).toBe("be-1");
+  });
+
+  test("prefers the atmux-spawned form when a legacy window coexists with it", async () => {
+    const name = await resolveCageWindowName("s", makeMember(), async () => [
+      "🐝alice",
+      "🐝-alice",
+    ]);
+    expect(name).toBe("🐝-alice");
+  });
+
+  test("falls back to the spawn form when NO candidate is live", async () => {
+    const name = await resolveCageWindowName("s", makeMember({ emoji: undefined }), async () => [
+      "someone-else",
+    ]);
+    // Names the shape the operator would go looking for — the same
+    // convention `resolveExistingWindowName` already follows.
+    expect(name).toBe("🐝-alice");
+  });
+
+  test("falls back to the spawn form when the window list cannot be read at all", async () => {
+    const name = await resolveCageWindowName("s", makeMember(), async () => {
+      throw new Error("tmux server gone");
+    });
+    expect(name).toBe("🐝-alice");
+  });
+});
+
+describe("probeCageState — a live pane on a live session is never 'down'", () => {
+  test("emoji-less roster + bare live windows → active, and `be-1` is what got probed", async () => {
+    // The voice-e2e cage shape verbatim: session up, three plainly-named
+    // windows, roster carrying no emoji. Pre-fix every row read `down`.
+    const { tmux, targets } = windowedTmux({ windows: ["be-1", "fe-1", "docs"] });
+    const h = await probeCageState(
+      makeTeam({ name: "be-1", emoji: undefined }),
+      makeMember({ name: "be-1", emoji: undefined }),
+      "/tmp/x",
+      { ...DEFAULT_OPTS, tmux },
+    );
+    expect(h.state).toBe("active");
+    expect(h.windowName).toBe("be-1");
+    // The invented name must never have been probed at all.
+    expect(targets).toEqual(["atmux-demo:be-1"]);
+    expect(targets).not.toContain("atmux-demo:🐝-be-1");
+  });
+
+  test("a window in the pre-ADR-135 legacy form is found, not reported down", async () => {
+    const { tmux, targets } = windowedTmux({ windows: ["🐝alice"] });
+    const h = await probeCageState(makeTeam(), makeMember(), "/tmp/x", { ...DEFAULT_OPTS, tmux });
+    expect(h.state).toBe("active");
+    expect(h.windowName).toBe("🐝alice");
+    expect(targets).toEqual(["atmux-demo:🐝alice"]);
+  });
+
+  test("a member with genuinely no window still reports down — absence is not papered over", async () => {
+    // The complement, and the reason this is a RESOLUTION fix rather than
+    // a "stop saying down" fix: when the member's window really is gone,
+    // `down` is still the answer.
+    const { tmux } = windowedTmux({ windows: ["someone-else"] });
+    const h = await probeCageState(
+      makeTeam({ name: "ghost", emoji: undefined }),
+      makeMember({ name: "ghost", emoji: undefined }),
+      "/tmp/x",
+      { ...DEFAULT_OPTS, tmux },
+    );
+    expect(h.state).toBe("down");
+    expect(h.windowName).toBe("🐝-ghost");
+  });
+
+  test("a caller-supplied window list is used instead of a per-member list-windows call", async () => {
+    // `status` hoists ONE `list-windows` for the whole roster and hands
+    // the names down; if the seam were ignored the probe would fall back
+    // to its own (here: empty) window namespace and report `down`.
+    let listWindowsCalls = 0;
+    const { tmux } = windowedTmux({ windows: ["be-1"] });
+    const wrapped = {
+      ...tmux,
+      window: {
+        async listWindows() {
+          listWindowsCalls += 1;
+          return [];
+        },
+      },
+    } as unknown as TmuxNamespace;
+    const h = await probeCageState(
+      makeTeam({ name: "be-1", emoji: undefined }),
+      makeMember({ name: "be-1", emoji: undefined }),
+      "/tmp/x",
+      { ...DEFAULT_OPTS, tmux: wrapped, listWindowNames: async () => ["be-1"] },
+    );
+    expect(h.state).toBe("active");
+    expect(listWindowsCalls).toBe(0);
+  });
+
+  test("session missing → down naming the spawn form, window list never consulted", async () => {
+    let listWindowsCalls = 0;
+    const tmux = {
+      session: {
+        async hasSession() {
+          return false;
+        },
+      },
+      window: {
+        async listWindows() {
+          listWindowsCalls += 1;
+          return [];
+        },
+      },
+      pane: {
+        async listPanes() {
+          return [];
+        },
+        async capturePane() {
+          return "";
+        },
+      },
+    } as unknown as TmuxNamespace;
+    const h = await probeCageState(makeTeam(), makeMember({ emoji: undefined }), "/tmp/x", {
+      ...DEFAULT_OPTS,
+      tmux,
+      hasSession: async () => false,
+    });
+    expect(h.state).toBe("down");
+    expect(h.windowName).toBe("🐝-alice");
+    expect(listWindowsCalls).toBe(0);
+  });
+
+  test("a live agent pane whose process cannot be identified is NOT called down", async () => {
+    // The vox e2e cage: the panes render an unmistakable Claude Code TUI
+    // but hold no `claude` process at all, so `ps --ppid` finds nothing.
+    // Reporting `down` let the weakest rung in the ladder veto the
+    // strongest, and `team_status` spoke it aloud as fact.
+    const { tmux } = windowedTmux({
+      windows: ["be-1"],
+      paneText: "● Reading src/invoice.ts\n\n│ Do you want to make this edit?\n│ ❯ 1. Yes\n",
+    });
+    const h = await probeCageState(
+      makeTeam({ name: "be-1", emoji: undefined }),
+      makeMember({ name: "be-1", emoji: undefined }),
+      "/tmp/x",
+      { ...DEFAULT_OPTS, tmux, paneChildIsClaude: async () => false },
+    );
+    expect(h.state).not.toBe("down");
+    // …and it says so: the state came off the screen, not off `ps`.
+    expect(h.inferredFromRender).toBe(true);
+  });
+
+  test("a pane with NO agent signal and no claude process is still down", async () => {
+    // Both signals agree. This is the case the fix must NOT swallow — it
+    // is the difference between a resolution fix and a false green.
+    const { tmux } = windowedTmux({ windows: ["be-1"], paneText: "$ ls -la\n$ " });
+    const h = await probeCageState(
+      makeTeam({ name: "be-1", emoji: undefined }),
+      makeMember({ name: "be-1", emoji: undefined }),
+      "/tmp/x",
+      { ...DEFAULT_OPTS, tmux, paneChildIsClaude: async () => false },
+    );
+    expect(h.state).toBe("down");
+    // A `down` row is a CONFIDENT conclusion — two agreeing observations —
+    // so it must not advertise doubt it does not have.
+    expect(h.inferredFromRender).toBeUndefined();
+  });
+
+  test("a confirmed claude process is never marked inferred", async () => {
+    const { tmux } = windowedTmux({
+      windows: ["alice"],
+      paneText: "42k tokens · esc to interrupt",
+    });
+    const h = await probeCageState(
+      makeTeam({ emoji: undefined }),
+      makeMember({ emoji: undefined }),
+      "/tmp/x",
+      {
+        ...DEFAULT_OPTS,
+        tmux,
+        paneChildIsClaude: async () => true,
+      },
+    );
+    expect(h.state).toBe("active");
+    expect(h.inferredFromRender).toBe(false);
+  });
+
+  test("the production default reads the live window list off tmux itself", async () => {
+    // No `listWindowNames` injected — proves the default seam is wired to
+    // `tmux.window.listWindows`, not to a synthesized guess.
+    const { tmux, targets } = windowedTmux({ windows: ["docs"] });
+    const h = await probeCageState(
+      makeTeam({ name: "docs", emoji: undefined }),
+      makeMember({ name: "docs", emoji: undefined }),
+      "/tmp/x",
+      { ...DEFAULT_OPTS, tmux },
+    );
+    expect(h.state).toBe("active");
+    expect(targets).toEqual(["atmux-demo:docs"]);
   });
 });

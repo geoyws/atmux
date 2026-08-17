@@ -39,6 +39,7 @@ _atmux() {
     'reconfigure:Re-run wizard against existing team.json'
     'doctor:Check deps, team.json, TUI PATH, webhook reachability'
     'dashboard:Live full-screen status panel'
+    'vox:Spoken operator interface — WS + PWA server (ADR-272)'
     'version:Print version'
     'help:Print help'
   )
@@ -172,6 +173,18 @@ _atmux() {
             '--name[Team name]:name:' \
             '--wizard[Interactive setup]' \
             '--force[Overwrite existing team.json]' ;;
+        vox)
+          _arguments \
+            '--serve[Run the WS + PWA server in the foreground (default)]' \
+            '--supervise[Idempotent detached atmux-vox tmux session]' \
+            '--status[Session state + /healthz probe]' \
+            '--stop[Graceful stop of the supervised session]' \
+            '--port[Listen port]:port:' \
+            '--provider[Provider kind]:provider:(openai openai-realtime gemini gemini-live)' \
+            '--model[Realtime model id]:model:' \
+            '--readonly[Hide the 4 messaging tools from the catalog]' \
+            '--max-frames[Exit 0 after N binary phone frames]:frames:' \
+            '--print-assets-dir[Print the resolved PWA assets dir and exit]' ;;
       esac
       ;;
   esac
