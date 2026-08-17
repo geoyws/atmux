@@ -177,3 +177,18 @@ The kanban team has already pre-imported 8 teams (`4f029a0 docs: record atmux fl
 `t-747e405a` · `t-f109324d` · `t-bb7484f7` · `t-028e6d63` · `t-e281276a` · `t-3d6e21ac`
 
 Fixing it is one command from `/root/work/ifca/src/ifca-docs`. Per the operational constraint above, that is a hand-off to whoever owns that board, not an edit made from here.
+
+### D1's integration surface has changed — there is no library to shim over
+
+D1 says atmux's verbs remain "as shims over the runtime **library**". That was true of the Bun implementation. It is not true now, and the correction is not cosmetic.
+
+At `414bfdd` the repo has **no `package.json` at all**, `src/` is empty, and the entire implementation is `rust/{main,store,db,model,registry,import,context}.rs`. `@geoyws/kanban` is no longer an npm package; it is a binary named `kanban`. **A Bun process cannot import it.**
+
+Two integration surfaces remain, and only one is acceptable:
+
+1. **Shell out to the `kanban` binary.** Every verb takes `--json`, and the receipts observed in this Phase 1 pass are well-formed and information-dense — the import receipt names its warnings, the overlap guard names its ids. atmux already owns the right seam for this: `src/abstractions/spawn.ts`, with `ATMUX_SPAWN_TIMEOUT_MS` and `ATMUX_GIT_TIMEOUT_MS` as precedent for a per-integration timeout knob.
+2. **Open the board's SQLite file directly from Bun.** Rejected. It bypasses the runtime's claim/lease/dependency invariants, which would then have to be reimplemented on the atmux side — which is the thing this whole ADR exists to stop doing.
+
+So D1 stands as a decision (the runtime owns the ledger; the verbs stay) and changes only in mechanism: **the shims are subprocess calls with a JSON protocol, not library calls.**
+
+**Consequence for sequencing.** A CLI is a contract with no type checker across it, and this runtime moved three times in a week including a breaking rewrite. So the shim layer lands **behind a flag, defaulting off**, with the CLI's shape captured as **fixture tests** — the same drift-guard pattern already used for the vox protocol. Then a runtime change breaks a named fixture test on a known commit, instead of surfacing as a wrong answer in a verb an operator is relying on. Per D4 this keeps the migration additive and reversible: the flag off means nothing changed.
