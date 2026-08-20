@@ -31,6 +31,42 @@ export type FixtureVerdict =
   | { bucket: "attention"; kind: AttentionClass }
   | { bucket: "quiet"; kind: QuietClass };
 
+/**
+ * The half of a pane fixture that only exists for the MUTATING scenarios
+ * (ADR-272 §Supplement E6).
+ *
+ * A read-only fixture pane is `cat <text>; exec sleep`, and `sleep` does
+ * not read its tty — so a nudge that genuinely delivered an Enter and a
+ * nudge that silently delivered nothing leave byte-identical panes. That
+ * makes "the Enter landed" unassertable, and an unassertable claim is
+ * exactly what E5 says the read-only harness cannot check.
+ *
+ * A pane carrying an `after` runs a READ LOOP instead: every line it
+ * consumes from its tty appends one line to a receipt file and repaints
+ * the pane with {@link text}. Two independent pieces of cage evidence
+ * follow, and neither can be produced by a tool merely returning `ok`:
+ *
+ *   - the receipt file's LINE COUNT is the number of Enters that actually
+ *     reached the pane's foreground process — 0 proves a refusal or a
+ *     decline held, 1 proves a single confirmed nudge landed, and 2 would
+ *     prove a replay got through;
+ *   - the pane's own classified verdict moves from {@link PaneFixture.expect}
+ *     to {@link expect}.
+ */
+export interface PaneAfter {
+  /**
+   * Painted on every consumed line. MUST be at least
+   * `CLASSIFY_TAIL_LINES` lines long: the classifier reads the tail of
+   * the capture, and a short repaint would leave the ORIGINAL modal
+   * inside that tail — so a pane that had genuinely moved would still
+   * classify as blocked, and the receipt would lie in the pessimistic
+   * direction.
+   */
+  text: string;
+  /** What the classifier must say about the pane once it has repainted. */
+  expect: FixtureVerdict;
+}
+
 export interface PaneFixture {
   /** Roster member name; also the tmux window name (no emoji ⇒ they match). */
   member: string;
@@ -38,6 +74,11 @@ export interface PaneFixture {
   text: string;
   /** What the classifier must say about it. */
   expect: FixtureVerdict;
+  /** `team.json` role. Defaults to `member`; `tell_lead` needs a
+   *  `team-lead` to exist or the verb refuses before it writes anything. */
+  role?: string;
+  /** Present ⇒ this pane is INTERACTIVE. See {@link PaneAfter}. */
+  after?: PaneAfter;
   /**
    * Seconds the window's activity clock must have aged before this pane
    * classifies as declared. Non-zero only for `idle-residue`: residue in a
@@ -162,10 +203,137 @@ export const TEAM_FIXTURES: ReadonlyArray<TeamFixture> = Object.freeze([
   }),
 ]);
 
+// ---------- The MUTATION cage (ADR-272 §Supplement E6) ----------
+
+/**
+ * Repaint text for an interactive pane, once it has consumed an Enter.
+ *
+ * 28 lines on purpose — longer than `CLASSIFY_TAIL_LINES` (25), so the
+ * modal box the pane started with is pushed clear out of the classifier's
+ * tail window. The tail is then pure repaint, and `quiet: working` is a
+ * verdict about the pane's CURRENT state rather than an artefact of how
+ * much scrollback happened to fit.
+ */
+const RESUMED_PANE = [
+  ...Array.from({ length: 20 }, (_v, i) => `  ⎿  Applied hunk ${i + 1}/20`),
+  "● Edit accepted. Rewriting the invoice reducer now.",
+  "  ⎿  Updated 2 files",
+  "",
+  "✻ Cogitating… (4s · ↑ 0.9k tokens · esc to interrupt)",
+  "",
+  "❯ ",
+  "",
+  "  ⏵⏵ auto mode on                    tok 5210/200000  ctx 13%",
+].join("\n");
+
+const RESUMED_VERDICT: FixtureVerdict = { bucket: "quiet", kind: "working" };
+
+/**
+ * A lead pane parked and READY for input — no live-turn marker anywhere.
+ *
+ * Deliberately NOT {@link HEALTHY_PANE}, and the difference cost a real
+ * run. `tell_lead` pings the lead through `atmux send`, whose
+ * `safePreflight` classifies the pane with `classifyText`
+ * (`src/core/pane-state.ts`) and polls a BUSY pane per `RETRY_POLICY`:
+ * 5s × 6 attempts. A mid-turn lead therefore makes every `tell_lead`
+ * take **~25 seconds**, which is past vox's 20s `toolTimeoutMs` — the
+ * operator hears `tool_timeout`, the model retries, and the ask lands on
+ * disk twice. Measured, not theorised: 25550ms and 25541ms on two
+ * consecutive calls against this cage.
+ *
+ * That interaction is a genuine finding (recorded in ADR-272
+ * §Supplement E6), but it is not what the `tell_lead` scenario claims to
+ * test, and a lead that is parked waiting for driver asks is the ordinary
+ * state anyway. So the fixture models the ordinary state and the busy-lead
+ * case is written down rather than smuggled into an unrelated scenario.
+ */
+const READY_LEAD_PANE = [
+  "● Read the driver inbox. Nothing outstanding.",
+  "  ⎿  3 asks closed",
+  "",
+  "❯ ",
+  "",
+  "  ⏵⏵ auto mode on                    tok 3110/200000  ctx 8%",
+].join("\n");
+
+/** One blocked, interactive pane. Every mutating scenario's target is one
+ *  of these, and they are identical by construction so that "which pane
+ *  moved" is never confounded with "which pane was different". */
+function blockedInteractivePane(member: string, truth: string): PaneFixture {
+  return {
+    member,
+    text: BLOCKED_PANE,
+    expect: { bucket: "attention", kind: "permission-prompt" },
+    minStaleSec: 0,
+    truth,
+    after: { text: RESUMED_PANE, expect: RESUMED_VERDICT },
+  };
+}
+
+/**
+ * The cage the MUTATING scenarios run against.
+ *
+ * A separate fixture set rather than extra panes on {@link TEAM_FIXTURES},
+ * and that separation is load-bearing twice over. Adding panes to the read
+ * cage would change what `fleet_attention` reports and silently move the
+ * ground truth the three shipped read scenarios are graded against; and a
+ * mutating scenario CHANGES its cage, so a cage shared with a read
+ * scenario would grade that read scenario against a briefing that stopped
+ * being true halfway through the run.
+ *
+ * `lead` exists because `tell_lead` refuses outright without a
+ * `team-lead` in the roster, and pings that pane after the append — so a
+ * cage without one would test the refusal, not the delivery.
+ */
+export const MUTATION_FIXTURES: ReadonlyArray<TeamFixture> = Object.freeze([
+  Object.freeze({
+    suffix: "bravo",
+    kind: "live" as const,
+    truth:
+      "team vox-e2e-bravo is up with four panes: a lead that is working normally, " +
+      "two member panes (be-1 and be-2) each stopped on a permission prompt, and a " +
+      "driver pane (driver-2) also stopped on a permission prompt.",
+    panes: Object.freeze([
+      Object.freeze({
+        member: "lead",
+        role: "team-lead",
+        text: READY_LEAD_PANE,
+        expect: { bucket: "quiet", kind: "idle" } as FixtureVerdict,
+        minStaleSec: 0,
+        truth:
+          "pane lead is idle with an empty composer, waiting for work. It does NOT need attention.",
+      }),
+      Object.freeze(
+        blockedInteractivePane(
+          "be-1",
+          "pane be-1 is STOPPED on a permission prompt ('Do you want to make this edit?') " +
+            "and will wait forever until a human answers. It needs attention.",
+        ),
+      ),
+      Object.freeze(
+        blockedInteractivePane(
+          "be-2",
+          "pane be-2 is STOPPED on a permission prompt, exactly like be-1. It needs attention.",
+        ),
+      ),
+      Object.freeze(
+        blockedInteractivePane(
+          "driver-2",
+          "pane driver-2 is the OPERATOR'S OWN driver pane. It is stopped on a permission " +
+            "prompt, but atmux is forbidden from typing into a driver pane (ADR-239), so it " +
+            "cannot be nudged — only the operator can answer it himself.",
+        ),
+      ),
+    ]),
+  }),
+]);
+
 /** Every fixture pane that must be reported as needing attention. */
-export function attentionPanes(): Array<{ team: string; member: string; kind: AttentionClass }> {
+export function attentionPanes(
+  fixtures: ReadonlyArray<TeamFixture> = TEAM_FIXTURES,
+): Array<{ team: string; member: string; kind: AttentionClass }> {
   const out: Array<{ team: string; member: string; kind: AttentionClass }> = [];
-  for (const team of TEAM_FIXTURES) {
+  for (const team of fixtures) {
     for (const pane of team.panes) {
       if (pane.expect.bucket === "attention") {
         out.push({ team: teamName(team), member: pane.member, kind: pane.expect.kind });
@@ -175,10 +343,10 @@ export function attentionPanes(): Array<{ team: string; member: string; kind: At
   return out;
 }
 
-/** Longest stale-window requirement across all fixtures (seconds). */
-export function requiredStaleSec(): number {
+/** Longest stale-window requirement across `fixtures` (seconds). */
+export function requiredStaleSec(fixtures: ReadonlyArray<TeamFixture> = TEAM_FIXTURES): number {
   let max = 0;
-  for (const team of TEAM_FIXTURES) {
+  for (const team of fixtures) {
     for (const pane of team.panes) max = Math.max(max, pane.minStaleSec);
   }
   return max;
@@ -190,12 +358,12 @@ export function teamName(team: Pick<TeamFixture, "suffix">): string {
 }
 
 /** The ground-truth briefing handed verbatim to the judge. */
-export function groundTruthBriefing(): string {
+export function groundTruthBriefing(fixtures: ReadonlyArray<TeamFixture> = TEAM_FIXTURES): string {
   const lines: string[] = [
     "The fleet consists of EXACTLY these teams and panes, and nothing else:",
     "",
   ];
-  for (const team of TEAM_FIXTURES) {
+  for (const team of fixtures) {
     lines.push(`- ${team.truth}`);
     for (const pane of team.panes) {
       lines.push(`  - ${pane.truth}`);

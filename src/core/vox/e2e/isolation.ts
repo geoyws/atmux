@@ -41,6 +41,23 @@ export const COCKPIT_ENV = "ATMUX_COCKPIT_CONFIG";
  */
 export const FAKE_TEAM_PREFIX = "vox-e2e-";
 
+/**
+ * Env var that carries the readonly posture into a vox server.
+ *
+ * The gate refuses to see it SET when mutations are enabled. Not because
+ * it would win — `resolveVoxConfig` gives an explicit flag precedence over
+ * the env (`flags?.readonly ?? parseBooleanEnv(...)`), so the harness's
+ * in-process `readonly: false` flag decides its own server either way —
+ * but because an environment variable is the one carrier that OUTLIVES
+ * this decision. `process.env` is inherited by every child process, and
+ * the fleet verbs resolve config at CALL time. A `0` written here to
+ * "enable mutations for the harness" is a `0` that every later `atmux`
+ * invocation in the same process tree reads, including ones aimed at the
+ * real fleet. So the posture travels as a flag, and the gate makes the
+ * env carrier unrepresentable rather than merely unused.
+ */
+export const READONLY_ENV = "ATMUX_VOX_READONLY";
+
 /** One team entry as the gate needs to see it. */
 export interface IsolationTeam {
   name: string;
@@ -57,8 +74,26 @@ export interface AssertIsolatedInput {
   tempRoot: string;
   /** Teams the harness itself created — the expected set, exactly. */
   expectedTeams: ReadonlyArray<IsolationTeam>;
-  /** Team names the cockpit file actually lists (read back from disk). */
-  cockpitTeamNames: ReadonlyArray<string>;
+  /**
+   * Teams the cockpit file actually lists, read back from disk — NAME AND
+   * ROOT.
+   *
+   * The root travels with the name because the name alone was only half
+   * the check the gate claimed to be making. `loadCockpit` hands the fleet
+   * verbs each entry's `root`, and every team-scoped tool resolves its
+   * `--team-dir` from THAT — so a cockpit whose names matched the plan
+   * while a root pointed somewhere else would pass a name-only gate and
+   * then address whatever the root named. Harmless while the harness was
+   * read-only; not harmless once a redeemed `pane_nudge` types into
+   * whatever that root resolves to.
+   */
+  cockpitTeams: ReadonlyArray<{ name: string; root: string }>;
+  /**
+   * True when this cage's server will run with mutations ENABLED
+   * (`readonly: false`). Adds refusals rather than removing any: every
+   * check that runs for a read-only cage also runs for this one.
+   */
+  mutationsEnabled?: boolean;
   /** Environment to read `HOME` + `ATMUX_COCKPIT_CONFIG` from. */
   env: NodeJS.ProcessEnv;
   /** uid used to build the tmux socket path. Injected for tests. */
@@ -96,6 +131,8 @@ export interface IsolationReport {
   /** The socket the REAL fleet uses, shown so the reader can see ours differs. */
   defaultTmuxSocket: string;
   realTeamsChecked: number;
+  /** Echoed into the printed evidence — a mutating cage must be loud. */
+  mutationsEnabled: boolean;
 }
 
 function refuse(what: string, hint: string): never {
@@ -134,6 +171,7 @@ export function defaultTmuxSocketPath(env: NodeJS.ProcessEnv, uid: number): stri
  */
 export function assertIsolated(input: AssertIsolatedInput): IsolationReport {
   const { env, uid, tempRoot } = input;
+  const mutationsEnabled = input.mutationsEnabled === true;
 
   if (!isAbsolute(tempRoot) || tempRoot === "/" || tempRoot.length < 2) {
     refuse(
@@ -201,7 +239,7 @@ export function assertIsolated(input: AssertIsolatedInput): IsolationReport {
       );
     }
   }
-  const actual = [...input.cockpitTeamNames].sort();
+  const actual = input.cockpitTeams.map((t) => t.name).sort();
   const expected = [...expectedNames].sort();
   if (actual.length !== expected.length || actual.some((n, i) => n !== expected[i])) {
     refuse(
@@ -251,6 +289,45 @@ export function assertIsolated(input: AssertIsolatedInput): IsolationReport {
     teams.push({ name: team.name, root: team.root, socketPath });
   }
 
+  // --- 4b. …and every ROOT ON DISK is ours, and agrees with the plan ----
+  //
+  // Matching NAMES is only half the property this gate claimed. The fleet
+  // verbs address a team by the `root` the cockpit hands them — that is
+  // what becomes `--team-dir` — so a root is a live pointer while a name
+  // is only a label. A cockpit whose names matched the plan while a root
+  // underneath one of them pointed at the operator's checkout would have
+  // passed a name-only gate and then addressed that checkout.
+  //
+  // Checked twice over, because either alone is defeatable: against the
+  // temp root (they must be OURS) and against the plan (disk and plan
+  // must AGREE — two wrongs agreeing on a root outside the temp dir is
+  // caught by the first check, and a disk root the plan never chose is
+  // caught by the second).
+  const plannedRootByName = new Map(input.expectedTeams.map((t) => [t.name, resolve(t.root)]));
+  for (const entry of input.cockpitTeams) {
+    if (!isUnder(tempRoot, entry.root)) {
+      refuse(
+        `cockpit entry ${entry.name} has root outside the temp dir (${JSON.stringify(entry.root)})`,
+        `every cockpit root must live under ${tempRoot} — that root is what the fleet verbs address a team by`,
+      );
+    }
+    const planned = plannedRootByName.get(entry.name);
+    if (planned !== undefined && planned !== resolve(entry.root)) {
+      refuse(
+        `cockpit entry ${entry.name} points at ${entry.root} but the harness planned ${planned}`,
+        "the cockpit on disk and the plan must name the same root",
+      );
+    }
+  }
+
+  // --- 4c. Mutations travel as a FLAG, never as an env var --------------
+  if (mutationsEnabled && env[READONLY_ENV] !== undefined) {
+    refuse(
+      `${READONLY_ENV} is set (${JSON.stringify(env[READONLY_ENV])}) while mutations are enabled`,
+      "the harness enables mutations with an in-process flag on its own server; an env var is inherited by every child process and would outlive the cage that wanted it",
+    );
+  }
+
   // --- 5. Disjoint from the real fleet -----------------------------------
   const real = new Set(input.realTeamNames ?? []);
   const collisions = expectedNames.filter((n) => real.has(n));
@@ -268,6 +345,7 @@ export function assertIsolated(input: AssertIsolatedInput): IsolationReport {
     home,
     defaultTmuxSocket: defaultSocket,
     realTeamsChecked: real.size,
+    mutationsEnabled,
   };
 }
 
@@ -275,6 +353,7 @@ export function assertIsolated(input: AssertIsolatedInput): IsolationReport {
 export function formatIsolationReport(r: IsolationReport): string[] {
   const lines = [
     "isolation: PASS — the harness cannot reach the real fleet",
+    `  posture        ${r.mutationsEnabled ? "MUTATIONS ENABLED — readonly is OFF for this cage only" : "readonly"}`,
     `  temp root      ${r.tempRoot}`,
     `  HOME           ${r.home}`,
     `  cockpit        ${r.cockpitPath}`,

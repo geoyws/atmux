@@ -15,11 +15,24 @@ import {
   FAKE_TEAM_PREFIX,
   formatIsolationReport,
   isUnder,
+  READONLY_ENV,
 } from "../../../../../src/core/vox/e2e/isolation.ts";
 import { ConfigError } from "../../../../../src/errors.ts";
 
 const TEMP = "/tmp/atmux-vox-e2e-abc123";
 const HOME = `${TEMP}/home`;
+
+/**
+ * Cockpit entries as they would be READ BACK OFF DISK — name and root.
+ *
+ * The root is derived by the same rule `buildCagePlan` uses (suffix under
+ * `<temp>/`), so a well-formed fixture agrees with the plan by
+ * construction and the disagreement cases below have to be written
+ * deliberately rather than arrived at by accident.
+ */
+function cockpit(...names: string[]): Array<{ name: string; root: string }> {
+  return names.map((n) => ({ name: n, root: `${TEMP}/${n.replace(FAKE_TEAM_PREFIX, "")}` }));
+}
 
 function base(overrides: Partial<AssertIsolatedInput> = {}): AssertIsolatedInput {
   return {
@@ -28,7 +41,7 @@ function base(overrides: Partial<AssertIsolatedInput> = {}): AssertIsolatedInput
       { name: "vox-e2e-alpha", root: `${TEMP}/alpha`, tmuxTmpdir: `${TEMP}/sock/alpha` },
       { name: "vox-e2e-ghost", root: `${TEMP}/ghost`, tmuxTmpdir: `${TEMP}/sock/ghost` },
     ],
-    cockpitTeamNames: ["vox-e2e-alpha", "vox-e2e-ghost"],
+    cockpitTeams: cockpit("vox-e2e-alpha", "vox-e2e-ghost"),
     env: { HOME, [COCKPIT_ENV]: `${TEMP}/cockpit.json` },
     uid: 1000,
     realTeamNames: ["atmux", "unum", "px", "mx", "hig"],
@@ -70,14 +83,17 @@ describe("assertIsolated — the escape it must never allow", () => {
   });
 
   test("REFUSES when the cockpit lists a real team alongside the fakes", () => {
-    refuses(base({ cockpitTeamNames: ["vox-e2e-alpha", "vox-e2e-ghost", "px"] }), "cockpit lists");
+    refuses(
+      base({ cockpitTeams: cockpit("vox-e2e-alpha", "vox-e2e-ghost", "px") }),
+      "cockpit lists",
+    );
   });
 
   test("REFUSES when a fake team name collides with a real one", () => {
     refuses(
       base({
         expectedTeams: [{ name: "vox-e2e-px", root: `${TEMP}/px`, tmuxTmpdir: `${TEMP}/s` }],
-        cockpitTeamNames: ["vox-e2e-px"],
+        cockpitTeams: cockpit("vox-e2e-px"),
         realTeamNames: ["vox-e2e-px"],
       }),
       "collide with the operator's real fleet",
@@ -102,6 +118,97 @@ describe("assertIsolated — the escape it must never allow", () => {
 
   test("REFUSES a team whose socket lands outside the temp dir", () => {
     refuses(base({ resolveSocket: () => "/tmp/atmux-px/sock" }), "socket outside the temp dir");
+  });
+
+  test("REFUSES a cockpit whose NAMES match but whose ROOT points at the real checkout", () => {
+    // The hole a name-only gate left open, and the one that matters most
+    // once mutations are on: `loadCockpit` hands each entry's `root` to
+    // the fleet verbs as `--team-dir`, so this cockpit would have passed
+    // every name check and then addressed the operator's repository.
+    refuses(
+      base({
+        cockpitTeams: [
+          { name: "vox-e2e-alpha", root: "/root/work/src/atmux" },
+          { name: "vox-e2e-ghost", root: `${TEMP}/ghost` },
+        ],
+      }),
+      "has root outside the temp dir",
+    );
+  });
+
+  test("REFUSES a cockpit root that is ours but is NOT the one the plan chose", () => {
+    // Both roots are inside the sandbox, so the first check is satisfied.
+    // They still disagree, which means the file on disk is not the file
+    // the harness believes it wrote — and the harness's own assertions
+    // are all written against the plan.
+    refuses(
+      base({
+        cockpitTeams: [
+          { name: "vox-e2e-alpha", root: `${TEMP}/somewhere-else` },
+          { name: "vox-e2e-ghost", root: `${TEMP}/ghost` },
+        ],
+      }),
+      "but the harness planned",
+    );
+  });
+
+  test("REFUSES a cockpit entry with no root at all", () => {
+    // `extractTeamEntries` yields "" for an entry whose `root` is missing
+    // or not a string. Treated as "outside the temp root" rather than as
+    // "unset and therefore fine": a cockpit shape the gate cannot account
+    // for is exactly when it must not proceed.
+    refuses(
+      base({
+        cockpitTeams: [
+          { name: "vox-e2e-alpha", root: "" },
+          { name: "vox-e2e-ghost", root: `${TEMP}/ghost` },
+        ],
+      }),
+      "has root outside the temp dir",
+    );
+  });
+
+  test("REFUSES mutations while ATMUX_VOX_READONLY is set in the environment", () => {
+    // The readonly posture must travel as an in-process flag. An env var
+    // is inherited by every child process and read at CALL time by the
+    // fleet verbs, so it would outlive the cage that wanted it.
+    refuses(
+      base({
+        mutationsEnabled: true,
+        env: { HOME, [COCKPIT_ENV]: `${TEMP}/cockpit.json`, [READONLY_ENV]: "0" },
+      }),
+      `${READONLY_ENV} is set`,
+    );
+  });
+
+  test("REFUSES mutations even when ATMUX_VOX_READONLY says `1`", () => {
+    // The refusal is about the CARRIER, not about the value. A `1` here
+    // would be overridden by the flag anyway, and a gate that allowed the
+    // safe-looking value would be teaching the next reader that this
+    // variable is a legitimate way to express the posture.
+    refuses(
+      base({
+        mutationsEnabled: true,
+        env: { HOME, [COCKPIT_ENV]: `${TEMP}/cockpit.json`, [READONLY_ENV]: "1" },
+      }),
+      `${READONLY_ENV} is set`,
+    );
+  });
+
+  test("allows ATMUX_VOX_READONLY when mutations are NOT enabled", () => {
+    // The read-only cages are unaffected: the new refusal is additive,
+    // and an operator who exports the variable for his own server must
+    // still be able to run the read half.
+    const report = assertIsolated(
+      base({ env: { HOME, [COCKPIT_ENV]: `${TEMP}/cockpit.json`, [READONLY_ENV]: "1" } }),
+    );
+    expect(report.mutationsEnabled).toBe(false);
+  });
+
+  test("passes a mutating cage with no readonly env var, and says so loudly", () => {
+    const report = assertIsolated(base({ mutationsEnabled: true }));
+    expect(report.mutationsEnabled).toBe(true);
+    expect(formatIsolationReport(report).join("\n")).toContain("MUTATIONS ENABLED");
   });
 });
 
@@ -137,27 +244,27 @@ describe("assertIsolated — every other refusal branch", () => {
   test("refuses duplicate fake team names", () => {
     const t = { name: "vox-e2e-a", root: `${TEMP}/a`, tmuxTmpdir: `${TEMP}/s` };
     refuses(
-      base({ expectedTeams: [t, t], cockpitTeamNames: ["vox-e2e-a", "vox-e2e-a"] }),
+      base({ expectedTeams: [t, t], cockpitTeams: cockpit("vox-e2e-a", "vox-e2e-a") }),
       "duplicate fake team names",
     );
   });
 
   test("refuses when no fake teams were declared", () => {
-    refuses(base({ expectedTeams: [], cockpitTeamNames: [] }), "no fake teams declared");
+    refuses(base({ expectedTeams: [], cockpitTeams: [] }), "no fake teams declared");
   });
 
   test("refuses a team name without the fake prefix", () => {
     refuses(
       base({
         expectedTeams: [{ name: "alpha", root: `${TEMP}/a`, tmuxTmpdir: `${TEMP}/s` }],
-        cockpitTeamNames: ["alpha"],
+        cockpitTeams: cockpit("alpha"),
       }),
       `lacks the ${JSON.stringify(FAKE_TEAM_PREFIX)} prefix`,
     );
   });
 
   test("refuses when the cockpit is missing a declared team", () => {
-    refuses(base({ cockpitTeamNames: ["vox-e2e-alpha"] }), "cockpit lists");
+    refuses(base({ cockpitTeams: cockpit("vox-e2e-alpha") }), "cockpit lists");
   });
 
   test("refuses a team root outside the temp dir", () => {
@@ -166,7 +273,7 @@ describe("assertIsolated — every other refusal branch", () => {
         expectedTeams: [
           { name: "vox-e2e-alpha", root: "/root/work/src/atmux", tmuxTmpdir: `${TEMP}/s` },
         ],
-        cockpitTeamNames: ["vox-e2e-alpha"],
+        cockpitTeams: cockpit("vox-e2e-alpha"),
       }),
       "root outside the temp dir",
     );
@@ -176,7 +283,7 @@ describe("assertIsolated — every other refusal branch", () => {
     refuses(
       base({
         expectedTeams: [{ name: "vox-e2e-alpha", root: `${TEMP}/a`, tmuxTmpdir: null }],
-        cockpitTeamNames: ["vox-e2e-alpha"],
+        cockpitTeams: cockpit("vox-e2e-alpha"),
       }),
       "no tmuxTmpdir",
     );
@@ -186,7 +293,7 @@ describe("assertIsolated — every other refusal branch", () => {
     refuses(
       base({
         expectedTeams: [{ name: "vox-e2e-alpha", root: `${TEMP}/a`, tmuxTmpdir: "" }],
-        cockpitTeamNames: ["vox-e2e-alpha"],
+        cockpitTeams: cockpit("vox-e2e-alpha"),
       }),
       "no tmuxTmpdir",
     );
@@ -196,7 +303,7 @@ describe("assertIsolated — every other refusal branch", () => {
     refuses(
       base({
         expectedTeams: [{ name: "vox-e2e-alpha", root: `${TEMP}/a`, tmuxTmpdir: "/tmp" }],
-        cockpitTeamNames: ["vox-e2e-alpha"],
+        cockpitTeams: cockpit("vox-e2e-alpha"),
       }),
       "tmuxTmpdir is outside the temp dir",
     );

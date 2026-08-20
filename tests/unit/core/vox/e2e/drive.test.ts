@@ -364,10 +364,23 @@ describe("default seams", () => {
   });
 
   test("runs with the real clock, sleeper, and a silent default log", async () => {
+    // The fake answers `hello` with `ready` and the AUDIO with a
+    // transcript, which is the ordering this file's `fakeSocket` doc
+    // describes and the ordering a real server produces. It matters here
+    // and nowhere else in this file: with the default 45s collect window
+    // and the real sleeper, the run ends early only because a final
+    // arrives AFTER the turn was spoken — a final that predates the
+    // question is not an answer to it, and the multi-turn wait keys on
+    // exactly that distinction (see `TranscriptAssembler.finalCount`).
+    let answered = false;
     const { connect } = fakeSocket({
       onSend: (data, push) => {
-        if (typeof data !== "string") return;
-        push(READY);
+        if (typeof data === "string") {
+          push(READY);
+          return;
+        }
+        if (answered) return;
+        answered = true;
         push(JSON.stringify({ type: "transcript.assistant", id: "a", text: "ok", final: true }));
       },
     });

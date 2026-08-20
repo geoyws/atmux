@@ -603,7 +603,7 @@ The operator's fleet is 20+ live teams on the **default tmux socket**. The harne
 
 Point it at a real-looking cockpit and it aborts; `tests/unit/core/vox/e2e/isolation.test.ts` proves that rather than asserting the happy path.
 
-It also never touches `atmux.geoy.ws` — it binds its own server on an ephemeral loopback port (`port: 0`), read-only, with a per-run random token.
+It also never touches `atmux.geoy.ws` — it binds its own server on an ephemeral loopback port (`port: 0`) with a per-run random token. Read-only cages run read-only; the mutating scenarios ([ADR-272](adr/272-voice-operator-interface.md) §E6) get `readonly: false` as an in-process FLAG on their own cage's server, never as `ATMUX_VOX_READONLY` — `assertIsolated` refuses outright if that variable is set while mutations are enabled, because an env var is inherited by every child and would outlive the cage that wanted it.
 
 ### The residue wait
 
@@ -712,7 +712,7 @@ Two consequences worth stating rather than learning twice:
 
 ### What it does not prove
 
-It is not a phone: no microphone, no browser audio pipeline, no PWA. It exercises the read-only half of the catalog only — the mutating verbs are never invoked, and confirmation flows are untested here. And a passing run is evidence about these fixtures and these three questions, not a general claim about the assistant's judgement.
+It is not a phone: no microphone, no browser audio pipeline, no PWA — V-9…V-17 remain the only evidence for the client half. Since 2026-08-20 it does exercise the mutating half ([ADR-272](adr/272-voice-operator-interface.md) §E6): `pane_nudge` confirmed and declined, the driver-pane refusal, one messaging verb asserted on disk, and the D7 token replay — each in its own cage, each graded on **cage state** rather than on what the tool returned. A passing run is still evidence about these fixtures and these questions, not a general claim about the assistant's judgement.
 
 ## §7 — Verification checklist (V-1 … V-20)
 

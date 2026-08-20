@@ -31,9 +31,27 @@ export interface PannedPane {
   /** tmux window name — equals the roster member (no emoji ⇒ they match). */
   windowName: string;
   member: string;
+  /** `team.json` role for this member. */
+  role: string;
   /** File the fixture text is written to, then `cat`ed into the pane. */
   textPath: string;
   text: string;
+  /**
+   * Repaint text for an INTERACTIVE pane, and where it lives. Null for a
+   * read-only fixture pane.
+   */
+  afterPath: string | null;
+  afterText: string | null;
+  /**
+   * File the pane appends one line to per Enter it consumes. Null for a
+   * read-only fixture pane.
+   *
+   * This is the strongest cage evidence the harness has: it is written by
+   * the pane's own foreground process reading its own tty, so it cannot be
+   * produced by a tool returning `ok`, by a summary the model spoke, or by
+   * anything the harness itself does.
+   */
+  receiptPath: string | null;
   /** Command tmux runs in the window. */
   shellCommand: string;
 }
@@ -97,15 +115,55 @@ export function buildCagePlan(opts: {
 
     const panes: PannedPane[] = fixture.panes.map((pane) => {
       const textPath = join(textDir, `${pane.member}.txt`);
+      const role = pane.role ?? "member";
+      if (pane.after === undefined) {
+        return {
+          windowName: pane.member,
+          member: pane.member,
+          role,
+          textPath,
+          text: pane.text,
+          afterPath: null,
+          afterText: null,
+          receiptPath: null,
+          // `exec` replaces the shell so `pane_current_command` reads `sleep`
+          // rather than `sh` — the classifier treats a bare shell as evidence
+          // the agent TUI died, which would misclassify every fixture pane.
+          shellCommand: `cat ${shellQuote(textPath)}; exec sleep ${HOLD_SECONDS}`,
+        };
+      }
+      const afterPath = join(textDir, `${pane.member}.after.txt`);
+      const receiptPath = join(textDir, `${pane.member}.enters`);
       return {
         windowName: pane.member,
         member: pane.member,
+        role,
         textPath,
         text: pane.text,
-        // `exec` replaces the shell so `pane_current_command` reads `sleep`
-        // rather than `sh` — the classifier treats a bare shell as evidence
-        // the agent TUI died, which would misclassify every fixture pane.
-        shellCommand: `cat ${shellQuote(textPath)}; exec sleep ${HOLD_SECONDS}`,
+        afterPath,
+        afterText: pane.after.text,
+        receiptPath,
+        // The READ LOOP (ADR-272 §Supplement E6). One appended line per
+        // line consumed from the tty, then a repaint.
+        //
+        // `pane_current_command` stays `sh` for the life of this pane,
+        // which the classifier tolerates here for a reason worth naming:
+        // the shell-command check is the LAST rung of its ladder, reached
+        // only when neither a modal nor a live-turn marker fired. Before
+        // the nudge the modal fires; after it the repaint's live-turn
+        // marker fires. Neither state ever reaches the rung that would
+        // read `sh` as a dead TUI.
+        //
+        // The trailing `exec sleep` is unreachable while stdin stays open
+        // and exists only so a closed tty parks the pane instead of
+        // exiting it — an exited pane classifies as `crashed`, which
+        // would turn an unrelated teardown race into a scenario failure.
+        shellCommand:
+          `cat ${shellQuote(textPath)}; ` +
+          `while IFS= read -r _line; do ` +
+          `printf 'enter\\n' >> ${shellQuote(receiptPath)}; ` +
+          `cat ${shellQuote(afterPath)}; ` +
+          `done; exec sleep ${HOLD_SECONDS}`,
       };
     });
 
@@ -114,7 +172,7 @@ export function buildCagePlan(opts: {
         name,
         description: "throwaway cage for the voice e2e harness — NOT a real team",
         tmuxTmpdir,
-        members: fixture.panes.map((p) => ({ name: p.member, role: "member" })),
+        members: panes.map((p) => ({ name: p.member, role: p.role })),
       },
       null,
       2,
@@ -161,7 +219,14 @@ export function plannedPaths(plan: CagePlan): string[] {
     paths.push(t.root, t.atmuxDir, t.teamJsonPath, t.anchorPath, t.tmuxTmpdir, t.socketDir);
     paths.push(t.textDir);
     paths.push(t.socketPath);
-    for (const p of t.panes) paths.push(p.textPath);
+    for (const p of t.panes) {
+      paths.push(p.textPath);
+      if (p.afterPath !== null) paths.push(p.afterPath);
+      // The receipt is written by the PANE, not by the plan — but it is
+      // still a path this cage causes to exist, so the "nothing escapes
+      // the temp root" assertion has to see it.
+      if (p.receiptPath !== null) paths.push(p.receiptPath);
+    }
   }
   return paths;
 }
@@ -207,7 +272,16 @@ export async function materializeCage(
     // creating explicitly — writing into a missing directory is an ENOENT
     // that only shows up on a real filesystem.
     if (team.panes.length > 0) await io.mkdir(team.textDir);
-    for (const pane of team.panes) await io.writeFile(pane.textPath, pane.text);
+    for (const pane of team.panes) {
+      await io.writeFile(pane.textPath, pane.text);
+      if (pane.afterPath !== null && pane.afterText !== null) {
+        await io.writeFile(pane.afterPath, pane.afterText);
+      }
+      // The receipt file is deliberately NOT created here. Its ABSENCE is
+      // the assertion the decline and driver-refusal scenarios rest on,
+      // and a file pre-created empty would make "absent" and "present but
+      // empty" two spellings of the same evidence.
+    }
   }
 
   await io.writeFile(plan.cockpitPath, plan.cockpitJson);

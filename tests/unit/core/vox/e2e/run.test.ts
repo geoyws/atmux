@@ -5,21 +5,24 @@
 import { describe, expect, test } from "bun:test";
 import type { TmuxNamespace } from "../../../../../src/abstractions/tmux.ts";
 import type { DriveResult } from "../../../../../src/core/vox/e2e/drive.ts";
-import { COCKPIT_ENV } from "../../../../../src/core/vox/e2e/isolation.ts";
+import { MUTATION_FIXTURES, TEAM_FIXTURES } from "../../../../../src/core/vox/e2e/fixtures.ts";
+import { COCKPIT_ENV, READONLY_ENV } from "../../../../../src/core/vox/e2e/isolation.ts";
 import type { JudgeOutcome } from "../../../../../src/core/vox/e2e/judge.ts";
 import {
   assertKillableSocket,
   computeStaleWaitMs,
   criteriaFor,
   decideScenario,
+  extractTeamEntries,
   extractTeamNames,
   formatHarnessResult,
+  groupScenarios,
   HARNESS_TOKEN_MIN,
   type HarnessDeps,
   type HarnessIo,
   runHarness,
 } from "../../../../../src/core/vox/e2e/run.ts";
-import { SCENARIOS, type Scenario } from "../../../../../src/core/vox/e2e/scenarios.ts";
+import { READ_CAGE, SCENARIOS, type Scenario } from "../../../../../src/core/vox/e2e/scenarios.ts";
 import { ConfigError } from "../../../../../src/errors.ts";
 
 const TOKEN = "a".repeat(HARNESS_TOKEN_MIN);
@@ -229,7 +232,7 @@ describe("runHarness — ordering is the safety property", () => {
     const h = harness();
     h.deps.env = {};
     const r = await runHarness(h.deps);
-    expect(r.isolation.realTeamsChecked).toBe(0);
+    expect(r.isolations[0]?.realTeamsChecked).toBe(0);
   });
 
   test("waits for the residue fixture to age before asking", async () => {
@@ -471,23 +474,277 @@ describe("decideScenario", () => {
   });
 });
 
+describe("groupScenarios — one cage per group", () => {
+  const s = (over: Partial<Scenario>): Scenario => ({
+    id: "x",
+    utterance: "u",
+    expectAnyTool: [],
+    criteria: [],
+    ...over,
+  });
+
+  test("read scenarios collapse into one group", () => {
+    const g = groupScenarios([s({ id: "a" }), s({ id: "b" })]);
+    expect(g.length).toBe(1);
+    expect(g[0]?.key).toBe(READ_CAGE);
+    expect(g[0]?.mutations).toBe(false);
+  });
+
+  test("each mutating cage key gets its own group, in FIRST-SEEN order", () => {
+    // Not sorted: the read cage is the expensive one to build (its residue
+    // fixture has to age), so re-ordering would silently change the cost
+    // of a run.
+    const g = groupScenarios([
+      s({ id: "m1", cageKey: "m-one", mutations: true, fixtures: MUTATION_FIXTURES }),
+      s({ id: "r1" }),
+      s({ id: "m2", cageKey: "m-two", mutations: true, fixtures: MUTATION_FIXTURES }),
+    ]);
+    expect(g.map((x) => x.key)).toEqual(["m-one", READ_CAGE, "m-two"]);
+  });
+
+  test("scenarios sharing a key share a cage", () => {
+    const g = groupScenarios([
+      s({ id: "a", cageKey: "shared", mutations: true, fixtures: MUTATION_FIXTURES }),
+      s({ id: "b", cageKey: "shared", mutations: true, fixtures: MUTATION_FIXTURES }),
+    ]);
+    expect(g.length).toBe(1);
+    expect(g[0]?.scenarios.map((x) => x.id)).toEqual(["a", "b"]);
+  });
+
+  test("REFUSES a cage claimed at two different postures", () => {
+    // Silently resolving this would mean a scenario expecting mutations
+    // ran read-only (or, worse, the reverse) with nothing in the output
+    // saying which.
+    expect(() =>
+      groupScenarios([
+        s({ id: "a", cageKey: "k", mutations: true, fixtures: MUTATION_FIXTURES }),
+        s({ id: "b", cageKey: "k" }),
+      ]),
+    ).toThrow("different mutation postures");
+  });
+
+  test("REFUSES a cage claimed with two different fixture sets", () => {
+    expect(() =>
+      groupScenarios([
+        s({ id: "a", cageKey: "k", fixtures: MUTATION_FIXTURES }),
+        s({ id: "b", cageKey: "k", fixtures: TEAM_FIXTURES }),
+      ]),
+    ).toThrow("different fixtures");
+  });
+
+  test("the shipped table groups into the read cage plus four mutation cages", () => {
+    expect(groupScenarios(SCENARIOS).map((g) => g.key)).toEqual([
+      READ_CAGE,
+      "mut-nudge",
+      "mut-refuse",
+      "mut-tell",
+      "mut-replay",
+    ]);
+  });
+});
+
+describe("runHarness — the mutating cages", () => {
+  const mutScenario = SCENARIOS.find((x) => x.id === "nudge_confirmed") as Scenario;
+  const protoScenario = SCENARIOS.find((x) => x.id === "confirm_replay") as Scenario;
+
+  test("a mutating cage starts its server with readonly FALSE, and a read cage does not", async () => {
+    const seen: boolean[] = [];
+    const h = harness({
+      scenarios: [SCENARIOS[0] as Scenario, mutScenario],
+      startServer: async (o) => {
+        seen.push(o.readonly);
+        return { url: "ws://127.0.0.1:1/ws", stop: () => {} };
+      },
+    });
+    await runHarness(h.deps);
+    expect(seen).toEqual([true, false]);
+  });
+
+  test("each cage gets its own gate report, its own root, and its own cockpit", async () => {
+    const cockpits: string[] = [];
+    const h = harness({
+      scenarios: [SCENARIOS[0] as Scenario, mutScenario],
+      startServer: async (o) => {
+        cockpits.push(o.cockpitPath);
+        return { url: "ws://127.0.0.1:1/ws", stop: () => {} };
+      },
+    });
+    const r = await runHarness(h.deps);
+    expect(r.isolations.length).toBe(2);
+    expect(r.isolations[0]?.mutationsEnabled).toBe(false);
+    expect(r.isolations[1]?.mutationsEnabled).toBe(true);
+    expect(cockpits[0]).not.toBe(cockpits[1]);
+    expect(cockpits[0]).toContain("cage-read");
+    expect(cockpits[1]).toContain("cage-mut-nudge");
+  });
+
+  test("ATMUX_VOX_READONLY in the environment REFUSES the mutating cage", async () => {
+    // The containment argument for the whole mutating half: the posture
+    // travels as an in-process flag, never as an inheritable env var.
+    const h = harness({ scenarios: [mutScenario] });
+    h.deps.env[READONLY_ENV] = "0";
+    await expect(runHarness(h.deps)).rejects.toBeInstanceOf(ConfigError);
+    expect(h.events).not.toContain("startServer");
+  });
+
+  test("cage postconditions decide a mutating scenario, whatever the judge said", async () => {
+    // The judge passes; the cage says no Enter arrived. The scenario must
+    // fail, and the failure must name the cage assertion.
+    const h = harness({
+      scenarios: [mutScenario],
+      drive: async () => okDrive({ toolNames: ["pane_nudge"] }),
+    });
+    const r = await runHarness(h.deps);
+    expect(r.pass).toBe(false);
+    expect(r.scenarios[0]?.failure).toContain("cage: enters:vox-e2e-bravo/be-1=1");
+    expect(r.scenarios[0]?.postconditions.length).toBeGreaterThan(0);
+  });
+
+  test("a multi-turn scenario synthesizes and speaks every turn", async () => {
+    const spoken: string[] = [];
+    let pcms = 0;
+    const h = harness({
+      scenarios: [mutScenario],
+      tts: async (req) => {
+        spoken.push(req.text);
+        return { pcm: new Uint8Array(4), durationMs: 1, cached: true, path: "p" };
+      },
+      drive: async (d) => {
+        pcms = d.args.pcms.length;
+        return okDrive({ toolNames: ["pane_nudge"] });
+      },
+    });
+    await runHarness(h.deps);
+    expect(spoken.length).toBe(2);
+    expect(spoken[1]).toContain("Yes");
+    expect(pcms).toBe(2);
+  });
+
+  test("the judge is given both turns, labelled, and the MUTATION cage's ground truth", async () => {
+    let utterance = "";
+    let groundTruth = "";
+    const h = harness({
+      scenarios: [mutScenario],
+      drive: async () => okDrive({ toolNames: ["pane_nudge"] }),
+      judge: async (input) => {
+        utterance = input.utterance;
+        groundTruth = input.groundTruth;
+        return okJudge();
+      },
+    });
+    await runHarness(h.deps);
+    expect(utterance).toContain("operator turn 1:");
+    expect(utterance).toContain("operator turn 2:");
+    expect(groundTruth).toContain("vox-e2e-bravo");
+    expect(groundTruth).not.toContain("vox-e2e-alpha");
+  });
+
+  test("a protocol scenario runs its own assertions and never speaks", async () => {
+    const h = harness({
+      scenarios: [protoScenario],
+      startServer: async () => ({
+        url: "ws://127.0.0.1:1/ws",
+        stop: () => {},
+        bridge: {
+          executeTool: async () => ({ envelopeJson: '{"ok":false,"error":"verb_failed"}' }),
+          health: () => ({
+            wedged: false,
+            stuckTool: null,
+            heldMs: null,
+            queueDepth: 0,
+            wedgeThresholdMs: 0,
+          }),
+        },
+      }),
+    });
+    const r = await runHarness(h.deps);
+    expect(h.events).not.toContain("tts");
+    expect(h.events).not.toContain("drive");
+    expect(h.events).not.toContain("judge");
+    expect(r.scenarios[0]?.drive).toBeNull();
+    expect(r.scenarios[0]?.pass).toBe(false);
+  });
+
+  test("a protocol scenario FAILS when the server exposed no bridge", async () => {
+    const h = harness({ scenarios: [protoScenario] });
+    const r = await runHarness(h.deps);
+    expect(r.pass).toBe(false);
+    expect(r.scenarios[0]?.postconditions[0]?.detail).toContain("no tool bridge");
+  });
+});
+
+describe("extractTeamEntries", () => {
+  test("carries each entry's ROOT, which is what the fleet verbs address", () => {
+    const raw = JSON.stringify({ sessions: [{ type: "team", name: "a", root: "/x/a" }] });
+    expect(extractTeamEntries(raw)).toEqual([{ name: "a", root: "/x/a" }]);
+  });
+
+  test("an entry with no root yields an empty one, which the gate refuses", () => {
+    // Fails closed: a cockpit shape the gate cannot account for is exactly
+    // when it must not proceed.
+    expect(extractTeamEntries(JSON.stringify({ teams: [{ name: "a" }] }))).toEqual([
+      { name: "a", root: "" },
+    ]);
+  });
+
+  test("an entry whose root is not a string is treated the same way", () => {
+    expect(extractTeamEntries(JSON.stringify({ teams: [{ name: "a", root: 7 }] }))).toEqual([
+      { name: "a", root: "" },
+    ]);
+  });
+});
+
+describe("decideScenario — the cage gate", () => {
+  const scenario = SCENARIOS[0] as Scenario;
+  const gate = { ok: true, expected: [], invoked: [], reason: null };
+  const proto = SCENARIOS.find((x) => x.id === "confirm_replay") as Scenario;
+
+  test("a failing postcondition fails a scenario the judge passed", () => {
+    const o = decideScenario(scenario, okDrive(), gate, okJudge(), [
+      { id: "enters:x=0", pass: false, detail: "consumed 1" },
+    ]);
+    expect(o.pass).toBe(false);
+    expect(o.failure).toContain("cage: enters:x=0");
+  });
+
+  test("passing postconditions leave a passing scenario passing", () => {
+    const o = decideScenario(scenario, okDrive(), gate, okJudge(), [
+      { id: "enters:x=0", pass: true, detail: "consumed 0" },
+    ]);
+    expect(o.pass).toBe(true);
+  });
+
+  test("a protocol scenario is decided by its assertions alone", () => {
+    expect(
+      decideScenario(proto, null, gate, null, [{ id: "a", pass: true, detail: "" }]).pass,
+    ).toBe(true);
+    expect(
+      decideScenario(proto, null, gate, null, [{ id: "a", pass: false, detail: "" }]).failure,
+    ).toContain("cage: a");
+  });
+
+  test("a protocol scenario that produced NO assertions fails rather than passing vacuously", () => {
+    expect(decideScenario(proto, null, gate, null, []).failure).toContain("no assertions at all");
+  });
+
+  test("a spoken scenario with no drive at all fails", () => {
+    expect(decideScenario(scenario, null, gate, null, []).failure).toContain(
+      "no session was driven",
+    );
+  });
+});
+
 describe("formatHarnessResult", () => {
   test("prints a per-scenario line and the overall verdict", () => {
     const text = formatHarnessResult({
-      isolation: {
-        cockpitPath: "",
-        tempRoot: "",
-        teams: [],
-        home: "",
-        defaultTmuxSocket: "",
-        realTeamsChecked: 0,
-      },
+      isolations: [],
       scenarios: [
         {
           scenario: SCENARIOS[0] as Scenario,
           drive: okDrive(),
           toolGate: { ok: true, expected: [], invoked: [], reason: null },
           judge: okJudge(),
+          postconditions: [],
           pass: true,
           failure: null,
         },
@@ -496,6 +753,7 @@ describe("formatHarnessResult", () => {
           drive: okDrive(),
           toolGate: { ok: true, expected: [], invoked: [], reason: null },
           judge: okJudge(),
+          postconditions: [],
           pass: false,
           failure: "judge: nope",
         },

@@ -15,7 +15,7 @@ import {
   plannedPaths,
   shellQuote,
 } from "../../../../../src/core/vox/e2e/cage.ts";
-import { TEAM_FIXTURES } from "../../../../../src/core/vox/e2e/fixtures.ts";
+import { MUTATION_FIXTURES, TEAM_FIXTURES } from "../../../../../src/core/vox/e2e/fixtures.ts";
 import { isUnder } from "../../../../../src/core/vox/e2e/isolation.ts";
 
 const TEMP = "/tmp/atmux-vox-e2e-plan";
@@ -275,6 +275,62 @@ describe("destroyCage", () => {
     const { io } = fakeIo();
     const { log: _drop, ...noLog } = io;
     await destroyCage(plan(), noLog, () => {});
+  });
+});
+
+describe("the INTERACTIVE panes the mutating scenarios need", () => {
+  function mutPlan() {
+    return buildCagePlan({ tempRoot: TEMP, uid: UID, fixtures: MUTATION_FIXTURES });
+  }
+
+  test("a pane with an `after` runs a read loop that records every Enter", () => {
+    const pane = mutPlan().teams[0]?.panes.find((p) => p.member === "be-1");
+    expect(pane?.receiptPath).toBe(`${TEMP}/panes/vox-e2e-bravo/be-1.enters`);
+    expect(pane?.afterPath).toBe(`${TEMP}/panes/vox-e2e-bravo/be-1.after.txt`);
+    // The receipt append must precede the repaint: the count is the
+    // evidence, and a repaint that could happen without one would let a
+    // pane look nudged while proving nothing was consumed.
+    const cmd = pane?.shellCommand ?? "";
+    expect(cmd).toContain("while IFS= read -r _line");
+    expect(cmd.indexOf("be-1.enters")).toBeLessThan(cmd.indexOf("be-1.after.txt"));
+  });
+
+  test("a pane with no `after` is unchanged — plain cat then exec sleep", () => {
+    const lead = mutPlan().teams[0]?.panes.find((p) => p.member === "lead");
+    expect(lead?.receiptPath).toBeNull();
+    expect(lead?.afterPath).toBeNull();
+    expect(lead?.shellCommand).toContain("exec sleep");
+    expect(lead?.shellCommand).not.toContain("read -r");
+  });
+
+  test("the roster carries each pane's declared role, so tell_lead finds a lead", () => {
+    const json = JSON.parse(mutPlan().teams[0]?.teamJson ?? "{}") as {
+      members: Array<{ name: string; role: string }>;
+    };
+    expect(json.members.find((m) => m.name === "lead")?.role).toBe("team-lead");
+    expect(json.members.find((m) => m.name === "be-1")?.role).toBe("member");
+  });
+
+  test("every interactive path — after text AND receipt — stays under the temp root", () => {
+    // The receipt is written by the PANE rather than by the plan, so it
+    // would be the easiest path to leave out of this assertion and the
+    // only one written by a process the harness does not control.
+    for (const p of plannedPaths(mutPlan())) expect(isUnder(TEMP, p)).toBe(true);
+    const paths = plannedPaths(mutPlan());
+    expect(paths.some((p) => p.endsWith("be-1.enters"))).toBe(true);
+    expect(paths.some((p) => p.endsWith("be-1.after.txt"))).toBe(true);
+  });
+
+  test("materializeCage writes the repaint text but NOT the receipt", () => {
+    // Absence is the assertion the decline and refusal scenarios rest on.
+    // A pre-created empty receipt would make "absent" and "present but
+    // empty" two spellings of the same evidence.
+    const { io, files } = fakeIo();
+    const p = mutPlan();
+    return materializeCage(p, io).then(() => {
+      expect(files.has(`${TEMP}/panes/vox-e2e-bravo/be-1.after.txt`)).toBe(true);
+      expect(files.has(`${TEMP}/panes/vox-e2e-bravo/be-1.enters`)).toBe(false);
+    });
   });
 });
 

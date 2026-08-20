@@ -50,6 +50,7 @@ import {
   runHarness,
   type ServerHandle,
 } from "../src/core/vox/e2e/run.ts";
+import { formatPostconditions } from "../src/core/vox/e2e/assertions.ts";
 import { formatOutcome } from "../src/core/vox/e2e/judge.ts";
 import { formatDriveResult } from "../src/core/vox/e2e/drive.ts";
 import { SCENARIOS, scenarioById, scenarioIds } from "../src/core/vox/e2e/scenarios.ts";
@@ -189,6 +190,7 @@ async function main(argv: ReadonlyArray<string>): Promise<number> {
     cockpitPath: string;
     home: string;
     token: string;
+    readonly: boolean;
   }): Promise<ServerHandle> => {
     // The env is already pinned by `runHarness`; assert rather than re-pin,
     // so a future reordering surfaces here instead of silently reading the
@@ -213,10 +215,19 @@ async function main(argv: ReadonlyArray<string>): Promise<number> {
     // the driver-scoped fleet verbs refuse and every scenario fails for a
     // reason that has nothing to do with the model.
     applyDriverScope(process.env);
+    // ADR-272 §Supplement E6 — the readonly posture arrives as a FLAG.
+    //
+    // `resolveVoxConfig` reads `flags?.readonly ?? parseBooleanEnv(env)`,
+    // so this decides the server outright and `ATMUX_VOX_READONLY` is
+    // never written. That is the whole containment argument for the
+    // mutating scenarios: an env var would be inherited by every child
+    // process and would outlive the cage that wanted it, whereas this
+    // value dies with the `VoxServeDeps` built from it. `assertIsolated`
+    // has already refused to proceed if that variable is set at all while
+    // mutations are enabled.
     const deps = await buildVoxDeps({
       env: process.env,
-      // Port 0 ⇒ the kernel picks a free one. Never the real deployment.
-      flags: { port, host: "127.0.0.1", readonly: true },
+      flags: { port, host: "127.0.0.1", readonly: opts.readonly },
     });
     const handle = startVoxServer({ deps });
     return {
@@ -224,6 +235,9 @@ async function main(argv: ReadonlyArray<string>): Promise<number> {
       stop: () => {
         handle.stop();
       },
+      // The RUNNING server's bridge, so a protocol scenario drives the
+      // confirm store the phone would reach rather than one of its own.
+      bridge: deps.bridge,
     };
   };
 
@@ -245,10 +259,21 @@ async function main(argv: ReadonlyArray<string>): Promise<number> {
 
   for (const s of result.scenarios) {
     process.stderr.write(`\n=== ${s.scenario.id} ===\n`);
-    process.stderr.write(`${formatDriveResult(s.drive)}\n`);
-    process.stderr.write(`transcript: ${s.drive.transcript}\n`);
+    if (s.drive !== null) {
+      process.stderr.write(`${formatDriveResult(s.drive)}\n`);
+      process.stderr.write(`transcript: ${s.drive.transcript}\n`);
+    }
     if (s.judge !== null) {
       for (const line of formatOutcome(s.judge)) process.stderr.write(`${line}\n`);
+    }
+    // The cage evidence, printed for passes as well as failures: a
+    // negative assertion nobody can see the evidence for is a negative
+    // assertion nobody should believe.
+    if (s.postconditions.length > 0) {
+      process.stderr.write("cage assertions:\n");
+      for (const line of formatPostconditions(s.postconditions)) {
+        process.stderr.write(`${line}\n`);
+      }
     }
   }
   for (const line of formatHarnessResult(result)) process.stderr.write(`${line}\n`);

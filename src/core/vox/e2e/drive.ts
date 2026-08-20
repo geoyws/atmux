@@ -37,12 +37,47 @@ export const READY_TIMEOUT_MS = 20_000;
  */
 export const QUIET_AFTER_FINAL_MS = 2_500;
 
+/**
+ * How long to wait for the assistant to finish ONE turn of a multi-turn
+ * conversation before speaking the next.
+ *
+ * Shorter than {@link DEFAULT_COLLECT_MS} because a turn that has not
+ * produced a final transcript inside this window has not merely been
+ * slow: the confirm round trip the multi-turn scenarios exist to exercise
+ * is a tool call plus one short spoken preview, and the loop exits the
+ * moment that lands. Speaking the next turn over a still-talking
+ * assistant would trigger barge-in and test a different thing entirely.
+ */
+export const TURN_TIMEOUT_MS = 60_000;
+
 export interface DriveArgs {
   url: string;
   token: string;
   /** PCM16 mono 24 kHz — the operator's utterance. */
   pcm: Uint8Array;
   collectMs?: number;
+}
+
+/**
+ * A CONVERSATION on ONE socket (ADR-272 §Supplement E6).
+ *
+ * The confirm round trip cannot be driven as two independent sessions,
+ * and that is a property of D7 rather than a convenience: the token is
+ * `sha256(tool ‖ canonicalJson(args) ‖ sessionId)`, and a fresh socket is
+ * a fresh `sessionId`. Reconnecting to say "yes" would present a token
+ * bound to a session that no longer exists — which the store would
+ * correctly refuse, so the scenario would pass for the wrong reason and
+ * would keep passing if the gate broke.
+ */
+export interface DriveTurnsArgs {
+  url: string;
+  token: string;
+  /** One PCM16 24 kHz buffer per operator turn, spoken in order. */
+  pcms: ReadonlyArray<Uint8Array>;
+  /** Overall budget across every turn. */
+  collectMs?: number;
+  /** Per-turn budget. Defaults to {@link TURN_TIMEOUT_MS}. */
+  turnTimeoutMs?: number;
 }
 
 export interface ToolCall {
@@ -74,6 +109,14 @@ export interface DriveResult {
 
 export interface DriveDeps {
   args: DriveArgs;
+  connect?: (url: string, opts: ConnectWebSocketOpts) => Promise<WsHandle>;
+  sleep?: (ms: number) => Promise<void>;
+  clock?: () => number;
+  log?: (line: string) => void;
+}
+
+export interface DriveTurnsDeps {
+  args: DriveTurnsArgs;
   connect?: (url: string, opts: ConnectWebSocketOpts) => Promise<WsHandle>;
   sleep?: (ms: number) => Promise<void>;
   clock?: () => number;
@@ -136,8 +179,22 @@ export class TranscriptAssembler {
 
   /** True once at least one assistant utterance has been finalized. */
   hasFinal(): boolean {
-    for (const v of this.byId.values()) if (v.final) return true;
-    return false;
+    return this.finalCount() > 0;
+  }
+
+  /**
+   * How many assistant utterances have been finalized so far.
+   *
+   * `hasFinal()` is sticky, which is right for a single-turn drive and
+   * wrong for a conversation: after turn 1 it is permanently true, so a
+   * turn-2 wait keyed on it would fall through instantly and speak over
+   * the assistant. The COUNT lets each turn wait for a final that is
+   * new since that turn started.
+   */
+  finalCount(): number {
+    let n = 0;
+    for (const v of this.byId.values()) if (v.final) n += 1;
+    return n;
   }
 }
 
@@ -150,6 +207,30 @@ export class TranscriptAssembler {
  * `ok: false` with `failure` set.
  */
 export async function driveUtterance(deps: DriveDeps): Promise<DriveResult> {
+  const turnsDeps: DriveTurnsDeps = {
+    args: {
+      url: deps.args.url,
+      token: deps.args.token,
+      pcms: [deps.args.pcm],
+      ...(deps.args.collectMs !== undefined ? { collectMs: deps.args.collectMs } : {}),
+    },
+    ...(deps.connect !== undefined ? { connect: deps.connect } : {}),
+    ...(deps.sleep !== undefined ? { sleep: deps.sleep } : {}),
+    ...(deps.clock !== undefined ? { clock: deps.clock } : {}),
+    ...(deps.log !== undefined ? { log: deps.log } : {}),
+  };
+  return await driveTurns(turnsDeps);
+}
+
+/**
+ * Run a whole conversation on ONE socket: connect → `hello` → await
+ * `ready` → for each turn, stream the speech at real-time pace, send
+ * `TURN_END`, and wait for the assistant to finish → collect → close.
+ *
+ * Never throws on a protocol outcome; a connect failure comes back as
+ * `ok: false` with `failure` set.
+ */
+export async function driveTurns(deps: DriveTurnsDeps): Promise<DriveResult> {
   const { args } = deps;
   const connect =
     deps.connect ??
@@ -236,22 +317,50 @@ export async function driveUtterance(deps: DriveDeps): Promise<DriveResult> {
     return finish(result, assembler);
   }
 
-  const frames = toneFrames(args.pcm);
-  log(`streaming ${frames.length} frames (${args.pcm.byteLength} B PCM16) at real-time pace`);
-  for (const f of frames) {
-    if (result.closeCode !== null) break;
-    ws.send(f);
-    result.uplinkFrames += 1;
-    await sleep(VOX_FRAME_MS);
-  }
+  const turnTimeoutMs = args.turnTimeoutMs ?? TURN_TIMEOUT_MS;
+  const overallDeadline = clock() + collectMs;
+  // Uplink sequence numbers continue ACROSS turns. The server does not
+  // validate them today, so this buys nothing at runtime — it is here
+  // because a harness that restarts the counter every turn is a harness
+  // that would stop matching the client the moment the server started
+  // checking, and the whole point of reusing `toneFrames` is that the
+  // harness's uplink cannot drift from the phone's.
+  let seq = 0;
 
-  // Collect until the assistant has finalized AND gone quiet, or the window
-  // elapses. Waiting the full window on every run would multiply provider
-  // minutes across scenarios for no extra evidence.
-  const deadline = clock() + collectMs;
-  while (result.closeCode === null && clock() < deadline) {
-    if (assembler.hasFinal() && clock() - lastFrameAtMs > QUIET_AFTER_FINAL_MS) break;
-    await sleep(VOX_FRAME_MS);
+  for (let turn = 0; turn < args.pcms.length; turn += 1) {
+    if (result.closeCode !== null) break;
+    const pcm = args.pcms[turn] ?? new Uint8Array(0);
+    const frames = toneFrames(pcm, seq);
+    seq = (seq + frames.length) & 0xffff;
+    log(
+      `turn ${turn + 1}/${args.pcms.length}: streaming ${frames.length} frames (${pcm.byteLength} B PCM16) at real-time pace`,
+    );
+    // The count of finals BEFORE this turn. Waiting for `hasFinal()` would
+    // return instantly on every turn after the first (it is sticky), and
+    // the harness would speak straight over the assistant's preview —
+    // which is barge-in, a different test, and one that would make the
+    // confirm round trip unobservable.
+    const finalsBefore = assembler.finalCount();
+    for (const f of frames) {
+      if (result.closeCode !== null) break;
+      ws.send(f);
+      result.uplinkFrames += 1;
+      await sleep(VOX_FRAME_MS);
+    }
+
+    // Collect until the assistant has finalized a NEW utterance AND gone
+    // quiet, or this turn's budget elapses. Waiting the full window on
+    // every turn would multiply provider minutes for no extra evidence.
+    const turnDeadline = Math.min(clock() + turnTimeoutMs, overallDeadline);
+    while (result.closeCode === null && clock() < turnDeadline) {
+      if (assembler.finalCount() > finalsBefore && clock() - lastFrameAtMs > QUIET_AFTER_FINAL_MS) {
+        break;
+      }
+      await sleep(VOX_FRAME_MS);
+    }
+    if (assembler.finalCount() === finalsBefore) {
+      log(`turn ${turn + 1}: no new final transcript within ${turnTimeoutMs}ms`);
+    }
   }
 
   if (result.closeCode === null) ws.close(1000, "e2e done");
