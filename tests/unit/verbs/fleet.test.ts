@@ -887,7 +887,17 @@ describe("fleet verb", () => {
       const captured = await captureStdio(() => fleet([]));
       expect(captured.result).toBe(0);
       expect(captured.stdout).toContain(`ATTENTION 1 findings across 1 panes in 1 teams`);
-      expect(captured.stdout).toContain(`${teamName}/cage — session is down`);
+      // A down team is reported by TEAM NAME ALONE. This assertion used to
+      // read `${teamName}/cage` and so encoded the bug as the contract:
+      // `probeTeamLive` stamped the synthetic observation with the literal
+      // string `"cage"`, `renderAttention` printed it in the member slot,
+      // and the voice model relayed it aloud as "member cage" — scored as
+      // a hallucination by the vox e2e judge, correctly, since no such
+      // member exists (ADR-273 §Supplement-6). Recorded in place so the
+      // next reader does not "restore" the slash.
+      expect(captured.stdout).toContain(`${teamName} — session is down`);
+      expect(captured.stdout).not.toContain(`${teamName}/cage`);
+      expect(captured.stdout).not.toContain("cage —");
     } finally {
       if (prior === undefined) delete process.env.ATMUX_COCKPIT_CONFIG;
       else process.env.ATMUX_COCKPIT_CONFIG = prior;

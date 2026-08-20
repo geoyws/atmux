@@ -12,6 +12,7 @@ import {
   STARVING_THRESHOLD_S,
   WEDGED_HEARTBEAT_STALE_SEC,
 } from "../../../src/core/cage-state.ts";
+import { classifyPaneObservation } from "../../../src/core/vox/fleet.ts";
 import type { Team, TeamMember } from "../../../src/schema/team.ts";
 
 // ---------- Fixtures ----------
@@ -833,5 +834,285 @@ describe("probeCageState — a live pane on a live session is never 'down'", () 
     );
     expect(h.state).toBe("active");
     expect(targets).toEqual(["atmux-demo:docs"]);
+  });
+});
+
+// ---------------------------------------------------------------------
+// ADR-273 §Supplement-6 — the SECOND verdict, from the SAME evidence
+// ---------------------------------------------------------------------
+//
+// W6: `team_status` said "active" about a pane blocked forever on a
+// permission prompt while `fleet_attention`, off the same socket, said
+// "waiting on a permission prompt". Both were true in their own
+// vocabulary and the operator got two incompatible pictures. The fix is
+// not a third taxonomy — it is this probe returning the BEHAVIOURAL
+// verdict alongside the process one, computed from the SAME capture, so
+// the two cannot drift.
+//
+// Would these pass if `agentState` were never populated? No: every one
+// asserts a specific kind, and the last asserts the probe agrees with
+// `classifyPaneObservation` run directly on the same text.
+
+/** tmux stub that also answers the window probe (activity clock etc). */
+function probedTmux(opts: {
+  windows: ReadonlyArray<string>;
+  paneText?: string;
+  /** Raw `WINDOW_PROBE_FORMAT` answer. */
+  probeRaw?: string;
+  capturePaneThrows?: boolean;
+}): { tmux: TmuxNamespace; displayCalls: () => number; captureCalls: () => number } {
+  const counters = { display: 0, capture: 0 };
+  const live = new Set(opts.windows);
+  const tmux = {
+    session: {
+      async hasSession() {
+        return true;
+      },
+    },
+    window: {
+      async listWindows() {
+        return opts.windows.map((name, index) => ({ index, id: `@${index}`, name, active: false }));
+      },
+    },
+    pane: {
+      async listPanes(target: string) {
+        const win = target.slice(target.indexOf(":") + 1);
+        if (!live.has(win)) throw new Error(`can't find window: ${win}`);
+        return [{ pid: 4242 }];
+      },
+      async capturePane() {
+        counters.capture += 1;
+        if (opts.capturePaneThrows === true) throw new Error("pane vanished");
+        return opts.paneText ?? "42k tokens · esc to interrupt";
+      },
+      async displayMessage() {
+        counters.display += 1;
+        return opts.probeRaw ?? "1700000000\t0\tclaude";
+      },
+    },
+  } as unknown as TmuxNamespace;
+  return {
+    tmux,
+    displayCalls: () => counters.display,
+    captureCalls: () => counters.capture,
+  };
+}
+
+const BLOCKED_TEXT = [
+  "● Reading src/core/billing/invoice.ts",
+  "│ Do you want to make this edit?                           │",
+  "│ ❯ 1. Yes                                                 │",
+].join("\n");
+
+const RESIDUE_TEXT = [
+  "● Ran the migration and the suite is green.",
+  "✻ Worked for 22s",
+  "❯ also add the rollback path before you push",
+  "  ⏵⏵ auto mode on                    tok 4821/200000  ctx 12%",
+].join("\n");
+
+const WORKING_TEXT = [
+  "● Refactoring the scheduler.",
+  "✻ Cogitating… (12s · ↑ 1.4k tokens · esc to interrupt)",
+  "❯ ",
+  "  ⏵⏵ auto mode on                    tok 9102/200000  ctx 21%",
+].join("\n");
+
+describe("probeCageState — agentState is the behavioural verdict, alongside state", () => {
+  test("a pane blocked on a permission prompt: process 'active', agent 'permission-prompt'", async () => {
+    // The W6 case exactly. `active` stays true — the process IS running —
+    // and the row now also says the thing the operator asked about.
+    const { tmux } = probedTmux({ windows: ["alice"], paneText: BLOCKED_TEXT });
+    const h = await probeCageState(
+      makeTeam({ emoji: undefined }),
+      makeMember({ emoji: undefined }),
+      "/tmp/x",
+      { ...DEFAULT_OPTS, tmux },
+    );
+    expect(h.state).toBe("active");
+    expect(h.agentState).toEqual({
+      bucket: "attention",
+      kind: "permission-prompt",
+      marker: "│ Do you want to make this edit?                           │",
+    });
+  });
+
+  test("a wedged composer reads idle-residue once the window has gone stale", async () => {
+    const { tmux } = probedTmux({
+      windows: ["alice"],
+      paneText: RESIDUE_TEXT,
+      // Activity 300s before `nowSec` — past RESIDUE_FRESH_SEC.
+      probeRaw: "1699999700\t0\tsleep",
+    });
+    const h = await probeCageState(
+      makeTeam({ emoji: undefined }),
+      makeMember({ emoji: undefined }),
+      "/tmp/x",
+      { ...DEFAULT_OPTS, tmux },
+    );
+    expect(h.agentState?.bucket).toBe("attention");
+    expect(h.agentState?.kind).toBe("idle-residue");
+  });
+
+  test("the SAME composer in a freshly-touched window is someone typing, not a wedge", async () => {
+    // The complement — and proof the activity clock actually reaches the
+    // classifier rather than being dropped on the floor.
+    const { tmux } = probedTmux({
+      windows: ["alice"],
+      paneText: RESIDUE_TEXT,
+      probeRaw: "1699999999\t0\tsleep",
+    });
+    const h = await probeCageState(
+      makeTeam({ emoji: undefined }),
+      makeMember({ emoji: undefined }),
+      "/tmp/x",
+      { ...DEFAULT_OPTS, tmux },
+    );
+    expect(h.agentState).toEqual({ bucket: "quiet", kind: "idle" });
+  });
+
+  test("a mid-turn pane reads quiet/working", async () => {
+    const { tmux } = probedTmux({ windows: ["alice"], paneText: WORKING_TEXT });
+    const h = await probeCageState(
+      makeTeam({ emoji: undefined }),
+      makeMember({ emoji: undefined }),
+      "/tmp/x",
+      { ...DEFAULT_OPTS, tmux },
+    );
+    expect(h.agentState).toEqual({ bucket: "quiet", kind: "working" });
+  });
+
+  test("session absent → agent 'dead', in the words fleet_attention uses", async () => {
+    const h = await probeCageState(makeTeam(), makeMember(), "/tmp/x", {
+      ...DEFAULT_OPTS,
+      tmux: tmuxStub(),
+      hasSession: async () => false,
+    });
+    expect(h.state).toBe("down");
+    expect(h.agentState).toEqual({
+      bucket: "attention",
+      kind: "dead",
+      marker: "tmux session absent",
+    });
+  });
+
+  test("window missing → agent 'dead' naming the window, not 'unresponsive'", async () => {
+    const { tmux } = probedTmux({ windows: ["someone-else"] });
+    const h = await probeCageState(
+      makeTeam({ emoji: undefined }),
+      makeMember({ emoji: undefined }),
+      "/tmp/x",
+      { ...DEFAULT_OPTS, tmux },
+    );
+    expect(h.state).toBe("down");
+    expect(h.agentState?.kind).toBe("dead");
+    expect(h.agentState?.bucket).toBe("attention");
+  });
+
+  test("a capture that FAILED reads 'unreadable', never 'pane is blank'", async () => {
+    // `""` and `null` are different claims: "I looked and saw nothing" vs
+    // "I could not look". Collapsing them is how a probe manufactures a
+    // confident verdict out of a failure.
+    const { tmux } = probedTmux({ windows: ["alice"], capturePaneThrows: true });
+    const h = await probeCageState(
+      makeTeam({ emoji: undefined }),
+      makeMember({ emoji: undefined }),
+      "/tmp/x",
+      { ...DEFAULT_OPTS, tmux, paneChildIsClaude: async () => true },
+    );
+    expect(h.agentState).toEqual({
+      bucket: "attention",
+      kind: "unreadable",
+      marker: "pane capture failed",
+    });
+  });
+
+  test("a broken window probe degrades to pane text alone, it does not throw", async () => {
+    const { tmux } = probedTmux({ windows: ["alice"], paneText: BLOCKED_TEXT });
+    const h = await probeCageState(
+      makeTeam({ emoji: undefined }),
+      makeMember({ emoji: undefined }),
+      "/tmp/x",
+      {
+        ...DEFAULT_OPTS,
+        tmux,
+        windowProbe: async () => {
+          throw new Error("tmux gone");
+        },
+      },
+    );
+    expect(h.agentState?.kind).toBe("permission-prompt");
+  });
+});
+
+describe("probeCageState — ONE pane, ONE read, TWO verdicts", () => {
+  test("an injected windowProbe is used INSTEAD of a second display-message", async () => {
+    // The structural half of the W6 fix. Two probes over one pane is
+    // exactly how the two classifiers came to disagree; `atmux status`
+    // already reads these signals for its own column, so it hands them
+    // down and this probe must not re-read them.
+    const probed = probedTmux({ windows: ["alice"], paneText: WORKING_TEXT });
+    let handed = 0;
+    const h = await probeCageState(
+      makeTeam({ emoji: undefined }),
+      makeMember({ emoji: undefined }),
+      "/tmp/x",
+      {
+        ...DEFAULT_OPTS,
+        tmux: probed.tmux,
+        windowProbe: async () => {
+          handed += 1;
+          return { activityAgeSec: 3, paneDead: false, currentCommand: "claude" };
+        },
+      },
+    );
+    expect(handed).toBe(1);
+    expect(probed.displayCalls()).toBe(0);
+    // …and ONE capture feeds both verdicts.
+    expect(probed.captureCalls()).toBe(1);
+    expect(h.state).toBe("active");
+    expect(h.agentState?.kind).toBe("working");
+  });
+
+  test("with no injection the default seam reads the window signals off tmux", async () => {
+    const probed = probedTmux({ windows: ["alice"], paneText: WORKING_TEXT });
+    await probeCageState(
+      makeTeam({ emoji: undefined }),
+      makeMember({ emoji: undefined }),
+      "/tmp/x",
+      { ...DEFAULT_OPTS, tmux: probed.tmux },
+    );
+    expect(probed.displayCalls()).toBe(1);
+  });
+
+  test("the probe's verdict IS classifyPaneObservation's — not a parallel reimplementation", async () => {
+    // The anti-drift pin. Run the same text through the classifier
+    // directly and require byte-equal verdicts. A second copy of the
+    // ladder inside this module would fail here the day either moved.
+    for (const text of [BLOCKED_TEXT, RESIDUE_TEXT, WORKING_TEXT]) {
+      const { tmux } = probedTmux({
+        windows: ["alice"],
+        paneText: text,
+        probeRaw: "1699999700\t0\tsleep",
+      });
+      const h = await probeCageState(
+        makeTeam({ emoji: undefined }),
+        makeMember({ emoji: undefined }),
+        "/tmp/x",
+        { ...DEFAULT_OPTS, tmux },
+      );
+      const direct = classifyPaneObservation({
+        team: "demo",
+        member: "alice",
+        windowName: "alice",
+        sessionUp: true,
+        windowPresent: true,
+        capture: text,
+        paneDead: false,
+        currentCommand: "sleep",
+        activityAgeSec: 300,
+      });
+      expect(h.agentState).toEqual(direct);
+    }
   });
 });

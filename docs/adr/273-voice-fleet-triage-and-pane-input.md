@@ -387,7 +387,7 @@ judge verdict: FAIL (model claude-opus-5)
 
 `down` is gone, the ambient ADR/inbox counts are gone, "idle" is gone. What remains is **not a defect in any probe**: `team_status` and `fleet_attention` speak different vocabularies about the same panes. `team_status` reports the 4-state PROCESS taxonomy (`down` / `bootstrapping` / `active` / `wedged`), and `active` is true of all three fixture panes under its documented definition ("has produced output"). The ground truth is a BEHAVIOURAL classification — permission-prompt / idle-residue / working — which only `classifyPaneObservation` in `src/core/vox/fleet.ts` produces, and `team_status` never calls it.
 
-So no amount of making the process probe more honest can satisfy `described_alpha_accurately`. Closing it means deciding that `team_status` surfaces the fleet classifier's per-pane verdict alongside (or instead of) the cage state — which changes a documented output surface and picks a winner between two classifiers. **That is a decision, not a bug fix, and it is deliberately NOT taken here.** Recording it as the open item rather than reshaping the surface unilaterally.
+So no amount of making the process probe more honest can satisfy `described_alpha_accurately`. Closing it means deciding that `team_status` surfaces the fleet classifier's per-pane verdict alongside (or instead of) the cage state — which changes a documented output surface and picks a winner between two classifiers. **That is a decision, not a bug fix, and it is deliberately NOT taken here.** Recording it as the open item rather than reshaping the surface unilaterally. — **→ Decided 2026-08-17: ALONGSIDE, with the behavioural verdict leading. See §Supplement-6.** This section is left as written: it is the record of the state before the decision.
 
 Two smaller residues visible in the same transcript, both model-side reads of an ambiguous table rather than false tool output: the model fused the `📋 kanban` and `📝 NEEDS APPROVAL` lines into "the kanban is clear and needs approval", and in the pre-W4 run it read the `cadence` column's "idle" as a pane state. Every individual line the tool printed was true.
 
@@ -488,6 +488,93 @@ A note on why the second needed its own test rather than an assertion inside an 
 - No per-host filter on the voice tool (`--host` exists on the CLI verb only). The spoken question is "how is the box holding up", which means every box.
 - No historical trend for either tool. Both answer "right now".
 - The **voice path** is unproven for both, the same gap §7 V-20 records for `fleet_attention`: the CLI verb and the tool share the renderer, but the tool-bridge path around it (argv construction, summarization, `maxResultChars` budgeting) has no live receipt yet.
+## Supplement-7 — W6 decided: `team_status` speaks the fleet classifier's verdict, alongside the cage state (2026-08-17)
+
+§Supplement-5 W6 stated an open decision precisely and declined to take it. This records the decision, taken by the operator, and what implementing it changed. **W6 above is left exactly as written** — it is the honest record of the state before the decision, and rewriting it would erase the fact that the surface was not reshaped unilaterally.
+
+### The decision
+
+**`team_status` surfaces the behavioural per-pane verdict from `classifyPaneObservation`, ALONGSIDE — not instead of — the process cage-state.** The behavioural verdict leads.
+
+Three reasons, in the order they carry weight.
+
+1. **Two classifiers contradicting each other on one spoken surface is the defect.** `fleet_attention` said "be-1 is blocked on a permission prompt"; `team_status` said "be-1 is active". Both true in their own vocabulary, and an operator asking two questions in one voice conversation got two incompatible pictures of the same pane. ADR-273 D3 already made `classifyPaneObservation` the fleet's truth; `team_status` disagreeing with it was drift, not a second opinion.
+2. **On a spoken interface the process taxonomy is the wrong vocabulary to lead with.** "Active", read aloud, means "working fine" to a human listener. A pane blocked on a permission prompt is technically active and practically stuck. The word actively misleads in the one place it matters most.
+3. **Alongside, not instead of.** The process state is real information — is the process alive, did it produce output — and `down` is exactly what you want when a cage has died. The behavioural verdict answers a different question. Both belong.
+
+### Y1 — One pane, one read, two verdicts
+
+The obvious implementation is to call the fleet classifier from `status.ts` on a fresh capture. That is the same defect one layer down: two probes over one pane drift the moment either one's capture depth, timing, or target resolution changes. `fleet.ts` and `cage-state.ts` reading the same socket at different moments is precisely how W6 happened.
+
+So the verdict is produced **inside `probeCageState`**, from the capture it already takes:
+
+- `tryCapture` now returns `string | null` and captures `CAPTURE_LINES = 40` — matching `src/verbs/fleet.ts::CAPTURE_LINES`. `null` (the capture FAILED) is preserved for the behavioural classifier, which reports `unreadable` for it; the process ladder still sees `""`, byte-identically to before. `""` and `null` are different claims — "I looked and saw nothing" versus "I could not look" — and collapsing them is how a probe manufactures confidence out of a failure.
+- `ProbeCageStateOpts.windowProbe` supplies the three INDEPENDENT window signals the classifier needs (`#{window_activity}` / `#{pane_dead}` / `#{pane_current_command}`). `gatherStatus` reads `#{pane_current_command}` for its own column anyway, so `readPaneCommand` was widened to `readMemberPane`, rendering the full `WINDOW_PROBE_FORMAT` in the SAME `display-message` and handing the result down. Net tmux calls per member: unchanged.
+- `CageHealth.agentState` carries the `PaneVerdict` on every return path, including the ones that never reach a capture (session absent, window absent) — routed through `classifyPaneObservation` with a synthetic observation rather than hand-written as `dead`, so the words match `fleet_attention`'s by construction rather than by discipline.
+
+`parseWindowProbe` + `WINDOW_PROBE_FORMAT` moved from `src/verbs/fleet.ts` to `src/core/vox/fleet.ts` for this (core must not import from `src/verbs/**`); the verb re-exports them, so every prior importer resolves unchanged.
+
+`tests/unit/core/cage-state.test.ts` pins the anti-drift property directly: the same fixture text through `probeCageState` and through `classifyPaneObservation` must yield **byte-equal** verdicts. A second copy of the ladder inside `cage-state.ts` would fail there the day either moved.
+
+### Y2 — What the row looks like now
+
+```
+member       role          tui        agent-state                                process-state      ctx      commit-cadence                 tasks
+  🐝 be-1      member        claude     agent: 🛑 waiting on a permission prompt   process: active?   —        commits: no signal             🟡 0 active  📌 0 todo
+       ↳ evidence for be-1: │ Do you want to make this edit?                           │
+  🐝 fe-1      member        claude     agent: 🛑 idle with unsubmitted text       process: active?   —        commits: no signal             🟡 0 active  📌 0 todo
+       ↳ evidence for fe-1: unsubmitted: also add the rollback path before you push
+  🐝 docs      member        claude     agent: 🟢 working                          process: active?   —        commits: no signal             🟡 0 active  📌 0 todo
+```
+
+The clause after the glyph is `paneVerdictPhrase` — the same `ATTENTION_REASON` / `QUIET_LABEL` lookup `renderAttention` uses, so the two tools cannot describe one pane in different words. The glyph is `paneVerdictGlyph`: 🛑 acute, 🟡 chronic (`dormant` only), 🟢 nothing needed — the same three-way call `renderQuiet` already makes when it counts parked panes separately from findings.
+
+The indented `↳ evidence` line mirrors `renderAttention`'s `> gist`: D3 requires every attention item to carry the evidence that produced it, and an operator who hears the same claim from both tools should be shown the same evidence for it. Quiet rows get no line — the budget belongs to the findings.
+
+`--json` gains `members[].agentState` = `{ bucket, kind, reason, marker? }`, key-presence.
+
+### Y3 — The two model-side legibility residues W6 named, fixed
+
+Both were cases where every line the tool printed was individually TRUE and the TABLE was ambiguous read aloud. This surface is consumed by a language model, so legibility to a model is a functional requirement, not polish — and a model reading a column-aligned table row by row has no header in front of it.
+
+- **The `📋 kanban` / `📝 NEEDS APPROVAL` fusion** ("the kanban is clear and needs approval"). Each line now names its own subject in full: `📋 kanban board: …` and `📝 awaiting your approval: ✅ nothing is waiting for sign-off` / `📝 awaiting your approval: 2 proposed ADRs, 2 driver-inbox asks, 1 blocked kanban tasks`. Neither can be read as a predicate of the other.
+  - **A second turn of the same screw, found by the full run.** With the subject fixed, the enumerated form still spent the words *in-progress* and *blocked* — which are ALSO pane vocabulary — and the model relayed "no tasks are in progress or blocked" about a team with a blocked pane. Every word true; the judge scored the sentence as contradicting the ground truth, and it was right to. An empty board now gets its own sentence, `📋 kanban board: no tasks on it at all`, spending no state words at all; a non-empty board keeps the noun welded to every number (`📌 1 tasks todo, … 🛑 1 tasks blocked`) so no count can travel without its subject.
+- **The cadence column's bare `idle`, read as a pane state.** Every cell is now prefixed `commits:` and the header is `commit-cadence`. The absent case reads `commits: no signal` rather than `—`: a dash read aloud is nothing at all, and "no signal" is the actual claim (§Supplement-5 W4).
+
+Same reasoning applied to the two state columns: the cells are `agent: …` and `process: …`, self-labelled, because a bare `active` in a row of bare cells is exactly what the model turned into "all panes are active".
+
+### Y4 — The vox system prompt moved with the surface
+
+The prompt clause landed on trunk in `b8bddef` describes the `?` marker BY ITS RENDERED TEXT, and `team_status` sends the text table (no `--json`). Renaming the column without touching the clause would leave the prompt pointing at something that no longer renders — nothing would fail, which is what makes it worth stating.
+
+- The `?` marker itself is **untouched**: `formatPaneStateColumn` is unchanged, and `formatProcessStateColumn` only prefixes it, so the cell still ENDS in `active?`, which is what the clause keys on. The clause's column name changed `pane-state` → `process-state` to match the header; every pinned phrase in `instructions.test.ts` still holds, plus a new assertion that the clause names the column it is about.
+- A **new pinned clause** teaches the two-states rule: the agent-state is what the agent is doing and answers the operator's question; the process-state says only that a process is running, and a pane can be process-active while its agent is stopped forever on a permission prompt. Lead with the agent-state. The evidence line is named so a "why" can be answered from tool output rather than invented.
+- The same clause also says **do NOT volunteer the process-state for a pane whose agent-state already says it is stuck**. "Lead with" was not enough on its own: a run produced *"be-1 is waiting on a permission prompt, process looks active but not confirmed"* — both halves true, the `?` correctly hedged per the `b8bddef` clause — and the judge read the second half as a claim the pane was fine. A running process is not news about a stopped agent, so the reassuring half should not be offered at all. Speaking it when ASKED is still required to carry the hedge; the two clauses compose rather than compete.
+- The `?` pin is now anchored to the RENDERER as well as the prose — it asserts `formatProcessStateColumn` actually emits the token the prompt quotes. A pin that only reads the prompt cannot notice the column that stopped producing the marker.
+
+### Y5 — Stated rather than fixed
+
+- **A non-claude TUI gets no behavioural reading.** `probeCageState` is claude-specific (it looks for `claude` in the pane's process tree), so a Codex / Cursor / Kimi pane renders `agent: ❔ no reading`. The classifier itself is NOT claude-specific — `ALT_AGENT_CHROME_RE` exists precisely for those panes, and `fleet_attention` classifies them fine. Closing the gap means a capture for non-claude members too, which is a second read of a pane this verb does not otherwise open; deliberately not smuggled into this change. `no reading` is the honest cell meanwhile — it must never render as anything that could be heard as "fine".
+- **The `ctx` column's `—`** has the same read-aloud problem the cadence column's `—` had. Left alone: it was not among the residues W6 observed reaching the operator, and changing it is a separate legibility pass.
+- **§Supplement-5 W7 is unchanged** — the `$HOME`+team-name-keyed reads and the one-level `ps` child walk are still ambient. Neither is touched here.
+
+### Y6 — One more lie the full run exposed: `probeTeamLive`'s `"cage"`
+
+Not part of the decision, found by running the whole suite rather than the one scenario, and fixed here because it is the same failure class the decision is about — a tool handing the model something to say that was never observed.
+
+A team whose session is absent yields ONE synthetic observation. It carried `member: roster?.members[0]?.name ?? "cage"`, so `renderAttention` printed `vox-e2e-ghost/cage` and the model faithfully spoke *"member cage"*. The judge scored it a hallucination on `attention` AND `all_ok`, correctly: no such member exists. `members[0]` is the same lie with a plausible name — it attributes a whole-team fact to one arbitrary member, and on a real team it would name a member who is fine.
+
+`PaneObservation.member` and `QuietItem.member` are now `string | null`, `null` meaning "this observation is about the TEAM, not an identified pane". `AttentionItem.member` was ALREADY `string | null` and `who()` already rendered a null member as the bare team name — the type was right and the producer was wrong. `fleet_quiet` never enumerates panes (D2), so nothing spoken is lost. `tests/unit/verbs/fleet.test.ts` asserted `${teamName}/cage` and so encoded the bug as the contract; it now asserts `${teamName} — session is down` and that the slash form is absent, with the history recorded in place.
+
+### Y7 — The judge is not deterministic, and that is load-bearing
+
+Measured while closing this: `--scenario drilldown` alone PASSED and the same build FAILED in a full three-scenario run, on wording the model chose differently. The `"cage"` hallucination appeared in one full run and not the previous one, with **identical tool output** both times.
+
+So: **run the full suite, never the single scenario you changed**, and treat a red run as evidence of a real defect even when a green run of the same build exists. Both faults X6 and X3 fixed were found exactly this way and would have been hidden by a re-roll. Re-rolling until green is the same move as loosening a criterion — it makes the gate measure its own variance instead of the system.
+
+### Y8 — Acceptance
+
+`bun scripts/vox-e2e.ts` — all three scenarios, verbatim judge output — is recorded in [RUNBOOK-vox.md](../RUNBOOK-vox.md) §6.8. The `drilldown` scenario, left failing on purpose since §Supplement-5, is the gate this decision was taken to close; `attention` and `all_ok` are regression legs. No judge criterion, grading rule, or fixture was altered to reach it: the scenario table (`src/core/vox/e2e/scenarios.ts`) and the fixtures (`src/core/vox/e2e/fixtures.ts`) are byte-identical to the run that failed.
 
 ## Acceptance
 

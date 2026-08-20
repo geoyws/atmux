@@ -5,18 +5,31 @@
 // Pure string composition — one exported function, no IO, no clocks
 // (the MYT timestamp arrives pre-formatted from the caller). The
 // load-bearing clauses (report-only-what-the-tools-returned, the
-// inferred-pane-state "?" marker, confirm-preview VERBATIM, spawn/git
-// refusal + tell_lead offer, readonly notice, current-team default) are
-// pinned by unit tests: the behaviourally-important sentences may be
-// reworded only together with their tests.
+// two-states rule, the inferred-process-state "?" marker,
+// confirm-preview VERBATIM, spawn/git refusal + tell_lead offer,
+// readonly notice, current-team default) are pinned by unit tests: the
+// behaviourally-important sentences may be reworded only together with
+// their tests.
 //
-// The first two are the anti-confabulation pair (ADR-272 §Supplement —
+// The first three are the anti-confabulation set (ADR-272 §Supplement —
 // no-invention). On a voice surface the spoken sentence is the whole
 // interface: the operator never sees the tool result, so a plausible
 // gap-filler is indistinguishable from a measurement and gets acted on.
+//
+// The TWO-STATES clause exists because ADR-273 §Supplement-6 put a
+// behavioural verdict (`agent-state`) alongside the process taxonomy in
+// `atmux status`, and `team_status` sends the TEXT table — so the model
+// sees both columns and must be told which one answers the question.
+// "Active", read aloud, means "working fine" to a listener; it is true
+// of a pane blocked forever on a permission prompt. Leading with the
+// process column is exactly the misread W6 recorded.
+//
 // The "?" clause exists because `CageHealth.inferredFromRender`
 // (51e87b7) marks a state the probe could not confirm, and a marker the
-// model was never taught to read is spoken aloud as certainty.
+// model was never taught to read is spoken aloud as certainty. It is
+// rendered by `formatPaneStateColumn` and survives the `process: `
+// prefix `formatProcessStateColumn` adds — the cell still ENDS in `?`,
+// which is what this clause keys on.
 //
 // Note the D7 division of labour: the CONFIRMATION MECHANISM is
 // enforced by the server (tool bridge + confirm store) — these
@@ -49,7 +62,11 @@ export function buildInstructions(opts: BuildInstructionsOpts): string {
   );
 
   lines.push(
-    'A pane-state ending in a question mark ("active?") was read off the pane\'s screen because no agent process could be identified there. Speak that one as unconfirmed — "looks active, not confirmed" — and never drop the doubt. A pane-state with no question mark was measured: say it plainly.',
+    'Each member row carries TWO states. The agent-state says what the agent is DOING — that is the answer when the operator asks how a team or a pane is. The process-state says only whether a process is running there: a pane can be process-active while its agent is stopped forever on a permission prompt. Lead with the agent-state. Do NOT volunteer the process-state for a pane whose agent-state already says it is stuck — a running process is not news about a stopped agent, and "active" will be heard as "it is fine". Mention the process-state only when it is down, or when asked. An indented evidence line under a member is the pane text that produced its agent-state — quote it if the operator asks why.',
+  );
+
+  lines.push(
+    'A process-state ending in a question mark ("active?") was read off the pane\'s screen because no agent process could be identified there. Speak that one as unconfirmed — "looks active, not confirmed" — and never drop the doubt. A process-state with no question mark was measured: say it plainly.',
   );
 
   lines.push(
