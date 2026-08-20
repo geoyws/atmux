@@ -161,3 +161,39 @@ export function summarizeTool(
   const { data, dropped } = fitWithinChars(shaped, opts.maxChars);
   return { data, truncated: dropped > 0 || capped, totalLines: shaped.length };
 }
+
+/**
+ * The `atmux::ok` success-receipt marker, anchored at line start.
+ *
+ * Every atmux verb that confirms a SIDE EFFECT writes `✅ atmux <msg>`
+ * to stderr — `createLogger().ok` in `src/core/tui.ts`, and the
+ * hand-rolled receipts in `src/verbs/tell-lead.ts` +
+ * `src/verbs/reply.ts`, all ported from bash `lib/common.sh:21`. The
+ * sibling markers on that same channel are `🔹 atmux` (progress),
+ * `⚠️  atmux` (warning) and `💥 atmux` (error); anchoring on `✅`
+ * excludes all three.
+ */
+const OK_RECEIPT_RE = /^✅\s*atmux\s*/;
+
+/**
+ * Pull the success receipt(s) out of a verb's captured stderr, shaped
+ * for speech. Returns `""` when the verb wrote no receipt.
+ *
+ * THE SCOPE IS DELIBERATELY NARROW, and that is the whole point. stderr
+ * is a SHARED diagnostic channel: warnings (`atmux: warn: dispatch: ping
+ * to be-1 failed`), progress lines, and library noise all land there,
+ * and whatever this returns is read ALOUD to the operator as the answer
+ * to "did it work?". Relaying stderr wholesale would let an unrelated
+ * warning become that answer. So only lines carrying the `atmux::ok`
+ * marker survive — the one line a verb writes to mean "the side effect
+ * landed" — and the marker itself is stripped, because emoji chrome is
+ * not something anyone wants spoken.
+ */
+export function extractOkReceipt(stderr: string): string {
+  return splitTrimmedLines(stripAnsi(stderr))
+    .map((l) => l.trim())
+    .filter((l) => OK_RECEIPT_RE.test(l))
+    .map((l) => l.replace(OK_RECEIPT_RE, "").trim())
+    .filter((l) => l.length > 0)
+    .join("\n");
+}

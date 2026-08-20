@@ -428,7 +428,9 @@ Five rules that keep the spoken answer honest:
 
 **Secrets**: no token, key or refresh token reaches the output of either tool — including `--json` and including the probe's stderr on the failure path, which is where an interpolated credential would otherwise land.
 
-**Both tools write their report to `stdout`.** That is load-bearing, not incidental: `captureVerbRun` collects a verb's output from `console.log` + `process.stdout.write` and does **not** read stderr, so a verb that writes its receipt to stderr yields empty captured stdout and the bridge renders it as `verb_output_unparseable` — "the verb produced no usable output". The verb succeeds and the model is told it failed. Pinned by `tests/unit/verbs/vox-infra-stdout-contract.test.ts`, including on the failure paths, so neither tool depends on the bridge-side fix for that class.
+**Both tools write their report to `stdout`.** That is the correct shape for a READ tool and it is pinned by `tests/unit/verbs/vox-infra-stdout-contract.test.ts`, including on the failure paths.
+
+> **Updated 2026-08-20** ([ADR-272](adr/272-voice-operator-interface.md) §Supplement-2026-08-20). This paragraph used to say that `captureVerbRun` does not read stderr, so a verb writing its receipt there yields empty captured stdout and the bridge renders `verb_output_unparseable` — the verb succeeds and the model is told it failed. **That defect is fixed.** `captureVerbRun` now captures stderr as well (both surfaces: `process.stderr.write` and `console.error`), and the bridge treats exit 0 as the success signal — a MUTATING tool with empty stdout returns a success envelope carrying its `atmux::ok` receipt. `verb_output_unparseable` is now raised only for a READ tool that produced nothing, which is what these two tools' stdout contract keeps them clear of. Neither tool ever depended on the bridge-side fix, and neither depends on it now.
 
 ## §6.6 — Pane input: `pane_nudge` / `atmux nudge`
 

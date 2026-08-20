@@ -9,6 +9,10 @@
 //     dashboard.ts implementation (error re-render line included).
 //   - captureVerbRun returns the numeric exit code; a throw lands in
 //     errorMessage with exitCode null and is NOT appended to stdout.
+//   - stderr is captured ALONGSIDE stdout and TEED through to the real
+//     stderr (ADR-272 §Supplement-2026-08-20) — the `atmux::ok` receipt
+//     lives on that channel, and swallowing it would blind the server
+//     log.
 //   - createVerbMutex is strict FIFO under interleaved async and a
 //     rejection does not poison the queue.
 //   - The queue is BOUNDED (VERB_MUTEX_MAX_QUEUE) and carries an abandon
@@ -133,12 +137,12 @@ describe("captureVerbRun", () => {
       console.log("log-line");
       return 0;
     }, []);
-    expect(r).toEqual({ stdout: "hello\nlog-line\n", exitCode: 0 });
+    expect(r).toEqual({ stdout: "hello\nlog-line\n", stderr: "", exitCode: 0 });
   });
 
   test("nonzero exit code passes through untouched", async () => {
     const r = await captureVerbRun(async () => 3, []);
-    expect(r).toEqual({ stdout: "", exitCode: 3 });
+    expect(r).toEqual({ stdout: "", stderr: "", exitCode: 3 });
   });
 
   test("a throw lands in errorMessage (exitCode null), NOT in stdout", async () => {
@@ -177,6 +181,280 @@ describe("captureVerbRun", () => {
       return 0;
     }, []);
     expect(r.stdout).toBe("bytes\n");
+  });
+});
+
+// ADR-272 §Supplement-2026-08-20 — the capture was half-deaf: atmux
+// verbs put their success RECEIPT on stderr (`atmux::ok`), so a
+// stdout-only capture could not tell "tell-lead delivered the ask" from
+// "the verb said nothing".
+describe("captureVerbRun — stderr", () => {
+  /** Swap in a recording stderr sink around `fn`, restoring afterwards.
+   *  This is what proves the TEE: if the capture swallowed stderr, this
+   *  sink would record nothing. */
+  async function withRecordedStderr<T>(fn: () => Promise<T>): Promise<{ r: T; sink: string }> {
+    let sink = "";
+    const orig = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((s: string | Uint8Array) => {
+      sink += typeof s === "string" ? s : new TextDecoder().decode(s);
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      return { r: await fn(), sink };
+    } finally {
+      process.stderr.write = orig;
+    }
+  }
+
+  test("a verb's stderr receipt lands in stderr, NOT in stdout", async () => {
+    const { r } = await withRecordedStderr(() =>
+      captureVerbRun(async () => {
+        process.stderr.write("✅ atmux tell-lead → lead (appended to /w/di.md)\n");
+        return 0;
+      }, []),
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).toBe("✅ atmux tell-lead → lead (appended to /w/di.md)\n");
+    // The whole defect in one assertion: stdout is empty and the run
+    // still succeeded.
+    expect(r.stdout).toBe("");
+  });
+
+  test("stderr is TEED — the real stderr still receives every write", async () => {
+    const { r, sink } = await withRecordedStderr(() =>
+      captureVerbRun(async () => {
+        process.stderr.write("atmux: warn: ping failed\n");
+        return 0;
+      }, []),
+    );
+    expect(r.stderr).toBe("atmux: warn: ping failed\n");
+    // Swallowing stderr would trade one blind spot for another — the vox
+    // server logs on this channel.
+    expect(sink).toBe("atmux: warn: ping failed\n");
+  });
+
+  test("stdout and stderr do not cross-contaminate", async () => {
+    const { r } = await withRecordedStderr(() =>
+      captureVerbRun(async () => {
+        process.stdout.write("out-line\n");
+        process.stderr.write("err-line\n");
+        console.log("log-line");
+        return 0;
+      }, []),
+    );
+    expect(r.stdout).toBe("out-line\nlog-line\n");
+    expect(r.stderr).toBe("err-line\n");
+  });
+
+  test("stderr written before a throw is still captured", async () => {
+    const { r } = await withRecordedStderr(() =>
+      captureVerbRun(async () => {
+        process.stderr.write("partial\n");
+        throw new Error("kapow");
+      }, []),
+    );
+    expect(r.exitCode).toBeNull();
+    expect(r.errorMessage).toBe("kapow");
+    expect(r.stderr).toBe("partial\n");
+  });
+
+  test("Uint8Array stderr writes decode into the buffer", async () => {
+    const { r } = await withRecordedStderr(() =>
+      captureVerbRun(async () => {
+        process.stderr.write(new TextEncoder().encode("err-bytes\n"));
+        return 0;
+      }, []),
+    );
+    expect(r.stderr).toBe("err-bytes\n");
+  });
+
+  test("restores process.stderr.write after a throwing verb", async () => {
+    const { r, sink } = await withRecordedStderr(async () => {
+      await captureVerbRun(async () => {
+        process.stderr.write("first\n");
+        throw new Error("x");
+      }, []);
+      // If the patch leaked, this write would land in the DEAD buffer of
+      // the finished capture instead of the recorder.
+      process.stderr.write("after\n");
+      return await captureVerbRun(async () => {
+        process.stderr.write("second\n");
+        return 0;
+      }, []);
+    });
+    expect(r.stderr).toBe("second\n");
+    expect(sink).toBe("first\nafter\nsecond\n");
+  });
+
+  // `console.error` is a SEPARATE surface from `process.stderr.write` in
+  // Bun — it does not route through it (verified 2026-08-20). A capture
+  // that patched only the `process.*` half would see the empty string for
+  // a verb that used `console.error`, which looks exactly like the defect
+  // this whole change closes.
+  test("CONTROL: the recorder patch alone does NOT see console.error", async () => {
+    // Without this control, the console.error tests below could pass
+    // vacuously on a harness that captured nothing. It pins the Bun fact
+    // the implementation depends on: patching `process.stderr.write` is
+    // not sufficient, so `runRedirected` must patch both.
+    let sink = "";
+    const orig = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((s: string | Uint8Array) => {
+      sink += typeof s === "string" ? s : new TextDecoder().decode(s);
+      return true;
+    }) as typeof process.stderr.write;
+    const origError = console.error;
+    console.error = () => {}; // keep the control quiet, not routed
+    console.error("not-routed");
+    console.error = origError;
+    process.stderr.write = orig;
+    expect(sink).toBe("");
+  });
+
+  test("a console.error receipt lands in stderr", async () => {
+    const origError = console.error;
+    const seen: string[] = [];
+    console.error = (...a: unknown[]) => {
+      seen.push(a.map((v) => String(v)).join(" "));
+    };
+    try {
+      const r = await captureVerbRun(async () => {
+        console.error("✅ atmux reply recorded (be-1 → driver) in /w/ob.md");
+        return 0;
+      }, []);
+      expect(r.stdout).toBe("");
+      expect(r.stderr).toBe("✅ atmux reply recorded (be-1 → driver) in /w/ob.md\n");
+      // TEED: the real console.error still ran (proved by the recorder
+      // seeing it), so a verb's diagnostics are not swallowed.
+      expect(seen).toEqual(["✅ atmux reply recorded (be-1 → driver) in /w/ob.md"]);
+    } finally {
+      console.error = origError;
+    }
+  });
+
+  test("console.error joins every argument, buffer and tee agreeing", async () => {
+    const origError = console.error;
+    const seen: string[] = [];
+    console.error = (...a: unknown[]) => {
+      seen.push(a.map((v) => String(v)).join(" "));
+    };
+    try {
+      const r = await captureVerbRun(async () => {
+        console.error("✅ atmux", "tell-lead", 7);
+        return 0;
+      }, []);
+      expect(r.stderr).toBe("✅ atmux tell-lead 7\n");
+      expect(seen).toEqual(["✅ atmux tell-lead 7"]);
+    } finally {
+      console.error = origError;
+    }
+  });
+
+  test("console.error is restored after a throwing verb", async () => {
+    const origError = console.error;
+    const seen: string[] = [];
+    console.error = (...a: unknown[]) => {
+      seen.push(a.map((v) => String(v)).join(" "));
+    };
+    try {
+      await captureVerbRun(async () => {
+        console.error("during");
+        throw new Error("x");
+      }, []);
+      // If the patch leaked, this would land in the finished capture's
+      // dead buffer instead of the recorder.
+      console.error("after");
+      expect(seen).toEqual(["during", "after"]);
+    } finally {
+      console.error = origError;
+    }
+  });
+
+  test("console.error and process.stderr.write share ONE buffer, in order", async () => {
+    const origError = console.error;
+    console.error = () => {};
+    try {
+      const { r } = await withRecordedStderr(() =>
+        captureVerbRun(async () => {
+          process.stderr.write("one\n");
+          console.error("two");
+          process.stderr.write("three\n");
+          return 0;
+        }, []),
+      );
+      expect(r.stderr).toBe("one\ntwo\nthree\n");
+    } finally {
+      console.error = origError;
+    }
+  });
+
+  // The TEE makes a leaked stderr patch behaviourally INVISIBLE — writes
+  // still reach the real stderr through it, so no output assertion can
+  // see the leak; only an identity round-trip can. Without these two,
+  // deleting `process.stderr.write = origStderrWriteRef` from the
+  // `finally` passes the entire suite (measured), and every capture
+  // leaves one more live closure appending to a dead buffer.
+  test.each([
+    ["a normal verb", async () => 0],
+    [
+      "a throwing verb",
+      async () => {
+        throw new Error("x");
+      },
+    ],
+  ])("restores the EXACT process.stderr.write it found, after %s", async (_label, verb) => {
+    const real = process.stderr.write;
+    const sentinel = ((): boolean => true) as typeof process.stderr.write;
+    process.stderr.write = sentinel;
+    try {
+      await captureVerbRun(verb as () => Promise<number>, []);
+      expect(process.stderr.write).toBe(sentinel);
+    } finally {
+      process.stderr.write = real;
+    }
+  });
+
+  test("N captures leave NO wrapper layers behind", async () => {
+    // Restoring a bound CLONE instead of the original would still pass
+    // the identity test above only by accident; running the cycle three
+    // times pins that the stream is not accumulating one wrapper per run.
+    const real = process.stderr.write;
+    const sentinel = ((): boolean => true) as typeof process.stderr.write;
+    process.stderr.write = sentinel;
+    try {
+      for (let i = 0; i < 3; i += 1) await captureVerbRun(async () => 0, []);
+      expect(process.stderr.write).toBe(sentinel);
+    } finally {
+      process.stderr.write = real;
+    }
+  });
+
+  test("the TEE calls Bun's REAL console.error DETACHED, without throwing", async () => {
+    // `runRedirected` saves `console.error` and invokes it as a bare
+    // function (`origError(...a)`). If Bun's console methods required
+    // `this === console`, every verb that used console.error inside a
+    // capture would crash — and every OTHER console.error test here
+    // stubs the original, so none of them would notice. This one runs
+    // against the real console.error and pays one line of test-log
+    // output for the proof.
+    const r = await captureVerbRun(async () => {
+      console.error("atmux: (verb-capture test) the tee reaches the real console.error");
+      return 0;
+    }, []);
+    expect(r.exitCode).toBe(0);
+    expect(r.errorMessage).toBeUndefined();
+    expect(r.stderr).toBe("atmux: (verb-capture test) the tee reaches the real console.error\n");
+  });
+
+  test("console.error is restored to the EXACT function it found", async () => {
+    const real = console.error;
+    const sentinel = (): void => {};
+    console.error = sentinel;
+    try {
+      await captureVerbRun(async () => 0, []);
+      expect(console.error).toBe(sentinel);
+    } finally {
+      console.error = real;
+    }
   });
 });
 
