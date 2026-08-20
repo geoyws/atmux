@@ -70,7 +70,7 @@ describe.if(HAS_TMUX)("cage colour-environment invariant — real tmux server (A
     for (const sock of ["s-shipped", "s-control"]) {
       Bun.spawnSync({
         cmd: ["tmux", "-S", join(dir, sock), "kill-server"],
-        env: { ...process.env, TMUX: undefined } as Record<string, string>,
+        env: { ...process.env, TMUX: undefined } as Record<string, string | undefined>,
         stderr: "ignore",
       });
     }
@@ -96,7 +96,7 @@ describe.if(HAS_TMUX)("cage colour-environment invariant — real tmux server (A
       ],
       // TMUX unset: per tmux(1) an inherited $TMUX overrides -S and would
       // land this probe on the caller's own server.
-      env: { ...process.env, NO_COLOR: "1", TMUX: undefined } as Record<string, string>,
+      env: { ...process.env, NO_COLOR: "1", TMUX: undefined } as Record<string, string | undefined>,
       stdout: "pipe",
       stderr: "pipe",
     });
