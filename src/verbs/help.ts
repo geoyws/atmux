@@ -107,6 +107,15 @@ Automation:
   report                      Post 30-min progress digest to Discord
   improve [--budget <spec>] [--status] [--dry-run]  Arm eternal-improvement loop (ADR-052)
   cost [--member <m>] [--since <t>] [--json]  Per-member USD + token usage
+  host-pressure [--host <h>] [--timeout-ms <n>] [--json]
+                              CPU / memory / disk headroom for every host
+                              (hax local, hig over ssh). An unreachable host
+                              reports UNREACHABLE and exits nonzero — never
+                              healthy. ADR-273 Supplement-6.
+  token-budget [--provider <p>] [--cache-only] [--timeout-ms <n>] [--json]
+                              Provider quota headroom (codex/claude/zai/kimi).
+                              Percent CONSUMED, exact reset times, cached rows
+                              labelled with their age. ADR-273 Supplement-6.
   rotate <member>             /clear the member and re-brief
   rotate-lead                 /clear the lead and re-bootstrap
   handoff <from> <to>         Move in-flight work from one member to another

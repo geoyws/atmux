@@ -48,8 +48,11 @@ describe("hostPressureRows (pure)", () => {
         loadAvg15min: 3.2,
         memAvailableMb: 32000,
         cpuCores: 16,
+        memTotalMb: 65536,
+        disks: [],
+        missingMounts: [],
       },
-      thresholds: { maxLoadRatio: 0.75, minMemMb: 8192 },
+      thresholds: { maxLoadRatio: 0.75, minMemMb: 8192, maxDiskPercent: 90 },
       skipped: false,
     };
     const rows = hostPressureRows(v);
@@ -72,8 +75,11 @@ describe("hostPressureRows (pure)", () => {
         loadAvg15min: 22.12,
         memAvailableMb: 30000,
         cpuCores: 16,
+        memTotalMb: 65536,
+        disks: [],
+        missingMounts: [],
       },
-      thresholds: { maxLoadRatio: 0.75, minMemMb: 8192 },
+      thresholds: { maxLoadRatio: 0.75, minMemMb: 8192, maxDiskPercent: 90 },
       skipped: false,
     };
     const rows = hostPressureRows(v);
@@ -98,8 +104,11 @@ describe("hostPressureRows (pure)", () => {
         loadAvg15min: 22.12,
         memAvailableMb: 2048,
         cpuCores: 16,
+        memTotalMb: 65536,
+        disks: [],
+        missingMounts: [],
       },
-      thresholds: { maxLoadRatio: 0.75, minMemMb: 8192 },
+      thresholds: { maxLoadRatio: 0.75, minMemMb: 8192, maxDiskPercent: 90 },
       skipped: false,
     };
     const rows = hostPressureRows(v);
@@ -122,8 +131,11 @@ describe("checkHostPressure (verb-side wrapper)", () => {
           loadAvg15min: 1.5,
           memAvailableMb: 24000,
           cpuCores: 8,
+          memTotalMb: 65536,
+          disks: [],
+          missingMounts: [],
         },
-        thresholds: { maxLoadRatio: 0.75, minMemMb: 8192 },
+        thresholds: { maxLoadRatio: 0.75, minMemMb: 8192, maxDiskPercent: 90 },
         skipped: false,
       };
     });
@@ -141,8 +153,11 @@ describe("checkHostPressure (verb-side wrapper)", () => {
         loadAvg15min: 1,
         memAvailableMb: 4096,
         cpuCores: 8,
+        memTotalMb: 65536,
+        disks: [],
+        missingMounts: [],
       },
-      thresholds: { maxLoadRatio: 0.75, minMemMb: 8192 },
+      thresholds: { maxLoadRatio: 0.75, minMemMb: 8192, maxDiskPercent: 90 },
       skipped: false,
     }));
     expect(rows[0]?.status).toBe("yellow");

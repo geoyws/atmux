@@ -261,6 +261,8 @@ export const VOX_RUNNER_IMPORTERS: Readonly<Record<VoxRunnerKey, () => Promise<V
     dispatch: async () => (await import("./dispatch.ts")).dispatch,
     claim: async () => (await import("./claim.ts")).claim,
     nudge: async () => (await import("./nudge.ts")).nudge,
+    hostPressure: async () => (await import("./host-pressure.ts")).hostPressure,
+    tokenBudget: async () => (await import("./token-budget.ts")).tokenBudget,
   });
 
 /**

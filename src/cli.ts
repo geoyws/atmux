@@ -54,6 +54,7 @@ import { fleet } from "./verbs/fleet.ts";
 import { groom } from "./verbs/groom.ts";
 import { handoff } from "./verbs/handoff.ts";
 import { health } from "./verbs/health.ts";
+import { hostPressure } from "./verbs/host-pressure.ts";
 import { heartbeat } from "./verbs/heartbeat.ts";
 import { help } from "./verbs/help.ts";
 import { hygieneTick } from "./verbs/hygiene-tick.ts";
@@ -98,6 +99,7 @@ import { sweepEpics } from "./verbs/team/sweep-epics.ts";
 import { teamRename } from "./verbs/team-rename.ts";
 import { teamRepairRename } from "./verbs/team-repair-rename.ts";
 import { tellLead } from "./verbs/tell-lead.ts";
+import { tokenBudget } from "./verbs/token-budget.ts";
 import { topo } from "./verbs/topo.ts";
 import { up } from "./verbs/up.ts";
 import { version } from "./verbs/version.ts";
@@ -286,6 +288,12 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return report(argv.slice(1));
     case "cost":
       return cost(argv.slice(1));
+    // ADR-273 §Supplement — the two infrastructure reads, also the
+    // `host_pressure` / `token_budget` voice tools' runners.
+    case "host-pressure":
+      return hostPressure(argv.slice(1));
+    case "token-budget":
+      return tokenBudget(argv.slice(1));
     case "cockpit":
       return cockpit(argv.slice(1));
     case "ombudsman":
