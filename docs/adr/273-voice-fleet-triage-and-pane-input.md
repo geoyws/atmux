@@ -576,6 +576,92 @@ So: **run the full suite, never the single scenario you changed**, and treat a r
 
 `bun scripts/vox-e2e.ts` — all three scenarios, verbatim judge output — is recorded in [RUNBOOK-vox.md](../RUNBOOK-vox.md) §6.8. The `drilldown` scenario, left failing on purpose since §Supplement-5, is the gate this decision was taken to close; `attention` and `all_ok` are regression legs. No judge criterion, grading rule, or fixture was altered to reach it: the scenario table (`src/core/vox/e2e/scenarios.ts`) and the fixtures (`src/core/vox/e2e/fixtures.ts`) are byte-identical to the run that failed.
 
+## Supplement-8 — team resolution stops requiring the LEADING segment (2026-08-20)
+
+`resolveTeamName` (`src/core/vox/team-context.ts`) could not resolve a team by the part of its name a human actually says. Probed directly against an index holding `vox-e2e-alpha` and `vox-e2e-ghost`:
+
+| spoken | before |
+|---|---|
+| `"alpha"` | `unknown` |
+| `"ghost"` | `unknown` |
+| `"the alpha team"` | `unknown` |
+| `"vox"` | `ambiguous [vox-e2e-alpha, vox-e2e-ghost]` — correct |
+| `"vox-e2e-alpha"` | `ok` |
+
+### Z1 — Why the ladder was backwards for this fleet, specifically
+
+The ladder ran exact → case-fold → strip `-root`/`-team` → **unique prefix** → Levenshtein ≤2. It had no suffix or segment rung, so **only a team's leading segment resolved.**
+
+That is a defensible default for repo-shaped names (`sopx-root`, `crm-react`) and it is exactly wrong here. This fleet's teams are named `<product>-<feature>-<user>[-driver-N]` per [CLAUDE.md](../../CLAUDE.md) §Branch naming, deliberately, so that one snapshot identifier can be checked out across every submodule. The consequence for speech is that **the prefix is the shared, least distinctive part of the name and the trailing segment is the one a person says:**
+
+| team | operator says | before |
+|---|---|---|
+| `px-crm-geoyws-driver-2` | "driver 2" | `unknown` |
+| `atmux-geoyws` | "geoyws" | `unknown` |
+| `vox-e2e-alpha` | "alpha" | `unknown` |
+| any of `px-*` | "px" | `ambiguous` across every sibling |
+
+So the one rung that could fire was the one guaranteed to collide, and the segments that identify a team uniquely were unreachable. A naming convention chosen for git correctness had silently set the voice surface's resolution up to fail.
+
+### Z2 — How it surfaced, and the flakiness it explains
+
+An e2e scenario failed with **`hallucinations: none`**. The model was behaving correctly — it asked rather than guessed, exactly as `instructions.ts` tells it to on `unknown_team` — and the tool had genuinely failed to resolve. Nothing in the transcript pointed at the resolver; the model's honesty is what made the defect legible instead of masking it as a bad answer.
+
+It also explains an observed flake: **when the model OMITS the team argument the current-team default answers fine; when it PASSES `"alpha"` resolution fails.** Same build, two outcomes, split on whether the model volunteered an optional argument. That is the signature of a resolver gap, not a model gap, and it is worth naming because "flaky, sometimes the model gets it right" is how this class of defect gets written off.
+
+### Z3 — The new rung, and why it is ONE rung
+
+The ladder is now:
+
+```
+1. exact
+2. case-fold
+3. case-fold after stripping -root / -team from BOTH sides
+4. unique prefix
+5. segment run          <- new
+6. Levenshtein <= RESOLVE_MAX_EDIT_DISTANCE (2)
+```
+
+Rung 5 matches when the normalized utterance is a **contiguous run of the name's `-`-separated segments**. Implementation is a boundary-anchored substring test — both name and needle are wrapped in `-`, so a plain `includes` can only match whole segments and `"e"` never hits `vox-e2e-alpha`.
+
+**Placement, both ends.** BELOW prefix: a leading-segment match is the more specific claim and that rung's behaviour is already pinned by tests that predate this change. ABOVE Levenshtein: a segment run is an EXACT match on token boundaries, so letting a fuzzy whole-string typo match outrank a segment the operator actually pronounced would be strictly worse than the bug being fixed. The regression pin for the second half is `rung 5 (segment) beats rung 6 (Levenshtein)` — `"alpha"` against `[vox-e2e-alpha, alpht]`, where `alpht` is edit-distance 1.
+
+**One rung, not two.** A separate trailing-segment rung sitting above an any-segment rung was considered and rejected. It would resolve `"crm"` against both `px-geoyws-crm` and `atmux-crm-tools` by preferring the one where the segment happens to be LAST — breaking a real collision on **position alone, a fact the operator never uttered.** Every other rung resolves on something that was said; that one would resolve on where a word sits in a string the operator never saw. It is a guess wearing a rung's clothes, and this module's whole posture (file header, [ADR-150](150-cross-team-complaints-routing.md) §D5) is ask-don't-guess. The cost is accepted deliberately: such a collision comes back `ambiguous` with both names and the operator says one more word. An extra rung is an extra chance to be confidently wrong.
+
+### Z4 — Spoken filler: a second mechanism, kept deliberately distinct from `stripSuffix`
+
+`normalizeSpoken` (new, exported) rewrites the **utterance**; `stripSuffix` rewrites a **name**. They are easy to confuse and are separate on purpose:
+
+| | `stripSuffix` | `normalizeSpoken` |
+|---|---|---|
+| operates on | a hyphenated NAME | an UTTERANCE |
+| applied to | BOTH sides of rung 3 | the spoken side only |
+| removes | repo-naming noise (`-root`, `-team`) | English filler + word breaks |
+
+`normalizeSpoken` case-folds, drops a possessive clitic (straight and curly apostrophe), drops a leading `the` and a trailing `team`/`teams`, and joins word breaks with `-` — **speech gives spaces where the name has hyphens**, which is what routes "driver 2" to `driver-2` and "px crm geoyws driver 2" to the whole name.
+
+Two boundaries worth stating:
+
+- **`-root` is NOT duplicated into the spoken filler set.** It is repo-naming noise, never an English word an operator speaks; duplicating it is exactly the confusing overlap the split exists to avoid. The one genuine overlap is `team`, which is both an English noun and a repo suffix — the two mechanisms agree there **by construction**, so `alpha`, `alpha-team` and "the alpha team" all reduce to the same thing.
+- **Merging the two would apply article-stripping to real team names**, which is how a team called `the-hive` stops resolving.
+
+Filler is only dropped while something is left to match — a team really can be called `team`. The guard is per-step, so `"the team"` normalizes to `"team"` (article gone, noun kept) rather than to nothing. A normalizer that can return the empty string is a rung that matches everything, so the rung additionally refuses to build a needle from an empty run; `"-"` and `"'s"` match NOTHING, including against a pathological name carrying an empty segment.
+
+### Z5 — What did NOT change, and the pins that hold it
+
+The ladder's core discipline is correct and is untouched: **the first rung with exactly one hit wins, and >1 hit on a rung returns `ambiguous` with the candidate names.** No result is collapsed into a best guess; no rung was reordered so a fuzzy match can beat an exact one. `RESOLVE_MAX_EDIT_DISTANCE` is still 2 and the fuzzy rung's behaviour is unchanged at distance 2 (resolves) and distance 3 (unknown).
+
+Five regression pins in `tests/unit/core/vox/team-context.test.ts` exist solely to hold rung order — each builds an index where the segment rung would hit ≥2 names, so hoisting it above the rung under test turns a resolve into an `ambiguous`. They were mutation-verified, not assumed: hoisting the segment rung above rung 1 reddens 5 tests, demoting it below Levenshtein reddens 1, dropping the boundary anchoring reddens 3, and collapsing `ambiguous` into a first-pick reddens 8.
+
+The honest consequence of a real fleet: **`"geoyws"` resolves only where that segment is unique.** Across `atmux-geoyws` + three `px-*-geoyws` teams it is `ambiguous` with all four candidates, and that is the right answer — the brief's table row is a statement about a fleet where the segment distinguishes, not a promise to pick one.
+
+### Z6 — Not built
+
+- **Number-words.** "driver two" does not route to `driver-2`; only the digit form does. A word→digit map is another normalization pass with its own collision surface (a team segment really can be `one`), and no evidence yet says ASR emits the word form here. Named rather than added.
+- **`my` / `our` as leading filler.** Only `the` is stripped. Every word added to the filler set is a word the segment rung can no longer match, and a team can be named after a common word.
+- **The voice path is unproven for this change.** Acceptance is the unit matrix; the e2e harness costs real API calls and its judge is non-deterministic (§Supplement-7 Y7), so it is run on the main loop, not here.
+
+
 ## Acceptance
 
 `fleet_attention` / `fleet_quiet` are covered by **[RUNBOOK-voice.md](../RUNBOOK-voice.md) §7 V-20** (added 2026-08-16 — until then the daily-use half of the voice surface had no acceptance row at all). Four legs: the sweep is bounded, unreadable teams are reported rather than omitted, the attention list honours the top-N speech budget, and `fleet_quiet` aggregates without naming a pane. All four are headless-verified and confirmed by a live CLI sweep; the **voice tool path** around the shared classifier is explicitly recorded there as unproven.
