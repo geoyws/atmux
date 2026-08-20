@@ -22,6 +22,10 @@
 //   dispatch    → src/verbs/dispatch.ts::dispatch
 //   claim       → src/verbs/claim.ts::claim
 //   nudge       → src/verbs/nudge.ts::nudge   (ADR-273 D4 pane input)
+//   hostPressure→ src/verbs/host-pressure.ts::hostPressure
+//                                            (ADR-273 §Supplement)
+//   tokenBudget → src/verbs/token-budget.ts::tokenBudget
+//                                            (ADR-273 §Supplement)
 //
 // `list_teams` is the ONE core-direct read: it has NO runner
 // (`runnerKey: null`) and is served straight from the team index by the
@@ -38,6 +42,7 @@
 import { z } from "zod";
 import { ConfigError } from "../../errors.ts";
 import { NUDGE_ACTIONS, nudgeConfirmPreview } from "./nudge.ts";
+import { BUDGET_PROVIDERS } from "./token-budget.ts";
 
 /** Injected-runner keys — see the module-map in the file header. */
 export type VoxRunnerKey =
@@ -54,7 +59,9 @@ export type VoxRunnerKey =
   | "tellLead"
   | "dispatch"
   | "claim"
-  | "nudge";
+  | "nudge"
+  | "hostPressure"
+  | "tokenBudget";
 
 /** One catalog entry. `argv` receives the VALIDATED args (post-Zod,
  *  `confirm_token` already stripped) plus the resolved team root
@@ -240,6 +247,54 @@ export const VOX_TOOL_CATALOG: ReadonlyArray<VoxToolEntry> = Object.freeze([
     confirm: false,
     runnerKey: "fleet",
     argv: () => ["--quiet"],
+  },
+  {
+    // ADR-273 §Supplement — the two INFRASTRUCTURE reads. Neither is
+    // team-scoped: a host and a provider quota belong to the whole
+    // fleet, and asking "which team is hax in" is a category error.
+    //
+    // `host_pressure` declares NO parameters at all. A per-host filter
+    // was considered and dropped: the spoken question is "how is the box
+    // holding up", which means every box, and a tool with no free-text
+    // argument has no flag-injection surface to reason about.
+    name: "host_pressure",
+    description:
+      "CPU, memory and disk headroom for every host the fleet runs on (hax and hig), where a host that cannot be reached is reported as UNREACHABLE rather than healthy. Use this for 'how is the box holding up', 'are we out of disk', 'is hig up'.",
+    params: z.object({}),
+    mutating: false,
+    confirm: false,
+    runnerKey: "hostPressure",
+    argv: () => [],
+  },
+  {
+    // `provider` is an enum over the frozen in-code list, so a
+    // transcript SELECTS a provider and can never author one; the value
+    // lands in a `--provider` FLAG-VALUE slot, which the verb's parser
+    // reads as data. `cache_only` is a boolean and renders to a bare
+    // flag we emit ourselves — no operator string reaches argv here at
+    // all, which is why neither argument carries `positionalParam`.
+    name: "token_budget",
+    description:
+      "AI account quota headroom across Codex, Claude, Z.ai and Kimi — how much of each budget is CONSUMED (not how much remains), and exactly when each window resets. Use this for 'how much budget have I got left', 'am I rate limited', 'when does my quota reset'; set cache_only for an instant answer from the last snapshot instead of a live probe.",
+    params: z.object({
+      provider: z
+        .enum(BUDGET_PROVIDERS)
+        .default("all")
+        .describe("Which provider to report; 'all' covers every account"),
+      cache_only: z
+        .boolean()
+        .default(false)
+        .describe(
+          "Read the last snapshot instead of probing live. Much faster; the answer is explicitly labelled CACHED with its age",
+        ),
+    }),
+    mutating: false,
+    confirm: false,
+    runnerKey: "tokenBudget",
+    argv: (args) => [
+      ...(typeof args.provider === "string" ? ["--provider", args.provider] : []),
+      ...(args.cache_only === true ? ["--cache-only"] : []),
+    ],
   },
   {
     name: "team_status",

@@ -423,6 +423,72 @@ Built from `buildCagePlan` + `materializeCage` — the same planner and the same
 
 Every difference is a claim the tool can now support: the panes resolve to windows tmux actually reports, the `?` says the occupant was never identified, the cadence cell says nothing because nothing was readable, and the approval row describes this team.
 
+
+## Supplement-6 — infrastructure reads: `host_pressure` + `token_budget` (2026-08-17)
+
+> Two tools the operator asked for and the catalog never had: *"get info about the token budget and other things of interest, and also the cpu/mem/disk pressure for hax and hig both"*. `cost_report` looked adjacent and is not — it is per-member AI **spend** for one team since session start, which answers neither question.
+
+### X1 — Shipped surface
+
+| Tool | Runner | Verb | Params | Mutating |
+|---|---|---|---|---|
+| `host_pressure` | `hostPressure` | `atmux host-pressure` | none | no |
+| `token_budget` | `tokenBudget` | `atmux token-budget` | `provider` (enum), `cache_only` (bool) | no |
+
+Both are reads, so both survive `ATMUX_VOX_READONLY=1`. Neither is team-scoped: a host and a provider quota belong to the whole fleet, and scoping either to a team would invite answering "how is hig" with one team's slice of a machine every team shares. The catalog is 19 tools.
+
+Implementation: `src/core/vox/host-report.ts` + `src/core/vox/token-budget.ts` (pure, fixture-testable), `src/verbs/host-pressure.ts` + `src/verbs/token-budget.ts` (IO), both also reachable as CLI verbs.
+
+### X2 — The two judgment calls
+
+1. **Unreachable is not healthy.** A host that cannot be reached — ssh failure, timeout, or a payload we cannot parse — reports `UNREACHABLE` with its reason, is never dropped from the report, and forces the overall verdict to not-ok. `hig` being down is exactly what the operator needs to hear, and a report that folded it into an all-clear would be using absence of evidence as evidence.
+2. **Cached is not live.** A `--cache-only` budget row is labelled `CACHED` with its snapshot age, in the headline *before* any number and again on every row. A stale snapshot described as a measurement is the same lie one domain over.
+
+### X3 — Reuse, not reimplementation
+
+- **Host pressure** extends the existing `src/core/host-pressure.ts` rather than adding a second probe. The remote host runs `probeHostPressure` too — with readers that serve text pre-fetched by one ssh round trip — so every parse, threshold and verdict is shared. A separate remote implementation is how two hosts start disagreeing about what 90% full means.
+- **Token budget** shells out to the operator's maintained `probe-budgets.sh` through the `spawn()` seam. That script already handles Codex's rate-limit JSON, Claude's five OAuth headers, Z.ai's quota windows and Kimi's absent quota API; a second copy in atmux would drift on the first provider header change, and would put four sets of credentials in a process that today never touches any. Resolution order: `ATMUX_BUDGET_PROBE`, then `~/.agents/skills/...` (the one tree both Claude and Codex read), then the `.claude*` fallbacks.
+
+### X4 — The disk dimension was added to `host-pressure.ts`, and it gates
+
+`host-pressure.ts` had load and memory but no disk. Disk was added **there**, so `atmux doctor`'s host-pressure row and the ADR-184 spawn-epic gate benefit alongside the voice tool.
+
+Disk **participates in the verdict**; it is not merely measured. A probe that reads a dimension and then excludes it from `ok` would return `ok: true` on a 99%-full host — and a full disk is exactly what breaks `git worktree add`, the first thing spawn-epic does. Threshold `ATMUX_SPAWN_MAX_DISK_PERCENT`, default **90**, matching the line the hig sentinel already alerts on so one host does not carry two definitions of "full".
+
+**This changes spawn-epic's refusal criteria**: a host over 90% on a probed mount now refuses spawn where before it did not. Deliberate, and named here rather than left to be discovered.
+
+A **missing mount is a reason, not a pass**. Matching is exact on df's "Mounted on" column: an ancestor-prefix rule was written first and rejected, because `/` is an ancestor of every absolute path, so it marked an absent `/data` as covered whenever `/` was also probed — the default configuration — leaving the check dead on arrival.
+
+### X5 — Three faults the live run found that the unit tests did not
+
+1. **`echo #atmux:loadavg` is a shell comment.** The snapshot markers begin with `#`, and unquoted they printed nothing, so hig's payload came back with no section headers. The failure was at least honest — an unparseable payload reported `UNREACHABLE`, exactly as X2.1 requires — but the host was wrongly unreachable for a week's worth of a wrong character. The test that "passed" asserted the marker *text* appeared in the command, which is true either way; it now asserts the **quoting**.
+2. **Two Codex budgets rendered identically.** `codex:primary` and `GPT-5.3-Codex-Spark:primary` share the 7d window, so both spoke as "codex pro 7d" — one `AT CAPACITY`, one fine, back to back and indistinguishable. The bucket is now appended whenever it is not already the window label.
+3. **`SpawnTimeoutError` embeds the whole argv.** The first live timeout produced a ~200-character dump of the remote shell script as the spoken reason. `speakProbeError` reduces it to `ssh to hig timed out after 250ms`, and surfaces the ssh failure phrases (`Connection refused`, `Permission denied`, …) that each imply a different fix.
+
+### X6 — Secrets
+
+Neither tool prints, logs or returns a token. `redactSecrets` masks credential-shaped substrings (JWTs, `Bearer …`, `sk-`/`ghp_`-style keys, and any opaque 40+ character run) on every free-text field that reaches output — including `--json`, since a leak that only happens under a flag is still a leak, and including the probe's stderr on the failure path, which is where an interpolated URL would otherwise land. The tests plant a control value and assert a benign note **is** rendered verbatim before asserting a planted token is not, so "no secret present" cannot pass by the field having been dropped.
+
+### X7 — Timeouts
+
+`ATMUX_HOST_PROBE_TIMEOUT_MS` (default 15_000) bounds each ssh; `ATMUX_BUDGET_PROBE_TIMEOUT_MS` (default 45_000) bounds the budget probe. Both resolve with the fail-closed contract `src/abstractions/spawn.ts::resolveDefaultTimeoutMs` uses — missing, non-numeric, non-finite or non-positive silently becomes the default. A voice tool that hangs is worse than one that errors.
+
+### X8 — Two ways a SUCCESSFUL read reaches the model as a failure
+
+Both were found by driving the real `tool-bridge` end to end with the real lazy runners, not by unit tests — each half was correct on its own, and only their composition was wrong. Both are the same failure class as X2: a confident answer that is not what the operator thinks it is.
+
+**1. A nonzero exit becomes `verb_failed`.** The bridge maps a verb's nonzero exit to an error envelope. Both tools originally returned 1 on bad news — an unreachable host, a rate-limited account — reasoning that the exit code should carry the verdict for shell chaining. The consequence: *"hig is unreachable"*, the single most important thing `host_pressure` can say, arrived at the model as a **broken tool** rather than as the finding. Every other read verb the catalog wires (`health`, `fleet`, `blockers`) returns 0 unconditionally; these now match. **The exit code says whether the read happened; the rendered text and `--json.ok` carry the verdict**, and a shell gate reads `--json | jq -e .ok`. Nonzero survives only for "could not measure anything at all", which genuinely is a tool failure.
+
+**2. Output on stderr becomes `verb_output_unparseable`.** `captureVerbRun` collects stdout only (`console.log` + `process.stdout.write`), so a verb writing its receipt to stderr yields empty captured stdout, which the bridge renders as *"the verb produced no usable output"*. `tell_lead` has that shape today and a **separate lane owns the bridge-side fix**; `src/core/vox/tool-bridge.ts` and `src/core/verb-capture.ts` were deliberately NOT touched here. Instead both tools write to stdout — the correct shape for a read tool regardless of what the bridge does — and `tests/unit/verbs/vox-infra-stdout-contract.test.ts` pins it on the success, failure and `--json` paths so neither tool depends on that fix landing.
+
+A note on why the second needed its own test rather than an assertion inside an existing one: `console.log` does **not** route through `process.stdout.write` in Bun (verified directly), which is why `verb-capture` patches both. A capture harness that watched only one channel would have reported an empty stderr for the wrong reason, so the harness itself carries a control test proving it can see a stderr write before any `expect(stderr).toBe("")` is trusted.
+
+### X9 — Not built
+
+- No per-host filter on the voice tool (`--host` exists on the CLI verb only). The spoken question is "how is the box holding up", which means every box.
+- No historical trend for either tool. Both answer "right now".
+- The **voice path** is unproven for both, the same gap §7 V-20 records for `fleet_attention`: the CLI verb and the tool share the renderer, but the tool-bridge path around it (argv construction, summarization, `maxResultChars` budgeting) has no live receipt yet.
+
 ## Acceptance
 
 `fleet_attention` / `fleet_quiet` are covered by **[RUNBOOK-voice.md](../RUNBOOK-voice.md) §7 V-20** (added 2026-08-16 — until then the daily-use half of the voice surface had no acceptance row at all). Four legs: the sweep is bounded, unreadable teams are reported rather than omitted, the attention list honours the top-N speech budget, and `fleet_quiet` aggregates without naming a pane. All four are headless-verified and confirmed by a live CLI sweep; the **voice tool path** around the shared classifier is explicitly recorded there as unproven.

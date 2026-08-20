@@ -1,6 +1,7 @@
 // Unit tests for src/core/host-pressure.ts (ADR-184 substrate).
 
 import { describe, expect, test } from "bun:test";
+// The DISK dimension has its own suite — tests/unit/core/host-pressure-disk.test.ts.
 import {
   formatPressureError,
   type HostPressureVerdict,
@@ -9,6 +10,12 @@ import {
   probeHostPressure,
   resolveThresholds,
 } from "../../../src/core/host-pressure.ts";
+
+/** A healthy `df -P -k /` payload — one 458 GB root at 47%. Injected
+ *  so no unit test shells out to a real `df`. */
+const DF_HEALTHY =
+  "Filesystem     1024-blocks      Used Available Capacity Mounted on\n" +
+  "/dev/md2         457717264 213000000 244717264      47% /\n";
 
 describe("resolveThresholds", () => {
   test("defaults when env empty", () => {
@@ -115,7 +122,8 @@ describe("probeHostPressure", () => {
     const v = await probeHostPressure({
       platform: "linux",
       readLoadAvg: async () => "0.5 0.5 0.5 1/100 1000",
-      readMemInfo: async () => "MemAvailable: 16777216 kB\n", // 16GB
+      readMemInfo: async () => "MemTotal: 67108864 kB\nMemAvailable: 16777216 kB\n", // 16GB
+      readDf: async () => DF_HEALTHY,
       readCpuCount: async () => 16,
       env: {},
     });
@@ -130,7 +138,8 @@ describe("probeHostPressure", () => {
     const v = await probeHostPressure({
       platform: "linux",
       readLoadAvg: async () => "20.0 20.0 20.0 1/100 1000",
-      readMemInfo: async () => "MemAvailable: 16777216 kB\n",
+      readMemInfo: async () => "MemTotal: 67108864 kB\nMemAvailable: 16777216 kB\n",
+      readDf: async () => DF_HEALTHY,
       readCpuCount: async () => 16,
       env: {},
     });
@@ -142,7 +151,8 @@ describe("probeHostPressure", () => {
     const v = await probeHostPressure({
       platform: "linux",
       readLoadAvg: async () => "0.5 0.5 0.5 1/100 1000",
-      readMemInfo: async () => "MemAvailable: 2097152 kB\n", // 2GB
+      readMemInfo: async () => "MemTotal: 67108864 kB\nMemAvailable: 2097152 kB\n", // 2GB
+      readDf: async () => DF_HEALTHY,
       readCpuCount: async () => 16,
       env: {},
     });
@@ -154,7 +164,8 @@ describe("probeHostPressure", () => {
     const v = await probeHostPressure({
       platform: "linux",
       readLoadAvg: async () => "20.0 20.0 20.0 1/100 1000",
-      readMemInfo: async () => "MemAvailable: 2097152 kB\n",
+      readMemInfo: async () => "MemTotal: 67108864 kB\nMemAvailable: 2097152 kB\n",
+      readDf: async () => DF_HEALTHY,
       readCpuCount: async () => 16,
       env: {},
     });
@@ -167,7 +178,8 @@ describe("probeHostPressure", () => {
     const v = await probeHostPressure({
       platform: "linux",
       readLoadAvg: async () => "5.0 5.0 5.0 1/100 1000",
-      readMemInfo: async () => "MemAvailable: 16777216 kB\n",
+      readMemInfo: async () => "MemTotal: 67108864 kB\nMemAvailable: 16777216 kB\n",
+      readDf: async () => DF_HEALTHY,
       readCpuCount: async () => 16,
       env: { ATMUX_SPAWN_MAX_LOAD_RATIO: "0.3" },
     });
@@ -177,7 +189,8 @@ describe("probeHostPressure", () => {
     const v2 = await probeHostPressure({
       platform: "linux",
       readLoadAvg: async () => "5.0 5.0 5.0 1/100 1000",
-      readMemInfo: async () => "MemAvailable: 16777216 kB\n",
+      readMemInfo: async () => "MemTotal: 67108864 kB\nMemAvailable: 16777216 kB\n",
+      readDf: async () => DF_HEALTHY,
       readCpuCount: async () => 16,
       env: { ATMUX_SPAWN_MAX_LOAD_RATIO: "2.0" },
     });
@@ -222,8 +235,11 @@ describe("formatPressureError", () => {
         loadAvg15min: 0.5,
         memAvailableMb: 16384,
         cpuCores: 16,
+        memTotalMb: 65536,
+        disks: [],
+        missingMounts: [],
       },
-      thresholds: { maxLoadRatio: 0.75, minMemMb: 8192 },
+      thresholds: { maxLoadRatio: 0.75, minMemMb: 8192, maxDiskPercent: 90 },
       skipped: false,
     };
     expect(formatPressureError(v)).toBe("");
@@ -238,8 +254,11 @@ describe("formatPressureError", () => {
         loadAvg15min: 20,
         memAvailableMb: 2048,
         cpuCores: 16,
+        memTotalMb: 65536,
+        disks: [],
+        missingMounts: [],
       },
-      thresholds: { maxLoadRatio: 0.75, minMemMb: 8192 },
+      thresholds: { maxLoadRatio: 0.75, minMemMb: 8192, maxDiskPercent: 90 },
       skipped: false,
     };
     const out = formatPressureError(v);

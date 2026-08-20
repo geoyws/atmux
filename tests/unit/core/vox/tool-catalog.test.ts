@@ -37,12 +37,14 @@ import { parseDispatchArgs } from "../../../../src/verbs/dispatch.ts";
 import { parseDriverInboxArgs } from "../../../../src/verbs/driver-inbox.ts";
 import { parseFleetArgs } from "../../../../src/verbs/fleet.ts";
 import { parseHealthArgs } from "../../../../src/verbs/health.ts";
+import { parseHostPressureArgs } from "../../../../src/verbs/host-pressure.ts";
 import { parseNudgeArgs } from "../../../../src/verbs/nudge.ts";
 import { parsePaneStateArgs } from "../../../../src/verbs/pane-state.ts";
 import { parseOutboxArgs } from "../../../../src/verbs/reply.ts";
 import { parseStatusArgs } from "../../../../src/verbs/status.ts";
 import { parseAddArgs, parseListArgs } from "../../../../src/verbs/task.ts";
 import { parseTellLeadArgs } from "../../../../src/verbs/tell-lead.ts";
+import { parseTokenBudgetArgs } from "../../../../src/verbs/token-budget.ts";
 import { parseTopoArgs } from "../../../../src/verbs/topo.ts";
 
 const ROOT = "/w/atmux";
@@ -54,12 +56,14 @@ function entry(name: string): VoxToolEntry {
 }
 
 describe("catalog surface (ADR-272 D6, frozen)", () => {
-  test("exactly the 17 tools (D6's 14 + ADR-273's 2 reads + ADR-273 D4's pane_nudge), in a stable order", () => {
+  test("exactly the 19 tools (D6's 14 + ADR-273's 2 triage reads + pane_nudge + §Supplement's 2 infra reads), in a stable order", () => {
     expect(VOX_TOOL_CATALOG.map((t) => t.name)).toEqual([
       "list_teams",
       "fleet_overview",
       "fleet_attention",
       "fleet_quiet",
+      "host_pressure",
+      "token_budget",
       "team_status",
       "team_health",
       "list_tasks",
@@ -123,15 +127,29 @@ describe("catalog surface (ADR-272 D6, frozen)", () => {
       dispatch_task: "dispatch",
       claim_task: "claim",
       pane_nudge: "nudge",
+      host_pressure: "hostPressure",
+      token_budget: "tokenBudget",
     });
   });
 
-  test("team-scoped = every tool except the four fleet-wide reads", () => {
+  test("team-scoped = every tool except the six fleet-wide reads", () => {
     // ADR-273 D1: triage is split by ATTENTION, not by team, so neither
     // new tool takes a `team` param — a fleet survey that needed one
     // would be the N x M call pattern the ADR exists to replace.
+    //
+    // ADR-273 §Supplement adds two more for a different reason: a HOST
+    // and a provider QUOTA are not team-shaped at all. Scoping either to
+    // a team would invite the model to answer "how is hig" with one
+    // team's slice of a machine every team shares.
     const fleetWide = VOX_TOOL_CATALOG.filter((t) => !isTeamScoped(t)).map((t) => t.name);
-    expect(fleetWide).toEqual(["list_teams", "fleet_overview", "fleet_attention", "fleet_quiet"]);
+    expect(fleetWide).toEqual([
+      "list_teams",
+      "fleet_overview",
+      "fleet_attention",
+      "fleet_quiet",
+      "host_pressure",
+      "token_budget",
+    ]);
   });
 
   test("confirm_token is declared on exactly the confirm-gated tools", () => {
@@ -641,6 +659,8 @@ const SAMPLES: Record<string, Record<string, unknown>> = {
   dispatch_task: { team: "atmux", task_id: "t-abc123", member: "be-1" },
   claim_task: { team: "atmux", task_id: "t-abc123", member: "be-1" },
   pane_nudge: { team: "atmux", member: "be-1", action: "submit" },
+  host_pressure: {},
+  token_budget: { provider: "claude", cache_only: false },
 };
 
 /** The bridge strips `confirm_token` BEFORE calling `entry.argv`
@@ -672,6 +692,12 @@ const EXPECTED_SLOTS: Record<string, Record<string, ArgvSlot>> = {
   // canned text is a compile-time constant looked up from `action`, so
   // no operator-supplied string ever becomes a spoken word in a pane.
   pane_nudge: { team: "absent", member: "flag-value", action: "flag-value" },
+  // ADR-273 §Supplement: `host_pressure` builds an EMPTY argv, so it has
+  // no slot to expose. `token_budget.provider` is an enum whose value
+  // lands after `--provider`, and `cache_only` is a boolean the audit
+  // skips by construction (it can never carry a flag).
+  host_pressure: {},
+  token_budget: { provider: "flag-value" },
 };
 
 /**
@@ -701,6 +727,8 @@ const RUNNER_PARSERS: Record<VoxRunnerKey, (argv: ReadonlyArray<string>) => unkn
   dispatch: (a) => parseDispatchArgs(a),
   claim: (a) => parseClaimDoneArgs(a, "claim"),
   nudge: (a) => parseNudgeArgs(a),
+  hostPressure: (a) => parseHostPressureArgs(a),
+  tokenBudget: (a) => parseTokenBudgetArgs(a),
 };
 
 /** True when SOME own property of the parse result is EXACTLY `value` —
@@ -780,7 +808,7 @@ describe("structural argv-slot gate (ADR-272 D2 §Supplement)", () => {
     expect(positionalArgs).toBe(3);
   });
 
-  test("coverage ratio: all 17 tools, all 29 arguments, none unclassified", () => {
+  test("coverage ratio: all 19 tools, all 31 arguments, none unclassified", () => {
     let argCount = 0;
     let classified = 0;
     for (const t of VOX_TOOL_CATALOG) {
@@ -797,12 +825,14 @@ describe("structural argv-slot gate (ADR-272 D2 §Supplement)", () => {
         else if (key in slots) classified += 1;
       }
     }
-    expect(VOX_TOOL_CATALOG.length).toBe(17);
+    expect(VOX_TOOL_CATALOG.length).toBe(19);
     // 24 + `fleet_attention.top` (an integer, so it classifies via the
     // non-string route); `fleet_quiet` declares none; ADR-273 D4's
-    // `pane_nudge` adds 4 (team, member, action, confirm_token).
-    expect(argCount).toBe(29);
-    expect(classified).toBe(29);
+    // `pane_nudge` adds 4 (team, member, action, confirm_token);
+    // §Supplement adds 2 — `host_pressure` declares none at all, and
+    // `token_budget` declares `provider` + `cache_only`.
+    expect(argCount).toBe(31);
+    expect(classified).toBe(31);
   });
 
   test("a `--` terminator is emitted ONLY for runners whose real parser honours it", () => {
@@ -837,6 +867,8 @@ describe("structural argv-slot gate (ADR-272 D2 §Supplement)", () => {
       dispatch: ["--", "-x"],
       claim: ["--", "-x"],
       nudge: ["--", "-x"],
+      hostPressure: ["--", "-x"],
+      tokenBudget: ["--", "-x"],
     };
     for (const [key, argv] of Object.entries(probeArgv) as Array<[VoxRunnerKey, string[]]>) {
       let honours = false;

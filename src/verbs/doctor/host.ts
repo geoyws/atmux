@@ -39,9 +39,17 @@ export function hostPressureRows(verdict: HostPressureVerdict): DoctorRow[] {
   const loadCeil = verdict.probe.cpuCores * verdict.thresholds.maxLoadRatio;
   const memMb = verdict.probe.memAvailableMb;
   const memMbThreshold = verdict.thresholds.minMemMb;
+  // Disk joins the row for the same reason it joins the verdict
+  // (ADR-273 §Supplement): a host-pressure row that never mentions disk
+  // reads as "pressure is fine" on a box that is 99% full.
+  const diskParts = verdict.probe.disks.map(
+    (d) => `${d.mount} ${d.usedPercent}%/${verdict.thresholds?.maxDiskPercent ?? 90}%`,
+  );
+  for (const m of verdict.probe.missingMounts) diskParts.push(`${m} NOT REPORTED`);
   const baseDetail = [
     `load 15min ${verdict.probe.loadAvg15min.toFixed(2)} / ${loadCeil.toFixed(2)} ceil`,
     `mem ${memMb}MB / ${memMbThreshold}MB floor`,
+    `disk ${diskParts.length > 0 ? diskParts.join(", ") : "none reported"}`,
     `${verdict.probe.cpuCores} cores`,
   ].join(" · ");
   if (verdict.ok) {
@@ -60,7 +68,7 @@ export function hostPressureRows(verdict: HostPressureVerdict): DoctorRow[] {
       detail: `OVER threshold — ${baseDetail}`,
       hint:
         `${verdict.reasons.join("; ")} — spawn-epic will REFUSE until pressure drops. ` +
-        `override: --force-spawn (use sparingly); tune: ATMUX_SPAWN_MAX_LOAD_RATIO + ATMUX_SPAWN_MIN_FREE_MB env.`,
+        `override: --force-spawn (use sparingly); tune: ATMUX_SPAWN_MAX_LOAD_RATIO + ATMUX_SPAWN_MIN_FREE_MB + ATMUX_SPAWN_MAX_DISK_PERCENT env.`,
     },
   ];
 }

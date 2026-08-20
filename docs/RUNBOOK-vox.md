@@ -85,7 +85,7 @@ Numeric knobs **fail closed to their default** on a non-numeric, non-positive, o
 | `ATMUX_VOX_ORIGINS` | — none — | **in practice, yes** | Comma-separated `Origin` allowlist. This is the **CSRF** defense: browsers do not apply same-origin policy to WebSocket handshakes, so without it any page the operator visits can ride his O2 session cookie into a driver-scope socket. ⚠️ **The server does NOT refuse to start without it** (only `ATMUX_VOX_TOKEN` does that). An empty allowlist means every *present* `Origin` is rejected — so the PWA cannot connect at all — while a request with **no** `Origin` header is allowed through to the token check (`checkOrigin` in `src/core/vox/auth.ts`: native apps and `scripts/vox-probe.ts` send none). Set it before the PWA is expected to work. |
 | `ATMUX_VOX_TOOL_TIMEOUT_MS` | `20000` | no | Per-tool wall-clock deadline. A tool that exceeds it returns a spoken error; it does not hang the session. |
 | `ATMUX_VOX_MAX_RESULT_CHARS` | `2000` | no | Truncation ceiling for a tool result before it reaches the model. Voice results are **spoken**, so a 40 KB pane dump is both expensive and useless. |
-| `ATMUX_VOX_READONLY` | unset | no | `1` ⇒ only the 12 read tools exist; the 4 messaging tools **and `pane_nudge`** are **absent from the catalog**, not merely refused at call time. **This is the setting the feature first ships in**, which is why `pane_nudge` is unreachable until P7 despite being built. Carries a `SUNSET` marker per [ADR-266](adr/266-shim-sunset-policy-and-first-sweep.md) §D1; cleared in P7. |
+| `ATMUX_VOX_READONLY` | unset | no | `1` ⇒ only the 14 read tools exist (12, plus `host_pressure` + `token_budget` from [ADR-273](adr/273-voice-fleet-triage-and-pane-input.md) §Supplement-6); the 4 messaging tools **and `pane_nudge`** are **absent from the catalog**, not merely refused at call time. **This is the setting the feature first ships in**, which is why `pane_nudge` is unreachable until P7 despite being built. Carries a `SUNSET` marker per [ADR-266](adr/266-shim-sunset-policy-and-first-sweep.md) §D1; cleared in P7. |
 | `ATMUX_VOX_RESUME_GRACE_MS` | `90000` | no | How long a dropped phone's **provider leg is parked** for `hello.resume` (ADR-272 §D8 — the walking-into-a-lift case). |
 | `ATMUX_VOX_CONFIRM_TTL_MS` | `120000` | no | Lifetime of a D7 confirmation token. Single-use, and bound to `sha256(tool ‖ canonical_json(args) ‖ session_id)`. |
 | `ATMUX_VOX_TRANSCRIPTS` | unset (**off**) | no | `1`/`true` ⇒ write session transcripts to `~/.atmux/vox-logs/vox-<sessionId>.jsonl` — one file per session, one JSON line per **final** utterance (`ts` / `iso` / `session` / `role` / `text`), file `0600` inside a `0700` directory. **Off is the shipped posture** ([ADR-272](adr/272-voice-operator-interface.md) OQ-4): a transcript is a durable record of everything said near the microphone, so the operator opts in. The banner says `transcripts=true|false` so you can see which you are running. There is deliberately **no directory override** — the path is derived from `$HOME` so a transcript can never land in a product checkout ([ADR-268](adr/268-managed-repo-state-isolation-enforcement.md)) or on a synced path. |
@@ -339,6 +339,96 @@ Quiet classes — `working`, `compacting`, `starting up`, `idle and clear` — a
 ### Speech budget
 
 `fleet_attention` speaks at most `top` entries. Same-class findings on the same team **collapse into one entry** (`dash — 7 panes (docs, driver, driver-2 +4)`) so one team's single cause cannot eat the whole budget. Everything beyond the budget becomes a count with a reason breakdown. `fleet_quiet` never names a pane.
+
+## §6.55 — Infrastructure: `host_pressure` + `token_budget`
+
+> **Shipped alongside [ADR-273](adr/273-voice-fleet-triage-and-pane-input.md) §Supplement-6.** Probe + renderer: `src/core/vox/host-report.ts` and `src/core/vox/token-budget.ts`. IO: `src/verbs/host-pressure.ts` / `src/verbs/token-budget.ts`, also reachable as the CLI verbs `atmux host-pressure` and `atmux token-budget`.
+
+Two questions the fleet tools cannot answer, because neither is about a team: **"how is the box holding up?"** and **"how much budget have I got left?"**. `cost_report` looks adjacent and is not — it reports per-member AI *spend* for one team since session start.
+
+Both are **read-only** (`mutating: false`, `confirm: false`) and work under `ATMUX_VOX_READONLY=1`. Neither takes a `team` param: a host and a provider quota belong to the whole fleet.
+
+### `host_pressure` — CPU / memory / disk, both hosts
+
+```bash
+atmux host-pressure                     # every host, spoken form
+atmux host-pressure --host hig          # one host (CLI only; the voice tool has no filter)
+atmux host-pressure --json              # verdict + summary + per-host entries
+atmux host-pressure --timeout-ms 5000   # tighten the per-host ssh budget
+```
+
+```
+HOSTS: all 2 healthy.
+hax — HEALTHY: cpu 73% of 16 cores over 15 min (72% right now), memory 36% used with 79.7 GB available, disk / 80% full (86.9 GB free).
+hig — HEALTHY: cpu 16% of 12 cores over 15 min (35% right now), memory 28% used with 45.2 GB available, disk / 71% full (123.8 GB free).
+```
+
+**hax** is read locally from `/proc` + `df`. **hig** is read over `ssh hig` in one round trip — `cat` on two `/proc` files, `grep -c` on a third, and `df`. Nothing is written to hig and nothing is installed on it.
+
+Load is normalised against **each host's own core count**, read per host rather than assumed. The same absolute load of 6.00 is 38% of hax's 16 cores and 50% of hig's 12, and speaking the raw number would make those sound identical.
+
+#### Unreachable is never healthy
+
+A host that cannot be reached — ssh failure, timeout, or a payload that will not parse — reports `UNREACHABLE` **with the reason**, stays in the report, and forces the overall verdict (and the exit code) to non-zero.
+
+```
+HOSTS: 1 of 2 UNREACHABLE (hig) — that is not an all-clear.
+hax — HEALTHY: cpu 75% of 16 cores over 15 min (108% right now), memory 36% used with 79.7 GB available, disk / 79% full (87.2 GB free).
+hig — UNREACHABLE: ssh to hig timed out after 250ms. Its headroom is unknown, not free.
+```
+
+**Exit codes carry "did the read happen", NOT the verdict.** `0` whenever a report was produced, including one that says a host is on fire. The verdict lives in the rendered text and in `--json`'s `ok`, so a shell gate reads `atmux host-pressure --json | jq -e .ok`.
+
+> This was the opposite way round first, and driving the real tool bridge end to end disproved it. Every read verb the catalog wires (`health`, `fleet`, `blockers`) returns 0 unconditionally, and [ADR-272](adr/272-voice-operator-interface.md) D2's bridge maps a **nonzero exit to a `verb_failed` envelope** — so "hig is unreachable", the most important thing this tool can say, reached the model as a *broken tool* rather than as the answer. Neither half was wrong on its own, which is why only an end-to-end run found it.
+
+#### Thresholds
+
+| Env | Default | Trips when |
+|---|---|---|
+| `ATMUX_SPAWN_MAX_LOAD_RATIO` | `0.75` | load(15min) > cores × ratio |
+| `ATMUX_SPAWN_MIN_FREE_MB` | `8192` | MemAvailable below the floor |
+| `ATMUX_SPAWN_MAX_DISK_PERCENT` | `90` | any probed mount above it |
+| `ATMUX_HOST_PROBE_TIMEOUT_MS` | `15000` | per-host ssh budget |
+
+All four fail **closed** to the default on a missing / non-numeric / non-positive value.
+
+⚠️ **Disk is new to `host-pressure.ts` and it GATES.** The same probe backs `atmux doctor`'s host-pressure row and the [ADR-184](adr/184-host-wide-epic-team-cap.md) spawn-epic gate, so a host over 90% on a probed mount now **refuses spawn-epic** where it previously did not. That is intended — a full disk is what breaks `git worktree add` — but it is a behaviour change worth knowing before it surprises you. Override with `--force-spawn`, or tune `ATMUX_SPAWN_MAX_DISK_PERCENT`.
+
+A **mount `df` does not report is a reason, not a pass** — it renders as `NOT REPORTED — unknown` and trips the verdict. Mount matching is exact on df's "Mounted on" column, so `mounts` must name mount **points**, not arbitrary paths.
+
+### `token_budget` — provider quota headroom
+
+```bash
+atmux token-budget                        # live probe, every provider
+atmux token-budget --provider claude      # all | codex | claude | zai | kimi
+atmux token-budget --cache-only           # instant, from the last snapshot
+atmux token-budget --json
+```
+
+```
+BUDGET: CACHED snapshot 28m old — not a live reading. 3 of 15 at capacity or unusable — not healthy. Also: 1 unmeasured (counted as unknown, not as free).
+codex pro 7d codex:primary — AT CAPACITY, 100% consumed, resets 2026-08-20 06:04 UTC, in 74h37m [rejected] (rate_limit_reached) [CACHED 28m ago — not a live reading]
+claude icloud account — AT CAPACITY, usage not reported, reset time not reported [error:token_invalid] [CACHED 28m ago — not a live reading]
+claude aix 7d — WARNING, 97% consumed, resets 2026-08-18 16:00 UTC, in 36h32m [warning] [CACHED 28m ago — not a live reading]
+zai current account — UNAVAILABLE, no usage figure: unavailable:no_api_key [CACHED 28m ago — not a live reading]
+claude unum 5h — ok, 1% consumed, resets 2026-08-17 05:10 UTC, in 1h42m [allowed] [CACHED 28m ago — not a live reading]
+```
+
+It **shells out to the operator's own budget probe** rather than reimplementing four provider APIs. Resolution order: `ATMUX_BUDGET_PROBE`, then `~/.agents/skills/budget/scripts/probe-budgets.sh` (the one tree Claude and Codex share), then the `~/.claude*` fallbacks. `ATMUX_BUDGET_PROBE_TIMEOUT_MS` (default `45000`) bounds it, fail-closed.
+
+Five rules that keep the spoken answer honest:
+
+1. **The number is percent CONSUMED, never remaining.** Every line says "consumed". 97 means 97 gone.
+2. **Reset times are exact or absent.** When the probe reports no reset, the line says *reset time not reported* — it never extrapolates one from the window length.
+3. **`rejected` and `error:*` are capacity LOSS.** The report cannot be healthy while one exists; an account whose token is invalid is an account you do not have.
+4. **Cached says so, with its age** — in the headline before any number, and again on every row.
+5. **Kimi is UNAVAILABLE, not 0%.** It exposes credential validity and no quota-usage API. Reporting an unmeasured quota as zero would be heard as headroom.
+
+**Exit codes**: `0` whenever the probe ran and at least one row was read — *including* a report that says three budgets are at capacity. That is a successful read of bad news. Nonzero is reserved for "could not measure anything at all" (the probe failed to run, or emitted nothing usable), which genuinely is a tool failure. Same reasoning as `host_pressure` above.
+
+**Secrets**: no token, key or refresh token reaches the output of either tool — including `--json` and including the probe's stderr on the failure path, which is where an interpolated credential would otherwise land.
+
+**Both tools write their report to `stdout`.** That is load-bearing, not incidental: `captureVerbRun` collects a verb's output from `console.log` + `process.stdout.write` and does **not** read stderr, so a verb that writes its receipt to stderr yields empty captured stdout and the bridge renders it as `verb_output_unparseable` — "the verb produced no usable output". The verb succeeds and the model is told it failed. Pinned by `tests/unit/verbs/vox-infra-stdout-contract.test.ts`, including on the failure paths, so neither tool depends on the bridge-side fix for that class.
 
 ## §6.6 — Pane input: `pane_nudge` / `atmux nudge`
 
