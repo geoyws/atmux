@@ -10,10 +10,14 @@
 //     snapshot collapses to a one-line ok summary.
 //   - Default shaping = head-lines within budget (which keeps the
 //     header + first rows of every tabular verb).
+//   - extractOkReceipt relays ONLY `atmux::ok` lines out of a verb's
+//     stderr (ADR-272 §Supplement-2026-08-20) — warnings, progress and
+//     errors share that channel and must never be spoken as the answer.
 
 import { describe, expect, test } from "bun:test";
 import {
   capLinesStructural,
+  extractOkReceipt,
   MEMBER_PANE_LAST_LINE_CAP,
   paneGist,
   stripAnsi,
@@ -229,5 +233,59 @@ describe("paneGist", () => {
 
   test("maxChars 0 collapses to the ellipsis rather than throwing", () => {
     expect(paneGist("something", { maxLines: 1, maxChars: 0 })).toBe("…");
+  });
+});
+
+// ADR-272 §Supplement-2026-08-20 — the receipt relay. `tell_lead`
+// succeeds and says so on STDERR; the bridge needs that line to have
+// something true to speak, and needs everything ELSE on that channel to
+// stay out of the operator's ear.
+describe("extractOkReceipt", () => {
+  test("pulls the tell-lead receipt and strips the atmux::ok marker", () => {
+    const receipt = extractOkReceipt(
+      "✅ atmux tell-lead → lead (appended to /w/atmux/.atmux/driver-inbox.md)\n",
+    );
+    expect(receipt).toBe("tell-lead → lead (appended to /w/atmux/.atmux/driver-inbox.md)");
+  });
+
+  test("strips the ANSI the real logger emits around the marker", () => {
+    // Byte-for-byte the shape of src/core/tui.ts createLogger().ok.
+    const colored =
+      "\x1b[36m✅ atmux\x1b[0m \x1b[32mreply recorded (be-1 → driver) in /w/ob.md\x1b[0m\n";
+    expect(extractOkReceipt(colored)).toBe("reply recorded (be-1 → driver) in /w/ob.md");
+  });
+
+  test.each([
+    ["warning", "atmux: warn: dispatch: ping to be-1 failed: no window\n"],
+    ["tui warn", "⚠️  atmux paused w1 (dispatch/claim will refuse)\n"],
+    ["tui progress", "🔹 atmux resolving team\n"],
+    ["tui error", "💥 atmux no such member\n"],
+    ["library noise", "DeprecationWarning: something\n"],
+    ["empty", ""],
+    ["blank lines only", "\n  \n\n"],
+  ])("drops %s — it must never become the spoken answer", (_label, stderr) => {
+    expect(extractOkReceipt(stderr)).toBe("");
+  });
+
+  test("keeps only the receipt when a warning shares the channel", () => {
+    const stderr = [
+      "atmux: warn: dispatch: ping to be-1 failed: no window",
+      "✅ atmux tell-lead → lead (appended to /w/di.md)",
+      "DeprecationWarning: noise",
+    ].join("\n");
+    expect(extractOkReceipt(stderr)).toBe("tell-lead → lead (appended to /w/di.md)");
+  });
+
+  test("joins multiple receipts in emission order", () => {
+    const stderr = "✅ atmux first thing\n✅ atmux second thing\n";
+    expect(extractOkReceipt(stderr)).toBe("first thing\nsecond thing");
+  });
+
+  test("a marker with nothing after it yields no receipt, not a blank line", () => {
+    expect(extractOkReceipt("✅ atmux\n✅ atmux   \n")).toBe("");
+  });
+
+  test("the marker must start the line — a quoted one mid-line is not a receipt", () => {
+    expect(extractOkReceipt("the verb prints ✅ atmux tell-lead when it works\n")).toBe("");
   });
 });

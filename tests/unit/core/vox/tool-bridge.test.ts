@@ -20,6 +20,10 @@
 //     its holder returns instead of executing a backlog of expired
 //     calls.
 //   - The WHOLE envelope stays ≤ maxResultChars, JSON always valid.
+//   - Exit 0 is the SUCCESS signal (ADR-272 §Supplement-2026-08-20):
+//     a MUTATING tool with empty stdout succeeds and speaks its
+//     `atmux::ok` stderr receipt; a READ tool with empty stdout keeps
+//     verb_output_unparseable. Warnings on stderr are never spoken.
 
 import { describe, expect, test } from "bun:test";
 import { createVerbMutex, VERB_MUTEX_MAX_QUEUE } from "../../../../src/core/verb-capture.ts";
@@ -1198,5 +1202,210 @@ describe("the wedge DRAINS instead of persisting", () => {
     const env = parseEnvelope(out.envelopeJson);
     expect(env).toMatchObject({ ok: false, error: "verb_failed" });
     expect(String(env.message)).toContain("internal error: capture exploded");
+  });
+});
+
+// ADR-272 §Supplement-2026-08-20 — exit 0 is the success signal, and
+// empty stdout is not evidence of failure.
+//
+// The defect these pin: `tell_lead` appended the ask to the lead inbox,
+// confirmed on STDERR per the `atmux::ok` convention, wrote nothing to
+// stdout, exited 0 — and the bridge answered `verb_output_unparseable`.
+// The operator heard "that failed", the model retried, and every retry
+// delivered another copy while reporting failure again.
+//
+// These run through the REAL captureVerbRun (the harness only overrides
+// `capture` where a test needs a shape the real one cannot produce), so
+// the stderr plumbing is exercised end to end.
+describe("empty stdout on exit 0", () => {
+  const TELL_LEAD = {
+    ...SESSION,
+    name: "tell_lead",
+    currentTeam: "atmux",
+    argsJson: '{"message":"ship it"}',
+  };
+  const RECEIPT = "✅ atmux tell-lead → lead (appended to /w/atmux/.atmux/driver-inbox.md)\n";
+
+  /** Run `fn` with the process's stderr sink swapped for a recorder.
+   *  The capture's TEE forwards into it, so the plumbing is still real —
+   *  this only keeps the suite log clean, and lets a test assert what
+   *  actually reached the channel. */
+  async function quietStderr<T>(fn: () => Promise<T>): Promise<{ r: T; sink: string }> {
+    let sink = "";
+    const orig = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((c: string | Uint8Array) => {
+      sink += typeof c === "string" ? c : new TextDecoder().decode(c);
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      return { r: await fn(), sink };
+    } finally {
+      process.stderr.write = orig;
+    }
+  }
+
+  test("mutating tool + stderr receipt → SUCCESS envelope carrying the receipt", async () => {
+    const h = makeHarness();
+    // Byte-for-byte what src/verbs/tell-lead.ts:301 does: stderr only.
+    h.deps.runners.tellLead = async () => {
+      process.stderr.write(RECEIPT);
+      return 0;
+    };
+    const { r: out, sink } = await quietStderr(() => h.bridge.executeTool(TELL_LEAD));
+    const env = parseEnvelope(out.envelopeJson);
+    expect(env).toMatchObject({ ok: true, tool: "tell_lead", team: "atmux" });
+    // The operator must hear the real outcome, not a shrug — and not the
+    // emoji chrome either.
+    expect(env.data).toBe("tell-lead → lead (appended to /w/atmux/.atmux/driver-inbox.md)");
+    expect(env.error).toBeUndefined();
+    // RELAYED, not diverted: the real stderr still received the receipt.
+    expect(sink).toBe(RECEIPT);
+  });
+
+  test("a receipt written via console.error reaches data (Bun's second stderr surface)", async () => {
+    // `console.error` does NOT route through `process.stderr.write` in
+    // Bun, so a capture patching only the `process.*` half would see the
+    // empty string here and this would render as verb_output_unparseable
+    // — the exact defect, arriving by a different door. The control for
+    // this fact lives in tests/unit/core/verb-capture.test.ts.
+    const h = makeHarness();
+    const origError = console.error;
+    console.error = () => {}; // keep the run quiet; the tee still fires
+    try {
+      h.deps.runners.tellLead = async () => {
+        console.error("✅ atmux tell-lead → lead (appended to /w/di.md)");
+        return 0;
+      };
+      const env = parseEnvelope((await h.bridge.executeTool(TELL_LEAD)).envelopeJson);
+      expect(env).toMatchObject({ ok: true, tool: "tell_lead" });
+      expect(env.data).toBe("tell-lead → lead (appended to /w/di.md)");
+      expect(env.error).toBeUndefined();
+    } finally {
+      console.error = origError;
+    }
+  });
+
+  test("mutating tool + NO stderr at all → success, with the deliberate wording", async () => {
+    const h = makeHarness();
+    h.deps.runners.tellLead = async () => 0;
+    const env = parseEnvelope((await h.bridge.executeTool(TELL_LEAD)).envelopeJson);
+    expect(env).toMatchObject({ ok: true, tool: "tell_lead" });
+    // Underscores gone because this string is SPOKEN (the same treatment
+    // buildConfirmPreview gives a tool name).
+    expect(env.data).toBe("tell lead completed — no details reported");
+  });
+
+  test("a WARNING on stderr does not become the spoken answer", async () => {
+    const h = makeHarness();
+    h.deps.runners.tellLead = async () => {
+      process.stderr.write("atmux: warn: dispatch: ping to lead failed: no window\n");
+      return 0;
+    };
+    const { r: out } = await quietStderr(() => h.bridge.executeTool(TELL_LEAD));
+    const env = parseEnvelope(out.envelopeJson);
+    expect(env).toMatchObject({ ok: true, tool: "tell_lead" });
+    expect(env.data).toBe("tell lead completed — no details reported");
+    expect(String(env.data)).not.toContain("ping to lead failed");
+  });
+
+  test("stdout still wins when the verb produces both", async () => {
+    // Regression pin: add_task prints the new id on stdout. A receipt on
+    // stderr must not displace it.
+    const h = makeHarness();
+    h.deps.runners.task = async () => {
+      process.stdout.write("t-abc123\n");
+      process.stderr.write("✅ atmux task added\n");
+      return 0;
+    };
+    const { r: out } = await quietStderr(() =>
+      h.bridge.executeTool({
+        ...SESSION,
+        name: "add_task",
+        currentTeam: "atmux",
+        argsJson: '{"title":"rewrite the seed script"}',
+      }),
+    );
+    expect(parseEnvelope(out.envelopeJson)).toMatchObject({
+      ok: true,
+      tool: "add_task",
+      data: "t-abc123",
+    });
+  });
+
+  test("a READ tool with nothing to say is STILL verb_output_unparseable", async () => {
+    // The discriminator is `entry.mutating`, not "did a receipt exist":
+    // a read tool owes DATA, so a receipt does not excuse its silence.
+    const h = makeHarness();
+    h.deps.runners.status = async () => {
+      process.stderr.write("✅ atmux status rendered\n");
+      return 0;
+    };
+    const { r: out } = await quietStderr(() =>
+      h.bridge.executeTool({
+        ...SESSION,
+        name: "team_status",
+        currentTeam: "atmux",
+        argsJson: "{}",
+      }),
+    );
+    const env = parseEnvelope(out.envelopeJson);
+    expect(env).toMatchObject({
+      ok: false,
+      tool: "team_status",
+      error: "verb_output_unparseable",
+    });
+    expect(env.data).toBeUndefined();
+  });
+
+  test("a NONZERO exit is still verb_failed, receipt or not", async () => {
+    const h = makeHarness();
+    h.deps.runners.tellLead = async () => {
+      process.stderr.write(RECEIPT);
+      return 2;
+    };
+    const { r: out } = await quietStderr(() => h.bridge.executeTool(TELL_LEAD));
+    const env = parseEnvelope(out.envelopeJson);
+    expect(env).toMatchObject({ ok: false, tool: "tell_lead", error: "verb_failed", exitCode: 2 });
+  });
+
+  test("a THROWN verb is still verb_failed, receipt or not", async () => {
+    const h = makeHarness();
+    h.deps.runners.tellLead = async () => {
+      process.stderr.write(RECEIPT);
+      throw new Error("no tmux window for lead");
+    };
+    const { r: out } = await quietStderr(() => h.bridge.executeTool(TELL_LEAD));
+    const env = parseEnvelope(out.envelopeJson);
+    expect(env).toMatchObject({
+      ok: false,
+      tool: "tell_lead",
+      error: "verb_failed",
+      exitCode: null,
+      message: "no tmux window for lead",
+    });
+  });
+
+  test("an injected capture without stderr still succeeds (the field is optional)", async () => {
+    // The `capture` seam is a test/wiring override; a fake that predates
+    // stderr must not crash the branch.
+    const h = makeHarness({ capture: async () => ({ stdout: "", exitCode: 0 }) });
+    const env = parseEnvelope((await h.bridge.executeTool(TELL_LEAD)).envelopeJson);
+    expect(env).toMatchObject({ ok: true, tool: "tell_lead" });
+    expect(env.data).toBe("tell lead completed — no details reported");
+  });
+
+  test("a long receipt is budget-fit structurally, not cut into invalid JSON", async () => {
+    const h = makeHarness({
+      config: { readonly: false, toolTimeoutMs: 20_000, maxResultChars: 200 },
+    });
+    h.deps.runners.tellLead = async () => {
+      for (let i = 0; i < 20; i += 1) process.stderr.write(`✅ atmux receipt line ${i}\n`);
+      return 0;
+    };
+    const { r: out } = await quietStderr(() => h.bridge.executeTool(TELL_LEAD));
+    expect(out.envelopeJson.length).toBeLessThanOrEqual(200);
+    const env = parseEnvelope(out.envelopeJson);
+    expect(env).toMatchObject({ ok: true, tool: "tell_lead", truncated: true });
+    expect(String(env.data)).toContain("more lines");
   });
 });

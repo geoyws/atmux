@@ -10,12 +10,19 @@
 //
 // Serialization: every verb execution goes through the injected
 // `VerbMutex` because the capture wrapper monkeypatches
-// `process.stdout.write` (see src/core/verb-capture.ts header). The
-// tool TIMEOUT bounds the RESPONSE, not the execution: on timeout the
-// envelope returns immediately, but the capture is NOT abandoned
-// mid-monkeypatch — the mutex slot completes when the verb actually
-// finishes (stdout restore is guaranteed by the capture's `finally`),
-// and the next tool simply queues behind it.
+// `process.stdout.write` AND `process.stderr.write` (see
+// src/core/verb-capture.ts header). The tool TIMEOUT bounds the
+// RESPONSE, not the execution: on timeout the envelope returns
+// immediately, but the capture is NOT abandoned mid-monkeypatch — the
+// mutex slot completes when the verb actually finishes (restore of both
+// streams is guaranteed by the capture's `finally`), and the next tool
+// simply queues behind it.
+//
+// Both streams are captured because atmux splits its output across them
+// by convention: stdout carries a verb's DATA, stderr carries its
+// `atmux::ok` success RECEIPT. Reading only stdout made a delivered
+// `tell_lead` look like a failed one — see step 12 and ADR-272
+// §Supplement-2026-08-20.
 //
 // The wedge, why `health()` exists, and how the lane now RECOVERS. The
 // timeout above bounds the RESPONSE, not the EXECUTION — deliberately, so
@@ -64,7 +71,7 @@ import {
   type VerbMutexState,
 } from "../verb-capture.ts";
 import type { ConfirmStore } from "./confirm.ts";
-import { capLinesStructural, summarizeTool } from "./summarize.ts";
+import { capLinesStructural, extractOkReceipt, summarizeTool } from "./summarize.ts";
 import { resolveTeamName, type VoxTeamIndex } from "./team-context.ts";
 import { isTeamScoped, type VoxRunnerKey, type VoxToolEntry } from "./tool-catalog.ts";
 
@@ -151,6 +158,9 @@ export type ToolErrorCode =
   | "confirm_expired"
   | "tool_timeout"
   | "verb_failed"
+  /** A READ tool succeeded (exit 0) but produced nothing to say. Never
+   *  raised for a mutating tool — see the step-12 comment in
+   *  `executeToolInner` for why exit 0 alone settles those. */
   | "verb_output_unparseable";
 
 function errorEnvelope(
@@ -466,15 +476,51 @@ export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
     }
 
     // 12 — summarize + budget-fit the success envelope.
+    //
+    // EXIT 0 IS THE SUCCESS SIGNAL. EMPTY STDOUT IS NOT EVIDENCE OF
+    // FAILURE. Step 10 above has already ruled out both real failure
+    // modes (a throw, a nonzero exit); everything reaching here SUCCEEDED,
+    // and the only remaining question is what there is to say about it.
+    //
+    // Conflating the two cost a live defect (ADR-272 §Supplement-2026-08-20):
+    // `tell_lead` appends to the lead inbox and confirms on STDERR per the
+    // `atmux::ok` convention, writing nothing to stdout — so the bridge
+    // returned `verb_output_unparseable` for a message that had already
+    // been delivered. The model, told it failed, retried; each retry
+    // delivered another copy and reported failure again.
+    //
+    // HOW THE BRIDGE TELLS THE TWO CASES APART: `entry.mutating`, which
+    // is exactly the "this tool's contract is a side effect" bit.
+    //   - mutating tool (tell_lead, add_task, dispatch_task, claim_task,
+    //     pane_nudge) → the contract is the EFFECT. Exit 0 means it
+    //     landed; silent stdout is a normal shape, not a defect.
+    //   - read tool → the contract is DATA, and it owed some. Every read
+    //     verb in the catalog emits a line even when the answer is empty
+    //     ("(no tasks)", "(no blockers)", "(driver-inbox empty / absent)",
+    //     the `QUIET …` header), so silence there is a genuine anomaly
+    //     and keeps the `verb_output_unparseable` code it was written for.
     const summary = summarizeTool(name, stdout, { maxChars });
-    if (summary.data.trim() === "") {
-      return errorEnvelope(name, "verb_output_unparseable", {
-        message: "the verb produced no usable output",
-      });
+    let data = summary.data;
+    if (data.trim() === "") {
+      if (!entry.mutating) {
+        return errorEnvelope(name, "verb_output_unparseable", {
+          message: "the verb produced no usable output",
+        });
+      }
+      // Speak the verb's OWN receipt when it wrote one — the operator
+      // should hear the real outcome ("tell-lead → lead (appended to
+      // …)"), not a shrug. Never relay raw stderr: `extractOkReceipt`
+      // keeps only `atmux::ok` lines, so a warning on that same channel
+      // can never become the spoken answer. No receipt → say plainly
+      // that it finished, with the tool name de-underscored the same way
+      // `buildConfirmPreview` does it, because this string is spoken.
+      const receipt = extractOkReceipt(result.stderr ?? "");
+      data =
+        receipt !== "" ? receipt : `${name.replace(/_/g, " ")} completed — no details reported`;
     }
     const envelopeJson = envelopeWithinBudget(
       (d, truncated) => ({ ok: true, tool: name, team: teamName, ms, truncated, data: d }),
-      summary.data,
+      data,
       summary.truncated || limitCut,
       maxChars,
     );

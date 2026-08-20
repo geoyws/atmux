@@ -557,6 +557,84 @@ Clause 1 addresses rows 2 and 3 directly: both are inventions on top of a tool t
 
 Neither clause is a guarantee. A prompt shapes disposition; it does not enforce. The gate that measures the result is the §E-harness `drilldown` scenario, which stays failing until it passes on its own terms — no criterion was touched here.
 
+## Supplement — exit 0 is the success signal; empty stdout is not evidence of failure (2026-08-20)
+
+### X1 — the defect: a tool that succeeded, delivered, and reported failure
+
+`tell_lead` **worked and said it had not**. Every link is on disk:
+
+1. `src/verbs/tell-lead.ts:301` appends the ask to the lead inbox and confirms on **stderr** — `✅ atmux tell-lead → <lead> (appended to <path>)` — writing nothing at all to stdout. That is the `atmux::ok` convention (`createLogger().ok`, `src/core/tui.ts:113`, ported from bash `lib/common.sh:21`), and `tell-lead.ts:296-299` records that an earlier TS port wrote to stdout without the prefix and that *that* was fixed as the F3 channel-asymmetry bug.
+2. `CaptureVerbRunResult` (`src/core/verb-capture.ts`) carried `{ stdout, exitCode, errorMessage? }` and **captured no stderr at all**, so the bridge structurally could not see the receipt.
+3. `src/core/vox/tool-bridge.ts` step 12 then read empty stdout as an error: `summary.data.trim() === ""` → `verb_output_unparseable`, *"the verb produced no usable output"*.
+
+So the verb exited 0, the message **was** appended, and the model received a failure envelope. The operator hears "that failed". The model retries. Each retry delivers another copy and reports failure again — a retry storm where every iteration both succeeds and is called broken. `tell_lead` is gated behind `ATMUX_VOX_READONLY` today; the moment that flag clears, its first use spams the lead inbox from the operator's phone while claiming it did nothing.
+
+### X2 — the verbs are correct; the bridge was wrong
+
+**The stderr convention is not changed, and must not be.** Moving receipts to stdout would revert a deliberate fix (§X1 item 1) and break every scripted caller that relies on clean stdout. The defect is entirely on the consuming side: a capture that heard half the channels, and a bridge that inferred failure from silence.
+
+**The rule this supplement pins: `exitCode === 0` is the success signal.** Step 10 of `executeToolInner` has already rejected both real failure modes — a throw (`errorMessage` set, `exitCode: null`) and a nonzero exit — before step 12 runs. Everything reaching step 12 **succeeded**; the only remaining question is what there is to *say* about it. Empty stdout answers that question, not the first one.
+
+### X3 — how the bridge tells "succeeded quietly" from "owed data and gave none"
+
+Explicitly, on `entry.mutating` — the catalog bit that already means *this tool's contract is a side effect*:
+
+| Case | Contract | Exit 0 + empty stdout |
+|---|---|---|
+| **mutating** tool (`tell_lead`, `add_task`, `dispatch_task`, `claim_task`, `pane_nudge`) | the EFFECT | **success.** Silence is a normal shape, not a defect |
+| **read** tool | DATA | `verb_output_unparseable`, the fault the code was written for |
+
+The read half is not a formality. Every read verb in the catalog emits a line even when the answer is empty — `(no tasks)`, `(no blockers)`, `(driver-inbox empty / absent)`, `📭 outbox empty`, the `QUIET n of m teams nominal` header, `team_health`'s collapsed `ok — …` — so silence from a read tool really is an anomaly, and keeping the code there preserves its diagnostic value instead of retiring it by accident.
+
+### X4 — what is relayed from stderr, and what is not
+
+`CaptureVerbRunResult` gains `stderr` (optional, so an injected `capture` fake need not supply it; the real `runRedirected` always does). Three properties are load-bearing:
+
+**stderr is TEED, not swallowed.** stdout is capture-*owned* — the buffer is the result — but stderr is the process's shared diagnostic channel: the vox server logs there, and a verb's warnings are often the operator's only trace of a half-done run. Buffering them silently would trade one blind spot for another, so every write reaches the real stderr **and** the buffer.
+
+**Both stderr SURFACES are patched, and that is load-bearing rather than belt-and-braces.** `console.error` does **not** route through `process.stderr.write` in Bun, exactly as `console.log` does not route through `process.stdout.write` — re-verified against Bun 1.3.14 on 2026-08-20, which is why the stdout half has always patched two things. A capture patching only the `process.*` half would read the empty string for a verb whose receipt went through `console.error`, producing this same defect through a different door. The Bun fact is pinned by a **control** test that asserts the `process.stderr.write` patch alone sees nothing; without it, the `console.error` assertions could pass vacuously on a harness that captured nothing at all.
+
+**Only `atmux::ok` lines are ever spoken.** `extractOkReceipt` (`src/core/vox/summarize.ts`) strips ANSI, keeps only lines whose trimmed form starts with the `✅ atmux` marker, and strips that marker (emoji chrome nobody wants read aloud). Everything else on the channel is dropped — the sibling markers `🔹 atmux` (progress), `⚠️  atmux` (warning), `💥 atmux` (error), plus bare warnings like `atmux: warn: dispatch: ping to be-1 failed` and any library noise. **This scoping is the point:** the relayed string is read aloud as the answer to *"did it work?"*, and relaying stderr wholesale would let an unrelated warning become that answer. A mutating tool with no receipt gets a plain, true fallback instead — `"<tool name> completed — no details reported"`, de-underscored the way `buildConfirmPreview` does it, because the string is spoken.
+
+### X4a — a second finding, surfaced by mutation-checking the fix
+
+Deleting `process.stderr.write = <original>` from the capture's `finally` passed the **entire** suite. That is a leak — every capture would leave one more live closure appending to a dead buffer — and the TEE is precisely what hides it: writes still reach the real stderr *through* the leaked patch, so no output assertion can tell the difference. Only an identity round-trip can, and the first cut of this fix could not offer one: it mirrored the stdout half and restored a **bound clone** rather than the value it found, so `process.stderr.write === <what we installed>` was false either way.
+
+Fixed by saving the raw property reference for the restore and a bound clone only for the tee call, then pinning it: after a normal verb, after a throwing verb, and after three consecutive captures (which is what separates "restored something" from "restored the same thing"). The stdout half still restores a bound clone; that is pre-existing, out of this defect's scope, and left alone deliberately rather than swept in.
+
+### X5 — scope audit: which catalog tools could hit this path
+
+Audited every entry, not only the reported one — a fix that repairs one tool and leaves a sibling broken is half a fix.
+
+| Tool | Mutating | Writes stdout on success | Hit the defect |
+|---|---|---|---|
+| `tell_lead` | ✅ | **no** — stderr receipt only (`tell-lead.ts:301`, and the dedup path `:261`) | **yes** |
+| `add_task` | ✅ | yes — new id (`task.ts:267`) | no |
+| `dispatch_task` | ✅ | yes — `dispatched <id> → <member>` (`dispatch.ts:191`) | no |
+| `claim_task` | ✅ | yes — `<who> claimed <id>` (`claim.ts:212`) | no |
+| `pane_nudge` | ✅ | yes (`nudge.ts:232`) | no |
+| `list_teams` | — | core-direct; `(no teams)` fallback in the bridge | no |
+| `fleet_overview` | — | yes — cockpit header (`topo.ts` `renderFlat`) | no |
+| `fleet_attention` / `fleet_quiet` | — | yes — `ATTENTION` / `QUIET` header always emitted | no |
+| `team_status` | — | yes | no |
+| `team_health` | — | yes — header always; all-ok collapses to `ok — <header>` | no |
+| `list_tasks` | — | yes — `(no tasks)` when empty | no |
+| `member_pane` | — | yes — the classified state, `UNKNOWN` included | no |
+| `driver_inbox` | — | yes — `(driver-inbox empty / absent)` etc. | no |
+| `lead_outbox` | — | yes — `📭 outbox empty` | no |
+| `cost_report` | — | yes — `💰 cost — since …` header | no |
+| `list_blockers` | — | yes — `(no blockers)` when empty | no |
+| `host_pressure` | — | yes — report via `console.log` (`host-pressure.ts:107`) | no |
+| `token_budget` | — | yes — report via `console.log` (`token-budget.ts:237`) | no |
+
+The last two arrived on trunk mid-fix (ADR-273 §Supplement-6) and are recorded here as **audited and fine** rather than left unmentioned — "correct today" and "never looked at" must not read the same in this table.
+
+**`tell_lead` was the only catalog tool affected**, and `src/verbs/reply.ts:127` writes the same stderr-only receipt shape (`✅ atmux reply recorded (<from> → driver) in <path>`) — it is not in the catalog today, but the `outbox` collector from that same module is, and a future `reply` tool would have walked into the identical trap. The fix is at the bridge, so it covers all five mutating entries uniformly rather than special-casing the one that was reported.
+
+### X6 — not done
+
+Nothing here changes a verb, a schema, an event topic, or the `ToolErrorCode` closed set — `verb_output_unparseable` is retained, narrowed to the read tools it was written for. `ATMUX_VOX_READONLY` still gates every mutating tool; this supplement removes a reason that flag could not safely be cleared, not the flag.
+
 ## Decision-anchors
 
 Every row verified against disk on **2026-08-14** unless dated otherwise.

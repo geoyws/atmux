@@ -8,8 +8,10 @@
 // direction stays verbs→core: the verb function itself always arrives
 // as an argument.
 //
-// Why a mutex: both capture wrappers monkeypatch `process.stdout.write`
-// / `console.log` around the verb call and restore the saved originals
+// Why a mutex: both capture wrappers monkeypatch all four output
+// surfaces — `process.stdout.write` / `console.log` /
+// `process.stderr.write` / `console.error` — around the verb call and
+// restore the saved originals
 // in `finally`. Two CONCURRENT captures clobber each other's saved
 // original (capture A restores capture B's override → later writes land
 // in a dead buffer). `createVerbMutex()` is the strict-FIFO async lock
@@ -29,38 +31,106 @@ export interface CaptureVerbRunResult {
   stdout: string;
   exitCode: number | null;
   errorMessage?: string;
+  /**
+   * Everything the verb wrote to stderr during the run — via
+   * `process.stderr.write` OR `console.error`, which are separate
+   * surfaces in Bun (see {@link runRedirected}).
+   *
+   * WHY IT IS CAPTURED AT ALL. atmux verbs put their success RECEIPT on
+   * stderr, never on stdout — the `atmux::ok` convention (`Logger.ok` in
+   * `src/core/tui.ts`, ported from bash `lib/common.sh:21`), which keeps
+   * stdout clean for scripted callers. `src/verbs/tell-lead.ts` is the
+   * pure case: it appends the ask to the lead inbox, confirms with
+   * `✅ atmux tell-lead → <lead> (appended to <path>)` on STDERR, and
+   * writes nothing at all to stdout. A consumer capturing only stdout
+   * therefore cannot see that the verb succeeded, which is exactly how
+   * the voice tool bridge came to report a DELIVERED message as broken
+   * (ADR-272 §Supplement-2026-08-20). The verbs are right; the capture
+   * was half-deaf.
+   *
+   * Optional so an injected `capture` fake (the bridge's test seam) need
+   * not supply it; {@link runRedirected} always does.
+   */
+  stderr?: string;
 }
 
 /**
  * The ONE redirect implementation shared by both capture wrappers.
- * Monkeypatches `process.stdout.write` + `console.log` to an in-memory
- * buffer around the verb call; restores the originals in `finally`
- * (guaranteed even when the verb throws). A thrown error is caught into
- * `errorMessage` — never re-raised — so callers decide how to render it.
+ * Monkeypatches BOTH surfaces of BOTH channels — `process.stdout.write`
+ * + `console.log`, `process.stderr.write` + `console.error` — to
+ * in-memory buffers around the verb call, restoring all four in
+ * `finally` (guaranteed even when the verb throws). A thrown error is
+ * caught into `errorMessage` — never re-raised — so callers decide how
+ * to render it.
+ *
+ * BOTH SURFACES PER CHANNEL IS LOAD-BEARING, NOT BELT-AND-BRACES.
+ * `console.log` does NOT route through `process.stdout.write` in Bun,
+ * and `console.error` does NOT route through `process.stderr.write`
+ * (re-verified 2026-08-20 against Bun 1.3.14: patching only the
+ * `process.*` half captures the empty string from a `console.*` call).
+ * That is why the stdout half has always patched two things, and why the
+ * stderr half must too — a verb whose receipt went through
+ * `console.error` would otherwise write into a hole that looks exactly
+ * like the defect this capture exists to close.
+ *
+ * stderr is TEED, not swallowed, and the asymmetry against stdout is
+ * deliberate. stdout is capture-OWNED — the buffer IS the result, and
+ * letting it through would corrupt whatever terminal or dashboard the
+ * caller is composing. stderr is the process's shared diagnostic
+ * channel: the vox server logs there, and a verb's warnings (`atmux:
+ * warn: dispatch: ping to be-1 failed`) are often the operator's only
+ * trace of a half-done run. Buffering those silently would trade one
+ * blind spot for another, so every stderr write still reaches the real
+ * stderr AND lands in the buffer.
  */
 async function runRedirected(
   verb: VerbFn,
   args: ReadonlyArray<string>,
 ): Promise<CaptureVerbRunResult> {
   let buf = "";
+  let errBuf = "";
   const origStdoutWrite = process.stdout.write.bind(process.stdout);
+  // The stderr half saves the RAW property value for the restore and a
+  // bound clone only for the TEE call. Restoring the raw reference makes
+  // the round-trip an identity — which is what lets a test assert the
+  // patch was actually removed, and stops each capture cycle leaving one
+  // more `bound` wrapper layer on the stream. (The stdout line above
+  // restores a bound clone; that is pre-existing and deliberately left
+  // alone here — it is not part of this defect.)
+  const origStderrWriteRef = process.stderr.write;
+  const origStderrWrite = origStderrWriteRef.bind(process.stderr);
   const origLog = console.log;
+  const origError = console.error;
   process.stdout.write = ((s: string | Uint8Array) => {
     buf += typeof s === "string" ? s : new TextDecoder().decode(s);
     return true;
   }) as typeof process.stdout.write;
+  process.stderr.write = ((s: string | Uint8Array) => {
+    errBuf += typeof s === "string" ? s : new TextDecoder().decode(s);
+    return origStderrWrite(s);
+  }) as typeof process.stderr.write;
   console.log = (msg: unknown) => {
     buf += `${String(msg)}\n`;
   };
+  // Every argument is joined (not just the first, as the pre-existing
+  // `console.log` patch above does) so the buffer matches what the tee
+  // actually emits — a buffer that disagrees with the real output is a
+  // second source of truth, which is the whole class of bug here.
+  console.error = (...a: unknown[]) => {
+    errBuf += `${a.map((v) => String(v)).join(" ")}\n`;
+    origError(...a);
+  };
   try {
     const exitCode = await verb(args);
-    return { stdout: buf, exitCode };
+    return { stdout: buf, stderr: errBuf, exitCode };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    return { stdout: buf, exitCode: null, errorMessage: msg };
+    return { stdout: buf, stderr: errBuf, exitCode: null, errorMessage: msg };
   } finally {
     process.stdout.write = origStdoutWrite;
+    process.stderr.write = origStderrWriteRef;
     console.log = origLog;
+    console.error = origError;
   }
 }
 
