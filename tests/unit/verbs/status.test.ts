@@ -11,11 +11,15 @@ import { appendDispatched, appendPending } from "../../../src/core/inbox.ts";
 import { addTask, moveTask } from "../../../src/core/kanban.ts";
 import { writeMemberStatus } from "../../../src/core/member-status.ts";
 import { UsageError } from "../../../src/errors.ts";
+import { TEAM_FIXTURES } from "../../../src/core/vox/e2e/fixtures.ts";
 import {
   defaultRoleEmoji,
+  formatAgentEvidenceLine,
+  formatAgentStateColumn,
   formatContextColumn,
   formatHeartbeatColumn,
   formatPaneStateColumn,
+  formatProcessStateColumn,
   formatSelfStatusColumn,
   gatherStatus,
   type MemberStatus,
@@ -171,9 +175,14 @@ describe("status verb — integration", () => {
     // Per t-74273200: text mode replaced the paneCommand column with
     // the unified cage state. Session-down → every member's cageState
     // is "down" (string in the state column, no parens).
+    // ADR-273 §Supplement-6: the cell is self-labelled `process: down`
+    // so it cannot be read as another column's value.
     expect(out).toContain("state");
-    expect(out).toMatch(/claude\s+down\s/);
-    expect(out).toContain("📋 kanban");
+    expect(out).toMatch(/process: down\s/);
+    // …and the behavioural verdict says the same thing in the words
+    // `fleet_attention` uses for a cage that is not running.
+    expect(out).toContain("agent: 🛑 session is down");
+    expect(out).toContain("📋 kanban board:");
   });
 
   test("session up: text mode shows 🟢 + cage state (claude TUI in cat pane → 'down')", async () => {
@@ -188,7 +197,11 @@ describe("status verb — integration", () => {
     // cage-state probe correctly reports 'down' (per t-74273200's
     // root-cause fix: pane_current_command was the misleading proxy;
     // child-PID claude-exec check is the canonical signal).
-    expect(out).toMatch(/claude\s+down\s/);
+    expect(out).toMatch(/process: down\s/);
+    // ADR-273 §Supplement-6: the behavioural classifier agrees from the
+    // SAME capture — a pane with no agent chrome is `unresponsive`, and
+    // the two verdicts must not contradict each other.
+    expect(out).toContain("agent: 🛑 no agent output at all");
   });
 
   test("--json emits expected shape — includes cageState field (t-74273200)", async () => {
@@ -434,15 +447,21 @@ describe("status — ADR-085 NEEDS APPROVAL row (t-3516d73a)", () => {
     else delete process.env.ATMUX_TEAM_DIR;
   });
 
-  test("N+M+K=0 → '📝 NEEDS APPROVAL: ✅ clear' row in text mode", async () => {
+  test("N+M+K=0 → the approval row says nothing is waiting, in its own words", async () => {
     await stageTeam([{ name: "alpha" }], false);
     // No ADRs / no driver-inbox stale / no blocked tasks — total=0.
     const { out } = await captureStdout(() =>
       status(["--socket", socketPath, "--team-dir", teamDir]),
     );
-    expect(out).toContain("📝 NEEDS APPROVAL: ✅ clear");
+    // ADR-273 §Supplement-6: the row names its own subject. The old
+    // `📝 NEEDS APPROVAL: ✅ clear`, sitting under `📋 kanban …`, was
+    // relayed aloud as "the kanban is clear and needs approval" — two
+    // true lines fused into one false claim.
+    expect(out).toContain("📝 awaiting your approval: ✅ nothing is waiting for sign-off");
     // The non-zero shape must NOT appear when total=0.
-    expect(out).not.toMatch(/NEEDS APPROVAL: \d+ ADRs/);
+    expect(out).not.toMatch(/awaiting your approval: \d+ proposed ADRs/);
+    // And the fusable bare wording is gone for good.
+    expect(out).not.toContain("NEEDS APPROVAL");
   });
 
   test("N+M+K=5 (2 ADRs / 2 inbox / 1 kanban) → row body matches ADR-085 grammar", async () => {
@@ -511,7 +530,9 @@ describe("status — ADR-085 NEEDS APPROVAL row (t-3516d73a)", () => {
     const { out } = await captureStdout(() =>
       status(["--socket", socketPath, "--team-dir", teamDir]),
     );
-    expect(out).toContain("📝 NEEDS APPROVAL: 2 ADRs / 2 inbox / 1 kanban");
+    expect(out).toContain(
+      "📝 awaiting your approval: 2 proposed ADRs, 2 driver-inbox asks, 1 blocked kanban tasks",
+    );
     expect(out).not.toContain("✅ clear");
   });
 
@@ -964,12 +985,20 @@ describe("formatDurationShort — CLAUDE.md duration convention", () => {
   });
 });
 
+// ADR-273 §Supplement-6: every cadence cell now names its own subject.
+// The bare forms these replaced were true and unreadable out of column
+// context — the vox drilldown transcript read this column's "idle" as a
+// PANE state and told the operator the team's panes were idle. Recorded
+// here rather than silently rewritten so the next reader does not
+// "restore" the shorter strings.
 describe("formatCadenceColumn — verdict-to-display", () => {
-  test("undefined → '—'", () => {
-    expect(formatCadenceColumn(undefined)).toBe("—");
+  test("undefined → 'commits: no signal', never a bare dash", () => {
+    expect(formatCadenceColumn(undefined)).toBe("commits: no signal");
+    // A dash read aloud is nothing at all; "no signal" is the claim.
+    expect(formatCadenceColumn(undefined)).not.toBe("—");
   });
 
-  test("'exempt' → '(exempt)'", () => {
+  test("'exempt' → 'commits: exempt'", () => {
     const obs: CadenceObservation = {
       windowSec: 1800,
       commitsInWindow: 0,
@@ -978,10 +1007,10 @@ describe("formatCadenceColumn — verdict-to-display", () => {
       ageOfLastCommitSec: null,
       verdict: "exempt",
     };
-    expect(formatCadenceColumn(obs)).toBe("(exempt)");
+    expect(formatCadenceColumn(obs)).toBe("commits: exempt");
   });
 
-  test("each non-exempt verdict carries its emoji + age", () => {
+  test("each non-exempt verdict carries its subject + emoji + age", () => {
     const base: Omit<CadenceObservation, "verdict"> = {
       windowSec: 1800,
       commitsInWindow: 1,
@@ -989,9 +1018,11 @@ describe("formatCadenceColumn — verdict-to-display", () => {
       lastCommitSha: "abc1234",
       ageOfLastCommitSec: 300,
     };
-    expect(formatCadenceColumn({ ...base, verdict: "shipping" })).toBe("🟢 shipping (5min)");
+    expect(formatCadenceColumn({ ...base, verdict: "shipping" })).toBe(
+      "commits: 🟢 shipping (5min)",
+    );
     expect(formatCadenceColumn({ ...base, ageOfLastCommitSec: 3600, verdict: "idle" })).toBe(
-      "🟡 idle (1h)",
+      "commits: 🟡 idle (1h)",
     );
     expect(
       formatCadenceColumn({
@@ -999,14 +1030,37 @@ describe("formatCadenceColumn — verdict-to-display", () => {
         ageOfLastCommitSec: 15 * 3600,
         verdict: "dormant",
       }),
-    ).toBe("🔴 dormant (15h)");
+    ).toBe("commits: 🔴 dormant (15h)");
     expect(
       formatCadenceColumn({
         ...base,
         ageOfLastCommitSec: 3 * 3600,
         verdict: "ship-zero-window",
       }),
-    ).toBe("🚨 ship-zero (3h)");
+    ).toBe("commits: 🚨 ship-zero (3h)");
+  });
+
+  test("EVERY verdict cell is prefixed — none can be read as another column", () => {
+    // The property, not four examples of it: a new verdict added without
+    // a subject prefix reintroduces exactly the misread W6 recorded.
+    const base: Omit<CadenceObservation, "verdict"> = {
+      windowSec: 1800,
+      commitsInWindow: 1,
+      lastCommitAt: 1000,
+      lastCommitSha: "abc1234",
+      ageOfLastCommitSec: 300,
+    };
+    const verdicts: ReadonlyArray<CadenceObservation["verdict"]> = [
+      "shipping",
+      "idle",
+      "dormant",
+      "ship-zero-window",
+      "exempt",
+    ];
+    for (const verdict of verdicts) {
+      expect(formatCadenceColumn({ ...base, verdict })).toStartWith("commits: ");
+    }
+    expect(formatCadenceColumn(undefined)).toStartWith("commits: ");
   });
 });
 
@@ -1311,15 +1365,27 @@ describe("gatherStatus / status verb — lead block surfaces in JSON", () => {
   });
 });
 
-describe("text mode — pane-state column rename + cadence column", () => {
-  test("header row uses 'pane-state' (not 'alive' or bare 'state')", async () => {
+describe("text mode — agent-state leads, process-state and cadence follow", () => {
+  test("header names all three state columns unambiguously", async () => {
     await stageTeam([{ name: "alpha" }], false);
     const { out } = await captureStdout(() =>
       status(["--socket", socketPath, "--team-dir", teamDir]),
     );
-    expect(out).toContain("pane-state");
-    // 'cadence' header column is the canonical truth-signal column.
-    expect(out).toContain("cadence");
+    // ADR-273 §Supplement-6: the BEHAVIOURAL column leads — it is what
+    // the operator asked about, and "active" read aloud means "fine" to a
+    // listener even when the pane is blocked forever on a prompt.
+    const header = out.split("\n").find((l) => l.startsWith("member ")) ?? "";
+    expect(header).toContain("agent-state");
+    // The process observable is still there, alongside, and now says so.
+    // (ADR-148 §D3 named it `pane-state`; §Supplement-6 renames it to
+    // `process-state` because a row now carries TWO pane states and
+    // "pane-state" no longer distinguishes them.)
+    expect(header).toContain("process-state");
+    // The commit-cadence column is the canonical truth-signal column.
+    expect(header).toContain("commit-cadence");
+    // agent-state comes FIRST of the three.
+    expect(header.indexOf("agent-state")).toBeLessThan(header.indexOf("process-state"));
+    expect(header.indexOf("process-state")).toBeLessThan(header.indexOf("commit-cadence"));
   });
 
   test("text mode shows NO cadence for a tmpdir worktree (no .git)", async () => {
@@ -2000,8 +2066,8 @@ describe("status — NEEDS APPROVAL is scoped to the team, not the ambient repo"
     const { out } = await captureStdout(() =>
       status(["--socket", socketPath, "--team-dir", teamDir]),
     );
-    expect(out).toContain("📝 NEEDS APPROVAL: ✅ clear");
-    expect(out).not.toMatch(/NEEDS APPROVAL: \d+ ADRs/);
+    expect(out).toContain("📝 awaiting your approval: ✅ nothing is waiting for sign-off");
+    expect(out).not.toMatch(/awaiting your approval: \d+ proposed ADRs/);
   });
 
   test("it counts the TEAM's own paperwork — one proposed ADR under the team root reads as 1", async () => {
@@ -2022,5 +2088,412 @@ describe("status — NEEDS APPROVAL is scoped to the team, not the ambient repo"
     expect(parsed.needsApproval.adr[0].path).toContain(teamDir);
     expect(parsed.needsApproval.inbox).toHaveLength(0);
     expect(parsed.needsApproval.total).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------
+// ADR-273 §Supplement-6 — the behavioural verdict, alongside the process
+// ---------------------------------------------------------------------
+//
+// W6 left `team_status` and `fleet_attention` speaking different
+// vocabularies about the same pane: "active" versus "waiting on a
+// permission prompt". Both true, jointly useless — and on a SPOKEN
+// surface "active" is heard as "fine". These pin the decision that closed
+// it: `team_status` surfaces the fleet classifier's per-pane verdict
+// ALONGSIDE the cage state, with the behavioural one leading.
+
+const AGENT_BASE: MemberStatus = {
+  name: "alpha",
+  role: "member",
+  tui: "claude",
+  paneCommand: "claude",
+  cageState: "active",
+  pendingCount: 0,
+  inProgressCount: 0,
+  heartbeat_age_s: null,
+};
+
+describe("formatAgentStateColumn — the behavioural cell", () => {
+  test("an attention verdict renders the SAME clause fleet_attention speaks", () => {
+    expect(
+      formatAgentStateColumn({
+        ...AGENT_BASE,
+        agentState: { bucket: "attention", kind: "permission-prompt", marker: "Do you want to" },
+      }),
+    ).toBe("agent: 🛑 waiting on a permission prompt");
+  });
+
+  test("a chronic attention verdict is amber, not red", () => {
+    expect(
+      formatAgentStateColumn({
+        ...AGENT_BASE,
+        agentState: { bucket: "attention", kind: "dormant", marker: "no output for 3h" },
+      }),
+    ).toBe("agent: 🟡 parked with nothing queued");
+  });
+
+  test("a quiet verdict renders green with its quiet label", () => {
+    expect(
+      formatAgentStateColumn({ ...AGENT_BASE, agentState: { bucket: "quiet", kind: "working" } }),
+    ).toBe("agent: 🟢 working");
+  });
+
+  test("no verdict says 'no reading' — never anything that could be heard as fine", () => {
+    // Absent means no probe ran (non-claude TUI, or a probe that threw).
+    // A tool with no way to say "I could not tell" is one an operator
+    // stops trusting — the same rule the `?` marker exists for.
+    const cell = formatAgentStateColumn(AGENT_BASE);
+    expect(cell).toBe("agent: ❔ no reading");
+    expect(cell).not.toContain("working");
+    expect(cell).not.toContain("🟢");
+  });
+});
+
+describe("formatProcessStateColumn — the process cell, self-labelled", () => {
+  test("carries the pane-state value verbatim, prefixed with its subject", () => {
+    expect(formatProcessStateColumn(AGENT_BASE)).toBe("process: active");
+    expect(formatProcessStateColumn({ ...AGENT_BASE, cageState: "down" })).toBe("process: down");
+  });
+
+  test("the inferred-from-render marker survives the prefix", () => {
+    // The `?` is the probe's own hedge (§Supplement-5 W5). Losing it here
+    // would launder an uncertain read into a confident one.
+    expect(formatProcessStateColumn({ ...AGENT_BASE, cageInferredFromRender: true })).toBe(
+      "process: active?",
+    );
+  });
+
+  test("a row read out of column context still names what the value is about", () => {
+    // The literal W6 residue: a bare `active` in a row of bare cells is
+    // what a model turns into "all panes are active".
+    expect(formatProcessStateColumn(AGENT_BASE)).toStartWith("process: ");
+  });
+});
+
+describe("formatAgentEvidenceLine — every attention claim carries its evidence", () => {
+  test("an attention verdict yields an indented evidence line naming the member", () => {
+    const line = formatAgentEvidenceLine({
+      ...AGENT_BASE,
+      agentState: {
+        bucket: "attention",
+        kind: "permission-prompt",
+        marker: "Do you want to make this edit?",
+      },
+    });
+    expect(line).toContain("evidence for alpha:");
+    expect(line).toContain("Do you want to make this edit?");
+    expect(line?.startsWith(" ")).toBe(true);
+  });
+
+  test("a quiet verdict yields no line — the budget belongs to the findings", () => {
+    expect(
+      formatAgentEvidenceLine({ ...AGENT_BASE, agentState: { bucket: "quiet", kind: "working" } }),
+    ).toBeNull();
+  });
+
+  test("no verdict at all yields no line", () => {
+    expect(formatAgentEvidenceLine(AGENT_BASE)).toBeNull();
+  });
+
+  test("an empty marker yields no line rather than a dangling arrow", () => {
+    expect(
+      formatAgentEvidenceLine({
+        ...AGENT_BASE,
+        agentState: { bucket: "attention", kind: "unreadable", marker: "   " },
+      }),
+    ).toBeNull();
+  });
+
+  test("a long marker is truncated with an ellipsis, not wrapped", () => {
+    const line = formatAgentEvidenceLine({
+      ...AGENT_BASE,
+      agentState: { bucket: "attention", kind: "idle-residue", marker: "x".repeat(400) },
+    });
+    expect(line).not.toBeNull();
+    expect(line?.includes("\n")).toBe(false);
+    expect(line).toContain("…");
+    expect((line ?? "").length).toBeLessThan(160);
+  });
+
+  test("the label follows the member's display label, not its id", () => {
+    // ADR-136 TR4 — the operator-facing string is the label when set.
+    const line = formatAgentEvidenceLine({
+      ...AGENT_BASE,
+      label: "backend",
+      agentState: { bucket: "attention", kind: "crashed", marker: "no agent TUI" },
+    });
+    expect(line).toContain("evidence for backend:");
+  });
+});
+
+// ---------------------------------------------------------------------
+// The cross-surface pin: the SAME panes the voice judge grades
+// ---------------------------------------------------------------------
+
+describe("status — team_status agrees with fleet_attention about the same panes", () => {
+  /**
+   * Paint the voice e2e fixture panes into a real tmux session.
+   *
+   * These are the exact strings `tests/unit/core/vox/e2e/fixtures.test.ts`
+   * runs through `classifyPaneObservation`, and the exact strings the vox
+   * judge grades against. Asserting `atmux status` reaches each fixture's
+   * DECLARED verdict is therefore a direct pin on the two surfaces
+   * agreeing — the drift W6 recorded fails here first.
+   */
+  async function stageFixtureCage(): Promise<{ teamName: string; sessionName: string }> {
+    const alpha = TEAM_FIXTURES.find((t) => t.kind === "live");
+    if (alpha === undefined) throw new Error("test fixture: no live team");
+    const teamName = `${sessionPrefix}-team`;
+    const sessionName = `atmux-${teamName}`;
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      JSON.stringify({
+        name: teamName,
+        members: alpha.panes.map((p) => ({ name: p.member, role: "member" })),
+      }),
+    );
+    const [first, ...rest] = alpha.panes;
+    if (first === undefined) throw new Error("test fixture: no panes");
+    const paint = async (member: string, text: string): Promise<string> => {
+      const path = join(teamDir, `${member}.txt`);
+      await writeFile(path, text);
+      // `exec` replaces the shell so pane_current_command is not a shell —
+      // the classifier reads a bare shell as evidence the TUI is gone.
+      return `cat ${path}; exec sleep 120`;
+    };
+    await tmux.session.newSession({
+      name: sessionName,
+      windowName: first.member,
+      shellCommand: await paint(first.member, first.text),
+    });
+    for (const pane of rest) {
+      await tmux.window.newWindow({
+        sessionName,
+        name: pane.member,
+        shellCommand: await paint(pane.member, pane.text),
+      });
+    }
+    await new Promise((r) => setTimeout(r, 250));
+    return { teamName, sessionName };
+  }
+
+  /**
+   * The real tmux namespace with ONE signal overridden: the window
+   * activity clock reads 200s old.
+   *
+   * Not a convenience — it is the only way to exercise the residue
+   * fixture, whose declared verdict requires a window nothing has touched
+   * for over a minute (`minStaleSec: 70`). 200s is deliberately between
+   * RESIDUE_FRESH_SEC (60) and FROZEN_ACTIVITY_SEC (300), so it ages the
+   * wedge WITHOUT turning the working pane into a frozen one. Everything
+   * else — the capture, the window list, the pane list, `ps` — is real.
+   */
+  function agedTmux(nowSec: number): TmuxNamespace {
+    return {
+      ...tmux,
+      pane: {
+        ...tmux.pane,
+        async displayMessage(opts: { target: string; format: string; print?: boolean }) {
+          const real = await tmux.pane.displayMessage(opts);
+          const parts = real.split("\t");
+          if (parts.length < 3) return real;
+          return [String(nowSec - 200), parts[1], parts[2]].join("\t");
+        },
+      },
+    } as unknown as TmuxNamespace;
+  }
+
+  test("every fixture pane reaches the verdict the voice judge is told is true", async () => {
+    const { teamName, sessionName } = await stageFixtureCage();
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Parameters<
+      typeof gatherStatus
+    >[1];
+    expect(team.name).toBe(teamName);
+    const nowSec = Math.floor(Date.now() / 1000);
+    const snap = await gatherStatus(agedTmux(nowSec), team, sessionName, atmuxDir);
+    const alpha = TEAM_FIXTURES.find((t) => t.kind === "live");
+    expect(alpha?.panes.length).toBeGreaterThan(0);
+    for (const pane of alpha?.panes ?? []) {
+      const row = snap.members.find((m) => m.name === pane.member);
+      expect(row).toBeDefined();
+      // The whole point: the row's behavioural verdict is the fixture's
+      // declared one — which is what `classifyPaneObservation` produces
+      // and what the judge's ground truth says.
+      expect(row?.agentState?.bucket).toBe(pane.expect.bucket);
+      expect(row?.agentState?.kind).toBe(pane.expect.kind);
+    }
+    // …and the process column still answers its own, different question:
+    // every pane's process is up. That is exactly the pair of claims the
+    // decision preserves — behaviour leading, process alongside.
+    for (const row of snap.members) expect(row.cageState).not.toBe("down");
+  });
+
+  test("text mode leads with the behavioural verdict and prints its evidence", async () => {
+    const { sessionName } = await stageFixtureCage();
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Parameters<
+      typeof gatherStatus
+    >[1];
+    const nowSec = Math.floor(Date.now() / 1000);
+    const snap = await gatherStatus(agedTmux(nowSec), team, sessionName, atmuxDir);
+    const blocked = snap.members.find((m) => m.agentState?.kind === "permission-prompt");
+    expect(blocked).toBeDefined();
+    expect(formatAgentStateColumn(blocked as MemberStatus)).toBe(
+      "agent: 🛑 waiting on a permission prompt",
+    );
+    const evidence = formatAgentEvidenceLine(blocked as MemberStatus);
+    expect(evidence).toContain("Do you want to make this edit?");
+  });
+
+  test("--json carries bucket, kind, the spoken reason, and the evidence marker", async () => {
+    await stageFixtureCage();
+    const { out } = await captureStdout(() =>
+      status(["--json", "--socket", socketPath, "--team-dir", teamDir]),
+    );
+    const parsed = JSON.parse(out);
+    const blocked = parsed.members.find(
+      (m: { agentState?: { kind: string } }) => m.agentState?.kind === "permission-prompt",
+    );
+    expect(blocked).toBeDefined();
+    expect(blocked.agentState.bucket).toBe("attention");
+    expect(blocked.agentState.reason).toBe("waiting on a permission prompt");
+    expect(blocked.agentState.marker).toContain("Do you want to make this edit?");
+    // The process state is still there, alongside.
+    expect(blocked.cageState).not.toBe("down");
+    // A quiet row carries no marker — there is no finding to evidence.
+    const working = parsed.members.find(
+      (m: { agentState?: { kind: string } }) => m.agentState?.kind === "working",
+    );
+    expect(working).toBeDefined();
+    expect(working.agentState.bucket).toBe("quiet");
+    expect(working.agentState.marker).toBeUndefined();
+  });
+});
+
+describe("status — a session that is down reports the agent dead, in the shared words", () => {
+  test("gatherStatus routes session-down through the SHARED classifier", async () => {
+    // Not a hand-written literal: the clause must be the one
+    // `fleet_attention` speaks for a cage that is not running, or the two
+    // tools describe the same fleet differently again.
+    await stageTeam([{ name: "alpha" }], false);
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Parameters<
+      typeof gatherStatus
+    >[1];
+    const snap = await gatherStatus(tmux, team, `atmux-${team.name}`, atmuxDir);
+    expect(snap.members[0]?.agentState).toEqual({
+      bucket: "attention",
+      kind: "dead",
+      marker: "tmux session absent",
+    });
+    expect(snap.members[0]?.cageState).toBe("down");
+  });
+
+  test("a non-claude TUI gets NO behavioural reading rather than a guessed one", async () => {
+    // The cage probe is claude-specific, so nothing observed this pane
+    // behaviourally. The honest cell is "no reading" — inventing a quiet
+    // verdict here would be the same lie in the other direction.
+    await stageTeam([{ name: "alpha", tui: "cursor" }], true);
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Parameters<
+      typeof gatherStatus
+    >[1];
+    const snap = await gatherStatus(tmux, team, `atmux-${team.name}`, atmuxDir);
+    expect(snap.members[0]?.agentState).toBeUndefined();
+    expect(formatAgentStateColumn(snap.members[0] as MemberStatus)).toBe("agent: ❔ no reading");
+  });
+});
+
+describe("status — the kanban and approval lines cannot be fused when read aloud", () => {
+  test("each line names its own subject in full", async () => {
+    // W6's second residue: `📋 kanban  📌 todo=0 …` followed by
+    // `📝 NEEDS APPROVAL: ✅ clear` was relayed as "the kanban is clear
+    // and needs approval". Every line printed was true.
+    await stageTeam([{ name: "alpha" }], false);
+    const { out } = await captureStdout(() =>
+      status(["--socket", socketPath, "--team-dir", teamDir]),
+    );
+    expect(out).toContain("📋 kanban board:");
+    expect(out).toContain("📝 awaiting your approval:");
+    // The fusable pair is gone: no bare "kanban" line and no bare
+    // "NEEDS APPROVAL" clause that could attach to it.
+    expect(out).not.toMatch(/📋 kanban {2}📌/);
+    expect(out).not.toContain("NEEDS APPROVAL");
+  });
+
+  test("an EMPTY board says so in a sentence, spending no pane vocabulary", async () => {
+    // "in-progress" and "blocked" are ALSO pane words. A model relaying
+    // "no tasks are in progress or blocked" about a team that HAS a
+    // blocked pane produces a sentence that reads as a contradiction —
+    // the vox judge scored exactly that. With nothing on the board, the
+    // shorter sentence is both true and unmistakable.
+    await stageTeam([{ name: "alpha" }], false);
+    const { out } = await captureStdout(() =>
+      status(["--socket", socketPath, "--team-dir", teamDir]),
+    );
+    expect(out).toContain("📋 kanban board: no tasks on it at all");
+    expect(out).not.toContain("in-progress");
+    expect(out).not.toMatch(/kanban board:.*blocked/);
+  });
+
+  test("a NON-empty board keeps the noun attached to every number", async () => {
+    await stageTeam([{ name: "alpha" }], false);
+    await addTask(atmuxDir, { subject: "one" });
+    const blockedId = await addTask(atmuxDir, { subject: "two" });
+    await moveTask(atmuxDir, blockedId, "blocked");
+    const { out } = await captureStdout(() =>
+      status(["--socket", socketPath, "--team-dir", teamDir]),
+    );
+    expect(out).toContain("📌 1 tasks todo");
+    expect(out).toContain("🟡 0 tasks in-progress");
+    expect(out).toContain("✅ 0 tasks done");
+    expect(out).toContain("🛑 1 tasks blocked");
+    // The subject leads the line, so no count can be read as a pane fact.
+    expect(out).toContain("📋 kanban board:");
+  });
+});
+
+// ---------------------------------------------------------------------
+// The fail-soft seams around the shared read (ADR-273 §Supplement-6)
+// ---------------------------------------------------------------------
+//
+// Both of these are paths where the probe LOST its evidence. Neither may
+// invent a verdict to fill the hole — a spoken surface has no way to show
+// the operator that a confident-sounding answer came from a failure.
+
+describe("status — a failed window read degrades, it does not fabricate", () => {
+  test("display-message throwing leaves the pane (down) with no window signals", async () => {
+    await stageTeam([{ name: "alpha", tui: "cursor" }], true);
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Parameters<
+      typeof gatherStatus
+    >[1];
+    const broken = {
+      ...tmux,
+      pane: {
+        ...tmux.pane,
+        async displayMessage() {
+          throw new Error("tmux server went away");
+        },
+      },
+    } as unknown as TmuxNamespace;
+    const snap = await gatherStatus(broken, team, `atmux-${team.name}`, atmuxDir);
+    // The legacy column falls back exactly as it always did…
+    expect(snap.members[0]?.paneCommand).toBe("(down)");
+    // …and nothing manufactured a behavioural verdict out of the failure.
+    expect(snap.members[0]?.agentState).toBeUndefined();
+  });
+
+  test("a cage probe that THROWS yields no state and no agent verdict", async () => {
+    // Not `down`, not `working` — the probe returned nothing, so the row
+    // claims nothing. `formatAgentStateColumn` renders "no reading".
+    await stageTeam([{ name: "alpha" }], true);
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Parameters<
+      typeof gatherStatus
+    >[1];
+    const snap = await gatherStatus(tmux, team, `atmux-${team.name}`, atmuxDir, {
+      probeCage: async () => {
+        throw new Error("probe exploded");
+      },
+    });
+    expect(snap.members[0]?.cageState).toBeNull();
+    expect(snap.members[0]?.agentState).toBeUndefined();
+    expect(formatAgentStateColumn(snap.members[0] as MemberStatus)).toBe("agent: ❔ no reading");
   });
 });

@@ -136,7 +136,22 @@ export const QUIET_LABEL: Readonly<Record<QuietClass, string>> = Object.freeze({
  *  see; the classifier adds no IO of its own. */
 export interface PaneObservation {
   team: string;
-  member: string;
+  /**
+   * Who the observation is about, or `null` when it is about the TEAM
+   * itself rather than an identified pane.
+   *
+   * `null` exists because the alternative was a lie. A team whose session
+   * is absent yields ONE synthetic observation, and there is no pane
+   * behind it to name — the sweep used to stamp it with the literal
+   * string `"cage"`, which `renderAttention` then printed as
+   * `vox-e2e-ghost/cage` and a voice model relayed as "member cage" (the
+   * e2e judge caught it as a hallucination, correctly: no such member
+   * exists). Naming `members[0]` instead is the same failure wearing a
+   * plausible name — it attributes a whole-team fact to one arbitrary
+   * member. `null` renders as the bare team name, which is the only true
+   * subject available.
+   */
+  member: string | null;
   /** tmux window name the sweep targeted (evidence for a `dead` item). */
   windowName: string;
   /** Is the team's tmux session present under its RESOLVED name? */
@@ -152,6 +167,43 @@ export interface PaneObservation {
   /** Seconds since tmux last saw output in this window. NOT derived from
    *  the pane text — this is the independent clock trap 3 needs. */
   activityAgeSec: number | null;
+}
+
+/**
+ * The three INDEPENDENT window signals an observation needs beyond the
+ * pane capture: tmux's own activity clock, whether the pane process has
+ * exited, and what command occupies it.
+ *
+ * Named and lifted here (from `src/verbs/fleet.ts`, which re-exports it)
+ * because `src/core/cage-state.ts` collects exactly these on behalf of
+ * `atmux status` — and the whole point of ADR-273 §Supplement-6 is that
+ * `team_status` and `fleet_attention` classify from the SAME evidence
+ * shape rather than each inventing its own.
+ */
+export interface WindowProbe {
+  activityAgeSec: number | null;
+  paneDead: boolean | null;
+  currentCommand: string | null;
+}
+
+/** tmux format string for the one-call-per-window liveness probe. The
+ *  activity clock is what trap 3 needs: it is maintained by tmux, not
+ *  derived from the pane text, so a frozen render cannot forge it. */
+export const WINDOW_PROBE_FORMAT = "#{window_activity}\t#{pane_dead}\t#{pane_current_command}";
+
+/** Split {@link WINDOW_PROBE_FORMAT}'s output. Pure. Every field degrades
+ *  to `null` independently — a tmux build that omits one must not cost the
+ *  other two. */
+export function parseWindowProbe(raw: string, nowSec: number): WindowProbe {
+  const [activity, dead, cmd] = raw.trim().split("\t");
+  const activityEpoch = Number(activity);
+  const activityAgeSec =
+    activity !== undefined && activity !== "" && Number.isFinite(activityEpoch)
+      ? Math.max(0, nowSec - activityEpoch)
+      : null;
+  const paneDead = dead === undefined || dead === "" ? null : dead === "1";
+  const currentCommand = cmd === undefined || cmd === "" ? null : cmd;
+  return { activityAgeSec, paneDead, currentCommand };
 }
 
 /** A team-level ask: unread driver-inbox entries and/or open lead flags.
@@ -204,7 +256,10 @@ export interface AttentionItem {
 
 export interface QuietItem {
   team: string;
-  member: string;
+  /** `null` when the observation was team-level — see
+   *  {@link PaneObservation.member}. `fleet_quiet` aggregates and never
+   *  enumerates panes (D2), so nothing here is ever spoken by name. */
+  member: string | null;
   kind: QuietClass;
 }
 
@@ -571,6 +626,36 @@ export function classifyPaneObservation(obs: PaneObservation): PaneVerdict {
   return { bucket: "quiet", kind: "idle" };
 }
 
+/**
+ * The one-clause spoken reason for a verdict, whichever bucket it fell in.
+ *
+ * Exists so every surface that speaks a pane verdict — `fleet_attention`'s
+ * ranked list AND `atmux status`'s per-member row — uses the SAME words for
+ * the same pane. ADR-273 §Supplement-6: two classifiers contradicting each
+ * other on one spoken surface was the defect; two RENDERINGS of one
+ * classifier drifting apart would be the same defect one layer down.
+ */
+export function paneVerdictPhrase(verdict: PaneVerdict): string {
+  return verdict.bucket === "attention"
+    ? ATTENTION_REASON[verdict.kind]
+    : QUIET_LABEL[verdict.kind];
+}
+
+/**
+ * Severity glyph for a verdict.
+ *
+ * Three levels, not two: a CHRONIC attention class (`dormant` — an agent
+ * parked with nothing queued) is a standing condition the operator is
+ * entitled to know about, not an incident, and stamping it with the same
+ * glyph as a wedged pane is how a triage surface trains its reader to
+ * ignore the glyph. Same call {@link renderQuiet} already makes when it
+ * counts parked panes separately from findings.
+ */
+export function paneVerdictGlyph(verdict: PaneVerdict): string {
+  if (verdict.bucket === "quiet") return "🟢";
+  return CHRONIC_CLASSES.has(verdict.kind) ? "🟡" : "🛑";
+}
+
 /** Compact spoken duration: `45s`, `12m`, `3h`. No day units (global
  *  convention). */
 export function formatAge(sec: number): string {
@@ -641,7 +726,9 @@ export function buildVerdict(sweep: FleetSweep): FleetVerdict {
     if (byTeam !== 0) return byTeam;
     return (a.member ?? "").localeCompare(b.member ?? "");
   });
-  quiet.sort((a, b) => a.team.localeCompare(b.team) || a.member.localeCompare(b.member));
+  quiet.sort(
+    (a, b) => a.team.localeCompare(b.team) || (a.member ?? "").localeCompare(b.member ?? ""),
+  );
 
   return {
     attention,

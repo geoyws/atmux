@@ -758,18 +758,33 @@ atmux release <patch|minor|major>            # one-shot deploy: bump package.jso
 
 | Verdict | Trigger | Display |
 |---|---|---|
-| `shipping` | ≥1 commit in window AND last commit `< shippingMaxAgeSec` (default 30 min) | `🟢 shipping (5min)` |
-| `idle` | 0 commits in window AND last commit `< idleMaxAgeSec` (default 2h) — could resume soon | `🟡 idle (1h2m)` |
-| `ship-zero-window` | 0 commits in window AND age `≥ shipZeroWindowSec` (default 2h) — escalation flag per ADR-132 §E6 | `🚨 ship-zero (3h)` |
-| `dormant` | 0 commits in window AND age `≥ dormantMaxAgeSec` (default 6h) | `🔴 dormant (15h)` |
+| `shipping` | ≥1 commit in window AND last commit `< shippingMaxAgeSec` (default 30 min) | `commits: 🟢 shipping (5min)` |
+| `idle` | 0 commits in window AND last commit `< idleMaxAgeSec` (default 2h) — could resume soon | `commits: 🟡 idle (1h2m)` |
+| `ship-zero-window` | 0 commits in window AND age `≥ shipZeroWindowSec` (default 2h) — escalation flag per ADR-132 §E6 | `commits: 🚨 ship-zero (3h)` |
+| `dormant` | 0 commits in window AND age `≥ dormantMaxAgeSec` (default 6h) | `commits: 🔴 dormant (15h)` |
 
-Per-member exemption (planners during long decomp passes, reviewers during multi-commit audit reviews) lands in `team.json::cadence.exemptMembers`; those rows render `(exempt)`.
+Per-member exemption (planners during long decomp passes, reviewers during multi-commit audit reviews) lands in `team.json::cadence.exemptMembers`; those rows render `commits: exempt`.
 
-A member whose worktree holds **no readable git repository** (missing path, not a repo, `git` unavailable) gets **no verdict at all** — the cell renders `—`. That is distinct from a repo with no matching commits, which is a real `idle`. Per [ADR-273](docs/adr/273-voice-fleet-triage-and-pane-input.md) §Supplement-5 W4: the probe used to collapse "I could not look" into "no commits", and `atmux status` then printed `🟡 idle (never)` about work that was never observable.
+Every cell carries the **`commits:` subject prefix**, and the column header is `commit-cadence`. That is not decoration: `atmux status`'s text table is what the `team_status` voice tool sends to the model, and a model reading a row has no header in front of it — the vox drilldown transcript read this column's bare `idle` as a *pane* state and told the operator the team's panes were idle. Per [ADR-273](docs/adr/273-voice-fleet-triage-and-pane-input.md) §Supplement-6.
 
-Cadence is the truth signal — **pane-state is the proxy.** The companion `pane-state` column (formerly `state`) shows the cage-state taxonomy (`active`/`wedged`/`bootstrapping`/`down`); use it for "is the process running?" diagnostics, NOT for "is work happening?" verdicts.
+A member whose worktree holds **no readable git repository** (missing path, not a repo, `git` unavailable) gets **no verdict at all** — the cell renders `commits: no signal`. That is distinct from a repo with no matching commits, which is a real `idle`. Per ADR-273 §Supplement-5 W4: the probe used to collapse "I could not look" into "no commits", and `atmux status` then printed `🟡 idle (never)` about work that was never observable.
 
-A trailing **`?`** on the pane-state cell (`active?`) means the state was read off the pane's **render** because no `claude` process could be identified in its tree — the pane is unmistakably an agent TUI, but nothing confirmed who is in it. A bare cell is a positive claim that `ps` named the occupant. `down` never carries the marker: it is reached only when the process probe and the render agree, which is a confident conclusion rather than a hedge. JSON exposes it as `members[].cageInferredFromRender` (key-presence). Per ADR-273 §Supplement-5 W5 — `team_status` is a voice tool, and one that cannot say "I could not tell" is one an operator stops trusting.
+### The two state columns — `agent-state` leads, `process-state` follows
+
+A member row carries **two** states, and they answer different questions ([ADR-273](docs/adr/273-voice-fleet-triage-and-pane-input.md) §Supplement-6):
+
+| Column | Question | Vocabulary | Example cell |
+|---|---|---|---|
+| `agent-state` | What is the agent **doing**? | the fleet-triage classes `fleet_attention` speaks (`permission-prompt`, `idle-residue`, `working`, `frozen`, …) | `agent: 🛑 waiting on a permission prompt` |
+| `process-state` | Is the **process** there and has it produced output? | the cage-state taxonomy (`active` / `wedged` / `bootstrapping` / `down`) | `process: active?` |
+
+Both come from **one** `probeCageState` call over **one** pane capture, so the two can never contradict each other about the same pane — which they did: `team_status` reported three panes as `active` while `fleet_attention`, off the same socket, correctly called one of them blocked on a permission prompt. `active` is *true* of a pane stopped forever on a prompt, and read aloud it means "working fine".
+
+`agent-state` comes first because it is what the operator asked about. An `attention`-bucket verdict is followed by an indented **`↳ evidence for <member>:`** line carrying the marker that produced it — the same evidence `fleet_attention` shows, so the two tools justify a claim identically. A row with no reading at all (non-claude TUI, or a probe that threw) renders `agent: ❔ no reading`, never anything that could be heard as "fine".
+
+Cadence is the truth signal for *shipping* — **process-state is the proxy for the process.** Use `process-state` for "is it running?" diagnostics, `agent-state` for "is it stuck?", and `commit-cadence` for "is work landing?".
+
+A trailing **`?`** on the process-state cell (`process: active?`) means the state was read off the pane's **render** because no `claude` process could be identified in its tree — the pane is unmistakably an agent TUI, but nothing confirmed who is in it. A bare cell is a positive claim that `ps` named the occupant. `down` never carries the marker: it is reached only when the process probe and the render agree, which is a confident conclusion rather than a hedge. JSON exposes it as `members[].cageInferredFromRender` (key-presence). Per ADR-273 §Supplement-5 W5 — `team_status` is a voice tool, and one that cannot say "I could not tell" is one an operator stops trusting. The vox system prompt teaches the model to speak that `?` as unconfirmed, so the marker's rendered shape is load-bearing (pinned in `tests/unit/core/vox/instructions.test.ts`).
 
 Config under `team.json::cadence` — all fields optional, defaults applied per ADR-148 §D7:
 
@@ -792,6 +807,8 @@ Config under `team.json::cadence` — all fields optional, defaults applied per 
 ```
 
 JSON output (`atmux status --json`) gains `members[].cadence` with the full observation shape: `windowSec`, `commitsInWindow`, `lastCommitAt`, `lastCommitSha`, `ageOfLastCommitSec`, `verdict`.
+
+It also carries `members[].agentState` (key-presence — absent means no probe ran) with `bucket` (`attention` | `quiet`), `kind` (the classifier class), `reason` (the spoken clause, identical to `fleet_attention`'s), and `marker` (the evidence line, on `attention` rows only).
 
 ## 🌱 Eternal-improvement (ADR-052)
 

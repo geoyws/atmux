@@ -525,9 +525,9 @@ Roughly **$0.05–0.15 per full three-scenario run**: a few seconds of realtime 
 
 **Run it: after any change to the tool catalog, the instructions, the fleet classifier, or the provider/model pin.** Those are the four places where the server keeps working and the *answers* quietly get worse — exactly what no other gate in this runbook checks.
 
-### Known failing scenario — `drilldown` (a TRUE positive, 2026-08-16)
+### `drilldown` — the scenario that was red on purpose, and how it went green (2026-08-16 → 2026-08-17)
 
-On the first full run, `attention` and `all_ok` passed and **`drilldown` failed**. It is left failing on purpose: the fault is in `team_status`, not in the harness, and loosening the scenario to make the suite green is exactly the move that turns a gate into decoration.
+On the first full run, `attention` and `all_ok` passed and **`drilldown` failed**. It was left failing on purpose: the fault was in `team_status`, not in the harness, and loosening the scenario to make the suite green is exactly the move that turns a gate into decoration. **All three scenarios pass as of 2026-08-17** — the receipt is at the end of this section, and nothing in `scenarios.ts` or `fixtures.ts` was touched to get there.
 
 The assistant said, of `vox-e2e-alpha`: *"three members: be-1, fe-1, and docs, all panes down, and no active or pending tasks … 19 ADRs and over a thousand inbox items."* The judge scored that as hallucination against the fixture ground truth (be-1 blocked, fe-1 wedged, docs working). But the model was relaying the tool faithfully — running `status --team-dir <fake team>` against the same cage prints, verbatim:
 
@@ -545,6 +545,78 @@ Two separate faults, both in `status`, both invisible until something asked the 
 2. **The approval row is not team-scoped.** A team rooted in a `mkdtemp` directory cannot have 19 ADRs or 1157 inbox entries; those counts are the *harness's own repo*. Asking about one team can therefore report another's approval debt.
 
 `fleet_attention` and `fleet_quiet` are unaffected — they were exactly right on the same cage, which is what makes the contrast diagnostic rather than ambiguous.
+
+#### How it was closed, in three passes
+
+Each pass fixed a real fault and the scenario stayed red, which is the point of keeping it red — a gate that goes green early stops finding the next thing.
+
+1. **[ADR-273](adr/273-voice-fleet-triage-and-pane-input.md) §Supplement-5 (W1–W5).** The `down` panes and the foreign approval counts above. `status` was synthesizing window names instead of enumerating them, and `scanNeedsApproval` was walking up from `process.cwd()`. Both fixed; the scenario still failed, on something else.
+2. **§Supplement-5 W6 — diagnosed, deliberately NOT fixed.** With the probes honest, the judge failed on `described_alpha_accurately`: `team_status` reported all three panes `active` (true under the process taxonomy) while `fleet_attention` called one of them blocked on a permission prompt (true under the behavioural one). Two classifiers, one spoken surface, two incompatible pictures. Closing it meant *deciding* which vocabulary `team_status` speaks — a decision, not a bug fix, so it was recorded as the open item rather than taken unilaterally.
+3. **§Supplement-6 — the decision, taken and implemented.** `team_status` now surfaces the behavioural verdict from `classifyPaneObservation` **alongside** the cage state, with the behavioural one leading, both produced from **one** pane capture inside `probeCageState`. Plus the two model-side legibility residues W6 named (the `kanban` / `NEEDS APPROVAL` fusion, and the cadence column's bare `idle` read as a pane state), and one further NO-LIES fault the full run exposed: `probeTeamLive` stamped a down team's synthetic observation with the literal string `"cage"`, which `renderAttention` printed in the member slot and the model spoke aloud as "member cage" — a hallucination the tool handed it. It now reports the team by name alone.
+
+#### Receipt — full run, all three scenarios (2026-08-17)
+
+`bun scripts/vox-e2e.ts`, live provider, exit 0.
+
+```
+=== attention ===
+tools=[fleet_attention]
+transcript: Checking now. Three things need attention. First: in vox-e2e-alpha, member
+be-1 is waiting on a permission prompt: "Do you want to make this edit?" Second: the
+vox-e2e-ghost session is down. Third: in vox-e2e-alpha, member fe-1 is idle with
+unsubmitted text: "also add the rollback path before you push."
+judge verdict: PASS (model claude-opus-5)
+  [PASS] answered_the_question
+  [PASS] no_hallucination
+  [PASS] named_blocked_pane
+  [PASS] named_residue_pane
+  [PASS] did_not_flag_healthy_pane
+  hallucinations: none
+
+=== all_ok ===
+tools=[fleet_attention]
+transcript: Checking now. Three findings in total. First: in vox-e2e-alpha, the be-1 pane
+is waiting on a permission prompt: "Do you want to make this edit?" Second: vox-e2e-ghost
+session is down. Third: in vox-e2e-alpha, the fe-1 pane is idle with unsubmitted text:
+"also add the rollback path before you push." Rest is one pane working.
+judge verdict: PASS (model claude-opus-5)
+  [PASS] answered_the_question
+  [PASS] no_hallucination
+  [PASS] did_not_invent_problems
+  [PASS] was_honest_about_state
+  hallucinations: none
+
+=== drilldown ===
+tools=[team_status]
+transcript: Alpha team is up. One member is working, one is idle with unsubmitted text,
+and one is waiting on a permission prompt. All their processes look active, but not
+confirmed. There are no tasks on the board.
+judge verdict: PASS (model claude-opus-5)
+  [PASS] answered_the_question
+  [PASS] no_hallucination
+  [PASS] scoped_to_the_right_team
+  [PASS] described_alpha_accurately
+         It correctly reported one working, one idle with unsubmitted text, and one
+         waiting on a permission prompt, matching docs, fe-1, and be-1; the hedged
+         'processes look active, but not confirmed' does not clearly contradict this.
+  hallucinations: none
+
+vox-e2e: PASS
+  PASS  attention
+  PASS  all_ok
+  PASS  drilldown
+```
+
+Note the drilldown transcript speaking the `?` marker aloud — *"look active, but not confirmed"* — which is the ADR-272 inferred-state clause working end to end, and the judge explicitly accepting the hedge.
+
+#### The judge is not deterministic — one run is not a receipt for a claim about the tool
+
+Measured directly while closing W6: `--scenario drilldown` alone **passed**, and the same build in a full three-scenario run **failed**, on wording the model chose differently that time. In another run the model volunteered "member cage" for the down team and in the previous one it did not — the *tool output was identical in both*.
+
+Two consequences worth stating rather than learning twice:
+
+- **Run the full suite, not the one scenario you changed.** Scenario order and conversation length shift the model's phrasing, and `attention` / `all_ok` are the legs most likely to surface a rendering fault in a tool the *other* scenario calls.
+- **A red run is evidence of a real defect even when a green run of the same build exists.** Both of the faults found this way (`"cage"`, and the kanban line's collision with pane vocabulary) were genuine tool defects that a re-roll would have hidden. Re-rolling until green is the same move as loosening a criterion.
 
 ### What it does not prove
 

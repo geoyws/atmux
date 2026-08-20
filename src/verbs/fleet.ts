@@ -73,10 +73,12 @@ import {
   buildVerdict,
   type FleetSweep,
   type PaneObservation,
+  parseWindowProbe,
   renderAttention,
   renderQuiet,
   type TeamAsks,
   type UnreadableTeam,
+  WINDOW_PROBE_FORMAT,
 } from "../core/vox/fleet.ts";
 import { paneGist } from "../core/vox/summarize.ts";
 import { UsageError } from "../errors.ts";
@@ -213,26 +215,16 @@ export interface FleetDeps {
   logger?: { log: (m: string) => void };
 }
 
-/** Split `#{window_activity}\t#{pane_dead}\t#{pane_current_command}`. */
-export function parseWindowProbe(
-  raw: string,
-  nowSec: number,
-): { activityAgeSec: number | null; paneDead: boolean | null; currentCommand: string | null } {
-  const [activity, dead, cmd] = raw.trim().split("\t");
-  const activityEpoch = Number(activity);
-  const activityAgeSec =
-    activity !== undefined && activity !== "" && Number.isFinite(activityEpoch)
-      ? Math.max(0, nowSec - activityEpoch)
-      : null;
-  const paneDead = dead === undefined || dead === "" ? null : dead === "1";
-  const currentCommand = cmd === undefined || cmd === "" ? null : cmd;
-  return { activityAgeSec, paneDead, currentCommand };
-}
-
-/** tmux format string for the one-call-per-window liveness probe. The
- *  activity clock is what trap 3 needs: it is maintained by tmux, not
- *  derived from the pane text, so a frozen render cannot forge it. */
-export const WINDOW_PROBE_FORMAT = "#{window_activity}\t#{pane_dead}\t#{pane_current_command}";
+// `parseWindowProbe` + `WINDOW_PROBE_FORMAT` moved to `src/core/vox/fleet.ts`
+// (ADR-273 §Supplement-6). They are pure, and `src/core/cage-state.ts` now
+// collects the same three signals for `atmux status` — core must not import
+// from `src/verbs/**`, so the shared shape lives in the shared module. The
+// re-export keeps every pre-move importer resolving.
+export {
+  parseWindowProbe,
+  WINDOW_PROBE_FORMAT,
+  type WindowProbe,
+} from "../core/vox/fleet.ts";
 
 /**
  * Production per-team probe. Resolves the socket + the ANCHOR-AWARE
@@ -240,8 +232,8 @@ export const WINDOW_PROBE_FORMAT = "#{window_activity}\t#{pane_dead}\t#{pane_cur
  *
  * A team whose session is absent yields ONE `dead` observation rather
  * than N: the operator needs to hear "sopx is down", not six identical
- * clauses. When the roster is known the lead's name is used as the
- * subject, otherwise the team stands in for itself.
+ * clauses. That observation carries NO member — the team stands in for
+ * itself, because there is no pane behind it to name.
  */
 export async function probeTeamLive(
   team: FlattenedTeamEntry,
@@ -262,7 +254,13 @@ export async function probeTeamLive(
       panes: [
         {
           team: team.name,
-          member: roster?.members[0]?.name ?? "cage",
+          // TEAM-level, so it names no pane. There is none to name: the
+          // session is absent. The literal `"cage"` this replaced was
+          // spoken aloud as "member cage" and scored as a hallucination
+          // by the e2e judge — correctly, since no such member exists —
+          // and `members[0]` would be the same lie with a plausible name,
+          // attributing a whole-team fact to one arbitrary member.
+          member: null,
           windowName: sessionName,
           sessionUp: false,
           windowPresent: false,

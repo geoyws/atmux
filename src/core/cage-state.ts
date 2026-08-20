@@ -28,6 +28,25 @@
 // its existing yellow/silent row policy (down + wedged always yellow;
 // bootstrapping yellow only above the ADR-081 §D staleness threshold;
 // active silent).
+//
+// ---------------------------------------------------------------------
+// ADR-273 §Supplement-6 — the SECOND verdict, from the SAME evidence
+// ---------------------------------------------------------------------
+//
+// The taxonomy above answers "is the process there and has it produced
+// output". That is a real question, and `down` is exactly what an operator
+// wants to hear when a cage has died. It is not, however, the question an
+// operator asks out loud: `active` is true of a pane blocked forever on a
+// permission prompt, and read aloud "active" means "working fine" to a
+// human listener.
+//
+// So this probe now returns BOTH: `CageHealth.state` (process) and
+// `CageHealth.agentState` (behaviour, from
+// `classifyPaneObservation` — the classifier `fleet_attention` already
+// uses). Both are computed from ONE pane capture and ONE window probe, in
+// this function, deliberately: `team_status` and `fleet_attention`
+// disagreeing about the same pane was the defect ADR-273 §Supplement-5 W6
+// recorded, and two probes over one pane is how that defect comes back.
 
 import type { SpawnResult } from "../abstractions/spawn.ts";
 import { spawn as defaultSpawn } from "../abstractions/spawn.ts";
@@ -42,6 +61,14 @@ import {
 } from "./common.ts";
 import { readHeartbeat } from "./heartbeat.ts";
 import { classifyText, type PaneState } from "./pane-state.ts";
+import {
+  classifyPaneObservation,
+  type PaneObservation,
+  type PaneVerdict,
+  parseWindowProbe,
+  WINDOW_PROBE_FORMAT,
+  type WindowProbe,
+} from "./vox/fleet.ts";
 
 // ---------- Public type ----------
 
@@ -117,6 +144,22 @@ export interface CageHealth {
    * means "this state was not inferred" — never "unknown".
    */
   inferredFromRender?: boolean;
+  /**
+   * The BEHAVIOURAL verdict for the same pane, from
+   * {@link classifyPaneObservation} — the classifier `fleet_attention`
+   * speaks. Alongside {@link CageHealth.state}, never instead of it: the
+   * two answer different questions and both are worth having.
+   *
+   * Computed from the SAME capture and the SAME window probe that produced
+   * `state`, in {@link probeCageState}. That is the whole point (ADR-273
+   * §Supplement-6): one pane, one read, two verdicts that cannot drift,
+   * rather than two probes whose answers an operator has to reconcile.
+   *
+   * Optional so injected probe stubs stay valid. Absent means the caller
+   * stubbed the probe or the pane was never observed — never "the pane is
+   * fine".
+   */
+  agentState?: PaneVerdict;
 }
 
 // ---------- Public API ----------
@@ -178,6 +221,22 @@ export interface ProbeCageStateOpts {
    * member rather than paying a `list-windows` per member.
    */
   listWindowNames?: (sessionName: string) => Promise<ReadonlyArray<string>>;
+  /**
+   * The three independent window signals the BEHAVIOURAL classifier needs
+   * (ADR-273 §Supplement-6): tmux's activity clock, `#{pane_dead}`, and
+   * `#{pane_current_command}`.
+   *
+   * Defaults to one `display-message` against the resolved target. Callers
+   * that already read those signals for their own columns MUST pass what
+   * they read rather than letting this fire a second time — `atmux status`
+   * needs `#{pane_current_command}` anyway, so it reads all three once and
+   * hands them down. Two reads of one pane is how the two verdicts start
+   * disagreeing again.
+   *
+   * Failure degrades to all-`null`, which the classifier tolerates by
+   * design (it falls back on the pane text alone).
+   */
+  windowProbe?: (target: string) => Promise<WindowProbe>;
 }
 
 /**
@@ -295,6 +354,22 @@ export async function probeCageState(
   // fallback, not the target — see `cageWindowCandidates`.
   const { canonical } = cageWindowCandidates(member);
 
+  /** Behavioural verdict for a pane this probe never got to look at.
+   *  Routed through the shared classifier rather than hand-written so the
+   *  words match `fleet_attention`'s by construction. */
+  const unobserved = (windowName: string, sessionUp: boolean): PaneVerdict =>
+    classifyPaneObservation({
+      team: team.name,
+      member: member.name,
+      windowName,
+      sessionUp,
+      windowPresent: false,
+      capture: null,
+      paneDead: null,
+      currentCommand: null,
+      activityAgeSec: null,
+    });
+
   // (1) session present?
   if (!(await hasSession(sessionName, socketPath))) {
     return {
@@ -304,6 +379,7 @@ export async function probeCageState(
       paneUptimeSec: null,
       evidence: "",
       heartbeatAgeSec: null,
+      agentState: unobserved(canonical, false),
     };
   }
 
@@ -329,6 +405,7 @@ export async function probeCageState(
       paneUptimeSec: null,
       evidence: "",
       heartbeatAgeSec: null,
+      agentState: unobserved(windowName, true),
     };
   }
   if (panePid === null) {
@@ -339,6 +416,7 @@ export async function probeCageState(
       paneUptimeSec: null,
       evidence: "",
       heartbeatAgeSec: null,
+      agentState: unobserved(windowName, true),
     };
   }
 
@@ -352,11 +430,41 @@ export async function probeCageState(
     hasClaude = false;
   }
 
-  // Capture pane text once for classifier + tokens-moved detection.
-  const text = await tryCapture(tmux, target);
+  // Capture pane text ONCE. It feeds three consumers — the process
+  // ladder's `classifyText`, the tokens-moved regex, and the behavioural
+  // classifier below. `null` (capture failed) is preserved for the last of
+  // those and flattened to `""` for the first two, which is what they have
+  // always seen: a failed capture must not silently become "a pane showing
+  // nothing", which is a different claim.
+  const captured = await tryCapture(tmux, target);
+  const text = captured ?? "";
   const paneUptimeSec = await readPaneUptimeSec(panePid);
   const evidence = text.slice(-200);
   const classification = classifyText(text);
+
+  // The independent window signals (activity clock / pane_dead /
+  // current command). ONE read, shared — see `ProbeCageStateOpts.windowProbe`.
+  const probeWindow = opts.windowProbe ?? ((t: string) => defaultWindowProbe(tmux, t, nowSec()));
+  let window: WindowProbe = { activityAgeSec: null, paneDead: null, currentCommand: null };
+  try {
+    window = await probeWindow(target);
+  } catch {
+    // A failed signal read is not a failed pane: the classifier is written
+    // to fall back on the pane text alone.
+  }
+
+  const observation: PaneObservation = {
+    team: team.name,
+    member: member.name,
+    windowName,
+    sessionUp: true,
+    windowPresent: true,
+    capture: captured,
+    paneDead: window.paneDead,
+    currentCommand: window.currentCommand,
+    activityAgeSec: window.activityAgeSec,
+  };
+  const agentState = classifyPaneObservation(observation);
 
   // (3b) POSITIVE EVIDENCE OUTRANKS ABSENCE OF EVIDENCE.
   //
@@ -385,6 +493,7 @@ export async function probeCageState(
       paneUptimeSec,
       evidence,
       heartbeatAgeSec: null,
+      agentState,
     };
   }
   const inferredFromRender = !hasClaude;
@@ -404,6 +513,7 @@ export async function probeCageState(
       evidence,
       heartbeatAgeSec,
       inferredFromRender,
+      agentState,
     };
   }
 
@@ -430,6 +540,7 @@ export async function probeCageState(
       evidence,
       heartbeatAgeSec: null,
       inferredFromRender,
+      agentState,
     };
   }
 
@@ -449,6 +560,7 @@ export async function probeCageState(
         evidence,
         heartbeatAgeSec: ageSec,
         inferredFromRender,
+        agentState,
       };
     }
     return {
@@ -459,6 +571,7 @@ export async function probeCageState(
       evidence,
       heartbeatAgeSec: ageSec,
       inferredFromRender,
+      agentState,
     };
   }
 
@@ -471,6 +584,7 @@ export async function probeCageState(
     evidence,
     heartbeatAgeSec: null,
     inferredFromRender,
+    agentState,
   };
 }
 
@@ -544,14 +658,49 @@ async function defaultPaneChildIsClaude(panePid: number): Promise<boolean> {
   // `down` reports on dev installs.
 }
 
-/** Wrap a capture-pane call in a try/catch — the pane may have died
- *  between listPanes + capturePane (e.g. operator killed it). */
-async function tryCapture(tmux: TmuxNamespace, target: string): Promise<string> {
+/**
+ * Lines of pane tail this probe captures.
+ *
+ * Matches `src/verbs/fleet.ts::CAPTURE_LINES` on purpose: the two surfaces
+ * now run the SAME behavioural classifier, and feeding it a different
+ * amount of scrollback is precisely how two classifiers that share code
+ * start disagreeing anyway. The classifier itself only ever looks at the
+ * last CLASSIFY_TAIL_LINES (25) of what it is given, so this is headroom,
+ * not cost.
+ */
+const CAPTURE_LINES = 40;
+
+/**
+ * Wrap a capture-pane call in a try/catch — the pane may have died between
+ * listPanes + capturePane (e.g. operator killed it).
+ *
+ * Returns `null` on failure rather than `""`. The distinction is what lets
+ * the behavioural classifier report `unreadable` ("I could not look")
+ * instead of the confident `unresponsive` ("I looked and the pane is
+ * blank"). The process ladder above flattens it back to `""`, which is
+ * exactly what it always saw.
+ */
+async function tryCapture(tmux: TmuxNamespace, target: string): Promise<string | null> {
   try {
-    return await tmux.pane.capturePane({ target, start: -30 });
+    return await tmux.pane.capturePane({ target, start: -CAPTURE_LINES });
   } catch {
-    return "";
+    return null;
   }
+}
+
+/** Default window-signal read: ONE `display-message` rendering
+ *  {@link WINDOW_PROBE_FORMAT} against the resolved target. */
+async function defaultWindowProbe(
+  tmux: TmuxNamespace,
+  target: string,
+  nowSec: number,
+): Promise<WindowProbe> {
+  const raw = await tmux.pane.displayMessage({
+    target,
+    format: WINDOW_PROBE_FORMAT,
+    print: true,
+  });
+  return parseWindowProbe(raw, nowSec);
 }
 
 /** Read pane process uptime via `ps -o etimes= -p <pid>`. Mirrors

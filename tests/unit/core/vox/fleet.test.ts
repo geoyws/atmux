@@ -38,6 +38,9 @@ import {
   renderQuiet,
   renderUnreadable,
   SILENT_IDLE_SEC,
+  paneVerdictGlyph,
+  paneVerdictPhrase,
+  QUIET_LABEL,
   summarizeRemainder,
   tailWindow,
 } from "../../../../src/core/vox/fleet.ts";
@@ -910,5 +913,77 @@ describe("quietBreakdown", () => {
 
   test("an empty quiet set reads as none, not as an empty string", () => {
     expect(quietBreakdown([])).toBe("none");
+  });
+});
+
+// ---------------------------------------------------------------------
+// ADR-273 §Supplement-6 — one vocabulary, spoken by every surface
+// ---------------------------------------------------------------------
+//
+// `team_status` and `fleet_attention` describing the same pane in
+// different words was the W6 defect. These two helpers are what makes
+// that unrepresentable: both surfaces render THROUGH them, so a clause
+// can only drift by drifting for everybody at once.
+
+describe("paneVerdictPhrase — the one-clause reason, whichever bucket", () => {
+  test("an attention verdict speaks its ATTENTION_REASON clause", () => {
+    expect(paneVerdictPhrase({ bucket: "attention", kind: "permission-prompt", marker: "m" })).toBe(
+      ATTENTION_REASON["permission-prompt"],
+    );
+    expect(paneVerdictPhrase({ bucket: "attention", kind: "permission-prompt", marker: "m" })).toBe(
+      "waiting on a permission prompt",
+    );
+  });
+
+  test("a quiet verdict speaks its QUIET_LABEL", () => {
+    expect(paneVerdictPhrase({ bucket: "quiet", kind: "working" })).toBe(QUIET_LABEL.working);
+    expect(paneVerdictPhrase({ bucket: "quiet", kind: "idle" })).toBe("idle and clear");
+  });
+
+  test("EVERY class in both vocabularies has a non-empty clause", () => {
+    // The property, not a sample: a class added without a reason would
+    // otherwise render as an empty string on a spoken surface.
+    for (const kind of ATTENTION_CLASSES) {
+      expect(paneVerdictPhrase({ bucket: "attention", kind, marker: "" }).length).toBeGreaterThan(
+        0,
+      );
+    }
+    for (const kind of QUIET_CLASSES) {
+      expect(paneVerdictPhrase({ bucket: "quiet", kind }).length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("paneVerdictGlyph — three levels, because chronic is not news", () => {
+  test("quiet is green", () => {
+    expect(paneVerdictGlyph({ bucket: "quiet", kind: "working" })).toBe("🟢");
+    expect(paneVerdictGlyph({ bucket: "quiet", kind: "idle" })).toBe("🟢");
+  });
+
+  test("an ACUTE attention class is red", () => {
+    expect(paneVerdictGlyph({ bucket: "attention", kind: "permission-prompt", marker: "" })).toBe(
+      "🛑",
+    );
+    expect(paneVerdictGlyph({ bucket: "attention", kind: "dead", marker: "" })).toBe("🛑");
+  });
+
+  test("a CHRONIC attention class is amber, not red", () => {
+    // `dormant` is a standing condition. Stamping it with the same glyph
+    // as a wedged pane is how a triage surface trains its reader to
+    // ignore the glyph — the same call renderQuiet already makes.
+    for (const kind of CHRONIC_CLASSES) {
+      expect(paneVerdictGlyph({ bucket: "attention", kind, marker: "" })).toBe("🟡");
+    }
+    expect(paneVerdictGlyph({ bucket: "attention", kind: "dormant", marker: "" })).toBe("🟡");
+  });
+
+  test("every class maps to exactly one of the three glyphs", () => {
+    const allowed = new Set(["🟢", "🟡", "🛑"]);
+    for (const kind of ATTENTION_CLASSES) {
+      expect(allowed.has(paneVerdictGlyph({ bucket: "attention", kind, marker: "" }))).toBe(true);
+    }
+    for (const kind of QUIET_CLASSES) {
+      expect(allowed.has(paneVerdictGlyph({ bucket: "quiet", kind }))).toBe(true);
+    }
   });
 });

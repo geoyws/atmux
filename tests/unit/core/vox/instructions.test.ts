@@ -2,7 +2,8 @@
 // system prompt.
 //
 // The load-bearing clauses are pinned individually: report-only-what-
-// the-tools-returned, the inferred-pane-state "?" marker, confirm-preview
+// the-tools-returned, the two-states rule (agent-state leads, process-
+// state follows), the inferred-process-state "?" marker, confirm-preview
 // VERBATIM rule, spawn/git refusal + tell_lead offer, readonly notice
 // (present only when readonly), current-team default (mentioned only
 // when set), MYT times, last-4 task ids, ≤3-word acknowledgement,
@@ -10,6 +11,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { buildInstructions } from "../../../../src/core/vox/instructions.ts";
+import { formatProcessStateColumn } from "../../../../src/verbs/status.ts";
 
 const BASE = {
   teams: ["atmux", "sopx-root", "mx-root"],
@@ -45,10 +47,45 @@ describe("buildInstructions — load-bearing clauses", () => {
     }
   });
 
+  // ADR-273 §Supplement-6. `team_status` sends the TEXT table, so the
+  // model sees BOTH state columns and must be told which one answers the
+  // operator's question. "Active" read aloud means "working fine" to a
+  // listener, and it is true of a pane blocked forever on a permission
+  // prompt — leading with the process column is exactly the misread W6
+  // recorded. Present unconditionally: which column answers the question
+  // does not depend on readonly or on which teams exist.
+  test("two states: the agent-state leads, the process-state is only a process claim", () => {
+    for (const opts of [
+      BASE,
+      { ...BASE, readonly: true },
+      { ...BASE, teams: [], currentTeam: null },
+    ]) {
+      const s = buildInstructions(opts);
+      expect(s).toContain("agent-state");
+      expect(s).toContain("process-state");
+      expect(s).toMatch(/what the agent is DOING/);
+      // The trap, named explicitly rather than left to inference.
+      expect(s).toMatch(/process-active while its agent is stopped forever on a permission prompt/);
+      expect(s).toMatch(/Lead with the agent-state/);
+      // Not merely "lead with" — the process word must not be attached to
+      // a pane already reported as stuck. A model that reports "be-1 is
+      // blocked, process active" hands the listener both halves and lets
+      // the reassuring one win.
+      expect(s).toMatch(/Do NOT volunteer the process-state/);
+      expect(s).toMatch(/not news about a stopped agent/);
+      // The evidence line exists so a "why" can be answered from the tool
+      // output rather than invented.
+      expect(s).toMatch(/evidence line/);
+    }
+  });
+
   // The `?` is `CageHealth.inferredFromRender` (51e87b7) rendered by
   // `formatPaneStateColumn`: state read off the pane's render because no
-  // agent process could be identified. Unmarked = measured.
-  test('inferred pane state: the trailing "?" is explained and must be spoken as unconfirmed', () => {
+  // agent process could be identified. Unmarked = measured. ADR-273
+  // §Supplement-6 renamed the COLUMN to `process-state` (a row now
+  // carries two pane states) and prefixed the cell — the marker itself is
+  // untouched and the cell still ENDS in `?`, which is what this keys on.
+  test('inferred process state: the trailing "?" is explained and must be spoken as unconfirmed', () => {
     for (const opts of [
       BASE,
       { ...BASE, readonly: true },
@@ -60,7 +97,44 @@ describe("buildInstructions — load-bearing clauses", () => {
       expect(s).toMatch(/no agent process could be identified/);
       expect(s).toContain("unconfirmed");
       expect(s).toMatch(/no question mark was measured/);
+      // The clause must name the column it is about — a clause pointing at
+      // a column name that no longer renders teaches the model nothing.
+      expect(s).toMatch(/A process-state ending in a question mark/);
     }
+  });
+
+  // The pin is only worth having if it fails when the marker stops being
+  // rendered, so it is anchored to the RENDERER, not just to the prose.
+  test("the marker the clause describes is the one the status table prints", () => {
+    const s = buildInstructions(BASE);
+    const cell = formatProcessStateColumn({
+      name: "alpha",
+      role: "member",
+      tui: "claude",
+      paneCommand: "claude",
+      cageState: "active",
+      pendingCount: 0,
+      inProgressCount: 0,
+      heartbeat_age_s: null,
+      cageInferredFromRender: true,
+    });
+    // The rendered cell ends in the exact token the prompt quotes.
+    expect(cell).toEndWith("active?");
+    expect(s).toContain('"active?"');
+    // …and a measured row does not.
+    expect(
+      formatProcessStateColumn({
+        name: "alpha",
+        role: "member",
+        tui: "claude",
+        paneCommand: "claude",
+        cageState: "active",
+        pendingCount: 0,
+        inProgressCount: 0,
+        heartbeat_age_s: null,
+        cageInferredFromRender: false,
+      }),
+    ).not.toEndWith("?");
   });
 
   test("spawn/stop/kill + git refusal, with the tell_lead offer", () => {

@@ -26,6 +26,7 @@ import {
 import {
   type CageHealth,
   type CageState,
+  cageWindowCandidates,
   type ProbeCageStateOpts,
   probeCageState,
   resolveCageWindowName,
@@ -42,6 +43,15 @@ import {
   resolveTeamSocket,
 } from "../core/common.ts";
 import { type DriverPaneHealth, probeDriverPane } from "../core/driver-pane-health.ts";
+import {
+  classifyPaneObservation,
+  type PaneVerdict,
+  paneVerdictGlyph,
+  paneVerdictPhrase,
+  parseWindowProbe,
+  WINDOW_PROBE_FORMAT,
+  type WindowProbe,
+} from "../core/vox/fleet.ts";
 import { DEFAULT_HEARTBEAT_STALE_SEC, readHeartbeatAges } from "../core/heartbeat.ts";
 import { loadInbox } from "../core/inbox.ts";
 import { loadKanban } from "../core/kanban.ts";
@@ -130,6 +140,25 @@ export interface MemberStatus {
    *  pane's child tree); non-claude TUIs are read via the legacy
    *  `paneCommand` field above. */
   cageState: CageState | null;
+  /**
+   * ADR-273 §Supplement-6: the BEHAVIOURAL verdict for this pane — what
+   * the agent in it is actually doing — from `classifyPaneObservation`,
+   * the classifier `fleet_attention` speaks.
+   *
+   * Alongside `cageState`, never instead of it. The two answer different
+   * questions and both belong: `cageState` says whether the process is
+   * there, `agentState` says whether it is stuck. `active` is true of a
+   * pane blocked forever on a permission prompt, and on a SPOKEN surface
+   * "active" means "working fine" to a listener — which is why this leads
+   * the rendered row.
+   *
+   * Both come from ONE call to `probeCageState`, over ONE pane capture, so
+   * `team_status` cannot contradict `fleet_attention` about the same pane
+   * (the W6 defect). Absent when no probe ran: a non-claude TUI (the cage
+   * probe is claude-specific) or a probe that threw. Absent means "no
+   * reading" — never "the pane is fine".
+   */
+  agentState?: PaneVerdict;
   /** ADR-273 §Supplement-5: true when `cageState` was read off the pane's
    *  RENDER alone because no `claude` process could be identified in its
    *  tree. Absent when the state was not inferred (process identified,
@@ -613,19 +642,27 @@ export async function gatherStatus(
 
   const members: MemberStatus[] = [];
   for (const m of team.members) {
-    const paneCommand = await readPaneCommand(
+    // ONE `display-message` per member, rendering all three window signals
+    // (`#{pane_current_command}` for the legacy column, plus the activity
+    // clock and `#{pane_dead}` the behavioural classifier needs). Handed
+    // down to the cage probe rather than re-read there — see
+    // `ProbeCageStateOpts.windowProbe`.
+    const paneRead = await readMemberPane(
       tmux,
       sessionName,
       m,
       sessionState === "up",
       liveWindowNames,
+      nowSec,
     );
+    const paneCommand = paneRead.paneCommand;
     // t-74273200 / c-8ecd3a61: cage-state probe for claude TUI members
     // — replaces the pane_current_command proxy which mis-reported
     // welcome-screen claude TUIs as `(down)`. Non-claude TUIs skip the
     // probe (cage taxonomy is claude-specific) and surface state=null.
     let cageState: CageState | null = null;
     let cageInferred: boolean | undefined;
+    let agentState: PaneVerdict | undefined;
     if (sessionState === "up" && (m.tui ?? "claude") === "claude") {
       try {
         // ADR-273 D3 trap 1: pass the RESOLVED session name. `gatherStatus`
@@ -636,9 +673,11 @@ export async function gatherStatus(
           tmux,
           sessionName,
           ...cageWindowOpt,
+          windowProbe: async () => paneRead.probe,
         });
         cageState = health.state;
         cageInferred = health.inferredFromRender;
+        agentState = health.agentState;
       } catch {
         // Probe failure → leave cageState null; the legacy paneCommand
         // proxy still gives the operator something to look at.
@@ -646,6 +685,20 @@ export async function gatherStatus(
       }
     } else if (sessionState === "down") {
       cageState = "down";
+      // ADR-273 §Supplement-6: routed through the SHARED classifier rather
+      // than hand-written as `dead`, so the words match `fleet_attention`'s
+      // for the same condition by construction rather than by discipline.
+      agentState = classifyPaneObservation({
+        team: team.name,
+        member: m.name,
+        windowName: paneRead.windowName,
+        sessionUp: false,
+        windowPresent: false,
+        capture: null,
+        paneDead: null,
+        currentCommand: null,
+        activityAgeSec: null,
+      });
     }
     const { pending: pendingCount, inProgress: inProgressCount } = await readMemberCounts(
       atmuxDir,
@@ -668,6 +721,7 @@ export async function gatherStatus(
     if (m.emoji !== undefined && m.emoji.length > 0) row.emoji = m.emoji;
     if (m.label !== undefined && m.label.length > 0) row.label = m.label;
     if (cageInferred !== undefined) row.cageInferredFromRender = cageInferred;
+    if (agentState !== undefined) row.agentState = agentState;
     // Per-task t-d98b2bd6: read the whip-side context signal when home
     // is resolvable. Skip silently when $HOME is unset (atmux running
     // under an unusual env — the row just shows no ctx data).
@@ -862,6 +916,7 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
           paneCommand: string;
           cageState: CageState | null;
           cageInferredFromRender?: boolean;
+          agentState?: { bucket: string; kind: string; reason: string; marker?: string };
           pendingCount: number;
           inProgressCount: number;
           heartbeat_age_s: number | null;
@@ -889,6 +944,18 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
         // (key-presence convention, same as contextPct below).
         if (m.cageInferredFromRender !== undefined) {
           row.cageInferredFromRender = m.cageInferredFromRender;
+        }
+        // ADR-273 §Supplement-6: the behavioural verdict, carrying the
+        // SAME `reason` clause `fleet_attention` speaks for that class, and
+        // the evidence marker that produced it. Key-presence convention:
+        // absent means no probe ran, never "the pane is fine".
+        if (m.agentState !== undefined) {
+          row.agentState = {
+            bucket: m.agentState.bucket,
+            kind: m.agentState.kind,
+            reason: paneVerdictPhrase(m.agentState),
+            ...(m.agentState.bucket === "attention" ? { marker: m.agentState.marker } : {}),
+          };
         }
         if (m.contextPct !== undefined) row.contextPct = m.contextPct;
         if (m.contextTs !== undefined) row.contextTs = m.contextTs;
@@ -938,14 +1005,46 @@ async function listSessionWindowNames(
   }
 }
 
-async function readPaneCommand(
+/** One member's pane, read ONCE (ADR-273 §Supplement-6). */
+interface MemberPaneRead {
+  /** Window the member's pane resolved to. */
+  windowName: string;
+  /** Legacy `pane_current_command` column value, `(down)` when absent. */
+  paneCommand: string;
+  /** The three independent window signals, for the behavioural classifier. */
+  probe: WindowProbe;
+}
+
+/** No signals at all — every field independently unknown. */
+const NO_WINDOW_PROBE: WindowProbe = Object.freeze({
+  activityAgeSec: null,
+  paneDead: null,
+  currentCommand: null,
+});
+
+/**
+ * Read one member's window signals with a SINGLE `display-message`.
+ *
+ * Formerly `readPaneCommand`, which rendered `#{pane_current_command}`
+ * alone. It now renders `WINDOW_PROBE_FORMAT` — the same format string
+ * `atmux fleet` uses — so the activity clock and `#{pane_dead}` come back
+ * on the same round trip and can be handed to the cage probe instead of
+ * being read a second time there. One pane, one read, two verdicts: two
+ * reads is how `team_status` and `fleet_attention` would start disagreeing
+ * again (ADR-273 §Supplement-5 W6).
+ */
+async function readMemberPane(
   tmux: TmuxNamespace,
   sessionName: string,
   member: TeamMember,
   sessionUp: boolean,
   liveWindowNames: ReadonlyArray<string> | null,
-): Promise<string> {
-  if (!sessionUp) return "(down)";
+  nowSec: number,
+): Promise<MemberPaneRead> {
+  const { canonical } = cageWindowCandidates(member);
+  if (!sessionUp) {
+    return { windowName: canonical, paneCommand: "(down)", probe: NO_WINDOW_PROBE };
+  }
   // Resolved against the live window list, NOT synthesized — the same
   // resolution the cage probe uses, so the `pane-state` and `paneCommand`
   // columns of one status row cannot contradict each other about which
@@ -963,24 +1062,31 @@ async function readPaneCommand(
   // command as another member's, with no error to notice. `list-panes`
   // (which the cage probe uses) does error, so only this call site needs
   // the guard.
-  if (liveWindowNames !== null && !liveWindowNames.includes(winName)) return "(down)";
+  if (liveWindowNames !== null && !liveWindowNames.includes(winName)) {
+    return { windowName: winName, paneCommand: "(down)", probe: NO_WINDOW_PROBE };
+  }
   const target = `${sessionName}:${winName}`;
   try {
     // Bash lib/status.sh:55 reads `#{pane_current_command}` via
     // `tmux list-panes -F`; our listPanes wrapper doesn't surface
     // that field, so we go through displayMessage which renders
     // any tmux format string against a target.
-    const cmd = await tmux.pane.displayMessage({
+    const raw = await tmux.pane.displayMessage({
       target,
-      format: "#{pane_current_command}",
+      format: WINDOW_PROBE_FORMAT,
       print: true,
     });
-    const trimmed = cmd.replace(/\n+$/, "");
-    return trimmed.length > 0 ? trimmed : "(down)";
+    const probe = parseWindowProbe(raw, nowSec);
+    return {
+      windowName: winName,
+      // Bash falls back to "(down)" for an empty command — mirror.
+      paneCommand: probe.currentCommand ?? "(down)",
+      probe,
+    };
   } catch {
     // expected: window may not exist (member declared in team.json
     // but never spawned). Bash falls back to "(down)" — mirror.
-    return "(down)";
+    return { windowName: winName, paneCommand: "(down)", probe: NO_WINDOW_PROBE };
   }
 }
 
@@ -1012,21 +1118,33 @@ function renderTextStatus(snap: StatusSnapshot, staleSec: number): void {
     const evidence = dp.evidence.length > 60 ? `${dp.evidence.slice(0, 60)}…` : dp.evidence;
     process.stdout.write(`🚗 driver  configured=y  state=${stateLabel}  evidence=${evidence}\n\n`);
   }
-  // t-74273200: text mode now leads with `cageState` (the unified 4-
-  // state taxonomy: down/bootstrapping/active/wedged) in place of the
-  // pane_current_command proxy that mis-reported welcome-screen claude
-  // TUIs as `(down)`. ADR-148 §D3 renamed this column from `state` to
-  // `pane-state` to make the proxy explicit — pane-state is a process
-  // observable, NOT a verdict on whether the member is shipping.
-  // Per-task t-d98b2bd6: `ctx` column added between state and tasks
-  // — reads the whip-side `member-context/*.json` signal written by
-  // measure-context.sh. Renders "—" / "(stale)" / "X.X%".
-  // ADR-148 §D3: new `cadence` column — canonical truth signal for
-  // "is this member shipping?". Sourced from per-member git log;
-  // formatted as `🟢 shipping (5min)` / `🟡 idle (1h2m)` / `🔴 dormant (15h)`
-  // / `🚨 ship-zero (3h)` per CLAUDE.md duration convention.
+  // t-74273200: text mode replaced the pane_current_command proxy (which
+  // mis-reported welcome-screen claude TUIs as `(down)`) with `cageState`
+  // — the unified 4-state taxonomy down/bootstrapping/active/wedged.
+  // ADR-148 §D3 named that column `pane-state` to make the proxy explicit:
+  // it is a PROCESS observable, not a verdict on whether the member is
+  // shipping.
+  //
+  // ADR-273 §Supplement-6 puts the BEHAVIOURAL verdict in front of it.
+  // Two reasons, both about being read aloud: (a) "active" is true of a
+  // pane blocked forever on a permission prompt, and a listener hears
+  // "active" as "fine"; (b) the operator asked what the agent is DOING,
+  // and that is the question `agent-state` answers. The process column
+  // stays — `down` is exactly what you want when a cage has died.
+  //
+  // Every cell in the two ambiguous columns is SELF-LABELLED (`process:`,
+  // `commits:`) rather than relying on the header. This surface is read by
+  // a language model, and a model reading a column-aligned table by rows
+  // has no header to consult: the drilldown transcript read the cadence
+  // column's bare "idle" as a pane state, and every line it was given was
+  // individually true (ADR-273 §Supplement-5 W6).
+  //
+  // Per-task t-d98b2bd6: `ctx` column reads the whip-side
+  // `member-context/*.json` signal written by measure-context.sh.
+  // ADR-148 §D3: the cadence column is the canonical truth signal for
+  // "is this member shipping?", sourced from per-member git log.
   process.stdout.write(
-    `member       role          tui        pane-state    ctx      cadence              tasks\n`,
+    `member       role          tui        agent-state                                process-state      ctx      commit-cadence                 tasks\n`,
   );
   for (const m of snap.members) {
     const emoji = m.emoji ?? defaultRoleEmoji(m.role);
@@ -1037,18 +1155,22 @@ function renderTextStatus(snap: StatusSnapshot, staleSec: number): void {
     const name = displayMemberName(m).padEnd(12);
     const role = m.role.padEnd(14);
     const tui = m.tui.padEnd(10);
+    // ADR-273 §Supplement-6: the behavioural verdict leads. Same words
+    // `fleet_attention` uses for the same class — one classifier, one
+    // vocabulary, so the two tools cannot describe one pane differently.
+    const agent = formatAgentStateColumn(m).padEnd(42);
     // For claude TUIs: surface the cage state. For non-claude TUIs:
     // fall back to the legacy pane_current_command (the cage taxonomy
     // doesn't apply — non-claude TUIs don't have claude in their child
     // process tree by definition).
-    const paneState = formatPaneStateColumn(m).padEnd(14);
+    const paneState = formatProcessStateColumn(m).padEnd(18);
     // Per-task t-d98b2bd6: ctx % column rendered as "8.4%" /
     // "(stale)" / "—". Width pinned to 8 chars so the trailing
     // tasks block stays column-aligned across heterogeneous teams.
     const ctx = formatContextColumn(m).padEnd(8);
-    // ADR-148 §D3: cadence column. Width pinned to 20 chars — fits
-    // the longest expected verdict ("🚨 ship-zero (24h)" + change).
-    const cadence = formatCadenceColumn(m.cadence).padEnd(20);
+    // ADR-148 §D3: cadence column. Width pinned to 30 chars — fits
+    // the longest expected verdict ("commits: 🚨 ship-zero (24h30m)").
+    const cadence = formatCadenceColumn(m.cadence).padEnd(30);
     // ADR-057 §D6c: heartbeat marker appended inline to the trailing
     // tasks segment — keeps existing column alignment intact while
     // surfacing the producer-side liveness signal next to the kanban
@@ -1064,22 +1186,46 @@ function renderTextStatus(snap: StatusSnapshot, staleSec: number): void {
     const ss = formatSelfStatusColumn(m);
     const ssSuffix = ss === "—" ? "" : `  ${ss}`;
     process.stdout.write(
-      `  ${emoji} ${name} ${role} ${tui} ${paneState} ${ctx} ${cadence} 🟡 ${m.inProgressCount} active  📌 ${m.pendingCount} todo${hbSuffix}${ssSuffix}\n`,
+      `  ${emoji} ${name} ${role} ${tui} ${agent} ${paneState} ${ctx} ${cadence} 🟡 ${m.inProgressCount} active  📌 ${m.pendingCount} todo${hbSuffix}${ssSuffix}\n`,
     );
+    // ADR-273 D3: every attention verdict carries the evidence that
+    // produced it. An operator (or a model relaying to one) who cannot see
+    // WHY a pane was called blocked has a black box, and a black box that
+    // cries wolf gets ignored. Quiet verdicts get no line — there is
+    // nothing to act on and the budget belongs to the findings.
+    const evidence = formatAgentEvidenceLine(m);
+    if (evidence !== null) process.stdout.write(`${evidence}\n`);
   }
+  // Both of the next two lines were individually TRUE and jointly
+  // misleading: read aloud, `📋 kanban … ` followed by `📝 NEEDS APPROVAL:
+  // ✅ clear` was relayed as "the kanban is clear and needs approval"
+  // (ADR-273 §Supplement-5 W6). Each line now names its own subject in
+  // full, so neither can be read as a predicate of the other.
+  //
+  // The EMPTY board gets its own sentence rather than four zeros. The
+  // enumerated form spends the words "in-progress" and "blocked" — which
+  // are ALSO pane vocabulary — and a model relaying "no tasks are in
+  // progress or blocked" about a team with a blocked pane produced a
+  // sentence the judge scored as contradicting the ground truth. When
+  // there is nothing on the board, saying so is both shorter and
+  // unmistakable; the per-count form keeps the noun attached to every
+  // number for the case where the counts actually matter.
   const k = snap.kanban;
+  const kanbanTotal = k.todo + k.inProgress + k.done + k.blocked;
   process.stdout.write(
-    `\n📋 kanban  📌 todo=${k.todo}  🟡 in-progress=${k.inProgress}  ✅ done=${k.done}  🛑 blocked=${k.blocked}\n`,
+    kanbanTotal === 0
+      ? `\n📋 kanban board: no tasks on it at all\n`
+      : `\n📋 kanban board: 📌 ${k.todo} tasks todo, 🟡 ${k.inProgress} tasks in-progress, ✅ ${k.done} tasks done, 🛑 ${k.blocked} tasks blocked\n`,
   );
   // ADR-085 §Three surfaces #1: approval-debt row. Positive-state when
   // total=0 so the operator sees the green even on a clean run — same
   // grammar as the driver-pane / medic rows below.
   const na = snap.needsApproval;
   if (na.total === 0) {
-    process.stdout.write(`📝 NEEDS APPROVAL: ✅ clear\n`);
+    process.stdout.write(`📝 awaiting your approval: ✅ nothing is waiting for sign-off\n`);
   } else {
     process.stdout.write(
-      `📝 NEEDS APPROVAL: ${na.adr.length} ADRs / ${na.inbox.length} inbox / ${na.kanban.length} kanban\n`,
+      `📝 awaiting your approval: ${na.adr.length} proposed ADRs, ${na.inbox.length} driver-inbox asks, ${na.kanban.length} blocked kanban tasks\n`,
     );
   }
   if (snap.driverInboxOpen > 0) {
@@ -1134,6 +1280,59 @@ function renderTextStatus(snap: StatusSnapshot, staleSec: number): void {
 export function formatPaneStateColumn(m: MemberStatus): string {
   const base = m.cageState ?? m.paneCommand;
   return m.cageInferredFromRender === true ? `${base}?` : base;
+}
+
+/**
+ * ADR-273 §Supplement-6: the `process-state` cell, self-labelled.
+ *
+ * The value is {@link formatPaneStateColumn} verbatim — the `?` marker and
+ * all. The `process:` prefix is what makes the cell survive being read out
+ * of its column: a bare `active` in a row of other bare cells is what a
+ * model turns into "all panes are active", and the word means "the process
+ * is up", not "the agent is fine".
+ */
+export function formatProcessStateColumn(m: MemberStatus): string {
+  return `process: ${formatPaneStateColumn(m)}`;
+}
+
+/**
+ * ADR-273 §Supplement-6: the `agent-state` cell — what the agent in this
+ * pane is actually DOING.
+ *
+ * The clause comes from {@link paneVerdictPhrase}, which is the same
+ * lookup `fleet_attention` renders from, so the two tools cannot describe
+ * one pane in different words. The glyph is
+ * {@link paneVerdictGlyph}: 🛑 acute, 🟡 chronic, 🟢 nothing needed.
+ *
+ * `no reading` is the honest cell when no probe ran — a non-claude TUI
+ * (the cage probe is claude-specific) or a probe that threw. It must not
+ * render as anything that could be heard as "fine".
+ */
+export function formatAgentStateColumn(m: MemberStatus): string {
+  const v = m.agentState;
+  if (v === undefined) return "agent: ❔ no reading";
+  return `agent: ${paneVerdictGlyph(v)} ${paneVerdictPhrase(v)}`;
+}
+
+/** Longest evidence marker carried on the indented sub-line. */
+const EVIDENCE_MAX_CHARS = 100;
+
+/**
+ * The indented evidence line under a member whose agent needs attention,
+ * or `null` when there is nothing to justify.
+ *
+ * Mirrors `renderAttention`'s `> gist` shape deliberately: an operator who
+ * hears the same claim from `fleet_attention` and from `team_status`
+ * should also be shown the same evidence for it.
+ */
+export function formatAgentEvidenceLine(m: MemberStatus): string | null {
+  const v = m.agentState;
+  if (v === undefined || v.bucket !== "attention") return null;
+  const marker = v.marker.trim();
+  if (marker.length === 0) return null;
+  const shown =
+    marker.length > EVIDENCE_MAX_CHARS ? `${marker.slice(0, EVIDENCE_MAX_CHARS - 1)}…` : marker;
+  return `       ↳ evidence for ${displayMemberName(m)}: ${shown}`;
 }
 
 /** Per-task t-d98b2bd6: format the `ctx %` column for a member row.
@@ -1292,22 +1491,36 @@ export function formatDurationShort(seconds: number | null): string {
   return m === 0 ? `${h}h` : `${h}h${m}m`;
 }
 
-/** Render one cadence cell — emoji + verdict + age. Stable width
- *  isn't enforced here (text mode pads via String.prototype.padEnd
- *  on the caller); this returns the unpadded display string. */
+/**
+ * Render one cadence cell — subject + emoji + verdict + age. Stable width
+ * isn't enforced here (text mode pads via String.prototype.padEnd on the
+ * caller); this returns the unpadded display string.
+ *
+ * Every cell is prefixed `commits:` per ADR-273 §Supplement-6. The bare
+ * forms this replaced (`🟡 idle (1h2m)`, `—`) were true and unreadable out
+ * of column context: the vox drilldown transcript read this column's
+ * "idle" as a PANE state and told the operator the team's panes were idle.
+ * A cell that names its own subject cannot be misattributed to another
+ * column, and this surface is read by a language model that has no header
+ * row in front of it.
+ *
+ * `no signal` (not `—`) for the absent case, for the same reason: a dash
+ * read aloud is nothing at all, and "no signal" is the actual claim — see
+ * §Supplement-5 W4 for why `undefined` here is distinct from `idle`.
+ */
 export function formatCadenceColumn(obs: CadenceObservation | undefined): string {
-  if (obs === undefined) return "—";
-  if (obs.verdict === "exempt") return "(exempt)";
+  if (obs === undefined) return "commits: no signal";
+  if (obs.verdict === "exempt") return "commits: exempt";
   const age = formatDurationShort(obs.ageOfLastCommitSec);
   switch (obs.verdict) {
     case "shipping":
-      return `🟢 shipping (${age})`;
+      return `commits: 🟢 shipping (${age})`;
     case "idle":
-      return `🟡 idle (${age})`;
+      return `commits: 🟡 idle (${age})`;
     case "dormant":
-      return `🔴 dormant (${age})`;
+      return `commits: 🔴 dormant (${age})`;
     case "ship-zero-window":
-      return `🚨 ship-zero (${age})`;
+      return `commits: 🚨 ship-zero (${age})`;
   }
 }
 

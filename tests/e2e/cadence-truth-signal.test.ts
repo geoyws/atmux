@@ -255,7 +255,7 @@ describe("e2e: ADR-148 cadence-truth-signal (1x cold-start+walk)", () => {
     expect(obs.verdict).toBe("shipping");
     expect(obs.commitsInWindow).toBe(1);
     expect(obs.ageOfLastCommitSec).toBe(300);
-    expect(formatCadenceColumn(obs)).toBe("🟢 shipping (5min)");
+    expect(formatCadenceColumn(obs)).toBe("commits: 🟢 shipping (5min)");
   });
 
   test("B2. Member-2 1h commit → 🟡 idle (D2/D3)", async () => {
@@ -273,7 +273,7 @@ describe("e2e: ADR-148 cadence-truth-signal (1x cold-start+walk)", () => {
     expect(obs.verdict).toBe("idle");
     expect(obs.commitsInWindow).toBe(0);
     expect(obs.ageOfLastCommitSec).toBe(3600);
-    expect(formatCadenceColumn(obs)).toBe("🟡 idle (1h)");
+    expect(formatCadenceColumn(obs)).toBe("commits: 🟡 idle (1h)");
   });
 
   test("B3. Member-3 3h commit → 🚨 ship-zero (D2/D3)", async () => {
@@ -291,7 +291,7 @@ describe("e2e: ADR-148 cadence-truth-signal (1x cold-start+walk)", () => {
     expect(obs.verdict).toBe("ship-zero-window");
     expect(obs.commitsInWindow).toBe(0);
     expect(obs.ageOfLastCommitSec).toBe(3 * 3600);
-    expect(formatCadenceColumn(obs)).toBe("🚨 ship-zero (3h)");
+    expect(formatCadenceColumn(obs)).toBe("commits: 🚨 ship-zero (3h)");
   });
 
   test("B3b. atmux status snap → cadence column matches all per-member verdicts (D3)", async () => {
@@ -477,8 +477,11 @@ describe("e2e: ADR-148 cadence-truth-signal (1x cold-start+walk)", () => {
     for (const m of snap.members) {
       expect(m.cadence).toBeUndefined();
     }
-    // Status renderer falls back to "—" when cadence is undefined.
-    expect(formatCadenceColumn(undefined)).toBe("—");
+    // Status renderer says "no signal" when cadence is undefined.
+    // It used to render a bare "—". `atmux status`'s text table is what
+    // the `team_status` voice tool hands to a model, and a dash read
+    // aloud is nothing at all — ADR-273 §Supplement-6 X3.
+    expect(formatCadenceColumn(undefined)).toBe("commits: no signal");
 
     // lane-stall-tick treats cadence.enabled=false as no-op (see verb's
     // team.cadence?.enabled !== true gate at line 162).
@@ -498,7 +501,7 @@ describe("e2e: ADR-148 cadence-truth-signal (1x cold-start+walk)", () => {
 
   test("B10. backward-compat: exemptMembers → verdict='exempt'", async () => {
     // Mark member-3 exempt — the ship-zero-window classifier path
-    // should be skipped entirely + the renderer returns "(exempt)".
+    // should be skipped entirely + the renderer returns "commits: exempt".
     const teamExempt: Team = {
       ...team,
       cadence: {
@@ -519,6 +522,6 @@ describe("e2e: ADR-148 cadence-truth-signal (1x cold-start+walk)", () => {
     // Exempt members short-circuit BEFORE the git-log probe — confirms
     // status.ts:614 exempt branch is honored (no needless git shell out).
     expect(gitCallsForMember3).toBe(0);
-    expect(formatCadenceColumn(m3?.cadence)).toBe("(exempt)");
+    expect(formatCadenceColumn(m3?.cadence)).toBe("commits: exempt");
   });
 });
