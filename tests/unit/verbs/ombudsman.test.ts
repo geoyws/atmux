@@ -30,6 +30,7 @@ import {
   ombudsman,
   parseOmbudsmanArgs,
   resolveDayFilePath,
+  resolveRepoRoot,
   spliceUnderSection,
   statusForAction,
 } from "../../../src/verbs/ombudsman.ts";
@@ -530,7 +531,7 @@ describe("ombudsman work — adjudication", () => {
         "--team-dir",
         teamDir,
       ],
-      { now: () => epochMs, log: () => {} },
+      { now: () => epochMs, log: () => {}, repoRoot: teamDir },
     );
     expect(exit).toBe(0);
 
@@ -572,7 +573,7 @@ describe("ombudsman work — adjudication", () => {
         "--team-dir",
         teamDir,
       ],
-      { now: () => epochMs, log: () => {} },
+      { now: () => epochMs, log: () => {}, repoRoot: teamDir },
     );
     expect(exit).toBe(0);
 
@@ -609,7 +610,7 @@ describe("ombudsman work — adjudication", () => {
         "--team-dir",
         teamDir,
       ],
-      { now: () => epochMs, log: () => {} },
+      { now: () => epochMs, log: () => {}, repoRoot: teamDir },
     );
     expect(exit).toBe(0);
 
@@ -645,7 +646,7 @@ describe("ombudsman work — adjudication", () => {
         "--team-dir",
         teamDir,
       ],
-      { now: () => epochMs, log: () => {} },
+      { now: () => epochMs, log: () => {}, repoRoot: teamDir },
     );
     expect(exit).toBe(0);
 
@@ -734,5 +735,52 @@ describe("ombudsman index", () => {
     );
     expect(result).toBe(0);
     expect(out).toContain("deferred to ADR-147 T8");
+  });
+});
+
+describe("resolveRepoRoot — what counts as a repo root", () => {
+  // The walk used to accept ANY `.git` entry. An EMPTY `.git` DIRECTORY
+  // satisfied that, and one exists at `/tmp/.git` on this host — so the
+  // walk stopped at `/tmp` and every release-notes append from a `/tmp`
+  // scratch dir landed in `/tmp/docs/release-notes/…`, outside the
+  // sandbox, silently, for days. These pin the distinction.
+
+  test("an EMPTY .git directory is NOT a repo root — the walk keeps going", async () => {
+    const root = await mkdtemp(join(tmpdir(), "atmux-reporoot-empty-"));
+    try {
+      await mkdir(join(root, "fake", ".git"), { recursive: true }); // empty: no HEAD
+      const start = join(root, "fake", "nested", ".atmux");
+      await mkdir(start, { recursive: true });
+      // Falls through to the documented fallback (start's parent), NOT `fake`.
+      expect(await resolveRepoRoot(start)).not.toBe(join(root, "fake"));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a .git directory carrying HEAD IS a repo root", async () => {
+    const root = await mkdtemp(join(tmpdir(), "atmux-reporoot-head-"));
+    try {
+      await mkdir(join(root, "repo", ".git"), { recursive: true });
+      await writeFile(join(root, "repo", ".git", "HEAD"), "ref: refs/heads/main\n");
+      const start = join(root, "repo", ".atmux");
+      await mkdir(start, { recursive: true });
+      expect(await resolveRepoRoot(start)).toBe(join(root, "repo"));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a gitlink FILE is a repo root — worktrees and submodules must keep working", async () => {
+    const root = await mkdtemp(join(tmpdir(), "atmux-reporoot-link-"));
+    try {
+      await mkdir(join(root, "wt"), { recursive: true });
+      await writeFile(join(root, "wt", ".git"), "gitdir: /elsewhere/.git/worktrees/wt\n");
+      const start = join(root, "wt", ".atmux");
+      await mkdir(start, { recursive: true });
+      expect(await resolveRepoRoot(start)).toBe(join(root, "wt"));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
