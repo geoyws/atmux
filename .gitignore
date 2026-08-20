@@ -31,3 +31,4 @@ rust/*/target/
 
 # Local scratch dirs (test fixtures during dev)
 .scratch/
+HANDOFF.md
