@@ -109,6 +109,18 @@ const USAGE =
 /** Detached tmux session `--supervise` owns (ADR-272 §D10). */
 export const VOX_TMUX_SESSION = "atmux-vox";
 /**
+ * The window inside {@link VOX_TMUX_SESSION}.
+ *
+ * ONE constant, used by BOTH `--supervise` (which creates the window) and
+ * `--stop` (which addresses it). They disagreed until 2026-08-21: supervise
+ * created `vox` while stop targeted a literal `voice` left over from the
+ * ADR-274 voice→vox rename, so `atmux vox --stop` failed with
+ * `can't find window: voice` against every session the current launcher
+ * makes — and because that `sendKeys` throws, the `killSession` on the line
+ * after it never ran. The verb could not stop the server at all.
+ */
+export const VOX_TMUX_WINDOW = "vox";
+/**
  * The OPERATOR'S DEFAULT tmux socket — literally named `default` by tmux
  * itself. `createTmux({ socket })` emits `-L <name>`, which makes the
  * selection independent of an inherited `$TMUX`; passing `"default"`
@@ -1005,7 +1017,7 @@ export async function superviseVox(deps: SuperviseDeps): Promise<number> {
   await deps.tmux.session.newSession({
     name: VOX_TMUX_SESSION,
     detached: true,
-    windowName: "vox",
+    windowName: VOX_TMUX_WINDOW,
     shellCommand: buildCrashLoopScript(deps.binPath),
     ...(deps.cwd !== undefined ? { cwd: deps.cwd } : {}),
   });
@@ -1181,7 +1193,11 @@ export async function stopVox(deps: StopDeps): Promise<number> {
     return 0;
   }
   await deps.tmux.pane.sendKeys({
-    target: { kind: "service", team: VOX_TMUX_SESSION, target: `${VOX_TMUX_SESSION}:voice` },
+    target: {
+      kind: "service",
+      team: VOX_TMUX_SESSION,
+      target: `${VOX_TMUX_SESSION}:${VOX_TMUX_WINDOW}`,
+    },
     keys: "C-c",
     enter: false,
   });

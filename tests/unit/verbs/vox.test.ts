@@ -58,6 +58,7 @@ import {
   VOICE_VERB_DEPRECATION,
   VOX_RUNNER_IMPORTERS,
   VOX_TMUX_SESSION,
+  VOX_TMUX_WINDOW,
   VOX_TMUX_SOCKET,
   type VoxAction,
   type VoxHealthzBody,
@@ -2041,6 +2042,32 @@ describe("stop", () => {
     expect(spy.keys).toHaveLength(0);
     expect(spy.killed).toHaveLength(0);
     expect(logs[0]).toContain("no 'atmux-vox' session");
+  });
+
+  // The window `--stop` addresses must be the window `--supervise` CREATED.
+  // Until 2026-08-21 it was not: supervise made `vox`, stop targeted a literal
+  // `voice` left from the ADR-274 rename, so `atmux vox --stop` died with
+  // `can't find window: voice` on every real session — and since that sendKeys
+  // throws, the killSession after it never ran. The verb could not stop the
+  // server at all, on the live box, for as long as the rename had been in.
+  //
+  // The existing tests above did not catch it because the tmux spy accepts any
+  // target string: they would have passed with the feature entirely broken,
+  // which is exactly the failure they were supposed to prevent. So this one
+  // asserts the two sides AGAINST EACH OTHER — reading the created window name
+  // out of supervise's own call and requiring stop's target to match it —
+  // rather than against a literal that could drift the same way twice.
+  test("stop addresses the SAME window supervise created — not a literal", async () => {
+    const sup = tmuxSpy();
+    await superviseVox({ tmux: sup.tmux, binPath: "/usr/local/bin/atmux", log: () => {} });
+    const createdWindow = String((sup.created[0] as Record<string, unknown>).windowName);
+
+    const stop = tmuxSpy([VOX_TMUX_SESSION]);
+    await stopVox({ tmux: stop.tmux, log: () => {}, sleep: async () => {} });
+    const target = stop.keys[0]?.target as { target?: string };
+
+    expect(createdWindow).toBe(VOX_TMUX_WINDOW);
+    expect(target.target).toBe(`${VOX_TMUX_SESSION}:${createdWindow}`);
   });
 });
 
