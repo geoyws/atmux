@@ -2,7 +2,7 @@
 
 Status: proposed
 Date: 2026-08-15
-Implementation: **D1–D3 built 2026-08-16** (`fleet_attention` + `fleet_quiet`); **D4's `pane_nudge` + D5 built 2026-08-16** (see §Supplement-2); **`pane_send` still not built** — it remains gated on OQ-1. Status stays `proposed` pending reviewer signoff — an ADR is not accepted by being implemented.
+Implementation: **D1–D3 built 2026-08-16** (`fleet_attention` + `fleet_quiet`); **D4's `pane_nudge` + D5 built 2026-08-16** (see §Supplement-2); **`pane_send` still not built** — **OQ-1 is now ANSWERED (§Supplement-9, 2026-08-21: no spoken second factor; four structural bounds instead), which opens the gate but does not close the work.** §AA5 lists what must be true before it ships. Status stays `proposed` pending reviewer signoff — an ADR is not accepted by being implemented.
 Extends: [ADR-272](272-voice-operator-interface.md) (voice operator interface)
 See also: [ADR-274](274-atmux-vox-rename.md) — the naming decision moved there: the feature is `atmux vox`. This ADR's title and body stand as written; the `atmux fleet` and `atmux nudge` verbs it adds are deliberately NOT renamed (ADR-274 §What this ADR does not decide).
 Related: [ADR-138](138-verified-send-keys.md) (verified send-keys), [ADR-139](139-refusal-pattern-detection.md) (refusal detection), [ADR-140](140-cheap-model-first.md) (cheap-model-first observation loops)
@@ -665,3 +665,90 @@ The honest consequence of a real fleet: **`"geoyws"` resolves only where that se
 ## Acceptance
 
 `fleet_attention` / `fleet_quiet` are covered by **[RUNBOOK-voice.md](../RUNBOOK-voice.md) §7 V-20** (added 2026-08-16 — until then the daily-use half of the voice surface had no acceptance row at all). Four legs: the sweep is bounded, unreadable teams are reported rather than omitted, the attention list honours the top-N speech budget, and `fleet_quiet` aggregates without naming a pane. All four are headless-verified and confirmed by a live CLI sweep; the **voice tool path** around the shared classifier is explicitly recorded there as unproven.
+
+---
+
+## Supplement-9 — OQ-1 answered: no spoken second factor; bound the blast radius instead (2026-08-21)
+
+**Decision made under operator delegation** ("do all that needs my attention according to
+ur recommendation", 2026-08-21). OQ-1 was marked *Operator decision, required before
+`pane_send` ships*; this records the answer and the reasoning so it is reviewable rather
+than assumed. **Status stays `proposed`** — an ADR is not accepted by being decided, and
+this one in particular touches the most powerful tool in the catalog.
+
+### AA1 — The answer
+
+**No second factor. `pane_send` ships on D7 confirmation + verbatim read-back, plus four
+structural bounds below.** The friction a spoken factor costs is real and lands exactly on
+the 2am one-handed case the feature exists for; what it buys, on this threat model, is
+close to nothing.
+
+### AA2 — Why a spoken passphrase buys nothing here
+
+A passphrase spoken into the session rides **the same channel as the request it is meant to
+authorise**. Anyone positioned to issue a `pane_send` — a hijacked socket, a live session on
+an unlocked phone, a model that decided to redeem its own token — is equally positioned to
+supply the passphrase, because it arrives through the same microphone and the same
+WebSocket. It authenticates nothing the session token and the O2 auth layer did not already
+authenticate.
+
+It is worth being precise about what it *would* defend against, because "add a second
+factor" sounds unconditionally safer. It defends against an attacker who can inject a tool
+call but cannot speak — which is not a shape this surface has: the model is the only thing
+that issues tool calls, and the model can emit any string.
+
+A code echoed from **another** channel (a phone push, a Discord message) is a genuine second
+factor. It is also a full stop on the use case: the operator is holding one phone, at 2am,
+and the premise is that the pane is wedged *now*. Requiring a second device to unstick the
+first is a feature that will not be used, and an unused safety control protects nothing.
+
+### AA3 — The real risk is targeting and transcription, not authorisation
+
+The failure that actually threatens `pane_send` is not an unauthorised caller. It is an
+**authorised caller whose words or target were misheard** — right text, wrong pane, or wrong
+text, right pane. ASR is the weak link, and a passphrase does not make ASR better.
+
+So the safety budget goes there instead. Four bounds, all server-enforced, none of which
+cost the operator a syllable:
+
+1. **The preview reads back the RESOLVED target, not the spoken one.** The confirm envelope
+   must name the team and member as `resolveTeamName` actually resolved them, so "driver
+   two" that landed on `px-crm-geoyws-driver-2` is spoken back as that full name. An
+   `ambiguous` resolution **refuses** rather than picking — the ladder already returns
+   candidates (§Supplement-8), and a voice tool guessing a target is precisely the fault
+   this ADR exists to avoid.
+2. **Driver panes are refused**, as `pane_nudge` already refuses them (ADR-239). The driver
+   is the operator's own interactive surface; text injected there is text the operator will
+   believe they typed.
+3. **The text is a single line, capped.** Control characters, and any newline or carriage
+   return that would submit more than the one previewed command, are rejected rather than
+   stripped — stripping changes what the operator confirmed, which is the same class of
+   fault as confirming one action and performing another (D7 §argument-binding).
+4. **Delivery is verified, per D5.** The tool reports the pane state *after* the send. "I
+   sent it" is a claim; "the composer cleared and the agent is working" is a receipt.
+
+### AA4 — The honest residue
+
+This does **not** make `pane_send` safe in the way a hardware key makes SSH safe, and the
+gap should not be papered over:
+
+- **The affirmation is still not server-enforced** (ADR-272 D7 §Clarification). The server
+  enforces the token's binding, TTL and single-use burn; nothing server-side observes the
+  operator saying yes. A model that redeemed its own token without speaking the preview
+  would be caught only by the operator noticing they never heard one. That is unchanged by
+  this decision and is now the load-bearing check on the most powerful tool in the catalog.
+- **The four bounds constrain WHERE and WHAT SHAPE, not WHAT.** "Whatever the operator said,
+  typed into an agent with full tool access" remains neither enumerable nor reversible (D4).
+  A correctly-targeted, correctly-transcribed, correctly-confirmed instruction can still be
+  a bad instruction.
+- **`spawn` / `stop` / `kill` keep their second-factor requirement** (ADR-272 §Deferred).
+  This supplement does not relax that and must not be read as precedent for it: their
+  failure mode is a misheard *name* destroying an enumerable thing, which read-back of a
+  resolved target addresses far less completely than it does for a send.
+
+### AA5 — What must be true before it ships
+
+`pane_send` is still **not built**. This answers the gate; it does not open it. Shipping it
+requires all four AA3 bounds implemented and tested, an e2e scenario in the mutating half
+asserting **on cage state** that a refused target did not receive the text (the inert-control
+discipline from ADR-272 §E6), and the confirm-replay scenario extended to cover it.
