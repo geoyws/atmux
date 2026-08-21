@@ -81,6 +81,52 @@ function stripSuffix(s: string): string {
  *  after a common word. */
 const SPOKEN_LEADING_ARTICLE = "the";
 
+/**
+ * Number WORDS an operator speaks, mapped to the digits the names carry.
+ *
+ * This closes a gap §Supplement-8 shipped with: the segment rung matched
+ * `"driver 2"` but NOT `"driver two"`, and the spoken form is the one a
+ * person actually says — ASR writes the word far more often than the digit.
+ * Measured on the 2026-08-21 e2e run, where the assistant was told "the pane
+ * called be one" and produced `b1`, a member that does not exist, so the
+ * redeemed `pane_nudge` failed in the verb.
+ *
+ * Levenshtein cannot cover this: `be-one` → `be-1` is 3 edits, past
+ * {@link RESOLVE_MAX_EDIT_DISTANCE}, and raising that threshold to reach it
+ * would start matching genuinely different names.
+ *
+ * Applied on the SPOKEN side only, and therefore only to the segment rung —
+ * the exact, case-fold and prefix rungs run on `foldedSpoken` and are
+ * untouched. So a team or member literally named `one` still resolves by
+ * exact match on rung 1, which is why this cannot shadow a real name.
+ *
+ * Stops at twenty deliberately: lanes are `driver-N` with a small N, and
+ * every entry is a word the segment rung can no longer match literally.
+ */
+const SPOKEN_NUMBERS: ReadonlyMap<string, string> = new Map([
+  ["zero", "0"],
+  ["one", "1"],
+  ["two", "2"],
+  ["three", "3"],
+  ["four", "4"],
+  ["five", "5"],
+  ["six", "6"],
+  ["seven", "7"],
+  ["eight", "8"],
+  ["nine", "9"],
+  ["ten", "10"],
+  ["eleven", "11"],
+  ["twelve", "12"],
+  ["thirteen", "13"],
+  ["fourteen", "14"],
+  ["fifteen", "15"],
+  ["sixteen", "16"],
+  ["seventeen", "17"],
+  ["eighteen", "18"],
+  ["nineteen", "19"],
+  ["twenty", "20"],
+]);
+
 /** Trailing common nouns an operator appends to a team name ("the alpha
  *  team"). Agrees BY CONSTRUCTION with {@link stripSuffix}'s `-team` arm:
  *  both exist so `alpha`, `alpha-team` and "the alpha team" reduce to the
@@ -115,6 +161,9 @@ export function normalizeSpoken(spoken: string): string {
     .split(/[\s-]+/)
     .filter((t) => t.length > 0);
   if (tokens.length > 1 && tokens[0] === SPOKEN_LEADING_ARTICLE) tokens = tokens.slice(1);
+  // "driver two" → "driver 2". See SPOKEN_NUMBERS for why this is a token
+  // substitution on the spoken side rather than a wider Levenshtein budget.
+  tokens = tokens.map((t) => SPOKEN_NUMBERS.get(t) ?? t);
   const last = tokens[tokens.length - 1];
   if (tokens.length > 1 && last !== undefined && SPOKEN_TRAILING_NOUNS.has(last)) {
     tokens = tokens.slice(0, -1);

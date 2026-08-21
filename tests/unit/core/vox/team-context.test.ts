@@ -75,6 +75,44 @@ describe("levenshtein", () => {
   });
 });
 
+describe("spoken numbers — the form a person actually says", () => {
+  // §Supplement-8 shipped a segment rung that matched "driver 2" but NOT
+  // "driver two". The digit form is what the NAME carries; the word form is
+  // what the OPERATOR says, and ASR emits the word far more often. The gap
+  // was measured on the 2026-08-21 e2e run: told "the pane called be one",
+  // the assistant produced `b1`, a member that does not exist, so the
+  // redeemed pane_nudge failed inside the verb.
+  const IDX = {
+    teams: [
+      { name: "px-crm-geoyws-driver-2", root: "/w/px", type: "team" },
+      { name: "atmux", root: "/w/atmux", type: "team" },
+    ],
+  } as unknown as VoxTeamIndex;
+
+  test("a spoken number resolves the same lane as the digit", () => {
+    expect(resolveTeamName(IDX, "driver two")).toEqual(resolveTeamName(IDX, "driver 2"));
+    expect(resolveTeamName(IDX, "driver two")).toMatchObject({ ok: true });
+  });
+
+  test("it does NOT shadow a name that IS the word — rung 1 runs first", () => {
+    // The substitution is on the spoken side and therefore reaches only the
+    // segment rung; exact / case-fold / prefix all run on foldedSpoken. A team
+    // literally called `one` must still win on rung 1, or this would make
+    // real names unreachable.
+    const withWord = {
+      teams: [
+        { name: "one", root: "/w/one", type: "team" },
+        { name: "atmux", root: "/w/atmux", type: "team" },
+      ],
+    } as unknown as VoxTeamIndex;
+    expect(resolveTeamName(withWord, "one")).toMatchObject({ ok: true, team: { name: "one" } });
+  });
+
+  test("an unrelated word is untouched", () => {
+    expect(normalizeSpoken("alpha bravo")).toBe("alpha-bravo");
+  });
+});
+
 describe("resolveTeamName — ladder rungs", () => {
   test("rung 1: exact match wins", () => {
     const r = resolveTeamName(INDEX, "atmux");
@@ -210,6 +248,15 @@ describe("normalizeSpoken", () => {
     // filler is NEVER dropped down to nothing — a team can be called `team`
     ["team", "team"],
     ["the team", "team"],
+    // Number WORDS → digits. ASR writes "two" far more often than "2", and the
+    // names carry the digit — so without this the segment rung matched the form
+    // nobody says. Levenshtein cannot cover it: be-one→be-1 is 3 edits.
+    ["driver two", "driver-2"],
+    ["be one", "be-1"],
+    ["driver 2", "driver-2"],
+    ["the driver two team", "driver-2"],
+    ["twenty", "20"],
+    ["zero", "0"],
     ["the", "the"],
     // ...but the guard is per-step, so "the teams" loses only the
     // article: stripping the last token would leave nothing to match.
