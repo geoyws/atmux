@@ -440,6 +440,18 @@ E5's second bullet is now closed. The harness exercises the mutating verbs, the 
 
 **Counting, not presence — the finding that forced it.** `tell_lead` writes its receipt to stderr while the bridge summarized stdout, so a successful call came back `verb_output_unparseable` and the model retried: **34 times on the 2026-08-17 run, appending 34 real asks to the lead's inbox.** A presence check passes throughout that. `teamFileMatches` therefore asserts the ask landed *exactly once* alongside asserting it landed at all, and both verdicts are pinned in tests so the counting arm cannot rot back into a second presence check. (The underlying bridge defect is fixed — §Supplement "exit 0 is the success signal" — but the assertion stays, because the class recurs whenever a verb's success is invisible to the bridge and the model is free to retry an append-only write.)
 
+**First run — 2026-08-21, and it earned its keep on day one.** 4 PASS / 4 FAIL. Recorded here as evidence rather than as a pass mark, because a harness's first run is the one that says whether it can see anything at all.
+
+**PASS — `confirm_replay`, all eleven assertions.** This is the security result and the reason E6 exists: an un-tokened `pane_nudge` returned `needs_confirmation` and **ran nothing**; the redeemed one delivered **exactly one** Enter; a **spent** token did not redeem and delivered no second Enter; a token minted for `be-1` **did not redeem** a call naming `be-2`, and `be-2` stayed untouched. Then the anti-vacuity control: a freshly-minted `be-2` token redeemed and `be-2` consumed exactly one Enter — *so its earlier zero was a refusal, not an inert pane*. Without that last one the four negatives above would have been unfalsifiable.
+
+**PASS — `tell_lead_delivered`, including `delivered ONCE (expected exactly 1)`.** The counting assertion is there because the pre-fix bridge caused a 34-message retry storm; one line landed, so the exit-0 fix closed it end to end.
+
+**FAIL — and the failures are the interesting half.** `nudge_confirmed` looked at first like a `pane_nudge` **delivery** defect: the confirm round-trip passed (`previews=1, redeems=1`) while all three cage assertions failed — no Enter, prompt still there, no repaint. It is not a delivery defect, and `confirm_replay` is what proves that: the same verb delivered Enters twice in the same run. The real chain was `verb_failed, confirmation redeemed` — the assistant, told *"the pane called **be one**"*, produced `b1`, a member that does not exist, so the token redeemed correctly and the verb then failed on an unknown member. **That is a transcription/resolution gap, one level below §Supplement-8's team ladder** — see ADR-273 §Supplement-10.
+
+`drilldown` and `nudge_declined` both failed the **tool gate** with `the assistant invoked [nothing]`. Not a resolver failure and not a judge-criteria failure: the model called no tool at all. `drilldown` has now failed on two separate runs for two different reasons, so it is not yet a solved scenario and must not be reported as one.
+
+**Two disciplines this run vindicated.** *Never re-roll a red run* — the useful finding came from reading a failure rather than re-running until it passed. And *a negative assertion needs a positive control* — every one of `confirm_replay`'s refusal checks would have passed against a pane that was simply dead.
+
 **What E6 still does NOT cover.** It remains not a phone — V-9…V-17 are still the only evidence for the client half. It costs real API calls and stays out of `bun test` for the reasons in E4. And it does not clear OQ-1: `pane_send` is still unbuilt, and the operator-facing readonly gate is still closed pending the auth decision.
 
 

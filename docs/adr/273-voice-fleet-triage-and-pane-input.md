@@ -752,3 +752,33 @@ gap should not be papered over:
 requires all four AA3 bounds implemented and tested, an e2e scenario in the mutating half
 asserting **on cage state** that a refused target did not receive the text (the inert-control
 discipline from ADR-272 §E6), and the confirm-replay scenario extended to cover it.
+
+---
+
+## Supplement-10 — the resolution ladder stops at TEAMS, and the operator names members too (2026-08-21)
+
+### AB1 — What the first mutating e2e run exposed
+
+§Supplement-8 gave **team** names a resolution ladder. **Member** names never got one. `pane_nudge`'s `member` argument goes to `src/verbs/nudge.ts` and is matched **exactly** against `team.json`, which throws `no such member in team.json: <x>`.
+
+Measured on the 2026-08-21 run (ADR-272 §E6): told *"the pane called **be one**"*, the assistant produced `b1`. The confirm token minted, the operator confirmed, the token redeemed — and the verb then failed on an unknown member. Every layer did its job; the name never survived the trip.
+
+### AB2 — Half of it is fixed, and it is the half that generalises
+
+The immediate cause was **spoken numbers**: `normalizeSpoken` turned `"driver two"` into `driver-two`, which matched nothing, while the names carry `driver-2`. ASR writes the word far more often than the digit, so the segment rung was matching the form nobody says. Fixed 2026-08-21 — `SPOKEN_NUMBERS` maps `zero…twenty` on the spoken side only, so exact/case-fold/prefix are untouched and a team literally called `one` still wins on rung 1.
+
+Levenshtein could not have covered it: `be-one` → `be-1` is 3 edits, past `RESOLVE_MAX_EDIT_DISTANCE`, and widening that budget starts matching genuinely different names.
+
+### AB3 — What is still missing
+
+**A `resolveMemberName`.** `team-context.ts` exports `resolveTeamName` and nothing else, so the ladder's discipline — first rung with exactly one hit wins, `>1` hits returns `ambiguous` with candidates, never a guess — applies to teams and stops there. Members are the level the operator actually names when acting (`pane_nudge`, `pane_send`, `dispatch_task`), which makes this the more consequential half.
+
+It should reuse the same rungs over the team's member list rather than growing a second, subtly different matcher. Two constraints carry over unchanged and one is new:
+
+- **`ambiguous` must refuse**, exactly as it does for teams. A voice tool guessing which pane to type into is the fault this ADR exists to avoid, and §Supplement-9 §AA3 already requires the confirm preview to read back the **resolved** target.
+- **The rungs are the same ladder**, including the segment rung and the spoken-number substitution — `be-1`, `be one`, `driver 2`, `driver two` are all the same utterance.
+- **New: the candidate set is per-team and tiny** (a handful of members), so the Levenshtein rung is far more likely to produce a unique-but-wrong hit than it is across twenty-odd team names. The threshold deserves re-derivation against real rosters rather than inheriting `2` by default.
+
+### AB4 — Not the whole story, and do not let this scenario be called fixed
+
+`nudge_confirmed` will not pass on member resolution alone. `drilldown` and `nudge_declined` failed the **tool gate** in the same run — `the assistant invoked [nothing]` — which is neither a resolver nor a judge-criteria failure: the model called no tool at all. `drilldown` has now failed twice, for two different reasons. That is a prompt/tool-affordance question, separate from this one, and it is unresolved.
