@@ -120,7 +120,7 @@ async function writeTeamJson(opts: {
   driverTui?: string | null;
   /** ADR-239 §A1: declarative driver roster (canonical post-ADR-266 §D2 —
    *  the legacy driverSession/driverTui synthesis was removed). */
-  drivers?: ReadonlyArray<{ name: string; tui: string; cwd: string }>;
+  drivers?: ReadonlyArray<{ name: string; tui?: string | null; cwd: string }>;
   /** ADR-082 W3: opt-in to per-member worktree isolation. Default
    *  omitted → legacy shared-tree behaviour (matches existing tests). */
   worktreeIsolation?: boolean;
@@ -643,6 +643,47 @@ describe("start — incremental restart skips existing windows", () => {
 // removed per ADR-266 §D2 — see the legacy-fields regression test.)
 
 describe("start — ADR-239 §A1 drivers[] topology", () => {
+  test("nullable driver tui starts the driver in zsh without an agent harness", async () => {
+    await writeTeamJson({
+      members: [],
+      drivers: [{ name: "driver", tui: null, cwd: "." }],
+    });
+
+    expect(await runStart([])).toBe(0);
+
+    const session = `atmux-${env.team}`;
+    const wins = await env.tmux.window.listWindows(session);
+    expect(wins.map((w) => w.name)).toEqual(["driver"]);
+    expect(
+      await env.tmux.pane.displayMessage({
+        target: `${session}:driver`,
+        format: "#{pane_current_command}",
+      }),
+    ).toBe("zsh");
+    expect(
+      env.logs.some(
+        (l) => l.kind === "ok" && l.msg.includes("driver at window 1") && l.msg.includes("zsh"),
+      ),
+    ).toBe(true);
+  });
+
+  test("omitted driver tui also starts zsh without an agent harness", async () => {
+    await writeTeamJson({
+      members: [],
+      drivers: [{ name: "driver", cwd: "." }],
+    });
+
+    expect(await runStart([])).toBe(0);
+
+    const session = `atmux-${env.team}`;
+    expect(
+      await env.tmux.pane.displayMessage({
+        target: `${session}:driver`,
+        format: "#{pane_current_command}",
+      }),
+    ).toBe("zsh");
+  });
+
   test("configured: driver is window 1 in declarative order, no __home placeholder", async () => {
     await writeTeamJson({
       members: [

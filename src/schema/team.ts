@@ -1561,7 +1561,10 @@ export const Team = z
         z
           .object({
             name: z.string().min(1),
-            tui: z.string().min(1),
+            /** Optional driver agent harness. `null` / absent means atmux
+             *  starts only the driver's normal interactive shell (zsh for
+             *  the operator) so the harness can be chosen per session. */
+            tui: z.string().min(1).nullable().optional(),
             cwd: z.string().min(1),
             claudeAccount: z.string().optional(),
           })

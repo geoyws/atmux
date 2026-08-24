@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🔄 Changed — driver panes default to zsh, not a pinned agent harness ([ADR-278](docs/adr/278-nullable-driver-agent-harness.md))
+
+- `drivers[].tui` is now nullable/optional. `null` or absence starts the driver in zsh without auto-launching Claude, Codex, OpenCode, or another agent harness; an explicit non-null alias retains the prior auto-launch behavior.
+- The new-team template and the operator's canonical atmux team configs now set driver harnesses to `null`. Member TUI declarations are unchanged.
+- Existing tmux sessions are untouched; the change takes effect when driver panes are next created.
+
 ### 🐛 Fixed — `vox`'s `tell_lead` succeeded, delivered the message, and reported failure ([ADR-272](docs/adr/272-voice-operator-interface.md) §Supplement-2026-08-20)
 
 **The verb worked and the bridge said it hadn't.** `atmux tell-lead` appends the ask to the lead inbox and confirms on **stderr** — `✅ atmux tell-lead → <lead> (appended to <path>)` — writing nothing at all to stdout, per the `atmux::ok` convention (`src/core/tui.ts`, ported from bash `lib/common.sh:21`). `CaptureVerbRunResult` captured **only stdout**, so the tool bridge structurally could not see that receipt, and its step-12 check — empty summarized output → `verb_output_unparseable` — turned exit 0 into a failure envelope.

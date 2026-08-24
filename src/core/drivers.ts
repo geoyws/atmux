@@ -18,8 +18,9 @@ import { join } from "node:path";
 export interface DriverSession {
   /** Pane name. driver-1 = `"driver"`; driver-N = `"driver-N"` (N>=2). */
   name: string;
-  /** TUI command alias (`"claude"`, `"cursor"`, `"shell"`, etc.). */
-  tui: string;
+  /** Optional TUI command alias (`"claude"`, `"cursor"`, etc.).
+   *  Null / absent leaves the driver in the normal interactive shell. */
+  tui?: string | null;
   /** Working directory for the pane. driver = `"."` (team root, trunk);
    *  driver-N = `.atmux/worktrees/driver-N` (per-driver worktree). */
   cwd: string;

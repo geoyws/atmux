@@ -427,6 +427,24 @@ describe("Team schema — driverSession (ADR-044 + ADR-064 §5)", () => {
   });
 });
 
+describe("Team schema — nullable driver harness", () => {
+  test("drivers[].tui accepts null or omission", () => {
+    const withNull = Team.parse({
+      name: "demo",
+      members: [],
+      drivers: [{ name: "driver", tui: null, cwd: "." }],
+    });
+    const omitted = Team.parse({
+      name: "demo",
+      members: [],
+      drivers: [{ name: "driver", cwd: "." }],
+    });
+
+    expect(withNull.drivers?.[0]?.tui).toBeNull();
+    expect(omitted.drivers?.[0]?.tui).toBeUndefined();
+  });
+});
+
 // ---------- worktreeIsolation / worktreeRoot — ADR-082 §2 ----------
 
 describe("Team schema — worktreeIsolation + worktreeRoot (ADR-082 §2)", () => {

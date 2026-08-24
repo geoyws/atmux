@@ -481,16 +481,19 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
       // after the TUI exits" property that the legacy send-keys path
       // gave for free, non-shell TUIs are wrapped with `sh -c '<cmd>;
       // exec $SHELL -i'` so the pane drops back to an interactive shell
-      // when the TUI quits. Shell-kind TUIs already ARE a shell — no
-      // wrap (and no command at all; the pane starts in $SHELL by
-      // default per tmux's new-session/new-window semantics).
-      const isShellOnlyTui = (tui: string): boolean =>
-        tui === "shell" || tui === "bash" || tui === "zsh";
+      // when the TUI quits. A null/absent TUI explicitly launches zsh:
+      // driver panes are operator workspaces and must not inherit a stale
+      // agent-harness choice. Named shell kinds keep tmux's normal shell.
+      const isShellOnlyTui = (tui: string | null | undefined): boolean =>
+        tui === undefined || tui === null || tui === "shell" || tui === "bash" || tui === "zsh";
+
+      const driverShellLabel = (tui: string | null | undefined): string => tui ?? "zsh";
 
       const wrapForShellFallback = (cmd: string): string =>
         `sh -c ${JSON.stringify(`${cmd}; exec $SHELL -i`)}`;
 
       const resolveCmd = (drv: DriverSession, cwd: string): string | undefined => {
+        if (drv.tui === undefined || drv.tui === null) return "zsh";
         if (isShellOnlyTui(drv.tui)) return undefined;
         const synth = {
           name: drv.name,
@@ -558,7 +561,7 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
         if (firstCmd !== undefined) newSessionOpts.shellCommand = firstCmd;
         await tmux.session.newSession(newSessionOpts);
         logger.ok(
-          `created tmux session: ${session} (${firstDriver.name} at window 1, ${firstDriver.tui})`,
+          `created tmux session: ${session} (${firstDriver.name} at window 1, ${driverShellLabel(firstDriver.tui)})`,
         );
         driverInitial = true;
       }
@@ -577,7 +580,9 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
         };
         if (cmd !== undefined) newWindowOpts.shellCommand = cmd;
         await tmux.window.newWindow(newWindowOpts);
-        logger.log(`  · driver pane: ${drv.name} at window ${i + 1} (${drv.tui}) cwd=${cwd}`);
+        logger.log(
+          `  · driver pane: ${drv.name} at window ${i + 1} (${driverShellLabel(drv.tui)}) cwd=${cwd}`,
+        );
       }
     }
     if (!driverInitial) {
