@@ -81,7 +81,7 @@ async function fixtureTeamDir(teamName: string): Promise<string> {
 }
 
 function emptyCockpit(): Cockpit {
-  return { schemaVersion: 1, cockpitSession: "atmux_cockpit", sessions: [] };
+  return { schemaVersion: 1, cockpitSession: "atmux_cockpit", sessions: [], windows: [] };
 }
 
 // ---------- renameTmuxSession ----------

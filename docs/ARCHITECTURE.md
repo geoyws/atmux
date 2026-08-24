@@ -50,7 +50,7 @@ Per [ADR-162](adr/162-atmux-owns-tmux-infrastructure.md):
 
 | Tier     | Socket flag                                              | Session name      | What runs there                                                                            |
 |----------|----------------------------------------------------------|-------------------|--------------------------------------------------------------------------------------------|
-| Cockpit  | `tmux -L atmux-cockpit` (named socket, dedicated)        | `atx`   | Operator's window into every enabled team — `_superdriver`, `_medic`, per-team viewers ([ADR-135](adr/135-cockpit-naming-convention.md) `_-prefix` for default roles) |
+| Cockpit  | `tmux -L atmux-cockpit` (named socket, dedicated)        | configured `cockpitSession` (default `atx`) | Operator's window into every enabled team — `_superdriver`, `_medic`, declarative operator windows, then per-team viewers ([ADR-279](adr/279-declarative-operator-cockpit-windows.md)) |
 | Per-team | `tmux -S <team-root>/.atmux/tmux/tmux-0/default` (cage)  | `atmux-<team>`    | The team's members + lead + planner + reviewer panes (one window per role). Cage-tier per [ADR-058](adr/058-cage-tier-isolation.md). |
 | Voice    | `tmux -L default` (the operator's **default** socket)     | `atmux-vox`     | The `atmux vox` WebSocket server under a crash-loop wrapper, when started with `--supervise` ([ADR-272](adr/272-voice-operator-interface.md) §D10). Fleet-wide operator infrastructure belonging to no team — a sibling of the driver's own shell ([ADR-044](adr/044-driver-session-on-default-socket.md)), deliberately **not** a cockpit window (the reconcile pass would prune it as an orphan) and **not** a cage window (`atmux stop` on an unrelated team would end the call). |
 

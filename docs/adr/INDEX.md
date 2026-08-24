@@ -244,6 +244,8 @@
 | 275 | External private Kanban is the sole work-state authority | 2026-08-16 | accepted (operator-direct) |
 | 276 | orchd is retired; atmux's scope narrows to tmux cages and `atmux vox` | 2026-08-16 | proposed |
 | 277 | Cages scrub `NO_COLOR` from their tmux server environment | 2026-08-18 | accepted (operator-direct) |
+| 278 | Nullable driver harness defaults; null starts zsh | 2026-08-24 | accepted (operator-direct) |
+| 279 | Declarative operator cockpit windows and literal session names | 2026-08-24 | accepted (operator-direct) |
 
 ## Superseded (skip)
 

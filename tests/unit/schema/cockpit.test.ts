@@ -5,7 +5,7 @@
 //   - .strict() leaf rejection of unknown keys
 //   - .strict() rejection of unknown `type` discriminator values
 //   - recursive nesting via z.lazy
-//   - schemaVersion default + cockpitSession default + prefixChain pass-through
+//   - schemaVersion, cockpitSession, and operator-window defaults + prefixChain pass-through
 //   - legacy back-compat field (`teams`) accepted as optional
 //     so the loader's enrichment pass round-trips it
 //
@@ -17,6 +17,7 @@ import {
   Cockpit,
   CockpitMedic,
   CockpitSession,
+  CockpitWindow,
   EpicTeamSession,
   SuperdriverSession,
   TeamSession,
@@ -243,12 +244,26 @@ describe("Cockpit — top-level shape + defaults", () => {
   test("empty object parses to schema defaults", () => {
     const c = Cockpit.parse({});
     expect(c.schemaVersion).toBe(1);
-    // ADR-264 §D1: default cockpitSession is `atx` (was `atmux_cockpit`
-    // per ADR-135, `atmux_teams` pre-ADR-135). Both legacy literals are
-    // coerced at load time via the migrateCockpitSessionLegacyLiteral
-    // shim; the schema default itself has flipped to the canonical form.
+    // ADR-264 §D1: default cockpitSession is `atx`; ADR-279 keeps an
+    // explicitly persisted literal authoritative.
     expect(c.cockpitSession).toBe("atx");
     expect(c.sessions).toEqual([]);
+    expect(c.windows).toEqual([]);
+  });
+
+  test("ADR-279: operator window accepts null or omitted command and defaults enabled", () => {
+    expect(CockpitWindow.parse({ name: "_misc", cwd: "/root/work", command: null })).toEqual({
+      name: "_misc",
+      enabled: true,
+      cwd: "/root/work",
+      command: null,
+    });
+    expect(CockpitWindow.parse({ name: "scratch", cwd: "/tmp" })).toEqual({
+      name: "scratch",
+      enabled: true,
+      cwd: "/tmp",
+    });
+    expect(() => CockpitWindow.parse({ name: "scratch", cwd: "", command: "zsh" })).toThrow();
   });
   test("parses a typical recursive cockpit", () => {
     const c = Cockpit.parse({

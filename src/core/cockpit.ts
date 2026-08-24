@@ -98,22 +98,21 @@ export async function loadCockpit(opts: LoadCockpitOpts = {}): Promise<LoadedCoc
   //      hard, actionable error.
   //   2. `migrateLegacyShape` — ADR-089 §B flat `teams[]` → recursive
   //      `sessions[]`.
-  //   3. `migrateCockpitSessionLegacyLiteral` — ADR-264 §D3 legacy
-  //      `cockpitSession` literals (`atmux_cockpit`, `atmux_teams`) →
-  //      canonical `"atx"`.
-  //      All shims are idempotent on inputs that already use the new shape.
+  // Explicit `cockpitSession` values are authoritative per ADR-279. New
+  // configs still default to `atx` in the schema, but loading an operator's
+  // persisted literal must never rename a live session as a side effect of a
+  // later reconcile.
   const raw = await readJson(path, z.unknown());
   const warn = opts.warn ?? ((msg: string) => process.stderr.write(msg));
   rejectSuperdoctorConfig(raw, path);
   const migrated = migrateLegacyShape(raw, path, warn);
-  const sessionShimmed = migrateCockpitSessionLegacyLiteral(migrated, path, warn);
   // ADR-005 boundary uniformity: Zod errors at the loadCockpit boundary
   // wrap as SchemaError so catch-by-tag callers (and the JSDoc contract
   // above — "SchemaError on parse failure") observe the same error
   // class as every other readJson-style boundary. Bare `Cockpit.parse`
   // throws Zod's native error class; that bypasses the wrap and breaks
   // both the JSDoc contract + 4+ existing tests asserting `SchemaError`.
-  const result = Cockpit.safeParse(sessionShimmed);
+  const result = Cockpit.safeParse(migrated);
   if (!result.success) {
     throw new SchemaError({
       file: path,
@@ -134,7 +133,33 @@ export async function loadCockpit(opts: LoadCockpitOpts = {}): Promise<LoadedCoc
       });
     }
   }
+  validateOperatorWindowNames(parsed);
   return enrichLegacyFields(parsed);
+}
+
+/** ADR-279: operator windows share the cockpit tmux namespace with role
+ * windows and team viewers, so every name must be globally unambiguous. */
+function validateOperatorWindowNames(cockpit: CockpitShape): void {
+  const occupied = new Set(["_superdriver", "superdriver", "_medic", "medic", "superdoctor"]);
+  walkSessions(cockpit.sessions ?? [], 0, (node) => {
+    if (node.type === "team" || node.type === "epic-team") occupied.add(node.name);
+  });
+  const seen = new Set<string>();
+  for (const window of cockpit.windows) {
+    if (occupied.has(window.name)) {
+      throw new ConfigError({
+        what: `cockpit operator window '${window.name}' conflicts with a reserved role or team name`,
+        hint: "choose a unique windows[].name; operator workspaces and team viewers share one tmux session",
+      });
+    }
+    if (seen.has(window.name)) {
+      throw new ConfigError({
+        what: `cockpit operator window '${window.name}' is declared more than once`,
+        hint: "keep exactly one windows[] entry for each cockpit window name",
+      });
+    }
+    seen.add(window.name);
+  }
 }
 
 /**
@@ -227,40 +252,6 @@ export function rejectSuperdoctorConfig(raw: unknown, path: string): void {
       hint: `change the entry's "type" to "medic" in ${path} (same fields; naming-only per ADR-133)`,
     });
   }
-}
-
-/**
- * ADR-264 §D3 (extends ADR-135 §D5 one generation): pre-parse shim that
- * coerces the legacy `cockpitSession` literals (`atmux_cockpit`,
- * `atmux_teams`) to the canonical `"atx"` value. Runs AFTER the
- * medic-block migration so the input has already been normalized for
- * ADR-133. Only fires on the two historical literals — operator-chosen
- * arbitrary names (e.g. `geoyws_cockpit`) pass through unchanged.
- *
- * Idempotent on already-canonical inputs. Does NOT auto-migrate the
- * on-disk file — the warning is the call to action. The tmux-side
- * rename of any existing legacy session to `atx` is handled by
- * `reconcileCockpitSession` (verbs/cockpit.ts) per ADR-264 §D4. After
- * one semver bump, a follow-up Task flips this shim to a schema-level
- * reject.
- */
-// SUNSET(v0.9.0): ADR-264 legacy-literal shim — delete after v0.9.0 ships (ADR-266 §D1).
-export function migrateCockpitSessionLegacyLiteral(
-  raw: unknown,
-  path: string,
-  warn: (msg: string) => void,
-): unknown {
-  if (typeof raw !== "object" || raw === null) return raw;
-  const obj = raw as Record<string, unknown>;
-  if (obj.cockpitSession !== "atmux_cockpit" && obj.cockpitSession !== "atmux_teams") return obj;
-  const legacy = obj.cockpitSession as string;
-  warn(
-    `atmux: cockpit.json at ${path} uses deprecated cockpitSession literal '${legacy}' — ` +
-      `coercing to canonical 'atx' per ADR-264. ` +
-      `Update the on-disk value to silence this warning. ` +
-      `Accepting this release; will fail next release.\n`,
-  );
-  return { ...obj, cockpitSession: "atx" };
 }
 
 /**

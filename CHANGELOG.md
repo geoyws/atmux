@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ✨ Added — declarative operator cockpit windows ([ADR-279](docs/adr/279-declarative-operator-cockpit-windows.md))
+
+- Top-level `cockpit.json::windows[]` persists non-team cockpit workspaces with a name, cwd, and optional command. Null or omitted command starts zsh; configured windows sit after `_medic` and before team viewers.
+- Explicit `cockpitSession` values are now authoritative. `atx` remains the new-config default, but loading a persisted `atmux_cockpit` no longer silently schedules an in-place rename before reconcile's destructive-operation gate.
+- The operator's canonical config now declares the live `_misc` workspace at `/root/work`. No live tmux session, window, client, or socket is mutated by this source/config change.
+
 ### 🔄 Changed — driver panes default to zsh, not a pinned agent harness ([ADR-278](docs/adr/278-nullable-driver-agent-harness.md))
 
 - `drivers[].tui` is now nullable/optional. `null` or absence starts the driver in zsh without auto-launching Claude, Codex, OpenCode, or another agent harness; an explicit non-null alias retains the prior auto-launch behavior.

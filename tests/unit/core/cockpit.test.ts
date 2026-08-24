@@ -104,7 +104,7 @@ describe("loadCockpit", () => {
     expect(cockpit.cockpitSession).toBe("atx");
   });
 
-  test("ADR-264 §D3 — coerces legacy cockpitSession 'atmux_teams' literal → 'atx' with deprecation warning", async () => {
+  test("ADR-279 — preserves explicit cockpitSession 'atmux_teams' literally", async () => {
     await writeCockpit({
       cockpitSession: "atmux_teams",
       teams: [{ name: "x", root: "/x", enabled: true }],
@@ -114,16 +114,11 @@ describe("loadCockpit", () => {
       home: homeDir,
       warn: (m) => warnings.push(m),
     });
-    // Coerced to canonical at parse time.
-    expect(cockpit.cockpitSession).toBe("atx");
-    // Deprecation warning fired.
-    const warned = warnings.some(
-      (m) => m.includes("cockpitSession literal 'atmux_teams'") && m.includes("ADR-264"),
-    );
-    expect(warned).toBe(true);
+    expect(cockpit.cockpitSession).toBe("atmux_teams");
+    expect(warnings.some((m) => m.includes("ADR-264"))).toBe(false);
   });
 
-  test("ADR-264 §D3 — coerces legacy cockpitSession 'atmux_cockpit' literal → 'atx' with deprecation warning", async () => {
+  test("ADR-279 — preserves explicit cockpitSession 'atmux_cockpit' literally", async () => {
     await writeCockpit({
       cockpitSession: "atmux_cockpit",
       teams: [{ name: "x", root: "/x", enabled: true }],
@@ -133,16 +128,11 @@ describe("loadCockpit", () => {
       home: homeDir,
       warn: (m) => warnings.push(m),
     });
-    // Coerced to canonical at parse time.
-    expect(cockpit.cockpitSession).toBe("atx");
-    // Deprecation warning fired.
-    const warned = warnings.some(
-      (m) => m.includes("cockpitSession literal 'atmux_cockpit'") && m.includes("ADR-264"),
-    );
-    expect(warned).toBe(true);
+    expect(cockpit.cockpitSession).toBe("atmux_cockpit");
+    expect(warnings.some((m) => m.includes("ADR-264"))).toBe(false);
   });
 
-  test("ADR-264 §D3 — operator-chosen arbitrary cockpitSession passes through unchanged (only legacy literals trigger shim)", async () => {
+  test("ADR-279 — operator-chosen arbitrary cockpitSession passes through unchanged", async () => {
     await writeCockpit({
       cockpitSession: "geoyws_cockpit",
       teams: [{ name: "x", root: "/x", enabled: true }],
@@ -156,6 +146,28 @@ describe("loadCockpit", () => {
     // No ADR-264 deprecation warning for arbitrary names.
     const adr264Warned = warnings.some((m) => m.includes("ADR-264"));
     expect(adr264Warned).toBe(false);
+  });
+
+  test("ADR-279 — loads operator windows and defaults null command to declarative null", async () => {
+    await writeCockpit({
+      sessions: [{ type: "team", name: "x", root: "/x" }],
+      windows: [{ name: "_misc", cwd: "/root/work", command: null }],
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
+    expect(cockpit.windows).toEqual([
+      { name: "_misc", enabled: true, cwd: "/root/work", command: null },
+    ]);
+  });
+
+  test("ADR-279 — rejects operator-window collisions with role and team names", async () => {
+    await writeCockpit({
+      sessions: [{ type: "team", name: "x", root: "/x" }],
+      windows: [{ name: "x", cwd: "/root/work" }],
+    });
+    await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(ConfigError);
+
+    await writeCockpit({ windows: [{ name: "_medic", cwd: "/root/work" }] });
+    await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(ConfigError);
   });
 
   test("applies team.enabled default (true) when omitted", async () => {

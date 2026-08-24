@@ -196,7 +196,7 @@ describe("hasInProgressTasks", () => {
 // ---------- collidesWithCockpit ----------
 
 function emptyCockpit(): Cockpit {
-  return { schemaVersion: 1, cockpitSession: "atmux_cockpit", sessions: [] };
+  return { schemaVersion: 1, cockpitSession: "atmux_cockpit", sessions: [], windows: [] };
 }
 
 describe("collidesWithCockpit", () => {

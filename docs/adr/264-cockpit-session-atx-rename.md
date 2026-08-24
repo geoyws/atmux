@@ -76,3 +76,7 @@ Runbooks, ARCHITECTURE.md, and `templates/briefs/*.md` are updated **where they 
 ### 2026-07-28 — `atx` promoted to canonical project shorthand (ADR-265)
 
 [ADR-265](265-atx-canonical-shorthand.md) generalises this ADR's session literal into the canonical prose shorthand for atmux itself. The session name chosen here is now doubly motivated: the cockpit is the canonical `atx` surface. This ADR's decisions are unchanged — per ADR-265 §D3, "the cockpit" remains the prose name for the operator surface, and `atx`-the-session-literal appears only in tmux-targeting commands.
+
+### 2026-08-24 — explicit session literals are authoritative (ADR-279)
+
+[ADR-279](279-declarative-operator-cockpit-windows.md) narrows D3: `atx` remains the default when `cockpitSession` is omitted, but a non-empty value explicitly persisted by the operator is no longer coerced during load. D4's in-place migration still applies when the resolved target is actually `atx`; it does not override a config that deliberately names `atmux_cockpit`, `atmux_teams`, or another session. This prevents a reconcile from changing an attach pointer before its destructive-operation gate runs.

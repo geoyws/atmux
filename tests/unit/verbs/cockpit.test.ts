@@ -841,6 +841,59 @@ describe("reconcileCockpitSession", () => {
     }
   });
 
+  test("ADR-279: recreates and preserves _misc as zsh between medic and team viewers", async () => {
+    const fx = await spinTmux("cockpit-operator-window");
+    try {
+      const { logger } = makeLogger();
+      const teams: CockpitTeam[] = [
+        { name: "alpha", root: "/a", enabled: true } as CockpitTeam,
+        { name: "beta", root: "/b", enabled: true } as CockpitTeam,
+      ];
+      const windows = [{ name: "_misc", enabled: true, cwd: "/tmp", command: null }];
+      const medic = { enabled: true, autoStart: false };
+      const deps: ResolveTeamWindowDeps = { buildMedicCommand: () => "sleep infinity" };
+
+      await reconcileCockpitSession(fx.tmux, "atmux_cockpit", teams, logger, deps, medic, false, {
+        windows,
+      });
+      const first = (await fx.tmux.window.listWindows("atmux_cockpit"))
+        .slice()
+        .sort((a, b) => a.index - b.index)
+        .map((w) => w.name);
+      expect(first).toEqual(["_superdriver", "_medic", "_misc", "alpha", "beta"]);
+
+      const command = Bun.spawnSync([
+        "tmux",
+        "-S",
+        fx.socketPath,
+        "display-message",
+        "-p",
+        "-t",
+        "atmux_cockpit:_misc",
+        "#{pane_current_command}",
+      ]);
+      expect(command.exitCode).toBe(0);
+      expect(command.stdout.toString().trim()).toBe("zsh");
+
+      // A second pass proves the declared workspace is not classified as an
+      // orphan and needs no destructive --yes acknowledgement.
+      await reconcileCockpitSession(fx.tmux, "atmux_cockpit", teams, logger, deps, medic, false, {
+        windows,
+      });
+      const second = (await fx.tmux.window.listWindows("atmux_cockpit"))
+        .slice()
+        .sort((a, b) => a.index - b.index)
+        .map((w) => w.name);
+      expect(second).toEqual(first);
+      expect(await fx.tmux.session.hasSession("atx")).toBe(false);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
   test("removes orphan viewer windows when team disappears", async () => {
     const fx = await spinTmux("cockpit-orphan");
     try {

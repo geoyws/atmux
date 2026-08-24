@@ -313,6 +313,21 @@ export const CockpitMedic = z
   .strict();
 export type CockpitMedic = z.infer<typeof CockpitMedic>;
 
+/** Operator-owned cockpit window with no backing atmux team cage.
+ *
+ * These windows are declarative peers of the team viewers, but they run a
+ * local command directly on the cockpit server. A null or omitted command
+ * deliberately means a plain zsh workspace. */
+export const CockpitWindow = z
+  .object({
+    name: z.string().min(1),
+    enabled: z.boolean().default(true),
+    cwd: z.string().min(1),
+    command: z.string().min(1).nullable().optional(),
+  })
+  .strict();
+export type CockpitWindow = z.infer<typeof CockpitWindow>;
+
 /** ADR-086 §Phase 1.5: verdict literal keys for the per-verdict dedup
  *  ladder. Restated here (not imported from `core/pulse-state.ts` to
  *  avoid the schema → core dependency direction) — kept in lockstep
@@ -365,18 +380,16 @@ export const Cockpit = z
      *  undefined treated as v0 by `loadCockpit` (migration shim path);
      *  `1` = recursive native; `2+` reserved for shim removal. */
     schemaVersion: z.number().int().default(1),
-    /** tmux session name on the operator's default socket. Default
-     *  `atx` per ADR-264 (was `atmux_cockpit` per ADR-135, `atmux_teams`
-     *  pre-ADR-135). Both legacy literals are still accepted at parse
-     *  time during the deprecation window — the string-level value
-     *  passes Zod validation unchanged; the deprecation warning is
-     *  emitted by `loadCockpit` when the field matches a legacy
-     *  literal, and `cockpit reconcile` applies the in-place
-     *  `tmux rename-session <legacy> → atx` shim (ADR-264 §D4). */
+    /** tmux session name on the dedicated cockpit socket. `atx` is the
+     *  default for new configs, but an explicit value is authoritative and
+     *  is never silently rewritten (ADR-279). */
     cockpitSession: z.string().min(1).default("atx"),
     /** ADR-089 §Pillar 1: recursive session tree. DFS-ordered; window
      *  order matches DFS traversal. */
     sessions: z.array(CockpitSession).default([]),
+    /** Declarative operator-owned windows placed after `_medic` and before
+     *  team viewers. They have no team cage and default to zsh. */
+    windows: z.array(CockpitWindow).default([]),
     /** ADR-089 §C: F-key prefix chain — defaults to `["F1","F2","F3","F4"]`
      *  when unset. Loader validates length + uniqueness. */
     prefixChain: z.array(z.string()).optional(),

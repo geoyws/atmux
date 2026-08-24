@@ -63,7 +63,7 @@ import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.t
 import { createLogger, type Logger } from "../core/tui.ts";
 import { resolveTuiCommand } from "../core/tui-cmd.ts";
 import { UsageError } from "../errors.ts";
-import type { CockpitMedic, CockpitTeam } from "../schema/cockpit.ts";
+import type { CockpitMedic, CockpitTeam, CockpitWindow } from "../schema/cockpit.ts";
 import { Team } from "../schema/team.ts";
 import { attachWithTmux } from "./attach.ts";
 import { cockpitRotate } from "./cockpit-rotate.ts";
@@ -768,7 +768,7 @@ export async function cockpitRebuild(
     {},
     cockpit.medic,
     parsed.yes,
-    {}, // reconcileOpts — fleet-wide path; no onlyTeam filter
+    { windows: cockpit.windows }, // fleet-wide; persist operator workspaces too
   );
 
   // Phase 5b (t-3fb7bc54): apply the resolved prefix to the cockpit
@@ -1498,6 +1498,10 @@ export interface ReconcileCockpitOpts {
    *  superdoctor force-relocated to slot 2, every team in `teams[]`
    *  processed). */
   onlyTeam?: string;
+  /** Operator-owned cockpit windows with no backing team cage. Fleet-wide
+   *  reconcile creates, orders, and preserves them; per-team reconcile does
+   *  not touch them. */
+  windows?: ReadonlyArray<CockpitWindow>;
 }
 
 export async function reconcileCockpitSession(
@@ -1518,6 +1522,8 @@ export async function reconcileCockpitSession(
   reconcileOpts: ReconcileCockpitOpts = {},
 ): Promise<void> {
   const onlyTeam = reconcileOpts.onlyTeam;
+  const operatorWindows =
+    onlyTeam === undefined ? (reconcileOpts.windows ?? []).filter((w) => w.enabled) : [];
 
   // ADR-264 §D4 (extends ADR-135 §D4 one generation) — legacy
   // cockpit-session-name migration. When the operator's running tmux
@@ -1632,6 +1638,7 @@ export async function reconcileCockpitSession(
     wantMedic,
     yes,
     logger,
+    operatorWindows,
     ...(onlyTeam !== undefined ? { onlyTeam } : {}),
   });
 
@@ -1741,6 +1748,7 @@ export async function reconcileCockpitSession(
   const wanted = new Set([
     "_superdriver",
     ...(wantMedic ? ["_medic"] : []),
+    ...operatorWindows.map((w) => w.name),
     ...cockpitTeams.map((t) => t.name),
   ]);
 
@@ -1752,6 +1760,23 @@ export async function reconcileCockpitSession(
   // is wanted) and skips the add pass naturally.
   const teamsToAdd =
     onlyTeam !== undefined ? cockpitTeams.filter((t) => t.name === onlyTeam) : cockpitTeams;
+
+  // Add missing operator-owned windows before team viewers. Existing panes
+  // are preserved as-is; creation is the only time cwd/command are applied.
+  for (const w of operatorWindows) {
+    if (present.has(w.name)) {
+      logger.log(`  · window '${w.name}' already present`);
+      continue;
+    }
+    await cockpitTmux.window.newWindow({
+      sessionName,
+      name: w.name,
+      detached: true,
+      cwd: w.cwd,
+      shellCommand: w.command ?? "zsh",
+    });
+    logger.log(`  ✓ added operator window '${w.name}'`);
+  }
 
   // Add missing viewer windows.
   for (const t of teamsToAdd) {
@@ -1774,7 +1799,7 @@ export async function reconcileCockpitSession(
   // immediately after their parent's viewer in cockpit window order. The
   // `teams` array from enabledTeams() is already in DFS pre-order
   // (parent → child → next sibling), so the desired layout is:
-  //   [_superdriver, _medic?, ...teams in DFS order]
+  //   [_superdriver, _medic?, ...operator windows, ...teams in DFS order]
   // Skip this pass in per-team mode — single-team callers have no authority
   // to reorder sibling team viewers.
   if (onlyTeam === undefined) {
@@ -1787,7 +1812,10 @@ export async function reconcileCockpitSession(
     // reorder only places L2 parent teams. Using `teams` (which contains
     // epic-teams too) would assign cockpit slots to entries that have no
     // cockpit window, leaving gaps and offsetting sibling teams.
-    const desired = cockpitTeams.map((t, i) => ({ name: t.name, finalIdx: cursorBase + i }));
+    const desired = [...operatorWindows, ...cockpitTeams].map((entry, i) => ({
+      name: entry.name,
+      finalIdx: cursorBase + i,
+    }));
 
     // Park-then-place to avoid sibling-team collisions.
     //
@@ -1948,6 +1976,7 @@ interface RefuseDestructiveOpts {
   wantMedic: boolean;
   yes: boolean;
   logger: Logger;
+  operatorWindows: ReadonlyArray<CockpitWindow>;
   /** ADR-063 ergonomic fix interplay (t-ab8df0b4): when set, the live
    *  reconcile body skips BOTH the superdoctor-relocation path AND the
    *  orphan-prune pass — so the dry-run gate must too, or the test/CI
@@ -1974,7 +2003,8 @@ interface RefuseDestructiveOpts {
  *      sweep.
  */
 async function refusePlannedDestructiveOps(opts: RefuseDestructiveOpts): Promise<void> {
-  const { cockpitTmux, sessionName, teams, wantMedic, yes, logger, onlyTeam } = opts;
+  const { cockpitTmux, sessionName, teams, wantMedic, yes, logger, operatorWindows, onlyTeam } =
+    opts;
   // Per-team (onlyTeam) mode is purely additive in the live body — no
   // medic relocation, no orphan-prune. Skip the dry-run entirely
   // rather than report "destructive" ops that the live path will never
@@ -2025,6 +2055,7 @@ async function refusePlannedDestructiveOps(opts: RefuseDestructiveOpts): Promise
   const wanted = new Set<string>([
     "_superdriver",
     ...(wantMedic ? ["_medic"] : []),
+    ...operatorWindows.map((w) => w.name),
     ...teams.map((t) => t.name),
   ]);
   for (const w of windows) {

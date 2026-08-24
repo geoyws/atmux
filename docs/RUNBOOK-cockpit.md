@@ -12,7 +12,7 @@ The cockpit binds to a dedicated named tmux socket: **`tmux -L atmux-cockpit`**.
 tmux -L atmux-cockpit attach -t atx
 ```
 
-The session name (`atx`, per [ADR-264](adr/264-cockpit-session-atx-rename.md) — was `atmux_cockpit` per [ADR-135](adr/135-cockpit-naming-convention.md)) is separate from the socket; only the socket moved. Per-team sockets remain on the cage-tier path (`-S <team-root>/.atmux/tmux/tmux-0/default`) per [ADR-058](adr/058-cage-tier-isolation.md) — that layer is untouched.
+The session name is separate from the socket; only the socket moved. `atx` is the default for new configs per [ADR-264](adr/264-cockpit-session-atx-rename.md), while an explicit `cockpitSession` value is authoritative per [ADR-279](adr/279-declarative-operator-cockpit-windows.md). Always attach to the configured literal—do not infer or rename it from the socket name. Per-team sockets remain on the cage-tier path (`-S <team-root>/.atmux/tmux/tmux-0/default`) per [ADR-058](adr/058-cage-tier-isolation.md) — that layer is untouched.
 
 **Verify isolation:**
 
@@ -21,8 +21,23 @@ The session name (`atx`, per [ADR-264](adr/264-cockpit-session-atx-rename.md) �
 tmux -L default list-sessions 2>&1 | grep -i atmux  # expect empty
 
 # Cockpit lives on its own socket
-tmux -L atmux-cockpit list-sessions  # expect: atx
+tmux -L atmux-cockpit list-sessions  # expect: configured cockpitSession (default: atx)
 ```
+
+### Operator-owned cockpit windows
+
+Use top-level `windows[]` for a durable cockpit workspace that is not backed by an atmux team cage:
+
+```json
+{
+  "cockpitSession": "atmux_cockpit",
+  "windows": [
+    { "name": "_misc", "cwd": "/root/work", "command": null }
+  ]
+}
+```
+
+Null or omitted `command` starts zsh. These windows appear after `_medic` and before team viewers, in declaration order. Reconcile preserves an existing matching pane and applies `cwd`/`command` only when recreating a missing window. Names must not collide with cockpit roles or team viewers.
 
 **Why this matters:** before ADR-162, atmux cockpit windows landed in the operator's own tmux server. A stray `tmux kill-server` from the operator wiped both their personal state AND atmux's cockpit. The socket-isolation closes that foot-gun.
 
