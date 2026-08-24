@@ -58,3 +58,9 @@ Every deprecation shim MUST ship with an explicit expiry — a version or date �
 
 - The eight ADRs listed in the header (their unenforced windows are executed here).
 - [ADR-264](264-cockpit-session-atx-rename.md) — its shims are the first to carry a D1-style sunset marker (v0.9.0).
+
+## Amendments
+
+### 2026-08-24 — no restoration of the legacy driver fallback
+
+[ADR-278](278-nullable-driver-agent-harness.md) does not restore the `driverSession` / `driverTui` fallback removed by D2. It changes only the active `drivers[]` contract: `drivers[].tui` may be null or omitted, and that state launches zsh. Explicit non-null `drivers[].tui` aliases remain the sole declarative way to request automatic agent-harness launch for a driver.

@@ -33,3 +33,9 @@ The ADR-239 no-send-keys invariant remains unchanged: zsh is supplied as the `ne
 
 Set `drivers[].tui` to an explicit alias in the affected team config and revert the schema/start changes. Existing sessions require no rollback because this decision never rewrites a running pane.
 
+## References
+
+- [ADR-044](044-driver-session-on-default-socket.md) — retained driver-at-front placement; its singular harness precedence is historical.
+- [ADR-128](128-complete-driver-role-port.md) — retained driver-role observability; its `driverSession` assumptions are historical.
+- [ADR-239](239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md) — current driver roster and command-mode launch invariant.
+- [ADR-266](266-shim-sunset-policy-and-first-sweep.md) — legacy `driverSession` / `driverTui` launch fallback remains removed.
