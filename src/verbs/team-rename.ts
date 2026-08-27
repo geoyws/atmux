@@ -20,7 +20,7 @@
 //
 // `collidesWithCockpit` walks ADR-089's recursive `sessions[]` tree —
 // any `type: "team"` node whose `name` equals the new team-name is a
-// collision target. `epic-team` siblings live in a different
+// collision target. Non-`team` session types live in a different
 // discriminator namespace and are NOT collision sources.
 //
 // Step 6 (cron re-install) uses the install-new-then-strip-old order
@@ -205,13 +205,13 @@ export function hasInProgressTasks(tasks: ReadonlyArray<KanbanTask>): boolean {
 
 /** DFS walk of `cockpit.sessions[]` looking for a `type: "team"` node
  *  whose `name` equals `newName`. Walks into nested `sessions[]` on
- *  every `team` or `epic-team` node so ADR-089 recursive children are
- *  reachable. Returns true on the first hit. */
+ *  every `team` node so ADR-089 recursive children are reachable.
+ *  Returns true on the first hit. */
 export function collidesWithCockpit(cockpit: Cockpit, newName: string): boolean {
   const visit = (nodes: ReadonlyArray<CockpitSessionT>): boolean => {
     for (const n of nodes) {
-      if (n.type === "team" && n.name === newName) return true;
-      if (n.type === "team" || n.type === "epic-team") {
+      if (n.type === "team") {
+        if (n.name === newName) return true;
         if (n.sessions.length > 0 && visit(n.sessions)) return true;
       }
     }

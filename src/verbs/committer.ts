@@ -82,8 +82,6 @@ import { productionQueueMergeAttempt } from "../core/intra-team-merge-dispatcher
 import { listTasks as listKanbanTasks } from "../core/kanban.ts";
 import { resolveMergerConfig } from "../core/merger-config.ts";
 import { bootstrapOrchd as bootstrapOrchdImport } from "../core/orchd-bootstrap.ts";
-import { dispatchDissolveEpic as dispatchDissolveEpicImport } from "../core/orchd-dispatch/dissolve-epic.ts";
-import { dispatchEpicMerge as dispatchEpicMergeImport } from "../core/orchd-dispatch/epic-merge.ts";
 import { dispatchGitPush as dispatchGitPushImport } from "../core/orchd-dispatch/git-push.ts";
 import { ORCHD_SUBSCRIPTIONS as ORCHD_SUBSCRIPTIONS_IMPORT } from "../core/orchd-registry.ts";
 import { MergerStateRepo } from "../core/repositories/merger-state-repo.ts";
@@ -370,8 +368,8 @@ export async function committerSweepVerb(
       baseBranch,
       // Roster gate (t-911c9314): non-member branches matching the
       // `<baseBranch>-*` glob (operator safety backups, archived
-      // branches, epic-team fan-in branches handled by `epic-merge`)
-      // get dropped before the dispatcher sees them. team.json is
+      // branches, and any other non-roster branch) get dropped before
+      // the dispatcher sees them. team.json is
       // already loaded above (`requireTeam`), so the projection is
       // free; the sweep core does the filter.
       rosterMembers: team.members.map((m) => m.name),
@@ -460,25 +458,13 @@ export async function committerDrainVerb(
   // (flag + offset-advance per ADR-232 OQ-3 anti-retry).
   bootstrapOrchdImport({
     db: ctx.db,
-    mergeDeps: {
-      // ADR-232 §D2.a wire-up: pass `localTeamName` so the dispatcher's
-      // local-cage-skip guard fires when the epic resolves to the
-      // running cage (prevents self-dispatch loops per the amendment).
-      // `resolveCage` + `invokeLocal` deliberately omitted in v1: the
-      // dispatcher's default cage-not-found path is QUIET
-      // (skipped-not-mine, no flag-add per the c477954-fix amendment) —
-      // the merge still fires via the in-cage `atmux epic-merge tick`
-      // cron path (ADR-091). Wire-up is sufficient for the §D3
-      // safety-net semantics; full cage-registry walker + EpicMergeContext
-      // assembly land in a follow-up Task once the transport choice
-      // (ADR-232 §D2.b OQ-1) resolves.
-      dispatchEpicMerge: async (epicId) =>
-        dispatchEpicMergeImport({ epicId }, { localTeamName: ctx.team.name }),
-    },
-    dissolveDeps: {
-      dispatchDissolveEpic: async (epicId) =>
-        dispatchDissolveEpicImport({ epicId }, { localCageName: ctx.team.name }),
-    },
+    // ADR-280 stage 3: `mergeDeps.dispatchEpicMerge` and
+    // `dissolveDeps.dispatchDissolveEpic` are NO LONGER wired. Both
+    // dispatchers lived in `core/orchd-dispatch/` and drove epic-team
+    // machinery that is retired; the handlers keep their stubbed
+    // defaults (`skipped-not-mine`, quiet — the ADR-232 §D3 safety net).
+    // `git-push.ts`, the third file in that directory, is ADR-229 and
+    // NOT epic machinery, so its wire-up below is unchanged.
     pushDeps: {
       dispatchGitPush: async (parentBase) =>
         dispatchGitPushImport(
@@ -486,17 +472,10 @@ export async function committerDrainVerb(
           { localCageName: ctx.team.name },
         ),
     },
-    // ADR-231 §D2 — orchd auto-spawn handler wire-up. Passes
-    // atmuxDir + the running cage's team config so
-    // effectiveAutoSpawn can resolve per-team defaults[] and
-    // spawnEpicHandler can stamp `spawned_at` via the local
-    // state.db. Without this wire-up, the spawn subscriptions
-    // register with a stub that returns `skipped-row-missing` for
-    // every event (safe no-op pre-T-S2.5).
-    spawnDeps: {
-      atmuxDir: ctx.atmuxDir,
-      team: ctx.team,
-    },
+    // Kanban root for the auto-merge handler's task reader. Was
+    // `spawnDeps.atmuxDir` until ADR-280 stage 3 removed the spawn
+    // handler that owned the field.
+    atmuxDir: ctx.atmuxDir,
   });
   let orchdProcessed = 0;
   let orchdErrors = 0;

@@ -957,150 +957,6 @@ export const DEFAULT_LANE_STALL_MIN_AGE_SEC = 1800;
  *  must-be-this-old gate inside the verb. */
 export const DEFAULT_LANE_STALL_CRON_INTERVAL_MINS = 5;
 
-/**
- * `team.json::epicTeam` — ADR-090 §Schema. Ephemeral epic-team config
- * block. Presence means the team is an epic-team (a child of some parent
- * team that lives at `<projectRoot>-epics/<epicId>/`); absence means
- * normal team (the existing topology).
- *
- * **§Decision-anchor #3 carve-out** (HARD CONFLICT with ADR-084 per
- * ADR-090): when `epicTeam` is set, `worktreeIsolation` MUST be `false`.
- * The cross-field refinement on the `Team` schema enforces this at
- * `loadTeam` time — `team.epicTeam !== undefined && worktreeIsolation
- * === true` refuses with an explicit error citing ADR-090 §Decision-
- * anchor #3. Members of an epic-team SHARE one worktree (the epic-team's
- * project root); per-member-branch isolation does NOT apply at this
- * scope.
- *
- * **§Decision-anchor #6**: `mergeMode: "pr"` is schema-accept-but-
- * runtime-noop in v1. The schema validates both values; ADR-091's
- * auto-merge state machine only handles `"auto"` at this writing.
- * `pr`-mode runtime impl is deferred to a future ADR.
- *
- * **§Decision-anchor #8 + #9**: when `mergeMode === "pr"`, `prTarget.base`
- * AND `prAuthorUser` are REQUIRED. The Team-level superRefine enforces
- * the cross-field gates; this sub-schema marks them `.optional()` so the
- * auto-mode happy-path keeps zero required pr-fields.
- *
- * `.strict()` consistent with sibling sub-blocks (ombudsman / cadence /
- * autoMerge) — typo'd keys surface as drift findings (ADR-054 §D3).
- */
-export const TeamEpic = z
-  .object({
-    /** Parent team name. Cockpit walk uses this to attach the epic-team
-     *  cage under the parent's tmpdir at
-     *  `/tmp/atmux-<parent>/epics/<epicId>/sock` (per ADR-089 §Pillar 1). */
-    parent: z.string().min(1),
-    /** Parent's `state.db` Epic row id (`e-XXXXXXXX`). Parent reads
-     *  child's SQLite directly to render progress; this back-pointer lets
-     *  a child surface conflicts/notes back to the right parent EPIC row. */
-    parentEpicKanbanId: z.string().min(1),
-    /** Parent branch the epic-team will merge into. Used by ADR-091's
-     *  auto-merge state machine + `dissolve-epic` cleanup. Example: `"main"`,
-     *  `"atmux-geoyws"`, `"sopx-geoyws"`. */
-    parentBase: z.string().min(1),
-    /** Merge mode for ADR-091 auto-merge state machine. `"auto"` runs the
-     *  direct merge (default). `"pr"` is schema-accept-but-runtime-noop
-     *  per §Decision-anchor #6 — accepted at schema, no-op at runtime in
-     *  v1. Future ADR ships the pr-mode runtime. */
-    mergeMode: z.enum(["auto", "pr"]).default("auto"),
-    /** §Decision-anchor #8: required when `mergeMode === "pr"` (Team-level
-     *  superRefine refuses on missing `prTarget.base` under pr-mode).
-     *  `remote` defaults to `"origin"`; `base` has NO default
-     *  (operator-explicit to prevent silent-wrong-base merges). */
-    prTarget: z
-      .object({
-        remote: z.string().default("origin"),
-        base: z.string().min(1),
-      })
-      .strict()
-      .optional(),
-    /** §Decision-anchor #9: required when `mergeMode === "pr"` (Team-level
-     *  superRefine refuses on missing under pr-mode). Names the `gh` CLI
-     *  user that owns PR creation; ADR-091's pr-mode runtime resolves at
-     *  PR-creation time via `gh auth switch --user <prAuthorUser>`. */
-    prAuthorUser: z.string().optional(),
-    /** ADR-144 §Two test-isolation modes (T3 t-8cba0705). Default
-     *  `"skip"` keeps the pre-ADR-144 direct `ready_to_merge → merging`
-     *  flow — back-compat for epic-teams created before T3 lands. Set
-     *  to `"cage"` for internal-tools self-dogfood path (atmux itself;
-     *  ADR-144 §Cage mode); `"deployed"` for IFCA product teams (T4).
-     *  Wired in `src/core/epic-merge.ts::runAutoMerge`. */
-    testGateMode: z.enum(["skip", "cage", "deployed"]).default("skip"),
-    /** ADR-144 §Cage mode: shell command the test-gate runner executes
-     *  inside the cage. Default `"bun test --timeout 30000"` matches
-     *  the atmux team's CI gate; per-team override (e.g. sopx might
-     *  use `"pnpm e2e"`). Empty string is refused at schema parse to
-     *  prevent silent skip. Honored in cage mode (deployed mode reads
-     *  `E2E_BASE_URL` from `stagingUrlTemplate` instead). */
-    testCommand: z.string().min(1).default("bun test --timeout 30000"),
-    /** ADR-144 §retryOnFlake: re-run the test command this many times
-     *  on a fail before declaring `test_failed`. Default `1` per the
-     *  ADR's resolved OQ-3 — single flake doesn't strike. Set to `0`
-     *  to disable retry. Capped at runtime to a sane upper-bound by
-     *  the test-cage runner (2 retries = 3 total attempts max). */
-    retryOnFlake: z.number().int().nonnegative().default(1),
-    /** ADR-144 §Cage mode: tmpdir path for the cage's TMUX_TMPDIR
-     *  override. The runner expands `${team}` + `${epic}` placeholders
-     *  at cage-spawn time per the ADR's example
-     *  `/tmp/atmux_${team}_${epic}_test_cage`. Operator-overridable for
-     *  teams that need a non-`/tmp` location (e.g. encrypted volume
-     *  for sensitive test fixtures). Null in `deployed` mode. */
-    cageTmpdir: z.string().nullable().default("/tmp/atmux_${team}_${epic}_test_cage"),
-    /** ADR-144 §retryOnFlake: per-attempt timeout in minutes. Default
-     *  `30`. Enforces orphan-reap discipline per global CLAUDE.md §`bun
-     *  test` orphans; the spawn primitive's underlying `timeoutMs`
-     *  reads `testTimeoutMin * 60_000`. */
-    testTimeoutMin: z.number().int().positive().default(30),
-    /** ADR-144 §Config shape: required PASS count before the test gate
-     *  releases. Default `1` (cold-start+walk shape per CLAUDE.md
-     *  §Testing Discipline). Raise to N>1 only for streak-stable
-     *  subsets — most epic-test gates are 1x acceptance, not
-     *  idempotence. */
-    requiredPasses: z.number().int().positive().default(1),
-    /** ADR-144 §Deployed mode (T4): URL template for the deploy step.
-     *  Null in cage mode; required string in deployed mode (the
-     *  TeamEpic-level superRefine enforces — landed in T4). Template
-     *  variables `${product}`, `${dev-suffix}`, `${epic-name}` are
-     *  expanded at deploy time by `scripts/deploy.sh`. */
-    stagingUrlTemplate: z.string().nullable().default(null),
-    /** ADR-227 §D3: orchd auto-dissolve carve-out. When `true` (default),
-     *  orchd auto-dissolves the epic-team on `epic.pushed` (per ADR-229
-     *  §DA3 trigger amendment; pre-amendment was `epic.merged`). Operator
-     *  sets `false` at spawn time via `atmux team spawn-epic --no-auto-
-     *  dissolve` to keep the cage alive for post-merge inspection (e.g.
-     *  grepping `.atmux/logs/`, post-mortem on a failed deploy, etc.).
-     *  Manual `atmux team dissolve-epic <eid>` still works as the cleanup
-     *  path when autoDissolve was false. */
-    autoDissolve: z
-      .boolean()
-      .default(true)
-      .describe(
-        "ADR-227: when true (default), orchd auto-dissolves the epic-team " +
-          "on epic.pushed. Operator sets false at spawn time to keep the " +
-          "cage alive for post-merge inspection; manual `atmux team " +
-          "dissolve-epic <eid>` still works as the cleanup path.",
-      ),
-  })
-  .strict()
-  .superRefine((data, ctx) => {
-    // ADR-144 §Deployed mode (T4 t-66a237cd) — when `testGateMode` is
-    // `"deployed"`, `stagingUrlTemplate` MUST be non-null. The deploy
-    // hook can't compose the branch-staging URL without it, and a
-    // silent default-null would crash the test-gate at first merge
-    // attempt with a cryptic "URL is null" stack instead of the clear
-    // schema-parse refusal here.
-    if (data.testGateMode === "deployed" && data.stagingUrlTemplate === null) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["stagingUrlTemplate"],
-        message:
-          "testGateMode: 'deployed' requires a non-null stagingUrlTemplate (e.g. '${product}-${dev-suffix}-${epic-name}-staging.ifca.app') — null is only valid in 'cage' / 'skip' modes.",
-      });
-    }
-  });
-export type TeamEpic = z.infer<typeof TeamEpic>;
-
 /** `team.json::autoPush` — ADR-229 §DA-Gate-4 + §DA-Gate-7 (Phase 6
  *  orchd auto-push opt-in config). All fields have defaults; the block
  *  itself is `.optional()` so existing teams that never opt in carry
@@ -1137,6 +993,14 @@ export type TeamAutoPush = z.infer<typeof TeamAutoPush>;
 
 /** `team.json::autoSpawn` — ADR-231 §D3 + §D4 per-team auto-spawn config
  *  for orchd's `spawn-epic` handler.
+ *
+ *  ⚠ **UNREAD as of ADR-280 stage 3.** Its only consumers were
+ *  `core/orchd-spawn.ts` (`effectiveAutoSpawn`) and the `atmux orchd
+ *  --sweep` cadence, both removed with the epic-team machinery. The
+ *  block is KEPT rather than deleted because ADR-276 owns the orchd
+ *  retirement and this is that ADR's surface, not stage 3's — but
+ *  setting it today changes NOTHING. Read the paragraphs below as a
+ *  description of what it USED to do.
  *
  *  Two sub-fields:
  *
@@ -1633,18 +1497,6 @@ export const Team = z
      *  `role: "ombudsman"`. Effective tick interval resolved at
      *  read-time via {@link DEFAULT_OMBUDSMAN_TICK_INTERVAL_MINS}. */
     ombudsman: TeamOmbudsman.optional(),
-    /** ADR-090 §Schema: epic-team config. Presence marks the team as an
-     *  ephemeral epic-team child of some parent team. When set, the
-     *  Team-level superRefine enforces three cross-field gates:
-     *    (1) `worktreeIsolation === true` ⇒ refuse (§Decision-anchor #3,
-     *        HARD CONFLICT with ADR-084 — epic-team members share one
-     *        worktree, not per-member branches);
-     *    (2) `epicTeam.mergeMode === "pr" && !epicTeam.prTarget?.base` ⇒
-     *        refuse (§Decision-anchor #8);
-     *    (3) `epicTeam.mergeMode === "pr" && !epicTeam.prAuthorUser` ⇒
-     *        refuse (§Decision-anchor #9).
-     *  Absent block keeps existing teams unchanged (additive). */
-    epicTeam: TeamEpic.optional(),
     /** ADR-229 §DA-Gate-4 + §DA-Gate-7: orchd Phase 6 auto-push opt-in
      *  config. Absent → defaults applied (`enabled: false`, refuse-by-
      *  default per loud-opt-in §DA5 anchor). See {@link TeamAutoPush}. */
@@ -1685,52 +1537,15 @@ export const Team = z
     discord: z.unknown().optional(),
     tuiCommands: z.unknown().optional(),
   })
-  .passthrough()
-  .superRefine((team, ctx) => {
-    // ADR-090 §Decision-anchor #3 (HARD CONFLICT carve-out with ADR-084):
-    // an epic-team cannot also opt into per-member-branch isolation.
-    // Members SHARE one worktree at the epic-team's project root; the
-    // shared-worktree carve-out is structurally enforced here so a hand-
-    // edited team.json that sets both keys is refused at loadTeam time.
-    if (team.epicTeam !== undefined && team.worktreeIsolation === true) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["epicTeam"],
-        message:
-          "ADR-090 §Decision-anchor #3: team.epicTeam set with worktreeIsolation=true — HARD CONFLICT with ADR-084. Epic-team members share one worktree (the epic-team's project root); per-member-branch isolation is reserved for normal teams. Unset one of the two.",
-      });
-    }
-    // ADR-090 §Decision-anchor #8: when pr-mode is set, prTarget.base
-    // MUST be present. No default (operator-explicit) to prevent silent-
-    // wrong-base merges.
-    if (
-      team.epicTeam !== undefined &&
-      team.epicTeam.mergeMode === "pr" &&
-      team.epicTeam.prTarget?.base === undefined
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["epicTeam", "prTarget", "base"],
-        message:
-          "ADR-090 §Decision-anchor #8: epicTeam.mergeMode='pr' requires epicTeam.prTarget.base. No default — operator must name the target branch explicitly.",
-      });
-    }
-    // ADR-090 §Decision-anchor #9: when pr-mode is set, prAuthorUser
-    // MUST be present. ADR-091's pr-mode runtime calls
-    // `gh auth switch --user <prAuthorUser>` before `gh pr create`.
-    if (
-      team.epicTeam !== undefined &&
-      team.epicTeam.mergeMode === "pr" &&
-      team.epicTeam.prAuthorUser === undefined
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["epicTeam", "prAuthorUser"],
-        message:
-          "ADR-090 §Decision-anchor #9: epicTeam.mergeMode='pr' requires epicTeam.prAuthorUser. Names the gh CLI user that owns PR creation under pr-mode.",
-      });
-    }
-  });
+  // ADR-280 stage 3 removed `team.json::epicTeam` (the ADR-090 §Schema
+  // block that marked a team as an epic-team child) together with the
+  // three §Decision-anchor #3/#8/#9 cross-field gates that lived in a
+  // `.superRefine` here. `.passthrough()` is deliberately KEPT: a live
+  // `team.json` still carrying a residual `epicTeam` block degrades to
+  // an ignored key rather than failing to parse — the opposite of the
+  // `.strict()` cockpit leaf, and the reason this removal is safe to do
+  // without touching every box first (ADR-280 §D4 stage 2 asymmetry).
+  .passthrough();
 export type Team = z.infer<typeof Team>;
 
 /** ADR-082 §2: effective default for `team.worktreeRoot` when the field

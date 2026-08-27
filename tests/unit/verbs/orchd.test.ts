@@ -302,142 +302,58 @@ describe("parseOrchdArgs", () => {
   });
 });
 
-// ---------- ADR-231 §D4 — --sweep subverb (t-11-84fced39) ----------
+// ---------- ADR-280 stage 3 — the three removed sub-verbs fail LOUD ----------
+//
+// `--sweep` (ADR-231 §D4), `--reap-stale` (ADR-250 §D2) and
+// `--sweep-merges` (ADR-134) all walked epic-teams; stage 3 removed
+// them along with `orchd-sweep.ts` / `orchd-reap.ts` and both
+// `dispatchEpicMerge` providers, so `--sweep-merges` has no possible
+// implementation left. Three describes covering their arg-parsing —
+// and one that mocked `orchd-sweep.ts` to drive the dispatch route —
+// went with them.
+//
+// What replaces those cases is the property that actually matters
+// after a removal, and that none of them asserted: an operator or cron
+// line still passing a retired sub-verb must get a UsageError naming
+// the flag, NOT a silent no-op. This is ADR-266 §D2's expired-contract
+// precedent, and it is the failure mode ADR-280 §D6 describes — a
+// removed verb shelled from inside a loop that tolerates non-zero
+// exits disappears without a trace unless it fails loud here.
 
-describe("parseOrchdArgs — --sweep subverb (ADR-231 §D4)", () => {
-  test("--sweep parses as sweep sub-verb", () => {
-    expect(parseOrchdArgs(["--sweep"])).toEqual({ subverb: "sweep" });
+describe("parseOrchdArgs — retired sub-verbs fail loud (ADR-280 stage 3)", () => {
+  test.each([["--sweep"], ["--reap-stale"], ["--sweep-merges"]])(
+    "%s is refused with a UsageError naming the flag",
+    (flag) => {
+      expect(() => parseOrchdArgs([flag])).toThrow(UsageError);
+      try {
+        parseOrchdArgs([flag]);
+        throw new Error("expected a throw");
+      } catch (e) {
+        expect(String((e as Error).message)).toContain(flag);
+      }
+    },
+  );
+
+  test.each([["sweep"], ["reap-stale"], ["sweep-merges"]])(
+    "the bare form %j is refused too — no silent fall-through to another sub-verb",
+    (bare) => {
+      expect(() => parseOrchdArgs([bare])).toThrow(UsageError);
+    },
+  );
+
+  test("a retired flag paired with a live one is still refused, not absorbed", () => {
+    // The old parser walked left-to-right and let a later sub-verb win,
+    // so `--sweep --start` used to resolve to `start`. It must now
+    // refuse instead of quietly accepting a line the operator wrote for
+    // the removed behaviour.
+    expect(() => parseOrchdArgs(["--sweep", "--start"])).toThrow(UsageError);
+    expect(() => parseOrchdArgs(["--start", "--sweep"])).toThrow(UsageError);
+    expect(() => parseOrchdArgs(["--reap-stale", "--team-dir", "/srv/demo"])).toThrow(UsageError);
   });
 
-  test("'sweep' bare form parses identically", () => {
-    expect(parseOrchdArgs(["sweep"])).toEqual({ subverb: "sweep" });
-  });
-
-  test("--sweep --team-dir captures path", () => {
-    expect(parseOrchdArgs(["--sweep", "--team-dir", "/srv/demo"])).toEqual({
-      subverb: "sweep",
-      teamDir: "/srv/demo",
-    });
-  });
-
-  test("--sweep --once flag captured (canonical cron-line form)", () => {
-    expect(parseOrchdArgs(["--sweep", "--once"])).toEqual({
-      subverb: "sweep",
-      once: true,
-    });
-  });
-
-  test("sweep + start mixed (last wins per parser order)", () => {
-    // Parser walks left-to-right; last subverb token wins. This pins
-    // the existing precedence so a future operator script that
-    // accidentally chains sub-verbs doesn't get a surprising verdict.
-    expect(parseOrchdArgs(["--sweep", "--start"])).toEqual({ subverb: "start" });
-    expect(parseOrchdArgs(["--start", "--sweep"])).toEqual({ subverb: "sweep" });
-  });
-});
-
-// ---------- ADR-250 §D2 — --reap-stale subverb + --dry-run ----------
-
-describe("parseOrchdArgs — --reap-stale subverb (ADR-250 §D2)", () => {
-  test("--reap-stale parses as reap-stale sub-verb", () => {
-    expect(parseOrchdArgs(["--reap-stale"])).toEqual({ subverb: "reap-stale" });
-  });
-
-  test("'reap-stale' bare form parses identically", () => {
-    expect(parseOrchdArgs(["reap-stale"])).toEqual({ subverb: "reap-stale" });
-  });
-
-  test("--reap-stale --dry-run captures dryRun", () => {
-    expect(parseOrchdArgs(["--reap-stale", "--dry-run"])).toEqual({
-      subverb: "reap-stale",
-      dryRun: true,
-    });
-  });
-
-  test("--reap-stale --team-dir + --dry-run all captured", () => {
-    expect(parseOrchdArgs(["--reap-stale", "--team-dir", "/srv/demo", "--dry-run"])).toEqual({
-      subverb: "reap-stale",
-      teamDir: "/srv/demo",
-      dryRun: true,
-    });
-  });
-
-  test("--dry-run omitted ⇒ dryRun absent (not false) — clean exactOptional shape", () => {
-    const parsed = parseOrchdArgs(["--reap-stale"]);
-    expect("dryRun" in parsed).toBe(false);
-  });
-});
-
-// ---------- orchd() dispatch — sweep route ----------
-
-describe("orchd() dispatch — --sweep routes through orchdSweep + prints counters JSON", async () => {
-  // The dispatch invocation lives in `orchd()` not in `parseOrchdArgs`,
-  // and `orchd()` touches the filesystem (getAtmuxDir) + opens a real
-  // SQLite db, so we mock at the module-import boundary. Bun's
-  // `mock.module` rewires `src/core/orchd-sweep.ts::orchdSweep` to a
-  // stub that records its call + returns a fixed counter shape. We
-  // also capture stdout to verify the JSON shape.
-  const { mock } = await import("bun:test");
-  const { mkdtemp, writeFile, mkdir } = await import("node:fs/promises");
-  const { tmpdir } = await import("node:os");
-  const { join } = await import("node:path");
-
-  test("orchd --sweep invokes orchdSweep with resolved atmuxDir + prints JSON counters", async () => {
-    const scratch = await mkdtemp(join(tmpdir(), "atmux-orchd-sweep-cli-"));
-    const atmuxDir = join(scratch, ".atmux");
-    await mkdir(atmuxDir, { recursive: true });
-    await writeFile(
-      join(atmuxDir, "team.json"),
-      JSON.stringify({ name: "demo", members: [{ name: "be-1", role: "member", tui: "claude" }] }),
-    );
-
-    const sweepCalls: string[] = [];
-    mock.module("../../../src/core/orchd-sweep.ts", () => ({
-      orchdSweep: async (dir: string) => {
-        sweepCalls.push(dir);
-        return {
-          epicsConsidered: 3,
-          epicsSpawned: 1,
-          workersConsidered: 2,
-          workersDissolved: 0,
-        };
-      },
-    }));
-
-    // Capture stdout writes.
-    const stdoutChunks: string[] = [];
-    const origWrite = process.stdout.write.bind(process.stdout);
-    (process.stdout as unknown as { write: typeof origWrite }).write = ((
-      chunk: string | Uint8Array,
-    ) => {
-      stdoutChunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString());
-      return true;
-    }) as typeof origWrite;
-
-    try {
-      // Late import so module mock is in effect when orchd() runs.
-      const { orchd } = await import(
-        `../../../src/verbs/orchd.ts?cache=${Date.now()}`
-      );
-      // `getAtmuxDir({teamDir})` joins `<teamDir>/.atmux`, so pass the
-      // scratch root (parent of the .atmux/ dir we created).
-      const rc = await orchd(["--sweep", "--team-dir", scratch]);
-      expect(rc).toBe(0);
-    } finally {
-      (process.stdout as unknown as { write: typeof origWrite }).write = origWrite;
-    }
-
-    expect(sweepCalls).toHaveLength(1);
-    expect(sweepCalls[0]).toBe(atmuxDir);
-
-    const stdout = stdoutChunks.join("");
-    expect(stdout.trim()).toBe(
-      JSON.stringify({
-        epicsConsidered: 3,
-        epicsSpawned: 1,
-        workersConsidered: 2,
-        workersDissolved: 0,
-      }),
-    );
+  test("the surviving sub-verbs are untouched by the removal", () => {
+    expect(parseOrchdArgs(["--start"])).toEqual({ subverb: "start" });
+    expect(parseOrchdArgs(["--drain"])).toEqual({ subverb: "drain" });
+    expect(parseOrchdArgs(["--status"])).toEqual({ subverb: "status" });
   });
 });

@@ -5,13 +5,26 @@
 //   2. --apply happy path (kanban rewrite + sequences advanced + snapshot)
 //   3. No-legacy-ids no-op
 //   4. Partial scope (--scope epics)
-//   5. Missing-branch graceful skip
+//   5. Kanban rewrite runs with no git side-channel
 //   6. Idempotent re-run
 //
-// Strategy: real bun:sqlite, real tmp filesystem, real `git init` so
-// branch-rename spawns hit real git. ATMUX_DIR + cwd are pinned per
-// test so getAtmuxDir() / loadTeam() resolve to our scratch dir
-// without leaking into other tests or the operator's worktree.
+// Strategy: real bun:sqlite, real tmp filesystem, real `git init`.
+// ATMUX_DIR + cwd are pinned per test so getAtmuxDir() / loadTeam()
+// resolve to our scratch dir without leaking into other tests or the
+// operator's worktree.
+//
+// ADR-280 stage 4. This verb had TWO out-of-DB side-channels that
+// operated on epic-TEAM artefacts rather than on the kanban `epics`
+// table it exists to migrate: a `<base>-epic-<id>` git-branch rename
+// keyed off `team.json::epicTeam.parentBase`, and a rewrite of
+// `team.json::epicTeam.parentEpicKanbanId`. Stage 3 removed both along
+// with the `epicTeam` schema block. The four cases that drove them are
+// re-pointed at the INVERSE property, because that is the one that
+// matters after a removal and none of them asserted it: the verb must
+// now leave git and `team.json` completely alone while its kanban
+// rewrite keeps working. A half-removed side-channel — one that still
+// renames a branch, or still edits an operator's team.json — is the
+// failure this file now guards.
 
 import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -305,23 +318,28 @@ describe("migrate-hex-ids — scope mechanics", () => {
 });
 
 describe("migrate-hex-ids — robustness", () => {
-  test("5. missing-branch graceful skip: verb completes + logs warn", async () => {
+  test("5. kanban rewrite runs with NO git side-channel and no branch-rename output", async () => {
+    // Was "missing-branch graceful skip": it asserted a `branch rename
+    // skip` warn plus `renamed=0 skipped=1` on stdout. Stage 3 removed
+    // the rename, so there is no skip to report — and reporting one
+    // would mean a dead code path survived. The half that outlives the
+    // removal is the kanban rewrite, which is asserted here alongside
+    // the silence.
     seedLegacy(env.db, "epics", "e-deadbeef");
-    // No git branch `atmux-test-base-epic-e-deadbeef` exists.
 
     const code = await migrateHexIds(["--apply"], { stdout: env.stdoutWriter, logger: env.logger });
     expect(code).toBe(0);
 
-    // Epic still renamed in kanban.
+    // The kanban rewrite — this verb's actual job — is unaffected.
     const epicId = (env.db.prepare("SELECT id FROM epics").get() as { id: string }).id;
     expect(epicId).toBe("e-1-deadbeef");
 
-    // Branch rename logged a skip warning.
+    // No branch-rename reporting of any shape, on stdout or in the log.
+    const out = stdoutText();
+    expect(out).not.toContain("branches renamed");
+    expect(out).not.toContain("skipping branch rename");
     const warnMsgs = env.logs.filter((l) => l.kind === "warn").map((l) => l.msg);
-    expect(warnMsgs.some((m) => m.includes("branch rename skip"))).toBe(true);
-
-    // Stdout reports renamed=0 skipped=1.
-    expect(stdoutText()).toContain("renamed=0 skipped=1");
+    expect(warnMsgs.some((m) => m.includes("branch rename"))).toBe(false);
   });
 
   test("6. idempotent re-run: second --apply is a no-op", async () => {
@@ -468,9 +486,15 @@ describe("migrate-hex-ids — flag parsing + side-channel mutations", () => {
     expect(stdoutText()).toContain("events payloads rewritten = 1");
   });
 
-  test("--apply rewrites .atmux/team.json parentEpicKanbanId", async () => {
-    // Re-seed team.json with parentEpicKanbanId pointing at a legacy epic.
+  test("--apply leaves .atmux/team.json byte-identical, residual epicTeam block included", async () => {
+    // Was "--apply rewrites .atmux/team.json parentEpicKanbanId". Stage 3
+    // removed that rewrite with the `epicTeam` schema block. `Team` is
+    // `.passthrough()`, so a live team.json carrying a residual
+    // `epicTeam` still parses — which is exactly why this needs a guard:
+    // the verb must not "helpfully" rewrite a key that no longer means
+    // anything, and it must not touch the file at all.
     await seedTeamJson(env.atmuxDir, { parentEpicKanbanId: "e-3b017960" });
+    const before = await readFile(join(env.atmuxDir, "team.json"), "utf-8");
     seedLegacy(env.db, "epics", "e-3b017960");
 
     const code = await migrateHexIds(["--apply"], {
@@ -479,14 +503,24 @@ describe("migrate-hex-ids — flag parsing + side-channel mutations", () => {
     });
     expect(code).toBe(0);
 
-    const teamRaw = await readFile(join(env.atmuxDir, "team.json"), "utf-8");
-    expect(teamRaw).toContain('"parentEpicKanbanId": "e-1-3b017960"');
-    expect(stdoutText()).toContain("team.json parentEpicKanbanId updated");
+    // Byte-identical — not merely "the id is unchanged".
+    const after = await readFile(join(env.atmuxDir, "team.json"), "utf-8");
+    expect(after).toBe(before);
+    expect(after).toContain('"parentEpicKanbanId": "e-3b017960"');
+    expect(stdoutText()).not.toContain("team.json parentEpicKanbanId updated");
+
+    // …while the kanban row it points at IS migrated, so the two are
+    // now deliberately out of sync rather than silently coupled.
+    const epicId = (env.db.prepare("SELECT id FROM epics").get() as { id: string }).id;
+    expect(epicId).toBe("e-1-3b017960");
   });
 
-  test("--apply renames matching git branch when one exists", async () => {
+  test("--apply leaves an existing <base>-epic-<id> branch ALONE — the verb no longer touches git", async () => {
+    // Was "--apply renames matching git branch when one exists". The
+    // rename is gone; a branch that the old verb WOULD have renamed is
+    // the sharpest fixture for proving no partial path survived, so the
+    // branch is still created and the assertion is inverted.
     seedLegacy(env.db, "epics", "e-3b017960");
-    // Create the legacy branch ahead of the verb call.
     await runGit(env.scratch, ["branch", "atmux-test-base-epic-e-3b017960"]);
 
     const code = await migrateHexIds(["--apply"], {
@@ -496,15 +530,14 @@ describe("migrate-hex-ids — flag parsing + side-channel mutations", () => {
     expect(code).toBe(0);
 
     const { stdout: branches } = await runGit(env.scratch, ["branch", "--list"]);
-    // Post-2026-05-26 double-e fix (ADR-090 §Disk layout amendment):
-    // the compound branch is emitted WITHOUT the redundant `e-` prefix,
-    // so the rename target is `atmux-test-base-epic-1-3b017960`
-    // (no `epic-e-` doubling). The pre-existing legacy branch
-    // `atmux-test-base-epic-e-3b017960` was found via the back-compat
-    // fallback path in renameGitBranches and still gets removed.
-    expect(branches).toContain("atmux-test-base-epic-1-3b017960");
-    expect(branches).not.toContain("atmux-test-base-epic-e-3b017960\n");
-    expect(stdoutText()).toContain("renamed=1");
+    // Untouched: the legacy name survives and no compound name appears.
+    expect(branches).toContain("atmux-test-base-epic-e-3b017960");
+    expect(branches).not.toContain("atmux-test-base-epic-1-3b017960");
+    expect(stdoutText()).not.toContain("renamed=");
+
+    // The kanban row still migrates — only the git side-channel is gone.
+    const epicId = (env.db.prepare("SELECT id FROM epics").get() as { id: string }).id;
+    expect(epicId).toBe("e-1-3b017960");
   });
 
   test("--apply rewrites ADR pointer references in docs/adr/*.md", async () => {
@@ -562,10 +595,13 @@ describe("migrate-hex-ids — flag parsing + side-channel mutations", () => {
     expect(warns.some((m) => m.includes("docs/adr/ absent"))).toBe(true);
   });
 
-  test("--apply without epicTeam skips branch rename with a stdout note", async () => {
-    // Re-seed team.json without epicTeam entirely (epicTeam.parentBase is
-    // schema-required when epicTeam is set, so the only way to omit it
-    // is to drop the whole epicTeam sub-block).
+  test("--apply behaves IDENTICALLY with and without a residual epicTeam block", async () => {
+    // Was "--apply without epicTeam skips branch rename with a stdout
+    // note". The note named `epicTeam.parentBase`, a field stage 3
+    // removed. What replaces it is the property that makes the removal
+    // complete: `epicTeam` is no longer an INPUT to this verb at all, so
+    // its presence or absence must make no difference to what the verb
+    // does or prints.
     await seedTeamJson(env.atmuxDir, { includeEpicTeam: false });
     seedLegacy(env.db, "epics", "e-3b017960");
 
@@ -574,6 +610,26 @@ describe("migrate-hex-ids — flag parsing + side-channel mutations", () => {
       logger: env.logger,
     });
     expect(code).toBe(0);
-    expect(stdoutText()).toContain("no epicTeam.parentBase");
+    expect(stdoutText()).not.toContain("epicTeam");
+
+    // Pinned positively, not just by absence: these are the ONLY
+    // `migrate-hex-ids:` lines the verb emits. If a side-channel is ever
+    // re-added, it lands here as an unexpected line rather than slipping
+    // past a `not.toContain`.
+    const reportLines = stdoutText()
+      .split("\n")
+      .filter((l) => l.startsWith("migrate-hex-ids:"))
+      .map((l) => l.replace(/(snapshot written to ).*/, "$1<path>"));
+    expect(reportLines).toEqual([
+      "migrate-hex-ids: team=team-alpha scope=all mappings=1",
+      "migrate-hex-ids: events payloads rewritten = 0",
+      "migrate-hex-ids: snapshot written to <path>",
+      "migrate-hex-ids: ADR pointer files rewritten = 0",
+      "migrate-hex-ids: complete.",
+    ]);
+
+    // And the kanban rewrite still landed, with no epicTeam in sight.
+    const epicId = (env.db.prepare("SELECT id FROM epics").get() as { id: string }).id;
+    expect(epicId).toBe("e-1-3b017960");
   });
 });

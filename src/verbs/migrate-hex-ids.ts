@@ -23,7 +23,6 @@
 // coordination is out of scope.
 
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
-import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { exists } from "../abstractions/fs.ts";
 import { closeDatabase, type Database, openDatabase } from "../abstractions/sqlite.ts";
@@ -344,94 +343,6 @@ async function rewriteAdrPointers(
   return touched;
 }
 
-// ---------- Git branch rename ----------
-
-async function renameGitBranches(
-  mappings: ReadonlyArray<IdMapping>,
-  base: string,
-  logger: Logger,
-): Promise<{ renamed: number; skipped: number }> {
-  let renamed = 0;
-  let skipped = 0;
-  for (const m of mappings) {
-    if (m.scope !== "e") continue; // only epic branches use the `-epic-<id>` shape
-    // Post-2026-05-26 double-e fix: strip the `e-` scope prefix before
-    // interpolating into the branch token so we don't emit `epic-e-`.
-    // legacyId / compoundId both carry the prefix natively (e.g.
-    // `e-c43a8e81` / `e-26-c43a8e81`) — strip exactly one leading `e-`.
-    // Pre-fix branches (created before this amendment) keep the
-    // double-e form on disk; this migrate verb renames them to the
-    // new clean form using both old + new candidate names.
-    const legacyIdStripped = m.legacyId.replace(/^e-/, "");
-    const compoundIdStripped = m.compoundId.replace(/^e-/, "");
-    const legacyBranch = `${base}-epic-${legacyIdStripped}`;
-    const legacyBranchPreFix = `${base}-epic-${m.legacyId}`;
-    const compoundBranch = `${base}-epic-${compoundIdStripped}`;
-    try {
-      try {
-        await runGit(["branch", "-m", legacyBranch, compoundBranch]);
-      } catch {
-        // Pre-fix branches (created before 2026-05-26 double-e amendment)
-        // carried the `epic-e-<id>` form on disk; fall back to that
-        // shape so the migrate verb still finds + renames them.
-        await runGit(["branch", "-m", legacyBranchPreFix, compoundBranch]);
-      }
-      renamed += 1;
-    } catch (e) {
-      logger.warn(
-        `migrate-hex-ids: branch rename skip — ${legacyBranch} (or ${legacyBranchPreFix}) → ${compoundBranch}: ${(e as Error).message}`,
-      );
-      skipped += 1;
-    }
-  }
-  return { renamed, skipped };
-}
-
-function runGit(argv: ReadonlyArray<string>): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    const proc = spawn("git", argv, { stdio: ["ignore", "pipe", "pipe"] });
-    let stderr = "";
-    proc.stderr.on("data", (d) => {
-      stderr += d.toString();
-    });
-    proc.on("error", reject);
-    proc.on("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`git ${argv.join(" ")} exit=${code}: ${stderr.trim()}`));
-    });
-  });
-}
-
-// ---------- team.json update ----------
-
-async function updateParentEpicKanbanId(
-  atmuxDir: string,
-  mappings: ReadonlyMap<string, string>,
-  logger: Logger,
-): Promise<boolean> {
-  const teamJsonPath = join(atmuxDir, "team.json");
-  if (!(await exists(teamJsonPath))) return false;
-  const text = await readFile(teamJsonPath, "utf-8");
-  let parsed: { epicTeam?: { parentEpicKanbanId?: string } };
-  try {
-    parsed = JSON.parse(text);
-  } catch (e) {
-    logger.warn(`migrate-hex-ids: team.json parse failed (${(e as Error).message}) — skipping`);
-    return false;
-  }
-  const current = parsed.epicTeam?.parentEpicKanbanId;
-  if (current === undefined) return false;
-  const compound = mappings.get(current);
-  if (compound === undefined) return false;
-  // Substring-substitute to preserve formatting (keys, whitespace).
-  const updated = text.replace(
-    new RegExp(`"parentEpicKanbanId"\\s*:\\s*"${current}"`),
-    `"parentEpicKanbanId": "${compound}"`,
-  );
-  await writeFile(teamJsonPath, updated, "utf-8");
-  return true;
-}
-
 // ---------- Snapshot ----------
 
 interface SnapshotPayload {
@@ -541,17 +452,12 @@ export async function migrateHexIds(
     stdout(`migrate-hex-ids: snapshot written to ${snapshotPath}\n`);
 
     // Out-of-DB mutations.
-    const teamJsonUpdated = await updateParentEpicKanbanId(atmuxDir, lookup, logger);
-    if (teamJsonUpdated) stdout("migrate-hex-ids: team.json parentEpicKanbanId updated\n");
-
-    // Git branch base = epicTeam.parentBase or fall back to a sensible default.
-    const parentBase = team.epicTeam?.parentBase;
-    if (parentBase !== undefined) {
-      const { renamed, skipped } = await renameGitBranches(finalMappings, parentBase, logger);
-      stdout(`migrate-hex-ids: branches renamed=${renamed} skipped=${skipped}\n`);
-    } else {
-      stdout("migrate-hex-ids: no epicTeam.parentBase in team.json — skipping branch rename\n");
-    }
+    //
+    // ADR-280 stage 3 removed two of them: the `team.json::epicTeam
+    // .parentEpicKanbanId` rewrite and the `<base>-epic-<id>` git-branch
+    // rename. Both operated on epic-TEAM artefacts (a retired concept),
+    // not on the kanban `epics` table this verb migrates — that rewrite
+    // is untouched and still runs above.
 
     const adrTouched = await rewriteAdrPointers(atmuxDir, lookup, logger);
     stdout(`migrate-hex-ids: ADR pointer files rewritten = ${adrTouched}\n`);

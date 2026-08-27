@@ -1,6 +1,12 @@
 // ADR-231 — Smoke tests for S3.1 unit-test scaffolding harness
 // (t-16-27fdc08b AC: "each helper works in isolation").
 //
+// ADR-280 stage 4 removed the `spawn-epic-subprocess-stub.ts` section:
+// the helper stubbed `atmux team spawn-epic`, a verb stage 2/3 removed,
+// so it could no longer stand in for anything real. The remaining three
+// helpers are unaffected — Honker dispatch, kanban rows and `atmux flag
+// add` all survive the epic-team retirement.
+//
 // One describe block per helper file. Smoke-level only — exhaustive
 // behavioural coverage lives in the Phase 2 handler tests that consume
 // these helpers (T-S2.5 / T-S2.6 / T-S3.2). Goal here is to fail loudly
@@ -17,16 +23,6 @@ import {
   createHonkerMock,
 } from "./honker-mock.ts";
 import { seedEpic, seedTask } from "./kanban-fixtures.ts";
-import {
-  CANONICAL_ELIGIBILITY_RACE_STDERR,
-  CANONICAL_HARD_FAILURE_STDERR,
-  CANONICAL_HOST_PRESSURE_STDERR,
-  createSpawnEpicStub,
-  ELIGIBILITY_RACE_RESULT,
-  HARD_FAILURE_RESULT,
-  HOST_PRESSURE_RESULT,
-  SUCCESS_RESULT,
-} from "./spawn-epic-subprocess-stub.ts";
 
 // ---------- honker-mock.ts ----------
 
@@ -192,85 +188,6 @@ describe("kanban-fixtures — seedEpic + seedTask", () => {
     expect(task.status).toBe("done");
     expect(task.owner).toBe("worker-0");
     expect(task.completedAt).toBe(1779540000);
-  });
-});
-
-// ---------- spawn-epic-subprocess-stub.ts ----------
-
-describe("spawn-epic-subprocess-stub — default + per-class results", () => {
-  test("default = SUCCESS_RESULT (exit 0, no stderr)", async () => {
-    const stub = createSpawnEpicStub();
-    const result = await stub.invoke({ epicId: "e-x", roster: "solo" });
-    expect(result.exitCode).toBe(0);
-    expect(result.stderr).toBe("");
-    expect(result.kind).toBe("success");
-  });
-
-  test("records invocations with epic + roster + force + sequence", async () => {
-    const stub = createSpawnEpicStub();
-    await stub.invoke({ epicId: "e-x", roster: "solo" });
-    await stub.invoke({ epicId: "e-y", roster: "default", force: true });
-    expect(stub.invocations).toHaveLength(2);
-    expect(stub.invocations[0]).toMatchObject({
-      epicId: "e-x",
-      roster: "solo",
-      force: false,
-      sequence: 1,
-    });
-    expect(stub.invocations[1]).toMatchObject({
-      epicId: "e-y",
-      roster: "default",
-      force: true,
-      sequence: 2,
-    });
-  });
-
-  test("setResult → host-pressure: canonical stderr classifier-compatible", async () => {
-    const stub = createSpawnEpicStub();
-    stub.setResult(HOST_PRESSURE_RESULT);
-    const result = await stub.invoke({ epicId: "e-x", roster: "solo" });
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr).toBe(CANONICAL_HOST_PRESSURE_STDERR);
-    // Sanity-check the canonical text matches the production regex.
-    expect(/host-wide cap\s*\(\d+\)\s*reached/.test(result.stderr)).toBe(true);
-  });
-
-  test("setResult → eligibility-race: canonical stderr classifier-compatible", async () => {
-    const stub = createSpawnEpicStub();
-    stub.setResult(ELIGIBILITY_RACE_RESULT);
-    const result = await stub.invoke({ epicId: "e-x", roster: "solo" });
-    expect(result.stderr).toBe(CANONICAL_ELIGIBILITY_RACE_STDERR);
-    expect(/eligible=false:\s/.test(result.stderr)).toBe(true);
-  });
-
-  test("setResult → hard-failure: stderr matches NEITHER transient regex", async () => {
-    const stub = createSpawnEpicStub();
-    stub.setResult(HARD_FAILURE_RESULT);
-    const result = await stub.invoke({ epicId: "e-x", roster: "solo" });
-    expect(result.stderr).toBe(CANONICAL_HARD_FAILURE_STDERR);
-    expect(/host-wide cap\s*\(\d+\)\s*reached/.test(result.stderr)).toBe(false);
-    expect(/eligible=false:\s/.test(result.stderr)).toBe(false);
-  });
-
-  test("setResultSequence → consume one per call, last entry sticks", async () => {
-    const stub = createSpawnEpicStub();
-    stub.setResultSequence([HOST_PRESSURE_RESULT, SUCCESS_RESULT]);
-    const a = await stub.invoke({ epicId: "e-x", roster: "solo" });
-    const b = await stub.invoke({ epicId: "e-x", roster: "solo" });
-    const c = await stub.invoke({ epicId: "e-x", roster: "solo" });
-    expect(a.kind).toBe("host-pressure");
-    expect(b.kind).toBe("success");
-    expect(c.kind).toBe("success"); // sticks on the last entry
-  });
-
-  test("reset() clears invocations + restores default success", async () => {
-    const stub = createSpawnEpicStub();
-    stub.setResult(HARD_FAILURE_RESULT);
-    await stub.invoke({ epicId: "e-x", roster: "solo" });
-    stub.reset();
-    expect(stub.invocations).toHaveLength(0);
-    const result = await stub.invoke({ epicId: "e-y", roster: "default" });
-    expect(result.kind).toBe("success");
   });
 });
 
