@@ -371,6 +371,14 @@ interface ResolvedDeps {
   stderr: (msg: string) => void;
   nowMs: () => number;
   homeDir: string;
+  /** Set ONLY when the caller explicitly injected `opts.homeDir`. The
+   *  cockpit-config load threads this as `LoadCockpitOpts.home`, which
+   *  since the a-e0199c53 precedence fix outranks the ambient
+   *  `ATMUX_COCKPIT_CONFIG` env var. Production (no injection) must
+   *  keep env-first resolution — cages export that var to point at the
+   *  operator's real config (e.g. cockpit.macos.json) — so the
+   *  defaulted `homeDir` is deliberately NOT forwarded to the loader. */
+  cockpitConfigHome?: string;
   cockpitSessionName: string;
   cockpitSocketName: string;
   tmuxFactory: (cfg: TmuxConfig) => TmuxNamespace;
@@ -398,6 +406,7 @@ function resolveDeps(opts: CockpitRotateOpts): ResolvedDeps {
     stderr,
     nowMs: opts.nowMs ?? nowMsDefault,
     homeDir,
+    ...(opts.homeDir !== undefined ? { cockpitConfigHome: opts.homeDir } : {}),
     cockpitSessionName: opts.cockpitSessionName ?? COCKPIT_SESSION_DEFAULT,
     cockpitSocketName: opts.cockpitSocketName ?? getCockpitSocketName(env),
     tmuxFactory: opts.tmuxFactory ?? createTmux,
@@ -876,7 +885,13 @@ async function performRespawn(
   let cmd: string;
   let cockpit: LoadedCockpit;
   try {
-    cockpit = await deps.loadCockpit({ home: deps.homeDir });
+    // Injected homeDir (tests) outranks ambient env; production keeps
+    // env-first so `ATMUX_COCKPIT_CONFIG` still selects the config the
+    // cockpit was built from. See ResolvedDeps.cockpitConfigHome.
+    cockpit = await deps.loadCockpit({
+      env: deps.env,
+      ...(deps.cockpitConfigHome !== undefined ? { home: deps.cockpitConfigHome } : {}),
+    });
   } catch (e) {
     const cause = e instanceof Error ? e.message : String(e);
     deps.stderr(

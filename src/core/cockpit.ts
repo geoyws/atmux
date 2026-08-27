@@ -36,7 +36,9 @@ export interface LoadCockpitOpts {
   /** Override config path. Wins over `env.ATMUX_COCKPIT_CONFIG` and the
    *  `$HOME/.atmux/cockpit.json` default. */
   path?: string;
-  /** Home dir override (test injection — avoids touching `$HOME`). */
+  /** Home dir override (test injection — avoids touching `$HOME`).
+   *  Outranks `env.ATMUX_COCKPIT_CONFIG`: programmatic injection beats
+   *  ambient environment (a-e0199c53). */
   home?: string;
   /** Test seam for migration-shim deprecation warnings. Defaults to
    *  `process.stderr.write` — tests inject a buffer to assert the warn
@@ -49,13 +51,26 @@ export function defaultCockpitConfigPath(home: string): string {
   return join(home, ".atmux", "cockpit.json");
 }
 
-/** Resolve the cockpit config path. Order: opts.path → env → default. */
+/** Resolve the cockpit config path. Order: opts.path → opts.home →
+ *  env.ATMUX_COCKPIT_CONFIG → env.HOME.
+ *
+ *  Programmatic injection outranks ambient environment (kanban
+ *  a-e0199c53, found 2026-08-27): every atmux cage exports
+ *  `ATMUX_COCKPIT_CONFIG`, so when that env var was consulted BEFORE
+ *  `opts.home`, the documented test-injection point silently lost to
+ *  the operator's real cockpit — a deleted test file changed which
+ *  tests saw the live 20-session roster. A caller that passes `home`
+ *  (or `path`) has said which config it means; only callers that pass
+ *  neither fall through to the ambient env. */
 export function resolveCockpitConfigPath(opts: LoadCockpitOpts = {}): string {
   if (opts.path !== undefined && opts.path.length > 0) return opts.path;
+  if (opts.home !== undefined && opts.home.length > 0) {
+    return defaultCockpitConfigPath(opts.home);
+  }
   const env = opts.env ?? process.env;
   const fromEnv = env.ATMUX_COCKPIT_CONFIG;
   if (fromEnv !== undefined && fromEnv.length > 0) return fromEnv;
-  const home = opts.home ?? env.HOME;
+  const home = env.HOME;
   if (home === undefined || home.length === 0) {
     throw new ConfigError({
       what: "cannot resolve cockpit config path: HOME unset and no --config / ATMUX_COCKPIT_CONFIG override",

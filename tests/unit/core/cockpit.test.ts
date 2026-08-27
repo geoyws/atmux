@@ -76,6 +76,30 @@ describe("resolveCockpitConfigPath", () => {
       "/other/.atmux/cockpit.json",
     );
   });
+  test("a-e0199c53 regression: opts.home outranks env.ATMUX_COCKPIT_CONFIG", () => {
+    // Every atmux cage exports ATMUX_COCKPIT_CONFIG, so when the env var
+    // resolved BEFORE opts.home, the documented test-injection point
+    // silently lost to ambient env and tests read the operator's real
+    // 20-session cockpit (found 2026-08-27 when a deleted test file
+    // changed which tests saw it). Programmatic injection must win.
+    expect(
+      resolveCockpitConfigPath({
+        env: { ATMUX_COCKPIT_CONFIG: "/operators/real/cockpit.json", HOME: "/h" },
+        home: "/injected",
+      }),
+    ).toBe("/injected/.atmux/cockpit.json");
+  });
+  test("a-e0199c53 regression: loadCockpit with injected home ignores env.ATMUX_COCKPIT_CONFIG", async () => {
+    await writeCockpit({ teams: [{ name: "inj", root: "/inj", enabled: true }] });
+    const cockpit = await loadCockpit({
+      home: homeDir,
+      env: { ATMUX_COCKPIT_CONFIG: "/nonexistent/operator-cockpit.json", HOME: "/h" },
+      warn: () => {},
+    });
+    // Had env won, this load would have thrown ConfigError (no file at
+    // the env path); instead the injected home's roster is read.
+    expect(cockpit.teams.map((t) => t.name)).toEqual(["inj"]);
+  });
   test("throws ConfigError when neither home nor explicit path is set", () => {
     expect(() => resolveCockpitConfigPath({ env: {} })).toThrow(ConfigError);
   });
