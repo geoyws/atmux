@@ -710,7 +710,12 @@ export async function cockpitRebuild(
   // `+ 1` → `+ 2` on 2026-05-24 (operator directive — "Fix code to
   // match ADR §C table"). Top-level team = level 2 = F2; nested child
   // = level 3 = F3; etc. Cockpit itself takes level 1 = F1 via
-  // Phase 5b below.
+  // Phase 5b below. `t.level` counts only CAGE (team) ancestors —
+  // `type: "group"` containers are transparent to it (walkSessions
+  // does not increment through them), so a team under a top-level
+  // group still lands on F2: a group runs no tmux server, and a
+  // prefix rung for it would address nothing (ADR-089 §Amendment
+  // 2026-08-27, group-tier note).
   for (const t of teams) {
     const sock = await resolveCageSocket(t.name, t.root);
     const cageTmux = factory({ socketPath: sock });

@@ -447,3 +447,11 @@ Renaming `epic-team` to a neutral discriminator. The literal is load-bearing acr
 **Cross-refs:** §C (the table this supersedes) · §Decision-anchor #6 (the max-depth rationale §(C) retires) · §H (corrected in §(D)) · [ADR-090](090-epic-team-lifecycle.md) (the epic-shaped instance that keeps its `epicId`) · [ADR-162](162-atmux-owns-tmux-infrastructure.md) §Decision-anchor #1 (per-socket keybinding namespaces — why distinct chords are a convenience, not a correctness requirement) · [`docs/RUNBOOK-cockpit.md`](../RUNBOOK-cockpit.md) §11 (the operator-facing form of §(B)/§(C)).
 
 **Filed via** t-f73a418c (docs lane, 2026-08-27).
+
+### Group-tier note (2026-08-27, e-419553c6) — `type: "group"` shipped, and it does NOT consume a prefix rung
+
+The organisational container this amendment described as inexpressible (§Implementation-ledger row 3) now ships as `type: "group"` (`src/schema/cockpit.ts` — `{ type, name, enabled?, sessions[] }`, `.strict()`, no `root`, no cage). `walkSessions` recurses through groups, `enabledTeams` never emits one as a team, a disabled group prunes its whole subtree, and the nearest ancestor group name is threaded onto flattened entries as `group?: string`.
+
+**Prefix correction to §(B):** a schema `group` does **not** shift the chain. §(B)'s table assumed the group tier would be a CAGE (a real tmux server nested between cockpit and team), and for a cage the shift stands — the accepted F2→F3 move applies whenever a cage nests inside a cage. But `type: "group"` creates NO tmux server, so a prefix rung for it would address nothing: there is no server on which the chord could land. Accordingly the level fed to `resolvePrefix(...)` counts only **cage (team) ancestors** — `walkSessions` does not increment `level` through a group — and a team under a top-level group stays on `F2`. §(B)'s dotfiles-enforcement analysis is unaffected for cage-shaped tiers; for schema groups there is nothing to enforce. This also resolves §(B)'s closing caveat for the cage-less case: the shift is not "documented and not in effect" — for `type: "group"` it deliberately does not apply.
+
+§Implementation-ledger updates: row 3 → **Ships** (`GroupSession`, e-419553c6); row 4 → **Ships for `group`** (`walkSessions` / `enabledTeams` widened; any OTHER new type is still a leaf until both are widened).

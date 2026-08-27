@@ -349,6 +349,12 @@ export interface FlattenedTeamEntry {
   /** Nearest ancestor `team` name, when this entry is nested. Absent at
    *  `level === 0`. */
   parent?: string;
+  /** Nearest ancestor `group` name (e-419553c6). Absent when no group
+   *  sits above this team. Groups are organisational only — they never
+   *  appear as entries themselves; this is how their name reaches
+   *  consumers (the operator's fuzzy picker) that want to show which
+   *  tier a team belongs to. */
+  group?: string;
   claudeAccount?: TeamSessionT["claudeAccount"];
   tuiOverrides?: TeamSessionT["tuiOverrides"];
 }
@@ -364,7 +370,10 @@ export interface FlattenedTeamEntry {
  *  (duck-typed). `.level` is additive for new consumers. */
 export function enabledTeams(cockpit: CockpitShape): FlattenedTeamEntry[] {
   const out: FlattenedTeamEntry[] = [];
-  walkSessions(cockpit.sessions ?? [], 0, (node, level, _parentRoot, parentName) => {
+  // Groups never yield an entry of their own (`type === "team"` filter),
+  // and a DISABLED group's children never reach the visitor at all —
+  // walkSessions prunes that subtree (e-419553c6).
+  walkSessions(cockpit.sessions ?? [], 0, (node, level, _parentRoot, parentName, parentGroup) => {
     if (node.type === "team" && node.enabled) {
       const e: FlattenedTeamEntry = {
         type: "team",
@@ -374,6 +383,7 @@ export function enabledTeams(cockpit: CockpitShape): FlattenedTeamEntry[] {
         level,
       };
       if (parentName !== undefined) e.parent = parentName;
+      if (parentGroup !== undefined) e.group = parentGroup;
       if (node.claudeAccount !== undefined) e.claudeAccount = node.claudeAccount;
       if (node.tuiOverrides !== undefined) e.tuiOverrides = node.tuiOverrides;
       out.push(e);
@@ -383,15 +393,21 @@ export function enabledTeams(cockpit: CockpitShape): FlattenedTeamEntry[] {
 }
 
 /** DFS walk over `sessions[]`. Visitor receives each node + its level +
- *  the nearest ancestor `team.root` + the nearest ancestor `team.name`.
- *  Public for ADR-089 T5/T6 consumers needing custom walks; the
- *  flattener + enrichment paths use it internally.
+ *  the nearest ancestor `team.root` + the nearest ancestor `team.name` +
+ *  the nearest ancestor `group.name`. Public for ADR-089 T5/T6
+ *  consumers needing custom walks; the flattener + enrichment paths use
+ *  it internally.
  *
  *  ADR-280 stage 3 added `parentName`. It replaces the `epic-team`
  *  node's own `.parent` back-pointer, which was the only way a consumer
  *  could reach its parent before nesting became general — the ancestry
  *  is now derived from the walk itself and works for any nested team.
- *  Visitors that ignore the extra argument are unaffected. */
+ *  Visitors that ignore the extra argument are unaffected.
+ *
+ *  e-419553c6 added `parentGroup` the same way, plus the group
+ *  recursion rules: a group's children are walked at the SAME level
+ *  (no prefix rung for a cage-less container — see the inline
+ *  comment), and a disabled group's subtree is skipped entirely. */
 export function walkSessions(
   sessions: ReadonlyArray<CockpitSessionT>,
   level: number,
@@ -400,15 +416,36 @@ export function walkSessions(
     level: number,
     parentRoot: string | undefined,
     parentName: string | undefined,
+    parentGroup: string | undefined,
   ) => void,
   parentRoot?: string,
   parentName?: string,
+  parentGroup?: string,
 ): void {
   for (const node of sessions) {
-    visit(node, level, parentRoot, parentName);
+    visit(node, level, parentRoot, parentName, parentGroup);
     if (node.type === "team") {
       if (Array.isArray(node.sessions) && node.sessions.length > 0) {
-        walkSessions(node.sessions, level + 1, visit, node.root, node.name);
+        walkSessions(node.sessions, level + 1, visit, node.root, node.name, parentGroup);
+      }
+    } else if (node.type === "group") {
+      // Groups do NOT increment `level`. Level feeds the F-key prefix
+      // chain (`resolvePrefix(t.level + 2, …)` in verbs/cockpit.ts),
+      // and a group creates NO tmux server — a prefix rung for it
+      // would address nothing. The operator-accepted F2→F3 shift of
+      // ADR-089 §Amendment 2026-08-27 §(B) applies only when a CAGE
+      // nests inside a cage; a cage-less container is transparent to
+      // the chain (see the amendment's dated group-tier note). The
+      // group is equally transparent to team ancestry (parentRoot /
+      // parentName pass through unchanged) — it only becomes the
+      // nearest-ancestor `parentGroup` for everything beneath it.
+      //
+      // A disabled group prunes its WHOLE subtree from the walk —
+      // unlike a disabled team, whose children are still visited (a
+      // team is one cage's flag; a group is a declaration that the
+      // subtree is off).
+      if (node.enabled && Array.isArray(node.sessions) && node.sessions.length > 0) {
+        walkSessions(node.sessions, level, visit, parentRoot, parentName, node.name);
       }
     }
   }
@@ -433,8 +470,12 @@ export interface CockpitTeamLookup {
   level: number;
   /** Nearest ancestor team name when this node is nested; absent at the
    *  top level. Consumers (caller-scope gate) join on this to drive the
-   *  parent ↔ child policy table. */
+   *  parent ↔ child policy table. Groups are transparent here — a team
+   *  under `team A → group G → team B` still reports `parent: "A"`. */
   parent?: string;
+  /** Nearest ancestor `group` name (e-419553c6); absent when no group
+   *  sits above this team. Mirrors {@link FlattenedTeamEntry.group}. */
+  group?: string;
 }
 
 /** ADR-092 §D2 — depth-first match on `node.name` across `cockpit.sessions[]`.
@@ -444,7 +485,7 @@ export interface CockpitTeamLookup {
  *  / synthesis paths). */
 export function findTeamByName(cockpit: CockpitShape, name: string): CockpitTeamLookup | null {
   let found: CockpitTeamLookup | null = null;
-  walkSessions(cockpit.sessions ?? [], 0, (node, level, _parentRoot, parentName) => {
+  walkSessions(cockpit.sessions ?? [], 0, (node, level, _parentRoot, parentName, parentGroup) => {
     if (found !== null) return;
     if (node.type !== "team") return;
     if (node.name !== name) return;
@@ -455,6 +496,7 @@ export function findTeamByName(cockpit: CockpitShape, name: string): CockpitTeam
       level,
     };
     if (parentName !== undefined) out.parent = parentName;
+    if (parentGroup !== undefined) out.group = parentGroup;
     found = out;
   });
   return found;
