@@ -48,8 +48,6 @@ import { discorder } from "./verbs/discorder.ts";
 import { dispatch as dispatchVerb } from "./verbs/dispatch.ts";
 import { doctor } from "./verbs/doctor.ts";
 import { driverInbox } from "./verbs/driver-inbox.ts";
-import { epic } from "./verbs/epic.ts";
-import { epicMerge } from "./verbs/epic-merge.ts";
 import { fleet } from "./verbs/fleet.ts";
 import { groom } from "./verbs/groom.ts";
 import { handoff } from "./verbs/handoff.ts";
@@ -87,15 +85,10 @@ import { send } from "./verbs/send.ts";
 import { start } from "./verbs/start.ts";
 import { status } from "./verbs/status.ts";
 import { stop } from "./verbs/stop.ts";
+import { epic } from "./verbs/epic.ts";
 import { story } from "./verbs/story.ts";
 import { dispatchSyncSubverb } from "./verbs/sync.ts";
 import { task } from "./verbs/task.ts";
-import { dissolveEpic } from "./verbs/team/dissolve-epic.ts";
-import { dissolveWorker } from "./verbs/team/dissolve-worker.ts";
-import { listWorkers } from "./verbs/team/list-workers.ts";
-import { spawnEpic } from "./verbs/team/spawn-epic.ts";
-import { spawnWorker } from "./verbs/team/spawn-worker.ts";
-import { sweepEpics } from "./verbs/team/sweep-epics.ts";
 import { teamRename } from "./verbs/team-rename.ts";
 import { teamRepairRename } from "./verbs/team-repair-rename.ts";
 import { tellLead } from "./verbs/tell-lead.ts";
@@ -319,8 +312,6 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       // the ADR-212 commit-escalation topic). Per-topic real handlers
       // are follow-up Tasks; MVP scaffold logs + advances offset.
       return cockpitMirror(argv.slice(1));
-    case "epic-merge":
-      return epicMerge(argv.slice(1));
     case "complaints":
       return complaints(argv.slice(1));
     case "blockers":
@@ -398,7 +389,7 @@ export async function dispatchTeamSubverb(argv: ReadonlyArray<string>): Promise<
   const sub = argv[0];
   if (sub === undefined || sub === "") {
     throw new UsageError({
-      what: "team: subverb required (try: rename | repair-rename | spawn-epic | dissolve-epic | sweep-epics | spawn-worker | dissolve-worker | list-workers)",
+      what: "team: subverb required (try: rename | repair-rename)",
       hint: "run 'atmux help' for the list of verbs",
     });
   }
@@ -407,21 +398,9 @@ export async function dispatchTeamSubverb(argv: ReadonlyArray<string>): Promise<
       return teamRename(argv.slice(1));
     case "repair-rename":
       return teamRepairRename(argv.slice(1));
-    case "spawn-epic":
-      return spawnEpic(argv.slice(1));
-    case "dissolve-epic":
-      return dissolveEpic(argv.slice(1));
-    case "sweep-epics":
-      return sweepEpics(argv.slice(1));
-    case "spawn-worker":
-      return spawnWorker(argv.slice(1));
-    case "dissolve-worker":
-      return dissolveWorker(argv.slice(1));
-    case "list-workers":
-      return listWorkers(argv.slice(1));
     default:
       throw new UsageError({
-        what: `team: unknown subverb '${sub}' (try: rename | repair-rename | spawn-epic | dissolve-epic | sweep-epics | spawn-worker | dissolve-worker | list-workers)`,
+        what: `team: unknown subverb '${sub}' (try: rename | repair-rename)`,
         hint: "run 'atmux help' for the list of verbs",
       });
   }
