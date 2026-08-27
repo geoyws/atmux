@@ -352,8 +352,63 @@ Inspect `<projectRoot>/.atmux/state/rename-rollback.log` first to identify which
 
 End-to-end dogfood pattern on the atmux team itself shipped under EPIC e-1e223687 (T6). The pattern: pick a reversible target (e.g. `atmux` → `atmux-core` then `atmux-core` → `atmux`), capture before/after `tmux list-panes -F '#{pane_pid}'` for PID stability, run `top -b -n 30 -d 0.1 -p $(pgrep -f atmux)` to verify peak RSS during rename < baseline × 1.1, confirm idempotent round-trip.
 
+## §11 — Nesting depth + the tmux prefix chain
+
+ADR-089 §C has cited this section since 2026-05-13; it is written here for the first time on 2026-08-27, alongside [ADR-089 §Amendment 2026-08-27](adr/089-hierarchical-cockpit.md).
+
+### Nest for any reason — the mechanism does not know why
+
+A cage may contain child cages, to arbitrary depth. There is **no rule that a nested cage must be an epic-team**, and no requirement that a child carry an `epicId`. Epic-teams are one kind of nested cage — the kind with a kanban epic behind them — and they keep their `epicId` because ADR-090's lifecycle joins on it. Nesting for organisational reasons (a group of products, a product's projects, a project's driver lanes) uses plain `type: "team"` children and needs no epic anywhere.
+
+### Which chord reaches which tier
+
+Each nesting level is its own tmux server on its own socket, and each gets its own prefix key so a chord is unambiguous regardless of which socket you happen to be attached to:
+
+| Level | Tier | Prefix |
+|---|---|---|
+| L0 | Host tmux (your daily driver) | `C-a` |
+| L1 | atmux cockpit | `F1` |
+| L2 | Group | `F2` |
+| L3 | Project / team cage | `F3` |
+| L4 | Nested cage — epic-team or any other reason | `F4` |
+| L5 | Spare | `F5` |
+| L6..L12 | Deeper nesting, if you have it | `F6`..`F12` |
+
+⚠ **A team cage moved from `F2` to `F3`, and an epic-team from `F3` to `F4`, when the group tier was inserted (2026-08-27).** If you have not run a fleet with a group tier, your cages are still at the pre-shift rungs.
+
+⚠ **The shift is not in effect until the operator dotfiles are updated.** atmux resolves the prefix from tree depth and needs no change, but the canonical enforcement is a socket-pattern `if-shell` chain in the operator's dotfiles (`_dotfiles/tmux/.tmux.conf` lines 148-184 and `_dotfiles/atmux/tmux.conf.local` lines 16-39), which assigns prefixes by matching the socket path against three hardcoded branches. Both files must change together — `tmux.conf.local` re-applies the prefix after the personal config is sourced, so editing only `.tmux.conf` is a silent no-op.
+
+### Override the chain
+
+```bash
+# In ~/.atmux/cockpit.json — flips the whole chain, not one level.
+"prefixChain": ["F1", "F2", "F3", "F4", "F5", "F6"]
+
+# Ctrl-letter variant for terminals where F-keys are modal (Termius / Blink / iTerm2-CC):
+"prefixChain": ["C-q", "C-w", "C-e", "C-r", "C-t", "C-y"]
+```
+
+The chain must have at least `MAX_NESTING_LEVEL` (6) entries and every entry must be unique; `loadCockpit` refuses the config otherwise. Unset leaves the F1..F12 default in place.
+
+### Depth beyond the chain
+
+Every level gets a distinct key for as long as the chain lasts. Depth past the chain's end is meant to be **refused** with an actionable error — never clamped to the deepest key and never wrapped back to `F1`, both of which would make one chord mean two cages. **That refusal is not implemented yet** (ADR-089 §Amendment 2026-08-27 §(C)/§(D)): today an over-deep tree loads without complaint and the affected cage silently falls back to tmux's legacy `C-\` prefix. If a cage's chord is not what this table says, check your depth before checking your dotfiles.
+
+### Verifying a cage's prefix
+
+```bash
+# What prefix is this cage actually on?
+tmux -S <socket> show-options -g prefix
+
+# What level does the cage believe it is at?
+echo "$ATMUX_NESTING_LEVEL"     # from inside a cage pane; 1-indexed, L1 = cockpit
+```
+
+A mismatch between those two is the ADR-092 doctor probe D9's finding class, and it is the symptom of the dotfiles chain and the depth arithmetic disagreeing.
+
 ## Cross-references
 
+- [ADR-089](adr/089-hierarchical-cockpit.md) — hierarchical cockpit (recursive `sessions[]` + the prefix chain); §Amendment 2026-08-27 generalises nesting beyond epic-teams and records the group-tier prefix shift (§11 above).
 - [ADR-167](adr/167-cockpit-rotate-verb.md) — cockpit rotate verb (Rung C); §Amendment 2026-05-17 documents wrapper-resolver asymmetry + handoff write-path semantics.
 - [ADR-162](adr/162-atmux-owns-tmux-infrastructure.md) — atmux owns its tmux infrastructure (cockpit socket isolation + canonical atmux.conf + version probes).
 - [ADR-135](adr/135-cockpit-naming-convention.md) — cockpit naming convention (`_-prefix` for default-member windows; session literal now `atx` per [ADR-264](adr/264-cockpit-session-atx-rename.md)).

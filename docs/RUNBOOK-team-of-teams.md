@@ -12,6 +12,8 @@
 
 Operator-facing playbook for the team-of-teams (epic-team) lifecycle that atmux exercises end-to-end in `tests/e2e/team-of-teams-pre-sopx.test.ts`. Pairs ADR-089 (cockpit-walk DFS substrate) + ADR-090 (epic-team lifecycle) + ADR-091 (epic-merge state machine) + ADR-092 (cross-team tell-lead) into a single operator narrative.
 
+> **Scope note.** This playbook covers epic-teams specifically — nested cages that exist *because of a kanban epic*, and that carry an `epicId` linking back to it. **It is not the general nesting model.** ADR-089's nesting mechanism is reason-agnostic: a cage may contain child cages to arbitrary depth for any purpose, and a nested cage needs no epic and no `epicId` ([ADR-089 §Amendment 2026-08-27](adr/089-hierarchical-cockpit.md) §(A); operator-facing form in [RUNBOOK-cockpit.md §11](RUNBOOK-cockpit.md)). Everything below applies to the epic-shaped instance, not to nesting as such.
+
 ⚠️ **Status: phase-2 partial — cross-team `tell-lead` paths (§Cross-team tell-lead) flipped to Verified per t-bc4fdb19. Lifecycle walk (§Sopx adoption) + doctor checks (§Doctor checks) remain phase-1 / t-c2e544b6 scope. Operator-runnable surfaces (`atmux team spawn-epic` / `dissolve-epic` / `epic-merge` cron) are now on the up-impl-3 branch via cherry-pick of `ba7ee3f` (ADR-092) + `a670648` (phase-1 skeleton); committer fan-in to trunk is in flight (committer-stuck-bug t-f4088323).**
 
 ## When to spawn an epic-team
