@@ -4,6 +4,8 @@
 **Date**: 2026-06-04
 **Driver-ref**: P0 kanban task t-65bec10b — a cleanup/probe once wiped `/tmp/atmux-<parent>/` wholesale when the parent team's OWN socket looked dead, taking its live epic-team children with it (2026-05-17 incident).
 
+> ⚠ **SUPERSEDED 2026-08-27 by [ADR-280](280-epic-team-retirement-and-staged-excision.md).** Epic-teams are retired: the `epic-team` cage type, the `epicId` cockpit field and the epic verbs no longer exist. This ADR is kept as history — the decision it records was true when made. Do not implement from it.
+
 ## Context
 
 Epic-team cages live on disk at `/tmp/atmux-<parent>/epics/<epicId>/tmux-<uid>/default` (ADR-090 §Disk layout; `spawn-epic.ts` §S2 writes the child `team.json` with `tmuxTmpdir = /tmp/atmux-<parent>/epics/<epicId>`, and the live socket is `<tmuxTmpdir>/tmux-<uid>/default` per ADR-251 / `resolveTeamSocket`). atmux owns this tmux infrastructure end-to-end (ADR-162).

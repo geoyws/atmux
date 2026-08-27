@@ -4,6 +4,8 @@
 **Date**: 2026-05-29
 **Driver-ref**: operator session 2026-05-29 — "orchd is leaking, growing RAM". Triage found orchd's own RSS steady at ~4MB; the growth was **136 `claude` TUIs ≈ 43.6 GB** across accumulated epic-team cages (sopx ×17, mx ×7, unum ×3, …) that were spawned but never dissolved.
 
+> ⚠ **SUPERSEDED 2026-08-27 by [ADR-280](280-epic-team-retirement-and-staged-excision.md).** Epic-teams are retired: the `epic-team` cage type, the `epicId` cockpit field and the epic verbs no longer exist. This ADR is kept as history — the decision it records was true when made. Do not implement from it.
+
 ## Context
 
 orchd spawns epic-teams on `epic.ready` / `epic.unblocked` (`src/core/orchd-spawn.ts`), and the 5-min `--sweep` backstop (`src/core/orchd-sweep.ts`) re-spawns missed ones. **Dissolution only fires on the happy path**: `task.done → … → epic.merged → epic.pushed →` the `atmux:orchd:auto-dissolve` consumer. An epic-team that is spawned but **never reaches merge** — stuck, idle, abandoned, never-started — is **never reaped**. Its tmux cage (driver + members, each a `claude` TUI) lives forever.

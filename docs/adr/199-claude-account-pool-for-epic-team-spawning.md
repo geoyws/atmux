@@ -5,6 +5,8 @@
 **Driver-ref**: 2026-05-20 evening design session — operator request "we also need a feature to be able to spawn epic-teams from a pool of claude accounts" + "gate it after our honker implementation"
 **Cross-refs**: [ADR-033](033-kanban-driver-only-flag.md) (driver-scope-only flag — pool config follows this scope), [ADR-091](091-kanban-driven-auto-merge.md) (epic-spawn / spawn-epic verb surface that this extends), [ADR-140](140-cheap-model-first.md) (motivation overlap — observation-loop Claude-burn reduction; pool reduces per-team rate-limit blast), Honker-substrate ADR (TBD — forward-ref for budget-event subscription path), memory `feedback_spawn_epic_claude_account_inheritance_gap` (the 401-on-spawn manual recovery dance this resolves), memory `feedback_spawn_epic_requires_driver_scope` (spawn-epic itself is driver-scope-only — pool mutations inherit), memory `project_spawn_epic_claude_account_pool` (design state).
 
+> ⚠ **SUPERSEDED 2026-08-27 by [ADR-280](280-epic-team-retirement-and-staged-excision.md).** Epic-teams are retired: the `epic-team` cage type, the `epicId` cockpit field and the epic verbs no longer exist. This ADR is kept as history — the decision it records was true when made. Do not implement from it.
+
 ## Context
 
 `atmux team spawn-epic <eid>` provisions an ephemeral epic-team (per ADR-091) with its own cage, worktree, kanban DB, and tmux session. Each member in the spawned team needs a `claudeAccount` field on its roster entry — without one, the cage spawn 401s at the first Claude API call.

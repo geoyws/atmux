@@ -4,6 +4,8 @@
 **Date**: 2026-05-20
 **Related**: [ADR-091](./091-kanban-driven-auto-merge.md) §EPIC-done definition (the section this ADR amends), [ADR-090](./090-epic-team-lifecycle.md) §`dissolve-epic` (the dissolve mechanism that destroys the kanban), [ADR-134](./134-in-team-auto-merger.md) (intra-team merger sibling — same scope-mirror question one level down).
 
+> ⚠ **SUPERSEDED 2026-08-27 by [ADR-280](280-epic-team-retirement-and-staged-excision.md).** Epic-teams are retired: the `epic-team` cage type, the `epicId` cockpit field and the epic verbs no longer exist. This ADR is kept as history — the decision it records was true when made. Do not implement from it.
+
 ## Context
 
 ### Trigger case

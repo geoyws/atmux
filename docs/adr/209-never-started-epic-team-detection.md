@@ -8,6 +8,8 @@
 **Extends**: ADR-090 (epic-team spawn/dissolve), ADR-132/158 (sentinel), ADR-170 (`team sweep-epics`), ADR-208 (deploy-completeness probe class — sibling failure mode for spawn-vs-deploy split).
 **Relates**: ADR-027 (doctor probe registry).
 
+> ⚠ **SUPERSEDED 2026-08-27 by [ADR-280](280-epic-team-retirement-and-staged-excision.md).** Epic-teams are retired: the `epic-team` cage type, the `epicId` cockpit field and the epic verbs no longer exist. This ADR is kept as history — the decision it records was true when made. Do not implement from it.
+
 ## Context
 
 Eight SOPX cockpit-rostered epic-teams were created via `team spawn-epic`. Each got the conventional payload (worktree + branch + kanban with 3–21 todos + cockpit roster entry + `team.json` with `claudeAccount` resolved). For 7 of them, **bring-up did fire** — tmux sessions exist at `/tmp/atmux-sopx/epics/<epicId>/tmux-0/default`, all 7 windows are present, claude is running in each pane. Despite that, the teams shipped zero commits past spawn-base.
