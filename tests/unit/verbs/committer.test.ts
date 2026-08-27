@@ -431,32 +431,40 @@ describe("orchd --drain / --start integration (committer bodies)", () => {
     expect(rc).toBe(0);
 
     // The drain log summary MUST surface orchd-* stats — drift detector
-    // for step 3/5's contract. Phase 2 (ADR-231) added 3 consumers:
-    // dissolve-solo-worker + spawn:on-ready + spawn:on-unblocked. Then
-    // ADR-214 §D2 added the complaint consumer and ADR-212 / e-cc3728bf
-    // added the rotation consumer, taking the canonical set to 8.
+    // for step 3/5's contract. The canonical set was 8: parent's
+    // auto-merge / auto-dissolve / auto-push (ADR-226/227/229), the
+    // ADR-231 §D2/§D6 spawn + solo-worker-dissolve trio, ADR-214 §D2's
+    // complaint consumer and ADR-212 / e-cc3728bf's rotation consumer.
+    //
+    // ADR-280 stage 3 removed the ADR-231 trio — `spawn:on-ready` and
+    // `spawn:on-unblocked` shelled `atmux team spawn-epic` and
+    // `dissolve-solo-worker` shelled `atmux team dissolve-worker`, all
+    // three verbs deleted by stages 2/3 — so the canonical set is 5. The
+    // shape of the assertion is UNCHANGED: an exact count and an exact
+    // sorted ID list, so a consumer silently appearing or disappearing
+    // still fails here. Nothing is weakened to accommodate the removal.
     const summary = logs.find((l) => l.includes("committer --drain: team="));
     expect(summary).toBeDefined();
-    expect(summary).toContain("orchd-subs=8");
+    expect(summary).toContain("orchd-subs=5");
+    expect(summary).toContain("orchd-processed=0");
     expect(summary).toContain("orchd-errors=0");
 
-    // Registry MUST have been populated with the eight canonical consumer
+    // Registry MUST have been populated with the five canonical consumer
     // IDs (idempotency means a sibling call wouldn't double-push these).
-    // ADR-231 §D2/§D6 added the spawn + solo-worker-dissolve entries on
-    // top of parent's auto-merge/dissolve/push (ADR-226/227/229);
-    // ADR-214 §D2 added complaint-consumer and ADR-212 / e-cc3728bf added
-    // rotation-consumer.
     const consumerIds = ORCHD_SUBSCRIPTIONS.map((s) => s.consumerId).sort();
     expect(consumerIds).toEqual([
       "atmux:complaint-consumer",
       "atmux:orchd:auto-dissolve",
       "atmux:orchd:auto-merge",
       "atmux:orchd:auto-push",
-      "atmux:orchd:dissolve-solo-worker",
-      "atmux:orchd:spawn:on-ready",
-      "atmux:orchd:spawn:on-unblocked",
       "atmux:rotation-consumer",
     ]);
+    // The three retired consumers are gone from the REGISTRY, not merely
+    // unexported — a stale row here would keep Honker draining a topic
+    // into a handler that no longer exists.
+    expect(consumerIds).not.toContain("atmux:orchd:spawn:on-ready");
+    expect(consumerIds).not.toContain("atmux:orchd:spawn:on-unblocked");
+    expect(consumerIds).not.toContain("atmux:orchd:dissolve-solo-worker");
 
     // Cleanup so sibling tests don't see leaked registry state.
     ORCHD_SUBSCRIPTIONS.length = 0;
