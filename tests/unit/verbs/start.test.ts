@@ -335,7 +335,7 @@ describe("start — happy path", () => {
     expect(exit).toBe(0);
 
     // Session present at the per-test socket
-    const session = `atmux-${env.team}`;
+    const session = env.team;
     expect(await env.tmux.session.hasSession(session)).toBe(true);
 
     // Two member windows, no `__<team>__home` placeholder remaining.
@@ -363,7 +363,7 @@ describe("start — happy path", () => {
     });
 
     await runStart([]);
-    const windows = await env.tmux.window.listWindows(`atmux-${env.team}`);
+    const windows = await env.tmux.window.listWindows(env.team);
     expect(windows.map((w) => w.name)).toContain("🦄-carol");
   });
 
@@ -379,7 +379,7 @@ describe("start — happy path", () => {
       // cwd path is exercised. Direct cwd readback is impractical without
       // running a shell-command in the pane (which would defeat the
       // empty-pane MVP).
-      const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
+      const wins = await env.tmux.window.listWindows(env.team);
       expect(wins.map((w) => w.name)).toContain("🐝-dave");
     } finally {
       await rm(memberCwd, { recursive: true, force: true });
@@ -395,7 +395,7 @@ describe("start — happy path", () => {
     );
 
     // Reset + run again with --no-doctor — no doctor notice should appear
-    await env.tmux.session.killSession(`atmux-${env.team}`);
+    await env.tmux.session.killSession(env.team);
     env.logs.length = 0;
     await runStart(["--no-doctor"]);
     expect(env.logs.some((l) => l.msg.includes("doctor mode"))).toBe(false);
@@ -413,7 +413,7 @@ describe("start — happy path", () => {
     await writeTeamJson({ members: [] });
     const exit = await runStart([]);
     expect(exit).toBe(0);
-    const session = `atmux-${env.team}`;
+    const session = env.team;
     const wins = await env.tmux.window.listWindows(session);
     expect(wins.map((w) => w.name)).toEqual([`__${env.team}__home`]);
   });
@@ -478,7 +478,7 @@ describe("start — happy path", () => {
     // re-fires the scrub loop), and verify the seeded vars are gone.
     await writeTeamJson({ members: [{ name: "alice", role: "member" }] });
     await runStart([], { extraEnv: { ATMUX_NO_CRON: "1" } });
-    const session = `atmux-${env.team}`;
+    const session = env.team;
     // Seed the three target vars on the session.
     for (const v of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CONFIG_DIR"]) {
       await env.tmux.session.setEnvironment({ target: session, name: v, value: "seeded" });
@@ -553,7 +553,7 @@ describe("start — live-lead guard", () => {
       members: [{ name: "alice", role: "team-lead" }],
     });
     expect(await runStart(["--force"])).toBe(0);
-    expect(await env.tmux.session.hasSession(`atmux-${env.team}`)).toBe(true);
+    expect(await env.tmux.session.hasSession(env.team)).toBe(true);
   });
 });
 
@@ -589,7 +589,7 @@ describe("start — arg-parse failures bubble through", () => {
     await writeTeamJson({ members: [] });
     await expect(runStart(["--bogus"])).rejects.toThrow(UsageError);
     // Session was NOT created
-    expect(await env.tmux.session.hasSession(`atmux-${env.team}`)).toBe(false);
+    expect(await env.tmux.session.hasSession(env.team)).toBe(false);
   });
 });
 
@@ -601,7 +601,7 @@ describe("start — __home placeholder cleanup", () => {
       members: [{ name: "alice", role: "team-lead" }],
     });
     await runStart([]);
-    const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
+    const wins = await env.tmux.window.listWindows(env.team);
     expect(wins.map((w) => w.name)).not.toContain(`__${env.team}__home`);
   });
 });
@@ -625,7 +625,7 @@ describe("start — incremental restart skips existing windows", () => {
     env.logs.length = 0;
     expect(await runStart([])).toBe(0);
 
-    const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
+    const wins = await env.tmux.window.listWindows(env.team);
     const names = wins.map((w) => w.name).sort();
     expect(names).toContain("🧭_alice");
     expect(names).toContain("🔍_bob");
@@ -651,7 +651,7 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
 
     expect(await runStart([])).toBe(0);
 
-    const session = `atmux-${env.team}`;
+    const session = env.team;
     const wins = await env.tmux.window.listWindows(session);
     expect(wins.map((w) => w.name)).toEqual(["driver"]);
     expect(
@@ -675,7 +675,7 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
 
     expect(await runStart([])).toBe(0);
 
-    const session = `atmux-${env.team}`;
+    const session = env.team;
     expect(
       await env.tmux.pane.displayMessage({
         target: `${session}:driver`,
@@ -696,7 +696,7 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
     const exit = await runStart([]);
     expect(exit).toBe(0);
 
-    const session = `atmux-${env.team}`;
+    const session = env.team;
     const wins = await env.tmux.window.listWindows(session);
     // Sort by index to assert positional order — listWindows returns
     // the natural tmux order but tests are clearer with explicit sort.
@@ -732,7 +732,7 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
     expect(exit).toBe(0);
 
     expect(env.logs.some((l) => l.msg.includes("driver at window 1"))).toBe(false);
-    const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
+    const wins = await env.tmux.window.listWindows(env.team);
     expect(wins.some((w) => w.name === "driver")).toBe(false);
   });
 
@@ -747,7 +747,7 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
     const exit = await runStart([]);
     expect(exit).toBe(0);
 
-    const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
+    const wins = await env.tmux.window.listWindows(env.team);
     expect(wins.some((w) => w.name === "driver")).toBe(false);
     // __home was created then cleaned up by step 9 (member spawned).
     expect(wins.some((w) => w.name === `__${env.team}__home`)).toBe(false);
@@ -762,7 +762,7 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
     await writeTeamJson({ members: [] });
     const exit = await runStart([]);
     expect(exit).toBe(0);
-    const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
+    const wins = await env.tmux.window.listWindows(env.team);
     expect(wins.map((w) => w.name)).toEqual([`__${env.team}__home`]);
   });
 
@@ -781,7 +781,7 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
     const exit = await runStart([]);
     expect(exit).toBe(0);
 
-    const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
+    const wins = await env.tmux.window.listWindows(env.team);
     // Driver window IS present — the resolve-failure does NOT block
     // session creation under ADR-239 §A1.
     expect(wins.some((w) => w.name === "driver")).toBe(true);
@@ -817,7 +817,7 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
     env.logs.length = 0;
     expect(await runStart([])).toBe(0);
 
-    const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
+    const wins = await env.tmux.window.listWindows(env.team);
     expect(wins.some((w) => w.name === "driver")).toBe(false);
     // No driver-at-window-1 log line either (path didn't run).
     expect(env.logs.some((l) => l.msg.includes("driver at window 1"))).toBe(false);
@@ -847,7 +847,7 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
     expect(exit).toBe(0);
 
     // Member window present — the send-keys path didn't throw.
-    const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
+    const wins = await env.tmux.window.listWindows(env.team);
     expect(wins.map((w) => w.name)).toContain("🧭_alpha");
   });
 
@@ -870,7 +870,7 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
     const exit = await runStart([]);
     expect(exit).toBe(0);
 
-    const session = `atmux-${env.team}`;
+    const session = env.team;
     const wins = await env.tmux.window.listWindows(session);
     const ordered = [...wins].sort((a, b) => a.index - b.index);
     expect(ordered[0]?.name).toBe("driver");
@@ -902,7 +902,7 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
     env.logs.length = 0;
     expect(await runStart(["--force"])).toBe(0);
 
-    const session = `atmux-${env.team}`;
+    const session = env.team;
     const wins = await env.tmux.window.listWindows(session);
     const ordered = [...wins].sort((a, b) => a.index - b.index);
     expect(ordered[0]?.name).toBe("driver");
@@ -1053,7 +1053,7 @@ describe("start — ADR-082 W3 worktree-isolation", () => {
     const exit = await runStart([], { gitSpawn });
     expect(exit).toBe(0);
     // Team still spawned all 3 members despite bob's provision failure.
-    const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
+    const wins = await env.tmux.window.listWindows(env.team);
     const names = wins.map((w) => w.name).sort();
     expect(names).toContain("🧭_alice");
     expect(names).toContain("🔍_bob");
@@ -1092,7 +1092,7 @@ describe("start — ADR-082 W3 worktree-isolation", () => {
     const warns = env.logs.filter((l) => l.kind === "warn");
     expect(warns.some((l) => l.msg.includes("cannot detect repo root"))).toBe(true);
     // Members still spawn — pane creation is unaffected.
-    const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
+    const wins = await env.tmux.window.listWindows(env.team);
     expect(wins.map((w) => w.name).sort()).toEqual(["🔍_bob", "🧭_alice"]);
   });
 
@@ -1199,7 +1199,7 @@ describe("start — ADR-081 §C brief-paste", () => {
 
       // Allow C-m + cat's echo to make it to the pane buffer.
       await new Promise<void>((res) => setTimeout(res, 200));
-      const pane = await capture(`atmux-${env.team}`, "🐝-alpha");
+      const pane = await capture(env.team, "🐝-alpha");
       expect(pane).toContain("Hello alpha on team");
       expect(pane).toContain(env.team);
       expect(pane).toContain("role=member");
@@ -1245,7 +1245,7 @@ describe("start — ADR-081 §C brief-paste", () => {
           }),
       });
       await new Promise<void>((res) => setTimeout(res, 200));
-      const pane = await capture(`atmux-${env.team}`, "🧭_lead1");
+      const pane = await capture(env.team, "🧭_lead1");
       expect(pane).toContain("LEAD-BRIEF-FOR-lead1");
       expect(pane).not.toContain("MEMBER-BRIEF-FOR-lead1");
     } finally {
@@ -1282,7 +1282,7 @@ describe("start — ADR-081 §C brief-paste", () => {
       await new Promise<void>((res) => setTimeout(res, 200));
       // unblocker pool starts with 🔓 (common.ts:ROLE_EMOJI_POOLS).
       // ADR-135 §D3: hyphen separator between emoji and member name.
-      const pane = await capture(`atmux-${env.team}`, "🔓-u1");
+      const pane = await capture(env.team, "🔓-u1");
       expect(pane).toContain("FALLBACK-FOR-unblocker");
     } finally {
       await rm(briefsDir, { recursive: true, force: true });
@@ -1318,7 +1318,7 @@ describe("start — ADR-081 §C brief-paste", () => {
         false,
       );
       // Pane still exists — team didn't wedge from the no-op brief path.
-      const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
+      const wins = await env.tmux.window.listWindows(env.team);
       expect(wins.map((w) => w.name)).toContain("🐝-alpha");
     } finally {
       await rm(briefsDir, { recursive: true, force: true });
@@ -1389,7 +1389,7 @@ describe("start — ADR-081 §C brief-paste", () => {
 
       // Lead's brief landed.
       await new Promise<void>((res) => setTimeout(res, 200));
-      const leadPane = await capture(`atmux-${env.team}`, "🧭_alpha");
+      const leadPane = await capture(env.team, "🧭_alpha");
       expect(leadPane).toContain("LEAD-BRIEF-FOR-alpha");
 
       // Bob's brief failed → warn line.
@@ -1399,7 +1399,7 @@ describe("start — ADR-081 §C brief-paste", () => {
       );
 
       // Both panes exist — team didn't half-spawn.
-      const wins = await env.tmux.window.listWindows(`atmux-${env.team}`);
+      const wins = await env.tmux.window.listWindows(env.team);
       const names = wins.map((w) => w.name);
       expect(names).toContain("🧭_alpha");
       expect(names).toContain("🐝-bob");

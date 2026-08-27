@@ -101,7 +101,7 @@ async function buildFixture(
   }>,
 ): Promise<Fixture> {
   const teamName = `mr${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-  const sessionName = `atmux-${teamName}`;
+  const sessionName = teamName; // bare per e-419553c6
   const teamDir = await mkdtemp(join(tmpdir(), "atmux-mr-team-"));
   const atmuxDir = join(teamDir, ".atmux");
   const socketDir = await mkdtemp(join(tmpdir(), "atmux-mr-sock-"));

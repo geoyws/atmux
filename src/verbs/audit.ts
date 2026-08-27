@@ -49,7 +49,12 @@ import { join } from "node:path";
 
 import { exists } from "../abstractions/fs.ts";
 import { tryReadJson } from "../abstractions/json.ts";
-import { createTmux, type TmuxConfig, type TmuxNamespace } from "../abstractions/tmux.ts";
+import {
+  createTmux,
+  exactSessionTarget,
+  type TmuxConfig,
+  type TmuxNamespace,
+} from "../abstractions/tmux.ts";
 import { type LoadCockpitOpts, loadCockpit } from "../core/cockpit.ts";
 import {
   getSessionName,
@@ -497,7 +502,7 @@ export async function runAllChecks(
     const tmux = deps.tmux ?? createTmux(buildTmuxConfig(team, args.socketPath));
     let sessionExists = false;
     try {
-      sessionExists = await tmux.session.hasSession(sessionName);
+      sessionExists = await tmux.session.hasSession(exactSessionTarget(sessionName));
     } catch {
       sessionExists = false;
     }

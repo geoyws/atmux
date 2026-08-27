@@ -61,7 +61,7 @@ function windowNameFor(m: Member): string {
 
 async function buildFixture(members: ReadonlyArray<Member>): Promise<Fixture> {
   const teamName = `mt${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-  const sessionName = `atmux-${teamName}`;
+  const sessionName = teamName; // bare per e-419553c6
   const atmuxDir = await mkdtemp(join(tmpdir(), "atmux-mt-dir-"));
   const socketDir = await mkdtemp(join(tmpdir(), "atmux-mt-sock-"));
   const socketPath = join(socketDir, "sock");

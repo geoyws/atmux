@@ -2,7 +2,7 @@ import { readlink as fsReadlink } from "node:fs/promises";
 import { exists, readTextOrNull } from "../../abstractions/fs.ts";
 import { isDefaultMemberRole } from "../../abstractions/member-roles.ts";
 import type { SpawnResult } from "../../abstractions/spawn.ts";
-import { createTmux } from "../../abstractions/tmux.ts";
+import { createTmux, exactSessionTarget } from "../../abstractions/tmux.ts";
 import {
   type CageHealth,
   type CageState,
@@ -51,15 +51,28 @@ export async function checkOrphanSessions(
     opts.hasSession ??
     (async (name: string) => {
       const tmux = createTmux({ socketPath: resolveTeamSocket(team) });
-      return await tmux.session.hasSession(name);
+      return await tmux.session.hasSession(exactSessionTarget(name));
     });
-  const teamSession = `atmux-${team.name}`;
-  if (await hasSession(teamSession)) {
+  // e-419553c6: the bare `<team>` name is the CURRENT default, so a
+  // bare-named session is never flagged here; the probe target is the
+  // retired `atmux-<team>` default a pre-migration cage could have left
+  // behind. A team whose anchor resolves TO that name is not orphaned
+  // either — that name IS its live session — so the resolved name is
+  // excluded. Resolution failure (singleSession with no anchor throws)
+  // falls back to the bare name, which never equals the probed literal.
+  let resolved: string;
+  try {
+    resolved = await getSessionName({ team });
+  } catch {
+    resolved = team.name;
+  }
+  const legacySession = `atmux-${team.name}`;
+  if (legacySession !== resolved && (await hasSession(legacySession))) {
     rows.push({
       status: "yellow",
       label: "orphan-session",
-      detail: `team is single-session but legacy session '${teamSession}' still exists`,
-      hint: `kill it: tmux kill-session -t ${teamSession}`,
+      detail: `team is single-session but legacy session '${legacySession}' still exists`,
+      hint: `kill it: tmux kill-session -t '=${legacySession}'`,
     });
   }
   return rows;
@@ -103,10 +116,11 @@ export type SessionNameSource = { root: string } | { atmuxDir?: string };
  *   With no `atmuxDir` it walks up from cwd, which for a current-team
  *   probe is that team's own directory.
  *
- * Fails soft to the legacy literal. `getSessionName` throws
- * `ConfigError` for a `singleSession` team with no anchor; one
- * misconfigured team must not take down the whole `atmux doctor` run,
- * and the literal is exactly what the probe used before this fix.
+ * Fails soft to the bare `<team>` default (e-419553c6 — session names
+ * dropped the `atmux-` prefix). `getSessionName` throws `ConfigError`
+ * for a `singleSession` team with no anchor; one misconfigured team
+ * must not take down the whole `atmux doctor` run, and the bare name is
+ * what an unanchored team's session is actually called now.
  */
 export async function probeSessionName(team: Team, src: SessionNameSource): Promise<string> {
   try {
@@ -116,7 +130,7 @@ export async function probeSessionName(team: Team, src: SessionNameSource): Prom
       team,
     });
   } catch {
-    return `atmux-${team.name}`;
+    return team.name;
   }
 }
 
@@ -210,7 +224,7 @@ export async function checkMemberCageStates(
     opts.hasSession ??
     (async (name: string, sock: string) => {
       const tmux = createTmux({ socketPath: sock });
-      return await tmux.session.hasSession(name);
+      return await tmux.session.hasSession(exactSessionTarget(name));
     });
   if (!(await hasSession(sessionName, socketPath))) return [];
 

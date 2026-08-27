@@ -52,7 +52,12 @@
 import { atomicWrite, readTextOrNull } from "../abstractions/fs.ts";
 import { updateJson } from "../abstractions/json.ts";
 import { DEFAULT_MEMBER_ROLES } from "../abstractions/member-roles.ts";
-import { createTmux, type TmuxConfig, type TmuxNamespace } from "../abstractions/tmux.ts";
+import {
+  createTmux,
+  exactSessionTarget,
+  type TmuxConfig,
+  type TmuxNamespace,
+} from "../abstractions/tmux.ts";
 import {
   MemberWindowResolveError,
   type MemberShape,
@@ -328,7 +333,7 @@ export async function memberRenameInternal(
   }
 
   if (sessionName !== null) {
-    const alive = await tmux.session.hasSession(sessionName).catch(() => false);
+    const alive = await tmux.session.hasSession(exactSessionTarget(sessionName)).catch(() => false);
     if (alive) {
       try {
         await tmux.window.renameWindow(`${sessionName}:${oldWindow}`, newWindow);
@@ -700,7 +705,7 @@ async function probeLiveSession(opts: {
     return null;
   }
   if (sessionName === null) return null;
-  const alive = await tmux.session.hasSession(sessionName).catch(() => false);
+  const alive = await tmux.session.hasSession(exactSessionTarget(sessionName)).catch(() => false);
   if (!alive) return null;
   return { tmux, sessionName };
 }

@@ -71,6 +71,7 @@ import { acquire as acquireLock, type LockHandle } from "../abstractions/lock.ts
 import { spawn } from "../abstractions/spawn.ts";
 import {
   createTmux,
+  exactSessionTarget,
   type SendTarget,
   serializeSendTarget,
   type TmuxNamespace,
@@ -1086,7 +1087,7 @@ async function runTick(parsed: PokeArgs, ctx: TickCtx): Promise<number> {
 
   // ---------- Check 1: session liveness with 2-tick gate ----------
   const prevState = await readSessionState(atmuxDir);
-  const sessionUp = await ctx.tmux.session.hasSession(session);
+  const sessionUp = await ctx.tmux.session.hasSession(exactSessionTarget(session));
   const { verdict, next } = classifySessionState(
     prevState,
     sessionUp,

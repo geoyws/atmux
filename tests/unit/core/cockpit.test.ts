@@ -372,16 +372,15 @@ describe("resolveCageSessionName (anchor-aware)", () => {
     expect(await resolveCageSessionName({ name: "unum", root: tmpDir })).toBe("atmux_unum");
   });
 
-  test("falls back to atmux-<name> (hyphen) when anchor absent", async () => {
+  test("falls back to the bare <name> when anchor absent (e-419553c6)", async () => {
     // No state/session.txt — must match getSessionName fallback from
     // common.ts, which start.ts uses to actually create the session.
-    expect(await resolveCageSessionName({ name: "ifca-docs", root: tmpDir })).toBe(
-      "atmux-ifca-docs",
-    );
-    expect(await resolveCageSessionName({ name: "rentx", root: tmpDir })).toBe("atmux-rentx");
+    // e-419553c6 dropped the `atmux-` prefix: the session IS the team.
+    expect(await resolveCageSessionName({ name: "ifca-docs", root: tmpDir })).toBe("ifca-docs");
+    expect(await resolveCageSessionName({ name: "rentx", root: tmpDir })).toBe("rentx");
   });
 
-  test("special-cases the 'atmux' team to bare 'atmux' when no anchor", async () => {
+  test("the 'atmux' team needs no special case any more — bare is universal", async () => {
     expect(await resolveCageSessionName({ name: "atmux", root: tmpDir })).toBe("atmux");
   });
 
@@ -391,10 +390,18 @@ describe("resolveCageSessionName (anchor-aware)", () => {
     expect(await resolveCageSessionName({ name: "x", root: tmpDir })).toBe("atmux_custom");
   });
 
+  test("legacy prefixed forms stay reachable via an explicit anchor", async () => {
+    await mkdir(join(tmpDir, ".atmux/state"), { recursive: true });
+    await writeFile(join(tmpDir, ".atmux/state/session.txt"), "atmux-legacy-pin\n");
+    expect(await resolveCageSessionName({ name: "legacy-pin", root: tmpDir })).toBe(
+      "atmux-legacy-pin",
+    );
+  });
+
   test("treats empty-string anchor as absent (falls back)", async () => {
     await mkdir(join(tmpDir, ".atmux/state"), { recursive: true });
     await writeFile(join(tmpDir, ".atmux/state/session.txt"), "   \n");
-    expect(await resolveCageSessionName({ name: "demo", root: tmpDir })).toBe("atmux-demo");
+    expect(await resolveCageSessionName({ name: "demo", root: tmpDir })).toBe("demo");
   });
 });
 

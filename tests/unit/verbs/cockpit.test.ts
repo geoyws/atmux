@@ -524,9 +524,11 @@ describe("autolaunchTeam", () => {
         "utf8",
       );
       // Create the cage session with a window named after the member.
-      // Cage session name for "demo" is "atmux-demo" per resolveCageSessionName() — hyphen-form fallback for unanchored teams (matches getSessionName).
+      // Cage session name for "demo" is the bare "demo" per
+      // resolveCageSessionName() — e-419553c6 bare fallback for
+      // unanchored teams (matches getSessionName).
       await fx.tmux.session.newSession({
-        name: "atmux-demo",
+        name: "demo",
         detached: true,
         windowName: "lead",
       });
@@ -567,7 +569,7 @@ describe("autolaunchTeam", () => {
         "utf8",
       );
       await fx.tmux.session.newSession({
-        name: "atmux-px",
+        name: "px",
         detached: true,
         windowName: "lead",
       });
@@ -593,7 +595,7 @@ describe("autolaunchTeam", () => {
       );
       expect(summary.launched).toBe(1);
       expect(summary.unbootstrapped).toEqual([]);
-      expect(probeCalls).toEqual(["lead@atmux-px:0"]);
+      expect(probeCalls).toEqual(["lead@px:0"]);
       // No warning lines emitted on the happy path.
       expect(logs.filter((l) => l.startsWith("warn:"))).toEqual([]);
     } finally {
@@ -620,7 +622,7 @@ describe("autolaunchTeam", () => {
         "utf8",
       );
       await fx.tmux.session.newSession({
-        name: "atmux-py",
+        name: "py",
         detached: true,
         windowName: "alpha",
       });
@@ -676,12 +678,12 @@ describe("autolaunchTeam", () => {
         "utf8",
       );
       await fx.tmux.session.newSession({
-        name: "atmux-pz",
+        name: "pz",
         detached: true,
         windowName: "alpha",
       });
       await fx.tmux.window.newWindow({
-        sessionName: "atmux-pz",
+        sessionName: "pz",
         name: "beta",
       });
       let calls = 0;

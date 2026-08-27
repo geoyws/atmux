@@ -17,7 +17,7 @@
 // the entire isolation mechanism — see `isolation.ts`.
 
 import { join } from "node:path";
-import type { TmuxNamespace } from "../../../abstractions/tmux.ts";
+import { exactSessionTarget, type TmuxNamespace } from "../../../abstractions/tmux.ts";
 import { sessionAnchorPath } from "../../common.ts";
 import { TEAM_FIXTURES, type TeamFixture, teamName } from "./fixtures.ts";
 
@@ -187,9 +187,9 @@ export function buildCagePlan(opts: {
       teamJson,
       anchorPath: sessionAnchorPath(atmuxDir),
       // Pinned explicitly rather than left to `resolveCageSessionName`'s
-      // `atmux-<name>` default, so the harness and the sweep cannot
-      // disagree about which session to look for.
-      sessionName: `atmux-${name}`,
+      // bare `<name>` default (e-419553c6), so the harness and the sweep
+      // cannot disagree about which session to look for.
+      sessionName: name,
       tmuxTmpdir,
       socketDir,
       socketPath: join(socketDir, "default"),
@@ -335,8 +335,10 @@ export async function destroyCage(
     guard(team.socketPath);
     const tmux = io.tmux(team.socketPath);
     try {
-      if (await tmux.session.hasSession(team.sessionName)) {
-        await tmux.session.killSession(team.sessionName);
+      // `=`-anchored (e-419553c6): bare fixture names prefix-collide —
+      // a probe/kill for `journal` must never take out `journalism`.
+      if (await tmux.session.hasSession(exactSessionTarget(team.sessionName))) {
+        await tmux.session.killSession(exactSessionTarget(team.sessionName));
         log(`cage: killed ${team.sessionName} on ${team.socketPath}`);
       }
     } catch (e) {

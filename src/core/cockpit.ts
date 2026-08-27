@@ -832,9 +832,10 @@ export function cageSessionName(teamName: string): string {
  *
  *  Resolution order (mirrors `common.ts::getSessionName`):
  *    1. `<root>/.atmux/state/session.txt` anchor (when present)
- *    2. Special-case: `team.name === "atmux"` → bare `"atmux"`
- *    3. Default: `atmux-<name>` (hyphen — matches what `start.ts` creates
- *       for any unanchored team via `getSessionName` fallback)
+ *    2. Default: bare `<name>` (e-419553c6 — the `atmux-` prefix was
+ *       dropped from SESSION names to save horizontal space; socket
+ *       paths keep it. The old `team.name === "atmux"` special case
+ *       collapsed into the default: bare is now universal.)
  *
  *  Use this from any cockpit / dissolve / doctor code path that needs
  *  to target a cage's tmux session — `hasSession`, `send-keys`,
@@ -849,6 +850,5 @@ export async function resolveCageSessionName(team: {
     const trimmed = anchor.trim();
     if (trimmed.length > 0) return trimmed;
   }
-  if (team.name === "atmux") return "atmux";
-  return `atmux-${team.name}`;
+  return team.name;
 }

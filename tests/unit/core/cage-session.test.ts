@@ -30,17 +30,17 @@ describe("resolveCageSession (name + socket)", () => {
     await writeFile(join(atmuxDir, "state", "session.txt"), value);
   }
 
-  test("anchor absent + no tmuxTmpdir → HYPHEN name + legacy /tmp socket (rentx)", async () => {
+  test("anchor absent + no tmuxTmpdir → BARE name + legacy /tmp socket (rentx)", async () => {
     const out = await resolveCageSession({ name: "rentx" }, atmuxDir);
-    expect(out.sessionName).toBe("atmux-rentx");
+    expect(out.sessionName).toBe("rentx");
     expect(out.socketPath).toBe("/tmp/atmux-rentx/sock");
   });
 
   test("anchor absent preserves dashes in team name (ifca-docs)", async () => {
-    // Regression guard: the legacy underscore form `atmux_ifca-docs` would
-    // mismatch the `atmux-ifca-docs` session start.ts actually creates.
+    // Regression guard: any prefixed derivation would mismatch the bare
+    // `ifca-docs` session start.ts actually creates (e-419553c6).
     const out = await resolveCageSession({ name: "ifca-docs" }, atmuxDir);
-    expect(out.sessionName).toBe("atmux-ifca-docs");
+    expect(out.sessionName).toBe("ifca-docs");
     expect(out.socketPath).toBe("/tmp/atmux-ifca-docs/sock");
   });
 
@@ -74,33 +74,37 @@ describe("resolveCageSession (name + socket)", () => {
     expect(out.socketPath).toBe("/tmp/atmux-atmux/sock");
   });
 
-  test("'atmux' team with NO anchor special-cases to bare 'atmux'", async () => {
-    // Branch: anchor absent AND team.name === "atmux" → bare session name,
-    // no tmuxTmpdir → legacy /tmp/atmux/sock socket.
+  test("'atmux' team with NO anchor → bare 'atmux' session, team-derived socket", async () => {
+    // e-419553c6: the socket derives from the TEAM name, matching
+    // getDefaultSocket("atmux") — the old session-name-derived
+    // `/tmp/atmux/sock` was a drift from the canonical resolvers.
     const out = await resolveCageSession({ name: "atmux" }, atmuxDir);
     expect(out.sessionName).toBe("atmux");
-    expect(out.socketPath).toBe("/tmp/atmux/sock");
+    expect(out.socketPath).toBe("/tmp/atmux-atmux/sock");
   });
 
-  test("empty-string anchor treated as absent → HYPHEN fallback (rentx)", async () => {
+  test("empty-string anchor treated as absent → BARE fallback (rentx)", async () => {
     await writeAnchor("   \n");
     const out = await resolveCageSession({ name: "rentx" }, atmuxDir);
-    expect(out.sessionName).toBe("atmux-rentx");
+    expect(out.sessionName).toBe("rentx");
     expect(out.socketPath).toBe("/tmp/atmux-rentx/sock");
   });
 
-  test("trailing-newline anchor is trimmed; socket derives from stripped name", async () => {
+  test("trailing-newline anchor is trimmed; socket stays TEAM-derived (e-419553c6)", async () => {
+    // Session names and socket paths are decoupled: the anchor renames
+    // the SESSION only — the socket keeps the /tmp/atmux-<team> shape
+    // the dotfiles prefix chain and /tmp namespacing depend on.
     await writeAnchor("atmux-custom\n\n");
     const out = await resolveCageSession({ name: "rentx" }, atmuxDir);
     expect(out.sessionName).toBe("atmux-custom");
-    expect(out.socketPath).toBe("/tmp/atmux-custom/sock");
+    expect(out.socketPath).toBe("/tmp/atmux-rentx/sock");
   });
 
   test("empty-string tmuxTmpdir falls through to legacy /tmp socket", async () => {
     // Branch: tmuxTmpdir present but zero-length → NOT a per-team cage,
     // must use the legacy /tmp/<sessionName>/sock derivation.
     const out = await resolveCageSession({ name: "rentx", tmuxTmpdir: "" }, atmuxDir);
-    expect(out.sessionName).toBe("atmux-rentx");
+    expect(out.sessionName).toBe("rentx");
     expect(out.socketPath).toBe("/tmp/atmux-rentx/sock");
   });
 

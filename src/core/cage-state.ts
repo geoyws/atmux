@@ -51,7 +51,7 @@
 import type { SpawnResult } from "../abstractions/spawn.ts";
 import { spawn as defaultSpawn } from "../abstractions/spawn.ts";
 import { now } from "../abstractions/time.ts";
-import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
+import { createTmux, exactSessionTarget, type TmuxNamespace } from "../abstractions/tmux.ts";
 import type { Team, TeamMember } from "../schema/team.ts";
 import {
   buildWindowName,
@@ -340,11 +340,15 @@ export async function probeCageState(
 ): Promise<CageHealth> {
   const socketPath = resolveTeamSocket(team);
   // ADR-273 D3 trap 1 — the anchor-aware name when the caller could
-  // resolve one, else the legacy fallback. See `ProbeCageStateOpts`.
-  const sessionName = opts.sessionName ?? `atmux-${team.name}`;
+  // resolve one, else the bare-name default (e-419553c6: session names
+  // dropped the `atmux-` prefix). See `ProbeCageStateOpts`.
+  const sessionName = opts.sessionName ?? team.name;
   const tmux = opts.tmux ?? createTmux({ socketPath });
   const hasSession =
-    opts.hasSession ?? (async (name: string, _sock: string) => tmux.session.hasSession(name));
+    opts.hasSession ??
+    // `=`-anchored: bare session names (e-419553c6) prefix-collide —
+    // `-t sopx` would match a `sopx-guild` session (t-0dbfe104 class).
+    (async (name: string, _sock: string) => tmux.session.hasSession(exactSessionTarget(name)));
   const childIsClaude = opts.paneChildIsClaude ?? defaultPaneChildIsClaude;
   const nowSec = opts.nowSec ?? (() => Math.floor(now() / 1000));
   const readHb = opts.readHeartbeat ?? readHeartbeat;
