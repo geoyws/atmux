@@ -1,6 +1,6 @@
 # ADR-276 — orchd is retired; atmux's scope narrows to tmux cages and `atmux vox`
 
-Status: proposed
+Status: accepted — operator-direct (quoted in §Context, 2026-08-16; reconfirmed verbatim by George 2026-08-27: "i thought it wasn't needed a long time ago in atmux")
 Date: 2026-08-16 (renumbered from a colliding `275-*` on 2026-08-17 — see §Provenance)
 Builds on: [ADR-275](275-external-private-kanban-authority.md) — **accepted, operator-direct.** That ADR decides the work-state question. This one does not re-decide it.
 Supersedes in effect: the orchd phase ADRs — [ADR-202](202-orchd-event-loop.md), [ADR-203](203-event-topic-taxonomy.md), [ADR-226](226-orchd-auto-merge.md), [ADR-227](227-orchd-auto-dissolve.md), [ADR-229](229-orchd-auto-push.md), [ADR-250](250-orchd-stale-epic-team-reaper.md)
