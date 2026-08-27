@@ -148,7 +148,7 @@ export async function tellLead(argv: ReadonlyArray<string>): Promise<number> {
     if (target === null) {
       throw new ConfigError({
         what: `tell-lead --team: no team \`${parsed.targetTeam}\` in cockpit tree`,
-        hint: 'check ~/.atmux/cockpit.json (or ATMUX_COCKPIT_CONFIG); team name must match a `type: "team"` or `type: "epic-team"` node',
+        hint: 'check ~/.atmux/cockpit.json (or ATMUX_COCKPIT_CONFIG); team name must match a `type: "team"` node',
       });
     }
     // ADR-092 §D3 caller-scope gate. Source team is the cwd-derived

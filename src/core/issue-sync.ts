@@ -320,12 +320,12 @@ export interface ResolveTargetTeamDeps {
 /**
  * Resolve a target team name to its `.atmux` dir via the cockpit
  * registry walk (ADR-261 §D9 — the storage-routing leg ADR-150 §D1
- * designed but never shipped). EXACTLY ONE `team` / `epic-team` session
+ * designed but never shipped). EXACTLY ONE `team` session
  * must match the name: zero, multiple, or a match with no resolvable
  * root all throw the typed {@link TargetTeamResolutionError} (ADR-150
- * §D5 refuse-on-ambiguous — never a silent first-pick). Epic-teams
- * share their parent team's worktree, so a matching epic-team resolves
- * to the nearest ancestor `team.root`.
+ * §D5 refuse-on-ambiguous — never a silent first-pick). Nested teams
+ * resolve to their own `root` like any other, so depth does not change
+ * the answer.
  */
 export async function resolveTargetTeamAtmuxDir(
   deps: ResolveTargetTeamDeps,
@@ -335,9 +335,9 @@ export async function resolveTargetTeamAtmuxDir(
   const cockpit = await load(deps.loadCockpitOpts);
   const roots: string[] = [];
   walkSessions(cockpit.sessions ?? [], 0, (node, _level, parentRoot) => {
-    if (node.type !== "team" && node.type !== "epic-team") return;
+    if (node.type !== "team") return;
     if (node.name !== name) return;
-    roots.push(node.type === "team" ? node.root : (parentRoot ?? ""));
+    roots.push(node.root);
   });
   if (roots.length === 0) {
     throw new TargetTeamResolutionError({ team: name, reason: "not-found", matches: 0 });

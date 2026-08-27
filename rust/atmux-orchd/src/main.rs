@@ -57,7 +57,7 @@ use serde_json::Value as JsonValue;
 
 // ADR-256 §Bounded-wait — default deadlines for nested subprocess waits.
 // orchd's Bun children (`--handle-one` per-event handlers + the periodic
-// `--sweep-merges` / `--scan-*` / `--housekeep` ticks) used to block the
+// `--scan-*` / `--housekeep` ticks) used to block the
 // supervisor thread on `Command::status()` UNBOUNDEDLY: a single hung Bun
 // child (deadlocked git merge, wedged network call, infinite loop) froze
 // orchd entirely — no further event dispatch, no ticker progress, the
@@ -877,7 +877,7 @@ fn main() -> ExitCode {
             .join(", ")
     );
     eprintln!(
-        "{} ⏱  orchd cadence · sweep-merges 5min · ctx-scan+budget 15min · housekeep 24h · log-rotate hourly",
+        "{} ⏱  orchd cadence · ctx-scan+budget 15min · housekeep 24h · log-rotate hourly",
         now_ts()
     );
 
@@ -933,16 +933,14 @@ fn main() -> ExitCode {
     let events = db.update_events();
     eprintln!("atmux-orchd: subscribed, entering wake loop");
 
-    // e-11-446429c9 §S6 — in-process 5-min sweep ticker. NOT a
-    // crontab entry per operator anti-cron stance (2026-05-24): "no
-    // crons because they're leaky and dangerous". This timer dies
-    // with the orchd binary — no on-disk scheduler artifact.
-    //
-    // Cadence: 300s between sweeps. Wakes off the same 60s recv
-    // timeout we already use; per-wake we check elapsed and fire
-    // when due.
-    let sweep_interval = Duration::from_secs(300);
-    let mut last_sweep_at = Instant::now();
+    // ADR-280 stage 3 removed the e-11-446429c9 §S6 in-process 5-min
+    // sweep ticker. It spawned `atmux orchd --sweep-merges`, a subverb
+    // that walked kanban epics and dispatched an EPIC-TEAM merge — both
+    // of its dispatchers (the in-cage `atmux epic-merge tick` and
+    // `core/orchd-dispatch/epic-merge.ts`) are retired, so the subverb
+    // has no implementation left and was removed with them. Leaving the
+    // ticker armed would have spawned a failing subprocess every 5
+    // minutes, silently, into a log nobody reads.
     // e-12-640853f3 §S1 — log rotation tick (every hour). Cheap stat
     // call; rename when oversized.
     let rotate_interval = Duration::from_secs(3600);
@@ -960,11 +958,7 @@ fn main() -> ExitCode {
     // rows. In-process per anti-cron stance.
     let housekeep_interval = Duration::from_secs(24 * 60 * 60);
     let mut last_housekeep_at = Instant::now();
-    // Fire one sweep at startup (after the initial drain) to catch
-    // unattended epics whose events fired while orchd was offline +
-    // weren't picked up because their consumer was stub at the time.
-    spawn_sweep_merges(&atmux_bin, &team_dir);
-    // Also fire one context scan + budget scan at startup so the
+    // Fire one context scan + budget scan at startup so the
     // lead sees current saturation state without waiting 15min.
     spawn_scan_context(&atmux_bin, &team_dir);
     spawn_scan_budget(&atmux_bin, &team_dir);
@@ -996,11 +990,6 @@ fn main() -> ExitCode {
                 eprintln!("atmux-orchd: watcher closed ({}), exiting", e);
                 return ExitCode::SUCCESS;
             }
-        }
-        // After each wake, check the sweep ticker. Fire if due.
-        if last_sweep_at.elapsed() >= sweep_interval {
-            spawn_sweep_merges(&atmux_bin, &team_dir);
-            last_sweep_at = Instant::now();
         }
         // Hourly log rotation check (e-12-640853f3 §S1). Cheap.
         if last_rotate_at.elapsed() >= rotate_interval {
@@ -1145,15 +1134,6 @@ fn run_tick_bounded(atmux_bin: &str, team_dir: &str, subverb: &str, icon: &str, 
     }
 }
 
-/// e-11-446429c9 §S6 — spawn the Bun-side `--sweep-merges` subverb.
-/// Fire-and-forget (bounded); the subprocess writes its JSON result to
-/// stdout, which the orchd pane's `tee` captures into the per-team log.
-/// Errors are non-fatal: a failed sweep doesn't compromise the
-/// event-driven fast-path; next tick retries.
-fn spawn_sweep_merges(atmux_bin: &str, team_dir: &str) {
-    run_tick_bounded(atmux_bin, team_dir, "--sweep-merges", "🧭", "sweep");
-}
-
 /// e-14-0f156732 — spawn the Bun-side `--scan-budget` subverb. Same
 /// pattern as scan-context. Consolidates existing budget probe +
 /// runBudgetCheck + Discord renderers per ADR-238.
@@ -1162,13 +1142,13 @@ fn spawn_scan_budget(atmux_bin: &str, team_dir: &str) {
 }
 
 /// e-12-640853f3 §S4 — spawn the Bun-side `--housekeep` subverb. Same
-/// pattern as sweep-merges / scan-context.
+/// pattern as scan-context.
 fn spawn_housekeep(atmux_bin: &str, team_dir: &str) {
     run_tick_bounded(atmux_bin, team_dir, "--housekeep", "🧹", "housekeep");
 }
 
-/// e-13-04c8b3bf — spawn the Bun-side `--scan-context` subverb. Same
-/// fire-and-forget pattern as sweep-merges. Subverb writes its own
+/// e-13-04c8b3bf — spawn the Bun-side `--scan-context` subverb.
+/// Fire-and-forget (bounded). Subverb writes its own
 /// summary line; we only log on non-success to avoid double-noise.
 fn spawn_scan_context(atmux_bin: &str, team_dir: &str) {
     run_tick_bounded(atmux_bin, team_dir, "--scan-context", "📊", "ctx-scan");

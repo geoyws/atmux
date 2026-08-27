@@ -112,7 +112,6 @@ import {
   renderBootFailureNotice,
 } from "../core/boot-claude.ts";
 import {
-  addEpicViewerToParentCage,
   enabledTeams,
   loadCockpit,
   readNestingLevel,
@@ -1039,54 +1038,6 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   }
 
   logger.ok(`team '${team.name}' is up. attach with: atmux attach`);
-
-  // 10b. ADR-089 §Pillar 1 §Amendment (t-2ea3bdb9, 2026-05-16): when this
-  //      team is an epic-team child (team.epicTeam !== undefined), add a
-  //      viewer-window to the PARENT atmux cage that auto-attaches into
-  //      this epic-team's nested cage. Operator-experience: paging
-  //      through parent's window list, the epic-team appears as a
-  //      sibling node at the end, opening directly into the epic-team
-  //      when selected.
-  //
-  //      Soft-fails if the parent cage isn't running OR cockpit
-  //      resolution can't find the parent — the viewer is a UX bridge,
-  //      not a load-bearing structural piece, and never wedges epic-team
-  //      start.
-  if (team.epicTeam !== undefined) {
-    try {
-      const cockpitForViewer = await loadCockpit({ env: opts.env ?? process.env });
-      const parentName = team.epicTeam.parent;
-      const parentEntry = enabledTeams(cockpitForViewer).find(
-        (t) => t.type === "team" && t.name === parentName,
-      );
-      if (parentEntry === undefined || parentEntry.root === "") {
-        logger.warn(
-          `epic-viewer: parent team '${parentName}' not found in cockpit roster — skipping viewer add (run cockpit reload + atmux start again)`,
-        );
-      } else {
-        // Honour the epic team.json's `tmuxTmpdir` (ADR-089 §Pillar 1
-        // nests epic cages under `<parent-tmpdir>/epics/<epicId>`, NOT
-        // under the epic's project root — so `perTeamCageSocketPath`
-        // would target the wrong path). `resolveTeamSocket` falls back
-        // to the legacy `/tmp/atmux-<name>/sock` when tmuxTmpdir is
-        // null, matching `addEpicViewerToParentCage`'s parent-side
-        // resolution via `resolveCageSocket`.
-        await addEpicViewerToParentCage({
-          parentRoot: parentEntry.root,
-          parentName,
-          epicId: team.name,
-          epicSocket: resolveTeamSocket(team),
-          epicSession: team.name.startsWith("atmux-") ? team.name : `atmux-${team.name}`,
-          tmuxFactory: factory as Parameters<typeof addEpicViewerToParentCage>[0]["tmuxFactory"],
-          log: (m) => logger.log(`  ${m.replace(/^\s+/, "")}`),
-          warn: (m) => logger.warn(m),
-        });
-      }
-    } catch (e) {
-      const cause = e instanceof Error ? e.message : String(e);
-      logger.warn(`epic-viewer: bridge add failed — continuing (${cause})`);
-    }
-  }
 
   // 11. ADR-233 §D1 (supersedes ADR-083 §IN §4): cron auto-install
   //     retired. `atmux start` writes ZERO crontab lines. orchd handles

@@ -63,20 +63,13 @@ export interface SyncCockpitRegistryArgs {
  *  under the new name and the old name's presence would persist as a
  *  ghost entry until manual cleanup).
  *
- *  Epic-team siblings (`type: "epic-team"`) are NOT renamed by this
- *  step. They live in a different discriminator namespace; an
- *  epic-team's `name` is its planner-assigned id (not the parent
- *  team-name). Renaming the parent team mutates only the parent
- *  team-node; epic-teams nested under it keep their `.name`. The
- *  child epic-team's `.parent` back-pointer is left untouched in this
- *  verb scope — under ADR-089 the `parent` field references the
- *  parent team-name; an operator running a rename against a parent
- *  that has live epic-team children should re-run with the parent
- *  team paused (`atmux team stop`) and re-sync the children
- *  separately. The current scope is: rename the parent node; out of
- *  scope here is the cross-reference back-pointer sweep (deferred per
- *  ADR-027 §Out of scope; future Task can extend findAndMutateTeamName
- *  to also rewrite child `.parent` pointers when they match).
+ *  Only the FIRST matching node is renamed. Nested child teams
+ *  (ADR-089 §Amendment 2026-08-27 §(A)) keep their own `.name` —
+ *  renaming a parent mutates only the parent node. An operator
+ *  running a rename against a parent with live children should re-run
+ *  with the parent paused (`atmux team stop`) and re-sync the children
+ *  separately. Out of scope here is any cross-reference sweep
+ *  (deferred per ADR-027 §Out of scope).
  *
  *  Legacy back-compat: if the on-disk file is in pre-ADR-089 flat
  *  `teams[]` shape, `migrateLegacyShape` lifts it to the canonical
@@ -145,7 +138,7 @@ export async function readAndMigrateCockpit(
 /** DFS walk of `nodes` mutating the first `type: "team"` node with
  *  `name === oldName` to `name = newName`. Returns `true` on hit,
  *  `false` if no match exists in the (sub)tree. Recurses into nested
- *  `sessions[]` on every `team` / `epic-team` node so ADR-089 children
+ *  `sessions[]` on every `team` node so ADR-089 children
  *  are reachable; the depth-first short-circuit halts the walk on the
  *  first hit (no need to scan further — the loader rejects duplicate
  *  names at load time, so at most one hit exists). Exported for
@@ -156,11 +149,11 @@ export function findAndMutateTeamName(
   newName: string,
 ): boolean {
   for (const n of nodes) {
-    if (n.type === "team" && n.name === oldName) {
-      n.name = newName;
-      return true;
-    }
-    if (n.type === "team" || n.type === "epic-team") {
+    if (n.type === "team") {
+      if (n.name === oldName) {
+        n.name = newName;
+        return true;
+      }
       if (n.sessions.length > 0 && findAndMutateTeamName(n.sessions, oldName, newName)) {
         return true;
       }

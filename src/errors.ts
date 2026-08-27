@@ -234,8 +234,8 @@ export class TargetTeamResolutionError extends AtmuxError {
       opts.reason === "ambiguous"
         ? `${opts.matches} cockpit sessions match — refusing the silent first-pick (ADR-150 §D5)`
         : opts.reason === "not-found"
-          ? "no cockpit team/epic-team session has this name"
-          : "matched an epic-team with no resolvable parent root";
+          ? "no cockpit team session has this name"
+          : "matched a team session with no resolvable root";
     super(`cannot resolve target team ${JSON.stringify(opts.team)}: ${detail}`, {
       context: { ...opts },
     });

@@ -61,14 +61,9 @@ import {
   createAutoDissolveHandler,
   type DissolveTriggerPayload,
 } from "./orchd-dissolve.ts";
-import {
-  createDissolveSoloWorkerHandler,
-  type DissolveSoloWorkerHandlerDeps,
-} from "./orchd-dissolve-solo-worker.ts";
 import { type AutoMergeHandlerDeps, createAutoMergeHandler } from "./orchd-merge.ts";
 import { type AutoPushHandlerDeps, createAutoPushHandler } from "./orchd-push.ts";
 import { registerOrchdSubscription } from "./orchd-registry.ts";
-import { createSpawnEpicHandler, type SpawnEpicHandlerDeps } from "./orchd-spawn.ts";
 import { KanbanRepo } from "./repositories/kanban-repo.ts";
 import { createRotationConsumerHandler, type RotationConsumerDeps } from "./rotation-consumer.ts";
 
@@ -78,18 +73,6 @@ import { createRotationConsumerHandler, type RotationConsumerDeps } from "./rota
 export const ORCHD_MERGE_CONSUMER_ID = "atmux:orchd:auto-merge";
 export const ORCHD_DISSOLVE_CONSUMER_ID = "atmux:orchd:auto-dissolve";
 export const ORCHD_PUSH_CONSUMER_ID = "atmux:orchd:auto-push";
-/** ADR-231 §D6: distinct from {@link ORCHD_DISSOLVE_CONSUMER_ID} (which
- *  handles parent's Phase 4 epic-team dissolve per ADR-227). Honker
- *  per-consumer offsets isolate the two subscriptions on the shared
- *  `task.done` topic. */
-export const ORCHD_DISSOLVE_SOLO_WORKER_CONSUMER_ID = "atmux:orchd:dissolve-solo-worker";
-/** ADR-231 §D2: spawnEpicHandler subscribes to BOTH `epic.ready` and
- *  `epic.unblocked` (per ADR-225 §Events) — two consumerIds isolate
- *  the per-topic offsets so a backlog on one topic doesn't shadow the
- *  other. The handler closure is the same factory (`createSpawnEpicHandler`);
- *  only the subscription bookkeeping differs. */
-export const ORCHD_SPAWN_ON_READY_CONSUMER_ID = "atmux:orchd:spawn:on-ready";
-export const ORCHD_SPAWN_ON_UNBLOCKED_CONSUMER_ID = "atmux:orchd:spawn:on-unblocked";
 /** ADR-214 §D2 — complaint consumer. Wakes on `complaint.filed` and
  *  routes to the lead's tell-lead inbox. */
 export const ORCHD_COMPLAINT_CONSUMER_ID = "atmux:complaint-consumer";
@@ -117,15 +100,18 @@ export const ORCHD_LEAD_STALL_ON_TASK_UNCLAIMED_CONSUMER_ID =
  *  - merge: `task.done` (per ADR-226 §D1)
  *  - dissolve: `epic.pushed` (per ADR-227 §Amendment 2026-05-23 trigger flip)
  *  - push: `epic.merged` (per ADR-229 §D1)
- *  - dissolve-solo-worker: `task.done` (per ADR-231 §D6) */
+ *
+ *  ADR-280 stage 3 removed the ADR-231 §D2 spawn subscriptions
+ *  (`epic.ready` / `epic.unblocked` → `atmux team spawn-epic`) and the
+ *  §D6 solo-worker dissolve subscription (`task.done` → `atmux team
+ *  dissolve-worker`): both shelled verbs that no longer exist, so both
+ *  were dead machinery that would have failed inside a loop that
+ *  tolerates non-zero exits. The merge / dissolve / push handlers are
+ *  KEPT — their dispatchers are injected and default to stubs, and
+ *  ADR-276 owns the orchd retirement. */
 export const ORCHD_MERGE_TOPIC = "task.done";
 export const ORCHD_DISSOLVE_TOPIC = "epic.pushed";
 export const ORCHD_PUSH_TOPIC = "epic.merged";
-export const ORCHD_DISSOLVE_SOLO_WORKER_TOPIC = "task.done";
-/** ADR-231 §D2 — both events trigger the same spawn handler per
- *  ADR-225 §Events (deps-graph + operator-flip transitions). */
-export const ORCHD_SPAWN_ON_READY_TOPIC = "epic.ready";
-export const ORCHD_SPAWN_ON_UNBLOCKED_TOPIC = "epic.unblocked";
 /** ADR-214 §D2 — complaint topic. */
 export const ORCHD_COMPLAINT_TOPIC = "complaint.filed";
 /** ADR-212 / e-cc3728bf — rotation observer signal (v1: context-high
@@ -156,20 +142,11 @@ export interface BootstrapOrchdDeps {
   dissolveDeps?: Omit<AutoDissolveHandlerDeps, "db">;
   /** Optional overrides for {@link createAutoPushHandler}. */
   pushDeps?: Omit<AutoPushHandlerDeps, "db">;
-  /** ADR-231 §D6: optional overrides for
-   *  {@link createDissolveSoloWorkerHandler}. Absent ⇒ handler factory
-   *  builds with `db` only + applies its own defaults
-   *  ({@link isSoloWorkerTeamName} classifier, real spawn, no-op
-   *  logger). */
-  dissolveSoloWorkerDeps?: Omit<DissolveSoloWorkerHandlerDeps, "db">;
-  /** ADR-231 §D2: REQUIRED overrides for {@link createSpawnEpicHandler}
-   *  when the spawn subscriptions should fire. The factory needs
-   *  `atmuxDir` + `team` (NOT derivable from `db` alone), so absent →
-   *  spawn subscriptions register with a stub that returns
-   *  `skipped-row-missing` for every event (safe no-op). Production
-   *  wire-up (`verbs/committer.ts`) passes the running cage's
-   *  atmuxDir + team config. */
-  spawnDeps?: Omit<SpawnEpicHandlerDeps, "db">;
+  /** Kanban root for the cage this daemon serves. Feeds the auto-merge
+   *  handler's `loadTasks`; absent → the handler falls back to its own
+   *  default. Was named `spawnDeps.atmuxDir` until ADR-280 stage 3
+   *  removed the spawn handler that owned it. */
+  atmuxDir?: string;
   /** ADR-214 §D2: optional overrides for the complaint consumer. Absent
    *  → real-process spawn of `atmux tell-lead`. Tests inject a mock
    *  `spawnTellLead` to assert on argv. */
@@ -224,7 +201,7 @@ export interface BootstrapOrchdResult {
  * which subscriptions were newly added vs already-present.
  */
 export function bootstrapOrchd(deps: BootstrapOrchdDeps): BootstrapOrchdResult {
-  const workAtmuxDir = deps.spawnDeps?.atmuxDir;
+  const workAtmuxDir = deps.atmuxDir;
   const mergeHandlerFn = createAutoMergeHandler({
     db: deps.db,
     ...(workAtmuxDir ? { loadTasks: async () => await loadKanbanTasks(workAtmuxDir) } : {}),
@@ -238,32 +215,6 @@ export function bootstrapOrchd(deps: BootstrapOrchdDeps): BootstrapOrchdResult {
     db: deps.db,
     ...(deps.pushDeps ?? {}),
   });
-  const dissolveSoloWorkerHandlerFn = createDissolveSoloWorkerHandler({
-    db: deps.db,
-    ...(workAtmuxDir
-      ? {
-          taskReader: {
-            showTask: (id: string) => showTask(workAtmuxDir, id),
-            listTasks: (filter: { owner: string }) =>
-              listTasks(workAtmuxDir, { assignee: filter.owner }),
-          },
-        }
-      : {}),
-    ...(deps.dissolveSoloWorkerDeps ?? {}),
-  });
-  // ADR-231 §D2 — spawn handler. When `spawnDeps` is absent (no caller
-  // wire-up), build a stub that returns `skipped-row-missing` for every
-  // event — safe no-op under at-least-once delivery + matches the
-  // pre-T-S2.5 behavior. Production callers (committer.ts) pass
-  // atmuxDir + team config so the real factory builds.
-  const spawnHandlerFn =
-    deps.spawnDeps !== undefined
-      ? createSpawnEpicHandler({
-          db: deps.db,
-          ...deps.spawnDeps,
-          epicStore: backendAwareEpicStore(deps.spawnDeps.atmuxDir, deps.db),
-        })
-      : async (_event: { epicId: string }) => "skipped-row-missing" as const;
   // ADR-214 §D2 — complaint consumer. Always builds; deps optional
   // (defaults to real-process spawn of `atmux tell-lead`).
   const complaintHandlerFn = createComplaintConsumerHandler(deps.complaintDeps ?? {});
@@ -289,33 +240,6 @@ export function bootstrapOrchd(deps: BootstrapOrchdDeps): BootstrapOrchdResult {
     consumerId: ORCHD_PUSH_CONSUMER_ID,
     handler: async (event: EventPayload) => {
       await pushHandlerFn(event as EpicMergedPayload);
-    },
-  });
-  // ADR-231 §D6 — solo-worker auto-dissolve subscriber. Shares the
-  // `task.done` topic with the auto-merge handler; per-consumer
-  // offsets (ADR-202 §VIII) isolate the two.
-  const dissolveSoloWorkerIsNew = registerOrchdSubscription({
-    topic: ORCHD_DISSOLVE_SOLO_WORKER_TOPIC,
-    consumerId: ORCHD_DISSOLVE_SOLO_WORKER_CONSUMER_ID,
-    handler: async (event: EventPayload) => {
-      await dissolveSoloWorkerHandlerFn(event as TaskDonePayload);
-    },
-  });
-  // ADR-231 §D2 — spawn subscriber. Registers TWICE (epic.ready +
-  // epic.unblocked) with distinct consumerIds so per-topic offsets
-  // stay independent. Handler closure is shared (same factory).
-  const spawnOnReadyIsNew = registerOrchdSubscription({
-    topic: ORCHD_SPAWN_ON_READY_TOPIC,
-    consumerId: ORCHD_SPAWN_ON_READY_CONSUMER_ID,
-    handler: async (event: EventPayload) => {
-      await spawnHandlerFn(event as EpicReadyPayload);
-    },
-  });
-  const spawnOnUnblockedIsNew = registerOrchdSubscription({
-    topic: ORCHD_SPAWN_ON_UNBLOCKED_TOPIC,
-    consumerId: ORCHD_SPAWN_ON_UNBLOCKED_CONSUMER_ID,
-    handler: async (event: EventPayload) => {
-      await spawnHandlerFn(event as EpicUnblockedPayload);
     },
   });
   // ADR-214 §D2 — complaint consumer.
@@ -389,21 +313,6 @@ export function bootstrapOrchd(deps: BootstrapOrchdDeps): BootstrapOrchdResult {
       },
       { consumerId: ORCHD_PUSH_CONSUMER_ID, topic: ORCHD_PUSH_TOPIC, isNew: pushIsNew },
       {
-        consumerId: ORCHD_DISSOLVE_SOLO_WORKER_CONSUMER_ID,
-        topic: ORCHD_DISSOLVE_SOLO_WORKER_TOPIC,
-        isNew: dissolveSoloWorkerIsNew,
-      },
-      {
-        consumerId: ORCHD_SPAWN_ON_READY_CONSUMER_ID,
-        topic: ORCHD_SPAWN_ON_READY_TOPIC,
-        isNew: spawnOnReadyIsNew,
-      },
-      {
-        consumerId: ORCHD_SPAWN_ON_UNBLOCKED_CONSUMER_ID,
-        topic: ORCHD_SPAWN_ON_UNBLOCKED_TOPIC,
-        isNew: spawnOnUnblockedIsNew,
-      },
-      {
         consumerId: ORCHD_COMPLAINT_CONSUMER_ID,
         topic: ORCHD_COMPLAINT_TOPIC,
         isNew: complaintIsNew,
@@ -422,35 +331,4 @@ export function bootstrapOrchd(deps: BootstrapOrchdDeps): BootstrapOrchdResult {
 
 async function loadKanbanTasks(atmuxDir: string) {
   return (await import("./kanban.ts")).loadKanban(atmuxDir).then((kanban) => kanban.tasks);
-}
-
-function backendAwareEpicStore(
-  atmuxDir: string,
-  db: Database,
-): NonNullable<SpawnEpicHandlerDeps["epicStore"]> {
-  const adapter = new KanbanCliAdapter();
-  const legacy = new KanbanRepo(db);
-  return {
-    getEpic: async (id) => {
-      if (!(await externalKanbanEnabled(atmuxDir))) return legacy.getEpic(id);
-      return (await adapter.loadKanban(atmuxDir)).epics.find((epic) => epic.id === id) ?? null;
-    },
-    saveEpic: async (epic) => {
-      if (!(await externalKanbanEnabled(atmuxDir))) {
-        legacy.upsertEpic(epic);
-        return;
-      }
-      const extra = epic.extra ?? {};
-      await adapter.patchMetadata(atmuxDir, epic.id, "atmux", {
-        workflowStatus: epic.status ?? null,
-        driverRef: epic.driverRef ?? null,
-        isReady: epic.isReady,
-        spawnedAt: epic.spawnedAt ?? null,
-        autoSpawn: extra.autoSpawn ?? null,
-        spawnFailed: extra.spawnFailed ?? null,
-        spawnPressureDeferred: extra.spawnPressureDeferred ?? null,
-        atmuxExtra: extra,
-      });
-    },
-  };
 }

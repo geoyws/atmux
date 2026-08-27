@@ -129,7 +129,7 @@ export function claudeAccountPoolRows(verdict: ClaudeAccountPoolVerdict): Doctor
           detail: `pool empty + ${verdict.teamsMissingAccount.length} team(s) without claudeAccount: ${verdict.teamsMissingAccount.join(", ")}`,
           hint:
             "populate cockpit.claudeAccountPool[] (ADR-199 §D1) so spawn-epic can draw a least-loaded account, " +
-            "or pin each team's claudeAccount explicitly — otherwise epic-team bootstrap 401s on a fresh OAuth login.",
+            "or pin each team's claudeAccount explicitly — otherwise a cage bootstrap 401s on a fresh OAuth login.",
         },
       ];
     }

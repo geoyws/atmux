@@ -705,11 +705,11 @@ export async function cockpitRebuild(
   // mirrors the same resolution by reading `t.level` from the flattened
   // enabledTeams() walk + adding 2 (walkSessions yields 0-indexed depth
   // counted from top-level team; ADR-089 §C numbers L1=Cockpit, L2=top-
-  // level team cage, L3=epic-team cage; so a top-level team with
+  // level team cage, L3=nested child cage; so a top-level team with
   // t.level=0 must resolve at L2 to get F2). Off-by-one shifted from
   // `+ 1` → `+ 2` on 2026-05-24 (operator directive — "Fix code to
-  // match ADR §C table"). Top-level team = level 2 = F2; epic-team
-  // child = level 3 = F3; etc. Cockpit itself takes level 1 = F1 via
+  // match ADR §C table"). Top-level team = level 2 = F2; nested child
+  // = level 3 = F3; etc. Cockpit itself takes level 1 = F1 via
   // Phase 5b below.
   for (const t of teams) {
     const sock = await resolveCageSocket(t.name, t.root);
@@ -785,7 +785,7 @@ export async function cockpitRebuild(
   // Resolution: cockpit gets `resolvePrefix(1, cockpit.prefixChain)`
   // (level 1 = `F1` by default). Per ADR-089 §C the chain is 1-indexed
   // and the cockpit IS L1: L1 = Cockpit, L2 = top-level team cage,
-  // L3 = epic-team cage. Each level has its own distinct slot, so the
+  // L3 = nested child cage. Each level has its own distinct slot, so the
   // chord pressed at any nesting depth is unambiguous (separate sockets
   // also reinforce the isolation but no longer carry the model alone).
   // The off-by-one alignment landed 2026-05-24 (operator directive —
@@ -1725,26 +1725,18 @@ export async function reconcileCockpitSession(
 
   const windows = await cockpitTmux.window.listWindows(sessionName);
   const present = new Set(windows.map((w) => w.name));
-  // ADR-089 §Pillar 1 §Amendment (t-2ea3bdb9, ba1f1c1): the cockpit hosts
-  // only L2 parent-team viewer windows. L3 epic-team viewers live INSIDE
-  // their parent's cage as 🌳-prefixed siblings of lead/planner/etc — added
-  // at epic `atmux start` time via addEpicViewerToParentCage (start.ts:967),
-  // not by cockpit rebuild. Filter epic-teams out of every cockpit-side
-  // window operation: wanted-set (drives orphan removal), add-loop, reorder
-  // pass. Regression source: prior rebuild iterated `teams` (which includes
-  // both type:"team" and type:"epic-team" per enabledTeams) and created a
-  // cockpit window per row, producing per-epic duplicates of the
-  // parent-cage viewers — surfaced 2026-05-18 as complaint c-abb7b603.
-  //
-  // The runtime check uses `in` rather than asserting a wider type because
-  // the param is typed `CockpitTeam[]` for back-compat — real fleet callers
-  // (cockpitRebuild) pass FlattenedTeamEntry[] which has `.type`, while
-  // legacy test fixtures may pass bare CockpitTeam[] without it. The `in`
-  // check is false on the legacy shape → no filtering → byte-identical
-  // behavior to pre-fix for callers that never had epic-teams to filter.
-  const cockpitTeams = teams.filter(
-    (t) => !("type" in t && (t as { type?: string }).type === "epic-team"),
-  );
+  // ADR-089 §Pillar 1 §Amendment (t-2ea3bdb9, ba1f1c1) used to filter
+  // `type: "epic-team"` rows out of every cockpit-side window operation:
+  // an epic-team's viewer lived INSIDE its parent's cage, not in the
+  // cockpit, so a cockpit window per epic row produced duplicates
+  // (complaint c-abb7b603, 2026-05-18). ADR-280 stage 3 removed the
+  // `epic-team` type, so that filter can no longer match anything and is
+  // gone. NOTE, stated rather than hidden: `enabledTeams` returns nested
+  // `type: "team"` rows too, and it always did — the removed filter never
+  // excluded them, so dropping it changes no behaviour. Whether a nested
+  // team SHOULD get its own cockpit window is an open ADR-089 question
+  // this stage deliberately does not answer.
+  const cockpitTeams = teams;
   const wanted = new Set([
     "_superdriver",
     ...(wantMedic ? ["_medic"] : []),
@@ -1754,10 +1746,7 @@ export async function reconcileCockpitSession(
 
   // Per-team mode: filter teams to JUST the named one before the add
   // pass — defensive against callers passing the full roster but
-  // wanting only one window touched. Per-team callers may name an
-  // epic-team; cockpitTeams already excludes those, so the filter
-  // returns [] for an epic-team target — correct (no cockpit window
-  // is wanted) and skips the add pass naturally.
+  // wanting only one window touched.
   const teamsToAdd =
     onlyTeam !== undefined ? cockpitTeams.filter((t) => t.name === onlyTeam) : cockpitTeams;
 
@@ -1795,8 +1784,8 @@ export async function reconcileCockpitSession(
     logger.log(`  ✓ added window '${t.name}' (${mode})`);
   }
 
-  // ADR-135 §D2 §Amendment (t-34fa0132): epic-team viewer windows MUST sit
-  // immediately after their parent's viewer in cockpit window order. The
+  // ADR-135 §D2 §Amendment (t-34fa0132): a child team's viewer window MUST
+  // sit immediately after its parent's viewer in cockpit window order. The
   // `teams` array from enabledTeams() is already in DFS pre-order
   // (parent → child → next sibling), so the desired layout is:
   //   [_superdriver, _medic?, ...operator windows, ...teams in DFS order]
@@ -1808,10 +1797,10 @@ export async function reconcileCockpitSession(
     const windowsForOrder = await cockpitTmux.window.listWindows(sessionName);
     const sdrv = windowsForOrder.find((w) => w.name === "_superdriver");
     const cursorBase = (sdrv !== undefined ? sdrv.index + 1 : 1) + (wantMedic ? 1 : 0);
-    // ADR-089 §Pillar 1 §Amendment: epic-teams are NOT cockpit windows;
-    // reorder only places L2 parent teams. Using `teams` (which contains
-    // epic-teams too) would assign cockpit slots to entries that have no
-    // cockpit window, leaving gaps and offsetting sibling teams.
+    // `cockpitTeams` is the same DFS-ordered set the add-loop and the
+    // wanted-set use, so reorder can never assign a cockpit slot to an
+    // entry that has no cockpit window (which would leave gaps and offset
+    // sibling teams).
     const desired = [...operatorWindows, ...cockpitTeams].map((entry, i) => ({
       name: entry.name,
       finalIdx: cursorBase + i,

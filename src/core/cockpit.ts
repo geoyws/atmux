@@ -142,7 +142,7 @@ export async function loadCockpit(opts: LoadCockpitOpts = {}): Promise<LoadedCoc
 function validateOperatorWindowNames(cockpit: CockpitShape): void {
   const occupied = new Set(["_superdriver", "superdriver", "_medic", "medic", "superdoctor"]);
   walkSessions(cockpit.sessions ?? [], 0, (node) => {
-    if (node.type === "team" || node.type === "epic-team") occupied.add(node.name);
+    if (node.type === "team") occupied.add(node.name);
   });
   const seen = new Set<string>();
   for (const window of cockpit.windows) {
@@ -310,34 +310,37 @@ function enrichLegacyFields(cockpit: CockpitShape): LoadedCockpit {
   };
 }
 
-/** A flattened team entry — one row per `type: "team"` or `epic-team"`
- *  session in DFS order, annotated with its nesting `level`. Used by
- *  ADR-089 T5 (prefix-chain) consumers to derive per-node prefix keys.
+/** A flattened team entry — one row per `type: "team"` session in DFS
+ *  order, annotated with its nesting `level`. Used by ADR-089 T5
+ *  (prefix-chain) consumers to derive per-node prefix keys.
  *
  *  Shape-compatible with legacy `CockpitTeam` for `name` / `root` /
  *  `enabled` access — existing callers iterate without type changes.
  *  `level=0` is the top-level sessions[] (root of the tree); each
- *  nested step adds 1. */
+ *  nested step adds 1.
+ *
+ *  ADR-280 stage 3 dropped the `epic-team` row shape and its `epicId`.
+ *  `parent` SURVIVES and is now populated for any nested team (it was
+ *  previously epic-only) — ADR-089 §Amendment 2026-08-27 §(A) makes a
+ *  team nested under a team the general case, and the parent↔child
+ *  policy table in {@link callerScopeAllowed} joins on this field. */
 export interface FlattenedTeamEntry {
-  type: "team" | "epic-team";
+  type: "team";
   name: string;
   enabled: boolean;
-  /** Present on `team`; for `epic-team` the parent team's root is
-   *  inherited at runtime (epic-teams share parent's worktree per
-   *  ADR-089). The synthesized value here mirrors the parent for legacy
-   *  duck-typed consumers; resolved by the flattener walk. */
+  /** The team's own project root. */
   root: string;
   level: number;
+  /** Nearest ancestor `team` name, when this entry is nested. Absent at
+   *  `level === 0`. */
   parent?: string;
-  epicId?: string;
   claudeAccount?: TeamSessionT["claudeAccount"];
   tuiOverrides?: TeamSessionT["tuiOverrides"];
 }
 
 /** Depth-first flattener — ADR-089 §F + T5 prep. Returns enabled
- *  team-shaped entries (both `type: "team"` and `type: "epic-team"`)
- *  with their nesting `level` annotated. `superdriver` /
- *  `superdoctor` / `medic` entries are excluded —
+ *  `type: "team"` entries with their nesting `level` annotated.
+ *  `superdriver` / `superdoctor` / `medic` entries are excluded —
  *  they're cockpit-internal singletons, not iterable "teams" in the
  *  legacy sense.
  *
@@ -346,7 +349,7 @@ export interface FlattenedTeamEntry {
  *  (duck-typed). `.level` is additive for new consumers. */
 export function enabledTeams(cockpit: CockpitShape): FlattenedTeamEntry[] {
   const out: FlattenedTeamEntry[] = [];
-  walkSessions(cockpit.sessions ?? [], 0, (node, level, parentRoot) => {
+  walkSessions(cockpit.sessions ?? [], 0, (node, level, _parentRoot, parentName) => {
     if (node.type === "team" && node.enabled) {
       const e: FlattenedTeamEntry = {
         type: "team",
@@ -355,21 +358,7 @@ export function enabledTeams(cockpit: CockpitShape): FlattenedTeamEntry[] {
         root: node.root,
         level,
       };
-      if (node.claudeAccount !== undefined) e.claudeAccount = node.claudeAccount;
-      if (node.tuiOverrides !== undefined) e.tuiOverrides = node.tuiOverrides;
-      out.push(e);
-    } else if (node.type === "epic-team" && node.enabled) {
-      const e: FlattenedTeamEntry = {
-        type: "epic-team",
-        name: node.name,
-        enabled: node.enabled,
-        // Epic-teams share parent's worktree; the walker threads
-        // `parentRoot` so duck-typed `.root` access keeps resolving.
-        root: parentRoot ?? "",
-        level,
-        parent: node.parent,
-        epicId: node.epicId,
-      };
+      if (parentName !== undefined) e.parent = parentName;
       if (node.claudeAccount !== undefined) e.claudeAccount = node.claudeAccount;
       if (node.tuiOverrides !== undefined) e.tuiOverrides = node.tuiOverrides;
       out.push(e);
@@ -379,21 +368,32 @@ export function enabledTeams(cockpit: CockpitShape): FlattenedTeamEntry[] {
 }
 
 /** DFS walk over `sessions[]`. Visitor receives each node + its level +
- *  the nearest ancestor `team.root` (for epic-teams that share a parent
- *  worktree). Public for ADR-089 T5/T6 consumers needing custom walks;
- *  the flattener + enrichment paths use it internally. */
+ *  the nearest ancestor `team.root` + the nearest ancestor `team.name`.
+ *  Public for ADR-089 T5/T6 consumers needing custom walks; the
+ *  flattener + enrichment paths use it internally.
+ *
+ *  ADR-280 stage 3 added `parentName`. It replaces the `epic-team`
+ *  node's own `.parent` back-pointer, which was the only way a consumer
+ *  could reach its parent before nesting became general — the ancestry
+ *  is now derived from the walk itself and works for any nested team.
+ *  Visitors that ignore the extra argument are unaffected. */
 export function walkSessions(
   sessions: ReadonlyArray<CockpitSessionT>,
   level: number,
-  visit: (node: CockpitSessionT, level: number, parentRoot: string | undefined) => void,
+  visit: (
+    node: CockpitSessionT,
+    level: number,
+    parentRoot: string | undefined,
+    parentName: string | undefined,
+  ) => void,
   parentRoot?: string,
+  parentName?: string,
 ): void {
   for (const node of sessions) {
-    visit(node, level, parentRoot);
-    if (node.type === "team" || node.type === "epic-team") {
-      const childRoot = node.type === "team" ? node.root : parentRoot;
+    visit(node, level, parentRoot, parentName);
+    if (node.type === "team") {
       if (Array.isArray(node.sessions) && node.sessions.length > 0) {
-        walkSessions(node.sessions, level + 1, visit, childRoot);
+        walkSessions(node.sessions, level + 1, visit, node.root, node.name);
       }
     }
   }
@@ -402,41 +402,44 @@ export function walkSessions(
 // ---------- ADR-092: cross-team tell-lead lookup + caller-scope gate ----------
 
 /** Result of `findTeamByName` — narrowed view of the matched cockpit
- *  node. Only `team` / `epic-team` nodes match (other session types
- *  don't host a backing team cage). `root` resolves to the node's own
- *  root for `type: "team"` and to the nearest ancestor `team.root` for
- *  `type: "epic-team"` (epic-teams share parent's worktree per ADR-089
- *  §F). Per ADR-092 §D2 Decision-anchor #2 — first match wins on name
- *  collision; cockpit-validation flags dupes at load time. */
+ *  node. Only `team` nodes match (other session types don't host a
+ *  backing team cage). Per ADR-092 §D2 Decision-anchor #2 — first match
+ *  wins on name collision; cockpit-validation flags dupes at load time.
+ *
+ *  ADR-280 stage 3: `epic-team` is retired, so the union narrows; but
+ *  `parent` is KEPT and is now derived from the DFS walk's ancestry
+ *  rather than an `epic-team`-only back-pointer, so the ADR-092 §D3
+ *  parent↔child gate keeps working for the general nesting model
+ *  ADR-089 §Amendment 2026-08-27 §(A) blesses. */
 export interface CockpitTeamLookup {
-  type: "team" | "epic-team";
+  type: "team";
   name: string;
   root: string;
   level: number;
-  /** Populated for `type: "epic-team"` — references the parent team
-   *  name; consumers (caller-scope gate) join on this to drive the
+  /** Nearest ancestor team name when this node is nested; absent at the
+   *  top level. Consumers (caller-scope gate) join on this to drive the
    *  parent ↔ child policy table. */
   parent?: string;
 }
 
 /** ADR-092 §D2 — depth-first match on `node.name` across `cockpit.sessions[]`.
- *  Returns the first matching `team` / `epic-team` node, or `null` when
- *  no match. Pure (no IO); reuses {@link walkSessions} for the DFS walk
- *  so traversal-order matches every other cockpit consumer (`enabledTeams`
+ *  Returns the first matching `team` node, or `null` when no match. Pure
+ *  (no IO); reuses {@link walkSessions} for the DFS walk so
+ *  traversal-order matches every other cockpit consumer (`enabledTeams`
  *  / synthesis paths). */
 export function findTeamByName(cockpit: CockpitShape, name: string): CockpitTeamLookup | null {
   let found: CockpitTeamLookup | null = null;
-  walkSessions(cockpit.sessions ?? [], 0, (node, level, parentRoot) => {
+  walkSessions(cockpit.sessions ?? [], 0, (node, level, _parentRoot, parentName) => {
     if (found !== null) return;
-    if (node.type !== "team" && node.type !== "epic-team") return;
+    if (node.type !== "team") return;
     if (node.name !== name) return;
     const out: CockpitTeamLookup = {
       type: node.type,
       name: node.name,
-      root: node.type === "team" ? node.root : (parentRoot ?? ""),
+      root: node.root,
       level,
     };
-    if (node.type === "epic-team") out.parent = node.parent;
+    if (parentName !== undefined) out.parent = parentName;
     found = out;
   });
   return found;
@@ -448,8 +451,13 @@ export function findTeamByName(cockpit: CockpitShape, name: string): CockpitTeam
  *      driver pane). Always allowed.
  *   2. `sourceName === targetName` — degenerate same-team case; allowed
  *      (no cross-team boundary crossed).
- *   3. Source is `epic-team` with `parent === targetName` — child → parent.
- *   4. Target is `epic-team` with `parent === sourceName` — parent → child.
+ *   3. Source is a NESTED team with `parent === targetName` — child → parent.
+ *   4. Target is a NESTED team with `parent === sourceName` — parent → child.
+ *
+ *  Rules 3/4 read `parent` off {@link findTeamByName}. Before ADR-280
+ *  stage 3 that field existed only on `epic-team` nodes; it is now the
+ *  walk-derived ancestry of any nested team, so the gate covers the
+ *  general nesting model instead of the retired epic-shaped instance.
  *
  *  Everything else (siblings, unrelated teams) refuses. Refusal in
  *  caller responsibility — this function returns the boolean; the
@@ -471,8 +479,8 @@ export function callerScopeAllowed(
   const src = findTeamByName(cockpit, sourceName);
   const tgt = findTeamByName(cockpit, targetName);
   if (src === null || tgt === null) return false;
-  if (src.type === "epic-team" && src.parent === tgt.name) return true;
-  if (tgt.type === "epic-team" && tgt.parent === src.name) return true;
+  if (src.parent !== undefined && src.parent === tgt.name) return true;
+  if (tgt.parent !== undefined && tgt.parent === src.name) return true;
   return false;
 }
 
@@ -480,7 +488,7 @@ export function callerScopeAllowed(
 
 /** Default F-key prefix chain. Twelve entries (F1..F12) cover every
  *  level the schema's max-depth cap (6) allows plus headroom for any
- *  future super-cockpit / multi-epic chains. Operator override via
+ *  future super-cockpit / deep-nesting chains. Operator override via
  *  `cockpit.prefixChain` flips the whole chain (per-level overrides
  *  are out of scope per ADR-089 §C). */
 export const DEFAULT_PREFIX_CHAIN: ReadonlyArray<string> = [
@@ -499,7 +507,7 @@ export const DEFAULT_PREFIX_CHAIN: ReadonlyArray<string> = [
 ];
 
 /** ADR-089 §Decision-anchor #6 — max nesting depth cockpit.json may
- *  declare. Computed as L1-L4 reserved (cockpit + team + epic-team +
+ *  declare. Computed as L1-L4 reserved (cockpit + team + nested team +
  *  one chain step) + 2 headroom. Used by validatePrefixChain (the
  *  chain must be long enough to assign a prefix per level) and by
  *  loadCockpit's depth check. */
@@ -515,7 +523,7 @@ export const ATMUX_NESTING_LEVEL_ENV = "ATMUX_NESTING_LEVEL";
  * `atmux start` invokes a top-level team cage, which per ADR-089
  * §C is L2 — the cockpit itself is L1). 1-indexed for human
  * readability per the §C table: L1 = Cockpit, L2 = top-level team
- * cage, L3 = epic-team cage, L4+ = reserved.
+ * cage, L3 = nested child cage, L4+ = reserved.
  *
  * The default shifted from 1 to 2 on 2026-05-24 (operator directive
  * — "Fix code to match ADR §C table + my mental model"). Pre-shift
@@ -523,7 +531,7 @@ export const ATMUX_NESTING_LEVEL_ENV = "ATMUX_NESTING_LEVEL";
  * and top-level team into the same chain slot (F1), relying on
  * tmux-socket separation to avoid physical collision. Post-shift
  * each level has its own distinct slot: cockpit=F1, team=F2,
- * epic-team=F3.
+ * nested child cage=F3.
  *
  * Pure. Exported for direct unit-testing.
  */
@@ -680,185 +688,6 @@ export function perTeamCageSocketPath(teamRoot: string): string {
   return `${teamRoot}/.atmux/tmux/tmux-${uid}/default`;
 }
 
-/** ADR-089 §Pillar 1 §Amendment (t-2ea3bdb9, 2026-05-16): the epic-team
- *  retains its own nested tmux server, but the PARENT atmux cage gains
- *  a viewer-window that auto-attaches into the epic-team. Operators page
- *  through the parent's window list and the epic-team appears as a
- *  sibling node alongside other role-members at the end of the parent's
- *  windows — same agile-tree pattern as cockpit's per-team viewer
- *  windows but one level deeper. Mirrors {@link cageRetryLoop} in
- *  `verbs/cockpit.ts` so the attach command form is symmetric.
- *
- *  Idempotent: skips if a viewer window for this epic already exists
- *  in the parent session. Soft-fails if the parent session isn't running
- *  (e.g. epic spawned while parent stopped) — logs a warn and exits 0;
- *  the operator can re-invoke after starting the parent cage.
- *
- *  Window-name convention: `🌳-<epicId>`. The 🌳 emoji distinguishes
- *  the viewer from regular member windows (which use member-role emojis
- *  like 🧭/🎯/🔍 + sometimes 🐝).
- *
- *  Returns the index of the added window (or `null` on idempotent skip /
- *  soft-fail). */
-/** Resolve the parent cage's live socket + session name. Handles both
- *  conventions: parents with `team.tmuxTmpdir` set (per-team-cage at
- *  `<root>/.atmux/tmux/tmux-<uid>/default`) AND parents with null
- *  `tmuxTmpdir` running on the legacy `/tmp/atmux-<team>/sock`. The
- *  session name is read from `<parentRoot>/.atmux/state/session.txt`
- *  (the same anchor `getSessionName` uses) so this matches reality for
- *  non-standard names like `atmux_<team>` — `parentName` is only a
- *  fallback when the anchor is missing. */
-async function resolveParentCageHandle(opts: {
-  parentRoot: string;
-  parentName: string;
-  /** Optional liveness probe — passed through to {@link resolveCageSocket}
-   *  to prefer a tmux-responding candidate when both legacy + per-team
-   *  sockets exist. See resolveCageSocket's "Liveness preference" note for
-   *  the stale-socket case this guards against. */
-  tmuxFactory?: (config: { socketPath: string }) => {
-    session: { listSessions(): Promise<ReadonlyArray<{ name: string }>> };
-  };
-}): Promise<{ socket: string; session: string }> {
-  const resolverDeps: Parameters<typeof resolveCageSocket>[2] = {};
-  if (opts.tmuxFactory !== undefined) {
-    const factory = opts.tmuxFactory;
-    resolverDeps.isLive = async (p) => {
-      try {
-        await factory({ socketPath: p }).session.listSessions();
-        return true;
-      } catch {
-        return false;
-      }
-    };
-  }
-  const socket = await resolveCageSocket(opts.parentName, opts.parentRoot, resolverDeps);
-  const anchor = await readTextOrNull(sessionAnchorPath(join(opts.parentRoot, ".atmux")));
-  const session =
-    anchor !== null && anchor.trim().length > 0 ? anchor.trim() : `atmux-${opts.parentName}`;
-  return { socket, session };
-}
-
-export async function addEpicViewerToParentCage(opts: {
-  parentRoot: string;
-  parentName: string;
-  epicId: string;
-  epicSocket: string;
-  epicSession: string;
-  tmuxFactory: (config: { socketPath: string }) => {
-    session: { listSessions(): Promise<ReadonlyArray<{ name: string }>> };
-    window: {
-      listWindows(sessionName: string): Promise<ReadonlyArray<{ name: string; index: number }>>;
-      newWindow(args: {
-        sessionName: string;
-        name: string;
-        detached: boolean;
-        shellCommand: string;
-      }): Promise<{ windowIndex: number }>;
-    };
-  };
-  log?: (msg: string) => void;
-  warn?: (msg: string) => void;
-}): Promise<number | null> {
-  const log = opts.log ?? (() => {});
-  const warn = opts.warn ?? (() => {});
-  const { socket: parentSocket, session: parentSession } = await resolveParentCageHandle({
-    parentRoot: opts.parentRoot,
-    parentName: opts.parentName,
-    tmuxFactory: opts.tmuxFactory,
-  });
-  const tmux = opts.tmuxFactory({ socketPath: parentSocket });
-  let parentAlive = false;
-  try {
-    const sessions = await tmux.session.listSessions();
-    parentAlive = sessions.some((s) => s.name === parentSession);
-  } catch {
-    parentAlive = false;
-  }
-  if (!parentAlive) {
-    warn(
-      `epic-viewer: parent session '${parentSession}' not running on ${parentSocket} — skipping viewer add (re-run after parent start)`,
-    );
-    return null;
-  }
-  const windowName = `🌳-${opts.epicId}`;
-  const windows = await tmux.window.listWindows(parentSession);
-  const existing = windows.find((w) => w.name === windowName);
-  if (existing !== undefined) {
-    log(`  · epic-viewer '${windowName}' already present in parent cage (idx ${existing.index})`);
-    return existing.index;
-  }
-  // Mirror cockpit's cageRetryLoop pattern: attach in a 1s-retry loop so
-  // a transient epic-cage death doesn't permanently disconnect the viewer.
-  const attachCmd = `while true; do tmux -S ${opts.epicSocket} attach -t ${opts.epicSession} 2>/dev/null; sleep 1; done`;
-  const created = await tmux.window.newWindow({
-    sessionName: parentSession,
-    name: windowName,
-    detached: true,
-    shellCommand: attachCmd,
-  });
-  log(`  ✓ added epic-viewer '${windowName}' to parent cage (idx ${created.windowIndex})`);
-  return created.windowIndex;
-}
-
-/** Counterpart to {@link addEpicViewerToParentCage} — removes the
- *  parent-cage viewer window when an epic-team is dissolved. Soft-fails
- *  if the parent session isn't running or the window doesn't exist
- *  (idempotent — re-invoking dissolve-epic without a leftover viewer
- *  must not error). */
-export async function removeEpicViewerFromParentCage(opts: {
-  parentRoot: string;
-  parentName: string;
-  epicId: string;
-  tmuxFactory: (config: { socketPath: string }) => {
-    session: { listSessions(): Promise<ReadonlyArray<{ name: string }>> };
-    window: {
-      listWindows(sessionName: string): Promise<ReadonlyArray<{ name: string; index: number }>>;
-      killWindow(target: string): Promise<void>;
-    };
-  };
-  log?: (msg: string) => void;
-  warn?: (msg: string) => void;
-}): Promise<boolean> {
-  const log = opts.log ?? (() => {});
-  const warn = opts.warn ?? (() => {});
-  const { socket: parentSocket, session: parentSession } = await resolveParentCageHandle({
-    parentRoot: opts.parentRoot,
-    parentName: opts.parentName,
-    tmuxFactory: opts.tmuxFactory,
-  });
-  const tmux = opts.tmuxFactory({ socketPath: parentSocket });
-  let parentAlive = false;
-  try {
-    const sessions = await tmux.session.listSessions();
-    parentAlive = sessions.some((s) => s.name === parentSession);
-  } catch {
-    parentAlive = false;
-  }
-  if (!parentAlive) {
-    warn(
-      `epic-viewer: parent session '${parentSession}' not running on ${parentSocket} — skipping viewer remove (no-op)`,
-    );
-    return false;
-  }
-  const windowName = `🌳-${opts.epicId}`;
-  const windows = await tmux.window.listWindows(parentSession);
-  const existing = windows.find((w) => w.name === windowName);
-  if (existing === undefined) {
-    log(`  · epic-viewer '${windowName}' already absent from parent cage`);
-    return false;
-  }
-  try {
-    await tmux.window.killWindow(`${parentSession}:${windowName}`);
-    log(`  ✓ removed epic-viewer '${windowName}' from parent cage`);
-    return true;
-  } catch (e) {
-    const cause = e instanceof Error ? e.message : String(e);
-    warn(
-      `epic-viewer: kill-window '${windowName}' failed (${cause}) — manual cleanup may be needed`,
-    );
-    return false;
-  }
-}
 
 /**
  * ADR-063 follow-up (driver-inbox 2026-05-14): probe BOTH socket

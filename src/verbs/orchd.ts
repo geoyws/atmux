@@ -27,16 +27,11 @@ import { join } from "node:path";
 import { loadEventById, saveOffset } from "../abstractions/events.ts";
 import { closeDatabase, openDatabase } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
-import { invokeAutoMergeInCage } from "../core/auto-merge-invoke.ts";
 import { getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts";
 import { probeHostPressure } from "../core/host-pressure.ts";
 import { loadKanban } from "../core/kanban.ts";
 import { bootstrapOrchd } from "../core/orchd-bootstrap.ts";
-import { dispatchDissolveEpic as dispatchDissolveEpicImport } from "../core/orchd-dispatch/dissolve-epic.ts";
-import { dispatchEpicMerge as dispatchEpicMergeImport } from "../core/orchd-dispatch/epic-merge.ts";
 import { dispatchGitPush as dispatchGitPushImport } from "../core/orchd-dispatch/git-push.ts";
-import { reapStaleEpicTeams } from "../core/orchd-reap.ts";
-import { isCageAliveForTeam, listSpawnedEpicTeamsForTeam } from "../core/orchd-reap-enum.ts";
 // ADR-224 §D6 — orchd subscription registry seam (Phase 1 zero-handler).
 // Re-exported from this verb module so Phase 2 + sibling EPIC e-a946af69
 // callers can register against the same canonical surface they see in
@@ -49,7 +44,6 @@ import {
   ORCHD_SUBSCRIPTIONS,
   visitOrchdSubscriptions,
 } from "../core/orchd-registry.ts";
-import { orchdSweep } from "../core/orchd-sweep.ts";
 import { pressureMonitorTick, resolveSpawnQueueLimits } from "../core/spawn-queue.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import {
@@ -59,7 +53,6 @@ import {
   committerDrainVerb,
 } from "./committer.ts";
 import { runLaneTick, runLaneTickForOne } from "./lane-tick.ts";
-import { spawnEpic } from "./team/spawn-epic.ts";
 
 export {
   findOrchdSubscriptionsByTopic,
@@ -70,7 +63,7 @@ export {
 } from "../core/orchd-registry.ts";
 
 const USAGE =
-  "atmux orchd <--start|--drain|--sweep|--reap-stale|--handle-one|--status> [--team-dir <path>] [--once] [--max-events N] [--dry-run] [--event-id ID --topic T [--task-id ID --member NAME --lane L]]";
+  "atmux orchd <--start|--drain|--handle-one|--status> [--team-dir <path>] [--once] [--max-events N] [--event-id ID --topic T [--task-id ID --member NAME --lane L]]";
 
 export interface ParsedOrchdArgs {
   /** Sub-verbs:
@@ -94,20 +87,14 @@ export interface ParsedOrchdArgs {
   subverb:
     | "start"
     | "drain"
-    | "sweep"
-    | "reap-stale"
     | "handle-one"
     | "status"
-    | "sweep-merges"
     | "scan-context"
     | "housekeep"
     | "scan-budget";
   teamDir?: string;
   /** `--once`: exit after first batch (test ergonomics). */
   once?: boolean;
-  /** `--dry-run`: (reap-stale) classify spawned epic-teams + print the
-   *  verdict, take NO destructive action. ADR-250 §D2. */
-  dryRun?: boolean;
   /** `--max-events N`: exit after processing N events (test ergonomics). */
   maxEvents?: number;
   /** `--event-id ID`: required when subverb is `handle-one`. */
@@ -144,18 +131,14 @@ export function parseOrchdArgs(argv: ReadonlyArray<string>): ParsedOrchdArgs {
   let subverb:
     | "start"
     | "drain"
-    | "sweep"
-    | "reap-stale"
     | "handle-one"
     | "status"
-    | "sweep-merges"
     | "scan-context"
     | "housekeep"
     | "scan-budget"
     | undefined;
   let teamDir: string | undefined;
   let once = false;
-  let dryRun = false;
   let maxEvents: number | undefined;
   let eventId: string | undefined;
   let topic: string | undefined;
@@ -176,16 +159,6 @@ export function parseOrchdArgs(argv: ReadonlyArray<string>): ParsedOrchdArgs {
       i += 1;
       continue;
     }
-    if (a === "--sweep" || a === "sweep") {
-      subverb = "sweep";
-      i += 1;
-      continue;
-    }
-    if (a === "--reap-stale" || a === "reap-stale") {
-      subverb = "reap-stale";
-      i += 1;
-      continue;
-    }
     if (a === "--handle-one" || a === "handle-one") {
       subverb = "handle-one";
       i += 1;
@@ -193,11 +166,6 @@ export function parseOrchdArgs(argv: ReadonlyArray<string>): ParsedOrchdArgs {
     }
     if (a === "--status" || a === "status") {
       subverb = "status";
-      i += 1;
-      continue;
-    }
-    if (a === "--sweep-merges" || a === "sweep-merges") {
-      subverb = "sweep-merges";
       i += 1;
       continue;
     }
@@ -218,11 +186,6 @@ export function parseOrchdArgs(argv: ReadonlyArray<string>): ParsedOrchdArgs {
     }
     if (a === "--once") {
       once = true;
-      i += 1;
-      continue;
-    }
-    if (a === "--dry-run") {
-      dryRun = true;
       i += 1;
       continue;
     }
@@ -336,7 +299,7 @@ export function parseOrchdArgs(argv: ReadonlyArray<string>): ParsedOrchdArgs {
   }
   if (subverb === undefined) {
     throw new UsageError({
-      what: "orchd: no sub-verb specified (--start, --drain, --sweep, --reap-stale, --handle-one, or --status)",
+      what: "orchd: no sub-verb specified (--start, --drain, --handle-one, or --status)",
       hint: USAGE,
     });
   }
@@ -382,7 +345,6 @@ export function parseOrchdArgs(argv: ReadonlyArray<string>): ParsedOrchdArgs {
   const out: ParsedOrchdArgs = { subverb };
   if (teamDir !== undefined) out.teamDir = teamDir;
   if (once) out.once = true;
-  if (dryRun) out.dryRun = true;
   if (maxEvents !== undefined) out.maxEvents = maxEvents;
   if (eventId !== undefined) out.eventId = eventId;
   if (topic !== undefined) out.topic = topic;
@@ -410,15 +372,6 @@ export async function orchd(
   }
   if (parsed.subverb === "status") {
     return await orchdStatus(parsed);
-  }
-  if (parsed.subverb === "sweep") {
-    return await orchdSweepCli(parsed);
-  }
-  if (parsed.subverb === "reap-stale") {
-    return await orchdReapStaleCli(parsed);
-  }
-  if (parsed.subverb === "sweep-merges") {
-    return await orchdSweepMergesCli(parsed);
   }
   if (parsed.subverb === "scan-context") {
     return await orchdScanContextCli(parsed);
@@ -451,59 +404,14 @@ export async function orchd(
       // Phase 2 wires this — see [[orchd-registry]] §D6 sketch.
     });
 
-    // ADR-228 §D4 + §D7 (Phase 5b, driver P0 step 4/5 2026-05-23):
-    // pressure-monitor drain loop. Wakes every pressureCheckIntervalSec
-    // (default 60s per ADR-228 §D6), probes host pressure, and on
-    // under-threshold-AND-non-empty-queue invokes pressureMonitorTick
-    // for one drain attempt (drain-one-per-tick per §DA4). Runs in
-    // parallel with committerDaemonVerb's watcher; both stop on
-    // SIGINT/SIGTERM via the shared process-signal handler installed
-    // by committerDaemonVerb.
-    //
-    // Owns its own db handle (per-loop SQLite connection; WAL mode
-    // tolerates concurrent connections) so the inner spawn-epic call
-    // can open additional db handles without contention on the daemon's
-    // primary connection.
-    const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
-    const monitorAtmuxDir = await getAtmuxDir(dirOpts);
-    const monitorDb = openDatabase(join(monitorAtmuxDir, "state.db"), migrations);
-    const monitorLimits = resolveSpawnQueueLimits(process.env);
-    const onMonitorTick = async (): Promise<void> => {
-      try {
-        await pressureMonitorTick({
-          db: monitorDb,
-          probeHostPressure: () => probeHostPressure({ env: process.env }),
-          spawnEpic: async (argv) => {
-            try {
-              const rc = await spawnEpic(argv);
-              return { success: rc === 0 };
-            } catch (e) {
-              return {
-                success: false,
-                reason: e instanceof Error ? e.message : String(e),
-              };
-            }
-          },
-          limits: monitorLimits,
-        });
-      } catch (e) {
-        process.stderr.write(
-          `orchd --start: pressure-monitor tick threw — ${e instanceof Error ? e.message : String(e)}\n`,
-        );
-      }
-    };
-    const monitorInterval = setInterval(() => {
-      void onMonitorTick();
-    }, monitorLimits.pressureCheckIntervalSec * 1000);
-    // setInterval keeps the event loop alive — unref so committerDaemonVerb's
-    // SIGINT-driven exit path isn't blocked by the timer reference.
-    monitorInterval.unref();
-    try {
-      return await committerDaemonVerb(committerArgs, opts);
-    } finally {
-      clearInterval(monitorInterval);
-      closeDatabase(monitorDb);
-    }
+    // ADR-280 stage 3 removed the ADR-228 §D4/§D7 pressure-monitor drain
+    // loop that ran here. Its only action was to drain the spawn queue by
+    // shelling `atmux team spawn-epic`, a verb that no longer exists, and
+    // its only producer was the retired `orchd-spawn` handler — so the
+    // queue can no longer be fed and the loop had nothing to drain.
+    // `core/spawn-queue.ts` itself is KEPT (ADR-184/ADR-228 territory,
+    // now caller-less) rather than deleted on this stage's authority.
+    return await committerDaemonVerb(committerArgs, opts);
   }
   return await committerDrainVerb(committerArgs, opts);
 }
@@ -657,31 +565,18 @@ async function orchdHandleOneByConsumerId(
   const dbPath = join(atmuxDir, "state.db");
   const db = openDatabase(dbPath, migrations);
   try {
-    // Same dep wiring as committer.ts::committerDrainVerb plus e-11-446429c9
-    // in-cage epic-merge invoker: when this cage IS an epic-team
-    // (team.epicTeam set), auto-merge dispatches via the in-cage
-    // `atmux epic-merge tick` verb spawn (replaces the retired
-    // ADR-091 cron tick). For parent cages without epicTeam set, the
-    // central dispatcher falls through to its safety-net
-    // skipped-not-mine (cross-cage routing is the deferred ADR-232
-    // §D2 OQ-1 work).
-    const epicRepoPath = atmuxDir.endsWith("/.atmux")
-      ? atmuxDir.slice(0, -"/.atmux".length)
-      : atmuxDir;
+    // Same dep wiring as committer.ts::committerDrainVerb.
+    //
+    // ADR-280 stage 3: `mergeDeps.dispatchEpicMerge` and
+    // `dissolveDeps.dispatchDissolveEpic` are NO LONGER wired. The
+    // in-cage invoker shelled `atmux epic-merge tick` and the central
+    // dispatchers lived in `core/orchd-dispatch/{epic-merge,
+    // dissolve-epic}.ts` — all epic-team machinery, all removed. The
+    // handlers keep their stubbed defaults (quiet `skipped-not-mine`,
+    // the ADR-232 §D3 safety net). `git-push.ts` is ADR-229, not epic
+    // machinery, so its wire-up below is unchanged.
     bootstrapOrchd({
       db,
-      mergeDeps: {
-        dispatchEpicMerge: async (epicId) => {
-          if (team.epicTeam !== undefined && team.epicTeam.parentEpicKanbanId === epicId) {
-            return await invokeAutoMergeInCage(epicRepoPath);
-          }
-          return await dispatchEpicMergeImport({ epicId }, { localTeamName: team.name });
-        },
-      },
-      dissolveDeps: {
-        dispatchDissolveEpic: async (epicId) =>
-          dispatchDissolveEpicImport({ epicId }, { localCageName: team.name }),
-      },
       pushDeps: {
         dispatchGitPush: async (parentBase) =>
           dispatchGitPushImport(
@@ -689,10 +584,10 @@ async function orchdHandleOneByConsumerId(
             { localCageName: team.name },
           ),
       },
-      spawnDeps: {
-        atmuxDir,
-        team,
-      },
+      // Kanban root for the auto-merge handler's task reader. Was
+      // `spawnDeps.atmuxDir` until ADR-280 stage 3 removed the spawn
+      // handler that owned the field.
+      atmuxDir,
       // ADR-247 §D2 — lead-stall watchdog. Reads the CURRENT kanban at
       // ping-time (§OQ3) and rate-limits via the cage's state file.
       // bootstrapOrchd skips registration when
@@ -767,89 +662,6 @@ async function orchdHandleOneByConsumerId(
  * status is read-only diagnostic.
  */
 
-/**
- * `atmux orchd --sweep` — one-shot cron-backstop walk (ADR-231 §D4).
- *
- * Resolves the local atmuxDir, runs `orchdSweep(atmuxDir)` once, and
- * prints the counters JSON to stdout for cron-line + Discord
- * summarization (T-S2.3 surfaces the structured summary). Exit code:
- * 0 on clean sweep (any counter values); non-zero only if `orchdSweep`
- * throws (the walker swallows handler errors per its own contract, so
- * the only throws here are unrecoverable setup failures — atmuxDir
- * unresolvable, etc.).
- *
- * `--once` is the canonical form (consistent with `--drain`); reused
- * verbatim — no per-invocation arg processing beyond `--team-dir`.
- */
-async function orchdSweepCli(parsed: ParsedOrchdArgs): Promise<number> {
-  const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
-  const atmuxDir = await getAtmuxDir(dirOpts);
-  const result = await orchdSweep(atmuxDir);
-  process.stdout.write(`${JSON.stringify(result)}\n`);
-  return 0;
-}
-
-/**
- * `atmux orchd --reap-stale [--team-dir <p>] [--dry-run]` — ADR-250 §D2.
- *
- * Walks this team's spawned epic-teams (cockpit `sessions[]` walk +
- * per-epic-socket liveness via `tmuxTmpdir` → `resolveTeamSocket`, ADR-251)
- * and acts per class: dead-cage orphan → reap (`performDissolveEpic`);
- * live-but-idle → escalate (log-only this phase); live+active → skip.
- *
- * `--dry-run` classifies + prints the verdict without acting — the safe
- * first pass an operator runs to SEE the classification before any
- * destructive reap. The dead-cage reap inherits `performDissolveEpic`'s
- * caller-scope gate (refuses unless `ATMUX_CALLER_SCOPE=driver`) + its
- * skip-on-dirty worktree refuse, so this surface never force-prunes.
- *
- * Output mirrors the other orchd sweeps: one human-readable summary line
- * + one line per acted/notable epic. Exit 0 unless setup throws (the
- * walker isolates per-epic action failures into the `errors` counter).
- */
-async function orchdReapStaleCli(parsed: ParsedOrchdArgs): Promise<number> {
-  const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
-  const atmuxDir = await getAtmuxDir(dirOpts);
-  const dryRun = parsed.dryRun ?? false;
-  const result = await reapStaleEpicTeams(atmuxDir, {
-    dryRun,
-    listSpawnedEpicTeams: (dir) => listSpawnedEpicTeamsForTeam(dir),
-    isCageAlive: (team) => isCageAliveForTeam(team),
-    // dissolve + escalate use the core production defaults
-    // (performDissolveEpic + stderr log) — ADR-250 §D5.
-    logger: {
-      info: (m) => process.stderr.write(`${m}\n`),
-      warn: (m) => process.stderr.write(`${m}\n`),
-    },
-  });
-  const { isoLocalTs } = await import("../core/orchd-log-fmt.ts");
-  const ts = isoLocalTs();
-  const tag = dryRun ? "🔎 reap-stale (dry-run)" : "♻️ reap-stale";
-  const emoji = result.errors > 0 ? "🔴 " : "";
-  process.stdout.write(
-    `[${ts}] ${emoji}${tag} · considered=${result.considered} reaped=${result.reaped} ` +
-      `escalated=${result.escalated} live-active=${result.skippedActive} errors=${result.errors}\n`,
-  );
-  for (const d of result.details) {
-    // Quiet the common live-active rows under a non-dry run; surface
-    // everything under --dry-run (the operator is inspecting).
-    if (!dryRun && d.outcome === "skipped-live-active") continue;
-    process.stdout.write(`[${ts}]   ${d.epicId}\t${d.outcome}\t${d.reason}\n`);
-  }
-  return 0;
-}
-
-/**
- * `atmux orchd --sweep-merges` — e-11-446429c9 §S5.
- *
- * One-shot reconcile pass: walks epics, dispatches merge for
- * unattended ready ones. Fires from the Rust orchd's 5-min in-process
- * ticker (S6) — NOT a crontab entry, dies with the orchd process.
- *
- * Same dispatch closure as orchdHandleOneByConsumerId so event-driven
- * + sweep paths share one code path. Writes JSON result to stdout
- * for the Rust caller's log capture.
- */
 /**
  * `atmux orchd --scan-budget` — e-14-0f156732.
  *
@@ -942,9 +754,6 @@ async function orchdHousekeepCli(parsed: ParsedOrchdArgs): Promise<number> {
       ORCHD_MERGE_CONSUMER_ID,
       ORCHD_DISSOLVE_CONSUMER_ID,
       ORCHD_PUSH_CONSUMER_ID,
-      ORCHD_DISSOLVE_SOLO_WORKER_CONSUMER_ID,
-      ORCHD_SPAWN_ON_READY_CONSUMER_ID,
-      ORCHD_SPAWN_ON_UNBLOCKED_CONSUMER_ID,
       ORCHD_COMPLAINT_CONSUMER_ID,
       ORCHD_ROTATION_CONSUMER_ID,
     } = await import("../core/orchd-bootstrap.ts");
@@ -954,9 +763,6 @@ async function orchdHousekeepCli(parsed: ParsedOrchdArgs): Promise<number> {
       ORCHD_MERGE_CONSUMER_ID,
       ORCHD_DISSOLVE_CONSUMER_ID,
       ORCHD_PUSH_CONSUMER_ID,
-      ORCHD_DISSOLVE_SOLO_WORKER_CONSUMER_ID,
-      ORCHD_SPAWN_ON_READY_CONSUMER_ID,
-      ORCHD_SPAWN_ON_UNBLOCKED_CONSUMER_ID,
       ORCHD_COMPLAINT_CONSUMER_ID,
       ORCHD_ROTATION_CONSUMER_ID,
     ];
@@ -1052,43 +858,6 @@ async function orchdScanContextCli(parsed: ParsedOrchdArgs): Promise<number> {
           `[${ts}] 📊 ctx-scan:${pm.member} ${pm.percent}% (≥${threshold ?? 40}%) emitted\n`,
         );
       }
-    }
-    return 0;
-  } finally {
-    closeDatabase(db);
-  }
-}
-
-async function orchdSweepMergesCli(parsed: ParsedOrchdArgs): Promise<number> {
-  const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
-  const atmuxDir = await getAtmuxDir(dirOpts);
-  const team = await requireTeam(dirOpts);
-  const dbPath = join(atmuxDir, "state.db");
-  const db = openDatabase(dbPath, migrations);
-  try {
-    const { sweepMerges } = await import("../core/orchd-merge-sweep.ts");
-    const { formatSweepReport } = await import("../core/orchd-log-fmt.ts");
-    const epicRepoPath = atmuxDir.endsWith("/.atmux")
-      ? atmuxDir.slice(0, -"/.atmux".length)
-      : atmuxDir;
-    const result = await sweepMerges({
-      db,
-      loadKanban: () => loadKanban(atmuxDir),
-      dispatchEpicMerge: async (epicId) => {
-        if (team.epicTeam !== undefined && team.epicTeam.parentEpicKanbanId === epicId) {
-          return await invokeAutoMergeInCage(epicRepoPath);
-        }
-        return await dispatchEpicMergeImport({ epicId }, { localTeamName: team.name });
-      },
-      log: (msg) => process.stderr.write(`${msg}\n`),
-    });
-    // e-12-640853f3 §S2 — default render is human-readable summary
-    // (one header line + only-interesting per-epic verdicts). JSON form
-    // available via env override for machine consumers.
-    if (process.env.ATMUX_ORCHD_SWEEP_JSON === "1") {
-      process.stdout.write(`${JSON.stringify(result)}\n`);
-    } else {
-      process.stdout.write(`${formatSweepReport(result)}\n`);
     }
     return 0;
   } finally {
