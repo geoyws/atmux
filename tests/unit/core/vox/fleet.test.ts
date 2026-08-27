@@ -799,12 +799,17 @@ describe("renderAttention — the spoken shape", () => {
 
 describe("renderUnreadable — reported, never dropped, never five identical clauses", () => {
   test("groups by REASON and names the teams", () => {
+    // ADR-280 stage 4: the shared reason was "epic-team root", which
+    // named a constant (`EPIC_TEAM_NO_CAGE_REASON`) stage 3 deleted. The
+    // renderer groups by whatever text it is handed, so the literal is
+    // arbitrary — it is updated only so nothing here still points at a
+    // reason string the sweep can no longer produce.
     const out = renderUnreadable([
-      { team: "e1", reason: "epic-team root" },
-      { team: "e2", reason: "epic-team root" },
+      { team: "e1", reason: "socket unreadable" },
+      { team: "e2", reason: "socket unreadable" },
       { team: "sopx", reason: "timeout" },
     ]);
-    expect(out).toBe("UNREADABLE 3 teams: e1, e2 — epic-team root; sopx — timeout");
+    expect(out).toBe("UNREADABLE 3 teams: e1, e2 — socket unreadable; sopx — timeout");
   });
 
   test("caps the names spoken but keeps the count exact", () => {

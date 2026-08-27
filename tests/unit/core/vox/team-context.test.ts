@@ -14,10 +14,16 @@
 //     resolves ("alpha", "geoyws", "driver 2"), spoken filler is dropped
 //     ("the alpha team"), and every rung ABOVE it still wins outright —
 //     that last group is the regression pin most likely to break.
-//   - buildTeamIndex flattens enabled team + epic-team sessions via the
-//     cockpit walker (epic-teams inherit the parent root) and honours
-//     the injectable loader; the default loader reads the cockpit.json
-//     that ATMUX_COCKPIT_CONFIG points at.
+//   - buildTeamIndex flattens enabled team sessions via the cockpit
+//     walker — including NESTED teams, which carry their own root — and
+//     honours the injectable loader; the default loader reads the
+//     cockpit.json that ATMUX_COCKPIT_CONFIG points at.
+//
+// ADR-280 stage 4: the nested entries in these fixtures were
+// `epic-team`s. That type is retired and `VoxTeamIndex.type` narrowed to
+// `"team"`; nesting itself is not retired (ADR-089 §Amendment
+// 2026-08-27 §(A)), so every nested-entry case is kept and re-expressed
+// against a nested `team`.
 
 import { describe, expect, test } from "bun:test";
 import { mkdtemp, writeFile } from "node:fs/promises";
@@ -55,7 +61,7 @@ const INDEX: VoxTeamIndex = {
     { name: "sopx-root", root: "/w/sopx", type: "team" },
     { name: "mx-root", root: "/w/mx", type: "team" },
     { name: "crm-react", root: "/w/crm", type: "team" },
-    { name: "e-payments", root: "/w/mx", type: "epic-team" },
+    { name: "mx-payments", root: "/w/mx/payments", type: "team" },
   ],
 };
 
@@ -217,10 +223,13 @@ describe("resolveTeamName — ladder rungs", () => {
     expect(resolveTeamName(INDEX, spoken)).toEqual({ ok: false, reason: "unknown" });
   });
 
-  test("epic-team entries resolve too", () => {
-    const r = resolveTeamName(INDEX, "e-payments");
+  test("nested-team entries resolve too, carrying their own root", () => {
+    const r = resolveTeamName(INDEX, "mx-payments");
     expect(r.ok).toBe(true);
-    if (r.ok) expect(r.team.type).toBe("epic-team");
+    if (r.ok) {
+      expect(r.team.type).toBe("team");
+      expect(r.team.root).toBe("/w/mx/payments");
+    }
   });
 
   test("empty index → unknown", () => {
@@ -552,7 +561,9 @@ describe("buildTeamIndex", () => {
         name: "alpha",
         root: "/w/alpha",
         enabled: true,
-        sessions: [{ type: "epic-team", name: "e-pay", parent: "alpha", enabled: true }],
+        sessions: [
+          { type: "team", name: "alpha-pay", root: "/w/alpha/pay", enabled: true },
+        ],
       },
       { type: "team", name: "beta", root: "/w/beta", enabled: false },
       { type: "team", name: "gamma", root: "/w/gamma", enabled: true },
@@ -560,11 +571,11 @@ describe("buildTeamIndex", () => {
     teams: [],
   } as unknown as LoadedCockpit;
 
-  test("injected loader: enabled teams + epic-teams (parent root inherited); disabled dropped", async () => {
+  test("injected loader: enabled teams incl. NESTED ones (own root); disabled dropped", async () => {
     const index = await buildTeamIndex({ loadCockpit: async () => cockpitFixture });
     expect(index.teams).toEqual([
       { name: "alpha", root: "/w/alpha", type: "team" },
-      { name: "e-pay", root: "/w/alpha", type: "epic-team" },
+      { name: "alpha-pay", root: "/w/alpha/pay", type: "team" },
       { name: "gamma", root: "/w/gamma", type: "team" },
     ]);
   });

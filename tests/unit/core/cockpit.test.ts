@@ -706,8 +706,16 @@ describe("walkSessions — depth-first traversal", () => {
       { name: "L1b", level: 1 },
     ]);
   });
-  test("threads parentRoot to epic-team descendants", () => {
-    const seen: Array<{ name: string; parentRoot: string | undefined }> = [];
+  // ADR-280 stage 4: the nested node was an `epic-team`; that type is
+  // retired and a team nested under a team is now the general case
+  // (ADR-089 §Amendment 2026-08-27 §(A)). The threading property is
+  // unchanged.
+  test("threads parentRoot AND parentName to nested-team descendants", () => {
+    const seen: Array<{
+      name: string;
+      parentRoot: string | undefined;
+      parentName: string | undefined;
+    }> = [];
     const sessions: CockpitSessionT[] = [
       {
         type: "team",
@@ -716,21 +724,22 @@ describe("walkSessions — depth-first traversal", () => {
         enabled: true,
         sessions: [
           {
-            type: "epic-team",
+            type: "team",
             name: "sopx-deferred",
-            parent: "sopx",
-            epicId: "e-1",
+            root: "/p/sopx-deferred",
             enabled: true,
             sessions: [],
           },
         ],
       },
     ];
-    walkSessions(sessions, 0, (node, _level, parentRoot) => {
-      seen.push({ name: node.name, parentRoot });
+    walkSessions(sessions, 0, (node, _level, parentRoot, parentName) => {
+      seen.push({ name: node.name, parentRoot, parentName });
     });
     expect(seen[0]?.parentRoot).toBeUndefined(); // top-level team has no parent
-    expect(seen[1]?.parentRoot).toBe("/p/sopx"); // nested epic-team inherits
+    expect(seen[0]?.parentName).toBeUndefined();
+    expect(seen[1]?.parentRoot).toBe("/p/sopx"); // nested team sees ancestor root
+    expect(seen[1]?.parentName).toBe("sopx"); // …and ancestor name (stage-3 arg)
   });
 });
 
@@ -789,7 +798,14 @@ describe("enabledTeams — DFS flattener with level annotation", () => {
     const flat = enabledTeams(cockpit);
     expect(flat.map((t) => t.name)).toEqual(["on", "parent", "child-on"]);
   });
-  test("epic-team entries inherit parent's root in flattened output", async () => {
+  // ADR-280 stage 4: was "epic-team entries inherit parent's root". The
+  // `epic-team` row is gone along with the root-inheritance it needed
+  // (an epic-team had no root of its own); a nested `team` carries its
+  // OWN root. What the flattener must still do — and what stage 3
+  // rewired from an `epic-team`-only back-pointer to walk ancestry — is
+  // populate `parent` on the nested entry, because `callerScopeAllowed`
+  // (ADR-092 §D3) joins on it.
+  test("nested team entries flatten with their own root and an ancestry-derived parent", async () => {
     await writeCockpit({
       schemaVersion: 1,
       sessions: [
@@ -799,10 +815,9 @@ describe("enabledTeams — DFS flattener with level annotation", () => {
           root: "/p/sopx",
           sessions: [
             {
-              type: "epic-team",
+              type: "team",
               name: "sopx-deferred",
-              parent: "sopx",
-              epicId: "e-1",
+              root: "/p/sopx-deferred",
             },
           ],
         },
@@ -812,13 +827,13 @@ describe("enabledTeams — DFS flattener with level annotation", () => {
     const flat = enabledTeams(cockpit);
     expect(flat).toHaveLength(2);
     expect(flat[0]).toMatchObject({ type: "team", name: "sopx", root: "/p/sopx", level: 0 });
+    expect(flat[0]?.parent).toBeUndefined(); // top level ⇒ no parent
     expect(flat[1]).toMatchObject({
-      type: "epic-team",
+      type: "team",
       name: "sopx-deferred",
-      root: "/p/sopx", // inherited from parent
+      root: "/p/sopx-deferred", // its OWN root, not the parent's
       level: 1,
-      parent: "sopx",
-      epicId: "e-1",
+      parent: "sopx", // derived from the walk, not declared on the node
     });
   });
   test("legacy flat teams[] roster flattens with all at level 0", async () => {
@@ -1030,9 +1045,16 @@ describe("loadCockpit — prefixChain validation (§Decision-anchor #4)", () => 
 
 // ---------- ADR-092: findTeamByName + callerScopeAllowed ----------
 
-/** Helper — synthesize a minimal CockpitShape with a depth-3 fixture
- *  (`alpha` team with epic-team `alpha-epic-1` child; `beta` team
- *  standalone; `omega` epic-team under `beta`). Used by ADR-092 tests. */
+/** Helper — synthesize a minimal CockpitShape with a two-level fixture
+ *  (`alpha` team with nested child `alpha-child-1`; `beta` team with
+ *  nested child `beta-omega`). Used by ADR-092 tests.
+ *
+ *  ADR-280 stage 4: the children were `epic-team` nodes carrying a
+ *  declared `parent`. That type is retired; they are now ordinary nested
+ *  `team` nodes and `parent` is derived by the walk. The fixture is
+ *  deliberately still a real `CockpitShape` (no `as never` on the nodes)
+ *  so a future schema narrowing breaks the build here rather than
+ *  silently passing on a cast. */
 function buildFixtureCockpit(): CockpitShape {
   return {
     schemaVersion: 1,
@@ -1044,11 +1066,10 @@ function buildFixtureCockpit(): CockpitShape {
         root: "/teams/alpha",
         sessions: [
           {
-            type: "epic-team",
-            name: "alpha-epic-1",
+            type: "team",
+            name: "alpha-child-1",
             enabled: true,
-            parent: "alpha",
-            epicId: "e-alpha-1",
+            root: "/teams/alpha/children/1",
             sessions: [],
           },
         ],
@@ -1060,11 +1081,10 @@ function buildFixtureCockpit(): CockpitShape {
         root: "/teams/beta",
         sessions: [
           {
-            type: "epic-team",
+            type: "team",
             name: "beta-omega",
             enabled: true,
-            parent: "beta",
-            epicId: "e-beta-omega",
+            root: "/teams/beta/children/omega",
             sessions: [],
           },
         ],
@@ -1083,10 +1103,10 @@ describe("findTeamByName (ADR-092 §D2)", () => {
     expect(found?.parent).toBeUndefined();
   });
 
-  test("matches type=epic-team nested with parent root inherited", () => {
-    const found = findTeamByName(buildFixtureCockpit(), "alpha-epic-1");
-    expect(found?.type).toBe("epic-team");
-    expect(found?.root).toBe("/teams/alpha");
+  test("matches a NESTED team, reporting its own root and its ancestry-derived parent", () => {
+    const found = findTeamByName(buildFixtureCockpit(), "alpha-child-1");
+    expect(found?.type).toBe("team");
+    expect(found?.root).toBe("/teams/alpha/children/1");
     expect(found?.parent).toBe("alpha");
     expect(found?.level).toBe(1);
   });
@@ -1096,24 +1116,23 @@ describe("findTeamByName (ADR-092 §D2)", () => {
   });
 
   test("walks depth-3 fixture deterministically (first match wins)", () => {
-    // Add a sibling-named epic under beta with same name as alpha's
-    // child to verify FIRST match by DFS order wins (Decision-anchor
-    // #2 — name collision is operator error; lookup is deterministic).
+    // Add a child under beta with the same name as alpha's child to
+    // verify FIRST match by DFS order wins (Decision-anchor #2 — name
+    // collision is operator error; lookup is deterministic).
     const cockpit = buildFixtureCockpit();
     (cockpit.sessions[1] as { sessions: CockpitSessionT[] }).sessions.push({
-      type: "epic-team",
-      name: "alpha-epic-1",
+      type: "team",
+      name: "alpha-child-1",
       enabled: true,
-      parent: "beta",
-      epicId: "e-clash",
+      root: "/teams/beta/children/clash",
       sessions: [],
-    } as never);
-    const found = findTeamByName(cockpit, "alpha-epic-1");
+    });
+    const found = findTeamByName(cockpit, "alpha-child-1");
     // First match is under alpha (DFS visits alpha branch before beta).
     expect(found?.parent).toBe("alpha");
   });
 
-  test("skips superdriver / medic leaves (only team / epic-team)", () => {
+  test("skips superdriver / medic leaves (only type=team qualifies)", () => {
     const cockpit: CockpitShape = {
       schemaVersion: 1,
       sessions: [
@@ -1122,8 +1141,9 @@ describe("findTeamByName (ADR-092 §D2)", () => {
       ],
       teams: [],
     } as unknown as CockpitShape;
-    // The medic literally named "alpha" is NOT matched — only
-    // team / epic-team types qualify.
+    // The medic literally named "alpha" is NOT matched — only the
+    // `team` type qualifies (the union lost `epic-team` in ADR-280
+    // stage 3, so `team` is now the sole team-bearing member).
     expect(findTeamByName(cockpit, "alpha")).toBeNull();
   });
 });
@@ -1132,7 +1152,7 @@ describe("callerScopeAllowed (ADR-092 §D3)", () => {
   test("driver scope is master override", () => {
     const cockpit = buildFixtureCockpit();
     expect(callerScopeAllowed(cockpit, "alpha", "beta", "driver")).toBe(true);
-    expect(callerScopeAllowed(cockpit, "alpha-epic-1", "beta-omega", "driver")).toBe(true);
+    expect(callerScopeAllowed(cockpit, "alpha-child-1", "beta-omega", "driver")).toBe(true);
   });
 
   test("same-team is trivially allowed", () => {
@@ -1140,35 +1160,37 @@ describe("callerScopeAllowed (ADR-092 §D3)", () => {
     expect(callerScopeAllowed(cockpit, "alpha", "alpha", undefined)).toBe(true);
   });
 
-  test("child epic-team → parent team allowed", () => {
+  // ADR-280 stage 3 WIDENED both of these: the gate used to reach a
+  // parent only through the `epic-team` node's own back-pointer, so it
+  // covered epic-teams alone. It now covers any nested team.
+  test("child team → parent team allowed", () => {
     const cockpit = buildFixtureCockpit();
-    expect(callerScopeAllowed(cockpit, "alpha-epic-1", "alpha", undefined)).toBe(true);
+    expect(callerScopeAllowed(cockpit, "alpha-child-1", "alpha", undefined)).toBe(true);
   });
 
-  test("parent team → child epic-team allowed", () => {
+  test("parent team → child team allowed", () => {
     const cockpit = buildFixtureCockpit();
-    expect(callerScopeAllowed(cockpit, "alpha", "alpha-epic-1", undefined)).toBe(true);
+    expect(callerScopeAllowed(cockpit, "alpha", "alpha-child-1", undefined)).toBe(true);
   });
 
   test("siblings under different parents refused", () => {
     const cockpit = buildFixtureCockpit();
-    expect(callerScopeAllowed(cockpit, "alpha-epic-1", "beta-omega", undefined)).toBe(false);
+    expect(callerScopeAllowed(cockpit, "alpha-child-1", "beta-omega", undefined)).toBe(false);
   });
 
   test("siblings under SAME parent refused — must route via parent", () => {
     const cockpit = buildFixtureCockpit();
-    // Add a sibling epic under alpha so we have two epic-teams sharing
+    // Add a second child under alpha so we have two nested teams sharing
     // parent=alpha. Per ADR-092 §D3 reviewer pre-flag: siblings must
     // route through the parent.
     (cockpit.sessions[0] as { sessions: CockpitSessionT[] }).sessions.push({
-      type: "epic-team",
-      name: "alpha-epic-2",
+      type: "team",
+      name: "alpha-child-2",
       enabled: true,
-      parent: "alpha",
-      epicId: "e-alpha-2",
+      root: "/teams/alpha/children/2",
       sessions: [],
-    } as never);
-    expect(callerScopeAllowed(cockpit, "alpha-epic-1", "alpha-epic-2", undefined)).toBe(false);
+    });
+    expect(callerScopeAllowed(cockpit, "alpha-child-1", "alpha-child-2", undefined)).toBe(false);
   });
 
   test("unrelated standalone teams refused", () => {
