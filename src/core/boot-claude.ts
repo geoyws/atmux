@@ -105,8 +105,10 @@ const BOOT_PROMPT_TEMPLATE =
 /** Render the boot prompt for a (team, member) pair. Exported for
  *  unit tests + observability — the lead-outbox failure surface
  *  echoes this string so the operator can see what was sent. */
-export function renderBootPrompt(team: string, member: string): string {
-  return BOOT_PROMPT_TEMPLATE.replaceAll("{team}", team).replaceAll("{member}", member);
+export function renderBootPrompt(team: string, member: string, briefPath?: string): string {
+  const base = BOOT_PROMPT_TEMPLATE.replaceAll("{team}", team).replaceAll("{member}", member);
+  if (briefPath === undefined) return base;
+  return `${base} Your exact cooperative bot contract is at ${briefPath}; read and obey it before accepting work.`;
 }
 
 /** TUI-ready detection. Matches either:
@@ -197,6 +199,9 @@ export interface BootClaudeOpts {
   /** Team name + member name for the boot prompt template. */
   team: string;
   member: string;
+  /** Optional exact role-brief path. Used by the cooperative `_bot`
+   *  seat because it is deliberately absent from `team.members[]`. */
+  briefPath?: string;
   // --- tunables (test injection) ---
   readyPollIntervalMs?: number;
   readyTimeoutMs?: number;
@@ -381,7 +386,7 @@ export async function bootClaudeMember(opts: BootClaudeOpts): Promise<BootResult
   }
 
   // (3-5) Boot prompt loop.
-  const prompt = renderBootPrompt(opts.team, opts.member);
+  const prompt = renderBootPrompt(opts.team, opts.member, opts.briefPath);
   let attempts = 0;
   while (attempts < maxAttempts) {
     attempts += 1;

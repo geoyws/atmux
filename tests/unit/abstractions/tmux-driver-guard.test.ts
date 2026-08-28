@@ -142,6 +142,17 @@ describe("DriverSendKeysViolation — ADR-239 §D2 runtime guard", () => {
     );
   });
 
+  test("pane.sendKeys admits the distinct _bot target without widening driver", async () => {
+    const target: SendTarget = {
+      kind: "bot",
+      team: "atmux",
+      target: "atmux:_bot",
+    };
+    await expect(tmux.pane.sendKeys({ target, keys: "hello" })).rejects.not.toThrow(
+      DriverSendKeysViolation,
+    );
+  });
+
   test("pane.sendKeys against 'driverless' (driver-prefix but not the pattern) does NOT throw", async () => {
     const target: SendTarget = {
       kind: "member",

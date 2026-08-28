@@ -104,6 +104,8 @@ Dispatch + work:
                               --task claims it, blocked --task blocks it
 
 Automation:
+  bot hold [team]             Reserve an idle-looking _bot for operator input
+  bot resume [team]           Clear the _bot operator hold interlock
   report                      Post 30-min progress digest to Discord
   improve [--budget <spec>] [--status] [--dry-run]  Arm eternal-improvement loop (ADR-052)
   cost [--member <m>] [--since <t>] [--json]  Per-member USD + token usage

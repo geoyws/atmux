@@ -25,6 +25,7 @@ import { UsageError } from "../../../src/errors.ts";
 import type { Team, TeamMember } from "../../../src/schema/team.ts";
 import {
   buildReport,
+  checkBotConfig,
   checkCockpitOnDefaultSocket,
   checkDeployedBinaryLag,
   checkLegacyWindowNameFormat,
@@ -401,6 +402,53 @@ describe("checkTuis", () => {
       members: [{ name: "alpha", tui: "shell" }],
     };
     expect(checkTuis(team)).toEqual([]);
+  });
+});
+
+describe("checkBotConfig — ADR-280", () => {
+  test("absent or disabled bot is silent for transient teams", () => {
+    expect(checkBotConfig(baseTeam)).toEqual([]);
+    expect(
+      checkBotConfig({
+        ...baseTeam,
+        bot: { enabled: false, tui: "claude", cwd: ".atmux/worktrees/bot" },
+      }),
+    ).toEqual([]);
+  });
+
+  test("shell-only bot is yellow and explicitly unroutable", () => {
+    const rows = checkBotConfig({
+      ...baseTeam,
+      bot: { enabled: true, tui: null, cwd: ".atmux/worktrees/bot" },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.detail).toContain("unroutable");
+  });
+
+  test("explicit harness reports executable health", () => {
+    const team: Team = {
+      ...baseTeam,
+      bot: { enabled: true, tui: "claude", cwd: ".atmux/worktrees/bot" },
+    };
+    expect(checkBotConfig(team, { which: () => "/bin/claude", env: {} })[0]).toMatchObject({
+      status: "green",
+      label: "bot:tui:claude",
+    });
+    expect(
+      checkBotConfig(team, { which: () => null, env: {}, platform: "linux" })[0],
+    ).toMatchObject({
+      status: "red",
+      label: "bot:tui:claude",
+    });
+  });
+
+  test("unknown explicit harness is red", () => {
+    const rows = checkBotConfig({
+      ...baseTeam,
+      bot: { enabled: true, tui: "wat", cwd: ".atmux/worktrees/bot" },
+    });
+    expect(rows[0]).toMatchObject({ status: "red", label: "bot:tui:wat" });
   });
 });
 

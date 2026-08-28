@@ -142,6 +142,14 @@ export type SendTarget =
       readonly kind: "service";
       readonly team: string;
       readonly target: Target;
+    }
+  | {
+      /** ADR-280 §D2 — the cooperative `_bot` seat is an explicit input
+       *  target. It is not a member and, crucially, does not widen the
+       *  unrepresentable driver kind from ADR-239. */
+      readonly kind: "bot";
+      readonly team: string;
+      readonly target: Target;
     };
 
 /** Serialize the inner tmux target — pure pass-through to
@@ -315,6 +323,10 @@ export interface TmuxNamespace {
       cwd?: string;
       shellCommand?: string;
       detached?: boolean;
+      /** Insert relative to an existing window. tmux's `-a`/`-b`
+       *  preserves every existing pane while allowing `_bot` to be
+       *  placed after drivers and before members on incremental start. */
+      insert?: { target: Target; position: "after" | "before" };
     }): Promise<WindowId>;
     killWindow(target: Target): Promise<void>;
     listWindows(
@@ -539,11 +551,14 @@ export function createTmux(config: TmuxConfig): TmuxNamespace {
     // ============== window ==============
 
     window: {
-      /** `tmux new-window -t <session>: [-n <name>] [-c <cwd>] [-d] -P -F '#{window_index}' [<shellCommand>]`.
+      /** `tmux new-window -t <target> [-a|-b] [-n <name>] [-c <cwd>] [-d] -P -F '#{window_index}' [<shellCommand>]`.
        *  Returns the new window's `WindowId` (resolved via `-P -F`); avoids
        *  a list-windows race with concurrent window creation. */
       async newWindow(opts) {
-        const argv = ["new-window", "-t", `${opts.sessionName}:`];
+        const target = opts.insert?.target ?? `${opts.sessionName}:`;
+        const argv = ["new-window", "-t", serializeTarget(target)];
+        if (opts.insert?.position === "after") argv.push("-a");
+        if (opts.insert?.position === "before") argv.push("-b");
         if (opts.detached ?? true) argv.push("-d");
         if (opts.name) argv.push("-n", opts.name);
         if (opts.cwd) argv.push("-c", opts.cwd);

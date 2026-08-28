@@ -36,6 +36,7 @@ import { addMember } from "./verbs/add-member.ts";
 import { attach } from "./verbs/attach.ts";
 import { audit } from "./verbs/audit.ts";
 import { blockers } from "./verbs/blockers.ts";
+import { bot } from "./verbs/bot.ts";
 import { claim, done } from "./verbs/claim.ts";
 import { cleanup } from "./verbs/cleanup.ts";
 import { cockpit } from "./verbs/cockpit.ts";
@@ -240,6 +241,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return topo(argv.slice(1));
     case "fleet":
       return fleet(argv.slice(1));
+    case "bot":
+      return bot(argv.slice(1));
     case "nudge":
       return nudge(argv.slice(1));
     case "member":

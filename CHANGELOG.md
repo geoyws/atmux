@@ -7,9 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### 📝 Proposed — cooperative `_bot` seats and `_superbot` offer-and-pull ([ADR-280](docs/adr/280-cooperative-bot-seat-and-superbot-offer-protocol.md))
+### ✨ Added — operator-cooperative `_bot` seats ([ADR-280](docs/adr/280-cooperative-bot-seat-and-superbot-offer-protocol.md))
 
-- Defines `_bot` as a distinct operator-cooperative seat after drivers and before members, with its own `<base>-bot` worktree. It does not weaken ADR-239's driver send-keys ban.
+- An opt-in `team.json::bot` block creates exactly one `_bot` window after declared drivers and before members, backed by `.atmux/worktrees/bot` on `<base>-bot`. Existing `_bot` windows are preserved during incremental starts.
+- Each bot has the stable `bot@<team>` identity and a harness-neutral brief. A null or omitted harness starts zsh for direct operator use but is deliberately unroutable; automated offers require an explicit harness/account.
+- `atmux bot hold|resume` provides a durable tmux-window interlock for operator sessions. Manual input needs no special mode and always outranks future scheduler offers.
+- `_bot` is a distinct typed send target. ADR-239's driver send-keys prohibition remains unchanged, and bot worktree setup fails closed instead of falling back to shared trunk.
+
+### 📝 Proposed — `_superbot` offer-and-pull ([ADR-280](docs/adr/280-cooperative-bot-seat-and-superbot-offer-protocol.md))
+
 - Defines `_superbot` as a deterministic 30-minute Kanban candidate router immediately after optional `_medic`. It offers a board/task/tag identity and exact claim command; it never claims, assigns, or copies task bodies.
 - Pins manual-input precedence, explicit hold/resume, `(board, tag)` default/fallback ownership, atomic first-claim-wins behavior, external issue provenance boundaries, and a seven-phase shadow-first rollout. Defaults remain disabled + shadow; this documentation change does not install, deploy, rebuild, reconcile, or mutate live tmux.
 

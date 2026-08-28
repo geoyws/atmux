@@ -121,6 +121,12 @@ async function writeTeamJson(opts: {
   /** ADR-239 §A1: declarative driver roster (canonical post-ADR-266 §D2 —
    *  the legacy driverSession/driverTui synthesis was removed). */
   drivers?: ReadonlyArray<{ name: string; tui?: string | null; cwd: string }>;
+  bot?: {
+    enabled?: boolean;
+    tui?: string | null;
+    cwd?: ".atmux/worktrees/bot";
+    claudeAccount?: string | null;
+  };
   /** ADR-082 W3: opt-in to per-member worktree isolation. Default
    *  omitted → legacy shared-tree behaviour (matches existing tests). */
   worktreeIsolation?: boolean;
@@ -146,6 +152,9 @@ async function writeTeamJson(opts: {
   }
   if (opts.drivers !== undefined) {
     body.drivers = opts.drivers;
+  }
+  if (opts.bot !== undefined) {
+    body.bot = opts.bot;
   }
   await writeFile(join(env.atmuxDir, "team.json"), `${JSON.stringify(body, null, 2)}\n`, "utf8");
 }
@@ -907,6 +916,116 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
     const ordered = [...wins].sort((a, b) => a.index - b.index);
     expect(ordered[0]?.name).toBe("driver");
     expect(ordered[1]?.name).toBe("🧭_alpha");
+  });
+});
+
+// ---------- ADR-280 §D2 cooperative _bot seat ----------
+
+describe("start — ADR-280 cooperative _bot seat", () => {
+  type GitSpawn = import("../../../src/abstractions/worktree.ts").GitSpawn;
+  type SpawnResult = import("../../../src/abstractions/spawn.ts").SpawnResult;
+
+  function result(exitCode: number, stdout = "", stderr = ""): SpawnResult {
+    return {
+      exitCode,
+      stdout,
+      stderr,
+      argv: [],
+      cmd: "git",
+      signalled: null,
+      durationMs: 0,
+    };
+  }
+
+  async function seedBotCwd(): Promise<string> {
+    const cwd = join(env.atmuxDir, ".atmux", "worktrees", "bot");
+    await mkdir(cwd, { recursive: true });
+    return cwd;
+  }
+
+  function healthyGit(calls: ReadonlyArray<string>[]): GitSpawn {
+    return async (argv) => {
+      calls.push(argv);
+      if (argv.includes("--show-toplevel")) return result(0, `${env.atmuxDir}\n`);
+      if (argv.includes("--show-current")) return result(0, "atmux-geoyws\n");
+      if (argv.includes("--verify")) return result(1);
+      return result(0);
+    };
+  }
+
+  test("fresh start places shell _bot after drivers and before members", async () => {
+    const botCwd = await seedBotCwd();
+    const calls: ReadonlyArray<string>[] = [];
+    await writeTeamJson({
+      drivers: [{ name: "driver", tui: null, cwd: "." }],
+      bot: { tui: null },
+      members: [
+        { name: "alpha", role: "team-lead", tui: "shell" },
+        { name: "bee", role: "member", tui: "shell" },
+      ],
+    });
+
+    expect(await runStart([], { gitSpawn: healthyGit(calls) })).toBe(0);
+
+    const session = `atmux-${env.team}`;
+    const ordered = (await env.tmux.window.listWindows(session)).sort((a, b) => a.index - b.index);
+    expect(ordered.map((window) => window.name)).toEqual(["driver", "_bot", "🧭_alpha", "🐝-bee"]);
+    expect(
+      await env.tmux.pane.displayMessage({
+        target: `${session}:_bot`,
+        format: "#{pane_current_command}",
+      }),
+    ).toBe("zsh");
+    expect(calls.some((call) => call.includes("atmux-geoyws-bot"))).toBe(true);
+    expect(calls.some((call) => call.includes(botCwd))).toBe(true);
+  });
+
+  test("incremental start inserts a newly configured _bot without recreating members", async () => {
+    await writeTeamJson({
+      drivers: [{ name: "driver", tui: null, cwd: "." }],
+      members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
+    });
+    expect(await runStart([])).toBe(0);
+    const session = `atmux-${env.team}`;
+    const memberPidBefore = await env.tmux.pane.displayMessage({
+      target: `${session}:🧭_alpha`,
+      format: "#{pane_pid}",
+    });
+
+    await seedBotCwd();
+    await writeTeamJson({
+      drivers: [{ name: "driver", tui: null, cwd: "." }],
+      bot: { tui: null },
+      members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
+    });
+    expect(await runStart([], { gitSpawn: healthyGit([]) })).toBe(0);
+
+    const ordered = (await env.tmux.window.listWindows(session)).sort((a, b) => a.index - b.index);
+    expect(ordered.map((window) => window.name)).toEqual(["driver", "_bot", "🧭_alpha"]);
+    expect(
+      await env.tmux.pane.displayMessage({
+        target: `${session}:🧭_alpha`,
+        format: "#{pane_pid}",
+      }),
+    ).toBe(memberPidBefore);
+  });
+
+  test("worktree detection failure skips _bot instead of using shared trunk", async () => {
+    await writeTeamJson({
+      bot: { tui: null },
+      members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
+    });
+    const gitSpawn: GitSpawn = async () => result(128, "", "not a git repository");
+
+    expect(await runStart([], { gitSpawn })).toBe(0);
+    const names = (await env.tmux.window.listWindows(`atmux-${env.team}`)).map((w) => w.name);
+    expect(names).not.toContain("_bot");
+    expect(names).toContain("🧭_alpha");
+    expect(
+      env.logs.some(
+        (line) => line.kind === "warn" && line.msg.includes("never falling back to shared trunk"),
+      ),
+    ).toBe(true);
   });
 });
 
