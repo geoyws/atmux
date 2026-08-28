@@ -116,6 +116,7 @@ import {
   buildGroupTopology,
   enabledTeams,
   loadCockpit,
+  ATMUX_NESTING_LEVEL_ENV,
   readNestingLevel,
   resolvePrefix,
 } from "../core/cockpit.ts";
@@ -654,7 +655,22 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   //     runs against teams that may not be in any cockpit roster, and
   //     missing / unparseable cockpit.json should NOT block the start.
   //     The fall-back chain still produces a valid prefix per level.
-  const nestingLevel = readNestingLevel(env);
+  // Topology-aware fallback (2026-08-28, e-419553c6 follow-up): an explicit
+  // ATMUX_NESTING_LEVEL (threaded by the cockpit/group reconcile) always wins,
+  // but a HAND-RUN `atmux start` used to fall back to a blind level 2 — which
+  // stamped F2 on teams that live under a group and belong on F3. When the env
+  // is unset, derive the level from the cockpit roster the way the reconcile
+  // does (`t.level + 2`); teams in no cockpit keep the level-2 default.
+  let nestingLevel = readNestingLevel(env);
+  if (env[ATMUX_NESTING_LEVEL_ENV] === undefined || env[ATMUX_NESTING_LEVEL_ENV] === "") {
+    try {
+      const roster = enabledTeams(await loadCockpit({ env }));
+      const entry = roster.find((t) => t.name === team.name);
+      if (entry !== undefined) nestingLevel = entry.level + 2;
+    } catch {
+      // No cockpit / unparseable cockpit: standalone start keeps the default.
+    }
+  }
   const cagePrefix = await resolveCagePrefixBestEffort(nestingLevel, opts, logger);
   await applyCagePrefix(tmux, cagePrefix);
   logger.log(`cage prefix: level=${nestingLevel} prefix=${cagePrefix}`);
