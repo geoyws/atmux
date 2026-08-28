@@ -94,7 +94,7 @@ async function stageTeam(
   withSession: boolean,
 ): Promise<{ teamName: string; sessionName: string }> {
   const teamName = `${sessionPrefix}-team`;
-  const sessionName = `atmux-${teamName}`;
+  const sessionName = teamName; // bare per e-419553c6
   await writeFile(join(atmuxDir, "team.json"), JSON.stringify({ name: teamName, members }));
   if (withSession) {
     const first = members[0];
@@ -211,7 +211,8 @@ describe("status verb — integration", () => {
     );
     const parsed = JSON.parse(out);
     expect(parsed.team).toMatch(/-team$/);
-    expect(parsed.session).toMatch(/^atmux-/);
+    // e-419553c6: the session name IS the team name (bare, no prefix).
+    expect(parsed.session).toBe(parsed.team);
     expect(parsed.sessionState).toBe("down");
     expect(parsed.members).toHaveLength(1);
     // ADR-148 T2: members[].cadence is the new commit-cadence column.
@@ -1752,7 +1753,7 @@ describe("gatherStatus — panes resolve against the LIVE window list", () => {
     // The two panes therefore run DIFFERENT commands: `cat` and `sleep`.
     // A test where both ran `cat` would pass on the wrong answer.
     const teamName = `${sessionPrefix}-team`;
-    const sessionName = `atmux-${teamName}`;
+    const sessionName = teamName; // bare per e-419553c6
     await writeFile(
       join(atmuxDir, "team.json"),
       JSON.stringify({
@@ -1843,9 +1844,9 @@ describe("gatherStatus — panes resolve against the LIVE window list", () => {
       },
     } as unknown as TmuxNamespace;
     const handed: Array<ReadonlyArray<string>> = [];
-    await gatherStatus(counting, team, `atmux-${team.name}`, atmuxDir, {
+    await gatherStatus(counting, team, team.name, atmuxDir, {
       probeCage: async (_t, m, _dir, opts) => {
-        handed.push(await (opts?.listWindowNames?.(`atmux-${team.name}`) ?? Promise.resolve([])));
+        handed.push(await (opts?.listWindowNames?.(team.name) ?? Promise.resolve([])));
         return {
           member: m.name,
           windowName: m.name,
@@ -1881,7 +1882,7 @@ describe("gatherStatus — panes resolve against the LIVE window list", () => {
         },
       },
     } as unknown as TmuxNamespace;
-    const snap = await gatherStatus(counting, team, `atmux-${team.name}`, atmuxDir);
+    const snap = await gatherStatus(counting, team, team.name, atmuxDir);
     expect(snap.sessionState).toBe("down");
     expect(snap.members[0]?.paneCommand).toBe("(down)");
     expect(listWindowsCalls).toBe(0);
@@ -1896,7 +1897,7 @@ describe("gatherStatus — panes resolve against the LIVE window list", () => {
     const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Parameters<
       typeof gatherStatus
     >[1];
-    const snap = await gatherStatus(tmux, team, `atmux-${team.name}`, atmuxDir, {
+    const snap = await gatherStatus(tmux, team, team.name, atmuxDir, {
       // null = "could not read a repository here", what the real probe
       // now returns for a non-repo path.
       gitLog: async () => null,
@@ -1916,7 +1917,7 @@ describe("gatherStatus — panes resolve against the LIVE window list", () => {
     const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Parameters<
       typeof gatherStatus
     >[1];
-    const snap = await gatherStatus(tmux, team, `atmux-${team.name}`, atmuxDir, {
+    const snap = await gatherStatus(tmux, team, team.name, atmuxDir, {
       gitLog: async () => [],
     });
     expect(snap.members[0]?.cadence?.verdict).toBe("idle");
@@ -1940,7 +1941,7 @@ describe("gatherStatus — panes resolve against the LIVE window list", () => {
         },
       },
     } as unknown as TmuxNamespace;
-    const snap = await gatherStatus(broken, team, `atmux-${team.name}`, atmuxDir);
+    const snap = await gatherStatus(broken, team, team.name, atmuxDir);
     expect(snap.sessionState).toBe("up");
     // Pre-seam behaviour verbatim: the synthesized target is asked, and
     // tmux answers about the current window rather than erroring.
@@ -1995,7 +1996,7 @@ describe("status — an inferred pane state is marked in BOTH text and JSON", ()
    *  shape, and the case where the probe must hedge rather than assert. */
   async function stageAgentLookingPane(): Promise<void> {
     const teamName = `${sessionPrefix}-team`;
-    const sessionName = `atmux-${teamName}`;
+    const sessionName = teamName; // bare per e-419553c6
     await writeFile(
       join(atmuxDir, "team.json"),
       JSON.stringify({ name: teamName, members: [{ name: "alpha", tui: "claude" }] }),
@@ -2244,7 +2245,7 @@ describe("status — team_status agrees with fleet_attention about the same pane
     const alpha = TEAM_FIXTURES.find((t) => t.kind === "live");
     if (alpha === undefined) throw new Error("test fixture: no live team");
     const teamName = `${sessionPrefix}-team`;
-    const sessionName = `atmux-${teamName}`;
+    const sessionName = teamName; // bare per e-419553c6
     await writeFile(
       join(atmuxDir, "team.json"),
       JSON.stringify({
@@ -2378,7 +2379,7 @@ describe("status — a session that is down reports the agent dead, in the share
     const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Parameters<
       typeof gatherStatus
     >[1];
-    const snap = await gatherStatus(tmux, team, `atmux-${team.name}`, atmuxDir);
+    const snap = await gatherStatus(tmux, team, team.name, atmuxDir);
     expect(snap.members[0]?.agentState).toEqual({
       bucket: "attention",
       kind: "dead",
@@ -2395,7 +2396,7 @@ describe("status — a session that is down reports the agent dead, in the share
     const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Parameters<
       typeof gatherStatus
     >[1];
-    const snap = await gatherStatus(tmux, team, `atmux-${team.name}`, atmuxDir);
+    const snap = await gatherStatus(tmux, team, team.name, atmuxDir);
     expect(snap.members[0]?.agentState).toBeUndefined();
     expect(formatAgentStateColumn(snap.members[0] as MemberStatus)).toBe("agent: ❔ no reading");
   });
@@ -2473,7 +2474,7 @@ describe("status — a failed window read degrades, it does not fabricate", () =
         },
       },
     } as unknown as TmuxNamespace;
-    const snap = await gatherStatus(broken, team, `atmux-${team.name}`, atmuxDir);
+    const snap = await gatherStatus(broken, team, team.name, atmuxDir);
     // The legacy column falls back exactly as it always did…
     expect(snap.members[0]?.paneCommand).toBe("(down)");
     // …and nothing manufactured a behavioural verdict out of the failure.
@@ -2487,7 +2488,7 @@ describe("status — a failed window read degrades, it does not fabricate", () =
     const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Parameters<
       typeof gatherStatus
     >[1];
-    const snap = await gatherStatus(tmux, team, `atmux-${team.name}`, atmuxDir, {
+    const snap = await gatherStatus(tmux, team, team.name, atmuxDir, {
       probeCage: async () => {
         throw new Error("probe exploded");
       },

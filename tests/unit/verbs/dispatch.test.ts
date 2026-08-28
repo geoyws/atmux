@@ -48,7 +48,7 @@ async function stageTeamWithMembers(members: ReadonlyArray<string>): Promise<{
   sessionName: string;
 }> {
   const teamName = `${sessionPrefix}-team`;
-  const sessionName = `atmux-${teamName}`;
+  const sessionName = teamName; // bare per e-419553c6
   await writeFile(
     join(atmuxDir, "team.json"),
     JSON.stringify({

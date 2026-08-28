@@ -488,7 +488,7 @@ describe("addMember — refusals", () => {
 describe("addMember — spawn path", () => {
   test("with live session: creates the new window and logs spawn", async () => {
     await writeTeamJson({ emojisMode: "static" });
-    const session = `atmux-${env.team}`;
+    const session = env.team;
     // Bring a fresh session up at the test socket so add-member can detect it
     await env.tmux.session.newSession({
       name: session,
@@ -514,7 +514,7 @@ describe("addMember — spawn path", () => {
     expect(await runAdd(["alpha"])).toBe(0);
     expect(env.logs.some((l) => l.msg.includes("run 'atmux start'"))).toBe(true);
     // No tmux session created as a side-effect of the verb
-    expect(await env.tmux.session.hasSession(`atmux-${env.team}`)).toBe(false);
+    expect(await env.tmux.session.hasSession(env.team)).toBe(false);
   });
 
   test("hasSession failure on the spawn probe is treated as no-session", async () => {

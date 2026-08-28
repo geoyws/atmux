@@ -1,8 +1,11 @@
 // ADR-063 (legacy flat shape) → ADR-089 (recursive `sessions[]` shape).
 //
 // New canonical: `Cockpit.sessions[]` — a discriminated union on `type`
-// across `team` / `superdriver` / `medic`. `team` carries nested
-// `sessions[]` for arbitrary-depth nesting.
+// across `team` / `group` / `superdriver` / `medic`. `team` carries
+// nested `sessions[]` for arbitrary-depth nesting; `group` is a purely
+// organisational container (no `root`, no cage, no tmux server) whose
+// children nest exactly like a team's — ADR-089 §Amendment 2026-08-27
+// §Implementation-ledger row 3, closed by e-419553c6.
 //
 // ADR-280 (2026-08-27) retired the `epic-team` member of that union along
 // with its `epicId` / `parent` fields. Nesting is UNCHANGED — ADR-089
@@ -150,6 +153,23 @@ export interface TeamSessionT {
   sessions: CockpitSessionT[];
 }
 
+/** Purely organisational container — ADR-089 §Amendment 2026-08-27
+ *  §Implementation-ledger row 3 (e-419553c6). A group has NO `root`,
+ *  NO backing cage and NO tmux server of its own; it exists so the
+ *  operator can express fleet structure (`geoyws` / `unum` / `ifca`)
+ *  without paying for a cage per tier. Children are ordinary
+ *  `sessions[]` entries — a `team` under a group is a normal team.
+ *  Deliberately narrow (`.strict()`, no claudeAccount / tuiOverrides /
+ *  prefixChain): nothing would consume them, so admitting them would
+ *  be schema surface that silently does nothing. */
+export interface GroupSessionT {
+  type: "group";
+  name: string;
+  enabled: boolean;
+  /** Recursive — children of any session type. */
+  sessions: CockpitSessionT[];
+}
+
 export interface SuperdriverSessionT {
   type: "superdriver";
   name: string;
@@ -178,7 +198,11 @@ export interface MedicSessionT {
   autoStartTimeoutSec?: number;
 }
 
-export type CockpitSessionT = TeamSessionT | SuperdriverSessionT | MedicSessionT;
+export type CockpitSessionT =
+  | TeamSessionT
+  | GroupSessionT
+  | SuperdriverSessionT
+  | MedicSessionT;
 
 // ---------- Concrete leaf schemas ----------
 
@@ -191,6 +215,22 @@ export const TeamSession: z.ZodType<TeamSessionT> = z.lazy(() =>
     sessions: z.array(CockpitSession).default([]),
   }).strict(),
 ) as z.ZodType<TeamSessionT>;
+
+/** Non-cage organisational container (see {@link GroupSessionT}).
+ *  NOT built on `CockpitSessionBase` — the base carries cage-facing
+ *  fields (claudeAccount / tuiOverrides / prefixChain) that a cage-less
+ *  container has no consumer for; `.strict()` refuses them so a config
+ *  author finds out at load, not by silence. */
+export const GroupSession: z.ZodType<GroupSessionT> = z.lazy(() =>
+  z
+    .object({
+      type: z.literal("group"),
+      name: z.string().min(1),
+      enabled: z.boolean().default(true),
+      sessions: z.array(CockpitSession).default([]),
+    })
+    .strict(),
+) as z.ZodType<GroupSessionT>;
 
 /** Cockpit window 1 — the operator's superdriver REPL. Singleton in
  *  practice but represented as a discriminated entry per ADR-089
@@ -228,6 +268,7 @@ export const MedicSession: z.ZodType<MedicSessionT> = z.lazy(() =>
 export const CockpitSession = z.lazy(() =>
   z.discriminatedUnion("type", [
     TeamSession as unknown as z.ZodObject,
+    GroupSession as unknown as z.ZodObject,
     SuperdriverSession as unknown as z.ZodObject,
     MedicSession as unknown as z.ZodObject,
   ]),

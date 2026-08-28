@@ -37,6 +37,7 @@ import { ensureDir } from "../abstractions/fs.ts";
 import { updateJson } from "../abstractions/json.ts";
 import {
   createTmux,
+  exactSessionTarget,
   type SendTarget,
   type TmuxConfig,
   type TmuxNamespace,
@@ -54,6 +55,7 @@ import {
 } from "../core/cockpit.ts";
 import { loadTeam, teamJsonPath } from "../core/common.ts";
 import { installCockpitCronBlock } from "../core/cron.ts";
+import { migrateLegacySessionName } from "../core/session-migrate.ts";
 import {
   awaitClaudePaneReady,
   formatReadinessWarning,
@@ -183,7 +185,9 @@ export async function resolveTeamWindowMode(
   }
   const session = await resolveCageSessionName(team);
   try {
-    if (!(await cageTmux.session.hasSession(session))) return "session-down";
+    // `=`-anchored: bare session names prefix-collide (`-t sopx` would
+    // match a `sopx-guild` session) — SEC sweep t-0dbfe104 class.
+    if (!(await cageTmux.session.hasSession(exactSessionTarget(session)))) return "session-down";
     const wins = await cageTmux.window.listWindows(session);
     if (!wins.some((w) => w.name === "driver")) return "session-down";
     return "attach";
@@ -249,10 +253,19 @@ export async function buildTeamWindowCommand(
 function cageRetryLoop(team: CockpitTeam, session: string): string {
   const legacy = cageSocketPath(team.name);
   const perTeam = perTeamCageSocketPath(team.root);
+  // `=`-anchored session portion: bare session names (e-419553c6)
+  // prefix-collide, and an attach that lands on a sibling cage would be
+  // far worse than a retry miss. SINGLE-QUOTED because this string runs
+  // in the pane's default-shell: zsh treats an unquoted leading `=` as
+  // its `=cmd` PATH expansion, which fails for `=<session>:driver`,
+  // aborts the whole command line, and kills the viewer window on
+  // macOS (proven live 2026-08-27 — the unquoted form dies within
+  // seconds, the quoted form survives).
+  const target = `'${exactSessionTarget(session)}:driver'`;
   return (
     `while true; do ` +
-    `tmux -S ${legacy} attach -t ${session}:driver 2>/dev/null ` +
-    `|| tmux -S ${perTeam} attach -t ${session}:driver 2>/dev/null; ` +
+    `tmux -S ${legacy} attach -t ${target} 2>/dev/null ` +
+    `|| tmux -S ${perTeam} attach -t ${target} 2>/dev/null; ` +
     `sleep 1; ` +
     `done`
   );
@@ -676,6 +689,19 @@ export async function cockpitRebuild(
     for (const t of teams) {
       const sock = await resolveCageSocket(t.name, t.root);
       const cageTmux = factory({ socketPath: sock });
+      // e-419553c6 bare-name migration for LIVE cages. A live cage is
+      // deliberately not restarted below, so it never routes through
+      // start.ts's own migration — rename its legacy `atmux-<team>`
+      // session here (in place, clients + PIDs preserved) so the
+      // viewer attach loops and doctor probes, which resolve the bare
+      // name, keep reaching it. No-op on anchored names + once done.
+      await migrateLegacySessionName({
+        tmux: cageTmux,
+        teamName: t.name,
+        resolvedSession: await resolveCageSessionName(t),
+        log: (m) => logger.log(`  ✓ ${t.name}: ${m}`),
+        warn: (m) => logger.warn(`  ⚠ ${t.name}: ${m}`),
+      });
       const alive = await cageAlive(cageTmux);
       if (alive && !parsed.forceCycle) {
         logger.log(`  · ${t.name} cage alive — skipping cycle (use --force-cycle to override)`);
@@ -710,7 +736,12 @@ export async function cockpitRebuild(
   // `+ 1` → `+ 2` on 2026-05-24 (operator directive — "Fix code to
   // match ADR §C table"). Top-level team = level 2 = F2; nested child
   // = level 3 = F3; etc. Cockpit itself takes level 1 = F1 via
-  // Phase 5b below.
+  // Phase 5b below. `t.level` counts only CAGE (team) ancestors —
+  // `type: "group"` containers are transparent to it (walkSessions
+  // does not increment through them), so a team under a top-level
+  // group still lands on F2: a group runs no tmux server, and a
+  // prefix rung for it would address nothing (ADR-089 §Amendment
+  // 2026-08-27, group-tier note).
   for (const t of teams) {
     const sock = await resolveCageSocket(t.name, t.root);
     const cageTmux = factory({ socketPath: sock });

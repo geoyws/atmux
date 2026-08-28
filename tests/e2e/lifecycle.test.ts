@@ -82,7 +82,7 @@ beforeAll(async () => {
   // ~/.claude/teams/<team>/ marker dir don't collide with concurrent
   // test files or stale prior runs.
   teamName = `lc${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-  sessionName = `atmux-${teamName}`;
+  sessionName = teamName; // bare per e-419553c6
 
   teamDir = await mkdtemp(join(tmpdir(), "atmux-lifecycle-"));
   atmuxDir = join(teamDir, ".atmux");

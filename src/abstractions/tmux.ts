@@ -278,6 +278,25 @@ export type TmuxConfig = SocketConfig & {
   readonly configFile?: string;
 };
 
+/**
+ * Build the exact-match tmux target for a session name. tmux's `-t`
+ * resolution PREFIX-matches session names, so `-t journal` happily
+ * matches a session named `journalism`; the `=` prefix forces an exact
+ * match. Bash used this at every has-session / attach-session callsite
+ * (SEC sweep t-0dbfe104, `lib/common.sh:590-592`). The bare-session-name
+ * change (e-419553c6 — `atmux-<team>` → `<team>`) raises the stakes:
+ * short bare names collide by prefix far more readily than the old
+ * prefixed forms, so session-targeting calls (has-session, kill-session,
+ * rename-session source, attach) must route through this helper rather
+ * than passing the raw name.
+ *
+ * Canonical home is here (the tmux abstraction owns target semantics);
+ * `verbs/attach.ts` re-exports it for its existing importers.
+ */
+export function exactSessionTarget(sessionName: string): string {
+  return `=${sessionName}`;
+}
+
 // ---------- Public namespace shape ----------
 
 export interface TmuxNamespace {

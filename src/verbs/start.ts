@@ -94,6 +94,7 @@ import { appendText, ensureDir, exists, readTextOrNull, writeText } from "../abs
 import { now } from "../abstractions/time.ts";
 import {
   createTmux,
+  exactSessionTarget,
   type SendTarget,
   type TmuxConfig,
   type TmuxNamespace,
@@ -134,6 +135,7 @@ import {
 } from "../core/drivers.ts";
 import { injectGoalIfActive } from "../core/goal-injection.ts";
 import { submitAfterPaste } from "../core/paste-submit.ts";
+import { migrateLegacySessionName } from "../core/session-migrate.ts";
 import { consumedManifestPath, resumeManifestPath } from "../core/soft-stop.ts";
 import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
@@ -390,15 +392,32 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
     await ensureDir(dirname(tmuxConfig.socketPath));
   }
 
-  // 5. Resolve session name (defaults to `atmux-<team>` per
-  //    common.getSessionName — also handles ATMUX_SESSION env override
-  //    + state/session.txt anchor if present).
+  // 5. Resolve session name (defaults to the bare `<team>` per
+  //    common.getSessionName / e-419553c6 — also handles ATMUX_SESSION
+  //    env override + state/session.txt anchor if present).
   const sessionOpts: { env: NodeJS.ProcessEnv; cwd?: string; team: typeof team } = { env, team };
   if (opts.cwd !== undefined) sessionOpts.cwd = opts.cwd;
   const session = await getSessionName(sessionOpts);
 
-  // 6. Live-lead guard (lib/start.sh:140-147).
-  const sessionExisted = await tmux.session.hasSession(session);
+  // 5b. e-419553c6 in-place migration: a live cage started under the
+  //     legacy `atmux-<team>` convention is renamed to the bare name
+  //     (preserving clients + pane PIDs, ADR-264 §D4 pattern) so the
+  //     incremental path below adopts it instead of reading it as
+  //     absent and creating a duplicate. Idempotent; no-op for
+  //     anchored/pinned names; both-exist warns and leaves it to the
+  //     operator.
+  await migrateLegacySessionName({
+    tmux,
+    teamName: team.name,
+    resolvedSession: session,
+    log: (m) => logger.log(m),
+    warn: (m) => logger.warn(m),
+  });
+
+  // 6. Live-lead guard (lib/start.sh:140-147). `=`-anchored: with bare
+  //    session names a prefix match (`-t sopx` matching `sopx-guild`)
+  //    would adopt a sibling team's cage (SEC sweep t-0dbfe104 class).
+  const sessionExisted = await tmux.session.hasSession(exactSessionTarget(session));
   if (sessionExisted) {
     if (!parsed.force) {
       logger.warn(
@@ -407,7 +426,7 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
     } else {
       logger.warn(`force: killing existing session ${session}`);
       try {
-        await tmux.session.killSession(session);
+        await tmux.session.killSession(exactSessionTarget(session));
       } catch {
         // expected: race window between hasSession and killSession;
         // the post-create branch below treats `hasSession=false` as

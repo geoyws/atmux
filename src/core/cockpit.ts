@@ -36,7 +36,9 @@ export interface LoadCockpitOpts {
   /** Override config path. Wins over `env.ATMUX_COCKPIT_CONFIG` and the
    *  `$HOME/.atmux/cockpit.json` default. */
   path?: string;
-  /** Home dir override (test injection — avoids touching `$HOME`). */
+  /** Home dir override (test injection — avoids touching `$HOME`).
+   *  Outranks `env.ATMUX_COCKPIT_CONFIG`: programmatic injection beats
+   *  ambient environment (a-e0199c53). */
   home?: string;
   /** Test seam for migration-shim deprecation warnings. Defaults to
    *  `process.stderr.write` — tests inject a buffer to assert the warn
@@ -49,13 +51,26 @@ export function defaultCockpitConfigPath(home: string): string {
   return join(home, ".atmux", "cockpit.json");
 }
 
-/** Resolve the cockpit config path. Order: opts.path → env → default. */
+/** Resolve the cockpit config path. Order: opts.path → opts.home →
+ *  env.ATMUX_COCKPIT_CONFIG → env.HOME.
+ *
+ *  Programmatic injection outranks ambient environment (kanban
+ *  a-e0199c53, found 2026-08-27): every atmux cage exports
+ *  `ATMUX_COCKPIT_CONFIG`, so when that env var was consulted BEFORE
+ *  `opts.home`, the documented test-injection point silently lost to
+ *  the operator's real cockpit — a deleted test file changed which
+ *  tests saw the live 20-session roster. A caller that passes `home`
+ *  (or `path`) has said which config it means; only callers that pass
+ *  neither fall through to the ambient env. */
 export function resolveCockpitConfigPath(opts: LoadCockpitOpts = {}): string {
   if (opts.path !== undefined && opts.path.length > 0) return opts.path;
+  if (opts.home !== undefined && opts.home.length > 0) {
+    return defaultCockpitConfigPath(opts.home);
+  }
   const env = opts.env ?? process.env;
   const fromEnv = env.ATMUX_COCKPIT_CONFIG;
   if (fromEnv !== undefined && fromEnv.length > 0) return fromEnv;
-  const home = opts.home ?? env.HOME;
+  const home = env.HOME;
   if (home === undefined || home.length === 0) {
     throw new ConfigError({
       what: "cannot resolve cockpit config path: HOME unset and no --config / ATMUX_COCKPIT_CONFIG override",
@@ -334,6 +349,12 @@ export interface FlattenedTeamEntry {
   /** Nearest ancestor `team` name, when this entry is nested. Absent at
    *  `level === 0`. */
   parent?: string;
+  /** Nearest ancestor `group` name (e-419553c6). Absent when no group
+   *  sits above this team. Groups are organisational only — they never
+   *  appear as entries themselves; this is how their name reaches
+   *  consumers (the operator's fuzzy picker) that want to show which
+   *  tier a team belongs to. */
+  group?: string;
   claudeAccount?: TeamSessionT["claudeAccount"];
   tuiOverrides?: TeamSessionT["tuiOverrides"];
 }
@@ -349,7 +370,10 @@ export interface FlattenedTeamEntry {
  *  (duck-typed). `.level` is additive for new consumers. */
 export function enabledTeams(cockpit: CockpitShape): FlattenedTeamEntry[] {
   const out: FlattenedTeamEntry[] = [];
-  walkSessions(cockpit.sessions ?? [], 0, (node, level, _parentRoot, parentName) => {
+  // Groups never yield an entry of their own (`type === "team"` filter),
+  // and a DISABLED group's children never reach the visitor at all —
+  // walkSessions prunes that subtree (e-419553c6).
+  walkSessions(cockpit.sessions ?? [], 0, (node, level, _parentRoot, parentName, parentGroup) => {
     if (node.type === "team" && node.enabled) {
       const e: FlattenedTeamEntry = {
         type: "team",
@@ -359,6 +383,7 @@ export function enabledTeams(cockpit: CockpitShape): FlattenedTeamEntry[] {
         level,
       };
       if (parentName !== undefined) e.parent = parentName;
+      if (parentGroup !== undefined) e.group = parentGroup;
       if (node.claudeAccount !== undefined) e.claudeAccount = node.claudeAccount;
       if (node.tuiOverrides !== undefined) e.tuiOverrides = node.tuiOverrides;
       out.push(e);
@@ -368,15 +393,21 @@ export function enabledTeams(cockpit: CockpitShape): FlattenedTeamEntry[] {
 }
 
 /** DFS walk over `sessions[]`. Visitor receives each node + its level +
- *  the nearest ancestor `team.root` + the nearest ancestor `team.name`.
- *  Public for ADR-089 T5/T6 consumers needing custom walks; the
- *  flattener + enrichment paths use it internally.
+ *  the nearest ancestor `team.root` + the nearest ancestor `team.name` +
+ *  the nearest ancestor `group.name`. Public for ADR-089 T5/T6
+ *  consumers needing custom walks; the flattener + enrichment paths use
+ *  it internally.
  *
  *  ADR-280 stage 3 added `parentName`. It replaces the `epic-team`
  *  node's own `.parent` back-pointer, which was the only way a consumer
  *  could reach its parent before nesting became general — the ancestry
  *  is now derived from the walk itself and works for any nested team.
- *  Visitors that ignore the extra argument are unaffected. */
+ *  Visitors that ignore the extra argument are unaffected.
+ *
+ *  e-419553c6 added `parentGroup` the same way, plus the group
+ *  recursion rules: a group's children are walked at the SAME level
+ *  (no prefix rung for a cage-less container — see the inline
+ *  comment), and a disabled group's subtree is skipped entirely. */
 export function walkSessions(
   sessions: ReadonlyArray<CockpitSessionT>,
   level: number,
@@ -385,15 +416,36 @@ export function walkSessions(
     level: number,
     parentRoot: string | undefined,
     parentName: string | undefined,
+    parentGroup: string | undefined,
   ) => void,
   parentRoot?: string,
   parentName?: string,
+  parentGroup?: string,
 ): void {
   for (const node of sessions) {
-    visit(node, level, parentRoot, parentName);
+    visit(node, level, parentRoot, parentName, parentGroup);
     if (node.type === "team") {
       if (Array.isArray(node.sessions) && node.sessions.length > 0) {
-        walkSessions(node.sessions, level + 1, visit, node.root, node.name);
+        walkSessions(node.sessions, level + 1, visit, node.root, node.name, parentGroup);
+      }
+    } else if (node.type === "group") {
+      // Groups do NOT increment `level`. Level feeds the F-key prefix
+      // chain (`resolvePrefix(t.level + 2, …)` in verbs/cockpit.ts),
+      // and a group creates NO tmux server — a prefix rung for it
+      // would address nothing. The operator-accepted F2→F3 shift of
+      // ADR-089 §Amendment 2026-08-27 §(B) applies only when a CAGE
+      // nests inside a cage; a cage-less container is transparent to
+      // the chain (see the amendment's dated group-tier note). The
+      // group is equally transparent to team ancestry (parentRoot /
+      // parentName pass through unchanged) — it only becomes the
+      // nearest-ancestor `parentGroup` for everything beneath it.
+      //
+      // A disabled group prunes its WHOLE subtree from the walk —
+      // unlike a disabled team, whose children are still visited (a
+      // team is one cage's flag; a group is a declaration that the
+      // subtree is off).
+      if (node.enabled && Array.isArray(node.sessions) && node.sessions.length > 0) {
+        walkSessions(node.sessions, level, visit, parentRoot, parentName, node.name);
       }
     }
   }
@@ -418,8 +470,12 @@ export interface CockpitTeamLookup {
   level: number;
   /** Nearest ancestor team name when this node is nested; absent at the
    *  top level. Consumers (caller-scope gate) join on this to drive the
-   *  parent ↔ child policy table. */
+   *  parent ↔ child policy table. Groups are transparent here — a team
+   *  under `team A → group G → team B` still reports `parent: "A"`. */
   parent?: string;
+  /** Nearest ancestor `group` name (e-419553c6); absent when no group
+   *  sits above this team. Mirrors {@link FlattenedTeamEntry.group}. */
+  group?: string;
 }
 
 /** ADR-092 §D2 — depth-first match on `node.name` across `cockpit.sessions[]`.
@@ -429,7 +485,7 @@ export interface CockpitTeamLookup {
  *  / synthesis paths). */
 export function findTeamByName(cockpit: CockpitShape, name: string): CockpitTeamLookup | null {
   let found: CockpitTeamLookup | null = null;
-  walkSessions(cockpit.sessions ?? [], 0, (node, level, _parentRoot, parentName) => {
+  walkSessions(cockpit.sessions ?? [], 0, (node, level, _parentRoot, parentName, parentGroup) => {
     if (found !== null) return;
     if (node.type !== "team") return;
     if (node.name !== name) return;
@@ -440,6 +496,7 @@ export function findTeamByName(cockpit: CockpitShape, name: string): CockpitTeam
       level,
     };
     if (parentName !== undefined) out.parent = parentName;
+    if (parentGroup !== undefined) out.group = parentGroup;
     found = out;
   });
   return found;
@@ -775,9 +832,10 @@ export function cageSessionName(teamName: string): string {
  *
  *  Resolution order (mirrors `common.ts::getSessionName`):
  *    1. `<root>/.atmux/state/session.txt` anchor (when present)
- *    2. Special-case: `team.name === "atmux"` → bare `"atmux"`
- *    3. Default: `atmux-<name>` (hyphen — matches what `start.ts` creates
- *       for any unanchored team via `getSessionName` fallback)
+ *    2. Default: bare `<name>` (e-419553c6 — the `atmux-` prefix was
+ *       dropped from SESSION names to save horizontal space; socket
+ *       paths keep it. The old `team.name === "atmux"` special case
+ *       collapsed into the default: bare is now universal.)
  *
  *  Use this from any cockpit / dissolve / doctor code path that needs
  *  to target a cage's tmux session — `hasSession`, `send-keys`,
@@ -792,6 +850,5 @@ export async function resolveCageSessionName(team: {
     const trimmed = anchor.trim();
     if (trimmed.length > 0) return trimmed;
   }
-  if (team.name === "atmux") return "atmux";
-  return `atmux-${team.name}`;
+  return team.name;
 }

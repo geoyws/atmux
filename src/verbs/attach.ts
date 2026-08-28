@@ -8,7 +8,7 @@
 //      $ATMUX_TEAM_DIR, walks up from cwd — same chain as bash via
 //      core/common.ts::getAtmuxDir).
 //   2. Resolve the team's tmux session name (env override, single-session
-//      anchor file, or default `atmux-<team>`).
+//      anchor file, or the bare `<team>` default per e-419553c6).
 //   3. Resolve the socket: `--socket <path>` flag if given, else default
 //      `/tmp/atmux-<team>/sock` per the Phase 2 placeholder spec lifted
 //      from the ADR-004 amend Consequences §"getDefaultSocket resolver"
@@ -44,7 +44,7 @@
 // The "session does not exist" + arg-parse + default-socket branches are
 // directly assertable.
 
-import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
+import { createTmux, exactSessionTarget, type TmuxNamespace } from "../abstractions/tmux.ts";
 import {
   getDefaultSocket,
   getSessionName,
@@ -110,16 +110,11 @@ export function parseAttachArgs(argv: ReadonlyArray<string>): AttachArgs {
   return out;
 }
 
-/**
- * Build the exact-match tmux target for a session name. Bash uses the
- * `=` prefix at every has-session / attach-session callsite so a session
- * named `atmux-k` does not falsely satisfy a probe for `atmux-kanban`
- * (SEC sweep `t-0dbfe104`, see `lib/common.sh:590-592`). Exported for
- * direct assertion + reuse if any sibling verb needs the same routine.
- */
-export function exactSessionTarget(sessionName: string): string {
-  return `=${sessionName}`;
-}
+// `exactSessionTarget` moved to `abstractions/tmux.ts` (e-419553c6 — the
+// bare-session-name change made it load-bearing for core modules too,
+// and core importing from a verb is the wrong dependency direction).
+// Re-exported here so existing importers (up.ts, tests) keep working.
+export { exactSessionTarget };
 
 /**
  * Inner attach driver — accepts an already-constructed tmux namespace +

@@ -54,7 +54,7 @@
 // the resolved name).
 
 import { now as nowMs } from "../abstractions/time.ts";
-import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
+import { createTmux, exactSessionTarget, type TmuxNamespace } from "../abstractions/tmux.ts";
 import { readOpenFlagsMd } from "../core/blockers.ts";
 import {
   enabledTeams,
@@ -242,7 +242,7 @@ export async function probeTeamLive(
 
   const asks = await readTeamAsks(team, nowSec);
 
-  const sessionUp = await tmux.session.hasSession(sessionName);
+  const sessionUp = await tmux.session.hasSession(exactSessionTarget(sessionName));
   if (!sessionUp) {
     return {
       panes: [
