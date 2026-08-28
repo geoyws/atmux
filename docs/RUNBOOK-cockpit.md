@@ -37,11 +37,11 @@ Use top-level `windows[]` for a durable cockpit workspace that is not backed by 
 }
 ```
 
-Null or omitted `command` starts zsh. These windows appear after the proposed `_superbot` role and before team viewers, in declaration order. Without `_superbot`, the current order remains after `_medic`. Reconcile preserves an existing matching pane and applies `cwd`/`command` only when recreating a missing window. Names must not collide with cockpit roles or team viewers.
+Null or omitted `command` starts zsh. These windows appear after an enabled `_superbot` role and before team viewers, in declaration order. Without `_superbot`, the order remains after `_medic`. Reconcile preserves an existing matching pane and applies `cwd`/`command` only when recreating a missing window. Names must not collide with cockpit roles or team viewers.
 
-### Proposed `_superbot` role (ADR-281)
+### Held `_superbot` role (ADR-281)
 
-ADR-281 proposes a deterministic scheduler window immediately after optional `_medic`:
+ADR-281 implements a deterministic scheduler window immediately after optional `_medic`, but the checked-in migration plan keeps activation held:
 
 ```json
 {
@@ -63,7 +63,7 @@ ADR-281 proposes a deterministic scheduler window immediately after optional `_m
 
 The safe rollout defaults are disabled and shadow-only. `_superbot` discovers through Kanban, offers only task identity plus the exact `kb claim` command, and never claims or assigns. A target team owns a distinct `_bot` window after its drivers and before members. Direct operator typing wins; automated delivery defers on a non-empty composer, active turn, modal/rate-limit state, explicit `atmux bot hold`, or a live `bot@<team>` lease.
 
-This section documents the proposed contract, not an activation procedure. Source implementation, process-level shadow proof, isolated-tmux offer simulation, static fleet-config validation, and a separate operator activation decision are required before any live cockpit reconcile or team rebuild. Do not use `atmux cockpit rebuild` to experiment with this proposal on the live cockpit.
+This section documents the implemented contract, not an activation procedure. Source implementation, installed-Kanban process integration, isolated-tmux offer simulation, and static fleet-config validation are complete. The fleet plan and current blockers live in [`migrations/281-superbot-fleet-plan.md`](migrations/281-superbot-fleet-plan.md). A separate operator activation decision is still required before any live cockpit reconcile or team rebuild. Do not use `atmux cockpit rebuild` to experiment with the held plan on the live cockpit.
 
 **Why this matters:** before ADR-162, atmux cockpit windows landed in the operator's own tmux server. A stray `tmux kill-server` from the operator wiped both their personal state AND atmux's cockpit. The socket-isolation closes that foot-gun.
 

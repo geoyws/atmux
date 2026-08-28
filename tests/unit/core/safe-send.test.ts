@@ -560,6 +560,27 @@ describe("safeSendKeysWithVerify default constants", () => {
 // ---------- Happy path: verifier passes on first poll ----------
 
 describe("safeSendKeysWithVerify — happy path", () => {
+  test("pre-send verifier refusal performs zero sends and zero escalation writes", async () => {
+    const lines: string[] = [];
+    const { fixture, baseOpts } = buildVerifyFixture(["operator is typing"]);
+    const result = await safeSendKeysWithVerify({
+      ...baseOpts,
+      log: (line) => lines.push(line),
+      target: "atmux:_bot",
+      keys: "offer",
+      expectVerifier: () => true,
+      preSendVerifier: () => false,
+    });
+    expect(result).toEqual({
+      success: false,
+      attempts: 0,
+      finalCapture: "operator is typing",
+    });
+    expect(fixture.sends).toHaveLength(0);
+    expect(fixture.logs).toHaveLength(0);
+    expect(lines).toContain("safeSendKeysWithVerify: atmux:_bot pre-send verifier refused");
+  });
+
   test("verifier returns true after first poll → success on attempt 1", async () => {
     // Captures: [0]=pre-send, [1]=post-send (verifier returns true).
     const { fixture, baseOpts } = buildVerifyFixture(["pre", "VERIFIED-state"]);

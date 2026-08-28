@@ -28,6 +28,10 @@ export interface SpawnOpts {
   cwd?: string;
   /** Env vars merged on top of `process.env`, NOT replacing it. */
   env?: Readonly<Record<string, string>>;
+  /** Ambient env names to remove after merging. Use for selectors whose
+   * empty string has application-specific meaning and therefore cannot
+   * safely stand in for absence. */
+  unsetEnv?: ReadonlyArray<string>;
   /** Hard timeout. Default 30_000ms. SIGTERM → 1s grace → SIGKILL. */
   timeoutMs?: number;
   /** Accepted exit code(s). Default `0`. Use `"any"` for "don't validate". */
@@ -119,7 +123,7 @@ export async function spawn(opts: SpawnOpts): Promise<SpawnResult> {
   const cmdResolved = resolveCmd(opts.cmd, argv);
   const expect = opts.expectExitCode ?? 0;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const env = mergeEnv(opts.env);
+  const env = mergeEnv(opts.env, opts.unsetEnv);
   const start = nowMs();
 
   const proc = Bun.spawn({
@@ -376,7 +380,10 @@ function resolveCmd(cmd: string, argv: ReadonlyArray<string>): string {
   return resolved;
 }
 
-function mergeEnv(extra?: Readonly<Record<string, string>>): Record<string, string> {
+function mergeEnv(
+  extra?: Readonly<Record<string, string>>,
+  unset: ReadonlyArray<string> = [],
+): Record<string, string> {
   const base: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (typeof v === "string") base[k] = v;
@@ -384,6 +391,7 @@ function mergeEnv(extra?: Readonly<Record<string, string>>): Record<string, stri
   if (extra) {
     for (const [k, v] of Object.entries(extra)) base[k] = v;
   }
+  for (const name of unset) delete base[name];
   return base;
 }
 

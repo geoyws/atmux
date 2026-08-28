@@ -201,11 +201,7 @@ export interface MedicSessionT {
   autoStartTimeoutSec?: number;
 }
 
-export type CockpitSessionT =
-  | TeamSessionT
-  | GroupSessionT
-  | SuperdriverSessionT
-  | MedicSessionT;
+export type CockpitSessionT = TeamSessionT | GroupSessionT | SuperdriverSessionT | MedicSessionT;
 
 // ---------- Concrete leaf schemas ----------
 
@@ -348,6 +344,61 @@ export const CockpitWindow = z
   .strict();
 export type CockpitWindow = z.infer<typeof CockpitWindow>;
 
+/** ADR-281 — one deterministic `(board, tag)` ownership route. The
+ *  default team receives the first offer; fallbacks are tried one at a
+ *  time, in declaration order, only after the configured interval. */
+export const CockpitSuperbotRoute = z
+  .object({
+    board: z.string().min(1),
+    tag: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+    defaultTeam: z.string().min(1),
+    fallbackTeams: z.array(z.string().min(1)).default([]),
+  })
+  .strict()
+  .superRefine((route, ctx) => {
+    const owners = [route.defaultTeam, ...route.fallbackTeams];
+    const seen = new Set<string>();
+    for (const owner of owners) {
+      if (seen.has(owner)) {
+        ctx.addIssue({
+          code: "custom",
+          message: `team '${owner}' appears more than once in the ownership route`,
+          path: ["fallbackTeams"],
+        });
+      }
+      seen.add(owner);
+    }
+  });
+export type CockpitSuperbotRoute = z.infer<typeof CockpitSuperbotRoute>;
+
+/** ADR-281 — cockpit `_superbot` scheduler. Disabled + shadowed by
+ *  default: parsing an old cockpit.json cannot activate automation. */
+export const CockpitSuperbot = z
+  .object({
+    enabled: z.boolean().default(false),
+    shadow: z.boolean().default(true),
+    intervalMins: z.number().int().positive().default(30),
+    fallbackAfterIntervals: z.number().int().positive().default(1),
+    maxOffersPerTick: z.number().int().positive().max(100).default(20),
+    routes: z.array(CockpitSuperbotRoute).default([]),
+  })
+  .strict()
+  .superRefine((config, ctx) => {
+    const seen = new Set<string>();
+    for (const [i, route] of config.routes.entries()) {
+      const key = `${route.board}\u0000${route.tag}`;
+      if (seen.has(key)) {
+        ctx.addIssue({
+          code: "custom",
+          message: `duplicate superbot route for board='${route.board}' tag='${route.tag}'`,
+          path: ["routes", i],
+        });
+      }
+      seen.add(key);
+    }
+  });
+export type CockpitSuperbot = z.infer<typeof CockpitSuperbot>;
+
 /** ADR-086 §Phase 1.5: verdict literal keys for the per-verdict dedup
  *  ladder. Restated here (not imported from `core/pulse-state.ts` to
  *  avoid the schema → core dependency direction) — kept in lockstep
@@ -410,6 +461,9 @@ export const Cockpit = z
     /** Declarative operator-owned windows placed after `_medic` and before
      *  team viewers. They have no team cage and default to zsh. */
     windows: z.array(CockpitWindow).default([]),
+    /** ADR-281 deterministic Kanban offer scheduler. Absence is parsed
+     *  as disabled + shadow, never as implicit activation. */
+    superbot: CockpitSuperbot.optional(),
     /** ADR-089 §C: F-key prefix chain — defaults to `["F1","F2","F3","F4"]`
      *  when unset. Loader validates length + uniqueness. */
     prefixChain: z.array(z.string()).optional(),

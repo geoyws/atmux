@@ -6,11 +6,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTmux, type TmuxConfig, type TmuxNamespace } from "../../../src/abstractions/tmux.ts";
-import {
-  buildGroupTopology,
-  enabledTeams,
-  groupSocketPath,
-} from "../../../src/core/cockpit.ts";
+import { buildGroupTopology, enabledTeams, groupSocketPath } from "../../../src/core/cockpit.ts";
 import type { Cockpit as CockpitShape } from "../../../src/schema/cockpit.ts";
 import type { Logger } from "../../../src/core/tui.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
@@ -20,6 +16,7 @@ import {
   applyCagePrefix,
   autolaunchTeam,
   buildMigrationBreadcrumb,
+  buildSuperbotWindowCommand,
   buildTeamWindowCommand,
   type CapturedCockpitWindow,
   cageAlive,
@@ -206,10 +203,12 @@ describe("cockpit() dispatch — reconcile canonical", () => {
   });
 
   test("rebuild alias removed per ADR-266 §D2 → UsageError (dispatch refuses)", async () => {
-    await expect(cockpit(["rebuild"], { env: baseEnv(), logger: makeLogger().logger })).rejects
-      .toThrow(UsageError);
-    await expect(cockpit(["rebuild"], { env: baseEnv(), logger: makeLogger().logger })).rejects
-      .toThrow(/ADR-266.*cockpit reconcile/);
+    await expect(
+      cockpit(["rebuild"], { env: baseEnv(), logger: makeLogger().logger }),
+    ).rejects.toThrow(UsageError);
+    await expect(
+      cockpit(["rebuild"], { env: baseEnv(), logger: makeLogger().logger }),
+    ).rejects.toThrow(/ADR-266.*cockpit reconcile/);
   });
 
   test("unknown sub-verb still rejected (reconcile didn't loosen the guard)", () => {
@@ -896,6 +895,76 @@ describe("reconcileCockpitSession", () => {
         .map((w) => w.name);
       expect(second).toEqual(first);
       expect(await fx.tmux.session.hasSession("atx")).toBe(false);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("ADR-281: _superbot sits after optional _medic and preserves every pane on re-run", async () => {
+    const fx = await spinTmux("cockpit-superbot-order");
+    try {
+      const { logger } = makeLogger();
+      const teams: CockpitTeam[] = [
+        { name: "alpha", root: "/a", enabled: true } as CockpitTeam,
+        { name: "beta", root: "/b", enabled: true } as CockpitTeam,
+      ];
+      const windows = [{ name: "_misc", enabled: true, cwd: "/tmp", command: null }];
+      const medic = { enabled: true, autoStart: false };
+      const deps: ResolveTeamWindowDeps = { buildMedicCommand: () => "sleep infinity" };
+      const reconcileOpts = {
+        windows,
+        superbot: {
+          enabled: true,
+          shadow: true,
+          intervalMins: 30,
+          fallbackAfterIntervals: 1,
+          maxOffersPerTick: 20,
+          routes: [],
+        },
+        superbotCommand: "sleep infinity",
+      };
+
+      await reconcileCockpitSession(
+        fx.tmux,
+        "atmux_cockpit",
+        teams,
+        logger,
+        deps,
+        medic,
+        false,
+        reconcileOpts,
+      );
+      const ordered = (await fx.tmux.window.listWindows("atmux_cockpit"))
+        .slice()
+        .sort((a, b) => a.index - b.index)
+        .map((window) => window.name);
+      expect(ordered).toEqual(["_superdriver", "_medic", "_superbot", "_misc", "alpha", "beta"]);
+      const before = new Map<string, number>();
+      for (const window of ordered) {
+        const pane = (await fx.tmux.pane.listPanes(`atmux_cockpit:${window}`))[0];
+        expect(pane).toBeDefined();
+        before.set(window, pane!.pid);
+      }
+
+      await reconcileCockpitSession(
+        fx.tmux,
+        "atmux_cockpit",
+        teams,
+        logger,
+        deps,
+        medic,
+        false,
+        reconcileOpts,
+      );
+      for (const [window, pid] of before) {
+        expect((await fx.tmux.pane.listPanes(`atmux_cockpit:${window}`))[0]?.pid).toBe(pid);
+      }
+      expect(buildSuperbotWindowCommand("/tmp/a b.json")).toBe(
+        "atmux superbot run --config '/tmp/a b.json'",
+      );
     } finally {
       try {
         await fx.tmux.server.killServer();
@@ -3243,7 +3312,12 @@ const groupTestDeps: ResolveTeamWindowDeps = {
 
 /** Minimal cockpit shape wrapper for buildGroupTopology in these tests. */
 function topoShape(sessions: unknown[]): CockpitShape {
-  return { schemaVersion: 1, cockpitSession: "atx", sessions, windows: [] } as unknown as CockpitShape;
+  return {
+    schemaVersion: 1,
+    cockpitSession: "atx",
+    sessions,
+    windows: [],
+  } as unknown as CockpitShape;
 }
 
 describe("reconcileGroupServers (e-419553c6)", () => {
@@ -3311,11 +3385,20 @@ describe("reconcileGroupServers (e-419553c6)", () => {
         shellCommand: "sleep 120",
       });
       const cagePidBefore = (
-        await cageTmux.pane.displayMessage({ target: `${team}:driver`, format: "#{pane_pid}", print: true })
+        await cageTmux.pane.displayMessage({
+          target: `${team}:driver`,
+          format: "#{pane_pid}",
+          print: true,
+        })
       ).trim();
       const topo = buildGroupTopology(
         topoShape([
-          { type: "group", name: g, enabled: true, sessions: [{ type: "team", name: team, root: cageRoot, enabled: true, sessions: [] }] },
+          {
+            type: "group",
+            name: g,
+            enabled: true,
+            sessions: [{ type: "team", name: team, root: cageRoot, enabled: true, sessions: [] }],
+          },
         ]),
       );
       // Default deps: loadTeam is injected (no team.json in the scratch
@@ -3324,7 +3407,9 @@ describe("reconcileGroupServers (e-419553c6)", () => {
       // reaches the live cage.
       await reconcileGroupServers(grpFactory, topo, logger, {
         yes: true,
-        deps: { loadTeam: groupTestDeps.loadTeam as NonNullable<ResolveTeamWindowDeps["loadTeam"]> },
+        deps: {
+          loadTeam: groupTestDeps.loadTeam as NonNullable<ResolveTeamWindowDeps["loadTeam"]>,
+        },
       });
       expect(await gTmux.session.hasSession(`=${g}`)).toBe(true);
       // The group window's retry loop should attach a client to the cage.
@@ -3341,7 +3426,11 @@ describe("reconcileGroupServers (e-419553c6)", () => {
       await gTmux.server.killServer();
       expect(await cageTmux.session.hasSession(`=${team}`)).toBe(true);
       const cagePidAfter = (
-        await cageTmux.pane.displayMessage({ target: `${team}:driver`, format: "#{pane_pid}", print: true })
+        await cageTmux.pane.displayMessage({
+          target: `${team}:driver`,
+          format: "#{pane_pid}",
+          print: true,
+        })
       ).trim();
       expect(cagePidAfter).toBe(cagePidBefore);
     } finally {
@@ -3376,7 +3465,14 @@ describe("reconcileGroupServers (e-419553c6)", () => {
     );
     const onlyFirst = buildGroupTopology(
       topoShape([
-        { type: "group", name: g, enabled: true, sessions: [{ type: "team", name: t1, root: "/nonexistent/c1", enabled: true, sessions: [] }] },
+        {
+          type: "group",
+          name: g,
+          enabled: true,
+          sessions: [
+            { type: "team", name: t1, root: "/nonexistent/c1", enabled: true, sessions: [] },
+          ],
+        },
       ]),
     );
     try {
@@ -3388,7 +3484,10 @@ describe("reconcileGroupServers (e-419553c6)", () => {
       let names = (await gTmux.window.listWindows(g)).map((w) => w.name);
       expect(names).toContain(t2);
       // With yes — pruned; t1 survives.
-      await reconcileGroupServers(grpFactory, onlyFirst, logger, { yes: true, deps: groupTestDeps });
+      await reconcileGroupServers(grpFactory, onlyFirst, logger, {
+        yes: true,
+        deps: groupTestDeps,
+      });
       names = (await gTmux.window.listWindows(g)).map((w) => w.name);
       expect(names).toContain(t1);
       expect(names).not.toContain(t2);
@@ -3418,7 +3517,9 @@ describe("reconcileGroupServers (e-419553c6)", () => {
               type: "group",
               name: inner,
               enabled: true,
-              sessions: [{ type: "team", name: t, root: "/nonexistent/d1", enabled: true, sessions: [] }],
+              sessions: [
+                { type: "team", name: t, root: "/nonexistent/d1", enabled: true, sessions: [] },
+              ],
             },
           ],
         },
@@ -3460,7 +3561,14 @@ describe("buildGroupWindowCommand", () => {
 describe("reconcileCockpitSession — topology (grouped teams leave the cockpit)", () => {
   const shapeFor = (g: string, grouped: string, solo: string): CockpitShape =>
     topoShape([
-      { type: "group", name: g, enabled: true, sessions: [{ type: "team", name: grouped, root: "/nonexistent/g1", enabled: true, sessions: [] }] },
+      {
+        type: "group",
+        name: g,
+        enabled: true,
+        sessions: [
+          { type: "team", name: grouped, root: "/nonexistent/g1", enabled: true, sessions: [] },
+        ],
+      },
       { type: "team", name: solo, root: "/nonexistent/s1", enabled: true, sessions: [] },
     ]);
 

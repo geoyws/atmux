@@ -1,6 +1,6 @@
 # ADR-281: Cooperative `_bot` seats and the `_superbot` offer protocol
 
-**Status**: proposed
+**Status**: accepted (operator-direct; source implemented, live activation held)
 **Date**: 2026-08-28
 **Driver-ref**: operator-direct — every persistent team needs an operator-cooperative bot window named exactly `_bot`; the cockpit needs `_superbot` immediately after `_medic`; `_superbot` should scan `/kb` every 30 minutes and offer actionable work to the owning team without preventing the operator from typing directly into `_bot`.
 **Relates**: [ADR-239](239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md) (drivers are operator-only and never receive automated send-keys), [ADR-261](261-issue-sync-external-tracker-ingestion.md) (external issue ingestion remains a separate adapter concern), [ADR-275](275-external-private-kanban-authority.md) (Kanban is the sole work/lease authority), [ADR-278](278-nullable-driver-agent-harness.md) (null harness means zsh), [ADR-279](279-declarative-operator-cockpit-windows.md) (cockpit ordering and non-destructive persistence)
@@ -30,7 +30,7 @@ Add a typed top-level `team.json::bot` block. It is not a `DriverSession`, is no
 }
 ```
 
-The schema accepts `tui?: string | null` for migration parity. Null or omission starts zsh, as with nullable drivers, but makes the seat ineligible for automated offers because atmux cannot prove which harness—if any—the operator later started. Fleet migration must therefore choose an explicit harness alias and, where that harness uses it, an explicit account per team. Credentials and tokens are never stored in team or cockpit configuration.
+The schema accepts `tui?: string | null` for migration parity. Null or omission starts zsh, as with nullable drivers, but makes the seat ineligible for automated offers because atmux cannot prove which harness—if any—the operator later started. Fleet migration must therefore choose an explicit harness alias and, where that harness uses it, an explicit account per team. Credentials and tokens are never stored in team or cockpit configuration. The first automated-offer implementation supports verified readiness only for Claude; other explicit harnesses remain valid for direct use but return `unsupported-verifier` until their real composer shapes are pinned.
 
 V1 applies to persistent parent teams only. Spawned/transient teams do not inherit `_bot`; that would multiply idle harnesses and ownership routes without measured demand.
 
@@ -81,19 +81,19 @@ Add a typed top-level `cockpit.json::superbot` block:
 
 Defaults are `enabled: false`, `shadow: true`, and `intervalMins: 30`. Route identity is `(board, tag)` because tag vocabularies are board-local. Each route names exactly one default team and an ordered, de-duplicated fallback list. Validation rejects duplicate route keys, duplicate teams within a route, unknown teams, non-parent teams, and a fallback equal to the default.
 
-Cockpit order becomes `_superdriver`, optional `_medic`, `_superbot`, declarative operator windows, then parent-team viewers. When enabled, `_superbot` runs `atmux superbot run`: a deterministic scheduler/log surface with a singleton lock, not an LLM TUI. Reconcile preserves matching panes and does not activate the feature merely because the schema exists.
+Cockpit order becomes `_superdriver`, optional `_medic`, `_superbot`, declarative operator windows, then parent-team viewers. When enabled, `_superbot` runs `atmux superbot run`: a deterministic scheduler/log surface with a singleton lock, not an LLM TUI. The same fence covers one-shot `tick` invocations so cron/manual overlap cannot reserve the same stale candidate twice. Reconcile preserves matching panes and does not activate the feature merely because the schema exists.
 
 ### D5 — Offer-and-pull protocol
 
-Each tick:
+Each tick, in declared route order:
 
-1. groups routes by board and asks the typed Kanban CLI adapter for `kb claim --candidates --project <board> --as superbot@cockpit --json`;
+1. asks the typed Kanban CLI adapter for `kb claim --candidates --project <board> --as superbot@cockpit --tag <tag> --json`, clearing ambient Kanban selectors first;
 2. preserves Kanban's returned ordering and excludes `driverOnly`, non-task/non-todo, leased, dependency-blocked, explicitly incompatible-assignee, draft-ancestor, untagged, and unmapped records;
-3. builds a stable, de-duplicated team sequence from every matching tag, with route default owners before fallbacks;
+3. de-duplicates a task that matches multiple routes by `(board, task-id)`; the first declared route wins, which lets specific tags precede general ones;
 4. offers a new candidate only to the first default owner;
 5. after one complete configured interval, offers to the next not-yet-offered fallback; it never fans out multiple new offers for one task in one tick;
 6. re-reads the task and the target bot's lease/readiness state immediately before every delivery; and
-7. records a successful offer timestamp in namespaced Kanban task metadata. Failed, shadowed, or deferred delivery does not record success.
+7. writes a namespaced pending delivery reservation immediately before send, then converts it to a successful offer timestamp only after verified submission. Shadowed/deferred delivery writes nothing; an interrupted or unverified send leaves the pending marker, retries that same team once after one interval, then advances rather than pretending delivery succeeded.
 
 `_superbot` never claims, assigns, moves, or completes a task. Ownership begins only when `_bot` successfully runs:
 
@@ -120,14 +120,14 @@ An operator may ask `_bot` to inspect Jira, GitHub Issues, IFCAX, or another aut
 
 ### D7 — Held-back rollout phases
 
-The phases are deliberately asymmetric:
+The phases are deliberately asymmetric. As of 2026-08-28, phases 1–6 have source/test/preparation receipts; phase 7 remains held:
 
-1. **Contract** — ADR, schema/API shape, and docs only. Held back: all runtime behavior, so review can change invariants cheaply.
-2. **Seat** — `_bot` schema/lifecycle/hold/readiness plus unit and isolated-tmux integration tests. Held back: scheduler delivery, so no fleet process can type into the new seat.
-3. **Scheduler** — `_superbot` schema, candidate adapter, routing, shadow reports, and tests. Held back: real sends; defaults remain disabled + shadow.
-4. **Shadow pilot** — run one process-level atmux-board tick over `cockpit`, `dispatch`, and `team-config`. Held back: send-keys; every candidate must be routed, deliberately skipped, or invalid with a reason.
-5. **Isolated offer simulation** — use throwaway tmux sockets and disposable Kanban fixtures to prove manual-input deferral, hold/resume, missing/dead-pane refusal, fallback timing, and exactly one lease winner. Held back: canonical configs and live cages.
-6. **Parent-team migration preparation** — add explicit per-team bot harness/account and `(board, tag)` owners to durable configs, validate statically, and keep transient inheritance off. Held back: rebuild/reconcile/install/deploy.
+1. **Contract** — ADR, schema/API shape, and docs. Held back runtime while the invariants were reviewed; now implemented.
+2. **Seat** — `_bot` schema/lifecycle/hold/readiness with unit coverage and throwaway-socket ordering coverage. Held back scheduler delivery while the target remained independently reviewable; now implemented.
+3. **Scheduler** — `_superbot` schema, installed-Kanban adapter, routing, shadow reports, singleton loop, cockpit placement, and unit/process integration coverage. Held back live defaults; it remains disabled + shadow unless explicitly configured.
+4. **Shadow pilot** — process integration crosses the installed Kanban CLI on a disposable board for `cockpit`, `dispatch`, and `team-config`, proving zero sends and zero metadata writes. A read-only current-board receipt may be run separately; no live config is needed or changed.
+5. **Isolated offer simulation** — one disposable Kanban board plus one explicit throwaway tmux socket proves hold deferral, manual-composer deferral, one verified multiline offer, the exact claim command, and direct typing after the offer. Unit coverage pins missing/dead/modal/rate-limit/busy/fallback cases, while concurrent real Kanban claims prove exactly one lease winner. Held back: canonical configs and live cages.
+6. **Parent-team migration preparation** — a validated, read-only renderer covers all 18 observed persistent teams and 95 exact `(board, tag)` owners while emitting only held JSON patches. It records six missing team configs, the `fmx` board/root mismatch, and a Gitea account-command mismatch as activation blockers. No durable live config is changed.
 7. **Live activation** — a separate operator decision after receipts. It may install updated source, reconcile one pilot cage/cockpit, then expand one team at a time. This ADR and its implementation do not authorize that phase.
 
 The holds isolate the three expensive failure classes: typing into human work, creating duplicate ownership, and changing tmux socket/session pointers while atmux itself is under development.
@@ -154,9 +154,9 @@ The holds isolate the three expensive failure classes: typing into human work, c
 
 - Unit tests cover schema defaults/refusals, route union/order, cooldowns, offer redaction, hold state, and every readiness defer reason.
 - Process integration tests cross the real installed Kanban CLI boundary for candidate discovery and concurrent exact-task claims.
-- Isolated-tmux integration tests use throwaway sockets and prove cage/cockpit ordering, direct typing before and after an offer, busy/composer/modal/rate-limit/held deferral, missing/dead-pane refusal, and no regression in driver send-keys protection.
+- Isolated-tmux integration tests use throwaway sockets and prove cage/cockpit ordering plus direct typing, hold, and exactly-one-offer behavior. Unit tests cover busy/composer/modal/rate-limit/held/missing/dead refusal and fallback; process integration covers the real Kanban claim race. Driver send-keys protection remains covered by its existing ADR-239 tests and is structurally untouched.
 - A process-level shadow receipt classifies every configured candidate without sending keys.
-- Static migration validation proves every persistent parent team has a `_bot` config and every configured `(board, tag)` has one default owner; transient teams remain excluded.
+- Static migration validation proves the held plan contains one target `_bot` block for every observed persistent parent team and one default owner for every planned `(board, tag)`; it does not claim those blocks are installed. Transient teams remain excluded.
 - No test is described as live E2E unless it crosses the actual live operator/system boundary. Unit, process-integration, and isolated-tmux layers are named as such.
 - No install, deploy, cockpit reconcile, cage restart, or live tmux/socket mutation occurs without the separate activation decision in D7 phase 7.
 
@@ -168,3 +168,4 @@ The holds isolate the three expensive failure classes: typing into human work, c
 - Cockpit scheduler phase: `e-4616c137`
 - Pilot/migration phase: `e-4b34332c`
 - [`docs/RUNBOOK-cockpit.md`](../RUNBOOK-cockpit.md)
+- [`docs/migrations/281-superbot-fleet-plan.md`](../migrations/281-superbot-fleet-plan.md)

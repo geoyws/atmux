@@ -1,0 +1,218 @@
+{
+  "schemaVersion": 1,
+  "observedAt": "2026-08-28T10:30:35Z",
+  "sourceCockpit": "/root/.atmux/cockpit.json",
+  "sourceCockpitSha256": "aafc163d3e7086806e61bdaf204b253da4dcf7892e9a6e5bcd0c59e63406741f",
+  "activation": "held",
+  "intervalMins": 30,
+  "fallbackAfterIntervals": 1,
+  "maxOffersPerTick": 20,
+  "persistentTeams": [
+    {
+      "name": "journal",
+      "root": "/root/work/journals/.sb",
+      "teamConfig": "present",
+      "bot": { "enabled": true, "tui": "claude", "cwd": ".atmux/worktrees/bot", "claudeAccount": "gmail" }
+    },
+    {
+      "name": "geoyws",
+      "root": "/root/work/geoyws/src/root",
+      "teamConfig": "present",
+      "bot": { "enabled": true, "tui": "claude", "cwd": ".atmux/worktrees/bot", "claudeAccount": "gmail" }
+    },
+    {
+      "name": "atmux",
+      "root": "/root/work/src/atmux",
+      "teamConfig": "present",
+      "bot": { "enabled": true, "tui": "claude", "cwd": ".atmux/worktrees/bot", "claudeAccount": "proton" }
+    },
+    {
+      "name": "orch",
+      "root": "/root/work/src/opencode-plugin-orch",
+      "teamConfig": "present",
+      "bot": { "enabled": true, "tui": "claude", "cwd": ".atmux/worktrees/bot", "claudeAccount": "proton" }
+    },
+    {
+      "name": "kanban",
+      "root": "/root/work/src/kanban",
+      "teamConfig": "present",
+      "bot": { "enabled": true, "tui": "claude", "cwd": ".atmux/worktrees/bot", "claudeAccount": "default" }
+    },
+    {
+      "name": "gitea",
+      "root": "/root/work/gitea",
+      "teamConfig": "present",
+      "bot": { "enabled": true, "tui": "claude", "cwd": ".atmux/worktrees/bot", "claudeAccount": "unum" }
+    },
+    {
+      "name": "dash",
+      "root": "/root/work/dash",
+      "teamConfig": "present",
+      "bot": { "enabled": true, "tui": "claude", "cwd": ".atmux/worktrees/bot", "claudeAccount": "gmail" }
+    },
+    {
+      "name": "unum",
+      "root": "/root/work/unum/src/root",
+      "teamConfig": "present",
+      "bot": { "enabled": true, "tui": "claude", "cwd": ".atmux/worktrees/bot", "claudeAccount": "gmail" }
+    },
+    {
+      "name": "aix",
+      "root": "/root/work/ifca/src/aix-root",
+      "teamConfig": "present",
+      "bot": { "enabled": true, "tui": "claude", "cwd": ".atmux/worktrees/bot", "claudeAccount": "ifca2" }
+    },
+    {
+      "name": "ix",
+      "root": "/root/work/ifca/src/ix-root",
+      "teamConfig": "missing",
+      "bot": { "enabled": true, "tui": "claude", "cwd": ".atmux/worktrees/bot", "claudeAccount": "ifca" }
+    },
+    {
+      "name": "mx",
+      "root": "/root/work/ifca/src/mx-root",
+      "teamConfig": "missing",
+      "bot": { "enabled": true, "tui": "claude", "cwd": ".atmux/worktrees/bot", "claudeAccount": "icloud" }
+    },
+    {
+      "name": "prjx",
+      "root": "/root/work/ifca/src/prjx-root",
+      "teamConfig": "present",
+      "bot": { "enabled": true, "tui": "claude", "cwd": ".atmux/worktrees/bot", "claudeAccount": "ifca2" }
+    },
+    {
+      "name": "px",
+      "root": "/root/work/ifca/src/pai-root",
+      "teamConfig": "present",
+      "bot": { "enabled": true, "tui": "claude", "cwd": ".atmux/worktrees/bot", "claudeAccount": "ifca2" }
+    },
+    {
+      "name": "hx",
+      "root": "/root/work/ifca/src/hotel-service",
+      "teamConfig": "missing",
+      "bot": { "enabled": true, "tui": "claude", "cwd": ".atmux/worktrees/bot", "claudeAccount": "default" }
+    },
+    {
+      "name": "hrx",
+      "root": "/root/work/ifca/src/hr-root",
+      "teamConfig": "missing",
+      "bot": { "enabled": true, "tui": "claude", "cwd": ".atmux/worktrees/bot", "claudeAccount": "ifca2" }
+    },
+    {
+      "name": "rx",
+      "root": "/root/work/ifca/src/rentx-root",
+      "teamConfig": "missing",
+      "bot": { "enabled": true, "tui": "claude", "cwd": ".atmux/worktrees/bot", "claudeAccount": "ifca2" }
+    },
+    {
+      "name": "fmx",
+      "root": "/root/work/ifca/src/fmx-root",
+      "teamConfig": "missing",
+      "bot": { "enabled": true, "tui": "claude", "cwd": ".atmux/worktrees/bot", "claudeAccount": "ifca2" }
+    },
+    {
+      "name": "ifca-docs",
+      "root": "/root/work/ifca/src/ifca-docs",
+      "teamConfig": "present",
+      "bot": { "enabled": true, "tui": "claude", "cwd": ".atmux/worktrees/bot", "claudeAccount": "icloud" }
+    }
+  ],
+  "ownership": [
+    {
+      "board": "atmux",
+      "tags": ["cockpit", "dispatch", "team-config", "tmux-env"],
+      "defaultTeam": "atmux",
+      "fallbackTeams": []
+    },
+    {
+      "board": "kanban",
+      "tags": ["attention", "audit", "claims", "deployments", "docs", "handoff", "mcp", "orchestration", "priority", "provenance", "pubsub", "registry", "rules", "search", "sitrep", "storage", "tags", "testing", "ui"],
+      "defaultTeam": "kanban",
+      "fallbackTeams": []
+    },
+    {
+      "board": "unum",
+      "tags": ["adr", "askie", "attachments", "auth", "ave", "branding", "build-hygiene", "charity", "concord", "deps", "e2e", "ecclesia", "fam", "finance", "gates", "gig", "infra", "museum", "observability", "perf", "search", "security", "shared", "totus-tuus", "users", "web-metadata"],
+      "defaultTeam": "unum",
+      "fallbackTeams": []
+    },
+    {
+      "board": "fmx",
+      "tags": ["ai-chat", "deploy", "finance", "reporting", "security", "tooling"],
+      "defaultTeam": "fmx",
+      "fallbackTeams": []
+    },
+    {
+      "board": "ix",
+      "tags": ["sc-sync", "submodules", "workspace"],
+      "defaultTeam": "ix",
+      "fallbackTeams": []
+    },
+    {
+      "board": "mx-root",
+      "tags": ["aix-chat", "loans", "loyalty", "operations", "platform", "shopper"],
+      "defaultTeam": "mx",
+      "fallbackTeams": []
+    },
+    {
+      "board": "prjx-root",
+      "tags": ["ocr", "projectx"],
+      "defaultTeam": "prjx",
+      "fallbackTeams": []
+    },
+    {
+      "board": "px",
+      "tags": ["aix", "aix-chat"],
+      "defaultTeam": "aix",
+      "fallbackTeams": []
+    },
+    {
+      "board": "px",
+      "tags": ["admin-react", "agency-react", "crm-react", "ifca", "loan-react", "monorepo-migration", "pai-root-tooling", "property-ai", "purchaser-react", "solicitor-react"],
+      "defaultTeam": "px",
+      "fallbackTeams": []
+    },
+    {
+      "board": "hrx",
+      "tags": ["aix", "chat", "frontend", "hr-node", "infra", "repo"],
+      "defaultTeam": "hrx",
+      "fallbackTeams": []
+    },
+    {
+      "board": "rentx-root",
+      "tags": ["rx-chat"],
+      "defaultTeam": "rx",
+      "fallbackTeams": []
+    },
+    {
+      "board": "ifca-docs",
+      "tags": ["aix", "deploy", "e2e", "links", "meta", "mx", "rentx", "scaffold"],
+      "defaultTeam": "ifca-docs",
+      "fallbackTeams": []
+    },
+    {
+      "board": "hax",
+      "tags": ["infra"],
+      "defaultTeam": "geoyws",
+      "fallbackTeams": []
+    },
+    {
+      "board": "medic",
+      "tags": ["infra"],
+      "defaultTeam": "geoyws",
+      "fallbackTeams": []
+    }
+  ],
+  "activationBlockers": [
+    "Six persistent cockpit roots (ix, mx, hx, hrx, rx, fmx) need a complete .atmux/team.json before their bot block can be applied.",
+    "Kanban project fmx is currently registered to /root/work/ifca/src/aix-root while cockpit team fmx points to /root/work/ifca/src/fmx-root; George must confirm or repair that mapping.",
+    "The gitea team custom Claude command currently selects the gmail config while its cockpit account selects unum; reconcile the command/account before activation.",
+    "Re-read cockpit/team config and registered tag inventories immediately before applying this snapshot; refuse on SHA or vocabulary drift."
+  ],
+  "excludedBoards": [
+    { "board": "geoyws", "reason": "registered board currently has no tags" },
+    { "board": "hx", "reason": "registered board currently has no tags" },
+    { "board": "dshoc", "reason": "registered board currently has no tags" },
+    { "board": "auditx-root", "reason": "registered board currently has no tags and has no exact persistent cockpit team" }
+  ]
+}

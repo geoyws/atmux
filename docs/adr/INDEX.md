@@ -247,7 +247,7 @@
 | 278 | Nullable driver harness defaults; null starts zsh | 2026-08-24 | accepted (operator-direct) |
 | 279 | Declarative operator cockpit windows and literal session names | 2026-08-24 | accepted (operator-direct) |
 | 280 | Epic-teams are retired — the concept, the `epic-team` cage type, and `epicId` on cockpit sessions | 2026-08-27 | accepted (operator-direct) |
-| 281 | Cooperative `_bot` seats and the `_superbot` offer protocol | 2026-08-28 | proposed |
+| 281 | Cooperative `_bot` seats and the `_superbot` offer protocol | 2026-08-28 | accepted (operator-direct; live activation held) |
 
 ## Superseded (skip)
 

@@ -14,10 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `atmux bot hold|resume` provides a durable tmux-window interlock for operator sessions. Manual input needs no special mode and always outranks future scheduler offers.
 - `_bot` is a distinct typed send target. ADR-239's driver send-keys prohibition remains unchanged, and bot worktree setup fails closed instead of falling back to shared trunk.
 
-### 📝 Proposed — `_superbot` offer-and-pull ([ADR-281](docs/adr/281-cooperative-bot-seat-and-superbot-offer-protocol.md))
+### ✨ Added — held `_superbot` offer-and-pull source ([ADR-281](docs/adr/281-cooperative-bot-seat-and-superbot-offer-protocol.md))
 
-- Defines `_superbot` as a deterministic 30-minute Kanban candidate router immediately after optional `_medic`. It offers a board/task/tag identity and exact claim command; it never claims, assigns, or copies task bodies.
-- Pins manual-input precedence, explicit hold/resume, `(board, tag)` default/fallback ownership, atomic first-claim-wins behavior, external issue provenance boundaries, and a seven-phase shadow-first rollout. Defaults remain disabled + shadow; this documentation change does not install, deploy, rebuild, reconcile, or mutate live tmux.
+- `_superbot` is a deterministic 30-minute Kanban candidate router immediately after optional `_medic`, with a singleton loop and one-shot tick. It offers board/task/tag identity plus the exact atomic claim command; it never claims, assigns, or copies task bodies.
+- Candidate discovery crosses the installed `kb` CLI with ambient board selectors removed. Route order resolves multi-tag work, default owners precede one-interval fallbacks, and pending delivery metadata distinguishes an interrupted send from a verified offer.
+- Automated delivery requires a stably idle, empty, unheld Claude bot with no live `bot@<team>` lease. It buffer-pastes one multiline offer under the per-pane lock and performs a final readiness check immediately before sending; direct operator input wins.
+- A checked-in held fleet plan covers all 18 observed persistent teams and 95 registered `(board, tag)` routes. Its renderer prints disabled + shadow cockpit and per-team patches without writing live configuration. Six missing team configs and two mapping/account mismatches remain explicit activation blockers.
+- Source defaults remain disabled + shadow. This change does not install, deploy, rebuild, reconcile, or mutate live tmux.
 
 ### 🗑 Removed — orchd retired entirely; atmux's scope narrows to tmux cages + `atmux vox` ([ADR-276](docs/adr/276-orchd-retirement-and-atmux-scope.md))
 

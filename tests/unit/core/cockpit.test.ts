@@ -131,6 +131,55 @@ describe("loadCockpit", () => {
     expect(cockpit.cockpitSession).toBe("atx");
   });
 
+  test("ADR-281 defaults superbot to disabled + shadow", async () => {
+    await writeCockpit({ sessions: [{ type: "team", name: "x", root: "/x" }] });
+    const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
+    expect(cockpit.superbot).toEqual({
+      enabled: false,
+      shadow: true,
+      intervalMins: 30,
+      fallbackAfterIntervals: 1,
+      maxOffersPerTick: 20,
+      routes: [],
+    });
+  });
+
+  test("ADR-281 validates unique routes and persistent team owners", async () => {
+    const sessions = [
+      { type: "team", name: "x", root: "/x" },
+      { type: "team", name: "y", root: "/y" },
+    ];
+    await writeCockpit({
+      sessions,
+      superbot: {
+        enabled: true,
+        routes: [{ board: "atmux", tag: "dispatch", defaultTeam: "x", fallbackTeams: ["y"] }],
+      },
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
+    expect(cockpit.superbot.shadow).toBe(true);
+    expect(cockpit.superbot.intervalMins).toBe(30);
+
+    await writeCockpit({
+      sessions,
+      superbot: {
+        routes: [
+          { board: "atmux", tag: "dispatch", defaultTeam: "x" },
+          { board: "atmux", tag: "dispatch", defaultTeam: "y" },
+        ],
+      },
+    });
+    await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(SchemaError);
+
+    await writeCockpit({
+      sessions,
+      superbot: {
+        routes: [{ board: "atmux", tag: "dispatch", defaultTeam: "missing" }],
+      },
+    });
+    await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(ConfigError);
+  });
+
   test("ADR-279 — preserves explicit cockpitSession 'atmux_teams' literally", async () => {
     await writeCockpit({
       cockpitSession: "atmux_teams",
@@ -575,7 +624,12 @@ describe("rejectSuperdoctorConfig — ADR-133 shim expiry (ADR-266 §D2)", () =>
   test("BOTH `medic` and `superdoctor` set → still fails (legacy key must go)", () => {
     expect(() =>
       rejectSuperdoctorConfig(
-        { schemaVersion: 1, sessions: [], medic: { enabled: true }, superdoctor: { enabled: false } },
+        {
+          schemaVersion: 1,
+          sessions: [],
+          medic: { enabled: true },
+          superdoctor: { enabled: false },
+        },
         "/p.json",
       ),
     ).toThrow(ConfigError);
@@ -617,12 +671,17 @@ describe("rejectSuperdoctorConfig — ADR-133 shim expiry (ADR-266 §D2)", () =>
 
   test("only `medic` set → no-op", () => {
     expect(() =>
-      rejectSuperdoctorConfig({ schemaVersion: 1, sessions: [], medic: { enabled: true } }, "/p.json"),
+      rejectSuperdoctorConfig(
+        { schemaVersion: 1, sessions: [], medic: { enabled: true } },
+        "/p.json",
+      ),
     ).not.toThrow();
   });
 
   test("neither set / non-object input → no-op", () => {
-    expect(() => rejectSuperdoctorConfig({ schemaVersion: 1, sessions: [] }, "/p.json")).not.toThrow();
+    expect(() =>
+      rejectSuperdoctorConfig({ schemaVersion: 1, sessions: [] }, "/p.json"),
+    ).not.toThrow();
     expect(() => rejectSuperdoctorConfig(null, "/p.json")).not.toThrow();
     expect(() => rejectSuperdoctorConfig("string", "/p.json")).not.toThrow();
   });
@@ -917,7 +976,11 @@ describe('type: "group" — schema', () => {
           name: "host",
           root: "/p/host",
           sessions: [
-            { type: "group", name: "inner", sessions: [{ type: "team", name: "deep", root: "/p/deep" }] },
+            {
+              type: "group",
+              name: "inner",
+              sessions: [{ type: "team", name: "deep", root: "/p/deep" }],
+            },
           ],
         },
       ],
@@ -1051,14 +1114,20 @@ describe('type: "group" — walkSessions', () => {
             type: "group",
             name: "g",
             enabled: true,
-            sessions: [{ type: "team", name: "child", root: "/p/child", enabled: true, sessions: [] }],
+            sessions: [
+              { type: "team", name: "child", root: "/p/child", enabled: true, sessions: [] },
+            ],
           },
         ],
       },
     ];
     let seen: { parentRoot?: string; parentName?: string } = {};
     walkSessions(mixed, 0, (node, _l, parentRoot, parentName) => {
-      if (node.name === "child") seen = { ...(parentRoot !== undefined ? { parentRoot } : {}), ...(parentName !== undefined ? { parentName } : {}) };
+      if (node.name === "child")
+        seen = {
+          ...(parentRoot !== undefined ? { parentRoot } : {}),
+          ...(parentName !== undefined ? { parentName } : {}),
+        };
     });
     // The nearest TEAM ancestor is `host`, not the group between them.
     expect(seen).toEqual({ parentRoot: "/p/host", parentName: "host" });
@@ -1070,7 +1139,9 @@ describe('type: "group" — walkSessions', () => {
         type: "group",
         name: "off",
         enabled: false,
-        sessions: [{ type: "team", name: "hidden", root: "/p/hidden", enabled: true, sessions: [] }],
+        sessions: [
+          { type: "team", name: "hidden", root: "/p/hidden", enabled: true, sessions: [] },
+        ],
       },
       { type: "team", name: "visible", root: "/p/visible", enabled: true, sessions: [] },
     ];
@@ -1261,7 +1332,9 @@ describe("buildGroupTopology", () => {
     ).toEqual(["t:unum", "t:kanban", "t:nested"]);
     // Cockpit session: the top-level group + the ungrouped team only.
     expect(
-      topo.cockpitEntries.map((e) => (e.kind === "group" ? `g:${e.group.name}` : `t:${e.team.name}`)),
+      topo.cockpitEntries.map((e) =>
+        e.kind === "group" ? `g:${e.group.name}` : `t:${e.team.name}`,
+      ),
     ).toEqual(["g:geoyws", "t:solo"]);
   });
 
@@ -1337,16 +1410,19 @@ describe("buildGroupTopology", () => {
               type: "group",
               name: "g",
               enabled: true,
-              sessions: [{ type: "team", name: "child", root: "/p/child", enabled: true, sessions: [] }],
+              sessions: [
+                { type: "team", name: "child", root: "/p/child", enabled: true, sessions: [] },
+              ],
             },
           ],
         },
       ]),
     );
-    expect(topo.cockpitEntries.map((e) => (e.kind === "group" ? `g:${e.group.name}` : `t:${e.team.name}`))).toEqual([
-      "t:host",
-      "g:g",
-    ]);
+    expect(
+      topo.cockpitEntries.map((e) =>
+        e.kind === "group" ? `g:${e.group.name}` : `t:${e.team.name}`,
+      ),
+    ).toEqual(["t:host", "g:g"]);
   });
 
   test("refuses duplicate enabled group names (shared socket + session)", () => {
