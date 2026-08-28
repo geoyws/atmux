@@ -289,6 +289,9 @@ Per `PLAN.md` §15:
 > table, and probe named there is a proposal, not an available command.
 > §3.7, added 2026-08-15, returns to **shipped** surface: the vox operator
 > interface, live and deployed in a deliberately reduced read-only posture.
+> ADR-280's `_bot` / `_superbot` offer-and-pull design is **proposed and not
+> activated**; the cockpit table below shows its intended order explicitly so a
+> source-only proposal is not mistaken for the current live topology.
 
 ### 3.1 Verbs (30, including aliases)
 
@@ -324,7 +327,8 @@ cages use `<emoji>-<member>` (hyphen-separated, ADR-135 §D3).
 |---|--------|------|-----------------|
 | 1 | `_superdriver` | Operator cross-team REPL | ADR-063 (renamed per ADR-135 §D2) |
 | 2 | `_medic` (was `medic`/`superdoctor`) | Fleet self-healing / diagnosis-and-prevention loop | ADR-077 + ADR-133 + ADR-135 §D2 |
-| 3..N | per-team viewers | One per enabled team in `cockpit.json::sessions` | ADR-063 |
+| 3 | `_superbot` (proposed; absent while disabled) | Deterministic 30-minute Kanban candidate router; never claims or assigns | ADR-280 |
+| 4..N | declarative operator windows, then per-team viewers | Operator workspaces in declaration order, then one viewer per enabled parent team | ADR-279 + ADR-063 |
 
 Backward-compat: a cockpit.json without a `medic` block retains the
 pre-ADR-077 topology (W1 `_superdriver` + W2..N per-team viewers).
@@ -334,6 +338,15 @@ deprecation warning per ADR-133 §D2. Cockpit rebuild detects legacy
 renames them in-place (idempotent) per ADR-135 §D4. Member windows in
 legacy `<emoji><member>` format get the same in-place rename treatment
 on next `atmux start`.
+
+**Proposed cooperative bot seat (ADR-280).** Every persistent parent team gains
+an exact `_bot` window after all drivers and before members/services, backed by
+`<base>-bot` in `.atmux/worktrees/bot`. It is neither a driver nor a member. The
+operator may type into it directly; `_superbot` may offer a tagged Kanban task
+only after conservative idle/readiness checks and an exact-task claim remains
+the first bot action. V1 excludes transient teams and external-issue polling.
+Defaults remain disabled + shadow until process and isolated-tmux integration
+receipts pass and the operator separately authorizes live activation.
 
 **Cockpit-W3 sentinel retired (EPIC e-be01fc89, 2026-05-23)** — the
 pluggable cockpit-W3 whip-manager (ADR-132 / ADR-158 / ADR-183 / ADR-185)

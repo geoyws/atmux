@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 📝 Proposed — cooperative `_bot` seats and `_superbot` offer-and-pull ([ADR-280](docs/adr/280-cooperative-bot-seat-and-superbot-offer-protocol.md))
+
+- Defines `_bot` as a distinct operator-cooperative seat after drivers and before members, with its own `<base>-bot` worktree. It does not weaken ADR-239's driver send-keys ban.
+- Defines `_superbot` as a deterministic 30-minute Kanban candidate router immediately after optional `_medic`. It offers a board/task/tag identity and exact claim command; it never claims, assigns, or copies task bodies.
+- Pins manual-input precedence, explicit hold/resume, `(board, tag)` default/fallback ownership, atomic first-claim-wins behavior, external issue provenance boundaries, and a seven-phase shadow-first rollout. Defaults remain disabled + shadow; this documentation change does not install, deploy, rebuild, reconcile, or mutate live tmux.
+
 ### ✨ Added — declarative operator cockpit windows ([ADR-279](docs/adr/279-declarative-operator-cockpit-windows.md))
 
 - Top-level `cockpit.json::windows[]` persists non-team cockpit workspaces with a name, cwd, and optional command. Null or omitted command starts zsh; configured windows sit after `_medic` and before team viewers.

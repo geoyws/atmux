@@ -50,8 +50,8 @@ Per [ADR-162](adr/162-atmux-owns-tmux-infrastructure.md):
 
 | Tier     | Socket flag                                              | Session name      | What runs there                                                                            |
 |----------|----------------------------------------------------------|-------------------|--------------------------------------------------------------------------------------------|
-| Cockpit  | `tmux -L atmux-cockpit` (named socket, dedicated)        | configured `cockpitSession` (default `atx`) | Operator's window into every enabled team — `_superdriver`, `_medic`, declarative operator windows, then per-team viewers ([ADR-279](adr/279-declarative-operator-cockpit-windows.md)) |
-| Per-team | `tmux -S <team-root>/.atmux/tmux/tmux-0/default` (cage)  | `atmux-<team>`    | The team's members + lead + planner + reviewer panes (one window per role). Cage-tier per [ADR-058](adr/058-cage-tier-isolation.md). |
+| Cockpit  | `tmux -L atmux-cockpit` (named socket, dedicated)        | configured `cockpitSession` (default `atx`) | Operator's window into every enabled team — `_superdriver`, optional `_medic`, proposed `_superbot`, declarative operator windows, then per-team viewers ([ADR-279](adr/279-declarative-operator-cockpit-windows.md), [ADR-280](adr/280-cooperative-bot-seat-and-superbot-offer-protocol.md)) |
+| Per-team | `tmux -S <team-root>/.atmux/tmux/tmux-0/default` (cage)  | `atmux-<team>`    | Drivers first, proposed `_bot`, then the team's members/services. `_bot` is a distinct cooperative seat, not a driver or member ([ADR-239](adr/239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md), [ADR-280](adr/280-cooperative-bot-seat-and-superbot-offer-protocol.md)). Cage-tier per [ADR-058](adr/058-cage-tier-isolation.md). |
 | Voice    | `tmux -L default` (the operator's **default** socket)     | `atmux-vox`     | The `atmux vox` WebSocket server under a crash-loop wrapper, when started with `--supervise` ([ADR-272](adr/272-voice-operator-interface.md) §D10). Fleet-wide operator infrastructure belonging to no team — a sibling of the driver's own shell ([ADR-044](adr/044-driver-session-on-default-socket.md)), deliberately **not** a cockpit window (the reconcile pass would prune it as an orphan) and **not** a cage window (`atmux stop` on an unrelated team would end the call). |
 
 **Config (both tiers):** every session is created with `-f <atmux.conf-path>` resolved by `getAtmuxTmuxConfPath()` in `src/core/tmux-paths.ts`. Default: `templates/tmux/atmux.conf` (installed under `/opt/atmux/<version>/templates/`). Operator override: `ATMUX_TMUX_CONF=<path>`. The 8-option baseline includes `automatic-rename off` — load-bearing for [ADR-135](adr/135-cockpit-naming-convention.md)'s `_-prefix` window-name contract.
@@ -102,7 +102,20 @@ The pull model defines each role by what it *doesn't* do — narrow surfaces, no
 
 ## Pull coordination
 
-The kanban — `.atmux/kanban.json` — is the source of truth for work. Three top-level arrays:
+> **Proposed extension — `_superbot` offer-and-pull.** [ADR-280](adr/280-cooperative-bot-seat-and-superbot-offer-protocol.md)
+> keeps Kanban as the sole work and lease authority. A deterministic cockpit
+> scheduler reads `kb claim --candidates`, routes only by explicit `(board, tag)`
+> ownership, and sends a short exact-claim offer to a stably idle team `_bot`.
+> It never sends task bodies, claims, assigns, or targets a driver. The first
+> `_bot` granted the atomic lease owns the task; every refused bot stops. The
+> implementation is phased behind disabled + shadow defaults and a separate live
+> activation decision.
+
+The external private Kanban CLI is the current source of truth for work and
+leases per [ADR-275](adr/275-external-private-kanban-authority.md). The legacy
+in-repo schema below records the pre-cutover shape for historical and rollback
+reading; new orchestration code must use the typed CLI adapter rather than open
+or recreate this store.
 
 ```json
 {
