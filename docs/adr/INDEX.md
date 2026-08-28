@@ -1,6 +1,6 @@
 # ADR Index
 
-> Generated 2026-05-24, refreshed 2026-06-05 (MYT) — extended through ADR-256 + backfilled 222/223. Refreshed again 2026-08-06 — extended through ADR-269: backfilled the five missing rows 262–266 (the index stopped at 261) and added the 2026-08-06 operator-ask batch (267 continuity / 268 managed-repo state isolation / 269 recursive branch ledger). Refreshed again 2026-08-14 — extended through ADR-272: added 272 (voice operator interface) and backfilled the missing 271 row (ADR-271 §D9 item 7 deferred its own index edit to avoid a concurrent clobber). Refreshed again 2026-08-15 — extended through ADR-273 (voice fleet triage + pane input). Refreshed again 2026-08-16 — extended through ADR-274 (`atmux voice` → `atmux vox`); ADR-272's row keeps ADR-272's own title, which ADR-274 §D1 deliberately does not rename. Refreshed again 2026-08-18 — extended through ADR-277 (cage colour-environment scrub) and backfilled the missing 276 row (the index stopped at 275). **ADR-270 is a deliberate gap in the sequence — no such ADR exists and none is missing.** Live ADRs only; superseded ADRs at the bottom for trace.
+> Generated 2026-05-24, refreshed 2026-06-05 (MYT) — extended through ADR-256 + backfilled 222/223. Refreshed again 2026-08-06 — extended through ADR-269: backfilled the five missing rows 262–266 (the index stopped at 261) and added the 2026-08-06 operator-ask batch (267 continuity / 268 managed-repo state isolation / 269 recursive branch ledger). Refreshed again 2026-08-14 — extended through ADR-272: added 272 (voice operator interface) and backfilled the missing 271 row (ADR-271 §D9 item 7 deferred its own index edit to avoid a concurrent clobber). Refreshed again 2026-08-15 — extended through ADR-273 (voice fleet triage + pane input). Refreshed again 2026-08-16 — extended through ADR-274 (`atmux voice` → `atmux vox`); ADR-272's row keeps ADR-272's own title, which ADR-274 §D1 deliberately does not rename. Refreshed again 2026-08-18 — extended through ADR-277 (cage colour-environment scrub) and backfilled the missing 276 row (the index stopped at 275). Refreshed again 2026-08-28 — extended through ADR-281 (tmux child-environment scrub at the spawn seam; amends ADR-277). **ADR-270 is a deliberate gap in the sequence — no such ADR exists and none is missing.** Live ADRs only; superseded ADRs at the bottom for trace.
 
 ## Live ADRs
 
@@ -247,6 +247,7 @@
 | 278 | Nullable driver harness defaults; null starts zsh | 2026-08-24 | accepted (operator-direct) |
 | 279 | Declarative operator cockpit windows and literal session names | 2026-08-24 | accepted (operator-direct) |
 | 280 | Epic-teams are retired — the concept, the `epic-team` cage type, and `epicId` on cockpit sessions | 2026-08-27 | accepted (operator-direct) |
+| 281 | The `NO_COLOR` scrub moves to the spawn seam — a tmux server atmux starts can never inherit it | 2026-08-28 | accepted |
 
 ## Superseded (skip)
 

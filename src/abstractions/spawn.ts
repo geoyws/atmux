@@ -28,6 +28,11 @@ export interface SpawnOpts {
   cwd?: string;
   /** Env vars merged on top of `process.env`, NOT replacing it. */
   env?: Readonly<Record<string, string>>;
+  /** Env var names DELETED from the merged result — i.e. the child sees
+   *  them as absent, not as empty (ADR-281). `env` can only add or
+   *  override; this is the only way to express "must not exist". Applied
+   *  AFTER `env`, so deletion is the last word (see `mergeEnv`). */
+  unsetEnv?: ReadonlyArray<string>;
   /** Hard timeout. Default 30_000ms. SIGTERM → 1s grace → SIGKILL. */
   timeoutMs?: number;
   /** Accepted exit code(s). Default `0`. Use `"any"` for "don't validate". */
@@ -119,7 +124,7 @@ export async function spawn(opts: SpawnOpts): Promise<SpawnResult> {
   const cmdResolved = resolveCmd(opts.cmd, argv);
   const expect = opts.expectExitCode ?? 0;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const env = mergeEnv(opts.env);
+  const env = mergeEnv(opts.env, opts.unsetEnv);
   const start = nowMs();
 
   const proc = Bun.spawn({
@@ -217,6 +222,8 @@ export interface SpawnInheritStdioOpts {
   argv?: ReadonlyArray<string>;
   cwd?: string;
   env?: Readonly<Record<string, string>>;
+  /** See `SpawnOpts.unsetEnv` (ADR-281). Same delete-after-merge rule. */
+  unsetEnv?: ReadonlyArray<string>;
 }
 
 /**
@@ -233,7 +240,7 @@ export interface SpawnInheritStdioOpts {
 export async function spawnInheritStdio(opts: SpawnInheritStdioOpts): Promise<number> {
   const argv = opts.argv ?? [];
   const cmdResolved = resolveCmd(opts.cmd, argv);
-  const env = mergeEnv(opts.env);
+  const env = mergeEnv(opts.env, opts.unsetEnv);
   const proc = Bun.spawn({
     cmd: [cmdResolved, ...argv],
     cwd: opts.cwd ?? process.cwd(),
@@ -257,7 +264,7 @@ export function spawnStream(opts: SpawnStreamOpts): SpawnStreamHandle {
   const cmdResolved = resolveCmd(opts.cmd, argv);
   const expect = opts.expectExitCode ?? 0;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const env = mergeEnv(opts.env);
+  const env = mergeEnv(opts.env, opts.unsetEnv);
   const start = nowMs();
 
   const proc = Bun.spawn({
@@ -376,13 +383,39 @@ function resolveCmd(cmd: string, argv: ReadonlyArray<string>): string {
   return resolved;
 }
 
-function mergeEnv(extra?: Readonly<Record<string, string>>): Record<string, string> {
+/** Build the child's environment: `process.env` → `extra` on top →
+ *  `unset` deleted.
+ *
+ *  ADR-281. `extra` alone can only ADD or OVERRIDE, and the value type is
+ *  `string`, so "this variable must not exist in the child" was
+ *  previously unrepresentable — `{ NO_COLOR: "" }` is a DIFFERENT
+ *  observable state (defined-but-empty; some consumers treat that as set,
+ *  others as unset — ADR-277 §D1 rejects it for exactly that reason).
+ *
+ *  Ordering is deliberate and documented: deletion runs AFTER the merge,
+ *  so `unset` WINS over a contradicting `extra` key. A caller that says
+ *  both "set X" and "unset X" gets the absent form. The alternative
+ *  (refusing the contradiction with a throw) would make the invariant
+ *  runtime-conditional at every call site; making deletion the last word
+ *  keeps "this variable cannot reach the child" unconditional, which is
+ *  the whole point of the seam.
+ *
+ *  This NEVER touches `process.env` — atmux's own stdout keeps honouring
+ *  https://no-color.org via `src/core/tui.ts::defaultPalette`, which reads
+ *  `process.env` at call time. Only the child's copy is rewritten. */
+function mergeEnv(
+  extra?: Readonly<Record<string, string>>,
+  unset?: ReadonlyArray<string>,
+): Record<string, string> {
   const base: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (typeof v === "string") base[k] = v;
   }
   if (extra) {
     for (const [k, v] of Object.entries(extra)) base[k] = v;
+  }
+  if (unset) {
+    for (const k of unset) delete base[k];
   }
   return base;
 }

@@ -74,6 +74,9 @@ import {
   exactSessionTarget,
   type SendTarget,
   serializeSendTarget,
+  TMUX_CHILD_ENV,
+  TMUX_CHILD_ENV_ARGV,
+  TMUX_CHILD_UNSET_ENV,
   type TmuxNamespace,
 } from "../abstractions/tmux.ts";
 import {
@@ -1686,8 +1689,21 @@ async function sendCageBrief(handle: CageHandle, body: string): Promise<void> {
 
   // tmux load-buffer reads from stdin via `-`. Wrap with sudo -u <agent>
   // for Tier 3+ since the cage tmux runs under the dedicated user.
-  const tmuxArgv = (rest: string[]): { cmd: string; argv: string[] } =>
-    isOperator
+  //
+  // ADR-281: both branches carry the tmux child-env policy, by different
+  // means. The operator branch spawns tmux directly, so `env` / `unsetEnv`
+  // reach it. The sudo branch cannot rely on that (env_reset), so the
+  // scrub rides in the `env(1)` argv prefix instead; the spawn-level pair
+  // is kept there too so the two branches cannot drift apart.
+  const tmuxArgv = (
+    rest: string[],
+  ): {
+    cmd: string;
+    argv: string[];
+    env: Readonly<Record<string, string>>;
+    unsetEnv: ReadonlyArray<string>;
+  } => ({
+    ...(isOperator
       ? { cmd: resolveTmuxBin(), argv: ["-L", handle.tmuxSocket, ...rest] }
       : {
           cmd: "sudo",
@@ -1695,18 +1711,24 @@ async function sendCageBrief(handle: CageHandle, body: string): Promise<void> {
             "-u",
             handle.agent,
             "env",
+            ...TMUX_CHILD_ENV_ARGV,
             `TMUX_TMPDIR=${handle.tmuxTmpdir}`,
             resolveTmuxBin(),
             "-L",
             handle.tmuxSocket,
             ...rest,
           ],
-        };
+        }),
+    env: TMUX_CHILD_ENV,
+    unsetEnv: TMUX_CHILD_UNSET_ENV,
+  });
 
   const load = tmuxArgv(["load-buffer", "-b", bufferName, "-"]);
   await spawn({
     cmd: load.cmd,
     argv: load.argv,
+    env: load.env,
+    unsetEnv: load.unsetEnv,
     stdin: body,
     timeoutMs: 10_000,
   });
@@ -1714,6 +1736,8 @@ async function sendCageBrief(handle: CageHandle, body: string): Promise<void> {
   await spawn({
     cmd: paste.cmd,
     argv: paste.argv,
+    env: paste.env,
+    unsetEnv: paste.unsetEnv,
     timeoutMs: 5_000,
   });
   // ADR-081 §A: settle ≥500ms, then submit via C-m (NOT Enter). This
@@ -1730,6 +1754,8 @@ async function sendCageBrief(handle: CageHandle, body: string): Promise<void> {
   await spawn({
     cmd: submit.cmd,
     argv: submit.argv,
+    env: submit.env,
+    unsetEnv: submit.unsetEnv,
     timeoutMs: 5_000,
   });
 }

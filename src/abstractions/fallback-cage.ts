@@ -36,7 +36,12 @@ import { resolveTmuxBin } from "../core/resolve-tmux-bin.ts";
 import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
 import { spawn as defaultSpawn, type SpawnOpts, type SpawnResult } from "./spawn.ts";
 import type { TmuxConfig, TmuxNamespace } from "./tmux.ts";
-import { createTmux as defaultCreateTmux } from "./tmux.ts";
+import {
+  createTmux as defaultCreateTmux,
+  TMUX_CHILD_ENV,
+  TMUX_CHILD_ENV_ARGV,
+  TMUX_CHILD_UNSET_ENV,
+} from "./tmux.ts";
 
 // ---------- Public types ----------
 
@@ -538,6 +543,13 @@ export async function createFallbackCage(opts: CreateFallbackCageOpts): Promise<
   // process.env unless overridden; for the cage we set it via the spawnFn
   // call directly below using mkdir to materialize the tmpdir, then rely
   // on tmux's `-L <socket>` resolution against $TMUX_TMPDIR.
+  //
+  // ADR-281: that inheritance is exactly the colour fault. The Tier-2
+  // (operator-UID) branch below creates its server through the `tmux`
+  // namespace built above — `createTmux` → `spawn()` — so it is ALREADY
+  // covered by tmux.ts's TMUX_CHILD_ENV / TMUX_CHILD_UNSET_ENV.
+  // The Tier-3+ `sudo` branch is NOT: sudo's env_reset drops a spawn-level
+  // override, so it carries TMUX_CHILD_ENV_ARGV in its `env(1)` prefix.
   await spawnFn({
     cmd: "mkdir",
     argv: ["-p", tmuxTmpdir],
@@ -564,6 +576,7 @@ export async function createFallbackCage(opts: CreateFallbackCageOpts): Promise<
         "-u",
         agent,
         "env",
+        ...TMUX_CHILD_ENV_ARGV,
         `TMUX_TMPDIR=${tmuxTmpdir}`,
         resolveTmuxBin(),
         "-L",
@@ -644,6 +657,10 @@ export async function destroyFallbackCage(
     // archived (it's the live project tree).
     const captureR = await spawnFn({
       cmd: resolveTmuxBin(),
+      // ADR-281: `capture-pane` against a dead socket starts a server, so
+      // even this teardown probe carries the child-env policy.
+      env: TMUX_CHILD_ENV,
+      unsetEnv: TMUX_CHILD_UNSET_ENV,
       argv: [
         "-L",
         handle.tmuxSocket,
@@ -693,6 +710,8 @@ export async function destroyFallbackCage(
         "-u",
         handle.agent,
         "env",
+        // ADR-281 — sudo's env_reset drops a spawn-level override.
+        ...TMUX_CHILD_ENV_ARGV,
         `TMUX_TMPDIR=${handle.tmuxTmpdir}`,
         resolveTmuxBin(),
         "-L",

@@ -1,4 +1,5 @@
 import { spawn as defaultSpawn, type SpawnResult } from "../../abstractions/spawn.ts";
+import { TMUX_CHILD_ENV, TMUX_CHILD_UNSET_ENV } from "../../abstractions/tmux.ts";
 import { resolveTmuxBin } from "../../core/resolve-tmux-bin.ts";
 
 // ---------- Row + report shape ----------
@@ -47,4 +48,15 @@ export function truncateEvidence(s: string, n: number): string {
 export type TmuxSpawn = (argv: ReadonlyArray<string>) => Promise<SpawnResult>;
 
 export const defaultTmuxSpawn: TmuxSpawn = (argv) =>
-  defaultSpawn({ cmd: resolveTmuxBin(), argv, expectExitCode: "any", timeoutMs: 5_000 });
+  defaultSpawn({
+    cmd: resolveTmuxBin(),
+    argv,
+    expectExitCode: "any",
+    timeoutMs: 5_000,
+    // ADR-281: a doctor probe is read-only against tmux STATE, but tmux
+    // starts a server implicitly for any subcommand that needs one — so a
+    // probe against a dead socket can be the process whose environ gets
+    // frozen. Same child-env policy as `abstractions/tmux.ts`.
+    env: TMUX_CHILD_ENV,
+    unsetEnv: TMUX_CHILD_UNSET_ENV,
+  });

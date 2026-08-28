@@ -2,6 +2,8 @@
 
 Status: accepted
 Date: 2026-08-18 (operator-direct: *"yes, fix atmux and the three servers"*)
+Amended by: [ADR-281](281-tmux-child-environment-scrub-at-the-spawn-seam.md) (2026-08-28) — **§D1's sentence "Because atmux passes `-f <this file>` on every invocation (ADR-162), this covers every cage, however it was launched" is RETRACTED.** `-f` is only on the argv when the caller supplied a `configFile`, and the conf only loads for the command that actually starts the server — which, against a dead socket, can be `attach` or even `list-keys`. Measured 2026-08-28 on geoywsMBP: 6 of 47 live servers had never loaded any atmux conf, and 2 of those carried a live `NO_COLOR=1`. ADR-281 adds a scrub at the `spawn()` seam beside this one; everything else in this ADR stands, and this file is not rewritten (append-only).
+
 Relates: [ADR-162](162-atmux-owns-tmux-infrastructure.md) (atmux owns the canonical tmux.conf — this adds to that baseline), [ADR-171](171-tmux-conf-local-override.md) (the operator override that must still be able to win; note the conf header's forward-reference to "ADR-163" for that path is stale — ADR-163 is the bundled-tmux-binary decision), [ADR-190](190-tmux-statusline-scaling.md) (the sibling conf invariant, same guard-file family)
 
 ## Context

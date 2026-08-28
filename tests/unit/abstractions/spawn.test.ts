@@ -358,3 +358,97 @@ describe("resolveDefaultTimeoutMs — ATMUX_SPAWN_TIMEOUT_MS env override", () =
     expect(resolveDefaultTimeoutMs()).toBe(30_000);
   });
 });
+
+// ---------- ADR-281 — unsetEnv, the env-DELETION seam ----------
+//
+// `env` can only add or override, and its value type is `string`, so
+// "this variable must not exist in the child" was previously
+// unrepresentable: `{ X: "" }` is a DIFFERENT observable state
+// (defined-but-empty). These tests pin the three properties ADR-281
+// depends on — deletion actually deletes, deletion beats a contradicting
+// `env` key, and `process.env` is never mutated.
+
+describe("unsetEnv (ADR-281)", () => {
+  const PROBE = "ATMUX_UNSET_PROBE";
+  let priorProbe: string | undefined;
+
+  beforeEach(() => {
+    priorProbe = process.env[PROBE];
+    process.env[PROBE] = "inherited";
+  });
+
+  afterEach(() => {
+    if (priorProbe === undefined) delete process.env[PROBE];
+    else process.env[PROBE] = priorProbe;
+  });
+
+  // `sh` prints `SET:<value>` when the var EXISTS (even empty) and
+  // `ABSENT` when it does not — the distinction the whole ADR turns on.
+  // `${X+set}` expands to `set` iff X is DEFINED, empty or not.
+  const probeScript = `if [ -n "\${${PROBE}+set}" ]; then echo "SET:$${PROBE}"; else echo ABSENT; fi`;
+
+  test("control — an inherited var reaches the child without unsetEnv", async () => {
+    // Without this leg, every assertion below could be green because the
+    // var never made it into the child in the first place.
+    const r = await spawn({ cmd: "sh", argv: ["-c", probeScript] });
+    expect(r.stdout).toBe("SET:inherited\n");
+  });
+
+  test("deletes an inherited var — the child sees it ABSENT, not empty", async () => {
+    const r = await spawn({ cmd: "sh", argv: ["-c", probeScript], unsetEnv: [PROBE] });
+    expect(r.stdout).toBe("ABSENT\n");
+  });
+
+  test("empty-string env is NOT the same thing — it arrives DEFINED", async () => {
+    // Pins why the seam had to exist at all (ADR-281 §D1 / ADR-277 §D1).
+    const r = await spawn({ cmd: "sh", argv: ["-c", probeScript], env: { [PROBE]: "" } });
+    expect(r.stdout).toBe("SET:\n");
+  });
+
+  test("deletion is the LAST word — unsetEnv beats a contradicting env key", async () => {
+    const r = await spawn({
+      cmd: "sh",
+      argv: ["-c", probeScript],
+      env: { [PROBE]: "resurrected" },
+      unsetEnv: [PROBE],
+    });
+    expect(r.stdout).toBe("ABSENT\n");
+  });
+
+  test("unlisted vars are untouched", async () => {
+    const r = await spawn({
+      cmd: "sh",
+      argv: ["-c", 'echo "$ATMUX_KEEP_ME"'],
+      env: { ATMUX_KEEP_ME: "kept" },
+      unsetEnv: [PROBE],
+    });
+    expect(r.stdout).toBe("kept\n");
+  });
+
+  test("never mutates the parent's own process.env", async () => {
+    // Load-bearing for ADR-281 §D5: src/core/tui.ts reads
+    // process.env.NO_COLOR at call time, so a delete here would silently
+    // re-colour atmux's own stdout.
+    await spawn({ cmd: "true", unsetEnv: [PROBE] });
+    expect(process.env[PROBE]).toBe("inherited");
+  });
+
+  test("an unset var listed in unsetEnv is a harmless no-op", async () => {
+    const r = await spawn({
+      cmd: "sh",
+      argv: ["-c", probeScript],
+      unsetEnv: ["ATMUX_NEVER_SET_ANYWHERE", PROBE],
+    });
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("ABSENT\n");
+  });
+
+  test("spawnStream honours unsetEnv too", async () => {
+    // spawnStream has no production caller today; it shares mergeEnv, so
+    // leaving it unpatched would make the invariant false the moment the
+    // streaming path is wired up.
+    const h = spawnStream({ cmd: "sh", argv: ["-c", probeScript], unsetEnv: [PROBE] });
+    const r = await h.exited;
+    expect(r.stdout).toBe("ABSENT\n");
+  });
+});

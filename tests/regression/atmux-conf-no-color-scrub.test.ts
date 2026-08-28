@@ -1,4 +1,5 @@
-// Regression guard for the cage colour-environment invariant (ADR-277).
+// Regression guard for the cage colour-environment invariant
+// (ADR-277, extended by ADR-281).
 //
 // A tmux server freezes its own environ at start and hands it to every
 // pane it later creates. atmux cages are routinely started from inside
@@ -18,18 +19,44 @@
 // probe against a conf WITHOUT the scrub and asserts `NO_COLOR=1` DOES
 // arrive — proving the probe can observe the failure it claims to rule
 // out, rather than passing because the mechanism never ran.
+//
+// ADR-281 (2026-08-28) adds the leg those tests could not have. Every
+// ADR-277 leg passes `-f CONF_PATH`, so together they can only prove the
+// conf is CORRECT — never that it ARRIVED. The final describe drives
+// atmux's own `createTmux` with no conf at all and asserts the pane is
+// clean anyway, because the scrub now also happens at the `spawn()` seam.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createTmux, type TmuxNamespace } from "../../src/abstractions/tmux.ts";
+import { defaultPalette, NO_COLOR as NO_COLOR_PALETTE } from "../../src/core/tui.ts";
 
 const REPO_ROOT = join(import.meta.dir, "..", "..");
 const CONF_PATH = join(REPO_ROOT, "templates", "tmux", "atmux.conf");
 const conf = readFileSync(CONF_PATH, "utf8");
 
 const HAS_TMUX = Bun.spawnSync({ cmd: ["sh", "-c", "command -v tmux"] }).exitCode === 0;
+
+/**
+ * Project a pane's `env` dump down to the colour-relevant variables.
+ *
+ * Assert against THIS, never the raw dump. A failed `expect(env)` prints
+ * the received value in full, and a real operator environment carries
+ * API tokens, DB passwords and Discord webhooks — observed leaking the
+ * whole set into a test log on 2026-08-28. Filtering by variable NAME
+ * preserves every assertion's meaning exactly: a variable that is present
+ * still appears here, so "absent from the projection" and "absent from
+ * the dump" are the same statement for these four names.
+ */
+function colourVars(envDump: string): string {
+  return envDump
+    .split("\n")
+    .filter((l) => /^(NO_COLOR|COLORTERM|TERM|TMUX)=/.test(l))
+    .join("\n");
+}
 
 describe("templates/tmux/atmux.conf cage colour-environment invariant (ADR-277)", () => {
   test("scrubs NO_COLOR from the environment of new processes", () => {
@@ -96,7 +123,23 @@ describe.if(HAS_TMUX)("cage colour-environment invariant — real tmux server (A
       ],
       // TMUX unset: per tmux(1) an inherited $TMUX overrides -S and would
       // land this probe on the caller's own server.
-      env: { ...process.env, NO_COLOR: "1", TMUX: undefined } as Record<string, string | undefined>,
+      //
+      // HOME redirected into the scratch dir (added 2026-08-28 with
+      // ADR-281): the conf's LAST line is ADR-171's
+      // `source-file -q "~/.config/atmux/tmux.conf.local"`, and on a real
+      // operator box that file can itself `source-file ~/.tmux.conf`,
+      // which may carry its own `set-environment -gr NO_COLOR` (ADR-281
+      // §D4 layer 3). When it does, the control leg below re-acquires the
+      // scrub it just stripped and FAILS — and, worse, the shipped-conf
+      // leg passes for the operator's reason rather than the shipped
+      // conf's. Verified failing that way on geoywsMBP on 2026-08-28,
+      // BEFORE any ADR-281 source change. A `-q` source-file of a path
+      // that does not exist is silent, so this isolates the suite to the
+      // conf it is actually testing without editing the conf.
+      env: { ...process.env, NO_COLOR: "1", TMUX: undefined, HOME: dir } as Record<
+        string,
+        string | undefined
+      >,
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -113,7 +156,7 @@ describe.if(HAS_TMUX)("cage colour-environment invariant — real tmux server (A
   }
 
   test("a pane started under the shipped conf does NOT inherit NO_COLOR", async () => {
-    const env = await paneEnv("s-shipped", CONF_PATH);
+    const env = colourVars(await paneEnv("s-shipped", CONF_PATH));
     expect(env).toContain("TERM=tmux-256color"); // the pane really did start
     expect(env).not.toMatch(/^NO_COLOR=/m);
   });
@@ -123,7 +166,172 @@ describe.if(HAS_TMUX)("cage colour-environment invariant — real tmux server (A
     // nothing — the pane would be clean for some unrelated reason.
     const control = join(dir, "control.conf");
     await writeFile(control, conf.replace(/^set-environment -gr NO_COLOR$/m, ""), "utf8");
-    const env = await paneEnv("s-control", control);
+    const env = colourVars(await paneEnv("s-control", control));
     expect(env).toMatch(/^NO_COLOR=1$/m);
+  });
+});
+
+// ---------------------------------------------------------------------
+// ADR-281 — the leg the conf-only guard structurally could not have.
+// ---------------------------------------------------------------------
+//
+// Every leg above passes `-f CONF_PATH`, so all of them together can only
+// prove the conf is CORRECT — never that it ARRIVED. ADR-277 asserted it
+// always does ("atmux passes `-f <this file>` on every invocation"); it
+// does not. `createTmux` only emits `-f` when the caller supplied a
+// `configFile`, and tmux starts a server implicitly for any subcommand
+// against a dead socket, so a read-only `attach` or `list-keys` can be the
+// process whose environ gets frozen before an `-f`-carrying command ever
+// runs. Measured 2026-08-28 on geoywsMBP: 6 of 47 live servers had never
+// loaded any atmux conf; 2 of those were greyscale.
+//
+// So this block starts a server through ATMUX'S OWN tmux namespace, with
+// `NO_COLOR=1` in `process.env`, and asserts a real pane comes out clean.
+//
+// `configFile: "/dev/null"` rather than omitting `-f` entirely, and this
+// is load-bearing rather than cosmetic: omitting it makes tmux load the
+// OPERATOR'S `~/.tmux.conf`, which on the author's box already carries the
+// same `set-environment -gr NO_COLOR` (ADR-281 §D4 layer 3). This suite
+// must measure layer 1 — the spawn scrub — so both legs below neutralise
+// every conf. Same argument, and the same flag, as
+// tests/unit/abstractions/tmux.test.ts's own `/dev/null` pin.
+//
+// Socket safety: a fresh `mkdtemp` dir per test and an explicit `-S` under
+// it, so nothing here can reach a live cage socket
+// (/tmp/atmux-<team>/sock, /tmp/atmux-grp-*, -L atmux-cockpit). Teardown
+// is unconditional.
+
+describe.if(HAS_TMUX)("tmux child-environment scrub at the spawn seam (ADR-281)", () => {
+  let dir = "";
+  let priorNoColor: string | undefined;
+  let priorTmux: string | undefined;
+  let tmux: TmuxNamespace | null = null;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "atmux-281-"));
+    // The fault reproduced: an agent Bash tool's environment.
+    priorNoColor = process.env.NO_COLOR;
+    process.env.NO_COLOR = "1";
+    // Belt-and-braces, exactly as tests/unit/abstractions/tmux.test.ts:
+    // per tmux(1) an inherited $TMUX overrides -S and would land these
+    // probes on the caller's own server. The load-bearing isolation is
+    // still the explicit -S below.
+    priorTmux = process.env.TMUX;
+    delete process.env.TMUX;
+    tmux = null;
+  });
+
+  afterEach(async () => {
+    try {
+      await tmux?.server.killServer();
+    } catch {
+      // expected: server may already be gone (idempotent teardown)
+    }
+    Bun.spawnSync({
+      cmd: ["tmux", "-S", join(dir, "s-raw"), "kill-server"],
+      env: { ...process.env, TMUX: undefined } as Record<string, string | undefined>,
+      stderr: "ignore",
+    });
+    if (priorNoColor === undefined) delete process.env.NO_COLOR;
+    else process.env.NO_COLOR = priorNoColor;
+    if (priorTmux !== undefined) process.env.TMUX = priorTmux;
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  async function waitForDump(out: string): Promise<string> {
+    for (let i = 0; i < 50; i++) {
+      try {
+        return await readFile(out, "utf8");
+      } catch {
+        await Bun.sleep(100);
+      }
+    }
+    throw new Error(`probe pane never wrote ${out}`);
+  }
+
+  test("a server created through atmux's own tmux namespace yields a clean pane", async () => {
+    const out = join(dir, "atmux.env");
+    tmux = createTmux({ socketPath: join(dir, "s-atmux"), configFile: "/dev/null" });
+    await tmux.session.newSession({
+      name: "probe",
+      detached: true,
+      shellCommand: `sh -c 'env > ${out}; sleep 3'`,
+    });
+
+    const env = colourVars(await waitForDump(out));
+    // The pane really started (tmux sets TMUX in every pane it spawns).
+    expect(env).toMatch(/^TMUX=/m);
+    // The invariant: absent, not empty.
+    expect(env).not.toMatch(/^NO_COLOR=/m);
+    // The other half of TMUX_CHILD_ENV — an agent Bash tool exports
+    // COLORTERM empty, which several TUIs read as "no 24-bit colour".
+    expect(env).toMatch(/^COLORTERM=truecolor$/m);
+  });
+
+  test("the server's global environment has no NO_COLOR to hand out", async () => {
+    // Complements the pane assertion: the pane could in principle be
+    // clean while the SERVER still holds the variable for future panes.
+    // Read via raw tmux — the server already exists, so this cannot
+    // create one, and the thing under test is the CREATE path.
+    tmux = createTmux({ socketPath: join(dir, "s-atmux"), configFile: "/dev/null" });
+    await tmux.session.newSession({ name: "probe", detached: true, shellCommand: "sleep 3" });
+
+    const r = Bun.spawnSync({
+      cmd: ["tmux", "-S", join(dir, "s-atmux"), "show-environment", "-g", "NO_COLOR"],
+      env: { ...process.env, TMUX: undefined } as Record<string, string | undefined>,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const said = `${r.stdout.toString()}${r.stderr.toString()}`;
+    // Either "unknown variable" (never present) or "-NO_COLOR" (present
+    // and marked for removal) is correct. `NO_COLOR=1` is the fault.
+    expect(said).not.toMatch(/^NO_COLOR=1$/m);
+    expect(said).toMatch(/unknown variable|^-NO_COLOR$/m);
+  });
+
+  test("(control) raw tmux under the SAME environment DOES poison the pane", async () => {
+    // The honest-test guard. This leg bypasses atmux entirely and must
+    // FAIL to be clean — if it ever goes green, the two legs above prove
+    // nothing, because the pane would be clean for an unrelated reason
+    // (an operator conf, an env that never carried NO_COLOR, a tmux that
+    // scrubs it itself).
+    const out = join(dir, "raw.env");
+    const proc = Bun.spawnSync({
+      cmd: [
+        "tmux",
+        "-S",
+        join(dir, "s-raw"),
+        "-f",
+        "/dev/null",
+        "new-session",
+        "-d",
+        "-s",
+        "probe",
+        `sh -c 'env > ${out}; sleep 3'`,
+      ],
+      env: { ...process.env, NO_COLOR: "1", TMUX: undefined } as Record<
+        string,
+        string | undefined
+      >,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(proc.exitCode).toBe(0);
+
+    const env = colourVars(await waitForDump(out));
+    expect(env).toMatch(/^NO_COLOR=1$/m);
+  });
+
+  test("atmux's OWN stdout still honours NO_COLOR after driving a tmux spawn", async () => {
+    // ADR-281 §D5. `src/core/tui.ts::defaultPalette` reads process.env at
+    // call time, so a `delete process.env.NO_COLOR` anywhere in atmux
+    // would silently re-colour atmux's own output inside an agent Bash
+    // tool — and break tests/helpers/setup.bash's `export NO_COLOR=1`
+    // parity harness. The scrub must reach the CHILD only.
+    tmux = createTmux({ socketPath: join(dir, "s-atmux"), configFile: "/dev/null" });
+    await tmux.session.newSession({ name: "probe", detached: true, shellCommand: "sleep 3" });
+
+    expect(process.env.NO_COLOR).toBe("1");
+    expect(defaultPalette({ isTty: true })).toBe(NO_COLOR_PALETTE);
   });
 });
