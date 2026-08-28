@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { SpawnOpts, SpawnResult } from "../../../src/abstractions/spawn.ts";
 import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import { SuperbotKanbanAdapter } from "../../../src/adapters/superbot-kanban.ts";
+import { BOT_HOLD_OPTION } from "../../../src/core/bot.ts";
 import type { LoadedCockpit } from "../../../src/core/cockpit.ts";
 import { LockTimeoutError, UsageError } from "../../../src/errors.ts";
 import type { Team } from "../../../src/schema/team.ts";
@@ -309,5 +310,126 @@ describe("superbotTick", () => {
     expect(pastes).toBe(1);
     expect(submits).toBe(1);
     expect(spawnCalls.filter((call) => call.argv?.[1] === "metadata")).toHaveLength(2);
+  });
+
+  test("locked pre-send gate refuses a newly claimed task, live lease, or operator hold", async () => {
+    for (const race of ["candidate", "lease", "hold"] as const) {
+      let candidateReads = 0;
+      let leaseReads = 0;
+      let optionReads = 0;
+      let metadataWrites = 0;
+      let sends = 0;
+      const candidate = {
+        id: "t-race",
+        type: "task",
+        status: "todo",
+        tags: ["dispatch"],
+        metadata: {},
+      };
+      const kanban = new SuperbotKanbanAdapter(async (opts) => {
+        if (opts.argv?.[0] === "claim") {
+          candidateReads += 1;
+          return result(
+            JSON.stringify(race === "candidate" && candidateReads >= 3 ? [] : [candidate]),
+          );
+        }
+        if (opts.argv?.[0] === "task" && opts.argv[1] === "list") {
+          leaseReads += 1;
+          return result(
+            JSON.stringify(race === "lease" && leaseReads >= 2 ? [{ id: "t-busy" }] : []),
+          );
+        }
+        if (opts.argv?.[0] === "task" && opts.argv[1] === "show") {
+          return result(
+            JSON.stringify({
+              id: "t-busy",
+              claim: { agentID: "bot@atmux", expiresAt: 10_000 },
+            }),
+          );
+        }
+        if (opts.argv?.[0] === "task" && opts.argv[1] === "metadata") {
+          metadataWrites += 1;
+          return result("{}");
+        }
+        throw new Error(`unexpected kb call: ${opts.argv?.join(" ")}`);
+      });
+
+      const ready = "completed\n❯ \n⏵⏵ auto mode on";
+      const tmux = {
+        session: { hasSession: async () => true },
+        window: {
+          listWindows: async () => [{ index: 1, id: "@1", name: "_bot", active: true }],
+        },
+        option: {
+          showOptions: async () => {
+            optionReads += 1;
+            return race === "hold" && optionReads >= 2 ? { [BOT_HOLD_OPTION]: "1" } : {};
+          },
+        },
+        buffer: {
+          loadBuffer: async () => {
+            sends += 1;
+          },
+          pasteBuffer: async () => {},
+        },
+        pane: {
+          displayMessage: async () => "sh\t0",
+          capturePane: async () => ready,
+          sendKeys: async () => {
+            sends += 1;
+          },
+        },
+      } as unknown as TmuxNamespace;
+      const team: Team = {
+        name: "atmux",
+        members: [],
+        bot: { enabled: true, tui: "claude", cwd: ".atmux/worktrees/bot" },
+      };
+      const cockpit = {
+        schemaVersion: 1,
+        cockpitSession: "atx",
+        sessions: [
+          { type: "team", name: "atmux", enabled: true, root: "/tmp/atmux", sessions: [] },
+        ],
+        windows: [],
+        teams: [{ name: "atmux", enabled: true, root: "/tmp/atmux" }],
+        superbot: {
+          enabled: true,
+          shadow: false,
+          intervalMins: 30,
+          fallbackAfterIntervals: 1,
+          maxOffersPerTick: 20,
+          routes: [
+            {
+              board: "atmux",
+              tag: "dispatch",
+              defaultTeam: "atmux",
+              fallbackTeams: [],
+            },
+          ],
+        },
+      } as LoadedCockpit;
+
+      const rows = await superbotTick(cockpit, false, {
+        kanban,
+        tmuxFactory: () => tmux,
+        loadTeamFn: async () => team,
+        now: () => 1_000,
+        sleep: async () => {},
+        paneLockDir: join(tmpdir(), `atmux-superbot-race-${race}-${process.pid}`),
+      });
+      expect(rows, race).toEqual([
+        {
+          board: "atmux",
+          tag: "dispatch",
+          task: "t-race",
+          team: "atmux",
+          outcome: race === "candidate" ? "not-candidate" : "not-ready",
+          ...(race === "candidate" ? {} : { reason: race === "lease" ? "live-lease" : "held" }),
+        },
+      ]);
+      expect(sends, race).toBe(0);
+      expect(metadataWrites, race).toBe(1);
+    }
   });
 });

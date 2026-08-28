@@ -16,14 +16,16 @@ import {
 } from "../core/bot.ts";
 import {
   enabledTeams,
+  type LoadedCockpit,
   loadCockpit,
   resolveCageSessionName,
   resolveCageSocket,
-  type LoadedCockpit,
 } from "../core/cockpit.ts";
 import { loadTeam } from "../core/common.ts";
+import { agentThinking, safeSendKeysWithVerify } from "../core/safe-send.ts";
 import {
   assessBotReadiness,
+  type BotReadinessReason,
   botComposerEmpty,
   chooseSuperbotTarget,
   completeSuperbotOffer,
@@ -33,7 +35,6 @@ import {
   SUPERBOT_ACTOR,
   type SuperbotCandidate,
 } from "../core/superbot.ts";
-import { agentThinking, safeSendKeysWithVerify } from "../core/safe-send.ts";
 import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { CockpitSuperbotRoute } from "../schema/cockpit.ts";
@@ -184,13 +185,15 @@ async function deliverOffer(opts: {
   sessionName: string;
   message: string;
   beforeCapture: string;
+  preSendCheck: (capture: string) => Promise<BotReadinessReason | "not-candidate">;
   sleep: (ms: number) => Promise<void>;
   paneLockDir?: string;
-}): Promise<boolean> {
+}): Promise<{ success: boolean; reason?: BotReadinessReason | "not-candidate" }> {
   const target = `${opts.sessionName}:${BOT_WINDOW_NAME}`;
   const sendTarget = botSendTarget(opts.team.name, opts.sessionName);
   const thinking = agentThinking();
   const bufferName = `atmux-superbot-${process.pid}-${Date.now()}`;
+  let refusalReason: BotReadinessReason | "not-candidate" | undefined;
   const result = await safeSendKeysWithVerify({
     target,
     keys: opts.message,
@@ -207,23 +210,28 @@ async function deliverOffer(opts: {
     expectVerifier: (capture) =>
       capture !== opts.beforeCapture &&
       (thinking(capture) || botComposerEmpty(opts.team.bot?.tui, capture)),
-    preSendVerifier: (capture) =>
-      capture === opts.beforeCapture &&
-      assessBotReadiness({
-        tui: opts.team.bot?.tui,
-        held: false,
-        hasLiveLease: false,
-        paneDead: false,
-        paneCurrentCommand: "",
-        firstCapture: capture,
-        secondCapture: capture,
-      }) === "ready",
+    preSendVerifier: async (capture) => {
+      if (capture !== opts.beforeCapture) {
+        refusalReason = "unstable";
+        return false;
+      }
+      const readiness = await opts.preSendCheck(capture);
+      if (readiness !== "ready") {
+        refusalReason = readiness;
+        return false;
+      }
+      refusalReason = undefined;
+      return true;
+    },
     retries: 0,
     onFail: "escalate",
     sleep: opts.sleep,
     ...(opts.paneLockDir !== undefined ? { paneLockDir: opts.paneLockDir } : {}),
   });
-  return result.success;
+  return {
+    success: result.success,
+    ...(refusalReason !== undefined ? { reason: refusalReason } : {}),
+  };
 }
 
 async function processCandidate(opts: {
@@ -303,12 +311,50 @@ async function processCandidate(opts: {
     nowMs,
   });
   await opts.deps.kanban.writeOfferState(opts.route.board, opts.candidate.id, reserved);
-  const sent = await deliverOffer({
+  const delivered = await deliverOffer({
     tmux,
     team: runtime.team,
     sessionName: runtime.sessionName,
     beforeCapture: readiness.secondCapture,
     sleep: opts.deps.sleep,
+    preSendCheck: async (capture) => {
+      if (
+        !(await opts.deps.kanban.isStillCandidate(
+          opts.route.board,
+          opts.route.tag,
+          actor,
+          opts.candidate.id,
+          opts.cockpit.superbot.maxOffersPerTick,
+        ))
+      ) {
+        return "not-candidate";
+      }
+      const freshLease = await actorHasAnyLiveClaim(
+        opts.deps.kanban,
+        opts.cockpit,
+        actor,
+        opts.deps.now(),
+      );
+      const target = `${runtime.sessionName}:${BOT_WINDOW_NAME}`;
+      if (!(await tmux.session.hasSession(runtime.sessionName))) return "dead";
+      const windows = await tmux.window.listWindows(runtime.sessionName);
+      if (!windows.some((window) => window.name === BOT_WINDOW_NAME)) return "dead";
+      const options = await tmux.option.showOptions({ target, window: true });
+      const pane = await tmux.pane.displayMessage({
+        target,
+        format: "#{pane_current_command}\t#{pane_dead}",
+      });
+      const [paneCurrentCommand = "", dead = "0"] = pane.split("\t");
+      return assessBotReadiness({
+        tui: runtime.team.bot?.tui,
+        held: options[BOT_HOLD_OPTION] === "1",
+        hasLiveLease: freshLease,
+        paneDead: dead === "1",
+        paneCurrentCommand,
+        firstCapture: readiness.secondCapture,
+        secondCapture: capture,
+      });
+    },
     ...(opts.deps.paneLockDir !== undefined ? { paneLockDir: opts.deps.paneLockDir } : {}),
     message: formatSuperbotOffer({
       board: opts.route.board,
@@ -317,8 +363,16 @@ async function processCandidate(opts: {
       team: decision.team,
     }),
   });
-  if (!sent) {
-    return { ...base, team: decision.team, outcome: "not-ready", reason: "send-unverified" };
+  if (!delivered.success) {
+    if (delivered.reason === "not-candidate") {
+      return { ...base, team: decision.team, outcome: "not-candidate" };
+    }
+    return {
+      ...base,
+      team: decision.team,
+      outcome: "not-ready",
+      reason: delivered.reason ?? "send-unverified",
+    };
   }
   await opts.deps.kanban.writeOfferState(
     opts.route.board,

@@ -581,6 +581,25 @@ describe("safeSendKeysWithVerify — happy path", () => {
     expect(lines).toContain("safeSendKeysWithVerify: atmux:_bot pre-send verifier refused");
   });
 
+  test("awaits an async pre-send verifier before admitting the send", async () => {
+    const { fixture, baseOpts } = buildVerifyFixture(["ready"]);
+    let checked = false;
+    const result = await safeSendKeysWithVerify({
+      ...baseOpts,
+      target: "atmux:_bot",
+      keys: "offer",
+      expectVerifier: () => true,
+      preSendVerifier: async () => {
+        await Promise.resolve();
+        checked = true;
+        return false;
+      },
+    });
+    expect(checked).toBe(true);
+    expect(result.attempts).toBe(0);
+    expect(fixture.sends).toHaveLength(0);
+  });
+
   test("verifier returns true after first poll → success on attempt 1", async () => {
     // Captures: [0]=pre-send, [1]=post-send (verifier returns true).
     const { fixture, baseOpts } = buildVerifyFixture(["pre", "VERIFIED-state"]);

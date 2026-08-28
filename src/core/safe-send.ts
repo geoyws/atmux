@@ -448,6 +448,11 @@ async function dismissKnownModal(
  *  an ad-hoc closure. */
 export type PaneVerifier = (paneCapture: string) => boolean;
 
+/** Last-moment verifier evaluated while the per-pane send lock is held.
+ * Async callers can re-read external ownership/interlock state before
+ * admitting the send; synchronous pane-only guards remain supported. */
+export type PreSendVerifier = (paneCapture: string) => boolean | Promise<boolean>;
+
 /** What to do when verification fails after all retries. `"escalate"`
  *  (default) writes to the send-keys-failures log and returns
  *  `{ success: false, ... }`; `"throw"` raises {@link SafeSendKeysError}
@@ -470,7 +475,7 @@ export interface SafeSendKeysWithVerifyOpts {
   /** Last-moment guard evaluated against the pre-send capture while
    * the per-pane send lock is held. A false result returns without
    * sending or writing an escalation entry. */
-  preSendVerifier?: PaneVerifier;
+  preSendVerifier?: PreSendVerifier;
   /** Max time (ms) to wait for the verifier to return `true` after
    *  each send attempt. Default 3000. */
   timeoutMs?: number;
@@ -601,7 +606,7 @@ async function safeSendKeysWithVerifyInner(
   // Step 1: pre-capture once for escalation evidence.
   const preCapture = await opts.capture(opts.target);
 
-  if (opts.preSendVerifier !== undefined && !opts.preSendVerifier(preCapture)) {
+  if (opts.preSendVerifier !== undefined && !(await opts.preSendVerifier(preCapture))) {
     log(`safeSendKeysWithVerify: ${opts.target} pre-send verifier refused`);
     return { success: false, attempts: 0, finalCapture: preCapture };
   }
