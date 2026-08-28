@@ -798,7 +798,9 @@ describe("poke() — public verb", () => {
       },
     });
     expect(exit).toBe(0);
-    expect(stdoutBuf).toContain("session atmux-demo is DOWN");
+    // Bare session names (e-419553c6): cage sessions are named <team>, not
+    // atmux-<team>; the DOWN report follows the session name.
+    expect(stdoutBuf).toContain("session demo is DOWN");
     const templates = sent.map((s) => s.template);
     expect(templates).toContain("whip-blocker");
     expect(templates).toContain("whip-progress");
