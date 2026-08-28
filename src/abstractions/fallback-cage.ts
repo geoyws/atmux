@@ -38,7 +38,6 @@ import { spawn as defaultSpawn, type SpawnOpts, type SpawnResult } from "./spawn
 import type { TmuxConfig, TmuxNamespace } from "./tmux.ts";
 import {
   createTmux as defaultCreateTmux,
-  TMUX_CHILD_ENV,
   TMUX_CHILD_ENV_ARGV,
   TMUX_CHILD_UNSET_ENV,
 } from "./tmux.ts";
@@ -547,7 +546,7 @@ export async function createFallbackCage(opts: CreateFallbackCageOpts): Promise<
   // ADR-281: that inheritance is exactly the colour fault. The Tier-2
   // (operator-UID) branch below creates its server through the `tmux`
   // namespace built above — `createTmux` → `spawn()` — so it is ALREADY
-  // covered by tmux.ts's TMUX_CHILD_ENV / TMUX_CHILD_UNSET_ENV.
+  // covered by tmux.ts's TMUX_CHILD_UNSET_ENV.
   // The Tier-3+ `sudo` branch is NOT: sudo's env_reset drops a spawn-level
   // override, so it carries TMUX_CHILD_ENV_ARGV in its `env(1)` prefix.
   await spawnFn({
@@ -659,7 +658,6 @@ export async function destroyFallbackCage(
       cmd: resolveTmuxBin(),
       // ADR-281: `capture-pane` against a dead socket starts a server, so
       // even this teardown probe carries the child-env policy.
-      env: TMUX_CHILD_ENV,
       unsetEnv: TMUX_CHILD_UNSET_ENV,
       argv: [
         "-L",

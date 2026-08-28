@@ -1,5 +1,5 @@
 import { spawn as defaultSpawn, type SpawnResult } from "../../abstractions/spawn.ts";
-import { TMUX_CHILD_ENV, TMUX_CHILD_UNSET_ENV } from "../../abstractions/tmux.ts";
+import { TMUX_CHILD_UNSET_ENV } from "../../abstractions/tmux.ts";
 import { resolveTmuxBin } from "../../core/resolve-tmux-bin.ts";
 
 // ---------- Row + report shape ----------
@@ -57,6 +57,5 @@ export const defaultTmuxSpawn: TmuxSpawn = (argv) =>
     // starts a server implicitly for any subcommand that needs one — so a
     // probe against a dead socket can be the process whose environ gets
     // frozen. Same child-env policy as `abstractions/tmux.ts`.
-    env: TMUX_CHILD_ENV,
     unsetEnv: TMUX_CHILD_UNSET_ENV,
   });
