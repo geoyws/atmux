@@ -45,6 +45,7 @@ import {
 import { type GroomArchiveResult, groomArchive } from "../core/groom-archive.ts";
 import { type ReconcileResult, reconcileKanbanVsGit } from "../core/groom-reconcile.ts";
 import { defaultStdoutWrite, type Writer } from "../core/io.ts";
+import { externalKanbanEnabled } from "../core/kanban-backend.ts";
 import { DEFAULT_CLAIMED_AT_THRESHOLD_MIN } from "../core/lane-drift.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { LockError, LockTimeoutError, UsageError } from "../errors.ts";
@@ -381,6 +382,7 @@ export async function groom(argv: ReadonlyArray<string>, opts: GroomOptions = {}
       env,
       ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
     }));
+  const externalBackend = await externalKanbanEnabled(atmuxDir, env);
 
   const result: GroomResult = {
     inboxAge: [],
@@ -498,30 +500,35 @@ export async function groom(argv: ReadonlyArray<string>, opts: GroomOptions = {}
       result.errors.push({ op: "decisions", message: errMsg(e) });
     }
 
-    try {
-      result.kanban = await summarizeKanban(atmuxDir, {
-        days: parsed.kanbanDays,
-        dryRun: parsed.dryRun,
-        ...(opts.nowMs !== undefined ? { nowMs: opts.nowMs } : {}),
-      });
-      if (!parsed.quiet && result.kanban.removed > 0) {
-        if (parsed.dryRun) {
-          logger.log(
-            `groom[dry-run]: would summarize+remove ${result.kanban.removed} done/cancelled cards older than ${parsed.kanbanDays}d`,
-          );
-        } else {
-          logger.ok(`groom: summarized + removed ${result.kanban.removed} stale kanban card(s)`);
+    if (!externalBackend) {
+      try {
+        result.kanban = await summarizeKanban(atmuxDir, {
+          days: parsed.kanbanDays,
+          dryRun: parsed.dryRun,
+          ...(opts.nowMs !== undefined ? { nowMs: opts.nowMs } : {}),
+        });
+        if (!parsed.quiet && result.kanban.removed > 0) {
+          if (parsed.dryRun) {
+            logger.log(
+              `groom[dry-run]: would summarize+remove ${result.kanban.removed} done/cancelled cards older than ${parsed.kanbanDays}d`,
+            );
+          } else {
+            logger.ok(`groom: summarized + removed ${result.kanban.removed} stale kanban card(s)`);
+          }
         }
+      } catch (e) {
+        logger.warn(`groom: kanban sub-op failed (continuing): ${errMsg(e)}`);
+        result.errors.push({ op: "kanban", message: errMsg(e) });
       }
-    } catch (e) {
-      logger.warn(`groom: kanban sub-op failed (continuing): ${errMsg(e)}`);
-      result.errors.push({ op: "kanban", message: errMsg(e) });
+    } else if (!parsed.quiet && env.ATMUX_DEBUG !== undefined && env.ATMUX_DEBUG !== "") {
+      logger.log("groom: legacy kanban summarization skipped (external authority)");
     }
 
     try {
       result.bakCull = await cullBakFiles(atmuxDir, {
         keep: parsed.keepBak,
         dryRun: parsed.dryRun,
+        ...(externalBackend ? { families: ["team.json"] } : {}),
       });
       if (!parsed.quiet) {
         for (const r of result.bakCull) {
@@ -674,7 +681,7 @@ export async function groom(argv: ReadonlyArray<string>, opts: GroomOptions = {}
     // --archive; runs last so any earlier sub-op failures (which
     // surfaced as warnings, not aborts) don't pollute the archive
     // with rows that should have been rewritten by an earlier step.
-    if (parsed.archive) {
+    if (parsed.archive && !externalBackend) {
       try {
         const ar = await groomArchive(atmuxDir, {
           days: parsed.kanbanDays,
@@ -692,6 +699,13 @@ export async function groom(argv: ReadonlyArray<string>, opts: GroomOptions = {}
         logger.warn(`groom: archive sub-op failed (continuing): ${errMsg(e)}`);
         result.errors.push({ op: "archive", message: errMsg(e) });
       }
+    } else if (
+      parsed.archive &&
+      !parsed.quiet &&
+      env.ATMUX_DEBUG !== undefined &&
+      env.ATMUX_DEBUG !== ""
+    ) {
+      logger.log("groom: legacy state.db archive skipped (external authority)");
     }
 
     // t-0027eec3 (c-4698c603 arm b): stale fixture tmux socket sweep.

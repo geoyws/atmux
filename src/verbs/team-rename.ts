@@ -20,7 +20,7 @@
 //
 // `collidesWithCockpit` walks ADR-089's recursive `sessions[]` tree —
 // any `type: "team"` node whose `name` equals the new team-name is a
-// collision target. `epic-team` siblings live in a different
+// collision target. Non-`team` session types live in a different
 // discriminator namespace and are NOT collision sources.
 //
 // Step 6 (cron re-install) uses the install-new-then-strip-old order
@@ -32,7 +32,12 @@
 import { dirname } from "node:path";
 import type { CrontabIO } from "../abstractions/crontab.ts";
 import type { TmuxNamespace } from "../abstractions/tmux.ts";
-import { defaultCockpitConfigPath, loadCockpit } from "../core/cockpit.ts";
+import {
+  defaultCockpitConfigPath,
+  findTeamByName,
+  groupSocketPath,
+  loadCockpit,
+} from "../core/cockpit.ts";
 import { getAtmuxDir, getDefaultSocket, loadTeam, type ResolveDirOpts } from "../core/common.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { listTasks } from "../core/kanban.ts";
@@ -205,13 +210,13 @@ export function hasInProgressTasks(tasks: ReadonlyArray<KanbanTask>): boolean {
 
 /** DFS walk of `cockpit.sessions[]` looking for a `type: "team"` node
  *  whose `name` equals `newName`. Walks into nested `sessions[]` on
- *  every `team` or `epic-team` node so ADR-089 recursive children are
- *  reachable. Returns true on the first hit. */
+ *  every `team` node so ADR-089 recursive children are reachable.
+ *  Returns true on the first hit. */
 export function collidesWithCockpit(cockpit: Cockpit, newName: string): boolean {
   const visit = (nodes: ReadonlyArray<CockpitSessionT>): boolean => {
     for (const n of nodes) {
-      if (n.type === "team" && n.name === newName) return true;
-      if (n.type === "team" || n.type === "epic-team") {
+      if (n.type === "team") {
+        if (n.name === newName) return true;
         if (n.sessions.length > 0 && visit(n.sessions)) return true;
       }
     }
@@ -426,9 +431,15 @@ export interface TeamRenameDeps {
    *  step 3 (rename-session). Default: `createTmux({ socketPath })`. */
   buildCageTmux?: (socketPath: string) => TmuxNamespace;
   /** Builds a TmuxNamespace pinned to the cockpit socket — used for
-   *  step 4 (team-viewer window rename). Default:
-   *  `createTmux({ socket: "atmux-cockpit" })`. */
+   *  step 4 (team-viewer window rename) when the team has NO group
+   *  ancestor. Default: `createTmux({ socket: "atmux-cockpit" })`. */
   buildCockpitTmux?: () => TmuxNamespace;
+  /** e-419553c6 true containment: builds a TmuxNamespace on a GROUP
+   *  server's socket — used for step 4 + the convergence probe when
+   *  the team's viewer lives in a group server (`findTeamByName(...)
+   *  .group` set). Receives `groupSocketPath(group)`. Default:
+   *  `createTmux({ socketPath })`. */
+  buildGroupViewerTmux?: (socketPath: string) => TmuxNamespace;
   /** Override the cockpit.json path. Defaults to
    *  `<home>/.atmux/cockpit.json`. */
   cockpitPath?: string;
@@ -462,7 +473,7 @@ export function renderRenamePlan(args: {
     "  1. acquire .atmux/state/rename.lock",
     `  2. team.json:.name = "${newName}" (backup at team.json.bak.<epoch>)`,
     `  3. tmux rename-session "${oldName}" → "${newSession}" (cage socket; PIDs preserved)`,
-    `  4. tmux rename-window "${oldName}" → "${newName}" (cockpit socket '${cockpitSession}')`,
+    `  4. tmux rename-window "${oldName}" → "${newName}" (viewer host session '${cockpitSession}')`,
     `  5. .atmux/state/session.txt = "${newSession}" (when present)`,
     `  6. cron-install --quiet (refresh block under '${newName}'; strips old marker)`,
     `  7. cockpit.json registry: rename type:"team" node '${oldName}' → '${newName}'`,
@@ -519,13 +530,21 @@ export async function teamRename(
   const cockpitSessionName = cockpit.cockpitSession ?? "atx";
   const cockpitPath = opts.cockpitPath ?? defaultCockpitConfigPath(process.env.HOME ?? "/root");
 
+  // e-419553c6 true containment: a grouped team's viewer window lives in
+  // its GROUP server, not the cockpit session — step 4 and step 10's
+  // viewer probe must address the host that actually holds the window.
+  // Group membership survives the rename (only the team's NAME changes),
+  // so one resolution up-front serves plan, rename and convergence.
+  const teamLookup = findTeamByName(cockpit, oldName);
+  const viewerSession = teamLookup?.group ?? cockpitSessionName;
+
   if (parsed.dryRun) {
     for (const line of renderRenamePlan({
       oldName,
       newName: parsed.newName,
       newSession,
       forceBranches: parsed.forceBranches,
-      cockpitSession: cockpitSessionName,
+      cockpitSession: viewerSession,
     })) {
       stdout(`${line}\n`);
     }
@@ -557,6 +576,18 @@ export async function teamRename(
     const { createTmux } = await import("../abstractions/tmux.ts");
     cockpitTmux = createTmux({ socket: "atmux-cockpit" });
   }
+  // e-419553c6: viewer host — the group server for grouped teams, the
+  // cockpit session otherwise (see `viewerSession` resolution above).
+  let viewerTmux: TmuxNamespace = cockpitTmux;
+  if (teamLookup?.group !== undefined) {
+    const groupSock = groupSocketPath(teamLookup.group);
+    if (opts.buildGroupViewerTmux !== undefined) {
+      viewerTmux = opts.buildGroupViewerTmux(groupSock);
+    } else {
+      const { createTmux } = await import("../abstractions/tmux.ts");
+      viewerTmux = createTmux({ socketPath: groupSock });
+    }
+  }
   const crontabIo = opts.crontab ?? (await import("../abstractions/crontab.ts")).defaultCrontabIO();
   const teamDir = dirname(atmuxDir);
   const members: ReadonlyArray<BranchRenameMember> = teamObj.members.map((m) => ({
@@ -577,8 +608,8 @@ export async function teamRename(
     // Step 4 — cockpit team-viewer window rename (T5 impl, cockpit socket).
     rollback.push(
       await viewerFn({
-        tmux: cockpitTmux,
-        cockpitSession: cockpitSessionName,
+        tmux: viewerTmux,
+        cockpitSession: viewerSession,
         oldName,
         newName: parsed.newName,
       }),
@@ -627,9 +658,9 @@ export async function teamRename(
         newName: parsed.newName,
         newSession,
         oldName,
-        cockpitTmux,
+        cockpitTmux: viewerTmux,
         cageTmux,
-        cockpitSession: cockpitSessionName,
+        cockpitSession: viewerSession,
         cockpitPath,
         crontabRead: () => crontabIo.read(),
       });

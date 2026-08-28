@@ -142,7 +142,7 @@ beforeAll(async () => {
   if (SKIP_REASON !== "") return;
 
   teamName = `cs${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-  sessionName = `atmux-${teamName}`;
+  sessionName = teamName; // bare per e-419553c6
 
   teamDir = await mkdtemp(join(tmpdir(), "atmux-cagestate-"));
   atmuxDir = join(teamDir, ".atmux");

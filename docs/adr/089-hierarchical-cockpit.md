@@ -118,6 +118,8 @@ Example JSONC for a cockpit with one team that has one in-flight epic-team:
 
 **Cockpit walk** is depth-first; window order matches DFS traversal. Nesting is **unbounded by the schema**, capped at runtime by `loadCockpit` max-depth (§Decision-anchor #6).
 
+> **Read the example above as one instance, not as the rule** — see [§Amendment 2026-08-27](#amendment-2026-08-27--nesting-is-general-not-epic-shaped-group-tier-shifts-the-prefix-chain-down-one-rung-t-f73a418c) §(A). `TeamSession` carries its own recursive `sessions[]` (the `sessions: z.array(z.lazy(() => CockpitSession))` line above), so a `team` nested inside a `team` is equally valid and needs no `epicId`; the epic-team child shown is one reason to nest, not the mechanism. The `loadCockpit` max-depth cap named in this paragraph was **never implemented** — §H and §Amendment 2026-08-27 §(D).
+
 ### (B) Migration shim — flat → recursive
 
 `loadCockpit` reads `schemaVersion` per §Decision-anchor #1:
@@ -141,6 +143,8 @@ Default chain per nesting level:
 | L2 | Team tmux server | `F2` | Default; override via `cockpit.prefixChain[1]` |
 | L3 | Epic-team tmux server | `F3` | Default; override via `cockpit.prefixChain[2]` |
 | L4+ | Reserved | F4-F12 | Future use (super-cockpit, multi-epic chains) |
+
+> ⚠ **Superseded by [§Amendment 2026-08-27](#amendment-2026-08-27--nesting-is-general-not-epic-shaped-group-tier-shifts-the-prefix-chain-down-one-rung-t-f73a418c) §(B).** Inserting a `group` tier at L2 moves the team cage to `F3` and the epic-team to `F4`; L0/L1 are unchanged. The rows above are kept verbatim as the 2026-05-13/2026-05-24 record — read §(B) for the current tier-to-rung mapping, §(C) for what happens past the chain's end (the "Reserved" row is no longer the answer), and note that the enforcement point is the operator's dotfiles, not this table.
 
 **Operator override** via `cockpit.prefixChain: ["F1","F2","F3"]` or `["C-q","C-w","C-e"]` (Ctrl-letter for mobile, see fallback below). Validation at `loadCockpit` per §Decision-anchor #4: length ≥ max-depth AND uniqueness.
 
@@ -221,6 +225,8 @@ Lifetime: until every caller is migrated to recursive walk (covered by the imple
 - `schemaVersion` is `.default(1)` so legacy files (missing the field) flow through the shim path.
 
 ### (H) Max-depth cap (§Decision-anchor #6)
+
+> ⚠ **Never implemented — corrected by [§Amendment 2026-08-27](#amendment-2026-08-27--nesting-is-general-not-epic-shaped-group-tier-shifts-the-prefix-chain-down-one-rung-t-f73a418c) §(D).** `loadCockpit` performs no depth walk; `MAX_NESTING_LEVEL` is read only by `validatePrefixChain` and `childNestingEnv`. The paragraph below describes intent that was never built. §(C) is where the refusal should land.
 
 `loadCockpit` refuses cockpit.json files with tree depth > 6. Computation: DFS, track max depth seen, throw `UsageError` on overshoot. Acyclic-by-construction is preserved; the cap defends against config-authoring errors that introduce cycles (e.g. `sessionA.parent === "sessionB" && sessionB.parent === "sessionA"` is structurally impossible in this schema, but a copy-paste loop in `sessions[]` nesting is possible). Cap of 6 covers L1-L4 reserved + 2 headroom.
 
@@ -338,3 +344,131 @@ Closes a gap exposed 2026-05-21 21:57 MYT on the operator's hax box (post seed-e
 **Test coverage** — `tests/unit/verbs/team/spawn-epic.test.ts` (describe block "spawnEpic — parent-cage viewer (ADR-089 §Pillar 1 §Amendment / t-2183f488)"): live-parent fixture asserts the `🌳-<epicId>` window is created with the correct retry-attach shell command + nested epic socket; down-parent fixture asserts soft-fail (no window, spawn still returns 0); idempotent fixture (window pre-present) asserts no duplicate `newWindow` call.
 
 **Filed via** t-2183f488 (up-impl lane, 2026-06-05).
+
+## §Amendment 2026-08-27 — nesting is general, not epic-shaped; group tier shifts the prefix chain down one rung (t-f73a418c)
+
+Operator directive 2026-08-27, verbatim: *"let's clean up the docs for epic team.... we have to just make it flexibly nestable so no hard rules like it has to be epic team"*. This amendment does two things: it restates the nesting model as a **general capability with no required reason**, and it records the operator-accepted prefix shift that follows from inserting a `group` tier above the team cage.
+
+**Docs-only.** No TypeScript, schema or test changed in the commit carrying this amendment. §Implementation ledger below states, per claim, whether the shipped binary does it today.
+
+### (A) Nesting is a general capability; `epic-team` is one instance of it, not the mechanism
+
+The model this ADR defines, restated without the epic framing:
+
+> **A cage may contain child cages, to arbitrary depth, for any reason the operator has.** A child cage is a `sessions[]` entry inside a parent's `sessions[]`. Nothing about the mechanism knows or cares *why* the operator nested it.
+
+Three hard rules that earlier readings of §Decision (A) invited, and which are now explicitly **retracted**:
+
+- ❌ *"Nesting means epics."* It does not. Nesting means containment. An epic is one reason to nest; organisational grouping, per-product fan-out, and per-driver lanes are others, and the mechanism is indifferent between them.
+- ❌ *"A nested cage must carry an `epicId`."* `epicId` is required only on `type: "epic-team"`, and it stays required **there** — an epic-team without a link back to `kanban.epics[].id` is a lifecycle bug, and ADR-090/091/182/219 all join on that field. What is retracted is the inference that *nesting in general* needs one. `type: "team"` has never had an `epicId` and never needs one.
+- ❌ *"Only an `epic-team` may be a child."* `type: "team"` has carried its own recursive `sessions[]` since the original impl (§Implementation ledger row 1). A team inside a team inside a team parses, walks, and gets a cage today.
+
+`epicId` therefore keeps its meaning exactly where an epic genuinely is the reason for the cage, and is simply absent everywhere else. It is not deprecated and not removed.
+
+**Worked example — the four-tier fleet the operator asked for (2026-08-27).** Tiers named `group` and `project` below are *descriptions of intent*, not schema literals; see §Implementation ledger row 3 for what the schema actually admits today.
+
+```
+L1  cockpit           _sdriver · _med · _misc
+L2    group           geoyws · unum · ifca
+L3      project       aix · ix · mx · prjx · px · hx · hrx · rx · fmx · ifca-docs
+L4        drivers     3 per project
+```
+
+None of `geoyws` / `unum` / `ifca` is an epic. Under the epic-only reading they were inexpressible; under the general reading they are ordinary child cages whose reason for existing is organisational.
+
+### (B) Prefix chain — the group tier shifts every rung below it down by one
+
+**Operator-accepted 2026-08-27.** §C's table is superseded by this one. The chain is unchanged in *shape* — it is the same 1-indexed walk down `prefixChain` — but the tier that occupies each rung moves:
+
+| Level | §C (2026-05-13, as amended 2026-05-24) | This amendment | Prefix |
+|---|---|---|---|
+| L0 | Host tmux | Host tmux — **unchanged** | `C-a` |
+| L1 | Cockpit | Cockpit — **unchanged** | `F1` |
+| L2 | Team cage | **Group** | `F2` |
+| L3 | Epic-team cage | **Project / team cage** | `F3` |
+| L4 | Reserved | **Nested cage — epic or any other reason** | `F4` |
+| L5 | Reserved | Spare | `F5` |
+| L6+ | Reserved | See §(C) | `F6`… |
+
+**Net effect on muscle memory: a team cage moves `F2` → `F3`, and an epic-team `F3` → `F4`.** Nothing above L2 moves.
+
+**This shift needs no arithmetic change in atmux.** The prefix is resolved from **tree depth**, never from node type — `src/verbs/cockpit.ts:719` computes `resolvePrefix(t.level + 2, cockpit.prefixChain)` against the 0-indexed depth `enabledTeams` annotates. Insert a tier and everything below it descends one rung automatically. That property is why §C's table was always a *description* of the depth arithmetic rather than a hardcoded mapping, and it is what makes this shift a documentation change on the atmux side.
+
+**The enforcement point is the operator's dotfiles, and it is NOT depth-derived.** Two files carry a socket-pattern `if-shell` chain that assigns the prefix by matching the socket path against three hardcoded branches (`*atmux-cockpit` → `F1`; `*/epics/*` → `F3`; `/tmp/atmux-*/sock` or `*/.atmux/tmux/*` or `*atmux-tmux*` → `F2`; else `C-a`):
+
+- `_dotfiles/tmux/.tmux.conf` — comment block lines 127-146, `if-shell` chain lines 148-184
+- `_dotfiles/atmux/tmux.conf.local` — lines 16-39, a near-duplicate re-applied after the personal config is sourced
+
+Both must be updated in the same delivery. Updating one and not the other is a silent no-op: `tmux.conf.local` exists precisely to re-assert the prefix after `.tmux.conf` is sourced, so it wins. A third site, `_dotfiles/tmux/.tmux.conf:266`, enumerates the same socket globs for an unrelated `bind w` `choose-tree` branch and needs the new tier's socket pattern added for consistency, though nothing breaks if it is missed.
+
+Because that chain matches on **socket path** rather than depth, a group cage whose socket looks like an ordinary team socket will be assigned `F2` — which is correct for a group and wrong for the project cage sitting under it, whose socket looks identical. Making the dotfiles depth-aware (or giving group cages a distinguishable socket path) is the real work of the shift. Until it lands, **the shift is documented and not in effect**, and this amendment says so rather than describing it as live.
+
+### (C) Beyond F5 — refuse, do not clamp and do not wrap
+
+§C left L4+ as "Reserved", which was tolerable while the level count was fixed at four. With depth open-ended it is undefined behaviour, so this amendment defines it:
+
+> **Every level gets a distinct entry for as long as `prefixChain` lasts (F1..F12 by default = levels 1 through 12). Depth beyond the chain's length is REFUSED at `loadCockpit` with an actionable error naming both the offending depth and the chain length. There is no clamp and no wrap-around.**
+
+**Reasoning.** The two alternatives both reintroduce, at depth, exactly the ambiguity the 2026-05-24 off-by-one shift was raised to remove:
+
+- **Clamp** (levels past the end share the deepest key) makes one chord mean two different cages, and the operator cannot tell which from looking at the pane.
+- **Wrap** (L13 → `F1`) is worse — it collides the deepest cage with the **cockpit**, the one session an operator most needs to reach unambiguously in a wedge.
+
+Socket separation does physically disambiguate both cases, but §Decision-anchor #7's whole claim is that the operator should never have to reason about which socket a chord lands on. A refusal costs the operator one config edit (lengthen `prefixChain`, or flatten the tree) and preserves that property; a clamp or a wrap costs them a wrong chord at the worst moment. The independent second reason to refuse: F13+ does not exist on most terminals, so 12 is a real physical ceiling, not an arbitrary one — there is nothing to extend the chain *with* past F12 except Ctrl-letter chords the operator must choose deliberately.
+
+**Consequence for `MAX_NESTING_LEVEL`.** The constant is `6` (`src/core/cockpit.ts:506`), justified in §Decision-anchor #6 as "L1-L4 reserved + 2 headroom" — an arithmetic that assumed a fixed four-level model this amendment retires. Under the rule above the cap should be the chain length (12 by default), leaving the chain — not a separate constant — as the single thing that bounds depth. **Not yet implemented; flagged as a decision needing an implementation task.** Note the current constant already admits the operator's four-tier fleet (cockpit L1 + group L2 + project L3 + drivers as windows, not levels), so nothing is blocked on it today.
+
+### (D) §H correction — the documented depth cap was never implemented
+
+§H states: *"`loadCockpit` refuses cockpit.json files with tree depth > 6."* **It does not, and never has.** `loadCockpit` (`src/core/cockpit.ts:83-138`) rejects a legacy `superdoctor` block, migrates the legacy shape, `safeParse`s, validates `prefixChain` length + uniqueness, and validates operator window names. It performs **no depth walk**. `MAX_NESTING_LEVEL` is consumed in exactly two places — `validatePrefixChain` (`src/core/cockpit.ts:587`, a minimum chain *length* check) and `childNestingEnv` (`src/core/cockpit.ts:649`, a cage-entry runtime guard). Neither reads the tree.
+
+The practical effect: an over-deep tree is not caught at load. It surfaces later as a swallowed `resolvePrefix` throw in the Phase 3 loop (`src/verbs/cockpit.ts:719-724`), which falls back to `applyCagePrefix`'s legacy `C-\` — a cage with a silently wrong prefix, which is the failure mode §Decision-anchor #4 exists to prevent. Recorded here as debt rather than quietly fixed in prose; the §(C) refusal is where it should land.
+
+### §Implementation ledger — what ships today vs what does not
+
+| # | Claim | Status | Sites |
+|---|---|---|---|
+| 1 | A `team` may contain child cages of any type, to arbitrary depth | **Ships** | `src/schema/cockpit.ts:143` (`TeamSessionT.sessions`), `:204` (zod `sessions`); `src/core/cockpit.ts:393` (`walkSessions` recurses on `team` and `epic-team`). No validation anywhere refuses a `team` under a `team`. |
+| 2 | Prefix is derived from depth, not from node type — so a new tier shifts everything below it automatically | **Ships** | `src/verbs/cockpit.ts:719`; `src/core/cockpit.ts:486-499` (`DEFAULT_PREFIX_CHAIN` = F1..F12), `:550` (`resolvePrefix`) |
+| 3 | A purely organisational tier — a container with no repo behind it | **Does NOT ship** | The union admits only `team` / `epic-team` / `superdriver` / `medic` (`src/schema/cockpit.ts:194`). Both nestable members demand a backing cage: `team` requires `root` (`:202`), `epic-team` requires `parent` + `epicId` (`:213-214`). There is no cage-less container type. Expressing a `group` today means giving it a `root` with a real `.atmux/team.json` and accepting a cage for it. |
+| 4 | A new session type could nest | **Does NOT ship** | `walkSessions` recurses only into `team` / `epic-team` (`src/core/cockpit.ts:393`); `enabledTeams` emits rows only for those two (`:350`, `:361`). Any new type is a leaf until both are widened. |
+| 5 | `epicId` is optional in the general nesting model | **Ships as documented** — because general nesting uses `team`, which has no `epicId` at all. On `epic-team` the field stays required, deliberately | `src/schema/cockpit.ts:156` (TS), `:214` (`z.string().min(1)`) |
+| 6 | A parent cage gets a viewer window for its child | **Ships for epics only** | `addEpicViewerToParentCage` / `removeEpicViewerFromParentCage` (`src/core/cockpit.ts:741`, `:808`) hardcode the window name `🌳-<epicId>` (`:783`, `:843`). A non-epic child has no equivalent helper and gets no parent-cage viewer. |
+| 7 | A verb spawns a nested cage | **Ships for epics only** | `src/verbs/team/spawn-epic.ts:774` writes `type: "epic-team"`. There is no generic "spawn a child cage" verb; `src/verbs/team/` holds spawn/dissolve for `epic` and `worker` only. |
+| 8 | `loadCockpit` refuses depth > `MAX_NESTING_LEVEL` | **Does NOT ship** — see §(D) | `src/core/cockpit.ts:83-138` |
+| 9 | The L2-group / L3-project / L4-nested prefix shift is in effect for the operator | **Does NOT ship** | Dotfiles socket chain, §(B). atmux's own arithmetic needs no change; the dotfiles do. |
+
+**Scope note.** Rows 3, 4, 6, 7 and the §(C) / §(D) items are the implementation surface a follow-up task would cover. This amendment does not open one; it states the model and the gap so the two are not confused.
+
+### Out of scope
+
+Renaming `epic-team` to a neutral discriminator. The literal is load-bearing across ADR-090 (lifecycle), ADR-091 (auto-merge), ADR-144 (test-gate), ADR-182 (auto-reap), ADR-219 (dissolve completeness) and the orchd subscriber series, and it names a genuinely epic-specific lifecycle that keeps its `epicId` linkage. Generalising the *mechanism* does not require renaming the *instance* — a discriminator rename is a schema migration and needs its own ADR, on the ADR-266 §D2 shim-sunset pattern.
+
+**Cross-refs:** §C (the table this supersedes) · §Decision-anchor #6 (the max-depth rationale §(C) retires) · §H (corrected in §(D)) · [ADR-090](090-epic-team-lifecycle.md) (the epic-shaped instance that keeps its `epicId`) · [ADR-162](162-atmux-owns-tmux-infrastructure.md) §Decision-anchor #1 (per-socket keybinding namespaces — why distinct chords are a convenience, not a correctness requirement) · [`docs/RUNBOOK-cockpit.md`](../RUNBOOK-cockpit.md) §11 (the operator-facing form of §(B)/§(C)).
+
+**Filed via** t-f73a418c (docs lane, 2026-08-27).
+
+### Group-tier note (2026-08-27, e-419553c6) — `type: "group"` shipped, and it does NOT consume a prefix rung
+
+> ⚠ **Superseded by the [2026-08-28 true-containment note](#group-tier-note-2026-08-28-e-419553c6--groups-are-real-servers-and-consume-the-f2-rung) below.** The prefix-neutral reading in this note lasted exactly one commit. The shipped schema/walk surface it describes (the `type: "group"` container, DFS recursion, disabled-subtree pruning, `group?: string` threading) still stands; the "no tmux server, no prefix rung" half does not.
+
+The organisational container this amendment described as inexpressible (§Implementation-ledger row 3) now ships as `type: "group"` (`src/schema/cockpit.ts` — `{ type, name, enabled?, sessions[] }`, `.strict()`, no `root`, no cage). `walkSessions` recurses through groups, `enabledTeams` never emits one as a team, a disabled group prunes its whole subtree, and the nearest ancestor group name is threaded onto flattened entries as `group?: string`.
+
+**Prefix correction to §(B):** a schema `group` does **not** shift the chain. §(B)'s table assumed the group tier would be a CAGE (a real tmux server nested between cockpit and team), and for a cage the shift stands — the accepted F2→F3 move applies whenever a cage nests inside a cage. But `type: "group"` creates NO tmux server, so a prefix rung for it would address nothing: there is no server on which the chord could land. Accordingly the level fed to `resolvePrefix(...)` counts only **cage (team) ancestors** — `walkSessions` does not increment `level` through a group — and a team under a top-level group stays on `F2`. §(B)'s dotfiles-enforcement analysis is unaffected for cage-shaped tiers; for schema groups there is nothing to enforce. This also resolves §(B)'s closing caveat for the cage-less case: the shift is not "documented and not in effect" — for `type: "group"` it deliberately does not apply.
+
+§Implementation-ledger updates: row 3 → **Ships** (`GroupSession`, e-419553c6); row 4 → **Ships for `group`** (`walkSessions` / `enabledTeams` widened; any OTHER new type is still a leaf until both are widened).
+
+### Group-tier note (2026-08-28, e-419553c6) — groups are REAL servers and consume the F2 rung
+
+**Supersedes the 2026-08-27 note above.** Prefix-neutral groups lasted one commit: the operator looked at the reconciled cockpit, saw a flat sibling row where the nesting should be ("i still see a flat topology... where is the nesting"), and chose **true containment** on 2026-08-28. The 2026-08-27 note's premise — "a group creates NO tmux server, so a prefix rung for it would address nothing" — is retired by giving every enabled group a real tmux server for the rung to land on.
+
+The mechanism (all in `src/core/cockpit.ts::buildGroupTopology` + `src/verbs/cockpit.ts::reconcileGroupServers`):
+
+- **Group servers.** Each enabled group backs a tmux server on `groupSocketPath(name)` = `/tmp/atmux-grp-<group>/sock` (the `-grp-` infix keeps group sockets out of the team-socket namespace `/tmp/atmux-<team>/sock`, so a group and a team may share a name — the live fleet's `unum` does). Its session (named after the group, bare per e-419553c6) hosts one viewer window per child: teams run the same dual-socket cage attach-retry-loop the cockpit uses, nested groups run an attach loop to their own server.
+- **The cockpit session** keeps `_superdriver` / `_medic` / the ADR-279 `windows[]` untouched, and holds ONE window per **top-level** group (embedding that group's server) plus a direct embed per **ungrouped** team — the pre-group path, still live and still tested.
+- **Team cages are unmoved.** Their sockets and sessions do not change and are never restarted by this — only their PREFIX shifts (F2→F3 under a group) and their viewer window's address changes (cockpit → group server). Killing a group server can never kill a cage: its windows hold only `tmux attach` clients.
+- **Prefix chain, restoring §(B) as written:** `walkSessions` increments `level` through groups again, so `resolvePrefix(level + 2, …)` yields **F1 cockpit · F2 group server (top-level) · F3 team-under-group** — an ungrouped top-level team stays F2. §(B)'s closing caveat is now genuinely resolved in the other direction: the shift IS in effect, enforced by atmux's own arithmetic (`applyCagePrefix` on each group server during reconcile), not by the dotfiles socket chain.
+
+The 2026-08-27 note's §Implementation-ledger updates stand (row 3 ships, row 4 ships for `group`); row 9's "dotfiles socket chain" enforcement analysis is retired for schema groups — atmux enforces the shift itself.
+
+**Filed via** e-419553c6 (group-servers lane, 2026-08-28).

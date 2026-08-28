@@ -196,7 +196,7 @@ describe("hasInProgressTasks", () => {
 // ---------- collidesWithCockpit ----------
 
 function emptyCockpit(): Cockpit {
-  return { schemaVersion: 1, cockpitSession: "atmux_cockpit", sessions: [] };
+  return { schemaVersion: 1, cockpitSession: "atmux_cockpit", sessions: [], windows: [] };
 }
 
 describe("collidesWithCockpit", () => {
@@ -221,22 +221,12 @@ describe("collidesWithCockpit", () => {
     expect(collidesWithCockpit(c, "other")).toBe(false);
   });
 
-  test("epic-team with same name does NOT collide (different namespace)", () => {
-    const c: Cockpit = {
-      ...emptyCockpit(),
-      sessions: [
-        {
-          type: "epic-team",
-          name: "e-1",
-          enabled: true,
-          parent: "atmux",
-          epicId: "e-1",
-          sessions: [],
-        },
-      ],
-    };
-    expect(collidesWithCockpit(c, "e-1")).toBe(false);
-  });
+  // ADR-280 stage 4: an "epic-team with the same name does NOT collide"
+  // case stood here. `epic-team` was the only session type that both
+  // carried a team-ish name AND sat outside the rename namespace, and it
+  // is retired. The surviving non-colliding types are `superdriver` and
+  // `medic`, already asserted by the last case in this block, so the
+  // property is still covered — by the types that still exist.
 
   test("nested team inside team match → collision (DFS)", () => {
     const c: Cockpit = {
@@ -262,29 +252,43 @@ describe("collidesWithCockpit", () => {
     expect(collidesWithCockpit(c, "child")).toBe(true);
   });
 
-  test("nested team inside epic-team match → collision (DFS through epic-team)", () => {
+  // ADR-280 stage 4: this descended through an `epic-team` to reach a
+  // depth-2 team. The intermediate node is now an ordinary nested team —
+  // ADR-089 §Amendment 2026-08-27 §(A) makes arbitrary depth the general
+  // case — so the walk is asserted to the same depth through the type
+  // that survives.
+  test("team nested two levels deep → collision (DFS descends past depth 1)", () => {
     const c: Cockpit = {
       ...emptyCockpit(),
       sessions: [
         {
-          type: "epic-team",
-          name: "e-1",
+          type: "team",
+          name: "top",
           enabled: true,
-          parent: "atmux",
-          epicId: "e-1",
+          root: "/r0",
           sessions: [
             {
               type: "team",
-              name: "deep",
+              name: "mid",
               enabled: true,
-              root: "/r",
-              sessions: [],
+              root: "/r1",
+              sessions: [
+                {
+                  type: "team",
+                  name: "deep",
+                  enabled: true,
+                  root: "/r2",
+                  sessions: [],
+                },
+              ],
             },
           ],
         },
       ],
     };
     expect(collidesWithCockpit(c, "deep")).toBe(true);
+    expect(collidesWithCockpit(c, "mid")).toBe(true);
+    expect(collidesWithCockpit(c, "absent")).toBe(false);
   });
 
   test("non-team siblings ignored (superdriver / medic)", () => {

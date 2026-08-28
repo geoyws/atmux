@@ -71,6 +71,7 @@ import { acquire as acquireLock, type LockHandle } from "../abstractions/lock.ts
 import { spawn } from "../abstractions/spawn.ts";
 import {
   createTmux,
+  exactSessionTarget,
   type SendTarget,
   serializeSendTarget,
   type TmuxNamespace,
@@ -107,7 +108,6 @@ import { runSelfHealPass } from "../core/cursor-self-heal.ts";
 import { writeHeartbeat } from "../core/heartbeat.ts";
 import { loadInbox } from "../core/inbox.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
-import { resolveTmuxBin } from "../core/resolve-tmux-bin.ts";
 import { listTasks } from "../core/kanban.ts";
 import {
   ensureLeadSessionStart,
@@ -132,11 +132,6 @@ import {
   shouldFireDedup as shouldFireModalCyclingDedup,
 } from "../core/modal-cycling-state.ts";
 import { classifyText } from "../core/pane-state.ts";
-import {
-  paneStateToSignal,
-  runVelocityGateCheck,
-  type VelocityGateDeps,
-} from "../core/velocity-gate.ts";
 import { PASTE_SUBMIT_SETTLE_FLOOR_MS, submitAfterPaste } from "../core/paste-submit.ts";
 import {
   loadPermModeDriftState,
@@ -151,8 +146,14 @@ import {
   type QueuedResubmitFailureLogFn,
   type QueuedResubmitSendKeysFn,
 } from "../core/queued-text-resubmit.ts";
+import { resolveTmuxBin } from "../core/resolve-tmux-bin.ts";
 import { composerEmpty, safeSendKeysWithVerify } from "../core/safe-send.ts";
 import { checkStaleAnchor } from "../core/stale-anchor.ts";
+import {
+  paneStateToSignal,
+  runVelocityGateCheck,
+  type VelocityGateDeps,
+} from "../core/velocity-gate.ts";
 import {
   type BudgetCheckCtx,
   type BudgetCheckDeps,
@@ -180,6 +181,7 @@ import { ConfigError, LockTimeoutError, UsageError } from "../errors.ts";
 import {
   type NeedsApprovalEntry,
   type NeedsApprovalReport,
+  projectRootFromAtmuxDir,
   scanNeedsApproval,
 } from "../lib/needs-approval.ts";
 import { Team, type TeamMember } from "../schema/team.ts";
@@ -1085,7 +1087,7 @@ async function runTick(parsed: PokeArgs, ctx: TickCtx): Promise<number> {
 
   // ---------- Check 1: session liveness with 2-tick gate ----------
   const prevState = await readSessionState(atmuxDir);
-  const sessionUp = await ctx.tmux.session.hasSession(session);
+  const sessionUp = await ctx.tmux.session.hasSession(exactSessionTarget(session));
   const { verdict, next } = classifySessionState(
     prevState,
     sessionUp,
@@ -1272,7 +1274,16 @@ async function runTick(parsed: PokeArgs, ctx: TickCtx): Promise<number> {
  *   `atmux status --json | jq .needsApproval` for the full list.
  */
 async function runNeedsApprovalCheck(ctx: TickCtx): Promise<void> {
-  const report = await scanNeedsApproval();
+  // Scoped to THIS team's root, explicitly. Left to its own default the
+  // scan walks up from `process.cwd()` — which for a cron-driven tick is
+  // wherever the crontab line happened to land, not the team being
+  // whipped — and the Discord ping that follows is stamped with
+  // `ctx.team.name`. That is a paperwork backlog attributed by name to a
+  // team that does not own it. `ctx.atmuxDir` is already the right answer
+  // and was sitting one line below.
+  const report = await scanNeedsApproval({
+    projectRoot: projectRootFromAtmuxDir(ctx.atmuxDir),
+  });
   // Append regardless of total — zero-state is observable. JSONL write
   // failures degrade silently; observability surfaces are best-effort.
   await safeAppendLeadEvent(

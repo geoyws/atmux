@@ -73,6 +73,8 @@ function makeFakeHttp(...script: ScriptedResponse[]): {
       statusText: "",
       headers: new Headers(next.headers ?? {}),
       body,
+      // Mirror http.ts, which reads bytes once and decodes `body` from them.
+      bytes: new TextEncoder().encode(body),
       durationMs: 1,
     } satisfies HttpResponse;
   };

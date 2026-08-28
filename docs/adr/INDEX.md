@@ -1,6 +1,6 @@
 # ADR Index
 
-> Generated 2026-05-24, refreshed 2026-06-05 (MYT) — extended through ADR-256 + backfilled 222/223. Refreshed again 2026-08-06 — extended through ADR-269: backfilled the five missing rows 262–266 (the index stopped at 261) and added the 2026-08-06 operator-ask batch (267 continuity / 268 managed-repo state isolation / 269 recursive branch ledger). Refreshed again 2026-08-14 — extended through ADR-272: added 272 (voice operator interface) and backfilled the missing 271 row (ADR-271 §D9 item 7 deferred its own index edit to avoid a concurrent clobber). Refreshed again 2026-08-15 — extended through ADR-273 (voice fleet triage + pane input). **ADR-270 is a deliberate gap in the sequence — no such ADR exists and none is missing.** Live ADRs only; superseded ADRs at the bottom for trace.
+> Generated 2026-05-24, refreshed 2026-06-05 (MYT) — extended through ADR-256 + backfilled 222/223. Refreshed again 2026-08-06 — extended through ADR-269: backfilled the five missing rows 262–266 (the index stopped at 261) and added the 2026-08-06 operator-ask batch (267 continuity / 268 managed-repo state isolation / 269 recursive branch ledger). Refreshed again 2026-08-14 — extended through ADR-272: added 272 (voice operator interface) and backfilled the missing 271 row (ADR-271 §D9 item 7 deferred its own index edit to avoid a concurrent clobber). Refreshed again 2026-08-15 — extended through ADR-273 (voice fleet triage + pane input). Refreshed again 2026-08-16 — extended through ADR-274 (`atmux voice` → `atmux vox`); ADR-272's row keeps ADR-272's own title, which ADR-274 §D1 deliberately does not rename. Refreshed again 2026-08-18 — extended through ADR-277 (cage colour-environment scrub) and backfilled the missing 276 row (the index stopped at 275). **ADR-270 is a deliberate gap in the sequence — no such ADR exists and none is missing.** Live ADRs only; superseded ADRs at the bottom for trace.
 
 ## Live ADRs
 
@@ -238,8 +238,15 @@
 | 268 | Managed-repo state isolation — enforce the dotfile-tree invariant in code, not in operator memory | 2026-08-06 | proposed |
 | 269 | Recursive branch ledger — per-repo branch state across a monorepo's nested submodules | 2026-08-06 | proposed |
 | 271 | SQLite is the sole coordination store (retire `kanban.json`); Rust `atmux-orchd` coordinates by default | 2026-08-07 | proposed |
-| 272 | `atmux voice` — spoken operator interface (mobile PWA + provider-neutral realtime seam + verb-only tool bridge) | 2026-08-14 | proposed |
+| 272 | `atmux voice` — spoken operator interface (mobile PWA + provider-neutral realtime seam + verb-only tool bridge) — renamed `atmux vox` by ADR-274 | 2026-08-14 | proposed |
 | 273 | Voice fleet triage + pane input ("what needs me?" + "type that") — extends ADR-272 | 2026-08-15 | proposed |
+| 274 | The voice operator interface is named `atmux vox` — rename + two deprecation shims (`atmux voice`, `ATMUX_VOICE_*`), sunset v0.9.1 | 2026-08-16 | proposed |
+| 275 | External private Kanban is the sole work-state authority | 2026-08-16 | accepted (operator-direct) |
+| 276 | orchd is retired; atmux's scope narrows to tmux cages and `atmux vox` | 2026-08-16 | proposed |
+| 277 | Cages scrub `NO_COLOR` from their tmux server environment | 2026-08-18 | accepted (operator-direct) |
+| 278 | Nullable driver harness defaults; null starts zsh | 2026-08-24 | accepted (operator-direct) |
+| 279 | Declarative operator cockpit windows and literal session names | 2026-08-24 | accepted (operator-direct) |
+| 280 | Epic-teams are retired — the concept, the `epic-team` cage type, and `epicId` on cockpit sessions | 2026-08-27 | accepted (operator-direct) |
 
 ## Superseded (skip)
 
@@ -256,4 +263,3 @@ Retained for historical trace only. Skip unless investigating supersession histo
 - [206](206-sentinel-dynamic-epic-discovery.SUPERSEDED.md) — Sentinel dynamic epic-team discovery — drop the cockpit.json registration requirement — superseded by ADR-211
 - [207](207-opus-sentinel-supersedes-cursor-sentinel-adr-132.SUPERSEDED.md) — Opus-sentinel supersedes cursor-sentinel — rolls back ADR-132 §D1 cursor backend per ADR-201 rejection — superseded by ADR-211
 - [236](236-three-tier-orchd-supervision.SUPERSEDED.md) — Three-tier orchd supervision (D1 internal retry + D2 cockpit superorchd + D3 Discord escalation) — superseded by ADR-240 (D2/D3 dropped, D1+D5 preserved)
-

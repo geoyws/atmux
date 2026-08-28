@@ -329,8 +329,13 @@ export function selectLongstandingIssues(
  * by ADR-257). Burndown-first: when `longstanding` is non-empty the
  * directive names those oldest open Tasks to resolve FIRST (in order);
  * an empty backlog falls back to net-new improvement candidates. Either
- * way the work MUST happen in an isolated improvement epic-team worktree
- * and reach trunk only via the verified committer (ADR-257 §D3).
+ * way the work MUST happen in an isolated improvement worktree and reach
+ * trunk only via the verified committer (ADR-257 §D3).
+ *
+ * ADR-280 stage 3: the isolation clause used to name `atmux team
+ * spawn-epic`, a verb that no longer exists. It now names `git worktree`
+ * directly — the ISOLATION contract is what ADR-257 §D3 requires; the
+ * epic-team was only ever one way of getting it.
  */
 export function buildArmMessage(
   cycleN: number,
@@ -339,11 +344,11 @@ export function buildArmMessage(
   const head = `🌱 eternal-improvement cycle ${cycleN} requested (ADR-257 burndown-first).`;
   // Standing isolation contract — same every cycle (ADR-257 §D3).
   const worktree =
-    ` Do ALL cycle work in an isolated improvement epic-team worktree ` +
-    `(\`atmux team spawn-epic\` — reuse the live improvement epic if present; ` +
-    `large items get NESTED worktrees branched from the epic base). Commit to ` +
-    `the epic branch; the ADR-134/091 committer fans it into trunk LATER, only ` +
-    `when verified green — never land unverified work on trunk.`;
+    ` Do ALL cycle work in an isolated improvement worktree ` +
+    `(\`git worktree add\` off the improvement branch — reuse the live one if ` +
+    `present; large items get NESTED worktrees branched from that base). Commit ` +
+    `to the improvement branch; the ADR-134 committer fans it into trunk LATER, ` +
+    `only when verified green — never land unverified work on trunk.`;
   if (longstanding.length > 0) {
     const ids = longstanding.map((i) => i.id).join(", ");
     return (

@@ -22,11 +22,11 @@ import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { defaultCrontabIO } from "../abstractions/crontab.ts";
 import { ensureDir, exists } from "../abstractions/fs.ts";
-import { closeDatabase, type Database, openDatabase } from "../abstractions/sqlite.ts";
-import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { createTmux } from "../abstractions/tmux.ts";
 import { defaultGitSpawn, type GitSpawn } from "../abstractions/worktree.ts";
 import { loadCockpit, resolveCockpitConfigPath } from "../core/cockpit.ts";
+import { loadKanban } from "../core/kanban.ts";
+import { externalKanbanEnabled } from "../core/kanban-backend.ts";
 import { makeReapZombieWorktree, type ReapDeps, type ReapLogEntry } from "../core/reap.ts";
 import type {
   BranchOnParent,
@@ -185,67 +185,40 @@ export function defaultDiscoveryIO(): DiscoveryIO {
 
 async function probeKanban(atmuxDir: string, parent: boolean): Promise<KanbanProbe | null> {
   const dbPath = join(atmuxDir, "state.db");
-  if (!(await exists(dbPath))) return null;
-  let db: Database | null = null;
+  if (!(await externalKanbanEnabled(atmuxDir)) && !(await exists(dbPath))) return null;
   try {
-    db = openDatabase(dbPath, migrations);
-    const openRow = db
-      .query<{ n: number }, []>("SELECT COUNT(*) AS n FROM tasks WHERE status != 'done'")
-      .get();
-    const doneRow = db
-      .query<{ n: number }, []>("SELECT COUNT(*) AS n FROM tasks WHERE status = 'done'")
-      .get();
-    const maxRow = db
-      .query<{ max_updated: number | null }, []>("SELECT MAX(updated_at) AS max_updated FROM tasks")
-      .get();
-    const lastIso =
-      maxRow?.max_updated === null || maxRow?.max_updated === undefined
-        ? null
-        : new Date(maxRow.max_updated * 1000).toISOString();
+    const kanban = await loadKanban(atmuxDir);
+    const activity = kanban.tasks.flatMap((task) =>
+      [task.createdAt, task.claimedAt, task.completedAt].filter(
+        (value): value is number => typeof value === "number",
+      ),
+    );
+    const lastIso = activity.length ? new Date(Math.max(...activity) * 1000).toISOString() : null;
     const out: KanbanProbe = {
-      tasks_open: openRow?.n ?? 0,
-      tasks_done: doneRow?.n ?? 0,
+      tasks_open: kanban.tasks.filter((task) => task.status !== "done").length,
+      tasks_done: kanban.tasks.filter((task) => task.status === "done").length,
       last_activity: lastIso,
     };
     if (parent) {
-      const epicRows = db.query<{ id: string }, []>("SELECT id FROM epics").all();
-      out.epics = epicRows.length;
-      out.epic_ids = epicRows.map((r) => r.id);
+      out.epics = kanban.epics.length;
+      out.epic_ids = kanban.epics.map((epic) => epic.id);
     }
     return out;
   } catch {
     return null;
-  } finally {
-    if (db !== null) {
-      try {
-        closeDatabase(db);
-      } catch {
-        // best-effort
-      }
-    }
   }
 }
 
 async function probeKanbanEpicRows(atmuxDir: string): Promise<KanbanEpicRow[] | null> {
   const dbPath = join(atmuxDir, "state.db");
-  if (!(await exists(dbPath))) return null;
-  let db: Database | null = null;
+  if (!(await externalKanbanEnabled(atmuxDir)) && !(await exists(dbPath))) return null;
   try {
-    db = openDatabase(dbPath, migrations);
-    const rows = db
-      .query<{ id: string; status: string | null }, []>("SELECT id, status FROM epics")
-      .all();
-    return rows.map((r) => ({ eid: r.id, status: r.status ?? "" }));
+    return (await loadKanban(atmuxDir)).epics.map((epic) => ({
+      eid: epic.id,
+      status: epic.status ?? "",
+    }));
   } catch {
     return null;
-  } finally {
-    if (db !== null) {
-      try {
-        closeDatabase(db);
-      } catch {
-        // best-effort
-      }
-    }
   }
 }
 

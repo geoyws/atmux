@@ -1,6 +1,0 @@
-{
-  "_comment": "ADR-221 §Worker scope (v1) — solo-worker roster: ONE member, no committer. For small, self-contained tasks that don't need parallel work or a separate committer (e.g. single-commit ADR amendment, one-file fix, doc sweep). Spawn via `atmux team spawn-epic <eid> --from <parent> --roster solo`. Worker is expected to: claim its task, do the work, commit, push, mark task done, then operator dissolves with `atmux team dissolve-epic <eid>` (auto-dissolve lands in v2). For load-bearing changes that warrant a separate committer review pass, use the `solo+committer` preset instead.",
-  "members": [
-    { "name": "solo", "role": "member", "lane": "misc", "tui": "claude" }
-  ]
-}

@@ -107,6 +107,15 @@ Automation:
   report                      Post 30-min progress digest to Discord
   improve [--budget <spec>] [--status] [--dry-run]  Arm eternal-improvement loop (ADR-052)
   cost [--member <m>] [--since <t>] [--json]  Per-member USD + token usage
+  host-pressure [--host <h>] [--timeout-ms <n>] [--json]
+                              CPU / memory / disk headroom for every host
+                              (hax local, hig over ssh). An unreachable host
+                              reports UNREACHABLE and exits nonzero — never
+                              healthy. ADR-273 Supplement-6.
+  token-budget [--provider <p>] [--cache-only] [--timeout-ms <n>] [--json]
+                              Provider quota headroom (codex/claude/zai/kimi).
+                              Percent CONSUMED, exact reset times, cached rows
+                              labelled with their age. ADR-273 Supplement-6.
   rotate <member>             /clear the member and re-brief
   rotate-lead                 /clear the lead and re-bootstrap
   handoff <from> <to>         Move in-flight work from one member to another
@@ -114,45 +123,15 @@ Automation:
   resume <member>             Unpause
 
 Maintenance:
+  migrate-kanban prepare --as <actor> [--team-dir <root>] [--receipt-root <path>] [--json]
+                              Snapshot legacy state, import it read-only into
+                              private Kanban, verify integrity, and write
+                              rollback receipts. Does not activate or delete.
   add-member <name> --role <r> --tui <t> [--model <m>] [--cwd <d>] [--command <c>]
   member rename <id> --label <new>          Hot-rename display label (ADR-136)
   member move <id> --to <position>          Relocate member's tmux window (ADR-161 §C)
   member swap <id-a> <id-b>                 Pairwise window swap (ADR-161 §C)
   member sort [--defaults-first]            Canonical reorder (ADR-161 §C)
-  team spawn-epic <epicId> --from <parent> [--roster <preset>|--roster-file <p>]
-                              ADR-090: spawn an ephemeral epic-team child of
-                              <parent>. Worktree at <parentRoot>-epics/<epicId>
-                              on branch <parentBase>-epic-<epicId>; cockpit
-                              entry appended under the parent. Requires
-                              ATMUX_CALLER_SCOPE=driver.
-  team dissolve-epic <epicId> [--skip-checks] [--force-prune]
-                              ADR-090: tear down an epic-team spawned via
-                              spawn-epic. Soft-stop + prune worktree + remove
-                              cockpit entry + mark parent kanban EPIC done.
-                              --skip-checks bypasses the all-tasks-done +
-                              clean-worktree gates (lead-override).
-  team sweep-epics [--apply] [--idle-hours N] [--parent <team>] [--json]
-                              ADR-170: enumerate every enabled epic-team and
-                              classify each (DRAIN/SAFE-DISSOLVE/STALE-IDLE/
-                              RISKY/MISSING). Read-only by default; --apply
-                              dissolves only SAFE-DISSOLVE candidates (0 open
-                              tasks + clean worktree + branch pushed to
-                              origin) via the ADR-090 dissolve-epic pipeline.
-  team spawn-worker <task-id> --from <parent> [--roster <preset>] [--parent-base <b>]
-                              ADR-221 §v2: thin wrapper around spawn-epic for
-                              single-task worker-teams. Derives worker-id from
-                              task-id (\`t-x\` / \`x\` / \`w-x\` → \`w-x\`), auto-
-                              creates a wrapper kanban EPIC in the parent, and
-                              defaults --roster=solo. Driver-scope only.
-  team dissolve-worker <worker-id-or-task-id> [--skip-checks] [--force-prune]
-                              ADR-221 §v2: dissolve-epic counterpart for
-                              worker-teams. Refuses generic \`e-\` epic ids;
-                              normalises \`t-\` / bare / \`w-\` forms to \`w-<tail>\`
-                              before delegating. Driver-scope only.
-  team list-workers [--parent <team>] [--json]
-                              ADR-221 §v2: enumerate enabled worker-teams in
-                              the cockpit (epic-teams with \`w-\` prefix). Read-
-                              only — for housekeeping use \`sweep-epics\`.
   reconfigure                 Re-run wizard against an existing team.json
   dashboard [--interval <s>]  Live full-screen status panel
   doctor [--fix] [--json]     Check deps, team.json, TUI PATH, webhook reachability
@@ -172,30 +151,33 @@ Maintenance:
                               digest; heartbeat = hourly state-of-team.
                               Read-only on kanban/git/decisions.
 
-Voice (ADR-272):
-  voice [--serve] [--port <n>] [--provider <p>] [--model <m>] [--readonly]
-        [--max-frames <n>] [--print-assets-dir]
+Vox (ADR-272):
+  vox [--serve] [--port <n>] [--provider <p>] [--model <m>] [--readonly]
+      [--max-frames <n>] [--print-assets-dir]
                               Spoken operator interface. --serve binds the
                               WebSocket + PWA server on
-                              ATMUX_VOICE_HOST:ATMUX_VOICE_PORT (default
-                              127.0.0.1:4390). Every voice tool is an atmux
+                              ATMUX_VOX_HOST:ATMUX_VOX_PORT (default
+                              127.0.0.1:4390). Every vox tool is an atmux
                               verb invocation and the server runs as the
                               driver (ADR-272 D2/D3). Refuses to start
-                              without ATMUX_VOICE_TOKEN (>=32 chars) and the
+                              without ATMUX_VOX_TOKEN (>=32 chars) and the
                               provider's API key.
-  voice --supervise           Idempotent detached tmux session \`atmux-voice\`
+  vox --supervise             Idempotent detached tmux session \`atmux-vox\`
                               on the DEFAULT socket, running --serve under a
                               crash-loop wrapper (5s backoff, breaker at 5
                               restarts in 60s). ADR-272 D10.
-                              env ATMUX_VOICE_BIN=<path> overrides which atmux
+                              env ATMUX_VOX_BIN=<path> overrides which atmux
                               binary the wrapper re-execs (precedence:
                               per-call > env > the atmux on PATH; empty value
                               falls through). Set it when supervising from a
                               repo checkout — the installed /opt/atmux/<v> may
-                              predate the voice verb and crash-loop on
-                              "unknown verb: voice". ADR-273 Supplement S5.
-  voice --status              Session up? /healthz reachable? provider + mode.
-  voice --stop                Graceful: SIGINT the server, then kill-session.
+                              predate the vox verb and crash-loop on
+                              "unknown verb: vox". ADR-273 Supplement S5.
+  vox --status                Session up? /healthz reachable? provider + mode.
+  vox --stop                  Graceful: SIGINT the server, then kill-session.
+  voice ...                   DEPRECATED alias for \`vox\` (ADR-274). Same
+                              flags and exit codes, plus a stderr notice.
+                              Removed in v0.9.1.
 
 Misc:
   version
@@ -205,9 +187,12 @@ Environment:
   ATMUX_DISCORD_WEBHOOK   Discord webhook URL for whip/report escalations
   ATMUX_DIR               Override state dir (default: ./.atmux)
   ATMUX_TEAM              Override team name (otherwise read from team.json)
-  ATMUX_VOICE_TOKEN       Required by \`voice\` — shared secret, >=32 chars
-  ATMUX_VOICE_ORIGINS     Required by \`voice\` — comma-separated Origin allowlist
-                          (the CSRF defense; see docs/RUNBOOK-voice.md §3)
+  ATMUX_VOX_TOKEN         Required by \`vox\` — shared secret, >=32 chars
+  ATMUX_VOX_ORIGINS       Required by \`vox\` — comma-separated Origin allowlist
+                          (the CSRF defense; see docs/RUNBOOK-vox.md §3)
+                          ATMUX_VOICE_* is still read as a deprecated
+                          fallback when the ATMUX_VOX_* name is unset
+                          (ADR-274; removed in v0.9.1)
 
 Docs:  https://github.com/geoyws/atmux
 `;

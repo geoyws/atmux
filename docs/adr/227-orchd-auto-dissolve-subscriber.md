@@ -3,6 +3,8 @@
 **Status**: accepted
 **Date**: 2026-05-23
 **Driver-ref**: parent atmux kanban Epic `e-a946af69` ("orchd lifecycle Phase 3-5") + driver-inbox 08:27 MYT 2026-05-23 (lead relay)
+
+> ⚠ **SUPERSEDED 2026-08-27 by [ADR-276](276-orchd-retirement-and-atmux-scope.md)** (dispatch already stubbed by [ADR-280](280-epic-team-retirement-and-staged-excision.md) stage 3). The auto-dissolve subscriber is deleted — auto-dissolve of teams and cage reaping are retired with orchd. Kept as history; do not implement from it.
 **Parent EPIC (this team)**: `e-a946af69` (orchd Phase 3-5)
 **Hard gates**: [ADR-226](226-orchd-auto-merge-subscriber.md) (Phase 3 emits `epic.merged`) + [ADR-090](090-epic-team-lifecycle.md) (`dissolve-epic` verb + ADR-090 §pre-flight gates).
 **Closes**: [ADR-221](221-solo-worker-scope.md) §v2 auto-dissolve (worker fold-in).

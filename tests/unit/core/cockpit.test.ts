@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   ATMUX_NESTING_LEVEL_ENV,
+  buildGroupTopology,
   cageSessionName,
   cageSocketPath,
   callerScopeAllowed,
@@ -14,6 +15,7 @@ import {
   defaultCockpitConfigPath,
   enabledTeams,
   findTeamByName,
+  groupSocketPath,
   loadCockpit,
   MAX_NESTING_LEVEL,
   migrateLegacyShape,
@@ -24,6 +26,7 @@ import {
   resolveCageSocket,
   resolveCockpitConfigPath,
   resolvePrefix,
+  resolveTopLevelGroup,
   validatePrefixChain,
   walkSessions,
 } from "../../../src/core/cockpit.ts";
@@ -76,6 +79,30 @@ describe("resolveCockpitConfigPath", () => {
       "/other/.atmux/cockpit.json",
     );
   });
+  test("a-e0199c53 regression: opts.home outranks env.ATMUX_COCKPIT_CONFIG", () => {
+    // Every atmux cage exports ATMUX_COCKPIT_CONFIG, so when the env var
+    // resolved BEFORE opts.home, the documented test-injection point
+    // silently lost to ambient env and tests read the operator's real
+    // 20-session cockpit (found 2026-08-27 when a deleted test file
+    // changed which tests saw it). Programmatic injection must win.
+    expect(
+      resolveCockpitConfigPath({
+        env: { ATMUX_COCKPIT_CONFIG: "/operators/real/cockpit.json", HOME: "/h" },
+        home: "/injected",
+      }),
+    ).toBe("/injected/.atmux/cockpit.json");
+  });
+  test("a-e0199c53 regression: loadCockpit with injected home ignores env.ATMUX_COCKPIT_CONFIG", async () => {
+    await writeCockpit({ teams: [{ name: "inj", root: "/inj", enabled: true }] });
+    const cockpit = await loadCockpit({
+      home: homeDir,
+      env: { ATMUX_COCKPIT_CONFIG: "/nonexistent/operator-cockpit.json", HOME: "/h" },
+      warn: () => {},
+    });
+    // Had env won, this load would have thrown ConfigError (no file at
+    // the env path); instead the injected home's roster is read.
+    expect(cockpit.teams.map((t) => t.name)).toEqual(["inj"]);
+  });
   test("throws ConfigError when neither home nor explicit path is set", () => {
     expect(() => resolveCockpitConfigPath({ env: {} })).toThrow(ConfigError);
   });
@@ -104,7 +131,7 @@ describe("loadCockpit", () => {
     expect(cockpit.cockpitSession).toBe("atx");
   });
 
-  test("ADR-264 §D3 — coerces legacy cockpitSession 'atmux_teams' literal → 'atx' with deprecation warning", async () => {
+  test("ADR-279 — preserves explicit cockpitSession 'atmux_teams' literally", async () => {
     await writeCockpit({
       cockpitSession: "atmux_teams",
       teams: [{ name: "x", root: "/x", enabled: true }],
@@ -114,16 +141,11 @@ describe("loadCockpit", () => {
       home: homeDir,
       warn: (m) => warnings.push(m),
     });
-    // Coerced to canonical at parse time.
-    expect(cockpit.cockpitSession).toBe("atx");
-    // Deprecation warning fired.
-    const warned = warnings.some(
-      (m) => m.includes("cockpitSession literal 'atmux_teams'") && m.includes("ADR-264"),
-    );
-    expect(warned).toBe(true);
+    expect(cockpit.cockpitSession).toBe("atmux_teams");
+    expect(warnings.some((m) => m.includes("ADR-264"))).toBe(false);
   });
 
-  test("ADR-264 §D3 — coerces legacy cockpitSession 'atmux_cockpit' literal → 'atx' with deprecation warning", async () => {
+  test("ADR-279 — preserves explicit cockpitSession 'atmux_cockpit' literally", async () => {
     await writeCockpit({
       cockpitSession: "atmux_cockpit",
       teams: [{ name: "x", root: "/x", enabled: true }],
@@ -133,16 +155,11 @@ describe("loadCockpit", () => {
       home: homeDir,
       warn: (m) => warnings.push(m),
     });
-    // Coerced to canonical at parse time.
-    expect(cockpit.cockpitSession).toBe("atx");
-    // Deprecation warning fired.
-    const warned = warnings.some(
-      (m) => m.includes("cockpitSession literal 'atmux_cockpit'") && m.includes("ADR-264"),
-    );
-    expect(warned).toBe(true);
+    expect(cockpit.cockpitSession).toBe("atmux_cockpit");
+    expect(warnings.some((m) => m.includes("ADR-264"))).toBe(false);
   });
 
-  test("ADR-264 §D3 — operator-chosen arbitrary cockpitSession passes through unchanged (only legacy literals trigger shim)", async () => {
+  test("ADR-279 — operator-chosen arbitrary cockpitSession passes through unchanged", async () => {
     await writeCockpit({
       cockpitSession: "geoyws_cockpit",
       teams: [{ name: "x", root: "/x", enabled: true }],
@@ -156,6 +173,38 @@ describe("loadCockpit", () => {
     // No ADR-264 deprecation warning for arbitrary names.
     const adr264Warned = warnings.some((m) => m.includes("ADR-264"));
     expect(adr264Warned).toBe(false);
+  });
+
+  test("ADR-279 — loads operator windows and defaults null command to declarative null", async () => {
+    await writeCockpit({
+      sessions: [{ type: "team", name: "x", root: "/x" }],
+      windows: [{ name: "_misc", cwd: "/root/work", command: null }],
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
+    expect(cockpit.windows).toEqual([
+      { name: "_misc", enabled: true, cwd: "/root/work", command: null },
+    ]);
+  });
+
+  test("ADR-279 — rejects operator-window collisions with role and team names", async () => {
+    await writeCockpit({
+      sessions: [{ type: "team", name: "x", root: "/x" }],
+      windows: [{ name: "x", cwd: "/root/work" }],
+    });
+    await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(ConfigError);
+
+    await writeCockpit({ windows: [{ name: "_medic", cwd: "/root/work" }] });
+    await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(ConfigError);
+
+    // e-419553c6: GROUP names occupy the cockpit window namespace too —
+    // a top-level group gets a cockpit viewer window embedding its server.
+    await writeCockpit({
+      sessions: [
+        { type: "group", name: "geoyws", sessions: [{ type: "team", name: "t", root: "/t" }] },
+      ],
+      windows: [{ name: "geoyws", cwd: "/root/work" }],
+    });
+    await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(ConfigError);
   });
 
   test("applies team.enabled default (true) when omitted", async () => {
@@ -336,16 +385,15 @@ describe("resolveCageSessionName (anchor-aware)", () => {
     expect(await resolveCageSessionName({ name: "unum", root: tmpDir })).toBe("atmux_unum");
   });
 
-  test("falls back to atmux-<name> (hyphen) when anchor absent", async () => {
+  test("falls back to the bare <name> when anchor absent (e-419553c6)", async () => {
     // No state/session.txt — must match getSessionName fallback from
     // common.ts, which start.ts uses to actually create the session.
-    expect(await resolveCageSessionName({ name: "ifca-docs", root: tmpDir })).toBe(
-      "atmux-ifca-docs",
-    );
-    expect(await resolveCageSessionName({ name: "rentx", root: tmpDir })).toBe("atmux-rentx");
+    // e-419553c6 dropped the `atmux-` prefix: the session IS the team.
+    expect(await resolveCageSessionName({ name: "ifca-docs", root: tmpDir })).toBe("ifca-docs");
+    expect(await resolveCageSessionName({ name: "rentx", root: tmpDir })).toBe("rentx");
   });
 
-  test("special-cases the 'atmux' team to bare 'atmux' when no anchor", async () => {
+  test("the 'atmux' team needs no special case any more — bare is universal", async () => {
     expect(await resolveCageSessionName({ name: "atmux", root: tmpDir })).toBe("atmux");
   });
 
@@ -355,10 +403,18 @@ describe("resolveCageSessionName (anchor-aware)", () => {
     expect(await resolveCageSessionName({ name: "x", root: tmpDir })).toBe("atmux_custom");
   });
 
+  test("legacy prefixed forms stay reachable via an explicit anchor", async () => {
+    await mkdir(join(tmpDir, ".atmux/state"), { recursive: true });
+    await writeFile(join(tmpDir, ".atmux/state/session.txt"), "atmux-legacy-pin\n");
+    expect(await resolveCageSessionName({ name: "legacy-pin", root: tmpDir })).toBe(
+      "atmux-legacy-pin",
+    );
+  });
+
   test("treats empty-string anchor as absent (falls back)", async () => {
     await mkdir(join(tmpDir, ".atmux/state"), { recursive: true });
     await writeFile(join(tmpDir, ".atmux/state/session.txt"), "   \n");
-    expect(await resolveCageSessionName({ name: "demo", root: tmpDir })).toBe("atmux-demo");
+    expect(await resolveCageSessionName({ name: "demo", root: tmpDir })).toBe("demo");
   });
 });
 
@@ -694,8 +750,16 @@ describe("walkSessions — depth-first traversal", () => {
       { name: "L1b", level: 1 },
     ]);
   });
-  test("threads parentRoot to epic-team descendants", () => {
-    const seen: Array<{ name: string; parentRoot: string | undefined }> = [];
+  // ADR-280 stage 4: the nested node was an `epic-team`; that type is
+  // retired and a team nested under a team is now the general case
+  // (ADR-089 §Amendment 2026-08-27 §(A)). The threading property is
+  // unchanged.
+  test("threads parentRoot AND parentName to nested-team descendants", () => {
+    const seen: Array<{
+      name: string;
+      parentRoot: string | undefined;
+      parentName: string | undefined;
+    }> = [];
     const sessions: CockpitSessionT[] = [
       {
         type: "team",
@@ -704,21 +768,22 @@ describe("walkSessions — depth-first traversal", () => {
         enabled: true,
         sessions: [
           {
-            type: "epic-team",
+            type: "team",
             name: "sopx-deferred",
-            parent: "sopx",
-            epicId: "e-1",
+            root: "/p/sopx-deferred",
             enabled: true,
             sessions: [],
           },
         ],
       },
     ];
-    walkSessions(sessions, 0, (node, _level, parentRoot) => {
-      seen.push({ name: node.name, parentRoot });
+    walkSessions(sessions, 0, (node, _level, parentRoot, parentName) => {
+      seen.push({ name: node.name, parentRoot, parentName });
     });
     expect(seen[0]?.parentRoot).toBeUndefined(); // top-level team has no parent
-    expect(seen[1]?.parentRoot).toBe("/p/sopx"); // nested epic-team inherits
+    expect(seen[0]?.parentName).toBeUndefined();
+    expect(seen[1]?.parentRoot).toBe("/p/sopx"); // nested team sees ancestor root
+    expect(seen[1]?.parentName).toBe("sopx"); // …and ancestor name (stage-3 arg)
   });
 });
 
@@ -777,7 +842,14 @@ describe("enabledTeams — DFS flattener with level annotation", () => {
     const flat = enabledTeams(cockpit);
     expect(flat.map((t) => t.name)).toEqual(["on", "parent", "child-on"]);
   });
-  test("epic-team entries inherit parent's root in flattened output", async () => {
+  // ADR-280 stage 4: was "epic-team entries inherit parent's root". The
+  // `epic-team` row is gone along with the root-inheritance it needed
+  // (an epic-team had no root of its own); a nested `team` carries its
+  // OWN root. What the flattener must still do — and what stage 3
+  // rewired from an `epic-team`-only back-pointer to walk ancestry — is
+  // populate `parent` on the nested entry, because `callerScopeAllowed`
+  // (ADR-092 §D3) joins on it.
+  test("nested team entries flatten with their own root and an ancestry-derived parent", async () => {
     await writeCockpit({
       schemaVersion: 1,
       sessions: [
@@ -787,10 +859,9 @@ describe("enabledTeams — DFS flattener with level annotation", () => {
           root: "/p/sopx",
           sessions: [
             {
-              type: "epic-team",
+              type: "team",
               name: "sopx-deferred",
-              parent: "sopx",
-              epicId: "e-1",
+              root: "/p/sopx-deferred",
             },
           ],
         },
@@ -800,13 +871,13 @@ describe("enabledTeams — DFS flattener with level annotation", () => {
     const flat = enabledTeams(cockpit);
     expect(flat).toHaveLength(2);
     expect(flat[0]).toMatchObject({ type: "team", name: "sopx", root: "/p/sopx", level: 0 });
+    expect(flat[0]?.parent).toBeUndefined(); // top level ⇒ no parent
     expect(flat[1]).toMatchObject({
-      type: "epic-team",
+      type: "team",
       name: "sopx-deferred",
-      root: "/p/sopx", // inherited from parent
+      root: "/p/sopx-deferred", // its OWN root, not the parent's
       level: 1,
-      parent: "sopx",
-      epicId: "e-1",
+      parent: "sopx", // derived from the walk, not declared on the node
     });
   });
   test("legacy flat teams[] roster flattens with all at level 0", async () => {
@@ -823,6 +894,535 @@ describe("enabledTeams — DFS flattener with level annotation", () => {
     const flat = enabledTeams(cockpit);
     expect(flat.map((t) => t.name)).toEqual(["a", "c"]);
     expect(flat.every((t) => t.level === 0)).toBe(true);
+  });
+});
+
+// ---------- e-419553c6: group tier (non-cage organisational container) ----------
+
+describe('type: "group" — schema', () => {
+  test("accepts a group with team children, at top level and nested in a team", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [
+        {
+          type: "group",
+          name: "ifca",
+          sessions: [
+            { type: "team", name: "mx", root: "/p/mx" },
+            { type: "team", name: "px", root: "/p/px" },
+          ],
+        },
+        {
+          type: "team",
+          name: "host",
+          root: "/p/host",
+          sessions: [
+            { type: "group", name: "inner", sessions: [{ type: "team", name: "deep", root: "/p/deep" }] },
+          ],
+        },
+      ],
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
+    expect(enabledTeams(cockpit).map((t) => t.name)).toEqual(["mx", "px", "host", "deep"]);
+  });
+
+  test("enabled defaults to true; sessions defaults to []", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [{ type: "group", name: "empty-group" }],
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
+    const g = (cockpit.sessions ?? [])[0];
+    expect(g).toMatchObject({ type: "group", name: "empty-group", enabled: true, sessions: [] });
+  });
+
+  test(".strict() rejects unknown keys on a group", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [{ type: "group", name: "g", typo: "nope" }],
+    });
+    await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(SchemaError);
+  });
+
+  test("rejects cage-facing fields a group has no consumer for (root, claudeAccount)", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [{ type: "group", name: "g", root: "/p/g" }],
+    });
+    await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(SchemaError);
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [{ type: "group", name: "g", claudeAccount: { configDir: "/c" } }],
+    });
+    await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(SchemaError);
+  });
+});
+
+describe('type: "group" — walkSessions', () => {
+  const tree: CockpitSessionT[] = [
+    {
+      type: "group",
+      name: "geoyws",
+      enabled: true,
+      sessions: [
+        { type: "team", name: "unum", root: "/p/unum", enabled: true, sessions: [] },
+        {
+          type: "team",
+          name: "kanban",
+          root: "/p/kanban",
+          enabled: true,
+          sessions: [
+            { type: "team", name: "nested", root: "/p/nested", enabled: true, sessions: [] },
+          ],
+        },
+      ],
+    },
+    { type: "team", name: "solo", root: "/p/solo", enabled: true, sessions: [] },
+  ];
+
+  test("recurses through groups in DFS order, keeping a group's children contiguous", () => {
+    const seen: string[] = [];
+    walkSessions(tree, 0, (node) => {
+      seen.push(node.name);
+    });
+    expect(seen).toEqual(["geoyws", "unum", "kanban", "nested", "solo"]);
+  });
+
+  test("groups DO increment level — every group backs a real server that consumes a rung (2026-08-28)", () => {
+    const seen: Array<{ name: string; level: number }> = [];
+    walkSessions(tree, 0, (node, level) => {
+      seen.push({ name: node.name, level });
+    });
+    expect(seen).toEqual([
+      { name: "geoyws", level: 0 }, // top-level group server ⇒ F2 via level+2
+      { name: "unum", level: 1 }, // one GROUP ancestor ⇒ one rung down (F3)
+      { name: "kanban", level: 1 },
+      { name: "nested", level: 2 }, // group + team ancestors ⇒ F4
+      { name: "solo", level: 0 }, // ungrouped top-level team stays F2
+    ]);
+  });
+
+  test("threads the nearest ancestor group name; teams pass it through", () => {
+    const seen: Array<{ name: string; parentGroup: string | undefined }> = [];
+    walkSessions(tree, 0, (node, _level, _parentRoot, _parentName, parentGroup) => {
+      seen.push({ name: node.name, parentGroup });
+    });
+    expect(seen).toEqual([
+      { name: "geoyws", parentGroup: undefined },
+      { name: "unum", parentGroup: "geoyws" },
+      { name: "kanban", parentGroup: "geoyws" },
+      { name: "nested", parentGroup: "geoyws" }, // survives the intermediate team
+      { name: "solo", parentGroup: undefined },
+    ]);
+  });
+
+  test("a deeper group overrides the ancestor group (nearest wins)", () => {
+    const nestedGroups: CockpitSessionT[] = [
+      {
+        type: "group",
+        name: "outer",
+        enabled: true,
+        sessions: [
+          {
+            type: "group",
+            name: "inner",
+            enabled: true,
+            sessions: [{ type: "team", name: "t", root: "/t", enabled: true, sessions: [] }],
+          },
+        ],
+      },
+    ];
+    let got: string | undefined;
+    walkSessions(nestedGroups, 0, (node, _l, _r, _n, parentGroup) => {
+      if (node.name === "t") got = parentGroup;
+    });
+    expect(got).toBe("inner");
+  });
+
+  test("groups are transparent to team ancestry (parentRoot / parentName pass through)", () => {
+    const mixed: CockpitSessionT[] = [
+      {
+        type: "team",
+        name: "host",
+        root: "/p/host",
+        enabled: true,
+        sessions: [
+          {
+            type: "group",
+            name: "g",
+            enabled: true,
+            sessions: [{ type: "team", name: "child", root: "/p/child", enabled: true, sessions: [] }],
+          },
+        ],
+      },
+    ];
+    let seen: { parentRoot?: string; parentName?: string } = {};
+    walkSessions(mixed, 0, (node, _l, parentRoot, parentName) => {
+      if (node.name === "child") seen = { ...(parentRoot !== undefined ? { parentRoot } : {}), ...(parentName !== undefined ? { parentName } : {}) };
+    });
+    // The nearest TEAM ancestor is `host`, not the group between them.
+    expect(seen).toEqual({ parentRoot: "/p/host", parentName: "host" });
+  });
+
+  test("a disabled group prunes its whole subtree from the walk", () => {
+    const pruned: CockpitSessionT[] = [
+      {
+        type: "group",
+        name: "off",
+        enabled: false,
+        sessions: [{ type: "team", name: "hidden", root: "/p/hidden", enabled: true, sessions: [] }],
+      },
+      { type: "team", name: "visible", root: "/p/visible", enabled: true, sessions: [] },
+    ];
+    const seen: string[] = [];
+    walkSessions(pruned, 0, (node) => {
+      seen.push(node.name);
+    });
+    // The group node itself is visited (like a disabled team); its
+    // children are not.
+    expect(seen).toEqual(["off", "visible"]);
+  });
+});
+
+describe('type: "group" — enabledTeams', () => {
+  test("never emits a group as a team; threads group onto entries", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [
+        {
+          type: "group",
+          name: "ifca",
+          sessions: [
+            { type: "team", name: "mx", root: "/p/mx" },
+            { type: "team", name: "px", root: "/p/px" },
+          ],
+        },
+        { type: "team", name: "solo", root: "/p/solo" },
+      ],
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
+    const flat = enabledTeams(cockpit);
+    expect(flat.map((t) => t.name)).toEqual(["mx", "px", "solo"]);
+    expect(flat.every((t) => t.type === "team")).toBe(true);
+    expect(flat[0]?.group).toBe("ifca");
+    expect(flat[1]?.group).toBe("ifca");
+    expect(flat[2]?.group).toBeUndefined();
+  });
+
+  test("children of a disabled group are skipped entirely, even when themselves enabled", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [
+        {
+          type: "group",
+          name: "parked",
+          enabled: false,
+          sessions: [{ type: "team", name: "inside", root: "/p/inside", enabled: true }],
+        },
+        { type: "team", name: "outside", root: "/p/outside" },
+      ],
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
+    expect(enabledTeams(cockpit).map((t) => t.name)).toEqual(["outside"]);
+  });
+
+  test("prefix arithmetic: the group consumes the F2 rung; teams under it shift down (2026-08-28)", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [
+        {
+          type: "group",
+          name: "grp",
+          sessions: [
+            {
+              type: "team",
+              name: "proj",
+              root: "/p/proj",
+              sessions: [{ type: "team", name: "sub", root: "/p/sub" }],
+            },
+          ],
+        },
+        { type: "team", name: "solo", root: "/p/solo" },
+      ],
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
+    const flat = enabledTeams(cockpit);
+    const proj = flat.find((t) => t.name === "proj");
+    const sub = flat.find((t) => t.name === "sub");
+    const solo = flat.find((t) => t.name === "solo");
+    // True containment (ADR-089 2026-08-28 group-tier note): the group
+    // backs a real server at F2, so its teams shift one rung down —
+    // the same arithmetic verbs/cockpit.ts Phase 3 applies (level + 2).
+    expect(resolvePrefix((proj?.level ?? -1) + 2)).toBe("F3");
+    expect(resolvePrefix((sub?.level ?? -1) + 2)).toBe("F4");
+    // An ungrouped top-level team keeps F2.
+    expect(resolvePrefix((solo?.level ?? -1) + 2)).toBe("F2");
+  });
+
+  test("legacy back-compat teams[] synthesis also sees through groups", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [
+        {
+          type: "group",
+          name: "g",
+          sessions: [{ type: "team", name: "inner", root: "/p/inner" }],
+        },
+      ],
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
+    // enrichLegacyFields walks the same tree: the synthesized legacy
+    // roster contains the group's teams, never the group.
+    expect(cockpit.teams.map((t) => t.name)).toEqual(["inner"]);
+  });
+});
+
+describe('type: "group" — findTeamByName', () => {
+  test("resolves a team inside a group, with group threading + team-ancestry transparency", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [
+        {
+          type: "team",
+          name: "host",
+          root: "/p/host",
+          sessions: [
+            {
+              type: "group",
+              name: "g",
+              sessions: [{ type: "team", name: "child", root: "/p/child" }],
+            },
+          ],
+        },
+      ],
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
+    const hit = findTeamByName(cockpit, "child");
+    expect(hit).toMatchObject({ type: "team", name: "child", root: "/p/child" });
+    expect(hit?.parent).toBe("host"); // nearest TEAM ancestor — the group is transparent
+    expect(hit?.group).toBe("g");
+    expect(findTeamByName(cockpit, "g")).toBeNull(); // a group is not a team
+  });
+});
+
+// ---------- e-419553c6: group servers (true containment, 2026-08-28) ----------
+
+describe("groupSocketPath — collision-freedom", () => {
+  test("carries the -grp- infix", () => {
+    expect(groupSocketPath("geoyws")).toBe("/tmp/atmux-grp-geoyws/sock");
+  });
+
+  test("a group and a team sharing a name never share a socket", () => {
+    // The live fleet has both a `unum` group and a `unum` team — the
+    // -grp- infix keeps their servers apart.
+    expect(groupSocketPath("unum")).not.toBe(cageSocketPath("unum"));
+    for (const n of ["a", "grp", "atmux", "x-y"]) {
+      expect(groupSocketPath(n)).not.toBe(cageSocketPath(n));
+    }
+  });
+});
+
+describe("buildGroupTopology", () => {
+  const shape = (sessions: unknown[]): CockpitShape =>
+    ({ schemaVersion: 1, cockpitSession: "atx", sessions, windows: [] }) as unknown as CockpitShape;
+
+  test("derives group servers + cockpit entries from a mixed tree, DFS order", () => {
+    const topo = buildGroupTopology(
+      shape([
+        {
+          type: "group",
+          name: "geoyws",
+          enabled: true,
+          sessions: [
+            { type: "team", name: "unum", root: "/p/unum", enabled: true, sessions: [] },
+            {
+              type: "team",
+              name: "kanban",
+              root: "/p/kanban",
+              enabled: true,
+              sessions: [
+                { type: "team", name: "nested", root: "/p/nested", enabled: true, sessions: [] },
+              ],
+            },
+          ],
+        },
+        { type: "team", name: "solo", root: "/p/solo", enabled: true, sessions: [] },
+      ]),
+    );
+    expect(topo.groups.map((g) => g.name)).toEqual(["geoyws"]);
+    const g = topo.groups[0];
+    expect(g?.level).toBe(0);
+    expect(g?.parentGroup).toBeUndefined();
+    // Nearest-group teams in DFS order — the team nested under `kanban`
+    // (nearest group still geoyws) gets its own viewer window too,
+    // mirroring the cockpit session's pre-group behaviour.
+    expect(
+      g?.children.map((c) => (c.kind === "team" ? `t:${c.team.name}` : `g:${c.name}`)),
+    ).toEqual(["t:unum", "t:kanban", "t:nested"]);
+    // Cockpit session: the top-level group + the ungrouped team only.
+    expect(
+      topo.cockpitEntries.map((e) => (e.kind === "group" ? `g:${e.group.name}` : `t:${e.team.name}`)),
+    ).toEqual(["g:geoyws", "t:solo"]);
+  });
+
+  test("nested groups chain: child group is a window in the parent's server; teams attribute to the NEAREST group", () => {
+    const topo = buildGroupTopology(
+      shape([
+        {
+          type: "group",
+          name: "outer",
+          enabled: true,
+          sessions: [
+            { type: "team", name: "a", root: "/p/a", enabled: true, sessions: [] },
+            {
+              type: "group",
+              name: "inner",
+              enabled: true,
+              sessions: [{ type: "team", name: "b", root: "/p/b", enabled: true, sessions: [] }],
+            },
+          ],
+        },
+      ]),
+    );
+    expect(topo.groups.map((g) => `${g.name}@${g.level}`)).toEqual(["outer@0", "inner@1"]);
+    expect(topo.groups[1]?.parentGroup).toBe("outer");
+    const outer = topo.groups[0];
+    expect(
+      outer?.children.map((c) => (c.kind === "team" ? `t:${c.team.name}` : `g:${c.name}`)),
+    ).toEqual(["t:a", "g:inner"]);
+    const inner = topo.groups[1];
+    expect(inner?.children.map((c) => (c.kind === "team" ? c.team.name : c.name))).toEqual(["b"]);
+    // Only the top-level group reaches the cockpit.
+    expect(topo.cockpitEntries.map((e) => (e.kind === "group" ? e.group.name : ""))).toEqual([
+      "outer",
+    ]);
+  });
+
+  test("a disabled group contributes no server and prunes its subtree; disabled teams are skipped", () => {
+    const topo = buildGroupTopology(
+      shape([
+        {
+          type: "group",
+          name: "parked",
+          enabled: false,
+          sessions: [{ type: "team", name: "inside", root: "/p/in", enabled: true, sessions: [] }],
+        },
+        {
+          type: "group",
+          name: "live",
+          enabled: true,
+          sessions: [
+            { type: "team", name: "on", root: "/p/on", enabled: true, sessions: [] },
+            { type: "team", name: "off", root: "/p/off", enabled: false, sessions: [] },
+          ],
+        },
+      ]),
+    );
+    expect(topo.groups.map((g) => g.name)).toEqual(["live"]);
+    expect(topo.groups[0]?.children.map((c) => (c.kind === "team" ? c.team.name : c.name))).toEqual(
+      ["on"],
+    );
+  });
+
+  test("a group hosted only under a TEAM (no group ancestor) embeds in the cockpit", () => {
+    const topo = buildGroupTopology(
+      shape([
+        {
+          type: "team",
+          name: "host",
+          root: "/p/host",
+          enabled: true,
+          sessions: [
+            {
+              type: "group",
+              name: "g",
+              enabled: true,
+              sessions: [{ type: "team", name: "child", root: "/p/child", enabled: true, sessions: [] }],
+            },
+          ],
+        },
+      ]),
+    );
+    expect(topo.cockpitEntries.map((e) => (e.kind === "group" ? `g:${e.group.name}` : `t:${e.team.name}`))).toEqual([
+      "t:host",
+      "g:g",
+    ]);
+  });
+
+  test("refuses duplicate enabled group names (shared socket + session)", () => {
+    expect(() =>
+      buildGroupTopology(
+        shape([
+          { type: "group", name: "x", enabled: true, sessions: [] },
+          { type: "group", name: "x", enabled: true, sessions: [] },
+        ]),
+      ),
+    ).toThrow(ConfigError);
+  });
+
+  test("refuses a viewer-name collision within one namespace; allows the same name across namespaces", () => {
+    // Collision: top-level group `unum` next to an UNGROUPED team `unum`
+    // — both would claim the cockpit window named `unum`.
+    expect(() =>
+      buildGroupTopology(
+        shape([
+          {
+            type: "group",
+            name: "unum",
+            enabled: true,
+            sessions: [{ type: "team", name: "inner", root: "/p/i", enabled: true, sessions: [] }],
+          },
+          { type: "team", name: "unum", root: "/p/unum", enabled: true, sessions: [] },
+        ]),
+      ),
+    ).toThrow(ConfigError);
+    // No collision: the `unum` TEAM lives INSIDE the `unum` GROUP —
+    // different namespaces (group server vs cockpit).
+    const topo = buildGroupTopology(
+      shape([
+        {
+          type: "group",
+          name: "unum",
+          enabled: true,
+          sessions: [{ type: "team", name: "unum", root: "/p/unum", enabled: true, sessions: [] }],
+        },
+      ]),
+    );
+    expect(topo.groups[0]?.children.map((c) => (c.kind === "team" ? c.team.name : c.name))).toEqual(
+      ["unum"],
+    );
+  });
+});
+
+describe("resolveTopLevelGroup", () => {
+  const topo = buildGroupTopology({
+    schemaVersion: 1,
+    cockpitSession: "atx",
+    windows: [],
+    sessions: [
+      {
+        type: "group",
+        name: "outer",
+        enabled: true,
+        sessions: [
+          {
+            type: "group",
+            name: "inner",
+            enabled: true,
+            sessions: [{ type: "team", name: "t", root: "/t", enabled: true, sessions: [] }],
+          },
+        ],
+      },
+    ],
+  } as unknown as CockpitShape);
+
+  test("walks the parentGroup chain to the cockpit-level group", () => {
+    expect(resolveTopLevelGroup(topo, "inner")).toBe("outer");
+    expect(resolveTopLevelGroup(topo, "outer")).toBe("outer");
+  });
+
+  test("unknown name → null", () => {
+    expect(resolveTopLevelGroup(topo, "nope")).toBeNull();
   });
 });
 
@@ -1018,9 +1618,16 @@ describe("loadCockpit — prefixChain validation (§Decision-anchor #4)", () => 
 
 // ---------- ADR-092: findTeamByName + callerScopeAllowed ----------
 
-/** Helper — synthesize a minimal CockpitShape with a depth-3 fixture
- *  (`alpha` team with epic-team `alpha-epic-1` child; `beta` team
- *  standalone; `omega` epic-team under `beta`). Used by ADR-092 tests. */
+/** Helper — synthesize a minimal CockpitShape with a two-level fixture
+ *  (`alpha` team with nested child `alpha-child-1`; `beta` team with
+ *  nested child `beta-omega`). Used by ADR-092 tests.
+ *
+ *  ADR-280 stage 4: the children were `epic-team` nodes carrying a
+ *  declared `parent`. That type is retired; they are now ordinary nested
+ *  `team` nodes and `parent` is derived by the walk. The fixture is
+ *  deliberately still a real `CockpitShape` (no `as never` on the nodes)
+ *  so a future schema narrowing breaks the build here rather than
+ *  silently passing on a cast. */
 function buildFixtureCockpit(): CockpitShape {
   return {
     schemaVersion: 1,
@@ -1032,11 +1639,10 @@ function buildFixtureCockpit(): CockpitShape {
         root: "/teams/alpha",
         sessions: [
           {
-            type: "epic-team",
-            name: "alpha-epic-1",
+            type: "team",
+            name: "alpha-child-1",
             enabled: true,
-            parent: "alpha",
-            epicId: "e-alpha-1",
+            root: "/teams/alpha/children/1",
             sessions: [],
           },
         ],
@@ -1048,11 +1654,10 @@ function buildFixtureCockpit(): CockpitShape {
         root: "/teams/beta",
         sessions: [
           {
-            type: "epic-team",
+            type: "team",
             name: "beta-omega",
             enabled: true,
-            parent: "beta",
-            epicId: "e-beta-omega",
+            root: "/teams/beta/children/omega",
             sessions: [],
           },
         ],
@@ -1071,10 +1676,10 @@ describe("findTeamByName (ADR-092 §D2)", () => {
     expect(found?.parent).toBeUndefined();
   });
 
-  test("matches type=epic-team nested with parent root inherited", () => {
-    const found = findTeamByName(buildFixtureCockpit(), "alpha-epic-1");
-    expect(found?.type).toBe("epic-team");
-    expect(found?.root).toBe("/teams/alpha");
+  test("matches a NESTED team, reporting its own root and its ancestry-derived parent", () => {
+    const found = findTeamByName(buildFixtureCockpit(), "alpha-child-1");
+    expect(found?.type).toBe("team");
+    expect(found?.root).toBe("/teams/alpha/children/1");
     expect(found?.parent).toBe("alpha");
     expect(found?.level).toBe(1);
   });
@@ -1084,24 +1689,23 @@ describe("findTeamByName (ADR-092 §D2)", () => {
   });
 
   test("walks depth-3 fixture deterministically (first match wins)", () => {
-    // Add a sibling-named epic under beta with same name as alpha's
-    // child to verify FIRST match by DFS order wins (Decision-anchor
-    // #2 — name collision is operator error; lookup is deterministic).
+    // Add a child under beta with the same name as alpha's child to
+    // verify FIRST match by DFS order wins (Decision-anchor #2 — name
+    // collision is operator error; lookup is deterministic).
     const cockpit = buildFixtureCockpit();
     (cockpit.sessions[1] as { sessions: CockpitSessionT[] }).sessions.push({
-      type: "epic-team",
-      name: "alpha-epic-1",
+      type: "team",
+      name: "alpha-child-1",
       enabled: true,
-      parent: "beta",
-      epicId: "e-clash",
+      root: "/teams/beta/children/clash",
       sessions: [],
-    } as never);
-    const found = findTeamByName(cockpit, "alpha-epic-1");
+    });
+    const found = findTeamByName(cockpit, "alpha-child-1");
     // First match is under alpha (DFS visits alpha branch before beta).
     expect(found?.parent).toBe("alpha");
   });
 
-  test("skips superdriver / medic leaves (only team / epic-team)", () => {
+  test("skips superdriver / medic leaves (only type=team qualifies)", () => {
     const cockpit: CockpitShape = {
       schemaVersion: 1,
       sessions: [
@@ -1110,8 +1714,9 @@ describe("findTeamByName (ADR-092 §D2)", () => {
       ],
       teams: [],
     } as unknown as CockpitShape;
-    // The medic literally named "alpha" is NOT matched — only
-    // team / epic-team types qualify.
+    // The medic literally named "alpha" is NOT matched — only the
+    // `team` type qualifies (the union lost `epic-team` in ADR-280
+    // stage 3, so `team` is now the sole team-bearing member).
     expect(findTeamByName(cockpit, "alpha")).toBeNull();
   });
 });
@@ -1120,7 +1725,7 @@ describe("callerScopeAllowed (ADR-092 §D3)", () => {
   test("driver scope is master override", () => {
     const cockpit = buildFixtureCockpit();
     expect(callerScopeAllowed(cockpit, "alpha", "beta", "driver")).toBe(true);
-    expect(callerScopeAllowed(cockpit, "alpha-epic-1", "beta-omega", "driver")).toBe(true);
+    expect(callerScopeAllowed(cockpit, "alpha-child-1", "beta-omega", "driver")).toBe(true);
   });
 
   test("same-team is trivially allowed", () => {
@@ -1128,35 +1733,37 @@ describe("callerScopeAllowed (ADR-092 §D3)", () => {
     expect(callerScopeAllowed(cockpit, "alpha", "alpha", undefined)).toBe(true);
   });
 
-  test("child epic-team → parent team allowed", () => {
+  // ADR-280 stage 3 WIDENED both of these: the gate used to reach a
+  // parent only through the `epic-team` node's own back-pointer, so it
+  // covered epic-teams alone. It now covers any nested team.
+  test("child team → parent team allowed", () => {
     const cockpit = buildFixtureCockpit();
-    expect(callerScopeAllowed(cockpit, "alpha-epic-1", "alpha", undefined)).toBe(true);
+    expect(callerScopeAllowed(cockpit, "alpha-child-1", "alpha", undefined)).toBe(true);
   });
 
-  test("parent team → child epic-team allowed", () => {
+  test("parent team → child team allowed", () => {
     const cockpit = buildFixtureCockpit();
-    expect(callerScopeAllowed(cockpit, "alpha", "alpha-epic-1", undefined)).toBe(true);
+    expect(callerScopeAllowed(cockpit, "alpha", "alpha-child-1", undefined)).toBe(true);
   });
 
   test("siblings under different parents refused", () => {
     const cockpit = buildFixtureCockpit();
-    expect(callerScopeAllowed(cockpit, "alpha-epic-1", "beta-omega", undefined)).toBe(false);
+    expect(callerScopeAllowed(cockpit, "alpha-child-1", "beta-omega", undefined)).toBe(false);
   });
 
   test("siblings under SAME parent refused — must route via parent", () => {
     const cockpit = buildFixtureCockpit();
-    // Add a sibling epic under alpha so we have two epic-teams sharing
+    // Add a second child under alpha so we have two nested teams sharing
     // parent=alpha. Per ADR-092 §D3 reviewer pre-flag: siblings must
     // route through the parent.
     (cockpit.sessions[0] as { sessions: CockpitSessionT[] }).sessions.push({
-      type: "epic-team",
-      name: "alpha-epic-2",
+      type: "team",
+      name: "alpha-child-2",
       enabled: true,
-      parent: "alpha",
-      epicId: "e-alpha-2",
+      root: "/teams/alpha/children/2",
       sessions: [],
-    } as never);
-    expect(callerScopeAllowed(cockpit, "alpha-epic-1", "alpha-epic-2", undefined)).toBe(false);
+    });
+    expect(callerScopeAllowed(cockpit, "alpha-child-1", "alpha-child-2", undefined)).toBe(false);
   });
 
   test("unrelated standalone teams refused", () => {

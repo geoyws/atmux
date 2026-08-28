@@ -1,11 +1,12 @@
 // Unit tests for src/schema/cockpit.ts — ADR-089 recursive sessions[]
 // schema (replaces ADR-063 flat teams[]).
 // Covers:
-//   - discriminatedUnion across team / epic-team / superdriver / medic
+//   - discriminatedUnion across team / superdriver / medic, and the
+//     LOUD rejection of the retired `epic-team` discriminator
 //   - .strict() leaf rejection of unknown keys
 //   - .strict() rejection of unknown `type` discriminator values
 //   - recursive nesting via z.lazy
-//   - schemaVersion default + cockpitSession default + prefixChain pass-through
+//   - schemaVersion, cockpitSession, and operator-window defaults + prefixChain pass-through
 //   - legacy back-compat field (`teams`) accepted as optional
 //     so the loader's enrichment pass round-trips it
 //
@@ -17,7 +18,7 @@ import {
   Cockpit,
   CockpitMedic,
   CockpitSession,
-  EpicTeamSession,
+  CockpitWindow,
   SuperdriverSession,
   TeamSession,
 } from "../../../src/schema/cockpit.ts";
@@ -62,53 +63,55 @@ describe("TeamSession — leaf shape", () => {
   });
 });
 
-describe("EpicTeamSession — leaf shape", () => {
-  test("parses a minimal epic-team entry with parent + epicId", () => {
-    const e = EpicTeamSession.parse({
-      type: "epic-team",
-      name: "sopx-deferred",
-      parent: "sopx",
-      epicId: "e-1",
-    });
-    expect(e.type).toBe("epic-team");
-    expect(e.parent).toBe("sopx");
-    expect(e.epicId).toBe("e-1");
-    expect(e.sessions).toEqual([]);
-  });
-  test("rejects missing parent", () => {
-    expect(() => EpicTeamSession.parse({ type: "epic-team", name: "x", epicId: "e-1" })).toThrow();
-  });
-  test("rejects missing epicId", () => {
-    expect(() => EpicTeamSession.parse({ type: "epic-team", name: "x", parent: "p" })).toThrow();
-  });
-  test("rejects unknown leaf keys (.strict)", () => {
+// ADR-280 stage 3 removed the `EpicTeamSession` leaf and its `epicId` /
+// `parent` fields from the union. The leaf-shape suite that stood here
+// is gone with the schema it described; what replaces it is the
+// EXPIRED-CONTRACT guard (ADR-266 §D2, restated in ADR-280 §Consequences):
+// a config still carrying `type: "epic-team"` must fail to parse LOUD,
+// never degrade to an ignored entry. `CockpitSession` is a
+// discriminatedUnion of `.strict()` leaves, so this is what enforces it —
+// and it is the single most load-bearing assertion of the retirement,
+// because the alternative (silent aliasing) is what ADR-266 forbids.
+
+describe("epic-team — retired discriminator fails loud (ADR-280 / ADR-266 §D2)", () => {
+  test("a bare epic-team entry is REJECTED by the union", () => {
     expect(() =>
-      EpicTeamSession.parse({
+      CockpitSession.parse({ type: "epic-team", name: "sopx-deferred", parent: "sopx", epicId: "e-1" }),
+    ).toThrow();
+  });
+
+  test("a full epic-team entry — every field the old leaf accepted — is still rejected", () => {
+    expect(() =>
+      CockpitSession.parse({
         type: "epic-team",
         name: "x",
         parent: "p",
         epicId: "e-1",
-        typo: "fail",
+        enabled: true,
+        cageMode: "paused",
+        sessions: [],
       }),
     ).toThrow();
   });
-  // t-72a6b7d7: epic-team carries the same cageMode taxonomy as standalone team.
-  test("t-72a6b7d7: epic-team accepts cageMode literal + rejects unknown", () => {
-    const e = EpicTeamSession.parse({
-      type: "epic-team",
-      name: "x",
-      parent: "p",
-      epicId: "e-1",
-      cageMode: "paused",
-    });
-    expect(e.cageMode).toBe("paused");
+
+  test("`epicId` / `parent` are no longer accepted on a type=team entry either (.strict)", () => {
+    // The fields left with the leaf; a team entry that inherits them
+    // from a hand-edited config must fail rather than silently drop them.
     expect(() =>
-      EpicTeamSession.parse({
-        type: "epic-team",
-        name: "x",
-        parent: "p",
-        epicId: "e-1",
-        cageMode: "nope",
+      TeamSession.parse({ type: "team", name: "x", root: "/p", epicId: "e-1" }),
+    ).toThrow();
+    expect(() =>
+      TeamSession.parse({ type: "team", name: "x", root: "/p", parent: "sopx" }),
+    ).toThrow();
+  });
+
+  test("a NESTED epic-team is rejected too — the union is enforced at every depth", () => {
+    expect(() =>
+      TeamSession.parse({
+        type: "team",
+        name: "sopx",
+        root: "/p/sopx",
+        sessions: [{ type: "epic-team", name: "sopx-deferred", parent: "sopx", epicId: "e-1" }],
       }),
     ).toThrow();
   });
@@ -134,14 +137,10 @@ describe("CockpitSession discriminated union", () => {
     const s = CockpitSession.parse({ type: "team", name: "x", root: "/p" });
     expect(s.type).toBe("team");
   });
-  test("dispatches to EpicTeamSession on type=epic-team", () => {
-    const s = CockpitSession.parse({
-      type: "epic-team",
-      name: "x",
-      parent: "p",
-      epicId: "e-1",
-    });
-    expect(s.type).toBe("epic-team");
+  test("rejects retired type=epic-team (ADR-280 stage 3 narrowed the union)", () => {
+    expect(() =>
+      CockpitSession.parse({ type: "epic-team", name: "x", parent: "p", epicId: "e-1" }),
+    ).toThrow();
   });
   test("dispatches to SuperdriverSession on type=superdriver", () => {
     const s = CockpitSession.parse({ type: "superdriver", name: "x" });
@@ -176,26 +175,24 @@ describe("CockpitSession — recursive nesting", () => {
     if (inner === undefined || inner.type !== "team") throw new Error("expected team");
     expect(inner.name).toBe("inner-a");
   });
-  test("team carries nested epic-team child", () => {
+  // ADR-280 stage 4: was "team carries nested epic-team child". Nesting
+  // survives the retirement — only the child TYPE changed — so the case
+  // is kept against a nested `team`, which is now the general shape
+  // (ADR-089 §Amendment 2026-08-27 §(A)).
+  test("team carries a nested team child that keeps its own root", () => {
     const parsed = TeamSession.parse({
       type: "team",
       name: "sopx",
       root: "/p/sopx",
-      sessions: [
-        {
-          type: "epic-team",
-          name: "sopx-deferred",
-          parent: "sopx",
-          epicId: "e-1",
-        },
-      ],
+      sessions: [{ type: "team", name: "sopx-deferred", root: "/p/sopx-deferred" }],
     });
     expect(parsed.sessions).toHaveLength(1);
     const child = parsed.sessions[0];
-    if (child === undefined || child.type !== "epic-team") {
-      throw new Error("expected epic-team child");
+    if (child === undefined || child.type !== "team") {
+      throw new Error("expected team child");
     }
-    expect(child.parent).toBe("sopx");
+    expect(child.name).toBe("sopx-deferred");
+    expect(child.root).toBe("/p/sopx-deferred");
   });
   test("deep recursive nesting (3 levels) parses cleanly", () => {
     const parsed = TeamSession.parse({
@@ -224,13 +221,15 @@ describe("CockpitSession — recursive nesting", () => {
     if (l2 === undefined || l2.type !== "team") throw new Error("expected L2 team");
     expect(l2.name).toBe("L2");
   });
-  test("epic-team also carries nested children", () => {
-    const parsed = EpicTeamSession.parse({
-      type: "epic-team",
-      name: "outer-epic",
-      parent: "p",
-      epicId: "e-1",
-      sessions: [{ type: "medic", name: "epic-medic" }],
+  // ADR-280 stage 4: was "epic-team also carries nested children". The
+  // property — a nesting-capable node accepts a NON-team leaf as a child
+  // — belongs to `team` now that it is the only such node.
+  test("team also carries a non-team nested child (medic leaf)", () => {
+    const parsed = TeamSession.parse({
+      type: "team",
+      name: "outer",
+      root: "/p/outer",
+      sessions: [{ type: "medic", name: "outer-medic" }],
     });
     expect(parsed.sessions).toHaveLength(1);
     expect(parsed.sessions[0]?.type).toBe("medic");
@@ -243,12 +242,26 @@ describe("Cockpit — top-level shape + defaults", () => {
   test("empty object parses to schema defaults", () => {
     const c = Cockpit.parse({});
     expect(c.schemaVersion).toBe(1);
-    // ADR-264 §D1: default cockpitSession is `atx` (was `atmux_cockpit`
-    // per ADR-135, `atmux_teams` pre-ADR-135). Both legacy literals are
-    // coerced at load time via the migrateCockpitSessionLegacyLiteral
-    // shim; the schema default itself has flipped to the canonical form.
+    // ADR-264 §D1: default cockpitSession is `atx`; ADR-279 keeps an
+    // explicitly persisted literal authoritative.
     expect(c.cockpitSession).toBe("atx");
     expect(c.sessions).toEqual([]);
+    expect(c.windows).toEqual([]);
+  });
+
+  test("ADR-279: operator window accepts null or omitted command and defaults enabled", () => {
+    expect(CockpitWindow.parse({ name: "_misc", cwd: "/root/work", command: null })).toEqual({
+      name: "_misc",
+      enabled: true,
+      cwd: "/root/work",
+      command: null,
+    });
+    expect(CockpitWindow.parse({ name: "scratch", cwd: "/tmp" })).toEqual({
+      name: "scratch",
+      enabled: true,
+      cwd: "/tmp",
+    });
+    expect(() => CockpitWindow.parse({ name: "scratch", cwd: "", command: "zsh" })).toThrow();
   });
   test("parses a typical recursive cockpit", () => {
     const c = Cockpit.parse({
@@ -261,14 +274,7 @@ describe("Cockpit — top-level shape + defaults", () => {
           type: "team",
           name: "sopx",
           root: "/p/sopx",
-          sessions: [
-            {
-              type: "epic-team",
-              name: "sopx-deferred",
-              parent: "sopx",
-              epicId: "e-1",
-            },
-          ],
+          sessions: [{ type: "team", name: "sopx-deferred", root: "/p/sopx-deferred" }],
         },
       ],
     });

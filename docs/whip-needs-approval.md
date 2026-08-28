@@ -40,16 +40,18 @@ The whip scanner treats `(deferred: …)` as "not actually waiting on approval �
 
 ## Surfaces
 
-### 1. `atmux status` — new `NEEDS APPROVAL` row
+### 1. `atmux status` — the approval row
 
 The `atmux status` text output gains a row:
 
 ```text
-📋 kanban  📌 todo=N  🟡 in-progress=N  ✅ done=N  🛑 blocked=N
-📝 NEEDS APPROVAL: 3 ADRs / 1 inbox / 0 kanban
+📋 kanban board: 📌 N tasks todo, 🟡 N tasks in-progress, ✅ N tasks done, 🛑 N tasks blocked
+📝 awaiting your approval: 3 proposed ADRs, 1 driver-inbox asks, 0 blocked kanban tasks
 ```
 
-When all three buckets are empty, the row collapses to `📝 NEEDS APPROVAL: ✅ clear` (positive-state grammar matching the driver-pane / medic / kanban rows). The row is always present — it doesn't skip on empty.
+When all three buckets are empty, the row collapses to `📝 awaiting your approval: ✅ nothing is waiting for sign-off` (positive-state grammar matching the driver-pane / medic / kanban rows). The row is always present — it doesn't skip on empty. When the board itself is empty the line above it collapses to `📋 kanban board: no tasks on it at all`.
+
+**Both lines are worded to survive being read ALOUD, and that is a functional requirement, not style.** `atmux status`'s text output is what the `team_status` voice tool hands to a language model. The earlier wording — `📋 kanban  📌 todo=0 …` immediately above `📝 NEEDS APPROVAL: ✅ clear` — was relayed to the operator as *"the kanban is clear and needs approval"*, fusing two true lines into one false claim; and the enumerated counts spent the words *in-progress* and *blocked*, which are also pane vocabulary, producing *"no tasks are in progress or blocked"* about a team that had a blocked pane. Each line now names its own subject in full and keeps the noun welded to every number. See [ADR-273](adr/273-voice-fleet-triage-and-pane-input.md) §Supplement-6 X3; the older grammar in [ADR-085](adr/085-whip-approvals-watcher.md) §Surfaces is superseded.
 
 ### 2. `atmux status --json` — `needsApproval` field
 

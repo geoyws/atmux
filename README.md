@@ -253,7 +253,7 @@ atmux team rename <old> <new> [--session <new-session>] [--migrate-session] [--f
 3. `tmux rename-window` for the cockpit team-viewer window matching the bare `<old>` name → `<new>` (per [ADR-135](docs/adr/135-cockpit-naming-convention.md) §window-naming: cockpit team-viewer carries the team name; per-member `<emoji>-<member>` + cockpit-role `_<role>` + epic-viewer `🌳-<eid>` windows do NOT carry team-name and are NOT touched). If `--session <new-session>` differs from the current session name, `tmux rename-session` runs too.
 4. Rewrite `state/session.txt` for single-session teams.
 5. **Cron re-install with NEW marker first, then remove the OLD marker.** Install-new-then-remove-old is the explicit ordering — avoids any window where the team has zero cron coverage (per ADR-027 OQ H3). Brief overlap of two markers is harmless; whip is flock-guarded so duplicate fires no-op.
-6. Cockpit registry update: DFS-walk `cockpit.json::sessions[]` (per [ADR-089](docs/adr/089-recursive-cockpit-sessions.md) §B) for the `type: "team"` node matching `<old>`; mutate `.name = <new>` in place. Legacy flat `teams[]` rosters auto-lift to the canonical `sessions[]` shape on first rename via `migrateLegacyShape`. Child epic-team nodes' `.name` fields are NOT touched — only the renamed team's own `.name` is mutated.
+6. Cockpit registry update: DFS-walk `cockpit.json::sessions[]` (per [ADR-089](docs/adr/089-hierarchical-cockpit.md) §B) for the `type: "team"` node matching `<old>`; mutate `.name = <new>` in place. Legacy flat `teams[]` rosters auto-lift to the canonical `sessions[]` shape on first rename via `migrateLegacyShape`. **Child nodes' `.name` fields are NOT touched** — only the renamed team's own `.name` is mutated. That holds for every kind of child cage, epic-team or otherwise; nesting is general (ADR-089 §Amendment 2026-08-27 §(A)).
 7. Clear `rename.lock`.
 8. Return success.
 
@@ -731,14 +731,20 @@ atmux topo [--tree] [--orphans] [--json]                  # read-only fleet mani
 atmux topo --reap [--apply] [--yes] [--class <name>]      # destructive — dry-run by default
            [--skip-checks] [--json]                       # see docs/RUNBOOK-topology.md
 
-🎙️ Voice operator interface (ADR-272 — see docs/RUNBOOK-voice.md)
-atmux voice [--serve] [--port <n>]           # WebSocket voice server (default 127.0.0.1:4390)
+🎙️ Vox operator interface (ADR-272 — see docs/RUNBOOK-vox.md)
+atmux vox [--serve] [--port <n>]           # WebSocket vox server (default 127.0.0.1:4390)
             [--provider <p>] [--model <m>]   #   provider: openai-realtime | gemini-live
             [--readonly]                     #   readonly: expose ONLY the 10 read tools
-atmux voice --supervise                      # idempotent detached `atmux-voice` tmux session
+atmux vox --supervise                      # idempotent detached `atmux-vox` tmux session
                                              #   (default socket) under a crash-loop wrapper
-atmux voice --status                         # session up? /healthz reachable? provider + mode
-atmux voice --stop                           # SIGINT the server, then kill-session
+atmux vox --status                         # session up? /healthz reachable? + the RUNNING SERVER's
+                                             #   provider / readonly / bridge, parsed from its
+                                             #   /healthz body — never this shell's own config
+atmux vox --stop                           # SIGINT the server, then kill-session
+atmux voice ...                            # DEPRECATED alias for `vox` (ADR-274) — identical
+                                             #   flags + exit codes, plus a stderr notice.
+                                             #   Removed in v0.9.1, as is the ATMUX_VOICE_*
+                                             #   env fallback below
 
 🚢 Release
 atmux release <patch|minor|major>            # one-shot deploy: bump package.json + commit
@@ -752,14 +758,33 @@ atmux release <patch|minor|major>            # one-shot deploy: bump package.jso
 
 | Verdict | Trigger | Display |
 |---|---|---|
-| `shipping` | ≥1 commit in window AND last commit `< shippingMaxAgeSec` (default 30 min) | `🟢 shipping (5min)` |
-| `idle` | 0 commits in window AND last commit `< idleMaxAgeSec` (default 2h) — could resume soon | `🟡 idle (1h2m)` |
-| `ship-zero-window` | 0 commits in window AND age `≥ shipZeroWindowSec` (default 2h) — escalation flag per ADR-132 §E6 | `🚨 ship-zero (3h)` |
-| `dormant` | 0 commits in window AND age `≥ dormantMaxAgeSec` (default 6h) | `🔴 dormant (15h)` |
+| `shipping` | ≥1 commit in window AND last commit `< shippingMaxAgeSec` (default 30 min) | `commits: 🟢 shipping (5min)` |
+| `idle` | 0 commits in window AND last commit `< idleMaxAgeSec` (default 2h) — could resume soon | `commits: 🟡 idle (1h2m)` |
+| `ship-zero-window` | 0 commits in window AND age `≥ shipZeroWindowSec` (default 2h) — escalation flag per ADR-132 §E6 | `commits: 🚨 ship-zero (3h)` |
+| `dormant` | 0 commits in window AND age `≥ dormantMaxAgeSec` (default 6h) | `commits: 🔴 dormant (15h)` |
 
-Per-member exemption (planners during long decomp passes, reviewers during multi-commit audit reviews) lands in `team.json::cadence.exemptMembers`; those rows render `(exempt)`.
+Per-member exemption (planners during long decomp passes, reviewers during multi-commit audit reviews) lands in `team.json::cadence.exemptMembers`; those rows render `commits: exempt`.
 
-Cadence is the truth signal — **pane-state is the proxy.** The companion `pane-state` column (formerly `state`) shows the cage-state taxonomy (`active`/`wedged`/`bootstrapping`/`down`); use it for "is the process running?" diagnostics, NOT for "is work happening?" verdicts.
+Every cell carries the **`commits:` subject prefix**, and the column header is `commit-cadence`. That is not decoration: `atmux status`'s text table is what the `team_status` voice tool sends to the model, and a model reading a row has no header in front of it — the vox drilldown transcript read this column's bare `idle` as a *pane* state and told the operator the team's panes were idle. Per [ADR-273](docs/adr/273-voice-fleet-triage-and-pane-input.md) §Supplement-6.
+
+A member whose worktree holds **no readable git repository** (missing path, not a repo, `git` unavailable) gets **no verdict at all** — the cell renders `commits: no signal`. That is distinct from a repo with no matching commits, which is a real `idle`. Per ADR-273 §Supplement-5 W4: the probe used to collapse "I could not look" into "no commits", and `atmux status` then printed `🟡 idle (never)` about work that was never observable.
+
+### The two state columns — `agent-state` leads, `process-state` follows
+
+A member row carries **two** states, and they answer different questions ([ADR-273](docs/adr/273-voice-fleet-triage-and-pane-input.md) §Supplement-6):
+
+| Column | Question | Vocabulary | Example cell |
+|---|---|---|---|
+| `agent-state` | What is the agent **doing**? | the fleet-triage classes `fleet_attention` speaks (`permission-prompt`, `idle-residue`, `working`, `frozen`, …) | `agent: 🛑 waiting on a permission prompt` |
+| `process-state` | Is the **process** there and has it produced output? | the cage-state taxonomy (`active` / `wedged` / `bootstrapping` / `down`) | `process: active?` |
+
+Both come from **one** `probeCageState` call over **one** pane capture, so the two can never contradict each other about the same pane — which they did: `team_status` reported three panes as `active` while `fleet_attention`, off the same socket, correctly called one of them blocked on a permission prompt. `active` is *true* of a pane stopped forever on a prompt, and read aloud it means "working fine".
+
+`agent-state` comes first because it is what the operator asked about. An `attention`-bucket verdict is followed by an indented **`↳ evidence for <member>:`** line carrying the marker that produced it — the same evidence `fleet_attention` shows, so the two tools justify a claim identically. A row with no reading at all (non-claude TUI, or a probe that threw) renders `agent: ❔ no reading`, never anything that could be heard as "fine".
+
+Cadence is the truth signal for *shipping* — **process-state is the proxy for the process.** Use `process-state` for "is it running?" diagnostics, `agent-state` for "is it stuck?", and `commit-cadence` for "is work landing?".
+
+A trailing **`?`** on the process-state cell (`process: active?`) means the state was read off the pane's **render** because no `claude` process could be identified in its tree — the pane is unmistakably an agent TUI, but nothing confirmed who is in it. A bare cell is a positive claim that `ps` named the occupant. `down` never carries the marker: it is reached only when the process probe and the render agree, which is a confident conclusion rather than a hedge. JSON exposes it as `members[].cageInferredFromRender` (key-presence). Per ADR-273 §Supplement-5 W5 — `team_status` is a voice tool, and one that cannot say "I could not tell" is one an operator stops trusting. The vox system prompt teaches the model to speak that `?` as unconfirmed, so the marker's rendered shape is load-bearing (pinned in `tests/unit/core/vox/instructions.test.ts`).
 
 Config under `team.json::cadence` — all fields optional, defaults applied per ADR-148 §D7:
 
@@ -782,6 +807,8 @@ Config under `team.json::cadence` — all fields optional, defaults applied per 
 ```
 
 JSON output (`atmux status --json`) gains `members[].cadence` with the full observation shape: `windowSec`, `commitsInWindow`, `lastCommitAt`, `lastCommitSha`, `ageOfLastCommitSec`, `verdict`.
+
+It also carries `members[].agentState` (key-presence — absent means no probe ran) with `bucket` (`attention` | `quiet`), `kind` (the classifier class), `reason` (the spoken clause, identical to `fleet_attention`'s), and `marker` (the evidence line, on `attention` rows only).
 
 ## 🌱 Eternal-improvement (ADR-052)
 
@@ -918,17 +945,18 @@ See [`plugins/atmux/README.md`](plugins/atmux/README.md) for the full per-skill 
 | `ATMUX_CURSOR_ARGS_EXTRA`            | _(empty)_                                    | Extra args appended after `--model`                   |
 | `ATMUX_KIMI_BIN`                     | `kimi`                                       | Kimi CLI binary                                     |
 | `ATMUX_TMUX_BIN`                     | `/opt/atmux/current/bin/tmux` → system `tmux` | Override the tmux binary every atmux call spawns (ADR-191). Vendored default lives next to `atmux`; falls back to system `tmux` on PATH (warn-once) when absent. Operators pinning a different tmux version (testing, local dev build, CI override) set this to win the resolution chain. |
-| `ATMUX_VOICE_TOKEN`                  | **(required)**                               | `atmux voice` shared secret, **≥32 chars** — the server refuses to start without one. Compared timing-safely *before* the WebSocket upgrade. Reaching that socket means acting as the driver, so treat it as a credential (ADR-272 §Security). |
-| `ATMUX_VOICE_ORIGINS`                | **(required)**                               | Comma-separated `Origin` allowlist — the CSRF defense, since browsers do not apply same-origin policy to WebSocket handshakes |
-| `ATMUX_VOICE_PROVIDER`               | `openai-realtime`                            | Realtime adapter: `openai-realtime` \| `gemini-live`. Resolved once at session construction — no hot-swap, no mid-session failover |
-| `ATMUX_VOICE_READONLY`               | (unset)                                      | `1`/`true` → expose ONLY the 10 read tools; the 4 messaging tools are absent from the catalog, not merely refused. **The posture the feature ships in** |
-| `ATMUX_VOICE_HOST` / `_PORT`         | `127.0.0.1` / `4390`                         | Bind address + port. Loopback by default so only nginx can reach it; binding `0.0.0.0` needs its own ADR |
-| `ATMUX_VOICE_MODEL`                  | per-provider default                         | Provider-model override (`gpt-realtime` for OpenAI) |
-| `ATMUX_VOICE_CONFIRM_TTL_MS`         | `120000`                                     | Lifetime of a single-use mutation-confirmation token (ADR-272 §D7) |
-| `ATMUX_VOICE_RESUME_GRACE_MS`        | `90000`                                      | How long a dropped phone's provider leg is parked before teardown (ADR-272 §D8) |
+| `ATMUX_VOX_TOKEN`                  | **(required)**                               | `atmux vox` shared secret, **≥32 chars** — the server refuses to start without one. Compared timing-safely *before* the WebSocket upgrade. Reaching that socket means acting as the driver, so treat it as a credential (ADR-272 §Security). |
+| `ATMUX_VOX_ORIGINS`                | **(required)**                               | Comma-separated `Origin` allowlist — the CSRF defense, since browsers do not apply same-origin policy to WebSocket handshakes |
+| `ATMUX_VOX_PROVIDER`               | `openai-realtime`                            | Realtime adapter: `openai-realtime` \| `gemini-live`. Resolved once at session construction — no hot-swap, no mid-session failover |
+| `ATMUX_VOX_READONLY`               | (unset)                                      | `1`/`true` → expose ONLY the 10 read tools; the 4 messaging tools are absent from the catalog, not merely refused. **The posture the feature ships in** |
+| `ATMUX_VOICE_*`                      | (unset)                                      | **DEPRECATED** ([ADR-274](docs/adr/274-atmux-vox-rename.md), `SUNSET(v0.9.1)`). Every `ATMUX_VOX_*` knob above is still read under its old `ATMUX_VOICE_*` name **as a fallback, only when the `ATMUX_VOX_*` equivalent is unset** — with a warning. When both are set `ATMUX_VOX_*` wins and the stale one is called out. An exported-but-empty value counts as unset, so it cannot shadow a real one |
+| `ATMUX_VOX_HOST` / `_PORT`         | `127.0.0.1` / `4390`                         | Bind address + port. Loopback by default so only nginx can reach it; binding `0.0.0.0` needs its own ADR |
+| `ATMUX_VOX_MODEL`                  | per-provider default                         | Provider-model override (`gpt-realtime` for OpenAI) |
+| `ATMUX_VOX_CONFIRM_TTL_MS`         | `120000`                                     | Lifetime of a single-use mutation-confirmation token (ADR-272 §D7) |
+| `ATMUX_VOX_RESUME_GRACE_MS`        | `90000`                                      | How long a dropped phone's provider leg is parked before teardown (ADR-272 §D8) |
 
-Full voice reference — env vars, nginx, start/stop, and the V-1…V-18 acceptance
-checklist — in [`docs/RUNBOOK-voice.md`](docs/RUNBOOK-voice.md).
+Full vox reference — env vars, nginx, start/stop, and the V-1…V-18 acceptance
+checklist — in [`docs/RUNBOOK-vox.md`](docs/RUNBOOK-vox.md).
 
 ## Dependencies
 

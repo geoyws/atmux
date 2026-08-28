@@ -2,7 +2,7 @@
 // what the pane looked like afterwards.
 //
 // The allow-list, the after-state classifier and the receipt renderer
-// live in `src/core/voice/nudge.ts` (pure, fixture-testable). THIS file
+// live in `src/core/vox/nudge.ts` (pure, fixture-testable). THIS file
 // is the IO half: resolve the member to a tmux window, read the pane,
 // deliver the keystroke, read the pane again, print the receipt.
 //
@@ -53,7 +53,7 @@ import {
   classifyPaneObservation,
   type PaneObservation,
   type PaneVerdict,
-} from "../core/voice/fleet.ts";
+} from "../core/vox/fleet.ts";
 import {
   classifyAfterNudge,
   isNudgeAction,
@@ -63,7 +63,7 @@ import {
   type NudgeReceipt,
   nudgeDidNotTake,
   renderNudgeReceipt,
-} from "../core/voice/nudge.ts";
+} from "../core/vox/nudge.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import { parseWindowProbe, WINDOW_PROBE_FORMAT } from "./fleet.ts";
 import { resolveMemberTarget, send as sendVerb } from "./send.ts";

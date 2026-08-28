@@ -29,6 +29,7 @@ import {
   readStuckMergerState,
   truncate,
 } from "../../../src/core/blockers.ts";
+import type { KanbanTask } from "../../../src/schema/kanban.ts";
 
 let teamDir: string;
 let db: Database;
@@ -349,6 +350,37 @@ just sitting here without any glyph
 // ---------- Top-level fan-out ----------
 
 describe("queryAllBlockers — integration across all 7 surfaces", () => {
+  test("adapter task snapshot replaces legacy task blocker surfaces", async () => {
+    db.exec(
+      "INSERT INTO tasks (id, subject, status, deps, created_at) VALUES ('t-legacy', 'legacy', 'blocked', json_array(), 100)",
+    );
+    const claimedAt = FIXED_NOW - 30 * 3600;
+    const tasks = [
+      {
+        id: "t-external-blocked",
+        subject: "external blocked",
+        status: "blocked",
+        deps: ["t-external-dep"],
+        createdAt: 200,
+      },
+      { id: "t-external-dep", subject: "dep", status: "todo" },
+      {
+        id: "t-external-stale",
+        subject: "external stale",
+        status: "in-progress",
+        owner: "codex",
+        claimedAt,
+      },
+    ] as KanbanTask[];
+
+    const rows = await queryAllBlockers(teamDir, db, { nowSec: FIXED_NOW, tasks });
+    expect(rows.some((row) => row.related_task_id === "t-legacy")).toBe(false);
+    expect(rows.find((row) => row.related_task_id === "t-external-blocked")?.blocker_class).toBe(
+      "dep-not-shipped",
+    );
+    expect(rows.some((row) => row.related_task_id === "t-external-stale")).toBe(true);
+  });
+
   test("joins SQLite + markdown rows + preserves source attribution", async () => {
     db.exec(
       "INSERT INTO tasks (id, subject, status, deps, created_at) VALUES ('t-blk', 's', 'blocked', json_array(), 100)",

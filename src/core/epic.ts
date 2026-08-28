@@ -18,14 +18,23 @@ import {
   transactImmediate,
 } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
+import { KanbanCliAdapter } from "../adapters/kanban-cli.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { KanbanEpic, KanbanStory, KanbanTask } from "../schema/kanban.ts";
 import { tryLoadTeam } from "./common.ts";
 import { nextId } from "./id-sequence.ts";
 import { nowEpoch } from "./kanban.ts";
+import { externalKanbanEnabled } from "./kanban-backend.ts";
 import { KanbanRepo } from "./repositories/kanban-repo.ts";
 
 const STATES = ["planning", "ready", "in-progress", "review", "done"] as const;
+const externalKanban = new KanbanCliAdapter();
+
+function externalTaskStatus(status: EpicState): string {
+  if (status === "planning") return "backlog";
+  if (status === "ready") return "todo";
+  return status;
+}
 export type EpicState = (typeof STATES)[number];
 
 /** Bash `_atmux_epic_gen_id`: `e-<8 hex chars>`. */
@@ -117,6 +126,21 @@ export async function addEpic(atmuxDir: string, opts: AddEpicOpts): Promise<stri
   const title = opts.title.trim();
   if (title.length === 0) {
     throw new UsageError({ what: "epic add: <title> required" });
+  }
+  if (await externalKanbanEnabled(atmuxDir)) {
+    const id = await externalKanban.addTask(atmuxDir, {
+      type: "epic",
+      subject: title,
+      ...(opts.body ? { body: opts.body } : {}),
+      ...(opts.dependsOn ? { deps: opts.dependsOn } : {}),
+    });
+    await externalKanban.patchMetadata(atmuxDir, id, "atmux", {
+      workflowStatus: "planning",
+      isReady: false,
+      ...(opts.driverRef ? { driverRef: opts.driverRef } : {}),
+      ...(opts.autoSpawn ? { autoSpawn: opts.autoSpawn } : {}),
+    });
+    return id;
   }
   if (!(await exists(_stateDbPath(atmuxDir)))) {
     throw new ConfigError({
@@ -257,6 +281,19 @@ export async function setEpicReady(
   id: string,
   ready: boolean,
 ): Promise<{ from: boolean; to: boolean; noop: boolean }> {
+  if (await externalKanbanEnabled(atmuxDir)) {
+    const epic = (await externalKanban.loadKanban(atmuxDir)).epics.find((item) => item.id === id);
+    if (!epic) throw new ConfigError({ what: `epic ready: no such epic: ${id}` });
+    if (epic.status === "done") {
+      throw new UsageError({
+        what: `epic ready: is_ready toggle on done epic ${id} is a no-op; refuse`,
+      });
+    }
+    const from = epic.isReady;
+    if (from !== ready)
+      await externalKanban.patchMetadata(atmuxDir, id, "atmux", { isReady: ready });
+    return { from, to: ready, noop: from === ready };
+  }
   if (!(await exists(_stateDbPath(atmuxDir)))) {
     throw new ConfigError({ what: `epic ready: no such epic: ${id}` });
   }
@@ -316,6 +353,22 @@ export async function setEpicDependsOn(
   id: string,
   deps: readonly string[],
 ): Promise<void> {
+  if (await externalKanbanEnabled(atmuxDir)) {
+    const epics = (await externalKanban.loadKanban(atmuxDir)).epics;
+    const epic = epics.find((item) => item.id === id);
+    if (!epic) throw new ConfigError({ what: `epic set-depends-on: no such epic: ${id}` });
+    if (deps.includes(id))
+      throw new UsageError({ what: `epic set-depends-on: epic ${id} cannot depend on itself` });
+    for (const dependency of deps) {
+      if (!epics.some((item) => item.id === dependency)) {
+        throw new UsageError({
+          what: `epic set-depends-on: dep ${dependency} does not exist (typo? deleted epic?)`,
+        });
+      }
+    }
+    await externalKanban.updateTask(atmuxDir, id, "atmux", { dependencies: deps });
+    return;
+  }
   if (!(await exists(_stateDbPath(atmuxDir)))) {
     throw new ConfigError({ what: `epic set-depends-on: no such epic: ${id}` });
   }
@@ -336,6 +389,20 @@ export async function setEpicDependsOn(
  *  Used by both cycle-detect (internal) AND the `epic deps` render
  *  verb (T4). Dangling refs are silently skipped. */
 export async function epicTransitiveDeps(atmuxDir: string, id: string): Promise<string[]> {
+  if (await externalKanbanEnabled(atmuxDir)) {
+    const epics = (await externalKanban.loadKanban(atmuxDir)).epics;
+    const byID = new Map(epics.map((epic) => [epic.id, epic]));
+    const seen = new Set<string>();
+    const queue = [...(byID.get(id)?.dependsOn ?? [])];
+    while (queue.length) {
+      const dependency = queue.shift();
+      if (!dependency || seen.has(dependency)) continue;
+      seen.add(dependency);
+      queue.push(...(byID.get(dependency)?.dependsOn ?? []));
+    }
+    seen.delete(id);
+    return [...seen];
+  }
   if (!(await exists(_stateDbPath(atmuxDir)))) return [];
   return await _withRepo(atmuxDir, (repo) => {
     const chain = _walkTransitiveDeps(repo, id);
@@ -364,6 +431,20 @@ export interface EpicEligibility {
  *  human-readable refusal reasons so the spawn-epic gate can render
  *  an actionable message. */
 export async function epicIsEligible(atmuxDir: string, id: string): Promise<EpicEligibility> {
+  if (await externalKanbanEnabled(atmuxDir)) {
+    const epics = (await externalKanban.loadKanban(atmuxDir)).epics;
+    const epic = epics.find((item) => item.id === id);
+    if (!epic) return { eligible: false, blockers: [`epic ${id}: not found`] };
+    const blockers: string[] = [];
+    if (!epic.isReady) blockers.push("is_ready=0");
+    for (const dependency of epic.dependsOn ?? []) {
+      const upstream = epics.find((item) => item.id === dependency);
+      if (!upstream) blockers.push(`dep ${dependency} missing`);
+      else if (upstream.status !== "done")
+        blockers.push(`dep ${dependency} not done (status=${upstream.status})`);
+    }
+    return { eligible: blockers.length === 0, blockers };
+  }
   if (!(await exists(_stateDbPath(atmuxDir)))) {
     return { eligible: false, blockers: [`epic ${id}: state.db not initialized`] };
   }
@@ -396,6 +477,10 @@ export async function listEpics(
   atmuxDir: string,
   filter: ListEpicsFilter = {},
 ): Promise<KanbanEpic[]> {
+  if (await externalKanbanEnabled(atmuxDir)) {
+    const epics = (await externalKanban.loadKanban(atmuxDir)).epics;
+    return filter.status ? epics.filter((epic) => epic.status === filter.status) : epics;
+  }
   if (!(await exists(_stateDbPath(atmuxDir)))) return [];
   return await _withRepo(atmuxDir, (repo) => {
     let epics = repo.listEpics();
@@ -417,6 +502,14 @@ export interface EpicWithChildren extends KanbanEpic {
 }
 
 export async function showEpic(atmuxDir: string, id: string): Promise<EpicWithChildren | null> {
+  if (await externalKanbanEnabled(atmuxDir)) {
+    const board = await externalKanban.loadKanban(atmuxDir);
+    const epic = board.epics.find((item) => item.id === id);
+    if (!epic) return null;
+    const storyRows = board.stories.filter((story) => story.epic === id);
+    const tasks = board.tasks.filter((task) => task.epic === id && !task.story);
+    return { ...epic, stories: storyRows.map((story) => story.id), storyRows, tasks };
+  }
   if (!(await exists(_stateDbPath(atmuxDir)))) return null;
   return await _withRepo(atmuxDir, (repo) => {
     const epic = repo.getEpic(id);
@@ -435,6 +528,14 @@ export async function showEpic(atmuxDir: string, id: string): Promise<EpicWithCh
 /** Comma-joined ids of stories + direct-tasks-with-no-story that are
  *  not yet `done`. Empty string means safe to advance to review/done. */
 export async function epicBlockingChildren(atmuxDir: string, id: string): Promise<string[]> {
+  if (await externalKanbanEnabled(atmuxDir)) {
+    const shown = await showEpic(atmuxDir, id);
+    if (!shown) return [];
+    return [
+      ...shown.storyRows.filter((story) => story.status !== "done").map((story) => story.id),
+      ...shown.tasks.filter((task) => task.status !== "done").map((task) => task.id),
+    ];
+  }
   if (!(await exists(_stateDbPath(atmuxDir)))) return [];
   return await _withRepo(atmuxDir, (repo) => {
     const stories = repo.listStories({ epic: id }).filter((s) => s.status !== "done");
@@ -463,6 +564,36 @@ export async function advanceEpic(
   id: string,
   target?: string,
 ): Promise<AdvanceEpicResult> {
+  if (await externalKanbanEnabled(atmuxDir)) {
+    const epic = await showEpic(atmuxDir, id);
+    if (!epic) throw new ConfigError({ what: `epic advance: no such epic: ${id}` });
+    const cur = epic.status ?? "planning";
+    const resolved = target?.length ? target : epicNextState(cur);
+    if (resolved === null)
+      throw new UsageError({ what: `epic advance: ${id} is in terminal state '${cur}'` });
+    if (!epicLegalTransition(cur, resolved)) {
+      throw new UsageError({
+        what: `epic advance: illegal transition ${cur} → ${resolved} (machine: planning→ready→in-progress→review→done)`,
+      });
+    }
+    if (cur === resolved) return { from: cur, to: resolved, summaryTaskId: null, noop: true };
+    if (
+      (resolved === "review" || resolved === "done") &&
+      (await epicBlockingChildren(atmuxDir, id)).length
+    ) {
+      throw new UsageError({
+        what: `epic advance: cannot advance ${id} to ${resolved} — blocking children: ${(await epicBlockingChildren(atmuxDir, id)).join(",")}`,
+      });
+    }
+    await externalKanban.transitionTask(
+      atmuxDir,
+      id,
+      externalTaskStatus(resolved as EpicState),
+      "atmux",
+      { workflowStatus: resolved },
+    );
+    return { from: cur, to: resolved, summaryTaskId: null, noop: false };
+  }
   if (!(await exists(_stateDbPath(atmuxDir)))) {
     throw new ConfigError({ what: `epic advance: no such epic: ${id}` });
   }

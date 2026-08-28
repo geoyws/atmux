@@ -26,14 +26,15 @@
 
 import { join } from "node:path";
 import { z } from "zod";
-import { atomicWrite, exists, readTextOrNull } from "../abstractions/fs.ts";
+import { atomicWrite, readTextOrNull } from "../abstractions/fs.ts";
 import { tryReadJson } from "../abstractions/json.ts";
 import { spawn } from "../abstractions/spawn.ts";
 import { now as nowMs } from "../abstractions/time.ts";
 import type { TmuxNamespace } from "../abstractions/tmux.ts";
-import { Kanban, type Kanban as KanbanShape } from "../schema/kanban.ts";
 import type { TeamMember as Member, Team } from "../schema/team.ts";
-import { inboxPathFor, kanbanJsonPath, stateDir, teamJsonPath } from "./common.ts";
+import { inboxPathFor, stateDir, teamJsonPath } from "./common.ts";
+import { kanbanWorkStateAvailable } from "./kanban-backend.ts";
+import { loadKanban } from "./kanban.ts";
 
 // ---------- Cursor ----------
 
@@ -136,46 +137,41 @@ export async function aggregateProgress(
   }
 
   // ---- kanban-driven done tasks + advanced stories ----
-  const kpath = kanbanJsonPath(atmuxDir);
-  if (await exists(kpath)) {
-    let parsed: KanbanShape | null = null;
-    try {
-      parsed = await tryReadJson(kpath, Kanban);
-    } catch {
-      parsed = null;
+  try {
+    if (!(await kanbanWorkStateAvailable(atmuxDir))) return out;
+    const parsed = await loadKanban(atmuxDir);
+    const doneAll = parsed.tasks
+      .filter((t) => typeof t.completedAt === "number" && t.completedAt > sinceEpoch)
+      .sort((a, b) => (a.completedAt ?? 0) - (b.completedAt ?? 0));
+    if (doneAll.length > cap) out.doneTasksTruncated = true;
+    for (const t of doneAll.slice(0, cap)) {
+      out.doneTasks.push({
+        id: t.id,
+        subject: t.subject ?? "",
+        owner: t.owner ?? "-",
+      });
     }
-    if (parsed !== null) {
-      const doneAll = parsed.tasks
-        .filter((t) => typeof t.completedAt === "number" && t.completedAt > sinceEpoch)
-        .sort((a, b) => (a.completedAt ?? 0) - (b.completedAt ?? 0));
-      if (doneAll.length > cap) out.doneTasksTruncated = true;
-      for (const t of doneAll.slice(0, cap)) {
-        out.doneTasks.push({
-          id: t.id,
-          subject: t.subject ?? "",
-          owner: t.owner ?? "-",
-        });
-      }
-      // Stories — schema doesn't expose `advancedAt` directly (passthrough);
-      // grab via Bun.file fallback path. Bash uses jq-passthrough; TS port
-      // accesses through the validated tasks/stories arrays where possible.
-      const stories = parsed.stories as ReadonlyArray<Record<string, unknown>>;
-      const advAll = stories
-        .filter((s) => {
-          const a = s.advancedAt;
-          return typeof a === "number" && a > sinceEpoch;
-        })
-        .sort((a, b) => ((a.advancedAt as number) ?? 0) - ((b.advancedAt as number) ?? 0));
-      if (advAll.length > cap) out.advancedStoriesTruncated = true;
-      for (const s of advAll.slice(0, cap)) {
-        out.advancedStories.push({
-          id: String(s.id ?? ""),
-          epic: String(s.epic ?? ""),
-          title: String(s.title ?? ""),
-          status: String(s.status ?? "?"),
-        });
-      }
+    // Stories — schema doesn't expose `advancedAt` directly (passthrough);
+    // grab via Bun.file fallback path. Bash uses jq-passthrough; TS port
+    // accesses through the validated tasks/stories arrays where possible.
+    const stories = parsed.stories as ReadonlyArray<Record<string, unknown>>;
+    const advAll = stories
+      .filter((s) => {
+        const a = s.advancedAt;
+        return typeof a === "number" && a > sinceEpoch;
+      })
+      .sort((a, b) => ((a.advancedAt as number) ?? 0) - ((b.advancedAt as number) ?? 0));
+    if (advAll.length > cap) out.advancedStoriesTruncated = true;
+    for (const s of advAll.slice(0, cap)) {
+      out.advancedStories.push({
+        id: String(s.id ?? ""),
+        epic: String(s.epic ?? ""),
+        title: String(s.title ?? ""),
+        status: String(s.status ?? "?"),
+      });
     }
+  } catch {
+    // Missing or unreadable work state is a degraded empty projection.
   }
 
   return out;
@@ -283,19 +279,15 @@ export async function aggregateHeartbeat(
   // Kanban counts
   let inFlightTasks = 0;
   let blockedTasks = 0;
-  const kpath = kanbanJsonPath(atmuxDir);
-  if (await exists(kpath)) {
-    try {
-      const k = await tryReadJson(kpath, Kanban);
-      if (k !== null) {
-        for (const t of k.tasks) {
-          if (t.status === "in-progress") inFlightTasks += 1;
-          else if (t.status === "blocked") blockedTasks += 1;
-        }
-      }
-    } catch {
-      // unreadable kanban → counts stay 0
+  try {
+    if (!(await kanbanWorkStateAvailable(atmuxDir))) throw new Error("work state absent");
+    const k = await loadKanban(atmuxDir);
+    for (const t of k.tasks) {
+      if (t.status === "in-progress") inFlightTasks += 1;
+      else if (t.status === "blocked") blockedTasks += 1;
     }
+  } catch {
+    // unreadable work state → counts stay 0
   }
 
   // Lead uptime — anchored at max(<lead>-rotated.epoch, session-start.txt)

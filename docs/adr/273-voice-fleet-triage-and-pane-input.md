@@ -2,8 +2,9 @@
 
 Status: proposed
 Date: 2026-08-15
-Implementation: **D1–D3 built 2026-08-16** (`fleet_attention` + `fleet_quiet`); **D4's `pane_nudge` + D5 built 2026-08-16** (see §Supplement-2); **`pane_send` still not built** — it remains gated on OQ-1. Status stays `proposed` pending reviewer signoff — an ADR is not accepted by being implemented.
+Implementation: **D1–D3 built 2026-08-16** (`fleet_attention` + `fleet_quiet`); **D4's `pane_nudge` + D5 built 2026-08-16** (see §Supplement-2); **`pane_send` still not built** — **OQ-1 is now ANSWERED (§Supplement-9, 2026-08-21: no spoken second factor; four structural bounds instead), which opens the gate but does not close the work.** §AA5 lists what must be true before it ships. Status stays `proposed` pending reviewer signoff — an ADR is not accepted by being implemented.
 Extends: [ADR-272](272-voice-operator-interface.md) (voice operator interface)
+See also: [ADR-274](274-atmux-vox-rename.md) — the naming decision moved there: the feature is `atmux vox`. This ADR's title and body stand as written; the `atmux fleet` and `atmux nudge` verbs it adds are deliberately NOT renamed (ADR-274 §What this ADR does not decide).
 Related: [ADR-138](138-verified-send-keys.md) (verified send-keys), [ADR-139](139-refusal-pattern-detection.md) (refusal detection), [ADR-140](140-cheap-model-first.md) (cheap-model-first observation loops)
 
 ## Context
@@ -296,3 +297,488 @@ tmux -S <unum cage socket>  has-session -t atmux-unum   → exit 1, can't find s
 The gate really was unreachable for both anchored teams. No row appears today because **both are driver-only** (`members: []`, per the 2026-05-16 decomposition recorded in §S3.1) and both checks are member-scoped — `checkMemberCageStates` returns at its empty-roster guard before the session name is even resolved, and `checkLegacyWindowNameFormat`'s inner loop is over `team.members`. `dash` is the only team on the fleet with a roster, and it carries no anchor, so its name resolves to the same `atmux-dash` both ways.
 
 So the change is **strictly additive and currently latent**: no row disappears (a blind check emits nothing to lose), and the rows that were structurally unreachable for `unum` and `atmux` become reachable the moment either team regains members. Reporting this as "N new rows appeared" would have been the lie; reporting a silent probe as proof of nothing would have been the other one.
+
+## Supplement-5 — `team_status` stops guessing which pane is whose (2026-08-17)
+
+Found by the voice e2e harness against its isolated fake cage, and left failing rather than greened. `team_status` printed:
+
+```
+🟢 TEAM vox-e2e-alpha  session=atmux-vox-e2e-alpha [up]
+  be-1 … down    fe-1 … down    docs … down
+```
+
+Three `down` panes on the line directly beneath a session the same verb had just called `[up]`, while `fleet_attention` classified those same panes correctly **off the same socket**. `team_status` is in the catalog and visible under readonly, so this was spoken to the operator as fact — the "cries wolf" class §D3 is written against, arriving through the tool rather than the model (the transcript shows the model relaying it faithfully).
+
+**Not §D3 trap 1, and not §Supplement-4.** Both concern the *session* name. This team's session is `atmux-vox-e2e-alpha`, which the `atmux-<team>` literal produces correctly, so neither could fire here.
+
+### W1 — Root cause: the verb SYNTHESIZED window names instead of enumerating them
+
+`probeCageState` built its target as `member.emoji ?? defaultEmojiForRole(role)` → `buildWindowName(...)`, inventing a `🐝` for a roster entry that carries none and probing `<session>:🐝-be-1`. The cage's windows are plainly named `be-1` / `fe-1` / `docs`; `list-panes` answers `can't find window`, the catch below step (2) returns `down`.
+
+`fleet.ts` never had it because it **enumerates** — `tmux.window.listWindows(session)` and then uses the names tmux gives back. That is the whole difference between the two verbs, from one socket.
+
+The fix moves `cage-state.ts` onto the same discipline: `cageWindowCandidates()` states every naming form a live window may carry (spawn form, roster-verbatim, ADR-135 hyphen, pre-ADR-135 no-separator, bare id) and `resolveCageWindowName()` picks the first that tmux actually reports, falling back to the spawn form when the list is unreadable — never *worse* than the guess it replaced. `gatherStatus` hoists one `list-windows` for the whole roster and hands it to every member's probe.
+
+**A member with no window still reports `down`.** This is a resolution fix, not a "stop saying down" fix.
+
+### W2 — The same root cause was also silently attributing one member's pane to another
+
+Found while fixing W1, and worse than a false `down`. `readPaneCommand` synthesized its own (differently-derived) target and passed it to `display-message`, which **does not fail on a missing window** — it resolves to the session's CURRENT window and exits 0:
+
+```
+$ tmux -S <sock> display-message -p -t 'atmux-vox-e2e-alpha:🐝-nope' '#{window_name} / #{pane_current_command}'
+be-1 / sleep          # exit 0
+```
+
+So every member whose synthesized name missed was reported with a *sibling's* command, with no error anywhere. `list-panes` (what the cage probe uses) does error, so only this call site needs the guard: a name absent from the enumerated list now short-circuits to `(down)` rather than being asked about.
+
+### W3 — The approval row described the CALLER's repo, not the team
+
+`gatherStatus` called `scanNeedsApproval()` with no arguments, so it walked up from `process.cwd()`. Against a `mkdtemp` team with an empty root it reported `📝 NEEDS APPROVAL: 19 ADRs / 1157 inbox / 2 kanban` — the harness's own repo, spoken as a fact about someone else's team. Under the voice bridge (`team_status` → `atmux status --team-dir <root>`) the caller is always the server's checkout, so the row was never describing the team asked about.
+
+It now passes `projectRoot` derived from the team's `atmuxDir`. `ScanDeps.projectRoot` already existed for exactly this; nothing called it. The pre-existing approval tests only passed by pinning `ATMUX_DIR`/`ATMUX_TEAM_DIR` process-wide — the leak was known-shaped and worked around in the fixture rather than closed. The new tests deliberately do **not** pin either, because `--team-dir` is all the voice bridge passes.
+
+### W3b — The same call, a second time, in `poke` §2.5
+
+`scanNeedsApproval()` had exactly two callers and BOTH were unscoped. The other is `runNeedsApprovalCheck` in `src/verbs/poke.ts`, which holds `ctx.atmuxDir` one line below the call and then stamps the resulting Discord ping with `ctx.team.name` — another team's paperwork backlog, pushed to the wire under this team's name, on a cron tick whose cwd is wherever the crontab line landed.
+
+Both call sites were known-broken and worked around in their tests rather than fixed. `tests/unit/verbs/poke.test.ts::seedTeam` disabled the feature outright with a comment naming the leak ("walks the REAL repo's docs/adr/ … leaking into tests' `sent[]` assertions"); `tests/e2e/whip-needs-approval.test.ts` pinned `process.env.ATMUX_DIR` because "mutating WhipOpts.env doesn't reach the lib". Both workarounds are now removed and replaced by assertions: the e2e CLEARS those env vars so its counts prove the scoping, and a new poke test turns the feature ON against a scratch root and asserts silence.
+
+### W4 — A verdict manufactured from a probe that could not look
+
+`defaultGitLog` collapsed a non-zero `git` exit to `[]`, and `[]` means "a repository with no matching commits" — so `git -C <not-a-repo> log` (exit 128) became `🟡 idle (never)`. A confident cadence verdict about work that was never observable.
+
+It reached the operator spoken. The vox drilldown transcript below relayed the word "idle" about a scratch team whose only sin was living outside a git repository, and the judge scored it as a hallucination — correctly, from its side: nothing in the ground truth was idle.
+
+`GitLogFn` now returns `string[] | null`, `null` being "I could not read a repository here". `classifyMemberCadence` returns `null` for it and `status` leaves the cell `—` ("no signal"), which is what the renderer already had for exactly this case. `[]` still reads `idle` — the distinction is the whole point.
+
+**A test asserted the bug.** `status.test.ts`'s "text mode shows 'idle' cadence for tmpdir worktree (no .git)" encoded the defect as the contract, comment and all ("no .git → git log probe fails → empty log → verdict='idle'"). It now asserts the opposite, with the history recorded in place so the next reader does not "restore" it.
+
+### W5 — The tool can now say "I could not tell"
+
+The second finding from the main loop: `team_status` returned `ok=true` and stated pane states as fact with no way to signal that it had inferred rather than measured them.
+
+`CageHealth.inferredFromRender` records when a state was read off the pane's render because `ps` could not identify the occupant, and `status`'s pane-state column renders it as a trailing `?` (`active?`). It is set ONLY on non-`down` rows: a `down` row is reached when both signals AGREE nothing is there, which is a confident conclusion, not a hedge — flagging it would advertise doubt the probe does not have.
+
+Related, and NOT fixed here: `defaultPaneChildIsClaude` runs `ps -o comm= --ppid <panePid>`, which is DIRECT CHILDREN only, while this module's own docs say "child-process tree" three times. A real cage whose claude sits deeper than one level (shell → wrapper → claude) is a false `down` today. The `?` marker now covers its symptom; the probe itself still needs the tree walk.
+
+### W6 — The e2e drilldown scenario: failure moved, scenario still FAILS
+
+Run verbatim, `bun scripts/vox-e2e.ts --scenario drilldown`, against the live provider. Both causes the main loop reported are gone; the judge now fails on something else entirely.
+
+**Before (reported by the main loop):** *"Alpha team is up, but all members' panes are down and idle. No tasks are active or in progress. There are 21 ADRs and a large inbox needing approval."*
+
+**After W1–W5:** *"Alpha team is up, with three members: be-1, fe-1, and docs. All panes are active, and no tasks are in progress or blocked. There's a note that the kanban is clear and needs approval."*
+
+```
+judge verdict: FAIL (model claude-opus-5)
+  [PASS] answered_the_question
+  [FAIL] no_hallucination
+         It invented conditions that do not exist: 'All panes are active, and no tasks
+         are in progress or blocked' and a note that 'the kanban is clear and needs
+         approval' — no such state exists, and be-1 is blocked on a permission prompt
+         while fe-1 is wedged with unsubmitted text.
+  [PASS] scoped_to_the_right_team
+  [FAIL] described_alpha_accurately
+         It claimed all panes are active with nothing blocked, directly contradicting
+         be-1's permission prompt and fe-1's unsubmitted composer text, and omitted
+         both panes needing attention.
+```
+
+`down` is gone, the ambient ADR/inbox counts are gone, "idle" is gone. What remains is **not a defect in any probe**: `team_status` and `fleet_attention` speak different vocabularies about the same panes. `team_status` reports the 4-state PROCESS taxonomy (`down` / `bootstrapping` / `active` / `wedged`), and `active` is true of all three fixture panes under its documented definition ("has produced output"). The ground truth is a BEHAVIOURAL classification — permission-prompt / idle-residue / working — which only `classifyPaneObservation` in `src/core/vox/fleet.ts` produces, and `team_status` never calls it.
+
+So no amount of making the process probe more honest can satisfy `described_alpha_accurately`. Closing it means deciding that `team_status` surfaces the fleet classifier's per-pane verdict alongside (or instead of) the cage state — which changes a documented output surface and picks a winner between two classifiers. **That is a decision, not a bug fix, and it is deliberately NOT taken here.** Recording it as the open item rather than reshaping the surface unilaterally. — **→ Decided 2026-08-17: ALONGSIDE, with the behavioural verdict leading. See §Supplement-6.** This section is left as written: it is the record of the state before the decision.
+
+Two smaller residues visible in the same transcript, both model-side reads of an ambiguous table rather than false tool output: the model fused the `📋 kanban` and `📝 NEEDS APPROVAL` lines into "the kanban is clear and needs approval", and in the pre-W4 run it read the `cadence` column's "idle" as a pane state. Every individual line the tool printed was true.
+
+### W7 — What is still ambient, stated rather than fixed
+
+Two reads in `status.ts` remain keyed by `$HOME` + team **name** while everything else is keyed by team **root**, so a scratch team that merely shares a name with a real one inherits its state. Reproduced directly — a team created seconds earlier in `/tmp`, named `atmux`:
+
+```
+🧭 lead lead  session_uptime=2044h17m
+```
+
+That is the real `atmux` team's `~/.claude/teams/atmux/lead-session-start.txt`, and this number is the **ADR-009 rotation gate's** source. `readMemberContextSignal` (the `ctx %` column) has the identical shape. Not fixed here: the producer is the bash-side whip, so re-keying is a cross-process protocol change and belongs in its own ADR, not smuggled into a truthfulness fix.
+
+Also noted, and correct as it stands: the `📋 medic` row is cockpit-global by design (§F5 / ADR-133) though it renders inside a team block; and `defaultGitLog`'s `git -C <path> log` walks up to the enclosing repository, which is right when a member's cwd is a subdirectory of its repo and wrong only for a team root that is not a repo at all.
+
+### W8 — Before and after, the harness's own cage
+
+Built from `buildCagePlan` + `materializeCage` — the same planner and the same fixture texts the e2e uses, so this is the cage the judge grades, not an approximation.
+
+```
+# before
+🟢 🧭 TEAM vox-e2e-alpha  session=atmux-vox-e2e-alpha [up]
+  🐝 be-1  claude  down    🐝 fe-1  claude  down    🐝 docs  claude  down
+                          🟡 idle (never)  ×3
+📝 NEEDS APPROVAL: 21 ADRs / 1160 inbox / 2 kanban
+
+# after
+🟢 🧭 TEAM vox-e2e-alpha  session=atmux-vox-e2e-alpha [up]
+  🐝 be-1  claude  active?   🐝 fe-1  claude  active?   🐝 docs  claude  active?
+                          —  (no repo ⇒ no cadence verdict)
+📝 NEEDS APPROVAL: ✅ clear
+```
+
+Every difference is a claim the tool can now support: the panes resolve to windows tmux actually reports, the `?` says the occupant was never identified, the cadence cell says nothing because nothing was readable, and the approval row describes this team.
+
+
+## Supplement-6 — infrastructure reads: `host_pressure` + `token_budget` (2026-08-17)
+
+> Two tools the operator asked for and the catalog never had: *"get info about the token budget and other things of interest, and also the cpu/mem/disk pressure for hax and hig both"*. `cost_report` looked adjacent and is not — it is per-member AI **spend** for one team since session start, which answers neither question.
+
+### X1 — Shipped surface
+
+| Tool | Runner | Verb | Params | Mutating |
+|---|---|---|---|---|
+| `host_pressure` | `hostPressure` | `atmux host-pressure` | none | no |
+| `token_budget` | `tokenBudget` | `atmux token-budget` | `provider` (enum), `cache_only` (bool) | no |
+
+Both are reads, so both survive `ATMUX_VOX_READONLY=1`. Neither is team-scoped: a host and a provider quota belong to the whole fleet, and scoping either to a team would invite answering "how is hig" with one team's slice of a machine every team shares. The catalog is 19 tools.
+
+Implementation: `src/core/vox/host-report.ts` + `src/core/vox/token-budget.ts` (pure, fixture-testable), `src/verbs/host-pressure.ts` + `src/verbs/token-budget.ts` (IO), both also reachable as CLI verbs.
+
+### X2 — The two judgment calls
+
+1. **Unreachable is not healthy.** A host that cannot be reached — ssh failure, timeout, or a payload we cannot parse — reports `UNREACHABLE` with its reason, is never dropped from the report, and forces the overall verdict to not-ok. `hig` being down is exactly what the operator needs to hear, and a report that folded it into an all-clear would be using absence of evidence as evidence.
+2. **Cached is not live.** A `--cache-only` budget row is labelled `CACHED` with its snapshot age, in the headline *before* any number and again on every row. A stale snapshot described as a measurement is the same lie one domain over.
+
+### X3 — Reuse, not reimplementation
+
+- **Host pressure** extends the existing `src/core/host-pressure.ts` rather than adding a second probe. The remote host runs `probeHostPressure` too — with readers that serve text pre-fetched by one ssh round trip — so every parse, threshold and verdict is shared. A separate remote implementation is how two hosts start disagreeing about what 90% full means.
+- **Token budget** shells out to the operator's maintained `probe-budgets.sh` through the `spawn()` seam. That script already handles Codex's rate-limit JSON, Claude's five OAuth headers, Z.ai's quota windows and Kimi's absent quota API; a second copy in atmux would drift on the first provider header change, and would put four sets of credentials in a process that today never touches any. Resolution order: `ATMUX_BUDGET_PROBE`, then `~/.agents/skills/...` (the one tree both Claude and Codex read), then the `.claude*` fallbacks.
+
+### X4 — The disk dimension was added to `host-pressure.ts`, and it gates
+
+`host-pressure.ts` had load and memory but no disk. Disk was added **there**, so `atmux doctor`'s host-pressure row and the ADR-184 spawn-epic gate benefit alongside the voice tool.
+
+Disk **participates in the verdict**; it is not merely measured. A probe that reads a dimension and then excludes it from `ok` would return `ok: true` on a 99%-full host — and a full disk is exactly what breaks `git worktree add`, the first thing spawn-epic does. Threshold `ATMUX_SPAWN_MAX_DISK_PERCENT`, default **90**, matching the line the hig sentinel already alerts on so one host does not carry two definitions of "full".
+
+**This changes spawn-epic's refusal criteria**: a host over 90% on a probed mount now refuses spawn where before it did not. Deliberate, and named here rather than left to be discovered.
+
+A **missing mount is a reason, not a pass**. Matching is exact on df's "Mounted on" column: an ancestor-prefix rule was written first and rejected, because `/` is an ancestor of every absolute path, so it marked an absent `/data` as covered whenever `/` was also probed — the default configuration — leaving the check dead on arrival.
+
+### X5 — Three faults the live run found that the unit tests did not
+
+1. **`echo #atmux:loadavg` is a shell comment.** The snapshot markers begin with `#`, and unquoted they printed nothing, so hig's payload came back with no section headers. The failure was at least honest — an unparseable payload reported `UNREACHABLE`, exactly as X2.1 requires — but the host was wrongly unreachable for a week's worth of a wrong character. The test that "passed" asserted the marker *text* appeared in the command, which is true either way; it now asserts the **quoting**.
+2. **Two Codex budgets rendered identically.** `codex:primary` and `GPT-5.3-Codex-Spark:primary` share the 7d window, so both spoke as "codex pro 7d" — one `AT CAPACITY`, one fine, back to back and indistinguishable. The bucket is now appended whenever it is not already the window label.
+3. **`SpawnTimeoutError` embeds the whole argv.** The first live timeout produced a ~200-character dump of the remote shell script as the spoken reason. `speakProbeError` reduces it to `ssh to hig timed out after 250ms`, and surfaces the ssh failure phrases (`Connection refused`, `Permission denied`, …) that each imply a different fix.
+
+### X6 — Secrets
+
+Neither tool prints, logs or returns a token. `redactSecrets` masks credential-shaped substrings (JWTs, `Bearer …`, `sk-`/`ghp_`-style keys, and any opaque 40+ character run) on every free-text field that reaches output — including `--json`, since a leak that only happens under a flag is still a leak, and including the probe's stderr on the failure path, which is where an interpolated URL would otherwise land. The tests plant a control value and assert a benign note **is** rendered verbatim before asserting a planted token is not, so "no secret present" cannot pass by the field having been dropped.
+
+### X7 — Timeouts
+
+`ATMUX_HOST_PROBE_TIMEOUT_MS` (default 15_000) bounds each ssh; `ATMUX_BUDGET_PROBE_TIMEOUT_MS` (default 45_000) bounds the budget probe. Both resolve with the fail-closed contract `src/abstractions/spawn.ts::resolveDefaultTimeoutMs` uses — missing, non-numeric, non-finite or non-positive silently becomes the default. A voice tool that hangs is worse than one that errors.
+
+### X8 — Two ways a SUCCESSFUL read reaches the model as a failure
+
+Both were found by driving the real `tool-bridge` end to end with the real lazy runners, not by unit tests — each half was correct on its own, and only their composition was wrong. Both are the same failure class as X2: a confident answer that is not what the operator thinks it is.
+
+**1. A nonzero exit becomes `verb_failed`.** The bridge maps a verb's nonzero exit to an error envelope. Both tools originally returned 1 on bad news — an unreachable host, a rate-limited account — reasoning that the exit code should carry the verdict for shell chaining. The consequence: *"hig is unreachable"*, the single most important thing `host_pressure` can say, arrived at the model as a **broken tool** rather than as the finding. Every other read verb the catalog wires (`health`, `fleet`, `blockers`) returns 0 unconditionally; these now match. **The exit code says whether the read happened; the rendered text and `--json.ok` carry the verdict**, and a shell gate reads `--json | jq -e .ok`. Nonzero survives only for "could not measure anything at all", which genuinely is a tool failure.
+
+**2. Output on stderr becomes `verb_output_unparseable`.** `captureVerbRun` collects stdout only (`console.log` + `process.stdout.write`), so a verb writing its receipt to stderr yields empty captured stdout, which the bridge renders as *"the verb produced no usable output"*. `tell_lead` has that shape today and a **separate lane owns the bridge-side fix**; `src/core/vox/tool-bridge.ts` and `src/core/verb-capture.ts` were deliberately NOT touched here. *(Pointer, added 2026-08-20: that bridge-side fix landed — see [ADR-272](272-voice-operator-interface.md) §Supplement-2026-08-20. The reasoning below stands as written; a read tool's report belongs on stdout regardless.)* Instead both tools write to stdout — the correct shape for a read tool regardless of what the bridge does — and `tests/unit/verbs/vox-infra-stdout-contract.test.ts` pins it on the success, failure and `--json` paths so neither tool depends on that fix landing.
+
+A note on why the second needed its own test rather than an assertion inside an existing one: `console.log` does **not** route through `process.stdout.write` in Bun (verified directly), which is why `verb-capture` patches both. A capture harness that watched only one channel would have reported an empty stderr for the wrong reason, so the harness itself carries a control test proving it can see a stderr write before any `expect(stderr).toBe("")` is trusted.
+
+### X9 — Not built
+
+- No per-host filter on the voice tool (`--host` exists on the CLI verb only). The spoken question is "how is the box holding up", which means every box.
+- No historical trend for either tool. Both answer "right now".
+- The **voice path** is unproven for both, the same gap §7 V-20 records for `fleet_attention`: the CLI verb and the tool share the renderer, but the tool-bridge path around it (argv construction, summarization, `maxResultChars` budgeting) has no live receipt yet.
+## Supplement-7 — W6 decided: `team_status` speaks the fleet classifier's verdict, alongside the cage state (2026-08-17)
+
+§Supplement-5 W6 stated an open decision precisely and declined to take it. This records the decision, taken by the operator, and what implementing it changed. **W6 above is left exactly as written** — it is the honest record of the state before the decision, and rewriting it would erase the fact that the surface was not reshaped unilaterally.
+
+### The decision
+
+**`team_status` surfaces the behavioural per-pane verdict from `classifyPaneObservation`, ALONGSIDE — not instead of — the process cage-state.** The behavioural verdict leads.
+
+Three reasons, in the order they carry weight.
+
+1. **Two classifiers contradicting each other on one spoken surface is the defect.** `fleet_attention` said "be-1 is blocked on a permission prompt"; `team_status` said "be-1 is active". Both true in their own vocabulary, and an operator asking two questions in one voice conversation got two incompatible pictures of the same pane. ADR-273 D3 already made `classifyPaneObservation` the fleet's truth; `team_status` disagreeing with it was drift, not a second opinion.
+2. **On a spoken interface the process taxonomy is the wrong vocabulary to lead with.** "Active", read aloud, means "working fine" to a human listener. A pane blocked on a permission prompt is technically active and practically stuck. The word actively misleads in the one place it matters most.
+3. **Alongside, not instead of.** The process state is real information — is the process alive, did it produce output — and `down` is exactly what you want when a cage has died. The behavioural verdict answers a different question. Both belong.
+
+### Y1 — One pane, one read, two verdicts
+
+The obvious implementation is to call the fleet classifier from `status.ts` on a fresh capture. That is the same defect one layer down: two probes over one pane drift the moment either one's capture depth, timing, or target resolution changes. `fleet.ts` and `cage-state.ts` reading the same socket at different moments is precisely how W6 happened.
+
+So the verdict is produced **inside `probeCageState`**, from the capture it already takes:
+
+- `tryCapture` now returns `string | null` and captures `CAPTURE_LINES = 40` — matching `src/verbs/fleet.ts::CAPTURE_LINES`. `null` (the capture FAILED) is preserved for the behavioural classifier, which reports `unreadable` for it; the process ladder still sees `""`, byte-identically to before. `""` and `null` are different claims — "I looked and saw nothing" versus "I could not look" — and collapsing them is how a probe manufactures confidence out of a failure.
+- `ProbeCageStateOpts.windowProbe` supplies the three INDEPENDENT window signals the classifier needs (`#{window_activity}` / `#{pane_dead}` / `#{pane_current_command}`). `gatherStatus` reads `#{pane_current_command}` for its own column anyway, so `readPaneCommand` was widened to `readMemberPane`, rendering the full `WINDOW_PROBE_FORMAT` in the SAME `display-message` and handing the result down. Net tmux calls per member: unchanged.
+- `CageHealth.agentState` carries the `PaneVerdict` on every return path, including the ones that never reach a capture (session absent, window absent) — routed through `classifyPaneObservation` with a synthetic observation rather than hand-written as `dead`, so the words match `fleet_attention`'s by construction rather than by discipline.
+
+`parseWindowProbe` + `WINDOW_PROBE_FORMAT` moved from `src/verbs/fleet.ts` to `src/core/vox/fleet.ts` for this (core must not import from `src/verbs/**`); the verb re-exports them, so every prior importer resolves unchanged.
+
+`tests/unit/core/cage-state.test.ts` pins the anti-drift property directly: the same fixture text through `probeCageState` and through `classifyPaneObservation` must yield **byte-equal** verdicts. A second copy of the ladder inside `cage-state.ts` would fail there the day either moved.
+
+### Y2 — What the row looks like now
+
+```
+member       role          tui        agent-state                                process-state      ctx      commit-cadence                 tasks
+  🐝 be-1      member        claude     agent: 🛑 waiting on a permission prompt   process: active?   —        commits: no signal             🟡 0 active  📌 0 todo
+       ↳ evidence for be-1: │ Do you want to make this edit?                           │
+  🐝 fe-1      member        claude     agent: 🛑 idle with unsubmitted text       process: active?   —        commits: no signal             🟡 0 active  📌 0 todo
+       ↳ evidence for fe-1: unsubmitted: also add the rollback path before you push
+  🐝 docs      member        claude     agent: 🟢 working                          process: active?   —        commits: no signal             🟡 0 active  📌 0 todo
+```
+
+The clause after the glyph is `paneVerdictPhrase` — the same `ATTENTION_REASON` / `QUIET_LABEL` lookup `renderAttention` uses, so the two tools cannot describe one pane in different words. The glyph is `paneVerdictGlyph`: 🛑 acute, 🟡 chronic (`dormant` only), 🟢 nothing needed — the same three-way call `renderQuiet` already makes when it counts parked panes separately from findings.
+
+The indented `↳ evidence` line mirrors `renderAttention`'s `> gist`: D3 requires every attention item to carry the evidence that produced it, and an operator who hears the same claim from both tools should be shown the same evidence for it. Quiet rows get no line — the budget belongs to the findings.
+
+`--json` gains `members[].agentState` = `{ bucket, kind, reason, marker? }`, key-presence.
+
+### Y3 — The two model-side legibility residues W6 named, fixed
+
+Both were cases where every line the tool printed was individually TRUE and the TABLE was ambiguous read aloud. This surface is consumed by a language model, so legibility to a model is a functional requirement, not polish — and a model reading a column-aligned table row by row has no header in front of it.
+
+- **The `📋 kanban` / `📝 NEEDS APPROVAL` fusion** ("the kanban is clear and needs approval"). Each line now names its own subject in full: `📋 kanban board: …` and `📝 awaiting your approval: ✅ nothing is waiting for sign-off` / `📝 awaiting your approval: 2 proposed ADRs, 2 driver-inbox asks, 1 blocked kanban tasks`. Neither can be read as a predicate of the other.
+  - **A second turn of the same screw, found by the full run.** With the subject fixed, the enumerated form still spent the words *in-progress* and *blocked* — which are ALSO pane vocabulary — and the model relayed "no tasks are in progress or blocked" about a team with a blocked pane. Every word true; the judge scored the sentence as contradicting the ground truth, and it was right to. An empty board now gets its own sentence, `📋 kanban board: no tasks on it at all`, spending no state words at all; a non-empty board keeps the noun welded to every number (`📌 1 tasks todo, … 🛑 1 tasks blocked`) so no count can travel without its subject.
+- **The cadence column's bare `idle`, read as a pane state.** Every cell is now prefixed `commits:` and the header is `commit-cadence`. The absent case reads `commits: no signal` rather than `—`: a dash read aloud is nothing at all, and "no signal" is the actual claim (§Supplement-5 W4).
+
+Same reasoning applied to the two state columns: the cells are `agent: …` and `process: …`, self-labelled, because a bare `active` in a row of bare cells is exactly what the model turned into "all panes are active".
+
+### Y4 — The vox system prompt moved with the surface
+
+The prompt clause landed on trunk in `b8bddef` describes the `?` marker BY ITS RENDERED TEXT, and `team_status` sends the text table (no `--json`). Renaming the column without touching the clause would leave the prompt pointing at something that no longer renders — nothing would fail, which is what makes it worth stating.
+
+- The `?` marker itself is **untouched**: `formatPaneStateColumn` is unchanged, and `formatProcessStateColumn` only prefixes it, so the cell still ENDS in `active?`, which is what the clause keys on. The clause's column name changed `pane-state` → `process-state` to match the header; every pinned phrase in `instructions.test.ts` still holds, plus a new assertion that the clause names the column it is about.
+- A **new pinned clause** teaches the two-states rule: the agent-state is what the agent is doing and answers the operator's question; the process-state says only that a process is running, and a pane can be process-active while its agent is stopped forever on a permission prompt. Lead with the agent-state. The evidence line is named so a "why" can be answered from tool output rather than invented.
+- The same clause also says **do NOT volunteer the process-state for a pane whose agent-state already says it is stuck**. "Lead with" was not enough on its own: a run produced *"be-1 is waiting on a permission prompt, process looks active but not confirmed"* — both halves true, the `?` correctly hedged per the `b8bddef` clause — and the judge read the second half as a claim the pane was fine. A running process is not news about a stopped agent, so the reassuring half should not be offered at all. Speaking it when ASKED is still required to carry the hedge; the two clauses compose rather than compete.
+- The `?` pin is now anchored to the RENDERER as well as the prose — it asserts `formatProcessStateColumn` actually emits the token the prompt quotes. A pin that only reads the prompt cannot notice the column that stopped producing the marker.
+
+### Y5 — Stated rather than fixed
+
+- **A non-claude TUI gets no behavioural reading.** `probeCageState` is claude-specific (it looks for `claude` in the pane's process tree), so a Codex / Cursor / Kimi pane renders `agent: ❔ no reading`. The classifier itself is NOT claude-specific — `ALT_AGENT_CHROME_RE` exists precisely for those panes, and `fleet_attention` classifies them fine. Closing the gap means a capture for non-claude members too, which is a second read of a pane this verb does not otherwise open; deliberately not smuggled into this change. `no reading` is the honest cell meanwhile — it must never render as anything that could be heard as "fine".
+- **The `ctx` column's `—`** has the same read-aloud problem the cadence column's `—` had. Left alone: it was not among the residues W6 observed reaching the operator, and changing it is a separate legibility pass.
+- **§Supplement-5 W7 is unchanged** — the `$HOME`+team-name-keyed reads and the one-level `ps` child walk are still ambient. Neither is touched here.
+
+### Y6 — One more lie the full run exposed: `probeTeamLive`'s `"cage"`
+
+Not part of the decision, found by running the whole suite rather than the one scenario, and fixed here because it is the same failure class the decision is about — a tool handing the model something to say that was never observed.
+
+A team whose session is absent yields ONE synthetic observation. It carried `member: roster?.members[0]?.name ?? "cage"`, so `renderAttention` printed `vox-e2e-ghost/cage` and the model faithfully spoke *"member cage"*. The judge scored it a hallucination on `attention` AND `all_ok`, correctly: no such member exists. `members[0]` is the same lie with a plausible name — it attributes a whole-team fact to one arbitrary member, and on a real team it would name a member who is fine.
+
+`PaneObservation.member` and `QuietItem.member` are now `string | null`, `null` meaning "this observation is about the TEAM, not an identified pane". `AttentionItem.member` was ALREADY `string | null` and `who()` already rendered a null member as the bare team name — the type was right and the producer was wrong. `fleet_quiet` never enumerates panes (D2), so nothing spoken is lost. `tests/unit/verbs/fleet.test.ts` asserted `${teamName}/cage` and so encoded the bug as the contract; it now asserts `${teamName} — session is down` and that the slash form is absent, with the history recorded in place.
+
+### Y7 — The judge is not deterministic, and that is load-bearing
+
+Measured while closing this: `--scenario drilldown` alone PASSED and the same build FAILED in a full three-scenario run, on wording the model chose differently. The `"cage"` hallucination appeared in one full run and not the previous one, with **identical tool output** both times.
+
+So: **run the full suite, never the single scenario you changed**, and treat a red run as evidence of a real defect even when a green run of the same build exists. Both faults X6 and X3 fixed were found exactly this way and would have been hidden by a re-roll. Re-rolling until green is the same move as loosening a criterion — it makes the gate measure its own variance instead of the system.
+
+### Y8 — Acceptance
+
+`bun scripts/vox-e2e.ts` — all three scenarios, verbatim judge output — is recorded in [RUNBOOK-vox.md](../RUNBOOK-vox.md) §6.8. The `drilldown` scenario, left failing on purpose since §Supplement-5, is the gate this decision was taken to close; `attention` and `all_ok` are regression legs. No judge criterion, grading rule, or fixture was altered to reach it: the scenario table (`src/core/vox/e2e/scenarios.ts`) and the fixtures (`src/core/vox/e2e/fixtures.ts`) are byte-identical to the run that failed.
+
+## Supplement-8 — team resolution stops requiring the LEADING segment (2026-08-20)
+
+`resolveTeamName` (`src/core/vox/team-context.ts`) could not resolve a team by the part of its name a human actually says. Probed directly against an index holding `vox-e2e-alpha` and `vox-e2e-ghost`:
+
+| spoken | before |
+|---|---|
+| `"alpha"` | `unknown` |
+| `"ghost"` | `unknown` |
+| `"the alpha team"` | `unknown` |
+| `"vox"` | `ambiguous [vox-e2e-alpha, vox-e2e-ghost]` — correct |
+| `"vox-e2e-alpha"` | `ok` |
+
+### Z1 — Why the ladder was backwards for this fleet, specifically
+
+The ladder ran exact → case-fold → strip `-root`/`-team` → **unique prefix** → Levenshtein ≤2. It had no suffix or segment rung, so **only a team's leading segment resolved.**
+
+That is a defensible default for repo-shaped names (`sopx-root`, `crm-react`) and it is exactly wrong here. This fleet's teams are named `<product>-<feature>-<user>[-driver-N]` per [CLAUDE.md](../../CLAUDE.md) §Branch naming, deliberately, so that one snapshot identifier can be checked out across every submodule. The consequence for speech is that **the prefix is the shared, least distinctive part of the name and the trailing segment is the one a person says:**
+
+| team | operator says | before |
+|---|---|---|
+| `px-crm-geoyws-driver-2` | "driver 2" | `unknown` |
+| `atmux-geoyws` | "geoyws" | `unknown` |
+| `vox-e2e-alpha` | "alpha" | `unknown` |
+| any of `px-*` | "px" | `ambiguous` across every sibling |
+
+So the one rung that could fire was the one guaranteed to collide, and the segments that identify a team uniquely were unreachable. A naming convention chosen for git correctness had silently set the voice surface's resolution up to fail.
+
+### Z2 — How it surfaced, and the flakiness it explains
+
+An e2e scenario failed with **`hallucinations: none`**. The model was behaving correctly — it asked rather than guessed, exactly as `instructions.ts` tells it to on `unknown_team` — and the tool had genuinely failed to resolve. Nothing in the transcript pointed at the resolver; the model's honesty is what made the defect legible instead of masking it as a bad answer.
+
+It also explains an observed flake: **when the model OMITS the team argument the current-team default answers fine; when it PASSES `"alpha"` resolution fails.** Same build, two outcomes, split on whether the model volunteered an optional argument. That is the signature of a resolver gap, not a model gap, and it is worth naming because "flaky, sometimes the model gets it right" is how this class of defect gets written off.
+
+### Z3 — The new rung, and why it is ONE rung
+
+The ladder is now:
+
+```
+1. exact
+2. case-fold
+3. case-fold after stripping -root / -team from BOTH sides
+4. unique prefix
+5. segment run          <- new
+6. Levenshtein <= RESOLVE_MAX_EDIT_DISTANCE (2)
+```
+
+Rung 5 matches when the normalized utterance is a **contiguous run of the name's `-`-separated segments**. Implementation is a boundary-anchored substring test — both name and needle are wrapped in `-`, so a plain `includes` can only match whole segments and `"e"` never hits `vox-e2e-alpha`.
+
+**Placement, both ends.** BELOW prefix: a leading-segment match is the more specific claim and that rung's behaviour is already pinned by tests that predate this change. ABOVE Levenshtein: a segment run is an EXACT match on token boundaries, so letting a fuzzy whole-string typo match outrank a segment the operator actually pronounced would be strictly worse than the bug being fixed. The regression pin for the second half is `rung 5 (segment) beats rung 6 (Levenshtein)` — `"alpha"` against `[vox-e2e-alpha, alpht]`, where `alpht` is edit-distance 1.
+
+**One rung, not two.** A separate trailing-segment rung sitting above an any-segment rung was considered and rejected. It would resolve `"crm"` against both `px-geoyws-crm` and `atmux-crm-tools` by preferring the one where the segment happens to be LAST — breaking a real collision on **position alone, a fact the operator never uttered.** Every other rung resolves on something that was said; that one would resolve on where a word sits in a string the operator never saw. It is a guess wearing a rung's clothes, and this module's whole posture (file header, [ADR-150](150-cross-team-complaints-routing.md) §D5) is ask-don't-guess. The cost is accepted deliberately: such a collision comes back `ambiguous` with both names and the operator says one more word. An extra rung is an extra chance to be confidently wrong.
+
+### Z4 — Spoken filler: a second mechanism, kept deliberately distinct from `stripSuffix`
+
+`normalizeSpoken` (new, exported) rewrites the **utterance**; `stripSuffix` rewrites a **name**. They are easy to confuse and are separate on purpose:
+
+| | `stripSuffix` | `normalizeSpoken` |
+|---|---|---|
+| operates on | a hyphenated NAME | an UTTERANCE |
+| applied to | BOTH sides of rung 3 | the spoken side only |
+| removes | repo-naming noise (`-root`, `-team`) | English filler + word breaks |
+
+`normalizeSpoken` case-folds, drops a possessive clitic (straight and curly apostrophe), drops a leading `the` and a trailing `team`/`teams`, and joins word breaks with `-` — **speech gives spaces where the name has hyphens**, which is what routes "driver 2" to `driver-2` and "px crm geoyws driver 2" to the whole name.
+
+Two boundaries worth stating:
+
+- **`-root` is NOT duplicated into the spoken filler set.** It is repo-naming noise, never an English word an operator speaks; duplicating it is exactly the confusing overlap the split exists to avoid. The one genuine overlap is `team`, which is both an English noun and a repo suffix — the two mechanisms agree there **by construction**, so `alpha`, `alpha-team` and "the alpha team" all reduce to the same thing.
+- **Merging the two would apply article-stripping to real team names**, which is how a team called `the-hive` stops resolving.
+
+Filler is only dropped while something is left to match — a team really can be called `team`. The guard is per-step, so `"the team"` normalizes to `"team"` (article gone, noun kept) rather than to nothing. A normalizer that can return the empty string is a rung that matches everything, so the rung additionally refuses to build a needle from an empty run; `"-"` and `"'s"` match NOTHING, including against a pathological name carrying an empty segment.
+
+### Z5 — What did NOT change, and the pins that hold it
+
+The ladder's core discipline is correct and is untouched: **the first rung with exactly one hit wins, and >1 hit on a rung returns `ambiguous` with the candidate names.** No result is collapsed into a best guess; no rung was reordered so a fuzzy match can beat an exact one. `RESOLVE_MAX_EDIT_DISTANCE` is still 2 and the fuzzy rung's behaviour is unchanged at distance 2 (resolves) and distance 3 (unknown).
+
+Five regression pins in `tests/unit/core/vox/team-context.test.ts` exist solely to hold rung order — each builds an index where the segment rung would hit ≥2 names, so hoisting it above the rung under test turns a resolve into an `ambiguous`. They were mutation-verified, not assumed: hoisting the segment rung above rung 1 reddens 5 tests, demoting it below Levenshtein reddens 1, dropping the boundary anchoring reddens 3, and collapsing `ambiguous` into a first-pick reddens 8.
+
+The honest consequence of a real fleet: **`"geoyws"` resolves only where that segment is unique.** Across `atmux-geoyws` + three `px-*-geoyws` teams it is `ambiguous` with all four candidates, and that is the right answer — the brief's table row is a statement about a fleet where the segment distinguishes, not a promise to pick one.
+
+### Z6 — Not built
+
+- **Number-words.** "driver two" does not route to `driver-2`; only the digit form does. A word→digit map is another normalization pass with its own collision surface (a team segment really can be `one`), and no evidence yet says ASR emits the word form here. Named rather than added.
+- **`my` / `our` as leading filler.** Only `the` is stripped. Every word added to the filler set is a word the segment rung can no longer match, and a team can be named after a common word.
+- **The voice path is unproven for this change.** Acceptance is the unit matrix; the e2e harness costs real API calls and its judge is non-deterministic (§Supplement-7 Y7), so it is run on the main loop, not here.
+
+
+## Acceptance
+
+`fleet_attention` / `fleet_quiet` are covered by **[RUNBOOK-voice.md](../RUNBOOK-voice.md) §7 V-20** (added 2026-08-16 — until then the daily-use half of the voice surface had no acceptance row at all). Four legs: the sweep is bounded, unreadable teams are reported rather than omitted, the attention list honours the top-N speech budget, and `fleet_quiet` aggregates without naming a pane. All four are headless-verified and confirmed by a live CLI sweep; the **voice tool path** around the shared classifier is explicitly recorded there as unproven.
+
+---
+
+## Supplement-9 — OQ-1 answered: no spoken second factor; bound the blast radius instead (2026-08-21)
+
+**Decision made under operator delegation** ("do all that needs my attention according to
+ur recommendation", 2026-08-21). OQ-1 was marked *Operator decision, required before
+`pane_send` ships*; this records the answer and the reasoning so it is reviewable rather
+than assumed. **Status stays `proposed`** — an ADR is not accepted by being decided, and
+this one in particular touches the most powerful tool in the catalog.
+
+### AA1 — The answer
+
+**No second factor. `pane_send` ships on D7 confirmation + verbatim read-back, plus four
+structural bounds below.** The friction a spoken factor costs is real and lands exactly on
+the 2am one-handed case the feature exists for; what it buys, on this threat model, is
+close to nothing.
+
+### AA2 — Why a spoken passphrase buys nothing here
+
+A passphrase spoken into the session rides **the same channel as the request it is meant to
+authorise**. Anyone positioned to issue a `pane_send` — a hijacked socket, a live session on
+an unlocked phone, a model that decided to redeem its own token — is equally positioned to
+supply the passphrase, because it arrives through the same microphone and the same
+WebSocket. It authenticates nothing the session token and the O2 auth layer did not already
+authenticate.
+
+It is worth being precise about what it *would* defend against, because "add a second
+factor" sounds unconditionally safer. It defends against an attacker who can inject a tool
+call but cannot speak — which is not a shape this surface has: the model is the only thing
+that issues tool calls, and the model can emit any string.
+
+A code echoed from **another** channel (a phone push, a Discord message) is a genuine second
+factor. It is also a full stop on the use case: the operator is holding one phone, at 2am,
+and the premise is that the pane is wedged *now*. Requiring a second device to unstick the
+first is a feature that will not be used, and an unused safety control protects nothing.
+
+### AA3 — The real risk is targeting and transcription, not authorisation
+
+The failure that actually threatens `pane_send` is not an unauthorised caller. It is an
+**authorised caller whose words or target were misheard** — right text, wrong pane, or wrong
+text, right pane. ASR is the weak link, and a passphrase does not make ASR better.
+
+So the safety budget goes there instead. Four bounds, all server-enforced, none of which
+cost the operator a syllable:
+
+1. **The preview reads back the RESOLVED target, not the spoken one.** The confirm envelope
+   must name the team and member as `resolveTeamName` actually resolved them, so "driver
+   two" that landed on `px-crm-geoyws-driver-2` is spoken back as that full name. An
+   `ambiguous` resolution **refuses** rather than picking — the ladder already returns
+   candidates (§Supplement-8), and a voice tool guessing a target is precisely the fault
+   this ADR exists to avoid.
+2. **Driver panes are refused**, as `pane_nudge` already refuses them (ADR-239). The driver
+   is the operator's own interactive surface; text injected there is text the operator will
+   believe they typed.
+3. **The text is a single line, capped.** Control characters, and any newline or carriage
+   return that would submit more than the one previewed command, are rejected rather than
+   stripped — stripping changes what the operator confirmed, which is the same class of
+   fault as confirming one action and performing another (D7 §argument-binding).
+4. **Delivery is verified, per D5.** The tool reports the pane state *after* the send. "I
+   sent it" is a claim; "the composer cleared and the agent is working" is a receipt.
+
+### AA4 — The honest residue
+
+This does **not** make `pane_send` safe in the way a hardware key makes SSH safe, and the
+gap should not be papered over:
+
+- **The affirmation is still not server-enforced** (ADR-272 D7 §Clarification). The server
+  enforces the token's binding, TTL and single-use burn; nothing server-side observes the
+  operator saying yes. A model that redeemed its own token without speaking the preview
+  would be caught only by the operator noticing they never heard one. That is unchanged by
+  this decision and is now the load-bearing check on the most powerful tool in the catalog.
+- **The four bounds constrain WHERE and WHAT SHAPE, not WHAT.** "Whatever the operator said,
+  typed into an agent with full tool access" remains neither enumerable nor reversible (D4).
+  A correctly-targeted, correctly-transcribed, correctly-confirmed instruction can still be
+  a bad instruction.
+- **`spawn` / `stop` / `kill` keep their second-factor requirement** (ADR-272 §Deferred).
+  This supplement does not relax that and must not be read as precedent for it: their
+  failure mode is a misheard *name* destroying an enumerable thing, which read-back of a
+  resolved target addresses far less completely than it does for a send.
+
+### AA5 — What must be true before it ships
+
+`pane_send` is still **not built**. This answers the gate; it does not open it. Shipping it
+requires all four AA3 bounds implemented and tested, an e2e scenario in the mutating half
+asserting **on cage state** that a refused target did not receive the text (the inert-control
+discipline from ADR-272 §E6), and the confirm-replay scenario extended to cover it.
+
+---
+
+## Supplement-10 — the resolution ladder stops at TEAMS, and the operator names members too (2026-08-21)
+
+### AB1 — What the first mutating e2e run exposed
+
+§Supplement-8 gave **team** names a resolution ladder. **Member** names never got one. `pane_nudge`'s `member` argument goes to `src/verbs/nudge.ts` and is matched **exactly** against `team.json`, which throws `no such member in team.json: <x>`.
+
+Measured on the 2026-08-21 run (ADR-272 §E6): told *"the pane called **be one**"*, the assistant produced `b1`. The confirm token minted, the operator confirmed, the token redeemed — and the verb then failed on an unknown member. Every layer did its job; the name never survived the trip.
+
+### AB2 — Half of it is fixed, and it is the half that generalises
+
+The immediate cause was **spoken numbers**: `normalizeSpoken` turned `"driver two"` into `driver-two`, which matched nothing, while the names carry `driver-2`. ASR writes the word far more often than the digit, so the segment rung was matching the form nobody says. Fixed 2026-08-21 — `SPOKEN_NUMBERS` maps `zero…twenty` on the spoken side only, so exact/case-fold/prefix are untouched and a team literally called `one` still wins on rung 1.
+
+Levenshtein could not have covered it: `be-one` → `be-1` is 3 edits, past `RESOLVE_MAX_EDIT_DISTANCE`, and widening that budget starts matching genuinely different names.
+
+### AB3 — What is still missing
+
+**A `resolveMemberName`.** `team-context.ts` exports `resolveTeamName` and nothing else, so the ladder's discipline — first rung with exactly one hit wins, `>1` hits returns `ambiguous` with candidates, never a guess — applies to teams and stops there. Members are the level the operator actually names when acting (`pane_nudge`, `pane_send`, `dispatch_task`), which makes this the more consequential half.
+
+It should reuse the same rungs over the team's member list rather than growing a second, subtly different matcher. Two constraints carry over unchanged and one is new:
+
+- **`ambiguous` must refuse**, exactly as it does for teams. A voice tool guessing which pane to type into is the fault this ADR exists to avoid, and §Supplement-9 §AA3 already requires the confirm preview to read back the **resolved** target.
+- **The rungs are the same ladder**, including the segment rung and the spoken-number substitution — `be-1`, `be one`, `driver 2`, `driver two` are all the same utterance.
+- **New: the candidate set is per-team and tiny** (a handful of members), so the Levenshtein rung is far more likely to produce a unique-but-wrong hit than it is across twenty-odd team names. The threshold deserves re-derivation against real rosters rather than inheriting `2` by default.
+
+### AB4 — Not the whole story, and do not let this scenario be called fixed
+
+`nudge_confirmed` will not pass on member resolution alone. `drilldown` and `nudge_declined` failed the **tool gate** in the same run — `the assistant invoked [nothing]` — which is neither a resolver nor a judge-criteria failure: the model called no tool at all. `drilldown` has now failed twice, for two different reasons. That is a prompt/tool-affordance question, separate from this one, and it is unresolved.

@@ -37,7 +37,7 @@
 // + repo root) so the swap is mechanical, no contract change.
 
 import { join } from "node:path";
-import { ensureDir, exists, readText, writeText } from "../abstractions/fs.ts";
+import { ensureDir, exists, readText, statOrNull, writeText } from "../abstractions/fs.ts";
 import { withLock } from "../abstractions/lock.ts";
 import { closeDatabase, openDatabase } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
@@ -57,7 +57,7 @@ import {
   removeFromSentinel,
   sentinelPath,
 } from "../core/ombudsman.ts";
-import { type CaptureFn } from "../core/pane-state.ts";
+import type { CaptureFn } from "../core/pane-state.ts";
 import { ComplaintsRepo } from "../core/repositories/complaints-repo.ts";
 import {
   type AppendLogFn,
@@ -493,14 +493,37 @@ function stateDbPath(atmuxDir: string): string {
 /** Walk up from `atmuxDir` until a `.git` directory is found; that's the
  *  repo root. Falls back to `atmuxDir`'s parent if no `.git` is found
  *  (e.g. test fixtures running outside a real git repo). */
-async function resolveRepoRoot(atmuxDir: string): Promise<string> {
+/**
+ * True when `<dir>/.git` really marks a git repository root.
+ *
+ * A bare `exists()` check is NOT enough, and the difference is not
+ * academic: an EMPTY `.git` DIRECTORY is enough to satisfy it, and one
+ * exists at `/tmp/.git` on this host. The walk below then stopped at
+ * `/tmp`, and every release-notes append from a test using a `/tmp`
+ * scratch dir landed in `/tmp/docs/release-notes/…` — outside the
+ * sandbox, into a real file, silently, for days. A tool that writes
+ * somewhere it never established is the same class this codebase keeps
+ * finding; here the misidentified state was "this is a repo".
+ *
+ * A real marker is either a gitlink FILE (worktree / submodule — the
+ * cases the walk exists to handle) or a directory carrying `HEAD`.
+ */
+async function isGitRoot(dir: string): Promise<boolean> {
+  const st = await statOrNull(join(dir, ".git"));
+  if (st === null) return false;
+  if (st.isFile) return true; // gitlink: worktree or submodule
+  return await exists(join(dir, ".git", "HEAD"));
+}
+
+/** Exported so tests can drive the walk without a real repo — same
+ *  reason `spliceUnderSection` is exported. */
+export async function resolveRepoRoot(atmuxDir: string): Promise<string> {
   // atmuxDir is typically `<repoRoot>/.atmux`; the parent is the candidate.
   // But submodule + worktree cases (e.g. `<repoRoot>/.atmux/worktrees/X`)
   // need the walk to find the right .git.
   let cur = atmuxDir;
   while (true) {
-    const candidate = join(cur, ".git");
-    if (await exists(candidate)) return cur;
+    if (await isGitRoot(cur)) return cur;
     const parent = join(cur, "..");
     const parentResolved = await resolvePath(parent);
     if (parentResolved === cur) break;

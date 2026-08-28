@@ -36,6 +36,12 @@
 > **opt-in**. See §1.2 principle 3, corrected 2026-08-06, for the current position
 > and the full position history.
 
+> ⚠ **2026-08-27 — orchd retired entirely** ([ADR-276](adr/276-orchd-retirement-and-atmux-scope.md)).
+> The daemon, verb, window, tickers and epic-machinery consumers are gone; atmux's
+> scope is tmux cages + `atmux vox`. The one-shot event drain survives as
+> operator-invoked `atmux committer --drain`. Read every "orchd is the runtime"
+> sentence in this PRD as history.
+
 > **2026-08-06 — business-intent document upstream of this PRD.**
 > [docs/brd/atmux.md](brd/atmux.md) is atmux's **Business Requirements Document**:
 > it records WHY atmux exists, who pays when it does not work, what outcome counts
@@ -144,8 +150,9 @@ Three durable principles (see `docs/ARCHITECTURE.md`):
    that explicitly sets `"orchestration": { "mode": "orchd" }`, and even then
    every orchd consumer (auto-merge, auto-push, auto-spawn, solo-worker
    dissolve, lead-stall watchdog, context/budget scanners) becomes opt-in with
-   it. `atmux orchd --start / --drain / --sweep` remains manually invocable in
-   any mode. The operator's recorded rationale is verbatim in ADR-260: *"LLMs
+   it. `atmux orchd --start / --drain / --sweep` remained manually invocable in
+   any mode until ADR-276 removed the verb (the drain is now `atmux committer
+   --drain`). The operator's recorded rationale is verbatim in ADR-260: *"LLMs
    can manage their own fleet better than atmux can at the moment."* atmux
    still **NEVER** writes to crontab
    ([ADR-233](adr/233-cron-auto-install-disabled-trust-orchd.md)).
@@ -287,7 +294,7 @@ Per `PLAN.md` §15:
 > §3.1–§3.5 describe **shipped** surface. §3.6, added 2026-08-06, describes three
 > requirement areas that are **ADR-proposed and NOT shipped** — every verb, flag,
 > table, and probe named there is a proposal, not an available command.
-> §3.7, added 2026-08-15, returns to **shipped** surface: the voice operator
+> §3.7, added 2026-08-15, returns to **shipped** surface: the vox operator
 > interface, live and deployed in a deliberately reduced read-only posture.
 
 ### 3.1 Verbs (30, including aliases)
@@ -339,7 +346,8 @@ on next `atmux start`.
 pluggable cockpit-W3 whip-manager (ADR-132 / ADR-158 / ADR-183 / ADR-185)
 is fully removed. Mechanical observation + Enter-push + `claim-next`
 re-fires distribute to Honker event consumers per sibling EPIC
-e-a946af69 (orchd Phase 3-5). Until those consumers ship, the lead's
+e-a946af69 (orchd Phase 3-5 — these consumers will NOT ship; orchd retired
+per ADR-276). Absent them, the lead's
 self-driven whip cron (`team.whip.intervalMins`) is the canonical
 observe + intervene loop; on-demand audits via `atmux doctor` cover the
 gap. Legacy `team.sentinel` / `cockpit.sentinel` / `cockpit.defaultSentinel`
@@ -591,11 +599,15 @@ operator's head plus the branch string typed into `/rcheckout`.
   class (claimed-but-not-progressing kanban lanes, root-repo-only). The ledger
   sits beside it and does not extend it.
 
-### 3.7 Voice operator interface — `atmux voice` (SHIPPED; deployed read-only)
+### 3.7 Vox operator interface — `atmux vox` (SHIPPED; deployed read-only)
 
 Design and rationale: [ADR-272](adr/272-voice-operator-interface.md) (Status:
-proposed). Operating surface + acceptance checklist:
-[docs/RUNBOOK-voice.md](RUNBOOK-voice.md).
+proposed). The name is [ADR-274](adr/274-atmux-vox-rename.md): the feature
+shipped as `atmux voice` and was renamed to **vox** on 2026-08-16, which is why
+ADR-272 and ADR-273 still carry the old word in their titles — the ADR tree is
+append-only and an ADR is named for what it decided when it decided it.
+Operating surface + acceptance checklist:
+[docs/RUNBOOK-vox.md](RUNBOOK-vox.md).
 
 **What it is.** A spoken operator interface for the fleet. The chain is
 **phone PWA → WebSocket relay on the operator's box → realtime AI provider →
@@ -604,12 +616,12 @@ holds the conversation and decides *which* tool to call, and the server decides
 what is permitted and runs it. Every tool the model can call is an `atmux` verb
 invocation built as an argv array — never a composed shell string, never
 `sh -c`, and there is no `run_command` or `eval` in the catalog ([ADR-272](adr/272-voice-operator-interface.md)
-§D2). Deleting the voice subsystem removes a microphone, not a capability:
+§D2). Deleting the vox subsystem removes a microphone, not a capability:
 everything it exposes is already reachable from the operator's terminal.
 
 **Who it is for.** One person — the operator — away from the desk, often
 one-handed: walking, in a lift, in a car. It is deliberately not a multi-user
-surface. Exactly one voice session is active at a time, takeover is
+surface. Exactly one vox session is active at a time, takeover is
 latest-wins, and a dropped phone parks the provider leg for 90 seconds so
 walking into a lift does not end the conversation (§D8). The motivation is
 coordination, not convenience: under manual orchestration
@@ -639,11 +651,11 @@ survey half ships before any ability to type into a pane. A full sweep of the
 real fleet takes about a tenth of a second.
 
 **What it cannot do today — the deployed posture is read-only.** The live
-deployment runs with `ATMUX_VOICE_READONLY=1`, so **only the 12 read tools
+deployment runs with `ATMUX_VOX_READONLY=1`, so **only the 12 read tools
 exist as far as the model is concerned**: the 4 messaging tools are filtered
-out of the catalog handed to the provider (`src/verbs/voice.ts`), and the tool
+out of the catalog handed to the provider (`src/verbs/vox.ts`), and the tool
 bridge independently refuses any mutating call with a `readonly_mode` error
-(`src/core/voice/tool-bridge.ts`) as a second layer. **Voice can therefore read
+(`src/core/vox/tool-bridge.ts`) as a second layer. **Vox can therefore read
 the fleet and change nothing.** Clearing the flag is phase P7 and is a
 deliberate, separate step — the flag carries an [ADR-266](adr/266-shim-sunset-policy-and-first-sweep.md)
 sunset marker.
@@ -659,18 +671,32 @@ speaking a stale binary protocol is the failure it refuses to buy).
 **Privilege, stated plainly.** The server sets `ATMUX_CALLER_SCOPE=driver` on
 every verb it invokes (§D3), so **whoever reaches the WebSocket is the
 driver.** That is why authentication is layered — an `oauth2-proxy` vhost, a
-`≥32`-char `ATMUX_VOICE_TOKEN` compared timing-safely *before* the WebSocket
+`≥32`-char `ATMUX_VOX_TOKEN` compared timing-safely *before* the WebSocket
 upgrade, a `hello` re-assertion plus an `Origin` allowlist (the CSRF defense —
 browsers do not apply same-origin policy to WebSocket handshakes), a loopback
 bind so only nginx can reach the port, and the read-only kill switch above.
 API keys never leave the box: the transport is a server-side relay
 specifically so provider credentials are never placed on a phone.
 
-**Verb surface.** `atmux voice [--serve|--supervise|--status|--stop]
+**Verb surface.** `atmux vox [--serve|--supervise|--status|--stop]
 [--port <n>] [--provider <p>] [--model <m>] [--readonly]`. `--supervise` runs
-the server inside a dedicated detached `atmux-voice` tmux session under a
+the server inside a dedicated detached `atmux-vox` tmux session under a
 crash-loop wrapper with a circuit breaker; it is operator-started and starts
 nothing at boot ([ADR-233](adr/233-cron-auto-install-disabled-trust-orchd.md)).
+
+**Both pre-rename names still work for one release, and they warn**
+([ADR-274](adr/274-atmux-vox-rename.md) §D2–§D3, per
+[ADR-266](adr/266-shim-sunset-policy-and-first-sweep.md) §D1). `atmux voice` is
+a working alias for `atmux vox` that prints a deprecation line to stderr, and
+`ATMUX_VOICE_*` is still read as a **fallback** wherever the `ATMUX_VOX_*`
+equivalent is unset, also warning; `ATMUX_VOX_*` wins when both are set. Both
+carry `SUNSET(v0.9.1)` markers and go in that release. The env fallback is the
+load-bearing half — `ATMUX_VOICE_TOKEN` is exported in shells that are already
+open, so without it the first launch after the rename fails with
+`ATMUX_VOX_TOKEN is required`, a message that does not name its own cause.
+Deliberately *not* renamed: the hostname `atmux.geoy.ws` (the host name is not
+the feature name) and the token's value (rotating a working credential during a
+rename makes a failure ambiguous).
 
 **Half of [ADR-273](adr/273-voice-fleet-triage-and-pane-input.md) is shipped.**
 Its survey half — fleet triage (`fleet_attention` / `fleet_quiet`) — is in the
@@ -1247,10 +1273,10 @@ Critical ADRs with active behavior:
 
 ### 2026-08-14 voice batch (surface in §3.7)
 
-- **[ADR-272](adr/272-voice-operator-interface.md)** — `atmux voice`, a spoken
+- **[ADR-272](adr/272-voice-operator-interface.md)** — `atmux vox`, a spoken
   operator interface: mobile PWA → WebSocket relay → provider-neutral realtime
   seam → verb-only tool bridge. **Shipped and deployed read-only**
-  (`ATMUX_VOICE_READONLY=1`), Status: proposed. Carves out
+  (`ATMUX_VOX_READONLY=1`), Status: proposed. Carves out
   `docs/ARCHITECTURE.md` §Principles item 1 for the *operator* seam only, behind
   an enforced import fence (§D1); every tool is an argv-built `atmux` verb call
   (§D2); the server acts with driver scope (§D3); mutation confirmation is

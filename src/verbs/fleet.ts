@@ -1,7 +1,7 @@
 // ADR-273 D1/D2/D3: `atmux fleet --attention | --quiet` — the fleet
 // triage sweep behind the `fleet_attention` / `fleet_quiet` voice tools.
 //
-// The classifier and the spoken shape live in `src/core/voice/fleet.ts`
+// The classifier and the spoken shape live in `src/core/vox/fleet.ts`
 // (pure, fixture-testable). THIS file is the IO half: enumerate teams
 // from the cockpit, read every pane, and hand the observations over.
 //
@@ -21,14 +21,14 @@
 // only to enrich (labels). A window the roster never heard of is still a
 // pane the operator owns.
 //
-// Viewer windows are the one exclusion: an ADR-089 epic-team viewer runs
-// `tmux attach` into ANOTHER session, so capturing it would double-count
-// a pane that the child team's own sweep already reports. They are
-// identified structurally (`pane_current_command === "tmux"`), not by
-// name. That exclusion is load-bearing precisely BECAUSE epic-teams are
-// now swept directly (see {@link resolveEpicEntry}) — without it, a live
-// epic-team's panes would be reported twice, once through its own cage
-// and once through the parent's 🌳 viewer.
+// Viewer windows are the one exclusion: an ADR-089 nested-cage viewer
+// runs `tmux attach` into ANOTHER session, so capturing it would
+// double-count a pane that the child team's own sweep already reports.
+// They are identified structurally (`pane_current_command === "tmux"`),
+// not by name. That exclusion is load-bearing precisely BECAUSE a nested
+// team is swept directly through its own cockpit entry — without it, a
+// live child's panes would be reported twice, once through its own cage
+// and once through the parent's viewer window.
 //
 // ---------------------------------------------------------------------
 // Bounding (ADR-273 §Consequences)
@@ -54,9 +54,8 @@
 // the resolved name).
 
 import { now as nowMs } from "../abstractions/time.ts";
-import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
+import { createTmux, exactSessionTarget, type TmuxNamespace } from "../abstractions/tmux.ts";
 import { readOpenFlagsMd } from "../core/blockers.ts";
-import { resolveEpicCageRoot } from "../core/cage-resolver.ts";
 import {
   enabledTeams,
   type FlattenedTeamEntry,
@@ -73,12 +72,14 @@ import {
   buildVerdict,
   type FleetSweep,
   type PaneObservation,
+  parseWindowProbe,
   renderAttention,
   renderQuiet,
   type TeamAsks,
   type UnreadableTeam,
-} from "../core/voice/fleet.ts";
-import { paneGist } from "../core/voice/summarize.ts";
+  WINDOW_PROBE_FORMAT,
+} from "../core/vox/fleet.ts";
+import { paneGist } from "../core/vox/summarize.ts";
 import { UsageError } from "../errors.ts";
 
 const USAGE =
@@ -204,35 +205,20 @@ export interface FleetDeps {
   now?: () => number;
   /** Deadline sleeper (injected so a test need not really wait). */
   sleep?: (ms: number) => Promise<void>;
-  /** Rewrite an `epic-team` cockpit entry to its OWN cage root, or
-   *  `null` when that cage is gone from disk. Defaults to
-   *  {@link resolveEpicEntry}; tests inject to drive both branches
-   *  without laying down worktrees. */
-  resolveEpicEntry?: (entry: FlattenedTeamEntry) => FlattenedTeamEntry | null;
   /** stdout sink. */
   logger?: { log: (m: string) => void };
 }
 
-/** Split `#{window_activity}\t#{pane_dead}\t#{pane_current_command}`. */
-export function parseWindowProbe(
-  raw: string,
-  nowSec: number,
-): { activityAgeSec: number | null; paneDead: boolean | null; currentCommand: string | null } {
-  const [activity, dead, cmd] = raw.trim().split("\t");
-  const activityEpoch = Number(activity);
-  const activityAgeSec =
-    activity !== undefined && activity !== "" && Number.isFinite(activityEpoch)
-      ? Math.max(0, nowSec - activityEpoch)
-      : null;
-  const paneDead = dead === undefined || dead === "" ? null : dead === "1";
-  const currentCommand = cmd === undefined || cmd === "" ? null : cmd;
-  return { activityAgeSec, paneDead, currentCommand };
-}
-
-/** tmux format string for the one-call-per-window liveness probe. The
- *  activity clock is what trap 3 needs: it is maintained by tmux, not
- *  derived from the pane text, so a frozen render cannot forge it. */
-export const WINDOW_PROBE_FORMAT = "#{window_activity}\t#{pane_dead}\t#{pane_current_command}";
+// `parseWindowProbe` + `WINDOW_PROBE_FORMAT` moved to `src/core/vox/fleet.ts`
+// (ADR-273 §Supplement-6). They are pure, and `src/core/cage-state.ts` now
+// collects the same three signals for `atmux status` — core must not import
+// from `src/verbs/**`, so the shared shape lives in the shared module. The
+// re-export keeps every pre-move importer resolving.
+export {
+  parseWindowProbe,
+  WINDOW_PROBE_FORMAT,
+  type WindowProbe,
+} from "../core/vox/fleet.ts";
 
 /**
  * Production per-team probe. Resolves the socket + the ANCHOR-AWARE
@@ -240,8 +226,8 @@ export const WINDOW_PROBE_FORMAT = "#{window_activity}\t#{pane_dead}\t#{pane_cur
  *
  * A team whose session is absent yields ONE `dead` observation rather
  * than N: the operator needs to hear "sopx is down", not six identical
- * clauses. When the roster is known the lead's name is used as the
- * subject, otherwise the team stands in for itself.
+ * clauses. That observation carries NO member — the team stands in for
+ * itself, because there is no pane behind it to name.
  */
 export async function probeTeamLive(
   team: FlattenedTeamEntry,
@@ -256,13 +242,19 @@ export async function probeTeamLive(
 
   const asks = await readTeamAsks(team, nowSec);
 
-  const sessionUp = await tmux.session.hasSession(sessionName);
+  const sessionUp = await tmux.session.hasSession(exactSessionTarget(sessionName));
   if (!sessionUp) {
     return {
       panes: [
         {
           team: team.name,
-          member: roster?.members[0]?.name ?? "cage",
+          // TEAM-level, so it names no pane. There is none to name: the
+          // session is absent. The literal `"cage"` this replaced was
+          // spoken aloud as "member cage" and scored as a hallucination
+          // by the e2e judge — correctly, since no such member exists —
+          // and `members[0]` would be the same lie with a plausible name,
+          // attributing a whole-team fact to one arbitrary member.
+          member: null,
           windowName: sessionName,
           sessionUp: false,
           windowPresent: false,
@@ -369,80 +361,6 @@ export async function readTeamAsks(
 // ---------- Sweep ----------
 
 /**
- * The ONE thing about an epic-team the cockpit entry cannot tell you.
- *
- * A cockpit `epic-team` node carries the PARENT's root (the flattener
- * threads `parentRoot` into `.root` so duck-typed consumers keep
- * working), so probing the entry as-is reads the parent's cage and
- * reports a confident wrong answer. That is why the first cut of this
- * sweep reported every epic-team as unreadable.
- *
- * It is not, however, unresolvable — it is resolvable one level down.
- * `spawn-epic` writes the epic-team a root of its own, with its own
- * `team.json` (carrying `tmuxTmpdir`, hence its own socket) and its own
- * session anchor, at one of two conventions that
- * {@link resolveEpicCageRoot} owns. Resolve that root and the entry
- * becomes an ordinary team: {@link probeTeamLive} needs no epic-specific
- * branch, because everything it reads (`tryLoadTeam`,
- * `resolveTeamSocket`, `resolveCageSessionName`, {@link readTeamAsks})
- * already keys off the root.
- *
- * Only when NEITHER convention exists on disk is there nothing to read —
- * and that is a different fact than "could not be read": the cage is
- * gone while its cockpit entry survives. See
- * {@link EPIC_TEAM_STALE_REASON}.
- */
-export function resolveEpicEntry(
-  entry: FlattenedTeamEntry,
-  existsSync?: (p: string) => boolean,
-): FlattenedTeamEntry | null {
-  const opts = existsSync === undefined ? {} : { existsSync };
-  const own = resolveEpicCageRoot(entry.root, entry.name, entry.epicId ?? entry.name, opts);
-  return own === null ? null : { ...entry, root: own };
-}
-
-/**
- * Why an epic-team is reported unreadable once its cage has been sought.
- *
- * Deliberately not the old "its own cage is not resolvable from the
- * cockpit entry" text, which was true of EVERY epic-team, fired on every
- * sweep, and named no action — the "cries wolf" failure ADR-273 D3 is
- * written against. This one fires only when the epic-team has no live
- * cage, and the action it names removes the entry PERMANENTLY.
- *
- * ONE shared constant rather than a per-case string, deliberately: it is
- * what lets `renderUnreadable`'s group-by-reason collapse the whole set
- * into a single spoken clause. Both cases it covers are the same fact to
- * an operator — "this epic-team is not running and its entry outlived
- * it" — and both take the same action, so splitting the wording would
- * buy a second clause and no second decision.
- *
- * **The trade-off, stated rather than hidden.** An epic-team whose cage
- * is not running lands HERE rather than as a `dead` attention item, which
- * is where a top-level team in the same state lands. That asymmetry is
- * deliberate and rests on what the two cockpit entries MEAN. A top-level
- * entry is a standing declaration that the team should be up (`atmux
- * start` maintains it, cron re-arms it), so its session being absent is
- * news. An epic-team is ephemeral by construction — spawned per epic,
- * `autoDissolve` on fan-in — so its cage ending is its NORMAL terminal
- * state, and its entry outliving it is chronic bookkeeping, not an
- * incident. Ranking chronic state below news is the same call ADR-273
- * §S3.3 already made for `dormant`, for the same reason: on the live
- * fleet these are long-dissolved epics, and letting them hold spoken
- * slots on every sweep would push acute findings on other teams into the
- * remainder count forever.
- *
- * What this costs: an epic-team that SHOULD be running right now and
- * whose cage just died is reported on this line instead of as an acute
- * `dead` item. It is still named on every sweep — never omitted — but it
- * is ranked as bookkeeping. A live epic cage is swept in full, so
- * everything short of total cage death (wedged, rate-limited, crashed
- * panes) still reaches the operator through the normal classes.
- */
-export const EPIC_TEAM_NO_CAGE_REASON =
-  "epic-team has no live cage — an ephemeral team that ended; prune with 'atmux team dissolve-epic <name>'";
-
-/**
  * True when the probe found the team's tmux SESSION absent.
  *
  * Recognised by shape rather than by a flag: {@link probeTeamLive}
@@ -506,7 +424,6 @@ export async function sweepFleet(
   const started = now();
   const listTeams = deps.listTeams ?? defaultListTeams;
   const probe = deps.probeTeam ?? probeTeamLive;
-  const resolveEpic = deps.resolveEpicEntry ?? ((e: FlattenedTeamEntry) => resolveEpicEntry(e));
   const teams = await listTeams();
   const nowSec = Math.floor(started / 1000);
 
@@ -539,27 +456,9 @@ export async function sweepFleet(
       cursor += 1;
       const team = teams[idx];
       if (team === undefined) return;
-      // An epic-team's cockpit entry points at the PARENT's root, so it
-      // is rewritten to the epic-team's OWN root before probing. A live
-      // epic cage is then swept exactly like any other team; only one
-      // with no cage at all falls through to the unreadable line.
-      const isEpic = team.type === "epic-team";
-      let target = team;
-      if (isEpic) {
-        const resolved = resolveEpic(team);
-        if (resolved === null) {
-          unreadable.push({ team: team.name, reason: EPIC_TEAM_NO_CAGE_REASON });
-          continue;
-        }
-        target = resolved;
-      }
-      const outcome = await runOne(target);
+      const outcome = await runOne(team);
       if (!outcome.ok) {
         unreadable.push({ team: team.name, reason: outcome.reason });
-        continue;
-      }
-      if (isEpic && cageIsAbsent(outcome.result)) {
-        unreadable.push({ team: team.name, reason: EPIC_TEAM_NO_CAGE_REASON });
         continue;
       }
       panes.push(...outcome.result.panes);

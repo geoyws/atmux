@@ -7,6 +7,8 @@
 **Numbering shift**: this ADR is the **+1 shift** of driver-inbox's §ADR-089 epic-team-lifecycle ask, bumped to avoid collision with the live **ADR-086** (atmux-pulse, already shipped). The full shift is `driver-inbox §ADR-086→087 (stop --soft), §ADR-087→088 (submodule init), §ADR-088→089 (hierarchical cockpit), §ADR-089→090 (this), §ADR-090→091 (auto-merge), §ADR-091→092 (cross-team tell-lead)`. Future readers MUST cross-reference using the shifted IDs, not the original driver-inbox numbering.
 **Reviewer pre-flag**: `.atmux/reviewer-preflag-ADR089-091.md` §ADR-090 (signed 2026-05-13) — 7 §Decision-anchors folded into §Decision below. Adjacent-class audit: `.atmux/audits/adr-089-091-adjacent-class-2026-05-13.md` §Class 1 (signed 2026-05-13) — 4 additional schema-field recommendations folded into §Decision below. All 11 anchors land as numbered §Decision-anchor lines before the prose.
 
+> ⚠ **SUPERSEDED 2026-08-27 by [ADR-280](280-epic-team-retirement-and-staged-excision.md).** Epic-teams are retired: the `epic-team` cage type, the `epicId` cockpit field and the epic verbs no longer exist. This ADR is kept as history — the decision it records was true when made. Do not implement from it.
+
 ## Context
 
 ### Why this ADR exists now

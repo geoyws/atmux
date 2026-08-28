@@ -133,6 +133,30 @@ describe("selectLongstandingIssues", () => {
 
 // ---------- buildArmMessage (ADR-257 burndown-first) ----------
 
+// ADR-280 stage 4: both cases used `toContain("spawn-epic")` as a proxy
+// for "the ADR-257 §D3 isolation contract is present every cycle". Stage 3
+// changed the MECHANISM and kept the contract — the directive named
+// `atmux team spawn-epic`, a verb stages 2/3 deleted, and now names `git
+// worktree add`. Grepping for a verb name was always the weak form of
+// this assertion: it would have passed on a directive that named the verb
+// and promised nothing. Both cases now assert the four clauses the
+// contract is actually made of, via a shared helper so the two cannot
+// drift apart, plus a guard that the retired verb is not named again.
+
+/** Every clause ADR-257 §D3 requires of the standing isolation contract,
+ *  asserted the same way in both directive shapes. */
+function expectIsolationContract(msg: string): void {
+  expect(msg).toContain("isolated improvement worktree"); // 1. isolation
+  expect(msg).toContain("git worktree add"); // 2. the mechanism that provides it
+  expect(msg).toContain("NESTED worktrees"); // 3. large items nest, not sprawl
+  expect(msg).toContain("committer fans it into trunk LATER"); // 4. no direct landing
+  expect(msg).toContain("only when verified green");
+  expect(msg).toContain("never land unverified work on trunk");
+  // The retired spawn path must not come back by copy-paste.
+  expect(msg).not.toContain("spawn-epic");
+  expect(msg).not.toContain("epic-team");
+}
+
 describe("buildArmMessage", () => {
   test("no longstanding items → net-new fallback + worktree-isolation contract", () => {
     const msg = buildArmMessage(3);
@@ -140,8 +164,7 @@ describe("buildArmMessage", () => {
     expect(msg).toContain("burndown-first");
     expect(msg).toContain("No longstanding backlog");
     expect(msg).toContain("ask each lane member");
-    expect(msg).toContain("spawn-epic"); // isolation contract present every cycle
-    expect(msg).toContain("committer");
+    expectIsolationContract(msg); // present every cycle
     expect(msg.startsWith("🌱")).toBe(true);
   });
 
@@ -153,8 +176,7 @@ describe("buildArmMessage", () => {
     expect(msg).toContain("LONGSTANDING ISSUES FIRST");
     expect(msg).toContain("t-old1, t-old2");
     expect(msg).not.toContain("ask each lane member"); // net-new suppressed when backlog present
-    expect(msg).toContain("spawn-epic");
-    expect(msg).toContain("verified");
+    expectIsolationContract(msg); // …and the contract holds in BOTH shapes
   });
 });
 

@@ -212,3 +212,11 @@ overrideable until the relevant Task lands.
    does NOT emit `command` (only emits `tui`). No teams in the wild
    set it. A deprecation cycle for code that nobody is using is
    pure ceremony.
+
+## Amendments
+
+### 2026-08-24 — driver configuration and harness semantics superseded
+
+[ADR-239](239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md) superseded this ADR's singular `team.driverSession` assumptions with the declarative `drivers[]` roster, and [ADR-266](266-shim-sunset-policy-and-first-sweep.md) removed the legacy launch fallback. References above to `driverSession` remain historical context for the driver-role port, not current guidance for whether a driver exists or which program it starts.
+
+[ADR-278](278-nullable-driver-agent-harness.md) establishes the current launch contract: `drivers[].tui` may be null or omitted, in which case the driver starts zsh with no agent harness. An explicit non-null alias remains available when a team intentionally wants automatic harness launch. Driver-pane health and cockpit presence are therefore roster/topology concerns, not evidence that an agent harness was configured.

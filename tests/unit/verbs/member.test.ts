@@ -107,7 +107,7 @@ async function readTeamJson(): Promise<{
 
 async function startLiveSession(opts: { windowName: string }): Promise<void> {
   await env.tmux.session.newSession({
-    name: `atmux-${env.team}`,
+    name: env.team,
     detached: true,
     windowName: opts.windowName,
   });
@@ -238,7 +238,7 @@ describe("memberRename — happy path", () => {
     const tj = await readTeamJson();
     expect(tj.members[0]).toMatchObject({ name: "lead", label: "Lead Coordinator", emoji: "🧭" });
 
-    const windows = await env.tmux.window.listWindows(`atmux-${env.team}`);
+    const windows = await env.tmux.window.listWindows(env.team);
     const names = windows.map((w) => w.name);
     expect(names).toContain("🧭_Lead Coordinator");
     expect(names).not.toContain("🧭_lead");
@@ -462,12 +462,12 @@ describe("dispatchMemberSubverb", () => {
     ]);
     await startLiveSession({ windowName: "driver" });
     await env.tmux.window.newWindow({
-      sessionName: `atmux-${env.team}`,
+      sessionName: env.team,
       name: "🧭_lead",
       detached: true,
     });
     await env.tmux.window.newWindow({
-      sessionName: `atmux-${env.team}`,
+      sessionName: env.team,
       name: "🛠️-worker",
       detached: true,
     });
@@ -494,12 +494,12 @@ describe("dispatchMemberSubverb", () => {
     ]);
     await startLiveSession({ windowName: "driver" });
     await env.tmux.window.newWindow({
-      sessionName: `atmux-${env.team}`,
+      sessionName: env.team,
       name: "🧭_lead",
       detached: true,
     });
     await env.tmux.window.newWindow({
-      sessionName: `atmux-${env.team}`,
+      sessionName: env.team,
       name: "🛠️-worker",
       detached: true,
     });
@@ -716,7 +716,7 @@ async function bootMemberTeamWithWindows(
     const label = m.label ?? m.name;
     const windowName = `${m.emoji}${isDefault ? "_" : "-"}${label}`;
     await env.tmux.window.newWindow({
-      sessionName: `atmux-${env.team}`,
+      sessionName: env.team,
       name: windowName,
       detached: true,
     });
@@ -724,7 +724,7 @@ async function bootMemberTeamWithWindows(
 }
 
 async function liveWindowsByName(): Promise<{ index: number; name: string }[]> {
-  return (await env.tmux.window.listWindows(`atmux-${env.team}`)).map((w) => ({
+  return (await env.tmux.window.listWindows(env.team)).map((w) => ({
     index: w.index,
     name: w.name,
   }));

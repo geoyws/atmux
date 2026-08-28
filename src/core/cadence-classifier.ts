@@ -82,7 +82,7 @@ export type GitLogFn = (
   worktreePath: string,
   sinceSec: number,
   author: string,
-) => Promise<string[]>;
+) => Promise<string[] | null>;
 
 /** Construct-time deps for {@link classifyMemberCadence}. */
 export interface ClassifyMemberCadenceDeps {
@@ -205,11 +205,15 @@ export async function classifyMemberCadence(
   worktreePath: string,
   config: ClassifyMemberCadenceConfig,
   deps: ClassifyMemberCadenceDeps = {},
-): Promise<CadenceObservation> {
+): Promise<CadenceObservation | null> {
   const gitLog = deps.gitLog ?? defaultGitLog;
   const nowSec = (deps.nowSec ?? (() => Math.floor(Date.now() / 1000)))();
   const sinceSec = Math.max(config.windowSec, config.thresholds.dormantMaxAgeSec);
   const lines = await gitLog(worktreePath, sinceSec, member);
+  // `null` is "the probe could not read a repository here" — distinct
+  // from `[]` ("a repository with no matching commits"). Only the second
+  // supports a verdict; the first must not be turned into one.
+  if (lines === null) return null;
   return classifyCadence(lines, nowSec, config.windowSec, config.thresholds);
 }
 
@@ -229,7 +233,7 @@ export async function defaultGitLog(
   worktreePath: string,
   sinceSec: number,
   author: string,
-): Promise<string[]> {
+): Promise<string[] | null> {
   try {
     const r: SpawnResult = await defaultSpawn({
       cmd: "git",
@@ -244,12 +248,21 @@ export async function defaultGitLog(
       expectExitCode: "any",
       timeoutMs: 5000,
     });
-    if (r.exitCode !== 0) return [];
+    // A non-zero exit is NOT "no commits" — it is "I could not look".
+    // `git -C <not-a-repo> log` exits 128, and collapsing that to `[]`
+    // made the classifier hand back a confident `🟡 idle (never)` for a
+    // directory that has no repository at all. That verdict then reached
+    // the operator through `atmux status`, and through `team_status` it
+    // reached them SPOKEN: the vox drilldown transcript relayed the word
+    // "idle" about panes whose only sin was living outside a git repo.
+    // `null` means "no signal" and the caller renders `—`.
+    if (r.exitCode !== 0) return null;
     return r.stdout
       .split("\n")
       .map((l) => l.trim())
       .filter((l) => l.length > 0);
   } catch {
-    return [];
+    // Spawn failure / timeout — also "could not look", not "no commits".
+    return null;
   }
 }

@@ -4,6 +4,8 @@
 **Date**: 2026-06-03
 **Driver-ref**: operator session 2026-06-03 — while wiring the ADR-250 reaper's liveness check, the canonical resolver `resolveCageSocket(name, epicRoot)` was found to report **live epic cages as dead**.
 
+> ⚠ **SUPERSEDED 2026-08-27 by [ADR-280](280-epic-team-retirement-and-staged-excision.md).** Epic-teams are retired: the `epic-team` cage type, the `epicId` cockpit field and the epic verbs no longer exist. This ADR is kept as history — the decision it records was true when made. Do not implement from it.
+
 ## Context
 
 Epic cages get their own tmux socket. At spawn, `spawn-epic.ts` (§S2) writes the epic's `team.json` with `tmuxTmpdir = /tmp/atmux-<parentTeam>/epics/<epicId>`. The live socket is then `<tmuxTmpdir>/tmux-<uid>/default` — the same scheme every read/write path is required to resolve through `resolveTeamSocket(team)` (`src/core/common.ts`, whose own docs state: *"All sites read AND write MUST use this resolver"*).

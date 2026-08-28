@@ -242,3 +242,7 @@ Same as the original §Rollback path. Revert the amendment commit; legacy `drive
 ### 2026-08-07 — D5 "`/clear` or `/preclear`" reads "`/clear` or `/handoff`" (ADR-263)
 
 [ADR-263](263-merge-session-preclear-into-handoff.md) merges the `/session preclear` verb into `/session handoff` — one mode-aware verb, no `preclear` alias. D5's "No rotation" bullet — "Operator chooses when to `/clear` or `/preclear`" — reads **"`/clear` or `/handoff`"**. The invariant is unchanged: drivers never auto-rotate, orchd's 15min context scan still skips them, and the operator still manages their own context by hand.
+
+### 2026-08-24 — D7 `drivers[].tui` is nullable (ADR-278)
+
+[ADR-278](278-nullable-driver-agent-harness.md) replaces D7's required `tui: string` with `tui?: string | null`. A non-null value still requests command-mode TUI launch; `null` or absence launches zsh with no agent harness so the operator can choose a harness per session. D2's no-send-keys invariant and the rest of the driver topology are unchanged.

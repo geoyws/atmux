@@ -15,6 +15,7 @@
 
 import type { Database } from "bun:sqlite";
 import { readTextOrNull } from "../abstractions/fs.ts";
+import type { KanbanTask } from "../schema/kanban.ts";
 import { decisionsLogPath, driverInboxPath } from "./common.ts";
 
 // ---------- Taxonomy ----------
@@ -549,6 +550,9 @@ export interface QueryAllBlockersOpts {
   /** Driver-inbox entries past this age without triage glyphs are
    *  treated as `stale-claim` blockers. 24h. */
   staleInboxAgeSec?: number;
+  /** Adapter-backed task snapshot. When present, task blocker surfaces
+   *  must not consult the legacy work-state tables. */
+  tasks?: ReadonlyArray<KanbanTask>;
 }
 
 /** ADR-152 §queryAllBlockers — the verb-facing fan-out. Joins seven
@@ -564,12 +568,70 @@ export async function queryAllBlockers(
   const staleInbox = opts.staleInboxAgeSec ?? 24 * 3600;
 
   const rows: BlockerRow[] = [];
-  rows.push(...readBlockedTasks(db, now));
-  rows.push(...readStaleInProgressTasks(db, now, staleClaim));
+  rows.push(...(opts.tasks ? readBlockedTaskSnapshot(opts.tasks, now) : readBlockedTasks(db, now)));
+  rows.push(
+    ...(opts.tasks
+      ? readStaleTaskSnapshot(opts.tasks, now, staleClaim)
+      : readStaleInProgressTasks(db, now, staleClaim)),
+  );
   rows.push(...readOpenComplaints(db, now));
   rows.push(...readStuckMergerState(db, now));
   rows.push(...(await readPendingDecisionsMd(atmuxDir, now)));
   rows.push(...(await readOpenFlagsMd(atmuxDir, now)));
   rows.push(...(await readDriverInboxBlockers(atmuxDir, now, staleInbox)));
   return rows;
+}
+
+function readBlockedTaskSnapshot(tasks: ReadonlyArray<KanbanTask>, nowSec: number): BlockerRow[] {
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  return tasks
+    .filter((task) => task.status === "blocked")
+    .map((task) => {
+      const blockingDepIds = (task.deps ?? []).filter((id) => byId.get(id)?.status !== "done");
+      const cls: BlockerClass = blockingDepIds.length > 0 ? "dep-not-shipped" : "member-stuck";
+      const action =
+        cls === "dep-not-shipped"
+          ? `Land or remove deps: ${blockingDepIds.join(", ")} (then \`atmux task move ${task.id} todo\`)`
+          : `Re-claim or re-route: \`atmux task show ${task.id}\` then \`atmux task move ${task.id} todo\` once unblocked`;
+      const createdAt = task.createdAt ?? 0;
+      return {
+        id: `task:${task.id}`,
+        source: "sqlite-tasks-blocked",
+        opened_at: createdAt,
+        age_sec: ageOf(createdAt, nowSec),
+        summary: truncate(`${task.id} ${task.subject ?? "(no subject)"}`),
+        blocker_class: cls,
+        suggested_action: truncate(action, 200),
+        related_task_id: task.id,
+      };
+    });
+}
+
+function readStaleTaskSnapshot(
+  tasks: ReadonlyArray<KanbanTask>,
+  nowSec: number,
+  defaultStaleClaimAgeSec: number,
+): BlockerRow[] {
+  return tasks.flatMap((task): BlockerRow[] => {
+    if (task.status !== "in-progress" || !task.claimedAt) return [];
+    const staleSec = task.staleMin != null ? task.staleMin * 60 : defaultStaleClaimAgeSec;
+    const age = nowSec - task.claimedAt;
+    if (age < staleSec) return [];
+    const owner = task.owner ?? "(unowned)";
+    return [
+      {
+        id: `task-stale:${task.id}`,
+        source: "sqlite-tasks-stale",
+        opened_at: task.claimedAt,
+        age_sec: age,
+        summary: truncate(`${task.id} owner=${owner} ${task.subject ?? "(no subject)"}`),
+        blocker_class: "stale-claim",
+        suggested_action: truncate(
+          `Member ${owner} stale on ${task.id} for ${Math.floor(age / 3600)}h — \`atmux handoff ${owner} <fresh-member>\` or \`atmux rotate ${owner}\``,
+          200,
+        ),
+        related_task_id: task.id,
+      },
+    ];
+  });
 }

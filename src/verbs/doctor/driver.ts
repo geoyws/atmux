@@ -1,6 +1,5 @@
 import { readTextOrNull } from "../../abstractions/fs.ts";
-import { tryReadJson } from "../../abstractions/json.ts";
-import { driverInboxPath, kanbanJsonPath } from "../../core/common.ts";
+import { driverInboxPath } from "../../core/common.ts";
 import {
   type DriverInboxEntry,
   parseEntries as parseDriverInboxEntries,
@@ -10,7 +9,8 @@ import {
   type ProbeDriverPaneDeps,
   probeDriverPane,
 } from "../../core/driver-pane-health.ts";
-import { Kanban } from "../../schema/kanban.ts";
+import { kanbanWorkStateAvailable } from "../../core/kanban-backend.ts";
+import { loadKanban } from "../../core/kanban.ts";
 import type { Team } from "../../schema/team.ts";
 import { type DoctorRow, truncateEvidence } from "./types.ts";
 
@@ -193,8 +193,8 @@ export async function checkInboxMarks(
 ): Promise<DoctorRow[]> {
   const inboxBody = await readTextOrNull(driverInboxPath(atmuxDir));
   if (inboxBody === null || inboxBody.length === 0) return [];
-  const kanban = await tryReadJson(kanbanJsonPath(atmuxDir), Kanban);
-  if (kanban === null) return [];
+  if (!(await kanbanWorkStateAvailable(atmuxDir))) return [];
+  const kanban = await loadKanban(atmuxDir);
   const knownIds = new Set(kanban.tasks.map((t) => t.id));
   const nowEpochSec = opts.nowEpochSec ?? Math.floor(Date.now() / 1000);
   const marks = findInboxTaskMarks(inboxBody, nowEpochSec);

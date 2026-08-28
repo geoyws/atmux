@@ -4,6 +4,8 @@
 **Date**: 2026-05-20
 **Related**: [ADR-082](./082-worktree-per-member.md) (per-member worktree primitive), [ADR-084](./084-worktree-per-member-branch.md) (per-member-branch convention), [ADR-090](./090-epic-team-lifecycle.md) (spawn-epic / dissolve-epic — the verbs this ADR amends defaults on), [ADR-091](./091-kanban-driven-auto-merge.md) (fan-in mode the per-member-branch pattern feeds), [ADR-134](./134-in-team-auto-merger.md) (intra-team auto-merger consuming per-member commits), [ADR-194](./194-auto-push-just-done-sha.md) (sibling auto-push race mitigation — `shared` mode), [`feedback_shared_index_commit_race_hazard`](memory).
 
+> ⚠ **SUPERSEDED 2026-08-27 by [ADR-280](280-epic-team-retirement-and-staged-excision.md).** Epic-teams are retired: the `epic-team` cage type, the `epicId` cockpit field and the epic verbs no longer exist. This ADR is kept as history — the decision it records was true when made. Do not implement from it.
+
 ## Context
 
 Across 3 days (2026-05-18 → 2026-05-20), 4 shared-index race incidents have manifested in epic-teams operating with `worktreeIsolation: false` (the current `spawn-epic` default):

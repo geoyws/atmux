@@ -1,4 +1,5 @@
-// ADR-233 §retired — cron auto-install retired; orchd is the runtime.
+// ADR-233 §retired — cron auto-install retired (orchd, the runtime that
+// replaced it, was itself retired per ADR-276).
 //
 // This file is a transitional no-op shim that keeps un-cleaned-up
 // importers (src/verbs/{doctor,stop,cockpit,team-rename,...}.ts) compiling

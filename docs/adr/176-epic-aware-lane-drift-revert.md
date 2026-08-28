@@ -6,6 +6,8 @@
 **Date**: 2026-05-17
 **Supersedes (in part)**: ADR-127 §OQ5 — the 3-criterion auto-revert algorithm gains a 4th criterion (`epic-children-progressing`). Original 3 criteria remain; this ADR tightens the algorithm, never relaxes it.
 
+> ⚠ **SUPERSEDED 2026-08-27 by [ADR-280](280-epic-team-retirement-and-staged-excision.md).** Epic-teams are retired: the `epic-team` cage type, the `epicId` cockpit field and the epic verbs no longer exist. This ADR is kept as history — the decision it records was true when made. Do not implement from it.
+
 ## Context
 
 `src/core/lane-drift.ts` (per ADR-127 §OQ5) reverts an `in-progress` Task to `todo` when **all three** of the following hold:

@@ -2,6 +2,7 @@
 
 **Status**: proposed
 **Date**: 2026-08-14
+**See also**: [ADR-274](274-atmux-vox-rename.md) — the naming decision (§OQ-5) moved there: the verb is `atmux vox`, `ATMUX_VOICE_*` is `ATMUX_VOX_*`, and both old names keep working until v0.9.1. This ADR's title, filename and body stand as written (append-only) — only the name the feature shipped under changed.
 **Driver-ref**: operator-direct 2026-08-14 — a Jarvis-style voice assistant for the fleet: talk to atmux from a phone, hear back what the teams are doing, and move work along by speaking. The operating picture the design is built for is the operator away from the desk — walking, in a lift, in a car — wanting the same read of the fleet he gets from `atmux status`, plus the ability to nudge a lead, without opening a laptop.
 **Relates**: [ADR-258](258-vendor-agnostic-orchestration-agentbackend.md) (the `AgentBackend` adapter — the precedent D4's provider seam copies in shape, and the ADR whose scope D1 draws a boundary against), [ADR-260](260-manual-orchestration-mode-default.md) / [ADR-237](237-no-llm-discord-and-whip-removal.md) (the "no LLM in atmux's own loop" line — D1 explains why an operator interface is on the other side of it), [ADR-233](233-cron-auto-install-disabled-trust-orchd.md) (no boot autostart, nothing heavy at reboot — the constraint D10's supervision shape obeys), [ADR-033](033-kanban-driver-only-flag.md) (the `ATMUX_CALLER_SCOPE=driver` gate D3 grants deliberately), [ADR-271](271-sqlite-sole-store-rust-orchd-coordinator.md) (`state.db` is the sole store, and its D3 hazard — the `{ create: true }` footgun D2 makes structurally unreachable), [ADR-126](126-sqlite-state-store.md) (SQLite canonical), [ADR-245](245-singleton-atmux-per-project.md) (one `.atmux/` per project — the resolution the tool bridge inherits by going through verbs), [ADR-268](268-managed-repo-state-isolation-enforcement.md) (managed-repo state isolation — why no voice artifact is written into a product repo), [ADR-244](244-per-repo-pre-commit-kanban-decisions-snapshot.md) / [ADR-239](239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md) §Supplement-2026-05-26 (operator-private state residency), [ADR-044](044-driver-session-on-default-socket.md) (the driver session on the default socket — the tier D10's `atmux-voice` session joins), [ADR-162](162-atmux-owns-tmux-infrastructure.md) (atmux owns its tmux infrastructure — the cockpit/cage socket split D10 stays out of), [ADR-135](135-cockpit-naming-convention.md) (cockpit window-name contract — the reconcile pass D10 avoids being pruned by), [ADR-264](264-cockpit-session-atx-rename.md) / [ADR-265](265-atx-canonical-shorthand.md) (the `atx` cockpit session name D10 must not collide with), [ADR-266](266-shim-sunset-policy-and-first-sweep.md) (sunset discipline — the phase-gated flags in §Security carry expiries), [ADR-192](192-cron-arm-idempotency-contract.md) (cron-arm idempotency — why D10 is a supervised session, not a cron arm), [ADR-009](009-auto-rotation.md) §2 + [ADR-254](254-coverage-gate-completeness.md) (the 100%-on-tracked-paths gate D9 refuses to widen), [ADR-217](217-atmux-skills-plugin-bundled-and-wizard-installed.md) §D5 (the `templates/` staging pattern D9 reuses), [ADR-203](203-event-topic-taxonomy.md) (closed event-topic set — deliberately NOT amended; see §Deferred, proactive narration).
 
@@ -345,6 +346,115 @@ The guard answers *"does this model id exist?"*. It does **not** answer *"will a
 - **No automatic remediation.** The guard names the closest ids; it does not switch the pin. Silently dialling a model the operator did not choose is a worse failure than a loud one he can fix in one export.
 - **Gemini's model list is fetched as ONE page of 1000.** The API caps `pageSize` there and defaults to 50 — far under the live catalog, which would make a present model look absent. A `nextPageToken` loop is not built; if Google ever ships more than 1000 models, the symptom is a short list, and that is the signal to build it.
 
+## Supplement — the opt-in behavioural e2e harness (2026-08-16)
+
+Records a third diagnostic, alongside M2's drift guard and M3's live smoke. It changes no tool surface and no wire contract. It is the first gate in this feature that checks **answers** rather than **plumbing**, and the first that needs an isolation argument to be safe to run at all.
+
+### E1 — The gap the smoke leaves open
+
+M3's live smoke asserts a `session-ready` event and non-zero downlink bytes. Both can hold while the assistant is useless: a session that opens, negotiates, streams audio, and then tells the operator that a team which does not exist needs his attention passes every existing gate. Nothing between the model and the operator's ear checks whether the answer was **true**.
+
+That gap is widest exactly where this feature is most load-bearing. §D1's premise is an operator away from a laptop, taking the answer at face value because he cannot cheaply verify it. A confidently wrong fleet report is therefore not a cosmetic failure — it is the failure mode with the worst consequences and the least chance of being noticed.
+
+`scripts/voice-e2e.ts` speaks a real synthesized utterance into a real provider against a **throwaway** cage whose state is known, then has a **different model** grade the answer against that known state.
+
+### E2 — The judge is a different model, and its own verdict is not trusted
+
+Grading OpenAI Realtime with OpenAI Realtime measures self-consistency, not correctness: a shared mis-hearing or a shared plausible invention cancels into a green run. The judge is therefore Claude (`claude-opus-5`), via `ANTHROPIC_API_KEY`.
+
+Two further properties, each aimed at a specific way LLM-as-judge goes bad:
+
+1. **The verdict is structured, not scored.** One explicit pass/fail plus reasoning per *named* criterion, plus a separate list of any team or pane the assistant invented — enforced by a strict JSON schema. A single 1-to-10 number cannot say which property broke, and a harness whose failure output is "6/10" is one nobody debugs.
+2. **`overall_pass` is recomputed from the criteria, never believed.** A judge that marks three criteria failed and then reports "overall: pass" is a real, observed failure mode; so is one that silently drops the hardest criterion. Both are counted as failures — dropping a criterion is otherwise the cheapest way to pass.
+
+Tool choice is *not* left to the judge. "Did it call `fleet_attention`" is a fact, read directly off the `tool.start` frames, and facts should not be graded by a language model when they can be observed. A scenario passes only if both gates hold.
+
+### E3 — Isolation is structural, not careful
+
+The operator's fleet is 20+ live teams with real agents doing real work, on the **default tmux socket**. A test that nudges, dispatches to, or merely wedges one of those panes is far worse than no test at all — so the harness is built to be *incapable* of addressing them, and refuses to run unless it can prove it.
+
+The seam already exists and is load-bearing elsewhere: `ATMUX_COCKPIT_CONFIG` overrides the cockpit path, and each entry's socket is resolved from that team's own `team.json` `tmuxTmpdir` via `resolveTeamSocket`. A temp-dir cockpit listing one fake team, rooted under the temp dir, with its own `tmuxTmpdir`, therefore gets its own socket.
+
+`assertIsolated` refuses — `ConfigError`, `EX_CONFIG` — unless **all** of: `HOME` and the cockpit override are pinned under the temp root; the cockpit path is not `$HOME/.atmux/cockpit.json`; the cockpit lists **exactly** the teams the harness created; every root, `tmuxTmpdir` and resolved socket is under the temp root; no socket equals the default tmux socket; and no fake name collides with the operator's real roster.
+
+Three choices in there are deliberate:
+
+- **Set equality, not a blocklist.** A blocklist has to enumerate the real fleet to be safe, and silently rots the moment a team is added. Equality against the harness's own list cannot rot.
+- **The gate reads the cockpit back off disk**, not the plan it just built. What protects the fleet is what is actually on disk.
+- **It runs after the cage is built and before the server starts.** Nothing has been addressed by then, because materializing the cage only ever touches sockets under the temp root; and the properties being checked (file contents, per-team `tmuxTmpdir`) do not exist before the files do.
+
+Teardown carries the same discipline in reverse: it asserts which socket it is about to kill. A stray session on a stray socket is untidy; a kill aimed at the default socket would end live agent sessions.
+
+`process.env` is mutated rather than an env object passed downward, and that is required rather than convenient: the fleet verbs resolve the cockpit at **call** time, so a scoped env would leave the real path live for every tool the model invokes.
+
+### E4 — Why it stays out of `bun test`
+
+Same reasoning as M3, and it compounds: three API surfaces bill per run (realtime, TTS, judge), it needs three real keys from the git-crypt'd dotfiles, and any one provider's outage turns it red for reasons unrelated to the commit. Roughly $0.05–0.15 and 2–4 minutes per full run. Everything under `src/core/voice/e2e/**` is unit-tested against fakes at the usual 100% line+function gate, so the logic is covered without a network; only the shim dials. **No `coveragePathIgnorePatterns` entry was added** — the count stays at 4 (§D9).
+
+**When to run it: after any change to the tool catalog, the instructions, the fleet classifier, or the provider/model pin.** Those are the four places where the plumbing keeps working and the answers quietly get worse.
+
+### E4a — First run: two real faults, in a verb nobody was looking at
+
+The harness earned its keep on its first full run. `attention` and `all_ok` passed; `drilldown` failed, and the failure was a **true positive** in `status`, not in the harness or the model.
+
+The assistant relayed `team_status` accurately. `team_status` was wrong: it reported `pane-state=down` for three panes it had just described the session of as `[up]` — panes `fleet_attention` classified correctly from the same socket — and it printed `NEEDS APPROVAL: 19 ADRs / 1157 inbox`, counts that cannot belong to a team rooted in a `mkdtemp` directory and therefore belong to whichever repo the process happened to be run from.
+
+Two consequences worth recording. First, **the fault was reachable only by asking**: every existing gate — typecheck, the 100% unit suite, the model-pin guard, the live smoke — was green throughout, because none of them compares what a tool *says* to what is *true*. Second, the scenario is **left failing**. Loosening a criterion to green the suite is the same move as raising a coverage threshold to meet coverage, and it is forbidden for the same reason: the gate would then be measuring its own settings rather than the system.
+
+### E4b — Second run (2026-08-17, post-`vox` rename): same verdict, and the leak is now measured rather than inferred
+
+Re-run after [ADR-274](274-atmux-vox-rename.md)'s rename, against the live provider: `attention` PASS, `all_ok` PASS, `drilldown` FAIL — identical to E4a. Two things this buys that the first run could not.
+
+**The rename did not regress the harness.** Same three scenarios, same two passes, same single failure with the same two failing criteria (`no_hallucination`, `described_alpha_accurately`). A rename touching 22 files, 20 modules and 36 test paths is exactly the change that silently breaks a behavioural harness; it did not.
+
+**E4a inferred that the bogus counts "belong to whichever repo the process happened to be run from". That is now measured.** The first run reported `19 ADRs`; this run reported `21 ADRs`. The harness's cage is a fresh `mkdtemp` with no ADRs at all, so a count that *moves between runs* cannot be coming from the cage — it is tracking live state in the real repository. An invented-but-constant number would have left the source ambiguous; a number that drifts identifies it.
+
+**The secondary fault E4a did not name:** `team_status` returned `ok=true` in 91ms. It did not degrade, warn, or signal partial knowledge — it reported unresolvable panes as *down*, which is a different claim, and the model then confabulated on top of a confident-looking answer ("a large inbox needing approval"). The session-name fix addresses the wrong answer. It does not address a voice tool that cannot distinguish **"I probed and the pane is down"** from **"I could not resolve this team's socket"**. The first is data; the second is a failure wearing data's clothes, and on a spoken interface the operator has no way to tell them apart. Worth closing in the same change.
+
+The scenario stays failing until the fix lands, per E4a.
+
+### E5 — What it does NOT cover
+
+Stated plainly, because a behavioural gate invites more confidence than it has earned:
+
+- **It is not a phone.** No microphone, no browser capture, no audio worklet, no PWA, no barge-in from a real speaker. It exercises the server and the model, not the client — V-9…V-17 remain the only evidence for that half.
+- **It is read-only.** Only the read-only half of the catalog is invoked. The mutating verbs, the confirmation round-trip (`confirm.ts`), and the `ATMUX_VOICE_READONLY=0` posture are all untested here — and those are the tools where a wrong answer *does* something.
+- **It is three questions against four fixture panes**, not a general claim about the assistant's judgement. It can show a regression; it cannot show correctness.
+- **A judge is a model.** It can be wrong in both directions. The structured verdict and the recomputed aggregate bound how wrong it can be *quietly*, not how wrong it can be.
+- **`dormant` is not exercised** — it needs an activity clock older than an hour, which no reasonable harness will wait for.
+- **Nothing here checks the fixtures against a live pane.** The fixtures are checked against the real `classifyPaneObservation`, which is the strongest available proxy, but a change in how tmux renders a real Claude TUI would not be caught.
+
+### E6 — The mutating half (2026-08-20)
+
+E5's second bullet is now closed. The harness exercises the mutating verbs, the D7 confirmation round-trip, and the `readonly: false` posture — the tools where a wrong answer *does* something. Until this landed, every mutating tool was behaviourally untested, which mattered because clearing the readonly gate is the moment they all become reachable at once.
+
+**Grading moved off the tool envelope and onto the cage.** The read-only scenarios can be graded on what the assistant *said*, because saying the wrong thing is the whole failure mode there. The mutating ones cannot: `pane_nudge` answering `{"ok":true}` is precisely the claim under test, and a harness that graded it on its own envelope would be certifying the claim with the claim — the exact fault ADR-273 D5 built the before/after receipt to catch. So every postcondition in `assertions.ts` reads cage state. `entersDelivered` counts lines in a file **the pane itself appended to**, one per line its foreground process consumed from its own tty; nothing the server, the model, or the harness does can write it. `paneTail` re-captures through tmux on the cage's own socket.
+
+**The five scenarios, each in its OWN cage:** `nudge_confirmed` (a confirmed nudge changes the pane), `nudge_declined` (a declined one provably does not), `driver_refused` (ADR-239 driver-pane refusal), `tell_lead_delivered` (a messaging verb asserted on disk), `confirm_replay` (D7 token replay). Separate cages are not tidiness — two mutating scenarios sharing one cage would each be asserting an Enter count the other is concurrently changing.
+
+**Containment: the posture is a FLAG, never an environment variable.** `resolveVoxConfig` reads `flags?.readonly ?? parseBooleanEnv(env)`, so the harness decides the server outright and `ATMUX_VOX_READONLY` is never written. An env var would be inherited by every child process and would outlive the cage that wanted it; a flag dies with the `VoxServeDeps` built from it. `assertIsolated` refuses to proceed at all if that variable is set while mutations are enabled. This is what makes `readonly: false` scoped to the harness rather than a hole in the gate — the operator-facing gate in OQ-1 is untouched and still closed.
+
+**Why `confirm_replay` does not go through the model.** D7 splits the confirmation and is explicit about which half is whose: the token's existence, its tool/args/session binding, its TTL, its single-use burn, and the refusal to run a gated tool without a valid token are SERVER-enforced; the affirmation is the model's. A replay is an attack on the server half. Asking a language model to attempt one would measure whether that model can be *talked into* trying — a different question with a non-deterministic answer, and a run where it simply declined would go green having tested nothing. So the scenario drives the real `ToolBridge` the running server built, and its own tests are sabotage tests: a bridge that lets a spent token redeem again, one that ignores argument binding, and one that fails open must each come back RED.
+
+**A negative assertion needs a positive control.** "The pane did not change" passes just as well when the pane was never reachable, so the declined-nudge and driver-refusal scenarios carry a control pane that MUST move. `assertions.test.ts` pins the inert-control case as a failure specifically so the negatives cannot go vacuous.
+
+**Counting, not presence — the finding that forced it.** `tell_lead` writes its receipt to stderr while the bridge summarized stdout, so a successful call came back `verb_output_unparseable` and the model retried: **34 times on the 2026-08-17 run, appending 34 real asks to the lead's inbox.** A presence check passes throughout that. `teamFileMatches` therefore asserts the ask landed *exactly once* alongside asserting it landed at all, and both verdicts are pinned in tests so the counting arm cannot rot back into a second presence check. (The underlying bridge defect is fixed — §Supplement "exit 0 is the success signal" — but the assertion stays, because the class recurs whenever a verb's success is invisible to the bridge and the model is free to retry an append-only write.)
+
+**First run — 2026-08-21, and it earned its keep on day one.** 4 PASS / 4 FAIL. Recorded here as evidence rather than as a pass mark, because a harness's first run is the one that says whether it can see anything at all.
+
+**PASS — `confirm_replay`, all eleven assertions.** This is the security result and the reason E6 exists: an un-tokened `pane_nudge` returned `needs_confirmation` and **ran nothing**; the redeemed one delivered **exactly one** Enter; a **spent** token did not redeem and delivered no second Enter; a token minted for `be-1` **did not redeem** a call naming `be-2`, and `be-2` stayed untouched. Then the anti-vacuity control: a freshly-minted `be-2` token redeemed and `be-2` consumed exactly one Enter — *so its earlier zero was a refusal, not an inert pane*. Without that last one the four negatives above would have been unfalsifiable.
+
+**PASS — `tell_lead_delivered`, including `delivered ONCE (expected exactly 1)`.** The counting assertion is there because the pre-fix bridge caused a 34-message retry storm; one line landed, so the exit-0 fix closed it end to end.
+
+**FAIL — and the failures are the interesting half.** `nudge_confirmed` looked at first like a `pane_nudge` **delivery** defect: the confirm round-trip passed (`previews=1, redeems=1`) while all three cage assertions failed — no Enter, prompt still there, no repaint. It is not a delivery defect, and `confirm_replay` is what proves that: the same verb delivered Enters twice in the same run. The real chain was `verb_failed, confirmation redeemed` — the assistant, told *"the pane called **be one**"*, produced `b1`, a member that does not exist, so the token redeemed correctly and the verb then failed on an unknown member. **That is a transcription/resolution gap, one level below §Supplement-8's team ladder** — see ADR-273 §Supplement-10.
+
+`drilldown` and `nudge_declined` both failed the **tool gate** with `the assistant invoked [nothing]`. Not a resolver failure and not a judge-criteria failure: the model called no tool at all. `drilldown` has now failed on two separate runs for two different reasons, so it is not yet a solved scenario and must not be reported as one.
+
+**Two disciplines this run vindicated.** *Never re-roll a red run* — the useful finding came from reading a failure rather than re-running until it passed. And *a negative assertion needs a positive control* — every one of `confirm_replay`'s refusal checks would have passed against a pane that was simply dead.
+
+**What E6 still does NOT cover.** It remains not a phone — V-9…V-17 are still the only evidence for the client half. It costs real API calls and stays out of `bun test` for the reasons in E4. And it does not clear OQ-1: `pane_send` is still unbuilt, and the operator-facing readonly gate is still closed pending the auth decision.
+
+
 ## Supplement — P7 prerequisites (2026-08-15)
 
 Changes that are each **latent today and live the moment `ATMUX_VOICE_READONLY` clears**. None changes the tool surface or a wire contract; each is the difference between "the mutating surface is reachable" and "the mutating surface is reachable *safely*". Recorded here rather than in commit messages because some of them REVERSE a decision this ADR already states, and a reversal that is not written down reads later as drift.
@@ -411,6 +521,151 @@ The fix is conditional, and the condition is load-bearing. **Suppression is arme
 
 The ordering invariant is asserted as an **order**, not as a pair of facts: the tests read the phone's interleaved wire log and assert that no binary frame appears after the `audio.clear` index, then that the next turn's audio appears strictly after it. "Both frames were sent" would pass on a clear that arrives after the audio it was supposed to flush, which is a glitch rather than a barge-in. A third test drives the two barge-in triggers side by side and asserts identical frame counts, drop counts and clear counts, so the paths cannot drift apart later.
 
+## Supplement — tool calls are logged, name-only (2026-08-16)
+
+### T1 — the gap
+
+A live session was asked *"what needs my attention across the fleet"*. The wire showed the whole loop working — `frameTypes=[ready,status,transcript.assistant,tool.start,tool.done]`, 1,135,200 bytes of spoken audio — and **the server log said nothing whatsoever about the tool call**. Which tool ran could not be determined server-side at all.
+
+This is the same silence class as the retired-beta dial failure `log.ts` was written for, and it is the same shape: the facts existed (`tool.start` / `tool.done` are constructed and sent to the phone) and were then discarded. The cost is identical too — with the log mute, "the model called `fleet_attention` and it failed" and "the model called something else entirely" are one observation.
+
+### T2 — what is logged, and the bound on it
+
+Exactly **one line in and one line out per tool call**, emitted from `session.ts::onToolCall` at the two points the frames are sent, through the existing `createVoiceLogger` sink (so redaction is structural — `log.ts` property 2).
+
+| Line | Carries |
+|---|---|
+| in | tool **name** · which of three gate states it is in — `confirm-gated` / `no confirmation gate` / `not in catalog` |
+| out | name · `ok` \| `failed` \| `previewed` · duration · on failure, the error **class** (`envelope.error`, a closed set) · on a gated call that ran, `confirmation redeemed` |
+
+**`previewed` vs `redeemed` is the reason the gate state is logged at all.** A D7 preview does not execute; the model is then expected to speak the preview and come back with the token. With only "a gated tool was called", *"the model previewed and never redeemed"* and *"the model never tried"* are the same silence — and once `ATMUX_VOICE_READONLY` is cleared, that is precisely the difference between a refusal and an outage. `redeemed` is claimed only when a token was offered **and** the bridge did not bounce it; `confirm_expired` is reported as its own failure class, not as a redemption.
+
+**NAME ONLY — never arguments, never the summary, never the preview, never the token.** OQ-4 makes transcripts opt-in specifically so speech does not land in a general always-on sink, and a tool's *arguments are speech*: "dispatch task 4a2f to driver-2" is a sentence the operator said. `/healthz`'s wedge reporting already set this precedent (`tool-bridge.ts` labels the mutex with the tool name and says why). Two structural bounds back the rule rather than trusting the producer: the **name** arrives on a provider frame, so a hallucinating model owns that string, and the failure **class** comes from an envelope this code did not have to have written — both are truncated at one shared rendering point (`toolLabel`, which the pre-existing stale-result drop line now also routes through). A test asserts that a call whose arguments carry a distinctive phrase does not put that phrase in the log, and that the line remains diagnostically useful.
+
+**Proportionality is part of the decision.** Two lines per call, never per frame. The provider-error cap (§`PROVIDER_ERROR_LOG_CAP`) exists because an advisory event can repeat per audio frame; a tool call cannot, so it needs no cap — but it does need to stay at two lines, or the dial story this sink exists to tell drowns.
+
+**Rejected: log the arguments behind a flag.** It reintroduces exactly the decision OQ-4 already made, in a second place, with a second flag to get wrong. The operator who needs the arguments turns on transcripts, which is the sink that was designed to hold speech and carries the retention rule.
+
+## Supplement — the prompt now forbids invention, and teaches the one uncertainty marker it can see (2026-08-17)
+
+Two clauses added to `src/core/vox/instructions.ts`, each pinned by its own test in `tests/unit/core/vox/instructions.test.ts` per this module's stated contract. They join the load-bearing set: reword only together with the pin.
+
+### N1 — why a prompt clause, on a surface that already enforces its safety in the server
+
+D7 draws the line correctly for *mutation*: the confirmation mechanism is enforced by the server, so a model that ignores its instructions still cannot change anything. **Truthfulness has no such server-side enforcement and cannot have one** — nothing between the tool result and the operator's ear can tell a summary from an embellishment. On a voice surface the spoken sentence *is* the whole interface: the operator never sees the tool output, so a plausible gap-filler is indistinguishable from a measurement, and it gets acted on. That is the asymmetry that makes "I don't know" the strictly better answer here, and it is why this is a prompt clause rather than a code change.
+
+The disposition is observed, not hypothesized. §E4a and §E4b both failed `drilldown` on `no_hallucination` against the live provider, with three distinct confabulations:
+
+| Spoken | What was actually true |
+|---|---|
+| *"There are 21 ADRs and a large inbox needing approval"* | ambient counts leaking from the real repository into a `mkdtemp` cage — **bad tool data**, fixed in `51e87b7` |
+| *"All panes are active, and no tasks are in progress or blocked"* | invented, and contradicting the fixture's pane blocked on a permission prompt |
+| *"the kanban is clear and needs approval"* | two unrelated rows of one table fused into a single self-contradicting claim |
+
+Only the first was a data fault. `51e87b7` fixed the data; **the disposition to fill a gap was untouched**, and nothing in the prompt discouraged it.
+
+### N2 — clause 1: report only what the tools returned
+
+> Say only what the tools returned. If a tool did not report something, say so plainly instead of inferring it; do not fuse two results into one claim, and never name a team, pane, member, or count no tool gave you. An empty result is an answer — say there was nothing.
+
+Three failures, one clause: inference where a tool was silent, fusion of separate results, and naming an entity no tool produced. The last sentence is there because "nothing came back" is the answer an assistant is most tempted to dress up, and dressing it up is precisely how row 3 of the table happened.
+
+It **subsumes nothing already in the prompt**. The existing `ambiguous_team` / `unknown_team` line is a narrower, more actionable instance of the same principle — say what the tool actually returned, then ask — and is kept for its concrete script; it is not a contradiction and was not rewritten.
+
+### N3 — clause 2: the "?" marker means unconfirmed, and must be spoken that way
+
+> A pane-state ending in a question mark ("active?") was read off the pane's screen because no agent process could be identified there. Speak that one as unconfirmed — "looks active, not confirmed" — and never drop the doubt. A pane-state with no question mark was measured: say it plainly.
+
+The wording tracks the rendered column, not the field name: `team_status` runs `atmux status` **without** `--json`, so what reaches the model is the text table whose header is literally `pane-state` and whose cell is `active?`. An instruction phrased in terms of `inferredFromRender` would name something the model never sees.
+
+`51e87b7` added `CageHealth.inferredFromRender` and `formatPaneStateColumn`'s trailing `?` ([ADR-273](273-voice-fleet-triage-and-pane-input.md) §Supplement-5): the state was believed off the pane's **render** because the `ps` probe could not identify the occupant. It is set only on non-`down` rows — a `down` row is the two signals *agreeing*, which is a conclusion rather than a hedge.
+
+**The marker was added for a voice tool and the voice model was never told what it means.** An unexplained `?` in a tool result is worse than no marker: it costs a character in the payload and buys nothing, because the model reads `active?` aloud as "active" and the operator hears certainty the probe does not have. The clause closes that loop, and its second half is load-bearing in the other direction — if every state were hedged, the hedge would carry no information, so an unmarked state is stated as a positive claim.
+
+### N4 — honest bound: what these clauses do and do not close
+
+Clause 1 addresses rows 2 and 3 directly: both are inventions on top of a tool that did not say the thing. Row 1 it addresses only *partially* — the numbers **were** in the tool output, so an obedient model relaying them is not violating the clause; that was a data fault and `51e87b7` is its fix. What the clause adds there is the refusal to characterize (*"a large inbox needing approval"*) beyond what the row said.
+
+Neither clause is a guarantee. A prompt shapes disposition; it does not enforce. The gate that measures the result is the §E-harness `drilldown` scenario, which stays failing until it passes on its own terms — no criterion was touched here.
+
+## Supplement — exit 0 is the success signal; empty stdout is not evidence of failure (2026-08-20)
+
+### X1 — the defect: a tool that succeeded, delivered, and reported failure
+
+`tell_lead` **worked and said it had not**. Every link is on disk:
+
+1. `src/verbs/tell-lead.ts:301` appends the ask to the lead inbox and confirms on **stderr** — `✅ atmux tell-lead → <lead> (appended to <path>)` — writing nothing at all to stdout. That is the `atmux::ok` convention (`createLogger().ok`, `src/core/tui.ts:113`, ported from bash `lib/common.sh:21`), and `tell-lead.ts:296-299` records that an earlier TS port wrote to stdout without the prefix and that *that* was fixed as the F3 channel-asymmetry bug.
+2. `CaptureVerbRunResult` (`src/core/verb-capture.ts`) carried `{ stdout, exitCode, errorMessage? }` and **captured no stderr at all**, so the bridge structurally could not see the receipt.
+3. `src/core/vox/tool-bridge.ts` step 12 then read empty stdout as an error: `summary.data.trim() === ""` → `verb_output_unparseable`, *"the verb produced no usable output"*.
+
+So the verb exited 0, the message **was** appended, and the model received a failure envelope. The operator hears "that failed". The model retries. Each retry delivers another copy and reports failure again — a retry storm where every iteration both succeeds and is called broken. `tell_lead` is gated behind `ATMUX_VOX_READONLY` today; the moment that flag clears, its first use spams the lead inbox from the operator's phone while claiming it did nothing.
+
+### X2 — the verbs are correct; the bridge was wrong
+
+**The stderr convention is not changed, and must not be.** Moving receipts to stdout would revert a deliberate fix (§X1 item 1) and break every scripted caller that relies on clean stdout. The defect is entirely on the consuming side: a capture that heard half the channels, and a bridge that inferred failure from silence.
+
+**The rule this supplement pins: `exitCode === 0` is the success signal.** Step 10 of `executeToolInner` has already rejected both real failure modes — a throw (`errorMessage` set, `exitCode: null`) and a nonzero exit — before step 12 runs. Everything reaching step 12 **succeeded**; the only remaining question is what there is to *say* about it. Empty stdout answers that question, not the first one.
+
+### X3 — how the bridge tells "succeeded quietly" from "owed data and gave none"
+
+Explicitly, on `entry.mutating` — the catalog bit that already means *this tool's contract is a side effect*:
+
+| Case | Contract | Exit 0 + empty stdout |
+|---|---|---|
+| **mutating** tool (`tell_lead`, `add_task`, `dispatch_task`, `claim_task`, `pane_nudge`) | the EFFECT | **success.** Silence is a normal shape, not a defect |
+| **read** tool | DATA | `verb_output_unparseable`, the fault the code was written for |
+
+The read half is not a formality. Every read verb in the catalog emits a line even when the answer is empty — `(no tasks)`, `(no blockers)`, `(driver-inbox empty / absent)`, `📭 outbox empty`, the `QUIET n of m teams nominal` header, `team_health`'s collapsed `ok — …` — so silence from a read tool really is an anomaly, and keeping the code there preserves its diagnostic value instead of retiring it by accident.
+
+### X4 — what is relayed from stderr, and what is not
+
+`CaptureVerbRunResult` gains `stderr` (optional, so an injected `capture` fake need not supply it; the real `runRedirected` always does). Three properties are load-bearing:
+
+**stderr is TEED, not swallowed.** stdout is capture-*owned* — the buffer is the result — but stderr is the process's shared diagnostic channel: the vox server logs there, and a verb's warnings are often the operator's only trace of a half-done run. Buffering them silently would trade one blind spot for another, so every write reaches the real stderr **and** the buffer.
+
+**Both stderr SURFACES are patched, and that is load-bearing rather than belt-and-braces.** `console.error` does **not** route through `process.stderr.write` in Bun, exactly as `console.log` does not route through `process.stdout.write` — re-verified against Bun 1.3.14 on 2026-08-20, which is why the stdout half has always patched two things. A capture patching only the `process.*` half would read the empty string for a verb whose receipt went through `console.error`, producing this same defect through a different door. The Bun fact is pinned by a **control** test that asserts the `process.stderr.write` patch alone sees nothing; without it, the `console.error` assertions could pass vacuously on a harness that captured nothing at all.
+
+**Only `atmux::ok` lines are ever spoken.** `extractOkReceipt` (`src/core/vox/summarize.ts`) strips ANSI, keeps only lines whose trimmed form starts with the `✅ atmux` marker, and strips that marker (emoji chrome nobody wants read aloud). Everything else on the channel is dropped — the sibling markers `🔹 atmux` (progress), `⚠️  atmux` (warning), `💥 atmux` (error), plus bare warnings like `atmux: warn: dispatch: ping to be-1 failed` and any library noise. **This scoping is the point:** the relayed string is read aloud as the answer to *"did it work?"*, and relaying stderr wholesale would let an unrelated warning become that answer. A mutating tool with no receipt gets a plain, true fallback instead — `"<tool name> completed — no details reported"`, de-underscored the way `buildConfirmPreview` does it, because the string is spoken.
+
+### X4a — a second finding, surfaced by mutation-checking the fix
+
+Deleting `process.stderr.write = <original>` from the capture's `finally` passed the **entire** suite. That is a leak — every capture would leave one more live closure appending to a dead buffer — and the TEE is precisely what hides it: writes still reach the real stderr *through* the leaked patch, so no output assertion can tell the difference. Only an identity round-trip can, and the first cut of this fix could not offer one: it mirrored the stdout half and restored a **bound clone** rather than the value it found, so `process.stderr.write === <what we installed>` was false either way.
+
+Fixed by saving the raw property reference for the restore and a bound clone only for the tee call, then pinning it: after a normal verb, after a throwing verb, and after three consecutive captures (which is what separates "restored something" from "restored the same thing"). The stdout half still restores a bound clone; that is pre-existing, out of this defect's scope, and left alone deliberately rather than swept in.
+
+### X5 — scope audit: which catalog tools could hit this path
+
+Audited every entry, not only the reported one — a fix that repairs one tool and leaves a sibling broken is half a fix.
+
+| Tool | Mutating | Writes stdout on success | Hit the defect |
+|---|---|---|---|
+| `tell_lead` | ✅ | **no** — stderr receipt only (`tell-lead.ts:301`, and the dedup path `:261`) | **yes** |
+| `add_task` | ✅ | yes — new id (`task.ts:267`) | no |
+| `dispatch_task` | ✅ | yes — `dispatched <id> → <member>` (`dispatch.ts:191`) | no |
+| `claim_task` | ✅ | yes — `<who> claimed <id>` (`claim.ts:212`) | no |
+| `pane_nudge` | ✅ | yes (`nudge.ts:232`) | no |
+| `list_teams` | — | core-direct; `(no teams)` fallback in the bridge | no |
+| `fleet_overview` | — | yes — cockpit header (`topo.ts` `renderFlat`) | no |
+| `fleet_attention` / `fleet_quiet` | — | yes — `ATTENTION` / `QUIET` header always emitted | no |
+| `team_status` | — | yes | no |
+| `team_health` | — | yes — header always; all-ok collapses to `ok — <header>` | no |
+| `list_tasks` | — | yes — `(no tasks)` when empty | no |
+| `member_pane` | — | yes — the classified state, `UNKNOWN` included | no |
+| `driver_inbox` | — | yes — `(driver-inbox empty / absent)` etc. | no |
+| `lead_outbox` | — | yes — `📭 outbox empty` | no |
+| `cost_report` | — | yes — `💰 cost — since …` header | no |
+| `list_blockers` | — | yes — `(no blockers)` when empty | no |
+| `host_pressure` | — | yes — report via `console.log` (`host-pressure.ts:107`) | no |
+| `token_budget` | — | yes — report via `console.log` (`token-budget.ts:237`) | no |
+
+The last two arrived on trunk mid-fix (ADR-273 §Supplement-6) and are recorded here as **audited and fine** rather than left unmentioned — "correct today" and "never looked at" must not read the same in this table.
+
+**`tell_lead` was the only catalog tool affected**, and `src/verbs/reply.ts:127` writes the same stderr-only receipt shape (`✅ atmux reply recorded (<from> → driver) in <path>`) — it is not in the catalog today, but the `outbox` collector from that same module is, and a future `reply` tool would have walked into the identical trap. The fix is at the bridge, so it covers all five mutating entries uniformly rather than special-casing the one that was reported.
+
+### X6 — not done
+
+Nothing here changes a verb, a schema, an event topic, or the `ToolErrorCode` closed set — `verb_output_unparseable` is retained, narrowed to the read tools it was written for. `ATMUX_VOX_READONLY` still gates every mutating tool; this supplement removes a reason that flag could not safely be cleared, not the flag.
+
 ## Decision-anchors
 
 Every row verified against disk on **2026-08-14** unless dated otherwise.
@@ -448,4 +703,4 @@ Every row verified against disk on **2026-08-14** unless dated otherwise.
 - **Depends on**: [ADR-033](033-kanban-driver-only-flag.md) (caller-scope gate), [ADR-271](271-sqlite-sole-store-rust-orchd-coordinator.md) §D3 (the store-safety refusal D2 inherits by going through verbs), [ADR-217](217-atmux-skills-plugin-bundled-and-wizard-installed.md) §D5 (`templates/` staging).
 - **Constrained by**: [ADR-233](233-cron-auto-install-disabled-trust-orchd.md) (no boot autostart — D10), [ADR-268](268-managed-repo-state-isolation-enforcement.md) (state residency), [ADR-009](009-auto-rotation.md) §2 + [ADR-254](254-coverage-gate-completeness.md) (coverage gate not widened — D9), [ADR-203](203-event-topic-taxonomy.md) (closed topic set — untouched).
 - **Does not change**: any existing verb's behavior, any schema, any event topic, any team's configuration. The tool bridge calls verbs; it does not modify them.
-- **Operator-facing companion**: [docs/RUNBOOK-voice.md](../RUNBOOK-voice.md) — env vars, start/stop, nginx, and the V-1…V-19 verification checklist.
+- **Operator-facing companion**: [docs/RUNBOOK-voice.md](../RUNBOOK-voice.md) — env vars, start/stop, nginx, and the V-1…V-20 verification checklist.

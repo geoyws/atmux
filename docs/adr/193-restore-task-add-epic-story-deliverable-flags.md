@@ -6,6 +6,8 @@
 **Driver-ref**: ADR-176 §sibling-gap surface 2026-05-17 — criterion (d) in `src/core/lane-drift.ts` requires `.epic` populated on kanban Tasks; at runtime all tasks have `.epic: null` because there is no CLI path to set it.
 **Relates**: ADR-127 §OQ5 (lane-drift original spec), ADR-176 (EPIC-aware criterion (d) — DEPENDENT, renumbered from ADR-171), ADR-165 (task-CLI-surface pattern — same shape as `atmux team set/get/unset`), ADR-007 (Epic / Story / Task hierarchy).
 
+> ⚠ **SUPERSEDED 2026-08-27 by [ADR-280](280-epic-team-retirement-and-staged-excision.md).** Epic-teams are retired: the `epic-team` cage type, the `epicId` cockpit field and the epic verbs no longer exist. This ADR is kept as history — the decision it records was true when made. Do not implement from it.
+
 ## Context
 
 `templates/briefs/planner.md` lines 55-58 document the canonical planner-facing `task add` signature:

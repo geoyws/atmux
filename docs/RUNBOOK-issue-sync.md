@@ -11,7 +11,7 @@ A deterministic poll → file → notify pipeline (no LLM in the loop until the 
 1. **Poll** the configured trackers' REST APIs through `src/abstractions/http.ts` (ADR-261 §D1 — no inbound HTTP, no webhooks, no `gh`/`az` shell-outs) via the vendor-agnostic `IssueTracker` adapters (`src/abstractions/issue-tracker.ts`, §D2).
 2. **Reconcile** against the `issue_sync` ledger (§D4) — long-horizon idempotency keyed on the canonical `sourceId` (`github:owner/repo#123`, `ado:org/project/42`).
 3. **File** new open issues as complaints via `fileDedupedComplaint`, row residing in the **target** team's `state.db` (§D9, ADR-150 §D1).
-4. **Notify** the target team's lead: `complaint.filed` → `atmux:complaint-consumer` on orchd-mode teams; the verb's inline `tell-lead --team` leg on manual-mode teams (§D5a). The lead adjudicates per [ADR-214](adr/214-retire-ombudsman-lead-absorbs-complaint-adjudication-via-honker.md) — promote-epic / file-task / wontfix / already-addressed / escalate. issue-sync never auto-converts an issue into kanban work (§D6).
+4. **Notify** the target team's lead: `complaint.filed` → `atmux:complaint-consumer` on orchd-mode teams (post-ADR-276 that consumer fires only when someone runs `atmux committer --drain` — the orchd daemon is retired); the verb's inline `tell-lead --team` leg on manual-mode teams (§D5a). The lead adjudicates per [ADR-214](adr/214-retire-ombudsman-lead-absorbs-complaint-adjudication-via-honker.md) — promote-epic / file-task / wontfix / already-addressed / escalate. issue-sync never auto-converts an issue into kanban work (§D6).
 
 **Phasing** (ADR-261 §D11):
 
@@ -19,7 +19,7 @@ A deterministic poll → file → notify pipeline (no LLM in the loop until the 
 |---|---|---|
 | 0 | This runbook + `IssueTracker` types + `team.json::issueSync` schema | **landed — no behavior yet** |
 | 1 | GitHub adapter + `atmux issues sync` verb + backfill flood control + `issue_sync` ledger | not landed |
-| 2 | Azure DevOps adapter + orchd `--poll-issues` ticker | not landed |
+| 2 | Azure DevOps adapter + orchd `--poll-issues` ticker | not landed — and the orchd ticker home is GONE (ADR-276); Phase 2 needs a new recurring home |
 | 3 | Upstream write-back (close/comment on the tracker) | **deferred — own future ADR** |
 
 ## §2 — Configuration
@@ -37,7 +37,7 @@ Absent block ⇒ issue-sync disabled; every existing `team.json` parses unchange
       "repos": ["geoyws/atmux"],              // allowlist — ONLY these repos are polled (§D7.2)
       "targetTeam": "atmux",                  // optional — default: the polling team (§D9)
       "labelSeverityMap": { "p0": "critical", "bug": "warn" },  // → extra.severity (§D3)
-      "pollIntervalSec": 900                  // orchd ticker cadence, Phase 2 (§D5b)
+      "pollIntervalSec": 900                  // Phase 2 cadence (§D5b) — its planned orchd-ticker home was retired (ADR-276)
     },
     {
       "id": "azure-devops",                   // Phase 2 adapter
@@ -74,8 +74,8 @@ Token rules (binding, §D7):
 atmux issues sync
 ```
 
-- Works on manual-mode teams (the fleet default per [ADR-260](adr/260-manual-orchestration-mode-default.md)) — the verb performs the consumer-equivalent lead routing itself (inline `atmux tell-lead --team <target>`) because the `atmux:complaint-consumer` is only registered under orchd. On orchd-mode targets the verb skips inline delivery and lets the event consumer fire — never both, no double-ping.
-- **No OS crontab entry, ever** (§D5). The recurring home is the Phase 2 orchd in-process ticker (orchd-mode teams only); on manual-mode teams the verb is on-demand — lead/driver/operator fires it when they want fresh tracker state.
+- Works on manual-mode teams (the fleet default per [ADR-260](adr/260-manual-orchestration-mode-default.md)) — the verb performs the consumer-equivalent lead routing itself (inline `atmux tell-lead --team <target>`) because the `atmux:complaint-consumer` is only registered by the drain bootstrap. ⚠ Post-ADR-276 there is no daemon on orchd-mode targets — the event sits until someone runs `atmux committer --drain` there, so on such targets delivery is effectively on-demand. The mode gate itself is a named follow-up in ADR-276's execution report.
+- **No OS crontab entry, ever** (§D5). The planned recurring home was the Phase 2 orchd in-process ticker — retired with orchd (ADR-276), so a new home is needed; today the verb is on-demand everywhere — lead/driver/operator fires it when they want fresh tracker state.
 - The poll is deterministic end-to-end; the only LLM involvement is the lead reading its inbox on its own turn.
 
 ## §4 — Backfill (first sync of a populated repo)

@@ -94,6 +94,7 @@ import { appendText, ensureDir, exists, readTextOrNull, writeText } from "../abs
 import { now } from "../abstractions/time.ts";
 import {
   createTmux,
+  exactSessionTarget,
   type SendTarget,
   type TmuxConfig,
   type TmuxNamespace,
@@ -112,9 +113,10 @@ import {
   renderBootFailureNotice,
 } from "../core/boot-claude.ts";
 import {
-  addEpicViewerToParentCage,
+  buildGroupTopology,
   enabledTeams,
   loadCockpit,
+  ATMUX_NESTING_LEVEL_ENV,
   readNestingLevel,
   resolvePrefix,
 } from "../core/cockpit.ts";
@@ -140,7 +142,7 @@ import {
 } from "../core/drivers.ts";
 import { injectGoalIfActive } from "../core/goal-injection.ts";
 import { submitAfterPaste } from "../core/paste-submit.ts";
-import { maybeSpawnOrchdWindow } from "../core/orchd-window.ts";
+import { migrateLegacySessionName } from "../core/session-migrate.ts";
 import { consumedManifestPath, resumeManifestPath } from "../core/soft-stop.ts";
 import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
@@ -148,7 +150,7 @@ import { CLAUDE_TUI_SCRUB_VARS, resolveTuiCommand } from "../core/tui-cmd.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import { ResumeManifest } from "../schema/resume.ts";
 import type { Team } from "../schema/team.ts";
-import { applyCagePrefix, reconcileCockpitSession } from "./cockpit.ts";
+import { applyCagePrefix, reconcileCockpitSession, reconcileGroupServers } from "./cockpit.ts";
 // ADR-233 §D1: cron auto-install retired; the `cronInstall` import is gone.
 //   Operators who want crons run `atmux cron-install` explicitly.
 import { defaultBriefsDir, getBriefPath, renderBrief } from "./rotate.ts";
@@ -397,15 +399,32 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
     await ensureDir(dirname(tmuxConfig.socketPath));
   }
 
-  // 5. Resolve session name (defaults to `atmux-<team>` per
-  //    common.getSessionName — also handles ATMUX_SESSION env override
-  //    + state/session.txt anchor if present).
+  // 5. Resolve session name (defaults to the bare `<team>` per
+  //    common.getSessionName / e-419553c6 — also handles ATMUX_SESSION
+  //    env override + state/session.txt anchor if present).
   const sessionOpts: { env: NodeJS.ProcessEnv; cwd?: string; team: typeof team } = { env, team };
   if (opts.cwd !== undefined) sessionOpts.cwd = opts.cwd;
   const session = await getSessionName(sessionOpts);
 
-  // 6. Live-lead guard (lib/start.sh:140-147).
-  const sessionExisted = await tmux.session.hasSession(session);
+  // 5b. e-419553c6 in-place migration: a live cage started under the
+  //     legacy `atmux-<team>` convention is renamed to the bare name
+  //     (preserving clients + pane PIDs, ADR-264 §D4 pattern) so the
+  //     incremental path below adopts it instead of reading it as
+  //     absent and creating a duplicate. Idempotent; no-op for
+  //     anchored/pinned names; both-exist warns and leaves it to the
+  //     operator.
+  await migrateLegacySessionName({
+    tmux,
+    teamName: team.name,
+    resolvedSession: session,
+    log: (m) => logger.log(m),
+    warn: (m) => logger.warn(m),
+  });
+
+  // 6. Live-lead guard (lib/start.sh:140-147). `=`-anchored: with bare
+  //    session names a prefix match (`-t sopx` matching `sopx-guild`)
+  //    would adopt a sibling team's cage (SEC sweep t-0dbfe104 class).
+  const sessionExisted = await tmux.session.hasSession(exactSessionTarget(session));
   if (sessionExisted) {
     if (!parsed.force) {
       logger.warn(
@@ -414,7 +433,7 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
     } else {
       logger.warn(`force: killing existing session ${session}`);
       try {
-        await tmux.session.killSession(session);
+        await tmux.session.killSession(exactSessionTarget(session));
       } catch {
         // expected: race window between hasSession and killSession;
         // the post-create branch below treats `hasSession=false` as
@@ -481,16 +500,19 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
       // after the TUI exits" property that the legacy send-keys path
       // gave for free, non-shell TUIs are wrapped with `sh -c '<cmd>;
       // exec $SHELL -i'` so the pane drops back to an interactive shell
-      // when the TUI quits. Shell-kind TUIs already ARE a shell — no
-      // wrap (and no command at all; the pane starts in $SHELL by
-      // default per tmux's new-session/new-window semantics).
-      const isShellOnlyTui = (tui: string): boolean =>
-        tui === "shell" || tui === "bash" || tui === "zsh";
+      // when the TUI quits. A null/absent TUI explicitly launches zsh:
+      // driver panes are operator workspaces and must not inherit a stale
+      // agent-harness choice. Named shell kinds keep tmux's normal shell.
+      const isShellOnlyTui = (tui: string | null | undefined): boolean =>
+        tui === undefined || tui === null || tui === "shell" || tui === "bash" || tui === "zsh";
+
+      const driverShellLabel = (tui: string | null | undefined): string => tui ?? "zsh";
 
       const wrapForShellFallback = (cmd: string): string =>
         `sh -c ${JSON.stringify(`${cmd}; exec $SHELL -i`)}`;
 
       const resolveCmd = (drv: DriverSession, cwd: string): string | undefined => {
+        if (drv.tui === undefined || drv.tui === null) return "zsh";
         if (isShellOnlyTui(drv.tui)) return undefined;
         const synth = {
           name: drv.name,
@@ -558,7 +580,7 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
         if (firstCmd !== undefined) newSessionOpts.shellCommand = firstCmd;
         await tmux.session.newSession(newSessionOpts);
         logger.ok(
-          `created tmux session: ${session} (${firstDriver.name} at window 1, ${firstDriver.tui})`,
+          `created tmux session: ${session} (${firstDriver.name} at window 1, ${driverShellLabel(firstDriver.tui)})`,
         );
         driverInitial = true;
       }
@@ -577,7 +599,9 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
         };
         if (cmd !== undefined) newWindowOpts.shellCommand = cmd;
         await tmux.window.newWindow(newWindowOpts);
-        logger.log(`  · driver pane: ${drv.name} at window ${i + 1} (${drv.tui}) cwd=${cwd}`);
+        logger.log(
+          `  · driver pane: ${drv.name} at window ${i + 1} (${driverShellLabel(drv.tui)}) cwd=${cwd}`,
+        );
       }
     }
     if (!driverInitial) {
@@ -631,7 +655,22 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   //     runs against teams that may not be in any cockpit roster, and
   //     missing / unparseable cockpit.json should NOT block the start.
   //     The fall-back chain still produces a valid prefix per level.
-  const nestingLevel = readNestingLevel(env);
+  // Topology-aware fallback (2026-08-28, e-419553c6 follow-up): an explicit
+  // ATMUX_NESTING_LEVEL (threaded by the cockpit/group reconcile) always wins,
+  // but a HAND-RUN `atmux start` used to fall back to a blind level 2 — which
+  // stamped F2 on teams that live under a group and belong on F3. When the env
+  // is unset, derive the level from the cockpit roster the way the reconcile
+  // does (`t.level + 2`); teams in no cockpit keep the level-2 default.
+  let nestingLevel = readNestingLevel(env);
+  if (env[ATMUX_NESTING_LEVEL_ENV] === undefined || env[ATMUX_NESTING_LEVEL_ENV] === "") {
+    try {
+      const roster = enabledTeams(await loadCockpit({ env }));
+      const entry = roster.find((t) => t.name === team.name);
+      if (entry !== undefined) nestingLevel = entry.level + 2;
+    } catch {
+      // No cockpit / unparseable cockpit: standalone start keeps the default.
+    }
+  }
   const cagePrefix = await resolveCagePrefixBestEffort(nestingLevel, opts, logger);
   await applyCagePrefix(tmux, cagePrefix);
   logger.log(`cage prefix: level=${nestingLevel} prefix=${cagePrefix}`);
@@ -961,33 +1000,11 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   const spawnCap = resolveSpawnConcurrency(opts.spawnConcurrency, env);
   await runWithConcurrency(teammates, spawnCap, spawnOneMember);
 
-  // 8b. ADR-202 §Amendment 2026-05-22 (II) — daemon supervisor window.
-  //     When the team has a committer/gitter role AND autoMerge is
-  //     enabled AND Honker is not explicitly disabled, spawn a service
-  //     window running `atmux committer --daemon` with auto-restart.
-  //     The daemon uses the atmux-listener Rust subprocess for
-  //     kernel-blocked NOTIFY/LISTEN wake (~60ms). Cron --drain stays
-  //     installed as the safety net — if the daemon window dies and
-  //     stays dead until the next `atmux start`, the drain catches
-  //     events within 1min.
-  //
-  //     Idempotent: skipped when the supervisor window already exists
-  //     (e.g. `atmux start` re-run on an already-up team).
-  // `dir` is the `.atmux/` directory (per getAtmuxDir contract,
-  // common.ts:58 — "Resolve the .atmux/ directory path"). orchd-window
-  // expects the PROJECT ROOT (parent of .atmux/) so its supervisor's
-  // `mkdir -p .atmux/logs` + `atmux-orchd .atmux/state.db` relative
-  // paths resolve correctly. Pass dirname(dir) — orchd-window self-heals
-  // anyway via resolveCanonicalTeamRoot, but passing the right thing
-  // here avoids the heal-path log noise.
-  await maybeSpawnOrchdWindow({
-    team,
-    session,
-    teamRoot: dirname(dir),
-    tmux,
-    logger,
-    env,
-  });
+  // 8b. ADR-276 — the `__orchd__` daemon supervisor window is retired
+  //     (was ADR-202 §Amendment 2026-05-22 (II)). `atmux start` no
+  //     longer spawns any event-router service window; the one-shot
+  //     event-drain backstop survives as operator-invoked
+  //     `atmux committer --drain`.
 
   // 9. Close the `__<team>__home` placeholder if any members spawned
   //    AND non-placeholder windows now exist (lib/start.sh:288-294).
@@ -1034,54 +1051,6 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   }
 
   logger.ok(`team '${team.name}' is up. attach with: atmux attach`);
-
-  // 10b. ADR-089 §Pillar 1 §Amendment (t-2ea3bdb9, 2026-05-16): when this
-  //      team is an epic-team child (team.epicTeam !== undefined), add a
-  //      viewer-window to the PARENT atmux cage that auto-attaches into
-  //      this epic-team's nested cage. Operator-experience: paging
-  //      through parent's window list, the epic-team appears as a
-  //      sibling node at the end, opening directly into the epic-team
-  //      when selected.
-  //
-  //      Soft-fails if the parent cage isn't running OR cockpit
-  //      resolution can't find the parent — the viewer is a UX bridge,
-  //      not a load-bearing structural piece, and never wedges epic-team
-  //      start.
-  if (team.epicTeam !== undefined) {
-    try {
-      const cockpitForViewer = await loadCockpit({ env: opts.env ?? process.env });
-      const parentName = team.epicTeam.parent;
-      const parentEntry = enabledTeams(cockpitForViewer).find(
-        (t) => t.type === "team" && t.name === parentName,
-      );
-      if (parentEntry === undefined || parentEntry.root === "") {
-        logger.warn(
-          `epic-viewer: parent team '${parentName}' not found in cockpit roster — skipping viewer add (run cockpit reload + atmux start again)`,
-        );
-      } else {
-        // Honour the epic team.json's `tmuxTmpdir` (ADR-089 §Pillar 1
-        // nests epic cages under `<parent-tmpdir>/epics/<epicId>`, NOT
-        // under the epic's project root — so `perTeamCageSocketPath`
-        // would target the wrong path). `resolveTeamSocket` falls back
-        // to the legacy `/tmp/atmux-<name>/sock` when tmuxTmpdir is
-        // null, matching `addEpicViewerToParentCage`'s parent-side
-        // resolution via `resolveCageSocket`.
-        await addEpicViewerToParentCage({
-          parentRoot: parentEntry.root,
-          parentName,
-          epicId: team.name,
-          epicSocket: resolveTeamSocket(team),
-          epicSession: team.name.startsWith("atmux-") ? team.name : `atmux-${team.name}`,
-          tmuxFactory: factory as Parameters<typeof addEpicViewerToParentCage>[0]["tmuxFactory"],
-          log: (m) => logger.log(`  ${m.replace(/^\s+/, "")}`),
-          warn: (m) => logger.warn(m),
-        });
-      }
-    } catch (e) {
-      const cause = e instanceof Error ? e.message : String(e);
-      logger.warn(`epic-viewer: bridge add failed — continuing (${cause})`);
-    }
-  }
 
   // 11. ADR-233 §D1 (supersedes ADR-083 §IN §4): cron auto-install
   //     retired. `atmux start` writes ZERO crontab lines. orchd handles
@@ -1188,6 +1157,22 @@ async function autoReconcileCockpitForTeam(
     socket: getCockpitSocketName(),
     configFile: getAtmuxTmuxConfPath(),
   });
+  // e-419553c6 true containment: a team with a group ancestor embeds in
+  // its GROUP's server, not the cockpit — thread the topology so the
+  // per-team reconcile routes the cockpit-side slot to the top-level
+  // ancestor group, and additively ensure the group-server chain (the
+  // team's window in its owning group + each ancestor's group-viewer
+  // window). Both are additive; neither prunes nor reorders siblings.
+  // Topology derivation shares the loaded cockpit, so a config that
+  // fails `buildGroupTopology`'s collision guards degrades to the
+  // legacy direct-embed WARN path rather than failing `start`.
+  let topology: ReturnType<typeof buildGroupTopology> | undefined;
+  try {
+    topology = buildGroupTopology(cockpit);
+  } catch (e) {
+    const cause = e instanceof Error ? e.message : String(e);
+    logger.warn(`cockpit group topology skipped: ${cause}`);
+  }
   try {
     await reconcile(
       cockpitTmux,
@@ -1197,11 +1182,21 @@ async function autoReconcileCockpitForTeam(
       {},
       cockpit.medic,
       false,
-      { onlyTeam: matched.name },
+      { onlyTeam: matched.name, ...(topology !== undefined ? { topology } : {}) },
     );
-    logger.log(
-      `  ✓ cockpit window for '${matched.name}' reconciled (cockpit:${cockpit.cockpitSession})`,
-    );
+    if (topology !== undefined && matched.group !== undefined) {
+      await reconcileGroupServers(factory, topology, logger, {
+        onlyTeam: matched.name,
+        ...(cockpit.prefixChain !== undefined ? { prefixChain: cockpit.prefixChain } : {}),
+      });
+      logger.log(
+        `  ✓ viewer for '${matched.name}' reconciled in group '${matched.group}' (cockpit:${cockpit.cockpitSession})`,
+      );
+    } else {
+      logger.log(
+        `  ✓ cockpit window for '${matched.name}' reconciled (cockpit:${cockpit.cockpitSession})`,
+      );
+    }
   } catch (e) {
     const cause = e instanceof Error ? e.message : String(e);
     logger.warn(`cockpit reconcile failed for '${matched.name}': ${cause}`);

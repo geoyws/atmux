@@ -5,6 +5,8 @@
 **Driver-ref:** Chat conversation 2026-05-19 ~14:30 MYT — observed 12 epic-team directories on disk across atmux/sopx/rentx parents (only 2 live cages), driver direction *"make sure atmux properly reaps once the epic-teams have done their job and have had their work merged"*.
 **Related:** ADR-091 (spawn-epic), ADR-134 (epic-merge — merger pattern), ADR-170 (sweep-epics verb + SAFE-DISSOLVE gate), ADR-131 §Amendment (auto-groom criteria tightening), ADR-181 (global RAM-budget gate on spawn).
 
+> ⚠ **SUPERSEDED 2026-08-27 by [ADR-280](280-epic-team-retirement-and-staged-excision.md).** Epic-teams are retired: the `epic-team` cage type, the `epicId` cockpit field and the epic verbs no longer exist. This ADR is kept as history — the decision it records was true when made. Do not implement from it.
+
 ## Context
 
 Epic-teams (ADR-091) are spawned for an epic's scope of work. ADR-134's merger pattern handles the trunk integration — the epic-team's branch is merged into the parent team's base branch via the in-team committer (was: gitter). What ADR-134 does **not** specify is what happens to the epic-team itself *after* the merge succeeds.

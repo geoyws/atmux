@@ -146,20 +146,24 @@ describe("e2e whip §2.5 needs-approval (ADR-085, t-3516d73a)", () => {
     discordSent.push(opts);
   };
 
-  /** Single whip tick against the per-test fixture. `scanNeedsApproval`
-   *  is called with no DI inside whip §2.5; it walks
-   *  `getAtmuxDir()` which reads `process.env.ATMUX_DIR` directly.
-   *  Mutating WhipOpts.env doesn't reach the lib (whip uses opts.env
-   *  for its own config reads only), so we pin process.env around
-   *  the whip call. Restore in `finally` to keep tests isolated. */
+  /** Single whip tick against the per-test fixture.
+   *
+   *  `ATMUX_DIR` / `ATMUX_TEAM_DIR` are deliberately CLEARED rather than
+   *  pinned. They used to be pinned because §2.5 called
+   *  `scanNeedsApproval()` with no arguments, so the lib walked up from
+   *  `process.cwd()` — the atmux repo — and reported ITS paperwork under
+   *  this fixture's team name; pinning the env was the only lever that
+   *  reached the lib. §2.5 now scopes the scan to `ctx.atmuxDir`, so the
+   *  whole walk is one `--team-dir` away and this suite proves it: every
+   *  count below comes from the fixture's own seeds. */
   async function tick(nowMs: number): Promise<number> {
     discordSent = [];
     _stdoutBuf = "";
     _stderrBuf = "";
     const priorAtmuxDir = process.env.ATMUX_DIR;
     const priorAtmuxTeamDir = process.env.ATMUX_TEAM_DIR;
-    process.env.ATMUX_DIR = atmuxDir;
-    process.env.ATMUX_TEAM_DIR = teamDir;
+    delete process.env.ATMUX_DIR;
+    delete process.env.ATMUX_TEAM_DIR;
     try {
       return await whip(["--team-dir", teamDir], {
         stdout,
@@ -175,9 +179,7 @@ describe("e2e whip §2.5 needs-approval (ADR-085, t-3516d73a)", () => {
       });
     } finally {
       if (priorAtmuxDir !== undefined) process.env.ATMUX_DIR = priorAtmuxDir;
-      else delete process.env.ATMUX_DIR;
       if (priorAtmuxTeamDir !== undefined) process.env.ATMUX_TEAM_DIR = priorAtmuxTeamDir;
-      else delete process.env.ATMUX_TEAM_DIR;
     }
   }
 

@@ -3,6 +3,8 @@
 **Status**: accepted
 **Date**: 2026-05-23
 **Driver-ref**: parent atmux kanban Epic `e-a946af69` ("orchd lifecycle Phase 3-5") + driver-inbox 08:27 MYT 2026-05-23 (lead relay)
+
+> ⚠ **SUPERSEDED 2026-08-27 by [ADR-276](276-orchd-retirement-and-atmux-scope.md)** (dispatch already stubbed by [ADR-280](280-epic-team-retirement-and-staged-excision.md) stage 3). The auto-merge subscriber is deleted — epic-completeness detection and merge dispatch are retired, and with them the only emitter of `epic.merged`. Kept as history; do not implement from it.
 **Parent EPIC (this team)**: `e-a946af69` (orchd Phase 3-5)
 **Hard gate**: [`e-60e16169`](../../README.md) (orchd Phase 1+2 — rename relayd→orchd + auto-spawn subscriber pattern). Phase 3 mounts onto the daemon Phase 1+2 ships.
 **Sibling cross-refs**: [ADR-090](090-epic-team-lifecycle.md) (`spawn-epic` / `dissolve-epic` primitives), [ADR-134](134-in-team-auto-merger.md) (in-team auto-merger two-trigger pattern), [ADR-202](202-honker-in-db-messaging-substrate.md) (Honker substrate), [ADR-203](203-event-topic-taxonomy.md) (topic taxonomy v1).

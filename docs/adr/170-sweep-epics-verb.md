@@ -1,5 +1,7 @@
 # ADR-170 — `atmux team sweep-epics` verb: enumerate + safely dissolve idle epic-teams
 
+> ⚠ **SUPERSEDED 2026-08-27 by [ADR-280](280-epic-team-retirement-and-staged-excision.md).** Epic-teams are retired: the `epic-team` cage type, the `epicId` cockpit field and the epic verbs no longer exist. This ADR is kept as history — the decision it records was true when made. Do not implement from it.
+
 Status: Accepted — ratified by driver 2026-05-21 (`atmux team sweep-epics [--apply] [--idle-hours N] [--parent T] [--json]` — 4-signal verdict; --apply dispatches dissolveEpic only on SAFE-DISSOLVE; §OQ recommendations as-written)
 Date: 2026-05-17
 

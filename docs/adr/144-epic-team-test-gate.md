@@ -4,6 +4,8 @@
 **Date**: 2026-05-16
 **Origin**: 2026-05-14 driver session — operator directive: *"we have to make the epic-team run e2e on their own branch staging isolated and make sure tests are passing before we can merge their work into our 'trunk' which is the pwd's branch"*
 
+> ⚠ **SUPERSEDED 2026-08-27 by [ADR-280](280-epic-team-retirement-and-staged-excision.md).** Epic-teams are retired: the `epic-team` cage type, the `epicId` cockpit field and the epic verbs no longer exist. This ADR is kept as history — the decision it records was true when made. Do not implement from it.
+
 ## Context
 
 Per [ADR-091](091-epic-merge-state-machine.md), epic-team auto-merge fires `git merge --no-ff <epic-branch>` against parent-team-trunk when the state machine advances `ready_to_merge → merging`. **There is no test-gate between those two states.** Broken epic-team work can land on parent-team-trunk and break the dogfood loop or — for IFCA product teams — the demo-walk path.

@@ -45,7 +45,7 @@ const priorEnv: Record<string, string | undefined> = {};
 
 beforeAll(async () => {
   teamName = `ss${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-  sessionName = `atmux-${teamName}`;
+  sessionName = teamName; // bare per e-419553c6
 
   teamDir = await mkdtemp(join(tmpdir(), "atmux-stopsoft-"));
   atmuxDir = join(teamDir, ".atmux");

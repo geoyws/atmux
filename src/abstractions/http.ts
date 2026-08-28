@@ -49,6 +49,17 @@ export interface HttpResponse {
   headers: Headers;
   /** Decoded body. Empty string for 204 / no-content responses. */
   body: string;
+  /**
+   * Raw response bytes, before UTF-8 decoding.
+   *
+   * Exists because some endpoints answer with binary that a string cannot
+   * round-trip: OpenAI's `/v1/audio/speech` returns raw PCM16, and decoding
+   * those bytes as UTF-8 silently replaces every invalid sequence with
+   * U+FFFD — a corruption that looks like working code right up until the
+   * audio is garbage. Callers that want bytes read this; `body` stays the
+   * decoded view so every existing caller is unaffected.
+   */
+  bytes: Uint8Array;
   /** ms from request issue to body fully read. */
   durationMs: number;
 }
@@ -93,7 +104,10 @@ export async function request(opts: HttpRequestOpts): Promise<HttpResponse> {
         externalSignal: opts.signal,
       });
       const durationMs = nowMs() - start;
-      const body = await sent.response.text();
+      // Read once as bytes, then decode. Reading `.text()` first would
+      // consume the stream and leave no way back to the raw octets.
+      const bytes = new Uint8Array(await sent.response.arrayBuffer());
+      const body = new TextDecoder().decode(bytes);
       const httpResp: HttpResponse = {
         url: opts.url,
         method,
@@ -101,6 +115,7 @@ export async function request(opts: HttpRequestOpts): Promise<HttpResponse> {
         statusText: sent.response.statusText,
         headers: sent.response.headers,
         body,
+        bytes,
         durationMs,
       };
       if (!statusAccepted(httpResp.status, expect)) {

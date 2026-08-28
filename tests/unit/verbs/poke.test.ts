@@ -574,13 +574,16 @@ const seedTeam = async (
   data: { name: string; members: unknown[]; whip?: unknown },
 ): Promise<void> => {
   await mkdir(atmuxDir, { recursive: true });
-  // ADR-085 §2.5 needs-approval scan walks the REAL repo's docs/adr/ via
-  // resolveProjectRoot() cwd-walk — proposed ADRs on the active branch
-  // (e.g. 087/089/137/147) fire a `whip-needs-approval` ping every tick,
-  // leaking into tests' `sent[]` assertions. Default-off here keeps the
-  // whip() verb tests focused on the slice they assert; explicit
-  // `whip.needsApprovalEnabled: true` in `data.whip` still wins (e.g.
-  // tests that DO exercise the scan path).
+  // Default-off keeps the whip() verb tests focused on the slice they
+  // assert; explicit `whip.needsApprovalEnabled: true` in `data.whip`
+  // still wins (e.g. tests that DO exercise the scan path).
+  //
+  // This used to be load-bearing rather than tidiness: §2.5's scan walked
+  // the REAL repo's docs/adr/ via `resolveProjectRoot()`'s cwd-walk, so
+  // proposed ADRs on the active branch fired a `whip-needs-approval` ping
+  // every tick and leaked into `sent[]`. The scan is now scoped to
+  // `ctx.atmuxDir`, which is why the test below can turn it ON against a
+  // scratch root and assert silence.
   const incomingWhip = (data.whip as Record<string, unknown> | undefined) ?? {};
   const mergedWhip = { needsApprovalEnabled: false, ...incomingWhip };
   await writeFile(join(atmuxDir, "team.json"), JSON.stringify({ ...data, whip: mergedWhip }));
@@ -655,6 +658,52 @@ describe("poke() — public verb", () => {
     // whip-last.hash anchor written
     const hash = await readFile(join(atmuxDir, "state", "whip-last.hash"), "utf8");
     expect(hash.trim()).toBe("1700000000");
+  });
+
+  test("§2.5 scan is scoped to the team root — a scratch team pings nothing", async () => {
+    // Turned ON deliberately, against a `mkdtemp` root with no docs/adr,
+    // no driver-inbox and no kanban. The scan walked up from cwd — the
+    // atmux repo, which carries a real backlog of proposed ADRs — so this
+    // used to fire a `whip-needs-approval` ping stamped `demo`: another
+    // team's paperwork, attributed by name.
+    //
+    // No `ATMUX_DIR` pin: the scoping has to come from `--team-dir`.
+    await seedTeam(atmuxDir, {
+      name: "demo",
+      members: [],
+      whip: { needsApprovalEnabled: true, heartbeat: false },
+    });
+    const priorAtmuxDir = process.env.ATMUX_DIR;
+    const priorAtmuxTeamDir = process.env.ATMUX_TEAM_DIR;
+    delete process.env.ATMUX_DIR;
+    delete process.env.ATMUX_TEAM_DIR;
+    const sent: DiscordSendOpts[] = [];
+    try {
+      await poke(["--team-dir", teamDir], {
+        stdout,
+        stderr,
+        now: () => 1_700_000_000_000,
+        home: homeDir,
+        env: {},
+        tmux: buildFakeTmux({ sessionUp: true, panes: {} }),
+        discordSend: async (o) => {
+          sent.push(o);
+        },
+      });
+    } finally {
+      if (priorAtmuxDir !== undefined) process.env.ATMUX_DIR = priorAtmuxDir;
+      if (priorAtmuxTeamDir !== undefined) process.env.ATMUX_TEAM_DIR = priorAtmuxTeamDir;
+    }
+    expect(sent.map((s) => s.template)).not.toContain("whip-needs-approval");
+    // And the JSONL snapshot — written every tick regardless of total —
+    // records a zero report rather than the ambient repo's counts.
+    const events = await readFile(join(atmuxDir, "logs", "lead-events.jsonl"), "utf8");
+    const snapshot = events
+      .split("\n")
+      .filter((l) => l.includes("needs-approval-snapshot"))
+      .map((l) => JSON.parse(l) as { report: { total: number } });
+    expect(snapshot).toHaveLength(1);
+    expect(snapshot[0]?.report.total).toBe(0);
   });
 
   test("session UP + heartbeat suppressed (config.heartbeat=false) → no Discord", async () => {
@@ -749,7 +798,9 @@ describe("poke() — public verb", () => {
       },
     });
     expect(exit).toBe(0);
-    expect(stdoutBuf).toContain("session atmux-demo is DOWN");
+    // Bare session names (e-419553c6): cage sessions are named <team>, not
+    // atmux-<team>; the DOWN report follows the session name.
+    expect(stdoutBuf).toContain("session demo is DOWN");
     const templates = sent.map((s) => s.template);
     expect(templates).toContain("whip-blocker");
     expect(templates).toContain("whip-progress");

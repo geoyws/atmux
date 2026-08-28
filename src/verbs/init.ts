@@ -60,15 +60,14 @@
 // [--name <team>] [--force|-f]`) is the contract.
 
 import { basename, join } from "node:path";
+import { KanbanCliAdapter } from "../adapters/kanban-cli.ts";
 import { ensureDir, exists, readText, writeText } from "../abstractions/fs.ts";
 import { readJson } from "../abstractions/json.ts";
 import { now } from "../abstractions/time.ts";
 import { driverInboxPath, getAtmuxDir, inboxPathFor, kanbanJsonPath } from "../core/common.ts";
+import { externalKanbanEnabled } from "../core/kanban-backend.ts";
 import { defaultStdoutWrite, type Writer } from "../core/io.ts";
-import {
-  installSkillsPlugin,
-  renderSkillsInstallResult,
-} from "../core/skills-plugin-install.ts";
+import { installSkillsPlugin, renderSkillsInstallResult } from "../core/skills-plugin-install.ts";
 import { resolveTemplatesDir } from "../core/templates-dir.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { ConfigError, UsageError } from "../errors.ts";
@@ -227,6 +226,8 @@ export interface InitOptions {
   logger?: Logger;
   /** stdout sink override (test injection); defaults to `process.stdout.write`. */
   stdout?: Writer;
+  /** External work-ledger adapter override (test injection). */
+  kanbanAdapter?: Pick<KanbanCliAdapter, "initialize">;
 }
 
 /**
@@ -355,7 +356,14 @@ export async function init(argv: ReadonlyArray<string>, opts: InitOptions = {}):
   const atmuxDir = await getAtmuxDir({ cwd, env });
   const kanban = kanbanJsonPath(atmuxDir);
   const drvInbox = driverInboxPath(atmuxDir);
-  if (!(await exists(kanban))) {
+  if (await externalKanbanEnabled(atmuxDir, env)) {
+    // Deliberately NOT `{ env }`: here `env` is `process.env`, and handing it
+    // to the adapter as an explicit env would re-admit the ambient
+    // `KANBAN_DB` / `KANBAN_DATA_DIR` the adapter strips, at the one call site
+    // that creates the board. The adapter inherits the environment itself.
+    const adapter = opts.kanbanAdapter ?? new KanbanCliAdapter();
+    await adapter.initialize(atmuxDir, teamName);
+  } else if (!(await exists(kanban))) {
     // Bash literal: `echo '{"tasks":[],"epics":[],"stories":[]}' > "$kj"`.
     // writeText to byte-match (compact, single-line, trailing newline).
     await writeText(kanban, '{"tasks":[],"epics":[],"stories":[]}\n');

@@ -1,8 +1,6 @@
 import { dirname, join } from "node:path";
 import { exists, removeFile, statOrNull, writeText } from "../../abstractions/fs.ts";
 import { tryReadJson } from "../../abstractions/json.ts";
-import { closeDatabase, openDatabase } from "../../abstractions/sqlite.ts";
-import { migrations } from "../../abstractions/sqlite-migrations.ts";
 import { createTmux } from "../../abstractions/tmux.ts";
 import { resolveCageSessionName } from "../../core/cockpit.ts";
 import {
@@ -12,8 +10,9 @@ import {
   tryLoadTeam,
 } from "../../core/common.ts";
 import { loadInbox } from "../../core/inbox.ts";
+import { listTasks } from "../../core/kanban.ts";
+import { externalKanbanEnabled } from "../../core/kanban-backend.ts";
 import { findPhantomInProgressClaims } from "../../core/phantom-prune.ts";
-import { KanbanRepo } from "../../core/repositories/kanban-repo.ts";
 import { Kanban } from "../../schema/kanban.ts";
 import type { Team } from "../../schema/team.ts";
 import type { DoctorRow } from "./types.ts";
@@ -95,13 +94,8 @@ export async function findPhantomInboxes(atmuxDir: string): Promise<PhantomEntry
   if (team === null) return [];
 
   const liveIds = new Set<string>();
-  if (await exists(stateDb)) {
-    const db = openDatabase(stateDb, migrations);
-    try {
-      for (const t of new KanbanRepo(db).listTasks()) liveIds.add(t.id);
-    } finally {
-      closeDatabase(db);
-    }
+  if ((await externalKanbanEnabled(atmuxDir)) || (await exists(stateDb))) {
+    for (const task of await listTasks(atmuxDir)) liveIds.add(task.id);
   } else {
     const kanban = await tryReadJson(kanbanJsonPath(atmuxDir), Kanban);
     if (kanban === null) return [];

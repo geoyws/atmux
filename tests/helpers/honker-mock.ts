@@ -1,6 +1,7 @@
 // ADR-231 / ADR-202 — Honker subscription mock for Phase 2 handler unit
-// tests (S3.1, t-16-27fdc08b). Pinned by ADR-224 §D6 / orchd-registry.ts
-// `OrchdSubscription` contract:
+// tests (S3.1, t-16-27fdc08b). Pinned by the ADR-224 §D6 registry
+// contract (`src/core/event-subscriptions.ts`, formerly
+// `orchd-registry.ts` — slimmed by ADR-276) `EventSubscription`:
 //
 //   - At-least-once delivery semantics. Per-`consumerId` offsets advance
 //     ONLY after the handler returns successfully — handler throw leaves
@@ -8,7 +9,7 @@
 //   - Multi-handler-per-topic supported (distinct `consumerId`s). Each
 //     handler tracks its own dispatch cursor.
 //   - Cross-topic ordering is NOT guaranteed (mirrors the real
-//     contract — `src/core/orchd-registry.ts` module comment).
+//     contract — `src/core/event-subscriptions.ts` module comment).
 //
 // The mock is in-memory + synchronous. Real `_honker_notifications`
 // table reads / NOTIFY/LISTEN polling are out of scope — this stands in
@@ -16,7 +17,7 @@
 // from the substrate.
 
 import type { EventPayload } from "../../src/schema/events.ts";
-import type { OrchdSubscription } from "../../src/core/orchd-registry.ts";
+import type { EventSubscription } from "../../src/core/event-subscriptions.ts";
 
 /** A single published event held in the mock's in-memory log.
  *  `sequence` is monotonic + assigned at publish time; it stands in for
@@ -69,7 +70,7 @@ export function buildPayload<T extends { topic: string }>(input: T): T & {
  *  fresh instance per `beforeEach` to avoid cross-test leakage). */
 export class HonkerMock {
   private events: PublishedEvent[] = [];
-  private subscribers = new Map<string, OrchdSubscription>();
+  private subscribers = new Map<string, EventSubscription>();
   /** Per-consumer offset — sequence of the last successfully-handled
    *  event. Drains skip events with `sequence <= offset`. */
   private offsets = new Map<string, number>();
@@ -77,8 +78,8 @@ export class HonkerMock {
 
   /** Register a subscriber. Idempotent: re-registering the same
    *  `consumerId` is a no-op (returns `false`). Mirrors
-   *  `registerOrchdSubscription` in src/core/orchd-registry.ts. */
-  register(sub: OrchdSubscription): boolean {
+   *  `registerEventSubscription` in src/core/event-subscriptions.ts. */
+  register(sub: EventSubscription): boolean {
     if (this.subscribers.has(sub.consumerId)) return false;
     this.subscribers.set(sub.consumerId, sub);
     if (!this.offsets.has(sub.consumerId)) this.offsets.set(sub.consumerId, 0);
@@ -158,7 +159,7 @@ export class HonkerMock {
   }
 
   /** Registered subscribers — read-only view. */
-  getSubscribers(): readonly OrchdSubscription[] {
+  getSubscribers(): readonly EventSubscription[] {
     return Array.from(this.subscribers.values());
   }
 

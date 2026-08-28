@@ -79,3 +79,11 @@ The pre-existing `team.json:.driverTui` field continues to drive the legacy at-e
 ## Open questions
 
 - **Should `atmux start --force` on an existing session auto-migrate the driver to window 1 (move + shift)?** Not in this ADR. The 2026-05-04 unum migration showed it's mechanically straightforward via tmux primitives, but bundling that into start would surprise operators who don't expect their tab indices to shift mid-attach. Consider a dedicated `atmux team migrate-driver-front` verb if usage data shows operators commonly need it.
+
+## Amendments
+
+### 2026-08-24 — harness selection no longer belongs to `driverSession`
+
+[ADR-239](239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md) replaced this ADR's singular `driverSession` launch model with the declarative `drivers[]` roster. [ADR-266](266-shim-sunset-policy-and-first-sweep.md) then removed the legacy `driverSession` / `driverTui` launch fallback. D1 and D4 above remain historical descriptions only and are not current configuration precedence.
+
+[ADR-278](278-nullable-driver-agent-harness.md) makes each current `drivers[].tui` nullable and optional. A null or omitted harness starts zsh in the driver window; an explicit non-null alias still auto-launches that harness. The placement decision from this ADR remains intact: drivers belong at the front of the dedicated team session, and existing running sessions are not rearranged.

@@ -1,9 +1,10 @@
 // ADR-148 §D4 / T3: lane-stall verb.
 //
-// Operator-on-demand post-ADR-233 (cron auto-install retired; orchd is
-// the event-driven runtime). Pre-ADR-233 this fired from a cron block;
-// the per-team `cron-install --template lane-stall-watch` arming is
-// gone. Until an orchd consumer subscribes to a lane-stall topic, the
+// Operator-on-demand post-ADR-233 (cron auto-install retired; the orchd
+// runtime that replaced it was itself retired per ADR-276). Pre-ADR-233
+// this fired from a cron block; the per-team `cron-install --template
+// lane-stall-watch` arming is gone. Until an event-subscription
+// consumer subscribes to a lane-stall topic, the
 // verb runs only when an operator/lead invokes `atmux lane-stall-tick`
 // directly. Per ADR-148 §D4 the verb is the fleet-wide safety net —
 // when a Task

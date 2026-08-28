@@ -44,6 +44,7 @@ import {
   requireTeam,
   resolveTeamSocket,
 } from "../core/common.ts";
+import { listTasks } from "../core/kanban.ts";
 import { resolveMergerConfig } from "../core/merger-config.ts";
 import {
   findPhantomInProgressClaims,
@@ -57,7 +58,6 @@ import {
   runReleaseNotesAutoAppend,
 } from "../core/release-notes-sweep.ts";
 import { HygieneRepo } from "../core/repositories/hygiene-repo.ts";
-import { KanbanRepo } from "../core/repositories/kanban-repo.ts";
 import type { FixDeps, TeamState } from "../core/superdoctor-hygiene/_shared.ts";
 import { type DrainTickResult, drainTick } from "../core/superdoctor-hygiene/drain.ts";
 import { UsageError } from "../errors.ts";
@@ -255,7 +255,7 @@ export async function hygieneTick(
   const db = openDatabase(join(atmuxDir, "state.db"), migrations);
   let drain: DrainTickResult;
   try {
-    const kanban = new KanbanRepo(db).listTasks();
+    const kanban = await listTasks(atmuxDir);
     const repo = new HygieneRepo(db);
     // Narrow Team → TeamState for the drain-loop signature.
     const teamState: TeamState = { members: team.members };
@@ -343,10 +343,9 @@ async function runReleaseNotesAppend(args: {
 
   // Re-open the kanban repo specifically for the sweep so the snapshot
   // is fresh post-drain (drainTick may have flipped task statuses).
-  const db = openDatabase(join(atmuxDir, "state.db"), migrations);
   let sweepResult: ReleaseNotesSweepResult;
   try {
-    const kanban = new KanbanRepo(db).listTasks();
+    const kanban = await listTasks(atmuxDir);
     sweepResult = await runReleaseNotesAutoAppend({
       repoRoot,
       baseBranch,
@@ -355,10 +354,8 @@ async function runReleaseNotesAppend(args: {
       nowMs,
     });
   } catch {
-    closeDatabase(db);
     return emptyReleaseNotesResult(repoRoot, "probe-failed");
   }
-  closeDatabase(db);
 
   return {
     dayFilePath: sweepResult.dayFilePath,

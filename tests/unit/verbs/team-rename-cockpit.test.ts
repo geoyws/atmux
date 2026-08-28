@@ -1,8 +1,16 @@
 // Unit tests for src/verbs/team-rename-cockpit.ts (ADR-027 T4).
 // Covers syncCockpitRegistry's full surface against synthetic
 // ~/.atmux/cockpit.json fixtures under tmpdir: happy / refuse-not-found
-// / legacy-lift / epic-team carve-out / nested team-in-team / atomic
+// / legacy-lift / non-team carve-out / nested team-in-team / atomic
 // write idempotence.
+//
+// ADR-280 stage 4: the carve-out cases were written against `epic-team`,
+// the only non-`team` node that could sit nested under a team. That type
+// is retired, so each case now asserts the SAME property against a type
+// that still exists — `superdriver` / `medic` for "not a rename target",
+// and an ordinary nested `team` for "a child is not renamed with its
+// parent". The rule under test is unchanged: only `type: "team"` nodes,
+// matched by name, are renamed.
 
 import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
@@ -127,7 +135,7 @@ describe("syncCockpitRegistry", () => {
     }
   });
 
-  test("epic-team child node NOT mutated when parent renamed", async () => {
+  test("a nested child team is NOT renamed when its parent is renamed", async () => {
     const dir = mkTmpdir();
     const cockpitPath = join(dir, "cockpit.json");
     try {
@@ -142,10 +150,9 @@ describe("syncCockpitRegistry", () => {
             enabled: true,
             sessions: [
               {
-                type: "epic-team",
-                name: "e-1",
-                parent: "parent",
-                epicId: "e-1",
+                type: "team",
+                name: "child",
+                root: "/tmp/parent/child",
                 enabled: true,
                 sessions: [],
               },
@@ -157,19 +164,20 @@ describe("syncCockpitRegistry", () => {
       const after = (await readCockpit(cockpitPath)) as {
         sessions: Array<{
           name: string;
-          sessions: Array<{ type: string; name: string; parent?: string }>;
+          sessions: Array<{ type: string; name: string; root?: string }>;
         }>;
       };
       expect(after.sessions[0]?.name).toBe("newparent");
-      expect(after.sessions[0]?.sessions[0]?.name).toBe("e-1");
-      // epic-team `parent` pointer NOT updated (out of scope per JSDoc OQ note)
-      expect(after.sessions[0]?.sessions[0]?.parent).toBe("parent");
+      // The rename matches on NAME, so the child is untouched — its own
+      // name and root both survive the parent's rename.
+      expect(after.sessions[0]?.sessions[0]?.name).toBe("child");
+      expect(after.sessions[0]?.sessions[0]?.root).toBe("/tmp/parent/child");
     } finally {
       rmTmpdir(dir);
     }
   });
 
-  test('type:"epic-team" node with matching name refuses (only type:"team" is renamed)', async () => {
+  test('a non-team node with a matching name refuses (only type:"team" is renamed)', async () => {
     const dir = mkTmpdir();
     const cockpitPath = join(dir, "cockpit.json");
     try {
@@ -183,20 +191,17 @@ describe("syncCockpitRegistry", () => {
             root: "/tmp/parent",
             enabled: true,
             sessions: [
-              {
-                type: "epic-team",
-                name: "e-1",
-                parent: "parent",
-                epicId: "e-1",
-                enabled: true,
-                sessions: [],
-              },
+              { type: "superdriver", name: "sd-1", enabled: true },
+              { type: "medic", name: "medic-1", enabled: true },
             ],
           },
         ],
       });
       await expect(
-        syncCockpitRegistry({ cockpitPath, oldName: "e-1", newName: "e-2" }),
+        syncCockpitRegistry({ cockpitPath, oldName: "sd-1", newName: "sd-2" }),
+      ).rejects.toThrow(ConfigError);
+      await expect(
+        syncCockpitRegistry({ cockpitPath, oldName: "medic-1", newName: "medic-2" }),
       ).rejects.toThrow(ConfigError);
     } finally {
       rmTmpdir(dir);
@@ -301,6 +306,29 @@ describe("findAndMutateTeamName", () => {
     expect((nodes[0] as { name: string }).name).toBe("foo");
   });
 
+  test("recurses through a group container to reach its teams (e-419553c6) — the group's own name is never mutated", () => {
+    const nodes: CockpitSessionT[] = [
+      {
+        type: "group",
+        name: "geoyws",
+        enabled: true,
+        sessions: [
+          { type: "team", name: "old", root: "/tmp/old", enabled: true, sessions: [] },
+        ],
+      },
+    ];
+    expect(findAndMutateTeamName(nodes, "old", "new")).toBe(true);
+    const group = nodes[0] as { name: string; sessions: Array<{ name: string }> };
+    expect(group.name).toBe("geoyws"); // group untouched
+    expect(group.sessions[0]?.name).toBe("new");
+    // A group NAME matching oldName is not a team — no mutation, no hit.
+    const groupOnly: CockpitSessionT[] = [
+      { type: "group", name: "old", enabled: true, sessions: [] },
+    ];
+    expect(findAndMutateTeamName(groupOnly, "old", "new")).toBe(false);
+    expect((groupOnly[0] as { name: string }).name).toBe("old");
+  });
+
   test("recurses into nested team's sessions[]", () => {
     const nodes: CockpitSessionT[] = [
       {
@@ -319,19 +347,15 @@ describe("findAndMutateTeamName", () => {
     );
   });
 
-  test("does NOT mutate epic-team siblings (only type:team)", () => {
+  test("does NOT mutate non-team siblings (only type:team)", () => {
     const nodes: CockpitSessionT[] = [
-      {
-        type: "epic-team",
-        name: "e-1",
-        parent: "parent",
-        epicId: "e-1",
-        enabled: true,
-        sessions: [],
-      },
+      { type: "superdriver", name: "sd-1", enabled: true },
+      { type: "medic", name: "medic-1", enabled: true },
     ];
-    expect(findAndMutateTeamName(nodes, "e-1", "e-2")).toBe(false);
-    expect((nodes[0] as { name: string }).name).toBe("e-1");
+    expect(findAndMutateTeamName(nodes, "sd-1", "sd-2")).toBe(false);
+    expect(findAndMutateTeamName(nodes, "medic-1", "medic-2")).toBe(false);
+    expect((nodes[0] as { name: string }).name).toBe("sd-1");
+    expect((nodes[1] as { name: string }).name).toBe("medic-1");
   });
 
   test("first match wins (short-circuits depth-first walk)", () => {
