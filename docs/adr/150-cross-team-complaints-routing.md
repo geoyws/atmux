@@ -10,7 +10,7 @@
 
 ## Numbering note
 
-Slot `ADR-150` is the next sequential after [ADR-149](149-) (eternal-improvement gating, proposed). Slots `150-151` were free at planner-decomp time; `152` was reserved for the medic-canary rename (`t-20674483`) and has since been re-allocated to ADR-152 blockers-list per [ADR-152](152-atmux-blockers-list-unified-verb.md) §Numbering-shift header; medic-canary moves to next-free-after-155 (likely ADR-156).
+Slot `ADR-150` is the next sequential after [ADR-149](149-) (eternal-improvement gating, proposed). Slots `150-151` were free at planner-decomp time; `152` was reserved for the medic-canary rename (`t-20674483`) and has since been re-allocated to ADR-152 blockers-list per [ADR-152](152-blockers-list-unified-verb.md) §Numbering-shift header; medic-canary moves to next-free-after-155 (likely ADR-156).
 
 ## Context
 
@@ -190,7 +190,7 @@ Reviewer-gated at each Task per the standing reviewer audit-bar (§Audit checkli
 - **[ADR-089](089-hierarchical-cockpit.md)** — cockpit recursive `sessions[]` + DFS walk; `walkSessions` / `enabledTeams` are the primitives `lookupTeamAtmuxDir` reuses.
 - **[ADR-133](133-medic-rename.md)** — medic rename; storage identifiers (`__superdoctor__` sentinel, `superdoctor_attempts` table) unchanged per ADR-133 §Out of scope, so ADR-150's column addition lands on the existing-named `complaints` table without rename collision.
 - **[ADR-147](147-ombudsman-and-release-notes.md)** — ombudsman adjudicates complaints; with ADR-150 shipped, ombudsman of team B drains complaints filed against B from team A.
-- **[ADR-152](152-atmux-blockers-list-unified-verb.md)** — blockers list; `complaints` (open) is surface 2 of 7. ADR-152's deferred cross-team aggregation (per its §Out of scope) lands as a follow-up using ADR-150's `lookupTeamAtmuxDir` primitive.
+- **[ADR-152](152-blockers-list-unified-verb.md)** — blockers list; `complaints` (open) is surface 2 of 7. ADR-152's deferred cross-team aggregation (per its §Out of scope) lands as a follow-up using ADR-150's `lookupTeamAtmuxDir` primitive.
 - **[ADR-153](153-auto-promotion-rules.md)** — auto-promotion R1; current §Out of scope "cross-team R1" lands as a follow-up using ADR-150's write-routing primitive (R1 fires complaints into target-team DB via `--target-team` resolution).
 - **[ADR-149](149-)** (proposed) — eternal-improvement gating; sibling `team.json` additive-block pattern.
 - **EPIC `t-1ea440e8`** — parent EPIC body has the cross-team complaint routing scope this ADR formalizes.

@@ -3,14 +3,14 @@
 **Status:** Accepted — v1 substrate (`templates/epic-rosters/solo.json` + `solo+committer.json`) via merge `fe6bcda` 2026-05-22; v2 convenience verbs (spawn-worker / dissolve-worker / list-workers) via this commit 2026-05-23. Auto-dissolve folded into orchd lifecycle [e-a946af69](../tasks/t-0db3f393.md) Phase 4 / ADR-227.
 **Date:** 2026-05-22 (v1) · 2026-05-23 (§v2 amendment)
 **Deciders:** geoyws (driver)
-**Related:** [ADR-090](090-epic-team-spawn.md), [ADR-091](091-epic-team-auto-merge.md), [ADR-033](033-driver-scope-only-gates.md), [ADR-170](170-sweep-epics.md), [ADR-199](199-claude-account-pool-for-epic-team-spawning.md), [t-8c8ce51c](../tasks/t-8c8ce51c.md), [t-9aa2f8cb](../tasks/t-9aa2f8cb.md), [t-0542595c](../tasks/t-0542595c.md)
+**Related:** [ADR-090](090-epic-team-lifecycle.md), [ADR-091](091-kanban-driven-auto-merge.md), [ADR-033](033-kanban-driver-only-flag.md), [ADR-170](170-sweep-epics-verb.md), [ADR-199](199-claude-account-pool-for-epic-team-spawning.md), [t-8c8ce51c](../tasks/t-8c8ce51c.md), [t-9aa2f8cb](../tasks/t-9aa2f8cb.md), [t-0542595c](../tasks/t-0542595c.md)
 
 ## Context
 
 Today's session (2026-05-22) shipped multiple small, single-commit fixes (merger-gate `c-6ca1ff2`, boot-claude strip, terminal-state recovery `c-baa0b8a`, backend-heavy roster). Each one fit the shape: 1-2 commits + 1 ADR amendment + a few tests. The team structure they CAN ride is:
 
 - **Drop on long-lived member queue** — works but pollutes that member's branch with unrelated work; gate-bug risk (until [t-9aa2f8cb](../tasks/t-9aa2f8cb.md) shipped, long-lived members' fan-in was structurally wedged); review semantics blurred when one member ships ten unrelated commits.
-- **Spawn a full epic-team** ([ADR-090](090-epic-team-spawn.md), 5-7 members) — wasteful: lead + planner + reviewer + fe-1/2 + be-1/2 + committer for a single commit. Account-pool budget pressure under concurrent epics.
+- **Spawn a full epic-team** ([ADR-090](090-epic-team-lifecycle.md), 5-7 members) — wasteful: lead + planner + reviewer + fe-1/2 + be-1/2 + committer for a single commit. Account-pool budget pressure under concurrent epics.
 - **Driver direct commit** — blocked by classifier (correct guardrail; trunk pushes bypass review).
 
 None of these fit "one-off small task." The gap is observable: today's driver-direct trunk commits (6ca1ff2 + baa0b8a + 3d923c7) each required operator-authorized `!`-prefix push.
@@ -100,9 +100,9 @@ Promoted from the original "follow-up Task" outline. Three convenience verbs lan
 ## References
 
 - [t-8c8ce51c](../tasks/t-8c8ce51c.md) — filing Task that motivated this ADR
-- [ADR-090 §`spawn-epic` verb](090-epic-team-spawn.md) — substrate this builds on
-- [ADR-091 §`epic-merge`](091-epic-team-auto-merge.md) — fan-in semantics shared with workers
-- [ADR-170 §`sweep-epics`](170-sweep-epics.md) — companion read-only enumerator + housekeeping path (workers count against the same sweep)
-- [ADR-202 §Amendment 2026-05-22](202-honker-pubsub-substrate.md) — event substrate for §v3 auto-dissolve consumer (consumer wiring deferred to EPIC e-a946af69 Phase 4)
+- [ADR-090 §`spawn-epic` verb](090-epic-team-lifecycle.md) — substrate this builds on
+- [ADR-091 §`epic-merge`](091-kanban-driven-auto-merge.md) — fan-in semantics shared with workers
+- [ADR-170 §`sweep-epics`](170-sweep-epics-verb.md) — companion read-only enumerator + housekeeping path (workers count against the same sweep)
+- [ADR-202 §Amendment 2026-05-22](202-honker-in-db-messaging-substrate.md) — event substrate for §v3 auto-dissolve consumer (consumer wiring deferred to EPIC e-a946af69 Phase 4)
 - 2026-05-22 session log — multiple small-fix commits motivating the gap analysis
 - 2026-05-23 §v2 amendment — e-678dd038 epic-team shipped the 3 convenience verbs + tests; dogfood validation outstanding (operator self-spawn of a worker via the new verb)

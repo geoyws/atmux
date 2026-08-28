@@ -54,7 +54,7 @@ The dead-cage reap calls `performDissolveEpic` with default checks. For a dead c
 - **Closes the leak's structural cause**: dead-cage orphans no longer accumulate. Pairs with the singleton guard ([ADR-249](249-orchd-singleton-guard.md)) which stops *duplicate* spawns at the source.
 - **Does NOT, by itself, free the live-idle RAM** (e.g. the 2026-05-29 sopx/mx/unum cages): those cages are alive, so the reaper escalates rather than kills. Immediate relief for already-accumulated live-idle cages is an operator-driven `atmux team dissolve-epic` per cage (cross-team → ping first).
 - **Code**: new `src/core/orchd-reap.ts` + `tests/unit/core/orchd-reap.test.ts`; new `--reap-stale` branch in `src/verbs/orchd.ts`. Rust supervisor tick deferred (D2).
-- **Out of scope**: auto-killing live cages (gated, off, future); reaping non-epic teams (regular-team decommission is [ADR-248](248-atmux-team-remove-verb.md)'s `atmux team remove`); cross-cage reaping ([ADR-232](232-cross-cage-dispatch.md) dispatcher territory).
+- **Out of scope**: auto-killing live cages (gated, off, future); reaping non-epic teams (regular-team decommission is [ADR-248](248-atmux-team-remove-verb.md)'s `atmux team remove`); cross-cage reaping ([ADR-232](232-orchd-cross-cage-dispatcher-seam.md) dispatcher territory).
 
 ## Amendment 2026-06-04 — §D2 "Next wire" phase shipped (`--reap-stale` + real enumerator/liveness)
 

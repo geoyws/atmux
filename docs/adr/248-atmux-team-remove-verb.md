@@ -144,7 +144,7 @@ This verb does NOT initialize a fresh `.atmux/` directory inside the team root (
 
 **ADR cross-refs**: this verb supersedes the operator-side cleanup-checklist baked into [ADR-090](090-epic-team-lifecycle.md) for **regular teams** only — epic-teams continue to use `atmux team dissolve-epic` with its existing gates ([ADR-219](219-dissolve-epic-completeness.md)). [ADR-235](235-cockpit-verb-surface-rationalization.md) §(D3) plain-English refusal contract governs all refusal messages emitted by this verb.
 
-**Out of scope**: re-implementing `atmux team rename` ([ADR-027](027-team-rename-verb.md)) on top of this verb — rename is a separate operation with different gates. Out-of-scope also: bulk `atmux team remove --all-stopped` style sweeps — single-team invocation only in this ADR; if a sweep verb is later wanted, supersede here.
+**Out of scope**: re-implementing `atmux team rename` ([ADR-027](027-team-rename-verb-and-topology-invariant.md)) on top of this verb — rename is a separate operation with different gates. Out-of-scope also: bulk `atmux team remove --all-stopped` style sweeps — single-team invocation only in this ADR; if a sweep verb is later wanted, supersede here.
 
 ## Open questions
 

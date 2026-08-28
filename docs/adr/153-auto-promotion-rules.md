@@ -6,14 +6,14 @@
 **Parent EPIC**: t-cc7e9ce2
 **Closes complaint**: c-33475fd6
 **Driver-ref**: /bruh sweep 2026-05-16 00:17 MYT → operator "fix all complaints" directive → planner decomposed 00:43 MYT.
-**Deps**: [ADR-152](152-atmux-blockers-list-unified-verb.md) (`blocker_class` taxonomy + canonical row shape that auto-promotion consumes).
+**Deps**: [ADR-152](152-blockers-list-unified-verb.md) (`blocker_class` taxonomy + canonical row shape that auto-promotion consumes).
 **Reviewer**: pre-flag gate before T2–T6 impl tasks dispatch.
 
 ## Context
 
 ### The freshness problem — blockers age silently
 
-[ADR-152](152-atmux-blockers-list-unified-verb.md) shipped a unified blockers-list aggregation across 7 coordination surfaces. But aggregation alone doesn't promote stale entries from low-visibility surfaces to high-visibility ones. Today three concrete staleness fingerprints recur:
+[ADR-152](152-blockers-list-unified-verb.md) shipped a unified blockers-list aggregation across 7 coordination surfaces. But aggregation alone doesn't promote stale entries from low-visibility surfaces to high-visibility ones. Today three concrete staleness fingerprints recur:
 
 1. **Kanban Tasks parked at `status=blocked`** with no aging signal — operator has to grep `atmux task list --status blocked` and remember when each was set. A 30h blocker looks identical to a 30min blocker.
 2. **Driver-inbox entries** sitting unread for hours because the lead is mid-rotation / context-pressured / on a long Task. The driver doesn't know which inbox rows the lead has actually seen.
@@ -311,7 +311,7 @@ Reviewer-gated at each Task per the standing reviewer audit-bar.
 ## Cross-references
 
 - **[ADR-005](005-kanban-as-source-of-truth.md)** — kanban as source of truth; R1 reads `tasks.status`.
-- **[ADR-007](007-kanban-design.md)** — kanban pull-model + `blocked` lifecycle state. R1 measures time-in-blocked.
+- **[ADR-007](007-pull-kanban.md)** — kanban pull-model + `blocked` lifecycle state. R1 measures time-in-blocked.
 - **[ADR-008](008-decisions-verb.md)** — decisions verb; the `🔵 Decisions Needed` surface that ADR-152 catalogs.
 - **[ADR-010](010-atmux-flag.md)** — `atmux flag` + `.atmux/flags.md` lifecycle. R2 emits into this surface.
 - **[ADR-126](126-sqlite-state-store.md)** — `.atmux/state.db` SQLite canonical store.
@@ -321,7 +321,7 @@ Reviewer-gated at each Task per the standing reviewer audit-bar.
 - **[ADR-149](149-)** (proposed) — eternal-improvement gating; sibling config-block pattern reused for `team.groom.autoPromotionThresholds`.
 - **[ADR-150](150-)** (proposed) — cross-team complaints; future cross-team R1 integration depends on this.
 - **[ADR-151](151-)** (proposed) — unblocker; downstream consumer of R1/R2/R3 aging signals.
-- **[ADR-152](152-atmux-blockers-list-unified-verb.md)** — blockers list inventory; ADR-153 is the temporal-overlay sibling. R1 promotions surface in ADR-152's `blocker_class: "dep-not-shipped"` (default) bucket; ADR-152 lifts the class from the auto-promoted complaint's column.
+- **[ADR-152](152-blockers-list-unified-verb.md)** — blockers list inventory; ADR-153 is the temporal-overlay sibling. R1 promotions surface in ADR-152's `blocker_class: "dep-not-shipped"` (default) bucket; ADR-152 lifts the class from the auto-promoted complaint's column.
 - **[ADR-154](154-)** (proposed) — coordination-storage port; provides `driver_inbox` + `lead_outbox` SQLite tables that R2/R3 read in steady-state.
 - **[ADR-155](155-)** (proposed) — pane-state verb; deliberately not a promotion-eligible surface (volatile).
 - Complaint `c-33475fd6` — originator (driver-claude-sopx /bruh sweep 2026-05-16 00:17 MYT); this ADR's acceptance closes it.

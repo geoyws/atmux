@@ -213,7 +213,7 @@ EPIC e-f28c2596 ("auto-fire Enter on queued worker compose-box + rotate-lead bri
 
 **Cross-refs**:
 
-- [ADR-168](168-send-keys-failures-log.md) — escalation log target + rotation policy.
+- [ADR-168](168-send-keys-log-rotation-policy.md) — escalation log target + rotation policy.
 - EPIC e-f28c2596 — auto-fire Enter on queued compose box + rotate-lead brief decouple.
 - memory `feedback_atmux_send_for_queued_panes` — pre-fix recovery pattern (driver-side `atmux send <member>`); post-fix the cron-fired verbs auto-unstick, and `atmux send` is the fallback for the rare verify-exhausted case.
 
