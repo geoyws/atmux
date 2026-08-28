@@ -470,7 +470,7 @@ describe("stream() — coarse synthesized events from pane-state polling", () =>
   test("BUSY ticks emit NO event (no fabricated text_chunk); transition to READY emits idle", async () => {
     const { deps } = mkDeps({
       // Three BUSY captures, then READY. BUSY emits nothing; READY → idle.
-      captures: ["✻ Cooked for 3s", "✻ Cooked for 5s", "✻ Cooked for 7s", "❯ "],
+      captures: ["✻ Cooking…", "✻ Cooking…", "✻ Cooking…", "❯ "],
     });
     const be = createTmuxClaudeBackend(deps, { streamPollIntervalMs: 0 });
     const handle = await be.spawn(spawnOpts());
@@ -562,7 +562,7 @@ describe("status() — pane-state classification + sidecar rate-limit window", (
   });
 
   test("BUSY pane → working", async () => {
-    const { deps } = mkDeps({ captures: ["✻ Cooked for 9s"] });
+    const { deps } = mkDeps({ captures: ["✻ Cooking…"] });
     const be = createTmuxClaudeBackend(deps);
     const handle = await be.spawn(spawnOpts());
     expect((await be.status(handle)).kind).toBe("working");

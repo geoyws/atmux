@@ -124,7 +124,7 @@ describe("classifyGate1 — user-not-typing", () => {
   });
   test("BUSY (other state) does NOT trigger gate-1", () => {
     // Gate 1 is scoped to TYPING only; BUSY is gate-2's concern.
-    expect(classifyGate1("✻ Cooked for 12s")).toBeNull();
+    expect(classifyGate1("✻ Cooking…")).toBeNull();
   });
 });
 
@@ -133,7 +133,7 @@ describe("classifyGate2 — pane-idle", () => {
     expect(classifyGate2("$ ❯ ")).toBeNull();
   });
   test("BUSY (`✻ ...`) refuses", () => {
-    const r = classifyGate2("✻ Cooked for 12s");
+    const r = classifyGate2("✻ Cooking…");
     expect(r).not.toBeNull();
     expect(r).toContain("BUSY");
   });
@@ -497,7 +497,7 @@ describe("cockpitRotate — gate 1 (user-not-typing)", () => {
 describe("cockpitRotate — gate 2 (pane-idle)", () => {
   test("refuses when target pane is BUSY (`✻ Cooked`)", async () => {
     const h = makeHarness();
-    h.captures.set("atmux_cockpit:_medic", "✻ Cooked for 12s");
+    h.captures.set("atmux_cockpit:_medic", "✻ Cooking…");
     const exit = await cockpitRotate(["medic"], harnessOpts(h));
     expect(exit).toBe(65);
     expect(h.capturedStderr.join("")).toContain("gate-2-pane-idle");
@@ -601,7 +601,7 @@ describe("cockpitRotate — --force bypass matrix (per ADR-167)", () => {
     const h = makeHarness();
     // All three gate sources would fire if checked:
     h.captures.set("atmux_cockpit:_superdriver", "Press up to edit queued messages");
-    h.captures.set("atmux_cockpit:_medic", "✻ Cooked for 5s");
+    h.captures.set("atmux_cockpit:_medic", "✻ Cooking…");
     // No stat → would fire gate-3 missing.
     const exit = await cockpitRotate(["medic", "--force"], harnessOpts(h));
     // T4 respawn lands cleanly; success audit only (no Discord on
@@ -648,9 +648,16 @@ describe("claudeUiGoneVerifier", () => {
     expect(claudeUiGoneVerifier("❯ ")).toBe(false);
   });
 
-  test("`✻ Cooked` busy marker → claude UI present → false", () => {
-    // The `✻` glyph plus the literal `Cooked` adverb both trigger the
-    // negative match (defense-in-depth — either signal suffices).
+  test("`✻ Cooked` marker → claude UI present → false", () => {
+    // KEEP THE PAST-TENSE STRING HERE. This verifier asks "is Claude's UI
+    // still on screen", NOT "is the agent busy" — and a finished turn's
+    // `✻ Cooked for 12s` residue is perfectly good evidence the UI is up.
+    // It is deliberately NOT the same question as pane-state's BUSY, which
+    // was tightened to exclude exactly this string (t-89fc1cf8); a sweep that
+    // "modernises" both to `✻ Cooking…` breaks this one, because the verifier
+    // matches the literal words `Cooked|Schlepping|Honking|Compacting` and
+    // never the glyph — `Cooking` is in none of them. Verified by making that
+    // exact mistake.
     expect(claudeUiGoneVerifier("✻ Cooked for 12s")).toBe(false);
     expect(claudeUiGoneVerifier("Cooked for 12s")).toBe(false);
   });

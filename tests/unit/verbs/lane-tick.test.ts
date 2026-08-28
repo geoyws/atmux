@@ -50,7 +50,7 @@ afterEach(async () => {
 const FIXTURE_READY = "│ > \ntok 67k/100  ⏵⏵ auto mode on\n";
 const FIXTURE_COMPACTING = "Compacting conversation (15%)…\n";
 const FIXTURE_TYPING = "Press up to edit queued messages\n";
-const FIXTURE_BUSY = "✻ Cooked for 12s\n";
+const FIXTURE_BUSY = "✻ Cooking…\n";
 const FIXTURE_MODAL = "Do you want Claude to proceed?\n[y/N]: ";
 
 interface SeedThreeMembersOpts {

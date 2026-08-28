@@ -178,7 +178,9 @@ const defaultNow = (): number => Date.now();
  *   TYPING     → working        (user/queued text in compose box — a turn is
  *                                being assembled / about to run; treat as
  *                                in-flight so callers don't preempt)
- *   BUSY       → working        (agent mid-think — `✻ Cooked for Ns`, etc.)
+ *   BUSY       → working        (agent mid-think — `✻ Cooking…`, etc. The
+ *                                PAST-tense `✻ Cooked for Ns` is IDLE, not
+ *                                busy — see pane-state.ts, t-89fc1cf8.)
  *   COMPACTING → working        (context compaction in progress — the
  *                                session is busy and cannot accept input;
  *                                resolves to idle when it finishes)

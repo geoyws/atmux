@@ -159,14 +159,14 @@ describe("safeSendKeys — COMPACTING retries", () => {
 
 describe("safeSendKeys — BUSY retries", () => {
   test("BUSY → READY on second attempt (turn completed)", async () => {
-    const { fixture, opts } = buildFixture(["✻ Cooked for 12s", "\ntok 67k/100  ⏵⏵ auto mode\n"]);
+    const { fixture, opts } = buildFixture(["✻ Cooking…", "\ntok 67k/100  ⏵⏵ auto mode\n"]);
     const result = await safeSendKeys("x", "y", opts);
     expect(result.outcome).toBe("sent");
     expect(fixture.sleeps).toEqual([5_000]);
   });
 
   test("BUSY for 6 attempts (30s budget) → exhausted-busy + flag p3", async () => {
-    const captures = Array(6).fill("✻ Cooked for 30s");
+    const captures = Array(6).fill("✻ Cooking…");
     const { fixture, opts } = buildFixture(captures);
     const result = await safeSendKeys("x", "y", opts);
     expect(result.outcome).toBe("exhausted-busy");

@@ -56,10 +56,25 @@ describe("classifyText — 8 discrete states", () => {
     expect(r.state).toBe("TYPING");
   });
 
-  test("BUSY when '✻ Cooked for Ns' spinner glyph present", () => {
-    const r = classifyText("✻ Cooked for 12s\n", nowFn);
+  test("BUSY when a LIVE '✻ <verb>…' spinner is showing", () => {
+    const r = classifyText("✻ Honking…\n", nowFn);
     expect(r.state).toBe("BUSY");
     expect(r.evidence).toContain("✻");
+  });
+
+  test("NOT BUSY when the glyph carries a PAST-tense elapsed-time suffix (t-89fc1cf8)", () => {
+    // Claude Code leaves the spinner glyph on screen after the turn ends and
+    // swaps the verb to past tense with an elapsed time. This pane is IDLE.
+    // Reading it as BUSY is what wedged two epics for hours on 2026-05-22:
+    // `lane-tick` logged `state=BUSY (evidence=✻ Bake) — skip` and never
+    // injected the todos that were waiting. Asserted on the literal string
+    // from that incident report.
+    expect(classifyText("✻ Baked for 1m 51s\n│ > \n", nowFn).state).toBe("READY");
+    expect(classifyText("✻ Brewed for 1m 56s\n│ > \n", nowFn).state).toBe("READY");
+    expect(classifyText("✽ Cooked for 12s\n│ > \n", nowFn).state).toBe("READY");
+    // ...and the live form is unaffected, so this cannot pass by making the
+    // classifier blind to the glyph altogether.
+    expect(classifyText("✻ Baking…\n│ > \n", nowFn).state).toBe("BUSY");
   });
 
   test("BUSY when '✽ Honking…' spinner glyph present", () => {
@@ -158,14 +173,14 @@ describe("classifyText — pattern priority", () => {
     // BUSY is checked AFTER COMPACTING (compaction is more blocking;
     // the pane can't accept input until compaction finishes regardless
     // of any spinner showing simultaneously).
-    const r = classifyText("Compacting conversation\n✻ Cooked for 5s", nowFn);
+    const r = classifyText("Compacting conversation\n✻ Cooking…", nowFn);
     expect(r.state).toBe("COMPACTING");
   });
 
   test("BUSY wins over MODAL when both signals present (OQ-C1)", () => {
     // ADR-080 §C OQ-C1: a busy pane that ALSO shows a modal hint is
     // mid-think — the modal will resolve when the turn completes.
-    const r = classifyText("✻ Cooked for 5s\nDo you want Claude to proceed?", nowFn);
+    const r = classifyText("✻ Cooking…\nDo you want Claude to proceed?", nowFn);
     expect(r.state).toBe("BUSY");
   });
 
