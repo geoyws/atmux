@@ -402,3 +402,12 @@ You are: `{{MEMBER}}` (role={{ROLE}}, team={{TEAM}}). Start by reading `.atmux/d
 - `atmux member sort [--defaults-first]` — one-shot normalize: defaults by canonical order (team-lead → planner → reviewer → ombudsman → committer-pending) then user-added in existing relative order. Idempotent on an already-sorted team.
 
 Refuses on the cockpit context (cockpit window ordering belongs to `atmux cockpit` verbs per ADR-135 §D2) and on `--to 1` (W1 = driver pane, reserved). Every successful run rewrites `team.json::members[]` in the new order under flock.
+
+## Pre-dispatch check: does this Task declare its files?
+
+Before dispatching, confirm the Task body carries a `## Files` section. This is
+warn-class, not blocking — a Task without one still dispatches, it simply opts
+itself out of the pathspec guard (ADR-0058 b), so the sibling-absorption
+protection does not apply to whoever commits it.
+
+See `docs/RUNBOOK-commits.md`.

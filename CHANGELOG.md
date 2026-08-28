@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ✨ Added — pathspec guard refuses commits that reach outside a Task's files (ADR-0058 b)
+
+**A commit picks up files it was never meant to touch, through the index rather than through carelessness.** Someone else stages work in the same worktree, a `lint-staged` sweep restores partially-staged files, or a `git commit` with no pathspec commits whatever the index already held — and the commit's message describes one change while its contents carry somebody else's. Measured at three incidents in six hours on `u-n-u-m/root`; all three were recovered, and all three depended on the committer noticing.
+
+- **`scripts/pathspec-guard.sh`** — verifies `git diff --cached --name-only` against the `## Files` section of the Task body, and exits non-zero naming every staged path that escapes it. The body is read from `--body-file`, `$ATMUX_TASK_BODY`, or the member's claim record, first match wins. A directory entry covers everything beneath it.
+- **A Task with no `## Files` section is not judged** — it warns and passes. Legacy Tasks predate the convention and failing them closed would block the board, which is also what makes the guard adoptable before every Task carries a pathspec.
+- **`ATMUX_PATHSPEC_GUARD=off` is audited, not silent** — it appends to `~/.atmux/logs/pathspec-guard.jsonl`. Recovery and bulk-rename commits legitimately need the bypass; an unattributable bypass is what makes the next incident impossible to explain.
+- **`docs/RUNBOOK-commits.md`** — the failure, the guard, the opt-out playbook, and what to do when it fires. Planner, lead and committer briefs cross-reference it.
+
+Ships as a standalone verifier rather than a hook: this repo declares no hook manager and has no `.husky/`, and inventing one would add a dependency it deliberately lacks. Wiring it into a hook is a one-line `scripts/pathspec-guard.sh` call wherever a consumer already runs pre-commit checks.
+
 ### 🐛 Fixed — `atmux fleet` sweeps epic-teams instead of writing them off ([ADR-273](docs/adr/273-voice-fleet-triage-and-pane-input.md) §Supplement-3 U1/U2)
 
 **Five of twenty teams reported UNREADABLE on every single sweep, with a reason naming no action.** ADR-273 §S3.2 claimed an `epic-team`'s cage "is not resolvable from the cockpit entry". That was true of the *entry* and false of the *cage*: `spawn-epic` gives an epic-team a root of its own carrying its own `team.json`, socket and session anchor — and this repo already knew how to find it, in `src/core/cage-resolver.ts`. The two on-disk conventions (ADR-089 in-parent `<parent>/.atmux/worktrees/<name>`, ADR-090 sibling `<parent>-epics/<epicId>`) are now one shared helper, `epicCageRootCandidates` / `resolveEpicCageRoot`, that `resolveCageForEpic` was refactored onto.

@@ -350,3 +350,20 @@ You inherit **Tier 1** naturally from your team-cage membership (per [ADR-058](.
 ---
 
 You are: `{{MEMBER}}` (role={{ROLE}}). Start by reading `team.json` to pick mode, then route into the matching section above. **Auto-merge mode**: subscribe to your team's pubsub socket, drain the state machine, surface conflicts durable-first. **Single-trunk mode**: `atmux claim --next --as {{MEMBER}}`, one commit per Task, conventional-commits subject. Hooks always run. Never push `main`/`master`; auto-merge mode pushes base for you.
+
+## Pre-flight: verify the index against the Task's pathspec
+
+```bash
+scripts/pathspec-guard.sh
+```
+
+It names any staged path outside the Task's `## Files` section. The two honest
+responses are to unstage what is not yours (`git restore --staged <path>`), or
+to correct the Task's section if the file genuinely belongs to this Task.
+Widening the pathspec to make the message go away re-creates the defect.
+
+A legitimate recovery or bulk-rename commit may set `ATMUX_PATHSPEC_GUARD=off`,
+which is audited to `~/.atmux/logs/pathspec-guard.jsonl` rather than silent.
+
+Then, always: `git show --stat HEAD`. The guard cannot see a commit made with
+`--no-verify` or from another shell. See `docs/RUNBOOK-commits.md`.
