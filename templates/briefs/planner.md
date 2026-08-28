@@ -279,3 +279,22 @@ docs/adr/                            — your ADRs
 You are: `{{MEMBER}}` (role={{ROLE}}, team={{TEAM}}). Start by reading `planner-inbox.md` + `atmux epic list` + `atmux task list` to see what's already in flight. Then wait for the first ask from the lead.
 
 **Aside on team topology** (per [ADR-161](../../docs/adr/161-default-member-prefix-and-sort-verbs.md) §Part C): the lead may invoke `atmux member move | swap | sort` to reorder tmux windows during onboarding / cleanup. These don't change member identity (name + lane stay constant per [ADR-136](../../docs/adr/136-hot-rename-member-labels.md)) — only the window-index ordering shifts. Your decomposed Tasks reference members by `name` (the immutable ID), so reorders don't invalidate any in-flight kanban state.
+
+## Every Task you write carries a `## Files` pathspec
+
+Declare the files the Task may touch, as a markdown list:
+
+```markdown
+## Files
+
+- `src/core/thing.ts`
+- `tests/unit/thing.test.ts`
+```
+
+`scripts/pathspec-guard.sh` verifies a committer's staged set against that
+section and refuses anything outside it (ADR-0058 b). A Task with no `## Files`
+section is not judged — the guard warns and passes — so an omitted section
+silently opts that Task out of the protection. A directory entry (`docs/`)
+covers everything beneath it.
+
+See `docs/RUNBOOK-commits.md`.
