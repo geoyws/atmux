@@ -36,6 +36,12 @@
 > **opt-in**. See §1.2 principle 3, corrected 2026-08-06, for the current position
 > and the full position history.
 
+> ⚠ **2026-08-27 — orchd retired entirely** ([ADR-276](adr/276-orchd-retirement-and-atmux-scope.md)).
+> The daemon, verb, window, tickers and epic-machinery consumers are gone; atmux's
+> scope is tmux cages + `atmux vox`. The one-shot event drain survives as
+> operator-invoked `atmux committer --drain`. Read every "orchd is the runtime"
+> sentence in this PRD as history.
+
 > **2026-08-06 — business-intent document upstream of this PRD.**
 > [docs/brd/atmux.md](brd/atmux.md) is atmux's **Business Requirements Document**:
 > it records WHY atmux exists, who pays when it does not work, what outcome counts
@@ -144,8 +150,9 @@ Three durable principles (see `docs/ARCHITECTURE.md`):
    that explicitly sets `"orchestration": { "mode": "orchd" }`, and even then
    every orchd consumer (auto-merge, auto-push, auto-spawn, solo-worker
    dissolve, lead-stall watchdog, context/budget scanners) becomes opt-in with
-   it. `atmux orchd --start / --drain / --sweep` remains manually invocable in
-   any mode. The operator's recorded rationale is verbatim in ADR-260: *"LLMs
+   it. `atmux orchd --start / --drain / --sweep` remained manually invocable in
+   any mode until ADR-276 removed the verb (the drain is now `atmux committer
+   --drain`). The operator's recorded rationale is verbatim in ADR-260: *"LLMs
    can manage their own fleet better than atmux can at the moment."* atmux
    still **NEVER** writes to crontab
    ([ADR-233](adr/233-cron-auto-install-disabled-trust-orchd.md)).
@@ -339,7 +346,8 @@ on next `atmux start`.
 pluggable cockpit-W3 whip-manager (ADR-132 / ADR-158 / ADR-183 / ADR-185)
 is fully removed. Mechanical observation + Enter-push + `claim-next`
 re-fires distribute to Honker event consumers per sibling EPIC
-e-a946af69 (orchd Phase 3-5). Until those consumers ship, the lead's
+e-a946af69 (orchd Phase 3-5 — these consumers will NOT ship; orchd retired
+per ADR-276). Absent them, the lead's
 self-driven whip cron (`team.whip.intervalMins`) is the canonical
 observe + intervene loop; on-demand audits via `atmux doctor` cover the
 gap. Legacy `team.sentinel` / `cockpit.sentinel` / `cockpit.defaultSentinel`

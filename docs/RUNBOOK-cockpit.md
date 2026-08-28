@@ -227,7 +227,7 @@ Leads live in per-team cages (per [ADR-162](adr/162-atmux-owns-tmux-infrastructu
 
 The cockpit-W3 sentinel role retired per EPIC e-be01fc89 (2026-05-23) —
 mechanical observation distributes to Honker event consumers per
-sibling EPIC e-a946af69 (orchd Phase 3-5). Until those consumers ship,
+sibling EPIC e-a946af69 (orchd Phase 3-5 — will not ship; orchd retired per ADR-276). Absent them,
 operators run on-demand audits via `atmux doctor` and the lead's
 self-driven whip cron (see `docs/RUNBOOK-on-demand-audit.md`). The
 historical sentinel install + recovery surface (W3 `_sentinel` window,

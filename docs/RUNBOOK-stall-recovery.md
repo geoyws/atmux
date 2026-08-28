@@ -10,9 +10,14 @@
 > + [ADR-213](adr/213-retire-jury-reviewer-absorbs-acceptance-criteria.md);
 > Medic narrowed to on-demand `atmux medic diagnose <team>` per
 > [ADR-212](adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md).
-> Routine observation + nudging migrates to orchd consumers
-> (`atmux:complaint-consumer`, `atmux:rotation-consumer`, the merge /
-> dissolve / push / spawn / dissolve-solo-worker handlers).
+> Routine observation + nudging was to migrate to orchd consumers.
+>
+> **2026-08-27 — orchd itself is RETIRED** ([ADR-276](adr/276-orchd-retirement-and-atmux-scope.md)): the daemon,
+> tickers and epic-machinery consumers are gone. The surviving
+> consumers (gitter, lane-router, complaint, lead-stall watchdog) drain
+> through operator-invoked
+> `atmux committer --drain`; everything below that waits on an orchd
+> tick is operator-on-demand now.
 
 **Audience:** operators reading a Discord ping or a flag entry from
 ADR-057's stall-prevention surfaces and needing to know what to do
@@ -218,7 +223,7 @@ CLAUDE.md ReviewDiscipline.
 modal-prompts land on a member's pane within
 `modalCycling.windowMin` (default 30 min) AND `git log --since=<window>`
 returns zero commits matching the member's claimed task. Runs here in
-the lead's whip cron; future orchd event consumers (sibling EPIC
+the lead's whip cron; the planned orchd event consumers (sibling EPIC
 e-a946af69) will consume the same detection function once Honker
 substrate ships.
 
@@ -600,12 +605,12 @@ when the operator sees `🟢 alive` while suspecting dormancy:
    surface the path-resolution error.
 
 3. **Escalation entrypoint (deferred)** — per-member `ship-zero-window`
-   verdicts WILL fire `ship-zero-2hr` once orchd event consumers ship
+   verdicts would have fired `ship-zero-2hr` via orchd event consumers — they will not ship (ADR-276)
    (sibling EPIC e-a946af69). The legacy cockpit-W3 sentinel/martinet
    dispatcher that previously held this scope was decommissioned per
    EPIC e-be01fc89; the `src/core/sentinel-escalation.ts` module and
    its tick log (`~/.atmux/state/sentinel-tick.log`) are gone. Until
-   orchd lands, lane-stall (step 4) is the active recovery surface for
+   orchd is retired (ADR-276), lane-stall (step 4) is the active recovery surface for
    ship-zero-window members.
 
 4. **Lane-stall fallback fires** when a `lane=X todo>30min` Task sits
@@ -656,4 +661,4 @@ tempdir; the spec's `beforeAll`/`afterAll` handles that).
 - **Auto-push:** `src/core/auto-push.ts`. Audit log: `.atmux/logs/auto-push.jsonl`.
 - **Pane-state classifier:** `src/core/pane-state.ts::classifyPane`. Send-keys gate: `src/core/safe-send.ts::safeSendKeys`.
 - **Per-class Tasks:** R57-T1 (D1) / R57-T2 (D2) / R57-T3 (D3) / R57-T4 (D4) / R57-T5 (D5) / R57-T6 (D6) / R57-T7 (D7) / R57-T8 (this docs Task).
-- **Cadence-truth-signal (ADR-148):** `src/core/cadence-classifier.ts` (classifier) + `src/verbs/lane-stall-tick.ts` (§D4 lane-stall fallback) + `src/verbs/status.ts::formatCadenceColumn` (renderer). Per-member escalation entrypoint deferred to orchd event consumers (sibling EPIC e-a946af69). E2E rehearsal: `tests/e2e/cadence-truth-signal.test.ts`.
+- **Cadence-truth-signal (ADR-148):** `src/core/cadence-classifier.ts` (classifier) + `src/verbs/lane-stall-tick.ts` (§D4 lane-stall fallback) + `src/verbs/status.ts::formatCadenceColumn` (renderer). Per-member escalation entrypoint was deferred to orchd event consumers (sibling EPIC e-a946af69) — will not ship; orchd retired per ADR-276. E2E rehearsal: `tests/e2e/cadence-truth-signal.test.ts`.

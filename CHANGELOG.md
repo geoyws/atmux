@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🗑 Removed — orchd retired entirely; atmux's scope narrows to tmux cages + `atmux vox` ([ADR-276](docs/adr/276-orchd-retirement-and-atmux-scope.md))
+
+- **The `atmux orchd` verb, the Rust `rust/atmux-orchd/` crate (ticker daemon), and the `__orchd__` service window are gone.** `atmux orchd` now fails loud with an error naming ADR-276. `package.json` no longer builds or installs `atmux-orchd`. `atmux start` spawns no service window.
+- **Epic-machinery event handlers deleted** (their dispatchers were already stubbed by [ADR-280](docs/adr/280-epic-team-retirement-and-staged-excision.md) stage 3): auto-merge (`orchd-merge.ts` — epic-completeness detection, and with it the only emitter of `epic.merged`), auto-dissolve (`orchd-dissolve.ts`), the backstop merge sweep (`orchd-merge-sweep.ts` + `orchd-log-fmt.ts`), context scanning (`orchd-context-scan.ts` + `pane-statusline.ts` — the only producer of `member.context-high`, so the rotation consumer went with it), housekeeping (`orchd-housekeep.ts`; `events-prune.ts` remains as the caller-invoked pruner), and the pressure-deferred spawn queue (`spawn-queue.ts` + repo + schema; its producer and drain died in ADR-280 stage 3).
+- **`committer --drain` / `--daemon` are committer's own sub-verbs again** — the ADR-266 §D2 alias expiry pointed at the orchd verb, which no longer exists, so the bodies (which never left `committer.ts`) got their CLI surface back. The drain is the ADR-276 §D1-shaped operator-invoked backstop.
+- **Auto-push (ADR-229) deleted outright, dispatcher included.** Nothing emits `epic.merged` once the auto-merge handler (its only emitter) is gone, so the seven-gate engine (`orchd-push.ts`) and the `dispatchGitPush` transport (`orchd-dispatch/git-push.ts`, ADR-232) were removed rather than kept as dead code; both re-derive from git history (last present at trunk `170700d3`) when ADR-276 §D1's operator-invoked push verb is built. The §DA-Gate-2 allowlist `src/core/auto-push.ts` is untouched — it has live consumers (merge-member, claim, merge-cycle, cockpit pushPolicy).
+- **The subscription registry slimmed and renamed**: `orchd-registry.ts` + `orchd-bootstrap.ts` → `src/core/event-subscriptions.ts`, registering the complaint consumer (ADR-214 — its emitter `atmux complaints` is live) and the lead-stall watchdog (ADR-247 — its wiring moved verbatim from the retired verb into the drain). Consumer-id strings are unchanged: they are durable `subscriber_offsets` keys.
+- **Survives, explicitly**: the Honker substrate, the events/offsets tables, `atmux-listener` (the daemon body's wake channel), `atmux-cockpit-mirror` (ADR-219/230 — different database, named by ADR-276 as kept), gitter + lane-router consumers, and `atmux vox`.
+- ADR-202/203/226/227/229 carry superseded-in-place banners pointing at ADR-276 (250 already had one from ADR-280).
+
 ### ✨ Added — declarative operator cockpit windows ([ADR-279](docs/adr/279-declarative-operator-cockpit-windows.md))
 
 - Top-level `cockpit.json::windows[]` persists non-team cockpit workspaces with a name, cwd, and optional command. Null or omitted command starts zsh; configured windows sit after `_medic` and before team viewers.
