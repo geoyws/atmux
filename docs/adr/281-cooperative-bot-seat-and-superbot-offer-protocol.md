@@ -92,7 +92,7 @@ Each tick, in declared route order:
 3. de-duplicates a task that matches multiple routes by `(board, task-id)`; the first declared route wins, which lets specific tags precede general ones;
 4. offers a new candidate only to the first default owner;
 5. after one complete configured interval, offers to the next not-yet-offered fallback; it never fans out multiple new offers for one task in one tick;
-6. re-reads the task and the target bot's lease/readiness state immediately before every delivery; and
+6. re-reads the task and the target bot's lease/readiness state immediately before every delivery; the lease guard covers every active canonical board in Kanban's workspace registry, plus configured route boards, so an operator-directed claim on an unrouted board still suppresses automation; and
 7. writes a namespaced pending delivery reservation immediately before send, then converts it to a successful offer timestamp only after verified submission. Shadowed/deferred delivery writes nothing; an interrupted or unverified send leaves the pending marker, retries that same team once after one interval, then advances rather than pretending delivery succeeded.
 
 `_superbot` never claims, assigns, moves, or completes a task. Ownership begins only when `_bot` successfully runs:
@@ -152,7 +152,7 @@ The holds isolate the three expensive failure classes: typing into human work, c
 
 ## Acceptance gates
 
-- Unit tests cover schema defaults/refusals, route union/order, cooldowns, offer redaction, hold state, and every readiness defer reason.
+- Unit tests cover schema defaults/refusals, route union/order, cooldowns, offer redaction, hold state, all-registered-board lease suppression, and every readiness defer reason.
 - Process integration tests cross the real installed Kanban CLI boundary for candidate discovery and concurrent exact-task claims.
 - Isolated-tmux integration tests use throwaway sockets and prove cage/cockpit ordering plus direct typing, hold, and exactly-one-offer behavior. Unit tests cover busy/composer/modal/rate-limit/held/missing/dead refusal and fallback; process integration covers the real Kanban claim race. Driver send-keys protection remains covered by its existing ADR-239 tests and is structurally untouched.
 - A process-level shadow receipt classifies every configured candidate without sending keys.

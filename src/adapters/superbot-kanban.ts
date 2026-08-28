@@ -2,8 +2,8 @@
 // Every call addresses an explicit board and clears ambient board selectors.
 
 import { z } from "zod";
-import { spawn, type SpawnOpts, type SpawnResult } from "../abstractions/spawn.ts";
 import { tryParseJsonString } from "../abstractions/json.ts";
+import { type SpawnOpts, type SpawnResult, spawn } from "../abstractions/spawn.ts";
 import {
   SUPERBOT_ACTOR,
   SUPERBOT_METADATA_KEY,
@@ -34,6 +34,15 @@ const TaskDetailSchema = z
   })
   .passthrough();
 
+const WorkspaceSchema = z
+  .object({
+    name: z.string().min(1),
+    boardPath: z.string().min(1),
+    canonical: z.boolean(),
+    archived: z.boolean(),
+  })
+  .passthrough();
+
 export type SuperbotSpawn = (opts: SpawnOpts) => Promise<SpawnResult>;
 
 const BOARD_SELECTOR_ENV = ["KANBAN_PROJECT", "KANBAN_DB", "KANBAN_DATA_DIR"] as const;
@@ -52,6 +61,18 @@ async function runJson(argv: ReadonlyArray<string>, spawnFn: SuperbotSpawn): Pro
 
 export class SuperbotKanbanAdapter {
   constructor(private readonly spawnFn: SuperbotSpawn = spawn) {}
+
+  /** Return every active canonical board registered with Kanban. The
+   * scheduler uses this inventory only as a lease interlock: a bot that
+   * already owns work on an unrouted board must not receive another offer. */
+  async registeredBoards(): Promise<string[]> {
+    const rows = z
+      .array(WorkspaceSchema)
+      .parse(await runJson(["workspace", "list", "--json"], this.spawnFn));
+    return [
+      ...new Set(rows.filter((row) => row.canonical && !row.archived).map((row) => row.name)),
+    ];
+  }
 
   async candidates(
     board: string,

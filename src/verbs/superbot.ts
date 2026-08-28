@@ -114,11 +114,10 @@ function defaultSleep(ms: number): Promise<void> {
 
 async function actorHasAnyLiveClaim(
   kanban: SuperbotKanbanAdapter,
-  cockpit: LoadedCockpit,
+  boards: ReadonlyArray<string>,
   actor: string,
   nowMs: number,
 ): Promise<boolean> {
-  const boards = [...new Set(cockpit.superbot.routes.map((route) => route.board))];
   for (const board of boards) {
     if (await kanban.hasLiveClaim(board, actor, nowMs)) return true;
   }
@@ -241,6 +240,7 @@ async function processCandidate(opts: {
   shadow: boolean;
   deps: Required<Pick<SuperbotTickDeps, "tmuxFactory" | "loadTeamFn" | "now" | "sleep">> & {
     kanban: SuperbotKanbanAdapter;
+    leaseBoards: () => Promise<ReadonlyArray<string>>;
     paneLockDir?: string;
   };
 }): Promise<SuperbotTickRow> {
@@ -263,7 +263,8 @@ async function processCandidate(opts: {
     return { ...base, team: decision.team, outcome: "unroutable", reason: "bot-config" };
   }
   const actor = botActor(decision.team);
-  const hasLiveLease = await actorHasAnyLiveClaim(opts.deps.kanban, opts.cockpit, actor, nowMs);
+  const leaseBoards = await opts.deps.leaseBoards();
+  const hasLiveLease = await actorHasAnyLiveClaim(opts.deps.kanban, leaseBoards, actor, nowMs);
   const tmux = opts.deps.tmuxFactory({
     socketPath: runtime.socketPath,
     configFile: getAtmuxTmuxConfPath(),
@@ -331,7 +332,7 @@ async function processCandidate(opts: {
       }
       const freshLease = await actorHasAnyLiveClaim(
         opts.deps.kanban,
-        opts.cockpit,
+        leaseBoards,
         actor,
         opts.deps.now(),
       );
@@ -389,12 +390,23 @@ export async function superbotTick(
   forceShadow = false,
   deps: SuperbotTickDeps = {},
 ): Promise<SuperbotTickRow[]> {
+  let leaseBoardsPromise: Promise<ReadonlyArray<string>> | undefined;
+  const kanban = deps.kanban ?? new SuperbotKanbanAdapter();
   const resolved = {
-    kanban: deps.kanban ?? new SuperbotKanbanAdapter(),
+    kanban,
     tmuxFactory: deps.tmuxFactory ?? createTmux,
     loadTeamFn: deps.loadTeamFn ?? loadTeam,
     now: deps.now ?? Date.now,
     sleep: deps.sleep ?? defaultSleep,
+    leaseBoards: () => {
+      leaseBoardsPromise ??= (async () => {
+        const registered = await kanban.registeredBoards();
+        return [
+          ...new Set([...registered, ...cockpit.superbot.routes.map((route) => route.board)]),
+        ];
+      })();
+      return leaseBoardsPromise;
+    },
     ...(deps.paneLockDir !== undefined ? { paneLockDir: deps.paneLockDir } : {}),
   };
   const shadow = forceShadow || cockpit.superbot.shadow;

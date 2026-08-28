@@ -15,6 +15,39 @@ function result(stdout: string): SpawnResult {
 }
 
 describe("SuperbotKanbanAdapter", () => {
+  test("lists each active canonical registered board and strips ambient selectors", async () => {
+    const calls: SpawnOpts[] = [];
+    const adapter = new SuperbotKanbanAdapter(async (opts) => {
+      calls.push(opts);
+      return result(
+        JSON.stringify([
+          {
+            name: "atmux",
+            boardPath: "/boards/atmux.db",
+            canonical: true,
+            archived: false,
+          },
+          {
+            name: "atmux",
+            boardPath: "/boards/atmux.db",
+            canonical: false,
+            archived: false,
+          },
+          {
+            name: "old",
+            boardPath: "/boards/old.db",
+            canonical: true,
+            archived: true,
+          },
+        ]),
+      );
+    });
+
+    expect(await adapter.registeredBoards()).toEqual(["atmux"]);
+    expect(calls[0]?.argv).toEqual(["workspace", "list", "--json"]);
+    expect(calls[0]?.unsetEnv).toEqual(["KANBAN_PROJECT", "KANBAN_DB", "KANBAN_DATA_DIR"]);
+  });
+
   test("uses explicit board/tag/actor and strips ambient board selectors", async () => {
     const calls: SpawnOpts[] = [];
     const adapter = new SuperbotKanbanAdapter(async (opts) => {

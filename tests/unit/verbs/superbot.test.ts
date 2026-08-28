@@ -105,6 +105,18 @@ describe("superbotTick", () => {
     const spawnCalls: SpawnOpts[] = [];
     const kanban = new SuperbotKanbanAdapter(async (opts) => {
       spawnCalls.push(opts);
+      if (opts.argv?.[0] === "workspace") {
+        return result(
+          JSON.stringify([
+            {
+              name: "atmux",
+              boardPath: "/boards/atmux.db",
+              canonical: true,
+              archived: false,
+            },
+          ]),
+        );
+      }
       if (opts.argv?.[0] === "claim") {
         return result(
           JSON.stringify([
@@ -228,6 +240,18 @@ describe("superbotTick", () => {
     const spawnCalls: SpawnOpts[] = [];
     const kanban = new SuperbotKanbanAdapter(async (opts) => {
       spawnCalls.push(opts);
+      if (opts.argv?.[0] === "workspace") {
+        return result(
+          JSON.stringify([
+            {
+              name: "atmux",
+              boardPath: "/boards/atmux.db",
+              canonical: true,
+              archived: false,
+            },
+          ]),
+        );
+      }
       if (opts.argv?.[0] === "claim") {
         return result(
           JSON.stringify([
@@ -327,6 +351,18 @@ describe("superbotTick", () => {
         metadata: {},
       };
       const kanban = new SuperbotKanbanAdapter(async (opts) => {
+        if (opts.argv?.[0] === "workspace") {
+          return result(
+            JSON.stringify([
+              {
+                name: "atmux",
+                boardPath: "/boards/atmux.db",
+                canonical: true,
+                archived: false,
+              },
+            ]),
+          );
+        }
         if (opts.argv?.[0] === "claim") {
           candidateReads += 1;
           return result(
@@ -431,5 +467,99 @@ describe("superbotTick", () => {
       expect(sends, race).toBe(0);
       expect(metadataWrites, race).toBe(1);
     }
+  });
+
+  test("refuses an offer when the target bot holds a live lease on an unrouted board", async () => {
+    let sends = 0;
+    const kanban = new SuperbotKanbanAdapter(async (opts) => {
+      if (opts.argv?.[0] === "workspace") {
+        return result(
+          JSON.stringify([
+            {
+              name: "atmux",
+              boardPath: "/boards/atmux.db",
+              canonical: true,
+              archived: false,
+            },
+            {
+              name: "manual",
+              boardPath: "/boards/manual.db",
+              canonical: true,
+              archived: false,
+            },
+          ]),
+        );
+      }
+      if (opts.argv?.[0] === "claim") {
+        return result(
+          JSON.stringify([
+            { id: "t-offer", type: "task", status: "todo", tags: ["dispatch"], metadata: {} },
+          ]),
+        );
+      }
+      if (opts.argv?.[0] === "task" && opts.argv[1] === "list") {
+        return result(JSON.stringify(opts.argv.includes("manual") ? [{ id: "t-manual" }] : []));
+      }
+      if (opts.argv?.[0] === "task" && opts.argv[1] === "show") {
+        return result(
+          JSON.stringify({
+            id: "t-manual",
+            claim: { agentID: "bot@atmux", expiresAt: 10_000 },
+          }),
+        );
+      }
+      throw new Error(`unexpected kb call: ${opts.argv?.join(" ")}`);
+    });
+    const tmux = {
+      session: { hasSession: async () => true },
+      window: { listWindows: async () => [{ index: 1, id: "@1", name: "_bot", active: true }] },
+      option: { showOptions: async () => ({}) },
+      pane: {
+        displayMessage: async () => "sh\t0",
+        capturePane: async () => "completed\n❯ \n⏵⏵ auto mode on",
+        sendKeys: async () => {
+          sends += 1;
+        },
+      },
+    } as unknown as TmuxNamespace;
+    const cockpit = {
+      schemaVersion: 1,
+      cockpitSession: "atx",
+      sessions: [{ type: "team", name: "atmux", enabled: true, root: "/tmp/atmux", sessions: [] }],
+      windows: [],
+      teams: [{ name: "atmux", enabled: true, root: "/tmp/atmux" }],
+      superbot: {
+        enabled: true,
+        shadow: false,
+        intervalMins: 30,
+        fallbackAfterIntervals: 1,
+        maxOffersPerTick: 20,
+        routes: [{ board: "atmux", tag: "dispatch", defaultTeam: "atmux", fallbackTeams: [] }],
+      },
+    } as LoadedCockpit;
+
+    expect(
+      await superbotTick(cockpit, false, {
+        kanban,
+        tmuxFactory: () => tmux,
+        loadTeamFn: async () => ({
+          name: "atmux",
+          members: [],
+          bot: { enabled: true, tui: "claude", cwd: ".atmux/worktrees/bot" },
+        }),
+        now: () => 1_000,
+        sleep: async () => {},
+      }),
+    ).toEqual([
+      {
+        board: "atmux",
+        tag: "dispatch",
+        task: "t-offer",
+        team: "atmux",
+        outcome: "not-ready",
+        reason: "live-lease",
+      },
+    ]);
+    expect(sends).toBe(0);
   });
 });
