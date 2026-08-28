@@ -306,6 +306,29 @@ describe("findAndMutateTeamName", () => {
     expect((nodes[0] as { name: string }).name).toBe("foo");
   });
 
+  test("recurses through a group container to reach its teams (e-419553c6) — the group's own name is never mutated", () => {
+    const nodes: CockpitSessionT[] = [
+      {
+        type: "group",
+        name: "geoyws",
+        enabled: true,
+        sessions: [
+          { type: "team", name: "old", root: "/tmp/old", enabled: true, sessions: [] },
+        ],
+      },
+    ];
+    expect(findAndMutateTeamName(nodes, "old", "new")).toBe(true);
+    const group = nodes[0] as { name: string; sessions: Array<{ name: string }> };
+    expect(group.name).toBe("geoyws"); // group untouched
+    expect(group.sessions[0]?.name).toBe("new");
+    // A group NAME matching oldName is not a team — no mutation, no hit.
+    const groupOnly: CockpitSessionT[] = [
+      { type: "group", name: "old", enabled: true, sessions: [] },
+    ];
+    expect(findAndMutateTeamName(groupOnly, "old", "new")).toBe(false);
+    expect((groupOnly[0] as { name: string }).name).toBe("old");
+  });
+
   test("recurses into nested team's sessions[]", () => {
     const nodes: CockpitSessionT[] = [
       {

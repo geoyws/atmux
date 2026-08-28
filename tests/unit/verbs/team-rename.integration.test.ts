@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CrontabIO } from "../../../src/abstractions/crontab.ts";
 import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
+import { groupSocketPath } from "../../../src/core/cockpit.ts";
 import type { Cockpit } from "../../../src/schema/cockpit.ts";
 import type { KanbanTask } from "../../../src/schema/kanban.ts";
 import {
@@ -486,5 +487,145 @@ describe("teamRename dispatcher", () => {
     expect(exit).toBe(0);
     expect(d.stderrBuf).toContain("releaseRenameLock failed");
     expect(d.stderrBuf).toContain("lock release exploded");
+  });
+});
+
+// ---------- e-419553c6: rename-through-group (viewer host routing) ----------
+//
+// A grouped team's viewer window lives in its GROUP server, not the
+// cockpit session — step 4 (viewer rename) and step 10's viewer probe
+// must address that host. These tests capture the opts the dispatcher
+// threads to renameTeamViewerWindowFn and assert the routing, without
+// touching a real tmux server.
+
+describe("teamRename — viewer host routes through the group (e-419553c6)", () => {
+  const dirs: string[] = [];
+  afterEach(async () => {
+    for (const d of dirs.splice(0)) await rm(d, { recursive: true, force: true });
+  });
+
+  const routingDeps = (
+    cockpit: Cockpit,
+  ): TeamRenameDeps & {
+    viewerCalls: Array<{ session: string; tmuxTag: string }>;
+    groupSocks: string[];
+  } => {
+    const viewerCalls: Array<{ session: string; tmuxTag: string }> = [];
+    const groupSocks: string[] = [];
+    const tagged = (tag: string): TmuxNamespace =>
+      ({
+        __tag: tag,
+        session: { renameSession: async () => {}, listSessions: async () => [] },
+        window: { listWindows: async () => [], renameWindow: async () => {} },
+      }) as unknown as TmuxNamespace;
+    const cockpitTmux = tagged("cockpit");
+    return {
+      viewerCalls,
+      groupSocks,
+      buildCageTmux: () => tagged("cage"),
+      buildCockpitTmux: () => cockpitTmux,
+      buildGroupViewerTmux: (sock: string) => {
+        groupSocks.push(sock);
+        return tagged("group");
+      },
+      crontab: {
+        read: async () => null,
+        write: async () => {},
+        available: async () => true,
+      } as unknown as CrontabIO,
+      cronInstallFn: async () => 0,
+      loadCockpitFn: async () => cockpit,
+      loadTasksFn: async () => [],
+      acquireRenameLockFn: async () => ({ label: "lock", undo: async () => {} }),
+      mutateTeamJsonFn: async () => ({ label: "mutate", undo: async () => {} }),
+      renameTeamViewerWindowFn: async (opts) => {
+        viewerCalls.push({
+          session: opts.cockpitSession,
+          tmuxTag: (opts.tmux as unknown as { __tag: string }).__tag,
+        });
+        return { label: "viewer", undo: async () => {} };
+      },
+      rewriteSessionAnchorFn: async () => ({ label: "anchor", undo: async () => {} }),
+      syncCockpitRegistryFn: async () => ({ label: "sync", undo: async () => {} }),
+      renamePerMemberBranchesFn: async () => ({
+        rollback: { label: "branches", undo: async () => {} },
+        outcomes: [],
+      }),
+      releaseRenameLockFn: async () => {},
+      stdout: () => {},
+      stderr: () => {},
+    };
+  };
+
+  test("grouped team: step 4 targets the group server session on groupSocketPath", async () => {
+    const td = await fixtureTeamDir("old-team");
+    dirs.push(td);
+    const cockpit: Cockpit = {
+      schemaVersion: 1,
+      cockpitSession: "atx",
+      windows: [],
+      sessions: [
+        {
+          type: "group",
+          name: "geoyws",
+          enabled: true,
+          sessions: [
+            { type: "team", name: "old-team", enabled: true, root: "/r/old", sessions: [] },
+          ],
+        },
+      ],
+    } as unknown as Cockpit;
+    const d = routingDeps(cockpit);
+    const exit = await teamRename(["new-team", "--team-dir", td], d);
+    expect(exit).toBe(0);
+    expect(d.viewerCalls).toEqual([{ session: "geoyws", tmuxTag: "group" }]);
+    expect(d.groupSocks).toEqual([groupSocketPath("geoyws")]);
+  });
+
+  test("ungrouped team: step 4 keeps the cockpit session + cockpit tmux", async () => {
+    const td = await fixtureTeamDir("old-team");
+    dirs.push(td);
+    const cockpit: Cockpit = {
+      schemaVersion: 1,
+      cockpitSession: "atx",
+      windows: [],
+      sessions: [
+        { type: "team", name: "old-team", enabled: true, root: "/r/old", sessions: [] },
+      ],
+    } as unknown as Cockpit;
+    const d = routingDeps(cockpit);
+    const exit = await teamRename(["new-team", "--team-dir", td], d);
+    expect(exit).toBe(0);
+    expect(d.viewerCalls).toEqual([{ session: "atx", tmuxTag: "cockpit" }]);
+    expect(d.groupSocks).toEqual([]);
+  });
+
+  test("--dry-run plan step 4 names the group server session for a grouped team", async () => {
+    const td = await fixtureTeamDir("old-team");
+    dirs.push(td);
+    const cockpit: Cockpit = {
+      schemaVersion: 1,
+      cockpitSession: "atx",
+      windows: [],
+      sessions: [
+        {
+          type: "group",
+          name: "geoyws",
+          enabled: true,
+          sessions: [
+            { type: "team", name: "old-team", enabled: true, root: "/r/old", sessions: [] },
+          ],
+        },
+      ],
+    } as unknown as Cockpit;
+    const d = routingDeps(cockpit);
+    let buf = "";
+    d.stdout = (s: string) => {
+      buf += s;
+    };
+    const exit = await teamRename(["--dry-run", "new-team", "--team-dir", td], d);
+    expect(exit).toBe(0);
+    const step4 = buf.split("\n").find((l) => l.trimStart().startsWith("4."));
+    expect(step4).toContain("'geoyws'");
   });
 });

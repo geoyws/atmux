@@ -157,7 +157,10 @@ export async function loadCockpit(opts: LoadCockpitOpts = {}): Promise<LoadedCoc
 function validateOperatorWindowNames(cockpit: CockpitShape): void {
   const occupied = new Set(["_superdriver", "superdriver", "_medic", "medic", "superdoctor"]);
   walkSessions(cockpit.sessions ?? [], 0, (node) => {
-    if (node.type === "team") occupied.add(node.name);
+    // Groups occupy the cockpit window namespace too (e-419553c6 true
+    // containment: a top-level group gets a cockpit viewer window
+    // embedding its server).
+    if (node.type === "team" || node.type === "group") occupied.add(node.name);
   });
   const seen = new Set<string>();
   for (const window of cockpit.windows) {
@@ -350,10 +353,12 @@ export interface FlattenedTeamEntry {
    *  `level === 0`. */
   parent?: string;
   /** Nearest ancestor `group` name (e-419553c6). Absent when no group
-   *  sits above this team. Groups are organisational only — they never
-   *  appear as entries themselves; this is how their name reaches
-   *  consumers (the operator's fuzzy picker) that want to show which
-   *  tier a team belongs to. */
+   *  sits above this team. Groups never appear as team entries
+   *  themselves; this is how their name reaches consumers. Since the
+   *  2026-08-28 true-containment decision this field also decides WHERE
+   *  the team's viewer window lives: grouped teams embed in their
+   *  group's server (see `buildGroupTopology` + the group reconcile in
+   *  verbs/cockpit.ts), ungrouped teams embed in the cockpit session. */
   group?: string;
   claudeAccount?: TeamSessionT["claudeAccount"];
   tuiOverrides?: TeamSessionT["tuiOverrides"];
@@ -375,21 +380,33 @@ export function enabledTeams(cockpit: CockpitShape): FlattenedTeamEntry[] {
   // walkSessions prunes that subtree (e-419553c6).
   walkSessions(cockpit.sessions ?? [], 0, (node, level, _parentRoot, parentName, parentGroup) => {
     if (node.type === "team" && node.enabled) {
-      const e: FlattenedTeamEntry = {
-        type: "team",
-        name: node.name,
-        enabled: node.enabled,
-        root: node.root,
-        level,
-      };
-      if (parentName !== undefined) e.parent = parentName;
-      if (parentGroup !== undefined) e.group = parentGroup;
-      if (node.claudeAccount !== undefined) e.claudeAccount = node.claudeAccount;
-      if (node.tuiOverrides !== undefined) e.tuiOverrides = node.tuiOverrides;
-      out.push(e);
+      out.push(flattenTeamNode(node, level, parentName, parentGroup));
     }
   });
   return out;
+}
+
+/** Shared row-builder for the flattened-team shape — used by both
+ *  {@link enabledTeams} and {@link buildGroupTopology} so the two walks
+ *  can never disagree on which fields survive flattening. */
+function flattenTeamNode(
+  node: TeamSessionT,
+  level: number,
+  parentName: string | undefined,
+  parentGroup: string | undefined,
+): FlattenedTeamEntry {
+  const e: FlattenedTeamEntry = {
+    type: "team",
+    name: node.name,
+    enabled: node.enabled,
+    root: node.root,
+    level,
+  };
+  if (parentName !== undefined) e.parent = parentName;
+  if (parentGroup !== undefined) e.group = parentGroup;
+  if (node.claudeAccount !== undefined) e.claudeAccount = node.claudeAccount;
+  if (node.tuiOverrides !== undefined) e.tuiOverrides = node.tuiOverrides;
+  return e;
 }
 
 /** DFS walk over `sessions[]`. Visitor receives each node + its level +
@@ -405,9 +422,10 @@ export function enabledTeams(cockpit: CockpitShape): FlattenedTeamEntry[] {
  *  Visitors that ignore the extra argument are unaffected.
  *
  *  e-419553c6 added `parentGroup` the same way, plus the group
- *  recursion rules: a group's children are walked at the SAME level
- *  (no prefix rung for a cage-less container — see the inline
- *  comment), and a disabled group's subtree is skipped entirely. */
+ *  recursion rules: a group's children are walked one level DOWN
+ *  (groups run real tmux servers and consume a prefix rung — see the
+ *  inline comment), and a disabled group's subtree is skipped
+ *  entirely. */
 export function walkSessions(
   sessions: ReadonlyArray<CockpitSessionT>,
   level: number,
@@ -429,23 +447,25 @@ export function walkSessions(
         walkSessions(node.sessions, level + 1, visit, node.root, node.name, parentGroup);
       }
     } else if (node.type === "group") {
-      // Groups do NOT increment `level`. Level feeds the F-key prefix
-      // chain (`resolvePrefix(t.level + 2, …)` in verbs/cockpit.ts),
-      // and a group creates NO tmux server — a prefix rung for it
-      // would address nothing. The operator-accepted F2→F3 shift of
-      // ADR-089 §Amendment 2026-08-27 §(B) applies only when a CAGE
-      // nests inside a cage; a cage-less container is transparent to
-      // the chain (see the amendment's dated group-tier note). The
-      // group is equally transparent to team ancestry (parentRoot /
-      // parentName pass through unchanged) — it only becomes the
-      // nearest-ancestor `parentGroup` for everything beneath it.
+      // Groups DO increment `level` — the ADR-089 §Amendment 2026-08-27
+      // §(B) F2→F3 shift is in effect for groups. The prefix-neutral
+      // reading (groups transparent to the chain because they ran no
+      // tmux server) lasted exactly one commit (49af4a59): the operator
+      // chose TRUE CONTAINMENT on 2026-08-28, so every enabled group
+      // now backs a REAL tmux server (`groupSocketPath` / the group
+      // reconcile in verbs/cockpit.ts) whose prefix rung is
+      // `resolvePrefix(level + 2, …)` — F2 for a top-level group — and
+      // the teams beneath it shift one rung down (F3). The group stays
+      // transparent to team ancestry (parentRoot / parentName pass
+      // through unchanged) — it only becomes the nearest-ancestor
+      // `parentGroup` for everything beneath it.
       //
       // A disabled group prunes its WHOLE subtree from the walk —
       // unlike a disabled team, whose children are still visited (a
       // team is one cage's flag; a group is a declaration that the
       // subtree is off).
       if (node.enabled && Array.isArray(node.sessions) && node.sessions.length > 0) {
-        walkSessions(node.sessions, level, visit, parentRoot, parentName, node.name);
+        walkSessions(node.sessions, level + 1, visit, parentRoot, parentName, node.name);
       }
     }
   }
@@ -539,6 +559,168 @@ export function callerScopeAllowed(
   if (src.parent !== undefined && src.parent === tgt.name) return true;
   if (tgt.parent !== undefined && tgt.parent === src.name) return true;
   return false;
+}
+
+// ---------- e-419553c6: group-server topology (true containment) ----------
+
+/** One enabled `type: "group"` node, annotated for the group-server
+ *  reconcile (e-419553c6, operator decision 2026-08-28). Every enabled
+ *  group backs a REAL tmux server on {@link groupSocketPath} whose
+ *  session (named after the group, bare) hosts one viewer window per
+ *  child — the same attach-retry-loop containment the cockpit uses for
+ *  ungrouped teams. */
+export interface GroupTopologyNode {
+  type: "group";
+  name: string;
+  /** Nesting depth on the SAME scale as {@link FlattenedTeamEntry.level}
+   *  (0 = top-level `sessions[]`; both team and group ancestors count),
+   *  so the group server's prefix is `resolvePrefix(level + 2, …)` —
+   *  F2 for a top-level group, exactly like a top-level team cage. */
+  level: number;
+  /** Nearest ancestor group, when this group nests under another group.
+   *  Absent for a top-level group (or one hosted only under teams) —
+   *  those get their viewer window in the cockpit session. */
+  parentGroup?: string;
+  /** DFS-ordered viewer windows this group's server hosts: direct child
+   *  groups, plus every enabled team whose NEAREST ancestor group is
+   *  this group (teams nested under teams inside the group included —
+   *  mirroring the cockpit session, which always gave nested teams
+   *  their own viewer windows too). */
+  children: GroupChildRef[];
+}
+
+/** One viewer window inside a group server. */
+export type GroupChildRef =
+  | { kind: "group"; name: string }
+  | { kind: "team"; team: FlattenedTeamEntry };
+
+/** One viewer window inside the COCKPIT session: an enabled team with
+ *  no group ancestor (nested teams included, DFS pre-order — unchanged
+ *  behaviour), or an enabled group with no group ancestor (its window
+ *  attach-loops to the group's own server). */
+export type CockpitViewerEntry =
+  | { kind: "group"; group: GroupTopologyNode }
+  | { kind: "team"; team: FlattenedTeamEntry };
+
+/** Output of {@link buildGroupTopology}. */
+export interface GroupedTopology {
+  /** Every enabled group, DFS order (parents before children). */
+  groups: GroupTopologyNode[];
+  /** DFS-ordered cockpit-session viewer entries — what the cockpit's
+   *  team-viewer slots should hold once groups own their teams. */
+  cockpitEntries: CockpitViewerEntry[];
+}
+
+/**
+ * Walk the cockpit tree once and derive the full three-tier viewer
+ * topology (e-419553c6 true containment):
+ *
+ *   L1 cockpit session — one window per {@link GroupedTopology.cockpitEntries}
+ *   L2 group servers   — one per enabled group, windows per `children`
+ *   L3 team cages      — unchanged; only their viewers move
+ *
+ * Refuses (ConfigError) two config shapes that would produce silently
+ * colliding tmux state rather than a wrong-but-visible layout:
+ *
+ *   1. duplicate enabled group names — two groups named `x` would share
+ *      `/tmp/atmux-grp-x/sock` AND session `x`;
+ *   2. duplicate viewer-window names inside one namespace (the cockpit
+ *      entry list, or one group's children) — tmux windows are addressed
+ *      by name during reconcile, so a `unum` group next to an ungrouped
+ *      `unum` team at the same tier is ambiguous. (A `unum` TEAM inside
+ *      the `unum` GROUP is fine — different namespaces.)
+ *
+ * Pure — no IO. The reconcile in verbs/cockpit.ts consumes this.
+ */
+export function buildGroupTopology(cockpit: CockpitShape): GroupedTopology {
+  const groups: GroupTopologyNode[] = [];
+  const byName = new Map<string, GroupTopologyNode>();
+  const cockpitEntries: CockpitViewerEntry[] = [];
+  walkSessions(cockpit.sessions ?? [], 0, (node, level, _parentRoot, parentName, parentGroup) => {
+    if (node.type === "group") {
+      // Disabled groups run no server; walkSessions already prunes
+      // their whole subtree from the walk.
+      if (!node.enabled) return;
+      if (byName.has(node.name)) {
+        throw new ConfigError({
+          what: `cockpit.json declares two enabled groups named '${node.name}' — they would share tmux socket ${groupSocketPath(node.name)} and session '${node.name}'`,
+          hint: "rename one of the groups (or disable one); group names must be unique across the tree",
+        });
+      }
+      const g: GroupTopologyNode = { type: "group", name: node.name, level, children: [] };
+      if (parentGroup !== undefined) g.parentGroup = parentGroup;
+      groups.push(g);
+      byName.set(node.name, g);
+      if (parentGroup === undefined) {
+        cockpitEntries.push({ kind: "group", group: g });
+      } else {
+        // Parent group precedes its children in DFS order, so the map
+        // lookup can only miss on a walk-order bug — fail loud.
+        const parent = byName.get(parentGroup);
+        if (parent === undefined) {
+          throw new ConfigError({
+            what: `buildGroupTopology: group '${node.name}' visited before its ancestor group '${parentGroup}' — DFS invariant broken`,
+          });
+        }
+        parent.children.push({ kind: "group", name: node.name });
+      }
+    } else if (node.type === "team" && node.enabled) {
+      const team = flattenTeamNode(node, level, parentName, parentGroup);
+      if (parentGroup === undefined) {
+        cockpitEntries.push({ kind: "team", team });
+      } else {
+        const parent = byName.get(parentGroup);
+        if (parent === undefined) {
+          throw new ConfigError({
+            what: `buildGroupTopology: team '${node.name}' visited before its ancestor group '${parentGroup}' — DFS invariant broken`,
+          });
+        }
+        parent.children.push({ kind: "team", team });
+      }
+    }
+  });
+  // Per-namespace window-name uniqueness (refusal 2 in the JSDoc).
+  const assertUniqueNames = (names: ReadonlyArray<string>, where: string): void => {
+    const seen = new Set<string>();
+    for (const n of names) {
+      if (seen.has(n)) {
+        throw new ConfigError({
+          what: `cockpit.json viewer-window name '${n}' appears twice in ${where} — tmux windows are addressed by name during reconcile, so the layout would be ambiguous`,
+          hint: "rename one of the colliding entries (a team and a group may share a name only when they live in DIFFERENT namespaces, e.g. the team inside that very group)",
+        });
+      }
+      seen.add(n);
+    }
+  };
+  assertUniqueNames(
+    cockpitEntries.map((e) => (e.kind === "group" ? e.group.name : e.team.name)),
+    "the cockpit session",
+  );
+  for (const g of groups) {
+    assertUniqueNames(
+      g.children.map((c) => (c.kind === "group" ? c.name : c.team.name)),
+      `group '${g.name}'`,
+    );
+  }
+  return { groups, cockpitEntries };
+}
+
+/** Walk a group's `parentGroup` chain up to the group with no group
+ *  ancestor — the one whose viewer window lives in the COCKPIT session.
+ *  Returns `name` itself when it is already top-level, and `null` when
+ *  `name` names no enabled group in the topology (caller decides how
+ *  loud to be). Cycle-safe: the chain is bounded by the group count. */
+export function resolveTopLevelGroup(topology: GroupedTopology, name: string): string | null {
+  const byName = new Map(topology.groups.map((g) => [g.name, g]));
+  let cur = byName.get(name);
+  if (cur === undefined) return null;
+  for (let hops = 0; hops <= topology.groups.length; hops += 1) {
+    if (cur.parentGroup === undefined) return cur.name;
+    const next = byName.get(cur.parentGroup);
+    if (next === undefined) return cur.name;
+    cur = next;
+  }
+  return cur.name;
 }
 
 // ---------- ADR-089 §C: F-key prefix chain + ATMUX_NESTING_LEVEL ----------
@@ -732,6 +914,20 @@ export function childNestingEnv(parentLevel: number): Record<string, string> {
  *  without churning unrelated callsites. */
 export function cageSocketPath(teamName: string): string {
   return `/tmp/atmux-${teamName}/sock`;
+}
+
+/** Group tmux-server socket absolute path: `/tmp/atmux-grp-<group>/sock`
+ *  (e-419553c6 true containment, 2026-08-28). The `-grp-` infix is
+ *  deliberate: group sockets live in a namespace team sockets
+ *  (`/tmp/atmux-<team>/sock`) can only reach by a team literally naming
+ *  itself `grp-<something>` — a group and a team may share a name (the
+ *  live fleet has both a `unum` group and a `unum` team) without their
+ *  servers colliding. (`ponytail:` the `grp-`-prefixed-team collision is
+ *  not load-guarded; a team named `grp-x` next to a group named `x`
+ *  would share a socket. No such team exists and the naming convention
+ *  makes one unlikely; a loader refusal is the upgrade path.) */
+export function groupSocketPath(groupName: string): string {
+  return `/tmp/atmux-grp-${groupName}/sock`;
 }
 
 /** Per-team cage socket absolute path under team-root convention:

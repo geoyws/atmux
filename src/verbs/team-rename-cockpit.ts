@@ -139,7 +139,11 @@ export async function readAndMigrateCockpit(
  *  `name === oldName` to `name = newName`. Returns `true` on hit,
  *  `false` if no match exists in the (sub)tree. Recurses into nested
  *  `sessions[]` on every `team` node so ADR-089 children
- *  are reachable; the depth-first short-circuit halts the walk on the
+ *  are reachable, AND through `type: "group"` containers (e-419553c6 —
+ *  pre-group, a team registered inside a group was silently unreachable
+ *  here, so step 7 of a rename reported success while the registry kept
+ *  the old name). A group's own name is never mutated — only `team`
+ *  nodes rename. The depth-first short-circuit halts the walk on the
  *  first hit (no need to scan further — the loader rejects duplicate
  *  names at load time, so at most one hit exists). Exported for
  *  direct unit-testing of the walk semantics. */
@@ -154,6 +158,10 @@ export function findAndMutateTeamName(
         n.name = newName;
         return true;
       }
+      if (n.sessions.length > 0 && findAndMutateTeamName(n.sessions, oldName, newName)) {
+        return true;
+      }
+    } else if (n.type === "group") {
       if (n.sessions.length > 0 && findAndMutateTeamName(n.sessions, oldName, newName)) {
         return true;
       }

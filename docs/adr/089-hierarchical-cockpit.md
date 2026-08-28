@@ -450,8 +450,25 @@ Renaming `epic-team` to a neutral discriminator. The literal is load-bearing acr
 
 ### Group-tier note (2026-08-27, e-419553c6) — `type: "group"` shipped, and it does NOT consume a prefix rung
 
+> ⚠ **Superseded by the [2026-08-28 true-containment note](#group-tier-note-2026-08-28-e-419553c6--groups-are-real-servers-and-consume-the-f2-rung) below.** The prefix-neutral reading in this note lasted exactly one commit. The shipped schema/walk surface it describes (the `type: "group"` container, DFS recursion, disabled-subtree pruning, `group?: string` threading) still stands; the "no tmux server, no prefix rung" half does not.
+
 The organisational container this amendment described as inexpressible (§Implementation-ledger row 3) now ships as `type: "group"` (`src/schema/cockpit.ts` — `{ type, name, enabled?, sessions[] }`, `.strict()`, no `root`, no cage). `walkSessions` recurses through groups, `enabledTeams` never emits one as a team, a disabled group prunes its whole subtree, and the nearest ancestor group name is threaded onto flattened entries as `group?: string`.
 
 **Prefix correction to §(B):** a schema `group` does **not** shift the chain. §(B)'s table assumed the group tier would be a CAGE (a real tmux server nested between cockpit and team), and for a cage the shift stands — the accepted F2→F3 move applies whenever a cage nests inside a cage. But `type: "group"` creates NO tmux server, so a prefix rung for it would address nothing: there is no server on which the chord could land. Accordingly the level fed to `resolvePrefix(...)` counts only **cage (team) ancestors** — `walkSessions` does not increment `level` through a group — and a team under a top-level group stays on `F2`. §(B)'s dotfiles-enforcement analysis is unaffected for cage-shaped tiers; for schema groups there is nothing to enforce. This also resolves §(B)'s closing caveat for the cage-less case: the shift is not "documented and not in effect" — for `type: "group"` it deliberately does not apply.
 
 §Implementation-ledger updates: row 3 → **Ships** (`GroupSession`, e-419553c6); row 4 → **Ships for `group`** (`walkSessions` / `enabledTeams` widened; any OTHER new type is still a leaf until both are widened).
+
+### Group-tier note (2026-08-28, e-419553c6) — groups are REAL servers and consume the F2 rung
+
+**Supersedes the 2026-08-27 note above.** Prefix-neutral groups lasted one commit: the operator looked at the reconciled cockpit, saw a flat sibling row where the nesting should be ("i still see a flat topology... where is the nesting"), and chose **true containment** on 2026-08-28. The 2026-08-27 note's premise — "a group creates NO tmux server, so a prefix rung for it would address nothing" — is retired by giving every enabled group a real tmux server for the rung to land on.
+
+The mechanism (all in `src/core/cockpit.ts::buildGroupTopology` + `src/verbs/cockpit.ts::reconcileGroupServers`):
+
+- **Group servers.** Each enabled group backs a tmux server on `groupSocketPath(name)` = `/tmp/atmux-grp-<group>/sock` (the `-grp-` infix keeps group sockets out of the team-socket namespace `/tmp/atmux-<team>/sock`, so a group and a team may share a name — the live fleet's `unum` does). Its session (named after the group, bare per e-419553c6) hosts one viewer window per child: teams run the same dual-socket cage attach-retry-loop the cockpit uses, nested groups run an attach loop to their own server.
+- **The cockpit session** keeps `_superdriver` / `_medic` / the ADR-279 `windows[]` untouched, and holds ONE window per **top-level** group (embedding that group's server) plus a direct embed per **ungrouped** team — the pre-group path, still live and still tested.
+- **Team cages are unmoved.** Their sockets and sessions do not change and are never restarted by this — only their PREFIX shifts (F2→F3 under a group) and their viewer window's address changes (cockpit → group server). Killing a group server can never kill a cage: its windows hold only `tmux attach` clients.
+- **Prefix chain, restoring §(B) as written:** `walkSessions` increments `level` through groups again, so `resolvePrefix(level + 2, …)` yields **F1 cockpit · F2 group server (top-level) · F3 team-under-group** — an ungrouped top-level team stays F2. §(B)'s closing caveat is now genuinely resolved in the other direction: the shift IS in effect, enforced by atmux's own arithmetic (`applyCagePrefix` on each group server during reconcile), not by the dotfiles socket chain.
+
+The 2026-08-27 note's §Implementation-ledger updates stand (row 3 ships, row 4 ships for `group`); row 9's "dotfiles socket chain" enforcement analysis is retired for schema groups — atmux enforces the shift itself.
+
+**Filed via** e-419553c6 (group-servers lane, 2026-08-28).

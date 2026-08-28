@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   ATMUX_NESTING_LEVEL_ENV,
+  buildGroupTopology,
   cageSessionName,
   cageSocketPath,
   callerScopeAllowed,
@@ -14,6 +15,7 @@ import {
   defaultCockpitConfigPath,
   enabledTeams,
   findTeamByName,
+  groupSocketPath,
   loadCockpit,
   MAX_NESTING_LEVEL,
   migrateLegacyShape,
@@ -24,6 +26,7 @@ import {
   resolveCageSocket,
   resolveCockpitConfigPath,
   resolvePrefix,
+  resolveTopLevelGroup,
   validatePrefixChain,
   walkSessions,
 } from "../../../src/core/cockpit.ts";
@@ -191,6 +194,16 @@ describe("loadCockpit", () => {
     await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(ConfigError);
 
     await writeCockpit({ windows: [{ name: "_medic", cwd: "/root/work" }] });
+    await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(ConfigError);
+
+    // e-419553c6: GROUP names occupy the cockpit window namespace too —
+    // a top-level group gets a cockpit viewer window embedding its server.
+    await writeCockpit({
+      sessions: [
+        { type: "group", name: "geoyws", sessions: [{ type: "team", name: "t", root: "/t" }] },
+      ],
+      windows: [{ name: "geoyws", cwd: "/root/work" }],
+    });
     await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(ConfigError);
   });
 
@@ -975,17 +988,17 @@ describe('type: "group" — walkSessions', () => {
     expect(seen).toEqual(["geoyws", "unum", "kanban", "nested", "solo"]);
   });
 
-  test("groups do NOT increment level — level counts only cage (team) ancestors", () => {
+  test("groups DO increment level — every group backs a real server that consumes a rung (2026-08-28)", () => {
     const seen: Array<{ name: string; level: number }> = [];
     walkSessions(tree, 0, (node, level) => {
       seen.push({ name: node.name, level });
     });
     expect(seen).toEqual([
-      { name: "geoyws", level: 0 },
-      { name: "unum", level: 0 }, // under a group only ⇒ still a top-level CAGE (F2)
-      { name: "kanban", level: 0 },
-      { name: "nested", level: 1 }, // one TEAM ancestor ⇒ one rung down (F3)
-      { name: "solo", level: 0 },
+      { name: "geoyws", level: 0 }, // top-level group server ⇒ F2 via level+2
+      { name: "unum", level: 1 }, // one GROUP ancestor ⇒ one rung down (F3)
+      { name: "kanban", level: 1 },
+      { name: "nested", level: 2 }, // group + team ancestors ⇒ F4
+      { name: "solo", level: 0 }, // ungrouped top-level team stays F2
     ]);
   });
 
@@ -1113,7 +1126,7 @@ describe('type: "group" — enabledTeams', () => {
     expect(enabledTeams(cockpit).map((t) => t.name)).toEqual(["outside"]);
   });
 
-  test("prefix arithmetic: a team under a group keeps its cage-only level (F2 via level+2)", async () => {
+  test("prefix arithmetic: the group consumes the F2 rung; teams under it shift down (2026-08-28)", async () => {
     await writeCockpit({
       schemaVersion: 1,
       sessions: [
@@ -1129,17 +1142,21 @@ describe('type: "group" — enabledTeams', () => {
             },
           ],
         },
+        { type: "team", name: "solo", root: "/p/solo" },
       ],
     });
     const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
     const flat = enabledTeams(cockpit);
     const proj = flat.find((t) => t.name === "proj");
     const sub = flat.find((t) => t.name === "sub");
-    // The group consumes NO rung: proj resolves exactly as a top-level
-    // team would (F2), and its nested team one rung down (F3) — the
-    // same arithmetic verbs/cockpit.ts Phase 3 applies (level + 2).
-    expect(resolvePrefix((proj?.level ?? -1) + 2)).toBe("F2");
-    expect(resolvePrefix((sub?.level ?? -1) + 2)).toBe("F3");
+    const solo = flat.find((t) => t.name === "solo");
+    // True containment (ADR-089 2026-08-28 group-tier note): the group
+    // backs a real server at F2, so its teams shift one rung down —
+    // the same arithmetic verbs/cockpit.ts Phase 3 applies (level + 2).
+    expect(resolvePrefix((proj?.level ?? -1) + 2)).toBe("F3");
+    expect(resolvePrefix((sub?.level ?? -1) + 2)).toBe("F4");
+    // An ungrouped top-level team keeps F2.
+    expect(resolvePrefix((solo?.level ?? -1) + 2)).toBe("F2");
   });
 
   test("legacy back-compat teams[] synthesis also sees through groups", async () => {
@@ -1185,6 +1202,227 @@ describe('type: "group" — findTeamByName', () => {
     expect(hit?.parent).toBe("host"); // nearest TEAM ancestor — the group is transparent
     expect(hit?.group).toBe("g");
     expect(findTeamByName(cockpit, "g")).toBeNull(); // a group is not a team
+  });
+});
+
+// ---------- e-419553c6: group servers (true containment, 2026-08-28) ----------
+
+describe("groupSocketPath — collision-freedom", () => {
+  test("carries the -grp- infix", () => {
+    expect(groupSocketPath("geoyws")).toBe("/tmp/atmux-grp-geoyws/sock");
+  });
+
+  test("a group and a team sharing a name never share a socket", () => {
+    // The live fleet has both a `unum` group and a `unum` team — the
+    // -grp- infix keeps their servers apart.
+    expect(groupSocketPath("unum")).not.toBe(cageSocketPath("unum"));
+    for (const n of ["a", "grp", "atmux", "x-y"]) {
+      expect(groupSocketPath(n)).not.toBe(cageSocketPath(n));
+    }
+  });
+});
+
+describe("buildGroupTopology", () => {
+  const shape = (sessions: unknown[]): CockpitShape =>
+    ({ schemaVersion: 1, cockpitSession: "atx", sessions, windows: [] }) as unknown as CockpitShape;
+
+  test("derives group servers + cockpit entries from a mixed tree, DFS order", () => {
+    const topo = buildGroupTopology(
+      shape([
+        {
+          type: "group",
+          name: "geoyws",
+          enabled: true,
+          sessions: [
+            { type: "team", name: "unum", root: "/p/unum", enabled: true, sessions: [] },
+            {
+              type: "team",
+              name: "kanban",
+              root: "/p/kanban",
+              enabled: true,
+              sessions: [
+                { type: "team", name: "nested", root: "/p/nested", enabled: true, sessions: [] },
+              ],
+            },
+          ],
+        },
+        { type: "team", name: "solo", root: "/p/solo", enabled: true, sessions: [] },
+      ]),
+    );
+    expect(topo.groups.map((g) => g.name)).toEqual(["geoyws"]);
+    const g = topo.groups[0];
+    expect(g?.level).toBe(0);
+    expect(g?.parentGroup).toBeUndefined();
+    // Nearest-group teams in DFS order — the team nested under `kanban`
+    // (nearest group still geoyws) gets its own viewer window too,
+    // mirroring the cockpit session's pre-group behaviour.
+    expect(
+      g?.children.map((c) => (c.kind === "team" ? `t:${c.team.name}` : `g:${c.name}`)),
+    ).toEqual(["t:unum", "t:kanban", "t:nested"]);
+    // Cockpit session: the top-level group + the ungrouped team only.
+    expect(
+      topo.cockpitEntries.map((e) => (e.kind === "group" ? `g:${e.group.name}` : `t:${e.team.name}`)),
+    ).toEqual(["g:geoyws", "t:solo"]);
+  });
+
+  test("nested groups chain: child group is a window in the parent's server; teams attribute to the NEAREST group", () => {
+    const topo = buildGroupTopology(
+      shape([
+        {
+          type: "group",
+          name: "outer",
+          enabled: true,
+          sessions: [
+            { type: "team", name: "a", root: "/p/a", enabled: true, sessions: [] },
+            {
+              type: "group",
+              name: "inner",
+              enabled: true,
+              sessions: [{ type: "team", name: "b", root: "/p/b", enabled: true, sessions: [] }],
+            },
+          ],
+        },
+      ]),
+    );
+    expect(topo.groups.map((g) => `${g.name}@${g.level}`)).toEqual(["outer@0", "inner@1"]);
+    expect(topo.groups[1]?.parentGroup).toBe("outer");
+    const outer = topo.groups[0];
+    expect(
+      outer?.children.map((c) => (c.kind === "team" ? `t:${c.team.name}` : `g:${c.name}`)),
+    ).toEqual(["t:a", "g:inner"]);
+    const inner = topo.groups[1];
+    expect(inner?.children.map((c) => (c.kind === "team" ? c.team.name : c.name))).toEqual(["b"]);
+    // Only the top-level group reaches the cockpit.
+    expect(topo.cockpitEntries.map((e) => (e.kind === "group" ? e.group.name : ""))).toEqual([
+      "outer",
+    ]);
+  });
+
+  test("a disabled group contributes no server and prunes its subtree; disabled teams are skipped", () => {
+    const topo = buildGroupTopology(
+      shape([
+        {
+          type: "group",
+          name: "parked",
+          enabled: false,
+          sessions: [{ type: "team", name: "inside", root: "/p/in", enabled: true, sessions: [] }],
+        },
+        {
+          type: "group",
+          name: "live",
+          enabled: true,
+          sessions: [
+            { type: "team", name: "on", root: "/p/on", enabled: true, sessions: [] },
+            { type: "team", name: "off", root: "/p/off", enabled: false, sessions: [] },
+          ],
+        },
+      ]),
+    );
+    expect(topo.groups.map((g) => g.name)).toEqual(["live"]);
+    expect(topo.groups[0]?.children.map((c) => (c.kind === "team" ? c.team.name : c.name))).toEqual(
+      ["on"],
+    );
+  });
+
+  test("a group hosted only under a TEAM (no group ancestor) embeds in the cockpit", () => {
+    const topo = buildGroupTopology(
+      shape([
+        {
+          type: "team",
+          name: "host",
+          root: "/p/host",
+          enabled: true,
+          sessions: [
+            {
+              type: "group",
+              name: "g",
+              enabled: true,
+              sessions: [{ type: "team", name: "child", root: "/p/child", enabled: true, sessions: [] }],
+            },
+          ],
+        },
+      ]),
+    );
+    expect(topo.cockpitEntries.map((e) => (e.kind === "group" ? `g:${e.group.name}` : `t:${e.team.name}`))).toEqual([
+      "t:host",
+      "g:g",
+    ]);
+  });
+
+  test("refuses duplicate enabled group names (shared socket + session)", () => {
+    expect(() =>
+      buildGroupTopology(
+        shape([
+          { type: "group", name: "x", enabled: true, sessions: [] },
+          { type: "group", name: "x", enabled: true, sessions: [] },
+        ]),
+      ),
+    ).toThrow(ConfigError);
+  });
+
+  test("refuses a viewer-name collision within one namespace; allows the same name across namespaces", () => {
+    // Collision: top-level group `unum` next to an UNGROUPED team `unum`
+    // — both would claim the cockpit window named `unum`.
+    expect(() =>
+      buildGroupTopology(
+        shape([
+          {
+            type: "group",
+            name: "unum",
+            enabled: true,
+            sessions: [{ type: "team", name: "inner", root: "/p/i", enabled: true, sessions: [] }],
+          },
+          { type: "team", name: "unum", root: "/p/unum", enabled: true, sessions: [] },
+        ]),
+      ),
+    ).toThrow(ConfigError);
+    // No collision: the `unum` TEAM lives INSIDE the `unum` GROUP —
+    // different namespaces (group server vs cockpit).
+    const topo = buildGroupTopology(
+      shape([
+        {
+          type: "group",
+          name: "unum",
+          enabled: true,
+          sessions: [{ type: "team", name: "unum", root: "/p/unum", enabled: true, sessions: [] }],
+        },
+      ]),
+    );
+    expect(topo.groups[0]?.children.map((c) => (c.kind === "team" ? c.team.name : c.name))).toEqual(
+      ["unum"],
+    );
+  });
+});
+
+describe("resolveTopLevelGroup", () => {
+  const topo = buildGroupTopology({
+    schemaVersion: 1,
+    cockpitSession: "atx",
+    windows: [],
+    sessions: [
+      {
+        type: "group",
+        name: "outer",
+        enabled: true,
+        sessions: [
+          {
+            type: "group",
+            name: "inner",
+            enabled: true,
+            sessions: [{ type: "team", name: "t", root: "/t", enabled: true, sessions: [] }],
+          },
+        ],
+      },
+    ],
+  } as unknown as CockpitShape);
+
+  test("walks the parentGroup chain to the cockpit-level group", () => {
+    expect(resolveTopLevelGroup(topo, "inner")).toBe("outer");
+    expect(resolveTopLevelGroup(topo, "outer")).toBe("outer");
+  });
+
+  test("unknown name → null", () => {
+    expect(resolveTopLevelGroup(topo, "nope")).toBeNull();
   });
 });
 

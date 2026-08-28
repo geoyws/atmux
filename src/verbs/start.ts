@@ -112,7 +112,13 @@ import {
   bootClaudeMember,
   renderBootFailureNotice,
 } from "../core/boot-claude.ts";
-import { enabledTeams, loadCockpit, readNestingLevel, resolvePrefix } from "../core/cockpit.ts";
+import {
+  buildGroupTopology,
+  enabledTeams,
+  loadCockpit,
+  readNestingLevel,
+  resolvePrefix,
+} from "../core/cockpit.ts";
 import {
   buildWindowName,
   buildWindowNameLegacy,
@@ -143,7 +149,7 @@ import { CLAUDE_TUI_SCRUB_VARS, resolveTuiCommand } from "../core/tui-cmd.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import { ResumeManifest } from "../schema/resume.ts";
 import type { Team } from "../schema/team.ts";
-import { applyCagePrefix, reconcileCockpitSession } from "./cockpit.ts";
+import { applyCagePrefix, reconcileCockpitSession, reconcileGroupServers } from "./cockpit.ts";
 // ADR-233 §D1: cron auto-install retired; the `cronInstall` import is gone.
 //   Operators who want crons run `atmux cron-install` explicitly.
 import { defaultBriefsDir, getBriefPath, renderBrief } from "./rotate.ts";
@@ -1135,6 +1141,22 @@ async function autoReconcileCockpitForTeam(
     socket: getCockpitSocketName(),
     configFile: getAtmuxTmuxConfPath(),
   });
+  // e-419553c6 true containment: a team with a group ancestor embeds in
+  // its GROUP's server, not the cockpit — thread the topology so the
+  // per-team reconcile routes the cockpit-side slot to the top-level
+  // ancestor group, and additively ensure the group-server chain (the
+  // team's window in its owning group + each ancestor's group-viewer
+  // window). Both are additive; neither prunes nor reorders siblings.
+  // Topology derivation shares the loaded cockpit, so a config that
+  // fails `buildGroupTopology`'s collision guards degrades to the
+  // legacy direct-embed WARN path rather than failing `start`.
+  let topology: ReturnType<typeof buildGroupTopology> | undefined;
+  try {
+    topology = buildGroupTopology(cockpit);
+  } catch (e) {
+    const cause = e instanceof Error ? e.message : String(e);
+    logger.warn(`cockpit group topology skipped: ${cause}`);
+  }
   try {
     await reconcile(
       cockpitTmux,
@@ -1144,11 +1166,21 @@ async function autoReconcileCockpitForTeam(
       {},
       cockpit.medic,
       false,
-      { onlyTeam: matched.name },
+      { onlyTeam: matched.name, ...(topology !== undefined ? { topology } : {}) },
     );
-    logger.log(
-      `  ✓ cockpit window for '${matched.name}' reconciled (cockpit:${cockpit.cockpitSession})`,
-    );
+    if (topology !== undefined && matched.group !== undefined) {
+      await reconcileGroupServers(factory, topology, logger, {
+        onlyTeam: matched.name,
+        ...(cockpit.prefixChain !== undefined ? { prefixChain: cockpit.prefixChain } : {}),
+      });
+      logger.log(
+        `  ✓ viewer for '${matched.name}' reconciled in group '${matched.group}' (cockpit:${cockpit.cockpitSession})`,
+      );
+    } else {
+      logger.log(
+        `  ✓ cockpit window for '${matched.name}' reconciled (cockpit:${cockpit.cockpitSession})`,
+      );
+    }
   } catch (e) {
     const cause = e instanceof Error ? e.message : String(e);
     logger.warn(`cockpit reconcile failed for '${matched.name}': ${cause}`);

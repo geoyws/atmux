@@ -153,15 +153,18 @@ export interface TeamSessionT {
   sessions: CockpitSessionT[];
 }
 
-/** Purely organisational container — ADR-089 §Amendment 2026-08-27
- *  §Implementation-ledger row 3 (e-419553c6). A group has NO `root`,
- *  NO backing cage and NO tmux server of its own; it exists so the
- *  operator can express fleet structure (`geoyws` / `unum` / `ifca`)
- *  without paying for a cage per tier. Children are ordinary
+/** Organisational container — ADR-089 §Amendment 2026-08-27
+ *  §Implementation-ledger row 3 (e-419553c6). A group has NO `root`
+ *  and NO backing cage, but since the 2026-08-28 true-containment
+ *  decision every enabled group DOES back a real tmux server
+ *  (`groupSocketPath(name)`; see ADR-089's 2026-08-28 group-tier note)
+ *  holding one viewer window per child — the containment tier between
+ *  the cockpit (F1) and the team cages (F3). Children are ordinary
  *  `sessions[]` entries — a `team` under a group is a normal team.
  *  Deliberately narrow (`.strict()`, no claudeAccount / tuiOverrides /
- *  prefixChain): nothing would consume them, so admitting them would
- *  be schema surface that silently does nothing. */
+ *  prefixChain): a group server hosts only attach clients, so nothing
+ *  would consume those fields — admitting them would be schema surface
+ *  that silently does nothing. */
 export interface GroupSessionT {
   type: "group";
   name: string;

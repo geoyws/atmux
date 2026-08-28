@@ -19,11 +19,18 @@
 //      the chain resolution fails — never as the primary path.
 //   4. auto-launch the TUI in each non-claude pane via resolveTuiCommand
 //      + tmux send-keys (skip with --no-launch)
+//   4.5 (e-419553c6 true containment) reconcile GROUP servers — one
+//      tmux server per enabled `type: "group"` (socket
+//      `/tmp/atmux-grp-<group>/sock`, session named after the group,
+//      prefix F2), one viewer window per child team/group running the
+//      same attach retry-loop the cockpit uses
 //   5. reconcile cockpit session (default `atx` per ADR-264) on
-//      the operator's default tmux socket: window 1 = superdriver,
-//      windows 2..N = one viewer per enabled team that nest-attaches
-//      to the cage via `tmux -S <sock> attach -t <session>` in a
-//      retry-loop (covers cage restarts + first-attach race)
+//      the dedicated cockpit socket: window 1 = superdriver,
+//      windows 2..N = one viewer per top-level group (nest-attaches to
+//      the group server) + one per UNGROUPED enabled team that
+//      nest-attaches to the cage via `tmux -S <sock> attach -t
+//      <session>` in a retry-loop (covers cage restarts + first-attach
+//      race); grouped teams' viewers live in their group's server
 //
 // Sub-verbs landed in this commit: `rebuild`. The rest of the verb
 // family sketched in ADR-063 §D1 (list / add / remove / enable /
@@ -43,8 +50,12 @@ import {
   type TmuxNamespace,
 } from "../abstractions/tmux.ts";
 import {
+  buildGroupTopology,
   cageSocketPath,
   enabledTeams,
+  type GroupTopologyNode,
+  type GroupedTopology,
+  groupSocketPath,
   type LoadCockpitOpts,
   loadCockpit,
   perTeamCageSocketPath,
@@ -52,6 +63,7 @@ import {
   resolveCageSocket,
   resolveCockpitConfigPath,
   resolvePrefix,
+  resolveTopLevelGroup,
 } from "../core/cockpit.ts";
 import { loadTeam, teamJsonPath } from "../core/common.ts";
 import { installCockpitCronBlock } from "../core/cron.ts";
@@ -261,11 +273,21 @@ function cageRetryLoop(team: CockpitTeam, session: string): string {
   // aborts the whole command line, and kills the viewer window on
   // macOS (proven live 2026-08-27 — the unquoted form dies within
   // seconds, the quoted form survives).
+  //
+  // `[ -S <sock> ] &&` guards (e-419553c6, proven on macOS 2026-08-28):
+  // when the socket's parent DIRECTORY doesn't exist, tmux prints
+  // "error creating <sock> (No such file or directory)" and exits **0**
+  // (homebrew tmux on macOS), so a bare `dialA || dialB` never reaches
+  // dialB — the per-team-convention fallback was silently dead for any
+  // team without a legacy /tmp/atmux-<team>/ dir. Guarding each dial on
+  // socket existence restores the fallback and keeps the original
+  // semantics: a clean detach from the first dial (exit 0) still skips
+  // the second, a missing/stale first socket falls through.
   const target = `'${exactSessionTarget(session)}:driver'`;
   return (
     `while true; do ` +
-    `tmux -S ${legacy} attach -t ${target} 2>/dev/null ` +
-    `|| tmux -S ${perTeam} attach -t ${target} 2>/dev/null; ` +
+    `{ [ -S ${legacy} ] && tmux -S ${legacy} attach -t ${target} 2>/dev/null; } ` +
+    `|| { [ -S ${perTeam} ] && tmux -S ${perTeam} attach -t ${target} 2>/dev/null; }; ` +
     `sleep 1; ` +
     `done`
   );
@@ -279,6 +301,246 @@ function shellPlaceholder(msg: string): string {
   const safe = msg.replace(/'/g, "'\\''");
   return `printf '%s\\n' '${safe}'; sleep infinity`;
 }
+
+// ---------- e-419553c6: group servers (true containment) ----------
+
+/** Attach retry-loop for a GROUP server — the command a group's viewer
+ *  window runs (in the cockpit session for a top-level group; in the
+ *  parent group's server for a nested one). Single socket — groups have
+ *  exactly one convention ({@link groupSocketPath}), unlike the
+ *  dual-convention team cages `cageRetryLoop` covers. Targets the bare
+ *  session (no `:driver` — a group session's active window is whichever
+ *  child the operator last used). `=`-anchored + single-quoted for the
+ *  same zsh `=cmd`-expansion reason documented on `cageRetryLoop`. */
+export function buildGroupWindowCommand(groupName: string): string {
+  const sock = groupSocketPath(groupName);
+  const target = `'${exactSessionTarget(groupName)}'`;
+  return `while true; do tmux -S ${sock} attach -t ${target} 2>/dev/null; sleep 1; done`;
+}
+
+/** Options for {@link reconcileGroupServers}. */
+export interface ReconcileGroupServersOpts {
+  /** Confirm destructive ops (pruning group-server viewer windows whose
+   *  team/group left the group). Mirrors the t-8b0e077e cockpit gate:
+   *  planned prunes are logged, then refused with UsageError when this
+   *  is false. Viewer windows hold only attach clients, so a prune can
+   *  never harm a cage — the gate exists so layout changes are
+   *  operator-acknowledged, same as the cockpit session's. */
+  yes?: boolean;
+  /** Operator prefix chain (`cockpit.prefixChain`). */
+  prefixChain?: ReadonlyArray<string>;
+  /** Per-team-window deps (mode resolution + test seams) — the same
+   *  bundle `reconcileCockpitSession` threads to
+   *  `resolveTeamWindowMode`. */
+  deps?: ResolveTeamWindowDeps;
+  /** ADDITIVE per-team mode (start.ts's auto-reconcile): only the named
+   *  team's ancestor-group chain is ensured — the owning group's server
+   *  gets the team's window, each ancestor gets the chain-child group's
+   *  window, nothing is pruned or reordered, sibling windows are not
+   *  added. No-op when the team has no group ancestor. */
+  onlyTeam?: string;
+}
+
+/** One planned viewer window inside a group server. */
+interface GroupWantedWindow {
+  name: string;
+  buildCmd: () => Promise<string>;
+}
+
+/**
+ * Ensure one tmux server per enabled group (e-419553c6 true containment,
+ * operator decision 2026-08-28): socket {@link groupSocketPath}, session
+ * named after the group (bare, per the e-419553c6 naming), one viewer
+ * window per child — teams run the same dual-socket `cageRetryLoop`
+ * embed the cockpit uses, child groups run {@link buildGroupWindowCommand}
+ * against their own server. Idempotent: a second run over unchanged
+ * config is all no-ops.
+ *
+ * Order of operations mirrors the cockpit reconcile: a destructive-op
+ * pre-pass (prunes only — creation is additive) refuses without `yes`
+ * BEFORE anything mutates, then servers/sessions/windows are ensured,
+ * then orphan windows pruned, then the group's prefix applied
+ * (`resolvePrefix(level + 2, …)` — F2 for a top-level group; the teams
+ * under it resolve F3 via the same arithmetic in Phase 3).
+ *
+ * Killing a group server can never kill a cage: its windows hold only
+ * `tmux attach` CLIENTS of the cage servers, and killing a client
+ * detaches it, nothing more. (Behaviourally asserted in the test
+ * suite.)
+ *
+ * Window ORDER inside a group server is creation-order (DFS on a fresh
+ * build). `ponytail:` no park-then-place reorder pass here — after a
+ * membership change, windows may sit out of DFS order until the server
+ * is next recreated; the cockpit session's reorder pass is the
+ * documented upgrade path if this ever matters.
+ */
+export async function reconcileGroupServers(
+  factory: (cfg: TmuxConfig) => TmuxNamespace,
+  topology: GroupedTopology,
+  logger: Logger,
+  opts: ReconcileGroupServersOpts = {},
+): Promise<void> {
+  const yes = opts.yes ?? false;
+  const deps = opts.deps ?? {};
+  const byName = new Map(topology.groups.map((g) => [g.name, g]));
+
+  // Resolve the per-group wanted-window list. In fleet mode that is the
+  // full DFS children list; in per-team additive mode it narrows to the
+  // ancestor chain (owning group → team window; ancestors → chain-child
+  // group window).
+  const plans: Array<{ group: GroupTopologyNode; wanted: GroupWantedWindow[] }> = [];
+  if (opts.onlyTeam === undefined) {
+    for (const g of topology.groups) {
+      const wanted: GroupWantedWindow[] = g.children.map((c) =>
+        c.kind === "group"
+          ? { name: c.name, buildCmd: async () => buildGroupWindowCommand(c.name) }
+          : {
+              name: c.team.name,
+              buildCmd: async () =>
+                await buildTeamWindowCommand(c.team, await resolveTeamWindowMode(c.team, deps)),
+            },
+      );
+      plans.push({ group: g, wanted });
+    }
+  } else {
+    const teamName = opts.onlyTeam;
+    const owner = topology.groups.find((g) =>
+      g.children.some((c) => c.kind === "team" && c.team.name === teamName),
+    );
+    if (owner === undefined) return; // ungrouped / unknown team — nothing group-side to do
+    const ownerTeam = owner.children.find(
+      (c): c is Extract<GroupChildRefLocal, { kind: "team" }> =>
+        c.kind === "team" && c.team.name === teamName,
+    );
+    if (ownerTeam === undefined) return; // unreachable; narrows the type
+    plans.push({
+      group: owner,
+      wanted: [
+        {
+          name: teamName,
+          buildCmd: async () =>
+            await buildTeamWindowCommand(
+              ownerTeam.team,
+              await resolveTeamWindowMode(ownerTeam.team, deps),
+            ),
+        },
+      ],
+    });
+    // Ancestor chain: each ancestor ensures the viewer window of the
+    // group one step DOWN the chain (child precedes parent in `chain`
+    // build order; we walk owner → root).
+    let child = owner;
+    const seen = new Set<string>([owner.name]);
+    while (child.parentGroup !== undefined) {
+      const parent = byName.get(child.parentGroup);
+      if (parent === undefined || seen.has(parent.name)) break;
+      seen.add(parent.name);
+      const childName = child.name;
+      plans.push({
+        group: parent,
+        wanted: [{ name: childName, buildCmd: async () => buildGroupWindowCommand(childName) }],
+      });
+      child = parent;
+    }
+  }
+
+  // Destructive-op pre-pass (fleet mode only — per-team mode is
+  // additive by construction). Names suffice; commands are built lazily
+  // in the mutate pass.
+  if (opts.onlyTeam === undefined) {
+    const planned: Array<{ group: string; window: string }> = [];
+    for (const { group, wanted } of plans) {
+      const gTmux = factory({ socketPath: groupSocketPath(group.name) });
+      if (!(await gTmux.session.hasSession(exactSessionTarget(group.name)))) continue;
+      const wantedNames = new Set(wanted.map((w) => w.name));
+      let windows: Array<{ name: string }>;
+      try {
+        windows = await gTmux.window.listWindows(group.name);
+      } catch {
+        continue;
+      }
+      for (const w of windows) {
+        if (!wantedNames.has(w.name)) planned.push({ group: group.name, window: w.name });
+      }
+    }
+    if (planned.length > 0) {
+      for (const op of planned) {
+        logger.warn(
+          `  ⚠ destructive: prune-orphan '${op.window}' from group server '${op.group}' — not in the group's cockpit.json children`,
+        );
+      }
+      if (!yes) {
+        throw new UsageError({
+          what: `cockpit reconcile: ${planned.length} destructive group-server op(s) planned; refusing without --yes`,
+          hint:
+            "Review the listed ops above. Re-run with `--yes` to apply, or edit cockpit.json " +
+            "to keep the windows in scope. (Viewer windows hold only attach clients — cages are never touched.)",
+        });
+      }
+    }
+  }
+
+  // Mutate pass — ensure servers, sessions, windows; prune; prefix.
+  for (const { group, wanted } of plans) {
+    if (wanted.length === 0) {
+      logger.log(`  · group '${group.name}' has no enabled children — skipping its server`);
+      continue;
+    }
+    const sock = groupSocketPath(group.name);
+    await ensureDir(dirname(sock));
+    const gTmux = factory({ socketPath: sock, configFile: getAtmuxTmuxConfPath() });
+    const first = wanted[0] as GroupWantedWindow;
+    if (!(await gTmux.session.hasSession(exactSessionTarget(group.name)))) {
+      await gTmux.session.newSession({
+        name: group.name,
+        detached: true,
+        windowName: first.name,
+        shellCommand: await first.buildCmd(),
+      });
+      logger.log(`  ✓ created group server '${group.name}' (${sock}; window 1: ${first.name})`);
+    }
+    const present = new Set((await gTmux.window.listWindows(group.name)).map((w) => w.name));
+    for (const w of wanted) {
+      if (present.has(w.name)) {
+        logger.log(`  · group '${group.name}': window '${w.name}' already present`);
+        continue;
+      }
+      await gTmux.window.newWindow({
+        sessionName: group.name,
+        name: w.name,
+        detached: true,
+        shellCommand: await w.buildCmd(),
+      });
+      present.add(w.name);
+      logger.log(`  ✓ group '${group.name}': added window '${w.name}'`);
+    }
+    if (opts.onlyTeam === undefined) {
+      const wantedNames = new Set(wanted.map((w) => w.name));
+      for (const w of await gTmux.window.listWindows(group.name)) {
+        if (wantedNames.has(w.name)) continue;
+        try {
+          await gTmux.window.killWindow(`${group.name}:${w.name}`);
+          logger.log(`  ✓ group '${group.name}': removed orphan window '${w.name}'`);
+        } catch {
+          // window may already be gone
+        }
+      }
+    }
+    // Group server prefix — F2 for a top-level group, one rung deeper
+    // per nesting step; same best-effort posture as Phase 3.
+    let prefix: string | undefined;
+    try {
+      prefix = resolvePrefix(group.level + 2, opts.prefixChain);
+    } catch {
+      // falls through to applyCagePrefix's legacy default — cosmetic.
+    }
+    await applyCagePrefix(gTmux, prefix);
+  }
+}
+
+/** Local structural alias for the `GroupChildRef` team arm (avoids
+ *  importing the union type just for one narrowing predicate). */
+type GroupChildRefLocal = GroupTopologyNode["children"][number];
 
 // ---------- Arg parsing ----------
 
@@ -677,7 +939,14 @@ export async function cockpitRebuild(
     logger.warn("no enabled teams in cockpit.json — nothing to do");
     return 0;
   }
+  // e-419553c6 true containment: derive the three-tier viewer topology
+  // once — group servers (Phase 4.5) and the cockpit session (Phase 5)
+  // both consume it, so they can never disagree on where a viewer lives.
+  const topology = buildGroupTopology(cockpit);
   logger.log(`cockpit roster: ${teams.map((t) => t.name).join(", ")}`);
+  if (topology.groups.length > 0) {
+    logger.log(`group servers: ${topology.groups.map((g) => g.name).join(", ")}`);
+  }
 
   // Phase 1: normalise each team's team.json (bareWindowNames + tuiCommands.claude).
   for (const t of teams) {
@@ -736,12 +1005,11 @@ export async function cockpitRebuild(
   // `+ 1` → `+ 2` on 2026-05-24 (operator directive — "Fix code to
   // match ADR §C table"). Top-level team = level 2 = F2; nested child
   // = level 3 = F3; etc. Cockpit itself takes level 1 = F1 via
-  // Phase 5b below. `t.level` counts only CAGE (team) ancestors —
-  // `type: "group"` containers are transparent to it (walkSessions
-  // does not increment through them), so a team under a top-level
-  // group still lands on F2: a group runs no tmux server, and a
-  // prefix rung for it would address nothing (ADR-089 §Amendment
-  // 2026-08-27, group-tier note).
+  // Phase 5b below. `t.level` counts team AND group ancestors: since
+  // the 2026-08-28 true-containment decision every enabled group backs
+  // a REAL tmux server (Phase 4.5) that consumes the F2 rung, so a
+  // team under a top-level group resolves F3 (ADR-089 §Amendment
+  // 2026-08-27, group-tier note as superseded 2026-08-28).
   for (const t of teams) {
     const sock = await resolveCageSocket(t.name, t.root);
     const cageTmux = factory({ socketPath: sock });
@@ -774,6 +1042,17 @@ export async function cockpitRebuild(
     }
   }
 
+  // Phase 4.5 (e-419553c6 true containment): one tmux server per
+  // enabled group, sitting between the cockpit (L1) and the team cages
+  // (L3). Runs BEFORE Phase 5 so the cockpit's group-viewer windows
+  // attach to live servers on first paint (the retry loop would cover a
+  // late start, but first paint matters to the operator). Group servers
+  // hold only attach clients — killing one can never touch a cage.
+  await reconcileGroupServers(factory, topology, logger, {
+    yes: parsed.yes,
+    ...(cockpit.prefixChain !== undefined ? { prefixChain: cockpit.prefixChain } : {}),
+  });
+
   // Phase 5: cockpit session on its dedicated socket (ADR-162
   // §Decision-anchor #1 — `tmux -L atmux-cockpit`). Resolver honours
   // `ATMUX_COCKPIT_SOCKET` legacy escape hatch. §Decision-anchor #2:
@@ -799,7 +1078,10 @@ export async function cockpitRebuild(
     {},
     cockpit.medic,
     parsed.yes,
-    { windows: cockpit.windows }, // fleet-wide; persist operator workspaces too
+    // fleet-wide; persist operator workspaces too. `topology` (e-419553c6)
+    // replaces grouped teams' cockpit windows with one window per
+    // top-level group; ungrouped teams keep their direct embed.
+    { windows: cockpit.windows, topology },
   );
 
   // Phase 5b (t-3fb7bc54): apply the resolved prefix to the cockpit
@@ -1533,7 +1815,21 @@ export interface ReconcileCockpitOpts {
    *  reconcile creates, orders, and preserves them; per-team reconcile does
    *  not touch them. */
   windows?: ReadonlyArray<CockpitWindow>;
+  /** e-419553c6 true containment: the group topology from
+   *  `buildGroupTopology(cockpit)`. When present, teams with a group
+   *  ancestor get NO cockpit window (their viewers live in the group's
+   *  server — `reconcileGroupServers`), and each top-level group gets
+   *  ONE cockpit window attach-looping to its server. When absent
+   *  (legacy callers / tests), every team in `teams[]` embeds directly
+   *  in the cockpit, exactly as before groups had servers. */
+  topology?: GroupedTopology;
 }
+
+/** One cockpit-session viewer slot the reconcile should ensure — either
+ *  a team's direct cage embed or a group server's embed. */
+type CockpitViewerAdd =
+  | { kind: "team"; name: string; team: CockpitTeam }
+  | { kind: "group"; name: string };
 
 export async function reconcileCockpitSession(
   cockpitTmux: TmuxNamespace,
@@ -1555,6 +1851,22 @@ export async function reconcileCockpitSession(
   const onlyTeam = reconcileOpts.onlyTeam;
   const operatorWindows =
     onlyTeam === undefined ? (reconcileOpts.windows ?? []).filter((w) => w.enabled) : [];
+  const topology = reconcileOpts.topology;
+
+  // e-419553c6: resolve which viewer slots the COCKPIT session owns.
+  // With a topology, grouped teams are excluded (their viewers live in
+  // their group's server per `reconcileGroupServers`) and each
+  // top-level group contributes ONE window embedding its server;
+  // without one (legacy callers / tests), every team in `teams[]`
+  // embeds directly, exactly the pre-group behaviour.
+  const viewerEntries: CockpitViewerAdd[] =
+    topology !== undefined
+      ? topology.cockpitEntries.map((e) =>
+          e.kind === "group"
+            ? { kind: "group", name: e.group.name }
+            : { kind: "team", name: e.team.name, team: e.team },
+        )
+      : teams.map((t) => ({ kind: "team", name: t.name, team: t }));
 
   // ADR-264 §D4 (extends ADR-135 §D4 one generation) — legacy
   // cockpit-session-name migration. When the operator's running tmux
@@ -1670,6 +1982,7 @@ export async function reconcileCockpitSession(
     yes,
     logger,
     operatorWindows,
+    viewerNames: viewerEntries.map((v) => v.name),
     ...(onlyTeam !== undefined ? { onlyTeam } : {}),
   });
 
@@ -1761,25 +2074,37 @@ export async function reconcileCockpitSession(
   // an epic-team's viewer lived INSIDE its parent's cage, not in the
   // cockpit, so a cockpit window per epic row produced duplicates
   // (complaint c-abb7b603, 2026-05-18). ADR-280 stage 3 removed the
-  // `epic-team` type, so that filter can no longer match anything and is
-  // gone. NOTE, stated rather than hidden: `enabledTeams` returns nested
-  // `type: "team"` rows too, and it always did — the removed filter never
-  // excluded them, so dropping it changes no behaviour. Whether a nested
-  // team SHOULD get its own cockpit window is an open ADR-089 question
-  // this stage deliberately does not answer.
-  const cockpitTeams = teams;
+  // `epic-team` type. The e-419553c6 topology now answers the nested-
+  // team question that note left open: nested teams WITHOUT a group
+  // ancestor still get cockpit windows (unchanged), nested teams under
+  // a group live in the group's server (`viewerEntries` above).
   const wanted = new Set([
     "_superdriver",
     ...(wantMedic ? ["_medic"] : []),
     ...operatorWindows.map((w) => w.name),
-    ...cockpitTeams.map((t) => t.name),
+    ...viewerEntries.map((v) => v.name),
   ]);
 
-  // Per-team mode: filter teams to JUST the named one before the add
-  // pass — defensive against callers passing the full roster but
-  // wanting only one window touched.
-  const teamsToAdd =
-    onlyTeam !== undefined ? cockpitTeams.filter((t) => t.name === onlyTeam) : cockpitTeams;
+  // Per-team mode: resolve the SINGLE viewer slot the caller owns.
+  // e-419553c6: for a team with a group ancestor that slot is its
+  // TOP-LEVEL ancestor group's window (the team's own window lives in
+  // the group server, which `reconcileGroupServers`' per-team mode
+  // ensures on the caller's side) — additive either way.
+  const viewersToAdd: CockpitViewerAdd[] = (() => {
+    if (onlyTeam === undefined) return viewerEntries;
+    const t = teams.find((x) => x.name === onlyTeam);
+    if (t === undefined) return [];
+    if (topology !== undefined) {
+      const owner = topology.groups.find((g) =>
+        g.children.some((c) => c.kind === "team" && c.team.name === onlyTeam),
+      );
+      if (owner !== undefined) {
+        const top = resolveTopLevelGroup(topology, owner.name) ?? owner.name;
+        return [{ kind: "group", name: top }];
+      }
+    }
+    return [{ kind: "team", name: t.name, team: t }];
+  })();
 
   // Add missing operator-owned windows before team viewers. Existing panes
   // are preserved as-is; creation is the only time cwd/command are applied.
@@ -1798,21 +2123,32 @@ export async function reconcileCockpitSession(
     logger.log(`  ✓ added operator window '${w.name}'`);
   }
 
-  // Add missing viewer windows.
-  for (const t of teamsToAdd) {
-    if (present.has(t.name)) {
-      logger.log(`  · window '${t.name}' already present`);
+  // Add missing viewer windows — team slots embed the cage directly,
+  // group slots embed the group's server (e-419553c6).
+  for (const v of viewersToAdd) {
+    if (present.has(v.name)) {
+      logger.log(`  · window '${v.name}' already present`);
       continue;
     }
-    const mode = await resolveTeamWindowMode(t, deps);
-    const cmd = await buildTeamWindowCommand(t, mode);
+    if (v.kind === "group") {
+      await cockpitTmux.window.newWindow({
+        sessionName,
+        name: v.name,
+        detached: true,
+        shellCommand: buildGroupWindowCommand(v.name),
+      });
+      logger.log(`  ✓ added window '${v.name}' (group-server embed)`);
+      continue;
+    }
+    const mode = await resolveTeamWindowMode(v.team, deps);
+    const cmd = await buildTeamWindowCommand(v.team, mode);
     await cockpitTmux.window.newWindow({
       sessionName,
-      name: t.name,
+      name: v.name,
       detached: true,
       shellCommand: cmd,
     });
-    logger.log(`  ✓ added window '${t.name}' (${mode})`);
+    logger.log(`  ✓ added window '${v.name}' (${mode})`);
   }
 
   // ADR-135 §D2 §Amendment (t-34fa0132): a child team's viewer window MUST
@@ -1828,11 +2164,11 @@ export async function reconcileCockpitSession(
     const windowsForOrder = await cockpitTmux.window.listWindows(sessionName);
     const sdrv = windowsForOrder.find((w) => w.name === "_superdriver");
     const cursorBase = (sdrv !== undefined ? sdrv.index + 1 : 1) + (wantMedic ? 1 : 0);
-    // `cockpitTeams` is the same DFS-ordered set the add-loop and the
+    // `viewerEntries` is the same DFS-ordered set the add-loop and the
     // wanted-set use, so reorder can never assign a cockpit slot to an
     // entry that has no cockpit window (which would leave gaps and offset
-    // sibling teams).
-    const desired = [...operatorWindows, ...cockpitTeams].map((entry, i) => ({
+    // sibling teams). Group windows order like team windows (e-419553c6).
+    const desired = [...operatorWindows, ...viewerEntries].map((entry, i) => ({
       name: entry.name,
       finalIdx: cursorBase + i,
     }));
@@ -1997,6 +2333,12 @@ interface RefuseDestructiveOpts {
   yes: boolean;
   logger: Logger;
   operatorWindows: ReadonlyArray<CockpitWindow>;
+  /** e-419553c6: the cockpit-session viewer names the live body will
+   *  keep (group windows + ungrouped teams). When provided it REPLACES
+   *  `teams`-derived names in the wanted set, so the dry-run matches a
+   *  topology-aware reconcile (a grouped team's old window is correctly
+   *  planned as a prune). Absent → legacy teams-derived set. */
+  viewerNames?: ReadonlyArray<string>;
   /** ADR-063 ergonomic fix interplay (t-ab8df0b4): when set, the live
    *  reconcile body skips BOTH the superdoctor-relocation path AND the
    *  orphan-prune pass — so the dry-run gate must too, or the test/CI
@@ -2023,8 +2365,17 @@ interface RefuseDestructiveOpts {
  *      sweep.
  */
 async function refusePlannedDestructiveOps(opts: RefuseDestructiveOpts): Promise<void> {
-  const { cockpitTmux, sessionName, teams, wantMedic, yes, logger, operatorWindows, onlyTeam } =
-    opts;
+  const {
+    cockpitTmux,
+    sessionName,
+    teams,
+    wantMedic,
+    yes,
+    logger,
+    operatorWindows,
+    onlyTeam,
+    viewerNames,
+  } = opts;
   // Per-team (onlyTeam) mode is purely additive in the live body — no
   // medic relocation, no orphan-prune. Skip the dry-run entirely
   // rather than report "destructive" ops that the live path will never
@@ -2076,7 +2427,7 @@ async function refusePlannedDestructiveOps(opts: RefuseDestructiveOpts): Promise
     "_superdriver",
     ...(wantMedic ? ["_medic"] : []),
     ...operatorWindows.map((w) => w.name),
-    ...teams.map((t) => t.name),
+    ...(viewerNames ?? teams.map((t) => t.name)),
   ]);
   for (const w of windows) {
     if (wanted.has(w.name)) continue;

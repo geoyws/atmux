@@ -5,7 +5,13 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createTmux, type TmuxNamespace } from "../../../src/abstractions/tmux.ts";
+import { createTmux, type TmuxConfig, type TmuxNamespace } from "../../../src/abstractions/tmux.ts";
+import {
+  buildGroupTopology,
+  enabledTeams,
+  groupSocketPath,
+} from "../../../src/core/cockpit.ts";
+import type { Cockpit as CockpitShape } from "../../../src/schema/cockpit.ts";
 import type { Logger } from "../../../src/core/tui.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
 import type { CockpitTeam } from "../../../src/schema/cockpit.ts";
@@ -26,7 +32,9 @@ import {
   type ParsedCockpitArgs,
   parseCockpitArgs,
   type ResolveTeamWindowDeps,
+  buildGroupWindowCommand,
   reconcileCockpitSession,
+  reconcileGroupServers,
   resolveTeamWindowMode,
 } from "../../../src/verbs/cockpit.ts";
 
@@ -3194,5 +3202,408 @@ describe("cockpitAttach — isolated (stubbed tmux + temp cockpit.json)", () => 
         tmuxFactory: () => stubTmux({ sessionExists: false }),
       }),
     ).rejects.toBeInstanceOf(ConfigError);
+  });
+});
+
+// ---------- e-419553c6: group servers — true containment (2026-08-28) ----------
+//
+// Behavioural tests against REAL scratch tmux servers. Group sockets are
+// name-derived (`/tmp/atmux-grp-<name>/sock`), so every test uses a
+// process-unique group/team name and registers the socket + dir in the
+// fixture-survivor registry above — the same c-4698c603 defense the
+// spinTmux fixtures get.
+
+/** Process-unique suffix so parallel/aborted runs never collide on the
+ *  name-derived group sockets. */
+const GRP_SUFFIX = `${process.pid.toString(36)}${Date.now().toString(36).slice(-4)}`;
+
+/** Register a group's name-derived socket + dir for teardown, and hand
+ *  back a namespace pinned to it. */
+function trackGroupServer(name: string): TmuxNamespace {
+  registerFixtureExitHook();
+  const sock = groupSocketPath(name);
+  activeFixtureSockets.add(sock);
+  activeFixtureDirs.add(sock.slice(0, sock.length - "/sock".length));
+  return createTmux({ socketPath: sock, configFile: "/dev/null" });
+}
+
+/** Factory that pins every group server to /dev/null tmux config (CI
+ *  runners must not inherit the repo template's option baseline). */
+const grpFactory = (cfg: TmuxConfig): TmuxNamespace =>
+  createTmux({ ...cfg, configFile: "/dev/null" } as TmuxConfig);
+
+/** Deps forcing every team window into `session-down` mode: the
+ *  retry-loop keeps the pane alive (macOS `sleep infinity` — the
+ *  `no-driver-config` placeholder — exits immediately and tmux reaps
+ *  the window, which would read as a reconcile bug). */
+const groupTestDeps: ResolveTeamWindowDeps = {
+  loadTeam: async () => ({ driverSession: {} }) as unknown as Team,
+  resolveCageSocket: async (teamName: string) => `/tmp/atmux-${teamName}/sock`,
+};
+
+/** Minimal cockpit shape wrapper for buildGroupTopology in these tests. */
+function topoShape(sessions: unknown[]): CockpitShape {
+  return { schemaVersion: 1, cockpitSession: "atx", sessions, windows: [] } as unknown as CockpitShape;
+}
+
+describe("reconcileGroupServers (e-419553c6)", () => {
+  test("creates one server per enabled group, one viewer window per child team, idempotent", async () => {
+    const g = `wng-a-${GRP_SUFFIX}`;
+    const t1 = `wnt-a1-${GRP_SUFFIX}`;
+    const t2 = `wnt-a2-${GRP_SUFFIX}`;
+    const gTmux = trackGroupServer(g);
+    const { logger, logs } = makeLogger();
+    const topo = buildGroupTopology(
+      topoShape([
+        {
+          type: "group",
+          name: g,
+          enabled: true,
+          sessions: [
+            { type: "team", name: t1, root: "/nonexistent/a1", enabled: true, sessions: [] },
+            { type: "team", name: t2, root: "/nonexistent/a2", enabled: true, sessions: [] },
+          ],
+        },
+      ]),
+    );
+    try {
+      await reconcileGroupServers(grpFactory, topo, logger, { yes: true, deps: groupTestDeps });
+      expect(await gTmux.session.hasSession(`=${g}`)).toBe(true);
+      const first = (await gTmux.window.listWindows(g))
+        .slice()
+        .sort((a, b) => a.index - b.index)
+        .map((w) => `${w.index}:${w.name}`);
+      expect(first.map((x) => x.split(":")[1])).toEqual([t1, t2]);
+      // Second run — all no-ops.
+      await reconcileGroupServers(grpFactory, topo, logger, { yes: true, deps: groupTestDeps });
+      const second = (await gTmux.window.listWindows(g))
+        .slice()
+        .sort((a, b) => a.index - b.index)
+        .map((w) => `${w.index}:${w.name}`);
+      expect(second).toEqual(first);
+      expect(logs.some((l) => l.includes(`window '${t1}' already present`))).toBe(true);
+    } finally {
+      try {
+        await gTmux.server.killServer();
+      } catch {}
+    }
+  });
+
+  test("embed wiring: the team window attaches a client to the live cage; killing the group server leaves the cage alive", async () => {
+    const g = `wng-b-${GRP_SUFFIX}`;
+    const team = `wnt-b1-${GRP_SUFFIX}`;
+    const gTmux = trackGroupServer(g);
+    const { logger } = makeLogger();
+    // Real cage on the per-team socket convention.
+    const cageRoot = await mkdtemp(join(tmpdir(), "wnest-cage-"));
+    activeFixtureDirs.add(cageRoot);
+    const uid = process.getuid?.() ?? 0;
+    const cageSockDir = join(cageRoot, ".atmux", "tmux", `tmux-${uid}`);
+    await mkdir(cageSockDir, { recursive: true });
+    const cageSock = join(cageSockDir, "default");
+    activeFixtureSockets.add(cageSock);
+    const cageTmux = createTmux({ socketPath: cageSock, configFile: "/dev/null" });
+    try {
+      await cageTmux.session.newSession({
+        name: team,
+        detached: true,
+        windowName: "driver",
+        shellCommand: "sleep 120",
+      });
+      const cagePidBefore = (
+        await cageTmux.pane.displayMessage({ target: `${team}:driver`, format: "#{pane_pid}", print: true })
+      ).trim();
+      const topo = buildGroupTopology(
+        topoShape([
+          { type: "group", name: g, enabled: true, sessions: [{ type: "team", name: team, root: cageRoot, enabled: true, sessions: [] }] },
+        ]),
+      );
+      // Default deps: loadTeam is injected (no team.json in the scratch
+      // root) but socket resolution runs for real — the per-team socket
+      // exists, so the window resolves `attach` mode and the retry loop
+      // reaches the live cage.
+      await reconcileGroupServers(grpFactory, topo, logger, {
+        yes: true,
+        deps: { loadTeam: groupTestDeps.loadTeam as NonNullable<ResolveTeamWindowDeps["loadTeam"]> },
+      });
+      expect(await gTmux.session.hasSession(`=${g}`)).toBe(true);
+      // The group window's retry loop should attach a client to the cage.
+      const deadline = Date.now() + 15_000;
+      let clients = "";
+      while (Date.now() < deadline) {
+        const probe = Bun.spawnSync(["tmux", "-S", cageSock, "list-clients"]);
+        clients = probe.stdout.toString().trim();
+        if (clients.length > 0) break;
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      expect(clients.length).toBeGreaterThan(0);
+      // Kill the group server — the cage must survive, same pane PID.
+      await gTmux.server.killServer();
+      expect(await cageTmux.session.hasSession(`=${team}`)).toBe(true);
+      const cagePidAfter = (
+        await cageTmux.pane.displayMessage({ target: `${team}:driver`, format: "#{pane_pid}", print: true })
+      ).trim();
+      expect(cagePidAfter).toBe(cagePidBefore);
+    } finally {
+      try {
+        await gTmux.server.killServer();
+      } catch {}
+      try {
+        await cageTmux.server.killServer();
+      } catch {}
+      await rm(cageRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("prune: a team leaving the group is refused without yes, applied with yes", async () => {
+    const g = `wng-c-${GRP_SUFFIX}`;
+    const t1 = `wnt-c1-${GRP_SUFFIX}`;
+    const t2 = `wnt-c2-${GRP_SUFFIX}`;
+    const gTmux = trackGroupServer(g);
+    const { logger } = makeLogger();
+    const both = buildGroupTopology(
+      topoShape([
+        {
+          type: "group",
+          name: g,
+          enabled: true,
+          sessions: [
+            { type: "team", name: t1, root: "/nonexistent/c1", enabled: true, sessions: [] },
+            { type: "team", name: t2, root: "/nonexistent/c2", enabled: true, sessions: [] },
+          ],
+        },
+      ]),
+    );
+    const onlyFirst = buildGroupTopology(
+      topoShape([
+        { type: "group", name: g, enabled: true, sessions: [{ type: "team", name: t1, root: "/nonexistent/c1", enabled: true, sessions: [] }] },
+      ]),
+    );
+    try {
+      await reconcileGroupServers(grpFactory, both, logger, { yes: true, deps: groupTestDeps });
+      // t2 left the group — refuse without yes, nothing mutated.
+      await expect(
+        reconcileGroupServers(grpFactory, onlyFirst, logger, { yes: false, deps: groupTestDeps }),
+      ).rejects.toBeInstanceOf(UsageError);
+      let names = (await gTmux.window.listWindows(g)).map((w) => w.name);
+      expect(names).toContain(t2);
+      // With yes — pruned; t1 survives.
+      await reconcileGroupServers(grpFactory, onlyFirst, logger, { yes: true, deps: groupTestDeps });
+      names = (await gTmux.window.listWindows(g)).map((w) => w.name);
+      expect(names).toContain(t1);
+      expect(names).not.toContain(t2);
+      expect(await gTmux.session.hasSession(`=${g}`)).toBe(true);
+    } finally {
+      try {
+        await gTmux.server.killServer();
+      } catch {}
+    }
+  });
+
+  test("prefix per level: top-level group server binds F2, nested group server F3", async () => {
+    const outer = `wng-d-${GRP_SUFFIX}`;
+    const inner = `wng-e-${GRP_SUFFIX}`;
+    const t = `wnt-d1-${GRP_SUFFIX}`;
+    const outerTmux = trackGroupServer(outer);
+    const innerTmux = trackGroupServer(inner);
+    const { logger } = makeLogger();
+    const topo = buildGroupTopology(
+      topoShape([
+        {
+          type: "group",
+          name: outer,
+          enabled: true,
+          sessions: [
+            {
+              type: "group",
+              name: inner,
+              enabled: true,
+              sessions: [{ type: "team", name: t, root: "/nonexistent/d1", enabled: true, sessions: [] }],
+            },
+          ],
+        },
+      ]),
+    );
+    try {
+      await reconcileGroupServers(grpFactory, topo, logger, { yes: true, deps: groupTestDeps });
+      const prefixOf = (name: string): string =>
+        Bun.spawnSync(["tmux", "-S", groupSocketPath(name), "show-options", "-g", "prefix"])
+          .stdout.toString()
+          .trim();
+      expect(prefixOf(outer)).toBe("prefix F2");
+      expect(prefixOf(inner)).toBe("prefix F3");
+      // The outer server's window for the inner group runs the group
+      // attach loop (containment chain, not a flat sibling).
+      const outerWindows = (await outerTmux.window.listWindows(outer)).map((w) => w.name);
+      expect(outerWindows).toEqual([inner]);
+    } finally {
+      try {
+        await outerTmux.server.killServer();
+      } catch {}
+      try {
+        await innerTmux.server.killServer();
+      } catch {}
+    }
+  });
+});
+
+describe("buildGroupWindowCommand", () => {
+  test("attach retry-loop against the group socket, exact-match + single-quoted target", () => {
+    const cmd = buildGroupWindowCommand("geoyws");
+    expect(cmd).toContain("tmux -S /tmp/atmux-grp-geoyws/sock attach -t '=geoyws'");
+    expect(cmd).toContain("while true");
+    expect(cmd).toContain("sleep 1");
+    expect(cmd).toContain("2>/dev/null");
+  });
+});
+
+describe("reconcileCockpitSession — topology (grouped teams leave the cockpit)", () => {
+  const shapeFor = (g: string, grouped: string, solo: string): CockpitShape =>
+    topoShape([
+      { type: "group", name: g, enabled: true, sessions: [{ type: "team", name: grouped, root: "/nonexistent/g1", enabled: true, sessions: [] }] },
+      { type: "team", name: solo, root: "/nonexistent/s1", enabled: true, sessions: [] },
+    ]);
+
+  test("fleet: one window per top-level group + direct embeds for ungrouped teams; grouped teams pruned; idempotent", async () => {
+    const g = `wng-f-${GRP_SUFFIX}`;
+    const grouped = `wnt-f1-${GRP_SUFFIX}`;
+    const solo = `wnt-f2-${GRP_SUFFIX}`;
+    const fx = await spinTmux("cockpit-group-topology");
+    try {
+      const { logger } = makeLogger();
+      const shape = shapeFor(g, grouped, solo);
+      const teams = enabledTeams(shape) as unknown as CockpitTeam[];
+      const topology = buildGroupTopology(shape);
+      // Simulate the pre-group cockpit: the grouped team already has a
+      // flat sibling window that this reconcile must replace.
+      await fx.tmux.session.newSession({ name: "s", detached: true, windowName: "_superdriver" });
+      await fx.tmux.window.newWindow({
+        sessionName: "s",
+        name: grouped,
+        detached: true,
+        shellCommand: "sleep 120",
+      });
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger, groupTestDeps, undefined, true, {
+        topology,
+      });
+      const names = (await fx.tmux.window.listWindows("s"))
+        .slice()
+        .sort((a, b) => a.index - b.index)
+        .map((w) => w.name);
+      expect(names).toEqual(["_superdriver", g, solo]);
+      // Idempotent second pass, no --yes needed (no destructive ops left).
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger, groupTestDeps, undefined, false, {
+        topology,
+      });
+      const second = (await fx.tmux.window.listWindows("s"))
+        .slice()
+        .sort((a, b) => a.index - b.index)
+        .map((w) => w.name);
+      expect(second).toEqual(names);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("fleet: replacing a grouped team's flat window is refused without --yes (destructive gate)", async () => {
+    const g = `wng-g-${GRP_SUFFIX}`;
+    const grouped = `wnt-g1-${GRP_SUFFIX}`;
+    const solo = `wnt-g2-${GRP_SUFFIX}`;
+    const fx = await spinTmux("cockpit-group-gate");
+    try {
+      const { logger } = makeLogger();
+      const shape = shapeFor(g, grouped, solo);
+      const teams = enabledTeams(shape) as unknown as CockpitTeam[];
+      const topology = buildGroupTopology(shape);
+      await fx.tmux.session.newSession({ name: "s", detached: true, windowName: "_superdriver" });
+      await fx.tmux.window.newWindow({
+        sessionName: "s",
+        name: grouped,
+        detached: true,
+        shellCommand: "sleep 120",
+      });
+      await expect(
+        reconcileCockpitSession(fx.tmux, "s", teams, logger, groupTestDeps, undefined, false, {
+          topology,
+        }),
+      ).rejects.toBeInstanceOf(UsageError);
+      // Nothing pruned.
+      const names = (await fx.tmux.window.listWindows("s")).map((w) => w.name);
+      expect(names).toContain(grouped);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("onlyTeam: a grouped team routes its cockpit slot to the TOP-LEVEL ancestor group, additively", async () => {
+    const g = `wng-h-${GRP_SUFFIX}`;
+    const grouped = `wnt-h1-${GRP_SUFFIX}`;
+    const solo = `wnt-h2-${GRP_SUFFIX}`;
+    const fx = await spinTmux("cockpit-group-onlyteam");
+    try {
+      const { logger } = makeLogger();
+      const shape = shapeFor(g, grouped, solo);
+      const teams = enabledTeams(shape) as unknown as CockpitTeam[];
+      const topology = buildGroupTopology(shape);
+      const matched = teams.find((t) => t.name === grouped) as CockpitTeam;
+      await reconcileCockpitSession(
+        fx.tmux,
+        "s",
+        [matched],
+        logger,
+        groupTestDeps,
+        undefined,
+        false,
+        { onlyTeam: grouped, topology },
+      );
+      const names = (await fx.tmux.window.listWindows("s")).map((w) => w.name);
+      expect(names).toContain("_superdriver");
+      expect(names).toContain(g); // the group's window, NOT the team's
+      expect(names).not.toContain(grouped);
+      // Additive: re-run is a no-op ("already present").
+      await reconcileCockpitSession(
+        fx.tmux,
+        "s",
+        [matched],
+        logger,
+        groupTestDeps,
+        undefined,
+        false,
+        { onlyTeam: grouped, topology },
+      );
+      expect((await fx.tmux.window.listWindows("s")).map((w) => w.name).sort()).toEqual(
+        names.slice().sort(),
+      );
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("onlyTeam without topology keeps the legacy direct embed (ungrouped path still lives)", async () => {
+    const solo = `wnt-i1-${GRP_SUFFIX}`;
+    const fx = await spinTmux("cockpit-group-legacy");
+    try {
+      const { logger } = makeLogger();
+      const team = { name: solo, root: "/nonexistent/i1", enabled: true } as CockpitTeam;
+      await reconcileCockpitSession(fx.tmux, "s", [team], logger, groupTestDeps, undefined, false, {
+        onlyTeam: solo,
+      });
+      const names = (await fx.tmux.window.listWindows("s")).map((w) => w.name);
+      expect(names).toContain(solo);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
   });
 });

@@ -376,7 +376,7 @@ Each nesting level is its own tmux server on its own socket, and each gets its o
 
 ⚠ **A team cage moved from `F2` to `F3`, and an epic-team from `F3` to `F4`, when the group tier was inserted (2026-08-27).** If you have not run a fleet with a group tier, your cages are still at the pre-shift rungs.
 
-⚠ **The shift is not in effect until the operator dotfiles are updated.** atmux resolves the prefix from tree depth and needs no change, but the canonical enforcement is a socket-pattern `if-shell` chain in the operator's dotfiles (`_dotfiles/tmux/.tmux.conf` lines 148-184 and `_dotfiles/atmux/tmux.conf.local` lines 16-39), which assigns prefixes by matching the socket path against three hardcoded branches. Both files must change together — `tmux.conf.local` re-applies the prefix after the personal config is sourced, so editing only `.tmux.conf` is a silent no-op.
+**The shift is enforced by atmux itself since 2026-08-28** (ADR-089's true-containment group-tier note): every enabled `type: "group"` backs a real tmux server on `/tmp/atmux-grp-<group>/sock`, and `atmux cockpit reconcile` applies `resolvePrefix(level + 2, …)` to each group server AND each team cage — a top-level group binds `F2`, its teams `F3`, an ungrouped top-level team stays `F2`. The earlier caveat that the shift waited on the operator dotfiles' socket-pattern `if-shell` chain (`_dotfiles/tmux/.tmux.conf` + `_dotfiles/atmux/tmux.conf.local`) is superseded for prefix ASSIGNMENT; those dotfiles chains still exist and, matching on socket path, can re-clobber a reconcile-applied prefix — if a cage's chord is wrong after a reconcile, check the dotfiles chain second (depth first, per §Depth beyond the chain).
 
 ### Override the chain
 
