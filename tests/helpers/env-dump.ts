@@ -21,10 +21,6 @@
 //      whose NAME looks like a credential, redacts EVERY sighting of a
 //      name it sees more than once, and refuses to emit an implausibly
 //      long value — the seatbelt, not the brake.
-//   3. `tests/regression/no-unfiltered-env-dump.test.ts` fails the suite
-//      if a file under one of the scanned roots reintroduces a known raw
-//      form. It is a tripwire for enumerated shapes, NOT a proof of
-//      absence — see its header.
 //
 // Route every environment probe through here. If you need a variable the
 // allowlist does not carry, add it to the `vars` argument at the call
@@ -75,11 +71,9 @@ export const ENV_DUMP_ALLOWLIST: ReadonlyArray<string> = Object.freeze([
  * The most names a single probe may collect.
  *
  * Without a cap the sanctioned helper would happily build a
- * whole-environment dump from a wide enough `vars` — and the resulting
- * call site would be invisible to the ADR-282 source guard, because it
- * would be spelled as an ordinary `dumpEnvCommand(...)` call. A probe
- * that genuinely needs more than this many variables is not a probe; it
- * is the dump this module exists to prevent.
+ * whole-environment dump from a wide enough `vars`. A probe that
+ * genuinely needs more than this many variables is not a probe; it is
+ * the dump this module exists to prevent.
  */
 export const ENV_DUMP_MAX_VARS = 8;
 

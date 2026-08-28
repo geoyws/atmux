@@ -1,10 +1,9 @@
 // Unit tests for tests/helpers/env-dump.ts (ADR-282).
 //
 // This helper is the repo's only sanctioned way to read a subprocess's
-// environment, and `tests/regression/no-unfiltered-env-dump.test.ts` points
-// every future author at it. If it silently stopped filtering, the guard
-// would be advertising the leak it exists to prevent — so the filtering,
-// the redaction and the input validation are each pinned here.
+// environment. If it silently stopped filtering, it would be advertising
+// the leak it exists to prevent — so the filtering, the redaction and the
+// input validation are each pinned here.
 
 import { describe, expect, test } from "bun:test";
 import {

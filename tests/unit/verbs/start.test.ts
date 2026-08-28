@@ -643,32 +643,6 @@ describe("start — incremental restart skips existing windows", () => {
 // removed per ADR-266 §D2 — see the legacy-fields regression test.)
 
 describe("start — ADR-239 §A1 drivers[] topology", () => {
-  /**
-   * `#{pane_current_command}` for a freshly created pane, settled.
-   *
-   * A bare read immediately after `runStart` is a race: tmux reports the
-   * pane's foreground process at that instant, and a shell that has just
-   * been exec'd can still be reporting its launcher. The two assertions
-   * below read it with no settle, and under load that showed up as a
-   * genuine flake — reproduced 2026-08-28 at 1 failure in 4 isolated runs
-   * of this file while the full suite ran alongside it.
-   *
-   * This polls for the expected value and returns whatever it last saw,
-   * so a failure still prints the real command rather than a timeout. It
-   * does NOT weaken the assertion: a driver that actually launched an
-   * agent harness never becomes `zsh`, so it still fails — it just fails
-   * for the right reason instead of for scheduler noise.
-   */
-  async function settledPaneCommand(target: string, want: string): Promise<string> {
-    let seen = "";
-    for (let i = 0; i < 40; i++) {
-      seen = await env.tmux.pane.displayMessage({ target, format: "#{pane_current_command}" });
-      if (seen === want) return seen;
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    return seen;
-  }
-
   test("nullable driver tui starts the driver in zsh without an agent harness", async () => {
     await writeTeamJson({
       members: [],
@@ -680,7 +654,12 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
     const session = env.team;
     const wins = await env.tmux.window.listWindows(session);
     expect(wins.map((w) => w.name)).toEqual(["driver"]);
-    expect(await settledPaneCommand(`${session}:driver`, "zsh")).toBe("zsh");
+    expect(
+      await env.tmux.pane.displayMessage({
+        target: `${session}:driver`,
+        format: "#{pane_current_command}",
+      }),
+    ).toBe("zsh");
     expect(
       env.logs.some(
         (l) => l.kind === "ok" && l.msg.includes("driver at window 1") && l.msg.includes("zsh"),
@@ -697,7 +676,12 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
     expect(await runStart([])).toBe(0);
 
     const session = env.team;
-    expect(await settledPaneCommand(`${session}:driver`, "zsh")).toBe("zsh");
+    expect(
+      await env.tmux.pane.displayMessage({
+        target: `${session}:driver`,
+        format: "#{pane_current_command}",
+      }),
+    ).toBe("zsh");
   });
 
   test("configured: driver is window 1 in declarative order, no __home placeholder", async () => {

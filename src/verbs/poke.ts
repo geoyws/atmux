@@ -1681,10 +1681,8 @@ async function runBudgetTickCheck(
  * so no pane-state classifier is needed — there's nothing in the pane
  * to preempt the paste.
  *
- * Exported for testing only. ADR-281 §D3 names this as one of the seven
- * sites carrying the tmux child-env policy, and until 2026-08-28 nothing
- * checked that: a reviewer deleted the `unsetEnv` here and the
- * 10,404-test suite came back byte-identical. Reaching it through
+ * Exported for testing only. ADR-281 §D3 names this as one of the sites
+ * carrying the tmux child-env policy. Reaching it through
  * `runBudgetTickCheck` -> `runBudgetCheck` needs a whole fallback-enabled
  * team fixture to assert one spawn option, so the seam is the export.
  * Production callers still go through `deps.sendCageBrief` below.

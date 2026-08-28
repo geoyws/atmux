@@ -23,8 +23,10 @@
 // ADR-281 (2026-08-28) adds the leg those tests could not have. Every
 // ADR-277 leg passes `-f CONF_PATH`, so together they can only prove the
 // conf is CORRECT — never that it ARRIVED. The final describe drives
-// atmux's own `createTmux` with no conf at all and asserts the pane is
-// clean anyway, because the scrub now also happens at the `spawn()` seam.
+// atmux's own `createTmux` with `-f /dev/null` — an explicitly EMPTY
+// conf, which is what rules the conf out as the reason — and asserts the
+// pane is clean anyway, because the scrub now also happens at the
+// `spawn()` seam.
 //
 // Probe safety (ADR-282, 2026-08-28). Every probe below collects ONLY the
 // four names in `ENV_DUMP_ALLOWLIST`, filtered inside the pane by
@@ -33,8 +35,7 @@
 // password and webhook URL in the operator's environment into the test
 // log. Filtering on the way IN was the first repair; not collecting it at
 // all is the structural one. Do not reintroduce a bare redirect of the
-// whole environment — tests/regression/no-unfiltered-env-dump.test.ts
-// fails the suite if you do.
+// whole environment.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
