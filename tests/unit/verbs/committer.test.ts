@@ -21,7 +21,6 @@ import {
   parseCommitterArgs,
   recordingQueueMergeAttempt,
 } from "../../../src/verbs/committer.ts";
-import { orchd } from "../../../src/verbs/orchd.ts";
 
 // ---------- parseCommitterArgs ----------
 
@@ -56,19 +55,20 @@ describe("parseCommitterArgs", () => {
     expect(() => parseCommitterArgs(["--sweep", "extra"])).toThrow(UsageError);
   });
 
-  test("--drain alias removed per ADR-266 §D2 → UsageError naming orchd --drain", () => {
-    expect(() => parseCommitterArgs(["--drain"])).toThrow(UsageError);
-    expect(() => parseCommitterArgs(["--drain"])).toThrow(/ADR-266.*orchd --drain/);
+  // ADR-276: with the orchd verb retired, --drain / --daemon returned
+  // to committer as its own canonical sub-verbs (the ADR-266 §D2 alias
+  // expiry pointed at `atmux orchd`, which no longer exists).
+  test("--drain parses as drain sub-verb (re-homed per ADR-276)", () => {
+    expect(parseCommitterArgs(["--drain"])).toEqual({ subverb: "drain" });
   });
-  test("'drain' bare form likewise rejected", () => {
-    expect(() => parseCommitterArgs(["drain"])).toThrow(UsageError);
+  test("'drain' bare form parses the same", () => {
+    expect(parseCommitterArgs(["drain"])).toEqual({ subverb: "drain" });
   });
-  test("--daemon alias removed per ADR-266 §D2 → UsageError naming orchd --start", () => {
-    expect(() => parseCommitterArgs(["--daemon"])).toThrow(UsageError);
-    expect(() => parseCommitterArgs(["--daemon"])).toThrow(/ADR-266.*orchd --start/);
+  test("--daemon parses as daemon sub-verb (re-homed per ADR-276)", () => {
+    expect(parseCommitterArgs(["--daemon"])).toEqual({ subverb: "daemon" });
   });
-  test("'daemon' bare form likewise rejected", () => {
-    expect(() => parseCommitterArgs(["daemon"])).toThrow(UsageError);
+  test("'daemon' bare form parses the same", () => {
+    expect(parseCommitterArgs(["daemon"])).toEqual({ subverb: "daemon" });
   });
   test("--once / --max-events still parse alongside --sweep (harmless no-op knobs)", () => {
     expect(parseCommitterArgs(["--sweep", "--once", "--max-events", "5"])).toEqual({
@@ -356,12 +356,12 @@ describe("committer() top-level dispatch", () => {
   });
 });
 
-// ---------- orchd --drain / --start (ADR-202/203 event-driven) ----------
+// ---------- committer --drain / --daemon (ADR-202/203 event-driven) ----------
 // These exercise the committerDrainVerb / committerDaemonVerb bodies via
-// the canonical orchd surface; the `committer --drain` / `--daemon`
-// aliases were removed per ADR-266 §D2.
+// the committer surface — the canonical home again since ADR-276 retired
+// the orchd verb that had owned `--drain` / `--start` (ADR-224/266).
 
-describe("orchd --drain / --start integration (committer bodies)", () => {
+describe("committer --drain / --daemon integration (event-driven bodies)", () => {
   let scratch: string;
   let atmuxDir: string;
   beforeEach(async () => {
@@ -395,7 +395,7 @@ describe("orchd --drain / --start integration (committer bodies)", () => {
       warn: () => {},
       err: () => {},
     };
-    const rc = await orchd(["--drain", "--team-dir", scratch], {
+    const rc = await committer(["--drain", "--team-dir", scratch], {
       logger,
       git: async () => fakeSpawnResult("main\n", 0),
     });
@@ -407,15 +407,15 @@ describe("orchd --drain / --start integration (committer bodies)", () => {
     ).toBe(true);
   });
 
-  // ADR-224 §D6 + ADR-226/227/229 wire-up (driver P0 step 3/5
-  // 2026-05-23) — `--drain` iterates `ORCHD_SUBSCRIPTIONS` so the
-  // single dispatch path covers both the hardcoded consumers
-  // (gitter / lane-router) AND the registry-sourced handlers.
-  test("--drain populates ORCHD_SUBSCRIPTIONS via bootstrapOrchd and emits orchd-* totals", async () => {
+  // ADR-224 §D6 (slimmed by ADR-276) — `--drain` iterates
+  // `EVENT_SUBSCRIPTIONS` so the single dispatch path covers both the
+  // hardcoded consumers (gitter / lane-router) AND the registry-sourced
+  // handlers.
+  test("--drain populates EVENT_SUBSCRIPTIONS via bootstrapEventSubscriptions and emits subs-* totals", async () => {
     // Clear the module-level registry so this test sees the post-drain
     // population starting from a known-empty baseline.
-    const { ORCHD_SUBSCRIPTIONS } = await import("../../../src/core/orchd-registry.ts");
-    ORCHD_SUBSCRIPTIONS.length = 0;
+    const { EVENT_SUBSCRIPTIONS } = await import("../../../src/core/event-subscriptions.ts");
+    EVENT_SUBSCRIPTIONS.length = 0;
 
     const logs: string[] = [];
     const logger = {
@@ -424,53 +424,59 @@ describe("orchd --drain / --start integration (committer bodies)", () => {
       warn: () => {},
       err: () => {},
     };
-    const rc = await orchd(["--drain", "--team-dir", scratch], {
+    const rc = await committer(["--drain", "--team-dir", scratch], {
       logger,
       git: async () => fakeSpawnResult("main\n", 0),
     });
     expect(rc).toBe(0);
 
-    // The drain log summary MUST surface orchd-* stats — drift detector
-    // for step 3/5's contract. The canonical set was 8: parent's
-    // auto-merge / auto-dissolve / auto-push (ADR-226/227/229), the
-    // ADR-231 §D2/§D6 spawn + solo-worker-dissolve trio, ADR-214 §D2's
-    // complaint consumer and ADR-212 / e-cc3728bf's rotation consumer.
-    //
-    // ADR-280 stage 3 removed the ADR-231 trio — `spawn:on-ready` and
-    // `spawn:on-unblocked` shelled `atmux team spawn-epic` and
-    // `dissolve-solo-worker` shelled `atmux team dissolve-worker`, all
-    // three verbs deleted by stages 2/3 — so the canonical set is 5. The
-    // shape of the assertion is UNCHANGED: an exact count and an exact
-    // sorted ID list, so a consumer silently appearing or disappearing
-    // still fails here. Nothing is weakened to accommodate the removal.
+    // The drain log summary MUST surface subs-* stats — drift detector
+    // for the drain's registry contract. History of the canonical set:
+    // 8 (ADR-226/227/229 auto-merge/dissolve/push + the ADR-231 spawn
+    // trio + ADR-214 complaint + ADR-212 rotation) → 5 after ADR-280
+    // stage 3 removed the spawn trio → 4 after ADR-276: auto-merge +
+    // auto-dissolve (epic machinery, ADR-276 §Consequences), rotation
+    // (its only producer, the pane-statusline context scan, died with
+    // orchd) AND auto-push (nothing emits `epic.merged` once the
+    // auto-merge handler — its only emitter — is gone) are deleted,
+    // while the ADR-247 lead-stall watchdog trio — previously wired
+    // only in the retired orchd verb's handle-one path — is now wired
+    // by the drain itself. The shape of the assertion is UNCHANGED: an
+    // exact count and an exact sorted ID list, so a consumer silently
+    // appearing or disappearing still fails here.
     const summary = logs.find((l) => l.includes("committer --drain: team="));
     expect(summary).toBeDefined();
-    expect(summary).toContain("orchd-subs=5");
-    expect(summary).toContain("orchd-processed=0");
-    expect(summary).toContain("orchd-errors=0");
+    expect(summary).toContain("subs=4");
+    expect(summary).toContain("subs-processed=0");
+    expect(summary).toContain("subs-errors=0");
 
-    // Registry MUST have been populated with the five canonical consumer
+    // Registry MUST have been populated with the four canonical consumer
     // IDs (idempotency means a sibling call wouldn't double-push these).
-    const consumerIds = ORCHD_SUBSCRIPTIONS.map((s) => s.consumerId).sort();
+    // Consumer-id STRINGS keep their historical values — they are
+    // durable subscriber_offsets keys (see event-subscriptions.ts).
+    const consumerIds = EVENT_SUBSCRIPTIONS.map((s) => s.consumerId).sort();
     expect(consumerIds).toEqual([
       "atmux:complaint-consumer",
-      "atmux:orchd:auto-dissolve",
-      "atmux:orchd:auto-merge",
-      "atmux:orchd:auto-push",
-      "atmux:rotation-consumer",
+      "atmux:lead-stall-watchdog:story-ready",
+      "atmux:lead-stall-watchdog:story-unclaimed",
+      "atmux:lead-stall-watchdog:task-unclaimed",
     ]);
-    // The three retired consumers are gone from the REGISTRY, not merely
+    // Retired consumers are gone from the REGISTRY, not merely
     // unexported — a stale row here would keep Honker draining a topic
     // into a handler that no longer exists.
+    expect(consumerIds).not.toContain("atmux:orchd:auto-push");
+    expect(consumerIds).not.toContain("atmux:orchd:auto-merge");
+    expect(consumerIds).not.toContain("atmux:orchd:auto-dissolve");
+    expect(consumerIds).not.toContain("atmux:rotation-consumer");
     expect(consumerIds).not.toContain("atmux:orchd:spawn:on-ready");
     expect(consumerIds).not.toContain("atmux:orchd:spawn:on-unblocked");
     expect(consumerIds).not.toContain("atmux:orchd:dissolve-solo-worker");
 
     // Cleanup so sibling tests don't see leaked registry state.
-    ORCHD_SUBSCRIPTIONS.length = 0;
+    EVENT_SUBSCRIPTIONS.length = 0;
   });
 
-  test("--start --once with empty events exits 0 cleanly", async () => {
+  test("--daemon --once with empty events exits 0 cleanly", async () => {
     const logs: string[] = [];
     const logger = {
       log: (s: string) => logs.push(s),
@@ -480,15 +486,10 @@ describe("orchd --drain / --start integration (committer bodies)", () => {
     };
     // Bound the loop with --once + --max-events 1 so the watcher exits.
     // Test fires SIGTERM after a short delay as belt-and-braces.
-    // Timer bumped 800→1500ms post-Phase 2 (ADR-231) — bootstrap now
-    // registers 6 orchd consumers (was 3), each walks an empty event
-    // table on startup; the cumulative cold-start work pushes past
-    // 800ms on slower CI nodes. 1500ms = ~250ms per consumer with
-    // headroom for the watcher's own init.
     const timer = setTimeout(() => process.emit("SIGTERM"), 1500);
     try {
-      const rc = await orchd(
-        ["--start", "--team-dir", scratch, "--once", "--max-events", "1"],
+      const rc = await committer(
+        ["--daemon", "--team-dir", scratch, "--once", "--max-events", "1"],
         {
           logger,
           git: async () => fakeSpawnResult("main\n", 0),

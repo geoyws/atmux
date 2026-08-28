@@ -111,12 +111,7 @@ import {
   bootClaudeMember,
   renderBootFailureNotice,
 } from "../core/boot-claude.ts";
-import {
-  enabledTeams,
-  loadCockpit,
-  readNestingLevel,
-  resolvePrefix,
-} from "../core/cockpit.ts";
+import { enabledTeams, loadCockpit, readNestingLevel, resolvePrefix } from "../core/cockpit.ts";
 import {
   buildWindowName,
   buildWindowNameLegacy,
@@ -139,7 +134,6 @@ import {
 } from "../core/drivers.ts";
 import { injectGoalIfActive } from "../core/goal-injection.ts";
 import { submitAfterPaste } from "../core/paste-submit.ts";
-import { maybeSpawnOrchdWindow } from "../core/orchd-window.ts";
 import { consumedManifestPath, resumeManifestPath } from "../core/soft-stop.ts";
 import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
@@ -965,33 +959,11 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   const spawnCap = resolveSpawnConcurrency(opts.spawnConcurrency, env);
   await runWithConcurrency(teammates, spawnCap, spawnOneMember);
 
-  // 8b. ADR-202 §Amendment 2026-05-22 (II) — daemon supervisor window.
-  //     When the team has a committer/gitter role AND autoMerge is
-  //     enabled AND Honker is not explicitly disabled, spawn a service
-  //     window running `atmux committer --daemon` with auto-restart.
-  //     The daemon uses the atmux-listener Rust subprocess for
-  //     kernel-blocked NOTIFY/LISTEN wake (~60ms). Cron --drain stays
-  //     installed as the safety net — if the daemon window dies and
-  //     stays dead until the next `atmux start`, the drain catches
-  //     events within 1min.
-  //
-  //     Idempotent: skipped when the supervisor window already exists
-  //     (e.g. `atmux start` re-run on an already-up team).
-  // `dir` is the `.atmux/` directory (per getAtmuxDir contract,
-  // common.ts:58 — "Resolve the .atmux/ directory path"). orchd-window
-  // expects the PROJECT ROOT (parent of .atmux/) so its supervisor's
-  // `mkdir -p .atmux/logs` + `atmux-orchd .atmux/state.db` relative
-  // paths resolve correctly. Pass dirname(dir) — orchd-window self-heals
-  // anyway via resolveCanonicalTeamRoot, but passing the right thing
-  // here avoids the heal-path log noise.
-  await maybeSpawnOrchdWindow({
-    team,
-    session,
-    teamRoot: dirname(dir),
-    tmux,
-    logger,
-    env,
-  });
+  // 8b. ADR-276 — the `__orchd__` daemon supervisor window is retired
+  //     (was ADR-202 §Amendment 2026-05-22 (II)). `atmux start` no
+  //     longer spawns any event-router service window; the one-shot
+  //     event-drain backstop survives as operator-invoked
+  //     `atmux committer --drain`.
 
   // 9. Close the `__<team>__home` placeholder if any members spawned
   //    AND non-placeholder windows now exist (lib/start.sh:288-294).

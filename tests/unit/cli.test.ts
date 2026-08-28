@@ -904,15 +904,17 @@ describe("logVerbEvent — events-log envelope", () => {
   });
 });
 
-// ---------- ADR-224 §D1 — orchd primary ----------
+// ---------- ADR-276 — orchd retired ----------
 //
-// The `atmux relayd` deprecation alias was removed per ADR-266 §D2
-// (expiry long past). Only the canonical orchd dispatch remains.
+// The verb (ADR-224 §D1; `relayd` alias removed per ADR-266 §D2) was
+// retired outright by ADR-276. It must fail LOUD with an actionable
+// error naming the ADR — never alias silently.
 
-describe("cli.main — atmux orchd (ADR-224 §D1)", () => {
-  test("'orchd' (no subverb) → exit 64 + 'atmux: orchd: no sub-verb specified' on stderr", async () => {
+describe("cli.main — atmux orchd retired (ADR-276)", () => {
+  test("'orchd' → exit 64 + retirement error naming ADR-276 and the drain backstop", async () => {
     const { exit, stderr } = await captureMain(["orchd"]);
     expect(exit).toBe(64);
-    expect(stderr).toContain("orchd: no sub-verb specified");
+    expect(stderr).toContain("retired per ADR-276");
+    expect(stderr).toContain("committer --drain");
   });
 });

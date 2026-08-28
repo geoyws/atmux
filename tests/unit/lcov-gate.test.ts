@@ -318,7 +318,7 @@ describe("evaluateGate — completeness diff (ADR-254 / the gate blind spot)", (
   // printed "✅" + exited 0 (finding test-lcov-gate-blind-to-zero-coverage).
   test("FAILS when a tracked-universe file is absent from the lcov (0% coverage)", () => {
     const lcovPresent = [fullFile("src/core/covered.ts")];
-    const universe = ["src/core/covered.ts", "src/core/orchd-housekeep.ts"];
+    const universe = ["src/core/covered.ts", "src/core/events-prune.ts"];
     const result = evaluateGate(lcovPresent, {
       threshold: 1.0,
       ignorePatterns: [],
@@ -328,12 +328,12 @@ describe("evaluateGate — completeness diff (ADR-254 / the gate blind spot)", (
     // If the feature were broken, this would be `true` (the old blind
     // spot) — so the assertion bottom-up answer is NO.
     expect(result.ok).toBe(false);
-    expect(result.missing).toEqual(["src/core/orchd-housekeep.ts"]);
+    expect(result.missing).toEqual(["src/core/events-prune.ts"]);
     // The covered file is NOT flagged missing.
     expect(result.missing).not.toContain("src/core/covered.ts");
     // The missing filename surfaces in the formatted report.
     const report = formatGateReport(result);
-    expect(report).toContain("src/core/orchd-housekeep.ts");
+    expect(report).toContain("src/core/events-prune.ts");
     expect(report).toContain("0%");
   });
 
@@ -423,8 +423,8 @@ describe("enumerateTrackedSources (scans the real worktree src/ tree)", () => {
     const ignore = ["src/types/generated/**", "**/index.ts", "tests/**", "**/*.fixtures.ts"];
     const tracked = enumerateTrackedSources(repoRoot, ignore);
     // Real destructive modules ADR-254 cares about must be in-universe.
-    expect(tracked).toContain("src/core/orchd-housekeep.ts");
-    expect(tracked).toContain("src/core/orchd-context-scan.ts");
+    expect(tracked).toContain("src/core/events-prune.ts");
+    expect(tracked).toContain("src/core/event-subscriptions.ts");
     // Paths are cwd-relative, POSIX, no leading slash.
     for (const p of tracked) {
       expect(p.startsWith("/")).toBe(false);
@@ -444,7 +444,7 @@ describe("enumerateTrackedSources (scans the real worktree src/ tree)", () => {
   test("empty ignore list still scans (no file excluded by patterns)", () => {
     const all = enumerateTrackedSources(repoRoot, []);
     expect(all.length).toBeGreaterThan(0);
-    expect(all).toContain("src/core/orchd-housekeep.ts");
+    expect(all).toContain("src/core/events-prune.ts");
   });
 });
 
@@ -488,7 +488,7 @@ describe("formatGateReport", () => {
     const out = formatGateReport({
       ok: false,
       failures: [],
-      missing: ["src/core/orchd-housekeep.ts", "src/core/orchd-context-scan.ts"],
+      missing: ["src/core/events-prune.ts", "src/core/event-subscriptions.ts"],
       trackedCount: 5,
       ignoredCount: 0,
     });
@@ -497,8 +497,8 @@ describe("formatGateReport", () => {
     expect(out).toContain("2 coverage breach(es)");
     // Both untested filenames must appear by name (the operator needs
     // to know WHICH file is uncovered — ADR-254).
-    expect(out).toContain("src/core/orchd-housekeep.ts");
-    expect(out).toContain("src/core/orchd-context-scan.ts");
+    expect(out).toContain("src/core/events-prune.ts");
+    expect(out).toContain("src/core/event-subscriptions.ts");
     // Explicitly labels them 0% / no-record so the breach class is
     // unambiguous vs a partial-coverage failure.
     expect(out).toContain("0%");
@@ -508,9 +508,7 @@ describe("formatGateReport", () => {
   test("red report counts BOTH partial-coverage and missing breaches", () => {
     const out = formatGateReport({
       ok: false,
-      failures: [
-        { path: "src/core/a.ts", dimension: "line", hit: 9, found: 10, pct: 0.9 },
-      ],
+      failures: [{ path: "src/core/a.ts", dimension: "line", hit: 9, found: 10, pct: 0.9 }],
       missing: ["src/core/b.ts"],
       trackedCount: 2,
       ignoredCount: 0,

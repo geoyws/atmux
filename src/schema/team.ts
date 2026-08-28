@@ -769,8 +769,13 @@ export type TeamLeadStallWatchdog = z.infer<typeof TeamLeadStallWatchdog>;
  *    the kanban via `claim`/`done`/`task move`, fan in + spawn by
  *    hand. Rationale per ADR-260: LLMs can manage their own fleet
  *    better than atmux's deterministic automation can at the moment.
- *  - `"orchd"` — pre-ADR-260 behavior: `maybeSpawnOrchdWindow` runs
- *    subject to the ADR-259 gates (autoMerge.enabled, ATMUX_HONKER).
+ *  - `"orchd"` — pre-ADR-260 behavior: the `__orchd__` daemon window
+ *    spawned subject to the ADR-259 gates. ⚠ INERT since ADR-276
+ *    retired orchd: `maybeSpawnOrchdWindow` is gone, so this mode no
+ *    longer spawns anything. The only remaining reader is issue-sync's
+ *    §D5a delivery gate. The enum value is KEPT (not failed-loud) until
+ *    that reader is redesigned — a follow-up named in ADR-276's
+ *    execution report, not silently decided here.
  *
  * `.strict()` per the sibling-block precedent (whip / autoMerge /
  * leadStallWatchdog) — a typo'd key surfaces as a refusal, not a
@@ -791,12 +796,10 @@ export type TeamOrchestration = z.infer<typeof TeamOrchestration>;
 export const DEFAULT_ORCHESTRATION_MODE = "manual" as const;
 
 /** ADR-260 §D1 read-time resolver — the single place "absent block ⇒
- *  manual" is encoded. Callers (orchd spawn gate, status renderer,
+ *  manual" is encoded. Callers (issue-sync §D5a, status renderer,
  *  briefs tooling) MUST go through this instead of reading
  *  `team.orchestration?.mode` directly so the default lives once. */
-export function resolveOrchestrationMode(
-  team: Pick<Team, "orchestration">,
-): "manual" | "orchd" {
+export function resolveOrchestrationMode(team: Pick<Team, "orchestration">): "manual" | "orchd" {
   return team.orchestration?.mode ?? DEFAULT_ORCHESTRATION_MODE;
 }
 
@@ -996,11 +999,14 @@ export type TeamAutoPush = z.infer<typeof TeamAutoPush>;
  *
  *  ⚠ **UNREAD as of ADR-280 stage 3.** Its only consumers were
  *  `core/orchd-spawn.ts` (`effectiveAutoSpawn`) and the `atmux orchd
- *  --sweep` cadence, both removed with the epic-team machinery. The
- *  block is KEPT rather than deleted because ADR-276 owns the orchd
- *  retirement and this is that ADR's surface, not stage 3's — but
- *  setting it today changes NOTHING. Read the paragraphs below as a
- *  description of what it USED to do.
+ *  --sweep` cadence, both removed with the epic-team machinery.
+ *  ADR-276's execution (2026-08-27) DEFERRED deleting this block: the
+ *  per-epic half of the autoSpawn config lives in kanban rows
+ *  (`schema/kanban.ts` + `verbs/epic.ts` flags), which is internal-
+ *  kanban surface governed by ADR-275's deletion gate — removing the
+ *  team-side block alone would leave a dangling half. Setting it today
+ *  changes NOTHING. Read the paragraphs below as a description of what
+ *  it USED to do.
  *
  *  Two sub-fields:
  *

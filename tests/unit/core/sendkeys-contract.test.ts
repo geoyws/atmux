@@ -83,13 +83,6 @@ const CARVE_OUT_FILES = new Set([
   // signature; the callback's `enter` is opt-controlled by safe-
   // send.ts which is in the carve-out list above.
   "verbs/ombudsman.ts",
-  // orchd-window.ts spawns a per-team service window and sends a
-  // long-lived bash supervisor loop AT THE SHELL PROMPT (pre-Claude,
-  // no bracketed-paste envelope). Same shape as verbs/start.ts
-  // launcher sends — the bracketed-paste-Enter-swallow bug zone
-  // does not apply to shell-prompt sends. See doc comment at the
-  // call-site for the carve-out rationale.
-  "core/orchd-window.ts",
   // poke.ts runQueuedTextResubmit wraps a raw sendKeys in the inner
   // sendKeysFn callback of safeSendKeysWithVerify — same shape as
   // core/goal-injection.ts above (verify-and-retry policy outside
