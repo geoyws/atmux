@@ -1,12 +1,12 @@
-// Safe environment probing for tests (ADR-282).
+// Safe environment probing for tests (ADR-282, hardened by ADR-283).
 //
-// A test that runs `env` and redirects the WHOLE dump into a file, reads
-// that file, and asserts on the string is a credential-disclosure bug
-// waiting for its first red run: `expect(received)` prints `received` in
-// full, and this operator's runner environment carries live API tokens,
-// database and docs passwords, and Discord webhook URLs. That happened on
-// 2026-08-28 — ~180 variables with their values went into a test log and
-// an agent transcript.
+// A test that runs `env`, redirects the WHOLE dump into a file, reads that
+// file, and asserts on the string is a credential-disclosure bug waiting
+// for its first red run: `expect(received)` prints `received` in full, and
+// this operator's shell environment carries live API tokens, database and
+// docs passwords, and Discord webhook URLs. That happened on 2026-08-28 —
+// ~180 variables with their values went into a test log and an agent
+// transcript.
 //
 // The fix is NOT "filter before asserting". Filtering after the fact still
 // pulls every secret into the test process, one careless `expect(raw)`
@@ -14,15 +14,38 @@
 //
 //   1. `dumpEnvCommand()` builds a pane command that greps the allowlist
 //      INSIDE the probe, so the file on disk only ever holds four names.
-//   2. `parseEnvDump()` filters again on the way in and redacts anything
-//      whose NAME looks like a credential — the seatbelt, not the brake.
+//      It refuses to build anything wider than `ENV_DUMP_MAX_VARS` names
+//      or to name anything credential-shaped, so the sanctioned helper
+//      cannot be talked into building a whole-environment dump.
+//   2. `parseEnvDump()` filters again on the way in, redacts anything
+//      whose NAME looks like a credential, keeps only the first sighting
+//      of each name, and refuses to emit an implausibly long value — the
+//      seatbelt, not the brake.
 //   3. `tests/regression/no-unfiltered-env-dump.test.ts` fails the suite
-//      if any file under `src/` or `tests/` reintroduces the raw form.
+//      if a file under one of the scanned roots reintroduces a known raw
+//      form. It is a tripwire for enumerated shapes, NOT a proof of
+//      absence — see its header.
+//   4. `scripts/test.ts` (ADR-283) builds the runner's environment from an
+//      allowlist, so the variables worth stealing are not in the process
+//      at all. That is the layer that does not depend on recognising code,
+//      and it is the one to reach for first.
 //
 // Route every environment probe through here. If you need a variable the
 // allowlist does not carry, add it to the `vars` argument at the call
 // site — that keeps the widening visible in the test that wanted it,
 // rather than silently widening every probe in the repo.
+
+import { CREDENTIAL_NAME_RE } from "./test-env.ts";
+
+/**
+ * The credential-name pattern, re-exported so a probe's own tests can
+ * assert against the same rule the redactor uses.
+ *
+ * Single-sourced from `test-env.ts` since 2026-08-28. Two copies of a
+ * security predicate is two answers to one question, and the copy that
+ * used to live here was the unanchored one that matched `PATH`.
+ */
+export const SENSITIVE_NAME_RE = CREDENTIAL_NAME_RE;
 
 /**
  * The colour-environment variables the tmux scrub suites need
@@ -39,21 +62,46 @@ export const ENV_DUMP_ALLOWLIST: ReadonlyArray<string> = Object.freeze([
 ]);
 
 /**
- * Variable NAMES whose values must never reach an assertion, however the
- * dump was produced. Matched case-insensitively against the name only —
- * the value is never inspected, so this cannot itself leak by matching.
+ * The most names a single probe may collect (ADR-283).
  *
- * Defence in depth behind `ENV_DUMP_ALLOWLIST`: the allowlist is what
- * actually keeps secrets out of the test process; this catches a call
- * site that widened `vars` without thinking it through.
+ * Without a cap the sanctioned helper would happily build a
+ * whole-environment dump from a wide enough `vars` — and the resulting
+ * call site would be invisible to the ADR-282 source guard, because it
+ * would be spelled as an ordinary `dumpEnvCommand(...)` call. A probe
+ * that genuinely needs more than this many variables is not a probe; it
+ * is the dump this module exists to prevent.
  */
-export const SENSITIVE_NAME_RE = /(TOKEN|SECRET|KEY|PASSWORD|PASSWD|PAT|WEBHOOK|CREDENTIAL|AUTH)/i;
+export const ENV_DUMP_MAX_VARS = 8;
 
-/** What `parseEnvDump` substitutes for a sensitive-looking value. */
+/**
+ * The longest value `parseEnvDump` will emit before redacting it.
+ *
+ * Every allowlisted name has a short value — `1`, `truecolor`,
+ * `tmux-256color`, `/tmp/sock,1234,0`. A long one means the projection is
+ * carrying something it did not mean to, most plausibly a multi-line
+ * secret whose second line happens to start with an allowlisted name.
+ */
+export const ENV_DUMP_MAX_VALUE_LEN = 256;
+
+/** What `parseEnvDump` substitutes for a value it will not emit. */
 export const REDACTED = "<redacted>";
 
 /** A variable name safe to splice into both a shell command and an ERE. */
 const SAFE_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * An `outPath` safe to splice into a shell word.
+ *
+ * Refusing quotes was not enough (ADR-283): the path is spliced into
+ * `… > ${outPath} || true` inside a single-quoted `sh -c '…'`, next to
+ * every other shell metacharacter. `;`, `&`, backtick, `$`, `(`, `)`,
+ * `<`, `>`, `*`, `?`, whitespace and a newline are each as dangerous as
+ * a quote there, and none of them was refused. An allowlist of the
+ * characters a real temp path uses is the shape that cannot be
+ * incomplete — every call site builds its path with `join(mkdtemp(…), …)`
+ * and satisfies it.
+ */
+const SAFE_OUT_PATH_RE = /^[A-Za-z0-9_@:+=./-]+$/;
 
 /**
  * Build the shell command for a probe pane that writes ONLY `vars` to
@@ -73,23 +121,36 @@ const SAFE_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * read the file back; a pane whose command exits immediately can take the
  * session down with it before the read lands.
  *
- * @throws if `outPath` contains a quote (it is spliced into a shell word)
- *         or any name is not a plain identifier (it is spliced into an ERE).
+ * @throws if `outPath` is not a plain filesystem path (it is spliced into
+ *         a shell word), if any name is not a plain identifier (it is
+ *         spliced into an ERE), if `vars` is empty or longer than
+ *         {@link ENV_DUMP_MAX_VARS}, or if any name is credential-shaped.
  */
 export function dumpEnvCommand(
   outPath: string,
   vars: ReadonlyArray<string> = ENV_DUMP_ALLOWLIST,
   keepAliveSeconds = 3,
 ): string {
-  if (/['"]/.test(outPath)) {
-    throw new Error(`dumpEnvCommand: outPath must not contain quotes: ${outPath}`);
+  if (!SAFE_OUT_PATH_RE.test(outPath)) {
+    throw new Error(
+      `dumpEnvCommand: outPath must be a plain path matching ${String(SAFE_OUT_PATH_RE)}: ${outPath}`,
+    );
   }
   if (vars.length === 0) {
     throw new Error("dumpEnvCommand: refusing to build a dump with an empty allowlist");
   }
+  if (vars.length > ENV_DUMP_MAX_VARS) {
+    throw new Error(
+      `dumpEnvCommand: refusing to collect ${vars.length} variables (max ${ENV_DUMP_MAX_VARS}) — ` +
+        "a probe that needs this many is a whole-environment dump wearing an allowlist",
+    );
+  }
   for (const name of vars) {
     if (!SAFE_NAME_RE.test(name)) {
       throw new Error(`dumpEnvCommand: not a plain variable name: ${name}`);
+    }
+    if (SENSITIVE_NAME_RE.test(name)) {
+      throw new Error(`dumpEnvCommand: refusing to collect a credential-shaped name: ${name}`);
     }
   }
   const filter = `env | grep -E "^(${vars.join("|")})=" > ${outPath} || true`;
@@ -97,26 +158,45 @@ export function dumpEnvCommand(
 }
 
 /**
- * Project a dump down to `vars`, redacting any surviving credential-shaped
- * name. Assert against THIS, never the raw file contents.
+ * Project a dump down to `vars`, redacting anything it will not vouch
+ * for. Assert against THIS, never the raw file contents.
  *
  * Filtering by NAME preserves every assertion's meaning exactly: a
  * variable that is present still appears here, so "absent from the
  * projection" and "absent from the dump" are the same statement for the
  * names in `vars`.
+ *
+ * Three guards, and the second two were added by ADR-283 because the
+ * line-oriented filter had a hole:
+ *
+ *   - a credential-shaped NAME is redacted;
+ *   - a value longer than {@link ENV_DUMP_MAX_VALUE_LEN} is redacted;
+ *   - only the FIRST sighting of a name is kept.
+ *
+ * The last two exist for the same fault. A variable whose value contains
+ * a newline followed by `TERM=` produces a second line that looks exactly
+ * like a legitimate `TERM` assignment, so the filter would keep it — and
+ * that line is a FRAGMENT OF THE SECRET'S VALUE. A real environment
+ * cannot contain a name twice, so a repeat is proof the split found
+ * something that was never a variable boundary.
  */
 export function parseEnvDump(
   dump: string,
   vars: ReadonlyArray<string> = ENV_DUMP_ALLOWLIST,
 ): string {
   const wanted = new Set(vars);
+  const seen = new Set<string>();
   const kept: string[] = [];
   for (const line of dump.split("\n")) {
     const eq = line.indexOf("=");
     if (eq <= 0) continue;
     const name = line.slice(0, eq);
     if (!wanted.has(name)) continue;
-    kept.push(SENSITIVE_NAME_RE.test(name) ? `${name}=${REDACTED}` : line);
+    const value = line.slice(eq + 1);
+    const unsafe =
+      seen.has(name) || SENSITIVE_NAME_RE.test(name) || value.length > ENV_DUMP_MAX_VALUE_LEN;
+    seen.add(name);
+    kept.push(unsafe ? `${name}=${REDACTED}` : line);
   }
   return kept.join("\n");
 }

@@ -16,8 +16,8 @@
 // for the dispatch layer so handlers can be unit-tested in isolation
 // from the substrate.
 
-import type { EventPayload } from "../../src/schema/events.ts";
 import type { EventSubscription } from "../../src/core/event-subscriptions.ts";
+import type { EventPayload } from "../../src/schema/events.ts";
 
 /** A single published event held in the mock's in-memory log.
  *  `sequence` is monotonic + assigned at publish time; it stands in for
@@ -51,16 +51,19 @@ export interface DrainResult {
  * that want to exercise validation should parse via `EventPayload.parse`
  * before passing in.
  */
-export function buildPayload<T extends { topic: string }>(input: T): T & {
+export function buildPayload<T extends { topic: string }>(
+  input: T,
+): T & {
   eventId: string;
   emittedAtSec: number;
   schemaVersion: 1;
 } {
   return {
-    eventId: input["eventId" as keyof T] as string | undefined ??
+    eventId:
+      (input["eventId" as keyof T] as string | undefined) ??
       `evt-${Math.random().toString(36).slice(2, 10)}`,
-    emittedAtSec: input["emittedAtSec" as keyof T] as number | undefined ??
-      Math.floor(Date.now() / 1000),
+    emittedAtSec:
+      (input["emittedAtSec" as keyof T] as number | undefined) ?? Math.floor(Date.now() / 1000),
     schemaVersion: 1,
     ...input,
   } as T & { eventId: string; emittedAtSec: number; schemaVersion: 1 };
@@ -111,17 +114,18 @@ export class HonkerMock {
    *      stop-on-first-failure semantics from src/abstractions/events.ts.
    */
   async drain(consumerId?: string): Promise<DrainResult[]> {
-    const targets = consumerId !== undefined
-      ? (this.subscribers.has(consumerId) ? [consumerId] : [])
-      : Array.from(this.subscribers.keys());
+    const targets =
+      consumerId !== undefined
+        ? this.subscribers.has(consumerId)
+          ? [consumerId]
+          : []
+        : Array.from(this.subscribers.keys());
 
     const results: DrainResult[] = [];
     for (const cid of targets) {
       const sub = this.subscribers.get(cid)!;
       const offset = this.offsets.get(cid) ?? 0;
-      const pending = this.events.filter(
-        (e) => e.sequence > offset && e.topic === sub.topic,
-      );
+      const pending = this.events.filter((e) => e.sequence > offset && e.topic === sub.topic);
 
       let delivered = 0;
       let failed = 0;

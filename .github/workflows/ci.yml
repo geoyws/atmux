@@ -82,7 +82,15 @@ jobs:
         # (ADR-009 §6, empirically validated in commit 600dc81). Coverage
         # is collected here; the gate fires in the next step via
         # tests/lcov-gate.ts.
-        run: bun test --coverage --coverage-reporter=lcov
+        #
+        # `scripts/test.ts`, not a bare `bun test`: it builds the runner's
+        # environment from an allowlist so no credential is present for a
+        # failing assertion to print (ADR-283). Arguments pass through
+        # unchanged. A bare `bun test` here would very likely also be
+        # refused by the ADR-283 preload, since actions/cache and
+        # actions/upload-artifact put ACTIONS_RUNTIME_TOKEN in the job
+        # environment — reasoned from their docs, not observed from here.
+        run: bun scripts/test.ts --coverage --coverage-reporter=lcov
 
       - name: Cron-delta guard (t-e1247699 cron-leak guard post)
         # Fails the build if `bun test` left any new `>>> atmux:team=`

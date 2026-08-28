@@ -15,16 +15,16 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
+  VoiceSession as ProviderLeg,
   VoiceEvent,
   VoiceProvider,
   VoiceProviderConfig,
-  VoiceSession as ProviderLeg,
   VoiceSessionOpts,
 } from "../../src/abstractions/voice-provider.ts";
-import { VoiceProviderError } from "../../src/errors.ts";
+import type { VerbFn } from "../../src/core/verb-capture.ts";
 import type { VoxTeamIndex } from "../../src/core/vox/team-context.ts";
 import type { VoxRunnerKey } from "../../src/core/vox/tool-catalog.ts";
-import type { VerbFn } from "../../src/core/verb-capture.ts";
+import { VoiceProviderError } from "../../src/errors.ts";
 import {
   buildVoxDeps,
   startVoxServer,

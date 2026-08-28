@@ -56,9 +56,31 @@ export interface KanbanCliFixture {
 export const KANBAN_CLI_FIXTURES = {
   /** `KanbanCliAdapter.addTask` — reads `id` off the created record. */
   taskAdd: {
-    argv: ["task", "add", "task alpha", "--as", "tester", "--body", "some body", "--lane", "fe", "--priority", "2", "--assignee", "be-1", "--deliverable", "a thing", "--parent", "e-4d17bce8", "--stale-minutes", "45", "--driver-only"],
+    argv: [
+      "task",
+      "add",
+      "task alpha",
+      "--as",
+      "tester",
+      "--body",
+      "some body",
+      "--lane",
+      "fe",
+      "--priority",
+      "2",
+      "--assignee",
+      "be-1",
+      "--deliverable",
+      "a thing",
+      "--parent",
+      "e-4d17bce8",
+      "--stale-minutes",
+      "45",
+      "--driver-only",
+    ],
     exitCode: 0,
-    stdout: "{\n  \"id\": \"t-02f3afe1\",\n  \"type\": \"task\",\n  \"parentID\": \"e-4d17bce8\",\n  \"title\": \"task alpha\",\n  \"body\": \"some body\",\n  \"assignee\": \"be-1\",\n  \"lane\": \"fe\",\n  \"deliverable\": \"a thing\",\n  \"staleMinutes\": 45,\n  \"driverOnly\": true,\n  \"status\": \"todo\",\n  \"priority\": 2,\n  \"createdAt\": 1786932660853,\n  \"updatedAt\": 1786932660853,\n  \"completedAt\": null,\n  \"metadata\": {}\n}\n",
+    stdout:
+      '{\n  "id": "t-02f3afe1",\n  "type": "task",\n  "parentID": "e-4d17bce8",\n  "title": "task alpha",\n  "body": "some body",\n  "assignee": "be-1",\n  "lane": "fe",\n  "deliverable": "a thing",\n  "staleMinutes": 45,\n  "driverOnly": true,\n  "status": "todo",\n  "priority": 2,\n  "createdAt": 1786932660853,\n  "updatedAt": 1786932660853,\n  "completedAt": null,\n  "metadata": {}\n}\n',
     stderr: "",
   },
   /** `listRecords` — the single read every list/show/load path is built on.
@@ -67,7 +89,8 @@ export const KANBAN_CLI_FIXTURES = {
   taskListWithRelations: {
     argv: ["task", "list", "--with-relations", "--json"],
     exitCode: 0,
-    stdout: "[\n  {\n    \"assignee\": \"be-1\",\n    \"body\": \"some body\",\n    \"completedAt\": null,\n    \"createdAt\": 1786932660853,\n    \"deliverable\": \"a thing\",\n    \"dependencies\": [],\n    \"driverOnly\": true,\n    \"id\": \"t-02f3afe1\",\n    \"lane\": \"fe\",\n    \"metadata\": {},\n    \"parentID\": \"e-4d17bce8\",\n    \"priority\": 2,\n    \"staleMinutes\": 45,\n    \"status\": \"todo\",\n    \"title\": \"task alpha\",\n    \"type\": \"task\",\n    \"updatedAt\": 1786932660853\n  },\n  {\n    \"assignee\": null,\n    \"body\": null,\n    \"completedAt\": null,\n    \"createdAt\": 1786932660795,\n    \"deliverable\": null,\n    \"dependencies\": [],\n    \"driverOnly\": false,\n    \"id\": \"e-4d17bce8\",\n    \"lane\": null,\n    \"metadata\": {},\n    \"parentID\": null,\n    \"priority\": 3,\n    \"staleMinutes\": null,\n    \"status\": \"todo\",\n    \"title\": \"epic one\",\n    \"type\": \"epic\",\n    \"updatedAt\": 1786932660795\n  },\n  {\n    \"assignee\": null,\n    \"body\": null,\n    \"completedAt\": null,\n    \"createdAt\": 1786932660923,\n    \"deliverable\": null,\n    \"dependencies\": [\n      \"t-02f3afe1\"\n    ],\n    \"driverOnly\": false,\n    \"id\": \"t-b2b57495\",\n    \"lane\": null,\n    \"metadata\": {},\n    \"parentID\": null,\n    \"priority\": 3,\n    \"staleMinutes\": null,\n    \"status\": \"todo\",\n    \"title\": \"task beta\",\n    \"type\": \"task\",\n    \"updatedAt\": 1786932660923\n  }\n]\n",
+    stdout:
+      '[\n  {\n    "assignee": "be-1",\n    "body": "some body",\n    "completedAt": null,\n    "createdAt": 1786932660853,\n    "deliverable": "a thing",\n    "dependencies": [],\n    "driverOnly": true,\n    "id": "t-02f3afe1",\n    "lane": "fe",\n    "metadata": {},\n    "parentID": "e-4d17bce8",\n    "priority": 2,\n    "staleMinutes": 45,\n    "status": "todo",\n    "title": "task alpha",\n    "type": "task",\n    "updatedAt": 1786932660853\n  },\n  {\n    "assignee": null,\n    "body": null,\n    "completedAt": null,\n    "createdAt": 1786932660795,\n    "deliverable": null,\n    "dependencies": [],\n    "driverOnly": false,\n    "id": "e-4d17bce8",\n    "lane": null,\n    "metadata": {},\n    "parentID": null,\n    "priority": 3,\n    "staleMinutes": null,\n    "status": "todo",\n    "title": "epic one",\n    "type": "epic",\n    "updatedAt": 1786932660795\n  },\n  {\n    "assignee": null,\n    "body": null,\n    "completedAt": null,\n    "createdAt": 1786932660923,\n    "deliverable": null,\n    "dependencies": [\n      "t-02f3afe1"\n    ],\n    "driverOnly": false,\n    "id": "t-b2b57495",\n    "lane": null,\n    "metadata": {},\n    "parentID": null,\n    "priority": 3,\n    "staleMinutes": null,\n    "status": "todo",\n    "title": "task beta",\n    "type": "task",\n    "updatedAt": 1786932660923\n  }\n]\n',
     stderr: "",
   },
   /** Pins the message `KanbanCliAdapter.showTask` matches with
@@ -91,14 +114,16 @@ export const KANBAN_CLI_FIXTURES = {
   taskMoveDone: {
     argv: ["task", "move", "t-02f3afe1", "done", "--as", "tester"],
     exitCode: 0,
-    stdout: "{\n  \"id\": \"t-02f3afe1\",\n  \"type\": \"task\",\n  \"parentID\": \"e-4d17bce8\",\n  \"title\": \"task alpha\",\n  \"body\": \"new body\",\n  \"assignee\": null,\n  \"lane\": null,\n  \"deliverable\": \"deliv2\",\n  \"staleMinutes\": 45,\n  \"driverOnly\": true,\n  \"status\": \"done\",\n  \"priority\": 7,\n  \"createdAt\": 1786932660853,\n  \"updatedAt\": 1786932661501,\n  \"completedAt\": 1786932661501,\n  \"metadata\": {}\n}\n",
+    stdout:
+      '{\n  "id": "t-02f3afe1",\n  "type": "task",\n  "parentID": "e-4d17bce8",\n  "title": "task alpha",\n  "body": "new body",\n  "assignee": null,\n  "lane": null,\n  "deliverable": "deliv2",\n  "staleMinutes": 45,\n  "driverOnly": true,\n  "status": "done",\n  "priority": 7,\n  "createdAt": 1786932660853,\n  "updatedAt": 1786932661501,\n  "completedAt": 1786932661501,\n  "metadata": {}\n}\n',
     stderr: "",
   },
   /** `updateTask` — pins that the mutated record comes back whole. */
   taskUpdateAssign: {
     argv: ["task", "update", "t-02f3afe1", "--as", "tester", "--assignee", "fe-2"],
     exitCode: 0,
-    stdout: "{\n  \"id\": \"t-02f3afe1\",\n  \"type\": \"task\",\n  \"parentID\": \"e-4d17bce8\",\n  \"title\": \"task alpha\",\n  \"body\": \"some body\",\n  \"assignee\": \"fe-2\",\n  \"lane\": \"fe\",\n  \"deliverable\": \"a thing\",\n  \"staleMinutes\": 45,\n  \"driverOnly\": true,\n  \"status\": \"todo\",\n  \"priority\": 2,\n  \"createdAt\": 1786932660853,\n  \"updatedAt\": 1786932661040,\n  \"completedAt\": null,\n  \"metadata\": {}\n}\n",
+    stdout:
+      '{\n  "id": "t-02f3afe1",\n  "type": "task",\n  "parentID": "e-4d17bce8",\n  "title": "task alpha",\n  "body": "some body",\n  "assignee": "fe-2",\n  "lane": "fe",\n  "deliverable": "a thing",\n  "staleMinutes": 45,\n  "driverOnly": true,\n  "status": "todo",\n  "priority": 2,\n  "createdAt": 1786932660853,\n  "updatedAt": 1786932661040,\n  "completedAt": null,\n  "metadata": {}\n}\n',
     stderr: "",
   },
   /** `updateTask` clear-flags — pins that cleared fields come back as JSON
@@ -106,7 +131,8 @@ export const KANBAN_CLI_FIXTURES = {
   taskUpdateClearLane: {
     argv: ["task", "update", "t-02f3afe1", "--as", "tester", "--clear-lane"],
     exitCode: 0,
-    stdout: "{\n  \"id\": \"t-02f3afe1\",\n  \"type\": \"task\",\n  \"parentID\": \"e-4d17bce8\",\n  \"title\": \"task alpha\",\n  \"body\": \"some body\",\n  \"assignee\": null,\n  \"lane\": null,\n  \"deliverable\": \"a thing\",\n  \"staleMinutes\": 45,\n  \"driverOnly\": true,\n  \"status\": \"todo\",\n  \"priority\": 2,\n  \"createdAt\": 1786932660853,\n  \"updatedAt\": 1786932661198,\n  \"completedAt\": null,\n  \"metadata\": {}\n}\n",
+    stdout:
+      '{\n  "id": "t-02f3afe1",\n  "type": "task",\n  "parentID": "e-4d17bce8",\n  "title": "task alpha",\n  "body": "some body",\n  "assignee": null,\n  "lane": null,\n  "deliverable": "a thing",\n  "staleMinutes": 45,\n  "driverOnly": true,\n  "status": "todo",\n  "priority": 2,\n  "createdAt": 1786932660853,\n  "updatedAt": 1786932661198,\n  "completedAt": null,\n  "metadata": {}\n}\n',
     stderr: "",
   },
   /** `removeTask` — pins that removal answers with a receipt object, not the
@@ -114,7 +140,7 @@ export const KANBAN_CLI_FIXTURES = {
   taskRemove: {
     argv: ["task", "remove", "t-b2b57495", "--as", "tester"],
     exitCode: 0,
-    stdout: "{\n  \"removed\": \"t-b2b57495\"\n}\n",
+    stdout: '{\n  "removed": "t-b2b57495"\n}\n',
     stderr: "",
   },
   /** `claimTask` — pins that a claim answers with a lease, not a task, which
@@ -122,7 +148,8 @@ export const KANBAN_CLI_FIXTURES = {
   claim: {
     argv: ["claim", "t-9e692daf", "--as", "be-1", "--caller-scope", "member", "--json"],
     exitCode: 0,
-    stdout: "{\n  \"taskID\": \"t-9e692daf\",\n  \"agentID\": \"be-1\",\n  \"sessionID\": null,\n  \"leaseToken\": \"521635ee-0a29-4b76-b161-3de60ac23204\",\n  \"claimedAt\": 1786933318421,\n  \"heartbeatAt\": 1786933318421,\n  \"expiresAt\": 1786934218421\n}\n",
+    stdout:
+      '{\n  "taskID": "t-9e692daf",\n  "agentID": "be-1",\n  "sessionID": null,\n  "leaseToken": "521635ee-0a29-4b76-b161-3de60ac23204",\n  "claimedAt": 1786933318421,\n  "heartbeatAt": 1786933318421,\n  "expiresAt": 1786934218421\n}\n',
     stderr: "",
   },
   claimAlreadyClaimed: {
@@ -136,7 +163,8 @@ export const KANBAN_CLI_FIXTURES = {
   claimNextPickedAnEpic: {
     argv: ["claim", "--next", "--as", "be-1", "--json"],
     exitCode: 0,
-    stdout: "{\n  \"taskID\": \"e-4d17bce8\",\n  \"agentID\": \"be-1\",\n  \"sessionID\": null,\n  \"leaseToken\": \"63116723-2a53-4dc0-96c1-86d1b039d332\",\n  \"claimedAt\": 1786932661392,\n  \"heartbeatAt\": 1786932661392,\n  \"expiresAt\": 1786933561392\n}\n",
+    stdout:
+      '{\n  "taskID": "e-4d17bce8",\n  "agentID": "be-1",\n  "sessionID": null,\n  "leaseToken": "63116723-2a53-4dc0-96c1-86d1b039d332",\n  "claimedAt": 1786932661392,\n  "heartbeatAt": 1786932661392,\n  "expiresAt": 1786933561392\n}\n',
     stderr: "",
   },
   claimNextEmpty: {
@@ -149,7 +177,8 @@ export const KANBAN_CLI_FIXTURES = {
   noteDone: {
     argv: ["note", "t-9e692daf", "closing note", "--as", "be-1", "--kind", "done", "--json"],
     exitCode: 0,
-    stdout: "{\n  \"seq\": 1,\n  \"taskID\": \"t-9e692daf\",\n  \"author\": \"be-1\",\n  \"kind\": \"done\",\n  \"body\": \"closing note\",\n  \"createdAt\": 1786933318479\n}\n",
+    stdout:
+      '{\n  "seq": 1,\n  "taskID": "t-9e692daf",\n  "author": "be-1",\n  "kind": "done",\n  "body": "closing note",\n  "createdAt": 1786933318479\n}\n',
     stderr: "",
   },
 } as const satisfies Record<string, KanbanCliFixture>;

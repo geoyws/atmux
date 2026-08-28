@@ -42,6 +42,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTmux, type TmuxNamespace } from "../../src/abstractions/tmux.ts";
+import { resolveTmuxBin } from "../../src/core/resolve-tmux-bin.ts";
 import { defaultPalette, NO_COLOR as NO_COLOR_PALETTE } from "../../src/core/tui.ts";
 import { dumpEnvCommand, parseEnvDump } from "../helpers/env-dump.ts";
 
@@ -49,7 +50,29 @@ const REPO_ROOT = join(import.meta.dir, "..", "..");
 const CONF_PATH = join(REPO_ROOT, "templates", "tmux", "atmux.conf");
 const conf = readFileSync(CONF_PATH, "utf8");
 
-const HAS_TMUX = Bun.spawnSync({ cmd: ["sh", "-c", "command -v tmux"] }).exitCode === 0;
+/**
+ * The tmux binary the CODE UNDER TEST will spawn, resolved exactly as it
+ * resolves it (ADR-191's three-tier chain: `ATMUX_TMUX_BIN` ->
+ * `/opt/atmux/current/bin/tmux` -> PATH).
+ *
+ * Corrected 2026-08-28 (ADR-283 §C4). This used to probe `command -v
+ * tmux`, i.e. the bare PATH — so on a box with `ATMUX_TMUX_BIN` set, or
+ * with a vendored binary and no system tmux, the gate and the subject
+ * disagreed: the suite could skip while atmux had a perfectly good tmux,
+ * or run raw-tmux control legs against a DIFFERENT binary from the one
+ * `createTmux` drives, which makes the comparison between the two
+ * meaningless.
+ */
+const TMUX_BIN: string | null = (() => {
+  try {
+    return resolveTmuxBin();
+  } catch {
+    return null;
+  }
+})();
+const HAS_TMUX = TMUX_BIN !== null;
+/** Safe to splice into an argv only inside a `HAS_TMUX` leg. */
+const TMUX = TMUX_BIN ?? "tmux";
 
 describe("templates/tmux/atmux.conf cage colour-environment invariant (ADR-277)", () => {
   test("scrubs NO_COLOR from the environment of new processes", () => {
@@ -75,6 +98,50 @@ describe("templates/tmux/atmux.conf cage colour-environment invariant (ADR-277)"
     expect(scrubAt).toBeGreaterThan(-1);
     expect(overrideAt).toBeGreaterThan(scrubAt);
   });
+
+  test("carries the server-level COLORTERM line ADR-281 §D2 says it carries", () => {
+    // ADR-283 §C1. ADR-281 asserted in three places that this file "keeps
+    // its `COLORTERM truecolor` line", and leaned on that as the
+    // compensating control for withdrawing the spawn-level injection. IT
+    // DID NOT: the only `set-environment` here was NO_COLOR, and the only
+    // COLORTERM occurrence was inside a comment. The line existed solely
+    // in the operator's personal ~/.tmux.conf, which this repository does
+    // not ship. The claim is true now, and this is what keeps it true.
+    //
+    // `-g`, not `-gr`: the intent here is to SET a value, where
+    // NO_COLOR's is to REMOVE one.
+    expect(conf).toMatch(/^set-environment -g COLORTERM truecolor$/m);
+  });
+
+  test("COLORTERM sits after the NO_COLOR scrub and before the operator override", () => {
+    // Ordering is the whole safety argument: above the ADR-171
+    // `source-file`, so ADR-277 §D2 still holds and an operator's own
+    // conf loads last and can override either line.
+    const scrubAt = conf.search(/^set-environment -gr NO_COLOR$/m);
+    const colortermAt = conf.search(/^set-environment -g COLORTERM truecolor$/m);
+    const overrideAt = conf.search(/^source-file -q .*tmux\.conf\.local/m);
+    expect({
+      afterScrub: colortermAt > scrubAt,
+      beforeOverride: colortermAt < overrideAt,
+    }).toEqual({ afterScrub: true, beforeOverride: true });
+  });
+});
+
+// @skip-reason: the two describes below start REAL tmux servers, so they
+// are gated on a resolvable tmux binary.
+//
+// bun 1.3.14 DOES count a `describe.if(false)` block's tests in the skip
+// total (verified 2026-08-28 — 9 tests, 9 skips), so they do not vanish
+// from the tally. What was missing is a gate: nothing anywhere made an
+// absent tmux a FAILURE. On a developer box without tmux, skipping is
+// legitimate. On CI, where the workflow installs tmux on purpose, an
+// absent one silently removes every behavioural assertion in this file,
+// and that must go red instead of quietly reporting a smaller suite.
+describe("the tmux-gated legs are not silently absent (ADR-283 §C4)", () => {
+  test("CI must have a resolvable tmux — a skip there is a failure, not a gap", () => {
+    const onCi = process.env.CI === "true" || process.env.CI === "1";
+    expect({ onCi, missingOnCi: onCi && !HAS_TMUX }).toEqual({ onCi, missingOnCi: false });
+  });
 });
 
 describe.if(HAS_TMUX)("cage colour-environment invariant — real tmux server (ADR-277)", () => {
@@ -89,7 +156,7 @@ describe.if(HAS_TMUX)("cage colour-environment invariant — real tmux server (A
   afterEach(async () => {
     for (const sock of ["s-shipped", "s-control"]) {
       Bun.spawnSync({
-        cmd: ["tmux", "-S", join(dir, sock), "kill-server"],
+        cmd: [TMUX, "-S", join(dir, sock), "kill-server"],
         env: { ...process.env, TMUX: undefined } as Record<string, string | undefined>,
         stderr: "ignore",
       });
@@ -103,7 +170,7 @@ describe.if(HAS_TMUX)("cage colour-environment invariant — real tmux server (A
     const out = join(dir, `${sock}.env`);
     const proc = Bun.spawnSync({
       cmd: [
-        "tmux",
+        TMUX,
         "-S",
         join(dir, sock),
         "-f",
@@ -221,7 +288,7 @@ describe.if(HAS_TMUX)("tmux child-environment scrub at the spawn seam (ADR-281)"
       // expected: server may already be gone (idempotent teardown)
     }
     Bun.spawnSync({
-      cmd: ["tmux", "-S", join(dir, "s-raw"), "kill-server"],
+      cmd: [TMUX, "-S", join(dir, "s-raw"), "kill-server"],
       env: { ...process.env, TMUX: undefined } as Record<string, string | undefined>,
       stderr: "ignore",
     });
@@ -274,7 +341,7 @@ describe.if(HAS_TMUX)("tmux child-environment scrub at the spawn seam (ADR-281)"
     await tmux.session.newSession({ name: "probe", detached: true, shellCommand: "sleep 3" });
 
     const r = Bun.spawnSync({
-      cmd: ["tmux", "-S", join(dir, "s-atmux"), "show-environment", "-g", "NO_COLOR"],
+      cmd: [TMUX, "-S", join(dir, "s-atmux"), "show-environment", "-g", "NO_COLOR"],
       env: { ...process.env, TMUX: undefined } as Record<string, string | undefined>,
       stdout: "pipe",
       stderr: "pipe",
@@ -295,7 +362,7 @@ describe.if(HAS_TMUX)("tmux child-environment scrub at the spawn seam (ADR-281)"
     const out = join(dir, "raw.env");
     const proc = Bun.spawnSync({
       cmd: [
-        "tmux",
+        TMUX,
         "-S",
         join(dir, "s-raw"),
         "-f",

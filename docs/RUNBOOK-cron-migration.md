@@ -320,7 +320,7 @@ After regenerating:
 
 1. Update the gate table above + the L1-L31 header in `tests/golden/cron-block.txt` if a new line was added (or an existing line's gating condition shifted).
 2. Update the `orderedVerbs` array in `tests/unit/core/cron.test.ts → "golden file pins every conditional line in render order (L1-L12 from header)"` to match the new ordering.
-3. Re-run `unset TMUX && timeout 60 bun test --timeout 30000 tests/unit/core/cron.test.ts` — all three `renderCronBlock — golden-file parity` cases should pass.
+3. Re-run `unset TMUX && timeout 60 bun scripts/test.ts --timeout 30000 tests/unit/core/cron.test.ts` — all three `renderCronBlock — golden-file parity` cases should pass. (`scripts/test.ts`, not a bare `bun test`: it builds the runner's environment from an allowlist so no credential is present for a failing assertion to print — [ADR-283](adr/283-scrub-the-test-runner-environment.md). A bare `bun test` is refused on a box that has any.)
 4. Same-commit ADR pointer (ADR-057 §D6d) per the project's doc-update convention.
 
 The reference Team config lives inside `scripts/regen-cron-golden.ts` and inside the test file (`goldenReferenceTeam()` helper) — keep them in sync. A future cleanup could move the fixture into a shared module, but the current duplication is intentional: the test must stay self-contained (no `scripts/` import in `tests/`) and the script must run standalone (no test-helper import in `scripts/`).

@@ -1,4 +1,4 @@
-// Unit tests for tests/helpers/env-dump.ts (ADR-282).
+// Unit tests for tests/helpers/env-dump.ts (ADR-282, hardened by ADR-283).
 //
 // This helper is the repo's only sanctioned way to read a subprocess's
 // environment, and `tests/regression/no-unfiltered-env-dump.test.ts` points
@@ -10,6 +10,8 @@ import { describe, expect, test } from "bun:test";
 import {
   dumpEnvCommand,
   ENV_DUMP_ALLOWLIST,
+  ENV_DUMP_MAX_VALUE_LEN,
+  ENV_DUMP_MAX_VARS,
   parseEnvDump,
   REDACTED,
   SENSITIVE_NAME_RE,
@@ -45,9 +47,36 @@ describe("dumpEnvCommand", () => {
     expect(dumpEnvCommand("/tmp/o")).toContain("|| true");
   });
 
-  test("refuses a quoted outPath — it is spliced into a shell word", () => {
-    expect(() => dumpEnvCommand("/tmp/a'b")).toThrow(/must not contain quotes/);
-    expect(() => dumpEnvCommand('/tmp/a"b')).toThrow(/must not contain quotes/);
+  test("accepts the shape every real call site produces — a mkdtemp path", () => {
+    // macOS `mkdtemp` under $TMPDIR, which is where every probe writes.
+    // Pinned so the tightened validation cannot start refusing the
+    // legitimate input while still admitting metacharacters.
+    expect(() =>
+      dumpEnvCommand("/var/folders/b0/z0c26pnn19b651fr12h0sbf00000gn/T/atmux-nc-abc123/s.env"),
+    ).not.toThrow();
+  });
+
+  test("refuses every shell metacharacter in outPath, not just a quote", () => {
+    // ADR-283: the path is spliced into `… > <path> || true` inside a
+    // single-quoted `sh -c '…'`. Refusing only quotes left `;`, `&`,
+    // backtick, `$(` and a newline as live injection routes.
+    for (const bad of [
+      "/tmp/a'b",
+      '/tmp/a"b',
+      "/tmp/a;rm -rf x",
+      "/tmp/a&b",
+      "/tmp/a|b",
+      "/tmp/a`id`",
+      "/tmp/a$(id)",
+      "/tmp/a b",
+      "/tmp/a\nb",
+      "/tmp/a>b",
+      "/tmp/a*b",
+      "/tmp/a{b}",
+      "",
+    ]) {
+      expect(() => dumpEnvCommand(bad)).toThrow(/outPath must be a plain path/);
+    }
   });
 
   test("refuses a name that is not a plain identifier — it is spliced into an ERE", () => {
@@ -57,6 +86,22 @@ describe("dumpEnvCommand", () => {
 
   test("refuses an empty allowlist — that would dump everything", () => {
     expect(() => dumpEnvCommand("/tmp/o", [])).toThrow(/empty allowlist/);
+  });
+
+  test("refuses an allowlist wide enough to be a dump in disguise", () => {
+    // ADR-283: without a cap the sanctioned helper builds the very thing
+    // it exists to prevent, at a call site the ADR-282 source guard reads
+    // as an ordinary helper call.
+    const wide = Array.from({ length: ENV_DUMP_MAX_VARS + 1 }, (_, i) => `VAR_${i}`);
+    expect(() => dumpEnvCommand("/tmp/o", wide)).toThrow(/refusing to collect/);
+    const atCap = wide.slice(0, ENV_DUMP_MAX_VARS);
+    expect(() => dumpEnvCommand("/tmp/o", atCap)).not.toThrow();
+  });
+
+  test("refuses to collect a credential-shaped name at all", () => {
+    for (const name of ["GITHUB_TOKEN", "DB_PASSWORD", "SLACK_WEBHOOK", "AWS_SECRET_ACCESS_KEY"]) {
+      expect(() => dumpEnvCommand("/tmp/o", ["TERM", name])).toThrow(/credential-shaped name/);
+    }
   });
 });
 
@@ -103,5 +148,30 @@ describe("parseEnvDump", () => {
     ]) {
       expect(parseEnvDump(`${name}=must-not-appear`, [name])).toBe(`${name}=${REDACTED}`);
     }
+  });
+
+  test("the pattern is anchored — it does not redact PATH, MONKEY or GIT_AUTHOR_NAME", () => {
+    // ADR-283 / C4. The unanchored version matched `PAT` inside `PATH`
+    // and `KEY` inside `MONKEY`. A filter that mangles `PATH` is a filter
+    // someone switches off.
+    for (const name of ["PATH", "MONKEY", "COMPATIBILITY", "GIT_AUTHOR_NAME", "KEYCHAIN"]) {
+      expect({ name, sensitive: SENSITIVE_NAME_RE.test(name) }).toEqual({ name, sensitive: false });
+    }
+  });
+
+  test("a newline inside a value cannot smuggle a fragment through as a second sighting", () => {
+    // The line-oriented filter's hole (ADR-283 / C4): a secret whose value
+    // contains "\nTERM=" produces a line that looks exactly like a
+    // legitimate TERM assignment, and that line is part of the secret. A
+    // real environment cannot hold a name twice, so the repeat is the tell.
+    const dump = ["TERM=tmux-256color", "TERM=tail-of-a-secret-value"].join("\n");
+    expect(parseEnvDump(dump)).toBe(`TERM=tmux-256color\nTERM=${REDACTED}`);
+  });
+
+  test("an implausibly long value is redacted even under an allowlisted name", () => {
+    const long = "x".repeat(ENV_DUMP_MAX_VALUE_LEN + 1);
+    expect(parseEnvDump(`TERM=${long}`)).toBe(`TERM=${REDACTED}`);
+    const atCap = "x".repeat(ENV_DUMP_MAX_VALUE_LEN);
+    expect(parseEnvDump(`TERM=${atCap}`)).toBe(`TERM=${atCap}`);
   });
 });

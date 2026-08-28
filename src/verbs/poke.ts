@@ -1680,8 +1680,16 @@ async function runBudgetTickCheck(
  * The cage tmux server is FRESH (just spawned by createFallbackCage),
  * so no pane-state classifier is needed — there's nothing in the pane
  * to preempt the paste.
+ *
+ * Exported for testing only (ADR-283 §B1). ADR-281 §D3 names this as one
+ * of the seven sites carrying the tmux child-env policy, and until
+ * 2026-08-28 nothing checked that: a reviewer deleted the `unsetEnv` here
+ * and the 10,404-test suite came back byte-identical. Reaching it through
+ * `runBudgetTickCheck` -> `runBudgetCheck` needs a whole fallback-enabled
+ * team fixture to assert one spawn option, so the seam is the export.
+ * Production callers still go through `deps.sendCageBrief` below.
  */
-async function sendCageBrief(handle: CageHandle, body: string): Promise<void> {
+export async function sendCageBrief(handle: CageHandle, body: string): Promise<void> {
   const bufferName = `atmux-fallback-${handle.team}-${handle.lane}-${handle.createdAt}`;
   const target = `${handle.sessionName}:${handle.windowName}`;
   const isOperator = handle.agent === "operator";
