@@ -138,14 +138,11 @@ export async function getBriefPath(role: string, briefsDir: string): Promise<str
  *  templates. Plain string-replacement; no regex special-casing needed
  *  because the placeholders never collide with markdown syntax.
  *
- *  ADR-090: epic-team briefs (e.g. `epic-lead.md`) reference
- *  `{{PARENT}}` (parent team name) + `{{EPIC_ID}}` (epic-team's name,
- *  matches the epicId slug). Both are optional — non-epic-team callers
- *  pass them as `undefined`, and the substitution skips, leaving any
- *  stray placeholders inert (normal-team briefs don't reference these
- *  keys, so the no-op is invisible). T9's `spawn-epic` populates the
- *  vars when rendering epic-team briefs; T10 wires the call-site in
- *  `src/verbs/start.ts` so epic-team starts pick them up automatically. */
+ *  ADR-280 stage 3 dropped the optional `{{PARENT}}` / `{{EPIC_ID}}`
+ *  vars. They existed for ADR-090's `epic-lead.md` brief, which is the
+ *  only template that ever referenced them and which this stage
+ *  deleted; no caller passed them. Adding a new optional placeholder
+ *  back is a one-line change if a nested-cage brief ever needs one. */
 export function renderBrief(
   content: string,
   vars: {
@@ -153,22 +150,13 @@ export function renderBrief(
     member: string;
     role: string;
     atmuxDir: string;
-    parent?: string;
-    epicId?: string;
   },
 ): string {
-  let out = content
+  return content
     .replaceAll("{{TEAM}}", vars.team)
     .replaceAll("{{MEMBER}}", vars.member)
     .replaceAll("{{ROLE}}", vars.role)
     .replaceAll("{{ATMUX_DIR}}", vars.atmuxDir);
-  if (vars.parent !== undefined) {
-    out = out.replaceAll("{{PARENT}}", vars.parent);
-  }
-  if (vars.epicId !== undefined) {
-    out = out.replaceAll("{{EPIC_ID}}", vars.epicId);
-  }
-  return out;
 }
 
 /** Default briefs directory: `<repo-root>/templates/briefs/` in dev mode

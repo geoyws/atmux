@@ -1,7 +1,8 @@
 // Unit tests for src/core/complaint-consumer.ts (ADR-214 §D2 wire,
 // e-92b8fa97).
 //
-// The consumer is the orchd subscriber for `complaint.filed`. It
+// The consumer is the event-subscription registry subscriber for
+// `complaint.filed` (drained by `committer --drain` since ADR-276). It
 // routes complaints to the target team's lead via `atmux tell-lead`
 // per ADR-214's lead-gated adjudication pattern.
 

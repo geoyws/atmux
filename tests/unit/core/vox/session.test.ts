@@ -277,7 +277,12 @@ class FakeProvider implements VoiceProvider {
 const TEAM_INDEX: VoxTeamIndex = {
   teams: [
     { name: "atmux", root: "/root/work/src/atmux", type: "team" },
-    { name: "atmux-epic", root: "/root/work/src/atmux", type: "epic-team" },
+    // ADR-280 stage 4: was `{ name: "atmux-epic", type: "epic-team" }`.
+    // The entry exists to give "atmux" a prefix-rung RIVAL so the
+    // ambiguous_team path below has something to be ambiguous against;
+    // the retired type was incidental to that. A nested team serves the
+    // same purpose and is what the index can now hold.
+    { name: "atmux-child", root: "/root/work/src/atmux/child", type: "team" },
     { name: "sopx-root", root: "/root/work/ifca/src/sopx-root", type: "team" },
   ],
 };
@@ -581,7 +586,7 @@ describe("ready frame", () => {
       provider: "openai-realtime",
       model: "gpt-realtime",
       team: null,
-      teams: ["atmux", "atmux-epic", "sopx-root"],
+      teams: ["atmux", "atmux-child", "sopx-root"],
       rates: { in: VOX_SAMPLE_RATE, out: VOX_SAMPLE_RATE },
       frameMs: VOX_FRAME_MS,
       vad: false,
@@ -828,14 +833,14 @@ describe("control frames", () => {
     const h = makeHarness();
     await live(h);
     await h.session.handlePhoneMessage(JSON.stringify({ type: "team", team: "atmux" }));
-    // "atmux" prefixes BOTH atmux and atmux-epic on the prefix rung...
+    // "atmux" prefixes BOTH atmux and atmux-child on the prefix rung...
     // ...but the exact rung matches exactly one, so this resolves.
     expect(h.phone.ofType("error")).toHaveLength(0);
     await h.session.handlePhoneMessage(JSON.stringify({ type: "team", team: "atmu" }));
     const err = h.phone.ofType("error").pop() as Record<string, unknown>;
     expect(err).toMatchObject({ code: "ambiguous_team", fatal: false });
     expect(String(err.message)).toContain("atmux");
-    expect(String(err.message)).toContain("atmux-epic");
+    expect(String(err.message)).toContain("atmux-child");
   });
 
   test("ping echoes t; a bare ping replies with a bare pong", async () => {

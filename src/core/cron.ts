@@ -1,8 +1,9 @@
-// ADR-233 §retired — cron auto-install retired; orchd is the runtime.
+// ADR-233 §retired — cron auto-install retired (orchd, the runtime that
+// replaced it, was itself retired per ADR-276).
 //
 // No-op shim per the same pattern as src/abstractions/crontab.ts.
 // Removed in ADR-233 §cleanup-EPIC once the importers are migrated
-// to either drop the call entirely or replace with orchd-based wakes.
+// to either drop the call entirely or replace with event-driven wakes.
 
 import type { CrontabIO } from "../abstractions/crontab.ts";
 

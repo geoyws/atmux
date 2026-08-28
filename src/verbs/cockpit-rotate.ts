@@ -57,6 +57,8 @@ import {
   type TmuxNamespace,
 } from "../abstractions/tmux.ts";
 import {
+  findTeamByName,
+  groupSocketPath,
   type LoadCockpitOpts,
   type LoadedCockpit,
   loadCockpit as loadCockpitDefault,
@@ -371,6 +373,14 @@ interface ResolvedDeps {
   stderr: (msg: string) => void;
   nowMs: () => number;
   homeDir: string;
+  /** Set ONLY when the caller explicitly injected `opts.homeDir`. The
+   *  cockpit-config load threads this as `LoadCockpitOpts.home`, which
+   *  since the a-e0199c53 precedence fix outranks the ambient
+   *  `ATMUX_COCKPIT_CONFIG` env var. Production (no injection) must
+   *  keep env-first resolution — cages export that var to point at the
+   *  operator's real config (e.g. cockpit.macos.json) — so the
+   *  defaulted `homeDir` is deliberately NOT forwarded to the loader. */
+  cockpitConfigHome?: string;
   cockpitSessionName: string;
   cockpitSocketName: string;
   tmuxFactory: (cfg: TmuxConfig) => TmuxNamespace;
@@ -398,6 +408,7 @@ function resolveDeps(opts: CockpitRotateOpts): ResolvedDeps {
     stderr,
     nowMs: opts.nowMs ?? nowMsDefault,
     homeDir,
+    ...(opts.homeDir !== undefined ? { cockpitConfigHome: opts.homeDir } : {}),
     cockpitSessionName: opts.cockpitSessionName ?? COCKPIT_SESSION_DEFAULT,
     cockpitSocketName: opts.cockpitSocketName ?? getCockpitSocketName(env),
     tmuxFactory: opts.tmuxFactory ?? createTmux,
@@ -433,16 +444,60 @@ async function defaultReadLeadOutboxTail(atmuxDir: string, lines: number): Promi
   return all.slice(start).join("\n");
 }
 
+/** e-419553c6 true containment: where a rotate target's window LIVES.
+ *  Medic (and `_superdriver` for gate-1) live in the cockpit session on
+ *  the cockpit socket; a team-driver viewer lives in the cockpit ONLY
+ *  when the team has no group ancestor — a grouped team's viewer lives
+ *  in its group's server (`groupSocketPath(group)`, session named after
+ *  the group). Every pane-addressing step (gate-2 capture, Ctrl-C,
+ *  kill-window, new-window) must use this host or it silently probes /
+ *  mutates a window that is not there. */
+interface ViewerHost {
+  cfg: TmuxConfig;
+  sessionName: string;
+}
+
+/** The cockpit-session host (gate-1 + medic + ungrouped team-driver). */
+function cockpitViewerHost(deps: ResolvedDeps): ViewerHost {
+  return { cfg: { socket: deps.cockpitSocketName }, sessionName: deps.cockpitSessionName };
+}
+
+/** Resolve the viewer host for a rotate target. Best-effort: a
+ *  loadCockpit failure (missing / malformed cockpit.json) falls back to
+ *  the cockpit host — matching the pre-group behaviour, where a broken
+ *  config surfaced downstream as "window not found" rather than a new
+ *  failure mode here. */
+async function resolveViewerHost(deps: ResolvedDeps, role: RoleId, sessionName: string): Promise<ViewerHost> {
+  if (role !== "team-driver") return cockpitViewerHost(deps);
+  let cockpit: LoadedCockpit;
+  try {
+    cockpit = await deps.loadCockpit({
+      env: deps.env,
+      ...(deps.cockpitConfigHome !== undefined ? { home: deps.cockpitConfigHome } : {}),
+    });
+  } catch {
+    return cockpitViewerHost(deps);
+  }
+  const lookup = findTeamByName(cockpit, sessionName);
+  if (lookup?.group === undefined) return cockpitViewerHost(deps);
+  return { cfg: { socketPath: groupSocketPath(lookup.group) }, sessionName: lookup.group };
+}
+
 /** Capture a cockpit-session pane's last N lines via the cockpit socket.
  *  Returns the captured text or empty string if the capture fails (tmux
  *  not running, window missing — gate-1/2 then pass on the empty text,
  *  which is the safer default than crashing the verb on a misconfigured
  *  cockpit). */
-async function safeCapturePane(deps: ResolvedDeps, windowName: string): Promise<string> {
+async function safeCapturePane(
+  deps: ResolvedDeps,
+  windowName: string,
+  host?: ViewerHost,
+): Promise<string> {
+  const h = host ?? cockpitViewerHost(deps);
   try {
-    const tmux = deps.tmuxFactory({ socket: deps.cockpitSocketName });
+    const tmux = deps.tmuxFactory(h.cfg);
     return await tmux.pane.capturePane({
-      target: `${deps.cockpitSessionName}:${windowName}`,
+      target: `${h.sessionName}:${windowName}`,
       start: -CAPTURE_PANE_LINES,
     });
   } catch {
@@ -822,13 +877,15 @@ async function sendCtrlCWithVerify(
   deps: ResolvedDeps,
   windowName: string,
   role: RoleId,
+  host?: ViewerHost,
 ): Promise<{ success: boolean; attempts: number }> {
-  const tmux = deps.tmuxFactory({ socket: deps.cockpitSocketName });
-  const paneTarget: Target = `${deps.cockpitSessionName}:${windowName}`;
+  const h = host ?? cockpitViewerHost(deps);
+  const tmux = deps.tmuxFactory(h.cfg);
+  const paneTarget: Target = `${h.sessionName}:${windowName}`;
   const sendTarget: SendTarget = {
     kind: "member",
     member: role,
-    team: deps.cockpitSessionName,
+    team: h.sessionName,
     target: paneTarget,
   };
   const captureFn: CaptureFn = (t: string) => tmux.pane.capturePane({ target: t });
@@ -871,12 +928,23 @@ async function performRespawn(
   role: RoleId,
   parsed: ParsedCockpitRotateArgs,
   startMs: number,
+  /** e-419553c6: where the target window lives (group server for a
+   *  grouped team-driver; the cockpit session otherwise). Optional for
+   *  test back-compat — defaults to the cockpit host. */
+  host?: ViewerHost,
 ): Promise<number> {
   const windowName = targetWindowForRole(role, parsed.sessionName);
+  const viewerHost = host ?? cockpitViewerHost(deps);
   let cmd: string;
   let cockpit: LoadedCockpit;
   try {
-    cockpit = await deps.loadCockpit({ home: deps.homeDir });
+    // Injected homeDir (tests) outranks ambient env; production keeps
+    // env-first so `ATMUX_COCKPIT_CONFIG` still selects the config the
+    // cockpit was built from. See ResolvedDeps.cockpitConfigHome.
+    cockpit = await deps.loadCockpit({
+      env: deps.env,
+      ...(deps.cockpitConfigHome !== undefined ? { home: deps.cockpitConfigHome } : {}),
+    });
   } catch (e) {
     const cause = e instanceof Error ? e.message : String(e);
     deps.stderr(
@@ -962,11 +1030,11 @@ async function performRespawn(
   // Send Ctrl-C to give claude (or the bash loop) a chance to flush
   // state before kill. Verifier outcome is informational; kill-window
   // is the destructive primitive that guarantees the pane is gone.
-  await sendCtrlCWithVerify(deps, windowName, role);
+  await sendCtrlCWithVerify(deps, windowName, role, viewerHost);
 
-  const tmux = deps.tmuxFactory({ socket: deps.cockpitSocketName });
+  const tmux = deps.tmuxFactory(viewerHost.cfg);
   try {
-    await tmux.window.killWindow(`${deps.cockpitSessionName}:${windowName}`);
+    await tmux.window.killWindow(`${viewerHost.sessionName}:${windowName}`);
   } catch (e) {
     const cause = e instanceof Error ? e.message : String(e);
     deps.stderr(`cockpit rotate: kill-window failed (${cause})\n`);
@@ -982,7 +1050,7 @@ async function performRespawn(
   let windowIndex: number;
   try {
     const winId = await tmux.window.newWindow({
-      sessionName: deps.cockpitSessionName,
+      sessionName: viewerHost.sessionName,
       name: windowName,
       detached: true,
       shellCommand: cmd,
@@ -1009,7 +1077,7 @@ async function performRespawn(
       try {
         await deps.autoStartMedicLoop({
           tmux,
-          sessionName: deps.cockpitSessionName,
+          sessionName: viewerHost.sessionName,
           windowIndex,
           timeoutMs: deps.autoStartTimeoutMs,
           logger: deps.cadenceLogger,
@@ -1079,6 +1147,12 @@ export async function cockpitRotate(
 
   const role = classifyRole(parsed.sessionName);
 
+  // e-419553c6: resolve where the target's window lives ONCE — a
+  // grouped team-driver's viewer sits in its group's server, and every
+  // pane-addressing step below must aim there. Gate-1 deliberately
+  // stays on the cockpit host (it reads `_superdriver`).
+  const viewerHost = await resolveViewerHost(deps, role, parsed.sessionName);
+
   // Pre-flight gates 1-3. Each refusal exits 65 with structured stderr
   // `gate-N-<name>: <reason>`. --force bypasses these (per ADR-167
   // §Pre-flight gate matrix bypass column for rows 1-3).
@@ -1102,7 +1176,7 @@ export async function cockpitRotate(
 
     // Gate 2 — pane-idle on the target window.
     const targetWindow = targetWindowForRole(role, parsed.sessionName);
-    const target = await safeCapturePane(deps, targetWindow);
+    const target = await safeCapturePane(deps, targetWindow, viewerHost);
     const r2 = classifyGate2(target);
     if (r2 !== null) {
       deps.stderr(`gate-2-pane-idle: ${r2}\n`);
@@ -1155,5 +1229,5 @@ export async function cockpitRotate(
   //   7. Append success audit row. Audit row writes AFTER respawn so
   //      `outcome` reflects ground truth (per ADR-167 §Ordering
   //      invariant).
-  return performRespawn(deps, role, parsed, startMs);
+  return performRespawn(deps, role, parsed, startMs, viewerHost);
 }

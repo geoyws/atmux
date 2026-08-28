@@ -50,14 +50,13 @@ import { dispatch as dispatchVerb } from "./verbs/dispatch.ts";
 import { doctor } from "./verbs/doctor.ts";
 import { driverInbox } from "./verbs/driver-inbox.ts";
 import { epic } from "./verbs/epic.ts";
-import { epicMerge } from "./verbs/epic-merge.ts";
 import { fleet } from "./verbs/fleet.ts";
 import { groom } from "./verbs/groom.ts";
 import { handoff } from "./verbs/handoff.ts";
 import { health } from "./verbs/health.ts";
-import { hostPressure } from "./verbs/host-pressure.ts";
 import { heartbeat } from "./verbs/heartbeat.ts";
 import { help } from "./verbs/help.ts";
+import { hostPressure } from "./verbs/host-pressure.ts";
 import { hygieneTick } from "./verbs/hygiene-tick.ts";
 import { improve } from "./verbs/improve.ts";
 import { inbox } from "./verbs/inbox.ts";
@@ -73,7 +72,6 @@ import { migrateKanban } from "./verbs/migrate-kanban.ts";
 import { migrateState } from "./verbs/migrate-state.ts";
 import { nudge } from "./verbs/nudge.ts";
 import { ombudsman } from "./verbs/ombudsman.ts";
-import { orchd } from "./verbs/orchd.ts";
 import { pause, resume } from "./verbs/pause.ts";
 import { poke } from "./verbs/poke.ts";
 import { pokeResumeCheck } from "./verbs/poke-resume-check.ts";
@@ -91,12 +89,6 @@ import { stop } from "./verbs/stop.ts";
 import { story } from "./verbs/story.ts";
 import { dispatchSyncSubverb } from "./verbs/sync.ts";
 import { task } from "./verbs/task.ts";
-import { dissolveEpic } from "./verbs/team/dissolve-epic.ts";
-import { dissolveWorker } from "./verbs/team/dissolve-worker.ts";
-import { listWorkers } from "./verbs/team/list-workers.ts";
-import { spawnEpic } from "./verbs/team/spawn-epic.ts";
-import { spawnWorker } from "./verbs/team/spawn-worker.ts";
-import { sweepEpics } from "./verbs/team/sweep-epics.ts";
 import { teamRename } from "./verbs/team-rename.ts";
 import { teamRepairRename } from "./verbs/team-repair-rename.ts";
 import { tellLead } from "./verbs/tell-lead.ts";
@@ -304,15 +296,14 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
     case "committer":
       return committer(argv.slice(1));
     case "orchd":
-      // ADR-224 §D1 — `orchd` (orchestrator daemon) is the canonical
-      // event-router persona/verb. Renamed 2026-05-22 to
-      // honestly cover the expanding lifecycle responsibilities (Phase 2
-      // adds auto-spawn / auto-dissolve subscribers per §D4). Subscribes
-      // to multi-topic via atmux-listener Rust kernel-blocked NOTIFY/
-      // LISTEN and dispatches to handler-per-topic. Sub-verbs: --start
-      // (long-lived), --drain (one-shot cron-backstop), --handle-one
-      // (per-event dispatch), --status (diagnostic).
-      return orchd(argv.slice(1));
+      // ADR-276 — orchd is retired. Fail loud rather than alias
+      // silently (ADR-266 §D2 precedent): the event-router daemon,
+      // its Rust ticker and its `__orchd__` window are gone. The
+      // one-shot event drain survives as `committer --drain`.
+      throw new UsageError({
+        what: "orchd: verb retired per ADR-276 (orchd is removed; atmux's scope is tmux cages + `atmux vox`)",
+        hint: "for the one-shot event-drain backstop use: atmux committer --drain",
+      });
     case "cockpit-mirror":
       // ADR-230 — cockpit-scope event dispatcher. Per-event Bun handler
       // spawned by the Rust `atmux-cockpit-mirror` binary
@@ -322,8 +313,6 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       // the ADR-212 commit-escalation topic). Per-topic real handlers
       // are follow-up Tasks; MVP scaffold logs + advances offset.
       return cockpitMirror(argv.slice(1));
-    case "epic-merge":
-      return epicMerge(argv.slice(1));
     case "complaints":
       return complaints(argv.slice(1));
     case "blockers":
@@ -401,7 +390,7 @@ export async function dispatchTeamSubverb(argv: ReadonlyArray<string>): Promise<
   const sub = argv[0];
   if (sub === undefined || sub === "") {
     throw new UsageError({
-      what: "team: subverb required (try: rename | repair-rename | spawn-epic | dissolve-epic | sweep-epics | spawn-worker | dissolve-worker | list-workers)",
+      what: "team: subverb required (try: rename | repair-rename)",
       hint: "run 'atmux help' for the list of verbs",
     });
   }
@@ -410,21 +399,9 @@ export async function dispatchTeamSubverb(argv: ReadonlyArray<string>): Promise<
       return teamRename(argv.slice(1));
     case "repair-rename":
       return teamRepairRename(argv.slice(1));
-    case "spawn-epic":
-      return spawnEpic(argv.slice(1));
-    case "dissolve-epic":
-      return dissolveEpic(argv.slice(1));
-    case "sweep-epics":
-      return sweepEpics(argv.slice(1));
-    case "spawn-worker":
-      return spawnWorker(argv.slice(1));
-    case "dissolve-worker":
-      return dissolveWorker(argv.slice(1));
-    case "list-workers":
-      return listWorkers(argv.slice(1));
     default:
       throw new UsageError({
-        what: `team: unknown subverb '${sub}' (try: rename | repair-rename | spawn-epic | dissolve-epic | sweep-epics | spawn-worker | dissolve-worker | list-workers)`,
+        what: `team: unknown subverb '${sub}' (try: rename | repair-rename)`,
         hint: "run 'atmux help' for the list of verbs",
       });
   }

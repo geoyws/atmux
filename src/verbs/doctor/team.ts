@@ -195,7 +195,7 @@ export function checkTuis(team: Team, opts: CheckTuisOpts = {}): DoctorRow[] {
   return rows;
 }
 
-/** ADR-280 §D2 — visibility for the distinct cooperative bot seat.
+/** ADR-281 §D2 — visibility for the distinct cooperative bot seat.
  *  Absent/disabled blocks are silent because transient teams deliberately
  *  do not inherit bots. A shell-only seat is usable by the operator but
  *  yellow/unroutable for `_superbot`; an explicit harness gets the same

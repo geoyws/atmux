@@ -12,7 +12,7 @@ import {
   resolveBotCwd,
 } from "../../../src/core/bot.ts";
 
-describe("ADR-280 bot identity primitives", () => {
+describe("ADR-281 bot identity primitives", () => {
   test("pins actor, window, worktree, and branch identities", () => {
     expect(BOT_WINDOW_NAME).toBe("_bot");
     expect(BOT_HOLD_OPTION).toBe("@atmux_bot_hold");

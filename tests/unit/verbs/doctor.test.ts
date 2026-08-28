@@ -405,7 +405,7 @@ describe("checkTuis", () => {
   });
 });
 
-describe("checkBotConfig — ADR-280", () => {
+describe("checkBotConfig — ADR-281", () => {
   test("absent or disabled bot is silent for transient teams", () => {
     expect(checkBotConfig(baseTeam)).toEqual([]);
     expect(
@@ -4727,8 +4727,9 @@ describe("checkLegacyWindowNameFormat", () => {
       tmux: async (argv) => {
         // -t <sessionName> at argv[3]
         const sessionName = argv[4];
-        if (sessionName === "atmux-alpha") return tmuxListOk("🧭-lead\n");
-        if (sessionName === "atmux-beta") return tmuxListOk("🎯_planner\n");
+        // e-419553c6: unanchored cockpit teams resolve to BARE names.
+        if (sessionName === "alpha") return tmuxListOk("🧭-lead\n");
+        if (sessionName === "beta") return tmuxListOk("🎯_planner\n");
         return tmuxListOk("");
       },
       loadCockpitFn: async () => fakeCockpit,

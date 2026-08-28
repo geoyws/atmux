@@ -16,7 +16,12 @@ import { join } from "node:path";
 
 import { exists, readTextOrNull } from "../abstractions/fs.ts";
 import { spawn as runSpawn, type SpawnResult } from "../abstractions/spawn.ts";
-import { createTmux, type TmuxConfig, type TmuxNamespace } from "../abstractions/tmux.ts";
+import {
+  createTmux,
+  exactSessionTarget,
+  type TmuxConfig,
+  type TmuxNamespace,
+} from "../abstractions/tmux.ts";
 import {
   type CadenceObservation,
   type CadenceThresholds,
@@ -459,7 +464,9 @@ export async function probeMedic(deps: GatherStatusDeps = {}): Promise<MedicStat
       socket: getCockpitSocketName(),
       configFile: getAtmuxTmuxConfPath(),
     });
-    sessionAlive = await cockpitTmux.session.hasSession(cockpit.cockpitSession);
+    sessionAlive = await cockpitTmux.session.hasSession(
+      exactSessionTarget(cockpit.cockpitSession),
+    );
     if (sessionAlive) {
       const wins = await cockpitTmux.window.listWindows(cockpit.cockpitSession);
       // ADR-135 canonical window name `_medic`; legacy `medic` and pre-ADR-133

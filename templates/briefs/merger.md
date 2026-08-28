@@ -1,4 +1,7 @@
 <!-- brief-version: v2 -->
+
+> ⚠ **orchd retired 2026-08-27 per [ADR-276](../../docs/adr/276-orchd-retirement-and-atmux-scope.md).** Every "orchd" / `__orchd__` window / ticker / auto-spawn / auto-merge-consumer sentence in this brief is HISTORY — no daemon runs. Manual orchestration ([ADR-260](../../docs/adr/260-manual-orchestration-mode-default.md)) is the reality; the one-shot event drain is operator-invoked `atmux committer --drain`.
+
 <!-- Changed 2026-05-24 per orchd+honker pivot — Shape B is orchd-hosted (was cron); event-driven wake via Honker (ADR-202/233). -->
 
 ## §0 — Identity check (FIRST action of every fresh turn)

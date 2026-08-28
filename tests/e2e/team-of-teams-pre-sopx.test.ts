@@ -1,37 +1,43 @@
-// CAPSTONE e2e — pre-sopx team-of-teams gate (Task t-edc93b42, Phase-1 skeleton).
+// e2e — the ADR-092 cross-team `tell-lead` caller-scope gate, driven
+// against a real on-disk parent + nested child cage and a real cockpit
+// fixture (Task t-edc93b42 → t-bc4fdb19).
 //
-// **Phase-1 STATUS: SKELETON ONLY.** Authored against trunk @ 4312bc2,
-// which does NOT yet carry the ADR-090 / ADR-091 / ADR-092 surfaces this
-// spec exercises. All sub-tests are `test.todo` placeholders cross-
-// linked to **Task t-bc4fdb19** (phase-2) which wires the real assertions
-// once the fan-ins land:
+// **ADR-280 stage 4 rescoped this file.** It began as the pre-sopx
+// team-of-teams capstone: a phase-1 skeleton of `test.todo` placeholders
+// for the epic-team lifecycle (spawn 2 epics in parallel → seed tasks →
+// walk them → fan member branches into the epic trunk → fan the epic
+// trunk into the parent trunk → dissolve → mark the KanbanEpic done →
+// assert no leakage), plus three phase-2 tests that DID land. Every stage
+// of the skeleton named a verb ADR-280 stages 2/3 deleted, so the
+// skeleton is gone — not deferred, retired.
 //
-//   | Surface                                              | Commit   | Branch              |
-//   |------------------------------------------------------|----------|---------------------|
-//   | ADR-090 TeamEpic + KanbanEpic + epic-rosters/default | 762716f  | geoyws-up-impl-3    |
-//   | ADR-090 spawn-epic + dissolve-epic verbs             | aac4ee1  | geoyws-up-impl-3    |
-//   | ADR-091 epic-merge state machine + cron + gitter     | a34fafa  | geoyws-up-impl-3    |
-//   | ADR-090↔091 wire-up (dissolveEpic on merging→merged) | b502ebe  | geoyws-up-impl-3    |
-//   | ADR-092 cross-team tell-lead --team flag             | ba7ee3f  | geoyws-up-impl      |
+// The three landed tests remain, and they are not epic machinery. They
+// cover ADR-092 §D3's symmetric caller-scope gate:
 //
-// The skeleton intentionally ships now (vs deferring) to:
-//   (1) reserve the canonical filename + fixture shape so phase-2's diff
-//       is implementation-only;
-//   (2) document the INTENDED lifecycle + state-snapshot expectations
-//       per the CLAUDE.md Test finding report pattern (state-snapshot at
-//       each step / containment analysis / fix sketch / residue inventory
-//       / severity-with-context); and
-//   (3) lock down the helper signatures (`makeFixture`, `seedEpicKanban`,
-//       `snapshotLifecycleState`, `assertNoLeakage`) so phase-2's review
-//       gate has a stable structural contract.
+//   (a) `ATMUX_CALLER_SCOPE=driver` is the master override;
+//   (c) a child cage → its parent is allowed from cockpit topology alone;
+//   (e/g) an unrelated sibling → the child is refused, and refused BEFORE
+//         any inbox mutation.
 //
-// Per ADR-029 §F1 "stateful e2e specs are not repeatable smokes" — the
-// real phase-2 will be a 1x cold-start+walk integration test, not a
-// streak-runnable stability smoke; seed-consumption is intrinsic.
+// Case (c) is the one stage 3 WIDENED. The gate used to reach a parent
+// only through an `epic-team` node's own `parent` back-pointer, so it
+// covered epic-teams and nothing else; `parent` is now derived from the
+// cockpit walk's ancestry, so the route holds for any nested team. The
+// fixture therefore builds an ordinary nested `team` node, and passing
+// here is the end-to-end evidence for that widening.
 //
-// **Out of scope this skeleton + phase-2 entirely** (per Task body
-// §Out of scope): sopx-side migration (operator-driven), PR-mode
-// dissolution (resolved-open #5), member-to-member cross-team messaging.
+// Tmux-send failure in the test process (no real cage server) is the
+// EXPECTED terminal failure mode. Each assertion reads the durable
+// inbox write, which lands BEFORE the tmux send (ADR-029 §F6 + §F7, and
+// the "appendDriverInbox already landed before this throw" comment in
+// tell-lead.ts).
+//
+// Per ADR-029 §F1 "stateful e2e specs are not repeatable smokes" — this
+// is a cold-start integration spec, not a streak-runnable stability
+// smoke.
+//
+// **Out of scope:** sopx-side migration (operator-driven),
+// member-to-member cross-team messaging.
 
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -41,7 +47,6 @@ import { closeDatabase, openDatabase } from "../../src/abstractions/sqlite.ts";
 import { migrations } from "../../src/abstractions/sqlite-migrations.ts";
 import { defaultGitSpawn } from "../../src/abstractions/worktree.ts";
 import { ConfigError } from "../../src/errors.ts";
-import { spawnEpic } from "../../src/verbs/team/spawn-epic.ts";
 import { tellLead } from "../../src/verbs/tell-lead.ts";
 
 // Module-level fixture-survivor registry mirrors the t-88b60ca7 /
@@ -58,8 +63,7 @@ function tearDownFixtureSurvivors(): void {
     try {
       // Synchronous rm — exit handlers can't await. Phase-2 will
       // augment with `Bun.spawnSync(["tmux", "-S", <sock>, "kill-server"])`
-      // for any spawned cage tmux sockets per the spawn-epic auto-launch
-      // path (ADR-090).
+      // for any spawned cage tmux sockets.
       require("node:fs").rmSync(dir, { recursive: true, force: true });
     } catch {}
   }
@@ -77,18 +81,27 @@ afterAll(() => {
 });
 
 // =========================================================================
-// FIXTURE HELPER SIGNATURES (phase-2 wires impls; signatures locked here)
+// FIXTURE HELPER SIGNATURES
 // =========================================================================
+//
+// ADR-280 stage 4 removed the phase-1 epic-lifecycle skeleton that stood
+// here: the `SpawnedEpic` / `LifecycleSnapshot` / `DissolutionResult`
+// signatures and the eight-stage `describe.skip` walk (spawn-parallel →
+// seed → task walk → epic-trunk fan-in → parent-trunk merge →
+// dissolve-epic → KanbanEpic done → no-leakage). Every stage of that walk
+// named a verb ADR-280 stages 2/3 deleted, so it was a specification for
+// work that will not be done — not deferred coverage. It is deleted
+// rather than left as `test.todo`, because a todo for a retired concept
+// reads as outstanding work forever.
+//
+// What SURVIVES, and is implemented below, is the ADR-092 cross-team
+// `tell-lead` surface. That is not epic machinery: stage 3 kept
+// `callerScopeAllowed` and WIDENED it — `parent` now comes from the
+// cockpit walk's ancestry instead of an `epic-team`-only back-pointer, so
+// the parent↔child gate covers any nested team. These three tests are the
+// only end-to-end coverage of that gate, and the child cage they need is
+// now built directly instead of via the deleted `spawn-epic` verb.
 
-/** Cold-start a fresh parent atmux-team fixture: bare remote +
- *  working clone + parent `team.json` with `epicTeam.enabled = true`
- *  + `autoMerge.enabled = true` (ADR-091 §schema) + roster preset for
- *  epic-lead spawn (ADR-090 §epic-rosters/default).
- *
- *  Phase-2: import {provisionWorktree} from "../../src/abstractions/worktree.ts"
- *  + mirror the bare-remote + initial-develop-commit shape from
- *  `tests/e2e/merger-fan-in.test.ts:makeFixture` (lines ~60-115).
- *  Register `tmpRoot` into `activeFixtureDirs` before returning. */
 interface ParentFixture {
   readonly tmpRoot: string;
   readonly bareRemotePath: string;
@@ -98,190 +111,24 @@ interface ParentFixture {
   readonly parentName: string;
 }
 
-// declare const makeParentFixture: () => Promise<ParentFixture>;
-
-/** Drive `atmux team spawn-epic --from <parent> --epic-name <name>
- *  --roster epic-default` against the parent fixture. Asserts:
- *  (a) `<parent>/.atmux/team.json` updated with new epic entry; (b)
- *  `<root>/.atmux/cockpit.json` (or test-injected cockpit config) gains
- *  an `EpicTeamSession` entry with `type='epic-team' parent=<parent>
- *  epicId=e-XXXXXXXX`; (c) parent kanban gains a `KanbanEpic` row in
- *  `planning` state per ADR-007 lifecycle; (d) epic-team cage tmux
- *  socket bound under `<atmuxDir>/.atmux/epic-<name>/tmux/`; (e) epic-
- *  lead pane spawned with the epic-default roster brief.
- *
- *  Phase-2: import `spawnEpic` from `../../src/verbs/team/spawn-epic.ts`
- *  (lands via aac4ee1 once fan-in clears) + invoke programmatically with
- *  a test logger; the verb itself owns the worktree + cockpit + kanban
- *  + tmux-socket setup. */
-interface SpawnedEpic {
-  readonly epicName: string;
-  readonly epicId: string;
-  readonly epicAtmuxDir: string;
-  readonly epicTmuxSocket: string;
+/** A child cage nested under the parent, as the cockpit sees it. */
+interface NestedChild {
+  readonly childName: string;
+  readonly childRoot: string;
+  readonly childAtmuxDir: string;
+  readonly childTmuxSocket: string;
 }
-
-// declare const spawnEpicAgainstParent: (
-//   parent: ParentFixture,
-//   epicName: string,
-// ) => Promise<SpawnedEpic>;
-
-/** Snapshot the lifecycle state across parent + epic at one moment.
- *  Phase-2 captures: parent `KanbanEpic.status`, every `KanbanTask` in
- *  the epic's kanban (id/status/owner), cockpit tree shape (parent +
- *  epic-team entries), worktree presence (`<parent-root>/.atmux/
- *  epic-<name>/`), cage tmux session liveness, cron block presence
- *  (`atmux:team=<parent>-epic-<name>`).
- *
- *  Per CLAUDE.md Test finding report pattern: state-snapshot at each
- *  step, not just end-state. */
-interface LifecycleSnapshot {
-  readonly stage: string;
-  readonly parentEpicStatus: string | null;
-  readonly epicTasks: ReadonlyArray<{ id: string; status: string; owner: string | null }>;
-  readonly cockpitEpicEntry: { type: string; parent: string; epicId: string } | null;
-  readonly worktreePresent: boolean;
-  readonly cageSessionAlive: boolean;
-  readonly cronBlockPresent: boolean;
-}
-
-// declare const snapshotLifecycleState: (
-//   parent: ParentFixture,
-//   epic: SpawnedEpic,
-//   stage: string,
-// ) => Promise<LifecycleSnapshot>;
-
-/** Drive `atmux team dissolve-epic --epic <name> --soft` against an
- *  epic. Asserts: (a) soft-stop path fires (notice → grace → resume
- *  manifest write at `<epicAtmuxDir>/state/resume.json` with
- *  `reason='dissolve-epic'`); (b) per-member-branches fan in to epic-
- *  team trunk (ADR-091 epic-merge state machine, states
- *  `recording → merging → merged`); (c) epic-team trunk fans in to
- *  parent trunk; (d) worktree pruned (`<parent-root>/.atmux/
- *  epic-<name>/` absent); (e) cockpit entry removed from
- *  `cockpit.sessions[]`; (f) parent KanbanEpic row transitions to
- *  `done`; (g) cron block removed (no stale `atmux:team=<parent>-
- *  epic-<name>` between `>>>` / `<<<` markers in user crontab).
- *
- *  Phase-2: import `dissolveEpic` from `../../src/verbs/team/dissolve-
- *  epic.ts` (lands via aac4ee1) + invoke programmatically. The
- *  `--soft` path is the canonical dissolution mode per ADR-090; the
- *  hard/force path is deferred per body §Out of scope. */
-// biome-ignore lint/correctness/noUnusedVariables: Phase-2 forward-ref scaffold — referenced from the commented `declare const dissolveEpicAgainstParent` block below; both land together when Phase 2 wires the programmatic dissolveEpic invocation.
-interface DissolutionResult {
-  readonly finalSnapshot: LifecycleSnapshot;
-  readonly mergedShas: ReadonlyArray<string>;
-}
-
-// declare const dissolveEpicAgainstParent: (
-//   parent: ParentFixture,
-//   epic: SpawnedEpic,
-// ) => Promise<DissolutionResult>;
-
-/** Final-state assertion: no leaked tmpdirs, sockets, or cron blocks.
- *  Phase-2 walks `os.tmpdir()` for any `atmux-e2e-team-of-teams-…`
- *  dirs + `/tmp/atmux-<parent>-epic-<X>/sock` paths + greps user crontab
- *  for un-bracketed `atmux:team=<parent>-epic-<X>` lines. */
-// declare const assertNoLeakage: (parent: ParentFixture) => Promise<void>;
-
-// =========================================================================
-// LIFECYCLE WALK — described inline, asserted in phase-2 (t-bc4fdb19)
-// =========================================================================
-
-describe.skip("team-of-teams pre-sopx capstone (phase-1 skeleton)", () => {
-  // Documented walk — each test.todo carries a no-op fn body at phase-1
-  // (TS signature requires it). Phase-2 swaps the body for real claim
-  // → done → snapshot → assert wiring against the helper signatures
-  // locked above.
-
-  test.todo("🌱 spawn 2 throwaway epics in parallel under one parent fixture", () => {
-    // Acceptance for t-bc4fdb19:
-    //   - Both epics returned with distinct epicId (e-XXXXXXXX).
-    //   - Parent cockpit has 2 EpicTeamSession entries; parent kanban
-    //     has 2 KanbanEpic rows in `planning` status.
-    //   - Per-epic atmuxDir + tmux socket exist + are isolated from
-    //     each other (no shared tmpdir paths).
-    //   - Snapshot: stage="post-spawn-parallel".
-  });
-
-  test.todo("📝 seed 2 mock Tasks in each epic's kanban (4 total across 2 epics)", () => {
-    // Per-epic seeded Tasks: one `lane=fe` + one `lane=be` so the
-    // per-member-branch fan-in path exercises both lanes through the
-    // epic's gitter. Tasks reference the parent kanban's Epic row via
-    // `task.epic = <epicId>`.
-    // Snapshot: stage="post-seed".
-  });
-
-  test.todo("🏗️ walk each epic's task lifecycle: file → claim → SHA → done", () => {
-    // Programmatic walk per task: claim via `atmux claim <id> --as
-    // <member>` against the epic's state.db; member commits 1 file
-    // on their `<epic-trunk>-<member>` branch; mark done via `atmux
-    // done <id> --as <member> --note "feat(scope): ..."`. Run BOTH
-    // epics' walks in parallel via `Promise.all` to certify isolation.
-    // Snapshot: stage="post-task-done-per-epic" (2 snapshots, 1 per epic).
-  });
-
-  test.todo("🔄 auto-merge state machine: per-member branches fan into epic-trunk", () => {
-    // Trigger via `atmux gitter --sweep` against each epic's atmuxDir.
-    // ADR-091 state machine walks `recording → merging → merged` per
-    // member branch. Both epics' fan-ins run in parallel (separate
-    // gitter dispatchers per epic; verify no cross-talk via cockpit
-    // tree's session boundaries).
-    // Snapshot: stage="post-epic-trunk-fan-in" (2 snapshots).
-  });
-
-  test.todo("🔄 auto-merge state machine: epic-trunk fans into parent trunk", () => {
-    // After per-member fan-in lands on epic-trunk, dissolveEpic
-    // (next test) triggers the epic-trunk → parent-trunk merge per
-    // ADR-091's wire-up commit (b502ebe). Hold this snapshot until
-    // post-dissolution to capture the parent's `git log --oneline
-    // --merges` showing 2 merge commits (one per epic).
-    // Snapshot: stage="post-parent-trunk-merge" (1 snapshot, both epics).
-  });
-
-  test.todo("🧹 dissolve-epic per epic — soft-stop + worktree prune + cockpit unregister", () => {
-    // Per-epic `atmux team dissolve-epic --epic <name> --soft`.
-    // Asserts soft-stop emits `reason='dissolve-epic'` resume manifest;
-    // worktree pruned; cockpit `sessions[]` no longer carries the
-    // epic; cron block removed; epic state.db archived per groom-
-    // archive sub-op.
-    // Snapshot: stage="post-dissolution" (2 snapshots).
-  });
-
-  test.todo("✅ parent KanbanEpic rows for BOTH epics transition to done", () => {
-    // Verify `kanban.epics[].status === 'done'` for both spawned
-    // epicIds + `completedAt` populated. ADR-090↔091 wire-up
-    // (b502ebe) is the closure path here.
-  });
-
-  test.todo("🧪 no-leakage final assertion — tmpdirs, sockets, cron blocks all clean", () => {
-    // `assertNoLeakage` walks os.tmpdir() / /tmp/atmux-… / `crontab -l`
-    // for any residue. The afterAll hook is the safety net; this
-    // assertion proves the happy-path cleanup is already complete
-    // before the hook fires.
-    // Snapshot: stage="post-cleanup" + diff against baseline taken
-    // pre-spawn (every set difference must be empty).
-  });
-});
 
 // =========================================================================
 // PHASE-2 IMPLEMENTATIONS (t-bc4fdb19) — ADR-092 cross-team tell-lead
 // =========================================================================
 //
 // Three INTEGRATION-shaped tests exercise the ADR-092 verb surface
-// against real cockpit fixtures + spawn-epic verb. Tmux-send failure
-// in the test process (no real cage server) is the EXPECTED terminal
-// failure mode; assertion uses the durable inbox-write that lands
-// BEFORE the tmux send (per ADR-029 §F6 + F7 + the tell-lead.ts
-// "appendDriverInbox already landed before this throw" comment).
-//
-// Helper signatures locked in phase-1 (ParentFixture, SpawnedEpic) are
-// implemented here. The lifecycle walk `describe.skip` above remains
-// at phase-1 scope — those 8 stages (spawn-parallel → seed → walk →
-// epic-trunk fan-in → parent-trunk merge → dissolve → KanbanEpic done →
-// no-leakage) are a separate scope-class from the ADR-092 cross-team
-// surfaces; phase-2's Task body explicitly scoped only the cross-team
-// + doctor (latter still deferred to t-c2e544b6).
+// against real cockpit fixtures. Tmux-send failure in the test process
+// (no real cage server) is the EXPECTED terminal failure mode;
+// assertion uses the durable inbox-write that lands BEFORE the tmux
+// send (per ADR-029 §F6 + F7 + the tell-lead.ts "appendDriverInbox
+// already landed before this throw" comment).
 
 async function git(
   cwd: string,
@@ -309,7 +156,7 @@ async function makeParentFixture(): Promise<ParentFixtureRuntime> {
   const bareRemotePath = join(tmpRoot, "origin.git");
   const parentRoot = join(tmpRoot, "atmux-test-parent");
   const cockpitPath = join(tmpRoot, "cockpit.json");
-  const templatesDir = join(tmpRoot, "templates", "epic-rosters");
+  const templatesDir = join(tmpRoot, "templates", "rosters");
 
   await mkdir(bareRemotePath, { recursive: true });
   await git(bareRemotePath, ["init", "--bare", "-b", "main"]);
@@ -339,9 +186,10 @@ async function makeParentFixture(): Promise<ParentFixtureRuntime> {
       members: [{ name: "lead", role: "team-lead" }],
     }),
   );
-  // Parent state.db seeded with the canonical EPIC row so future
-  // lifecycle-walk impls have a target for dissolve-epic's parent-
-  // mark-done step. Cross-team tests below do not exercise it.
+  // Parent state.db seeded with one kanban Epic row. The kanban Epic
+  // WORK ITEM survives the epic-TEAM retirement (ADR-280 §D5 leaves it
+  // under ADR-275's gate), and the row keeps the fixture's state.db
+  // representative of a real parent. Cross-team tests do not read it.
   const parentDb = openDatabase(join(atmuxDir, "state.db"), migrations);
   parentDb
     .query(
@@ -393,50 +241,57 @@ async function makeParentFixture(): Promise<ParentFixtureRuntime> {
   };
 }
 
-async function spawnEpicForFixture(
+/** Build a child cage NESTED under the parent, both on disk and in the
+ *  cockpit tree.
+ *
+ *  ADR-280 stage 4: this replaces `spawnEpicForFixture`, which drove
+ *  `atmux team spawn-epic` to lay down `<parent>-epics/<epicId>/` and
+ *  register an `epic-team` cockpit node. Neither the verb nor the node
+ *  type exists. The cockpit shape it produces is what the gate under
+ *  test actually reads — a `team` node nested inside the parent's
+ *  `sessions[]`, with its own root — and `callerScopeAllowed` derives
+ *  the parent link from that nesting rather than from a declared field. */
+async function makeNestedChild(
   fix: ParentFixtureRuntime,
-  epicId: string,
-): Promise<SpawnedEpic> {
-  const rc = await spawnEpic(
-    [
-      epicId,
-      "--from",
-      fix.parentName,
-      "--parent-base",
-      "main",
-      "--parent-epic-kanban-id",
-      "e-cross-team-flow",
-    ],
-    {
-      cockpitPath: fix.cockpitPath,
-      templatesDir: fix.templatesDir,
-      callerScope: () => "driver",
-      logger: {
-        log: (m) => fix.capturedLogs.push(m),
-        warn: (m) => fix.capturedLogs.push(`WARN: ${m}`),
-      },
-    },
+  childName: string,
+): Promise<NestedChild> {
+  const childRoot = join(fix.tmpRoot, childName);
+  const childAtmuxDir = join(childRoot, ".atmux");
+  await mkdir(childAtmuxDir, { recursive: true });
+
+  // tmuxTmpdir pinned at the fixture for the same /tmp-leak reason as
+  // the parent: the socket path resolves but no server backs it, so
+  // tellLead's tmux send fails with the expected ConfigError AFTER the
+  // durable inbox write has landed.
+  const childTmuxDir = join(fix.tmpRoot, `${childName}-tmux`);
+  await mkdir(childTmuxDir, { recursive: true });
+  await writeFile(
+    join(childAtmuxDir, "team.json"),
+    JSON.stringify({
+      name: childName,
+      tmuxTmpdir: childTmuxDir,
+      members: [{ name: "lead", role: "team-lead" }],
+    }),
   );
-  if (rc !== 0) {
-    throw new Error(`spawn-epic exited ${rc}; logs:\n${fix.capturedLogs.join("\n")}`);
-  }
-  const epicRoot = join(`${fix.repoPath}-epics`, epicId);
-  const epicAtmuxDir = join(epicRoot, ".atmux");
-  // Pin epic-team tmuxTmpdir to the fixture too — same /tmp-leak
-  // reason as parent. The socket path resolves but no server backs
-  // it; tellLead's tmux send fails with the expected ConfigError.
-  const teamJsonPath = join(epicAtmuxDir, "team.json");
-  const teamRaw = JSON.parse(await Bun.file(teamJsonPath).text());
-  const epicTmuxDir = join(fix.tmpRoot, `${epicId}-tmux`);
-  await mkdir(epicTmuxDir, { recursive: true });
-  teamRaw.tmuxTmpdir = epicTmuxDir;
-  await writeFile(teamJsonPath, JSON.stringify(teamRaw));
+
+  // Nest the child INSIDE the parent's sessions[] — this is the only
+  // thing that makes it a child as far as the gate is concerned.
+  const cockpit = JSON.parse(await Bun.file(fix.cockpitPath).text()) as {
+    sessions: Array<{ name: string; sessions?: unknown[] }>;
+  };
+  const parentNode = cockpit.sessions.find((n) => n.name === fix.parentName);
+  if (parentNode === undefined) throw new Error("parent node missing from cockpit fixture");
+  parentNode.sessions = [
+    ...(parentNode.sessions ?? []),
+    { type: "team", name: childName, enabled: true, root: childRoot },
+  ];
+  await writeFile(fix.cockpitPath, JSON.stringify(cockpit));
 
   return {
-    epicName: epicId,
-    epicId,
-    epicAtmuxDir,
-    epicTmuxSocket: join(epicTmuxDir, "sock"),
+    childName,
+    childRoot,
+    childAtmuxDir,
+    childTmuxSocket: join(childTmuxDir, "sock"),
   };
 }
 
@@ -448,13 +303,13 @@ async function readInboxOrEmpty(atmuxDir: string): Promise<string> {
 
 describe("ADR-092 cross-team tell-lead (phase-2, t-bc4fdb19)", () => {
   let fixture: ParentFixtureRuntime;
-  let epic: SpawnedEpic;
+  let child: NestedChild;
   let priorCockpit: string | undefined;
   let priorScope: string | undefined;
 
   beforeEach(async () => {
     fixture = await makeParentFixture();
-    epic = await spawnEpicForFixture(fixture, "e-cross-team");
+    child = await makeNestedChild(fixture, "child-cross-team");
     priorCockpit = process.env.ATMUX_COCKPIT_CONFIG;
     priorScope = process.env.ATMUX_CALLER_SCOPE;
     process.env.ATMUX_COCKPIT_CONFIG = fixture.cockpitPath;
@@ -469,7 +324,7 @@ describe("ADR-092 cross-team tell-lead (phase-2, t-bc4fdb19)", () => {
     activeFixtureDirs.delete(fixture.tmpRoot);
   });
 
-  test("parent driver → epic-lead — inbox routes to epic-team's .atmux/", async () => {
+  test("parent driver → child lead — inbox routes to the CHILD's .atmux/", async () => {
     // ADR-092 §D3 case (a): ATMUX_CALLER_SCOPE=driver is the master
     // override — routing lands without scope-gate refusal. Tmux send
     // throws in test env (no real cage server); assert inbox-write
@@ -481,45 +336,48 @@ describe("ADR-092 cross-team tell-lead (phase-2, t-bc4fdb19)", () => {
         "--team-dir",
         fixture.repoPath,
         "--team",
-        epic.epicName,
+        child.childName,
         "phase-2",
         "driver",
         "ping",
       ]),
     ).rejects.toThrow(ConfigError);
-    const epicInbox = await readInboxOrEmpty(epic.epicAtmuxDir);
-    expect(epicInbox).toContain("phase-2 driver ping");
-    expect(epicInbox).toContain("# Driver Inbox");
-    // Parent inbox stays empty — routing went to epic, not source.
+    const childInbox = await readInboxOrEmpty(child.childAtmuxDir);
+    expect(childInbox).toContain("phase-2 driver ping");
+    expect(childInbox).toContain("# Driver Inbox");
+    // Parent inbox stays empty — routing went to the child, not source.
     const parentInbox = await readInboxOrEmpty(fixture.atmuxDir);
     expect(parentInbox).toBe("");
   });
 
-  test("epic-lead → parent — child-to-parent allowed via §D3 case (c)", async () => {
-    // ADR-092 §D3 case (c): child epic-team → its parent is allowed
-    // natively (cockpit's `epicTeam.parent` linkage authorizes the
-    // route). ATMUX_CALLER_SCOPE unset — gate uses cockpit topology.
+  test("child lead → parent — child-to-parent allowed via §D3 case (c)", async () => {
+    // ADR-092 §D3 case (c): a child cage → its parent is allowed
+    // natively. ATMUX_CALLER_SCOPE unset, so the gate resolves the link
+    // purely from cockpit topology — and THIS is the case ADR-280 stage
+    // 3 widened: the parent used to be read off the `epic-team` node's
+    // own back-pointer, so an ordinary nested team would have been
+    // refused here. It is now derived from the walk's ancestry, so the
+    // route holds for any nesting.
     delete process.env.ATMUX_CALLER_SCOPE;
-    const epicRoot = join(`${fixture.repoPath}-epics`, epic.epicName);
     await expect(
       tellLead([
         "--team-dir",
-        epicRoot,
+        child.childRoot,
         "--team",
         fixture.parentName,
         "phase-2",
-        "epic-up",
+        "child-up",
         "ping",
       ]),
     ).rejects.toThrow(ConfigError);
     const parentInbox = await readInboxOrEmpty(fixture.atmuxDir);
-    expect(parentInbox).toContain("phase-2 epic-up ping");
-    // Epic inbox stays empty — routing went up, not back to source.
-    const epicInbox = await readInboxOrEmpty(epic.epicAtmuxDir);
-    expect(epicInbox).toBe("");
+    expect(parentInbox).toContain("phase-2 child-up ping");
+    // Child inbox stays empty — routing went up, not back to source.
+    const childInbox = await readInboxOrEmpty(child.childAtmuxDir);
+    expect(childInbox).toBe("");
   });
 
-  test("unrelated team → epic — caller-scope refused, NO inbox write either side", async () => {
+  test("unrelated team → child — caller-scope refused, NO inbox write either side", async () => {
     // ADR-092 §D3 case (e/g): an unrelated source team → target is
     // refused before any inbox mutation. Refusal text names both
     // endpoints per Decision-anchor #5. Stage a third "outsider"
@@ -552,53 +410,32 @@ describe("ADR-092 cross-team tell-lead (phase-2, t-bc4fdb19)", () => {
 
     delete process.env.ATMUX_CALLER_SCOPE;
     await expect(
-      tellLead(["--team-dir", outsiderRoot, "--team", epic.epicName, "should be refused"]),
+      tellLead(["--team-dir", outsiderRoot, "--team", child.childName, "should be refused"]),
     ).rejects.toThrow(/refused/);
     // Critical: refusal fires BEFORE appendDriverInbox — neither
     // source nor target inbox has the message.
-    const epicInbox = await readInboxOrEmpty(epic.epicAtmuxDir);
-    expect(epicInbox).toBe("");
+    const childInbox = await readInboxOrEmpty(child.childAtmuxDir);
+    expect(childInbox).toBe("");
     const outsiderInbox = await readInboxOrEmpty(outsiderAtmux);
     expect(outsiderInbox).toBe("");
   });
 });
 
 // =========================================================================
-// PHASE-2 DEFERRED — doctor D5a / D8 / D9 (gated on t-c2e544b6)
+// DEFERRED — doctor D9 (gated on t-c2e544b6)
 // =========================================================================
 //
-// Doctor probe surfaces are NOT yet on trunk (t-c2e544b6 owns them).
-// Captured here as `test.todo` placeholders so phase-2's residual
-// scope is visible at file-grep time + the follow-up claimant has a
-// turnkey wiring spec. The Task body's AC bullet #2 (D5a/D8/D9
-// assertions fire) re-claims as t-c2e544b6 ships.
+// ADR-280 stage 4 dropped two of the three deferred doctor probes: D5a
+// (submodule-pointer integrity for an epic-team worktree) and D8
+// (`epicTeam.parent` reachability). Both named the retired type and the
+// retired schema field, so neither is outstanding work any more. D9 is
+// nesting-general and survives.
 //
-//   - D5a — submodule pointer integrity (extends ADR-057 §D5a for
-//           epic-team awareness). Helper: build a corrupted submodule
-//           pointer in an epic-team worktree + assert doctor row
-//           severity.
-//   - D8  — `epicTeam.parent` reachability. Helper: spawn epic, then
-//           remove parent from cockpit; assert orphan-epic P1 row.
-//   - D9  — prefix-level consistency. Every cage tmux.conf prefix
-//           must match `ATMUX_NESTING_LEVEL` env (ADR-089). Helper:
-//           build mismatched prefix env + tmux.conf; assert mismatch
-//           row.
-//
-// Adjacent-flag deferrals (auto-mode capstone bypasses; pr-mode
-// follow-up territory — t-cc4c5fd9 audit):
-//   - gh-CLI auth-switch race under pr-mode.
-//   - Claude API rate-limit ceiling at 2 epics × 7 members = 14 TUIs.
-//   - GitHub Actions cross-account secret scoping.
+//   - D9 — prefix-level consistency. Every cage tmux.conf prefix must
+//           match `ATMUX_NESTING_LEVEL` env (ADR-089). Helper: build
+//           mismatched prefix env + tmux.conf; assert mismatch row.
 
-describe.todo("ADR-092 doctor D5a/D8/D9 (deferred to t-c2e544b6)", () => {
-  test.todo("D5a — submodule pointer integrity for epic-team worktree", () => {
-    // Build corrupted submodule pointer in epic-team worktree;
-    // assert doctor row severity per ADR-057 §D5a extension.
-  });
-  test.todo("D8 — orphan epic-team surfaces when parent removed mid-lifecycle", () => {
-    // Spawn epic, remove parent from cockpit; assert orphan-epic P1
-    // doctor row.
-  });
+describe.todo("ADR-092 doctor D9 (deferred to t-c2e544b6)", () => {
   test.todo("D9 — prefix-level consistency across cage tmux.conf + env", () => {
     // Build mismatched ATMUX_NESTING_LEVEL env vs tmux.conf prefix;
     // assert mismatch row.

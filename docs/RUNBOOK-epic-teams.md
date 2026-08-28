@@ -1,5 +1,17 @@
 # RUNBOOK: Epic-team test-gate (cage / deployed / skip)
 
+> ⚠ **RETIRED 2026-08-27 — [ADR-280](adr/280-epic-team-retirement-and-staged-excision.md).**
+> Epic-teams no longer exist. The `epic-team` cage type, the `epicId` cockpit
+> field, and every verb this runbook drives — `team spawn-epic`,
+> `team dissolve-epic`, `team sweep-epics`, `epic-merge`, and the three
+> worker-team verbs built on them — were removed from atmux. **Nothing below is
+> runnable.** It is kept as history, not as a playbook.
+>
+> What SURVIVES is the nesting mechanism itself: a `team` may contain child
+> cages to arbitrary depth for any reason, with no epic and no `epicId`
+> ([ADR-089 §Amendment 2026-08-27](adr/089-hierarchical-cockpit.md) §(A);
+> operator-facing form in [RUNBOOK-cockpit.md §11](RUNBOOK-cockpit.md)).
+
 Operator runbook for the ADR-144 epic-team test-gate. Covers
 configuration, mode selection, mid-flight inspection, manual
 recovery from `test_failed`, and the operator bypass.

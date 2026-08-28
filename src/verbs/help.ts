@@ -134,40 +134,6 @@ Maintenance:
   member move <id> --to <position>          Relocate member's tmux window (ADR-161 §C)
   member swap <id-a> <id-b>                 Pairwise window swap (ADR-161 §C)
   member sort [--defaults-first]            Canonical reorder (ADR-161 §C)
-  team spawn-epic <epicId> --from <parent> [--roster <preset>|--roster-file <p>]
-                              ADR-090: spawn an ephemeral epic-team child of
-                              <parent>. Worktree at <parentRoot>-epics/<epicId>
-                              on branch <parentBase>-epic-<epicId>; cockpit
-                              entry appended under the parent. Requires
-                              ATMUX_CALLER_SCOPE=driver.
-  team dissolve-epic <epicId> [--skip-checks] [--force-prune]
-                              ADR-090: tear down an epic-team spawned via
-                              spawn-epic. Soft-stop + prune worktree + remove
-                              cockpit entry + mark parent kanban EPIC done.
-                              --skip-checks bypasses the all-tasks-done +
-                              clean-worktree gates (lead-override).
-  team sweep-epics [--apply] [--idle-hours N] [--parent <team>] [--json]
-                              ADR-170: enumerate every enabled epic-team and
-                              classify each (DRAIN/SAFE-DISSOLVE/STALE-IDLE/
-                              RISKY/MISSING). Read-only by default; --apply
-                              dissolves only SAFE-DISSOLVE candidates (0 open
-                              tasks + clean worktree + branch pushed to
-                              origin) via the ADR-090 dissolve-epic pipeline.
-  team spawn-worker <task-id> --from <parent> [--roster <preset>] [--parent-base <b>]
-                              ADR-221 §v2: thin wrapper around spawn-epic for
-                              single-task worker-teams. Derives worker-id from
-                              task-id (\`t-x\` / \`x\` / \`w-x\` → \`w-x\`), auto-
-                              creates a wrapper kanban EPIC in the parent, and
-                              defaults --roster=solo. Driver-scope only.
-  team dissolve-worker <worker-id-or-task-id> [--skip-checks] [--force-prune]
-                              ADR-221 §v2: dissolve-epic counterpart for
-                              worker-teams. Refuses generic \`e-\` epic ids;
-                              normalises \`t-\` / bare / \`w-\` forms to \`w-<tail>\`
-                              before delegating. Driver-scope only.
-  team list-workers [--parent <team>] [--json]
-                              ADR-221 §v2: enumerate enabled worker-teams in
-                              the cockpit (epic-teams with \`w-\` prefix). Read-
-                              only — for housekeeping use \`sweep-epics\`.
   reconfigure                 Re-run wizard against an existing team.json
   dashboard [--interval <s>]  Live full-screen status panel
   doctor [--fix] [--json]     Check deps, team.json, TUI PATH, webhook reachability

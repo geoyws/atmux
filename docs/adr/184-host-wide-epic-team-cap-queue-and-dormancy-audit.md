@@ -5,6 +5,8 @@
 **Driver-ref**: 2026-05-17 22:25 MYT driver-inbox P0 — hax box RAM-pinned (49/61 GiB RAM, 61/127 GiB swap, load 24, 61 tmux servers, 225 claude procs, ~56 GiB RSS observed). Driver: hard cap on concurrent atmux epic-teams across all projects + serialization/queue policy + audit-and-retire-dormant protocol for the current 61.
 **Relates**: ADR-018 (per-team tmux socket isolation), ADR-058 (cage tiering — host-tier becomes implicit Tier-0), ADR-077 (medic — dormancy-heuristic precedent), ADR-090 (epic-team lifecycle — `spawn-epic` / `dissolve-epic`), ADR-126 (JSON fallback storage pattern), ADR-132/158 (sentinel — pluggable observer; possible v2 host-tier candidate), ADR-148 (commit-cadence ground-truth signal).
 
+> ⚠ **SUPERSEDED 2026-08-27 by [ADR-280](280-epic-team-retirement-and-staged-excision.md).** Epic-teams are retired: the `epic-team` cage type, the `epicId` cockpit field and the epic verbs no longer exist. This ADR is kept as history — the decision it records was true when made. Do not implement from it.
+
 ## Context
 
 Epic-teams (per ADR-090) spawn one tmux server + N member panes (~150-280 MB RSS each) per ephemeral child team. With M projects on hax (atmux / unum / sopx / rentx / bugbot / fixer / mmx) × K active epic-teams each, RSS scales O(MK). 2026-05-17 22:25 MYT snapshot:

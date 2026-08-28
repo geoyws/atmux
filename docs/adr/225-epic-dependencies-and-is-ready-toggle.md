@@ -5,6 +5,8 @@
 **Driver-ref**: EPIC e-cf8a6195 (master design-task `t-802c468b` in parent atmux kanban)
 **Sibling EPIC**: e-60e16169 (orchd auto-spawn loop — Phase 2 consumer)
 
+> ⚠ **SUPERSEDED 2026-08-27 by [ADR-280](280-epic-team-retirement-and-staged-excision.md).** Epic-teams are retired: the `epic-team` cage type, the `epicId` cockpit field and the epic verbs no longer exist. This ADR is kept as history — the decision it records was true when made. Do not implement from it.
+
 ## Context
 
 atmux already has TASK-level `deps` (in-array of task IDs; `claim --next` skips

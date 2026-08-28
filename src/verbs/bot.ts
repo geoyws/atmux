@@ -1,4 +1,4 @@
-// ADR-280 §D3 — operator availability interlock for the cooperative
+// ADR-281 §D3 — operator availability interlock for the cooperative
 // per-team `_bot` seat. This verb only mutates a window-scoped tmux
 // option; it never claims, assigns, or changes Kanban work state.
 

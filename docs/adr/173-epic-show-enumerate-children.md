@@ -5,6 +5,8 @@
 **Driver-ref**: ADR-193 §OQ-4 carve-out — read-side ergonomics deferred to a sibling ADR. ADR-176 §Consequences also references the gap implicitly (criterion (d) requires children-indexable data; the operator-facing view of those children is what ADR-173 surfaces).
 **Relates**: ADR-007 (Epic/Story/Task hierarchy original spec), ADR-193 (write-side `--epic`/`--story` flags — runtime prerequisite), ADR-176 (criterion (d) — same data path), ADR-165 (CLI-surface pattern reference).
 
+> ⚠ **SUPERSEDED 2026-08-27 by [ADR-280](280-epic-team-retirement-and-staged-excision.md).** Epic-teams are retired: the `epic-team` cage type, the `epicId` cockpit field and the epic verbs no longer exist. This ADR is kept as history — the decision it records was true when made. Do not implement from it.
+
 ## Context
 
 `atmux epic show <eid>` today returns:

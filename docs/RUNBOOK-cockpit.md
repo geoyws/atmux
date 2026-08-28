@@ -39,9 +39,9 @@ Use top-level `windows[]` for a durable cockpit workspace that is not backed by 
 
 Null or omitted `command` starts zsh. These windows appear after the proposed `_superbot` role and before team viewers, in declaration order. Without `_superbot`, the current order remains after `_medic`. Reconcile preserves an existing matching pane and applies `cwd`/`command` only when recreating a missing window. Names must not collide with cockpit roles or team viewers.
 
-### Proposed `_superbot` role (ADR-280)
+### Proposed `_superbot` role (ADR-281)
 
-ADR-280 proposes a deterministic scheduler window immediately after optional `_medic`:
+ADR-281 proposes a deterministic scheduler window immediately after optional `_medic`:
 
 ```json
 {
@@ -253,7 +253,7 @@ Leads live in per-team cages (per [ADR-162](adr/162-atmux-owns-tmux-infrastructu
 
 The cockpit-W3 sentinel role retired per EPIC e-be01fc89 (2026-05-23) —
 mechanical observation distributes to Honker event consumers per
-sibling EPIC e-a946af69 (orchd Phase 3-5). Until those consumers ship,
+sibling EPIC e-a946af69 (orchd Phase 3-5 — will not ship; orchd retired per ADR-276). Absent them,
 operators run on-demand audits via `atmux doctor` and the lead's
 self-driven whip cron (see `docs/RUNBOOK-on-demand-audit.md`). The
 historical sentinel install + recovery surface (W3 `_sentinel` window,
@@ -378,8 +378,63 @@ Inspect `<projectRoot>/.atmux/state/rename-rollback.log` first to identify which
 
 End-to-end dogfood pattern on the atmux team itself shipped under EPIC e-1e223687 (T6). The pattern: pick a reversible target (e.g. `atmux` → `atmux-core` then `atmux-core` → `atmux`), capture before/after `tmux list-panes -F '#{pane_pid}'` for PID stability, run `top -b -n 30 -d 0.1 -p $(pgrep -f atmux)` to verify peak RSS during rename < baseline × 1.1, confirm idempotent round-trip.
 
+## §11 — Nesting depth + the tmux prefix chain
+
+ADR-089 §C has cited this section since 2026-05-13; it is written here for the first time on 2026-08-27, alongside [ADR-089 §Amendment 2026-08-27](adr/089-hierarchical-cockpit.md).
+
+### Nest for any reason — the mechanism does not know why
+
+A cage may contain child cages, to arbitrary depth. There is **no rule that a nested cage must be an epic-team**, and no requirement that a child carry an `epicId`. Epic-teams are one kind of nested cage — the kind with a kanban epic behind them — and they keep their `epicId` because ADR-090's lifecycle joins on it. Nesting for organisational reasons (a group of products, a product's projects, a project's driver lanes) uses plain `type: "team"` children and needs no epic anywhere.
+
+### Which chord reaches which tier
+
+Each nesting level is its own tmux server on its own socket, and each gets its own prefix key so a chord is unambiguous regardless of which socket you happen to be attached to:
+
+| Level | Tier | Prefix |
+|---|---|---|
+| L0 | Host tmux (your daily driver) | `C-a` |
+| L1 | atmux cockpit | `F1` |
+| L2 | Group | `F2` |
+| L3 | Project / team cage | `F3` |
+| L4 | Nested cage — epic-team or any other reason | `F4` |
+| L5 | Spare | `F5` |
+| L6..L12 | Deeper nesting, if you have it | `F6`..`F12` |
+
+⚠ **A team cage moved from `F2` to `F3`, and an epic-team from `F3` to `F4`, when the group tier was inserted (2026-08-27).** If you have not run a fleet with a group tier, your cages are still at the pre-shift rungs.
+
+**The shift is enforced by atmux itself since 2026-08-28** (ADR-089's true-containment group-tier note): every enabled `type: "group"` backs a real tmux server on `/tmp/atmux-grp-<group>/sock`, and `atmux cockpit reconcile` applies `resolvePrefix(level + 2, …)` to each group server AND each team cage — a top-level group binds `F2`, its teams `F3`, an ungrouped top-level team stays `F2`. The earlier caveat that the shift waited on the operator dotfiles' socket-pattern `if-shell` chain (`_dotfiles/tmux/.tmux.conf` + `_dotfiles/atmux/tmux.conf.local`) is superseded for prefix ASSIGNMENT; those dotfiles chains still exist and, matching on socket path, can re-clobber a reconcile-applied prefix — if a cage's chord is wrong after a reconcile, check the dotfiles chain second (depth first, per §Depth beyond the chain).
+
+### Override the chain
+
+```bash
+# In ~/.atmux/cockpit.json — flips the whole chain, not one level.
+"prefixChain": ["F1", "F2", "F3", "F4", "F5", "F6"]
+
+# Ctrl-letter variant for terminals where F-keys are modal (Termius / Blink / iTerm2-CC):
+"prefixChain": ["C-q", "C-w", "C-e", "C-r", "C-t", "C-y"]
+```
+
+The chain must have at least `MAX_NESTING_LEVEL` (6) entries and every entry must be unique; `loadCockpit` refuses the config otherwise. Unset leaves the F1..F12 default in place.
+
+### Depth beyond the chain
+
+Every level gets a distinct key for as long as the chain lasts. Depth past the chain's end is meant to be **refused** with an actionable error — never clamped to the deepest key and never wrapped back to `F1`, both of which would make one chord mean two cages. **That refusal is not implemented yet** (ADR-089 §Amendment 2026-08-27 §(C)/§(D)): today an over-deep tree loads without complaint and the affected cage silently falls back to tmux's legacy `C-\` prefix. If a cage's chord is not what this table says, check your depth before checking your dotfiles.
+
+### Verifying a cage's prefix
+
+```bash
+# What prefix is this cage actually on?
+tmux -S <socket> show-options -g prefix
+
+# What level does the cage believe it is at?
+echo "$ATMUX_NESTING_LEVEL"     # from inside a cage pane; 1-indexed, L1 = cockpit
+```
+
+A mismatch between those two is the ADR-092 doctor probe D9's finding class, and it is the symptom of the dotfiles chain and the depth arithmetic disagreeing.
+
 ## Cross-references
 
+- [ADR-089](adr/089-hierarchical-cockpit.md) — hierarchical cockpit (recursive `sessions[]` + the prefix chain); §Amendment 2026-08-27 generalises nesting beyond epic-teams and records the group-tier prefix shift (§11 above).
 - [ADR-167](adr/167-cockpit-rotate-verb.md) — cockpit rotate verb (Rung C); §Amendment 2026-05-17 documents wrapper-resolver asymmetry + handoff write-path semantics.
 - [ADR-162](adr/162-atmux-owns-tmux-infrastructure.md) — atmux owns its tmux infrastructure (cockpit socket isolation + canonical atmux.conf + version probes).
 - [ADR-135](adr/135-cockpit-naming-convention.md) — cockpit naming convention (`_-prefix` for default-member windows; session literal now `atx` per [ADR-264](adr/264-cockpit-session-atx-rename.md)).

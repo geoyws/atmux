@@ -18,14 +18,12 @@ import { UsageError } from "../../../src/errors.ts";
 import {
   CAPTURE_LINES,
   cageIsAbsent,
-  EPIC_TEAM_NO_CAGE_REASON,
   type FleetDeps,
   fleet,
   parseFleetArgs,
   parseWindowProbe,
   probeTeamLive,
   readTeamAsks,
-  resolveEpicEntry,
   SWEEP_CONCURRENCY_DEFAULT,
   SWEEP_TIMEOUT_MS_DEFAULT,
   sweepFleet,
@@ -181,46 +179,18 @@ describe("parseWindowProbe", () => {
 // sweepFleet — bounding, concurrency, and the no-silent-omission rule
 // ---------------------------------------------------------------------
 
-describe("resolveEpicEntry", () => {
-  test("rewrites .root to the ADR-089 in-parent cage, leaving every other field alone", () => {
-    const entry = team("8-abc", {
-      type: "epic-team",
-      root: "/w/mx",
-      epicId: "8-abc",
-      parent: "mx",
-    });
-    const got = resolveEpicEntry(entry, (p) => p === "/w/mx/.atmux/worktrees/8-abc");
-    expect(got).toEqual({ ...entry, root: "/w/mx/.atmux/worktrees/8-abc" });
-  });
-
-  test("rewrites .root to the ADR-090 sibling cage when that is the one on disk", () => {
-    const entry = team("8-abc", { type: "epic-team", root: "/w/mx", epicId: "8-abc" });
-    expect(resolveEpicEntry(entry, (p) => p === "/w/mx-epics/8-abc")?.root).toBe(
-      "/w/mx-epics/8-abc",
-    );
-  });
-
-  test("falls back to the entry NAME when the cockpit node carries no epicId", () => {
-    const entry = team("8-abc", { type: "epic-team", root: "/w/mx" });
-    expect(resolveEpicEntry(entry, (p) => p === "/w/mx-epics/8-abc")?.root).toBe(
-      "/w/mx-epics/8-abc",
-    );
-  });
-
-  test("returns null when neither cage path exists — never the parent's root", () => {
-    const entry = team("8-abc", { type: "epic-team", root: "/w/mx", epicId: "8-abc" });
-    expect(resolveEpicEntry(entry, () => false)).toBeNull();
-  });
-
-  test("with no existsSync injected it reads the real filesystem", async () => {
-    const parent = await makeRoot({});
-    await mkdir(join(parent, ".atmux", "worktrees", "8-real"), { recursive: true });
-    const found = team("8-real", { type: "epic-team", root: parent, epicId: "8-real" });
-    expect(resolveEpicEntry(found)?.root).toBe(join(parent, ".atmux", "worktrees", "8-real"));
-    const missing = team("8-nope", { type: "epic-team", root: parent, epicId: "8-nope" });
-    expect(resolveEpicEntry(missing)).toBeNull();
-  });
-});
+// ADR-280 stage 3 deleted `resolveEpicEntry` and `EPIC_TEAM_NO_CAGE_REASON`
+// along with `core/cage-resolver.ts` (ADR-251), whose last consumer was
+// exactly this epic branch. The suite that covered them is gone with the
+// code. What replaced the branch is simpler and is asserted below in
+// `sweepFleet`: a nested team carries its OWN root on its cockpit entry
+// (stage 3's walker change), so it is swept as an ordinary team with no
+// rewrite step and no epic-shaped demotion.
+//
+// `cageIsAbsent` SURVIVES as an export but its only production caller
+// was that branch, so it is currently caller-less. Reported rather than
+// deleted — trimming a live export is not stage 4's call — and kept
+// under test so it does not rot while it waits for a verdict.
 
 describe("cageIsAbsent", () => {
   test("true only when EVERY observation says the session is absent", () => {
@@ -308,109 +278,78 @@ describe("sweepFleet", () => {
     expect(s.teamsSurveyed).toBe(3);
   });
 
-  test("a LIVE epic-team is swept, and probed at its OWN cage root — not the parent root the entry carries", async () => {
-    // The regression this pins: the cockpit entry's `.root` is the
-    // PARENT's (the flattener threads parentRoot through), so probing it
-    // verbatim reads the parent's cage and reports a confident wrong
-    // answer about the child. Before this fix no epic-team was probed at
-    // all — every one was reported unreadable.
+  // ADR-280 stage 4 — the nine cases that stood here drove the
+  // epic-team branch `sweepFleet` no longer has: entry-root rewriting via
+  // `resolveEpicEntry`, and the demotion of a cage-less epic-team onto the
+  // unreadable line under `EPIC_TEAM_NO_CAGE_REASON`. Both are gone with
+  // the branch, so the cases that asserted them are gone too. The
+  // properties that OUTLIVE the branch are kept, and are stronger now
+  // because they hold for every team rather than for one type:
+
+  test("a NESTED team is swept like any other, at the root its own cockpit entry carries", async () => {
+    // Stage 3's walker change is what makes this true: a nested entry
+    // used to inherit the PARENT's root (which is why probing it verbatim
+    // read the parent's cage and reported a confident wrong answer, and
+    // why a rewrite step existed at all). A nested `team` node carries its
+    // own root, so no rewrite is needed and none happens.
     const probed: Array<{ name: string; root: string }> = [];
     const s = await sweepFleet({
       listTeams: async () => [
         team("mx", { root: "/w/mx-root" }),
-        team("8-abc", { type: "epic-team", root: "/w/mx-root", epicId: "8-abc" }),
+        team("mx-child", { root: "/w/mx-root/children/child", level: 1, parent: "mx" }),
       ],
-      resolveEpicEntry: (e) => ({ ...e, root: "/w/mx-root-epics/8-abc" }),
       probeTeam: async (t) => {
         probed.push({ name: t.name, root: t.root });
-        return { panes: [obs({ team: t.name })], asks: null, unreadable: null };
+        return {
+          panes: [obs({ team: t.name })],
+          asks: { team: t.name, driverInboxUnread: 2, openFlags: 0, gist: "g" },
+          unreadable: null,
+        };
       },
       now: () => 0,
     });
     expect(probed).toEqual([
       { name: "mx", root: "/w/mx-root" },
-      { name: "8-abc", root: "/w/mx-root-epics/8-abc" },
+      { name: "mx-child", root: "/w/mx-root/children/child" },
     ]);
-    // The whole point: a live epic-team produces PANES and no unreadable
-    // row at all — it is an ordinary team once its root is resolved.
-    expect(s.panes.map((p) => p.team)).toEqual(["mx", "8-abc"]);
+    // Panes AND asks both come through — the sweep reaches the child's
+    // whole cage, not just its panes — and nothing lands unreadable.
+    expect(s.panes.map((p) => p.team)).toEqual(["mx", "mx-child"]);
+    expect(s.asks.map((a) => a.team)).toEqual(["mx", "mx-child"]);
     expect(s.unreadable).toEqual([]);
   });
 
-  test("a live epic-team's asks are collected too — resolution reaches its whole cage, not just its panes", async () => {
+  test("a team whose session is DOWN reports as a pane — at every level, with no demotion", async () => {
+    // The old behaviour was ASYMMETRIC on purpose: a top-level team being
+    // down was news and reached the attention list, while an epic-team in
+    // the same state was demoted to the unreadable line as chronic
+    // bookkeeping. With epic-teams retired there is no ephemeral class
+    // left to demote, so both levels now behave the same way — pinned in
+    // both directions so a re-introduced demotion is a visible change.
     const s = await sweepFleet({
-      listTeams: async () => [team("8-abc", { type: "epic-team", epicId: "8-abc" })],
-      resolveEpicEntry: (e) => ({ ...e, root: "/w/own" }),
+      listTeams: async () => [
+        team("orch"),
+        team("orch-child", { root: "/w/orch/children/c", level: 1, parent: "orch" }),
+      ],
       probeTeam: async (t) => ({
-        panes: [obs({ team: t.name })],
-        asks: { team: t.name, driverInboxUnread: 2, openFlags: 0, gist: "g" },
-        unreadable: null,
-      }),
-      now: () => 0,
-    });
-    expect(s.asks).toEqual([{ team: "8-abc", driverInboxUnread: 2, openFlags: 0, gist: "g" }]);
-  });
-
-  test("an epic-team with NO cage on disk is reported once, with an ACTIONABLE reason", async () => {
-    const s = await sweepFleet({
-      listTeams: async () => [team("parent"), team("e-1", { type: "epic-team" })],
-      resolveEpicEntry: () => null,
-      probeTeam: async () => EMPTY,
-      now: () => 0,
-    });
-    expect(s.unreadable).toEqual([{ team: "e-1", reason: EPIC_TEAM_NO_CAGE_REASON }]);
-    expect(s.teamsSurveyed).toBe(2);
-    // Actionable means it names the verb that removes it — a reason the
-    // operator cannot act on is the noise ADR-273 D3 forbids.
-    expect(EPIC_TEAM_NO_CAGE_REASON).toContain("atmux team dissolve-epic");
-  });
-
-  test("an epic-team whose cage EXISTS but is not running lands on the unreadable line, not in the attention budget", async () => {
-    // An ephemeral cage that ended is chronic bookkeeping, not news
-    // (ADR-273 §S3.3's argument, applied to epic-teams). Reporting it as
-    // an acute `dead` item would hold a spoken slot on every sweep for a
-    // team that finished months ago.
-    const s = await sweepFleet({
-      listTeams: async () => [team("e-1", { type: "epic-team" })],
-      resolveEpicEntry: (e) => ({ ...e, root: "/w/own" }),
-      probeTeam: async () => ({
-        panes: [obs({ team: "e-1", sessionUp: false, windowPresent: false, capture: null })],
-        asks: null,
-        unreadable: null,
-      }),
-      now: () => 0,
-    });
-    expect(s.unreadable).toEqual([{ team: "e-1", reason: EPIC_TEAM_NO_CAGE_REASON }]);
-    // The synthetic session-absent observation is DROPPED rather than
-    // double-reported: it must not also become a `dead` attention item.
-    expect(s.panes).toEqual([]);
-  });
-
-  test("a TOP-LEVEL team whose session is down still reports as a pane — the demotion is epic-only", async () => {
-    // The asymmetry IS the decision, so it is pinned in both directions:
-    // a standing team being down is news and must keep reaching the
-    // attention list.
-    const s = await sweepFleet({
-      listTeams: async () => [team("orch")],
-      probeTeam: async () => ({
-        panes: [obs({ team: "orch", sessionUp: false, windowPresent: false, capture: null })],
+        panes: [obs({ team: t.name, sessionUp: false, windowPresent: false, capture: null })],
         asks: null,
         unreadable: null,
       }),
       now: () => 0,
     });
     expect(s.unreadable).toEqual([]);
-    expect(s.panes.map((p) => p.sessionUp)).toEqual([false]);
+    expect(s.panes.map((p) => p.team)).toEqual(["orch", "orch-child"]);
+    expect(s.panes.map((p) => p.sessionUp)).toEqual([false, false]);
   });
 
-  test("a live epic-team with a broken pane is still swept — only TOTAL cage absence is demoted", async () => {
-    // Guards the trade-off from swallowing real findings: a bad pane
-    // inside a running epic cage must still reach the operator.
+  test("a nested team with a broken pane is still swept in full", async () => {
+    // Guards the removed trade-off from coming back by accident: a bad
+    // pane inside a running nested cage must reach the operator.
     const s = await sweepFleet({
-      listTeams: async () => [team("e-1", { type: "epic-team" })],
-      resolveEpicEntry: (e) => ({ ...e, root: "/w/own" }),
+      listTeams: async () => [team("c-1", { root: "/w/own", level: 1, parent: "p" })],
       probeTeam: async () => ({
-        panes: [obs({ team: "e-1", paneDead: true }), obs({ team: "e-1", member: "be-1" })],
+        panes: [obs({ team: "c-1", paneDead: true }), obs({ team: "c-1", member: "be-1" })],
         asks: null,
         unreadable: null,
       }),
@@ -420,55 +359,25 @@ describe("sweepFleet", () => {
     expect(s.panes).toHaveLength(2);
   });
 
-  test("an epic-team with no cage on disk is NOT probed — a guessed root would read the parent's cage", async () => {
-    let probeCalls = 0;
-    await sweepFleet({
-      listTeams: async () => [team("e-1", { type: "epic-team" })],
-      resolveEpicEntry: () => null,
-      probeTeam: async () => {
-        probeCalls += 1;
-        return EMPTY;
+  test("no team type is special-cased out of the probe — every listed team is probed exactly once", async () => {
+    // The deleted branch could skip the probe entirely (a cage-less
+    // epic-team was never probed). Nothing skips it now, which is the
+    // never-silently-omit contract holding without an exception.
+    const probeCalls: string[] = [];
+    const s = await sweepFleet({
+      listTeams: async () => [
+        team("a"),
+        team("b", { level: 1, parent: "a" }),
+        team("c", { level: 2, parent: "b" }),
+      ],
+      probeTeam: async (t) => {
+        probeCalls.push(t.name);
+        return { panes: [obs({ team: t.name })], asks: null, unreadable: null };
       },
       now: () => 0,
     });
-    expect(probeCalls).toBe(0);
-  });
-
-  test("BOTH no-cage cases share ONE reason string, so the renderer collapses them into one clause", async () => {
-    // Per-case reason text would defeat renderUnreadable's group-by-
-    // reason and spend one spoken clause per dead entry — the exact noise
-    // this change exists to remove. e-1's cage root is gone; e-2 and e-3
-    // have roots but no running cage.
-    const s = await sweepFleet({
-      listTeams: async () => [
-        team("e-1", { type: "epic-team" }),
-        team("e-2", { type: "epic-team" }),
-        team("e-3", { type: "epic-team" }),
-      ],
-      resolveEpicEntry: (e) => (e.name === "e-1" ? null : { ...e, root: "/w/own" }),
-      probeTeam: async (t) => ({
-        panes: [obs({ team: t.name, sessionUp: false, windowPresent: false, capture: null })],
-        asks: null,
-        unreadable: null,
-      }),
-      now: () => 0,
-    });
-    expect(s.unreadable.map((u) => u.team)).toEqual(["e-1", "e-2", "e-3"]);
-    expect(new Set(s.unreadable.map((u) => u.reason)).size).toBe(1);
-    expect(renderUnreadable(s.unreadable).split("\n")).toHaveLength(1);
-  });
-
-  test("the default epic resolver is used when none is injected", async () => {
-    // Guards the wiring: an injected-only resolver would leave production
-    // on the old always-unreadable path with every test still green.
-    const s = await sweepFleet({
-      listTeams: async () => [
-        team("e-gone", { type: "epic-team", root: "/nonexistent/parent-root" }),
-      ],
-      probeTeam: async () => EMPTY,
-      now: () => 0,
-    });
-    expect(s.unreadable).toEqual([{ team: "e-gone", reason: EPIC_TEAM_NO_CAGE_REASON }]);
+    expect(probeCalls.sort()).toEqual(["a", "b", "c"]);
+    expect(s.teamsSurveyed).toBe(3);
   });
 
   test("teams are swept CONCURRENTLY up to the cap", async () => {

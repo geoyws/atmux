@@ -24,6 +24,7 @@ import type { MemberCageHealth } from "../../../src/verbs/doctor/cockpit.ts";
 import {
   checkLegacyWindowNameFormat,
   checkMemberCageStates,
+  checkOrphanSessions,
   probeSessionName,
 } from "../../../src/verbs/doctor/cockpit.ts";
 
@@ -80,12 +81,12 @@ describe("probeSessionName", () => {
     expect(await probeSessionName({ name: "unum", members: [] }, { root })).toBe("atmux_unum");
   });
 
-  test("{ root } with no anchor falls back to the hyphen form start.ts creates", async () => {
+  test("{ root } with no anchor falls back to the bare form start.ts creates (e-419553c6)", async () => {
     const root = await makeRoot();
-    expect(await probeSessionName({ name: "sopx", members: [] }, { root })).toBe("atmux-sopx");
+    expect(await probeSessionName({ name: "sopx", members: [] }, { root })).toBe("sopx");
   });
 
-  test("{ root } special-cases the atmux team's BARE session name", async () => {
+  test("{ root } — the atmux team is bare like every other team now", async () => {
     const root = await makeRoot();
     expect(await probeSessionName({ name: "atmux", members: [] }, { root })).toBe("atmux");
   });
@@ -123,13 +124,13 @@ describe("probeSessionName", () => {
     expect(await probeSessionName({ name: "whatever", members: [] }, {})).toBe("atmux_current");
   });
 
-  test("a singleSession team with no anchor fails SOFT to the legacy literal, never throws", async () => {
+  test("a singleSession team with no anchor fails SOFT to the bare name, never throws", async () => {
     // getSessionName raises ConfigError here. One misconfigured team must
-    // not take down the whole `atmux doctor` run, and the literal is
-    // exactly what this probe used before the fix.
+    // not take down the whole `atmux doctor` run, and the bare name is
+    // what an unanchored team's session is actually called (e-419553c6).
     const root = await makeRoot();
     const team: Team = { name: "legacy", members: [], singleSession: true };
-    expect(await probeSessionName(team, { atmuxDir: join(root, ".atmux") })).toBe("atmux-legacy");
+    expect(await probeSessionName(team, { atmuxDir: join(root, ".atmux") })).toBe("legacy");
   });
 });
 
@@ -199,7 +200,7 @@ describe("checkMemberCageStates — session name resolution", () => {
     expect(seen).toEqual(["atmux_unum"]);
   });
 
-  test("an unanchored team keeps the hyphen form — no existing team shifts", async () => {
+  test("an unanchored team probes the bare name (e-419553c6)", async () => {
     const root = await makeRoot();
     const asked: string[] = [];
     await checkMemberCageStates({ name: "sopx", members: [member("be-1")] }, join(root, ".atmux"), {
@@ -208,7 +209,7 @@ describe("checkMemberCageStates — session name resolution", () => {
         return false;
       },
     });
-    expect(asked).toEqual(["atmux-sopx"]);
+    expect(asked).toEqual(["sopx"]);
   });
 });
 
@@ -310,5 +311,65 @@ describe("checkLegacyWindowNameFormat — session name resolution", () => {
       },
     );
     expect(tmux.calls[0]).toContain("atmux_current");
+  });
+});
+
+// ---------------------------------------------------------------------
+// checkOrphanSessions — bare names are never orphans (e-419553c6)
+// ---------------------------------------------------------------------
+
+describe("checkOrphanSessions — bare-name era", () => {
+  /** Pin resolution to a temp `.atmux` so the check's getSessionName walk
+   *  never reads the repo's own anchor. Restored in afterEach below. */
+  let priorAtmuxDir: string | undefined;
+  async function pinAtmuxDir(anchor?: string): Promise<void> {
+    const root = await makeRoot(anchor);
+    priorAtmuxDir = process.env.ATMUX_DIR;
+    process.env.ATMUX_DIR = join(root, ".atmux");
+  }
+  afterEach(() => {
+    if (priorAtmuxDir === undefined) delete process.env.ATMUX_DIR;
+    else process.env.ATMUX_DIR = priorAtmuxDir;
+    priorAtmuxDir = undefined;
+  });
+
+  test("a live BARE-named session is not flagged — only the legacy literal is probed", async () => {
+    await pinAtmuxDir("legacy-anchor-name");
+    const asked: string[] = [];
+    const rows = await checkOrphanSessions(
+      { name: "sopx", members: [], singleSession: true } as Team,
+      {
+        hasSession: async (name) => {
+          asked.push(name);
+          return name === "sopx"; // only the bare session exists
+        },
+      },
+    );
+    // The bare name is the CURRENT default — never probed as an orphan.
+    expect(asked).toEqual(["atmux-sopx"]);
+    expect(rows.filter((r) => r.label === "orphan-session")).toEqual([]);
+  });
+
+  test("a genuinely orphaned legacy atmux-<team> session is still flagged", async () => {
+    await pinAtmuxDir(); // no anchor → resolution fails soft to bare
+    const rows = await checkOrphanSessions(
+      { name: "sopx", members: [], singleSession: true } as Team,
+      { hasSession: async (name) => name === "atmux-sopx" },
+    );
+    const orphans = rows.filter((r) => r.label === "orphan-session");
+    expect(orphans).toHaveLength(1);
+    expect(orphans[0]?.detail).toContain("atmux-sopx");
+    // The paste-back hint quotes the `=` anchor — zsh's =cmd expansion
+    // would otherwise break the copied command.
+    expect(orphans[0]?.hint).toContain("'=atmux-sopx'");
+  });
+
+  test("a team ANCHORED to atmux-<team> is not flagged — that IS its live session", async () => {
+    await pinAtmuxDir("atmux-sopx");
+    const rows = await checkOrphanSessions(
+      { name: "sopx", members: [], singleSession: true } as Team,
+      { hasSession: async (name) => name === "atmux-sopx" },
+    );
+    expect(rows.filter((r) => r.label === "orphan-session")).toEqual([]);
   });
 });

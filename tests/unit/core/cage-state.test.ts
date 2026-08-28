@@ -429,12 +429,12 @@ describe("probeCageState — sessionName override (ADR-273 D3 trap 1)", () => {
     };
   }
 
-  test("without the override it still asks for the legacy `atmux-<team>` form", async () => {
+  test("without the override it asks for the bare `<team>` form (e-419553c6)", async () => {
     // Pins the fallback as UNCHANGED, so callers that have not been
     // updated behave exactly as they did before this seam landed.
     const spy = nameSpy();
     await probeCageState(makeTeam(), makeMember(), "/tmp/x", { ...DEFAULT_OPTS, ...spy.opts });
-    expect(spy.asked).toEqual(["atmux-demo"]);
+    expect(spy.asked).toEqual(["demo"]);
   });
 
   test("the override is what tmux is asked about — the anchored name wins", async () => {
@@ -682,7 +682,7 @@ describe("probeCageState — a live pane on a live session is never 'down'", () 
     expect(h.state).toBe("active");
     expect(h.windowName).toBe("be-1");
     // The invented name must never have been probed at all.
-    expect(targets).toEqual(["atmux-demo:be-1"]);
+    expect(targets).toEqual(["demo:be-1"]);
     expect(targets).not.toContain("atmux-demo:🐝-be-1");
   });
 
@@ -691,7 +691,7 @@ describe("probeCageState — a live pane on a live session is never 'down'", () 
     const h = await probeCageState(makeTeam(), makeMember(), "/tmp/x", { ...DEFAULT_OPTS, tmux });
     expect(h.state).toBe("active");
     expect(h.windowName).toBe("🐝alice");
-    expect(targets).toEqual(["atmux-demo:🐝alice"]);
+    expect(targets).toEqual(["demo:🐝alice"]);
   });
 
   test("a member with genuinely no window still reports down — absence is not papered over", async () => {
@@ -833,7 +833,7 @@ describe("probeCageState — a live pane on a live session is never 'down'", () 
       { ...DEFAULT_OPTS, tmux },
     );
     expect(h.state).toBe("active");
-    expect(targets).toEqual(["atmux-demo:docs"]);
+    expect(targets).toEqual(["demo:docs"]);
   });
 });
 

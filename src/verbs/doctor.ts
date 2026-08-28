@@ -50,6 +50,7 @@ import {
   checkCockpitOnDefaultSocket,
   checkDeployedBinaryLag,
   checkLegacyWindowNameFormat,
+  probeSessionName,
 } from "./doctor/cockpit.ts";
 import {
   checkWhipConfigDrift,
@@ -429,7 +430,11 @@ async function fixStarvingMembers(
   const { defaultBriefsDir } = await import("./rotate.ts");
 
   const socketPath = resolveTeamSocket(team);
-  const sessionName = `atmux-${team.name}`;
+  // Anchor-aware, bare-name default (e-419553c6): the rows being fixed
+  // came from checkMemberCageStates, which resolved the session the
+  // same way — a hand-built literal here would re-paste into a session
+  // that may not exist under that name.
+  const sessionName = await probeSessionName(team, { atmuxDir });
   const tmux = createTmux({ socketPath });
   const briefsDir = opts.briefsDir ?? defaultBriefsDir();
   const sleep =

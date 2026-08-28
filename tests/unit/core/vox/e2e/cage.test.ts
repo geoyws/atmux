@@ -131,7 +131,7 @@ describe("buildCagePlan — isolation is a property of the plan", () => {
   });
 
   test("the session name is pinned rather than left to the resolver's default", () => {
-    for (const t of plan().teams) expect(t.sessionName).toBe(`atmux-${t.name}`);
+    for (const t of plan().teams) expect(t.sessionName).toBe(t.name); // bare per e-419553c6
   });
 
   test("pane commands exec a holder so pane_current_command is not a shell", () => {
@@ -241,8 +241,10 @@ describe("destroyCage", () => {
     const { io, rec } = fakeIo();
     await destroyCage(p, io, () => {});
     const alpha = p.teams.find((t) => t.kind === "live");
+    // Kill targets are `=`-anchored (e-419553c6): bare fixture names
+    // prefix-collide, and a teardown kill must never widen.
     expect(rec.killed).toEqual([
-      { socket: alpha?.socketPath ?? "", name: alpha?.sessionName ?? "" },
+      { socket: alpha?.socketPath ?? "", name: `=${alpha?.sessionName ?? ""}` },
     ]);
   });
 
@@ -268,7 +270,7 @@ describe("destroyCage", () => {
     const lines: string[] = [];
     const { io } = fakeIo({ killThrows: true });
     await destroyCage(plan(), { ...io, log: (l) => lines.push(l) }, () => {});
-    expect(lines.join("\n")).toContain("teardown of atmux-vox-e2e-alpha failed");
+    expect(lines.join("\n")).toContain("teardown of vox-e2e-alpha failed");
   });
 
   test("works without a log sink", async () => {

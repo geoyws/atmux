@@ -20,27 +20,27 @@ function anchorReader(body: string | null): (path: string) => Promise<string | n
   };
 }
 
-describe("buildSessionName — anchor-first, HYPHEN fallback (ADR-162)", () => {
-  test("absent anchor → atmux-<team> HYPHEN canonical", async () => {
+describe("buildSessionName — anchor-first, BARE fallback (ADR-162 as amended by e-419553c6)", () => {
+  test("absent anchor → bare <team> canonical (e-419553c6)", async () => {
     expect(
       await buildSessionName({ name: "rentx" }, { atmuxDir: ATMUX_DIR, readAnchor: anchorReader(null) }),
-    ).toBe("atmux-rentx");
+    ).toBe("rentx");
   });
 
   test("absent anchor, hyphenated team name passes through untouched", async () => {
     expect(
       await buildSessionName({ name: "ifca-docs" }, { atmuxDir: ATMUX_DIR, readAnchor: anchorReader(null) }),
-    ).toBe("atmux-ifca-docs");
+    ).toBe("ifca-docs");
   });
 
-  test("anchor with legacy UNDERSCORE form is used verbatim", async () => {
+  test("anchor with a legacy prefixed form is used verbatim", async () => {
     expect(
       await buildSessionName({ name: "unum" }, { atmuxDir: ATMUX_DIR, readAnchor: anchorReader("atmux_unum") }),
     ).toBe("atmux_unum");
   });
 
-  test("anchor wins over the hyphen fallback even when it disagrees with team.name", async () => {
-    // If the fallback leaked through, this would be 'atmux-sopx', not the anchor value.
+  test("anchor wins over the bare fallback even when it disagrees with team.name", async () => {
+    // If the fallback leaked through, this would be 'sopx', not the anchor value.
     expect(
       await buildSessionName({ name: "sopx" }, { atmuxDir: ATMUX_DIR, readAnchor: anchorReader("atmux_sopx") }),
     ).toBe("atmux_sopx");
@@ -52,16 +52,16 @@ describe("buildSessionName — anchor-first, HYPHEN fallback (ADR-162)", () => {
     ).toBe("atmux");
   });
 
-  test("empty anchor file falls through to hyphen fallback", async () => {
+  test("empty anchor file falls through to bare fallback", async () => {
     expect(
       await buildSessionName({ name: "rentx" }, { atmuxDir: ATMUX_DIR, readAnchor: anchorReader("") }),
-    ).toBe("atmux-rentx");
+    ).toBe("rentx");
   });
 
-  test("whitespace-only anchor file falls through to hyphen fallback", async () => {
+  test("whitespace-only anchor file falls through to bare fallback", async () => {
     expect(
       await buildSessionName({ name: "rentx" }, { atmuxDir: ATMUX_DIR, readAnchor: anchorReader("   \n\t ") }),
-    ).toBe("atmux-rentx");
+    ).toBe("rentx");
   });
 
   test("trailing-newline anchor is stripped, not used verbatim", async () => {
@@ -93,9 +93,9 @@ describe("buildSessionName — real filesystem anchor path", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  test("no session.txt on disk → hyphen fallback (default reader, ENOENT path)", async () => {
+  test("no session.txt on disk → bare fallback (default reader, ENOENT path)", async () => {
     // Exercises the real readTextOrNull default — no injected reader.
-    expect(await buildSessionName({ name: "rentx" }, { atmuxDir })).toBe("atmux-rentx");
+    expect(await buildSessionName({ name: "rentx" }, { atmuxDir })).toBe("rentx");
   });
 
   test("session.txt on disk is read and stripped (default reader)", async () => {

@@ -40,7 +40,7 @@ import { now as nowMs } from "../abstractions/time.ts";
 import { createTmux } from "../abstractions/tmux.ts";
 import { Kanban } from "../schema/kanban.ts";
 import { kanbanJsonPath, archiveDir as resolveArchiveDir } from "./common.ts";
-import { hasLiveEpicChildren } from "./epic-cage-children.ts";
+import { hasLiveChildCages } from "./cage-children.ts";
 
 // ---------- Shared time helpers ----------
 
@@ -969,10 +969,11 @@ export interface ZombieSweepResult {
   /** Subset of `scanned` where the parent dir was successfully
    *  removed. */
   removed: number;
-  /** ADR-252 (t-65bec10b): subset of `scanned` SKIPPED — neither killed
-   *  nor removed — because `hasLiveEpicChildren` reported a live epic-team
-   *  cage under `<dir>/epics/*`. Structural guard against orphaning live
-   *  children when a parent tmpdir is swept. */
+  /** ADR-252 (t-65bec10b), generalised by ADR-280 stage 3: subset of
+   *  `scanned` SKIPPED — neither killed nor removed — because
+   *  `hasLiveChildCages` reported a live NESTED cage under `<dir>`.
+   *  Structural guard against orphaning live children when a parent
+   *  tmpdir is swept. */
   skippedLiveChildren: number;
   /** Per-dir errors that did NOT abort the sweep. */
   errors: { path: string; message: string }[];
@@ -990,10 +991,10 @@ export interface SweepZombieSocketsOpts {
   /** Test injection — replace the tmux kill-server call. Production
    *  uses `createTmux({ socketPath }).server.killServer()`. */
   killServer?: (socketPath: string) => Promise<void>;
-  /** ADR-252 (t-65bec10b) test seam — live-epic-children guard. Default:
-   *  real {@link hasLiveEpicChildren}. Returns `true` when `<dir>/epics/*`
-   *  hosts a live epic-team cage ⇒ the sweep SKIPS removing that parent
-   *  dir (no kill, no rm) and bumps `skippedLiveChildren`. */
+  /** ADR-252 (t-65bec10b) test seam — live-child-cage guard. Default:
+   *  real {@link hasLiveChildCages}. Returns `true` when a nested cage
+   *  under `<dir>` is live ⇒ the sweep SKIPS removing that parent dir
+   *  (no kill, no rm) and bumps `skippedLiveChildren`. */
   hasLiveChildren?: (parentTmpdir: string) => Promise<boolean>;
 }
 
@@ -1016,7 +1017,7 @@ export async function sweepZombieTmuxSockets(
   const now = opts.nowMs ?? nowMs();
   const dryRun = opts.dryRun === true;
   const killServer = opts.killServer ?? defaultKillServer;
-  const hasLiveChildren = opts.hasLiveChildren ?? hasLiveEpicChildren;
+  const hasLiveChildren = opts.hasLiveChildren ?? hasLiveChildCages;
 
   const result: ZombieSweepResult = {
     scanned: 0,
@@ -1040,19 +1041,22 @@ export async function sweepZombieTmuxSockets(
 
     result.scanned += 1;
 
-    // ADR-252 (t-65bec10b) — structural live-epic-children guard. BEFORE
-    // any kill/rm, refuse to touch a parent tmpdir that hosts a LIVE
-    // epic-team cage under `<full>/epics/<epicId>/tmux-<uid>/default`. The
-    // 2026-05-17 P0 class: a probe found the parent's OWN socket dead,
-    // declared the whole `/tmp/atmux-<parent>/` dir an orphan, and
-    // `rm -rf`'d it — taking its live epic children with it. Belt-and-
-    // suspenders: ZOMBIE_FIXTURE_PATTERN already excludes the canonical
-    // parent dir `/tmp/atmux-atmux` (no trailing-hyphen suffix), so this
-    // sweep can't reach it today — but this guard protects ANY team whose
-    // tmpdir DOES match the fixture pattern AND happens to host epics, and
-    // hardens this removal path against future regressions. `hasLiveChildren`
-    // is fail-SAFE: on any uncertainty it returns true ⇒ we skip removal
-    // (same safety direction as the reaper's fail-closed-to-ALIVE).
+    // ADR-252 (t-65bec10b) — structural live-child-cage guard, generalised
+    // past epic-teams by ADR-280 stage 3. BEFORE any kill/rm, refuse to
+    // touch a parent tmpdir that hosts a LIVE nested cage at
+    // `<full>/…/tmux-<uid>/default`. The 2026-05-17 P0 class: a probe found
+    // the parent's OWN socket dead, declared the whole `/tmp/atmux-<parent>/`
+    // dir an orphan, and `rm -rf`'d it — taking its live children with it.
+    // The epic-team instance that motivated the guard is retired; nested
+    // cages are not (ADR-089 §Amendment 2026-08-27 §(A) makes nesting the
+    // general model), so the invariant stands and the glob is structural
+    // rather than name-based. Belt-and-suspenders: ZOMBIE_FIXTURE_PATTERN
+    // already excludes the canonical parent dir `/tmp/atmux-atmux` (no
+    // trailing-hyphen suffix), so this sweep can't reach it today — but
+    // this guard protects ANY team whose tmpdir DOES match the fixture
+    // pattern AND happens to host nested cages, and hardens this removal
+    // path against future regressions. `hasLiveChildren` is fail-SAFE: on
+    // any uncertainty it returns true ⇒ we skip removal.
     if (!dryRun && (await hasLiveChildren(full))) {
       result.skippedLiveChildren += 1;
       continue;

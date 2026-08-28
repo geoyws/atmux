@@ -98,7 +98,7 @@ const DEFAULT_THRESHOLDS: CadenceThresholds = {
 
 beforeAll(async () => {
   teamName = `cad${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-  sessionName = `atmux-${teamName}`;
+  sessionName = teamName; // bare per e-419553c6
   teamDir = await mkdtemp(join(tmpdir(), "atmux-cadence-"));
   atmuxDir = join(teamDir, ".atmux");
   await mkdir(atmuxDir, { recursive: true });

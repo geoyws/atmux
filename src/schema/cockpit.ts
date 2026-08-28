@@ -1,9 +1,19 @@
 // ADR-063 (legacy flat shape) → ADR-089 (recursive `sessions[]` shape).
 //
 // New canonical: `Cockpit.sessions[]` — a discriminated union on `type`
-// across `team` / `epic-team` / `superdriver` / `medic`.
-// `team` and `epic-team` carry nested `sessions[]` for arbitrary-depth
-// nesting.
+// across `team` / `group` / `superdriver` / `medic`. `team` carries
+// nested `sessions[]` for arbitrary-depth nesting; `group` is a purely
+// organisational container (no `root`, no cage, no tmux server) whose
+// children nest exactly like a team's — ADR-089 §Amendment 2026-08-27
+// §Implementation-ledger row 3, closed by e-419553c6.
+//
+// ADR-280 (2026-08-27) retired the `epic-team` member of that union along
+// with its `epicId` / `parent` fields. Nesting is UNCHANGED — ADR-089
+// §Amendment 2026-08-27 §(A) makes a `team` containing child cages the
+// general model; what went is the epic-shaped instance, not the mechanism.
+// A config still carrying `type: "epic-team"` now fails `safeParse` loud
+// (the union is strict) rather than aliasing silently — ADR-266 §D2's
+// expired-contract precedent.
 //
 // ADR-133 (medic rename) + ADR-132 (sentinel at W3) — the schema admits
 // both the legacy `superdoctor` discriminator + block AND the canonical
@@ -119,8 +129,8 @@ const CockpitSessionBase = z.object({
 
 // ---------- Forward type declarations (Zod v4 recursion idiom) ----------
 //
-// `CockpitSession` is a discriminated union whose `team` and `epic-team`
-// members carry nested `sessions[]` of the same union — recursive. Zod's
+// `CockpitSession` is a discriminated union whose `team` member carries
+// nested `sessions[]` of the same union — recursive. Zod's
 // runtime `z.lazy(...)` defers the union construction until first parse,
 // breaking the cycle; the TS types are forward-declared as interface
 // aliases so the schema-export `z.infer<>` lines up.
@@ -143,23 +153,23 @@ export interface TeamSessionT {
   sessions: CockpitSessionT[];
 }
 
-export interface EpicTeamSessionT {
-  type: "epic-team";
+/** Organisational container — ADR-089 §Amendment 2026-08-27
+ *  §Implementation-ledger row 3 (e-419553c6). A group has NO `root`
+ *  and NO backing cage, but since the 2026-08-28 true-containment
+ *  decision every enabled group DOES back a real tmux server
+ *  (`groupSocketPath(name)`; see ADR-089's 2026-08-28 group-tier note)
+ *  holding one viewer window per child — the containment tier between
+ *  the cockpit (F1) and the team cages (F3). Children are ordinary
+ *  `sessions[]` entries — a `team` under a group is a normal team.
+ *  Deliberately narrow (`.strict()`, no claudeAccount / tuiOverrides /
+ *  prefixChain): a group server hosts only attach clients, so nothing
+ *  would consume those fields — admitting them would be schema surface
+ *  that silently does nothing. */
+export interface GroupSessionT {
+  type: "group";
   name: string;
   enabled: boolean;
-  /** Parent team name — must resolve to a `type: "team"` entry elsewhere
-   *  in the tree. Cross-reference validation is deferred to `loadCockpit`
-   *  (schema-level lookahead would require a custom resolver). */
-  parent: string;
-  /** Links back to `kanban.epics[].id` — populated by `spawn-epic`
-   *  (ADR-090 impl). */
-  epicId: string;
-  prefixChain?: string[];
-  claudeAccount?: CockpitClaudeAccount;
-  tuiOverrides?: CockpitTuiOverrides;
-  /** t-72a6b7d7 — epic-teams inherit the same cageMode taxonomy as
-   *  standalone teams. See {@link CockpitTeamCageMode}. */
-  cageMode?: CockpitTeamCageMode;
+  /** Recursive — children of any session type. */
   sessions: CockpitSessionT[];
 }
 
@@ -191,7 +201,11 @@ export interface MedicSessionT {
   autoStartTimeoutSec?: number;
 }
 
-export type CockpitSessionT = TeamSessionT | EpicTeamSessionT | SuperdriverSessionT | MedicSessionT;
+export type CockpitSessionT =
+  | TeamSessionT
+  | GroupSessionT
+  | SuperdriverSessionT
+  | MedicSessionT;
 
 // ---------- Concrete leaf schemas ----------
 
@@ -205,17 +219,21 @@ export const TeamSession: z.ZodType<TeamSessionT> = z.lazy(() =>
   }).strict(),
 ) as z.ZodType<TeamSessionT>;
 
-/** Ephemeral sub-team under a parent team (ADR-090). Shares the parent's
- *  worktree — no own `root` field. */
-export const EpicTeamSession: z.ZodType<EpicTeamSessionT> = z.lazy(() =>
-  CockpitSessionBase.extend({
-    type: z.literal("epic-team"),
-    parent: z.string().min(1),
-    epicId: z.string().min(1),
-    cageMode: CockpitTeamCageMode.optional(),
-    sessions: z.array(CockpitSession).default([]),
-  }).strict(),
-) as z.ZodType<EpicTeamSessionT>;
+/** Non-cage organisational container (see {@link GroupSessionT}).
+ *  NOT built on `CockpitSessionBase` — the base carries cage-facing
+ *  fields (claudeAccount / tuiOverrides / prefixChain) that a cage-less
+ *  container has no consumer for; `.strict()` refuses them so a config
+ *  author finds out at load, not by silence. */
+export const GroupSession: z.ZodType<GroupSessionT> = z.lazy(() =>
+  z
+    .object({
+      type: z.literal("group"),
+      name: z.string().min(1),
+      enabled: z.boolean().default(true),
+      sessions: z.array(CockpitSession).default([]),
+    })
+    .strict(),
+) as z.ZodType<GroupSessionT>;
 
 /** Cockpit window 1 — the operator's superdriver REPL. Singleton in
  *  practice but represented as a discriminated entry per ADR-089
@@ -247,11 +265,13 @@ export const MedicSession: z.ZodType<MedicSessionT> = z.lazy(() =>
  *
  *  Discriminator literals: `superdoctor` was accepted during the
  *  ADR-133 deprecation window; that window closed and the literal was
- *  removed per ADR-266 §D2 — only `medic` parses now. */
+ *  removed per ADR-266 §D2 — only `medic` parses now. `epic-team` was
+ *  removed the same way per ADR-280 §D1; a config still carrying it
+ *  fails to parse rather than degrading. */
 export const CockpitSession = z.lazy(() =>
   z.discriminatedUnion("type", [
     TeamSession as unknown as z.ZodObject,
-    EpicTeamSession as unknown as z.ZodObject,
+    GroupSession as unknown as z.ZodObject,
     SuperdriverSession as unknown as z.ZodObject,
     MedicSession as unknown as z.ZodObject,
   ]),
@@ -407,13 +427,17 @@ export const Cockpit = z
     medic: CockpitMedic.optional(),
     /** Optional ADR-086 pulse probe tunables. Omit for defaults. */
     pulse: CockpitPulse.optional(),
-    /** ADR-199 — Claude account pool for epic-team spawning. When
-     *  populated, `spawn-epic` draws `team.claudeAccount` from this
-     *  list via `selectAccount()` (least-loaded by budget probe state).
-     *  Each entry extends {@link CockpitClaudeAccount} with an optional
-     *  weight tie-breaker. Empty / unset → spawn-epic falls back to
-     *  the existing per-member inheritance chain (ADR-090 §Amendment
-     *  2026-05-20). */
+    /** ADR-199 — Claude account pool. When populated, a spawner draws
+     *  `team.claudeAccount` from this list via `selectAccount()`
+     *  (least-loaded by budget probe state). Each entry extends
+     *  {@link CockpitClaudeAccount} with an optional weight tie-breaker.
+     *  Empty / unset → the existing per-member inheritance chain.
+     *
+     *  ADR-280 stage 3 note: the pool's only runtime consumer was
+     *  `spawn-epic`, which is retired. The field, `core/account-pool.ts`
+     *  and the `doctor` probe are KEPT — the mechanism is an account
+     *  selector, not epic machinery, and nothing generic replaces it
+     *  yet. It is currently read only by `doctor`. */
     claudeAccountPool: z.array(ClaudeAccountPoolEntry).optional(),
     /** ADR-229 §DA-Gate-2: cockpit-scope orchd-push policy layers
      *  (additive on top of the canonical {@link import("../core/auto-push.ts").STAGING_PATTERNS}

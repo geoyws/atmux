@@ -1,4 +1,4 @@
-# ADR-280: Cooperative `_bot` seats and the `_superbot` offer protocol
+# ADR-281: Cooperative `_bot` seats and the `_superbot` offer protocol
 
 **Status**: proposed
 **Date**: 2026-08-28

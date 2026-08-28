@@ -189,7 +189,7 @@ describe("attach() — session existence check", () => {
       expect(e).toBeInstanceOf(ConfigError);
       const err = e as ConfigError;
       // Bash text-parity: "session <name> does not exist".
-      expect(err.message).toContain(`session atmux-${teamName} does not exist`);
+      expect(err.message).toContain(`session ${teamName} does not exist`);
       // Hint text-parity: "run 'atmux start' first".
       expect(err.message).toContain("run 'atmux start' first");
     }
@@ -205,7 +205,7 @@ describe("attach() — session present but no tty", () => {
     // with non-zero because bun:test has no controlling tty; the
     // abstraction wraps tmux's failure as TmuxError.
     const tmux = createTmux({ socketPath, configFile: "/dev/null" });
-    await tmux.session.newSession({ name: `atmux-${teamName}` });
+    await tmux.session.newSession({ name: teamName });
 
     await expect(attach(["--team-dir", scratch, "--socket", socketPath])).rejects.toBeInstanceOf(
       TmuxError,
@@ -216,7 +216,7 @@ describe("attach() — session present but no tty", () => {
     const teamName = `${sessionPrefix}t2`;
     await seedTeam(join(scratch, ".atmux"), { name: teamName, members: [] });
     const tmux = createTmux({ socketPath, configFile: "/dev/null" });
-    await tmux.session.newSession({ name: `atmux-${teamName}` });
+    await tmux.session.newSession({ name: teamName });
 
     // Simulate operator-inside-tmux: $TMUX populated. Verb deletes for
     // the duration of the attach call, restores in `finally` regardless
@@ -233,7 +233,7 @@ describe("attach() — session present but no tty", () => {
     const teamName = `${sessionPrefix}t3`;
     await seedTeam(join(scratch, ".atmux"), { name: teamName, members: [] });
     const tmux = createTmux({ socketPath, configFile: "/dev/null" });
-    await tmux.session.newSession({ name: `atmux-${teamName}` });
+    await tmux.session.newSession({ name: teamName });
 
     // Pre-condition: $TMUX is already unset (beforeEach deleted it).
     expect(process.env.TMUX).toBeUndefined();
@@ -320,7 +320,7 @@ describe("attach() — default socket path", () => {
     } catch (e) {
       expect(e).toBeInstanceOf(ConfigError);
       const err = e as ConfigError;
-      expect(err.message).toContain(`session atmux-${teamName} does not exist`);
+      expect(err.message).toContain(`session ${teamName} does not exist`);
     }
   });
 });

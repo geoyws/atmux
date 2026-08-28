@@ -117,7 +117,7 @@ Hourly `/loop /whip` cycle, in order:
 6. **Author preventive ask** — every complaint includes a `preventive_ask` field. The point isn't fixing this incident; it's ensuring the next one doesn't happen.
 7. **Log everything** — every action medic takes is logged to its own complaint box first. Audit trail survives a misdiagnosis.
 
-> **Cheap-model-first interaction (per [ADR-140](./adr/140-cheap-model-first.md))**: post-ADR-140, the hourly *scan loop* described above is intended to move to an **event-driven** model — medic wakes on events written to `~/.atmux/state/medic-events.log` by future Honker event consumers (orchd Phase 3-5, sibling EPIC e-a946af69). Until those consumers ship, medic stays on the hourly sweep described in this page; the legacy sentinel/martinet observer role that originally fed events to medic was decommissioned per EPIC e-be01fc89. ADR-143's cron-rotate covers routine lead-rotation. Transition is sequenced via ADR-131 / ADR-139 / EPIC e-a946af69.
+> **Cheap-model-first interaction (per [ADR-140](./adr/140-cheap-model-first.md))**: post-ADR-140, the hourly *scan loop* described above is intended to move to an **event-driven** model — medic wakes on events written to `~/.atmux/state/medic-events.log` by future Honker event consumers (orchd Phase 3-5, sibling EPIC e-a946af69 — those consumers will NOT ship: orchd was retired per [ADR-276](./adr/276-orchd-retirement-and-atmux-scope.md)). Medic stays on the hourly sweep described in this page; the legacy sentinel/martinet observer role that originally fed events to medic was decommissioned per EPIC e-be01fc89. ADR-143's cron-rotate covers routine lead-rotation. Transition is sequenced via ADR-131 / ADR-139 / EPIC e-a946af69.
 
 ## What its actions look like
 
@@ -283,13 +283,13 @@ Read via `SuperdoctorAttemptsRepo` (`src/core/repositories/superdoctor-attempts-
 - **`atmux whip watchdog` (verb)** — per-team liveness one-shot. Pane-state classifier + cage health. Medic sweeps watchdog output across all teams.
 - **per-team lead** — coordinator inside one team. Medic doesn't replace a lead; it watches across leads and addresses cross-team / structural issues that no single lead can see.
 - **`/whip` skill** — the cycle engine that drives the whip loop. Medic uses it the same way a team-lead does, with a different role brief (the deferred medic skill — formerly the `superdoctor` skill, renamed alongside plugin source under EPIC `t-d25ff629` TR5).
-- **orchd event consumers (sibling EPIC e-a946af69 / Honker Phase 3-5)** — once shipped, will absorb routine observation + nudging + rotation per [ADR-140] cheap-model-first principle, leaving medic's residual scope at emergency / code-fix-class incidents. The legacy cockpit-W3 sentinel/martinet observer that previously held this scope was decommissioned per EPIC e-be01fc89.
+- **orchd event consumers (sibling EPIC e-a946af69 / Honker Phase 3-5)** — RETIRED before shipping (orchd removed per [ADR-276](./adr/276-orchd-retirement-and-atmux-scope.md)); the plan had been to absorb routine observation + nudging + rotation per [ADR-140] cheap-model-first principle, leaving medic's residual scope at emergency / code-fix-class incidents. The legacy cockpit-W3 sentinel/martinet observer that previously held this scope was decommissioned per EPIC e-be01fc89.
 
 ## Status
 
 ADR-077 §D1 + §D2 (cockpit topology + schema), §F1 (skill brief in `~/.claude/skills/superdoctor/`), §F2 (complaint box SQLite + `atmux complaints` verb), §F3 (`atmux send __superdoctor__` validator), §F4 (P0 send-keys runbook), §F5 (status verb medic surface), and §F6 (self-escalation primitives — `superdoctor_attempts` table + `renderSelfHealFailed` Discord template) all ship. Setting `medic.enabled: true` (or legacy `superdoctor.enabled: true` during deprecation window per ADR-133) in `~/.atmux/cockpit.json` and running `atmux cockpit rebuild` spawns window 2 with a Claude Opus session that — when invoked as `/loop /medic` (or legacy `/loop /superdoctor` until plugin source TR5 lands) — runs the hourly diagnosis loop end-to-end.
 
-Post-[ADR-140] roadmap: the hourly scan loop converts to event-driven listening on `~/.atmux/state/medic-events.log` once orchd event consumers ship (sibling EPIC e-a946af69); medic's residual scope narrows to code-fix-class incidents. Sequenced via ADR-131 / ADR-139 / EPIC e-a946af69.
+Post-[ADR-140] roadmap: the hourly scan loop was to convert to event-driven listening on `~/.atmux/state/medic-events.log` once orchd event consumers shipped — they will not (orchd retired per ADR-276); medic's residual scope narrows to code-fix-class incidents. Sequenced via ADR-131 / ADR-139 / EPIC e-a946af69.
 
 Open follow-ups (not blocking):
 

@@ -45,7 +45,12 @@
 
 import { ensureDir, exists, writeText } from "../abstractions/fs.ts";
 import { updateJson } from "../abstractions/json.ts";
-import { createTmux, type TmuxConfig, type TmuxNamespace } from "../abstractions/tmux.ts";
+import {
+  createTmux,
+  exactSessionTarget,
+  type TmuxConfig,
+  type TmuxNamespace,
+} from "../abstractions/tmux.ts";
 import {
   buildWindowName,
   defaultEmojiForRole,
@@ -438,7 +443,7 @@ async function maybeSpawn(
   let live = false;
   if (session !== null) {
     try {
-      live = await tmux.session.hasSession(session);
+      live = await tmux.session.hasSession(exactSessionTarget(session));
     } catch {
       // expected: tmux server unreachable / socket missing → treat as
       // no-session. Bash also tolerates `tmux has-session` failures

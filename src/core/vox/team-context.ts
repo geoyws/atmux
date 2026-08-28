@@ -26,12 +26,11 @@
 import { enabledTeams, type LoadedCockpit, loadCockpit } from "../cockpit.ts";
 
 /** One resolvable team. `root` is the project root (`--team-dir` value
- *  for the verbs the voice bridge invokes); epic-teams inherit the
- *  parent team's root per ADR-089. */
+ *  for the verbs the voice bridge invokes). */
 export interface VoxTeamEntry {
   name: string;
   root: string;
-  type: "team" | "epic-team";
+  type: "team";
 }
 
 export interface VoxTeamIndex {
@@ -43,8 +42,8 @@ export interface BuildTeamIndexDeps {
   loadCockpit?: () => Promise<LoadedCockpit>;
 }
 
-/** Build the voice team index from the cockpit roster (enabled `team` +
- *  `epic-team` sessions, DFS order). Propagates the loader's
+/** Build the voice team index from the cockpit roster (enabled `team`
+ *  sessions, DFS order). Propagates the loader's
  *  `ConfigError` / `SchemaError` — a missing cockpit is a boot-time
  *  configuration problem, not a per-tool-call one. */
 export async function buildTeamIndex(deps: BuildTeamIndexDeps = {}): Promise<VoxTeamIndex> {

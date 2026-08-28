@@ -8,7 +8,7 @@ You are reading this because you're a coding agent (Claude Code, Cursor, OpenCod
 
 atmux runs a team of TUI agents (one per tmux window) against a single project: lead routes, planner decomposes, reviewer gates, committer merges, workers pull from a SQLite-backed kanban. The driver (the human operator, sometimes wrapped in a Claude Code REPL) feeds the team Epic-shaped asks; the team pulls work itself.
 
-## 2 — Mental model — driver / team / orchd
+## 2 — Mental model — driver / team
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -32,22 +32,22 @@ atmux runs a team of TUI agents (one per tmux window) against a single project: 
 │  🦦 docs     — same-commit docs sweep + ADR backfill         │
 │  workers     — claim from kanban via `atmux claim --next`    │
 └──────────────────────────────────────────────────────────────┘
-                         ▲
-                         │  events via Honker (SQLite NOTIFY/LISTEN)
-                         │
-┌──────────────────────────────────────────────────────────────┐
-│ ORCHD — the always-on supervisor + event consumers           │
-│   subscribes to in-DB topics, dispatches mechanical work     │
-│   (auto-spawn epic-teams, merge on task.done, dissolve on    │
-│    epic.pushed, etc.) — see §3                               │
-└──────────────────────────────────────────────────────────────┘
 ```
+
+(An always-on ORCHD supervisor box used to sit under this diagram,
+consuming Honker events and dispatching mechanical work. **orchd is
+retired per [ADR-276](adr/276-orchd-retirement-and-atmux-scope.md)** —
+atmux's scope is tmux cages + `atmux vox`; the one-shot event-drain
+backstop survives as operator-invoked `atmux committer --drain`. §3
+records the model as history.)
 
 You will typically be ONE node in this graph. If you don't know which: `echo $ATMUX_MEMBER` tells you the role you were spawned as. Read [`templates/briefs/<role>.md`](../templates/briefs/) first.
 
-## 3 — The orchd model (what changed in 2026-05)
+## 3 — The orchd model (2026-05 → retired 2026-08 per ADR-276)
 
-Pre-orchd atmux ran on cron-ticked polling loops (whip, sentinel, medic, bruhloop). Each tick paid for an LLM turn whether or not there was real signal. orchd retires those loops:
+> ⚠ **orchd is RETIRED** ([ADR-276](adr/276-orchd-retirement-and-atmux-scope.md), 2026-08-27; manual orchestration had already been the fleet default since [ADR-260](adr/260-manual-orchestration-mode-default.md)). The role retirements below (ADR-211/212/213/214) stand, and the Honker substrate + topic taxonomy remain — but the daemon, its tickers, auto-spawn/auto-merge/auto-dissolve, and the `__orchd__` window are gone. Surviving event consumers (gitter, lane-router, complaint consumer, lead-stall watchdog) drain through operator-invoked `atmux committer --drain`; the ADR-229 auto-push engine was deleted with its only trigger emitter. Read the rest of this section as recorded history.
+
+Pre-orchd atmux ran on cron-ticked polling loops (whip, sentinel, medic, bruhloop). Each tick paid for an LLM turn whether or not there was real signal. orchd retired those loops:
 
 - **[ADR-202](adr/202-honker-in-db-messaging-substrate.md)** — Honker (SQLite NOTIFY/LISTEN extension) is the messaging substrate. Consumers `LISTEN` for topics like `task.done`, `epic.merged`, `member.no-progress`; producers `NOTIFY` inside the same transaction that mutates state. Cross-process wake latency ~0.7ms p50. Cost when idle: zero.
 - **[ADR-211](adr/211-retire-sentinel-role-distribute-to-honker-consumers.md)** — sentinel role retired. Mechanical observation (pane-classify, wedge-clear, refusal-handle, silent-team-detect) distributes to Honker consumers.
@@ -55,9 +55,9 @@ Pre-orchd atmux ran on cron-ticked polling loops (whip, sentinel, medic, bruhloo
 - **[ADR-213](adr/213-retire-jury-reviewer-absorbs-acceptance-criteria.md)** — jury role retired. Reviewer absorbs Story-level acceptance criteria signoff.
 - **[ADR-214](adr/214-retire-ombudsman-lead-absorbs-complaint-adjudication-via-honker.md)** — ombudsman role retired. Lead absorbs complaint adjudication via Honker events.
 
-What this means in practice: **panes being "down" in `atmux status` is the steady state**, not a problem. Epic-teams auto-spawn from `isReady`-flipped Epics; the base team panes only come up when there is actual claim-able work. Don't surface "dormancy" to the driver — there is none.
+What this meant in practice: **panes being "down" in `atmux status` is the steady state**, not a problem. Don't surface "dormancy" to the driver — there is none. (Epic-team auto-spawn is gone with [ADR-280](adr/280-epic-team-retirement-and-staged-excision.md).)
 
-The full orchd lifecycle is documented across ADR-224 → ADR-233. The most load-bearing pieces:
+The full orchd lifecycle was documented across ADR-224 → ADR-233. The consumer table below is HISTORY — only `gitter` still runs, via the drain:
 
 | Consumer | Trigger | Action | ADR |
 |---|---|---|---|
@@ -106,7 +106,6 @@ The full list is `atmux help`; below is the role-tagged subset. All verbs operat
 - `atmux send planner <ask>` — route an Epic-shaped ask
 - `atmux reply <text>` — write to lead-outbox for the driver
 - `atmux epic add <title> --body <text>` — create an Epic
-- `atmux epic advance <id> --to ready` — trigger orchd auto-spawn
 
 **Planner**
 

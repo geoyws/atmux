@@ -91,6 +91,8 @@ own because continuity depends on it.
 
 ### P0 — ADR-271: retire kanban.json, Rust orchd coordinates (operator decision 2026-08-07)
 
+> ⚠ **2026-08-27 — half of this item is DEAD.** [ADR-276](docs/adr/276-orchd-retirement-and-atmux-scope.md) retired orchd entirely (the `rust/atmux-orchd/` crate named below no longer exists), so ADR-271's "Rust orchd coordinates" half is moot. The kanban.json-retirement half is [ADR-275](docs/adr/275-external-private-kanban-authority.md) territory (external kanban authority, accepted + shipping).
+
 [ADR-271](docs/adr/271-sqlite-sole-store-rust-orchd-coordinator.md) — `Status: proposed`, needs
 reviewer signoff before code lands.
 

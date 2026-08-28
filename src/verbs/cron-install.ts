@@ -1,4 +1,5 @@
-// ADR-233 §retired — cron auto-install retired; orchd is the runtime.
+// ADR-233 §retired — cron auto-install retired (orchd, the runtime that
+// replaced it, was itself retired per ADR-276).
 //
 // No-op shim per the same pattern as src/abstractions/crontab.ts.
 // Importers (team-rename.ts, team-repair-rename.ts) call this as a

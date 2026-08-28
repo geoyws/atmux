@@ -36,6 +36,12 @@
 > **opt-in**. See §1.2 principle 3, corrected 2026-08-06, for the current position
 > and the full position history.
 
+> ⚠ **2026-08-27 — orchd retired entirely** ([ADR-276](adr/276-orchd-retirement-and-atmux-scope.md)).
+> The daemon, verb, window, tickers and epic-machinery consumers are gone; atmux's
+> scope is tmux cages + `atmux vox`. The one-shot event drain survives as
+> operator-invoked `atmux committer --drain`. Read every "orchd is the runtime"
+> sentence in this PRD as history.
+
 > **2026-08-06 — business-intent document upstream of this PRD.**
 > [docs/brd/atmux.md](brd/atmux.md) is atmux's **Business Requirements Document**:
 > it records WHY atmux exists, who pays when it does not work, what outcome counts
@@ -144,8 +150,9 @@ Three durable principles (see `docs/ARCHITECTURE.md`):
    that explicitly sets `"orchestration": { "mode": "orchd" }`, and even then
    every orchd consumer (auto-merge, auto-push, auto-spawn, solo-worker
    dissolve, lead-stall watchdog, context/budget scanners) becomes opt-in with
-   it. `atmux orchd --start / --drain / --sweep` remains manually invocable in
-   any mode. The operator's recorded rationale is verbatim in ADR-260: *"LLMs
+   it. `atmux orchd --start / --drain / --sweep` remained manually invocable in
+   any mode until ADR-276 removed the verb (the drain is now `atmux committer
+   --drain`). The operator's recorded rationale is verbatim in ADR-260: *"LLMs
    can manage their own fleet better than atmux can at the moment."* atmux
    still **NEVER** writes to crontab
    ([ADR-233](adr/233-cron-auto-install-disabled-trust-orchd.md)).
@@ -289,7 +296,7 @@ Per `PLAN.md` §15:
 > table, and probe named there is a proposal, not an available command.
 > §3.7, added 2026-08-15, returns to **shipped** surface: the vox operator
 > interface, live and deployed in a deliberately reduced read-only posture.
-> ADR-280's `_bot` / `_superbot` offer-and-pull design is **proposed and not
+> ADR-281's `_bot` / `_superbot` offer-and-pull design is **proposed and not
 > activated**; the cockpit table below shows its intended order explicitly so a
 > source-only proposal is not mistaken for the current live topology.
 
@@ -327,7 +334,7 @@ cages use `<emoji>-<member>` (hyphen-separated, ADR-135 §D3).
 |---|--------|------|-----------------|
 | 1 | `_superdriver` | Operator cross-team REPL | ADR-063 (renamed per ADR-135 §D2) |
 | 2 | `_medic` (was `medic`/`superdoctor`) | Fleet self-healing / diagnosis-and-prevention loop | ADR-077 + ADR-133 + ADR-135 §D2 |
-| 3 | `_superbot` (proposed; absent while disabled) | Deterministic 30-minute Kanban candidate router; never claims or assigns | ADR-280 |
+| 3 | `_superbot` (proposed; absent while disabled) | Deterministic 30-minute Kanban candidate router; never claims or assigns | ADR-281 |
 | 4..N | declarative operator windows, then per-team viewers | Operator workspaces in declaration order, then one viewer per enabled parent team | ADR-279 + ADR-063 |
 
 Backward-compat: a cockpit.json without a `medic` block retains the
@@ -339,7 +346,7 @@ renames them in-place (idempotent) per ADR-135 §D4. Member windows in
 legacy `<emoji><member>` format get the same in-place rename treatment
 on next `atmux start`.
 
-**Proposed cooperative bot seat (ADR-280).** Every persistent parent team gains
+**Proposed cooperative bot seat (ADR-281).** Every persistent parent team gains
 an exact `_bot` window after all drivers and before members/services, backed by
 `<base>-bot` in `.atmux/worktrees/bot`. It is neither a driver nor a member. The
 operator may type into it directly; `_superbot` may offer a tagged Kanban task
@@ -352,7 +359,8 @@ receipts pass and the operator separately authorizes live activation.
 pluggable cockpit-W3 whip-manager (ADR-132 / ADR-158 / ADR-183 / ADR-185)
 is fully removed. Mechanical observation + Enter-push + `claim-next`
 re-fires distribute to Honker event consumers per sibling EPIC
-e-a946af69 (orchd Phase 3-5). Until those consumers ship, the lead's
+e-a946af69 (orchd Phase 3-5 — these consumers will NOT ship; orchd retired
+per ADR-276). Absent them, the lead's
 self-driven whip cron (`team.whip.intervalMins`) is the canonical
 observe + intervene loop; on-demand audits via `atmux doctor` cover the
 gap. Legacy `team.sentinel` / `cockpit.sentinel` / `cockpit.defaultSentinel`

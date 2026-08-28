@@ -380,7 +380,7 @@ describe("send() — integration", () => {
     sessionName: string;
   }> {
     const teamName = `${sessionPrefix}-team`;
-    const sessionName = `atmux-${teamName}`;
+    const sessionName = teamName; // bare per e-419553c6
     const team = { name: teamName, members };
     await writeFile(join(atmuxDir, "team.json"), JSON.stringify(team));
     // Spin a session with the FIRST member as window 0, then add

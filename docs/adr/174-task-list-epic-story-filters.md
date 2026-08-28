@@ -5,6 +5,8 @@
 **Driver-ref**: ADR-193 §OQ-4 ("file as a sibling follow-up ADR/task. ADR-193 stays focused on the write-side gap; read-side ergonomics is a separate ADR") + ADR-173 §Related ("`atmux task list --epic` filter remains as a future fast-follow").
 **Relates**: ADR-193 (write-side `--epic`/`--story` flags — runtime prerequisite), ADR-173 (`atmux epic show` children enumeration — sibling read-side surface), ADR-007 (Epic/Story/Task hierarchy original spec), ADR-006 (JSON output stability convention).
 
+> ⚠ **SUPERSEDED 2026-08-27 by [ADR-280](280-epic-team-retirement-and-staged-excision.md).** Epic-teams are retired: the `epic-team` cage type, the `epicId` cockpit field and the epic verbs no longer exist. This ADR is kept as history — the decision it records was true when made. Do not implement from it.
+
 ## Context
 
 `atmux task list` today accepts `[--status S] [--assignee M] [--lane L] [--json]`. Filtering by EPIC parentage or Story parentage is not available; operators must `--json | jq '.[] | select(.epic == "e-xxx")'` to slice the kanban by parent.

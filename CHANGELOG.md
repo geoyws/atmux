@@ -7,17 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### ✨ Added — operator-cooperative `_bot` seats ([ADR-280](docs/adr/280-cooperative-bot-seat-and-superbot-offer-protocol.md))
+### ✨ Added — operator-cooperative `_bot` seats ([ADR-281](docs/adr/281-cooperative-bot-seat-and-superbot-offer-protocol.md))
 
 - An opt-in `team.json::bot` block creates exactly one `_bot` window after declared drivers and before members, backed by `.atmux/worktrees/bot` on `<base>-bot`. Existing `_bot` windows are preserved during incremental starts.
 - Each bot has the stable `bot@<team>` identity and a harness-neutral brief. A null or omitted harness starts zsh for direct operator use but is deliberately unroutable; automated offers require an explicit harness/account.
 - `atmux bot hold|resume` provides a durable tmux-window interlock for operator sessions. Manual input needs no special mode and always outranks future scheduler offers.
 - `_bot` is a distinct typed send target. ADR-239's driver send-keys prohibition remains unchanged, and bot worktree setup fails closed instead of falling back to shared trunk.
 
-### 📝 Proposed — `_superbot` offer-and-pull ([ADR-280](docs/adr/280-cooperative-bot-seat-and-superbot-offer-protocol.md))
+### 📝 Proposed — `_superbot` offer-and-pull ([ADR-281](docs/adr/281-cooperative-bot-seat-and-superbot-offer-protocol.md))
 
 - Defines `_superbot` as a deterministic 30-minute Kanban candidate router immediately after optional `_medic`. It offers a board/task/tag identity and exact claim command; it never claims, assigns, or copies task bodies.
 - Pins manual-input precedence, explicit hold/resume, `(board, tag)` default/fallback ownership, atomic first-claim-wins behavior, external issue provenance boundaries, and a seven-phase shadow-first rollout. Defaults remain disabled + shadow; this documentation change does not install, deploy, rebuild, reconcile, or mutate live tmux.
+
+### 🗑 Removed — orchd retired entirely; atmux's scope narrows to tmux cages + `atmux vox` ([ADR-276](docs/adr/276-orchd-retirement-and-atmux-scope.md))
+
+- **The `atmux orchd` verb, the Rust `rust/atmux-orchd/` crate (ticker daemon), and the `__orchd__` service window are gone.** `atmux orchd` now fails loud with an error naming ADR-276. `package.json` no longer builds or installs `atmux-orchd`. `atmux start` spawns no service window.
+- **Epic-machinery event handlers deleted** (their dispatchers were already stubbed by [ADR-280](docs/adr/280-epic-team-retirement-and-staged-excision.md) stage 3): auto-merge (`orchd-merge.ts` — epic-completeness detection, and with it the only emitter of `epic.merged`), auto-dissolve (`orchd-dissolve.ts`), the backstop merge sweep (`orchd-merge-sweep.ts` + `orchd-log-fmt.ts`), context scanning (`orchd-context-scan.ts` + `pane-statusline.ts` — the only producer of `member.context-high`, so the rotation consumer went with it), housekeeping (`orchd-housekeep.ts`; `events-prune.ts` remains as the caller-invoked pruner), and the pressure-deferred spawn queue (`spawn-queue.ts` + repo + schema; its producer and drain died in ADR-280 stage 3).
+- **`committer --drain` / `--daemon` are committer's own sub-verbs again** — the ADR-266 §D2 alias expiry pointed at the orchd verb, which no longer exists, so the bodies (which never left `committer.ts`) got their CLI surface back. The drain is the ADR-276 §D1-shaped operator-invoked backstop.
+- **Auto-push (ADR-229) deleted outright, dispatcher included.** Nothing emits `epic.merged` once the auto-merge handler (its only emitter) is gone, so the seven-gate engine (`orchd-push.ts`) and the `dispatchGitPush` transport (`orchd-dispatch/git-push.ts`, ADR-232) were removed rather than kept as dead code; both re-derive from git history (last present at trunk `170700d3`) when ADR-276 §D1's operator-invoked push verb is built. The §DA-Gate-2 allowlist `src/core/auto-push.ts` is untouched — it has live consumers (merge-member, claim, merge-cycle, cockpit pushPolicy).
+- **The subscription registry slimmed and renamed**: `orchd-registry.ts` + `orchd-bootstrap.ts` → `src/core/event-subscriptions.ts`, registering the complaint consumer (ADR-214 — its emitter `atmux complaints` is live) and the lead-stall watchdog (ADR-247 — its wiring moved verbatim from the retired verb into the drain). Consumer-id strings are unchanged: they are durable `subscriber_offsets` keys.
+- **Survives, explicitly**: the Honker substrate, the events/offsets tables, `atmux-listener` (the daemon body's wake channel), `atmux-cockpit-mirror` (ADR-219/230 — different database, named by ADR-276 as kept), gitter + lane-router consumers, and `atmux vox`.
+- ADR-202/203/226/227/229 carry superseded-in-place banners pointing at ADR-276 (250 already had one from ADR-280).
 
 ### ✨ Added — declarative operator cockpit windows ([ADR-279](docs/adr/279-declarative-operator-cockpit-windows.md))
 

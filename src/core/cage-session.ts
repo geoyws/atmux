@@ -7,9 +7,9 @@
 // (`resolveCageSessionName` in ./cockpit.ts) with the tmuxTmpdir-aware
 // socket derivation. Bug B/C root cause was the legacy synchronous
 // `cageSessionName` returning UNDERSCORE `atmux_<team>` unconditionally
-// while `start.ts` creates HYPHEN `atmux-<team>` for any unanchored team
-// — this helper inherits the HYPHEN-canonical resolution and is the
-// substrate T3 (cockpit.ts:1075) + T4 (verbs/cockpit.ts:249) refactor onto.
+// while `start.ts` created HYPHEN `atmux-<team>` for any unanchored team
+// — this helper inherits the canonical resolution (bare `<team>` since
+// e-419553c6) and is the substrate T3/T4 refactor onto.
 //
 // Pure (path-resolution + a single anchor-file read) — no tmux IO.
 // Tests inject a real temp `.atmux/state/session.txt` to drive every branch.
@@ -21,13 +21,13 @@ import { resolveCageSessionName } from "./cockpit.ts";
  *  tmux server — the session NAME (`tmux ... -t <sessionName>`) and the
  *  socket PATH (`tmux -S <socketPath>`). */
 export interface CageSession {
-  /** `atmux-<team>` (HYPHEN default, per ADR-162 + start.ts) or the
-   *  verbatim value anchored in `<atmuxDir>/state/session.txt`. The
-   *  `atmux` team special-cases to bare `"atmux"`. */
+  /** Bare `<team>` (e-419553c6 default) or the verbatim value anchored
+   *  in `<atmuxDir>/state/session.txt` (the only route to the legacy
+   *  prefixed forms). */
   sessionName: string;
   /** `<team.tmuxTmpdir>/sock` when the team pins a per-team tmux tmpdir
    *  (sopx / unum / atmux dogfood); otherwise the legacy
-   *  `/tmp/<sessionName>/sock`. */
+   *  `/tmp/atmux-<team>/sock`. */
   socketPath: string;
 }
 
@@ -35,15 +35,20 @@ export interface CageSession {
  *
  *  Resolution order (mirrors `common.ts::getSessionName` for the name):
  *    1. `<atmuxDir>/state/session.txt` anchor — trimmed; used verbatim
- *       when non-empty (legacy UNDERSCORE forms like `atmux_unum` are
- *       ONLY honoured via this anchor).
- *    2. Special-case: `team.name === "atmux"` → bare `"atmux"`.
- *    3. Default: `atmux-<team.name>` (HYPHEN — what `start.ts` actually
- *       creates for any unanchored team).
+ *       when non-empty (legacy prefixed forms like `atmux_unum` /
+ *       `atmux-<team>` are ONLY honoured via this anchor).
+ *    2. Default: bare `<team.name>` (e-419553c6 — what `start.ts`
+ *       actually creates for any unanchored team).
  *
- *  Socket path derives from the resolved session name:
+ *  Socket path derives from the TEAM, never from the session name
+ *  (e-419553c6 decoupled them: session names dropped the `atmux-`
+ *  prefix but socket paths KEEP it — the dotfiles prefix chain and
+ *  /tmp namespacing depend on `/tmp/atmux-<team>/…`):
  *    - `team.tmuxTmpdir` set → `<tmuxTmpdir>/sock`
- *    - else → legacy `/tmp/<sessionName>/sock`
+ *    - else → legacy `/tmp/atmux-<team.name>/sock` (matches
+ *      `common.ts::getDefaultSocket` / `cockpit.ts::cageSocketPath` —
+ *      the pre-e-419553c6 session-name-derived form was a drift from
+ *      both and had no production caller).
  *
  *  @param atmuxDir absolute path to the cage's `.atmux` directory. */
 export async function resolveCageSession(
@@ -59,6 +64,6 @@ export async function resolveCageSession(
   const socketPath =
     team.tmuxTmpdir !== undefined && team.tmuxTmpdir.length > 0
       ? `${team.tmuxTmpdir}/sock`
-      : `/tmp/${sessionName}/sock`;
+      : `/tmp/atmux-${team.name}/sock`;
   return { sessionName, socketPath };
 }

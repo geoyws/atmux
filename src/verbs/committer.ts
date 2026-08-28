@@ -3,11 +3,11 @@
 // verb-name alias was removed per ADR-266 §D2 (window expired).
 //
 // NOTE: `committer --daemon` / `committer --drain` were ADR-224
-// deprecation aliases for `orchd --start` / `orchd --drain`; they were
-// removed per ADR-266 §D2. The daemon/drain BODIES stay here (orchd
-// delegates to committerDaemonVerb / committerDrainVerb — single source
-// of truth per ADR-202 §V) but the committer verb surface no longer
-// accepts those sub-verbs.
+// deprecation aliases for `orchd --start` / `orchd --drain` (removed
+// per ADR-266 §D2) while the orchd verb owned the canonical surface.
+// ADR-276 retired orchd entirely, so the daemon/drain sub-verbs are
+// committer's own surface again — the bodies never left this file
+// (single source of truth per ADR-202 §V).
 // Hosts the `atmux committer --sweep` sub-verb that the per-team cron
 // backstop fires (per ADR-134 §triggers §cron-backstop-secondary). The
 // sweep walks per-member branches, consults the merger_state table,
@@ -74,40 +74,38 @@ import {
   type QueueMergeFn,
 } from "../core/committer-sweep.ts";
 import { getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts";
+import { bootstrapEventSubscriptions, EVENT_SUBSCRIPTIONS } from "../core/event-subscriptions.ts";
 import {
   createGitterMergeHandler as createGitterMergeHandlerImport,
   gitterConsume as gitterConsumeImport,
 } from "../core/gitter-consumer.ts";
 import { productionQueueMergeAttempt } from "../core/intra-team-merge-dispatcher.ts";
-import { listTasks as listKanbanTasks } from "../core/kanban.ts";
+import { listTasks as listKanbanTasks, loadKanban } from "../core/kanban.ts";
 import { resolveMergerConfig } from "../core/merger-config.ts";
-import { bootstrapOrchd as bootstrapOrchdImport } from "../core/orchd-bootstrap.ts";
-import { dispatchDissolveEpic as dispatchDissolveEpicImport } from "../core/orchd-dispatch/dissolve-epic.ts";
-import { dispatchEpicMerge as dispatchEpicMergeImport } from "../core/orchd-dispatch/epic-merge.ts";
-import { dispatchGitPush as dispatchGitPushImport } from "../core/orchd-dispatch/git-push.ts";
-import { ORCHD_SUBSCRIPTIONS as ORCHD_SUBSCRIPTIONS_IMPORT } from "../core/orchd-registry.ts";
 import { MergerStateRepo } from "../core/repositories/merger-state-repo.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { UsageError } from "../errors.ts";
 import type { Team as TeamShape } from "../schema/team.ts";
 import { runLaneTick as runLaneTickImport } from "./lane-tick.ts";
 
-const USAGE = "atmux committer <--sweep> [--team-dir <path>]";
+const USAGE =
+  "atmux committer <--sweep|--drain|--daemon> [--team-dir <path>] [--once] [--max-events N]";
 
 // ---------- Arg parsing ----------
 
 export interface ParsedCommitterArgs {
   /** Sub-verbs:
    *   - `sweep`  : original ADR-134 branch-poll cron sweep (T4).
-   *   - `drain`  : ADR-202/203 cron-backstop event drain (one-shot
-   *                gitterConsume — drains pending `task.done` events
-   *                via the offset table, exits 0).
+   *   - `drain`  : ADR-202/203 one-shot event drain (gitterConsume +
+   *                lane-router + the event-subscription registry, via
+   *                the offset table; exits 0). Operator-invoked — the
+   *                ADR-276 §D1-shaped backstop.
    *   - `daemon` : ADR-202/203 long-lived NOTIFY/LISTEN consumer
    *                (watchEvents loop; runs until SIGINT/SIGTERM).
-   *  Only `sweep` is parseable from the `atmux committer` CLI surface;
-   *  `drain` / `daemon` are constructed internally by `orchd.ts` which
-   *  owns the canonical `--drain` / `--start` surface (ADR-224; the
-   *  committer-side aliases were removed per ADR-266 §D2). */
+   *  All three parse from the `atmux committer` CLI surface. History:
+   *  drain/daemon moved to the `orchd` verb per ADR-224 (the committer
+   *  aliases expired per ADR-266 §D2), then returned home when ADR-276
+   *  retired orchd — committer is the canonical owner again. */
   subverb: "sweep" | "drain" | "daemon";
   /** Override the team-dir for `requireTeam` (test injection +
    *  cross-team invocation from the cockpit shell). */
@@ -136,14 +134,19 @@ export function parseCommitterArgs(argv: ReadonlyArray<string>): ParsedCommitter
       i += 1;
       continue;
     }
-    if (a === "--drain" || a === "drain" || a === "--daemon" || a === "daemon") {
-      // ADR-266 §D2: the ADR-224 deprecation aliases expired — hard,
-      // actionable error naming the canonical orchd surface.
-      const canonical = a === "--daemon" || a === "daemon" ? "orchd --start" : "orchd --drain";
-      throw new UsageError({
-        what: `committer: '${a}' alias removed per ADR-266 §D2 (ADR-224 deprecation window expired) — use 'atmux ${canonical}'`,
-        hint: USAGE,
-      });
+    if (a === "--drain" || a === "drain") {
+      // ADR-276: with the orchd verb retired, drain returned to its
+      // pre-ADR-224 home on committer (the ADR-266 §D2 alias expiry
+      // pointed at `atmux orchd --drain`, which no longer exists).
+      subverb = "drain";
+      i += 1;
+      continue;
+    }
+    if (a === "--daemon" || a === "daemon") {
+      // ADR-276: same re-homing as --drain (was `atmux orchd --start`).
+      subverb = "daemon";
+      i += 1;
+      continue;
     }
     if (a === "--once") {
       once = true;
@@ -370,8 +373,8 @@ export async function committerSweepVerb(
       baseBranch,
       // Roster gate (t-911c9314): non-member branches matching the
       // `<baseBranch>-*` glob (operator safety backups, archived
-      // branches, epic-team fan-in branches handled by `epic-merge`)
-      // get dropped before the dispatcher sees them. team.json is
+      // branches, and any other non-roster branch) get dropped before
+      // the dispatcher sees them. team.json is
       // already loaded above (`requireTeam`), so the projection is
       // free; the sweep core does the filter.
       rosterMembers: team.members.map((m) => m.name),
@@ -433,96 +436,72 @@ export async function committerDrainVerb(
       `committer --drain: task.unclaimed drain threw — ${e instanceof Error ? e.message : String(e)} (will retry next tick)`,
     );
   }
-  // ADR-224 §D6 + ADR-226/227/229 wire-up (driver P0 step 3/5
-  // 2026-05-23): drain ORCHD_SUBSCRIPTIONS too so the drain path
-  // covers both hardcoded consumers (above) AND every registry-
-  // sourced handler. Driver-preferred over deploying `--start` mode
-  // (the latter requires the `__orchd__` window per ADR-224 §D6, gated
-  // on team restart). Each subscription is consumed under its own
-  // `consumerId` → independent offset → at-least-once recovery; a
-  // throw in one handler does NOT halt sibling subs (`continue`
-  // per-iteration; the wider try/catch covers iterator-itself faults).
+  // ADR-224 §D6 (slimmed by ADR-276): drain the event-subscription
+  // registry too, so the drain path covers both hardcoded consumers
+  // (above) AND every registry-sourced handler. Each subscription is
+  // consumed under its own `consumerId` → independent offset →
+  // at-least-once recovery; a throw in one handler does NOT halt
+  // sibling subs (`continue` per-iteration; the wider try/catch covers
+  // iterator-itself faults).
   //
-  // Idempotent `bootstrapOrchd` call: drain is one-shot per process,
-  // so the registry starts empty each invocation. Calling bootstrap
-  // here populates it for the iterator below; if a caller already
-  // populated the registry (tests, future `--start` path), the
-  // idempotency guard inside `registerOrchdSubscription` no-ops the
-  // duplicate consumerIds.
+  // Idempotent bootstrap call: drain is one-shot per process, so the
+  // registry starts empty each invocation. If a caller already
+  // populated it (tests), the idempotency guard inside
+  // `registerEventSubscription` no-ops the duplicate consumerIds.
   //
-  // Push-dispatcher wiring (ADR-232 §D1 — Story s-4-a74c6fc1 / t-5):
-  // inject `dispatchGitPush` so the auto-push handler's Gate-1 fires
-  // a real `git push origin <parentBase>` (default stub returned
-  // `skipped-not-mine` per ADR-232 §D3 safety net). Cage param =
-  // local team.name; remote cages are stubbed per ADR-232 §D2
-  // (local-only v1). Skipped-not-mine still routes back to the
-  // safety net on cage-not-found / push-rejection / fetch-failure
-  // (flag + offset-advance per ADR-232 OQ-3 anti-retry).
-  bootstrapOrchdImport({
-    db: ctx.db,
-    mergeDeps: {
-      // ADR-232 §D2.a wire-up: pass `localTeamName` so the dispatcher's
-      // local-cage-skip guard fires when the epic resolves to the
-      // running cage (prevents self-dispatch loops per the amendment).
-      // `resolveCage` + `invokeLocal` deliberately omitted in v1: the
-      // dispatcher's default cage-not-found path is QUIET
-      // (skipped-not-mine, no flag-add per the c477954-fix amendment) —
-      // the merge still fires via the in-cage `atmux epic-merge tick`
-      // cron path (ADR-091). Wire-up is sufficient for the §D3
-      // safety-net semantics; full cage-registry walker + EpicMergeContext
-      // assembly land in a follow-up Task once the transport choice
-      // (ADR-232 §D2.b OQ-1) resolves.
-      dispatchEpicMerge: async (epicId) =>
-        dispatchEpicMergeImport({ epicId }, { localTeamName: ctx.team.name }),
-    },
-    dissolveDeps: {
-      dispatchDissolveEpic: async (epicId) =>
-        dispatchDissolveEpicImport({ epicId }, { localCageName: ctx.team.name }),
-    },
-    pushDeps: {
-      dispatchGitPush: async (parentBase) =>
-        dispatchGitPushImport(
-          { cage: ctx.team.name, branch: parentBase },
-          { localCageName: ctx.team.name },
-        ),
-    },
-    // ADR-231 §D2 — orchd auto-spawn handler wire-up. Passes
-    // atmuxDir + the running cage's team config so
-    // effectiveAutoSpawn can resolve per-team defaults[] and
-    // spawnEpicHandler can stamp `spawned_at` via the local
-    // state.db. Without this wire-up, the spawn subscriptions
-    // register with a stub that returns `skipped-row-missing` for
-    // every event (safe no-op pre-T-S2.5).
-    spawnDeps: {
+  // The ADR-229 auto-push subscription that was wired here died with
+  // ADR-276: nothing emits its `epic.merged` trigger once the
+  // auto-merge handler (the only emitter) was deleted, so the
+  // seven-gate engine + `dispatchGitPush` transport were removed
+  // rather than kept as dead code. They re-derive from git history
+  // when ADR-276 §D1's operator-invoked push verb is built.
+  //
+  // Lead-stall watchdog wiring (ADR-247 §D2, moved here verbatim from
+  // the retired orchd verb): re-reads the CURRENT kanban at ping-time
+  // (§OQ3) and rate-limits via the cage's state file. The bootstrap
+  // skips registration when `team.leadStallWatchdog.enabled === false`
+  // (§D6 off-switch).
+  bootstrapEventSubscriptions({
+    leadStallDeps: {
       atmuxDir: ctx.atmuxDir,
-      team: ctx.team,
+      team: {
+        name: ctx.team.name,
+        members: ctx.team.members,
+        ...(ctx.team.leadStallWatchdog !== undefined
+          ? { leadStallWatchdog: ctx.team.leadStallWatchdog }
+          : {}),
+      },
+      loadSnapshot: async () => {
+        const kanban = await loadKanban(ctx.atmuxDir);
+        return { stories: kanban.stories ?? [], tasks: kanban.tasks };
+      },
     },
   });
-  let orchdProcessed = 0;
-  let orchdErrors = 0;
+  let subsProcessed = 0;
+  let subsErrors = 0;
   try {
     const { withIdempotency } = await import("../abstractions/events.ts");
-    for (const sub of ORCHD_SUBSCRIPTIONS_IMPORT) {
+    for (const sub of EVENT_SUBSCRIPTIONS) {
       try {
         await withIdempotency(ctx.db, sub.consumerId, { topics: [sub.topic] }, async (event) => {
           if (event.topic !== sub.topic) return;
           await sub.handler(event);
-          orchdProcessed += 1;
+          subsProcessed += 1;
         });
       } catch (e) {
-        orchdErrors += 1;
+        subsErrors += 1;
         ctx.logger.log(
-          `committer --drain: orchd-sub ${sub.consumerId} (topic=${sub.topic}) threw — ${e instanceof Error ? e.message : String(e)} (will retry next tick)`,
+          `committer --drain: sub ${sub.consumerId} (topic=${sub.topic}) threw — ${e instanceof Error ? e.message : String(e)} (will retry next tick)`,
         );
       }
     }
   } catch (e) {
     ctx.logger.log(
-      `committer --drain: orchd subscriptions iterator threw — ${e instanceof Error ? e.message : String(e)} (will retry next tick)`,
+      `committer --drain: subscriptions iterator threw — ${e instanceof Error ? e.message : String(e)} (will retry next tick)`,
     );
   }
   ctx.logger.log(
-    `committer --drain: team='${ctx.team.name}' done=${gitterResult.processed} escalated=${gitterResult.escalated} unclaimed=${unclaimedProcessed} orchd-subs=${ORCHD_SUBSCRIPTIONS_IMPORT.length} orchd-processed=${orchdProcessed} orchd-errors=${orchdErrors}`,
+    `committer --drain: team='${ctx.team.name}' done=${gitterResult.processed} escalated=${gitterResult.escalated} unclaimed=${unclaimedProcessed} subs=${EVENT_SUBSCRIPTIONS.length} subs-processed=${subsProcessed} subs-errors=${subsErrors}`,
   );
   ctx.closeDb(ctx.db);
   return 0;
@@ -604,8 +583,8 @@ export async function committerDaemonVerb(
     // handler; offset for that handler is what gets advanced.
     const gitterConsumer = "atmux:gitter";
     const laneRouterConsumer = "atmux:lane-router";
-    // Watch BOTH topics in one subscription — orchd is the multi-topic
-    // dispatcher. The handler dispatches by topic; offsets are
+    // Watch BOTH topics in one subscription — the daemon is the
+    // multi-topic dispatcher. The handler dispatches by topic; offsets are
     // per-consumer (gitter vs lane-router) for independent recovery.
     // We pick the LOWER of the two offsets as the initial cursor so
     // no consumer falls behind silently.

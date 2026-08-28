@@ -12,7 +12,7 @@
     { "name": "driver-4", "tui": null, "cwd": ".atmux/worktrees/driver-4" },
     { "name": "driver-5", "tui": null, "cwd": ".atmux/worktrees/driver-5" }
   ],
-  "_comment_bot": "ADR-280: one cooperative _bot seat for persistent parent teams. It has an isolated .atmux/worktrees/bot worktree on <base>-bot and sits after drivers, before members. null tui starts zsh for operator use and is deliberately unroutable by _superbot; choose an explicit harness + account in the durable team config before automated offers are enabled. Transient/epic teams omit this block.",
+  "_comment_bot": "ADR-281: one cooperative _bot seat for persistent parent teams. It has an isolated .atmux/worktrees/bot worktree on <base>-bot and sits after drivers, before members. null tui starts zsh for operator use and is deliberately unroutable by _superbot; choose an explicit harness + account in the durable team config before automated offers are enabled. Nested teams omit this block unless configured explicitly.",
   "bot": {
     "enabled": true,
     "tui": null,

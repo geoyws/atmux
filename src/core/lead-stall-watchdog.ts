@@ -1,4 +1,5 @@
-// ADR-247 §D2/D3/D4/D5 — lead-stall watchdog (orchd consumer).
+// ADR-247 §D2/D3/D4/D5 — lead-stall watchdog (event-subscription
+// consumer; drained by `committer --drain` since ADR-276 retired orchd).
 //
 // Closes the agile-loop stall reproduced 2026-05-28 in mx-root
 // (complaint c-b2c8418e): the planner advances stories `planning →
@@ -20,7 +21,7 @@
 //   - {@link readLastPingSec} / {@link recordPing} are the per-cage
 //     rate-limit dedup-state R/W (§D5 first bullet) — same posture as
 //     budget-warning-state.ts (`<atmuxDir>/state/<file>.json`).
-//   - {@link createLeadStallWatchdogHandler} is the orchd consumer
+//   - {@link createLeadStallWatchdogHandler} is the subscription consumer
 //     factory: on a `story.ready` / `story.unclaimed` / `task.unclaimed`
 //     event, evaluate over the current kanban, and — if it fires AND the
 //     rate-limit allows — send the concrete ping to the lead via
@@ -46,8 +47,8 @@
 //     ADR-247 §D7: depends on the ADR-246 cockpit registry to enumerate
 //     active epic cages. Not built here.
 
-import { join } from "node:path";
 import { spawn } from "node:child_process";
+import { join } from "node:path";
 
 import { atomicWrite, ensureDir, readTextOrNull } from "../abstractions/fs.ts";
 import type { KanbanStory, KanbanTask } from "../schema/kanban.ts";
@@ -226,7 +227,8 @@ export function decideLeadStall(input: DecideLeadStallInput): LeadStallDecision 
       fire: false,
       conditions: [],
       items: [],
-      reason: "no actionable work (no ready-no-claimant story or aged unclaimed task past threshold)",
+      reason:
+        "no actionable work (no ready-no-claimant story or aged unclaimed task past threshold)",
     };
   }
 
@@ -328,7 +330,7 @@ function bullet(item: LeadStallDispatchItem): string {
 //
 // State file `<atmuxDir>/state/lead-stall-watchdog.json` holds the
 // epoch-seconds of the last ping for this cage. One number per cage —
-// the rate-limit is per-cage (§D5 first bullet), and the orchd consumer
+// the rate-limit is per-cage (§D5 first bullet), and the consumer
 // runs in exactly one cage, so a single `lastPingSec` field suffices.
 // Same atomic-write + tolerant-read posture as budget-warning-state.ts
 // (losing the file just re-arms a fresh window — never a hard error).
@@ -456,7 +458,7 @@ const DEFAULT_IDLE_THRESHOLD_MIN = 5;
 const DEFAULT_RATE_LIMIT_PER_CAGE_MIN = 5;
 
 /**
- * Factory — returns the orchd handler for the lead-stall-watchdog
+ * Factory — returns the subscription handler for the lead-stall-watchdog
  * subscriptions (`story.ready` / `story.unclaimed` / `task.unclaimed`).
  *
  * On each event: read the CURRENT kanban (ADR-247 §OQ3 ping-time
@@ -534,7 +536,7 @@ export function createLeadStallWatchdogHandler(
 }
 
 /** Default real-process spawn of `atmux tell-lead`. Inherits stdio so
- *  logs surface in the orchd pane log. */
+ *  logs surface in the drain's log. */
 function defaultSpawnTellLead(args: ReadonlyArray<string>): Promise<number> {
   return new Promise((resolve) => {
     const child = spawn("atmux", [...args], { stdio: "inherit", env: process.env });

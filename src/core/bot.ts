@@ -1,4 +1,4 @@
-// ADR-280 — cooperative per-team `_bot` seat primitives.
+// ADR-281 — cooperative per-team `_bot` seat primitives.
 //
 // This module deliberately does not import the member or driver lifecycle.
 // `_bot` is an operator-cooperative automation target: it may receive a

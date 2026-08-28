@@ -236,8 +236,12 @@ export interface SessionNameOpts extends ResolveDirOpts {
  *   1. env.ATMUX_SESSION
  *   2. <atmuxDir>/state/session.txt   (single-session anchor file)
  *   3. team.singleSession === true (or env.ATMUX_DRIVER_SESSION) but no anchor
- *      → ConfigError (refuses silent fallback to atmux-<team>; bash invariant)
- *   4. atmux-<team.name>
+ *      → ConfigError (refuses silent fallback to the default; bash invariant)
+ *   4. <team.name> — BARE, no `atmux-` prefix (e-419553c6, operator
+ *      directive 2026-08-27: "atmux-${teamName} … should just be
+ *      ${teamName} to save space"). Only the tmux SESSION name is bare;
+ *      socket paths keep the `/tmp/atmux-<team>/…` prefix — the
+ *      dotfiles prefix chain and /tmp namespacing depend on it.
  */
 export async function getSessionName(opts: SessionNameOpts = {}): Promise<string> {
   const env = opts.env ?? process.env;
@@ -258,7 +262,7 @@ export async function getSessionName(opts: SessionNameOpts = {}): Promise<string
       hint: "run 'atmux start' to seed it",
     });
   }
-  return `atmux-${team.name}`;
+  return team.name;
 }
 
 /**

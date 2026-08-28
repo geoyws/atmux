@@ -3,6 +3,8 @@
 **Status**: accepted
 **Date**: 2026-05-23
 **Driver-ref**: parent atmux kanban Epic `e-a946af69` + driver-inbox amendment 2026-05-23 (lead relay) + parent atmux Task `t-5-cf7682b1` (amendment audit trail) + parent atmux Task `t-0db3f393` (master design).
+
+> ⚠ **SUPERSEDED 2026-08-27 by [ADR-276](276-orchd-retirement-and-atmux-scope.md).** Automatic push is retired outright: nothing emits `epic.merged` once the auto-merge handler (its only emitter) is deleted, so the seven-gate engine (`orchd-push.ts`) and the `dispatchGitPush` transport (`orchd-dispatch/git-push.ts`, ADR-232) were DELETED rather than kept as dead code. Pushes are manual. If ADR-276 §D1's operator-invoked push verb is built, both re-derive from git history (last present at trunk `170700d3`). The §DA-Gate-2 allowlist (`src/core/auto-push.ts`) is NOT part of this — it has live consumers (merge-member, claim, merge-cycle, cockpit pushPolicy) and stays. Kept as history for the gate design.
 **Parent EPIC (this team)**: `e-a946af69` (orchd Phase 3-5 + Phase 6 fold-in)
 **Hard gates**: [ADR-226](226-orchd-auto-merge-subscriber.md) (Phase 3 emits `epic.merged`) + [`e-60e16169`](../../README.md) (orchd daemon substrate).
 **Sibling cross-refs**: [ADR-202](202-honker-in-db-messaging-substrate.md) (substrate), [ADR-203](203-event-topic-taxonomy.md) (topic taxonomy), [global CLAUDE.md push policy](../../../../.claude-personal/CLAUDE.md) (staging-branch hard-refuse + George-manual constraint).

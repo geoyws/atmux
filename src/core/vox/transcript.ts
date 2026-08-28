@@ -163,7 +163,7 @@ export interface CreateTranscriptSinkOpts {
 }
 
 /** Production append: `mkdir -p` (0700) then a synchronous append (0600).
- *  Synchronous for the same reason `appendOrchdPushAuditRow` is — the row
+ *  Synchronous for the same reason the audit-log appenders are — the row
  *  is complete when the call returns, so a crash cannot lose a line that
  *  a queued async write would still be holding. */
 function defaultAppend(path: string, text: string): void {

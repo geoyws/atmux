@@ -290,7 +290,7 @@ describe("getSessionName", () => {
     const atmuxDir = join(dir, ".atmux");
     await seedTeam(atmuxDir, { name: "t", members: [] });
     const got = await getSessionName({ dir: atmuxDir, env: { ATMUX_SESSION: "" } });
-    expect(got).toBe("atmux-t");
+    expect(got).toBe("t");
   });
 
   test("reads stored session anchor file when present", async () => {
@@ -308,14 +308,14 @@ describe("getSessionName", () => {
     await mkdir(stateDir(atmuxDir), { recursive: true });
     await writeFile(sessionAnchorPath(atmuxDir), "   \n");
     const got = await getSessionName({ dir: atmuxDir, env: {} });
-    expect(got).toBe("atmux-t");
+    expect(got).toBe("t");
   });
 
-  test("composes atmux-<team> default", async () => {
+  test("bare <team> default (e-419553c6 — no atmux- prefix)", async () => {
     const atmuxDir = join(dir, ".atmux");
     await seedTeam(atmuxDir, { name: "foo", members: [] });
     const got = await getSessionName({ dir: atmuxDir, env: {} });
-    expect(got).toBe("atmux-foo");
+    expect(got).toBe("foo");
   });
 
   test("singleSession: true with no anchor → ConfigError", async () => {
@@ -341,7 +341,7 @@ describe("getSessionName", () => {
       env: {},
       team: { name: "preloaded", members: [] },
     });
-    expect(got).toBe("atmux-preloaded");
+    expect(got).toBe("preloaded");
   });
 });
 

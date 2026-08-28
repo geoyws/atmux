@@ -1,39 +1,41 @@
 // ADR-225 end-to-end smoke — exercises the full v13→v14 substrate
-// from migration through CLI verbs through spawn-epic gate through
-// Honker events. T7 of EPIC e-cf8a6195 (master design task
+// from migration through CLI verbs through the eligibility gate
+// through Honker events. T7 of EPIC e-cf8a6195 (master design task
 // t-802c468b).
 //
-// Single integration spec covering the canonical 3-epic chain that
-// orchd Phase 2 will rely on. Closes the gaps between unit tests
-// (which exercise each layer in isolation) and serves as the
-// reference fixture for sibling EPIC e-60e16169 (orchd auto-spawn).
+// Single integration spec covering the canonical 3-epic chain.
+// Closes the gaps between unit tests (which exercise each layer in
+// isolation).
+//
+// SCOPE, after ADR-280 stage 4. The kanban Epic WORK ITEM survives the
+// epic-TEAM retirement — `core/epic.ts` + `verbs/epic.ts` are
+// internal-kanban surfaces that ADR-280 §D5 leaves under ADR-275's gate,
+// so every dependency/eligibility/event assertion below is still live
+// coverage of shipping code. What left with stage 3 is the CONSUMER that
+// used to read the gate: `atmux team spawn-epic`. The gate itself,
+// `epicIsEligible` (ADR-225 §Eligibility), is unchanged and is now
+// asserted DIRECTLY rather than through the deleted verb — same
+// property, one fewer layer. Deleting these cases instead would have
+// dropped the only integration-level coverage of the dep chain.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { GitSpawn } from "../../src/abstractions/branch-merge.ts";
-import type { SpawnResult } from "../../src/abstractions/spawn.ts";
 import { closeDatabase, openDatabase } from "../../src/abstractions/sqlite.ts";
 import { migrations } from "../../src/abstractions/sqlite-migrations.ts";
 import {
   addEpic,
   advanceEpic,
+  epicIsEligible,
   setEpicReady,
   showEpic,
 } from "../../src/core/epic.ts";
-import type { HostPressureVerdict } from "../../src/core/host-pressure.ts";
 import { epic } from "../../src/verbs/epic.ts";
-import {
-  type SpawnEpicOpts,
-  spawnEpic,
-} from "../../src/verbs/team/spawn-epic.ts";
 
 let scratch: string;
 let teamDir: string;
 let atmuxDir: string;
-let cockpitPath: string;
-let templatesDir: string;
 
 beforeEach(async () => {
   scratch = await mkdtemp(join(tmpdir(), "atmux-deps-e2e-"));
@@ -49,36 +51,6 @@ beforeEach(async () => {
     JSON.stringify({
       name: "parent-team",
       members: [{ name: "lead", role: "team-lead" }],
-    }),
-  );
-  // Templates dir + a default roster preset (needed by spawn-epic).
-  templatesDir = join(scratch, "templates", "epic-rosters");
-  await mkdir(templatesDir, { recursive: true });
-  await writeFile(
-    join(templatesDir, "default.json"),
-    JSON.stringify({
-      members: [
-        { name: "lead", role: "lead", tui: "claude" },
-        { name: "planner", role: "planner", tui: "claude" },
-        { name: "reviewer", role: "reviewer", tui: "claude" },
-        { name: "be-1", role: "member", lane: "be", tui: "claude" },
-      ],
-    }),
-  );
-  // Cockpit with the parent-team registered.
-  cockpitPath = join(scratch, "cockpit.json");
-  await writeFile(
-    cockpitPath,
-    JSON.stringify({
-      schemaVersion: 1,
-      sessions: [
-        {
-          type: "team",
-          name: "parent-team",
-          enabled: true,
-          root: teamDir,
-        },
-      ],
     }),
   );
 });
@@ -103,55 +75,6 @@ async function captureStdout<T>(fn: () => Promise<T>): Promise<{ out: string; re
   }
 }
 
-/** Permissive host-pressure probe + git stub for the spawn-epic path —
- *  mirrors the unit-test fixtures so we don't repeat the same stubs. */
-const permissivePressure: NonNullable<SpawnEpicOpts["probeHostPressure"]> = async () =>
-  ({
-    ok: true,
-    reasons: [],
-    probe: null,
-    thresholds: null,
-    skipped: true,
-  }) satisfies HostPressureVerdict;
-
-function makeGitStub(): GitSpawn {
-  return async (argv_) => {
-    const ok = (stdout: string): SpawnResult => ({
-      exitCode: 0,
-      stdout,
-      stderr: "",
-      argv: [],
-      cmd: "git",
-      signalled: null,
-      durationMs: 0,
-    });
-    if (argv_.includes("rev-parse") && argv_.includes("--abbrev-ref")) {
-      return ok("main");
-    }
-    if (argv_.includes("worktree") && argv_.includes("add")) {
-      const wtPath = argv_[argv_.length - 2];
-      if (wtPath !== undefined) {
-        await mkdir(wtPath, { recursive: true }).catch(() => undefined);
-      }
-      return ok("");
-    }
-    return ok("");
-  };
-}
-
-function makeSpawnOpts(homeDir: string): SpawnEpicOpts {
-  return {
-    cockpitPath,
-    probeHostPressure: permissivePressure,
-    templatesDir,
-    callerScope: () => "driver",
-    env: { ...process.env, HOME: homeDir, ATMUX_MEMBER: "be-1" },
-    git: makeGitStub(),
-    logger: { log: () => undefined, warn: () => undefined },
-    logSpawnOverrideOpts: { homeDir, now: () => 1_700_000_000_000 },
-  };
-}
-
 /** Read every row from the `events` table for assertions. */
 function readEvents(): Array<{
   topic: string;
@@ -172,7 +95,7 @@ function readEvents(): Array<{
 }
 
 describe("ADR-225 substrate — 3-epic chain end-to-end", () => {
-  test("happy path: chain A→B→C; epic.ready + epic.unblocked fire as deps clear; spawn-epic gate refuses then succeeds", async () => {
+  test("happy path: chain A→B→C; epic.ready + epic.unblocked fire as deps clear; eligibility gate refuses then permits", async () => {
     // ---------- 1. Build the chain: A deps_on [B], B deps_on [C], C leaf.
     const c = await addEpic(atmuxDir, { title: "C" });
     const b = await addEpic(atmuxDir, { title: "B", dependsOn: [c] });
@@ -199,13 +122,12 @@ describe("ADR-225 substrate — 3-epic chain end-to-end", () => {
     expect(depsOut).toContain(`  ${b}`);
     expect(depsOut).toContain(`    ${c}`);
 
-    // ---------- 4. spawn-epic A — refused (is_ready=0 AND unmet deps).
-    const homeDir = join(scratch, "home");
-    await mkdir(homeDir, { recursive: true });
-    await expect(spawnEpic(["a-spawn", "--from", "parent-team"], {
-      ...makeSpawnOpts(homeDir),
-      // Use the real predicate against the seeded chain.
-    })).rejects.toThrow();
+    // ---------- 4. Eligibility gate on A — refused, and it names BOTH
+    //              blockers (is_ready=0 AND the unmet dep).
+    const gate0 = await epicIsEligible(atmuxDir, a);
+    expect(gate0.eligible).toBe(false);
+    expect(gate0.blockers).toContain("is_ready=0");
+    expect(gate0.blockers.some((x) => x.startsWith(`dep ${b} not done`))).toBe(true);
 
     // ---------- 5. `epic ready A` → epic.ready event lands.
     await setEpicReady(atmuxDir, a, true);
@@ -213,16 +135,12 @@ describe("ADR-225 substrate — 3-epic chain end-to-end", () => {
     expect(eventsAfterReady).toHaveLength(1);
     expect(eventsAfterReady[0]?.payload.epicId).toBe(a);
 
-    // spawn-epic A still refused (deps unmet even though is_ready=1).
-    // Re-shape the spawn-epic arg shape: pass the epic kanban id.
-    // The verb keys off `--parent-epic-kanban-id` (defaults to `e-<id>`)
-    // — use that to point at `a`.
-    await expect(
-      spawnEpic(
-        ["a-spawn", "--from", "parent-team", "--parent-epic-kanban-id", a],
-        makeSpawnOpts(homeDir),
-      ),
-    ).rejects.toThrow(/not eligible/);
+    // A is still ineligible — is_ready=1 now, but the dep is unmet, so
+    // `is_ready=0` drops off the blocker list and the dep blocker stays.
+    const gate1 = await epicIsEligible(atmuxDir, a);
+    expect(gate1.eligible).toBe(false);
+    expect(gate1.blockers).not.toContain("is_ready=0");
+    expect(gate1.blockers.some((x) => x.startsWith(`dep ${b} not done`))).toBe(true);
 
     // ---------- 6. Advance C to done — at THIS layer, A's deps include
     //              only B (not C); B is still planning + B's own deps
@@ -259,63 +177,32 @@ describe("ADR-225 substrate — 3-epic chain end-to-end", () => {
     expect(aUnblocked).toBeDefined();
     expect(aUnblocked?.payload.byEpicId).toBe(b);
 
-    // ---------- 9. `spawn-epic A` now succeeds (eligible: is_ready=1 +
-    //              all direct deps done).
-    const rc = await spawnEpic(
-      ["a-spawn", "--from", "parent-team", "--parent-epic-kanban-id", a],
-      makeSpawnOpts(homeDir),
-    );
-    expect(rc).toBe(0);
-    // Verify the spawn produced a child team.json.
-    const childTeamRaw = await readFile(
-      join(scratch, "parent-team-epics", "a-spawn", ".atmux", "team.json"),
-      "utf8",
-    );
-    expect(JSON.parse(childTeamRaw).name).toBe("a-spawn");
+    // ---------- 9. A is now ELIGIBLE: is_ready=1 + every direct dep done.
+    //              This is the transition the gate exists to express.
+    const gate2 = await epicIsEligible(atmuxDir, a);
+    expect(gate2.eligible).toBe(true);
+    expect(gate2.blockers).toEqual([]);
   });
 
-  test("`--force` on ineligible epic spawns + writes override log line with blockers", async () => {
-    // Create an epic that's NOT ready + has no deps. Eligibility predicate
-    // refuses on is_ready=0; --force overrides + logs.
+  // ADR-280 stage 4: the former "`--force` on ineligible epic spawns +
+  // writes override log line" case drove the deleted `spawn-epic` verb and
+  // its `spawn-overrides.log`. The verb is gone and `core/spawn-override.ts`
+  // is now caller-less (reported, not deleted — ADR-276/275 own it). What
+  // the case actually pinned at THIS layer is the gate's blocker report on
+  // a dep-free but unready epic, which is kept:
+  test("a dep-free but unready epic is ineligible, and `is_ready=0` is its only blocker", async () => {
     const e = await addEpic(atmuxDir, { title: "draft" });
     expect((await showEpic(atmuxDir, e))?.isReady).toBe(false);
 
-    const homeDir = join(scratch, "home2");
-    await mkdir(homeDir, { recursive: true });
+    const gate = await epicIsEligible(atmuxDir, e);
+    expect(gate.eligible).toBe(false);
+    expect(gate.blockers).toEqual(["is_ready=0"]);
 
-    const rc = await spawnEpic(
-      [
-        "forced-spawn",
-        "--from",
-        "parent-team",
-        "--parent-epic-kanban-id",
-        e,
-        "--force",
-      ],
-      makeSpawnOpts(homeDir),
-    );
-    expect(rc).toBe(0);
-
-    // Override log line landed.
-    const logPath = join(homeDir, ".atmux", "state", "spawn-overrides.log");
-    const raw = await readFile(logPath, "utf8");
-    const lines = raw
-      .split("\n")
-      .filter((l) => l.length > 0)
-      .map((l) => JSON.parse(l) as Record<string, unknown>);
-    expect(lines).toHaveLength(1);
-    const line = lines[0] as {
-      epicId: string;
-      team: string;
-      blockers: string[];
-      callerMember: string;
-      callerScope: string;
-    };
-    expect(line.epicId).toBe(e);
-    expect(line.team).toBe("parent-team");
-    expect(line.blockers).toContain("is_ready=0");
-    expect(line.callerMember).toBe("be-1");
-    expect(line.callerScope).toBe("driver");
+    // Marking it ready clears the sole blocker — no deps to satisfy.
+    await setEpicReady(atmuxDir, e, true);
+    const after = await epicIsEligible(atmuxDir, e);
+    expect(after.eligible).toBe(true);
+    expect(after.blockers).toEqual([]);
   });
 });
 
