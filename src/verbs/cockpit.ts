@@ -53,6 +53,7 @@ import {
   buildGroupTopology,
   cageSocketPath,
   enabledTeams,
+  firstTeamRoot,
   type GroupTopologyNode,
   type GroupedTopology,
   groupSocketPath,
@@ -344,6 +345,10 @@ export interface ReconcileGroupServersOpts {
 /** One planned viewer window inside a group server. */
 interface GroupWantedWindow {
   name: string;
+  /** Shell cwd for the viewer pane. A pane left in the reconcile invoker's
+   *  cwd makes the operator's cwd-guard paint `root != root`; team windows
+   *  spawn at the team root, group windows at {@link firstTeamRoot}. */
+  cwd?: string | undefined;
   buildCmd: () => Promise<string>;
 }
 
@@ -393,9 +398,14 @@ export async function reconcileGroupServers(
     for (const g of topology.groups) {
       const wanted: GroupWantedWindow[] = g.children.map((c) =>
         c.kind === "group"
-          ? { name: c.name, buildCmd: async () => buildGroupWindowCommand(c.name) }
+          ? {
+              name: c.name,
+              cwd: firstTeamRoot(topology, c.name),
+              buildCmd: async () => buildGroupWindowCommand(c.name),
+            }
           : {
               name: c.team.name,
+              cwd: c.team.root,
               buildCmd: async () =>
                 await buildTeamWindowCommand(c.team, await resolveTeamWindowMode(c.team, deps)),
             },
@@ -418,6 +428,7 @@ export async function reconcileGroupServers(
       wanted: [
         {
           name: teamName,
+          cwd: ownerTeam.team.root,
           buildCmd: async () =>
             await buildTeamWindowCommand(
               ownerTeam.team,
@@ -438,7 +449,13 @@ export async function reconcileGroupServers(
       const childName = child.name;
       plans.push({
         group: parent,
-        wanted: [{ name: childName, buildCmd: async () => buildGroupWindowCommand(childName) }],
+        wanted: [
+          {
+            name: childName,
+            cwd: firstTeamRoot(topology, childName),
+            buildCmd: async () => buildGroupWindowCommand(childName),
+          },
+        ],
       });
       child = parent;
     }
@@ -495,6 +512,7 @@ export async function reconcileGroupServers(
         name: group.name,
         detached: true,
         windowName: first.name,
+        ...(first.cwd !== undefined ? { cwd: first.cwd } : {}),
         shellCommand: await first.buildCmd(),
       });
       logger.log(`  ✓ created group server '${group.name}' (${sock}; window 1: ${first.name})`);
@@ -509,6 +527,7 @@ export async function reconcileGroupServers(
         sessionName: group.name,
         name: w.name,
         detached: true,
+        ...(w.cwd !== undefined ? { cwd: w.cwd } : {}),
         shellCommand: await w.buildCmd(),
       });
       present.add(w.name);
@@ -2135,6 +2154,9 @@ export async function reconcileCockpitSession(
         sessionName,
         name: v.name,
         detached: true,
+        ...((cwd) => (cwd !== undefined ? { cwd } : {}))(
+          topology !== undefined ? firstTeamRoot(topology, v.name) : undefined,
+        ),
         shellCommand: buildGroupWindowCommand(v.name),
       });
       logger.log(`  ✓ added window '${v.name}' (group-server embed)`);
@@ -2146,6 +2168,7 @@ export async function reconcileCockpitSession(
       sessionName,
       name: v.name,
       detached: true,
+      cwd: v.team.root,
       shellCommand: cmd,
     });
     logger.log(`  ✓ added window '${v.name}' (${mode})`);

@@ -602,6 +602,33 @@ export type CockpitViewerEntry =
   | { kind: "group"; group: GroupTopologyNode }
   | { kind: "team"; team: FlattenedTeamEntry };
 
+/** First team root reachable inside a group (DFS: own teams, then child
+ *  groups) — the natural `cwd` for that group's viewer windows. A viewer
+ *  pane whose shell sits in an unrelated directory makes the operator's
+ *  cwd-guard paint `root != root` on the status bar; spawning the pane at
+ *  a real member root keeps the guard truthful (found live 2026-08-28 on
+ *  the first group-server rollout, where every embed pane inherited the
+ *  reconcile invoker's cwd). Undefined only for a group with no teams
+ *  anywhere beneath it — callers then omit cwd, the pre-fix behaviour. */
+export function firstTeamRoot(topology: GroupedTopology, groupName: string): string | undefined {
+  const byName = new Map(topology.groups.map((g) => [g.name, g]));
+  const walk = (name: string, seen: Set<string>): string | undefined => {
+    if (seen.has(name)) return undefined;
+    seen.add(name);
+    const g = byName.get(name);
+    if (g === undefined) return undefined;
+    for (const c of g.children) if (c.kind === "team") return c.team.root;
+    for (const c of g.children) {
+      if (c.kind === "group") {
+        const r = walk(c.name, seen);
+        if (r !== undefined) return r;
+      }
+    }
+    return undefined;
+  };
+  return walk(groupName, new Set());
+}
+
 /** Output of {@link buildGroupTopology}. */
 export interface GroupedTopology {
   /** Every enabled group, DFS order (parents before children). */
