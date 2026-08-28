@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "observedAt": "2026-08-28T10:30:35Z",
+  "observedAt": "2026-08-28T11:04:07Z",
   "sourceCockpit": "/root/.atmux/cockpit.json",
   "sourceCockpitSha256": "aafc163d3e7086806e61bdaf204b253da4dcf7892e9a6e5bcd0c59e63406741f",
   "activation": "held",
@@ -101,7 +101,7 @@
     {
       "name": "rx",
       "root": "/root/work/ifca/src/rentx-root",
-      "teamConfig": "missing",
+      "teamConfig": "present",
       "bot": { "enabled": true, "tui": "claude", "cwd": ".atmux/worktrees/bot", "claudeAccount": "ifca2" }
     },
     {
@@ -138,8 +138,14 @@
     },
     {
       "board": "fmx",
-      "tags": ["ai-chat", "deploy", "finance", "reporting", "security", "tooling"],
+      "tags": ["ai-chat", "deploy", "finance", "reporting"],
       "defaultTeam": "fmx",
+      "fallbackTeams": []
+    },
+    {
+      "board": "fmx",
+      "tags": ["security", "tooling"],
+      "defaultTeam": "aix",
       "fallbackTeams": []
     },
     {
@@ -204,9 +210,8 @@
     }
   ],
   "activationBlockers": [
-    "Six persistent cockpit roots (ix, mx, hx, hrx, rx, fmx) need a complete .atmux/team.json before their bot block can be applied.",
-    "Kanban project fmx is currently registered to /root/work/ifca/src/aix-root while cockpit team fmx points to /root/work/ifca/src/fmx-root; George must confirm or repair that mapping.",
-    "The gitea team custom Claude command currently selects the gmail config while its cockpit account selects unum; reconcile the command/account before activation.",
+    "Five enabled cockpit roots (ix, mx, hx, hrx, fmx) are absent on this machine; restore or check out each real repository before linking its existing canonical team config or applying a bot block.",
+    "Installing the reviewed source and applying bot/superbot blocks to runtime configuration remain explicitly held; the currently running cockpit and cages must not be used to test this snapshot.",
     "Re-read cockpit/team config and registered tag inventories immediately before applying this snapshot; refuse on SHA or vocabulary drift."
   ],
   "excludedBoards": [

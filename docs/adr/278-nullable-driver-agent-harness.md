@@ -35,7 +35,7 @@ Set `drivers[].tui` to an explicit alias in the affected team config and revert 
 
 ## Migration receipt — 2026-08-28
 
-The versioned dotfiles inventory and its `/root/.atmux` mirrors were checked structurally with `jq`, not by grepping every `tui` field (member harnesses remain intentional). Fifteen canonical team files had a non-null legacy `driverTui`; five of those also had non-null `driverSession.tui` and/or `drivers[].tui`. Those driver-only fields now all resolve to null across both inventories. No `atmux start`, cockpit reconcile/rebuild, session rename, socket lookup, send-keys, install, or deployment was run; existing panes and tmux server pointers were untouched.
+The versioned dotfiles inventory, its `/root/.atmux` mirrors, and every present enabled-team project config were checked structurally with `jq`, not by grepping every `tui` field (member harnesses remain intentional). Fifteen canonical team files had a non-null legacy `driverTui`; five of those also had non-null `driverSession.tui` and/or `drivers[].tui`. Those driver-only fields now all resolve to null across both canonical/runtime inventories. The active cockpit audit found 12 of 18 project configs initially present; the existing canonical RX config was then linked into its real repository, yielding 13 present configs with zero pinned driver harnesses. The other five configured project roots (`ix`, `mx`, `hx`, `hrx`, `fmx`) are absent from this machine and were not fabricated. No `atmux start`, cockpit reconcile/rebuild, session rename, socket lookup, send-keys, install, or deployment was run; existing panes and tmux server pointers were untouched.
 
 ## References
 

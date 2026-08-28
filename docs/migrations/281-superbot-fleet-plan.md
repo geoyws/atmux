@@ -1,6 +1,6 @@
 # ADR-281 fleet migration plan (held)
 
-This is the source-side preparation for cooperative `_bot` seats and `_superbot`. It is intentionally **not** an activation receipt. No live `team.json`, `cockpit.json`, tmux socket, cage, install, rebuild, reconcile, or deployment was changed while preparing it.
+This is the source-side preparation for cooperative `_bot` seats and `_superbot`. It is intentionally **not** an activation receipt. The renderer did not apply any `bot` or `superbot` block. Separate filesystem-only preparation normalized nullable driver fields, aligned two account selectors, and linked the existing canonical RX team config into its real project root; it did not change `cockpit.json`, invoke tmux, install atmux, rebuild/reconcile a cage, or deploy anything.
 
 The machine-readable plan is [`281-superbot-fleet-plan.json`](281-superbot-fleet-plan.json). It snapshots `/root/.atmux/cockpit.json` at SHA-256 `aafc163d3e7086806e61bdaf204b253da4dcf7892e9a6e5bcd0c59e63406741f` on 2026-08-28 and names all 18 enabled persistent parent teams. Every team has an explicit target `_bot` block with:
 
@@ -9,7 +9,7 @@ The machine-readable plan is [`281-superbot-fleet-plan.json`](281-superbot-fleet
 - an explicit account selector (never a credential); and
 - the pinned `.atmux/worktrees/bot` worktree.
 
-The ownership snapshot expands to 95 exact `(board, tag)` routes. Route order is intentional: `px/aix` and `px/aix-chat` precede PX's general tags so shared Aix work reaches the `aix` bot. HAX and medic `infra` work routes to the personal `geoyws` team. Other registered boards with no tags remain explicitly excluded rather than receiving a guessed title/path route. Fallback lists are initially empty because a different team generally means a different repository; cross-repo fallback should be added only where both teams can safely own the same checkout.
+The ownership snapshot expands to 95 exact `(board, tag)` routes. Route order is intentional: `px/aix` and `px/aix-chat` precede PX's general tags so shared Aix work reaches the `aix` bot. The mixed `fmx` board keeps product tags (`ai-chat`, `deploy`, `finance`, `reporting`) with the `fmx` team, while shared Harness tags (`security`, `tooling`) route to the `aix` team whose root is the board's registered root. HAX and medic `infra` work routes to the personal `geoyws` team. Other registered boards with no tags remain explicitly excluded rather than receiving a guessed title/path route. Fallback lists are initially empty because a different team generally means a different repository; cross-repo fallback should be added only where both teams can safely own the same checkout.
 
 ## Read-only rendering
 
@@ -28,12 +28,13 @@ It never writes those files and never invokes tmux. A plan with a missing/nullab
 
 ## Current blockers before phase 7
 
-- Six persistent cockpit roots—`ix`, `mx`, `hx`, `hrx`, `rx`, and `fmx`—have no `.atmux/team.json`. A complete team config must be bootstrapped/recovered before adding only the `bot` block; do not synthesize a roster from cockpit data.
-- Kanban project `fmx` currently resolves to `/root/work/ifca/src/aix-root`, while cockpit team `fmx` resolves to `/root/work/ifca/src/fmx-root`. George must confirm or repair that mapping before the route can be activated.
-- The `gitea` team custom Claude command currently selects the Gmail config while the cockpit entry selects the Unum account. The account choice must be reconciled before activation so the declared selector and launched process agree.
+- Five enabled cockpit roots—`ix`, `mx`, `hx`, `hrx`, and `fmx`—do not exist on this machine. Their complete canonical team configs already exist in dotfiles, but the real repositories must be restored or checked out before linking those configs or applying a `bot` block. Creating empty directories merely to satisfy the plan would hide the missing checkout and is forbidden.
+- The updated atmux source is not installed and no runtime `bot`/`superbot` block has been applied. Activation remains separately held, so the running cockpit and cages must not be used to test this snapshot.
 - Cockpit/team files and Kanban tags are live data. Re-inventory immediately before applying; refuse if the cockpit digest, persistent-team set, config existence, account mapping, or tag vocabulary drifted.
 
-These blockers are also carried in the rendered JSON and Kanban attention item `a-32cd24b0` so they cannot disappear in a chat handoff.
+The two resolvable discrepancies were closed without touching tmux: RX's existing canonical config is now linked from its present repository root, and the `gitea`/`rx` canonical Claude commands and driver account labels now agree with the cockpit (`unum` and `ifca2`). The `fmx` board/root mismatch is represented as explicit tag ownership instead of rewriting a mixed board's registered root.
+
+These remaining blockers are also carried in the rendered JSON so they cannot disappear in a chat handoff.
 
 ## Activation remains a separate change
 

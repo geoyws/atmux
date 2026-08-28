@@ -37,7 +37,7 @@ describe("ADR-281 held fleet migration plan", () => {
     ]);
     expect(
       plan.persistentTeams.filter((team) => team.teamConfig === "missing").map((team) => team.name),
-    ).toEqual(["ix", "mx", "hx", "hrx", "rx", "fmx"]);
+    ).toEqual(["ix", "mx", "hx", "hrx", "fmx"]);
     expect(
       plan.persistentTeams.every(
         (team) =>
@@ -67,7 +67,27 @@ describe("ADR-281 held fleet migration plan", () => {
       defaultTeam: "aix",
       fallbackTeams: [],
     });
-    expect(rendered.activationBlockers).not.toHaveLength(0);
+    expect(
+      rendered.cockpitPatch.superbot.routes.find(
+        (route) => route.board === "fmx" && route.tag === "ai-chat",
+      ),
+    ).toEqual({
+      board: "fmx",
+      tag: "ai-chat",
+      defaultTeam: "fmx",
+      fallbackTeams: [],
+    });
+    expect(
+      rendered.cockpitPatch.superbot.routes.find(
+        (route) => route.board === "fmx" && route.tag === "tooling",
+      ),
+    ).toEqual({
+      board: "fmx",
+      tag: "tooling",
+      defaultTeam: "aix",
+      fallbackTeams: [],
+    });
+    expect(rendered.activationBlockers).toHaveLength(3);
   });
 
   test("refuses implicit harness/account and duplicate board-local ownership", () => {
