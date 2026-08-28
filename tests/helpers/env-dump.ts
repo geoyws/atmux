@@ -13,7 +13,8 @@
 // away from print. **Never collect what must not be printed.** So:
 //
 //   1. `dumpEnvCommand()` builds a pane command that greps the allowlist
-//      INSIDE the probe, so the file on disk only ever holds four names.
+//      INSIDE the probe, so the file on disk only ever holds allowlisted
+//      names — four by default, and never more than `ENV_DUMP_MAX_VARS`.
 //      It refuses to build anything wider than `ENV_DUMP_MAX_VARS` names
 //      or to name anything credential-shaped, so the sanctioned helper
 //      cannot be talked into building a whole-environment dump.

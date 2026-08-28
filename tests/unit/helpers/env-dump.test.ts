@@ -89,8 +89,7 @@ describe("dumpEnvCommand", () => {
 
   test("refuses an allowlist wide enough to be a dump in disguise", () => {
     // Without a cap the sanctioned helper builds the very thing
-    // it exists to prevent, at a call site the ADR-282 source guard reads
-    // as an ordinary helper call.
+    // it exists to prevent, spelled as an ordinary helper call.
     const wide = Array.from({ length: ENV_DUMP_MAX_VARS + 1 }, (_, i) => `VAR_${i}`);
     expect(() => dumpEnvCommand("/tmp/o", wide)).toThrow(/refusing to collect/);
     const atCap = wide.slice(0, ENV_DUMP_MAX_VARS);

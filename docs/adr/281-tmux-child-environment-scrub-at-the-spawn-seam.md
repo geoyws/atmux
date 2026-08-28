@@ -185,7 +185,7 @@ The operator's `.zshrc` sources a git-crypt'd `.env`, and `.zshrc` is read by *i
 
 - The `templates/tmux/atmux.conf` `COLORTERM` correction (§D2 above), now stated only as far as it is measured.
 - `tests/unit/abstractions/tmux-child-env.test.ts`, which makes §D2's and §D3's invariants enforced rather than merely stated — extended 2026-08-29 to cover the `env(1)` argv half, which had no call-site coverage at all.
-- ADR-282's widened matcher, its non-vacuity legs and its `dumpEnvCommand` hardening (ADR-282 §Retraction 2026-08-29).
+- ADR-282's `dumpEnvCommand` hardening. Its widened source-scanning matcher and the non-vacuity legs that pinned it are NOT kept — the guard was deleted on 2026-08-29 (ADR-282 §Retraction 2026-08-29).
 
 **What falls with it:** `scripts/test.ts`, `tests/helpers/test-env.ts`, `tests/helpers/test-env-guard.ts`, the bunfig preload, the `package.json` script rewrites and the CI-workflow change are all deleted. **A bare `bun test` works normally again.** The standing defence for the disclosure remains ADR-282's: probes collect an allowlist and never the whole environment.
 
