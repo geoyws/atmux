@@ -98,7 +98,7 @@ const SKIP_REASON: string = !HAS_TMUX
   : !HAS_NODE
     ? "node binary missing"
     : !NOT_IN_CAGE
-      ? "running inside a tmux server (export TMUX=''; or run via `unset TMUX && bun run test ...`)"
+      ? "running inside a tmux server (export TMUX=''; or run via `unset TMUX && bun test ...`)"
       : "";
 
 if (SKIP_REASON !== "") {

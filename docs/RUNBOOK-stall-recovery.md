@@ -278,7 +278,7 @@ modal-cycling catches *different prompts in rapid sequence*.
 
 ```bash
 # Run the focused unit + e2e specs against your changes.
-unset TMUX && bun scripts/test.ts --timeout 30000 \
+unset TMUX && bun test --timeout 30000 \
   tests/unit/core/modal-cycling-detector.test.ts \
   tests/unit/core/modal-cycling-state.test.ts \
   tests/e2e/modal-cycling-detector.test.ts
@@ -329,7 +329,7 @@ between invocations.
 
 ```bash
 # Run the focused unit + e2e specs against your changes.
-unset TMUX && bun scripts/test.ts --timeout 30000 \
+unset TMUX && bun test --timeout 30000 \
   tests/unit/core/refusal-scan.test.ts \
   tests/unit/core/refusal-trigger.test.ts \
   tests/unit/abstractions/sqlite-migrations.test.ts \
@@ -643,7 +643,7 @@ full chain (status column → classify() E6 fire → lane-stall-tick fire
 synthetic gitLog fixtures + injected sendKeys. Bun runs it in <1s:
 
 ```bash
-unset TMUX && bun scripts/test.ts --timeout 30000 tests/e2e/cadence-truth-signal.test.ts
+unset TMUX && bun test --timeout 30000 tests/e2e/cadence-truth-signal.test.ts
 ```
 
 12 beats, 1x cold-start+walk (non-idempotent — re-runs need a fresh

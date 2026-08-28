@@ -1,4 +1,4 @@
-// A fake `Bun.spawn` that records what atmux asked for (ADR-283 §B1).
+// A fake `Bun.spawn` that records what atmux asked for (ADR-281 §D3).
 //
 // `src/abstractions/spawn.ts` is the only module allowed to call
 // `Bun.spawn` (ADR-100 R4), and every tmux call site in the repository

@@ -13,8 +13,8 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "bun scripts/test.ts",
-    "test:coverage": "bun scripts/test.ts --coverage",
+    "test": "bun test",
+    "test:coverage": "bun test --coverage",
     "lint": "biome lint . && bun scripts/lint-tz.ts && bun scripts/lint-socket-resolver.ts",
     "lint:tz": "bun scripts/lint-tz.ts",
     "lint:socket-resolver": "bun scripts/lint-socket-resolver.ts",

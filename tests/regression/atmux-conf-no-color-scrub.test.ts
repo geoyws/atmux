@@ -55,7 +55,7 @@ const conf = readFileSync(CONF_PATH, "utf8");
  * resolves it (ADR-191's three-tier chain: `ATMUX_TMUX_BIN` ->
  * `/opt/atmux/current/bin/tmux` -> PATH).
  *
- * Corrected 2026-08-28 (ADR-283 §C4). This used to probe `command -v
+ * Corrected 2026-08-28. This used to probe `command -v
  * tmux`, i.e. the bare PATH — so on a box with `ATMUX_TMUX_BIN` set, or
  * with a vendored binary and no system tmux, the gate and the subject
  * disagreed: the suite could skip while atmux had a perfectly good tmux,
@@ -100,7 +100,7 @@ describe("templates/tmux/atmux.conf cage colour-environment invariant (ADR-277)"
   });
 
   test("carries the server-level COLORTERM line ADR-281 §D2 says it carries", () => {
-    // ADR-283 §C1. ADR-281 asserted in three places that this file "keeps
+    // ADR-281 asserted in three places that this file "keeps
     // its `COLORTERM truecolor` line", and leaned on that as the
     // compensating control for withdrawing the spawn-level injection. IT
     // DID NOT: the only `set-environment` here was NO_COLOR, and the only
@@ -137,7 +137,7 @@ describe("templates/tmux/atmux.conf cage colour-environment invariant (ADR-277)"
 // legitimate. On CI, where the workflow installs tmux on purpose, an
 // absent one silently removes every behavioural assertion in this file,
 // and that must go red instead of quietly reporting a smaller suite.
-describe("the tmux-gated legs are not silently absent (ADR-283 §C4)", () => {
+describe("the tmux-gated legs are not silently absent", () => {
   test("CI must have a resolvable tmux — a skip there is a failure, not a gap", () => {
     const onCi = process.env.CI === "true" || process.env.CI === "1";
     expect({ onCi, missingOnCi: onCi && !HAS_TMUX }).toEqual({ onCi, missingOnCi: false });

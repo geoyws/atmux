@@ -12,26 +12,35 @@
 // environment, and ADR-282's original wording — "so the class cannot come
 // back", "taking any other route fails the suite" — was false and has
 // been withdrawn. Pattern-matching arbitrary code for "unfiltered env
-// capture" is undecidable in the direction that matters. Measured
-// 2026-08-28 over an enumeration of 21 capture shapes, the first version
-// of this matcher caught 9 — and the widened one catching all 21 proves
-// nothing beyond that enumeration, since it was widened against it.
-// The residual gaps are enumerated in ADR-283 §Residual gaps
-// rather than left for the next reviewer to rediscover, and the two
-// obvious ones are restated here:
+// capture" is undecidable in the direction that matters.
 //
-//   - The scan is LINE-ORIENTED. An argv array split across lines
-//     (`cmd: [\n  "env",\n]`) is not matched.
-//   - It scans SOURCE. A capture assembled at runtime — from a string
-//     built by concatenation, from a variable, from `eval` — is invisible
-//     to it by construction.
+// THE MEASURED RATIO. Re-enumerated first-hand 2026-08-29 over 36 genuine
+// whole-environment-capture shapes: this matcher catches **23 and misses
+// 13**. Both halves are pinned by the "catch/miss ratio is measured, not
+// assumed" leg below, so this number cannot drift away from the code. The
+// missed 13, by class:
 //
-// The defence that does not depend on recognising code is ADR-283: the
-// test runner's environment is built from an allowlist, so the variables
-// worth stealing are not in the process for any shape to capture. This
-// file remains worth having because it catches the mistake early, at the
-// place it is written, with a message naming the safe route — but it is
-// the second line, not the first.
+//   - 5x RUNTIME OBJECT — `console.log(process.env)`, `JSON.stringify`,
+//     `{ ...process.env }`, `Object.entries`, a snapshot assertion. Missed
+//     BY DESIGN, not by oversight: `process.env` is read legitimately all
+//     over `src/`, so matching it would be all false positives.
+//   - 3x SHELL BUILTIN — `export -p`, `declare -x`, `set`. Each prints the
+//     environment as surely as `env` does, and none is in `DUMPERS`.
+//   - 1x KERNEL INTERFACE — `cat /proc/self/environ` (Linux).
+//   - 1x PROCESS TABLE — `ps eww <pid>`.
+//   - 1x QUOTED SHELL WORD — `sh -c "env" > file`: the redirect sits
+//     outside the quotes, so neither the redirect nor the argv rule fires.
+//   - 1x LINE-SPLIT ARGV — the scan is LINE-ORIENTED, so an argv array
+//     broken across lines is not matched.
+//   - 1x RUNTIME ASSEMBLY — a command built by concatenation, held in a
+//     variable, or `eval`'d is invisible to a source scan by construction.
+//
+// The alternate-dumper class (the first four groups) is the one an earlier
+// residual-gaps list omitted entirely, which is how a guard comes to be
+// trusted for more than it does.
+//
+// So: catch the mistake early, at the place it is written, with a message
+// naming the safe route. Do not read a green run as an absence proof.
 //
 // Self-application: this file scans itself like every other, and there is
 // NO path exclusion list. The forbidden fragments below are assembled
@@ -54,14 +63,36 @@ const REPO_ROOT = join(import.meta.dir, "..", "..");
  *
  * `src/` is included because a test helper (or a diagnostic verb) could
  * just as easily dump an environment. `scripts/`, `bin/`, `templates/`
- * and `plugins/` were added 2026-08-28: every one of them carries
- * executable shell, and `scripts/` and `bin/` are outside biome's
- * `files.includes`, so nothing else in the repository looks at them at
- * all.
+ * and `plugins/` were added 2026-08-28.
+ *
+ * ⚠ The reason first given for the four new roots — "every one of them
+ * carries executable shell" — was FALSE of `templates/`, and the false
+ * reason hid a live blind spot. Measured 2026-08-29: `templates/` holds
+ * no `.sh`, `.bash` or `.bats` file at all. What it holds is 4 `.js`
+ * files and `templates/tmux/atmux.conf`, and the `.conf` was UNSCANNABLE
+ * because `.conf` was not in {@link SCAN_EXTS} — so the one file this
+ * repository's colour work actually edits was the one file the guard
+ * could not read.
+ *
+ * The true reason to scan `templates/`: a tmux conf executes shell.
+ * Measured 2026-08-29 on tmux 3.7c against a throwaway `mktemp` socket —
+ * a conf containing `run-shell "echo … > <marker>"` wrote the marker, so
+ * `run-shell` in a shipped conf is live code, not configuration data.
+ *
+ * `scripts/` and `bin/` are also outside biome's `files.includes`, so
+ * nothing else in the repository reads them at all.
  */
 const SCAN_ROOTS = ["src", "tests", "scripts", "bin", "templates", "plugins"] as const;
 
-const SCAN_EXTS = new Set([".ts", ".tsx", ".js", ".mjs", ".cjs", ".sh", ".bash", ".bats"]);
+/**
+ * Extensions read by the walk.
+ *
+ * `.conf` is here because of the blind spot above. The roster is checked
+ * against what the scanned roots actually contain by the
+ * "no scannable-looking extension is silently skipped" leg below, so an
+ * extension that appears in a scanned root cannot go unnoticed again.
+ */
+const SCAN_EXTS = new Set([".ts", ".tsx", ".js", ".mjs", ".cjs", ".sh", ".bash", ".bats", ".conf"]);
 
 /**
  * Minimum file count per root, so the assertion cannot pass because the
@@ -179,6 +210,40 @@ function isOffending(line: string): boolean {
   if (COMMENT_START.test(line)) return false;
   return OFFENDERS.some((re) => re.test(line));
 }
+
+/**
+ * Whole-environment capture shapes this matcher IS expected to catch.
+ *
+ * Module-level so the "catches what it exists to catch" leg and the
+ * measured catch/miss ratio leg read the same list — a ratio computed
+ * over a list only one of them can see is not a measurement.
+ */
+const CAUGHT_SHAPES: ReadonlyArray<string> = [
+  `shellCommand: \`sh -c '${DUMPERS[0]} ${GT} \${out}; sleep 3'\`,`, // the 2026-08-28 leak, verbatim
+  `${DUMPERS[0]}${GT}/tmp/x`, // no space
+  `${DUMPERS[0]} ${GT}${GT} /tmp/x`, // append
+  `${DUMPERS[0]} 2${GT} /tmp/x`, // fd-qualified redirect
+  `${DUMPERS[0]} ${GT} "$D/out"`, // quoted expansion
+  `${DUMPERS[0]} ${GT} ~/leak`,
+  `${DUMPERS[0]} ${PIPE} tee /tmp/x`, // piped to something that is not grep
+  `${DUMPERS[0]} ${PIPE}sort`, // no space
+  `${DUMPERS[0]} ${PIPE} sort ${PIPE} grep -E "^TERM="`, // grep too late — already in the pipeline
+  `${DUMPERS[1]} ${GT} /tmp/x`, // printenv is the same capability
+  `${DUMPERS[1]} ${PIPE} cat`,
+  // --- shapes the first version of this matcher MISSED (2026-08-28) ---
+  `${DUMPERS[0]} ${GT} out`, // bare relative filename — ADR-282's stated gap
+  `${DUMPERS[0]} ${GT}${GT} dump.txt;`, // …appended, statement-terminated
+  `const r = Bun.spawnSync({ cmd: ["${DUMPERS[0]}"], stdout: "pipe" });`, // the idiomatic TS route
+  `Bun.spawn({ cmd: ['${DUMPERS[1]}'] })`, // single quotes
+  `cmd: [\`${DUMPERS[0]}\`],`, // backticks
+  `spawnSync("sh", ["-c", "${DUMPERS[0]}"])`, // dumper last in the argv array
+  `${DUMPERS[0]} -0 ${PIPE} xargs -0 echo`, // null-separated whole dump
+  `${DUMPERS[0]} --null`,
+  `cmd: ["${DUMPERS[0]}", "-0"]`, // …in argv form
+  `${DUMPERS[1]} -0`,
+  `const all = \`$(${DUMPERS[0]})\`;`, // command substitution
+  `x=$(${DUMPERS[1]})`,
+];
 
 /** Should this file be read? Extension roster, plus extensionless files
  *  carrying a shebang — `bin/atmux` and `bin/atmux-tmux` are both
@@ -303,33 +368,7 @@ describe("no unfiltered environment dump reaches an assertion (ADR-282)", () => 
   });
 
   test("the matcher catches the shapes it exists to catch", () => {
-    const caught = [
-      `shellCommand: \`sh -c '${DUMPERS[0]} ${GT} \${out}; sleep 3'\`,`, // the 2026-08-28 leak, verbatim
-      `${DUMPERS[0]}${GT}/tmp/x`, // no space
-      `${DUMPERS[0]} ${GT}${GT} /tmp/x`, // append
-      `${DUMPERS[0]} 2${GT} /tmp/x`, // fd-qualified redirect
-      `${DUMPERS[0]} ${GT} "$D/out"`, // quoted expansion
-      `${DUMPERS[0]} ${GT} ~/leak`,
-      `${DUMPERS[0]} ${PIPE} tee /tmp/x`, // piped to something that is not grep
-      `${DUMPERS[0]} ${PIPE}sort`, // no space
-      `${DUMPERS[0]} ${PIPE} sort ${PIPE} grep -E "^TERM="`, // grep too late — already in the pipeline
-      `${DUMPERS[1]} ${GT} /tmp/x`, // printenv is the same capability
-      `${DUMPERS[1]} ${PIPE} cat`,
-      // --- shapes the first version of this matcher MISSED (2026-08-28) ---
-      `${DUMPERS[0]} ${GT} out`, // bare relative filename — ADR-282's stated gap
-      `${DUMPERS[0]} ${GT}${GT} dump.txt;`, // …appended, statement-terminated
-      `const r = Bun.spawnSync({ cmd: ["${DUMPERS[0]}"], stdout: "pipe" });`, // the idiomatic TS route
-      `Bun.spawn({ cmd: ['${DUMPERS[1]}'] })`, // single quotes
-      `cmd: [\`${DUMPERS[0]}\`],`, // backticks
-      `spawnSync("sh", ["-c", "${DUMPERS[0]}"])`, // dumper last in the argv array
-      `${DUMPERS[0]} -0 ${PIPE} xargs -0 echo`, // null-separated whole dump
-      `${DUMPERS[0]} --null`,
-      `cmd: ["${DUMPERS[0]}", "-0"]`, // …in argv form
-      `${DUMPERS[1]} -0`,
-      `const all = \`$(${DUMPERS[0]})\`;`, // command substitution
-      `x=$(${DUMPERS[1]})`,
-    ];
-    for (const line of caught) {
+    for (const line of CAUGHT_SHAPES) {
       expect({ line, offending: isOffending(line) }).toEqual({ line, offending: true });
     }
   });
@@ -358,6 +397,106 @@ describe("no unfiltered environment dump reaches an assertion (ADR-282)", () => 
     for (const line of allowed) {
       expect({ line, offending: isOffending(line) }).toEqual({ line, offending: false });
     }
+  });
+
+  test("the matcher's catch/miss ratio is measured, not assumed", () => {
+    // Re-enumerated first-hand 2026-08-29 rather than inherited from a
+    // review. Every entry below is a genuine whole-environment capture;
+    // the split records which ones this matcher sees. The ratio in this
+    // file's header is THIS number, and it moves only when this list does.
+    //
+    // The missed entries are composed from pieces for the same reason the
+    // caught ones are: this file is scanned like every other, and a
+    // widened matcher must not turn its own fixtures into violations.
+    const PROC = ["/proc", "self", "environ"].join("/");
+    const PROCESS_ENV = `process.${DUMP_CMD}`;
+    const missed: Array<[string, string]> = [
+      // --- alternate dumper COMMANDS: the whole class the matcher's
+      //     `DUMPERS` roster does not contain. Each prints the exported
+      //     environment as surely as `env` does.
+      ["shell builtin", `export -p ${GT} /tmp/x`],
+      ["shell builtin", `declare -x ${GT} /tmp/x`],
+      ["shell builtin", `set ${GT} /tmp/x`],
+      ["kernel interface", `cat ${PROC} ${GT} /tmp/x`],
+      ["process table", `ps eww $$ ${GT} /tmp/x`],
+      // --- the dumper inside a quoted shell word rather than an argv
+      //     element: the redirect sits outside the quotes, so neither the
+      //     redirect rule nor the argv rule sees a dump.
+      ["quoted shell word", `sh -c "${DUMP_CMD}" ${GT} /tmp/x`],
+      // --- whole-object captures of the runtime's own environment view.
+      //     Uncatchable here BY DESIGN, not by oversight: `process.env` is
+      //     read legitimately all over `src/`, and `NOT_A_WORD_BEFORE`
+      //     excludes it on purpose. See the "safe shapes" leg, which
+      //     requires the spread form to stay legal.
+      ["runtime object", `console.log(${PROCESS_ENV})`],
+      ["runtime object", `JSON.stringify(${PROCESS_ENV})`],
+      ["runtime object", `const all = { ...${PROCESS_ENV} };`],
+      ["runtime object", `Object.entries(${PROCESS_ENV})`],
+      ["runtime object", `expect(${PROCESS_ENV}).toMatchSnapshot()`],
+      // --- the two gaps this file's header already names.
+      ["line-split argv", `  "${DUMP_CMD}",`],
+      ["runtime assembly", `const c = "en" + "v"; Bun.spawn({ cmd: [c] });`],
+    ];
+
+    const caughtCount = CAUGHT_SHAPES.filter(isOffending).length;
+    const missedResults = missed.map(([cls, line]) => ({
+      cls,
+      line,
+      offending: isOffending(line),
+    }));
+
+    // Every "caught" shape must be caught and every "missed" shape must
+    // be missed — otherwise the ratio quoted in the header is fiction.
+    expect({
+      caught: caughtCount,
+      enumerated: CAUGHT_SHAPES.length + missed.length,
+      missedStillMissed: missedResults.filter((r) => r.offending),
+    }).toEqual({
+      caught: CAUGHT_SHAPES.length,
+      enumerated: CAUGHT_SHAPES.length + missed.length,
+      missedStillMissed: [],
+    });
+  });
+
+  test("no scannable-looking extension in a scanned root is silently skipped", () => {
+    // The `.conf` blind spot, pinned. `templates/tmux/atmux.conf` — the
+    // file this repository's colour work edits — was unreadable to the
+    // walk because `.conf` was not in SCAN_EXTS, while the roots' stated
+    // justification claimed they "all carry executable shell". A tmux
+    // conf DOES execute shell (`run-shell`), so the file was both live
+    // code and invisible.
+    //
+    // This enumerates the extensions actually present and requires every
+    // one that can execute to be scanned, so the next such file cannot
+    // slip in behind a stale roster.
+    const EXECUTABLE_EXTS = new Set([
+      ".ts",
+      ".tsx",
+      ".js",
+      ".mjs",
+      ".cjs",
+      ".sh",
+      ".bash",
+      ".bats",
+      ".conf",
+    ]);
+    const present = new Set<string>();
+    for (const root of SCAN_ROOTS) {
+      const glob = new Bun.Glob("**/*");
+      for (const rel of glob.scanSync({
+        cwd: join(REPO_ROOT, root),
+        onlyFiles: true,
+        dot: false,
+      })) {
+        if (rel.includes("node_modules/")) continue;
+        const base = rel.slice(rel.lastIndexOf("/") + 1);
+        const dot = base.lastIndexOf(".");
+        if (dot > 0) present.add(base.slice(dot));
+      }
+    }
+    const executablePresent = [...present].filter((e) => EXECUTABLE_EXTS.has(e)).sort();
+    const unscanned = executablePresent.filter((e) => !SCAN_EXTS.has(e));
+    expect({ unscanned, executablePresent }).toEqual({ unscanned: [], executablePresent });
   });
 
   test("the sanctioned helper really does filter to the allowlist", () => {

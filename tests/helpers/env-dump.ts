@@ -1,4 +1,4 @@
-// Safe environment probing for tests (ADR-282, hardened by ADR-283).
+// Safe environment probing for tests (ADR-282).
 //
 // A test that runs `env`, redirects the WHOLE dump into a file, reads that
 // file, and asserts on the string is a credential-disclosure bug waiting
@@ -18,34 +18,44 @@
 //      or to name anything credential-shaped, so the sanctioned helper
 //      cannot be talked into building a whole-environment dump.
 //   2. `parseEnvDump()` filters again on the way in, redacts anything
-//      whose NAME looks like a credential, keeps only the first sighting
-//      of each name, and refuses to emit an implausibly long value — the
-//      seatbelt, not the brake.
+//      whose NAME looks like a credential, redacts EVERY sighting of a
+//      name it sees more than once, and refuses to emit an implausibly
+//      long value — the seatbelt, not the brake.
 //   3. `tests/regression/no-unfiltered-env-dump.test.ts` fails the suite
 //      if a file under one of the scanned roots reintroduces a known raw
 //      form. It is a tripwire for enumerated shapes, NOT a proof of
 //      absence — see its header.
-//   4. `scripts/test.ts` (ADR-283) builds the runner's environment from an
-//      allowlist, so the variables worth stealing are not in the process
-//      at all. That is the layer that does not depend on recognising code,
-//      and it is the one to reach for first.
 //
 // Route every environment probe through here. If you need a variable the
 // allowlist does not carry, add it to the `vars` argument at the call
 // site — that keeps the widening visible in the test that wanted it,
 // rather than silently widening every probe in the repo.
 
-import { CREDENTIAL_NAME_RE } from "./test-env.ts";
-
 /**
- * The credential-name pattern, re-exported so a probe's own tests can
- * assert against the same rule the redactor uses.
+ * Names whose value must never reach an assertion, however the dump was
+ * produced. Matched against the NAME only — the value is never
+ * inspected, so this cannot itself become a disclosure path.
  *
- * Single-sourced from `test-env.ts` since 2026-08-28. Two copies of a
- * security predicate is two answers to one question, and the copy that
- * used to live here was the unanchored one that matched `PATH`.
+ * **Two classes, because one rule cannot serve both.** The long words are
+ * matched as substrings — nothing benign is called `…PASSWORD…`, and
+ * substring matching is what catches `PGPASSWD`, where the token is not
+ * on a `_` boundary at all. The short ones (`KEY`, `PAT`, `AUTH`) are
+ * matched only as whole `_`-delimited segments, because the bare-substring
+ * version of exactly this pattern lived here until 2026-08-28 and matched
+ * `PATH` (via `PAT`), `MONKEY` and `COMPATIBILITY` (via `KEY`). Redacting
+ * `PATH` in a projection is how a filter earns being switched off.
+ *
+ * `AUTH(?:ORIZATION)?` rather than a substring `AUTH` for the same
+ * reason: `GIT_AUTHOR_NAME` must not match, and `AUTHORIZATION` must.
+ *
+ * This is **not** the wall — {@link ENV_DUMP_ALLOWLIST} is. A name
+ * pattern is a guess about what a secret is called and will always be
+ * incomplete: `DATABASE_URL` carries a password and matches nothing here.
+ * It is excluded by the allowlist instead, which is the point of ordering
+ * them this way.
  */
-export const SENSITIVE_NAME_RE = CREDENTIAL_NAME_RE;
+export const SENSITIVE_NAME_RE =
+  /(?:PASSWORD|PASSWD|PASSPHRASE|SECRET|TOKEN|WEBHOOK|CREDENTIALS?|APIKEY|SIGNATURE)|(?:^|_)(?:KEYS?|AUTH(?:ORIZATION)?|PAT)(?:_|$)/i;
 
 /**
  * The colour-environment variables the tmux scrub suites need
@@ -62,7 +72,7 @@ export const ENV_DUMP_ALLOWLIST: ReadonlyArray<string> = Object.freeze([
 ]);
 
 /**
- * The most names a single probe may collect (ADR-283).
+ * The most names a single probe may collect.
  *
  * Without a cap the sanctioned helper would happily build a
  * whole-environment dump from a wide enough `vars` — and the resulting
@@ -92,7 +102,7 @@ const SAFE_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /**
  * An `outPath` safe to splice into a shell word.
  *
- * Refusing quotes was not enough (ADR-283): the path is spliced into
+ * Refusing quotes was not enough: the path is spliced into
  * `… > ${outPath} || true` inside a single-quoted `sh -c '…'`, next to
  * every other shell metacharacter. `;`, `&`, backtick, `$`, `(`, `)`,
  * `<`, `>`, `*`, `?`, whitespace and a newline are each as dangerous as
@@ -166,12 +176,11 @@ export function dumpEnvCommand(
  * projection" and "absent from the dump" are the same statement for the
  * names in `vars`.
  *
- * Three guards, and the second two were added by ADR-283 because the
- * line-oriented filter had a hole:
+ * Three guards, because the line-oriented filter has a hole:
  *
  *   - a credential-shaped NAME is redacted;
  *   - a value longer than {@link ENV_DUMP_MAX_VALUE_LEN} is redacted;
- *   - only the FIRST sighting of a name is kept.
+ *   - a name seen MORE THAN ONCE has EVERY sighting redacted.
  *
  * The last two exist for the same fault. A variable whose value contains
  * a newline followed by `TERM=` produces a second line that looks exactly
@@ -179,24 +188,39 @@ export function dumpEnvCommand(
  * that line is a FRAGMENT OF THE SECRET'S VALUE. A real environment
  * cannot contain a name twice, so a repeat is proof the split found
  * something that was never a variable boundary.
+ *
+ * **Every sighting, not just the repeat, and the difference is the whole
+ * bug.** Keeping the first and redacting the rest is order-dependent, and
+ * the order is chosen by the secret, not by us: the fragment lands FIRST
+ * whenever the secret sorts before the name it collides with, which
+ * `env(1)` output does not control. Given
+ * `["TERM=<fragment>", "TERM=tmux-256color"]` a keep-the-first rule emits
+ * the fragment verbatim and redacts the legitimate value — exactly
+ * backwards. Once a name repeats, the boundary that produced BOTH lines is
+ * proven fake, so neither line is trustworthy and neither is emitted.
  */
 export function parseEnvDump(
   dump: string,
   vars: ReadonlyArray<string> = ENV_DUMP_ALLOWLIST,
 ): string {
   const wanted = new Set(vars);
-  const seen = new Set<string>();
-  const kept: string[] = [];
+  const lines: Array<{ name: string; value: string; line: string }> = [];
+  const counts = new Map<string, number>();
   for (const line of dump.split("\n")) {
     const eq = line.indexOf("=");
     if (eq <= 0) continue;
     const name = line.slice(0, eq);
     if (!wanted.has(name)) continue;
-    const value = line.slice(eq + 1);
-    const unsafe =
-      seen.has(name) || SENSITIVE_NAME_RE.test(name) || value.length > ENV_DUMP_MAX_VALUE_LEN;
-    seen.add(name);
-    kept.push(unsafe ? `${name}=${REDACTED}` : line);
+    lines.push({ name, value: line.slice(eq + 1), line });
+    counts.set(name, (counts.get(name) ?? 0) + 1);
   }
-  return kept.join("\n");
+  return lines
+    .map(({ name, value, line }) => {
+      const unsafe =
+        (counts.get(name) ?? 0) > 1 ||
+        SENSITIVE_NAME_RE.test(name) ||
+        value.length > ENV_DUMP_MAX_VALUE_LEN;
+      return unsafe ? `${name}=${REDACTED}` : line;
+    })
+    .join("\n");
 }

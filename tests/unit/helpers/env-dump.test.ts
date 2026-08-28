@@ -1,4 +1,4 @@
-// Unit tests for tests/helpers/env-dump.ts (ADR-282, hardened by ADR-283).
+// Unit tests for tests/helpers/env-dump.ts (ADR-282).
 //
 // This helper is the repo's only sanctioned way to read a subprocess's
 // environment, and `tests/regression/no-unfiltered-env-dump.test.ts` points
@@ -57,7 +57,7 @@ describe("dumpEnvCommand", () => {
   });
 
   test("refuses every shell metacharacter in outPath, not just a quote", () => {
-    // ADR-283: the path is spliced into `… > <path> || true` inside a
+    // The path is spliced into `… > <path> || true` inside a
     // single-quoted `sh -c '…'`. Refusing only quotes left `;`, `&`,
     // backtick, `$(` and a newline as live injection routes.
     for (const bad of [
@@ -89,7 +89,7 @@ describe("dumpEnvCommand", () => {
   });
 
   test("refuses an allowlist wide enough to be a dump in disguise", () => {
-    // ADR-283: without a cap the sanctioned helper builds the very thing
+    // Without a cap the sanctioned helper builds the very thing
     // it exists to prevent, at a call site the ADR-282 source guard reads
     // as an ordinary helper call.
     const wide = Array.from({ length: ENV_DUMP_MAX_VARS + 1 }, (_, i) => `VAR_${i}`);
@@ -151,7 +151,7 @@ describe("parseEnvDump", () => {
   });
 
   test("the pattern is anchored — it does not redact PATH, MONKEY or GIT_AUTHOR_NAME", () => {
-    // ADR-283 / C4. The unanchored version matched `PAT` inside `PATH`
+    // The unanchored version matched `PAT` inside `PATH`
     // and `KEY` inside `MONKEY`. A filter that mangles `PATH` is a filter
     // someone switches off.
     for (const name of ["PATH", "MONKEY", "COMPATIBILITY", "GIT_AUTHOR_NAME", "KEYCHAIN"]) {
@@ -159,13 +159,27 @@ describe("parseEnvDump", () => {
     }
   });
 
-  test("a newline inside a value cannot smuggle a fragment through as a second sighting", () => {
-    // The line-oriented filter's hole (ADR-283 / C4): a secret whose value
-    // contains "\nTERM=" produces a line that looks exactly like a
-    // legitimate TERM assignment, and that line is part of the secret. A
-    // real environment cannot hold a name twice, so the repeat is the tell.
-    const dump = ["TERM=tmux-256color", "TERM=tail-of-a-secret-value"].join("\n");
-    expect(parseEnvDump(dump)).toBe(`TERM=tmux-256color\nTERM=${REDACTED}`);
+  test("a repeated name redacts EVERY sighting, in either order", () => {
+    // The line-oriented filter's hole: a secret whose value contains
+    // "\nTERM=" produces a line that looks exactly like a legitimate TERM
+    // assignment, and that line is part of the secret. A real environment
+    // cannot hold a name twice, so the repeat is the tell.
+    //
+    // The first repair kept the FIRST sighting and redacted the rest,
+    // which is order-dependent — and the order is chosen by the secret,
+    // not by us. Measured 2026-08-29 against that version: with the
+    // fragment SECOND it redacted the fragment; with the fragment FIRST it
+    // printed the fragment VERBATIM and redacted the legitimate value.
+    // Both orders are asserted here so that regression cannot come back.
+    //
+    // The payload is a placeholder string. Never put a real credential,
+    // or a real fragment of one, in a test fixture.
+    const FRAGMENT = "PLACEHOLDER-FRAGMENT-NOT-A-REAL-SECRET";
+    const both = `TERM=${REDACTED}\nTERM=${REDACTED}`;
+    expect({
+      fragmentSecond: parseEnvDump(`TERM=tmux-256color\nTERM=${FRAGMENT}`),
+      fragmentFirst: parseEnvDump(`TERM=${FRAGMENT}\nTERM=tmux-256color`),
+    }).toEqual({ fragmentSecond: both, fragmentFirst: both });
   });
 
   test("an implausibly long value is redacted even under an allowlisted name", () => {
