@@ -62,6 +62,7 @@ async function defaultListWindows(sessionName: string): Promise<ReadonlyArray<st
   // here). Failure modes (tmux missing, session absent, list error)
   // all map to null.
   const { spawn } = await import("../../abstractions/spawn.ts");
+  const { TMUX_CHILD_UNSET_ENV } = await import("../../abstractions/tmux.ts");
   const { resolveTmuxBin } = await import("../resolve-tmux-bin.ts");
   let r: Awaited<ReturnType<typeof spawn>>;
   try {
@@ -70,6 +71,10 @@ async function defaultListWindows(sessionName: string): Promise<ReadonlyArray<st
       argv: ["list-windows", "-t", sessionName, "-F", "#{window_name}"],
       timeoutMs: 5_000,
       expectExitCode: "any",
+      // ADR-281 — unpinned socket + implicit server start: this probe can
+      // be the process whose environ tmux freezes. Same policy as
+      // `abstractions/tmux.ts`.
+      unsetEnv: TMUX_CHILD_UNSET_ENV,
     });
   } catch {
     return null;

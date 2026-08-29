@@ -14,14 +14,8 @@
 // the real Zod schema, HonkerMock loses at-least-once semantics).
 
 import { describe, expect, test } from "bun:test";
-import {
-  createFlagSpy,
-  type FlagAddArgs,
-} from "./atmux-flag-spy.ts";
-import {
-  buildPayload,
-  createHonkerMock,
-} from "./honker-mock.ts";
+import { createFlagSpy, type FlagAddArgs } from "./atmux-flag-spy.ts";
+import { buildPayload, createHonkerMock } from "./honker-mock.ts";
 import { seedEpic, seedTask } from "./kanban-fixtures.ts";
 
 // ---------- honker-mock.ts ----------
@@ -109,13 +103,15 @@ describe("honker-mock — registry + dispatch", () => {
       },
     });
 
-    mock.publish(buildPayload({
-      topic: "task.done",
-      taskId: "t-1",
-      member: "m",
-      team: "t",
-      doneAtSec: 1,
-    }) as Parameters<typeof mock.publish>[0]);
+    mock.publish(
+      buildPayload({
+        topic: "task.done",
+        taskId: "t-1",
+        member: "m",
+        team: "t",
+        doneAtSec: 1,
+      }) as Parameters<typeof mock.publish>[0],
+    );
 
     await mock.drain();
     expect(seenA).toEqual(["t-1"]);
@@ -150,7 +146,8 @@ describe("kanban-fixtures — seedEpic + seedTask", () => {
     const epic = seedEpic({
       autoSpawn: { enabled: true, roster: "solo", forceSpawn: false },
     });
-    const extra = (epic as { extra?: { autoSpawn?: { enabled?: boolean; roster?: string } } }).extra;
+    const extra = (epic as { extra?: { autoSpawn?: { enabled?: boolean; roster?: string } } })
+      .extra;
     expect(extra?.autoSpawn?.enabled).toBe(true);
     expect(extra?.autoSpawn?.roster).toBe("solo");
   });

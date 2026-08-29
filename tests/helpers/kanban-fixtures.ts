@@ -19,10 +19,7 @@
 //     scenarios. Override `status: "done"` for dissolve-handler tests.
 
 import type { z } from "zod";
-import {
-  KanbanEpic,
-  KanbanTask,
-} from "../../src/schema/kanban.ts";
+import { KanbanEpic, KanbanTask } from "../../src/schema/kanban.ts";
 
 /** ADR-231 §D3 per-epic autoSpawn shape. Rides through KanbanEpic's
  *  passthrough `extra` slot until T-S1.2 lands a typed sub-schema. */
@@ -87,7 +84,9 @@ export interface SeedTaskInput {
 function randomHex(n: number): string {
   let out = "";
   while (out.length < n) {
-    out += Math.floor(Math.random() * 0xffffffff).toString(16).padStart(8, "0");
+    out += Math.floor(Math.random() * 0xffffffff)
+      .toString(16)
+      .padStart(8, "0");
   }
   return out.slice(0, n);
 }

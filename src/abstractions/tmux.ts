@@ -25,11 +25,74 @@
 // Computed once per process via in-helper memoization, so the closure
 // captures a stable binary path; the rest of this module remains
 // argv-shape-only.
+//
+// Child environment (ADR-281, 2026-08-28; narrowed 2026-08-28).
+// -------------------------------------------------------------
+// One documented exception to "argv-shape-only": every `spawn()` in this
+// module also passes `unsetEnv: TMUX_CHILD_UNSET_ENV`. That is a DELETION
+// only — this module sets no colour variable on any tmux child. See that
+// constant for why the ADR-277 conf scrub is not sufficient on its own,
+// and ADR-281 §D2 for why the `COLORTERM=truecolor` half was dropped.
 
 import { isDriverPaneName } from "../core/drivers.ts";
 import { resolveTmuxBin } from "../core/resolve-tmux-bin.ts";
 import { TmuxError } from "../errors.ts";
 import { type ExpectExitCode, spawn, spawnInheritStdio } from "./spawn.ts";
+
+// ---------- ADR-281 — colour environment handed to every tmux child ----------
+
+/**
+ * Env vars DELETED from every tmux process atmux spawns (ADR-281).
+ *
+ * A tmux **server** freezes its own environ at start and initialises its
+ * global environment from it; every pane it ever creates is built from
+ * that frozen copy. So whatever atmux hands the process that *happens* to
+ * start the server is baked in for the life of that server — restarting
+ * the pane, the TUI, or `claude` itself changes nothing (ADR-277 §Context).
+ *
+ * `NO_COLOR` is set by Claude Code's Bash tool so captured output is plain
+ * text — correct for a captured subprocess, wrong for a long-lived
+ * interactive cage. It is not in tmux's `update-environment`, so unlike
+ * `TERM` it survives straight into every pane.
+ *
+ * This is defence in depth BESIDE `templates/tmux/atmux.conf`'s
+ * `set-environment -gr NO_COLOR` (ADR-277), not a replacement for it. The
+ * conf only runs when `-f <conf>` is on the argv of the command that
+ * actually STARTS the server — and tmux starts a server implicitly for any
+ * subcommand against a dead socket, including read-only ones. Scrubbing at
+ * the spawn seam removes the variable before tmux can freeze it, so it
+ * holds whether or not the conf loaded.
+ *
+ * Note this is the CHILD's env only — `mergeEnv` never touches
+ * `process.env`, so atmux's own stdout keeps honouring no-color.org via
+ * `src/core/tui.ts::defaultPalette`.
+ *
+ * **Deletion only — this module SETS nothing.** There is deliberately no
+ * companion `TMUX_CHILD_ENV`. `COLORTERM=truecolor` was one until
+ * 2026-08-28 and was withdrawn (ADR-281 §D2): tmux sets `COLORTERM` in
+ * every pane itself, overriding the server environ, so the pane half was
+ * inert; and on the `attach-session` path tmux reads `COLORTERM` from the
+ * CLIENT to decide the operator's own terminal advertises RGB, which is
+ * not atmux's call to make. `TERM` is excluded for the same reason.
+ */
+export const TMUX_CHILD_UNSET_ENV: ReadonlyArray<string> = Object.freeze(["NO_COLOR"]);
+
+/**
+ * The same policy expressed as `env(1)` argv flags, for the call sites
+ * that reach tmux through `sudo -u <agent> env … tmux …` (ADR-281).
+ *
+ * A spawn-level `unsetEnv` does NOT survive `sudo`: sudo resets the
+ * environment by policy (`env_reset`), so the only environment that
+ * reaches tmux there is what the argv `env` prefix rebuilds. Splice this
+ * in immediately after the literal `"env"`, before any `NAME=value`
+ * assignments — `env` requires its options first.
+ *
+ * Kept byte-for-byte equivalent to `TMUX_CHILD_UNSET_ENV`, so the sudo
+ * path can never drift into a second, divergent colour policy.
+ *
+ * `env -u NAME` on a variable that is not set is a no-op, not an error.
+ */
+export const TMUX_CHILD_ENV_ARGV: ReadonlyArray<string> = Object.freeze(["-u", "NO_COLOR"]);
 
 // ---------- ADR-239 §D2 + §A5 — no-send-keys-to-drivers runtime guard ----------
 
@@ -464,7 +527,13 @@ export function createTmux(config: TmuxConfig): TmuxNamespace {
   ): Promise<RawResult> {
     const argv = [...socketArgs, ...subArgv];
     try {
-      const r = await spawn({ cmd: resolveTmuxBin(), argv, expectExitCode: expect });
+      const r = await spawn({
+        cmd: resolveTmuxBin(),
+        argv,
+        expectExitCode: expect,
+        // ADR-281 — see TMUX_CHILD_UNSET_ENV.
+        unsetEnv: TMUX_CHILD_UNSET_ENV,
+      });
       return { stdout: r.stdout, stderr: r.stderr, exitCode: r.exitCode };
     } catch (e) {
       // Map any thrown error → TmuxError so ADR-006 §tag-by-subsystem holds.
@@ -731,7 +800,16 @@ export function createTmux(config: TmuxConfig): TmuxNamespace {
         subArgv.push("-");
         const argv = [...socketArgs, ...subArgv];
         try {
-          await spawn({ cmd: resolveTmuxBin(), argv, stdin: opts.data, expectExitCode: 0 });
+          await spawn({
+            cmd: resolveTmuxBin(),
+            argv,
+            stdin: opts.data,
+            expectExitCode: 0,
+            // ADR-281 — same child-env policy as `tmuxRunRaw`. This path
+            // bypasses `tmuxRun` for stdin only; it must not also become a
+            // second, divergent environment policy.
+            unsetEnv: TMUX_CHILD_UNSET_ENV,
+          });
         } catch (e) {
           const ctx =
             typeof e === "object" && e !== null && "context" in e
@@ -781,7 +859,20 @@ export function createTmux(config: TmuxConfig): TmuxNamespace {
        *  shapes match the rest of the namespace. */
       async attachSessionInheritStdio(name) {
         const argv = [...socketArgs, "attach-session", "-t", name];
-        const exitCode = await spawnInheritStdio({ cmd: resolveTmuxBin(), argv });
+        const exitCode = await spawnInheritStdio({
+          cmd: resolveTmuxBin(),
+          argv,
+          // ADR-281 — `attach-session` against a dead socket STARTS a
+          // server, so the attach path needs the NO_COLOR deletion too.
+          //
+          // It must NOT gain a `env: { COLORTERM: … }` rider. tmux reads
+          // COLORTERM from the CLIENT to decide whether the operator's
+          // terminal advertises RGB (`#{client_termfeatures}`); asserting
+          // it here would make tmux stop downconverting and emit raw
+          // 24-bit SGR at a terminal that never claimed to understand it.
+          // Same harm ADR-281 §D2 cites for refusing to force `TERM`.
+          unsetEnv: TMUX_CHILD_UNSET_ENV,
+        });
         if (exitCode !== 0) {
           throw new TmuxError({
             argv,

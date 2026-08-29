@@ -74,6 +74,8 @@ import {
   exactSessionTarget,
   type SendTarget,
   serializeSendTarget,
+  TMUX_CHILD_ENV_ARGV,
+  TMUX_CHILD_UNSET_ENV,
   type TmuxNamespace,
 } from "../abstractions/tmux.ts";
 import {
@@ -1678,16 +1680,37 @@ async function runBudgetTickCheck(
  * The cage tmux server is FRESH (just spawned by createFallbackCage),
  * so no pane-state classifier is needed — there's nothing in the pane
  * to preempt the paste.
+ *
+ * Exported for testing only. ADR-281 §D3 names this as one of the sites
+ * carrying the tmux child-env policy. Reaching it through
+ * `runBudgetTickCheck` -> `runBudgetCheck` needs a whole fallback-enabled
+ * team fixture to assert one spawn option, so the seam is the export.
+ * Production callers still go through `deps.sendCageBrief` below.
+ * Driven by `tests/unit/abstractions/tmux-child-env.test.ts`, on both the
+ * operator branch (spawn-level `unsetEnv`) and the sudo branch (the
+ * `env(1)` argv prefix).
  */
-async function sendCageBrief(handle: CageHandle, body: string): Promise<void> {
+export async function sendCageBrief(handle: CageHandle, body: string): Promise<void> {
   const bufferName = `atmux-fallback-${handle.team}-${handle.lane}-${handle.createdAt}`;
   const target = `${handle.sessionName}:${handle.windowName}`;
   const isOperator = handle.agent === "operator";
 
   // tmux load-buffer reads from stdin via `-`. Wrap with sudo -u <agent>
   // for Tier 3+ since the cage tmux runs under the dedicated user.
-  const tmuxArgv = (rest: string[]): { cmd: string; argv: string[] } =>
-    isOperator
+  //
+  // ADR-281: both branches carry the tmux child-env policy, by different
+  // means. The operator branch spawns tmux directly, so `unsetEnv` reaches
+  // it. The sudo branch cannot rely on that (env_reset), so the scrub
+  // rides in the `env(1)` argv prefix instead; the spawn-level `unsetEnv`
+  // is kept there too so the two branches cannot drift apart.
+  const tmuxArgv = (
+    rest: string[],
+  ): {
+    cmd: string;
+    argv: string[];
+    unsetEnv: ReadonlyArray<string>;
+  } => ({
+    ...(isOperator
       ? { cmd: resolveTmuxBin(), argv: ["-L", handle.tmuxSocket, ...rest] }
       : {
           cmd: "sudo",
@@ -1695,18 +1718,22 @@ async function sendCageBrief(handle: CageHandle, body: string): Promise<void> {
             "-u",
             handle.agent,
             "env",
+            ...TMUX_CHILD_ENV_ARGV,
             `TMUX_TMPDIR=${handle.tmuxTmpdir}`,
             resolveTmuxBin(),
             "-L",
             handle.tmuxSocket,
             ...rest,
           ],
-        };
+        }),
+    unsetEnv: TMUX_CHILD_UNSET_ENV,
+  });
 
   const load = tmuxArgv(["load-buffer", "-b", bufferName, "-"]);
   await spawn({
     cmd: load.cmd,
     argv: load.argv,
+    unsetEnv: load.unsetEnv,
     stdin: body,
     timeoutMs: 10_000,
   });
@@ -1714,6 +1741,7 @@ async function sendCageBrief(handle: CageHandle, body: string): Promise<void> {
   await spawn({
     cmd: paste.cmd,
     argv: paste.argv,
+    unsetEnv: paste.unsetEnv,
     timeoutMs: 5_000,
   });
   // ADR-081 §A: settle ≥500ms, then submit via C-m (NOT Enter). This
@@ -1730,6 +1758,7 @@ async function sendCageBrief(handle: CageHandle, body: string): Promise<void> {
   await spawn({
     cmd: submit.cmd,
     argv: submit.argv,
+    unsetEnv: submit.unsetEnv,
     timeoutMs: 5_000,
   });
 }
