@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🧹 Removed — the per-window `window-size smallest` override on the cockpit's `unum` window (ADR-284)
+
+**Every cockpit window now uses one sizing policy: the server global `window-size latest` + `aggressive-resize on`. No window-level or session-level `window-size` override is set on any cockpit window.**
+
+The `unum` cockpit window had carried `window-size smallest` since 2026-06-24, installed by two `after-new-window` / `after-rename-window` hooks in the operator's `~/.tmux.conf`, which reaches an atmux server through the ADR-171 override path (`templates/tmux/atmux.conf` → `~/.config/atmux/tmux.conf.local` → `source-file ~/.tmux.conf`). atmux itself sets no `window-size` at any scope and still does not.
+
+Measured on `geoywsMBP` 2026-08-30 with three clients attached to cockpit session `atx`: `ifca` rendered **291x80** under `latest` while `unum` rendered **79x43**, clamped by a 79x44 client regardless of which client was active. A sweep of every live tmux socket on the box found exactly one `window-size` override at any non-global scope — cockpit `atx:5`. The group cage was never at fault; its client faithfully inherited the clipped cockpit pane.
+
+**The override was a workaround for ghost clients, and it made them permanent.** `_dotfiles/bin/tmux-ghost-reaper.sh` — written the day *before* the override — records the precedent verbatim: *"a lingering narrow client is doubly harmful on the atmux cockpit … cages (e.g. unum) render cramped … (2026-06-23: a 71x38 cockpit attach idled ~21h and pinned the unum cage to 270x74.)"* Both extra clients on 2026-08-30 were ghosts by that reaper's own criteria (narrow + stale: 79x44 idle 53min, 102x53 idle 335min), and **the reaper has never been scheduled on `geoywsMBP`** — empty `crontab`, no launchd agent. It was a hax-era cron the ADR-008 devbox migration left behind. `smallest` promoted a ghost's geometry from an accident into policy, and in doing so suppressed the only visible symptom of the missing cron for 68 days.
+
+Retired in three places, because a conf edit does not reach a running server:
+
+- **Source** — the hook block and its `@unum_smallest_hook` guard are deleted from `_dotfiles/tmux/.tmux.conf`, replaced by a tombstone pointing at ADR-284.
+- **Self-healing** — `_dotfiles/tmux/refit-nested.sh` already cleared stale *session*-level `window-size` on reload; it now clears *window*-level too, on every window of every reachable server (addressed by `#{window_id}`, so renames and renumbering can't dodge it).
+- **Live** — the running cockpit was remediated in the same change: override unset, both hook arrays unset (verified to hold only slot `[0]`, both ours, before using `-u`), guard flag cleared, both ghosts detached, conf edits landed first so a reload in between could not reinstall.
+
+**Measured tmux 3.7c semantics, established on a throwaway two-client rig and then confirmed live** — none of this is asserted from the manual: `smallest` clamps from an *attached* client, not a viewing one, so an idle ghost in another window still binds; `latest` pins a window to the client that last generated real **input** while viewing it, and a `select-window` issued by a control client does not move that pin; and removing the override resizes nothing on its own — nor does detaching the pinning client — because an unviewed window keeps its stale geometry until something triggers a recalculation. The live refit was therefore driven through a temporary grouped session (`new-session -d -s _fit284 -t atx`) so a throwaway 291x81 client could view window 5 while the operator stayed on window 6, rather than flipping his own client and risking keystrokes landing in the unum cage. Final state: six windows at 291x80, one client, zero overrides, both hook arrays empty, all three group cages reporting a 291x80 inner client.
+
+**Raised, not armed:** the ghost reaper is the real defence and nothing schedules it on this host. Arming a cron that detaches clients and posts to Discord is a standing change on the operator's machine, so ADR-284 §D6 raises it instead, along with two portability defects found while reading it — the script appends to root-owned `/var/log` on macOS (aborting under `set -e` *after* it has already detached clients), and its local-console exemptions (`/dev/pts/0`, `/dev/tty1`) are Linux tty names that never match on Darwin.
+
 ### ↩️ Withdrawn — ADR-283 (test-runner environment scrub), and the claims cut back to what is measured
 
 **ADR-283 was proposed on 2026-08-28 and is withdrawn.** It would have built the `bun test` runner's environment from an allowlist, on the claim that *"if the variables are not in the runner's environment, no test can leak them, whatever shape it uses … there is nothing to evade."* Two measured reasons it is gone, and ADR number 283 is left as a deliberate gap:
