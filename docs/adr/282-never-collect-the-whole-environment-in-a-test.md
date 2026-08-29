@@ -1,6 +1,6 @@
 # ADR-282: Never collect the whole environment in a test — allowlist at the source
 
-**Status**: proposed
+**Status**: accepted — operator-direct 2026-08-29
 **Date**: 2026-08-28 (amended — see §Retraction 2026-08-29)
 **Amended by**: this ADR's own §Retraction 2026-08-29, which records that its source-scanning guard was **deleted**. ⚠ A follow-on ADR (283, "scrub the test runner's environment") was proposed 2026-08-28 and **withdrawn 2026-08-29**; see §Retraction 2026-08-29 for why, and for what of it is kept.
 **Relates**: [ADR-281](281-tmux-child-environment-scrub-at-the-spawn-seam.md) (whose regression suite is the file this is about), [ADR-277](277-cage-color-environment-scrub.md) (the invariant that suite guards), [ADR-102](102-test-strategy.md) (the test-strategy this adds a rule to)

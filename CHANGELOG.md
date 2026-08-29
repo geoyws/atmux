@@ -53,7 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 🔧 Changed — ADR-281 revised the day it landed, and demoted to `proposed`
 
-- **Status corrected `accepted` → `proposed`.** ADR-281 was marked accepted by the implementing agent in the same commit as its own code; `CLAUDE.md` §"Binding discipline" #4 allows that transition only via reviewer signoff or a driver/lead `decisions-add`.
+- **Status corrected `accepted` → `proposed`.** ADR-281 was marked accepted by the implementing agent in the same commit as its own code; `CLAUDE.md` §"Binding discipline" #4 allows that transition only via reviewer signoff or a driver/lead `decisions-add`. **Re-accepted 2026-08-29 by operator-direct signoff**, together with ADR-282, when the branch was authorised for merge.
 - **`TMUX_CHILD_ENV` withdrawn entirely** (see the ADR-281 entry above) — the export is gone rather than emptied, so no dead seam invites a refill.
 - **A vacuous assertion deleted, not repaired.** `expect(env).toMatch(/^COLORTERM=truecolor$/m)` could not fail: tmux sets that value in every pane itself, so it held with or without atmux's policy and survived the mutation that emptied `TMUX_CHILD_ENV`. Deleted with the policy it was pinning.
 

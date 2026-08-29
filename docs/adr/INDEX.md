@@ -247,8 +247,8 @@
 | 278 | Nullable driver harness defaults; null starts zsh | 2026-08-24 | accepted (operator-direct) |
 | 279 | Declarative operator cockpit windows and literal session names | 2026-08-24 | accepted (operator-direct) |
 | 280 | Epic-teams are retired — the concept, the `epic-team` cage type, and `epicId` on cockpit sessions | 2026-08-27 | accepted (operator-direct) |
-| 281 | The `NO_COLOR` scrub moves to the spawn seam — a tmux server atmux starts can never inherit it | 2026-08-28 | proposed |
-| 282 | Never collect the whole environment in a test — allowlist at the source | 2026-08-28 | proposed |
+| 281 | The `NO_COLOR` scrub moves to the spawn seam — a tmux server atmux starts can never inherit it | 2026-08-28 | accepted (operator-direct) |
+| 282 | Never collect the whole environment in a test — allowlist at the source | 2026-08-28 | accepted (operator-direct) |
 
 ## Superseded (skip)
 

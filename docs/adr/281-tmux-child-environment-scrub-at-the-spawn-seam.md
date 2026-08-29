@@ -1,6 +1,6 @@
 # ADR-281: The `NO_COLOR` scrub moves to the spawn seam — a tmux server atmux starts can never inherit it
 
-**Status**: proposed
+**Status**: accepted — operator-direct 2026-08-29
 **Date**: 2026-08-28 (revised same day — see §Revision 2026-08-28)
 **Amends**: [ADR-277](277-cage-color-environment-scrub.md) — keeps its conf directive, **retracts** its coverage claim (see §Retraction). ADR-277 is not superseded: its `set-environment -gr NO_COLOR` stays exactly where it is, and stays the layer an operator can override.
 **Relates (safety)**: [ADR-282](282-never-collect-the-whole-environment-in-a-test.md) — this ADR's own regression suite is what leaked an operator environment; ADR-282 filters every probe at the source. ⚠ A third ADR (283) was proposed on 2026-08-28 to scrub the test RUNNER's environment and was **withdrawn on 2026-08-29** — see §Retraction 2026-08-29. The two corrections it carried that were sound are kept here: the `templates/tmux/atmux.conf` claim below is now true, and §D2's and §D3's invariants are enforced by `tests/unit/abstractions/tmux-child-env.test.ts` rather than merely stated.
@@ -194,6 +194,7 @@ The operator's `.zshrc` sources a git-crypt'd `.env`, and `.zshrc` is read by *i
 Three adversarial reviews of the first revision landed the same day it did. Their findings are folded in above rather than kept as a diff, because the ADR had **not** been legitimately accepted and was therefore still editable in band.
 
 1. **Status demoted `accepted` → `proposed`.** It was marked `accepted` by the implementing agent, in the same commit as its own code. `/CLAUDE.md` §"Binding discipline" #4 permits `proposed → accepted` only via reviewer signoff or a driver/lead `decisions-add`; a self-acceptance is neither. Recorded rather than quietly corrected, because "who accepted this" is the whole value of the field.
+   **Resolved 2026-08-29**: the operator accepted ADR-281 and ADR-282 directly ("mergeit all" / "and do the adrs") and authorised the merge to `atmux-geoyws`. The field now reads `accepted — operator-direct 2026-08-29`, which is the transition #4 permits. The full trail is: self-accepted 2026-08-28 → demoted the same day → operator-accepted 2026-08-29.
 2. **`TMUX_CHILD_ENV` withdrawn** — §D2, with the measurements that decided it.
 3. **The `hx` / `list-keys` evidence rescoped** — §Measured evidence. It was cited among the cases the fix covers; it is not one, and `list-keys` appears nowhere in atmux's source.
 4. **The regression suite's vacuous `COLORTERM` assertion deleted**, not repaired. `expect(env).toMatch(/^COLORTERM=truecolor$/m)` could not fail: tmux sets that value in every pane itself, so the assertion held with or without atmux's policy, and it survived the mutation that emptied `TMUX_CHILD_ENV`. An assertion that cannot fail is a lie about coverage (`/CLAUDE.md` §Engineering, "NO LIES").
