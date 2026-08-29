@@ -190,6 +190,6 @@ T5 wires the handoff write-path at the TODO(T5) anchor T4 left at `performRespaw
 - [ADR-132](132-pluggable-martinet.SUPERSEDED.md) → renamed sentinel per ADR-158 — sentinel pluggable martinet pattern.
 - [ADR-135](135-cockpit-naming-convention.md) — `_-prefix` cockpit window naming; medic / sentinel window IDs.
 - [ADR-138](138-verified-send-keys.md) — safeSendKeysWithVerify; all Ctrl-C + spawn-prompt sends route through this.
-- [ADR-155](155-pane-state-classifier.md) — pane-state probe; reusable abstraction for gate-1 + gate-2.
+- [ADR-155](155-pane-state-structured-verb.md) — pane-state probe; reusable abstraction for gate-1 + gate-2.
 - [ADR-162](162-atmux-owns-tmux-infrastructure.md) — atmux owns cockpit tmux infrastructure; this verb fits within that scope.
 - `/bruh` skill §3a (operator-managed; lives under `~/work/journals/.sb/claude-skills/plugins/coordination/skills/bruh/SKILL.md` per the dotfiles flow) — the §3a "manual fallback today" line should be flipped to "use `atmux cockpit rotate <session-name>`" by the operator at the next dotfiles-update cycle. This ADR cannot edit `claude-skills` directly (dotfiles territory per the atmux team's claude-skills carve-out); the operator picks up the change when they refresh `~/.claude/plugins/`.

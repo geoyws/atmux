@@ -3,7 +3,7 @@
 **Status**: Accepted — ratified by driver 2026-05-21 (§D1 3 thresholds + §D2 5-step playbook + §OQ recommendations as-written: v1 hardcoded constants, no auto-rollback, single-host scope, no cgroup-cage caps, permissive stack regex w/ protected-list, 5-min cadence tighten under pressure)
 **Date**: 2026-05-21
 **Driver-ref**: 2026-05-21 operator manual cleanup of hax (load 82 → 27, RAM 68GB-used/2GB-free → 61GB/29GB, 11 merged epic-teams dissolved, duplicate sopx-staging + sopx-e2e docker stacks stopped) — surfaced via complaints `c-718abae6` (atmux) + `c-f901569f` (ifca-docs sibling).
-**Cross-refs**: [ADR-077](077-superdoctor-cockpit-role.md) (medic substrate — fleet self-healing loop at cockpit W2), [ADR-184](184-host-wide-epic-team-cap-queue-and-dormancy-audit.md) (host-wide epic-team cap + spawn queue — same multi-project host-tier surface), [ADR-132](132-pluggable-martinet.SUPERSEDED.md) (sentinel sibling — observe-only counterpart at W3), [ADR-158](158-martinet-to-sentinel-rename.SUPERSEDED.md) (rename), [ADR-189](189-lean-mode-side-project-topology-preset.md) (lean-mode pivot — on-demand-via-medic-verb rather than continuous cron-poll), [ADR-197](197-cron-reaper-teardown-contract.md) (cron-reaper teardown contract — sibling cleanup class for the cron surface), complaint `c-718abae6` (closes), complaint `c-f901569f` (closes — ifca-docs cross-link), Epic `e-a771c03d` (parent — this ADR is its T1 anchor).
+**Cross-refs**: [ADR-077](077-superdoctor-cockpit-role.md) (medic substrate — fleet self-healing loop at cockpit W2), [ADR-184](184-host-wide-epic-team-cap-queue-and-dormancy-audit.md) (host-wide epic-team cap + spawn queue — same multi-project host-tier surface), [ADR-132](132-pluggable-martinet.SUPERSEDED.md) (sentinel sibling — observe-only counterpart at W3), [ADR-158](158-martinet-to-sentinel-rename.SUPERSEDED.md) (rename), [ADR-189](189-lean-mode-side-project-topology.md) (lean-mode pivot — on-demand-via-medic-verb rather than continuous cron-poll), [ADR-197](197-cron-reaper-teardown-contract.md) (cron-reaper teardown contract — sibling cleanup class for the cron surface), complaint `c-718abae6` (closes), complaint `c-f901569f` (closes — ifca-docs cross-link), Epic `e-a771c03d` (parent — this ADR is its T1 anchor).
 
 ## Context
 
@@ -179,7 +179,7 @@ If the playbook causes more downtime than it relieves:
 - [ADR-178](178-test-cage-leak-reaper.md) (test-cage leak reaper — Step 5 orphan-cage cleanup is the production-cage sibling of ADR-178's test-cage scope).
 - [ADR-181](181-global-ram-budget-gate-on-spawn.md) (global RAM-budget gate at spawn — admission control sibling to this ADR's runtime relief).
 - [ADR-184](184-host-wide-epic-team-cap-queue-and-dormancy-audit.md) (host-wide epic-team cap + dormancy audit — same multi-project hax-host scope; this ADR is the *act* arm to ADR-184's *plan + audit* arm).
-- [ADR-189](189-lean-mode-side-project-topology-preset.md) (lean-mode pivot — medic's threshold-check fires on event-driven tick under lean-mode, hourly-backstop under fleet-mode).
+- [ADR-189](189-lean-mode-side-project-topology.md) (lean-mode pivot — medic's threshold-check fires on event-driven tick under lean-mode, hourly-backstop under fleet-mode).
 - [ADR-197](197-cron-reaper-teardown-contract.md) (cron-reaper teardown contract — Step 4 dissolve-epic inherits ADR-197's cron-strip via the teardown hook).
 - Complaint `c-718abae6` (closes — 2026-05-21 hax operator manual cleanup).
 - Complaint `c-f901569f` (closes — ifca-docs sibling complaint).

@@ -3,8 +3,8 @@
 Status: accepted — operator-direct (quoted in §Context, 2026-08-16; reconfirmed verbatim by George 2026-08-27: "i thought it wasn't needed a long time ago in atmux")
 Date: 2026-08-16 (renumbered from a colliding `275-*` on 2026-08-17 — see §Provenance)
 Builds on: [ADR-275](275-external-private-kanban-authority.md) — **accepted, operator-direct.** That ADR decides the work-state question. This one does not re-decide it.
-Supersedes in effect: the orchd phase ADRs — [ADR-202](202-orchd-event-loop.md), [ADR-203](203-event-topic-taxonomy.md), [ADR-226](226-orchd-auto-merge.md), [ADR-227](227-orchd-auto-dissolve.md), [ADR-229](229-orchd-auto-push.md), [ADR-250](250-orchd-stale-epic-team-reaper.md)
-Relates: [ADR-219](219-cockpit-mirror.md) (a bus consumer that SURVIVES this), [ADR-272](272-voice-operator-interface.md) / [ADR-274](274-atmux-vox-rename.md) (`atmux vox` — the other half of the narrowed scope), [ADR-271](271-sqlite-sole-store-rust-orchd-coordinator.md)
+Supersedes in effect: the orchd phase ADRs — [ADR-202](202-honker-in-db-messaging-substrate.md), [ADR-203](203-event-topic-taxonomy.md), [ADR-226](226-orchd-auto-merge-subscriber.md), [ADR-227](227-orchd-auto-dissolve-subscriber.md), [ADR-229](229-orchd-auto-push-and-safety-gates.md), [ADR-250](250-orchd-stale-epic-reaper.md)
+Relates: [ADR-230](230-cockpit-mirror-rust-crate-fleet-event-consumer.md) (a bus consumer that SURVIVES this — cited as "ADR-219" when this ADR was written, which was a stale number: the cockpit-mirror crate was renumbered 219 -> 230 on 2026-05-23 to resolve a collision, per [ADR-202](202-honker-in-db-messaging-substrate.md) line 929. On disk 219 is [dissolve-epic-completeness](219-dissolve-epic-completeness.md), which [ADR-280](280-epic-team-retirement-and-staged-excision.md) SUPERSEDES — so the old citation named a retired epic-team ADR as surviving and pointed at a filename that does not exist), [ADR-272](272-voice-operator-interface.md) / [ADR-274](274-atmux-vox-rename.md) (`atmux vox` — the other half of the narrowed scope), [ADR-271](271-sqlite-sole-store-rust-orchd-coordinator.md)
 
 ## Provenance — this ADR was written in ignorance of an accepted sibling, and is corrected here
 
@@ -54,7 +54,7 @@ Today a task write and its event emit are **one transaction in one file** (`src/
 
 So the same-transaction emit becomes a **dead write we stop making**, not a distributed-transaction problem to solve. This is also why ADR-275's D3 ("no dual writes") is satisfiable at all on the event side.
 
-**What survives, and must not be swept up with it:** [ADR-219](219-cockpit-mirror.md)'s `atmux-cockpit-mirror` is a separate singleton daemon reading a **different database** (`~/.atmux/cockpit-events.db`), consuming `budget.warning`, `budget.recovered`, `gitter.escalated`, `team.spawned`, `team.dissolved` — **no kanban topic among them**. It is cage infrastructure, it is on the keep side of D1 and D2, and the Honker substrate it depends on stays.
+**What survives, and must not be swept up with it:** [ADR-230](230-cockpit-mirror-rust-crate-fleet-event-consumer.md)'s `atmux-cockpit-mirror` (written here as ADR-219 — the pre-renumber id; see §Relates) is a separate singleton daemon reading a **different database** (`~/.atmux/cockpit-events.db`), consuming `budget.warning`, `budget.recovered`, `gitter.escalated`, `team.spawned`, `team.dissolved` — **no kanban topic among them**. It is cage infrastructure, it is on the keep side of D1 and D2, and the Honker substrate it depends on stays.
 
 ## Consequences
 

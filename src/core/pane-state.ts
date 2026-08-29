@@ -13,8 +13,10 @@
 //   - READY        — prompt visible; safe to send keystrokes immediately.
 //   - TYPING       — user has text in the compose box (queued message
 //                    pending submit). Send would merge into the queue.
-//   - BUSY         — agent mid-think (Claude Code spinner verb visible:
-//                    `✻ Cooked for Ns`, `✽ Honking…`, etc.). Resolves
+//   - BUSY         — agent mid-think (a LIVE Claude Code spinner verb is
+//                    visible: `✻ Cooking…`, `✽ Honking…`). The past-tense
+//                    `✻ Cooked for Ns` form is IDLE residue, NOT busy.
+//                    Resolves
 //                    when the turn completes; send merges into queue
 //                    same as TYPING. Distinct from TYPING semantically:
 //                    TYPING resolves on user submit, BUSY resolves on
@@ -83,8 +85,25 @@ const PATTERNS: ReadonlyArray<Pattern> = [
   // Priority: between COMPACTING and MODAL — a busy pane showing a modal
   // hint is mid-think and the modal will resolve when the turn completes
   // (per ADR-080 §C OQ-C1).
-  { state: "BUSY", regex: /✻\s+\w+/ }, // "✻ Cooked for Ns" / "✻ Cooked for 12s"
-  { state: "BUSY", regex: /✽\s+\w+/ }, // "✽ Honking…"
+  //
+  // The glyph ALONE is not evidence of a live turn. Claude Code keeps the
+  // spinner glyph on screen after the turn ends and swaps the verb to PAST
+  // tense with an elapsed-time suffix — `✻ Baked for 1m 51s` is an IDLE pane,
+  // not a working one. Matching the bare glyph made every finished-with-residue
+  // pane read BUSY, which is how two epics sat wedged for hours on 2026-05-22
+  // while `lane-tick` logged `state=BUSY (evidence=✻ Bake) — skip` and never
+  // injected their waiting todos (t-89fc1cf8).
+  //
+  // The discriminator is the ELAPSED-TIME SUFFIX, not a verb whitelist: a live
+  // turn renders `✻ Honking…` or `(12.4s · still thinking)`, never
+  // `<Verb> for <duration>`. A whitelist would need editing every time
+  // Anthropic adds a spinner word; this does not.
+  //
+  // The lookahead sits immediately after the glyph so `\w+` cannot backtrack
+  // around it — anchored later, `\w+` would match `Bake` and let the `d for 1m`
+  // remainder slip past the assertion.
+  { state: "BUSY", regex: /✻\s+(?!\w+\s+for\s+\d)\w+/ }, // `✻ Honking…` yes, `✻ Baked for 1m 51s` no
+  { state: "BUSY", regex: /✽\s+(?!\w+\s+for\s+\d)\w+/ }, // same, other glyph
   {
     state: "BUSY",
     regex:

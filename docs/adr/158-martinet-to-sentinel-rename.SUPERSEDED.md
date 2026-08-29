@@ -190,7 +190,7 @@ ADR-158 completes when ALL of:
 
 ## Cross-references
 
-- [ADR-132](132-pluggable-martinet.md) — design of the role (superseded nomenclature only; design preserved). Gains §Amendment annotation.
+- [ADR-132](132-pluggable-martinet.SUPERSEDED.md) — design of the role (superseded nomenclature only; design preserved). Gains §Amendment annotation.
 - [ADR-133](133-medic-rename.md) — rename-mechanics precedent (superdoctor → medic).
 - [ADR-135](135-cockpit-naming-convention.md) — D4 in-place window rename pattern.
 - [ADR-139](139-refusal-pattern-auto-rotate.md) — refusal-pattern detection (consumed by sentinel; identifier renames cascade).

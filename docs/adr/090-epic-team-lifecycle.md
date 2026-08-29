@@ -412,7 +412,7 @@ Only trunk-merge serialization remains load-bearing, and it self-regulates via t
 
 ## Cross-references
 
-- [ADR-018](018-per-team-tmuxdir.md) — per-team tmpdir; nesting under `/tmp/atmux-<parent>/epics/<epicId>/sock` re-uses this primitive.
+- [ADR-018](018-per-team-tmux-socket-isolation.md) — per-team tmpdir; nesting under `/tmp/atmux-<parent>/epics/<epicId>/sock` re-uses this primitive.
 - [ADR-032](032-socket-pubsub-messaging-layer.md) — socket-pubsub propagation; each epic-team gets its own sockets directory.
 - [ADR-076](076-sqlite-everywhere.md) — state.db is canonical; each epic-team has its own.
 - [ADR-082](082-worktree-isolation-per-member.md) — per-member worktree primitive (reused; HARD CONFLICT carve-out per §Decision-anchor #3).
@@ -473,7 +473,7 @@ Both steps no-op when `tmux.session.hasSession()` returns false (idempotent diss
 
 **Concrete impl**: `src/verbs/team/dissolve-epic.ts::defaultCageTeardown` (helper added 2026-05-21). 5 unit tests in `tests/unit/verbs/team/dissolve-epic.test.ts` cover: (a) alive cage → both softStop + killSession run, (b) dead cage → killSession skipped, (c) hasSession throws → no killSession + no rethrow, (d) session name uses ADR-161 cage form `atmux_<name>`, (e) end-to-end dissolve with no `softStopHook` still kills cage. Total dissolve-epic tests: 16/16 pass.
 
-**Out of scope / follow-up**: A `cockpit.reaper` consumer subscribed to `epic.dissolved` events (per [ADR-202](202-honker-pubsub-substrate-deferred.md) substrate) will provide defense-in-depth — re-runs the reap until the orphan tmux is gone + surfaces dropped reaps to lead. That work lives in the Honker gitter EPIC e-d5278f2b alongside the trunk-merge consumer (ADR-091).
+**Out of scope / follow-up**: A `cockpit.reaper` consumer subscribed to `epic.dissolved` events (per [ADR-202](202-honker-in-db-messaging-substrate.md) substrate) will provide defense-in-depth — re-runs the reap until the orphan tmux is gone + surfaces dropped reaps to lead. That work lives in the Honker gitter EPIC e-d5278f2b alongside the trunk-merge consumer (ADR-091).
 
 **Cross-refs:** ADR-087 (softStop primitive — composed here) · ADR-202 (Honker substrate — defense-in-depth path) · `verbs/stop.ts:272` (canonical killSession pattern after softStop).
 

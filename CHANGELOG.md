@@ -57,6 +57,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`TMUX_CHILD_ENV` withdrawn entirely** (see the ADR-281 entry above) — the export is gone rather than emptied, so no dead seam invites a refill.
 - **A vacuous assertion deleted, not repaired.** `expect(env).toMatch(/^COLORTERM=truecolor$/m)` could not fail: tmux sets that value in every pane itself, so it held with or without atmux's policy and survived the mutation that emptied `TMUX_CHILD_ENV`. Deleted with the policy it was pinning.
 
+### ✨ Added — pathspec guard refuses commits that reach outside a Task's files (ADR-0058 b)
+
+**A commit picks up files it was never meant to touch, through the index rather than through carelessness.** Someone else stages work in the same worktree, a `lint-staged` sweep restores partially-staged files, or a `git commit` with no pathspec commits whatever the index already held — and the commit's message describes one change while its contents carry somebody else's. Measured at three incidents in six hours on `u-n-u-m/root`; all three were recovered, and all three depended on the committer noticing.
+
+- **`scripts/pathspec-guard.sh`** — verifies `git diff --cached --name-only` against the `## Files` section of the Task body, and exits non-zero naming every staged path that escapes it. The body is read from `--body-file`, `$ATMUX_TASK_BODY`, or the member's claim record, first match wins. A directory entry covers everything beneath it.
+- **A Task with no `## Files` section is not judged** — it warns and passes. Legacy Tasks predate the convention and failing them closed would block the board, which is also what makes the guard adoptable before every Task carries a pathspec.
+- **`ATMUX_PATHSPEC_GUARD=off` is audited, not silent** — it appends to `~/.atmux/logs/pathspec-guard.jsonl`. Recovery and bulk-rename commits legitimately need the bypass; an unattributable bypass is what makes the next incident impossible to explain.
+- **`docs/RUNBOOK-commits.md`** — the failure, the guard, the opt-out playbook, and what to do when it fires. Planner, lead and committer briefs cross-reference it.
+
+Ships as a standalone verifier rather than a hook: this repo declares no hook manager and has no `.husky/`, and inventing one would add a dependency it deliberately lacks. Wiring it into a hook is a one-line `scripts/pathspec-guard.sh` call wherever a consumer already runs pre-commit checks.
+
 ### 🗑 Removed — orchd retired entirely; atmux's scope narrows to tmux cages + `atmux vox` ([ADR-276](docs/adr/276-orchd-retirement-and-atmux-scope.md))
 
 - **The `atmux orchd` verb, the Rust `rust/atmux-orchd/` crate (ticker daemon), and the `__orchd__` service window are gone.** `atmux orchd` now fails loud with an error naming ADR-276. `package.json` no longer builds or installs `atmux-orchd`. `atmux start` spawns no service window.

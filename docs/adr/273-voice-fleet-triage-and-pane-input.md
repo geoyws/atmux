@@ -5,7 +5,7 @@ Date: 2026-08-15
 Implementation: **D1–D3 built 2026-08-16** (`fleet_attention` + `fleet_quiet`); **D4's `pane_nudge` + D5 built 2026-08-16** (see §Supplement-2); **`pane_send` still not built** — **OQ-1 is now ANSWERED (§Supplement-9, 2026-08-21: no spoken second factor; four structural bounds instead), which opens the gate but does not close the work.** §AA5 lists what must be true before it ships. Status stays `proposed` pending reviewer signoff — an ADR is not accepted by being implemented.
 Extends: [ADR-272](272-voice-operator-interface.md) (voice operator interface)
 See also: [ADR-274](274-atmux-vox-rename.md) — the naming decision moved there: the feature is `atmux vox`. This ADR's title and body stand as written; the `atmux fleet` and `atmux nudge` verbs it adds are deliberately NOT renamed (ADR-274 §What this ADR does not decide).
-Related: [ADR-138](138-verified-send-keys.md) (verified send-keys), [ADR-139](139-refusal-pattern-detection.md) (refusal detection), [ADR-140](140-cheap-model-first.md) (cheap-model-first observation loops)
+Related: [ADR-138](138-verified-send-keys.md) (verified send-keys), [ADR-139](139-refusal-pattern-auto-rotate.md) (refusal detection), [ADR-140](140-cheap-model-first.md) (cheap-model-first observation loops)
 
 ## Context
 

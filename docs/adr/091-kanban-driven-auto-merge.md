@@ -237,7 +237,7 @@ Driver finding 2026-05-19 06:30 MYT (operator: "make sure committers/gitters don
 
 ## Cross-references
 
-- [ADR-018](018-per-team-tmuxdir.md) — per-team tmpdir; epic-team's nested `/tmp/atmux-<parent>/epics/<epicId>/` re-uses this primitive (ADR-089 §Pillar 1).
+- [ADR-018](018-per-team-tmux-socket-isolation.md) — per-team tmpdir; epic-team's nested `/tmp/atmux-<parent>/epics/<epicId>/` re-uses this primitive (ADR-089 §Pillar 1).
 - [ADR-032](032-socket-pubsub-messaging-layer.md) — socket-pubsub; primary event-driven trigger is forward-ref to this layer (cron-backstop ships v1).
 - [ADR-076](076-sqlite-everywhere.md) — state.db is canonical; `merger_state` table lives here.
 - [ADR-082](082-worktree-isolation-per-member.md) — per-member worktree primitive; HARD CONFLICT carve-out at epic-team scope per ADR-090 §Decision-anchor #3.
