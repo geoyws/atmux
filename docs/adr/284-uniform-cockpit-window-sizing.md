@@ -1,7 +1,7 @@
 # ADR-284: One sizing policy for every cockpit window — the `unum` `window-size smallest` override is retired
 
 **Status**: accepted — operator-direct 2026-08-30
-**Date**: 2026-08-30
+**Date**: 2026-08-30 (amended same day — see §Correction 2026-08-30, which withdraws this ADR's original account of *why* the ghost reaper is unscheduled; the decision in D1–D5 is unchanged, D6 is rewritten)
 **Driver-ref**: operator-direct — "get rid of that per window override, all windows should be have the same, supercede it with an adr? retire it durably" + "and then fix unum's current behaviour for the servers' lifetimes".
 **Supersedes**: the un-ADR'd operator decision of 2026-06-24, recorded only as a comment block in `_dotfiles/tmux/.tmux.conf` (lines 98–117 at retirement). There was no ADR to mark superseded; this one takes its place in the record.
 **Relates**: [ADR-171](171-tmux-conf-local-override.md) (the path by which the operator's personal conf reaches an atmux server), [ADR-162](162-atmux-owns-tmux-infrastructure.md) (atmux owns the cockpit socket and its tmux baseline), [ADR-279](279-declarative-operator-cockpit-windows.md) (cockpit window construction). Also bears on the dotfiles-side devbox migration (dotfiles ADR-008, runbook `_dotfiles/docs/infra/devbox-migration-2026-08.md`) — that migration is why the ghost-reaper cron this override was compensating for is absent on the new host.
@@ -46,7 +46,9 @@ The block's comment gives its date, 2026-06-24, and its stated purpose: let a sm
 
 So the override was not really about a second screen. It was a workaround for **ghost clients** — mosh/et attaches that linger after their network peer is gone — and it is a workaround that makes the disease permanent: `smallest` promotes a ghost's geometry from an accident into policy. The purpose-built fix already existed on the same day, in the same dotfiles: reap the ghost.
 
-**Both extra clients on 2026-08-30 were ghosts by that reaper's own criteria** (`width < 120` and stale `> 300s`, never the focused client): 79x44 stale 53 min, 102x53 stale 335 min. **The reaper has never been scheduled on `geoywsMBP`** — `crontab -l` is empty and `~/Library/LaunchAgents` holds no such job. It was a hax-era cron; the ADR-008 devbox migration moved the cockpit to the MBP and left the reaper behind. Ghosts have been accumulating unswept ever since, and on exactly one window — `unum` — the accumulation was configured to be authoritative.
+**Both extra clients on 2026-08-30 were ghosts by that reaper's own criteria** (`width < 120` and stale `> 300s`, never the focused client): 79x44 stale 53 min, 102x53 stale 335 min. Nothing schedules the reaper on `geoywsMBP` — `crontab -l` is empty and `~/Library/LaunchAgents` holds no such job — **and it is disabled on `hax` too, deliberately.** See §Correction 2026-08-30: the first revision of this ADR read that absence as migration drift, and it is not.
+
+So on `unum`, and only on `unum`, an unswept ghost was configured to be authoritative.
 
 ### Measured tmux semantics (tmux 3.7c, `geoywsMBP`, 2026-08-30)
 
@@ -91,7 +93,7 @@ Per §Measured semantics #3, steps 1–2 leave the window at its stale size. Fli
 
 **D5 — The small-screen case is answered at the client, not in window config.** A small client that clips a cage is detached (`detach-client -t <tty>`) or lived with for the duration of that attach. If that proves insufficient, the replacement is a deliberate, discoverable, all-windows mechanism — not a per-name hook.
 
-**D6 — The ghost reaper is the real defence, and it is missing on `geoywsMBP`.** D1 is only comfortable to live with while ghosts are swept. `_dotfiles/bin/tmux-ghost-reaper.sh` exists, is executable, and is documented as a 15-minute cron covering the default *and* cockpit servers — but nothing schedules it on this host. Arming it is a standing behaviour change on the operator's machine (it detaches clients and posts to Discord), so it is **raised for the operator rather than armed here**, per ADR-192 cron discipline. Two known portability defects to fix in the same pass: the script appends to `/var/log/tmux-ghost-reaper.log`, which is root-owned on macOS and will abort the script under `set -e` *after* it has already detached clients; and its local-console exemptions (`/dev/pts/0`, `/dev/tty1`) are Linux tty names that never match on Darwin.
+**D6 — Do not re-arm the ghost reaper to compensate for this, and do not port it to `geoywsMBP`.** The reaper is disabled on `hax` by operator decision of 2026-06-25 and stays that way pending an explicit call (raised as attention `a-a752804f`). Its heuristic cannot do the job asked of it — see §Correction below for the evidence — and ADR-284 removes half of what it was defending: under plain `latest`, a lingering narrow client no longer clamps any window; it holds a pin on one window it last typed in, and any real use of that window refits it. What survives is the redraw-lockstep cost the reaper's header describes, which is real, is not what was observed on 2026-08-30, and is a separate problem from window sizing. Two Darwin defects to fix first if it is ever re-armed here: it appends to `/var/log/tmux-ghost-reaper.log`, which is root-owned on macOS (verified not writable as `geoyws`), so under `set -e` it aborts *after* it has already detached clients and the Discord notice never fires; and its local-console exemptions (`/dev/pts/0`, `/dev/tty1`) are Linux tty names that never match on Darwin.
 
 ## Consequences
 
@@ -100,7 +102,7 @@ Per §Measured semantics #3, steps 1–2 leave the window at its stale size. Fli
 - The 2026-06-24 small-second-screen convenience is gone. Accepted cost: it was serving a rare case at the expense of the common one, and it was masking a missing cron.
 - A cramped cage is once again a *symptom* of an unreaped ghost, which is what it should be.
 - `refit-nested.sh` does one extra `show`/`unset` pair per window per reachable server. It stays flock-guarded with a 3-second cooldown; the added RPCs are small against the 1–2s the body already takes.
-- Until D6 is armed, ghosts must be reaped by hand when a cage looks cramped. The check is one command: `tmux -L atmux-cockpit list-clients -F '#{client_tty} #{client_width}x#{client_height} #{t:client_activity} #{client_flags}'`.
+- Ghosts are reaped by hand, deliberately, when a cage looks cramped or the cockpit feels sluggish. The check is one command: `tmux -L atmux-cockpit list-clients -F '#{client_tty} #{client_width}x#{client_height} #{t:client_activity} #{client_flags}'`. This is the accepted steady state, not a stopgap awaiting D6.
 
 ## Rollback
 
@@ -110,11 +112,55 @@ Reinstate the block in `_dotfiles/tmux/.tmux.conf`, drop the window-level unset 
 
 - **Pinning `window-size latest` in `templates/tmux/atmux.conf`.** It restates tmux's own default and would not have prevented this: a window-level option beats a global one, so the hook would have won regardless. Writing it would advertise an enforcement atmux does not perform — the failure mode [ADR-282](282-never-collect-the-whole-environment-in-a-test.md) §Retraction was written about.
 - **A regression test.** The surface is a file in a private dotfiles repository that this repository cannot read in CI. A guard here would assert on something it cannot see.
-- **Arming the reaper cron.** See D6 — raised, not armed.
+- **Arming the reaper cron.** See D6 and §Correction — it is disabled by operator decision, the decision stands until he revisits it, and this ADR recommends it stay that way.
+
+## Correction 2026-08-30 — the reaper was not lost, it was switched off, and the heuristic is why
+
+The first revision of this ADR stated, in §Context and §D6, that the ghost reaper "has never been scheduled on `geoywsMBP`" because "the ADR-008 devbox migration moved the cockpit to the MBP and left the reaper behind." **The absence is real; the explanation was invented.** Recorded here rather than silently edited, per the discipline [ADR-282](282-never-collect-the-whole-environment-in-a-test.md) §Retraction established.
+
+`hax`'s crontab carries the entry, commented out, with its own note:
+
+```cron
+# tmux ghost-client reaper — detach et/mosh clients with >4h stale activity (added 2026-05-07)
+# DISABLED 2026-06-25 22:18 MYT by George request — was reaping his live narrow mosh client.
+#   Its narrow tier (NARROW_WIDTH=120, NARROW_THRESHOLD=300s) treats ANY client <120 cols as a
+#   ghost candidate and detaches after 5min idle. George's 71-col phone client (pts/36) was being
+#   kicked repeatedly all day (see /var/log/tmux-ghost-reaper.log). Re-enable ONLY after raising
+#   NARROW_WIDTH below his phone width or adding a tty/width allowlist.
+# */15 * * * * /usr/local/bin/tmux-ghost-reaper
+```
+
+`/var/log/tmux-ghost-reaper.log` on `hax` corroborates it: between 2026-05-17 and 2026-06-25 a 71x38 client was detached **dozens of times at 6–19 minutes idle**, including three times on the final day. That is not a ghost being swept; that is a phone in a pocket.
+
+### The real sequence
+
+| date | event |
+|---|---|
+| 2026-05-07 | reaper added, single 4h tier |
+| ~2026-05-16 | narrow tier added (`<120` cols → 5 min) |
+| 2026-05-17 → 06-25 | the 71-col phone client is kicked repeatedly |
+| 2026-06-23 | a ghost pins the unum cage (the incident in the script header) |
+| **2026-06-24** | **`window-size smallest` installed on the unum window** |
+| **2026-06-25 22:18 MYT** | **reaper DISABLED by operator request** |
+
+So the override was not compensating for a *missing* mechanism. It was installed the day before the operator switched that mechanism off, and the same 71-column phone client is on both sides of the trade: `smallest` existed to keep that client's view of the unum cage un-clipped, and the reaper was disabled because it kept ejecting that same client. The two changes are one decision made in two places, and this ADR retires only one half of it. §D6 records the other half as the operator's standing call.
+
+### Why tuning does not rescue it
+
+The crontab's own remedy — "raising `NARROW_WIDTH` below his phone width" — is garbled (the action that spares a 71-column client is *lowering* `NARROW_WIDTH` to ≤ 71, not raising it), and neither direction works:
+
+- **Width does not separate the cases.** The phone is 71 columns; the ghost on 2026-08-30 was 79. Same class, opposite verdicts required.
+- **Idle time does not either.** A pocketed phone idles *longer* than a freshly-orphaned mosh attach. The signal runs backwards.
+- **The specific fix would have missed tonight's ghost.** With `NARROW_WIDTH ≤ 71`, the 79x44 ghost falls into the `normal` tier at 2 h and its 53 minutes of staleness would not have reached the threshold.
+
+A width-and-idle heuristic cannot distinguish "small and alive" from "small and dead", because neither input carries that fact. The honest position is that this ADR has no automated replacement to propose, and says so rather than proposing one that would fail the same way.
+
 
 ## References
 
 - Live measurement, `geoywsMBP`, 2026-08-30 03:00–03:55 MYT: cockpit `atx` per-window options; three attached clients at 291x81 / 102x53 / 79x44; group-cage clients at 79x43 (`grp-unum`) and 291x80 (`grp-ifca`); final state all six windows 291x80 and all three group cages 291x80.
 - Fleet sweep, same session: every live tmux socket on the box checked at window and session scope for `window-size`. One hit, `atx:5`.
 - Two-client rig, tmux 3.7c, torn down after use: `latest` pin moves on client **input**, not on a control-client `select-window`; `smallest` clamps from a non-viewing client; an unviewed window keeps a stale size after both the override and the pinning client are gone.
+- `hax` crontab (entry commented out 2026-06-25 22:18 MYT) and `/var/log/tmux-ghost-reaper.log` (dozens of 71x38 reaps at 6–19 min idle, 2026-05-17 → 06-25) — the evidence behind §Correction.
+- `/var/log` on `geoywsMBP`: `drwxr-xr-x root:wheel`, not writable as `geoyws`; a `>>` append there fails, which under `set -e` aborts the reaper after it has detached clients.
 - `_dotfiles/bin/tmux-ghost-reaper.sh` header, recording the 2026-06-23 precedent (a 71x38 attach idled ~21h and pinned the unum cage) that this override was written the next day to work around.
