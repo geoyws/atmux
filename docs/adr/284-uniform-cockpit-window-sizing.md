@@ -1,6 +1,6 @@
 # ADR-284: One sizing policy for every cockpit window — the `unum` `window-size smallest` override is retired
 
-**Status**: accepted — operator-direct 2026-08-30
+**Status**: accepted — operator-direct 2026-08-30; §D6 reconfirmed operator-direct 2026-08-30
 **Date**: 2026-08-30 (amended same day — see §Correction 2026-08-30, which withdraws this ADR's original account of *why* the ghost reaper is unscheduled; the decision in D1–D5 is unchanged, D6 is rewritten)
 **Driver-ref**: operator-direct — "get rid of that per window override, all windows should be have the same, supercede it with an adr? retire it durably" + "and then fix unum's current behaviour for the servers' lifetimes".
 **Supersedes**: the un-ADR'd operator decision of 2026-06-24, recorded only as a comment block in `_dotfiles/tmux/.tmux.conf` (lines 98–117 at retirement). There was no ADR to mark superseded; this one takes its place in the record.
@@ -93,7 +93,7 @@ Per §Measured semantics #3, steps 1–2 leave the window at its stale size. Fli
 
 **D5 — The small-screen case is answered at the client, not in window config.** A small client that clips a cage is detached (`detach-client -t <tty>`) or lived with for the duration of that attach. If that proves insufficient, the replacement is a deliberate, discoverable, all-windows mechanism — not a per-name hook.
 
-**D6 — Do not re-arm the ghost reaper to compensate for this, and do not port it to `geoywsMBP`.** The reaper is disabled on `hax` by operator decision of 2026-06-25 and stays that way pending an explicit call (raised as attention `a-a752804f`). Its heuristic cannot do the job asked of it — see §Correction below for the evidence — and ADR-284 removes half of what it was defending: under plain `latest`, a lingering narrow client no longer clamps any window; it holds a pin on one window it last typed in, and any real use of that window refits it. What survives is the redraw-lockstep cost the reaper's header describes, which is real, is not what was observed on 2026-08-30, and is a separate problem from window sizing. Two Darwin defects to fix first if it is ever re-armed here: it appends to `/var/log/tmux-ghost-reaper.log`, which is root-owned on macOS (verified not writable as `geoyws`), so under `set -e` it aborts *after* it has already detached clients and the Discord notice never fires; and its local-console exemptions (`/dev/pts/0`, `/dev/tty1`) are Linux tty names that never match on Darwin.
+**D6 — Do not re-arm the ghost reaper to compensate for this, and do not port it to `geoywsMBP`.** Disabled on `hax` by operator decision of 2026-06-25 and **reconfirmed operator-direct on 2026-08-30** — *"keep it disabled, don't port it to the mbp"* (attention `a-a752804f`, resolved). This is settled, not pending. It already holds without any change: `init.sh:534` links `/usr/local/bin/tmux-ghost-reaper` inside an `if [[ "$IS_LINUX" == "1" ]]` guard so no bootstrap can place it on macOS; `geoywsMBP` has no symlink, no crontab entry and no launchd agent; `hax` has zero active reaper cron lines. The script stays as a hand-run tool — running it deliberately is fine, scheduling it is not. Its heuristic cannot do the job asked of it — see §Correction below for the evidence — and ADR-284 removes half of what it was defending: under plain `latest`, a lingering narrow client no longer clamps any window; it holds a pin on one window it last typed in, and any real use of that window refits it. What survives is the redraw-lockstep cost the reaper's header describes, which is real, is not what was observed on 2026-08-30, and is a separate problem from window sizing. Two Darwin defects to fix first if it is ever re-armed here: it appends to `/var/log/tmux-ghost-reaper.log`, which is root-owned on macOS (verified not writable as `geoyws`), so under `set -e` it aborts *after* it has already detached clients and the Discord notice never fires; and its local-console exemptions (`/dev/pts/0`, `/dev/tty1`) are Linux tty names that never match on Darwin.
 
 ## Consequences
 
@@ -112,7 +112,7 @@ Reinstate the block in `_dotfiles/tmux/.tmux.conf`, drop the window-level unset 
 
 - **Pinning `window-size latest` in `templates/tmux/atmux.conf`.** It restates tmux's own default and would not have prevented this: a window-level option beats a global one, so the hook would have won regardless. Writing it would advertise an enforcement atmux does not perform — the failure mode [ADR-282](282-never-collect-the-whole-environment-in-a-test.md) §Retraction was written about.
 - **A regression test.** The surface is a file in a private dotfiles repository that this repository cannot read in CI. A guard here would assert on something it cannot see.
-- **Arming the reaper cron.** See D6 and §Correction — it is disabled by operator decision, the decision stands until he revisits it, and this ADR recommends it stay that way.
+- **Arming the reaper cron.** See D6 and §Correction — disabled by operator decision, reconfirmed 2026-08-30, and already unreachable from any bootstrap on macOS. Closed.
 
 ## Correction 2026-08-30 — the reaper was not lost, it was switched off, and the heuristic is why
 
