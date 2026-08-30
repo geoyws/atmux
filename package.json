@@ -18,6 +18,7 @@
     "lint": "biome lint . && bun scripts/lint-tz.ts && bun scripts/lint-socket-resolver.ts",
     "lint:tz": "bun scripts/lint-tz.ts",
     "lint:socket-resolver": "bun scripts/lint-socket-resolver.ts",
+    "superbot:render-plan": "bun scripts/render-superbot-fleet-plan.ts",
     "format": "biome format --write .",
     "build": "bun build ./bin/atmux-entry.ts --target=bun --outdir=dist",
     "build:compile": "bun build ./bin/atmux-entry.ts --compile --target=bun-linux-x64 --outfile dist/atmux",

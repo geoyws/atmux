@@ -84,6 +84,7 @@ import {
   checkTuiCommandsClaudeOverride,
   checkMemberLabelCollision,
   collectSafeOrphanBranches,
+  checkBotConfig,
 } from "./doctor/team.ts";
 import { checkTmuxVersionMismatch, checkVendoredTmuxBinary } from "./doctor/tmux.ts";
 import { type DoctorRow, buildReport } from "./doctor/types.ts";
@@ -160,6 +161,7 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   rows.push(...(await checkTeam(atmuxDir)));
   if (team !== null) {
     rows.push(...checkTuis(team));
+    rows.push(...checkBotConfig(team));
   }
   rows.push(...(await checkStateDir(atmuxDir)));
   rows.push(...(await checkWebhook(team)));
@@ -576,6 +578,7 @@ export {
   checkTuiCommandsClaudeOverride,
   checkMemberLabelCollision,
   collectSafeOrphanBranches,
+  checkBotConfig,
 } from "./doctor/team.ts";
 export {
   checkStateDir,

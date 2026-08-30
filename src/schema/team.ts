@@ -1336,6 +1336,22 @@ export function resolveRefusalConfig(
   };
 }
 
+/** ADR-285 §D2 — cooperative automation seat. The block is opt-in so
+ *  transient/legacy teams do not silently gain a long-lived harness;
+ *  persistent parent teams are migrated explicitly. When present,
+ *  `enabled` defaults true and the cwd is pinned to the one supported
+ *  bot-worktree location. A null/omitted tui starts zsh for direct
+ *  operator use but is intentionally unroutable by `_superbot`. */
+export const TeamBot = z
+  .object({
+    enabled: z.boolean().default(true),
+    tui: z.string().min(1).nullable().optional(),
+    cwd: z.literal(".atmux/worktrees/bot").default(".atmux/worktrees/bot"),
+    claudeAccount: z.string().min(1).nullable().optional(),
+  })
+  .strict();
+export type TeamBot = z.infer<typeof TeamBot>;
+
 /** `.atmux/team.json` — the team's durable identity + roster. */
 export const Team = z
   .object({
@@ -1443,6 +1459,7 @@ export const Team = z
       .min(1)
       .max(10)
       .optional(),
+    bot: TeamBot.optional(),
     /** Member roster. Order is preserved (window layout depends on it). */
     members: z.array(TeamMember),
     emojis: TeamEmojis.optional(),

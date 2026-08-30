@@ -76,6 +76,20 @@ Retired in three places, because a conf edit does not reach a running server:
 - **Status corrected `accepted` → `proposed`.** ADR-281 was marked accepted by the implementing agent in the same commit as its own code; `CLAUDE.md` §"Binding discipline" #4 allows that transition only via reviewer signoff or a driver/lead `decisions-add`. **Re-accepted 2026-08-29 by operator-direct signoff**, together with ADR-282, when the branch was authorised for merge.
 - **`TMUX_CHILD_ENV` withdrawn entirely** (see the ADR-281 entry above) — the export is gone rather than emptied, so no dead seam invites a refill.
 - **A vacuous assertion deleted, not repaired.** `expect(env).toMatch(/^COLORTERM=truecolor$/m)` could not fail: tmux sets that value in every pane itself, so it held with or without atmux's policy and survived the mutation that emptied `TMUX_CHILD_ENV`. Deleted with the policy it was pinning.
+### ✨ Added — operator-cooperative `_bot` seats ([ADR-285](docs/adr/285-cooperative-bot-seat-and-superbot-offer-protocol.md))
+
+- An opt-in `team.json::bot` block creates exactly one `_bot` window after declared drivers and before members, backed by `.atmux/worktrees/bot` on `<base>-bot`. Existing `_bot` windows are preserved during incremental starts.
+- Each bot has the stable `bot@<team>` identity and a harness-neutral brief. A null or omitted harness starts zsh for direct operator use but is deliberately unroutable; automated offers require an explicit harness/account.
+- `atmux bot hold|resume` provides a durable tmux-window interlock for operator sessions. Manual input needs no special mode and always outranks future scheduler offers.
+- `_bot` is a distinct typed send target. ADR-239's driver send-keys prohibition remains unchanged, and bot worktree setup fails closed instead of falling back to shared trunk.
+
+### ✨ Added — held `_superbot` offer-and-pull source ([ADR-285](docs/adr/285-cooperative-bot-seat-and-superbot-offer-protocol.md))
+
+- `_superbot` is a deterministic 30-minute Kanban candidate router immediately after optional `_medic`, with a singleton loop and one-shot tick. It offers board/task/tag identity plus the exact atomic claim command; it never claims, assigns, or copies task bodies.
+- Candidate discovery crosses the installed `kb` CLI with ambient board selectors removed. Route order resolves multi-tag work, default owners precede one-interval fallbacks, and pending delivery metadata distinguishes an interrupted send from a verified offer.
+- Automated delivery requires a stably idle, empty, unheld Claude bot with no live `bot@<team>` lease. It buffer-pastes one multiline offer under the per-pane lock and performs a final readiness check immediately before sending; direct operator input wins.
+- A checked-in held fleet plan covers all 18 observed persistent teams and 95 registered `(board, tag)` routes. Its renderer prints disabled + shadow cockpit and per-team patches without writing live configuration. Six missing team configs and two mapping/account mismatches remain explicit activation blockers.
+- Source defaults remain disabled + shadow. This change does not install, deploy, rebuild, reconcile, or mutate live tmux.
 
 ### ✨ Added — pathspec guard refuses commits that reach outside a Task's files (ADR-0058 b)
 

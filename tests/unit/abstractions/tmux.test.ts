@@ -664,7 +664,7 @@ describe("ADR-025 — SendTarget compile-time gate", () => {
     expect(true).toBe(true);
   });
 
-  test("serializeSendTarget round-trips both valid kinds", () => {
+  test("serializeSendTarget round-trips member, lead, and cooperative bot kinds", () => {
     const memberTarget: SendTarget = {
       kind: "member",
       member: "alice",
@@ -678,5 +678,11 @@ describe("ADR-025 — SendTarget compile-time gate", () => {
       target: { sessionName: "atmux-demo", windowIndex: 0, paneIndex: 0 },
     };
     expect(serializeSendTarget(leadTarget)).toBe("atmux-demo:0.0");
+    const botTarget: SendTarget = {
+      kind: "bot",
+      team: "demo",
+      target: "atmux-demo:_bot",
+    };
+    expect(serializeSendTarget(botTarget)).toBe("atmux-demo:_bot");
   });
 });

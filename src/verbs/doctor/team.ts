@@ -195,6 +195,64 @@ export function checkTuis(team: Team, opts: CheckTuisOpts = {}): DoctorRow[] {
   return rows;
 }
 
+/** ADR-285 §D2 — visibility for the distinct cooperative bot seat.
+ *  Absent/disabled blocks are silent because transient teams deliberately
+ *  do not inherit bots. A shell-only seat is usable by the operator but
+ *  yellow/unroutable for `_superbot`; an explicit harness gets the same
+ *  executable resolution as members without making `_bot` a member. */
+export function checkBotConfig(team: Team, opts: CheckTuisOpts = {}): DoctorRow[] {
+  const bot = team.bot;
+  if (bot?.enabled !== true) return [];
+  const tui = bot.tui;
+  if (tui === undefined || tui === null || tui === "shell" || tui === "bash" || tui === "zsh") {
+    return [
+      {
+        status: "yellow",
+        label: "bot:config",
+        detail: `_bot starts in ${tui ?? "zsh"} for direct operator use but is unroutable`,
+        hint: "set bot.tui and bot.claudeAccount explicitly before enabling automated offers",
+      },
+    ];
+  }
+  const synth: TeamMember = {
+    name: "_bot",
+    role: "bot",
+    tui,
+    cwd: bot.cwd,
+    ...(typeof bot.claudeAccount === "string" ? { claudeAccount: bot.claudeAccount } : {}),
+  };
+  const resolved = resolveMemberBin(synth, team, opts.env ?? process.env);
+  if ("unknown" in resolved) {
+    return [
+      {
+        status: "red",
+        label: `bot:tui:${resolved.unknown}`,
+        detail: "unknown bot tui type",
+        hint: "register it in team.tuiCommands or use claude/opencode/kimi/cursor",
+      },
+    ];
+  }
+  if ("skip" in resolved) return [];
+  const path = (opts.which ?? defaultWhich)(resolved.bin);
+  if (path === null) {
+    return [
+      {
+        status: "red",
+        label: `bot:tui:${resolved.bin}`,
+        detail: "NOT on PATH (_bot)",
+        hint: `install: ${installHint(resolved.bin, opts.platform ?? process.platform)}`,
+      },
+    ];
+  }
+  return [
+    {
+      status: "green",
+      label: `bot:tui:${resolved.bin}`,
+      detail: `${path} (_bot, actor bot@${team.name})`,
+    },
+  ];
+}
+
 // ---------- t-589145dc: tuiCommands.claude default-target override ----------
 
 /**

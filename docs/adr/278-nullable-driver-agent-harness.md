@@ -16,7 +16,7 @@ A stale persisted harness also couples a team rebuild to launch behavior that th
 1. `drivers[].tui` is nullable and optional. A non-empty string remains an explicit request to auto-launch that named TUI through the existing command-mode path.
 2. `null` or absence means no agent harness. `atmux start` launches `zsh` as the driver pane's command and does not resolve or launch a TUI alias.
 3. New-team defaults set every `drivers[].tui` to `null`.
-4. The operator's canonical atmux team configs set every `drivers[].tui` to `null`. The legacy `driverSession.tui` marker is also normalized to `null`; ADR-266 already removed it from driver launch resolution, so this is configuration clarity rather than a second launch path.
+4. The operator's canonical atmux team configs set every `drivers[].tui` to `null`. The legacy `driverSession.tui` and `driverTui` markers are also normalized to `null`; ADR-266 already removed them from driver launch resolution, so this is configuration clarity rather than a second launch path.
 5. Member entries are unchanged. `members[].tui` continues to describe deliberately automated team-member launches.
 6. Existing running tmux sessions are not mutated. The new behavior applies when a driver window is next created by `atmux start` or a team rebuild.
 
@@ -32,6 +32,10 @@ The ADR-239 no-send-keys invariant remains unchanged: zsh is supplied as the `ne
 ## Rollback
 
 Set `drivers[].tui` to an explicit alias in the affected team config and revert the schema/start changes. Existing sessions require no rollback because this decision never rewrites a running pane.
+
+## Migration receipt — 2026-08-28
+
+The versioned dotfiles inventory, its `/root/.atmux` mirrors, and every present enabled-team project config were checked structurally with `jq`, not by grepping every `tui` field (member harnesses remain intentional). Fifteen canonical team files had a non-null legacy `driverTui`; five of those also had non-null `driverSession.tui` and/or `drivers[].tui`. Those driver-only fields now all resolve to null across both canonical/runtime inventories. The active cockpit audit found 12 of 18 project configs initially present; the existing canonical RX config was then linked into its real repository, yielding 13 present configs with zero pinned driver harnesses. The other five configured project roots (`ix`, `mx`, `hx`, `hrx`, `fmx`) are absent from this machine and were not fabricated. No `atmux start`, cockpit reconcile/rebuild, session rename, socket lookup, send-keys, install, or deployment was run; existing panes and tmux server pointers were untouched.
 
 ## References
 

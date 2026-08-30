@@ -448,6 +448,11 @@ async function dismissKnownModal(
  *  an ad-hoc closure. */
 export type PaneVerifier = (paneCapture: string) => boolean;
 
+/** Last-moment verifier evaluated while the per-pane send lock is held.
+ * Async callers can re-read external ownership/interlock state before
+ * admitting the send; synchronous pane-only guards remain supported. */
+export type PreSendVerifier = (paneCapture: string) => boolean | Promise<boolean>;
+
 /** What to do when verification fails after all retries. `"escalate"`
  *  (default) writes to the send-keys-failures log and returns
  *  `{ success: false, ... }`; `"throw"` raises {@link SafeSendKeysError}
@@ -467,6 +472,10 @@ export interface SafeSendKeysWithVerifyOpts {
   /** Per-call verifier — must return `true` once the expected
    *  post-send state is observed. */
   expectVerifier: PaneVerifier;
+  /** Last-moment guard evaluated against the pre-send capture while
+   * the per-pane send lock is held. A false result returns without
+   * sending or writing an escalation entry. */
+  preSendVerifier?: PreSendVerifier;
   /** Max time (ms) to wait for the verifier to return `true` after
    *  each send attempt. Default 3000. */
   timeoutMs?: number;
@@ -498,6 +507,10 @@ export interface SafeSendKeysWithVerifyOpts {
   escalationLogPath?: string;
   /** Override `$HOME` for path resolution (test injection). */
   home?: string;
+  /** Override the per-pane serialization lock directory. Tests and
+   * isolated simulations use a disposable directory; production
+   * leaves this unset for the host-wide lock namespace. */
+  paneLockDir?: string;
   /** Append-side effect for the escalation log. Default writes via
    *  `fs/promises.appendFile`. */
   appendLog?: AppendLogFn;
@@ -573,11 +586,10 @@ export const DEFAULT_VERIFY_RETRIES = 1;
 export async function safeSendKeysWithVerify(
   opts: SafeSendKeysWithVerifyOpts,
 ): Promise<SafeSendKeysWithVerifyResult> {
-  return withPaneSendLock(
-    opts.target,
-    () => safeSendKeysWithVerifyInner(opts),
-    opts.log !== undefined ? { log: opts.log } : {},
-  );
+  const lockOpts: { log?: (msg: string) => void; lockDir?: string } = {};
+  if (opts.log !== undefined) lockOpts.log = opts.log;
+  if (opts.paneLockDir !== undefined) lockOpts.lockDir = opts.paneLockDir;
+  return withPaneSendLock(opts.target, () => safeSendKeysWithVerifyInner(opts), lockOpts);
 }
 
 async function safeSendKeysWithVerifyInner(
@@ -593,6 +605,11 @@ async function safeSendKeysWithVerifyInner(
 
   // Step 1: pre-capture once for escalation evidence.
   const preCapture = await opts.capture(opts.target);
+
+  if (opts.preSendVerifier !== undefined && !(await opts.preSendVerifier(preCapture))) {
+    log(`safeSendKeysWithVerify: ${opts.target} pre-send verifier refused`);
+    return { success: false, attempts: 0, finalCapture: preCapture };
+  }
 
   let attempts = 0;
   let finalCapture = preCapture;

@@ -25,6 +25,7 @@ import {
   TeamAutoEmitTrunkMerge,
   TeamAutoSpawn,
   TeamAutoSpawnDefault,
+  TeamBot,
   TeamCadence,
   TeamCadenceThresholds,
   TeamCrons,
@@ -37,6 +38,41 @@ import {
   TeamRefusalDetection,
   TeamWhip,
 } from "../../../src/schema/team.ts";
+
+// ---------- ADR-285 cooperative bot seat ----------
+
+describe("TeamBot — explicit parent-team seat", () => {
+  test("empty block defaults enabled + canonical cwd while leaving harness unset", () => {
+    expect(TeamBot.parse({})).toEqual({
+      enabled: true,
+      cwd: ".atmux/worktrees/bot",
+    });
+  });
+
+  test("nullable harness/account preserve direct-operator shell mode", () => {
+    expect(
+      TeamBot.parse({
+        tui: null,
+        claudeAccount: null,
+      }),
+    ).toEqual({
+      enabled: true,
+      tui: null,
+      cwd: ".atmux/worktrees/bot",
+      claudeAccount: null,
+    });
+  });
+
+  test("rejects alternate cwd and unknown keys", () => {
+    expect(() => TeamBot.parse({ cwd: ".atmux/worktrees/something-else" })).toThrow();
+    expect(() => TeamBot.parse({ typo: true })).toThrow();
+  });
+
+  test("team-level bot remains optional for transient/legacy teams", () => {
+    const parsed = Team.parse({ name: "ephemeral", members: [] });
+    expect(parsed.bot).toBeUndefined();
+  });
+});
 
 // ---------- TeamWhip — valid + defaults ----------
 

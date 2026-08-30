@@ -58,6 +58,26 @@ describe("spawn (buffered)", () => {
     expect(r.stdout).toBe("set-from-test\n");
   });
 
+  test("unsetEnv removes ambient and explicitly merged selectors", async () => {
+    const name = "ATMUX_TEST_UNSET_SELECTOR";
+    const previous = process.env[name];
+    process.env[name] = "ambient";
+    try {
+      const r = await spawn({
+        cmd: "printenv",
+        argv: [name],
+        env: { [name]: "explicit" },
+        unsetEnv: [name],
+        expectExitCode: [0, 1],
+      });
+      expect(r.exitCode).toBe(1);
+      expect(r.stdout).toBe("");
+    } finally {
+      if (previous === undefined) delete process.env[name];
+      else process.env[name] = previous;
+    }
+  });
+
   test("default expectExitCode=0 throws SpawnError on nonzero", async () => {
     await expect(spawn({ cmd: "false" })).rejects.toBeInstanceOf(SpawnError);
   });

@@ -16,6 +16,7 @@ import { ConfigError, SchemaError } from "../errors.ts";
 import {
   Cockpit,
   type CockpitMedic,
+  type CockpitSuperbot,
   type CockpitSessionT,
   type Cockpit as CockpitShape,
   type CockpitTeam,
@@ -28,7 +29,19 @@ import { sessionAnchorPath } from "./common.ts";
  *  narrowed: `teams` is always populated by `enrichLegacyFields`;
  *  `medic` is populated when a top-level `medic` block OR at least one
  *  `type: "medic"` entry exists. */
-export type LoadedCockpit = CockpitShape & { teams: CockpitTeam[] };
+export type LoadedCockpit = CockpitShape & {
+  teams: CockpitTeam[];
+  superbot: CockpitSuperbot;
+};
+
+export const DEFAULT_COCKPIT_SUPERBOT: CockpitSuperbot = {
+  enabled: false,
+  shadow: true,
+  intervalMins: 30,
+  fallbackAfterIntervals: 1,
+  maxOffersPerTick: 20,
+  routes: [],
+};
 
 export interface LoadCockpitOpts {
   /** Environment hash. Defaults to `process.env`. Test injection point. */
@@ -149,13 +162,40 @@ export async function loadCockpit(opts: LoadCockpitOpts = {}): Promise<LoadedCoc
     }
   }
   validateOperatorWindowNames(parsed);
+  validateSuperbotRoutes(parsed, path);
   return enrichLegacyFields(parsed);
+}
+
+/** ADR-285: route owners must be enabled persistent teams from this
+ * cockpit roster. This deliberately does not infer teams from tags or
+ * create transient workers. */
+export function validateSuperbotRoutes(cockpit: CockpitShape, path = "cockpit.json"): void {
+  const teams = new Set(enabledTeams(cockpit).map((team) => team.name));
+  for (const route of cockpit.superbot?.routes ?? []) {
+    for (const owner of [route.defaultTeam, ...route.fallbackTeams]) {
+      if (!teams.has(owner)) {
+        throw new ConfigError({
+          what:
+            `cockpit.json at ${path}: superbot route board='${route.board}' ` +
+            `tag='${route.tag}' names unknown or disabled team '${owner}'`,
+          hint: "route only to enabled persistent sessions[] team entries",
+        });
+      }
+    }
+  }
 }
 
 /** ADR-279: operator windows share the cockpit tmux namespace with role
  * windows and team viewers, so every name must be globally unambiguous. */
 function validateOperatorWindowNames(cockpit: CockpitShape): void {
-  const occupied = new Set(["_superdriver", "superdriver", "_medic", "medic", "superdoctor"]);
+  const occupied = new Set([
+    "_superdriver",
+    "superdriver",
+    "_medic",
+    "medic",
+    "superdoctor",
+    "_superbot",
+  ]);
   walkSessions(cockpit.sessions ?? [], 0, (node) => {
     // Groups occupy the cockpit window namespace too (e-419553c6 true
     // containment: a top-level group gets a cockpit viewer window
@@ -324,6 +364,7 @@ function enrichLegacyFields(cockpit: CockpitShape): LoadedCockpit {
   return {
     ...cockpit,
     teams,
+    superbot: cockpit.superbot ?? DEFAULT_COCKPIT_SUPERBOT,
     ...(medic !== undefined ? { medic } : {}),
   };
 }
@@ -967,7 +1008,6 @@ export function perTeamCageSocketPath(teamRoot: string): string {
   const uid = process.getuid?.() ?? 0;
   return `${teamRoot}/.atmux/tmux/tmux-${uid}/default`;
 }
-
 
 /**
  * ADR-063 follow-up (driver-inbox 2026-05-14): probe BOTH socket
