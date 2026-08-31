@@ -162,6 +162,37 @@ describe("performRebase — clean rebase", () => {
     expect(row?.transitionedBy).toBe("cron");
   });
 
+  test("rev-parse HEAD failure after clean rebase rejects and leaves row rebasing", async () => {
+    seedRebasing();
+    const argvLog: ReadonlyArray<string>[] = [];
+    const tracingGit: GitSpawn = async (argv) => {
+      argvLog.push(argv);
+      if (argv.includes("rev-parse") && argv.includes("--git-dir")) {
+        return spawnOk(".git\n");
+      }
+      if (argv.includes("rebase") && !argv.includes("--abort")) {
+        return spawnOk("");
+      }
+      if (argv.includes("rev-parse") && argv.includes("HEAD")) {
+        return spawnFail("fatal: ambiguous argument 'HEAD': unknown revision", 128);
+      }
+      return spawnOk("");
+    };
+
+    const ctx = makeCtx({ git: tracingGit });
+    delete (ctx as Partial<IntraTeamRebaseContext>).now;
+
+    await expect(performRebase(ctx)).rejects.toThrow(
+      /perform-rebase: 'git rev-parse HEAD' failed after clean rebase \(exit 128\): fatal: ambiguous argument 'HEAD': unknown revision/,
+    );
+    expect(repo.getState(MEMBER_BRANCH)?.state).toBe("rebasing");
+    expect(argvLog).toEqual([
+      ["-C", WT_PATH, "rev-parse", "--git-dir"],
+      ["-C", WT_PATH, "rebase", BASE],
+      ["-C", WT_PATH, "rev-parse", "HEAD"],
+    ]);
+  });
+
   test("default `by` is 'cron'", async () => {
     seedRebasing();
     const ctx = makeCtx();
