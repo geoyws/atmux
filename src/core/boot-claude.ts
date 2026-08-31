@@ -111,15 +111,30 @@ export function renderBootPrompt(team: string, member: string, briefPath?: strin
   return `${base} Your exact cooperative bot contract is at ${briefPath}; read and obey it before accepting work.`;
 }
 
+/** Claude Code's first-run folder-trust modal. Match one contiguous
+ *  current modal block at the tail of the capture only, allowing
+ *  only the known blank-line spacing that Claude renders between
+ *  rows. This intentionally rejects stale scrollback, near-matches,
+ *  and generic permission prompts. */
+const FOLDER_TRUST_MODAL_RE =
+  /(?:^|[\r\n])[ \t]*Quick safety check: Is this a project you created or one you trust\?[ \t]*(?:\r?\n[ \t]*){1,2}[ \t]*❯[ \t]*1\.[ \t]*Yes, I trust this folder[ \t]*(?:\r?\n[ \t]*){1,2}[ \t]*2\.[ \t]*No, exit[ \t]*(?:\r?\n[ \t]*){1,2}[ \t]*Enter to confirm · Esc to cancel[ \t]*$/;
+
+export function isClaudeCodeFolderTrustModal(captured: string): boolean {
+  return FOLDER_TRUST_MODAL_RE.test(captured.trimEnd());
+}
+
 /** TUI-ready detection. Matches either:
- *   - `❯` — claude's compose-box prompt glyph (rendered once the
- *     interactive input row is up)
- *   - `tokens` — the bottom-frame token-count footer (rendered
- *     after the first turn produces tokens; covers the
- *     already-booted case)
- *  Either match is sufficient evidence the TUI is past welcome
- *  rendering and ready to receive input. */
-const TUI_READY_RE = /❯|tokens/;
+ *   - the bare compose-box prompt row (`❯`) once the interactive
+ *     input row is up
+ *   - the border prompt row (`│ ❯` / `│ >`)
+ *   - the bottom-frame token-count footer (`↑ ... tokens`, `tok ...`,
+ *     or `tokens · N%`) after the first turn produces tokens; covers
+ *     the already-booted case
+ *
+ *  The trust-folder modal's `❯ 1. Yes, I trust this folder` line is
+ *  not readiness. */
+const TUI_READY_RE =
+  /^(?:[ \t]*(?:[│>][ \t]*)?❯[ \t]*$|[ \t]*│[ \t]*[>❯][ \t]*$|[ \t]*↑[^\n]*tokens[^\n]*$|[ \t]*tok[ \t]+\d+(?:\.\d+)?k\/\d[^\n]*$|[ \t]*tokens[ \t]*·[ \t]*\d+%[^\n]*$)/m;
 
 /** Sentinel: claude has produced tokens (the `↑ Nk ↓ Mk tokens`
  *  status footer where N+M > 0). Captures the "boot prompt
@@ -181,7 +196,12 @@ export interface BootResult {
    *  retry-fail. */
   attempts: number;
   /** Populated on `failed` to name the failure mode. */
-  reason?: "tui-not-ready" | "tokens-never-moved" | "capture-error" | "submit-not-verified";
+  reason?:
+    | "tui-not-ready"
+    | "tokens-never-moved"
+    | "capture-error"
+    | "submit-not-verified"
+    | "folder-trust-not-cleared";
 }
 
 export interface BootClaudeOpts {
@@ -225,6 +245,8 @@ export interface BootClaudeOpts {
   submitVerifyRetries?: number;
   /** Submit-verify poll interval. Default 250ms. */
   submitVerifyPollIntervalMs?: number;
+  /** Submit-verify lock-dir override (test injection). */
+  paneLockDir?: string;
   /** Escalation-log append (test injection — production wires
    *  `appendFile`). Default fires the safe-send.ts built-in. */
   appendLog?: AppendLogFn;
@@ -305,9 +327,14 @@ async function pollUntil(
  *      "double boot prompt" double-submit risk flagged by the
  *      reviewer pre-flag.
  *
- *   2. Poll capture-pane for TUI ready state (`❯` or `tokens`
- *      glyph) up to `readyTimeoutMs`. If never ready, return
- *      `failed` with `tui-not-ready`. No boot prompt sent.
+ *   2. Poll capture-pane for TUI ready state (`❯` prompt row or
+ *      `tokens` footer) up to `readyTimeoutMs`. If the exact
+ *      folder-trust modal appears, accept the preselected trust row
+ *      once with bare Enter, then keep waiting until the real
+ *      composer is ready. If that modal stays up after the single
+ *      acceptance, return `failed` with `folder-trust-not-cleared`.
+ *      If never ready, return `failed` with `tui-not-ready`. No boot
+ *      prompt sent.
  *
  *   3. Send boot prompt via send-keys with enter:true. Short
  *      single-line payload — no paste-buffer involvement, no
@@ -370,17 +397,98 @@ export async function bootClaudeMember(opts: BootClaudeOpts): Promise<BootResult
   }
 
   // (2) Readiness wait for the TUI to render.
-  const ready = await pollUntil(isTuiReady, {
-    tmux: opts.tmux,
-    target: opts.paneTargetString,
-    intervalMs: readyInterval,
-    timeoutMs: readyTimeout,
-    sleep,
-    now,
-  });
-  if (!ready.found) {
-    if (ready.error !== undefined) {
+  const readyDeadline = now() + readyTimeout;
+  let readyCapture = "";
+  let readyError: string | undefined;
+  let trustEnterIssued = false;
+
+  const acceptTrustModalOnce = async (
+    timeoutMs: number,
+  ): Promise<
+    | { status: "cleared" | "raced-away" | "timed-out"; finalCapture: string }
+    | { status: "capture-error"; finalCapture?: string }
+  > => {
+    const acceptOpts: Parameters<typeof safeSendKeysWithVerify>[0] = {
+      target: opts.paneTargetString,
+      keys: "Enter",
+      capture: (t) => opts.tmux.pane.capturePane({ target: t, start: -40 }),
+      sendKeys: async (t, keys) => {
+        const liveCapture = await opts.tmux.pane.capturePane({ target: t, start: -40 });
+        if (!isClaudeCodeFolderTrustModal(liveCapture)) {
+          return;
+        }
+        await opts.tmux.pane.sendKeys({ target: opts.sendTarget, keys, enter: false });
+      },
+      preSendVerifier: (capture) => isClaudeCodeFolderTrustModal(capture),
+      expectVerifier: (capture) => !isClaudeCodeFolderTrustModal(capture),
+      timeoutMs,
+      retries: 0,
+      pollIntervalMs: readyInterval,
+      onFail: "escalate",
+      sleep,
+      now,
+    };
+    if (opts.paneLockDir !== undefined) acceptOpts.paneLockDir = opts.paneLockDir;
+    if (opts.home !== undefined) acceptOpts.home = opts.home;
+    if (opts.appendLog !== undefined) acceptOpts.appendLog = opts.appendLog;
+    try {
+      const result = await safeSendKeysWithVerify(acceptOpts);
+      if (result.success) {
+        return { status: "cleared", finalCapture: result.finalCapture };
+      }
+      if (result.attempts === 0 && !isClaudeCodeFolderTrustModal(result.finalCapture)) {
+        return { status: "raced-away", finalCapture: result.finalCapture };
+      }
+      return { status: "timed-out", finalCapture: result.finalCapture };
+    } catch {
+      return { status: "capture-error" };
+    }
+  };
+
+  while (now() < readyDeadline) {
+    try {
+      readyCapture = await opts.tmux.pane.capturePane({
+        target: opts.paneTargetString,
+        start: -40,
+      });
+    } catch (e) {
+      readyError = e instanceof Error ? e.message : String(e);
+      break;
+    }
+
+    if (isClaudeCodeFolderTrustModal(readyCapture)) {
+      if (!trustEnterIssued) {
+        trustEnterIssued = true;
+        const remainingTrustMs = Math.max(0, readyDeadline - now());
+        const trustAccept = await acceptTrustModalOnce(remainingTrustMs);
+        if (trustAccept.status === "capture-error") {
+          return { status: "failed", attempts: 0, reason: "capture-error" };
+        }
+        readyCapture = trustAccept.finalCapture;
+        if (isTuiReady(readyCapture)) {
+          readyError = undefined;
+          break;
+        }
+        if (trustAccept.status === "timed-out" && isClaudeCodeFolderTrustModal(readyCapture)) {
+          return { status: "failed", attempts: 0, reason: "folder-trust-not-cleared" };
+        }
+      }
+      continue;
+    }
+
+    if (isTuiReady(readyCapture)) {
+      readyError = undefined;
+      break;
+    }
+
+    await sleep(readyInterval);
+  }
+  if (!isTuiReady(readyCapture)) {
+    if (readyError !== undefined) {
       return { status: "failed", attempts: 0, reason: "capture-error" };
+    }
+    if (isClaudeCodeFolderTrustModal(readyCapture)) {
+      return { status: "failed", attempts: 0, reason: "folder-trust-not-cleared" };
     }
     return { status: "failed", attempts: 0, reason: "tui-not-ready" };
   }
@@ -450,6 +558,7 @@ export async function bootClaudeMember(opts: BootClaudeOpts): Promise<BootResult
     };
     if (opts.appendLog !== undefined) submitVerifyOpts.appendLog = opts.appendLog;
     if (opts.home !== undefined) submitVerifyOpts.home = opts.home;
+    if (opts.paneLockDir !== undefined) submitVerifyOpts.paneLockDir = opts.paneLockDir;
     let submitVerify: Awaited<ReturnType<typeof safeSendKeysWithVerify>>;
     try {
       submitVerify = await safeSendKeysWithVerify(submitVerifyOpts);
@@ -523,7 +632,9 @@ export function renderBootFailureNotice(args: {
           ? "tmux capture-pane / send-keys error"
           : args.result.reason === "submit-not-verified"
             ? "boot prompt pasted but C-m submit was eaten (composer still loaded) — try `atmux send` (uses verified-send-keys) before another rotate"
-            : "unknown failure";
+            : args.result.reason === "folder-trust-not-cleared"
+              ? "Claude Code folder-trust modal stayed open after one Enter"
+              : "unknown failure";
   return (
     `## 🚨 [boot-failure] · \`${args.team}\` · \`${args.member}\` · ${args.nowIso}\n\n` +
     `**🔴 Stalled** — member pane undead after ${args.result.attempts} boot attempts: ${reasonLabel}.\n\n` +

@@ -15,6 +15,7 @@ import { describe, expect, test } from "bun:test";
 import type { SendTarget, TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import {
   bootClaudeMember,
+  isClaudeCodeFolderTrustModal,
   isTuiReady,
   renderBootFailureNotice,
   renderBootPrompt,
@@ -26,9 +27,11 @@ import {
 // ---------- Fake-tmux helper ----------
 
 interface CallRecord {
-  kind: "send" | "capture";
+  kind: "send" | "capture" | "key";
   payload?: string;
-  target?: string;
+  keys?: string;
+  enter?: boolean;
+  target?: string | SendTarget;
 }
 
 /** Build a stub TmuxNamespace that satisfies the bootClaudeMember
@@ -44,6 +47,10 @@ function fakeTmux(opts: {
   captureThrowOn?: number;
   /** If set, sendKeys throws on the Nth call (1-indexed). */
   sendThrowOn?: number;
+  /** If set, loadBuffer throws on the Nth call (1-indexed). */
+  bufferLoadThrowOn?: number;
+  /** If set, pasteBuffer throws on the Nth call (1-indexed). */
+  bufferPasteThrowOn?: number;
 }): {
   tmux: TmuxNamespace;
   calls: CallRecord[];
@@ -53,6 +60,8 @@ function fakeTmux(opts: {
   const calls: CallRecord[] = [];
   let captureCallCount = 0;
   let sendCallCount = 0;
+  let bufferLoadCallCount = 0;
+  let bufferPasteCallCount = 0;
   let captureIdx = 0;
 
   const tmux = {
@@ -68,16 +77,16 @@ function fakeTmux(opts: {
         captureIdx += 1;
         return opts.captures[i] ?? "";
       },
-      async sendKeys(callOpts: { keys: string; target: SendTarget }) {
-        // ADR-138 T3b3 (t-06547e2d): boot-prompt path now goes via
-        // pasteAndSubmit. The prompt text emits through
-        // buffer.loadBuffer (recorded by the buffer mock below);
-        // the C-m submit emits through THIS pane.sendKeys mock. We
-        // do NOT log C-m to `calls` — it's implementation detail.
-        // sendThrowOn still fires on the C-m send to preserve the
-        // verb-failure-injection semantics existing tests depend on
-        // (a throw at the submit step is observable as the send
-        // failing, same as raw send-keys throwing pre-T3b3).
+      async sendKeys(callOpts: { keys: string; target: SendTarget; enter?: boolean }) {
+        const record: CallRecord = {
+          kind: "key",
+          keys: callOpts.keys,
+          target: callOpts.target,
+        };
+        if (callOpts.enter !== undefined) {
+          record.enter = callOpts.enter;
+        }
+        calls.push(record);
         sendCallCount += 1;
         if (opts.sendThrowOn !== undefined && sendCallCount === opts.sendThrowOn) {
           throw new Error("send-keys: process exited 1");
@@ -96,8 +105,23 @@ function fakeTmux(opts: {
       // mechanism differs (paste vs raw type).
       async loadBuffer(callOpts: { name: string; data: string }) {
         calls.push({ kind: "send", payload: callOpts.data });
+        bufferLoadCallCount += 1;
+        if (
+          opts.bufferLoadThrowOn !== undefined &&
+          bufferLoadCallCount === opts.bufferLoadThrowOn
+        ) {
+          throw new Error("load-buffer: process exited 1");
+        }
       },
-      async pasteBuffer(_o: { name?: string; target: SendTarget; deleteAfter?: boolean }) {},
+      async pasteBuffer(_o: { name?: string; target: SendTarget; deleteAfter?: boolean }) {
+        bufferPasteCallCount += 1;
+        if (
+          opts.bufferPasteThrowOn !== undefined &&
+          bufferPasteCallCount === opts.bufferPasteThrowOn
+        ) {
+          throw new Error("paste-buffer: process exited 1");
+        }
+      },
     },
   } as unknown as TmuxNamespace;
 
@@ -115,6 +139,8 @@ const sendTarget: SendTarget = {
   team: "atmux",
   target: "atmux:fe-1",
 };
+
+const testPaneLockDir = "/private/tmp/atmux-pane-locks";
 
 const noopSleep = async (_ms: number) => {};
 
@@ -172,11 +198,76 @@ describe("isTuiReady", () => {
   test("matches `tokens` text (status footer)", () => {
     expect(isTuiReady("↑ 5k ↓ 2k tokens · 12%")).toBe(true);
   });
+  test("MISS: trust-folder modal with `❯ 1. Yes, I trust this folder` is not ready", () => {
+    const modal = [
+      "Quick safety check: Is this a project you created or one you trust?",
+      "",
+      " ❯ 1. Yes, I trust this folder",
+      "   2. No, exit",
+      "",
+      " Enter to confirm · Esc to cancel",
+    ].join("\n");
+    expect(isTuiReady(modal)).toBe(false);
+  });
   test("MISS: welcome banner with no prompt yet → false", () => {
     expect(isTuiReady("✻ Welcome to Claude\n\n  /help for help")).toBe(false);
   });
   test("MISS: empty string → false", () => {
     expect(isTuiReady("")).toBe(false);
+  });
+});
+
+// ---------- isClaudeCodeFolderTrustModal ----------
+
+describe("isClaudeCodeFolderTrustModal", () => {
+  test("matches the exact first-run trust modal and rejects near-matches", () => {
+    const exact = [
+      "Quick safety check: Is this a project you created or one you trust?",
+      "",
+      " ❯ 1. Yes, I trust this folder",
+      "   2. No, exit",
+      "",
+      " Enter to confirm · Esc to cancel",
+    ].join("\n");
+    expect(isClaudeCodeFolderTrustModal(exact)).toBe(true);
+    expect(isClaudeCodeFolderTrustModal(`${exact}\n\n \n`)).toBe(true);
+
+    const nearMatch = [
+      "Quick safety check: Is this a project you created or one you trust?",
+      "",
+      " ❯ 1. Yes, I trust this folder",
+      "   2. No, exit",
+      "",
+      " Press Enter to confirm · Esc to cancel",
+    ].join("\n");
+    expect(isClaudeCodeFolderTrustModal(nearMatch)).toBe(false);
+
+    const genericPrompt = "Do you want Claude to run this command?\nDo you want to continue?";
+    expect(isClaudeCodeFolderTrustModal(genericPrompt)).toBe(false);
+
+    const staleMix = [
+      "Quick safety check: Is this a project you created or one you trust?",
+      "",
+      " ❯ 1. Yes, I trust this folder",
+      "",
+      "This is old scrollback, not the live modal",
+      "   2. No, exit",
+      "",
+      " Enter to confirm · Esc to cancel",
+    ].join("\n");
+    expect(isClaudeCodeFolderTrustModal(staleMix)).toBe(false);
+
+    const staleThenComposer = [
+      "Quick safety check: Is this a project you created or one you trust?",
+      "",
+      " ❯ 1. Yes, I trust this folder",
+      "   2. No, exit",
+      "",
+      " Enter to confirm · Esc to cancel",
+      "",
+      "❯ ",
+    ].join("\n");
+    expect(isClaudeCodeFolderTrustModal(staleThenComposer)).toBe(false);
   });
 });
 
@@ -267,6 +358,7 @@ describe("bootClaudeMember — pre-send sentinel", () => {
       team: "atmux",
       member: "fe-1",
       sleep: noopSleep,
+      paneLockDir: testPaneLockDir,
       now: fakeClock(),
     });
     expect(r.status).toBe("already-booted");
@@ -291,6 +383,7 @@ describe("bootClaudeMember — readiness poll", () => {
       readyTimeoutMs: 500,
       readyPollIntervalMs: 100,
       sleep: noopSleep,
+      paneLockDir: testPaneLockDir,
       now: fakeClock({ step: 100 }),
     });
     expect(r.status).toBe("failed");
@@ -319,13 +412,410 @@ describe("bootClaudeMember — readiness poll", () => {
       postBootTimeoutMs: 5_000,
       postBootPollIntervalMs: 100,
       sleep: noopSleep,
+      paneLockDir: testPaneLockDir,
       now: fakeClock({ step: 100 }),
     });
     expect(r.status).toBe("booted");
     expect(r.attempts).toBe(1);
     const sends = calls.filter((c) => c.kind === "send");
     expect(sends).toHaveLength(1);
-    expect(sends[0]!.payload).toBe(renderBootPrompt("atmux", "fe-1"));
+    expect(sends[0]?.payload).toBe(renderBootPrompt("atmux", "fe-1"));
+  });
+
+  test("exact trust modal gets one bare-Enter acceptance, then boot proceeds only after the composer is ready", async () => {
+    const exactModal = [
+      "Quick safety check: Is this a project you created or one you trust?",
+      "",
+      " ❯ 1. Yes, I trust this folder",
+      "   2. No, exit",
+      "",
+      " Enter to confirm · Esc to cancel",
+    ].join("\n");
+    const { tmux, calls, getSendCallCount } = fakeTmux({
+      captures: [
+        exactModal, // initial sentinel — modal is not booted
+        exactModal, // readiness poll #1 — exact modal is accepted once with bare Enter
+        exactModal, // trust-accept preCapture
+        exactModal, // trust-accept callback recapture — still modal, proceed with Enter
+        "❯ ", // trust-accept verify poll #1 — modal cleared
+        "❯ ", // readiness poll #2 — real composer ready
+        "❯ pre-capture for safeSend", // safeSend preCapture
+        "❯ ", // safeSend verify poll — composer clears
+        "↑ 3k tokens\n❯ ", // post-boot poll — tokens moved
+      ],
+    });
+    const r = await bootClaudeMember({
+      tmux,
+      sendTarget,
+      paneTargetString: "atmux:fe-1",
+      team: "atmux",
+      member: "fe-1",
+      readyTimeoutMs: 5_000,
+      readyPollIntervalMs: 100,
+      submitVerifyTimeoutMs: 500,
+      submitVerifyPollIntervalMs: 50,
+      submitVerifyRetries: 0,
+      postBootTimeoutMs: 500,
+      postBootPollIntervalMs: 100,
+      maxAttempts: 1,
+      sleep: noopSleep,
+      paneLockDir: testPaneLockDir,
+      now: fakeClock({ step: 25 }),
+      appendLog: async () => {},
+    });
+    expect(r.status).toBe("booted");
+    expect(r.attempts).toBe(1);
+    expect(getSendCallCount()).toBe(2); // trust-modal Enter + boot-prompt C-m
+    const keyEvents = calls.filter((c) => c.kind === "key");
+    expect(keyEvents).toHaveLength(2);
+    expect(keyEvents[0]?.keys).toBe("Enter");
+    expect(keyEvents[0]?.enter).toBe(false);
+    expect(keyEvents[1]?.keys).toBe("C-m");
+    expect(keyEvents[1]?.enter).toBe(false);
+    const sends = calls.filter((c) => c.kind === "send");
+    expect(sends).toHaveLength(1);
+    expect(sends[0]?.payload).toBe(renderBootPrompt("atmux", "fe-1"));
+  });
+
+  test("final trust verify poll can clear to composer and bootstrap continues without an extra outer readiness capture", async () => {
+    const exactModal = [
+      "Quick safety check: Is this a project you created or one you trust?",
+      "",
+      " ❯ 1. Yes, I trust this folder",
+      "   2. No, exit",
+      "",
+      " Enter to confirm · Esc to cancel",
+    ].join("\n");
+    const { tmux, calls, getSendCallCount } = fakeTmux({
+      captures: [
+        exactModal, // initial sentinel — modal is not booted
+        exactModal, // readiness poll #1 — exact modal is accepted
+        exactModal, // trust-accept preCapture
+        exactModal, // trust-accept callback recapture — still modal, send Enter
+        "❯ ", // trust-accept verify poll — composer clear on the final allowed poll
+        "❯ pre-capture for safeSend", // boot prompt safeSend preCapture
+        "❯ ", // boot prompt safeSend verify poll — composer clears
+        "↑ 3k tokens\n❯ ", // post-boot poll — tokens moved
+      ],
+    });
+    const r = await bootClaudeMember({
+      tmux,
+      sendTarget,
+      paneTargetString: "atmux:fe-1",
+      team: "atmux",
+      member: "fe-1",
+      readyTimeoutMs: 1_000,
+      readyPollIntervalMs: 25,
+      submitVerifyTimeoutMs: 500,
+      submitVerifyPollIntervalMs: 50,
+      submitVerifyRetries: 0,
+      postBootTimeoutMs: 500,
+      postBootPollIntervalMs: 100,
+      maxAttempts: 1,
+      sleep: noopSleep,
+      paneLockDir: testPaneLockDir,
+      now: fakeClock({ step: 100 }),
+      appendLog: async () => {},
+    });
+    expect(r.status).toBe("booted");
+    expect(r.attempts).toBe(1);
+    expect(r.reason).toBeUndefined();
+    expect(getSendCallCount()).toBe(2);
+    const keyEvents = calls.filter((c) => c.kind === "key");
+    expect(keyEvents).toHaveLength(2);
+    expect(keyEvents[0]?.keys).toBe("Enter");
+    expect(keyEvents[1]?.keys).toBe("C-m");
+    expect(calls.filter((c) => c.kind === "capture")).toHaveLength(8);
+    expect(calls.filter((c) => c.kind === "send")).toHaveLength(1);
+  });
+
+  test("trust modal that vanishes before acceptance is raced-away and sends no Enter", async () => {
+    const exactModal = [
+      "Quick safety check: Is this a project you created or one you trust?",
+      "",
+      " ❯ 1. Yes, I trust this folder",
+      "   2. No, exit",
+      "",
+      " Enter to confirm · Esc to cancel",
+    ].join("\n");
+    const { tmux, calls, getSendCallCount } = fakeTmux({
+      captures: [
+        exactModal, // initial sentinel — not already booted
+        exactModal, // readiness poll #1 — exact modal is visible
+        "❯ ", // trust-accept preCapture — modal vanished before Enter
+        "❯ ", // trust-accept callback recapture — composer already clear, so no Enter
+        "❯ ", // readiness poll #2 — composer now ready
+        "❯ pre-capture for safeSend", // safeSend preCapture
+        "❯ ", // safeSend verify poll — composer clears
+        "↑ 2k tokens\n❯ ", // post-boot poll — tokens moved
+      ],
+    });
+    const r = await bootClaudeMember({
+      tmux,
+      sendTarget,
+      paneTargetString: "atmux:fe-1",
+      team: "atmux",
+      member: "fe-1",
+      readyTimeoutMs: 2_000,
+      readyPollIntervalMs: 100,
+      submitVerifyTimeoutMs: 500,
+      submitVerifyPollIntervalMs: 50,
+      submitVerifyRetries: 0,
+      postBootTimeoutMs: 500,
+      postBootPollIntervalMs: 100,
+      maxAttempts: 1,
+      sleep: noopSleep,
+      paneLockDir: testPaneLockDir,
+      now: fakeClock({ step: 25 }),
+      appendLog: async () => {},
+    });
+    expect(r.status).toBe("booted");
+    expect(r.attempts).toBe(1);
+    expect(getSendCallCount()).toBe(1);
+    const keyEvents = calls.filter((c) => c.kind === "key");
+    expect(keyEvents).toHaveLength(1);
+    expect(keyEvents[0]?.keys).toBe("C-m");
+    expect(keyEvents[0]?.enter).toBe(false);
+    expect(calls.filter((c) => c.kind === "send")).toHaveLength(1);
+  });
+
+  test("slow repeated trust modal after one acceptance expires to folder-trust-not-cleared without a second Enter", async () => {
+    const exactModal = [
+      "Quick safety check: Is this a project you created or one you trust?",
+      "",
+      " ❯ 1. Yes, I trust this folder",
+      "   2. No, exit",
+      "",
+      " Enter to confirm · Esc to cancel",
+    ].join("\n");
+    const { tmux, calls, getSendCallCount } = fakeTmux({
+      captures: [
+        exactModal,
+        exactModal,
+        exactModal,
+        exactModal,
+        exactModal,
+        exactModal,
+        exactModal,
+      ],
+    });
+    const r = await bootClaudeMember({
+      tmux,
+      sendTarget,
+      paneTargetString: "atmux:fe-1",
+      team: "atmux",
+      member: "fe-1",
+      readyTimeoutMs: 400,
+      readyPollIntervalMs: 100,
+      sleep: noopSleep,
+      paneLockDir: testPaneLockDir,
+      now: fakeClock({ step: 100 }),
+    });
+    expect(r.status).toBe("failed");
+    expect(r.reason).toBe("folder-trust-not-cleared");
+    expect(r.attempts).toBe(0);
+    expect(getSendCallCount()).toBe(1);
+    const keyEvents = calls.filter((c) => c.kind === "key");
+    expect(keyEvents).toHaveLength(1);
+    expect(keyEvents[0]?.keys).toBe("Enter");
+    expect(keyEvents[0]?.enter).toBe(false);
+    expect(calls.filter((c) => c.kind === "send")).toHaveLength(0);
+  });
+
+  test("exact trust modal that races away once but returns until deadline fails closed without a second Enter", async () => {
+    const exactModal = [
+      "Quick safety check: Is this a project you created or one you trust?",
+      "",
+      " ❯ 1. Yes, I trust this folder",
+      "   2. No, exit",
+      "",
+      " Enter to confirm · Esc to cancel",
+    ].join("\n");
+    const { tmux, calls, getSendCallCount } = fakeTmux({
+      captures: [
+        exactModal, // initial sentinel — not already booted
+        exactModal, // readiness poll #1 — exact modal is visible
+        exactModal, // trust-accept preCapture — exact modal still visible
+        "❯ ", // trust-accept callback recapture — modal vanished before Enter
+        "✻ Welcome to Claude Code", // trust-accept verify poll — not ready, not exact modal
+        exactModal, // readiness poll #2 — modal returned after the boundary
+        exactModal, // readiness poll #3 — modal still present
+        exactModal, // readiness poll #4 — modal still present at deadline
+      ],
+    });
+    const r = await bootClaudeMember({
+      tmux,
+      sendTarget,
+      paneTargetString: "atmux:fe-1",
+      team: "atmux",
+      member: "fe-1",
+      readyTimeoutMs: 1_000,
+      readyPollIntervalMs: 25,
+      sleep: noopSleep,
+      paneLockDir: testPaneLockDir,
+      now: fakeClock({ step: 25 }),
+    });
+    expect(r.status).toBe("failed");
+    expect(r.reason).toBe("folder-trust-not-cleared");
+    expect(r.attempts).toBe(0);
+    expect(getSendCallCount()).toBe(0);
+    expect(calls.filter((c) => c.kind === "key")).toHaveLength(0);
+    expect(calls.filter((c) => c.kind === "send")).toHaveLength(0);
+  });
+
+  test("boot-paste load-buffer failure surfaces as capture-error before any C-m is sent", async () => {
+    const { tmux, calls, getSendCallCount } = fakeTmux({
+      captures: ["❯ "], // readiness ready
+      bufferLoadThrowOn: 1,
+    });
+    const r = await bootClaudeMember({
+      tmux,
+      sendTarget,
+      paneTargetString: "atmux:fe-1",
+      team: "atmux",
+      member: "fe-1",
+      readyTimeoutMs: 500,
+      readyPollIntervalMs: 100,
+      postBootTimeoutMs: 500,
+      postBootPollIntervalMs: 100,
+      maxAttempts: 1,
+      sleep: noopSleep,
+      paneLockDir: testPaneLockDir,
+      now: fakeClock({ step: 25 }),
+    });
+    expect(r.status).toBe("failed");
+    expect(r.reason).toBe("capture-error");
+    expect(r.attempts).toBe(1);
+    expect(getSendCallCount()).toBe(0);
+    expect(calls.filter((c) => c.kind === "key")).toHaveLength(0);
+  });
+
+  test("boot-paste load-buffer failure on attempt 1 retries and succeeds on attempt 2", async () => {
+    const { tmux, calls, getSendCallCount } = fakeTmux({
+      captures: [
+        "❯ ", // readiness ready
+        "❯ pre-capture for safeSend", // attempt 2 loadBuffer success, safeSend preCapture
+        "❯ ", // safeSend verify poll — composer clears
+        "↑ 2k tokens\n❯ ", // post-boot poll — tokens moved
+      ],
+      bufferLoadThrowOn: 1,
+    });
+    const r = await bootClaudeMember({
+      tmux,
+      sendTarget,
+      paneTargetString: "atmux:fe-1",
+      team: "atmux",
+      member: "fe-1",
+      readyTimeoutMs: 500,
+      readyPollIntervalMs: 100,
+      postBootTimeoutMs: 500,
+      postBootPollIntervalMs: 100,
+      maxAttempts: 2,
+      sleep: noopSleep,
+      paneLockDir: testPaneLockDir,
+      now: fakeClock({ step: 25 }),
+    });
+    expect(r.status).toBe("booted");
+    expect(r.attempts).toBe(2);
+    expect(getSendCallCount()).toBe(1);
+    expect(calls.filter((c) => c.kind === "key")).toHaveLength(1);
+    expect(calls.filter((c) => c.kind === "send")).toHaveLength(2);
+  });
+
+  test("near-match or generic permission prompt is not auto-accepted", async () => {
+    const nearMatch = [
+      "Quick safety check: Is this a project you created or one you trust?",
+      "",
+      " ❯ 1. Yes, I trust this folder",
+      "   2. No, exit",
+      "",
+      " Press Enter to confirm · Esc to cancel",
+    ].join("\n");
+    const { tmux, getSendCallCount } = fakeTmux({
+      captures: [nearMatch],
+    });
+    const r = await bootClaudeMember({
+      tmux,
+      sendTarget,
+      paneTargetString: "atmux:fe-1",
+      team: "atmux",
+      member: "fe-1",
+      readyTimeoutMs: 200,
+      readyPollIntervalMs: 50,
+      sleep: noopSleep,
+      paneLockDir: testPaneLockDir,
+      now: fakeClock({ step: 50 }),
+    });
+    expect(r.status).toBe("failed");
+    expect(r.reason).toBe("tui-not-ready");
+    expect(getSendCallCount()).toBe(0);
+  });
+
+  test("trust-accept send error is classified as capture-error and still uses bare Enter exactly once", async () => {
+    const exactModal = [
+      "Quick safety check: Is this a project you created or one you trust?",
+      "",
+      " ❯ 1. Yes, I trust this folder",
+      "   2. No, exit",
+      "",
+      " Enter to confirm · Esc to cancel",
+    ].join("\n");
+    const { tmux, calls, getSendCallCount } = fakeTmux({
+      captures: [exactModal, exactModal],
+      sendThrowOn: 1,
+    });
+    const r = await bootClaudeMember({
+      tmux,
+      sendTarget,
+      paneTargetString: "atmux:fe-1",
+      team: "atmux",
+      member: "fe-1",
+      readyTimeoutMs: 500,
+      readyPollIntervalMs: 100,
+      sleep: noopSleep,
+      paneLockDir: testPaneLockDir,
+      now: fakeClock({ step: 100 }),
+    });
+    expect(r.status).toBe("failed");
+    expect(r.reason).toBe("capture-error");
+    expect(getSendCallCount()).toBe(1);
+    const keyEvents = calls.filter((c) => c.kind === "key");
+    expect(keyEvents).toHaveLength(1);
+    expect(keyEvents[0]?.keys).toBe("Enter");
+    expect(keyEvents[0]?.enter).toBe(false);
+    expect(calls.filter((c) => c.kind === "send")).toHaveLength(0);
+  });
+
+  test("trust-accept capture error is classified as capture-error before any key is sent", async () => {
+    const exactModal = [
+      "Quick safety check: Is this a project you created or one you trust?",
+      "",
+      " ❯ 1. Yes, I trust this folder",
+      "   2. No, exit",
+      "",
+      " Enter to confirm · Esc to cancel",
+    ].join("\n");
+    const { tmux, calls, getSendCallCount } = fakeTmux({
+      captures: [exactModal, exactModal, exactModal],
+      captureThrowOn: 4,
+    });
+    const r = await bootClaudeMember({
+      tmux,
+      sendTarget,
+      paneTargetString: "atmux:fe-1",
+      team: "atmux",
+      member: "fe-1",
+      readyTimeoutMs: 500,
+      readyPollIntervalMs: 100,
+      sleep: noopSleep,
+      paneLockDir: testPaneLockDir,
+      now: fakeClock({ step: 100 }),
+    });
+    expect(r.status).toBe("failed");
+    expect(r.reason).toBe("capture-error");
+    expect(getSendCallCount()).toBe(0);
+    expect(calls.filter((c) => c.kind === "key")).toHaveLength(0);
+    expect(calls.filter((c) => c.kind === "send")).toHaveLength(0);
   });
 });
 
@@ -366,6 +856,7 @@ describe("bootClaudeMember — retry", () => {
       postBootPollIntervalMs: 100,
       maxAttempts: 2,
       sleep: noopSleep,
+      paneLockDir: testPaneLockDir,
       now: fakeClock({ step: 100 }),
     });
     expect(r.status).toBe("booted");
@@ -374,8 +865,8 @@ describe("bootClaudeMember — retry", () => {
     // (loadBuffer records as "send"-shaped entry per fakeTmux contract).
     const sends = calls.filter((c) => c.kind === "send");
     expect(sends).toHaveLength(2);
-    expect(sends[0]!.payload).toBe(renderBootPrompt("atmux", "fe-1"));
-    expect(sends[1]!.payload).toBe(renderBootPrompt("atmux", "fe-1"));
+    expect(sends[0]?.payload).toBe(renderBootPrompt("atmux", "fe-1"));
+    expect(sends[1]?.payload).toBe(renderBootPrompt("atmux", "fe-1"));
   });
 
   test("both attempts fail → failed with tokens-never-moved, attempts=maxAttempts", async () => {
@@ -398,6 +889,7 @@ describe("bootClaudeMember — retry", () => {
       postBootPollIntervalMs: 100,
       maxAttempts: 2,
       sleep: noopSleep,
+      paneLockDir: testPaneLockDir,
       now: fakeClock({ step: 100 }),
     });
     expect(r.status).toBe("failed");
@@ -444,6 +936,7 @@ describe("bootClaudeMember — submit-verify path (t-1b45d565)", () => {
       postBootPollIntervalMs: 1_000,
       maxAttempts: 2,
       sleep: noopSleep,
+      paneLockDir: testPaneLockDir,
       now: fakeClock({ step: 50 }),
       // Suppress escalation-log write (test injection — no disk IO).
       appendLog: async () => {},
@@ -483,6 +976,7 @@ describe("bootClaudeMember — submit-verify path (t-1b45d565)", () => {
       postBootPollIntervalMs: 100,
       maxAttempts: 2,
       sleep: noopSleep,
+      paneLockDir: testPaneLockDir,
       now: fakeClock({ step: 25 }),
       appendLog: async () => {},
     });
@@ -516,6 +1010,7 @@ describe("bootClaudeMember — send-keys verb-failure", () => {
       postBootTimeoutMs: 500,
       maxAttempts: 2,
       sleep: noopSleep,
+      paneLockDir: testPaneLockDir,
       now: fakeClock({ step: 100 }),
     });
     expect(r.status).toBe("booted");
@@ -530,10 +1025,7 @@ describe("bootClaudeMember — capture error", () => {
   test("capture throws during readiness wait → failed with capture-error", async () => {
     const { tmux } = fakeTmux({
       captures: [""],
-      captureThrowOn: 1, // first capturePane throws (initial sentinel
-      // succeeds — wait, throw on call 1 = initial sentinel itself).
-      // Initial sentinel error is swallowed (degrade-to-poll); the
-      // readiness loop's first capture is the next throw target.
+      captureThrowOn: 2, // initial sentinel succeeds; readiness-loop capture throws.
     });
     const r = await bootClaudeMember({
       tmux,
@@ -544,20 +1036,12 @@ describe("bootClaudeMember — capture error", () => {
       readyTimeoutMs: 500,
       readyPollIntervalMs: 100,
       sleep: noopSleep,
+      paneLockDir: testPaneLockDir,
       now: fakeClock({ step: 100 }),
     });
-    // Initial sentinel throw is swallowed → falls to readiness loop
-    // which DOES report capture-error on first capture-pane call.
-    // But the readiness loop runs AFTER initial-sentinel and shares
-    // the throw counter — second capture-pane (loop call 1) succeeds
-    // and finds empty string (no ready). Then loop times out.
-    // The actual returned reason depends on whether throw fires
-    // during the loop. Verify it's a fail with one of the two
-    // expected reasons (capture-error OR tui-not-ready depending
-    // on which capture call the throw lands on).
+    // Readiness-loop capture throws deterministically.
     expect(r.status).toBe("failed");
-    expect(r.reason).toBeDefined();
-    expect(["capture-error", "tui-not-ready"]).toContain(r.reason ?? "");
+    expect(r.reason).toBe("capture-error");
   });
 });
 
@@ -607,6 +1091,14 @@ describe("renderBootFailureNotice", () => {
     });
     expect(capture).toContain("capture-pane");
 
+    const trustModal = renderBootFailureNotice({
+      team: "t",
+      member: "m",
+      result: { status: "failed", attempts: 0, reason: "folder-trust-not-cleared" },
+      nowIso: "ts",
+    });
+    expect(trustModal).toContain("folder-trust modal stayed open");
+
     // t-1b45d565: submit-not-verified label names the operator-
     // actionable intervention (atmux send uses verified-send-keys).
     const submitNotVerified = renderBootFailureNotice({
@@ -654,6 +1146,7 @@ describe("bootClaudeMember — forceBootPrompt (EPIC e-f28c2596 T7)", () => {
       postBootPollIntervalMs: 100,
       maxAttempts: 1,
       sleep: noopSleep,
+      paneLockDir: testPaneLockDir,
       now: fakeClock({ step: 25 }),
       appendLog: async () => {},
     });
@@ -663,7 +1156,7 @@ describe("bootClaudeMember — forceBootPrompt (EPIC e-f28c2596 T7)", () => {
     // Exactly ONE "send"-shaped entry (loadBuffer carrying the boot prompt).
     const sends = calls.filter((c) => c.kind === "send");
     expect(sends).toHaveLength(1);
-    expect(sends[0]!.payload).toBe(renderBootPrompt("atmux", "lead-x"));
+    expect(sends[0]?.payload).toBe(renderBootPrompt("atmux", "lead-x"));
   });
 
   test("forceBootPrompt=true + composer stays loaded → submit-not-verified (escalates to send-keys-failures.log)", async () => {
@@ -677,7 +1170,7 @@ describe("bootClaudeMember — forceBootPrompt (EPIC e-f28c2596 T7)", () => {
     const escalations: Array<{ path: string; body: string }> = [];
     const { tmux } = fakeTmux({
       captures: [
-        "❯ ↑ 5k tokens", // [0] readiness ready
+        "❯ ", // [0] readiness ready
         "❯ pre", // [1] safeSend preCapture
         "❯ Read /tmp/atmux-brief", // [2..N] composer stays non-empty — sticky
       ],
@@ -698,6 +1191,7 @@ describe("bootClaudeMember — forceBootPrompt (EPIC e-f28c2596 T7)", () => {
       postBootPollIntervalMs: 1_000,
       maxAttempts: 1,
       sleep: noopSleep,
+      paneLockDir: testPaneLockDir,
       now: fakeClock({ step: 25 }),
       appendLog: async (path, body) => {
         escalations.push({ path, body });
@@ -708,7 +1202,7 @@ describe("bootClaudeMember — forceBootPrompt (EPIC e-f28c2596 T7)", () => {
     // ADR-168: escalation log row was written.
     expect(escalations.length).toBeGreaterThanOrEqual(1);
     // The escalation entry references the target pane.
-    expect(escalations[0]!.body).toContain("atmux:lead-x");
+    expect(escalations[0]?.body).toContain("atmux:lead-x");
   });
 
   test("forceBootPrompt=false (default): tokens-in-initial-capture → already-booted (no regression — sentinel preserved for start.ts callers)", async () => {
@@ -727,6 +1221,7 @@ describe("bootClaudeMember — forceBootPrompt (EPIC e-f28c2596 T7)", () => {
       member: "fe-1",
       // forceBootPrompt omitted → undefined → branch enters sentinel
       sleep: noopSleep,
+      paneLockDir: testPaneLockDir,
       now: fakeClock(),
     });
     expect(r.status).toBe("already-booted");
@@ -764,6 +1259,7 @@ describe("bootClaudeMember — forceBootPrompt (EPIC e-f28c2596 T7)", () => {
       postBootPollIntervalMs: 100,
       maxAttempts: 1,
       sleep: noopSleep,
+      paneLockDir: testPaneLockDir,
       now: fakeClock({ step: 25 }),
       appendLog: async () => {},
     });
@@ -771,6 +1267,6 @@ describe("bootClaudeMember — forceBootPrompt (EPIC e-f28c2596 T7)", () => {
     expect(r.attempts).toBe(1);
     const sends = calls.filter((c) => c.kind === "send");
     expect(sends).toHaveLength(1);
-    expect(sends[0]!.payload).toBe(renderBootPrompt("atmux", "lead-x"));
+    expect(sends[0]?.payload).toBe(renderBootPrompt("atmux", "lead-x"));
   });
 });
