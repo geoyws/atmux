@@ -904,6 +904,16 @@ describe("checkCursorPluginCache", () => {
     expect(await checkCursorPluginCache({ which: cursorPresent, home })).toEqual([]);
   });
 
+  test("malformed known_marketplaces.json → no throw, no rows", async () => {
+    await writeInstalled({
+      plugins: {
+        "alpha@my-mkt": [{ installPath: "doesnt-matter", version: "0.1.0" }],
+      },
+    });
+    await writeFile(join(home, ".claude", "plugins", "known_marketplaces.json"), "{ not json");
+    await expect(checkCursorPluginCache({ which: cursorPresent, home })).resolves.toEqual([]);
+  });
+
   test("malformed JSON → no throw, no rows", async () => {
     await writeFile(join(home, ".claude", "plugins", "installed_plugins.json"), "{ not json");
     expect(await checkCursorPluginCache({ which: cursorPresent, home })).toEqual([]);
