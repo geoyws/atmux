@@ -200,6 +200,40 @@ describe("awaitClaudePaneReady — deadline handling", () => {
     expect(result.elapsedMs).toBeGreaterThanOrEqual(600);
   });
 
+  test("uses the real default sleep before retrying UNKNOWN panes", async () => {
+    const { state, deps } = buildProbeDeps([BOOTING_PANE], 250);
+    const { sleep: _sleep, ...defaultSleepDeps } = deps;
+    void _sleep;
+    let markerHandle: ReturnType<typeof setTimeout> | null = null;
+    const marker = new Promise<void>((resolve) => {
+      markerHandle = setTimeout(() => {
+        resolve();
+      }, 0);
+    });
+    const probe = awaitClaudePaneReady(
+      "atmux:0",
+      { deadlineMs: 1_000, pollIntervalMs: 1 },
+      defaultSleepDeps,
+    );
+
+    try {
+      const firstSettled = await Promise.race([
+        probe.then(() => "probe"),
+        marker.then(() => "marker"),
+      ]);
+      expect(firstSettled).toBe("marker");
+
+      const result = await probe;
+      expect(result.state).toBe("timeout");
+      expect(result.attempts).toBe(2);
+      expect(result.elapsedMs).toBeGreaterThanOrEqual(1_000);
+      expect(state.sleeps).toHaveLength(0);
+    } finally {
+      await marker;
+      if (markerHandle !== null) clearTimeout(markerHandle);
+    }
+  });
+
   test("welcome screen persists past deadline in strict mode → starving on first read", async () => {
     // The probe terminates on the first conclusive state — welcome
     // screen is conclusive in strict mode, so the deadline never trips.
