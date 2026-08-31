@@ -22,7 +22,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closeDatabase, type Database, openDatabase } from "../../../../src/abstractions/sqlite.ts";
 import { migrations } from "../../../../src/abstractions/sqlite-migrations.ts";
-import { HygieneRepo } from "../../../../src/core/repositories/hygiene-repo.ts";
+import { HygieneRepo, type HygieneRow } from "../../../../src/core/repositories/hygiene-repo.ts";
 import type { FixDeps, TeamState } from "../../../../src/core/superdoctor-hygiene/_shared.ts";
 import { detectAll, drainTick } from "../../../../src/core/superdoctor-hygiene/drain.ts";
 import type { KanbanTask } from "../../../../src/schema/kanban.ts";
@@ -136,6 +136,33 @@ describe("drainTick — happy path", () => {
     expect(deps.calls).toEqual([{ verb: "assign:t-001", arg: "fe-1" }]);
     // Row marked fixed in DB
     const stored = repo.getFingerprint("t-001", "ghost-owner");
+    expect(stored?.fixAppliedAt).toBe(1000);
+    expect(stored?.fixSuccessful).toBe(true);
+  });
+
+  test("lane-null-orphan → drained + lane verb invoked", async () => {
+    const team: TeamState = {
+      members: [
+        { name: "fe-1", role: "member", lane: "fe" },
+        { name: "be-1", role: "member", lane: "be" },
+      ],
+    };
+    const kanban: KanbanTask[] = [
+      task({
+        id: "t-002",
+        owner: null,
+        lane: null,
+        status: "todo",
+        priority: 1,
+      }),
+    ];
+    const deps = recorderDeps();
+    const r = await drainTick({ team, kanban, repo, deps, now: 1000 });
+    expect(r.detected).toBe(1);
+    expect(r.drained?.row.fingerprintClass).toBe("lane-null-orphan");
+    expect(r.drained?.result.applied).toBe(true);
+    expect(deps.calls).toEqual([{ verb: "lane:t-002", arg: "be" }]);
+    const stored = repo.getFingerprint("t-002", "lane-null-orphan");
     expect(stored?.fixAppliedAt).toBe(1000);
     expect(stored?.fixSuccessful).toBe(true);
   });
@@ -358,6 +385,52 @@ describe("drainTick — fix failure", () => {
     expect(stored.fixAppliedAt).toBe(1000);
     expect(stored.fixSuccessful).toBe(false);
     expect(repo.listUnfixed()).toHaveLength(0);
+  });
+
+  test("malformed unfixed row with attemptedFix=null → result.applied=false, reason='verb-failed'", async () => {
+    const markFixedCalls: Array<{
+      taskId: string;
+      fingerprintClass: string;
+      now: number;
+      successful: boolean;
+    }> = [];
+    const stubRepo = {
+      upsertFingerprint: () => {},
+      listUnfixed: (): HygieneRow[] => [
+        {
+          taskId: "t-bad",
+          fingerprintClass: "lane-null-orphan",
+          severity: "P3",
+          confidence: "low",
+          diagnosis: "corrupt row",
+          detectedAt: 1000,
+          lastSeenAt: 1000,
+          attemptedFix: null,
+          fixAppliedAt: null,
+          fixSuccessful: null,
+        },
+      ],
+      markFixed: (taskId: string, fingerprintClass: string, now: number, successful: boolean) => {
+        markFixedCalls.push({ taskId, fingerprintClass, now, successful });
+      },
+    } as unknown as HygieneRepo;
+    const r = await drainTick({
+      team: { members: [] },
+      kanban: [],
+      repo: stubRepo,
+      deps: recorderDeps(),
+      now: 2000,
+    });
+    expect(r.drained?.result.applied).toBe(false);
+    expect(r.drained?.result.reason).toBe("verb-failed");
+    expect(markFixedCalls).toEqual([
+      {
+        taskId: "t-bad",
+        fingerprintClass: "lane-null-orphan",
+        now: 2000,
+        successful: false,
+      },
+    ]);
   });
 
   test("escalate fingerprint (zero candidates) → result.applied=false, reason='escalate'", async () => {
