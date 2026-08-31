@@ -58,6 +58,10 @@ import type {
 const USAGE =
   "atmux improve [--budget <spec>] [--status] [--tick] [--dry-run] [--default-budget] [--idle-fallback] [--force]";
 
+async function defaultOnTerminate(): Promise<void> {
+  return undefined;
+}
+
 // ---------- Args ----------
 
 export interface ImproveArgs {
@@ -203,7 +207,7 @@ export async function improve(
   const discord = opts.discordSend ?? sendDiscord;
   const commitChecker = opts.commitChecker ?? defaultCommitChecker;
   const tokensSpentForClose = opts.tokensSpentForClose ?? (async () => 0);
-  const onTerminate = opts.onTerminate ?? (async () => {});
+  const onTerminate = opts.onTerminate ?? defaultOnTerminate;
 
   const statePath = eternalImprovementStatePath(atmuxDir);
 
@@ -374,13 +378,14 @@ function buildInitialState(opts: BuildInitialOpts): EternalImprovementState {
 async function safeFireDiscord(
   label: string,
   send: () => Promise<void>,
-  stderr: Writer = (s) => process.stderr.write(s),
+  stderr?: Writer,
 ): Promise<void> {
+  const sink = stderr ?? (process.stderr.write.bind(process.stderr) as Writer);
   try {
     await send();
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    stderr(`atmux improve: discord ping ${label} skipped (best-effort): ${msg}\n`);
+    sink(`atmux improve: discord ping ${label} skipped (best-effort): ${msg}\n`);
   }
 }
 

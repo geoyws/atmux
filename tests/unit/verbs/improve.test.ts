@@ -630,6 +630,28 @@ describe("improve --tick", () => {
     expect(sent[1]?.template).toBe("eternal-improvement-done");
   });
 
+  test("budget exhausted with default hooks → terminate and persist zero budget", async () => {
+    await seedActiveCycle({ budgetRemaining: 0 });
+    await seedKanban([
+      {
+        id: "t-aaaaaaaa",
+        status: "done",
+        epic: "e-a25968cc",
+        completedAt: 1_800_000_500,
+      },
+    ]);
+    const exit = await improve(["--tick", "--team-dir", teamDir], {
+      discordSend: (async () => {}) as never,
+      nowMs: () => 1_800_001_000_000,
+    });
+    expect(exit).toBe(0);
+    const after = JSON.parse(
+      await readFile(join(atmuxDir, "state", "eternal-improvement.json"), "utf8"),
+    );
+    expect(after.active).toBe(false);
+    expect(after.budgetRemaining).toBe(0);
+  });
+
   test("Mode B (idle-fallback) → done ping carries modeB:true", async () => {
     await seedActiveCycle({
       mode: "idle-fallback",
