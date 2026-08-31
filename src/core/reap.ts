@@ -237,7 +237,7 @@ async function reapOne(orphan: TopoOrphan, opts: ReapOpts, result: ReapResult): 
   if (opts.dryRun === true) {
     result.skipped.push({
       orphan,
-      primitive: primitiveLabel(reapable.class as OrphanClass),
+      primitive: primitiveLabel(reapable.class as Exclude<OrphanClass, "kanban-epic-without-cage">),
       reason: "dry-run",
     });
     return;
@@ -408,7 +408,7 @@ async function invoke(
   }
 }
 
-function primitiveLabel(cls: OrphanClass): string {
+function primitiveLabel(cls: Exclude<OrphanClass, "kanban-epic-without-cage">): string {
   switch (cls) {
     case "cron-block-without-worktree":
       return "cronReaperReap";
@@ -420,8 +420,6 @@ function primitiveLabel(cls: OrphanClass): string {
       return "rmZombieWorktree";
     case "cage-tmux-without-registry":
       return "killCageServer";
-    case "kanban-epic-without-cage":
-      return "surface-only";
   }
 }
 
