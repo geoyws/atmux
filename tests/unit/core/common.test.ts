@@ -14,6 +14,7 @@ import {
   checkMemberName,
   checkTeamName,
   classifyPaneState,
+  decisionsLogPath,
   defaultEmojiForRole,
   detectRateLimit,
   displayMemberName,
@@ -30,6 +31,7 @@ import {
   inboxPathFor,
   isCompacting,
   isContextCleared,
+  isMedicInboxKey,
   isMemberWindowName,
   isReservedTeamName,
   kanbanJsonPath,
@@ -38,12 +40,15 @@ import {
   leadOutboxPath,
   loadTeam,
   logsDir,
+  MEDIC_INBOX_KEY,
   normalizeMemberName,
   paneIsBusy,
   requireTeam,
   resolveCallerScope,
+  resolveExistingWindowName,
   resolveTeamSocket,
   resolveWindowWithRenameShim,
+  SUPERDOCTOR_INBOX_KEY,
   sessionAnchorPath,
   stateDir,
   teamJsonPath,
@@ -185,7 +190,17 @@ describe("path helpers", () => {
   test("driverInboxPath / leadOutboxPath / sessionAnchorPath", () => {
     expect(driverInboxPath("/x/.atmux")).toBe("/x/.atmux/driver-inbox.md");
     expect(leadOutboxPath("/x/.atmux")).toBe("/x/.atmux/lead-outbox.md");
+    expect(decisionsLogPath("/x/.atmux")).toBe("/x/.atmux/decisions.md");
     expect(sessionAnchorPath("/x/.atmux")).toBe("/x/.atmux/state/session.txt");
+  });
+});
+
+describe("isMedicInboxKey", () => {
+  test("accepts the canonical key, deprecated alias, and rejects other values", () => {
+    expect(isMedicInboxKey(MEDIC_INBOX_KEY)).toBe(true);
+    expect(isMedicInboxKey(SUPERDOCTOR_INBOX_KEY)).toBe(true);
+    expect(isMedicInboxKey("not-medic")).toBe(false);
+    expect(isMedicInboxKey(undefined)).toBe(false);
   });
 });
 
@@ -1108,5 +1123,100 @@ describe("resolveWindowWithRenameShim (EPIC e-a3077ca0 T1)", () => {
     );
     expect(result).toBe(CANONICAL);
     expect(renamed).toEqual([]);
+  });
+});
+
+describe("resolveExistingWindowName", () => {
+  const SESSION = "atmux-test";
+  const CANONICAL = "🧭_lead";
+  const HYPHEN_FORM = "🧭-lead";
+  const LEGACY_FORM = "🧭lead";
+
+  function makeListWindowNames(names: ReadonlyArray<string>): {
+    listWindowNames: (sessionName: string) => Promise<ReadonlyArray<string>>;
+    calls: Array<string>;
+  } {
+    const calls: Array<string> = [];
+    return {
+      calls,
+      async listWindowNames(sessionName) {
+        calls.push(sessionName);
+        return names;
+      },
+    };
+  }
+
+  test("canonical hit returns canonical and passes through the session name", async () => {
+    const { calls, listWindowNames } = makeListWindowNames([CANONICAL]);
+    const got = await resolveExistingWindowName(
+      SESSION,
+      "lead",
+      "🧭",
+      undefined,
+      listWindowNames,
+      "team-lead",
+    );
+    expect(got).toBe(CANONICAL);
+    expect(calls).toEqual([SESSION]);
+  });
+
+  test("ADR-135 hyphen hit returns hyphen form when canonical is absent", async () => {
+    const { calls, listWindowNames } = makeListWindowNames([HYPHEN_FORM]);
+    const got = await resolveExistingWindowName(
+      SESSION,
+      "lead",
+      "🧭",
+      undefined,
+      listWindowNames,
+      "team-lead",
+    );
+    expect(got).toBe(HYPHEN_FORM);
+    expect(calls).toEqual([SESSION]);
+  });
+
+  test("legacy hit returns legacy form when canonical and hyphen are absent", async () => {
+    const { calls, listWindowNames } = makeListWindowNames([LEGACY_FORM]);
+    const got = await resolveExistingWindowName(
+      SESSION,
+      "lead",
+      "🧭",
+      undefined,
+      listWindowNames,
+      "team-lead",
+    );
+    expect(got).toBe(LEGACY_FORM);
+    expect(calls).toEqual([SESSION]);
+  });
+
+  test("no hit returns canonical by default and still lists once", async () => {
+    const { calls, listWindowNames } = makeListWindowNames(["🐝-alice"]);
+    const got = await resolveExistingWindowName(
+      SESSION,
+      "lead",
+      "🧭",
+      undefined,
+      listWindowNames,
+      "team-lead",
+    );
+    expect(got).toBe(CANONICAL);
+    expect(calls).toEqual([SESSION]);
+  });
+
+  test("injected rejection falls back to canonical without surfacing the failure", async () => {
+    const calls: Array<string> = [];
+    const listWindowNames = async (sessionName: string): Promise<ReadonlyArray<string>> => {
+      calls.push(sessionName);
+      throw new Error("tmux unavailable");
+    };
+    const got = await resolveExistingWindowName(
+      SESSION,
+      "lead",
+      "🧭",
+      undefined,
+      listWindowNames,
+      "team-lead",
+    );
+    expect(got).toBe(CANONICAL);
+    expect(calls).toEqual([SESSION]);
   });
 });
