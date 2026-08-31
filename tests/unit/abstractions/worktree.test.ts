@@ -370,6 +370,27 @@ describe("initSubmodules", () => {
     expect(warnings[0]).toContain("/wt/alice");
   });
 
+  test("non-zero exit uses the default stderr warn sink when opts.warn is omitted", async () => {
+    const git: GitSpawn = async () => fail("fatal: clone failed for submodule 'foo'", 1);
+    const stderr = process.stderr as typeof process.stderr & {
+      write: typeof process.stderr.write;
+    };
+    const originalWrite = stderr.write;
+    let captured = "";
+    stderr.write = ((chunk: string | Uint8Array) => {
+      captured += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString();
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      await expect(initSubmodules("/wt/alice", { git })).resolves.toBeUndefined();
+      expect(captured).toContain("initSubmodules");
+      expect(captured).toContain("rc=1");
+      expect(captured).toContain("/wt/alice");
+    } finally {
+      stderr.write = originalWrite;
+    }
+  });
+
   test("rc=0 + empty stdout (no submodules in repo) is a silent no-op", async () => {
     const warnings: string[] = [];
     const git: GitSpawn = async () => ok("");
