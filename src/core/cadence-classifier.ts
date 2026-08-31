@@ -34,7 +34,8 @@
 // team.json validation; this interface is canonical for runtime
 // classification.
 
-import { spawn as defaultSpawn, type SpawnResult } from "../abstractions/spawn.ts";
+import type { SpawnResult } from "../abstractions/spawn.ts";
+import { spawn as defaultSpawn } from "../abstractions/spawn.ts";
 
 // ---------- Public types ----------
 
@@ -233,9 +234,11 @@ export async function defaultGitLog(
   worktreePath: string,
   sinceSec: number,
   author: string,
+  deps: { spawn?: typeof defaultSpawn } = {},
 ): Promise<string[] | null> {
+  const runSpawn = deps.spawn ?? defaultSpawn;
   try {
-    const r: SpawnResult = await defaultSpawn({
+    const r: SpawnResult = await runSpawn({
       cmd: "git",
       argv: [
         "-C",
