@@ -91,6 +91,12 @@ describe("fix:supervisor-missing detect", () => {
     expect(ctx).toBeNull();
   });
 
+  test("default listWindows returns null for invalid NUL sessionName via spawn catch path", async () => {
+    const recipe = makeFixSupervisorMissingRecipe();
+    const ctx = await recipe.detect(whipCtx({ sessionName: "invalid\0session" }));
+    expect(ctx).toBeNull();
+  });
+
   test("empty windows list (sentinel for transient race) + supervisor missing → context", async () => {
     const recipe = makeRecipe([[]]);
     const ctx = (await recipe.detect(whipCtx())) as SupervisorMissingContext | null;
