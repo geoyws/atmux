@@ -8,6 +8,9 @@
 // separate per the doctor-honker.test.ts precedent.
 
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { BudgetProbeState } from "../../../src/core/account-pool.ts";
 import type { LoadedCockpit } from "../../../src/core/cockpit.ts";
 import {
@@ -146,8 +149,7 @@ describe("checkClaudeAccountPool (verb-side wrapper)", () => {
 
   test("empty pool + cockpit team missing claudeAccount → RED", async () => {
     const rows = await checkClaudeAccountPool("/home/x", {
-      loadCockpitFn: async () =>
-        cockpitWith({ teams: [{ name: "alpha", root: "/r/alpha" }] }),
+      loadCockpitFn: async () => cockpitWith({ teams: [{ name: "alpha", root: "/r/alpha" }] }),
       nowSec: NOW,
     });
     expect(rows[0]?.status).toBe("red");
@@ -211,8 +213,7 @@ describe("checkClaudeAccountPool (verb-side wrapper)", () => {
 
   test("populated pool, a label with NO budget probe data → YELLOW (missing == stale)", async () => {
     const rows = await checkClaudeAccountPool("/home/x", {
-      loadCockpitFn: async () =>
-        cockpitWith({ pool: [{ configDir: "/c/p", label: "personal" }] }),
+      loadCockpitFn: async () => cockpitWith({ pool: [{ configDir: "/c/p", label: "personal" }] }),
       loadBudgetMapFn: async () => {
         // Label maps to null — probe file absent.
         const m = new Map<string, BudgetProbeState | null>();
@@ -250,5 +251,31 @@ describe("checkClaudeAccountPool (verb-side wrapper)", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.label).toBe("claudeAccountPool");
     expect(["green", "yellow", "red", "info"]).toContain(rows[0]?.status ?? "<undef>");
+  });
+
+  test("default production loadCockpit() fail-soft path → exact benign info row", async () => {
+    const scratchHome = await mkdtemp(join(tmpdir(), "atmux-doctor-home-"));
+    const priorHome = process.env.HOME;
+    const priorCockpitConfig = process.env.ATMUX_COCKPIT_CONFIG;
+    process.env.HOME = scratchHome;
+    delete process.env.ATMUX_COCKPIT_CONFIG;
+
+    try {
+      const rows = await checkClaudeAccountPool(undefined, { nowSec: NOW });
+      expect(rows).toEqual([
+        {
+          status: "info",
+          label: "claudeAccountPool",
+          detail:
+            "pool unconfigured; every team pins its own claudeAccount (spawn-epic uses the inheritance chain)",
+        },
+      ]);
+    } finally {
+      if (priorHome === undefined) delete process.env.HOME;
+      else process.env.HOME = priorHome;
+      if (priorCockpitConfig === undefined) delete process.env.ATMUX_COCKPIT_CONFIG;
+      else process.env.ATMUX_COCKPIT_CONFIG = priorCockpitConfig;
+      await rm(scratchHome, { recursive: true, force: true });
+    }
   });
 });
