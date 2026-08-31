@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ✨ Added — prefix-table Meta hotkeys for windows 10-19
+
+`templates/tmux/atmux.conf` now uses explicit `bind -T prefix` lines for `M-0..M-9` → `select-window -t 10..19`. The built-in prefix digits `1-9` stay untouched, the F-key prefix chain stays untouched, and the shipped config still loads the local override last.
+
 ### 🧹 Removed — the per-window `window-size smallest` override on the cockpit's `unum` window (ADR-284)
 
 **Every cockpit window now uses one sizing policy: the server global `window-size latest` + `aggressive-resize on`. No window-level or session-level `window-size` override is set on any cockpit window.**

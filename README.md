@@ -1319,6 +1319,8 @@ Full mechanism + ADR-026 single-session topology rationale that justifies the in
 
 Driver + members share one tmux session because that's how a human actually drives the team: they want to see everything at a glance, hop between members with `prefix w`, and avoid the session-soup that dedicated sessions accumulate when you run multiple teams. Window-name prefix `__<team>__<member>` keeps choose-tree (`prefix s`) grouped visually, and `lib/stop.sh`'s refuse-gate prevents accidental `kill-session` on the driver shell. ADR-026 captures the rationale + window-count risk register.
 
+For window jumps, tmux's built-in `prefix 1-9` stays in place, `prefix Meta+0..9` jumps straight to windows 10-19, and 20+ still goes through chooser / explicit `select-window`. That leaves the F-key prefix chain for nested cages alone.
+
 Flip `singleSession=false` only for teams that aren't being driven by a human — non-human-driven team or a detached observer setup that wants a dedicated `atmux-<team>` session it can attach to in isolation. The wizard does not prompt for it; the field is a declared escape hatch, edited by hand. ADR-016 holds the original opt-in design for context (its default policy line is superseded by ADR-026, but the migrate verb + refuse-gate infrastructure stand).
 
 ## Comparison vs plugin-orch
