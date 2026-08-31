@@ -184,6 +184,40 @@ describe("renderDiff — vs prior file", () => {
     expect(out).toContain("+  description: now-described");
   });
 
+  test("description removed when computed omits it → single - line", () => {
+    const out = renderDiff(
+      { name: "x", description: "was-described", members: [] },
+      { name: "x", description: undefined, members: [] },
+    );
+    expect(out).toContain("-  description: was-described");
+    expect(out).not.toContain("+  description:");
+  });
+
+  test("malformed known member field falls back to JSON text", () => {
+    const out = renderDiff(
+      {
+        name: "x",
+        members: [
+          member({
+            name: "json-field",
+            color: { nested: true } as unknown as string,
+          }),
+        ],
+      },
+      {
+        name: "x",
+        description: undefined,
+        members: [
+          member({
+            name: "json-field",
+            color: { nested: true } as unknown as string,
+          }),
+        ],
+      },
+    );
+    expect(out).toContain('     color: {"nested":true}');
+  });
+
   test("members header counts the computed roster", () => {
     const out = renderDiff(null, {
       name: "x",
