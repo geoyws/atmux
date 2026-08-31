@@ -11,10 +11,12 @@
 //     already covered by the inject-stub branch).
 
 import { describe, expect, test } from "bun:test";
+import type { SpawnResult } from "../../../src/abstractions/spawn.ts";
 import {
   type CadenceThresholds,
   classifyCadence,
   classifyMemberCadence,
+  defaultGitLog,
   type GitLogFn,
 } from "../../../src/core/cadence-classifier.ts";
 
@@ -32,6 +34,18 @@ const DEFAULT_THRESHOLDS: CadenceThresholds = {
 /** Build a `git log` output line — `<sha> <epoch-sec>`. */
 function logLine(sha: string, ageSec: number): string {
   return `${sha} ${NOW_SEC - ageSec}`;
+}
+
+function spawnResult(stdout: string, exitCode = 0): SpawnResult {
+  return {
+    cmd: "git",
+    argv: [],
+    exitCode,
+    signalled: null,
+    stdout,
+    stderr: "",
+    durationMs: 1,
+  };
 }
 
 // ---------- classifyCadence — verdict matrix ----------
@@ -216,6 +230,19 @@ describe("classifyCadence — verdict matrix", () => {
     );
     expect(out.lastCommitSha).toBe("abcdef0");
   });
+
+  test("dormant fallthrough: age 10000 with idle7200 / shipZero12000 / dormant24000", () => {
+    const thresholds: CadenceThresholds = {
+      shippingMaxAgeSec: 1800,
+      idleMaxAgeSec: 7200,
+      dormantMaxAgeSec: 24_000,
+      shipZeroWindowSec: 12_000,
+    };
+    const out = classifyCadence([logLine("ppppppp1234", 10_000)], NOW_SEC, 1800, thresholds);
+    expect(out).not.toBeNull();
+    if (out === null) throw new Error("cadence probe returned null");
+    expect(out.verdict).toBe("dormant");
+  });
 });
 
 // ---------- classifyMemberCadence — async wrapper ----------
@@ -325,5 +352,51 @@ describe("classifyMemberCadence — async wrapper", () => {
     if (out === null) throw new Error("cadence probe returned null");
     expect(out.verdict).toBe("ship-zero-window");
     expect(out.ageOfLastCommitSec).toBe(8000);
+  });
+});
+
+describe("defaultGitLog — injected spawn seam", () => {
+  test("splits, trims, and filters stdout lines", async () => {
+    const calls: Array<{
+      cmd: string;
+      argv: ReadonlyArray<string>;
+      expectExitCode?: unknown;
+      timeoutMs?: number;
+    }> = [];
+    const out = await defaultGitLog("wt", 123, "fe-1", {
+      spawn: async (opts) => {
+        calls.push(opts);
+        return spawnResult("  abcdef0 100  \n\n  bcdef01 200\t\n   \n");
+      },
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.cmd).toBe("git");
+    expect(calls[0]?.argv).toEqual([
+      "-C",
+      "wt",
+      "log",
+      "--since=123s",
+      "--author=fe-1",
+      "--format=%H %ct",
+    ]);
+    expect(calls[0]?.expectExitCode).toBe("any");
+    expect(calls[0]?.timeoutMs).toBe(5000);
+    expect(out).toEqual(["abcdef0 100", "bcdef01 200"]);
+  });
+
+  test("non-zero exit returns null", async () => {
+    const out = await defaultGitLog("wt", 123, "fe-1", {
+      spawn: async () => spawnResult("ignored\n", 128),
+    });
+    expect(out).toBeNull();
+  });
+
+  test("thrown spawn rejection returns null", async () => {
+    const out = await defaultGitLog("wt", 123, "fe-1", {
+      spawn: async () => {
+        throw new Error("boom");
+      },
+    });
+    expect(out).toBeNull();
   });
 });
