@@ -189,6 +189,30 @@ describe("mergeCycle — empty candidate list", () => {
     expect(logs.join("")).toContain("no-op:     0");
     expect(logs.join("")).toContain("conflicts: 0");
   });
+
+  test("no <base>-* branches → default stdout summary still reports zero counts", async () => {
+    const git = async (argv: ReadonlyArray<string>): Promise<SpawnResult> => {
+      if (argv.includes("fetch")) return ok("");
+      if (argv.includes("branch") && argv.includes("--list")) return ok("");
+      return ok("");
+    };
+    const chunks: string[] = [];
+    const originalWrite = process.stdout.write;
+    process.stdout.write = ((chunk: unknown) => {
+      chunks.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      const rc = await mergeCycle(["--team-dir", teamDir], { git });
+      expect(rc).toBe(0);
+    } finally {
+      process.stdout.write = originalWrite;
+    }
+    const text = chunks.join("");
+    expect(text).toContain("merged:    0");
+    expect(text).toContain("no-op:     0");
+    expect(text).toContain("conflicts: 0");
+  });
 });
 
 // ---------- (D) All no-op ----------
