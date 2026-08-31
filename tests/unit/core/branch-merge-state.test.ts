@@ -323,6 +323,10 @@ describe("isValidTransition — adjacency matrix", () => {
     expect(isValidTransition("reverted", "in_progress")).toBe(true);
   });
 
+  test("merged → open (ADR-134 amendment recovery after new commits land)", () => {
+    expect(isValidTransition("merged", "open")).toBe(true);
+  });
+
   // ---------- forbidden transitions (sample of representative edges)
 
   test("open → merged FORBIDDEN (cannot skip the machine)", () => {
