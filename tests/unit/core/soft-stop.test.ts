@@ -5,7 +5,7 @@
 // so we can verify per-pane notify behaviour without spawning processes.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CrontabIO } from "../../../src/abstractions/crontab.ts";
@@ -14,11 +14,13 @@ import { addTask, claimTaskForMember } from "../../../src/core/kanban.ts";
 import {
   DEFAULT_SOFT_STOP_GRACE_SECONDS,
   QUIESCE_TAG,
+  consumedManifestPath,
   quiesceCron,
   resumeManifestPath,
   SOFT_STOP_NOTICE,
   softStop,
 } from "../../../src/core/soft-stop.ts";
+import type { Kanban } from "../../../src/schema/kanban.ts";
 import { ResumeManifest } from "../../../src/schema/resume.ts";
 import type { Team } from "../../../src/schema/team.ts";
 
@@ -279,6 +281,75 @@ describe("softStop", () => {
     const stragglers = entries.filter((e) => e.startsWith("resume.json.tmp."));
     expect(stragglers).toHaveLength(0);
     expect(entries).toContain("resume.json");
+  });
+
+  test("default sleep uses globalThis.setTimeout and waits 3000ms when grace is 3s", async () => {
+    const { tmux } = makeRecorderTmux();
+    const setTimeoutCalls: number[] = [];
+    const originalSetTimeout = globalThis.setTimeout;
+    try {
+      globalThis.setTimeout = ((fn: TimerHandler, ms?: number, ...args: never[]) => {
+        setTimeoutCalls.push(ms ?? NaN);
+        return originalSetTimeout(fn, 0, ...(args as []));
+      }) as typeof globalThis.setTimeout;
+
+      await softStop({
+        team: makeTeam({ softStopGraceSeconds: 3 } as Partial<Team>),
+        atmuxDir,
+        sessionName: "atmux-softstop-test",
+        tmux,
+        reason: "soft-stop",
+      });
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+    }
+
+    expect(setTimeoutCalls).toEqual([3000]);
+  });
+
+  test("consumedManifestPath pins the consumed resume manifest name", async () => {
+    expect(consumedManifestPath(atmuxDir, 1778700000)).toBe(
+      join(atmuxDir, "state", "resume.json.1778700000.consumed"),
+    );
+  });
+
+  test("picks the newer in-progress task when a member owns two rows", async () => {
+    const fixture = {
+      tasks: [
+        {
+          id: "t-oldest",
+          subject: "older task",
+          status: "in-progress",
+          owner: "w1",
+          claimedAt: 12,
+        },
+        {
+          id: "t-newer",
+          subject: "newer task",
+          status: "in-progress",
+          owner: "w1",
+          claimedAt: 27,
+        },
+      ],
+      epics: [],
+      stories: [],
+    } satisfies Kanban;
+    await writeFile(join(atmuxDir, "kanban.json"), `${JSON.stringify(fixture, null, 2)}\n`);
+
+    const { tmux } = makeRecorderTmux();
+    const result = await softStop({
+      team: makeTeam(),
+      atmuxDir,
+      sessionName: "atmux-softstop-test",
+      tmux,
+      reason: "soft-stop",
+      clock: () => 1_778_700_000_000,
+      sleep: async () => {},
+    });
+
+    const w1 = result.manifest.members.find((m) => m.name === "w1");
+    expect(w1?.lastClaim).toBe("t-newer");
+    expect(w1?.claimedAt).toBe(27);
   });
 });
 
