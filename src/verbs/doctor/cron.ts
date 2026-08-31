@@ -160,6 +160,8 @@ export interface CheckCronOrphansOpts {
   crontab?: CrontabIO;
   /** Defaults to `statOrNull`-backed dir check. */
   dirExists?: (path: string) => Promise<boolean>;
+  /** Defaults to the real `findCronOrphans` helper. */
+  findCronOrphans?: typeof findCronOrphans;
 }
 
 /**
@@ -178,7 +180,8 @@ export async function checkCronOrphans(opts: CheckCronOrphansOpts = {}): Promise
   const crontab = opts.crontab ?? defaultCrontabIO();
   if (!(await crontab.available())) return [];
   const dirExists = opts.dirExists ?? defaultDirExistsForCron;
-  const orphans = await findCronOrphans({ io: crontab, dirExists });
+  const findOrphans = opts.findCronOrphans ?? findCronOrphans;
+  const orphans = await findOrphans({ io: crontab, dirExists });
   return orphans.map((o: CronBlockTarget) => ({
     status: "yellow" as const,
     label: "cron-config",

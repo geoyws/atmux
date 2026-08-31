@@ -1145,10 +1145,9 @@ describe("checkCronIntervalDivisors", () => {
 //
 // Post-ADR-233 the underlying `findCronOrphans` is a no-op shim that
 // always returns `[]` (cron auto-install retired; orchd is the runtime).
-// Every test below asserts the post-retire contract: regardless of
-// crontab content, the probe surfaces zero rows. Once the cron-shim
-// modules are deleted in cleanup-EPIC, this whole block goes with
-// them.
+// The default-contract tests below assert the post-retire silence, while
+// the seam test injects one synthetic orphan so the doctor mapper and
+// its default dir-exists helper both execute.
 
 describe("checkCronOrphans", () => {
   const fakeIO = (body: string | null, opts: { available?: boolean } = {}): CrontabIO => ({
@@ -1224,6 +1223,33 @@ describe("checkCronOrphans", () => {
       dirExists: async (p: string) => live.has(p),
     });
     expect(rows).toEqual([]);
+  });
+
+  test("synthetic orphan maps to yellow cron-config row and hits default dirExists", async () => {
+    let tempDir: string | null = null;
+    try {
+      tempDir = await mkdtemp(join(tmpdir(), "atmux-doctor-cron-orphan-"));
+      const rows = await checkCronOrphans({
+        crontab: fakeIO("# orphan seam test"),
+        findCronOrphans: async ({ dirExists }) => {
+          expect(await dirExists(tempDir as string)).toBe(true);
+          return [{ team: "omega", atmuxDir: "/srv/omega/.atmux" }];
+        },
+      });
+
+      expect(rows).toEqual([
+        {
+          status: "yellow",
+          label: "cron-config",
+          detail: "orphan cron block: team='omega' atmux_dir='/srv/omega/.atmux' (path does not exist)",
+          hint: "crontab -e to drop the block, or restore /srv/omega/.atmux if the project moved",
+        },
+      ]);
+    } finally {
+      if (tempDir !== null) {
+        await rm(tempDir, { recursive: true, force: true });
+      }
+    }
   });
 });
 
