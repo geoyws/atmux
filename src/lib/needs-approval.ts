@@ -172,13 +172,12 @@ export async function scanProposedAdrs(
       const path = join(dir, name);
       const text = await fs.readText(path);
       if (text === null) continue;
-      const statusMatch = STATUS_RE.exec(text);
-      if (statusMatch === null) continue;
       // Pull the Status: line in full to test for `(deferred: ...)`. The
       // suffix can appear anywhere on the same line — match by line, not
       // by capture-group offset.
       const statusLine = extractStatusLine(text);
-      if (statusLine !== null && DEFERRED_SUFFIX_RE.test(statusLine)) continue;
+      if (statusLine === null) continue;
+      if (DEFERRED_SUFFIX_RE.test(statusLine)) continue;
 
       const mtimeSec = await fs.mtimeSec(path);
       const ageMin = mtimeSec === null ? 0 : Math.max(0, Math.floor((now - mtimeSec) / 60));
