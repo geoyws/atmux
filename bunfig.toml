@@ -29,11 +29,23 @@ coverageSkipTestFiles = true
 # tracked at 100%; matching paths are excluded from the gate.
 # Glob shape: `tests/**` (recursive) NOT `tests/` — Bun 1.3.13 needs
 # the `**` for directory-recursive exclusion (ADR-009 §6 footnote).
+# Exact-path compile-time-only seams (TypeScript erases them; Bun
+# cannot emit meaningful executable coverage for them):
+# - src/abstractions/agent-backend.ts
+# - src/abstractions/issue-tracker.ts
+# - src/abstractions/voice-provider.ts
+# - src/core/cursor-recipes/types.ts
+# - src/core/sync-claude-team-json/types.ts
 coveragePathIgnorePatterns = [
   "src/types/generated/**",
   "**/index.ts",
   "tests/**",
   "**/*.fixtures.ts",
+  "src/abstractions/agent-backend.ts",
+  "src/abstractions/issue-tracker.ts",
+  "src/abstractions/voice-provider.ts",
+  "src/core/cursor-recipes/types.ts",
+  "src/core/sync-claude-team-json/types.ts",
 ]
 # NB: src/cli.ts WAS in this list per the original ADR-009 §2 draft;
 # architect's review-verdict refinement (`64898c7`) accepted that

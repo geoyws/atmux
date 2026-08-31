@@ -47,6 +47,18 @@ The concrete cost: two daily-firing destructive modules shipped with 0% coverage
 
 The per-file `%%` checks for present files are unchanged — partial-coverage breaches and 0%-coverage (missing) breaches both fail the gate, and the report counts and lists both classes, with the 0%-coverage class labeled explicitly (`0% (no SF: record in lcov)`).
 
+### D1.1 — exact-path-only denominator exclusions for compile-time seams
+
+The gate universe is the set of tracked executable source files after `coveragePathIgnorePatterns` is applied. The denominator stays honest because the only exclusions are exact paths for compile-time-only seams that TypeScript erases and that Bun cannot express as meaningful executable coverage:
+
+- `src/abstractions/agent-backend.ts`
+- `src/abstractions/issue-tracker.ts`
+- `src/abstractions/voice-provider.ts`
+- `src/core/cursor-recipes/types.ts`
+- `src/core/sync-claude-team-json/types.ts`
+
+This is exact-path-only policy, not a filename class policy. A suffix such as `types.ts` is never sufficient on its own, because runtime-bearing `types.ts` files remain tracked. For example, `src/verbs/doctor/types.ts` stays in the denominator, and `src/core/spawn-override.ts` stays tracked as a runtime source. No allowlist switch is introduced or implied; the gate still hard-fails for every tracked runtime source with incomplete or absent coverage.
+
 ### D2 — backfill the two masked destructive modules to 100%
 
 `tests/unit/core/orchd-housekeep.test.ts` and `tests/unit/core/orchd-context-scan.test.ts` are added in the same commit, both at 100% line + function coverage of their subject module. They seed in-memory `bun:sqlite` on both sides of every cutoff (and the MIN-offset safety floor), assert exact deleted-row counts for all four `housekeep` DELETEs, the empty-`activeConsumerIds` branch, the rotated-log `unlinkSync` path, and the context-scan threshold / dedup-window / emit branches — including the error-containment catch arms.

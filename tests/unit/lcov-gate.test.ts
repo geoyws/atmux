@@ -1,7 +1,7 @@
 // Unit tests for tests/lcov-gate.ts (ADR-009 §6).
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -15,6 +15,15 @@ import {
   runCli,
   toRelative,
 } from "../lcov-gate.ts";
+
+const repoRoot = join(import.meta.dir, "..", "..");
+const exactTypeOnlyPaths = [
+  "src/abstractions/agent-backend.ts",
+  "src/abstractions/issue-tracker.ts",
+  "src/abstractions/voice-provider.ts",
+  "src/core/cursor-recipes/types.ts",
+  "src/core/sync-claude-team-json/types.ts",
+] as const;
 
 describe("parseLcov", () => {
   test("parses one file record", () => {
@@ -142,6 +151,21 @@ coveragePathIgnorePatterns = [
       "a/**",
       "b/**",
     ]);
+  });
+});
+
+describe("coveragePathIgnorePatterns policy", () => {
+  test("lists only exact compile-time-only seams and keeps runtime-bearing types.ts tracked", async () => {
+    const toml = await readFile(join(repoRoot, "bunfig.toml"), "utf8");
+    const patterns = extractIgnorePatterns(toml);
+    expect(patterns).toEqual([
+      "src/types/generated/**",
+      "**/index.ts",
+      "tests/**",
+      "**/*.fixtures.ts",
+      ...exactTypeOnlyPaths,
+    ]);
+    expect(patterns).not.toContain("**/types.ts");
   });
 });
 
@@ -417,14 +441,19 @@ describe("enumerateTrackedSources (scans the real worktree src/ tree)", () => {
   // This file (tests/lcov-gate.ts is excluded via tests/**, but its
   // SUBJECT modules live under src/). We scan the real repo so the
   // assertion is grounded in actual on-disk truth, not a fixture.
-  const repoRoot = join(import.meta.dir, "..", "..");
-
-  test("includes known tracked src files and excludes ignored ones", () => {
-    const ignore = ["src/types/generated/**", "**/index.ts", "tests/**", "**/*.fixtures.ts"];
+  test("includes known tracked src files and excludes ignored ones", async () => {
+    const ignore = extractIgnorePatterns(await readFile(join(repoRoot, "bunfig.toml"), "utf8"));
     const tracked = enumerateTrackedSources(repoRoot, ignore);
     // Real destructive modules ADR-254 cares about must be in-universe.
     expect(tracked).toContain("src/core/events-prune.ts");
     expect(tracked).toContain("src/core/event-subscriptions.ts");
+    // The exact-path compile-time-only seams are excluded from the gate.
+    for (const p of exactTypeOnlyPaths) {
+      expect(tracked).not.toContain(p);
+    }
+    // Runtime-bearing types.ts files stay tracked.
+    expect(tracked).toContain("src/verbs/doctor/types.ts");
+    expect(tracked).toContain("src/core/spawn-override.ts");
     // Paths are cwd-relative, POSIX, no leading slash.
     for (const p of tracked) {
       expect(p.startsWith("/")).toBe(false);
@@ -445,6 +474,7 @@ describe("enumerateTrackedSources (scans the real worktree src/ tree)", () => {
     const all = enumerateTrackedSources(repoRoot, []);
     expect(all.length).toBeGreaterThan(0);
     expect(all).toContain("src/core/events-prune.ts");
+    expect(all).toContain("src/verbs/doctor/types.ts");
   });
 });
 
