@@ -303,4 +303,23 @@ describe("safeAppendVerbEvent", () => {
     const body = await readFile(join(atmuxDir, "logs", "2026", "05", "events.jsonl"), "utf8");
     expect(body.length).toBeGreaterThan(0);
   });
+
+  test("stderr defaults to process.stderr.write and emits warning on ENOTDIR", async () => {
+    await mkdir(join(atmuxDir, "logs", "2026"), { recursive: true });
+    await Bun.write(join(atmuxDir, "logs", "2026", "05"), "blocker");
+    const epoch = Date.UTC(2026, 4, 12, 10, 0, 0);
+    const stderrCalls: string[] = [];
+    const originalStderrWrite = process.stderr.write;
+    try {
+      process.stderr.write = ((chunk: string | Uint8Array) => {
+        stderrCalls.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
+        return true;
+      }) as typeof process.stderr.write;
+      await safeAppendVerbEvent(atmuxDir, evt(), undefined, { epochMsForBucket: epoch });
+    } finally {
+      process.stderr.write = originalStderrWrite;
+    }
+    expect(stderrCalls.length).toBeGreaterThan(0);
+    expect(stderrCalls.join("")).toContain("events-log: append skipped");
+  });
 });
