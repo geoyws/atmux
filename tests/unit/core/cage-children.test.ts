@@ -352,6 +352,18 @@ describe("hasLiveChildCages — real default lister against the filesystem", () 
     expect(r).toBe(false);
   });
 
+  test("real default lister: a NUL byte in the parent path ⇒ true (defaultListDir rethrows non-ENOENT)", async () => {
+    // Null bytes are rejected by the real `readdir` before any tmux
+    // probing can happen, so the public guard must fail safe to `true`.
+    const nulParent = `${scratch}\0nul`;
+    const r = await hasLiveChildCages(nulParent, {
+      tmuxFactory: () => {
+        throw new Error("must not probe — listing failed before tmux");
+      },
+    });
+    expect(r).toBe(true);
+  });
+
   test("real default lister: a plain FILE beside child dirs contributes no candidates (ENOTDIR→[])", async () => {
     // The second-level descent readdir()s a regular file → ENOTDIR → [] →
     // `continue`, rather than tripping the fail-safe.
