@@ -16,7 +16,11 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createTmux, exactSessionTarget, type TmuxNamespace } from "../../../src/abstractions/tmux.ts";
+import {
+  createTmux,
+  exactSessionTarget,
+  type TmuxNamespace,
+} from "../../../src/abstractions/tmux.ts";
 import {
   type LegacySessionMigration,
   migrateLegacySessionName,
@@ -31,6 +35,7 @@ interface StubCalls {
 
 function stubTmux(opts: {
   present: ReadonlySet<string>;
+  hasSessionThrows?: ReadonlySet<string>;
   renameThrows?: boolean;
   calls: StubCalls;
 }): TmuxNamespace {
@@ -38,6 +43,7 @@ function stubTmux(opts: {
     session: {
       hasSession: async (name: string) => {
         opts.calls.hasSession.push(name);
+        if (opts.hasSessionThrows?.has(name) === true) throw new Error("probe boom");
         // The stub honours the `=` anchor the way tmux does for an
         // exact name: strip it before the lookup.
         const bare = name.startsWith("=") ? name.slice(1) : name;
@@ -95,18 +101,37 @@ describe("migrateLegacySessionName — branch coverage (stub tmux)", () => {
     expect(logs.join("\n")).toContain("atmux-sopx");
   });
 
+  test("renames when the bare probe throws after the legacy probe succeeds", async () => {
+    const warns: string[] = [];
+    const tmux = stubTmux({
+      present: new Set(["atmux-x"]),
+      hasSessionThrows: new Set([exactSessionTarget("x")]),
+      calls,
+    });
+    const out = await migrateLegacySessionName({
+      tmux,
+      teamName: "x",
+      resolvedSession: "x",
+      warn: (m) => warns.push(m),
+    });
+    expect(out).toBe("renamed");
+    expect(calls.hasSession).toEqual([exactSessionTarget("atmux-x"), exactSessionTarget("x")]);
+    expect(calls.renames).toEqual([{ from: "=atmux-x", to: "x" }]);
+    expect(warns).toEqual([]);
+  });
+
   test("idempotent: a second run after the rename is a noop", async () => {
     const present = new Set(["atmux-x"]);
     const tmux = stubTmux({ present, calls });
-    expect(
-      await migrateLegacySessionName({ tmux, teamName: "x", resolvedSession: "x" }),
-    ).toBe("renamed");
+    expect(await migrateLegacySessionName({ tmux, teamName: "x", resolvedSession: "x" })).toBe(
+      "renamed",
+    );
     // Simulate the rename having landed.
     present.delete("atmux-x");
     present.add("x");
-    expect(
-      await migrateLegacySessionName({ tmux, teamName: "x", resolvedSession: "x" }),
-    ).toBe("noop");
+    expect(await migrateLegacySessionName({ tmux, teamName: "x", resolvedSession: "x" })).toBe(
+      "noop",
+    );
     expect(calls.renames).toHaveLength(1);
   });
 
@@ -146,9 +171,9 @@ describe("migrateLegacySessionName — branch coverage (stub tmux)", () => {
         },
       },
     } as unknown as TmuxNamespace;
-    expect(
-      await migrateLegacySessionName({ tmux, teamName: "x", resolvedSession: "x" }),
-    ).toBe("noop");
+    expect(await migrateLegacySessionName({ tmux, teamName: "x", resolvedSession: "x" })).toBe(
+      "noop",
+    );
   });
 });
 
