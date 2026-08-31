@@ -2634,6 +2634,11 @@ describe("checkWorktreeNestedStateDb", () => {
     expect(rows).toEqual([]);
   });
 
+  test("worktrees/ empty file → throws", async () => {
+    await writeFile(join(atmuxDir, "worktrees"), "");
+    await expect(checkWorktreeNestedStateDb(team([{ name: "alice" }]), atmuxDir)).rejects.toThrow();
+  });
+
   test("worktree dir present but NO nested state.db → empty rows (the healthy case)", async () => {
     // alice's worktree carries only a team.json (allowed per ADR-245) — no
     // state.db. The probe must stay silent.
