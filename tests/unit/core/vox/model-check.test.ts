@@ -21,6 +21,8 @@
 //      prevented it.
 
 import { describe, expect, test } from "bun:test";
+import type { HttpRequestOpts, HttpResponse } from "../../../../src/abstractions/http.ts";
+import { HttpError, HttpTimeoutError } from "../../../../src/abstractions/http.ts";
 import {
   checkModelPin,
   describeFetchFailure,
@@ -32,7 +34,6 @@ import {
   SKIP_MODEL_CHECK_ENV,
   suggestModels,
 } from "../../../../src/core/vox/model-check.ts";
-import { HttpError, HttpTimeoutError } from "../../../../src/errors.ts";
 
 const KEY = "sk-live-secret-value-9f3a";
 
@@ -233,6 +234,43 @@ describe("checkModelPin — the skip flag", () => {
 });
 
 describe("the PRODUCTION http path (loopback only — no provider is ever dialled)", () => {
+  test("forwards the exact request options and returns the body verbatim", async () => {
+    const seen: Array<HttpRequestOpts> = [];
+    const requestFn = async (opts: HttpRequestOpts): Promise<HttpResponse> => {
+      seen.push(opts);
+      return {
+        url: opts.url,
+        method: opts.method ?? "GET",
+        status: 200,
+        statusText: "OK",
+        headers: new Headers(),
+        body: "verbatim-body",
+        bytes: new TextEncoder().encode("verbatim-body"),
+        durationMs: 1,
+      };
+    };
+
+    const body = await fetchModelListBody(
+      {
+        url: "http://provider.test/v1/models",
+        headers: { "x-goog-api-key": KEY, "x-extra": "present" },
+      },
+      4321,
+      requestFn,
+    );
+
+    expect(body).toBe("verbatim-body");
+    expect(seen).toEqual([
+      {
+        url: "http://provider.test/v1/models",
+        method: "GET",
+        headers: { "x-goog-api-key": KEY, "x-extra": "present" },
+        timeoutMs: 4321,
+        retry: 0,
+      },
+    ]);
+  });
+
   // Every other test injects `fetchBody`. A seam that is always injected
   // is a seam nobody has proved works, so this drives the real one
   // against a local `Bun.serve` — which is also the only place the
