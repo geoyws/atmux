@@ -522,6 +522,57 @@ describe("cockpitRotate — gate 2 (pane-idle)", () => {
     expect(h.capturedStderr.join("")).toContain("gate-2-pane-idle");
     expect(firstDiscord(h).template).toBe("cockpit-rotate-refused");
   });
+
+  test("team-driver under a top-level group captures from the group session", async () => {
+    const h = makeHarness();
+    const cockpit = defaultCockpit();
+    cockpit.sessions = [
+      {
+        type: "group",
+        name: "platform",
+        enabled: true,
+        sessions: [
+          {
+            type: "team",
+            name: "atmux",
+            root: "/root/work/src/atmux",
+            enabled: true,
+            sessions: [],
+          },
+        ],
+      },
+    ];
+    const tmuxConfigs: TmuxConfig[] = [];
+    const captureTargets: string[] = [];
+    const opts = {
+      ...harnessOpts(h),
+      cockpit,
+      loadCockpit: async () => cockpit,
+      tmuxFactory: (cfg: TmuxConfig) => {
+        tmuxConfigs.push(cfg);
+        const inner = makeTmuxFactory(h)(cfg);
+        return {
+          ...inner,
+          pane: {
+            ...inner.pane,
+            capturePane: async (captureOpts: { target: string; start?: number }) => {
+              captureTargets.push(captureOpts.target);
+              return inner.pane.capturePane(captureOpts);
+            },
+          },
+        } as unknown as TmuxNamespace;
+      },
+    };
+    h.captures.set("platform:atmux", "✻ Cooking…");
+
+    const exit = await cockpitRotate(["atmux"], opts);
+
+    expect(exit).toBe(65);
+    expect(h.capturedStderr.join("")).toContain("gate-2-pane-idle");
+    expect(captureTargets).toContain("platform:atmux");
+    expect(captureTargets).not.toContain("atmux_cockpit:atmux");
+    expect(tmuxConfigs).toContainEqual({ socketPath: "/tmp/atmux-grp-platform/sock" });
+  });
 });
 
 describe("cockpitRotate — gate 3 (uptime)", () => {
