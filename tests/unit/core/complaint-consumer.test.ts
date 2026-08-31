@@ -6,13 +6,17 @@
 // routes complaints to the target team's lead via `atmux tell-lead`
 // per ADR-214's lead-gated adjudication pattern.
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
+import * as nodeChildProcess from "node:child_process";
 import {
   type ComplaintConsumerOutcome,
   createComplaintConsumerHandler,
   formatComplaintMessage,
 } from "../../../src/core/complaint-consumer.ts";
 import type { ComplaintFiledPayload } from "../../../src/schema/events.ts";
+
+const childProcessSnapshot = { ...nodeChildProcess };
+const realSpawn = nodeChildProcess.spawn;
 
 function makeEvent(overrides: Partial<ComplaintFiledPayload> = {}): ComplaintFiledPayload {
   return {
@@ -56,6 +60,81 @@ describe("createComplaintConsumerHandler — routing", () => {
     expect(msg).toContain("test summary");
     expect(msg).toContain("severity=warn");
     expect(msg).toContain("source=operator");
+  });
+
+  test.serial("falls back to the real spawn path when deps.spawnTellLead is omitted", async () => {
+    const calls: Array<{
+      command: string;
+      args: ReadonlyArray<string>;
+      options: { stdio?: string; env?: NodeJS.ProcessEnv };
+    }> = [];
+    let installed = false;
+
+    try {
+      mock.module("node:child_process", () => ({
+        ...childProcessSnapshot,
+        spawn: mock(
+          (
+            command: string,
+            args: ReadonlyArray<string>,
+            options: { stdio?: string; env?: NodeJS.ProcessEnv },
+          ) => {
+            const callIndex = calls.push({ command, args: [...args], options });
+            const child = {
+              on(
+                event: "error" | "exit",
+                handler: (code?: number | Error) => void,
+              ) {
+                if (callIndex === 1 && event === "exit") {
+                  queueMicrotask(() => handler(0));
+                } else if (callIndex === 2 && event === "error") {
+                  queueMicrotask(() => handler(new Error("spawn failed")));
+                }
+                return child;
+              },
+            };
+            return child;
+          },
+        ),
+      }));
+      installed = true;
+
+      const routedEvent = makeEvent({ complaintId: "c-fallback-ok", targetTeam: "sopx" });
+      const routedHandler = createComplaintConsumerHandler({ env: {} });
+      const routedOutcome = await routedHandler(routedEvent);
+      expect(routedOutcome).toBe("routed" satisfies ComplaintConsumerOutcome);
+
+      const failedEvent = makeEvent({ complaintId: "c-fallback-fail", targetTeam: "opsx" });
+      const failedHandler = createComplaintConsumerHandler({ env: {} });
+      const failedOutcome = await failedHandler(failedEvent);
+      expect(failedOutcome).toBe("tell-lead-failed" satisfies ComplaintConsumerOutcome);
+
+      expect(calls).toHaveLength(2);
+      expect(calls[0]).toEqual({
+        command: "atmux",
+        args: ["tell-lead", "--team", "sopx", formatComplaintMessage(routedEvent)],
+        options: {
+          stdio: "inherit",
+          env: process.env,
+        },
+      });
+      expect(calls[1]).toEqual({
+        command: "atmux",
+        args: ["tell-lead", "--team", "opsx", formatComplaintMessage(failedEvent)],
+        options: {
+          stdio: "inherit",
+          env: process.env,
+        },
+      });
+    } finally {
+      if (installed) {
+        mock.module("node:child_process", () => ({
+          ...childProcessSnapshot,
+        }));
+        mock.restore();
+        expect(nodeChildProcess.spawn).toBe(realSpawn);
+      }
+    }
   });
 
   test("cross-team complaints pass the target team name to tell-lead", async () => {
