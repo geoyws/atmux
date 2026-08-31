@@ -92,6 +92,35 @@ describe("hostPressureRows (pure)", () => {
     expect(rows[0]?.hint).toContain("ATMUX_SPAWN_MAX_LOAD_RATIO");
   });
 
+  test("over-threshold verdict renders non-empty disk usage and missing mounts", () => {
+    const v: HostPressureVerdict = {
+      ok: false,
+      reasons: ["disk / 91% > 90% threshold"],
+      probe: {
+        loadAvg1min: 8.5,
+        loadAvg15min: 22.12,
+        memAvailableMb: 2048,
+        cpuCores: 16,
+        memTotalMb: 65536,
+        disks: [
+          { mount: "/", totalMb: 100000, availableMb: 9000, usedPercent: 91 },
+          { mount: "/var", totalMb: 50000, availableMb: 6000, usedPercent: 88 },
+        ],
+        missingMounts: ["/home"],
+      },
+      thresholds: { maxLoadRatio: 0.75, minMemMb: 8192, maxDiskPercent: 90 },
+      skipped: false,
+    };
+    const rows = hostPressureRows(v);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.label).toBe("host-pressure");
+    expect(rows[0]?.detail).toContain("disk / 91%/90%, /var 88%/90%, /home NOT REPORTED");
+    expect(rows[0]?.detail).not.toContain("none reported");
+    expect(rows[0]?.detail).toContain("OVER threshold");
+    expect(rows[0]?.hint).toContain("REFUSE");
+  });
+
   test("multiple reasons surface in the hint", () => {
     const v: HostPressureVerdict = {
       ok: false,
