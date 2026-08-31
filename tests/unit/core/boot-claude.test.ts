@@ -15,11 +15,11 @@ import { describe, expect, test } from "bun:test";
 import type { SendTarget, TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import {
   bootClaudeMember,
+  bootSignalLive,
   isClaudeCodeFolderTrustModal,
   isTuiReady,
   renderBootFailureNotice,
   renderBootPrompt,
-  bootSignalLive,
   thinkingActive,
   tokensMoved,
 } from "../../../src/core/boot-claude.ts";
@@ -56,6 +56,8 @@ function fakeTmux(opts: {
   calls: CallRecord[];
   getCaptureCallCount: () => number;
   getSendCallCount: () => number;
+  getBufferLoadCallCount: () => number;
+  getBufferPasteCallCount: () => number;
 } {
   const calls: CallRecord[] = [];
   let captureCallCount = 0;
@@ -130,6 +132,8 @@ function fakeTmux(opts: {
     calls,
     getCaptureCallCount: () => captureCallCount,
     getSendCallCount: () => sendCallCount,
+    getBufferLoadCallCount: () => bufferLoadCallCount,
+    getBufferPasteCallCount: () => bufferPasteCallCount,
   };
 }
 
@@ -897,6 +901,53 @@ describe("bootClaudeMember — retry", () => {
     expect(r.attempts).toBe(2);
     // Exactly 2 send-keys invocations (the retry pattern)
     expect(calls.filter((c) => c.kind === "send")).toHaveLength(2);
+  });
+});
+
+// ---------- bootClaudeMember — post-boot capture error ----------
+
+describe("bootClaudeMember — post-boot capture error", () => {
+  test("post-boot poll captures once, then throws on the next poll → failed with tokens-never-moved, no retry", async () => {
+    const throwOnCaptureCall = 6;
+    const {
+      tmux,
+      getCaptureCallCount,
+      getSendCallCount,
+      getBufferLoadCallCount,
+      getBufferPasteCallCount,
+    } = fakeTmux({
+      captures: [
+        "✻ Welcome", // [1] initial sentinel — not booted
+        "❯ ", // [2] readiness — ready
+        "❯ pre-capture", // [3] safeSend pre-capture
+        "❯ ", // [4] safeSend verify capture — composer empty
+        "still nothing\n❯ ", // [5] post-boot poll #1 — not live yet
+      ],
+      captureThrowOn: throwOnCaptureCall, // [6] post-boot poll #2 — plain Error
+    });
+    const r = await bootClaudeMember({
+      tmux,
+      sendTarget,
+      paneTargetString: "atmux:fe-1",
+      team: "atmux",
+      member: "fe-1",
+      readyTimeoutMs: 1_000,
+      readyPollIntervalMs: 1,
+      submitVerifyTimeoutMs: 10,
+      submitVerifyRetries: 0,
+      submitVerifyPollIntervalMs: 1,
+      postBootTimeoutMs: 1_000,
+      postBootPollIntervalMs: 1,
+      maxAttempts: 1,
+      paneLockDir: testPaneLockDir,
+    });
+    expect(r.status).toBe("failed");
+    expect(r.reason).toBe("tokens-never-moved");
+    expect(r.attempts).toBe(1);
+    expect(getCaptureCallCount()).toBe(throwOnCaptureCall);
+    expect(getBufferLoadCallCount()).toBe(1);
+    expect(getBufferPasteCallCount()).toBe(1);
+    expect(getSendCallCount()).toBe(1);
   });
 });
 
