@@ -401,6 +401,66 @@ describe("ADR-057 §D3a — acquireWithTTL crashed-PID recovery", () => {
     await child.exited;
   });
 
+  test("default isAlive uses process.kill(pid, 0) for a nonexistent PID and audits the orphan", async () => {
+    const target = join(dir, "default-dead-pid");
+    const lockPath = `${target}.lock`;
+    const auditDir = join(dir, "logs-default-dead-pid");
+
+    const child = Bun.spawn([
+      "bun",
+      "-e",
+      `
+        const lock = await import("${process.cwd()}/src/abstractions/lock.ts");
+        const h = await lock.acquire("${target}");
+        process.stdout.write("ready\\n");
+        await new Promise(r => setTimeout(r, 1500));
+        await h.release();
+      `,
+    ], { stdout: "pipe" });
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+    try {
+      reader = child.stdout?.getReader() ?? null;
+      const decoder = new TextDecoder();
+      let readyText = "";
+      while (!readyText.includes("ready\n")) {
+        const chunk = await reader.read();
+        if (chunk.done) {
+          throw new Error("child exited before signaling ready");
+        }
+        readyText += decoder.decode(chunk.value, { stream: true });
+      }
+      expect(readyText).toContain("ready\n");
+      // 99999999 is intentionally far above the local process table; if a
+      // platform does somehow allocate it, the test will need a different
+      // deterministic nonexistent-PID source.
+      await writeFile(lockPath, "99999999\n");
+      const oldEpoch = Date.now() / 1000 - 600;
+      const { utimes } = await import("node:fs/promises");
+      await utimes(lockPath, oldEpoch, oldEpoch);
+
+      let caught: LockTimeoutError | null = null;
+      try {
+        await acquireWithTTL(target, {
+          ttlSec: 300,
+          auditDir,
+          timeoutMs: 200,
+          retryDelayMs: 30,
+        });
+      } catch (e) {
+        if (e instanceof LockTimeoutError) caught = e;
+      }
+      expect(caught).not.toBeNull();
+      const auditLog = join(auditDir, "lock-recovery.log");
+      const text = await readFile(auditLog, "utf8");
+      expect(text).toContain(lockPath);
+      expect(text).toContain("prev_pid=99999999");
+      expect(text).toContain("reason=ttl-orphan");
+    } finally {
+      await reader?.cancel().catch(() => {});
+      await child.exited;
+    }
+  });
+
   test("default isAlive uses process.kill(pid, 0) — own PID is alive", async () => {
     const target = join(dir, "self-alive");
     const lockPath = `${target}.lock`;
