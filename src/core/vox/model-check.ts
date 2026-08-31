@@ -216,8 +216,9 @@ export function describeFetchFailure(e: unknown): string {
 export async function fetchModelListBody(
   req: { url: string; headers: Record<string, string> },
   timeoutMs: number = MODEL_CHECK_TIMEOUT_MS,
+  requestFn: typeof request = request,
 ): Promise<string> {
-  const res = await request({
+  const res = await requestFn({
     url: req.url,
     method: "GET",
     headers: req.headers,
