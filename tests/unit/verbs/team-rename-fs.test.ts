@@ -365,4 +365,10 @@ describe("isRenameInProgress", () => {
     // case is the pre-ADR-027 baseline behavior.
     expect(await isRenameInProgress("/nonexistent/path/that/has/no/atmux/dir")).toBe(false);
   });
+
+  test("fail-open when atmuxDir is a regular file (state/rename.lock lookup hits ENOTDIR)", async () => {
+    const fileAtmuxDir = join(root, "atmux-dir-file");
+    await writeFile(fileAtmuxDir, "not a directory", "utf8");
+    expect(await isRenameInProgress(fileAtmuxDir)).toBe(false);
+  });
 });
