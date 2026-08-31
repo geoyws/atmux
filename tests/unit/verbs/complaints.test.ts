@@ -88,6 +88,12 @@ describe("parseComplaintsArgs", () => {
     expect(() => parseComplaintsArgs(["list", "--status", "bogus"])).toThrow(UsageError);
   });
 
+  test("list --status without a value rejected", () => {
+    expect(() => parseComplaintsArgs(["list", "--status"])).toThrow(
+      "complaints list: --status requires a value",
+    );
+  });
+
   test("list --all + --status mutually exclusive", () => {
     expect(() => parseComplaintsArgs(["list", "--all", "--status", "open"])).toThrow(UsageError);
   });
@@ -99,6 +105,12 @@ describe("parseComplaintsArgs", () => {
   test("file requires --summary", () => {
     expect(() => parseComplaintsArgs(["file"])).toThrow(UsageError);
     expect(() => parseComplaintsArgs(["file", "--root-cause", "x"])).toThrow(UsageError);
+  });
+
+  test("file rejects unknown args", () => {
+    expect(() => parseComplaintsArgs(["file", "--summary", "x", "--bogus"])).toThrow(
+      "complaints file: unknown arg: --bogus",
+    );
   });
 
   test("file with --summary parses; root-cause/ask/by/related-task/kind optional", () => {
@@ -387,6 +399,8 @@ describe("complaints verb — integration", () => {
         "use isolated cage",
         "--by",
         "superdoctor",
+        "--related-task",
+        "t-aaaaaaaa",
         "--team-dir",
         teamDir,
       ]),
@@ -399,6 +413,7 @@ describe("complaints verb — integration", () => {
     expect(listOut).toContain("cage cycled itself");
     expect(listOut).toContain("🔴"); // open status emoji
     expect(listOut).toContain("isolated cage");
+    expect(listOut).toContain("related task: t-aaaaaaaa");
 
     const { out: resolveOut } = await captureStdout(() =>
       complaints([
