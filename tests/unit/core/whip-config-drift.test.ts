@@ -54,7 +54,8 @@ describe("composeDriftReport", () => {
     });
     const report = composeDriftReport(err, "raw");
     expect(report.issues.length).toBeGreaterThan(0);
-    const first = report.issues[0]!;
+    const first = report.issues[0];
+    if (first === undefined) throw new Error("test setup: expected at least one issue");
     expect(first.path).toContain("whip");
     expect(first.code).toBeTruthy();
     expect(first.message).toBeTruthy();
@@ -96,22 +97,23 @@ describe("composeDriftReport", () => {
     expect(a.driftHash).not.toBe(b.driftHash);
   });
 
-  test("issue sort is canonical (path then code) — order doesn't depend on Zod issue order", () => {
-    // Same issues, different parse order, should hash the same.
-    // We can't easily reorder Zod issues, so we just assert determinism
-    // by hashing twice and confirming equality (already tested above).
-    // Plus assert sort by path within issues array.
-    const err = makeZodError({
-      name: "t",
-      members: [],
-      whip: { zlast: 1, aFirst: 2 },
-    });
-    const report = composeDriftReport(err, "raw");
-    if (report.issues.length >= 2) {
-      const paths = report.issues.map((i) => i.path.join("."));
-      const sorted = [...paths].sort();
-      expect(paths).toEqual(sorted);
-    }
+  test("equal-path issues normalize by code tiebreaker regardless of input order", () => {
+    const issueA = { path: ["whip"], code: "zzz", message: "late code" };
+    const issueB = { path: ["whip"], code: "aaa", message: "early code" };
+    const errAB = { issues: [issueA, issueB] } as unknown as ZodError;
+    const errBA = { issues: [issueB, issueA] } as unknown as ZodError;
+
+    const reportAB = composeDriftReport(errAB, "raw");
+    const reportBA = composeDriftReport(errBA, "raw");
+
+    expect(reportAB.issues).toHaveLength(2);
+    expect(reportBA.issues).toHaveLength(2);
+    expect(reportAB.issues.map((issue) => issue.code)).toEqual(["aaa", "zzz"]);
+    expect(reportBA.issues.map((issue) => issue.code)).toEqual(["aaa", "zzz"]);
+    expect(reportAB.driftHash).toBe(reportBA.driftHash);
+    expect(reportAB.driftHash).not.toBe("");
+    expect(reportAB.catastrophic).toBe(false);
+    expect(reportBA.catastrophic).toBe(false);
   });
 
   test("rawSnippet truncated to ≤500 chars", () => {
