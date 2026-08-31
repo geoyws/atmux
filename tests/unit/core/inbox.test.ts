@@ -6,6 +6,9 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { exists } from "../../../src/abstractions/fs.ts";
+import { closeDatabase, openDatabase } from "../../../src/abstractions/sqlite.ts";
+import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
 import { SUPERDOCTOR_INBOX_KEY } from "../../../src/core/common.ts";
 import {
   appendDispatched,
@@ -18,6 +21,7 @@ import {
   movePendingToInProgress,
   removeFromInProgress,
 } from "../../../src/core/inbox.ts";
+import { addTask, moveTask } from "../../../src/core/kanban.ts";
 import type { InboxEntry } from "../../../src/schema/inbox.ts";
 
 let atmuxDir: string;
@@ -58,6 +62,47 @@ describe("loadInbox", () => {
     const i = await loadInbox(atmuxDir, "alpha");
     expect(i.pending).toHaveLength(1);
     expect(i.pending[0]?.id).toBe("t-aaaaaaaa");
+  });
+});
+
+describe("loadInbox (SQL canonical)", () => {
+  test("reads state.db buckets and leaves legacy inbox JSON absent", async () => {
+    const stateDbPath = join(atmuxDir, "state.db");
+    const db = openDatabase(stateDbPath, migrations);
+    closeDatabase(db);
+
+    const pendingId = await addTask(atmuxDir, { subject: "pending task", assignee: "alpha" });
+    const inProgressId = await addTask(atmuxDir, {
+      subject: "in-progress task",
+      assignee: "alpha",
+    });
+    const doneId = await addTask(atmuxDir, { subject: "done task", assignee: "alpha" });
+
+    await moveTask(atmuxDir, inProgressId, "in-progress");
+    await moveTask(atmuxDir, doneId, "done");
+
+    const inboxJsonPath = join(atmuxDir, "inboxes", "alpha.json");
+    expect(await exists(inboxJsonPath)).toBe(false);
+
+    const initial = await loadInbox(atmuxDir, "alpha");
+    expect(initial.pending.map((t) => t.id)).toEqual([pendingId]);
+    expect(initial.inProgress.map((t) => t.id)).toEqual([inProgressId]);
+    expect(initial.done.map((t) => t.id)).toEqual([doneId]);
+
+    const pendingTask = initial.pending.at(0);
+    const inProgressTask = initial.inProgress.at(0);
+    if (pendingTask === undefined || inProgressTask === undefined) {
+      throw new Error("expected seeded inbox entries");
+    }
+
+    await appendDispatched(atmuxDir, "alpha", inProgressTask, 101);
+    await appendPending(atmuxDir, "alpha", pendingTask, 102);
+    await movePendingToInProgress(atmuxDir, "alpha", pendingTask, 103);
+    await removeFromInProgress(atmuxDir, "alpha", inProgressId);
+    await moveInProgressToDone(atmuxDir, "alpha", inProgressTask, 104);
+
+    expect(await exists(inboxJsonPath)).toBe(false);
+    expect(await loadInbox(atmuxDir, "alpha")).toEqual(initial);
   });
 });
 
