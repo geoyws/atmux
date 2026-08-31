@@ -51,14 +51,24 @@ describe("checkStaleAnchor", () => {
     expect(v.cursorLagSec).toBe(0);
   });
 
-  test("cursor stale, but no unread entries → no fire", async () => {
-    // Cursor at 11:00 MYT today (1778122800). Entry at 09:00 MYT today (1778115600).
-    // Mtime older than cursor → no fire.
-    await writeFile(inboxPath, "## 09:00 MYT — only\nbody");
-    await setMtime(inboxPath, 1778115600); // 09:00 MYT today
-    await writeCursor(atmuxDir, 1778122800); // 11:00 MYT today
+  test("cursor stale, but no unread entries after the gate → no fire", async () => {
+    const statePath = join(atmuxDir, "state", "whip-stale-anchor-state.json");
+
+    // Cursor at 09:00 MYT today (1778115600). The inbox tip is older than the cursor,
+    // but the file mtime is 12:00 MYT, so lag = 3h > staleSec and the stale gate opens.
+    await writeFile(inboxPath, "## 08:30 MYT — already read\nbody");
+    await setMtime(inboxPath, NOW_EPOCH_SEC);
+    await writeCursor(atmuxDir, 1778115600); // 09:00 MYT today
+
     const v = await checkStaleAnchor({ atmuxDir, nowEpochSec: NOW_EPOCH_SEC });
-    expect(v.fire).toBe(false);
+    expect(v).toEqual({
+      fire: false,
+      bullet: null,
+      tipHash: null,
+      unreadCount: 0,
+      cursorLagSec: 3 * 3600,
+    });
+    await expect(Bun.file(statePath).exists()).resolves.toBe(false);
   });
 
   test("cursor stale + unread entries → fires once with bullet", async () => {
