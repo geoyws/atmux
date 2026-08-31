@@ -17,12 +17,15 @@
 //   - dry-run reports decisions without markDone calls
 //   - first SHA wins when multiple commits in the range ref the same task
 //   - git invocation uses `<from>..<to>` range form
+//   - real SQLite state.db seed → default open-task scan + persisted done notes
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SpawnResult } from "../../../src/abstractions/spawn.ts";
+import { closeDatabase, openDatabase } from "../../../src/abstractions/sqlite.ts";
+import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
 import { flipTasksMergedInRange } from "../../../src/core/post-merge-task-flip.ts";
 
 let atmuxDir: string;
@@ -43,6 +46,7 @@ afterEach(async () => {
 interface OpenTask {
   id: string;
   status: string;
+  driverOnly?: boolean;
 }
 
 interface FakeCommit {
@@ -107,6 +111,26 @@ function makeMarkDone(): {
   return { fn, calls };
 }
 
+function seedTaskRows(atmuxDir: string, rows: ReadonlyArray<OpenTask & { createdAt: number }>) {
+  const db = openDatabase(join(atmuxDir, "state.db"), migrations);
+  try {
+    for (const row of rows) {
+      db.query(
+        "INSERT INTO tasks (id, subject, status, driver_only, created_at, note) VALUES ($id, $subject, $status, $driver_only, $created_at, $note)",
+      ).run({
+        $id: row.id,
+        $subject: `seeded ${row.id}`,
+        $status: row.status,
+        $driver_only: row.driverOnly === true ? 1 : 0,
+        $created_at: row.createdAt,
+        $note: null,
+      });
+    }
+  } finally {
+    closeDatabase(db);
+  }
+}
+
 // ---------- tests ----------
 
 describe("flipTasksMergedInRange", () => {
@@ -135,6 +159,64 @@ describe("flipTasksMergedInRange", () => {
     expect(md.calls).toEqual([
       { id: "t-aaaaaaaa", note: "flipped: shipped via merge SHA deadbeefcafe" },
     ]);
+  });
+
+  test("SQLite-backed open scan flips todo + in-progress rows and persists done notes", async () => {
+    seedTaskRows(atmuxDir, [
+      { id: "t-00000000", status: "done", createdAt: 0 },
+      { id: "t-11111111", status: "todo", driverOnly: true, createdAt: 1 },
+      { id: "t-22222222", status: "in-progress", driverOnly: true, createdAt: 2 },
+    ]);
+
+    const { spawn } = fakeGit([
+      { sha: "feedfacecafe", subject: "feat(core): t-11111111 t-22222222 ship together" },
+    ]);
+
+    const r = await flipTasksMergedInRange(atmuxDir, "base12345678", "merge87654321", {
+      git: spawn,
+    });
+
+    expect(r.openTasks).toBe(2);
+    expect(r.matched).toBe(2);
+    expect(r.flipped).toBe(2);
+    expect(r.decisions).toEqual([
+      { taskId: "t-11111111", sha: "feedfacecafe", action: "flip" },
+      { taskId: "t-22222222", sha: "feedfacecafe", action: "flip" },
+    ]);
+
+    const db = openDatabase(join(atmuxDir, "state.db"), migrations);
+    try {
+      const rows = db
+        .query("SELECT id, status, driver_only, note FROM tasks ORDER BY id ASC")
+        .all() as Array<{
+          id: string;
+          status: string | null;
+          driver_only: number | null;
+          note: string | null;
+        }>;
+      expect(rows).toEqual([
+        {
+          id: "t-00000000",
+          status: "done",
+          driver_only: 0,
+          note: null,
+        },
+        {
+          id: "t-11111111",
+          status: "done",
+          driver_only: 1,
+          note: "flipped: shipped via merge SHA feedfacecafe",
+        },
+        {
+          id: "t-22222222",
+          status: "done",
+          driver_only: 1,
+          note: "flipped: shipped via merge SHA feedfacecafe",
+        },
+      ]);
+    } finally {
+      closeDatabase(db);
+    }
   });
 
   test("body-only match → NOT flipped (t-4ea69dd1 P0 mirror)", async () => {
