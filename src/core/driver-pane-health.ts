@@ -88,7 +88,7 @@ export async function probeDriverPane(
   const listWindowNames =
     deps.listWindowNames ??
     (async (s: string): Promise<ReadonlyArray<string>> => {
-      const ws = await tmux.window.listWindows(s).catch(() => []);
+      const ws = await tmux.window.listWindows(s);
       return ws.map((w) => w.name);
     });
 

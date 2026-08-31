@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import { probeDriverPane } from "../../../src/core/driver-pane-health.ts";
 import type { CaptureFn, PaneState } from "../../../src/core/pane-state.ts";
 import type { Team } from "../../../src/schema/team.ts";
@@ -133,6 +134,67 @@ describe("probeDriverPane — configured but no driver window", () => {
     expect(result.configured).toBe(true);
     expect(result.windowExists).toBe(false);
     expect(result.state).toBeNull();
+  });
+});
+
+describe("probeDriverPane — production-default tmux adapters", () => {
+  test("uses tmux.window.listWindows and tmux.pane.capturePane when deps omit overrides", async () => {
+    const tmux = {
+      window: {
+        async listWindows(_sessionName: string) {
+          return [{ index: 0, id: "%1", name: "driver", active: true }];
+        },
+      },
+      pane: {
+        async capturePane(_opts: {
+          target: string;
+          start?: number;
+          end?: number;
+          includeAnsi?: boolean;
+        }) {
+          return STATE_FIXTURES.READY;
+        },
+      },
+    } as unknown as TmuxNamespace;
+
+    const result = await probeDriverPane(teamWithDriverSession(), atmuxDir, { tmux });
+
+    expect(result.configured).toBe(true);
+    expect(result.windowExists).toBe(true);
+    expect(result.state).toBe("READY");
+    expect(result.evidence.length).toBeGreaterThan(0);
+  });
+
+  test("tmux.window.listWindows rejection degrades to windowExists=false without capturePane", async () => {
+    let captureCalled = false;
+    const tmux = {
+      window: {
+        async listWindows(_sessionName: string) {
+          throw new Error("tmux list-windows failed");
+        },
+      },
+      pane: {
+        async capturePane(_opts: {
+          target: string;
+          start?: number;
+          end?: number;
+          includeAnsi?: boolean;
+        }) {
+          captureCalled = true;
+          return STATE_FIXTURES.READY;
+        },
+      },
+    } as unknown as TmuxNamespace;
+
+    const result = await probeDriverPane(teamWithDriverSession(), atmuxDir, { tmux });
+
+    expect(result).toEqual({
+      configured: true,
+      windowExists: false,
+      state: null,
+      evidence: "",
+    });
+    expect(captureCalled).toBe(false);
   });
 });
 
