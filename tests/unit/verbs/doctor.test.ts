@@ -10,7 +10,7 @@
 // Public verb driven against fixture team.json with both runChecks
 // override (focused) and the default chain (integration smoke).
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -3503,6 +3503,29 @@ describe("checkMemberForcePushRecent", () => {
     expect(await checkMemberForcePushRecent(t, "/p/.atmux")).toEqual([]);
   });
 
+  test("branch resolves but reflog throws → empty rows and default now closure runs", async () => {
+    const realDateNow = Date.now;
+    let dateNowCalls = 0;
+    Date.now = () => {
+      dateNowCalls += 1;
+      return 1700001000000;
+    };
+    const gitSpawn: GitSpawn = async (argv) => {
+      if (argv.includes("--show-current")) return gitOk("main-alice\n");
+      if (argv.includes("reflog")) throw new Error("reflog unavailable");
+      return gitOk("");
+    };
+    try {
+      const rows = await checkMemberForcePushRecent(team([{ name: "alice" }]), "/p/.atmux", {
+        gitSpawn,
+      });
+      expect(rows).toEqual([]);
+      expect(dateNowCalls).toBe(1);
+    } finally {
+      Date.now = realDateNow;
+    }
+  });
+
   test("no force-push events in reflog → empty rows", async () => {
     const reflog = [
       "refs/heads/main-alice@{1700000000} commit: feat(x): land thing",
@@ -3678,6 +3701,30 @@ describe("checkSendKeysFailureRecent", () => {
   test("missing log file → empty rows", async () => {
     const rows = await checkSendKeysFailureRecent({ logPath: `${logPath}-missing` });
     expect(rows).toEqual([]);
+  });
+
+  test("logPath pointing at a directory → empty rows when readTextOrNull rejects", async () => {
+    const fsModule = await import("../../../src/abstractions/fs.ts");
+    const realReadTextOrNull = fsModule.readTextOrNull;
+    const mockReadTextOrNull = mock(async (path: string) => {
+      expect(path).toBe(logDir);
+      throw new Error("directory read rejected");
+    });
+
+    mock.module("../../../src/abstractions/fs.ts", () => ({
+      readTextOrNull: mockReadTextOrNull,
+    }));
+
+    try {
+      const rows = await checkSendKeysFailureRecent({ logPath: logDir });
+      expect(rows).toEqual([]);
+      expect(mockReadTextOrNull).toHaveBeenCalledTimes(1);
+    } finally {
+      mock.module("../../../src/abstractions/fs.ts", () => ({
+        readTextOrNull: realReadTextOrNull,
+      }));
+      mock.restore();
+    }
   });
 
   test("empty log → empty rows", async () => {
