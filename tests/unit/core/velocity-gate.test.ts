@@ -326,3 +326,85 @@ describe("runVelocityGateCheck — send returns busy → no pending-state record
     expect(rec?.menuSentAtSec).toBeNull();
   });
 });
+
+describe("runVelocityGateCheck — catch-path coverage", () => {
+  test("reply-validation probe failure is swallowed and classification continues", async () => {
+    const w = makeWiring({ paneSignal: "READY" });
+    await runVelocityGateCheck(makeDeps(w));
+
+    const seedRecord = await readStrikeRecord(atmuxDir, TEAM, SYMPTOM_HASH);
+    expect(seedRecord?.menuSentAtSec).not.toBeNull();
+
+    const logs: string[] = [];
+    const deps = makeDeps({ ...w, sendResult: "busy" });
+    deps.log = (msg) => {
+      logs.push(msg);
+    };
+    let probeCalls = 0;
+    deps.probeLeadPane = async () => {
+      probeCalls += 1;
+      if (probeCalls === 1) {
+        throw new Error("reply-validation probe failed");
+      }
+      return "pane idle text";
+    };
+
+    const result = await runVelocityGateCheck(deps);
+    expect(result.replyValidation).toBeNull();
+    expect(result.classification.verdict).toBe("BAD");
+    expect(result.menuSent).toBe(false);
+    expect(logs.some((line) => line.includes("reply-validation probe failed"))).toBe(true);
+
+    const rec = await readStrikeRecord(atmuxDir, TEAM, SYMPTOM_HASH);
+    expect(rec?.menuSentAtSec).toBeNull();
+    expect(rec?.menuPaneHash).toBeNull();
+  });
+
+  test("commit probe failure is swallowed and treated as 0", async () => {
+    const deps = makeDeps(makeWiring({ paneSignal: "BUSY" }));
+    deps.probeCommits = async () => {
+      throw new Error("commit probe failed");
+    };
+
+    const result = await runVelocityGateCheck(deps);
+    expect(result.classification.verdict).toBe("BAD");
+    expect(result.strikeIncremented).toBe(true);
+    expect(result.menuSent).toBe(false);
+  });
+
+  test("kanban probe failure is swallowed and treated as 0", async () => {
+    const deps = makeDeps(makeWiring({ paneSignal: "BUSY" }));
+    deps.probeInProgress = async () => {
+      throw new Error("kanban probe failed");
+    };
+
+    const result = await runVelocityGateCheck(deps);
+    expect(result.classification.verdict).toBe("STANDBY");
+    expect(result.strikeIncremented).toBe(false);
+    expect(result.menuSent).toBe(false);
+  });
+
+  test("lead-pane classify failure is swallowed and treated as UNREACHABLE", async () => {
+    const deps = makeDeps(makeWiring());
+    deps.classifyLeadCapture = () => {
+      throw new Error("lead classify failed");
+    };
+
+    const result = await runVelocityGateCheck(deps);
+    expect(result.paneSignal).toBe("UNREACHABLE");
+    expect(result.classification.verdict).toBe("BAD");
+    expect(result.menuSent).toBe(false);
+  });
+
+  test("menu-send throw is swallowed after strike increment", async () => {
+    const deps = makeDeps(makeWiring({ paneSignal: "READY" }));
+    deps.sendToLeadPane = async () => {
+      throw new Error("menu send failed");
+    };
+
+    const result = await runVelocityGateCheck(deps);
+    expect(result.classification.verdict).toBe("BAD");
+    expect(result.strikeIncremented).toBe(true);
+    expect(result.menuSent).toBe(false);
+  });
+});
