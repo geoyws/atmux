@@ -18,6 +18,7 @@ import {
   Cockpit,
   CockpitMedic,
   CockpitSession,
+  CockpitSuperbotRoute,
   CockpitWindow,
   SuperdriverSession,
   TeamSession,
@@ -404,5 +405,22 @@ describe("Cockpit.pushPolicy — ADR-229 §DA-Gate-2 (orchd-push allowlist / ref
         pushPolicy: { refusedBases: [], allowdBases: [] }, // typo
       }),
     ).toThrow();
+  });
+});
+
+describe("CockpitSuperbotRoute — ownership route validation", () => {
+  test("rejects duplicate defaultTeam in fallbackTeams with a path-pinned custom issue", () => {
+    const result = CockpitSuperbotRoute.safeParse({
+      board: "px",
+      tag: "aix-chat",
+      defaultTeam: "aix",
+      fallbackTeams: ["aix"],
+    });
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error("expected parse failure");
+    expect(result.error.issues[0]?.path).toEqual(["fallbackTeams"]);
+    expect(result.error.issues[0]?.message).toBe(
+      "team 'aix' appears more than once in the ownership route",
+    );
   });
 });
