@@ -302,6 +302,24 @@ describe("spliceEntry — pure splice", () => {
     expect(cBbbIdx).toBeGreaterThan(atmuxIdx);
     expect(cBbbIdx).toBeLessThan(notesIdx);
   });
+
+  test("stops a multi-team splice at the next sibling `###` header, not the later H2", () => {
+    const body =
+      "# 2026-05-15\n\n## Complaints adjudicated\n\n### atmux\n\n- c-aaa\n\n### sopx\n\n- c-sopx\n\n## Notes (optional)\n\n- later note\n";
+    const out = spliceEntry(body, "Complaints adjudicated", "- c-bbb", "atmux");
+    const atmuxIdx = out.indexOf("### atmux");
+    const cAaaIdx = out.indexOf("- c-aaa");
+    const cBbbIdx = out.indexOf("- c-bbb");
+    const sopxIdx = out.indexOf("### sopx");
+    const cSopxIdx = out.indexOf("- c-sopx");
+    const notesIdx = out.indexOf("## Notes (optional)");
+    expect(atmuxIdx).toBeGreaterThan(0);
+    expect(cAaaIdx).toBeGreaterThan(atmuxIdx);
+    expect(cBbbIdx).toBeGreaterThan(cAaaIdx);
+    expect(cBbbIdx).toBeLessThan(sopxIdx);
+    expect(cSopxIdx).toBeGreaterThan(sopxIdx);
+    expect(notesIdx).toBeGreaterThan(cSopxIdx);
+  });
 });
 
 // ---------- helpers ----------
