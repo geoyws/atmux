@@ -23,8 +23,12 @@
 
 import type { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { closeDatabase, openDatabase } from "../../../src/abstractions/sqlite.ts";
 import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
+import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import type { RefusalDetectionResult } from "../../../src/core/refusal-classifier.ts";
 import {
   listRefusalEventsForMember,
@@ -356,6 +360,89 @@ describe("scanTeamForRefusals", () => {
       expect(result.recorded).toBe(1);
     } finally {
       close();
+    }
+  });
+
+  test("default openDb / nowSec / paneCapture fallbacks persist a refusal row", async () => {
+    const teamRoot = await mkdtemp(join(tmpdir(), "atmux-refusal-scan-default-"));
+    const atmuxDir = join(teamRoot, ".atmux");
+    await mkdir(atmuxDir, { recursive: true });
+
+    const statePath = join(atmuxDir, "state.db");
+    const seedDb = openDatabase(statePath, migrations);
+    closeDatabase(seedDb);
+
+    const captured: Array<{ target: string; start?: number }> = [];
+    const tmux = {
+      pane: {
+        capturePane: async ({
+          target,
+          start,
+        }: {
+          target: string;
+          start?: number;
+        }): Promise<string> => {
+          if (start === undefined) {
+            captured.push({ target });
+          } else {
+            captured.push({ target, start });
+          }
+          return "I REFUSE to comply";
+        },
+      },
+    } as unknown as TmuxNamespace;
+
+    try {
+      const beforeScanSec = Math.floor(Date.now() / 1000);
+      const team = makeTeam(["alice"]);
+      const result = await scanTeamForRefusals(team, atmuxDir, {
+        tmux,
+        classify: (capture: string): RefusalDetectionResult =>
+          capture.includes("REFUSE")
+            ? detection("hard", 0.91, [{ phrase: "refuse-to-comply", class: "hard" }])
+            : none(),
+        log: () => {},
+      });
+      const afterScanSec = Math.floor(Date.now() / 1000);
+
+      expect(result.scanned).toBe(1);
+      expect(result.detected).toBe(1);
+      expect(result.recorded).toBe(1);
+      expect(result.deduped).toBe(0);
+      expect(result.perMember[0]).toMatchObject({
+        member: "alice",
+        severity: "hard",
+        matches: 1,
+        recorded: true,
+      });
+      expect(captured).toEqual([{ target: "demo:alice", start: -50 }]);
+
+      const readDb = openDatabase(statePath, migrations);
+      try {
+        const rows = listRefusalEventsForMember(readDb, "alice");
+        expect(rows).toHaveLength(1);
+        const row = rows[0];
+        if (row === undefined) {
+          throw new Error("expected one refusal row");
+        }
+        expect(row).toMatchObject({
+          member: "alice",
+          team: "demo",
+          severity: "hard",
+          confidence: 0.91,
+        });
+        expect(row.detectedAt).toBeGreaterThanOrEqual(beforeScanSec);
+        expect(row.detectedAt).toBeLessThanOrEqual(afterScanSec);
+        expect(row.minuteBucket).toBe(Math.floor(row.detectedAt / 60));
+        expect(row.phrases).toEqual([
+          { phrase: "refuse-to-comply", class: "hard" },
+        ]);
+        expect(result.perMember[0]?.eventId).toBe(row.id);
+      } finally {
+        closeDatabase(readDb);
+      }
+    } finally {
+      await rm(teamRoot, { recursive: true, force: true });
     }
   });
 });
