@@ -192,6 +192,34 @@ describe("claim verb — integration", () => {
     expect(inbox.inProgress).toHaveLength(1);
   });
 
+  test("done: regular logs file still returns 0 and leaves the task done", async () => {
+    const id = await addTask(atmuxDir, { subject: "x" });
+    await captureStdout(() => claim([id, "--as", "alpha", "--team-dir", teamDir]));
+    await writeFile(join(atmuxDir, "logs"), "blocked");
+
+    const origStderrWrite = process.stderr.write.bind(process.stderr);
+    let stderr = "";
+    process.stderr.write = ((s: string | Uint8Array) => {
+      stderr += typeof s === "string" ? s : new TextDecoder().decode(s);
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      const { result } = await captureStdout(() =>
+        done([id, "--as", "alpha", "--team-dir", teamDir]),
+      );
+      expect(result).toBe(0);
+    } finally {
+      process.stderr.write = origStderrWrite;
+    }
+
+    const k = await loadKanban(atmuxDir);
+    expect(k.tasks[0]?.owner).toBe("alpha");
+    expect(k.tasks[0]?.status).toBe("done");
+    expect(stderr).toContain("auto-push: unexpected error:");
+    expect(stderr).toContain("fs mkdir failed on");
+    expect(stderr).toContain(join(atmuxDir, "logs"));
+  });
+
   // ADR-033 explicit-id claim refuse-gate (t-9fb3858f, sibling to
   // t-25edd0f7's auto-pickup gate). 2x2 coverage on (driverOnly × scope).
   describe("ADR-033 driver-only refuse-gate", () => {
