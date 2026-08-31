@@ -5,6 +5,7 @@ import {
   chooseSuperbotTarget,
   completeSuperbotOffer,
   formatSuperbotOffer,
+  readSuperbotOfferState,
   reserveSuperbotOffer,
   SUPERBOT_METADATA_KEY,
   type SuperbotCandidate,
@@ -102,6 +103,23 @@ describe("superbot route/cooldown policy", () => {
       }),
     ).toEqual({ team: "geoyws", reason: "fallback", attempt: 1 });
   });
+
+  test("rejects malformed offeredTeams even when route metadata matches", () => {
+    const state = readSuperbotOfferState(
+      candidate({
+        [SUPERBOT_METADATA_KEY]: {
+          routeKey: "atmux/dispatch",
+          firstOfferedAt: 1_000,
+          lastOfferedAt: 2_000,
+          offeredTeams: ["atmux"],
+          pending: null,
+        },
+      }),
+      route,
+    );
+
+    expect(state).toBeNull();
+  });
 });
 
 describe("superbot offer and readiness", () => {
@@ -150,6 +168,23 @@ describe("superbot offer and readiness", () => {
         secondCapture: "❯ \n● done\n❯ operator draft\n⏵⏵ auto mode on",
       }),
     ).toBe("composer-not-empty");
+  });
+
+  test("non-empty Claude composer capture stays non-idle", () => {
+    const capture = "❯ operator draft\nPress up to edit queued messages";
+
+    expect(botComposerEmpty("claude", capture)).toBe(false);
+    expect(
+      assessBotReadiness({
+        tui: "claude",
+        held: false,
+        hasLiveLease: false,
+        paneDead: false,
+        paneCurrentCommand: "claude",
+        firstCapture: capture,
+        secondCapture: capture,
+      }),
+    ).toBe("not-idle");
   });
 
   test("stable Claude chrome is ready even when tmux reports sh", () => {
