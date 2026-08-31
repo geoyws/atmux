@@ -214,6 +214,30 @@ describe("merge-member verb — no-op path", () => {
     expect(logs.join("")).toContain("geoyws-alpha");
   });
 
+  test("status='no-op' with default log → exit 0 and writes stdout", async () => {
+    const primitive = async (): Promise<MergeMemberResult> => ({
+      status: "no-op",
+      reason: "no-commits-ahead",
+    });
+    const originalWrite = process.stdout.write;
+    let captured = "";
+    process.stdout.write = ((chunk: string | Uint8Array) => {
+      captured += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString();
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      const rc = await mergeMemberVerb(["alpha", "--team-dir", teamDir], {
+        primitive,
+      });
+      expect(rc).toBe(0);
+    } finally {
+      process.stdout.write = originalWrite;
+    }
+    expect(captured).toContain("merge-member: no-op");
+    expect(captured).toContain("alpha");
+    expect(captured).toContain("geoyws-alpha");
+  });
+
   test("no-op does NOT attempt push even with --push flag", async () => {
     let pushAttempted = false;
     const primitive = async (): Promise<MergeMemberResult> => ({
