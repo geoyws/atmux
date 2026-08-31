@@ -308,7 +308,8 @@ async function reapSubflow(
   // and dry-run `--reap` (without `--apply`) stay UNGATED so members can
   // still inspect what WOULD be reaped.
   if (parsed.apply) {
-    const callerScope = opts.callerScope ?? (() => resolveCallerScope({ env: opts.env ?? process.env }));
+    const callerScope =
+      opts.callerScope ?? (() => resolveCallerScope({ env: opts.env ?? process.env }));
     if (callerScope() !== "driver") {
       throw new ConfigError({
         what: "topo --reap --apply: refused — caller scope is not 'driver'. This is a SYSTEM-WIDE destructive sweep (kill-server + rm -rf worktree + git branch -D across all teams); only the driver may apply it (ADR-253 §Defect 1 / ADR-033 §Caller-scope gate).",
@@ -481,7 +482,7 @@ function renderReapResult(result: ReapResult, dryRun: boolean): string {
 
 // ---------- Per-orphan path resolvers ----------
 
-function repoPathForBranchOnManifest(manifest: TopoManifest, _branch: string): string {
+export function repoPathForBranchOnManifest(manifest: TopoManifest, _branch: string): string {
   // Branches are named `<base>-epic-<eid>`. The repo path lives at the
   // parent team's `worktree`. We don't carry a branch→parent lookup
   // table on the manifest today; falling back to the first team whose
@@ -493,7 +494,7 @@ function repoPathForBranchOnManifest(manifest: TopoManifest, _branch: string): s
   return "";
 }
 
-function baseBranchForBranchOnManifest(manifest: TopoManifest, branch: string): string {
+export function baseBranchForBranchOnManifest(manifest: TopoManifest, branch: string): string {
   // The base is `<branch>` minus the `-epic-<eid>` suffix. Derive from
   // the parent team's current branch when present, else parse the
   // branch itself.
