@@ -156,6 +156,7 @@ describe("superbot offer and readiness", () => {
     expect(botComposerEmpty("claude", "❯ old command\n● done\n❯ \nfooter")).toBe(true);
     expect(botComposerEmpty("claude", "❯ \n● done\n❯ operator draft\nfooter")).toBe(false);
     expect(botComposerEmpty("claude", '❯ Try "fix lint errors"\nfooter')).toBe(true);
+    expect(botComposerEmpty("claude", "work complete\n● done\nfooter")).toBe(false);
     expect(botComposerEmpty("codex", "❯ \nfooter")).toBe(false);
     expect(
       assessBotReadiness({
