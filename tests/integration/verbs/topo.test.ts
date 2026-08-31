@@ -39,15 +39,18 @@ import type {
   CronMarkerBlock,
   DiscoveryIO,
   KanbanProbe,
+  TopoManifest,
   TmuxSocketEntry,
 } from "../../../src/core/topo-aggregate.ts";
-import { UsageError } from "../../../src/errors.ts";
+import { ConfigError, UsageError } from "../../../src/errors.ts";
 import { parseCronMarkerBlocks } from "../../../src/verbs/topo-io.ts";
 import {
   applyFilters,
   defaultSeenStatePath,
   loadSeenStateOrDefault,
+  baseBranchForBranchOnManifest,
   parseTopoArgs,
+  repoPathForBranchOnManifest,
   type ReapPromptResponse,
   renderFlat,
   renderTree,
@@ -313,6 +316,27 @@ describe("topo() — orphan injection", () => {
     expect(out).toContain("ghost");
   });
 
+  test("worktree-without-cage reaps the derived worktree path", async () => {
+    const cockpit = cockpitWith([team("atmux", "/srv/atmux")]);
+    const io = makeStubIO({
+      cockpit,
+      worktreesByParent: {
+        atmux: [{ path: "/srv/atmux-epics/e-x", parent: "atmux", eid: "e-x" }],
+      },
+    });
+    const reap = makeStubReapDeps();
+    const log = makeLogger();
+    await topo(["--reap", "--apply", "--yes"], {
+      callerScope: () => "driver",
+      io,
+      seenState: pastGraceSeen("worktree-without-cage::e-x"),
+      saveSeenState: async () => {},
+      reapDeps: reap.deps,
+      logger: log,
+    });
+    expect(reap.rmZombieWorktreeCalls).toEqual(["/srv/atmux-epics/e-x"]);
+  });
+
   test("--orphans flag in flat render suppresses team rows + shows orphans only", async () => {
     const cockpit = cockpitWith([team("atmux", "/srv/atmux")]);
     const io = makeStubIO({
@@ -342,6 +366,47 @@ describe("topo() — orphan injection", () => {
       logger: log,
     });
     expect(log.lines.join("\n")).toContain("no orphans detected");
+  });
+});
+
+describe("reap path helpers", () => {
+  test("empty worktree and null branch fall back to empty strings", () => {
+    const manifest = {
+      schema_version: 1,
+      generated_at: "2026-05-22T13:54:00.000Z",
+      cockpit: {
+        socket: "/tmp/.tmux-1000/atmux-cockpit",
+        alive: true,
+        registry_path: "/root/.atmux/cockpit.json",
+        sessions_count: 0,
+      },
+      teams: [
+        {
+          name: "atmux",
+          kind: "parent",
+          atmux_dir: "/srv/atmux/.atmux",
+          worktree: "",
+          branch: null,
+          cage_socket: "/tmp/atmux-atmux/sock",
+          cage_alive: false,
+          kanban: null,
+          in_cockpit_registry: true,
+          last_activity: null,
+          epics: [],
+        },
+      ],
+      orphans: [],
+      summary: {
+        teams_count: 1,
+        epics_count: 0,
+        cages_alive: 0,
+        orphans_count: 0,
+        elapsed_ms: 0,
+      },
+    } satisfies TopoManifest;
+
+    expect(repoPathForBranchOnManifest(manifest, "feature-x")).toBe("");
+    expect(baseBranchForBranchOnManifest(manifest, "feature-x")).toBe("");
   });
 });
 
@@ -1030,6 +1095,35 @@ describe("topo --reap — dry-run", () => {
     expect(out).toContain("reap (dry-run)");
     expect(out).toContain("SKIPPED");
   });
+
+  test("--reap --apply refuses when caller scope is not driver", async () => {
+    const io = makeStubIO({ cockpit: null });
+    const log = makeLogger();
+    await expect(
+      topo(["--reap", "--apply", "--yes"], {
+        callerScope: () => "member",
+        io,
+        seenState: emptySeenState(new Date("2026-05-22T13:54:00.000Z")),
+        saveSeenState: async () => {},
+        reapDeps: makeStubReapDeps().deps,
+        logger: log,
+      }),
+    ).rejects.toThrow(ConfigError);
+  });
+
+  test("--reap --apply uses the default caller-scope resolver when env is driver", async () => {
+    const io = makeStubIO({ cockpit: null });
+    const log = makeLogger();
+    const rc = await topo(["--reap", "--apply", "--yes"], {
+      env: { ATMUX_CALLER_SCOPE: "driver" },
+      io,
+      seenState: emptySeenState(new Date("2026-05-22T13:54:00.000Z")),
+      saveSeenState: async () => {},
+      reapDeps: makeStubReapDeps().deps,
+      logger: log,
+    });
+    expect(rc).toBe(0);
+  });
 });
 
 describe("topo --reap --apply --yes — non-interactive batch", () => {
@@ -1376,4 +1470,3 @@ describe("parseTopoArgs — --skip-checks", () => {
     expect(() => parseTopoArgs(["--reap", "--skip-checks"])).toThrow(UsageError);
   });
 });
-
