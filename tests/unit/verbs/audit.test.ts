@@ -541,6 +541,32 @@ describe("loadRegisteredTmpdirs", () => {
     }
   });
 
+  test("malformed team.json is skipped and later valid team still contributes tmuxTmpdir", async () => {
+    const root = await mkdtemp(join(tmpdir(), "audit-cockpit-"));
+    try {
+      const malformedTeam = join(root, "team-malformed");
+      const validTeam = join(root, "team-valid");
+      await mkdir(join(malformedTeam, ".atmux"), { recursive: true });
+      await mkdir(join(validTeam, ".atmux"), { recursive: true });
+      await writeFile(join(malformedTeam, ".atmux", "team.json"), "{ not valid json");
+      await writeFile(
+        join(validTeam, ".atmux", "team.json"),
+        JSON.stringify({ name: "tv", members: [], tmuxTmpdir: "/tmp/atmux_tmux_tv" }),
+      );
+
+      const set = await loadRegisteredTmpdirs(async () => ({
+        teams: [
+          { root: malformedTeam, enabled: true },
+          { root: validTeam, enabled: true },
+        ],
+      }));
+
+      expect(set).toEqual(new Set(["/tmp/atmux_tmux_tv"]));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("loader rejection → empty set (best-effort)", async () => {
     const set = await loadRegisteredTmpdirs(async () => {
       throw new Error("no cockpit");
