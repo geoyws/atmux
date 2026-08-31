@@ -10,6 +10,8 @@
 //   - already-done not in scan set (filter scopes to todo+in-progress)
 //   - no match → no-op
 //   - dry-run: decisions recorded, no DB writes (no markDone calls)
+//   - skip-already-done defensive path still records the decision
+//   - real SQLite-backed open scan persists done state + note
 //   - idempotent: re-run on a freshly-flipped task is no-op
 //   - skipped when repoDir doesn't exist
 //   - skipped when git log fails (non-zero exit)
@@ -22,6 +24,8 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SpawnResult } from "../../../src/abstractions/spawn.ts";
+import { closeDatabase, openDatabase } from "../../../src/abstractions/sqlite.ts";
+import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
 import { reconcileKanbanVsGit } from "../../../src/core/groom-reconcile.ts";
 
 let atmuxDir: string;
@@ -106,6 +110,29 @@ function makeMarkDone(): {
     calls.push({ id, note });
   };
   return { fn, calls };
+}
+
+function seedTaskRows(
+  atmuxDir: string,
+  rows: ReadonlyArray<OpenTask & { createdAt: number; driverOnly?: boolean; note?: string | null }>,
+) {
+  const db = openDatabase(join(atmuxDir, "state.db"), migrations);
+  try {
+    for (const row of rows) {
+      db.query(
+        "INSERT INTO tasks (id, subject, status, driver_only, created_at, note) VALUES ($id, $subject, $status, $driver_only, $created_at, $note)",
+      ).run({
+        $id: row.id,
+        $subject: `seeded ${row.id}`,
+        $status: row.status,
+        $driver_only: row.driverOnly === true ? 1 : 0,
+        $created_at: row.createdAt,
+        $note: row.note ?? null,
+      });
+    }
+  } finally {
+    closeDatabase(db);
+  }
 }
 
 // ---------- tests ----------
@@ -300,6 +327,77 @@ describe("reconcileKanbanVsGit", () => {
     expect(r.flipped).toBe(0);
     expect(r.decisions[0]?.action).toBe("flip");
     expect(md.calls).toHaveLength(0);
+  });
+
+  test("matching done task → skip-already-done and no markDone call", async () => {
+    const open: OpenTask[] = [{ id: "t-ddd0d0d0", status: "done" }];
+    const { spawn } = fakeGit([{ sha: "sha0d0d0d0", subject: "fix: t-ddd0d0d0 — already closed" }]);
+    const md = makeMarkDone();
+    const r = await reconcileKanbanVsGit(atmuxDir, {
+      repoDir,
+      git: spawn,
+      listOpenTasks: makeListOpenTasks(open),
+      markDone: md.fn,
+    });
+    expect(r.scanned).toBe(1);
+    expect(r.matched).toBe(1);
+    expect(r.flipped).toBe(0);
+    expect(r.decisions).toEqual([
+      { taskId: "t-ddd0d0d0", sha: "sha0d0d0d0", action: "skip-already-done" },
+    ]);
+    expect(md.calls).toHaveLength(0);
+  });
+
+  test("SQLite-backed open scan persists done state and note via default driver-scope markTaskDone", async () => {
+    seedTaskRows(atmuxDir, [
+      { id: "t-00000000", status: "done", createdAt: 0, note: "kept-done" },
+      { id: "t-11111111", status: "todo", driverOnly: true, createdAt: 1 },
+    ]);
+
+    const { spawn } = fakeGit([
+      { sha: "feedfacecafe", subject: "feat(core): t-11111111 — ship the thing" },
+    ]);
+
+    const r = await reconcileKanbanVsGit(atmuxDir, {
+      repoDir,
+      git: spawn,
+    });
+
+    expect(r.scanned).toBe(1);
+    expect(r.matched).toBe(1);
+    expect(r.flipped).toBe(1);
+    expect(r.decisions).toEqual([{ taskId: "t-11111111", sha: "feedfacecafe", action: "flip" }]);
+
+    const db = openDatabase(join(atmuxDir, "state.db"), migrations);
+    try {
+      const rows = db
+        .query("SELECT id, status, driver_only, completed_at, note FROM tasks ORDER BY id ASC")
+        .all() as Array<{
+        id: string;
+        status: string | null;
+        driver_only: number | null;
+        completed_at: number | null;
+        note: string | null;
+      }>;
+      expect(rows).toEqual([
+        {
+          id: "t-00000000",
+          status: "done",
+          driver_only: 0,
+          completed_at: null,
+          note: "kept-done",
+        },
+        {
+          id: "t-11111111",
+          status: "done",
+          driver_only: 1,
+          completed_at: expect.any(Number),
+          note: "groomed: shipped via SHA feedfacecafe",
+        },
+      ]);
+    } finally {
+      closeDatabase(db);
+    }
   });
 
   test("repoDir missing → soft-skip with skippedReason", async () => {
