@@ -150,6 +150,17 @@ describe("migrateLegacySessionName — branch coverage (stub tmux)", () => {
     expect(warns.join("\n")).toContain("ambiguous");
   });
 
+  test("ambiguous without a warn handler still returns ambiguous", async () => {
+    const tmux = stubTmux({ present: new Set(["atmux-x", "x"]), calls });
+    const out = await migrateLegacySessionName({
+      tmux,
+      teamName: "x",
+      resolvedSession: "x",
+    });
+    expect(out).toBe("ambiguous");
+    expect(calls.renames).toEqual([]);
+  });
+
   test("rename failure degrades to noop with a warning, never throws", async () => {
     const warns: string[] = [];
     const tmux = stubTmux({ present: new Set(["atmux-x"]), renameThrows: true, calls });
