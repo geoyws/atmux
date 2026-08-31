@@ -135,6 +135,36 @@ describe("syncCockpitRegistry", () => {
     }
   });
 
+  test("legacy flat teams[] shape renames without an explicit warn callback", async () => {
+    const dir = mkTmpdir();
+    const cockpitPath = join(dir, "cockpit.json");
+    try {
+      await writeCockpit(cockpitPath, {
+        cockpitSession: "atmux_cockpit",
+        teams: [{ name: "atmux-kanban", root: "/tmp/atmux-kanban", enabled: true }],
+      });
+      const step = await syncCockpitRegistry({
+        cockpitPath,
+        oldName: "atmux-kanban",
+        newName: "atmux",
+      });
+      expect(step.label).toMatch(/cockpit-sync atmux-kanban → atmux/);
+      const after = (await readCockpit(cockpitPath)) as {
+        schemaVersion: number;
+        sessions: Array<{ type: string; name: string; root: string }>;
+        teams?: unknown;
+      };
+      expect(after.schemaVersion).toBe(1);
+      expect(after.sessions.length).toBe(1);
+      expect(after.sessions[0]?.type).toBe("team");
+      expect(after.sessions[0]?.name).toBe("atmux");
+      expect(after.sessions[0]?.root).toBe("/tmp/atmux-kanban");
+      expect(after.teams).toBeUndefined();
+    } finally {
+      rmTmpdir(dir);
+    }
+  });
+
   test("a nested child team is NOT renamed when its parent is renamed", async () => {
     const dir = mkTmpdir();
     const cockpitPath = join(dir, "cockpit.json");
