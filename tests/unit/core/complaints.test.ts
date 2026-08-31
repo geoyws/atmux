@@ -527,3 +527,74 @@ describe("ComplaintsRepo.bumpSourceCount", () => {
     expect(c?.extra.custom).toBe("preserved");
   });
 });
+
+describe("ComplaintsRepo.countByStatus", () => {
+  test("counts mixed statuses independently", () => {
+    const open = fileDedupedComplaint(db, 1000, {
+      sourceKind: "whip",
+      sourceId: "whip-team-a-open",
+      targetTeam: "team-a",
+      incidentSummary: "open",
+    });
+    const openTwo = fileDedupedComplaint(db, 1050, {
+      sourceKind: "whip",
+      sourceId: "whip-team-a-open-2",
+      targetTeam: "team-a",
+      incidentSummary: "open-2",
+    });
+    const resolved = fileDedupedComplaint(db, 1100, {
+      sourceKind: "whip",
+      sourceId: "whip-team-a-resolved",
+      targetTeam: "team-a",
+      incidentSummary: "resolved",
+    });
+    const wontfix = fileDedupedComplaint(db, 1200, {
+      sourceKind: "whip",
+      sourceId: "whip-team-a-wontfix",
+      targetTeam: "team-a",
+      incidentSummary: "wontfix",
+    });
+
+    const repo = new ComplaintsRepo(db);
+    repo.resolve({ id: resolved.id, status: "resolved", resolvedAt: 1300 });
+    repo.resolve({ id: wontfix.id, status: "wontfix", resolvedAt: 1400 });
+
+    expect(repo.countByStatus("open")).toBe(2);
+    expect(repo.countByStatus("resolved")).toBe(1);
+    expect(repo.countByStatus("wontfix")).toBe(1);
+    expect(repo.getById(open.id)?.status).toBe("open");
+    expect(repo.getById(openTwo.id)?.status).toBe("open");
+  });
+});
+
+describe("ComplaintsRepo.mergeExtra", () => {
+  test("returns false when id is unknown", () => {
+    const repo = new ComplaintsRepo(db);
+    expect(repo.mergeExtra("c-nope", { kind: "heads-up" })).toBe(false);
+  });
+
+  test("shallow-merges patch onto existing extra while preserving unpatched keys", () => {
+    const filed = fileDedupedComplaint(db, 1000, {
+      sourceKind: "whip",
+      sourceId: "whip-team-a-merge-extra",
+      targetTeam: "team-a",
+      incidentSummary: "x",
+      extra: { kind: "heads-up", severity: "high", custom: "preserved" },
+    });
+
+    const repo = new ComplaintsRepo(db);
+    const ok = repo.mergeExtra(filed.id, {
+      severity: "low",
+      patchOnly: "applied",
+    });
+
+    expect(ok).toBe(true);
+    const c = repo.getById(filed.id);
+    expect(c?.extra.kind).toBe("heads-up");
+    expect(c?.extra.severity).toBe("low");
+    expect(c?.extra.custom).toBe("preserved");
+    expect(c?.extra.patchOnly).toBe("applied");
+    expect(c?.extra.source_count).toBe(1);
+    expect(c?.extra.last_seen).toBe(1000);
+  });
+});
