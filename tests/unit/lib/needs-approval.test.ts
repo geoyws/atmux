@@ -15,6 +15,9 @@
 //   + non-blocked exclusion + null-timestamp drop.
 
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   defaultClock,
   defaultScanFs,
@@ -28,6 +31,9 @@ import {
   scanNeedsApproval,
   scanProposedAdrs,
 } from "../../../src/lib/needs-approval.ts";
+import { closeDatabase, openDatabase } from "../../../src/abstractions/sqlite.ts";
+import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
+import { KanbanRepo } from "../../../src/core/repositories/kanban-repo.ts";
 import type { KanbanTask } from "../../../src/schema/kanban.ts";
 
 // ---------- Test helpers ----------
@@ -464,6 +470,76 @@ describe("default impls", () => {
   test("defaultScanKanban returns the production shape (callable)", () => {
     const k = defaultScanKanban();
     expect(typeof k.listBlocked).toBe("function");
+  });
+
+  test("defaultScanKanban.listBlocked reads blocked rows from real SQLite storage", async () => {
+    const atmuxDir = await mkdtemp(join(tmpdir(), "atmux-needs-approval-"));
+    const db = openDatabase(join(atmuxDir, "state.db"), migrations);
+    try {
+      const repo = new KanbanRepo(db);
+      repo.addTask({
+        id: "t-aaaaaaaa",
+        subject: "blocked task",
+        body: "",
+        status: "blocked",
+        owner: null,
+        deps: [],
+        priority: null,
+        epic: null,
+        story: null,
+        lane: null,
+        createdAt: NOW,
+        claimedAt: NOW - 3600,
+        completedAt: null,
+      } as KanbanTask);
+      repo.addTask({
+        id: "t-bbbbbbbb",
+        subject: "todo task",
+        body: "",
+        status: "todo",
+        owner: null,
+        deps: [],
+        priority: null,
+        epic: null,
+        story: null,
+        lane: null,
+        createdAt: NOW,
+        claimedAt: null,
+        completedAt: null,
+      } as KanbanTask);
+
+      const rows = await defaultScanKanban().listBlocked(atmuxDir);
+      expect(rows.map((row) => row.id)).toEqual(["t-aaaaaaaa"]);
+      expect(rows[0]?.status).toBe("blocked");
+    } finally {
+      closeDatabase(db);
+      await rm(atmuxDir, { recursive: true, force: true });
+    }
+  });
+
+  test("scanNeedsApproval degrades kanban failures to an empty bucket", async () => {
+    const rows = await scanNeedsApproval({
+      fs: fakeFs({
+        nowSec: NOW,
+        dirs: { [`${ROOT}/docs/adr`]: ["a.md"] },
+        files: {
+          [`${ROOT}/docs/adr/a.md`]: "# ADR A\n\n**Status**: proposed\n",
+          [`${ROOT}/.atmux/driver-inbox.md`]: `## 18:30 MYT — open question\nbody\n`,
+        },
+      }),
+      kanban: {
+        async listBlocked(): Promise<KanbanTask[]> {
+          throw new Error("kanban down");
+        },
+      },
+      clock: () => NOW,
+      projectRoot: ROOT,
+    });
+
+    expect(rows.adr.map((r) => r.id)).toEqual(["a"]);
+    expect(rows.inbox[0]?.subject).toContain("open question");
+    expect(rows.kanban).toEqual([]);
+    expect(rows.total).toBe(2);
   });
 });
 
