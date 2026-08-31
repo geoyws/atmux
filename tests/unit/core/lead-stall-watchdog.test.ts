@@ -15,7 +15,8 @@
 //   - Consumer handler: pings on fire, persists the ping epoch, and a
 //     SECOND handler invocation within the window emits no second ping.
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import * as nodeChildProcess from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -505,5 +506,136 @@ describe("createLeadStallWatchdogHandler — consumer wiring", () => {
     });
     expect(await handler({ topic: "story.ready", team: "atmux" })).toBe("skip-disabled");
     expect(captured).toHaveLength(0);
+  });
+});
+
+describe("createLeadStallWatchdogHandler — default seams", () => {
+  test.serial("uses the default spawnTellLead path when omitted and handles exit/error callbacks", async () => {
+    const childProcessSnapshot = { ...nodeChildProcess };
+    const calls: Array<{
+      command: string;
+      args: Array<string>;
+      stdio?: string;
+      env?: NodeJS.ProcessEnv;
+    }> = [];
+    let installed = false;
+
+    const makeStory = (id: string): KanbanStory =>
+      ({
+        id,
+        status: "ready",
+        title: `story ${id}`,
+        advancedAt: NOW - THRESHOLD_SEC - 100,
+        lane: "be",
+      }) as unknown as KanbanStory;
+
+    const mkHandler = async (atmuxDir: string, story: KanbanStory) =>
+      createLeadStallWatchdogHandler({
+        atmuxDir,
+        team: { name: "atmux", members: MEMBERS as never },
+        loadSnapshot: async () => ({ stories: [story], tasks: [] }),
+      });
+
+    const mkDir = async (prefix: string): Promise<string> => mkdtemp(join(tmpdir(), prefix));
+
+    try {
+      mock.module("node:child_process", () => ({
+        ...childProcessSnapshot,
+        spawn: mock(
+          (
+            command: string,
+            args: ReadonlyArray<string>,
+            options: { stdio?: string; env?: NodeJS.ProcessEnv },
+          ) => {
+            const callIndex = calls.length + 1;
+            calls.push({
+              command,
+              args: [...args],
+              stdio: options.stdio,
+              env: options.env,
+            });
+            const child = {
+              on(
+                event: "error" | "exit",
+                handler: (code?: number | Error) => void,
+              ) {
+                if (callIndex === 1 && event === "exit") {
+                  queueMicrotask(() => handler(0));
+                } else if (callIndex === 2 && event === "error") {
+                  queueMicrotask(() => handler(new Error("spawn failed")));
+                }
+                return child;
+              },
+            };
+            return child;
+          },
+        ),
+      }));
+      installed = true;
+
+      const okDir = await mkDir("atmux-lead-stall-default-spawn-ok-");
+      const failDir = await mkDir("atmux-lead-stall-default-spawn-fail-");
+      try {
+        const okHandler = await mkHandler(okDir, makeStory("s-ok"));
+        expect(await okHandler({ topic: "story.ready", team: "atmux" })).toBe("pinged");
+
+        const failHandler = await mkHandler(failDir, makeStory("s-fail"));
+        expect(await failHandler({ topic: "story.ready", team: "atmux" })).toBe(
+          "tell-lead-failed",
+        );
+
+        expect(calls).toHaveLength(2);
+        expect(calls[0]!.command).toBe("atmux");
+        expect(calls[0]!.args.slice(0, 3)).toEqual(["tell-lead", "--team", "atmux"]);
+        expect(calls[0]!.args[3]).toContain("s-ok");
+        expect(calls[0]!.stdio).toBe("inherit");
+        expect(calls[0]!.env).toBe(process.env);
+
+        expect(calls[1]!.command).toBe("atmux");
+        expect(calls[1]!.args.slice(0, 3)).toEqual(["tell-lead", "--team", "atmux"]);
+        expect(calls[1]!.args[3]).toContain("s-fail");
+        expect(calls[1]!.stdio).toBe("inherit");
+        expect(calls[1]!.env).toBe(process.env);
+      } finally {
+        await rm(okDir, { recursive: true, force: true });
+        await rm(failDir, { recursive: true, force: true });
+      }
+    } finally {
+      if (installed) {
+        mock.module("node:child_process", () => ({
+          ...childProcessSnapshot,
+        }));
+        mock.restore();
+      }
+    }
+  });
+
+  test.serial("uses the default Date.now() clock when nowSec is omitted", async () => {
+    const atmuxDir = await mkdtemp(join(tmpdir(), "atmux-lead-stall-default-clock-"));
+    const realDateNow = Date.now;
+    const fakeNowMs = 1_780_000_123_456;
+    const expectedNowSec = Math.floor(fakeNowMs / 1000);
+    const story = {
+      id: "s-clock",
+      status: "ready",
+      advancedAt: expectedNowSec - THRESHOLD_SEC - 100,
+      lane: "be",
+    } as unknown as KanbanStory;
+
+    try {
+      Date.now = () => fakeNowMs;
+      const handler = createLeadStallWatchdogHandler({
+        atmuxDir,
+        team: { name: "atmux", members: MEMBERS as never },
+        loadSnapshot: async () => ({ stories: [story], tasks: [] }),
+        spawnTellLead: async () => 0,
+      });
+
+      expect(await handler({ topic: "story.ready", team: "atmux" })).toBe("pinged");
+      expect(await readLastPingSec(atmuxDir)).toBe(expectedNowSec);
+    } finally {
+      Date.now = realDateNow;
+      await rm(atmuxDir, { recursive: true, force: true });
+    }
   });
 });
