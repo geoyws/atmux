@@ -404,6 +404,41 @@ describe("runSelfHealPass — success path", () => {
     expect(diff).toContain("diff --git");
   });
 
+  test("success still returns when final state persistence fails", async () => {
+    const recipe = makeRecipe({
+      id: "fix:team-json-schema-drift",
+      detect: async () => ({ reason: "drift" }),
+      verify: async () => ({
+        ok: true,
+        reasons: [],
+        patchSummary: "3 keys updated",
+      }),
+    });
+    const { sends, send } = makeSendCapture();
+    const logs: string[] = [];
+    const summary = await runSelfHealPass(
+      baseOpts({
+        recipes: [recipe],
+        enabledRecipeIds: ["fix:team-json-schema-drift"],
+        send,
+        log: (m) => logs.push(m),
+        addTaskFn: async (dir) => {
+          await rm(join(dir, "state"), { recursive: true, force: true });
+          await writeFile(join(dir, "state"), "blocked");
+          return "t-staged-2";
+        },
+      }),
+    );
+
+    expect(summary.attempted).toBe(1);
+    expect(summary.succeeded).toBe(1);
+    expect(summary.failed).toBe(0);
+    expect(summary.results[0]?.outcome).toBe("succeeded");
+    expect(summary.results[0]?.detail).toBe("t-staged-2");
+    expect(sends).toHaveLength(2);
+    expect(logs.some((m) => m.includes("persisting state failed"))).toBe(true);
+  });
+
   test("attempt-ping uses recipe.reason field when present", async () => {
     const recipe = makeRecipe({
       id: "fix:supervisor-missing",
