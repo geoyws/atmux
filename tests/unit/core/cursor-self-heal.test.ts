@@ -22,6 +22,7 @@ import { join } from "node:path";
 import type { CursorInvokeResult } from "../../../src/abstractions/cursor.ts";
 import type { DiscordSendOpts } from "../../../src/abstractions/discord.ts";
 import { atomicWrite } from "../../../src/abstractions/fs.ts";
+import { fixCronPollutionRecipe } from "../../../src/core/cursor-recipes/fix-cron-pollution.ts";
 import type { CursorRecipe, GitPatch } from "../../../src/core/cursor-recipes/types.ts";
 import {
   pendingPatchDir,
@@ -147,6 +148,37 @@ describe("path helpers", () => {
     expect(selfHealLogPath("/x", "fix:cron-pollution", 1700000010)).toBe(
       "/x/logs/cursor-self-heal-fix-cron-pollution-1700000010.log",
     );
+  });
+});
+
+describe("fixCronPollutionRecipe retirement contract", () => {
+  test("detect returns null, propose rejects, verify returns the exact retired result", async () => {
+    const whipCtx = {
+      atmuxDir: "/tmp/atmux",
+      projectCwd: "/tmp/project",
+      nowSec: 1,
+      teamName: "atmux",
+    };
+    const job = {
+      prompt: "",
+      fileAllowlist: [],
+      tokenCap: 0,
+      cwd: whipCtx.projectCwd,
+    };
+    const patch = {
+      diff: "",
+      files: [],
+    };
+
+    await expect(fixCronPollutionRecipe.detect(whipCtx)).resolves.toBeNull();
+    await expect(fixCronPollutionRecipe.propose({}, whipCtx)).rejects.toThrow(
+      "ADR-233: fix-cron-pollution recipe retired",
+    );
+    await expect(fixCronPollutionRecipe.verify(job, patch, whipCtx)).resolves.toStrictEqual({
+      ok: false,
+      reasons: ["ADR-233: fix-cron-pollution recipe retired"],
+      patchSummary: "",
+    });
   });
 });
 
