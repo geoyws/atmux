@@ -150,6 +150,17 @@ describe("appendText", () => {
     expect(await readText(p)).toBe("hi\n");
   });
 
+  test("wraps appendFile failures when the target path is a directory", async () => {
+    const p = join(dir, "append-target");
+    await mkdir(p);
+
+    await expect(appendText(p, "x")).rejects.toMatchObject({
+      tag: "fs",
+      cause: expect.any(Error),
+      context: { path: p, op: "write" },
+    });
+  });
+
   test("FsError on a write-impossible target (parent path is a file)", async () => {
     // Create a regular file, then try to append into a path nested beneath it.
     const blocker = join(dir, "blocker");
