@@ -10,7 +10,7 @@ import {
   type DriftReport,
 } from "../../core/whip-config-drift.ts";
 import { type Team, Team as TeamSchema } from "../../schema/team.ts";
-import { type DoctorRow, type GitSpawn, defaultGitSpawn } from "./types.ts";
+import { type DoctorRow, defaultGitSpawn, type GitSpawn } from "./types.ts";
 
 // ---------- ADR-054 §D4: whip-config-drift ----------
 
