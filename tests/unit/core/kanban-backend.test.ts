@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -32,6 +32,14 @@ describe("durable Kanban backend marker", () => {
     expect(await externalKanbanEnabled(scratch, {})).toBe(true);
     expect(await externalKanbanEnabled(scratch, { ATMUX_KANBAN_BACKEND: "legacy" })).toBe(false);
     expect((await stat(kanbanBackendMarkerPath(scratch))).mode & 0o777).toBe(0o600);
+  });
+
+  test("rejects structurally invalid backend markers", async () => {
+    scratch = await mkdtemp(join(tmpdir(), "atmux-kanban-backend-invalid-"));
+    await mkdir(join(scratch, "state"), { recursive: true });
+    await writeFile(join(scratch, "state", "kanban-backend.json"), JSON.stringify({ backend: 1 }));
+
+    await expect(readKanbanBackendMarker(scratch)).rejects.toThrow("invalid marker shape");
   });
 
   test("discovers external and local authorities without creating a legacy stub", async () => {
