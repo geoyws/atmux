@@ -211,6 +211,13 @@ describe("paneStateToStatusKind — 8-state → SessionStatusKind", () => {
     const mapped = cases.map(([s]) => paneStateToStatusKind(s));
     expect(mapped).not.toContain("overloaded");
   });
+
+  test("invalid runtime pane-state is returned unchanged by the exhaustiveness guard", () => {
+    const invalidState = "BROKEN-RUNTIME-STATE" as PaneState;
+
+    expect(paneStateToStatusKind(invalidState)).toBe(invalidState as never);
+    expect(paneStateToEvent(invalidState, "evidence")).toBe(invalidState as never);
+  });
 });
 
 // ===========================================================================
@@ -452,6 +459,37 @@ async function drain(it: AsyncIterable<AgentEvent>, max: number): Promise<AgentE
 }
 
 describe("stream() — coarse synthesized events from pane-state polling", () => {
+  test("READY emits idle, then MODAL permission_request, with default sleep/clock when deps.sleep/deps.now are omitted", async () => {
+    const { deps } = mkDeps({ captures: ["❯ ", "Do you want to proceed?"] });
+    delete deps.sleep;
+    delete deps.now;
+
+    const be = createTmuxClaudeBackend(deps, { streamPollIntervalMs: 20 });
+    const handle = await be.spawn(spawnOpts());
+    const it = be.stream(handle)[Symbol.asyncIterator]();
+
+    try {
+      const first = await it.next();
+      expect(first).toEqual({ done: false, value: { type: "idle" } });
+
+      const started = performance.now();
+      const second = await it.next();
+      const elapsed = performance.now() - started;
+      expect(second).toEqual({
+        done: false,
+        value: {
+          type: "permission_request",
+          toolName: "",
+          toolCallId: "",
+          input: "Do you want to",
+        },
+      });
+      expect(elapsed).toBeGreaterThanOrEqual(10);
+    } finally {
+      await it.return?.();
+    }
+  });
+
   test("emits one event per state TRANSITION (READY → MODAL → RATE-LIMIT)", async () => {
     // Pane captures classifying to READY, then MODAL, then RATE-LIMIT.
     const { deps } = mkDeps({
@@ -559,6 +597,21 @@ describe("status() — pane-state classification + sidecar rate-limit window", (
     });
     expect(rec.probeCalls).toContain("icloud");
     expect(s.observedAtSec).toBe(1_700_000_000);
+  });
+
+  test("default now comes from Date.now when deps.now is omitted", async () => {
+    const { deps } = mkDeps({ captures: ["❯ "], noProbe: true });
+    delete deps.now;
+
+    const be = createTmuxClaudeBackend(deps);
+    const handle = await be.spawn(spawnOpts({ selector: { account: "default" } }));
+    const before = Math.floor(Date.now() / 1000);
+    const s = await be.status(handle);
+    const after = Math.floor(Date.now() / 1000);
+
+    expect(s.kind).toBe("idle");
+    expect(s.observedAtSec).toBeGreaterThanOrEqual(before);
+    expect(s.observedAtSec).toBeLessThanOrEqual(after);
   });
 
   test("BUSY pane → working", async () => {
