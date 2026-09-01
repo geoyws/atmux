@@ -47,14 +47,10 @@ const moduleState = createResolveTmuxBinState();
 /** Default PATH probe — runs `which tmux` synchronously, returns the
  *  trimmed absolute path on success or null when not found. */
 function defaultPathProbe(): string | null {
-  try {
-    const r = nativeSpawnSync("which", ["tmux"], { encoding: "utf8" });
-    if (r.status !== 0) return null;
-    const out = (r.stdout ?? "").trim();
-    return out.length > 0 ? out : null;
-  } catch {
-    return null;
-  }
+  const r = nativeSpawnSync("which", ["tmux"], { encoding: "utf8" });
+  if (r.status !== 0) return null;
+  const out = (r.stdout ?? "").trim();
+  return out.length > 0 ? out : null;
 }
 
 /**
