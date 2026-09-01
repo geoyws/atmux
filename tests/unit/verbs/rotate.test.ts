@@ -1036,9 +1036,9 @@ describe("rotate() — public verb", () => {
       windows: [{ index: 0, name: "lead-x", active: true }],
       // paneText that pre-T7 would have short-circuited as already-booted
       // (matches `\d+k tokens`). With T7's forceBootPrompt:true default
-      // the sentinel is bypassed; readiness poll passes (matches `❯`),
-      // boot prompt fires via loadBuffer + pasteBuffer.
-      paneText: "❯ ↑ 5k tokens",
+      // the sentinel is bypassed; the realistic two-line render passes
+      // readiness on the bare `❯` row before the boot prompt fires.
+      paneText: "❯\n↑ 5k tokens",
     });
     const exit = await rotate(["--team-dir", scratch, "--lead"], {
       buildTmux: () => tmux,

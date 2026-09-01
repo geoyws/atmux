@@ -195,17 +195,18 @@ describe("connectWebSocket — real fixture", () => {
     }
   });
 
-  test("client close with explicit code reaches the server (Bun drops the outbound reason)", async () => {
+  test("client close with explicit code reaches the server with the runtime-supported reason", async () => {
     const fx = startWsFixture();
     try {
       const handle = await connectWebSocket(fx.url);
       handle.close(4002, "client done");
       await handle.closed;
       await waitUntil(() => fx.closes.length === 1);
-      // Bun 1.3.14 quirk (verified against a raw client socket too): the
-      // client→server close REASON is not delivered — only the code. Pinned
-      // here so a future Bun fix surfaces as a diff, not silence.
-      expect(fx.closes[0]).toEqual({ code: 4002, reason: "" });
+      // Bun 1.3.x drops the client→server close reason; Bun 1.4.0 fixed
+      // that runtime behavior. atmux supports both runtime lines.
+      const [bunMajor, bunMinor] = Bun.version.split(".").map(Number);
+      const expectedReason = bunMajor === 1 && bunMinor === 3 ? "" : "client done";
+      expect(fx.closes[0]).toEqual({ code: 4002, reason: expectedReason });
     } finally {
       await fx.stop();
     }
