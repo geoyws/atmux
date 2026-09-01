@@ -133,6 +133,8 @@ export interface CleanupOptions {
   stdout?: Writer;
   atmuxDir?: string;
   nowMs?: number;
+  /** Test-only seam for wrapper-path coverage. Production callers leave unset. */
+  pruneInboxes?: typeof pruneInboxes;
 }
 
 export interface CleanupResult {
@@ -208,7 +210,7 @@ export async function cleanup(
       if (parsed.maxAgeDays !== undefined) opts2.maxAgeDays = parsed.maxAgeDays;
       if (opts.nowMs !== undefined) opts2.nowMs = opts.nowMs;
       try {
-        out.inboxes = await pruneInboxes(atmuxDir, opts2);
+        out.inboxes = await (opts.pruneInboxes ?? pruneInboxes)(atmuxDir, opts2);
       } catch (e) {
         if (e instanceof RangeError) {
           throw new UsageError({
