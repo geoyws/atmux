@@ -1921,6 +1921,17 @@ describe("buildTeamWindowCommand", () => {
     expect(cmd).toContain("||");
   });
 
+  test("attach mode keeps both attach legs socket-guarded before tmux and preserves || fallback", async () => {
+    const cmd = await buildTeamWindowCommand(team, "attach");
+    const legacyLeg = `{ [ -S /tmp/atmux-demo/sock ] && tmux -S /tmp/atmux-demo/sock attach -t '=demo:driver' 2>/dev/null; }`;
+    const perTeamLeg = `{ [ -S /d/.atmux/tmux/tmux-${uid}/default ] && tmux -S /d/.atmux/tmux/tmux-${uid}/default attach -t '=demo:driver' 2>/dev/null; }`;
+
+    expect(cmd).toContain(legacyLeg);
+    expect(cmd).toContain(perTeamLeg);
+    expect(cmd.indexOf(legacyLeg)).toBeLessThan(cmd.indexOf("||"));
+    expect(cmd.indexOf("||")).toBeLessThan(cmd.indexOf(perTeamLeg));
+  });
+
   test("no-driver-config emits the 'set team.json::driverSession' guidance", async () => {
     const cmd = await buildTeamWindowCommand(team, "no-driver-config");
     expect(cmd).toContain("no driver configured for demo");
