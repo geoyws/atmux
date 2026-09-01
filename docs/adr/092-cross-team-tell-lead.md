@@ -77,7 +77,7 @@ Cross-team routing is **gated** to prevent member-to-member-cross-team chatter. 
 | epic-team member | `E1` with `parent=P` | `E2` with `parent=P` (sibling) | ❌ refused — must route via parent |
 | any | `T1` | `T2` (unrelated) | ❌ refused |
 
-Implemented via `callerScopeAllowed(cockpit, sourceName, targetName, callerScope): boolean` — pure, in `src/core/cockpit.ts`. Refusal emits `ConfigError` with body `cross-team tell-lead refused: <src> → <tgt> not allowed (driver / parent / parent-of-target only)` so operator sees both the policy + the offending pair.
+Implemented via `callerScopeAllowed(cockpit, sourceName, targetName, callerScope): boolean` — pure, in `src/core/cockpit.ts`. Refusal emits `ConfigError` with body `cross-team tell-lead refused: <src> → <tgt> not allowed (driver / parent / parent-of-target only)` so operator sees both the policy + the offending pair. If the source team lookup fails, the call site keeps that state structural (`undefined`), renders `"<unknown>"` only in the error text, and refuses unless `ATMUX_CALLER_SCOPE=driver` is set exactly; unresolved source identity never participates in same-name comparison.
 
 `ATMUX_CALLER_SCOPE` env var is the **master override** — driver pane sets it once on cockpit bootstrap. Documented in ADR + RUNBOOK. Member panes do NOT inherit it (per cage tier — Tier-1 cage members don't get cockpit-level env).
 

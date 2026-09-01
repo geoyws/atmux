@@ -1,11 +1,13 @@
 // Unit tests for src/verbs/tell-lead.ts.
 // Bash spec: lib/tell.sh @ worktree-frozen.
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
+import * as commonCore from "../../../src/core/common.ts";
+import * as sendCore from "../../../src/core/send.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
 import {
   buildHeadsUp,
@@ -103,6 +105,17 @@ async function stageTeam(
     await new Promise((r) => setTimeout(r, 80));
   }
   return { teamName, sessionName };
+}
+
+async function writeCockpitConfig(
+  baseDir: string,
+  sessions: ReadonlyArray<Record<string, unknown>>,
+): Promise<void> {
+  await mkdir(join(baseDir, ".atmux"), { recursive: true });
+  await writeFile(
+    join(baseDir, ".atmux", "cockpit.json"),
+    JSON.stringify({ schemaVersion: 1, sessions }),
+  );
 }
 
 // ---------- Pure: parseTellLeadArgs ----------
@@ -231,6 +244,137 @@ describe("tellLead — integration", () => {
     );
   });
 
+  test("ADR-092: --team missing in cockpit tree → ConfigError before any send path", async () => {
+    const { teamName } = await stageTeam([{ name: "alpha", role: "team-lead" }], true);
+    await writeCockpitConfig(homeDir, [
+      { type: "team", name: teamName, root: teamDir, enabled: true },
+    ]);
+
+    await expect(
+      tellLead(["--socket", socketPath, "--team-dir", teamDir, "--team", "ghost", "msg"]),
+    ).rejects.toThrow(/no team `ghost` in cockpit tree/);
+    const di = await Bun.file(join(atmuxDir, "driver-inbox.md"))
+      .exists()
+      .catch(() => false);
+    expect(di).toBe(false);
+  });
+
+  test("ADR-092: unresolved source plus literal <unknown> target refuses before inbox/send without driver scope", async () => {
+    const targetTeamName = "<unknown>";
+    await writeFile(
+      join(teamDir, "team.json"),
+      JSON.stringify({
+        name: targetTeamName,
+        members: [{ name: "lead", role: "team-lead" }],
+      }),
+    );
+
+    const sourceDir = await mkdtemp(join(tmpdir(), "atmux-tell-lead-source-"));
+    const priorCallerScope = process.env.ATMUX_CALLER_SCOPE;
+    const priorCockpitConfig = process.env.ATMUX_COCKPIT_CONFIG;
+    const priorHome = process.env.HOME;
+    delete process.env.ATMUX_CALLER_SCOPE;
+    process.env.ATMUX_COCKPIT_CONFIG = join(homeDir, ".atmux", "cockpit.json");
+    process.env.HOME = homeDir;
+    await writeCockpitConfig(homeDir, [
+      { type: "team", name: targetTeamName, root: teamDir, enabled: true },
+    ]);
+    try {
+      await expect(
+        tellLead([
+          "--socket",
+          socketPath,
+          "--team-dir",
+          sourceDir,
+          "--team",
+          targetTeamName,
+          "cross",
+          "team",
+        ]),
+      ).rejects.toThrow(/cross-team tell-lead refused: <unknown> → <unknown>/);
+      const diExists = await Bun.file(join(atmuxDir, "driver-inbox.md"))
+        .exists()
+        .catch(() => false);
+      expect(diExists).toBe(false);
+    } finally {
+      if (priorCallerScope !== undefined) process.env.ATMUX_CALLER_SCOPE = priorCallerScope;
+      else delete process.env.ATMUX_CALLER_SCOPE;
+      if (priorCockpitConfig !== undefined) process.env.ATMUX_COCKPIT_CONFIG = priorCockpitConfig;
+      else delete process.env.ATMUX_COCKPIT_CONFIG;
+      if (priorHome !== undefined) process.env.HOME = priorHome;
+      else delete process.env.HOME;
+      await rm(sourceDir, { recursive: true, force: true });
+    }
+  });
+
+  test("ADR-092: unresolved source still succeeds under exact driver override and cockpit config beats decoy HOME", async () => {
+    const { teamName } = await stageTeam([{ name: "alpha", role: "team-lead" }], true);
+    const sourceDir = await mkdtemp(join(tmpdir(), "atmux-tell-lead-source-"));
+    const overrideHome = await mkdtemp(join(tmpdir(), "atmux-tell-lead-home-override-"));
+    const priorCallerScope = process.env.ATMUX_CALLER_SCOPE;
+    const priorCockpitConfig = process.env.ATMUX_COCKPIT_CONFIG;
+    const priorHome = process.env.HOME;
+    const resolveSpy = spyOn(commonCore, "resolveWindowWithRenameShim").mockResolvedValue("lead");
+    const sendSpy = spyOn(sendCore, "sendToMember").mockResolvedValue({
+      kind: "ok",
+      preSnapshot: {
+        busy: false,
+        rateLimit: "none",
+        compacting: false,
+        contextCleared: false,
+        queuedMessages: false,
+      },
+      preWarn: false,
+      preflight: {
+        finalClassification: {
+          state: "READY",
+          evidence: "",
+          capturedAt: 0,
+        },
+        attempts: 1,
+        dismissals: 0,
+        ready: true,
+      },
+    });
+    process.env.ATMUX_CALLER_SCOPE = "driver";
+    process.env.ATMUX_COCKPIT_CONFIG = join(homeDir, ".atmux", "cockpit.json");
+    process.env.HOME = overrideHome;
+    await writeCockpitConfig(homeDir, [
+      { type: "team", name: teamName, root: teamDir, enabled: true },
+    ]);
+    await writeCockpitConfig(overrideHome, [
+      { type: "team", name: "decoy", root: sourceDir, enabled: true },
+    ]);
+    try {
+      const { stderr } = await captureStdoutStderr(() =>
+        tellLead([
+          "--socket",
+          socketPath,
+          "--team-dir",
+          sourceDir,
+          "--team",
+          teamName,
+          "cross",
+          "team",
+        ]),
+      );
+      expect(stderr).toContain("✅ atmux tell-lead → alpha");
+      const di = await Bun.file(join(atmuxDir, "driver-inbox.md")).text();
+      expect(di).toContain("cross team");
+    } finally {
+      if (priorCallerScope !== undefined) process.env.ATMUX_CALLER_SCOPE = priorCallerScope;
+      else delete process.env.ATMUX_CALLER_SCOPE;
+      if (priorCockpitConfig !== undefined) process.env.ATMUX_COCKPIT_CONFIG = priorCockpitConfig;
+      else delete process.env.ATMUX_COCKPIT_CONFIG;
+      if (priorHome !== undefined) process.env.HOME = priorHome;
+      else delete process.env.HOME;
+      resolveSpy.mockRestore();
+      sendSpy.mockRestore();
+      await rm(sourceDir, { recursive: true, force: true });
+      await rm(overrideHome, { recursive: true, force: true });
+    }
+  });
+
   test("ping failure → ConfigError 'no tmux window' after durable inbox write (ADR-029 §F6 + F7)", async () => {
     // Per ADR-029 §F6 + F7 — bash lib/tell.sh:44 calls send_to_member
     // unguarded; lib/send.sh:61-62 dies "no tmux window for <m> (is the
@@ -245,6 +389,25 @@ describe("tellLead — integration", () => {
     // Inbox write happened BEFORE the throw — durable.
     const di = await Bun.file(join(atmuxDir, "driver-inbox.md")).text();
     expect(di).toContain("ask body");
+  });
+
+  test("send-layer rejection after window resolution still surfaces as ConfigError and keeps inbox durable", async () => {
+    const { teamName } = await stageTeam([{ name: "alpha", role: "team-lead" }], true);
+    const sendSpy = spyOn(sendCore, "sendToMember").mockImplementationOnce(async () => {
+      throw new Error("forced send failure");
+    });
+    try {
+      await writeCockpitConfig(homeDir, [
+        { type: "team", name: teamName, root: teamDir, enabled: true },
+      ]);
+      await expect(
+        tellLead(["--socket", socketPath, "--team-dir", teamDir, "forced", "failure"]),
+      ).rejects.toThrow(/no tmux window for alpha \(is the team running\?\)/);
+      const di = await Bun.file(join(atmuxDir, "driver-inbox.md")).text();
+      expect(di).toContain("forced failure");
+    } finally {
+      sendSpy.mockRestore();
+    }
   });
 
   test("multiple asks accumulate in driver-inbox", async () => {
