@@ -9,12 +9,13 @@
 // polluting /tmp.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CrontabIO } from "../../../src/abstractions/crontab.ts";
 import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import { groupSocketPath } from "../../../src/core/cockpit.ts";
+import { resetResolveTmuxBinForTesting } from "../../../src/core/resolve-tmux-bin.ts";
 import type { Cockpit } from "../../../src/schema/cockpit.ts";
 import type { KanbanTask } from "../../../src/schema/kanban.ts";
 import {
@@ -71,14 +72,22 @@ function stubCrontab(initialBody: string | null = null): {
   };
 }
 
-async function fixtureTeamDir(teamName: string): Promise<string> {
+async function fixtureTeamDir(
+  teamName: string,
+  members: ReadonlyArray<{ name: string }> = [],
+): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "atmux-team-rename-"));
   await mkdir(join(root, ".atmux"), { recursive: true });
-  await writeFile(
-    join(root, ".atmux", "team.json"),
-    JSON.stringify({ name: teamName, members: [] }),
-  );
+  await writeFile(join(root, ".atmux", "team.json"), JSON.stringify({ name: teamName, members }));
   return root;
+}
+
+async function fixtureTmuxBinary(script: string): Promise<{ root: string; bin: string }> {
+  const root = await mkdtemp(join(tmpdir(), "atmux-team-rename-tmux-"));
+  const bin = join(root, "tmux");
+  await writeFile(bin, script, "utf8");
+  await chmod(bin, 0o755);
+  return { root, bin };
 }
 
 function emptyCockpit(): Cockpit {
@@ -230,6 +239,7 @@ describe("teamRename dispatcher", () => {
   const dirs: string[] = [];
   afterEach(async () => {
     for (const d of dirs.splice(0)) await rm(d, { recursive: true, force: true });
+    resetResolveTmuxBinForTesting();
   });
 
   const baseDeps = (): TeamRenameDeps & {
@@ -332,6 +342,103 @@ describe("teamRename dispatcher", () => {
       },
     };
   };
+
+  test.serial("defaults to tmux factory fallbacks and threads members into step 8", async () => {
+    const td = await fixtureTeamDir("old-team", [{ name: "alice" }, { name: "bob" }]);
+    dirs.push(td);
+
+    const teamMembers: Array<{ name: string }> = [];
+    const { root: tmuxRoot, bin } = await fixtureTmuxBinary("#!/bin/sh\nexit 0\n");
+    dirs.push(tmuxRoot);
+    const socketRoot = await mkdtemp(join(tmpdir(), "atmux-team-rename-socket-"));
+    dirs.push(socketRoot);
+    const priorTmuxBin = process.env.ATMUX_TMUX_BIN;
+
+    try {
+      process.env.ATMUX_TMUX_BIN = bin;
+      resetResolveTmuxBinForTesting();
+
+      const d = baseDeps();
+      delete d.buildCageTmux;
+      delete d.buildCockpitTmux;
+      delete d.buildGroupViewerTmux;
+      d.loadCockpitFn = async () =>
+        ({
+          schemaVersion: 1,
+          cockpitSession: "atx",
+          windows: [],
+          sessions: [
+            {
+              type: "group",
+              name: "geoyws",
+              enabled: true,
+              sessions: [
+                {
+                  type: "team",
+                  name: "old-team",
+                  enabled: true,
+                  root: "/r/old",
+                  sessions: [],
+                },
+              ],
+            },
+          ],
+        }) as unknown as Cockpit;
+      d.renamePerMemberBranchesFn = async (opts) => {
+        teamMembers.push(...opts.members.map((m) => ({ name: m.name })));
+        return {
+          rollback: { label: "branches", undo: async () => {} },
+          outcomes: [],
+        };
+      };
+      let convergenceHintWrites = 0;
+      const originalStderr = d.stderr ?? (() => {});
+      d.stderr = (s: string) => {
+        originalStderr(s);
+        if (s.startsWith("team rename: post-rename convergence check found gaps:")) {
+          convergenceHintWrites += 1;
+          throw new Error("stderr write failed");
+        }
+      };
+
+      const exit = await teamRename(
+        ["new-team", "--socket", join(socketRoot, "socket"), "--team-dir", td],
+        d,
+      );
+      expect(exit).toBe(0);
+      expect(teamMembers).toEqual([{ name: "alice" }, { name: "bob" }]);
+      expect(convergenceHintWrites).toBe(1);
+      expect(d.stderrBuf).toContain("convergence probe failed: stderr write failed");
+      expect(d.releaseCalled).toBe(1);
+    } finally {
+      if (priorTmuxBin === undefined) {
+        delete process.env.ATMUX_TMUX_BIN;
+      } else {
+        process.env.ATMUX_TMUX_BIN = priorTmuxBin;
+      }
+    }
+  });
+
+  test.serial("logs convergence probe failures after the rename succeeds", async () => {
+    const td = await fixtureTeamDir("old-team");
+    dirs.push(td);
+
+    const d = baseDeps();
+    let convergenceHintWrites = 0;
+    const originalStderr = d.stderr ?? (() => {});
+    d.stderr = (s: string) => {
+      originalStderr(s);
+      if (s.startsWith("team rename: post-rename convergence check found gaps:")) {
+        convergenceHintWrites += 1;
+        throw new Error("stderr write failed");
+      }
+    };
+    const exit = await teamRename(["new-team", "--team-dir", td], d);
+    expect(exit).toBe(0);
+    expect(convergenceHintWrites).toBe(1);
+    expect(d.stderrBuf).toContain("convergence probe failed: stderr write failed");
+    expect(d.releaseCalled).toBe(1);
+  });
 
   test("happy path — all steps fire in order", async () => {
     const td = await fixtureTeamDir("old-team");
