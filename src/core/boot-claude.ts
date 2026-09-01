@@ -599,6 +599,9 @@ export async function bootClaudeMember(opts: BootClaudeOpts): Promise<BootResult
     if (moved.found) {
       return { status: "booted", attempts };
     }
+    if (moved.error !== undefined) {
+      return { status: "failed", attempts, reason: "capture-error" };
+    }
     // Not moved within window → loop iteration retries the whole
     // paste+submit+poll cycle (composer-cleared but claude went
     // catatonic — rare; whole-cycle retry handles it).
