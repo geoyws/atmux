@@ -115,6 +115,35 @@ describe("safeSendKeys — TYPING retries", () => {
     expect(fixture.sends).toHaveLength(1);
   });
 
+  test("omitting sleep override uses the default sleep adapter", async () => {
+    const { opts } = buildFixture([
+      "Press up to edit queued messages",
+      "\ntok 67k/100  ⏵⏵ auto mode\n",
+    ]);
+    const originalSetTimeout = globalThis.setTimeout;
+    let timeoutCalls = 0;
+    try {
+      globalThis.setTimeout = ((
+        handler: Parameters<typeof setTimeout>[0],
+        _timeout?: number,
+        ...args: unknown[]
+      ) => {
+        timeoutCalls += 1;
+        (handler as (...handlerArgs: unknown[]) => void)(...args);
+        return 0 as unknown as ReturnType<typeof setTimeout>;
+      }) as typeof setTimeout;
+      const result = await safeSendKeys("atmux:1.0", "hi", {
+        capture: opts.capture,
+        sendKeys: opts.sendKeys,
+      });
+      expect(result.outcome).toBe("sent");
+      expect(result.attempts).toBe(2);
+      expect(timeoutCalls).toBe(1);
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+    }
+  });
+
   test("TYPING for 3 attempts → exhausted-typing + flag p3", async () => {
     const { fixture, opts } = buildFixture([
       "Press up to edit queued messages",
