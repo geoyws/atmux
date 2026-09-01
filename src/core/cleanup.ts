@@ -25,6 +25,10 @@ import { tryReadJson, updateJson } from "../abstractions/json.ts";
 import { now as nowMs } from "../abstractions/time.ts";
 import { inboxDir as resolveInboxDir, logsDir as resolveLogsDir } from "./common.ts";
 
+export type DirectoryRead = (path: string) => Promise<string[]>;
+
+const readDirNames: DirectoryRead = async (path) => readdir(path);
+
 // ---------- Sub-op 1: log rotation ----------
 
 export interface RotatedLog {
@@ -47,6 +51,11 @@ export interface RotateLogsOpts {
   /** Default 1MB (1024*1024). */
   maxBytes?: number;
   dryRun?: boolean;
+  /** Test seam for deterministic recovery-path coverage. */
+  hooks?: {
+    readdir?: DirectoryRead;
+    rename?: typeof rename;
+  };
 }
 
 /**
@@ -61,12 +70,14 @@ export async function rotateLogs(
 ): Promise<LogRotationResult> {
   const maxBytes = opts.maxBytes ?? 1024 * 1024;
   const dryRun = opts.dryRun === true;
+  const renameImpl = opts.hooks?.rename ?? rename;
   const ldir = resolveLogsDir(atmuxDir);
   const out: LogRotationResult = { rotated: [], skipped: 0, capBytes: maxBytes };
 
   if (!(await exists(ldir))) return out;
 
-  const entries = await readdir(ldir).catch(() => [] as string[]);
+  const readdirImpl = opts.hooks?.readdir ?? readDirNames;
+  const entries = await readdirImpl(ldir).catch(() => [] as string[]);
   for (const name of entries) {
     if (!name.endsWith(".log")) continue;
     const full = join(ldir, name);
@@ -77,12 +88,12 @@ export async function rotateLogs(
         // Bash: `mv "$f" "$f.1"; : > "$f"`. Plain rename + truncate is
         // sufficient — there's no atomicity contract for log rotation
         // (logs are write-only append; a torn .1 is recoverable).
-        await rename(full, `${full}.1`).catch(async () => {
+        await renameImpl(full, `${full}.1`).catch(async () => {
           // If a stale .1 has unusual perms / kernel rejected the rename,
           // fall back to write+truncate emulation: append-then-clear is
           // less ideal but better than aborting cleanup entirely.
           await removeFile(`${full}.1`);
-          await rename(full, `${full}.1`);
+          await renameImpl(full, `${full}.1`);
         });
         await writeText(full, "");
       }
@@ -131,6 +142,10 @@ export interface PruneInboxesOpts {
   maxAgeDays?: number;
   dryRun?: boolean;
   nowMs?: number;
+  /** Test seam for deterministic entry ordering in dry-run coverage. */
+  hooks?: {
+    readdir?: DirectoryRead;
+  };
 }
 
 /**
@@ -164,7 +179,8 @@ export async function pruneInboxes(
   };
   if (!(await exists(ibDir))) return out;
 
-  const entries = await readdir(ibDir).catch(() => [] as string[]);
+  const readdirImpl = opts.hooks?.readdir ?? readDirNames;
+  const entries = await readdirImpl(ibDir).catch(() => [] as string[]);
   for (const name of entries) {
     if (!name.endsWith(".json")) continue;
     const full = join(ibDir, name);
@@ -196,8 +212,7 @@ export async function pruneInboxes(
       // updateJson returns post-validate value; defensive recompute.
       after = next.done?.length ?? after;
     } catch {
-      // If the file is malformed Zod throws — parity preserves the bash
-      // posture of "skip this inbox, keep going". Counts unchanged.
+      // Keep walking other inboxes after any per-file error.
       continue;
     }
     out.totalPruned += pruned;
@@ -218,8 +233,8 @@ function keep(entry: DoneLike, cutoffSec: number): boolean {
 }
 
 async function readDoneEntries(path: string): Promise<DoneLike[]> {
-  // tryReadJson throws SchemaError on malformed; swallow + return []
-  // so the caller (dry-run path) can keep walking other inboxes.
+  // Swallow any per-file read/parse error and let the caller keep
+  // walking other inboxes.
   let parsed: z.infer<typeof InboxFile> | null = null;
   try {
     parsed = await tryReadJson(path, InboxFile);
@@ -242,6 +257,10 @@ export interface PurgeLegacyInboxesResult {
 
 export interface PurgeLegacyInboxesOpts {
   dryRun?: boolean;
+  /** Test seam for deterministic recovery-path coverage. */
+  hooks?: {
+    readdir?: DirectoryRead;
+  };
 }
 
 /**
@@ -264,7 +283,8 @@ export async function purgeLegacyInboxes(
   const out: PurgeLegacyInboxesResult = { removed: [], skipped: false };
   if (!(await exists(ibDir))) return out;
 
-  const entries = await readdir(ibDir).catch(() => [] as string[]);
+  const readdirImpl = opts.hooks?.readdir ?? readDirNames;
+  const entries = await readdirImpl(ibDir).catch(() => [] as string[]);
   for (const name of entries) {
     const isLegacy =
       name.endsWith(".json") || name.endsWith(".json.lock") || name.includes(".json.bak");
