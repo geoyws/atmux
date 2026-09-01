@@ -9,7 +9,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { resolveBriefsDir, resolveTemplatesDir } from "../../../src/core/templates-dir.ts";
 
 describe("resolveTemplatesDir", () => {
@@ -42,6 +42,62 @@ describe("resolveTemplatesDir", () => {
     // Sanity: the resolved path is absolute.
     expect(r.startsWith("/")).toBe(true);
   });
+
+  test("dev probe miss + installed probe hit returns installed-mode templates dir", () => {
+    const devPath = resolve(import.meta.dir, "..", "..", "..", "templates");
+    const execPath = join("/synthetic", "bin", "atmux");
+    const installedPath = join("/synthetic", "templates");
+    const existsCalls: string[] = [];
+    let realpathArg: string | undefined;
+
+    const out = resolveTemplatesDir(
+      {},
+      {
+        execPath,
+        existsSync: (p) => {
+          existsCalls.push(p);
+          return p === installedPath;
+        },
+        realpathSync: (p) => {
+          realpathArg = p;
+          return execPath;
+        },
+      },
+    );
+
+    expect(realpathArg).toBe(execPath);
+    expect(existsCalls).toEqual([devPath, installedPath]);
+    expect(out).toBe(installedPath);
+  });
+});
+
+describe("resolveTemplatesDir — installed-mode fallback", () => {
+  test("installed-path miss falls back to the dev-mode templates dir", () => {
+    const devPath = resolve(import.meta.dir, "..", "..", "..", "templates");
+    const execPath = join("/synthetic", "missing-bin", "atmux");
+    const installedPath = join("/synthetic", "templates");
+    const existsCalls: string[] = [];
+    let realpathArg: string | undefined;
+
+    const out = resolveTemplatesDir(
+      {},
+      {
+        execPath,
+        existsSync: (p) => {
+          existsCalls.push(p);
+          return false;
+        },
+        realpathSync: (p) => {
+          realpathArg = p;
+          return execPath;
+        },
+      },
+    );
+
+    expect(realpathArg).toBe(execPath);
+    expect(existsCalls).toEqual([devPath, installedPath]);
+    expect(out).toBe(devPath);
+  });
 });
 
 describe("resolveBriefsDir", () => {
@@ -56,26 +112,19 @@ describe("resolveBriefsDir", () => {
   });
 });
 
-// The installed-mode fallback (process.execPath-based) cannot be
-// exercised purely through env injection — `process.execPath` is
-// process-wide state and bun-test runs as the bun binary, not the
-// installed atmux binary. The dev-mode path always wins under bun-test.
+// The injected resolver dependencies above cover installed-mode probe
+// behavior in-process. A real installed-binary layout still requires the
+// shell-level repro below because bun-test runs as the bun binary, not the
+// installed atmux binary.
 //
-// Coverage for the installed-mode branch is captured indirectly via
+// Installed-binary coverage is captured indirectly via
 // the c-003a2a4c repro proof: `/usr/local/bin/atmux init` (the actual
 // compiled binary) succeeds end-to-end after build:install ships
 // `templates/` to `/opt/atmux/<v>/templates/`. The shell-level repro
 // is documented in the commit body + RUNBOOK-deploy.md.
 //
-// One synthetic probe for completeness — exercise the realpathSync
-// + dirname code path by symlinking a stub "bin" under a tmpdir-rooted
-// "templates" sibling, then asserting resolveTemplatesDir falls back
-// past the dev probe (when ATMUX_TEMPLATES_DIR is set to a missing
-// path that triggers the empty-string fall-through but doesn't poison
-// the dev path). Skipped because the prod path uses process.execPath
-// which we can't mutate inside the test process — the test would have
-// to spawn a subprocess. Out-of-scope for unit; the e2e is via the
-// install-binary repro.
+// Keep the pending real-binary probe separate from the deterministic unit
+// seam: it validates package layout and process.execPath together.
 
 describe("resolveTemplatesDir — installed-mode fallback (out-of-process)", () => {
   test.todo("installed-mode branch — covered by post-deploy /usr/local/bin/atmux init repro", () => {
