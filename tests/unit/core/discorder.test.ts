@@ -76,6 +76,15 @@ describe("progress cursor", () => {
 // ---------- aggregateProgress ----------
 
 describe("aggregateProgress", () => {
+  test("spawnGit rejection degrades to an empty commit delta", async () => {
+    const got = await aggregateProgress(env.atmuxDir, "/dummy", 0, {
+      spawnGit: async () => {
+        throw new Error("git unavailable");
+      },
+    });
+    expect(got.commits).toEqual([]);
+  });
+
   test("empty when neither git nor kanban available", async () => {
     const got = await aggregateProgress(env.atmuxDir, "/no-such-dir", 0, {
       spawnGit: async () => "",
@@ -250,6 +259,38 @@ describe("aggregateProgress", () => {
       { id: "s-yes", epic: "E1", title: "story A", status: "in-progress" },
     ]);
   });
+
+  test("sorts multiple done tasks and advanced stories oldest-first", async () => {
+    await writeFile(
+      join(env.atmuxDir, "kanban.json"),
+      JSON.stringify({
+        tasks: [
+          { id: "t-new", status: "done", completedAt: 30 },
+          { id: "t-old", status: "done", completedAt: 20 },
+        ],
+        epics: [],
+        stories: [
+          { id: "s-new", status: "done", advancedAt: 40 },
+          { id: "s-old", status: "in-progress", advancedAt: 10 },
+        ],
+      }),
+    );
+    const got = await aggregateProgress(env.atmuxDir, "/d", 0, {
+      spawnGit: async () => "",
+    });
+    expect(got.doneTasks.map((task) => task.id)).toEqual(["t-old", "t-new"]);
+    expect(got.advancedStories.map((story) => story.id)).toEqual(["s-old", "s-new"]);
+  });
+
+  test("malformed kanban state degrades to an empty progress delta", async () => {
+    await writeFile(join(env.atmuxDir, "kanban.json"), "{ not json");
+    const got = await aggregateProgress(env.atmuxDir, "/d", 0, {
+      spawnGit: async () => "",
+    });
+    expect(got.commits).toEqual([]);
+    expect(got.doneTasks).toEqual([]);
+    expect(got.advancedStories).toEqual([]);
+  });
 });
 
 // ---------- aggregateHeartbeat ----------
@@ -293,6 +334,19 @@ describe("aggregateHeartbeat", () => {
     expect(snap.totalMembers).toBe(3);
   });
 
+  test("session probe rejection degrades to session-down", async () => {
+    const tmux = {
+      session: {
+        async hasSession() {
+          throw new Error("socket unavailable");
+        },
+      },
+    } as unknown as TmuxNamespace;
+    const snap = await aggregateHeartbeat(team, env.atmuxDir, "atmux-x", tmux);
+    expect(snap.sessionUp).toBe(false);
+    expect(snap.aliveCount).toBe(0);
+  });
+
   test("alive when pane runs the declared TUI", async () => {
     const tmux = fakeTmux({
       sessionUp: true,
@@ -306,6 +360,21 @@ describe("aggregateHeartbeat", () => {
     const snap = await aggregateHeartbeat(team, env.atmuxDir, "atmux-x", tmux);
     expect(snap.sessionUp).toBe(true);
     expect(snap.aliveCount).toBe(3);
+    expect(snap.drifted).toEqual([]);
+  });
+
+  test("kimi member is alive when the pane command matches", async () => {
+    const kimiTeam = {
+      ...team,
+      members: [{ name: "k", role: "member", tui: "kimi" }],
+    } as Team;
+    const snap = await aggregateHeartbeat(
+      kimiTeam,
+      env.atmuxDir,
+      "atmux-x",
+      fakeTmux({ sessionUp: true, paneCmd: () => "kimi" }),
+    );
+    expect(snap.aliveCount).toBe(1);
     expect(snap.drifted).toEqual([]);
   });
 
@@ -407,5 +476,13 @@ describe("aggregateHeartbeat", () => {
     const tmux = fakeTmux({ sessionUp: false });
     const snap = await aggregateHeartbeat(team, env.atmuxDir, "atmux-x", tmux);
     expect(snap.leadUptimeSec).toBe(null);
+  });
+
+  test("malformed kanban state degrades heartbeat counts to zero", async () => {
+    const tmux = fakeTmux({ sessionUp: false });
+    await writeFile(join(env.atmuxDir, "kanban.json"), "{ not json");
+    const snap = await aggregateHeartbeat(team, env.atmuxDir, "atmux-x", tmux);
+    expect(snap.inFlightTasks).toBe(0);
+    expect(snap.blockedTasks).toBe(0);
   });
 });

@@ -219,9 +219,15 @@ export interface DiscorderOptions {
   team?: Team;
   /** Test injection — disable Discord network call. Used by unit tests. */
   skipDiscord?: boolean;
+  /** Test injection — alternate Discord sender for send-path coverage. */
+  sendDiscord?: typeof discordSend;
   /** Test injection — alternate progress aggregator (e.g. when no git
    *  is available). */
   aggregateProgressFn?: typeof aggregateProgress;
+  /** Test injection — alternate lock acquisition. */
+  acquireFn?: typeof acquireWithTTL;
+  /** Test injection — alternate team loader for error propagation coverage. */
+  requireTeamFn?: typeof requireTeam;
 }
 
 export async function discorder(
@@ -262,7 +268,7 @@ export async function discorder(
 
   let handle = null;
   try {
-    handle = await acquireWithTTL(lockBase, {
+    handle = await (opts.acquireFn ?? acquireWithTTL)(lockBase, {
       timeoutMs: 0,
       auditDir: join(atmuxDir, "logs"),
     });
@@ -291,7 +297,7 @@ async function runProgress(
   opts: DiscorderOptions,
   logger: Logger,
 ): Promise<number> {
-  const team = opts.team ?? (await loadTeamSafe(dirOpts, logger));
+  const team = opts.team ?? (await loadTeamSafe(dirOpts, logger, opts.requireTeamFn));
   if (team === null) return 0;
 
   const stampMs = opts.nowMs ?? nowMs();
@@ -302,26 +308,17 @@ async function runProgress(
   const aggregate = opts.aggregateProgressFn ?? aggregateProgress;
   const delta = await aggregate(atmuxDir, opts.cwd ?? process.cwd(), sinceEpoch);
 
-  if (
-    delta.commits.length === 0 &&
-    delta.doneTasks.length === 0 &&
-    delta.advancedStories.length === 0
-  ) {
-    logger.log("discorder progress: no deltas since cursor — silent (no ping)");
-    await writeProgressCursor(atmuxDir, stampSec);
-    return 0;
-  }
-
   const window = formatWindow(stampSec - sinceEpoch);
   const send = buildProgressDiscordOpts(team.name, delta, window, stampMs);
   if (send === null) {
+    logger.log("discorder progress: no deltas since cursor — silent (no ping)");
     await writeProgressCursor(atmuxDir, stampSec);
     return 0;
   }
 
   if (opts.skipDiscord !== true) {
     try {
-      await discordSend(send);
+      await (opts.sendDiscord ?? discordSend)(send);
     } catch (e) {
       logger.warn(`discorder progress: discord send failed: ${errMsg(e)}`);
       // Cursor NOT advanced — next tick re-tries the same window.
@@ -340,7 +337,7 @@ async function runHeartbeat(
   opts: DiscorderOptions,
   logger: Logger,
 ): Promise<number> {
-  const team = opts.team ?? (await loadTeamSafe(dirOpts, logger));
+  const team = opts.team ?? (await loadTeamSafe(dirOpts, logger, opts.requireTeamFn));
   if (team === null) return 0;
 
   const sessionName = await getSessionName({ ...dirOpts, team });
@@ -353,7 +350,7 @@ async function runHeartbeat(
 
   if (opts.skipDiscord !== true) {
     try {
-      await discordSend(send);
+      await (opts.sendDiscord ?? discordSend)(send);
     } catch (e) {
       logger.warn(`discorder heartbeat: discord send failed: ${errMsg(e)}`);
       return 0;
@@ -363,9 +360,13 @@ async function runHeartbeat(
   return 0;
 }
 
-async function loadTeamSafe(dirOpts: ResolveDirOpts, logger: Logger): Promise<Team | null> {
+async function loadTeamSafe(
+  dirOpts: ResolveDirOpts,
+  logger: Logger,
+  requireTeamFn: typeof requireTeam = requireTeam,
+): Promise<Team | null> {
   try {
-    return await requireTeam(dirOpts);
+    return await requireTeamFn(dirOpts);
   } catch (e) {
     if (e instanceof ConfigError) {
       logger.warn(`discorder: ${e.message}`);
