@@ -315,6 +315,28 @@ describe("runBudgetCheck — pause threshold breach → enter pause", () => {
     expect(fake.logs.some((l) => l.includes("pause(alpha) failed"))).toBe(true);
   });
 
+  test("pause failure still swallows errors when no logger is injected", async () => {
+    const fake = makeFakeDeps();
+    fake.probesByAccount.set("icloud", probe("icloud", 95, 50));
+    const baseDeps = depsFor(fake);
+    const { log: _log, ...depsWithoutLog } = baseDeps;
+    const v = await runBudgetCheck(
+      ctxOf([
+        { name: "alpha", claudeAccount: "icloud" },
+        { name: "beta", claudeAccount: "icloud" },
+      ]),
+      {
+        ...depsWithoutLog,
+        pauseMember: async (atmuxDir, member, opts) => {
+          if (member === "alpha") throw new Error("simulated pause failure");
+          await baseDeps.pauseMember(atmuxDir, member, opts);
+        },
+      },
+    );
+    expect(v).toBe("paused-just-now");
+    expect(fake.pauseCalls.map((c) => c.member)).toEqual(["beta"]);
+  });
+
   test("Discord send failure logged but not thrown", async () => {
     const fake = makeFakeDeps();
     fake.probesByAccount.set("icloud", probe("icloud", 95, 50));
