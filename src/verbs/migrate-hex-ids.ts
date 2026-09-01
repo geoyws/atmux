@@ -308,7 +308,7 @@ function readNonIdColumns(db: Database, table: string): string[] {
 
 /** Quote an id as a SQL string literal — safe because compound IDs
  *  match a strict regex (no apostrophes / backslashes possible). */
-function quoteId(id: string): string {
+export function quoteId(id: string): string {
   if (!/^[tse]-[0-9]+-[0-9a-f]{8}$/.test(id)) {
     throw new Error(`quoteId: refusing unsafe id '${id}'`);
   }
