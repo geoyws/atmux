@@ -157,11 +157,21 @@ export async function tellLead(argv: ReadonlyArray<string>): Promise<number> {
     // var name is exact-match — no shorthand.
     const callerScope = process.env.ATMUX_CALLER_SCOPE;
     const sourceName = await resolveSourceTeamName(dirOpts);
-    if (!callerScopeAllowed(cockpit, sourceName, parsed.targetTeam, callerScope)) {
+    const sourceDisplayName = sourceName ?? "<unknown>";
+    if (sourceName === undefined && callerScope !== "driver") {
+      throw new ConfigError({
+        what: `cross-team tell-lead refused: ${sourceDisplayName} → ${parsed.targetTeam} not allowed (driver / parent / parent-of-target only)`,
+        hint: "set ATMUX_CALLER_SCOPE=driver in the cockpit pane to override, or route via the parent team's lead",
+      });
+    }
+    if (
+      sourceName !== undefined &&
+      !callerScopeAllowed(cockpit, sourceName, parsed.targetTeam, callerScope)
+    ) {
       // ADR-092 §D3 + Decision-anchor #5 — refusal text names both
       // ends so the operator can triage the policy violation.
       throw new ConfigError({
-        what: `cross-team tell-lead refused: ${sourceName} → ${parsed.targetTeam} not allowed (driver / parent / parent-of-target only)`,
+        what: `cross-team tell-lead refused: ${sourceDisplayName} → ${parsed.targetTeam} not allowed (driver / parent / parent-of-target only)`,
         hint: "set ATMUX_CALLER_SCOPE=driver in the cockpit pane to override, or route via the parent team's lead",
       });
     }
@@ -316,14 +326,13 @@ export function buildHeadsUp(msg: string): string {
 }
 
 /** ADR-092 §D3 helper — resolve the *source* team name for the caller-scope
- *  gate. Tries the cwd-derived team.json first; falls back to the literal
- *  `"<unknown>"` when no team.json is reachable (cockpit-driver case where
- *  the gate is bypassed via `ATMUX_CALLER_SCOPE=driver` anyway). */
-async function resolveSourceTeamName(dirOpts: ResolveDirOpts): Promise<string> {
+ *  gate. Tries the cwd-derived team.json first; returns `undefined` when no
+ *  team.json is reachable. `"<unknown>"` stays display-only at the call site. */
+async function resolveSourceTeamName(dirOpts: ResolveDirOpts): Promise<string | undefined> {
   try {
     return await getTeamName(dirOpts);
   } catch {
-    return "<unknown>";
+    return undefined;
   }
 }
 
