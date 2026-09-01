@@ -1,6 +1,6 @@
-// Integration tests for `resolveTeamSocket` (t-add5976a — read-side
+// Real-tmux integration for `resolveTeamSocket` (t-add5976a — read-side
 // tmuxTmpdir honour). Spins a real tmux server under a custom
-// TMUX_TMPDIR, opens an atmux-<team> session, and proves:
+// TMUX_TMPDIR, opens a bare `team.name` session, and proves:
 //
 //   Beat 1: resolveTeamSocket(team) reaches the live session via
 //     createTmux + hasSession (positive path — [up] for a
@@ -17,11 +17,14 @@
 // server + Bun.spawnSync env-pinned probes).
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { createTmux } from "../../src/abstractions/tmux.ts";
 import { getDefaultSocket, resolveTeamSocket } from "../../src/core/common.ts";
+import {
+  CANONICAL_ATMUX_TMUX_CONF_PATH,
+  createCanonicalAtmuxTmux,
+  setCanonicalAtmuxTmuxHome,
+} from "../helpers/tmux.ts";
 
 function probeBin(cmd: string[]): boolean {
   try {
@@ -40,10 +43,13 @@ const HAS_TMUX = probeBin(["tmux", "-V"]);
 function tmuxEnv(
   argv: string[],
   tmuxTmpdir: string,
+  homeDir: string,
 ): { exitCode: number | null; stdout: string; stderr: string } {
+  const env = { ...process.env, HOME: homeDir, TMUX_TMPDIR: tmuxTmpdir } as NodeJS.ProcessEnv;
+  delete env.TMUX;
   const proc = Bun.spawnSync({
-    cmd: ["tmux", ...argv],
-    env: { ...process.env, TMUX_TMPDIR: tmuxTmpdir },
+    cmd: ["tmux", "-f", CANONICAL_ATMUX_TMUX_CONF_PATH, ...argv],
+    env,
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -54,36 +60,47 @@ function tmuxEnv(
   };
 }
 
-describe("e2e t-add5976a resolveTeamSocket — real tmux honours team.tmuxTmpdir", () => {
+describe("real-tmux integration for t-add5976a resolveTeamSocket — tmux honours team.tmuxTmpdir", () => {
   const TEAM = "e2e-rts";
-  const SESSION = `atmux-${TEAM}`;
+  const SESSION = TEAM;
   let workDir: string;
+  let homeDir: string;
   let tmuxTmpdir: string;
+  let restoreHome: (() => void) | undefined;
+  let priorTmux: string | undefined;
 
   beforeEach(async () => {
-    workDir = await mkdtemp(join(tmpdir(), "atmux-e2e-rts-"));
+    workDir = await mkdtemp("/tmp/rts-");
+    homeDir = join(workDir, "home");
+    await mkdir(homeDir, { recursive: true });
     tmuxTmpdir = join(workDir, ".atmux", "tmux");
-    // tmux creates `<TMUX_TMPDIR>/tmux-<uid>/` itself on first invocation;
-    // we just need the parent to exist.
-    await Bun.spawnSync({ cmd: ["mkdir", "-p", tmuxTmpdir] }).exitCode;
+    await mkdir(tmuxTmpdir, { recursive: true });
+    restoreHome = setCanonicalAtmuxTmuxHome(homeDir);
+    priorTmux = process.env.TMUX;
+    delete process.env.TMUX;
   });
 
   afterEach(async () => {
+    restoreHome?.();
+    restoreHome = undefined;
+    if (priorTmux !== undefined) process.env.TMUX = priorTmux;
+    else delete process.env.TMUX;
     // Best-effort tear-down — kill the cage server if still alive (idempotent;
     // non-zero "no server" is fine).
-    tmuxEnv(["kill-server"], tmuxTmpdir);
+    tmuxEnv(["kill-server"], tmuxTmpdir, homeDir);
     await rm(workDir, { recursive: true, force: true });
   });
 
   test.skipIf(!HAS_TMUX)(
-    "Beat 1 (positive): resolveTeamSocket reaches a session opened under custom TMUX_TMPDIR",
+    "Beat 1 (positive): resolveTeamSocket reaches a real tmux session opened under custom TMUX_TMPDIR",
     async () => {
       // Start a real tmux server with the custom tmpdir + a detached
-      // session named atmux-<team>. This is the post-`atmux start` shape
+      // session named `team.name`. This is the post-`atmux start` shape
       // a bash-launched team produces.
       const newSess = tmuxEnv(
         ["new-session", "-d", "-s", SESSION, "-x", "80", "-y", "24"],
         tmuxTmpdir,
+        homeDir,
       );
       expect(newSess.exitCode).toBe(0);
 
@@ -94,20 +111,21 @@ describe("e2e t-add5976a resolveTeamSocket — real tmux honours team.tmuxTmpdir
       );
       expect(socketPath).toBe(`${tmuxTmpdir}/tmux-${process.getuid?.() ?? 0}/default`);
 
-      // The abstraction's tmux namespace at that path can see the session.
-      const tmux = createTmux({ socketPath });
+      // The abstraction's tmux namespace at that path can see the bare-session.
+      const tmux = createCanonicalAtmuxTmux({ socketPath });
       const found = await tmux.session.hasSession(SESSION);
       expect(found).toBe(true);
     },
   );
 
   test.skipIf(!HAS_TMUX)(
-    "Beat 2 ([down]→[up] repro): canonical fallback misses; resolveTeamSocket finds",
+    "Beat 2 ([down]→[up] repro): real tmux shows canonical fallback misses; resolveTeamSocket finds",
     async () => {
-      // Same shape — real tmux session under custom TMUX_TMPDIR.
+      // Same shape — real tmux bare session under custom TMUX_TMPDIR.
       const newSess = tmuxEnv(
         ["new-session", "-d", "-s", SESSION, "-x", "80", "-y", "24"],
         tmuxTmpdir,
+        homeDir,
       );
       expect(newSess.exitCode).toBe(0);
 
@@ -117,7 +135,7 @@ describe("e2e t-add5976a resolveTeamSocket — real tmux honours team.tmuxTmpdir
       // bug the dispatch describes.
       const canonicalSocket = getDefaultSocket(TEAM);
       expect(canonicalSocket).toBe(`/tmp/atmux-${TEAM}/sock`);
-      const tmuxCanonical = createTmux({ socketPath: canonicalSocket });
+      const tmuxCanonical = createCanonicalAtmuxTmux({ socketPath: canonicalSocket });
       const foundCanonical = await tmuxCanonical.session.hasSession(SESSION);
       expect(foundCanonical).toBe(false); // [down] — false positive
 
@@ -127,7 +145,7 @@ describe("e2e t-add5976a resolveTeamSocket — real tmux honours team.tmuxTmpdir
         { name: TEAM, tmuxTmpdir },
         { uid: process.getuid?.() ?? 0 },
       );
-      const tmuxResolved = createTmux({ socketPath: resolvedSocket });
+      const tmuxResolved = createCanonicalAtmuxTmux({ socketPath: resolvedSocket });
       const foundResolved = await tmuxResolved.session.hasSession(SESSION);
       expect(foundResolved).toBe(true); // [up] — correct
     },
