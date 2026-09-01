@@ -199,6 +199,38 @@ describe("dispatch verb — integration", () => {
     expect(log).toContain(id);
   });
 
+  test("legacy tmux window name is renamed in place before pinging", async () => {
+    const teamName = `${sessionPrefix}-team`;
+    const sessionName = teamName;
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      JSON.stringify({
+        name: teamName,
+        members: [{ name: "lead", emoji: "🧭" }],
+      }),
+    );
+    await tmux.session.newSession({
+      name: sessionName,
+      shellCommand: "cat",
+      windowName: "🧭lead",
+    });
+    await new Promise((r) => setTimeout(r, 80));
+
+    const id = await addTask(atmuxDir, { subject: "x" });
+    const { stdout } = await captureStdoutStderr(() =>
+      dispatch(["lead", id, "--socket", socketPath, "--team-dir", teamDir]),
+    );
+    expect(stdout).toContain(`dispatched ${id} → lead`);
+
+    const names = (await tmux.window.listWindows(sessionName)).map((w) => w.name);
+    expect(names).toContain("🧭-lead");
+    expect(names).not.toContain("🧭lead");
+
+    const logPath = join(atmuxDir, "logs", "send-lead.log");
+    const log = await Bun.file(logPath).text();
+    expect(log).toContain(id);
+  });
+
   test("unknown member → ConfigError", async () => {
     await stageTeamWithMembers(["alpha"]);
     const id = await addTask(atmuxDir, { subject: "x" });
