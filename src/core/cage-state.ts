@@ -168,6 +168,7 @@ export interface CageHealth {
 /** Spawn injection — defaults to the abstractions/spawn implementation
  *  but tests pass a stub that synthesizes `ps` output. */
 export type ChildExecProbe = (panePid: number) => Promise<boolean>;
+export type SpawnProbe = typeof defaultSpawn;
 
 export interface ProbeCageStateOpts {
   /** Override the tmux client. Default: `createTmux({ socketPath })`. */
@@ -178,6 +179,8 @@ export interface ProbeCageStateOpts {
    *  Default uses `ps -A -o ppid= -o comm=` and filters rows to the exact
    *  pane PID before matching `claude`, `claude-*`, or `node`. */
   paneChildIsClaude?: ChildExecProbe;
+  /** Spawn override for deterministic coverage of the default `ps` probes. */
+  spawnProbe?: SpawnProbe;
   /** Wall-clock injection (seconds). Default: `Math.floor(now()/1000)`. */
   nowSec?: () => number;
   /** Heartbeat read override — defaults to {@link readHeartbeat}.
@@ -346,12 +349,14 @@ export async function probeCageState(
   // dropped the `atmux-` prefix). See `ProbeCageStateOpts`.
   const sessionName = opts.sessionName ?? team.name;
   const tmux = opts.tmux ?? createTmux({ socketPath });
+  const spawnProbe = opts.spawnProbe ?? defaultSpawn;
   const hasSession =
     opts.hasSession ??
     // `=`-anchored: bare session names (e-419553c6) prefix-collide —
     // `-t sopx` would match a `sopx-guild` session (t-0dbfe104 class).
     (async (name: string, _sock: string) => tmux.session.hasSession(exactSessionTarget(name)));
-  const childIsClaude = opts.paneChildIsClaude ?? defaultPaneChildIsClaude;
+  const childIsClaude =
+    opts.paneChildIsClaude ?? ((panePid: number) => defaultPaneChildIsClaude(panePid, spawnProbe));
   const nowSec = opts.nowSec ?? (() => Math.floor(now() / 1000));
   const readHb = opts.readHeartbeat ?? readHeartbeat;
 
@@ -444,7 +449,7 @@ export async function probeCageState(
   // nothing", which is a different claim.
   const captured = await tryCapture(tmux, target);
   const text = captured ?? "";
-  const paneUptimeSec = await readPaneUptimeSec(panePid);
+  const paneUptimeSec = await readPaneUptimeSec(panePid, spawnProbe);
   const evidence = text.slice(-200);
   const classification = classifyText(text);
 
@@ -666,10 +671,10 @@ export function psOutputHasDirectClaudeChild(panePid: number, stdout: string): b
  *  `ps -A -o ppid= -o comm=` and filter to direct children of the requested
  *  pane PID before matching `claude` / `claude-*` / `node` in the comm
  *  column. Pure-ish (single spawn call), portable across Linux + macOS. */
-async function defaultPaneChildIsClaude(panePid: number): Promise<boolean> {
+async function defaultPaneChildIsClaude(panePid: number, spawnProbe: SpawnProbe): Promise<boolean> {
   let r: SpawnResult;
   try {
-    r = await defaultSpawn({
+    r = await spawnProbe({
       cmd: "ps",
       argv: ["-A", "-o", "ppid=", "-o", "comm="],
       expectExitCode: "any",
@@ -733,10 +738,10 @@ async function defaultWindowProbe(
 /** Read pane process uptime via `ps -o etimes= -p <pid>`. Mirrors
  *  doctor.ts's `readPaneUptimeSec` — kept local rather than exported
  *  so this module stays self-contained. */
-async function readPaneUptimeSec(pid: number): Promise<number | null> {
+async function readPaneUptimeSec(pid: number, spawnProbe: SpawnProbe): Promise<number | null> {
   let r: SpawnResult;
   try {
-    r = await defaultSpawn({
+    r = await spawnProbe({
       cmd: "ps",
       argv: ["-o", "etimes=", "-p", String(pid)],
       expectExitCode: "any",
