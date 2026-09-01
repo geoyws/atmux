@@ -68,9 +68,8 @@ export function resolveTuiCommand(
   if (tcRaw !== undefined && tcRaw !== null && typeof tcRaw === "object") {
     const tc = tcRaw as Record<string, unknown>;
     const prefix = tc[tui];
-    if (typeof prefix === "string" && prefix.length > 0) {
+    if (typeof prefix === "string" && prefix.length > 0)
       return composeCustom(name, cwd, prefix, model);
-    }
   }
 
   // 3. Built-in defaults.
