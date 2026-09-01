@@ -907,7 +907,7 @@ describe("bootClaudeMember — retry", () => {
 // ---------- bootClaudeMember — post-boot capture error ----------
 
 describe("bootClaudeMember — post-boot capture error", () => {
-  test("post-boot poll captures once, then throws on the next poll → failed with tokens-never-moved, no retry", async () => {
+  test("post-boot poll throws on the second capture → failed with capture-error and no resend/retry even when maxAttempts > 1", async () => {
     const throwOnCaptureCall = 6;
     const {
       tmux,
@@ -938,11 +938,11 @@ describe("bootClaudeMember — post-boot capture error", () => {
       submitVerifyPollIntervalMs: 1,
       postBootTimeoutMs: 1_000,
       postBootPollIntervalMs: 1,
-      maxAttempts: 1,
+      maxAttempts: 2,
       paneLockDir: testPaneLockDir,
     });
     expect(r.status).toBe("failed");
-    expect(r.reason).toBe("tokens-never-moved");
+    expect(r.reason).toBe("capture-error");
     expect(r.attempts).toBe(1);
     expect(getCaptureCallCount()).toBe(throwOnCaptureCall);
     expect(getBufferLoadCallCount()).toBe(1);
