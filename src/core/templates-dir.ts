@@ -41,12 +41,25 @@
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
+interface ResolveTemplatesDirDeps {
+  existsSync?: (path: string) => boolean;
+  realpathSync?: (path: string) => string;
+  execPath?: string;
+}
+
 /**
  * Resolve the `templates/` directory. See module header for the full
  * resolution chain. Returns a path string (caller probes / reads as
  * needed; this fn does NOT throw on missing).
  */
-export function resolveTemplatesDir(env: NodeJS.ProcessEnv = process.env): string {
+export function resolveTemplatesDir(
+  env: NodeJS.ProcessEnv = process.env,
+  deps: ResolveTemplatesDirDeps = {},
+): string {
+  const existsProbe = deps.existsSync ?? existsSync;
+  const realpath = deps.realpathSync ?? realpathSync;
+  const execPath = deps.execPath ?? process.execPath;
+
   // (1) env override
   const override = env.ATMUX_TEMPLATES_DIR;
   if (override !== undefined && override.length > 0) return override;
@@ -54,16 +67,16 @@ export function resolveTemplatesDir(env: NodeJS.ProcessEnv = process.env): strin
   // (2) dev-mode — `<repo>/src/core/templates-dir.ts` → up 2 → `<repo>` →
   // `+ templates`. Probe; if exists, return.
   const devPath = resolve(import.meta.dir, "..", "..", "templates");
-  if (existsSync(devPath)) return devPath;
+  if (existsProbe(devPath)) return devPath;
 
   // (3) installed-mode — `/opt/atmux/<v>/bin/atmux` (after realpath
   // unwinds `/usr/local/bin/atmux → /opt/atmux/current/bin/atmux →
   // /opt/atmux/<v>/bin/atmux`) → up 1 → `/opt/atmux/<v>` →
   // `+ templates`. Probe; if exists, return.
   try {
-    const real = realpathSync(process.execPath);
+    const real = realpath(execPath);
     const installedPath = resolve(dirname(real), "..", "templates");
-    if (existsSync(installedPath)) return installedPath;
+    if (existsProbe(installedPath)) return installedPath;
   } catch {
     // realpath can throw on missing execPath (defensive — unreachable
     // in practice). Fall through to (4).
