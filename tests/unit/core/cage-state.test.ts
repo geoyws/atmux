@@ -1,6 +1,7 @@
 // Unit tests for src/core/cage-state.ts (t-74273200 / c-8ecd3a61).
 
 import { describe, expect, test } from "bun:test";
+import type { SpawnOpts, SpawnResult } from "../../../src/abstractions/spawn.ts";
 import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import {
   type CageHealth,
@@ -69,6 +70,34 @@ const DEFAULT_OPTS = {
   readHeartbeat: async () => null,
 };
 
+function spawnResult(stdout: string, exitCode = 0): SpawnResult {
+  return {
+    cmd: "ps",
+    argv: [] as string[],
+    exitCode,
+    signalled: null,
+    stdout,
+    stderr: "",
+    durationMs: 1,
+  };
+}
+
+function makeSpawnProbe(
+  child: () => SpawnResult,
+  uptime: () => SpawnResult,
+): (opts: SpawnOpts) => Promise<SpawnResult> {
+  return async ({ cmd, argv = [] }) => {
+    if (cmd !== "ps") throw new Error(`unexpected cmd: ${cmd}`);
+    if (argv[0] === "-A") {
+      return child();
+    }
+    if (argv[0] === "-o") {
+      return uptime();
+    }
+    throw new Error(`unexpected argv: ${argv.join(" ")}`);
+  };
+}
+
 // ---------- (1) session-missing → down ----------
 
 describe("probeCageState — session-missing branch", () => {
@@ -100,6 +129,89 @@ describe("probeCageState — session-missing branch", () => {
     expect(h.paneUptimeSec).toBeNull();
     expect(h.heartbeatAgeSec).toBeNull();
     expect(listPanesCalls).toBe(0);
+  });
+});
+
+describe("probeCageState — default ps probe failure and uptime parsing", () => {
+  test("default child-process probe spawn failure degrades to down", async () => {
+    const tmux = tmuxStub({ paneText: "❯ ↑ 5k tokens" });
+    const h = await probeCageState(makeTeam(), makeMember(), "/tmp/x", {
+      ...DEFAULT_OPTS,
+      tmux,
+      paneChildIsClaude: undefined,
+      spawnProbe: makeSpawnProbe(
+        () => {
+          throw new Error("ps unavailable");
+        },
+        () => spawnResult("123\n"),
+      ),
+    });
+    expect(h.state).toBe("down");
+    expect(h.inferredFromRender).toBeUndefined();
+    expect(h.paneUptimeSec).toBe(123);
+  });
+
+  test("default child-process probe returns down on non-zero ps exit", async () => {
+    const tmux = tmuxStub({ paneText: "❯ ↑ 5k tokens" });
+    const h = await probeCageState(makeTeam(), makeMember(), "/tmp/x", {
+      ...DEFAULT_OPTS,
+      tmux,
+      paneChildIsClaude: undefined,
+      spawnProbe: makeSpawnProbe(
+        () => spawnResult("", 1),
+        () => spawnResult("123\n"),
+      ),
+    });
+    expect(h.state).toBe("down");
+    expect(h.inferredFromRender).toBeUndefined();
+    expect(h.paneUptimeSec).toBe(123);
+  });
+
+  test("malformed uptime output is ignored and leaves paneUptimeSec null", async () => {
+    const tmux = tmuxStub({ paneText: "❯ ↑ 5k tokens" });
+    const h = await probeCageState(makeTeam(), makeMember(), "/tmp/x", {
+      ...DEFAULT_OPTS,
+      tmux,
+      paneChildIsClaude: undefined,
+      spawnProbe: makeSpawnProbe(
+        () => spawnResult("12345 claude\n"),
+        () => spawnResult("not-a-number\n"),
+      ),
+    });
+    expect(h.state).toBe("active");
+    expect(h.paneUptimeSec).toBeNull();
+  });
+
+  test("uptime probe spawn failure is swallowed and leaves paneUptimeSec null", async () => {
+    const tmux = tmuxStub({ paneText: "❯ ↑ 5k tokens" });
+    const h = await probeCageState(makeTeam(), makeMember(), "/tmp/x", {
+      ...DEFAULT_OPTS,
+      tmux,
+      paneChildIsClaude: undefined,
+      spawnProbe: makeSpawnProbe(
+        () => spawnResult("12345 claude\n"),
+        () => {
+          throw new Error("ps unavailable");
+        },
+      ),
+    });
+    expect(h.state).toBe("active");
+    expect(h.paneUptimeSec).toBeNull();
+  });
+
+  test("numeric uptime output is parsed as paneUptimeSec", async () => {
+    const tmux = tmuxStub({ paneText: "❯ ↑ 5k tokens" });
+    const h = await probeCageState(makeTeam(), makeMember(), "/tmp/x", {
+      ...DEFAULT_OPTS,
+      tmux,
+      paneChildIsClaude: undefined,
+      spawnProbe: makeSpawnProbe(
+        () => spawnResult("12345 claude\n"),
+        () => spawnResult("456\n"),
+      ),
+    });
+    expect(h.state).toBe("active");
+    expect(h.paneUptimeSec).toBe(456);
   });
 });
 
