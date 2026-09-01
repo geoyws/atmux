@@ -228,6 +228,8 @@ export interface InitOptions {
   stdout?: Writer;
   /** External work-ledger adapter override (test injection). */
   kanbanAdapter?: Pick<KanbanCliAdapter, "initialize">;
+  /** Backup source reader override for the best-effort `--force` copy. */
+  backupReadText?: typeof readText;
 }
 
 /**
@@ -298,10 +300,11 @@ export async function init(argv: ReadonlyArray<string>, opts: InitOptions = {}):
   // failure is non-fatal so a low-disk / read-only edge case doesn't
   // wedge the legitimate flow.
   if (parsed.force && (await exists(tj))) {
+    const backupReadText = opts.backupReadText ?? readText;
     const epoch = Math.floor(now() / 1000);
     const bak = `${tj}.bak.${epoch}`;
     try {
-      const src = await readText(tj);
+      const src = await backupReadText(tj);
       await writeText(bak, src);
     } catch {
       // expected: backup is best-effort safety net per bash semantics;
