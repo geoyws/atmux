@@ -149,12 +149,6 @@ export function selectAccount(deps: SelectAccountDeps): SelectAccountResult {
   const anyHealthy = scored.some((s) => !s.throttled);
   const eligible = anyHealthy ? scored.filter((s) => !s.throttled) : scored;
 
-  if (eligible.length === 0) {
-    // Theoretically unreachable (pool.length > 0 guard above + always
-    // at least one in `scored`), but type-narrow safely.
-    return { account: null, reason: "pool empty after throttled exclusion" };
-  }
-
   // Sort: fresh-data-first, then by h5_util ASC, then by weight DESC,
   // then by index ASC.
   eligible.sort((a, b) => {
