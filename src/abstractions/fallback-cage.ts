@@ -17,12 +17,11 @@
 // Tier 4 (MiniMax) → **DROPPED** per ADR-050 v1 (formerly: stubbed
 //                    behind MINIMAX_CLI_AVAILABLE env flag).
 //
-// The Tier 3+ helpers (workspace builder, sudo-tmux spawn path, brief
-// composers, archive paths, rsync excludes) remain in this module so
-// `destroyFallbackCage` can tear down legacy `CageHandle` rows
-// persisted before the 2026-05-14 reduction. New cages of tier !== 2
-// are refused at the create path — the destroy path is best-effort
-// cleanup, not a re-entry point.
+// Tier 3+ brief composers, archive paths, and teardown support remain
+// in this module so `destroyFallbackCage` can clean up legacy
+// `CageHandle` rows persisted before the 2026-05-14 reduction. New
+// cages of tier !== 2 are refused at the create path — the destroy
+// path is best-effort cleanup, not a re-entry point.
 //
 // Brief composers are folded into this module per ADR-058 §D4 — the
 // brief embeds tier-identity (agent name, workDir, git policy), so
@@ -145,8 +144,8 @@ export class FallbackTierDroppedError extends Error {
   }
 }
 
-/** Thrown when a Tier 3+ provisioned user is missing — operator must run
- *  scripts/provision-fallback-user.sh first per ADR-058 §D2. */
+/** Legacy cascade signal retained for callers that still classify old
+ * Tier 3+ provisioning failures. New cage creation never emits it. */
 export class FallbackUserMissingError extends Error {
   readonly agent: FallbackAgent;
   constructor(agent: FallbackAgent) {
@@ -169,8 +168,7 @@ export const TIER_AGENT: Readonly<Record<FallbackTier, FallbackAgent>> = {
   4: "minimax-agent",
 };
 
-/** rsync excludes for Tier 3+ workspace — keeps `.git` + credentials +
- *  reference material + transient state out of the agent's view. */
+/** Legacy Tier 3+ workspace excludes retained for reconciliation tooling. */
 export const TIER3_RSYNC_EXCLUDES: ReadonlyArray<string> = [
   ".git",
   ".gitmodules-credentials",
@@ -375,106 +373,6 @@ export function composeTier4Brief(opts: ComposeBriefOpts): string {
 // ---------- Cage create / destroy ----------
 
 /**
- * Verify a Tier 3+ provisioned user exists. Throws
- * FallbackUserMissingError on miss.
- */
-async function verifyAgentProvisioned(
-  agent: FallbackAgent,
-  spawnFn: (opts: SpawnOpts) => Promise<SpawnResult>,
-): Promise<void> {
-  if (agent === "operator") return;
-  const r = await spawnFn({
-    cmd: "getent",
-    argv: ["passwd", agent],
-    timeoutMs: 5_000,
-    expectExitCode: "any",
-  });
-  if (r.exitCode !== 0) throw new FallbackUserMissingError(agent);
-}
-
-/**
- * Tier 3+ workspace builder — sudo + mkdir + rsync + git-context dump
- * + chown. NO direct git calls inside the agent's workspace
- * (reviewer-gated lint rule per ADR-058 §D4 hard rule). Git context
- * dumps are written via spawnFn in the OPERATOR's UID context, then
- * rsync'd in (which is the only place a `git` invocation appears in
- * this module — and it runs OUTSIDE the agent's cage, against the
- * operator's worktree).
- */
-async function buildTier3PlusWorkspace(
-  opts: {
-    agent: FallbackAgent;
-    team: string;
-    lane: string;
-    projectCwd: string;
-    workDir: string;
-  },
-  spawnFn: (opts: SpawnOpts) => Promise<SpawnResult>,
-): Promise<void> {
-  const cageDir = `/home/${opts.agent}/cages/${opts.team}-${opts.lane}`;
-
-  await spawnFn({
-    cmd: "sudo",
-    argv: ["-u", opts.agent, "mkdir", "-p", `${cageDir}/work`],
-    timeoutMs: 10_000,
-  });
-
-  const rsyncArgv: string[] = ["-av"];
-  for (const exclude of TIER3_RSYNC_EXCLUDES) rsyncArgv.push(`--exclude=${exclude}`);
-  rsyncArgv.push(`${opts.projectCwd}/`, `${cageDir}/work/`);
-  await spawnFn({
-    cmd: "rsync",
-    argv: rsyncArgv,
-    timeoutMs: 5 * 60 * 1000,
-  });
-
-  // Git context dump — runs OUTSIDE the cage, against operator's
-  // worktree. Output paths land inside the agent's workspace; agent
-  // reads them as static reference data.
-  const histR = await spawnFn({
-    cmd: "git",
-    argv: ["log", "--oneline", "-50"],
-    cwd: opts.projectCwd,
-    timeoutMs: 10_000,
-    expectExitCode: "any",
-  });
-  const statusR = await spawnFn({
-    cmd: "git",
-    argv: ["status"],
-    cwd: opts.projectCwd,
-    timeoutMs: 10_000,
-    expectExitCode: "any",
-  });
-  const branchR = await spawnFn({
-    cmd: "git",
-    argv: ["branch", "--show-current"],
-    cwd: opts.projectCwd,
-    timeoutMs: 10_000,
-    expectExitCode: "any",
-  });
-  const writeContextFile = async (filename: string, body: string): Promise<void> => {
-    await spawnFn({
-      cmd: "sudo",
-      argv: ["-u", opts.agent, "tee", `${cageDir}/work/${filename}`],
-      stdin: body,
-      timeoutMs: 10_000,
-    });
-  };
-  await writeContextFile("_history.log", histR.stdout);
-  await writeContextFile("_status.log", statusR.stdout);
-  await writeContextFile("_branch.log", branchR.stdout);
-
-  // chown the entire cage tree to agent — defence in depth even though
-  // sudo -u <agent> mkdir already created with correct ownership; rsync
-  // may have produced operator-owned files if running as operator.
-  await spawnFn({
-    cmd: "sudo",
-    argv: ["chown", "-R", `${opts.agent}:${opts.agent}`, cageDir],
-    timeoutMs: 30_000,
-  });
-}
-
-/**
  * Create a fallback cage for a single lane. ADR-050 v1 + Task t-706655ee
  * (2026-05-14 operator scope reduction) restrict creation to **Tier 2
  * (Cursor) only** — Tier 3 (Kimi) and Tier 4 (MiniMax) are permanently
@@ -488,8 +386,8 @@ async function buildTier3PlusWorkspace(
  * `atmux flag add --severity high` + a Discord
  * `[fallback-tier-unavailable]` ping rather than retrying.
  *
- * The brief composers + workspace builders for Tier 3+ remain in this
- * module for the `destroyFallbackCage` teardown path (handles
+ * The brief composers + teardown branches for Tier 3+ remain in this
+ * module for `destroyFallbackCage` (handles
  * `CageHandle` rows persisted before the 2026-05-14 reduction); the
  * **create** path is the hard gate, not the destroy path.
  */
@@ -507,27 +405,12 @@ export async function createFallbackCage(opts: CreateFallbackCageOpts): Promise<
   const nowSec = opts.nowSec ?? ((): number => Math.floor(Date.now() / 1000));
 
   const agent = TIER_AGENT[tier];
-  await verifyAgentProvisioned(agent, spawnFn);
 
   const tmuxTmpdir = cageTmuxTmpdir(opts.team, opts.lane, agent);
   const tmuxSocket = cageTmuxSocket(opts.team, opts.lane);
   const sessionName = cageSessionName(opts.team, opts.lane);
   const windowName = `tier${tier}-${opts.lane}`;
-  const workDir =
-    agent === "operator" ? opts.projectCwd : tier3WorkDir(agent, opts.team, opts.lane);
-
-  if (agent !== "operator") {
-    await buildTier3PlusWorkspace(
-      {
-        agent,
-        team: opts.team,
-        lane: opts.lane,
-        projectCwd: opts.projectCwd,
-        workDir,
-      },
-      spawnFn,
-    );
-  }
+  const workDir = opts.projectCwd;
 
   // Spawn the cage tmux server. The factory captures the socket flag in
   // a closure so all subsequent invocations reach this server only.
@@ -547,51 +430,18 @@ export async function createFallbackCage(opts: CreateFallbackCageOpts): Promise<
   // (operator-UID) branch below creates its server through the `tmux`
   // namespace built above — `createTmux` → `spawn()` — so it is ALREADY
   // covered by tmux.ts's TMUX_CHILD_UNSET_ENV.
-  // The Tier-3+ `sudo` branch is NOT: sudo's env_reset drops a spawn-level
-  // override, so it carries TMUX_CHILD_ENV_ARGV in its `env(1)` prefix.
   await spawnFn({
     cmd: "mkdir",
     argv: ["-p", tmuxTmpdir],
     timeoutMs: 5_000,
   });
 
-  // For Tier 3+ the tmux server itself runs as the dedicated agent —
-  // not the operator. We spawn `sudo -u <agent> tmux ...` to create
-  // the session; createTmux's namespace is then used by the OPERATOR
-  // for read-only inspection (operator can `tmux -L <socket> attach`
-  // because the socket is set with permissive group rights via the
-  // provisioned user's setfacl grants).
-  if (agent === "operator") {
-    await tmux.session.newSession({
-      name: sessionName,
-      detached: true,
-      cwd: workDir,
-      windowName,
-    });
-  } else {
-    await spawnFn({
-      cmd: "sudo",
-      argv: [
-        "-u",
-        agent,
-        "env",
-        ...TMUX_CHILD_ENV_ARGV,
-        `TMUX_TMPDIR=${tmuxTmpdir}`,
-        resolveTmuxBin(),
-        "-L",
-        tmuxSocket,
-        "new-session",
-        "-d",
-        "-s",
-        sessionName,
-        "-n",
-        windowName,
-        "-c",
-        workDir,
-      ],
-      timeoutMs: 15_000,
-    });
-  }
+  await tmux.session.newSession({
+    name: sessionName,
+    detached: true,
+    cwd: workDir,
+    windowName,
+  });
 
   return {
     tier,
