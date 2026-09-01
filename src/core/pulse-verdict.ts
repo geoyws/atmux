@@ -110,15 +110,18 @@ export function describeVerdict(inputs: PulseInputs, verdict: PulseVerdict): str
     }
     case "🔴 Stalled":
       return `🔴 **Stalled** — ${inputs.inProgressCount} in-progress, 0 commits in ${inputs.windowMin}min`;
-    case "🚨 Need you": {
-      const parts: string[] = [];
-      if (inputs.staleDriverInboxCount > 0) {
-        parts.push(`${inputs.staleDriverInboxCount} stale driver-ask(s)`);
-      }
-      if (inputs.pendingDecisionsCount > 0) {
-        parts.push(`${inputs.pendingDecisionsCount} open decision(s)`);
-      }
-      return `🚨 **Need you** — ${parts.join(", ")}`;
-    }
+    case "🚨 Need you":
+      return describeNeedYouBody(inputs);
   }
+}
+
+function describeNeedYouBody(inputs: PulseInputs): string {
+  const parts: string[] = [];
+  if (inputs.staleDriverInboxCount > 0) {
+    parts.push(`${inputs.staleDriverInboxCount} stale driver-ask(s)`);
+  }
+  if (inputs.pendingDecisionsCount > 0) {
+    parts.push(`${inputs.pendingDecisionsCount} open decision(s)`);
+  }
+  return `🚨 **Need you** — ${parts.join(", ")}`;
 }
