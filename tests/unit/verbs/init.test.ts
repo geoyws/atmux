@@ -14,7 +14,7 @@
 // (read-failure on the source).
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Logger } from "../../../src/core/tui.ts";
@@ -71,25 +71,23 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  // Restore writability so chmod-tampered tests can clean up.
-  try {
-    await chmod(env.cwd, 0o755);
-  } catch {
-    /* expected: cwd may have been removed mid-test */
-  }
   await rm(env.cwd, { recursive: true, force: true });
   // Strip the parent tmpdir (one level up from the stable `project` dir).
   const parent = resolve(env.cwd, "..");
   await rm(parent, { recursive: true, force: true });
 });
 
-async function runInit(argv: ReadonlyArray<string>): Promise<number> {
+async function runInit(
+  argv: ReadonlyArray<string>,
+  opts: Parameters<typeof init>[1] = {},
+): Promise<number> {
   return await init(argv, {
     cwd: env.cwd,
     templatesDir: env.templatesDir,
     env: {},
     logger: env.logger,
     stdout: env.stdout,
+    ...opts,
   });
 }
 
@@ -407,18 +405,17 @@ describe("init — overwrite gating (bash lib/init.sh:30-32, :40-42)", () => {
   });
 
   test("--force backup tolerates read failure (best-effort swallow)", async () => {
-    // Seed a team.json then chmod the file to be unreadable. The
-    // backup attempt should swallow the read failure and proceed
-    // with the overwrite, mirroring bash's `cp ... 2>/dev/null || return 0`.
     await runInit(["--name", "a"]);
     const tj = join(env.cwd, ".atmux", "team.json");
-    await chmod(tj, 0o000);
-    try {
-      const exit = await runInit(["--name", "b", "--force"]);
-      expect(exit).toBe(0);
-    } finally {
-      await chmod(tj, 0o644);
-    }
+    const backupReadCalls: string[] = [];
+    const exit = await runInit(["--name", "b", "--force"], {
+      backupReadText: async (path) => {
+        backupReadCalls.push(path);
+        throw new Error("synthetic backup read failure");
+      },
+    });
+    expect(exit).toBe(0);
+    expect(backupReadCalls).toEqual([tj]);
     // Overwrite still landed.
     const tj2 = JSON.parse(await readFile(tj, "utf8")) as { name: string };
     expect(tj2.name).toBe("b");
