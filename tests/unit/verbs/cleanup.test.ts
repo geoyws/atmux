@@ -5,7 +5,7 @@
 // through both sub-ops in order.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Logger } from "../../../src/core/tui.ts";
@@ -105,16 +105,27 @@ describe("cleanup verb", () => {
     expect(oks.some((m) => m.includes("1 rotated"))).toBe(true);
   });
 
-  test("logs --dry-run does not rotate", async () => {
+  test("logs --dry-run uses env ATMUX_DIR fallback and does not rotate", async () => {
     await mkdir(env.logsDir, { recursive: true });
-    await writeFile(join(env.logsDir, "x.log"), "x".repeat(2 * 1024 * 1024));
+    const original = "x".repeat(2 * 1024 * 1024);
+    await writeFile(join(env.logsDir, "x.log"), original);
+    const trapRoot = await mkdtemp(join(tmpdir(), "atmux-cleanup-cwd-"));
+    const trapAtmuxDir = join(trapRoot, ".atmux");
+    const trapLogsDir = join(trapAtmuxDir, "logs");
+    const trapCwd = join(trapRoot, "project", "nested");
+    await mkdir(trapLogsDir, { recursive: true });
+    await writeFile(join(trapLogsDir, "trap.log"), "y".repeat(1024));
+    await mkdir(trapCwd, { recursive: true });
     await cleanup(["logs", "--dry-run"], {
-      atmuxDir: env.atmuxDir,
-      env: {},
+      cwd: trapCwd,
+      env: { ATMUX_DIR: env.atmuxDir },
       logger: env.logger,
     });
+    expect(await readdir(env.logsDir)).toEqual(["x.log"]);
+    expect(await readFile(join(env.logsDir, "x.log"), "utf8")).toBe(original);
     const oks = env.logs.filter((l) => l.kind === "ok").map((l) => l.msg);
-    expect(oks.some((m) => m.includes("dry-run"))).toBe(true);
+    expect(oks).toContain("cleanup logs (dry-run): 1 would rotate, 0 under cap");
+    expect(await readdir(trapLogsDir)).toEqual(["trap.log"]);
   });
 
   test("inboxes subcommand prunes .done[] past threshold", async () => {
@@ -180,6 +191,22 @@ describe("cleanup verb", () => {
         logger: env.logger,
       }),
     ).rejects.toThrow(UsageError);
+  });
+
+  test("inboxes RangeError from pruneInboxes is mapped to UsageError", async () => {
+    await expect(
+      cleanup(["inboxes"], {
+        atmuxDir: env.atmuxDir,
+        env: {},
+        logger: env.logger,
+        pruneInboxes: async () => {
+          throw new RangeError(
+            "cleanup inboxes: --max-age-days must be a positive integer (got 0)",
+          );
+        },
+      }),
+    ).rejects.toThrow(UsageError);
+    expect(env.logs).toEqual([]);
   });
 
   test("inboxes per-file dry-run log emits one line per pruned file", async () => {
