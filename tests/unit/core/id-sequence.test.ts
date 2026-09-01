@@ -198,7 +198,9 @@ describe("matchesIdPrefix — partial lookup", () => {
     expect(matchesIdPrefix("t-12-abc12345", "t-12-a")).toBe(true);
   });
 
-  test("digit-boundary check: t-1 does NOT match t-12-abc", () => {
+  test("scope-only queries are rejected and numeric-prefix ambiguity stays false", () => {
+    expect(matchesIdPrefix("t-12-abc12345", "t")).toBe(false);
+    expect(matchesIdPrefix("t-12-abc12345", "t-")).toBe(false);
     expect(matchesIdPrefix("t-12-abc12345", "t-1")).toBe(false);
     expect(matchesIdPrefix("t-12-abc12345", "t-12")).toBe(true);
   });
