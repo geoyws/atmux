@@ -253,8 +253,7 @@ async function claimNext(parsed: ClaimDoneArgs): Promise<number> {
   // ADR-210 Tier-2 §73: explicit `--role <X>` is a hard lane filter that
   // bypasses callerLane / crossLaneClaim. Pass it through so selection
   // only considers Tasks whose `.lane === role`.
-  const roleFilter =
-    parsed.role !== undefined && parsed.role.length > 0 ? parsed.role : undefined;
+  const roleFilter = parsed.role !== undefined && parsed.role.length > 0 ? parsed.role : undefined;
   const candidate = selectNextClaimable(tasks, {
     callerLane,
     crossLaneClaim,

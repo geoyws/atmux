@@ -662,13 +662,13 @@ describe("epic parseAddArgs — auto-spawn flags (ADR-231 §D3)", () => {
   });
 
   test("mutex: --roster without --auto-spawn → UsageError (helpful message)", () => {
-    expect(() => parseAddArgs(["t", "--roster", "solo"])).toThrow(
-      /--roster requires --auto-spawn/,
-    );
+    expect(() => parseAddArgs(["t", "--roster", "solo"])).toThrow(/--roster requires --auto-spawn/);
   });
 
   test("mutex: --force-spawn without --auto-spawn → UsageError", () => {
-    expect(() => parseAddArgs(["t", "--force-spawn"])).toThrow(/--force-spawn requires --auto-spawn/);
+    expect(() => parseAddArgs(["t", "--force-spawn"])).toThrow(
+      /--force-spawn requires --auto-spawn/,
+    );
   });
 
   test("mutex: --no-auto-spawn + --roster → UsageError (--roster requires --auto-spawn-enable)", () => {
@@ -697,15 +697,7 @@ describe("epic parseAddArgs — auto-spawn flags (ADR-231 §D3)", () => {
 describe("epic verb — ADR-231 §D3 auto-spawn round-trip", () => {
   test("`epic add --auto-spawn --roster solo` writes extra.autoSpawn", async () => {
     const { out } = await captureStdout(async () => {
-      return await epic([
-        "add",
-        "--team-dir",
-        teamDir,
-        "Z",
-        "--auto-spawn",
-        "--roster",
-        "solo",
-      ]);
+      return await epic(["add", "--team-dir", teamDir, "Z", "--auto-spawn", "--roster", "solo"]);
     });
     const newId = out.trim();
     const z = await showEpic(atmuxDir, newId);

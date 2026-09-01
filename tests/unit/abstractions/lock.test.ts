@@ -406,17 +406,20 @@ describe("ADR-057 §D3a — acquireWithTTL crashed-PID recovery", () => {
     const lockPath = `${target}.lock`;
     const auditDir = join(dir, "logs-default-dead-pid");
 
-    const child = Bun.spawn([
-      "bun",
-      "-e",
-      `
+    const child = Bun.spawn(
+      [
+        "bun",
+        "-e",
+        `
         const lock = await import("${process.cwd()}/src/abstractions/lock.ts");
         const h = await lock.acquire("${target}");
         process.stdout.write("ready\\n");
         await new Promise(r => setTimeout(r, 1500));
         await h.release();
       `,
-    ], { stdout: "pipe" });
+      ],
+      { stdout: "pipe" },
+    );
     const reader = child.stdout.getReader();
     try {
       const decoder = new TextDecoder();

@@ -61,12 +61,7 @@ const DF_EMPTY = "Filesystem     1024-blocks      Used Available Capacity Mounte
 /** Build a remote payload in the exact shape `buildSnapshotCommand`
  *  produces, so the parser is tested against the format the command
  *  actually emits rather than against a convenient invention. */
-function snapshotPayload(opts: {
-  load?: string;
-  mem?: string;
-  cpu?: string;
-  df?: string;
-}): string {
+function snapshotPayload(opts: { load?: string; mem?: string; cpu?: string; df?: string }): string {
   return [
     SNAPSHOT_MARKERS.load,
     (opts.load ?? LOAD_CALM).trimEnd(),
@@ -205,14 +200,18 @@ describe("resolveHostProbeTimeoutMs", () => {
     expect(resolveHostProbeTimeoutMs({ ATMUX_HOST_PROBE_TIMEOUT_MS: "2500" })).toBe(2500);
   });
 
-  test.each([["nope"], [""], ["0"], ["-5"], ["Infinity"], ["NaN"]])(
-    "fails CLOSED to the default on %p",
-    (raw) => {
-      expect(resolveHostProbeTimeoutMs({ ATMUX_HOST_PROBE_TIMEOUT_MS: raw })).toBe(
-        DEFAULT_HOST_PROBE_TIMEOUT_MS,
-      );
-    },
-  );
+  test.each([
+    ["nope"],
+    [""],
+    ["0"],
+    ["-5"],
+    ["Infinity"],
+    ["NaN"],
+  ])("fails CLOSED to the default on %p", (raw) => {
+    expect(resolveHostProbeTimeoutMs({ ATMUX_HOST_PROBE_TIMEOUT_MS: raw })).toBe(
+      DEFAULT_HOST_PROBE_TIMEOUT_MS,
+    );
+  });
 });
 
 // ---------- Both hosts healthy ----------
@@ -541,9 +540,7 @@ describe("renderHostReport", () => {
       { host: "hax", reachable: true, verdict: okVerdict(16, 47), error: null, ms: 1 },
       { host: "hig", reachable: false, verdict: null, error: "Connection refused", ms: 1 },
     ]);
-    expect(out.split("\n")[0]).toBe(
-      "HOSTS: 1 of 2 UNREACHABLE (hig) — that is not an all-clear.",
-    );
+    expect(out.split("\n")[0]).toBe("HOSTS: 1 of 2 UNREACHABLE (hig) — that is not an all-clear.");
     expect(out).toContain("hig — UNREACHABLE: Connection refused.");
     expect(out).toContain("Its headroom is unknown, not free.");
     // The word "healthy" must not attach to the unreachable host.

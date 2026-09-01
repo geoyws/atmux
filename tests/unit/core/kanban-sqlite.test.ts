@@ -539,7 +539,12 @@ describe("kanban (SQLite mode) — task-lifecycle event emit (ADR-202/203)", () 
     let calls = 0;
     const shim: EmitFn = ((..._args: Parameters<EmitFn>) => {
       calls += 1;
-      return { topic: "task.done", eventId: "e1", emittedAtSec: 1, schemaVersion: 1 } as ReturnType<EmitFn>;
+      return {
+        topic: "task.done",
+        eventId: "e1",
+        emittedAtSec: 1,
+        schemaVersion: 1,
+      } as ReturnType<EmitFn>;
     }) as EmitFn;
     await moveTask(env.atmuxDir, id, "done", { emit: shim });
     expect(calls).toBe(1);
@@ -651,9 +656,11 @@ describe("kanban (SQLite mode) — task-lifecycle event emit (ADR-202/203)", () 
     {
       const db = openStateDb();
       try {
-        db.prepare(
-          "UPDATE tasks SET story = ?, epic = ? WHERE id = ?",
-        ).run("s-deadbeef", "e-deadbeef", id);
+        db.prepare("UPDATE tasks SET story = ?, epic = ? WHERE id = ?").run(
+          "s-deadbeef",
+          "e-deadbeef",
+          id,
+        );
       } finally {
         closeDatabase(db);
       }

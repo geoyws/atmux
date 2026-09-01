@@ -53,12 +53,7 @@ export interface MemberShape {
  *  acceptance rule in `src/core/common.ts`. */
 export function candidateWindowNames(
   member: MemberShape,
-  buildWindowName: (
-    name: string,
-    emoji?: string,
-    label?: string,
-    role?: string,
-  ) => string,
+  buildWindowName: (name: string, emoji?: string, label?: string, role?: string) => string,
   buildWindowNameLegacy: (name: string, emoji?: string) => string,
 ): ReadonlyArray<string> {
   const canonical = buildWindowName(member.name, member.emoji, member.label, member.role);
@@ -77,12 +72,7 @@ export async function resolveMemberToWindowIdx(opts: {
   memberId: string;
   members: ReadonlyArray<MemberShape>;
   tmux: TmuxNamespace;
-  buildWindowName: (
-    name: string,
-    emoji?: string,
-    label?: string,
-    role?: string,
-  ) => string;
+  buildWindowName: (name: string, emoji?: string, label?: string, role?: string) => string;
   buildWindowNameLegacy: (name: string, emoji?: string) => string;
   /** Driver-window index — defaults to 1 per ADR-162 base-index. */
   driverIndex?: number;
@@ -95,11 +85,7 @@ export async function resolveMemberToWindowIdx(opts: {
       message: `member id '${opts.memberId}' not found in team.json — run 'atmux status' for the live roster`,
     });
   }
-  const names = candidateWindowNames(
-    member,
-    opts.buildWindowName,
-    opts.buildWindowNameLegacy,
-  );
+  const names = candidateWindowNames(member, opts.buildWindowName, opts.buildWindowNameLegacy);
   const live = await opts.tmux.window.listWindows(opts.sessionName);
   const matches = live.filter((w) => names.includes(w.name));
   if (matches.length === 0) {
@@ -216,8 +202,7 @@ export function sortMembersDefaultsFirst<M extends MemberShape>(
   for (const [idx, role] of canonicalOrder.entries()) {
     orderIndex.set(role, idx);
   }
-  const isDefault = (m: M): boolean =>
-    m.role !== undefined && orderIndex.has(m.role);
+  const isDefault = (m: M): boolean => m.role !== undefined && orderIndex.has(m.role);
   const defaults = members
     .map((m, originalIdx) => ({ m, originalIdx }))
     .filter(({ m }) => isDefault(m))

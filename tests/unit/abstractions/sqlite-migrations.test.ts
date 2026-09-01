@@ -741,15 +741,18 @@ describe("v15 → v16: epics.spawned_at (ADR-231 §D2, t-6-8db78adf)", () => {
       "todo",
       1,
     );
-    db.prepare(
-      `INSERT INTO epics (id, status, created_at, spawned_at) VALUES (?, ?, ?, ?)`,
-    ).run("e-live", "in-progress", 1, 1_700_000_500);
-    const skipped = db
-      .prepare(`SELECT id FROM epics WHERE spawned_at IS NOT NULL`)
-      .all() as Array<{ id: string }>;
-    const eligible = db
-      .prepare(`SELECT id FROM epics WHERE spawned_at IS NULL`)
-      .all() as Array<{ id: string }>;
+    db.prepare(`INSERT INTO epics (id, status, created_at, spawned_at) VALUES (?, ?, ?, ?)`).run(
+      "e-live",
+      "in-progress",
+      1,
+      1_700_000_500,
+    );
+    const skipped = db.prepare(`SELECT id FROM epics WHERE spawned_at IS NOT NULL`).all() as Array<{
+      id: string;
+    }>;
+    const eligible = db.prepare(`SELECT id FROM epics WHERE spawned_at IS NULL`).all() as Array<{
+      id: string;
+    }>;
     expect(skipped.map((r) => r.id)).toEqual(["e-live"]);
     expect(eligible.map((r) => r.id)).toEqual(["e-pending"]);
   });

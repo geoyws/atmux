@@ -48,9 +48,7 @@ function canonicalize(value: unknown): string {
   }
   const obj = value as Record<string, unknown>;
   const keys = Object.keys(obj).sort();
-  const parts = keys.map(
-    (k) => `${JSON.stringify(k)}:${canonicalize(obj[k])}`,
-  );
+  const parts = keys.map((k) => `${JSON.stringify(k)}:${canonicalize(obj[k])}`);
   return `{${parts.join(",")}}`;
 }
 
@@ -58,9 +56,7 @@ function canonicalize(value: unknown): string {
  *  block is OUT of scope per ADR-164 §"Behavior" step 5 (otherwise the
  *  fingerprint would always match the just-stamped marker, defeating
  *  drift detection). */
-export function computeFingerprint(
-  members: ReadonlyArray<ClaudeTeamMember>,
-): string {
+export function computeFingerprint(members: ReadonlyArray<ClaudeTeamMember>): string {
   const canonical = canonicalize(members);
   return `sha256:${createHash("sha256").update(canonical).digest("hex")}`;
 }
@@ -152,9 +148,6 @@ export function syncEventsLogPath(atmuxDir: string): string {
 /** Append one event line. Caller supplies `atmuxDir` (resolved via
  *  `getAtmuxDir` from `src/core/common.ts`) so we don't re-walk the
  *  filesystem here. */
-export async function logSyncEvent(
-  atmuxDir: string,
-  event: SyncEvent,
-): Promise<void> {
+export async function logSyncEvent(atmuxDir: string, event: SyncEvent): Promise<void> {
   await appendText(syncEventsLogPath(atmuxDir), `${JSON.stringify(event)}\n`);
 }

@@ -38,12 +38,7 @@ import { UsageError } from "../errors.ts";
 
 export type MigrateHexScope = "epics" | "stories" | "tasks" | "all";
 
-const VALID_SCOPES: ReadonlySet<MigrateHexScope> = new Set([
-  "epics",
-  "stories",
-  "tasks",
-  "all",
-]);
+const VALID_SCOPES: ReadonlySet<MigrateHexScope> = new Set(["epics", "stories", "tasks", "all"]);
 
 export interface ParsedMigrateHexArgs {
   dryRun: boolean;
@@ -71,7 +66,10 @@ export function parseMigrateHexArgs(args: ReadonlyArray<string>): ParsedMigrateH
     if (a === "--scope") {
       const v = args[i + 1];
       if (v === undefined) {
-        throw new UsageError({ what: "--scope requires a value", hint: "epics | stories | tasks | all" });
+        throw new UsageError({
+          what: "--scope requires a value",
+          hint: "epics | stories | tasks | all",
+        });
       }
       if (!VALID_SCOPES.has(v as MigrateHexScope)) {
         throw new UsageError({
@@ -201,9 +199,10 @@ function substituteMappings(
  *  epicId / storyId field carries a migrated legacy id. */
 function rewriteEventPayloads(db: Database, mappings: ReadonlyMap<string, string>): number {
   if (mappings.size === 0) return 0;
-  const rows = db
-    .prepare("SELECT event_id, payload FROM events")
-    .all() as Array<{ event_id: string; payload: string }>;
+  const rows = db.prepare("SELECT event_id, payload FROM events").all() as Array<{
+    event_id: string;
+    payload: string;
+  }>;
   const update = db.prepare("UPDATE events SET payload = ? WHERE event_id = ?");
   let touched = 0;
   for (const r of rows) {
@@ -252,7 +251,10 @@ function applyKanbanMutations(db: Database, mappings: ReadonlyArray<IdMapping>):
     db.prepare("UPDATE tasks SET epic = ? WHERE epic = ?").run(compound, legacy);
     db.prepare("UPDATE tasks SET story = ? WHERE story = ?").run(compound, legacy);
     db.prepare("UPDATE stories SET epic = ? WHERE epic = ?").run(compound, legacy);
-    db.prepare("UPDATE stories SET merge_task_id = ? WHERE merge_task_id = ?").run(compound, legacy);
+    db.prepare("UPDATE stories SET merge_task_id = ? WHERE merge_task_id = ?").run(
+      compound,
+      legacy,
+    );
     db.prepare("UPDATE complaints SET related_task_id = ? WHERE related_task_id = ?").run(
       compound,
       legacy,
@@ -352,10 +354,7 @@ interface SnapshotPayload {
   mappings: ReadonlyArray<IdMapping>;
 }
 
-async function writeSnapshot(
-  atmuxDir: string,
-  payload: SnapshotPayload,
-): Promise<string> {
+async function writeSnapshot(atmuxDir: string, payload: SnapshotPayload): Promise<string> {
   const dir = join(atmuxDir, "migrations");
   await mkdir(dir, { recursive: true });
   const path = join(dir, `hex-ids-${payload.ts}.json`);

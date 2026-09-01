@@ -117,7 +117,15 @@ describe("memberStatusSet — member resolution", () => {
 describe("memberStatusSet — status write + heartbeat (ADR-260 §D3)", () => {
   test("writes the full record (note + taskId) and prints confirmation", async () => {
     const id = await addTask(atmuxDir, { subject: "x" });
-    const { exec, lines } = run(["rate-limited", "--as", "alpha", "--note", "429 until 14:00", "--task", id]);
+    const { exec, lines } = run([
+      "rate-limited",
+      "--as",
+      "alpha",
+      "--note",
+      "429 until 14:00",
+      "--task",
+      id,
+    ]);
     expect(await exec()).toBe(0);
     const rec = await readMemberStatus(atmuxDir, "alpha");
     expect(rec?.status).toBe("rate-limited");
@@ -182,7 +190,15 @@ describe("memberStatusSet — kanban coupling (ADR-260 §D4)", () => {
 
   test("blocked --task moves the task to blocked with the --note text", async () => {
     const id = await addTask(atmuxDir, { subject: "x" });
-    const { exec, lines } = run(["blocked", "--as", "alpha", "--task", id, "--note", "waiting on reviewer"]);
+    const { exec, lines } = run([
+      "blocked",
+      "--as",
+      "alpha",
+      "--task",
+      id,
+      "--note",
+      "waiting on reviewer",
+    ]);
     expect(await exec()).toBe(0);
     const task = await showTask(atmuxDir, id);
     expect(task?.status).toBe("blocked");

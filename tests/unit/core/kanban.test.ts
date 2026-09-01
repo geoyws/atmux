@@ -826,7 +826,12 @@ describe("tryAutoEmitTrunkMerge (ADR-146 §D1+D2+D5)", () => {
     try {
       seedStory(repo, "s-aaaa0003", "geoyws-alpha");
       const lastTask = seedTask(repo, "t-sharedcwd", "s-aaaa0003", "done");
-      const newId = tryAutoEmitTrunkMerge(repo, lastTask, makeTeam({ worktreeIsolation: false }), db);
+      const newId = tryAutoEmitTrunkMerge(
+        repo,
+        lastTask,
+        makeTeam({ worktreeIsolation: false }),
+        db,
+      );
       expect(newId).toBeNull();
     } finally {
       closeDatabase(db);

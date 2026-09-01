@@ -95,7 +95,9 @@ describe("kanban concurrent claim (SQLite BEGIN IMMEDIATE gate)", () => {
     const members = ["alice", "bob", "carol", "dave", "erin", "frank"];
     const outcomes = await Promise.all(members.map((m) => attemptClaim(env.atmuxDir, id, m)));
 
-    const won = outcomes.filter((o): o is Extract<ClaimOutcome, { kind: "won" }> => o.kind === "won");
+    const won = outcomes.filter(
+      (o): o is Extract<ClaimOutcome, { kind: "won" }> => o.kind === "won",
+    );
     const lost = outcomes.filter(
       (o): o is Extract<ClaimOutcome, { kind: "lost" }> => o.kind === "lost",
     );

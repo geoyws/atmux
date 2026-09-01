@@ -141,9 +141,10 @@ describe("v16 → v17: issue_sync (ADR-261 §D4)", () => {
     expect(names.has("idx_issue_sync_tracker_scope")).toBe(true);
     expect(names.has("idx_issue_sync_filing_state")).toBe(true);
 
-    const scopeCols = db
-      .prepare("PRAGMA index_info(idx_issue_sync_tracker_scope)")
-      .all() as Array<{ seqno: number; name: string }>;
+    const scopeCols = db.prepare("PRAGMA index_info(idx_issue_sync_tracker_scope)").all() as Array<{
+      seqno: number;
+      name: string;
+    }>;
     expect(scopeCols.sort((a, b) => a.seqno - b.seqno).map((c) => c.name)).toEqual([
       "tracker_id",
       "scope",

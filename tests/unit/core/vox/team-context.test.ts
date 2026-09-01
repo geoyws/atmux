@@ -561,9 +561,7 @@ describe("buildTeamIndex", () => {
         name: "alpha",
         root: "/w/alpha",
         enabled: true,
-        sessions: [
-          { type: "team", name: "alpha-pay", root: "/w/alpha/pay", enabled: true },
-        ],
+        sessions: [{ type: "team", name: "alpha-pay", root: "/w/alpha/pay", enabled: true }],
       },
       { type: "team", name: "beta", root: "/w/beta", enabled: false },
       { type: "team", name: "gamma", root: "/w/gamma", enabled: true },

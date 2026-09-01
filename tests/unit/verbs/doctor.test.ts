@@ -1241,7 +1241,8 @@ describe("checkCronOrphans", () => {
         {
           status: "yellow",
           label: "cron-config",
-          detail: "orphan cron block: team='omega' atmux_dir='/srv/omega/.atmux' (path does not exist)",
+          detail:
+            "orphan cron block: team='omega' atmux_dir='/srv/omega/.atmux' (path does not exist)",
           hint: "crontab -e to drop the block, or restore /srv/omega/.atmux if the project moved",
         },
       ]);
@@ -2703,10 +2704,7 @@ describe("checkWorktreeNestedStateDb", () => {
     expect(rows).toHaveLength(2);
     expect(rows.every((r) => r.status === "red")).toBe(true);
     const labels = rows.map((r) => r.label).sort();
-    expect(labels).toEqual([
-      "worktree:nested-state-db:alice",
-      "worktree:nested-state-db:bob",
-    ]);
+    expect(labels).toEqual(["worktree:nested-state-db:alice", "worktree:nested-state-db:bob"]);
     const alice = rows.find((r) => r.label === "worktree:nested-state-db:alice");
     const bob = rows.find((r) => r.label === "worktree:nested-state-db:bob");
     expect(alice?.hint).toContain(`rm ${aliceDb}`);
@@ -4535,7 +4533,6 @@ describe("checkCockpitOnDefaultSocket", () => {
   });
 });
 
-
 // ---------- t-400a1cad: checkDeployedBinaryLag ----------
 
 describe("checkDeployedBinaryLag", () => {
@@ -4638,7 +4635,6 @@ describe("checkDeployedBinaryLag", () => {
     expect(rows).toEqual([]);
   });
 });
-
 
 // ---------- EPIC e-a3077ca0 T8: checkLegacyWindowNameFormat ----------
 

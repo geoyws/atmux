@@ -43,10 +43,7 @@ describe("mapMember", () => {
   });
 
   test("lead member: name rewritten to 'team-lead' + agentType='team-lead'", () => {
-    const got = mapMember(
-      tm({ name: "lead", role: "team-lead", emoji: "🧭" }),
-      null,
-    );
+    const got = mapMember(tm({ name: "lead", role: "team-lead", emoji: "🧭" }), null);
     expect(got.name).toBe("team-lead");
     expect(got.agentType).toBe("team-lead");
     expect(got.color).toBe("white"); // 🧭 → white
@@ -58,7 +55,10 @@ describe("mapMember", () => {
   });
 
   test("model passthrough for non-default values", () => {
-    const got = mapMember(tm({ name: "be-1", role: "member", model: "claude-haiku-4-5-20251001" }), null);
+    const got = mapMember(
+      tm({ name: "be-1", role: "member", model: "claude-haiku-4-5-20251001" }),
+      null,
+    );
     expect(got.model).toBe("claude-haiku-4-5-20251001");
   });
 
@@ -125,10 +125,7 @@ describe("mapRoster", () => {
 
   test("sidecar threaded through to every mapMember call", () => {
     const sidecar = { _byMemberName: { "fe-1": "blue" } };
-    const got = mapRoster(
-      [tm({ name: "fe-1", role: "member", emoji: "🌸" })],
-      sidecar,
-    );
+    const got = mapRoster([tm({ name: "fe-1", role: "member", emoji: "🌸" })], sidecar);
     expect(got[0]?.color).toBe("blue");
   });
 });

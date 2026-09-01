@@ -251,9 +251,7 @@ export async function runVelocityGateCheck(deps: VelocityGateDeps): Promise<Velo
           const marker = parseLeadReplyMarker(capture);
           if (marker !== null) {
             replyValidation = "compliant";
-            deps.log(
-              `whip-velocity-gate: compliant reply (choice=${marker.choice})\n`,
-            );
+            deps.log(`whip-velocity-gate: compliant reply (choice=${marker.choice})\n`);
           } else {
             await incrementStrike(
               deps.atmuxDir,
@@ -294,7 +292,9 @@ export async function runVelocityGateCheck(deps: VelocityGateDeps): Promise<Velo
       paneSignal = deps.classifyLeadCapture(capture);
     }
   } catch (e) {
-    deps.log(`whip-velocity-gate: lead-pane probe failed (treating as UNREACHABLE): ${String(e)}\n`);
+    deps.log(
+      `whip-velocity-gate: lead-pane probe failed (treating as UNREACHABLE): ${String(e)}\n`,
+    );
   }
 
   const classification = classifyVelocity({
@@ -339,7 +339,9 @@ export async function runVelocityGateCheck(deps: VelocityGateDeps): Promise<Velo
           menuSent = true;
           deps.log("whip-velocity-gate: menu sent + pending-state recorded\n");
         } else {
-          deps.log(`whip-velocity-gate: menu send returned '${result}' — skipping pending-state record\n`);
+          deps.log(
+            `whip-velocity-gate: menu send returned '${result}' — skipping pending-state record\n`,
+          );
         }
       } catch (e) {
         deps.log(`whip-velocity-gate: menu-send threw: ${String(e)}\n`);

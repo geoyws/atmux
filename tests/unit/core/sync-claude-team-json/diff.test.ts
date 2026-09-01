@@ -22,7 +22,12 @@ describe("renderDiff — fresh file (prior === null)", () => {
       name: "fixture",
       description: "test",
       members: [
-        member({ name: "team-lead", agentType: "team-lead", color: "white", model: "claude-opus-4-7" }),
+        member({
+          name: "team-lead",
+          agentType: "team-lead",
+          color: "white",
+          model: "claude-opus-4-7",
+        }),
         member({ name: "planner", color: "magenta", model: "claude-opus-4-7" }),
       ],
     });
@@ -140,7 +145,12 @@ describe("renderDiff — vs prior file", () => {
       name: "fixture",
       description: "old",
       members: [
-        member({ name: "team-lead", agentType: "team-lead", color: "white", model: "claude-opus-4-7" }),
+        member({
+          name: "team-lead",
+          agentType: "team-lead",
+          color: "white",
+          model: "claude-opus-4-7",
+        }),
         member({ name: "planner", color: "magenta" }),
         member({ name: "removed-one", color: "red" }),
       ],

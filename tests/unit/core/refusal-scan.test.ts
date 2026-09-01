@@ -434,9 +434,7 @@ describe("scanTeamForRefusals", () => {
         expect(row.detectedAt).toBeGreaterThanOrEqual(beforeScanSec);
         expect(row.detectedAt).toBeLessThanOrEqual(afterScanSec);
         expect(row.minuteBucket).toBe(Math.floor(row.detectedAt / 60));
-        expect(row.phrases).toEqual([
-          { phrase: "refuse-to-comply", class: "hard" },
-        ]);
+        expect(row.phrases).toEqual([{ phrase: "refuse-to-comply", class: "hard" }]);
         expect(result.perMember[0]?.eventId).toBe(row.id);
       } finally {
         closeDatabase(readDb);

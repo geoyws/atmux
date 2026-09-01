@@ -55,11 +55,7 @@ import {
   TrackerRateLimitError,
 } from "../errors.ts";
 import type { IssueSyncRecord } from "../schema/issue-sync.ts";
-import {
-  resolveOrchestrationMode,
-  type Team,
-  type TeamIssueSyncTracker,
-} from "../schema/team.ts";
+import { resolveOrchestrationMode, type Team, type TeamIssueSyncTracker } from "../schema/team.ts";
 import { loadCockpit, type LoadCockpitOpts, walkSessions } from "./cockpit.ts";
 import { getAtmuxDir, loadTeam } from "./common.ts";
 import { DEFAULT_DEDUP_WINDOW_SEC, fileDedupedComplaint } from "./complaints.ts";
@@ -435,7 +431,9 @@ function filingInputFromLedgerRow(rec: IssueSyncRecord): FilingInput {
     sourceId: rec.sourceId,
     summary: sanitizeIssueTitle(title) || rec.sourceId,
     url: typeof ex.url === "string" ? ex.url : "",
-    labels: Array.isArray(ex.labels) ? ex.labels.filter((l): l is string => typeof l === "string") : [],
+    labels: Array.isArray(ex.labels)
+      ? ex.labels.filter((l): l is string => typeof l === "string")
+      : [],
     author: typeof ex.author === "string" ? ex.author : null,
     bodyExcerpt: typeof ex.body_excerpt === "string" ? ex.body_excerpt : null,
     severity: typeof ex.severity === "string" ? ex.severity : null,
@@ -582,7 +580,11 @@ export function createIssueSyncEngine(deps: IssueSyncEngineDeps = {}): IssueSync
   }
 
   /** Dispatch ONE fetched issue through the §D4 sync-state matrix. */
-  async function reconcileIssue(ctx: SyncCtx, scope: string, issue: NormalizedIssue): Promise<void> {
+  async function reconcileIssue(
+    ctx: SyncCtx,
+    scope: string,
+    issue: NormalizedIssue,
+  ): Promise<void> {
     ctx.report.scanned += 1;
     const now = ctx.nowSec();
     const severity = severityFromLabels(issue.labels, ctx.cfg.labelSeverityMap);
@@ -708,7 +710,9 @@ export function createIssueSyncEngine(deps: IssueSyncEngineDeps = {}): IssueSync
       if (page.nextCursor === cursor) {
         // Defensive: an adapter bug echoing the same cursor would spin
         // this loop forever inside a 900s tick — bail loudly instead.
-        ctx.report.errors.push(`scope ${scope}: cursor did not advance (${page.nextCursor}) — aborting walk`);
+        ctx.report.errors.push(
+          `scope ${scope}: cursor did not advance (${page.nextCursor}) — aborting walk`,
+        );
         return;
       }
       cursor = page.nextCursor;
@@ -811,7 +815,9 @@ export function createIssueSyncEngine(deps: IssueSyncEngineDeps = {}): IssueSync
             `complaints — atmux complaints list --source-kind ${trackerCfg.id}`;
           const code = await spawnTellLead(["tell-lead", "--team", targetTeamName, line]);
           if (code !== 0) {
-            report.errors.push(`backfill summary tell-lead exited rc=${code} (target ${targetTeamName})`);
+            report.errors.push(
+              `backfill summary tell-lead exited rc=${code} (target ${targetTeamName})`,
+            );
           }
         }
         return report;

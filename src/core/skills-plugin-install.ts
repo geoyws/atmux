@@ -166,8 +166,7 @@ export async function writeOptOutMarker(
   if (home === undefined || home.length === 0) {
     return { kind: "skipped", reason: "$HOME unset" };
   }
-  const markerPath =
-    opts.optOutMarker ?? join(home, ".atmux", "state", "skills-plugin-opted-out");
+  const markerPath = opts.optOutMarker ?? join(home, ".atmux", "state", "skills-plugin-opted-out");
   await fsMkdir(dirname(markerPath), { recursive: true });
   await writeFile(markerPath, "", { flag: "w" });
   return { kind: "marker-written", markerPath };
@@ -178,7 +177,10 @@ export async function writeOptOutMarker(
 /** Source of truth: ADR-217 §D2 carve set. Surface used by the deferred
  *  interactive wizard prompt + plugins/atmux/README.md cross-link. */
 export const SKILLS_TABLE: ReadonlyArray<{ name: string; desc: string }> = [
-  { name: "/atmux:team", desc: "unified team lifecycle (start/stop/add/clear/cleanup/bootstrap/rotate)" },
+  {
+    name: "/atmux:team",
+    desc: "unified team lifecycle (start/stop/add/clear/cleanup/bootstrap/rotate)",
+  },
   { name: "/atmux:driver", desc: "driver-1 consolidation of sibling driver branches" },
   { name: "/atmux:session", desc: "session continuity (cont/handoff/stop)" },
   { name: "/atmux:tell-lead", desc: "driver→lead durable message" },

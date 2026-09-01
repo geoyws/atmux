@@ -49,7 +49,11 @@ function fakeSpawn(
 
 describe("spawnNativeListener", () => {
   test("filters out the 'ready' handshake — only event lines yielded", async () => {
-    const { spawn } = fakeSpawn(["ready", "honker:stream:task.done\tnew", "honker:stream:task.done\tnew"]);
+    const { spawn } = fakeSpawn([
+      "ready",
+      "honker:stream:task.done\tnew",
+      "honker:stream:task.done\tnew",
+    ]);
     const handle = spawnNativeListener({
       binaryPath: "/fake/atmux-listener",
       dbPath: "/fake/state.db",
@@ -61,10 +65,7 @@ describe("spawnNativeListener", () => {
       collected.push(line);
       if (collected.length >= 2) break;
     }
-    expect(collected).toEqual([
-      "honker:stream:task.done\tnew",
-      "honker:stream:task.done\tnew",
-    ]);
+    expect(collected).toEqual(["honker:stream:task.done\tnew", "honker:stream:task.done\tnew"]);
     handle.stop();
   });
 

@@ -481,14 +481,7 @@ describe("parseSignoffFlags", () => {
   });
 
   test("--as + --note + --team-dir captured", () => {
-    const f = parseSignoffFlags([
-      "--as",
-      "reviewer",
-      "--note",
-      "approved",
-      "--team-dir",
-      "/x",
-    ]);
+    const f = parseSignoffFlags(["--as", "reviewer", "--note", "approved", "--team-dir", "/x"]);
     expect(f.as).toBe("reviewer");
     expect(f.note).toBe("approved");
     expect(f.teamDir).toBe("/x");
@@ -537,9 +530,9 @@ describe("storySignoff", () => {
     const eid = await addEpic(atmuxDir, { title: "E" });
     const sid = await addStory(atmuxDir, { title: "S", epic: eid });
     await advanceToReview(eid, sid);
-    await expect(
-      storySignoff(atmuxDir, sid, { callerMember: "alpha" }),
-    ).rejects.toThrow(/role=member cannot sign off/);
+    await expect(storySignoff(atmuxDir, sid, { callerMember: "alpha" })).rejects.toThrow(
+      /role=member cannot sign off/,
+    );
   });
 
   test("reviewer caller WITHOUT --as → accepted (caller-role gate satisfied)", async () => {
@@ -567,9 +560,7 @@ describe("storySignoff", () => {
     const eid = await addEpic(atmuxDir, { title: "E" });
     const sid = await addStory(atmuxDir, { title: "S", epic: eid });
     await advanceToReview(eid, sid);
-    await expect(
-      storySignoff(atmuxDir, sid, { as: "ghost" }),
-    ).rejects.toThrow(/no such member/);
+    await expect(storySignoff(atmuxDir, sid, { as: "ghost" })).rejects.toThrow(/no such member/);
   });
 
   test("no --as and no $ATMUX_MEMBER → UsageError", async () => {
@@ -580,26 +571,26 @@ describe("storySignoff", () => {
   });
 
   test("missing story → ConfigError", async () => {
-    await expect(
-      storySignoff(atmuxDir, "s-deadbeef", { as: "reviewer" }),
-    ).rejects.toThrow(ConfigError);
+    await expect(storySignoff(atmuxDir, "s-deadbeef", { as: "reviewer" })).rejects.toThrow(
+      ConfigError,
+    );
   });
 
   test("callerMember not in team.json → ConfigError", async () => {
     const eid = await addEpic(atmuxDir, { title: "E" });
     const sid = await addStory(atmuxDir, { title: "S", epic: eid });
     await advanceToReview(eid, sid);
-    await expect(
-      storySignoff(atmuxDir, sid, { callerMember: "ghost-pane" }),
-    ).rejects.toThrow(/ghost-pane.*not found in team\.json/);
+    await expect(storySignoff(atmuxDir, sid, { callerMember: "ghost-pane" })).rejects.toThrow(
+      /ghost-pane.*not found in team\.json/,
+    );
   });
 
   test("no state.db → ConfigError", async () => {
     const freshDir = join(teamDir, "fresh-no-db");
     await mkdir(freshDir, { recursive: true });
-    await expect(
-      storySignoff(freshDir, "s-anything", { as: "reviewer" }),
-    ).rejects.toThrow(ConfigError);
+    await expect(storySignoff(freshDir, "s-anything", { as: "reviewer" })).rejects.toThrow(
+      ConfigError,
+    );
   });
 
   test("idempotent re-call appends a second audit entry", async () => {
@@ -646,21 +637,18 @@ describe("storyUnsignoff", () => {
       const db = openDatabase(join(atmuxDir, "state.db"), migrations);
       const repo = new KanbanRepo(db);
       const s = repo.getStory(sid);
-      if (s !== null)
-        repo.upsertStory({ ...s, reviewSignoff: true, mergeTaskId: "t-faketask" });
+      if (s !== null) repo.upsertStory({ ...s, reviewSignoff: true, mergeTaskId: "t-faketask" });
       closeDatabase(db);
     }
-    await expect(
-      storyUnsignoff(atmuxDir, sid, { as: "reviewer" }),
-    ).rejects.toThrow(/mergeTaskId/);
+    await expect(storyUnsignoff(atmuxDir, sid, { as: "reviewer" })).rejects.toThrow(/mergeTaskId/);
   });
 
   test("status != review → UsageError", async () => {
     const eid = await addEpic(atmuxDir, { title: "E" });
     const sid = await addStory(atmuxDir, { title: "S", epic: eid });
-    await expect(
-      storyUnsignoff(atmuxDir, sid, { as: "reviewer" }),
-    ).rejects.toThrow(/'planning' state/);
+    await expect(storyUnsignoff(atmuxDir, sid, { as: "reviewer" })).rejects.toThrow(
+      /'planning' state/,
+    );
   });
 
   test("non-reviewer caller without --as → UsageError", async () => {
@@ -668,15 +656,15 @@ describe("storyUnsignoff", () => {
     const sid = await addStory(atmuxDir, { title: "S", epic: eid });
     await advanceToReview(eid, sid);
     await storySignoff(atmuxDir, sid, { as: "reviewer" });
-    await expect(
-      storyUnsignoff(atmuxDir, sid, { callerMember: "alpha" }),
-    ).rejects.toThrow(/cannot sign off/);
+    await expect(storyUnsignoff(atmuxDir, sid, { callerMember: "alpha" })).rejects.toThrow(
+      /cannot sign off/,
+    );
   });
 
   test("missing story → ConfigError", async () => {
-    await expect(
-      storyUnsignoff(atmuxDir, "s-deadbeef", { as: "reviewer" }),
-    ).rejects.toThrow(ConfigError);
+    await expect(storyUnsignoff(atmuxDir, "s-deadbeef", { as: "reviewer" })).rejects.toThrow(
+      ConfigError,
+    );
   });
 });
 
@@ -767,9 +755,7 @@ describe("story verb — signoff / unsignoff dispatch", () => {
   });
 
   test("unknown verb hint mentions signoff/unsignoff", async () => {
-    await expect(story(["bogus", "--team-dir", teamDir])).rejects.toThrow(
-      /signoff/,
-    );
+    await expect(story(["bogus", "--team-dir", teamDir])).rejects.toThrow(/signoff/);
   });
 
   test("verb-layer threads $ATMUX_MEMBER to callerMember", async () => {
@@ -801,9 +787,9 @@ describe("story verb — signoff / unsignoff dispatch", () => {
     const prior = process.env.ATMUX_MEMBER;
     process.env.ATMUX_MEMBER = "alpha";
     try {
-      await expect(
-        story(["signoff", sid, "--team-dir", teamDir]),
-      ).rejects.toThrow(/cannot sign off/);
+      await expect(story(["signoff", sid, "--team-dir", teamDir])).rejects.toThrow(
+        /cannot sign off/,
+      );
     } finally {
       if (prior === undefined) delete process.env.ATMUX_MEMBER;
       else process.env.ATMUX_MEMBER = prior;
@@ -830,15 +816,13 @@ describe("parseAddArgs — --merge-mode", () => {
   });
 
   test("--merge-mode bogus → UsageError naming the field", () => {
-    expect(() =>
-      parseAddArgs(["t", "--epic", "e-1", "--merge-mode", "bogus"]),
-    ).toThrow(/--merge-mode must be/);
+    expect(() => parseAddArgs(["t", "--epic", "e-1", "--merge-mode", "bogus"])).toThrow(
+      /--merge-mode must be/,
+    );
   });
 
   test("dangling --merge-mode → UsageError", () => {
-    expect(() => parseAddArgs(["t", "--epic", "e-1", "--merge-mode"])).toThrow(
-      UsageError,
-    );
+    expect(() => parseAddArgs(["t", "--epic", "e-1", "--merge-mode"])).toThrow(UsageError);
   });
 });
 
@@ -901,17 +885,13 @@ describe("advanceStory — trunk-direct branching", () => {
 
   test("review → done refused without signoff", async () => {
     const { sid } = await buildTrunkDirectAtReview();
-    await expect(advanceStory(atmuxDir, sid, "done")).rejects.toThrow(
-      /reviewer signoff missing/,
-    );
+    await expect(advanceStory(atmuxDir, sid, "done")).rejects.toThrow(/reviewer signoff missing/);
   });
 
   test("review → merging refused (no merging phase for trunk-direct)", async () => {
     const { sid } = await buildTrunkDirectAtReview();
     await storySignoff(atmuxDir, sid, { as: "reviewer" });
-    await expect(advanceStory(atmuxDir, sid, "merging")).rejects.toThrow(
-      /trunk-direct/,
-    );
+    await expect(advanceStory(atmuxDir, sid, "merging")).rejects.toThrow(/trunk-direct/);
   });
 
   test("default next-step from review jumps to done for trunk-direct", async () => {
@@ -1010,16 +990,7 @@ describe("story verb — --merge-mode dispatch", () => {
   test("story add --merge-mode bogus → UsageError via verb path", async () => {
     const eid = await addEpic(atmuxDir, { title: "E" });
     await expect(
-      story([
-        "add",
-        "--epic",
-        eid,
-        "--merge-mode",
-        "no-merge",
-        "--team-dir",
-        teamDir,
-        "T",
-      ]),
+      story(["add", "--epic", eid, "--merge-mode", "no-merge", "--team-dir", teamDir, "T"]),
     ).rejects.toThrow(/--merge-mode must be/);
   });
 });
@@ -1095,9 +1066,7 @@ describe("ADR-175 rentx E1 capstone — 4 trunk-direct story shapes", () => {
       const repo = new KanbanRepo(db);
       const childTasks = repo.listTasks({ story: sid });
       const reviewTasks = childTasks.filter((t) => t.lane === "review");
-      const mergeTasks = childTasks.filter(
-        (t) => (t.subject ?? "").startsWith("merge "),
-      );
+      const mergeTasks = childTasks.filter((t) => (t.subject ?? "").startsWith("merge "));
       closeDatabase(db);
       // review entry dispatches a `review <sid>` reviewer-lane Task per
       // src/core/story.ts — that's expected. NO merge-Task should ever
@@ -1127,9 +1096,7 @@ describe("ADR-175 rentx E1 capstone — 4 trunk-direct story shapes", () => {
     const mergedRow = getStoryRow(sid);
     expect(mergedRow?.mergeTaskId).toBe(tid);
     // merging → done blocked until merge-Task done.
-    await expect(advanceStory(atmuxDir, sid, "done")).rejects.toThrow(
-      /gitter has not completed/,
-    );
+    await expect(advanceStory(atmuxDir, sid, "done")).rejects.toThrow(/gitter has not completed/);
     await moveTask(atmuxDir, tid, "done");
     const d = await advanceStory(atmuxDir, sid, "done");
     expect(d.to).toBe("done");
@@ -1148,9 +1115,7 @@ describe("ADR-175 rentx E1 capstone — 4 trunk-direct story shapes", () => {
     await advanceStory(atmuxDir, sid, "testing");
     await advanceStory(atmuxDir, sid, "review");
     // No signoff — review → done MUST refuse with the documented message.
-    await expect(advanceStory(atmuxDir, sid, "done")).rejects.toThrow(
-      /reviewer signoff missing/,
-    );
+    await expect(advanceStory(atmuxDir, sid, "done")).rejects.toThrow(/reviewer signoff missing/);
     // State unchanged — still in review.
     expect(getStoryRow(sid)?.status).toBe("review");
     expect(getStoryRow(sid)?.reviewSignoff).not.toBe(true);
@@ -1271,17 +1236,13 @@ describe("updateStory (core)", () => {
   });
 
   test("missing story → ConfigError", async () => {
-    await expect(
-      updateStory(atmuxDir, "s-deadbeef", { body: "x" }),
-    ).rejects.toThrow(ConfigError);
+    await expect(updateStory(atmuxDir, "s-deadbeef", { body: "x" })).rejects.toThrow(ConfigError);
   });
 
   test("no state.db → ConfigError", async () => {
     const freshDir = join(teamDir, "fresh-no-db-update");
     await mkdir(freshDir, { recursive: true });
-    await expect(
-      updateStory(freshDir, "s-anything", { body: "x" }),
-    ).rejects.toThrow(ConfigError);
+    await expect(updateStory(freshDir, "s-anything", { body: "x" })).rejects.toThrow(ConfigError);
   });
 });
 
@@ -1302,16 +1263,7 @@ describe("story verb — update dispatch", () => {
     const eid = await addEpic(atmuxDir, { title: "E" });
     const sid = await addStory(atmuxDir, { title: "S", epic: eid });
     const { out, result } = await captureStdout(() =>
-      story([
-        "update",
-        sid,
-        "--body",
-        "verb body",
-        "--ac",
-        "verb ac",
-        "--team-dir",
-        teamDir,
-      ]),
+      story(["update", sid, "--body", "verb body", "--ac", "verb ac", "--team-dir", teamDir]),
     );
     expect(result).toBe(0);
     expect(out).toContain(`story ${sid} updated`);

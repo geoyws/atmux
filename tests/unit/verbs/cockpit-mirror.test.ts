@@ -7,10 +7,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { UsageError } from "../../../src/errors.ts";
-import {
-  cockpitMirror,
-  parseCockpitMirrorArgs,
-} from "../../../src/verbs/cockpit-mirror.ts";
+import { cockpitMirror, parseCockpitMirrorArgs } from "../../../src/verbs/cockpit-mirror.ts";
 
 describe("parseCockpitMirrorArgs", () => {
   test("--handle-one + --event-id + --topic parses", () => {
@@ -31,13 +28,7 @@ describe("parseCockpitMirrorArgs", () => {
 
   test("'handle-one' bare form parses identically", () => {
     expect(
-      parseCockpitMirrorArgs([
-        "handle-one",
-        "--event-id",
-        "01900xyz",
-        "--topic",
-        "team.spawned",
-      ]),
+      parseCockpitMirrorArgs(["handle-one", "--event-id", "01900xyz", "--topic", "team.spawned"]),
     ).toEqual({
       subverb: "handle-one",
       eventId: "01900xyz",
@@ -54,27 +45,21 @@ describe("parseCockpitMirrorArgs", () => {
   });
 
   test("--handle-one without --event-id throws", () => {
-    expect(() =>
-      parseCockpitMirrorArgs(["--handle-one", "--topic", "team.spawned"]),
-    ).toThrow(UsageError);
+    expect(() => parseCockpitMirrorArgs(["--handle-one", "--topic", "team.spawned"])).toThrow(
+      UsageError,
+    );
   });
 
   test("--handle-one without --topic throws", () => {
-    expect(() =>
-      parseCockpitMirrorArgs(["--handle-one", "--event-id", "x"]),
-    ).toThrow(UsageError);
+    expect(() => parseCockpitMirrorArgs(["--handle-one", "--event-id", "x"])).toThrow(UsageError);
   });
 
   test("--event-id without value throws", () => {
-    expect(() => parseCockpitMirrorArgs(["--handle-one", "--event-id"])).toThrow(
-      UsageError,
-    );
+    expect(() => parseCockpitMirrorArgs(["--handle-one", "--event-id"])).toThrow(UsageError);
   });
 
   test("--topic without value throws", () => {
-    expect(() => parseCockpitMirrorArgs(["--handle-one", "--topic"])).toThrow(
-      UsageError,
-    );
+    expect(() => parseCockpitMirrorArgs(["--handle-one", "--topic"])).toThrow(UsageError);
   });
 
   test("no sub-verb throws UsageError", () => {

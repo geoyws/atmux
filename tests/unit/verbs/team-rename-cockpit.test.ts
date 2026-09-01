@@ -342,9 +342,7 @@ describe("findAndMutateTeamName", () => {
         type: "group",
         name: "geoyws",
         enabled: true,
-        sessions: [
-          { type: "team", name: "old", root: "/tmp/old", enabled: true, sessions: [] },
-        ],
+        sessions: [{ type: "team", name: "old", root: "/tmp/old", enabled: true, sessions: [] }],
       },
     ];
     expect(findAndMutateTeamName(nodes, "old", "new")).toBe(true);
@@ -372,9 +370,7 @@ describe("findAndMutateTeamName", () => {
       },
     ];
     expect(findAndMutateTeamName(nodes, "inner", "inner2")).toBe(true);
-    expect((nodes[0] as { sessions: Array<{ name: string }> }).sessions[0]?.name).toBe(
-      "inner2",
-    );
+    expect((nodes[0] as { sessions: Array<{ name: string }> }).sessions[0]?.name).toBe("inner2");
   });
 
   test("does NOT mutate non-team siblings (only type:team)", () => {
@@ -395,18 +391,14 @@ describe("findAndMutateTeamName", () => {
         name: "dup",
         root: "/tmp/a",
         enabled: true,
-        sessions: [
-          { type: "team", name: "dup", root: "/tmp/b", enabled: true, sessions: [] },
-        ],
+        sessions: [{ type: "team", name: "dup", root: "/tmp/b", enabled: true, sessions: [] }],
       },
     ];
     expect(findAndMutateTeamName(nodes, "dup", "new")).toBe(true);
     expect((nodes[0] as { name: string }).name).toBe("new");
     // sibling-nested duplicate (would never pass loader, but the walk is
     // first-hit so the inner duplicate remains as-is)
-    expect(
-      (nodes[0] as { sessions: Array<{ name: string }> }).sessions[0]?.name,
-    ).toBe("dup");
+    expect((nodes[0] as { sessions: Array<{ name: string }> }).sessions[0]?.name).toBe("dup");
   });
 
   test("walks past non-matching team-type nodes into their nested sessions[]", () => {
@@ -423,14 +415,10 @@ describe("findAndMutateTeamName", () => {
         name: "outer2",
         root: "/tmp/o2",
         enabled: true,
-        sessions: [
-          { type: "team", name: "target", root: "/tmp/t", enabled: true, sessions: [] },
-        ],
+        sessions: [{ type: "team", name: "target", root: "/tmp/t", enabled: true, sessions: [] }],
       },
     ];
     expect(findAndMutateTeamName(nodes, "target", "found")).toBe(true);
-    expect(
-      (nodes[1] as { sessions: Array<{ name: string }> }).sessions[0]?.name,
-    ).toBe("found");
+    expect((nodes[1] as { sessions: Array<{ name: string }> }).sessions[0]?.name).toBe("found");
   });
 });

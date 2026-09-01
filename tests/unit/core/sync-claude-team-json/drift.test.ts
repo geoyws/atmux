@@ -42,10 +42,7 @@ const MEMBERS_A: ClaudeTeamMember[] = [
   { name: "planner", color: "magenta", role: "planner brief" },
   { name: "fe-1", color: "orange", role: "fe-1 brief" },
 ];
-const MEMBERS_B: ClaudeTeamMember[] = [
-  ...MEMBERS_A,
-  { name: "fe-2", color: "orange" },
-];
+const MEMBERS_B: ClaudeTeamMember[] = [...MEMBERS_A, { name: "fe-2", color: "orange" }];
 
 describe("public surface invariants", () => {
   test("SYNC_MARKER_KEY is the documented top-level passthrough name", () => {
@@ -106,9 +103,7 @@ describe("nextMarker — shape + round-trip", () => {
   });
 
   test("fingerprint matches computeFingerprint of the same roster", () => {
-    expect(nextMarker(MEMBERS_A, TS).sourceFingerprint).toBe(
-      computeFingerprint(MEMBERS_A),
-    );
+    expect(nextMarker(MEMBERS_A, TS).sourceFingerprint).toBe(computeFingerprint(MEMBERS_A));
   });
 
   test("different lastSyncedAt with same roster → same fingerprint, different timestamp", () => {
@@ -212,10 +207,10 @@ describe("driftWarning — single-line stderr shape", () => {
       priorMarker: {
         lastSyncedAt: "2026-05-01T00:00:00.000Z",
         schemaRev: "v1",
-        sourceFingerprint: "sha256:abcdef0123456789aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        sourceFingerprint:
+          "sha256:abcdef0123456789aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       },
-      currentFingerprint:
-        "sha256:fedcba9876543210bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      currentFingerprint: "sha256:fedcba9876543210bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     };
     const line = driftWarning(det);
     expect(line.startsWith("🔧 [sync-claude-team-json]")).toBe(true);

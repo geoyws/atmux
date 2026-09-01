@@ -144,7 +144,7 @@ export function loadHonkerOrFallback(db: Database, hooks: HonkerHooks = {}): Hon
         // Late-bound import — only resolves on darwin where the API is
         // actually needed. Untested in production until Mac dev path
         // ships per ADR-202 §D7.
-        const sqliteModule = (db.constructor as unknown) as {
+        const sqliteModule = db.constructor as unknown as {
           setCustomSQLite?: (path: string) => void;
         };
         if (typeof sqliteModule.setCustomSQLite === "function") {
@@ -180,9 +180,11 @@ export function loadHonkerOrFallback(db: Database, hooks: HonkerHooks = {}): Hon
     if (hooks.loadExtension) {
       hooks.loadExtension(db, extensionPath, entryPoint);
     } else {
-      (db as unknown as {
-        loadExtension: (path: string, entry?: string) => void;
-      }).loadExtension(extensionPath, entryPoint);
+      (
+        db as unknown as {
+          loadExtension: (path: string, entry?: string) => void;
+        }
+      ).loadExtension(extensionPath, entryPoint);
     }
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -197,9 +199,7 @@ export function loadHonkerOrFallback(db: Database, hooks: HonkerHooks = {}): Hon
   // Phase-1 probe is intentionally minimal: a `SELECT honker_version()`
   // round-trip. Future EPICs may extend with NOTIFY/LISTEN round-trip.
   try {
-    const probePassed = hooks.smokeProbe
-      ? hooks.smokeProbe(db)
-      : defaultSmokeProbe(db);
+    const probePassed = hooks.smokeProbe ? hooks.smokeProbe(db) : defaultSmokeProbe(db);
     if (!probePassed) {
       return {
         loaded: false,

@@ -36,10 +36,7 @@ function expandModel(atmuxModel: string | undefined): string | undefined {
  *  Pure function — caller composes the array. Brief preservation
  *  (T4) merges the prior Claude-side `role` text on top of this
  *  output; this T3 path emits no `role` field. */
-export function mapMember(
-  member: TeamMember,
-  sidecar: ColorSidecar | null,
-): ClaudeTeamMember {
+export function mapMember(member: TeamMember, sidecar: ColorSidecar | null): ClaudeTeamMember {
   const claude: ClaudeTeamMember = {
     name: rewriteClaudeName(member.name, member.role),
     color: resolveColor(member.name, member.emoji, sidecar),

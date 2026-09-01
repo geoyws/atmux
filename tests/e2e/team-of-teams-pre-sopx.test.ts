@@ -251,10 +251,7 @@ async function makeParentFixture(): Promise<ParentFixtureRuntime> {
  *  test actually reads — a `team` node nested inside the parent's
  *  `sessions[]`, with its own root — and `callerScopeAllowed` derives
  *  the parent link from that nesting rather than from a declared field. */
-async function makeNestedChild(
-  fix: ParentFixtureRuntime,
-  childName: string,
-): Promise<NestedChild> {
+async function makeNestedChild(fix: ParentFixtureRuntime, childName: string): Promise<NestedChild> {
   const childRoot = join(fix.tmpRoot, childName);
   const childAtmuxDir = join(childRoot, ".atmux");
   await mkdir(childAtmuxDir, { recursive: true });

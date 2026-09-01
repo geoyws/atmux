@@ -40,11 +40,7 @@ function fakeId(n: number): string {
 }
 
 /** Insert N events at the given emitted_at_sec. Returns the inserted ids. */
-function seedEvents(
-  startN: number,
-  count: number,
-  emittedAtSec: number,
-): string[] {
+function seedEvents(startN: number, count: number, emittedAtSec: number): string[] {
   const ids: string[] = [];
   const stmt = db.prepare(
     `INSERT INTO events (event_id, topic, payload, emitted_at_sec, schema_version)
@@ -130,9 +126,9 @@ describe("events-prune.prune — happy paths", () => {
     expect(countEvents()).toBe(3);
 
     // The 3 surviving rows are the newest (rowids 8-10).
-    const surviving = db
-      .prepare("SELECT rowid FROM events ORDER BY rowid ASC")
-      .all() as Array<{ rowid: number }>;
+    const surviving = db.prepare("SELECT rowid FROM events ORDER BY rowid ASC").all() as Array<{
+      rowid: number;
+    }>;
     expect(surviving.map((r) => r.rowid)).toEqual([8, 9, 10]);
   });
 
@@ -159,9 +155,9 @@ describe("events-prune.prune — happy paths", () => {
     expect(countEvents()).toBe(5);
 
     // Surviving rowids are 8-12 (the 5 newest).
-    const surviving = db
-      .prepare("SELECT rowid FROM events ORDER BY rowid ASC")
-      .all() as Array<{ rowid: number }>;
+    const surviving = db.prepare("SELECT rowid FROM events ORDER BY rowid ASC").all() as Array<{
+      rowid: number;
+    }>;
     expect(surviving.map((r) => r.rowid)).toEqual([8, 9, 10, 11, 12]);
   });
 });

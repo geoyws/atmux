@@ -715,27 +715,23 @@ describe("task verb — dispatch", () => {
 
   test("'update' --owner reassigns to existing member", async () => {
     const id = await addTask(atmuxDir, { subject: "phantom-owned" });
-    await captureStdout(() =>
-      task(["update", id, "--owner", "alpha", "--team-dir", teamDir]),
-    );
+    await captureStdout(() => task(["update", id, "--owner", "alpha", "--team-dir", teamDir]));
     const after = await showTask(atmuxDir, id);
     expect(after?.owner).toBe("alpha");
   });
 
   test("'update' --owner unknown member → ConfigError with valid-members hint", async () => {
     const id = await addTask(atmuxDir, { subject: "x" });
-    await expect(
-      task(["update", id, "--owner", "ghost", "--team-dir", teamDir]),
-    ).rejects.toThrow(/not in team\.json/);
+    await expect(task(["update", id, "--owner", "ghost", "--team-dir", teamDir])).rejects.toThrow(
+      /not in team\.json/,
+    );
   });
 
   test("'update' --unassign sets owner to null (parking-lot pattern)", async () => {
     const id = await addTask(atmuxDir, { subject: "x", assignee: "alpha" });
     const before = await showTask(atmuxDir, id);
     expect(before?.owner).toBe("alpha");
-    await captureStdout(() =>
-      task(["update", id, "--unassign", "--team-dir", teamDir]),
-    );
+    await captureStdout(() => task(["update", id, "--unassign", "--team-dir", teamDir]));
     const after = await showTask(atmuxDir, id);
     expect(after?.owner).toBeNull();
   });
@@ -746,9 +742,7 @@ describe("task verb — dispatch", () => {
       body: "preserve me",
       deps: ["t-keep0001"],
     });
-    await captureStdout(() =>
-      task(["update", id, "--owner", "alpha", "--team-dir", teamDir]),
-    );
+    await captureStdout(() => task(["update", id, "--owner", "alpha", "--team-dir", teamDir]));
     const after = await showTask(atmuxDir, id);
     expect(after?.owner).toBe("alpha");
     expect(after?.body).toBe("preserve me");
@@ -757,9 +751,7 @@ describe("task verb — dispatch", () => {
 
   test("'update' --owner '' aliases --unassign (parking-lot pattern)", async () => {
     const id = await addTask(atmuxDir, { subject: "x", assignee: "alpha" });
-    await captureStdout(() =>
-      task(["update", id, "--owner", "", "--team-dir", teamDir]),
-    );
+    await captureStdout(() => task(["update", id, "--owner", "", "--team-dir", teamDir]));
     const after = await showTask(atmuxDir, id);
     expect(after?.owner).toBeNull();
   });
@@ -776,9 +768,9 @@ describe("task verb — dispatch", () => {
     const id = await addTask(atmuxDir, { subject: "x" });
     // --owner as last arg → parser sees rest[i+1]=undefined and refuses
     // before getAtmuxDir runs. Ordered so --team-dir comes first.
-    await expect(
-      task(["update", id, "--team-dir", teamDir, "--owner"]),
-    ).rejects.toThrow(UsageError);
+    await expect(task(["update", id, "--team-dir", teamDir, "--owner"])).rejects.toThrow(
+      UsageError,
+    );
   });
 
   // ---------- ADR-193: task add/update --epic / --story / --deliverable ----------
@@ -813,16 +805,14 @@ describe("task verb — dispatch", () => {
   });
 
   test("ADR-193: 'add --epic <malformed>' → UsageError (shape gate)", async () => {
-    await expect(
-      task(["add", "--team-dir", teamDir, "--epic", "garbage", "subj"]),
-    ).rejects.toThrow(UsageError);
+    await expect(task(["add", "--team-dir", teamDir, "--epic", "garbage", "subj"])).rejects.toThrow(
+      UsageError,
+    );
   });
 
   test("ADR-193: 'update --epic' re-parents an existing task", async () => {
     const id = await addTask(atmuxDir, { subject: "orphan" });
-    await captureStdout(() =>
-      task(["update", id, "--epic", "e-4976c457", "--team-dir", teamDir]),
-    );
+    await captureStdout(() => task(["update", id, "--epic", "e-4976c457", "--team-dir", teamDir]));
     expect((await showTask(atmuxDir, id))?.epic).toBe("e-4976c457");
   });
 
@@ -849,9 +839,9 @@ describe("task verb — dispatch", () => {
 
   test("ADR-193: 'update --epic <malformed>' → UsageError (no mutation)", async () => {
     const id = await addTask(atmuxDir, { subject: "x" });
-    await expect(
-      task(["update", id, "--epic", "bad", "--team-dir", teamDir]),
-    ).rejects.toThrow(UsageError);
+    await expect(task(["update", id, "--epic", "bad", "--team-dir", teamDir])).rejects.toThrow(
+      UsageError,
+    );
   });
 
   test("ADR-193: 'update' with only --epic is valid (counts toward the gate)", async () => {
@@ -864,9 +854,7 @@ describe("task verb — dispatch", () => {
 
   test("ADR-193: 'update --epic' doesn't clobber body (multi-field isolation)", async () => {
     const id = await addTask(atmuxDir, { subject: "x", body: "keep me" });
-    await captureStdout(() =>
-      task(["update", id, "--epic", "e-12345678", "--team-dir", teamDir]),
-    );
+    await captureStdout(() => task(["update", id, "--epic", "e-12345678", "--team-dir", teamDir]));
     const after = await showTask(atmuxDir, id);
     expect(after?.epic).toBe("e-12345678");
     expect(after?.body).toBe("keep me");

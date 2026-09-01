@@ -55,7 +55,10 @@ let env: TestEnv;
 let priorCwd: string;
 let priorAtmuxDir: string | undefined;
 
-function runGit(cwd: string, argv: ReadonlyArray<string>): Promise<{ stdout: string; code: number }> {
+function runGit(
+  cwd: string,
+  argv: ReadonlyArray<string>,
+): Promise<{ stdout: string; code: number }> {
   return new Promise((resolve, reject) => {
     const proc = spawn("git", argv, { cwd, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
@@ -267,9 +270,7 @@ describe("migrate-hex-ids — happy paths", () => {
     // Seed already-compound ids only.
     const now = Math.floor(Date.now() / 1000);
     env.db
-      .prepare(
-        `INSERT INTO epics (id, title, status, created_at) VALUES (?, ?, ?, ?)`,
-      )
+      .prepare(`INSERT INTO epics (id, title, status, created_at) VALUES (?, ?, ?, ?)`)
       .run("e-1-3b017960", "e1", "todo", now);
     env.db
       .prepare(
@@ -310,9 +311,10 @@ describe("migrate-hex-ids — scope mechanics", () => {
     expect(taskId).toBe("t-cafebabe");
 
     // Only `e` sequence advanced.
-    const seqs = env.db
-      .prepare("SELECT scope, last_id FROM id_sequences")
-      .all() as Array<{ scope: string; last_id: number }>;
+    const seqs = env.db.prepare("SELECT scope, last_id FROM id_sequences").all() as Array<{
+      scope: string;
+      last_id: number;
+    }>;
     expect(seqs).toEqual([{ scope: "e", last_id: 1 }]);
   });
 });
@@ -452,7 +454,10 @@ describe("migrate-hex-ids — flag parsing + side-channel mutations", () => {
 
   test("explicit --dry-run is still dry-run even with --apply absent", async () => {
     seedLegacy(env.db, "epics", "e-3b017960");
-    const code = await migrateHexIds(["--dry-run"], { stdout: env.stdoutWriter, logger: env.logger });
+    const code = await migrateHexIds(["--dry-run"], {
+      stdout: env.stdoutWriter,
+      logger: env.logger,
+    });
     expect(code).toBe(0);
     expect(stdoutText()).toContain("DRY RUN");
   });

@@ -88,9 +88,7 @@ export interface SyncCockpitRegistryArgs {
  *  this step; if state diverged externally between sync + undo (e.g.
  *  an out-of-band edit renamed the node again), the undo() surfaces a
  *  ConfigError rather than silently no-op'ing — operator inspects. */
-export async function syncCockpitRegistry(
-  args: SyncCockpitRegistryArgs,
-): Promise<RollbackStep> {
+export async function syncCockpitRegistry(args: SyncCockpitRegistryArgs): Promise<RollbackStep> {
   const warn = args.warn ?? ((_m: string) => {});
   const cockpit = await readAndMigrateCockpit(args.cockpitPath, warn);
   const found = findAndMutateTeamName(cockpit.sessions ?? [], args.oldName, args.newName);

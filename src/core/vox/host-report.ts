@@ -204,9 +204,7 @@ export const DEFAULT_HOST_PROBE_TIMEOUT_MS = 15_000;
  * `src/abstractions/spawn.ts` uses, so an operator who has learned one
  * knob has learned this one.
  */
-export function resolveHostProbeTimeoutMs(
-  env: NodeJS.ProcessEnv = process.env,
-): number {
+export function resolveHostProbeTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env.ATMUX_HOST_PROBE_TIMEOUT_MS;
   if (raw === undefined || raw.trim() === "") return DEFAULT_HOST_PROBE_TIMEOUT_MS;
   const n = Number(raw);
@@ -216,23 +214,12 @@ export function resolveHostProbeTimeoutMs(
 
 /** Default ssh runner — `BatchMode=yes` so a host that would prompt for a
  *  password FAILS instead of hanging on a tty nobody is watching. */
-async function defaultRunSsh(
-  sshHost: string,
-  command: string,
-  timeoutMs: number,
-): Promise<string> {
+async function defaultRunSsh(sshHost: string, command: string, timeoutMs: number): Promise<string> {
   const { spawn } = await import("../../abstractions/spawn.ts");
   const connectTimeoutSec = Math.max(1, Math.floor(timeoutMs / 2000));
   const r = await spawn({
     cmd: "ssh",
-    argv: [
-      "-o",
-      "BatchMode=yes",
-      "-o",
-      `ConnectTimeout=${connectTimeoutSec}`,
-      sshHost,
-      command,
-    ],
+    argv: ["-o", "BatchMode=yes", "-o", `ConnectTimeout=${connectTimeoutSec}`, sshHost, command],
     timeoutMs,
     // df exits non-zero for a missing mount while still printing the
     // rows that DO exist; the parser decides, not the exit code.
@@ -343,9 +330,7 @@ export interface HostReportSummary {
 
 /** Fold per-host entries into one verdict. See the file header for why
  *  `unreachable` forces `ok: false`. */
-export function summarizeHostReport(
-  entries: ReadonlyArray<HostReportEntry>,
-): HostReportSummary {
+export function summarizeHostReport(entries: ReadonlyArray<HostReportEntry>): HostReportSummary {
   const unreachable: string[] = [];
   const pressured: string[] = [];
   const healthy: string[] = [];
@@ -398,7 +383,9 @@ function renderEntry(e: HostReportEntry): string {
   const cpuPct = pct(p.loadAvg15min, p.cpuCores);
   const cpuNowPct = pct(p.loadAvg1min, p.cpuCores);
   const memUsedPct = pct(p.memTotalMb - p.memAvailableMb, p.memTotalMb);
-  const diskParts = p.disks.map((d) => `${d.mount} ${d.usedPercent}% full (${speakSize(d.availableMb)} free)`);
+  const diskParts = p.disks.map(
+    (d) => `${d.mount} ${d.usedPercent}% full (${speakSize(d.availableMb)} free)`,
+  );
   for (const m of p.missingMounts) diskParts.push(`${m} NOT REPORTED — unknown`);
   const disk = diskParts.length > 0 ? diskParts.join(", ") : "no mounts reported — unknown";
   const body =

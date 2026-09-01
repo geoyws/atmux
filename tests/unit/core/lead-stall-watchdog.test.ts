@@ -131,15 +131,16 @@ describe("decideLeadStall — W1 (ready story, no claimant)", () => {
   });
 
   test("does NOT fire on an already-claimed ready story (owner set)", () => {
-    const d = decideLeadStall(
-      input({ stories: [readyStory("s-1", THRESHOLD_SEC + 100, "be-1")] }),
-    );
+    const d = decideLeadStall(input({ stories: [readyStory("s-1", THRESHOLD_SEC + 100, "be-1")] }));
     expect(d.fire).toBe(false);
     expect(d.items).toHaveLength(0);
   });
 
   test("does NOT fire on a non-ready story even when aged", () => {
-    const planning: LeadStallStoryInput = { ...readyStory("s-1", THRESHOLD_SEC + 100), status: "planning" };
+    const planning: LeadStallStoryInput = {
+      ...readyStory("s-1", THRESHOLD_SEC + 100),
+      status: "planning",
+    };
     const d = decideLeadStall(input({ stories: [planning] }));
     expect(d.fire).toBe(false);
   });
@@ -176,7 +177,9 @@ describe("decideLeadStall — W2 (unclaimed task)", () => {
   });
 
   test("does NOT fire on an owned unclaimed task (contradictory row, never re-dispatch)", () => {
-    const d = decideLeadStall(input({ tasks: [unclaimedTask("t-1", THRESHOLD_SEC + 100, "fe-1")] }));
+    const d = decideLeadStall(
+      input({ tasks: [unclaimedTask("t-1", THRESHOLD_SEC + 100, "fe-1")] }),
+    );
     expect(d.fire).toBe(false);
   });
 
@@ -268,7 +271,10 @@ describe("formatLeadStallPing — concrete dispatch (§D4)", () => {
 
   test("flags a no-member lane instead of fabricating a dispatch target", () => {
     // misc lane has no roster member in MEMBERS → targetMember null.
-    const story: LeadStallStoryInput = { ...readyStory("s-misc", THRESHOLD_SEC + 100), lane: "misc" };
+    const story: LeadStallStoryInput = {
+      ...readyStory("s-misc", THRESHOLD_SEC + 100),
+      lane: "misc",
+    };
     const d = decideLeadStall(input({ stories: [story] }));
     expect(d.items[0]!.targetMember).toBeNull();
     const ping = formatLeadStallPing(d.items);
@@ -377,9 +383,7 @@ describe("createLeadStallWatchdogHandler — consumer wiring", () => {
       team: {
         name: "atmux",
         members: MEMBERS as never,
-        ...(opts.enabled !== undefined
-          ? { leadStallWatchdog: { enabled: opts.enabled } }
-          : {}),
+        ...(opts.enabled !== undefined ? { leadStallWatchdog: { enabled: opts.enabled } } : {}),
       },
       loadSnapshot: async () => ({ stories: opts.stories, tasks: opts.tasks }),
       spawnTellLead: async (args) => {
@@ -510,105 +514,105 @@ describe("createLeadStallWatchdogHandler — consumer wiring", () => {
 });
 
 describe("createLeadStallWatchdogHandler — default seams", () => {
-  test.serial("uses the default spawnTellLead path when omitted and handles exit/error callbacks", async () => {
-    const childProcessSnapshot = { ...nodeChildProcess };
-    const calls: Array<{
-      command: string;
-      args: Array<string>;
-      stdio?: string;
-      env?: NodeJS.ProcessEnv;
-    }> = [];
-    let installed = false;
+  test.serial(
+    "uses the default spawnTellLead path when omitted and handles exit/error callbacks",
+    async () => {
+      const childProcessSnapshot = { ...nodeChildProcess };
+      const calls: Array<{
+        command: string;
+        args: Array<string>;
+        stdio?: string;
+        env?: NodeJS.ProcessEnv;
+      }> = [];
+      let installed = false;
 
-    const makeStory = (id: string): KanbanStory =>
-      ({
-        id,
-        status: "ready",
-        title: `story ${id}`,
-        advancedAt: NOW - THRESHOLD_SEC - 100,
-        lane: "be",
-      }) as unknown as KanbanStory;
+      const makeStory = (id: string): KanbanStory =>
+        ({
+          id,
+          status: "ready",
+          title: `story ${id}`,
+          advancedAt: NOW - THRESHOLD_SEC - 100,
+          lane: "be",
+        }) as unknown as KanbanStory;
 
-    const mkHandler = async (atmuxDir: string, story: KanbanStory) =>
-      createLeadStallWatchdogHandler({
-        atmuxDir,
-        team: { name: "atmux", members: MEMBERS as never },
-        loadSnapshot: async () => ({ stories: [story], tasks: [] }),
-      });
+      const mkHandler = async (atmuxDir: string, story: KanbanStory) =>
+        createLeadStallWatchdogHandler({
+          atmuxDir,
+          team: { name: "atmux", members: MEMBERS as never },
+          loadSnapshot: async () => ({ stories: [story], tasks: [] }),
+        });
 
-    const mkDir = async (prefix: string): Promise<string> => mkdtemp(join(tmpdir(), prefix));
+      const mkDir = async (prefix: string): Promise<string> => mkdtemp(join(tmpdir(), prefix));
 
-    try {
-      mock.module("node:child_process", () => ({
-        ...childProcessSnapshot,
-        spawn: mock(
-          (
-            command: string,
-            args: ReadonlyArray<string>,
-            options: { stdio?: string; env?: NodeJS.ProcessEnv },
-          ) => {
-            const callIndex = calls.length + 1;
-            calls.push({
-              command,
-              args: [...args],
-              ...(options.stdio === undefined ? {} : { stdio: options.stdio }),
-              ...(options.env === undefined ? {} : { env: options.env }),
-            });
-            const child = {
-              on(
-                event: "error" | "exit",
-                handler: (code?: number | Error) => void,
-              ) {
-                if (callIndex === 1 && event === "exit") {
-                  queueMicrotask(() => handler(0));
-                } else if (callIndex === 2 && event === "error") {
-                  queueMicrotask(() => handler(new Error("spawn failed")));
-                }
-                return child;
-              },
-            };
-            return child;
-          },
-        ),
-      }));
-      installed = true;
-
-      const okDir = await mkDir("atmux-lead-stall-default-spawn-ok-");
-      const failDir = await mkDir("atmux-lead-stall-default-spawn-fail-");
       try {
-        const okHandler = await mkHandler(okDir, makeStory("s-ok"));
-        expect(await okHandler({ topic: "story.ready", team: "atmux" })).toBe("pinged");
-
-        const failHandler = await mkHandler(failDir, makeStory("s-fail"));
-        expect(await failHandler({ topic: "story.ready", team: "atmux" })).toBe(
-          "tell-lead-failed",
-        );
-
-        expect(calls).toHaveLength(2);
-        expect(calls[0]!.command).toBe("atmux");
-        expect(calls[0]!.args.slice(0, 3)).toEqual(["tell-lead", "--team", "atmux"]);
-        expect(calls[0]!.args[3]).toContain("s-ok");
-        expect(calls[0]!.stdio).toBe("inherit");
-        expect(calls[0]!.env).toBe(process.env);
-
-        expect(calls[1]!.command).toBe("atmux");
-        expect(calls[1]!.args.slice(0, 3)).toEqual(["tell-lead", "--team", "atmux"]);
-        expect(calls[1]!.args[3]).toContain("s-fail");
-        expect(calls[1]!.stdio).toBe("inherit");
-        expect(calls[1]!.env).toBe(process.env);
-      } finally {
-        await rm(okDir, { recursive: true, force: true });
-        await rm(failDir, { recursive: true, force: true });
-      }
-    } finally {
-      if (installed) {
         mock.module("node:child_process", () => ({
           ...childProcessSnapshot,
+          spawn: mock(
+            (
+              command: string,
+              args: ReadonlyArray<string>,
+              options: { stdio?: string; env?: NodeJS.ProcessEnv },
+            ) => {
+              const callIndex = calls.length + 1;
+              calls.push({
+                command,
+                args: [...args],
+                ...(options.stdio === undefined ? {} : { stdio: options.stdio }),
+                ...(options.env === undefined ? {} : { env: options.env }),
+              });
+              const child = {
+                on(event: "error" | "exit", handler: (code?: number | Error) => void) {
+                  if (callIndex === 1 && event === "exit") {
+                    queueMicrotask(() => handler(0));
+                  } else if (callIndex === 2 && event === "error") {
+                    queueMicrotask(() => handler(new Error("spawn failed")));
+                  }
+                  return child;
+                },
+              };
+              return child;
+            },
+          ),
         }));
-        mock.restore();
+        installed = true;
+
+        const okDir = await mkDir("atmux-lead-stall-default-spawn-ok-");
+        const failDir = await mkDir("atmux-lead-stall-default-spawn-fail-");
+        try {
+          const okHandler = await mkHandler(okDir, makeStory("s-ok"));
+          expect(await okHandler({ topic: "story.ready", team: "atmux" })).toBe("pinged");
+
+          const failHandler = await mkHandler(failDir, makeStory("s-fail"));
+          expect(await failHandler({ topic: "story.ready", team: "atmux" })).toBe(
+            "tell-lead-failed",
+          );
+
+          expect(calls).toHaveLength(2);
+          expect(calls[0]!.command).toBe("atmux");
+          expect(calls[0]!.args.slice(0, 3)).toEqual(["tell-lead", "--team", "atmux"]);
+          expect(calls[0]!.args[3]).toContain("s-ok");
+          expect(calls[0]!.stdio).toBe("inherit");
+          expect(calls[0]!.env).toBe(process.env);
+
+          expect(calls[1]!.command).toBe("atmux");
+          expect(calls[1]!.args.slice(0, 3)).toEqual(["tell-lead", "--team", "atmux"]);
+          expect(calls[1]!.args[3]).toContain("s-fail");
+          expect(calls[1]!.stdio).toBe("inherit");
+          expect(calls[1]!.env).toBe(process.env);
+        } finally {
+          await rm(okDir, { recursive: true, force: true });
+          await rm(failDir, { recursive: true, force: true });
+        }
+      } finally {
+        if (installed) {
+          mock.module("node:child_process", () => ({
+            ...childProcessSnapshot,
+          }));
+          mock.restore();
+        }
       }
-    }
-  });
+    },
+  );
 
   test.serial("uses the default Date.now() clock when nowSec is omitted", async () => {
     const atmuxDir = await mkdtemp(join(tmpdir(), "atmux-lead-stall-default-clock-"));

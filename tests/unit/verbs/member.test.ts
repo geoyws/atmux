@@ -638,7 +638,9 @@ describe("parseMemberSwapArgs", () => {
   });
 
   test("same id swap is rejected", () => {
-    expect(() => parseMemberSwapArgs(["alice", "alice"])).toThrow(/cannot swap a member with itself/);
+    expect(() => parseMemberSwapArgs(["alice", "alice"])).toThrow(
+      /cannot swap a member with itself/,
+    );
   });
 
   test("unknown flag throws UsageError", () => {
@@ -676,9 +678,11 @@ describe("parseMemberSortArgs", () => {
   });
 
   test("threads socket-path / team-dir", () => {
-    expect(
-      parseMemberSortArgs(["--socket-path", "/abs/sock", "--team-dir", "/tmp/x"]),
-    ).toEqual({ defaultsFirst: true, socketPath: "/abs/sock", teamDir: "/tmp/x" });
+    expect(parseMemberSortArgs(["--socket-path", "/abs/sock", "--team-dir", "/tmp/x"])).toEqual({
+      defaultsFirst: true,
+      socketPath: "/abs/sock",
+      teamDir: "/tmp/x",
+    });
   });
 
   test("positional arg throws UsageError", () => {
@@ -712,7 +716,8 @@ async function bootMemberTeamWithWindows(
   await startLiveSession({ windowName: "driver" });
   for (const m of members) {
     const role = m.role ?? "member";
-    const isDefault = role === "team-lead" || role === "planner" || role === "reviewer" || role === "ombudsman";
+    const isDefault =
+      role === "team-lead" || role === "planner" || role === "reviewer" || role === "ombudsman";
     const label = m.label ?? m.name;
     const windowName = `${m.emoji}${isDefault ? "_" : "-"}${label}`;
     await env.tmux.window.newWindow({
@@ -743,16 +748,13 @@ describe("memberMove — happy path", () => {
     // Order before: W1=driver, W2=🧭_lead, W3=🛠️-alpha, W4=📦-beta.
     expect(before.map((w) => w.name)).toEqual(["driver", "🧭_lead", "🛠️-alpha", "📦-beta"]);
 
-    const r = await memberMoveInternal(
-      ["beta", "--to", "2", "--socket-path", env.socketPath],
-      {
-        env: { ...process.env, ATMUX_DIR: env.atmuxDir },
-        cwd: env.atmuxDir,
-        home: env.home,
-        stdout: (s) => env.stdout.push(s),
-        stderr: (s) => env.stderr.push(s),
-      },
-    );
+    const r = await memberMoveInternal(["beta", "--to", "2", "--socket-path", env.socketPath], {
+      env: { ...process.env, ATMUX_DIR: env.atmuxDir },
+      cwd: env.atmuxDir,
+      home: env.home,
+      stdout: (s) => env.stdout.push(s),
+      stderr: (s) => env.stderr.push(s),
+    });
     expect(r).toEqual({ exitCode: 0, wrote: true, moved: true });
 
     const after = await liveWindowsByName();
@@ -776,16 +778,13 @@ describe("memberMove — idempotent", () => {
       { name: "worker", role: "member", emoji: "🛠️" },
     ]);
     // worker is at W3 — move to W3 again.
-    const r = await memberMoveInternal(
-      ["worker", "--to", "3", "--socket-path", env.socketPath],
-      {
-        env: { ...process.env, ATMUX_DIR: env.atmuxDir },
-        cwd: env.atmuxDir,
-        home: env.home,
-        stdout: (s) => env.stdout.push(s),
-        stderr: (s) => env.stderr.push(s),
-      },
-    );
+    const r = await memberMoveInternal(["worker", "--to", "3", "--socket-path", env.socketPath], {
+      env: { ...process.env, ATMUX_DIR: env.atmuxDir },
+      cwd: env.atmuxDir,
+      home: env.home,
+      stdout: (s) => env.stdout.push(s),
+      stderr: (s) => env.stderr.push(s),
+    });
     expect(r).toEqual({ exitCode: 0, wrote: false, moved: false });
     expect(env.stdout.join("")).toContain("already at W3 — no-op");
   });
@@ -845,16 +844,13 @@ describe("memberMove — refusals", () => {
       { name: "worker", role: "member", emoji: "🛠️" },
     ]);
     // No startLiveSession — team session does not exist.
-    const r = await memberMoveInternal(
-      ["worker", "--to", "2", "--socket-path", env.socketPath],
-      {
-        env: { ...process.env, ATMUX_DIR: env.atmuxDir },
-        cwd: env.atmuxDir,
-        home: env.home,
-        stdout: (s) => env.stdout.push(s),
-        stderr: (s) => env.stderr.push(s),
-      },
-    );
+    const r = await memberMoveInternal(["worker", "--to", "2", "--socket-path", env.socketPath], {
+      env: { ...process.env, ATMUX_DIR: env.atmuxDir },
+      cwd: env.atmuxDir,
+      home: env.home,
+      stdout: (s) => env.stdout.push(s),
+      stderr: (s) => env.stderr.push(s),
+    });
     expect(r).toEqual({ exitCode: 0, wrote: false, moved: false });
     expect(env.stderr.join("")).toContain("team session not running");
   });
@@ -872,16 +868,13 @@ describe("memberSwap — happy path", () => {
     const before = await liveWindowsByName();
     expect(before.map((w) => w.name)).toEqual(["driver", "🧭_lead", "🛠️-alpha", "📦-beta"]);
 
-    const r = await memberSwapInternal(
-      ["alpha", "beta", "--socket-path", env.socketPath],
-      {
-        env: { ...process.env, ATMUX_DIR: env.atmuxDir },
-        cwd: env.atmuxDir,
-        home: env.home,
-        stdout: (s) => env.stdout.push(s),
-        stderr: (s) => env.stderr.push(s),
-      },
-    );
+    const r = await memberSwapInternal(["alpha", "beta", "--socket-path", env.socketPath], {
+      env: { ...process.env, ATMUX_DIR: env.atmuxDir },
+      cwd: env.atmuxDir,
+      home: env.home,
+      stdout: (s) => env.stdout.push(s),
+      stderr: (s) => env.stderr.push(s),
+    });
     expect(r).toEqual({ exitCode: 0, wrote: true, swapped: true });
 
     const after = await liveWindowsByName();
@@ -918,16 +911,13 @@ describe("memberSwap — refusals", () => {
       { name: "lead", role: "team-lead", emoji: "🧭" },
       { name: "worker", role: "member", emoji: "🛠️" },
     ]);
-    const r = await memberSwapInternal(
-      ["lead", "worker", "--socket-path", env.socketPath],
-      {
-        env: { ...process.env, ATMUX_DIR: env.atmuxDir },
-        cwd: env.atmuxDir,
-        home: env.home,
-        stdout: (s) => env.stdout.push(s),
-        stderr: (s) => env.stderr.push(s),
-      },
-    );
+    const r = await memberSwapInternal(["lead", "worker", "--socket-path", env.socketPath], {
+      env: { ...process.env, ATMUX_DIR: env.atmuxDir },
+      cwd: env.atmuxDir,
+      home: env.home,
+      stdout: (s) => env.stdout.push(s),
+      stderr: (s) => env.stderr.push(s),
+    });
     expect(r.exitCode).toBe(0);
     expect(r.swapped).toBe(false);
     expect(env.stderr.join("")).toContain("team session not running");
@@ -967,16 +957,13 @@ describe("memberSort — happy path (live session)", () => {
       { name: "planner", role: "planner", emoji: "🗺️" },
     ]);
 
-    const r = await memberSortInternal(
-      ["--defaults-first", "--socket-path", env.socketPath],
-      {
-        env: { ...process.env, ATMUX_DIR: env.atmuxDir },
-        cwd: env.atmuxDir,
-        home: env.home,
-        stdout: (s) => env.stdout.push(s),
-        stderr: (s) => env.stderr.push(s),
-      },
-    );
+    const r = await memberSortInternal(["--defaults-first", "--socket-path", env.socketPath], {
+      env: { ...process.env, ATMUX_DIR: env.atmuxDir },
+      cwd: env.atmuxDir,
+      home: env.home,
+      stdout: (s) => env.stdout.push(s),
+      stderr: (s) => env.stderr.push(s),
+    });
     expect(r.exitCode).toBe(0);
     expect(r.wrote).toBe(true);
     expect(r.moveCount).toBeGreaterThan(0);
@@ -984,13 +971,7 @@ describe("memberSort — happy path (live session)", () => {
     const tj = await readTeamJson();
     // Canonical order: team-lead, planner, reviewer (committer/ombudsman absent),
     // then user-added in original relative order (alpha, beta).
-    expect(tj.members.map((m) => m.name)).toEqual([
-      "lead",
-      "planner",
-      "reviewer",
-      "alpha",
-      "beta",
-    ]);
+    expect(tj.members.map((m) => m.name)).toEqual(["lead", "planner", "reviewer", "alpha", "beta"]);
   });
 });
 
@@ -1002,16 +983,13 @@ describe("memberSort — idempotent", () => {
       { name: "reviewer", role: "reviewer", emoji: "🔍" },
       { name: "alpha", role: "member", emoji: "🛠️" },
     ]);
-    const r = await memberSortInternal(
-      ["--socket-path", env.socketPath],
-      {
-        env: { ...process.env, ATMUX_DIR: env.atmuxDir },
-        cwd: env.atmuxDir,
-        home: env.home,
-        stdout: (s) => env.stdout.push(s),
-        stderr: (s) => env.stderr.push(s),
-      },
-    );
+    const r = await memberSortInternal(["--socket-path", env.socketPath], {
+      env: { ...process.env, ATMUX_DIR: env.atmuxDir },
+      cwd: env.atmuxDir,
+      home: env.home,
+      stdout: (s) => env.stdout.push(s),
+      stderr: (s) => env.stderr.push(s),
+    });
     expect(r).toEqual({ exitCode: 0, wrote: false, moveCount: 0 });
     expect(env.stdout.join("")).toContain("already in canonical order");
   });
@@ -1023,16 +1001,13 @@ describe("memberSort — team stopped", () => {
       { name: "alpha", role: "member", emoji: "🛠️" },
       { name: "lead", role: "team-lead", emoji: "🧭" },
     ]);
-    const r = await memberSortInternal(
-      ["--socket-path", env.socketPath],
-      {
-        env: { ...process.env, ATMUX_DIR: env.atmuxDir },
-        cwd: env.atmuxDir,
-        home: env.home,
-        stdout: (s) => env.stdout.push(s),
-        stderr: (s) => env.stderr.push(s),
-      },
-    );
+    const r = await memberSortInternal(["--socket-path", env.socketPath], {
+      env: { ...process.env, ATMUX_DIR: env.atmuxDir },
+      cwd: env.atmuxDir,
+      home: env.home,
+      stdout: (s) => env.stdout.push(s),
+      stderr: (s) => env.stderr.push(s),
+    });
     expect(r.exitCode).toBe(0);
     expect(r.wrote).toBe(true);
     expect(r.moveCount).toBe(0);

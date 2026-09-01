@@ -183,7 +183,9 @@ export async function cleanup(
     if (parsed.purgeLegacy) {
       out.legacyInboxes = await purgeLegacyInboxes(atmuxDir, { dryRun: parsed.dryRun });
       if (out.legacyInboxes.skipped) {
-        logger.log("cleanup inboxes --purge-legacy: skipped (no state.db — JSON may still be canonical)");
+        logger.log(
+          "cleanup inboxes --purge-legacy: skipped (no state.db — JSON may still be canonical)",
+        );
       } else if (parsed.dryRun) {
         for (const name of out.legacyInboxes.removed) {
           logger.log(`  [dry-run] would remove inboxes/${name}`);

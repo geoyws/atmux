@@ -20,10 +20,7 @@ import {
   computeFingerprint,
   syncEventsLogPath,
 } from "../../../../src/core/sync-claude-team-json/drift.ts";
-import {
-  computeMappedTeam,
-  writeSync,
-} from "../../../../src/core/sync-claude-team-json/index.ts";
+import { computeMappedTeam, writeSync } from "../../../../src/core/sync-claude-team-json/index.ts";
 
 interface Harness {
   root: string;
@@ -105,7 +102,9 @@ describe("computeMappedTeam — prior .claude/team.json present", () => {
     });
     await writeClaudeTeam(h, {
       name: "t",
-      members: [{ name: "team-lead", agentType: "team-lead", color: "white", role: "preserved-text" }],
+      members: [
+        { name: "team-lead", agentType: "team-lead", color: "white", role: "preserved-text" },
+      ],
     });
     const result = await computeMappedTeam({ dir: h.atmuxDir, claudeDir: h.claudeDir });
     expect(result.prior).not.toBeNull();
@@ -180,9 +179,9 @@ describe("computeMappedTeam — sidecar present", () => {
 describe("computeMappedTeam — error paths", () => {
   test("missing .atmux/team.json → throws actionable error", async () => {
     // Fresh tmpdir, no team.json written
-    await expect(
-      computeMappedTeam({ dir: h.atmuxDir, claudeDir: h.claudeDir }),
-    ).rejects.toThrow(/no \.atmux\/team\.json/);
+    await expect(computeMappedTeam({ dir: h.atmuxDir, claudeDir: h.claudeDir })).rejects.toThrow(
+      /no \.atmux\/team\.json/,
+    );
   });
 
   test("malformed prior .claude/team.json → SyntaxError surfaces (caller decides UX)", async () => {
@@ -296,9 +295,7 @@ describe("writeSync — fresh file (no prior .claude/team.json)", () => {
     };
     expect(marker.lastSyncedAt).toBe(FIXED_TS);
     expect(marker.schemaRev).toBe("v1");
-    expect(marker.sourceFingerprint).toBe(
-      computeFingerprint(members as never),
-    );
+    expect(marker.sourceFingerprint).toBe(computeFingerprint(members as never));
 
     const events = await readEvents(h.atmuxDir);
     expect(events).toHaveLength(1);
@@ -315,9 +312,7 @@ describe("writeSync — fresh file (no prior .claude/team.json)", () => {
       claudeDir: h.claudeDir,
       now: FIXED_NOW,
     });
-    const written = await readJson<Record<string, unknown>>(
-      join(h.claudeDir, "team.json"),
-    );
+    const written = await readJson<Record<string, unknown>>(join(h.claudeDir, "team.json"));
     expect(written.name).toBe("no-desc");
     expect("description" in written).toBe(false);
   });
@@ -350,10 +345,7 @@ describe("writeSync — re-run with marker matching prior (no drift)", () => {
     expect(marker.lastSyncedAt).toBe("2026-06-01T00:00:00.000Z");
     // Both events logged
     const events = await readEvents(h.atmuxDir);
-    expect(events.map((e) => (e as { action: string }).action)).toEqual([
-      "synced",
-      "synced",
-    ]);
+    expect(events.map((e) => (e as { action: string }).action)).toEqual(["synced", "synced"]);
   });
 });
 
@@ -406,9 +398,7 @@ describe("writeSync — drift detected", () => {
 
     // .claude/team.json should be UNCHANGED — re-read + assert the
     // hand-edited 2-member roster is still present.
-    const after = await readJson<Record<string, unknown>>(
-      join(h.claudeDir, "team.json"),
-    );
+    const after = await readJson<Record<string, unknown>>(join(h.claudeDir, "team.json"));
     expect((after.members as unknown[]).length).toBe(2);
   });
 
@@ -422,15 +412,10 @@ describe("writeSync — drift detected", () => {
 
     // Two events: drift-forced then synced.
     const events = await readEvents(h.atmuxDir);
-    expect(events.map((e) => (e as { action: string }).action)).toEqual([
-      "drift-forced",
-      "synced",
-    ]);
+    expect(events.map((e) => (e as { action: string }).action)).toEqual(["drift-forced", "synced"]);
 
     // File written with the atmux-side roster (extra-1 dropped) + fresh marker.
-    const after = await readJson<Record<string, unknown>>(
-      join(h.claudeDir, "team.json"),
-    );
+    const after = await readJson<Record<string, unknown>>(join(h.claudeDir, "team.json"));
     const members = after.members as Array<{ name: string }>;
     expect(members.map((m) => m.name)).toEqual(["team-lead"]);
     const marker = after[SYNC_MARKER_KEY] as {
@@ -450,9 +435,7 @@ describe("writeSync — unknown top-level fields preserved", () => {
     });
     // Seed the .claude side with a clean marker that matches its roster,
     // plus a custom top-level field that the verb shouldn't drop.
-    const priorMembers = [
-      { name: "team-lead", agentType: "team-lead", color: "white" },
-    ];
+    const priorMembers = [{ name: "team-lead", agentType: "team-lead", color: "white" }];
     await writeClaudeTeam(h, {
       name: "t",
       members: priorMembers,
@@ -470,9 +453,7 @@ describe("writeSync — unknown top-level fields preserved", () => {
       now: FIXED_NOW,
     });
 
-    const after = await readJson<Record<string, unknown>>(
-      join(h.claudeDir, "team.json"),
-    );
+    const after = await readJson<Record<string, unknown>>(join(h.claudeDir, "team.json"));
     expect(after.operatorExtension).toBe("preserve-me");
   });
 });

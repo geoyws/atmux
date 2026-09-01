@@ -368,9 +368,7 @@ export async function probeHostPressure(
     );
   }
   if (memAvailableMb < thresholds.minMemMb) {
-    reasons.push(
-      `MemAvailable ${memAvailableMb}MB < ${thresholds.minMemMb}MB threshold`,
-    );
+    reasons.push(`MemAvailable ${memAvailableMb}MB < ${thresholds.minMemMb}MB threshold`);
   }
   for (const d of disks) {
     if (d.usedPercent > thresholds.maxDiskPercent) {

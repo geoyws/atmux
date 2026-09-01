@@ -267,9 +267,7 @@ export async function purgeLegacyInboxes(
   const entries = await readdir(ibDir).catch(() => [] as string[]);
   for (const name of entries) {
     const isLegacy =
-      name.endsWith(".json") ||
-      name.endsWith(".json.lock") ||
-      name.includes(".json.bak");
+      name.endsWith(".json") || name.endsWith(".json.lock") || name.includes(".json.bak");
     if (!isLegacy) continue;
     const full = join(ibDir, name);
     const st = await statOrNull(full);

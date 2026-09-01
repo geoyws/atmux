@@ -123,11 +123,7 @@ function taskDoneEvent(over: Partial<TaskDonePayload> = {}): TaskDonePayload {
   };
 }
 
-function fakeDispatcher(opts: {
-  postState?: BranchMergeState;
-  queued?: boolean;
-  reason?: string;
-}) {
+function fakeDispatcher(opts: { postState?: BranchMergeState; queued?: boolean; reason?: string }) {
   return () =>
     async ({ memberBranch }: { memberBranch: string; aheadCount: number }) => {
       if (opts.postState !== undefined) {
@@ -173,9 +169,7 @@ describe("roster-skip", () => {
       dispatcherFactory: fakeDispatcher({ postState: "merged" }),
     });
 
-    const outcome = await handler(
-      taskDoneEvent({ member: "", commitSha: undefined }),
-    );
+    const outcome = await handler(taskDoneEvent({ member: "", commitSha: undefined }));
 
     expect(outcome).toBe("skipped-not-mine");
     assertNoForbiddenVerbs(capture.calls);
@@ -316,16 +310,12 @@ describe("commitSha fallback resolution", () => {
       dispatcherFactory: fakeDispatcher({ postState: "merged" }),
     });
 
-    const outcome = await handler(
-      taskDoneEvent({ member: "", commitSha: "deadbeef" }),
-    );
+    const outcome = await handler(taskDoneEvent({ member: "", commitSha: "deadbeef" }));
 
     expect(outcome).toBe("merged");
     // Resolver consulted branch --contains
     expect(
-      capture.calls.some(
-        (argv) => argv.includes("branch") && argv.includes("--contains"),
-      ),
+      capture.calls.some((argv) => argv.includes("branch") && argv.includes("--contains")),
     ).toBe(true);
     assertNoForbiddenVerbs(capture.calls);
   });
@@ -342,9 +332,7 @@ describe("commitSha fallback resolution", () => {
       dispatcherFactory: fakeDispatcher({ postState: "merged" }),
     });
 
-    const outcome = await handler(
-      taskDoneEvent({ member: "", commitSha: "deadbeef" }),
-    );
+    const outcome = await handler(taskDoneEvent({ member: "", commitSha: "deadbeef" }));
 
     expect(outcome).toBe("skipped-not-mine");
     assertNoForbiddenVerbs(capture.calls);
@@ -362,9 +350,7 @@ describe("commitSha fallback resolution", () => {
       dispatcherFactory: fakeDispatcher({ postState: "merged" }),
     });
 
-    const outcome = await handler(
-      taskDoneEvent({ member: "", commitSha: "deadbeef" }),
-    );
+    const outcome = await handler(taskDoneEvent({ member: "", commitSha: "deadbeef" }));
 
     expect(outcome).toBe("skipped-not-mine");
     assertNoForbiddenVerbs(capture.calls);
@@ -417,22 +403,24 @@ describe("logger adapter (consumer-tier → tui.Logger)", () => {
         warn: () => {},
         error: () => {},
       },
-      dispatcherFactory: (dispatcherDeps) => async ({ memberBranch }) => {
-        // Exercise every adapter method — production dispatcher only
-        // calls .log() but the surface must conform to tui.Logger.
-        dispatcherDeps.logger.log(`adapter-log: ${memberBranch}`);
-        dispatcherDeps.logger.ok(`adapter-ok: ${memberBranch}`);
-        dispatcherDeps.logger.warn(`adapter-warn: ${memberBranch}`);
-        dispatcherDeps.logger.err(`adapter-err: ${memberBranch}`);
-        mergerRepo.transition({
-          memberBranch,
-          next: "merged",
-          note: "fake",
-          by: "cron",
-          transitionedAt: 1_700_000_000,
-        });
-        return { queued: true };
-      },
+      dispatcherFactory:
+        (dispatcherDeps) =>
+        async ({ memberBranch }) => {
+          // Exercise every adapter method — production dispatcher only
+          // calls .log() but the surface must conform to tui.Logger.
+          dispatcherDeps.logger.log(`adapter-log: ${memberBranch}`);
+          dispatcherDeps.logger.ok(`adapter-ok: ${memberBranch}`);
+          dispatcherDeps.logger.warn(`adapter-warn: ${memberBranch}`);
+          dispatcherDeps.logger.err(`adapter-err: ${memberBranch}`);
+          mergerRepo.transition({
+            memberBranch,
+            next: "merged",
+            note: "fake",
+            by: "cron",
+            transitionedAt: 1_700_000_000,
+          });
+          return { queued: true };
+        },
     });
 
     const outcome = await handler(taskDoneEvent());

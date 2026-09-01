@@ -38,8 +38,7 @@ const COCKPIT_MIRROR_BIN = join(
 );
 const HAS_BIN = existsSync(COCKPIT_MIRROR_BIN);
 
-const sleep = (ms: number): Promise<void> =>
-  new Promise((r) => setTimeout(r, ms));
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 describe.if(HAS_BIN)("atmux-cockpit-mirror smoke (ADR-219 T-S2-11)", () => {
   let scratchDir: string;
@@ -58,10 +57,7 @@ describe.if(HAS_BIN)("atmux-cockpit-mirror smoke (ADR-219 T-S2-11)", () => {
 
     // Fake atmux: log argv (space-separated) + exit 0 immediately. The
     // newline-per-call is the unit the assertion grep walks.
-    await writeFile(
-      fakeAtmuxBin,
-      `#!/bin/bash\necho "$@" >> "${fakeAtmuxLog}"\nexit 0\n`,
-    );
+    await writeFile(fakeAtmuxBin, `#!/bin/bash\necho "$@" >> "${fakeAtmuxLog}"\nexit 0\n`);
     await chmod(fakeAtmuxBin, 0o755);
     _mirrorStdoutBuf = "";
     _mirrorStderrBuf = "";
@@ -111,12 +107,7 @@ describe.if(HAS_BIN)("atmux-cockpit-mirror smoke (ADR-219 T-S2-11)", () => {
   function insertEvent(db: Database, topic: string, eventId: string): void {
     db.prepare(
       "INSERT INTO events (event_id, topic, payload, emitted_at_sec) VALUES (?, ?, ?, ?)",
-    ).run(
-      eventId,
-      topic,
-      JSON.stringify({ eventId, topic }),
-      Math.floor(Date.now() / 1000),
-    );
+    ).run(eventId, topic, JSON.stringify({ eventId, topic }), Math.floor(Date.now() / 1000));
   }
 
   function spawnMirror(): ReturnType<typeof Bun.spawn> {
@@ -184,10 +175,7 @@ describe.if(HAS_BIN)("atmux-cockpit-mirror smoke (ADR-219 T-S2-11)", () => {
     let logContent = "";
     while (Date.now() < deadline) {
       logContent = await readFakeLog();
-      if (
-        logContent.includes("cockpit-mirror") &&
-        logContent.includes("0190budgetwarn")
-      ) {
+      if (logContent.includes("cockpit-mirror") && logContent.includes("0190budgetwarn")) {
         break;
       }
       await sleep(100);

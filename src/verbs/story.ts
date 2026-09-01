@@ -23,8 +23,7 @@ import {
 } from "../core/story.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 
-const USAGE_HINT_ROOT =
-  "atmux story <add|list|show|advance|update|signoff|unsignoff> [args]";
+const USAGE_HINT_ROOT = "atmux story <add|list|show|advance|update|signoff|unsignoff> [args]";
 const USAGE_ADD =
   "atmux story add <title> --epic <eid> [--ac C] [--body T] [--merge-mode feature-branch|trunk-direct]";
 const USAGE_LIST = "atmux story list --epic <eid> [--status S] [--json]";
@@ -529,9 +528,7 @@ async function storySignoffVerb(argv: ReadonlyArray<string>): Promise<number> {
   if (flags.note !== undefined) opts.note = flags.note;
   if (callerMember !== undefined && callerMember.length > 0) opts.callerMember = callerMember;
   const r = await storySignoff(atmuxDir, id, opts);
-  process.stderr.write(
-    `story: ${r.storyId} signed off by ${r.signedOffBy} at ${r.signedOffAt}\n`,
-  );
+  process.stderr.write(`story: ${r.storyId} signed off by ${r.signedOffBy} at ${r.signedOffAt}\n`);
   return 0;
 }
 

@@ -85,9 +85,7 @@ export function renderDiff(prior: ClaudeTeam | null, computed: ComputedRoster): 
  *  member appears twice with the same name, the last write wins —
  *  consistent with how `mergeBriefs` (T4) resolves prior-member
  *  lookup. */
-function indexByName(
-  members: readonly ClaudeTeamMember[],
-): Map<string, ClaudeTeamMember> {
+function indexByName(members: readonly ClaudeTeamMember[]): Map<string, ClaudeTeamMember> {
   const m = new Map<string, ClaudeTeamMember>();
   for (const member of members) {
     if (typeof member?.name === "string" && member.name.length > 0) {

@@ -73,14 +73,16 @@ describe("parseHostPressureArgs", () => {
     expect(() => parseHostPressureArgs(["--host"])).toThrow(/--host requires a value/);
   });
 
-  test.each([["abc"], ["0"], ["-3"], ["NaN"]])(
-    "--timeout-ms %p is refused rather than coerced",
-    (bad) => {
-      expect(() => parseHostPressureArgs(["--timeout-ms", bad])).toThrow(
-        /--timeout-ms must be a positive number/,
-      );
-    },
-  );
+  test.each([
+    ["abc"],
+    ["0"],
+    ["-3"],
+    ["NaN"],
+  ])("--timeout-ms %p is refused rather than coerced", (bad) => {
+    expect(() => parseHostPressureArgs(["--timeout-ms", bad])).toThrow(
+      /--timeout-ms must be a positive number/,
+    );
+  });
 
   test("--timeout-ms without a value is a UsageError", () => {
     expect(() => parseHostPressureArgs(["--timeout-ms"])).toThrow(/requires a value/);

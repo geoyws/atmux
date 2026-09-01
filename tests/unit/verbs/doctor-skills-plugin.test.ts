@@ -167,10 +167,7 @@ describe("checkSkillsPlugin (I/O wrapper)", () => {
     const installPath = join(home, ".claude", "plugins", "atmux");
     const manifestDir = join(installPath, ".claude-plugin");
     await mkdir(manifestDir, { recursive: true });
-    await writeFile(
-      join(manifestDir, "plugin.json"),
-      JSON.stringify({ skills: [] }),
-    );
+    await writeFile(join(manifestDir, "plugin.json"), JSON.stringify({ skills: [] }));
 
     const rows = await checkSkillsPlugin({ home });
     expect(rows[0]?.status).toBe("yellow");

@@ -888,11 +888,7 @@ describe("runLaneTickForOne — IX-A lean per-event dispatcher", () => {
   // safeSendKeysWithVerify uses on the post-send capture poll.
   const FIXTURE_COMPOSER_EMPTY = "tok 67k/100  ⏵⏵ auto mode on\n❯ \n";
 
-  async function seedKanbanWithTask(
-    id: string,
-    subject: string,
-    lane: string,
-  ): Promise<void> {
+  async function seedKanbanWithTask(id: string, subject: string, lane: string): Promise<void> {
     const kanban = {
       tasks: [
         {

@@ -38,11 +38,7 @@ afterEach(async () => {
  *  positive-path tests only care about `.name`. */
 async function seedTeamJson(name: string): Promise<void> {
   const body = { name, members: [] };
-  await writeFile(
-    join(atmuxDir, "team.json"),
-    `${JSON.stringify(body, null, 2)}\n`,
-    "utf8",
-  );
+  await writeFile(join(atmuxDir, "team.json"), `${JSON.stringify(body, null, 2)}\n`, "utf8");
 }
 
 // ---------- renameLockPath ----------
@@ -77,9 +73,9 @@ describe("acquireRenameLock", () => {
   test("refuse: throws ConfigError when lock already exists", async () => {
     const lockPath = renameLockPath(atmuxDir);
     await writeFile(lockPath, '{"old":"x","new":"y","epoch":1}', "utf8");
-    await expect(
-      acquireRenameLock({ atmuxDir, oldName: "old", newName: "new" }),
-    ).rejects.toThrow(ConfigError);
+    await expect(acquireRenameLock({ atmuxDir, oldName: "old", newName: "new" })).rejects.toThrow(
+      ConfigError,
+    );
   });
 
   test("refuse: surfaces existing body in hint for operator triage", async () => {
@@ -169,11 +165,7 @@ describe("mutateTeamJson", () => {
   test("post-write team.json is valid JSON with the schema-required keys preserved", async () => {
     // Seed with extra keys to confirm we preserve passthrough fields.
     const seed = { name: "old", members: [{ name: "fe-1", tui: "claude" }] };
-    await writeFile(
-      join(atmuxDir, "team.json"),
-      `${JSON.stringify(seed, null, 2)}\n`,
-      "utf8",
-    );
+    await writeFile(join(atmuxDir, "team.json"), `${JSON.stringify(seed, null, 2)}\n`, "utf8");
     const step = await mutateTeamJson({ atmuxDir, oldName: "old", newName: "renamed" });
     const after = JSON.parse(await readFile(join(atmuxDir, "team.json"), "utf8")) as {
       name: string;

@@ -57,13 +57,7 @@ import { z } from "zod";
 /** Providers `probe-budgets.sh` accepts. Declared HERE, in core, because
  *  the voice catalog derives its `provider` enum from it and core must
  *  never import from `src/verbs/**` (ADR-272 D2). */
-export const BUDGET_PROVIDERS = Object.freeze([
-  "all",
-  "codex",
-  "claude",
-  "zai",
-  "kimi",
-] as const);
+export const BUDGET_PROVIDERS = Object.freeze(["all", "codex", "claude", "zai", "kimi"] as const);
 
 export type BudgetProvider = (typeof BUDGET_PROVIDERS)[number];
 
@@ -304,7 +298,8 @@ function renderRow(row: BudgetRow, nowSec: number): string {
   const cachedSuffix = isCachedRow(row)
     ? ` [CACHED ${speakDuration(rowCacheAgeSec(row, nowSec))} ago — not a live reading]`
     : "";
-  const note = typeof row.note === "string" && row.note !== "" ? ` (${redactSecrets(row.note)})` : "";
+  const note =
+    typeof row.note === "string" && row.note !== "" ? ` (${redactSecrets(row.note)})` : "";
   const status = redactSecrets(row.status);
 
   if (cls === "unmeasured") {

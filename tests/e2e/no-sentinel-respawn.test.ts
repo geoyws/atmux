@@ -158,9 +158,7 @@ describe("e2e: no-sentinel-respawn regression (EPIC e-be01fc89 T4)", () => {
     // any sentinel session.
     const legacyCockpit = {
       schemaVersion: 1,
-      sessions: [
-        { type: "team", name: "regression-team", root: homeDir, enabled: true },
-      ],
+      sessions: [{ type: "team", name: "regression-team", root: homeDir, enabled: true }],
       // EPIC e-be01fc89 removed-keys — kept in legacy operator configs.
       sentinel: { impl: "cursor", enabled: true },
       defaultSentinel: "claude",

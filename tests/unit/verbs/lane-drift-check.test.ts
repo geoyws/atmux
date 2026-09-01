@@ -628,10 +628,7 @@ describe("runLaneDriftCheck — ADR-176 criterion (d) threaded end-to-end", () =
       { thresholdMin: 30, commits: 30, reset: true, dryRun: false },
       {
         listInProgressTasks: async () => [parent],
-        listAllTasks: async () => [
-          parent,
-          { id: "t-child01", epic: "t-parent01", status: "todo" },
-        ],
+        listAllTasks: async () => [parent, { id: "t-child01", epic: "t-parent01", status: "todo" }],
         classifyMember: classifyPlanner,
         git: gitNoRefs,
         moveTask: async (_dir: string, id: string) => {

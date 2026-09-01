@@ -103,9 +103,7 @@ describe("parseBudgetRows", () => {
   });
 
   test("an unknown extra field does not reject the row", () => {
-    const { rows, malformed } = parseBudgetRows(
-      JSON.stringify({ ...row(), someFutureField: "x" }),
-    );
+    const { rows, malformed } = parseBudgetRows(JSON.stringify({ ...row(), someFutureField: "x" }));
     expect(malformed).toBe(0);
     expect(rows).toHaveLength(1);
   });
@@ -323,10 +321,22 @@ describe("speakRowIdentity — two budgets must never sound identical", () => {
     const out = renderBudgetReport(
       parseBudgetRows(
         ndjson([
-          row({ provider: "codex", account: "pro", bucket: "codex:primary",
-                windowMinutes: 10080, usedPercent: 100, status: "rejected" }),
-          row({ provider: "codex", account: "pro", bucket: "GPT-5.3-Codex-Spark:primary",
-                windowMinutes: 10080, usedPercent: 0, status: "allowed" }),
+          row({
+            provider: "codex",
+            account: "pro",
+            bucket: "codex:primary",
+            windowMinutes: 10080,
+            usedPercent: 100,
+            status: "rejected",
+          }),
+          row({
+            provider: "codex",
+            account: "pro",
+            bucket: "GPT-5.3-Codex-Spark:primary",
+            windowMinutes: 10080,
+            usedPercent: 0,
+            status: "allowed",
+          }),
         ]),
       ),
       NOW,
@@ -397,9 +407,7 @@ describe("renderBudgetReport — consumed, never remaining", () => {
       ),
       NOW,
     );
-    expect(out.split("\n")[0]).toBe(
-      "BUDGET: LIVE. 1 of 2 at capacity or unusable — not healthy.",
-    );
+    expect(out.split("\n")[0]).toBe("BUDGET: LIVE. 1 of 2 at capacity or unusable — not healthy.");
     expect(out).toContain("codex pro 7d codex:primary — AT CAPACITY, 100% consumed");
     expect(out).toContain("(rate_limit_reached)");
     // The whole point: it must not read as an all-clear.
@@ -410,8 +418,14 @@ describe("renderBudgetReport — consumed, never remaining", () => {
     const out = renderBudgetReport(
       parseBudgetRows(
         ndjson([
-          row({ account: "icloud", bucket: "account", usedPercent: null, windowMinutes: null,
-                resetsAt: null, status: "error:token_invalid" }),
+          row({
+            account: "icloud",
+            bucket: "account",
+            usedPercent: null,
+            windowMinutes: null,
+            resetsAt: null,
+            status: "error:token_invalid",
+          }),
         ]),
       ),
       NOW,
@@ -508,9 +522,7 @@ describe("renderBudgetReport — unmeasured is never zero", () => {
 
   test("the headline counts unmeasured rows as unknown, in words", () => {
     const out = renderBudgetReport(
-      parseBudgetRows(
-        ndjson([row(), row({ provider: "zai", status: "unavailable:no_api_key" })]),
-      ),
+      parseBudgetRows(ndjson([row(), row({ provider: "zai", status: "unavailable:no_api_key" })])),
       NOW,
     );
     expect(out).toContain("1 unmeasured (counted as unknown, not as free)");

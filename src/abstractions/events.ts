@@ -139,7 +139,7 @@ export function emit(
   // automatically publishes NOTIFY; callers that never bootHonker'd
   // (test fixtures, pure durable-INSERT paths) see no behavior change
   // because `getHonkerState(db)` returns null → `loaded=false`.
-  const shouldNotify = opts.honkerLoaded ?? (getHonkerState(db)?.loaded ?? false);
+  const shouldNotify = opts.honkerLoaded ?? getHonkerState(db)?.loaded ?? false;
   if (shouldNotify) {
     try {
       db.prepare("SELECT honker_stream_publish(?, ?, ?) AS r").get(
@@ -230,9 +230,9 @@ export function drainSince(db: Database, opts: DrainOpts): EventPayload[] {
  * ADR-202 §Amendment 2026-05-22 (VIII) caveat-fix.
  */
 export function loadEventById(db: Database, eventId: string): EventPayload | null {
-  const row = db
-    .prepare("SELECT payload FROM events WHERE event_id = ?")
-    .get(eventId) as { payload: string } | undefined;
+  const row = db.prepare("SELECT payload FROM events WHERE event_id = ?").get(eventId) as
+    | { payload: string }
+    | undefined;
   if (row === undefined) return null;
   try {
     return EventPayload.parse(JSON.parse(row.payload));
@@ -380,11 +380,9 @@ function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
  *  is empty. Used as a cheap wake-up cursor by `watchEvents()`. */
 function readHonkerNotificationMaxId(db: Database): number {
   try {
-    const row = db
-      .prepare(
-        "SELECT COALESCE(MAX(id), 0) AS m FROM _honker_notifications",
-      )
-      .get() as { m: number | null } | undefined;
+    const row = db.prepare("SELECT COALESCE(MAX(id), 0) AS m FROM _honker_notifications").get() as
+      | { m: number | null }
+      | undefined;
     return row?.m ?? 0;
   } catch {
     // Table not present (e.g. honker not bootstrapped on this db) — fall
@@ -549,10 +547,9 @@ export async function* watchEvents(
  * — same one-direction dependency rule as the rest of the abstractions
  * tier (honker → bun:sqlite; events → schema/events.ts + honker).
  */
-export function announceHonkerState(emitOverride?: typeof emit): (
-  db: Database,
-  state: HonkerRuntimeState,
-) => void {
+export function announceHonkerState(
+  emitOverride?: typeof emit,
+): (db: Database, state: HonkerRuntimeState) => void {
   const emitFn = emitOverride ?? emit;
   return (db, state) => {
     if (state.loaded) {

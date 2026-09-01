@@ -9,10 +9,7 @@
 /** Rewrite for the Claude-side `name` field. Returns `"team-lead"` when
  *  `role === "team-lead"` (post-Zod transform, so legacy `"gitter"` etc.
  *  are already coerced upstream); else returns the input verbatim. */
-export function rewriteClaudeName(
-  atmuxName: string,
-  atmuxRole: string | undefined,
-): string {
+export function rewriteClaudeName(atmuxName: string, atmuxRole: string | undefined): string {
   if (atmuxRole === "team-lead") return "team-lead";
   return atmuxName;
 }

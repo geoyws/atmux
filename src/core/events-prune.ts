@@ -112,14 +112,13 @@ export function prune(db: Database, opts: PruneOpts = {}): PruneResult {
     // pruned if offsets advanced, so the caller can surface visibility
     // ("12k events queued, no consumer has read past id 42 in 6h").
     if (ceiling <= floor) {
-      const { n } = db
-        .prepare("SELECT COUNT(*) AS n FROM events WHERE rowid <= ?")
-        .get(floor) as { n: number };
+      const { n } = db.prepare("SELECT COUNT(*) AS n FROM events WHERE rowid <= ?").get(floor) as {
+        n: number;
+      };
       return {
         deleted: 0,
         skipped: n,
-        reason:
-          "offsets stale — no consumers advanced past prune_state.cursor since last prune",
+        reason: "offsets stale — no consumers advanced past prune_state.cursor since last prune",
       };
     }
 
@@ -145,9 +144,9 @@ export function prune(db: Database, opts: PruneOpts = {}): PruneResult {
     // offset-allowed window. Cap still respects offset-gating: we
     // only delete rows with rowid <= ceiling.
     let maxDeleted = 0;
-    const { remaining } = db
-      .prepare("SELECT COUNT(*) AS remaining FROM events")
-      .get() as { remaining: number };
+    const { remaining } = db.prepare("SELECT COUNT(*) AS remaining FROM events").get() as {
+      remaining: number;
+    };
     if (remaining > maxRows) {
       const excess = remaining - maxRows;
       const maxRes = db
