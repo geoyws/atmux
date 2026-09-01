@@ -45,6 +45,7 @@ function ctx(
   return {
     plan: PLAN,
     readFile: async (p) => files.get(p) ?? null,
+    now: () => 0,
     sleep: async () => {},
     tmux: () =>
       ({
@@ -138,15 +139,21 @@ describe("awaitEnters — the polling asymmetry", () => {
 
   test("polls until an EXPECTED Enter shows up", async () => {
     let reads = 0;
+    let t = 0;
     const c: CageProbe = {
       ...ctx(),
-      sleep: async () => {},
+      now: () => t,
+      sleep: async (ms: number) => {
+        t += ms;
+      },
       readFile: async () => {
         reads += 1;
         return reads >= 3 ? "enter\n" : null;
       },
     };
     expect(await awaitEnters(c, located, 1)).toBe(1);
+    expect(reads).toBe(3);
+    expect(t).toBe(2_500);
   });
 
   test("does NOT poll when zero is expected — it reads once and reports what it saw", async () => {
@@ -167,13 +174,16 @@ describe("awaitEnters — the polling asymmetry", () => {
 
   test("gives up at the poll deadline rather than hanging", async () => {
     let t = 0;
-    const c: CageProbe = { ...ctx(), sleep: async () => {}, readFile: async () => null };
-    expect(
-      await awaitEnters(c, located, 1, () => {
-        t += 1_000;
-        return t;
-      }),
-    ).toBe(0);
+    const c: CageProbe = {
+      ...ctx(),
+      now: () => t,
+      sleep: async (ms: number) => {
+        t += ms;
+      },
+      readFile: async () => null,
+    };
+    expect(await awaitEnters(c, located, 1)).toBe(0);
+    expect(t).toBe(10_000);
   });
 
   test("a receipt-less pane short-circuits to null even when Enters are expected", async () => {
@@ -181,27 +191,22 @@ describe("awaitEnters — the polling asymmetry", () => {
     expect(await awaitEnters(ctx(), lead, 1)).toBeNull();
   });
 
-  test("a receipt that vanishes mid-poll reports null rather than a count", async () => {
+  test("a receipt that vanishes mid-poll still resolves to zero", async () => {
     const located2 = locatePane(PLAN, TEAM, "be-2") as NonNullable<ReturnType<typeof locatePane>>;
     let reads = 0;
+    let t = 0;
     const c: CageProbe = {
       ...ctx(),
-      sleep: async () => {},
+      now: () => t,
+      sleep: async () => {
+        t += 4_000;
+      },
       readFile: async () => {
         reads += 1;
         return reads === 1 ? "" : null;
       },
     };
-    // First read yields 0 (< expected), so it polls; the pane's receipt
-    // path is still non-null so the second read yields 0 again and the
-    // loop runs to its deadline.
-    let t = 0;
-    expect(
-      await awaitEnters(c, located2, 1, () => {
-        t += 4_000;
-        return t;
-      }),
-    ).toBe(0);
+    expect(await awaitEnters(c, located2, 1)).toBe(0);
   });
 });
 

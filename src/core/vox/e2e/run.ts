@@ -557,6 +557,7 @@ function probeFor(run: ScenarioRun, drive: DriveResult | null): PostconditionCon
     plan: run.plan,
     readFile: run.ctx.deps.io.readFile,
     tmux: run.ctx.deps.io.tmux,
+    now: run.ctx.now,
     sleep: run.ctx.sleep,
     drive,
   };

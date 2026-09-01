@@ -122,6 +122,7 @@ function ctx(bridge: ToolBridge, enters: Map<string, number>): ReplayContext {
     bridge,
     sessionId: "sess",
     team: TEAM,
+    now: () => 0,
     sleep: async () => {},
     tmux: () => ({}) as unknown as TmuxNamespace,
     readFile: async (path) => {

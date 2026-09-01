@@ -71,6 +71,7 @@ export interface CageProbe {
   plan: CagePlan;
   readFile: (path: string) => Promise<string | null>;
   tmux: (socketPath: string) => TmuxNamespace;
+  now: () => number;
   sleep: (ms: number) => Promise<void>;
 }
 
@@ -149,13 +150,12 @@ export async function awaitEnters(
   ctx: CageProbe,
   located: LocatedPane,
   expected: number,
-  clock: () => number = () => Date.now(),
 ): Promise<number | null> {
   await ctx.sleep(ENTER_SETTLE_MS);
   let n = await countEnters(ctx, located);
   if (expected === 0 || n === null) return n;
-  const deadline = clock() + ENTER_POLL_MS;
-  while (n < expected && clock() < deadline) {
+  const deadline = ctx.now() + ENTER_POLL_MS;
+  while (n < expected && ctx.now() < deadline) {
     await ctx.sleep(250);
     n = await countEnters(ctx, located);
     if (n === null) return null;
