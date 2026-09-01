@@ -440,6 +440,16 @@ describe("readRrCounter + recordSpawn + rrLastSpawnMap", () => {
     expect(s.lastSpawnByLabel).toEqual({});
   });
 
+  test("readRrCounter — missing required field → zeroed state", async () => {
+    await writeFile(
+      join(scratch, ".atmux", "state", "pool-rr-counter.json"),
+      JSON.stringify({ counter: 7, lastSpawnByLabel: null }),
+    );
+    const s = await readRrCounter(scratch);
+    expect(s.counter).toBe(0);
+    expect(s.lastSpawnByLabel).toEqual({});
+  });
+
   test("readRrCounter — strips non-numeric label ordinals from hand-edited junk", async () => {
     await writeFile(
       join(scratch, ".atmux", "state", "pool-rr-counter.json"),
