@@ -9,6 +9,7 @@ import { createTmux, type TmuxNamespace } from "../../../src/abstractions/tmux.t
 import { loadInbox } from "../../../src/core/inbox.ts";
 import { addTask, loadKanban } from "../../../src/core/kanban.ts";
 import { pauseMember } from "../../../src/core/pause.ts";
+import { getAtmuxTmuxConfPath } from "../../../src/core/tmux-paths.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
 import { buildDispatchPing, dispatch, parseDispatchArgs } from "../../../src/verbs/dispatch.ts";
 
@@ -16,7 +17,6 @@ let socketDir: string;
 let socketPath: string;
 let teamDir: string;
 let atmuxDir: string;
-let priorTmux: string | undefined;
 let tmux: TmuxNamespace;
 let sessionPrefix: string;
 
@@ -27,9 +27,7 @@ beforeEach(async () => {
   atmuxDir = join(teamDir, ".atmux");
   await mkdir(atmuxDir, { recursive: true });
   sessionPrefix = `s${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
-  priorTmux = process.env.TMUX;
-  delete process.env.TMUX;
-  tmux = createTmux({ socketPath, configFile: "/dev/null" });
+  tmux = createTmux({ socketPath, configFile: getAtmuxTmuxConfPath() });
 });
 
 afterEach(async () => {
@@ -38,7 +36,6 @@ afterEach(async () => {
   } catch {
     // expected: server may already be gone
   }
-  if (priorTmux !== undefined) process.env.TMUX = priorTmux;
   await rm(socketDir, { recursive: true, force: true });
   await rm(teamDir, { recursive: true, force: true });
 });
