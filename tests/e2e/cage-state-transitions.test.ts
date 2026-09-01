@@ -1,19 +1,21 @@
-// E2E ADR-081 §D + t-74273200 → t-581ee81f: full cage-state taxonomy
-// gate across the four shipped states (down / bootstrapping / active /
-// wedged) with `atmux status` AND `atmux doctor` agreement assertions.
+// Real tmux integration ADR-081 §D + t-74273200 → t-581ee81f:
+// cage-state taxonomy coverage across the four shipped states (down /
+// bootstrapping / active / wedged) with `atmux status` AND `atmux
+// doctor` agreement assertions.
 //
-// **Stateful 1x cold-start+walk e2e — sequenced beats consume real
-// tmux + a real `node` child-process per member (chosen because the
+// **Stateful 1x cold-start+walk integration — sequenced beats consume real
+// tmux + a real `node` child-process for every non-down member (chosen because the
 // production `defaultPaneChildIsClaude` probe accepts `node` as a
 // Claude Code wrapper exec name, per `src/core/cage-state.ts:322`).
 // Don't streak; don't run-of-N.** Per CLAUDE.md testing discipline
-// §"Stateful e2e specs are not repeatable smokes."
+// §"Stateful integration specs are not repeatable smokes."
 //
 // Why `node` as the claude stand-in: real `claude` would require the
 // Anthropic API + an interactive TUI session per test, which is hostile
 // to CI. The cage-state probe ladder asks one question — *"is there a
-// process named claude/claude-*/node under the pane's shell PID?"* —
-// and `node -e 'process.stdin.resume()'` answers yes deterministically.
+// process named claude/claude-*/node in the pane PID's direct
+// children?"* — and `node -e 'process.stdin.resume()'` answers yes
+// deterministically.
 // All other ladder steps (rate-limit text, tokens-moved regex,
 // heartbeat staleness) are driven by `tmux send-keys` text + heartbeat
 // file writes, no claude binary needed.
@@ -23,8 +25,8 @@
 // manually wire the tmux session/windows because `start` would try to
 // spawn the real claude TUI):
 //
-//   - down-mbr           bare shell, no node — ps probe sees no
-//                        claude-like child → state="down".
+//   - down-mbr           portable keepalive pane, no node — ps probe
+//                        sees no claude-like child → state="down".
 //   - bootstrapping-mbr  pane shows welcome banner; node child alive,
 //                        but tokens never moved → state="bootstrapping".
 //                        Doctor row gated by STARVING_THRESHOLD_S (60s
@@ -67,7 +69,7 @@ import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createTmux, type TmuxNamespace } from "../../src/abstractions/tmux.ts";
+import type { TmuxNamespace } from "../../src/abstractions/tmux.ts";
 import {
   probeCageState,
   STARVING_THRESHOLD_S,
@@ -77,6 +79,11 @@ import { writeHeartbeat } from "../../src/core/heartbeat.ts";
 import type { Team } from "../../src/schema/team.ts";
 import { checkMemberCageStates, doctor as doctorVerb } from "../../src/verbs/doctor.ts";
 import { status as statusVerb } from "../../src/verbs/status.ts";
+import {
+  createCanonicalAtmuxTmux,
+  PORTABLE_KEEPALIVE_COMMAND,
+  setCanonicalAtmuxTmuxHome,
+} from "../helpers/tmux.ts";
 
 // ---------- Env probes (module-load time) ----------
 
@@ -103,7 +110,7 @@ const SKIP_REASON: string = !HAS_TMUX
 
 if (SKIP_REASON !== "") {
   // eslint-disable-next-line no-console
-  console.warn(`[cage-state-transitions.e2e] SKIPPED — ${SKIP_REASON}`);
+  console.warn(`[cage-state-transitions.integration] SKIPPED — ${SKIP_REASON}`);
 }
 
 // Beat assertions wait on tmux + node startup; 30s headroom matches
@@ -117,6 +124,8 @@ let teamDir: string;
 let atmuxDir: string;
 let socketDir: string;
 let socketPath: string;
+let homeDir: string;
+let restoreHome: (() => void) | undefined;
 let teamName: string;
 let sessionName: string;
 let tmux: TmuxNamespace;
@@ -145,6 +154,8 @@ beforeAll(async () => {
   sessionName = teamName; // bare per e-419553c6
 
   teamDir = await mkdtemp(join(tmpdir(), "atmux-cagestate-"));
+  homeDir = await mkdtemp(join(tmpdir(), "atmux-cagestate-home-"));
+  restoreHome = setCanonicalAtmuxTmuxHome(homeDir);
   atmuxDir = join(teamDir, ".atmux");
   await mkdir(atmuxDir, { recursive: true });
   await mkdir(join(atmuxDir, "heartbeats"), { recursive: true });
@@ -187,17 +198,20 @@ beforeAll(async () => {
   delete process.env.ATMUX_SESSION;
   delete process.env.TMUX;
 
-  tmux = createTmux({ socketPath });
+  tmux = createCanonicalAtmuxTmux({ socketPath });
 
   // Create the tmux session + per-member shell window. We skip
   // `atmux start` because it would try to spawn the real claude TUI;
-  // bare-shell windows preserve the probe-friendly state (pane.pid =
-  // shell pid; child processes attach via send-keys).
+  // the first member gets a portable keepalive pane so it stays
+  // long-lived and agentless (no claude/node child), while the other
+  // members remain interactive shells for the state text + node child
+  // setup below.
   const firstMember = MEMBERS[0];
   if (firstMember === undefined) throw new Error("MEMBERS empty");
   await tmux.session.newSession({
     name: sessionName,
     windowName: `${firstMember.emoji}${firstMember.name}`,
+    shellCommand: PORTABLE_KEEPALIVE_COMMAND,
     detached: true,
   });
   for (let i = 1; i < MEMBERS.length; i += 1) {
@@ -219,8 +233,8 @@ beforeAll(async () => {
   // call keeps node in the foreground so it stays attached to the
   // shell as a child for the rest of the test.
 
-  // (1) down-mbr — leave the pane as bare shell. ps probe will find no
-  // claude/node/claude-* child → state=down.
+  // (1) down-mbr — leave the keepalive pane agentless. ps probe will
+  // find no claude/node/claude-* child → state=down.
   // (no-op)
 
   // (2) bootstrap-mbr — welcome banner + node, no tokens.
@@ -344,11 +358,17 @@ afterAll(async () => {
   } catch {
     // expected.
   }
+  try {
+    restoreHome?.();
+  } catch {
+    // expected.
+  }
   for (const [k, v] of Object.entries(priorEnv)) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
   }
   await rm(teamDir, { recursive: true, force: true });
+  await rm(homeDir, { recursive: true, force: true });
   await rm(socketDir, { recursive: true, force: true });
 });
 
@@ -437,7 +457,7 @@ async function readDoctorText(): Promise<string> {
 // ---------- Beats ----------
 
 describe.skipIf(SKIP_REASON !== "")(
-  "cage-state transitions — all 4 states + status/doctor agreement (t-581ee81f)",
+  "cage-state transitions — real tmux integration + status/doctor agreement (t-581ee81f)",
   () => {
     test("Beat 1 — down: pane without claude-like child → status='down' + doctor row 'pane down'", async () => {
       const json = await readStatusJson();
