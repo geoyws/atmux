@@ -20,6 +20,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { SpawnInheritStdioOpts } from "../../../src/abstractions/spawn.ts";
 import { spawn } from "../../../src/abstractions/spawn.ts";
 import {
   clientRowToObject,
@@ -569,6 +570,44 @@ describe("client operations", () => {
     const name = `${sessionPrefix}_atc`;
     await tmux.session.newSession({ name });
     await expect(tmux.client.attachSession(name)).rejects.toBeInstanceOf(TmuxError);
+  });
+
+  test("attachSessionInheritStdio wraps a nonzero inherited-stdio exit in TmuxError", async () => {
+    const name = `${sessionPrefix}_atc_is`;
+    const calls: Array<SpawnInheritStdioOpts> = [];
+    const localTmux = createCanonicalAtmuxTmux({
+      socketPath,
+      hooks: {
+        spawnInheritStdio: async (opts) => {
+          calls.push({ ...opts });
+          return 17;
+        },
+      },
+    });
+
+    const error = await localTmux.client.attachSessionInheritStdio(name).catch((caught) => caught);
+    expect(error).toBeInstanceOf(TmuxError);
+    expect(calls).toHaveLength(1);
+
+    const call = calls[0];
+    if (!call) {
+      throw new Error("expected one spawnInheritStdio call");
+    }
+    expect(call).toEqual({
+      cmd: expect.stringMatching(/(?:^|\/)tmux$/),
+      argv: ["-S", socketPath, "-f", CANONICAL_ATMUX_TMUX_CONF_PATH, "attach-session", "-t", name],
+      unsetEnv: ["NO_COLOR"],
+    });
+    expect(call.env).toBeUndefined();
+    expect(call.cwd).toBeUndefined();
+    const tmuxError = error as TmuxError;
+    expect(tmuxError.context).toEqual({
+      argv: ["-S", socketPath, "-f", CANONICAL_ATMUX_TMUX_CONF_PATH, "attach-session", "-t", name],
+      exitCode: 17,
+      stderr: "",
+      stdout: "",
+    });
+    expect(tmuxError.message).toBe("tmux -S failed (exit 17): ");
   });
 });
 

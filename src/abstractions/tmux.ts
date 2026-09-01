@@ -347,6 +347,10 @@ export type TmuxConfig = SocketConfig & {
    *  server-starting paths use the canonical `getAtmuxTmuxConfPath()` helper
    *  path. */
   readonly configFile?: string;
+  /** Test seam for `attachSessionInheritStdio`; defaults to the module import. */
+  readonly hooks?: {
+    readonly spawnInheritStdio?: typeof spawnInheritStdio;
+  };
 };
 
 /**
@@ -528,6 +532,7 @@ export function createTmux(config: TmuxConfig): TmuxNamespace {
     }
     return flags;
   })();
+  const spawnInheritStdioImpl = config.hooks?.spawnInheritStdio ?? spawnInheritStdio;
 
   async function tmuxRun(subArgv: ReadonlyArray<string>): Promise<RawResult> {
     return tmuxRunRaw(subArgv, 0);
@@ -874,7 +879,7 @@ export function createTmux(config: TmuxConfig): TmuxNamespace {
        *  shapes match the rest of the namespace. */
       async attachSessionInheritStdio(name) {
         const argv = [...socketArgs, "attach-session", "-t", name];
-        const exitCode = await spawnInheritStdio({
+        const exitCode = await spawnInheritStdioImpl({
           cmd: resolveTmuxBin(),
           argv,
           // ADR-281 — `attach-session` against a dead socket STARTS a
