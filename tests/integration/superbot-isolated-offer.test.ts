@@ -13,6 +13,15 @@ import { superbotTick } from "../../src/verbs/superbot.ts";
 
 const roots: string[] = [];
 
+function resolveInstalledKanbanBinary(): string | null {
+  const explicit = process.env.KANBAN_BIN?.trim();
+  if (explicit) return explicit;
+  return Bun.which("kanban");
+}
+
+const installedKanbanBinary = resolveInstalledKanbanBinary();
+const safeKanbanBinary = installedKanbanBinary ?? "kanban";
+
 afterEach(async () => {
   while (roots.length > 0) {
     const root = roots.pop();
@@ -26,7 +35,7 @@ async function runKb(
   dataHome: string,
 ): Promise<SpawnResult> {
   return await spawn({
-    cmd: "kb",
+    cmd: safeKanbanBinary,
     argv,
     cwd,
     env: { XDG_DATA_HOME: dataHome },
@@ -49,7 +58,9 @@ async function waitFor(
   throw new Error(`isolated pane never displayed ${JSON.stringify(pattern)}: ${capture}`);
 }
 
-describe("_superbot isolated live-offer simulation", () => {
+describe.skipIf(installedKanbanBinary === null)(
+  "_superbot isolated live-offer simulation (requires a nonblank KANBAN_BIN or kanban on PATH)",
+  () => {
   test("hold and manual typing defer; one offer uses the exact claim command", async () => {
     const root = await mkdtemp(join(tmpdir(), "atmux-superbot-offer-"));
     roots.push(root);
@@ -116,6 +127,7 @@ describe("_superbot isolated live-offer simulation", () => {
         async (opts: SpawnOpts): Promise<SpawnResult> =>
           await spawn({
             ...opts,
+            cmd: safeKanbanBinary,
             cwd: workspace,
             env: { ...opts.env, XDG_DATA_HOME: dataHome },
           }),
@@ -234,4 +246,5 @@ describe("_superbot isolated live-offer simulation", () => {
       } catch {}
     }
   });
-});
+  },
+);
