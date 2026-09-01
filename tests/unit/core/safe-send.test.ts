@@ -1270,4 +1270,36 @@ describe("withPaneSendLock", () => {
 
     await holderDone;
   });
+
+  test("LockTimeoutError fail-open still proceeds when log is omitted", async () => {
+    const lockDir = mkdtempSync(join(tmpdir(), "pane-lock-test-"));
+    const target = "atmux:lead";
+
+    const holderDone = (async () => {
+      await withPaneSendLock(
+        target,
+        async () => {
+          await new Promise((r) => setTimeout(r, 500));
+        },
+        { lockDir },
+      );
+    })();
+
+    await new Promise((r) => setTimeout(r, 20));
+
+    let secondRan = false;
+    const out = await withPaneSendLock(
+      target,
+      () => {
+        secondRan = true;
+        return "fail-open-payload";
+      },
+      { lockDir, timeoutMs: 100 },
+    );
+
+    expect(out).toBe("fail-open-payload");
+    expect(secondRan).toBe(true);
+
+    await holderDone;
+  });
 });
