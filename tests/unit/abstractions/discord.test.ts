@@ -19,6 +19,7 @@ import {
   renderAccountSwapPassComplete,
   renderAccountSwapStart,
   renderAccountSwapSuccess,
+  renderCockpitRotateRefused,
   renderEpicTestFail,
   renderEpicTestPass,
   renderEternalImprovementDone,
@@ -165,6 +166,41 @@ describe("validation — bullet shape", () => {
     }
     expect(caught?.message).toContain("missing allowed emoji prefix");
     expect(caught?.message).toContain("🌎");
+  });
+
+  test("whatsNew empty string throws", async () => {
+    let caught: DiscordWebhookError | null = null;
+    try {
+      await send({
+        template: "hygiene-blocker",
+        team: "atmux",
+        category: "🔧",
+        verdict: "🔴 **Stalled** — `t-x` wedged 1m, lane mismatch",
+        whatsNew: [""],
+        whenMs: FIXED_TS,
+      });
+    } catch (e) {
+      if (e instanceof DiscordWebhookError) caught = e;
+    }
+    expect(caught?.message).toContain("whatsNew[0] is empty");
+  });
+
+  test("whatsNew over 80 graphemes throws", async () => {
+    let caught: DiscordWebhookError | null = null;
+    try {
+      await send({
+        template: "hygiene-blocker",
+        team: "atmux",
+        category: "🔧",
+        verdict: "🔴 **Stalled** — `t-x` wedged 1m, lane mismatch",
+        whatsNew: ["a".repeat(81)],
+        whenMs: FIXED_TS,
+      });
+    } catch (e) {
+      if (e instanceof DiscordWebhookError) caught = e;
+    }
+    expect(caught?.message).toContain("whatsNew[0] too long");
+    expect(caught?.message).toContain("max 80");
   });
 
   test("empty-string bullet throws", async () => {
@@ -2602,6 +2638,22 @@ describe("renderHygieneBlocker — R10 send() round-trip (recorder path)", () =>
     // surface ("owner lane ≠ task lane") which is the lane-mismatch
     // class's verdict-line root-cause clause.
     expect(log).toContain("owner lane");
+  });
+
+  test("cockpit rotate refusal with force records the defensive warning bullet", async () => {
+    const opts = renderCockpitRotateRefused({
+      team: "atmux",
+      sessionName: "driver",
+      gate: "gate-1-user-not-typing",
+      reason: "pane still active",
+      force: true,
+      whenMs: FIXED_TS,
+    });
+    await send(opts);
+    const log = await readFile(recorderPath, "utf8");
+    expect(log).toContain("[cockpit-rotate-refused]");
+    expect(log).toContain("unexpected: --force was passed but gate fired anyway");
+    expect(log).toContain("gate-1-user-not-typing");
   });
 });
 
