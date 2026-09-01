@@ -123,6 +123,7 @@ describe.skipIf(
           })({
             ...opts,
             cmd: safeKanbanBinary,
+            argv: opts.argv ?? [],
             cwd: opts.cwd ?? workspace,
             env: { ...opts.env, XDG_DATA_HOME: dataHome },
           }),

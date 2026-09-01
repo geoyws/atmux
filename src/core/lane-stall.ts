@@ -220,7 +220,9 @@ export function decideLaneStall(opts: DecideLaneStallOpts): LaneStallDecision[] 
     }
 
     // Fire: pick most-recently-active member; tiebreak by roster order.
-    const target = pickTargetMember(laneMembers as NonEmptyLaneStallMemberList);
+    const firstLaneMember = laneMembers[0];
+    if (firstLaneMember === undefined) continue;
+    const target = pickTargetMember([firstLaneMember, ...laneMembers.slice(1)]);
     out.push({
       kind: "fire",
       taskId: t.id,

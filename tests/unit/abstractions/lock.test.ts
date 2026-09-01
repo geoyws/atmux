@@ -417,9 +417,8 @@ describe("ADR-057 §D3a — acquireWithTTL crashed-PID recovery", () => {
         await h.release();
       `,
     ], { stdout: "pipe" });
-    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+    const reader = child.stdout.getReader();
     try {
-      reader = child.stdout?.getReader() ?? null;
       const decoder = new TextDecoder();
       let readyText = "";
       while (!readyText.includes("ready\n")) {
@@ -456,7 +455,7 @@ describe("ADR-057 §D3a — acquireWithTTL crashed-PID recovery", () => {
       expect(text).toContain("prev_pid=99999999");
       expect(text).toContain("reason=ttl-orphan");
     } finally {
-      await reader?.cancel().catch(() => {});
+      await reader.cancel().catch(() => {});
       await child.exited;
     }
   });

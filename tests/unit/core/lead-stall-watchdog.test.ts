@@ -551,8 +551,8 @@ describe("createLeadStallWatchdogHandler — default seams", () => {
             calls.push({
               command,
               args: [...args],
-              stdio: options.stdio,
-              env: options.env,
+              ...(options.stdio === undefined ? {} : { stdio: options.stdio }),
+              ...(options.env === undefined ? {} : { env: options.env }),
             });
             const child = {
               on(

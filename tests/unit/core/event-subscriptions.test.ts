@@ -8,6 +8,7 @@ import {
   EVENT_SUBSCRIPTIONS,
   registerEventSubscription,
 } from "../../../src/core/event-subscriptions.ts";
+import type { EventPayload } from "../../../src/schema/events.ts";
 import type { KanbanStory, KanbanTask } from "../../../src/schema/kanban.ts";
 
 let atmuxDir: string;
@@ -159,10 +160,10 @@ describe("registry-mutating event-subscriptions coverage", () => {
       sub.consumerId.startsWith("atmux:lead-stall-watchdog:"),
     );
     expect(leadSubs).toHaveLength(3);
-    const leadEvent = {
+    const leadEventBase = {
       eventId: "evt-2",
       emittedAtSec: 1_780_000_000,
-      schemaVersion: 1,
+      schemaVersion: 1 as const,
       team: "demo",
     };
     const expectedLeadMessage =
@@ -179,7 +180,33 @@ describe("registry-mutating event-subscriptions coverage", () => {
       expect(sub).toBeDefined();
       currentNowSec =
         topic === "story.ready" ? 1_780_000_000 : topic === "story.unclaimed" ? 1_780_000_300 : 1_780_000_600;
-      await sub!.handler({ ...leadEvent, topic });
+      const event: EventPayload =
+        topic === "story.ready"
+          ? {
+              ...leadEventBase,
+              topic,
+              epicId: "e-1",
+              storyId: "s-1",
+              lane: "be",
+              body: "wrapper coverage story",
+            }
+          : topic === "story.unclaimed"
+            ? {
+                ...leadEventBase,
+                topic,
+                epicId: "e-1",
+                storyId: "s-1",
+                lane: "be",
+                readyForSec: 300,
+                capturedAtSec: currentNowSec,
+              }
+            : {
+                ...leadEventBase,
+                topic,
+                taskId: "t-1",
+                lane: "be",
+              };
+      await sub!.handler(event);
       expectedLeadCalls += 1;
       expect(leadCalls).toHaveLength(expectedLeadCalls);
     }

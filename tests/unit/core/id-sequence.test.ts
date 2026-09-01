@@ -73,7 +73,7 @@ describe("defensive allocation paths", () => {
       prepare: () => ({
         get: () => undefined,
       }),
-    } as Database;
+    } as unknown as Database;
 
     try {
       nextId(fakeDb, "t");
@@ -101,7 +101,7 @@ describe("defensive allocation paths", () => {
       prepare: () => ({
         get: () => undefined,
       }),
-    } as Database;
+    } as unknown as Database;
 
     try {
       assignSequenceToLegacyId(fakeDb, "t", "t-3b017960");
@@ -119,7 +119,7 @@ describe("defensive allocation paths", () => {
       prepare: () => ({
         get: () => ({ last_id: 7 }),
       }),
-    } as Database;
+    } as unknown as Database;
 
     expect(assignSequenceToLegacyId(fakeDb, "t", "t-3b017960")).toEqual({
       compoundId: "t-7-3b017960",

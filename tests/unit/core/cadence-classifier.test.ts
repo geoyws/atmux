@@ -365,7 +365,7 @@ describe("defaultGitLog — injected spawn seam", () => {
     }> = [];
     const out = await defaultGitLog("wt", 123, "fe-1", {
       spawn: async (opts) => {
-        calls.push(opts);
+        calls.push({ ...opts, argv: opts.argv ?? [] });
         return spawnResult("  abcdef0 100  \n\n  bcdef01 200\t\n   \n");
       },
     });

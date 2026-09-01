@@ -288,10 +288,10 @@ describe("softStop", () => {
     const setTimeoutCalls: number[] = [];
     const originalSetTimeout = globalThis.setTimeout;
     try {
-      globalThis.setTimeout = ((fn: TimerHandler, ms?: number, ...args: never[]) => {
+      globalThis.setTimeout = ((fn: (...args: never[]) => void, ms?: number, ...args: never[]) => {
         setTimeoutCalls.push(ms ?? NaN);
         return originalSetTimeout(fn, 0, ...(args as []));
-      }) as typeof globalThis.setTimeout;
+      }) as unknown as typeof globalThis.setTimeout;
 
       await softStop({
         team: makeTeam({ softStopGraceSeconds: 3 } as Partial<Team>),
