@@ -86,6 +86,15 @@ export interface SendArgs {
   kind?: string;
 }
 
+/** Narrow seam for the single-member assertion in {@link send}. */
+export function requireSingleMemberName(parsed: Pick<SendArgs, "broadcast" | "member">): string {
+  const memberName = parsed.member;
+  if (memberName === undefined) {
+    throw new UsageError({ what: "send: <member> argument is required" });
+  }
+  return memberName;
+}
+
 const USAGE_HINT_SINGLE =
   "atmux send [--no-submit] [--no-verify] <member> <msg...>\n" +
   "       atmux send --submit-only <member>   # ADR-273: Enter on existing composer text, paste nothing";
@@ -389,11 +398,7 @@ export async function send(argv: ReadonlyArray<string>): Promise<number> {
 
   // Single-member path. parseSendArgs guarantees `member` is set when
   // `broadcast === false`.
-  const memberName = parsed.member;
-  if (memberName === undefined) {
-    // Defensive — parseSendArgs should make this unreachable.
-    throw new UsageError({ what: "send: <member> argument is required" });
-  }
+  const memberName = requireSingleMemberName(parsed);
   const memberEntry = team.members.find((m) => m.name === memberName);
   if (memberEntry === undefined) {
     throw new ConfigError({

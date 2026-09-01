@@ -29,6 +29,7 @@ import { ConfigError, UsageError } from "../../../src/errors.ts";
 import {
   buildMemberTarget,
   parseSendArgs,
+  requireSingleMemberName,
   resolveMemberTarget,
   send,
 } from "../../../src/verbs/send.ts";
@@ -200,6 +201,16 @@ describe("parseSendArgs — flag parsing", () => {
     expect(a.from).toBe("x");
     expect(a.kind).toBe("info");
     expect(a.member).toBe("alpha");
+  });
+});
+
+describe("requireSingleMemberName", () => {
+  test("returns the member name for single-member sends", () => {
+    expect(requireSingleMemberName({ broadcast: false, member: "alpha" })).toBe("alpha");
+  });
+
+  test("throws UsageError when the parsed member is missing", () => {
+    expect(() => requireSingleMemberName({ broadcast: false })).toThrow(UsageError);
   });
 });
 
