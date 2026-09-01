@@ -23,7 +23,6 @@ import { join } from "node:path";
 import { spawn } from "../../../src/abstractions/spawn.ts";
 import {
   clientRowToObject,
-  createTmux,
   parseSplitWindowIdsOrThrow,
   parseTabular,
   parseWindowIndexOrThrow,
@@ -33,6 +32,7 @@ import {
   type TmuxNamespace,
 } from "../../../src/abstractions/tmux.ts";
 import { TmuxError } from "../../../src/errors.ts";
+import { CANONICAL_ATMUX_TMUX_CONF_PATH, createCanonicalAtmuxTmux } from "../../helpers/tmux.ts";
 
 let socketDir: string;
 let socketPath: string;
@@ -50,11 +50,7 @@ beforeEach(async () => {
   // the `-S <socketPath>` baked into every tmux argv by createTmux.
   priorTmux = process.env.TMUX;
   delete process.env.TMUX;
-  // configFile: "/dev/null" pins tmux to stock defaults (base-index 0,
-  // pane-base-index 0, no key-bindings) so tests don't depend on the
-  // operator's ~/.tmux.conf — same physical-impossibility argument as the
-  // socket flag, applied to config state.
-  tmux = createTmux({ socketPath, configFile: "/dev/null" });
+  tmux = createCanonicalAtmuxTmux({ socketPath });
 });
 
 afterEach(async () => {
@@ -167,7 +163,16 @@ describe("createTmux socket pinning", () => {
     try {
       await spawn({
         cmd: "tmux",
-        argv: ["-S", otherPath, "-f", "/dev/null", "new-session", "-d", "-s", "isolated"],
+        argv: [
+          "-S",
+          otherPath,
+          "-f",
+          CANONICAL_ATMUX_TMUX_CONF_PATH,
+          "new-session",
+          "-d",
+          "-s",
+          "isolated",
+        ],
         expectExitCode: 0,
       });
       // Our abstraction is pinned to socketPath, so it sees no server.
@@ -176,7 +181,7 @@ describe("createTmux socket pinning", () => {
       // (which would only see its own socket anyway).
       await spawn({
         cmd: "tmux",
-        argv: ["-S", otherPath, "-f", "/dev/null", "kill-server"],
+        argv: ["-S", otherPath, "-f", CANONICAL_ATMUX_TMUX_CONF_PATH, "kill-server"],
         expectExitCode: "any",
       });
     } finally {
@@ -190,9 +195,8 @@ describe("createTmux socket pinning", () => {
     const priorTmpdir = process.env.TMUX_TMPDIR;
     process.env.TMUX_TMPDIR = socketDir;
     try {
-      const named = createTmux({
+      const named = createCanonicalAtmuxTmux({
         socket: "atmux-port-test-named",
-        configFile: "/dev/null",
       });
       const name = `${sessionPrefix}_named`;
       await named.session.newSession({ name });
@@ -360,14 +364,14 @@ describe("pane operations", () => {
         kind: "member",
         member: "test-member",
         team: "test-team",
-        target: { sessionName: name, windowIndex: 0, paneIndex: 0 },
+        target: { sessionName: name, windowIndex: 1, paneIndex: 0 },
       },
       keys: "hello-from-test",
     });
     // Allow tmux/cat to echo back.
     await new Promise((r) => setTimeout(r, 100));
     const captured = await tmux.pane.capturePane({
-      target: { sessionName: name, windowIndex: 0, paneIndex: 0 },
+      target: { sessionName: name, windowIndex: 1, paneIndex: 0 },
       start: -10,
     });
     expect(captured).toContain("hello-from-test");
@@ -381,7 +385,7 @@ describe("pane operations", () => {
         kind: "member",
         member: "test-member",
         team: "test-team",
-        target: { sessionName: name, windowIndex: 0, paneIndex: 0 },
+        target: { sessionName: name, windowIndex: 1, paneIndex: 0 },
       },
       keys: "C-c-literal-text",
       literal: true,
@@ -389,7 +393,7 @@ describe("pane operations", () => {
     });
     await new Promise((r) => setTimeout(r, 100));
     const captured = await tmux.pane.capturePane({
-      target: { sessionName: name, windowIndex: 0, paneIndex: 0 },
+      target: { sessionName: name, windowIndex: 1, paneIndex: 0 },
     });
     expect(captured).toContain("C-c-literal-text");
   });
@@ -397,7 +401,7 @@ describe("pane operations", () => {
   test("listPanes returns the single default pane", async () => {
     const name = `${sessionPrefix}_lp`;
     await tmux.session.newSession({ name });
-    const panes = await tmux.pane.listPanes(`${name}:0`);
+    const panes = await tmux.pane.listPanes(`${name}:1`);
     expect(panes.length).toBeGreaterThanOrEqual(1);
     expect(panes[0]?.width).toBeGreaterThan(0);
     expect(panes[0]?.height).toBeGreaterThan(0);
@@ -411,7 +415,7 @@ describe("pane operations", () => {
     const name = `${sessionPrefix}_dm`;
     await tmux.session.newSession({ name });
     const out = await tmux.pane.displayMessage({
-      target: `${name}:0`,
+      target: `${name}:1`,
       format: "#{session_name}",
     });
     expect(out).toBe(name);
@@ -421,7 +425,7 @@ describe("pane operations", () => {
     const name = `${sessionPrefix}_dm2`;
     await tmux.session.newSession({ name });
     const out = await tmux.pane.displayMessage({
-      target: `${name}:0`,
+      target: `${name}:1`,
       format: "ignored",
       print: false,
     });
@@ -432,12 +436,12 @@ describe("pane operations", () => {
     const name = `${sessionPrefix}_sw_h`;
     await tmux.session.newSession({ name });
     const pane = await tmux.pane.splitWindow({
-      target: { sessionName: name, windowIndex: 0 },
+      target: { sessionName: name, windowIndex: 1 },
     });
     expect(pane.sessionName).toBe(name);
-    expect(pane.windowIndex).toBe(0);
+    expect(pane.windowIndex).toBe(1);
     expect(pane.paneIndex).toBeGreaterThan(0);
-    const panes = await tmux.pane.listPanes(`${name}:0`);
+    const panes = await tmux.pane.listPanes(`${name}:1`);
     expect(panes.length).toBe(2);
   });
 
@@ -445,19 +449,19 @@ describe("pane operations", () => {
     const name = `${sessionPrefix}_sw_v`;
     await tmux.session.newSession({ name });
     const pane = await tmux.pane.splitWindow({
-      target: { sessionName: name, windowIndex: 0 },
+      target: { sessionName: name, windowIndex: 1 },
       vertical: true,
       cwd: "/tmp",
       shellCommand: "sleep 30",
     });
     expect(pane.sessionName).toBe(name);
-    expect(pane.windowIndex).toBe(0);
+    expect(pane.windowIndex).toBe(1);
   });
 
   test("splitWindow accepts a string target", async () => {
     const name = `${sessionPrefix}_sw_str`;
     await tmux.session.newSession({ name });
-    const pane = await tmux.pane.splitWindow({ target: `${name}:0` });
+    const pane = await tmux.pane.splitWindow({ target: `${name}:1` });
     // sessionName is parsed from the leading segment of the string target.
     expect(pane.sessionName).toBe(name);
   });
@@ -492,13 +496,13 @@ describe("buffer operations", () => {
         kind: "member",
         member: "test-member",
         team: "test-team",
-        target: { sessionName: name, windowIndex: 0, paneIndex: 0 },
+        target: { sessionName: name, windowIndex: 1, paneIndex: 0 },
       },
       deleteAfter: true,
     });
     await new Promise((r) => setTimeout(r, 100));
     const captured = await tmux.pane.capturePane({
-      target: { sessionName: name, windowIndex: 0, paneIndex: 0 },
+      target: { sessionName: name, windowIndex: 1, paneIndex: 0 },
     });
     expect(captured).toContain("loaded-content");
     // Buffer was deleted; deleteBuffer again should fail.
@@ -521,12 +525,12 @@ describe("buffer operations", () => {
         kind: "member",
         member: "test-member",
         team: "test-team",
-        target: { sessionName: name, windowIndex: 0, paneIndex: 0 },
+        target: { sessionName: name, windowIndex: 1, paneIndex: 0 },
       },
     });
     await new Promise((r) => setTimeout(r, 100));
     const captured = await tmux.pane.capturePane({
-      target: { sessionName: name, windowIndex: 0, paneIndex: 0 },
+      target: { sessionName: name, windowIndex: 1, paneIndex: 0 },
     });
     expect(captured).toContain("default-buf-data");
   });
@@ -578,9 +582,9 @@ describe("option operations", () => {
       name: "remain-on-exit",
       value: "on",
       window: true,
-      target: `${name}:0`,
+      target: `${name}:1`,
     });
-    const opts = await tmux.option.showOptions({ window: true, target: `${name}:0` });
+    const opts = await tmux.option.showOptions({ window: true, target: `${name}:1` });
     expect(opts["remain-on-exit"]).toBe("on");
   });
 
