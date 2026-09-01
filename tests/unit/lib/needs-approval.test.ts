@@ -18,6 +18,9 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { closeDatabase, openDatabase } from "../../../src/abstractions/sqlite.ts";
+import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
+import { KanbanRepo } from "../../../src/core/repositories/kanban-repo.ts";
 import {
   defaultClock,
   defaultScanFs,
@@ -31,9 +34,6 @@ import {
   scanNeedsApproval,
   scanProposedAdrs,
 } from "../../../src/lib/needs-approval.ts";
-import { closeDatabase, openDatabase } from "../../../src/abstractions/sqlite.ts";
-import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
-import { KanbanRepo } from "../../../src/core/repositories/kanban-repo.ts";
 import type { KanbanTask } from "../../../src/schema/kanban.ts";
 
 // ---------- Test helpers ----------
@@ -130,33 +130,31 @@ describe("scanProposedAdrs", () => {
     expect(rows).toEqual([]);
   });
 
-  test("scans BOTH docs/adr and docs/adr-bun", async () => {
+  test("scans only the canonical docs/adr tree", async () => {
+    const retiredAdrDir = join(ROOT, "docs", "adr-bun");
     const fs = fakeFs({
       nowSec: NOW,
       dirs: {
         [`${ROOT}/docs/adr`]: ["001-main.md"],
-        [`${ROOT}/docs/adr-bun`]: ["001-bun.md"],
+        [retiredAdrDir]: ["001-bun.md"],
       },
       files: {
         [`${ROOT}/docs/adr/001-main.md`]: "# Main\n\n**Status**: proposed\n",
-        [`${ROOT}/docs/adr-bun/001-bun.md`]: "# Bun\n\n**Status**: proposed\n",
+        [`${retiredAdrDir}/001-bun.md`]: "# Bun\n\n**Status**: proposed\n",
       },
     });
     const rows = await scanProposedAdrs(ROOT, fs, () => NOW);
-    expect(rows.map((r) => r.id).sort()).toEqual(["001-bun", "001-main"]);
+    expect(rows.map((r) => r.id)).toEqual(["001-main"]);
   });
 
-  test("missing adr-bun dir doesn't break the scan", async () => {
-    const adrDir = `${ROOT}/docs/adr`;
+  test("missing canonical ADR directory returns an empty scan", async () => {
     const fs = fakeFs({
       nowSec: NOW,
-      dirs: { [adrDir]: ["001-x.md"] }, // no adr-bun entry — listDir → null
-      files: {
-        [`${adrDir}/001-x.md`]: "# X\n\n**Status**: proposed\n",
-      },
+      dirs: {},
+      files: {},
     });
     const rows = await scanProposedAdrs(ROOT, fs, () => NOW);
-    expect(rows.map((r) => r.id)).toEqual(["001-x"]);
+    expect(rows).toEqual([]);
   });
 
   test("ageMin computed from mtime when present", async () => {

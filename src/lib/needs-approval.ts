@@ -1,5 +1,5 @@
 // ADR-085 §Scan API — surface paperwork debt across three buckets:
-//   A. Proposed ADRs (docs/adr/*.md + docs/adr-bun/*.md with
+//   A. Proposed ADRs (docs/adr/*.md with
 //      `^**Status**: (proposed|draft|wip|pending)` and no
 //      `(deferred: <reason>)` suffix).
 //   B. Untriaged driver-inbox asks (heading w/o ✅/📤/⏳/❌ marker in
@@ -146,7 +146,7 @@ export async function scanNeedsApproval(deps: ScanDeps = {}): Promise<NeedsAppro
 // ---------- Bucket A: ADRs ----------
 
 /**
- * Glob `docs/adr/*.md` + `docs/adr-bun/*.md`, read each, surface the ones
+ * Read `docs/adr/*.md`, surface the ones
  * with `^**Status**: (proposed|draft|wip|pending)` AND no
  * `(deferred: <reason>)` suffix.
  *
@@ -160,7 +160,7 @@ export async function scanProposedAdrs(
   fs: ScanFs,
   clock: () => number,
 ): Promise<NeedsApprovalEntry[]> {
-  const dirs = [join(projectRoot, "docs", "adr"), join(projectRoot, "docs", "adr-bun")];
+  const dirs = [join(projectRoot, "docs", "adr")];
   const out: NeedsApprovalEntry[] = [];
   const now = clock();
 

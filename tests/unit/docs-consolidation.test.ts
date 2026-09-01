@@ -27,8 +27,27 @@ const REPO_ROOT = join(import.meta.dir, "..", "..");
  *  reserved-but-not-yet-authored slots, etc). Extend as needed; reviewer
  *  blocks unexplained additions. */
 const ADR_GAP_WHITELIST = new Set<string>([
-  // 087-092 = team-of-teams reservation; some may not be authored yet.
-  // Comment out / add IDs here as the gap inventory shifts.
+  // Historical parent-repo or retired pre-consolidation references.
+  "046",
+  "048",
+  "049",
+  "058",
+  "064",
+  "066",
+  "069",
+  // Shipped decisions that were intentionally never backfilled as files.
+  "053",
+  "054",
+  "055",
+  "056",
+  "060",
+  "062",
+  "068",
+  "076",
+  // Reserved, re-slotted, or withdrawn gaps recorded in the ADR index.
+  "156",
+  "270",
+  "283",
 ]);
 
 /** Build the set of existing ADR NNN tokens from docs/adr/*.md filenames. */
@@ -69,22 +88,11 @@ describe("docs-consolidation (ADR-093) smoke", () => {
 
   test("(3) every ADR-NNN ref in tracked files resolves to a docs/adr/<NNN>-*.md file", () => {
     const ids = existingAdrIds();
-    // Find every ADR-NNN token across the repo (excluding noisy paths).
-    const res = spawnSync(
-      "rg",
-      [
-        "--no-line-number",
-        "--no-heading",
-        "--no-filename",
-        "-o",
-        "ADR-\\d{3}",
-        "--glob=!.git/**",
-        "--glob=!node_modules/**",
-        "--glob=!docs/adr-bun/**",
-        "--glob=!.atmux/**",
-      ],
-      { cwd: REPO_ROOT, encoding: "utf-8" },
-    );
+    // Find every ADR-NNN token in tracked, non-binary files.
+    const res = spawnSync("git", ["grep", "-I", "-h", "-o", "-E", "ADR-[0-9]{3}", "--", "."], {
+      cwd: REPO_ROOT,
+      encoding: "utf-8",
+    });
     expect(res.status).toBeLessThan(2);
     const refs = new Set<string>(
       res.stdout

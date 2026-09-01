@@ -16,7 +16,7 @@ When the scan finds anything actionable, it:
 
 | Bucket | Source | Stale threshold | What it catches |
 |---|---|---|---|
-| **A — Proposed ADRs** | `docs/adr/*.md` (+ `docs/adr-bun/*.md` if present) matching `^**Status**:\s*(proposed\|draft\|wip\|pending)` | Always stale (no time-based gate) | ADRs that shipped impl but never had their status flipped to `accepted` |
+| **A — Proposed ADRs** | `docs/adr/*.md` matching `^**Status**:\s*(proposed\|draft\|wip\|pending)` | Always stale (no time-based gate) | ADRs that shipped impl but never had their status flipped to `accepted` |
 | **B — Untriaged driver-inbox asks** | `.atmux/driver-inbox.md` headings without inline `✅` / `📤` / `⏳` / `❌` marker | >30 min since the heading's MYT timestamp | Asks the lead hasn't acknowledged yet — typically auto-mode resolutions awaiting reviewer signoff |
 | **C — Long-blocked tasks** | Kanban tasks with `status = blocked` (via `state.db`) | >2 h since the most recent state transition | Tasks that have been stuck in blocked and need an unblock decision |
 

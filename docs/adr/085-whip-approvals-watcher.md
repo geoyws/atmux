@@ -18,7 +18,7 @@ The pattern recurs today — 6 ADRs are currently `proposed` (077, 079, 080, 081
 
 | Bucket | Source | Stale threshold | Today's count (sample) |
 |---|---|---|---|
-| A — Proposed ADRs | `docs/adr/*.md` + `docs/adr-bun/*.md` matching `^**Status**:\s*(proposed\|draft\|wip\|pending)` | always stale | 6 |
+| A — Proposed ADRs | `docs/adr/*.md` matching `^**Status**:\s*(proposed\|draft\|wip\|pending)` | always stale | 6 |
 | B — Untriaged driver-inbox asks | `.atmux/driver-inbox.md` `^## ` heading without inline ✅/📤/⏳/❌ marker in the heading or its section body | >30 min since the timestamp in the heading | TBD per tick |
 | C — Long-blocked tasks | kanban tasks where `status = blocked` | >2 h since most recent state transition | TBD per tick |
 

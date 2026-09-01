@@ -70,7 +70,7 @@
 | 090 | Epic-team lifecycle — `spawn-epic` / `dissolve-epic` verbs + `TeamEpic` schema + roster preset | 2026-05-15 | accepted |
 | 091 | Kanban-driven auto-merge state machine — epic-team → parent fan-in | 2026-05-16 | accepted |
 | 092 | Cross-team `tell-lead --team <name>` — cockpit-walk lookup + caller-scope gate | 2026-05-16 | accepted (2026-05-16, ships in same commit as impl T1 per planner-deferred decom |
-| 093 | Consolidate `docs/adr-bun/` into `docs/adr/` — single tree per project | 2026-05-13 | accepted |
+| 093 | Consolidate `docs/adr-bun` into `docs/adr/` — single tree per project | 2026-05-13 | accepted |
 | 094 | c-alias spawn convention as first-class — bake defaults into `atmux::tui_claude` | 2026-05-13 | Accepted (2026-05-15, operator-batch-flip) |
 | 095 | Why TypeScript on Bun (vs Go, Zig, staying in bash) |  |  |
 | 096 | Module taxonomy (abstraction / core / domain) |  |  |
