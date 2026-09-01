@@ -8,7 +8,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   installSkillsPlugin,
   renderSkillsInstallResult,
@@ -152,6 +152,25 @@ describe("installSkillsPlugin — wrong-target symlink", () => {
   });
 });
 
+describe("renderSkillsInstallResult — remaining branches", () => {
+  test("opted-out, marker-written, and wrong-target-replaced render distinct operator lines", () => {
+    expect(renderSkillsInstallResult({ kind: "opted-out", markerPath: "/tmp/marker" })).toBe(
+      "· skills plugin install skipped — opt-out marker at /tmp/marker\n",
+    );
+    expect(renderSkillsInstallResult({ kind: "marker-written", markerPath: "/tmp/marker" })).toBe(
+      "· skills plugin install opted out (marker: /tmp/marker)\n",
+    );
+    expect(
+      renderSkillsInstallResult({
+        kind: "wrong-target-replaced",
+        target: "/tmp/target",
+        source: "/tmp/source",
+        previousTarget: "/tmp/old",
+      }),
+    ).toBe("✓ skills plugin re-symlinked (was → /tmp/old, now → /tmp/source)\n");
+  });
+});
+
 // ---------- --no-skills flag ----------
 
 describe("installSkillsPlugin — --no-skills flag", () => {
@@ -272,5 +291,55 @@ describe("resolvePluginsDir", () => {
     // it returns a non-empty path that ends with `plugins`.
     expect(out.length).toBeGreaterThan(0);
     expect(out).toMatch(/plugins$/);
+  });
+});
+
+describe("resolvePluginsDir — installed-mode fallback", () => {
+  test("dev probe miss + realpath hit → returns installed-mode plugins dir", () => {
+    const devPath = resolve(import.meta.dir, "..", "..", "plugins");
+    const execPath = join(env.scratch, "bin", "atmux");
+    const installedPath = join(env.scratch, "plugins");
+    const existsCalls: string[] = [];
+    let realpathArg: string | undefined;
+    const out = resolvePluginsDir(
+      {},
+      {
+        execPath,
+        existsSync: (p) => {
+          existsCalls.push(p);
+          return p === installedPath;
+        },
+        realpathSync: (p) => {
+          realpathArg = p;
+          return execPath;
+        },
+      },
+    );
+    expect(realpathArg).toBe(execPath);
+    expect(existsCalls).toEqual([devPath, installedPath]);
+    expect(out).toBe(installedPath);
+  });
+
+  test("installed-path miss falls back to the dev-mode plugins dir", () => {
+    const devPath = resolve(import.meta.dir, "..", "..", "plugins");
+    const execPath = join(env.scratch, "missing-bin", "atmux");
+    const installedPath = join(env.scratch, "plugins");
+    const existsCalls: string[] = [];
+    const out = resolvePluginsDir(
+      {},
+      {
+        execPath,
+        existsSync: (p) => {
+          existsCalls.push(p);
+          return false;
+        },
+        realpathSync: (p) => {
+          expect(p).toBe(execPath);
+          return execPath;
+        },
+      },
+    );
+    expect(existsCalls).toEqual([devPath, installedPath]);
+    expect(out).toBe(devPath);
   });
 });
