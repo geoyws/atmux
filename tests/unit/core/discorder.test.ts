@@ -8,6 +8,7 @@ import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import {
   aggregateHeartbeat,
   aggregateProgress,
+  type ProgressAggregateOpts,
   progressCursorPath,
   readProgressCursor,
   writeProgressCursor,
@@ -20,7 +21,17 @@ interface Env {
   atmuxDir: string;
 }
 
+type SpawnHandle = NonNullable<ProgressAggregateOpts["spawnHandle"]>;
+type SpawnCall = Parameters<SpawnHandle>[0];
+type SpawnResult = Awaited<ReturnType<SpawnHandle>>;
+
 let env: Env;
+
+function makeSpawnHandle(
+  impl: (call: SpawnCall) => Promise<SpawnResult> | SpawnResult,
+): SpawnHandle {
+  return async (call: SpawnCall) => impl(call);
+}
 
 beforeEach(async () => {
   const root = await mkdtemp(join(tmpdir(), "atmux-discorder-"));
@@ -94,6 +105,84 @@ describe("aggregateProgress", () => {
     });
     expect(got.commits).toHaveLength(5);
     expect(got.commitsTruncated).toBe(true);
+  });
+
+  test("default git path returns empty when repo probe throws", async () => {
+    const calls: SpawnCall[] = [];
+    const got = await aggregateProgress(env.atmuxDir, "/repo", 0, {
+      spawnHandle: makeSpawnHandle((call) => {
+        calls.push(call);
+        const { argv } = call;
+        if ((argv ?? []).includes("--git-dir")) throw new Error("not a repo");
+        return { exitCode: 0, stdout: "" };
+      }),
+    });
+    expect(got.commits).toEqual([]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.argv).toEqual(["rev-parse", "--git-dir"]);
+  });
+
+  test("default git path returns empty when repo probe exits non-zero", async () => {
+    const calls: SpawnCall[] = [];
+    const got = await aggregateProgress(env.atmuxDir, "/repo", 0, {
+      spawnHandle: makeSpawnHandle((call) => {
+        calls.push(call);
+        const { argv } = call;
+        if ((argv ?? []).includes("--git-dir")) return { exitCode: 1, stdout: "" };
+        throw new Error("unexpected git log after failed repo probe");
+      }),
+    });
+    expect(got.commits).toEqual([]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.argv).toEqual(["rev-parse", "--git-dir"]);
+  });
+
+  test("default git path returns empty when git log exits non-zero", async () => {
+    const calls: SpawnCall[] = [];
+    const got = await aggregateProgress(env.atmuxDir, "/repo", 0, {
+      spawnHandle: makeSpawnHandle((call) => {
+        calls.push(call);
+        const { argv } = call;
+        if ((argv ?? []).includes("--git-dir")) return { exitCode: 0, stdout: "" };
+        return { exitCode: 2, stdout: "aaa1111\tignored subject\tAlice\n" };
+      }),
+    });
+    expect(got.commits).toEqual([]);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.argv).toEqual(["rev-parse", "--git-dir"]);
+    expect(calls[1]?.argv?.[0]).toBe("log");
+  });
+
+  test("default git path parses stdout from git log", async () => {
+    const got = await aggregateProgress(env.atmuxDir, "/repo", 0, {
+      spawnHandle: makeSpawnHandle(({ argv }) => {
+        if ((argv ?? []).includes("--git-dir")) return { exitCode: 0, stdout: "" };
+        return {
+          exitCode: 0,
+          stdout: ["aaa1111\tfix bug\tAlice", "bbb2222\tadd feature\tBob"].join("\n"),
+        };
+      }),
+    });
+    expect(got.commits).toEqual([
+      { sha: "aaa1111", subject: "fix bug", author: "Alice" },
+      { sha: "bbb2222", subject: "add feature", author: "Bob" },
+    ]);
+  });
+
+  test("default git path returns empty when git log spawn throws", async () => {
+    const calls: SpawnCall[] = [];
+    const got = await aggregateProgress(env.atmuxDir, "/repo", 0, {
+      spawnHandle: makeSpawnHandle((call) => {
+        calls.push(call);
+        const { argv } = call;
+        if ((argv ?? []).includes("--git-dir")) return { exitCode: 0, stdout: "" };
+        throw new Error("spawn failed");
+      }),
+    });
+    expect(got.commits).toEqual([]);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.argv).toEqual(["rev-parse", "--git-dir"]);
+    expect(calls[1]?.argv?.[0]).toBe("log");
   });
 
   test("kanban done-tasks past cursor", async () => {
@@ -190,8 +279,8 @@ describe("aggregateHeartbeat", () => {
     name: "smoke",
     members: [
       { name: "lead", role: "team-lead", tui: "claude" },
-      { name: "alice", role: "member", tui: "claude" },
-      { name: "bob", role: "member", tui: "kimi" },
+      { name: "alice", role: "member", tui: "opencode" },
+      { name: "bob", role: "member", tui: "cursor" },
     ],
     singleSession: false,
   } as Team;
@@ -209,8 +298,8 @@ describe("aggregateHeartbeat", () => {
       sessionUp: true,
       paneCmd: (target) => {
         if (target.endsWith(":lead")) return "claude";
-        if (target.endsWith(":alice")) return "claude";
-        if (target.endsWith(":bob")) return "kimi";
+        if (target.endsWith(":alice")) return "opencode";
+        if (target.endsWith(":bob")) return "cursor-agent";
         return null;
       },
     });
@@ -220,13 +309,35 @@ describe("aggregateHeartbeat", () => {
     expect(snap.drifted).toEqual([]);
   });
 
+  test("unsupported tui values fall back to non-drifting alive members", async () => {
+    const oddTeam: Team = {
+      name: "smoke",
+      members: [
+        { name: "lead", role: "team-lead", tui: "claude" },
+        { name: "zoe", role: "member", tui: "mystery" },
+      ],
+      singleSession: false,
+    } as Team;
+    const tmux = fakeTmux({
+      sessionUp: true,
+      paneCmd: (target) => {
+        if (target.endsWith(":lead")) return "claude";
+        if (target.endsWith(":zoe")) return "anything";
+        return null;
+      },
+    });
+    const snap = await aggregateHeartbeat(oddTeam, env.atmuxDir, "atmux-x", tmux);
+    expect(snap.aliveCount).toBe(2);
+    expect(snap.drifted).toEqual([]);
+  });
+
   test("drift: window missing + tui not running", async () => {
     const tmux = fakeTmux({
       sessionUp: true,
       paneCmd: (target) => {
         if (target.endsWith(":lead")) return null; // window missing
         if (target.endsWith(":alice")) return "bash"; // wrong TUI
-        if (target.endsWith(":bob")) return "kimi";
+        if (target.endsWith(":bob")) return "cursor-agent";
         return null;
       },
     });
@@ -235,6 +346,18 @@ describe("aggregateHeartbeat", () => {
     expect(snap.drifted).toHaveLength(2);
     expect(snap.drifted.find((d) => d.name === "lead")?.reason).toBe("window-missing");
     expect(snap.drifted.find((d) => d.name === "alice")?.reason).toBe("tui-not-running:bash");
+  });
+
+  test("no team-lead keeps lead uptime fields empty", async () => {
+    const tmux = fakeTmux({ sessionUp: false });
+    const noLeadTeam: Team = {
+      name: "smoke",
+      members: [{ name: "alice", role: "member", tui: "claude" }],
+      singleSession: false,
+    } as Team;
+    const snap = await aggregateHeartbeat(noLeadTeam, env.atmuxDir, "atmux-x", tmux);
+    expect(snap.leadName).toBe(null);
+    expect(snap.leadUptimeSec).toBe(null);
   });
 
   test("kanban counts in-progress + blocked", async () => {
@@ -267,6 +390,17 @@ describe("aggregateHeartbeat", () => {
     });
     expect(snap.leadName).toBe("lead");
     expect(snap.leadUptimeSec).toBe(90 * 60);
+  });
+
+  test("lead uptime can anchor from session-start.txt alone", async () => {
+    const tmux = fakeTmux({ sessionUp: false });
+    const anchorSec = Math.floor(RUN_MS / 1000) - 45 * 60;
+    await writeFile(join(env.atmuxDir, "state", "session-start.txt"), `${anchorSec}\n`);
+    const snap = await aggregateHeartbeat(team, env.atmuxDir, "atmux-x", tmux, {
+      nowMs: RUN_MS,
+    });
+    expect(snap.leadName).toBe("lead");
+    expect(snap.leadUptimeSec).toBe(45 * 60);
   });
 
   test("no anchor → leadUptimeSec=null", async () => {

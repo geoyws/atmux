@@ -36,6 +36,10 @@ import { inboxPathFor, stateDir, teamJsonPath } from "./common.ts";
 import { loadKanban } from "./kanban.ts";
 import { kanbanWorkStateAvailable } from "./kanban-backend.ts";
 
+type GitSpawnInput = Parameters<typeof spawn>[0];
+type GitSpawnOutput = Pick<Awaited<ReturnType<typeof spawn>>, "exitCode" | "stdout">;
+type GitSpawnHandle = (call: GitSpawnInput) => Promise<GitSpawnOutput> | GitSpawnOutput;
+
 // ---------- Cursor ----------
 
 const CursorState = z.object({ epoch: z.number().int().nonnegative() });
@@ -90,6 +94,8 @@ export interface ProgressAggregateOpts {
   cap?: number;
   /** Override the spawn handle (test injection). */
   spawnGit?: (since: number) => Promise<string>;
+  /** Override the process spawn helper used by the default Git-log path. */
+  spawnHandle?: GitSpawnHandle;
 }
 
 /**
@@ -116,9 +122,10 @@ export async function aggregateProgress(
   };
 
   // ---- commits ----
+  const spawnHandle = opts.spawnHandle ?? spawn;
   const rawGit = opts.spawnGit
     ? await opts.spawnGit(sinceEpoch).catch(() => "")
-    : await runGitLogSince(gitDir, sinceEpoch);
+    : await runGitLogSince(gitDir, sinceEpoch, spawnHandle);
   if (rawGit.length > 0) {
     const lines = rawGit.split("\n").filter((l) => l.length > 0);
     for (const line of lines) {
@@ -177,17 +184,21 @@ export async function aggregateProgress(
   return out;
 }
 
-async function runGitLogSince(cwd: string, sinceEpoch: number): Promise<string> {
+async function runGitLogSince(
+  cwd: string,
+  sinceEpoch: number,
+  spawnHandle: GitSpawnHandle = spawn,
+): Promise<string> {
   // Ignore errors: if not in a repo, return empty.
   try {
-    const probe = await spawn({
+    const probe = await spawnHandle({
       cmd: "git",
       argv: ["rev-parse", "--git-dir"],
       cwd,
       expectExitCode: "any",
     });
     if (probe.exitCode !== 0) return "";
-    const log = await spawn({
+    const log = await spawnHandle({
       cmd: "git",
       argv: ["log", `--since=@${sinceEpoch}`, "--pretty=tformat:%h%x09%s%x09%an"],
       cwd,
