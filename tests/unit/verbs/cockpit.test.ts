@@ -1,20 +1,20 @@
 // Unit tests for src/verbs/cockpit.ts — ADR-063 cockpit verb.
 
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createTmux, type TmuxConfig, type TmuxNamespace } from "../../../src/abstractions/tmux.ts";
+import type { TmuxConfig, TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import { buildGroupTopology, enabledTeams, groupSocketPath } from "../../../src/core/cockpit.ts";
-import type { Cockpit as CockpitShape } from "../../../src/schema/cockpit.ts";
 import type { Logger } from "../../../src/core/tui.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
-import type { CockpitTeam } from "../../../src/schema/cockpit.ts";
+import type { Cockpit as CockpitShape, CockpitTeam } from "../../../src/schema/cockpit.ts";
 import type { Team } from "../../../src/schema/team.ts";
 import {
   applyCagePrefix,
   autolaunchTeam,
+  buildGroupWindowCommand,
   buildMigrationBreadcrumb,
   buildSuperbotWindowCommand,
   buildTeamWindowCommand,
@@ -29,11 +29,11 @@ import {
   type ParsedCockpitArgs,
   parseCockpitArgs,
   type ResolveTeamWindowDeps,
-  buildGroupWindowCommand,
   reconcileCockpitSession,
   reconcileGroupServers,
   resolveTeamWindowMode,
 } from "../../../src/verbs/cockpit.ts";
+import { createCanonicalAtmuxTmux, setCanonicalAtmuxTmuxHome } from "../../helpers/tmux.ts";
 
 // ---------- parseCockpitArgs ----------
 
@@ -346,17 +346,19 @@ interface TmuxFixture {
 }
 
 // c-4698c603 defense — fixture-survivor registry. Every spinTmux'd
-// socket + dir is tracked here; `tearDownFixtureSurvivors` is wired into
-// `process.on('exit')` (once, lazily) plus `afterAll` at end-of-file so
-// kill-server + dir-rm fire even when an individual test's try/finally
-// is bypassed by a thrown error / unhandled rejection. The per-test
-// finally blocks remain authoritative for happy-path cleanup;
-// kill-server + rmSync are idempotent, so re-running on already-cleaned
-// state is a no-op. SIGKILL on the bun-test process is unrecoverable
-// (userland exit handlers don't fire) — CLAUDE.md's `bun test --timeout`
-// + BashTool `timeout` discipline is the operator-side mitigation.
+// socket + dir + temp HOME is tracked here; `tearDownFixtureSurvivors`
+// is wired into `process.on('exit')` (once, lazily) plus `afterAll` at
+// end-of-file so kill-server + dir-rm + HOME restore fire even when an
+// individual test's try/finally is bypassed by a thrown error /
+// unhandled rejection. The per-test finally blocks remain authoritative
+// for happy-path cleanup; kill-server, rmSync and HOME restore are
+// idempotent, so re-running on already-cleaned state is a no-op.
+// SIGKILL on the bun-test process is unrecoverable (userland exit
+// handlers don't fire) — CLAUDE.md's `bun test --timeout` + BashTool
+// `timeout` discipline is the operator-side mitigation.
 const activeFixtureSockets = new Set<string>();
 const activeFixtureDirs = new Set<string>();
+const activeFixtureHomeRestores: Array<() => void> = [];
 let fixtureExitHookRegistered = false;
 
 function tearDownFixtureSurvivors(): void {
@@ -371,6 +373,11 @@ function tearDownFixtureSurvivors(): void {
   for (const dir of activeFixtureDirs) {
     try {
       rmSync(dir, { recursive: true, force: true });
+    } catch {}
+  }
+  while (activeFixtureHomeRestores.length > 0) {
+    try {
+      activeFixtureHomeRestores.pop()?.();
     } catch {}
   }
   activeFixtureSockets.clear();
@@ -388,17 +395,20 @@ function registerFixtureExitHook(): void {
 // does NOT survive SIGKILL of the bun-test parent, which is the exact gap
 // ADR-178 §Context names. `spinTmux` writes a `<socketDir>/.leak-tracker.json`
 // sidecar synchronously (OQ2 — sync writeFileSync, one fewer await + closes the
-// crash-window race for free) right after `mkdtemp` and BEFORE `createTmux`, so
-// the out-of-process `atmux test-reaper` verb (T3) can identify cross-run
-// orphans without parsing live process state. `tearDownFixtureSurvivors`
-// rmSync's the dir recursively, which removes the sidecar alongside it on the
-// happy path — leaving no trail.
+// crash-window race for free) right after `mkdtemp` and BEFORE
+// `createCanonicalAtmuxTmux`, so the out-of-process `atmux test-reaper` verb
+// (T3) can identify cross-run orphans without parsing live process state.
+// `tearDownFixtureSurvivors` rmSync's the dir recursively, which removes the
+// sidecar alongside it on the happy path — leaving no trail.
 const LEAK_TRACKER_FILENAME = ".leak-tracker.json";
 
 async function spinTmux(prefix: string): Promise<TmuxFixture> {
   registerFixtureExitHook();
   const socketDir = await mkdtemp(join(tmpdir(), `atmux-cockpit-${prefix}-`));
   const socketPath = join(socketDir, "sock");
+  const homeDir = await mkdtemp(join(tmpdir(), `atmux-cockpit-home-${prefix}-`));
+  activeFixtureDirs.add(homeDir);
+  activeFixtureHomeRestores.push(setCanonicalAtmuxTmuxHome(homeDir));
   writeFileSync(
     join(socketDir, LEAK_TRACKER_FILENAME),
     JSON.stringify({
@@ -411,7 +421,7 @@ async function spinTmux(prefix: string): Promise<TmuxFixture> {
       prefix,
     }),
   );
-  const tmux = createTmux({ socketPath, configFile: "/dev/null" });
+  const tmux = createCanonicalAtmuxTmux({ socketPath });
   activeFixtureSockets.add(socketPath);
   activeFixtureDirs.add(socketDir);
   return { tmux, socketPath, socketDir };
@@ -431,6 +441,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   if (priorTmux !== undefined) process.env.TMUX = priorTmux;
+  tearDownFixtureSurvivors();
 });
 
 // ADR-178 §Decision "Sidecar file shape" — the leak-tracker sidecar is the
@@ -444,6 +455,14 @@ describe("spinTmux leak-tracker sidecar (ADR-178)", () => {
     const fx = await spinTmux("leak-tracker-sidecar");
     const sidecar = join(fx.socketDir, ".leak-tracker.json");
     try {
+      await fx.tmux.session.newSession({ name: "s", detached: true, windowName: "driver" });
+      const opts = await fx.tmux.option.showOptions({ global: true });
+      const windowOpts = await fx.tmux.option.showOptions({ global: true, window: true });
+      expect(opts["base-index"]).toBe("1");
+      expect(windowOpts["allow-rename"]).toBe("off");
+      expect(windowOpts["automatic-rename"]).toBe("off");
+      const wins = await fx.tmux.window.listWindows("s");
+      expect(wins[0]?.index).toBe(1);
       // Written synchronously on spawn — survives SIGKILL of the test process.
       expect(existsSync(sidecar)).toBe(true);
       const parsed = JSON.parse(readFileSync(sidecar, "utf8")) as Record<string, unknown>;
@@ -602,7 +621,7 @@ describe("autolaunchTeam", () => {
       );
       expect(summary.launched).toBe(1);
       expect(summary.unbootstrapped).toEqual([]);
-      expect(probeCalls).toEqual(["lead@px:0"]);
+      expect(probeCalls).toEqual(["lead@px:1"]);
       // No warning lines emitted on the happy path.
       expect(logs.filter((l) => l.startsWith("warn:"))).toEqual([]);
     } finally {
@@ -946,7 +965,8 @@ describe("reconcileCockpitSession", () => {
       for (const window of ordered) {
         const pane = (await fx.tmux.pane.listPanes(`atmux_cockpit:${window}`))[0];
         expect(pane).toBeDefined();
-        before.set(window, pane!.pid);
+        if (!pane) throw new Error(`missing pane for ${window}`);
+        before.set(window, pane.pid);
       }
 
       await reconcileCockpitSession(
@@ -3289,28 +3309,30 @@ describe("cockpitAttach — isolated (stubbed tmux + temp cockpit.json)", () => 
 //
 // Behavioural tests against REAL scratch tmux servers. Group sockets are
 // name-derived (`/tmp/atmux-grp-<name>/sock`), so every test uses a
-// process-unique group/team name and registers the socket + dir in the
-// fixture-survivor registry above — the same c-4698c603 defense the
-// spinTmux fixtures get.
+// process-unique group/team name and registers the socket + dir + temp
+// HOME in the fixture-survivor registry above — the same c-4698c603
+// defense the spinTmux fixtures get.
 
 /** Process-unique suffix so parallel/aborted runs never collide on the
  *  name-derived group sockets. */
 const GRP_SUFFIX = `${process.pid.toString(36)}${Date.now().toString(36).slice(-4)}`;
 
-/** Register a group's name-derived socket + dir for teardown, and hand
- *  back a namespace pinned to it. */
+/** Register a group's name-derived socket + dir + HOME for teardown,
+ *  and hand back a namespace pinned to it. */
 function trackGroupServer(name: string): TmuxNamespace {
   registerFixtureExitHook();
+  const homeDir = mkdtempSync(join(tmpdir(), `atmux-cockpit-home-${name}-`));
+  activeFixtureDirs.add(homeDir);
+  activeFixtureHomeRestores.push(setCanonicalAtmuxTmuxHome(homeDir));
   const sock = groupSocketPath(name);
   activeFixtureSockets.add(sock);
   activeFixtureDirs.add(sock.slice(0, sock.length - "/sock".length));
-  return createTmux({ socketPath: sock, configFile: "/dev/null" });
+  return createCanonicalAtmuxTmux({ socketPath: sock });
 }
 
-/** Factory that pins every group server to /dev/null tmux config (CI
- *  runners must not inherit the repo template's option baseline). */
-const grpFactory = (cfg: TmuxConfig): TmuxNamespace =>
-  createTmux({ ...cfg, configFile: "/dev/null" } as TmuxConfig);
+/** Factory that pins every group server to the canonical atmux tmux
+ *  config with HOME already isolated by the live test harness. */
+const grpFactory = (cfg: TmuxConfig): TmuxNamespace => createCanonicalAtmuxTmux(cfg);
 
 /** Deps forcing every team window into `session-down` mode: the
  *  retry-loop keeps the pane alive (macOS `sleep infinity` — the
@@ -3387,7 +3409,10 @@ describe("reconcileGroupServers (e-419553c6)", () => {
     await mkdir(cageSockDir, { recursive: true });
     const cageSock = join(cageSockDir, "default");
     activeFixtureSockets.add(cageSock);
-    const cageTmux = createTmux({ socketPath: cageSock, configFile: "/dev/null" });
+    const cageHome = await mkdtemp(join(tmpdir(), "wnest-cage-home-"));
+    activeFixtureDirs.add(cageHome);
+    activeFixtureHomeRestores.push(setCanonicalAtmuxTmuxHome(cageHome));
+    const cageTmux = createCanonicalAtmuxTmux({ socketPath: cageSock });
     try {
       await cageTmux.session.newSession({
         name: team,
