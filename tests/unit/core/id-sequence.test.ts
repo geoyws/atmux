@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { closeDatabase, type Database, openDatabase } from "../../../src/abstractions/sqlite.ts";
 import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
 import {
+  assignSequenceToLegacyId,
   isAnyId,
   isCompoundId,
   isHexId,
@@ -63,6 +64,67 @@ describe("nextId — compound allocation", () => {
   test("hashOverride seam for test determinism", () => {
     expect(nextId(db, "t", () => "deadbeef")).toBe("t-1-deadbeef");
     expect(nextId(db, "t", () => "12345678")).toBe("t-2-12345678");
+  });
+});
+
+describe("defensive allocation paths", () => {
+  test("nextId throws when SQLite RETURNING yields no row", () => {
+    const fakeDb = {
+      prepare: () => ({
+        get: () => undefined,
+      }),
+    } as Database;
+
+    try {
+      nextId(fakeDb, "t");
+      throw new Error("expected nextId to throw");
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe("nextId(t): SQLite RETURNING produced no row");
+    }
+  });
+
+  test("assignSequenceToLegacyId rejects non-legacy ids for scope", () => {
+    try {
+      assignSequenceToLegacyId(db, "t", "t-1-3b017960");
+      throw new Error("expected assignSequenceToLegacyId to throw");
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe(
+        "assignSequenceToLegacyId: 't-1-3b017960' is not a legacy hex id for scope 't'",
+      );
+    }
+  });
+
+  test("assignSequenceToLegacyId throws when SQLite RETURNING yields no row", () => {
+    const fakeDb = {
+      prepare: () => ({
+        get: () => undefined,
+      }),
+    } as Database;
+
+    try {
+      assignSequenceToLegacyId(fakeDb, "t", "t-3b017960");
+      throw new Error("expected assignSequenceToLegacyId to throw");
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe(
+        "assignSequenceToLegacyId(t): SQLite RETURNING produced no row",
+      );
+    }
+  });
+
+  test("assignSequenceToLegacyId preserves legacy hash in compound output", () => {
+    const fakeDb = {
+      prepare: () => ({
+        get: () => ({ last_id: 7 }),
+      }),
+    } as Database;
+
+    expect(assignSequenceToLegacyId(fakeDb, "t", "t-3b017960")).toEqual({
+      compoundId: "t-7-3b017960",
+      sequenceN: 7,
+    });
   });
 });
 
@@ -130,6 +192,10 @@ describe("matchesIdPrefix — partial lookup", () => {
 
   test("partial hash also matches", () => {
     expect(matchesIdPrefix("t-1-3b017960", "t-1-3b01")).toBe(true);
+  });
+
+  test("two-dash candidate prefix returns true", () => {
+    expect(matchesIdPrefix("t-12-abc12345", "t-12-a")).toBe(true);
   });
 
   test("digit-boundary check: t-1 does NOT match t-12-abc", () => {
