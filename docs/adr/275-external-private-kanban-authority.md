@@ -20,6 +20,8 @@ The external `kanban` repository and its private per-user SQLite registry/boards
 
 atmux calls the installed `kanban` CLI through a typed adapter. It does not link to Kanban's database schema or open Kanban board files directly. This keeps schema migrations, locking, privacy permissions, board discovery, and atomic leases owned by Kanban.
 
+Process-boundary tests use only a nonblank `KANBAN_BIN` or a discoverable local `kanban` binary. They never fall back to `kb`, which may be an operator wrapper for the HAX-authoritative board. A missing local binary is reported as an explicit skip; recorded-fixture adapter tests remain runnable.
+
 ### D3 — No dual writes
 
 Cutover uses an explicit backend selection. A command invocation reads and writes either legacy atmux state or external Kanban state, never both. Mirrored writes are forbidden because partial failure would create two plausible authorities.

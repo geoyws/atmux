@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { realpathSync } from "node:fs";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +11,22 @@ import type { Team } from "../../src/schema/team.ts";
 import { superbotTick } from "../../src/verbs/superbot.ts";
 
 const roots: string[] = [];
+const KANBAN_UNSET_ENV = ["KANBAN_PROJECT", "KANBAN_DB", "KANBAN_DATA_DIR"] as const;
+type RecordedSpawn = {
+  cmd: string;
+  argv: ReadonlyArray<string>;
+  cwd?: string;
+  unsetEnv?: ReadonlyArray<string>;
+};
+
+function resolveInstalledKanbanBinary(): string | null {
+  const explicit = process.env.KANBAN_BIN?.trim();
+  if (explicit) return explicit;
+  return Bun.which("kanban");
+}
+
+const installedKanbanBinary = resolveInstalledKanbanBinary();
+const safeKanbanBinary = installedKanbanBinary ?? "kanban";
 
 afterEach(async () => {
   while (roots.length > 0) {
@@ -26,20 +43,27 @@ async function runKb(
   argv: ReadonlyArray<string>,
   cwd: string,
   dataHome: string,
+  recordedCalls?: RecordedSpawn[],
   expectExitCode: number | ReadonlyArray<number> = 0,
 ): Promise<SpawnResult> {
-  return await spawn({
-    cmd: "kb",
+  const call = {
+    cmd: safeKanbanBinary,
     argv,
     cwd,
     env: isolatedEnv(dataHome),
-    unsetEnv: ["KANBAN_PROJECT", "KANBAN_DB", "KANBAN_DATA_DIR"],
+    unsetEnv: KANBAN_UNSET_ENV,
     expectExitCode,
     timeoutMs: 30_000,
-  });
+  };
+  recordedCalls?.push(call);
+  return await spawn(call);
 }
 
-describe("_superbot installed-Kanban process boundary", () => {
+describe.skipIf(
+  installedKanbanBinary === null,
+)(
+  "_superbot installed-Kanban process boundary (requires a nonblank KANBAN_BIN or kanban on PATH)",
+  () => {
   test("shadow-routes real candidates and concurrent exact claims produce one winner", async () => {
     const root = await mkdtemp(join(tmpdir(), "atmux-superbot-kanban-"));
     roots.push(root);
@@ -47,8 +71,9 @@ describe("_superbot installed-Kanban process boundary", () => {
     const dataHome = join(root, "xdg");
     await mkdir(workspace, { recursive: true });
     const board = `superbot-process-${process.pid}-${Date.now()}`;
+    const recordedCalls: RecordedSpawn[] = [];
 
-    await runKb(["init", "--name", board, "--as", "fixture", "--json"], workspace, dataHome);
+    await runKb(["init", "--name", board, "--as", "fixture", "--json"], workspace, dataHome, recordedCalls);
     const tags = ["cockpit", "dispatch", "team-config"];
     for (const tag of tags) {
       await runKb(
@@ -64,6 +89,7 @@ describe("_superbot installed-Kanban process boundary", () => {
         ],
         workspace,
         dataHome,
+        recordedCalls,
       );
     }
     const taskIds: Record<string, string> = {};
@@ -81,6 +107,7 @@ describe("_superbot installed-Kanban process boundary", () => {
         ],
         workspace,
         dataHome,
+        recordedCalls,
       );
       taskIds[tag] = (JSON.parse(created.stdout) as { id: string }).id;
     }
@@ -89,11 +116,17 @@ describe("_superbot installed-Kanban process boundary", () => {
 
     const adapter = new SuperbotKanbanAdapter(
       async (opts: SpawnOpts): Promise<SpawnResult> =>
-        await spawn({
-          ...opts,
-          cwd: workspace,
-          env: { ...opts.env, XDG_DATA_HOME: dataHome },
-        }),
+        await spawn(
+          ((call) => {
+            recordedCalls.push(call);
+            return call;
+          })({
+            ...opts,
+            cmd: safeKanbanBinary,
+            cwd: opts.cwd ?? workspace,
+            env: { ...opts.env, XDG_DATA_HOME: dataHome },
+          }),
+        ),
     );
     const candidates = await adapter.candidates(board, "dispatch", "superbot@cockpit", 20);
     expect(candidates.map((candidate) => candidate.id)).toContain(taskId);
@@ -153,6 +186,7 @@ describe("_superbot installed-Kanban process boundary", () => {
       ["task", "show", taskId, "--project", board, "--json"],
       workspace,
       dataHome,
+      recordedCalls,
     );
     expect((JSON.parse(afterShadow.stdout) as { metadata: Record<string, unknown> }).metadata).toEqual(
       {},
@@ -163,12 +197,14 @@ describe("_superbot installed-Kanban process boundary", () => {
         ["claim", taskId, "--project", board, "--as", "bot@alpha", "--json"],
         workspace,
         dataHome,
+        recordedCalls,
         [0, 1],
       ),
       runKb(
         ["claim", taskId, "--project", board, "--as", "bot@beta", "--json"],
         workspace,
         dataHome,
+        recordedCalls,
         [0, 1],
       ),
     ]);
@@ -181,9 +217,29 @@ describe("_superbot installed-Kanban process boundary", () => {
       ["task", "show", taskId, "--project", board, "--json"],
       workspace,
       dataHome,
+      recordedCalls,
     );
     expect((JSON.parse(detail.stdout) as { claim: { agentID: string } }).claim.agentID).toBe(
       winner,
     );
+
+    expect(recordedCalls.length).toBeGreaterThan(0);
+    for (const call of recordedCalls) {
+      expect(call.cmd).toBe(safeKanbanBinary);
+      expect(call.argv.length).toBeGreaterThan(0);
+      expect(call.unsetEnv).toEqual([...KANBAN_UNSET_ENV]);
+      expect(call.cwd).toBeDefined();
+      expect(realpathSync(call.cwd ?? "")).toBe(realpathSync(workspace));
+    }
+    expect(
+      recordedCalls.some((call) => call.argv[0] === "claim" && call.argv[1] === "--candidates"),
+    ).toBe(true);
+    expect(recordedCalls.some((call) => call.argv[0] === "task" && call.argv[1] === "show")).toBe(
+      true,
+    );
+    expect(recordedCalls.some((call) => call.argv[0] === "workspace" && call.argv[1] === "list")).toBe(
+      true,
+    );
   });
-});
+  },
+);

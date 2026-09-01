@@ -1,5 +1,13 @@
-import { afterAll, afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { afterAll, afterEach, describe, expect, test as bunTest } from "bun:test";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -56,6 +64,10 @@ import {
 
 const roots: string[] = [];
 const originalXdgDataHome = process.env.XDG_DATA_HOME;
+const test = bunTest;
+const installedKanbanBinary = process.env.KANBAN_BIN?.trim() || Bun.which("kanban");
+const installedKanbanCommand = installedKanbanBinary ?? "kanban";
+const localProcessTest = bunTest.skipIf(installedKanbanBinary === null);
 
 afterEach(() => {
   delete process.env.ATMUX_KANBAN_BACKEND;
@@ -82,7 +94,11 @@ function fixture(): { root: string; atmuxDir: string; adapter: KanbanCliAdapter 
   const atmuxDir = join(root, ".atmux");
   mkdirSync(atmuxDir);
   process.env.XDG_DATA_HOME = join(root, "private-kanban");
-  return { root, atmuxDir, adapter: new KanbanCliAdapter() };
+  return {
+    root,
+    atmuxDir,
+    adapter: new KanbanCliAdapter({ binary: installedKanbanCommand }),
+  };
 }
 
 // A stand-in for the `kanban` binary that replays a captured fixture and
@@ -173,7 +189,9 @@ async function fixtureReplay(
   };
 }
 
-describe("external Kanban CLI adapter", () => {
+describe("external Kanban CLI adapter (requires nonblank KANBAN_BIN or local kanban)", () => {
+  const test = localProcessTest;
+
   test("initializes and round-trips task lifecycle through the installed command", async () => {
     const { root, atmuxDir, adapter } = fixture();
     await adapter.initialize(atmuxDir, "adapter-test");
@@ -204,7 +222,7 @@ describe("external Kanban CLI adapter", () => {
     expect(claimed.owner).toBe("driver");
     expect((await adapter.markTaskDone(atmuxDir, taskID, "driver")).status).toBe("done");
 
-    const fromNestedPath = new KanbanCliAdapter();
+    const fromNestedPath = new KanbanCliAdapter({ binary: installedKanbanCommand });
     expect((await fromNestedPath.listTasks(join(root, ".atmux"))).length).toBe(2);
   });
 
@@ -632,52 +650,58 @@ describe("kanban board selection", () => {
     });
   });
 
-  test("an inherited KANBAN_DB cannot redirect the board, and is named once", async () => {
-    const { root, atmuxDir, adapter } = fixture();
-    await adapter.initialize(atmuxDir, "strip-test");
-    const taskID = await adapter.addTask(atmuxDir, { subject: "Selected by cwd" });
+  localProcessTest(
+    "an inherited KANBAN_DB cannot redirect the board, and is named once [requires local kanban]",
+    async () => {
+      const { root, atmuxDir, adapter } = fixture();
+      await adapter.initialize(atmuxDir, "strip-test");
+      const taskID = await adapter.addTask(atmuxDir, { subject: "Selected by cwd" });
 
-    // If the ambient value reached the subprocess, `store_path` would
-    // short-circuit board discovery and open (creating) this file instead.
-    const decoy = join(root, "decoy-board.db");
-    process.env.KANBAN_DB = decoy;
-    const warnings: string[] = [];
-    const originalConsoleError = console.error;
-    console.error = (...args: unknown[]) => {
-      warnings.push(args.join(" "));
-    };
-    try {
-      expect((await adapter.listTasks(atmuxDir)).map((task) => task.id)).toEqual([taskID]);
-      expect((await adapter.listTasks(atmuxDir)).map((task) => task.id)).toEqual([taskID]);
-    } finally {
-      console.error = originalConsoleError;
-    }
+      // If the ambient value reached the subprocess, `store_path` would
+      // short-circuit board discovery and open (creating) this file instead.
+      const decoy = join(root, "decoy-board.db");
+      process.env.KANBAN_DB = decoy;
+      const warnings: string[] = [];
+      const originalConsoleError = console.error;
+      console.error = (...args: unknown[]) => {
+        warnings.push(args.join(" "));
+      };
+      try {
+        expect((await adapter.listTasks(atmuxDir)).map((task) => task.id)).toEqual([taskID]);
+        expect((await adapter.listTasks(atmuxDir)).map((task) => task.id)).toEqual([taskID]);
+      } finally {
+        console.error = originalConsoleError;
+      }
 
-    expect(existsSync(decoy)).toBe(false);
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain("KANBAN_DB");
-    expect(warnings[0]).toContain(root);
-  });
+      expect(existsSync(decoy)).toBe(false);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain("KANBAN_DB");
+      expect(warnings[0]).toContain(root);
+    },
+  );
 
-  test("an inherited KANBAN_DATA_DIR cannot redirect the registry", async () => {
-    const { root, atmuxDir, adapter } = fixture();
-    await adapter.initialize(atmuxDir, "registry-strip-test");
-    const taskID = await adapter.addTask(atmuxDir, { subject: "Selected by cwd" });
+  localProcessTest(
+    "an inherited KANBAN_DATA_DIR cannot redirect the registry [requires local kanban]",
+    async () => {
+      const { root, atmuxDir, adapter } = fixture();
+      await adapter.initialize(atmuxDir, "registry-strip-test");
+      const taskID = await adapter.addTask(atmuxDir, { subject: "Selected by cwd" });
 
-    // An empty registry root: leaked through, the cwd walk-up finds no
-    // workspace and every call fails instead of reading the project's board.
-    const decoyRegistry = join(root, "decoy-registry");
-    mkdirSync(decoyRegistry);
-    process.env.KANBAN_DATA_DIR = decoyRegistry;
-    const originalConsoleError = console.error;
-    console.error = () => {};
-    try {
-      expect((await adapter.listTasks(atmuxDir)).map((task) => task.id)).toEqual([taskID]);
-    } finally {
-      console.error = originalConsoleError;
-    }
-    expect(existsSync(join(decoyRegistry, "registry.db"))).toBe(false);
-  });
+      // An empty registry root: leaked through, the cwd walk-up finds no
+      // workspace and every call fails instead of reading the project's board.
+      const decoyRegistry = join(root, "decoy-registry");
+      mkdirSync(decoyRegistry);
+      process.env.KANBAN_DATA_DIR = decoyRegistry;
+      const originalConsoleError = console.error;
+      console.error = () => {};
+      try {
+        expect((await adapter.listTasks(atmuxDir)).map((task) => task.id)).toEqual([taskID]);
+      } finally {
+        console.error = originalConsoleError;
+      }
+      expect(existsSync(join(decoyRegistry, "registry.db"))).toBe(false);
+    },
+  );
 
   test("initialize pins the board with cwd and passes no --workspace", async () => {
     const replay = await fixtureReplay({ init: "taskAdd" });
@@ -688,7 +712,7 @@ describe("kanban board selection", () => {
     // every other verb, so this adapter never states it: cwd is the selector
     // that holds for all of them.
     expect(call?.argv).toEqual(["init", "--name", "named-board", "--json"]);
-    expect(call?.cwd).toBe(replay.root);
+    expect(realpathSync(call?.cwd ?? "")).toBe(realpathSync(replay.root));
   });
 
   test("initialize defaults the board name to the project directory", async () => {
