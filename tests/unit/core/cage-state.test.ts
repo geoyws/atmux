@@ -70,6 +70,11 @@ const DEFAULT_OPTS = {
   readHeartbeat: async () => null,
 };
 
+const DEFAULT_SPAWN_OPTS = {
+  nowSec: DEFAULT_OPTS.nowSec,
+  readHeartbeat: DEFAULT_OPTS.readHeartbeat,
+};
+
 function spawnResult(stdout: string, exitCode = 0): SpawnResult {
   return {
     cmd: "ps",
@@ -136,9 +141,8 @@ describe("probeCageState — default ps probe failure and uptime parsing", () =>
   test("default child-process probe spawn failure degrades to down", async () => {
     const tmux = tmuxStub({ paneText: "❯ ↑ 5k tokens" });
     const h = await probeCageState(makeTeam(), makeMember(), "/tmp/x", {
-      ...DEFAULT_OPTS,
+      ...DEFAULT_SPAWN_OPTS,
       tmux,
-      paneChildIsClaude: undefined,
       spawnProbe: makeSpawnProbe(
         () => {
           throw new Error("ps unavailable");
@@ -154,9 +158,8 @@ describe("probeCageState — default ps probe failure and uptime parsing", () =>
   test("default child-process probe returns down on non-zero ps exit", async () => {
     const tmux = tmuxStub({ paneText: "❯ ↑ 5k tokens" });
     const h = await probeCageState(makeTeam(), makeMember(), "/tmp/x", {
-      ...DEFAULT_OPTS,
+      ...DEFAULT_SPAWN_OPTS,
       tmux,
-      paneChildIsClaude: undefined,
       spawnProbe: makeSpawnProbe(
         () => spawnResult("", 1),
         () => spawnResult("123\n"),
@@ -170,9 +173,8 @@ describe("probeCageState — default ps probe failure and uptime parsing", () =>
   test("malformed uptime output is ignored and leaves paneUptimeSec null", async () => {
     const tmux = tmuxStub({ paneText: "❯ ↑ 5k tokens" });
     const h = await probeCageState(makeTeam(), makeMember(), "/tmp/x", {
-      ...DEFAULT_OPTS,
+      ...DEFAULT_SPAWN_OPTS,
       tmux,
-      paneChildIsClaude: undefined,
       spawnProbe: makeSpawnProbe(
         () => spawnResult("12345 claude\n"),
         () => spawnResult("not-a-number\n"),
@@ -185,9 +187,8 @@ describe("probeCageState — default ps probe failure and uptime parsing", () =>
   test("uptime probe spawn failure is swallowed and leaves paneUptimeSec null", async () => {
     const tmux = tmuxStub({ paneText: "❯ ↑ 5k tokens" });
     const h = await probeCageState(makeTeam(), makeMember(), "/tmp/x", {
-      ...DEFAULT_OPTS,
+      ...DEFAULT_SPAWN_OPTS,
       tmux,
-      paneChildIsClaude: undefined,
       spawnProbe: makeSpawnProbe(
         () => spawnResult("12345 claude\n"),
         () => {
@@ -202,9 +203,8 @@ describe("probeCageState — default ps probe failure and uptime parsing", () =>
   test("numeric uptime output is parsed as paneUptimeSec", async () => {
     const tmux = tmuxStub({ paneText: "❯ ↑ 5k tokens" });
     const h = await probeCageState(makeTeam(), makeMember(), "/tmp/x", {
-      ...DEFAULT_OPTS,
+      ...DEFAULT_SPAWN_OPTS,
       tmux,
-      paneChildIsClaude: undefined,
       spawnProbe: makeSpawnProbe(
         () => spawnResult("12345 claude\n"),
         () => spawnResult("456\n"),
