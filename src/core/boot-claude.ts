@@ -535,12 +535,16 @@ export async function bootClaudeMember(opts: BootClaudeOpts): Promise<BootResult
     // inside pasted body" rather than "submit composer".
     await sleep(PASTE_SUBMIT_SETTLE_FLOOR_MS);
 
-    // ADR-138 verified-send-keys: confirm the C-m actually cleared
-    // the composer (composerEmpty matches `❯ ` at end-of-line). On
-    // verify failure within submitVerifyTimeoutMs, re-fire C-m up
-    // to submitVerifyRetries times. After exhaustion, return
-    // submit-not-verified — skip the (otherwise wasted) tokensMoved
-    // poll since the prompt never made it past the composer.
+    // Boot submit is boot-specific: accept either a cleared
+    // composer or, only for non-forced cold/start bootstrap, boot-
+    // live evidence (tokens moved or active-thinking). forceBootPrompt
+    // stays composer-empty-only because `/clear` can leave stale
+    // scrollback that would otherwise look live. The later post-boot
+    // poll still uses bootSignalLive as the actual bootstrap
+    // confirmation.
+    const composerEmptyVerifier = composerEmpty();
+    const bootSubmitAccepted = (capture: string) =>
+      composerEmptyVerifier(capture) || (opts.forceBootPrompt !== true && bootSignalLive(capture));
     const submitVerifyOpts: Parameters<typeof safeSendKeysWithVerify>[0] = {
       target: opts.paneTargetString,
       keys: "C-m",
@@ -548,7 +552,7 @@ export async function bootClaudeMember(opts: BootClaudeOpts): Promise<BootResult
       sendKeys: async (_t, keys) => {
         await opts.tmux.pane.sendKeys({ target: opts.sendTarget, keys, enter: false });
       },
-      expectVerifier: composerEmpty(),
+      expectVerifier: bootSubmitAccepted,
       timeoutMs: submitVerifyTimeoutMs,
       retries: submitVerifyRetries,
       pollIntervalMs: submitVerifyPollIntervalMs,

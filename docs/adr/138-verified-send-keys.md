@@ -103,6 +103,8 @@ Callers migrate to `safeSendKeysWithVerify` with an appropriate verifier:
 
 Direct `tmux send-keys` calls REMAIN ONLY for cases where verification is N/A — `tmux rename-window`, layout commands, send-keys to a non-TUI shell pane. Reviewer enforces the migration at commit-review time.
 
+Boot-only carve-out: `bootClaudeMember()` accepts a `C-m` submit when the composer is empty or, only for non-forced cold/start bootstrap, when the capture already proves the boot is live (`bootSignalLive`, meaning tokens moved or active-thinking). `forceBootPrompt:true` remains composer-empty-only because `/clear` can leave stale scrollback; that narrower rule prevents false `submit-not-verified` resends during Claude bootstrap while the generic `safeSendKeysWithVerify` contract for normal message sends stays composer-empty.
+
 ### T3b3 closure (t-06547e2d, 2026-05-15 P0)
 
 The lane-tick claim-injection callsite (`src/verbs/lane-tick.ts:240`) was empirically observed to drop the trailing `Enter` on member panes in the "just finished compose + ← for agents" transition state. 3rd recurrence on 2026-05-15 22:47 MYT triggered driver P0 + this migration.

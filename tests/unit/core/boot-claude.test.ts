@@ -1037,6 +1037,51 @@ describe("bootClaudeMember — submit-verify path (t-1b45d565)", () => {
     // attempt; verifier picks up the clear on poll #2).
     expect(getSendCallCount()).toBe(1);
   });
+
+  test("boot submit accepts sticky active-thinking evidence after C-m and still boots on attempt 1", async () => {
+    const { tmux, calls, getSendCallCount, getBufferLoadCallCount, getBufferPasteCallCount } =
+      fakeTmux({
+        captures: [
+          "✻ Welcome", // sentinel — not booted
+          "❯ ", // ready
+          "❯ still-loaded", // safeSend preCapture — composer still loaded
+          "✻ Worked for 1m 30s\n❯ still-loaded", // submit verify poll — active-thinking proves boot live while composer stays loaded
+          "✻ Worked for 1m 30s\n❯ still-loaded", // post-boot poll — same sticky boot-live capture remains
+        ],
+      });
+    const r = await bootClaudeMember({
+      tmux,
+      sendTarget,
+      paneTargetString: "atmux:fe-1",
+      team: "atmux",
+      member: "fe-1",
+      readyTimeoutMs: 500,
+      readyPollIntervalMs: 100,
+      submitVerifyTimeoutMs: 500,
+      submitVerifyPollIntervalMs: 50,
+      submitVerifyRetries: 0,
+      postBootTimeoutMs: 500,
+      postBootPollIntervalMs: 100,
+      maxAttempts: 1,
+      sleep: noopSleep,
+      paneLockDir: testPaneLockDir,
+      now: fakeClock({ step: 25 }),
+      appendLog: async () => {},
+    });
+    expect(r.status).toBe("booted");
+    expect(r.attempts).toBe(1);
+    expect(r.reason).toBeUndefined();
+    expect(getSendCallCount()).toBe(1);
+    expect(getBufferLoadCallCount()).toBe(1);
+    expect(getBufferPasteCallCount()).toBe(1);
+    const keyEvents = calls.filter((c) => c.kind === "key");
+    expect(keyEvents).toHaveLength(1);
+    expect(keyEvents[0]?.keys).toBe("C-m");
+    expect(keyEvents[0]?.enter).toBe(false);
+    expect(calls.filter((c) => c.kind === "capture")).toHaveLength(5);
+    expect(calls.filter((c) => c.kind === "send")).toHaveLength(1);
+    expect(calls.find((c) => c.kind === "send")?.payload).toBe(renderBootPrompt("atmux", "fe-1"));
+  });
 });
 
 // ---------- send-keys verb-failure ----------
@@ -1067,6 +1112,38 @@ describe("bootClaudeMember — send-keys verb-failure", () => {
     expect(r.status).toBe("booted");
     expect(r.attempts).toBe(2);
     expect(getSendCallCount()).toBe(2);
+  });
+
+  test("send-keys throws on the only attempt — failed with capture-error and line 573 is covered", async () => {
+    const { tmux, getSendCallCount, getBufferLoadCallCount, getBufferPasteCallCount } = fakeTmux({
+      captures: [
+        "✻ Welcome", // sentinel
+        "❯ ", // ready
+        "❯ pre-capture for safeSend", // safeSend preCapture
+      ],
+      sendThrowOn: 1,
+    });
+    const r = await bootClaudeMember({
+      tmux,
+      sendTarget,
+      paneTargetString: "atmux:fe-1",
+      team: "atmux",
+      member: "fe-1",
+      readyTimeoutMs: 500,
+      readyPollIntervalMs: 100,
+      postBootTimeoutMs: 500,
+      postBootPollIntervalMs: 100,
+      maxAttempts: 1,
+      sleep: noopSleep,
+      paneLockDir: testPaneLockDir,
+      now: fakeClock({ step: 100 }),
+    });
+    expect(r.status).toBe("failed");
+    expect(r.reason).toBe("capture-error");
+    expect(r.attempts).toBe(1);
+    expect(getSendCallCount()).toBe(1);
+    expect(getBufferLoadCallCount()).toBe(1);
+    expect(getBufferPasteCallCount()).toBe(1);
   });
 });
 
@@ -1173,14 +1250,14 @@ describe("bootClaudeMember — forceBootPrompt (EPIC e-f28c2596 T7)", () => {
     // wait + boot prompt + tokens-moved poll. The initial capture is NOT
     // consumed (no `capturePane(start: -40)` pre-poll), so the first capture
     // in the array is consumed by the readiness poll instead.
-    const { tmux, calls } = fakeTmux({
-      captures: [
-        "❯ ↑ 5k tokens", // [0] readiness — isTuiReady TRUE (matches ❯ + tokens)
-        "❯ pre", // [1] safeSend preCapture (composer not empty — would normally fail verify)
-        "❯ ", // [2] safeSend verify poll #1 — composerEmpty TRUE
-        "↑ 12k tokens\n❯ ", // [3] tokens-poll — tokensMoved TRUE, status=booted
-      ],
-    });
+    const { tmux, calls, getSendCallCount, getBufferLoadCallCount, getBufferPasteCallCount } =
+      fakeTmux({
+        captures: [
+          "❯ ↑ 5k tokens", // [0] readiness — isTuiReady TRUE (matches ❯ + stale tokens)
+          "❯ pre", // [1] safeSend preCapture (composer not empty — would normally fail verify)
+          "✻ Worked for 1m 30s\n❯ still-loaded\n↑ 12k tokens", // [2] verify poll — stale live evidence must NOT bypass forceBootPrompt
+        ],
+      });
     const r = await bootClaudeMember({
       tmux,
       sendTarget,
@@ -1201,9 +1278,18 @@ describe("bootClaudeMember — forceBootPrompt (EPIC e-f28c2596 T7)", () => {
       now: fakeClock({ step: 25 }),
       appendLog: async () => {},
     });
-    // Sentinel bypassed → boot prompt fired → status booted
-    expect(r.status).toBe("booted");
+    // Sentinel bypassed → boot prompt fired → stale live evidence is ignored
+    // under forceBootPrompt, so submit verification fails closed.
+    expect(r.status).toBe("failed");
+    expect(r.reason).toBe("submit-not-verified");
     expect(r.attempts).toBe(1);
+    expect(getSendCallCount()).toBe(1);
+    expect(getBufferLoadCallCount()).toBe(1);
+    expect(getBufferPasteCallCount()).toBe(1);
+    const keyEvents = calls.filter((c) => c.kind === "key");
+    expect(keyEvents).toHaveLength(1);
+    expect(keyEvents[0]?.keys).toBe("C-m");
+    expect(keyEvents[0]?.enter).toBe(false);
     // Exactly ONE "send"-shaped entry (loadBuffer carrying the boot prompt).
     const sends = calls.filter((c) => c.kind === "send");
     expect(sends).toHaveLength(1);
