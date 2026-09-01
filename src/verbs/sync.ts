@@ -32,11 +32,7 @@ import {
   type ComputeOpts,
   type WriteSyncOpts,
 } from "../core/sync-claude-team-json/index.ts";
-import {
-  defaultStderrWrite,
-  defaultStdoutWrite,
-  type Writer,
-} from "../core/io.ts";
+import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { UsageError } from "../errors.ts";
 
 const KNOWN_SUBVERBS = ["claude-team-json"] as const;
@@ -91,9 +87,7 @@ interface SyncClaudeTeamJsonFlags {
   force: boolean;
 }
 
-function parseSyncClaudeTeamJsonFlags(
-  argv: ReadonlyArray<string>,
-): SyncClaudeTeamJsonFlags {
+function parseSyncClaudeTeamJsonFlags(argv: ReadonlyArray<string>): SyncClaudeTeamJsonFlags {
   const flags: SyncClaudeTeamJsonFlags = {
     overwriteBriefs: false,
     dryRun: false,
@@ -126,10 +120,7 @@ function parseSyncClaudeTeamJsonFlags(
   return flags;
 }
 
-async function syncClaudeTeamJson(
-  argv: ReadonlyArray<string>,
-  opts: SyncOpts,
-): Promise<number> {
+async function syncClaudeTeamJson(argv: ReadonlyArray<string>, opts: SyncOpts): Promise<number> {
   const flags = parseSyncClaudeTeamJsonFlags(argv);
 
   if (flags.dryRun) {

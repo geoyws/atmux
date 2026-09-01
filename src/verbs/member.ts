@@ -81,12 +81,7 @@ import {
 } from "../core/common.ts";
 import { writeHeartbeat } from "../core/heartbeat.ts";
 import { loadInbox, movePendingToInProgress } from "../core/inbox.ts";
-import {
-  claimTaskForMember,
-  markTaskBlockedWithNote,
-  nowEpoch,
-  showTask,
-} from "../core/kanban.ts";
+import { claimTaskForMember, markTaskBlockedWithNote, nowEpoch, showTask } from "../core/kanban.ts";
 import {
   isMemberSelfStatus,
   MEMBER_SELF_STATUS_VALUES,
@@ -793,9 +788,7 @@ export async function memberMoveInternal(
   }
 
   if (!moved) {
-    stdout(
-      `member move: '${parsed.memberId}' already at W${parsed.position} — no-op\n`,
-    );
+    stdout(`member move: '${parsed.memberId}' already at W${parsed.position} — no-op\n`);
     return { exitCode: 0, wrote: false, moved: false };
   }
 
@@ -902,9 +895,7 @@ export async function memberSwapInternal(
   const orderedIds = mapWindowsToMemberIds(liveAfter, team.members as ReadonlyArray<MemberShape>);
   await persistMemberOrder(tjPath, orderedIds);
 
-  stdout(
-    `✅ member swap: '${parsed.idA}' W${a.index} ↔ '${parsed.idB}' W${b.index}\n`,
-  );
+  stdout(`✅ member swap: '${parsed.idA}' W${a.index} ↔ '${parsed.idB}' W${b.index}\n`);
   return { exitCode: 0, wrote: true, swapped: true };
 }
 
@@ -1142,7 +1133,12 @@ export async function memberStatusSet(
 
   const dirOpts: ResolveDirOpts = teamDir !== undefined ? { teamDir } : {};
   const team = await requireTeam(dirOpts);
-  const resolved = pickMemberName({ id: "", ...(who !== undefined ? { who } : {}) }, env, cwd, team.members);
+  const resolved = pickMemberName(
+    { id: "", ...(who !== undefined ? { who } : {}) },
+    env,
+    cwd,
+    team.members,
+  );
   if (resolved === undefined) {
     throw new UsageError({
       what: "member status: can't infer member — set ATMUX_MEMBER or pass --as <member>",
@@ -1204,7 +1200,9 @@ export async function memberStatusSet(
         `note: ${resolved} still owns ${ib.inProgress.length} in-progress task(s) — going idle with dangling work is usually a lie:\n`,
       );
       for (const t of ib.inProgress) {
-        stdout(`  ${t.id}  ${t.subject ?? ""}  → atmux done ${t.id}  (or atmux task move ${t.id} todo)\n`);
+        stdout(
+          `  ${t.id}  ${t.subject ?? ""}  → atmux done ${t.id}  (or atmux task move ${t.id} todo)\n`,
+        );
       }
     }
   }

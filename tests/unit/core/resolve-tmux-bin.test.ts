@@ -121,17 +121,47 @@ describe("resolveTmuxBin — tier 3 (system PATH with warn-once)", () => {
   test("warn fires ONCE — repeated calls with same state are silent", () => {
     const warns: string[] = [];
     const state = createResolveTmuxBinState();
-    resolveTmuxBin({}, () => false, (s) => warns.push(s), state, () => "/usr/bin/tmux");
-    resolveTmuxBin({}, () => false, (s) => warns.push(s), state, () => "/usr/bin/tmux");
-    resolveTmuxBin({}, () => false, (s) => warns.push(s), state, () => "/usr/bin/tmux");
+    resolveTmuxBin(
+      {},
+      () => false,
+      (s) => warns.push(s),
+      state,
+      () => "/usr/bin/tmux",
+    );
+    resolveTmuxBin(
+      {},
+      () => false,
+      (s) => warns.push(s),
+      state,
+      () => "/usr/bin/tmux",
+    );
+    resolveTmuxBin(
+      {},
+      () => false,
+      (s) => warns.push(s),
+      state,
+      () => "/usr/bin/tmux",
+    );
     expect(warns).toHaveLength(1);
   });
 
   test("warn fires AGAIN when state record is fresh — no global side-channel", () => {
     const warns: string[] = [];
     const pathProbe = () => "/usr/bin/tmux";
-    resolveTmuxBin({}, () => false, (s) => warns.push(s), createResolveTmuxBinState(), pathProbe);
-    resolveTmuxBin({}, () => false, (s) => warns.push(s), createResolveTmuxBinState(), pathProbe);
+    resolveTmuxBin(
+      {},
+      () => false,
+      (s) => warns.push(s),
+      createResolveTmuxBinState(),
+      pathProbe,
+    );
+    resolveTmuxBin(
+      {},
+      () => false,
+      (s) => warns.push(s),
+      createResolveTmuxBinState(),
+      pathProbe,
+    );
     expect(warns).toHaveLength(2);
   });
 });
@@ -226,7 +256,13 @@ describe("resolveTmuxBin — default parameters", () => {
     }) as typeof process.stderr.write;
     try {
       const state = createResolveTmuxBinState();
-      const r = resolveTmuxBin({}, () => false, undefined, state, () => "/usr/bin/tmux");
+      const r = resolveTmuxBin(
+        {},
+        () => false,
+        undefined,
+        state,
+        () => "/usr/bin/tmux",
+      );
       expect(r).toBe("/usr/bin/tmux");
       expect(captured.some((s) => s.includes("vendored tmux not found"))).toBe(true);
     } finally {
@@ -241,7 +277,12 @@ describe("resolveTmuxBin — default parameters", () => {
     const state = createResolveTmuxBinState();
     let result: string;
     try {
-      result = resolveTmuxBin({}, () => false, () => {}, state);
+      result = resolveTmuxBin(
+        {},
+        () => false,
+        () => {},
+        state,
+      );
     } catch {
       // No tmux on PATH at all — defaultPathProbe returned null,
       // resolver threw bootstrap-failure. Acceptable result; assertion
@@ -257,13 +298,31 @@ describe("resetResolveTmuxBinForTesting", () => {
   test("clears the default module-level cache + warn-once flag", () => {
     resetResolveTmuxBinForTesting();
     const warns: string[] = [];
-    resolveTmuxBin({}, () => false, (s) => warns.push(s), undefined, () => "/usr/bin/tmux");
-    resolveTmuxBin({}, () => false, (s) => warns.push(s), undefined, () => "/usr/bin/tmux");
+    resolveTmuxBin(
+      {},
+      () => false,
+      (s) => warns.push(s),
+      undefined,
+      () => "/usr/bin/tmux",
+    );
+    resolveTmuxBin(
+      {},
+      () => false,
+      (s) => warns.push(s),
+      undefined,
+      () => "/usr/bin/tmux",
+    );
     expect(warns).toHaveLength(1);
 
     resetResolveTmuxBinForTesting();
 
-    resolveTmuxBin({}, () => false, (s) => warns.push(s), undefined, () => "/usr/bin/tmux");
+    resolveTmuxBin(
+      {},
+      () => false,
+      (s) => warns.push(s),
+      undefined,
+      () => "/usr/bin/tmux",
+    );
     expect(warns).toHaveLength(2);
 
     resetResolveTmuxBinForTesting();

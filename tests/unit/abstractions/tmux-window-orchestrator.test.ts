@@ -55,10 +55,7 @@ describe("sortMembersDefaultsFirst", () => {
   });
 
   test("members without a role land in user-added bucket", () => {
-    const members = [
-      { name: "noRole" },
-      { name: "lead", role: "team-lead" },
-    ];
+    const members = [{ name: "noRole" }, { name: "lead", role: "team-lead" }];
     const sorted = sortMembersDefaultsFirst(members, CANONICAL);
     expect(sorted.map((m) => m.name)).toEqual(["lead", "noRole"]);
   });
@@ -138,15 +135,27 @@ function stubTmux(state: StubState): TmuxNamespace {
       selectWindow: async () => {},
       moveWindow: async (opts) => {
         state.moveCalls.push({
-          source: typeof opts.source === "string" ? opts.source : `W${(opts.source as { windowIndex: number }).windowIndex}`,
-          target: typeof opts.target === "string" ? opts.target : `W${(opts.target as { windowIndex: number }).windowIndex}`,
+          source:
+            typeof opts.source === "string"
+              ? opts.source
+              : `W${(opts.source as { windowIndex: number }).windowIndex}`,
+          target:
+            typeof opts.target === "string"
+              ? opts.target
+              : `W${(opts.target as { windowIndex: number }).windowIndex}`,
         });
       },
       swapWindow: async (opts) => {
         if (state.swapThrows !== undefined) throw state.swapThrows;
         state.swapCalls.push({
-          source: typeof opts.source === "string" ? opts.source : `W${(opts.source as { windowIndex: number }).windowIndex}`,
-          target: typeof opts.target === "string" ? opts.target : `W${(opts.target as { windowIndex: number }).windowIndex}`,
+          source:
+            typeof opts.source === "string"
+              ? opts.source
+              : `W${(opts.source as { windowIndex: number }).windowIndex}`,
+          target:
+            typeof opts.target === "string"
+              ? opts.target
+              : `W${(opts.target as { windowIndex: number }).windowIndex}`,
         });
       },
     },

@@ -81,10 +81,7 @@ describe("createComplaintConsumerHandler — routing", () => {
           ) => {
             const callIndex = calls.push({ command, args: [...args], options });
             const child = {
-              on(
-                event: "error" | "exit",
-                handler: (code?: number | Error) => void,
-              ) {
+              on(event: "error" | "exit", handler: (code?: number | Error) => void) {
                 if (callIndex === 1 && event === "exit") {
                   queueMicrotask(() => handler(0));
                 } else if (callIndex === 2 && event === "error") {

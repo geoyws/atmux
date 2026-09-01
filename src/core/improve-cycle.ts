@@ -302,10 +302,7 @@ export function selectLongstandingIssues(
   const limit = opts.limit ?? 3;
   const improvementEpicId = opts.improvementEpicId ?? IMPROVEMENT_EPIC_ID;
   const candidates = tasks.filter(
-    (t) =>
-      t.status === "todo" &&
-      (t.epic ?? null) !== improvementEpicId &&
-      t.driverOnly !== true,
+    (t) => t.status === "todo" && (t.epic ?? null) !== improvementEpicId && t.driverOnly !== true,
   );
   candidates.sort((a, b) => {
     const ageA = a.createdAt ?? nowSec;

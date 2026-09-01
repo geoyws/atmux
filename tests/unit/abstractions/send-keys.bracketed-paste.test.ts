@@ -130,9 +130,9 @@ describe("ADR-205 — bracketed-paste as the default body-delivery shape", () =>
     //    buffer — this is the ESC[200~ … ESC[201~ envelope at the
     //    tmux layer (paste-buffer wraps content in bracketed-paste).
     expect(paste?.op === "pasteBuffer" && paste.deleteAfter).toBe(true);
-    expect(load?.op === "loadBuffer" && paste?.op === "pasteBuffer" && load.name === paste.name).toBe(
-      true,
-    );
+    expect(
+      load?.op === "loadBuffer" && paste?.op === "pasteBuffer" && load.name === paste.name,
+    ).toBe(true);
 
     // 3. Submit is the literal carriage-return keysym `C-m`, NOT the
     //    `Enter` token (ADR-081 §A: Enter gets swallowed as a newline

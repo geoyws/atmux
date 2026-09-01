@@ -186,9 +186,7 @@ describe("renameTeamViewerWindow (edges)", () => {
       oldName: "team-a",
       newName: "team-a-renamed",
     });
-    expect(renameWindowCalls).toEqual([
-      { target: "atmux_cockpit_test:7", name: "team-a-renamed" },
-    ]);
+    expect(renameWindowCalls).toEqual([{ target: "atmux_cockpit_test:7", name: "team-a-renamed" }]);
   });
 
   test("oldName === newName — still resolves the window then renames in place (no special-case)", async () => {

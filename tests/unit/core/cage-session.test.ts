@@ -46,20 +46,14 @@ describe("resolveCageSession (name + socket)", () => {
 
   test("UNDERSCORE anchor honoured verbatim + tmuxTmpdir socket (unum)", async () => {
     await writeAnchor("atmux_unum");
-    const out = await resolveCageSession(
-      { name: "unum", tmuxTmpdir: "/tmp/atmux-unum" },
-      atmuxDir,
-    );
+    const out = await resolveCageSession({ name: "unum", tmuxTmpdir: "/tmp/atmux-unum" }, atmuxDir);
     expect(out.sessionName).toBe("atmux_unum");
     expect(out.socketPath).toBe("/tmp/atmux-unum/sock");
   });
 
   test("UNDERSCORE anchor honoured verbatim + tmuxTmpdir socket (sopx)", async () => {
     await writeAnchor("atmux_sopx");
-    const out = await resolveCageSession(
-      { name: "sopx", tmuxTmpdir: "/tmp/atmux-sopx" },
-      atmuxDir,
-    );
+    const out = await resolveCageSession({ name: "sopx", tmuxTmpdir: "/tmp/atmux-sopx" }, atmuxDir);
     expect(out.sessionName).toBe("atmux_sopx");
     expect(out.socketPath).toBe("/tmp/atmux-sopx/sock");
   });
@@ -113,10 +107,7 @@ describe("resolveCageSession (name + socket)", () => {
     // of the resolved session name — proves the two halves are derived
     // independently (anchor drives name, tmuxTmpdir drives socket).
     await writeAnchor("atmux_weird_name");
-    const out = await resolveCageSession(
-      { name: "unum", tmuxTmpdir: "/custom/tmuxdir" },
-      atmuxDir,
-    );
+    const out = await resolveCageSession({ name: "unum", tmuxTmpdir: "/custom/tmuxdir" }, atmuxDir);
     expect(out.sessionName).toBe("atmux_weird_name");
     expect(out.socketPath).toBe("/custom/tmuxdir/sock");
   });

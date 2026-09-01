@@ -271,10 +271,7 @@ describe("tokenBudget — bad news is a successful read; nothing readable is not
 
   test("all budgets healthy → 0", async () => {
     const c = capture();
-    const code = await tokenBudget(
-      [],
-      deps({ runProbe: async () => HEALTHY_NDJSON, log: c.log }),
-    );
+    const code = await tokenBudget([], deps({ runProbe: async () => HEALTHY_NDJSON, log: c.log }));
     expect(code).toBe(0);
     expect(c.lines.join("\n")).toContain("all 1 measured budgets have headroom");
   });

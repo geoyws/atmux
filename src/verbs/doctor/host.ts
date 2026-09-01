@@ -137,7 +137,8 @@ export function claudeAccountPoolRows(verdict: ClaudeAccountPoolVerdict): Doctor
       {
         status: "info",
         label: "claudeAccountPool",
-        detail: "pool unconfigured; every team pins its own claudeAccount (spawn-epic uses the inheritance chain)",
+        detail:
+          "pool unconfigured; every team pins its own claudeAccount (spawn-epic uses the inheritance chain)",
       },
     ];
   }

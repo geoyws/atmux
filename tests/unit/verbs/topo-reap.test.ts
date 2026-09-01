@@ -56,7 +56,9 @@ function makeIOWithCageOrphans(refs: string[]): DiscoveryIO {
       return {
         schemaVersion: 1,
         cockpitSession: "atmux_cockpit",
-        sessions: [{ type: "team", name: "atmux", enabled: true, root: "/srv/atmux", sessions: [] }],
+        sessions: [
+          { type: "team", name: "atmux", enabled: true, root: "/srv/atmux", sessions: [] },
+        ],
         teams: [],
       } as unknown as Awaited<ReturnType<DiscoveryIO["readCockpit"]>>;
     },

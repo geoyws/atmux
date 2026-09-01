@@ -81,7 +81,6 @@ function driftedTeamJson(): string {
   });
 }
 
-
 interface FakeCursorOpts {
   /** When true, return a non-empty patch touching team.json. */
   patchTeamJson?: boolean;

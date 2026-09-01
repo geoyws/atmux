@@ -84,7 +84,10 @@ describe("hasLiveChildCages — structural P0 guard (ADR-252, t-65bec10b)", () =
     const seen: string[] = [];
     const r = await hasLiveChildCages("/tmp/atmux-demo", {
       listDir: listerFor({ "/tmp/atmux-demo": ["child-a"] }),
-      tmuxFactory: fakeTmuxFactory({ "/tmp/atmux-demo/child-a/tmux-0/default": [liveSession] }, seen),
+      tmuxFactory: fakeTmuxFactory(
+        { "/tmp/atmux-demo/child-a/tmux-0/default": [liveSession] },
+        seen,
+      ),
       uid: 0,
     });
     expect(r).toBe(true);

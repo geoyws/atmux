@@ -36,10 +36,7 @@ export interface ComplaintConsumerDeps {
 
 /** Outcome surface — mirrors the orchd-merge / orchd-dissolve pattern
  *  for observability + audit-log consistency. */
-export type ComplaintConsumerOutcome =
-  | "routed"
-  | "skipped-bump"
-  | "tell-lead-failed";
+export type ComplaintConsumerOutcome = "routed" | "skipped-bump" | "tell-lead-failed";
 
 const NOOP_LOGGER = { log: () => {}, warn: () => {} };
 

@@ -181,10 +181,7 @@ describe("validatePluginJson — Task t-dcf4f970 acceptance cases", () => {
       name: "x",
       version: "0.0.1",
       description: "second skill broken",
-      skills: [
-        { name: "good", path: "skills/good/SKILL.md" },
-        { name: "bad" },
-      ],
+      skills: [{ name: "good", path: "skills/good/SKILL.md" }, { name: "bad" }],
     });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toContain("skills[1]");

@@ -589,9 +589,7 @@ describe("teamRename — viewer host routes through the group (e-419553c6)", () 
       schemaVersion: 1,
       cockpitSession: "atx",
       windows: [],
-      sessions: [
-        { type: "team", name: "old-team", enabled: true, root: "/r/old", sessions: [] },
-      ],
+      sessions: [{ type: "team", name: "old-team", enabled: true, root: "/r/old", sessions: [] }],
     } as unknown as Cockpit;
     const d = routingDeps(cockpit);
     const exit = await teamRename(["new-team", "--team-dir", td], d);

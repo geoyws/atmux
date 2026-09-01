@@ -192,13 +192,7 @@ describe("drainSince", () => {
     db.prepare(
       `INSERT INTO events (event_id, topic, payload, emitted_at_sec, schema_version)
        VALUES (?, ?, ?, ?, ?)`,
-    ).run(
-      "01890000-0000-7000-8000-000000000099",
-      "task.claimed",
-      "{not valid json",
-      300,
-      1,
-    );
+    ).run("01890000-0000-7000-8000-000000000099", "task.claimed", "{not valid json", 300, 1);
     // Valid rows still drain; poison silently skipped
     const all = drainSince(db, { topics: [], lastEventId: "" });
     expect(all.length).toBe(5); // unchanged — poison dropped
@@ -251,14 +245,9 @@ describe("withIdempotency", () => {
 
   test("first run processes all events + advances offset", async () => {
     const seen: string[] = [];
-    const count = await withIdempotency(
-      db,
-      "alpha:gitter",
-      { topics: ["task.claimed"] },
-      (e) => {
-        if (e.topic === "task.claimed") seen.push(e.taskId);
-      },
-    );
+    const count = await withIdempotency(db, "alpha:gitter", { topics: ["task.claimed"] }, (e) => {
+      if (e.topic === "task.claimed") seen.push(e.taskId);
+    });
     expect(count).toBe(4);
     expect(seen).toEqual(["t-1", "t-2", "t-3", "t-4"]);
     expect(loadOffset(db, "alpha:gitter")).toBe(fakeId(4));
@@ -268,30 +257,20 @@ describe("withIdempotency", () => {
     // Prime the offset to fakeId(4)
     saveOffset(db, "alpha:gitter", fakeId(4));
     const seen: string[] = [];
-    const count = await withIdempotency(
-      db,
-      "alpha:gitter",
-      { topics: ["task.claimed"] },
-      (e) => {
-        if (e.topic === "task.claimed") seen.push(e.taskId);
-      },
-    );
+    const count = await withIdempotency(db, "alpha:gitter", { topics: ["task.claimed"] }, (e) => {
+      if (e.topic === "task.claimed") seen.push(e.taskId);
+    });
     expect(count).toBe(0);
     expect(seen).toEqual([]);
   });
 
   test("handler throw halts the drain + does NOT advance past failing event", async () => {
     const seen: string[] = [];
-    const count = await withIdempotency(
-      db,
-      "alpha:gitter",
-      { topics: ["task.claimed"] },
-      (e) => {
-        if (e.topic !== "task.claimed") return;
-        if (e.taskId === "t-3") throw new Error("synthetic failure");
-        seen.push(e.taskId);
-      },
-    );
+    const count = await withIdempotency(db, "alpha:gitter", { topics: ["task.claimed"] }, (e) => {
+      if (e.topic !== "task.claimed") return;
+      if (e.taskId === "t-3") throw new Error("synthetic failure");
+      seen.push(e.taskId);
+    });
     expect(count).toBe(2); // t-1, t-2 succeeded; t-3 threw; t-4 never reached
     expect(seen).toEqual(["t-1", "t-2"]);
     // Offset advanced to the last *successful* event, not past the failing one.
@@ -482,9 +461,9 @@ describe("emit — honkerLoaded stream-publish bridge", () => {
     expect(result.eventId).toBeTruthy();
     // Durable INSERT is the load-bearing assertion: a thrown
     // honker_stream_publish() must not derail the durable row.
-    const row = db
-      .prepare("SELECT topic FROM events WHERE event_id = ?")
-      .get(result.eventId) as { topic: string };
+    const row = db.prepare("SELECT topic FROM events WHERE event_id = ?").get(result.eventId) as {
+      topic: string;
+    };
     expect(row.topic).toBe("task.done");
     resetHonkerStateForTest(db);
   });
@@ -519,9 +498,9 @@ describe("emit — honkerLoaded stream-publish bridge", () => {
       { honkerLoaded: false, nowSec: () => 100 },
     );
     expect(result.eventId).toBeTruthy();
-    const row = db
-      .prepare("SELECT topic FROM events WHERE event_id = ?")
-      .get(result.eventId) as { topic: string };
+    const row = db.prepare("SELECT topic FROM events WHERE event_id = ?").get(result.eventId) as {
+      topic: string;
+    };
     expect(row.topic).toBe("task.done");
     resetHonkerStateForTest(db);
   });
@@ -533,11 +512,27 @@ describe("watchEvents", () => {
   test("backlog drain on first iteration — events emitted before subscription are yielded", async () => {
     // Use injected monotonic-ish IDs so lexicographic order is deterministic.
     let counter = 0;
-    const ids = ["01900000000000000000000000000001", "01900000000000000000000000000002", "01900000000000000000000000000003"];
+    const ids = [
+      "01900000000000000000000000000001",
+      "01900000000000000000000000000002",
+      "01900000000000000000000000000003",
+    ];
     const gen = () => ids[counter++] ?? "";
-    emit(db, { topic: "task.done", taskId: "t-A", member: "be-1", team: "demo", doneAtSec: 1 }, { generateId: gen });
-    emit(db, { topic: "task.done", taskId: "t-B", member: "be-1", team: "demo", doneAtSec: 2 }, { generateId: gen });
-    emit(db, { topic: "task.done", taskId: "t-C", member: "be-1", team: "demo", doneAtSec: 3 }, { generateId: gen });
+    emit(
+      db,
+      { topic: "task.done", taskId: "t-A", member: "be-1", team: "demo", doneAtSec: 1 },
+      { generateId: gen },
+    );
+    emit(
+      db,
+      { topic: "task.done", taskId: "t-B", member: "be-1", team: "demo", doneAtSec: 2 },
+      { generateId: gen },
+    );
+    emit(
+      db,
+      { topic: "task.done", taskId: "t-C", member: "be-1", team: "demo", doneAtSec: 3 },
+      { generateId: gen },
+    );
     const ac = new AbortController();
     const watcher = watchEvents(db, {
       topics: ["task.done"],
@@ -711,13 +706,21 @@ describe("watchEvents", () => {
     const injectedIds = ["01900000000000000000000000000b01", "01900000000000000000000000000b02"];
     const gen = () => injectedIds[counter++] ?? "";
     // Pre-populate one event
-    emit(db, { topic: "task.done", taskId: "t-A", member: "x", team: "y", doneAtSec: 1 }, { generateId: gen });
+    emit(
+      db,
+      { topic: "task.done", taskId: "t-A", member: "x", team: "y", doneAtSec: 1 },
+      { generateId: gen },
+    );
     const ac = new AbortController();
     // Yield two wake signals then end
     const signals = (async function* () {
       yield "honker:stream:task.done\tnew";
       // Emit a second event mid-loop so the second signal triggers a drain
-      emit(db, { topic: "task.done", taskId: "t-B", member: "x", team: "y", doneAtSec: 2 }, { generateId: gen });
+      emit(
+        db,
+        { topic: "task.done", taskId: "t-B", member: "x", team: "y", doneAtSec: 2 },
+        { generateId: gen },
+      );
       yield "honker:stream:task.done\tnew";
     })();
     const watcher = watchEvents(db, {

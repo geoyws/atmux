@@ -29,8 +29,7 @@
 
 import { ConfigError, UsageError } from "../errors.ts";
 
-const USAGE =
-  "atmux cockpit-mirror <--handle-one|--status> [--event-id ID --topic T]";
+const USAGE = "atmux cockpit-mirror <--handle-one|--status> [--event-id ID --topic T]";
 
 export interface ParsedCockpitMirrorArgs {
   subverb: "handle-one" | "status";
@@ -40,9 +39,7 @@ export interface ParsedCockpitMirrorArgs {
   topic?: string;
 }
 
-export function parseCockpitMirrorArgs(
-  argv: ReadonlyArray<string>,
-): ParsedCockpitMirrorArgs {
+export function parseCockpitMirrorArgs(argv: ReadonlyArray<string>): ParsedCockpitMirrorArgs {
   let subverb: "handle-one" | "status" | undefined;
   let eventId: string | undefined;
   let topic: string | undefined;
@@ -129,49 +126,49 @@ export interface CockpitMirrorDeps {
   handlers?: Partial<Record<string, (eventId: string) => Promise<void>>>;
 }
 
-const DEFAULT_HANDLERS: Record<string, (eventId: string, log: (m: string) => void) => Promise<void>> =
-  {
-    "epic.merge_ready": async (eventId, log) => {
-      // TODO(follow-up): wire to parent-gitter dispatcher hook per
-      // ADR-091 — fan-in pre-flag #4. Current MVP scaffold logs only;
-      // dispatch is implemented in the per-team gitter consumer.
-      log(`cockpit-mirror: epic.merge_ready eventId=${eventId} — log-only (handler follow-up)`);
-    },
-    "epic.spawn_blocked": async (eventId, log) => {
-      // TODO(follow-up): emit operator-visibility ping (Discord +
-      // cockpit dashboard). MVP scaffold logs only.
-      log(
-        `cockpit-mirror: epic.spawn_blocked eventId=${eventId} — log-only (handler follow-up)`,
-      );
-    },
-    "team.spawned": async (eventId, log) => {
-      // TODO(follow-up): registry-rebuild trigger (cockpit.json
-      // sessions[] auto-lift). MVP scaffold logs only.
-      log(`cockpit-mirror: team.spawned eventId=${eventId} — log-only (handler follow-up)`);
-    },
-    "team.dissolved": async (eventId, log) => {
-      // TODO(follow-up): registry-rebuild + cron-reaper. MVP scaffold
-      // logs only.
-      log(`cockpit-mirror: team.dissolved eventId=${eventId} — log-only (handler follow-up)`);
-    },
-    "budget.warning": async (eventId, log) => {
-      // TODO(follow-up): wire to account-pool reroute per ADR-199 §D6
-      // (least-loaded selector subscriber) + Discord webhook via
-      // src/abstractions/discord.ts::send. MVP scaffold logs only.
-      log(`cockpit-mirror: budget.warning eventId=${eventId} — log-only (handler follow-up)`);
-    },
-    "budget.recovered": async (eventId, log) => {
-      // TODO(follow-up): re-enable rerouted accounts per ADR-199 §D6.
-      // MVP scaffold logs only.
-      log(`cockpit-mirror: budget.recovered eventId=${eventId} — log-only (handler follow-up)`);
-    },
-    "gitter.escalated": async (eventId, log) => {
-      // TODO(follow-up): flag-add + Discord webhook. MVP scaffold logs
-      // only — the per-team flag escalation already lands; cockpit-side
-      // is the fleet-wide aggregator.
-      log(`cockpit-mirror: gitter.escalated eventId=${eventId} — log-only (handler follow-up)`);
-    },
-  };
+const DEFAULT_HANDLERS: Record<
+  string,
+  (eventId: string, log: (m: string) => void) => Promise<void>
+> = {
+  "epic.merge_ready": async (eventId, log) => {
+    // TODO(follow-up): wire to parent-gitter dispatcher hook per
+    // ADR-091 — fan-in pre-flag #4. Current MVP scaffold logs only;
+    // dispatch is implemented in the per-team gitter consumer.
+    log(`cockpit-mirror: epic.merge_ready eventId=${eventId} — log-only (handler follow-up)`);
+  },
+  "epic.spawn_blocked": async (eventId, log) => {
+    // TODO(follow-up): emit operator-visibility ping (Discord +
+    // cockpit dashboard). MVP scaffold logs only.
+    log(`cockpit-mirror: epic.spawn_blocked eventId=${eventId} — log-only (handler follow-up)`);
+  },
+  "team.spawned": async (eventId, log) => {
+    // TODO(follow-up): registry-rebuild trigger (cockpit.json
+    // sessions[] auto-lift). MVP scaffold logs only.
+    log(`cockpit-mirror: team.spawned eventId=${eventId} — log-only (handler follow-up)`);
+  },
+  "team.dissolved": async (eventId, log) => {
+    // TODO(follow-up): registry-rebuild + cron-reaper. MVP scaffold
+    // logs only.
+    log(`cockpit-mirror: team.dissolved eventId=${eventId} — log-only (handler follow-up)`);
+  },
+  "budget.warning": async (eventId, log) => {
+    // TODO(follow-up): wire to account-pool reroute per ADR-199 §D6
+    // (least-loaded selector subscriber) + Discord webhook via
+    // src/abstractions/discord.ts::send. MVP scaffold logs only.
+    log(`cockpit-mirror: budget.warning eventId=${eventId} — log-only (handler follow-up)`);
+  },
+  "budget.recovered": async (eventId, log) => {
+    // TODO(follow-up): re-enable rerouted accounts per ADR-199 §D6.
+    // MVP scaffold logs only.
+    log(`cockpit-mirror: budget.recovered eventId=${eventId} — log-only (handler follow-up)`);
+  },
+  "gitter.escalated": async (eventId, log) => {
+    // TODO(follow-up): flag-add + Discord webhook. MVP scaffold logs
+    // only — the per-team flag escalation already lands; cockpit-side
+    // is the fleet-wide aggregator.
+    log(`cockpit-mirror: gitter.escalated eventId=${eventId} — log-only (handler follow-up)`);
+  },
+};
 
 /** Topics this dispatcher knows. Non-whitelisted topics return 0 with
  *  a warn — Rust caller still advances offset (anti-stick on a topic
@@ -203,8 +200,7 @@ export async function cockpitMirror(
   if (eventId === undefined || topic === undefined) {
     // Parser guarantees both; defensive check for ts narrowing.
     throw new UsageError({
-      what:
-        "cockpit-mirror --handle-one: parser invariant violated (missing event-id or topic)",
+      what: "cockpit-mirror --handle-one: parser invariant violated (missing event-id or topic)",
     });
   }
 
@@ -215,8 +211,8 @@ export async function cockpitMirror(
 
   // Resolve handler: caller-injected > default.
   const injected = deps.handlers?.[topic];
-  const handler: (eventId: string) => Promise<void> = injected
-    ?? ((evId): Promise<void> => DEFAULT_HANDLERS[topic]!(evId, log));
+  const handler: (eventId: string) => Promise<void> =
+    injected ?? ((evId): Promise<void> => DEFAULT_HANDLERS[topic]!(evId, log));
 
   try {
     await handler(eventId);

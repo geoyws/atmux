@@ -420,10 +420,7 @@ describe("Team schema — driverSession (ADR-044 + ADR-064 §5)", () => {
     }
     expect(caught).toBeInstanceOf(ZodError);
     // Pinpoint the failing path so a future loosening can't silently pass.
-    expect((caught as ZodError).issues[0]?.path).toEqual([
-      "driverSession",
-      "model",
-    ]);
+    expect((caught as ZodError).issues[0]?.path).toEqual(["driverSession", "model"]);
   });
 
   test("Team.parse with driverSession=null is accepted (explicitly disabled)", () => {
@@ -1287,9 +1284,7 @@ describe("TeamAutoSpawn — block shape", () => {
   });
 
   test("strict mode rejects unknown top-level keys", () => {
-    expect(() =>
-      TeamAutoSpawn.parse({ defualts: [] }),
-    ).toThrow();
+    expect(() => TeamAutoSpawn.parse({ defualts: [] })).toThrow();
   });
 
   test("invalid entry inside defaults[] rejects the whole block", () => {
@@ -1408,9 +1403,7 @@ describe("TeamLeadStallWatchdog schema (ADR-247 §D6)", () => {
   });
 
   test("strict — rejects an unknown key (drift detection per ADR-054 §D3)", () => {
-    expect(() =>
-      TeamLeadStallWatchdog.parse({ idleTresholdMin: 5 }),
-    ).toThrow(ZodError);
+    expect(() => TeamLeadStallWatchdog.parse({ idleTresholdMin: 5 })).toThrow(ZodError);
   });
 
   test("Team.parse threads leadStallWatchdog through + back-compat when absent", () => {
@@ -1558,17 +1551,15 @@ describe("TeamIssueSync schema (ADR-261 §D10)", () => {
   });
 
   test("azure-devops arm requires org + project coordinates", () => {
-    expect(() =>
-      TeamIssueSync.parse({ trackers: [{ id: "azure-devops", org: "ifca" }] }),
-    ).toThrow(ZodError);
+    expect(() => TeamIssueSync.parse({ trackers: [{ id: "azure-devops", org: "ifca" }] })).toThrow(
+      ZodError,
+    );
   });
 
   test("labelSeverityMap values constrained to the extractSeverity vocabulary", () => {
     expect(() =>
       TeamIssueSync.parse({
-        trackers: [
-          { id: "github", repos: ["geoyws/atmux"], labelSeverityMap: { p0: "high" } },
-        ],
+        trackers: [{ id: "github", repos: ["geoyws/atmux"], labelSeverityMap: { p0: "high" } }],
       }),
     ).toThrow(ZodError);
   });

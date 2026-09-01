@@ -209,7 +209,10 @@ describe("host-pressure — the report goes to STDOUT, never stderr", () => {
 describe("token-budget — the report goes to STDOUT, never stderr", () => {
   test("a healthy report lands on stdout; stderr stays empty", async () => {
     const { result, stdout, stderr } = await withCapturedIo(() =>
-      tokenBudget([], budgetDeps(async () => HEALTHY_NDJSON)),
+      tokenBudget(
+        [],
+        budgetDeps(async () => HEALTHY_NDJSON),
+      ),
     );
     expect(result).toBe(0);
     expect(stdout).toContain("all 1 measured budgets have headroom");
@@ -218,7 +221,10 @@ describe("token-budget — the report goes to STDOUT, never stderr", () => {
 
   test("a DEGRADED report lands on stdout — 'you are rate limited' is the answer", async () => {
     const { result, stdout, stderr } = await withCapturedIo(() =>
-      tokenBudget([], budgetDeps(async () => HEALTHY_NDJSON + REJECTED_NDJSON)),
+      tokenBudget(
+        [],
+        budgetDeps(async () => HEALTHY_NDJSON + REJECTED_NDJSON),
+      ),
     );
     // Exit 0 (a successful read of bad news) AND on stdout: both halves
     // are needed for the model to receive this as an answer rather than
@@ -248,7 +254,10 @@ describe("token-budget — the report goes to STDOUT, never stderr", () => {
 
   test("--json lands on stdout and parses", async () => {
     const { stdout, stderr } = await withCapturedIo(() =>
-      tokenBudget(["--json"], budgetDeps(async () => HEALTHY_NDJSON)),
+      tokenBudget(
+        ["--json"],
+        budgetDeps(async () => HEALTHY_NDJSON),
+      ),
     );
     expect(JSON.parse(stdout.trim()).ok).toBe(true);
     expect(stderr).toBe("");

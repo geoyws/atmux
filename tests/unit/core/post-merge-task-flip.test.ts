@@ -189,11 +189,11 @@ describe("flipTasksMergedInRange", () => {
       const rows = db
         .query("SELECT id, status, driver_only, note FROM tasks ORDER BY id ASC")
         .all() as Array<{
-          id: string;
-          status: string | null;
-          driver_only: number | null;
-          note: string | null;
-        }>;
+        id: string;
+        status: string | null;
+        driver_only: number | null;
+        note: string | null;
+      }>;
       expect(rows).toEqual([
         {
           id: "t-00000000",

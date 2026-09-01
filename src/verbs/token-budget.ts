@@ -149,12 +149,7 @@ export function parseTokenBudgetArgs(argv: ReadonlyArray<string>): TokenBudgetAr
 
 /** Build the probe argv from parsed args. */
 export function budgetProbeArgv(args: TokenBudgetArgs): string[] {
-  return [
-    "--json",
-    "--provider",
-    args.provider,
-    ...(args.cacheOnly ? ["--cache-only"] : []),
-  ];
+  return ["--json", "--provider", args.provider, ...(args.cacheOnly ? ["--cache-only"] : [])];
 }
 
 /**

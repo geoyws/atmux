@@ -100,7 +100,9 @@ describe("parseMemAvailableMb", () => {
   });
 
   test("missing MemAvailable line throws", () => {
-    expect(() => parseMemAvailableMb("MemTotal: 16000000 kB\n")).toThrow(/MemAvailable line absent/);
+    expect(() => parseMemAvailableMb("MemTotal: 16000000 kB\n")).toThrow(
+      /MemAvailable line absent/,
+    );
   });
 
   test("invalid value throws", () => {

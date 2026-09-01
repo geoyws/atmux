@@ -237,11 +237,9 @@ function tuiCursor(name: string, cwd: string, model: string, env: NodeJS.Process
       ? (env.ATMUX_CURSOR_DEFAULT_MODEL ?? "composer-2")
       : model;
   const forceRaw = env.ATMUX_CURSOR_FORCE ?? "1";
-  const forceFlag =
-    forceRaw !== "0" && forceRaw !== "false" ? " --force" : "";
+  const forceFlag = forceRaw !== "0" && forceRaw !== "false" ? " --force" : "";
   const mcpRaw = env.ATMUX_CURSOR_APPROVE_MCPS ?? "1";
-  const mcpFlag =
-    mcpRaw !== "0" && mcpRaw !== "false" ? " --approve-mcps" : "";
+  const mcpFlag = mcpRaw !== "0" && mcpRaw !== "false" ? " --approve-mcps" : "";
   const extra = env.ATMUX_CURSOR_ARGS_EXTRA ?? "";
   const extraSuffix = extra.length > 0 ? ` ${extra}` : "";
   return `${envPrefix(name)} cd ${posixQuote(cwd)} && ${bin}${forceFlag}${mcpFlag} --model ${posixQuote(m)}${extraSuffix}`;

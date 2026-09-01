@@ -30,7 +30,12 @@
 // CLI plumbing (flag parsing + subverb routing + tabular printing
 // for the `list` output).
 
-import { getAtmuxDir, requireTeam, type ResolveDirOpts, resolveCallerScope } from "../core/common.ts";
+import {
+  getAtmuxDir,
+  requireTeam,
+  type ResolveDirOpts,
+  resolveCallerScope,
+} from "../core/common.ts";
 import { removeFromInProgress } from "../core/inbox.ts";
 import {
   addTask,

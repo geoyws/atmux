@@ -129,10 +129,7 @@ describe("release", () => {
   });
 
   test("dirty tree refuses without --allow-dirty (exit 65)", async () => {
-    const spawn = async (
-      _cmd: string,
-      argv: ReadonlyArray<string>,
-    ): Promise<SpawnResult> => {
+    const spawn = async (_cmd: string, argv: ReadonlyArray<string>): Promise<SpawnResult> => {
       if (argv[0] === "status") return makeSpawnResult(" M src/foo.ts\n");
       return makeSpawnResult("");
     };
@@ -196,10 +193,7 @@ describe("release", () => {
   });
 
   test("build:install failure surfaces with recovery hint + non-zero exit", async () => {
-    const spawn = async (
-      cmd: string,
-      argv: ReadonlyArray<string>,
-    ): Promise<SpawnResult> => {
+    const spawn = async (cmd: string, argv: ReadonlyArray<string>): Promise<SpawnResult> => {
       if (argv[0] === "status") return makeSpawnResult("");
       if (argv[0] === "add" || argv[0] === "commit") return makeSpawnResult("");
       if (cmd === "bun" && argv[0] === "run" && argv[1] === "build:install") {

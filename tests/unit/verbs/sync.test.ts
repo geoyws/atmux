@@ -114,21 +114,21 @@ describe("dispatchSyncSubverb", () => {
     // refuses with UsageError rather than swallowing it silently. Locks
     // in the typo-protection promise of the flag-parse surface across
     // T4 + T5 + T6.
-    await expect(
-      dispatchSyncSubverb(["claude-team-json", "--frobnicate"]),
-    ).rejects.toThrow(UsageError);
-    await expect(
-      dispatchSyncSubverb(["claude-team-json", "--frobnicate"]),
-    ).rejects.toThrow(/unknown flag.*--frobnicate/);
+    await expect(dispatchSyncSubverb(["claude-team-json", "--frobnicate"])).rejects.toThrow(
+      UsageError,
+    );
+    await expect(dispatchSyncSubverb(["claude-team-json", "--frobnicate"])).rejects.toThrow(
+      /unknown flag.*--frobnicate/,
+    );
   });
 
   test("claude-team-json refuses positional args (T4 flag-parse)", async () => {
-    await expect(
-      dispatchSyncSubverb(["claude-team-json", "stray-positional"]),
-    ).rejects.toThrow(UsageError);
-    await expect(
-      dispatchSyncSubverb(["claude-team-json", "stray-positional"]),
-    ).rejects.toThrow(/unexpected positional/);
+    await expect(dispatchSyncSubverb(["claude-team-json", "stray-positional"])).rejects.toThrow(
+      UsageError,
+    );
+    await expect(dispatchSyncSubverb(["claude-team-json", "stray-positional"])).rejects.toThrow(
+      /unexpected positional/,
+    );
   });
 });
 
@@ -154,10 +154,7 @@ describe("dispatchSyncSubverb — --dry-run (T6 / t-fe4a570e)", () => {
     const claudeDir = join(root, ".claude");
     await mkdir(atmuxDir, { recursive: true });
     await mkdir(claudeDir, { recursive: true });
-    await writeFile(
-      join(atmuxDir, "team.json"),
-      JSON.stringify(ATMUX_TEAM_FIXTURE),
-    );
+    await writeFile(join(atmuxDir, "team.json"), JSON.stringify(ATMUX_TEAM_FIXTURE));
     return { root, atmuxDir, claudeDir };
   }
 
@@ -165,17 +162,14 @@ describe("dispatchSyncSubverb — --dry-run (T6 / t-fe4a570e)", () => {
     const { root, atmuxDir, claudeDir } = await seedEnv();
     try {
       let out = "";
-      const rc = await dispatchSyncSubverb(
-        ["claude-team-json", "--dry-run"],
-        {
-          dir: atmuxDir,
-          claudeDir,
-          stopAt: root,
-          stdout: (s) => {
-            out += s;
-          },
+      const rc = await dispatchSyncSubverb(["claude-team-json", "--dry-run"], {
+        dir: atmuxDir,
+        claudeDir,
+        stopAt: root,
+        stdout: (s) => {
+          out += s;
         },
-      );
+      });
       expect(rc).toBe(0);
       // Fresh-file header
       expect(out).toContain("fresh file");
@@ -209,17 +203,14 @@ describe("dispatchSyncSubverb — --dry-run (T6 / t-fe4a570e)", () => {
     );
     try {
       let out = "";
-      const rc = await dispatchSyncSubverb(
-        ["claude-team-json", "--dry-run"],
-        {
-          dir: atmuxDir,
-          claudeDir,
-          stopAt: root,
-          stdout: (s) => {
-            out += s;
-          },
+      const rc = await dispatchSyncSubverb(["claude-team-json", "--dry-run"], {
+        dir: atmuxDir,
+        claudeDir,
+        stopAt: root,
+        stdout: (s) => {
+          out += s;
         },
-      );
+      });
       expect(rc).toBe(0);
       // Non-fresh header
       expect(out).toContain("no write performed");
@@ -231,9 +222,7 @@ describe("dispatchSyncSubverb — --dry-run (T6 / t-fe4a570e)", () => {
       expect(out).toMatch(/^ {3}\[member: team-lead\]/m);
       // SIDE-EFFECT: .claude/team.json must NOT have been modified —
       // re-read and assert the stale roster is still present.
-      const after = JSON.parse(
-        await Bun.file(join(claudeDir, "team.json")).text(),
-      );
+      const after = JSON.parse(await Bun.file(join(claudeDir, "team.json")).text());
       expect(after.members).toHaveLength(3);
       expect(after.members[2].name).toBe("extra-1");
     } finally {
@@ -316,10 +305,7 @@ describe("dispatchSyncSubverb — write path (T5 / t-c2b757c1)", () => {
     const claudeDir = join(root, ".claude");
     await mkdir(atmuxDir, { recursive: true });
     await mkdir(claudeDir, { recursive: true });
-    await writeFile(
-      join(atmuxDir, "team.json"),
-      JSON.stringify(ATMUX_TEAM_FIXTURE),
-    );
+    await writeFile(join(atmuxDir, "team.json"), JSON.stringify(ATMUX_TEAM_FIXTURE));
     return { root, atmuxDir, claudeDir };
   }
 
@@ -345,9 +331,7 @@ describe("dispatchSyncSubverb — write path (T5 / t-c2b757c1)", () => {
       const marker = written[SYNC_MARKER_KEY];
       expect(marker.schemaRev).toBe("v1");
       expect(marker.lastSyncedAt).toBe(FIXED_TS_DATE.toISOString());
-      expect(marker.sourceFingerprint).toBe(
-        computeFingerprint(written.members),
-      );
+      expect(marker.sourceFingerprint).toBe(computeFingerprint(written.members));
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -392,9 +376,7 @@ describe("dispatchSyncSubverb — write path (T5 / t-c2b757c1)", () => {
       expect(stderrOut).toContain("last synced at:");
       expect(stderrOut).toContain("re-run with --force");
       // The hand-edited file MUST be untouched on the abort path.
-      const after = JSON.parse(
-        await readFile(join(claudeDir, "team.json"), "utf8"),
-      );
+      const after = JSON.parse(await readFile(join(claudeDir, "team.json"), "utf8"));
       expect(after.members).toHaveLength(2);
       expect(after.members[1].name).toBe("extra-1");
     } finally {
@@ -422,32 +404,22 @@ describe("dispatchSyncSubverb — write path (T5 / t-c2b757c1)", () => {
     );
     try {
       const stderrBuf: string[] = [];
-      const rc = await dispatchSyncSubverb(
-        ["claude-team-json", "--force"],
-        {
-          dir: atmuxDir,
-          claudeDir,
-          stopAt: root,
-          now: FIXED_NOW,
-          stderr: (s) => stderrBuf.push(s),
-        },
-      );
+      const rc = await dispatchSyncSubverb(["claude-team-json", "--force"], {
+        dir: atmuxDir,
+        claudeDir,
+        stopAt: root,
+        now: FIXED_NOW,
+        stderr: (s) => stderrBuf.push(s),
+      });
       expect(rc).toBe(0);
       // Warning still emitted (transparency); no "refusing" follow-up.
       const stderrOut = stderrBuf.join("");
       expect(stderrOut).toContain("drift detected");
       expect(stderrOut).not.toContain("refusing to overwrite");
       // The atmux-side roster (extra-1 dropped) is now on disk.
-      const after = JSON.parse(
-        await readFile(join(claudeDir, "team.json"), "utf8"),
-      );
-      expect(after.members.map((m: { name: string }) => m.name)).toEqual([
-        "team-lead",
-        "be-1",
-      ]);
-      expect(after[SYNC_MARKER_KEY].lastSyncedAt).toBe(
-        FIXED_TS_DATE.toISOString(),
-      );
+      const after = JSON.parse(await readFile(join(claudeDir, "team.json"), "utf8"));
+      expect(after.members.map((m: { name: string }) => m.name)).toEqual(["team-lead", "be-1"]);
+      expect(after[SYNC_MARKER_KEY].lastSyncedAt).toBe(FIXED_TS_DATE.toISOString());
     } finally {
       await rm(root, { recursive: true, force: true });
     }

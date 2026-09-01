@@ -77,7 +77,12 @@ describe("TeamSession — leaf shape", () => {
 describe("epic-team — retired discriminator fails loud (ADR-280 / ADR-266 §D2)", () => {
   test("a bare epic-team entry is REJECTED by the union", () => {
     expect(() =>
-      CockpitSession.parse({ type: "epic-team", name: "sopx-deferred", parent: "sopx", epicId: "e-1" }),
+      CockpitSession.parse({
+        type: "epic-team",
+        name: "sopx-deferred",
+        parent: "sopx",
+        epicId: "e-1",
+      }),
     ).toThrow();
   });
 

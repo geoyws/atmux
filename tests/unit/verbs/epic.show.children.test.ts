@@ -110,9 +110,7 @@ describe("epic show children render (ADR-173 §69)", () => {
     const tid = await addTask(atmuxDir, { subject: "direct" });
     linkTaskToEpic(tid, eid);
 
-    const { out } = await captureStdout(() =>
-      epic(["show", eid, "--json", "--team-dir", teamDir]),
-    );
+    const { out } = await captureStdout(() => epic(["show", eid, "--json", "--team-dir", teamDir]));
     const parsed = JSON.parse(out);
     expect(parsed.id).toBe(eid);
     // ADR-173 JSON mode: children keys present + populated from the join.

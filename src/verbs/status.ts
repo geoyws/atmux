@@ -464,9 +464,7 @@ export async function probeMedic(deps: GatherStatusDeps = {}): Promise<MedicStat
       socket: getCockpitSocketName(),
       configFile: getAtmuxTmuxConfPath(),
     });
-    sessionAlive = await cockpitTmux.session.hasSession(
-      exactSessionTarget(cockpit.cockpitSession),
-    );
+    sessionAlive = await cockpitTmux.session.hasSession(exactSessionTarget(cockpit.cockpitSession));
     if (sessionAlive) {
       const wins = await cockpitTmux.window.listWindows(cockpit.cockpitSession);
       // ADR-135 canonical window name `_medic`; legacy `medic` and pre-ADR-133

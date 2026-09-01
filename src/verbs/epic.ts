@@ -357,8 +357,7 @@ function _buildDepCountMap(epics: ReadonlyArray<KanbanEpic>): Map<string, string
 // `(+N more)` overflow marker.
 function taskRowSuffix(t: KanbanTask): string {
   const owner = t.owner !== null && t.owner !== undefined && t.owner.length > 0 ? t.owner : "-";
-  const prio =
-    t.priority !== null && t.priority !== undefined ? `P${String(t.priority)}` : "P-";
+  const prio = t.priority !== null && t.priority !== undefined ? `P${String(t.priority)}` : "P-";
   const deps = t.deps ?? [];
   let depsCol = "";
   if (deps.length > 0) {
@@ -421,9 +420,7 @@ async function epicShow(argv: ReadonlyArray<string>): Promise<number> {
       lines.push(`  ${s.id} [${s.status ?? ""}] — ${s.title ?? ""}`);
       const childTasks = epic.tasks.filter((t) => t.story === s.id);
       for (const t of childTasks) {
-        lines.push(
-          `    task ${t.id} [${t.status ?? ""}] — ${t.subject ?? ""} ${taskRowSuffix(t)}`,
-        );
+        lines.push(`    task ${t.id} [${t.status ?? ""}] — ${t.subject ?? ""} ${taskRowSuffix(t)}`);
       }
     }
   } else {

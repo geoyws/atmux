@@ -89,8 +89,7 @@ export async function heartbeat(
   opts: HeartbeatOpts = {},
 ): Promise<number> {
   const parsed = parseHeartbeatArgs(argv);
-  const dirOpts: ResolveDirOpts =
-    parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
+  const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
   const atmuxDir = await getAtmuxDir(dirOpts);
   if (opts.now !== undefined) {
     await writeHeartbeat(atmuxDir, parsed.member, Math.floor(opts.now() / 1000));

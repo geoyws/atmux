@@ -44,11 +44,9 @@ export const defaultNativeSpawn: NativeSpawnFn = (binary, args) => {
     stdio: ["pipe", "pipe", "pipe"],
   });
   const stdout = lineStream(child);
-  const onExit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
-    (resolve) => {
-      child.once("exit", (code, signal) => resolve({ code, signal }));
-    },
-  );
+  const onExit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+    child.once("exit", (code, signal) => resolve({ code, signal }));
+  });
   return {
     stdout,
     kill: () => {
@@ -155,8 +153,7 @@ export function spawnNativeListener(opts: NativeListenerOpts): NativeListenerHan
  */
 export function resolveDefaultListenerBinary(
   env: NodeJS.ProcessEnv = process.env,
-  existsSync: (path: string) => boolean = (path) =>
-    Bun.file(path).size > 0 || false,
+  existsSync: (path: string) => boolean = (path) => Bun.file(path).size > 0 || false,
 ): string | null {
   const explicit = env.ATMUX_LISTENER_BIN?.trim();
   if (explicit && explicit.length > 0) {

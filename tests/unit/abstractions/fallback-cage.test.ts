@@ -729,8 +729,7 @@ describe("Lifecycle — destroyFallbackCage Tier 2", () => {
     // ending in "/tmux" (vendored or operator override).
     expect(
       spawn.calls.some(
-        (c) =>
-          (c.cmd === "tmux" || /\/tmux$/.test(c.cmd)) && c.argv.includes("capture-pane"),
+        (c) => (c.cmd === "tmux" || /\/tmux$/.test(c.cmd)) && c.argv.includes("capture-pane"),
       ),
     ).toBe(true);
     const teeCall = spawn.calls.find(

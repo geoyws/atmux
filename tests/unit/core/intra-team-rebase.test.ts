@@ -24,10 +24,7 @@ import type { GitSpawn } from "../../../src/abstractions/branch-merge.ts";
 import type { SpawnResult } from "../../../src/abstractions/spawn.ts";
 import { closeDatabase, type Database, openDatabase } from "../../../src/abstractions/sqlite.ts";
 import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
-import {
-  type IntraTeamRebaseContext,
-  performRebase,
-} from "../../../src/core/intra-team-rebase.ts";
+import { type IntraTeamRebaseContext, performRebase } from "../../../src/core/intra-team-rebase.ts";
 import { MergerStateRepo } from "../../../src/core/repositories/merger-state-repo.ts";
 
 let scratch: string;
@@ -237,9 +234,7 @@ describe("performRebase — conflict", () => {
       return baseGit(argv);
     };
     await performRebase(makeCtx({ git: tracingGit }));
-    const abortCall = argvLog.find(
-      (a) => a.includes("rebase") && a.includes("--abort"),
-    );
+    const abortCall = argvLog.find((a) => a.includes("rebase") && a.includes("--abort"));
     expect(abortCall).toBeDefined();
   });
 });
@@ -276,9 +271,7 @@ describe("performRebase — TOCTOU guard", () => {
       by: "operator",
       transitionedAt: 100,
     });
-    const result = await performRebase(
-      makeCtx({ git: makeGitStub({ rebaseOutcome: "clean" }) }),
-    );
+    const result = await performRebase(makeCtx({ git: makeGitStub({ rebaseOutcome: "clean" }) }));
     expect(result.state).toBe("ready_to_merge");
     expect(result.changed).toBe(false);
     expect(result.reason).toContain("concurrency lost");
@@ -287,9 +280,7 @@ describe("performRebase — TOCTOU guard", () => {
   });
 
   test("no row at all → no-op (observed='open')", async () => {
-    const result = await performRebase(
-      makeCtx({ git: makeGitStub({ rebaseOutcome: "clean" }) }),
-    );
+    const result = await performRebase(makeCtx({ git: makeGitStub({ rebaseOutcome: "clean" }) }));
     expect(result.state).toBe("open");
     expect(result.changed).toBe(false);
     expect(result.reason).toContain("concurrency lost");

@@ -21,12 +21,7 @@ import { now } from "../abstractions/time.ts";
  *  AgentBackend status enum (`idle | working | rate-limited`) plus
  *  `blocked` (an agent-level judgment; the backend enum's probe-derived
  *  `awaiting-input` / `errored` are NOT self-reportable). */
-export const MEMBER_SELF_STATUS_VALUES = [
-  "idle",
-  "working",
-  "blocked",
-  "rate-limited",
-] as const;
+export const MEMBER_SELF_STATUS_VALUES = ["idle", "working", "blocked", "rate-limited"] as const;
 export type MemberSelfStatus = (typeof MEMBER_SELF_STATUS_VALUES)[number];
 
 /** Runtime guard for verb-layer argv parsing. */
@@ -72,10 +67,7 @@ export async function writeMemberStatus(
     ...record,
     updatedAtSec: record.updatedAtSec ?? Math.floor(now() / 1000),
   });
-  await atomicWrite(
-    memberStatusPath(atmuxDir, full.member),
-    `${JSON.stringify(full, null, 2)}\n`,
-  );
+  await atomicWrite(memberStatusPath(atmuxDir, full.member), `${JSON.stringify(full, null, 2)}\n`);
   return full;
 }
 

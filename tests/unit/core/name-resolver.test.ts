@@ -23,50 +23,74 @@ function anchorReader(body: string | null): (path: string) => Promise<string | n
 describe("buildSessionName — anchor-first, BARE fallback (ADR-162 as amended by e-419553c6)", () => {
   test("absent anchor → bare <team> canonical (e-419553c6)", async () => {
     expect(
-      await buildSessionName({ name: "rentx" }, { atmuxDir: ATMUX_DIR, readAnchor: anchorReader(null) }),
+      await buildSessionName(
+        { name: "rentx" },
+        { atmuxDir: ATMUX_DIR, readAnchor: anchorReader(null) },
+      ),
     ).toBe("rentx");
   });
 
   test("absent anchor, hyphenated team name passes through untouched", async () => {
     expect(
-      await buildSessionName({ name: "ifca-docs" }, { atmuxDir: ATMUX_DIR, readAnchor: anchorReader(null) }),
+      await buildSessionName(
+        { name: "ifca-docs" },
+        { atmuxDir: ATMUX_DIR, readAnchor: anchorReader(null) },
+      ),
     ).toBe("ifca-docs");
   });
 
   test("anchor with a legacy prefixed form is used verbatim", async () => {
     expect(
-      await buildSessionName({ name: "unum" }, { atmuxDir: ATMUX_DIR, readAnchor: anchorReader("atmux_unum") }),
+      await buildSessionName(
+        { name: "unum" },
+        { atmuxDir: ATMUX_DIR, readAnchor: anchorReader("atmux_unum") },
+      ),
     ).toBe("atmux_unum");
   });
 
   test("anchor wins over the bare fallback even when it disagrees with team.name", async () => {
     // If the fallback leaked through, this would be 'sopx', not the anchor value.
     expect(
-      await buildSessionName({ name: "sopx" }, { atmuxDir: ATMUX_DIR, readAnchor: anchorReader("atmux_sopx") }),
+      await buildSessionName(
+        { name: "sopx" },
+        { atmuxDir: ATMUX_DIR, readAnchor: anchorReader("atmux_sopx") },
+      ),
     ).toBe("atmux_sopx");
   });
 
   test("anchor holding the bare 'atmux' session is honored", async () => {
     expect(
-      await buildSessionName({ name: "atmux" }, { atmuxDir: ATMUX_DIR, readAnchor: anchorReader("atmux") }),
+      await buildSessionName(
+        { name: "atmux" },
+        { atmuxDir: ATMUX_DIR, readAnchor: anchorReader("atmux") },
+      ),
     ).toBe("atmux");
   });
 
   test("empty anchor file falls through to bare fallback", async () => {
     expect(
-      await buildSessionName({ name: "rentx" }, { atmuxDir: ATMUX_DIR, readAnchor: anchorReader("") }),
+      await buildSessionName(
+        { name: "rentx" },
+        { atmuxDir: ATMUX_DIR, readAnchor: anchorReader("") },
+      ),
     ).toBe("rentx");
   });
 
   test("whitespace-only anchor file falls through to bare fallback", async () => {
     expect(
-      await buildSessionName({ name: "rentx" }, { atmuxDir: ATMUX_DIR, readAnchor: anchorReader("   \n\t ") }),
+      await buildSessionName(
+        { name: "rentx" },
+        { atmuxDir: ATMUX_DIR, readAnchor: anchorReader("   \n\t ") },
+      ),
     ).toBe("rentx");
   });
 
   test("trailing-newline anchor is stripped, not used verbatim", async () => {
     expect(
-      await buildSessionName({ name: "rentx" }, { atmuxDir: ATMUX_DIR, readAnchor: anchorReader("atmux-prod\n") }),
+      await buildSessionName(
+        { name: "rentx" },
+        { atmuxDir: ATMUX_DIR, readAnchor: anchorReader("atmux-prod\n") },
+      ),
     ).toBe("atmux-prod");
   });
 
@@ -74,7 +98,10 @@ describe("buildSessionName — anchor-first, BARE fallback (ADR-162 as amended b
     // \s+$ strips the trailing tab but NOT the inner content; a leading
     // space (unlikely in practice) survives so the test pins the regex shape.
     expect(
-      await buildSessionName({ name: "rentx" }, { atmuxDir: ATMUX_DIR, readAnchor: anchorReader("atmux-x\t") }),
+      await buildSessionName(
+        { name: "rentx" },
+        { atmuxDir: ATMUX_DIR, readAnchor: anchorReader("atmux-x\t") },
+      ),
     ).toBe("atmux-x");
   });
 });

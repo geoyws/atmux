@@ -25,12 +25,7 @@ afterEach(async () => {
 
 describe("registry-mutating event-subscriptions coverage", () => {
   test("rejects duplicate consumerIds, bootstraps the canonical topic set, and each wrapper forwards", async () => {
-    const expectedTopics = [
-      "complaint.filed",
-      "story.ready",
-      "story.unclaimed",
-      "task.unclaimed",
-    ];
+    const expectedTopics = ["complaint.filed", "story.ready", "story.unclaimed", "task.unclaimed"];
     const complaintCalls: Array<ReadonlyArray<string>> = [];
     const leadCalls: Array<ReadonlyArray<string>> = [];
     let currentNowSec = 1_780_000_000;
@@ -98,7 +93,9 @@ describe("registry-mutating event-subscriptions coverage", () => {
     expect(result.registered).toHaveLength(4);
     expect(result.registered.every((entry) => entry.isNew)).toBe(true);
     expect(EVENT_SUBSCRIPTIONS).toHaveLength(4);
-    expect([...EVENT_SUBSCRIPTIONS.map((sub) => sub.topic)].sort()).toEqual([...expectedTopics].sort());
+    expect([...EVENT_SUBSCRIPTIONS.map((sub) => sub.topic)].sort()).toEqual(
+      [...expectedTopics].sort(),
+    );
 
     const bootstrapSecond = bootstrapEventSubscriptions({
       complaintDeps: {
@@ -128,9 +125,13 @@ describe("registry-mutating event-subscriptions coverage", () => {
     expect(bootstrapSecond.registered).toHaveLength(4);
     expect(bootstrapSecond.registered.every((entry) => entry.isNew === false)).toBe(true);
     expect(EVENT_SUBSCRIPTIONS).toHaveLength(4);
-    expect([...EVENT_SUBSCRIPTIONS.map((sub) => sub.topic)].sort()).toEqual([...expectedTopics].sort());
+    expect([...EVENT_SUBSCRIPTIONS.map((sub) => sub.topic)].sort()).toEqual(
+      [...expectedTopics].sort(),
+    );
 
-    const complaintSub = EVENT_SUBSCRIPTIONS.find((sub) => sub.consumerId === COMPLAINT_CONSUMER_ID);
+    const complaintSub = EVENT_SUBSCRIPTIONS.find(
+      (sub) => sub.consumerId === COMPLAINT_CONSUMER_ID,
+    );
     expect(complaintSub).toBeDefined();
     await complaintSub!.handler({
       topic: "complaint.filed",
@@ -153,7 +154,7 @@ describe("registry-mutating event-subscriptions coverage", () => {
       "tell-lead",
       "--team",
       "demo",
-      "[complaint] c-1 severity=medium source=kanban: wrapper coverage — adjudicate: atmux complaints resolve c-1 --status resolved|wontfix --note \"<why>\"",
+      '[complaint] c-1 severity=medium source=kanban: wrapper coverage — adjudicate: atmux complaints resolve c-1 --status resolved|wontfix --note "<why>"',
     ]);
 
     const leadSubs = EVENT_SUBSCRIPTIONS.filter((sub) =>
@@ -179,7 +180,11 @@ describe("registry-mutating event-subscriptions coverage", () => {
       const sub = leadByTopic.get(topic);
       expect(sub).toBeDefined();
       currentNowSec =
-        topic === "story.ready" ? 1_780_000_000 : topic === "story.unclaimed" ? 1_780_000_300 : 1_780_000_600;
+        topic === "story.ready"
+          ? 1_780_000_000
+          : topic === "story.unclaimed"
+            ? 1_780_000_300
+            : 1_780_000_600;
       const event: EventPayload =
         topic === "story.ready"
           ? {

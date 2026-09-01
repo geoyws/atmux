@@ -26,11 +26,7 @@ import {
   nextMarker,
 } from "./drift.ts";
 import { mapRoster, mergeBriefs } from "./mapping.ts";
-import type {
-  ClaudeTeam,
-  ClaudeTeamMember,
-  ColorSidecar,
-} from "./types.ts";
+import type { ClaudeTeam, ClaudeTeamMember, ColorSidecar } from "./types.ts";
 
 /** Repo-root resolution: by default the orchestrator reads `.claude/...`
  *  files relative to `process.cwd()`. Tests + future callers may pin a
@@ -80,20 +76,14 @@ async function readLooseJson<T>(path: string): Promise<T | null> {
 
 /** Read all three inputs + compute the mapped roster. T4-T6 layer write,
  *  brief-preservation, drift-detection, and dry-run on top. */
-export async function computeMappedTeam(
-  opts: ComputeOpts = {},
-): Promise<ComputeResult> {
+export async function computeMappedTeam(opts: ComputeOpts = {}): Promise<ComputeResult> {
   const team = await tryLoadTeam(opts);
   if (team === null) {
-    throw new Error(
-      "atmux sync claude-team-json: no .atmux/team.json — run 'atmux init' first",
-    );
+    throw new Error("atmux sync claude-team-json: no .atmux/team.json — run 'atmux init' first");
   }
   const dir = claudeDirOf(opts);
   const prior = await readLooseJson<ClaudeTeam>(join(dir, "team.json"));
-  const sidecar = await readLooseJson<ColorSidecar>(
-    join(dir, "team-colors.json"),
-  );
+  const sidecar = await readLooseJson<ColorSidecar>(join(dir, "team-colors.json"));
   const mapped = mapRoster(team.members, sidecar);
   const members = mergeBriefs(prior, mapped, team.members, {
     overwriteBriefs: opts.overwriteBriefs ?? false,
@@ -147,9 +137,7 @@ export interface WriteSyncResult {
  *
  *  The atomic write goes through `abstractions/fs.atomicWrite` (mktemp +
  *  rename) so partial-write races leave the prior file untouched. */
-export async function writeSync(
-  opts: WriteSyncOpts = {},
-): Promise<WriteSyncResult> {
+export async function writeSync(opts: WriteSyncOpts = {}): Promise<WriteSyncResult> {
   const { prior, computed } = await computeMappedTeam(opts);
   const stderr = opts.stderr ?? defaultStderrWrite;
   const atmuxDir = await getAtmuxDir(opts);

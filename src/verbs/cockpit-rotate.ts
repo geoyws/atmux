@@ -467,7 +467,11 @@ function cockpitViewerHost(deps: ResolvedDeps): ViewerHost {
  *  the cockpit host — matching the pre-group behaviour, where a broken
  *  config surfaced downstream as "window not found" rather than a new
  *  failure mode here. */
-async function resolveViewerHost(deps: ResolvedDeps, role: RoleId, sessionName: string): Promise<ViewerHost> {
+async function resolveViewerHost(
+  deps: ResolvedDeps,
+  role: RoleId,
+  sessionName: string,
+): Promise<ViewerHost> {
   if (role !== "team-driver") return cockpitViewerHost(deps);
   let cockpit: LoadedCockpit;
   try {

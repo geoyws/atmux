@@ -143,10 +143,7 @@ describe("refusalScan (verb)", () => {
     // No state.db file: core short-circuits to a fully no-op result
     // without ever invoking tmux. The verb still emits the JSON
     // summary so cron tail can distinguish a no-op tick from a crash.
-    await writeFile(
-      join(atmuxDir, "team.json"),
-      JSON.stringify({ name: "demo", members: [] }),
-    );
+    await writeFile(join(atmuxDir, "team.json"), JSON.stringify({ name: "demo", members: [] }));
 
     const { out, result } = await captureStdout(() => refusalScan(["--team-dir", scratch]));
 
@@ -163,10 +160,7 @@ describe("refusalScan (verb)", () => {
   });
 
   test("--json flag accepted; output shape identical (forward-compat reservation)", async () => {
-    await writeFile(
-      join(atmuxDir, "team.json"),
-      JSON.stringify({ name: "demo", members: [] }),
-    );
+    await writeFile(join(atmuxDir, "team.json"), JSON.stringify({ name: "demo", members: [] }));
 
     const { out, result } = await captureStdout(() =>
       refusalScan(["--team-dir", scratch, "--json"]),
@@ -205,16 +199,15 @@ describe("refusalScan (verb)", () => {
         captures.push(target);
         return target.includes("alpha") ? "alpha-pane-body" : "bravo-pane-body";
       },
-      classify: (capture: string) => (capture.startsWith("alpha") ? softDetection() : noneDetection()),
+      classify: (capture: string) =>
+        capture.startsWith("alpha") ? softDetection() : noneDetection(),
       nowSec: () => 1_700_000_000,
       log: () => {
         /* swallow stderr noise */
       },
     };
 
-    const { out, result } = await captureStdout(() =>
-      refusalScan(["--team-dir", scratch], deps),
-    );
+    const { out, result } = await captureStdout(() => refusalScan(["--team-dir", scratch], deps));
 
     expect(result).toBe(0);
     expect(captures).toHaveLength(2);
@@ -257,9 +250,7 @@ describe("refusalScan (verb)", () => {
       );
 
       const { result: r1 } = await captureStdout(() => refusalScan(["--team-dir", scratch]));
-      const { result: r2 } = await captureStdout(() =>
-        refusalScan(["--team-dir", otherScratch]),
-      );
+      const { result: r2 } = await captureStdout(() => refusalScan(["--team-dir", otherScratch]));
 
       expect(r1).toBe(0);
       expect(r2).toBe(0);

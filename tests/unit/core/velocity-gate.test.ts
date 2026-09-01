@@ -31,10 +31,7 @@ import {
   runVelocityGateCheck,
   type VelocityGateDeps,
 } from "../../../src/core/velocity-gate.ts";
-import {
-  readStrikeRecord,
-  velocityStalledSymptomHash,
-} from "../../../src/core/whip-strikes.ts";
+import { readStrikeRecord, velocityStalledSymptomHash } from "../../../src/core/whip-strikes.ts";
 
 let root: string;
 let atmuxDir: string;
