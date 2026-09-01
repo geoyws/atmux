@@ -67,6 +67,7 @@ function harness(over: Partial<HarnessDeps> = {}, ioOver: Partial<HarnessIo> = {
   const events: string[] = [];
   const files = new Map<string, string>();
   const env: NodeJS.ProcessEnv = { HOME: "/root" };
+  let clock = 0;
   const io: HarnessIo = {
     mkdtemp: async (p) => `/tmp/${p}xyz`,
     mkdir: async () => {},
@@ -107,8 +108,10 @@ function harness(over: Partial<HarnessDeps> = {}, ioOver: Partial<HarnessIo> = {
     anthropicKey: "sk-a",
     token: TOKEN,
     scenarios: [SCENARIOS[0] as Scenario],
-    now: () => 0,
-    sleep: async () => {},
+    now: () => clock,
+    sleep: async (ms) => {
+      clock += ms;
+    },
     startServer: async () => {
       events.push("startServer");
       return {
