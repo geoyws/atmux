@@ -33,7 +33,11 @@ import {
   renderWhipBudgetResume,
   renderWhipBudgetWarning,
 } from "../abstractions/discord.ts";
-import type { CageHandle } from "../abstractions/fallback-cage.ts";
+import type {
+  CageHandle,
+  createFallbackCage as defaultCreateFallbackCage,
+  destroyFallbackCage as defaultDestroyFallbackCage,
+} from "../abstractions/fallback-cage.ts";
 import { appendText } from "../abstractions/fs.ts";
 import { formatDuration, formatMyt, now } from "../abstractions/time.ts";
 import type { KanbanTask } from "../schema/kanban.ts";
@@ -129,6 +133,10 @@ export interface BudgetCheckDeps {
   pauseMember?: (atmuxDir: string, member: string, opts: { reason: string }) => Promise<void>;
   /** Resume a member. Default: `core/pause.ts::resumeMember`. */
   resumeMember?: (atmuxDir: string, member: string) => Promise<void>;
+  /** Create a fallback cage. Default: `fallback-cage.ts::createFallbackCage`. */
+  createFallbackCage?: typeof defaultCreateFallbackCage;
+  /** Destroy a fallback cage. Default: `fallback-cage.ts::destroyFallbackCage`. */
+  destroyFallbackCage?: typeof defaultDestroyFallbackCage;
   /** Send a Discord message. Default: `discord.ts::send`. */
   discordSend?: (opts: DiscordSendOpts) => Promise<void>;
   /** Append to driver-inbox. Default: `appendText` to driver-inbox.md. */
@@ -546,6 +554,7 @@ async function runFallbackDispatch(
     inFlightTasks: inFlight,
     sendBrief: deps.sendCageBrief,
     log,
+    ...(deps.createFallbackCage !== undefined ? { createCage: deps.createFallbackCage } : {}),
   };
   await dispatch(dispatchOpts);
 }
@@ -569,6 +578,7 @@ async function runFallbackWalk(
     pausedAtSec,
     sendContinuity: deps.sendContinuityBrief,
     log,
+    ...(deps.destroyFallbackCage !== undefined ? { destroyCage: deps.destroyFallbackCage } : {}),
   };
   await walk(walkOpts);
 }
