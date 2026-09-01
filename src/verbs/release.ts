@@ -99,14 +99,18 @@ export type SpawnFn = (
   opts?: { cwd?: string },
 ) => Promise<SpawnResult>;
 
-const defaultSpawnFn: SpawnFn = (cmd, argv, opts = {}) =>
-  defaultSpawn({
-    cmd,
-    argv,
-    expectExitCode: "any",
-    timeoutMs: 300_000,
-    ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
-  });
+export function makeDefaultSpawnFn(spawnImpl: typeof defaultSpawn = defaultSpawn): SpawnFn {
+  return (cmd, argv, opts = {}) =>
+    spawnImpl({
+      cmd,
+      argv,
+      expectExitCode: "any",
+      timeoutMs: 300_000,
+      ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
+    });
+}
+
+const defaultSpawnFn = makeDefaultSpawnFn();
 
 export interface ReleaseOpts {
   /** Override the spawn for test isolation. Receives ('git'|'bun', argv, opts). */
@@ -115,6 +119,8 @@ export interface ReleaseOpts {
   readPackageJson?: () => Promise<string | null>;
   /** Writer for package.json. Defaults to ./package.json. */
   writePackageJson?: (content: string) => Promise<void>;
+  /** Package manifest path used by the default reader/writer. Test seam; defaults to package.json. */
+  packageJsonPath?: string;
   stdout?: Writer;
   stderr?: Writer;
 }
@@ -125,9 +131,10 @@ export async function release(
 ): Promise<number> {
   const parsed = parseReleaseArgs(argv);
   const spawn = opts.spawn ?? defaultSpawnFn;
-  const readPackageJson = opts.readPackageJson ?? (() => readTextOrNull("package.json"));
+  const packageJsonPath = opts.packageJsonPath ?? "package.json";
+  const readPackageJson = opts.readPackageJson ?? (() => readTextOrNull(packageJsonPath));
   const writePackageJson =
-    opts.writePackageJson ?? ((content: string) => writeText("package.json", content));
+    opts.writePackageJson ?? ((content: string) => writeText(packageJsonPath, content));
   const stdout = opts.stdout ?? defaultStdoutWrite;
   const stderr = opts.stderr ?? defaultStderrWrite;
 
@@ -192,7 +199,7 @@ export async function release(
   await writePackageJson(updatedPkg);
 
   // Step 5 — git add + commit.
-  const addRes = await spawn("git", ["add", "package.json"]);
+  const addRes = await spawn("git", ["add", packageJsonPath]);
   if (addRes.exitCode !== 0) {
     stderr(`release: git add failed (exit ${addRes.exitCode}): ${addRes.stderr}\n`);
     return 70;

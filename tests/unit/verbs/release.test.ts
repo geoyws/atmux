@@ -6,14 +6,30 @@
 // Spawn injection is critical — these tests never call real git / bun.
 
 import { describe, expect, test } from "bun:test";
-import type { SpawnResult } from "../../../src/abstractions/spawn.ts";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { SpawnOpts, SpawnResult } from "../../../src/abstractions/spawn.ts";
 import { UsageError } from "../../../src/errors.ts";
 import {
   type BumpKind,
   bumpVersion,
+  makeDefaultSpawnFn,
   parseReleaseArgs,
   release,
 } from "../../../src/verbs/release.ts";
+
+function makeSpawnResult(stdout: string, exitCode = 0, stderr = ""): SpawnResult {
+  return {
+    exitCode,
+    stdout,
+    stderr,
+    argv: [],
+    cmd: "spawn",
+    signalled: null,
+    durationMs: 0,
+  };
+}
 
 describe("parseReleaseArgs", () => {
   test.each<[string, BumpKind]>([
@@ -86,18 +102,57 @@ describe("bumpVersion", () => {
   });
 });
 
-describe("release", () => {
-  function makeSpawnResult(stdout: string, exitCode = 0, stderr = ""): SpawnResult {
-    return {
-      exitCode,
-      stdout,
-      stderr,
-      argv: [],
-      cmd: "spawn",
-      signalled: null,
-      durationMs: 0,
+describe("makeDefaultSpawnFn", () => {
+  test("wraps the shared spawn helper with release defaults", async () => {
+    const observed: Array<unknown> = [];
+    const defaultSpawn = async (input: SpawnOpts): Promise<SpawnResult> => {
+      observed.push(input);
+      return makeSpawnResult("ok");
     };
-  }
+    const spawn = makeDefaultSpawnFn(defaultSpawn);
+
+    const result = await spawn("git", ["status", "--porcelain"], { cwd: "/tmp/release-test" });
+
+    expect(result.stdout).toBe("ok");
+    expect(observed).toEqual([
+      {
+        cmd: "git",
+        argv: ["status", "--porcelain"],
+        expectExitCode: "any",
+        timeoutMs: 300_000,
+        cwd: "/tmp/release-test",
+      },
+    ]);
+  });
+});
+
+describe("release", () => {
+  test("default manifest reader and writer use the injected package path", async () => {
+    const root = await mkdtemp(join(tmpdir(), "atmux-release-"));
+    const packageJsonPath = join(root, "package.json");
+    await writeFile(packageJsonPath, JSON.stringify({ name: "atmux", version: "0.8.6" }));
+    const calls: Array<[string, ReadonlyArray<string>]> = [];
+    const spawn = async (cmd: string, argv: ReadonlyArray<string>): Promise<SpawnResult> => {
+      calls.push([cmd, argv]);
+      if (argv[0] === "rev-parse") return makeSpawnResult("release-test\n");
+      return makeSpawnResult("");
+    };
+
+    try {
+      expect(
+        await release(["patch"], {
+          spawn,
+          packageJsonPath,
+          stdout: () => {},
+          stderr: () => {},
+        }),
+      ).toBe(0);
+      expect(JSON.parse(await readFile(packageJsonPath, "utf8")).version).toBe("0.8.7");
+      expect(calls).toContainEqual(["git", ["add", packageJsonPath]]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 
   test("dry-run prints plan without mutating package.json or spawning git mutations", async () => {
     const calls: Array<[string, ReadonlyArray<string>]> = [];
@@ -181,6 +236,21 @@ describe("release", () => {
     expect(rc).toBe(64);
   });
 
+  test("missing version field returns exit 64", async () => {
+    const stderrChunks: string[] = [];
+    const rc = await release(["patch"], {
+      spawn: async () => makeSpawnResult(""),
+      readPackageJson: async () => JSON.stringify({ name: "atmux" }),
+      writePackageJson: async () => {},
+      stdout: () => {},
+      stderr: (m) => {
+        stderrChunks.push(m);
+      },
+    });
+    expect(rc).toBe(64);
+    expect(stderrChunks.join("")).toContain("missing 'version' field");
+  });
+
   test("invalid JSON returns exit 64", async () => {
     const rc = await release(["patch"], {
       spawn: async () => makeSpawnResult(""),
@@ -190,6 +260,70 @@ describe("release", () => {
       stderr: () => {},
     });
     expect(rc).toBe(64);
+  });
+
+  test("git status failure returns exit 65 and does not write package.json", async () => {
+    const calls: Array<[string, ReadonlyArray<string>]> = [];
+    const spawn = async (cmd: string, argv: ReadonlyArray<string>): Promise<SpawnResult> => {
+      calls.push([cmd, argv]);
+      if (argv[0] === "status") return makeSpawnResult("", 2, "permission denied");
+      return makeSpawnResult("");
+    };
+    let wrote = false;
+    const stderrChunks: string[] = [];
+    const rc = await release(["patch"], {
+      spawn,
+      readPackageJson: async () => JSON.stringify({ name: "atmux", version: "0.8.6" }),
+      writePackageJson: async () => {
+        wrote = true;
+      },
+      stdout: () => {},
+      stderr: (m) => {
+        stderrChunks.push(m);
+      },
+    });
+    expect(rc).toBe(65);
+    expect(wrote).toBe(false);
+    expect(calls).toEqual([["git", ["status", "--porcelain"]]]);
+    expect(stderrChunks.join("")).toContain("git status failed (exit 2)");
+  });
+
+  test("version substitution failure returns exit 70 without writing", async () => {
+    let wrote = false;
+    const stderrChunks: string[] = [];
+    const rc = await release(["patch", "--allow-dirty"], {
+      spawn: async (_cmd, argv) =>
+        argv[0] === "rev-parse" ? makeSpawnResult("release-x\n") : makeSpawnResult(""),
+      readPackageJson: async () => '{"\\u0076ersion":"0.8.6"}',
+      writePackageJson: async () => {
+        wrote = true;
+      },
+      stdout: () => {},
+      stderr: (message) => stderrChunks.push(message),
+    });
+    expect(rc).toBe(70);
+    expect(wrote).toBe(false);
+    expect(stderrChunks.join("")).toContain("failed to substitute version");
+  });
+
+  test("git add failure returns exit 70 before commit", async () => {
+    const calls: string[] = [];
+    const stderrChunks: string[] = [];
+    const rc = await release(["patch"], {
+      spawn: async (_cmd, argv) => {
+        calls.push(argv[0] ?? "");
+        if (argv[0] === "rev-parse") return makeSpawnResult("release-x\n");
+        if (argv[0] === "add") return makeSpawnResult("", 1, "index locked");
+        return makeSpawnResult("");
+      },
+      readPackageJson: async () => JSON.stringify({ name: "atmux", version: "0.8.6" }),
+      writePackageJson: async () => {},
+      stdout: () => {},
+      stderr: (message) => stderrChunks.push(message),
+    });
+    expect(rc).toBe(70);
+    expect(calls).toEqual(["status", "rev-parse", "add"]);
+    expect(stderrChunks.join("")).toContain("git add failed (exit 1): index locked");
   });
 
   test("build:install failure surfaces with recovery hint + non-zero exit", async () => {
@@ -214,6 +348,98 @@ describe("release", () => {
     expect(rc).toBe(70);
     expect(stderrChunks.join("")).toContain("build:install failed");
     expect(stderrChunks.join("")).toContain("git reset --soft HEAD~1");
+  });
+
+  test("git commit failure returns exit 70 after writing package.json and git add", async () => {
+    const calls: Array<[string, ReadonlyArray<string>]> = [];
+    const spawn = async (cmd: string, argv: ReadonlyArray<string>): Promise<SpawnResult> => {
+      calls.push([cmd, argv]);
+      if (argv[0] === "status") return makeSpawnResult("");
+      if (argv[0] === "commit") return makeSpawnResult("", 1, "commit rejected");
+      if (argv[0] === "rev-parse" && argv[1] === "--abbrev-ref") return makeSpawnResult("geoyws");
+      return makeSpawnResult("");
+    };
+    const written: string[] = [];
+    const stderrChunks: string[] = [];
+    const rc = await release(["patch"], {
+      spawn,
+      readPackageJson: async () => JSON.stringify({ name: "atmux", version: "0.8.6" }),
+      writePackageJson: async (c) => {
+        written.push(c);
+      },
+      stdout: () => {},
+      stderr: (m) => {
+        stderrChunks.push(m);
+      },
+    });
+    expect(rc).toBe(70);
+    expect(written).toHaveLength(1);
+    expect(calls.map((c) => c[1][0])).toEqual(["status", "rev-parse", "add", "commit"]);
+    expect(stderrChunks.join("")).toContain("git commit failed (exit 1)");
+  });
+
+  test("git push failure keeps the local commit and reports a manual recovery command", async () => {
+    const calls: Array<[string, ReadonlyArray<string>]> = [];
+    const spawn = async (cmd: string, argv: ReadonlyArray<string>): Promise<SpawnResult> => {
+      calls.push([cmd, argv]);
+      if (argv[0] === "status") return makeSpawnResult("");
+      if (argv[0] === "rev-parse" && argv[1] === "--abbrev-ref")
+        return makeSpawnResult("release-x");
+      if (argv[0] === "push") return makeSpawnResult("", 1, "remote rejected");
+      return makeSpawnResult("");
+    };
+    const stdoutChunks: string[] = [];
+    const stderrChunks: string[] = [];
+    const rc = await release(["minor"], {
+      spawn,
+      readPackageJson: async () => JSON.stringify({ name: "atmux", version: "0.8.6" }),
+      writePackageJson: async () => {},
+      stdout: (m) => {
+        stdoutChunks.push(m);
+      },
+      stderr: (m) => {
+        stderrChunks.push(m);
+      },
+    });
+    expect(rc).toBe(70);
+    expect(calls.map((c) => c[1][0])).toEqual([
+      "status",
+      "rev-parse",
+      "add",
+      "commit",
+      "run",
+      "rev-parse",
+      "push",
+    ]);
+    expect(stdoutChunks.join("")).toContain("✓ commit landed: 0.9.0");
+    expect(stderrChunks.join("")).toContain("git push failed (exit 1): remote rejected");
+    expect(stderrChunks.join("")).toContain("git push origin release-x");
+  });
+
+  test("post-build branch probe failure returns exit 70 without pushing", async () => {
+    let revParseCalls = 0;
+    const calls: string[] = [];
+    const stderrChunks: string[] = [];
+    const rc = await release(["patch"], {
+      spawn: async (_cmd, argv) => {
+        calls.push(argv[0] ?? "");
+        if (argv[0] === "rev-parse") {
+          revParseCalls += 1;
+          return revParseCalls === 1
+            ? makeSpawnResult("release-x\n")
+            : makeSpawnResult("", 128, "no HEAD");
+        }
+        return makeSpawnResult("");
+      },
+      readPackageJson: async () => JSON.stringify({ name: "atmux", version: "0.8.6" }),
+      writePackageJson: async () => {},
+      stdout: () => {},
+      stderr: (message) => stderrChunks.push(message),
+    });
+    expect(rc).toBe(70);
+    expect(calls.at(-1)).toBe("rev-parse");
+    expect(calls).not.toContain("push");
+    expect(stderrChunks.join("")).toContain("git rev-parse failed (exit 128)");
   });
 
   test("happy path: writes new version + commits + builds + pushes", async () => {
