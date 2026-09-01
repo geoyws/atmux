@@ -4,7 +4,7 @@
 // inbox) are injected. No real network / spawn / tmux calls.
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -12,6 +12,10 @@ import type {
   BudgetProbeStatus,
 } from "../../../src/abstractions/budget-probe.ts";
 import type { DiscordSendOpts } from "../../../src/abstractions/discord.ts";
+import type {
+  CageHandle,
+  CreateFallbackCageOpts,
+} from "../../../src/abstractions/fallback-cage.ts";
 import { resetNow, setNow } from "../../../src/abstractions/time.ts";
 import {
   isBudgetPauseActive,
@@ -33,6 +37,7 @@ import {
   type BudgetCheckTeamMember,
   runBudgetCheck,
 } from "../../../src/core/whip-budget-check.ts";
+import { fallbackCagesPath } from "../../../src/core/whip-budget-fallback.ts";
 
 // ---------- Fixed clock ----------
 
@@ -92,6 +97,22 @@ function ctxOf(
       budgetWarningBands: [0.5, 0.25, 0.15],
       budgetRefreshLeadMins: 30,
       ...cfg,
+    },
+  };
+}
+
+function fallbackCtx(
+  members: BudgetCheckTeamMember[],
+  cfg: Partial<BudgetCheckCtx["config"]> = {},
+  projectCwd = "/project/cwd",
+): BudgetCheckCtx {
+  const base = ctxOf(members, cfg);
+  return {
+    ...base,
+    projectCwd,
+    team: {
+      ...base.team,
+      fallback: { enabled: true },
     },
   };
 }
@@ -307,6 +328,127 @@ describe("runBudgetCheck — pause threshold breach → enter pause", () => {
     expect(v).toBe("paused-just-now");
     expect(fake.logs.some((l) => l.includes("budget-pause: discord send failed"))).toBe(true);
   });
+
+  test("fallback dispatch missing deps logs skip but still enters pause", async () => {
+    const fake = makeFakeDeps();
+    fake.probesByAccount.set("icloud", probe("icloud", 95, 50));
+    const v = await runBudgetCheck(fallbackCtx([{ name: "alpha", claudeAccount: "icloud" }]), {
+      ...depsFor(fake),
+    });
+    expect(v).toBe("paused-just-now");
+    expect(fake.pauseCalls.map((c) => c.member)).toEqual(["alpha"]);
+    expect(fake.logs.some((l) => l.includes("fallback-dispatch: missing"))).toBe(true);
+  });
+
+  test("fallback dispatch throw logs fail-soft but still enters pause", async () => {
+    const fake = makeFakeDeps();
+    fake.probesByAccount.set("icloud", probe("icloud", 95, 50));
+    const v = await runBudgetCheck(fallbackCtx([{ name: "alpha", claudeAccount: "icloud" }]), {
+      ...depsFor(fake),
+      listInFlightTasks: async () => [
+        {
+          id: "task-1",
+          lane: "alpha",
+          owner: "alpha",
+          subject: "Delegate this",
+          body: "Delegate this",
+        } as never,
+      ],
+      sendCageBrief: async () => {},
+      dispatchFallback: async () => {
+        throw new Error("simulated dispatch failure");
+      },
+    });
+    expect(v).toBe("paused-just-now");
+    const state = await loadBudgetPauseState(atmuxDir);
+    expect(state?.paused).toBe(true);
+    expect(state?.atRisk.map((r) => r.member)).toEqual(["alpha"]);
+    expect(fake.pauseCalls.map((c) => c.member)).toEqual(["alpha"]);
+    expect(fake.driverInboxAppends.some((c) => c.includes("budget-pause entered"))).toBe(true);
+    expect(fake.discordSends.some((s) => s.template === "whip-budget-pause")).toBe(true);
+    expect(fake.logs).toContain("whip: fallback-dispatch failed: simulated dispatch failure");
+  });
+
+  test("fallback dispatch empty in-flight list logs skip and avoids delegation", async () => {
+    const fake = makeFakeDeps();
+    fake.probesByAccount.set("icloud", probe("icloud", 95, 50));
+    const createCalls: Array<unknown> = [];
+    const v = await runBudgetCheck(fallbackCtx([{ name: "alpha", claudeAccount: "icloud" }]), {
+      ...depsFor(fake),
+      listInFlightTasks: async () => [],
+      sendCageBrief: async () => {},
+      createFallbackCage: async (opts) => {
+        createCalls.push(opts);
+        return {
+          tier: 2,
+          team: opts.team,
+          lane: opts.lane,
+          taskId: opts.taskId,
+          agent: "operator",
+          tmuxTmpdir: "/tmp/atmux_fallback_atmux_alpha/",
+          tmuxSocket: "fallback_atmux_alpha",
+          workDir: opts.projectCwd,
+          sessionName: "fallback-atmux-alpha",
+          windowName: "agent",
+          createdAt: FIXED_NOW_SEC,
+        } satisfies CageHandle;
+      },
+    });
+    expect(v).toBe("paused-just-now");
+    expect(createCalls).toEqual([]);
+    expect(fake.logs.some((l) => l.includes("fallback-dispatch: no in-flight tasks"))).toBe(true);
+  });
+
+  test("fallback dispatch default helper uses injected cage seam and still pauses", async () => {
+    const fake = makeFakeDeps();
+    fake.probesByAccount.set("icloud", probe("icloud", 95, 50));
+    const createCalls: CreateFallbackCageOpts[] = [];
+    const sentBriefs: string[] = [];
+    const { appendDriverInbox: _appendDriverInbox, ...fallbackDeps } = depsFor(fake);
+    const v = await runBudgetCheck(
+      fallbackCtx([{ name: "alpha", claudeAccount: "icloud" }], {}, "/project/cwd"),
+      {
+        ...fallbackDeps,
+        listInFlightTasks: async () => [
+          {
+            id: "task-1",
+            lane: "alpha",
+            owner: "alpha",
+            subject: "Delegate this",
+            body: "Delegate this",
+          } as never,
+        ],
+        sendCageBrief: async (_handle, body) => {
+          sentBriefs.push(body);
+        },
+        createFallbackCage: async (opts) => {
+          createCalls.push(opts);
+          return {
+            tier: 2,
+            team: opts.team,
+            lane: opts.lane,
+            taskId: opts.taskId,
+            agent: "operator",
+            tmuxTmpdir: "/tmp/atmux_fallback_atmux_alpha/",
+            tmuxSocket: "fallback_atmux_alpha",
+            workDir: opts.projectCwd,
+            sessionName: "fallback-atmux-alpha",
+            windowName: "agent",
+            createdAt: FIXED_NOW_SEC,
+          } satisfies CageHandle;
+        },
+      },
+    );
+    expect(v).toBe("paused-just-now");
+    expect(createCalls.length).toBe(1);
+    expect(createCalls[0]?.projectCwd).toBe("/project/cwd");
+    expect(sentBriefs.length).toBe(1);
+    expect(sentBriefs[0]).toContain("Delegate this");
+    expect(await readFile(join(atmuxDir, "driver-inbox.md"), "utf8")).toContain(
+      "budget-pause entered",
+    );
+    expect(fake.logs.some((l) => l.includes("fallback-dispatch failed"))).toBe(false);
+  });
 });
 
 // ---------- resume branch ----------
@@ -416,6 +558,80 @@ describe("runBudgetCheck — paused, resume gate met → resume", () => {
     });
     expect(v).toBe("resumed");
     expect(fake.logs.some((l) => l.includes("budget-resume: discord send failed"))).toBe(true);
+  });
+
+  test("fallback walk missing sendContinuityBrief logs skip but still resumes", async () => {
+    const fake = makeFakeDeps();
+    fake.probesByAccount.set("icloud", probe("icloud", 50, 50));
+    const v = await runBudgetCheck(fallbackCtx([{ name: "alpha", claudeAccount: "icloud" }]), {
+      ...depsFor(fake),
+    });
+    expect(v).toBe("resumed");
+    expect(await isBudgetPauseActive(atmuxDir)).toBe(false);
+    expect(fake.logs.some((l) => l.includes("fallback-walk: missing sendContinuityBrief"))).toBe(
+      true,
+    );
+  });
+
+  test("fallback walk default helper uses injected destroy seam and still resumes", async () => {
+    const fake = makeFakeDeps();
+    fake.probesByAccount.set("icloud", probe("icloud", 50, 50));
+    const continuityCalls: Array<{ member: string; body: string }> = [];
+    const destroyCalls: Array<{ handle: CageHandle }> = [];
+    const pausedAt = FIXED_NOW_SEC - 3600;
+    await writeFile(
+      fallbackCagesPath(atmuxDir, pausedAt),
+      JSON.stringify({
+        epoch: pausedAt,
+        team: "atmux",
+        cages: [
+          {
+            tier: 2,
+            team: "atmux",
+            lane: "alpha",
+            taskId: "task-1",
+            agent: "operator",
+            tmuxTmpdir: "/tmp/atmux_fallback_atmux_alpha/",
+            tmuxSocket: "fallback_atmux_alpha",
+            workDir: "/project/cwd",
+            sessionName: "fallback-atmux-alpha",
+            windowName: "agent",
+            createdAt: pausedAt,
+          } satisfies CageHandle,
+        ],
+      }),
+    );
+    const v = await runBudgetCheck(fallbackCtx([{ name: "alpha", claudeAccount: "icloud" }]), {
+      ...depsFor(fake),
+      sendContinuityBrief: async (member, body) => {
+        continuityCalls.push({ member, body });
+      },
+      destroyFallbackCage: async (handle) => {
+        destroyCalls.push({ handle });
+      },
+    });
+    expect(v).toBe("resumed");
+    expect(continuityCalls.map((c) => c.member)).toEqual(["alpha"]);
+    expect(destroyCalls.map((c) => c.handle.taskId)).toEqual(["task-1"]);
+    expect(fake.logs.some((l) => l.includes("fallback-walk failed"))).toBe(false);
+  });
+
+  test("fallback walk failure logged but does not break resume", async () => {
+    const fake = makeFakeDeps();
+    fake.probesByAccount.set("icloud", probe("icloud", 50, 50));
+    const v = await runBudgetCheck(fallbackCtx([{ name: "alpha", claudeAccount: "icloud" }]), {
+      ...depsFor(fake),
+      sendContinuityBrief: async () => {},
+      walkFallback: async () => {
+        throw new Error("simulated walk failure");
+      },
+    });
+    expect(v).toBe("resumed");
+    expect(await isBudgetPauseActive(atmuxDir)).toBe(false);
+    expect(fake.resumeCalls.map((c) => c.member)).toEqual(["alpha"]);
+    expect(fake.driverInboxAppends.some((c) => c.includes("budget-pause cleared"))).toBe(true);
+    expect(fake.discordSends.some((s) => s.template === "whip-budget-resume")).toBe(true);
+    expect(fake.logs.some((l) => l.includes("fallback-walk failed"))).toBe(true);
   });
 });
 
