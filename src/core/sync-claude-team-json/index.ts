@@ -11,19 +11,19 @@
 
 import { join } from "node:path";
 import { atomicWrite, readTextOrNull } from "../../abstractions/fs.ts";
-import type { Writer } from "../io.ts";
-import { defaultStderrWrite } from "../io.ts";
 import type { ResolveDirOpts } from "../common.ts";
 import { getAtmuxDir, tryLoadTeam } from "../common.ts";
+import type { Writer } from "../io.ts";
+import { defaultStderrWrite } from "../io.ts";
 import {
   DriftAbortError,
   type DriftDetection,
-  type SyncEvent,
-  SYNC_MARKER_KEY,
   detectDrift,
   driftWarning,
   logSyncEvent,
   nextMarker,
+  SYNC_MARKER_KEY,
+  type SyncEvent,
 } from "./drift.ts";
 import { mapRoster, mergeBriefs } from "./mapping.ts";
 import type { ClaudeTeam, ClaudeTeamMember, ColorSidecar } from "./types.ts";

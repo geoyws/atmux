@@ -14,8 +14,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   checkSkillsPlugin,
-  skillsPluginStateRows,
   type SkillsPluginState,
+  skillsPluginStateRows,
 } from "../../../src/verbs/doctor.ts";
 
 describe("skillsPluginStateRows (pure)", () => {

@@ -47,8 +47,8 @@
 import {
   DEFAULT_MOUNTS,
   type HostPressureVerdict,
-  probeHostPressure,
   type ProbeHostPressureDeps,
+  probeHostPressure,
 } from "../host-pressure.ts";
 
 // ---------- Targets ----------

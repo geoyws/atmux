@@ -54,8 +54,8 @@ import {
   cageSocketPath,
   enabledTeams,
   firstTeamRoot,
-  type GroupTopologyNode,
   type GroupedTopology,
+  type GroupTopologyNode,
   groupSocketPath,
   type LoadCockpitOpts,
   loadCockpit,
@@ -68,12 +68,12 @@ import {
 } from "../core/cockpit.ts";
 import { loadTeam, teamJsonPath } from "../core/common.ts";
 import { installCockpitCronBlock } from "../core/cron.ts";
-import { migrateLegacySessionName } from "../core/session-migrate.ts";
 import {
   awaitClaudePaneReady,
   formatReadinessWarning,
   type PaneReadinessResult,
 } from "../core/pane-readiness.ts";
+import { migrateLegacySessionName } from "../core/session-migrate.ts";
 import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { resolveTuiCommand } from "../core/tui-cmd.ts";

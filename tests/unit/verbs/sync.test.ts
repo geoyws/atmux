@@ -21,9 +21,9 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  computeFingerprint,
   EX_DATAERR,
   SYNC_MARKER_KEY,
-  computeFingerprint,
 } from "../../../src/core/sync-claude-team-json/drift.ts";
 import { UsageError } from "../../../src/errors.ts";
 import { dispatchSyncSubverb } from "../../../src/verbs/sync.ts";

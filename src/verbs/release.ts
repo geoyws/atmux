@@ -21,8 +21,8 @@
 //
 // Skipped in --dry-run: every action; prints the plan + exits 0.
 
-import { spawn as defaultSpawn, type SpawnResult } from "../abstractions/spawn.ts";
 import { readTextOrNull, writeText } from "../abstractions/fs.ts";
+import { spawn as defaultSpawn, type SpawnResult } from "../abstractions/spawn.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { UsageError } from "../errors.ts";
 

@@ -33,8 +33,8 @@ import { now as nowMs } from "../abstractions/time.ts";
 import type { TmuxNamespace } from "../abstractions/tmux.ts";
 import type { TeamMember as Member, Team } from "../schema/team.ts";
 import { inboxPathFor, stateDir, teamJsonPath } from "./common.ts";
-import { kanbanWorkStateAvailable } from "./kanban-backend.ts";
 import { loadKanban } from "./kanban.ts";
+import { kanbanWorkStateAvailable } from "./kanban-backend.ts";
 
 // ---------- Cursor ----------
 

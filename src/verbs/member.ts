@@ -59,9 +59,9 @@ import {
   type TmuxNamespace,
 } from "../abstractions/tmux.ts";
 import {
-  MemberWindowResolveError,
   type MemberShape,
   type MemberWindow,
+  MemberWindowResolveError,
   moveMemberWindow,
   resolveMemberToWindowIdx,
   sortMembersDefaultsFirst,
@@ -81,18 +81,18 @@ import {
 } from "../core/common.ts";
 import { writeHeartbeat } from "../core/heartbeat.ts";
 import { loadInbox, movePendingToInProgress } from "../core/inbox.ts";
+import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { claimTaskForMember, markTaskBlockedWithNote, nowEpoch, showTask } from "../core/kanban.ts";
+import { leadWindowNamePath } from "../core/lead-marker.ts";
 import {
   isMemberSelfStatus,
   MEMBER_SELF_STATUS_VALUES,
   writeMemberStatus,
 } from "../core/member-status.ts";
-import { pickMemberName } from "./claim.ts";
-import type { Team as TeamShape } from "../schema/team.ts";
-import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
-import { leadWindowNamePath } from "../core/lead-marker.ts";
 import { ConfigError, UsageError } from "../errors.ts";
+import type { Team as TeamShape } from "../schema/team.ts";
 import { Team, type TeamMember } from "../schema/team.ts";
+import { pickMemberName } from "./claim.ts";
 
 const USAGE = "atmux member rename <member-id> --label <new-label>";
 const MOVE_USAGE = "atmux member move <member-id> --to <position>";

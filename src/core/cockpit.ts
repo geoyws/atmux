@@ -16,9 +16,9 @@ import { ConfigError, SchemaError } from "../errors.ts";
 import {
   Cockpit,
   type CockpitMedic,
-  type CockpitSuperbot,
   type CockpitSessionT,
   type Cockpit as CockpitShape,
+  type CockpitSuperbot,
   type CockpitTeam,
   type TeamSessionT,
 } from "../schema/cockpit.ts";

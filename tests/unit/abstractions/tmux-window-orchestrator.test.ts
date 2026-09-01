@@ -6,8 +6,7 @@
 // tests/unit/verbs/member.test.ts where the verbs drive a live socket.
 
 import { describe, expect, test } from "bun:test";
-import { TmuxError } from "../../../src/errors.ts";
-import { buildWindowName, buildWindowNameLegacy } from "../../../src/core/common.ts";
+import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import {
   candidateWindowNames,
   MemberWindowResolveError,
@@ -16,7 +15,8 @@ import {
   sortMembersDefaultsFirst,
   swapMemberWindows,
 } from "../../../src/abstractions/tmux-window-orchestrator.ts";
-import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
+import { buildWindowName, buildWindowNameLegacy } from "../../../src/core/common.ts";
+import { TmuxError } from "../../../src/errors.ts";
 
 // ---------- sortMembersDefaultsFirst ----------
 

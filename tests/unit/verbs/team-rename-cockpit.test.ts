@@ -12,11 +12,11 @@
 // parent". The rule under test is unchanged: only `type: "team"` nodes,
 // matched by name, are renamed.
 
+import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, test } from "bun:test";
 import { ConfigError } from "../../../src/errors.ts";
 import {
   findAndMutateTeamName,

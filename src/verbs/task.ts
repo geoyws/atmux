@@ -32,8 +32,8 @@
 
 import {
   getAtmuxDir,
-  requireTeam,
   type ResolveDirOpts,
+  requireTeam,
   resolveCallerScope,
 } from "../core/common.ts";
 import { removeFromInProgress } from "../core/inbox.ts";

@@ -16,9 +16,9 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { prune } from "../../../src/core/events-prune.ts";
-import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
 import { openDatabase } from "../../../src/abstractions/sqlite.ts";
+import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
+import { prune } from "../../../src/core/events-prune.ts";
 
 let scratch: string;
 let db: Database;

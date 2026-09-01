@@ -7,10 +7,10 @@
 
 import { describe, expect, test } from "bun:test";
 import {
-  VENDORED_TMUX_PATH,
   createResolveTmuxBinState,
   resetResolveTmuxBinForTesting,
   resolveTmuxBin,
+  VENDORED_TMUX_PATH,
 } from "../../../src/core/resolve-tmux-bin.ts";
 
 describe("resolveTmuxBin — tier 1 (ATMUX_TMUX_BIN override)", () => {

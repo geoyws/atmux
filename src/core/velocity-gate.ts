@@ -29,8 +29,8 @@ import {
   clearPendingMenu,
   computePaneHash,
   incrementStrike,
-  recordMenuSent,
   readStrikeRecord,
+  recordMenuSent,
   resetStrikeRecord,
   velocityStalledSymptomHash,
 } from "./whip-strikes.ts";

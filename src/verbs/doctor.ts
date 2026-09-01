@@ -45,49 +45,49 @@ import {
 import { UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
 import {
-  checkOrphanSessions,
-  checkMemberCageStates,
   checkCockpitOnDefaultSocket,
   checkDeployedBinaryLag,
   checkLegacyWindowNameFormat,
+  checkMemberCageStates,
+  checkOrphanSessions,
   probeSessionName,
 } from "./doctor/cockpit.ts";
 import {
-  checkWhipConfigDrift,
+  checkCronBlock,
   checkCronIntervalDivisors,
   checkCronOrphans,
-  checkCronBlock,
   checkReleaseNoteMissing,
+  checkWhipConfigDrift,
 } from "./doctor/cron.ts";
 import { checkDeps } from "./doctor/deps.ts";
-import { checkWebhook, checkHonker } from "./doctor/discord.ts";
+import { checkHonker, checkWebhook } from "./doctor/discord.ts";
 import { checkDriverPaneState, checkInboxMarks } from "./doctor/driver.ts";
 import {
+  checkMergerFanIn,
   checkSubmoduleIntegrity,
   checkWorktreeIsolation,
   checkWorktreeNestedStateDb,
-  checkMergerFanIn,
 } from "./doctor/git.ts";
-import { checkHostPressure, checkClaudeAccountPool } from "./doctor/host.ts";
-import { checkSkillsPlugin, checkCursorPluginCache } from "./doctor/plugins.ts";
+import { checkClaudeAccountPool, checkHostPressure } from "./doctor/host.ts";
+import { checkCursorPluginCache, checkSkillsPlugin } from "./doctor/plugins.ts";
 import { renderHuman, renderJson } from "./doctor/render.ts";
 import {
-  checkStateDir,
   checkLegacyInboxJson,
   checkPhantomInboxes,
-  probeLiveMembers,
   checkPhantomInProgressClaims,
+  checkStateDir,
+  probeLiveMembers,
 } from "./doctor/state.ts";
 import {
-  checkTeam,
-  checkTuis,
-  checkTuiCommandsClaudeOverride,
-  checkMemberLabelCollision,
-  collectSafeOrphanBranches,
   checkBotConfig,
+  checkMemberLabelCollision,
+  checkTeam,
+  checkTuiCommandsClaudeOverride,
+  checkTuis,
+  collectSafeOrphanBranches,
 } from "./doctor/team.ts";
 import { checkTmuxVersionMismatch, checkVendoredTmuxBinary } from "./doctor/tmux.ts";
-import { type DoctorRow, buildReport } from "./doctor/types.ts";
+import { buildReport, type DoctorRow } from "./doctor/types.ts";
 
 const USAGE = "atmux doctor [--quiet|-q] [--fix] [--json]";
 
@@ -559,118 +559,118 @@ export interface FixStarvingOpts {
   verifyPollIntervalMs?: number;
 }
 
-// ---------- Re-exports (ADR-266 split: probes live under ./doctor/) ----------
 export {
-  type DoctorStatus,
-  type DoctorRow,
-  type DoctorReport,
-  buildReport,
-  type GitSpawn,
-  type TmuxSpawn,
-} from "./doctor/types.ts";
-export { type CheckDepsOpts, installHint, checkDeps } from "./doctor/deps.ts";
+  type CheckCockpitOnDefaultSocketOpts,
+  type CheckDeployedBinaryLagOpts,
+  type CheckLegacyWindowNameFormatOpts,
+  type CheckMemberCageStatesOpts,
+  type CheckOrphanSessionsOpts,
+  checkCockpitOnDefaultSocket,
+  checkDeployedBinaryLag,
+  checkLegacyWindowNameFormat,
+  checkMemberCageStates,
+  checkOrphanSessions,
+  type MemberCageHealth,
+  type MemberCageState,
+  STARVING_THRESHOLD_S,
+} from "./doctor/cockpit.ts";
 export {
-  checkTeam,
-  firstBin,
-  type CheckTuisOpts,
-  resolveMemberBin,
-  checkTuis,
-  checkTuiCommandsClaudeOverride,
-  checkMemberLabelCollision,
-  collectSafeOrphanBranches,
-  checkBotConfig,
-} from "./doctor/team.ts";
+  type CheckCronBlockOpts,
+  type CheckCronOrphansOpts,
+  type CheckReleaseNoteMissingOpts,
+  checkCronBlock,
+  checkCronIntervalDivisors,
+  checkCronOrphans,
+  checkReleaseNoteMissing,
+  checkWhipConfigDrift,
+} from "./doctor/cron.ts";
+export { type CheckDepsOpts, checkDeps, installHint } from "./doctor/deps.ts";
 export {
-  checkStateDir,
-  type PhantomEntry,
-  findPhantomInboxes,
-  findLegacyInboxJson,
+  type CheckWebhookOpts,
+  checkHonker,
+  checkWebhook,
+  honkerStateRows,
+} from "./doctor/discord.ts";
+export {
+  type CheckDriverPaneStateOpts,
+  type CheckInboxMarksOpts,
+  checkDriverPaneState,
+  checkInboxMarks,
+  findInboxTaskMarks,
+  type InboxMarkOrphan,
+} from "./doctor/driver.ts";
+export {
+  type CheckMergerFanInOpts,
+  type CheckSubmoduleIntegrityOpts,
+  type CheckWorktreeNestedStateDbOpts,
+  type CheckWorktreeOpts,
+  checkMergerFanIn,
+  checkSubmoduleIntegrity,
+  checkWorktreeIsolation,
+  checkWorktreeNestedStateDb,
+  parseSubmoduleStatus,
+  type SubmoduleStatus,
+} from "./doctor/git.ts";
+export {
+  type CheckClaudeAccountPoolDeps,
+  type ClaudeAccountPoolVerdict,
+  checkClaudeAccountPool,
+  checkHostPressure,
+  claudeAccountPoolRows,
+  hostPressureRows,
+} from "./doctor/host.ts";
+export {
+  type CheckMemberForcePushRecentOpts,
+  type CheckSendKeysFailureRecentOpts,
+  checkMemberForcePushRecent,
+  checkSendKeysFailureRecent,
+} from "./doctor/member-ops.ts";
+export {
+  type CheckCursorPluginCacheOpts,
+  type CheckSkillsPluginOpts,
+  checkCursorPluginCache,
+  checkSkillsPlugin,
+  type SkillsPluginState,
+  skillsPluginStateRows,
+} from "./doctor/plugins.ts";
+export { renderHuman, renderJson } from "./doctor/render.ts";
+export {
   checkLegacyInboxJson,
   checkPhantomInboxes,
   checkPhantomInProgressClaims,
+  checkStateDir,
+  findLegacyInboxJson,
+  findPhantomInboxes,
+  type PhantomEntry,
 } from "./doctor/state.ts";
 export {
-  type CheckWebhookOpts,
-  checkWebhook,
-  honkerStateRows,
-  checkHonker,
-} from "./doctor/discord.ts";
+  type CheckTuisOpts,
+  checkBotConfig,
+  checkMemberLabelCollision,
+  checkTeam,
+  checkTuiCommandsClaudeOverride,
+  checkTuis,
+  collectSafeOrphanBranches,
+  firstBin,
+  resolveMemberBin,
+} from "./doctor/team.ts";
 export {
-  hostPressureRows,
-  checkHostPressure,
-  type ClaudeAccountPoolVerdict,
-  claudeAccountPoolRows,
-  type CheckClaudeAccountPoolDeps,
-  checkClaudeAccountPool,
-} from "./doctor/host.ts";
-export {
-  type SkillsPluginState,
-  skillsPluginStateRows,
-  type CheckSkillsPluginOpts,
-  checkSkillsPlugin,
-  type CheckCursorPluginCacheOpts,
-  checkCursorPluginCache,
-} from "./doctor/plugins.ts";
-export {
-  checkWhipConfigDrift,
-  checkCronIntervalDivisors,
-  type CheckCronOrphansOpts,
-  checkCronOrphans,
-  type CheckCronBlockOpts,
-  checkCronBlock,
-  type CheckReleaseNoteMissingOpts,
-  checkReleaseNoteMissing,
-} from "./doctor/cron.ts";
-export {
-  type CheckOrphanSessionsOpts,
-  checkOrphanSessions,
-  STARVING_THRESHOLD_S,
-  type MemberCageState,
-  type MemberCageHealth,
-  type CheckMemberCageStatesOpts,
-  checkMemberCageStates,
-  type CheckCockpitOnDefaultSocketOpts,
-  checkCockpitOnDefaultSocket,
-  type CheckDeployedBinaryLagOpts,
-  checkDeployedBinaryLag,
-  type CheckLegacyWindowNameFormatOpts,
-  checkLegacyWindowNameFormat,
-} from "./doctor/cockpit.ts";
-export {
-  type SubmoduleStatus,
-  parseSubmoduleStatus,
-  type CheckSubmoduleIntegrityOpts,
-  checkSubmoduleIntegrity,
-  type CheckWorktreeOpts,
-  checkWorktreeIsolation,
-  type CheckWorktreeNestedStateDbOpts,
-  checkWorktreeNestedStateDb,
-  type CheckMergerFanInOpts,
-  checkMergerFanIn,
-} from "./doctor/git.ts";
-export {
-  type CheckDriverPaneStateOpts,
-  checkDriverPaneState,
-  type InboxMarkOrphan,
-  findInboxTaskMarks,
-  type CheckInboxMarksOpts,
-  checkInboxMarks,
-} from "./doctor/driver.ts";
-export { renderHuman, renderJson } from "./doctor/render.ts";
-export {
-  TMUX_MIN_VERSION,
-  TMUX_TESTED_VERSION,
+  type CheckTmuxVersionOpts,
+  type CheckVendoredTmuxBinaryOpts,
+  checkTmuxVersionMismatch,
+  checkVendoredTmuxBinary,
+  compareTmuxVersion,
   type ParsedTmuxVersion,
   parseTmuxVersion,
-  compareTmuxVersion,
-  type CheckTmuxVersionOpts,
-  checkTmuxVersionMismatch,
-  type CheckVendoredTmuxBinaryOpts,
-  checkVendoredTmuxBinary,
+  TMUX_MIN_VERSION,
+  TMUX_TESTED_VERSION,
 } from "./doctor/tmux.ts";
+// ---------- Re-exports (ADR-266 split: probes live under ./doctor/) ----------
 export {
-  type CheckMemberForcePushRecentOpts,
-  checkMemberForcePushRecent,
-  type CheckSendKeysFailureRecentOpts,
-  checkSendKeysFailureRecent,
-} from "./doctor/member-ops.ts";
+  buildReport,
+  type DoctorReport,
+  type DoctorRow,
+  type DoctorStatus,
+  type GitSpawn,
+  type TmuxSpawn,
+} from "./doctor/types.ts";

@@ -1,6 +1,6 @@
 import { existsSync as fsExistsSync } from "node:fs";
 import type { SpawnResult } from "../../abstractions/spawn.ts";
-import { type DoctorRow, type TmuxSpawn, defaultTmuxSpawn } from "./types.ts";
+import { type DoctorRow, defaultTmuxSpawn, type TmuxSpawn } from "./types.ts";
 
 // ---------- ADR-162 §Decision-anchor #5: tmux infrastructure probes ----------
 

@@ -1,4 +1,4 @@
-import type { DoctorStatus, DoctorReport } from "./types.ts";
+import type { DoctorReport, DoctorStatus } from "./types.ts";
 
 // ---------- Render ----------
 

@@ -20,8 +20,8 @@ import {
   stateDir,
 } from "../core/common.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
-import { kanbanWorkStateAvailable } from "../core/kanban-backend.ts";
 import { loadKanban } from "../core/kanban.ts";
+import { kanbanWorkStateAvailable } from "../core/kanban-backend.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { KanbanTask } from "../schema/kanban.ts";
 

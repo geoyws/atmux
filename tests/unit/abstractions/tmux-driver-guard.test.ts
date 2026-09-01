@@ -10,8 +10,8 @@
 // use a bogus socket path — the throw happens before tmux is touched.
 
 import { describe, expect, test } from "bun:test";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   createTmux,
   DriverSendKeysViolation,

@@ -33,8 +33,8 @@ import {
   withIdempotency,
 } from "../../../src/abstractions/events.ts";
 import { bootHonker, resetHonkerStateForTest } from "../../../src/abstractions/honker.ts";
-import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
 import { openDatabase } from "../../../src/abstractions/sqlite.ts";
+import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
 
 let scratch: string;
 let db: Database;

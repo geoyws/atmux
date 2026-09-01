@@ -1,10 +1,10 @@
 // ADR-285 — deterministic `_superbot` routing and readiness primitives.
 // Pure policy lives here; Kanban/tmux process IO is owned by the verb.
 
+import type { CockpitSuperbotRoute } from "../schema/cockpit.ts";
 import { botActor } from "./bot.ts";
 import { classifyText } from "./pane-state.ts";
 import { verifierForTui } from "./safe-send.ts";
-import type { CockpitSuperbotRoute } from "../schema/cockpit.ts";
 
 export const SUPERBOT_METADATA_KEY = "atmuxSuperbot";
 export const SUPERBOT_PENDING_RETRY_LIMIT = 2;

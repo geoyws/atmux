@@ -2,7 +2,7 @@ import { existsSync as fsExistsSync } from "node:fs";
 import { join } from "node:path";
 import { resolveWorktreePath, sanitizeBranchSegment } from "../../abstractions/worktree.ts";
 import type { Team } from "../../schema/team.ts";
-import { type DoctorRow, type GitSpawn, defaultGitSpawn } from "./types.ts";
+import { type DoctorRow, defaultGitSpawn, type GitSpawn } from "./types.ts";
 
 // ---------- ADR-057 §D5a: submodule pointer integrity ----------
 
