@@ -34,7 +34,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closeDatabase, openDatabase } from "../../../src/abstractions/sqlite.ts";
 import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
-import { migrateHexIds } from "../../../src/verbs/migrate-hex-ids.ts";
+import { migrateHexIds, quoteId } from "../../../src/verbs/migrate-hex-ids.ts";
 
 interface TestEnv {
   scratch: string;
@@ -375,6 +375,11 @@ describe("migrate-hex-ids — robustness", () => {
 });
 
 describe("migrate-hex-ids — flag parsing + side-channel mutations", () => {
+  test("quoteId quotes valid compound ids and refuses unsafe ids", () => {
+    expect(quoteId("t-1-3b017960")).toBe("'t-1-3b017960'");
+    expect(() => quoteId("t-1-3b017960' OR 1=1 --")).toThrow(/refusing unsafe id/);
+  });
+
   test("--scope flag value form (--scope X vs --scope=X) both work", async () => {
     seedLegacy(env.db, "epics", "e-aaaaaaaa");
 
