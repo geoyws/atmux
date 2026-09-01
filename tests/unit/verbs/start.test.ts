@@ -7,11 +7,11 @@
 // windows present, `state/session-start.txt` written, log lines sunk).
 //
 // Test isolation (memory `feedback_tmux_test_isolation.md`):
-// `createTmux({ socketPath, configFile: "/dev/null" })` is the load-bearing
-// guarantee — `-S <socketPath>` baked into every tmux invocation makes it
-// physically impossible for a spawned subprocess to reach the operator's
-// daily-driver tmux server. The `delete process.env.TMUX` belt-and-braces
-// in beforeEach is layered on top.
+// `createCanonicalAtmuxTmux({ socketPath })` is the load-bearing guarantee —
+// `-S <socketPath>` baked into every tmux invocation makes it physically
+// impossible for a spawned subprocess to reach the operator's daily-driver
+// tmux server. The `delete process.env.TMUX` belt-and-braces in beforeEach is
+// layered on top, and the helper keeps the canonical tmux.conf path pinned.
 //
 // 100% narrowed coverage (ADR-009 §2): every branch of `parseStartArgs`,
 // `resolveTmuxConfig`, `defaultSocketPath`, and the `start` verb body is
@@ -24,7 +24,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createTmux, type TmuxNamespace } from "../../../src/abstractions/tmux.ts";
+import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import type { Logger } from "../../../src/core/tui.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
 import {
@@ -34,12 +34,15 @@ import {
   resolveTmuxConfig,
   start,
 } from "../../../src/verbs/start.ts";
+import { createCanonicalAtmuxTmux, setCanonicalAtmuxTmuxHome } from "../../helpers/tmux.ts";
 
 // ---------- Test fixture helpers ----------
 
 interface TestEnv {
   /** Per-test `.atmux/` dir (passed via `ATMUX_DIR`). */
   atmuxDir: string;
+  /** Per-test `HOME` dir used to keep tmux.conf.local out of the server. */
+  homeDir: string;
   /** Per-test absolute socket path (passed via `--socket-path`). */
   socketPath: string;
   /** Per-test `tmux` namespace pinned to the same socket — used to
@@ -56,14 +59,13 @@ let env: TestEnv;
 let socketDir: string;
 let priorTmux: string | undefined;
 let priorNoCron: string | undefined;
+let restoreHome: (() => void) | null = null;
 
 beforeEach(async () => {
   socketDir = await mkdtemp(join(tmpdir(), "atmux-start-sock-"));
+  const homeDir = await mkdtemp(join(tmpdir(), "atmux-start-home-"));
   const socketPath = join(socketDir, "sock");
   const atmuxDir = await mkdtemp(join(tmpdir(), "atmux-start-dir-"));
-  // ATMUX_DIR points the verb at the `.atmux/` we're about to seed.
-  // `getAtmuxDir` reads that env var first (per the resolution chain in
-  // src/core/common.ts:51) — no need for cwd-walk wiring in tests.
   const team = `t${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
   await mkdir(atmuxDir, { recursive: true });
   priorTmux = process.env.TMUX;
@@ -77,9 +79,7 @@ beforeEach(async () => {
   // tests/helpers/setup.bash:47 (bash sandbox parity).
   priorNoCron = process.env.ATMUX_NO_CRON;
   process.env.ATMUX_NO_CRON = "1";
-  // Use `/dev/null` config so tmux behaviour is reproducible regardless
-  // of the operator's ~/.tmux.conf (base-index, key-bindings, etc.).
-  const tmux = createTmux({ socketPath, configFile: "/dev/null" });
+  restoreHome = setCanonicalAtmuxTmuxHome(homeDir);
   const logs: TestEnv["logs"] = [];
   const logger: Logger = {
     log: (msg) => logs.push({ kind: "log", msg }),
@@ -87,7 +87,24 @@ beforeEach(async () => {
     warn: (msg) => logs.push({ kind: "warn", msg }),
     err: (msg) => logs.push({ kind: "err", msg }),
   };
-  env = { atmuxDir, socketPath, tmux, team, logs, logger };
+  try {
+    const tmux = createCanonicalAtmuxTmux({ socketPath });
+    // ATMUX_DIR points the verb at the `.atmux/` we're about to seed.
+    // `getAtmuxDir` reads that env var first (per the resolution chain in
+    // src/core/common.ts:51) — no need for cwd-walk wiring in tests.
+    env = { atmuxDir, homeDir, socketPath, tmux, team, logs, logger };
+  } catch (error) {
+    restoreHome?.();
+    restoreHome = null;
+    if (priorTmux !== undefined) process.env.TMUX = priorTmux;
+    else delete process.env.TMUX;
+    if (priorNoCron !== undefined) process.env.ATMUX_NO_CRON = priorNoCron;
+    else delete process.env.ATMUX_NO_CRON;
+    await rm(socketDir, { recursive: true, force: true });
+    await rm(atmuxDir, { recursive: true, force: true });
+    await rm(homeDir, { recursive: true, force: true });
+    throw error;
+  }
 });
 
 afterEach(async () => {
@@ -99,11 +116,14 @@ afterEach(async () => {
   } catch {
     // expected: server may already be gone (idempotent teardown)
   }
+  restoreHome?.();
+  restoreHome = null;
   if (priorTmux !== undefined) process.env.TMUX = priorTmux;
   if (priorNoCron !== undefined) process.env.ATMUX_NO_CRON = priorNoCron;
   else delete process.env.ATMUX_NO_CRON;
   await rm(socketDir, { recursive: true, force: true });
   await rm(env.atmuxDir, { recursive: true, force: true });
+  await rm(env.homeDir, { recursive: true, force: true });
 });
 
 /** Write a minimal `team.json` with the given members + flags. */
@@ -710,12 +730,19 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
     // Sort by index to assert positional order — listWindows returns
     // the natural tmux order but tests are clearer with explicit sort.
     const ordered = [...wins].sort((a, b) => a.index - b.index);
+    expect(ordered.map((w) => w.index)).toEqual([1, 2, 3]);
     expect(ordered[0]?.name).toBe("driver");
     // Members emoji-prefixed by role: team-lead → 🧭, member → 🐝.
     expect(ordered[1]?.name).toBe("🧭_alpha");
     expect(ordered[2]?.name).toBe("🐝-bee");
     // No __home placeholder ever created.
     expect(wins.some((w) => w.name === `__${env.team}__home`)).toBe(false);
+    expect(
+      await env.tmux.pane.displayMessage({
+        target: `${session}:driver.0`,
+        format: "#{pane_index}",
+      }),
+    ).toBe("0");
 
     // Logger surfaces the driver-at-window-1 marker for parity with bash
     // `lib/start.sh:203` ("driver at window 1, <tui>").
@@ -1322,7 +1349,7 @@ describe("start — ADR-081 §C brief-paste", () => {
       expect(pane).toContain("Hello alpha on team");
       expect(pane).toContain(env.team);
       expect(pane).toContain("role=member");
-      expect(pane).toContain(env.atmuxDir);
+      expect(pane.replaceAll("\n", "")).toContain(env.atmuxDir);
 
       // Logger surfaces a per-member paste line for observability.
       expect(
@@ -1679,9 +1706,13 @@ describe("start — ADR-063 cockpit auto-reconcile", () => {
     const exit = await runStart([], { loadCockpitFn, cockpitReconcileFn: reconcileFn });
     expect(exit).toBe(0);
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.onlyTeam).toBe(env.team);
-    expect(calls[0]!.teamNames).toEqual([env.team]);
-    expect(calls[0]!.sessionName).toBe("atmux_teams");
+    const call = calls[0];
+    if (!call) {
+      throw new Error("expected exactly one cockpit reconcile call");
+    }
+    expect(call.onlyTeam).toBe(env.team);
+    expect(call.teamNames).toEqual([env.team]);
+    expect(call.sessionName).toBe("atmux_teams");
     // ✓ log line emitted on success.
     expect(env.logs.some((l) => l.msg.includes("cockpit window") && l.msg.includes(env.team))).toBe(
       true,
@@ -1982,8 +2013,12 @@ describe("start — t-eb0887fe parallelized member spawn", () => {
       (e) => e.kind === "enter" && e.member !== "alpha" && e.member !== "",
     );
     // Every teammate's enter happens AT OR AFTER the lead's exit time.
+    const leadExitTime = leadExit?.t;
+    if (leadExitTime === undefined) {
+      throw new Error("expected a lead exit timestamp");
+    }
     for (const ent of teammateEntries) {
-      expect(ent.t).toBeGreaterThanOrEqual(leadExit!.t - 1); // -1ms timing slack
+      expect(ent.t).toBeGreaterThanOrEqual(leadExitTime - 1); // -1ms timing slack
     }
   });
 
