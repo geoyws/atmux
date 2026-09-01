@@ -6,6 +6,11 @@ export const CANONICAL_ATMUX_TMUX_CONF_PATH = getAtmuxTmuxConfPath({
   ATMUX_TMUX_CONF: undefined,
 } as NodeJS.ProcessEnv);
 
+/** Shared portable keepalive for tmux-backed test panes.
+ *
+ * POSIX sh on macOS/BSD/Linux accepts this loop; `sleep infinity` does not. */
+export const PORTABLE_KEEPALIVE_COMMAND = "while :; do sleep 86400; done";
+
 /**
  * Create a tmux namespace pinned to atmux's canonical conf path.
  *

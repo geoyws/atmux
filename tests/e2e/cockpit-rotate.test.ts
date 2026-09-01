@@ -1,11 +1,11 @@
-// ADR-167 T7 — e2e capstone for `atmux cockpit rotate`.
+// ADR-167 T7 — real-tmux integration coverage for `atmux cockpit rotate`.
 //
 // Spins a hermetic synthetic cockpit cage under a per-test TMUX_TMPDIR
 // + ATMUX_COCKPIT_SOCKET override, seeds a HOME with cockpit.json +
 // per-role session-start markers + a stub `claude` wrapper on PATH,
 // then invokes `cockpitRotate(...)` directly so each run exercises the
-// full verb path (gate matrix → handoff write → Ctrl-C → kill-window →
-// new-window → audit row) against a real tmux server.
+// direct-verb path (gate matrix → handoff write → send-keys seam →
+// kill-window → new-window → audit row) against a real tmux server.
 //
 // Six runs cover the operator-visible round-trip per ADR-167 §Decision
 // + §Pre-flight gate matrix + §Per-role respawn matrix + §Ordering
@@ -22,13 +22,12 @@
 //
 // Skipped when tmux binary is absent (CI without tmux).
 //
-// Pattern adapted from tests/e2e/resolve-team-socket.test.ts (real tmux
-// + TMUX_TMPDIR isolation) + cockpit-rotate unit harness for the seam
+// Pattern adapted from tests/e2e/resolve-team-socket.test.ts (real tmux +
+// TMUX_TMPDIR isolation) + cockpit-rotate unit harness for the seam
 // shapes (loadCockpit, tmuxFactory, atomicWrite).
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { TmuxConfig, TmuxNamespace } from "../../src/abstractions/tmux.ts";
 import type { LoadedCockpit } from "../../src/core/cockpit.ts";
@@ -37,6 +36,7 @@ import {
   cockpitRotate,
   handoffPayloadPath,
 } from "../../src/verbs/cockpit-rotate.ts";
+import { CANONICAL_ATMUX_TMUX_CONF_PATH, PORTABLE_KEEPALIVE_COMMAND } from "../helpers/tmux.ts";
 
 // ---------- environment probe ----------
 
@@ -71,17 +71,25 @@ interface Hermetic {
  *  env-spread is REQUIRED — Bun.spawnSync without an explicit `env`
  *  caches the parent's env at Bun process start and ignores subsequent
  *  process.env mutations (verified 2026-05-17 with isolation repro).
- *  Spreading process.env at call-site picks up the beforeEach
+ *  Spreading process.env at call-site picks up the beforeEach HOME /
  *  TMUX_TMPDIR / ATMUX_COCKPIT_SOCKET overrides so this test's tmux
- *  calls hit the SAME socket the verb's spawn() will hit (verb's spawn
- *  abstraction always sets env explicitly via mergeEnv). */
-function tmuxCage(
-  _hermetic: Hermetic,
+ *  calls hit the SAME socket the verb's spawn() will hit. Global tmux
+ *  flags precede the subcommand so the server starts with the canonical
+ *  atmux config file instead of the host default. */
+function spawnTmux(
+  socketName: string,
   argv: string[],
-): { exitCode: number | null; stdout: string; stderr: string } {
+  extraEnv: NodeJS.ProcessEnv = {},
+): {
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+} {
+  const env = { ...process.env, ...extraEnv };
+  delete env.TMUX;
   const proc = Bun.spawnSync({
-    cmd: ["tmux", "-L", COCKPIT_SOCKET, ...argv],
-    env: { ...process.env },
+    cmd: ["tmux", "-f", CANONICAL_ATMUX_TMUX_CONF_PATH, "-L", socketName, ...argv],
+    env,
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -92,11 +100,18 @@ function tmuxCage(
   };
 }
 
+function tmuxCage(
+  _hermetic: Hermetic,
+  argv: string[],
+): { exitCode: number | null; stdout: string; stderr: string } {
+  return spawnTmux(COCKPIT_SOCKET, argv);
+}
+
 /** Seed a hermetic HOME with cockpit.json + per-role session-start
  *  markers (mtime ≥60min so gate-3 passes) + a stub `claude` wrapper on
- *  PATH that exec's `sleep infinity` (Plan A wrapper exercise — the
- *  real resolveClaudeWrapper resolves /root/.claude → 'claude', which
- *  then resolves via $PATH to our stub). */
+ *  PATH that execs the shared portable keepalive (Plan A wrapper
+ *  exercise — the real resolveClaudeWrapper resolves /root/.claude →
+ *  'claude', which then resolves via $PATH to our stub). */
 async function setupHermeticHome(hermetic: Hermetic): Promise<void> {
   const { homeDir } = hermetic;
   // Per-role marker dirs + cockpit.json dir + audit-log dir + bin dir.
@@ -106,8 +121,9 @@ async function setupHermeticHome(hermetic: Hermetic): Promise<void> {
   await mkdir(join(homeDir, ".atmux/state"), { recursive: true });
   await mkdir(join(hermetic.workDir, "bin"), { recursive: true });
 
-  // Session-start markers — mtime set to 2h ago via shell touch
-  // (Node's utimes is portable but verbose; touch -d is simplest).
+  // Session-start markers — mtime set to 2h ago with Node fs.utimes.
+  // Keep the 2-hour age explicit so the gate-3 threshold stays
+  // satisfied on macOS/BSD/Linux without shell-specific date syntax.
   // Role literals per src/verbs/cockpit-rotate.ts::sessionStartMarkerPath:
   // medic, team-driver (NOT team-name). Plus team-alpha dir is created
   // above for handoff payload path symmetry.
@@ -116,12 +132,7 @@ async function setupHermeticHome(hermetic: Hermetic): Promise<void> {
   for (const role of ["medic", "team-driver"]) {
     const markerPath = join(homeDir, ".claude/teams/__cockpit__", role, "session-start.txt");
     await writeFile(markerPath, "", "utf8");
-    // ISO date for `touch -d` — portable on coreutils.
-    Bun.spawnSync({
-      cmd: ["touch", "-d", twoHoursAgo.toISOString(), markerPath],
-      stdout: "ignore",
-      stderr: "ignore",
-    });
+    await utimes(markerPath, twoHoursAgo, twoHoursAgo);
   }
 
   // cockpit.json — minimal sessions[] declaring medic + one team
@@ -152,17 +163,24 @@ async function setupHermeticHome(hermetic: Hermetic): Promise<void> {
   // empty .atmux dir is enough (no .atmux/team.json read by rotate).
   await mkdir(join(hermetic.workDir, "team-alpha-root", ".atmux"), { recursive: true });
 
-  // Stub claude wrapper on PATH — exec sleep infinity so the respawn
-  // newWindow's shellCommand persists past the verb's call site.
+  // Stub claude wrapper on PATH — exec the shared portable keepalive so
+  // the respawn newWindow's shellCommand persists past the verb's call site.
   const stubClaude = join(hermetic.workDir, "bin", "claude");
-  await writeFile(stubClaude, "#!/bin/sh\nexec sleep infinity\n", { mode: 0o755 });
+  await writeFile(
+    stubClaude,
+    `#!/bin/sh
+exec sh -c '${PORTABLE_KEEPALIVE_COMMAND}'
+`,
+    { mode: 0o755 },
+  );
   await chmod(stubClaude, 0o755);
 }
 
 /** Spawn the synthetic cockpit session with the 3 windows the verb
  *  reads/touches: _superdriver (gate-1 source), _medic, team-alpha
- *  (team-driver target). Each window runs `sleep infinity` so they
- *  stay alive until the verb's killWindow tears them down. */
+ *  (team-driver target). Each window runs the shared portable
+ *  keepalive so they stay alive until the verb's killWindow tears
+ *  them down. */
 function spawnCockpitSession(hermetic: Hermetic): void {
   const newSess = tmuxCage(hermetic, [
     "new-session",
@@ -175,7 +193,7 @@ function spawnCockpitSession(hermetic: Hermetic): void {
     "200",
     "-y",
     "50",
-    "sleep infinity",
+    PORTABLE_KEEPALIVE_COMMAND,
   ]);
   expect(newSess.exitCode).toBe(0);
   for (const win of ["_medic", "team-alpha"]) {
@@ -186,7 +204,7 @@ function spawnCockpitSession(hermetic: Hermetic): void {
       `${COCKPIT_SESSION}:`,
       "-n",
       win,
-      "sleep infinity",
+      PORTABLE_KEEPALIVE_COMMAND,
     ]);
     expect(w.exitCode).toBe(0);
   }
@@ -215,13 +233,12 @@ async function tailAuditRow(hermetic: Hermetic): Promise<CockpitRotateAuditRow |
  *
  *  `safeSendKeysWithVerify` is permissively stubbed by default:
  *  production's verifier loops capturePane against the post-Ctrl-C
- *  pane to confirm the claude TUI is gone, but our hermetic stub-
- *  claude pane (`sleep infinity`) DIES on Ctrl-C — the next capture
- *  pass throws `can't find window`. Stub returns success so the verb
- *  proceeds to killWindow + newWindow (which IS the destructive
- *  primitive the e2e exercises). Plan B atomicity test (Run 6)
- *  doesn't need this stub since it injects a recording tmuxFactory
- *  that captures sendKeys calls but never propagates to real tmux. */
+ *  pane to confirm the claude TUI is gone. In this fixture the seam
+ *  advances directly to the separately asserted killWindow + newWindow
+ *  behavior, so the stub returns success and the verb can continue.
+ *  Plan B atomicity test (Run 6) doesn't need this stub since it
+ *  injects a recording tmuxFactory that captures sendKeys calls but
+ *  never propagates to real tmux. */
 function rotateOpts(
   hermetic: Hermetic,
   extra: Record<string, unknown> = {},
@@ -238,11 +255,9 @@ function rotateOpts(
     discordSend: async () => {
       /* recorded via test-local closure when needed */
     },
-    // Permissive Ctrl-C send — the verifier loop in production verifies
-    // the claude TUI is gone via capturePane, which throws against our
-    // stub `sleep infinity` pane (which dies on SIGINT). Skip the
-    // verify loop; killWindow is the next-step primitive that actually
-    // removes the pane.
+    // Permissive Ctrl-C send — the injected seam advances directly to
+    // the separately asserted killWindow + newWindow path in this
+    // fixture. Production still verifies the post-Ctrl-C pane state.
     safeSendKeysWithVerify: async () => ({
       success: true,
       attempts: 1,
@@ -264,7 +279,9 @@ const ENV_KEYS_MUTATED = [
 ] as const;
 
 async function newHermetic(): Promise<Hermetic> {
-  const workDir = await mkdtemp(join(tmpdir(), "atmux_test_cockpit_rotate_"));
+  // Keep the TMUX_TMPDIR root short enough that the eventual socket
+  // path stays under macOS sun_path limits.
+  const workDir = await mkdtemp("/tmp/atmux-rot-");
   const homeDir = join(workDir, "home");
   const tmuxTmpdir = join(workDir, "tmux");
   await mkdir(homeDir, { recursive: true });
@@ -310,7 +327,7 @@ async function teardownHermetic(hermetic: Hermetic): Promise<void> {
 
 // ---------- tests ----------
 
-describe.skipIf(!HAS_TMUX)("e2e ADR-167 T7 — atmux cockpit rotate", () => {
+describe.skipIf(!HAS_TMUX)("integration ADR-167 T7 — atmux cockpit rotate", () => {
   let hermetic: Hermetic;
 
   beforeEach(async () => {
@@ -475,7 +492,7 @@ describe.skipIf(!HAS_TMUX)("e2e ADR-167 T7 — atmux cockpit rotate", () => {
       // pane-state classifier's TYPING regex (src/core/pane-state.ts L109)
       // is /Press up to edit queued messages/i — paint exactly that
       // line so classifyText returns state="TYPING".
-      `sh -c 'printf "\\nPress up to edit queued messages\\n"; sleep infinity'`,
+      `sh -c 'printf "\\nPress up to edit queued messages\\n"; ${PORTABLE_KEEPALIVE_COMMAND}'`,
     ]);
     // Settle — give tmux time to paint the pane so capturePane sees the footer.
     await new Promise((r) => setTimeout(r, 250));
@@ -497,23 +514,15 @@ describe.skipIf(!HAS_TMUX)("e2e ADR-167 T7 — atmux cockpit rotate", () => {
     // same TMUX_TMPDIR so the assertion is real (not just isolated
     // by accident-of-path).
     const cageSocket = "atmux-team-alpha-cage";
-    const cageSpawn = Bun.spawnSync({
-      cmd: [
-        "tmux",
-        "-L",
-        cageSocket,
-        "new-session",
-        "-d",
-        "-s",
-        "atmux-team-alpha",
-        "-n",
-        "lead",
-        "sleep infinity",
-      ],
-      env: { ...process.env },
-      stdout: "ignore",
-      stderr: "pipe",
-    });
+    const cageSpawn = spawnTmux(cageSocket, [
+      "new-session",
+      "-d",
+      "-s",
+      "atmux-team-alpha",
+      "-n",
+      "lead",
+      PORTABLE_KEEPALIVE_COMMAND,
+    ]);
     expect(cageSpawn.exitCode).toBe(0);
 
     const preList = tmuxCage(hermetic, [
@@ -547,12 +556,7 @@ describe.skipIf(!HAS_TMUX)("e2e ADR-167 T7 — atmux cockpit rotate", () => {
 
     // Cage socket's lead session is UNTOUCHED — list-sessions on the
     // cage socket still shows it. (Cockpit verb scope per ADR-162.)
-    const cageList = Bun.spawnSync({
-      cmd: ["tmux", "-L", cageSocket, "list-sessions", "-F", "#{session_name}"],
-      env: { ...process.env },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
+    const cageList = spawnTmux(cageSocket, ["list-sessions", "-F", "#{session_name}"]);
     expect(cageList.exitCode).toBe(0);
     expect(cageList.stdout?.toString()).toContain("atmux-team-alpha");
 
@@ -564,12 +568,7 @@ describe.skipIf(!HAS_TMUX)("e2e ADR-167 T7 — atmux cockpit rotate", () => {
 
     // Cleanup the cage socket so the afterEach kill-server only has
     // the cockpit socket to tear down (cage is a separate tmux server).
-    Bun.spawnSync({
-      cmd: ["tmux", "-L", cageSocket, "kill-server"],
-      env: { ...process.env },
-      stdout: "ignore",
-      stderr: "ignore",
-    });
+    spawnTmux(cageSocket, ["kill-server"]);
   });
 
   // ----- Run 6: handoff-write-failed atomicity (Plan B injection) -----
@@ -650,8 +649,9 @@ describe.skipIf(!HAS_TMUX)("e2e ADR-167 T7 — atmux cockpit rotate", () => {
     expect(row?.error).toContain("synthetic ENOSPC");
 
     // ---- ATOMICITY PROOF ----
-    // The verb fired no destructive primitives: no Ctrl-C, no kill,
-    // no new-window. Capture (gate IO) is allowed; mutations are not.
+    // The injected seam does not deliver Ctrl-C in this fixture; the
+    // assertion is that no kill or new-window fires when handoff write
+    // fails. Capture (gate IO) is allowed; mutations are not.
     const mutations = ops.filter(
       (o) => o.op === "killWindow" || o.op === "newWindow" || o.op === "sendKeys",
     );
