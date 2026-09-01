@@ -16,7 +16,7 @@ atmux's lead/member/cockpit topology is built entirely on top of `tmux` — sock
 The unstated assumption underneath both ADRs is that **the tmux binary in `$PATH` behaves the way we expect**. That assumption is not safe:
 
 1. **Version skew across hosts.** ADR-097 §Context already names this: "tmux's option/command syntax changes across major versions (3.0 → 3.3 deprecated `target-` flags, 3.4 added `display-message -p` semantic shifts)." Today atmux runs on hax (Ubuntu 22.04 — tmux 3.2a), local Macs (varies by `brew` upgrade cadence — 3.4 or 3.5a), CI runners (whatever the base image ships), and operator workstations (Arch / Debian stable / NixOS / WSL — all different).
-2. **Config-side surprise.** Even on a pinned binary version, `tmux` reads `~/.tmux.conf` by default. ADR-097 already documents this and ships a `configFile: "/dev/null"` workaround for tests. Production code today omits `configFile` — meaning the operator's personal tmux config (custom prefix, base-index, status-bar formatters) silently shapes atmux's runtime. Reading window-name with a `#{?...}` formatter that the operator overrode can return parser-breaking strings.
+2. **Config-side surprise.** Even on a pinned binary version, `tmux` reads `~/.tmux.conf` by default. ADR-097 already documents this and now routes the server-starting paths through the canonical atmux conf path. The 2026-05-05 `configFile: "/dev/null"` workaround is historical and superseded on 2026-09-01. In the current wiring, session-start production paths and live-server tests use the canonical path, while non-server-starting callers can still omit `configFile` where that is appropriate. Reading window-name with a `#{?...}` formatter that the operator overrode can return parser-breaking strings.
 3. **Output-format drift.** ADR-138's verifier contract assumes specific `capture-pane` output shapes (composer-empty / agent-thinking / modal-closed / context-non-zero detection). A future tmux patch changing how `capture-pane` formats unicode or how terminal escapes are stripped will silently break every verifier without a single test failure (the tests run on the dev box's tmux; the failure is on the operator's box).
 4. **OSS contributor footgun.** A fresh `git clone` + `bun install` against a host that ships tmux 1.8 (Debian buster) or tmux on Windows-via-WSL with a different `pid` table layout will fail in ways that look like atmux bugs, not tmux-version bugs. ADR-162 §3 added a warn-probe for this (v1: "your host tmux is too old, things may break"); ADR-163 promotes that warning to a structural fix (v2: ship our own tmux, never load the host one).
 
@@ -31,9 +31,9 @@ A bundled binary lives in the user's `$PATH` (via `/opt/atmux/<version>/bin/tmux
 
 ### Why this isn't ADR-097 territory
 
-ADR-097 is the tmux *abstraction layer* — it specifies the API surface (`tmux.session.newSession(...)`, `tmux.pane.sendKeys(...)`), not where the tmux binary comes from. ADR-097 §Decision §Config-pinning already added `configFile` to the `TmuxConfig` discriminated union, but the resolved path is left to the consumer. ADR-163 specifies the consumer side: when production code constructs the tmux namespace, it pins `configFile` to the bundled binary's bundled tmux.conf (instead of omitting it).
+ADR-097 is the tmux *abstraction layer* — it specifies the API surface (`tmux.session.newSession(...)`, `tmux.pane.sendKeys(...)`), not where the tmux binary comes from. ADR-097 §Decision §Config-pinning already added `configFile` to the `TmuxConfig` discriminated union, but the resolved path is left to the consumer. ADR-163's 2026-05-16 proposal specified the consumer side: production code would pin `configFile` to the bundled binary's bundled tmux.conf instead of omitting it. That bundled resolver remains unimplemented as of 2026-09-01; current server-starting paths use `getAtmuxTmuxConfPath()`.
 
-The shape of the API does not change. The binary it shells out to does, and the config that binary loads does.
+In that historical proposal, the API would gain the proposed binary selector; the selected binary and the config it loaded would change.
 
 ## Decision
 
@@ -47,7 +47,7 @@ Six §Decision-anchor lines first, then prose around each subsystem.
 >
 > **§Decision-anchor #4** — **Version-lock v2 — promote ADR-162 §3 warn-probe to refusal at session-start.** ADR-162 §3 shipped a warn-probe that runs on `atmux doctor` and emits `🟡 host tmux too old (got X, want ≥Y), bundled tmux recommended` without blocking. ADR-163 promotes this gate: when the bundled binary is present (post-install check), atmux REFUSES to fall back to the host tmux for any team-spawning verb (`atmux start`, `atmux rotate-lead`, `atmux team start`, cockpit rebuild). The host-tmux path remains usable for `atmux doctor` / `atmux status` (read-only probes). Refusal hint names the bundled binary path + invites `atmux tmux reset-config` if the bundle is corrupted. The `ATMUX_USE_HOST_TMUX=1` escape hatch exists for CI / debugging — emits a `[host-tmux-fallback]` Discord notification (driver-only, audited).
 >
-> **§Decision-anchor #5** — **ADR-097 `configFile` resolver pins to bundled path.** The production callers of `createTmux` (per ADR-097 §Decision §Method shape) MUST pass `configFile: getBundledTmuxConfigPath()` (new export from `src/core/tmux-bundle.ts`). The resolver returns `${atmuxRoot}/vendor/tmux/atmux.conf` or refuses if the bundle is absent (forcing the v2 refusal-gate behavior). The `configFile: "/dev/null"` test-fixture path stays valid (tests want stock tmux defaults, not the bundled config — ADR-097 §Decision is unchanged for tests). Three call-sites in production code (`src/core/team-start.ts`, `src/core/cockpit-rebuild.ts`, `src/core/rotate-lead.ts` — locate via grep) gain the pinned-config wiring.
+> **§Decision-anchor #5 (historical 2026-05-16 proposal)** — **ADR-097 `configFile` resolver would pin to a bundled path.** The proposal required production callers of `createTmux` (per ADR-097 §Decision §Method shape) to pass `configFile: getBundledTmuxConfigPath()` from a new `src/core/tmux-bundle.ts`; the proposed resolver would return `${atmuxRoot}/vendor/tmux/atmux.conf` or refuse if the bundle were absent. That resolver is not implemented in this tree as of 2026-09-01. Current live-server tests, the parity harness, and selected production server-starting paths use `configFile: getAtmuxTmuxConfPath()` so they load the canonical atmux conf instead of an empty config file. Other production `createTmux` call sites still require a server-startability audit. The proposal named `src/core/team-start.ts`, `src/core/cockpit-rebuild.ts`, and `src/core/rotate-lead.ts` as initial wiring sites; that nonexistent current-tree list is historical. The API/code shape below remains historical until a bundled resolver lands.
 >
 > **§Decision-anchor #6** — **ADR-138 verifier contract is preserved by the version-lock — verifiers test against the pinned tmux output format, not host's.** ADR-138's five built-in verifiers (`composerEmpty` / `agentThinking` / `modalClosed` / `contextNonZero` / `paneMatchesRegex`) all operate on `capture-pane` output. Pinning tmux to 3.4 means the verifier regex set is stable across deploys — no more "verifier broke on macOS 3.5a" silent failures. The verifier test suite (`tests/core/safe-send.test.ts` — confirm via grep) MUST run against the bundled binary in CI (currently runs against the runner's host tmux); T6 of this ADR's decomp wires the CI matrix to spawn from the bundled binary.
 
@@ -84,14 +84,14 @@ $XDG_CONFIG_HOME/atmux/
 └── tmux.conf.local      (user override, optional; created empty by reset-config)
 ```
 
-**Conf content** (default, per §Decision-anchor #2):
+**Historical proposed minimum contents** (2026-05-16 draft, superseded by `templates/tmux/atmux.conf` on 2026-09-01):
 
 The default `atmux.conf` is shipped from `templates/tmux/atmux.conf` (per ADR-162 — that ADR ships the template; ADR-163 owns the binary that loads it). Minimum contents:
 
 ```tmux
-# atmux default tmux config — DO NOT EDIT
-# Run `atmux tmux reset-config` to regenerate this file.
-# Customize via $XDG_CONFIG_HOME/atmux/tmux.conf.local instead.
+# Historical only: proposed minimum tmux config for the bundled-config
+# design pass. It is preserved here so the 2026-09-01 supersession can be
+# read against the original proposal.
 
 # Quarantine — never load operator's personal ~/.tmux.conf
 # (atmux's tmux invocations also pass -f explicitly, so ~/.tmux.conf is
@@ -110,7 +110,7 @@ set -g mouse on
 source-file -q ~/.config/atmux/tmux.conf.local
 ```
 
-The exact template lives in `templates/tmux/atmux.conf` per ADR-162; this ADR pins the shape (override-line MUST be last; `source-file -q` MUST use `-q` for the no-file no-op).
+The live `templates/tmux/atmux.conf` template is the current source of truth. It sets `base-index 1` and does not set `pane-base-index`.
 
 **User override semantics**: operator-edits land in `~/.config/atmux/tmux.conf.local`. Loaded LAST so it overrides the defaults. Examples of legit overrides: theme overlay (`set -g status-style …`), custom binding (`bind -n M-, …`), per-host status-bar formatter. Operators MUST NOT redefine `base-index` / `pane-base-index` — atmux's window-numbering invariants depend on them. `atmux tmux print-config` flags overrides that touch atmux-load-bearing keys with a warning.
 
@@ -158,9 +158,9 @@ export function bundledTmuxExists(): boolean;       // null-safe probe
 export function getBundledTmuxVersion(): string;    // "tmux 3.4"
 ```
 
-The three production call-sites that construct `TmuxConfig` (per ADR-097 §Decision) pass `configFile: getBundledTmuxConfigPath()` instead of omitting it. The construct also accepts a per-verb-resolved `binary: getBundledTmuxPath()` field (NEW on `TmuxConfig` — additive, optional). When `binary` is undefined, the factory falls back to PATH-resolved `tmux` (backward-compat for tests + the host-tmux escape hatch).
+The 2026-05-16 proposal named `src/core/team-start.ts`, `src/core/cockpit-rebuild.ts`, and `src/core/rotate-lead.ts` as the initial production call sites for the bundled-path wiring; that file list is historical and records the proposal, not the current tree. On 2026-09-01, current examples explicitly wired to `getAtmuxTmuxConfPath()` include server-starting paths in `src/verbs/start.ts`, `src/verbs/cockpit.ts`, `src/verbs/bot.ts`, `src/verbs/superbot.ts`, `src/verbs/status.ts`, and `src/abstractions/fallback-cage.ts`. That list is not an assertion that every other production `createTmux` caller is non-starting or already safe; the remaining call sites require a separate audit. The proposal also sketched a per-verb-resolved `binary: getBundledTmuxPath()` field and a PATH fallback; that material is historical only and is not implemented in this tree as of 2026-09-01.
 
-The full `TmuxConfig` shape becomes:
+The full `TmuxConfig` shape proposed in 2026-05-16 becomes:
 
 ```ts
 type SocketConfig =
@@ -168,12 +168,13 @@ type SocketConfig =
   | { readonly socketPath: string; readonly socket?: never };
 
 export type TmuxConfig = SocketConfig & {
-  readonly configFile?: string;   // -f <path>; tests pass "/dev/null"
-  readonly binary?: string;       // path to tmux executable; defaults to PATH-resolved
+  readonly configFile?: string;   // optional -f <path>; current live tests and selected server-starting paths use getAtmuxTmuxConfPath()
+  // `binary?: string` was part of the 2026-05-16 proposal, but it is not
+  // implemented in this tree as of 2026-09-01.
 };
 ```
 
-ADR-097 gets an amendment annotation citing ADR-163 (append-only — never edit ADR-097's existing prose; add a `## Amendments` section at the bottom pointing to this ADR).
+ADR-097 gets an amendment annotation citing ADR-163 (append-only — never edit ADR-097's existing prose; add a `## Amendments` section at the bottom pointing to this ADR). The 2026-05-16 proposal remains historical until an actual resolver lands.
 
 **ADR-138 verifier alignment** (per §Decision-anchor #6):
 
@@ -183,14 +184,14 @@ ADR-163 closes the skew by running the verifier test suite (`tests/core/safe-sen
 
 No ADR-138 amendment is needed (the contract stays the same — verifiers operate on capture-pane output). What changes is the CI environment: bundled tmux instead of host tmux.
 
-### §EPIC-done definition (canonical for this ADR's decomp)
+### §EPIC-done definition for the 2026-05-16 proposal only
 
-ADR-163 completes when ALL of:
+ADR-163's 2026-05-16 proposal would complete when ALL of:
 
 1. T1 lands — vendored prebuilt binaries available as GitHub-release artifacts for the four supported platforms; postinstall fetches + verifies SHA-256 + symlinks.
 2. T2 lands — `${atmuxRoot}/vendor/tmux/atmux.conf` default + `$XDG_CONFIG_HOME/atmux/tmux.conf.local` override resolver implemented; production callers pass `configFile: getBundledTmuxConfigPath()`.
 3. T3 lands — `atmux tmux reset-config` / `print-config` / `which` verbs shipped + help text updated.
-4. T4 lands — ADR-097 amendment annotation + `binary` field added to `TmuxConfig` + three production call-sites pass `binary: getBundledTmuxPath()`.
+4. T4 lands — ADR-097 amendment annotation + `binary` field added to `TmuxConfig` + the production call-sites pass `binary: getBundledTmuxPath()`.
 5. T5 lands — version-lock v2 refusal at team-spawning verbs; `ATMUX_USE_HOST_TMUX=1` escape hatch with `[host-tmux-fallback]` Discord audit.
 6. T6 lands — CI matrix runs `tests/core/safe-send.test.ts` against bundled tmux; e2e dogfood verifies fresh OSS clone bootstraps cleanly with the bundled binary.
 7. T7 lands — RUNBOOK-tmux-bundled.md + README §Installation section updated.
