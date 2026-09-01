@@ -72,9 +72,9 @@ export function nextId(db: Database, scope: IdScope, hashOverride?: () => string
 /** Read the current counter without incrementing. Returns 0 when the
  *  scope has never been used. Useful for tests + observability. */
 export function peekId(db: Database, scope: IdScope): number {
-  const row = db
-    .prepare("SELECT last_id FROM id_sequences WHERE scope = ?")
-    .get(scope) as { last_id: number } | undefined;
+  const row = db.prepare("SELECT last_id FROM id_sequences WHERE scope = ?").get(scope) as
+    | { last_id: number }
+    | undefined;
   return row?.last_id ?? 0;
 }
 
@@ -185,31 +185,13 @@ export function matchesIdPrefix(candidate: string, query: string): boolean {
   if (isHexId(candidate) && !isCompoundId(candidate)) return false;
   // Compound IDs: prefix match against the `<scope>-<N>` or
   // `<scope>-<N>-` part. `t-12` against `t-12-abc` should match;
-  // `t-1` against `t-12-abc` should NOT (would be ambiguous with t-1).
+  // `t` and `t-` are too broad and must not match.
   if (isCompoundId(candidate)) {
-    // Split into `t-N-hash`; allow query of forms `t-N`, `t-N-`,
-    // or `t-N-<partial-hash>`. Note: query forms like `t` or `t-`
-    // alone are too broad — reject to avoid false matches across
-    // running numbers.
     const lastDashIdx = candidate.lastIndexOf("-");
     const prefixNoHash = candidate.slice(0, lastDashIdx); // `t-N`
-    // Exact match on the `t-N` part (running number) is allowed.
     if (query === prefixNoHash) return true;
-    // Allow `t-N-partial-hash` — full prefix of candidate AND query
-    // already crosses the second dash (i.e. into the hash portion).
-    // The second-dash threshold prevents `t-1` matching `t-12-abc`:
-    // `t-1` has one dash, doesn't cross the second dash, so the
-    // exact-prefixNoHash branch above handles it (or rejects).
-    if (candidate.startsWith(query)) {
-      const queryDashCount = (query.match(/-/g) ?? []).length;
-      if (queryDashCount >= 2) return true; // into hash portion
-      // queryDashCount === 1: query is `t-NNN<...>`; check digit
-      // boundary to prevent `t-1` matching `t-12-abc`.
-      const queryChar = query.charCodeAt(query.length - 1);
-      const nextChar = candidate.charCodeAt(query.length);
-      const queryIsDigit = queryChar >= 48 && queryChar <= 57;
-      const nextIsDigit = nextChar >= 48 && nextChar <= 57;
-      if (queryIsDigit && nextIsDigit) return false;
+    const queryDashCount = (query.match(/-/g) ?? []).length;
+    if (queryDashCount >= 2 && candidate.startsWith(query)) {
       return true;
     }
   }
