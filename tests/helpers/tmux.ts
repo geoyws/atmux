@@ -17,7 +17,9 @@ export const CANONICAL_ATMUX_TMUX_CONF_PATH = getAtmuxTmuxConfPath({
  * `getAtmuxTmuxConfPath()` still preserves the repo-vs-installed topology
  * split.
  */
-export function createCanonicalAtmuxTmux(config: Omit<TmuxConfig, "configFile">): TmuxNamespace {
+type WithoutConfigFile<T> = T extends unknown ? Omit<T, "configFile"> : never;
+
+export function createCanonicalAtmuxTmux(config: WithoutConfigFile<TmuxConfig>): TmuxNamespace {
   return createTmux({ ...config, configFile: CANONICAL_ATMUX_TMUX_CONF_PATH });
 }
 
