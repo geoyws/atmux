@@ -23,6 +23,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTmux, type TmuxNamespace } from "../../../src/abstractions/tmux.ts";
+import * as tmuxOrchestrator from "../../../src/abstractions/tmux-window-orchestrator.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
 import {
   dispatchMemberSubverb,
@@ -800,8 +801,75 @@ describe("memberMove — refusals", () => {
         home: env.home,
         stdout: (s) => env.stdout.push(s),
         stderr: (s) => env.stderr.push(s),
+        resolveMemberToWindowIdxFn: async () => {
+          throw new tmuxOrchestrator.MemberWindowResolveError({
+            kind: "unknown-id",
+            message: "member id 'ghost' not found in team.json",
+          });
+        },
       }),
-    ).rejects.toThrow(ConfigError);
+    ).rejects.toThrow(/member move: member id 'ghost' not found in team\.json/);
+  });
+
+  test("moveMemberWindow resolve failure maps to UsageError and leaves roster untouched", async () => {
+    await bootMemberTeamWithWindows([
+      { name: "lead", role: "team-lead", emoji: "🧭" },
+      { name: "worker", role: "member", emoji: "🛠️" },
+    ]);
+    await expect(
+      memberMoveInternal(["worker", "--to", "2", "--socket-path", env.socketPath], {
+        env: { ...process.env, ATMUX_DIR: env.atmuxDir },
+        cwd: env.atmuxDir,
+        home: env.home,
+        stdout: (s) => env.stdout.push(s),
+        stderr: (s) => env.stderr.push(s),
+        resolveMemberToWindowIdxFn: async () => ({
+          id: "worker",
+          index: 3,
+          name: "🛠️-worker",
+        }),
+        moveMemberWindowFn: async () => {
+          throw new tmuxOrchestrator.MemberWindowResolveError({
+            kind: "driver-window",
+            message: "cannot move 'worker' to W1 — slot reserved for the driver pane",
+          });
+        },
+      }),
+    ).rejects.toThrow(
+      /member move: cannot move 'worker' to W1 — slot reserved for the driver pane/,
+    );
+    const tj = await readTeamJson();
+    expect(tj.members.map((m) => m.name)).toEqual(["lead", "worker"]);
+  });
+
+  test("singleSession without an anchor is treated as a stopped team", async () => {
+    await writeFile(
+      join(env.atmuxDir, "team.json"),
+      `${JSON.stringify(
+        {
+          name: env.team,
+          singleSession: true,
+          members: [
+            { name: "lead", role: "team-lead", emoji: "🧭" },
+            { name: "worker", role: "member", emoji: "🛠️" },
+          ],
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+
+    const r = await memberMoveInternal(["worker", "--to", "2", "--socket-path", env.socketPath], {
+      env: { ...process.env, ATMUX_DIR: env.atmuxDir },
+      cwd: env.atmuxDir,
+      home: env.home,
+      stdout: (s) => env.stdout.push(s),
+      stderr: (s) => env.stderr.push(s),
+    });
+
+    expect(r).toEqual({ exitCode: 0, wrote: false, moved: false });
+    expect(env.stderr.join("")).toContain("team session not running");
   });
 
   test("moving to W1 (driver slot) throws UsageError", async () => {
@@ -902,8 +970,33 @@ describe("memberSwap — refusals", () => {
         home: env.home,
         stdout: (s) => env.stdout.push(s),
         stderr: (s) => env.stderr.push(s),
+        resolveMemberToWindowIdxFn: async () => {
+          throw new tmuxOrchestrator.MemberWindowResolveError({
+            kind: "unknown-id",
+            message: "member id 'ghost' not found in team.json",
+          });
+        },
       }),
-    ).rejects.toThrow(ConfigError);
+    ).rejects.toThrow(/member swap: member id 'ghost' not found in team\.json/);
+  });
+
+  test("swapMemberWindows no-op is surfaced without rewriting team.json", async () => {
+    await bootMemberTeamWithWindows([
+      { name: "lead", role: "team-lead", emoji: "🧭" },
+      { name: "worker", role: "member", emoji: "🛠️" },
+    ]);
+    const r = await memberSwapInternal(["lead", "worker", "--socket-path", env.socketPath], {
+      env: { ...process.env, ATMUX_DIR: env.atmuxDir },
+      cwd: env.atmuxDir,
+      home: env.home,
+      stdout: (s) => env.stdout.push(s),
+      stderr: (s) => env.stderr.push(s),
+      swapMemberWindowsFn: async () => false,
+    });
+    expect(r).toEqual({ exitCode: 0, wrote: false, swapped: false });
+    expect(env.stdout.join("")).toContain("share W");
+    const tj = await readTeamJson();
+    expect(tj.members.map((m) => m.name)).toEqual(["lead", "worker"]);
   });
 
   test("team stopped → no-op with stderr notice", async () => {
@@ -972,6 +1065,47 @@ describe("memberSort — happy path (live session)", () => {
     // Canonical order: team-lead, planner, reviewer (committer/ombudsman absent),
     // then user-added in original relative order (alpha, beta).
     expect(tj.members.map((m) => m.name)).toEqual(["lead", "planner", "reviewer", "alpha", "beta"]);
+  });
+
+  test("rostered-but-not-live members are skipped while live members still sort", async () => {
+    await writeTeamJson([
+      { name: "alpha", role: "member", emoji: "🛠️" },
+      { name: "ghost", role: "member", emoji: "👻" },
+      { name: "lead", role: "team-lead", emoji: "🧭" },
+    ]);
+    await startLiveSession({ windowName: "driver" });
+    await env.tmux.window.newWindow({
+      sessionName: env.team,
+      name: "🛠️-alpha",
+      detached: true,
+    });
+    await env.tmux.window.newWindow({
+      sessionName: env.team,
+      name: "🧭_lead",
+      detached: true,
+    });
+
+    const r = await memberSortInternal(["--socket-path", env.socketPath], {
+      env: { ...process.env, ATMUX_DIR: env.atmuxDir },
+      cwd: env.atmuxDir,
+      home: env.home,
+      stdout: (s) => env.stdout.push(s),
+      stderr: (s) => env.stderr.push(s),
+      resolveMemberToWindowIdxFn: async (opts) => {
+        const { memberId } = opts;
+        if (memberId === "ghost") {
+          throw new tmuxOrchestrator.MemberWindowResolveError({
+            kind: "unknown-id",
+            message: "member id 'ghost' not found in team.json",
+          });
+        }
+        return await tmuxOrchestrator.resolveMemberToWindowIdx(opts);
+      },
+    });
+    expect(r).toEqual({ exitCode: 0, wrote: true, moveCount: 1 });
+
+    const tj = await readTeamJson();
+    expect(tj.members.map((m) => m.name)).toEqual(["lead", "alpha", "ghost"]);
   });
 });
 

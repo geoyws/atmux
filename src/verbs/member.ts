@@ -618,7 +618,14 @@ export function parseMemberSortArgs(argv: ReadonlyArray<string>): MemberSortArgs
 
 // ---------- Shared verb plumbing ----------
 
-export interface MemberOrchestrationOpts extends MemberRenameOpts {}
+export interface MemberOrchestrationOpts extends MemberRenameOpts {
+  /** Test seam for `resolveMemberToWindowIdx` (default uses the real orchestrator). */
+  resolveMemberToWindowIdxFn?: typeof resolveMemberToWindowIdx;
+  /** Test seam for `moveMemberWindow` (default uses the real orchestrator). */
+  moveMemberWindowFn?: typeof moveMemberWindow;
+  /** Test seam for `swapMemberWindows` (default uses the real orchestrator). */
+  swapMemberWindowsFn?: typeof swapMemberWindows;
+}
 
 export interface MemberMoveResult {
   exitCode: number;
@@ -753,8 +760,9 @@ export async function memberMoveInternal(
   }
 
   let source: MemberWindow;
+  const resolveMember = opts.resolveMemberToWindowIdxFn ?? resolveMemberToWindowIdx;
   try {
-    source = await resolveMemberToWindowIdx({
+    source = await resolveMember({
       sessionName: probe.sessionName,
       memberId: parsed.memberId,
       members: team.members as ReadonlyArray<MemberShape>,
@@ -763,17 +771,17 @@ export async function memberMoveInternal(
       buildWindowNameLegacy,
     });
   } catch (e) {
-    if (e instanceof MemberWindowResolveError) {
+    if (e instanceof MemberWindowResolveError)
       throw new ConfigError({ what: `member move: ${e.message}` });
-    }
     throw e;
   }
 
   const liveBeforeMove = await probe.tmux.window.listWindows(probe.sessionName);
   const occupiedIndices = new Set(liveBeforeMove.map((w) => w.index));
   let moved: boolean;
+  const moveWindow = opts.moveMemberWindowFn ?? moveMemberWindow;
   try {
-    moved = await moveMemberWindow({
+    moved = await moveWindow({
       sessionName: probe.sessionName,
       source,
       target: parsed.position,
@@ -781,9 +789,8 @@ export async function memberMoveInternal(
       occupiedIndices,
     });
   } catch (e) {
-    if (e instanceof MemberWindowResolveError) {
+    if (e instanceof MemberWindowResolveError)
       throw new UsageError({ what: `member move: ${e.message}` });
-    }
     throw e;
   }
 
@@ -851,8 +858,9 @@ export async function memberSwapInternal(
 
   let a: MemberWindow;
   let b: MemberWindow;
+  const resolveMember = opts.resolveMemberToWindowIdxFn ?? resolveMemberToWindowIdx;
   try {
-    a = await resolveMemberToWindowIdx({
+    a = await resolveMember({
       sessionName: probe.sessionName,
       memberId: parsed.idA,
       members: team.members as ReadonlyArray<MemberShape>,
@@ -860,7 +868,7 @@ export async function memberSwapInternal(
       buildWindowName,
       buildWindowNameLegacy,
     });
-    b = await resolveMemberToWindowIdx({
+    b = await resolveMember({
       sessionName: probe.sessionName,
       memberId: parsed.idB,
       members: team.members as ReadonlyArray<MemberShape>,
@@ -869,16 +877,15 @@ export async function memberSwapInternal(
       buildWindowNameLegacy,
     });
   } catch (e) {
-    if (e instanceof MemberWindowResolveError) {
+    if (e instanceof MemberWindowResolveError)
       throw new ConfigError({ what: `member swap: ${e.message}` });
-    }
     throw e;
   }
 
   const liveBefore = await probe.tmux.window.listWindows(probe.sessionName);
   const highestIndex = liveBefore.reduce((max, w) => (w.index > max ? w.index : max), 0);
 
-  const swapped = await swapMemberWindows({
+  const swapped = await (opts.swapMemberWindowsFn ?? swapMemberWindows)({
     sessionName: probe.sessionName,
     a,
     b,
@@ -987,8 +994,9 @@ export async function memberSortInternal(
       const liveNow = await probe.tmux.window.listWindows(probe.sessionName);
       const occupiedIndices = new Set(liveNow.map((w) => w.index));
       let source: MemberWindow;
+      const resolveMember = opts.resolveMemberToWindowIdxFn ?? resolveMemberToWindowIdx;
       try {
-        source = await resolveMemberToWindowIdx({
+        source = await resolveMember({
           sessionName: probe.sessionName,
           memberId,
           members: team.members as ReadonlyArray<MemberShape>,
@@ -998,13 +1006,9 @@ export async function memberSortInternal(
           driverIndex: Number.isFinite(driverIdx) ? driverIdx : 1,
         });
       } catch (e) {
-        if (e instanceof MemberWindowResolveError && e.kind === "unknown-id") {
-          // Member rostered in team.json but has no live window —
-          // expected for paused members or pre-spawn slots. Skip; the
-          // persisted JSON still records the canonical order so the
-          // next `atmux start` materializes them in place.
-          continue;
-        }
+        // A rostered member may have no live window while paused or pre-spawn;
+        // keep its persisted order and let the next start materialize it.
+        if (e instanceof MemberWindowResolveError && e.kind === "unknown-id") continue;
         throw e;
       }
       if (source.index === targetIdx) continue;
