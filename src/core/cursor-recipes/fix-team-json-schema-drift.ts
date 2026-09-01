@@ -149,19 +149,7 @@ export const fixTeamJsonSchemaDriftRecipe: CursorRecipe = {
       };
     }
 
-    // (3) members[] preservation — must remain an array post-cursor.
-    // Strict pre/post members count-equality would require the detect-
-    // time snapshot to be threaded through verify; not done in v1.
-    // The Team.safeParse step above already guarantees the shape is
-    // valid, including members being an array of TeamMember.
-    if (typeof parsed === "object" && parsed !== null) {
-      const after = (parsed as { members?: unknown }).members;
-      if (!Array.isArray(after)) {
-        reasons.push("team.json members[] is not an array post-cursor");
-      }
-    }
-
-    // (4) Patch summary — count keys touched at the path level.
+    // (3) Patch summary — count keys touched at the path level.
     const summary =
       reasons.length === 0
         ? `team.json drift fix — schema parses clean (${patch.files.length} file touched)`
