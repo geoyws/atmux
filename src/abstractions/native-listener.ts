@@ -12,61 +12,123 @@
 // as graceful exit). The caller can also explicitly call `.return()` on
 // the iterator.
 //
-// **Failure handling**: subprocess spawn failure throws immediately
-// (the caller can fall back to poll-mode). Runtime crash (binary
-// exits non-zero) ends the iterator cleanly — caller's watchEvents
-// degrades to poll-mode per its externalSignals contract.
+// **Failure handling**: a synchronous spawn helper failure still
+// throws immediately (the caller can fall back to poll-mode). Child
+// process spawn errors (missing binary, permission, not executable)
+// surface through the returned `stdout` iterator so `watchEvents()`
+// can fall back to poll-mode. Runtime crash (binary exits non-zero)
+// ends the iterator cleanly — caller's watchEvents degrades to
+// poll-mode per its externalSignals contract.
 //
 // **Where the binary lives**: production callers point `binaryPath` at
 // the build:install-staged `/opt/atmux/<v>/bin/atmux-listener`. Tests
 // override with a fake-spawn injection seam.
 
-import { type ChildProcess, spawn as nodeSpawn } from "node:child_process";
+import { spawn as nodeSpawn } from "node:child_process";
 
 /** Test-injection seam — wraps Node's child_process.spawn so tests can
  *  feed canned stdout streams without launching real subprocesses. */
-export interface NativeSpawnFn {
-  (
-    binary: string,
-    args: ReadonlyArray<string>,
-  ): {
-    stdout: AsyncIterable<string>;
-    kill: () => void;
-    onExit: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
-  };
-}
+export type NativeSpawnFn = (
+  binary: string,
+  args: ReadonlyArray<string>,
+) => {
+  stdout: AsyncIterable<string>;
+  kill: () => void;
+  onExit: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
+};
 
 /** Default spawner — uses node:child_process. Reads stdout line-by-line
  *  via a readline-like splitter to handle the listener's
  *  newline-delimited protocol. */
-export const defaultNativeSpawn: NativeSpawnFn = (binary, args) => {
-  const child: ChildProcess = nodeSpawn(binary, [...args], {
+type NativeChildProcessLike = {
+  stdout?: (AsyncIterable<string> & { setEncoding: (encoding: string) => void }) | null;
+  stdin?: { end?: () => void } | null;
+  killed?: boolean;
+  kill: (signal: NodeJS.Signals) => void;
+  once: (
+    event: "exit" | "error",
+    listener:
+      | ((code: number | null, signal: NodeJS.Signals | null) => void)
+      | ((error: Error) => void),
+  ) => unknown;
+};
+
+type NativeSpawnImpl = (
+  binary: string,
+  args: ReadonlyArray<string>,
+  options: { stdio: ["pipe", "pipe", "pipe"] },
+) => NativeChildProcessLike;
+
+export function defaultNativeSpawn(
+  binary: string,
+  args: ReadonlyArray<string>,
+  spawnImpl: NativeSpawnImpl = nodeSpawn as unknown as NativeSpawnImpl,
+): ReturnType<NativeSpawnFn> {
+  const child = spawnImpl(binary, [...args], {
     stdio: ["pipe", "pipe", "pipe"],
   });
-  const stdout = lineStream(child);
+  let failStream: ((error: Error) => void) | null = null;
+  const streamError = new Promise<Error>((resolve) => {
+    failStream = resolve;
+  });
+  const stdout = lineStream(child, streamError);
   const onExit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
-    child.once("exit", (code, signal) => resolve({ code, signal }));
+    let settled = false;
+    child.once("exit", (code: number | null, signal: NodeJS.Signals | null) => {
+      if (settled) return;
+      settled = true;
+      resolve({ code, signal });
+    });
+    child.once("error", (error: Error) => {
+      if (settled) return;
+      settled = true;
+      failStream?.(error);
+      resolve({ code: null, signal: null });
+    });
   });
   return {
     stdout,
     kill: () => {
       // Closing stdin lets the listener exit cleanly on its next
       // stdout flush (broken pipe). SIGTERM as belt-and-braces.
-      child.stdin?.end();
-      if (!child.killed) child.kill("SIGTERM");
+      try {
+        child.stdin?.end?.();
+      } catch {
+        // Best-effort shutdown only.
+      }
+      try {
+        if (!child.killed) child.kill("SIGTERM");
+      } catch {
+        // Best-effort shutdown only.
+      }
     },
     onExit,
   };
-};
+}
 
 /** Yield decoded lines from a child's stdout — drops the trailing "\n",
  *  handles partial-line buffering across `data` events. */
-async function* lineStream(child: ChildProcess): AsyncGenerator<string, void, void> {
+async function* lineStream(
+  child: NativeChildProcessLike,
+  childError?: Promise<Error>,
+): AsyncGenerator<string, void, void> {
   if (!child.stdout) return;
   let buffer = "";
   child.stdout.setEncoding("utf8");
-  for await (const chunk of child.stdout as unknown as AsyncIterable<string>) {
-    buffer += chunk;
+  const source = child.stdout as unknown as AsyncIterable<string>;
+  const sourceIter = source[Symbol.asyncIterator]();
+  while (true) {
+    const nextPromise = sourceIter.next().then((result) => ({ kind: "chunk" as const, result }));
+    const race = childError
+      ? Promise.race([nextPromise, childError.then((error) => ({ kind: "error" as const, error }))])
+      : nextPromise;
+    const outcome = await race;
+    if (outcome.kind === "error") {
+      void sourceIter.return?.().catch(() => {});
+      throw outcome.error;
+    }
+    if (outcome.result.done) break;
+    buffer += outcome.result.value;
     let idx = buffer.indexOf("\n");
     while (idx !== -1) {
       const line = buffer.slice(0, idx);
@@ -112,32 +174,57 @@ export interface NativeListenerHandle {
  * Pass `handle.signals` into `watchEvents({ externalSignals: ... })`
  * to drive the consumer loop kernel-blocked.
  *
- * Throws synchronously if `spawn()` itself fails (binary missing, no
- * permission, etc.). Caller's fallback should catch and degrade to
- * poll-mode.
+ * Throws synchronously if `spawn()` itself fails. Async child-process
+ * spawn errors (binary missing, no permission, not executable) reject
+ * the returned stdout iterator; callers can observe that failure and
+ * fall back to poll-mode. `exited` still resolves with exit details.
  */
 export function spawnNativeListener(opts: NativeListenerOpts): NativeListenerHandle {
   const spawn = opts.spawn ?? defaultNativeSpawn;
   const { stdout, kill, onExit } = spawn(opts.binaryPath, [opts.dbPath, opts.channel]);
   const diag = opts.onDiagnostic ?? (() => {});
+  let stopped = false;
+  const safeDiag = (msg: string) => {
+    try {
+      diag(msg);
+    } catch {
+      // Diagnostics are best-effort only.
+    }
+  };
+
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    try {
+      kill();
+    } catch {
+      // Best-effort shutdown only.
+    }
+  };
 
   // Filter out the "ready" handshake line — callers only care about
   // notification lines, but observing "ready" is useful for diagnostics.
   async function* filtered(): AsyncGenerator<string, void, void> {
     let seenReady = false;
-    for await (const line of stdout) {
-      if (!seenReady && line === "ready") {
-        seenReady = true;
-        diag("native-listener: ready");
-        continue;
+    let completed = false;
+    try {
+      for await (const line of stdout) {
+        if (!seenReady && line === "ready") {
+          seenReady = true;
+          safeDiag("native-listener: ready");
+          continue;
+        }
+        yield line;
       }
-      yield line;
+      completed = true;
+    } finally {
+      if (!completed) stop();
     }
   }
 
   return {
     signals: filtered(),
-    stop: kill,
+    stop,
     exited: onExit,
   };
 }
