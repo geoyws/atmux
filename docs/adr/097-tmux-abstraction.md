@@ -244,13 +244,13 @@ type SocketConfig =
   | { readonly socketPath: string; readonly socket?: never };
 
 export type TmuxConfig = SocketConfig & {
-  readonly configFile?: string;  // -f <path>; tests pass "/dev/null"
+  readonly configFile?: string;  // optional -f <path>; live-server tests and selected server-starting paths use getAtmuxTmuxConfPath()
 };
 ```
 
 The factory captures the socket flag (and optional `-f <path>`) in a closure and routes every `tmuxRun` / `tmuxRunRaw` call (and the direct `loadBuffer` stdin path) through `[...socketArgs, ...subcmdArgv]`. By construction, no method on the returned namespace can issue a tmux command that omits the socket flag — including `server.killServer()`, which is the failure point of the original incident.
 
-**Config-pinning, same physical-impossibility argument.** Even on an isolated socket, `tmux` reads `~/.tmux.conf` by default — so an operator config that sets `base-index 1` / `pane-base-index 1` (common; matches default ifdef-tmux 3.0+ ergonomics) silently reshapes test fixtures that hardcode `:0`. Tests + parity harness pass `configFile: "/dev/null"` to get tmux's stock defaults, the same way they pass `socketPath` to get an isolated socket. Production code omits `configFile` to inherit operator config.
+**Config-pinning, same physical-impossibility argument.** Even on an isolated socket, `tmux` reads `~/.tmux.conf` by default — so an operator config that sets `base-index 1` / `pane-base-index 1` silently reshapes test fixtures that hardcode `:0`. On 2026-09-01, live-server tests / the parity harness and the production server-starting paths already wired for canonical config pass `configFile: getAtmuxTmuxConfPath()`, the same way tests pass `socketPath` to get an isolated socket. The 2026-05-05 stock-default `/dev/null` test rationale is historical only and is superseded for live-server tests. A separate production-call-site audit remains necessary; this amendment does not claim that every production `createTmux` caller is already pinned.
 
 **`hasServer()` probe correction.** The original ADR sketch suggested `tmux info` for `hasServer`. Empirically, `tmux info` exits 1 in non-TTY contexts (e.g. `bun test`) even with a healthy server — its output is terminal-info that requires an attached client. The amended implementation uses `list-sessions` exit code instead: exit 0 means the server is up with ≥1 session, exit 1 means no server (tmux exits its server when the last session closes). For atmux's usage (every team always has at least its lead window), this is the right semantic.
 
@@ -333,3 +333,7 @@ Surveyed. None of the existing packages cover all our subcommands, and most assu
 - bash `lib/common.sh`, `lib/send.sh`, `lib/whip.sh`, `lib/start.sh` — primary tmux-shellout sites at worktree HEAD
 - `man tmux` command-group taxonomy — source of the bucket structure
 - `feedback_tmux_test_isolation.md` (memory) — incident motivation for the 2026-05-05 socket-injection amend
+
+## Amendment 2026-09-01 — live-server tests and session-start paths use the canonical atmux conf
+
+The 2026-05-05 `/dev/null` stock-default test guidance is historical. On 2026-09-01, live-server tests / the parity harness were wired to `configFile: getAtmuxTmuxConfPath()` so they load the canonical atmux conf instead of an empty config file. Selected production server-starting paths already use the same resolver; the remaining production `createTmux` inventory is a separate follow-up and is not represented here as complete.

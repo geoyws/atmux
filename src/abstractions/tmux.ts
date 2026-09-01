@@ -331,21 +331,21 @@ export function clientRowToObject(row: Record<string, string>): {
  * socket flag is the load-bearing guarantee.
  *
  * **Config (optional)** — `configFile?: string` adds `-f <path>` after the
- * socket flag on every invocation. Production code omits this to inherit
- * the operator's `~/.tmux.conf`; tests + the parity harness pass
- * `configFile: "/dev/null"` to make tmux behaviour reproducible regardless
- * of operator config (e.g. `base-index`, `pane-base-index`, key-bindings).
- * The same physical-impossibility argument as socket-pinning: with
- * `-f /dev/null` baked into argv, no test path can pick up an out-of-band
- * `~/.tmux.conf` setting.
+ * socket flag on every invocation. It is a generic API field: live-server
+ * tests and selected production server-starting paths pass the canonical
+ * `getAtmuxTmuxConfPath()` path. Other callers may provide a different path
+ * or omit it; production callers that might start a server must be audited
+ * before omission is treated as safe.
  */
 type SocketConfig =
   | { readonly socket: string; readonly socketPath?: never }
   | { readonly socketPath: string; readonly socket?: never };
 
 export type TmuxConfig = SocketConfig & {
-  /** Optional `-f <path>` flag appended after the socket flag. Tests pass
-   *  `/dev/null` for reproducibility; production omits to use `~/.tmux.conf`. */
+  /** Optional `-f <path>` flag appended after the socket flag. It is a
+   *  generic API field; live-server tests and selected production
+   *  server-starting paths use the canonical `getAtmuxTmuxConfPath()` helper
+   *  path. */
   readonly configFile?: string;
 };
 
