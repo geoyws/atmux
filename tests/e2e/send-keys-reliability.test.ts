@@ -43,48 +43,59 @@ import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { renderSendKeysFailureWarning } from "../../src/abstractions/discord.ts";
-import { createTmux, type TmuxNamespace } from "../../src/abstractions/tmux.ts";
+import type { TmuxNamespace } from "../../src/abstractions/tmux.ts";
 import {
   DEFAULT_SEND_KEYS_FAILURES_LOG_REL,
   type PaneVerifier,
   safeSendKeysWithVerify,
 } from "../../src/core/safe-send.ts";
 import { checkSendKeysFailureRecent } from "../../src/verbs/doctor.ts";
+import { createCanonicalAtmuxTmux, setCanonicalAtmuxTmuxHome } from "../helpers/tmux.ts";
 
 setDefaultTimeout(30_000);
 
 let socketDir: string;
 let socketPath: string;
 let tmux: TmuxNamespace;
-let homeDir: string;
+let homeDir = "";
 let logPath: string;
 let priorTmux: string | undefined;
-let sessionName: string;
-let target: string;
+let sessionName = "";
+let target = "";
+let restoreHome: (() => void) | undefined;
 
 beforeEach(async () => {
   socketDir = await mkdtemp(join(tmpdir(), "atmux-skr-sock-"));
   socketPath = join(socketDir, "sock");
   homeDir = await mkdtemp(join(tmpdir(), "atmux-skr-home-"));
   logPath = join(homeDir, DEFAULT_SEND_KEYS_FAILURES_LOG_REL);
+  restoreHome = setCanonicalAtmuxTmuxHome(homeDir);
   priorTmux = process.env.TMUX;
   delete process.env.TMUX;
-  tmux = createTmux({ socketPath, configFile: "/dev/null" });
+  tmux = createCanonicalAtmuxTmux({ socketPath });
 
   sessionName = `skr_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
   await tmux.session.newSession({ name: sessionName, shellCommand: "cat" });
-  target = `${sessionName}:0`;
+  const opts = await tmux.option.showOptions({ global: true });
+  const windowOpts = await tmux.option.showOptions({ global: true, window: true });
+  expect(opts["base-index"]).toBe("1");
+  expect(windowOpts["pane-base-index"]).toBe("0");
+  expect(windowOpts["automatic-rename"]).toBe("off");
+  target = `${sessionName}:1`;
 });
 
 afterEach(async () => {
   try {
-    await tmux.server.killServer();
+    if (tmux !== undefined) await tmux.server.killServer();
   } catch {
     // expected: server may already be gone (idempotent teardown)
   }
   if (priorTmux !== undefined) process.env.TMUX = priorTmux;
+  else delete process.env.TMUX;
+  restoreHome?.();
+  restoreHome = undefined;
   await rm(socketDir, { recursive: true, force: true });
-  await rm(homeDir, { recursive: true, force: true });
+  if (homeDir !== "") await rm(homeDir, { recursive: true, force: true });
 });
 
 /** Build a stateful verifier that returns `false` on the first N
