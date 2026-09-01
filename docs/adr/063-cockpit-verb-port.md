@@ -3,6 +3,8 @@
 **Status**: accepted (implementation landed 2026-05-08)
 **Date**: 2026-05-08
 
+2026-09-01 amendment: cockpit placeholder panes must use a portable persistent loop; `sleep infinity` is invalid on BSD/macOS and must not back a live cockpit window.
+
 > **2026-05-14 cockpit-topology updates** — cockpit window order
 > expanded by ADR-132 + ADR-133, then renamed by ADR-135:
 >

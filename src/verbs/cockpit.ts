@@ -122,8 +122,8 @@ export interface ResolveTeamWindowDeps {
   /** Override the medic (legacy: superdoctor) window's shell command
    *  (test injection). Default uses `buildMedicWindowCommand`. CI
    *  runners don't have `claude` installed; tests inject
-   *  `() => "sleep infinity"` so the window persists for topology
-   *  assertions. */
+   *  the shared portable keepalive loop so the window persists for
+   *  topology assertions. */
   buildMedicCommand?: (m: CockpitMedic) => string;
   /** Back-compat alias for `buildMedicCommand`. Existing test
    *  fixtures injecting `buildSuperdoctorCommand` keep working; the
@@ -232,10 +232,10 @@ function defaultCageTmuxFactory(socketPath: string): TmuxNamespace {
  *     the cage comes back up. Pre-2026-05-14 this branch planted
  *     `sleep infinity`, which left the window dead until a manual
  *     rebuild — exactly the bug reported in driver-inbox 2026-05-14.
- *   - `"no-driver-config"` — print an explanatory line + `sleep
- *     infinity`. No retry loop because waiting can't fix a missing
- *     `team.json::driverSession`; the operator must edit team.json
- *     and re-run rebuild.
+ *   - `"no-driver-config"` — print an explanatory line + the portable
+ *     keepalive loop. No retry loop because waiting can't fix a
+ *     missing `team.json::driverSession`; the operator must edit
+ *     team.json and re-run rebuild.
  *
  * Supersedes the t-b5864443 socketPath-arg signature — the dual-socket
  * retry-loop derives BOTH paths internally from the team name + root,
@@ -302,10 +302,12 @@ function cageRetryLoop(team: CockpitTeam, session: string): string {
 /** Shell-quote-safe single-message placeholder. The single-quote
  *  embedding follows POSIX convention (`'foo'\''bar'` for an embedded
  *  apostrophe); team / driverSession identifiers don't normally contain
- *  apostrophes but the escape keeps the verb robust. */
+ *  apostrophes but the escape keeps the verb robust. The keepalive is a
+ *  portable POSIX loop because `sleep infinity` is not valid on
+ *  BSD/macOS and must not back a live cockpit window. */
 function shellPlaceholder(msg: string): string {
   const safe = msg.replace(/'/g, "'\\''");
-  return `printf '%s\\n' '${safe}'; sleep infinity`;
+  return `printf '%s\\n' '${safe}'; while :; do sleep 86400; done`;
 }
 
 // ---------- e-419553c6: group servers (true containment) ----------

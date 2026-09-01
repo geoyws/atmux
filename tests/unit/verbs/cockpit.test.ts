@@ -33,7 +33,11 @@ import {
   reconcileGroupServers,
   resolveTeamWindowMode,
 } from "../../../src/verbs/cockpit.ts";
-import { createCanonicalAtmuxTmux, setCanonicalAtmuxTmuxHome } from "../../helpers/tmux.ts";
+import {
+  createCanonicalAtmuxTmux,
+  PORTABLE_KEEPALIVE_COMMAND,
+  setCanonicalAtmuxTmuxHome,
+} from "../../helpers/tmux.ts";
 
 // ---------- parseCockpitArgs ----------
 
@@ -879,7 +883,7 @@ describe("reconcileCockpitSession", () => {
       ];
       const windows = [{ name: "_misc", enabled: true, cwd: "/tmp", command: null }];
       const medic = { enabled: true, autoStart: false };
-      const deps: ResolveTeamWindowDeps = { buildMedicCommand: () => "sleep infinity" };
+      const deps: ResolveTeamWindowDeps = { buildMedicCommand: () => PORTABLE_KEEPALIVE_COMMAND };
 
       await reconcileCockpitSession(fx.tmux, "atmux_cockpit", teams, logger, deps, medic, false, {
         windows,
@@ -932,7 +936,7 @@ describe("reconcileCockpitSession", () => {
       ];
       const windows = [{ name: "_misc", enabled: true, cwd: "/tmp", command: null }];
       const medic = { enabled: true, autoStart: false };
-      const deps: ResolveTeamWindowDeps = { buildMedicCommand: () => "sleep infinity" };
+      const deps: ResolveTeamWindowDeps = { buildMedicCommand: () => PORTABLE_KEEPALIVE_COMMAND };
       const reconcileOpts = {
         windows,
         superbot: {
@@ -943,7 +947,7 @@ describe("reconcileCockpitSession", () => {
           maxOffersPerTick: 20,
           routes: [],
         },
-        superbotCommand: "sleep infinity",
+        superbotCommand: PORTABLE_KEEPALIVE_COMMAND,
       };
 
       await reconcileCockpitSession(
@@ -1035,10 +1039,12 @@ describe("reconcileCockpitSession", () => {
   // Test-only deps that keep the superdoctor window alive on CI runners
   // where `claude` isn't installed (otherwise newWindow's spawned process
   // exits immediately + tmux destroys the window).
-  const sdDeps: ResolveTeamWindowDeps = { buildSuperdoctorCommand: () => "sleep infinity" };
+  const sdDeps: ResolveTeamWindowDeps = {
+    buildSuperdoctorCommand: () => PORTABLE_KEEPALIVE_COMMAND,
+  };
 
   // t-22453c1e: existing tests opt out of auto-start since the
-  // `sleep infinity` pane has no Claude markers — the auto-start
+  // portable keepalive pane has no Claude markers — the auto-start
   // poll would either burn 30s timing out OR (with mock-sleep)
   // tight-loop until the wall-clock deadline expires. Dedicated
   // auto-start tests below cover the path explicitly.
@@ -1213,7 +1219,7 @@ describe("reconcileCockpitSession", () => {
       // namespace via deps, so we register a real call recorder via the
       // capturePane injection (which IS in deps).
       const deps: ResolveTeamWindowDeps = {
-        buildSuperdoctorCommand: () => "sleep infinity",
+        buildSuperdoctorCommand: () => PORTABLE_KEEPALIVE_COMMAND,
         autoStartSleep: async () => {},
         autoStartCapturePane: async (sessionName, windowIndex) => {
           captures.push({ sessionName, windowIndex });
@@ -1254,7 +1260,7 @@ describe("reconcileCockpitSession", () => {
       let captureCalls = 0;
       const sentKeys: string[] = [];
       const deps: ResolveTeamWindowDeps = {
-        buildSuperdoctorCommand: () => "sleep infinity",
+        buildSuperdoctorCommand: () => PORTABLE_KEEPALIVE_COMMAND,
         autoStartSleep: async () => {},
         autoStartCapturePane: async () => {
           captureCalls += 1;
@@ -1294,7 +1300,7 @@ describe("reconcileCockpitSession", () => {
       const { logger, logs } = makeLogger();
       const sentKeys: string[] = [];
       const deps: ResolveTeamWindowDeps = {
-        buildSuperdoctorCommand: () => "sleep infinity",
+        buildSuperdoctorCommand: () => PORTABLE_KEEPALIVE_COMMAND,
         autoStartSleep: async () => {},
         autoStartCapturePane: async () => "Loading...\n", // never settles
       };
@@ -1330,7 +1336,7 @@ describe("reconcileCockpitSession", () => {
       const { logger, logs: _logs } = makeLogger();
       const sentKeys: string[] = [];
       const deps: ResolveTeamWindowDeps = {
-        buildSuperdoctorCommand: () => "sleep infinity",
+        buildSuperdoctorCommand: () => PORTABLE_KEEPALIVE_COMMAND,
         autoStartSleep: async () => {},
         autoStartCapturePane: async () => "❯ Try\nauto mode on · tok 0/0",
       };
@@ -1956,7 +1962,7 @@ describe("buildTeamWindowCommand", () => {
     const cmd = await buildTeamWindowCommand(team, "no-driver-config");
     expect(cmd).toContain("no driver configured for demo");
     expect(cmd).toContain("team.json::driverSession");
-    expect(cmd).toContain("sleep infinity");
+    expect(cmd).toContain(PORTABLE_KEEPALIVE_COMMAND);
   });
 
   test("session-down emits the 'atmux start' guidance + self-healing retry-loop", async () => {
@@ -2331,7 +2337,9 @@ describe("cockpitRebuild", () => {
       JSON.stringify({
         schemaVersion: 1,
         cockpitSession: "test_cockpit_medic_nudge",
-        medic: { enabled: true },
+        // Keep this fixture scoped to the topology/nudge contract.
+        // Dedicated auto-start tests below cover the settling behavior.
+        medic: { enabled: true, autoStart: false },
         sessions: [{ type: "team", name: "demo", root: projRoot }],
       }),
       "utf8",
@@ -3335,9 +3343,9 @@ function trackGroupServer(name: string): TmuxNamespace {
 const grpFactory = (cfg: TmuxConfig): TmuxNamespace => createCanonicalAtmuxTmux(cfg);
 
 /** Deps forcing every team window into `session-down` mode: the
- *  retry-loop keeps the pane alive (macOS `sleep infinity` — the
- *  `no-driver-config` placeholder — exits immediately and tmux reaps
- *  the window, which would read as a reconcile bug). */
+ *  retry-loop keeps the pane alive (the portable placeholder loop
+ *  replaces `sleep infinity`, which is invalid on BSD/macOS and would
+ *  otherwise reap the window, reading as a reconcile bug). */
 const groupTestDeps: ResolveTeamWindowDeps = {
   loadTeam: async () => ({ driverSession: {} }) as unknown as Team,
   resolveCageSocket: async (teamName: string) => `/tmp/atmux-${teamName}/sock`,
