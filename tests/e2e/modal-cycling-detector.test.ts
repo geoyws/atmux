@@ -1,15 +1,17 @@
-// E2E modal-cycling-detector walk (ADR-142 §D1-D5) — synthetic
-// 3-modal-cycle scenario walked end-to-end through the public `whip`
-// verb. Asserts the full trigger plumbing: history record → cycle-
-// check → Discord template fire → clarifier dispatch (via DI seam) →
-// flag-add (via DI seam) → dedup behaviour → productive-ceremony
-// short-circuit → exempt-member opt-out → backward-compat defaults.
+// API-level integration-style modal-cycling-detector walk (ADR-142
+// §D1-D5) — synthetic 3-modal-cycle scenario exercised through the
+// public `whip` verb with fake tmux and injected external surfaces.
+// Asserts the full trigger plumbing: history record → cycle-check →
+// Discord template fire → clarifier dispatch (via DI seam) → flag-add
+// (via DI seam) → dedup behaviour → productive-ceremony short-circuit
+// → exempt-member opt-out → backward-compat defaults.
 //
-// **Stateful 1x cold-start+walk e2e** per CLAUDE.md testing-discipline
-// — sequenced beats consume real on-disk modal-history state across
-// ticks. Don't streak; don't run-of-N. Each scenario re-seeds its own
-// throwaway tmpdir so the walks are independent at the test() level
-// but stateful within a single test() body.
+// **Stateful 1x cold-start+walk integration-style** per CLAUDE.md
+// testing-discipline — sequenced beats consume real on-disk
+// modal-history state across ticks. Don't streak; don't run-of-N. Each
+// scenario re-seeds its own throwaway tmpdir so the walks are
+// independent at the test() level but stateful within a single test()
+// body.
 //
 // Mocking shape:
 //   - `discordSend`             — captures `[whip-modal-cycling]` fire
@@ -192,7 +194,7 @@ const NOW_SEC = 1_700_000_000;
 const NOW_MS = NOW_SEC * 1000;
 const FIVE_MIN_MS = 5 * 60 * 1000;
 
-describe("e2e modal-cycling-detector walk (ADR-142 §D1-D5)", () => {
+describe("API-level integration-style modal-cycling-detector walk (ADR-142 §D1-D5)", () => {
   let teamDir: string;
   let atmuxDir: string;
   let homeDir: string;
@@ -229,6 +231,24 @@ describe("e2e modal-cycling-detector walk (ADR-142 §D1-D5)", () => {
     const sent: DiscordSendOpts[] = [];
     const clarifierCalls: Array<{ member: string; message: string }> = [];
     const flagCalls: Array<{ subject: string; body: string }> = [];
+    const tmuxNs = buildFakeTmux({
+      sessionUp: true,
+      panes: { "🐝-alice": { paneCmd: "claude", state: MODAL_C, pid: 1234 } },
+    });
+    let sendKeysCalls = 0;
+    let bufferCalls = 0;
+    tmuxNs.pane.sendKeys = async () => {
+      sendKeysCalls += 1;
+    };
+    tmuxNs.buffer.loadBuffer = async () => {
+      bufferCalls += 1;
+    };
+    tmuxNs.buffer.pasteBuffer = async () => {
+      bufferCalls += 1;
+    };
+    tmuxNs.buffer.deleteBuffer = async () => {
+      bufferCalls += 1;
+    };
 
     // Pane keys here mirror src/core/common.ts::buildWindowName output:
     // member role (default for tui=claude with no explicit role override)
@@ -242,10 +262,7 @@ describe("e2e modal-cycling-detector walk (ADR-142 §D1-D5)", () => {
       now: () => NOW_MS,
       home: homeDir,
       env: {},
-      tmux: buildFakeTmux({
-        sessionUp: true,
-        panes: { "🐝-alice": { paneCmd: "claude", state: MODAL_C, pid: 1234 } },
-      }),
+      tmux: tmuxNs,
       discordSend: async (o) => {
         sent.push(o);
       },
@@ -271,6 +288,8 @@ describe("e2e modal-cycling-detector walk (ADR-142 §D1-D5)", () => {
     expect(clarifierCalls[0]?.message).toMatch(/modal-cycling detected/);
     expect(flagCalls).toHaveLength(1);
     expect(flagCalls[0]?.subject).toMatch(/modal-cycling detected on alice/);
+    expect(sendKeysCalls).toBe(0);
+    expect(bufferCalls).toBe(0);
 
     // History file now has 3 entries with 3 distinct hashes.
     const historyRaw = await readFile(join(atmuxDir, "state", "modal-history-alice.json"), "utf8");

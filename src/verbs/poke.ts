@@ -1970,6 +1970,9 @@ async function checkMember(
     state = "";
   }
   const snap = classifyPaneState(state);
+  // Classify once so recognized modals skip queued-text resubmit and the
+  // detector can reuse the same result below.
+  const modalCapture = classifyPaneAsModal(state);
 
   if (snap.rateLimit === "hard") {
     findings.push({
@@ -2017,7 +2020,13 @@ async function checkMember(
   //   • compacting           → keystrokes absorbed + lost during context redraw
   //   • busy (active turn)   → helper's own ACTIVE_TURN_RE re-checks but redundant
   //                            guard avoids constructing the SendTarget at all
-  if (snap.rateLimit !== "hard" && !snap.compacting && !snap.busy && state !== "") {
+  if (
+    snap.rateLimit !== "hard" &&
+    !snap.compacting &&
+    !snap.busy &&
+    state !== "" &&
+    !modalCapture.isModal
+  ) {
     try {
       const action = await runQueuedTextResubmit({
         tmux,
@@ -2150,18 +2159,17 @@ async function checkMember(
   // observer ports the same function post-ADR-140-ship.
   const cyc = ctx.modalCyclingConfig;
   if (cyc.enabled && !cyc.exemptMembers.has(member.name)) {
-    const classified = classifyPaneAsModal(state);
     if (
-      classified.isModal &&
-      classified.modalText !== undefined &&
-      classified.modalClass !== undefined
+      modalCapture.isModal &&
+      modalCapture.modalText !== undefined &&
+      modalCapture.modalClass !== undefined
     ) {
       const entry: ModalHistoryEntry = {
         member: member.name,
-        paneTextHash: computeModalHash(classified.modalText),
+        paneTextHash: computeModalHash(modalCapture.modalText),
         detectedAt: nowSec,
-        modalText: classified.modalText,
-        modalClass: classified.modalClass,
+        modalText: modalCapture.modalText,
+        modalClass: modalCapture.modalClass,
       };
       try {
         const history = await loadModalHistory(atmuxDir, member.name);

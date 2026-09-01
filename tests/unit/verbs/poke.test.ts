@@ -2417,6 +2417,64 @@ describe("poke() — public verb", () => {
       expect(dedup.alice).toBe(NOW_SEC);
     });
 
+    test("recognized modal prompt stays out of queued-text resubmit and still fires modal-cycling", async () => {
+      await seedTeam(atmuxDir, {
+        name: "demo",
+        members: [{ name: "alice", tui: "claude", emoji: "🐝" }],
+      });
+      await seedTwoPriorEntries(atmuxDir, "alice", NOW_SEC);
+
+      const tmuxNs = buildFakeTmux({
+        sessionUp: true,
+        panes: {
+          "🐝-alice": { paneCmd: "claude", state: MODAL_TEXTS[2], pid: 1234 },
+        },
+      });
+      let sendKeysCalls = 0;
+      let bufferCalls = 0;
+      tmuxNs.pane.sendKeys = async () => {
+        sendKeysCalls += 1;
+      };
+      tmuxNs.buffer.loadBuffer = async () => {
+        bufferCalls += 1;
+      };
+      tmuxNs.buffer.pasteBuffer = async () => {
+        bufferCalls += 1;
+      };
+      tmuxNs.buffer.deleteBuffer = async () => {
+        bufferCalls += 1;
+      };
+
+      const sent: DiscordSendOpts[] = [];
+      const clarifierCalls: string[] = [];
+      const flagCalls: string[] = [];
+
+      await poke(["--team-dir", teamDir], {
+        stdout,
+        stderr,
+        now: () => NOW_MS,
+        home: homeDir,
+        env: {},
+        tmux: tmuxNs,
+        discordSend: async (o: DiscordSendOpts) => {
+          sent.push(o);
+        },
+        commitCountInWindow: async () => 0,
+        dispatchModalCyclingClarifier: async (m: string) => {
+          clarifierCalls.push(m);
+        },
+        fileModalCyclingFlag: async (s: string) => {
+          flagCalls.push(s);
+        },
+      });
+
+      expect(sent.filter((s) => s.template === "whip-modal-cycling")).toHaveLength(1);
+      expect(clarifierCalls).toHaveLength(1);
+      expect(flagCalls).toHaveLength(1);
+      expect(sendKeysCalls).toBe(0);
+      expect(bufferCalls).toBe(0);
+    });
+
     test("dedup respected — second tick within window does not re-fire", async () => {
       await seedTeam(atmuxDir, {
         name: "demo",

@@ -44,6 +44,9 @@ This ADR fills the gap between these three.
 
 ## Decision
 
+Stable rule: classify the pane as modal before queued-text resubmit, and
+never auto-submit a recognized modal prompt as composer text.
+
 ### (D1) Modal history per member at `~/.atmux/state/modal-history-<member>.json`
 
 A per-member append-only state file capturing detected modal events:
