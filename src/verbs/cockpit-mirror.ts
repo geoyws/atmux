@@ -31,13 +31,9 @@ import { ConfigError, UsageError } from "../errors.ts";
 
 const USAGE = "atmux cockpit-mirror <--handle-one|--status> [--event-id ID --topic T]";
 
-export interface ParsedCockpitMirrorArgs {
-  subverb: "handle-one" | "status";
-  /** `--event-id ID`: required when subverb is `handle-one`. */
-  eventId?: string;
-  /** `--topic T`: required when subverb is `handle-one`. */
-  topic?: string;
-}
+export type ParsedCockpitMirrorArgs =
+  | { subverb: "handle-one"; eventId: string; topic: string }
+  | { subverb: "status"; eventId?: string; topic?: string };
 
 export function parseCockpitMirrorArgs(argv: ReadonlyArray<string>): ParsedCockpitMirrorArgs {
   let subverb: "handle-one" | "status" | undefined;
@@ -110,8 +106,9 @@ export function parseCockpitMirrorArgs(argv: ReadonlyArray<string>): ParsedCockp
         hint: USAGE,
       });
     }
+    return { subverb, eventId, topic };
   }
-  const out: ParsedCockpitMirrorArgs = { subverb };
+  const out: ParsedCockpitMirrorArgs = { subverb: "status" };
   if (eventId !== undefined) out.eventId = eventId;
   if (topic !== undefined) out.topic = topic;
   return out;
@@ -197,12 +194,6 @@ export async function cockpitMirror(
   // handle-one path.
   const eventId = parsed.eventId;
   const topic = parsed.topic;
-  if (eventId === undefined || topic === undefined) {
-    // Parser guarantees both; defensive check for ts narrowing.
-    throw new UsageError({
-      what: "cockpit-mirror --handle-one: parser invariant violated (missing event-id or topic)",
-    });
-  }
 
   if (!KNOWN_TOPICS.has(topic)) {
     log(`cockpit-mirror: unknown topic '${topic}' eventId=${eventId} — log-warn, return 0`);

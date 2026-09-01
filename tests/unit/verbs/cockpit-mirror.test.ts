@@ -5,7 +5,7 @@
 //   - cockpitMirror dispatch routing per topic (handler resolution,
 //     unknown-topic warn-and-pass, handler-throw → exit 1)
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { UsageError } from "../../../src/errors.ts";
 import { cockpitMirror, parseCockpitMirrorArgs } from "../../../src/verbs/cockpit-mirror.ts";
 
@@ -76,6 +76,21 @@ describe("parseCockpitMirrorArgs", () => {
 });
 
 describe("cockpitMirror — handle-one dispatch", () => {
+  test("default logger writes status diagnostics to stderr", async () => {
+    const chunks: string[] = [];
+    const write = spyOn(process.stderr, "write").mockImplementation(((chunk: unknown) => {
+      chunks.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write);
+    try {
+      expect(await cockpitMirror(["--status"])).toBe(0);
+    } finally {
+      write.mockRestore();
+    }
+    expect(chunks.join("")).toContain("# atmux cockpit-mirror --status\n");
+    expect(chunks.join("")).toContain("known-topics\t7\n");
+  });
+
   test("known topic + injected handler: handler called with eventId, returns 0", async () => {
     const calls: Array<{ topic: string; eventId: string }> = [];
     const logs: string[] = [];
@@ -91,17 +106,27 @@ describe("cockpitMirror — handle-one dispatch", () => {
     expect(rc).toBe(0);
     expect(calls.length).toBe(1);
     expect(calls[0]).toEqual({ topic: "epic.merge_ready", eventId: "e-1" });
+    expect(logs).toEqual([]);
   });
 
-  test("known topic + no injected handler: falls through to default stub, returns 0 + logs", async () => {
-    const logs: string[] = [];
-    const rc = await cockpitMirror(
-      ["--handle-one", "--event-id", "e-1", "--topic", "team.spawned"],
-      { log: (m) => logs.push(m) },
-    );
-    expect(rc).toBe(0);
-    expect(logs.some((l) => l.includes("team.spawned eventId=e-1"))).toBe(true);
-    expect(logs.some((l) => l.includes("log-only"))).toBe(true);
+  test("known topic + no injected handler: every default stub logs and returns 0", async () => {
+    const topics = [
+      "epic.merge_ready",
+      "epic.spawn_blocked",
+      "team.spawned",
+      "team.dissolved",
+      "budget.warning",
+      "budget.recovered",
+      "gitter.escalated",
+    ] as const;
+    for (const topic of topics) {
+      const logs: string[] = [];
+      const rc = await cockpitMirror(["--handle-one", "--event-id", "e-1", "--topic", topic], {
+        log: (m) => logs.push(m),
+      });
+      expect(rc).toBe(0);
+      expect(logs).toEqual([`cockpit-mirror: ${topic} eventId=e-1 — log-only (handler follow-up)`]);
+    }
   });
 
   test("unknown topic: log-warn + return 0 (do NOT block Rust drain)", async () => {
@@ -111,7 +136,9 @@ describe("cockpitMirror — handle-one dispatch", () => {
       { log: (m) => logs.push(m) },
     );
     expect(rc).toBe(0);
-    expect(logs.some((l) => l.includes("unknown topic 'totally.fictional'"))).toBe(true);
+    expect(logs).toEqual([
+      "cockpit-mirror: unknown topic 'totally.fictional' eventId=e-1 — log-warn, return 0",
+    ]);
   });
 
   test("known topic + handler throws: returns 1 + logs", async () => {
@@ -126,16 +153,26 @@ describe("cockpitMirror — handle-one dispatch", () => {
       { handlers, log: (m) => logs.push(m) },
     );
     expect(rc).toBe(1);
-    expect(logs.some((l) => l.includes("handler threw"))).toBe(true);
-    expect(logs.some((l) => l.includes("simulated handler fault"))).toBe(true);
+    expect(logs).toEqual([
+      "cockpit-mirror: handler threw on topic=budget.warning eventId=e-1: simulated handler fault",
+    ]);
   });
 
-  test("--status surfaces the topic whitelist", async () => {
+  test("--status surfaces the topic whitelist and formatting exactly", async () => {
     const logs: string[] = [];
     const rc = await cockpitMirror(["--status"], { log: (m) => logs.push(m) });
     expect(rc).toBe(0);
-    expect(logs.some((l) => l.includes("known-topics"))).toBe(true);
-    // All 7 ADR-219 D3 topics must surface (sorted).
+    expect(logs).toEqual([
+      "# atmux cockpit-mirror --status",
+      "known-topics\t7",
+      "topic\tbudget.recovered\tstub (handler follow-up pending)",
+      "topic\tbudget.warning\tstub (handler follow-up pending)",
+      "topic\tepic.merge_ready\tstub (handler follow-up pending)",
+      "topic\tepic.spawn_blocked\tstub (handler follow-up pending)",
+      "topic\tgitter.escalated\tstub (handler follow-up pending)",
+      "topic\tteam.dissolved\tstub (handler follow-up pending)",
+      "topic\tteam.spawned\tstub (handler follow-up pending)",
+    ]);
     for (const topic of [
       "budget.recovered",
       "budget.warning",
