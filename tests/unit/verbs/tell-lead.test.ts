@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createTmux, type TmuxNamespace } from "../../../src/abstractions/tmux.ts";
+import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
 import {
   buildHeadsUp,
@@ -13,14 +13,17 @@ import {
   parseTellLeadArgs,
   tellLead,
 } from "../../../src/verbs/tell-lead.ts";
+import { createCanonicalAtmuxTmux, setCanonicalAtmuxTmuxHome } from "../../helpers/tmux.ts";
 
 let socketDir: string;
 let socketPath: string;
 let teamDir: string;
 let atmuxDir: string;
+let homeDir = "";
 let priorTmux: string | undefined;
 let tmux: TmuxNamespace;
-let sessionPrefix: string;
+let sessionPrefix = "";
+let restoreHome: (() => void) | undefined;
 
 beforeEach(async () => {
   socketDir = await mkdtemp(join(tmpdir(), "atmux-tell-lead-sock-"));
@@ -28,21 +31,27 @@ beforeEach(async () => {
   teamDir = await mkdtemp(join(tmpdir(), "atmux-tell-lead-team-"));
   atmuxDir = join(teamDir, ".atmux");
   await mkdir(atmuxDir, { recursive: true });
+  homeDir = await mkdtemp(join(tmpdir(), "atmux-tell-lead-home-"));
+  restoreHome = setCanonicalAtmuxTmuxHome(homeDir);
   sessionPrefix = `s${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
   priorTmux = process.env.TMUX;
   delete process.env.TMUX;
-  tmux = createTmux({ socketPath, configFile: "/dev/null" });
+  tmux = createCanonicalAtmuxTmux({ socketPath });
 });
 
 afterEach(async () => {
   try {
-    await tmux.server.killServer();
+    if (tmux !== undefined) await tmux.server.killServer();
   } catch {
     // expected
   }
   if (priorTmux !== undefined) process.env.TMUX = priorTmux;
-  await rm(socketDir, { recursive: true, force: true });
-  await rm(teamDir, { recursive: true, force: true });
+  else delete process.env.TMUX;
+  restoreHome?.();
+  restoreHome = undefined;
+  if (socketDir !== undefined) await rm(socketDir, { recursive: true, force: true });
+  if (teamDir !== undefined) await rm(teamDir, { recursive: true, force: true });
+  if (homeDir !== "") await rm(homeDir, { recursive: true, force: true });
 });
 
 async function captureStdoutStderr<T>(
@@ -85,7 +94,11 @@ async function stageTeam(
       windowName: first.name,
     });
     for (const m of members.slice(1)) {
-      await tmux.window.newWindow({ sessionName, name: m.name, shellCommand: "cat" });
+      await tmux.window.newWindow({
+        sessionName,
+        name: m.name,
+        shellCommand: "cat",
+      });
     }
     await new Promise((r) => setTimeout(r, 80));
   }
@@ -346,7 +359,7 @@ describe("tellLead — integration", () => {
     // tmux needs the socket's parent dir to exist before bind(2).
     await mkdir(pjoin(tmpdirParent, `tmux-${uid}`), { recursive: true });
     // Spin a fresh tmux on the tmuxTmpdir-derived socket.
-    const tmpdirTmux = createTmux({ socketPath: tmpdirSocket, configFile: "/dev/null" });
+    const tmpdirTmux = createCanonicalAtmuxTmux({ socketPath: tmpdirSocket });
     try {
       const teamName = `${sessionPrefix}-tmpdir`;
       const sessionName = teamName; // bare per e-419553c6
@@ -363,6 +376,11 @@ describe("tellLead — integration", () => {
         shellCommand: "cat",
         windowName: "alpha",
       });
+      const tmpdirOpts = await tmpdirTmux.option.showOptions({ global: true });
+      const tmpdirWindowOpts = await tmpdirTmux.option.showOptions({ global: true, window: true });
+      expect(tmpdirOpts["base-index"]).toBe("1");
+      expect(tmpdirWindowOpts["pane-base-index"]).toBe("0");
+      expect(tmpdirWindowOpts["automatic-rename"]).toBe("off");
       await new Promise((r) => setTimeout(r, 80));
 
       const { stderr } = await captureStdoutStderr(() =>
@@ -405,7 +423,11 @@ describe("tellLead — integration", () => {
         members: [{ name: leadName, emoji, role }],
       }),
     );
-    await tmux.session.newSession({ name: sessionName, shellCommand: "cat", windowName });
+    await tmux.session.newSession({
+      name: sessionName,
+      shellCommand: "cat",
+      windowName,
+    });
     await new Promise((r) => setTimeout(r, 80));
     return { teamName, sessionName };
   }

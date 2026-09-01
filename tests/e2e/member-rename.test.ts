@@ -26,7 +26,7 @@
 //      `task.owner` still equals the immutable ID, AND a
 //      subsequent `atmux done` succeeds using the ID.
 //
-//   C. Rename current lead — pre-seed `lead-window-name.txt`,
+//   C. Rename lead member — pre-seed `lead-window-name.txt`,
 //      rename lead member; assert marker file rewritten
 //      atomically (same atomicWrite as team.json), AND status
 //      text shows the new label for the lead row.
@@ -60,12 +60,13 @@ import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createTmux, type TmuxNamespace } from "../../src/abstractions/tmux.ts";
+import type { TmuxNamespace } from "../../src/abstractions/tmux.ts";
 import { buildWindowName } from "../../src/core/common.ts";
 import { Kanban } from "../../src/schema/kanban.ts";
 import { Team } from "../../src/schema/team.ts";
 import { checkMemberLabelCollision } from "../../src/verbs/doctor.ts";
 import { memberRenameInternal } from "../../src/verbs/member.ts";
+import { createCanonicalAtmuxTmux, setCanonicalAtmuxTmuxHome } from "../helpers/tmux.ts";
 
 setDefaultTimeout(30_000);
 
@@ -77,6 +78,7 @@ interface Fixture {
   teamName: string;
   sessionName: string;
   homeDir: string;
+  restoreHome: () => void;
   tmux: TmuxNamespace;
   /** Members seeded into team.json. Tests mutate via member rename. */
   members: Array<{
@@ -88,7 +90,7 @@ interface Fixture {
   }>;
 }
 
-let fx: Fixture;
+let fx: Fixture | undefined;
 const priorTmux = { value: undefined as string | undefined };
 
 async function buildFixture(
@@ -107,6 +109,7 @@ async function buildFixture(
   const socketDir = await mkdtemp(join(tmpdir(), "atmux-mr-sock-"));
   const socketPath = join(socketDir, "sock");
   const homeDir = await mkdtemp(join(tmpdir(), "atmux-mr-home-"));
+  const restoreHome = setCanonicalAtmuxTmuxHome(homeDir);
 
   await mkdir(atmuxDir, { recursive: true });
   await mkdir(join(atmuxDir, "inboxes"), { recursive: true });
@@ -136,55 +139,81 @@ async function buildFixture(
   // oldWindow target via the same function, so any drift between
   // the fixture's window spawn and the verb's lookup would surface
   // as a `tmux: can't find window` mid-rename.
-  const tmux = createTmux({ socketPath, configFile: "/dev/null" });
-  const first = members[0];
-  if (first === undefined) throw new Error("test setup: ≥1 member required");
-  const winName = (m: (typeof members)[number]): string =>
-    buildWindowName(m.name, m.emoji, m.label, m.role);
-  await tmux.session.newSession({
-    name: sessionName,
-    shellCommand: "cat",
-    windowName: winName(first),
-  });
-  for (const m of members.slice(1)) {
-    await tmux.window.newWindow({
-      sessionName,
-      name: winName(m),
+  let tmux: TmuxNamespace | undefined;
+  try {
+    tmux = createCanonicalAtmuxTmux({ socketPath });
+    const first = members[0];
+    if (first === undefined) throw new Error("test setup: ≥1 member required");
+    const winName = (m: (typeof members)[number]): string =>
+      buildWindowName(m.name, m.emoji, m.label, m.role);
+    await tmux.session.newSession({
+      name: sessionName,
       shellCommand: "cat",
+      windowName: winName(first),
     });
-  }
+    const opts = await tmux.option.showOptions({ global: true });
+    const windowOpts = await tmux.option.showOptions({ global: true, window: true });
+    expect(opts["base-index"]).toBe("1");
+    expect(windowOpts["pane-base-index"]).toBe("0");
+    expect(windowOpts["automatic-rename"]).toBe("off");
+    for (const m of members.slice(1)) {
+      await tmux.window.newWindow({
+        sessionName,
+        name: winName(m),
+        shellCommand: "cat",
+      });
+    }
 
-  return {
-    teamDir,
-    atmuxDir,
-    socketDir,
-    socketPath,
-    teamName,
-    sessionName,
-    homeDir,
-    tmux,
-    members: [...members],
-  };
+    return {
+      teamDir,
+      atmuxDir,
+      socketDir,
+      socketPath,
+      teamName,
+      sessionName,
+      homeDir,
+      restoreHome,
+      tmux,
+      members: [...members],
+    };
+  } catch (error) {
+    try {
+      await tmux?.server.killServer();
+    } catch {
+      // expected when setup failed before the server came up
+    }
+    restoreHome();
+    await rm(teamDir, { recursive: true, force: true });
+    await rm(socketDir, { recursive: true, force: true });
+    await rm(homeDir, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 beforeEach(() => {
+  fx = undefined;
   priorTmux.value = process.env.TMUX;
   delete process.env.TMUX;
 });
 
 afterEach(async () => {
   try {
-    await fx.tmux.server.killServer();
+    if (fx !== undefined) await fx.tmux.server.killServer();
   } catch {
     // expected: server may already be down
   }
   if (priorTmux.value !== undefined) process.env.TMUX = priorTmux.value;
-  await rm(fx.teamDir, { recursive: true, force: true });
-  await rm(fx.socketDir, { recursive: true, force: true });
-  await rm(fx.homeDir, { recursive: true, force: true });
+  else delete process.env.TMUX;
+  fx?.restoreHome();
+  if (fx !== undefined) {
+    await rm(fx.teamDir, { recursive: true, force: true });
+    await rm(fx.socketDir, { recursive: true, force: true });
+    await rm(fx.homeDir, { recursive: true, force: true });
+  }
 });
 
 async function runRename(args: ReadonlyArray<string>): ReturnType<typeof memberRenameInternal> {
+  if (fx === undefined) throw new Error("test setup: fixture not initialized");
   return await memberRenameInternal(args, {
     env: { ...process.env, ATMUX_DIR: fx.atmuxDir },
     cwd: fx.atmuxDir,
@@ -195,10 +224,12 @@ async function runRename(args: ReadonlyArray<string>): ReturnType<typeof memberR
 }
 
 async function readTeamJson(): Promise<ReturnType<typeof Team.parse>> {
+  if (fx === undefined) throw new Error("test setup: fixture not initialized");
   return Team.parse(JSON.parse(await readFile(join(fx.atmuxDir, "team.json"), "utf8")));
 }
 
 async function listWindowNames(): Promise<string[]> {
+  if (fx === undefined) throw new Error("test setup: fixture not initialized");
   const ws = await fx.tmux.window.listWindows(fx.sessionName);
   return ws.map((w) => w.name);
 }
@@ -286,7 +317,7 @@ describe("e2e: ADR-136 member rename — 6-path walk", () => {
     expect(inFlight?.owner).not.toBe("Mid-Flight Worker");
   });
 
-  test("Path C — rename current lead: lead-window-name.txt patched atomically with team.json", async () => {
+  test("Path C — rename lead member: lead-window-name.txt patched atomically with team.json", async () => {
     fx = await buildFixture([
       { name: "lead", role: "team-lead", emoji: "🧭", tui: "shell" },
       { name: "worker-1", role: "member", emoji: "🐝", tui: "shell" },

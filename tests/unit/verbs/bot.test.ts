@@ -2,16 +2,20 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createTmux, type TmuxNamespace } from "../../../src/abstractions/tmux.ts";
+import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import { BOT_HOLD_OPTION } from "../../../src/core/bot.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
 import type { Team } from "../../../src/schema/team.ts";
 import { parseBotArgs, setBotHoldWithTmux } from "../../../src/verbs/bot.ts";
+import { createCanonicalAtmuxTmux, setCanonicalAtmuxTmuxHome } from "../../helpers/tmux.ts";
 
 describe("parseBotArgs", () => {
   test("parses local and named-team forms", () => {
     expect(parseBotArgs(["hold"])).toEqual({ action: "hold" });
-    expect(parseBotArgs(["resume", "atmux"])).toEqual({ action: "resume", team: "atmux" });
+    expect(parseBotArgs(["resume", "atmux"])).toEqual({
+      action: "resume",
+      team: "atmux",
+    });
   });
 
   test("rejects invalid actions, duplicate teams, and ambiguous roots", () => {
@@ -23,8 +27,10 @@ describe("parseBotArgs", () => {
 });
 
 describe("setBotHoldWithTmux — isolated tmux", () => {
-  let dir: string;
+  let dir = "";
+  let homeDir = "";
   let tmux: TmuxNamespace;
+  let restoreHome: (() => void) | undefined;
   const session = "atmux-bot-hold-test";
   const team: Team = {
     name: "demo",
@@ -35,24 +41,44 @@ describe("setBotHoldWithTmux — isolated tmux", () => {
   beforeEach(async () => {
     delete process.env.TMUX;
     dir = await mkdtemp(join(tmpdir(), "atmux-bot-hold-"));
-    tmux = createTmux({ socketPath: join(dir, "sock"), configFile: "/dev/null" });
+    homeDir = await mkdtemp(join(tmpdir(), "atmux-bot-home-"));
+    restoreHome = setCanonicalAtmuxTmuxHome(homeDir);
+    tmux = createCanonicalAtmuxTmux({ socketPath: join(dir, "sock") });
     await tmux.session.newSession({ name: session, windowName: "_bot" });
+    const opts = await tmux.option.showOptions({ global: true });
+    const windowOpts = await tmux.option.showOptions({ global: true, window: true });
+    expect(opts["base-index"]).toBe("1");
+    expect(windowOpts["pane-base-index"]).toBe("0");
+    expect(windowOpts["automatic-rename"]).toBe("off");
   });
 
   afterEach(async () => {
-    await tmux.server.killServer().catch(() => {});
-    await rm(dir, { recursive: true, force: true });
+    if (tmux !== undefined) await tmux.server.killServer().catch(() => {});
+    restoreHome?.();
+    restoreHome = undefined;
+    if (dir !== "") await rm(dir, { recursive: true, force: true });
+    if (homeDir !== "") await rm(homeDir, { recursive: true, force: true });
   });
 
   test("hold and resume write only the _bot window option", async () => {
     await setBotHoldWithTmux(tmux, team, session, "hold");
     expect(
-      (await tmux.option.showOptions({ window: true, target: `${session}:_bot` }))[BOT_HOLD_OPTION],
+      (
+        await tmux.option.showOptions({
+          window: true,
+          target: `${session}:_bot`,
+        })
+      )[BOT_HOLD_OPTION],
     ).toBe("1");
 
     await setBotHoldWithTmux(tmux, team, session, "resume");
     expect(
-      (await tmux.option.showOptions({ window: true, target: `${session}:_bot` }))[BOT_HOLD_OPTION],
+      (
+        await tmux.option.showOptions({
+          window: true,
+          target: `${session}:_bot`,
+        })
+      )[BOT_HOLD_OPTION],
     ).toBe("0");
   });
 

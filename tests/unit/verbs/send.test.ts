@@ -24,7 +24,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createTmux, type TmuxNamespace } from "../../../src/abstractions/tmux.ts";
+import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
 import {
   buildMemberTarget,
@@ -32,6 +32,7 @@ import {
   resolveMemberTarget,
   send,
 } from "../../../src/verbs/send.ts";
+import { createCanonicalAtmuxTmux, setCanonicalAtmuxTmuxHome } from "../../helpers/tmux.ts";
 
 // ---------- pure: parseSendArgs ----------
 
@@ -221,29 +222,37 @@ describe("buildMemberTarget", () => {
 // ---------- resolveMemberTarget — cross-format self-heal (EPIC e-a3077ca0 T3) ----------
 
 describe("resolveMemberTarget — window-name self-heal shim", () => {
-  let socketDir: string;
-  let socketPath: string;
+  let socketDir = "";
+  let socketPath = "";
+  let homeDir = "";
   let priorTmux: string | undefined;
   let tmux: TmuxNamespace;
-  let sessionName: string;
+  let sessionName = "";
+  let restoreHome: (() => void) | undefined;
 
   beforeEach(async () => {
     socketDir = await mkdtemp(join(tmpdir(), "atmux-rmt-sock-"));
     socketPath = join(socketDir, "sock");
+    homeDir = await mkdtemp(join(tmpdir(), "atmux-rmt-home-"));
+    restoreHome = setCanonicalAtmuxTmuxHome(homeDir);
     priorTmux = process.env.TMUX;
     delete process.env.TMUX;
-    tmux = createTmux({ socketPath, configFile: "/dev/null" });
+    tmux = createCanonicalAtmuxTmux({ socketPath });
     sessionName = `s${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
   });
 
   afterEach(async () => {
     try {
-      await tmux.server.killServer();
+      if (tmux !== undefined) await tmux.server.killServer();
     } catch {
       // expected: server may already be gone
     }
     if (priorTmux !== undefined) process.env.TMUX = priorTmux;
-    await rm(socketDir, { recursive: true, force: true });
+    else delete process.env.TMUX;
+    restoreHome?.();
+    restoreHome = undefined;
+    if (socketDir !== "") await rm(socketDir, { recursive: true, force: true });
+    if (homeDir !== "") await rm(homeDir, { recursive: true, force: true });
   });
 
   test("(a) canonical window exists → no rename, returns canonical target", async () => {
@@ -342,13 +351,15 @@ describe("resolveMemberTarget — window-name self-heal shim", () => {
 // ---------- integration: send() drives core/send ----------
 
 describe("send() — integration", () => {
-  let socketDir: string;
-  let socketPath: string;
-  let atmuxDir: string;
-  let teamDir: string;
+  let socketDir = "";
+  let socketPath = "";
+  let atmuxDir = "";
+  let teamDir = "";
+  let homeDir = "";
   let priorTmux: string | undefined;
   let tmux: TmuxNamespace;
-  let sessionPrefix: string;
+  let sessionPrefix = "";
+  let restoreHome: (() => void) | undefined;
 
   beforeEach(async () => {
     socketDir = await mkdtemp(join(tmpdir(), "atmux-send-verb-sock-"));
@@ -356,21 +367,27 @@ describe("send() — integration", () => {
     teamDir = await mkdtemp(join(tmpdir(), "atmux-send-verb-team-"));
     atmuxDir = join(teamDir, ".atmux");
     await mkdir(atmuxDir, { recursive: true });
+    homeDir = await mkdtemp(join(tmpdir(), "atmux-send-verb-home-"));
+    restoreHome = setCanonicalAtmuxTmuxHome(homeDir);
     sessionPrefix = `s${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
     priorTmux = process.env.TMUX;
     delete process.env.TMUX;
-    tmux = createTmux({ socketPath, configFile: "/dev/null" });
+    tmux = createCanonicalAtmuxTmux({ socketPath });
   });
 
   afterEach(async () => {
     try {
-      await tmux.server.killServer();
+      if (tmux !== undefined) await tmux.server.killServer();
     } catch {
       // expected: server may already be gone
     }
     if (priorTmux !== undefined) process.env.TMUX = priorTmux;
-    await rm(socketDir, { recursive: true, force: true });
-    await rm(teamDir, { recursive: true, force: true });
+    else delete process.env.TMUX;
+    restoreHome?.();
+    restoreHome = undefined;
+    if (socketDir !== "") await rm(socketDir, { recursive: true, force: true });
+    if (teamDir !== "") await rm(teamDir, { recursive: true, force: true });
+    if (homeDir !== "") await rm(homeDir, { recursive: true, force: true });
   });
 
   /** Stage a team.json with the given member roster + spin a tmux
@@ -383,7 +400,7 @@ describe("send() — integration", () => {
     const sessionName = teamName; // bare per e-419553c6
     const team = { name: teamName, members };
     await writeFile(join(atmuxDir, "team.json"), JSON.stringify(team));
-    // Spin a session with the FIRST member as window 0, then add
+    // Spin a session with the FIRST member as window 1, then add
     // windows for each remaining member, named per buildWindowName.
     const first = members[0];
     if (first === undefined) throw new Error("test setup: stageTeam needs ≥1 member");
@@ -396,6 +413,11 @@ describe("send() — integration", () => {
       shellCommand: "cat",
       windowName: firstWin,
     });
+    const opts = await tmux.option.showOptions({ global: true });
+    const windowOpts = await tmux.option.showOptions({ global: true, window: true });
+    expect(opts["base-index"]).toBe("1");
+    expect(windowOpts["pane-base-index"]).toBe("0");
+    expect(windowOpts["automatic-rename"]).toBe("off");
     for (const m of members.slice(1)) {
       const winName = m.emoji !== undefined && m.emoji.length > 0 ? `${m.emoji}${m.name}` : m.name;
       await tmux.window.newWindow({
@@ -549,7 +571,9 @@ describe("send() — integration", () => {
     expect(await Bun.file(join(atmuxDir, "logs", "send-__superdoctor__.log")).exists()).toBe(false);
     // The row landed in inbox_messages (verify via the read helper).
     const { loadInboxMessages } = await import("../../../src/core/inbox.ts");
-    const rows = await loadInboxMessages(atmuxDir, { member: "__superdoctor__" });
+    const rows = await loadInboxMessages(atmuxDir, {
+      member: "__superdoctor__",
+    });
     expect(rows).toHaveLength(1);
     expect(rows[0]?.body).toBe("the cage cycled itself");
     expect(rows[0]?.kind).toBe("heads-up");
@@ -573,7 +597,9 @@ describe("send() — integration", () => {
     ]);
     expect(exit).toBe(0);
     const { loadInboxMessages } = await import("../../../src/core/inbox.ts");
-    const rows = await loadInboxMessages(atmuxDir, { member: "__superdoctor__" });
+    const rows = await loadInboxMessages(atmuxDir, {
+      member: "__superdoctor__",
+    });
     expect(rows).toHaveLength(1);
     expect(rows[0]?.sender).toBe("atmux:lead");
     expect(rows[0]?.kind).toBe("p0");

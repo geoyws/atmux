@@ -8,15 +8,15 @@
 // tmux window creation when session is up, log lines sunk).
 //
 // Test isolation (memory `feedback_tmux_test_isolation.md`):
-// `createTmux({ socketPath, configFile: "/dev/null" })` — `-S <socketPath>`
-// baked into every tmux invocation makes it physically impossible for a
-// spawned subprocess to reach the operator's daily-driver tmux server.
+// `createCanonicalAtmuxTmux({ socketPath })` plus a caller-owned HOME
+// tempdir keeps each test on the canonical atmux conf while isolating the
+// server socket from the operator's daily-driver tmux server.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createTmux, type TmuxNamespace } from "../../../src/abstractions/tmux.ts";
+import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import type { Logger } from "../../../src/core/tui.ts";
 import { ConfigError, SchemaError, UsageError } from "../../../src/errors.ts";
 import {
@@ -26,6 +26,7 @@ import {
   resolveAddMemberTmuxConfig,
   resolveEmojiMode,
 } from "../../../src/verbs/add-member.ts";
+import { createCanonicalAtmuxTmux, setCanonicalAtmuxTmuxHome } from "../../helpers/tmux.ts";
 
 // ---------- Test fixture helpers ----------
 
@@ -45,19 +46,23 @@ interface TestEnv {
 }
 
 let env: TestEnv;
-let socketDir: string;
+let socketDir = "";
+let homeDir = "";
 let priorTmux: string | undefined;
+let restoreHome: (() => void) | undefined;
 
 beforeEach(async () => {
   socketDir = await mkdtemp(join(tmpdir(), "atmux-am-sock-"));
   const socketPath = join(socketDir, "sock");
+  homeDir = await mkdtemp(join(tmpdir(), "atmux-am-home-"));
+  restoreHome = setCanonicalAtmuxTmuxHome(homeDir);
   const atmuxDir = await mkdtemp(join(tmpdir(), "atmux-am-dir-"));
   const team = `t${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
   await mkdir(atmuxDir, { recursive: true });
   await mkdir(join(atmuxDir, "inboxes"), { recursive: true });
   priorTmux = process.env.TMUX;
   delete process.env.TMUX;
-  const tmux = createTmux({ socketPath, configFile: "/dev/null" });
+  const tmux = createCanonicalAtmuxTmux({ socketPath });
   const logs: TestEnv["logs"] = [];
   const logger: Logger = {
     log: (msg) => logs.push({ kind: "log", msg }),
@@ -70,13 +75,17 @@ beforeEach(async () => {
 
 afterEach(async () => {
   try {
-    await env.tmux.server.killServer();
+    if (env !== undefined) await env.tmux.server.killServer();
   } catch {
     // expected: server may already be gone (idempotent teardown)
   }
   if (priorTmux !== undefined) process.env.TMUX = priorTmux;
-  await rm(socketDir, { recursive: true, force: true });
-  await rm(env.atmuxDir, { recursive: true, force: true });
+  else delete process.env.TMUX;
+  restoreHome?.();
+  restoreHome = undefined;
+  if (socketDir !== "") await rm(socketDir, { recursive: true, force: true });
+  if (homeDir !== "") await rm(homeDir, { recursive: true, force: true });
+  if (env !== undefined) await rm(env.atmuxDir, { recursive: true, force: true });
 });
 
 /** Write a minimal `team.json` with the given members + flags. */
@@ -120,6 +129,7 @@ async function runAdd(
   args: ReadonlyArray<string>,
   extra?: { env?: Record<string, string>; rng?: () => number },
 ): Promise<number> {
+  if (env === undefined) throw new Error("test setup: env not initialized");
   return await addMember([...args, "--socket-path", env.socketPath], {
     env: { ...process.env, ATMUX_DIR: env.atmuxDir, ...extra?.env },
     cwd: env.atmuxDir,
@@ -171,7 +181,9 @@ describe("parseAddMemberArgs", () => {
   });
 
   test("--socket / --socket-path are exposed", () => {
-    expect(parseAddMemberArgs(["a", "--socket", "alpha"], "/x")).toMatchObject({ socket: "alpha" });
+    expect(parseAddMemberArgs(["a", "--socket", "alpha"], "/x")).toMatchObject({
+      socket: "alpha",
+    });
     expect(parseAddMemberArgs(["a", "--socket-path", "/abs"], "/x")).toMatchObject({
       socketPath: "/abs",
     });
@@ -432,7 +444,9 @@ describe("addMember — happy path", () => {
   test("static mode is honoured when ATMUX_EMOJI_MODE=static is set", async () => {
     await writeTeamJson({});
     expect(
-      await runAdd(["alpha", "--role", "team-lead"], { env: { ATMUX_EMOJI_MODE: "static" } }),
+      await runAdd(["alpha", "--role", "team-lead"], {
+        env: { ATMUX_EMOJI_MODE: "static" },
+      }),
     ).toBe(0);
     const team = await readTeamJson();
     expect(team.members[0]?.emoji).toBe("🧭");
@@ -495,6 +509,11 @@ describe("addMember — spawn path", () => {
       windowName: `__${env.team}__home`,
       cwd: env.atmuxDir,
     });
+    const opts = await env.tmux.option.showOptions({ global: true });
+    const windowOpts = await env.tmux.option.showOptions({ global: true, window: true });
+    expect(opts["base-index"]).toBe("1");
+    expect(windowOpts["pane-base-index"]).toBe("0");
+    expect(windowOpts["automatic-rename"]).toBe("off");
     expect(await runAdd(["alpha", "--role", "team-lead"])).toBe(0);
 
     // The new window exists under buildWindowName(team, name, emoji)
