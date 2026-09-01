@@ -71,11 +71,12 @@ The 1:1 preservation contract decouples skill ownership from operator dotfiles: 
 
 ### §D2 — Skill carve set + naming
 
-12 skills, source → destination:
+13 skills, source → destination:
 
 | Source (operator dotfiles) | Bundled name | Rationale |
 |---|---|---|
 | `coordination/team` | `/atmux:team` | unified lifecycle (start/stop/add/clear/cleanup/bootstrap/rotate) |
+| `coordination/driver` | `/atmux:driver` | driver-1 consolidation of sibling driver branches |
 | `coordination/session` | `/atmux:session` | preclear / handoff / cont / stop |
 | `coordination/tell-lead` | `/atmux:tell-lead` | driver→lead durable message |
 | `coordination/heads-up` | `/atmux:heads-up` | lightweight teammate ping |
@@ -162,7 +163,7 @@ Doctor probe (`atmux doctor`): adds a row `atmux-skills-plugin` — green if sym
 
 `plugins/atmux/README.md` covers:
 
-1. What the plugin provides (12 skills, one-line description each)
+1. What the plugin provides (13 skills, one-line description each)
 2. How to install (3 paths — via wizard, manual symlink, override-with-dotfiles)
 3. Quick reference table (skill name + most common invocation)
 4. Link to per-skill SKILL.md for deeper docs
@@ -182,10 +183,11 @@ The atmux top-level README gains a §"Skills (`/atmux:`)" section pointing to `p
 {
   "name": "atmux",
   "version": "0.1.0",
-  "description": "Atmux skills — cockpit-tier workflows for atmux team-of-teams (12 skills: team lifecycle, session continuity, fleet sweeps, etc.)",
+  "description": "Atmux skills — cockpit-tier workflows for atmux team-of-teams (13 skills: team lifecycle, driver consolidation, session continuity, fleet sweeps, etc.)",
   "atmuxCompat": ">=0.8.10",
   "skills": [
     { "name": "team", "path": "skills/team/SKILL.md" },
+    { "name": "driver", "path": "skills/driver/SKILL.md" },
     { "name": "session", "path": "skills/session/SKILL.md" },
     { "name": "tell-lead", "path": "skills/tell-lead/SKILL.md" },
     { "name": "heads-up", "path": "skills/heads-up/SKILL.md" },
@@ -206,7 +208,7 @@ Exact manifest shape conforms to Claude Code's plugin schema in effect at landin
 ### §D9 — Out of scope (deferred)
 
 - **Migrating operator's private dotfiles to point at the bundled plugin.** Operator-side choice; this ADR delivers the public surface.
-- **Cross-platform skill body variants.** All 12 skills are bash-flavored + reference Linux semantics. macOS/WSL polish is follow-up work; the ADR ships the dominant target (Linux hax-like environments) first.
+- **Cross-platform skill body variants.** All 13 skills are bash-flavored + reference Linux semantics. macOS/WSL polish is follow-up work; the ADR ships the dominant target (Linux hax-like environments) first.
 - **Composer 2.5 / cursor-cli sentinel skills.** Per ADR-201 rejection, no cursor-driven skills bundle in this plugin.
 - **Multi-version compatibility shims.** `plugin.json::atmuxCompat` records the requirement; supporting older atmux versions is not in scope.
 
@@ -259,6 +261,10 @@ EPIC scope size: substantial (~12 SKILL.md generalizations × ~100-line bodies +
 - memory `feedback_claude_skills_dotfiles_territory` — operator-dotfiles vs atmux-bundle distinction
 
 ## Amendments
+
+### 2026-09-01 — `/atmux:driver` is the 13th bundled skill
+
+Commit `772fdcac` added `/atmux:driver` for driver-1 consolidation of sibling driver branches. The live §D2 carve set, §D6 documentation count, §D8 manifest example, wizard reference table, and schema tests therefore enumerate 13 skills. Earlier references to the original 12-skill scaffold and its 12-way generalization review remain historical descriptions of the 2026-05-21 landing sequence.
 
 ### 2026-08-07 — §D2's `/atmux:session` verb list is `cont` / `handoff` / `stop` (ADR-263)
 
