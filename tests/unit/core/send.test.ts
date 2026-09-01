@@ -71,6 +71,36 @@ async function spinCatSession(prefix: string): Promise<{ session: string; target
   return { session, target: `${session}:1.0` };
 }
 
+function buildScriptedTmux(captures: string[]) {
+  const capturesSeen: Array<{ target: string; start: number }> = [];
+  const sends: Array<{ target: unknown; keys: string; literal?: boolean; enter?: boolean }> = [];
+  const loadBuffers: Array<{ name: string; data: string }> = [];
+  const pasteBuffers: Array<{ name?: string; target?: unknown; deleteAfter?: boolean }> = [];
+  let captureIdx = 0;
+  const tmux = {
+    pane: {
+      async capturePane(o: { target: string; start: number }) {
+        capturesSeen.push({ target: o.target, start: o.start });
+        const idx = Math.min(captureIdx, captures.length - 1);
+        captureIdx += 1;
+        return captures[idx] ?? "";
+      },
+      async sendKeys(o: { target: unknown; keys: string; literal?: boolean; enter?: boolean }) {
+        sends.push(o);
+      },
+    },
+    buffer: {
+      async loadBuffer(o: { name: string; data: string }) {
+        loadBuffers.push(o);
+      },
+      async pasteBuffer(o: { name?: string; target?: unknown; deleteAfter?: boolean }) {
+        pasteBuffers.push(o);
+      },
+    },
+  } as unknown as TmuxNamespace;
+  return { tmux, capturesSeen, sends, loadBuffers, pasteBuffers };
+}
+
 describe("sendToMember — happy path", () => {
   test("delivers msg + writes log + returns ok", async () => {
     const { target } = await spinCatSession(`${sessionPrefix}_a`);
@@ -347,6 +377,158 @@ describe("sendToMember — sleep injection", () => {
       verify: true,
     });
     expect(Date.now() - t0).toBeGreaterThanOrEqual(100); // pre + verify
+  });
+});
+
+describe("sendToMember — warn-not-consumed exits", () => {
+  test("rawSendKeys verify path warns when the pane still looks consumed", async () => {
+    const { tmux, capturesSeen, sends, loadBuffers, pasteBuffers } = buildScriptedTmux([
+      "\ntok 67k/100  ⏵⏵ auto mode\n",
+      "\ntok 67k/100  ⏵⏵ auto mode\n",
+      "literal-body\n$ ",
+    ]);
+    const sleeps: number[] = [];
+    const out = await sendToMember(
+      tmux,
+      atmuxDir,
+      { target: `${sessionPrefix}_raw:1.0`, member: "raw", team: "test-team" },
+      "literal-body",
+      {
+        sleep: async (ms) => {
+          sleeps.push(ms);
+        },
+        rawSendKeys: true,
+        verify: true,
+        verifyDelayMs: 123,
+      },
+    );
+    expect(out.kind).toBe("warn-not-consumed");
+    expect(sleeps).toEqual([123]);
+    expect(capturesSeen).toEqual([
+      { target: `${sessionPrefix}_raw:1.0`, start: -40 },
+      { target: `${sessionPrefix}_raw:1.0`, start: -40 },
+      { target: `${sessionPrefix}_raw:1.0`, start: -10 },
+    ]);
+    expect(loadBuffers).toHaveLength(0);
+    expect(pasteBuffers).toHaveLength(0);
+    expect(sends).toEqual([
+      {
+        target: {
+          kind: "member",
+          member: "raw",
+          team: "test-team",
+          target: `${sessionPrefix}_raw:1.0`,
+        },
+        keys: "literal-body",
+        literal: true,
+        enter: true,
+      },
+    ]);
+  });
+
+  test("rawSendKeys verify path returns ok when the pane no longer looks consumed", async () => {
+    const { tmux, capturesSeen, sends, loadBuffers, pasteBuffers } = buildScriptedTmux([
+      "\ntok 67k/100  ⏵⏵ auto mode\n",
+      "\ntok 67k/100  ⏵⏵ auto mode\n",
+      "literal-body\nstill-running",
+    ]);
+    const sleeps: number[] = [];
+    const out = await sendToMember(
+      tmux,
+      atmuxDir,
+      { target: `${sessionPrefix}_raw-ok:1.0`, member: "raw-ok", team: "test-team" },
+      "literal-body",
+      {
+        sleep: async (ms) => {
+          sleeps.push(ms);
+        },
+        rawSendKeys: true,
+        verify: true,
+        verifyDelayMs: 123,
+      },
+    );
+    expect(out.kind).toBe("ok");
+    expect(sleeps).toEqual([123]);
+    expect(capturesSeen).toEqual([
+      { target: `${sessionPrefix}_raw-ok:1.0`, start: -40 },
+      { target: `${sessionPrefix}_raw-ok:1.0`, start: -40 },
+      { target: `${sessionPrefix}_raw-ok:1.0`, start: -10 },
+    ]);
+    expect(loadBuffers).toHaveLength(0);
+    expect(pasteBuffers).toHaveLength(0);
+    expect(sends).toEqual([
+      {
+        target: {
+          kind: "member",
+          member: "raw-ok",
+          team: "test-team",
+          target: `${sessionPrefix}_raw-ok:1.0`,
+        },
+        keys: "literal-body",
+        literal: true,
+        enter: true,
+      },
+    ]);
+  });
+
+  test("paste path preserves verifyResult when the outer heuristic warns", async () => {
+    const { tmux, capturesSeen, sends, loadBuffers, pasteBuffers } = buildScriptedTmux([
+      "\ntok 67k/100  ⏵⏵ auto mode\n",
+      "\ntok 67k/100  ⏵⏵ auto mode\n",
+      "\ntok 67k/100  ⏵⏵ auto mode\n",
+      "\ntok 67k/100  ⏵⏵ auto mode\n",
+      "pasted-body\n$ ",
+    ]);
+    const sleeps: number[] = [];
+    const out = await sendToMember(
+      tmux,
+      atmuxDir,
+      { target: `${sessionPrefix}_paste:1.0`, member: "paste", team: "test-team" },
+      "pasted-body",
+      {
+        sleep: async (ms) => {
+          sleeps.push(ms);
+        },
+        verify: true,
+        expectVerifier: () => true,
+        verifyDelayMs: 0,
+      },
+    );
+    expect(out.kind).toBe("warn-not-consumed");
+    expect(out.verifyResult?.success).toBe(true);
+    expect(out.verifyResult?.attempts).toBe(1);
+    expect(sleeps).toEqual([500, 250, 0]);
+    expect(capturesSeen).toEqual([
+      { target: `${sessionPrefix}_paste:1.0`, start: -40 },
+      { target: `${sessionPrefix}_paste:1.0`, start: -40 },
+      { target: `${sessionPrefix}_paste:1.0`, start: -10 },
+      { target: `${sessionPrefix}_paste:1.0`, start: -10 },
+      { target: `${sessionPrefix}_paste:1.0`, start: -10 },
+    ]);
+    expect(loadBuffers).toHaveLength(1);
+    expect(loadBuffers[0]?.data).toBe("pasted-body");
+    expect(typeof loadBuffers[0]?.name).toBe("string");
+    expect((loadBuffers[0]?.name ?? "").length).toBeGreaterThan(0);
+    expect(pasteBuffers).toHaveLength(1);
+    expect(pasteBuffers[0]?.target).toEqual({
+      kind: "member",
+      member: "paste",
+      team: "test-team",
+      target: `${sessionPrefix}_paste:1.0`,
+    });
+    expect(pasteBuffers[0]?.deleteAfter).toBe(true);
+    expect(sends).toEqual([
+      {
+        target: {
+          kind: "member",
+          member: "paste",
+          team: "test-team",
+          target: `${sessionPrefix}_paste:1.0`,
+        },
+        keys: "C-m",
+        enter: false,
+      },
+    ]);
   });
 });
 
