@@ -4592,6 +4592,23 @@ describe("checkDeployedBinaryLag", () => {
     expect(rows[0]?.hint).toContain("build:install");
   });
 
+  test("malformed package.json → silent (JSON parse fallback)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "atmux-doctor-binary-lag-json-"));
+    const cwd = process.cwd();
+    try {
+      process.chdir(dir);
+      await writeFile(join(dir, "package.json"), "{ not json");
+      const rows = await checkDeployedBinaryLag({
+        readDeployedVersion: async () => "0.8.7",
+        git: async () => gitResult(""),
+      });
+      expect(rows).toEqual([]);
+    } finally {
+      process.chdir(cwd);
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("no /opt/atmux/current symlink → silent (non-system install)", async () => {
     const rows = await checkDeployedBinaryLag({
       readDeployedVersion: async () => null,
@@ -4616,6 +4633,22 @@ describe("checkDeployedBinaryLag", () => {
       readSourceVersion: async () => "0.8.7",
       git: async () => {
         throw new Error("ENOENT");
+      },
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("rev-list throws → silent (counting step failure stays non-blocking)", async () => {
+    const rows = await checkDeployedBinaryLag({
+      readDeployedVersion: async () => "0.8.7",
+      readSourceVersion: async () => "0.8.7",
+      git: async (argv) => {
+        if (argv[0] === "rev-parse") return gitResult("h\n");
+        if (argv[0] === "log") return gitResult("b\n");
+        if (argv[0] === "rev-list") {
+          throw new Error("ENOENT");
+        }
+        return gitResult("");
       },
     });
     expect(rows).toEqual([]);
@@ -4789,6 +4822,32 @@ describe("checkLegacyWindowNameFormat", () => {
     expect(rows).toEqual([]);
   });
 
+  test("loadCockpit default catch → missing cockpit config falls back to currentTeam", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "atmux-doctor-legacy-window-cockpit-"));
+    const cwd = process.cwd();
+    const prevCockpitConfig = process.env.ATMUX_COCKPIT_CONFIG;
+    try {
+      process.chdir(dir);
+      process.env.ATMUX_COCKPIT_CONFIG = join(dir, "missing-cockpit.json");
+      const team = buildTeam("atmux", [{ name: "lead", role: "team-lead", emoji: "🧭" }]);
+      const rows = await checkLegacyWindowNameFormat(team, {
+        tmux: async () => tmuxListOk("🧭-lead\n"),
+        socketExists: async () => true,
+      });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.detail).toContain("atmux cage:");
+      expect(rows[0]?.detail).toContain("🧭-lead");
+    } finally {
+      process.chdir(cwd);
+      if (prevCockpitConfig === undefined) {
+        delete process.env.ATMUX_COCKPIT_CONFIG;
+      } else {
+        process.env.ATMUX_COCKPIT_CONFIG = prevCockpitConfig;
+      }
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("currentTeam=null + no cockpit → no rows (nothing to probe)", async () => {
     const rows = await checkLegacyWindowNameFormat(null, {
       tmux: async () => tmuxListOk(""),
@@ -4828,6 +4887,32 @@ describe("checkLegacyWindowNameFormat", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.detail).toContain("alpha cage");
     expect(rows[0]?.detail).toContain("🧭-lead");
+  });
+
+  test("default loadTeamForRoot catch skips malformed cockpit entry and still probes currentTeam", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "atmux-doctor-legacy-window-team-"));
+    const cwd = process.cwd();
+    try {
+      process.chdir(dir);
+      const badRoot = join(dir, "bad-root");
+      await mkdir(join(badRoot, ".atmux"), { recursive: true });
+      await writeFile(join(badRoot, ".atmux", "team.json"), "{not-json");
+      const fakeCockpit = {
+        teams: [{ name: "alpha", root: badRoot }],
+      } as unknown as LoadedCockpit;
+      const team = buildTeam("atmux", [{ name: "lead", role: "team-lead", emoji: "🧭" }]);
+      const rows = await checkLegacyWindowNameFormat(team, {
+        tmux: async () => tmuxListOk("🧭-lead\n"),
+        loadCockpitFn: async () => fakeCockpit,
+        socketExists: async () => true,
+      });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.detail).toContain("atmux cage:");
+      expect(rows[0]?.detail).toContain("🧭-lead");
+    } finally {
+      process.chdir(cwd);
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   test("currentTeam dedup — already in cockpit, only probed once", async () => {
