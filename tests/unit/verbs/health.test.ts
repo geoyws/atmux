@@ -14,7 +14,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BudgetProbeResult } from "../../../src/abstractions/budget-probe.ts";
-import { createTmux, type TmuxNamespace } from "../../../src/abstractions/tmux.ts";
+import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import { writeHeartbeat } from "../../../src/core/heartbeat.ts";
 import { addTask, moveTask } from "../../../src/core/kanban.ts";
 import { UsageError } from "../../../src/errors.ts";
@@ -26,21 +26,25 @@ import {
   renderTextHealth,
   uniqueClaudeAccounts,
 } from "../../../src/verbs/health.ts";
+import { createCanonicalAtmuxTmux, setCanonicalAtmuxTmuxHome } from "../../helpers/tmux.ts";
 
 let socketDir: string;
 let socketPath: string;
 let teamDir: string;
 let atmuxDir: string;
+let homeDir: string;
 let priorTmux: string | undefined;
 let priorCockpitConfig: string | undefined;
 let tmux: TmuxNamespace;
 let sessionPrefix: string;
 let cockpitConfigPath: string;
+let restoreHome: (() => void) | null = null;
 
 beforeEach(async () => {
   socketDir = await mkdtemp(join(tmpdir(), "atmux-health-sock-"));
   socketPath = join(socketDir, "sock");
   teamDir = await mkdtemp(join(tmpdir(), "atmux-health-team-"));
+  homeDir = await mkdtemp(join(tmpdir(), "atmux-health-home-"));
   atmuxDir = join(teamDir, ".atmux");
   await mkdir(atmuxDir, { recursive: true });
   sessionPrefix = `s${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -49,7 +53,8 @@ beforeEach(async () => {
   priorCockpitConfig = process.env.ATMUX_COCKPIT_CONFIG;
   cockpitConfigPath = join(teamDir, "cockpit-fixture.json");
   process.env.ATMUX_COCKPIT_CONFIG = cockpitConfigPath;
-  tmux = createTmux({ socketPath, configFile: "/dev/null" });
+  restoreHome = setCanonicalAtmuxTmuxHome(homeDir);
+  tmux = createCanonicalAtmuxTmux({ socketPath });
 });
 
 afterEach(async () => {
@@ -58,7 +63,10 @@ afterEach(async () => {
   } catch {
     // expected: idempotent teardown
   }
+  restoreHome?.();
+  restoreHome = null;
   if (priorTmux !== undefined) process.env.TMUX = priorTmux;
+  else delete process.env.TMUX;
   if (priorCockpitConfig !== undefined) {
     process.env.ATMUX_COCKPIT_CONFIG = priorCockpitConfig;
   } else {
@@ -66,6 +74,7 @@ afterEach(async () => {
   }
   await rm(socketDir, { recursive: true, force: true });
   await rm(teamDir, { recursive: true, force: true });
+  await rm(homeDir, { recursive: true, force: true });
 });
 
 async function captureStdout<T>(fn: () => Promise<T>): Promise<{ out: string; result: T }> {
