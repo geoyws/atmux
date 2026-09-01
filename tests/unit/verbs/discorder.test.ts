@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { acquire } from "../../../src/abstractions/lock.ts";
 import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
+import { readProgressCursor, writeProgressCursor } from "../../../src/core/discorder.ts";
 import type { Logger } from "../../../src/core/tui.ts";
 import { UsageError } from "../../../src/errors.ts";
 import type { Team } from "../../../src/schema/team.ts";
@@ -277,6 +278,7 @@ describe("discorder verb", () => {
     expect(rc).toBe(0);
     const silent = env.logs.find((l) => l.msg.includes("no deltas since cursor"));
     expect(silent).toBeDefined();
+    expect(await readProgressCursor(env.atmuxDir)).toBe(Math.floor(RUN_MS / 1000));
   });
 
   test("progress: non-empty delta + skipDiscord exits 0 cleanly", async () => {
@@ -303,6 +305,74 @@ describe("discorder verb", () => {
     expect(env.logs.filter((l) => l.kind === "warn")).toHaveLength(0);
   });
 
+  test("progress: send path renders payload, stamps whenMs, and advances the cursor", async () => {
+    await seedTeamJson();
+    await writeProgressCursor(env.atmuxDir, Math.floor(RUN_MS / 1000) - 3660);
+    const sent: Array<{
+      template?: string | undefined;
+      whenMs?: number | undefined;
+      sections?: ReadonlyArray<unknown> | undefined;
+    }> = [];
+    const rc = await discorder(["progress"], {
+      atmuxDir: env.atmuxDir,
+      env: {},
+      logger: env.logger,
+      nowMs: RUN_MS,
+      team: TEAM,
+      sendDiscord: async (opts) => {
+        sent.push({
+          template: opts.template,
+          whenMs: opts.whenMs,
+          sections: opts.sections,
+        });
+      },
+      aggregateProgressFn: async () => ({
+        sinceEpoch: 0,
+        commits: [{ sha: "aaa", subject: "s", author: "A" }],
+        commitsTruncated: false,
+        doneTasks: [{ id: "t-1", subject: "done", owner: "B" }],
+        doneTasksTruncated: false,
+        advancedStories: [{ id: "s-1", epic: "E", title: "story", status: "done" }],
+        advancedStoriesTruncated: false,
+      }),
+    });
+    expect(rc).toBe(0);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.template).toBe("whip-progress");
+    expect(sent[0]?.whenMs).toBe(RUN_MS);
+    expect(sent[0]?.sections).toHaveLength(3);
+    expect(JSON.stringify(sent[0]?.sections)).toContain("1h1m ago");
+    expect(await readProgressCursor(env.atmuxDir)).toBe(Math.floor(RUN_MS / 1000));
+  });
+
+  test("progress: send failure logs a warning and leaves the cursor unchanged", async () => {
+    await seedTeamJson();
+    const rc = await discorder(["progress"], {
+      atmuxDir: env.atmuxDir,
+      env: {},
+      logger: env.logger,
+      nowMs: RUN_MS,
+      team: TEAM,
+      sendDiscord: async () => {
+        throw new Error("disk full");
+      },
+      aggregateProgressFn: async () => ({
+        sinceEpoch: 0,
+        commits: [{ sha: "aaa", subject: "s", author: "A" }],
+        commitsTruncated: false,
+        doneTasks: [],
+        doneTasksTruncated: false,
+        advancedStories: [],
+        advancedStoriesTruncated: false,
+      }),
+    });
+    expect(rc).toBe(0);
+    const warn = env.logs.find((l) => l.kind === "warn");
+    expect(warn?.msg).toContain("discord send failed");
+    expect(warn?.msg).toContain("disk full");
+    expect(await readProgressCursor(env.atmuxDir)).toBe(null);
+  });
+
   test("heartbeat: skipDiscord exits 0 cleanly", async () => {
     await seedTeamJson();
     // Seed session anchor for getSessionName via team.singleSession=false
@@ -319,6 +389,44 @@ describe("discorder verb", () => {
     expect(rc).toBe(0);
   });
 
+  test("heartbeat: send path renders payload and stamps whenMs", async () => {
+    await seedTeamJson();
+    const sent: Array<{ template?: string; whenMs?: number }> = [];
+    const rc = await discorder(["heartbeat"], {
+      atmuxDir: env.atmuxDir,
+      env: {},
+      logger: env.logger,
+      nowMs: RUN_MS,
+      team: TEAM,
+      tmux: fakeTmux(),
+      sendDiscord: async (opts) => {
+        sent.push({
+          template: opts.template,
+          ...(opts.whenMs !== undefined ? { whenMs: opts.whenMs } : {}),
+        });
+      },
+    });
+    expect(rc).toBe(0);
+    expect(sent).toEqual([{ template: "whip-heartbeat", whenMs: RUN_MS }]);
+  });
+
+  test("heartbeat: send failure logs a warning", async () => {
+    await seedTeamJson();
+    const rc = await discorder(["heartbeat"], {
+      atmuxDir: env.atmuxDir,
+      env: {},
+      logger: env.logger,
+      nowMs: RUN_MS,
+      team: TEAM,
+      tmux: fakeTmux(),
+      sendDiscord: () => Promise.reject("net unreachable"),
+    });
+    expect(rc).toBe(0);
+    const warn = env.logs.find((l) => l.kind === "warn");
+    expect(warn?.msg).toContain("discord send failed");
+    expect(warn?.msg).toContain("net unreachable");
+  });
+
   test("missing team.json → safe exit (no team) instead of crash", async () => {
     // Pin ATMUX_DIR so requireTeam resolves to env.atmuxDir (no team.json
     // there) rather than walking up to the atmux repo root which has one.
@@ -332,6 +440,38 @@ describe("discorder verb", () => {
     expect(rc).toBe(0);
     const warn = env.logs.find((l) => l.kind === "warn");
     expect(warn).toBeDefined();
+  });
+
+  test("non-configuration team-load failures propagate", async () => {
+    await expect(
+      discorder(["progress"], {
+        atmuxDir: env.atmuxDir,
+        env: {},
+        logger: env.logger,
+        nowMs: RUN_MS,
+        skipDiscord: true,
+        requireTeamFn: async () => {
+          throw new Error("storage fault");
+        },
+      }),
+    ).rejects.toThrow("storage fault");
+  });
+
+  test("non-contention lock failures propagate", async () => {
+    await seedTeamJson();
+    await expect(
+      discorder(["progress"], {
+        atmuxDir: env.atmuxDir,
+        env: {},
+        logger: env.logger,
+        nowMs: RUN_MS,
+        team: TEAM,
+        skipDiscord: true,
+        acquireFn: async () => {
+          throw new Error("lock storage fault");
+        },
+      }),
+    ).rejects.toThrow("lock storage fault");
   });
 
   // ADR-027 rename.lock guard: present lock → skip + exit 0 BEFORE
