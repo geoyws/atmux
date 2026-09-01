@@ -22,17 +22,30 @@ import { exists, statOrNull } from "../abstractions/fs.ts";
  *  pattern as resolveTemplatesDir — compiled bun ELF's `import.meta.dir`
  *  sits inside $bunfs (rooted at `/`), so the dev probe falls through
  *  to a realpath-on-execPath installed-mode lookup. */
-export function resolvePluginsDir(env: NodeJS.ProcessEnv = process.env): string {
+interface ResolvePluginsDirDeps {
+  existsSync?: (path: string) => boolean;
+  realpathSync?: (path: string) => string;
+  execPath?: string;
+}
+
+export function resolvePluginsDir(
+  env: NodeJS.ProcessEnv = process.env,
+  deps: ResolvePluginsDirDeps = {},
+): string {
+  const existsProbe = deps.existsSync ?? existsSync;
+  const realpath = deps.realpathSync ?? realpathSync;
+  const execPath = deps.execPath ?? process.execPath;
+
   const override = env.ATMUX_PLUGINS_DIR;
   if (override !== undefined && override.length > 0) return override;
 
   const devPath = resolve(import.meta.dir, "..", "..", "plugins");
-  if (existsSync(devPath)) return devPath;
+  if (existsProbe(devPath)) return devPath;
 
   try {
-    const real = realpathSync(process.execPath);
+    const real = realpath(execPath);
     const installedPath = resolve(dirname(real), "..", "plugins");
-    if (existsSync(installedPath)) return installedPath;
+    if (existsProbe(installedPath)) return installedPath;
   } catch {
     // realpath can throw on missing execPath; fall through.
   }
