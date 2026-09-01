@@ -48,6 +48,13 @@ import {
   resolveTeamSocket,
 } from "../core/common.ts";
 import { type DriverPaneHealth, probeDriverPane } from "../core/driver-pane-health.ts";
+import { DEFAULT_HEARTBEAT_STALE_SEC, readHeartbeatAges } from "../core/heartbeat.ts";
+import { loadInbox } from "../core/inbox.ts";
+import { loadKanban } from "../core/kanban.ts";
+import { kanbanWorkStateAvailable } from "../core/kanban-backend.ts";
+import { readLeadSessionStart, readLeadWindowName } from "../core/lead-marker.ts";
+import { type MemberSelfStatus, readAllMemberStatuses } from "../core/member-status.ts";
+import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.ts";
 import {
   classifyPaneObservation,
   type PaneVerdict,
@@ -57,13 +64,6 @@ import {
   WINDOW_PROBE_FORMAT,
   type WindowProbe,
 } from "../core/vox/fleet.ts";
-import { DEFAULT_HEARTBEAT_STALE_SEC, readHeartbeatAges } from "../core/heartbeat.ts";
-import { loadInbox } from "../core/inbox.ts";
-import { loadKanban } from "../core/kanban.ts";
-import { kanbanWorkStateAvailable } from "../core/kanban-backend.ts";
-import { readLeadSessionStart, readLeadWindowName } from "../core/lead-marker.ts";
-import { type MemberSelfStatus, readAllMemberStatuses } from "../core/member-status.ts";
-import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.ts";
 import { UsageError } from "../errors.ts";
 import {
   type NeedsApprovalReport,
@@ -142,7 +142,7 @@ export interface MemberStatus {
    *  with `atmux doctor` (`MemberCageState` is an alias). When the
    *  member's `tui !== "claude"`, this is `null` — the cage-state
    *  probe is claude-specific (it checks for `claude` exec in the
-   *  pane's child tree); non-claude TUIs are read via the legacy
+   *  pane's direct children); non-claude TUIs are read via the legacy
    *  `paneCommand` field above. */
   cageState: CageState | null;
   /**

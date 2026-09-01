@@ -100,6 +100,10 @@ Detection probe: query each pane's child PID via `tmux list-panes -F '#{pane_pid
 
 Doctor's `--fix` for `starving` state: paste the brief (same path as §C) and verify ctx > 0 within 30s. Falls through to `--force` flag for the rare case where a member should genuinely remain at welcome screen.
 
+### Amendment — 2026-09-01: portable direct-child discovery
+
+The live probe implementation now enumerates all processes with `ps -A -o ppid= -o comm=` and then filters rows to the exact pane PID before classifying the command name. GNU `ps --ppid` is the assumption that breaks on macOS (`ps: illegal option -- -`), so the direct-child check has to be portable at the process-listing layer rather than relying on a recursive tree probe. This is rationale/history for the cage-state fix, not a second binding rule.
+
 ### (E) Move starving-bootstrap recovery to the cockpit/supervisor (per c-7193c689)
 
 The lead's whip §4a `auto-bootstrap-starving-members` step is removed and the equivalent logic lives in `cockpit autolaunch` (or `medic`'s starvation-detection rule). Rationale: a stuck lead cannot fire whip; supervisor-side recovery breaks the chicken-and-egg. `medic` already has the authority (ADR-077 §D3 — rotate leads, clear members, cycle cages) and the cross-team scope; adding "if a team has ≥1 starving member AND lead has been idle ≥5min, paste briefs to starving members" is a narrow extension.

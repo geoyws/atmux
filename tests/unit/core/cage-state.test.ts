@@ -7,7 +7,9 @@ import {
   cageWindowCandidates,
   hasProducedOutput,
   isAgentPane,
+  parsePaneChildPsRows,
   probeCageState,
+  psOutputHasDirectClaudeChild,
   resolveCageWindowName,
   STARVING_THRESHOLD_S,
   WEDGED_HEARTBEAT_STALE_SEC,
@@ -148,6 +150,49 @@ describe("probeCageState — claude-not-running branch", () => {
       },
     });
     expect(h.state).toBe("down");
+  });
+});
+
+describe("parsePaneChildPsRows / psOutputHasDirectClaudeChild — portable PPID+comm parsing", () => {
+  test("parses macOS/Linux-shaped rows with leading whitespace and ignores malformed rows", () => {
+    const rows = parsePaneChildPsRows(`
+       101 /opt/homebrew/bin/node
+      202 claude-code
+      303 /usr/local/bin/claude
+      bad row
+
+      404 /opt/homebrew/bin/python3
+    `);
+    expect(rows).toEqual([
+      { ppid: 101, comm: "/opt/homebrew/bin/node" },
+      { ppid: 202, comm: "claude-code" },
+      { ppid: 303, comm: "/usr/local/bin/claude" },
+      { ppid: 404, comm: "/opt/homebrew/bin/python3" },
+    ]);
+  });
+
+  test("matches only the exact requested PPID and accepts full-path comm output", () => {
+    const stdout = [
+      "100 /opt/homebrew/bin/node",
+      "101 /opt/homebrew/bin/claude",
+      "101 /opt/homebrew/bin/claude-code",
+      "102 /opt/homebrew/bin/node",
+      "101 /usr/local/bin/python3",
+    ].join("\n");
+    expect(psOutputHasDirectClaudeChild(101, stdout)).toBe(true);
+    expect(psOutputHasDirectClaudeChild(100, stdout)).toBe(true);
+    expect(psOutputHasDirectClaudeChild(102, stdout)).toBe(true);
+    expect(psOutputHasDirectClaudeChild(103, stdout)).toBe(false);
+  });
+
+  test("rejects non-agent commands and empty output", () => {
+    expect(psOutputHasDirectClaudeChild(4242, "")).toBe(false);
+    expect(
+      psOutputHasDirectClaudeChild(
+        4242,
+        ["4242 /usr/bin/python3", "4242 /usr/bin/bash", "4242 /opt/homebrew/bin/grep"].join("\n"),
+      ),
+    ).toBe(false);
   });
 });
 

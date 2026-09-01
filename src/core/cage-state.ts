@@ -11,8 +11,8 @@
 // This module unifies the two probes under a single 4-state vocabulary:
 //
 //   down          — no tmux session OR pane window missing OR no
-//                   `claude` exec in the pane's child-process tree.
-//   bootstrapping — claude PID alive in the pane tree, but tokens have
+//                   `claude` exec in the pane's direct children.
+//   bootstrapping — claude PID alive in the pane's direct children, but tokens have
 //                   never moved (welcome banner, first-input pending,
 //                   or fresh `/clear` mid-render).
 //   active        — claude PID alive AND tokens have moved (the pane is
@@ -48,6 +48,7 @@
 // disagreeing about the same pane was the defect ADR-273 §Supplement-5 W6
 // recorded, and two probes over one pane is how that defect comes back.
 
+import { basename } from "node:path";
 import type { SpawnResult } from "../abstractions/spawn.ts";
 import { spawn as defaultSpawn } from "../abstractions/spawn.ts";
 import { now } from "../abstractions/time.ts";
@@ -165,7 +166,7 @@ export interface CageHealth {
 // ---------- Public API ----------
 
 /** Spawn injection — defaults to the abstractions/spawn implementation
- *  but tests pass a stub that synthesizes `ps`/`pgrep` output. */
+ *  but tests pass a stub that synthesizes `ps` output. */
 export type ChildExecProbe = (panePid: number) => Promise<boolean>;
 
 export interface ProbeCageStateOpts {
@@ -173,8 +174,9 @@ export interface ProbeCageStateOpts {
   tmux?: TmuxNamespace;
   /** Test override for `tmux.session.hasSession`. */
   hasSession?: (name: string, socketPath: string) => Promise<boolean>;
-  /** Probe override: "is `claude` in this pane PID's child tree?"
-   *  Default uses `ps --ppid <panePid> -o comm=` and matches `claude`. */
+  /** Probe override: "is `claude` in this pane PID's direct children?"
+   *  Default uses `ps -A -o ppid= -o comm=` and filters rows to the exact
+   *  pane PID before matching `claude`, `claude-*`, or `node`. */
   paneChildIsClaude?: ChildExecProbe;
   /** Wall-clock injection (seconds). Default: `Math.floor(now()/1000)`. */
   nowSec?: () => number;
@@ -322,7 +324,7 @@ export async function resolveCageWindowName(
  *
  *   1. session missing → `down`
  *   2. pane window missing → `down`
- *   3. no `claude` in pane's child tree → `down`
+ *   3. no `claude` in pane's direct children → `down`
  *   4. pane classifier text shows RATE-LIMIT → `wedged`
  *   5. tokens NOT moved (no `\d+k tokens` shape) → `bootstrapping`
  *   6. heartbeat age > {@link WEDGED_HEARTBEAT_STALE_SEC} → `wedged`
@@ -424,12 +426,12 @@ export async function probeCageState(
     };
   }
 
-  // (3) claude exec in child tree?
+  // (3) claude exec in direct children?
   let hasClaude = false;
   try {
     hasClaude = await childIsClaude(panePid);
   } catch {
-    // `ps`/`pgrep` failure → not confirmed. Whether that becomes `down`
+    // `ps` failure → not confirmed. Whether that becomes `down`
     // is decided below, against the pane's own render.
     hasClaude = false;
   }
@@ -634,15 +636,42 @@ export function hasProducedOutput(state: PaneState): boolean {
  *  same TUI rendering contract). */
 const TOKENS_MOVED_RE = /(?<![0-9])\d+k\s*(?:tokens|↓)|tokens\s*·\s*\d+%/i;
 
-/** Default child-exec probe: `ps --ppid <panePid> -o comm=` and match
- *  `claude` (or `claude-code`) in the comm column. Pure-ish (single
- *  spawn call), portable across Linux + macOS. */
+export interface PaneChildPsRow {
+  ppid: number;
+  comm: string;
+}
+
+export function parsePaneChildPsRows(stdout: string): PaneChildPsRow[] {
+  const rows: PaneChildPsRow[] = [];
+  for (const line of stdout.split("\n")) {
+    const match = line.match(/^\s*(\d+)\s+(.+?)\s*$/);
+    if (match === null) continue;
+    rows.push({ ppid: Number(match[1]), comm: match[2] ?? "" });
+  }
+  return rows;
+}
+
+function isClaudeExecName(comm: string): boolean {
+  const execName = basename(comm.trim());
+  return execName === "claude" || execName.startsWith("claude-") || execName === "node";
+}
+
+export function psOutputHasDirectClaudeChild(panePid: number, stdout: string): boolean {
+  return parsePaneChildPsRows(stdout).some(
+    (row) => row.ppid === panePid && isClaudeExecName(row.comm),
+  );
+}
+
+/** Default child-exec probe: enumerate all processes via
+ *  `ps -A -o ppid= -o comm=` and filter to direct children of the requested
+ *  pane PID before matching `claude` / `claude-*` / `node` in the comm
+ *  column. Pure-ish (single spawn call), portable across Linux + macOS. */
 async function defaultPaneChildIsClaude(panePid: number): Promise<boolean> {
   let r: SpawnResult;
   try {
     r = await defaultSpawn({
       cmd: "ps",
-      argv: ["-o", "comm=", "--ppid", String(panePid)],
+      argv: ["-A", "-o", "ppid=", "-o", "comm="],
       expectExitCode: "any",
       timeoutMs: 2_000,
     });
@@ -650,13 +679,7 @@ async function defaultPaneChildIsClaude(panePid: number): Promise<boolean> {
     return false;
   }
   if (r.exitCode !== 0) return false;
-  // `comm` is the command name (basename of argv[0]) — typically
-  // truncated to 16 chars on Linux but `claude` fits. Match any line
-  // whose first token is `claude` (handles `claude-code` variant).
-  return r.stdout
-    .split("\n")
-    .map((l) => l.trim())
-    .some((l) => l === "claude" || l.startsWith("claude") || l === "node");
+  return psOutputHasDirectClaudeChild(panePid, r.stdout);
   // `node` accepted as a Claude Code wrapper exec name on some
   // installs (npm-shim path); the alternative is false-negative
   // `down` reports on dev installs.
