@@ -1,8 +1,8 @@
 // Unit tests for src/core/send.ts (ADR-003 + ADR-004 amend).
 //
-// Strategy: spin a real tmux server on a unique per-test socket via
-// `createTmux({ socketPath, configFile: "/dev/null" })` — same isolation
-// discipline as `tests/unit/abstractions/tmux.test.ts` (Task #1 amend).
+// Strategy: spin a real tmux server on a unique per-test socket through
+// atmux's canonical tmux-conf helper — the same isolation discipline as
+// `tests/unit/abstractions/tmux.test.ts` (Task #1 amend).
 // All `sleep` calls inside `sendToMember` are stubbed to no-op; we
 // don't want test-suite latency from the bash-faithful 0.3s + 2s
 // delays, and they have no observable effect on outcome correctness
@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createTmux, type TmuxNamespace } from "../../../src/abstractions/tmux.ts";
+import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import { classifyPaneState, logsDir } from "../../../src/core/common.ts";
 import {
   isPreSendWarn,
@@ -20,25 +20,30 @@ import {
   SUBMIT_ONLY_LOG_BODY,
   sendToMember,
 } from "../../../src/core/send.ts";
+import { createCanonicalAtmuxTmux, setCanonicalAtmuxTmuxHome } from "../../helpers/tmux.ts";
 
 const NO_SLEEP = (_ms: number): Promise<void> => Promise.resolve();
 
 let socketDir: string;
 let socketPath: string;
 let atmuxDir: string;
+let homeDir: string;
 let priorTmux: string | undefined;
 let tmux: TmuxNamespace;
 let sessionPrefix: string;
+let restoreHome: (() => void) | null = null;
 
 beforeEach(async () => {
   socketDir = await mkdtemp(join(tmpdir(), "atmux-send-sock-"));
   socketPath = join(socketDir, "sock");
   atmuxDir = await mkdtemp(join(tmpdir(), "atmux-send-dir-"));
+  homeDir = await mkdtemp(join(tmpdir(), "atmux-send-home-"));
   await mkdir(join(atmuxDir, "logs"), { recursive: true });
   sessionPrefix = `s${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
   priorTmux = process.env.TMUX;
   delete process.env.TMUX;
-  tmux = createTmux({ socketPath, configFile: "/dev/null" });
+  restoreHome = setCanonicalAtmuxTmuxHome(homeDir);
+  tmux = createCanonicalAtmuxTmux({ socketPath });
 });
 
 afterEach(async () => {
@@ -47,9 +52,13 @@ afterEach(async () => {
   } catch {
     // expected: server may already be gone (idempotent teardown)
   }
+  restoreHome?.();
+  restoreHome = null;
   if (priorTmux !== undefined) process.env.TMUX = priorTmux;
+  else delete process.env.TMUX;
   await rm(socketDir, { recursive: true, force: true });
   await rm(atmuxDir, { recursive: true, force: true });
+  await rm(homeDir, { recursive: true, force: true });
 });
 
 /** Spin a tmux session running `cat` so paste-buffer + Enter has a
@@ -58,7 +67,8 @@ afterEach(async () => {
 async function spinCatSession(prefix: string): Promise<{ session: string; target: string }> {
   const session = `${prefix}_${Math.random().toString(36).slice(2, 6)}`;
   await tmux.session.newSession({ name: session, shellCommand: "cat" });
-  return { session, target: `${session}:0.0` };
+  expect((await tmux.window.listWindows(session)).map((window) => window.index)).toEqual([1]);
+  return { session, target: `${session}:1.0` };
 }
 
 describe("sendToMember — happy path", () => {
@@ -214,7 +224,7 @@ describe("sendToMember — pre-send classifier", () => {
       name: session,
       shellCommand: "sh -c \"printf 'Compacting conversation…\\n' && cat\"",
     });
-    const target = `${session}:0.0`;
+    const target = `${session}:1.0`;
     await new Promise((r) => setTimeout(r, 200));
     const out = await sendToMember(
       tmux,
@@ -235,7 +245,7 @@ describe("sendToMember — pre-send classifier", () => {
       name: session,
       shellCommand: "sh -c \"printf 'You hit your limit, retry later\\n' && cat\"",
     });
-    const target = `${session}:0.0`;
+    const target = `${session}:1.0`;
     await new Promise((r) => setTimeout(r, 200));
     const out = await sendToMember(
       tmux,
@@ -289,7 +299,7 @@ describe("sendToMember — safe-send preflight (t-06e7209d)", () => {
       shellCommand:
         "sh -c \"printf '● How is Claude doing this session? (optional)\\n  1: Bad    2: Fine   3: Good   0: Dismiss\\n' && cat\"",
     });
-    const target = `${session}:0.0`;
+    const target = `${session}:1.0`;
     await new Promise((r) => setTimeout(r, 200));
     const out = await sendToMember(
       tmux,

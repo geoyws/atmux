@@ -10,21 +10,18 @@
 //      session named `journalism`), (b) `exactSessionTarget` closes it,
 //      and (c) the migration renames a live legacy session in place.
 // Layer 2 follows the tests/unit/abstractions/tmux.test.ts isolation
-// pattern: `-S <socketPath>` baked into every argv + `-f /dev/null`.
+// pattern: `-S <socketPath>` baked into every argv plus canonical atmux conf.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  createTmux,
-  exactSessionTarget,
-  type TmuxNamespace,
-} from "../../../src/abstractions/tmux.ts";
+import { exactSessionTarget, type TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import {
   type LegacySessionMigration,
   migrateLegacySessionName,
 } from "../../../src/core/session-migrate.ts";
+import { createCanonicalAtmuxTmux, setCanonicalAtmuxTmuxHome } from "../../helpers/tmux.ts";
 
 // ---------- Layer 1: stub-based branch coverage ----------
 
@@ -193,15 +190,19 @@ describe("migrateLegacySessionName — branch coverage (stub tmux)", () => {
 describe("bare-name anchoring + migration against a real tmux server", () => {
   let socketDir: string;
   let socketPath: string;
+  let homeDir: string;
   let priorTmux: string | undefined;
   let tmux: TmuxNamespace;
+  let restoreHome: (() => void) | null = null;
 
   beforeEach(async () => {
     socketDir = await mkdtemp(join(tmpdir(), "atmux-session-migrate-"));
     socketPath = join(socketDir, "sock");
+    homeDir = await mkdtemp(join(tmpdir(), "atmux-session-migrate-home-"));
     priorTmux = process.env.TMUX;
     delete process.env.TMUX;
-    tmux = createTmux({ socketPath, configFile: "/dev/null" });
+    restoreHome = setCanonicalAtmuxTmuxHome(homeDir);
+    tmux = createCanonicalAtmuxTmux({ socketPath });
   });
 
   afterEach(async () => {
@@ -210,8 +211,12 @@ describe("bare-name anchoring + migration against a real tmux server", () => {
     } catch {
       // expected: server may already be gone
     }
+    restoreHome?.();
+    restoreHome = null;
     if (priorTmux !== undefined) process.env.TMUX = priorTmux;
+    else delete process.env.TMUX;
     await rm(socketDir, { recursive: true, force: true });
+    await rm(homeDir, { recursive: true, force: true });
   });
 
   test("tmux prefix-matches session names; `=` closes the hole (journal vs journalism)", async () => {
