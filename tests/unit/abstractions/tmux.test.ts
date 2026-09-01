@@ -32,12 +32,17 @@ import {
   type TmuxNamespace,
 } from "../../../src/abstractions/tmux.ts";
 import { TmuxError } from "../../../src/errors.ts";
-import { CANONICAL_ATMUX_TMUX_CONF_PATH, createCanonicalAtmuxTmux } from "../../helpers/tmux.ts";
+import {
+  CANONICAL_ATMUX_TMUX_CONF_PATH,
+  createCanonicalAtmuxTmux,
+  setCanonicalAtmuxTmuxHome,
+} from "../../helpers/tmux.ts";
 
 let socketDir: string;
 let socketPath: string;
 let sessionPrefix: string;
 let priorTmux: string | undefined;
+let restoreHome: (() => void) | null = null;
 let tmux: TmuxNamespace;
 
 beforeEach(async () => {
@@ -50,6 +55,7 @@ beforeEach(async () => {
   // the `-S <socketPath>` baked into every tmux argv by createTmux.
   priorTmux = process.env.TMUX;
   delete process.env.TMUX;
+  restoreHome = setCanonicalAtmuxTmuxHome(socketDir);
   tmux = createCanonicalAtmuxTmux({ socketPath });
 });
 
@@ -63,6 +69,8 @@ afterEach(async () => {
     // expected: server may already be gone (idempotent teardown)
   }
   if (priorTmux !== undefined) process.env.TMUX = priorTmux;
+  restoreHome?.();
+  restoreHome = null;
   await rm(socketDir, { recursive: true, force: true });
 });
 
@@ -190,19 +198,21 @@ describe("createTmux socket pinning", () => {
   });
 
   test("createTmux({ socket }) -L variant works", async () => {
-    // Use the per-test socketDir as TMUX_TMPDIR so the named socket
-    // resolves under our isolated tmpdir, not the operator's.
+    // Keep the named-socket scratch path short so the macOS tmpdir length
+    // does not trip tmux's socket-path limit.
     const priorTmpdir = process.env.TMUX_TMPDIR;
-    process.env.TMUX_TMPDIR = socketDir;
+    let named: TmuxNamespace | null = null;
+    process.env.TMUX_TMPDIR = "/tmp";
     try {
-      const named = createCanonicalAtmuxTmux({
-        socket: "atmux-port-test-named",
+      named = createCanonicalAtmuxTmux({
+        socket: `${sessionPrefix}-named`,
       });
       const name = `${sessionPrefix}_named`;
       await named.session.newSession({ name });
       expect(await named.session.hasSession(name)).toBe(true);
-      await named.server.killServer();
+      expect((await named.window.listWindows(name)).map((window) => window.index)).toEqual([1]);
     } finally {
+      await named?.server.killServer().catch(() => {});
       if (priorTmpdir !== undefined) process.env.TMUX_TMPDIR = priorTmpdir;
       else delete process.env.TMUX_TMPDIR;
     }
