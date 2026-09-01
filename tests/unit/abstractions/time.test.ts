@@ -3,9 +3,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   formatDuration,
-  formatTickDuration,
   formatMyt,
   formatMytFull,
+  formatTickDuration,
   now,
   nowIso,
   resetNow,

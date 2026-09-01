@@ -2,7 +2,7 @@ import { readTextOrNull } from "../../abstractions/fs.ts";
 import { resolveWorktreePath } from "../../abstractions/worktree.ts";
 import { DEFAULT_SEND_KEYS_FAILURES_LOG_REL } from "../../core/safe-send.ts";
 import type { Team } from "../../schema/team.ts";
-import { type DoctorRow, type GitSpawn, defaultGitSpawn } from "./types.ts";
+import { type DoctorRow, defaultGitSpawn, type GitSpawn } from "./types.ts";
 
 // ---------- ADR-137: member-forcepush-recent probe ----------
 

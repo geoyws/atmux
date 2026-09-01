@@ -1,4 +1,4 @@
-import { afterAll, afterEach, describe, expect, test as bunTest } from "bun:test";
+import { afterAll, afterEach, test as bunTest, describe, expect } from "bun:test";
 import {
   chmodSync,
   existsSync,
@@ -19,11 +19,6 @@ import {
   sanitizeKanbanEnv,
 } from "../../../src/adapters/kanban-cli.ts";
 import {
-  KANBAN_CLI_FIXTURES,
-  KANBAN_FIXTURE_COMMIT,
-  type KanbanCliFixtureName,
-} from "../../helpers/kanban-cli-fixtures-414bfdd.ts";
-import {
   addEpic as coreAddEpic,
   advanceEpic as coreAdvanceEpic,
   listEpics as coreListEpics,
@@ -36,7 +31,6 @@ import {
   prepareExternalKanbanCutover,
   rollbackExternalKanbanCutover,
 } from "../../../src/core/external-kanban-cutover.ts";
-import { readKanbanBackendMarker } from "../../../src/core/kanban-backend.ts";
 import {
   addTask as coreAddTask,
   assignTask as coreAssignTask,
@@ -52,6 +46,7 @@ import {
   setTaskStory as coreSetTaskStory,
   showTask as coreShowTask,
 } from "../../../src/core/kanban.ts";
+import { readKanbanBackendMarker } from "../../../src/core/kanban-backend.ts";
 import { KanbanRepo } from "../../../src/core/repositories/kanban-repo.ts";
 import {
   addStory as coreAddStory,
@@ -61,6 +56,11 @@ import {
   storySignoff as coreStorySignoff,
   updateStory as coreUpdateStory,
 } from "../../../src/core/story.ts";
+import {
+  KANBAN_CLI_FIXTURES,
+  KANBAN_FIXTURE_COMMIT,
+  type KanbanCliFixtureName,
+} from "../../helpers/kanban-cli-fixtures-414bfdd.ts";
 
 const roots: string[] = [];
 const originalXdgDataHome = process.env.XDG_DATA_HOME;

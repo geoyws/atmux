@@ -20,12 +20,11 @@ import * as nodeChildProcess from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { KanbanStory, KanbanTask } from "../../../src/schema/kanban.ts";
 import {
   buildLaneTargetMap,
   createLeadStallWatchdogHandler,
-  decideLeadStall,
   type DecideLeadStallInput,
+  decideLeadStall,
   formatLeadStallPing,
   type LeadStallStoryInput,
   type LeadStallTaskInput,
@@ -36,6 +35,7 @@ import {
   storyToInput,
   taskToInput,
 } from "../../../src/core/lead-stall-watchdog.ts";
+import type { KanbanStory, KanbanTask } from "../../../src/schema/kanban.ts";
 
 const NOW = 1_780_000_000;
 const THRESHOLD_MIN = 5;

@@ -15,21 +15,21 @@
 //     NEVER receives 'rebase' / 'squash' / 'reset' / 'checkout' across
 //     the full test matrix.
 
-import type { SpawnResult } from "../../../src/abstractions/spawn.ts";
+import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GitSpawn } from "../../../src/abstractions/branch-merge.ts";
-import { createGitterMergeHandler } from "../../../src/core/gitter-merge-handler.ts";
-import type { Logger } from "../../../src/core/gitter-consumer.ts";
-import type { BranchMergeState } from "../../../src/core/branch-merge-state.ts";
-import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
+import type { SpawnResult } from "../../../src/abstractions/spawn.ts";
 import { openDatabase } from "../../../src/abstractions/sqlite.ts";
-import { MergerStateRepo } from "../../../src/core/repositories/merger-state-repo.ts";
+import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
+import type { BranchMergeState } from "../../../src/core/branch-merge-state.ts";
+import type { Logger } from "../../../src/core/gitter-consumer.ts";
+import { createGitterMergeHandler } from "../../../src/core/gitter-merge-handler.ts";
 import { KanbanRepo } from "../../../src/core/repositories/kanban-repo.ts";
+import { MergerStateRepo } from "../../../src/core/repositories/merger-state-repo.ts";
 import type { TaskDonePayload } from "../../../src/schema/events.ts";
-import type { Database } from "bun:sqlite";
 
 let scratch: string;
 let db: Database;

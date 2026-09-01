@@ -15,9 +15,9 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  computeFingerprint,
   DriftAbortError,
   SYNC_MARKER_KEY,
-  computeFingerprint,
   syncEventsLogPath,
 } from "../../../../src/core/sync-claude-team-json/drift.ts";
 import { computeMappedTeam, writeSync } from "../../../../src/core/sync-claude-team-json/index.ts";

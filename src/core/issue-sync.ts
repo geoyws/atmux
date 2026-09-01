@@ -56,7 +56,7 @@ import {
 } from "../errors.ts";
 import type { IssueSyncRecord } from "../schema/issue-sync.ts";
 import { resolveOrchestrationMode, type Team, type TeamIssueSyncTracker } from "../schema/team.ts";
-import { loadCockpit, type LoadCockpitOpts, walkSessions } from "./cockpit.ts";
+import { type LoadCockpitOpts, loadCockpit, walkSessions } from "./cockpit.ts";
 import { getAtmuxDir, loadTeam } from "./common.ts";
 import { DEFAULT_DEDUP_WINDOW_SEC, fileDedupedComplaint } from "./complaints.ts";
 import { ComplaintsRepo } from "./repositories/complaints-repo.ts";

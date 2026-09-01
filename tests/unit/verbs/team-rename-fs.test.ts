@@ -13,9 +13,9 @@ import {
   acquireRenameLock,
   isRenameInProgress,
   mutateTeamJson,
+  type RenameLockBody,
   releaseRenameLock,
   renameLockPath,
-  type RenameLockBody,
   rewriteSessionAnchor,
 } from "../../../src/verbs/team-rename-fs.ts";
 

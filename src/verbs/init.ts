@@ -60,13 +60,13 @@
 // [--name <team>] [--force|-f]`) is the contract.
 
 import { basename, join } from "node:path";
-import { KanbanCliAdapter } from "../adapters/kanban-cli.ts";
 import { ensureDir, exists, readText, writeText } from "../abstractions/fs.ts";
 import { readJson } from "../abstractions/json.ts";
 import { now } from "../abstractions/time.ts";
+import { KanbanCliAdapter } from "../adapters/kanban-cli.ts";
 import { driverInboxPath, getAtmuxDir, inboxPathFor, kanbanJsonPath } from "../core/common.ts";
-import { externalKanbanEnabled } from "../core/kanban-backend.ts";
 import { defaultStdoutWrite, type Writer } from "../core/io.ts";
+import { externalKanbanEnabled } from "../core/kanban-backend.ts";
 import { installSkillsPlugin, renderSkillsInstallResult } from "../core/skills-plugin-install.ts";
 import { resolveTemplatesDir } from "../core/templates-dir.ts";
 import { createLogger, type Logger } from "../core/tui.ts";

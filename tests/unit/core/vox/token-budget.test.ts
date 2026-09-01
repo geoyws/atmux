@@ -18,9 +18,9 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+  BUDGET_PROVIDERS,
   type BudgetRow,
   type BudgetRowClass,
-  BUDGET_PROVIDERS,
   classifyBudgetRow,
   isCachedRow,
   parseBudgetRows,
@@ -29,8 +29,8 @@ import {
   renderBudgetReport,
   rowCacheAgeSec,
   speakDuration,
-  speakRowIdentity,
   speakReset,
+  speakRowIdentity,
   speakWindow,
   summarizeBudget,
 } from "../../../../src/core/vox/token-budget.ts";

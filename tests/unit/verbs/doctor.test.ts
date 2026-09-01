@@ -14,10 +14,10 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { closeDatabase, openDatabase } from "../../../src/abstractions/sqlite.ts";
-import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
 import type { CrontabIO } from "../../../src/abstractions/crontab.ts";
 import type { SpawnResult } from "../../../src/abstractions/spawn.ts";
+import { closeDatabase, openDatabase } from "../../../src/abstractions/sqlite.ts";
+import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
 import type { CageState } from "../../../src/core/cage-state.ts";
 import type { LoadedCockpit } from "../../../src/core/cockpit.ts";
 import { KanbanRepo } from "../../../src/core/repositories/kanban-repo.ts";
@@ -27,30 +27,30 @@ import {
   buildReport,
   checkBotConfig,
   checkCockpitOnDefaultSocket,
-  checkDeployedBinaryLag,
-  checkLegacyWindowNameFormat,
   checkCronBlock,
   checkCronIntervalDivisors,
   checkCronOrphans,
   checkCursorPluginCache,
+  checkDeployedBinaryLag,
   checkDeps,
   checkInboxMarks,
+  checkLegacyInboxJson,
+  checkLegacyWindowNameFormat,
   checkMemberCageStates,
   checkMemberForcePushRecent,
   checkMemberLabelCollision,
   checkMergerFanIn,
   checkOrphanSessions,
   checkPhantomInboxes,
-  checkLegacyInboxJson,
   checkReleaseNoteMissing,
   checkSendKeysFailureRecent,
   checkStateDir,
   checkSubmoduleIntegrity,
   checkTeam,
   checkTmuxVersionMismatch,
-  checkVendoredTmuxBinary,
   checkTuiCommandsClaudeOverride,
   checkTuis,
+  checkVendoredTmuxBinary,
   checkWebhook,
   checkWhipConfigDrift,
   checkWorktreeIsolation,

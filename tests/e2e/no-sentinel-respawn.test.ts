@@ -32,9 +32,9 @@ import { join } from "node:path";
 import { createTmux, type TmuxNamespace } from "../../src/abstractions/tmux.ts";
 import { loadCockpit } from "../../src/core/cockpit.ts";
 import * as cronModule from "../../src/core/cron.ts";
+import type { Logger } from "../../src/core/tui.ts";
 import { Team } from "../../src/schema/team.ts";
 import { reconcileCockpitSession } from "../../src/verbs/cockpit.ts";
-import type { Logger } from "../../src/core/tui.ts";
 
 setDefaultTimeout(20_000);
 

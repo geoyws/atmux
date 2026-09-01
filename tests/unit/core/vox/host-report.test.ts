@@ -15,8 +15,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   type HostPressureVerdict,
-  probeHostPressure,
   type ProbeHostPressureDeps,
+  probeHostPressure,
 } from "../../../../src/core/host-pressure.ts";
 import {
   buildSnapshotCommand,

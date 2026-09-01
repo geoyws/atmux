@@ -9,8 +9,8 @@ import {
   type ProbeDriverPaneDeps,
   probeDriverPane,
 } from "../../core/driver-pane-health.ts";
-import { kanbanWorkStateAvailable } from "../../core/kanban-backend.ts";
 import { loadKanban } from "../../core/kanban.ts";
+import { kanbanWorkStateAvailable } from "../../core/kanban-backend.ts";
 import type { Team } from "../../schema/team.ts";
 import { type DoctorRow, truncateEvidence } from "./types.ts";
 

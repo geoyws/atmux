@@ -12,9 +12,9 @@ import type { CrontabIO } from "../../../src/abstractions/crontab.ts";
 import type { SendTarget, TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import { addTask, claimTaskForMember } from "../../../src/core/kanban.ts";
 import {
+  consumedManifestPath,
   DEFAULT_SOFT_STOP_GRACE_SECONDS,
   QUIESCE_TAG,
-  consumedManifestPath,
   quiesceCron,
   resumeManifestPath,
   SOFT_STOP_NOTICE,

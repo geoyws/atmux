@@ -33,8 +33,8 @@ import { enabledTeams, loadCockpit } from "../core/cockpit.ts";
 import { driverInboxPath, teamJsonPath } from "../core/common.ts";
 import { parseEntries } from "../core/driver-inbox.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
-import { kanbanWorkStateAvailable } from "../core/kanban-backend.ts";
 import { loadKanban } from "../core/kanban.ts";
+import { kanbanWorkStateAvailable } from "../core/kanban-backend.ts";
 import {
   DEFAULT_PULSE_DEDUP_LADDER,
   DEFAULT_PULSE_WINDOW_MIN,
@@ -60,7 +60,6 @@ import {
 } from "../core/superdoctor-activity.ts";
 import { UsageError } from "../errors.ts";
 import type { CockpitPulse, CockpitTeam } from "../schema/cockpit.ts";
-import { isRenameInProgress } from "./team-rename-fs.ts";
 import type { Team } from "../schema/team.ts";
 import { Team as TeamSchema } from "../schema/team.ts";
 import {
@@ -69,6 +68,7 @@ import {
   type DoctorRow,
   runAllChecks as defaultRunDoctorChecks,
 } from "./doctor.ts";
+import { isRenameInProgress } from "./team-rename-fs.ts";
 
 const USAGE = "atmux pulse [--json] [--ping] [--config <path>]";
 

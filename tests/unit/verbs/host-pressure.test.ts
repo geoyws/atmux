@@ -10,8 +10,8 @@
 import { describe, expect, test } from "bun:test";
 import type { HostPressureVerdict } from "../../../src/core/host-pressure.ts";
 import type { HostReportEntry } from "../../../src/core/vox/host-report.ts";
-import { hostPressure, parseHostPressureArgs } from "../../../src/verbs/host-pressure.ts";
 import { UsageError } from "../../../src/errors.ts";
+import { hostPressure, parseHostPressureArgs } from "../../../src/verbs/host-pressure.ts";
 
 const OK_VERDICT: HostPressureVerdict = {
   ok: true,

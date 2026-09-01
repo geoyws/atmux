@@ -25,9 +25,9 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { emit, loadOffset } from "../../../src/abstractions/events.ts";
-import { gitterConsume, type HandlerOutcome } from "../../../src/core/gitter-consumer.ts";
-import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
 import { openDatabase } from "../../../src/abstractions/sqlite.ts";
+import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
+import { gitterConsume, type HandlerOutcome } from "../../../src/core/gitter-consumer.ts";
 
 let scratch: string;
 let db: Database;

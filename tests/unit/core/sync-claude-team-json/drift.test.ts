@@ -21,15 +21,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   CURRENT_SCHEMA_REV,
-  DriftAbortError,
-  EX_DATAERR,
-  SYNC_MARKER_KEY,
   computeFingerprint,
+  DriftAbortError,
   detectDrift,
   driftWarning,
+  EX_DATAERR,
   formatDriftHint,
   logSyncEvent,
   nextMarker,
+  SYNC_MARKER_KEY,
   syncEventsLogPath,
 } from "../../../../src/core/sync-claude-team-json/drift.ts";
 import type {

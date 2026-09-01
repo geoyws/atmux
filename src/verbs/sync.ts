@@ -20,6 +20,7 @@
 // reportError's existing 64 path. Future sync targets (cockpit-json,
 // inbox-mirror, etc.) slot into the switch without breaking parity.
 
+import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { renderDiff } from "../core/sync-claude-team-json/diff.ts";
 import {
   DriftAbortError,
@@ -27,12 +28,11 @@ import {
   formatDriftHint,
 } from "../core/sync-claude-team-json/drift.ts";
 import {
-  computeMappedTeam,
-  writeSync,
   type ComputeOpts,
+  computeMappedTeam,
   type WriteSyncOpts,
+  writeSync,
 } from "../core/sync-claude-team-json/index.ts";
-import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { UsageError } from "../errors.ts";
 
 const KNOWN_SUBVERBS = ["claude-team-json"] as const;

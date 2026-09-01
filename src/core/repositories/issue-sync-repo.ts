@@ -24,8 +24,8 @@
 // A kill between steps leaves a `pending` row that `listPending`
 // surfaces at the next sync — the deterministic repair path.
 
-import { transactImmediate } from "../../abstractions/sqlite.ts";
 import type { Database } from "../../abstractions/sqlite.ts";
+import { transactImmediate } from "../../abstractions/sqlite.ts";
 import {
   type IssueSyncCursor,
   IssueSyncCursor as IssueSyncCursorSchema,
