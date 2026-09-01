@@ -26,14 +26,14 @@
 //
 // Memory ref `feedback_tmux_test_isolation.md`: every tmux subprocess
 // here addresses an isolated `-S <socketPath>` baked into argv by
-// `createTmux`, so kill-server / kill-session in teardown CANNOT
+// the canonical atmux-conf helper, so kill-server / kill-session in teardown CANNOT
 // touch the operator's daily-driver tmux server.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createTmux, type TmuxNamespace } from "../../../src/abstractions/tmux.ts";
+import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import { teamJsonPath } from "../../../src/core/common.ts";
 import { ConfigError, TmuxError, UsageError } from "../../../src/errors.ts";
 import {
@@ -43,6 +43,7 @@ import {
   exactSessionTarget,
   parseAttachArgs,
 } from "../../../src/verbs/attach.ts";
+import { createCanonicalAtmuxTmux, setCanonicalAtmuxTmuxHome } from "../../helpers/tmux.ts";
 
 // ---------- pure helpers ----------
 
@@ -111,12 +112,14 @@ describe("exactSessionTarget", () => {
 let scratch: string;
 let socketDir: string;
 let socketPath: string;
+let homeDir: string;
 let sessionPrefix: string;
 let priorTmux: string | undefined;
 let priorAtmuxDir: string | undefined;
 let priorAtmuxTeamDir: string | undefined;
 let priorAtmuxSession: string | undefined;
 let priorDriverSession: string | undefined;
+let restoreHome: (() => void) | null = null;
 
 async function seedTeam(atmuxDir: string, team: unknown): Promise<void> {
   await mkdir(atmuxDir, { recursive: true });
@@ -127,6 +130,7 @@ beforeEach(async () => {
   scratch = await mkdtemp(join(tmpdir(), "atmux-attach-"));
   socketDir = await mkdtemp(join(tmpdir(), "atmux-attach-sock-"));
   socketPath = join(socketDir, "sock");
+  homeDir = await mkdtemp(join(tmpdir(), "atmux-attach-home-"));
   sessionPrefix = `s${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
 
   // Strip env that would override --team-dir / leak into getAtmuxDir +
@@ -143,26 +147,36 @@ beforeEach(async () => {
   delete process.env.ATMUX_TEAM_DIR;
   delete process.env.ATMUX_SESSION;
   delete process.env.ATMUX_DRIVER_SESSION;
+  restoreHome = setCanonicalAtmuxTmuxHome(homeDir);
 });
 
 afterEach(async () => {
   // Tear down the per-test tmux server through the same socket-pinned
   // abstraction so the kill cannot escape to the operator's server.
   try {
-    const tmux = createTmux({ socketPath, configFile: "/dev/null" });
+    const tmux = createCanonicalAtmuxTmux({ socketPath });
     await tmux.server.killServer();
   } catch {
     // expected: server may have never started or already exited
   }
 
+  restoreHome?.();
+  restoreHome = null;
+
   if (priorTmux !== undefined) process.env.TMUX = priorTmux;
+  else delete process.env.TMUX;
   if (priorAtmuxDir !== undefined) process.env.ATMUX_DIR = priorAtmuxDir;
+  else delete process.env.ATMUX_DIR;
   if (priorAtmuxTeamDir !== undefined) process.env.ATMUX_TEAM_DIR = priorAtmuxTeamDir;
+  else delete process.env.ATMUX_TEAM_DIR;
   if (priorAtmuxSession !== undefined) process.env.ATMUX_SESSION = priorAtmuxSession;
+  else delete process.env.ATMUX_SESSION;
   if (priorDriverSession !== undefined) process.env.ATMUX_DRIVER_SESSION = priorDriverSession;
+  else delete process.env.ATMUX_DRIVER_SESSION;
 
   await rm(socketDir, { recursive: true, force: true });
   await rm(scratch, { recursive: true, force: true });
+  await rm(homeDir, { recursive: true, force: true });
 });
 
 describe("attach() — pre-flight failures", () => {
@@ -204,7 +218,7 @@ describe("attach() — session present but no tty", () => {
     // address, then call attach. The blocking attach returns immediately
     // with non-zero because bun:test has no controlling tty; the
     // abstraction wraps tmux's failure as TmuxError.
-    const tmux = createTmux({ socketPath, configFile: "/dev/null" });
+    const tmux = createCanonicalAtmuxTmux({ socketPath });
     await tmux.session.newSession({ name: teamName });
 
     await expect(attach(["--team-dir", scratch, "--socket", socketPath])).rejects.toBeInstanceOf(
@@ -215,7 +229,7 @@ describe("attach() — session present but no tty", () => {
   test("TMUX env is restored after attach (set → set)", async () => {
     const teamName = `${sessionPrefix}t2`;
     await seedTeam(join(scratch, ".atmux"), { name: teamName, members: [] });
-    const tmux = createTmux({ socketPath, configFile: "/dev/null" });
+    const tmux = createCanonicalAtmuxTmux({ socketPath });
     await tmux.session.newSession({ name: teamName });
 
     // Simulate operator-inside-tmux: $TMUX populated. Verb deletes for
@@ -232,7 +246,7 @@ describe("attach() — session present but no tty", () => {
   test("TMUX env stays unset after attach (unset → unset)", async () => {
     const teamName = `${sessionPrefix}t3`;
     await seedTeam(join(scratch, ".atmux"), { name: teamName, members: [] });
-    const tmux = createTmux({ socketPath, configFile: "/dev/null" });
+    const tmux = createCanonicalAtmuxTmux({ socketPath });
     await tmux.session.newSession({ name: teamName });
 
     // Pre-condition: $TMUX is already unset (beforeEach deleted it).
