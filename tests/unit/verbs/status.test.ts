@@ -1,7 +1,7 @@
 // Unit tests for src/verbs/status.ts.
 // Bash spec: lib/status.sh @ worktree-frozen.
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -317,6 +317,12 @@ describe("status verb — integration", () => {
       status(["--socket", socketPath, "--team-dir", teamDir]),
     );
     expect(out).not.toContain("📬 driver-inbox");
+
+    await writeFile(join(atmuxDir, "driver-inbox.md"), "## Open\n- [t1] **a**: m1\n");
+    const { out: openOut } = await captureStdout(() =>
+      status(["--socket", socketPath, "--team-dir", teamDir]),
+    );
+    expect(openOut).toContain("📬 driver-inbox  open=1");
   });
 
   test("default role emoji applied when member has no emoji", async () => {
@@ -1175,6 +1181,40 @@ describe("gatherStatus — cadence column integration", () => {
     });
     expect(snap.members[0]?.cadence?.verdict).toBe("dormant");
   });
+
+  test("worktreeIsolation resolves relative and absolute worktree roots for cadence probes", async () => {
+    const { sessionName } = await stageTeam(
+      [{ name: "alpha", emoji: "🐝", role: "member" }],
+      false,
+    );
+    const teamRaw = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Team;
+    const cases = [
+      {
+        team: { ...teamRaw, worktreeIsolation: true },
+        expected: join(teamDir, ".atmux", "worktrees", "alpha"),
+      },
+      {
+        team: {
+          ...teamRaw,
+          worktreeIsolation: true,
+          worktreeRoot: join(teamDir, "alt-worktrees"),
+        },
+        expected: join(teamDir, "alt-worktrees", "alpha"),
+      },
+    ];
+
+    for (const { team, expected } of cases) {
+      const seen: string[] = [];
+      const snap = await gatherStatus(tmux, team, sessionName, atmuxDir, {
+        gitLog: async (worktreePath) => {
+          seen.push(worktreePath);
+          return [];
+        },
+      });
+      expect(seen).toEqual([expected]);
+      expect(snap.members[0]?.cadence?.verdict).toBe("idle");
+    }
+  });
 });
 
 // ---------- ADR-077 §lead-uptime-measurement (t-6d950ffd) ----------
@@ -1287,6 +1327,30 @@ describe("probeLeadUptime — ADR-077 §lead-uptime-measurement", () => {
     expect(snap.leadPanePid).toBeGreaterThan(0);
     expect(psCalls).toEqual([snap.leadPanePid!]);
     expect(snap.shell_pid_etime_s).toBe(99999);
+  });
+
+  test("default ps probe failure degrades shell_pid_etime_s to null", async () => {
+    const { sessionName, teamName } = await stageTeam(
+      [{ name: "lead-alpha", role: "team-lead" }],
+      true,
+    );
+    await writeLeadSessionStart(teamName, Math.floor(Date.now() / 1000) - 60, {
+      home: homeDir,
+    });
+    const team = JSON.parse(await Bun.file(join(atmuxDir, "team.json")).text()) as Team;
+    const originalWhich = Bun.which.bind(Bun);
+    const whichSpy = spyOn(Bun, "which").mockImplementation(((cmd: string) =>
+      cmd === "ps" ? null : originalWhich(cmd)) as typeof Bun.which);
+    try {
+      const snap = await probeLeadUptime(tmux, team, sessionName, true, {
+        home: homeDir,
+      });
+      expect(snap.leadPanePid).toBeGreaterThan(0);
+      expect(snap.lead_session_uptime_s).toBeGreaterThanOrEqual(0);
+      expect(snap.shell_pid_etime_s).toBeNull();
+    } finally {
+      whichSpy.mockRestore();
+    }
   });
 
   test("explicit-naming: lead_session_uptime_s ≠ shell_pid_etime_s under same probe", async () => {
