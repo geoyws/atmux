@@ -1,17 +1,18 @@
-// E2E ADR-147 T7 (t-bbc15985) — ombudsman lifecycle: complaint file →
+// API-level integration ADR-147 T7 (t-bbc15985) — ombudsman lifecycle: complaint file →
 // sentinel write → cron tick wakes pane → adjudication round-trip →
 // release-notes day-file written → sentinel cleared.
 //
-// **Stateful 1x cold-start+walk e2e — Path A walks a sequenced 3-
+// **Stateful 1x cold-start+walk API-level integration — Path A walks a sequenced 3-
 // complaint adjudication chain against a fresh mkdtemp'd state.db +
 // release-notes tree per fixture. Don't streak; don't run-of-N.** Per
 // CLAUDE.md testing discipline §"Stateful e2e specs are not repeatable
 // smokes." The cage tear-down is implicit — `afterEach` rm's the temp
 // dir; no tmux cage is bootstrapped because the tick wake is verified
-// via mocked `sendKeys` + `capture` deps (the production wake path is
+// via injected `sendKeys` + `capture` deps (the production wake path is
 // the real `safeSendKeysWithVerify` → real tmux; the verb-side
-// mock-injection tests the verb's tick→sendKeys → release-notes write
-// chain end-to-end without standing up a tmux server).
+// mock-injection keeps this API-level integration coverage off the
+// user-terminal flow while still exercising the verb's tick→sendKeys →
+// release-notes write chain without standing up a tmux server).
 //
 // ---------------------------------------------------------------
 // Scope vs T1's unit coverage
@@ -20,7 +21,7 @@
 // `tests/unit/verbs/ombudsman.test.ts` covers parser + each helper
 // (sentinel R/W, formatEntryLine, spliceUnderSection,
 // resolveDayFilePath, statusForAction, actionLabel) at the function
-// level. This e2e tests the LAYER ABOVE — the `complaints file` →
+// level. This API-level integration tests the LAYER ABOVE — the `complaints file` →
 // sentinel append → `ombudsman tick` wake → `ombudsman work` adjudicate
 // → `complaints resolve` flip → release-notes day-file write chain
 // driven by the verb entry points themselves, against a real
@@ -184,7 +185,7 @@ afterEach(async () => {
 
 // ---------- Path A: happy adjudication ----------
 
-describe("e2e ombudsman — Path A happy adjudication (3-complaint walk)", () => {
+describe("API-level integration ombudsman — Path A happy adjudication (3-complaint walk)", () => {
   test("A1-A5: file 3 complaints → tick wakes → epic+wontfix+already-addressed → day-file with 3 entries → sentinel empty", async () => {
     // A1: cold-start fixture with ombudsman.enabled=true.
     fix = await makeFixture();
@@ -222,9 +223,9 @@ describe("e2e ombudsman — Path A happy adjudication (3-complaint walk)", () =>
       // succeeds, so exactly one sendKeys call lands.
       expect(rig.calls).toHaveLength(1);
       expect(rig.calls[0]?.text).toBe("atmux ombudsman work");
-      // Window target is `<session>:<emoji>-<member>`. Session falls
-      // back to `atmux-<team.name>` per `getSessionName` step 4.
-      expect(rig.calls[0]?.target).toBe("atmux-ombudsman-e2e:⚖️-ombudsman");
+      // Window target is `<team.name>:<emoji>_<role>`. Production emits
+      // a bare `team.name` session, not an `atmux-`-prefixed one.
+      expect(rig.calls[0]?.target).toBe("ombudsman-e2e:⚖️_ombudsman");
     }
 
     // A4: adjudicate. c1 = epic (file the EPIC Task first, then work
@@ -371,7 +372,7 @@ describe("e2e ombudsman — Path A happy adjudication (3-complaint walk)", () =>
 
 // ---------- Path B: defer + retry next tick ----------
 
-describe("e2e ombudsman — Path B defer + retry", () => {
+describe("API-level integration ombudsman — Path B defer + retry", () => {
   test("B1-B4: file 1 complaint → tick → defer → sentinel retains id → next tick wakes again", async () => {
     fix = await makeFixture();
 
@@ -450,7 +451,7 @@ describe("e2e ombudsman — Path B defer + retry", () => {
 
 // ---------- Path C: disabled team is no-op ----------
 
-describe("e2e ombudsman — Path C disabled team is no-op", () => {
+describe("API-level integration ombudsman — Path C disabled team is no-op", () => {
   test("C1-C3: ombudsman.enabled=false → sentinel never written → tick is silent no-op (sendKeys never called)", async () => {
     // C1: cold-start with ombudsman.enabled=false (override).
     fix = await makeFixture({ ombudsmanEnabled: false });
