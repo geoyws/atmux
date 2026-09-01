@@ -57,7 +57,7 @@ import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createTmux, type TmuxNamespace } from "../../src/abstractions/tmux.ts";
+import type { TmuxNamespace } from "../../src/abstractions/tmux.ts";
 import {
   type CadenceObservation,
   type CadenceThresholds,
@@ -68,6 +68,7 @@ import { decideLaneStall, type LaneStallMemberInput } from "../../src/core/lane-
 import type { Team } from "../../src/schema/team.ts";
 import { runLaneStallTick } from "../../src/verbs/lane-stall-tick.ts";
 import { formatCadenceColumn, gatherStatus } from "../../src/verbs/status.ts";
+import { createCanonicalAtmuxTmux, setCanonicalAtmuxTmuxHome } from "../helpers/tmux.ts";
 
 setDefaultTimeout(30_000);
 
@@ -85,6 +86,7 @@ let homeDir: string;
 const NOW_MS = 1_780_000_000_000;
 const NOW_SEC = Math.floor(NOW_MS / 1000);
 const priorEnv: Record<string, string | undefined> = {};
+let restoreHome: (() => void) | null = null;
 
 // Default thresholds match ADR-148 §D7 defaults exactly — fixture
 // cadence ages are picked relative to these so verdicts are stable
@@ -176,7 +178,8 @@ beforeAll(async () => {
   delete process.env.ATMUX_SESSION;
   delete process.env.TMUX;
 
-  tmux = createTmux({ socketPath, configFile: "/dev/null" });
+  restoreHome = setCanonicalAtmuxTmuxHome(homeDir);
+  tmux = createCanonicalAtmuxTmux({ socketPath });
 });
 
 afterAll(async () => {
@@ -185,6 +188,8 @@ afterAll(async () => {
   } catch {
     // expected: server may not have been started for this spec
   }
+  restoreHome?.();
+  restoreHome = null;
   for (const [k, v] of Object.entries(priorEnv)) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
