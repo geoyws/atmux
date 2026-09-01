@@ -5,7 +5,7 @@
 // side-effects. 100% narrowed coverage of every branch.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pruneInboxes, purgeLegacyInboxes, rotateLogs } from "../../../src/core/cleanup.ts";
@@ -83,6 +83,32 @@ describe("rotateLogs", () => {
     expect((await readFile(`${log}.1`, "utf8"))[0]).toBe("y");
   });
 
+  test("falls back to delete-and-retry when rename fails once", async () => {
+    await mkdir(env.logsDir, { recursive: true });
+    const log = join(env.logsDir, "retry.log");
+    const snapshot = `${log}.1`;
+    const body = "x".repeat(2 * 1024 * 1024);
+    await writeFile(log, body);
+    await writeFile(snapshot, "stale snapshot");
+
+    let calls = 0;
+    const got = await rotateLogs(env.atmuxDir, {
+      hooks: {
+        rename: async (from, to) => {
+          calls += 1;
+          if (calls === 1) throw new Error("rename blocked");
+          await expect(access(to)).rejects.toThrow();
+          await rename(from, to);
+        },
+      },
+    });
+
+    expect(calls).toBe(2);
+    expect(got.rotated.map((r) => r.path)).toEqual([log]);
+    expect((await readFile(snapshot, "utf8")).length).toBe(body.length);
+    expect(await readFile(log, "utf8")).toBe("");
+  });
+
   test("--dry-run reports without rotating", async () => {
     await mkdir(env.logsDir, { recursive: true });
     const log = join(env.logsDir, "x.log");
@@ -91,6 +117,24 @@ describe("rotateLogs", () => {
     expect(got.rotated).toHaveLength(1);
     const remaining = await readdir(env.logsDir);
     expect(remaining).toEqual(["x.log"]);
+  });
+
+  test("readdir rejection yields an unchanged empty result", async () => {
+    await mkdir(env.logsDir, { recursive: true });
+    const log = join(env.logsDir, "blocked.log");
+    await writeFile(log, "x".repeat(2 * 1024 * 1024));
+
+    const got = await rotateLogs(env.atmuxDir, {
+      hooks: {
+        readdir: async () => {
+          throw new Error("readdir blocked");
+        },
+      },
+    });
+
+    expect(got.rotated).toEqual([]);
+    expect(got.skipped).toBe(0);
+    expect(await readFile(log, "utf8")).toBe("x".repeat(2 * 1024 * 1024));
   });
 
   test("custom maxBytes", async () => {
@@ -204,12 +248,66 @@ describe("pruneInboxes", () => {
     });
     // bad.json is silently skipped; good.json gets pruned.
     expect(got.totalPruned).toBe(1);
+    expect(got.totalKept).toBe(0);
+    expect(got.files).toEqual([{ name: "good.json", pruned: 1, kept: 0 }]);
+  });
+
+  test("dry-run skips malformed JSON inboxes and keeps walking", async () => {
+    await mkdir(env.inboxDir, { recursive: true });
+    await writeFile(join(env.inboxDir, "bad.json"), "{ this is not json");
+    await writeFile(
+      join(env.inboxDir, "good.json"),
+      JSON.stringify({
+        done: [{ completedAt: Math.floor(RUN_MS / 1000) - 30 * 86400 }],
+      }),
+    );
+
+    const got = await pruneInboxes(env.atmuxDir, {
+      maxAgeDays: 7,
+      nowMs: RUN_MS,
+      dryRun: true,
+      hooks: {
+        readdir: async () => ["bad.json", "good.json"],
+      },
+    });
+
+    expect(got.totalPruned).toBe(1);
+    expect(got.totalKept).toBe(0);
+    expect(got.files).toEqual([{ name: "good.json", pruned: 1, kept: 0 }]);
+  });
+
+  test("readdir rejection yields an unchanged empty result", async () => {
+    await mkdir(env.inboxDir, { recursive: true });
+    const path = join(env.inboxDir, "blocked.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        done: [{ completedAt: Math.floor(RUN_MS / 1000) - 30 * 86400 }],
+      }),
+    );
+
+    const got = await pruneInboxes(env.atmuxDir, {
+      maxAgeDays: 7,
+      nowMs: RUN_MS,
+      hooks: {
+        readdir: async () => {
+          throw new Error("readdir blocked");
+        },
+      },
+    });
+
+    expect(got.totalPruned).toBe(0);
+    expect(got.totalKept).toBe(0);
+    expect(got.files).toEqual([]);
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({
+      done: [{ completedAt: Math.floor(RUN_MS / 1000) - 30 * 86400 }],
+    });
   });
 
   test("invalid maxAgeDays throws RangeError", async () => {
-    expect(pruneInboxes(env.atmuxDir, { maxAgeDays: 0 })).rejects.toThrow(RangeError);
-    expect(pruneInboxes(env.atmuxDir, { maxAgeDays: -1 })).rejects.toThrow(RangeError);
-    expect(pruneInboxes(env.atmuxDir, { maxAgeDays: 1.5 })).rejects.toThrow(RangeError);
+    await expect(pruneInboxes(env.atmuxDir, { maxAgeDays: 0 })).rejects.toThrow(RangeError);
+    await expect(pruneInboxes(env.atmuxDir, { maxAgeDays: -1 })).rejects.toThrow(RangeError);
+    await expect(pruneInboxes(env.atmuxDir, { maxAgeDays: 1.5 })).rejects.toThrow(RangeError);
   });
 });
 
@@ -243,5 +341,24 @@ describe("purgeLegacyInboxes", () => {
     const got = await purgeLegacyInboxes(env.atmuxDir, { dryRun: true });
     expect(got.removed).toEqual(["alpha.json"]);
     expect(await readdir(env.inboxDir)).toContain("alpha.json");
+  });
+
+  test("readdir rejection yields an unchanged empty result", async () => {
+    await mkdir(env.inboxDir, { recursive: true });
+    await writeFile(join(env.atmuxDir, "state.db"), "");
+    const legacy = join(env.inboxDir, "legacy.json");
+    await writeFile(legacy, "{}");
+
+    const got = await purgeLegacyInboxes(env.atmuxDir, {
+      hooks: {
+        readdir: async () => {
+          throw new Error("readdir blocked");
+        },
+      },
+    });
+
+    expect(got.skipped).toBe(false);
+    expect(got.removed).toEqual([]);
+    expect(await readFile(legacy, "utf8")).toBe("{}");
   });
 });
