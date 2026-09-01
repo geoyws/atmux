@@ -204,29 +204,6 @@ export function decideLaneStall(opts: DecideLaneStallOpts): LaneStallDecision[] 
       });
       continue;
     }
-    // Defensive: all members must carry a stall-verdict, not some
-    // unknown literal. Treat unknown verdicts as "not shipping" via
-    // the set check — keeps the decision permissive in the face of
-    // T5 adding new verdicts without breaking the gate.
-    const allInStallSet = laneMembers.every((m) =>
-      STALL_VERDICTS.has(m.verdict) || m.verdict === "shipping"
-        ? STALL_VERDICTS.has(m.verdict)
-        : true,
-    );
-    if (!allInStallSet) {
-      // Unreachable in practice: the shipping branch above caught
-      // shipping; this only fires if a future verdict were added
-      // outside the set AND outside shipping. Leave as a placeholder
-      // skip kind for forward-compat.
-      out.push({
-        kind: "skip-some-shipping",
-        taskId: t.id,
-        lane: t.lane,
-        reason: "unknown verdict in lane — treating as non-stall",
-      });
-      continue;
-    }
-
     // Gate 4: dedup window.
     const recentFire = opts.dedup.find(
       (d) => d.taskId === t.id && d.lane === t.lane && opts.nowSec - d.firedAt < dedupWindowSec,
@@ -243,7 +220,7 @@ export function decideLaneStall(opts: DecideLaneStallOpts): LaneStallDecision[] 
     }
 
     // Fire: pick most-recently-active member; tiebreak by roster order.
-    const target = pickTargetMember(laneMembers);
+    const target = pickTargetMember(laneMembers as NonEmptyLaneStallMemberList);
     out.push({
       kind: "fire",
       taskId: t.id,
@@ -258,11 +235,10 @@ export function decideLaneStall(opts: DecideLaneStallOpts): LaneStallDecision[] 
 
 /** Most-recently-active wins; ties broken by roster-order (input
  *  array order). Members without `lastActivityAt` rank last. */
-function pickTargetMember(members: ReadonlyArray<LaneStallMemberInput>): LaneStallMemberInput {
+type NonEmptyLaneStallMemberList = readonly [LaneStallMemberInput, ...LaneStallMemberInput[]];
+
+function pickTargetMember(members: NonEmptyLaneStallMemberList): LaneStallMemberInput {
   let best = members[0];
-  if (best === undefined) {
-    throw new Error("pickTargetMember called on empty member list");
-  }
   let bestActivity = best.lastActivityAt ?? -1;
   for (let i = 1; i < members.length; i++) {
     const m = members[i];
