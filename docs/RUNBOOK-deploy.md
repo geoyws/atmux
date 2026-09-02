@@ -110,7 +110,7 @@ Preserved versions enumerable via `ls /opt/atmux/`. Each is a self-contained `bi
 
 ## Vendored tmux binary (ADR-191)
 
-`build:install` ships its own `/opt/atmux/<version>/bin/tmux` alongside the `atmux` binary so atmux's behavior tracks a pinned tmux version (currently 3.6a). Every atmux call resolves the binary via `resolveTmuxBin()` (`src/core/resolve-tmux-bin.ts`) — 3-tier chain `ATMUX_TMUX_BIN` env override → vendored at `/opt/atmux/current/bin/tmux` → system `tmux` on PATH (warn-once on fallback). The operator's daily-driver `tmux` from the shell is untouched: vendored lives at an explicit absolute path; PATH still resolves `tmux` to whatever the operator has installed (e.g. `/usr/local/bin/tmux` from brew/apt).
+The install pipeline is staged to ship its own `/opt/atmux/<version>/bin/tmux` for the future vendored plane, but the live resolver stays separate today. Ordinary atmux calls still use `resolveTmuxBin()` (`src/core/resolve-tmux-bin.ts`) with the legacy chain `ATMUX_TMUX_BIN` override → system `tmux` on PATH. The prepared vendored seam uses `resolveVendoredTmuxBin()` and `ATMUX_VENDORED_TMUX_BIN` only; it does not auto-reroute ordinary calls, and it never falls back to system PATH. The operator's daily-driver `tmux` from the shell is untouched: PATH still resolves `tmux` to whatever the operator has installed (e.g. `/usr/local/bin/tmux` from brew/apt).
 
 ### Verify after install
 
@@ -124,7 +124,9 @@ atmux doctor 2>&1 | rg 'vendored-tmux'          # → no row (green) when binary
 ### Override for testing
 
 ```bash
-ATMUX_TMUX_BIN=/path/to/operator-tmux atmux <verb>   # process-scope, wins the chain
+ATMUX_TMUX_BIN=/path/to/operator-tmux atmux <verb>   # process-scope, wins the legacy/live resolver
+
+ATMUX_VENDORED_TMUX_BIN=/opt/atmux/current/bin/tmux atmux <future-vendored-verb>   # prepared seam only
 ```
 
 Operator-pinned for testing a different tmux version, local dev build, or CI rig deliberately using system tmux. Override is process-scope; no global state.

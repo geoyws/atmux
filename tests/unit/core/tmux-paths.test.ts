@@ -11,6 +11,7 @@ import { describe, expect, test } from "bun:test";
 import {
   ATMUX_TMUX_CONF_RELPATH,
   COCKPIT_SOCKET_DEFAULT,
+  COCKPIT_SOCKET_VENDORED,
   getAtmuxTmuxConfPath,
   getCockpitSocketName,
 } from "../../../src/core/tmux-paths.ts";
@@ -37,6 +38,12 @@ describe("getCockpitSocketName", () => {
     expect(getCockpitSocketName({ ATMUX_COCKPIT_SOCKET: "my-cockpit" })).toBe("my-cockpit");
   });
 
+  test("env override honoured verbatim — future vendored cockpit socket", () => {
+    expect(getCockpitSocketName({ ATMUX_COCKPIT_SOCKET: "atmux-vendored-cockpit" })).toBe(
+      COCKPIT_SOCKET_VENDORED,
+    );
+  });
+
   test("default parameter falls through to process.env (smoke — value depends on env)", () => {
     // Calling with no arg should not throw + should return a non-empty
     // string. Exact value depends on the test process's env; under
@@ -50,6 +57,12 @@ describe("getCockpitSocketName", () => {
 describe("COCKPIT_SOCKET_DEFAULT constant", () => {
   test("equals 'atmux-cockpit' per ADR-162 §Decision-anchor #1", () => {
     expect(COCKPIT_SOCKET_DEFAULT).toBe("atmux-cockpit");
+  });
+});
+
+describe("COCKPIT_SOCKET_VENDORED constant", () => {
+  test("equals 'atmux-vendored-cockpit' for the future vendored plane", () => {
+    expect(COCKPIT_SOCKET_VENDORED).toBe("atmux-vendored-cockpit");
   });
 });
 

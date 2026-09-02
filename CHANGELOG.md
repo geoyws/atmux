@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ♻️ Changed — tmux resolution split is explicit
+
+- Live-plane tmux calls keep using `resolveTmuxBin()` with `ATMUX_TMUX_BIN` override → host PATH.
+- The prepared vendored seam uses `resolveVendoredTmuxBin()` with `ATMUX_VENDORED_TMUX_BIN` only; no auto-reroute to it yet.
+
 ### ✨ Added — prefix-table Meta hotkeys for windows 10-19
 
 `templates/tmux/atmux.conf` now uses explicit `bind -T prefix` lines for `M-0..M-9` → `select-window -t 10..19`. The built-in prefix digits `1-9` stay untouched, the F-key prefix chain stays untouched, and the shipped config still loads the local override last.

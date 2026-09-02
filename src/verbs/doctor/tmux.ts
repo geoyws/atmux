@@ -10,9 +10,9 @@ import { type DoctorRow, defaultTmuxSpawn, type TmuxSpawn } from "./types.ts";
 
 export const TMUX_MIN_VERSION = "3.2";
 
-/** Highest tmux version atmux is tested against. Above → yellow.
- *  Per ADR-162 §Part C. ADR-138's send-keys verifier contract is
- *  validated against this version on hax. */
+/** Highest tmux version the live host doctor is tested against. Above
+ *  → yellow. Per ADR-162 §Part C. ADR-138's send-keys verifier contract
+ *  is validated against this version on hax. */
 
 export const TMUX_TESTED_VERSION = "3.6a";
 
@@ -67,7 +67,7 @@ export interface CheckTmuxVersionOpts {
  * tmux falls below {@link TMUX_MIN_VERSION} or above
  * {@link TMUX_TESTED_VERSION}. Both bounds are warn-class (non-
  * blocking); the canary surface motivates ADR-163's bundled-binary
- * v2 promotion.
+ * v2 proposal.
  *
  * Unparseable output (`tmux next-3.7`, `tmux master`, missing tmux)
  * collapses to a yellow row with `actual: "unknown"` so the operator
@@ -181,8 +181,9 @@ export interface CheckVendoredTmuxBinaryOpts {
  *      pre-ADR-191 deploys both land here. Self-clearing after the
  *      build pipeline lands the binary.
  *   2. `vendored-tmux-version-drift` — vendored binary present but
- *      `tmux -V` against it doesn't match the ADR-191 pin (3.6a).
- *      Indicates an out-of-date install or a hand-staged binary.
+ *      `tmux -V` against it doesn't match the current accepted
+ *      contract {@link TMUX_TESTED_VERSION}. Indicates an out-of-date
+ *      install or a hand-staged binary.
  *
  * Both rows are warn-class. The probe calls the vendored binary
  * directly so `ATMUX_TMUX_BIN` and the resolver chain do not affect

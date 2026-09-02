@@ -11,20 +11,21 @@
 // or `-S <abspath>` prepended to argv. There is NO top-level `tmux`
 // singleton — callers obtain a namespace via `createTmux({ socket })` or
 // `createTmux({ socketPath })`, the factory captures the socket flag in a
-// closure, every internal `spawn({ cmd: resolveTmuxBin(), argv: [...] })`
-// is built from `[...socketArgs, ...subcmdArgv]`. This makes it physically
-// impossible for any path through the abstraction to reach the
-// operator's daily-driver tmux server (which is what the env-only
+// closure, and every internal `spawn({ cmd: resolveBinaryPath(), ... })`
+// is built from `[...socketArgs, ...subcmdArgv]`. This makes it
+// physically impossible for any path through the abstraction to reach
+// the operator's daily-driver tmux server (which is what the env-only
 // `TMUX_TMPDIR` fix failed to guarantee — incident 2026-05-05 01:44 MYT,
 // memory ref `feedback_tmux_test_isolation.md`).
 //
-// Binary resolution (ADR-191, 2026-05-23).
+// Binary resolution (ADR-191, 2026-05-23; prepared vendored-plane
+// seam 2026-09-02).
 // ----------------------------------------
-// `cmd:` is computed by `resolveTmuxBin()` (3-tier chain:
-// ATMUX_TMUX_BIN → /opt/atmux/current/bin/tmux → system `tmux` on PATH).
-// Computed once per process via in-helper memoization, so the closure
-// captures a stable binary path; the rest of this module remains
-// argv-shape-only.
+// `cmd:` is computed by `resolveTmuxBin()` by default (legacy/live
+// chain: ATMUX_TMUX_BIN → system `tmux` on PATH). Callers may instead
+// pass `binaryPath` to pin the namespace to an explicit binary. The
+// seam is prepared for a future vendored-only plane; no current
+// production call site is routed through it yet.
 //
 // Child environment (ADR-281, 2026-08-28; narrowed 2026-08-28).
 // -------------------------------------------------------------
@@ -34,6 +35,7 @@
 // constant for why the ADR-277 conf scrub is not sufficient on its own,
 // and ADR-281 §D2 for why the `COLORTERM=truecolor` half was dropped.
 
+import { isAbsolute } from "node:path";
 import { isDriverPaneName } from "../core/drivers.ts";
 import { resolveTmuxBin } from "../core/resolve-tmux-bin.ts";
 import { TmuxError } from "../errors.ts";
@@ -347,6 +349,12 @@ export type TmuxConfig = SocketConfig & {
    *  server-starting paths use the canonical `getAtmuxTmuxConfPath()` helper
    *  path. */
   readonly configFile?: string;
+  /** Optional explicit tmux binary path. When unset, the namespace
+   *  uses the legacy/live resolver chain. When set, the namespace is
+   *  pinned to that binary and never consults `resolveTmuxBin()`.
+   *  This is a prepared seam for a future vendored-only plane; no
+   *  current production call site passes a vendored binary yet. */
+  readonly binaryPath?: string;
   /** Test seam for `attachSessionInheritStdio`; defaults to the module import. */
   readonly hooks?: {
     readonly spawnInheritStdio?: typeof spawnInheritStdio;
@@ -524,6 +532,19 @@ export function createTmux(config: TmuxConfig): TmuxNamespace {
   // Build the global-flag prefix (socket + optional config-file) exactly
   // once; closure-captured below. `-L`/`-S` MUST come before any subcommand
   // — and `-f` is documented in tmux(1) as a global flag in the same slot.
+  const resolveBinaryPath =
+    config.binaryPath !== undefined
+      ? (() => {
+          const trimmed = config.binaryPath.trim();
+          if (trimmed.length === 0) {
+            throw new Error("[atmux] binaryPath must be a non-empty absolute path");
+          }
+          if (!isAbsolute(trimmed)) {
+            throw new Error("[atmux] binaryPath must be an absolute path");
+          }
+          return () => trimmed;
+        })()
+      : resolveTmuxBin;
   const socketArgs: ReadonlyArray<string> = (() => {
     const flags: string[] =
       typeof config.socket === "string" ? ["-L", config.socket] : ["-S", config.socketPath];
@@ -545,7 +566,7 @@ export function createTmux(config: TmuxConfig): TmuxNamespace {
     const argv = [...socketArgs, ...subArgv];
     try {
       const r = await spawn({
-        cmd: resolveTmuxBin(),
+        cmd: resolveBinaryPath(),
         argv,
         expectExitCode: expect,
         // ADR-281 — see TMUX_CHILD_UNSET_ENV.
@@ -821,7 +842,7 @@ export function createTmux(config: TmuxConfig): TmuxNamespace {
         const argv = [...socketArgs, ...subArgv];
         try {
           await spawn({
-            cmd: resolveTmuxBin(),
+            cmd: resolveBinaryPath(),
             argv,
             stdin: opts.data,
             expectExitCode: 0,
@@ -880,7 +901,7 @@ export function createTmux(config: TmuxConfig): TmuxNamespace {
       async attachSessionInheritStdio(name) {
         const argv = [...socketArgs, "attach-session", "-t", name];
         const exitCode = await spawnInheritStdioImpl({
-          cmd: resolveTmuxBin(),
+          cmd: resolveBinaryPath(),
           argv,
           // ADR-281 — `attach-session` against a dead socket STARTS a
           // server, so the attach path needs the NO_COLOR deletion too.

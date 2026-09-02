@@ -5,6 +5,12 @@
 **Driver-ref**: driver-2026-05-20-13:25-MYT (ASK 1 of operator's structural-foundations dispatch; sibling to ADR-190 ASK 2 atmux.conf OSS-ready)
 **Operator order**: lands AFTER Epic e-63c97ed8 (atmux.conf shipped patterns); ASK 1 is the "insulation layer" on top of the conf-patterns Epic.
 
+## Amendment 2026-09-02 — staged split, pending gate
+
+- Host-facing runtime resolution stays on the legacy resolver.
+- 3.7c is a vendored candidate pin pending George gate, not an accepted live-plane pin.
+- `binaryPath` and `resolveVendoredTmuxBin()` are prepared seams only; no current production call site is routed through them.
+
 ## Context
 
 atmux currently uses the operator's system-installed tmux (typically `/usr/local/bin/tmux` from `brew install tmux` or `apt install tmux`). Two recurring problems with this dependency posture:

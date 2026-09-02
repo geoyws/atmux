@@ -7,6 +7,12 @@
 **Relationship to ADR-162**: ADR-162 §3 carves out "binary acquisition + version-lock v2" as deferred scope; this ADR closes that carve-out. ADR-162's `cockpit-on-default-socket` foot-gun fix + `templates/tmux/atmux.conf` config-template stay in ADR-162; ADR-163 owns the BINARY that loads that config.
 **Cross-refs**: ADR-097 (tmux abstraction — `configFile` resolver on the `TmuxConfig` discriminated union), ADR-138 (verified send-keys — verifier contract assumes a specific tmux output format), ADR-091 (auto-merge state machine — consumes tmux through ADR-097's abstraction), ADR-144 (epic-team test-gate — cage-mode spawns tmux servers per ADR-018's per-team-tmpdir primitive).
 
+## Amendment 2026-09-02 — staged split, pending gate
+
+- Host-facing doctor/version checks stay anchored to 3.6a.
+- The future server-only split is reserved to the dated amendment; the historical proposal text below remains about 3.4.
+- The prepared `binaryPath`/vendored-resolver seam exists, but no production call site is routed through it yet.
+
 ## Context
 
 ### The host-tmux trust problem

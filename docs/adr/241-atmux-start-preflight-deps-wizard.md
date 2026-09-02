@@ -16,7 +16,7 @@
 
 ## Context
 
-ADR-191 ships the resolver (`resolveTmuxBin`) and names the install side as §Pending. On hax today, `/opt/atmux/current/bin/tmux` does not exist; `resolveTmuxBin` silently falls through to `/usr/local/bin/tmux` (system tmux) with one warn-once line per process. Net: ADR-191 is "wired but not dogfooded" — the resolver path is exercised on every spawn but it resolves to the same system binary it always did.
+ADR-191 ships the resolver (`resolveTmuxBin`) and names the install side as §Pending. On hax today, `/opt/atmux/current/bin/tmux` does not exist; `resolveTmuxBin` resolves to the host tmux on PATH. Net: ADR-191 is "wired but not dogfooded" — the resolver path is exercised on every spawn but it resolves to the same system binary it always did.
 
 Operator just decided to land the vendored binary on this host. Two operator-facing paths exist today:
 
