@@ -185,10 +185,12 @@ export async function writeOptOutMarker(
   return { kind: "marker-written", markerPath };
 }
 
-// ---------- 13-skill reference table for the [s]how branch ----------
+// ---------- 11-skill reference table for the [s]how branch ----------
 
-/** Source of truth: ADR-217 §D2 carve set. Surface used by the deferred
- *  interactive wizard prompt + plugins/atmux/README.md cross-link. */
+/** Source of truth: ADR-217 §D2 carve set, minus `/atmux:bruh` +
+ *  `/atmux:bruhloop` (retired + deleted per ADR-288 §D4). Surface used by
+ *  the deferred interactive wizard prompt + plugins/atmux/README.md
+ *  cross-link. */
 export const SKILLS_TABLE: ReadonlyArray<{ name: string; desc: string }> = [
   {
     name: "/atmux:team",
@@ -198,8 +200,6 @@ export const SKILLS_TABLE: ReadonlyArray<{ name: string; desc: string }> = [
   { name: "/atmux:session", desc: "session continuity (cont/handoff/stop)" },
   { name: "/atmux:tell-lead", desc: "driver→lead durable message" },
   { name: "/atmux:heads-up", desc: "lightweight teammate ping" },
-  { name: "/atmux:bruh", desc: "sweep blockers/flags/worktrees in one pass" },
-  { name: "/atmux:bruhloop", desc: "hands-off /loop wrapper around bruh" },
   { name: "/atmux:whip", desc: "autonomous-work nudge loop" },
   { name: "/atmux:bau", desc: "business-as-usual status sweep" },
   { name: "/atmux:ghostbuster", desc: "mergeable-branch sweeper (scoped to calling team)" },

@@ -262,6 +262,10 @@ EPIC scope size: substantial (~12 SKILL.md generalizations × ~100-line bodies +
 
 ## Amendments
 
+### 2026-09-02 — `/atmux:bruh` + `/atmux:bruhloop` retired and deleted; the bundle carries 11 skills (ADR-288)
+
+[ADR-288](288-superdriver-lane-shortform-and-multi-lane-cockpit.md) §D4 retires and **deletes** `plugins/atmux/skills/bruh/` and `plugins/atmux/skills/bruhloop/`: they are superseded by the kb-row operating model (a standing goal per superdriver lane plus the `/atmux:sweep` and `/atmux:whip` cadences), the operator confirmed on 2026-09-02 they are no longer needed, and `bruhloop` was pure sugar over `bruh`. The live §D2 carve set, the §D6 documentation count, the §D8 manifest, the wizard reference table (`SKILLS_TABLE`) and the schema tests therefore enumerate **11** skills. The §0.7 eternal-improvement heuristics that `/atmux:sweep` and `/atmux:whip` cited from `bruh` are inlined into those skills. The 12- and 13-skill figures in this ADR's body and earlier amendments remain historical.
+
 ### 2026-09-01 — `/atmux:driver` is the 13th bundled skill
 
 Commit `772fdcac` added `/atmux:driver` for driver-1 consolidation of sibling driver branches. The live §D2 carve set, §D6 documentation count, §D8 manifest example, wizard reference table, and schema tests therefore enumerate 13 skills. Earlier references to the original 12-skill scaffold and its 12-way generalization review remain historical descriptions of the 2026-05-21 landing sequence.

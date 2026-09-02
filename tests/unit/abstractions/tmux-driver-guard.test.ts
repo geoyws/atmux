@@ -32,6 +32,15 @@ describe("extractWindowNameFromTargetString — parse the window-name segment", 
     expect(extractWindowNameFromTargetString("atmux:driver.0")).toBe("driver");
   });
 
+  test("ADR-288 review: exact-match prefix — '<session>:=driver' → 'driver' (the `=` is stripped)", () => {
+    expect(extractWindowNameFromTargetString("atmux:=driver")).toBe("driver");
+    expect(extractWindowNameFromTargetString("atmux:=driver-2")).toBe("driver-2");
+    expect(extractWindowNameFromTargetString("atmux:=driver-2.0")).toBe("driver-2");
+    expect(extractWindowNameFromTargetString("atmux:=lead")).toBe("lead");
+    // Bare `=` → empty window segment → not classifiable.
+    expect(extractWindowNameFromTargetString("atmux:=")).toBeNull();
+  });
+
   test("numeric index — '<session>:2' → null", () => {
     expect(extractWindowNameFromTargetString("atmux:2")).toBeNull();
   });
@@ -76,6 +85,30 @@ describe("DriverSendKeysViolation — ADR-239 §D2 runtime guard", () => {
       member: "driver-2",
       team: "atmux",
       target: "atmux:driver-2",
+    };
+    await expect(tmux.pane.sendKeys({ target, keys: "hello" })).rejects.toThrow(
+      DriverSendKeysViolation,
+    );
+  });
+
+  test("ADR-288 review: pane.sendKeys against exact-match '<session>:=driver' still throws", async () => {
+    const target: SendTarget = {
+      kind: "member",
+      member: "driver",
+      team: "atmux",
+      target: "atmux:=driver",
+    };
+    await expect(tmux.pane.sendKeys({ target, keys: "hello" })).rejects.toThrow(
+      DriverSendKeysViolation,
+    );
+  });
+
+  test("ADR-288 review: pane.sendKeys against exact-match '<session>:=driver-2' still throws", async () => {
+    const target: SendTarget = {
+      kind: "member",
+      member: "driver-2",
+      team: "atmux",
+      target: "atmux:=driver-2",
     };
     await expect(tmux.pane.sendKeys({ target, keys: "hello" })).rejects.toThrow(
       DriverSendKeysViolation,

@@ -118,7 +118,7 @@ Or invoke via the skill harness (with the args passed through). The script is bu
 
 ## Operator-facing report format — attention + verdict markers
 
-After the verbatim table/JSON output, prepend a one-line operator-attention summary so the operator can scan-skim without re-reading the table. Same scheme as `/atmux:whip`, `/atmux:bau`, `/atmux:bruh`, `/atmux:session`, `/atmux:team`, `/atmux:tell-lead`.
+After the verbatim table/JSON output, prepend a one-line operator-attention summary so the operator can scan-skim without re-reading the table. Same scheme as `/atmux:whip`, `/atmux:bau`, `/atmux:session`, `/atmux:team`, `/atmux:tell-lead`.
 
 **Verdict-derivation rules (account-status aggregate):**
 

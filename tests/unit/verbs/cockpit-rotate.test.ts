@@ -5,7 +5,7 @@
 // classification.
 //
 // T3 (this commit): pre-flight gate impl —
-//   - pure classifiers: classifyGate1 (TYPING in superdriver pane),
+//   - pure classifiers: classifyGate1 (TYPING in the `_sd` superdriver pane),
 //     classifyGate2 (BUSY/COMPACTING in target pane), classifyGate3
 //     (uptime <60min).
 //   - IO orchestration: gate firing order, --force bypass matrix (gate
@@ -448,6 +448,77 @@ describe("cockpitRotate — gate-4 (T2 carry-forward)", () => {
     expect(exit).toBe(65);
     expect(h.capturedStderr.join("")).toContain("gate-4-never-rotate-superdriver");
   });
+
+  // ADR-288 §D1/§D3: the shortform `sd` and both window literals are
+  // refused exactly like the role name — no spelling of window 1 reaches
+  // the respawn path, and the gate identifier is unchanged.
+  for (const spelling of ["sd", "_sd", "_superdriver"]) {
+    test(`ADR-288: refuses '${spelling}' under --force with the same gate-4 identifier`, async () => {
+      const h = makeHarness();
+      const exit = await cockpitRotate([spelling, "--force"], harnessOpts(h));
+      expect(exit).toBe(65);
+      expect(h.capturedStderr.join("")).toContain("gate-4-never-rotate-superdriver");
+      expect(firstAuditRow(h).outcome).toBe("gate-4-refused");
+      expect(firstAuditRow(h).sessionName).toBe(spelling);
+      expect(h.killWindowCalls.length).toBe(0);
+      expect(h.newWindowCalls.length).toBe(0);
+    });
+  }
+
+  test("ADR-288 §D3: an `_sdN` lane is not a rotate target — classifies team-driver, refused as unknown team, pane untouched", async () => {
+    const h = makeHarness();
+    // `sd2` is an ADR-279 operator window, not a team: gate-4 passes,
+    // --force skips gates 1-3, then performRespawn finds no team config.
+    const exit = await cockpitRotate(["sd2", "--force"], harnessOpts(h));
+    expect(exit).toBe(70);
+    expect(h.capturedStderr.join("")).toContain("team 'sd2' not found in cockpit.json");
+    expect(firstAuditRow(h).outcome).toBe("respawn-failed");
+    expect(firstAuditRow(h).role).toBe("team-driver");
+    expect(firstAuditRow(h).sessionName).toBe("sd2");
+    expect(h.ctrlCCalls.length).toBe(0);
+    expect(h.killWindowCalls.length).toBe(0);
+    expect(h.newWindowCalls.length).toBe(0);
+    // Review finding: the refusal must precede the handoff write, so the
+    // last real team-driver payload is never clobbered by a lane typo.
+    expect(h.handoffWrites.length).toBe(0);
+  });
+
+  test("ADR-288 §D3: unknown team is refused BEFORE gates 1-3 (no --force needed, no gate state)", async () => {
+    const h = makeHarness();
+    // No session-start marker, no captures: gates 1-3 would otherwise run
+    // (and gate-3 would refuse on the missing marker). The unknown-team
+    // refusal fires first, right after role classification.
+    const exit = await cockpitRotate(["sd3"], harnessOpts(h));
+    expect(exit).toBe(70);
+    expect(h.capturedStderr.join("")).toContain("team 'sd3' not found in cockpit.json");
+    expect(h.capturedStderr.join("")).not.toContain("gate-3-uptime");
+    expect(firstAuditRow(h).outcome).toBe("respawn-failed");
+    expect(h.handoffWrites.length).toBe(0);
+    expect(h.killWindowCalls.length).toBe(0);
+  });
+
+  test("ADR-288 §D3: pre-gate cockpit load failure defers; performRespawn still refuses the unknown team before its handoff write", async () => {
+    const h = makeHarness();
+    passGates(h, "team-driver");
+    // First loadCockpit (pre-gate check) throws → deferred; the later
+    // loads (viewer-host resolution + performRespawn) succeed.
+    let calls = 0;
+    const opts = {
+      ...harnessOpts(h),
+      loadCockpit: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error("transient cockpit.json read failure");
+        return h.cockpit;
+      },
+    };
+    const exit = await cockpitRotate(["sd2"], opts);
+    expect(exit).toBe(70);
+    expect(h.capturedStderr.join("")).toContain("team 'sd2' not found in cockpit.json");
+    expect(firstAuditRow(h).outcome).toBe("respawn-failed");
+    expect(h.handoffWrites.length).toBe(0);
+    expect(h.ctrlCCalls.length).toBe(0);
+    expect(h.killWindowCalls.length).toBe(0);
+  });
 });
 
 describe("cockpitRotate — caller-scope gate", () => {
@@ -464,7 +535,7 @@ describe("cockpitRotate — caller-scope gate", () => {
 describe("cockpitRotate — gate 1 (user-not-typing)", () => {
   test("refuses when superdriver compose-box has queued text", async () => {
     const h = makeHarness();
-    h.captures.set("atmux_cockpit:_superdriver", "Press up to edit queued messages");
+    h.captures.set("atmux_cockpit:=_sd", "Press up to edit queued messages");
     const exit = await cockpitRotate(["medic"], harnessOpts(h));
     expect(exit).toBe(65);
     expect(h.capturedStderr.join("")).toContain("gate-1-user-not-typing");
@@ -476,17 +547,74 @@ describe("cockpitRotate — gate 1 (user-not-typing)", () => {
     expect(firstDiscord(h).template).toBe("cockpit-rotate-refused");
   });
 
+  test("ADR-288 deprecation window: falls back to legacy `_superdriver` capture when `_sd` is absent", async () => {
+    const h = makeHarness();
+    // No `_sd` window yet (cockpit not reconciled since the rename) —
+    // the legacy window is still the operator's compose box.
+    h.captures.set("atmux_cockpit:=_superdriver", "Press up to edit queued messages");
+    const exit = await cockpitRotate(["medic"], harnessOpts(h));
+    expect(exit).toBe(65);
+    expect(h.capturedStderr.join("")).toContain("gate-1-user-not-typing");
+    expect(firstAuditRow(h).outcome).toBe("gate-1-refused");
+  });
+
+  test("ADR-288 review: gate-1 probes use tmux exact-match targets (`:=_sd`, then `:=_superdriver`)", async () => {
+    const h = makeHarness();
+    const seen: string[] = [];
+    const base = makeTmuxFactory(h);
+    const opts = {
+      ...harnessOpts(h),
+      tmuxFactory: (cfg: TmuxConfig): TmuxNamespace => {
+        const ns = base(cfg);
+        return {
+          ...ns,
+          pane: {
+            ...ns.pane,
+            capturePane: async (o: Parameters<TmuxNamespace["pane"]["capturePane"]>[0]) => {
+              seen.push(String(o.target));
+              return ns.pane.capturePane(o);
+            },
+          },
+        } as TmuxNamespace;
+      },
+    };
+    // No captures seeded: `_sd` probe returns "" → fallback probe fires.
+    h.stats.set("/test/home/.claude/teams/__cockpit__/medic/session-start.txt", {
+      mtimeMs: T0 - 2 * 60 * 60_000,
+    });
+    await cockpitRotate(["medic"], opts);
+    expect(seen).toContain("atmux_cockpit:=_sd");
+    expect(seen).toContain("atmux_cockpit:=_superdriver");
+    // A regression to tmux prefix matching (`atx:_sd` → resolves to `_sd2`)
+    // must fail here.
+    expect(seen).not.toContain("atmux_cockpit:_sd");
+    expect(seen).not.toContain("atmux_cockpit:_superdriver");
+    // Gate-2 on the medic role window is exact-match too.
+    expect(seen).toContain("atmux_cockpit:=_medic");
+  });
+
+  test("ADR-288: a present `_sd` capture wins over a stale legacy `_superdriver` capture", async () => {
+    const h = makeHarness();
+    h.captures.set("atmux_cockpit:=_sd", "❯ ");
+    h.captures.set("atmux_cockpit:=_superdriver", "Press up to edit queued messages");
+    passGates(h, "medic");
+    const exit = await cockpitRotate(["medic"], harnessOpts(h));
+    // `_sd` is idle → gate-1 passes; the stale legacy capture is ignored.
+    expect(h.capturedStderr.join("")).not.toContain("gate-1-user-not-typing");
+    expect(exit).toBe(0);
+  });
+
   test("--force bypasses gate-1 → continues to T4 respawn (exit 0)", async () => {
     const h = makeHarness();
     // Even with TYPING in superdriver, --force should bypass to respawn.
-    h.captures.set("atmux_cockpit:_superdriver", "Press up to edit queued messages");
+    h.captures.set("atmux_cockpit:=_sd", "Press up to edit queued messages");
     h.stats.set("/test/home/.claude/teams/__cockpit__/medic/session-start.txt", {
       mtimeMs: T0 - 2 * 60 * 60_000,
     });
     const exit = await cockpitRotate(["medic", "--force"], harnessOpts(h));
     expect(exit).toBe(0);
     // Success path: respawn lands, success audit row written, no Discord.
-    expect(h.killWindowCalls).toEqual(["atmux_cockpit:_medic"]);
+    expect(h.killWindowCalls).toEqual(["atmux_cockpit:=_medic"]);
     expect(h.newWindowCalls.length).toBe(1);
     expect(h.appendedAudit.length).toBe(1);
     const row = firstAuditRow(h);
@@ -497,7 +625,7 @@ describe("cockpitRotate — gate 1 (user-not-typing)", () => {
 describe("cockpitRotate — gate 2 (pane-idle)", () => {
   test("refuses when target pane is BUSY (`✻ Cooked`)", async () => {
     const h = makeHarness();
-    h.captures.set("atmux_cockpit:_medic", "✻ Cooking…");
+    h.captures.set("atmux_cockpit:=_medic", "✻ Cooking…");
     const exit = await cockpitRotate(["medic"], harnessOpts(h));
     expect(exit).toBe(65);
     expect(h.capturedStderr.join("")).toContain("gate-2-pane-idle");
@@ -508,7 +636,7 @@ describe("cockpitRotate — gate 2 (pane-idle)", () => {
 
   test("refuses when target pane is COMPACTING", async () => {
     const h = makeHarness();
-    h.captures.set("atmux_cockpit:_medic", "Compacting conversation");
+    h.captures.set("atmux_cockpit:=_medic", "Compacting conversation");
     const exit = await cockpitRotate(["medic"], harnessOpts(h));
     expect(exit).toBe(65);
     expect(h.capturedStderr.join("")).toContain("gate-2-pane-idle");
@@ -703,8 +831,8 @@ describe("cockpitRotate — --force bypass matrix (per ADR-167)", () => {
   test("gates 1-3 ALL skipped under --force (rows 1-3 column 'yes')", async () => {
     const h = makeHarness();
     // All three gate sources would fire if checked:
-    h.captures.set("atmux_cockpit:_superdriver", "Press up to edit queued messages");
-    h.captures.set("atmux_cockpit:_medic", "✻ Cooking…");
+    h.captures.set("atmux_cockpit:=_sd", "Press up to edit queued messages");
+    h.captures.set("atmux_cockpit:=_medic", "✻ Cooking…");
     // No stat → would fire gate-3 missing.
     const exit = await cockpitRotate(["medic", "--force"], harnessOpts(h));
     // T4 respawn lands cleanly; success audit only (no Discord on
@@ -847,10 +975,10 @@ describe("cockpitRotate — T4 medic respawn", () => {
     expect(exit).toBe(0);
     // Ctrl-C fired against the medic window via cockpit socket.
     expect(h.ctrlCCalls.length).toBe(1);
-    expect(h.ctrlCCalls[0]?.target).toBe("atmux_cockpit:_medic");
+    expect(h.ctrlCCalls[0]?.target).toBe("atmux_cockpit:=_medic");
     expect(h.ctrlCCalls[0]?.keys).toBe("C-c");
     // killWindow then newWindow on the same window.
-    expect(h.killWindowCalls).toEqual(["atmux_cockpit:_medic"]);
+    expect(h.killWindowCalls).toEqual(["atmux_cockpit:=_medic"]);
     expect(h.newWindowCalls.length).toBe(1);
     expect(h.newWindowCalls[0]?.name).toBe("_medic");
     expect(h.newWindowCalls[0]?.shellCommand).toContain(" claude ");
@@ -1636,7 +1764,7 @@ describe("cockpitRotate — T6 safeCapturePane catch branch", () => {
     // READY per classifyGate1/2 empty-passes-defensively), gate-3
     // passes via stat-marker mtime, respawn fires.
     expect(exit).toBe(0);
-    expect(h.killWindowCalls).toEqual(["atmux_cockpit:_medic"]);
+    expect(h.killWindowCalls).toEqual(["atmux_cockpit:=_medic"]);
     expect(h.newWindowCalls.length).toBe(1);
     // No gate-refusal audit row — gates didn't fire even though
     // capture-pane threw under the hood.

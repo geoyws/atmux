@@ -112,7 +112,7 @@ const ATMUX_DIR = "/tmp/atmux-bracketed-paste-test-noop";
 describe("ADR-205 — bracketed-paste as the default body-delivery shape", () => {
   test("default send emits load-buffer + paste-buffer -d + C-m submit (the envelope)", async () => {
     const { tmux, calls } = makeMockTmux();
-    const out = await sendToMember(tmux, ATMUX_DIR, TARGET, "/bruh do the thing", {
+    const out = await sendToMember(tmux, ATMUX_DIR, TARGET, "/whip do the thing", {
       sleep: NO_SLEEP,
       verify: false,
     });
@@ -124,7 +124,7 @@ describe("ADR-205 — bracketed-paste as the default body-delivery shape", () =>
 
     // 1. Body staged into a buffer verbatim (envelope carries it).
     expect(load).toBeDefined();
-    expect(load?.op === "loadBuffer" && load.data).toBe("/bruh do the thing");
+    expect(load?.op === "loadBuffer" && load.data).toBe("/whip do the thing");
 
     // 2. paste-buffer fires with -d (deleteAfter) into the SAME named
     //    buffer — this is the ESC[200~ … ESC[201~ envelope at the
@@ -141,9 +141,9 @@ describe("ADR-205 — bracketed-paste as the default body-delivery shape", () =>
     expect(submit?.op === "sendKeys" && submit.enter).toBe(false);
 
     // 4. The body NEVER went through a literal text-body send-keys —
-    //    if it had, the slash-leading "/bruh" would trigger the popup.
+    //    if it had, the slash-leading "/whip" would trigger the popup.
     const literalBody = calls.find(
-      (c) => c.op === "sendKeys" && c.literal === true && c.keys === "/bruh do the thing",
+      (c) => c.op === "sendKeys" && c.literal === true && c.keys === "/whip do the thing",
     );
     expect(literalBody).toBeUndefined();
 

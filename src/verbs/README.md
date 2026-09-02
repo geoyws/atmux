@@ -64,11 +64,11 @@ Operator one-pager: [docs/RUNBOOK-sync.md](../../docs/RUNBOOK-sync.md). Migrator
 
 ### `cockpit rotate` ([ADR-167](../../docs/adr/167-cockpit-rotate-verb.md))
 
-Operator-fired rotation of cockpit role panes (`medic` / `<team-name>`) with brief-paste-ready handoff. Closes Rung C of the `/bruh` escalation chain — the previously manual handoff + Ctrl-C + canonical-respawn protocol. Lives in [`src/verbs/cockpit-rotate.ts`](cockpit-rotate.ts) and dispatched from `src/verbs/cockpit.ts` (sub-verb pattern, sibling to `cockpit rebuild` + `cockpit migrate-socket`).
+Operator-fired rotation of cockpit role panes (`medic` / `<team-name>`) with brief-paste-ready handoff. Historically closed Rung C of the `/bruh` escalation chain (the skill was retired per [ADR-288](../../docs/adr/288-superdriver-lane-shortform-and-multi-lane-cockpit.md) §D4) — the previously manual handoff + Ctrl-C + canonical-respawn protocol. Lives in [`src/verbs/cockpit-rotate.ts`](cockpit-rotate.ts) and dispatched from `src/verbs/cockpit.ts` (sub-verb pattern, sibling to `cockpit rebuild` + `cockpit migrate-socket`).
 
 Flag surface:
 
-- `<session-name>` — required positional: `medic` or a registered team-name. `superdriver` is unconditionally refused (operator REPL pane).
+- `<session-name>` — required positional: `medic` or a registered team-name. `superdriver` (cockpit window 1, literal `_sd` per ADR-288 §D1; the `sd` / `_sd` / `_superdriver` spellings are refused the same way) is unconditionally refused (operator REPL pane). `_sdN` lanes (N ≥ 2) are ADR-279 operator windows, not rotate targets: they classify as `team-driver` and are refused right after classification — before gates 1-3 and before any handoff payload is written — with `team '<name>' not found in cockpit.json` (exit 70, pane untouched, `~/.claude/teams/__cockpit__/team-driver/handoff.md` untouched).
 - `--force` — bypass pre-flight gates 1-3 (user-not-typing, pane-idle, uptime) ONLY. Gate 4 (never-rotate-superdriver) is unconditional.
 
 Exit codes: `0` success, `64` (EX_USAGE) bad argv, `65` (EX_DATAERR) gate refusal (1-4), `70` (EX_SOFTWARE) respawn / handoff-write failure, `78` (EX_CONFIG) caller-scope refusal (driver-only per [ADR-033](../../docs/adr/033-caller-scope-gate.md)).

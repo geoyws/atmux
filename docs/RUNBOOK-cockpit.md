@@ -37,7 +37,7 @@ Use top-level `windows[]` for a durable cockpit workspace that is not backed by 
 }
 ```
 
-Null or omitted `command` starts zsh. These windows appear after an enabled `_superbot` role and before team viewers, in declaration order. Without `_superbot`, the order remains after `_medic`. Reconcile preserves an existing matching pane and applies `cwd`/`command` only when recreating a missing window. Names must not collide with cockpit roles or team viewers.
+Null or omitted `command` starts zsh. These windows appear after an enabled `_superbot` role and before team viewers, in declaration order. Without `_superbot`, the order remains after `_medic`. **Exception — superdriver lanes ([ADR-288](adr/288-superdriver-lane-shortform-and-multi-lane-cockpit.md) §D5):** operator windows named `_sdN` (N ≥ 2) are placed immediately after `_sd`, before `_medic` / `_superbot`; the live order is `_sd, _sd2, _sd3, _medic, _misc, <viewers>`, and reconcile restores it by moves only (a cockpit in the older `_sd, _medic, _sd2, …` order is reordered without kills and without `--yes`). Reconcile preserves an existing matching pane and applies `cwd`/`command` only when recreating a missing window. Names must not collide with cockpit roles or team viewers.
 
 ### Held `_superbot` role (ADR-285)
 
@@ -175,14 +175,14 @@ The override is per-invocation; agents that spawn atmux processes inherit the en
 
 ## §6 — Cockpit pane rotation (`atmux cockpit rotate`)
 
-Operator-fired rotation of a cockpit role pane — `medic` or a per-team driver pane. Closes the manual handoff + Ctrl-C + canonical-respawn protocol that previously lived in the `/bruh` skill §3a manual fallback. Per [ADR-167](adr/167-cockpit-rotate-verb.md) (Rung C of the `/bruh` escalation chain — Rung A = member rotate, Rung B = lead rotate via medic, Rung D = full cockpit rebuild).
+Operator-fired rotation of a cockpit role pane — `medic` or a per-team driver pane. Historically it closed the manual handoff + Ctrl-C + canonical-respawn protocol that lived in the `/bruh` skill §3a manual fallback (that skill was retired per [ADR-288](adr/288-superdriver-lane-shortform-and-multi-lane-cockpit.md) §D4). Per [ADR-167](adr/167-cockpit-rotate-verb.md) the verb is Rung C of the escalation ladder — Rung A = member rotate, Rung B = lead rotate via medic, Rung D = full cockpit rebuild.
 
 ```bash
 atmux cockpit rotate medic    [--force]
 atmux cockpit rotate <team>   [--force]
 ```
 
-`superdriver` is **unconditionally refused** (gate 4 below; `--force` does not bypass — it's the operator REPL pane).
+`superdriver` is **unconditionally refused** (gate 4 below; `--force` does not bypass — it's the operator REPL pane, cockpit window `_sd` per [ADR-288](adr/288-superdriver-lane-shortform-and-multi-lane-cockpit.md) §D1; the `sd` / `_sd` / `_superdriver` spellings are refused the same way). The additional superdriver lanes `_sd2` / `_sd3` are **not rotate targets**: `atmux cockpit rotate sd2` classifies as a team-driver and is refused right after classification, before the gates and before any handoff payload is written, with `team 'sd2' not found in cockpit.json` (exit 70, pane untouched, the last real team-driver handoff untouched) — restart a lane by hand and re-arm its standing goal (ADR-288 §D3).
 
 ### When to invoke
 
@@ -196,10 +196,10 @@ Four gates run in order; any failure aborts with `exit 65` (EX_DATAERR) plus a s
 
 | # | Gate | Refuses when | `--force` bypass |
 |---|---|---|---|
-| 1 | user-not-typing | `_superdriver` compose-box has text (operator may be about to reference target panes) | yes |
+| 1 | user-not-typing | `_sd` compose-box has text (operator may be about to reference target panes); reads legacy `_superdriver` while the window is still un-renamed | yes |
 | 2 | pane-idle | target pane shows `✽` / `✻` / `Compacting` markers in the last 60s | yes |
 | 3 | uptime | per-role `session-start.txt` mtime is `<60min` ago | yes |
-| 4 | never-rotate-superdriver | session-name resolves to `superdriver` | **no** |
+| 4 | never-rotate-superdriver | session-name is `superdriver` or any spelling of cockpit window 1 — `sd`, `_sd`, `_superdriver` (ADR-288 §D3) | **no** |
 
 Gate 4 fires first (cheapest + most load-bearing — superdriver is the operator REPL; rotating it would kill the interactive session).
 
@@ -299,7 +299,7 @@ git push origin <branch>
 
 Use only when `atmux release` itself is broken (`atmux` binary unbootable, `package.json` non-semver). Per the design intent the legacy form is deprecated for daily use — `atmux release` is the canonical surface.
 
-## §9 — Operator coordination skills (`/atmux:bau`, `/atmux:bruh`, `/atmux:whip`, `/atmux:team`, …)
+## §9 — Operator coordination skills (`/atmux:bau`, `/atmux:whip`, `/atmux:team`, …)
 
 Atmux ships a Claude Code skills plugin at `plugins/atmux/` (in the atmux source tree) that wraps the cockpit-tier verbs as operator-facing `/slash-commands`. Per [ADR-217](adr/217-atmux-skills-plugin-bundled-and-wizard-installed.md), the plugin is installed by the first-run wizard (`atmux init` per [ADR-200](adr/200-install-wizard-guided-first-run-setup.md) §D5) and symlinked into Claude Code's plugin discovery path so skill upgrades ride atmux releases automatically. Operators who prefer their own dotfiles-resident variants can override by dropping a real directory at `~/.claude/plugins/atmux/` (the wizard preserves it).
 
@@ -307,8 +307,6 @@ Atmux ships a Claude Code skills plugin at `plugins/atmux/` (in the atmux source
 |---|---|---|
 | Start-of-session, status snapshot | `/atmux:bau [hours]` | Commit cadence / rate-limits / kanban / churn per team. Default 24h window. Escalates Dormant teams to lead. |
 | Want autonomous-work nudge cadence | `/atmux:whip [verb]` | Autonomous-work nudge loop (run / cadence / watchdog). Pure-shell. |
-| End-of-day unblocker pass | `/atmux:bruh` | Sweeps pending decisions / blockers / flags / worktrees in one pass. |
-| Hands-off 15-min `/atmux:bruh` cadence | `/atmux:bruhloop` | Sugar wrapper that arms `/loop 15mins /atmux:bruh …` so the operator doesn't retype the chain. |
 | One-shot team lifecycle | `/atmux:team <verb>` | start / stop / add / clear / cleanup / bootstrap / rotate-lead / rotate-member. Calls `atmux team` verbs underneath. |
 | Session continuity (resume / handoff / stop) | `/atmux:session <verb>` | Reads / writes `handoff.md`, drives `/clear`-safe boundaries. |
 | Diagnostic across all Claude accounts | `/atmux:budget` | 5h + weekly rate-limit utilization + reset times. Pure-shell + Anthropic API. |

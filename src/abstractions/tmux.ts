@@ -129,7 +129,12 @@ export function extractWindowNameFromTargetString(targetStr: string): string | n
   if (colon < 0) return null;
   const after = targetStr.slice(colon + 1);
   const dot = after.indexOf(".");
-  const winSeg = dot < 0 ? after : after.slice(0, dot);
+  // tmux target syntax: a leading `=` on the window segment forces an
+  // exact-name match (`sess:=driver`). Strip it before classifying —
+  // otherwise `=driver` never matches DRIVER_PANE_NAME_RE and the ADR-239
+  // §D2 never-send-keys-to-driver guard is bypassed by any exact-match
+  // target (ADR-288 review finding; `cockpit rotate` uses `=` targets).
+  const winSeg = (dot < 0 ? after : after.slice(0, dot)).replace(/^=/, "");
   if (winSeg.length === 0) return null;
   // Numeric index → not a name to classify.
   if (/^[0-9]+$/.test(winSeg)) return null;

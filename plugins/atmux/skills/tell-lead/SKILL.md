@@ -77,7 +77,7 @@ When in doubt: if you'd be annoyed to see it sitting in your inbox unmarked tomo
 
 ## Operator-facing report format — attention + verdict markers
 
-`tell-lead` runs once and emits the verb's output. Wrap that output with a one-line top-marker so the operator knows whether the ask landed cleanly, partial-landed (durable write OK but wake-up missed), or failed (no durable write at all). Same verdict-marker scheme as other atmux skills (whip, sweep, bau, bruh, session, team).
+`tell-lead` runs once and emits the verb's output. Wrap that output with a one-line top-marker so the operator knows whether the ask landed cleanly, partial-landed (durable write OK but wake-up missed), or failed (no durable write at all). Same verdict-marker scheme as other atmux skills (whip, sweep, bau, session, team).
 
 **Verdict-derivation rules:**
 

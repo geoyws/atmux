@@ -62,7 +62,7 @@ Setup:
                               ADR-167 Rung C: canonical rotation of a cockpit-
                               level role pane — \`medic\` (W2) or \`<team-name>\`
                               (W3+ driver pane). Refuses \`superdriver\`
-                              unconditionally; four pre-flight gates
+                              (W1 \`_sd\`) unconditionally; four pre-flight gates
                               (user-not-typing / pane-idle / uptime /
                               never-rotate-superdriver) protect against
                               accidental rotation. Driver-only via

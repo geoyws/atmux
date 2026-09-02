@@ -12,7 +12,7 @@ Recreates the canonical cockpit topology in one shot via the `atmux cockpit rebu
 
 | Layer | What |
 |---|---|
-| Cockpit session `atmux_cockpit` ([ADR-135](../../../../docs/adr/135-cockpit-naming-convention.md) §D1; renamed from legacy `atmux_teams`) | window 1 `_superdriver`; optional `_medic` / `_sentinel` slots when configured (both retired as auto-spawn roles per ADR-211 + ADR-212 — slots stay for back-compat); per-team viewer windows from window N+1, each self-heal-loops `tmux attach` into its cage's driver window |
+| Cockpit session `atx` ([ADR-264](../../../../docs/adr/264-cockpit-session-atx-rename.md) §D5; was `atmux_cockpit` per [ADR-135](../../../../docs/adr/135-cockpit-naming-convention.md) §D1, before that `atmux_teams`) | window 1 `_sd` (superdriver lane 1; was `_superdriver` — renamed in place per [ADR-288](../../../../docs/adr/288-superdriver-lane-shortform-and-multi-lane-cockpit.md) §D1); the `_sd2` / `_sd3` superdriver lanes immediately after it as declarative operator windows (ADR-288 §D2, placement per §D5); then optional `_medic` / `_sentinel` slots when configured (both retired as auto-spawn roles per ADR-211 + ADR-212 — slots stay for back-compat); per-team viewer windows from window N+1, each self-heal-loops `tmux attach` into its cage's driver window |
 | Per-team cages | one tmux server per team on an atmux-resolved socket (`/tmp/atmux-<team>/sock`, or `team.json::tmuxTmpdir` override; see [ADR-018](../../../../docs/adr/018-per-team-tmux-socket-isolation.md) + [ADR-162](../../../../docs/adr/162-atmux-owns-tmux-infrastructure.md)). Each cage spawns Claude with an isolated `CLAUDE_CONFIG_DIR` so per-account session state and rate-limit windows don't cross-contaminate. Member panes use `--permission-mode auto` + bare window names per ADR-006. |
 | Cage prefix | per-cage prefix is **level-resolved** at rebuild time per [ADR-089](../../../../docs/adr/089-hierarchical-cockpit.md) §C — cages nested inside a parent cage gain a different prefix than top-level team cages, so the operator can target a specific layer without ambiguity. |
 | Registry `~/.claude/teams/registry.json` | trimmed to the canonical team set; existing emoji rosters preserved across rebuilds. |
@@ -46,12 +46,12 @@ Cockpit rebuild touches the full topology (cockpit-tier windows + per-team cages
 **Verdict-derivation rules:**
 - **✅** all expected windows landed (cockpit-tier roles + per-team viewers, every cage at expected socket), cycling completed cleanly.
 - **⚠** topology landed but one or more cages couldn't be cycled (in-flight REPL preserved with `--no-cycle`, or cycle hit a wedged pane that needs operator's call).
-- **🔴** verb exit non-zero, OR `_superdriver` window didn't spawn, OR `cockpit.json` read failed, OR ≥1 expected cage failed to come up after retry.
+- **🔴** verb exit non-zero, OR `_sd` window didn't spawn, OR `cockpit.json` read failed, OR ≥1 expected cage failed to come up after retry.
 - **👁** attaches when operator must decide: keep wedged pane vs `--force-cycle`, re-enable a paused team, address missing cage socket.
 
 **Examples:**
 ```
-✅ /atmux:cockpit-rebuild — 4 cages up, _superdriver + 4 viewers, all cycled
+✅ /atmux:cockpit-rebuild — 4 cages up, _sd + 4 viewers, all cycled
 ```
 ```
 ⚠ /atmux:cockpit-rebuild --no-cycle — topology reconciled, 3 cages kept their in-flight REPLs

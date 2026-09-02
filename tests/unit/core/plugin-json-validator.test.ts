@@ -24,7 +24,7 @@ describe("validatePluginJson — Task t-dcf4f970 acceptance cases", () => {
     }
   });
 
-  test("Case 1b: real plugins/atmux/.claude-plugin/plugin.json shape (13 skills) → ok true", () => {
+  test("Case 1b: real plugins/atmux/.claude-plugin/plugin.json shape (11 skills) → ok true", () => {
     const result = validatePluginJson({
       name: "atmux",
       version: "0.1.0",
@@ -36,8 +36,6 @@ describe("validatePluginJson — Task t-dcf4f970 acceptance cases", () => {
         { name: "session", path: "skills/session/SKILL.md" },
         { name: "tell-lead", path: "skills/tell-lead/SKILL.md" },
         { name: "heads-up", path: "skills/heads-up/SKILL.md" },
-        { name: "bruh", path: "skills/bruh/SKILL.md" },
-        { name: "bruhloop", path: "skills/bruhloop/SKILL.md" },
         { name: "whip", path: "skills/whip/SKILL.md" },
         { name: "bau", path: "skills/bau/SKILL.md" },
         { name: "ghostbuster", path: "skills/ghostbuster/SKILL.md" },
@@ -47,7 +45,7 @@ describe("validatePluginJson — Task t-dcf4f970 acceptance cases", () => {
       ],
     });
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.skillCount).toBe(13);
+    if (result.ok) expect(result.skillCount).toBe(11);
   });
 
   // ---- Case 2: Missing required field (name/version/description/skills) → error with field name

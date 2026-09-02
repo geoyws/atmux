@@ -147,6 +147,10 @@ Same idempotent-rewrite pattern as ADR-133 TR6 (`superdoctor → medic` cron lin
 
 ## Amendments
 
+### 2026-09-02 — §D2 window-1 literal superseded: `_superdriver` → `_sd` (ADR-288)
+
+[ADR-288](288-superdriver-lane-shortform-and-multi-lane-cockpit.md) §D1 supersedes this ADR's §D2 literal for cockpit window 1: the canonical window name is now **`_sd`** (the dotfiles ADR-009 pure-truncation shortform of `superdriver`, matching the `driver` → `d` lane rule). The underscore prefix, `_medic`, per-team viewer names and §D3 are unchanged. §D4's in-place `rename-window` shim is reused one step further — it now renames both `superdriver` and `_superdriver` to `_sd`, idempotently, with the same both-present ambiguity warning. `_superdriver` / `superdriver` stay in the never-prune guard and the reserved operator-window set for one release cycle, exactly as `superdoctor` was kept. ADR-288 §D2 additionally introduces `_sdN` (N ≥ 2, no `_sd1`) as ADR-279 declarative operator windows — not cockpit-role windows, so they carry no reservation.
+
 ### 2026-07-28 — §D1 superseded: session literal `atmux_cockpit` → `atx` (ADR-264)
 
 [ADR-264](264-cockpit-session-atx-rename.md) supersedes this ADR's §D1 session-name literal: the canonical cockpit tmux session is now **`atx`** (the prose term "cockpit" and the `atmux-cockpit` socket name are unchanged). The migration machinery this ADR established is reused one generation up — §D5's coercion shim now covers *both* legacy literals (`atmux_teams`, `atmux_cockpit` → `atx`), and §D4's in-place `rename-session` shim renames either legacy session to `atx`. §D2 (`_-prefix` cockpit windows) and §D3 (`<emoji>-<member>` format, as amended by ADR-161) remain operative and untouched.

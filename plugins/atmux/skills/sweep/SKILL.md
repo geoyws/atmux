@@ -54,7 +54,18 @@ Each time this skill fires in `run` mode, do the following. Keep responses terse
 
 3. **Execute the brief.** Run the per-team sweep, triage, investigate, decide authority, act, log to complaint box.
 
-   **Eternal-improvement fallback**: if the per-team sweep finds zero anomalies AND zero open complaints AND every team is shipping (commit-cadence green per BAU verdict), trigger one cycle of `/atmux:bruh` §0.7 in driver-scope per team in scope — file ONE [improve P3] task per the heuristics there (tech-debt grep / ADR §OQ / coverage gap / aged doctor warn / lint sweep / stale memory). Sweep's hourly cadence + low-frequency anomaly profile makes it the natural place to inject background improvements without burning whip-rate tokens. Skip if operator freeze in lead's driver-inbox last 24h. Skip if CPU/RAM throttle active. Log under terminal report as `♻️ eternal improvement: <team> · t-XXXXXXXX <title>`.
+   **Eternal-improvement fallback**: if the per-team sweep finds zero anomalies AND zero open complaints AND every team is shipping (commit-cadence green per BAU verdict), run one eternal-improvement cycle in driver-scope per team in scope — file ONE `[improve P3]` task per the first heuristic that hits, in this order (formerly `/atmux:bruh` §0.7, retired per ADR-288 §D4; the list is inlined here so nothing dangles):
+
+   1. **Tech-debt grep** — `rg -nE 'TODO|FIXME|HACK|XXX' src/ docs/ -g '!**/node_modules/**' | head -10`; pick one TODO with concrete actionable scope and file it with the verbatim `file:line` + a fix sketch.
+   2. **ADR §OQ follow-ups** — `rg -nE '^### OQ-|^## Open questions' docs/adr/ | head -10`; an open OQ older than 30 days is a candidate — file a P3 task to resolve it via ADR amendment.
+   3. **Test coverage gaps** — run the project's coverage probe (e.g. `bun test --coverage`) and pick the lowest-coverage tracked file; file "Raise X.ts coverage from N% to 100% — add tests for [uncovered lines]".
+   4. **Aged doctor warn rows** — `atmux doctor --json | jq '.rows[] | select(.status == "yellow")'`; pick a row yellow for >7 days and file a task to fix it (not suppress it).
+   5. **Lint warning sweep** — if the lint run reports >50 warnings, file one P3 sweep task; below 50 the signal/noise is too low.
+   6. **Stale memory entries** — `find <claude-memory-dir> -name '*.md' -mtime +90 | head -5`; file a P4 task to triage + archive.
+
+   Constraints: default priority P3, one task per cycle (a slow drip, not a flood), title prefix `[improve P3] …`, body cites the exact heuristic hit, skip a heuristic when a sibling improvement task is already in `todo` for the same hit.
+
+   Sweep's hourly cadence + low-frequency anomaly profile makes it the natural place to inject background improvements without burning whip-rate tokens. Skip if operator freeze in lead's driver-inbox last 24h. Skip if CPU/RAM throttle active. Log under terminal report as `♻️ eternal improvement: <team> · t-XXXXXXXX <title>`.
 
 4. **Re-arm.** At the end of the turn:
 
@@ -72,7 +83,7 @@ Each time this skill fires in `run` mode, do the following. Keep responses terse
 - **Action authority is real.** Per [ADR-077](../../../../docs/adr/077-superdoctor-cockpit-role.md) §D3 sweep may rotate leads, clear members, cycle cages, push fixes to atmux on its own branch + open PR, and modify `~/.atmux/cockpit.json`. Hard limits in §What it must NOT do (in the brief).
 - **Action-before-log audit trail.** Every action is written to the complaint box BEFORE it executes. If the action turns out to be wrong, the audit trail survives.
 - **Discord uses `[sweep]` prefix.** Operator-facing reports gate on the attention+verdict marker scheme; ban on unprefixed pings still applies.
-- **Operator-facing report format.** All three modes (`run`, `once`, `dry-run`) emit reports using the attention+verdict scheme (👁 / ✅ / ⚠ / 🔴 / ℹ). The discipline + per-team derivation rules live in the brief at `sweep-prompt.md` §9.5; mirrors `/atmux:whip` §8.0, `/atmux:bau` header, `/atmux:bruh` §7, `/atmux:session` global, `/atmux:team` global, `/atmux:tell-lead`, and `/atmux:budget`.
+- **Operator-facing report format.** All three modes (`run`, `once`, `dry-run`) emit reports using the attention+verdict scheme (👁 / ✅ / ⚠ / 🔴 / ℹ). The discipline + per-team derivation rules live in the brief at `sweep-prompt.md` §9.5; mirrors `/atmux:whip` §8.0, `/atmux:bau` header, `/atmux:session` global, `/atmux:team` global, `/atmux:tell-lead`, and `/atmux:budget`.
 
 ---
 

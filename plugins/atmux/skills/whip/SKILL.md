@@ -52,7 +52,18 @@ Each time this skill fires in `run` mode, do the following. Keep the response te
 
 3. **Execute the prompt.** Do the team check, dispatch/unblock work, make judgment calls. Do NOT stop and wait for the user.
 
-   **Eternal-improvement fallback** (operator directive 2026-05-20): if the team check finds zero work to dispatch/unblock AND zero pending claims AND every member is genuinely idle (not paused / not rate-limited / not mid-rotation), trigger one cycle of `/atmux:bruh` §0.7 — file ONE [improve P3] task per the heuristics there (tech-debt grep / ADR §OQ / coverage gap / aged doctor warn / lint sweep / stale memory). Do NOT lengthen the cadence yet — let §Cadence's adaptive slow-down fire only if the team STAYS idle after the improvement-task injection. Skip the fallback if operator freeze is in lead's driver-inbox last 24h. This replaces the legacy "idle = slow down" reflex with "idle = generate self-directed work".
+   **Eternal-improvement fallback** (operator directive 2026-05-20): if the team check finds zero work to dispatch/unblock AND zero pending claims AND every member is genuinely idle (not paused / not rate-limited / not mid-rotation), run one eternal-improvement cycle for this team — file ONE `[improve P3]` task per the first heuristic that hits, in this order (formerly `/atmux:bruh` §0.7, retired per ADR-288 §D4; the list is inlined here so nothing dangles):
+
+   1. **Tech-debt grep** — `rg -nE 'TODO|FIXME|HACK|XXX' src/ docs/ -g '!**/node_modules/**' | head -10`; pick one TODO with concrete actionable scope and file it with the verbatim `file:line` + a fix sketch.
+   2. **ADR §OQ follow-ups** — `rg -nE '^### OQ-|^## Open questions' docs/adr/ | head -10`; an open OQ older than 30 days is a candidate — file a P3 task to resolve it via ADR amendment.
+   3. **Test coverage gaps** — run the project's coverage probe (e.g. `bun test --coverage`) and pick the lowest-coverage tracked file; file "Raise X.ts coverage from N% to 100% — add tests for [uncovered lines]".
+   4. **Aged doctor warn rows** — `atmux doctor --json | jq '.rows[] | select(.status == "yellow")'`; pick a row yellow for >7 days and file a task to fix it (not suppress it).
+   5. **Lint warning sweep** — if the lint run reports >50 warnings, file one P3 sweep task; below 50 the signal/noise is too low.
+   6. **Stale memory entries** — `find <claude-memory-dir> -name '*.md' -mtime +90 | head -5`; file a P4 task to triage + archive.
+
+   Constraints: default priority P3, one task per cycle (a slow drip, not a flood), title prefix `[improve P3] …`, body cites the exact heuristic hit, skip a heuristic when a sibling improvement task is already in `todo` for the same hit.
+
+   Do NOT lengthen the cadence yet — let §Cadence's adaptive slow-down fire only if the team STAYS idle after the improvement-task injection. Skip the fallback if operator freeze is in lead's driver-inbox last 24h. This replaces the legacy "idle = slow down" reflex with "idle = generate self-directed work".
 
 4. **Escalate only real blockers.** If and only if a blocker needs user input (credentials, ambiguous product decision, external access), call:
 
@@ -110,7 +121,7 @@ Each time this skill fires in `run` mode, do the following. Keep the response te
 - **Overnight** when team is idle — burning ~300k tokens/hour at 270s cadence for a silent team is waste. At 3600s you still get hourly heartbeat + emergency-signal propagation.
 - **Post-demo wind-down** — work shipped, team idle, the user wants to read without chatter.
 
-**Note** (operator directive 2026-05-20): eternal-improvement (`/atmux:bruh §0.7`) fires from `/atmux:whip run` step 3 BEFORE the adaptive slow-down. Real idle (slow-down triggers) only after the fallback runs and STILL finds no work to do. Empty kanban + every improvement-heuristic already filed = legitimate idle. Idle ≠ "nothing to do" — idle = "nothing to do AND nothing to improve".
+**Note** (operator directive 2026-05-20): eternal-improvement (the six-heuristic list inlined in step 3 — formerly `/atmux:bruh` §0.7, retired per ADR-288 §D4) fires from `/atmux:whip run` step 3 BEFORE the adaptive slow-down. Real idle (slow-down triggers) only after the fallback runs and STILL finds no work to do. Empty kanban + every improvement-heuristic already filed = legitimate idle. Idle ≠ "nothing to do" — idle = "nothing to do AND nothing to improve".
 - **Rate-limit pressure** — slowing the lead's cadence reduces its share of the usage bucket.
 - **Demo rehearsal / live demo** — no Discord pings mid-presentation.
 

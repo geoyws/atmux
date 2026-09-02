@@ -487,7 +487,7 @@ The operator reads the sweep pane to scan-skim what each turn did. **Every opera
 **✅ Fine** — <one-liner per team; condense if all-green>
 ```
 
-Per-line marker glossary (consistent across `/atmux:whip` §8.0, `/atmux:bau` header, `/atmux:bruh` §7, `/atmux:session`, `/atmux:team`, `/atmux:tell-lead`, `/atmux:budget`):
+Per-line marker glossary (consistent across `/atmux:whip` §8.0, `/atmux:bau` header, `/atmux:session`, `/atmux:team`, `/atmux:tell-lead`, `/atmux:budget`):
 
 - **👁** prefix = operator-action-requested. Driver MUST stop and read. Without 👁, the line is safe to skim.
 - **✅** = working as intended (shipping / healthy / on-cadence)

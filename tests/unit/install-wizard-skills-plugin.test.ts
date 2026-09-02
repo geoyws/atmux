@@ -237,8 +237,8 @@ describe("init verb — --skills-only flag", () => {
 // ---------- [s]how branch → SKILLS_TABLE + render ----------
 
 describe("SKILLS_TABLE — [s]how reference table", () => {
-  test("contains exactly 13 entries — one per §D2 carve set skill", () => {
-    expect(SKILLS_TABLE).toHaveLength(13);
+  test("contains exactly 11 entries — §D2 carve set minus bruh/bruhloop (ADR-288 §D4)", () => {
+    expect(SKILLS_TABLE).toHaveLength(11);
   });
 
   test("each entry has a /atmux:<name> shape + non-empty description", () => {
@@ -248,29 +248,30 @@ describe("SKILLS_TABLE — [s]how reference table", () => {
     }
   });
 
-  test("table includes the 13 §D2 skill names", () => {
+  test("table includes the 11 live §D2 skill names", () => {
     const names = SKILLS_TABLE.map((s) => s.name);
     expect(names).toContain("/atmux:team");
     expect(names).toContain("/atmux:driver");
     expect(names).toContain("/atmux:session");
     expect(names).toContain("/atmux:tell-lead");
     expect(names).toContain("/atmux:heads-up");
-    expect(names).toContain("/atmux:bruh");
-    expect(names).toContain("/atmux:bruhloop");
     expect(names).toContain("/atmux:whip");
     expect(names).toContain("/atmux:bau");
     expect(names).toContain("/atmux:ghostbuster");
     expect(names).toContain("/atmux:budget");
     expect(names).toContain("/atmux:sweep");
     expect(names).toContain("/atmux:cockpit-rebuild");
+    // ADR-288 §D4: retired + deleted.
+    expect(names).not.toContain("/atmux:bruh");
+    expect(names).not.toContain("/atmux:bruhloop");
   });
 
-  test("renderSkillsTable returns 13 left-aligned lines with skill+desc", () => {
+  test("renderSkillsTable returns 11 left-aligned lines with skill+desc", () => {
     const out = renderSkillsTable();
     // Strip trailing newline (helper appends one) but preserve per-line
     // leading-space indent. `.trim()` would eat line 1's indent.
     const lines = out.replace(/\n$/, "").split("\n");
-    expect(lines).toHaveLength(13);
+    expect(lines).toHaveLength(11);
     for (const line of lines) {
       expect(line).toMatch(/^  \/atmux:/);
     }

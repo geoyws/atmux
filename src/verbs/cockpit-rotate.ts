@@ -1,8 +1,10 @@
 // ADR-167: `atmux cockpit rotate <session-name>` — Rung C canonical
 // rotation verb for cockpit-level role panes (medic / per-team driver).
-// Closes the missing rung in /bruh's escalation chain (Rung A = member
-// rotate, Rung B = lead rotate via medic, Rung C = this verb, Rung D =
-// full cockpit rebuild).
+// Historically it closed the missing rung in the /bruh escalation chain
+// (Rung A = member rotate, Rung B = lead rotate via medic, Rung C = this
+// verb, Rung D = full cockpit rebuild) — formerly the /bruh skill,
+// retired per ADR-288 §D4; the rung ladder is kept here as the verb's
+// own scope description.
 //
 // T2 (shipped c376f63): verb dispatch, parser, gate-4 (never-rotate-
 // superdriver), caller-scope gate, role classifier, per-role respawn
@@ -96,9 +98,24 @@ export interface ParsedCockpitRotateArgs {
 
 /** Session-names that the verb hard-refuses regardless of `--force`.
  *  Gate 4 fires before all others (cheapest + most load-bearing) — the
- *  superdriver pane (W1 per ADR-135) is the operator REPL; rotating it
- *  would kill the interactive session. */
-const RESERVED_NEVER_ROTATE: ReadonlySet<string> = new Set(["superdriver"]);
+ *  superdriver pane (W1, window literal `_sd` per ADR-288 §D1; was
+ *  `_superdriver` per ADR-135) is the operator REPL; rotating it would
+ *  kill the interactive session. The role name `superdriver` stays the
+ *  canonical key (the gate identifier is `gate-4-never-rotate-superdriver`
+ *  and the audit row's `sessionName` is what post-incident filters read);
+ *  the ADR-288 shortform `sd` and both window literals are refused too so
+ *  no spelling of window 1 reaches the respawn path. `_sdN` lanes (N ≥ 2)
+ *  are NOT in this set — they are ADR-279 operator windows, and the verb
+ *  has no role for them: `classifyRole` files them as `team-driver`, and
+ *  `refuseUnknownTeam` then refuses with `team '<name>' not found in
+ *  cockpit.json` right after classification — before the gates and
+ *  before any handoff payload is written (exit 70, pane untouched). */
+const RESERVED_NEVER_ROTATE: ReadonlySet<string> = new Set([
+  "superdriver",
+  "sd",
+  "_sd",
+  "_superdriver",
+]);
 
 /** Default cockpit session-name (ADR-264 §D5; was `atmux_cockpit`
  *  per ADR-135). Operators with bespoke names pass
@@ -217,9 +234,9 @@ export function targetWindowForRole(role: RoleId, sessionName: string): string {
 // reason — or null if the gate passes. IO happens in `runPreFlightGates`
 // below, which composes capture / stat / clock with the pure classifier.
 
-/** Gate 1 — user-not-typing. Refuses when the cockpit `_superdriver`
- *  compose-box is TYPING. Reuses src/core/pane-state.ts (ADR-155) so
- *  the classifier definition stays in one place. */
+/** Gate 1 — user-not-typing. Refuses when the cockpit `_sd` (window 1,
+ *  ADR-288 §D1) compose-box is TYPING. Reuses src/core/pane-state.ts
+ *  (ADR-155) so the classifier definition stays in one place. */
 export function classifyGate1(superdriverCapture: string): string | null {
   const cls = classifyText(superdriverCapture);
   if (cls.state === "TYPING") {
@@ -301,7 +318,7 @@ export interface CockpitRotateOpts {
   /** Override `HOME` resolution for session-start marker + audit-log
    *  path. Defaults to `env.HOME ?? "/root"`. */
   homeDir?: string;
-  /** Cockpit session-name; gate-1 reads `<session>:_superdriver` and
+  /** Cockpit session-name; gate-1 reads `<session>:_sd` and
    *  gate-2 reads `<session>:<target-window>`. Default
    *  `atx` (ADR-264 §D5 canonical). */
   cockpitSessionName?: string;
@@ -445,7 +462,7 @@ async function defaultReadLeadOutboxTail(atmuxDir: string, lines: number): Promi
 }
 
 /** e-419553c6 true containment: where a rotate target's window LIVES.
- *  Medic (and `_superdriver` for gate-1) live in the cockpit session on
+ *  Medic (and `_sd` for gate-1) live in the cockpit session on
  *  the cockpit socket; a team-driver viewer lives in the cockpit ONLY
  *  when the team has no group ancestor — a grouped team's viewer lives
  *  in its group's server (`groupSocketPath(group)`, session named after
@@ -487,21 +504,42 @@ async function resolveViewerHost(
   return { cfg: { socketPath: groupSocketPath(lookup.group) }, sessionName: lookup.group };
 }
 
+/** tmux target for a cockpit-ROLE window (`_sd`, `_superdriver`, `_medic`).
+ *  The `=` prefix forces an exact window-name match. Without it tmux
+ *  prefix-matches window names, so `atx:_sd` resolves to `_sd2` when `_sd`
+ *  is absent and exactly one `_sdN` lane exists (measured on tmux 3.7c) —
+ *  gate 1's legacy fallback would then never fire, and Ctrl-C / kill-window
+ *  aimed at `_medic` could land on a `_medic*`-named window. Team viewer
+ *  targets keep the plain `<session>:<team>` form (ADR-288 review). */
+function exactWindowTarget(sessionName: string, windowName: string): string {
+  return `${sessionName}:=${windowName}`;
+}
+
+/** Target for a rotate step: exact-match for cockpit-role windows (medic),
+ *  plain for team viewers (their names are team names, matched as before). */
+function roleWindowTarget(sessionName: string, role: RoleId, windowName: string): string {
+  return role === "medic" ? exactWindowTarget(sessionName, windowName) : `${sessionName}:${windowName}`;
+}
+
 /** Capture a cockpit-session pane's last N lines via the cockpit socket.
  *  Returns the captured text or empty string if the capture fails (tmux
  *  not running, window missing — gate-1/2 then pass on the empty text,
  *  which is the safer default than crashing the verb on a misconfigured
- *  cockpit). */
+ *  cockpit). `exact` selects the `=`-prefixed exact-match target (cockpit-
+ *  role windows); the default keeps tmux's prefix match for team names. */
 async function safeCapturePane(
   deps: ResolvedDeps,
   windowName: string,
   host?: ViewerHost,
+  exact = false,
 ): Promise<string> {
   const h = host ?? cockpitViewerHost(deps);
   try {
     const tmux = deps.tmuxFactory(h.cfg);
     return await tmux.pane.capturePane({
-      target: `${h.sessionName}:${windowName}`,
+      target: exact
+        ? exactWindowTarget(h.sessionName, windowName)
+        : `${h.sessionName}:${windowName}`,
       start: -CAPTURE_PANE_LINES,
     });
   } catch {
@@ -885,7 +923,7 @@ async function sendCtrlCWithVerify(
 ): Promise<{ success: boolean; attempts: number }> {
   const h = host ?? cockpitViewerHost(deps);
   const tmux = deps.tmuxFactory(h.cfg);
-  const paneTarget: Target = `${h.sessionName}:${windowName}`;
+  const paneTarget: Target = roleWindowTarget(h.sessionName, role, windowName);
   const sendTarget: SendTarget = {
     kind: "member",
     member: role,
@@ -922,6 +960,41 @@ function readMedicConfig(cockpit: LoadedCockpit): CockpitMedic | null {
 }
 function readTeamConfig(cockpit: LoadedCockpit, teamName: string): CockpitTeam | null {
   return cockpit.teams.find((t) => t.name === teamName) ?? null;
+}
+
+/** ADR-288 §D3 (review finding): refuse an unknown team-driver target as
+ *  early as possible — right after role classification, BEFORE gates 1-3
+ *  and BEFORE any handoff payload is written — so `rotate sd2` (an `_sdN`
+ *  operator lane) or a typo cannot clobber the last real team-driver
+ *  handoff at `~/.claude/teams/__cockpit__/team-driver/handoff.md`.
+ *  Returns the exit code when refused, or null to continue. A cockpit
+ *  load failure here is deferred (null): `performRespawn` owns that
+ *  failure mode and repeats the unknown-team check ahead of its own
+ *  handoff write. */
+async function refuseUnknownTeam(
+  deps: ResolvedDeps,
+  parsed: ParsedCockpitRotateArgs,
+  startMs: number,
+): Promise<number | null> {
+  let cockpit: LoadedCockpit;
+  try {
+    cockpit = await deps.loadCockpit({
+      env: deps.env,
+      ...(deps.cockpitConfigHome !== undefined ? { home: deps.cockpitConfigHome } : {}),
+    });
+  } catch {
+    return null;
+  }
+  if (readTeamConfig(cockpit, parsed.sessionName) !== null) return null;
+  const err = `team '${parsed.sessionName}' not found in cockpit.json`;
+  deps.stderr(`cockpit rotate: ${err}\n`);
+  await emitRespawnFailure(deps, {
+    role: "team-driver",
+    sessionName: parsed.sessionName,
+    durationMs: deps.nowMs() - startMs,
+    error: err,
+  });
+  return EX_SOFTWARE;
 }
 
 /** Per-role respawn flow: kill the target window, build the per-role
@@ -963,6 +1036,29 @@ async function performRespawn(
     return EX_SOFTWARE;
   }
 
+  // ADR-288 §D3 (review finding): an unknown team is refused BEFORE the
+  // handoff write below, never after it — otherwise the last real
+  // team-driver payload would be clobbered on the way to a refusal.
+  // Normally `refuseUnknownTeam` (pre-gate) has already settled this;
+  // this repeat covers the case where the pre-gate cockpit load failed
+  // transiently and only this load succeeded.
+  let teamCfg: CockpitTeam | undefined;
+  if (role === "team-driver") {
+    const t = readTeamConfig(cockpit, parsed.sessionName);
+    if (t === null) {
+      const err = `team '${parsed.sessionName}' not found in cockpit.json`;
+      deps.stderr(`cockpit rotate: ${err}\n`);
+      await emitRespawnFailure(deps, {
+        role,
+        sessionName: parsed.sessionName,
+        durationMs: deps.nowMs() - startMs,
+        error: err,
+      });
+      return EX_SOFTWARE;
+    }
+    teamCfg = t;
+  }
+
   // T5: assemble + atomic-write the role-specific handoff payload
   // BEFORE Ctrl-C per ADR-167 §Ordering invariant. If the write fails,
   // the pane is intentionally NOT touched — recovery is "retry the
@@ -996,18 +1092,9 @@ async function performRespawn(
         break;
       }
       case "team-driver": {
-        const t = readTeamConfig(cockpit, parsed.sessionName);
-        if (t === null) {
-          const err = `team '${parsed.sessionName}' not found in cockpit.json`;
-          deps.stderr(`cockpit rotate: ${err}\n`);
-          await emitRespawnFailure(deps, {
-            role,
-            sessionName: parsed.sessionName,
-            durationMs: deps.nowMs() - startMs,
-            error: err,
-          });
-          return EX_SOFTWARE;
-        }
+        // `teamCfg` was resolved (and an unknown team refused) BEFORE the
+        // handoff write above, so it is always set on this branch.
+        const t = teamCfg as CockpitTeam;
         // Team-driver cockpit window is the cage-attach retry loop (per
         // ADR-162); it does NOT spawn a claude TUI. The c-alias wrapper
         // resolver is therefore skipped at this branch — the wrapper
@@ -1038,7 +1125,7 @@ async function performRespawn(
 
   const tmux = deps.tmuxFactory(viewerHost.cfg);
   try {
-    await tmux.window.killWindow(`${viewerHost.sessionName}:${windowName}`);
+    await tmux.window.killWindow(roleWindowTarget(viewerHost.sessionName, role, windowName));
   } catch (e) {
     const cause = e instanceof Error ? e.message : String(e);
     deps.stderr(`cockpit rotate: kill-window failed (${cause})\n`);
@@ -1151,18 +1238,35 @@ export async function cockpitRotate(
 
   const role = classifyRole(parsed.sessionName);
 
+  // ADR-288 §D3 (review finding): an unknown team-driver target — an
+  // `_sdN` operator lane, or a typo — is refused here, before the gates
+  // and before any handoff payload is written (exit 70, pane untouched).
+  if (role === "team-driver") {
+    const refused = await refuseUnknownTeam(deps, parsed, startMs);
+    if (refused !== null) return refused;
+  }
+
   // e-419553c6: resolve where the target's window lives ONCE — a
   // grouped team-driver's viewer sits in its group's server, and every
   // pane-addressing step below must aim there. Gate-1 deliberately
-  // stays on the cockpit host (it reads `_superdriver`).
+  // stays on the cockpit host (it reads `_sd`).
   const viewerHost = await resolveViewerHost(deps, role, parsed.sessionName);
 
   // Pre-flight gates 1-3. Each refusal exits 65 with structured stderr
   // `gate-N-<name>: <reason>`. --force bypasses these (per ADR-167
   // §Pre-flight gate matrix bypass column for rows 1-3).
   if (!parsed.force) {
-    // Gate 1 — user-not-typing on cockpit `_superdriver` pane.
-    const sd = await safeCapturePane(deps, "_superdriver");
+    // Gate 1 — user-not-typing on cockpit `_sd` pane (ADR-288 §D1).
+    // Deprecation-window fallback: a cockpit that has not been reconciled
+    // since the ADR-288 rename still names window 1 `_superdriver`; an
+    // empty `_sd` capture (window absent) falls back to the legacy name
+    // so the typing guard never silently lapses between install and the
+    // first `cockpit reconcile`. Remove with the ADR-288 deprecation window.
+    // Both probes use the `=` exact-match target: a prefix-matched `atx:_sd`
+    // would resolve to a lone `_sd2` lane and the fallback would never fire.
+    const sd =
+      (await safeCapturePane(deps, "_sd", undefined, true)) ||
+      (await safeCapturePane(deps, "_superdriver", undefined, true));
     const r1 = classifyGate1(sd);
     if (r1 !== null) {
       deps.stderr(`gate-1-user-not-typing: ${r1}\n`);
@@ -1180,7 +1284,7 @@ export async function cockpitRotate(
 
     // Gate 2 — pane-idle on the target window.
     const targetWindow = targetWindowForRole(role, parsed.sessionName);
-    const target = await safeCapturePane(deps, targetWindow, viewerHost);
+    const target = await safeCapturePane(deps, targetWindow, viewerHost, role === "medic");
     const r2 = classifyGate2(target);
     if (r2 !== null) {
       deps.stderr(`gate-2-pane-idle: ${r2}\n`);

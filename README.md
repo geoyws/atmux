@@ -896,15 +896,14 @@ See [ADR-041 §Prompt-cache discipline](docs/adr/041-token-savings-kanban-slicin
 <!-- per ADR-217 §D7 -->
 ## 🛠️ Skills (`/atmux:` namespace)
 
-atmux ships with a Claude Code plugin bundling 12 cockpit-tier skills (`/atmux:bruh`, `/atmux:team`, `/atmux:tell-lead`, `/atmux:whip`, etc.) at [`plugins/atmux/`](plugins/atmux/). Each wraps a recurring multi-step atmux workflow so operators can drive a fleet without memorising the full verb surface. Install via the `atmux init` wizard (per [ADR-200](docs/adr/200-install-wizard-guided-first-run-setup.md)) or manually symlink `plugins/atmux/` into `~/.claude/plugins/atmux/`.
+atmux ships with a Claude Code plugin bundling 11 cockpit-tier skills (`/atmux:team`, `/atmux:driver`, `/atmux:tell-lead`, `/atmux:whip`, etc.) at [`plugins/atmux/`](plugins/atmux/). `/atmux:bruh` and `/atmux:bruhloop` were retired and deleted per [ADR-288](docs/adr/288-superdriver-lane-shortform-and-multi-lane-cockpit.md) §D4 — the kb-row operating model (a standing goal per superdriver lane plus the `/atmux:sweep` and `/atmux:whip` cadences) covers what they swept. Each wraps a recurring multi-step atmux workflow so operators can drive a fleet without memorising the full verb surface. Install via the `atmux init` wizard (per [ADR-200](docs/adr/200-install-wizard-guided-first-run-setup.md)) or manually symlink `plugins/atmux/` into `~/.claude/plugins/atmux/`.
 
 | Skill                       | What it does                                                              | Calls atmux verb              |
 |-----------------------------|---------------------------------------------------------------------------|-------------------------------|
 | `/atmux:bau`                | Business-as-usual status check + auto-escalate dormant teams to lead.     | `atmux status / report` (read) |
-| `/atmux:bruh`               | Unblocker sweep — decisions / blockers / flags / worktrees in one pass.   | `atmux flags / decisions / inbox` |
-| `/atmux:bruhloop`           | 15-min `/atmux:bruh` cadence sugar wrapping `/loop`.                      | (chains to `/atmux:bruh`)     |
 | `/atmux:budget`             | Live rate-limit probe across every Claude account, prints utilisation.    | (pure-shell — Anthropic API)  |
 | `/atmux:cockpit-rebuild`    | Deterministically (re)build the cockpit + every per-team cage.            | `atmux cockpit rebuild`       |
+| `/atmux:driver`             | Driver-1 consolidation of sibling driver branches (consolidate / status). | `git` (fetch + merge)         |
 | `/atmux:ghostbuster`        | Sweep mergeable epic-team branches; merge what's ahead, prune stale.      | `atmux epic-merge / git`      |
 | `/atmux:heads-up <msg>`     | Lightweight nudge to teammates about new tasks / cascade unblocks.        | `atmux send`                  |
 | `/atmux:session`            | Session continuity (cont / handoff / stop) at phase boundaries.| `atmux handoff`               |

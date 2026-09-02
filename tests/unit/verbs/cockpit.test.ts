@@ -24,6 +24,7 @@ import {
   cockpitAttach,
   cockpitMigrateSocket,
   cockpitRebuild,
+  isSuperdriverLaneName,
   LEGACY_COCKPIT_SESSION_NAMES,
   normaliseTeamJson,
   type ParsedCockpitArgs,
@@ -818,7 +819,7 @@ describe("applyCagePrefix", () => {
       await fx.tmux.session.newSession({
         name: "atmux_test_cockpit",
         detached: true,
-        windowName: "_superdriver",
+        windowName: "_sd",
       });
       await applyCagePrefix(fx.tmux, "F1");
       const opts = await fx.tmux.option.showOptions({ global: true });
@@ -844,7 +845,7 @@ describe("reconcileCockpitSession", () => {
       await reconcileCockpitSession(fx.tmux, "atmux_test", teams, logger);
       const wins = await fx.tmux.window.listWindows("atmux_test");
       const names = wins.map((w) => w.name);
-      expect(names).toContain("_superdriver");
+      expect(names).toContain("_sd");
       expect(names).toContain("alpha");
       expect(names).toContain("beta");
     } finally {
@@ -892,7 +893,7 @@ describe("reconcileCockpitSession", () => {
         .slice()
         .sort((a, b) => a.index - b.index)
         .map((w) => w.name);
-      expect(first).toEqual(["_superdriver", "_medic", "_misc", "alpha", "beta"]);
+      expect(first).toEqual(["_sd", "_medic", "_misc", "alpha", "beta"]);
 
       const command = Bun.spawnSync([
         "tmux",
@@ -964,7 +965,7 @@ describe("reconcileCockpitSession", () => {
         .slice()
         .sort((a, b) => a.index - b.index)
         .map((window) => window.name);
-      expect(ordered).toEqual(["_superdriver", "_medic", "_superbot", "_misc", "alpha", "beta"]);
+      expect(ordered).toEqual(["_sd", "_medic", "_superbot", "_misc", "alpha", "beta"]);
       const before = new Map<string, number>();
       for (const window of ordered) {
         const pane = (await fx.tmux.pane.listPanes(`atmux_cockpit:${window}`))[0];
@@ -1023,7 +1024,7 @@ describe("reconcileCockpitSession", () => {
         true,
       );
       const names = (await fx.tmux.window.listWindows("s")).map((w) => w.name);
-      expect(names).toContain("_superdriver");
+      expect(names).toContain("_sd");
       expect(names).toContain("a");
       expect(names).not.toContain("b");
     } finally {
@@ -1064,7 +1065,7 @@ describe("reconcileCockpitSession", () => {
       // Window 1 = superdriver (created by newSession); window 2 = superdoctor;
       // teams 3..N. Indices may not literally be 1,2,3 if tmux is configured
       // with base-index != 1, but RELATIVE order is what we assert.
-      expect(byIndex[0]?.name).toBe("_superdriver");
+      expect(byIndex[0]?.name).toBe("_sd");
       // ADR-133: window renamed superdoctor → medic. Legacy alias kept
       //          in buildSuperdoctorCommand dep for back-compat; window
       //          name is canonical "medic".
@@ -1092,8 +1093,8 @@ describe("reconcileCockpitSession", () => {
       await reconcileCockpitSession(fx.tmux, "s", teams, logger);
       await reconcileCockpitSession(fx.tmux, "s", teams, logger, {}, { enabled: false });
       const names = (await fx.tmux.window.listWindows("s")).map((w) => w.name).sort();
-      // ADR-135 §D2: `_superdriver` sorts before `alpha` (`_` < lowercase ASCII).
-      expect(names).toEqual(["_superdriver", "alpha"]);
+      // ADR-135 §D2: `_sd` sorts before `alpha` (`_` < lowercase ASCII).
+      expect(names).toEqual(["_sd", "alpha"]);
     } finally {
       try {
         await fx.tmux.server.killServer();
@@ -1144,7 +1145,7 @@ describe("reconcileCockpitSession", () => {
         .slice()
         .sort((a, b) => a.index - b.index)
         .map((w) => w.name);
-      expect(pre[0]).toBe("_superdriver");
+      expect(pre[0]).toBe("_sd");
       expect(pre.slice(1).sort()).toEqual(["alpha", "beta"]);
       // Upgrade — superdoctor enabled. The move-with-kill on the
       // displaced team viewer is a destructive op; t-8b0e077e requires
@@ -1153,7 +1154,7 @@ describe("reconcileCockpitSession", () => {
       const post = (await fx.tmux.window.listWindows("s"))
         .slice()
         .sort((a, b) => a.index - b.index);
-      expect(post[0]?.name).toBe("_superdriver");
+      expect(post[0]?.name).toBe("_sd");
       // ADR-133: W2 named "medic" canonically.
       expect(post[1]?.name).toBe("_medic");
       // Both teams must still be present (one was displaced + recreated).
@@ -1183,7 +1184,7 @@ describe("reconcileCockpitSession", () => {
       // a destructive op (t-8b0e077e) → thread `yes=true`.
       await reconcileCockpitSession(fx.tmux, "s", [], logger, sdDeps, sdNoAutoStart, true);
       const names = (await fx.tmux.window.listWindows("s")).map((w) => w.name).sort();
-      expect(names).toContain("_superdriver");
+      expect(names).toContain("_sd");
       // ADR-133: W2 canonically named "medic". Legacy "superdoctor" window is preserved by orphan-prune for back-compat, but fresh creations use "medic".
       expect(names).toContain("_medic");
       expect(names).not.toContain("alpha");
@@ -1450,8 +1451,8 @@ describe("reconcileCockpitSession", () => {
       // required.
       await reconcileCockpitSession(fx.tmux, "s", teams, logger);
       const names = (await fx.tmux.window.listWindows("s")).map((w) => w.name).sort();
-      // ADR-135 §D2: `_superdriver` sorts before `alpha` (`_` < lowercase ASCII).
-      expect(names).toEqual(["_superdriver", "alpha"]);
+      // ADR-135 §D2: `_sd` sorts before `alpha` (`_` < lowercase ASCII).
+      expect(names).toEqual(["_sd", "alpha"]);
     } finally {
       try {
         await fx.tmux.server.killServer();
@@ -1500,7 +1501,7 @@ describe("reconcileCockpitSession — ADR-264 §D4 legacy session rename shim", 
       await fx.tmux.session.newSession({
         name: "atmux_cockpit",
         detached: true,
-        windowName: "_superdriver",
+        windowName: "_sd",
       });
       await reconcileCockpitSession(fx.tmux, "atx", [], logger);
       expect(await fx.tmux.session.hasSession("atx")).toBe(true);
@@ -1521,7 +1522,7 @@ describe("reconcileCockpitSession — ADR-264 §D4 legacy session rename shim", 
       await fx.tmux.session.newSession({
         name: "atmux_teams",
         detached: true,
-        windowName: "_superdriver",
+        windowName: "_sd",
       });
       await reconcileCockpitSession(fx.tmux, "atx", [], logger);
       expect(await fx.tmux.session.hasSession("atx")).toBe(true);
@@ -1542,12 +1543,12 @@ describe("reconcileCockpitSession — ADR-264 §D4 legacy session rename shim", 
       await fx.tmux.session.newSession({
         name: "atx",
         detached: true,
-        windowName: "_superdriver",
+        windowName: "_sd",
       });
       await fx.tmux.session.newSession({
         name: "atmux_cockpit",
         detached: true,
-        windowName: "_superdriver",
+        windowName: "_sd",
       });
       await reconcileCockpitSession(fx.tmux, "atx", [], logger);
       // No rename happened — both sessions survive.
@@ -1571,7 +1572,7 @@ describe("reconcileCockpitSession — ADR-264 §D4 legacy session rename shim", 
       await fx.tmux.session.newSession({
         name: "atmux_cockpit",
         detached: true,
-        windowName: "_superdriver",
+        windowName: "_sd",
       });
       // Target is an operator-chosen name, not the canonical `atx` —
       // the legacy session must be left untouched.
@@ -1579,6 +1580,479 @@ describe("reconcileCockpitSession — ADR-264 §D4 legacy session rename shim", 
       expect(await fx.tmux.session.hasSession("atmux_cockpit")).toBe(true);
       expect(await fx.tmux.session.hasSession("geoyws_cockpit")).toBe(true);
       expect(logs.join("\n")).not.toContain("renamed session");
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------- ADR-288 §D1: `_superdriver` → `_sd` window-1 shortform ----------
+
+describe("reconcileCockpitSession — ADR-288 §D1 legacy window-1 rename shim", () => {
+  // Portable medic command so the `_medic` window survives on runners
+  // without `claude` (mirrors sdDeps in the ADR-077 block above).
+  const medicDeps: ResolveTeamWindowDeps = {
+    buildMedicCommand: () => PORTABLE_KEEPALIVE_COMMAND,
+  };
+  const medicNoAutoStart = { enabled: true, autoStart: false };
+
+  test("renames a pre-existing ADR-135 `_superdriver` window in place → `_sd`", async () => {
+    const fx = await spinTmux("cockpit-a288-shim-us");
+    try {
+      const { logger, logs } = makeLogger();
+      await fx.tmux.session.newSession({
+        name: "s",
+        detached: true,
+        windowName: "_superdriver",
+      });
+      const teams: CockpitTeam[] = [{ name: "alpha", root: "/a", enabled: true } as CockpitTeam];
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger);
+      const wins = await fx.tmux.window.listWindows("s");
+      const names = wins.map((w) => w.name);
+      expect(names).toContain("_sd");
+      expect(names).not.toContain("_superdriver");
+      // In-place rename: window 1 keeps its index (base-index 1 per the
+      // canonical atmux.conf) — no kill+respawn.
+      expect(wins.find((w) => w.name === "_sd")?.index).toBe(1);
+      expect(logs.join("\n")).toContain("renamed window '_superdriver' → '_sd'");
+      // Idempotent second pass: no further rename, no ambiguity warning.
+      const renamesBefore = logs.filter((l) => l.includes("renamed window")).length;
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger);
+      const renamesAfter = logs.filter((l) => l.includes("renamed window")).length;
+      expect(renamesAfter).toBe(renamesBefore);
+      expect(logs.some((l) => l.includes("migration ambiguous"))).toBe(false);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("renames a pre-ADR-135 bare `superdriver` window straight to `_sd`", async () => {
+    const fx = await spinTmux("cockpit-a288-shim-bare");
+    try {
+      const { logger, logs } = makeLogger();
+      await fx.tmux.session.newSession({
+        name: "s",
+        detached: true,
+        windowName: "superdriver",
+      });
+      await reconcileCockpitSession(fx.tmux, "s", [], logger);
+      const names = (await fx.tmux.window.listWindows("s")).map((w) => w.name);
+      expect(names).toContain("_sd");
+      expect(names).not.toContain("superdriver");
+      expect(names).not.toContain("_superdriver");
+      expect(logs.join("\n")).toContain("renamed window 'superdriver' → '_sd'");
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("legacy `_superdriver` + canonical `_sd` coexisting warns; neither is pruned", async () => {
+    const fx = await spinTmux("cockpit-a288-shim-ambig");
+    try {
+      const { logger, logs } = makeLogger();
+      await fx.tmux.session.newSession({ name: "s", detached: true, windowName: "_sd" });
+      await fx.tmux.window.newWindow({
+        sessionName: "s",
+        name: "_superdriver",
+        detached: true,
+        shellCommand: PORTABLE_KEEPALIVE_COMMAND,
+      });
+      // No `--yes`: if the legacy window were classified as an orphan the
+      // t-8b0e077e safety gate would throw UsageError here.
+      await reconcileCockpitSession(fx.tmux, "s", [], logger);
+      const names = (await fx.tmux.window.listWindows("s")).map((w) => w.name);
+      expect(names).toContain("_sd");
+      expect(names).toContain("_superdriver");
+      expect(logs.join("\n")).toContain(
+        "cockpit has BOTH '_superdriver' and '_sd' windows — ADR-135 §D4 / ADR-288 §D1 migration ambiguous",
+      );
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("never-prune guard: legacy `_superdriver` survives orphan-prune even with --yes when the shim is skipped", async () => {
+    const fx = await spinTmux("cockpit-a288-noprune");
+    try {
+      const { logger } = makeLogger();
+      // Fixture injects BOTH spellings so the rename shim is a no-op
+      // (ambiguous → warn, no rename) and the legacy window reaches the
+      // orphan-prune pass un-migrated. `beta` is the control: a genuine
+      // orphan that the same pass must sweep.
+      await fx.tmux.session.newSession({ name: "s", detached: true, windowName: "_sd" });
+      for (const name of ["_superdriver", "beta"]) {
+        await fx.tmux.window.newWindow({
+          sessionName: "s",
+          name,
+          detached: true,
+          shellCommand: PORTABLE_KEEPALIVE_COMMAND,
+        });
+      }
+      await reconcileCockpitSession(fx.tmux, "s", [], logger, {}, undefined, true);
+      const names = (await fx.tmux.window.listWindows("s")).map((w) => w.name);
+      expect(names).toContain("_sd");
+      expect(names).toContain("_superdriver");
+      expect(names).not.toContain("beta");
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("medic slot anchors at `_sd.index + 1` even when `_sd` is NOT at the first index (literal-2 fallback would kill it)", async () => {
+    const fx = await spinTmux("cockpit-a288-anchor-off1");
+    try {
+      const { logger } = makeLogger();
+      // `zeta` (a team viewer) occupies index 1 and `_sd` sits at index 2.
+      // With base-index 1 a literal `2` fallback would aim `_medic` at
+      // `_sd`'s own slot (move-with-kill on the operator REPL); the anchor
+      // must resolve to `_sd.index + 1 === 3`.
+      await fx.tmux.session.newSession({ name: "s", detached: true, windowName: "zeta" });
+      await fx.tmux.window.newWindow({
+        sessionName: "s",
+        name: "_sd",
+        detached: true,
+        shellCommand: PORTABLE_KEEPALIVE_COMMAND,
+      });
+      const teams: CockpitTeam[] = [{ name: "zeta", root: "/z", enabled: true } as CockpitTeam];
+      await reconcileCockpitSession(
+        fx.tmux,
+        "s",
+        teams,
+        logger,
+        medicDeps,
+        medicNoAutoStart,
+        true,
+      );
+      const wins = (await fx.tmux.window.listWindows("s"))
+        .slice()
+        .sort((a, b) => a.index - b.index);
+      const sd = wins.find((w) => w.name === "_sd");
+      const md = wins.find((w) => w.name === "_medic");
+      expect(sd?.index).toBe(2);
+      expect(md?.index).toBe(3);
+      expect(wins.map((w) => w.name)).toEqual(["_sd", "_medic", "zeta"]);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("un-renamed legacy `_superdriver` at index 2 (rename shim failed) anchors the reorder; the REPL window survives", async () => {
+    const fx = await spinTmux("cockpit-a288-norename");
+    try {
+      const { logger, logs } = makeLogger();
+      // Simulate the shim's warn-and-continue path: rename-window throws,
+      // so `_superdriver` stays un-migrated. It sits at index 2 behind a
+      // viewer at index 1, so the reorder base must be `anchor.index + 1
+      // === 3`: a literal fallback `2` (anchor not found) would place the
+      // first viewer onto the legacy window with move-with-kill.
+      const flaky: TmuxNamespace = {
+        ...fx.tmux,
+        window: {
+          ...fx.tmux.window,
+          renameWindow: async () => {
+            throw new Error("simulated rename-window failure");
+          },
+        },
+      };
+      await fx.tmux.session.newSession({ name: "s", detached: true, windowName: "zeta" });
+      for (const name of ["_superdriver", "alpha"]) {
+        await fx.tmux.window.newWindow({
+          sessionName: "s",
+          name,
+          detached: true,
+          shellCommand: PORTABLE_KEEPALIVE_COMMAND,
+        });
+      }
+      const legacyId = (await fx.tmux.window.listWindows("s")).find(
+        (w) => w.name === "_superdriver",
+      )?.id;
+      const teams: CockpitTeam[] = [
+        { name: "alpha", root: "/a", enabled: true } as CockpitTeam,
+        { name: "zeta", root: "/z", enabled: true } as CockpitTeam,
+      ];
+      await reconcileCockpitSession(flaky, "s", teams, logger, {}, undefined, true);
+      expect(logs.join("\n")).toContain("failed to rename legacy '_superdriver' window to '_sd'");
+      const wins = (await fx.tmux.window.listWindows("s"))
+        .slice()
+        .sort((a, b) => a.index - b.index);
+      // Anchored on the legacy window at 2: viewers start at 3.
+      expect(wins.map((w) => `${w.index}:${w.name}`)).toEqual([
+        "2:_superdriver",
+        "3:alpha",
+        "4:zeta",
+      ]);
+      // Same window id → the REPL was never killed.
+      expect(wins.find((w) => w.name === "_superdriver")?.id).toBe(legacyId);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("medic slot follows a just-migrated `_superdriver` (`_sd.index + 1`)", async () => {
+    const fx = await spinTmux("cockpit-a288-anchor-mig");
+    try {
+      const { logger } = makeLogger();
+      // Legacy cockpit: `_superdriver` at index 1, a team viewer already
+      // parked at index 2. The shim renames window 1 to `_sd` first, then
+      // `_medic` must land at `_sd.index + 1`, displacing `alpha`
+      // (destructive → --yes).
+      await fx.tmux.session.newSession({
+        name: "s",
+        detached: true,
+        windowName: "_superdriver",
+      });
+      await fx.tmux.window.newWindow({
+        sessionName: "s",
+        name: "alpha",
+        detached: true,
+        shellCommand: PORTABLE_KEEPALIVE_COMMAND,
+      });
+      const teams: CockpitTeam[] = [{ name: "alpha", root: "/a", enabled: true } as CockpitTeam];
+      await reconcileCockpitSession(
+        fx.tmux,
+        "s",
+        teams,
+        logger,
+        medicDeps,
+        medicNoAutoStart,
+        true,
+      );
+      const wins = (await fx.tmux.window.listWindows("s"))
+        .slice()
+        .sort((a, b) => a.index - b.index);
+      expect(wins.map((w) => w.name)).toEqual(["_sd", "_medic", "alpha"]);
+      const sd = wins.find((w) => w.name === "_sd");
+      const md = wins.find((w) => w.name === "_medic");
+      expect(sd).toBeDefined();
+      expect(md?.index).toBe((sd?.index ?? -100) + 1);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("ADR-288 §D2: `_sd2` / `_sd3` lanes are plain operator windows ordered after `_sd`", async () => {
+    const fx = await spinTmux("cockpit-a288-lanes");
+    try {
+      const { logger } = makeLogger();
+      const teams: CockpitTeam[] = [{ name: "alpha", root: "/a", enabled: true } as CockpitTeam];
+      const windows = [
+        { name: "_sd2", enabled: true, cwd: "/tmp", command: null },
+        { name: "_sd3", enabled: true, cwd: "/tmp", command: null },
+      ];
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger, {}, undefined, false, {
+        windows,
+      });
+      const first = (await fx.tmux.window.listWindows("s"))
+        .slice()
+        .sort((a, b) => a.index - b.index)
+        .map((w) => w.name);
+      expect(first).toEqual(["_sd", "_sd2", "_sd3", "alpha"]);
+      // Second pass: declared lanes are wanted, not orphans — no --yes needed.
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger, {}, undefined, false, {
+        windows,
+      });
+      const second = (await fx.tmux.window.listWindows("s"))
+        .slice()
+        .sort((a, b) => a.index - b.index)
+        .map((w) => w.name);
+      expect(second).toEqual(first);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+  // ---------- ADR-288 §D5: lane placement ----------
+
+  type Fx = Awaited<ReturnType<typeof spinTmux>>;
+  const orderOf = async (fx: Fx, session = "s"): Promise<string[]> =>
+    (await fx.tmux.window.listWindows(session))
+      .slice()
+      .sort((a, b) => a.index - b.index)
+      .map((w) => w.name);
+  const idsOf = async (fx: Fx, session = "s"): Promise<Record<string, string>> =>
+    Object.fromEntries((await fx.tmux.window.listWindows(session)).map((w) => [w.name, w.id]));
+  const d5Windows = [
+    { name: "_sd2", enabled: true, cwd: "/tmp", command: null },
+    { name: "_sd3", enabled: true, cwd: "/tmp", command: null },
+    { name: "_misc", enabled: true, cwd: "/tmp", command: null },
+  ];
+  const alphaTeam: CockpitTeam[] = [{ name: "alpha", root: "/a", enabled: true } as CockpitTeam];
+
+  test("ADR-288 §D5: fresh reconcile places lanes right after `_sd`, then `_medic`, `_misc`, viewers", async () => {
+    const fx = await spinTmux("cockpit-a288-d5-fresh");
+    try {
+      const { logger } = makeLogger();
+      await reconcileCockpitSession(fx.tmux, "s", alphaTeam, logger, medicDeps, medicNoAutoStart, false, {
+        windows: d5Windows,
+      });
+      expect(await orderOf(fx)).toEqual(["_sd", "_sd2", "_sd3", "_medic", "_misc", "alpha"]);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("ADR-288 §D5: a cockpit already in lane order is a no-op on re-run (no kills, no moves)", async () => {
+    const fx = await spinTmux("cockpit-a288-d5-noop");
+    try {
+      const { logger } = makeLogger();
+      await reconcileCockpitSession(fx.tmux, "s", alphaTeam, logger, medicDeps, medicNoAutoStart, false, {
+        windows: d5Windows,
+      });
+      const before = await orderOf(fx);
+      const idsBefore = await idsOf(fx);
+      expect(before).toEqual(["_sd", "_sd2", "_sd3", "_medic", "_misc", "alpha"]);
+      const second = makeLogger();
+      await reconcileCockpitSession(fx.tmux, "s", alphaTeam, second.logger, medicDeps, medicNoAutoStart, false, {
+        windows: d5Windows,
+      });
+      expect(await orderOf(fx)).toEqual(before);
+      // Same tmux window ids → nothing was killed and recreated.
+      expect(await idsOf(fx)).toEqual(idsBefore);
+      // No move / kill / prune lines in the second pass.
+      const moved = second.logs.filter(
+        (l) => l.includes("✓ moved") || l.includes("removed orphan") || l.includes("✓ added"),
+      );
+      expect(moved).toEqual([]);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("ADR-288 §D5: a cockpit in the OLD order `_sd,_medic,_sd2,_sd3,_misc` is reordered without killing anything and without --yes", async () => {
+    const fx = await spinTmux("cockpit-a288-d5-old");
+    try {
+      const { logger, logs } = makeLogger();
+      await fx.tmux.session.newSession({ name: "s", detached: true, windowName: "_sd" });
+      for (const name of ["_medic", "_sd2", "_sd3", "_misc"]) {
+        await fx.tmux.window.newWindow({
+          sessionName: "s",
+          name,
+          detached: true,
+          shellCommand: PORTABLE_KEEPALIVE_COMMAND,
+        });
+      }
+      expect(await orderOf(fx)).toEqual(["_sd", "_medic", "_sd2", "_sd3", "_misc"]);
+      const idsBefore = await idsOf(fx);
+      // yes=false: the pre-mutation safety gate must NOT classify the lane
+      // sitting in the old medic slot as a move-with-kill victim.
+      await reconcileCockpitSession(fx.tmux, "s", [], logger, medicDeps, medicNoAutoStart, false, {
+        windows: d5Windows,
+      });
+      expect(await orderOf(fx)).toEqual(["_sd", "_sd2", "_sd3", "_medic", "_misc"]);
+      // Every window kept its id → moves only, no kill + recreate.
+      expect(await idsOf(fx)).toEqual(idsBefore);
+      // The medic pass deferred (no move-with-kill); the park-then-place
+      // pass did the positioning — ids above prove nothing was killed.
+      expect(logs.some((l) => l.includes("left to the park-then-place pass (ADR-288 §D5)"))).toBe(true);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("ADR-288 §D5: with medic disabled the lanes still lead, then `_misc`, then viewers", async () => {
+    const fx = await spinTmux("cockpit-a288-d5-nomedic");
+    try {
+      const { logger } = makeLogger();
+      await reconcileCockpitSession(fx.tmux, "s", alphaTeam, logger, {}, undefined, false, {
+        windows: d5Windows,
+      });
+      expect(await orderOf(fx)).toEqual(["_sd", "_sd2", "_sd3", "_misc", "alpha"]);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("ADR-288 §D5: `_sd10` is a lane, `_sd1` / `_sdx` / `_misc` are not (placement regex)", () => {
+    expect(isSuperdriverLaneName("_sd2")).toBe(true);
+    expect(isSuperdriverLaneName("_sd9")).toBe(true);
+    expect(isSuperdriverLaneName("_sd10")).toBe(true);
+    expect(isSuperdriverLaneName("_sd19")).toBe(true);
+    expect(isSuperdriverLaneName("_sd")).toBe(false);
+    expect(isSuperdriverLaneName("_sd0")).toBe(false);
+    expect(isSuperdriverLaneName("_sd1")).toBe(false);
+    expect(isSuperdriverLaneName("_sd01")).toBe(false);
+    expect(isSuperdriverLaneName("_sdx")).toBe(false);
+    expect(isSuperdriverLaneName("_misc")).toBe(false);
+    expect(isSuperdriverLaneName("sd2")).toBe(false);
+  });
+
+  test("un-renamed bare `superdriver` at index 2 (rename shim failed) anchors the reorder too", async () => {
+    const fx = await spinTmux("cockpit-a288-norename-bare");
+    try {
+      const { logger, logs } = makeLogger();
+      const flaky: TmuxNamespace = {
+        ...fx.tmux,
+        window: {
+          ...fx.tmux.window,
+          renameWindow: async () => {
+            throw new Error("simulated rename-window failure");
+          },
+        },
+      };
+      // Viewer at index 1, un-renamed bare `superdriver` at index 2: the
+      // third `findWindowOneAnchor` fallback must anchor on it so viewers
+      // start at 3 (a literal fallback 2 would land on the legacy window).
+      await fx.tmux.session.newSession({ name: "s", detached: true, windowName: "zeta" });
+      for (const name of ["superdriver", "alpha"]) {
+        await fx.tmux.window.newWindow({
+          sessionName: "s",
+          name,
+          detached: true,
+          shellCommand: PORTABLE_KEEPALIVE_COMMAND,
+        });
+      }
+      const legacyId = (await fx.tmux.window.listWindows("s")).find(
+        (w) => w.name === "superdriver",
+      )?.id;
+      const teams: CockpitTeam[] = [
+        { name: "alpha", root: "/a", enabled: true } as CockpitTeam,
+        { name: "zeta", root: "/z", enabled: true } as CockpitTeam,
+      ];
+      await reconcileCockpitSession(flaky, "s", teams, logger, {}, undefined, true);
+      expect(logs.join("\n")).toContain("failed to rename legacy 'superdriver' window to '_sd'");
+      const wins = (await fx.tmux.window.listWindows("s"))
+        .slice()
+        .sort((a, b) => a.index - b.index);
+      expect(wins.map((w) => `${w.index}:${w.name}`)).toEqual(["2:superdriver", "3:alpha", "4:zeta"]);
+      expect(wins.find((w) => w.name === "superdriver")?.id).toBe(legacyId);
     } finally {
       try {
         await fx.tmux.server.killServer();
@@ -1620,7 +2094,7 @@ describe("reconcileCockpitSession — onlyTeam scope (ADR-063 ergonomic fix)", (
       const after = (await fx.tmux.window.listWindows("s")).map((w) => w.name);
       expect(after).toContain("alpha"); // sibling preserved
       expect(after).toContain("unum"); // target added
-      expect(after).toContain("_superdriver");
+      expect(after).toContain("_sd");
     } finally {
       try {
         await fx.tmux.server.killServer();
@@ -2584,7 +3058,7 @@ describe("buildMigrationBreadcrumb (ADR-162 TR3 — Phase 5)", () => {
       {
         sessionName: "atmux_cockpit",
         index: 1,
-        name: "_superdriver",
+        name: "_sd",
         scrollback: "line A\nline B",
       },
       { sessionName: "atmux_cockpit", index: 2, name: "_medic", scrollback: "medic tail" },
@@ -2592,7 +3066,7 @@ describe("buildMigrationBreadcrumb (ADR-162 TR3 — Phase 5)", () => {
     const out = buildMigrationBreadcrumb(captured, "atx", "atmux-cockpit");
     expect(out).toContain("atmux cockpit migrate-socket breadcrumb");
     expect(out).toContain("tmux -L atmux-cockpit attach -t atx");
-    expect(out).toContain("## atmux_cockpit:1 '_superdriver'");
+    expect(out).toContain("## atmux_cockpit:1 '_sd'");
     expect(out).toContain("line A\nline B");
     expect(out).toContain("## atmux_cockpit:2 '_medic'");
     expect(out).toContain("medic tail");
@@ -2601,7 +3075,7 @@ describe("buildMigrationBreadcrumb (ADR-162 TR3 — Phase 5)", () => {
 
   test("empty scrollback surfaces placeholder line, not blank", () => {
     const captured: CapturedCockpitWindow[] = [
-      { sessionName: "atmux_teams", index: 1, name: "_superdriver", scrollback: "" },
+      { sessionName: "atmux_teams", index: 1, name: "_sd", scrollback: "" },
     ];
     const out = buildMigrationBreadcrumb(captured, "atx", "atmux-cockpit");
     expect(out).toContain("(scrollback empty or capture failed)");
@@ -2765,7 +3239,7 @@ describe("cockpitMigrateSocket (ADR-162 TR3) — mock-driven flow", () => {
   test("Phase 1 — ATMUX_COCKPIT_SOCKET=default refuses (legacy = target)", async () => {
     const defaultState: MockTmuxState = {
       sessions: new Map([
-        ["atmux_cockpit", { windows: [{ index: 1, name: "_superdriver" }], createdAt: 0 }],
+        ["atmux_cockpit", { windows: [{ index: 1, name: "_sd" }], createdAt: 0 }],
       ]),
       scrollback: new Map(),
       ops: [],
@@ -2787,7 +3261,7 @@ describe("cockpitMigrateSocket (ADR-162 TR3) — mock-driven flow", () => {
           "atmux_cockpit",
           {
             windows: [
-              { index: 1, name: "_superdriver" },
+              { index: 1, name: "_sd" },
               { index: 2, name: "_medic" },
             ],
             createdAt: 0,
@@ -2827,7 +3301,7 @@ describe("cockpitMigrateSocket (ADR-162 TR3) — mock-driven flow", () => {
     // Phase 4 — windows recreated by name (relative order preserved)
     const newWins = cockpitState.sessions.get("atx")?.windows ?? [];
     const names = newWins.map((w) => w.name);
-    expect(names).toContain("_superdriver");
+    expect(names).toContain("_sd");
     expect(names).toContain("_medic");
     expect(names).toContain("viewer-x");
     // Phase 5 — breadcrumb logged
@@ -2837,7 +3311,7 @@ describe("cockpitMigrateSocket (ADR-162 TR3) — mock-driven flow", () => {
   test("--dry-run — no mutations on either socket", async () => {
     const defaultState: MockTmuxState = {
       sessions: new Map([
-        ["atmux_cockpit", { windows: [{ index: 1, name: "_superdriver" }], createdAt: 0 }],
+        ["atmux_cockpit", { windows: [{ index: 1, name: "_sd" }], createdAt: 0 }],
       ]),
       scrollback: new Map([["atmux_cockpit:1", "tail"]]),
       ops: [],
@@ -2871,7 +3345,7 @@ describe("cockpitMigrateSocket (ADR-162 TR3) — mock-driven flow", () => {
   test("--keep-legacy — Phase 6 cleanup skipped; recreate still runs", async () => {
     const defaultState: MockTmuxState = {
       sessions: new Map([
-        ["atmux_cockpit", { windows: [{ index: 1, name: "_superdriver" }], createdAt: 0 }],
+        ["atmux_cockpit", { windows: [{ index: 1, name: "_sd" }], createdAt: 0 }],
       ]),
       scrollback: new Map([["atmux_cockpit:1", "tail"]]),
       ops: [],
@@ -2904,7 +3378,7 @@ describe("cockpitMigrateSocket (ADR-162 TR3) — mock-driven flow", () => {
           "atmux_cockpit",
           {
             windows: [
-              { index: 1, name: "_superdriver" },
+              { index: 1, name: "_sd" },
               { index: 2, name: "_medic" },
             ],
             createdAt: 0,
@@ -2914,9 +3388,9 @@ describe("cockpitMigrateSocket (ADR-162 TR3) — mock-driven flow", () => {
       scrollback: new Map(),
       ops: [],
     };
-    // Pre-existing target session has _superdriver but not _medic
+    // Pre-existing target session has _sd but not _medic
     const cockpitState: MockTmuxState = {
-      sessions: new Map([["atx", { windows: [{ index: 1, name: "_superdriver" }], createdAt: 0 }]]),
+      sessions: new Map([["atx", { windows: [{ index: 1, name: "_sd" }], createdAt: 0 }]]),
       scrollback: new Map(),
       ops: [],
     };
@@ -2931,8 +3405,8 @@ describe("cockpitMigrateSocket (ADR-162 TR3) — mock-driven flow", () => {
     });
     expect(code).toBe(0);
     const names = cockpitState.sessions.get("atx")?.windows.map((w) => w.name) ?? [];
-    // _superdriver kept (already there), _medic added
-    expect(names).toContain("_superdriver");
+    // _sd kept (already there), _medic added
+    expect(names).toContain("_sd");
     expect(names).toContain("_medic");
     expect(logs.join("\n")).toContain("already present on target");
     expect(logs.join("\n")).toContain("1 window(s) created, 1 skipped");
@@ -2941,7 +3415,7 @@ describe("cockpitMigrateSocket (ADR-162 TR3) — mock-driven flow", () => {
   test("Phase 6 kill-session failure warns + continues, doesn't throw", async () => {
     const defaultState: MockTmuxState = {
       sessions: new Map([
-        ["atmux_cockpit", { windows: [{ index: 1, name: "_superdriver" }], createdAt: 0 }],
+        ["atmux_cockpit", { windows: [{ index: 1, name: "_sd" }], createdAt: 0 }],
       ]),
       scrollback: new Map(),
       ops: [],
@@ -2982,7 +3456,7 @@ describe("cockpitMigrateSocket (ADR-162 TR3) — mock-driven flow", () => {
   test("Phase 2 capturePane failure surfaces warn but continues to Phase 3+", async () => {
     const defaultState: MockTmuxState = {
       sessions: new Map([
-        ["atmux_cockpit", { windows: [{ index: 1, name: "_superdriver" }], createdAt: 0 }],
+        ["atmux_cockpit", { windows: [{ index: 1, name: "_sd" }], createdAt: 0 }],
       ]),
       scrollback: new Map(), // No seed → capturePane returns "" via stub
       ops: [],
@@ -3628,7 +4102,7 @@ describe("reconcileCockpitSession — topology (grouped teams leave the cockpit)
       const topology = buildGroupTopology(shape);
       // Simulate the pre-group cockpit: the grouped team already has a
       // flat sibling window that this reconcile must replace.
-      await fx.tmux.session.newSession({ name: "s", detached: true, windowName: "_superdriver" });
+      await fx.tmux.session.newSession({ name: "s", detached: true, windowName: "_sd" });
       await fx.tmux.window.newWindow({
         sessionName: "s",
         name: grouped,
@@ -3642,7 +4116,7 @@ describe("reconcileCockpitSession — topology (grouped teams leave the cockpit)
         .slice()
         .sort((a, b) => a.index - b.index)
         .map((w) => w.name);
-      expect(names).toEqual(["_superdriver", g, solo]);
+      expect(names).toEqual(["_sd", g, solo]);
       // Idempotent second pass, no --yes needed (no destructive ops left).
       await reconcileCockpitSession(fx.tmux, "s", teams, logger, groupTestDeps, undefined, false, {
         topology,
@@ -3670,7 +4144,7 @@ describe("reconcileCockpitSession — topology (grouped teams leave the cockpit)
       const shape = shapeFor(g, grouped, solo);
       const teams = enabledTeams(shape) as unknown as CockpitTeam[];
       const topology = buildGroupTopology(shape);
-      await fx.tmux.session.newSession({ name: "s", detached: true, windowName: "_superdriver" });
+      await fx.tmux.session.newSession({ name: "s", detached: true, windowName: "_sd" });
       await fx.tmux.window.newWindow({
         sessionName: "s",
         name: grouped,
@@ -3715,7 +4189,7 @@ describe("reconcileCockpitSession — topology (grouped teams leave the cockpit)
         { onlyTeam: grouped, topology },
       );
       const names = (await fx.tmux.window.listWindows("s")).map((w) => w.name);
-      expect(names).toContain("_superdriver");
+      expect(names).toContain("_sd");
       expect(names).toContain(g); // the group's window, NOT the team's
       expect(names).not.toContain(grouped);
       // Additive: re-run is a no-op ("already present").

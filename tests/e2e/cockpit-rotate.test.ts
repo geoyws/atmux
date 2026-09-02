@@ -14,7 +14,7 @@
 //   1. medic rotation success (Plan A — real resolver, stub claude on PATH)
 //   2. gate-4 superdriver-refuse (unconditional; --force has no effect)
 //   3. gate-3 uptime refusal + --force bypass
-//   4. gate-1 user-typing refusal (cockpit _superdriver compose box)
+//   4. gate-1 user-typing refusal (cockpit _sd compose box)
 //   5. team-driver rotation, cage socket unaffected (cockpit verb scope)
 //   6. handoff-write-failed atomicity (Plan B — injected atomicWrite +
 //      tmuxFactory recorder asserts killWindow/newWindow/sendKeys
@@ -177,7 +177,7 @@ exec sh -c '${PORTABLE_KEEPALIVE_COMMAND}'
 }
 
 /** Spawn the synthetic cockpit session with the 3 windows the verb
- *  reads/touches: _superdriver (gate-1 source), _medic, team-alpha
+ *  reads/touches: _sd (gate-1 source), _medic, team-alpha
  *  (team-driver target). Each window runs the shared portable
  *  keepalive so they stay alive until the verb's killWindow tears
  *  them down. */
@@ -188,7 +188,7 @@ function spawnCockpitSession(hermetic: Hermetic): void {
     "-s",
     COCKPIT_SESSION,
     "-n",
-    "_superdriver",
+    "_sd",
     "-x",
     "200",
     "-y",
@@ -412,7 +412,7 @@ describe.skipIf(!HAS_TMUX)("integration ADR-167 T7 — atmux cockpit rotate", ()
     row = await tailAuditRow(hermetic);
     expect(row?.outcome).toBe("gate-4-refused");
 
-    // _superdriver window untouched.
+    // _sd window untouched.
     const list = tmuxCage(hermetic, [
       "list-windows",
       "-t",
@@ -420,7 +420,7 @@ describe.skipIf(!HAS_TMUX)("integration ADR-167 T7 — atmux cockpit rotate", ()
       "-F",
       "#{window_name}",
     ]);
-    expect(list.stdout).toContain("_superdriver");
+    expect(list.stdout).toContain("_sd");
   });
 
   // ----- Run 3: gate-3 uptime refusal + --force bypass -----
@@ -474,21 +474,21 @@ describe.skipIf(!HAS_TMUX)("integration ADR-167 T7 — atmux cockpit rotate", ()
 
   // ----- Run 4: gate-1 user-typing refusal -----
 
-  test("Run 4 — gate-1 user-typing refuses when _superdriver compose box has queued text", async () => {
+  test("Run 4 — gate-1 user-typing refuses when _sd compose box has queued text", async () => {
     spawnCockpitSession(hermetic);
-    // Replace _superdriver pane with a fake Claude-Code-shaped TUI
+    // Replace _sd pane with a fake Claude-Code-shaped TUI
     // that classifyText() classifies as TYPING. The classifier in
     // src/core/pane-state.ts keys off the `❯ <text>` prompt at the
     // bottom of the pane, so we kill the sleep-infinity pane + spawn
     // a tiny shell loop that paints that footer and waits.
-    tmuxCage(hermetic, ["kill-window", "-t", `${COCKPIT_SESSION}:_superdriver`]);
+    tmuxCage(hermetic, ["kill-window", "-t", `${COCKPIT_SESSION}:_sd`]);
     tmuxCage(hermetic, [
       "new-window",
       "-d",
       "-t",
       `${COCKPIT_SESSION}:`,
       "-n",
-      "_superdriver",
+      "_sd",
       // pane-state classifier's TYPING regex (src/core/pane-state.ts L109)
       // is /Press up to edit queued messages/i — paint exactly that
       // line so classifyText returns state="TYPING".

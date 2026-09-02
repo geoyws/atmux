@@ -332,17 +332,20 @@ cages use `<emoji>-<member>` (hyphen-separated, ADR-135 §D3).
 
 | # | Window | Role | Authorizing ADR |
 |---|--------|------|-----------------|
-| 1 | `_superdriver` | Operator cross-team REPL | ADR-063 (renamed per ADR-135 §D2) |
-| 2 | `_medic` (was `medic`/`superdoctor`) | Fleet self-healing / diagnosis-and-prevention loop | ADR-077 + ADR-133 + ADR-135 §D2 |
-| 3 | `_superbot` (proposed; absent while disabled) | Deterministic 30-minute Kanban candidate router; never claims or assigns | ADR-285 |
-| 4..N | declarative operator windows, then per-team viewers | Operator workspaces in declaration order, then one viewer per enabled parent team | ADR-279 + ADR-063 |
+| 1 | `_sd` (was `_superdriver`) | Operator cross-team REPL — superdriver lane `sd` | ADR-063 (renamed per ADR-135 §D2, shortform per ADR-288 §D1) |
+| 2..k | `_sd2` … `_sdN` (superdriver lanes; live: `_sd2`, `_sd3`) | Additional superdriver lanes — ADR-279 operator windows placed immediately after `_sd`, in declaration order | ADR-288 §D2 + §D5 |
+| k+1 | `_medic` (was `medic`/`superdoctor`) | Fleet self-healing / diagnosis-and-prevention loop — slot is after the last lane | ADR-077 + ADR-133 + ADR-135 §D2 + ADR-288 §D5 |
+| k+2 | `_superbot` (proposed; absent while disabled) | Deterministic 30-minute Kanban candidate router; never claims or assigns | ADR-285 |
+| k+3..N | other declarative operator windows (e.g. `_misc`), then per-team viewers | Operator workspaces in declaration order, then one viewer per enabled parent team. Lanes (`_sdN`, N ≥ 2, no `_sd1`; `ATMUX_MEMBER=sdN`, kb actor `claude@sdN`, same `superdriver` board, lease-guarded dispatch) are the only operator windows placed ahead of the role windows | ADR-279 + ADR-288 §D2/§D5 + ADR-063 |
 
 Backward-compat: a cockpit.json without a `medic` block retains the
-pre-ADR-077 topology (W1 `_superdriver` + W2..N per-team viewers).
+pre-ADR-077 topology (W1 `_sd` + W2..N per-team viewers).
 Loader migrates legacy `superdoctor` keys to medic semantics with a
 deprecation warning per ADR-133 §D2. Cockpit rebuild detects legacy
 `atmux_teams` session + legacy non-underscored cockpit-role windows and
-renames them in-place (idempotent) per ADR-135 §D4. Member windows in
+renames them in-place (idempotent) per ADR-135 §D4; the same shim renames
+a legacy `superdriver` / `_superdriver` window 1 to `_sd` per ADR-288 §D1,
+and both legacy spellings stay preserved for one release. Member windows in
 legacy `<emoji><member>` format get the same in-place rename treatment
 on next `atmux start`.
 
@@ -418,12 +421,13 @@ source of truth.
 
 ### 3.5 Skills plugin (`/atmux:` namespace, optional)
 
-atmux ships with a Claude Code plugin (`plugins/atmux/`) bundling 12
+atmux ships with a Claude Code plugin (`plugins/atmux/`) bundling 11
 operator-cockpit-tier skills under the `/atmux:` namespace —
-`/atmux:bruh`, `/atmux:team`, `/atmux:tell-lead`, `/atmux:session`,
+`/atmux:team`, `/atmux:driver`, `/atmux:tell-lead`, `/atmux:session`,
 `/atmux:whip`, `/atmux:bau`, `/atmux:budget`, `/atmux:cockpit-rebuild`,
-`/atmux:ghostbuster`, `/atmux:heads-up`, `/atmux:bruhloop`,
-`/atmux:sweep`. Each wraps a recurring multi-step atmux workflow that
+`/atmux:ghostbuster`, `/atmux:heads-up`, `/atmux:sweep` (`/atmux:bruh`
+and `/atmux:bruhloop` were retired per ADR-288 §D4). Each wraps a
+recurring multi-step atmux workflow that
 operators previously either retyped from memory or maintained in
 private dotfiles. Bundling them with atmux makes the cockpit-tier
 workflow discoverable + survives operator-machine bootstrap.

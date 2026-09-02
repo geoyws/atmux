@@ -598,7 +598,7 @@ Team is down. /clear when ready; /atmux:session cont tomorrow will re-start via 
 
 ## Operator-facing report format — attention + verdict markers
 
-Every session verb ends with a one-block summary the operator reads to decide what to do next (`/clear` now? wait? retry?). All four verbs use the same attention+verdict scheme as `/atmux:whip` §8.0, `/atmux:sweep` §9.5 (formerly the medic surface; per [ADR-212](../../../../docs/adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md) the role retired but the marker scheme stayed), `/atmux:bau` header, and `/atmux:bruh` §7.
+Every session verb ends with a one-block summary the operator reads to decide what to do next (`/clear` now? wait? retry?). All four verbs use the same attention+verdict scheme as `/atmux:whip` §8.0, `/atmux:sweep` §9.5 (formerly the medic surface; per [ADR-212](../../../../docs/adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md) the role retired but the marker scheme stayed), and `/atmux:bau` header.
 
 **Marker glossary:**
 - **Top-line emoji** — verdict for the whole verb run: ✅ (clean / ready) · ⚠ (partial / watch one cycle) · 🔴 (failed / blocking)

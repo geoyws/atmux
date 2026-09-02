@@ -1,12 +1,12 @@
 # atmux skills — Claude Code plugin
 
-Cockpit-tier workflows for atmux team-of-teams, shipped as a Claude Code plugin in the atmux source tree. 13 skills wrap atmux verbs + cross-team workflows that the operator-facing CLI alone can't express in one breath.
+Cockpit-tier workflows for atmux team-of-teams, shipped as a Claude Code plugin in the atmux source tree. 11 skills wrap atmux verbs + cross-team workflows that the operator-facing CLI alone can't express in one breath. (`/atmux:bruh` and `/atmux:bruhloop` were retired and deleted per [ADR-288](../../docs/adr/288-superdriver-lane-shortform-and-multi-lane-cockpit.md) §D4.)
 
 Per [ADR-217](../../docs/adr/217-atmux-skills-plugin-bundled-and-wizard-installed.md) §D6.
 
 ## What this plugin provides
 
-13 skills, all invoked as `/atmux:<skill>` (Claude Code's `plugin:skill` convention):
+11 skills, all invoked as `/atmux:<skill>` (Claude Code's `plugin:skill` convention):
 
 | Skill | One-line description |
 |---|---|
@@ -15,8 +15,6 @@ Per [ADR-217](../../docs/adr/217-atmux-skills-plugin-bundled-and-wizard-installe
 | `/atmux:session` | Session continuity — cont, handoff, stop. |
 | `/atmux:tell-lead` | Driver→lead durable message via `atmux tell-lead` (file-backed + best-effort wake-up). |
 | `/atmux:heads-up` | Lightweight teammate ping — fold into next idle turn. |
-| `/atmux:bruh` | One-pass unblocker — sweeps blockers, flags, decisions, mergeable worktrees. |
-| `/atmux:bruhloop` | Hands-off `/loop` wrapper that re-fires `/atmux:bruh` on a cadence. |
 | `/atmux:whip` | Autonomous-work nudge loop — verbs: `run`, `cadence`, `watchdog`. |
 | `/atmux:bau` | Business-as-usual sweep — commit cadence, rate-limits, kanban, dormant escalation. |
 | `/atmux:ghostbuster` | Mergeable epic-team branch sweeper (current cage only). |
@@ -64,8 +62,6 @@ If you already maintain your own atmux skill bodies in a dotfiles tree, drop a r
 /atmux:session cont                  # resume after pane reload
 /atmux:session handoff              # safe-to-/clear handoff
 /atmux:tell-lead "<message>"         # durable driver→lead ask
-/atmux:bruh                          # one-pass unblock sweep
-/atmux:bruhloop                      # 15-min /bruh cadence
 /atmux:whip run                      # autonomous-work nudge loop
 /atmux:bau                           # business-as-usual status
 /atmux:bau 48 --no-fix               # 48h window, no auto-escalation
