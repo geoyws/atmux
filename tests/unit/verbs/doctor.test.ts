@@ -15,9 +15,10 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CrontabIO } from "../../../src/abstractions/crontab.ts";
-import type { SpawnResult } from "../../../src/abstractions/spawn.ts";
+import type { SpawnOpts, SpawnResult } from "../../../src/abstractions/spawn.ts";
 import { closeDatabase, openDatabase } from "../../../src/abstractions/sqlite.ts";
 import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
+import { TMUX_CHILD_UNSET_ENV } from "../../../src/abstractions/tmux.ts";
 import type { CageState } from "../../../src/core/cage-state.ts";
 import type { LoadedCockpit } from "../../../src/core/cockpit.ts";
 import { KanbanRepo } from "../../../src/core/repositories/kanban-repo.ts";
@@ -4341,8 +4342,10 @@ describe("checkVendoredTmuxBinary", () => {
     expect(rows[0]?.status).toBe("yellow");
     expect(rows[0]?.label).toBe("vendored-tmux-missing");
     expect(rows[0]?.detail).toContain("/opt/atmux/current/bin/tmux");
+    expect(rows[0]?.detail).toContain("is not installed");
     expect(rows[0]?.hint).toContain("build:install");
-    expect(rows[0]?.hint).toContain("ATMUX_TMUX_BIN");
+    expect(rows[0]?.hint).toContain("/opt/atmux/current/bin/tmux");
+    expect(rows[0]?.hint).not.toContain("ATMUX_TMUX_BIN");
   });
 
   test("vendored present + exact pinned version 3.6a → no rows", async () => {
@@ -4351,6 +4354,36 @@ describe("checkVendoredTmuxBinary", () => {
       tmux: async () => tmuxOk("tmux 3.6a"),
     });
     expect(rows).toEqual([]);
+  });
+
+  test("default vendored spawn uses the exact vendoredPath cmd", async () => {
+    const captured: SpawnOpts[] = [];
+    const rows = await checkVendoredTmuxBinary({
+      existsSync: () => true,
+      vendoredPath: "/custom/tmux",
+      spawn: async (opts) => {
+        captured.push(opts);
+        return {
+          exitCode: 0,
+          stdout: "tmux 3.6a",
+          stderr: "",
+          argv: opts.argv ?? [],
+          cmd: opts.cmd,
+          signalled: null,
+          durationMs: 0,
+        };
+      },
+    });
+    const spawnOpts = captured[0];
+    if (spawnOpts === undefined) {
+      throw new Error("missing captured spawn opts");
+    }
+    expect(rows).toEqual([]);
+    expect(spawnOpts.cmd).toBe("/custom/tmux");
+    expect(spawnOpts.argv).toEqual(["-V"]);
+    expect(spawnOpts.expectExitCode).toBe("any");
+    expect(spawnOpts.timeoutMs).toBe(5_000);
+    expect(spawnOpts.unsetEnv).toEqual(TMUX_CHILD_UNSET_ENV);
   });
 
   test("vendored present + version drift (3.6b) → yellow 'version-drift'", async () => {
