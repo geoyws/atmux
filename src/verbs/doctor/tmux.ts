@@ -1,5 +1,6 @@
 import { existsSync as fsExistsSync } from "node:fs";
-import type { SpawnResult } from "../../abstractions/spawn.ts";
+import { spawn as defaultSpawn, type SpawnResult } from "../../abstractions/spawn.ts";
+import { TMUX_CHILD_UNSET_ENV } from "../../abstractions/tmux.ts";
 import { type DoctorRow, defaultTmuxSpawn, type TmuxSpawn } from "./types.ts";
 
 // ---------- ADR-162 §Decision-anchor #5: tmux infrastructure probes ----------
@@ -162,8 +163,10 @@ export async function checkTmuxVersionMismatch(
 export interface CheckVendoredTmuxBinaryOpts {
   /** Filesystem probe override (test seam). */
   existsSync?: (path: string) => boolean;
-  /** tmux spawn override — invoked with the resolved binary as `cmd`. */
+  /** tmux spawn override — invoked with argv only by the vendored-path default. */
   tmux?: TmuxSpawn;
+  /** Low-level spawn override for the vendored-binary probe. */
+  spawn?: typeof defaultSpawn;
   /** Override the path probed for the vendored binary. */
   vendoredPath?: string;
   /** Override the version we expect the vendored binary to report. */
@@ -181,35 +184,43 @@ export interface CheckVendoredTmuxBinaryOpts {
  *      `tmux -V` against it doesn't match the ADR-191 pin (3.6a).
  *      Indicates an out-of-date install or a hand-staged binary.
  *
- * Both rows are warn-class; atmux falls through to system tmux via
- * `resolveTmuxBin()` so no behavior breaks. The probe gives the
- * operator a discoverable signal that the resolution chain is on the
- * fallback tier instead of the vendored tier.
+ * Both rows are warn-class. The probe calls the vendored binary
+ * directly so `ATMUX_TMUX_BIN` and the resolver chain do not affect
+ * this check. The probe gives the operator a discoverable signal that
+ * the vendored install is present and on the pinned version.
  */
 
 export async function checkVendoredTmuxBinary(
   opts: CheckVendoredTmuxBinaryOpts = {},
 ): Promise<DoctorRow[]> {
   const exists = opts.existsSync ?? fsExistsSync;
-  const tmux = opts.tmux ?? defaultTmuxSpawn;
   const vendoredPath = opts.vendoredPath ?? "/opt/atmux/current/bin/tmux";
   const expected = opts.expectedVersion ?? TMUX_TESTED_VERSION;
+  const spawn = opts.spawn ?? defaultSpawn;
+  const tmux =
+    opts.tmux ??
+    (async (argv: ReadonlyArray<string>) =>
+      spawn({
+        cmd: vendoredPath,
+        argv,
+        expectExitCode: "any",
+        timeoutMs: 5_000,
+        unsetEnv: TMUX_CHILD_UNSET_ENV,
+      }));
 
   if (!exists(vendoredPath)) {
     return [
       {
         status: "yellow",
         label: "vendored-tmux-missing",
-        detail: `${vendoredPath} not installed — resolveTmuxBin() falls through to system tmux`,
-        hint:
-          "ship the binary via `bun run build:install` (per ADR-191) or set " +
-          "ATMUX_TMUX_BIN to silence the fallback warning.",
+        detail: `${vendoredPath} is not installed`,
+        hint: `install tmux at ${vendoredPath} via \`bun run build:install\` (ADR-191).`,
       },
     ];
   }
 
-  // Vendored binary present. Run `tmux -V` against the resolved binary
-  // (which is the vendored path when present) to confirm the pin.
+  // Vendored binary present. Run `tmux -V` against the vendored path
+  // directly to confirm the pin.
   let result: SpawnResult;
   try {
     result = await tmux(["-V"]);
