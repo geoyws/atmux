@@ -9,7 +9,8 @@
 // fixture team (empty state → "(no blockers)").
 
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BlockerRow } from "../../../src/core/blockers.ts";
@@ -206,36 +207,61 @@ describe("renderTable", () => {
 });
 
 describe("blockers() — --team-dir threading (end-to-end, empty fixture team)", () => {
-  async function stageTeam(): Promise<string> {
-    const dir = await mkdtemp(join(tmpdir(), "atmux-blockers-"));
-    const atmuxDir = join(dir, ".atmux");
-    await mkdir(atmuxDir, { recursive: true });
-    await writeFile(join(atmuxDir, "team.json"), JSON.stringify({ name: "fix", members: [] }));
-    return dir;
+  async function stageTeam(): Promise<{ root: string; teamDir: string }> {
+    const root = await mkdtemp(join(tmpdir(), "atmux-blockers-"));
+    const atmuxDir = join(root, ".atmux");
+    try {
+      await mkdir(atmuxDir, { recursive: true });
+      await writeFile(join(atmuxDir, "team.json"), JSON.stringify({ name: "fix", members: [] }));
+      return { root, teamDir: root };
+    } catch (error) {
+      await rm(root, { recursive: true, force: true });
+      expect(existsSync(root)).toBe(false);
+      throw error;
+    }
+  }
+
+  async function cleanupTeam(root: string): Promise<void> {
+    await rm(root, { recursive: true, force: true });
+    expect(existsSync(root)).toBe(false);
   }
 
   test("table output via the flag", async () => {
-    const dir = await stageTeam();
-    const { result, stdout } = await captureStdio(() => blockers(["list", "--team-dir", dir]));
-    expect(result).toBe(0);
-    expect(stdout).toBe("(no blockers)\n");
+    const { root, teamDir } = await stageTeam();
+    try {
+      const { result, stdout } = await captureStdio(() =>
+        blockers(["list", "--team-dir", teamDir]),
+      );
+      expect(result).toBe(0);
+      expect(stdout).toBe("(no blockers)\n");
+    } finally {
+      await cleanupTeam(root);
+    }
   });
 
   test("--json output via the flag", async () => {
-    const dir = await stageTeam();
-    const { result, stdout } = await captureStdio(() =>
-      blockers(["list", "--json", "--team-dir", dir]),
-    );
-    expect(result).toBe(0);
-    expect(JSON.parse(stdout)).toEqual([]);
+    const { root, teamDir } = await stageTeam();
+    try {
+      const { result, stdout } = await captureStdio(() =>
+        blockers(["list", "--json", "--team-dir", teamDir]),
+      );
+      expect(result).toBe(0);
+      expect(JSON.parse(stdout)).toEqual([]);
+    } finally {
+      await cleanupTeam(root);
+    }
   });
 
   test("flag wins over the caller-provided dirOpts param", async () => {
-    const dir = await stageTeam();
-    const { result, stdout } = await captureStdio(() =>
-      blockers(["list", "--team-dir", dir], { teamDir: "/nonexistent/nowhere" }),
-    );
-    expect(result).toBe(0);
-    expect(stdout).toBe("(no blockers)\n");
+    const { root, teamDir } = await stageTeam();
+    try {
+      const { result, stdout } = await captureStdio(() =>
+        blockers(["list", "--team-dir", teamDir], { teamDir: "/nonexistent/nowhere" }),
+      );
+      expect(result).toBe(0);
+      expect(stdout).toBe("(no blockers)\n");
+    } finally {
+      await cleanupTeam(root);
+    }
   });
 });

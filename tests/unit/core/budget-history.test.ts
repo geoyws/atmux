@@ -1,6 +1,7 @@
 // Unit tests for src/core/budget-history.ts (ADR-053 §D5).
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,15 +12,17 @@ import {
 } from "../../../src/core/budget-history.ts";
 
 let atmuxDir: string;
+let tmpRoot: string;
 
 beforeEach(async () => {
-  const tmp = await mkdtemp(join(tmpdir(), "atmux-bh-"));
-  atmuxDir = join(tmp, ".atmux");
+  tmpRoot = await mkdtemp(join(tmpdir(), "atmux-bh-"));
+  atmuxDir = join(tmpRoot, ".atmux");
   await mkdir(atmuxDir, { recursive: true });
 });
 
 afterEach(async () => {
-  await rm(atmuxDir, { recursive: true, force: true }).catch(() => {});
+  await rm(tmpRoot, { recursive: true, force: true });
+  expect(existsSync(tmpRoot)).toBe(false);
 });
 
 const sampleEntry = (overrides: Partial<BudgetHistoryEntry> = {}): BudgetHistoryEntry => ({

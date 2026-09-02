@@ -2,6 +2,7 @@
 // template Discord-emit dedup gate).
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,15 +19,17 @@ import {
 } from "../../../src/core/whip-finding-state.ts";
 
 let atmuxDir: string;
+let tmpRoot: string;
 
 beforeEach(async () => {
-  const tmp = await mkdtemp(join(tmpdir(), "atmux-wfs-"));
-  atmuxDir = join(tmp, ".atmux");
+  tmpRoot = await mkdtemp(join(tmpdir(), "atmux-wfs-"));
+  atmuxDir = join(tmpRoot, ".atmux");
   await mkdir(join(atmuxDir, "state"), { recursive: true });
 });
 
 afterEach(async () => {
-  await rm(atmuxDir, { recursive: true, force: true }).catch(() => {});
+  await rm(tmpRoot, { recursive: true, force: true });
+  expect(existsSync(tmpRoot)).toBe(false);
 });
 
 // ---------- hashFindingBullets ----------
