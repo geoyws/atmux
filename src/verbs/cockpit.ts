@@ -53,9 +53,9 @@ import {
   buildGroupTopology,
   cageSocketPath,
   enabledTeams,
-  firstTeamRoot,
   type GroupedTopology,
   type GroupTopologyNode,
+  groupCwd,
   groupSocketPath,
   type LoadCockpitOpts,
   loadCockpit,
@@ -76,7 +76,7 @@ import {
 import { migrateLegacySessionName } from "../core/session-migrate.ts";
 import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
-import { resolveTuiCommand } from "../core/tui-cmd.ts";
+import { posixQuote, resolveTuiCommand } from "../core/tui-cmd.ts";
 import { UsageError } from "../errors.ts";
 import type {
   CockpitMedic,
@@ -352,9 +352,18 @@ export interface ReconcileGroupServersOpts {
 /** One planned viewer window inside a group server. */
 interface GroupWantedWindow {
   name: string;
-  /** Shell cwd for the viewer pane. A pane left in the reconcile invoker's
-   *  cwd makes the operator's cwd-guard paint `root != root`; team windows
-   *  spawn at the team root, group windows at {@link firstTeamRoot}. */
+  /** Shell cwd for this viewer PANE — never the enclosing server's session
+   *  start directory. A pane left in the reconcile invoker's cwd makes the
+   *  operator's cwd-guard paint `root != root`; team windows spawn at the
+   *  team root, group windows at {@link groupCwd} (the group's own `cwd`
+   *  when cockpit.json sets one, else the borrowed `firstTeamRoot`).
+   *
+   *  The enclosing server's session start directory is decided separately
+   *  in the mutate pass: an explicit `group.cwd` owns it, and window 1's
+   *  command is `cd`-prefixed back to this value. Only when the group has
+   *  NO explicit cwd does the first WANTED window's `cwd` seed the session
+   *  — "wanted", not "first child", because `onlyTeam` mode makes a single
+   *  non-first child the whole wanted list. */
   cwd?: string | undefined;
   buildCmd: () => Promise<string>;
 }
@@ -407,7 +416,7 @@ export async function reconcileGroupServers(
         c.kind === "group"
           ? {
               name: c.name,
-              cwd: firstTeamRoot(topology, c.name),
+              cwd: groupCwd(topology, c.name),
               buildCmd: async () => buildGroupWindowCommand(c.name),
             }
           : {
@@ -459,7 +468,7 @@ export async function reconcileGroupServers(
         wanted: [
           {
             name: childName,
-            cwd: firstTeamRoot(topology, childName),
+            cwd: groupCwd(topology, childName),
             buildCmd: async () => buildGroupWindowCommand(childName),
           },
         ],
@@ -515,12 +524,36 @@ export async function reconcileGroupServers(
     const gTmux = factory({ socketPath: sock, configFile: getAtmuxTmuxConfPath() });
     const first = wanted[0] as GroupWantedWindow;
     if (!(await gTmux.session.hasSession(exactSessionTarget(group.name)))) {
+      // `new-session -c` sets BOTH the session start directory and window
+      // 1's pane cwd, and the two want different answers when the group
+      // carries an explicit `cwd` (2026-09-02, t-98b30a82):
+      //
+      //   session start dir → the GROUP's own cwd. A bare `new-window`,
+      //     and tmux's right-click "New Window", open in `#{session_path}`.
+      //   window 1's pane   → its OWN child's cwd (team root / child-group
+      //     cwd), or the operator's per-window cwd-guard paints
+      //     `root != root` on the status bar.
+      //
+      // So start the session at the group cwd and `cd` window 1's command
+      // back. `;` not `&&`: a missing child root must not kill the attach
+      // loop and with it the only window of a brand-new session — tmux's
+      // own `-c` is tolerant of a missing directory, and this matches it.
+      // Read `group.cwd` directly, NOT `groupCwd(...)`: a group without an
+      // explicit cwd must take the byte-identical pre-2026-09-02 path.
+      const ownCwd = group.cwd;
+      const firstCwd = first.cwd;
+      const firstCmd = await first.buildCmd();
+      const sessionCwd = ownCwd ?? firstCwd;
+      const firstShellCommand =
+        ownCwd !== undefined && firstCwd !== undefined && firstCwd !== ownCwd
+          ? `cd ${posixQuote(firstCwd)} 2>/dev/null; ${firstCmd}`
+          : firstCmd;
       await gTmux.session.newSession({
         name: group.name,
         detached: true,
         windowName: first.name,
-        ...(first.cwd !== undefined ? { cwd: first.cwd } : {}),
-        shellCommand: await first.buildCmd(),
+        ...(sessionCwd !== undefined ? { cwd: sessionCwd } : {}),
+        shellCommand: firstShellCommand,
       });
       logger.log(`  ✓ created group server '${group.name}' (${sock}; window 1: ${first.name})`);
     }
@@ -2194,7 +2227,7 @@ export async function reconcileCockpitSession(
         name: v.name,
         detached: true,
         ...((cwd) => (cwd !== undefined ? { cwd } : {}))(
-          topology !== undefined ? firstTeamRoot(topology, v.name) : undefined,
+          topology !== undefined ? groupCwd(topology, v.name) : undefined,
         ),
         shellCommand: buildGroupWindowCommand(v.name),
       });

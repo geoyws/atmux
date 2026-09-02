@@ -404,6 +404,29 @@ Each nesting level is its own tmux server on its own socket, and each gets its o
 
 **The shift is enforced by atmux itself since 2026-08-28** (ADR-089's true-containment group-tier note): every enabled `type: "group"` backs a real tmux server on `/tmp/atmux-grp-<group>/sock`, and `atmux cockpit reconcile` applies `resolvePrefix(level + 2, …)` to each group server AND each team cage — a top-level group binds `F2`, its teams `F3`, an ungrouped top-level team stays `F2`. The earlier caveat that the shift waited on the operator dotfiles' socket-pattern `if-shell` chain (`_dotfiles/tmux/.tmux.conf` + `_dotfiles/atmux/tmux.conf.local`) is superseded for prefix ASSIGNMENT; those dotfiles chains still exist and, matching on socket path, can re-clobber a reconcile-applied prefix — if a cage's chord is wrong after a reconcile, check the dotfiles chain second (depth first, per §Depth beyond the chain).
 
+### Where a group's panes open — `cwd`
+
+A `type: "group"` node in `~/.atmux/cockpit.json` takes five fields: `type`, `name`, optional `enabled` (default `true`), optional `cwd`, and `sessions[]`. Everything else is refused at load — a group has no cage, so `root`, `claudeAccount`, `tuiOverrides` and `prefixChain` on a group are config-author errors, not silent no-ops.
+
+`cwd` (2026-09-02) sets two things. First, where the group's viewer pane starts — its window in the cockpit session, and its window inside a parent group's server. Second, the start directory of the group's **own** tmux server session, which is what a bare `new-window` issued from inside the session — and tmux's right-click "New Window" — opens in. (A `tmux -S … new-window` typed in an outside shell uses that shell's cwd and is unaffected.) Unset, the viewer pane borrows the first child team's `root` via a DFS walk and the server session starts at its first *wanted* window's cwd, which is why the `ifca` group used to open at `.../ifca/src/aix-root`:
+
+```jsonc
+{ "type": "group", "name": "ifca", "cwd": "/Users/geoyws/work/ifca",
+  "sessions": [ { "type": "team", "name": "aix", "root": "/Users/geoyws/work/ifca/src/aix-root" } ] }
+```
+
+Window 1 of the group's server keeps its own cwd — the reconcile starts the session at the group cwd and prefixes that window's command with a `cd` back, because `new-session -c` would otherwise set both. So `#{session_path}` is the group and `#{pane_current_path}` is the team, which is what the per-window cwd-guard expects.
+
+`cwd` is **not** inherited: a child group without one falls back to its own first team root, never to an ancestor's `cwd`.
+
+**Applying a change to a group that is already running.** `atmux cockpit reconcile` never respawns an existing session or window, so editing `cwd` on a live group changes nothing on its own: the group's server keeps its old `#{session_path}`, and for a top-level group the cockpit's viewer window keeps its old pane cwd until that window is recreated. Recycle the group's server to pick it up — **every client attached to that server drops**, so do it when nobody is mid-flight in those panes:
+
+```bash
+tmux -S /tmp/atmux-grp-<group>/sock kill-server && atmux cockpit reconcile
+```
+
+The team cages survive this. A group server's windows hold only `tmux attach` clients of the cage servers, so killing it detaches those clients and nothing more (ADR-089's 2026-08-28 note). Spec: [ADR-089](adr/089-hierarchical-cockpit.md)'s 2026-09-02 group-tier note (`t-98b30a82`).
+
 ### Override the chain
 
 ```bash

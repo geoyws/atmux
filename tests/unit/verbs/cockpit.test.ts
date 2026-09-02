@@ -2,12 +2,13 @@
 
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TmuxConfig, TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import { buildGroupTopology, enabledTeams, groupSocketPath } from "../../../src/core/cockpit.ts";
 import type { Logger } from "../../../src/core/tui.ts";
+import { posixQuote } from "../../../src/core/tui-cmd.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
 import type { Cockpit as CockpitShape, CockpitTeam } from "../../../src/schema/cockpit.ts";
 import type { Team } from "../../../src/schema/team.ts";
@@ -3756,6 +3757,461 @@ describe("reconcileCockpitSession — topology (grouped teams leave the cockpit)
         await fx.tmux.server.killServer();
       } catch {}
       await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------- 2026-09-02: optional per-group `cwd` reaches live panes ----------
+
+describe('type: "group" cwd — viewer panes and group-server start directory', () => {
+  /** tmux reports `pane_current_path` fully resolved, so a `/tmp/...`
+   *  fixture path must be realpath'd before comparison (on macOS `/tmp`
+   *  is a symlink to `/private/tmp`). */
+  const panePath = async (tmux: TmuxNamespace, target: string): Promise<string> =>
+    (
+      await tmux.pane.displayMessage({
+        target,
+        format: "#{pane_current_path}",
+        print: true,
+      })
+    ).trim();
+
+  /** The SESSION's start directory — what a bare `new-window` inside the
+   *  group opens in. Deliberately a different tmux format from
+   *  `pane_current_path`, so a test can tell the two apart. */
+  const sessionPath = async (tmux: TmuxNamespace, session: string): Promise<string> =>
+    (
+      await tmux.pane.displayMessage({
+        target: session,
+        format: "#{session_path}",
+        print: true,
+      })
+    ).trim();
+
+  /** A real directory a tmux pane can actually start in, tracked for teardown. */
+  const fixtureDir = async (label: string): Promise<string> => {
+    const dir = await realpath(await mkdtemp(join(tmpdir(), `atmux-gcwd-${label}-`)));
+    activeFixtureDirs.add(dir);
+    return dir;
+  };
+
+  /** {@link grpFactory} with every `newSession` call recorded, so a test can
+   *  assert on the exact `cwd` + `shellCommand` the reconcile chose without
+   *  reverse-engineering them out of a live pane. */
+  const recordingGrpFactory = (
+    sink: Array<{ name: string; cwd?: string | undefined; shellCommand?: string | undefined }>,
+  ): ((cfg: TmuxConfig) => TmuxNamespace) => {
+    return (cfg: TmuxConfig): TmuxNamespace => {
+      const real = grpFactory(cfg);
+      return {
+        ...real,
+        session: {
+          ...real.session,
+          newSession: async (opts: Parameters<TmuxNamespace["session"]["newSession"]>[0]) => {
+            sink.push({ name: opts.name, cwd: opts.cwd, shellCommand: opts.shellCommand });
+            await real.session.newSession(opts);
+          },
+        },
+      };
+    };
+  };
+
+  test("a child group's explicit cwd drives its viewer window inside the parent server", async () => {
+    const parent = `wng-cwd-p-${GRP_SUFFIX}`;
+    const child = `wng-cwd-c-${GRP_SUFFIX}`;
+    const team = `wnt-cwd-t-${GRP_SUFFIX}`;
+    const groupDir = await fixtureDir("group");
+    const teamRoot = await fixtureDir("teamroot");
+    const pTmux = trackGroupServer(parent);
+    const cTmux = trackGroupServer(child);
+    const { logger } = makeLogger();
+    const topo = buildGroupTopology(
+      topoShape([
+        {
+          type: "group",
+          name: parent,
+          enabled: true,
+          sessions: [
+            {
+              type: "group",
+              name: child,
+              enabled: true,
+              cwd: groupDir,
+              sessions: [{ type: "team", name: team, root: teamRoot, enabled: true, sessions: [] }],
+            },
+          ],
+        },
+      ]),
+    );
+    try {
+      await reconcileGroupServers(grpFactory, topo, logger, { yes: true, deps: groupTestDeps });
+      // The child group is the parent's only (hence first) child, so its
+      // cwd is what `newSession` started the parent server in — and the
+      // viewer pane sits there too, not at the borrowed team root.
+      expect(await panePath(pTmux, `${parent}:${child}`)).toBe(groupDir);
+      // The child's own server is unaffected: its single child is a TEAM,
+      // which still spawns at the team root.
+      expect(await panePath(cTmux, `${child}:${team}`)).toBe(teamRoot);
+    } finally {
+      for (const t of [pTmux, cTmux]) {
+        try {
+          await t.server.killServer();
+        } catch {}
+      }
+    }
+  });
+
+  test("a child group without cwd keeps the borrowed firstTeamRoot", async () => {
+    const parent = `wng-nocwd-p-${GRP_SUFFIX}`;
+    const child = `wng-nocwd-c-${GRP_SUFFIX}`;
+    const team = `wnt-nocwd-t-${GRP_SUFFIX}`;
+    const teamRoot = await fixtureDir("nocwd-teamroot");
+    const pTmux = trackGroupServer(parent);
+    const cTmux = trackGroupServer(child);
+    const { logger } = makeLogger();
+    const topo = buildGroupTopology(
+      topoShape([
+        {
+          type: "group",
+          name: parent,
+          enabled: true,
+          sessions: [
+            {
+              type: "group",
+              name: child,
+              enabled: true,
+              sessions: [{ type: "team", name: team, root: teamRoot, enabled: true, sessions: [] }],
+            },
+          ],
+        },
+      ]),
+    );
+    try {
+      await reconcileGroupServers(grpFactory, topo, logger, { yes: true, deps: groupTestDeps });
+      expect(await panePath(pTmux, `${parent}:${child}`)).toBe(teamRoot);
+    } finally {
+      for (const t of [pTmux, cTmux]) {
+        try {
+          await t.server.killServer();
+        } catch {}
+      }
+    }
+  });
+
+  test("onlyTeam ancestor-chain windows use the ancestor group's own cwd", async () => {
+    const parent = `wng-only-p-${GRP_SUFFIX}`;
+    const child = `wng-only-c-${GRP_SUFFIX}`;
+    const team = `wnt-only-t-${GRP_SUFFIX}`;
+    const groupDir = await fixtureDir("only-group");
+    const teamRoot = await fixtureDir("only-teamroot");
+    const pTmux = trackGroupServer(parent);
+    const cTmux = trackGroupServer(child);
+    const { logger } = makeLogger();
+    const topo = buildGroupTopology(
+      topoShape([
+        {
+          type: "group",
+          name: parent,
+          enabled: true,
+          sessions: [
+            {
+              type: "group",
+              name: child,
+              enabled: true,
+              cwd: groupDir,
+              sessions: [{ type: "team", name: team, root: teamRoot, enabled: true, sessions: [] }],
+            },
+          ],
+        },
+      ]),
+    );
+    try {
+      await reconcileGroupServers(grpFactory, topo, logger, {
+        onlyTeam: team,
+        deps: groupTestDeps,
+      });
+      expect(await panePath(cTmux, `${child}:${team}`)).toBe(teamRoot);
+      expect(await panePath(pTmux, `${parent}:${child}`)).toBe(groupDir);
+    } finally {
+      for (const t of [pTmux, cTmux]) {
+        try {
+          await t.server.killServer();
+        } catch {}
+      }
+    }
+  });
+
+  test("the cockpit's group viewer window opens at the group's cwd, else at firstTeamRoot", async () => {
+    const withCwd = `wng-ck-a-${GRP_SUFFIX}`;
+    const without = `wng-ck-b-${GRP_SUFFIX}`;
+    const teamA = `wnt-ck-a1-${GRP_SUFFIX}`;
+    const teamB = `wnt-ck-b1-${GRP_SUFFIX}`;
+    const groupDir = await fixtureDir("ck-group");
+    const rootA = await fixtureDir("ck-roota");
+    const rootB = await fixtureDir("ck-rootb");
+    const fx = await spinTmux("cockpit-group-cwd");
+    try {
+      const { logger } = makeLogger();
+      const shape = topoShape([
+        {
+          type: "group",
+          name: withCwd,
+          enabled: true,
+          cwd: groupDir,
+          sessions: [{ type: "team", name: teamA, root: rootA, enabled: true, sessions: [] }],
+        },
+        {
+          type: "group",
+          name: without,
+          enabled: true,
+          sessions: [{ type: "team", name: teamB, root: rootB, enabled: true, sessions: [] }],
+        },
+      ]);
+      const teams = enabledTeams(shape) as unknown as CockpitTeam[];
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger, groupTestDeps, undefined, true, {
+        topology: buildGroupTopology(shape),
+      });
+      expect(await panePath(fx.tmux, `s:${withCwd}`)).toBe(groupDir);
+      expect(await panePath(fx.tmux, `s:${without}`)).toBe(rootB);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  // ---- The group's OWN server session start directory (t-98b30a82) ----
+  //
+  // `new-session -c` sets the session start dir AND window 1's pane cwd.
+  // These four pin the decoupling: `#{session_path}` and
+  // `#{pane_current_path}` are asserted as SEPARATE tmux formats so a
+  // regression that collapses them back together cannot pass.
+
+  test("explicit group cwd owns #{session_path} while window 1's pane stays at its team root", async () => {
+    const g = `wng-sp-a-${GRP_SUFFIX}`;
+    const team = `wnt-sp-a1-${GRP_SUFFIX}`;
+    const groupDir = await fixtureDir("sp-group");
+    const teamRoot = await fixtureDir("sp-teamroot");
+    const gTmux = trackGroupServer(g);
+    const { logger } = makeLogger();
+    const sessions: Array<{ name: string; cwd?: string | undefined; shellCommand?: string }> = [];
+    const topo = buildGroupTopology(
+      topoShape([
+        {
+          type: "group",
+          name: g,
+          enabled: true,
+          cwd: groupDir,
+          sessions: [{ type: "team", name: team, root: teamRoot, enabled: true, sessions: [] }],
+        },
+      ]),
+    );
+    try {
+      await reconcileGroupServers(recordingGrpFactory(sessions), topo, logger, {
+        yes: true,
+        deps: groupTestDeps,
+      });
+      // The session — where a bare `new-window` inside the group opens.
+      expect(await sessionPath(gTmux, g)).toBe(groupDir);
+      // Window 1's pane — still the team root, so the per-window cwd-guard
+      // keeps reading `root == root`.
+      expect(await panePath(gTmux, `${g}:${team}`)).toBe(teamRoot);
+      // The mechanism that decouples them.
+      const created = sessions.find((s) => s.name === g);
+      expect(created?.cwd).toBe(groupDir);
+      expect(created?.shellCommand).toStartWith(`cd ${posixQuote(teamRoot)} 2>/dev/null; `);
+    } finally {
+      try {
+        await gTmux.server.killServer();
+      } catch {}
+    }
+  });
+
+  test("a group with no cwd starts its session at the first wanted window's cwd, command unprefixed", async () => {
+    const g = `wng-sp-b-${GRP_SUFFIX}`;
+    const team = `wnt-sp-b1-${GRP_SUFFIX}`;
+    const teamRoot = await fixtureDir("sp-b-teamroot");
+    const gTmux = trackGroupServer(g);
+    const { logger } = makeLogger();
+    const sessions: Array<{ name: string; cwd?: string | undefined; shellCommand?: string }> = [];
+    const topo = buildGroupTopology(
+      topoShape([
+        {
+          type: "group",
+          name: g,
+          enabled: true,
+          sessions: [{ type: "team", name: team, root: teamRoot, enabled: true, sessions: [] }],
+        },
+      ]),
+    );
+    try {
+      await reconcileGroupServers(recordingGrpFactory(sessions), topo, logger, {
+        yes: true,
+        deps: groupTestDeps,
+      });
+      expect(await sessionPath(gTmux, g)).toBe(teamRoot);
+      const created = sessions.find((s) => s.name === g);
+      expect(created?.cwd).toBe(teamRoot);
+      // Byte-identical to the pre-2026-09-02 path: no `cd` prefix at all.
+      expect(created?.shellCommand).not.toContain("cd ");
+    } finally {
+      try {
+        await gTmux.server.killServer();
+      } catch {}
+    }
+  });
+
+  test("group cwd equal to the first wanted window's cwd takes the plain-command path", async () => {
+    const g = `wng-sp-c-${GRP_SUFFIX}`;
+    const team = `wnt-sp-c1-${GRP_SUFFIX}`;
+    const shared = await fixtureDir("sp-c-shared");
+    const gTmux = trackGroupServer(g);
+    const { logger } = makeLogger();
+    const sessions: Array<{ name: string; cwd?: string | undefined; shellCommand?: string }> = [];
+    const topo = buildGroupTopology(
+      topoShape([
+        {
+          type: "group",
+          name: g,
+          enabled: true,
+          cwd: shared,
+          sessions: [{ type: "team", name: team, root: shared, enabled: true, sessions: [] }],
+        },
+      ]),
+    );
+    try {
+      await reconcileGroupServers(recordingGrpFactory(sessions), topo, logger, {
+        yes: true,
+        deps: groupTestDeps,
+      });
+      const created = sessions.find((s) => s.name === g);
+      expect(created?.cwd).toBe(shared);
+      // Same directory on both sides — a `cd` back to it would be noise.
+      expect(created?.shellCommand).not.toContain("cd ");
+      expect(await sessionPath(gTmux, g)).toBe(shared);
+      expect(await panePath(gTmux, `${g}:${team}`)).toBe(shared);
+    } finally {
+      try {
+        await gTmux.server.killServer();
+      } catch {}
+    }
+  });
+
+  test("explicit group cwd with an unresolvable window-1 cwd skips the cd prefix", async () => {
+    const parent = `wng-sp-e-${GRP_SUFFIX}`;
+    const barren = `wng-sp-e-in-${GRP_SUFFIX}`;
+    const groupDir = await fixtureDir("sp-e-group");
+    const pTmux = trackGroupServer(parent);
+    const { logger } = makeLogger();
+    const sessions: Array<{ name: string; cwd?: string | undefined; shellCommand?: string }> = [];
+    // The parent HAS a cwd, but its only wanted window is a childless
+    // group, so `groupCwd` yields undefined for it. That is the third
+    // conjunct of the guard: `firstCwd !== undefined` is false, so the
+    // session takes the group cwd and the command stays unprefixed —
+    // there is no directory to `cd` back to.
+    const topo = buildGroupTopology(
+      topoShape([
+        {
+          type: "group",
+          name: parent,
+          enabled: true,
+          cwd: groupDir,
+          sessions: [{ type: "group", name: barren, enabled: true, sessions: [] }],
+        },
+      ]),
+    );
+    try {
+      await reconcileGroupServers(recordingGrpFactory(sessions), topo, logger, {
+        yes: true,
+        deps: groupTestDeps,
+      });
+      const created = sessions.find((s) => s.name === parent);
+      expect(created?.cwd).toBe(groupDir);
+      expect(created?.shellCommand).not.toContain("cd ");
+      expect(await sessionPath(pTmux, parent)).toBe(groupDir);
+    } finally {
+      try {
+        await pTmux.server.killServer();
+      } catch {}
+    }
+  });
+
+  test("a window-1 cwd containing a single quote is shell-escaped in the cd prefix", async () => {
+    const g = `wng-sp-q-${GRP_SUFFIX}`;
+    const team = `wnt-sp-q1-${GRP_SUFFIX}`;
+    const groupDir = await fixtureDir("sp-q-group");
+    // A literal `'` in the team root: unescaped, the `cd '<path>'` would
+    // terminate its own quote and the rest of the attach loop would be
+    // parsed as stray shell words.
+    const teamRoot = await fixtureDir("sp-q'uote-root");
+    expect(teamRoot).toContain("'");
+    const gTmux = trackGroupServer(g);
+    const { logger } = makeLogger();
+    const sessions: Array<{ name: string; cwd?: string | undefined; shellCommand?: string }> = [];
+    const topo = buildGroupTopology(
+      topoShape([
+        {
+          type: "group",
+          name: g,
+          enabled: true,
+          cwd: groupDir,
+          sessions: [{ type: "team", name: team, root: teamRoot, enabled: true, sessions: [] }],
+        },
+      ]),
+    );
+    try {
+      await reconcileGroupServers(recordingGrpFactory(sessions), topo, logger, {
+        yes: true,
+        deps: groupTestDeps,
+      });
+      const created = sessions.find((s) => s.name === g);
+      expect(created?.shellCommand).toStartWith(`cd ${posixQuote(teamRoot)} 2>/dev/null; `);
+      // The escaping actually works: the pane really lands in the quoted
+      // directory, so the `cd` was one word to the shell.
+      expect(await panePath(gTmux, `${g}:${team}`)).toBe(teamRoot);
+      expect(await sessionPath(gTmux, g)).toBe(groupDir);
+    } finally {
+      try {
+        await gTmux.server.killServer();
+      } catch {}
+    }
+  });
+
+  test("no group cwd and no resolvable child cwd omits the session cwd entirely", async () => {
+    const parent = `wng-sp-d-${GRP_SUFFIX}`;
+    const barren = `wng-sp-d-in-${GRP_SUFFIX}`;
+    const pTmux = trackGroupServer(parent);
+    const { logger, logs } = makeLogger();
+    const sessions: Array<{ name: string; cwd?: string | undefined; shellCommand?: string }> = [];
+    // `barren` has no teams anywhere beneath it, so `groupCwd` returns
+    // undefined for the parent's only wanted window and there is nothing
+    // to pass as `-c`.
+    const topo = buildGroupTopology(
+      topoShape([
+        {
+          type: "group",
+          name: parent,
+          enabled: true,
+          sessions: [{ type: "group", name: barren, enabled: true, sessions: [] }],
+        },
+      ]),
+    );
+    try {
+      await reconcileGroupServers(recordingGrpFactory(sessions), topo, logger, {
+        yes: true,
+        deps: groupTestDeps,
+      });
+      const created = sessions.find((s) => s.name === parent);
+      expect(created).toBeDefined();
+      expect(created?.cwd).toBeUndefined();
+      expect(created?.shellCommand).not.toContain("cd ");
+      // The childless group itself runs no server.
+      expect(logs.some((l) => l.includes(`group '${barren}' has no enabled children`))).toBe(true);
+    } finally {
+      try {
+        await pTmux.server.killServer();
+      } catch {}
     }
   });
 });

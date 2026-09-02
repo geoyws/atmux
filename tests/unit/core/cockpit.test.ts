@@ -15,6 +15,8 @@ import {
   defaultCockpitConfigPath,
   enabledTeams,
   findTeamByName,
+  firstTeamRoot,
+  groupCwd,
   groupSocketPath,
   loadCockpit,
   MAX_NESTING_LEVEL,
@@ -1019,6 +1021,61 @@ describe('type: "group" — schema', () => {
     });
     await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(SchemaError);
   });
+
+  // 2026-09-02: `cwd` is the one field admitted past the group's
+  // deliberately-narrow bar, because it HAS consumers (viewer-pane cwd
+  // + group-server start directory). `root`/`claudeAccount` still don't.
+  test("accepts an optional cwd on a group and keeps it verbatim", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [
+        {
+          type: "group",
+          name: "ifca",
+          cwd: "/Users/geoyws/work/ifca",
+          sessions: [{ type: "team", name: "aix", root: "/Users/geoyws/work/ifca/src/aix-root" }],
+        },
+      ],
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
+    expect((cockpit.sessions ?? [])[0]).toMatchObject({
+      type: "group",
+      name: "ifca",
+      cwd: "/Users/geoyws/work/ifca",
+    });
+  });
+
+  test("cwd is optional — a group without one parses and carries no cwd", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [{ type: "group", name: "plain" }],
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
+    expect((cockpit.sessions ?? [])[0]).not.toHaveProperty("cwd");
+  });
+
+  test("rejects an empty-string cwd (same min(1) bar team root uses)", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [{ type: "group", name: "g", cwd: "" }],
+    });
+    await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(SchemaError);
+  });
+
+  test("adding cwd did not loosen .strict() — root, claudeAccount and typos still refused", async () => {
+    for (const extra of [
+      { root: "/p/g" },
+      { claudeAccount: { configDir: "/c" } },
+      { tuiOverrides: { theme: "x" } },
+      { typo: "nope" },
+    ]) {
+      await writeCockpit({
+        schemaVersion: 1,
+        sessions: [{ type: "group", name: "g", cwd: "/p/here", ...extra }],
+      });
+      await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(SchemaError);
+    }
+  });
 });
 
 describe('type: "group" — walkSessions', () => {
@@ -1499,6 +1556,122 @@ describe("resolveTopLevelGroup", () => {
 
   test("unknown name → null", () => {
     expect(resolveTopLevelGroup(topo, "nope")).toBeNull();
+  });
+});
+
+// ---------- 2026-09-02: optional per-group `cwd` ----------
+
+describe("groupCwd — explicit group cwd over the borrowed firstTeamRoot", () => {
+  const shape = (sessions: unknown[]): CockpitShape =>
+    ({ schemaVersion: 1, cockpitSession: "atx", sessions, windows: [] }) as unknown as CockpitShape;
+
+  /** Mirrors the operator's measured 2026-09-02 geoywsMBP shape: an
+   *  `ifca` group whose first child team sits at `src/aix-root`, plus a
+   *  sibling group with no cwd, plus a nested group that sets its own. */
+  const topo = buildGroupTopology(
+    shape([
+      {
+        type: "group",
+        name: "ifca",
+        enabled: true,
+        cwd: "/Users/geoyws/work/ifca",
+        sessions: [
+          {
+            type: "team",
+            name: "aix",
+            root: "/Users/geoyws/work/ifca/src/aix-root",
+            enabled: true,
+            sessions: [],
+          },
+          {
+            type: "group",
+            name: "px",
+            enabled: true,
+            cwd: "/Users/geoyws/work/ifca/px",
+            sessions: [
+              {
+                type: "team",
+                name: "pxt",
+                root: "/Users/geoyws/work/ifca/src/px-root",
+                enabled: true,
+                sessions: [],
+              },
+            ],
+          },
+          {
+            type: "group",
+            name: "mx",
+            enabled: true,
+            sessions: [
+              {
+                type: "team",
+                name: "mxt",
+                root: "/Users/geoyws/work/ifca/src/mx-root",
+                enabled: true,
+                sessions: [],
+              },
+            ],
+          },
+        ],
+      },
+      { type: "group", name: "barren", enabled: true, sessions: [] },
+      {
+        type: "group",
+        name: "shell",
+        enabled: true,
+        sessions: [
+          // Barren sibling FIRST, so the fallback's child-group walk has
+          // to keep looking after an undefined answer.
+          { type: "group", name: "shell-empty", enabled: true, sessions: [] },
+          {
+            type: "group",
+            name: "shell-inner",
+            enabled: true,
+            sessions: [{ type: "team", name: "st", root: "/p/st", enabled: true, sessions: [] }],
+          },
+        ],
+      },
+    ]),
+  );
+
+  test("buildGroupTopology carries an explicit cwd, and omits the key when unset", () => {
+    const byName = new Map(topo.groups.map((g) => [g.name, g]));
+    expect(byName.get("ifca")?.cwd).toBe("/Users/geoyws/work/ifca");
+    expect(byName.get("px")?.cwd).toBe("/Users/geoyws/work/ifca/px");
+    expect(byName.get("mx")).not.toHaveProperty("cwd");
+    expect(byName.get("barren")).not.toHaveProperty("cwd");
+  });
+
+  test("returns the explicit cwd, not the first child team's root", () => {
+    expect(groupCwd(topo, "ifca")).toBe("/Users/geoyws/work/ifca");
+    expect(firstTeamRoot(topo, "ifca")).toBe("/Users/geoyws/work/ifca/src/aix-root");
+  });
+
+  test("falls back to its OWN firstTeamRoot, never an ancestor's cwd, when unset", () => {
+    // `mx` nests under `ifca`, which DOES carry a cwd. Non-inheritance is
+    // what these two assertions pin: the answer is mx's own team root, and
+    // it is exactly what `firstTeamRoot` would have said on its own.
+    expect(groupCwd(topo, "mx")).toBe("/Users/geoyws/work/ifca/src/mx-root");
+    expect(groupCwd(topo, "mx")).toBe(firstTeamRoot(topo, "mx"));
+  });
+
+  test("a nested group's own cwd wins over its parent's", () => {
+    expect(groupCwd(topo, "px")).toBe("/Users/geoyws/work/ifca/px");
+  });
+
+  test("undefined for a group with neither cwd nor any team beneath it", () => {
+    expect(groupCwd(topo, "barren")).toBeUndefined();
+  });
+
+  test("with no cwd anywhere, the fallback still descends into child groups", () => {
+    // `shell` holds no direct team — firstTeamRoot recurses into
+    // `shell-inner` for the answer, unchanged by the cwd addition.
+    expect(groupCwd(topo, "shell")).toBe("/p/st");
+    expect(groupCwd(topo, "shell")).toBe(firstTeamRoot(topo, "shell"));
+  });
+
+  test("undefined for a name that is no enabled group", () => {
+    expect(groupCwd(topo, "nope")).toBeUndefined();
   });
 });
 

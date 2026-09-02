@@ -161,14 +161,35 @@ export interface TeamSessionT {
  *  holding one viewer window per child — the containment tier between
  *  the cockpit (F1) and the team cages (F3). Children are ordinary
  *  `sessions[]` entries — a `team` under a group is a normal team.
- *  Deliberately narrow (`.strict()`, no claudeAccount / tuiOverrides /
- *  prefixChain): a group server hosts only attach clients, so nothing
- *  would consume those fields — admitting them would be schema surface
- *  that silently does nothing. */
+ *  Deliberately narrow (`.strict()`, no root / claudeAccount /
+ *  tuiOverrides / prefixChain): a group server hosts only attach
+ *  clients, so nothing would consume those fields — admitting them
+ *  would be schema surface that silently does nothing. The 2026-09-02
+ *  `cwd` addition (t-98b30a82) is admitted on exactly that test and
+ *  PASSES it — two live consumers read it:
+ *
+ *    1. the group's VIEWER PANE, whether that window lives in the
+ *       cockpit session or in a parent group's server;
+ *    2. the group's OWN tmux server session start directory, so a bare
+ *       `new-window` inside the group opens here. Window 1's pane is
+ *       kept at its own child's cwd by a `cd` prefix on its command,
+ *       since `new-session -c` would otherwise set both.
+ *
+ *  It is named `cwd`, not `root`, because `root` means "directory
+ *  holding `.atmux/team.json`" and a group has no cage; `root` and
+ *  `claudeAccount` on a group stay refused because they still have no
+ *  consumer. */
 export interface GroupSessionT {
   type: "group";
   name: string;
   enabled: boolean;
+  /** Optional directory the group's viewer pane opens in, and the start
+   *  directory of the group's own tmux server session. Absolute by
+   *  convention, not by schema — exactly as team `root`. Unset (the
+   *  default) keeps the pre-2026-09-02 behaviour: the viewer pane
+   *  borrows the first child team's root via `firstTeamRoot`, and the
+   *  server session starts at its first wanted window's cwd. */
+  cwd?: string;
   /** Recursive — children of any session type. */
   sessions: CockpitSessionT[];
 }
@@ -219,13 +240,17 @@ export const TeamSession: z.ZodType<TeamSessionT> = z.lazy(() =>
  *  NOT built on `CockpitSessionBase` — the base carries cage-facing
  *  fields (claudeAccount / tuiOverrides / prefixChain) that a cage-less
  *  container has no consumer for; `.strict()` refuses them so a config
- *  author finds out at load, not by silence. */
+ *  author finds out at load, not by silence. `cwd` is the one addition
+ *  (2026-09-02) that clears that bar — see {@link GroupSessionT}. Same
+ *  `z.string().min(1)` shape team `root` uses; absoluteness is not
+ *  schema-enforced there either. */
 export const GroupSession: z.ZodType<GroupSessionT> = z.lazy(() =>
   z
     .object({
       type: z.literal("group"),
       name: z.string().min(1),
       enabled: z.boolean().default(true),
+      cwd: z.string().min(1).optional(),
       sessions: z.array(CockpitSession).default([]),
     })
     .strict(),

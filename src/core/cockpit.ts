@@ -622,6 +622,14 @@ export interface GroupTopologyNode {
    *  Absent for a top-level group (or one hosted only under teams) —
    *  those get their viewer window in the cockpit session. */
   parentGroup?: string;
+  /** Verbatim `cwd` from the group's cockpit.json node (2026-09-02,
+   *  t-98b30a82), when the operator set one; absent when the config
+   *  omits it. Two readers: {@link groupCwd} (viewer-pane cwd, with a
+   *  `firstTeamRoot` fallback) and `reconcileGroupServers` (this group's
+   *  own tmux server session start directory, raw and with NO fallback).
+   *  Never inherited from an ancestor group — an unset child falls back
+   *  to its OWN {@link firstTeamRoot}. */
+  cwd?: string;
   /** DFS-ordered viewer windows this group's server hosts: direct child
    *  groups, plus every enabled team whose NEAREST ancestor group is
    *  this group (teams nested under teams inside the group included —
@@ -650,7 +658,12 @@ export type CockpitViewerEntry =
  *  a real member root keeps the guard truthful (found live 2026-08-28 on
  *  the first group-server rollout, where every embed pane inherited the
  *  reconcile invoker's cwd). Undefined only for a group with no teams
- *  anywhere beneath it — callers then omit cwd, the pre-fix behaviour. */
+ *  anywhere beneath it — callers then omit cwd, the pre-fix behaviour.
+ *
+ *  Since 2026-09-02 this is the FALLBACK behind {@link groupCwd}, not a
+ *  direct consumer surface: a group carrying an explicit `cwd` never
+ *  reaches here. Call `groupCwd` unless you specifically want the
+ *  borrowed-from-first-child answer. */
 export function firstTeamRoot(topology: GroupedTopology, groupName: string): string | undefined {
   const byName = new Map(topology.groups.map((g) => [g.name, g]));
   const walk = (name: string, seen: Set<string>): string | undefined => {
@@ -668,6 +681,33 @@ export function firstTeamRoot(topology: GroupedTopology, groupName: string): str
     return undefined;
   };
   return walk(groupName, new Set());
+}
+
+/** Where a group's VIEWER PANE opens — the group's window in the cockpit
+ *  session, or its window inside a parent group's server (2026-09-02,
+ *  t-98b30a82). The group's explicit `cwd` when cockpit.json set one,
+ *  otherwise {@link firstTeamRoot} — the unchanged pre-2026-09-02
+ *  default. Undefined when neither exists (no `cwd`, no team anywhere
+ *  beneath); callers then omit cwd entirely.
+ *
+ *  NOT the group's own tmux server start directory. That is decided in
+ *  `reconcileGroupServers`, which reads the raw `GroupTopologyNode.cwd`
+ *  rather than this fallback so a group without an explicit cwd keeps
+ *  the pre-2026-09-02 behaviour exactly.
+ *
+ *  Motivation, measured on geoywsMBP 2026-09-02: the `ifca` group's
+ *  panes opened at `.../ifca/src/aix-root` because `firstTeamRoot`
+ *  borrows the first child team's root, while the operator wants the
+ *  group at `/Users/geoyws/work/ifca`. The borrowed root is a fine
+ *  default and a poor override.
+ *
+ *  Not inherited: an unset child group falls back to its own
+ *  `firstTeamRoot`, never to an ancestor's `cwd`. Unknown group names
+ *  return undefined, same as `firstTeamRoot`. Pure (no IO). */
+export function groupCwd(topology: GroupedTopology, groupName: string): string | undefined {
+  const g = topology.groups.find((n) => n.name === groupName);
+  if (g?.cwd !== undefined) return g.cwd;
+  return firstTeamRoot(topology, groupName);
 }
 
 /** Output of {@link buildGroupTopology}. */
@@ -717,6 +757,7 @@ export function buildGroupTopology(cockpit: CockpitShape): GroupedTopology {
       }
       const g: GroupTopologyNode = { type: "group", name: node.name, level, children: [] };
       if (parentGroup !== undefined) g.parentGroup = parentGroup;
+      if (node.cwd !== undefined) g.cwd = node.cwd;
       groups.push(g);
       byName.set(node.name, g);
       if (parentGroup === undefined) {

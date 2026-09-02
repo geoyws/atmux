@@ -472,3 +472,24 @@ The mechanism (all in `src/core/cockpit.ts::buildGroupTopology` + `src/verbs/coc
 The 2026-08-27 note's §Implementation-ledger updates stand (row 3 ships, row 4 ships for `group`); row 9's "dotfiles socket chain" enforcement analysis is retired for schema groups — atmux enforces the shift itself.
 
 **Filed via** e-419553c6 (group-servers lane, 2026-08-28).
+
+### Group-tier note (2026-09-02, t-98b30a82) — optional `cwd` on `type: "group"`
+
+The 2026-08-28 note gave every group's viewer panes a cwd, but only a **borrowed** one: `src/core/cockpit.ts::firstTeamRoot` DFS-walks a group for its first child team and hands back that team's `root`. Measured on `geoywsMBP` 2026-09-02, that put the `ifca` group's panes at `/Users/geoyws/work/ifca/src/aix-root` — the first child's cage root — where the operator wants the group itself, `/Users/geoyws/work/ifca`. Borrowing is a fine default and a poor override.
+
+`type: "group"` therefore admits one new optional field:
+
+- **`cwd?: string`** (`src/schema/cockpit.ts`, `z.string().min(1).optional()` — the same shape team `root` uses; absoluteness is not schema-enforced on either). Carried onto `GroupTopologyNode.cwd` by `buildGroupTopology` when present, and read by the new `src/core/cockpit.ts::groupCwd(topology, name)`.
+
+It has exactly two consumers, and they are separate mechanisms:
+
+- **Consumer 1 — the group's VIEWER PANE**, via the new `src/core/cockpit.ts::groupCwd(topology, name)`: the explicit `cwd` when set, else `firstTeamRoot`. `firstTeamRoot` stays exported and unchanged as that fallback. All three call sites in `src/verbs/cockpit.ts` moved to `groupCwd` — the child-group window inside a parent group server, the `onlyTeam` ancestor-chain window, and the cockpit session's group viewer window.
+- **Consumer 2 — the group's OWN tmux server session start directory**, in `reconcileGroupServers`. This reads the raw `GroupTopologyNode.cwd`, *not* `groupCwd`, so a group without an explicit `cwd` takes a byte-identical pre-2026-09-02 path. It matters because a bare `new-window` issued **from inside the session** — and tmux's right-click "New Window" — opens in `#{session_path}`, not in the active pane's cwd. (A `tmux -S … new-window` typed in an outside shell uses that shell's cwd instead, and is unaffected by any of this.)
+
+**The two are decoupled by a `cd` prefix, because `new-session -c` sets both.** tmux gives a new session's first pane the same start directory as the session, so passing the group cwd would drag window 1's pane along with it and make the operator's per-window cwd-guard paint `root != root`. When the group has an explicit `cwd` and window 1's own cwd differs, the session is created at the group cwd and window 1's command becomes `cd <window-1 cwd> 2>/dev/null; <original command>` (quoted with the existing `src/core/tui-cmd.ts::posixQuote`). The separator is `;`, not `&&`: a missing child root must not kill the attach loop and with it the only window of a brand-new session, which matches tmux's own tolerance of a missing `-c` directory.
+
+- **Default unchanged.** A group with no `cwd` resolves exactly as it did on 2026-08-28: the viewer pane borrows `firstTeamRoot`, and the server session starts at its FIRST WANTED window's cwd with an unprefixed command. "Wanted", not "first child" — `onlyTeam` mode narrows the wanted list to a single, possibly non-first, child. Undefined on both sides when there is neither a `cwd` nor any team beneath the group; the `-c` flag is then omitted entirely, the pre-2026-08-28 behaviour.
+- **Not inherited.** A child group without `cwd` falls back to its OWN `firstTeamRoot`, never to an ancestor's `cwd`.
+- **`root` and `claudeAccount` are still refused.** The group schema stays `.strict()`, and the 2026-08-27 "deliberately narrow" bar is unchanged: a field is admitted only when something consumes it. `cwd` has the two consumers above; `root`/`claudeAccount`/`tuiOverrides`/`prefixChain` still have none. The name is `cwd`, not `root`, precisely because `root` means "directory holding `.atmux/team.json`" and a group has no cage.
+
+**Filed via** t-98b30a82 (group-cwd lane, 2026-09-02).

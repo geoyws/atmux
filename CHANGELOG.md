@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ✨ Added — optional `cwd` on `type: "group"` cockpit sessions
+
+**A group can now say where it lives, instead of borrowing the answer from its first child team.** `cockpit.json` accepts `cwd` on a `type: "group"` node (`z.string().min(1).optional()`, the same shape team `root` uses). Measured on `geoywsMBP` 2026-09-02: the `ifca` group sat at `/Users/geoyws/work/ifca/src/aix-root` — its first child team's cage root, which is what `firstTeamRoot` borrows — where the operator wants the group itself, `/Users/geoyws/work/ifca`.
+
+Two things read it, by two different routes:
+
+- **The group's viewer pane**, wherever that window lives — the cockpit session, or a parent group's server. `buildGroupTopology` carries the field onto the topology node and the new `src/core/cockpit.ts::groupCwd` returns it, falling back to the existing `firstTeamRoot` when unset. All three group-window call sites in `src/verbs/cockpit.ts` moved to `groupCwd`.
+- **The group's own tmux server session start directory**, so a bare `new-window` inside the group opens there rather than in a child's cage root. `reconcileGroupServers` reads the raw topology field here, not the `groupCwd` fallback.
+
+`new-session -c` sets the session start directory **and** the first pane's cwd, so the two are decoupled: the session is created at the group cwd, and window 1's command is prefixed `cd <its own cwd> 2>/dev/null;` to keep that pane at its team root where the per-window cwd-guard expects it. The separator is `;`, not `&&`, so a missing child root cannot kill the attach loop and with it the only window of a fresh session.
+
+**Nothing changes without the field.** A group with no `cwd` behaves exactly as before: the viewer pane borrows `firstTeamRoot`, and the server session starts at its first *wanted* window's cwd with an unprefixed command. A child group without one falls back to its own `firstTeamRoot` rather than inheriting an ancestor's. The group schema stays `.strict()` and still refuses `root`, `claudeAccount`, `tuiOverrides` and `prefixChain` — `cwd` is admitted because it has consumers and they do not. It is named `cwd`, not `root`, because `root` means "directory holding `.atmux/team.json`" and a group has no cage. See [ADR-089](docs/adr/089-hierarchical-cockpit.md)'s 2026-09-02 group-tier note (`t-98b30a82`).
+
 ### ✨ Added — prefix-table Meta hotkeys for windows 10-19
 
 `templates/tmux/atmux.conf` now uses explicit `bind -T prefix` lines for `M-0..M-9` → `select-window -t 10..19`. The built-in prefix digits `1-9` stay untouched, the F-key prefix chain stays untouched, and the shipped config still loads the local override last.
