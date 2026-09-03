@@ -3,7 +3,7 @@
 **Status**: accepted
 **Date**: 2026-06-05
 **Driver-ref**: George 2026-06-05 — "make eternal-improvement always address longstanding issues first, then improvements that need tackling; work should sit neatly in worktrees or nested worktrees branched from worktrees, awaiting a merge into trunk later when verified. This way time and tokens are not wasted (tokens are pre-paid and expire every week)."
-**Relates**: [ADR-052](052-eternal-improvement-loop.md) (the substrate this reframes), [ADR-149](149-eternal-improvement-gating.md) (its backlog-defer gate, superseded here), [ADR-090](090-epic-team-lifecycle.md) (spawn-epic worktree isolation reused), [ADR-134](134-in-team-auto-merger.md) / [ADR-091](091-kanban-driven-auto-merge.md) (verified fan-in to trunk), [ADR-082](082-worktree-isolation-per-member.md) / [ADR-084](084-merge-not-rebase.md) (long-lived worktree branches), [ADR-126](126-sqlite-state-store.md) (kanban store read by the selector).
+**Relates**: [ADR-052](052-eternal-improvement-loop.md) (the substrate this reframes), [ADR-149](149-eternal-improvement-gating.md) (its backlog-defer gate, superseded here), [ADR-090](090-epic-team-lifecycle.md) (spawn-epic worktree isolation reused), [ADR-134](134-in-team-auto-merger.md) / [ADR-091](091-kanban-driven-auto-merge.md) (verified fan-in to trunk), [ADR-082](082-worktree-isolation-per-member.md) / [ADR-084](084-worktree-per-member-branch-model.md) (long-lived worktree branches), [ADR-126](126-sqlite-state-store.md) (kanban store read by the selector).
 
 ## Context
 

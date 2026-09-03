@@ -168,4 +168,4 @@ The holds isolate the three expensive failure classes: typing into human work, c
 - Cockpit scheduler phase: `e-4616c137`
 - Pilot/migration phase: `e-4b34332c`
 - [`docs/RUNBOOK-cockpit.md`](../RUNBOOK-cockpit.md)
-- [`docs/migrations/285-superbot-fleet-plan.md`](../migrations/285-superbot-fleet-plan.md)
+- historical superbot fleet-plan migration note under `docs/migrations/285-superbot-fleet-plan.md` (file not retained)
