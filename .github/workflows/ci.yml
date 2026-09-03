@@ -10,9 +10,10 @@
 #                              per ADR-009 §6 — Bun's coverageThreshold is
 #                              parsed-but-no-op, validated in commit 600dc81)
 #   step 3 biome lint+format → "Biome check" job step
-#   steps 5-8 (silent-swallow / schema / ADR / conv-commit) — manual review
-#                              + scripts/lint-discipline.ts (Phase 1 — ADR-006
-#                              R1/R2/R6/R7/R11; foundation-porter deliverable).
+#   ADR cross-refs           → "ADR cross-reference links" job step
+#   remaining steps 5-8      → manual review + scripts/lint-discipline.ts
+#                              (Phase 1 — ADR-006 R1/R2/R6/R7/R11;
+#                              foundation-porter deliverable).
 
 name: ci-bun
 
@@ -31,6 +32,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: ADR cross-reference links
+        run: /bin/bash scripts/check-adr-links.sh
 
       - name: Setup Bun (pin 1.3.13 per package.json engines)
         uses: oven-sh/setup-bun@v2
