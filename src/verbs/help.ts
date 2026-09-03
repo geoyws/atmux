@@ -123,6 +123,8 @@ Automation:
   rotate <member>             /clear the member and re-brief
   rotate-lead                 /clear the lead and re-bootstrap
   handoff <from> <to>         Move in-flight work from one member to another
+                              (legacy-mode only; current continuity uses KB
+                              checkpoint/handoff records)
   pause <member>              Mark member paused (dispatch refuses to queue)
   resume <member>             Unpause
 

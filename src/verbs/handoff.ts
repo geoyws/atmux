@@ -45,7 +45,7 @@ import { Kanban as KanbanSchema, type KanbanTask } from "../schema/kanban.ts";
 import type { Team, TeamMember } from "../schema/team.ts";
 import { defaultSleep, windowExists } from "./rotate.ts";
 
-const USAGE = "atmux handoff <from> <to> [--reason <text>] [--no-native] [--pause-from]";
+const USAGE = "atmux handoff <from> <to> [--reason <text>] [--no-native] [--pause-from] (legacy-mode only)";
 
 // ---------- Args ----------
 

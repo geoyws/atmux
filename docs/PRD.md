@@ -453,15 +453,14 @@ Source: [ADR-217](adr/217-atmux-skills-plugin-bundled-and-wizard-installed.md).
 For the full skill list + per-skill invocation reference + uninstall
 instructions, see `plugins/atmux/README.md`.
 
-### 3.6 PLANNED — 2026-08-06 operator ask (R1 / R2 / R3). ADR-proposed, NOT shipped.
+### 3.6 2026-08-06 operator ask — R1 current / R2-R3 proposed.
 
-> ⚠ **Nothing in §3.6 exists yet.** All three ADRs below carry **Status:
-> proposed** as of 2026-08-06 and none has reviewer signoff or a
-> driver `decisions-add` ratification (project `CLAUDE.md` §Binding-discipline 4).
-> Verbs, flags, tables, sub-ops, and probes named here are **proposals**. Running
-> them today produces `unknown verb` / `unknown flag`. Business intent for all
-> three is in [docs/brd/atmux.md](brd/atmux.md) (BR1, BR4–BR7); the requirement
-> decomposition R1 / R2 / R3 traces to one operator ask on 2026-08-06.
+> ⚠ **R1 is current documented KB continuity.** The live authority is ADR-289
+> and the documented shape in §3.6.1 is accepted. R2 and R3 remain proposed:
+> their named verbs, flags, tables, sub-ops, and probes are still proposals and
+> may not be treated as shipped. Business intent for all three is in
+> [docs/brd/atmux.md](brd/atmux.md) (BR1, BR4–BR7); the requirement
+> decomposition traces to one operator ask on 2026-08-06.
 
 Operator ask, 2026-08-06 (verbatim): *"i need atmux to track plans and todos so
 that they're never lost even if agents run out of tokens and then another agent
@@ -471,56 +470,19 @@ atmux so that the git repo can be clean of our artifacts and my team members
 won't need to see my todo artifacts. and i need atmux to note the branches that
 we're working with across monorepos recursively as well."*
 
-| Area | Requirement | ADR (proposed) | BRD |
+| Area | Requirement | ADR / status | BRD |
 |---|---|---|---|
-| **R1** | Continuity — plans / todos / intent survive agent token exhaustion; a replacement agent resumes with no operator re-explanation | [ADR-267](adr/267-durable-agent-continuity-contract.md) | [BR1](brd/atmux.md) |
-| **R2** | Host-repo cleanliness — atmux artifacts never enter a managed product repo's git history, established and verified by machine rather than operator memory | [ADR-268](adr/268-managed-repo-state-isolation-enforcement.md) | BR4 + BR5 |
-| **R3** | Recursive branch ledger — atmux records which branch every repo in a monorepo (root + nested submodules, recursively) is working on, and detects drift | [ADR-269](adr/269-recursive-branch-ledger.md) | BR6 + BR7 |
+| **R1** | Continuity — plans / todos / intent survive agent token exhaustion; a replacement agent resumes from KB records; `atmux handoff` is legacy-mode only | [ADR-289](adr/289-kb-authoritative-agent-continuity.md) — accepted | [BR1](brd/atmux.md) |
+| **R2** | Host-repo cleanliness — atmux artifacts never enter a managed product repo's git history, established and verified by machine rather than operator memory | [ADR-268](adr/268-managed-repo-state-isolation-enforcement.md) — proposed | BR4 + BR5 |
+| **R3** | Recursive branch ledger — atmux records which branch every repo in a monorepo (root + nested submodules, recursively) is working on, and detects drift | [ADR-269](adr/269-recursive-branch-ledger.md) — proposed | BR6 + BR7 |
 
-#### 3.6.1 R1 — durable agent continuity ([ADR-267](adr/267-durable-agent-continuity-contract.md), proposed)
+#### 3.6.1 R1 — durable agent continuity ([ADR-289](adr/289-kb-authoritative-agent-continuity.md), accepted)
 
-**What is already shipped and needs nothing:** kanban rows are on disk in
-`.atmux/state.db` ([ADR-126](adr/126-sqlite-state-store.md)), so *what* was
-claimed survives any agent death by construction; a fresh agent self-serves work
-via `atmux claim --next --as <member>`
-([ADR-007](adr/007-pull-kanban.md)) with no dispatcher; standing decisions live
-in `.atmux/decisions.md` ([ADR-008](adr/008-decisions-verb.md)); `atmux handoff`
-and `/atmux:session cont` exist
-([ADR-263](adr/263-merge-session-preclear-into-handoff.md)).
+The current continuity contract is HAX KB, not pane scrollback. After `kb claim --next --as "<agent>"`, record `kb note <task-id> "<plan>" --as "<agent>" --kind plan`; on each commit, record `kb note <task-id> "<sha> <line>" --as "<agent>" --kind progress`; on blockers, use `kb cp <task-id> --lease "$TOKEN" --as "<agent>" --state blocked --summary "<blocker>" --intent "<intent>" --next-action "<unblock condition>"`; before `/clear`, rotation, or expected compaction, write `kb cp <task-id> --lease "$TOKEN" --as "<agent>" --state continue --summary "<summary>" --intent "<intent>" --next-action "<next action>"` or session-form `kb h new --as "<agent>" --to "<successor>" --branch "<branch>" --repo "<repo-path>" --reason "<reason>" --summary "<summary>" --intent "<intent>" --next-action "<next action>"`. `atmux handoff` survives only as a legacy-mode compatibility surface, and the source seam in `src/verbs/handoff.ts` already refuses external Kanban mode because leases cannot be transferred atomically there.
 
-**The gap ADR-267 addresses:** the *reason* for the rows is not durable. atmux's
-only narrative-capture mechanism is `atmux handoff`, which is death-bed and
-best-effort — it asks the dying pane for a summary and polls
-`ATMUX_HANDOFF_WAIT` seconds (default 30), falls back to a `tmux capture-pane`
-tail of `ATMUX_HANDOFF_LINES` lines (default 500), and writes a
-`(no pane to capture)` stub when the source window is already gone. And there is
-**no append-only progress-note seam**: `atmux task update --body` *replaces* the
-body (`--body ""` clears it), and no `--note` flag exists on `atmux task update`
-at all.
+The dirty-worktree rule is unchanged: dirty work stays on disk, `dirtySummary` records it, same-host/same-worktree successors inherit it, and cross-host loss of uncommitted work is explicit. On `@@mbp`, the operator spawns successors manually because no auto-launched agents are allowed there; on `@@hax`, successor dispatch belongs to Kanban, not atmux.
 
-**Proposed, not shipped** (ADR-267 §D1–§D4):
-
-- `atmux task note <task-id> "<text>" [--as <member>] [--kind plan|progress|blocker|decision|done]`
-  plus a read-only `atmux task notes <task-id>`, backed by a new append-only
-  `task_notes` table on the next free rung of the
-  `src/abstractions/sqlite-migrations.ts` ladder. Append-only by construction —
-  no `--edit`, no `--rm`. `tasks.note` and `atmux done --note` are untouched.
-- `atmux task show <id>` gains a `notes` array, oldest-first.
-- A sixth `atmux groom` sub-op `archiveTaskNotes`, reusing `--kanban-days`, with
-  the hard invariant that **notes on a non-`done` Task are never archived at any
-  age**.
-- A claim→plan obligation in `templates/briefs/member.md`, enforced as a
-  **detectable proxy and deliberately not a hard block** — a sixth kanban-hygiene
-  detector `plan-missing` in the existing
-  [ADR-131](adr/131-superdoctor-kanban-hygiene.md) family, drained by the
-  existing `atmux hygiene-tick`, stored in the existing `superdoctor_hygiene`
-  table (no extra migration), always `escalate` and never auto-fixed.
-- The resume invariant, stated so it is measurable: *every Task in status
-  `in-progress` carries at least one `plan` note, so a cold agent resumes without
-  reading pane scrollback* — which holds exactly when `plan-missing` reports zero.
-
-**No new daemon, ticker, cron arm, or event topic** — ADR-267 §D4(c) declines all
-four, consistent with §1.2 principle 3 as corrected above.
+ADR-289 keeps the old boundary table as the durable resume rhythm, but it now reads against KB commands instead of a death-bed summary path.
 
 #### 3.6.2 R2 — managed-repo state isolation ([ADR-268](adr/268-managed-repo-state-isolation-enforcement.md), proposed)
 
@@ -838,30 +800,30 @@ porter; not docs-lane.
   `member rm/rename` (closes API gap); deprecation aliases for 3 months
   before removal in v3.
 
-### 5.5 2026-08-06 operator ask — R1 / R2 / R3 (ADR-proposed; not phase-gated)
+### 5.5 2026-08-06 operator ask — R1 accepted/current; R2-R3 proposed (not phase-gated)
 
 Added 2026-08-06. These three items do **not** sit in the Phase 0–6 ladder above
 — that ladder tracks the bash → Bun port, which is orthogonal. They are
 requirement areas from a single operator ask on 2026-08-06, each with its own
-ADR at **Status: proposed**. Surface detail is in §3.6; business intent is in
+R1 is now **Status: accepted**. Surface detail is in §3.6; business intent is in
 [docs/brd/atmux.md](brd/atmux.md); open questions are in §10.5–§10.7.
 
 | Item | Deliverable | ADR | Status 2026-08-06 |
 |---|---|---|---|
-| **R1 — durable agent continuity** | `atmux task note` + `task_notes` table + `notes` in `task show` + `archiveTaskNotes` groom sub-op + `plan-missing` hygiene detector + brief/skill amendments | [ADR-267](adr/267-durable-agent-continuity-contract.md) | **proposed.** No reviewer signoff. ADR-267 phases the instruction leg (brief text, zero code) ahead of the schema + detector legs. Blocked on OQ-7 (epic-team cages own their own `state.db`, so the detector would emit false `plan-missing` findings on parent-team Tasks whose work happens in a child cage) — that must be decided before the detector ships. |
+| **R1 — durable agent continuity** | KB continuity rhythm (plan / progress / blocker / checkpoint) + legacy-mode `atmux handoff` compatibility | [ADR-289](adr/289-kb-authoritative-agent-continuity.md) | **accepted.** Current authority is HAX KB. ADR-289 supersedes ADR-267 and keeps the old boundary table as a compatibility reference only. |
 | **R2 — managed-repo state isolation** | `atmux init` isolation step + machine-global excludes patterns + `managed-repo-state-untracked` doctor probe + `atmux doctor --sweep-isolation` | [ADR-268](adr/268-managed-repo-state-isolation-enforcement.md) | **proposed.** No reviewer signoff. Carries one **realized leak** to remediate independently of the code: `/root/work/ifca/src/tx-root` has `.atmux/team.json` committed in `c82add0` and pushed to an IFCA-org remote. `git rm -r --cached .atmux` + commit stops future tracking; the blob stays in pushed history, and rewriting a pushed IFCA-org branch is out of scope and needs explicit operator authorization under the push policy. |
 | **R3 — recursive branch ledger** | `branch_ledger` + `branch_ledger_intent` tables + `atmux branches record\|show\|verify` + `checkBranchLedgerDrift` doctor probe + write hooks in the four recursive scripts and after `provisionWorktree` | [ADR-269](adr/269-recursive-branch-ledger.md) | **proposed.** No reviewer signoff. ADR-269 §Phasing: Phase 0 is the ADR + `docs/RUNBOOK-branch-ledger.md` + pure types/functions only (no migration, no verb, no behaviour); Phase 1 is the migration + verb + probe + write points, with traversal wall-clock measured on `ix-root` (39 repos — 38 declared submodules + root — at depth 3, the fleet worst case per ADR-269 §OQ-1) **before** any cadence is armed. ADR-269 §Phasing rules `property-root` out as a measurement target: 14 submodules, recursive count equal to top-level, i.e. depth 1. |
 
 **Two cross-cutting sequencing facts, stated once so neither is discovered late:**
 
-1. **Migration-rung collision.** ADR-267 (`task_notes`) and ADR-269
-   (`branch_ledger` + `branch_ledger_intent`) both add rungs to the single
-   append-only ladder in `src/abstractions/sqlite-migrations.ts`, whose highest
-   landed rung as of 2026-08-06 is `to: 17`. Both ADRs explicitly yield to
-   whichever lands first and take the next free pair. The ladder stays monotonic;
-   no landed `up` body is ever edited. Re-derive the rung at implementation time
-   with one `rg` — do not trust a number pinned in an ADR written before its
-   sibling landed.
+1. **Migration-rung collision, historical note.** ADR-267's retired
+   `task_notes` proposal and ADR-269 (`branch_ledger` + `branch_ledger_intent`)
+   both added rungs to the single append-only ladder in
+   `src/abstractions/sqlite-migrations.ts`, whose highest landed rung as of
+   2026-08-06 is `to: 17`. This is now historical only: ADR-267 is superseded
+   by ADR-289, and the retired `task_notes` proposal no longer contends for a
+   migration rung. Re-derive the rung at implementation time with one `rg` — do
+   not trust a number pinned in an ADR written before its sibling landed.
 2. **R2 is a prerequisite for R3's output being safe, and R3 needs nothing new
    for it.** ADR-269's ledger rows spell out lane topology and cross-product
    branch names (`px-crm-geoyws-driver-2`, sibling-product submodule paths) —
@@ -1055,59 +1017,44 @@ build pipeline cron-pulled from main HEAD. Awaiting lead green-light;
 DNS / TLS / nginx commands driver-coordinated (per docs-lane guardrails:
 no flarectl / certbot / nginx without explicit ack).
 
-### 10.5 R1 — how strongly can the claim→plan obligation be enforced? (open)
+### 10.5 R1 — historical question: how strongly could the claim→plan obligation be enforced? (superseded)
 
-*Added 2026-08-06 from [ADR-267](adr/267-durable-agent-continuity-contract.md).*
+*Added 2026-08-06 from [ADR-267](adr/267-durable-agent-continuity-contract.md); retained for trace only. Live continuity authority now points to [ADR-289](adr/289-kb-authoritative-agent-continuity.md).*
 
-**The core question, unresolved by design in v1:** atmux can create a durable,
-cheap plan-recording seam. It **cannot compel an agent to write to it.** ADR-267
-§D2 therefore rejects a hard gate on `atmux claim` / `atmux task move <id>
-in-progress` outright — not deferred, rejected — for three reasons: (a) a gate
-that requires *a* note is satisfied by *any* note, which is Goodhart, the same
-move as raising a coverage threshold to meet coverage; (b) blocking a claim wedges
-the [ADR-007](adr/007-pull-kanban.md) pull model, and a dormant member is strictly
-worse than an unplanned claim; (c) some claims fire before any agent is in the
-loop (first-turn bootstrap, lane-tick), where there is nobody present to author a
-note. What ships instead is a **detectable proxy** — the `plan-missing` hygiene
-finding — plus a **reviewer comment**, explicitly *not* a third fail-state
-alongside code-without-tests and code-without-doc-update.
+**Historical context only:** ADR-267 explored whether atmux could create a durable,
+cheap plan-recording seam even though it could not compel an agent to write to it.
+Its answer was to reject a hard gate on `atmux claim` / `atmux task move <id>
+in-progress`, for the same three reasons recorded in the original proposal: note
+quality cannot be guaranteed by a presence gate, claim blocking wedges the
+[ADR-007](adr/007-pull-kanban.md) pull model, and some claims happen before any
+agent is in the loop. ADR-289 now holds the live KB continuity contract; this
+section is trace only.
 
-Still open:
+Still historical:
 
-1. **Does detection-plus-surfacing actually change behaviour?** The named failure
-   mode is a *silent* regression: nothing errors, and the only symptom is a rising
-   `plan-missing` count. ADR-267 §Consequences states the sharp version — *"if the
-   surfacing leg is skipped, this ADR ships a metric nobody reads and the
-   operator's original problem is unfixed while appearing addressed."* The finding
-   must reach a lead via the existing
+1. **Detection-plus-surfacing was the proposed proxy.** The named failure mode was
+   a silent regression where nothing errors and the only symptom is a rising
+   `plan-missing` count. ADR-267 §Consequences argued that the finding had to
+   reach a lead via the existing
    [ADR-010](adr/010-atmux-flag.md) → [ADR-214](adr/214-retire-ombudsman-lead-absorbs-complaint-adjudication-via-honker.md)
-   path, not merely land in `superdoctor_hygiene`. **This is the implementation
-   step most likely to be dropped and most damaging to drop.**
-2. **`planGraceSec`** — recommended 900 (15 min) as the age gate before
-   `plan-missing` trips. Untested; measure real claim→first-note latency on a live
-   team before pinning.
-3. **Goodhart on note *content* has no v1 mitigation.**
-   `atmux task note t-x --kind plan "will fix it"` satisfies the detector, which
-   counts rows and cannot judge content. LLM scoring of note quality is out of
-   scope ([ADR-237](adr/237-no-llm-discord-and-whip-removal.md) forbids
-   time-driven LLM cycles, and a quality judge is the next thing to be gamed). The
-   reviewer reading the note is the only quality signal, and it is a comment.
-4. **Epic-team cages own their own `state.db`** (ADR-267 OQ-7) — so a parent-team
-   Task whose work happens in a child cage shows **zero** notes in the parent, and
-   the first `hygiene-tick` run would emit false `plan-missing` findings on every
-   such parent Task. Needs a decision — parent Task exempt while a child cage owns
-   it, versus fan-in writing a summarising note back — **before the detector
-   ships**. This is an implementation blocker, not a nice-to-have.
-5. **Two disjoint handoff artifacts exist today.** `atmux handoff` writes
+   path, not merely land in `superdoctor_hygiene`.
+2. **`planGraceSec`** was the suggested 900-second age gate before
+   `plan-missing` trips. It remained untested and is historical only.
+3. **Goodhart on note content had no v1 mitigation.**
+   `atmux task note t-x --kind plan "will fix it"` was enough to satisfy the
+   detector, which counted rows and could not judge content.
+4. **Epic-team cages owning their own `state.db`** was a blocker in ADR-267 OQ-7.
+   A parent-team Task whose work happened in a child cage would show zero notes in
+   the parent, and the first `hygiene-tick` run would have emitted false
+   `plan-missing` findings on every such parent Task.
+5. **Two disjoint handoff artifacts existed.** `atmux handoff` wrote
    `.atmux/handoff/<from>-to-<to>-<ts>.md` (singular `handoff`; verified on disk
-   2026-08-06 — `.atmux/handoffs` does not exist), while `/atmux:session cont`
-   reads `~/.claude/projects/<project-slug>/todo/<branch>/handoff.md`. Neither path
-   probes the other, so **the resume path never reads the handoff verb's output.**
-   ADR-267 §D3a proposes a one-line skill amendment with no code change; until it
-   lands, the gap stands.
-6. **Per-Task note soft cap** — recommended 50, warning-only and never a refusal
-   (refusing the append is refusing the durability). Should exceeding 3× the cap
-   escalate to its own hygiene finding, or stay advisory forever?
+   2026-08-06 — `.atmux/handoffs` did not exist), while `/atmux:session cont`
+   read `~/.claude/projects/<project-slug>/todo/<branch>/handoff.md`. ADR-267
+   §D3a proposed a one-line skill amendment with no code change; this is now
+   historical.
+6. **Per-Task note soft cap** was recommended at 50, warning-only and never a
+   refusal. It stayed advisory.
 
 ### 10.6 R2 — whole `.atmux/` or individual files symlinked into managed repos? (proposed answer: individual)
 
@@ -1256,15 +1203,16 @@ Critical ADRs with active behavior:
 - **ADR-055** — Cursor self-heal (recipe-driven; v1 recipes: `fix:team-json-schema-drift` / `fix:cron-pollution` / `fix:supervisor-missing`). R1-T8 chain landed (`0fa4572` → `80d628e` → `9554f70` → `f50e751` → `1ce71c3`). Reviewer-gate, no auto-commit.
 - **ADR-056** — Account-swap (preemptive handoff at 75% used; lead/planner excluded; sequential per-team flock; OQ-3 = post-resume reconciliation deferred). R1-T10/T11/T12 landed (`f99519f` / `ffa2bd5` / `22ac16b` / `83115ec`).
 
-### 2026-08-06 operator-ask batch (Status: proposed — surface in §3.6, roadmap in §5.5, open questions in §10.5–§10.7)
+### 2026-08-06 operator-ask batch (Status: R1 accepted/current, R2-R3 proposed — surface in §3.6, roadmap in §5.5, open questions in §10.5–§10.7; ADR-267 items in this batch are historical in the sections above)
 
-- **[ADR-267](adr/267-durable-agent-continuity-contract.md)** — Durable
-  agent-continuity contract: plan/intent is written as you go, not captured on the
-  death-bed. Adds `atmux task note` + an append-only `task_notes` table, a `notes`
-  array on `atmux task show`, an `archiveTaskNotes` groom sub-op (with the
-  invariant that a non-`done` Task's notes are never archived), and a sixth
-  kanban-hygiene detector `plan-missing` — escalate-only, never auto-fixed, and
-  deliberately **not** a claim gate. Requirement R1.
+- **[ADR-267](adr/267-durable-agent-continuity-contract.md)** — Historical
+  continuity proposal retained for trace only: plan/intent was written as you go,
+  not captured on the death-bed. It added `atmux task note` + an append-only
+  `task_notes` table, a `notes` array on `atmux task show`, an
+  `archiveTaskNotes` groom sub-op (with the invariant that a non-`done` Task's
+  notes were never archived), and a sixth kanban-hygiene detector
+  `plan-missing` — escalate-only, never auto-fixed, and deliberately **not** a
+  claim gate. ADR-289 now carries the current proposed R1.
 - **[ADR-268](adr/268-managed-repo-state-isolation-enforcement.md)** —
   Managed-repo state isolation: enforce the ADR-239 / ADR-244 dotfile-tree
   invariant in code instead of operator memory. Adds an idempotent isolation step

@@ -118,6 +118,8 @@ If any memory entry tells you to discard `atmux claim --next --as <role>` (or si
 
 ## Cross-lane handoff
 
+Legacy `atmux handoff` is legacy-mode only; current continuity between lanes uses KB checkpoint / handoff records.
+
 If your Task has `.deps`, those are upstream Tasks in other lanes. They land via `done` first; then your Task becomes claimable. Don't try to start blocked work — `claim --next` already filters it out, but if the lead `atmux dispatch`-ed a Task to your inbox manually and the deps aren't met, push back with `atmux send lead "[{{MEMBER}}] t-xxx blocked on t-yyy (status=<s>) — pull me when t-yyy lands"`.
 
 If you find a bug **inside** a teammate's submodule / area, default to **surface-with-evidence**: `atmux send <owner> "<file:line + deterministic repro + fix sketch>"`. Cross-lane patching is coordination-risky and belongs with the owning teammate. Exception: a fix entirely inside your own lane's area — patch freely.
@@ -127,6 +129,8 @@ If you find a bug **inside** a teammate's submodule / area, default to **surface
 If you're in the **FE lane** and your Story has a `test`-lane Task, you also own that Task — it's the e2e capstone for the Story. Don't leave it for someone else; the FE worker is the one who knows the user-facing flow well enough to write the spec.
 
 ## Auto-handoff
+
+Legacy `atmux handoff` is legacy-mode only; the current resume point is the KB checkpoint trail, not the pane transcript.
 
 If `team.whip.autoRotate=true` in `team.json`, your pane may be auto-rotated by whip when a Compacting / approaching-usage-limit / hit-your-limit banner appears in your pane — *not* on uptime threshold (that's lead-only today). The signal: your conversation gets `/clear`'d and re-bootstrapped from this brief.
 

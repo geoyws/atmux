@@ -28,6 +28,14 @@ describe("verbs/help", () => {
     expect(ATMUX_USAGE).toContain("Docs:  https://github.com/geoyws/atmux\n");
   });
 
+  test("ATMUX_USAGE marks handoff as legacy-mode only with KB continuity wording", () => {
+    expect(ATMUX_USAGE).toContain(
+      "handoff <from> <to>         Move in-flight work from one member to another\n" +
+        "                              (legacy-mode only; current continuity uses KB\n" +
+        "                              checkpoint/handoff records)",
+    );
+  });
+
   test("help() returns exit code 0 + writes USAGE to stdout", async () => {
     // Capture process.stdout.write (NOT console.log — help.ts uses
     // stdout.write directly to avoid console.log's auto-newline append,
