@@ -39,6 +39,28 @@ Use top-level `windows[]` for a durable cockpit workspace that is not backed by 
 
 Null or omitted `command` starts zsh. These windows appear after an enabled `_superbot` role and before team viewers, in declaration order. Without `_superbot`, the order remains after `_medic`. Reconcile preserves an existing matching pane and applies `cwd`/`command` only when recreating a missing window. Names must not collide with cockpit roles or team viewers.
 
+### Driver-only cockpit split
+
+For the dedicated vendored cockpit, set `driverOnly: true` and declare exactly these three windows, in order:
+
+```json
+{
+  "cockpitSession": "atx",
+  "driverOnly": true,
+  "windows": [
+    { "name": "driver", "cwd": "/Users/geoyws/work/src/atmux" },
+    { "name": "driver-2", "cwd": "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-2" },
+    { "name": "driver-3", "cwd": "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-3" }
+  ]
+}
+```
+
+`atmux cockpit reconcile --no-launch` stays truthful in this mode: it creates or reconciles only those three operator windows, preserves any already-declared ones, and refuses unexpected live windows instead of pruning them. There are no team viewers, no medic, and no superbot in the driver-only split.
+
+The driver-only split binds the vendored tmux binary `/opt/atmux/current/bin/tmux` to the dedicated `atmux-vendored-cockpit` socket and still threads the canonical `atmux.conf` path.
+
+The repository tests for this split are mock-driven unit tests only; they do not start a live tmux server.
+
 ### Held `_superbot` role (ADR-285)
 
 ADR-285 implements a deterministic scheduler window immediately after optional `_medic`, but the checked-in migration plan keeps activation held:

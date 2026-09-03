@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { TmuxConfig, TmuxNamespace } from "../../../src/abstractions/tmux.ts";
+import type { Target, TmuxConfig, TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import { buildGroupTopology, enabledTeams, groupSocketPath } from "../../../src/core/cockpit.ts";
 import type { Logger } from "../../../src/core/tui.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
@@ -24,6 +24,7 @@ import {
   cockpitAttach,
   cockpitMigrateSocket,
   cockpitRebuild,
+  type CockpitOpts,
   LEGACY_COCKPIT_SESSION_NAMES,
   normaliseTeamJson,
   type ParsedCockpitArgs,
@@ -38,6 +39,12 @@ import {
   PORTABLE_KEEPALIVE_COMMAND,
   setCanonicalAtmuxTmuxHome,
 } from "../../helpers/tmux.ts";
+import {
+  COCKPIT_SOCKET_VENDORED,
+  getAtmuxTmuxConfPath,
+} from "../../../src/core/tmux-paths.ts";
+
+const FAKE_VENDORED_TMUX_BIN = "/tmp/atmux-vendored-tmux-fake";
 
 // ---------- parseCockpitArgs ----------
 
@@ -2095,6 +2102,25 @@ describe("reconcileCockpitSession — driverSession-aware per-team windows", () 
 describe("cockpitRebuild", () => {
   let homeDir: string;
   let projRoot: string;
+  const driverOnlyWindows = () => [
+    { name: "driver", cwd: "/Users/geoyws/work/src/atmux" },
+    { name: "driver-2", cwd: "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-2" },
+    { name: "driver-3", cwd: "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-3" },
+  ];
+  const driverOnlyOpts = (): Pick<CockpitOpts, "resolveVendoredTmuxBin"> => ({
+    resolveVendoredTmuxBin: () => FAKE_VENDORED_TMUX_BIN,
+  });
+  const writeDriverOnlyCockpit = async () => {
+    await writeFile(
+      join(homeDir, ".atmux", "cockpit.json"),
+      JSON.stringify({
+        cockpitSession: "atx",
+        driverOnly: true,
+        windows: driverOnlyWindows(),
+      }),
+      "utf8",
+    );
+  };
 
   beforeEach(async () => {
     homeDir = await mkdtemp(join(tmpdir(), "atmux-cockpit-reb-home-"));
@@ -2113,6 +2139,396 @@ describe("cockpitRebuild", () => {
   afterEach(async () => {
     await rm(homeDir, { recursive: true, force: true });
     await rm(projRoot, { recursive: true, force: true });
+  });
+
+  test("driverOnly=true creates the exact three driver windows in order with plain zsh", async () => {
+    await writeDriverOnlyCockpit();
+    const state: MockTmuxState = { sessions: new Map(), scrollback: new Map(), ops: [] };
+    const { logger, logs } = makeLogger();
+    let startCalls = 0;
+    const configs: TmuxConfig[] = [];
+    const code = await cockpitRebuild(
+      {
+        subverb: "reconcile",
+        noCycle: true,
+        forceCycle: false,
+        ackDangerous: false,
+        noLaunch: true,
+        yes: false,
+      },
+      {
+        env: { HOME: homeDir, ATMUX_NO_CRON: "1" },
+        ...driverOnlyOpts(),
+        tmuxFactory: (cfg) => {
+          configs.push(cfg);
+          return makeMockTmux("cockpit", state);
+        },
+        logger,
+        startFn: async () => {
+          startCalls += 1;
+          return 0;
+        },
+      },
+    );
+    expect(code).toBe(0);
+    expect(startCalls).toBe(0);
+    expect(state.ops).toEqual([
+      "cockpit:hasSession(=atx)",
+      "cockpit:newSession(atx,driver)",
+      "cockpit:newWindow(atx,driver-2)",
+      "cockpit:newWindow(atx,driver-3)",
+      "cockpit:setOption(prefix,F1,global)",
+    ]);
+    expect(state.ops.some((op) => op.includes("kill") || op.includes("rename"))).toBe(false);
+    const sess = state.sessions.get("atx");
+    expect(sess?.windows.map((w) => w.name)).toEqual(["driver", "driver-2", "driver-3"]);
+    expect(sess?.windows.map((w) => w.cwd)).toEqual(driverOnlyWindows().map((w) => w.cwd));
+    expect(sess?.windows.every((w) => (w as { shellCommand?: unknown }).shellCommand === undefined)).toBe(true);
+    expect(configs).toEqual([
+      {
+        socket: COCKPIT_SOCKET_VENDORED,
+        configFile: getAtmuxTmuxConfPath({ HOME: homeDir, ATMUX_NO_CRON: "1" }),
+        binaryPath: FAKE_VENDORED_TMUX_BIN,
+      },
+    ]);
+    expect(logs.join("\n")).toContain("driver-only cockpit ready");
+  });
+
+  test("driverOnly=true binds the vendored socket and binary even when env asks for legacy cockpit", async () => {
+    await writeDriverOnlyCockpit();
+    const state: MockTmuxState = { sessions: new Map(), scrollback: new Map(), ops: [] };
+    let captured: TmuxConfig | undefined;
+    const code = await cockpitRebuild(
+      {
+        subverb: "reconcile",
+        noCycle: true,
+        forceCycle: false,
+        ackDangerous: false,
+        noLaunch: true,
+        yes: false,
+      },
+      {
+        env: {
+          HOME: homeDir,
+          ATMUX_NO_CRON: "1",
+          ATMUX_COCKPIT_SOCKET: "atmux-cockpit",
+          ATMUX_TMUX_CONF: "/tmp/driver-only-cockpit.conf",
+        },
+        ...driverOnlyOpts(),
+        tmuxFactory: (cfg) => {
+          captured = cfg;
+          return makeMockTmux("cockpit", state);
+        },
+        logger: makeLogger().logger,
+        startFn: async () => 0,
+      },
+    );
+    expect(code).toBe(0);
+    expect(captured).toEqual({
+      socket: COCKPIT_SOCKET_VENDORED,
+      configFile: "/tmp/driver-only-cockpit.conf",
+      binaryPath: FAKE_VENDORED_TMUX_BIN,
+    });
+  });
+
+  test("driverOnly=true aborts before tmux factory when vendored binary resolution fails", async () => {
+    await writeDriverOnlyCockpit();
+    const state: MockTmuxState = { sessions: new Map(), scrollback: new Map(), ops: [] };
+    let factoryCalls = 0;
+    let startCalls = 0;
+    await expect(
+      cockpitRebuild(
+        {
+          subverb: "reconcile",
+          noCycle: true,
+          forceCycle: false,
+          ackDangerous: false,
+          noLaunch: true,
+          yes: false,
+        },
+        {
+          env: { HOME: homeDir, ATMUX_NO_CRON: "1" },
+          resolveVendoredTmuxBin: () => {
+            throw new Error("vendored tmux missing");
+          },
+          tmuxFactory: () => {
+            factoryCalls += 1;
+            return makeMockTmux("cockpit", state);
+          },
+          logger: makeLogger().logger,
+          startFn: async () => {
+            startCalls += 1;
+            return 0;
+          },
+        },
+      ),
+    ).rejects.toThrow(/vendored tmux missing/);
+    expect(factoryCalls).toBe(0);
+    expect(startCalls).toBe(0);
+    expect(state.ops).toEqual([]);
+  });
+
+  test("driverOnly=true fills a missing declared window and preserves the others", async () => {
+    await writeDriverOnlyCockpit();
+    const state: MockTmuxState = {
+      sessions: new Map([
+        [
+          "atx",
+          {
+            createdAt: 1,
+            windows: [
+              {
+                index: 1,
+                name: "driver",
+                cwd: "/Users/geoyws/work/src/atmux",
+                shellCommand: "zsh",
+              },
+              {
+                index: 2,
+                name: "driver-3",
+                cwd: "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-3",
+                shellCommand: "zsh",
+              },
+            ],
+          },
+        ],
+      ]),
+      scrollback: new Map(),
+      ops: [],
+    };
+    const { logger } = makeLogger();
+    const code = await cockpitRebuild(
+      {
+        subverb: "reconcile",
+        noCycle: true,
+        forceCycle: false,
+        ackDangerous: false,
+        noLaunch: true,
+        yes: false,
+      },
+      {
+        env: { HOME: homeDir, ATMUX_NO_CRON: "1" },
+        ...driverOnlyOpts(),
+        tmuxFactory: () => makeMockTmux("cockpit", state),
+        logger,
+        startFn: async () => 0,
+      },
+    );
+    expect(code).toBe(0);
+    expect(state.ops).toContain("cockpit:newWindow(atx,driver-2)");
+    expect(state.ops).toContain("cockpit:swapWindow(atx:3<->atx:2)");
+    expect(state.ops.some((op) => op.includes("kill") || op.includes("rename") || op.includes("moveWindow"))).toBe(
+      false,
+    );
+    expect(state.sessions.get("atx")?.windows.map((w) => w.name)).toEqual([
+      "driver",
+      "driver-2",
+      "driver-3",
+    ]);
+  });
+
+  test("driverOnly=true refuses unexpected live windows before any mutation", async () => {
+    await writeDriverOnlyCockpit();
+    const state: MockTmuxState = {
+      sessions: new Map([
+        [
+          "atx",
+          {
+            createdAt: 1,
+            windows: [
+              { index: 1, name: "driver", cwd: "/Users/geoyws/work/src/atmux", shellCommand: "zsh" },
+              {
+                index: 2,
+                name: "_superdriver",
+                cwd: "/Users/geoyws/work/src/atmux",
+                shellCommand: "zsh",
+              },
+            ],
+          },
+        ],
+      ]),
+      scrollback: new Map(),
+      ops: [],
+    };
+    const { logger } = makeLogger();
+    await expect(
+      cockpitRebuild(
+        {
+          subverb: "reconcile",
+          noCycle: true,
+          forceCycle: false,
+          ackDangerous: false,
+          noLaunch: true,
+          yes: false,
+        },
+        {
+          env: { HOME: homeDir, ATMUX_NO_CRON: "1" },
+          ...driverOnlyOpts(),
+          tmuxFactory: () => makeMockTmux("cockpit", state),
+          logger,
+          startFn: async () => 0,
+        },
+      ),
+    ).rejects.toThrow(/unexpected live window/);
+    expect(state.ops).toEqual(["cockpit:hasSession(=atx)", "cockpit:listWindows(atx)"]);
+  });
+
+  test("driverOnly=true refuses duplicate live windows before any mutation", async () => {
+    await writeDriverOnlyCockpit();
+    const state: MockTmuxState = {
+      sessions: new Map([
+        [
+          "atx",
+          {
+            createdAt: 1,
+            windows: [
+              { index: 1, name: "driver", cwd: "/Users/geoyws/work/src/atmux", shellCommand: "zsh" },
+              {
+                index: 2,
+                name: "driver",
+                cwd: "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-2",
+                shellCommand: "zsh",
+              },
+              {
+                index: 3,
+                name: "driver-3",
+                cwd: "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-3",
+                shellCommand: "zsh",
+              },
+            ],
+          },
+        ],
+      ]),
+      scrollback: new Map(),
+      ops: [],
+    };
+    const { logger } = makeLogger();
+    await expect(
+      cockpitRebuild(
+        {
+          subverb: "reconcile",
+          noCycle: true,
+          forceCycle: false,
+          ackDangerous: false,
+          noLaunch: true,
+          yes: false,
+        },
+        {
+          env: { HOME: homeDir, ATMUX_NO_CRON: "1" },
+          ...driverOnlyOpts(),
+          tmuxFactory: () => makeMockTmux("cockpit", state),
+          logger,
+          startFn: async () => 0,
+        },
+      ),
+    ).rejects.toThrow(/duplicate live window/);
+    expect(state.ops).toEqual(["cockpit:hasSession(=atx)", "cockpit:listWindows(atx)"]);
+  });
+
+  test("driverOnly=true refuses excess live windows before any mutation", async () => {
+    await writeDriverOnlyCockpit();
+    const state: MockTmuxState = {
+      sessions: new Map([["atx", { createdAt: 1, windows: [] }]]),
+      scrollback: new Map(),
+      ops: [],
+    };
+    const tmux = makeMockTmux("cockpit", state);
+    const excessLiveWindows: Awaited<ReturnType<TmuxNamespace["window"]["listWindows"]>> = [
+      { index: 1, id: "@1", name: "driver", active: true },
+      { index: 2, id: "@2", name: "driver-2", active: false },
+      { index: 3, id: "@3", name: "driver-3", active: false },
+      { index: 4, id: "@4", name: "_superdriver", active: false },
+    ];
+    tmux.window.listWindows = async (sessionName: string) => {
+      state.ops.push(`cockpit:listWindows(${sessionName})`);
+      return excessLiveWindows;
+    };
+    const { logger } = makeLogger();
+    await expect(
+      cockpitRebuild(
+        {
+          subverb: "reconcile",
+          noCycle: true,
+          forceCycle: false,
+          ackDangerous: false,
+          noLaunch: true,
+          yes: false,
+        },
+        {
+          env: { HOME: homeDir, ATMUX_NO_CRON: "1" },
+          ...driverOnlyOpts(),
+          tmuxFactory: () => tmux,
+          logger,
+          startFn: async () => 0,
+        },
+      ),
+    ).rejects.toThrow(/too many live windows/);
+    expect(state.ops).toEqual(["cockpit:hasSession(=atx)", "cockpit:listWindows(atx)"]);
+  });
+
+  test("driverOnly=true reorders surviving windows without kill/rename", async () => {
+    await writeDriverOnlyCockpit();
+    const state: MockTmuxState = {
+      sessions: new Map([
+        [
+          "atx",
+          {
+            createdAt: 1,
+            windows: [
+              {
+                index: 1,
+                name: "driver-3",
+                cwd: "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-3",
+                shellCommand: "zsh",
+              },
+              {
+                index: 2,
+                name: "driver",
+                cwd: "/Users/geoyws/work/src/atmux",
+                shellCommand: "zsh",
+              },
+              {
+                index: 3,
+                name: "driver-2",
+                cwd: "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-2",
+                shellCommand: "zsh",
+              },
+            ],
+          },
+        ],
+      ]),
+      scrollback: new Map(),
+      ops: [],
+    };
+    const { logger } = makeLogger();
+    const code = await cockpitRebuild(
+      {
+        subverb: "reconcile",
+        noCycle: true,
+        forceCycle: false,
+        ackDangerous: false,
+        noLaunch: true,
+        yes: false,
+      },
+      {
+        env: { HOME: homeDir, ATMUX_NO_CRON: "1" },
+        ...driverOnlyOpts(),
+        tmuxFactory: () => makeMockTmux("cockpit", state),
+        logger,
+        startFn: async () => 0,
+      },
+    );
+    expect(code).toBe(0);
+    expect(state.ops).toContain("cockpit:swapWindow(atx:2<->atx:1)");
+    expect(state.ops).toContain("cockpit:swapWindow(atx:3<->atx:2)");
+    expect(state.ops.some((op) => op.includes("kill") || op.includes("rename") || op.includes("moveWindow"))).toBe(
+      false,
+    );
+    expect(state.sessions.get("atx")?.windows.map((w) => w.name)).toEqual([
+      "driver",
+      "driver-2",
+      "driver-3",
+    ]);
   });
 
   test("--no-cycle + --no-launch only normalises team.json + reconciles cockpit", async () => {
@@ -2617,7 +3033,13 @@ describe("buildMigrationBreadcrumb (ADR-162 TR3 — Phase 5)", () => {
 
 interface MockTmuxState {
   /** Sessions on this socket. */
-  sessions: Map<string, { windows: { index: number; name: string }[]; createdAt: number }>;
+  sessions: Map<
+    string,
+    {
+      windows: { index: number; name: string; cwd?: string; shellCommand?: string }[];
+      createdAt: number;
+    }
+  >;
   /** Pane-capture seed keyed by `<session>:<index>`. */
   scrollback: Map<string, string>;
   /** Operations log — every call appended in order for assertion. */
@@ -2628,7 +3050,34 @@ interface MockTmuxState {
  *  with `<socketTag>:` so a multi-socket flow can be asserted with a
  *  single shared ops array per state. */
 function makeMockTmux(socketTag: string, state: MockTmuxState): TmuxNamespace {
+  const normalizeSessionName = (name: string) => (name.startsWith("=") ? name.slice(1) : name);
+  const coerceWindowTarget = (target: Target): { sessionName: string; windowIndex: number } => {
+    if (typeof target !== "string") {
+      return { sessionName: target.sessionName, windowIndex: target.windowIndex };
+    }
+    const [sessionNameRaw = ""] = target.split(":", 2);
+    const rawWindow = target.slice(sessionNameRaw.length + 1).split(".", 1)[0] ?? "1";
+    const windowIndex = Number.parseInt(rawWindow, 10);
+    return {
+      sessionName: sessionNameRaw.length > 0 ? sessionNameRaw : target,
+      windowIndex: Number.isFinite(windowIndex) ? windowIndex : 1,
+    };
+  };
+  const normalizeWindows = (sessionName: string) => {
+    const sess = state.sessions.get(normalizeSessionName(sessionName));
+    if (sess === undefined) return;
+    sess.windows.forEach((window, index) => {
+      window.index = index + 1;
+    });
+  };
   const ns: Partial<TmuxNamespace> = {
+    option: {
+      async setOption(opts) {
+        state.ops.push(
+          `${socketTag}:setOption(${opts.name},${opts.value ?? ""},${opts.global === true ? "global" : "local"})`,
+        );
+      },
+    } as TmuxNamespace["option"],
     session: {
       async listSessions() {
         state.ops.push(`${socketTag}:listSessions`);
@@ -2640,18 +3089,24 @@ function makeMockTmux(socketTag: string, state: MockTmuxState): TmuxNamespace {
       },
       async hasSession(name) {
         state.ops.push(`${socketTag}:hasSession(${name})`);
-        return state.sessions.has(name);
+        return state.sessions.has(normalizeSessionName(name));
       },
       async newSession(opts) {
         state.ops.push(`${socketTag}:newSession(${opts.name},${opts.windowName ?? ""})`);
-        state.sessions.set(opts.name, {
-          windows: [{ index: 1, name: opts.windowName ?? "shell" }],
+        const firstWindow: { index: number; name: string; cwd?: string; shellCommand?: string } = {
+          index: 1,
+          name: opts.windowName ?? "shell",
+        };
+        if (opts.cwd !== undefined) firstWindow.cwd = opts.cwd;
+        if (opts.shellCommand !== undefined) firstWindow.shellCommand = opts.shellCommand;
+        state.sessions.set(normalizeSessionName(opts.name), {
+          windows: [firstWindow],
           createdAt: Date.now(),
         });
       },
       async killSession(name) {
         state.ops.push(`${socketTag}:killSession(${name})`);
-        state.sessions.delete(name);
+        state.sessions.delete(normalizeSessionName(name));
       },
       async renameSession() {
         throw new Error("not used by migrate-socket");
@@ -2663,21 +3118,31 @@ function makeMockTmux(socketTag: string, state: MockTmuxState): TmuxNamespace {
     window: {
       async listWindows(sessionName) {
         state.ops.push(`${socketTag}:listWindows(${sessionName})`);
-        const sess = state.sessions.get(sessionName);
-        return (sess?.windows ?? []).map((w) => ({
-          index: w.index,
-          id: `@${w.index}`,
-          name: w.name,
-          active: w.index === 1,
-        }));
+        const sess = state.sessions.get(normalizeSessionName(sessionName));
+        const windows: { index: number; id: string; name: string; active: boolean }[] = [];
+        for (const w of sess?.windows ?? []) {
+          windows.push({
+            index: w.index,
+            id: `@${w.index}`,
+            name: w.name,
+            active: w.index === 1,
+          });
+        }
+        return windows;
       },
       async newWindow(opts) {
         state.ops.push(`${socketTag}:newWindow(${opts.sessionName},${opts.name ?? ""})`);
-        const sess = state.sessions.get(opts.sessionName);
+        const sess = state.sessions.get(normalizeSessionName(opts.sessionName));
         let nextIdx = 1;
         if (sess !== undefined) {
           nextIdx = (sess.windows.at(-1)?.index ?? 0) + 1;
-          sess.windows.push({ index: nextIdx, name: opts.name ?? `window-${nextIdx}` });
+          const nextWindow: { index: number; name: string; cwd?: string; shellCommand?: string } = {
+            index: nextIdx,
+            name: opts.name ?? `window-${nextIdx}`,
+          };
+          if (opts.cwd !== undefined) nextWindow.cwd = opts.cwd;
+          if (opts.shellCommand !== undefined) nextWindow.shellCommand = opts.shellCommand;
+          sess.windows.push(nextWindow);
         }
         return { sessionName: opts.sessionName, windowIndex: nextIdx };
       },
@@ -2690,11 +3155,54 @@ function makeMockTmux(socketTag: string, state: MockTmuxState): TmuxNamespace {
       async selectWindow() {
         throw new Error("not used by migrate-socket");
       },
-      async moveWindow() {
-        throw new Error("not used by migrate-socket");
+      async moveWindow(opts) {
+        const source = coerceWindowTarget(opts.source);
+        const target = coerceWindowTarget(opts.target);
+        state.ops.push(
+          `${socketTag}:moveWindow(${source.sessionName}:${source.windowIndex}->${target.sessionName}:${target.windowIndex}${opts.kill === true ? ",kill" : ""})`,
+        );
+        const sourceSession = state.sessions.get(normalizeSessionName(source.sessionName));
+        const targetSession = state.sessions.get(normalizeSessionName(target.sessionName));
+        if (sourceSession === undefined || targetSession === undefined) return;
+        const sourceIdx = sourceSession.windows.findIndex((w) => w.index === source.windowIndex);
+        if (sourceIdx < 0) return;
+        const [moved] = sourceSession.windows.splice(sourceIdx, 1);
+        if (moved === undefined) return;
+        const targetIdx = Math.max(0, Math.min(target.windowIndex - 1, targetSession.windows.length));
+        targetSession.windows.splice(targetIdx, 0, moved);
+        normalizeWindows(target.sessionName);
+        if (source.sessionName !== target.sessionName) {
+          normalizeWindows(source.sessionName);
+        }
       },
-      async swapWindow() {
-        throw new Error("not used by migrate-socket");
+      async swapWindow(opts) {
+        const source = coerceWindowTarget(opts.source);
+        const target = coerceWindowTarget(opts.target);
+        state.ops.push(
+          `${socketTag}:swapWindow(${source.sessionName}:${source.windowIndex}<->${target.sessionName}:${target.windowIndex})`,
+        );
+        const sourceSession = state.sessions.get(normalizeSessionName(source.sessionName));
+        const targetSession = state.sessions.get(normalizeSessionName(target.sessionName));
+        if (sourceSession === undefined || targetSession === undefined) return;
+        const sourceIdx = sourceSession.windows.findIndex((w) => w.index === source.windowIndex);
+        const targetIdx = targetSession.windows.findIndex((w) => w.index === target.windowIndex);
+        if (sourceIdx < 0 || targetIdx < 0) return;
+        if (sourceSession === targetSession) {
+          const left = sourceSession.windows[sourceIdx];
+          const right = sourceSession.windows[targetIdx];
+          if (left === undefined || right === undefined) return;
+          sourceSession.windows[sourceIdx] = right;
+          sourceSession.windows[targetIdx] = left;
+          normalizeWindows(source.sessionName);
+          return;
+        }
+        const [movedSource] = sourceSession.windows.splice(sourceIdx, 1);
+        const [movedTarget] = targetSession.windows.splice(targetIdx, 1);
+        if (movedSource === undefined || movedTarget === undefined) return;
+        sourceSession.windows.splice(sourceIdx, 0, movedTarget);
+        targetSession.windows.splice(targetIdx, 0, movedSource);
+        normalizeWindows(source.sessionName);
+        normalizeWindows(target.sessionName);
       },
     },
     pane: {
@@ -3224,6 +3732,40 @@ describe("cockpitAttach — isolated (stubbed tmux + temp cockpit.json)", () => 
     });
     expect(exit).toBe(0);
     expect(capturedSocket).toBe("default");
+  });
+
+  test("driverOnly attach binds the vendored socket, binary, and configFile even when env asks for legacy cockpit", async () => {
+    await writeFile(
+      cockpitJson,
+      JSON.stringify({
+        schemaVersion: 1,
+        cockpitSession: "atx",
+        driverOnly: true,
+        windows: [
+          { name: "driver", cwd: "/Users/geoyws/work/src/atmux" },
+          { name: "driver-2", cwd: "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-2" },
+          { name: "driver-3", cwd: "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-3" },
+        ],
+      }),
+    );
+    let capturedConfig: TmuxConfig | undefined;
+    const exit = await cockpitAttach(attachOpts(), {
+      env: {
+        ATMUX_COCKPIT_SOCKET: "atmux-cockpit",
+        ATMUX_TMUX_CONF: "/tmp/driver-only-attach.conf",
+      },
+      resolveVendoredTmuxBin: () => FAKE_VENDORED_TMUX_BIN,
+      tmuxFactory: (cfg) => {
+        capturedConfig = cfg;
+        return stubTmux({ sessionExists: true });
+      },
+    });
+    expect(exit).toBe(0);
+    expect(capturedConfig).toEqual({
+      socket: "atmux-vendored-cockpit",
+      configFile: "/tmp/driver-only-attach.conf",
+      binaryPath: FAKE_VENDORED_TMUX_BIN,
+    });
   });
 
   test("uses cockpitSession from cockpit.json (operator-chosen name passes through per ADR-264 §D3)", async () => {

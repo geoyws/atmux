@@ -8,7 +8,7 @@
 // Pure (path-resolution + parse only) — no tmux IO, no orchestration.
 // Tests inject `env` + `home` to drive every branch.
 
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { exists, readTextOrNull } from "../abstractions/fs.ts";
 import { readJson } from "../abstractions/json.ts";
@@ -18,6 +18,7 @@ import {
   type CockpitMedic,
   type CockpitSessionT,
   type Cockpit as CockpitShape,
+  type CockpitWindow,
   type CockpitSuperbot,
   type CockpitTeam,
   type TeamSessionT,
@@ -161,6 +162,7 @@ export async function loadCockpit(opts: LoadCockpitOpts = {}): Promise<LoadedCoc
       });
     }
   }
+  validateDriverOnlyCockpit(parsed, path);
   validateOperatorWindowNames(parsed);
   validateSuperbotRoutes(parsed, path);
   return enrichLegacyFields(parsed);
@@ -181,6 +183,76 @@ export function validateSuperbotRoutes(cockpit: CockpitShape, path = "cockpit.js
           hint: "route only to enabled persistent sessions[] team entries",
         });
       }
+    }
+  }
+}
+
+/** ADR-279 / 2026-09-03 — driver-only cockpit mode.
+ *
+ * This is a narrow operator-only split, not a general-purpose window
+ * roster. The shape is intentionally tiny so the dedicated driver
+ * cockpit cannot hide live roles behind extra sessions, medic / bot
+ * blocks, or incomplete operator windows. */
+export function validateDriverOnlyCockpit(cockpit: CockpitShape, path = "cockpit.json"): void {
+  if (cockpit.driverOnly !== true) return;
+
+  if ((cockpit.sessions ?? []).length > 0) {
+    throw new ConfigError({
+      what: `cockpit.json at ${path}: driverOnly=true requires sessions[] to be empty`,
+      hint: "move every team/group entry out of sessions[] before enabling the driver-only cockpit split",
+    });
+  }
+
+  if (cockpit.medic?.enabled === true) {
+    throw new ConfigError({
+      what: `cockpit.json at ${path}: driverOnly=true cannot enable medic`,
+      hint: "remove the medic block or leave driverOnly false on the full cockpit config",
+    });
+  }
+
+  if (cockpit.superbot?.enabled === true) {
+    throw new ConfigError({
+      what: `cockpit.json at ${path}: driverOnly=true cannot enable superbot`,
+      hint: "remove the superbot block or leave driverOnly false on the full cockpit config",
+    });
+  }
+
+  const windows: CockpitWindow[] = cockpit.windows ?? [];
+  if (windows.length !== 3) {
+    throw new ConfigError({
+      what: `cockpit.json at ${path}: driverOnly=true requires exactly 3 operator windows`,
+      hint: "declare the three driver windows only, in the order they should appear in tmux",
+    });
+  }
+
+  const expectedNames = ["driver", "driver-2", "driver-3"] as const;
+  for (const [index, expectedName] of expectedNames.entries()) {
+    const window = windows[index];
+    if (window === undefined || window.name !== expectedName) {
+      throw new ConfigError({
+        what:
+          `cockpit.json at ${path}: driverOnly=true requires windows[] to be ` +
+          `[driver, driver-2, driver-3] in that exact order`,
+        hint: "declare the dedicated driver windows in the canonical driver, driver-2, driver-3 order",
+      });
+    }
+    if (window.enabled === false) {
+      throw new ConfigError({
+        what: `cockpit.json at ${path}: driverOnly=true cannot include disabled window '${window.name}'`,
+        hint: "remove disabled operator windows from the driver-only topology",
+      });
+    }
+    if (window.command !== undefined && window.command !== null) {
+      throw new ConfigError({
+        what: `cockpit.json at ${path}: driverOnly=true windows must use plain zsh (window '${window.name}' sets command)`,
+        hint: "omit command or set it to null so the cockpit opens a plain interactive zsh pane",
+      });
+    }
+    if (window.cwd.trim().length === 0 || !isAbsolute(window.cwd)) {
+      throw new ConfigError({
+        what: `cockpit.json at ${path}: driverOnly=true windows require an absolute non-empty cwd (window '${window.name}' has '${window.cwd}')`,
+        hint: "set each driver window cwd to an absolute path",
+      });
     }
   }
 }

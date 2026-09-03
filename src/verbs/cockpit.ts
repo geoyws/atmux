@@ -66,6 +66,7 @@ import {
   resolvePrefix,
   resolveTopLevelGroup,
 } from "../core/cockpit.ts";
+import { resolveVendoredTmuxBin } from "../core/resolve-tmux-bin.ts";
 import { loadTeam, teamJsonPath } from "../core/common.ts";
 import { installCockpitCronBlock } from "../core/cron.ts";
 import {
@@ -74,7 +75,7 @@ import {
   type PaneReadinessResult,
 } from "../core/pane-readiness.ts";
 import { migrateLegacySessionName } from "../core/session-migrate.ts";
-import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.ts";
+import { COCKPIT_SOCKET_VENDORED, getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { resolveTuiCommand } from "../core/tui-cmd.ts";
 import { UsageError } from "../errors.ts";
@@ -877,6 +878,14 @@ export interface CockpitOpts {
   /** ADR-086: resolve the atmux binary path for the cron line. Default
    *  reads `ATMUX_BIN` env then falls back to `Bun.which("atmux")`. */
   resolveAtmuxBin?: () => string | null;
+  /** Driver-only mode seam for the vendored tmux binary path. Defaults
+   *  to the prepared future binary location. */
+  resolveVendoredTmuxBin?: () => string;
+}
+
+function resolveDriverOnlyTmuxBinary(opts: CockpitOpts, env: NodeJS.ProcessEnv): string {
+  if (opts.resolveVendoredTmuxBin !== undefined) return opts.resolveVendoredTmuxBin();
+  return resolveVendoredTmuxBin(env);
 }
 
 /** Top-level dispatch for `atmux cockpit <subverb>`. */
@@ -941,9 +950,18 @@ export async function cockpitAttach(
   const loadOpts: LoadCockpitOpts = { env };
   if (parsed.configPath !== undefined) loadOpts.path = parsed.configPath;
   const cockpit = await loadCockpit(loadOpts);
-
-  const socket = getCockpitSocketName(env);
-  const tmux = factory({ socket });
+  let tmuxCfg: TmuxConfig;
+  if (cockpit.driverOnly === true) {
+    const driverOnlyBinaryPath = resolveDriverOnlyTmuxBinary(opts, env);
+    tmuxCfg = {
+      socket: COCKPIT_SOCKET_VENDORED,
+      configFile: getAtmuxTmuxConfPath(env),
+      binaryPath: driverOnlyBinaryPath,
+    };
+  } else {
+    tmuxCfg = { socket: getCockpitSocketName(env) };
+  }
+  const tmux = factory(tmuxCfg);
   return attachWithTmux(tmux, cockpit.cockpitSession, { inheritStdio: parsed.human === true });
 }
 
@@ -961,6 +979,22 @@ export async function cockpitRebuild(
   const loadOpts: LoadCockpitOpts = { env };
   if (parsed.configPath !== undefined) loadOpts.path = parsed.configPath;
   const cockpit = await loadCockpit(loadOpts);
+  let cockpitTmux: TmuxNamespace;
+  if (cockpit.driverOnly === true) {
+    const driverOnlyBinaryPath = resolveDriverOnlyTmuxBinary(opts, env);
+    cockpitTmux = factory({
+      socket: COCKPIT_SOCKET_VENDORED,
+      configFile: getAtmuxTmuxConfPath(env),
+      binaryPath: driverOnlyBinaryPath,
+    });
+    await reconcileDriverOnlyCockpitSession(cockpitTmux, cockpit, logger);
+    logger.ok(`driver-only cockpit ready: ${driverOnlyBinaryPath} -L ${COCKPIT_SOCKET_VENDORED} attach -t ${cockpit.cockpitSession}`);
+    return 0;
+  }
+  cockpitTmux = factory({
+    socket: getCockpitSocketName(),
+    configFile: getAtmuxTmuxConfPath(),
+  });
   const teams = enabledTeams(cockpit);
   if (teams.length === 0) {
     logger.warn("no enabled teams in cockpit.json — nothing to do");
@@ -1090,10 +1124,6 @@ export async function cockpitRebuild(
   // loader populates `cockpit.medic` from the top-level `medic` block
   // or the first `type: "medic"` sessions[] entry; the legacy
   // `superdoctor` block was removed per ADR-266 §D2 (hard load error).
-  const cockpitTmux = factory({
-    socket: getCockpitSocketName(),
-    configFile: getAtmuxTmuxConfPath(),
-  });
   // ADR-133: pass `medic` directly; the reconcile names the window
   // canonically and migrates any legacy "superdoctor" window in-place
   // on first reconcile.
@@ -2319,6 +2349,121 @@ export async function reconcileCockpitSession(
       // window may already be gone
     }
   }
+}
+
+/** ADR-279 / 2026-09-03 — dedicated driver-only cockpit reconcile.
+ *
+ * This path keeps the operator-only cockpit narrow: three declared
+ * windows, plain interactive zsh, no team/group viewers, and no
+ * destructive cleanup of anything that already exists. Unexpected live
+ * windows are a hard stop rather than a prune target. */
+async function reconcileDriverOnlyCockpitSession(
+  cockpitTmux: TmuxNamespace,
+  cockpit: Awaited<ReturnType<typeof loadCockpit>>,
+  logger: Logger,
+): Promise<void> {
+  const sessionName = cockpit.cockpitSession;
+  const windows = cockpit.windows;
+  const desiredNames = windows.map((window) => window.name);
+  const desiredSet = new Set(desiredNames);
+  const sessionExists = await cockpitTmux.session.hasSession(exactSessionTarget(sessionName));
+
+  if (!sessionExists) {
+    const [first, ...rest] = windows;
+    if (first === undefined) {
+      throw new UsageError({
+        what: "driver-only cockpit requires exactly three operator windows",
+      });
+    }
+    await cockpitTmux.session.newSession({
+      name: sessionName,
+      detached: true,
+      windowName: first.name,
+      cwd: first.cwd,
+    });
+    logger.log(`  ✓ created driver-only cockpit session '${sessionName}'`);
+    for (const window of rest) {
+      await cockpitTmux.window.newWindow({
+        sessionName,
+        name: window.name,
+        detached: true,
+        cwd: window.cwd,
+      });
+      logger.log(`  ✓ added driver-only window '${window.name}'`);
+    }
+  } else {
+    const live = await cockpitTmux.window.listWindows(sessionName);
+    if (live.length > desiredNames.length) {
+      throw new UsageError({
+        what: `driver-only cockpit '${sessionName}' has too many live windows (${live.length} > ${desiredNames.length})`,
+      });
+    }
+    const liveCounts = new Map<string, number>();
+    for (const window of live) {
+      if (!desiredSet.has(window.name)) {
+        throw new UsageError({
+          what: `driver-only cockpit '${sessionName}' has unexpected live window '${window.name}'`,
+        });
+      }
+      const count = (liveCounts.get(window.name) ?? 0) + 1;
+      liveCounts.set(window.name, count);
+      if (count > 1) {
+        throw new UsageError({
+          what: `driver-only cockpit '${sessionName}' has duplicate live window '${window.name}'`,
+        });
+      }
+    }
+    for (const window of windows) {
+      if (liveCounts.has(window.name)) {
+        logger.log(`  · driver-only window '${window.name}' already present`);
+        continue;
+      }
+      await cockpitTmux.window.newWindow({
+        sessionName,
+        name: window.name,
+        detached: true,
+        cwd: window.cwd,
+      });
+      logger.log(`  ✓ added driver-only window '${window.name}'`);
+    }
+
+    let ordered = await cockpitTmux.window.listWindows(sessionName);
+    for (let i = 0; i < desiredNames.length; i += 1) {
+      const name = desiredNames[i];
+      const current = ordered.find((window) => window.name === name);
+      if (current === undefined) {
+        throw new UsageError({
+          what: `driver-only cockpit '${sessionName}' lost window '${name}' during reconcile`,
+        });
+      }
+      const targetIndex = i + 1;
+      if (current.index === targetIndex) continue;
+      const occupant = ordered.find((window) => window.index === targetIndex);
+      if (occupant === undefined) {
+        throw new UsageError({
+          what: `driver-only cockpit '${sessionName}' missing target slot ${targetIndex} for window '${name}'`,
+        });
+      }
+      await cockpitTmux.window.swapWindow({
+        source: { sessionName, windowIndex: current.index },
+        target: { sessionName, windowIndex: targetIndex },
+      });
+      logger.log(
+        `  ✓ swapped driver-only window '${name}' into idx ${targetIndex} (with '${occupant.name}')`,
+      );
+      ordered = await cockpitTmux.window.listWindows(sessionName);
+    }
+  }
+
+  let prefix: string | undefined;
+  try {
+    prefix = resolvePrefix(1, cockpit.prefixChain);
+  } catch {
+    // Best-effort — invalid chain falls through to applyCagePrefix's
+    // legacy `C-\` default (cosmetic only; cockpit operation
+    // unaffected).
+  }
+  await applyCagePrefix(cockpitTmux, prefix);
 }
 
 /**

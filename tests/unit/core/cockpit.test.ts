@@ -28,6 +28,7 @@ import {
   resolvePrefix,
   resolveTopLevelGroup,
   validatePrefixChain,
+  validateDriverOnlyCockpit,
   walkSessions,
 } from "../../../src/core/cockpit.ts";
 import { ConfigError, SchemaError } from "../../../src/errors.ts";
@@ -222,6 +223,38 @@ describe("loadCockpit", () => {
     // No ADR-264 deprecation warning for arbitrary names.
     const adr264Warned = warnings.some((m) => m.includes("ADR-264"));
     expect(adr264Warned).toBe(false);
+  });
+
+  test("ADR-279 amendment: driverOnly=true rejects a relative cwd", () => {
+    expect(() =>
+      validateDriverOnlyCockpit({
+        schemaVersion: 1,
+        cockpitSession: "atx",
+        driverOnly: true,
+        sessions: [],
+        windows: [
+          { name: "driver", cwd: "/Users/geoyws/work/src/atmux" },
+          { name: "driver-2", cwd: "relative/driver-2" },
+          { name: "driver-3", cwd: "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-3" },
+        ],
+      } as unknown as CockpitShape),
+    ).toThrow(/absolute non-empty cwd/);
+  });
+
+  test("ADR-279 amendment: driverOnly=true rejects a blank cwd", () => {
+    expect(() =>
+      validateDriverOnlyCockpit({
+        schemaVersion: 1,
+        cockpitSession: "atx",
+        driverOnly: true,
+        sessions: [],
+        windows: [
+          { name: "driver", cwd: "/Users/geoyws/work/src/atmux" },
+          { name: "driver-2", cwd: "" },
+          { name: "driver-3", cwd: "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-3" },
+        ],
+      } as unknown as CockpitShape),
+    ).toThrow(/absolute non-empty cwd/);
   });
 
   test("ADR-279 — loads operator windows and defaults null command to declarative null", async () => {
@@ -1689,6 +1722,147 @@ describe("loadCockpit — prefixChain validation (§Decision-anchor #4)", () => 
       sessions: [{ type: "team", name: "x", root: "/x" }],
     });
     await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(/duplicated/);
+  });
+});
+
+describe("loadCockpit — driverOnly validation (ADR-279 amendment 2026-09-03)", () => {
+  test("driverOnly=true accepts the exact three-window driver topology", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      driverOnly: true,
+      cockpitSession: "atx",
+      windows: [
+        { name: "driver", cwd: "/Users/geoyws/work/src/atmux" },
+        { name: "driver-2", cwd: "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-2" },
+        { name: "driver-3", cwd: "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-3" },
+      ],
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
+    expect(cockpit.driverOnly).toBe(true);
+    expect(cockpit.windows.map((w) => w.name)).toEqual(["driver", "driver-2", "driver-3"]);
+  });
+
+  test("driverOnly=true rejects nonempty sessions[]", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      driverOnly: true,
+      windows: [
+        { name: "driver", cwd: "/Users/geoyws/work/src/atmux" },
+        { name: "driver-2", cwd: "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-2" },
+        { name: "driver-3", cwd: "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-3" },
+      ],
+      sessions: [{ type: "team", name: "demo", root: "/teams/demo" }],
+    });
+    await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(/sessions\[\]/);
+  });
+
+  test("driverOnly=true rejects a wrong driver window name", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      driverOnly: true,
+      windows: [
+        { name: "driver", cwd: "/Users/geoyws/work/src/atmux" },
+        { name: "driver-x", cwd: "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-2" },
+        { name: "driver-3", cwd: "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-3" },
+      ],
+    });
+    await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(/driver, driver-2, driver-3/);
+  });
+
+  test("driverOnly=true rejects the wrong window order", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      driverOnly: true,
+      windows: [
+        { name: "driver-2", cwd: "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-2" },
+        { name: "driver", cwd: "/Users/geoyws/work/src/atmux" },
+        { name: "driver-3", cwd: "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-3" },
+      ],
+    });
+    await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(/exact order/);
+  });
+
+  test("driverOnly=true rejects medic.enabled", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      driverOnly: true,
+      medic: { enabled: true },
+      windows: [
+        { name: "driver", cwd: "/Users/geoyws/work/src/atmux" },
+        { name: "driver-2", cwd: "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-2" },
+        { name: "driver-3", cwd: "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-3" },
+      ],
+    });
+    await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(/cannot enable medic/);
+  });
+
+  test("driverOnly=true rejects superbot.enabled", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      driverOnly: true,
+      superbot: { enabled: true },
+      windows: [
+        { name: "driver", cwd: "/Users/geoyws/work/src/atmux" },
+        { name: "driver-2", cwd: "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-2" },
+        { name: "driver-3", cwd: "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-3" },
+      ],
+    });
+    await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(/cannot enable superbot/);
+  });
+
+  test("driverOnly=true rejects disabled operator windows", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      driverOnly: true,
+      windows: [
+        { name: "driver", cwd: "/Users/geoyws/work/src/atmux" },
+        {
+          name: "driver-2",
+          cwd: "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-2",
+          enabled: false,
+        },
+        { name: "driver-3", cwd: "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-3" },
+      ],
+    });
+    await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(/disabled window/);
+  });
+
+  test("driverOnly=true rejects duplicate operator windows", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      driverOnly: true,
+      windows: [
+        { name: "driver", cwd: "/Users/geoyws/work/src/atmux" },
+        { name: "driver", cwd: "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-2" },
+        { name: "driver-3", cwd: "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-3" },
+      ],
+    });
+    await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(/exact order/);
+  });
+
+  test("driverOnly=true rejects windows with command overrides", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      driverOnly: true,
+      windows: [
+        { name: "driver", cwd: "/Users/geoyws/work/src/atmux", command: "zsh" },
+        { name: "driver-2", cwd: "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-2" },
+        { name: "driver-3", cwd: "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-3" },
+      ],
+    });
+    await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(/plain zsh/);
+  });
+
+  test("driverOnly=true rejects any topology that is not exactly three windows", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      driverOnly: true,
+      windows: [
+        { name: "driver", cwd: "/Users/geoyws/work/src/atmux" },
+        { name: "driver-2", cwd: "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-2" },
+      ],
+    });
+    await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(/exactly 3/);
   });
 });
 

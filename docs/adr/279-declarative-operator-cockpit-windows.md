@@ -26,6 +26,10 @@ The canonical cockpit config is already durable: `/root/.atmux/cockpit.json` and
 6. The current fleet config declares `_misc` with `cwd: "/root/work"` and `command: null`.
 7. This change does not run cockpit reconcile, rename a session, move a window, switch a client, rebuild a cage, or deploy. The live setup is the observation target and must remain untouched while persistence support lands.
 
+### 2026-09-03 amendment — driver-only cockpit split
+
+The same operator-window model now has a narrow, backwards-compatible mode for the dedicated vendored cockpit. When `cockpit.json` sets `driverOnly: true`, the cockpit declares exactly three windows — `driver`, `driver-2`, and `driver-3` — all plain interactive zsh workspaces with explicit `cwd`s, no `sessions[]`, no medic, and no superbot. Reconcile uses the dedicated vendored tmux binary on the `atmux-vendored-cockpit` socket, preserves existing declared windows, and refuses any unexpected live window before mutating state. This amendment is additive; the full cockpit topology above remains the default contract when `driverOnly` is absent or false.
+
 ## Consequences
 
 - A fresh cockpit can reproduce `_misc` rather than relying on an immortal pane.

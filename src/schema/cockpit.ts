@@ -461,6 +461,11 @@ export const Cockpit = z
     /** Declarative operator-owned windows placed after `_medic` and before
      *  team viewers. They have no team cage and default to zsh. */
     windows: z.array(CockpitWindow).default([]),
+    /** Operator-only split: `true` turns the cockpit into a windows-only
+     *  layout with no team/group viewers, no medic, and no superbot.
+     *  Absence remains backward-compatible and is treated as false by
+     *  the loader's `=== true` checks. */
+    driverOnly: z.boolean().optional(),
     /** ADR-285 deterministic Kanban offer scheduler. Absence is parsed
      *  as disabled + shadow, never as implicit activation. */
     superbot: CockpitSuperbot.optional(),

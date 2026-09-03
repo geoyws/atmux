@@ -251,8 +251,22 @@ describe("Cockpit — top-level shape + defaults", () => {
     // ADR-264 §D1: default cockpitSession is `atx`; ADR-279 keeps an
     // explicitly persisted literal authoritative.
     expect(c.cockpitSession).toBe("atx");
+    expect(c.driverOnly).toBeUndefined();
     expect(c.sessions).toEqual([]);
     expect(c.windows).toEqual([]);
+  });
+
+  test("ADR-279 amendment: driverOnly=true round-trips on the schema", () => {
+    const c = Cockpit.parse({
+      driverOnly: true,
+      sessions: [],
+      windows: [
+        { name: "driver", cwd: "/Users/geoyws/work/src/atmux" },
+        { name: "driver-2", cwd: "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-2" },
+        { name: "driver-3", cwd: "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-3" },
+      ],
+    });
+    expect(c.driverOnly).toBe(true);
   });
 
   test("ADR-279: operator window accepts null or omitted command and defaults enabled", () => {

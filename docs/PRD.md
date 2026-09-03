@@ -330,12 +330,24 @@ single-underscore prefix (sorts before plain team names in `tmux
 list-windows`); per-team viewers stay plain. Member windows inside team
 cages use `<emoji>-<member>` (hyphen-separated, ADR-135 §D3).
 
+`cockpit.json` can also set `driverOnly: true` for the dedicated vendored
+cockpit. That mode is intentionally narrower: it requires exactly three
+operator windows named `driver`, `driver-2`, and `driver-3`, with plain
+interactive zsh and explicit `cwd`s, and it suppresses the team-viewer /
+medic / superbot side of the cockpit entirely. When the flag is absent or
+false, the full topology below remains the contract.
+The driver-only path is wired to the vendored tmux binary and socket,
+not the ambient operator cockpit.
+
 | # | Window | Role | Authorizing ADR |
 |---|--------|------|-----------------|
 | 1 | `_superdriver` | Operator cross-team REPL | ADR-063 (renamed per ADR-135 §D2) |
 | 2 | `_medic` (was `medic`/`superdoctor`) | Fleet self-healing / diagnosis-and-prevention loop | ADR-077 + ADR-133 + ADR-135 §D2 |
 | 3 | `_superbot` (proposed; absent while disabled) | Deterministic 30-minute Kanban candidate router; never claims or assigns | ADR-285 |
 | 4..N | declarative operator windows, then per-team viewers | Operator workspaces in declaration order, then one viewer per enabled parent team | ADR-279 + ADR-063 |
+
+Driver-only amendment (ADR-279 2026-09-03): when `driverOnly: true`, the cockpit
+collapses to exactly the three operator windows above and no team viewers at all.
 
 Backward-compat: a cockpit.json without a `medic` block retains the
 pre-ADR-077 topology (W1 `_superdriver` + W2..N per-team viewers).
