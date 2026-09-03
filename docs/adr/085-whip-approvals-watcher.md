@@ -10,7 +10,7 @@ Decomposition of t-e1bf1bbd (George, 14:14 MYT 2026-05-08): "always surface non-
 
 ### Failure mode observed (2026-05-08)
 
-George ran a paperwork-catch-up batch at 14:13 MYT — 7 ADRs sat in `Status: proposed` for days while their implementation had already shipped (ADR-bun/062, /064, /068; ADR/032, /033, /036, /037). The whip cycle never surfaced them; they aged silently. ADR-068 §HC#4 already nailed the philosophy ("live-not-cached status / uptime / activity"), but it scopes to runtime state (pane liveness, kanban counts, lead-events). This ADR extends HC#4's contract to **paperwork debt**: anything awaiting driver/lead acknowledgement that whip can see in plaintext.
+George ran a paperwork-catch-up batch at 14:13 MYT — 7 ADRs sat in `Status: proposed` for days while their implementation had already shipped (ADR-bun/062, /064, /068; ADR/032, /033, /036, /037). The whip cycle never surfaced them; they aged silently. historical decision number 068 (no surviving ADR file) §HC#4 already nailed the philosophy ("live-not-cached status / uptime / activity"), but it scopes to runtime state (pane liveness, kanban counts, lead-events). This ADR extends HC#4's contract to **paperwork debt**: anything awaiting driver/lead acknowledgement that whip can see in plaintext.
 
 The pattern recurs today — 6 ADRs are currently `proposed` (077, 079, 080, 081, 082, 084), several with implementation already merged. Without a watcher, the next paperwork-catch-up batch is a matter of when, not if.
 
@@ -26,7 +26,7 @@ These are three different reads, but the same surfacing pipeline.
 
 ## Decision
 
-Add a `needs-approval` scan to whip's tick loop. Re-runs every tick (5 min cron + manual `atmux whip`), live-not-cached per ADR-068 §HC#4.
+Add a `needs-approval` scan to whip's tick loop. Re-runs every tick (5 min cron + manual `atmux whip`), live-not-cached per historical decision number 068 (no surviving ADR file) §HC#4.
 
 ### Scan API (`src/lib/needs-approval.ts`)
 
@@ -81,7 +81,7 @@ The scan considers an ask **triaged** if ANY of {✅, 📤, ⏳, ❌} appears in
 
 ## Open questions
 
-1. **OQ1**: Should bucket C (kanban-blocked) also include `todo` tasks with `staleMin` exceeded (per ADR-053 staleness model)? Recommended default — **no**; staleness is a different signal (no claim within window) and whip already handles it via §4 (stale-task surfacing). Keep `needs-approval` scoped to status=blocked transitions. (reversibility: low — easy to add later if signal demand exists)
+1. **OQ1**: Should bucket C (kanban-blocked) also include `todo` tasks with `staleMin` exceeded (per historical decision number 053 (no surviving ADR file) staleness model)? Recommended default — **no**; staleness is a different signal (no claim within window) and whip already handles it via §4 (stale-task surfacing). Keep `needs-approval` scoped to status=blocked transitions. (reversibility: low — easy to add later if signal demand exists)
 2. **OQ2**: Discord noise budget. If bucket totals exceed ~15 entries, the ping body explodes past 2000 chars and chunks. Recommended default — **single chunk, hard-cap at 5 per bucket + "+N more" tail**, driver shells in for full list via `atmux status --json | jq .needsApproval`. (reversibility: low)
 3. **OQ3**: Should `^Status: draft` ADRs (vs `proposed`) be excluded — i.e., is `draft` an intentional "not ready for review yet" state? Recommended default — **include both**; today's corpus uses `proposed` exclusively, but defending against future drift is cheap. Author who genuinely wants a draft uses the `(deferred: <reason>)` escape hatch. (reversibility: low)
 
@@ -90,8 +90,8 @@ OQ1+OQ2+OQ3 are all reversibility:low; `atmux decisions add` is the right channe
 ## Refs
 
 - Parent kanban entry: t-e1bf1bbd (planner-claimed 2026-05-12)
-- ADR-068 §HC#4 — live-not-cached status contract this ADR extends
-- ADR-053 — staleness model (separate surface, do not conflate)
+- historical decision number 068 (no surviving ADR file) §HC#4 — live-not-cached status contract this ADR extends
+- historical decision number 053 (no surviving ADR file) — staleness model (separate surface, do not conflate)
 - CLAUDE.md §Discord message format — `whip-needs-approval` template shape
 - `src/verbs/whip.ts:142+` — WhipArgs / classifySessionState integration point
 - `src/verbs/status.ts:128+` — StatusSnapshot interface to extend

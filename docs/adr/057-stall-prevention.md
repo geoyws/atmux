@@ -3,7 +3,7 @@
 **Status**: accepted (2026-05-07)
 **Date**: 2026-05-07
 
-> **Sibling-ADR gap (annotation 2026-05-17, Epic e-2c1ac890 / Task t-9ff04cab).** ADR-053 (executor budget-pause), ADR-054 (TeamWhip strict schema), ADR-055 (whip Discord template registry), and ADR-056 (account-swap pass) are referenced throughout this document but are NOT yet landed as canonical files in `docs/adr/`. Those decisions shipped via commits + driver-inbox + the retired bun-port ADR tree; porting them to `docs/adr/` is **out-of-scope for this Task** (sibling docs gap — file separately if driver requests). Code cross-references using `ADR-053`/`054`/`055`/`056` remain valid; the rationale is grep-recoverable from the commit history listed under each Decision below.
+> **Sibling-ADR gap (annotation 2026-05-17, Epic e-2c1ac890 / Task t-9ff04cab).** historical decision number 053 (no surviving ADR file) (executor budget-pause), historical decision number 054 (no surviving ADR file) (TeamWhip strict schema), historical decision number 055 (no surviving ADR file) (whip Discord template registry), and historical decision number 056 (no surviving ADR file) (account-swap pass) are referenced throughout this document but are NOT yet landed as canonical files in `docs/adr/`. Those decisions shipped via commits + driver-inbox + the retired bun-port ADR tree; porting them to `docs/adr/` is **out-of-scope for this Task** (sibling docs gap — file separately if driver requests). Code cross-references using `historical decision number 053 (no surviving ADR file)`/`054`/`055`/`056` remain valid; the rationale is grep-recoverable from the commit history listed under each Decision below.
 
 ## Context
 
@@ -23,7 +23,7 @@ Forensic review of seven incidents (driver-inbox entries 2026-04-28 → 2026-05-
 
 Each class needed a discrete mitigation. The seven classes map one-to-one to **Decisions D1–D7** below. Implementation landed across **eight Tasks (R57-T1 through R57-T8)** between 2026-05-07 and 2026-05-17, plus residual follow-on Tasks tracked in Epic `e-2c1ac890` (this Epic).
 
-The decisions are **additive on top of v1.0.0 primitives** — no breaking change to existing verb signatures or state-file shapes; legacy `team.json` consumers keep current semantics via Zod defaults (per ADR-054). Operators on a staged rollout follow the cross-class dep ordering in the final section.
+The decisions are **additive on top of v1.0.0 primitives** — no breaking change to existing verb signatures or state-file shapes; legacy `team.json` consumers keep current semantics via Zod defaults (per historical decision number 054 (no surviving ADR file)). Operators on a staged rollout follow the cross-class dep ordering in the final section.
 
 This ADR is the **canonical rationale doc**. Operator-facing usage notes live in [`HANDOFF.md` §🛡️ v1.1.x stall-prevention](../../HANDOFF.md) (now retired — superseded by `.atmux/driver-inbox.md` per commit `2696539`; the operator section was preserved verbatim in commit `dc7fe77`'s diff). The ping-action lookup table lives in [`docs/RUNBOOK-stall-recovery.md`](../RUNBOOK-stall-recovery.md).
 
@@ -43,7 +43,7 @@ Per-state policy:
 - `COMPACTING` → retry 5s × 6 (30s total); exhausted → P3 flag + `exhausted-compacting` outcome.
 - `MODAL` → refuse + P3 flag.
 - `SHELL` / `UNKNOWN` → refuse + P2 flag.
-- `RATE-LIMIT` → refuse, **no flag** (ADR-053 budget-pause owns it).
+- `RATE-LIMIT` → refuse, **no flag** (historical decision number 053 (no surviving ADR file) budget-pause owns it).
 
 `safeSendKeys` takes injected `capture` / `sendKeys` / `raiseFlag` / `log` / `sleep` deps — no global state, fully unit-testable. The original ADR-085 §`no-direct-send-keys` lint rule (eslint plugin) was **deferred** — the gate is available; per-callsite adoption rolls out as supervisor / dispatch / send / whip surfaces are touched.
 
@@ -93,7 +93,7 @@ Out of scope: auto-recovery (BTab-cycle automation). v1.1.x is surface-only — 
 **Modules:** [`src/verbs/doctor.ts`](../../src/verbs/doctor.ts), [`src/core/window-id.ts`](../../src/core/window-id.ts), [`src/abstractions/tmux.ts`](../../src/abstractions/tmux.ts), [`src/verbs/dispatch.ts`](../../src/verbs/dispatch.ts), [`src/core/tz-lint.ts`](../../src/core/tz-lint.ts), [`scripts/lint-tz.ts`](../../scripts/lint-tz.ts).
 
 - **D5a — submodule integrity** — `atmux doctor` adds a finding when `git diff --submodule=log` shows pointer mismatch AND submodule HEAD ≠ parent's recorded SHA.
-- **D5b — window-ID resolution** — `src/core/window-id.ts` is the emoji-prefix-tolerant glob resolver. `src/abstractions/tmux.ts` + `src/verbs/dispatch.ts` route supervisor send-keys through immutable tmux window IDs (`@N`). **Supersedes the earlier P1 emoji-prefix-glob fix** — window IDs are immutable across renames, so they fix a strictly stronger version of the problem (any window rename, not just emoji-prefix divergence). Closes ADR-048's bare-window-names supervisor gap.
+- **D5b — window-ID resolution** — `src/core/window-id.ts` is the emoji-prefix-tolerant glob resolver. `src/abstractions/tmux.ts` + `src/verbs/dispatch.ts` route supervisor send-keys through immutable tmux window IDs (`@N`). **Supersedes the earlier P1 emoji-prefix-glob fix** — window IDs are immutable across renames, so they fix a strictly stronger version of the problem (any window rename, not just emoji-prefix divergence). Closes unlanded decision number 048's bare-window-names supervisor gap.
 - **D5c — inbox-mark verify** — `doctor` cross-checks `.atmux/inboxes/<member>.json` `inProgress` slice vs `kanban.json` status; drift surfaces as a finding (witnessed as the orphan `📤 task t-706655ee` in `docs.json` after kanban owner moved to `whip-impl`).
 - **D5d — TZ-explicit timestamp lint** — `src/core/tz-lint.ts` + `scripts/lint-tz.ts` + `package.json::lint:tz`. Catches bare `date` / `new Date()` / non-MYT timestamps in user-facing surfaces (Discord templates, driver-inbox writes, commit-rendered times) per [Global CLAUDE.md §Conventions](https://github.com/anthropics/claude-code) timezone rule. Reviewer-gate enforces on touched code.
 
@@ -162,7 +162,7 @@ The D6d golden-file (Task `t-bb519494`) pins the marker-fenced crontab block sha
 
 ## Out of scope
 
-- **ADR-053 / 054 / 055 / 056 docs/adr/ landings** — sibling docs gap; the decisions shipped via commits + bun-port adr-bun tree. File separately if driver requests.
+- **historical decision number 053 (no surviving ADR file) / 054 / 055 / 056 docs/adr/ landings** — sibling docs gap; the decisions shipped via commits + bun-port adr-bun tree. File separately if driver requests.
 - **`eslint-plugin-local::no-direct-send-keys`** rule (D1 §Lint gate) — deferred; per-callsite adoption rolls out as supervisor / dispatch / send / whip surfaces are touched.
 - **Auto-recovery for D4a / D4c** — BTab-cycle and worktree-restore automation. v1.1.x is surface-only; operator acts on the ping.
 - **D2a auto-archive groom** wire-up — gated on the cron-groom port; primitives shipped, wire pending.
@@ -176,7 +176,7 @@ The D6d golden-file (Task `t-bb519494`) pins the marker-fenced crontab block sha
 - Operator playbook: [`docs/RUNBOOK-stall-recovery.md`](../RUNBOOK-stall-recovery.md).
 - Cron migration: [`docs/RUNBOOK-cron-migration.md`](../RUNBOOK-cron-migration.md).
 - Original bun-port rationale is retained, not duplicated here: the retired bun-port ADR-057 was referenced by the retired `HANDOFF.md` operator section. The file is no longer in the tree after bash decommission commit `2696539`, but the rationale is reconstructed verbatim above.
-- Related ADRs: ADR-043 (idle counter, D4b interaction) · ADR-048 (window naming, D5b precursor) · ADR-049 (rate-limit windows, D4d / D1 RATE-LIMIT state) · ADR-053 (executor budget-pause, D7 staging-branch carve-out) · ADR-054 (TeamWhip strict schema, residual scope) · ADR-085 (lint / verb-discovery surface, D1 deferred lint).
+- Related ADRs: ADR-043 (idle counter, D4b interaction) · unlanded decision number 048 (window naming, D5b precursor) · historical decision number 049 (no surviving ADR file) (rate-limit windows, D4d / D1 RATE-LIMIT state) · historical decision number 053 (no surviving ADR file) (executor budget-pause, D7 staging-branch carve-out) · historical decision number 054 (no surviving ADR file) (TeamWhip strict schema, residual scope) · ADR-085 (lint / verb-discovery surface, D1 deferred lint).
 
 ## §Amendment 2026-05-20 — partial supersession by ADR-126 (D3a `acquireWithTTL` + D3c atomic-write for SQLite-migrated state)
 

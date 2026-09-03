@@ -1,6 +1,6 @@
 # ADR-126: SQLite for `.atmux/` state, JSON archive-only
 
-**Status:** Accepted — ratified by driver 2026-05-23 (foundation shipped + dogfooded for months: state.db powers kanban + merger_state + cron decommission + Honker events + epic-team registry; JSON archive-only enforced via ADR-076 + subsequent migrations through v13 on trunk).
+**Status:** Accepted — ratified by driver 2026-05-23 (foundation shipped + dogfooded for months: state.db powers kanban + merger_state + cron decommission + Honker events + epic-team registry; JSON archive-only enforced via historical decision number 076 (no surviving ADR file) + subsequent migrations through v13 on trunk).
 **Date:** 2026-05-07
 **Owner:** driver
 **Driver-ref:** chat 2026-05-07 16:0X MYT — "let's entertain the idea of using sqlite instead of jq" + corruption incident on `.atmux/kanban.json` from bash misinterpretation. Build-now (post-cutover) per same chat.
@@ -207,4 +207,4 @@ Post-burn-in. Once all teams have `state.db` + parity harness shows zero diverge
 - ADR-109: schema-version-deferred (superseded for SQLite-managed state)
 - ADR-119 / ADR-120: parity matrix + channel-mask (extends to SQLite channels)
 - ADR-057 D3a/D3c: lock-TTL + atomic-write (mostly obsolete for migrated state)
-- ADR-058: multi-tier fallback chain (paused; resumes post-cutover, orthogonal to ADR-126)
+- ADR-050: multi-tier fallback chain (paused; resumes post-cutover, orthogonal to ADR-126)

@@ -274,7 +274,7 @@ Wider acceptance (T2 follow-up Task) — spawn integration + brief sweep + memor
 - **Member-brief sweep** — dropping "commit + push" steps from member briefs. T2 follow-up.
 - **Memory reversal on `feedback_atmux_no_gitter_worker_commits`** — T2 follow-up; ADR lands first, memory updates in T2 with explicit supersession pointer.
 - **Cross-team gitter sharing** — atmux's gitter does NOT serve other teams (sopx, unum). Each team spawns its own gitter; same as the prior multi-team pattern.
-- **Gitter cage tier change** — gitter inherits Tier 1 naturally from atmux-team's cage (per ADR-058 / ADR-134 §Cage tier). No new tier carve-out.
+- **Gitter cage tier change** — gitter inherits Tier 1 naturally from atmux-team's cage (per ADR-050 / ADR-134 §Cage tier). No new tier carve-out.
 - **PR-mode gitter** — schema-accept-but-runtime-noop per ADR-091 pre-flag #8; ADR-145 ships auto-merge mode only.
 
 

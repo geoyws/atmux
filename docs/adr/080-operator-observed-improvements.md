@@ -140,7 +140,7 @@ Consumes `findCommitForTask` (exported by §B1) + the `team.gitter.repoPath` sch
 - Idempotence: re-running tick with all 3 done → no kanban writes, no log.
 - `--backfill-done` flag: scans all in-progress commit-tasks regardless of recency; returns count of resolved.
 
-**Deferred (OQ-2)**: post-commit git hook variant — addresses non-gitter commits + sub-tick latency. Defer until ADR-069 (auto-routing protocol) drafts; not blocking demo-week.
+**Deferred (OQ-2)**: post-commit git hook variant — addresses non-gitter commits + sub-tick latency. Defer until historical decision number 069 (no surviving ADR file) (auto-routing protocol) drafts; not blocking demo-week.
 
 ### §C — pane-state BUSY (spinner verbs) + lane-tick refusal
 
@@ -284,7 +284,7 @@ ADR doc lands first; impl commits in dispatch order. Suggested wave: §D + §E (
 
 This ADR addresses **rotation policy + kanban hygiene + injection guards + CLI papercuts**. **Not in scope, not orphaned**:
 
-- **Auto-routing protocol (ADR-069 forward-ref)** — sibling-task auto-creation on member-done; design-coupled to §B's hook variant. Defer to its own ADR; §B's lane-tick poll is sufficient for the 29-stale recovery + future demo-week.
+- **Auto-routing protocol (historical decision number 069 (no surviving ADR file) forward-ref)** — sibling-task auto-creation on member-done; design-coupled to §B's hook variant. Defer to its own ADR; §B's lane-tick poll is sufficient for the 29-stale recovery + future demo-week.
 - **Member-side ctx rotation** — non-lead members are rotated by lead at lead's discretion; not a programmatic gate. Operator can manually `atmux rotate <member>` per ADR-021.
 - **Cross-team auto-done** — same-team only (§B's `repoPath` is per-team). Cross-team commit referencing another team's task is a coordination edge — surface via complaint-box (ADR-077) if observed.
 - **Sopx-side fixes** — bash atmux on sopx is sopx-team work; this ADR is bun-side only.

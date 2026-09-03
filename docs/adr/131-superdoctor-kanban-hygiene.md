@@ -8,7 +8,7 @@
 
 > **Rename note (2026-05-14, late afternoon)**: this ADR was first authored earlier on 2026-05-14 as "Superdoctor kanban-hygiene auto-fix loop". Later the same day the cockpit self-healing role was renamed `superdoctor` → `medic` per [ADR-133](./133-medic-rename.md). Body prose below refers to **medic** throughout (originally read "superdoctor"). Storage-layer identifiers (`superdoctor_attempts` table, `__superdoctor__` sentinel, `src/core/superdoctor-hygiene/` source dir) remain unchanged for the deprecation window per ADR-133 §Out of scope. The file slug `131-superdoctor-kanban-hygiene.md` is retained — renaming files breaks `git log --follow` and the ADR audit trail.
 >
-> **Detection-tier relocation (2026-05-14, also late afternoon)** per [ADR-140](./140-cheap-model-first.md) §"What MOVES to martinet" (accepted 2026-05-15): the five kanban-hygiene detectors (§D2) **move from medic's hourly tick to martinet's 270s tick** (Cursor composer-2-fast, Tier 2 cage per ADR-058). Rationale: kanban-hygiene detection is mechanical observation (read tasks table → match fingerprint → produce drain-list); Claude's reluctance bias on the deterministic-fix actions (ghost-owner reassignment, lane-mismatch patch, lane-null backfill) makes the cheaper, non-hedging Cursor backend the production-grade choice. §D2's severity ordering, fix policy, refuse-and-ask escape hatch (§D3), and `hygiene_fingerprints` schema (§D4) are preserved verbatim — only the **caller** changes. Medic retains §D5 complaint-box write authority on detector-confirmed structural failures (Cursor martinet escalates the unfixed fingerprints to medic via `~/.atmux/state/medic-events.log` per [ADR-140](./140-cheap-model-first.md) §"Authority split for rotation"). The §D2 "cost is one additional pass per tick over each team's `state.db` tasks table" line still holds — the pass now runs in martinet's tick, not medic's.
+> **Detection-tier relocation (2026-05-14, also late afternoon)** per [ADR-140](./140-cheap-model-first.md) §"What MOVES to martinet" (accepted 2026-05-15): the five kanban-hygiene detectors (§D2) **move from medic's hourly tick to martinet's 270s tick** (Cursor composer-2-fast, Tier 2 cage per ADR-050). Rationale: kanban-hygiene detection is mechanical observation (read tasks table → match fingerprint → produce drain-list); Claude's reluctance bias on the deterministic-fix actions (ghost-owner reassignment, lane-mismatch patch, lane-null backfill) makes the cheaper, non-hedging Cursor backend the production-grade choice. §D2's severity ordering, fix policy, refuse-and-ask escape hatch (§D3), and `hygiene_fingerprints` schema (§D4) are preserved verbatim — only the **caller** changes. Medic retains §D5 complaint-box write authority on detector-confirmed structural failures (Cursor martinet escalates the unfixed fingerprints to medic via `~/.atmux/state/medic-events.log` per [ADR-140](./140-cheap-model-first.md) §"Authority split for rotation"). The §D2 "cost is one additional pass per tick over each team's `state.db` tasks table" line still holds — the pass now runs in martinet's tick, not medic's.
 
 ## Context
 
@@ -153,9 +153,9 @@ Each detector is a single `SELECT … FROM tasks` query with an index on `status
 - **ADR-077** — medic cockpit role. §D1-D2 establish the detection-class chain this ADR extends; §D3 cadence/authority bound; §D5 complaint box residency.
 - **ADR-082** — per-member worktree isolation. The 9 lane=null orphans observed in SOPX correlate with worktree-isolated teams where dispatch routing is per-lane; lane=null orphans become functionally invisible to the lane-affinity matcher.
 - **ADR-084** — per-member-branch model. Members' natural-lane resolution (used by deterministic-pick) reads from `team.members[].lane` introduced alongside this ADR's tier.
-- **ADR-076** — SQL-canonical inbox. Hygiene fingerprints live in the same `state.db` per the same residency pattern.
+- **historical decision number 076 (no surviving ADR file)** — SQL-canonical inbox. Hygiene fingerprints live in the same `state.db` per the same residency pattern.
 - **ADR-126** — kanban storage in `state.db`. The tasks table this ADR audits.
-- **ADR-049** — budget-pause. Medic's hourly cadence respects budget windows; hygiene pass skips when team is paused (no point fixing wedge fingerprints during a pause that already wedges everything).
+- **historical decision number 049 (no surviving ADR file)** — budget-pause. Medic's hourly cadence respects budget windows; hygiene pass skips when team is paused (no point fixing wedge fingerprints during a pause that already wedges everything).
 - **CLAUDE.md** "Don't make a dormant team look like a working team" + whip §0.05 — the operator-side rule this ADR makes structurally enforced.
 - **`feedback_overnight_reddit_stakes`** — the operator-stated stake for not letting deterministic fixes get blocked on operator round-trips.
 
@@ -169,7 +169,7 @@ Each detector is a single `SELECT … FROM tasks` query with an index on `status
 
 **OQ-2 — Hygiene-DB residency: per-team `.atmux/state.db` or shared `~/.atmux/state/superdoctor-hygiene.db`?**
 
-Per-team is the existing canonical residency for kanban data (ADR-126 + ADR-076). Shared would centralise the audit trail across all teams medic monitors but split the residency model (kanban here, hygiene there).
+Per-team is the existing canonical residency for kanban data (ADR-126 + historical decision number 076 (no surviving ADR file)). Shared would centralise the audit trail across all teams medic monitors but split the residency model (kanban here, hygiene there).
 
 **Recommended default**: per-team `.atmux/state.db` (matches existing ADR-126/076 pattern; no residency drift; cross-team aggregation composable via `UNION ALL` query if needed; survives team archival as part of the team's own state). Override = move to shared store when medic needs to correlate hygiene patterns across teams (e.g. "ghost-owner spikes after every cockpit rebuild" — a cross-team signal). Until that signal exists, per-team is cheaper.
 
@@ -228,18 +228,18 @@ A planner-initiated kanban-grooming sweep audited 6 EPIC-parent tasks marked `ta
 
 | Task | Subject scope | Groomed-as-shipped SHA | Actual SHA scope | Match? |
 |---|---|---|---|---|
-| `t-7101c40f` | ADR-064 bash decommission | (multiple) | bin/atmux → bun shim; lib/ gone | ✅ true positive |
+| `t-7101c40f` | historical decision number 064 (no surviving ADR file) bash decommission | (multiple) | bin/atmux → bun shim; lib/ gone | ✅ true positive |
 | `t-60982d48` | ADR-089 **dogfood** (cockpit verbs walk + nested-cage e2e) | 7be35c4 | ADR-089 recursive sessions[] **impl** + DFS flattener | ❌ scope mismatch (impl, not dogfood-e2e) |
 | `t-c2e544b6` | ADR-092 **doctor D5a/D8/D9** + round-trip e2e | (multiple) | ADR-092 tell-lead cross-team verb; D5a in doctor.ts is ADR-057-referenced; D8+D9+e2e not visible | ❌ partial |
 | `t-8ec31d4d` | ADR-050 **§Resume continuity** (composer + member-pane paste on budget-resume) | 258ea95 | ADR-050 **§Acceptance gate Tier 2** (Cursor) fallback lifecycle | ❌ different §section |
-| `t-66746ab4` | bun-port: task add/update `--epic` + `--story` CLI flags | 407d075 | **bash** kanban verb shipped 2026-04-25; bun-port src/verbs/task.ts has no `"--epic"` literal | ❌ pre-ADR-064 bash artifact |
+| `t-66746ab4` | bun-port: task add/update `--epic` + `--story` CLI flags | 407d075 | **bash** kanban verb shipped 2026-04-25; bun-port src/verbs/task.ts has no `"--epic"` literal | ❌ pre-historical decision number 064 (no surviving ADR file) bash artifact |
 | `t-e057d8ff` | ADR-140 T3 medic verb impl | 3cb1697 | `docs(changelog)`: refreshes ADR-140 entry, explicitly says **"T3 + T4 filed and claimable for be-lane"** | ❌ doc-update mistaken for ship |
 
 **Failure mode**: the auto-groom hook appears to tag `task.note = "shipped via SHA X"` based on **loose criteria** — likely an `ADR-NNN` substring match in commit subject — without verifying:
 
 1. Whether the commit's scope (subject + body) covers the task's **specific** scope (§section, sub-task identifier, deliverable surface).
 2. Whether the commit is a code-shipping commit (`feat:` / `fix:`) vs a doc/changelog refresh (`docs:` that may explicitly say the work is NOT yet done).
-3. Whether the commit reflects the modern artifact (TS port post-ADR-064) vs a pre-decommission bash artifact.
+3. Whether the commit reflects the modern artifact (TS port post-historical decision number 064 (no surviving ADR file)) vs a pre-decommission bash artifact.
 
 **Decision** (extends §D2 5-class drain with a 6th detector class, OR — preferred — tightens §D2's `shipped-via-SHA` write-out criteria):
 

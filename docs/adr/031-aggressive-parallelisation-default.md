@@ -56,7 +56,7 @@ Driver retains the right to force priority-0 on critical-path Tasks (via direct 
 
 ### REVIEW-lane carve-out
 
-Aggressive cross-lane fallback (the second-pass any-lane filter in `claim --next`) does NOT apply to `lane=review` Tasks. REVIEW signoff is specialty discipline (per [ADR-029](./029-team-scope-tiers.md) audit bar — exhaustive grep + negative-space proof + vulnerability-class widening); a `lane=fe` / `lane=be` / `lane=test` member cannot meaningfully deputize on it. The refuse-gate sits at two sites in `lib/claim.sh`:
+Aggressive cross-lane fallback (the second-pass any-lane filter in `claim --next`) does NOT apply to `lane=review` Tasks. REVIEW signoff is specialty discipline (per [ADR-029](./029-driver-lead-team-scope-superdriver-cross-team.md) audit bar — exhaustive grep + negative-space proof + vulnerability-class widening); a `lane=fe` / `lane=be` / `lane=test` member cannot meaningfully deputize on it. The refuse-gate sits at two sites in `lib/claim.sh`:
 
 - `_atmux_claim_select_next` second-pass any-lane filter — `lane=review` Tasks excluded when caller's `lane != review`.
 - `main` `claim` branch (explicit-id form) — explicit `atmux claim <review-task-id>` refuses unless caller is review-shaped.
