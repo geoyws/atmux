@@ -328,7 +328,8 @@ export interface StatusSnapshot {
   kanban: KanbanCounts;
   driverInboxOpen: number;
   /** ADR-064 §4: driver-pane health snapshot. Always populated;
-   *  renderer skips display when `configured=false`. */
+   *  renderer skips display when `configured=false` (legacy fixture
+   *  compatibility only). */
   driverPane: DriverPaneHealth;
   /** ADR-077 §F5 / ADR-133: cockpit medic snapshot. Always populated;
    *  renderer skips display when `configured=false`. */
@@ -1109,19 +1110,29 @@ async function readMemberCounts(
   return { pending: ib.pending.length, inProgress: ib.inProgress.length };
 }
 
-function renderTextStatus(snap: StatusSnapshot, staleSec: number): void {
+export function renderTextStatus(snap: StatusSnapshot, staleSec: number): void {
   const sessEmoji = snap.sessionState === "up" ? "🟢" : "🔴";
   process.stdout.write(
     `${sessEmoji} 🧭 TEAM ${snap.team}  session=${snap.session} [${snap.sessionState}]\n\n`,
   );
-  // ADR-064 §4: driver-pane row above the per-member table — only when
-  // the team opted into the ADR-044 driver-window topology. Mirrors the
+  // ADR-064 §4: driver-pane row above the per-member table — the
+  // canonical driver roster is the default, and pair failures render
+  // distinctly from a successful no-window absence. Mirrors the
   // existing `driver-inbox open=N` skip-when-empty pattern below.
   if (snap.driverPane.configured) {
     const dp = snap.driverPane;
-    const stateLabel = dp.windowExists ? (dp.state ?? "UNKNOWN") : "no-window";
     const evidence = dp.evidence.length > 60 ? `${dp.evidence.slice(0, 60)}…` : dp.evidence;
-    process.stdout.write(`🚗 driver  configured=y  state=${stateLabel}  evidence=${evidence}\n\n`);
+    if (dp.pairDecision !== undefined && dp.pairDecision !== "noop") {
+      const pairLabel = dp.pairDecision === "unavailable" ? "observer-failure" : dp.pairDecision;
+      process.stdout.write(
+        `🚗 driver  configured=y  pair=${pairLabel} reason=${dp.pairReason ?? "pair.observer.list_panes_failed"}  evidence=${evidence}\n\n`,
+      );
+    } else {
+      const stateLabel = dp.windowExists ? (dp.state ?? "UNKNOWN") : "no-window";
+      process.stdout.write(
+        `🚗 driver  configured=y  state=${stateLabel}  evidence=${evidence}\n\n`,
+      );
+    }
   }
   // t-74273200: text mode replaced the pane_current_command proxy (which
   // mis-reported welcome-screen claude TUIs as `(down)`) with `cageState`
