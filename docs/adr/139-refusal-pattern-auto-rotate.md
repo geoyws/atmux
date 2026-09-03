@@ -66,7 +66,7 @@ Two scan sites, same classifier:
 | **Medic** (W2) | hourly | **Primary detector NOW** (pre-martinet-ship). Backstop after martinet ships. |
 | **Martinet** (W3) | 270s | **Primary detector POST-martinet-ship** ([ADR-132](132-pluggable-martinet.SUPERSEDED.md) prerequisite). |
 
-Both scan every team's every member-pane. Both record positive detections to a new SQLite table `refusal_events` at the team's `.atmux/state.db` (per-team residency mirrors [[project_kanban_storage_sqlite]] + [ADR-076](076-) inbox-in-tasks convention).
+Both scan every team's every member-pane. Both record positive detections to a new SQLite table `refusal_events` at the team's `.atmux/state.db` (per-team residency mirrors [[project_kanban_storage_sqlite]] + historical decision number 076 (no surviving ADR file) inbox-in-tasks convention).
 
 **Schema** (T3 ships the migration):
 

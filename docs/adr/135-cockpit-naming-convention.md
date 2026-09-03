@@ -11,7 +11,7 @@ ADR-063 named the operator cockpit session **`atmux_teams`**. ADR-110 (`buildWin
 
 ### Session name conflates container with contents
 
-`atmux_teams` reads as *"the session that contains teams"* — accurate but misleading. The cockpit IS the operator's command surface (per ADR-063 + ADR-046); the per-team viewers are nested-attaches into team cages, not first-class members of this session. As the cockpit accreted opt-in roles (medic per ADR-077/133, martinet per ADR-132), the "_teams" suffix grew less descriptive: medic and martinet are cockpit-level roles, not teams.
+`atmux_teams` reads as *"the session that contains teams"* — accurate but misleading. The cockpit IS the operator's command surface (per ADR-063 + historical decision number 046 (no surviving ADR file)); the per-team viewers are nested-attaches into team cages, not first-class members of this session. As the cockpit accreted opt-in roles (medic per ADR-077/133, martinet per ADR-132), the "_teams" suffix grew less descriptive: medic and martinet are cockpit-level roles, not teams.
 
 `atmux_cockpit` names the surface by its purpose. The session is *the operator's cockpit*; the teams it views are addressable via per-team viewer windows whose names are the team names themselves (no underscore, no prefix).
 
@@ -123,7 +123,7 @@ Same idempotent-rewrite pattern as ADR-133 TR6 (`superdoctor → medic` cron lin
 - **Operator zero-disruption** — in-place `rename-session` + `rename-window` preserve attached clients. The cockpit reattach + per-team `atmux start` next-run apply migration silently.
 - **No state-file migration** — `~/.atmux/cockpit.json` field is value-level (a string literal), not key-level; legacy value accepted with warning during the deprecation window per D5.
 - **Reversibility** — flip back is one default change + one buildWindowName line; the migration shim's idempotency makes "what's the current name" the source of truth, not "what's the config say".
-- **Cross-references**: ADR-063 (cockpit verb), ADR-046 (cockpit session naming origin), ADR-077 (medic role), ADR-132 (martinet role), ADR-133 (medic rename precedent for D2 underscore-prefix migration shape), ADR-110 (buildWindowName origin — supersedes the bash-era `__<team>__<emoji><member>` to `<emoji><member>`; this ADR's D3 amends to `<emoji>-<member>`).
+- **Cross-references**: ADR-063 (cockpit verb), historical decision number 046 (no surviving ADR file) (cockpit session naming origin), ADR-077 (medic role), ADR-132 (martinet role), ADR-133 (medic rename precedent for D2 underscore-prefix migration shape), ADR-110 (buildWindowName origin — supersedes the bash-era `__<team>__<emoji><member>` to `<emoji><member>`; this ADR's D3 amends to `<emoji>-<member>`).
 
 ## Cross-references
 
@@ -132,7 +132,7 @@ Same idempotent-rewrite pattern as ADR-133 TR6 (`superdoctor → medic` cron lin
 - ADR-132 — pluggable martinet. Window name `_martinet` per D2.
 - ADR-133 — medic rename (TR2/TR3 already landed). Same backward-compat shim shape (D5) reused here for session/window scope.
 - ADR-110 — buildWindowName naming origin (drops bash-era `__<team>__` prefix; establishes `<emoji><member>`). Hyphen separator per D3 amends the format.
-- ADR-046 — original cockpit session naming (historical; pre-dates the docs/adr/ tree's current numbering).
+- historical decision number 046 (no surviving ADR file) — original cockpit session naming (historical; pre-dates the docs/adr/ tree's current numbering).
 - `src/core/common.ts::buildWindowName` — function the D3 change lands in.
 - `src/verbs/cockpit.ts` rebuild handler — D4 migration shim lands here.
 - `src/verbs/start.ts` reconcile path — member-window D4 migration shim lands here.
@@ -155,7 +155,7 @@ Same idempotent-rewrite pattern as ADR-133 TR6 (`superdoctor → medic` cron lin
 
 [ADR-162](162-atmux-owns-tmux-infrastructure.md) extends the cockpit naming convention from **session-name isolation** to **socket isolation**. The cockpit moves from the operator's default tmux socket (`tmux ...`) to a dedicated named socket (`tmux -L atmux-cockpit ...`). The `cockpitSession: "atmux_cockpit"` session name (this ADR's §Decision) is unchanged — `atmux-cockpit` becomes the SOCKET name AND `atmux_cockpit` stays the SESSION name on that socket.
 
-Per-team sockets remain on the existing cage-tier `-S <team-root>/.atmux/tmux/tmux-0/default` path per [ADR-058](058-cage-tier-isolation.md) — unaffected by ADR-162. The `_-prefix` window-name format from this ADR's §D2 / §D3 is preserved verbatim on the new socket; ADR-162 §Decision-anchor #3's `automatic-rename off` in `templates/tmux/atmux.conf` is what protects the `_-prefix` contract from tmux's auto-rename stomping.
+Per-team sockets remain on the existing cage-tier `-S <team-root>/.atmux/tmux/tmux-0/default` path per [ADR-050](050-fallback-chain.md) — unaffected by ADR-162. The `_-prefix` window-name format from this ADR's §D2 / §D3 is preserved verbatim on the new socket; ADR-162 §Decision-anchor #3's `automatic-rename off` in `templates/tmux/atmux.conf` is what protects the `_-prefix` contract from tmux's auto-rename stomping.
 
 The migration verb `atmux cockpit migrate-socket` (ADR-162 TR3) handles existing operators: it discovers legacy `atmux_cockpit` (or pre-this-ADR `atmux_teams`) sessions on the default socket and recreates them on the dedicated socket. Process state is NOT transferred (tmux primitives can't re-bind PIDs across servers — documented in [ADR-162 §Amendment 2026-05-16](162-atmux-owns-tmux-infrastructure.md#2026-05-16--decision-anchor-4-mechanism-graceful-recreate-not-pid-preservation-t-26346aef-tr3-impl)); scrollback is preserved as a breadcrumb file. Cron-spawned cockpit roles re-establish on the next tick. See [`docs/RUNBOOK-cockpit.md`](../RUNBOOK-cockpit.md) §2 for the operator-facing flow.
 

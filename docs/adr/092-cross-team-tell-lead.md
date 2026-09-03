@@ -6,7 +6,7 @@
 **Parent task**: t-5f20ba85 (ADR-092 impl)
 **Driver-ref**: driver-inbox 14:03 MYT §Pillar — file-mod citation `src/verbs/tell-lead.ts:52-93,108-204`. The ADR-091 conflict-surface story (T12) needed a cross-team driver→lead routing path that didn't fall back to operator-driven flag escalation; this ADR records the call-site decision.
 **ADR seq**: 6/6 — last in the ADR-089/090/091/092 chain (recursive sessions[] → epic-team lifecycle → epic-merge state machine → cross-team comms).
-**Relates**: ADR-089 (recursive `sessions[]` substrate — cockpit-walk lookup depends on the DFS traversal), ADR-090 (epic-team lifecycle, forward-reference — defines `epicTeam.parent` linkage), ADR-091 (epic-merge, forward-reference — first consumer of the conflict-surface path), ADR-029 (tell-lead bash spec — `--team` is a forward-compat extension of the same shape), ADR-058 (cage tier, forward-reference — cross-team routing crosses cage boundaries; documented at §D5).
+**Relates**: ADR-089 (recursive `sessions[]` substrate — cockpit-walk lookup depends on the DFS traversal), ADR-090 (epic-team lifecycle, forward-reference — defines `epicTeam.parent` linkage), ADR-091 (epic-merge, forward-reference — first consumer of the conflict-surface path), ADR-029 (tell-lead bash spec — `--team` is a forward-compat extension of the same shape), ADR-050 (cage tier, forward-reference — cross-team routing crosses cage boundaries; documented at §D5).
 
 ## Context
 
@@ -83,7 +83,7 @@ Implemented via `callerScopeAllowed(cockpit, sourceName, targetName, callerScope
 
 ### (D4) Heads-up + socket resolution — already nested per ADR-089
 
-The cross-team heads-up reuses the existing `sendToMember(tmux, atmuxDir, ...)` path. The only delta is which `tmux` instance + which `atmuxDir`. Each is resolved from the target team's `team.json` / `resolveTeamSocket`. Nesting works because every cage tmux socket is per-team (`/tmp/atmux-<team>/sock` or `team.tmuxTmpdir`), and the cockpit driver pane has filesystem read access to every team's `.atmux/team.json` per ADR-058 (operator-tier visibility into every cage).
+The cross-team heads-up reuses the existing `sendToMember(tmux, atmuxDir, ...)` path. The only delta is which `tmux` instance + which `atmuxDir`. Each is resolved from the target team's `team.json` / `resolveTeamSocket`. Nesting works because every cage tmux socket is per-team (`/tmp/atmux-<team>/sock` or `team.tmuxTmpdir`), and the cockpit driver pane has filesystem read access to every team's `.atmux/team.json` per ADR-050 (operator-tier visibility into every cage).
 
 Reviewer pre-flag (task body): socket resolution must NOT leak a parent-cage prefix. The implementation calls `resolveTeamSocket(targetTeam)` directly on the loaded target `team.json` — no path-construction from source-cage state.
 
@@ -132,7 +132,7 @@ ADR-091 T12 (epic-merge conflict surface) currently uses `atmux flag add` as the
 - ADR-090 (epic-team lifecycle, forward-reference; in-flight per parent EPIC t-e576dd43) — `epicTeam.parent` linkage drives the caller-scope policy.
 - ADR-091 (epic-merge state machine, forward-reference) — conflict-surface first consumer (T12 migrates post-acceptance).
 - [ADR-029](029-driver-lead-team-scope-superdriver-cross-team.md) §F-fix series — bash spec for tell-lead heads-up; `--team` is a forward-compat extension respecting the byte-equal contract on the default path.
-- ADR-058 (cage-tier naming, forward-reference) — cage tier; cross-team routing respects Tier-1 boundaries (D5).
+- ADR-050 (cage-tier naming, forward-reference) — cage tier; cross-team routing respects Tier-1 boundaries (D5).
 - Task t-c2e544b6 — sibling e2e (parent ↔ epic-lead round-trip + doctor D8/D9 extends).
 - [ADR-099](099-error-handling.md) — `ConfigError` / BSD exit code mapping (`EX_NOPERM=77` for refusal).
 

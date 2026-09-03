@@ -276,6 +276,6 @@ The existing post-kill `cron-remove` strips the team's whole marker-fenced block
 - `src/core/soft-stop.ts::quiesceCron` — implementation
 - `src/verbs/stop.ts` — invocation site (pre-`softStop()` in the `--soft` branch)
 - `src/abstractions/crontab.ts` — `CrontabIO` DI surface (re-used)
-- ADR-053 — whip advisory locking (eases reaping if explicit `pkill` ever added)
-- ADR-076 — per-team cron isolation (scoping via `ATMUX_DIR=<dir>` env marker)
+- historical decision number 053 (no surviving ADR file) — whip advisory locking (eases reaping if explicit `pkill` ever added)
+- historical decision number 076 (no surviving ADR file) — per-team cron isolation (scoping via `ATMUX_DIR=<dir>` env marker)
 - ADR-083 — `cron-remove` verb (companion post-kill step)

@@ -37,9 +37,9 @@ Both fixed inline today (cheap fix in dotfiles script: switched cage paths to `/
 
 `cockpit-rebuild` (lives at `~/work/journals/.sb/_dotfiles/bin/cockpit-rebuild.sh`, symlinked to `~/bin/cockpit-rebuild` by `_dotfiles/init.sh`) deterministically (re)builds the operator cockpit:
 
-- Cockpit session `atmux_teams` on the operator's default tmux socket (window 1 = `superdriver`, windows 2..N = one nest-attach viewer per registered team) — per ADR-046, ADR-050.
+- Cockpit session `atmux_teams` on the operator's default tmux socket (window 1 = `superdriver`, windows 2..N = one nest-attach viewer per registered team) — per historical decision number 046 (no surviving ADR file).
 - One per-team cage tmux server per team — per ADR-018 (per-team-tmux-socket-isolation).
-- `bareWindowNames: true` on every team.json — per ADR-048.
+- `bareWindowNames: true` on every team.json — per unlanded decision number 048.
 - Registry trimmed to the canonical team set, existing emoji rosters preserved.
 - `C-\` cage prefix re-applied on each cage (project-local cage paths miss atmux-bun's auto-prefix-on-`/tmp/atmux-tmux*` heuristic).
 - Live-team protection: cages with running claude processes are NOT cycled unless `--force-cycle`.

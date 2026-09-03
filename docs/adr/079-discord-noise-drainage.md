@@ -61,7 +61,7 @@ function cronEvery(minutes: number): string {
 | `team.groom.atHour` | 4 (new) | `cron.ts:104` | `0 4 ... atmux groom` |
 | `team.unblocker.intervalMins` | 2 (new) | `cron.ts:117` | `*/2 ... atmux unblocker tick` |
 
-The `whip-resume-check` 1-min gate at `cron.ts:111` stays hardcoded — sub-1-min cadence isn't a tunable, it's ADR-053 §D4's deliberate post-pause latency floor.
+The `whip-resume-check` 1-min gate at `cron.ts:111` stays hardcoded — sub-1-min cadence isn't a tunable, it's historical decision number 053 (no surviving ADR file) §D4's deliberate post-pause latency floor.
 
 **Doctor warn** (`src/verbs/doctor.ts`): a new yellow check `cron-interval-divisor` warns when any configured `intervalMins` is not a divisor of 60. Cron's `*/N` only honors divisors of 60 cleanly — `*/7` fires at xx:00, xx:07, ..., xx:56, then xx:00 (gap of 4min, not 7).
 

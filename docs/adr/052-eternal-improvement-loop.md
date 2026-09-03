@@ -3,7 +3,7 @@
 **Status**: accepted (2026-05-16, retrospective backfill per `t-75a79d7c`; substrate shipped in `src/core/improve.ts` + `src/core/improve-cycle.ts` + `src/core/eternal-improvement.ts` + `src/schema/eternal-improvement.ts` + `src/verbs/improve.ts` across T1–T8 + R1-T5 + §Whip-integration during 2026-05 — written here to close the citation gap flagged at `aaa5689` and resolve the "ghost ADR" referenced by ADR-081 / ADR-115 / ADR-149.)
 **Date**: 2026-05-06 (original implementation start) — backfilled 2026-05-16
 **Author**: atmux team (substrate authored across multiple members; backfill drafted by `whip-impl` per planner-routed task body's option (a) "Write docs/adr/052-eternal-improvement-loop.md backfilling from code + sibling ADRs")
-**Relates**: ADR-022 (whip — fires the intercept), ADR-049 (budget caps — supplies token quantities), ADR-005 (errors — `SchemaError` on invalid state-file), ADR-016 (schemaVersion deferral — burn-in carve-out), ADR-077 (medic — observes the run via doctor probes), ADR-126 (SQLite kanban — read by cycle-closability checks), ADR-148 (cadence-as-truth — sibling principle), ADR-149 (eternal-improvement gating — extends this ADR's `openCycle` entry path)
+**Relates**: ADR-022 (whip — fires the intercept), historical decision number 049 (no surviving ADR file) (budget caps — supplies token quantities), ADR-005 (errors — `SchemaError` on invalid state-file), ADR-016 (schemaVersion deferral — burn-in carve-out), ADR-077 (medic — observes the run via doctor probes), ADR-126 (SQLite kanban — read by cycle-closability checks), ADR-148 (cadence-as-truth — sibling principle), ADR-149 (eternal-improvement gating — extends this ADR's `openCycle` entry path)
 
 ## Context
 
@@ -63,7 +63,7 @@ Built-in default: `DEFAULT_BUDGET_SPEC = "30%-wk"`.
 Resolved by `resolveBudget(spec, opts)`:
 
 - `kind: "raw"` → `{ total: spec.tokens, formula: "raw=<n>" }`
-- `kind: "pct-5h"` → reads `.atmux/state/budget-probe-<team>.json` (ADR-049) for `h5_util`; computes `<pct>/100 × (1 - h5_util) × DEFAULT_5H_CAP_TOKENS` (5_000_000 default; operator-overrideable per ADR-049).
+- `kind: "pct-5h"` → reads `.atmux/state/budget-probe-<team>.json` (historical decision number 049 (no surviving ADR file)) for `h5_util`; computes `<pct>/100 × (1 - h5_util) × DEFAULT_5H_CAP_TOKENS` (5_000_000 default; operator-overrideable per historical decision number 049 (no surviving ADR file)).
 - `kind: "pct-wk"` → same shape against `wk_util` + `DEFAULT_WK_CAP_TOKENS` (100_000_000 default).
 
 **Fail-closed rule**: when `kind:pct-*` is requested but no probe file exists, `resolveBudget` returns `null` and the verb maps to `UsageError`. Operators with cold probe state must either run `atmux budget probe` first, switch to raw token spec, or use `--default-budget` (which also fails until probe lands — the default itself is pct-based).
@@ -199,7 +199,7 @@ The substrate landed across these commits (Task ID → commit SHA → file slice
 | T6 | `t-a3a0e5b1` (ADR-052 T6 whip-hook Mode B) | `9d08d42` + `620afd4` | Whip-integration — intercept ADR-043 auto-stop with `atmux improve`. |
 | T7 | `t-…` (cycle-loop mechanics) | `8f2eada` | Cycle-loop mechanics (open / close / terminate / preempt + `--tick`). |
 | T8 | `t-816a5104` (ADR-052 T8 e2e) | `1e838d1` | e2e — synthetic 1-cycle eternal-improvement run from start to termination. |
-| R1-T5 | `t-19ce70d9` (ADR-053 budget-pause integration) | `8160d71` | Wire `runBudgetCheck` into whip-tick for the §Whip-integration intercept. |
+| R1-T5 | `t-19ce70d9` (historical decision number 053 (no surviving ADR file) budget-pause integration) | `8160d71` | Wire `runBudgetCheck` into whip-tick for the §Whip-integration intercept. |
 | Doc | `t-7a8be5f` | `7a8be5f` | ADR-022 annotation noting the bash-side intercept. |
 
 Discord cross-template renderers + `formatTokens` shipped alongside T3. The `IMPROVEMENT_EPIC_ID` constant landed with T7 (the first consumer in `isDriverPreempt`).
@@ -209,7 +209,7 @@ Test coverage at the source modules is 100% line + branch as of this backfill �
 ## Cross-references
 
 - **ADR-022** — whip cron + pulse machinery. ADR-052's §Whip-integration intercepts whip's ADR-043 auto-stop path.
-- **ADR-049** — budget caps (5h, weekly). Supplies the `h5_util` / `wk_util` probe values consumed by `resolveBudget` for `kind:pct-*` specs.
+- **historical decision number 049 (no surviving ADR file)** — budget caps (5h, weekly). Supplies the `h5_util` / `wk_util` probe values consumed by `resolveBudget` for `kind:pct-*` specs.
 - **ADR-005** — error hierarchy. `SchemaError` thrown on invalid state-file; `UsageError` on bad budget spec or contention with stale state-file (without `--force`).
 - **ADR-016** — schema versioning. Burn-in carve-out: `schemaVersion` is omitted from the state-file schema until post-bash-decommission (Phase 6).
 - **ADR-077** — medic / superdoctor. Consumes doctor probes derived from the state-file (active run / stale run / cycle-stuck). Diagnose loop reads the state and surfaces anomalies.
@@ -225,7 +225,7 @@ Test coverage at the source modules is 100% line + branch as of this backfill �
 
 **OQ-1 — Gate the `openCycle` entry path on operator opt-in + real-work backlog?** — **Resolved by ADR-149** (config gate + backlog gate). Until ADR-149 landed, every cron tick that found the predicate chain clear opened a new cycle; ADR-149 narrows the entry to teams that have explicitly opted in AND have an empty backlog.
 
-**OQ-2 — Per-member budget min vs team-level probe?** — Substrate approximates `min(remaining_wk_tokens_per_active_member)` via the team-level probe (ADR-049 emits one file per team capturing the bottleneck member). Precise per-member min lands when the loop wiring needs it; deferred.
+**OQ-2 — Per-member budget min vs team-level probe?** — Substrate approximates `min(remaining_wk_tokens_per_active_member)` via the team-level probe (historical decision number 049 (no surviving ADR file) emits one file per team capturing the bottleneck member). Precise per-member min lands when the loop wiring needs it; deferred.
 
 **OQ-3 — Cross-team coordination?** — Out of scope. Each team's eternal-improvement run is independent. Super-driver-level "at most M teams running concurrently" coordination defers to a future super-* hierarchy ADR (currently tracked as ADR-274 candidate).
 

@@ -24,7 +24,7 @@ The downside is a per-role format check inside `buildWindowName` (per ADR-135 D3
 
 ### Why label-layer only — no id mutation
 
-Per [[project_member_hot_rename_adr_136]] / ADR-136: members have three layers — `id` (immutable; powers kanban owner field, branch name, worktree path, inbox keys), `label` (display name; can change), `emoji` (display prefix; can change). ADR-161's `_-prefix` change lives entirely in the LABEL layer. Kanban records keyed by `id` ("lead", "planner") are unaffected. Branch names like `<teamBase>-planner` stay verbatim. Inbox paths `.atmux/inboxes/lead.json` (legacy; or the equivalent post-ADR-076 SQLite rows) stay verbatim.
+Per [[project_member_hot_rename_adr_136]] / ADR-136: members have three layers — `id` (immutable; powers kanban owner field, branch name, worktree path, inbox keys), `label` (display name; can change), `emoji` (display prefix; can change). ADR-161's `_-prefix` change lives entirely in the LABEL layer. Kanban records keyed by `id` ("lead", "planner") are unaffected. Branch names like `<teamBase>-planner` stay verbatim. Inbox paths `.atmux/inboxes/lead.json` (legacy; or the equivalent post-historical decision number 076 (no surviving ADR file) SQLite rows) stay verbatim.
 
 Zero state migration required. The label change is purely cosmetic — pickups happen on next `atmux start` invocation when `buildWindowName` runs against the now-role-aware logic.
 

@@ -111,7 +111,7 @@ Operator opt-in is explicit: superdoctor is OFF by default. Single-team and Solo
 }
 ```
 
-Schema reuses `CockpitClaudeAccount` and `CockpitTuiOverrides` verbatim — superdoctor's spawn shape is structurally identical to a team window's TUI shape, so reusing the leaf objects keeps drift detection (ADR-054 §D3 .strict() pattern) consistent.
+Schema reuses `CockpitClaudeAccount` and `CockpitTuiOverrides` verbatim — superdoctor's spawn shape is structurally identical to a team window's TUI shape, so reusing the leaf objects keeps drift detection (historical decision number 054 (no surviving ADR file) §D3 .strict() pattern) consistent.
 
 ### D3 — Cadence + authority
 
@@ -126,10 +126,10 @@ Trade-off: full authority means a misdiagnosis can compound (e.g. wrong-team `/t
 
 Per the 2026-05-08 directive: "the inbox must live in sqlite for data safety purposes and type safety."
 
-Superdoctor's inbox is the existing `inbox_messages` SQLite table (already schema'd at `src/abstractions/sqlite-migrations.ts:89`, currently unused after ADR-076 collapsed per-member inbox semantics into the `tasks` table). Member key is the literal string `__superdoctor__`. Sender semantics:
+Superdoctor's inbox is the existing `inbox_messages` SQLite table (already schema'd at `src/abstractions/sqlite-migrations.ts:89`, currently unused after historical decision number 076 (no surviving ADR file) collapsed per-member inbox semantics into the `tasks` table). Member key is the literal string `__superdoctor__`. Sender semantics:
 
 - **Members → superdoctor** (e.g. lead surfacing "I think this is a recurrent symptom"): `atmux send __superdoctor__ "<msg>"` writes a row to `inbox_messages` with `member='__superdoctor__'`, `sender='<team>:<member>'`, `kind='heads-up'`. Superdoctor reads on each whip turn.
-- **Superdoctor → members** (urgent only, e.g. "stop running e2e in your own cage"): `atmux send <team>:<member> "<msg>"` — this routes through the same `tasks` table writer the rest of the cluster uses (ADR-076 SQL-canonical inbox).
+- **Superdoctor → members** (urgent only, e.g. "stop running e2e in your own cage"): `atmux send <team>:<member> "<msg>"` — this routes through the same `tasks` table writer the rest of the cluster uses (historical decision number 076 (no surviving ADR file) SQL-canonical inbox).
 - **Superdoctor → lead** (routine asks): same as above, target `<team>:<lead>`.
 - **P0 escalation** (the system is on fire): bypass routing. Capture the target pane (per global "always read pane state BEFORE tmux send-keys"), then `tmux send-keys -t <window>` directly. Reserved for "demo in <30min and member is wedged" — every send-keys bypass is audit-logged in superdoctor's complaint box.
 
@@ -139,7 +139,7 @@ The cockpit-level superdoctor is NOT a member of any team's `team.json`. It's at
 
 Out of scope for this ADR's implementation; kanban-tracked under epic `t-274ec70c`. Specified here so superdoctor's bootstrap brief has a target shape:
 
-- **Storage**: per-team SQLite at `<team-root>/.atmux/state.db`, new `complaints` table (NOT a JSON file — ADR-076 cutover stays).
+- **Storage**: per-team SQLite at `<team-root>/.atmux/state.db`, new `complaints` table (NOT a JSON file — historical decision number 076 (no surviving ADR file) cutover stays).
 - **Schema** (proposed, draft only): `id TEXT PRIMARY KEY, opened_at INTEGER, opened_by TEXT, incident_summary TEXT, root_cause TEXT, preventive_ask TEXT, status TEXT (open/resolved/wontfix), resolved_at INTEGER, resolved_by TEXT, related_task_id TEXT, extra TEXT`.
 - **Verb surface** (proposed): `atmux complaints list [<team>]`, `atmux complaints file <team> --summary ... --root-cause ... --ask ...`, `atmux complaints resolve <id>`. Deferred to a follow-up ADR when the volume justifies a verb (until then superdoctor uses raw SQL via `bun:sqlite`).
 - **Cross-team complaint**: when superdoctor identifies a bug that belongs to atmux itself (vs the affected team), it files in atmux's complaint box. Operator pulls atmux complaints into atmux's own kanban as actionable tasks.
@@ -154,7 +154,7 @@ The actual `superdoctor` skill (analogous to `~/.claude/skills/whip/whip-prompt.
 
 - Self-healing loop runs without operator intervention; the third hand on the wheel during long autonomous sessions.
 - Recurrence prevention compounds — every complaint is a structural fix proposal, audit-logged across cockpit lifetimes.
-- Existing infrastructure reused: cockpit reconcile, ADR-076 SQL inbox, `/loop /whip`, `/team` skill family.
+- Existing infrastructure reused: cockpit reconcile, historical decision number 076 (no surviving ADR file) SQL inbox, `/loop /whip`, `/team` skill family.
 
 **Negative**:
 
@@ -250,7 +250,7 @@ Cross-refs: ADR-009 (rotation gate), ADR-077 (this ADR / medic role), c-06dabd47
 
 **Sentinel sibling (boundary):** pane-liveness, mechanical nudges, member-state observation, routine + emergency rotation per [ADR-132](./132-pluggable-martinet.SUPERSEDED.md) §Amendment 2026-05-19. Sentinel observe-pass invokes doctor probes for code-class findings (read-only) and escalates code-fix work back to medic via the escalate-to-claude-lead path; medic invokes doctor for liveness-class findings via the shared probe library.
 
-**Doctor stays shared infra** per [ADR-027](./027-doctor-self-diagnostics.md) — owns no loop of its own; probe classes (code-health, deploy-completeness per [ADR-208](./208-deploy-completeness-probe-class.md), wedge-classes per EPIC e-35dd6274, lifecycle-symmetry per audit finding #1) are invoked by callers.
+**Doctor stays shared infra** per the doctor self-diagnostics history (no surviving local ADR file) — owns no loop of its own; probe classes (code-health, deploy-completeness per [ADR-208](./208-deploy-completeness-probe-class.md), wedge-classes per EPIC e-35dd6274, lifecycle-symmetry per audit finding #1) are invoked by callers.
 
 > **§Amendment 2026-05-21 — partial supersession by [ADR-212](./212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md):** The **cockpit-tier Medic scheduled-tick role** (the W2 pane running hourly diagnosis-and-prevention) retires per ADR-212 §D1. The **probe substrate library** described above (`src/core/doctor-class.ts`, doctor probe registry, probe-class taxonomy) **PERSISTS** — it's reusable infrastructure for the Honker consumer EPICs that absorb medic's functions. Only the W2 role retires; the doctor library that this ADR established stays in tree.
 

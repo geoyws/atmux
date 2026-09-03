@@ -26,7 +26,7 @@ PR#2 (geoyws→main merge) closed 2026-05-07; v1.0.0 / v1.1.x bucketing is moot.
 - **ADR-bun/060 (sqlite-state-store)** — schema extension. New `complaints` table per ADR-126 migration discipline (PRAGMA `user_version`; idempotent INSERT-IF-NOT-EXISTS).
 - **ADR-100 (pull-kanban)** — preserved. Per-member task-queue shape continues; only the file-name word changes (`inboxes/<name>.json` → `tasks/<m-id>.json`). Lane semantics + `claim --next` cross-lane fallback untouched.
 - **ADR-120 (team rename verb + topology invariant)** — extended. New `atmux team rename-member <old> <new>` extends ADR-120's atomic-rename-or-rollback model with member scope. Archive-don't-rewrite discipline applies.
-- **ADR-053 (flag-add dedup)** — pattern reference. `atmux complain` reuses the `_flags_dedup_open_within` 5-min TTL on (filer, sha256(message)) tuple.
+- **historical decision number 053 (no surviving ADR file) (flag-add dedup)** — pattern reference. `atmux complain` reuses the `_flags_dedup_open_within` 5-min TTL on (filer, sha256(message)) tuple.
 - **ADR-bun/044 (driverSession)** + **ADR-bun/064 (driver role port)** — extended. Driver pane gets reserved sentinel `m-driver` (special-cased outside `members[]`); driver-pane health probe surfaces driver in live-status surfaces.
 - **ADR/032 (socket-pubsub-messaging-layer)** — *proposed, NOT a hard pre-req*. Cross-team complaints (#3) initially use a simple file-write substrate; future migration to socket-pubsub is non-breaking (registry-keyed routing the same either way). See OQ-3.
 
@@ -150,7 +150,7 @@ atmux complain "<message>"
 
 - **Filer resolution**: pane lookup (tmux session/window) → member identity from team.json. Driver-pane = `external:<host-team>:driver`.
 - **Target resolution**: `--team <name>` → registry.json lookup → target team's `cwd` + `T-id`. Single-host trust model: registry-listed teams freely write each other's complaints (matches the archived bash port's `lib/socket-pubsub.sh` pattern).
-- **Dedup gate**: 5-min TTL on (filer, sha256(message)) tuple per ADR-053. Re-fire within window is silently absorbed; no duplicate row.
+- **Dedup gate**: 5-min TTL on (filer, sha256(message)) tuple per historical decision number 053 (no surviving ADR file). Re-fire within window is silently absorbed; no duplicate row.
 - **Two writes** per complaint:
   1. INSERT row into target team's `state.db.complaints`.
   2. APPEND 1-line summary to target team's `complaints/<filer-team-name>.md` for greppable surface (`[HH:MM MYT] c-XXXX p2 from m-id@T-id: <message>`).
@@ -253,7 +253,7 @@ Initial 16 entries (driver supplied 11 in 12:48 MYT addendum; planner adds 5 —
 | `driver` | The manager-of-managers, steering the whole thing. | Operator/George — the human-in-the-loop relay. |
 | `complaints` | HR's polite name for "things that piss us off." | Free-form pain-report intake lane (this very feature). |
 | `groom` | The cron that tidies your mess so you don't have to. | Daily archive sweep — driver-asks/lead-events/kanban tails into dated archives. |
-| `flag` | The polite escalation to a higher-up. | Severity-tagged operator-attention signal with dedup-gating (ADR-053). |
+| `flag` | The polite escalation to a higher-up. | Severity-tagged operator-attention signal with dedup-gating (historical decision number 053 (no surviving ADR file)). |
 | `dispatch` | The impersonal handoff. | Push a task to a member's task-queue with a pane-ping. |
 | `claim` | "I'll take this one, boss." | Member pulls a task from todo, marks in-progress + assigns to self (ADR-100). |
 | `done` | The mandatory status update. | Mark claimed task complete; auto-dispatches commit-Task to gitter (ADR-106/057). |

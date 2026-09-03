@@ -36,7 +36,7 @@ Seven §Decision-anchor lines, then prose around each. Pre-flag references map b
 >
 > **§Decision-anchor #2** — Use `z.discriminatedUnion("type", [...])` for session subtypes, NOT `z.union` (pre-flag #2). Subtypes: `team` / `epic-team` / `superdriver` / `superdoctor`. This is the **first discriminated union in the repo** (`rg -n discriminatedUnion src/schema` → 0 today); flag as canonical pattern.
 >
-> **§Decision-anchor #3** — Preserve `.strict()` at the leaf-object level (pre-flag #3, mirrors ADR-054 §D3). Top-level `Cockpit` stays `.passthrough()` per existing `cockpit.ts:127` pattern.
+> **§Decision-anchor #3** — Preserve `.strict()` at the leaf-object level (pre-flag #3, mirrors historical decision number 054 (no surviving ADR file) §D3). Top-level `Cockpit` stays `.passthrough()` per existing `cockpit.ts:127` pattern.
 >
 > **§Decision-anchor #4** — Validate `prefixChain` at `loadCockpit`: BOTH length ≥ max-depth AND uniqueness (pre-flag #4). `["F1","F2","F2"]` is refused (key collision when both visible).
 >
@@ -220,7 +220,7 @@ Lifetime: until every caller is migrated to recursive walk (covered by the imple
 
 ### (G) Schema invariants (§Decision-anchor #3)
 
-- All `*Session` leaf objects use `.strict()` per ADR-054 §D3 drift-detection rule.
+- All `*Session` leaf objects use `.strict()` per historical decision number 054 (no surviving ADR file) §D3 drift-detection rule.
 - Top-level `Cockpit` uses `.passthrough()` per existing `cockpit.ts:127` pattern.
 - `schemaVersion` is `.default(1)` so legacy files (missing the field) flow through the shim path.
 
@@ -288,8 +288,8 @@ Covered by §Decision (C) auto-detect + fallback chain. The 12-row compat matrix
 - `.atmux/reviewer-preflag-ADR089-091.md` (signed 2026-05-13) — 7 §Decision-anchors lifted from §ADR-089.
 - `.atmux/audits/adr-089-091-adjacent-class-2026-05-13.md` §Class 2 — F-key rebinding compat matrix + auto-detect heuristic.
 - [ADR-018](018-per-team-tmux-socket-isolation.md) — cage topology this ADR nests on top of.
-- [ADR-054](054-strict-schema-drift-detection.md) §D3 — `.strict()` at leaf-object level (preserved here).
-- [ADR-063](063-cockpit-roster-schema.md) — current flat cockpit schema (this ADR is its successor).
+- historical decision number 054 (no surviving ADR file) §D3 — `.strict()` at leaf-object level (preserved here).
+- historical cockpit roster schema decision — current flat cockpit schema (this ADR is its successor).
 - [ADR-077](077-superdoctor-cockpit-role.md) §D1 — singleton superdriver/superdoctor pattern (lifted into `sessions[]` as discriminated types).
 - [ADR-090](090-epic-team-lifecycle.md) — consumes `EpicTeamSession`; lands after impl T4.
 - [ADR-091](091-kanban-driven-auto-merge.md) — walks the tree; lands after impl T4+T6.

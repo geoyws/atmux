@@ -45,7 +45,7 @@ The initial driver framing placed the merger at cockpit window 4 (fleet-wide, pe
 2. **Symmetry with ADR-091 epic-team gitters** — epic-teams already have their own gitter living inside the epic-team cage, doing auto-merge cron. A per-team intra-team merger sits in the same architectural position, just at a lower nesting level. Symmetry across nesting levels is a virtue (one mental model for the whole tree).
 3. **Failure isolation** — a cockpit-W4 outage freezes fan-in for every team. A per-team gitter outage only affects its team. Same reasoning that already pushed sopx to spawn its own gitter (`🐢gitter` at window 16) rather than relying on a fleet-wide merger.
 4. **Account scoping** — cockpit-W4 needs claude-account switching per team (atmux=personal, sopx=ifca). A per-team gitter inherits the team's claude account naturally — no `gh auth switch` mutex contention (the exact footgun pre-flagged in [`.atmux/reviewer-preflag-ADR089-091.md`] §ADR-091 §3).
-5. **Cage tier alignment** — the merger needs Tier-1 git access (`merge`, `revert`, branch operations). A per-team cage member inherits Tier-1 naturally (per [ADR-058](058-cage-tier-naming.md) — every team-cage member is Tier-1 within its team). Cockpit-W4 would need an explicit Tier-1 carve-out at cockpit scope — an architectural smell, because the cockpit tier is otherwise read-only / dispatch-only.
+5. **Cage tier alignment** — the merger needs Tier-1 git access (`merge`, `revert`, branch operations). A per-team cage member inherits Tier-1 naturally (per [ADR-050](050-fallback-chain.md) — every team-cage member is Tier-1 within its team). Cockpit-W4 would need an explicit Tier-1 carve-out at cockpit scope — an architectural smell, because the cockpit tier is otherwise read-only / dispatch-only.
 
 The reframe collapses two open questions:
 
@@ -163,7 +163,7 @@ The lead pane picks up the `flag add` event via socket-pubsub (per ADR-032). Mem
 
 ### Cage tier
 
-Gitter inherits **Tier 1** naturally from its team-cage membership (per [ADR-058](058-cage-tier-naming.md) — every cage member at L2-team-level is Tier-1 within that team's repo). No new tier carve-out is needed. The merger's git ops (`merge`, `revert`, branch ops) run inside the gitter's worktree — the same Tier-1 boundary every team member already operates within.
+Gitter inherits **Tier 1** naturally from its team-cage membership (per [ADR-050](050-fallback-chain.md) — every cage member at L2-team-level is Tier-1 within that team's repo). No new tier carve-out is needed. The merger's git ops (`merge`, `revert`, branch ops) run inside the gitter's worktree — the same Tier-1 boundary every team member already operates within.
 
 This is one of the five reasons the in-team placement was chosen over cockpit-W4: cockpit would have required an explicit Tier-1 carve-out at cockpit scope, breaking the "cockpit is read-only / dispatch-only" architectural promise.
 
@@ -256,7 +256,7 @@ T1 supersedes the original "draft cockpit-merger ADR" Task body. T6 / T7 replace
 ## Acceptance gates
 
 - ADR-134 lands at `docs/adr/134-in-team-auto-merger.md` with Status: proposed. ✅ (this commit)
-- ADR references: ADR-091 (sibling epic-team scope), ADR-082 + ADR-084 (worktree-isolation substrate), ADR-032 (socket-pubsub), ADR-058 (cage tier), [[feedback_atmux_no_gitter_worker_commits]] (gap closed). ✅
+- ADR references: ADR-091 (sibling epic-team scope), ADR-082 + ADR-084 (worktree-isolation substrate), ADR-032 (socket-pubsub), ADR-050 (cage tier), [[feedback_atmux_no_gitter_worker_commits]] (gap closed). ✅
 - Gitter brief at `templates/briefs/gitter.md` gains a "worktree-isolation mode" section (in T6); backward-compat for single-trunk teams retained.
 - `atmux team.json` gains a `gitter` member entry (in T7); `atmux start` spawns the gitter window correctly.
 - e2e proof (in T8): 3 parallel commits + auto-merge to base + 1 forced-conflict + 1 forced-test-fail-revert all green.
@@ -274,7 +274,7 @@ T1 supersedes the original "draft cockpit-merger ADR" Task body. T6 / T7 replace
 
 - [ADR-091] — epic-team auto-merge (sibling at higher nesting level; reuses state-machine shape)
 - [ADR-082](082-worktree-isolation-per-member.md) + [ADR-084](084-worktree-per-member-branch-model.md) — worktree-per-member-branch (substrate)
-- [ADR-058](058-cage-tier-naming.md) — cage tiering; gitter lives at team cage's Tier 1 naturally
+- [ADR-050](050-fallback-chain.md) — cage tiering; gitter lives at team cage's Tier 1 naturally
 - [ADR-032](032-socket-pubsub-messaging-layer.md) — socket-pubsub for task-done cascade
 - [ADR-077](077-superdoctor-cockpit-role.md) — medic cockpit role (orthogonal; cockpit topology unchanged by this ADR)
 - ADR-132 — martinet cockpit role (sibling cockpit concern; orthogonal)
