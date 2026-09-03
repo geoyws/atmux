@@ -11,22 +11,104 @@
 // runtime-guarded here (ADR-239 §D2 + §A5).
 
 import { join } from "node:path";
+import { z } from "zod";
 
+export const DriverSessionSchema = z
+  .object({
+    name: z.string().min(1),
+    tui: z.string().min(1).nullable().optional(),
+    cwd: z.string().min(1),
+    claudeAccount: z.string().optional(),
+  })
+  .passthrough();
 /** A single driver pane entry. Mirrors the {@link Team.drivers} Zod
- *  shape in `src/schema/team.ts`. Kept as a structural type (not an
- *  import) so this module stays consumable from schema-free callers. */
-export interface DriverSession {
-  /** Pane name. driver-1 = `"driver"`; driver-N = `"driver-N"` (N>=2). */
-  name: string;
-  /** Optional TUI command alias (`"claude"`, `"cursor"`, etc.).
-   *  Null / absent leaves the driver in the normal interactive shell. */
-  tui?: string | null;
-  /** Working directory for the pane. driver = `"."` (team root, trunk);
-   *  driver-N = `.atmux/worktrees/driver-N` (per-driver worktree). */
-  cwd: string;
-  /** Optional per-driver Claude account override (per ADR-024). */
-  claudeAccount?: string;
+ *  shape in `src/schema/team.ts`. Kept schema-inferred so callers get a
+ *  single source of truth for the stored contract. */
+export type DriverSession = z.infer<typeof DriverSessionSchema>;
+
+/** Parent-team driver roster bounds for the declarative contract. */
+export const MIN_PARENT_TEAM_DRIVERS = 3;
+export const MAX_PARENT_TEAM_DRIVERS = 10;
+
+/** Canonical worker/attention pair metadata for later tmux materializers. */
+export type DriverPairPaneRole = "worker" | "attention";
+export type DriverPairPaneSide = "left" | "right";
+export type DriverPairPaneWorkflow = "kb-att";
+export type DriverPairPaneAuthority = "decision-only";
+
+export const DriverPairWorkerPaneSchema = z
+  .object({
+    role: z.literal("worker"),
+    side: z.literal("left"),
+  })
+  .strict();
+export type DriverPairWorkerPaneSpec = z.infer<typeof DriverPairWorkerPaneSchema>;
+
+export const DriverPairAttentionPaneSchema = z
+  .object({
+    role: z.literal("attention"),
+    side: z.literal("right"),
+    workflow: z.literal("kb-att"),
+    authority: z.literal("decision-only"),
+    command: z.string().min(1).nullable().default(null),
+  })
+  .strict();
+export type DriverPairAttentionPaneSpec = z.infer<typeof DriverPairAttentionPaneSchema>;
+
+export type DriverPairPaneSpec = DriverPairWorkerPaneSpec | DriverPairAttentionPaneSpec;
+
+type DriverPairPresetShape = {
+  layout: "horizontal";
+  panes: [DriverPairWorkerPaneSpec, DriverPairAttentionPaneSpec];
+};
+
+const CANONICAL_ATTENTION_PANE: DriverPairAttentionPaneSpec = Object.freeze({
+  role: "attention",
+  side: "right",
+  workflow: "kb-att",
+  authority: "decision-only",
+  command: null,
+});
+
+const CANONICAL_WORKER_PANE: DriverPairWorkerPaneSpec = Object.freeze({
+  role: "worker",
+  side: "left",
+});
+
+const CANONICAL_DRIVER_PAIR_PANES = Object.freeze([
+  CANONICAL_WORKER_PANE,
+  CANONICAL_ATTENTION_PANE,
+] as [DriverPairWorkerPaneSpec, DriverPairAttentionPaneSpec]);
+
+export const CANONICAL_DRIVER_PAIR_PRESET = Object.freeze({
+  layout: "horizontal",
+  panes: CANONICAL_DRIVER_PAIR_PANES,
+}) as DriverPairPresetShape;
+
+export const DriverPairPresetSchema = z
+  .object({
+    layout: z.literal("horizontal"),
+    panes: z.tuple([DriverPairWorkerPaneSchema, DriverPairAttentionPaneSchema]),
+  })
+  .strict();
+export type DriverPairPreset = z.infer<typeof DriverPairPresetSchema>;
+
+interface DriverPairTeamLike {
+  driverPair?: DriverPairPreset | null | undefined;
 }
+
+function cloneDriverPairPreset(preset: DriverPairPreset): DriverPairPreset {
+  return {
+    layout: preset.layout,
+    panes: [{ ...preset.panes[0] }, { ...preset.panes[1] }],
+  };
+}
+
+export const CANONICAL_PARENT_TEAM_DRIVERS: readonly DriverSession[] = Object.freeze([
+  Object.freeze({ name: "driver", tui: null, cwd: "." }),
+  Object.freeze({ name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" }),
+  Object.freeze({ name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" }),
+]);
 
 /** Input shape for {@link resolveDriversList}. */
 interface DriverRosterTeam {
@@ -37,13 +119,11 @@ interface DriverRosterTeam {
  * Resolve the effective driver list for a team per ADR-239 §A1.
  *
  *   1. `team.drivers[]` if present + non-empty → return as-is.
- *   2. Otherwise → empty array (caller falls back to the
- *      `__home` placeholder window per existing start.ts behavior).
+ *   2. Otherwise → the canonical three-driver default roster.
  *
- * ADR-266 §D2: the ADR-239 §D7 legacy `driverSession` / `driverTui`
- * single-driver synthesis was removed (deprecation window expired) —
- * operator configs still on the legacy fields must migrate to
- * `drivers[]`.
+ * The helper encodes the live three-driver floor while preserving
+ * explicit rosters up to the cap. Later runtime slices can consume it
+ * directly without re-encoding the roster shape.
  *
  * Pure. No I/O.
  */
@@ -51,7 +131,28 @@ export function resolveDriversList(team: DriverRosterTeam): DriverSession[] {
   if (Array.isArray(team.drivers) && team.drivers.length > 0) {
     return team.drivers;
   }
-  return [];
+  return CANONICAL_PARENT_TEAM_DRIVERS.map((driver) => ({ ...driver }));
+}
+
+/**
+ * Resolve the canonical worker/attention pair for a team.
+ *
+ * Stored configs keep `driverPair` optional so existing `Team` literals
+ * stay compatible. When the field is absent, callers use this helper to
+ * materialize a fresh copy of the canonical preset.
+ */
+export function resolveDriverPair(team: DriverPairTeamLike): DriverPairPreset {
+  if (team.driverPair !== undefined && team.driverPair !== null) {
+    return team.driverPair;
+  }
+  return cloneDriverPairPreset(CANONICAL_DRIVER_PAIR_PRESET);
+}
+
+/** Test whether an explicit driver roster length is within the parent-team cap. */
+export function isSupportedDriverCount(count: number): boolean {
+  return (
+    Number.isInteger(count) && count >= MIN_PARENT_TEAM_DRIVERS && count <= MAX_PARENT_TEAM_DRIVERS
+  );
 }
 
 /**

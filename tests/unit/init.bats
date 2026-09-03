@@ -23,6 +23,16 @@ teardown() {
 
   run jq -r '.name' .atmux/team.json
   [ "$output" = "hello" ]
+  run jq -r '.drivers | length' .atmux/team.json
+  [ "$output" = "3" ]
+  run jq -r '[.drivers[] | .name] | join(",")' .atmux/team.json
+  [ "$output" = "driver,driver-2,driver-3" ]
+  run jq -r '.driverPair.layout' .atmux/team.json
+  [ "$output" = "horizontal" ]
+  run jq -r '.driverPair.panes[1].workflow' .atmux/team.json
+  [ "$output" = "kb-att" ]
+  run jq -r '.driverPair.panes[1].command | tostring' .atmux/team.json
+  [ "$output" = "null" ]
 }
 
 @test "init: refuses to overwrite without --force" {
@@ -42,23 +52,26 @@ teardown() {
   [ "$output" = "b" ]
 }
 
-@test "init: template has the 9 default members with expected roles" {
+@test "init: template has the 5 default members with expected roles" {
   "$ATMUX_BIN" init --name t
+  run jq -r '.drivers | length' .atmux/team.json
+  [ "$output" = "3" ]
+  run jq -r '.driverPair.panes[1].authority' .atmux/team.json
+  [ "$output" = "decision-only" ]
   run jq -r '.members | length' .atmux/team.json
-  [ "$output" = "9" ]
+  [ "$output" = "5" ]
   run jq -r '[.members[] | select(.role == "team-lead")] | length' .atmux/team.json
   [ "$output" = "1" ]
   run jq -r '[.members[] | select(.role == "planner")] | length' .atmux/team.json
   [ "$output" = "1" ]
+  run jq -r '[.members[] | select(.role == "docs")] | length' .atmux/team.json
+  [ "$output" = "1" ]
   run jq -r '[.members[] | select(.role == "reviewer")] | length' .atmux/team.json
   [ "$output" = "1" ]
-  run jq -r '[.members[] | select(.role == "gitter")] | length' .atmux/team.json
+  run jq -r '[.members[] | select(.name == "gitter" and .role == "committer")] | length' .atmux/team.json
   [ "$output" = "1" ]
   run jq -r '[.members[] | select(.role == "dba")] | length' .atmux/team.json
-  [ "$output" = "1" ]
-  # Feature-lane worker names
-  run jq -r '[.members[] | select(.name == "fe-auth")] | length' .atmux/team.json
-  [ "$output" = "1" ]
+  [ "$output" = "0" ]
 }
 
 @test "init: defaults team name to basename of pwd" {

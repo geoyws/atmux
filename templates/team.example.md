@@ -1,5 +1,13 @@
 # team.example.json — per-member model selection
 
+The shipped template now carries the three-driver floor from ADR-239/ADR-288:
+`driver`, `driver-2`, `driver-3`. The later worker-left / attention-right
+pair contract is defined in `src/core/drivers.ts`. This template stores the
+canonical pair explicitly, and callers resolve the same fresh canonical preset
+through `resolveDriverPair(team)` when older configs omit `driverPair`. The
+attention pane keeps `command: null` by default so it starts as an interactive
+shell unless a later slice deliberately wires auto-launch in.
+
 Companion notes for `team.example.json`. The schema field `.members[].model`
 exists today (read by `lib/start.sh`, propagated by `lib/tui.sh` as
 `claude --model <id>`). This file documents which value to set per role

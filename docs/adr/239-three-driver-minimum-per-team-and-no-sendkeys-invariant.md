@@ -1,6 +1,6 @@
 # ADR-239: Five-driver minimum per team + no-send-keys-to-drivers invariant
 
-**Status**: Accepted — ratified by operator 2026-05-24 14:30 MYT (live operator-design session). **Amended 2026-05-26** — driver floor bumped 3→5; member-roster trimmed to {lead, planner, docs, reviewer, gitter} across every parent team (see §Amendment-2026-05-26).
+**Status**: Accepted — ratified by operator 2026-05-24 14:30 MYT (live operator-design session). **Amended 2026-05-26** — driver floor bumped 3→5; member-roster trimmed to {lead, planner, docs, reviewer, gitter} across every parent team (see §Amendment-2026-05-26). **Superseded 2026-09-03 by ADR-288** — the live floor returns to 3 drivers; the 2026-05-26 five-driver sweep remains historical provenance.
 **Date**: 2026-05-24 (original); 2026-05-26 (amendment)
 **Driver-ref**: operator-direct 14:25-14:35 MYT 2026-05-24 — "now we need 3 drivers minimum per team … drivers are never supposed to receive sendkeys … they are to be free for the human to interact with … driver-2 and driver-3 always have their own worktrees that they merge frequently with the trunk". Amendment 2026-05-26 — "i want each atmux parent team to have 5 drivers … you do not give them any pre-prompts … i want u to go thru each team.json and remove ombudsman and any other member apart from lead, planner, docs, reviewer, gitter".
 **Cross-refs**: [ADR-044](044-driver-session-on-default-socket.md) (driver as window 1 — extends from singular to three drivers grouped at front), [ADR-082](082-worktree-isolation-per-member.md) (per-member branch durability — drivers get the same shape per-driver), [ADR-084](084-worktree-per-member-branch-model.md) (per-member worktree isolation — driver-2/driver-3 inherit), [ADR-137](137-merge-over-rebase.md) (merge-not-rebase — drivers merge from `origin/<base>` into `<base>-driver-N` per the team contract), [ADR-018](018-per-team-tmux-socket-isolation.md) (cage isolation — drivers all live in the same cage tmux session, not separate cages)
@@ -148,6 +148,8 @@ Resolve OQ1-OQ5 before flipping any sibling ADR to "accepted" that depends on D7
 
 ## Amendment-2026-05-26 — five-driver floor + strict 5-member roster
 
+**Historical note:** superseded 2026-09-03 by [ADR-288](288-driver-window-worker-attention-pane-pair.md); retained here for provenance, incident traceability, and the strict member-roster / no-sendkeys record.
+
 **Driver-ref**: operator-direct 2026-05-26 — verbatim two messages: (1) *"i want each atmux parent team to have 5 drivers... driver, driver-2, driver-3.. etc and you do not give them any pre-prompts. they should also spawn into their own git worktrees... (e.g. atmux-geoyws-driver-2) but driver (the original) always remains in atmux-geoyws (the working trunk).... then i want u to spawn these drivers for every running atmux parent team"*; (2) *"i will shutdown and rebuild every team later so it'll reset properly.... also i want u to go thru each team.json and remove ombudsman and any other member apart from lead, planner, docs, reviewer, gitter"*. Operator-decision-scope: ALL parent teams (atmux + sopx-root + aix-root + auditx-root + rentx-root + rentx + ifca-docs + mx-root + unum/root); strict 5-role roster (specialist seats removed across all teams — operator-confirmed via AskUserQuestion, 2026-05-26).
 
 ### A1 — Driver floor bumped from 3 → 5
@@ -246,3 +248,7 @@ Same as the original §Rollback path. Revert the amendment commit; legacy `drive
 ### 2026-08-24 — D7 `drivers[].tui` is nullable (ADR-278)
 
 [ADR-278](278-nullable-driver-agent-harness.md) replaces D7's required `tui: string` with `tui?: string | null`. A non-null value still requests command-mode TUI launch; `null` or absence launches zsh with no agent harness so the operator can choose a harness per session. D2's no-send-keys invariant and the rest of the driver topology are unchanged.
+
+### 2026-09-03 — ADR-288 restores the three-driver floor and adds the canonical worker/attention pair
+
+[ADR-288](288-driver-window-worker-attention-pane-pair.md) supersedes the 2026-05-26 five-driver floor with the live three-driver floor and the canonical worker-left / attention-right pair contract. The strict member roster, worktree naming, no-sendkeys rule, and historical incident/provenance text remain intact; only the driver-count contract and stored pair preset change.

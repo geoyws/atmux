@@ -179,6 +179,20 @@ async function writeTeamJson(opts: {
   await writeFile(join(env.atmuxDir, "team.json"), `${JSON.stringify(body, null, 2)}\n`, "utf8");
 }
 
+function canonicalDrivers(driverTui?: string | null): ReadonlyArray<{
+  name: string;
+  tui?: string | null;
+  cwd: string;
+}> {
+  return [
+    driverTui === undefined
+      ? { name: "driver", cwd: "." }
+      : { name: "driver", tui: driverTui, cwd: "." },
+    { name: "driver-2", cwd: ".atmux/worktrees/driver-2", tui: null },
+    { name: "driver-3", cwd: ".atmux/worktrees/driver-3", tui: null },
+  ];
+}
+
 /** Inject the per-test factory + env+cwd into a `start` call.
  *  Tests pass args + the team-specific socket-path flag automatically.
  *  Optional `opts` lets ADR-082 W3 tests inject a `gitSpawn` mock so
@@ -675,14 +689,14 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
   test("nullable driver tui starts the driver in zsh without an agent harness", async () => {
     await writeTeamJson({
       members: [],
-      drivers: [{ name: "driver", tui: null, cwd: "." }],
+      drivers: canonicalDrivers(null),
     });
 
     expect(await runStart([])).toBe(0);
 
     const session = env.team;
     const wins = await env.tmux.window.listWindows(session);
-    expect(wins.map((w) => w.name)).toEqual(["driver"]);
+    expect(wins.map((w) => w.name)).toEqual(["driver", "driver-2", "driver-3"]);
     expect(
       await env.tmux.pane.displayMessage({
         target: `${session}:driver`,
@@ -699,7 +713,7 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
   test("omitted driver tui also starts zsh without an agent harness", async () => {
     await writeTeamJson({
       members: [],
-      drivers: [{ name: "driver", cwd: "." }],
+      drivers: canonicalDrivers(),
     });
 
     expect(await runStart([])).toBe(0);
@@ -719,7 +733,7 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
         { name: "alpha", role: "team-lead", tui: "shell" },
         { name: "bee", role: "member", tui: "shell" },
       ],
-      drivers: [{ name: "driver", tui: "shell", cwd: "." }],
+      drivers: canonicalDrivers("shell"),
     });
 
     const exit = await runStart([]);
@@ -730,11 +744,11 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
     // Sort by index to assert positional order — listWindows returns
     // the natural tmux order but tests are clearer with explicit sort.
     const ordered = [...wins].sort((a, b) => a.index - b.index);
-    expect(ordered.map((w) => w.index)).toEqual([1, 2, 3]);
-    expect(ordered[0]?.name).toBe("driver");
+    expect(ordered.map((w) => w.index)).toEqual([1, 2, 3, 4, 5]);
+    expect(ordered.slice(0, 3).map((w) => w.name)).toEqual(["driver", "driver-2", "driver-3"]);
     // Members emoji-prefixed by role: team-lead → 🧭, member → 🐝.
-    expect(ordered[1]?.name).toBe("🧭_alpha");
-    expect(ordered[2]?.name).toBe("🐝-bee");
+    expect(ordered[3]?.name).toBe("🧭_alpha");
+    expect(ordered[4]?.name).toBe("🐝-bee");
     // No __home placeholder ever created.
     expect(wins.some((w) => w.name === `__${env.team}__home`)).toBe(false);
     expect(
@@ -757,9 +771,8 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
     await writeTeamJson({
       members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
       // Legacy fields only — the ADR-239 §D7 synthesis expired per
-      // ADR-266 §D2; without drivers[] the start path falls through to
-      // the __home placeholder flow (driverSession stays as the
-      // cockpit/health opt-in marker only).
+      // ADR-266 §D2; without drivers[] the start path now resolves the
+      // canonical three-driver roster and ignores the legacy fields.
       driverSession: { tui: "shell" },
       driverTui: "shell",
     });
@@ -767,16 +780,17 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
     const exit = await runStart([]);
     expect(exit).toBe(0);
 
-    expect(env.logs.some((l) => l.msg.includes("driver at window 1"))).toBe(false);
     const wins = await env.tmux.window.listWindows(env.team);
-    expect(wins.some((w) => w.name === "driver")).toBe(false);
+    const ordered = [...wins].sort((a, b) => a.index - b.index);
+    expect(ordered.map((w) => w.name)).toEqual(["driver", "driver-2", "driver-3", "🧭_alpha"]);
+    expect(env.logs.some((l) => l.msg.includes("driver at window 1"))).toBe(true);
   });
 
-  test("explicitly disabled: driverSession=null falls through to legacy __home", async () => {
+  test("explicitly disabled: driverSession=null still uses the canonical driver roster", async () => {
     await writeTeamJson({
       members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
       // Matches the wizard's "explicitly disabled" output. The field is
-      // present but null — must NOT trigger the driver-initial path.
+      // present but null — must NOT change the canonical driver roster.
       driverSession: null,
     });
 
@@ -784,22 +798,24 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
     expect(exit).toBe(0);
 
     const wins = await env.tmux.window.listWindows(env.team);
-    expect(wins.some((w) => w.name === "driver")).toBe(false);
-    // __home was created then cleaned up by step 9 (member spawned).
+    const ordered = [...wins].sort((a, b) => a.index - b.index);
+    expect(ordered.map((w) => w.name)).toEqual(["driver", "driver-2", "driver-3", "🧭_alpha"]);
     expect(wins.some((w) => w.name === `__${env.team}__home`)).toBe(false);
-    // No driver-at-window-1 log line when the path was skipped.
-    expect(env.logs.some((l) => l.msg.includes("driver at window 1"))).toBe(false);
+    expect(env.logs.some((l) => l.msg.includes("driver at window 1"))).toBe(true);
   });
 
-  test("absent: legacy __home placeholder path is unchanged", async () => {
+  test("absent: canonical three-driver roster is materialized with no __home fallback", async () => {
     // Regression guard: zero-member team.json without driverSession must
-    // still leave the __home placeholder, matching the pre-ADR-044
-    // "happy path: zero-member team" assertion.
+    // still resolve the canonical three-driver roster via resolveDriversList
+    // and must not fall back to the __home placeholder path.
     await writeTeamJson({ members: [] });
     const exit = await runStart([]);
     expect(exit).toBe(0);
     const wins = await env.tmux.window.listWindows(env.team);
-    expect(wins.map((w) => w.name)).toEqual([`__${env.team}__home`]);
+    const ordered = [...wins].sort((a, b) => a.index - b.index);
+    expect(ordered.map((w) => w.index)).toEqual([1, 2, 3]);
+    expect(ordered.map((w) => w.name)).toEqual(["driver", "driver-2", "driver-3"]);
+    expect(wins.some((w) => w.name === `__${env.team}__home`)).toBe(false);
   });
 
   test("unknown tui: driver window still created, warn surfaces, pane lands in shell", async () => {
@@ -811,7 +827,7 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
     // shell-kind TUIs (no command, just a shell pane).
     await writeTeamJson({
       members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
-      drivers: [{ name: "driver", tui: "this-tui-does-not-exist-anywhere", cwd: "." }],
+      drivers: canonicalDrivers("this-tui-does-not-exist-anywhere"),
     });
 
     const exit = await runStart([]);
@@ -821,6 +837,8 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
     // Driver window IS present — the resolve-failure does NOT block
     // session creation under ADR-239 §A1.
     expect(wins.some((w) => w.name === "driver")).toBe(true);
+    expect(wins.some((w) => w.name === "driver-2")).toBe(true);
+    expect(wins.some((w) => w.name === "driver-3")).toBe(true);
     // No __home placeholder either — driver creates the session.
     expect(wins.some((w) => w.name === `__${env.team}__home`)).toBe(false);
     // Warn line surfaces the resolve-failure reason for operator
@@ -841,6 +859,7 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
     // disrupt operator state on attached sessions.
     await writeTeamJson({
       members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
+      drivers: canonicalDrivers(),
     });
     expect(await runStart([])).toBe(0);
 
@@ -848,13 +867,14 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
     // (incremental, no --force) — must NOT add a driver window.
     await writeTeamJson({
       members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
-      drivers: [{ name: "driver", tui: "shell", cwd: "." }],
+      drivers: canonicalDrivers("shell"),
     });
     env.logs.length = 0;
     expect(await runStart([])).toBe(0);
 
     const wins = await env.tmux.window.listWindows(env.team);
-    expect(wins.some((w) => w.name === "driver")).toBe(false);
+    const ordered = [...wins].sort((a, b) => a.index - b.index);
+    expect(ordered.map((w) => w.name)).toEqual(["driver", "driver-2", "driver-3", "🧭_alpha"]);
     // No driver-at-window-1 log line either (path didn't run).
     expect(env.logs.some((l) => l.msg.includes("driver at window 1"))).toBe(false);
   });
@@ -868,6 +888,7 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
       name: env.team,
       members: [{ name: "alpha", role: "team-lead", tui: "fake-member-tui" }],
       tuiCommands: { "fake-member-tui": "true" },
+      drivers: canonicalDrivers(),
     };
     await writeFile(join(env.atmuxDir, "team.json"), `${JSON.stringify(body, null, 2)}\n`, "utf8");
 
@@ -898,7 +919,7 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
     const body = {
       name: env.team,
       members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
-      drivers: [{ name: "driver", tui: "fake-driver", cwd: "." }],
+      drivers: canonicalDrivers("fake-driver"),
       tuiCommands: { "fake-driver": "true" },
     };
     await writeFile(join(env.atmuxDir, "team.json"), `${JSON.stringify(body, null, 2)}\n`, "utf8");
@@ -910,6 +931,8 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
     const wins = await env.tmux.window.listWindows(session);
     const ordered = [...wins].sort((a, b) => a.index - b.index);
     expect(ordered[0]?.name).toBe("driver");
+    expect(ordered[1]?.name).toBe("driver-2");
+    expect(ordered[2]?.name).toBe("driver-3");
     // The driver-at-window-1 marker still surfaces with the fake tui.
     expect(
       env.logs.some(
@@ -925,6 +948,7 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
   test("--force with drivers[]: driver-initial path runs after kill", async () => {
     await writeTeamJson({
       members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
+      drivers: canonicalDrivers(),
     });
     // First start without drivers[] — legacy __home path.
     expect(await runStart([])).toBe(0);
@@ -933,7 +957,7 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
     // driver-initial branch.
     await writeTeamJson({
       members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
-      drivers: [{ name: "driver", tui: "shell", cwd: "." }],
+      drivers: canonicalDrivers("shell"),
     });
     env.logs.length = 0;
     expect(await runStart(["--force"])).toBe(0);
@@ -942,7 +966,9 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
     const wins = await env.tmux.window.listWindows(session);
     const ordered = [...wins].sort((a, b) => a.index - b.index);
     expect(ordered[0]?.name).toBe("driver");
-    expect(ordered[1]?.name).toBe("🧭_alpha");
+    expect(ordered[1]?.name).toBe("driver-2");
+    expect(ordered[2]?.name).toBe("driver-3");
+    expect(ordered[3]?.name).toBe("🧭_alpha");
   });
 });
 
@@ -984,7 +1010,7 @@ describe("start — ADR-285 cooperative _bot seat", () => {
     const botCwd = await seedBotCwd();
     const calls: ReadonlyArray<string>[] = [];
     await writeTeamJson({
-      drivers: [{ name: "driver", tui: null, cwd: "." }],
+      drivers: canonicalDrivers(null),
       bot: { tui: null },
       members: [
         { name: "alpha", role: "team-lead", tui: "shell" },
@@ -1009,7 +1035,7 @@ describe("start — ADR-285 cooperative _bot seat", () => {
 
   test("incremental start inserts a newly configured _bot without recreating members", async () => {
     await writeTeamJson({
-      drivers: [{ name: "driver", tui: null, cwd: "." }],
+      drivers: canonicalDrivers(null),
       members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
     });
     expect(await runStart([])).toBe(0);
@@ -1021,7 +1047,7 @@ describe("start — ADR-285 cooperative _bot seat", () => {
 
     await seedBotCwd();
     await writeTeamJson({
-      drivers: [{ name: "driver", tui: null, cwd: "." }],
+      drivers: canonicalDrivers(null),
       bot: { tui: null },
       members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
     });

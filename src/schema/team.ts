@@ -15,6 +15,12 @@
 // lib/common.sh::atmux::team_field (bash-side reader).
 
 import { z } from "zod";
+import {
+  DriverPairPresetSchema,
+  DriverSessionSchema,
+  MAX_PARENT_TEAM_DRIVERS,
+  MIN_PARENT_TEAM_DRIVERS,
+} from "../core/drivers.ts";
 
 /** TUI types atmux supports launching into a pane.
  *
@@ -1411,7 +1417,7 @@ export const Team = z
      *  cycle per OQ5 (planner verified no live config sets the key). */
     driverSession: z
       .object({
-        tui: z.string().nullable().optional(),
+        tui: z.string().min(1).nullable().optional(),
         /** ADR-239 §D7 lineage — loose model pin for the driver's TUI
          *  (e.g. an operator-chosen cursor model identifier). Any string
          *  accepted; atmux does NOT enforce a specific value set. `null`
@@ -1423,9 +1429,14 @@ export const Team = z
       .strict()
       .nullable()
       .optional(),
-    /** ADR-239 §D7 + §A5 (amended 2026-05-26) — declarative driver roster.
+    /** ADR-239 §D7 + §A5 (amended 2026-09-03) — declarative driver roster.
      *
-     *  When present + non-empty, supersedes the legacy `driverSession` /
+     *  Contract floor for explicit rosters is now 3 drivers. The
+     *  historical 2026-05-26 five-driver sweep remains in ADR-239's
+     *  amendment history, but the live contract reverts to the three-
+     *  driver floor encoded here and in ADR-288.
+     *
+     *  When present, this roster supersedes the legacy `driverSession` /
      *  `driverTui` fields and drives `atmux start`'s driver-spawn loop
      *  per ADR-239 §A1. Operator-interactive ONLY — no send-keys EVER
      *  (ADR-239 §D2), no pre-prompts / briefs (ADR-239 §D5 + §A3).
@@ -1443,22 +1454,17 @@ export const Team = z
      *  need more concurrent driver panes should cite a follow-up ADR
      *  raising the cap, not silently exceed it. */
     drivers: z
-      .array(
-        z
-          .object({
-            name: z.string().min(1),
-            /** Optional driver agent harness. `null` / absent means atmux
-             *  starts only the driver's normal interactive shell (zsh for
-             *  the operator) so the harness can be chosen per session. */
-            tui: z.string().min(1).nullable().optional(),
-            cwd: z.string().min(1),
-            claudeAccount: z.string().optional(),
-          })
-          .passthrough(),
-      )
-      .min(1)
-      .max(10)
+      .array(DriverSessionSchema)
+      .min(MIN_PARENT_TEAM_DRIVERS)
+      .max(MAX_PARENT_TEAM_DRIVERS)
       .optional(),
+    /** ADR-288: canonical worker-left / attention-right pair preset.
+     *
+     *  Stored configs keep this field optional so existing Team literals
+     *  remain schema-compatible. Callers resolve the canonical fresh
+     *  preset through `resolveDriverPair(team)` when the field is absent.
+     */
+    driverPair: DriverPairPresetSchema.optional(),
     bot: TeamBot.optional(),
     /** Member roster. Order is preserved (window layout depends on it). */
     members: z.array(TeamMember),
