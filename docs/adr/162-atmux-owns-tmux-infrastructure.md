@@ -4,13 +4,13 @@
 **Date**: 2026-05-16
 **Driver-ref**: 2026-05-16 driver session — operator: "atmux should not clobber the user's default tmux." Audit found 3 gaps in current isolation posture.
 **Parent EPIC**: t-0b15d199 (this ADR is the umbrella; sub-tasks TR1-TR6 filed in same session per [[feedback_decomp_same_session_with_deps]]).
-**Cross-refs**: ADR-058 (cage-tier isolation — per-team sockets already in place), ADR-135 (cockpit naming convention — `atmux_cockpit` session name; this ADR adds matching socket isolation), ADR-138 (verified send-keys — the version-check protects the verifier contract). ADR-163 (bundled tmux binary) closes the deferred §Part C v2 carve-out.
+**Cross-refs**: historical decision number 058 (no surviving ADR file) (cage-tier isolation — per-team sockets already in place), ADR-135 (cockpit naming convention — `atmux_cockpit` session name; this ADR adds matching socket isolation), ADR-138 (verified send-keys — the version-check protects the verifier contract). ADR-163 (bundled tmux binary) closes the deferred §Part C v2 carve-out.
 
 ## Context
 
 ### What's already isolated (audit 2026-05-16)
 
-atmux's per-team isolation is already in good shape: `src/abstractions/tmux.ts:347` resolves every team operation through `tmux -S <team-root>/.atmux/tmux/tmux-0/default`. Each team's tmux server lives in its own socket, namespaced under the team's root directory. ADR-058's cage-tier guarantees hold at the team layer — atmux operations against `team-foo` cannot accidentally clobber a session belonging to `team-bar`, and neither can clobber the operator's personal tmux server outside atmux.
+atmux's per-team isolation is already in good shape: `src/abstractions/tmux.ts:347` resolves every team operation through `tmux -S <team-root>/.atmux/tmux/tmux-0/default`. Each team's tmux server lives in its own socket, namespaced under the team's root directory. historical decision number 058 (no surviving ADR file) cage-tier guarantees hold at the team layer — atmux operations against `team-foo` cannot accidentally clobber a session belonging to `team-bar`, and neither can clobber the operator's personal tmux server outside atmux.
 
 ### What's NOT isolated — three gaps
 
@@ -34,7 +34,7 @@ The bundled-binary work is heavy: per-platform builds, GitHub-release artifact p
 
 Five §Decision-anchor lines first, then prose around each subsystem.
 
-> **§Decision-anchor #1** — **Cockpit moves to a dedicated socket: `tmux -L atmux-cockpit`.** Every `factory({ socket: "default" })` call-site for cockpit-side operations refactors to `factory({ socket: "atmux-cockpit" })`. The `-L <name>` socket form (named socket; tmux resolves to `/tmp/tmux-<UID>/atmux-cockpit`) is preferred over `-S <path>` for the cockpit because operators can reach it via `tmux -L atmux-cockpit attach` without remembering a custom path. Matches ADR-135's `cockpitSession: "atmux_cockpit"` naming — socket + session both bear the `atmux-cockpit`/`atmux_cockpit` brand. Per-team sockets stay on the existing `-S <team-root>/.atmux/tmux/tmux-0/default` path (no change to ADR-058 cage-tier topology).
+> **§Decision-anchor #1** — **Cockpit moves to a dedicated socket: `tmux -L atmux-cockpit`.** Every `factory({ socket: "default" })` call-site for cockpit-side operations refactors to `factory({ socket: "atmux-cockpit" })`. The `-L <name>` socket form (named socket; tmux resolves to `/tmp/tmux-<UID>/atmux-cockpit`) is preferred over `-S <path>` for the cockpit because operators can reach it via `tmux -L atmux-cockpit attach` without remembering a custom path. Matches ADR-135's `cockpitSession: "atmux_cockpit"` naming — socket + session both bear the `atmux-cockpit`/`atmux_cockpit` brand. Per-team sockets stay on the existing `-S <team-root>/.atmux/tmux/tmux-0/default` path (no change to historical decision number 058 (no surviving ADR file) cage-tier topology).
 
 > **§Decision-anchor #2** — **Canonical `templates/tmux/atmux.conf` loaded via `-f <path>` on EVERY atmux session creation.** Both cockpit (atmux-cockpit socket) and per-team (per-team-root socket) sessions load this file as their tmux.conf. The operator's personal `~/.tmux.conf` is NEVER loaded by atmux invocations — explicit `-f` flag closes the inheritance path. Operator override: `ATMUX_TMUX_CONF=<path>` env var points at a custom conf file. The conf ships in the npm package at `templates/tmux/atmux.conf` and is installed alongside the binary per ADR-047 install topology — resolution at runtime walks `/opt/atmux/current/templates/tmux/atmux.conf` (or the dev-checkout path during development).
 
@@ -83,7 +83,7 @@ The refactor is mechanical but exhaustive — grep + verify. Any default-socket 
 - `-L <name>` resolves to `/tmp/tmux-<UID>/<name>` per tmux convention; operator-discoverable via `tmux -L atmux-cockpit attach`.
 - `-S <path>` requires the operator to remember the full path.
 - Cockpit is operator-facing (operator attaches into it to drive); `-L` wins on discoverability.
-- Per-team sockets stay on `-S` because they're cage-tier (operator rarely attaches directly; ADR-058's isolation model expects explicit path).
+- Per-team sockets stay on `-S` because they're cage-tier (operator rarely attaches directly; historical decision number 058 (no surviving ADR file) isolation model expects explicit path).
 
 ### §Part B — canonical tmux.conf
 
@@ -171,7 +171,7 @@ ADR-162 completes when ALL of:
 - **Bundled tmux binary**: deferred to ADR-163 §Decision-anchor #1.
 - **Version-lock refusal** (not just warn): deferred to ADR-163 §Decision-anchor #4.
 - **User-override conf path** (`~/.config/atmux/tmux.conf.local`): deferred to ADR-163 §Decision-anchor #2 — ADR-162's atmux.conf intentionally doesn't `source-file` it.
-- **Per-team socket name changes**: out of scope. Per-team sockets stay on the existing `-S <team-root>/.atmux/tmux/tmux-0/default` path (ADR-058 cage-tier). Only cockpit moves.
+- **Per-team socket name changes**: out of scope. Per-team sockets stay on the existing `-S <team-root>/.atmux/tmux/tmux-0/default` path (historical decision number 058 (no surviving ADR file) cage-tier). Only cockpit moves.
 - **Tmux 4.x feature-flag detection**: out of scope. The version-mismatch probe is integer-version range; nuanced feature-flag detection ships separately if needed.
 
 ### Rollback path
@@ -209,7 +209,7 @@ Per ADR-090's reuse-statement pattern — minimal new abstractions:
 ## Cross-references
 
 - [ADR-047](047-canonical-install-topology.md) — install topology (`/opt/atmux/<version>/`); atmux.conf path resolved against `${atmuxRoot}`.
-- [ADR-058](058-cage-tier-isolation.md) — cage-tier isolation; per-team sockets already on cage-tier; this ADR adds cockpit-level socket isolation.
+- historical decision number 058 (no surviving ADR file) — cage-tier isolation; per-team sockets already on cage-tier; this ADR adds cockpit-level socket isolation.
 - [ADR-097](097-tmux-abstraction.md) — `TmuxConfig` discriminated union with `socket` + `configFile` fields; both consumed here.
 - [ADR-135](135-cockpit-naming-convention.md) — `cockpitSession: "atmux_cockpit"` + `_-prefix` window naming; this ADR adds the matching socket. Append a §Amendment annotation citing ADR-162.
 - [ADR-138](138-verified-send-keys.md) — verified send-keys; the version-check protects the verifier contract from tmux-version drift.

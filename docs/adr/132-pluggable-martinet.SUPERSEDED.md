@@ -14,7 +14,7 @@
 
 > **Reshape note 2 (2026-05-14, late afternoon)**: Operator dropped MiniMax + Kimi impls — *"unreliable and not smart enough"*. Current canonical impl set is **2-impl: `claude` (degenerate/baseline) + `cursor` (composer-2-fast, primary cost-saver)** per [ADR-140] §Decision + `[[project_martinet_pattern]]` memory. MiniMax/Kimi references in §D4 / §D6 / §D7 / §Tradeoffs / §Implementation plan / §Out of scope are preserved in §Historical alternatives below for audit-trail and superseded by the 2-impl set everywhere they appear. EPIC sub-task table reflects the drop: T3 (MinimaxMartinet) and T4's Kimi half are NO-OP / removed; T4 becomes Cursor-only. ADR-140 is the load-bearing forward-pointer for the cheap-model-first principle that justified MiniMax/Kimi originally and now justifies their replacement with Cursor.
 
-> **Implementation note (2026-05-15)**: `CursorMartinet` ships in `src/abstractions/martinets/cursor.ts` per Task **t-e96d286a** (the kanban EPIC's repurposed T3 slot — slid up from the original T4 line in §"Implementation plan" below to absorb the dropped MiniMax T3). The verb-layer wiring in `src/verbs/martinet.ts::buildMartinet` constructs the impl when `team.martinet === "cursor"` (or `cockpit.defaultMartinet === "cursor"`); `src/verbs/cockpit.ts::buildMartinetWindowCommand` emits a `while true; do atmux martinet tick; sleep 270; done` loop for the cursor variant (no Claude TUI — cursor-agent is a `--print` CLI; the loop owns cadence). Cage posture: the cockpit W3 window itself runs as operator UID with full git access — the W3 window IS the Tier-2 cage in trust posture per ADR-058 §D1, so no separate `/tmp/atmux_cursor_martinet_<team>/sock` carve-out is provisioned (martinet is fleet-wide singleton; per-team cage paths in the original t-e96d286a body predated the §D2 fleet-singleton reshape).
+> **Implementation note (2026-05-15)**: `CursorMartinet` ships in `src/abstractions/martinets/cursor.ts` per Task **t-e96d286a** (the kanban EPIC's repurposed T3 slot — slid up from the original T4 line in §"Implementation plan" below to absorb the dropped MiniMax T3). The verb-layer wiring in `src/verbs/martinet.ts::buildMartinet` constructs the impl when `team.martinet === "cursor"` (or `cockpit.defaultMartinet === "cursor"`); `src/verbs/cockpit.ts::buildMartinetWindowCommand` emits a `while true; do atmux martinet tick; sleep 270; done` loop for the cursor variant (no Claude TUI — cursor-agent is a `--print` CLI; the loop owns cadence). Cage posture: the cockpit W3 window itself runs as operator UID with full git access — the W3 window IS the Tier-2 cage in trust posture per ADR-050 §D1, so no separate `/tmp/atmux_cursor_martinet_<team>/sock` carve-out is provisioned (martinet is fleet-wide singleton; per-team cage paths in the original t-e96d286a body predated the §D2 fleet-singleton reshape).
 
 ## §Amendment — cost-curve realization + cron-polling deprecation (2026-05-20)
 
@@ -22,7 +22,7 @@ Cron-polling pattern documented in this ADR was load-bearing during fleet-bootst
 
 ### Decision
 
-Cron-polling is DEPRECATED under lean-mode side-project topology (new [ADR-189](./189-lean-mode-side-project-topology-preset.md)). The `atmux sentinel tick --once` verb is PRESERVED as on-demand audit invocation; identical observe→decide→apply loop, single tick exit.
+Cron-polling is DEPRECATED under lean-mode side-project topology (new [ADR-189](./189-lean-mode-side-project-topology.md)). The `atmux sentinel tick --once` verb is PRESERVED as on-demand audit invocation; identical observe→decide→apply loop, single tick exit.
 
 Event-driven escalate-to-claude-lead from dispatcher (`t-ffcbd1dc` anchor) replaces cron-polling for wedge-detection. See Epic `e-be01fc89` for the full lean-mode pivot.
 
@@ -157,7 +157,7 @@ Post-2026-05-14 simplification (per Reshape note 2 + [ADR-140]):
 
 > **Historical alternatives (rejected 2026-05-14)**: MiniMax-via-OpenCode (Tier 3, `minimax-agent` user, 300s) and Kimi (Tier 3, `kimi-agent` user, 600s) were specified in the original 4-impl design. Operator dropped both: *"unreliable and not smart enough"*. Cursor composer-2-fast became the production-grade tradeoff. See `[[project_martinet_pattern]]` + `[[project_cheap_model_first_adr_140]]` memory for full context.
 
-> **Cross-ref note**: The EPIC body cites "ADR-058 (fallback-cage tiering)" — ADR-058 does not exist as a separate ADR; the fallback-cage tiering specification is canonical in **ADR-050** "Multi-tier executor fallback chain". This ADR (132) consistently references ADR-050 from this point forward.
+> **Cross-ref note**: The EPIC body cites "ADR-050 (fallback-cage tiering)" — ADR-050 does not exist as a separate ADR; the fallback-cage tiering specification is canonical in **ADR-050** "Multi-tier executor fallback chain". This ADR (132) consistently references ADR-050 from this point forward.
 
 ### (D5) Escalation contract — strict gate (six triggers, E6 is MANDATORY)
 
@@ -205,13 +205,13 @@ Post-2026-05-14 simplification (per Reshape note 2 + [ADR-140]):
 }
 ```
 
-The `cockpit.martinet.{claudeAccount, tuiOverrides}` pair re-uses `CockpitClaudeAccount` and `CockpitTuiOverrides` from ADR-077 §D2 verbatim (same struct pattern as medic) — drift detection via ADR-054 §D3 `.strict()` Zod stays consistent.
+The `cockpit.martinet.{claudeAccount, tuiOverrides}` pair re-uses `CockpitClaudeAccount` and `CockpitTuiOverrides` from ADR-077 §D2 verbatim (same struct pattern as medic) — drift detection via historical decision number 054 (no surviving ADR file) §D3 `.strict()` Zod stays consistent.
 
 **Resolution order** (per existing cockpit + team-config pattern): per-team `team.json::martinet` beats `cockpit.json::defaultMartinet` beats hard-coded `"claude"` fallback. Backward-compatibility: a team.json with no `martinet` field auto-resolves to `"claude"` and the existing whip codepath fires unchanged (Martinet impl `claude` is the degenerate impl wrapping the current whip prompt).
 
 ### (D7) Cadence + budget interaction
 
-The Martinet runs in its own cage with its own runtime token budget — **independent of the Claude Max budget** that ADR-049 budget-pause guards. A team with `martinet: "cursor"` continues whipping during a Claude lead's budget-pause window. This is the load-bearing operational win: **the team's commit cadence becomes decoupled from the Claude lead's budget cycle** for the mechanical-observation tier.
+The Martinet runs in its own cage with its own runtime token budget — **independent of the Claude Max budget** that historical decision number 049 (no surviving ADR file) budget-pause guards. A team with `martinet: "cursor"` continues whipping during a Claude lead's budget-pause window. This is the load-bearing operational win: **the team's commit cadence becomes decoupled from the Claude lead's budget cycle** for the mechanical-observation tier.
 
 Escalations during a Claude budget-pause window queue in the driver-inbox and process when the Claude lead's pause resolves. Martinet keeps the team moving on mechanical work in the meantime.
 
@@ -254,15 +254,15 @@ Wrong Enter-push: worst case is firing Enter into a queued message that should h
 
 ## Cross-references
 
-- **ADR-050** — Multi-tier executor fallback chain. **Canonical fallback-cage tiering reference** (EPIC body's "ADR-058" should read ADR-050). Tier 2 Cursor cage path is e2e-validated per ADR-050 §"E2E proofs"; ADR-132 reuses the same cage primitive.
+- **ADR-050** — Multi-tier executor fallback chain. **Canonical fallback-cage tiering reference** (EPIC body's "ADR-050" should read ADR-050). Tier 2 Cursor cage path is e2e-validated per ADR-050 §"E2E proofs"; ADR-132 reuses the same cage primitive.
 - **ADR-063** — Cockpit verb port + window topology. T8 updates §"Cockpit topology" to include W3=martinet.
 - **ADR-077** — medic cockpit role (formerly `superdoctor`, renamed per ADR-133). Martinet at W3 is the sibling cockpit-level role to medic at W2. Same iteration model (fleet-wide single process), different cadence (270s tactical vs hourly recurrence-prevention). T8 updates §D1 cross-ref to acknowledge W3.
 - **ADR-086** §"Forward pointer (Phase 2)" — MiniMax-as-parallel-pulse-observer. ADR-132 supersedes that pointer for the Martinet scope (broader than pulse-verdict — covers full observe+decide+apply loop, not just verdict rendering).
 - **ADR-131** — medic kanban-hygiene auto-fix loop. **Same deterministic-tiebreak philosophy** — bounded-risk autopilot beats unbounded-dormancy refusal. Martinet.decide() implements the same lane-affinity → load → alphabetical resolution rule when emitting `claim-next` / reassign actions.
 - **ADR-082** — per-member worktree isolation. Martinet observations honour worktree boundaries; pane captures are per-worktree.
 - **ADR-084** — per-member branch model. Martinet natural-lane resolution reads `team.members[].lane` introduced in ADR-084's adjacent schema work.
-- **ADR-049** — budget-pause. Martinet runs in its own runtime; non-Claude impls keep the team moving during Claude lead's budget-pause windows (see §D7).
-- **ADR-054** §D3 — `.strict()` Zod pattern for cockpit.json. Martinet block uses the same pattern.
+- **historical decision number 049 (no surviving ADR file)** — budget-pause. Martinet runs in its own runtime; non-Claude impls keep the team moving during Claude lead's budget-pause windows (see §D7).
+- **historical decision number 054 (no surviving ADR file)** §D3 — `.strict()` Zod pattern for cockpit.json. Martinet block uses the same pattern.
 - **CLAUDE.md** "always read pane state BEFORE tmux send-keys" + "push them to work — submit queued member input" + whip §0.05 — the operator-side rules Martinet structurally enforces.
 - **[ADR-138](138-verified-send-keys.md)** — verified send-keys; CursorMartinet's `apply()` MUST call `safeSendKeysWithVerify` per ADR-138 §"Forward-compat with ADR-132". The verified send-keys helper is the primitive every Martinet impl inherits for free.
 - **[ADR-140](140-cheap-model-first.md)** — cheap-model-first principle. Canonical justification for routing mechanical observation + nudges + routine rotation to Cursor martinet, reserving Claude (Opus xhigh) for strategic + code-gen + code review. MiniMax/Kimi drop (Reshape note 2) is anchored to ADR-140 §Decision.
@@ -334,12 +334,12 @@ The role type identified as "martinet" throughout this ADR is renamed to "sentin
 - Member compose-box unstick + observation per [ADR-140](./140-cheap-model-first.md) cheap-model-first.
 - **Not scoped to**: code health, test failures, build/lint state, repository invariants. Those are medic scope per [[ADR-077 §Amendment 2026-05-19]].
 
-**Out-of-scope clarification.** The original §"Out of scope" entry "Martinet observation of cockpit-tier surfaces (medic own loop, superdriver) — out of v1 scope" is preserved verbatim. EPIC e-35dd6274 §Part C (sentinel epic-team scope extension, codified in [ADR-185](./185-sentinel-epic-team-scope.md) per [t-2bbb828f](#)) extends sentinel observation to epic-team cages without dissolving this medic/sentinel boundary — sentinel still does not observe medic; medic still does not observe pane-liveness.
+**Out-of-scope clarification.** The original §"Out of scope" entry "Martinet observation of cockpit-tier surfaces (medic own loop, superdriver) — out of v1 scope" is preserved verbatim. EPIC e-35dd6274 §Part C (sentinel epic-team scope extension, codified in historical decision number 185 (no surviving ADR file) per [t-2bbb828f](#)) extends sentinel observation to epic-team cages without dissolving this medic/sentinel boundary — sentinel still does not observe medic; medic still does not observe pane-liveness.
 
 **Sentinel ↔ medic cross-invocation:**
 
 - Sentinel observe-pass invokes doctor probes for code-class findings (read-only) and routes structural-fix asks to medic via escalate-to-claude-lead.
-- Medic invokes doctor for liveness-class findings via the shared probe library (no medic owns sentinel's loop — both consume the same probe substrate per [ADR-027](./027-doctor-self-diagnostics.md)).
+- Medic invokes doctor for liveness-class findings via the shared probe library (no medic owns sentinel's loop — both consume the same probe substrate per the doctor self-diagnostics history (no surviving local ADR file)).
 
 Cross-refs: ADR-077 §Amendment 2026-05-19 (medic boundary side), ADR-027 (doctor framework — shared probe substrate), ADR-140 (cheap-model-first justification), ADR-184 (host-cap epic-team gate — sentinel iteration scope), ADR-185 (sentinel epic-team scope extension), EPIC e-35dd6274 (wedge-clearing mechanism), t-186d5910 (sentinel deploy — landing makes the boundary observable in production cockpit telemetry).
 
@@ -365,7 +365,7 @@ The cron-polling sentinel substrate documented by this ADR (§D1-D8) and amended
 
 **Lean-mode posture:** [ADR-189](./189-lean-mode-side-project-topology.md) (lean-mode side-project topology) ratified 2026-05-21 — the sentinel deletion is the canonical implementation of ADR-189's §D2 disable list ("sentinel cron-polling under lean-mode"). Post-deletion: there is no sentinel surface to disable; lean-mode no longer needs the carve-out wording. ADR-189 D2 is updated by T7 to reflect this.
 
-**Operator host migration:** operator hosts with active sentinel cron blocks: `atmux stop && atmux start` cycles the sandwich-marker block per team. Per [ADR-202](./202-honker-pubsub-substrate.md) §X cron decommission protocol, the cron block is idempotently rewritten on each start; no orphan-cron risk.
+**Operator host migration:** operator hosts with active sentinel cron blocks: `atmux stop && atmux start` cycles the sandwich-marker block per team. Per [ADR-202](./202-honker-in-db-messaging-substrate.md) §X cron decommission protocol, the cron block is idempotently rewritten on each start; no orphan-cron risk.
 
 **Implementation evidence (commit chain on `atmux-geoyws-epic-e-be01fc89`):**
 

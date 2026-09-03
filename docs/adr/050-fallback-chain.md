@@ -5,7 +5,7 @@
 
 ## Context
 
-`atmux whip` enforces ADR-049 budget-pause when the team's Claude Max account hits its 5h or weekly rate-limit window. Pause halts every member; work resumes only when the window refreshes (5min–7days latency). Driver feedback (multiple sessions, 2026-04 onward) — losing 4–8h to a single budget event is the dominant failure mode of long-running teams.
+`atmux whip` enforces historical decision number 049 (no surviving ADR file) budget-pause when the team's Claude Max account hits its 5h or weekly rate-limit window. Pause halts every member; work resumes only when the window refreshes (5min–7days latency). Driver feedback (multiple sessions, 2026-04 onward) — losing 4–8h to a single budget event is the dominant failure mode of long-running teams.
 
 The natural mitigation is a **multi-tier executor fallback chain**: when Tier 1 (Claude Opus) is rate-limited, spawn lower-tier executors (Cursor, Kimi, MiniMax) into per-pane cages and let them carry the lane until the budget window reopens. Parent task `t-706655ee` drafts the full chain (4 tiers, dedicated Linux users, ACL-isolated workspaces, manual reconciliation).
 
@@ -35,7 +35,7 @@ Tier 2 runs as the operator user (no sudo, no ACL setup). Tier 2 has full git ac
 
 Fallback fires when ALL of the following are true on a sustained budget-pause:
 
-1. `whip` ADR-049 budget-pause has been active continuously for ≥**`team.whip.fallback.sustainMins`** (default **30**). One-off rate-limit blips that resolve <30min do NOT spawn a fallback cage — the pause-resume hot path is cheaper than the fallback round-trip.
+1. `whip` historical decision number 049 (no surviving ADR file) budget-pause has been active continuously for ≥**`team.whip.fallback.sustainMins`** (default **30**). One-off rate-limit blips that resolve <30min do NOT spawn a fallback cage — the pause-resume hot path is cheaper than the fallback round-trip.
 2. `team.whip.fallback.enabled === true` (opt-in, default `false` on `atmux init`). Operator opts in per-team.
 3. The paused member has at least one Task in `in-progress` claimed-by them; idle members get no fallback.
 
@@ -72,12 +72,12 @@ Cage stdout/stderr captured to `<atmuxDir>/logs/fallback-cursor-<member>.log`. L
 
 ### Resume continuity
 
-When the budget window reopens (whip ADR-049 fires resume):
+When the budget window reopens (whip historical decision number 049 (no surviving ADR file) fires resume):
 
 1. For each member with an active fallback cage:
    - Read the cage's output log
    - Compose a **resume continuity brief**: "While you were paused, fallback Tier 2 (Cursor) committed: <commit summaries from git log since cage spawn>. Output log: `<atmuxDir>/logs/fallback-cursor-<member>.log`. Status: <fresh-or-mid-task>."
-   - Paste to the original member's pane via `safeSendKeys` (gated on pane state per ADR-062 §2)
+   - Paste to the original member's pane via `safeSendKeys` (gated on pane state per ADR-127 §2)
 2. Tear down fallback cage: `tmux kill-server -L <cage-tmpdir>/sock`; archive log to `<atmuxDir>/logs/fallback-archive/<member>-<epoch>.log`.
 3. Resume member continues from natural commit boundary.
 
@@ -118,11 +118,11 @@ ADR-050b (future) will fold in Tier 3 (Kimi) and Tier 4 (MiniMax). Pre-condition
 | 2 | Sustain threshold — pause `< sustainMins` → `'sustain-not-reached'`; `≥` → dispatch; `inProgressTaskCount=0` → `'no-in-progress-tasks'` | ✅ |
 | 3 | Cage spawn — `spawnFallbackCage` invokes `createCage` once with the right opts shape (team / lane=member / tier=2 / taskId / atmuxDir / projectCwd) and persists `CageHandle` to `fallback-cages-v1.json` keyed `<team>:<member>`; second spawn for the same key is idempotent (no second `createCage` call) | ✅ |
 | 4 | Brief composition — `composeTier2Brief` carries §D4 sections (Tier 2 / Cursor / composer-2 identification + Mission + Scope guardrails + Git policy + Reconciliation + operator-UID full-git posture); `spawnFallbackCage` delivers the brief through `sendBrief` when supplied | ✅ |
-| 5 | Output capture — `cageArchivePath(atmuxDir, 2, team, lane, epoch)` resolves under `<atmuxDir>/tier2-handoff/archive/<team>-<lane>-<epoch>` (ADR-058 archive layout supersedes the §Output capture's draft `<atmuxDir>/logs/fallback-cursor-<member>.log` path; cage stdout/stderr land in the archive on teardown) | ✅ |
+| 5 | Output capture — `cageArchivePath(atmuxDir, 2, team, lane, epoch)` resolves under `<atmuxDir>/tier2-handoff/archive/<team>-<lane>-<epoch>` (ADR-050 archive layout supersedes the §Output capture's draft `<atmuxDir>/logs/fallback-cursor-<member>.log` path; cage stdout/stderr land in the archive on teardown) | ✅ |
 | 6 | Resume continuity — `composeResumeBrief` produces "while you were paused, fallback committed: <commits>" brief + paste via `safeSendKeys` gated on pane state | ⏭️ **`test.skip` — t-8ec31d4d (composeResumeBrief) not yet shipped** |
 | 7 | Idempotent teardown — second `teardownFallbackCage` on the same member is a no-op (no throw, no second `destroyCage` call); cages-file removed when the cages map empties on the delete | ✅ |
 
-**Layering note (ADR-050 ↔ ADR-058)**. ADR-050 v1 was substantially absorbed into ADR-058's multi-tier abstractions (`createFallbackCage` + `composeTier2Brief` + `cageArchivePath` in `src/abstractions/fallback-cage.ts`; multi-tier orchestration `dispatchFallbackOnPause` + `walkFallbackOnResume` in `src/core/whip-budget-fallback.ts`). The ADR-050 v1 narrowed wrappers (`spawnFallbackCage` + `teardownFallbackCage` + `shouldDispatchFallback` + `fallbackCagesPathV1`) sit on top, single-member + Tier-2-only. The sibling `tests/e2e/fallback-cage.test.ts` exercises the ADR-058 multi-tier surface with env-gated real-tmux probes; this spec is the **ADR-050 v1 acceptance gate** verbatim against the v1 wrapper API.
+**Layering note (ADR-050 ↔ ADR-050)**. ADR-050 v1 was substantially absorbed into ADR-050's multi-tier abstractions (`createFallbackCage` + `composeTier2Brief` + `cageArchivePath` in `src/abstractions/fallback-cage.ts`; multi-tier orchestration `dispatchFallbackOnPause` + `walkFallbackOnResume` in `src/core/whip-budget-fallback.ts`). The ADR-050 v1 narrowed wrappers (`spawnFallbackCage` + `teardownFallbackCage` + `shouldDispatchFallback` + `fallbackCagesPathV1`) sit on top, single-member + Tier-2-only. The sibling `tests/e2e/fallback-cage.test.ts` exercises the ADR-050 multi-tier surface with env-gated real-tmux probes; this spec is the **ADR-050 v1 acceptance gate** verbatim against the v1 wrapper API.
 
 **Step 6 carve-out**. `composeResumeBrief` lives in the unshipped `src/core/fallback-resume.ts` (referenced by `whip-budget-fallback.ts:286` as future work). When t-8ec31d4d lands, drop `.skip` from the Step 6 beat in the spec and wire the import + assertions per the inline TODO checklist in the spec body.
 
@@ -150,10 +150,10 @@ Resolved at decompose-time. Override path = driver edits inline in `.atmux/drive
 
 ## Related
 
-- ADR-049: budget-pause foundation (this ADR depends on)
+- historical decision number 049 (no surviving ADR file): budget-pause foundation (this ADR depends on)
 - ADR-018: per-team tmux socket isolation (fallback cage reuses pattern)
 - ADR-024: spawn-account-matching (Tier 2 Cursor uses its own auth, NOT operator's claude-account)
-- ADR-062: pane-state classifier (resume brief paste gated on member's pane state === READY)
+- historical decision number 062 (no surviving ADR file): pane-state classifier (resume brief paste gated on member's pane state === READY)
 - [[feedback_opus_all_for_agile_flow]] — operator memory governing agile-chain trust scope; ADR-050 carves out a fallback-chain exception with explicit reasoning
 - Parent: `t-706655ee` (multi-tier fallback chain, originally full-chain scope — now narrowed to Tier 2 v1)
 - Decompose Task: `t-71629309`

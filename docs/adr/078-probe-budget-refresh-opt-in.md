@@ -28,7 +28,7 @@ The bug is structural: **atmux's Fix-C path mutates a shared credentials file th
 
 ### Why Fix-C exists
 
-ADR-053 §D1 introduced the OAuth refresh path so that long-running whip cron loops don't 401 mid-tick when an account's access token aged past expiry. That use case is real — atmux **owns** the whip daemon's credentials lifecycle in that context, and refresh-on-the-fly keeps the daemon alive without operator intervention. The issue is that the same code path is now entered by short-lived probes that have no stake in the credentials lifecycle (account-swap, future cockpit/UI surfaces) and just want to read budget headers.
+historical decision number 053 (no surviving ADR file) §D1 introduced the OAuth refresh path so that long-running whip cron loops don't 401 mid-tick when an account's access token aged past expiry. That use case is real — atmux **owns** the whip daemon's credentials lifecycle in that context, and refresh-on-the-fly keeps the daemon alive without operator intervention. The issue is that the same code path is now entered by short-lived probes that have no stake in the credentials lifecycle (account-swap, future cockpit/UI surfaces) and just want to read budget headers.
 
 ## Decision
 
@@ -201,6 +201,6 @@ This is **not in scope for ADR-078** — independent root cause, independent fix
 - `src/verbs/whip-resume-check.ts:192` — daemon caller (flip to `true`).
 - `src/core/account-swap.ts:519,536` — one-shot caller (default `false`).
 - `src/verbs/whip.ts:903,952` — adapter callers (default `false`).
-- ADR-053 — original Fix-C / OAuth refresh introduction.
+- historical decision number 053 (no surviving ADR file) — original Fix-C / OAuth refresh introduction.
 - `/root/.claude/teams/atmux/dispatch-p0-oauth-race.md` — origin brief.
 - `/root/.claude/teams/atmux/driver-inbox.md` [07:48 MYT 2026-05-09] — original superdriver entry.

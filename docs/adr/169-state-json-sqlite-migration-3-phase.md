@@ -8,7 +8,7 @@
 
 ## Context
 
-[ADR-126](126-sqlite-state-store.md) (proposed 2026-05-07) established the principle *"SQLite for `.atmux/` state, JSON archive-only"*. The kanban migration shipped at epoch `1778159007497` (April 2026) per `.atmux/migration-state-sqlite.json`; kanban now lives in `state.db` (~2.4 MB), `kanban.json` archived under `.atmux/archive/json-pre-sqlite-*`. The inbox migration shipped per ADR-076 (atmux 0.5.0+). Both worked.
+[ADR-126](126-sqlite-state-store.md) (proposed 2026-05-07) established the principle *"SQLite for `.atmux/` state, JSON archive-only"*. The kanban migration shipped at epoch `1778159007497` (April 2026) per `.atmux/migration-state-sqlite.json`; kanban now lives in `state.db` (~2.4 MB), `kanban.json` archived under `.atmux/archive/json-pre-sqlite-*`. The inbox migration shipped per decision number 076 (no local ADR file exists) (atmux 0.5.0+). Both worked.
 
 **~14 state-of-record JSON files remain** under `.atmux/state/` — each its own bespoke read/write path (no shared abstraction beyond `tryParseJsonString`), each carrying its own corruption-as-fresh / atomicity / concurrency surface that the kanban migration consolidated away.
 
@@ -162,7 +162,7 @@ The probe is severity P2 warn (not error) — operators may have legitimate ad-h
 ### Sibling work (cross-ref)
 
 - [ADR-126](126-sqlite-state-store.md) (proposed) — the canonical principle. This ADR closes its remaining surface; T6 flips ADR-126 status `proposed → accepted`.
-- [ADR-076](076-inbox-migration-to-sqlite.md) (shipped, atmux 0.5.0+) — `.atmux/inboxes/<m>.json` → SQLite. **Precedent** for the migration verb + archive pattern.
+- decision number 076 (no local ADR file exists) (shipped, atmux 0.5.0+) — `.atmux/inboxes/<m>.json` → SQLite. **Precedent** for the migration verb + archive pattern.
 - [ADR-154](154-driver-inbox-lead-outbox-sqlite-migration.md) (proposed, EPIC `t-2298cbb0`) — driver-inbox + lead-outbox markdown→SQLite migration. **Sibling** pattern at the `coordination_messages` table level; non-blocking on this EPIC.
 
 ### Hard guardrail
@@ -199,10 +199,10 @@ Per ADR-077 §7d ("not a license to redesign atmux") + EPIC body — the medic f
 ## Cross-references
 
 - [ADR-126](126-sqlite-state-store.md) — `state.db` SQLite principle; T6 flips this to `accepted`.
-- [ADR-076](076-inbox-migration-to-sqlite.md) — inbox migration precedent.
+- decision number 076 (no local ADR file exists) — inbox migration precedent.
 - [ADR-154](154-driver-inbox-lead-outbox-sqlite-migration.md) — sibling markdown→SQLite migration at coordination layer.
 - [ADR-164](164-sync-claude-team-json.md) — `cockpit.json` + `team.json` + `.claude/team.json` KEEP-AS-JSON rationale.
-- [ADR-005](005-atomic-json-and-flock.md) — flock pattern superseded for state files by SQLite transactions (config files keep flock).
+- historical decision number 005 (no surviving ADR file) — flock pattern superseded for state files by SQLite transactions (config files keep flock).
 - `src/verbs/migrate-state.ts` — kanban target template (per `t-26dba81c`).
 - Ombudsman complaint `c-67bbac0a` (filed 2026-05-17) — the trigger.
 - EPIC `e-38ee9939` — 6 sub-tasks T1-T6 with populated deps[].

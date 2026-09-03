@@ -27,7 +27,7 @@ Today aggression knobs live scattered across role-specific schema blocks:
 
 - `team.json::autoMerge` (per ADR-145) — gitter's auto-merge toggle.
 - `team.json::eternalImprovement.enabled` (per ADR-149) — improvement-cycle opt-in.
-- `team.json::whip` — cron cadence, budget-pause thresholds (ADR-053/054).
+- `team.json::whip` — cron cadence, budget-pause thresholds (historical decision number 053 (no surviving ADR file)/054).
 - `cockpit.json::defaultAutoMerge` / `defaultMedic` — fleet defaults.
 - `/bruh` skill behaviour — currently hardcoded ("sweep all pending decisions, flip all flags, merge all worktrees").
 - Martinet's `NudgeAction` per ADR-132 — observation pipeline aggression hardcoded.
@@ -132,7 +132,7 @@ Reading conventions:
 
 `autonomy` joins the family of team-level config blocks alongside `whip`, `kanban`, `crons`, `epicTeam`, `cadence` (per ADR-148), `eternalImprovement` (per ADR-149). Same shape conventions:
 
-- Schema lives in `src/schema/team.ts` as a Zod `.strict()` sub-object (drift-rejection per ADR-054).
+- Schema lives in `src/schema/team.ts` as a Zod `.strict()` sub-object (drift-rejection per historical decision number 054 (no surviving ADR file)).
 - `.passthrough()` at the parent `Team` schema level remains intact — adding `autonomy` doesn't break unrelated fields.
 - Mirror in `src/schema/cockpit.ts` for the `defaultAutonomy` fleet-default sibling.
 - Default values declared at the Zod level via `.default(...)` per existing pattern (e.g. `TeamWhip.intervalMins.default(15)`); D5's all-auto-enabled posture means every key defaults to today's behavior.

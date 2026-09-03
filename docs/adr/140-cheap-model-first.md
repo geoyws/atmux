@@ -19,7 +19,7 @@ Cheap-model invocations under lean-mode topology fire via:
 
 NOT via continuous cron-polling. The 65-70% Claude-burn reduction projected in this ADR was an EVERY-TICK calculation under cron-polling; under lean-mode, the realized reduction is HIGHER because most ticks no longer fire (no idle-cycle observation cost).
 
-See [ADR-132 §Amendment 2026-05-20](./132-pluggable-martinet.SUPERSEDED.md) + [ADR-189](./189-lean-mode-side-project-topology-preset.md) (the lean-mode pivot anchor) + Epic `e-be01fc89` for the full pivot.
+See [ADR-132 §Amendment 2026-05-20](./132-pluggable-martinet.SUPERSEDED.md) + [ADR-189](./189-lean-mode-side-project-topology.md) (the lean-mode pivot anchor) + Epic `e-be01fc89` for the full pivot.
 
 **Filed via** t-4de68474 (docs role, 2026-05-20).
 
@@ -27,7 +27,7 @@ See [ADR-132 §Amendment 2026-05-20](./132-pluggable-martinet.SUPERSEDED.md) + [
 
 The cheap-model-first principle still applies; the *sentinel-tier invocation surface* is gone. Cursor/Opus invocations for observation/nudging now route through:
 
-- `atmux doctor` (on-demand operator audit, code/lint/test classes per [ADR-027](./027-doctor-self-diagnostics.md))
+- `atmux doctor` (on-demand operator audit, code/lint/test classes per the doctor self-diagnostics history (no surviving local ADR file))
 - `atmux wedges` (on-demand wedge sweep per [ADR-186](./186-wedge-clearing-mechanism.md))
 - orchd event consumers (EPIC e-a946af69) — event-driven escalate-to-claude-lead absorbs the cron-polling shape
 
@@ -62,7 +62,7 @@ Categories (1)–(3) are **mechanical AND Claude hedges on them**. Category (4) 
 ### Cheap-model-first principle (canonical)
 
 - **Claude (Opus xhigh)** = strategic + judgment + code generation + code review + creative work.
-- **Cursor composer-2-fast** (via martinet, Tier 2 cage per ADR-058) = ALL mechanical execution loops + ALL uncomfortable-but-routine actions.
+- **Cursor composer-2-fast** (via martinet, Tier 2 cage per ADR-050) = ALL mechanical execution loops + ALL uncomfortable-but-routine actions.
 - ~~MiniMax / Kimi~~ = **REJECTED** 2026-05-14 — capability too low for the contract. Cursor is the production-grade tradeoff.
 
 ### What MOVES to martinet (Cursor composer-2-fast)
@@ -175,7 +175,7 @@ T2–T4 are not yet filed as separate kanban Tasks at the time of this commit. R
 
 - **[ADR-077](077-superdoctor-cockpit-role.md)** — medic (will be annotated by T2).
 - **[ADR-138](138-verified-send-keys.md)** — verified send-keys; Cursor martinet is the primary caller.
-- **ADR-058** — Tier 2 cursor cage; proven via `t-90cc66de` (done). Forward-reference.
+- **ADR-050** — Tier 2 cursor cage; proven via `t-90cc66de` (done). Forward-reference.
 - **ADR-131** kanban-hygiene — martinet-resident detection (Cursor). Forward-reference.
 - **ADR-132** martinet v2 — 2-impl design (Cursor composer-2-fast + Claude degenerate). Forward-reference.
 - **ADR-134** auto-merge fan-in (gitter). Forward-reference.

@@ -157,11 +157,11 @@ The historical empty-config proof above stays as history. Current live-server te
 - **`CLAUDECODE`, `CLAUDE_CODE_*` and the rest of ADR-277 §Out of scope** stay out of scope for the same reason they were: scrubbing tool-detection variables could change how tools inside a cage behave.
 - **`sudo` paths beyond the argv prefix.** Tier-3+ cage creation is currently unreachable (`createFallbackCage` throws `FallbackTierDroppedError` for any tier ≠ 2), but `poke.ts`'s sudo branch is live for Tier-3 handles. Both carry `TMUX_CHILD_ENV_ARGV`; nothing else about sudo's environment handling is addressed here.
 
-## Retraction 2026-08-29 — ADR-283 was proposed and is WITHDRAWN
+## Retraction 2026-08-29 — withdrawn decision number 283 (no ADR file by design) was proposed and is WITHDRAWN
 
 A third ADR in this series, **283 "Scrub the test runner's environment"**, was proposed on 2026-08-28 to remove the operator's credentials from the `bun test` runner's environment. It is **withdrawn**, and ADR number 283 is left as a deliberate gap rather than reused. Two independent reasons, both measured:
 
-**1. Its central guarantee is false.** ADR-283 claimed: *"If the variables are not in the runner's environment, no test can leak them, whatever shape it uses — today or in a shape nobody has invented yet. That is a property of the environment, not of a matcher, so there is nothing to evade."* There is something to evade: **one interactive-shell hop puts every credential back.** Measured on `geoywsMBP`, 2026-08-28, starting from `env -i` carrying only allowlisted names (counts only — no names, no values):
+**1. Its central guarantee is false.** Withdrawn decision number 283 (no ADR file by design) claimed: *"If the variables are not in the runner's environment, no test can leak them, whatever shape it uses — today or in a shape nobody has invented yet. That is a property of the environment, not of a matcher, so there is nothing to evade."* There is something to evade: **one interactive-shell hop puts every credential back.** Measured on `geoywsMBP`, 2026-08-28, starting from `env -i` carrying only allowlisted names (counts only — no names, no values):
 
 | what the test spawns | variable names in the child | credential-shaped |
 |---|---|---|
@@ -183,9 +183,9 @@ The absolute counts differ from the row above (a different seed set and a differ
 
 The operator's `.zshrc` sources a git-crypt'd `.env`, and `.zshrc` is read by *interactive* shells. So a scrubbed runner that spawns an interactive shell has an unscrubbed grandchild — and spawning interactive shells is precisely what atmux does. The claim was not "hard to evade"; it was wrong about the mechanism it named.
 
-**2. Its `bun test` refusal is destructive on this box.** ADR-283 §D2 added a bunfig preload that **refuses** a bare `bun test` when the environment carries credential-shaped names. `.atmux/team.json` on this repository carries `autoMerge: { enabled: true, testCommand: "bun test", revertOnFail: true, skipTestGate: false }` (verified 2026-08-29). Per `templates/briefs/committer.md:128` the gitter runs `testCommand` as the `merging → tested → merged` gate, and per `:130` a failure with `revertOnFail` true means `git revert -m 1 <merge-commit>`. **A refusal exits non-zero and is indistinguishable from a test failure**, so shipping it would have turned every auto-merge on this repository into an automatic revert.
+**2. Its `bun test` refusal is destructive on this box.** Withdrawn decision number 283 (no ADR file by design) §D2 added a bunfig preload that **refuses** a bare `bun test` when the environment carries credential-shaped names. `.atmux/team.json` on this repository carries `autoMerge: { enabled: true, testCommand: "bun test", revertOnFail: true, skipTestGate: false }` (verified 2026-08-29). Per `templates/briefs/committer.md:128` the gitter runs `testCommand` as the `merging → tested → merged` gate, and per `:130` a failure with `revertOnFail` true means `git revert -m 1 <merge-commit>`. **A refusal exits non-zero and is indistinguishable from a test failure**, so shipping it would have turned every auto-merge on this repository into an automatic revert.
 
-**What ADR-283 got right is kept, here and in ADR-282, without it:**
+**What withdrawn decision number 283 (no ADR file by design) got right is kept, here and in ADR-282, without it:**
 
 - The `templates/tmux/atmux.conf` `COLORTERM` correction (§D2 above), now stated only as far as it is measured.
 - `tests/unit/abstractions/tmux-child-env.test.ts`, which makes §D2's and §D3's invariants enforced rather than merely stated — extended 2026-08-29 to cover the `env(1)` argv half, which had no call-site coverage at all.

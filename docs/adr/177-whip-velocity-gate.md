@@ -9,7 +9,7 @@
 - **Date**: 2026-05-14
 - **Driver**: parity-cron-impl (t-289119f2)
 - **Related**: sibling t-e91fec98 (T2 superdoctor escalation),
-  ADR-062 (`crons.laneTickEnabled` shape sibling), ADR-085 (whip
+  ADR-127 (`crons.laneTickEnabled` shape sibling), ADR-085 (whip
   needs-approval surface), ADR-077 (superdoctor cockpit role)
 
 ## Problem
@@ -273,7 +273,7 @@ incoming strikes and never escalates. Reversible.
 - `src/core/whip-escalation.ts` (T2)
 - `src/core/repositories/complaints-repo.ts` (T2 — `findOpenBySourceId` + `bumpSourceCount`)
 - Sibling Task t-e91fec98 (T2 — this commit's escalation surface)
-- ADR-062 §Rollback (`crons.laneTickEnabled` precedent for the
+- ADR-127 §Rollback (`crons.laneTickEnabled` precedent for the
   fleet-consistent kill-switch shape)
 - CLAUDE.md "0-commit overnight excuses → Reddit receipts" — the
   operator stake that drove this ADR

@@ -4,7 +4,7 @@
 **Date**: 2026-05-16
 **Author**: `whip-impl` (T1 draft per `t-85b928a9`, parent EPIC `t-2deb17f0` — `atmux team set <key> <value>` CLI surface)
 **Driver-ref**: 2026-05-16 08:07 MYT — driver flag on a sibling team: *"had to bypass atmux to flip `team.json.autoMerge.enabled` (null → true) because no CLI verb exists for it."* Manual JSON edits with hand-written backups are fragile; operators have shipped typos (`autoMerg`, `eternalImprovment`) that survive until the next `atmux start` schema-validation pass.
-**Relates**: ADR-054 (strict-mode schema + drift detection — every mutation must round-trip the schema; bare-`proposed` state-rot per the ghost-ADR audit at `t-75a79d7c` style), ADR-098 (JSON + locking model — flock sidecar + tempfile-rename pattern this verb reuses verbatim), ADR-076 (kanban→SQLite migration — boundary-marker for which state-file this verb touches; SQLite-resident state has different mutation primitives), ADR-148 (commit-cadence — config-file edits are NOT git commits and MUST NOT trigger cadence rotation), ADR-097 (tmux abstraction — irrelevant; named because the Task body included it as a stub).
+**Relates**: historical decision number 054 (no surviving ADR file) (strict-mode schema + drift detection — every mutation must round-trip the schema; bare-`proposed` state-rot per the ghost-ADR audit at `t-75a79d7c` style), ADR-098 (JSON + locking model — flock sidecar + tempfile-rename pattern this verb reuses verbatim), historical decision number 076 (no surviving ADR file) (kanban→SQLite migration — boundary-marker for which state-file this verb touches; SQLite-resident state has different mutation primitives), ADR-148 (commit-cadence — config-file edits are NOT git commits and MUST NOT trigger cadence rotation), ADR-097 (tmux abstraction — irrelevant; named because the Task body included it as a stub).
 
 ## Context
 
@@ -17,7 +17,7 @@
 
 Path 2 is the failure mode this ADR closes. Concrete symptoms observed across 2026-04-15 → 2026-05-16:
 
-- **Schema typos survive until next read** — `budgetPauseTreshold` (typo) sat in a team.json for ~36h before `atmux whip` next loaded the file and the `.strict()` rejection (per ADR-054) finally surfaced. By then nobody remembered which field they meant to set.
+- **Schema typos survive until next read** — `budgetPauseTreshold` (typo) sat in a team.json for ~36h before `atmux whip` next loaded the file and the `.strict()` rejection (per historical decision number 054 (no surviving ADR file)) finally surfaced. By then nobody remembered which field they meant to set.
 - **No backup, no audit** — operator edits with `vim`; if vim crashes mid-save the file is truncated; if the operator typos the JSON they discover at next `atmux` invocation that the file no longer parses. Recovery requires `.atmux/team.json.bak.*` from a prior `atmux::jq_update` write, which may be days stale.
 - **No locking** — operator edit during a live `atmux whip` tick race-overwrites the whip's pending `lastTickAt` mutation. Whip-tick metadata silently lost.
 - **No discoverability** — operators have no `atmux team get autoMerge.enabled` to read the current value, so the only way to confirm a config change is to dump the whole file with `cat` / `jq`.
@@ -62,11 +62,11 @@ Flags:
 - `--dry-run` — resolve + validate but don't write. Prints the resolved final value + would-write diff.
 - `--no-lock` — skip the flock sidecar. NOT exposed in v1; reserved for future test-injection.
 
-### D2 — Schema gate via Zod strict-mode (per ADR-054)
+### D2 — Schema gate via Zod strict-mode (per historical decision number 054 (no surviving ADR file))
 
 Every `set` / `unset` write:
 
-1. Read current `team.json` into the `Team` Zod schema (strict-mode where applicable, per ADR-054's drift-detection convention).
+1. Read current `team.json` into the `Team` Zod schema (strict-mode where applicable, per historical decision number 054 (no surviving ADR file)'s drift-detection convention).
 2. Apply the mutation in-memory (set / delete the key at `<dot.path>`).
 3. **Re-validate** the post-mutation object against the Zod schema. If validation fails, REFUSE the write — exit 1, stderr the Zod error path, file UNCHANGED.
 4. On success, atomic-write the file.
@@ -205,9 +205,9 @@ The Zod schema marks some fields required (e.g. `team.name`). `unset team.name` 
 
 ## Cross-references
 
-- **ADR-054 — strict-mode schema + drift detection**. The gate (D2) reuses ADR-054's `.strict()` posture verbatim. Drift detection on `Team.parse()` is the same boundary that the schema-gate enforces on every `set` / `unset`. (Note: ADR-054 file is not present in the worktree — referenced by code comments + sibling schemas; ghost-ADR similar to the pre-`t-75a79d7c` state of ADR-052. Out-of-scope follow-up: backfill ADR-054 like ADR-052 was just backfilled.)
+- **historical decision number 054 (no surviving ADR file) — strict-mode schema + drift detection**. The gate (D2) reuses historical decision number 054 (no surviving ADR file)'s `.strict()` posture verbatim. Drift detection on `Team.parse()` is the same boundary that the schema-gate enforces on every `set` / `unset`. (Note: historical decision number 054 (no surviving ADR file) file is not present in the worktree — referenced by code comments + sibling schemas; ghost-ADR similar to the pre-`t-75a79d7c` state of ADR-052. Out-of-scope follow-up: backfill historical decision number 054 (no surviving ADR file) like ADR-052 was just backfilled.)
 - **ADR-098 — JSON + locking model**. D3 reuses `atmux::jq_update`'s flock-sidecar + tempfile-rename primitive verbatim. The ts-side `updateJson` helper at `src/abstractions/json.ts` is the ready-made TS port.
-- **ADR-076 — kanban→SQLite migration**. Boundary marker: SQLite-resident state (kanban tasks, inboxes per ADR-076) has different mutation primitives (BEGIN IMMEDIATE transactions per ADR-126); this verb governs the JSON-resident state ONLY (`team.json`, plus future `cockpit.json` if a sibling verb extends).
+- **historical decision number 076 (no surviving ADR file) — kanban→SQLite migration**. Boundary marker: SQLite-resident state (kanban tasks, inboxes per historical decision number 076 (no surviving ADR file)) has different mutation primitives (BEGIN IMMEDIATE transactions per ADR-126); this verb governs the JSON-resident state ONLY (`team.json`, plus future `cockpit.json` if a sibling verb extends).
 - **ADR-148 — commit-cadence**. Config-file edits are NOT git commits and MUST NOT advance the cadence verdict. The audit log lives in `.atmux/logs/` (D5), not in git history; cadence classifiers reading `git log --since=…` are unaffected.
 - **ADR-097 — tmux abstraction**. Named by the Task body as a "config-surface conventions" cross-ref; the actual ADR-097 is the tmux abstraction layer, not config-surface. Listed here for completeness; not load-bearing.
 
@@ -227,7 +227,7 @@ The Zod schema marks some fields required (e.g. `team.name`). `unset team.name` 
 - [x] Pre-flight verify cited in commit body (`git log --all -- 'docs/adr/165-*'` empty before write; t-846e43dd holds ADR-164 slot; 165+ clean).
 - [x] All 6 §Decision-anchors land as numbered prose (D1 verb namespace; D2 schema gate; D3 atomic write; D4 backup; D5 audit log; D6 dot-path) — plus D7 type coercion + D8 migration story as additional anchors per Task body's "Verb signatures + Zod gate + atomic write + backup semantics + audit log NDJSON + dot-path JSON-Pointer-lite + type coercion + migration story" surface enumeration.
 - [x] Consumer matrix-equivalent — implementation plan table (T1-T6) with deps + lane assignments.
-- [x] Cross-refs to ADR-054 / ADR-098 / ADR-076 / ADR-148 / ADR-097.
+- [x] Cross-refs to historical decision number 054 (no surviving ADR file) / ADR-098 / historical decision number 076 (no surviving ADR file) / ADR-148 / ADR-097.
 - [x] 3 OQs with recommended defaults (get-Zod-roundtrip; unset-required-field; audit-log location).
 - [x] Out-of-scope §explicit on batch edits + secrets + cockpit sibling verb + migrate verb + SQLite state.
 - [ ] Single commit; reviewer-gated. Reviewer flips Status proposed → accepted in a subsequent commit post-T6 ship.

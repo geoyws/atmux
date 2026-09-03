@@ -47,7 +47,7 @@ The dead-cage reap calls `performDissolveEpic` with default checks. For a dead c
 
 ### (D4) Dep-injection seam
 
-`reapStaleEpicTeams(atmuxDir, deps)` takes every cross-module call as an injectable: `listSpawnedEpicTeams`, `isCageAlive`, `isCageStaleIdle`, `dissolve`, `escalate`. Production passes real impls; tests pin each for deterministic counter assertions — the same pattern as `orchdSweep` (`OrchdSweepDeps`). Failure isolation matches `orchdSweep`: a thrown per-epic action is caught + counted, never halts the walk, never retries (anti-retry-storm, [ADR-231](231-orchd-rust-dispatcher.md)).
+`reapStaleEpicTeams(atmuxDir, deps)` takes every cross-module call as an injectable: `listSpawnedEpicTeams`, `isCageAlive`, `isCageStaleIdle`, `dissolve`, `escalate`. Production passes real impls; tests pin each for deterministic counter assertions — the same pattern as `orchdSweep` (`OrchdSweepDeps`). Failure isolation matches `orchdSweep`: a thrown per-epic action is caught + counted, never halts the walk, never retries (anti-retry-storm, [ADR-231](231-orchd-auto-spawn-and-solo-worker-dissolve.md)).
 
 ## Consequences
 

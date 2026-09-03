@@ -18,7 +18,7 @@ The token-burn framing is the load-bearing motivation. Every member running `/wh
 - [ADR-236](236-three-tier-orchd-supervision.SUPERSEDED.md) — the supervision tier this ADR is a sibling to. D3 of ADR-236 depends on D1 of this ADR (Discord template is Rust-composed, deterministic, no LLM).
 - [ADR-077](077-superdoctor-cockpit-role.md) — medic's original spec. D2 of this ADR narrows medic's role to operator-on-demand invocation.
 - [ADR-133](133-medic-rename.md) — superdoctor → medic rename; storage-layer identifiers preserved.
-- [ADR-068](068-bash-to-ts-cutover.md) — `atmux discorder` subverb cutover (the deterministic kanban→Discord aggregator that stays).
+- decision number 068 (no local ADR file exists) — `atmux discorder` subverb cutover (the deterministic kanban→Discord aggregator that stays).
 - [ADR-008](008-decisions-verb.md) — decisions block in whip; its consumer side (`whip-decisions-check.ts`) is in scope for this ADR's deprecation pass.
 - `docs/medic.md` — operator-facing reference; picks up "on-demand only" callout in the same commit as D2 lands.
 
@@ -68,7 +68,7 @@ The Discord-sending surface (`abstractions/discord.send`) stays as-is. The chang
 3. **`src/verbs/whip.ts` and `src/verbs/whip-resume-check.ts`** — deprecated. Verb stays callable for one release with a "removed in next release, see ADR-237" deprecation log line, then deleted. Tests under `tests/unit/verbs/whip*.test.ts` flip to assert the deprecation log path; new tests for the budget-pause primitive (now standalone, not whip-gated) cover the substrate behavior that whip used to host.
 
 **What stays in Bucket A (no change):**
-- `atmux discorder progress` / `heartbeat` — operator can fire on-demand; no auto cadence (per D2's cron-removal policy). The aggregator code is healthy + already TS-pure (ADR-068). Future event-driven trigger (e.g. Honker subscriber on `task.done` that calls discorder) is allowed and aligned with ADR-202.
+- `atmux discorder progress` / `heartbeat` — operator can fire on-demand; no auto cadence (per D2's cron-removal policy). The aggregator code is healthy + already TS-pure (decision number 068, no local ADR file exists). Future event-driven trigger (e.g. Honker subscriber on `task.done` that calls discorder) is allowed and aligned with ADR-202.
 - All other Bucket A modules listed in §Context.
 
 ### D2 — Medic auto-loop removed. Medic is on-demand only.
