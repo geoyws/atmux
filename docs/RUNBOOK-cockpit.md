@@ -127,7 +127,7 @@ Cron-spawned cockpit roles (medic) re-establish themselves on the next cron tick
 
 atmux ships a canonical tmux config at `templates/tmux/atmux.conf` (installed under `/opt/atmux/<version>/templates/` per [ADR-047](adr/047-canonical-install-topology.md)). Every cockpit + per-team session creation call-site threads this file via the `-f <path>` flag, so atmux invocations **never inherit the operator's `~/.tmux.conf`**. This closes the inheritance path that previously made atmux behavior depend on the operator's personal config drift (`base-index`, `pane-base-index`, custom key bindings, etc.).
 
-The old Homebrew tmux/resurrect plane remains independent and untouched. The future vendored `aca` / `aco` cockpit plane is a separate namespace with its own socket, config, and resurrect state, and it will use an explicit tmux 3.7c binary via `resolveVendoredTmuxBin()` instead of the host resolver. Ordinary cockpit and cage calls stay on the legacy plane.
+The old Homebrew tmux/resurrect plane remains independent and untouched. The vendored `aca` / `aco` cockpit plane is a separate namespace with its own socket and plugin-free config; it uses explicit tmux 3.7c via `resolveVendoredTmuxBin()` instead of the host resolver. It has no tmux-resurrect state: `aco` restores its exact three-window layout declaratively. Ordinary cockpit and cage calls stay on the legacy plane.
 
 The baseline ships 8 options per [ADR-162 §Decision-anchor #3](adr/162-atmux-owns-tmux-infrastructure.md) — most critically `automatic-rename off` (protects the [ADR-135](adr/135-cockpit-naming-convention.md) `buildWindowName` contract from tmux's auto-rename stomping on `_-prefix` windows).
 

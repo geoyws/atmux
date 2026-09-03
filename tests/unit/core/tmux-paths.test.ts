@@ -38,7 +38,7 @@ describe("getCockpitSocketName", () => {
     expect(getCockpitSocketName({ ATMUX_COCKPIT_SOCKET: "my-cockpit" })).toBe("my-cockpit");
   });
 
-  test("env override honoured verbatim — future vendored cockpit socket", () => {
+  test("env override honoured verbatim — vendored cockpit socket", () => {
     expect(getCockpitSocketName({ ATMUX_COCKPIT_SOCKET: "atmux-vendored-cockpit" })).toBe(
       COCKPIT_SOCKET_VENDORED,
     );
@@ -61,7 +61,7 @@ describe("COCKPIT_SOCKET_DEFAULT constant", () => {
 });
 
 describe("COCKPIT_SOCKET_VENDORED constant", () => {
-  test("equals 'atmux-vendored-cockpit' for the future vendored plane", () => {
+  test("equals 'atmux-vendored-cockpit' for the vendored cockpit plane", () => {
     expect(COCKPIT_SOCKET_VENDORED).toBe("atmux-vendored-cockpit");
   });
 });

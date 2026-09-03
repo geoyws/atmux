@@ -250,7 +250,7 @@ describe("resolveTmuxBin — default parameters", () => {
   });
 });
 
-describe("resolveVendoredTmuxBin — future vendored-only plane", () => {
+describe("resolveVendoredTmuxBin — vendored driver-only cockpit plane", () => {
   test("canonical vendored path resolves and does not probe PATH", () => {
     const existsCalls: string[] = [];
     const r = resolveVendoredTmuxBin(
