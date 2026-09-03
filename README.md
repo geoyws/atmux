@@ -716,7 +716,7 @@ atmux issues sync                            # issue-sync: poll GitHub/Azure-Dev
 🔧 Maintenance
 atmux rotate <member>
 atmux rotate-lead
-atmux handoff <from> <to> [--reason <r>] [--no-native] [--pause-from]
+atmux handoff <from> <to> [--reason <r>] [--no-native] [--pause-from]  # legacy-mode only
 atmux add-member <name> --role <r> --tui <t> [--model <m>] [--cwd <d>] [--command <c>]
 atmux member rename <id> --label <new>       # hot-rename display label (ADR-136)
 atmux member move <id> --to <position>       # relocate member's tmux window (ADR-161 §C)
@@ -907,7 +907,7 @@ atmux ships with a Claude Code plugin bundling 12 cockpit-tier skills (`/atmux:b
 | `/atmux:cockpit-rebuild`    | Deterministically (re)build the cockpit + every per-team cage.            | `atmux cockpit rebuild`       |
 | `/atmux:ghostbuster`        | Sweep mergeable epic-team branches; merge what's ahead, prune stale.      | `atmux epic-merge / git`      |
 | `/atmux:heads-up <msg>`     | Lightweight nudge to teammates about new tasks / cascade unblocks.        | `atmux send`                  |
-| `/atmux:session`            | Session continuity (cont / handoff / stop) at phase boundaries.| `atmux handoff`               |
+| `/atmux:session`            | Session continuity (cont / handoff / stop) at phase boundaries; `atmux handoff` is legacy-mode only. | `atmux handoff`               |
 | `/atmux:sweep`              | Cockpit-level self-healing diagnosis-and-prevention sweep.                | `atmux doctor / status`       |
 | `/atmux:team`               | Team lifecycle (start / stop / add / clear / cleanup / rotate-lead).      | `atmux team / start / stop`   |
 | `/atmux:tell-lead <msg>`    | Driver → lead durable ask with best-effort pane wake-up.                  | `atmux tell-lead`             |
@@ -984,8 +984,10 @@ by `cwd`. Configure in `team.json`:
 
 - **`warn`** — whip logs + Discord-pings only.
 - **`pause`** — whip also calls `atmux pause <member>`; `dispatch`/`claim` refuse.
-- **`failover`** — whip additionally tries `atmux handoff <exhausted> <peer>`,
+- **`failover`** — whip additionally tries legacy-mode `atmux handoff <exhausted> <peer>`,
   where `<peer>` is another member with the same `role` that still has budget.
+  Current external-KB continuity uses KB checkpoint and session-handoff
+  records; the legacy handoff remains only as a compatibility fallback.
 
 Override pricing with `ATMUX_PRICING_FILE=/path/to/my-pricing.json`. Default
 table at `lib/pricing.json` (Opus / Sonnet / Haiku).
@@ -999,11 +1001,15 @@ atmux cost --since "1 hour ago" # windowed
 
 ## 🤝 Handoff
 
+Current continuity authority is KB. Use KB checkpoint and session-handoff
+records for the live path; `atmux handoff` remains legacy-mode only and still
+exists for compatibility when the legacy projection is useful.
+
 ```bash
 atmux handoff cursor-1 kimi-1 --reason "cursor budget exhausted"
 ```
 
-Two-phase:
+Legacy-mode two-phase compatibility path:
 1. 📝 **Native**: asks the source TUI to write a handoff summary to a
    pre-registered path. Waits `ATMUX_HANDOFF_WAIT` (default 30s).
 2. 🖥️ **Screen-scrape**: if the file never shows up, `tmux capture-pane -S

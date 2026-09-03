@@ -50,7 +50,7 @@ Pair runbook beats with e2e step labels — beat name = `test.step()` label verb
 
 ## Session lifecycle
 
-Handoff at every phase boundary — phase = "shipped X end-to-end" (committed + pushed + smoked/typechecked/deployed green). Memory + handoff + task-list land while context is fresh. Driver itself = no-op handoff (no coordination state); lead in dedicated window handoffs at boundaries.
+Handoff at every phase boundary via KB records — phase = "shipped X end-to-end" (committed + pushed + smoked/typechecked/deployed green). `atmux handoff` is legacy-mode only and stays compatibility-only. Memory + handoff + task-list land while context is fresh. Driver itself = no-op handoff (no coordination state); lead in dedicated window handoffs at boundaries.
 
 ## Migrators
 
