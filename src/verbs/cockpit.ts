@@ -66,7 +66,6 @@ import {
   resolvePrefix,
   resolveTopLevelGroup,
 } from "../core/cockpit.ts";
-import { resolveVendoredTmuxBin } from "../core/resolve-tmux-bin.ts";
 import { loadTeam, teamJsonPath } from "../core/common.ts";
 import { installCockpitCronBlock } from "../core/cron.ts";
 import {
@@ -74,8 +73,13 @@ import {
   formatReadinessWarning,
   type PaneReadinessResult,
 } from "../core/pane-readiness.ts";
+import { resolveVendoredTmuxBin } from "../core/resolve-tmux-bin.ts";
 import { migrateLegacySessionName } from "../core/session-migrate.ts";
-import { COCKPIT_SOCKET_VENDORED, getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.ts";
+import {
+  COCKPIT_SOCKET_VENDORED,
+  getAtmuxTmuxConfPath,
+  getCockpitSocketName,
+} from "../core/tmux-paths.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { resolveTuiCommand } from "../core/tui-cmd.ts";
 import { UsageError } from "../errors.ts";
@@ -988,7 +992,9 @@ export async function cockpitRebuild(
       binaryPath: driverOnlyBinaryPath,
     });
     await reconcileDriverOnlyCockpitSession(cockpitTmux, cockpit, logger);
-    logger.ok(`driver-only cockpit ready: ${driverOnlyBinaryPath} -L ${COCKPIT_SOCKET_VENDORED} attach -t ${cockpit.cockpitSession}`);
+    logger.ok(
+      `driver-only cockpit ready: ${driverOnlyBinaryPath} -L ${COCKPIT_SOCKET_VENDORED} attach -t ${cockpit.cockpitSession}`,
+    );
     return 0;
   }
   cockpitTmux = factory({

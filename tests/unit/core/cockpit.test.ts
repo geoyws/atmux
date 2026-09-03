@@ -27,8 +27,8 @@ import {
   resolveCockpitConfigPath,
   resolvePrefix,
   resolveTopLevelGroup,
-  validatePrefixChain,
   validateDriverOnlyCockpit,
+  validatePrefixChain,
   walkSessions,
 } from "../../../src/core/cockpit.ts";
 import { ConfigError, SchemaError } from "../../../src/errors.ts";
@@ -1766,7 +1766,9 @@ describe("loadCockpit — driverOnly validation (ADR-279 amendment 2026-09-03)",
         { name: "driver-3", cwd: "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-3" },
       ],
     });
-    await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(/driver, driver-2, driver-3/);
+    await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(
+      /driver, driver-2, driver-3/,
+    );
   });
 
   test("driverOnly=true rejects the wrong window order", async () => {
@@ -1793,7 +1795,9 @@ describe("loadCockpit — driverOnly validation (ADR-279 amendment 2026-09-03)",
         { name: "driver-3", cwd: "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-3" },
       ],
     });
-    await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(/cannot enable medic/);
+    await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(
+      /cannot enable medic/,
+    );
   });
 
   test("driverOnly=true rejects superbot.enabled", async () => {
@@ -1807,7 +1811,9 @@ describe("loadCockpit — driverOnly validation (ADR-279 amendment 2026-09-03)",
         { name: "driver-3", cwd: "/Users/geoyws/work/src/atmux/.atmux/worktrees/driver-3" },
       ],
     });
-    await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(/cannot enable superbot/);
+    await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(
+      /cannot enable superbot/,
+    );
   });
 
   test("driverOnly=true rejects disabled operator windows", async () => {

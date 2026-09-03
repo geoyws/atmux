@@ -18,9 +18,9 @@ import {
   type CockpitMedic,
   type CockpitSessionT,
   type Cockpit as CockpitShape,
-  type CockpitWindow,
   type CockpitSuperbot,
   type CockpitTeam,
+  type CockpitWindow,
   type TeamSessionT,
 } from "../schema/cockpit.ts";
 import { sessionAnchorPath } from "./common.ts";

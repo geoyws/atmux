@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Target, TmuxConfig, TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import { buildGroupTopology, enabledTeams, groupSocketPath } from "../../../src/core/cockpit.ts";
+import { COCKPIT_SOCKET_VENDORED, getAtmuxTmuxConfPath } from "../../../src/core/tmux-paths.ts";
 import type { Logger } from "../../../src/core/tui.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
 import type { Cockpit as CockpitShape, CockpitTeam } from "../../../src/schema/cockpit.ts";
@@ -19,12 +20,12 @@ import {
   buildSuperbotWindowCommand,
   buildTeamWindowCommand,
   type CapturedCockpitWindow,
+  type CockpitOpts,
   cageAlive,
   cockpit,
   cockpitAttach,
   cockpitMigrateSocket,
   cockpitRebuild,
-  type CockpitOpts,
   LEGACY_COCKPIT_SESSION_NAMES,
   normaliseTeamJson,
   type ParsedCockpitArgs,
@@ -39,10 +40,6 @@ import {
   PORTABLE_KEEPALIVE_COMMAND,
   setCanonicalAtmuxTmuxHome,
 } from "../../helpers/tmux.ts";
-import {
-  COCKPIT_SOCKET_VENDORED,
-  getAtmuxTmuxConfPath,
-} from "../../../src/core/tmux-paths.ts";
 
 const FAKE_VENDORED_TMUX_BIN = "/tmp/atmux-vendored-tmux-fake";
 
@@ -2183,7 +2180,9 @@ describe("cockpitRebuild", () => {
     const sess = state.sessions.get("atx");
     expect(sess?.windows.map((w) => w.name)).toEqual(["driver", "driver-2", "driver-3"]);
     expect(sess?.windows.map((w) => w.cwd)).toEqual(driverOnlyWindows().map((w) => w.cwd));
-    expect(sess?.windows.every((w) => (w as { shellCommand?: unknown }).shellCommand === undefined)).toBe(true);
+    expect(
+      sess?.windows.every((w) => (w as { shellCommand?: unknown }).shellCommand === undefined),
+    ).toBe(true);
     expect(configs).toEqual([
       {
         socket: COCKPIT_SOCKET_VENDORED,
@@ -2317,9 +2316,11 @@ describe("cockpitRebuild", () => {
     expect(code).toBe(0);
     expect(state.ops).toContain("cockpit:newWindow(atx,driver-2)");
     expect(state.ops).toContain("cockpit:swapWindow(atx:3<->atx:2)");
-    expect(state.ops.some((op) => op.includes("kill") || op.includes("rename") || op.includes("moveWindow"))).toBe(
-      false,
-    );
+    expect(
+      state.ops.some(
+        (op) => op.includes("kill") || op.includes("rename") || op.includes("moveWindow"),
+      ),
+    ).toBe(false);
     expect(state.sessions.get("atx")?.windows.map((w) => w.name)).toEqual([
       "driver",
       "driver-2",
@@ -2336,7 +2337,12 @@ describe("cockpitRebuild", () => {
           {
             createdAt: 1,
             windows: [
-              { index: 1, name: "driver", cwd: "/Users/geoyws/work/src/atmux", shellCommand: "zsh" },
+              {
+                index: 1,
+                name: "driver",
+                cwd: "/Users/geoyws/work/src/atmux",
+                shellCommand: "zsh",
+              },
               {
                 index: 2,
                 name: "_superdriver",
@@ -2382,7 +2388,12 @@ describe("cockpitRebuild", () => {
           {
             createdAt: 1,
             windows: [
-              { index: 1, name: "driver", cwd: "/Users/geoyws/work/src/atmux", shellCommand: "zsh" },
+              {
+                index: 1,
+                name: "driver",
+                cwd: "/Users/geoyws/work/src/atmux",
+                shellCommand: "zsh",
+              },
               {
                 index: 2,
                 name: "driver",
@@ -2521,9 +2532,11 @@ describe("cockpitRebuild", () => {
     expect(code).toBe(0);
     expect(state.ops).toContain("cockpit:swapWindow(atx:2<->atx:1)");
     expect(state.ops).toContain("cockpit:swapWindow(atx:3<->atx:2)");
-    expect(state.ops.some((op) => op.includes("kill") || op.includes("rename") || op.includes("moveWindow"))).toBe(
-      false,
-    );
+    expect(
+      state.ops.some(
+        (op) => op.includes("kill") || op.includes("rename") || op.includes("moveWindow"),
+      ),
+    ).toBe(false);
     expect(state.sessions.get("atx")?.windows.map((w) => w.name)).toEqual([
       "driver",
       "driver-2",
@@ -3168,7 +3181,10 @@ function makeMockTmux(socketTag: string, state: MockTmuxState): TmuxNamespace {
         if (sourceIdx < 0) return;
         const [moved] = sourceSession.windows.splice(sourceIdx, 1);
         if (moved === undefined) return;
-        const targetIdx = Math.max(0, Math.min(target.windowIndex - 1, targetSession.windows.length));
+        const targetIdx = Math.max(
+          0,
+          Math.min(target.windowIndex - 1, targetSession.windows.length),
+        );
         targetSession.windows.splice(targetIdx, 0, moved);
         normalizeWindows(target.sessionName);
         if (source.sessionName !== target.sessionName) {
