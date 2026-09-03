@@ -26,6 +26,45 @@ export interface CheckDriverPaneStateOpts {
   probe?: (team: Team, atmuxDir: string) => Promise<DriverPaneHealth>;
 }
 
+function hasPairObservation(health: DriverPaneHealth): boolean {
+  return (
+    health.pairDecision !== undefined ||
+    health.pairReason !== undefined ||
+    health.pairDiagnostics !== undefined
+  );
+}
+
+function renderDriverPanePairRow(health: DriverPaneHealth): DoctorRow | null {
+  if (!hasPairObservation(health)) return null;
+  const reason = health.pairReason ?? "pair.observer.list_panes_failed";
+  const diagnosis = health.pairDiagnostics?.[0] ?? "Driver pane pair requires repair before start.";
+  const detail = `${diagnosis} (reason=${reason})`;
+
+  if (health.pairDecision === "noop") {
+    return {
+      status: "green",
+      label: "driver-pane-pair",
+      detail,
+    };
+  }
+
+  if (health.pairDecision === "plan-add-attention") {
+    return {
+      status: "yellow",
+      label: "driver-pane-pair",
+      detail,
+      hint: "run atmux start to add the attention pane",
+    };
+  }
+
+  return {
+    status: "red",
+    label: "driver-pane-pair",
+    detail,
+    hint: "repair the driver-pane layout before starting",
+  };
+}
+
 /**
  * ADR-064 §4 + §OQ3 — surface the driver pane's live state as a
  * doctor row. Severity mapping:
@@ -36,7 +75,8 @@ export interface CheckDriverPaneStateOpts {
  *   - configured=true, state ∈ {RATE-LIMIT, MODAL, COMPACTING} → yellow ("driver pane stuck")
  *   - configured=true, state ∈ {SHELL, UNKNOWN, null}   → yellow ("unexpected state")
  *
- * Single label across all rows: `driver-pane-state`.
+ * Pair rows use `driver-pane-pair`; state rows keep
+ * `driver-pane-state`.
  */
 
 export async function checkDriverPaneState(
@@ -48,14 +88,68 @@ export async function checkDriverPaneState(
   const probe = opts.probe ?? ((t, dir) => probeDriverPane(t, dir, opts.probeDeps));
   const health = await probe(team, atmuxDir);
 
+  // Legacy backward-compatible fixtures may still set configured=false
+  // even though production probe snapshots always report configured=true.
   if (!health.configured) return [];
+
+  const pairRow = renderDriverPanePairRow(health);
+  if (pairRow !== null) {
+    if (pairRow.status === "green") {
+      const pairRows: DoctorRow[] = [pairRow];
+      if (health.state === "READY" || health.state === "TYPING" || health.state === "BUSY") {
+        pairRows.push({
+          status: "green",
+          label: "driver-pane-state",
+          detail: `state=${health.state}`,
+        });
+        return pairRows;
+      }
+      if (health.state === null) {
+        pairRows.push({
+          status: "yellow",
+          label: "driver-pane-state",
+          detail: "driver pane capture returned no signal",
+          hint: "check tmux server health",
+        });
+        return pairRows;
+      }
+      if (
+        health.state === "RATE-LIMIT" ||
+        health.state === "MODAL" ||
+        health.state === "COMPACTING"
+      ) {
+        const evidence = truncateEvidence(health.evidence, 60);
+        pairRows.push({
+          status: "yellow",
+          label: "driver-pane-state",
+          detail: `driver pane stuck in ${health.state}${evidence === "" ? "" : ` (${evidence})`}`,
+          hint:
+            health.state === "RATE-LIMIT"
+              ? "wait for budget refresh"
+              : health.state === "MODAL"
+                ? "answer the modal in the driver pane"
+                : "wait for compaction to finish",
+        });
+        return pairRows;
+      }
+      const evidence = truncateEvidence(health.evidence, 60);
+      pairRows.push({
+        status: "yellow",
+        label: "driver-pane-state",
+        detail: `driver pane in unexpected state=${health.state}${evidence === "" ? "" : ` (${evidence})`}`,
+        hint: "check the driver pane manually",
+      });
+      return pairRows;
+    }
+    return [pairRow];
+  }
 
   if (!health.windowExists) {
     return [
       {
         status: "yellow",
         label: "driver-pane-state",
-        detail: "team has driverSession set but no live driver window",
+        detail: "team has no live driver window",
         hint: "run atmux start",
       },
     ];

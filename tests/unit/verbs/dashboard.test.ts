@@ -13,6 +13,9 @@
 // directory: precondition-failure (no team.json), happy path with
 // `signal` aborted before the first frame (so the loop returns
 // immediately and we still cover the team-load + collect-wiring code).
+// The happy-path wiring test injects lightweight verbs/probe hooks so
+// it exercises the collector closure without contacting the default
+// tmux socket.
 
 import { describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
@@ -500,16 +503,39 @@ describe("dashboard() — public verb wiring", () => {
   });
 
   test("happy path: renders ONE real frame (driver-pane collector closure runs) then exits on SIGINT", async () => {
-    // Covers the `() => probeDriverPane(team, atmuxDir)` closure the
-    // verb hands to buildLoopDeps — reachable only by letting the loop
-    // render a real frame. The fixture team has no driverSession, so
-    // probeDriverPane returns `configured: false` without tmux IO; the
-    // three real verbs run against the fixture and any errors they
-    // throw are swallowed by captureVerbStdout into the frame body.
+    // Covers the dashboard collect wiring that hands a driver-pane
+    // probe into the frame builder. The injected verbs keep the test
+    // off the default tmux socket while still proving the collector
+    // closure runs and renders one frame.
     const dir = await mkdtemp(join(tmpdir(), "atmux-dash-frame-"));
     const atmuxDir = join(dir, ".atmux");
     await mkdir(atmuxDir, { recursive: true });
     await writeFile(join(atmuxDir, "team.json"), JSON.stringify({ name: "x", members: [] }));
+
+    let probeCalled = false;
+    const hooks = {
+      statusVerb: async () => {
+        process.stdout.write("🟢 TEAM atmux  session=atmux-x [up]\n");
+        return 0;
+      },
+      taskVerb: async () => {
+        process.stdout.write("t-1 todo  test\n");
+        return 0;
+      },
+      outboxVerb: async () => {
+        process.stdout.write("[lead → driver] hello\n");
+        return 0;
+      },
+      probeDriverPane: async () => {
+        probeCalled = true;
+        return {
+          configured: true,
+          windowExists: false,
+          state: null,
+          evidence: "probe-hook",
+        };
+      },
+    };
 
     let sigintHandler: (() => void) | null = null;
     const origOnce = process.once.bind(process);
@@ -530,9 +556,10 @@ describe("dashboard() — public verb wiring", () => {
       return true;
     }) as typeof process.stdout.write;
     try {
-      const exit = await dashboard(["--team-dir", dir, "--interval", "0.001"]);
+      const exit = await dashboard(["--team-dir", dir, "--interval", "0.001"], hooks);
       expect(exit).toBe(0);
       expect(frames).toBe(1);
+      expect(probeCalled).toBe(true);
     } finally {
       process.stdout.write = origStdoutWrite;
       process.once = origOnce;

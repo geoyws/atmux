@@ -59,16 +59,75 @@ describe("dashboard composeFrame — driver-pane block", () => {
     expect(frame).toContain("state=n/a");
   });
 
-  test("driverPane state=COMPACTING shows the live state token", () => {
+  test("driverPane pairDecision=unavailable renders observer failure instead of state", () => {
     const dp: DriverPaneHealth = {
       configured: true,
       windowExists: true,
-      state: "COMPACTING",
-      evidence: "Compacting conversation",
+      state: null,
+      pairDecision: "unavailable",
+      pairReason: "pair.observer.list_panes_failed",
+      evidence: "tmux pane list failed",
     };
     const frame = composeFrame({ ...BASE_FRAME, driverPane: dp });
-    expect(frame).toContain("state=COMPACTING");
-    expect(frame).toContain("Compacting conversation");
+    expect(frame).toContain("pair=observer-failure");
+    expect(frame).toContain("reason=pair.observer.list_panes_failed");
+    expect(frame).not.toContain("window=exists  state=");
+  });
+
+  test("driverPane list-window failure also renders observer failure", () => {
+    const dp: DriverPaneHealth = {
+      configured: true,
+      windowExists: false,
+      state: null,
+      pairDecision: "unavailable",
+      pairReason: "pair.observer.list_windows_failed",
+      evidence: "tmux list-windows failed",
+    };
+    const frame = composeFrame({ ...BASE_FRAME, driverPane: dp });
+    expect(frame).toContain("pair=observer-failure");
+    expect(frame).toContain("reason=pair.observer.list_windows_failed");
+  });
+
+  test("driverPane pairDecision=fail-closed renders the fail-closed reason", () => {
+    const dp: DriverPaneHealth = {
+      configured: true,
+      windowExists: true,
+      state: null,
+      pairDecision: "fail-closed",
+      pairReason: "pair.observer.missing_pane_metadata",
+      evidence: "missing pane metadata",
+    };
+    const frame = composeFrame({ ...BASE_FRAME, driverPane: dp });
+    expect(frame).toContain("pair=fail-closed");
+    expect(frame).toContain("reason=pair.observer.missing_pane_metadata");
+  });
+
+  test("driverPane pairDecision=plan-add-attention renders the add-attention reason", () => {
+    const dp: DriverPaneHealth = {
+      configured: true,
+      windowExists: true,
+      state: null,
+      pairDecision: "plan-add-attention",
+      pairReason: "pair.singleton.safe_worker_role",
+      evidence: "worker singleton",
+    };
+    const frame = composeFrame({ ...BASE_FRAME, driverPane: dp });
+    expect(frame).toContain("pair=plan-add-attention");
+    expect(frame).toContain("reason=pair.singleton.safe_worker_role");
+  });
+
+  test("driverPane pairDecision=noop + READY shows the worker state", () => {
+    const dp: DriverPaneHealth = {
+      configured: true,
+      windowExists: true,
+      pairDecision: "noop",
+      pairReason: "pair.two.valid",
+      state: "READY",
+      evidence: "worker pane ready",
+    };
+    const frame = composeFrame({ ...BASE_FRAME, driverPane: dp });
+    expect(frame).toContain("state=READY");
+    expect(frame).toContain("worker pane ready");
   });
 
   test("driver-pane block appears ABOVE driver-inbox block (ordering)", () => {
@@ -83,6 +142,22 @@ describe("dashboard composeFrame — driver-pane block", () => {
     const inboxIdx = frame.indexOf("─── driver-inbox open ───");
     expect(paneIdx).toBeGreaterThan(-1);
     expect(inboxIdx).toBeGreaterThan(paneIdx);
+  });
+
+  test("pair row is emitted before evidence in the dashboard block", () => {
+    const dp: DriverPaneHealth = {
+      configured: true,
+      windowExists: true,
+      state: null,
+      pairDecision: "unavailable",
+      pairReason: "pair.observer.list_windows_failed",
+      evidence: "tmux list-windows failed",
+    };
+    const frame = composeFrame({ ...BASE_FRAME, driverPane: dp });
+    const pairIdx = frame.indexOf("pair=observer-failure");
+    const evidenceIdx = frame.indexOf("evidence:");
+    expect(pairIdx).toBeGreaterThan(-1);
+    expect(evidenceIdx).toBeGreaterThan(pairIdx);
   });
 
   test("evidence is truncated to 80 chars in the dashboard block", () => {

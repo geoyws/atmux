@@ -122,9 +122,8 @@ export interface FrameSnapshot {
   driverInbox: string;
   /** First ≤10 lines of `atmux outbox`. */
   outbox: string;
-  /** ADR-064 §4: driver-pane health snapshot. Optional for back-compat
-   *  with existing test fixtures; absence is rendered same as
-   *  `configured=false` (block skipped). */
+  /** ADR-064 §4: driver-pane health snapshot. Optional for legacy
+   *  fixture back-compat; absence is rendered as a skipped block. */
   driverPane?: DriverPaneHealth;
 }
 
@@ -136,8 +135,7 @@ export function composeFrame(snap: FrameSnapshot): string {
   const statusBlock = `${snap.status}${ensureTrailingNewline(snap.status)}\n`;
   const kanbanBlock = `─── recent kanban ───\n${snap.recentKanban}${ensureTrailingNewline(snap.recentKanban)}\n`;
   // ADR-064 §4: driver-pane block above driver-inbox. Skipped when the
-  // team didn't opt into the ADR-044 driver-window topology OR when the
-  // snapshot lacks the field (back-compat).
+  // snapshot lacks the field (legacy fixture back-compat).
   const driverPaneBlock =
     snap.driverPane === undefined ? "" : renderDriverPaneBlock(snap.driverPane);
   const inboxBlock = `─── driver-inbox open ───\n${snap.driverInbox}${ensureTrailingNewline(snap.driverInbox)}\n`;
@@ -149,9 +147,17 @@ export function composeFrame(snap: FrameSnapshot): string {
  *  block); else 3-line block with trailing newline. */
 function renderDriverPaneBlock(dp: DriverPaneHealth): string {
   if (!dp.configured) return "";
+  const evidence = dp.evidence.length > 80 ? `${dp.evidence.slice(0, 80)}…` : dp.evidence;
+  if (dp.pairDecision !== undefined && dp.pairDecision !== "noop") {
+    const pairLabel = dp.pairDecision === "unavailable" ? "observer-failure" : dp.pairDecision;
+    return (
+      `─── driver pane ───\n` +
+      `configured=y  pair=${pairLabel} reason=${dp.pairReason ?? "pair.observer.list_panes_failed"}\n` +
+      `evidence: ${evidence}\n`
+    );
+  }
   const window = dp.windowExists ? "exists" : "missing";
   const state = dp.windowExists ? (dp.state ?? "UNKNOWN") : "n/a";
-  const evidence = dp.evidence.length > 80 ? `${dp.evidence.slice(0, 80)}…` : dp.evidence;
   return (
     `─── driver pane ───\n` +
     `configured=y  window=${window}  state=${state}\n` +
@@ -324,6 +330,16 @@ export function buildDriverInboxReader(atmuxDir: string): () => Promise<string |
 /** Verb function shape — every verb exports `(args) => Promise<exit>`. */
 type VerbFn = (a: ReadonlyArray<string>) => Promise<number>;
 
+/** Test-only wiring hooks for `dashboard()`. Production callers omit
+ *  this; unit tests can inject lightweight verbs/probes to exercise
+ *  the collector closure without hitting the default tmux socket. */
+export interface DashboardHooks {
+  statusVerb?: VerbFn;
+  taskVerb?: VerbFn;
+  outboxVerb?: VerbFn;
+  probeDriverPane?: () => Promise<DriverPaneHealth>;
+}
+
 /** Wiring layer: build the `DashboardLoopDeps` for the prod runtime.
  *  Exported so the closures (the four collect-binders + the write
  *  passthrough) are exercisable from unit tests without spinning the
@@ -360,7 +376,10 @@ export function buildLoopDeps(
  * is fired by the caller. Throws `ConfigError` (no team.json) /
  * `UsageError` (bad args) before entering the loop.
  */
-export async function dashboard(argv: ReadonlyArray<string>): Promise<number> {
+export async function dashboard(
+  argv: ReadonlyArray<string>,
+  hooks: DashboardHooks = {},
+): Promise<number> {
   const parsed = parseDashboardArgs(argv);
 
   const dirOpts: ResolveDirOpts = {};
@@ -377,9 +396,12 @@ export async function dashboard(argv: ReadonlyArray<string>): Promise<number> {
   // module top would create import-cycle risk against any verb that
   // ever wants to invoke the dashboard programmatically; lazy keeps
   // the dependency direction one-way.
-  const { status: statusVerb } = await import("./status.ts");
-  const { task: taskVerb } = await import("./task.ts");
-  const { outbox: outboxVerb } = await import("./reply.ts");
+  const { status: statusVerbReal } = await import("./status.ts");
+  const { task: taskVerbReal } = await import("./task.ts");
+  const { outbox: outboxVerbReal } = await import("./reply.ts");
+  const statusVerb = hooks.statusVerb ?? statusVerbReal;
+  const taskVerb = hooks.taskVerb ?? taskVerbReal;
+  const outboxVerb = hooks.outboxVerb ?? outboxVerbReal;
 
   // SIGINT / SIGTERM → graceful shutdown. Bash dashboard.sh:18 sets a
   // trap that prints `dashboard: exit` and exits 0; mirror the visible
@@ -393,8 +415,13 @@ export async function dashboard(argv: ReadonlyArray<string>): Promise<number> {
   process.once("SIGINT", onSignal);
   process.once("SIGTERM", onSignal);
   try {
-    const deps = buildLoopDeps(atmuxDir, statusVerb, taskVerb, outboxVerb, abort.signal, () =>
-      probeDriverPane(team, atmuxDir),
+    const deps = buildLoopDeps(
+      atmuxDir,
+      statusVerb,
+      taskVerb,
+      outboxVerb,
+      abort.signal,
+      hooks.probeDriverPane ?? (() => probeDriverPane(team, atmuxDir)),
     );
     return await dashboardLoop(deps, parsed.intervalSec);
   } finally {
