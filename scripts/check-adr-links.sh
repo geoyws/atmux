@@ -34,16 +34,51 @@ adr_dir="$(cd "$script_dir/../docs/adr" && pwd)" || {
 cd "$adr_dir" || { echo "ERR: cannot cd $adr_dir" >&2; exit 2; }
 
 # ---- Build the set of ADR numbers that exist on disk ----
-# Keyed by zero-padded 3-digit number; value is the canonical filename.
-declare -A num_exists
-declare -A basename_exists
+# Bash 3.2 does not support associative arrays, so keep newline-delimited
+# membership lists and do exact line membership checks instead.
+num_exists_list=""
+basename_exists_list=""
+
+has_line() {
+  local needle=$1
+  local haystack=$2
+  [ -n "$haystack" ] || return 1
+  printf '%s\n' "$haystack" | grep -Fxq -- "$needle"
+}
+
+add_line() {
+  local value=$1
+  local list_name=$2
+  case "$list_name" in
+    basename_exists_list)
+      if [ -n "$basename_exists_list" ]; then
+        basename_exists_list="${basename_exists_list}
+$value"
+      else
+        basename_exists_list=$value
+      fi
+      ;;
+    num_exists_list)
+      if [ -n "$num_exists_list" ]; then
+        num_exists_list="${num_exists_list}
+$value"
+      else
+        num_exists_list=$value
+      fi
+      ;;
+    *)
+      return 2
+      ;;
+  esac
+}
+
 for f in *.md; do
   [ "$f" = "INDEX.md" ] && continue
   [ "$f" = "README.md" ] && continue
-  basename_exists["$f"]=1
+  add_line "$f" basename_exists_list
   # Extract leading NNN- prefix.
   if [[ "$f" =~ ^([0-9]{3})- ]]; then
-    num_exists["${BASH_REMATCH[1]}"]=1
+    add_line "${BASH_REMATCH[1]}" num_exists_list
   fi
 done
 
@@ -66,7 +101,7 @@ for src in *.md; do
     base="${base%%#*}"
     # Only consider basenames that look like an ADR file.
     [[ "$base" =~ ^[0-9]{3}- ]] || continue
-    if [ -z "${basename_exists[$base]:-}" ]; then
+    if ! has_line "$base" "$basename_exists_list"; then
       file_findings+=("  dangling md-link: $base")
     fi
   done < <(grep -oE '\]\([^)]*[0-9]{3}-[^)]*\.md[^)]*\)' "$src" \
@@ -84,7 +119,7 @@ for src in *.md; do
     # Normalize to 3-digit zero-pad for the lookup.
     pad="$(printf '%03d' "$((10#$n))")"
     [ "$pad" = "$self_num" ] && continue
-    if [ -z "${num_exists[$pad]:-}" ]; then
+    if ! has_line "$pad" "$num_exists_list"; then
       file_findings+=("  dangling ADR-ref: ADR-$n (no docs/adr/$pad-*.md)")
     fi
   done < <(grep -oE 'ADR-[0-9]{2,3}([^0-9]|$)' "$src" \
@@ -93,11 +128,13 @@ for src in *.md; do
             | sort -u)
 
   if [ "${#file_findings[@]}" -gt 0 ]; then
-    dangling=$((dangling + ${#file_findings[@]}))
+    deduped_findings="$(printf '%s\n' "${file_findings[@]}" | sort -u)"
+    file_dangling_count="$(printf '%s\n' "$deduped_findings" | grep -c '^  ')"
+    dangling=$((dangling + file_dangling_count))
     {
       echo "✗ $src"
       # Deduplicate findings within the file.
-      printf '%s\n' "${file_findings[@]}" | sort -u
+      printf '%s\n' "$deduped_findings"
     } >&2
   fi
 done
