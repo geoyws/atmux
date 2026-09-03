@@ -18,8 +18,8 @@
 //   `resolveVendoredTmuxBin()` is the fail-closed sibling for the
 //   driver-only cockpit path. It accepts `ATMUX_VENDORED_TMUX_BIN` or
 //   the canonical vendored install path, but never falls back to the
-//   system tmux on PATH. That keeps the future cockpit/group/team
-//   servers from silently re-contacting the legacy Homebrew tmux plane.
+//   system tmux on PATH. That keeps the vendored cockpit from silently
+//   re-contacting the legacy Homebrew tmux plane.
 //
 // Mirrors the injectable-seams shape of `resolveDefaultListenerBinary`
 // in `src/abstractions/native-listener.ts` (env + existsSync) plus a
@@ -80,7 +80,7 @@ function defaultPathProbe(): string | null {
 export function resolveTmuxBin(
   env: NodeJS.ProcessEnv = process.env,
   existsSync: (path: string) => boolean = fsExistsSync,
-  _warn: (msg: string) => unknown = () => {},
+  _warn?: (msg: string) => unknown,
   state: ResolveTmuxBinState = moduleState,
   pathProbe: () => string | null = defaultPathProbe,
 ): string {
