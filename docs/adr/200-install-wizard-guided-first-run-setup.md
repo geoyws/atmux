@@ -3,7 +3,7 @@
 **Status**: Accepted — ratified by driver 2026-05-23 (Honker substrate on trunk via Epic A/B/C + orchd P1 merges; deferral condition met). Implementation EPIC [e-b545b70c](../tasks/) carries the wizard impl follow-up — substrate is no longer a blocker.
 **Date**: 2026-05-20
 **Driver-ref**: 2026-05-20 evening design session — operator request "make sure that we have a wizard to install atmux as well" + "gate it after honker"
-**Cross-refs**: [ADR-126](126-sqlite-state-store.md) (state.db introduces install-side concern about extension-load), [ADR-162](162-cockpit-socket-isolation.md) (cockpit tmux socket setup the wizard automates), [ADR-077](077-superdoctor-cockpit-role.md) (medic/superdoctor role wired up at first-run), [ADR-091](091-kanban-driven-auto-merge.md) (epic-team spawn surface that the wizard exposes config for), [ADR-192](192-cron-arm-idempotency-contract.md) (wizard installs the per-team cron blocks), [ADR-199](199-claude-account-pool-for-epic-team-spawning.md) (pool config step), Honker substrate ADR (TBD — forward-ref D6).
+**Cross-refs**: [ADR-126](126-sqlite-state-store.md) (state.db introduces install-side concern about extension-load), [ADR-162](162-atmux-owns-tmux-infrastructure.md) (cockpit tmux socket setup the wizard automates), [ADR-077](077-superdoctor-cockpit-role.md) (medic/superdoctor role wired up at first-run), [ADR-091](091-kanban-driven-auto-merge.md) (epic-team spawn surface that the wizard exposes config for), [ADR-192](192-cron-arm-idempotency-contract.md) (wizard installs the per-team cron blocks), [ADR-199](199-claude-account-pool-for-epic-team-spawning.md) (pool config step), Honker substrate ADR (TBD — forward-ref D6).
 
 ## Context
 

@@ -202,7 +202,7 @@ Per ADR-077 §7d ("not a license to redesign atmux") + EPIC body — the medic f
 - decision number 076 (no local ADR file exists) — inbox migration precedent.
 - [ADR-154](154-driver-inbox-lead-outbox-sqlite-migration.md) — sibling markdown→SQLite migration at coordination layer.
 - [ADR-164](164-sync-claude-team-json.md) — `cockpit.json` + `team.json` + `.claude/team.json` KEEP-AS-JSON rationale.
-- [ADR-005](005-atomic-json-and-flock.md) — flock pattern superseded for state files by SQLite transactions (config files keep flock).
+- historical decision number 005 (no surviving ADR file) — flock pattern superseded for state files by SQLite transactions (config files keep flock).
 - `src/verbs/migrate-state.ts` — kanban target template (per `t-26dba81c`).
 - Ombudsman complaint `c-67bbac0a` (filed 2026-05-17) — the trigger.
 - EPIC `e-38ee9939` — 6 sub-tasks T1-T6 with populated deps[].

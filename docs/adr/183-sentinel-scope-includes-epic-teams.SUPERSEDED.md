@@ -7,7 +7,7 @@
 **Driver-ref**: 2026-05-20 driver session — operator demand "fix it all, we want sentinel now" closing t-186d5910 Part C. The original implementation comment in `src/verbs/sentinel.ts:360-364` claimed epic-teams were out-of-scope per ADR-132 §"Out of scope", but ADR-132 actually only excludes cockpit-tier surfaces (medic / superdriver); the epic-team exclusion was an implementation choice that predates ADR-091 epic-team proliferation.
 **Parent EPIC**: none (Task `t-186d5910` Part C — driver hotfix bundled with Parts A + D).
 **Supersedes (in scope)**: `src/verbs/sentinel.ts:360-364` implementation comment claiming epic-teams are out-of-scope; no ADR clause is rescinded (ADR-132 §"Out of scope" never named epic-teams explicitly, only cockpit-tier surfaces).
-**Cross-refs**: [ADR-132](./132-pluggable-martinet.md) §D2/§D4 (sentinel design, cockpit W3, impl pluggability), [ADR-158](./158-martinet-to-sentinel-rename.md) (martinet → sentinel rename — vocabulary only), [ADR-091](./091-epic-team-fan-in.md) (epic-team lifecycle — proliferation source), [ADR-089](./089-cockpit-recursive-sessions.md) (recursive `sessions[]` shape — flattener lives here), [ADR-140](./140-cheap-model-first.md) (cheap-model-first — justifies extending observation surface).
+**Cross-refs**: [ADR-132](./132-pluggable-martinet.SUPERSEDED.md) §D2/§D4 (sentinel design, cockpit W3, impl pluggability), [ADR-158](./158-martinet-to-sentinel-rename.SUPERSEDED.md) (martinet → sentinel rename — vocabulary only), [ADR-091](./091-kanban-driven-auto-merge.md) (epic-team lifecycle — proliferation source), [ADR-089](./089-hierarchical-cockpit.md) (recursive `sessions[]` shape — flattener lives here), [ADR-140](./140-cheap-model-first.md) (cheap-model-first — justifies extending observation surface).
 
 ## Context
 
@@ -138,7 +138,7 @@ None at write time. The cursor-impl `observe` path is socket-discovery-only (per
 2. **Sentinel gap** — if cockpit.json gets out of sync with disk reality (epic-team worktree gone but entry still listed), sentinel observes a phantom team and logs error rows.
 3. **Cockpit-rebuild churn** — `atmux cockpit rebuild` reconciles cockpit.json against running tmux state; epic-team turnover means rebuild keeps adding and removing the same kinds of entries.
 
-**Dynamic-discovery model** — sentinel discovers epic-teams at tick time, NOT from cockpit.json registration. The candidate enumeration mechanisms (one will be chosen via [ADR-185](185-sentinel-dynamic-epic-discovery.md)):
+**Dynamic-discovery model** — sentinel discovers epic-teams at tick time, NOT from cockpit.json registration. The candidate enumeration mechanisms (one will be chosen via [ADR-206](206-sentinel-dynamic-epic-discovery.SUPERSEDED.md)):
 
 - (A) Parent `.atmux/state.db` epics table query — walks `epics WHERE status IN ('in_progress', 'review')` and resolves the worktree per epic-team naming convention.
 - (B) Filesystem scan — `<parent-root>-epics/` or `.atmux/worktrees/e-*` glob.

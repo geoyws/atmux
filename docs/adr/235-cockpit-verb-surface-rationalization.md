@@ -6,7 +6,7 @@
 
 ## Context
 
-The cockpit verb surface accreted four shipped verbs that overlap in scope without explicit precedence: `atmux up` ([ADR-010](010-up-verb.md), [ADR-044](044-up-attach-mode.md)), `atmux start` ([ADR-044](044-up-attach-mode.md), [ADR-082](082-worktree-isolation-per-member.md)), `atmux cockpit rebuild` ([ADR-063](063-cockpit-verb-port.md)), and `atmux doctor [--fix]` ([ADR-019](019-doctor-verb.md), [ADR-077](077-superdoctor-cockpit-role.md)). Each was authored to solve a distinct problem; the seams between them grew increasingly fuzzy as the cockpit topology matured through [ADR-089](089-hierarchical-cockpit.md) (recursive `sessions[]`), [ADR-135](135-cockpit-naming-convention.md) (`atmux_cockpit` + `_role` window prefix), and [ADR-167](167-cockpit-rotate-verb.md) (Rung C role rotation).
+The cockpit verb surface accreted four shipped verbs that overlap in scope without explicit precedence: `atmux up` (historical decision number 010 (no surviving ADR file), [ADR-044](044-driver-session-on-default-socket.md)), `atmux start` ([ADR-044](044-driver-session-on-default-socket.md), [ADR-082](082-worktree-isolation-per-member.md)), `atmux cockpit rebuild` ([ADR-063](063-cockpit-verb-port.md)), and `atmux doctor [--fix]` (historical decision number 019 (no surviving ADR file), [ADR-077](077-superdoctor-cockpit-role.md)). Each was authored to solve a distinct problem; the seams between them grew increasingly fuzzy as the cockpit topology matured through [ADR-089](089-hierarchical-cockpit.md) (recursive `sessions[]`), [ADR-135](135-cockpit-naming-convention.md) (`atmux_cockpit` + `_role` window prefix), and [ADR-167](167-cockpit-rotate-verb.md) (Rung C role rotation).
 
 Three operator complaints converged on the same underlying gap:
 
