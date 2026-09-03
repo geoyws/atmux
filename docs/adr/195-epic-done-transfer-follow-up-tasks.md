@@ -208,7 +208,7 @@ All resolutions logged via `atmux decisions add` per the reversibility table.
 - [ADR-091](./091-kanban-driven-auto-merge.md) §EPIC-done definition — the section this ADR amends.
 - [ADR-090](./090-epic-team-lifecycle.md) §`dissolve-epic` — the mechanism that destroys the kanban.
 - [ADR-134](./134-in-team-auto-merger.md) — intra-team merger; sibling scope (no cross-scope analog of this ADR's problem, since intra-team Tasks land in the parent's own kanban from inception).
-- [ADR-131](./131-auto-groom-criteria.md) — auto-groom pattern; pre-existing parent-kanban hygiene.
+- [ADR-131](./131-superdoctor-kanban-hygiene.md) — auto-groom pattern; pre-existing parent-kanban hygiene.
 - Empirical motivation: `t-f0adc3bc` filed in `e-1e223687`'s kanban on 2026-05-20 by fe-1, body cites ADR-027 §Consequences. Post-dissolve risk surfaced by lead.
 - `src/core/epic-merge.ts::evaluateGate` — D2 impl site.
 - `src/verbs/dissolve-epic.ts` — D4 last-line refuse site.
