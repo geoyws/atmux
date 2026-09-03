@@ -210,11 +210,38 @@ describe("init — template path (bash lib/init.sh:87-107 parity)", () => {
     const tj = JSON.parse(await readFile(join(dir, "team.json"), "utf8")) as {
       name: string;
       tmuxTmpdir?: string;
+      drivers: { name: string; tui?: string | null; cwd?: string }[];
+      driverPair: {
+        layout: string;
+        panes: Array<{
+          role: string;
+          side: string;
+          workflow?: string;
+          authority?: string;
+          command?: string | null;
+        }>;
+      };
       members: { name: string; role?: string; cwd?: string }[];
     };
     expect(tj.name).toBe("hello");
     // Bash lib/init.sh:104 — tmuxTmpdir set to the per-team cage path.
     expect(tj.tmuxTmpdir).toBe("/tmp/atmux-tmux_hello");
+    expect(tj.drivers.length).toBe(3);
+    expect(tj.drivers.map((d) => d.name)).toEqual(["driver", "driver-2", "driver-3"]);
+    expect(tj.drivers.every((d) => d.tui === null)).toBe(true);
+    expect(tj.driverPair).toEqual({
+      layout: "horizontal",
+      panes: [
+        { role: "worker", side: "left" },
+        {
+          role: "attention",
+          side: "right",
+          workflow: "kb-att",
+          authority: "decision-only",
+          command: null,
+        },
+      ],
+    });
     // Bash lib/init.sh:105 — every member's cwd rewritten to PWD.
     for (const m of tj.members) {
       expect(m.cwd).toBe(env.cwd);

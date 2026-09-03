@@ -8,11 +8,17 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+  CANONICAL_DRIVER_PAIR_PRESET,
+  CANONICAL_PARENT_TEAM_DRIVERS,
   canonicalDriverName,
+  type DriverPairPaneSpec,
+  DriverPairPresetSchema,
   type DriverSession,
   isDriverPaneName,
+  isSupportedDriverCount,
   isTrunkDriver,
   resolveDriverCwd,
+  resolveDriverPair,
   resolveDriversList,
 } from "../../../src/core/drivers.ts";
 
@@ -25,12 +31,87 @@ describe("resolveDriversList — ADR-239 §A1 (post ADR-266 §D2)", () => {
     expect(resolveDriversList({ drivers })).toEqual(drivers);
   });
 
-  test("drivers[] empty → empty array (no legacy synthesis post-ADR-266)", () => {
-    expect(resolveDriversList({ drivers: [] })).toEqual([]);
+  test("drivers[] empty → canonical three-driver default", () => {
+    expect(resolveDriversList({ drivers: [] })).toEqual([...CANONICAL_PARENT_TEAM_DRIVERS]);
   });
 
-  test("no drivers[] → empty array (caller falls back to __home placeholder)", () => {
-    expect(resolveDriversList({})).toEqual([]);
+  test("no drivers[] → canonical three-driver default", () => {
+    expect(resolveDriversList({})).toEqual([...CANONICAL_PARENT_TEAM_DRIVERS]);
+  });
+});
+
+describe("canonical driver contract constants", () => {
+  test("three-driver floor and 10-driver ceiling are explicit", () => {
+    expect(isSupportedDriverCount(3)).toBe(true);
+    expect(isSupportedDriverCount(10)).toBe(true);
+    expect(isSupportedDriverCount(2)).toBe(false);
+    expect(isSupportedDriverCount(11)).toBe(false);
+  });
+
+  test("canonical pair preset is horizontal left/right with null-default attention launcher", () => {
+    expect(CANONICAL_DRIVER_PAIR_PRESET).toEqual({
+      layout: "horizontal",
+      panes: [
+        { role: "worker", side: "left" },
+        {
+          role: "attention",
+          side: "right",
+          workflow: "kb-att",
+          authority: "decision-only",
+          command: null,
+        },
+      ],
+    });
+    expect(DriverPairPresetSchema.parse(CANONICAL_DRIVER_PAIR_PRESET)).toEqual(
+      CANONICAL_DRIVER_PAIR_PRESET,
+    );
+  });
+
+  test("canonical pair preset runtime source is frozen against mutation", () => {
+    expect(Object.isFrozen(CANONICAL_DRIVER_PAIR_PRESET)).toBe(true);
+    expect(Object.isFrozen(CANONICAL_DRIVER_PAIR_PRESET.panes)).toBe(true);
+    expect(Object.isFrozen(CANONICAL_DRIVER_PAIR_PRESET.panes[0])).toBe(true);
+    expect(Object.isFrozen(CANONICAL_DRIVER_PAIR_PRESET.panes[1])).toBe(true);
+    expect(() => {
+      (CANONICAL_DRIVER_PAIR_PRESET.panes as unknown as DriverPairPaneSpec[])[0] = {
+        role: "attention",
+        side: "right",
+        workflow: "kb-att",
+        authority: "decision-only",
+        command: null,
+      };
+    }).toThrow();
+    expect(CANONICAL_DRIVER_PAIR_PRESET.panes[0]).toEqual({ role: "worker", side: "left" });
+  });
+
+  test("resolveDriverPair returns a fresh canonical preset when absent", () => {
+    const resolved = resolveDriverPair({});
+    expect(resolved).toEqual(CANONICAL_DRIVER_PAIR_PRESET);
+    expect(resolved).not.toBe(CANONICAL_DRIVER_PAIR_PRESET);
+    expect(resolved.panes).not.toBe(CANONICAL_DRIVER_PAIR_PRESET.panes);
+    expect(resolved.panes[0]).not.toBe(CANONICAL_DRIVER_PAIR_PRESET.panes[0]);
+    expect(resolved.panes[1]).not.toBe(CANONICAL_DRIVER_PAIR_PRESET.panes[1]);
+    resolved.panes[1].command = "claude --print";
+    expect(resolved.panes[1].command).toBe("claude --print");
+    expect(CANONICAL_DRIVER_PAIR_PRESET.panes[1].command).toBeNull();
+  });
+
+  test("resolveDriverPair preserves an explicit stored preset", () => {
+    const preset = DriverPairPresetSchema.parse({
+      layout: "horizontal",
+      panes: [
+        { role: "worker", side: "left" },
+        {
+          role: "attention",
+          side: "right",
+          workflow: "kb-att",
+          authority: "decision-only",
+          command: "claude --print",
+        },
+      ],
+    });
+
+    expect(resolveDriverPair({ driverPair: preset })).toBe(preset);
   });
 });
 

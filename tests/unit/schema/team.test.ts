@@ -11,6 +11,11 @@
 import { describe, expect, test } from "bun:test";
 import { ZodError } from "zod";
 import {
+  CANONICAL_DRIVER_PAIR_PRESET,
+  CANONICAL_PARENT_TEAM_DRIVERS,
+  resolveDriverPair,
+} from "../../../src/core/drivers.ts";
+import {
   DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG,
   DEFAULT_CADENCE_CONFIG,
   DEFAULT_CADENCE_THRESHOLDS,
@@ -376,6 +381,16 @@ describe("Team schema — driverSession (ADR-044 + ADR-064 §5)", () => {
     expect(team.driverSession).toEqual({ tui: "shell" });
   });
 
+  test("Team.parse rejects empty-string driverSession.tui", () => {
+    expect(() =>
+      Team.parse({
+        name: "demo",
+        members: [],
+        driverSession: { tui: "" },
+      }),
+    ).toThrow();
+  });
+
   test("Team.parse with driverSession.model=<str> parses cleanly (loose model pin)", () => {
     const team = Team.parse({
       name: "demo",
@@ -462,16 +477,195 @@ describe("Team schema — nullable driver harness", () => {
     const withNull = Team.parse({
       name: "demo",
       members: [],
-      drivers: [{ name: "driver", tui: null, cwd: "." }],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", cwd: ".atmux/worktrees/driver-3" },
+      ],
     });
     const omitted = Team.parse({
       name: "demo",
       members: [],
-      drivers: [{ name: "driver", cwd: "." }],
+      drivers: [
+        { name: "driver", cwd: "." },
+        { name: "driver-2", cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", cwd: ".atmux/worktrees/driver-3" },
+      ],
     });
 
     expect(withNull.drivers?.[0]?.tui).toBeNull();
     expect(omitted.drivers?.[0]?.tui).toBeUndefined();
+  });
+});
+
+describe("Team schema — declarative driver floor and cap", () => {
+  test("canonical driver roster and pair preset are structurally pinned", () => {
+    expect(CANONICAL_PARENT_TEAM_DRIVERS).toEqual([
+      { name: "driver", tui: null, cwd: "." },
+      { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+      { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+    ]);
+    expect(CANONICAL_DRIVER_PAIR_PRESET).toEqual({
+      layout: "horizontal",
+      panes: [
+        {
+          role: "worker",
+          side: "left",
+        },
+        {
+          role: "attention",
+          side: "right",
+          workflow: "kb-att",
+          authority: "decision-only",
+          command: null,
+        },
+      ],
+    });
+  });
+
+  test("driverPair defaults to the canonical worker-left / attention-right preset", () => {
+    const team = Team.parse({ name: "demo", members: [] });
+    expect(resolveDriverPair(team)).toEqual(CANONICAL_DRIVER_PAIR_PRESET);
+  });
+
+  test("driverPair accepts explicit attention command strings", () => {
+    const team = Team.parse({
+      name: "demo",
+      members: [],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            command: "claude --print",
+          },
+        ],
+      },
+    });
+    expect(team.driverPair?.panes[1]).toMatchObject({
+      role: "attention",
+      side: "right",
+      workflow: "kb-att",
+      authority: "decision-only",
+      command: "claude --print",
+    });
+  });
+
+  test("driverPair rejects extra attention launch-field drift and defaults command to null", () => {
+    const team = Team.parse({ name: "demo", members: [] });
+    expect(resolveDriverPair(team).panes[1]).toMatchObject({
+      role: "attention",
+      side: "right",
+      workflow: "kb-att",
+      authority: "decision-only",
+      command: null,
+    });
+    expect(() =>
+      Team.parse({
+        name: "demo",
+        members: [],
+        driverPair: {
+          layout: "horizontal",
+          panes: [
+            { role: "worker", side: "left" },
+            {
+              role: "attention",
+              side: "right",
+              workflow: "kb-att",
+              authority: "decision-only",
+              tui: "shell",
+            },
+          ],
+        },
+      }),
+    ).toThrow();
+  });
+
+  test("3 explicit drivers pass", () => {
+    const team = Team.parse({
+      name: "demo",
+      members: [],
+      drivers: [
+        { name: "driver", cwd: "." },
+        { name: "driver-2", cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", cwd: ".atmux/worktrees/driver-3" },
+      ],
+    });
+    expect(team.drivers?.length).toBe(3);
+  });
+
+  test("4-10 explicit drivers pass and preserve order", () => {
+    for (const count of [4, 5, 6, 7, 8, 9, 10]) {
+      const team = Team.parse({
+        name: "demo",
+        members: [],
+        drivers: Array.from({ length: count }, (_, index) => ({
+          name: index === 0 ? "driver" : `driver-${index + 1}`,
+          cwd: index === 0 ? "." : `.atmux/worktrees/driver-${index + 1}`,
+        })),
+      });
+      expect(team.drivers?.map((d) => d.name)).toEqual(
+        Array.from({ length: count }, (_, index) =>
+          index === 0 ? "driver" : `driver-${index + 1}`,
+        ),
+      );
+    }
+  });
+
+  test("1-2 explicit drivers fail and >10 fails", () => {
+    expect(() =>
+      Team.parse({
+        name: "demo",
+        members: [],
+        drivers: [{ name: "driver", cwd: "." }],
+      }),
+    ).toThrow();
+    expect(() =>
+      Team.parse({
+        name: "demo",
+        members: [],
+        drivers: [
+          { name: "driver", cwd: "." },
+          { name: "driver-2", cwd: ".atmux/worktrees/driver-2" },
+        ],
+      }),
+    ).toThrow();
+    expect(() =>
+      Team.parse({
+        name: "demo",
+        members: [],
+        drivers: [
+          { name: "driver", cwd: "." },
+          { name: "driver-2", cwd: ".atmux/worktrees/driver-2" },
+          { name: "driver-3", cwd: ".atmux/worktrees/driver-3" },
+          { name: "driver-4", cwd: ".atmux/worktrees/driver-4" },
+          { name: "driver-5", cwd: ".atmux/worktrees/driver-5" },
+          { name: "driver-6", cwd: ".atmux/worktrees/driver-6" },
+          { name: "driver-7", cwd: ".atmux/worktrees/driver-7" },
+          { name: "driver-8", cwd: ".atmux/worktrees/driver-8" },
+          { name: "driver-9", cwd: ".atmux/worktrees/driver-9" },
+          { name: "driver-10", cwd: ".atmux/worktrees/driver-10" },
+          { name: "driver-11", cwd: ".atmux/worktrees/driver-11" },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  test("driver entries preserve unknown fields for forward compatibility", () => {
+    const team = Team.parse({
+      name: "demo",
+      members: [],
+      drivers: [
+        { name: "driver", cwd: ".", tui: null, futureFlag: "ok" },
+        { name: "driver-2", cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", cwd: ".atmux/worktrees/driver-3" },
+      ],
+    } as never);
+    expect((team.drivers?.[0] as { futureFlag?: string } | undefined)?.futureFlag).toBe("ok");
   });
 });
 

@@ -4,14 +4,25 @@
   "tmuxTmpdir": "/tmp/atmux-tmux_my-team",
   "_comment_singleSession": "Default false (2026-04-30 reversal of ADR-026) — cage isolation per ADR-018 is the safe path; singleSession opts out of it on the daily-driver socket and reintroduces the side-channel pollution class (cage-prefix leak, cross-socket spawn, partial-rename mess). Launcher sessions (atmux_<team> created by atmux doctor --fix) preserve the at-a-glance benefit while keeping isolation. Set true ONLY for non-human-driven teams or detached observer setups (declared escape hatch).",
   "singleSession": false,
-  "_comment_drivers": "ADR-239 (amended 2026-05-26): five drivers minimum per parent team, named driver / driver-2 / driver-3 / driver-4 / driver-5. Each is operator-interactive ONLY — atmux NEVER sends keystrokes to driver panes (no claim-next dispatch, no whip poke, no orchd unblock). NO PRE-PROMPTS, no brief paste, no role anchor — drivers start fresh in zsh and the operator launches whichever agent harness they want for that session. Set tui to a harness alias only when a team deliberately wants auto-launch. Each driver-N (N>=2) gets its own git worktree at .atmux/worktrees/driver-N on branch <base>-driver-N. driver (the original) lives at team root on the primary base branch (e.g. atmux-geoyws). Operator merges trunk into driver-N branches at their own discretion (no auto-merge cron for drivers). Drivers grouped at windows 1-5 in the cage tmux session, members follow at 6+.",
+  "_comment_drivers": "ADR-239 / ADR-288: three drivers are the canonical parent-team floor, named driver / driver-2 / driver-3. Each is operator-interactive ONLY — atmux NEVER sends keystrokes to driver panes (no claim-next dispatch, no whip poke, no orchd unblock). NO PRE-PROMPTS, no brief paste, no role anchor — drivers start fresh in zsh and the operator launches whichever agent harness they want for that session. Set tui to a harness alias only when a team deliberately wants auto-launch. Each driver-N (N>=2) gets its own git worktree at .atmux/worktrees/driver-N on branch <base>-driver-N. driver (the original) lives at team root on the primary base branch (e.g. atmux-geoyws). Operator merges trunk into driver-N branches at their own discretion (no auto-merge cron for drivers). The canonical worker-left / attention-right pair is stored explicitly in this template; configs that omit driverPair resolve the same fresh canonical preset through resolveDriverPair(team), with attention command defaulting to null so the pane stays an interactive shell until an operator explicitly supplies a launch command.",
   "drivers": [
     { "name": "driver", "tui": null, "cwd": "." },
     { "name": "driver-2", "tui": null, "cwd": ".atmux/worktrees/driver-2" },
-    { "name": "driver-3", "tui": null, "cwd": ".atmux/worktrees/driver-3" },
-    { "name": "driver-4", "tui": null, "cwd": ".atmux/worktrees/driver-4" },
-    { "name": "driver-5", "tui": null, "cwd": ".atmux/worktrees/driver-5" }
+    { "name": "driver-3", "tui": null, "cwd": ".atmux/worktrees/driver-3" }
   ],
+  "driverPair": {
+    "layout": "horizontal",
+    "panes": [
+      { "role": "worker", "side": "left" },
+      {
+        "role": "attention",
+        "side": "right",
+        "workflow": "kb-att",
+        "authority": "decision-only",
+        "command": null
+      }
+    ]
+  },
   "_comment_bot": "ADR-285: one cooperative _bot seat for persistent parent teams. It has an isolated .atmux/worktrees/bot worktree on <base>-bot and sits after drivers, before members. null tui starts zsh for operator use and is deliberately unroutable by _superbot; choose an explicit harness + account in the durable team config before automated offers are enabled. Nested teams omit this block unless configured explicitly.",
   "bot": {
     "enabled": true,
