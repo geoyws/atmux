@@ -110,7 +110,7 @@ Preserved versions enumerable via `ls /opt/atmux/`. Each is a self-contained `bi
 
 ## Vendored tmux binary (ADR-191)
 
-The install pipeline now ships its own `/opt/atmux/<version>/bin/tmux` and wires the installed tree to tmux 3.7c. Ordinary atmux calls still use `resolveTmuxBin()` (`src/core/resolve-tmux-bin.ts`) with the legacy chain `ATMUX_TMUX_BIN` override → system `tmux` on PATH; they do not auto-route through the vendored binary. The future `aca` / `aco` vendored cockpit path will opt into `resolveVendoredTmuxBin()` and its own socket/config/resurrect namespace, fail closed, and never fall back to host tmux. The operator's daily-driver `tmux` from the shell and the old Homebrew tmux/resurrect plane are untouched. The older 3.6a wording in the historical ADR text is historical only.
+The install pipeline now ships its own `/opt/atmux/<version>/bin/tmux` and wires the installed tree to tmux 3.7c. Ordinary atmux calls still use `resolveTmuxBin()` (`src/core/resolve-tmux-bin.ts`) with the legacy chain `ATMUX_TMUX_BIN` override → system `tmux` on PATH; they do not auto-route through the vendored binary. The driver-only `aca` / `aco` cockpit path opts into `resolveVendoredTmuxBin()` with its own socket and plugin-free config, fails closed, and never falls back to host tmux. It is restored declaratively by `cockpit reconcile --no-launch`, not tmux-resurrect. The operator's daily-driver `tmux` and the old Homebrew tmux-resurrect/Continuum plane are untouched. The older 3.6a wording in the historical ADR text is historical only.
 
 ### Verify after install
 
@@ -126,7 +126,7 @@ atmux doctor 2>&1 | rg 'vendored-tmux'          # → no row (green) when binary
 ```bash
 ATMUX_TMUX_BIN=/path/to/operator-tmux atmux <verb>   # process-scope, wins the legacy/live resolver
 
-ATMUX_VENDORED_TMUX_BIN=/opt/atmux/current/bin/tmux atmux <future-vendored-verb>   # prepared seam only
+ATMUX_VENDORED_TMUX_BIN=/opt/atmux/current/bin/tmux atmux cockpit <driver-only-command>   # vendored plane
 ```
 
 Operator-pinned for testing a different tmux version, local dev build, or CI rig deliberately using system tmux. Override is process-scope; no global state.

@@ -1,6 +1,6 @@
 # ADR-191: atmux ships its own vendored tmux binary — version-pinning + behavior isolation + reproducibility
 
-**Status**: Accepted — ratified by driver 2026-09-03 (vendored tmux at /opt/atmux/<v>/bin/tmux pinned to 3.7c; ordinary atmux paths stay on `resolveTmuxBin()` with `ATMUX_TMUX_BIN` then host PATH, while only the future `aca` / `aco` vendored cockpit path opts into `resolveVendoredTmuxBin()` and fails closed; older 3.6a wording is historical only)
+**Status**: Accepted — ratified by driver 2026-09-03 (vendored tmux at /opt/atmux/<v>/bin/tmux pinned to 3.7c; ordinary atmux paths stay on `resolveTmuxBin()` with `ATMUX_TMUX_BIN` then host PATH, while only the driver-only `aca` / `aco` vendored cockpit path opts into `resolveVendoredTmuxBin()` and fails closed; older 3.6a wording is historical only)
 **Date**: 2026-05-20
 **Driver-ref**: driver-2026-05-20-13:25-MYT (ASK 1 of operator's structural-foundations dispatch; sibling to ADR-190 ASK 2 atmux.conf OSS-ready)
 **Operator order**: lands AFTER Epic e-63c97ed8 (atmux.conf shipped patterns); ASK 1 is the "insulation layer" on top of the conf-patterns Epic.
@@ -8,7 +8,7 @@
 ## Amendment 2026-09-02 — staged split, historical pending gate
 
 - Ordinary atmux paths stay on the legacy resolver: `resolveTmuxBin()` first honors `ATMUX_TMUX_BIN`, then host PATH.
-- The future `aca` / `aco` vendored cockpit path is the only consumer of `binaryPath` / `resolveVendoredTmuxBin()`; it fails closed and never falls back to host tmux.
+- The driver-only `aca` / `aco` vendored cockpit path is the only consumer of `binaryPath` / `resolveVendoredTmuxBin()`; it fails closed and never falls back to host tmux.
 - 3.7c was a vendored candidate pin pending George gate; this note is historical and superseded by the 2026-09-03 acceptance.
 
 ## Amendment 2026-09-03 — accepted vendored pin is 3.7c
@@ -47,13 +47,13 @@ Ordinary / legacy atmux spawn sites resolve tmux through `resolveTmuxBin()`:
 1. `process.env.ATMUX_TMUX_BIN` if set (operator override)
 2. host PATH (`tmux` / `which tmux`) if no override is set
 
-That legacy resolver does not consult the vendored binary and does not fall back to a future cockpit-specific binary path. The future `aca` / `aco` vendored cockpit path will instead use `resolveVendoredTmuxBin()` / `binaryPath`, point at `/opt/atmux/<v>/bin/tmux`, and fail closed with no host PATH fallback.
+That legacy resolver does not consult the vendored binary. The driver-only `aca` / `aco` cockpit path instead uses `resolveVendoredTmuxBin()` / `binaryPath`, points at `/opt/atmux/<v>/bin/tmux`, and fails closed with no host PATH fallback.
 
 ### Call-sites to migrate
 
 - `src/abstractions/tmux.ts` — owner of `resolveTmuxBin()` + every tmux spawn primitive
 - `src/verbs/start.ts` — tmux server bootstrap for new cages
-- `src/verbs/cockpit.ts` — cockpit socket isolation (per ADR-162); the future `aca` / `aco` vendored cockpit path is the only cockpit caller that will use the vendored binary
+- `src/verbs/cockpit.ts` — cockpit socket isolation (per ADR-162); the driver-only `aca` / `aco` vendored cockpit path is the only cockpit caller that uses the vendored binary
 - `install.sh` — installer fetches + verifies + symlinks the vendored binary into `/opt/atmux/<v>/bin/tmux`
 - Any script or shell call that hard-codes `tmux` — grep + migrate
 
@@ -127,7 +127,7 @@ Roll back the vendored plane by atomically retargeting `/opt/atmux/current` to a
 
 4. **(LOW reversibility) Static vs dynamic linking**: static = portable but bigger; dynamic = relies on system libevent/ncurses (the very libraries we're trying to isolate). Recommendation: static where possible (libevent at least; ncurses can be either). Reviewer signs off on link posture per build engineer's call.
 
-5. **(LOW reversibility) Bin namespace clash**: `/opt/atmux/<v>/bin/tmux` conflicts with operator running `tmux` from PATH. Resolution: ordinary atmux callers keep `resolveTmuxBin()` (override → host PATH), while the future vendored cockpit path uses `resolveVendoredTmuxBin()` on the explicit path. Operator's PATH still hits system tmux. No actual clash. Open to discussion if operator-ergonomics suffers.
+5. **(LOW reversibility) Bin namespace clash**: `/opt/atmux/<v>/bin/tmux` conflicts with operator running `tmux` from PATH. Resolution: ordinary atmux callers keep `resolveTmuxBin()` (override → host PATH), while the driver-only vendored cockpit path uses `resolveVendoredTmuxBin()` on the explicit path. Operator's PATH still hits system tmux. No actual clash. Open to discussion if operator-ergonomics suffers.
 
 ## Implementation status
 
@@ -148,7 +148,8 @@ Tracked under Epic e-162046c7 (driver dispatch 2026-05-23, "ship the unshipped")
 **2026-09-03 — source-build packaging + operator docs**
 
 - `package.json::build:install` now runs `scripts/build-install.ts`, which source-builds exact tmux 3.7c from the SHA-pinned archive and publishes only a validated complete candidate.
-- The deploy/cockpit runbooks and `[Unreleased]` changelog document the separate fail-closed `aca` / `aco` plane and the untouched legacy Homebrew tmux/resurrect plane.
+- `src/verbs/cockpit.ts` now routes `driverOnly: true` through the vendored binary, `atmux-vendored-cockpit` socket, and exact three-window no-agent topology.
+- The deploy/cockpit runbooks and `[Unreleased]` changelog document the separate fail-closed `aca` / `aco` plane, its declarative no-resurrect restore path, and the untouched legacy Homebrew tmux-resurrect/Continuum plane.
 
 **Pending (subsequent landings on Epic e-162046c7)**
 

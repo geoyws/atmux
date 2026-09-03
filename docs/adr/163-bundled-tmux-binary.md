@@ -10,7 +10,7 @@
 ## Amendment 2026-09-02 — staged split, historical pending gate
 
 - Ordinary atmux paths stay on `resolveTmuxBin()` (ATMUX_TMUX_BIN override → host PATH).
-- The future `aca` / `aco` vendored cockpit path is the only consumer of `binaryPath` / `resolveVendoredTmuxBin()`; it fails closed and never falls back to host tmux.
+- The driver-only `aca` / `aco` vendored cockpit path is the only consumer of `binaryPath` / `resolveVendoredTmuxBin()`; it fails closed and never falls back to host tmux.
 - The old prebuilt/per-platform proposal below is historical and superseded.
 
 ## Amendment 2026-09-03 — accepted vendored pin is 3.7c
@@ -226,7 +226,7 @@ The enablement and non-goal subsections below preserve the 2026-05 proposal. The
 
 - **Bundled libevent / ncurses dependency upgrades**. Statically linking libevent insulates atmux from libevent bumps; ncurses is dynamically linked so OS-level ncurses upgrades still affect rendering. Acceptable trade-off — ncurses ABI is stable.
 - **Windows-native support.** Out of scope. WSL is the supported Windows path (uses linux-x64 or linux-arm64 binary depending on WSL arch).
-- **Operator-installed tmux replacement.** Operators who genuinely want their host tmux can set `ATMUX_USE_HOST_TMUX=1` permanently; ADR-163 doesn't fight them but DOES audit it via Discord.
+- **Operator-installed tmux replacement.** Historical/superseded as a universal rollback story. Host-tmux overrides remain legacy-plane debug escapes only; they do not re-enable vendored `aca` / `aco`, which stays fail-closed until the exact 3.7c bundle is restored.
 - **Building tmux from operator-modified source.** The build-from-source escape hatch builds from upstream's tagged source. Custom-patched tmux is out of scope — operators wanting that should clone tmux separately + set `ATMUX_TMUX_TARBALL` to their own tarball.
 
 ### Rollback path — amended 2026-09-03
