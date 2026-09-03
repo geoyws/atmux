@@ -187,7 +187,7 @@ export interface CheckVendoredTmuxBinaryOpts {
  *
  * Both rows are warn-class. The probe calls the vendored binary
  * directly so `ATMUX_TMUX_BIN` and the legacy resolver do not affect
- * this check; only the future vendored cockpit path consumes this
+ * this check; only the vendored driver-only cockpit path consumes this
  * helper. The probe gives the operator a discoverable signal that the
  * vendored install is present and on the pinned version.
  */

@@ -18,14 +18,13 @@
 // `TMUX_TMPDIR` fix failed to guarantee — incident 2026-05-05 01:44 MYT,
 // memory ref `feedback_tmux_test_isolation.md`).
 //
-// Binary resolution (ADR-191, 2026-05-23; prepared vendored-plane
-// seam 2026-09-02).
+// Binary resolution (ADR-191, 2026-05-23; vendored-plane activation
+// 2026-09-03).
 // ----------------------------------------
 // `cmd:` is computed by `resolveTmuxBin()` by default (legacy/live
 // chain: ATMUX_TMUX_BIN → system `tmux` on PATH). Callers may instead
 // pass `binaryPath` to pin the namespace to an explicit binary. The
-// seam is prepared for a future vendored-only plane; no current
-// production call site is routed through it yet.
+// driver-only cockpit path uses that seam to pin the vendored binary.
 //
 // Child environment (ADR-281, 2026-08-28; narrowed 2026-08-28).
 // -------------------------------------------------------------
@@ -352,8 +351,8 @@ export type TmuxConfig = SocketConfig & {
   /** Optional explicit tmux binary path. When unset, the namespace
    *  uses the legacy/live resolver chain. When set, the namespace is
    *  pinned to that binary and never consults `resolveTmuxBin()`.
-   *  This is a prepared seam for a future vendored-only plane; no
-   *  current production call site passes a vendored binary yet. */
+   *  The driver-only cockpit path uses this field to pin the vendored
+   *  binary. */
   readonly binaryPath?: string;
   /** Test seam for `attachSessionInheritStdio`; defaults to the module import. */
   readonly hooks?: {

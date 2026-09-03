@@ -14,9 +14,9 @@
 // throws: atmux cannot function without tmux somewhere, and a clear
 // "can't find tmux" beats a cryptic ENOENT at the first spawn.
 //
-// Future vendored plane:
+// Vendored driver-only cockpit plane:
 //   `resolveVendoredTmuxBin()` is the fail-closed sibling for the
-//   future server-only path. It accepts `ATMUX_VENDORED_TMUX_BIN` or
+//   driver-only cockpit path. It accepts `ATMUX_VENDORED_TMUX_BIN` or
 //   the canonical vendored install path, but never falls back to the
 //   system tmux on PATH. That keeps the future cockpit/group/team
 //   servers from silently re-contacting the legacy Homebrew tmux plane.
@@ -109,15 +109,16 @@ export function resolveTmuxBin(
 }
 
 /**
- * Resolve the tmux binary for the future vendored plane.
+ * Resolve the tmux binary for the vendored driver-only cockpit plane.
  *
  * Unlike {@link resolveTmuxBin}, this helper is fail-closed:
  * - `ATMUX_VENDORED_TMUX_BIN` is the explicit override.
  * - otherwise the canonical vendored path is used.
  * - system PATH is never consulted.
  *
- * That keeps the future server-only cockpit/group/team plane from
- * drifting back to the legacy Homebrew tmux route.
+ * That keeps the driver-only cockpit plane from implicitly drifting back to
+ * the legacy Homebrew tmux route. An explicit override remains an operator
+ * escape hatch and is never selected automatically.
  */
 export function resolveVendoredTmuxBin(
   env: NodeJS.ProcessEnv = process.env,
@@ -143,7 +144,7 @@ export function resolveVendoredTmuxBin(
   }
 
   throw new Error(
-    `[atmux] cannot find vendored tmux: ATMUX_VENDORED_TMUX_BIN unset and ${VENDORED_TMUX_PATH} absent. Future server-only paths must not fall back to the system tmux; install the vendored binary first (ADR-191/ADR-163).`,
+    `[atmux] cannot find vendored tmux: ATMUX_VENDORED_TMUX_BIN unset and ${VENDORED_TMUX_PATH} absent. Driver-only cockpit paths must not fall back to the system tmux; install the vendored binary first (ADR-191/ADR-163).`,
   );
 }
 
