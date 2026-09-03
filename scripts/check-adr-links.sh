@@ -112,8 +112,11 @@ for src in *.md; do
   # Only 2-3 digit forms are atmux-tree ADRs; 4-digit `ADR-NNNN` forms
   # (e.g. ADR-0067) are GLOBAL ~/.claude CLAUDE.md doctrine ADRs in a
   # different tree and are intentionally NOT resolved here.
+  # Strip Markdown links first so labels such as `[ADR-333](...)` do not
+  # get re-scanned as bare prose.
   self_num=""
   if [[ "$src" =~ ^([0-9]{3})- ]]; then self_num="${BASH_REMATCH[1]}"; fi
+  bare_scan_src="$(sed -E 's/\[[^][]*\]\([^)]*\)/ /g' "$src")"
   while IFS= read -r n; do
     [ -z "$n" ] && continue
     # Normalize to 3-digit zero-pad for the lookup.
@@ -122,7 +125,8 @@ for src in *.md; do
     if ! has_line "$pad" "$num_exists_list"; then
       file_findings+=("  dangling ADR-ref: ADR-$n (no docs/adr/$pad-*.md)")
     fi
-  done < <(grep -oE 'ADR-[0-9]{2,3}([^0-9]|$)' "$src" \
+  done < <(printf '%s\n' "$bare_scan_src" \
+            | grep -oE 'ADR-[0-9]{2,3}([^0-9]|$)' \
             | grep -oE 'ADR-[0-9]{2,3}' \
             | sed -E 's/^ADR-//' \
             | sort -u)

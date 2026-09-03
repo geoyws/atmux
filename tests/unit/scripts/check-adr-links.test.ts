@@ -62,20 +62,41 @@ describe("check-adr-links.sh", () => {
     }
   });
 
-  test("reports a dangling Markdown basename when the slug does not exist", async () => {
+  test("reports a dangling Markdown basename without inventing a bare-label finding", async () => {
     const root = await makeFixture({
-      "docs/adr/001-root.md": ["# ADR-001: root", "", "See [ADR-002](002-renamed.md).", ""].join(
+      "docs/adr/001-root.md": ["# ADR-001: root", "", "See [ADR-333](333-missing.md).", ""].join(
         "\n",
       ),
-      "docs/adr/002-linked.md": ["# ADR-002: linked", ""].join("\n"),
     });
     try {
       const r = await runScript(root);
       expect(r.exit).toBe(1);
       expect(r.stdout).toBe("");
       expect(r.stderr).toContain("✗ 001-root.md");
-      expect(r.stderr).toContain("dangling md-link: 002-renamed.md");
+      expect(r.stderr).toContain("dangling md-link: 333-missing.md");
+      expect(r.stderr).not.toContain("dangling ADR-ref: ADR-333 (no docs/adr/333-*.md)");
       expect(r.stderr).toContain("✗ check-adr-links: 1 dangling ADR target(s) across docs/adr/");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("reports both dangling link and separate bare prose references for the same ADR number", async () => {
+    const root = await makeFixture({
+      "docs/adr/001-root.md": [
+        "# ADR-001: root",
+        "",
+        "See [ADR-777](777-missing.md) and ADR-777.",
+        "",
+      ].join("\n"),
+    });
+    try {
+      const r = await runScript(root);
+      expect(r.exit).toBe(1);
+      expect(r.stdout).toBe("");
+      expect(r.stderr).toContain("dangling md-link: 777-missing.md");
+      expect(r.stderr).toContain("dangling ADR-ref: ADR-777 (no docs/adr/777-*.md)");
+      expect(r.stderr).toContain("✗ check-adr-links: 2 dangling ADR target(s) across docs/adr/");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -96,6 +117,26 @@ describe("check-adr-links.sh", () => {
       expect(r.stdout).toBe("");
       expect(r.stderr).toContain("dangling ADR-ref: ADR-67 (no docs/adr/067-*.md)");
       expect(r.stderr).toContain("✗ check-adr-links: 1 dangling ADR target(s) across docs/adr/");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("accepts exact .SUPERSEDED.md basenames and bare references to superseded ADRs", async () => {
+    const root = await makeFixture({
+      "docs/adr/001-root.md": [
+        "# ADR-001: root",
+        "",
+        "See [ADR-002](002-legacy.SUPERSEDED.md) and ADR-002.",
+        "",
+      ].join("\n"),
+      "docs/adr/002-legacy.SUPERSEDED.md": ["# ADR-002: legacy", ""].join("\n"),
+    });
+    try {
+      const r = await runScript(root);
+      expect(r.exit).toBe(0);
+      expect(r.stdout).toBe("✓ check-adr-links: all ADR cross-references resolve in docs/adr/\n");
+      expect(r.stderr).toBe("");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
