@@ -151,9 +151,8 @@ Tracked under Epic e-162046c7 (driver dispatch 2026-05-23, "ship the unshipped")
 - `src/verbs/cockpit.ts` now routes `driverOnly: true` through the vendored binary, `atmux-vendored-cockpit` socket, and exact three-window no-agent topology.
 - The deploy/cockpit runbooks and `[Unreleased]` changelog document the separate fail-closed `aca` / `aco` plane, its declarative no-resurrect restore path, and the untouched legacy Homebrew tmux-resurrect/Continuum plane.
 
-**Pending (subsequent landings on Epic e-162046c7)**
+**Pending (remaining follow-ups on Epic e-162046c7)**
 
-- README operator guidance — how to override via `ATMUX_TMUX_BIN`.
 - SECURITY.md — supply-chain posture (tmux CVE monitoring + per-release SHA256 publication).
 - ADR-162 §Amendment cross-link this ADR (cockpit socket isolation + binary isolation: complete tmux-infrastructure ownership per the operator's framing).
 
