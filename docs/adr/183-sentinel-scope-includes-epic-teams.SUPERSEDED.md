@@ -124,7 +124,7 @@ Reviewer flips this ADR proposed → accepted in the same commit per driver-hotf
 
 ## Open questions
 
-None at write time. The cursor-impl `observe` path is socket-discovery-only (per ADR-058 §D1 trust posture, cockpit W3 IS the Tier-2 cage; no per-team cage carve-out), and `enabledTeams` already threads `parentRoot` for epic-team `.root` resolution. If the cursor-impl turns out to need separate cage identity per epic-team for observation (e.g. SSH-into-child semantics), that's a follow-up ADR — the current cockpit-singleton design observes via the parent's tmux socket which is what epic-teams share anyway.
+None at write time. The cursor-impl `observe` path is socket-discovery-only (per ADR-050 §D1 trust posture, cockpit W3 IS the Tier-2 cage; no per-team cage carve-out), and `enabledTeams` already threads `parentRoot` for epic-team `.root` resolution. If the cursor-impl turns out to need separate cage identity per epic-team for observation (e.g. SSH-into-child semantics), that's a follow-up ADR — the current cockpit-singleton design observes via the parent's tmux socket which is what epic-teams share anyway.
 
 ## Amendments
 

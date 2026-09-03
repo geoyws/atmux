@@ -15,7 +15,7 @@
 - [ADR-233](233-cron-auto-install-disabled-trust-orchd.md) — cron retirement. The Bucket A2 verbs this ADR retires/migrates were cron-fired pre-ADR-233; without cron they have no auto-caller.
 - [ADR-236](236-three-tier-orchd-supervision.SUPERSEDED.md) — superseded by [ADR-240](240-drop-superorchd-orchd-self-supervises.md). Originally proposed `[orchd-supervision-failure]` as a consumer of this ADR's template registry; ADR-240 dropped the superorchd binary that would have emitted it, so this template is NOT built. The template registry shape stays as-is — future external-supervision retrofits would slot into the same registry without ADR-238 changes.
 - [ADR-237](237-no-llm-discord-and-whip-removal.md) — sibling policy ADR. ADR-237 says "no LLM cadence in Discord"; this ADR says "ALL Discord emission goes through orchd, regardless of LLM-vs-deterministic origin". Together they specify the full Discord surface shape.
-- [ADR-068](068-bash-to-ts-cutover.md) — bash discorder cutover history; the `[whip-progress]` / `[whip-heartbeat]` template-name byte-parity decision this ADR finishes reversing per ADR-237 §D4.
+- decision number 068 (no local ADR file exists) — bash discorder cutover history; the `[whip-progress]` / `[whip-heartbeat]` template-name byte-parity decision this ADR finishes reversing per ADR-237 §D4.
 
 ## Context
 
