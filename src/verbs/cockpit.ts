@@ -883,7 +883,7 @@ export interface CockpitOpts {
    *  reads `ATMUX_BIN` env then falls back to `Bun.which("atmux")`. */
   resolveAtmuxBin?: () => string | null;
   /** Driver-only mode seam for the vendored tmux binary path. Defaults
-   *  to the prepared future binary location. */
+   *  to the canonical installed binary location. */
   resolveVendoredTmuxBin?: () => string;
 }
 

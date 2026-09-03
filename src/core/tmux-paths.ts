@@ -25,7 +25,7 @@ import { resolveTemplatesDir } from "./templates-dir.ts";
  *  cockpit. Operator discoverable via `tmux -L atmux-cockpit attach`. */
 export const COCKPIT_SOCKET_DEFAULT = "atmux-cockpit";
 
-/** Future-server cockpit socket name used by the vendored plane. */
+/** Dedicated driver-only cockpit socket name used by the vendored plane. */
 export const COCKPIT_SOCKET_VENDORED = "atmux-vendored-cockpit";
 
 /** Per ADR-162 §Decision-anchor #2: relative path under `templates/`
@@ -46,7 +46,7 @@ export const ATMUX_TMUX_CONF_RELPATH = "tmux/atmux.conf";
  * default socket can set `ATMUX_COCKPIT_SOCKET=default`; ADR-162's
  * TR5 doctor probe still warns, but operations proceed against the
  * legacy socket. `ATMUX_COCKPIT_SOCKET=atmux-vendored-cockpit` is the
- * explicit future-plane socket escape hatch. Empty string is treated as
+ * explicit vendored-plane socket override. Empty string is treated as
  * unset (canonical default returned) — matches the convention used by
  * `resolveTemplatesDir`.
  *
