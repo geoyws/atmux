@@ -19,29 +19,29 @@ function tmuxOk(stdout: string) {
 }
 
 describe("doctor/tmux contract split", () => {
-  test("host and vendored checks stay on the accepted 3.6a contract", () => {
+  test("host and vendored checks stay on the accepted 3.7c contract", () => {
     expect(TMUX_MIN_VERSION).toBe("3.2");
-    expect(TMUX_TESTED_VERSION).toBe("3.6a");
+    expect(TMUX_TESTED_VERSION).toBe("3.7c");
   });
 
-  test("host version mismatch uses the live 3.6a contract", async () => {
+  test("host version mismatch uses the live 3.7c contract", async () => {
     const rows = await checkTmuxVersionMismatch({
-      tmux: async () => tmuxOk("tmux 3.6a"),
+      tmux: async () => tmuxOk("tmux 3.7c"),
     });
     expect(rows).toEqual([]);
   });
 
-  test("vendored binary uses the same accepted 3.6a contract", async () => {
+  test("vendored binary uses the same accepted 3.7c contract", async () => {
     const rows = await checkVendoredTmuxBinary({
       existsSync: () => true,
-      tmux: async () => tmuxOk("tmux 3.6a"),
+      tmux: async () => tmuxOk("tmux 3.7c"),
     });
     expect(rows).toEqual([]);
   });
 
   test("host and vendored expectations are independent", async () => {
     const hostRows = await checkTmuxVersionMismatch({
-      tmux: async () => tmuxOk("tmux 3.6b"),
+      tmux: async () => tmuxOk("tmux 3.8a"),
     });
     const vendoredRows = await checkVendoredTmuxBinary({
       existsSync: () => true,
@@ -50,8 +50,8 @@ describe("doctor/tmux contract split", () => {
 
     expect(hostRows[0]?.label).toBe("tmux-version-mismatch");
     expect(vendoredRows[0]?.label).toBe("vendored-tmux-version-drift");
-    expect(hostRows[0]?.detail).toContain("3.6b");
+    expect(hostRows[0]?.detail).toContain("3.8a");
     expect(vendoredRows[0]?.detail).toContain("3.6b");
-    expect(vendoredRows[0]?.detail).toContain("3.6a");
+    expect(vendoredRows[0]?.detail).toContain("3.7c");
   });
 });

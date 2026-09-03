@@ -9,7 +9,7 @@
   },
   "engines": {
     "bun": ">=1.3.13",
-    "tmux": ">=3.4"
+    "tmux": ">=3.2"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -24,7 +24,7 @@
     "build:compile": "bun build ./bin/atmux-entry.ts --compile --target=bun-linux-x64 --outfile dist/atmux",
     "build:listener": "cd rust/atmux-listener && cargo build --release",
     "build:cockpit-mirror": "cd rust/atmux-cockpit-mirror && cargo build --release",
-    "build:install": "bun run build:compile && bun run build:listener && bun run build:cockpit-mirror && sudo install -d -m 755 /opt/atmux/$npm_package_version/bin && sudo install -m 755 dist/atmux /opt/atmux/$npm_package_version/bin/atmux && sudo install -m 755 rust/atmux-listener/target/release/atmux-listener /opt/atmux/$npm_package_version/bin/atmux-listener && sudo install -m 755 rust/atmux-cockpit-mirror/target/release/atmux-cockpit-mirror /opt/atmux/$npm_package_version/bin/atmux-cockpit-mirror && sudo ln -sfn /opt/atmux/current/bin/atmux-cockpit-mirror /usr/local/bin/atmux-cockpit-mirror && sudo rm -rf /opt/atmux/$npm_package_version/templates && sudo cp -r templates /opt/atmux/$npm_package_version/templates && sudo rm -rf /opt/atmux/$npm_package_version/plugins && sudo cp -r plugins /opt/atmux/$npm_package_version/plugins && sudo ln -sfn /opt/atmux/$npm_package_version /opt/atmux/current && sudo ln -sfn /opt/atmux/current/bin/atmux /usr/local/bin/atmux"
+    "build:install": "bun scripts/build-install.ts"
   },
   "dependencies": {
     "zod": "^4.4.3"

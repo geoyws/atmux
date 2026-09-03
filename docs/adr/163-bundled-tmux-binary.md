@@ -7,11 +7,18 @@
 **Relationship to ADR-162**: ADR-162 §3 carves out "binary acquisition + version-lock v2" as deferred scope; this ADR closes that carve-out. ADR-162's `cockpit-on-default-socket` foot-gun fix + `templates/tmux/atmux.conf` config-template stay in ADR-162; ADR-163 owns the BINARY that loads that config.
 **Cross-refs**: ADR-097 (tmux abstraction — `configFile` resolver on the `TmuxConfig` discriminated union), ADR-138 (verified send-keys — verifier contract assumes a specific tmux output format), ADR-091 (auto-merge state machine — consumes tmux through ADR-097's abstraction), ADR-144 (epic-team test-gate — cage-mode spawns tmux servers per ADR-018's per-team-tmpdir primitive).
 
-## Amendment 2026-09-02 — staged split, pending gate
+## Amendment 2026-09-02 — staged split, historical pending gate
 
-- Host-facing doctor/version checks stay anchored to 3.6a.
-- The future server-only split is reserved to the dated amendment; the historical proposal text below remains about 3.4.
-- The prepared `binaryPath`/vendored-resolver seam exists, but no production call site is routed through it yet.
+- Ordinary atmux paths stay on `resolveTmuxBin()` (ATMUX_TMUX_BIN override → host PATH).
+- The future `aca` / `aco` vendored cockpit path is the only consumer of `binaryPath` / `resolveVendoredTmuxBin()`; it fails closed and never falls back to host tmux.
+- The old prebuilt/per-platform proposal below is historical and superseded.
+
+## Amendment 2026-09-03 — accepted vendored pin is 3.7c
+
+- The host-facing doctor/version contract now treats 3.7c as the tested-against tmux release, and the current vendored install path reports `tmux 3.7c`.
+- The production install path now source-builds tmux 3.7c from the pinned upstream tarball, verifies the source SHA before extraction, and stages the result into the canonical `/opt/atmux/<version>` payload before atomically retargeting `current`.
+- The source-build manifest is `scripts/tmux-bundle-manifest.json` with `{version, sourceUrl, sourceSha256, configureArgs}`. It is not a per-platform SHA table.
+- The 2026-09-02 staged-split note remains historical. The live contract is the 2026-09-03 pin, not the earlier 3.6a staging language.
 
 ## Context
 
@@ -45,26 +52,28 @@ In that historical proposal, the API would gain the proposed binary selector; th
 
 Six §Decision-anchor lines first, then prose around each subsystem.
 
-> **§Decision-anchor #1** — **Vendored prebuilt binaries via GitHub-release artifact; build-from-source as escape hatch for unsupported platforms.** atmux releases ship a per-platform prebuilt `tmux` binary (linux-x64, linux-arm64, darwin-x64, darwin-arm64) under `/opt/atmux/<version>/vendor/tmux/<platform>/tmux`. The npm/Bun installer's `postinstall` script symlinks the right platform's binary to `/opt/atmux/<version>/bin/tmux` per ADR-047's atomic-symlink-swap pattern. Unsupported platforms (Alpine musl, FreeBSD, OpenBSD, Windows-native) fall back to a build-from-source path that requires `gcc` + `libevent-dev` + `ncurses-dev` on the host. Build-from-source is opt-in via `ATMUX_TMUX_BUILD=1`; default is "prebuilt or fail-with-actionable-hint." Pinned tmux version is **3.4** (current stable as of 2026-05; bumps require an ADR-163 amendment + reviewer signoff).
+> **§Decision-anchor #1 (historical 2026-05-16 prebuilt proposal)** — **Vendored prebuilt binaries via GitHub-release artifact; build-from-source as escape hatch for unsupported platforms.** atmux releases ship a per-platform prebuilt `tmux` binary (linux-x64, linux-arm64, darwin-x64, darwin-arm64) under `/opt/atmux/<version>/vendor/tmux/<platform>/tmux`. The npm/Bun installer's `postinstall` script symlinks the right platform's binary to `/opt/atmux/<version>/bin/tmux` per ADR-047's atomic-symlink-swap pattern. Unsupported platforms (Alpine musl, FreeBSD, OpenBSD, Windows-native) fall back to a build-from-source path that requires `gcc` + `libevent-dev` + `ncurses-dev` on the host. Build-from-source is opt-in via `ATMUX_TMUX_BUILD=1`; default is "prebuilt or fail-with-actionable-hint." Pinned tmux version is **3.4** (current stable as of 2026-05; bumps require an ADR-163 amendment + reviewer signoff). This anchor is historical and superseded by the 2026-09-03 source-build contract.
 >
-> **§Decision-anchor #2** — **Config layout — `${atmuxRoot}/vendor/tmux/atmux.conf` is the default; `${userConfigDir}/atmux/tmux.conf.local` is the user override; resolution is default → override (override wins on key conflict).** The default config ships in the vendored binary directory and is read-only (operator MUST NOT edit — `atmux tmux reset-config` regenerates it). The user override lives in the standard XDG location (`$XDG_CONFIG_HOME/atmux/tmux.conf.local` or `~/.config/atmux/tmux.conf.local`) — operators edit this file to customize bindings, status-bar, theme overlays. atmux's tmux invocations pass `-f ${bundled}/atmux.conf` AND `source-file -q ${userOverride}` is appended inside the default conf (the `-q` makes missing override a silent no-op). The user's personal `~/.tmux.conf` is NEVER loaded by atmux's bundled tmux — full host-config quarantine.
+> **§Decision-anchor #2 (historical 2026-05-16 config proposal)** — **Config layout — `${atmuxRoot}/vendor/tmux/atmux.conf` is the default; `${userConfigDir}/atmux/tmux.conf.local` is the user override; resolution is default → override (override wins on key conflict).** The default config ships in the vendored binary directory and is read-only (operator MUST NOT edit — `atmux tmux reset-config` regenerates it). The user override lives in the standard XDG location (`$XDG_CONFIG_HOME/atmux/tmux.conf.local` or `~/.config/atmux/tmux.conf.local`) — operators edit this file to customize bindings, status-bar, theme overlays. atmux's tmux invocations pass `-f ${bundled}/atmux.conf` AND `source-file -q ${userOverride}` is appended inside the default conf (the `-q` makes missing override a silent no-op). The user's personal `~/.tmux.conf` is NEVER loaded by atmux's bundled tmux — full host-config quarantine.
 >
-> **§Decision-anchor #3** — **`atmux tmux reset-config` verb regenerates both files; `atmux tmux print-config` dumps the active layered config.** The reset verb writes the default conf from the embedded template (shipped under `templates/tmux/atmux.conf` per ADR-162) into `${atmuxRoot}/vendor/tmux/atmux.conf` (overwriting any tampering) AND creates a fresh empty `${userOverride}` with header comments documenting the override semantics. `--force` overwrites an existing user override (otherwise refuses with a hint to back up first). `atmux tmux print-config` is the operator's debug-helper: prints `-f ${default}` + `source-file ${override}` evaluated against the actual binary (via `tmux -f ${default} show-options -A`). No-op safe; read-only.
+> **§Decision-anchor #3 (historical 2026-05-16 verb proposal)** — **`atmux tmux reset-config` verb regenerates both files; `atmux tmux print-config` dumps the active layered config.** The reset verb writes the default conf from the embedded template (shipped under `templates/tmux/atmux.conf` per ADR-162) into `${atmuxRoot}/vendor/tmux/atmux.conf` (overwriting any tampering) AND creates a fresh empty `${userOverride}` with header comments documenting the override semantics. `--force` overwrites an existing user override (otherwise refuses with a hint to back up first). `atmux tmux print-config` is the operator's debug-helper: prints `-f ${default}` + `source-file ${override}` evaluated against the actual binary (via `tmux -f ${default} show-options -A`). No-op safe; read-only.
 >
-> **§Decision-anchor #4** — **Version-lock v2 — promote ADR-162 §3 warn-probe to refusal at session-start.** ADR-162 §3 shipped a warn-probe that runs on `atmux doctor` and emits `🟡 host tmux too old (got X, want ≥Y), bundled tmux recommended` without blocking. ADR-163 promotes this gate: when the bundled binary is present (post-install check), atmux REFUSES to fall back to the host tmux for any team-spawning verb (`atmux start`, `atmux rotate-lead`, `atmux team start`, cockpit rebuild). The host-tmux path remains usable for `atmux doctor` / `atmux status` (read-only probes). Refusal hint names the bundled binary path + invites `atmux tmux reset-config` if the bundle is corrupted. The `ATMUX_USE_HOST_TMUX=1` escape hatch exists for CI / debugging — emits a `[host-tmux-fallback]` Discord notification (driver-only, audited).
+> **§Decision-anchor #4** — **Version-lock v2 — promote ADR-162 §3 warn-probe to refusal at session-start.** ADR-162 §3 shipped a warn-probe that runs on `atmux doctor` and emits `🟡 host tmux too old (got X, want ≥Y), bundled tmux recommended` without blocking. ADR-163 promotes this gate for the future vendored `aca` / `aco` cockpit path: when that path opts into `resolveVendoredTmuxBin()` and the bundled binary is present (post-install check), it REFUSES to fall back to the host tmux. Ordinary atmux paths stay on `resolveTmuxBin()` and keep the legacy host-PATH behavior; `atmux doctor` / `atmux status` remain read-only probes. Refusal hint names the bundled binary path + invites `atmux tmux reset-config` if the bundle is corrupted. The `ATMUX_USE_HOST_TMUX=1` escape hatch exists for CI / debugging of the legacy resolver surface only — it does not apply to the vendored cockpit path.
 >
 > **§Decision-anchor #5 (historical 2026-05-16 proposal)** — **ADR-097 `configFile` resolver would pin to a bundled path.** The proposal required production callers of `createTmux` (per ADR-097 §Decision §Method shape) to pass `configFile: getBundledTmuxConfigPath()` from a new `src/core/tmux-bundle.ts`; the proposed resolver would return `${atmuxRoot}/vendor/tmux/atmux.conf` or refuse if the bundle were absent. That resolver is not implemented in this tree as of 2026-09-01. Current live-server tests, the parity harness, and selected production server-starting paths use `configFile: getAtmuxTmuxConfPath()` so they load the canonical atmux conf instead of an empty config file. Other production `createTmux` call sites still require a server-startability audit. The proposal named `src/core/team-start.ts`, `src/core/cockpit-rebuild.ts`, and `src/core/rotate-lead.ts` as initial wiring sites; that nonexistent current-tree list is historical. The API/code shape below remains historical until a bundled resolver lands.
 >
-> **§Decision-anchor #6** — **ADR-138 verifier contract is preserved by the version-lock — verifiers test against the pinned tmux output format, not host's.** ADR-138's five built-in verifiers (`composerEmpty` / `agentThinking` / `modalClosed` / `contextNonZero` / `paneMatchesRegex`) all operate on `capture-pane` output. Pinning tmux to 3.4 means the verifier regex set is stable across deploys — no more "verifier broke on macOS 3.5a" silent failures. The verifier test suite (`tests/core/safe-send.test.ts` — confirm via grep) MUST run against the bundled binary in CI (currently runs against the runner's host tmux); T6 of this ADR's decomp wires the CI matrix to spawn from the bundled binary.
+> **§Decision-anchor #6 (historical 2026-05-16 verifier proposal)** — **ADR-138 verifier contract is preserved by the version-lock — verifiers test against the pinned tmux output format, not host's.** ADR-138's five built-in verifiers (`composerEmpty` / `agentThinking` / `modalClosed` / `contextNonZero` / `paneMatchesRegex`) all operate on `capture-pane` output. Pinning tmux to 3.4 means the verifier regex set is stable across deploys — no more "verifier broke on macOS 3.5a" silent failures. The verifier test suite (`tests/core/safe-send.test.ts` — confirm via grep) MUST run against the bundled binary in CI (currently runs against the runner's host tmux); T6 of this ADR's decomp wires the CI matrix to spawn from the bundled binary.
 
 ### §Binary distribution mechanism
 
-**Vendoring strategy** (per §Decision-anchor #1):
+This section preserves the historical 2026-05-16 prebuilt proposal for context only. The live contract is the 2026-09-03 source-build manifest `{version, sourceUrl, sourceSha256, configureArgs}` in `scripts/tmux-bundle-manifest.json`, plus the host source-build path described in Amendment 2026-09-03.
+
+**Vendoring strategy** (per §Decision-anchor #1, historical):
 
 1. **Build pipeline**: a separate `atmux-vendor-tmux` CI workflow builds tmux 3.4 from source against the four supported platform triples on GitHub Actions runners (`ubuntu-22.04` for linux-x64, `ubuntu-22.04-arm` for linux-arm64, `macos-14` for darwin-arm64, `macos-13` for darwin-x64). Artifacts are statically linked where possible (libevent statically linked; ncurses dynamically linked because static ncurses on macOS is painful). Builds are deterministic — reproducible-build flags + SOURCE_DATE_EPOCH pinned to the tmux 3.4 release date.
 2. **Release artifact**: each atmux release tag (`v0.X.Y`) attaches the four binaries as GitHub-release assets named `tmux-3.4-${platform}.tar.gz`. The npm/Bun package's `postinstall` script (`scripts/install-vendored-tmux.ts`) downloads the artifact matching `process.platform` + `process.arch`, verifies SHA-256 against a manifest baked into the package, extracts to `/opt/atmux/<version>/vendor/tmux/${platform}/tmux`, atomic-symlinks `/opt/atmux/<version>/bin/tmux → vendor/tmux/${platform}/tmux`, and chmods it executable.
 3. **Build-from-source escape hatch**: when `ATMUX_TMUX_BUILD=1` or `process.platform` is unsupported, `postinstall` clones `https://github.com/tmux/tmux.git` at tag `3.4`, runs `./configure --enable-static --without-utempter && make`, and installs the resulting binary into the same vendored path. Build dependencies (`gcc`, `make`, `libevent-dev`, `ncurses-dev`) are NOT installed by atmux — operator must have them; postinstall fails with a clear hint listing the missing packages.
-4. **Manifest**: `scripts/tmux-bundle-manifest.json` (committed to the repo, NOT generated) lists per-platform SHA-256s. The `atmux-vendor-tmux` workflow updates the manifest on each tmux version bump; the bump requires an ADR-163 amendment so reviewer signoff is mandatory.
+4. **Manifest**: `scripts/tmux-bundle-manifest.json` (committed to the repo, NOT generated) lists the source-build metadata `{version, sourceUrl, sourceSha256, configureArgs}`. The old per-platform SHA-256 manifest is historical and superseded. The `atmux-vendor-tmux` workflow updates the manifest on each tmux version bump; the bump requires an ADR-163 amendment so reviewer signoff is mandatory.
 5. **Offline-install path**: operators on air-gapped boxes pre-download the artifact, set `ATMUX_TMUX_TARBALL=/path/to/tmux-3.4-${platform}.tar.gz`, and `postinstall` skips the GitHub fetch. Same SHA-256 verification.
 
 **Why GitHub-release artifact, not npm package**: npm packages bundle everything into the tarball, which inflates the package size 20-40MB per platform × 4 platforms = 80-160MB unpacked. npm tarballs are downloaded on every install. GitHub-release artifacts are fetched lazily per platform — Linux users never download macOS binaries. Bun's `postinstall` runs once per install; the lazy fetch is cheap.
@@ -132,7 +141,7 @@ The live `templates/tmux/atmux.conf` template is the current source of truth. It
 
 The `tmux` verb namespace is NEW — no conflict with the existing `tmux` import in code. Help text registered in `src/verbs/help.ts`.
 
-### §Version-lock v2
+### §Version-lock v2 (historical 2026-05 proposal)
 
 **Promotion gate** (per §Decision-anchor #4):
 
@@ -204,6 +213,8 @@ ADR-163's 2026-05-16 proposal would complete when ALL of:
 
 ## Consequences
 
+The enablement and non-goal subsections below preserve the 2026-05 proposal. The amended 2026-09-03 rollback contract follows them and is the operative rollback guidance.
+
 ### What this ADR enables
 
 - **Deterministic atmux behavior across hosts.** Verifier contracts (ADR-138), window-numbering invariants (ADR-097 base-index/pane-base-index), capture-pane output formats — all pinned. The fresh-OSS-contributor footgun closes.
@@ -218,11 +229,11 @@ ADR-163's 2026-05-16 proposal would complete when ALL of:
 - **Operator-installed tmux replacement.** Operators who genuinely want their host tmux can set `ATMUX_USE_HOST_TMUX=1` permanently; ADR-163 doesn't fight them but DOES audit it via Discord.
 - **Building tmux from operator-modified source.** The build-from-source escape hatch builds from upstream's tagged source. Custom-patched tmux is out of scope — operators wanting that should clone tmux separately + set `ATMUX_TMUX_TARBALL` to their own tarball.
 
-### Rollback path
+### Rollback path — amended 2026-09-03
 
-- Set `ATMUX_USE_HOST_TMUX=1` in the operator's shell rc — all atmux verbs fall back to PATH-resolved `tmux`. Warns once per session via Discord (`[host-tmux-fallback]`). No code change required.
-- Remove `/opt/atmux/<version>/vendor/tmux/` from the install — postinstall is idempotent; re-running `bun install -g atmux` (or `npm install -g atmux`) re-vendors.
-- ADR-163 itself is reversible by amending ADR-097 to drop the `binary` field + removing the production callers' `binary:` argument. Vendored binary directory becomes dead weight (operator can `rm -rf` it).
+- Preferred: atomically retarget `/opt/atmux/current` to a previously verified complete release tree that includes exact tmux 3.7c.
+- Deliberately removing the vendored tmux disables only the vendored `aca` / `aco` plane. That plane fails closed until a complete bundle is restored; the legacy Homebrew tmux/resurrect plane remains independent and untouched.
+- The old `ATMUX_USE_HOST_TMUX=1` universal-fallback and postinstall-revendor instructions were part of the historical 2026-05 proposal and do not apply to the current vendored cockpit path.
 
 ### Reuse statement
 
@@ -230,7 +241,7 @@ ADR-163's 2026-05-16 proposal would complete when ALL of:
 - `TmuxConfig` discriminated union: ADR-097.
 - `safeSendKeysWithVerify` verifier contract: ADR-138.
 - `templates/tmux/atmux.conf` config template: ADR-162.
-- `[host-tmux-fallback]` Discord template: ADR-162 §3 names it; this ADR fires it from the version-lock v2 escape hatch path. Template literal landed by ADR-162 T<N>; ADR-163 wires the call-site.
+- `[host-tmux-fallback]` Discord template: historical 2026-05 proposal only; it does not override the current vendored cockpit's fail-closed path.
 - Driver-only caller-scope refusal: mirrors ADR-144 T5 `--skip-test-gate` pattern.
 
 ## Open questions

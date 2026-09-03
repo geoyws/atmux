@@ -373,11 +373,12 @@ Codebase-wide alignment pass after the orchd / Honker session shipped 7 epics:
 
 ### ✨ Added — `resolveTmuxBin()` 3-tier resolver + `vendored-tmux-binary` doctor probe (ADR-191, e-162046c7)
 
-First half of the vendored-tmux ship — the source-side resolution chain lands before the build-side install pipeline so the runtime is ready for the binary the moment `build:install` learns to ship it.
+The vendored-tmux runtime split and source-build packaging now land together. Ordinary atmux calls retain the legacy host resolver; only the separate `aca` / `aco` cockpit path opts into fail-closed vendored tmux 3.7c.
 
 - **Resolver helper**: new `src/core/resolve-tmux-bin.ts::resolveTmuxBin()` walks `ATMUX_TMUX_BIN` (operator override) → `/opt/atmux/current/bin/tmux` (vendored) → system `tmux` on PATH (warn-once on fallback). Per-process memoization avoids re-probing the filesystem on every tmux spawn; the warn-once dedup keeps the fallback message out of high-frequency call paths. Injectable env / existsSync / warn / state seams mirror `resolveDefaultListenerBinary` for test parity. 100% line + func coverage in `tests/unit/core/resolve-tmux-bin.test.ts`.
 - **Call-site migration**: every `cmd: "tmux"` literal in production code routed through `resolveTmuxBin()` — `src/abstractions/tmux.ts` (3 spawn primitives), `src/abstractions/fallback-cage.ts` (Tier-3+ sudo spawn + capture-pane + kill-session), `src/verbs/poke.ts` (paste-buffer load/paste), `src/verbs/doctor.ts` (tmux-version probe family), `src/core/cursor-recipes/fix-supervisor-missing.ts` (list-windows detect).
-- **Doctor probe** `checkVendoredTmuxBinary` (src/verbs/doctor.ts): yellow row `vendored-tmux-missing` when `/opt/atmux/current/bin/tmux` is absent (operators see the fallback signal explicitly) + `vendored-tmux-version-drift` when present-but-not-3.6a. Self-clearing post-install. 7 unit tests cover all branches.
+- **Doctor probe** `checkVendoredTmuxBinary` (src/verbs/doctor.ts): yellow row `vendored-tmux-missing` when `/opt/atmux/current/bin/tmux` is absent (the vendored plane stays fail-closed) + `vendored-tmux-version-drift` when present-but-not-3.7c. Self-clearing post-install. 8 unit tests cover all branches.
+- **Build/install**: `package.json::build:install` now source-builds exact tmux 3.7c from the SHA-pinned archive, validates the complete staged payload, and atomically publishes it under `/opt/atmux/<version>`.
 - **Operator-facing**: `ATMUX_TMUX_BIN` documented in README §Configuration. Build:install pipeline extension (DoD #1) lands separately — gated on operator/driver authorization since it sudo-touches `/opt/atmux/` on live deploys.
 
 Cross-refs: [ADR-191](docs/adr/191-vendored-tmux-binary.md) §Implementation status (this commit), [ADR-162](docs/adr/162-atmux-owns-tmux-infrastructure.md) (complementary tmux-infra ownership), [ADR-163](docs/adr/163-bundled-tmux-binary.md) (pin reference).

@@ -34,7 +34,7 @@ describe("ADR-191 resolveTmuxBin — injected probe contract", () => {
   beforeEach(async () => {
     scratch = await mkdtemp(join(tmpdir(), "atmux-vendored-tmux-"));
     fakeTmux = join(scratch, "fake-tmux");
-    await writeFile(fakeTmux, "#!/bin/sh\necho 'tmux 3.6a'\n");
+    await writeFile(fakeTmux, "#!/bin/sh\necho 'tmux 3.7c'\n");
     await chmod(fakeTmux, 0o755);
   });
 

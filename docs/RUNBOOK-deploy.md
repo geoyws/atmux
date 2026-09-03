@@ -25,13 +25,13 @@ Old versions preserved under `/opt/atmux/<version>/` for one-line rollback (see 
 
 3. **Commit on trunk** (`geoyws`). `package.json` + `CHANGELOG.md` only; conventional-commits subject (`chore(deploy): bump A.B.C → X.Y.Z + atmux build:install (t-…)`); body documents bump rationale + smoke targets.
 
-4. **Run `bun run build:install`** from the trunk worktree (`/root/work/src/atmux` or equivalent). The script:
-   1. `bun build:compile` → `dist/atmux` (bun ELF, ~100MB)
-   2. `sudo install -d -m 755 /opt/atmux/<V>/bin`
-   3. `sudo install -m 755 dist/atmux /opt/atmux/<V>/bin/atmux`
-   4. `sudo rm -rf /opt/atmux/<V>/templates && sudo cp -r templates /opt/atmux/<V>/templates` ← static-assets ship (added per c-003a2a4c / t-17d413b1: compiled bun's `import.meta.dir` walks $bunfs to `/templates` so `atmux init` + brief reads need on-disk templates alongside the binary; the resolver at `src/core/templates-dir.ts` probes `<execPath>/../templates` as the installed-mode fallback after the dev-mode probe misses)
-   5. `sudo ln -sfn /opt/atmux/<V> /opt/atmux/current` ← atomic flip
-   6. `sudo ln -sfn /opt/atmux/current/bin/atmux /usr/local/bin/atmux`
+4. **Run `sudo "$(command -v bun)" scripts/build-install.ts`** from the trunk worktree (`/root/work/src/atmux` or equivalent). The release flow resolves Bun before sudo and the build-install script stages into a private scratch tree, then:
+    1. compiles the host `atmux` binary into the stage root and records its SHA
+    2. builds the listener and cockpit mirror binaries and records their SHAs
+    3. builds vendored tmux 3.7c from the pinned source archive SHA/build command, rewrites the staged Mach-O closure on Darwin, and records the staged binary and dylib hashes after the rewrites land
+    4. refreshes `/opt/atmux/<V>/templates` and `/opt/atmux/<V>/plugins` from the repo copies ← static-assets ship (added per c-003a2a4c / t-17d413b1: compiled bun's `import.meta.dir` walks $bunfs to `/templates` so `atmux init` + brief reads need on-disk templates alongside the binary; the resolver at `src/core/templates-dir.ts` probes `<execPath>/../templates` as the installed-mode fallback after the dev-mode probe misses)
+    5. writes the stage manifest, validates the staged bytes, and only then retargets `/opt/atmux/current` ← atomic flip
+    6. retargets `/usr/local/bin/atmux`
 
 5. **Push trunk**. `git push origin geoyws` — surfaces the version bump to other members' `git fetch` views.
 
@@ -110,16 +110,16 @@ Preserved versions enumerable via `ls /opt/atmux/`. Each is a self-contained `bi
 
 ## Vendored tmux binary (ADR-191)
 
-The install pipeline is staged to ship its own `/opt/atmux/<version>/bin/tmux` for the future vendored plane, but the live resolver stays separate today. Ordinary atmux calls still use `resolveTmuxBin()` (`src/core/resolve-tmux-bin.ts`) with the legacy chain `ATMUX_TMUX_BIN` override → system `tmux` on PATH. The prepared vendored seam uses `resolveVendoredTmuxBin()` and `ATMUX_VENDORED_TMUX_BIN` only; it does not auto-reroute ordinary calls, and it never falls back to system PATH. The operator's daily-driver `tmux` from the shell is untouched: PATH still resolves `tmux` to whatever the operator has installed (e.g. `/usr/local/bin/tmux` from brew/apt).
+The install pipeline now ships its own `/opt/atmux/<version>/bin/tmux` and wires the installed tree to tmux 3.7c. Ordinary atmux calls still use `resolveTmuxBin()` (`src/core/resolve-tmux-bin.ts`) with the legacy chain `ATMUX_TMUX_BIN` override → system `tmux` on PATH; they do not auto-route through the vendored binary. The future `aca` / `aco` vendored cockpit path will opt into `resolveVendoredTmuxBin()` and its own socket/config/resurrect namespace, fail closed, and never fall back to host tmux. The operator's daily-driver `tmux` from the shell and the old Homebrew tmux/resurrect plane are untouched. The older 3.6a wording in the historical ADR text is historical only.
 
 ### Verify after install
 
 ```bash
-/opt/atmux/current/bin/tmux -V                  # → tmux 3.6a
+/opt/atmux/current/bin/tmux -V                  # → tmux 3.7c
 atmux doctor 2>&1 | rg 'vendored-tmux'          # → no row (green) when binary present + pinned-version match
 ```
 
-`atmux doctor` warns yellow `vendored-tmux-missing` when `/opt/atmux/current/bin/tmux` is absent (atmux falls through to system tmux — functional but unpinned), and yellow `vendored-tmux-version-drift` when present-but-not-3.6a (hand-staged binary or stale install). Both rows self-clear after the next clean `build:install`.
+`atmux doctor` warns yellow `vendored-tmux-missing` when `/opt/atmux/current/bin/tmux` is absent. That is an install failure signal, not a deployment fallback: the vendored plane is considered incomplete until the binary is present. `vendored-tmux-version-drift` stays yellow when the binary is present but not 3.7c (hand-staged binary or stale install). Both rows self-clear after the next clean `build:install`.
 
 ### Override for testing
 
@@ -134,12 +134,12 @@ Operator-pinned for testing a different tmux version, local dev build, or CI rig
 ### Rollback the vendored binary
 
 ```bash
-sudo rm /opt/atmux/<version>/bin/tmux            # one version
-# or for full-fleet drop:
-sudo find /opt/atmux/ -maxdepth 3 -name tmux -type f -delete
+# Preferred: select a previously verified complete release tree.
+sudo ln -sfn /opt/atmux/<known-good-version> /opt/atmux/current
+/opt/atmux/current/bin/tmux -V                    # must print tmux 3.7c
 ```
 
-Next atmux spawn observes the missing vendored binary, warns once to stderr, falls through to system `tmux` on PATH. Operator workflows continue (system tmux is the floor). To re-install: re-run `bun run build:install` from a trunk worktree.
+Do not delete the vendored binary as a routine rollback. Deliberately removing it disables `aca` / `aco`: the vendored plane fails closed until a complete exact-3.7c release tree is restored. The old Homebrew tmux/resurrect plane remains independent and untouched throughout. Rebuild a complete candidate with `bun run build:install` from a trunk worktree when no verified rollback tree exists.
 
 ### Operator daily-driver tmux
 

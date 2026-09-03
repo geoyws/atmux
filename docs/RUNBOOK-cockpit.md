@@ -127,6 +127,8 @@ Cron-spawned cockpit roles (medic) re-establish themselves on the next cron tick
 
 atmux ships a canonical tmux config at `templates/tmux/atmux.conf` (installed under `/opt/atmux/<version>/templates/` per [ADR-047](adr/047-canonical-install-topology.md)). Every cockpit + per-team session creation call-site threads this file via the `-f <path>` flag, so atmux invocations **never inherit the operator's `~/.tmux.conf`**. This closes the inheritance path that previously made atmux behavior depend on the operator's personal config drift (`base-index`, `pane-base-index`, custom key bindings, etc.).
 
+The old Homebrew tmux/resurrect plane remains independent and untouched. The future vendored `aca` / `aco` cockpit plane is a separate namespace with its own socket, config, and resurrect state, and it will use an explicit tmux 3.7c binary via `resolveVendoredTmuxBin()` instead of the host resolver. Ordinary cockpit and cage calls stay on the legacy plane.
+
 The baseline ships 8 options per [ADR-162 §Decision-anchor #3](adr/162-atmux-owns-tmux-infrastructure.md) — most critically `automatic-rename off` (protects the [ADR-135](adr/135-cockpit-naming-convention.md) `buildWindowName` contract from tmux's auto-rename stomping on `_-prefix` windows).
 
 **Operator override:**
@@ -148,10 +150,10 @@ The override is one-shot per invocation; persistent overrides go in shell profil
 
 Two new warn-class doctor probes ([ADR-162 §Decision-anchor #5](adr/162-atmux-owns-tmux-infrastructure.md)) surface ADR-162 drift before it bites:
 
-**`tmux-version-mismatch`** — compares the host tmux version against atmux's tested range (currently min 3.2, tested-against 3.6a). Warn payloads:
+**`tmux-version-mismatch`** — compares the host tmux version against atmux's tested range (currently min 3.2, tested-against 3.7c). Warn payloads:
 
 - `🟡 host tmux version X.Y below minimum 3.2` — atmux features may not work; upgrade or pin via [ADR-163](adr/163-bundled-tmux-binary.md) bundled binary.
-- `🟡 host tmux version Z.W untested above 3.6a` — atmux ops may still work but haven't been validated.
+- `🟡 host tmux version Z.W untested above 3.7c` — atmux ops may still work but haven't been validated.
 
 Warn-class only — doesn't block atmux. Surfaces via `atmux doctor` (human) + `atmux doctor --json` (structured).
 

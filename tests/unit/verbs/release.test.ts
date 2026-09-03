@@ -5,7 +5,7 @@
 //
 // Spawn injection is critical — these tests never call real git / bun.
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +18,8 @@ import {
   parseReleaseArgs,
   release,
 } from "../../../src/verbs/release.ts";
+
+const bunBinary = "/opt/homebrew/bin/bun";
 
 function makeSpawnResult(stdout: string, exitCode = 0, stderr = ""): SpawnResult {
   return {
@@ -327,27 +329,63 @@ describe("release", () => {
   });
 
   test("build:install failure surfaces with recovery hint + non-zero exit", async () => {
-    const spawn = async (cmd: string, argv: ReadonlyArray<string>): Promise<SpawnResult> => {
-      if (argv[0] === "status") return makeSpawnResult("");
-      if (argv[0] === "add" || argv[0] === "commit") return makeSpawnResult("");
-      if (cmd === "bun" && argv[0] === "run" && argv[1] === "build:install") {
-        return makeSpawnResult("", 1, "build:compile failed");
-      }
-      return makeSpawnResult("");
-    };
-    const stderrChunks: string[] = [];
-    const rc = await release(["patch"], {
-      spawn,
-      readPackageJson: async () => JSON.stringify({ name: "atmux", version: "0.8.6" }),
-      writePackageJson: async () => {},
-      stdout: () => {},
-      stderr: (m) => {
-        stderrChunks.push(m);
-      },
-    });
-    expect(rc).toBe(70);
-    expect(stderrChunks.join("")).toContain("build:install failed");
-    expect(stderrChunks.join("")).toContain("git reset --soft HEAD~1");
+    const whichSpy = spyOn(Bun, "which").mockImplementation((cmd: string) =>
+      cmd === "bun" ? bunBinary : null,
+    );
+    try {
+      const spawn = async (cmd: string, argv: ReadonlyArray<string>): Promise<SpawnResult> => {
+        if (argv[0] === "status") return makeSpawnResult("");
+        if (argv[0] === "add" || argv[0] === "commit") return makeSpawnResult("");
+        if (cmd === "sudo" && argv[0] === bunBinary && argv[1] === "scripts/build-install.ts") {
+          return makeSpawnResult("", 1, "build:compile failed");
+        }
+        return makeSpawnResult("");
+      };
+      const stderrChunks: string[] = [];
+      const rc = await release(["patch"], {
+        spawn,
+        readPackageJson: async () => JSON.stringify({ name: "atmux", version: "0.8.6" }),
+        writePackageJson: async () => {},
+        stdout: () => {},
+        stderr: (m) => {
+          stderrChunks.push(m);
+        },
+      });
+      expect(rc).toBe(70);
+      expect(stderrChunks.join("")).toContain("build:compile failed");
+      expect(stderrChunks.join("")).toContain("git reset --soft HEAD~1");
+    } finally {
+      whichSpy.mockRestore();
+    }
+  });
+
+  test("missing bun returns exit 69 before build-install", async () => {
+    const whichSpy = spyOn(Bun, "which").mockImplementation((cmd: string) =>
+      cmd === "bun" ? null : "/usr/bin/not-used",
+    );
+    try {
+      const calls: string[] = [];
+      const stderrChunks: string[] = [];
+      const rc = await release(["patch"], {
+        spawn: async (_cmd, argv) => {
+          calls.push(argv[0] ?? "");
+          if (argv[0] === "status") return makeSpawnResult("");
+          if (argv[0] === "rev-parse" && argv[1] === "--abbrev-ref")
+            return makeSpawnResult("release-x");
+          if (argv[0] === "add" || argv[0] === "commit") return makeSpawnResult("");
+          return makeSpawnResult("");
+        },
+        readPackageJson: async () => JSON.stringify({ name: "atmux", version: "0.8.6" }),
+        writePackageJson: async () => {},
+        stdout: () => {},
+        stderr: (m) => stderrChunks.push(m),
+      });
+      expect(rc).toBe(69);
+      expect(calls).toEqual(["status", "rev-parse", "add", "commit"]);
+      expect(stderrChunks.join("")).toContain("bun not found on PATH");
+    } finally {
+      whichSpy.mockRestore();
+    }
   });
 
   test("git commit failure returns exit 70 after writing package.json and git add", async () => {
@@ -379,41 +417,48 @@ describe("release", () => {
   });
 
   test("git push failure keeps the local commit and reports a manual recovery command", async () => {
-    const calls: Array<[string, ReadonlyArray<string>]> = [];
-    const spawn = async (cmd: string, argv: ReadonlyArray<string>): Promise<SpawnResult> => {
-      calls.push([cmd, argv]);
-      if (argv[0] === "status") return makeSpawnResult("");
-      if (argv[0] === "rev-parse" && argv[1] === "--abbrev-ref")
-        return makeSpawnResult("release-x");
-      if (argv[0] === "push") return makeSpawnResult("", 1, "remote rejected");
-      return makeSpawnResult("");
-    };
-    const stdoutChunks: string[] = [];
-    const stderrChunks: string[] = [];
-    const rc = await release(["minor"], {
-      spawn,
-      readPackageJson: async () => JSON.stringify({ name: "atmux", version: "0.8.6" }),
-      writePackageJson: async () => {},
-      stdout: (m) => {
-        stdoutChunks.push(m);
-      },
-      stderr: (m) => {
-        stderrChunks.push(m);
-      },
-    });
-    expect(rc).toBe(70);
-    expect(calls.map((c) => c[1][0])).toEqual([
-      "status",
-      "rev-parse",
-      "add",
-      "commit",
-      "run",
-      "rev-parse",
-      "push",
-    ]);
-    expect(stdoutChunks.join("")).toContain("✓ commit landed: 0.9.0");
-    expect(stderrChunks.join("")).toContain("git push failed (exit 1): remote rejected");
-    expect(stderrChunks.join("")).toContain("git push origin release-x");
+    const whichSpy = spyOn(Bun, "which").mockImplementation((cmd: string) =>
+      cmd === "bun" ? bunBinary : null,
+    );
+    try {
+      const calls: Array<[string, ReadonlyArray<string>]> = [];
+      const spawn = async (cmd: string, argv: ReadonlyArray<string>): Promise<SpawnResult> => {
+        calls.push([cmd, argv]);
+        if (argv[0] === "status") return makeSpawnResult("");
+        if (argv[0] === "rev-parse" && argv[1] === "--abbrev-ref")
+          return makeSpawnResult("release-x");
+        if (argv[0] === "push") return makeSpawnResult("", 1, "remote rejected");
+        return makeSpawnResult("");
+      };
+      const stdoutChunks: string[] = [];
+      const stderrChunks: string[] = [];
+      const rc = await release(["minor"], {
+        spawn,
+        readPackageJson: async () => JSON.stringify({ name: "atmux", version: "0.8.6" }),
+        writePackageJson: async () => {},
+        stdout: (m) => {
+          stdoutChunks.push(m);
+        },
+        stderr: (m) => {
+          stderrChunks.push(m);
+        },
+      });
+      expect(rc).toBe(70);
+      expect(calls.map((c) => c[1][0])).toEqual([
+        "status",
+        "rev-parse",
+        "add",
+        "commit",
+        bunBinary,
+        "rev-parse",
+        "push",
+      ]);
+      expect(stdoutChunks.join("")).toContain("✓ commit landed: 0.9.0");
+      expect(stderrChunks.join("")).toContain("git push failed (exit 1): remote rejected");
+      expect(stderrChunks.join("")).toContain("git push origin release-x");
+    } finally {
+      whichSpy.mockRestore();
+    }
   });
 
   test("post-build branch probe failure returns exit 70 without pushing", async () => {
@@ -443,36 +488,43 @@ describe("release", () => {
   });
 
   test("happy path: writes new version + commits + builds + pushes", async () => {
-    const calls: Array<[string, ReadonlyArray<string>]> = [];
-    const spawn = async (cmd: string, argv: ReadonlyArray<string>): Promise<SpawnResult> => {
-      calls.push([cmd, argv]);
-      if (argv[0] === "status") return makeSpawnResult("");
-      if (argv[0] === "rev-parse" && argv[1] === "--abbrev-ref") return makeSpawnResult("geoyws");
-      return makeSpawnResult("");
-    };
-    const written: string[] = [];
-    const stdoutChunks: string[] = [];
-    const rc = await release(["minor"], {
-      spawn,
-      readPackageJson: async () => JSON.stringify({ name: "atmux", version: "0.8.6" }),
-      writePackageJson: async (c) => {
-        written.push(c);
-      },
-      stdout: (m) => {
-        stdoutChunks.push(m);
-      },
-      stderr: () => {},
-    });
-    expect(rc).toBe(0);
-    expect(written).toHaveLength(1);
-    expect(written[0]).toContain('"version": "0.9.0"');
-    // Verify the spawn chain ran in expected order: status → add → commit → bun run build:install → rev-parse → push
-    const argv0 = calls.map((c) => c[1].join(" "));
-    expect(argv0).toContain("status --porcelain");
-    expect(argv0).toContain("add package.json");
-    expect(argv0.some((s) => s.startsWith("commit -m"))).toBe(true);
-    expect(argv0).toContain("run build:install");
-    expect(argv0).toContain("push origin geoyws");
-    expect(stdoutChunks.join("")).toContain("v0.9.0 deployed");
+    const whichSpy = spyOn(Bun, "which").mockImplementation((cmd: string) =>
+      cmd === "bun" ? bunBinary : null,
+    );
+    try {
+      const calls: Array<[string, ReadonlyArray<string>]> = [];
+      const spawn = async (cmd: string, argv: ReadonlyArray<string>): Promise<SpawnResult> => {
+        calls.push([cmd, argv]);
+        if (argv[0] === "status") return makeSpawnResult("");
+        if (argv[0] === "rev-parse" && argv[1] === "--abbrev-ref") return makeSpawnResult("geoyws");
+        return makeSpawnResult("");
+      };
+      const written: string[] = [];
+      const stdoutChunks: string[] = [];
+      const rc = await release(["minor"], {
+        spawn,
+        readPackageJson: async () => JSON.stringify({ name: "atmux", version: "0.8.6" }),
+        writePackageJson: async (c) => {
+          written.push(c);
+        },
+        stdout: (m) => {
+          stdoutChunks.push(m);
+        },
+        stderr: () => {},
+      });
+      expect(rc).toBe(0);
+      expect(written).toHaveLength(1);
+      expect(written[0]).toContain('"version": "0.9.0"');
+      // Verify the spawn chain ran in expected order: status → add → commit → sudo bun scripts/build-install.ts → rev-parse → push
+      const argv0 = calls.map((c) => c[1].join(" "));
+      expect(argv0).toContain("status --porcelain");
+      expect(argv0).toContain("add package.json");
+      expect(argv0.some((s) => s.startsWith("commit -m"))).toBe(true);
+      expect(calls).toContainEqual(["sudo", [bunBinary, "scripts/build-install.ts"]]);
+      expect(argv0).toContain("push origin geoyws");
+      expect(stdoutChunks.join("")).toContain("v0.9.0 deployed");
+    } finally {
+      whichSpy.mockRestore();
+    }
   });
 });

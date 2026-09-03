@@ -113,7 +113,7 @@ export function makeDefaultSpawnFn(spawnImpl: typeof defaultSpawn = defaultSpawn
 const defaultSpawnFn = makeDefaultSpawnFn();
 
 export interface ReleaseOpts {
-  /** Override the spawn for test isolation. Receives ('git'|'bun', argv, opts). */
+  /** Override the spawn for test isolation. Receives command invocations such as git, sudo, and bun. */
   spawn?: SpawnFn;
   /** Reader for package.json. Defaults to ./package.json. */
   readPackageJson?: () => Promise<string | null>;
@@ -184,8 +184,8 @@ export async function release(
   if (parsed.dryRun) {
     stdout("  --dry-run set — would perform:\n");
     stdout(`    1. write package.json version=${next}\n`);
-    stdout('    2. git commit -m "chore(release): bump version to ' + next + '"\n');
-    stdout("    3. bun run build:install\n");
+    stdout(`    2. git commit -m "chore(release): bump version to ${next}"\n`);
+    stdout("    3. sudo <absolute-bun> scripts/build-install.ts\n");
     stdout("    4. git push origin <current-branch>\n");
     return 0;
   }
@@ -213,11 +213,16 @@ export async function release(
   stdout(`  ✓ commit landed: ${next}\n`);
 
   // Step 6 — build + install.
-  stdout("  → bun run build:install (this takes a few seconds)...\n");
-  const buildRes = await spawn("bun", ["run", "build:install"]);
+  const bunBinary = Bun.which("bun");
+  if (bunBinary === null) {
+    stderr("release: bun not found on PATH\n");
+    return 69;
+  }
+  stdout(`  → sudo ${bunBinary} scripts/build-install.ts (this takes a few seconds)...\n`);
+  const buildRes = await spawn("sudo", [bunBinary, "scripts/build-install.ts"]);
   if (buildRes.exitCode !== 0) {
     stderr(
-      `release: bun run build:install failed (exit ${buildRes.exitCode}).\n` +
+      `release: sudo ${bunBinary} scripts/build-install.ts failed (exit ${buildRes.exitCode}).\n` +
         `        stderr: ${buildRes.stderr}\n` +
         `        Recover: roll the version forward manually + redeploy, OR run\n` +
         `        \`git reset --soft HEAD~1\` to undo the commit and retry.\n`,

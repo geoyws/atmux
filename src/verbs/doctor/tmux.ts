@@ -14,7 +14,7 @@ export const TMUX_MIN_VERSION = "3.2";
  *  → yellow. Per ADR-162 §Part C. ADR-138's send-keys verifier contract
  *  is validated against this version on hax. */
 
-export const TMUX_TESTED_VERSION = "3.6a";
+export const TMUX_TESTED_VERSION = "3.7c";
 
 /** Parsed tmux version. `suffix` is the optional trailing alphabetic
  *  letter (e.g. `"a"` in `tmux 3.6a`); empty string when absent. */
@@ -163,7 +163,7 @@ export async function checkTmuxVersionMismatch(
 export interface CheckVendoredTmuxBinaryOpts {
   /** Filesystem probe override (test seam). */
   existsSync?: (path: string) => boolean;
-  /** tmux spawn override — invoked with argv only by the vendored-path default. */
+  /** tmux spawn override — invoked with argv only by the vendored cockpit path. */
   tmux?: TmuxSpawn;
   /** Low-level spawn override for the vendored-binary probe. */
   spawn?: typeof defaultSpawn;
@@ -186,9 +186,10 @@ export interface CheckVendoredTmuxBinaryOpts {
  *      install or a hand-staged binary.
  *
  * Both rows are warn-class. The probe calls the vendored binary
- * directly so `ATMUX_TMUX_BIN` and the resolver chain do not affect
- * this check. The probe gives the operator a discoverable signal that
- * the vendored install is present and on the pinned version.
+ * directly so `ATMUX_TMUX_BIN` and the legacy resolver do not affect
+ * this check; only the future vendored cockpit path consumes this
+ * helper. The probe gives the operator a discoverable signal that the
+ * vendored install is present and on the pinned version.
  */
 
 export async function checkVendoredTmuxBinary(

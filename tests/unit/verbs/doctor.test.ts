@@ -4208,14 +4208,14 @@ describe("checkTmuxVersionMismatch", () => {
     };
   }
 
-  test("constants are at the documented values per ADR-162 §Part C", () => {
+  test("constants are at the documented values per ADR-162 §Part C and ADR-163", () => {
     expect(TMUX_MIN_VERSION).toBe("3.2");
-    expect(TMUX_TESTED_VERSION).toBe("3.6a");
+    expect(TMUX_TESTED_VERSION).toBe("3.7c");
   });
 
-  test("in-range tmux 3.6a (exact tested version) → no rows", async () => {
+  test("in-range tmux 3.7c (exact tested version) → no rows", async () => {
     const rows = await checkTmuxVersionMismatch({
-      tmux: async () => tmuxOk("tmux 3.6a"),
+      tmux: async () => tmuxOk("tmux 3.7c"),
     });
     expect(rows).toEqual([]);
   });
@@ -4254,22 +4254,14 @@ describe("checkTmuxVersionMismatch", () => {
     expect(rows[0]?.detail).toContain("below minimum");
   });
 
-  test("above-tested tmux 3.7 → yellow with 'above tested' detail", async () => {
+  test("above-tested tmux 3.7d → yellow with 'above tested' detail", async () => {
     const rows = await checkTmuxVersionMismatch({
-      tmux: async () => tmuxOk("tmux 3.7"),
+      tmux: async () => tmuxOk("tmux 3.7d"),
     });
     expect(rows).toHaveLength(1);
     expect(rows[0]?.status).toBe("yellow");
     expect(rows[0]?.label).toBe("tmux-version-mismatch");
-    expect(rows[0]?.detail).toContain("3.7");
-    expect(rows[0]?.detail).toContain("above tested");
-  });
-
-  test("above-tested tmux 3.6b (suffix bump above 3.6a) → yellow", async () => {
-    const rows = await checkTmuxVersionMismatch({
-      tmux: async () => tmuxOk("tmux 3.6b"),
-    });
-    expect(rows).toHaveLength(1);
+    expect(rows[0]?.detail).toContain("3.7d");
     expect(rows[0]?.detail).toContain("above tested");
   });
 
@@ -4336,7 +4328,7 @@ describe("checkVendoredTmuxBinary", () => {
   test("vendored binary absent → yellow 'vendored-tmux-missing'", async () => {
     const rows = await checkVendoredTmuxBinary({
       existsSync: () => false,
-      tmux: async () => tmuxOk("tmux 3.6a"),
+      tmux: async () => tmuxOk("tmux 3.7c"),
     });
     expect(rows).toHaveLength(1);
     expect(rows[0]?.status).toBe("yellow");
@@ -4348,10 +4340,10 @@ describe("checkVendoredTmuxBinary", () => {
     expect(rows[0]?.hint).not.toContain("ATMUX_TMUX_BIN");
   });
 
-  test("vendored present + exact pinned version 3.6a → no rows", async () => {
+  test("vendored present + exact pinned version 3.7c → no rows", async () => {
     const rows = await checkVendoredTmuxBinary({
       existsSync: () => true,
-      tmux: async () => tmuxOk("tmux 3.6a"),
+      tmux: async () => tmuxOk("tmux 3.7c"),
     });
     expect(rows).toEqual([]);
   });
@@ -4365,7 +4357,7 @@ describe("checkVendoredTmuxBinary", () => {
         captured.push(opts);
         return {
           exitCode: 0,
-          stdout: "tmux 3.6a",
+          stdout: "tmux 3.7c",
           stderr: "",
           argv: opts.argv ?? [],
           cmd: opts.cmd,
@@ -4386,15 +4378,15 @@ describe("checkVendoredTmuxBinary", () => {
     expect(spawnOpts.unsetEnv).toEqual(TMUX_CHILD_UNSET_ENV);
   });
 
-  test("vendored present + version drift (3.6b) → yellow 'version-drift'", async () => {
+  test("vendored present + version drift (3.7b) → yellow 'version-drift'", async () => {
     const rows = await checkVendoredTmuxBinary({
       existsSync: () => true,
-      tmux: async () => tmuxOk("tmux 3.6b"),
+      tmux: async () => tmuxOk("tmux 3.7b"),
     });
     expect(rows).toHaveLength(1);
     expect(rows[0]?.label).toBe("vendored-tmux-version-drift");
-    expect(rows[0]?.detail).toContain("3.6b");
-    expect(rows[0]?.detail).toContain("3.6a");
+    expect(rows[0]?.detail).toContain("3.7b");
+    expect(rows[0]?.detail).toContain("3.7c");
     expect(rows[0]?.hint).toContain("build:install");
   });
 
