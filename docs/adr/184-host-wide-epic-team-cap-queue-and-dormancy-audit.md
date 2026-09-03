@@ -3,7 +3,7 @@
 **Status**: Accepted — ratified by driver 2026-05-21 (host-wide cap=8 + queue + dormancy audit; §OQ recommendations as-written: per-user ~/.atmux/state registry, JSON+flock, cap=8, no auto-retire dormants v1, per-project quota advisory only, priority-then-FIFO queue, hard-refuse at queue-full, return-immediately at cap with exit-75, queue ping target from team.json::discord)
 **Date**: 2026-05-18
 **Driver-ref**: 2026-05-17 22:25 MYT driver-inbox P0 — hax box RAM-pinned (49/61 GiB RAM, 61/127 GiB swap, load 24, 61 tmux servers, 225 claude procs, ~56 GiB RSS observed). Driver: hard cap on concurrent atmux epic-teams across all projects + serialization/queue policy + audit-and-retire-dormant protocol for the current 61.
-**Relates**: ADR-018 (per-team tmux socket isolation), ADR-058 (cage tiering — host-tier becomes implicit Tier-0), ADR-077 (medic — dormancy-heuristic precedent), ADR-090 (epic-team lifecycle — `spawn-epic` / `dissolve-epic`), ADR-126 (JSON fallback storage pattern), ADR-132/158 (sentinel — pluggable observer; possible v2 host-tier candidate), ADR-148 (commit-cadence ground-truth signal).
+**Relates**: ADR-018 (per-team tmux socket isolation), ADR-050 (cage tiering — host-tier becomes implicit Tier-0), ADR-077 (medic — dormancy-heuristic precedent), ADR-090 (epic-team lifecycle — `spawn-epic` / `dissolve-epic`), ADR-126 (JSON fallback storage pattern), ADR-132/158 (sentinel — pluggable observer; possible v2 host-tier candidate), ADR-148 (commit-cadence ground-truth signal).
 
 > ⚠ **SUPERSEDED 2026-08-27 by [ADR-280](280-epic-team-retirement-and-staged-excision.md).** Epic-teams are retired: the `epic-team` cage type, the `epicId` cockpit field and the epic verbs no longer exist. This ADR is kept as history — the decision it records was true when made. Do not implement from it.
 
@@ -357,7 +357,7 @@ Operator-driven manual reduction precedes any new spawn — v1 cap (8) is well b
 ## Cross-refs
 
 - ADR-018 (per-team tmux socket isolation).
-- ADR-058 (cage tiering — host-tier is implicit Tier-0).
+- ADR-050 (cage tiering — host-tier is implicit Tier-0).
 - ADR-077 (medic — dormancy-heuristic precedent for idle-pane signal).
 - ADR-090 (epic-team lifecycle — `spawn-epic` + `dissolve-epic`; this ADR extends both).
 - ADR-126 (JSON fallback storage pattern — registry uses this path).

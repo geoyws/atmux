@@ -159,7 +159,7 @@ If TTL=15s is too coarse (statusline feels stale), operators can lower MAX_AGE p
 - ADR-163 (bundled tmux 3.6a — the version whose #() re-eval-on-PANE-ACTIVITY semantics motivates this ADR)
 - ADR-171 (tmux.conf.local override — escape valve for operator-curated cage statusline overrides)
 - ADR-135 (window-name convention — buildWindowName cited in cage statusline)
-- ADR-058 (cage tier isolation — zero-fork keeps Tier-1 lean per the tier invariants)
+- ADR-050 (cage tier isolation — zero-fork keeps Tier-1 lean per the tier invariants)
 - ADR-132 §Amendment 2026-05-20 (cost-curve realization — same theme: cron-polling fork storm vs statusline fork storm; both addressed via TTL-cache + on-demand patterns)
 - Operator-dotfiles `ee009cc` on github.com/geoyws/dotfiles (origin of the 6 helper scripts)
 - Driver-ref: driver-2026-05-20-13:24-MYT

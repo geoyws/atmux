@@ -3,7 +3,7 @@
 **Status**: proposed (deferred: impl not yet shipped; `atmux test-reaper` verb absent + no `src/core/leak-tracker*` module as of 2026-05-22 audit. Original ratification 2026-05-21 was bookkeeping-batch — see §Amendment 2026-05-22 below for the surface-vs-impl audit context.)
 **Date**: 2026-05-18
 **Driver-ref**: complaint c-27a1c8f4 (filed 2026-05-17 by medic; adjudicated by ombudsman 2026-05-17 to atmux team for in-process half; dotfiles half scoped out per `[[feedback_claude_skills_dotfiles_territory]]`).
-**Relates**: ADR-018 (per-team tmux socket isolation — same isolation pattern), ADR-058 (cage tiering — test cage is ephemeral Tier-1), ADR-162 (atmux owns its tmux infrastructure — cockpit-socket isolation; same defensive-cleanup discipline applied to tests).
+**Relates**: ADR-018 (per-team tmux socket isolation — same isolation pattern), ADR-050 (cage tiering — test cage is ephemeral Tier-1), ADR-162 (atmux owns its tmux infrastructure — cockpit-socket isolation; same defensive-cleanup discipline applied to tests).
 
 ## Context
 
@@ -96,7 +96,7 @@ Rejected alternative: write to a single `~/.atmux/state/test-fixture-registry.js
 - Sidecar dies with the dir on happy-path cleanup — zero state-file invariant to maintain.
 - No registry-write race when N parallel `bun test` workers spawn fixtures (each writes to its own dir).
 - Reaper logic is "glob + parse + decide" — no transactional registry semantics needed.
-- Aligns with ADR-058 cage-tiering principle: ephemeral test cages own their own state lifecycle.
+- Aligns with ADR-050 cage-tiering principle: ephemeral test cages own their own state lifecycle.
 
 ## Consequences
 
@@ -154,7 +154,7 @@ Rejected alternative: write to a single `~/.atmux/state/test-fixture-registry.js
 - Medic §0-prelude shell sweep (dotfiles).
 - Audit + rollout of sidecar to non-`cockpit.test.ts` test files (T6 produces follow-up Tasks).
 - Cross-host reaper (this is local-only — Hetzner box test cages only).
-- Reaper as cron / daemon — verb-only invocation per ADR-058 ephemeral-cage discipline.
+- Reaper as cron / daemon — verb-only invocation per ADR-050 ephemeral-cage discipline.
 - LLM-classifier for orphan-cause-of-death (medic territory).
 
 ## Cross-refs
@@ -162,7 +162,7 @@ Rejected alternative: write to a single `~/.atmux/state/test-fixture-registry.js
 - Complaint c-27a1c8f4 (atmux team adjudication by ombudsman, 2026-05-17).
 - `tests/unit/verbs/cockpit.test.ts:269-322` — existing fixture-survivor registry (c-4698c603 defense; same problem, different scope — userland-hooks-only).
 - ADR-018 (per-team tmux socket isolation).
-- ADR-058 (cage tiering — ephemeral Tier-1).
+- ADR-050 (cage tiering — ephemeral Tier-1).
 - ADR-162 (atmux owns its tmux infrastructure — cockpit-socket isolation; sibling discipline at the team layer).
 - [ADR-223](223-reap-cascade-semantics-and-safety.md) — orphan-reap cascade is a sibling orchestrator for production-class orphans; test-reaper remains canonical for the test-class.
 - Global CLAUDE.md `bun test --timeout` discipline (`~/.claude-personal/CLAUDE.md` §Engineering "bun test orphans survive BashTool timeouts").
