@@ -209,7 +209,7 @@ Per ADR-090's reuse-statement pattern — minimal new abstractions:
 ## Cross-references
 
 - [ADR-047](047-canonical-install-topology.md) — install topology (`/opt/atmux/<version>/`); atmux.conf path resolved against `${atmuxRoot}`.
-- [ADR-058](058-cage-tier-isolation.md) — cage-tier isolation; per-team sockets already on cage-tier; this ADR adds cockpit-level socket isolation.
+- ADR-058 (cage tier isolation — no surviving ADR file) — cage-tier isolation; per-team sockets already on cage-tier; this ADR adds cockpit-level socket isolation.
 - [ADR-097](097-tmux-abstraction.md) — `TmuxConfig` discriminated union with `socket` + `configFile` fields; both consumed here.
 - [ADR-135](135-cockpit-naming-convention.md) — `cockpitSession: "atmux_cockpit"` + `_-prefix` window naming; this ADR adds the matching socket. Append a §Amendment annotation citing ADR-162.
 - [ADR-138](138-verified-send-keys.md) — verified send-keys; the version-check protects the verifier contract from tmux-version drift.

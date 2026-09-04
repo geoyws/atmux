@@ -6,7 +6,7 @@
 
 ## Context
 
-`.atmux/team.json` is the **canonical** team roster atmux reads for every verb (`dispatch`, `send`, `rotate`, `start`, `stop`, etc.). It is fresh, schema-validated (per [ADR-005](005-json-and-lock.md)), and in lock-step with the live cage.
+`.atmux/team.json` is the **canonical** team roster atmux reads for every verb (`dispatch`, `send`, `rotate`, `start`, `stop`, etc.). It is fresh, schema-validated (per [ADR-098](098-json-and-locking.md)), and in lock-step with the live cage.
 
 `.claude/team.json` is the **legacy** roster shape consumed by the Claude-side `/team` skill family (`/team rotate-lead`, `/team clear <member>`, bootstrap brief paste-in, `whip-prompt.md` teammate-scan fallback path). Pre-atmux projects used it as the only source of truth; post-atmux projects often keep it around for off-Claude-team-skill migration coverage.
 
@@ -121,7 +121,7 @@ The atmux convention is `members[0].name = "lead"` (short, one-word, single-quot
 - **Existing atmux projects** (atmux, sopx, unum): no behavior change unless the verb is fired. The atmux project itself has no `.claude/team.json` at HEAD; firing the verb here creates one.
 - **`.claude/team.json` shape grows** a `_atmuxSync` top-level field. The Claude `/team` skill family ignores unknown keys (verified pre-write); no skill-side change needed.
 - **Brief preservation** is the default — operators who hand-author long-form role text are protected from accidental overwrite. The opt-in `--overwrite-briefs` flag lets a clean-room restructure proceed.
-- **Drift detection** surfaces hand-edits between syncs (operator added a brief; sync detects file changed; refuses without `--force`). This is the same shape as [ADR-054](054-typed-whip-config-with-zod.md) §"drift detection" — pattern reuse, not new mechanism.
+- **Drift detection** surfaces hand-edits between syncs (operator added a brief; sync detects file changed; refuses without `--force`). This is the same shape as ADR-054 (typed whip config with zod — no surviving ADR file) §"drift detection" — pattern reuse, not new mechanism.
 - **Coverage**: `src/verbs/sync.ts` + `src/core/sync-claude-team-json/*.ts` ship with 100% unit coverage (per the testing discipline in CLAUDE.md). One bats integration test covers the round-trip (atmux team.json fixture → run verb → assert .claude/team.json shape).
 - **Auto-cron + post-write hook**: deferred to follow-up (see OQ-6). v1 is operator-fired only.
 

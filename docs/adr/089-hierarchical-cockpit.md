@@ -288,8 +288,8 @@ Covered by §Decision (C) auto-detect + fallback chain. The 12-row compat matrix
 - `.atmux/reviewer-preflag-ADR089-091.md` (signed 2026-05-13) — 7 §Decision-anchors lifted from §ADR-089.
 - `.atmux/audits/adr-089-091-adjacent-class-2026-05-13.md` §Class 2 — F-key rebinding compat matrix + auto-detect heuristic.
 - [ADR-018](018-per-team-tmux-socket-isolation.md) — cage topology this ADR nests on top of.
-- [ADR-054](054-strict-schema-drift-detection.md) §D3 — `.strict()` at leaf-object level (preserved here).
-- [ADR-063](063-cockpit-roster-schema.md) — current flat cockpit schema (this ADR is its successor).
+- ADR-054 (strict schema drift detection — no surviving ADR file) §D3 — `.strict()` at leaf-object level (preserved here).
+- [ADR-063](063-cockpit-verb-port.md) — current flat cockpit schema (this ADR is its successor).
 - [ADR-077](077-superdoctor-cockpit-role.md) §D1 — singleton superdriver/superdoctor pattern (lifted into `sessions[]` as discriminated types).
 - [ADR-090](090-epic-team-lifecycle.md) — consumes `EpicTeamSession`; lands after impl T4.
 - [ADR-091](091-kanban-driven-auto-merge.md) — walks the tree; lands after impl T4+T6.

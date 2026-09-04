@@ -3,7 +3,7 @@
 **Status**: accepted
 **Date**: 2026-06-05
 **Driver-ref**: George 2026-06-05 — "make eternal-improvement always address longstanding issues first, then improvements that need tackling; work should sit neatly in worktrees or nested worktrees branched from worktrees, awaiting a merge into trunk later when verified. This way time and tokens are not wasted (tokens are pre-paid and expire every week)."
-**Relates**: [ADR-052](052-eternal-improvement-loop.md) (the substrate this reframes), [ADR-149](149-eternal-improvement-gating.md) (its backlog-defer gate, superseded here), [ADR-090](090-epic-team-lifecycle.md) (spawn-epic worktree isolation reused), [ADR-134](134-in-team-auto-merger.md) / [ADR-091](091-epic-team-committer.md) (verified fan-in to trunk), [ADR-082](082-long-lived-member-branches.md) / [ADR-084](084-merge-not-rebase.md) (long-lived worktree branches), [ADR-126](126-sqlite-state-store.md) (kanban store read by the selector).
+**Relates**: [ADR-052](052-eternal-improvement-loop.md) (the substrate this reframes), [ADR-149](149-eternal-improvement-gating.md) (its backlog-defer gate, superseded here), [ADR-090](090-epic-team-lifecycle.md) (spawn-epic worktree isolation reused), [ADR-134](134-in-team-auto-merger.md) / [ADR-091](091-kanban-driven-auto-merge.md) (verified fan-in to trunk), [ADR-082](082-worktree-isolation-per-member.md) / [ADR-084](084-worktree-per-member-branch-model.md) (long-lived worktree branches), [ADR-126](126-sqlite-state-store.md) (kanban store read by the selector).
 
 ## Context
 
@@ -33,7 +33,7 @@ The loop no longer **defers** on a non-empty backlog — it **works** it (D1). A
 
 ### (D3) Worktree isolation + deferred verified merge
 
-All cycle work happens in an **isolated improvement epic-team worktree** (reuse `atmux team spawn-epic`, ADR-090 — one live improvement epic, reused across cycles; **large items get nested worktrees branched from the epic base**, the "nested worktrees branched from worktrees" the operator asked for). Work is committed to the epic branch; the [ADR-134](134-in-team-auto-merger.md) / [ADR-091](091-epic-team-committer.md) committer fans it into trunk **LATER, only when verified green**. Unverified work never lands on trunk; idle-time work is never lost (it lives durably in the worktree until verified).
+All cycle work happens in an **isolated improvement epic-team worktree** (reuse `atmux team spawn-epic`, ADR-090 — one live improvement epic, reused across cycles; **large items get nested worktrees branched from the epic base**, the "nested worktrees branched from worktrees" the operator asked for). Work is committed to the epic branch; the [ADR-134](134-in-team-auto-merger.md) / [ADR-091](091-kanban-driven-auto-merge.md) committer fans it into trunk **LATER, only when verified green**. Unverified work never lands on trunk; idle-time work is never lost (it lives durably in the worktree until verified).
 
 Cycle-close mechanics are unchanged (`isCycleClosable` over the epic-team's kanban; `tasksDone` recorded at close); the trunk-merge is **asynchronous** via the committer, so a cycle's tokens are never blocked waiting on merge.
 

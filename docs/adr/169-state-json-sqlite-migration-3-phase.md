@@ -162,7 +162,7 @@ The probe is severity P2 warn (not error) — operators may have legitimate ad-h
 ### Sibling work (cross-ref)
 
 - [ADR-126](126-sqlite-state-store.md) (proposed) — the canonical principle. This ADR closes its remaining surface; T6 flips ADR-126 status `proposed → accepted`.
-- [ADR-076](076-inbox-migration-to-sqlite.md) (shipped, atmux 0.5.0+) — `.atmux/inboxes/<m>.json` → SQLite. **Precedent** for the migration verb + archive pattern.
+- ADR-076 (inbox migration to sqlite — no surviving ADR file) (shipped, atmux 0.5.0+) — `.atmux/inboxes/<m>.json` → SQLite. **Precedent** for the migration verb + archive pattern.
 - [ADR-154](154-driver-inbox-lead-outbox-sqlite-migration.md) (proposed, EPIC `t-2298cbb0`) — driver-inbox + lead-outbox markdown→SQLite migration. **Sibling** pattern at the `coordination_messages` table level; non-blocking on this EPIC.
 
 ### Hard guardrail
@@ -199,10 +199,10 @@ Per ADR-077 §7d ("not a license to redesign atmux") + EPIC body — the medic f
 ## Cross-references
 
 - [ADR-126](126-sqlite-state-store.md) — `state.db` SQLite principle; T6 flips this to `accepted`.
-- [ADR-076](076-inbox-migration-to-sqlite.md) — inbox migration precedent.
+- ADR-076 (inbox migration to sqlite — no surviving ADR file) — inbox migration precedent.
 - [ADR-154](154-driver-inbox-lead-outbox-sqlite-migration.md) — sibling markdown→SQLite migration at coordination layer.
 - [ADR-164](164-sync-claude-team-json.md) — `cockpit.json` + `team.json` + `.claude/team.json` KEEP-AS-JSON rationale.
-- [ADR-005](005-atomic-json-and-flock.md) — flock pattern superseded for state files by SQLite transactions (config files keep flock).
+- [ADR-098](098-json-and-locking.md) — flock pattern superseded for state files by SQLite transactions (config files keep flock).
 - `src/verbs/migrate-state.ts` — kanban target template (per `t-26dba81c`).
 - Ombudsman complaint `c-67bbac0a` (filed 2026-05-17) — the trigger.
 - EPIC `e-38ee9939` — 6 sub-tasks T1-T6 with populated deps[].

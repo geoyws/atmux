@@ -138,7 +138,7 @@ None at write time. The cursor-impl `observe` path is socket-discovery-only (per
 2. **Sentinel gap** — if cockpit.json gets out of sync with disk reality (epic-team worktree gone but entry still listed), sentinel observes a phantom team and logs error rows.
 3. **Cockpit-rebuild churn** — `atmux cockpit rebuild` reconciles cockpit.json against running tmux state; epic-team turnover means rebuild keeps adding and removing the same kinds of entries.
 
-**Dynamic-discovery model** — sentinel discovers epic-teams at tick time, NOT from cockpit.json registration. The candidate enumeration mechanisms (one will be chosen via [ADR-185](185-sentinel-dynamic-epic-discovery.md)):
+**Dynamic-discovery model** — sentinel discovers epic-teams at tick time, NOT from cockpit.json registration. The candidate enumeration mechanisms (one will be chosen via [ADR-206](206-sentinel-dynamic-epic-discovery.SUPERSEDED.md)):
 
 - (A) Parent `.atmux/state.db` epics table query — walks `epics WHERE status IN ('in_progress', 'review')` and resolves the worktree per epic-team naming convention.
 - (B) Filesystem scan — `<parent-root>-epics/` or `.atmux/worktrees/e-*` glob.

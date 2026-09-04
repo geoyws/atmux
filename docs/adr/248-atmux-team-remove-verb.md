@@ -138,7 +138,7 @@ This verb does NOT initialize a fresh `.atmux/` directory inside the team root (
 
 **Operators** gain a single recoverable verb for decommissioning regular teams. The 10-step checklist + 3 footguns collapse to one safety-gated call with a `--dry-run` preview and a recoverable receipt. Symmetric `atmux team add` lets operators undo accidental removals from the receipt.
 
-**Code** adds: `src/verbs/team/remove.ts`, `src/verbs/team/add.ts`, `src/core/removal-receipt.ts` (receipt write + read), `src/core/cockpit-json.ts` (formatting-preserving edit helper — extract from existing `cockpit.ts` if not already). Receipt directory `~/.atmux/state/removals/` is the new state-file location (per [ADR-126](126-json-to-sqlite-migration.md) §state-file principle — receipts are append-only audit, JSON is fine).
+**Code** adds: `src/verbs/team/remove.ts`, `src/verbs/team/add.ts`, `src/core/removal-receipt.ts` (receipt write + read), `src/core/cockpit-json.ts` (formatting-preserving edit helper — extract from existing `cockpit.ts` if not already). Receipt directory `~/.atmux/state/removals/` is the new state-file location (per [ADR-126](126-sqlite-state-store.md) §state-file principle — receipts are append-only audit, JSON is fine).
 
 **Tests**: integration covering each safety-gate refusal path; integration covering `--dry-run` no-side-effects; integration covering `--force` bypassing each gate; e2e covering the full remove → receipt-recovery → add round-trip on a synthetic team fixture.
 

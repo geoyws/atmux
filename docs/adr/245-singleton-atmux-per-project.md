@@ -3,7 +3,7 @@
 **Status**: Accepted — ratified by operator 2026-05-27 13:15 MYT (live operator-design session)
 **Date**: 2026-05-27
 **Driver-ref**: operator-direct 2026-05-27 — "there will always be one .atmux per project and all branching development we assume will have to be another project."
-**Cross-refs**: [ADR-018](018-cage-isolation.md) (cage isolation — one tmux server per team), [ADR-082](082-long-lived-member-branches.md) (per-member long-lived branches), [ADR-084](084-worktree-per-member-branch-model.md) (per-member git worktrees under `.atmux/worktrees/`), [ADR-090](090-epic-teams.md) (epic-team subtrees + dissolution), [ADR-211](211-orchd-spawn-supervisor.md) §nested-.atmux-ban (orchd-spawn checks for nested .atmux), [ADR-239](239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md) (per-driver worktrees), [ADR-244](244-per-repo-pre-commit-kanban-decisions-snapshot.md) §Supersession-2026-05-26 (atmux state in dotfiles, symlinked into the project's singleton .atmux/)
+**Cross-refs**: [ADR-018](018-per-team-tmux-socket-isolation.md) (cage isolation — one tmux server per team), [ADR-082](082-worktree-isolation-per-member.md) (per-member long-lived branches), [ADR-084](084-worktree-per-member-branch-model.md) (per-member git worktrees under `.atmux/worktrees/`), [ADR-090](090-epic-team-lifecycle.md) (epic-team subtrees + dissolution), [ADR-211](211-orchd-spawn-supervisor.md) §nested-.atmux-ban (orchd-spawn checks for nested .atmux), [ADR-239](239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md) (per-driver worktrees), [ADR-244](244-per-repo-pre-commit-kanban-decisions-snapshot.md) §Supersession-2026-05-26 (atmux state in dotfiles, symlinked into the project's singleton .atmux/)
 
 ## Context
 

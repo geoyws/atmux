@@ -179,7 +179,7 @@ Same-commit doc per `/CLAUDE.md §Docs Discipline` — the verb is a documented 
 - [ADR-077](077-superdoctor-cockpit-role.md) §F2 — complaints box schema (surface 3).
 - [ADR-134](134-in-team-auto-merger.md) — merger_state table (surface 4); revert vs conflict semantics drive the class derivation.
 - [ADR-008](008-decisions-verb.md) — decisions verb format (surface 5).
-- [ADR-057](057-driver-inbox-delta-only-read.md) §D2 — driver-inbox.md format (surface 7); existing parser at `src/core/driver-inbox.ts` is the spec for our regex.
+- [ADR-057](057-stall-prevention.md) §D2 — driver-inbox.md format (surface 7); existing parser at `src/core/driver-inbox.ts` is the spec for our regex.
 - ADR-151 (unblocker) — primary downstream consumer of the JSON form.
 - [ADR-148](148-commit-cadence-truth-signal.md) — sibling "single canonical truth signal" pattern; `blockers list` is to "what's blocked" what cadence is to "what's working".
 - Complaint c-1d28fc72 — original surface-of-the-need.

@@ -414,7 +414,7 @@ Only trunk-merge serialization remains load-bearing, and it self-regulates via t
 
 - [ADR-018](018-per-team-tmux-socket-isolation.md) — per-team tmpdir; nesting under `/tmp/atmux-<parent>/epics/<epicId>/sock` re-uses this primitive.
 - [ADR-032](032-socket-pubsub-messaging-layer.md) — socket-pubsub propagation; each epic-team gets its own sockets directory.
-- [ADR-076](076-sqlite-everywhere.md) — state.db is canonical; each epic-team has its own.
+- ADR-076 (sqlite everywhere — no surviving ADR file) — state.db is canonical; each epic-team has its own.
 - [ADR-082](082-worktree-isolation-per-member.md) — per-member worktree primitive (reused; HARD CONFLICT carve-out per §Decision-anchor #3).
 - [ADR-084](084-worktree-per-member-branch-model.md) — per-member-branch model (HARD CONFLICT carve-out per §Decision-anchor #3).
 - [ADR-087](087-atmux-stop-soft.md) — `soft-stop` primitive (consumed by `dissolve-epic` per §`dissolve-epic` step 4).

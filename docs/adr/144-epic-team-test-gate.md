@@ -8,7 +8,7 @@
 
 ## Context
 
-Per [ADR-091](091-epic-merge-state-machine.md), epic-team auto-merge fires `git merge --no-ff <epic-branch>` against parent-team-trunk when the state machine advances `ready_to_merge → merging`. **There is no test-gate between those two states.** Broken epic-team work can land on parent-team-trunk and break the dogfood loop or — for IFCA product teams — the demo-walk path.
+Per [ADR-091](091-kanban-driven-auto-merge.md), epic-team auto-merge fires `git merge --no-ff <epic-branch>` against parent-team-trunk when the state machine advances `ready_to_merge → merging`. **There is no test-gate between those two states.** Broken epic-team work can land on parent-team-trunk and break the dogfood loop or — for IFCA product teams — the demo-walk path.
 
 The risk is asymmetric:
 - **No test-gate**: a single bad merge can corrupt parent-trunk for every downstream consumer (sibling epic-teams, demo-walk, branch-staging).
@@ -284,9 +284,9 @@ tested → jury-pending → jury-approved → merge-ready (gitter)
 ## Cross-refs
 
 - [ADR-090](090-epic-team-lifecycle.md) — epic-team lifecycle; provisions cage/deployment at spawn time.
-- [ADR-091](091-epic-merge-state-machine.md) — auto-merge state machine substrate; this ADR extends with mandatory `tested` state.
+- [ADR-091](091-kanban-driven-auto-merge.md) — auto-merge state machine substrate; this ADR extends with mandatory `tested` state.
 - [ADR-134](134-in-team-auto-merger.md) — sibling test-gate pattern at the intra-team gitter layer (one level up).
-- [ADR-058](058-fallback-cage-tiering.md) — cage tiering; cage-mode uses Tier 1 with own state.db.
+- ADR-058 (fallback cage tiering — no surviving ADR file) — cage tiering; cage-mode uses Tier 1 with own state.db.
 - [ADR-018](018-per-team-tmux-socket-isolation.md) — per-team tmux socket isolation; cage-mode uses its own socket.
 - [ADR-008](008-decisions-verb.md) — Discord template R10 enforcement; this ADR adds three literals to the central union.
 - Global CLAUDE.md §Environment Tiers — branch-staging convention for deployed mode.

@@ -109,7 +109,7 @@ Outcome values: `success` / `gate-N-refused` / `respawn-failed` / `handoff-write
 
 ### Caller-scope gate
 
-Per [ADR-033](033-caller-scope-gate.md): verb refuses non-driver callers. Cockpit rotation is high-consequence (parallel to spawn-epic / dissolve-epic); restricting to `ATMUX_CALLER_SCOPE=driver` matches the existing pattern for cockpit-level mutations.
+Per [ADR-033](033-kanban-driver-only-flag.md): verb refuses non-driver callers. Cockpit rotation is high-consequence (parallel to spawn-epic / dissolve-epic); restricting to `ATMUX_CALLER_SCOPE=driver` matches the existing pattern for cockpit-level mutations.
 
 ### Ordering invariant
 
@@ -184,8 +184,8 @@ T5 wires the handoff write-path at the TODO(T5) anchor T4 left at `performRespaw
 ## Related
 
 - [ADR-006](006-error-class-and-exit-code.md) — error class → exit code mapping (65 EX_DATAERR for gate refusals).
-- [ADR-033](033-caller-scope-gate.md) — caller-scope gate; cockpit rotate is driver-only.
-- [ADR-077](077-superdoctor-self-healing.md) → renamed medic per ADR-133 — medic cadence; re-arm step in per-role respawn matrix.
+- [ADR-033](033-kanban-driver-only-flag.md) — caller-scope gate; cockpit rotate is driver-only.
+- [ADR-077](077-superdoctor-cockpit-role.md) → renamed medic per ADR-133 — medic cadence; re-arm step in per-role respawn matrix.
 - [ADR-094](094-c-alias-spawn-convention.md) — c-alias spawn convention; claudeAccount wrapper resolution.
 - [ADR-132](132-pluggable-martinet.SUPERSEDED.md) → renamed sentinel per ADR-158 — sentinel pluggable martinet pattern.
 - [ADR-135](135-cockpit-naming-convention.md) — `_-prefix` cockpit window naming; medic / sentinel window IDs.
