@@ -337,3 +337,17 @@ Surveyed. None of the existing packages cover all our subcommands, and most assu
 ## Amendment 2026-09-01 — live-server tests and session-start paths use the canonical atmux conf
 
 The 2026-05-05 `/dev/null` stock-default test guidance is historical. On 2026-09-01, live-server tests / the parity harness were wired to `configFile: getAtmuxTmuxConfPath()` so they load the canonical atmux conf instead of an empty config file. Selected production server-starting paths already use the same resolver; the remaining production `createTmux` inventory is a separate follow-up and is not represented here as complete.
+
+## Amendment 2026-09-04 — the canonical conf is the DEFAULT, and the production inventory is closed (t-2480d87f)
+
+The follow-up the 2026-09-01 amendment left open is done, and it found the omission was near-total rather than partial: of roughly 40 production `createTmux` call sites across `src/verbs/**` and `src/core/**`, **none** passed `configFile`. Every one of them started tmux under the operator's `~/.tmux.conf`, which is exactly what §253's physical-impossibility argument says silently reshapes behaviour — an operator `base-index 1` would move panes under code that hardcodes `:0`.
+
+The fix is at the seam, not the call sites: `createTmux` now appends `-f` on every invocation, defaulting to `getAtmuxTmuxConfPath()` when `configFile` is absent. `configFile` changes WHICH conf, never WHETHER there is one.
+
+Defaulting rather than annotating ~40 sites is deliberate. The previous wording asked each production caller to be "audited before omission is treated as safe", and the audit's own result is the argument against that design: a rule 40 sites must individually remember is a rule that drifts, and it did.
+
+Read-only intent is not an exemption. A tmux command against a dead socket can START the server — the reason the root AGENTS rule mandates probing with `[ -S <sock> ] && tmux -S <sock> has-session` — so a "just looking" path can create an unconfigured server just as easily as a spawning one. No attempt is made here to classify call sites as server-starting vs not; that classification is what the default makes unnecessary.
+
+`ATMUX_TMUX_CONF` remains the documented operator opt-out, and `ATMUX_TMUX_CONF=/dev/null` still reaches stock tmux, because `getAtmuxTmuxConfPath` reads that env first.
+
+Coverage is behavioural, not argv-shaped: a live server started with no `configFile` is asserted to report `base-index 1` (atmux.conf) rather than tmux's stock `0`, which proves the conf was honoured rather than merely passed. Sibling tests pin that an explicit `configFile` still wins and that the `/dev/null` opt-out still reaches stock. The first fails if the default is removed.

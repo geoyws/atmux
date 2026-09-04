@@ -24,6 +24,7 @@ import type { SpawnInheritStdioOpts } from "../../../src/abstractions/spawn.ts";
 import { spawn } from "../../../src/abstractions/spawn.ts";
 import {
   clientRowToObject,
+  createTmux,
   parseSplitWindowIdsOrThrow,
   parseTabular,
   parseWindowIndexOrThrow,
@@ -737,5 +738,58 @@ describe("ADR-025 — SendTarget compile-time gate", () => {
       target: "atmux-demo:_bot",
     };
     expect(serializeSendTarget(botTarget)).toBe("atmux-demo:_bot");
+  });
+});
+
+
+// ---------- t-2480d87f: the canonical conf is the DEFAULT, not opt-in ----------
+
+describe("createTmux conf pinning default", () => {
+  // `base-index` is the probe because stock tmux defaults it to 0 while
+  // templates/tmux/atmux.conf sets it to 1. Reading 1 back off a server
+  // started WITHOUT an explicit configFile is direct proof the conf was
+  // loaded — an argv assertion could only prove we passed a flag, not
+  // that tmux honoured it.
+  //
+  // HOME is already redirected to the per-test dir by the shared
+  // beforeEach, so there is no `~/.tmux.conf` to muddy the result: a 0
+  // here means stock defaults, i.e. the fix regressed.
+  const readBaseIndex = async (sock: string): Promise<string> => {
+    const r = await spawn({
+      cmd: "tmux",
+      argv: ["-S", sock, "show-options", "-gv", "base-index"],
+      expectExitCode: 0,
+    });
+    return r.stdout.trim();
+  };
+
+  test("a server started with NO configFile still loads atmux.conf", async () => {
+    const t = createTmux({ socketPath });
+    await t.session.newSession({ name: `${sessionPrefix}-default-conf`, detached: true });
+    expect(await readBaseIndex(socketPath)).toBe("1");
+  });
+
+  test("an explicit configFile still wins over the default", async () => {
+    // The default must not become a silent override — callers that pass a
+    // path (the live-server harness, any future non-canonical fixture)
+    // keep getting exactly what they asked for.
+    const t = createTmux({ socketPath, configFile: CANONICAL_ATMUX_TMUX_CONF_PATH });
+    await t.session.newSession({ name: `${sessionPrefix}-explicit-conf`, detached: true });
+    expect(await readBaseIndex(socketPath)).toBe("1");
+  });
+
+  test("ATMUX_TMUX_CONF=/dev/null remains the operator opt-out to stock tmux", async () => {
+    // Required by the card: the documented escape hatch must still reach
+    // stock behaviour. base-index falls back to tmux's own default of 0.
+    const prior = process.env.ATMUX_TMUX_CONF;
+    process.env.ATMUX_TMUX_CONF = "/dev/null";
+    try {
+      const t = createTmux({ socketPath });
+      await t.session.newSession({ name: `${sessionPrefix}-optout`, detached: true });
+      expect(await readBaseIndex(socketPath)).toBe("0");
+    } finally {
+      if (prior === undefined) delete process.env.ATMUX_TMUX_CONF;
+      else process.env.ATMUX_TMUX_CONF = prior;
+    }
   });
 });

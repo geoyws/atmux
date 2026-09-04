@@ -36,6 +36,7 @@
 
 import { isDriverPaneName } from "../core/drivers.ts";
 import { resolveTmuxBin } from "../core/resolve-tmux-bin.ts";
+import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
 import { TmuxError } from "../errors.ts";
 import { type ExpectExitCode, spawn, spawnInheritStdio } from "./spawn.ts";
 
@@ -330,22 +331,34 @@ export function clientRowToObject(row: Record<string, string>): {
  * / `$TMUX_TMPDIR` env state — env-level isolation is belt-and-braces, the
  * socket flag is the load-bearing guarantee.
  *
- * **Config (optional)** — `configFile?: string` adds `-f <path>` after the
- * socket flag on every invocation. It is a generic API field: live-server
- * tests and selected production server-starting paths pass the canonical
- * `getAtmuxTmuxConfPath()` path. Other callers may provide a different path
- * or omit it; production callers that might start a server must be audited
- * before omission is treated as safe.
+ * **Config (always applied)** — `-f <path>` follows the socket flag on
+ * every invocation. `configFile?: string` overrides WHICH path; omitting it
+ * no longer means "no conf", it means the canonical
+ * `getAtmuxTmuxConfPath()` one (t-2480d87f).
+ *
+ * The audit that field's previous wording asked for ("production callers
+ * that might start a server must be audited before omission is treated as
+ * safe") found ~40 production call sites omitting it, every one of them
+ * inheriting the operator's `~/.tmux.conf`. Defaulting at this seam is the
+ * fix, because the alternative — 40 sites each remembering — is the drift
+ * that produced the finding.
+ *
+ * Omission is not safe on read-only paths either: a tmux command against a
+ * dead socket can START the server, which is why the root AGENTS rule says
+ * to probe with `[ -S <sock> ] && tmux -S <sock> has-session`.
+ *
+ * `ATMUX_TMUX_CONF` remains the operator opt-out and still reaches stock
+ * tmux via `ATMUX_TMUX_CONF=/dev/null`.
  */
 type SocketConfig =
   | { readonly socket: string; readonly socketPath?: never }
   | { readonly socketPath: string; readonly socket?: never };
 
 export type TmuxConfig = SocketConfig & {
-  /** Optional `-f <path>` flag appended after the socket flag. It is a
-   *  generic API field; live-server tests and selected production
-   *  server-starting paths use the canonical `getAtmuxTmuxConfPath()` helper
-   *  path. */
+  /** Override for the `-f <path>` flag appended after the socket flag.
+   *  Omitting it does NOT omit `-f`: it defaults to the canonical
+   *  `getAtmuxTmuxConfPath()` path (t-2480d87f). Pass a path only to pin a
+   *  DIFFERENT conf. */
   readonly configFile?: string;
   /** Test seam for `attachSessionInheritStdio`; defaults to the module import. */
   readonly hooks?: {
@@ -527,9 +540,26 @@ export function createTmux(config: TmuxConfig): TmuxNamespace {
   const socketArgs: ReadonlyArray<string> = (() => {
     const flags: string[] =
       typeof config.socket === "string" ? ["-L", config.socket] : ["-S", config.socketPath];
-    if (typeof config.configFile === "string") {
-      flags.push("-f", config.configFile);
-    }
+    // t-2480d87f: `-f` is DEFAULTED, not optional. The root invariant is
+    // that no tmux server starts without atmux's conf, and ~40 production
+    // call sites omitted `configFile` — every one of them inheriting the
+    // operator's `~/.tmux.conf` instead. Defaulting here fixes all of them
+    // at the seam rather than asking 40 sites to remember, which is the
+    // drift the audit found in the first place.
+    //
+    // Read-only intent is NOT a safe reason to omit it: a tmux command
+    // against a dead socket can START the server (the reason the root
+    // AGENTS rule says to probe with `[ -S <sock> ] && tmux -S <sock>
+    // has-session`), so the conf must be pinned even on paths that only
+    // mean to look.
+    //
+    // `ATMUX_TMUX_CONF` stays the documented operator opt-out and still
+    // reaches stock tmux via `ATMUX_TMUX_CONF=/dev/null`, because
+    // `getAtmuxTmuxConfPath` honours that env first.
+    flags.push(
+      "-f",
+      typeof config.configFile === "string" ? config.configFile : getAtmuxTmuxConfPath(),
+    );
     return flags;
   })();
   const spawnInheritStdioImpl = config.hooks?.spawnInheritStdio ?? spawnInheritStdio;
