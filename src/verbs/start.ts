@@ -95,6 +95,7 @@ import { now } from "../abstractions/time.ts";
 import {
   createTmux,
   exactSessionTarget,
+  type PaneInfo,
   type SendTarget,
   type TmuxConfig,
   type TmuxNamespace,
@@ -142,9 +143,16 @@ import {
   teamJsonPath,
 } from "../core/common.ts";
 import {
+  DRIVER_PANE_ROLE_ATTENTION,
+  DRIVER_PANE_ROLE_WORKER,
+  type DriverPane,
+  planDriverPanePair,
+} from "../core/driver-pair.ts";
+import {
   type DriverSession,
   isTrunkDriver,
   resolveDriverCwd,
+  resolveDriverPair,
   resolveDriversList,
 } from "../core/drivers.ts";
 import { injectGoalIfActive } from "../core/goal-injection.ts";
@@ -267,6 +275,216 @@ export function parseStartArgs(
  * `getDefaultSocket` from `core/common.ts` directly.
  */
 export const defaultSocketPath = getDefaultSocket;
+
+// ---------- Driver pair helpers ----------
+
+interface AdoptedSession {
+  name: string;
+}
+
+interface ConfiguredDriverWindow {
+  driver: DriverSession;
+  plan: ReturnType<typeof planDriverPanePair>;
+}
+
+function driverPairError(reasonCode: string, detail: string): ConfigError {
+  return new ConfigError({
+    what: `start: driver pair ${reasonCode}: ${detail}`,
+    hint: "run atmux doctor",
+  });
+}
+
+function normalizeDriverPane(pane: PaneInfo, windowName: string): DriverPane {
+  if (pane.id === undefined || !/^%[0-9]+$/.test(pane.id)) {
+    throw driverPairError(
+      "preflight failed [pair.missing_required_metadata]",
+      `driver window '${windowName}' is missing strict tmux pane id metadata`,
+    );
+  }
+  if (!Number.isFinite(pane.pid) || !Number.isInteger(pane.pid) || pane.pid <= 0) {
+    throw driverPairError(
+      "preflight failed [pair.missing_required_metadata]",
+      `driver window '${windowName}' is missing positive pane pid metadata`,
+    );
+  }
+  if (
+    pane.left === undefined ||
+    !Number.isFinite(pane.left) ||
+    !Number.isInteger(pane.left) ||
+    pane.left < 0
+  ) {
+    throw driverPairError(
+      "preflight failed [pair.missing_required_metadata]",
+      `driver window '${windowName}' is missing non-negative pane left metadata`,
+    );
+  }
+  if (!Number.isInteger(pane.index) || pane.index < 0) {
+    throw driverPairError(
+      "preflight failed [pair.missing_required_metadata]",
+      `driver window '${windowName}' is missing non-negative pane index metadata`,
+    );
+  }
+  return {
+    id: pane.id,
+    index: pane.index,
+    pid: pane.pid,
+    left: pane.left,
+    ...(pane.role !== undefined ? { role: pane.role } : {}),
+  };
+}
+
+function ensureNoFailClosed(plan: ReturnType<typeof planDriverPanePair>): void {
+  if (plan.decision !== "fail-closed") return;
+  throw driverPairError(`preflight failed [${plan.reasonCode}]`, plan.diagnostics[0]);
+}
+
+function ensureConfiguredDriverWindowPrefix(
+  currentWindows: ReadonlyArray<{ name: string }>,
+  drivers: ReadonlyArray<DriverSession>,
+): void {
+  const driverIndexByName = new Map(drivers.map((driver, index) => [driver.name, index] as const));
+  let lastDriverIndex = -1;
+  let sawNonDriverWindow = false;
+  for (const window of currentWindows) {
+    const driverIndex = driverIndexByName.get(window.name);
+    if (driverIndex === undefined) {
+      sawNonDriverWindow = true;
+      continue;
+    }
+    if (sawNonDriverWindow) {
+      throw driverPairError(
+        "preflight failed [pair.reversed_order]",
+        "Existing configured driver windows must form a front block before members.",
+      );
+    }
+    if (driverIndex < lastDriverIndex) {
+      throw driverPairError(
+        "preflight failed [pair.reversed_order]",
+        "Existing configured driver windows are out of roster order.",
+      );
+    }
+    lastDriverIndex = driverIndex;
+  }
+}
+
+function isAddAttentionPlan(
+  plan: ReturnType<typeof planDriverPanePair>,
+): plan is Extract<ReturnType<typeof planDriverPanePair>, { decision: "plan-add-attention" }> {
+  return plan.decision === "plan-add-attention";
+}
+
+async function resolveAdoptedSession(
+  tmux: TmuxNamespace,
+  teamName: string,
+  resolvedSession: string,
+): Promise<AdoptedSession> {
+  if (resolvedSession !== teamName) {
+    return { name: resolvedSession };
+  }
+  if (await tmux.session.hasSession(exactSessionTarget(teamName))) {
+    return { name: teamName };
+  }
+  const legacy = `atmux-${teamName}`;
+  if (await tmux.session.hasSession(exactSessionTarget(legacy))) {
+    return { name: legacy };
+  }
+  return { name: teamName };
+}
+
+async function readConfiguredDriverWindows(
+  tmux: TmuxNamespace,
+  sessionName: string,
+  drivers: ReadonlyArray<DriverSession>,
+): Promise<ConfiguredDriverWindow[]> {
+  const windows = await tmux.window.listWindows(sessionName);
+  ensureConfiguredDriverWindowPrefix(windows, drivers);
+  const windowByName = new Map(windows.map((w) => [w.name, w]));
+  const out: ConfiguredDriverWindow[] = [];
+  for (const driver of drivers) {
+    const window = windowByName.get(driver.name);
+    if (window === undefined) continue;
+    const panesRaw = await tmux.pane.listPanes(`${sessionName}:${window.name}`);
+    const panes = panesRaw.map((pane) => normalizeDriverPane(pane, window.name));
+    const plan = planDriverPanePair(panes);
+    ensureNoFailClosed(plan);
+    out.push({ driver, plan });
+  }
+  return out;
+}
+
+async function materializeDriverWindowPair(args: {
+  tmux: TmuxNamespace;
+  sessionName: string;
+  driver: DriverSession;
+  driverCwd: string;
+  attentionCommand: string | null;
+}): Promise<void> {
+  const { tmux, sessionName, driver, driverCwd, attentionCommand } = args;
+  const panesBefore = await tmux.pane.listPanes(`${sessionName}:${driver.name}`);
+  const normalizedBefore = panesBefore.map((pane) => normalizeDriverPane(pane, driver.name));
+  const planBefore = planDriverPanePair(normalizedBefore);
+  ensureNoFailClosed(planBefore);
+  if (planBefore.decision === "noop") return;
+  if (!isAddAttentionPlan(planBefore)) return;
+  const setPaneRole = tmux.pane.setPaneRole;
+  if (setPaneRole === undefined) {
+    throw driverPairError(
+      "materialization failed [pair.missing_set_pane_role]",
+      `tmux namespace does not expose setPaneRole for driver window '${driver.name}'`,
+    );
+  }
+
+  await setPaneRole({
+    target: { paneId: planBefore.keepPane.id },
+    value: DRIVER_PANE_ROLE_WORKER,
+  });
+
+  await tmux.pane.splitWindow({
+    target: `${sessionName}:${driver.name}`,
+    detached: true,
+    cwd: driverCwd,
+    ...(attentionCommand !== null ? { shellCommand: attentionCommand } : {}),
+  });
+
+  const panesAfterSplitRaw = await tmux.pane.listPanes(`${sessionName}:${driver.name}`);
+  const panesAfterSplit = panesAfterSplitRaw.map((pane) => normalizeDriverPane(pane, driver.name));
+  if (panesAfterSplit.length !== 2) {
+    throw driverPairError(
+      "materialization failed [pair.repair_split_failed]",
+      `driver window '${driver.name}' did not settle to two panes after split`,
+    );
+  }
+  const leftPane = panesAfterSplit.reduce((left, pane) => (pane.left < left.left ? pane : left));
+  const rightPane = panesAfterSplit.find((pane) => pane.id !== leftPane.id);
+  if (rightPane === undefined) {
+    throw driverPairError(
+      "materialization failed [pair.repair_split_failed]",
+      `driver window '${driver.name}' lost its attention pane during split`,
+    );
+  }
+  if (leftPane.pid !== planBefore.keepPane.pid) {
+    throw driverPairError(
+      "materialization failed [pair.worker_pid_changed]",
+      `driver window '${driver.name}' replaced the worker pane process during pair materialization`,
+    );
+  }
+
+  await setPaneRole({
+    target: { paneId: rightPane.id },
+    value: DRIVER_PANE_ROLE_ATTENTION,
+  });
+
+  const panesFinal = await tmux.pane.listPanes(`${sessionName}:${driver.name}`);
+  const planFinal = planDriverPanePair(
+    panesFinal.map((pane) => normalizeDriverPane(pane, driver.name)),
+  );
+  if (planFinal.decision !== "noop") {
+    throw driverPairError(
+      `materialization failed [${planFinal.reasonCode}]`,
+      planFinal.diagnostics[0],
+    );
+  }
+}
 
 // ---------- Verb entry ----------
 
@@ -411,70 +629,224 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   //    env override + state/session.txt anchor if present).
   const sessionOpts: { env: NodeJS.ProcessEnv; cwd?: string; team: typeof team } = { env, team };
   if (opts.cwd !== undefined) sessionOpts.cwd = opts.cwd;
-  const session = await getSessionName(sessionOpts);
+  const resolvedSession = await getSessionName(sessionOpts);
+  let session = resolvedSession;
+  const adoptedSession = await resolveAdoptedSession(tmux, team.name, resolvedSession);
 
-  // 5b. e-419553c6 in-place migration: a live cage started under the
-  //     legacy `atmux-<team>` convention is renamed to the bare name
-  //     (preserving clients + pane PIDs, ADR-264 §D4 pattern) so the
-  //     incremental path below adopts it instead of reading it as
-  //     absent and creating a duplicate. Idempotent; no-op for
-  //     anchored/pinned names; both-exist warns and leaves it to the
-  //     operator.
-  await migrateLegacySessionName({
-    tmux,
-    teamName: team.name,
-    resolvedSession: session,
-    log: (m) => logger.log(m),
-    warn: (m) => logger.warn(m),
-  });
+  // 5b. Driver preflight. Read-only only: identify the live session the
+  //     start path will adopt, then classify any currently present driver
+  //     windows before any tmux write happens.
+  const drivers = resolveDriversList(team as Parameters<typeof resolveDriversList>[0]);
+  const driverPair = resolveDriverPair(team);
+  const driverAttentionCommand = driverPair.panes[1].command;
+  const projectRoot = dirname(dir);
+  const homeWin = `__${team.name}__home`;
+  const liveSessionExists = await tmux.session.hasSession(exactSessionTarget(adoptedSession.name));
+  const configuredDriverWindows =
+    liveSessionExists && !parsed.force
+      ? await readConfiguredDriverWindows(tmux, adoptedSession.name, drivers)
+      : [];
+  const configuredDriverWindowByName = new Map(
+    configuredDriverWindows.map((entry) => [entry.driver.name, entry] as const),
+  );
+  const driverNames = new Set(drivers.map((driver) => driver.name));
+  const gitSpawn = opts.gitSpawn ?? defaultGitSpawn;
+  const rootR =
+    drivers.length > 0
+      ? await gitSpawn(["-C", projectRoot, "rev-parse", "--show-toplevel"])
+      : undefined;
+  const branchR =
+    drivers.length > 0
+      ? await gitSpawn(["-C", projectRoot, "branch", "--show-current"])
+      : undefined;
+  const repoPath = rootR?.exitCode === 0 ? rootR.stdout.trim() : projectRoot;
+  const baseBranch = branchR?.exitCode === 0 ? branchR.stdout.trim() : "";
+  let canProvisionDriverWorktrees = baseBranch.length > 0 && rootR?.exitCode === 0;
+  if (!canProvisionDriverWorktrees && drivers.some((d) => !isTrunkDriver(d))) {
+    logger.warn(
+      "driver worktree: cannot detect repo root or base branch — driver-N panes will land on the shared trunk cwd (fix git state to re-enable per-driver worktrees)",
+    );
+  }
+
+  // ADR-239 §A5 — command-mode launch: the resolved TUI cmd runs as
+  // the pane's PID 0. To preserve the "pane stays a usable shell
+  // after the TUI exits" property that the legacy send-keys path
+  // gave for free, non-shell TUIs are wrapped with `sh -c '<cmd>;
+  // exec $SHELL -i'` so the pane drops back to an interactive shell
+  // when the TUI quits. A null/absent TUI explicitly launches zsh:
+  // driver panes are operator workspaces and must not inherit a stale
+  // agent-harness choice. Named shell kinds keep tmux's normal shell.
+  const isShellOnlyTui = (tui: string | null | undefined): boolean =>
+    tui === undefined || tui === null || tui === "shell" || tui === "bash" || tui === "zsh";
+
+  const driverShellLabel = (tui: string | null | undefined): string => tui ?? "zsh";
+
+  const wrapForShellFallback = (cmd: string): string =>
+    `sh -c ${JSON.stringify(`${cmd}; exec $SHELL -i`)}`;
+
+  const resolveCmd = (drv: DriverSession, cwd: string): string | undefined => {
+    if (drv.tui === undefined || drv.tui === null) return "zsh";
+    if (isShellOnlyTui(drv.tui)) return undefined;
+    const synth = {
+      name: drv.name,
+      role: "driver",
+      tui: drv.tui,
+      model: "default",
+      cwd,
+      ...(drv.claudeAccount !== undefined ? { claudeAccount: drv.claudeAccount } : {}),
+    };
+    try {
+      const raw = resolveTuiCommand(synth, team, { env, cwd });
+      return wrapForShellFallback(raw);
+    } catch (err) {
+      logger.warn(
+        `driver ${drv.name}: could not resolve command for tui='${drv.tui}' — pane will land in shell (${err instanceof Error ? err.message : String(err)})`,
+      );
+      return undefined;
+    }
+  };
+
+  const ensureDriverWorktree = async (
+    drv: DriverSession,
+    configuredCwd: string,
+  ): Promise<string> => {
+    if (isTrunkDriver(drv) || !canProvisionDriverWorktrees) return configuredCwd;
+    // Per ADR-239 §A1 worktree path: `.atmux/worktrees/driver-N`.
+    // We resolve against the worktree config (DEFAULT_WORKTREE_ROOT
+    // = ".atmux/worktrees") rather than honoring an arbitrary cwd —
+    // operators who diverge from the convention get the explicit
+    // cwd back, no provisioning fired.
+    const conventionalCwd = join(projectRoot, ".atmux", "worktrees", drv.name);
+    if (configuredCwd !== conventionalCwd) return configuredCwd;
+    const wtBranch = `${baseBranch}-${drv.name}`;
+    try {
+      const r = await provisionWorktree(repoPath, baseBranch, wtBranch, conventionalCwd, {
+        git: gitSpawn,
+        ...(team.worktreeInitSubmodules === true ? { initSubmodules: true } : {}),
+      });
+      logger.log(
+        `  · driver worktree ${r.created ? "created" : "reused"}: ${drv.name} → ${conventionalCwd} [${wtBranch}]`,
+      );
+      return conventionalCwd;
+    } catch (err) {
+      logger.warn(
+        `driver worktree: ${drv.name} provision failed — falling back to shared trunk cwd (${err instanceof Error ? err.message : String(err)})`,
+      );
+      canProvisionDriverWorktrees = false;
+      return projectRoot;
+    }
+  };
 
   // 6. Live-lead guard (lib/start.sh:140-147). `=`-anchored: with bare
   //    session names a prefix match (`-t sopx` matching `sopx-guild`)
   //    would adopt a sibling team's cage (SEC sweep t-0dbfe104 class).
-  const sessionExisted = await tmux.session.hasSession(exactSessionTarget(session));
-  if (sessionExisted) {
+  if (liveSessionExists) {
     if (!parsed.force) {
       logger.warn(
-        `session ${session} already exists. Running start in incremental mode (existing windows kept).`,
+        `session ${adoptedSession.name} already exists. Running start in incremental mode (existing windows kept).`,
       );
     } else {
-      logger.warn(`force: killing existing session ${session}`);
-      try {
-        await tmux.session.killSession(exactSessionTarget(session));
-      } catch {
-        // expected: race window between hasSession and killSession;
-        // the post-create branch below treats `hasSession=false` as
-        // "create fresh"
-      }
+      logger.warn(`force: killing existing session ${adoptedSession.name}`);
     }
   }
 
-  // 7. Create session if missing.
+  if (liveSessionExists && parsed.force) {
+    try {
+      await tmux.session.killSession(exactSessionTarget(adoptedSession.name));
+    } catch {
+      // expected: race window between hasSession and killSession;
+      // the post-create branch below treats `hasSession=false` as
+      // "create fresh"
+    }
+  } else if (liveSessionExists) {
+    const migration = await migrateLegacySessionName({
+      tmux,
+      teamName: team.name,
+      resolvedSession,
+      log: (m) => logger.log(m),
+      warn: (m) => logger.warn(m),
+    });
+    if (migration === "renamed") {
+      session = resolvedSession;
+    } else {
+      session = adoptedSession.name;
+    }
+    for (let index = 0; index < drivers.length; index++) {
+      const driver = drivers[index];
+      if (driver === undefined) continue;
+      const existing = configuredDriverWindowByName.get(driver.name);
+      if (existing !== undefined) {
+        if (existing.plan.decision !== "plan-add-attention") continue;
+        const cwd = resolveDriverCwd(existing.driver, projectRoot);
+        await materializeDriverWindowPair({
+          tmux,
+          sessionName: session,
+          driver: existing.driver,
+          driverCwd: cwd,
+          attentionCommand: driverAttentionCommand,
+        });
+        continue;
+      }
+
+      const currentWindows = await tmux.window.listWindows(session);
+      const currentWindowNames = new Set(currentWindows.map((window) => window.name));
+      const previousDriver = drivers
+        .slice(0, index)
+        .reverse()
+        .find((candidate) => currentWindowNames.has(candidate.name));
+      const nextDriver = drivers
+        .slice(index + 1)
+        .find((candidate) => currentWindowNames.has(candidate.name));
+      const firstMember = currentWindows.find((window) => !driverNames.has(window.name));
+      const insert =
+        previousDriver !== undefined
+          ? {
+              target: `${session}:${previousDriver.name}`,
+              position: "after" as const,
+            }
+          : nextDriver !== undefined
+            ? {
+                target: `${session}:${nextDriver.name}`,
+                position: "before" as const,
+              }
+            : firstMember !== undefined
+              ? {
+                  target: `${session}:${firstMember.name}`,
+                  position: "before" as const,
+                }
+              : undefined;
+
+      const cwd0 = resolveDriverCwd(driver, projectRoot);
+      const cwd = await ensureDriverWorktree(driver, cwd0);
+      const cmd = resolveCmd(driver, cwd);
+      const newWindowOpts: Parameters<typeof tmux.window.newWindow>[0] = {
+        sessionName: session,
+        name: driver.name,
+        cwd,
+        detached: true,
+      };
+      if (insert !== undefined) newWindowOpts.insert = insert;
+      if (cmd !== undefined) newWindowOpts.shellCommand = cmd;
+      await tmux.window.newWindow(newWindowOpts);
+      await materializeDriverWindowPair({
+        tmux,
+        sessionName: session,
+        driver,
+        driverCwd: cwd,
+        attentionCommand: driverAttentionCommand,
+      });
+    }
+  }
+
+  // 7. Create session if missing or if the operator explicitly forced
+  //    a re-create after the read-only preflight completed.
   //
-  //    Default path (lib/start.sh:156, 200-204): seed with the
-  //    `__<team>__home` placeholder window and let the member loop
-  //    populate, then kill `__home` once any real window exists.
-  //
-  //    ADR-044 path (lib/start.sh:177-214): when `team.driverSession`
-  //    is configured, seed the session with a `driver` window at index 1
-  //    running the resolved TUI command instead of the placeholder.
-  //    Members append after as windows 2..N+1, matching the bash
-  //    `driver → lead → members` declarative topology. The legacy
-  //    `__home` cleanup in step 9 is skipped when this path fires
-  //    (no placeholder was ever created).
-  //
-  //    `team.driverSession === null` is treated the same as missing —
-  //    matches the existing wizard's "explicitly disabled" output and
-  //    keeps `null` round-trip-safe for teams that opted out.
-  const homeWin = `__${team.name}__home`;
-  const stillExists = sessionExisted && !parsed.force;
-  const projectRoot = dirname(dir);
-  // ADR-239 §A1 + §A5 — resolve the declarative driver roster. (The
-  // legacy `driverSession` / `driverTui` synthesis was removed per
-  // ADR-266 §D2 — only `drivers[]` drives the spawn loop now.)
-  const drivers = resolveDriversList(team as Parameters<typeof resolveDriversList>[0]);
+  //    Fresh path: each driver window is paired immediately after it is
+  //    created so the worker process stays intact while the attention
+  //    pane is attached to the right.
+  const freshStart = !liveSessionExists || parsed.force;
   let driverInitial = false;
-  if (!stillExists) {
+  if (freshStart) {
     if (drivers.length > 0) {
       // ---------- ADR-239 §A1/§A5 driver-spawn loop ----------
       //
@@ -483,94 +855,6 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
       // routes through pane.sendKeys — ADR-239 §D2 no-send-keys-EVER
       // invariant is satisfied at spawn time by construction.
       //
-      // Worktree provisioning for driver-N (N>=2) happens inline: the cwd
-      // convention `.atmux/worktrees/driver-N` triggers a provisionWorktree
-      // call against `<base>-driver-N` off `origin/<base>` (ADR-082/-084
-      // pattern, mirrored from the member-worktree loop below).
-      const gitSpawn = opts.gitSpawn ?? defaultGitSpawn;
-      const rootR = await gitSpawn(["-C", projectRoot, "rev-parse", "--show-toplevel"]);
-      const branchR = await gitSpawn(["-C", projectRoot, "branch", "--show-current"]);
-      const repoPath = rootR.exitCode === 0 ? rootR.stdout.trim() : projectRoot;
-      const baseBranch = branchR.exitCode === 0 ? branchR.stdout.trim() : "";
-      // Worktree provisioning fails closed: an empty baseBranch (detached
-      // HEAD) or non-zero git rev-parse means driver-N panes land on the
-      // shared trunk path instead of an isolated worktree. Logged once.
-      let canProvisionDriverWorktrees = baseBranch.length > 0 && rootR.exitCode === 0;
-      if (!canProvisionDriverWorktrees && drivers.some((d) => !isTrunkDriver(d))) {
-        logger.warn(
-          "driver worktree: cannot detect repo root or base branch — driver-N panes will land on the shared trunk cwd (fix git state to re-enable per-driver worktrees)",
-        );
-      }
-
-      // ADR-239 §A5 — command-mode launch: the resolved TUI cmd runs as
-      // the pane's PID 0. To preserve the "pane stays a usable shell
-      // after the TUI exits" property that the legacy send-keys path
-      // gave for free, non-shell TUIs are wrapped with `sh -c '<cmd>;
-      // exec $SHELL -i'` so the pane drops back to an interactive shell
-      // when the TUI quits. A null/absent TUI explicitly launches zsh:
-      // driver panes are operator workspaces and must not inherit a stale
-      // agent-harness choice. Named shell kinds keep tmux's normal shell.
-      const isShellOnlyTui = (tui: string | null | undefined): boolean =>
-        tui === undefined || tui === null || tui === "shell" || tui === "bash" || tui === "zsh";
-
-      const driverShellLabel = (tui: string | null | undefined): string => tui ?? "zsh";
-
-      const wrapForShellFallback = (cmd: string): string =>
-        `sh -c ${JSON.stringify(`${cmd}; exec $SHELL -i`)}`;
-
-      const resolveCmd = (drv: DriverSession, cwd: string): string | undefined => {
-        if (drv.tui === undefined || drv.tui === null) return "zsh";
-        if (isShellOnlyTui(drv.tui)) return undefined;
-        const synth = {
-          name: drv.name,
-          role: "driver",
-          tui: drv.tui,
-          model: "default",
-          cwd,
-          ...(drv.claudeAccount !== undefined ? { claudeAccount: drv.claudeAccount } : {}),
-        };
-        try {
-          const raw = resolveTuiCommand(synth, team, { env, cwd });
-          return wrapForShellFallback(raw);
-        } catch (err) {
-          logger.warn(
-            `driver ${drv.name}: could not resolve command for tui='${drv.tui}' — pane will land in shell (${err instanceof Error ? err.message : String(err)})`,
-          );
-          return undefined;
-        }
-      };
-
-      const ensureDriverWorktree = async (
-        drv: DriverSession,
-        configuredCwd: string,
-      ): Promise<string> => {
-        if (isTrunkDriver(drv) || !canProvisionDriverWorktrees) return configuredCwd;
-        // Per ADR-239 §A1 worktree path: `.atmux/worktrees/driver-N`.
-        // We resolve against the worktree config (DEFAULT_WORKTREE_ROOT
-        // = ".atmux/worktrees") rather than honoring an arbitrary cwd —
-        // operators who diverge from the convention get the explicit
-        // cwd back, no provisioning fired.
-        const conventionalCwd = join(projectRoot, ".atmux", "worktrees", drv.name);
-        if (configuredCwd !== conventionalCwd) return configuredCwd;
-        const wtBranch = `${baseBranch}-${drv.name}`;
-        try {
-          const r = await provisionWorktree(repoPath, baseBranch, wtBranch, conventionalCwd, {
-            git: gitSpawn,
-            ...(team.worktreeInitSubmodules === true ? { initSubmodules: true } : {}),
-          });
-          logger.log(
-            `  · driver worktree ${r.created ? "created" : "reused"}: ${drv.name} → ${conventionalCwd} [${wtBranch}]`,
-          );
-          return conventionalCwd;
-        } catch (err) {
-          logger.warn(
-            `driver worktree: ${drv.name} provision failed — falling back to shared trunk cwd (${err instanceof Error ? err.message : String(err)})`,
-          );
-          canProvisionDriverWorktrees = false;
-          return projectRoot;
-        }
-      };
-
       // First driver creates the session (window 1). Subsequent drivers
       // attach as windows 2..N. Window order is driver-N at slots 1..N
       // per ADR-239 §D3; members follow at N+1.
@@ -586,6 +870,13 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
         };
         if (firstCmd !== undefined) newSessionOpts.shellCommand = firstCmd;
         await tmux.session.newSession(newSessionOpts);
+        await materializeDriverWindowPair({
+          tmux,
+          sessionName: session,
+          driver: firstDriver,
+          driverCwd: firstCwd,
+          attentionCommand: driverAttentionCommand,
+        });
         logger.ok(
           `created tmux session: ${session} (${firstDriver.name} at window 1, ${driverShellLabel(firstDriver.tui)})`,
         );
@@ -606,6 +897,13 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
         };
         if (cmd !== undefined) newWindowOpts.shellCommand = cmd;
         await tmux.window.newWindow(newWindowOpts);
+        await materializeDriverWindowPair({
+          tmux,
+          sessionName: session,
+          driver: drv,
+          driverCwd: cwd,
+          attentionCommand: driverAttentionCommand,
+        });
         logger.log(
           `  · driver pane: ${drv.name} at window ${i + 1} (${driverShellLabel(drv.tui)}) cwd=${cwd}`,
         );

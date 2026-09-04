@@ -47,7 +47,11 @@ import {
   requireTeam,
   resolveTeamSocket,
 } from "../core/common.ts";
-import { type DriverPaneHealth, probeDriverPane } from "../core/driver-pane-health.ts";
+import {
+  type DriverPaneHealth,
+  type ProbeDriverPaneDeps,
+  probeDriverPane,
+} from "../core/driver-pane-health.ts";
 import { DEFAULT_HEARTBEAT_STALE_SEC, readHeartbeatAges } from "../core/heartbeat.ts";
 import { loadInbox } from "../core/inbox.ts";
 import { loadKanban } from "../core/kanban.ts";
@@ -645,6 +649,22 @@ export async function gatherStatus(
   // before this seam existed.
   const cageWindowOpt: Pick<ProbeCageStateOpts, "listWindowNames"> =
     liveWindowNames === null ? {} : { listWindowNames: async () => liveWindowNames };
+  // ADR-288 driver pair: the driver-pane probe shares that SAME single
+  // read. Left to its own default it calls `list-windows` again, which
+  // is the second read this function exists to avoid — one per roster,
+  // never one per probe.
+  //
+  // A down session is handed an empty list rather than omitted: we
+  // already know there is nothing to enumerate, and letting the probe
+  // fall back would pay a `list-windows` against a session that is gone.
+  // Only the up-but-unreadable case omits the seam, so the probe keeps
+  // the exact `list_windows_failed` behaviour it had before it existed.
+  const driverWindowOpt: Pick<ProbeDriverPaneDeps, "listWindowNames"> =
+    sessionState !== "up"
+      ? { listWindowNames: async () => [] }
+      : liveWindowNames === null
+        ? {}
+        : { listWindowNames: async () => liveWindowNames };
 
   const members: MemberStatus[] = [];
   for (const m of team.members) {
@@ -838,7 +858,7 @@ export async function gatherStatus(
   // ADR-064 §4: driver-pane health probe. Reuses the same tmux
   // namespace already in scope so we don't pay a second connection
   // setup; the helper itself stays I/O-bounded to one capture call.
-  const driverPane = await probeDriverPane(team, atmuxDir, { tmux });
+  const driverPane = await probeDriverPane(team, atmuxDir, { tmux, ...driverWindowOpt });
 
   // ADR-077 §F5 / ADR-133: cockpit medic probe. Independent of the
   // team's own cage tmux — uses the operator's default socket via a

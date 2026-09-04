@@ -23,7 +23,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import type { Logger } from "../../../src/core/tui.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
@@ -366,7 +366,7 @@ describe("resolveTmuxConfig", () => {
 // ---------- start verb — happy path ----------
 
 describe("start — happy path", () => {
-  test("creates session + one window per member + records timestamp", async () => {
+  test("creates session + driver pair + one window per member + records timestamp", async () => {
     await writeTeamJson({
       members: [
         { name: "alice", role: "team-lead" },
@@ -381,16 +381,30 @@ describe("start — happy path", () => {
     const session = env.team;
     expect(await env.tmux.session.hasSession(session)).toBe(true);
 
-    // Two member windows, no `__<team>__home` placeholder remaining.
-    // (Placeholder still uses the `__<team>__home` form — only member
-    // windows dropped the prefix per ADR-017.)
-    const windows = await env.tmux.window.listWindows(session);
-    const names = windows.map((w) => w.name).sort();
-    // buildWindowName(member, emoji, label, role) → ADR-161 TR2:
-    // default roles render `_-prefix`. emojis from defaultEmojiForRole:
-    // team-lead → 🧭, reviewer → 🔍. Sort order: 🔍_bob < 🧭_alice.
-    expect(names).toEqual(["🔍_bob", "🧭_alice"]);
-    expect(names).not.toContain(`__${env.team}__home`);
+    const windows = [...(await env.tmux.window.listWindows(session))].sort(
+      (a, b) => a.index - b.index,
+    );
+    expect(windows.map((w) => w.name)).toEqual([
+      "driver",
+      "driver-2",
+      "driver-3",
+      "🧭_alice",
+      "🔍_bob",
+    ]);
+    for (const driverName of ["driver", "driver-2", "driver-3"] as const) {
+      const panes = [...(await env.tmux.pane.listPanes(`${session}:${driverName}`))].sort(
+        (a, b) => (a.left ?? 0) - (b.left ?? 0),
+      );
+      expect(panes).toHaveLength(2);
+      expect(panes[0]?.role).toBe("worker");
+      expect(panes[1]?.role).toBe("attention");
+      const leftPane = panes[0]?.left;
+      const rightPane = panes[1]?.left;
+      expect(leftPane).toBeDefined();
+      expect(rightPane).toBeDefined();
+      expect((leftPane as number) < (rightPane as number)).toBe(true);
+    }
+    expect(windows.map((w) => w.name)).not.toContain(`__${env.team}__home`);
 
     // Timestamp written as integer seconds
     const ts = await readFile(join(env.atmuxDir, "state", "session-start.txt"), "utf8");
@@ -452,13 +466,16 @@ describe("start — happy path", () => {
     ).toBe(true);
   });
 
-  test("zero-member team creates session + leaves __home in place", async () => {
+  test("zero-member team creates session + driver pair and leaves __home absent", async () => {
     await writeTeamJson({ members: [] });
     const exit = await runStart([]);
     expect(exit).toBe(0);
     const session = env.team;
-    const wins = await env.tmux.window.listWindows(session);
-    expect(wins.map((w) => w.name)).toEqual([`__${env.team}__home`]);
+    const wins = [...(await env.tmux.window.listWindows(session))].sort(
+      (a, b) => a.index - b.index,
+    );
+    expect(wins.map((w) => w.name)).toEqual(["driver", "driver-2", "driver-3"]);
+    expect(wins.map((w) => w.name)).not.toContain(`__${env.team}__home`);
   });
 
   test("applies the level-resolved cage prefix globally on the tmux server (ADR-089 §C)", async () => {
@@ -853,10 +870,9 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
     ).toBe(true);
   });
 
-  test("incremental: existing session without driver is left alone (ADR-044 D3)", async () => {
-    // ADR-044 D3 explicitly forbids retroactively inserting a driver into
-    // an existing session — that would shift member window indices and
-    // disrupt operator state on attached sessions.
+  test("incremental: existing session without driver inserts the canonical roster before members", async () => {
+    // Incremental start now fills missing driver windows in roster order
+    // while preserving any existing worker panes.
     await writeTeamJson({
       members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
       drivers: canonicalDrivers(),
@@ -864,7 +880,8 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
     expect(await runStart([])).toBe(0);
 
     // Now add drivers[] AFTER the session is up. Re-run start
-    // (incremental, no --force) — must NOT add a driver window.
+    // (incremental, no --force) — missing driver windows should be
+    // inserted in canonical order ahead of member windows.
     await writeTeamJson({
       members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
       drivers: canonicalDrivers("shell"),
@@ -875,7 +892,6 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
     const wins = await env.tmux.window.listWindows(env.team);
     const ordered = [...wins].sort((a, b) => a.index - b.index);
     expect(ordered.map((w) => w.name)).toEqual(["driver", "driver-2", "driver-3", "🧭_alpha"]);
-    // No driver-at-window-1 log line either (path didn't run).
     expect(env.logs.some((l) => l.msg.includes("driver at window 1"))).toBe(false);
   });
 
@@ -1022,7 +1038,14 @@ describe("start — ADR-285 cooperative _bot seat", () => {
 
     const session = env.team;
     const ordered = (await env.tmux.window.listWindows(session)).sort((a, b) => a.index - b.index);
-    expect(ordered.map((window) => window.name)).toEqual(["driver", "_bot", "🧭_alpha", "🐝-bee"]);
+    expect(ordered.map((window) => window.name)).toEqual([
+      "driver",
+      "driver-2",
+      "driver-3",
+      "_bot",
+      "🧭_alpha",
+      "🐝-bee",
+    ]);
     expect(
       await env.tmux.pane.displayMessage({
         target: `${session}:_bot`,
@@ -1054,7 +1077,13 @@ describe("start — ADR-285 cooperative _bot seat", () => {
     expect(await runStart([], { gitSpawn: healthyGit([]) })).toBe(0);
 
     const ordered = (await env.tmux.window.listWindows(session)).sort((a, b) => a.index - b.index);
-    expect(ordered.map((window) => window.name)).toEqual(["driver", "_bot", "🧭_alpha"]);
+    expect(ordered.map((window) => window.name)).toEqual([
+      "driver",
+      "driver-2",
+      "driver-3",
+      "_bot",
+      "🧭_alpha",
+    ]);
     expect(
       await env.tmux.pane.displayMessage({
         target: `${session}:🧭_alpha`,
@@ -1111,7 +1140,73 @@ describe("start — ADR-082 W3 worktree-isolation", () => {
     };
   }
 
-  test("legacy team (no worktreeIsolation field) makes ZERO git invocations", async () => {
+  const fakeRepoPath = "/srv/fake-repo";
+  const baseBranch = "geoyws";
+  const configuredDriverNames = ["driver-2", "driver-3"] as const;
+
+  const isMemberTaggedCall = (call: ReadonlyArray<string>): boolean =>
+    call.some((arg) => /alice|bob/.test(arg));
+
+  const isDriverProbeCall = (call: ReadonlyArray<string>, projectRoot: string): boolean =>
+    call.length === 4 &&
+    call[0] === "-C" &&
+    call[1] === projectRoot &&
+    ((call[2] === "rev-parse" && call[3] === "--show-toplevel") ||
+      (call[2] === "branch" && call[3] === "--show-current"));
+
+  const isWorktreeListCall = (call: ReadonlyArray<string>): boolean =>
+    call.length === 5 &&
+    call[0] === "-C" &&
+    call[1] === fakeRepoPath &&
+    call[2] === "worktree" &&
+    call[3] === "list" &&
+    call[4] === "--porcelain";
+
+  const isConfiguredDriverVerifyCall = (call: ReadonlyArray<string>): boolean =>
+    call.length === 6 &&
+    call[0] === "-C" &&
+    call[1] === fakeRepoPath &&
+    call[2] === "rev-parse" &&
+    call[3] === "--verify" &&
+    call[4] === "--quiet" &&
+    configuredDriverNames.some(
+      (driverName) => call[5] === `refs/heads/${baseBranch}-${driverName}`,
+    );
+
+  const isConfiguredDriverAddCall = (
+    call: ReadonlyArray<string>,
+    driverProjectRoot: string,
+  ): boolean =>
+    (call.length === 7 || call.length === 8) &&
+    call[0] === "-C" &&
+    call[1] === fakeRepoPath &&
+    call[2] === "worktree" &&
+    call[3] === "add" &&
+    configuredDriverNames.some((driverName) => {
+      const worktreePath = join(driverProjectRoot, ".atmux", "worktrees", driverName);
+      if (call.length === 7) {
+        return call[4] === worktreePath && call[5] === `${baseBranch}-${driverName}`;
+      }
+      return (
+        call[4] === "-b" &&
+        call[5] === `${baseBranch}-${driverName}` &&
+        call[6] === worktreePath &&
+        call[7] === baseBranch
+      );
+    });
+
+  const isAllowedRemainingGitCall = (
+    call: ReadonlyArray<string>,
+    driverProjectRoot: string,
+    memberProjectRoot: string,
+  ): boolean =>
+    isDriverProbeCall(call, driverProjectRoot) ||
+    isDriverProbeCall(call, memberProjectRoot) ||
+    isWorktreeListCall(call) ||
+    isConfiguredDriverVerifyCall(call) ||
+    isConfiguredDriverAddCall(call, driverProjectRoot);
+
+  test("legacy team (no worktreeIsolation field) still skips member worktree provisioning", async () => {
     await writeTeamJson({
       members: [
         { name: "alice", role: "team-lead" },
@@ -1125,10 +1220,27 @@ describe("start — ADR-082 W3 worktree-isolation", () => {
     };
     const exit = await runStart([], { gitSpawn });
     expect(exit).toBe(0);
+    const driverProjectRoot = dirname(env.atmuxDir);
+    const memberProjectRoot = env.atmuxDir;
+    const memberCalls = calls.filter(isMemberTaggedCall);
     // The legacy short-circuit MUST gate at `team.worktreeIsolation === true`
-    // — any git invocation here is a regression that resurrects the
+    // — member-specific git invocations here would resurrect the
     // shared-tree-only path's behaviour for opt-in teams.
-    expect(calls).toEqual([]);
+    expect(memberCalls).toEqual([]);
+    const nonMemberCalls = calls.filter((call) => !isMemberTaggedCall(call));
+    const unknownCalls = nonMemberCalls.filter(
+      (call) => !isAllowedRemainingGitCall(call, driverProjectRoot, memberProjectRoot),
+    );
+    expect(unknownCalls).toEqual([]);
+    expect(nonMemberCalls).toHaveLength(2);
+    expect(nonMemberCalls.filter((call) => isDriverProbeCall(call, driverProjectRoot))).toHaveLength(
+      2,
+    );
+    expect(nonMemberCalls.filter(isWorktreeListCall)).toHaveLength(0);
+    expect(nonMemberCalls.filter(isConfiguredDriverVerifyCall)).toHaveLength(0);
+    expect(
+      nonMemberCalls.filter((call) => isConfiguredDriverAddCall(call, driverProjectRoot)),
+    ).toHaveLength(0);
   });
 
   test("worktreeIsolation=true happy path: each member gets a per-member-branch worktree provisioned + cwd overridden", async () => {
@@ -1159,27 +1271,17 @@ describe("start — ADR-082 W3 worktree-isolation", () => {
     };
     const exit = await runStart([], { gitSpawn });
     expect(exit).toBe(0);
-    // Per ADR-084: 1× rev-parse --show-toplevel, 1× branch
-    // --show-current, then per member 3 calls (list, rev-parse
-    // --verify refs/heads/<wtBranch>, worktree add -b <wtBranch>).
-    // Total: 2 + 2*3 = 8.
-    expect(calls).toHaveLength(8);
-    expect(calls[0]).toEqual([
-      "-C",
-      env.atmuxDir.replace(/\/?\.atmux\/?$/, "") || "/",
-      "rev-parse",
-      "--show-toplevel",
-    ]);
-    expect(calls[1]).toEqual([
-      "-C",
-      env.atmuxDir.replace(/\/?\.atmux\/?$/, "") || "/",
-      "branch",
-      "--show-current",
-    ]);
+    const driverProjectRoot = dirname(env.atmuxDir);
+    const memberProjectRoot = env.atmuxDir;
+    const memberCalls = calls.filter(isMemberTaggedCall);
+    // Per ADR-084: each member should see one rev-parse verification
+    // and one worktree add. The list probe is shared and not member-
+    // tagged in the fake transport.
+    expect(memberCalls).toHaveLength(4);
     // Per-member-branch path: `worktree add -b <baseBranch>-<member>
     // <wtPath> <baseBranch>`. Verify both members get a `-b` add with
     // the right derived branch name.
-    const addCalls = calls.filter((c) => c.includes("add"));
+    const addCalls = memberCalls.filter((c) => c.includes("add"));
     expect(addCalls).toHaveLength(2);
     for (const c of addCalls) {
       expect(c).toContain("-b");
@@ -1189,7 +1291,7 @@ describe("start — ADR-082 W3 worktree-isolation", () => {
     expect(addCalls.some((c) => c.includes("geoyws-alice"))).toBe(true);
     expect(addCalls.some((c) => c.includes("geoyws-bob"))).toBe(true);
     // rev-parse --verify call targets the derived branch ref.
-    const verifyCalls = calls.filter((c) => c.includes("--verify"));
+    const verifyCalls = memberCalls.filter((c) => c.includes("--verify"));
     expect(verifyCalls).toHaveLength(2);
     expect(verifyCalls.some((c) => c.includes("refs/heads/geoyws-alice"))).toBe(true);
     expect(verifyCalls.some((c) => c.includes("refs/heads/geoyws-bob"))).toBe(true);
@@ -1198,6 +1300,23 @@ describe("start — ADR-082 W3 worktree-isolation", () => {
     expect(env.logs.some((l) => l.msg.includes("worktree created: bob"))).toBe(true);
     expect(env.logs.some((l) => l.msg.includes("[geoyws-alice]"))).toBe(true);
     expect(env.logs.some((l) => l.msg.includes("[geoyws-bob]"))).toBe(true);
+    const nonMemberCalls = calls.filter((call) => !isMemberTaggedCall(call));
+    const unknownCalls = nonMemberCalls.filter(
+      (call) => !isAllowedRemainingGitCall(call, driverProjectRoot, memberProjectRoot),
+    );
+    expect(unknownCalls).toEqual([]);
+    expect(nonMemberCalls).toHaveLength(12);
+    expect(nonMemberCalls.filter((call) => isDriverProbeCall(call, driverProjectRoot))).toHaveLength(
+      2,
+    );
+    expect(nonMemberCalls.filter((call) => isDriverProbeCall(call, memberProjectRoot))).toHaveLength(
+      2,
+    );
+    expect(nonMemberCalls.filter(isWorktreeListCall)).toHaveLength(4);
+    expect(nonMemberCalls.filter(isConfiguredDriverVerifyCall)).toHaveLength(2);
+    expect(
+      nonMemberCalls.filter((call) => isConfiguredDriverAddCall(call, driverProjectRoot)),
+    ).toHaveLength(2);
   });
 
   test("partial-fail: one member's provisionWorktree throws → others still spawn, failed one falls back", async () => {
@@ -1256,16 +1375,41 @@ describe("start — ADR-082 W3 worktree-isolation", () => {
     };
     const exit = await runStart([], { gitSpawn });
     expect(exit).toBe(0);
-    // rev-parse + branch are the only calls — branch is exec'd before
-    // the rev-parse-failure gate kicks in (the impl reads both up-front).
-    // No `worktree add` invocations.
-    expect(calls.filter((c) => c.includes("add"))).toHaveLength(0);
+    const driverProjectRoot = dirname(env.atmuxDir);
+    const memberProjectRoot = env.atmuxDir;
+    const memberCalls = calls.filter(isMemberTaggedCall);
+    // Member worktree provisioning must not fire when repo detection
+    // fails. Driver worktrees may still probe git independently.
+    expect(memberCalls.filter((c) => c.includes("add"))).toHaveLength(0);
     // Warning surfaces the repo-root detection failure.
     const warns = env.logs.filter((l) => l.kind === "warn");
     expect(warns.some((l) => l.msg.includes("cannot detect repo root"))).toBe(true);
     // Members still spawn — pane creation is unaffected.
     const wins = await env.tmux.window.listWindows(env.team);
-    expect(wins.map((w) => w.name).sort()).toEqual(["🔍_bob", "🧭_alice"]);
+    expect(wins.map((w) => w.name).sort()).toEqual([
+      "driver",
+      "driver-2",
+      "driver-3",
+      "🔍_bob",
+      "🧭_alice",
+    ]);
+    const nonMemberCalls = calls.filter((call) => !isMemberTaggedCall(call));
+    const unknownCalls = nonMemberCalls.filter(
+      (call) => !isAllowedRemainingGitCall(call, driverProjectRoot, memberProjectRoot),
+    );
+    expect(unknownCalls).toEqual([]);
+    expect(nonMemberCalls).toHaveLength(4);
+    expect(nonMemberCalls.filter((call) => isDriverProbeCall(call, driverProjectRoot))).toHaveLength(
+      2,
+    );
+    expect(nonMemberCalls.filter((call) => isDriverProbeCall(call, memberProjectRoot))).toHaveLength(
+      2,
+    );
+    expect(nonMemberCalls.filter(isWorktreeListCall)).toHaveLength(0);
+    expect(nonMemberCalls.filter(isConfiguredDriverVerifyCall)).toHaveLength(0);
+    expect(
+      nonMemberCalls.filter((call) => isConfiguredDriverAddCall(call, driverProjectRoot)),
+    ).toHaveLength(0);
   });
 
   test("detached HEAD (empty branch) → all fall back with 'detached HEAD' warning, no provisioning", async () => {
@@ -1283,7 +1427,8 @@ describe("start — ADR-082 W3 worktree-isolation", () => {
     };
     const exit = await runStart([], { gitSpawn });
     expect(exit).toBe(0);
-    expect(calls.filter((c) => c.includes("add"))).toHaveLength(0);
+    const memberCalls = calls.filter((c) => c.some((arg) => /alice/.test(arg)));
+    expect(memberCalls.filter((c) => c.includes("add"))).toHaveLength(0);
     const warns = env.logs.filter((l) => l.kind === "warn");
     expect(warns.some((l) => l.msg.includes("detached HEAD"))).toBe(true);
   });

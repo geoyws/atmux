@@ -89,10 +89,37 @@ describe("docs-consolidation (ADR-093) smoke", () => {
   test("(3) every ADR-NNN ref in tracked files resolves to a docs/adr/<NNN>-*.md file", () => {
     const ids = existingAdrIds();
     // Find every ADR-NNN token in tracked, non-binary files.
-    const res = spawnSync("git", ["grep", "-I", "-h", "-o", "-E", "ADR-[0-9]{3}", "--", "."], {
-      cwd: REPO_ROOT,
-      encoding: "utf-8",
-    });
+    //
+    // The dangling-ref DETECTOR and its negative-test suite are excluded,
+    // for the same reason test (2) excludes this file: both deliberately
+    // contain refs that resolve to nothing, because that is the input a
+    // detector must be fed to prove it detects. Scanning them makes a
+    // WORKING detector look like a broken repo.
+    //
+    // Deliberately two named files, not a `tests/**` glob: a genuine
+    // dangling ref in any other file — test suites included — must still
+    // fail this gate. Note the exclusions are also why no literal
+    // three-digit ref appears in this comment; writing one here would put
+    // an unresolvable token in a file this scan DOES read.
+    const res = spawnSync(
+      "git",
+      [
+        "grep",
+        "-I",
+        "-h",
+        "-o",
+        "-E",
+        "ADR-[0-9]{3}",
+        "--",
+        ".",
+        ":(exclude)scripts/check-adr-links.sh",
+        ":(exclude)tests/unit/scripts/check-adr-links.test.ts",
+      ],
+      {
+        cwd: REPO_ROOT,
+        encoding: "utf-8",
+      },
+    );
     expect(res.status).toBeLessThan(2);
     const refs = new Set<string>(
       res.stdout
