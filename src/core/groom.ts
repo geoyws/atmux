@@ -1004,6 +1004,40 @@ export interface SweepZombieSocketsOpts {
  *  per the c-4698c603 (b) arm proposal. */
 const ZOMBIE_FIXTURE_PATTERN = /^atmux-(cockpit-)?[^/]+-[^/]+$/;
 
+/** Production dir prefixes this sweep must NEVER classify as a fixture,
+ *  however fixture-shaped their names look.
+ *
+ *  `atmux-grp-<group>` is a live GROUP SERVER socket dir
+ *  (`groupSocketPath`, e-419553c6 2026-08-28). It is two segments after
+ *  `atmux-`, so {@link ZOMBIE_FIXTURE_PATTERN} matches it — and the
+ *  live-child guard below does NOT save it, because that guard looks for
+ *  a nested `<dir>/tmux-<uid>/default` cage and a group dir contains only
+ *  `sock`. On @@mbp 2026-09-04 all three of `atmux-grp-geoyws`,
+ *  `-ifca` and `-unum` matched, were 12h old (past the 6h floor) and had
+ *  zero nested cages: `groom --zombie-sweep` would have killed all three
+ *  live group servers.
+ *
+ *  This is a case of a later feature invalidating an earlier stated
+ *  safety argument. The comment on the live-child guard reasons that the
+ *  pattern "already excludes the canonical parent dir /tmp/atmux-atmux
+ *  (no trailing-hyphen suffix), so this sweep can't reach it today" —
+ *  true for `atmux-<team>`, and silently untrue once `atmux-grp-<group>`
+ *  existed.
+ *
+ *  Why an explicit prefix list rather than a smarter shape test: the
+ *  suffixes are genuinely indistinguishable. `mkdtemp` yields
+ *  `atmux-start-sock-NMThvC`; a real group yields `atmux-grp-geoyws`.
+ *  Both are six alphanumeric characters. No regex over the NAME can tell
+ *  a random suffix from a short group name, so the production namespace
+ *  has to be named. Keep this in sync with any new `/tmp/atmux-*` dir
+ *  shape that is not a test fixture. */
+const PRODUCTION_DIR_PREFIXES: ReadonlyArray<string> = ["atmux-grp-"];
+
+/** True when `name` is a production socket dir the sweep must skip. */
+export function isProductionSocketDir(name: string): boolean {
+  return PRODUCTION_DIR_PREFIXES.some((p) => name.startsWith(p));
+}
+
 /** 6h default — short enough to drain typical CI rounds, long enough
  *  that a stale-looking fixture dir at minute 5h59 of an actively-
  *  running spec doesn't get nuked mid-test. */
@@ -1033,6 +1067,9 @@ export async function sweepZombieTmuxSockets(
   for (const ent of entries) {
     if (!ent.isDirectory()) continue;
     if (!ZOMBIE_FIXTURE_PATTERN.test(ent.name)) continue;
+    // Production namespaces are excluded BEFORE the age and live-child
+    // gates, so no combination of mtime or emptiness can reach them.
+    if (isProductionSocketDir(ent.name)) continue;
 
     const full = join(dirRoot, ent.name);
     const st = await statOrNull(full);

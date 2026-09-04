@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sweepZombieTmuxSockets } from "../../../src/core/groom.ts";
+import { isProductionSocketDir, sweepZombieTmuxSockets } from "../../../src/core/groom.ts";
 
 // Pin clock at 2026-05-16 12:00 UTC; 6h default threshold means
 // anything mtime'd at or before 06:00 UTC is sweep-eligible.
@@ -384,5 +384,66 @@ describe("sweepZombieTmuxSockets", () => {
     expect(r.skippedLiveChildren).toBe(0);
     expect(r.removed).toBe(1);
     expect(await stat(dir).catch(() => null)).toBeNull();
+  });
+
+  // ---------- a-6427312d: never reap a live GROUP server ----------
+
+  test("NEVER sweeps a live group-server dir, even fixture-shaped and past the age floor", async () => {
+    // Reproduces the exact @@mbp state measured 2026-09-04: three live
+    // group servers at /tmp/atmux-grp-{geoyws,ifca,unum}, each 12h old
+    // and containing ONLY `sock`. Every gate the sweep has was already
+    // satisfied — the name matches ZOMBIE_FIXTURE_PATTERN, the mtime is
+    // past the 6h floor, and the live-child guard does not fire because
+    // that guard looks for a nested <dir>/tmux-<uid>/default cage which
+    // a group dir simply does not have. Without the production-prefix
+    // guard, `groom --zombie-sweep` killed all three.
+    const dir = await makeFixtureDir("atmux-grp-geoyws", {
+      ageMs: SIX_HOURS_MS + 1000,
+    });
+
+    const r = await sweepZombieTmuxSockets({
+      tmpDir: env.fakeTmp,
+      nowMs: RUN_MS,
+      killServer: stubKill(env),
+    });
+
+    expect(r.scanned).toBe(0);
+    expect(r.killed).toBe(0);
+    expect(r.removed).toBe(0);
+    expect(env.killCalls).toEqual([]);
+    // The socket dir must still be on disk, untouched.
+    expect(await stat(dir).catch(() => null)).not.toBeNull();
+  });
+
+  test("the group guard does not weaken the fixture sweep it sits next to", async () => {
+    // Guard against over-correcting: the orphan this whole area exists to
+    // reap (t-2937d4de, `atmux-start-sock-<mkdtemp>`) must STILL be swept.
+    const fixture = await makeFixtureDir("atmux-start-sock-NMThvC", {
+      ageMs: SIX_HOURS_MS + 1000,
+    });
+    await makeFixtureDir("atmux-grp-unum", { ageMs: SIX_HOURS_MS + 1000 });
+
+    const r = await sweepZombieTmuxSockets({
+      tmpDir: env.fakeTmp,
+      nowMs: RUN_MS,
+      killServer: stubKill(env),
+    });
+
+    expect(r.scanned).toBe(1);
+    expect(r.removed).toBe(1);
+    expect(env.killCalls).toEqual([join(fixture, "sock")]);
+    expect(await stat(fixture).catch(() => null)).toBeNull();
+  });
+
+  test("isProductionSocketDir names the production namespace, not a name shape", () => {
+    // A shape test CANNOT do this job and the assertion records why: a
+    // mkdtemp suffix and a short group name are both six alphanumeric
+    // characters, so nothing about the NAME distinguishes them.
+    expect(isProductionSocketDir("atmux-grp-geoyws")).toBe(true);
+    expect(isProductionSocketDir("atmux-grp-ifca")).toBe(true);
+    expect(isProductionSocketDir("atmux-start-sock-NMThvC")).toBe(false);
+    expect(isProductionSocketDir("atmux-cockpit-foo-bar")).toBe(false);
+    // Same length, same character class, opposite verdicts.
+    expect("geoyws".length).toBe("NMThvC".length);
   });
 });
