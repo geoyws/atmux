@@ -646,7 +646,7 @@ describe("gatherDiscovery — populated paths", () => {
 describe("aggregateTopo — empty / cockpit-null discovery", () => {
   test("emits minimal manifest from empty discovery", () => {
     const m = aggregateTopo(emptyDiscovery());
-    expect(m.schema_version).toBe(1);
+    expect(m.schema_version).toBe(2);
     expect(m.cockpit.alive).toBe(false);
     expect(m.cockpit.sessions_count).toBe(0);
     expect(m.teams).toEqual([]);
@@ -930,5 +930,115 @@ describe("determinism", () => {
       ],
     });
     expect(JSON.stringify(aggregateTopo(discovery))).toBe(JSON.stringify(aggregateTopo(discovery)));
+  });
+});
+
+// ---------- t-a14dfe3e: manifest v2 group tier ----------
+
+function groupSession(name: string, sessions: unknown[] = []) {
+  return { type: "group" as const, name, enabled: true, sessions };
+}
+
+describe("aggregateTopo — group tier (manifest v2)", () => {
+  test("a team inside a group reports that group and level 1", () => {
+    const m = aggregateTopo(
+      emptyDiscovery({
+        cockpit: {
+          socket: "/x",
+          alive: true,
+          registry_path: "/r",
+          data: cockpitWith([groupSession("geoyws", [teamSession("atmux", "/srv/atmux")])]),
+        },
+        parents: [parentDiscovery({ name: "atmux" })],
+      }),
+    );
+    expect(m.schema_version).toBe(2);
+    expect(m.groups).toEqual([{ name: "geoyws", parent_group: null, level: 0 }]);
+    expect(m.teams[0]?.group).toBe("geoyws");
+    expect(m.teams[0]?.level).toBe(1);
+  });
+
+  test("an ungrouped team reports group null and level 0", () => {
+    const m = aggregateTopo(
+      emptyDiscovery({
+        cockpit: {
+          socket: "/x",
+          alive: true,
+          registry_path: "/r",
+          data: cockpitWith([teamSession("solo", "/srv/solo")]),
+        },
+        parents: [parentDiscovery({ name: "solo" })],
+      }),
+    );
+    expect(m.groups).toEqual([]);
+    expect(m.teams[0]?.group).toBeNull();
+    expect(m.teams[0]?.level).toBe(0);
+  });
+
+  test("nested groups carry parent_group and increasing level", () => {
+    const m = aggregateTopo(
+      emptyDiscovery({
+        cockpit: {
+          socket: "/x",
+          alive: true,
+          registry_path: "/r",
+          data: cockpitWith([
+            groupSession("outer", [groupSession("inner", [teamSession("deep", "/srv/deep")])]),
+          ]),
+        },
+        parents: [parentDiscovery({ name: "deep" })],
+      }),
+    );
+    // Sorted by name, so inner precedes outer regardless of tree order.
+    expect(m.groups).toEqual([
+      { name: "inner", parent_group: "outer", level: 1 },
+      { name: "outer", parent_group: null, level: 0 },
+    ]);
+    expect(m.teams[0]?.group).toBe("inner");
+    expect(m.teams[0]?.level).toBe(2);
+  });
+
+  test("a null cockpit yields no groups and leaves every team ungrouped", () => {
+    const m = aggregateTopo(emptyDiscovery({ parents: [parentDiscovery({ name: "atmux" })] }));
+    expect(m.groups).toEqual([]);
+    expect(m.teams[0]?.group).toBeNull();
+  });
+
+  test("a cockpit that FAILS validation degrades to no groups instead of throwing", () => {
+    // buildGroupTopology throws ConfigError on the collision shapes it
+    // refuses — here, two enabled groups sharing a name. `atmux topo` is
+    // the diagnostic you reach for WHEN cockpit.json is broken, so it
+    // must keep reporting rather than die on the very config it exists
+    // to inspect (ADR-222 §D5: no probe throws).
+    const m = aggregateTopo(
+      emptyDiscovery({
+        cockpit: {
+          socket: "/x",
+          alive: true,
+          registry_path: "/r",
+          data: cockpitWith([groupSession("dup"), groupSession("dup")]),
+        },
+        parents: [parentDiscovery({ name: "atmux" })],
+      }),
+    );
+    expect(m.groups).toEqual([]);
+    expect(m.teams[0]?.group).toBeNull();
+    expect(m.schema_version).toBe(2);
+  });
+
+  test("a team in cockpit.json but absent from discovery does not invent a row", () => {
+    const m = aggregateTopo(
+      emptyDiscovery({
+        cockpit: {
+          socket: "/x",
+          alive: true,
+          registry_path: "/r",
+          data: cockpitWith([groupSession("g", [teamSession("known", "/srv/known")])]),
+        },
+        parents: [],
+      }),
+    );
+    expect(m.teams).toEqual([]);
+    expect(m.groups).toEqual([{ name: "g", parent_group: null, level: 0 }]);
   });
 });

@@ -41,6 +41,7 @@ import {
   type DiscoveryIO,
   gatherDiscovery,
   type TopoEpic,
+  type TopoGroup,
   type TopoManifest,
   type TopoOrphan,
   type TopoTeam,
@@ -553,7 +554,7 @@ export function renderFlat(manifest: TopoManifest, orphansOnly: boolean): string
     for (const team of manifest.teams) {
       lines.push("");
       lines.push(
-        `TEAM ${team.name}  ${formatAlive(team.cage_alive)}  branch=${team.branch ?? "?"}`,
+        `TEAM ${team.name}  ${formatAlive(team.cage_alive)}  branch=${team.branch ?? "?"}  group=${team.group ?? "-"}`,
       );
       if (team.kanban !== null) {
         lines.push(
@@ -584,18 +585,49 @@ export function renderTree(manifest: TopoManifest, orphansOnly: boolean): string
   const lines: string[] = [];
   lines.push(`cockpit  ${formatAlive(manifest.cockpit.alive)}  ${manifest.cockpit.socket}`);
   if (!orphansOnly) {
-    for (const team of manifest.teams) {
-      lines.push(`├── ${team.name}  ${formatAlive(team.cage_alive)}`);
+    // Group tier (manifest v2). Teams hang off their nearest enclosing
+    // group; a team with `group: null` sits directly under the cockpit,
+    // which is exactly how the pre-group tree drew EVERY team — so a
+    // groupless cockpit renders byte-identically to schema v1 output.
+    const childGroups = new Map<string | null, TopoGroup[]>();
+    for (const g of manifest.groups) {
+      const key = g.parent_group;
+      const bucket = childGroups.get(key);
+      if (bucket === undefined) childGroups.set(key, [g]);
+      else bucket.push(g);
+    }
+    const teamsOf = new Map<string | null, TopoTeam[]>();
+    for (const t of manifest.teams) {
+      const bucket = teamsOf.get(t.group);
+      if (bucket === undefined) teamsOf.set(t.group, [t]);
+      else bucket.push(t);
+    }
+    const emitTeam = (team: TopoTeam, indent: string): void => {
+      lines.push(`${indent}├── ${team.name}  ${formatAlive(team.cage_alive)}`);
       const epics = team.epics;
       for (let i = 0; i < epics.length; i += 1) {
         const e = epics[i] as TopoEpic;
         const last = i === epics.length - 1;
         const branch = last ? "└──" : "├──";
         lines.push(
-          `│   ${branch} ${e.eid}  ${formatAlive(e.cage_alive)}  ahead=${e.branch_ahead_of_trunk ?? "?"}`,
+          `${indent}│   ${branch} ${e.eid}  ${formatAlive(e.cage_alive)}  ahead=${e.branch_ahead_of_trunk ?? "?"}`,
         );
       }
-    }
+    };
+    // Depth-bounded by the group count: a cycle in `parent_group` would
+    // otherwise recurse forever, and this is a diagnostic that must not
+    // hang on a malformed tree.
+    const emitGroup = (g: TopoGroup, indent: string, seen: Set<string>): void => {
+      if (seen.has(g.name)) return;
+      seen.add(g.name);
+      lines.push(`${indent}├── ${g.name}/`);
+      const inner = `${indent}│   `;
+      for (const child of childGroups.get(g.name) ?? []) emitGroup(child, inner, seen);
+      for (const team of teamsOf.get(g.name) ?? []) emitTeam(team, inner);
+    };
+    const seen = new Set<string>();
+    for (const g of childGroups.get(null) ?? []) emitGroup(g, "", seen);
+    for (const team of teamsOf.get(null) ?? []) emitTeam(team, "");
   }
   if (manifest.orphans.length > 0) {
     lines.push("");

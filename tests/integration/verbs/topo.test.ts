@@ -40,6 +40,7 @@ import type {
   DiscoveryIO,
   KanbanProbe,
   TopoManifest,
+  TopoTeam,
   TmuxSocketEntry,
 } from "../../../src/core/topo-aggregate.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
@@ -288,7 +289,7 @@ describe("topo() — populated fleet", () => {
       logger: log,
     });
     const parsed = JSON.parse(log.lines[0] ?? "{}");
-    expect(parsed.schema_version).toBe(1);
+    expect(parsed.schema_version).toBe(2);
     expect(parsed.teams).toHaveLength(1);
     // No discovery internals should appear on the public manifest.
     expect(parsed.discovery).toBeUndefined();
@@ -372,7 +373,8 @@ describe("topo() — orphan injection", () => {
 describe("reap path helpers", () => {
   test("empty worktree and null branch fall back to empty strings", () => {
     const manifest = {
-      schema_version: 1,
+      schema_version: 2,
+      groups: [],
       generated_at: "2026-05-22T13:54:00.000Z",
       cockpit: {
         socket: "/tmp/.tmux-1000/atmux-cockpit",
@@ -384,6 +386,8 @@ describe("reap path helpers", () => {
         {
           name: "atmux",
           kind: "parent",
+          group: null,
+          level: 0,
           atmux_dir: "/srv/atmux/.atmux",
           worktree: "",
           branch: null,
@@ -525,7 +529,8 @@ describe("renderFlat", () => {
   test("emits header + team + orphans section", () => {
     const out = renderFlat(
       {
-        schema_version: 1,
+        schema_version: 2,
+        groups: [],
         generated_at: "2026-05-22T13:54:00.000Z",
         cockpit: {
           socket: "/tmp/.tmux-1000/atmux-cockpit",
@@ -537,6 +542,8 @@ describe("renderFlat", () => {
           {
             name: "atmux",
             kind: "parent",
+            group: null,
+            level: 0,
             atmux_dir: "/srv/atmux/.atmux",
             worktree: "/srv/atmux",
             branch: "atmux-geoyws",
@@ -578,7 +585,8 @@ describe("renderTree", () => {
   test("emits cockpit root + nested team + epic leaves", () => {
     const out = renderTree(
       {
-        schema_version: 1,
+        schema_version: 2,
+        groups: [],
         generated_at: "2026-05-22T13:54:00.000Z",
         cockpit: {
           socket: "/tmp/.tmux-1000/atmux-cockpit",
@@ -590,6 +598,8 @@ describe("renderTree", () => {
           {
             name: "atmux",
             kind: "parent",
+            group: null,
+            level: 0,
             atmux_dir: "/srv/atmux/.atmux",
             worktree: "/srv/atmux",
             branch: null,
@@ -757,7 +767,8 @@ describe("seen-state file round-trip", () => {
 describe("applyFilters", () => {
   test("no filters passes manifest through", () => {
     const m = {
-      schema_version: 1 as const,
+      schema_version: 2 as const,
+      groups: [],
       generated_at: "2026-05-22T13:54:00.000Z",
       cockpit: { socket: "/x", alive: true, registry_path: "/r", sessions_count: 0 },
       teams: [],
@@ -859,7 +870,8 @@ describe("renderTree orphan section", () => {
   test("emits orphans block when present", () => {
     const out = renderTree(
       {
-        schema_version: 1,
+        schema_version: 2,
+        groups: [],
         generated_at: "2026-05-22T13:54:00.000Z",
         cockpit: {
           socket: "/x",
@@ -1468,5 +1480,139 @@ describe("parseTopoArgs — --skip-checks", () => {
 
   test("--skip-checks without --apply refuses", () => {
     expect(() => parseTopoArgs(["--reap", "--skip-checks"])).toThrow(UsageError);
+  });
+});
+
+// ---------- t-a14dfe3e: renderTree draws the group tier ----------
+
+describe("renderTree — group tier", () => {
+  const cockpitBlock = {
+    socket: "/tmp/.tmux-1000/atmux-cockpit",
+    alive: true,
+    registry_path: "/root/.atmux/cockpit.json",
+    sessions_count: 1,
+  };
+  const team = (name: string, group: string | null, level: number): TopoTeam => ({
+    name,
+    kind: "parent",
+    group,
+    level,
+    atmux_dir: `/srv/${name}/.atmux`,
+    worktree: `/srv/${name}`,
+    branch: "main",
+    cage_socket: `/tmp/atmux-${name}/sock`,
+    cage_alive: true,
+    kanban: null,
+    in_cockpit_registry: true,
+    last_activity: null,
+    epics: [],
+  });
+
+  test("a grouped team is drawn UNDER its group, not at the cockpit root", () => {
+    const out = renderTree(
+      {
+        schema_version: 2,
+        groups: [{ name: "geoyws", parent_group: null, level: 0 }],
+        generated_at: "2026-05-22T13:54:00.000Z",
+        cockpit: cockpitBlock,
+        teams: [team("atmux", "geoyws", 1)],
+        orphans: [],
+        summary: {
+          teams_count: 1,
+          epics_count: 0,
+          cages_alive: 1,
+          orphans_count: 0,
+          elapsed_ms: 0,
+        },
+      },
+      false,
+    );
+    const lines = out.split("\n");
+    expect(lines[0]).toContain("cockpit");
+    expect(lines[1]).toBe("├── geoyws/");
+    // Indented one level deeper than the group.
+    expect(lines[2]).toBe("│   ├── atmux  🟢");
+  });
+
+  test("nested groups indent cumulatively", () => {
+    const out = renderTree(
+      {
+        schema_version: 2,
+        groups: [
+          { name: "inner", parent_group: "outer", level: 1 },
+          { name: "outer", parent_group: null, level: 0 },
+        ],
+        generated_at: "2026-05-22T13:54:00.000Z",
+        cockpit: cockpitBlock,
+        teams: [team("deep", "inner", 2)],
+        orphans: [],
+        summary: {
+          teams_count: 1,
+          epics_count: 0,
+          cages_alive: 1,
+          orphans_count: 0,
+          elapsed_ms: 0,
+        },
+      },
+      false,
+    );
+    const lines = out.split("\n");
+    expect(lines[1]).toBe("├── outer/");
+    expect(lines[2]).toBe("│   ├── inner/");
+    expect(lines[3]).toBe("│   │   ├── deep  🟢");
+  });
+
+  test("with NO groups the tree is byte-identical to the pre-group shape", () => {
+    // The v1 renderer drew every team as a direct cockpit child. A
+    // groupless v2 manifest must render exactly that, so upgrading the
+    // schema does not churn the output operators read every day.
+    const out = renderTree(
+      {
+        schema_version: 2,
+        groups: [],
+        generated_at: "2026-05-22T13:54:00.000Z",
+        cockpit: cockpitBlock,
+        teams: [team("atmux", null, 0), team("unum", null, 0)],
+        orphans: [],
+        summary: {
+          teams_count: 2,
+          epics_count: 0,
+          cages_alive: 2,
+          orphans_count: 0,
+          elapsed_ms: 0,
+        },
+      },
+      false,
+    );
+    expect(out.split("\n").slice(1)).toEqual(["├── atmux  🟢", "├── unum  🟢"]);
+  });
+
+  test("a parent_group cycle terminates instead of hanging the diagnostic", () => {
+    // Malformed input must not spin: topo is what you run when the
+    // config is already wrong.
+    const out = renderTree(
+      {
+        schema_version: 2,
+        groups: [
+          { name: "a", parent_group: "b", level: 0 },
+          { name: "b", parent_group: "a", level: 0 },
+        ],
+        generated_at: "2026-05-22T13:54:00.000Z",
+        cockpit: cockpitBlock,
+        teams: [],
+        orphans: [],
+        summary: {
+          teams_count: 0,
+          epics_count: 0,
+          cages_alive: 0,
+          orphans_count: 0,
+          elapsed_ms: 0,
+        },
+      },
+      false,
+    );
+    // Neither group is a cockpit-root child, so nothing is drawn — and
+    // critically, the call returns.
+    expect(out.split("\n").length).toBe(1);
   });
 });

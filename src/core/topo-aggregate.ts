@@ -12,8 +12,8 @@
 // global sockets + crontab + per-parent worktree/branch/kanban-epic
 // enumerations). Both consumers (aggregator AND classifier) read from
 // it; neither does IO. This is the lead-mandated Plan-B refinement
-// to keep the public `--json` manifest schema (which cockpit-mirror
-// pins on) free of raw discovery scaffolding.
+// to keep the public `--json` manifest schema free of raw discovery
+// scaffolding.
 //
 // Schema notes:
 //   - `TopoManifest` is the public `--json` shape pinned at ADR-222
@@ -32,18 +32,30 @@
 // formats the timestamp + carries elapsed_ms verbatim into
 // summary.elapsed_ms. Teams + epics + sockets + worktrees + branches
 // are sorted alphabetically / lexicographically inside aggregateTopo
-// so the manifest is byte-stable for the cockpit-mirror diff loop.
+// so the manifest is byte-stable for any diffing consumer.
 
 import { join } from "node:path";
-import type { LoadedCockpit } from "./cockpit.ts";
+import { buildGroupTopology, type LoadedCockpit } from "./cockpit.ts";
 
 // ---------- Manifest types (the §D2 public --json contract) ----------
 
-/** Top-level manifest. Pinned shape per ADR-222 §D2 (`schema_version:
- *  1`, additive-only). The Rust cockpit-mirror crate (`e-95087c8b`
- *  S2) pins on this; widen carefully. */
+/** Top-level manifest. Shape pinned per ADR-222 §D2, additive-only;
+ *  bumped to `schema_version: 2` by t-a14dfe3e, which added the group
+ *  tier.
+ *
+ *  Earlier comments here said the Rust cockpit-mirror crate pins on this
+ *  schema. It does not, and did not: `atmux-cockpit-mirror` reads
+ *  `~/.atmux/cockpit-events.db` through honker/rusqlite, and the string
+ *  `topo` appears nowhere in `rust/`. Verified 2026-09-04 before the v2
+ *  bump — that belief was the only stated reason the bump needed a
+ *  coordinated crate release, and it was false. Every consumer is
+ *  TypeScript: `verbs/topo.ts`, this module, and `core/orphan-detector.ts`. */
 export interface TopoManifest {
-  schema_version: 1;
+  schema_version: 2;
+  /** Group tier (e-419553c6), sorted by `name`. Empty when
+   *  cockpit.json declared no groups, or when it could not be read or
+   *  refused validation - see {@link aggregateTopo}. */
+  groups: TopoGroup[];
   /** ISO 8601 UTC, 3-digit ms precision. */
   generated_at: string;
   cockpit: TopoCockpit;
@@ -54,6 +66,17 @@ export interface TopoManifest {
    *  at the verb-layer composer. */
   orphans: TopoOrphan[];
   summary: TopoSummary;
+}
+
+/** One group server in the cockpit tree. A group owns a tmux server but
+ *  no root and no cage - see `groupSocketPath` (t-a14dfe3e). */
+export interface TopoGroup {
+  name: string;
+  /** Enclosing group, or null for a group whose viewer window lives in
+   *  the cockpit session itself. */
+  parent_group: string | null;
+  /** Nesting depth: 0 for a top-level group, 1 for its child, etc. */
+  level: number;
 }
 
 /** Cockpit singleton block. */
@@ -73,6 +96,11 @@ export interface TopoCockpit {
 export interface TopoTeam {
   name: string;
   kind: "parent";
+  /** Nearest enclosing group, or null for a team whose viewer window
+   *  sits directly in the cockpit session. */
+  group: string | null;
+  /** Nesting depth of the team's viewer window. 0 when ungrouped. */
+  level: number;
   atmux_dir: string;
   worktree: string;
   /** null when the worktree's rev-parse failed (§D5 row 6). */
@@ -586,7 +614,10 @@ async function gatherOneEpic(
  *  (`src/core/orphan-detector.ts`) fills it via the verb-layer
  *  orchestrator. */
 export function aggregateTopo(discovery: Discovery): TopoManifest {
-  const teams: TopoTeam[] = discovery.parents.map((p) => parentToTeam(p));
+  const { groups, teamGroup, teamLevel } = deriveGroups(discovery.cockpit.data);
+  const teams: TopoTeam[] = discovery.parents.map((p) =>
+    parentToTeam(p, teamGroup.get(p.name) ?? null, teamLevel.get(p.name) ?? 0),
+  );
 
   let cagesAlive = discovery.cockpit.alive ? 1 : 0;
   let epicsCount = 0;
@@ -599,7 +630,8 @@ export function aggregateTopo(discovery: Discovery): TopoManifest {
   }
 
   return {
-    schema_version: 1,
+    schema_version: 2,
+    groups,
     generated_at: formatIsoMs(discovery.generated_at),
     cockpit: {
       socket: discovery.cockpit.socket,
@@ -619,10 +651,71 @@ export function aggregateTopo(discovery: Discovery): TopoManifest {
   };
 }
 
-function parentToTeam(p: ParentDiscovery): TopoTeam {
+
+/**
+ * Derive the group tier from the loaded cockpit, plus per-team lookups.
+ *
+ * Degrades to "no groups" on ANY failure, and that is deliberate.
+ * `aggregateTopo` is the pure half of a diagnostic whose whole contract
+ * (ADR-222 D5) is that every probe is nullable and nothing throws on a
+ * bad source — `atmux topo` has to keep reporting when cockpit.json is
+ * the very thing that is broken. `buildGroupTopology` legitimately
+ * THROWS ConfigError on the collision shapes it refuses (duplicate group
+ * names, ambiguous viewer-window names, a `grp-<g>` team beside a group
+ * `<g>`), so letting that escape here would make the diagnostic die on
+ * exactly the config it exists to diagnose.
+ *
+ * A team absent from the map is ungrouped, not an error: cockpit.json
+ * lists teams the discovery walk may not have reached, and vice versa.
+ */
+function deriveGroups(cockpit: LoadedCockpit | null): {
+  groups: TopoGroup[];
+  teamGroup: Map<string, string | null>;
+  teamLevel: Map<string, number>;
+} {
+  const teamGroup = new Map<string, string | null>();
+  const teamLevel = new Map<string, number>();
+  if (cockpit === null) return { groups: [], teamGroup, teamLevel };
+  let topology: ReturnType<typeof buildGroupTopology>;
+  try {
+    topology = buildGroupTopology(cockpit);
+  } catch {
+    return { groups: [], teamGroup, teamLevel };
+  }
+  const groups: TopoGroup[] = topology.groups
+    .map((g) => ({
+      name: g.name,
+      parent_group: g.parentGroup ?? null,
+      level: g.level,
+    }))
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  for (const g of topology.groups) {
+    for (const child of g.children) {
+      if (child.kind === "team") {
+        teamGroup.set(child.team.name, g.name);
+        teamLevel.set(child.team.name, g.level + 1);
+      }
+    }
+  }
+  for (const entry of topology.cockpitEntries) {
+    if (entry.kind === "team") {
+      teamGroup.set(entry.team.name, null);
+      teamLevel.set(entry.team.name, 0);
+    }
+  }
+  return { groups, teamGroup, teamLevel };
+}
+
+function parentToTeam(
+  p: ParentDiscovery,
+  group: string | null,
+  level: number,
+): TopoTeam {
   const team: TopoTeam = {
     name: p.name,
     kind: "parent",
+    group,
+    level,
     atmux_dir: p.atmux_dir,
     worktree: p.worktree,
     branch: p.branch,

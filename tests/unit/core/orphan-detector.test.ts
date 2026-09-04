@@ -92,6 +92,8 @@ function makeTeam(overrides: Partial<TopoTeam> = {}): TopoTeam {
   return {
     name: "atmux",
     kind: "parent",
+    group: null,
+    level: 0,
     atmux_dir: "/srv/atmux/.atmux",
     worktree: "/srv/atmux",
     branch: "atmux-geoyws",
@@ -107,7 +109,8 @@ function makeTeam(overrides: Partial<TopoTeam> = {}): TopoTeam {
 
 function makeManifest(overrides: Partial<TopoManifest> = {}): TopoManifest {
   return {
-    schema_version: 1,
+    schema_version: 2,
+    groups: [],
     generated_at: "2026-05-22T13:54:00.000Z",
     cockpit: {
       socket: "/tmp/.tmux-1000/atmux-cockpit",
