@@ -39,8 +39,9 @@ import {
  *  ADR-138 §submitVerify (t-1b45d565 split out the C-m submit into its
  *  own safeSendKeysWithVerify call): without tight `submitVerifyTimeoutMs`
  *  + `submitVerifyRetries` overrides, the verify loop spins for
- *  `DEFAULT_SUBMIT_VERIFY_TIMEOUT_MS (3000ms) × (DEFAULT_SUBMIT_VERIFY_RETRIES (1) + 1)`
- *  = 6000ms of REAL wall-clock per boot attempt. The injected `sleep`
+ *  `DEFAULT_SUBMIT_VERIFY_TIMEOUT_MS (8000ms since t-f72e96ab) ×
+ *  (DEFAULT_SUBMIT_VERIFY_RETRIES (1) + 1)`
+ *  = 16000ms of REAL wall-clock per boot attempt. The injected `sleep`
  *  is no-op but `Date.now()` (used for the deadline check) advances
  *  independently — the loop tight-spins until the natural timeout
  *  elapses. Tight overrides (50ms timeout, 0 retries) keep the

@@ -14,12 +14,14 @@
 import { describe, expect, test } from "bun:test";
 import type { SendTarget, TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import {
+  DEFAULT_SUBMIT_VERIFY_TIMEOUT_MS,
   bootClaudeMember,
   bootSignalLive,
   isClaudeCodeFolderTrustModal,
   isTuiReady,
   renderBootFailureNotice,
   renderBootPrompt,
+  resolveSubmitVerifyTimeoutMs,
   thinkingActive,
   tokensMoved,
 } from "../../../src/core/boot-claude.ts";
@@ -1405,5 +1407,68 @@ describe("bootClaudeMember — forceBootPrompt (EPIC e-f28c2596 T7)", () => {
     const sends = calls.filter((c) => c.kind === "send");
     expect(sends).toHaveLength(1);
     expect(sends[0]?.payload).toBe(renderBootPrompt("atmux", "lead-x"));
+  });
+});
+
+// ---------- t-f72e96ab: submit-verify timeout resolution ----------
+
+describe("resolveSubmitVerifyTimeoutMs — precedence and fail-closed parsing", () => {
+  const ENV = "ATMUX_BOOT_VERIFY_TIMEOUT_MS";
+  const withEnv = <T>(value: string | undefined, fn: () => T): T => {
+    const prior = process.env[ENV];
+    if (value === undefined) delete process.env[ENV];
+    else process.env[ENV] = value;
+    try {
+      return fn();
+    } finally {
+      if (prior === undefined) delete process.env[ENV];
+      else process.env[ENV] = prior;
+    }
+  };
+
+  test("the default is 8s, the budget t-f72e96ab raised from 3s", () => {
+    // Pinned as a value, not just a symbol: the whole point of the task
+    // was that 3s x 1 retry = 6s expired before a composer that DID
+    // clear. A future edit back down to 3s must fail here.
+    expect(DEFAULT_SUBMIT_VERIFY_TIMEOUT_MS).toBe(8_000);
+    expect(withEnv(undefined, () => resolveSubmitVerifyTimeoutMs())).toBe(8_000);
+  });
+
+  test("a finite positive per-call value wins over both env and default", () => {
+    expect(withEnv("5000", () => resolveSubmitVerifyTimeoutMs(1234))).toBe(1234);
+  });
+
+  test("env is used when no per-call value is given", () => {
+    expect(withEnv("12000", () => resolveSubmitVerifyTimeoutMs())).toBe(12_000);
+  });
+
+  test.each([
+    ["zero", "0"],
+    ["negative", "-1"],
+    ["non-numeric", "soon"],
+    ["empty", ""],
+    ["Infinity", "Infinity"],
+  ])("a %s env value fails CLOSED to the default, never disables the timeout", (_label, raw) => {
+    // Fail-closed is the load-bearing half. An un-timed verify on a
+    // genuinely dead pane hangs the whole team start instead of failing
+    // one member, so a fat-fingered export must not switch it off.
+    expect(withEnv(raw, () => resolveSubmitVerifyTimeoutMs())).toBe(
+      DEFAULT_SUBMIT_VERIFY_TIMEOUT_MS,
+    );
+  });
+
+  test.each([
+    ["zero", 0],
+    ["negative", -5],
+    ["NaN", Number.NaN],
+    ["Infinity", Number.POSITIVE_INFINITY],
+  ])("a %s per-call value falls through to env rather than being honoured", (_label, opt) => {
+    expect(withEnv("9000", () => resolveSubmitVerifyTimeoutMs(opt))).toBe(9_000);
+  });
+
+  test("an unusable per-call value AND an unusable env value both fall to the default", () => {
+    expect(withEnv("nope", () => resolveSubmitVerifyTimeoutMs(Number.NaN))).toBe(
+      DEFAULT_SUBMIT_VERIFY_TIMEOUT_MS,
+    );
   });
 });

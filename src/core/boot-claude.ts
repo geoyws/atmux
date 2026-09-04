@@ -69,11 +69,59 @@ export const POST_BOOT_TIMEOUT_MS = 30_000;
 export const MAX_ATTEMPTS = 2;
 
 /** Default safeSendKeysWithVerify timeout per C-m submit attempt
- *  (t-1b45d565). 3s matches the safe-send.ts default — claude's
- *  composer clears in <500ms post-Enter on a healthy pane; 3s gives
- *  headroom for capture-pane latency without burning the outer
- *  tokens-moved budget. */
-export const DEFAULT_SUBMIT_VERIFY_TIMEOUT_MS = 3_000;
+ *  (t-1b45d565, raised 3s → 8s per t-f72e96ab).
+ *
+ *  The original 3s was reasoned from a healthy pane, where claude's
+ *  composer clears in <500ms post-Enter. That reasoning holds and is
+ *  not what changed — what changed is the evidence about UNhealthy
+ *  ones. t-f72e96ab measured 21/21 members failing `submit-not-verified`
+ *  across three unum epic-teams, and a manual replay showed the
+ *  composer DID clear and the readiness regex DID match, just past the
+ *  6s total budget (3s × the one retry). A verifier that gives up
+ *  before the thing it waits for happens does not report a wedged
+ *  pane, it manufactures one — and the caller's response to
+ *  `submit-not-verified` is to re-send, so the too-short budget was
+ *  causing the double-submit it exists to prevent.
+ *
+ *  8s × 2 attempts = 16s worst case per member before the outer
+ *  `maxAttempts` loop. That is a real slowdown on the genuinely-dead
+ *  path, accepted deliberately: a pane that is merely slow is far more
+ *  common than one that is dead, and the old budget failed 100% of
+ *  members on a loaded host. Operators who need a different figure set
+ *  {@link resolveSubmitVerifyTimeoutMs}'s env override rather than
+ *  patching this constant. */
+export const DEFAULT_SUBMIT_VERIFY_TIMEOUT_MS = 8_000;
+
+/**
+ * Resolve the submit-verify timeout with precedence:
+ *   `optTimeoutMs` (per-call) > env `ATMUX_BOOT_VERIFY_TIMEOUT_MS` >
+ *   {@link DEFAULT_SUBMIT_VERIFY_TIMEOUT_MS}.
+ *
+ * Mirrors `resolveGitTimeoutMs` in `src/abstractions/spawn.ts` — same
+ * shape, same fail-closed rule: a `0`, negative, `NaN` or `Infinity`
+ * value is treated as "unset" and falls back to the default rather than
+ * disabling the timeout. Disabling it is the one outcome nobody wants
+ * here, because an un-timed verify on a genuinely dead pane hangs the
+ * whole team start instead of failing one member.
+ *
+ * A distinct seam from `ATMUX_SPAWN_TIMEOUT_MS` (process spawn) and
+ * `ATMUX_GIT_TIMEOUT_MS` (git plumbing): this one governs only how long
+ * a single C-m submit waits for claude's composer to clear.
+ *
+ * Read at call time, not module load, so a test or an operator can set
+ * it after import without a reload — the `spawn.ts` sibling snapshots
+ * at module load, which is exactly what makes it awkward to test.
+ */
+export function resolveSubmitVerifyTimeoutMs(optTimeoutMs?: number): number {
+  if (optTimeoutMs !== undefined && Number.isFinite(optTimeoutMs) && optTimeoutMs > 0) {
+    return optTimeoutMs;
+  }
+  const raw = process.env.ATMUX_BOOT_VERIFY_TIMEOUT_MS;
+  if (raw === undefined || raw === "") return DEFAULT_SUBMIT_VERIFY_TIMEOUT_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_SUBMIT_VERIFY_TIMEOUT_MS;
+  return parsed;
+}
 
 /** Default safeSendKeysWithVerify retries per C-m submit cycle. 1 =
  *  two C-m sends per paste before declaring submit-not-verified.
@@ -235,8 +283,10 @@ export interface BootClaudeOpts {
   // --- safeSendKeysWithVerify plumbing (t-1b45d565 — verify the C-m
   //     submit actually cleared the composer; retries on no-op + early-
   //     returns `submit-not-verified` if every attempt's C-m got eaten). ---
-  /** Submit-verify timeout per attempt. Default
-   *  {@link DEFAULT_SUBMIT_VERIFY_TIMEOUT_MS} (3s). */
+  /** Submit-verify timeout per attempt. Resolved by
+   *  {@link resolveSubmitVerifyTimeoutMs}: this value wins when finite
+   *  and positive, else env `ATMUX_BOOT_VERIFY_TIMEOUT_MS`, else
+   *  {@link DEFAULT_SUBMIT_VERIFY_TIMEOUT_MS} (8s). */
   submitVerifyTimeoutMs?: number;
   /** Submit-verify retries-per-boot-attempt (the outer maxAttempts
    *  loop multiplies this). Default
@@ -362,7 +412,7 @@ export async function bootClaudeMember(opts: BootClaudeOpts): Promise<BootResult
   const postBootInterval = opts.postBootPollIntervalMs ?? POST_BOOT_POLL_INTERVAL_MS;
   const postBootTimeout = opts.postBootTimeoutMs ?? POST_BOOT_TIMEOUT_MS;
   const maxAttempts = opts.maxAttempts ?? MAX_ATTEMPTS;
-  const submitVerifyTimeoutMs = opts.submitVerifyTimeoutMs ?? DEFAULT_SUBMIT_VERIFY_TIMEOUT_MS;
+  const submitVerifyTimeoutMs = resolveSubmitVerifyTimeoutMs(opts.submitVerifyTimeoutMs);
   const submitVerifyRetries = opts.submitVerifyRetries ?? DEFAULT_SUBMIT_VERIFY_RETRIES;
   const submitVerifyPollIntervalMs = opts.submitVerifyPollIntervalMs ?? 250;
 
