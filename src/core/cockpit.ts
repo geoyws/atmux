@@ -687,7 +687,7 @@ export interface GroupedTopology {
  *   L2 group servers   — one per enabled group, windows per `children`
  *   L3 team cages      — unchanged; only their viewers move
  *
- * Refuses (ConfigError) two config shapes that would produce silently
+ * Refuses (ConfigError) three config shapes that would produce silently
  * colliding tmux state rather than a wrong-but-visible layout:
  *
  *   1. duplicate enabled group names — two groups named `x` would share
@@ -697,6 +697,12 @@ export interface GroupedTopology {
  *      by name during reconcile, so a `unum` group next to an ungrouped
  *      `unum` team at the same tier is ambiguous. (A `unum` TEAM inside
  *      the `unum` GROUP is fine — different namespaces.)
+ *   3. a team named `grp-<g>` beside a group named `<g>` — the only name
+ *      that defeats the `-grp-` infix, since `cageSocketPath("grp-x")`
+ *      and `groupSocketPath("x")` render the same socket. Checked across
+ *      the whole tree, not per namespace: a socket path is global, so
+ *      these two can collide from different branches where a window-name
+ *      clash could not (t-c710133f).
  *
  * Pure — no IO. The reconcile in verbs/cockpit.ts consumes this.
  */
@@ -769,6 +775,33 @@ export function buildGroupTopology(cockpit: CockpitShape): GroupedTopology {
       g.children.map((c) => (c.kind === "group" ? c.name : c.team.name)),
       `group '${g.name}'`,
     );
+  }
+  // Refusal 3 (t-c710133f): a team literally named
+  // `grp-<g>` beside a group named `<g>`.
+  //
+  // The `-grp-` infix in `groupSocketPath` is what normally keeps group
+  // sockets out of the team namespace, and it is why a `unum` group and a
+  // `unum` team coexist happily. It buys that separation everywhere EXCEPT
+  // the one name that reproduces the infix: `cageSocketPath("grp-x")` and
+  // `groupSocketPath("x")` both render `/tmp/atmux-grp-x/sock`.
+  //
+  // Two tmux servers on one socket is the silent-collision class refusals
+  // 1 and 2 exist to prevent, so it is refused the same way. It is checked
+  // across the WHOLE tree rather than per namespace: the socket path is
+  // global, so the two can collide from different branches where a mere
+  // window-name clash could not.
+  const allTeamNames = [
+    ...cockpitEntries.filter((e) => e.kind === "team").map((e) => e.team.name),
+    ...groups.flatMap((g) => g.children.filter((c) => c.kind === "team").map((c) => c.team.name)),
+  ];
+  for (const teamName of allTeamNames) {
+    const suffix = teamName.startsWith("grp-") ? teamName.slice("grp-".length) : null;
+    if (suffix === null || suffix === "") continue;
+    if (!byName.has(suffix)) continue;
+    throw new ConfigError({
+      what: `cockpit.json declares a team named '${teamName}' beside a group named '${suffix}' — both resolve to tmux socket ${groupSocketPath(suffix)}, so their servers would collide`,
+      hint: `rename the team (the 'grp-' prefix is reserved for group sockets), or rename the group so it no longer matches the team's suffix`,
+    });
   }
   return { groups, cockpitEntries };
 }
@@ -990,10 +1023,11 @@ export function cageSocketPath(teamName: string): string {
  *  (`/tmp/atmux-<team>/sock`) can only reach by a team literally naming
  *  itself `grp-<something>` — a group and a team may share a name (the
  *  live fleet has both a `unum` group and a `unum` team) without their
- *  servers colliding. (`ponytail:` the `grp-`-prefixed-team collision is
- *  not load-guarded; a team named `grp-x` next to a group named `x`
- *  would share a socket. No such team exists and the naming convention
- *  makes one unlikely; a loader refusal is the upgrade path.) */
+ *  servers colliding. The one name that DOES defeat the infix — a team
+ *  called `grp-x` beside a group called `x`, which lands both on this
+ *  exact path — is refused at load time by {@link buildGroupTopology}
+ *  refusal 3, so it can no longer reach a live server (t-c710133f took
+ *  the upgrade path the former `ponytail:` note here described). */
 export function groupSocketPath(groupName: string): string {
   return `/tmp/atmux-grp-${groupName}/sock`;
 }

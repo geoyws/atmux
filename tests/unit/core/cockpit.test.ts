@@ -1297,6 +1297,90 @@ describe("buildGroupTopology", () => {
   const shape = (sessions: unknown[]): CockpitShape =>
     ({ schemaVersion: 1, cockpitSession: "atx", sessions, windows: [] }) as unknown as CockpitShape;
 
+  // ---------- t-c710133f: refusal 3, grp-<g> team beside group <g> ----------
+
+  const team = (name: string) => ({
+    type: "team",
+    name,
+    root: `/p/${name}`,
+    enabled: true,
+    sessions: [],
+  });
+
+  test("refuses a team named grp-<g> beside a group named <g> — both land on one socket", () => {
+    // cageSocketPath("grp-x") and groupSocketPath("x") both render
+    // /tmp/atmux-grp-x/sock. That is two tmux servers on one socket,
+    // the same silent-collision class refusals 1 and 2 prevent.
+    expect(() =>
+      buildGroupTopology(
+        shape([
+          { type: "group", name: "x", enabled: true, sessions: [team("inner")] },
+          team("grp-x"),
+        ]),
+      ),
+    ).toThrow(ConfigError);
+  });
+
+  test("the refusal names both colliding entries and the socket they share", () => {
+    // A refusal that does not say WHICH two names collide makes the
+    // operator diff the whole tree to find them.
+    let msg = "";
+    try {
+      buildGroupTopology(
+        shape([{ type: "group", name: "x", enabled: true, sessions: [] }, team("grp-x")]),
+      );
+    } catch (e) {
+      msg = e instanceof Error ? e.message : String(e);
+    }
+    expect(msg).toContain("grp-x");
+    expect(msg).toContain("/tmp/atmux-grp-x/sock");
+  });
+
+  test("catches the collision ACROSS branches, not just within one namespace", () => {
+    // The socket path is global, so these two never share a namespace and
+    // no window-name check would ever see them. This is why refusal 3 runs
+    // over the whole tree instead of per-namespace like refusal 2.
+    expect(() =>
+      buildGroupTopology(
+        shape([
+          { type: "group", name: "x", enabled: true, sessions: [] },
+          { type: "group", name: "other", enabled: true, sessions: [team("grp-x")] },
+        ]),
+      ),
+    ).toThrow(ConfigError);
+  });
+
+  test("allows grp-<g> when NO group named <g> exists — the prefix alone is not the fault", () => {
+    // Refusing every `grp-`-prefixed team would be a naming policy. The
+    // collision is what is refused, and it needs both halves present.
+    const topo = buildGroupTopology(shape([team("grp-x")]));
+    expect(topo.cockpitEntries.map((e) => (e.kind === "team" ? e.team.name : null))).toEqual([
+      "grp-x",
+    ]);
+  });
+
+  test("allows a team and group sharing a name WITHOUT the grp- prefix (the live unum shape)", () => {
+    // The `-grp-` infix exists precisely so a `unum` group and a `unum`
+    // team can coexist. Refusal 3 must not regress that.
+    const topo = buildGroupTopology(
+      shape([{ type: "group", name: "unum", enabled: true, sessions: [team("unum")] }]),
+    );
+    expect(topo.groups.map((g) => g.name)).toEqual(["unum"]);
+  });
+
+  test("ignores a DISABLED group — a group that runs no server cannot collide", () => {
+    const topo = buildGroupTopology(
+      shape([{ type: "group", name: "x", enabled: false, sessions: [] }, team("grp-x")]),
+    );
+    expect(topo.groups).toEqual([]);
+  });
+
+  test("a team named exactly 'grp-' is not treated as naming the empty group", () => {
+    // Guards the slice(): an empty suffix must not match anything.
+    const topo = buildGroupTopology(shape([team("grp-")]));
+    expect(topo.cockpitEntries.length).toBe(1);
+  });
+
   test("derives group servers + cockpit entries from a mixed tree, DFS order", () => {
     const topo = buildGroupTopology(
       shape([
