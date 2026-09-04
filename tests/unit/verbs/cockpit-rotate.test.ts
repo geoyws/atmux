@@ -251,7 +251,7 @@ interface TestHarness {
   /** Force killWindow to throw the given error on next call. */
   killWindowThrows?: Error;
   /** Recorded `tmux.window.newWindow` invocations. */
-  newWindowCalls: { name: string; shellCommand: string }[];
+  newWindowCalls: { name: string; shellCommand: string; cwd?: string }[];
   /** Window-index newWindow returns; default 4 (matches medic at idx 4
    *  for a fresh cockpit per ADR-135 §D2). */
   newWindowIndex: number;
@@ -345,10 +345,11 @@ function makeTmuxFactory(h: TestHarness): (cfg: TmuxConfig) => TmuxNamespace {
           h.killWindowCalls.push(target);
           if (h.killWindowThrows !== undefined) throw h.killWindowThrows;
         },
-        newWindow: async (opts: { name?: string; shellCommand?: string }) => {
+        newWindow: async (opts: { name?: string; shellCommand?: string; cwd?: string }) => {
           h.newWindowCalls.push({
             name: opts.name ?? "",
             shellCommand: opts.shellCommand ?? "",
+            ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
           });
           if (h.newWindowThrows !== undefined) throw h.newWindowThrows;
           return { sessionName: "atmux_cockpit", windowIndex: h.newWindowIndex };
@@ -921,6 +922,60 @@ describe("cockpitRotate — T4 team-driver respawn", () => {
     expect(firstAuditRow(h).outcome).toBe("success");
     expect(firstAuditRow(h).role).toBe("team-driver");
     expect(firstAuditRow(h).sessionName).toBe("atmux");
+  });
+
+  // ---------- t-454ef211: recreated window must not inherit the
+  //            rotate invoker's cwd ----------
+
+  test("recreates the team window AT THE TEAM ROOT, not the invoker's cwd", async () => {
+    // The bug: `newWindow` was called without `cwd`, so tmux put the new
+    // window wherever whoever ran `atmux cockpit rotate` happened to be
+    // standing. For a team-driver viewer inside a GROUP server that is
+    // the same fault the ADR-089 group-tier note fixed for reconcile on
+    // 2026-08-28 — the operator's cwd-guard paints `root != root`
+    // because the pane sits in an unrelated directory.
+    //
+    // The assertion is parity with reconcile, which spawns a team window
+    // at `c.team.root` (src/verbs/cockpit.ts). Both read the same
+    // cockpit.json field, so the two paths cannot drift.
+    const h = makeHarness();
+    passGates(h, "team-driver");
+    const exit = await cockpitRotate(["atmux"], harnessOpts(h));
+
+    expect(exit).toBe(0);
+    expect(h.newWindowCalls[0]?.cwd).toBe("/root/work/src/atmux");
+  });
+
+  test("the team root comes from cockpit.json, not from a hardcoded path", async () => {
+    // Guards the fix against being satisfied by a constant: move the
+    // team's root in the config and the recreated window must follow it.
+    const h = makeHarness();
+    const cockpit = h.cockpit as unknown as { teams: { name: string; root: string }[] };
+    const team = cockpit.teams.find((t) => t.name === "atmux");
+    if (team === undefined) throw new Error("fixture lost its atmux team");
+    team.root = "/somewhere/else/entirely";
+    passGates(h, "team-driver");
+    const exit = await cockpitRotate(["atmux"], harnessOpts(h));
+
+    expect(exit).toBe(0);
+    expect(h.newWindowCalls[0]?.cwd).toBe("/somewhere/else/entirely");
+  });
+
+  test("_medic is recreated with NO cwd, matching what reconcile does", async () => {
+    // Deliberate parity, not an oversight. `_medic` is a cockpit-session
+    // window with no team behind it, and reconcile's own `_medic`
+    // newWindow call passes no cwd either. Inventing a root on the
+    // rotate path alone would make the two disagree — the exact class of
+    // bug this task fixes. Giving `_medic` a considered cwd on BOTH
+    // paths is filed as a separate follow-up; if that lands, this test
+    // is the one that should change.
+    const h = makeHarness();
+    passGates(h, "medic");
+    const exit = await cockpitRotate(["medic"], harnessOpts(h));
+
+    expect(exit).toBe(0);
+    expect(h.newWindowCalls[0]?.name).toBe("_medic");
+    expect(h.newWindowCalls[0]?.cwd).toBeUndefined();
   });
 
   test("unknown team-name → respawn-failed audit + exit 70", async () => {
@@ -1606,10 +1661,11 @@ describe("cockpitRotate — T6 safeCapturePane catch branch", () => {
           killWindow: async (target: string) => {
             h.killWindowCalls.push(target);
           },
-          newWindow: async (opts: { name?: string; shellCommand?: string }) => {
+          newWindow: async (opts: { name?: string; shellCommand?: string; cwd?: string }) => {
             h.newWindowCalls.push({
               name: opts.name ?? "",
               shellCommand: opts.shellCommand ?? "",
+              ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
             });
             return { sessionName: "atmux_cockpit", windowIndex: h.newWindowIndex };
           },

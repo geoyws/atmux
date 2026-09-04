@@ -940,6 +940,21 @@ async function performRespawn(
   const windowName = targetWindowForRole(role, parsed.sessionName);
   const viewerHost = host ?? cockpitViewerHost(deps);
   let cmd: string;
+  /** t-454ef211: cwd for the recreated window.
+   *
+   *  Rotate kills a window and makes a new one, and `newWindow` without
+   *  `cwd` inherits the cwd of whoever RAN the rotate — so a team-driver
+   *  viewer came back sitting in the invoker's directory. Inside a group
+   *  server that is the exact fault the ADR-089 group-tier note fixed for
+   *  reconcile on 2026-08-28: the operator's cwd-guard paints
+   *  `root != root` because the pane is somewhere unrelated.
+   *
+   *  The rule is parity — a rotated window must land where reconcile
+   *  would have put it (`src/verbs/cockpit.ts`: team windows at
+   *  `team.root`, group windows at `firstTeamRoot`). `undefined` keeps
+   *  the pre-fix inherit-the-invoker behaviour, so it is only ever used
+   *  where reconcile also omits cwd. */
+  let respawnCwd: string | undefined;
   let cockpit: LoadedCockpit;
   try {
     // Injected homeDir (tests) outranks ambient env; production keeps
@@ -993,6 +1008,13 @@ async function performRespawn(
       case "medic": {
         const m = readMedicConfig(cockpit);
         cmd = buildClaudeRespawnCommand(m?.claudeAccount, m?.tuiOverrides);
+        // `respawnCwd` deliberately stays undefined. `_medic` is a
+        // cockpit-session window with no team behind it, and reconcile
+        // creates it with no cwd either (`src/verbs/cockpit.ts`, the
+        // `_medic` newWindow call). Inventing a root here would make
+        // rotate and reconcile disagree, which is the failure this task
+        // is fixing rather than a second instance of it. Giving `_medic`
+        // a deliberate cwd on BOTH paths is filed separately.
         break;
       }
       case "team-driver": {
@@ -1016,6 +1038,10 @@ async function performRespawn(
         // consumers (cockpit rebuild's lead-pane spawn inside the
         // cage) and is intentionally untouched here.
         cmd = await buildTeamWindowCommand(t, "attach");
+        // Same source reconcile uses for a team window (`c.team.root`),
+        // read from the same cockpit.json, so rotate and reconcile can
+        // never disagree about where this window belongs.
+        respawnCwd = t.root;
         break;
       }
     }
@@ -1058,6 +1084,7 @@ async function performRespawn(
       name: windowName,
       detached: true,
       shellCommand: cmd,
+      ...(respawnCwd !== undefined ? { cwd: respawnCwd } : {}),
     });
     windowIndex = winId.windowIndex;
   } catch (e) {
