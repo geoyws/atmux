@@ -9,9 +9,12 @@ import {
   evaluateGate,
   extractIgnorePatterns,
   formatGateReport,
+  formatProvenanceLine,
   isIgnored,
   parseArgs,
   parseLcov,
+  parseProvenance,
+  PROVENANCE_BASENAME,
   runCli,
   toRelative,
 } from "../lcov-gate.ts";
@@ -748,5 +751,139 @@ describe("runCli (integration)", () => {
     await writeFile(join(dir, "bunfig.toml"), "", "utf8");
     const exit = await runCli(["--quiet"], dir);
     expect(exit).toBe(0);
+  });
+});
+
+
+// ---------- t-15bcfaf8: provenance ----------
+
+describe("lcov provenance", () => {
+  const good = {
+    command: ["bun", "test", "--coverage"],
+    finishedAt: "2026-09-04T04:00:00.000Z",
+    testFiles: 368,
+  };
+
+  test("parses a well-formed sidecar", () => {
+    expect(parseProvenance(JSON.stringify(good))).toEqual(good);
+  });
+
+  test("testFiles is optional", () => {
+    const { testFiles, ...rest } = good;
+    expect(parseProvenance(JSON.stringify(rest))).toEqual(rest);
+  });
+
+  test.each([
+    ["absent", null],
+    ["not JSON", "{oops"],
+    ["not an object", "[1,2]"],
+    ["null", "null"],
+    ["command missing", '{"finishedAt":"x"}'],
+    ["command not an array", '{"command":"bun test","finishedAt":"x"}'],
+    ["command holds a non-string", '{"command":["bun",7],"finishedAt":"x"}'],
+    ["finishedAt missing", '{"command":["bun"]}'],
+    ["finishedAt empty", '{"command":["bun"],"finishedAt":""}'],
+  ])("a %s sidecar reads as UNKNOWN rather than a fabricated provenance", (_label, text) => {
+    // Degrading to null is the load-bearing behaviour. A corrupt sidecar
+    // that parsed into a plausible-looking command would attach a false
+    // provenance to a real number — worse than admitting we do not know.
+    expect(parseProvenance(text as string | null)).toBeNull();
+  });
+
+  test("the UNKNOWN banner says the number is not comparable and how to fix it", () => {
+    const line = formatProvenanceLine(null);
+    expect(line).toContain("UNKNOWN");
+    expect(line).toContain("NOT comparable");
+    expect(line).toContain("bun run coverage:gate");
+  });
+
+  test("a known provenance prints the exact command back", () => {
+    const line = formatProvenanceLine(good);
+    expect(line).toContain("bun test --coverage");
+    expect(line).toContain("368 test file(s)");
+    expect(line).toContain(good.finishedAt);
+  });
+
+  test("every gate report leads with a provenance line, green or red", () => {
+    // The point of the card: a breach count must never travel without
+    // its command, and neither must a green verdict.
+    const green = formatGateReport(
+      { ok: true, failures: [], missing: [], trackedCount: 1, ignoredCount: 0 },
+      null,
+    );
+    expect(green.split("\n")[0]).toContain("provenance");
+    const red = formatGateReport(
+      {
+        ok: false,
+        failures: [{ path: "src/x.ts", dimension: "line", hit: 1, found: 2, pct: 0.5 }],
+        missing: [],
+        trackedCount: 1,
+        ignoredCount: 0,
+      },
+      null,
+    );
+    expect(red.split("\n")[0]).toContain("provenance");
+  });
+
+  test("runCli reads the sidecar sitting beside the lcov it was given", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "lcov-prov-"));
+    try {
+      await writeFile(
+        join(dir, "lcov.info"),
+        "SF:src/x.ts\nDA:1,1\nLF:1\nLH:1\nend_of_record\n",
+        "utf8",
+      );
+      await writeFile(join(dir, PROVENANCE_BASENAME), JSON.stringify(good), "utf8");
+      const out: string[] = [];
+      const priorWrite = process.stdout.write.bind(process.stdout);
+      process.stdout.write = ((chunk: string) => {
+        out.push(String(chunk));
+        return true;
+      }) as typeof process.stdout.write;
+      try {
+        await runCli(["--lcov", join(dir, "lcov.info"), "--no-completeness"], dir);
+      } finally {
+        process.stdout.write = priorWrite;
+      }
+      expect(out.join("")).toContain("bun test --coverage");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("coverage-gate wrapper arg parsing", () => {
+  test("defaults to unit + integration, NOT the whole tree", async () => {
+    // The default deliberately excludes tests/e2e: including it changes
+    // the denominator AND spawns real tmux servers, so it is an operator
+    // call rather than something the wrapper picks silently.
+    const { parseWrapperArgs } = await import("../../scripts/coverage-gate.ts");
+    expect(parseWrapperArgs([])).toEqual({
+      suite: ["tests/unit", "tests/integration"],
+      gateOnly: false,
+    });
+  });
+
+  test("--all means the whole tree, expressed as no paths to `bun test`", async () => {
+    const { parseWrapperArgs } = await import("../../scripts/coverage-gate.ts");
+    expect(parseWrapperArgs(["--all"])).toEqual({ suite: [], gateOnly: false });
+  });
+
+  test("explicit paths win over the default", async () => {
+    const { parseWrapperArgs } = await import("../../scripts/coverage-gate.ts");
+    expect(parseWrapperArgs(["tests/unit"]).suite).toEqual(["tests/unit"]);
+  });
+
+  test("paths after `--` are passed through verbatim", async () => {
+    const { parseWrapperArgs } = await import("../../scripts/coverage-gate.ts");
+    expect(parseWrapperArgs(["--", "tests/unit", "--gate-only"]).suite).toEqual([
+      "tests/unit",
+      "--gate-only",
+    ]);
+  });
+
+  test("--gate-only re-gates without re-running the suite", async () => {
+    const { parseWrapperArgs } = await import("../../scripts/coverage-gate.ts");
+    expect(parseWrapperArgs(["--gate-only"]).gateOnly).toBe(true);
   });
 });

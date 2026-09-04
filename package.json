@@ -15,6 +15,7 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "test:coverage": "bun test --coverage",
+    "coverage:gate": "bun scripts/coverage-gate.ts",
     "lint": "biome lint . && bun scripts/lint-tz.ts && bun scripts/lint-socket-resolver.ts",
     "lint:tz": "bun scripts/lint-tz.ts",
     "lint:socket-resolver": "bun scripts/lint-socket-resolver.ts",

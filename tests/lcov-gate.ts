@@ -20,7 +20,7 @@
 //   bun tests/lcov-gate.ts --threshold 0.95   # override threshold (0..1, default 1.0)
 
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 // ---------- Types ----------
 
@@ -332,10 +332,79 @@ export function evaluateGate(
   };
 }
 
+// ---------- Provenance (t-15bcfaf8) ----------
+//
+// A breach count means nothing without the command that produced it. The
+// same commit, same file, read 304/304 lines under the whole-tree
+// `bun test --coverage` and 296/315 under a narrower
+// `bun test tests/unit tests/integration --coverage` — identical content,
+// different denominator, because the instrumented line set follows which
+// modules the run loaded. Two honest agents therefore reached two
+// different numbers and neither was wrong.
+//
+// So the gate refuses to print a number without saying where it came
+// from. `scripts/coverage-gate.ts` writes this sidecar next to the lcov;
+// running the gate against an lcov produced any other way reports
+// UNKNOWN rather than quietly implying comparability.
+
+/** Sidecar path, relative to the lcov file's own directory. */
+export const PROVENANCE_BASENAME = "lcov.provenance.json";
+
+export interface LcovProvenance {
+  /** Exact argv that produced the lcov, e.g. ["bun","test","--coverage"]. */
+  readonly command: ReadonlyArray<string>;
+  /** ISO-8601 UTC instant the run finished. */
+  readonly finishedAt: string;
+  /** Test-file count the run reported, when known — a second, cheap
+   *  signal that two lcovs came from different suites. */
+  readonly testFiles?: number;
+}
+
+/** Parse a provenance sidecar. Returns null for absent OR malformed —
+ *  a corrupt sidecar must read as "unknown", never as a fabricated
+ *  provenance, since the whole point is to not overstate what we know. */
+export function parseProvenance(text: string | null): LcovProvenance | null {
+  if (text === null) return null;
+  try {
+    const raw: unknown = JSON.parse(text);
+    if (typeof raw !== "object" || raw === null) return null;
+    const o = raw as Record<string, unknown>;
+    if (!Array.isArray(o.command) || o.command.some((c) => typeof c !== "string")) return null;
+    if (typeof o.finishedAt !== "string" || o.finishedAt === "") return null;
+    const out: LcovProvenance = {
+      command: o.command as ReadonlyArray<string>,
+      finishedAt: o.finishedAt,
+      ...(typeof o.testFiles === "number" && Number.isFinite(o.testFiles)
+        ? { testFiles: o.testFiles }
+        : {}),
+    };
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+/** The one line every quoted breach count must travel with. */
+export function formatProvenanceLine(p: LcovProvenance | null): string {
+  if (p === null) {
+    return (
+      "lcov-gate: provenance UNKNOWN — this lcov carries no record of the command that produced it.\n" +
+      "           Breach counts from different suites are NOT comparable (the instrumented line set\n" +
+      "           follows which modules a run loads). Produce one with `bun run coverage:gate`, and do\n" +
+      "           not quote this number without naming the command yourself."
+    );
+  }
+  const files = p.testFiles !== undefined ? `, ${p.testFiles} test file(s)` : "";
+  return `lcov-gate: provenance — \`${p.command.join(" ")}\`${files}, finished ${p.finishedAt}`;
+}
+
 // ---------- Reporters ----------
 
-export function formatGateReport(result: GateResult): string {
-  const lines: string[] = [];
+export function formatGateReport(
+  result: GateResult,
+  provenance: LcovProvenance | null = null,
+): string {
+  const lines: string[] = [formatProvenanceLine(provenance)];
   if (result.ok) {
     lines.push(
       `lcov-gate: ✅ ${result.trackedCount} tracked file(s) at 100% (${result.ignoredCount} ignored)`,
@@ -451,8 +520,19 @@ export async function runCli(argv: ReadonlyArray<string>, cwd: string): Promise<
     cwd,
     ...(trackedUniverse !== undefined ? { trackedUniverse } : {}),
   });
+  // Read the provenance sidecar written by `scripts/coverage-gate.ts`.
+  // Absent or malformed both degrade to null -> the UNKNOWN banner, never
+  // to a fabricated provenance.
+  let provenance: LcovProvenance | null = null;
+  try {
+    provenance = parseProvenance(
+      await readFile(join(dirname(lcovAbs), PROVENANCE_BASENAME), "utf8"),
+    );
+  } catch {
+    provenance = null;
+  }
   if (!result.ok || !args.quiet) {
-    process.stdout.write(formatGateReport(result));
+    process.stdout.write(formatGateReport(result, provenance));
   }
   return result.ok ? 0 : 1;
 }
