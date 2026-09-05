@@ -1399,13 +1399,15 @@ describe("cockpitRotate — T4 success audit-row shape", () => {
 // doctor / cockpit-rotate audit telemetry. Cover it now to close the
 // claude-account-wrapper.ts FN gap (lcov FNH:1/FNF:2 → 2/2).
 describe("claude-account-wrapper exports (T6 direct unit)", () => {
-  test("knownClaudeConfigDirs enumerates the canonical 4-entry registry", () => {
+  test("knownClaudeConfigDirs enumerates the canonical 6-entry registry", () => {
     const dirs = knownClaudeConfigDirs();
     expect(dirs).toEqual([
       "/root/.claude",
       "/root/.claude-unum",
       "/root/.claude-icloud",
       "/root/.claude-ifca",
+      "/root/.claude-ifca2",
+      "/root/.claude-gmail",
     ]);
   });
 
@@ -1414,6 +1416,8 @@ describe("claude-account-wrapper exports (T6 direct unit)", () => {
     expect(resolveClaudeWrapper("/root/.claude-unum")).toBe("c-u");
     expect(resolveClaudeWrapper("/root/.claude-icloud")).toBe("c-ic");
     expect(resolveClaudeWrapper("/root/.claude-ifca")).toBe("c-i");
+    expect(resolveClaudeWrapper("/root/.claude-ifca2")).toBe("c-i2");
+    expect(resolveClaudeWrapper("/root/.claude-gmail")).toBe("c-g");
   });
 
   test("resolveClaudeWrapper throws ConfigError on unknown configDir w/ hint listing every registered dir", () => {

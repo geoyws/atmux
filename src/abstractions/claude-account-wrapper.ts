@@ -23,7 +23,13 @@ import { ConfigError } from "../errors.ts";
 
 /** Canonical c-alias wrapper names. Order matches global CLAUDE.md
  *  §Spawn Pattern case-stanza. */
-export type ClaudeWrapper = "claude" | "c-u" | "c-ic" | "c-i";
+export type ClaudeWrapper =
+  | "claude"
+  | "c-u"
+  | "c-ic"
+  | "c-i"
+  | "c-i2"
+  | "c-g";
 
 /** Resolution table per ADR-167 §Decision (claudeAccount wrapper
  *  resolver). Operator-side wrappers MUST be on PATH for the resolved
@@ -32,7 +38,12 @@ const WRAPPER_TABLE: ReadonlyMap<string, ClaudeWrapper> = new Map([
   ["/root/.claude", "claude"],
   ["/root/.claude-unum", "c-u"],
   ["/root/.claude-icloud", "c-ic"],
+  // Retired pre-2026-09 IFCA identity — still named by live cockpits, resolving through the dotfiles `c-i -> c-i2` alias.
   ["/root/.claude-ifca", "c-i"],
+  // Current IFCA identity (claude2@ifca.com.my).
+  ["/root/.claude-ifca2", "c-i2"],
+  // atmux gmail teams (geoyws@gmail.com).
+  ["/root/.claude-gmail", "c-g"],
 ]);
 
 /** Resolve a `claudeAccount.configDir` string to its wrapper-command

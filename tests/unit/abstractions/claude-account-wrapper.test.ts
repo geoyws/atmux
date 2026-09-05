@@ -23,8 +23,16 @@ describe("resolveClaudeWrapper", () => {
     expect(resolveClaudeWrapper("/root/.claude-icloud")).toBe<ClaudeWrapper>("c-ic");
   });
 
-  test("/root/.claude-ifca → c-i (ifca account)", () => {
+  test("/root/.claude-ifca → c-i (retired pre-2026-09 ifca identity, resolves via dotfiles c-i alias)", () => {
     expect(resolveClaudeWrapper("/root/.claude-ifca")).toBe<ClaudeWrapper>("c-i");
+  });
+
+  test("/root/.claude-ifca2 → c-i2 (current ifca identity)", () => {
+    expect(resolveClaudeWrapper("/root/.claude-ifca2")).toBe<ClaudeWrapper>("c-i2");
+  });
+
+  test("/root/.claude-gmail → c-g (atmux gmail teams)", () => {
+    expect(resolveClaudeWrapper("/root/.claude-gmail")).toBe<ClaudeWrapper>("c-g");
   });
 
   test("unknown configDir throws ConfigError", () => {
@@ -70,12 +78,14 @@ describe("resolveClaudeWrapper", () => {
 });
 
 describe("knownClaudeConfigDirs", () => {
-  test("returns the canonical four configDirs", () => {
+  test("returns the canonical six configDirs", () => {
     const set = knownClaudeConfigDirs();
     expect(set).toContain("/root/.claude");
     expect(set).toContain("/root/.claude-unum");
     expect(set).toContain("/root/.claude-icloud");
     expect(set).toContain("/root/.claude-ifca");
+    expect(set).toContain("/root/.claude-ifca2");
+    expect(set).toContain("/root/.claude-gmail");
   });
 
   test("returns a stable-ordered array (insertion order)", () => {

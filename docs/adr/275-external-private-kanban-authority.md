@@ -82,3 +82,18 @@ Until then, the feature flag is a development seam, not a production cutover cla
 - `/root/work/src/kanban/docs/adr/ADR-003-private-sqlite-multi-project-kanban.md`
 - `/root/work/src/kanban/docs/adr/ADR-004-atomic-agent-handoffs.md`
 - `/root/work/src/kanban/docs/adr/ADR-005-atmux-kanban-migration.md`
+
+## §Amendment 2026-09-05 — `kb` host routing is supplied externally, not by atmux
+
+`kb` host routing is supplied **externally**: the consumer-owned `hosts.tsv`
+(`KB_HOSTS_TABLE`), read by the `kb-board`/`kb-host` wrappers from the pinned
+public `geoyws/kb-skill` package, per kanban ADR-036. atmux carries **no** kb
+host routing table and performs **no** pane injection for kb — board rule
+`r-1376df29` bans `send-keys`, and lanes reach the ledger through the wrappers
+or the `kb mcp` stdio server (`ssh <home> /root/.local/bin/kb mcp`). The D2
+process adapter above calls the installed `kanban` CLI; it does not select a
+kb host or route kb commands into panes.
+
+**Cross-refs**: kanban ADR-036 (`hosts.tsv` / `KB_HOSTS_TABLE`); board rule
+`r-1376df29` (send-keys ban); pinned public `geoyws/kb-skill` package
+(`kb-board` / `kb-host` wrappers).
