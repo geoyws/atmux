@@ -180,10 +180,11 @@ context is heavy (uptime > rotation threshold OR self-compaction banner
 visible) but teammates are productive — clearing teammates would lose
 their in-flight work; rotating the lead is targeted.
 
-For cockpit-tier role rotation — the `medic` window at W2 (auto-spawn
-role retired per ADR-212, but the probe substrate + session-name slot
-persist for the host-pressure playbook in ADR-198), `sentinel` at W3,
-or team-driver panes at W4+ per ADR-167 — use:
+For cockpit-tier role rotation — the `_medic` window (a **live** cockpit
+member per ADR-291 §D1, in the slot right after the `_sdN` superdriver
+lanes per ADR-290 §D5, running the ADR-198 host-pressure playbook among
+other sweeps), the legacy `sentinel` slot (that role is retired per
+ADR-211), or team-driver panes per ADR-167 — use:
 
 ```bash
 atmux cockpit rotate <session-name> [--force]
@@ -195,10 +196,12 @@ pane-idle / uptime / never-rotate-superdriver) and refuses
 `ATMUX_CALLER_SCOPE=driver`.
 
 > Note on naming: per ADR-133 the cockpit role formerly known as
-> `superdoctor` was renamed `medic` (then per ADR-212 the auto-spawn
-> retired, probe substrate persisted). ADR-158 renamed the
-> uptime-rotation-manager role to `sentinel`. The driver pane retains
-> its own lifecycle and is never rotated by these verbs.
+> `superdoctor` was renamed `medic`; ADR-212 retired its auto-spawn in
+> 2026-05 and ADR-291 reinstated the role as a live cockpit member on
+> 2026-09-07 (its pane now carries `ATMUX_MEMBER=medic` and it works the
+> `medic` kb board). ADR-158 renamed the uptime-rotation-manager role to
+> `sentinel`, which is retired per ADR-211. The driver pane retains its
+> own lifecycle and is never rotated by these verbs.
 
 ---
 

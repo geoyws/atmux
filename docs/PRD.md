@@ -20,8 +20,11 @@
 > writes to crontab — cron auto-install retired per [ADR-233](adr/233-cron-auto-install-disabled-trust-orchd.md);
 > orchd is the runtime. Cockpit roles trimmed: **Sentinel retired**
 > ([ADR-211](adr/211-retire-sentinel-role-distribute-to-honker-consumers.md)),
-> **Medic narrowed to on-demand `atmux medic diagnose <team>`**
-> ([ADR-212](adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md)),
+> **Medic reinstated as a live cockpit member 2026-09-07**
+> ([ADR-291](adr/291-medic-reinstated-as-cockpit-member.md), which supersedes
+> [ADR-212](adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md)
+> §D1/§D5/§D6 — the 2026-05-24 claim that medic "narrowed to on-demand
+> `atmux medic diagnose <team>`" was never true: no such verb was ever written),
 > **Jury retired** ([ADR-213](adr/213-retire-jury-reviewer-absorbs-acceptance-criteria.md);
 > reviewer absorbs acceptance criteria), **Ombudsman retired**
 > ([ADR-214](adr/214-retire-ombudsman-lead-absorbs-complaint-adjudication-via-honker.md);
@@ -334,7 +337,7 @@ cages use `<emoji>-<member>` (hyphen-separated, ADR-135 §D3).
 |---|--------|------|-----------------|
 | 1 | `_sd` (was `_superdriver`) | Operator cross-team REPL — superdriver lane `sd` | ADR-063 (renamed per ADR-135 §D2, shortform per ADR-290 §D1) |
 | 2..k | `_sd2` … `_sdN` (superdriver lanes; live: `_sd2`, `_sd3`) | Additional superdriver lanes — ADR-279 operator windows placed immediately after `_sd`, in declaration order | ADR-290 §D2 + §D5 |
-| k+1 | `_medic` (was `medic`/`superdoctor`) | Fleet self-healing / diagnosis-and-prevention loop — slot is after the last lane | ADR-077 + ADR-133 + ADR-135 §D2 + ADR-290 §D5 |
+| k+1 | `_medic` | Fleet + host health lane — LIVE per ADR-291 §D1; slot is after `_sd` and every `_sdN` lane; the pane carries `ATMUX_MEMBER=medic` and works the `medic` kb board | ADR-077 + ADR-133 + ADR-290 §D5 + [ADR-291](adr/291-medic-reinstated-as-cockpit-member.md) |
 | k+2 | `_superbot` (proposed; absent while disabled) | Deterministic 30-minute Kanban candidate router; never claims or assigns | ADR-285 |
 | k+3..N | other declarative operator windows (e.g. `_misc`), then per-team viewers | Operator workspaces in declaration order, then one viewer per enabled parent team. Lanes (`_sdN`, N ≥ 2, no `_sd1`; `ATMUX_MEMBER=sdN`, kb actor `claude@sdN`, same `superdriver` board, lease-guarded dispatch) are the only operator windows placed ahead of the role windows | ADR-279 + ADR-290 §D2/§D5 + ADR-063 |
 

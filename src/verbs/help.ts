@@ -60,12 +60,14 @@ Setup:
                               shape for headless probes.
   cockpit rotate <session-name> [--force]
                               ADR-167 Rung C: canonical rotation of a cockpit-
-                              level role pane — \`medic\` (W2) or \`<team-name>\`
-                              (W3+ driver pane). Refuses \`superdriver\`
-                              (W1 \`_sd\`) unconditionally; four pre-flight gates
-                              (user-not-typing / pane-idle / uptime /
-                              never-rotate-superdriver) protect against
-                              accidental rotation. Driver-only via
+                              level role pane — \`medic\` or \`<team-name>\`
+                              (driver pane). The live \`_medic\` window sits
+                              right after the \`_sdN\` lanes (ADR-290 §D5) and
+                              the role is live per ADR-291. Refuses
+                              \`superdriver\` (W1 \`_sd\`) unconditionally; four
+                              pre-flight gates (user-not-typing / pane-idle /
+                              uptime / never-rotate-superdriver) protect
+                              against accidental rotation. Driver-only via
                               ATMUX_CALLER_SCOPE=driver.
 
 Messaging:

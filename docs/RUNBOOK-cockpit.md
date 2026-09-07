@@ -97,7 +97,7 @@ atmux cockpit migrate-socket --keep-legacy
 - **What's preserved:** window names, relative window order, [ADR-135](adr/135-cockpit-naming-convention.md) `_-prefix` convention, scrollback (as visual breadcrumb only).
 - **What's lost:** live process state in each pane (Claude conversation context, REPL state, mid-edit buffers).
 
-Cron-spawned cockpit roles (medic) re-establish themselves on the next cron tick — they're stateless across ticks, no operator action needed. The only state-bearing panes are operator-driven (a `superdriver` Claude conversation, an ad-hoc shell). Operators re-invoke those in the new panes; the breadcrumb file gives them visual context to recover from.
+There are no cron-spawned cockpit roles any more (cron auto-install retired per [ADR-233](adr/233-cron-auto-install-disabled-trust-orchd.md)). `_medic` is recreated by the next `atmux cockpit reconcile` — it is a live cockpit member per [ADR-291](adr/291-medic-reinstated-as-cockpit-member.md) §D1 — but its Claude/Codex conversation and its armed standing goal are pane state and do not survive; the operator re-arms the lane by hand. The same holds for the `_sd` / `_sdN` lane REPLs and any ad-hoc shell. The breadcrumb file gives the operator visual context to recover from.
 
 **Idempotent.** Re-running `atmux cockpit migrate-socket` on an already-migrated cockpit returns 0 with the "no legacy cockpit on default socket" log. The doctor probe [`cockpit-on-default-socket`](#§4--doctor-probes) self-clears after migration completes.
 
@@ -175,7 +175,7 @@ The override is per-invocation; agents that spawn atmux processes inherit the en
 
 ## §6 — Cockpit pane rotation (`atmux cockpit rotate`)
 
-Operator-fired rotation of a cockpit role pane — `medic` or a per-team driver pane. Historically it closed the manual handoff + Ctrl-C + canonical-respawn protocol that lived in the `/bruh` skill §3a manual fallback (that skill was retired per [ADR-290](adr/290-superdriver-lane-shortform-and-multi-lane-cockpit.md) §D4). Per [ADR-167](adr/167-cockpit-rotate-verb.md) the verb is Rung C of the escalation ladder — Rung A = member rotate, Rung B = lead rotate via medic, Rung D = full cockpit rebuild.
+Operator-fired rotation of a cockpit role pane — `medic` (a live cockpit member per [ADR-291](adr/291-medic-reinstated-as-cockpit-member.md) §D1, in the `_medic` window right after the `_sdN` lanes per [ADR-290](adr/290-superdriver-lane-shortform-and-multi-lane-cockpit.md) §D5) or a per-team driver pane. Historically it closed the manual handoff + Ctrl-C + canonical-respawn protocol that lived in the `/bruh` skill §3a manual fallback (that skill was retired per ADR-290 §D4). Per [ADR-167](adr/167-cockpit-rotate-verb.md) the verb is Rung C of the escalation ladder — Rung A = member rotate, Rung B = lead rotate, Rung D = full cockpit reconcile.
 
 ```bash
 atmux cockpit rotate medic    [--force]
@@ -214,7 +214,7 @@ Per [ADR-167 §Per-role respawn matrix](adr/167-cockpit-rotate-verb.md):
 3. **`tmux kill-window`** the target pane (SIGHUP fallback for C-c-resistant claude).
 4. **Resolve `claudeAccount` wrapper** via the [ADR-094](adr/094-c-alias-spawn-convention.md) c-alias table (`/root/.claude → claude`, `-unum → c-u`, `-icloud → c-ic`, `-ifca → c-i`, unknown → `ConfigError` exit 70). Load-bearing for medic; skipped for team-driver (its spawn line is the cage retry loop, not a claude TUI).
 5. **`tmux new-window`** with the resolved respawn command.
-6. **Re-arm cadence** — medic gets `/loop /medic` via `autoStartSuperdoctorLoop`; team-driver has no claude TUI to re-arm.
+6. **Re-arm cadence** — nothing is auto-armed in practice: `autoStartSuperdoctorLoop` would send-keys `/loop /medic`, a slash command that no longer exists, and send-keys into a pane is banned (board rule `r-1376df29`), so the medic's `autoStart` should stay `false` and the operator re-arms the lane's standing goal by hand ([ADR-291](adr/291-medic-reinstated-as-cockpit-member.md) §Out of scope). The respawn command itself carries `export ATMUX_MEMBER=medic &&` (ADR-291 §D3), so the pane comes back with its identity. Team-driver has no claude TUI to re-arm.
 7. **Append success audit row** to `~/.atmux/state/cockpit-rotate-audit.log` (NDJSON) with `outcome="success"` + `handoffPath`.
 
 ### Recovery — when a step fails
@@ -229,7 +229,7 @@ Per [ADR-167 §Per-role respawn matrix](adr/167-cockpit-rotate-verb.md):
 | `killWindow` throw | exit 70, `respawn-failed` audit row | Ctrl-C fired; kill failed (window may still exist — diagnose manually) |
 | `newWindow` throw | exit 70, `respawn-failed` audit row | window gone, no respawn (rare — tmux server unreachable) |
 | Ctrl-C verifier escalation | continues anyway (kill-window is destructive primitive) | rotated |
-| `autoStart` failure | continues (exit 0) | rotated but cadence un-armed — operator types `/loop /medic` manually |
+| `autoStart` failure | continues (exit 0) | rotated but nothing armed — the operator arms the lane's standing goal by hand; `autoStart` should be `false` anyway (ADR-291) |
 
 The verb favors **"either fully succeed or leave the pane intact"** over partial-state recovery. Handoff write success without respawn IS recoverable: the operator inspects `~/.claude/teams/__cockpit__/<role>/handoff.md`, fixes the underlying issue (typically wrapper resolution or tmux state), and re-runs the verb.
 
@@ -247,7 +247,7 @@ V1 has no rotation policy ([ADR-167 §OQ-6](adr/167-cockpit-rotate-verb.md) — 
 
 ### Lead-pane rotation is out of scope
 
-Leads live in per-team cages (per [ADR-162](adr/162-atmux-owns-tmux-infrastructure.md)) — `cockpit rotate` operates on the cockpit socket only. Use Rung B (medic's `/team rotate-lead`) for lead rotation.
+Leads live in per-team cages (per [ADR-162](adr/162-atmux-owns-tmux-infrastructure.md)) — `cockpit rotate` operates on the cockpit socket only. Use Rung B, `/team rotate-lead`, for lead rotation. (Rung B was historically the medic's move; the reinstated medic per [ADR-291](adr/291-medic-reinstated-as-cockpit-member.md) §D2 works fleet and host health from its own kb board and does not rotate team leads — the operator or the team's own driver runs `/team rotate-lead`, and on a drivers-only team there is no lead to rotate at all.)
 
 ## §7 — On-demand observation (post-sentinel-decommission)
 

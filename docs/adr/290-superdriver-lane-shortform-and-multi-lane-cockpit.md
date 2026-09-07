@@ -94,7 +94,7 @@ Operator decision (George, 2026-09-02 11:20 MYT): the live cockpit is `1:_sd 2:_
 | Why not code-reserve `_sd2` / `_sd3` as role windows | ADR-279 windows already recreate after server loss; a schema leaf would model a zsh window with a Claude in it as a role, which it is not | Low — convention bake-in |
 | Why keep the role name `superdriver` | Schema discriminator, brief template, kb board name and the gate-4 identifier all key on it; renaming is churn with no operator-visible gain | Low |
 | Should gate 4 refuse `sd` too | Yes — cheap, and it spares the operator the confusing `team 'sd' not found` path for the window-1 shortform | Low |
-| `_medic` sits between `_sd` and `_sd2` in window order | **Resolved by §D5** (operator, 2026-09-02 11:20 MYT): the lanes precede `_medic`; the order is `_sd, _sd2, _sd3, _medic, _misc, …`, and reconcile keeps it (a pre-§D5 cockpit is reordered without kills). Medic auto-spawn is still retired per ADR-212, so the slot is normally empty | Low |
+| `_medic` sits between `_sd` and `_sd2` in window order | **Resolved by §D5** (operator, 2026-09-02 11:20 MYT): the lanes precede `_medic`; the order is `_sd, _sd2, _sd3, _medic, _misc, …`, and reconcile keeps it (a pre-§D5 cockpit is reordered without kills). The `_medic` slot holds a **live** cockpit member — the medic was reinstated on 2026-09-07 per [ADR-291](291-medic-reinstated-as-cockpit-member.md), which supersedes ADR-212 §D1 (see §Amendment 2026-09-07 below) | Low |
 | Three lanes on one `CLAUDE_CONFIG_DIR` share a rate-limit window | Accepted for now; `/atmux:budget` shows the shared bucket. Splitting accounts per lane is a follow-up if contention is measured, not assumed | Medium |
 | Whether `_sdN` lanes ever get rotate support | **Open.** Not in this ADR; if wanted, it is a `lane` role in `classifyRole` plus a lane handoff payload shape. Today the verb fails closed (§D3) | — |
 | Deprecation window for the legacy spellings | One release cycle, same as ADR-135 §D5 | Low |
@@ -119,7 +119,7 @@ Operator decision (George, 2026-09-02 11:20 MYT): the live cockpit is `1:_sd 2:_
 - [ADR-167](167-cockpit-rotate-verb.md) — gate-1 source window + never-rotate key; `/bruh` references now historical (amendment appended).
 - [ADR-217](217-atmux-skills-plugin-bundled-and-wizard-installed.md) — carve set loses `bruh` / `bruhloop`; count 13 → 11 (amendment appended).
 - [ADR-166](166-team-autonomy-policy.md) — `bruh` was one consumer of the `autonomy` block; the block and its other consumers are unchanged.
-- [ADR-212](212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md) — why the `_medic` slot between `_sd` and `_sd2` is normally empty.
+- [ADR-212](212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md) — the retirement that made the `_medic` slot read as vacant when this ADR was written; §D1 / §D5 / §D6 superseded on 2026-09-07 by [ADR-291](291-medic-reinstated-as-cockpit-member.md), which puts the live `_medic` window after the `_sdN` lanes exactly per §D5 here.
 - Dotfiles ADR-009 — `/Users/geoyws/work/journals/.sb/_dotfiles/docs/adr/009-typed-reference-sigils.md` (lines 55–80) — the shortform-is-truncation rule and the no-`d1` argument this ADR applies.
 - `src/verbs/cockpit.ts` — literal, shim, guards. `src/core/cockpit.ts::validateOperatorWindowNames` — reserved set. `src/verbs/cockpit-rotate.ts::RESERVED_NEVER_ROTATE` — gate 4.
 - `templates/briefs/superdriver.md` — §0 identity check + §Multi-lane section.
@@ -135,4 +135,6 @@ Operator decision (George, 2026-09-02 11:20 MYT): the live cockpit is `1:_sd 2:_
 
 ## Amendments
 
-_(none yet)_
+### §Amendment 2026-09-07 — the `_medic` slot is occupied, not empty
+
+[ADR-291](291-medic-reinstated-as-cockpit-member.md) reinstates the medic as a live cockpit member (operator geoyws, 2026-09-07) and supersedes ADR-212 §D1 / §D5 / §D6. The §OQ row and the ADR-212 cross-reference above previously said the slot "is normally empty"; both were corrected in the same commit. §D5's placement rule is unchanged — `_medic` sits at `anchor.index + 1 + laneCount`, after `_sd` and every `_sdN` lane — and it now holds a working pane whose command carries `export ATMUX_MEMBER=medic &&` (ADR-291 §D3).

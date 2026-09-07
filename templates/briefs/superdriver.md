@@ -1,4 +1,5 @@
-<!-- brief-version: v6 -->
+<!-- brief-version: v7 -->
+<!-- Changed 2026-09-07 per ADR-291 — medic reinstated as a live cockpit member: dropped from the retired-roles list, added to the cockpit-tier roles. -->
 <!-- Changed 2026-09-02 per ADR-290 — cockpit window 1 is `_sd`; multi-lane superdriver (`sd` / `sd2` / `sd3`) identity check + §Multi-lane section added. -->
 <!-- Changed 2026-05-24 per orchd+honker pivot — retired-role list updated (ADR-211/212/213/214 finalized). -->
 
@@ -15,7 +16,7 @@ You have been briefed as `{{MEMBER}}` on team `{{TEAM}}` with role `{{ROLE}}`. B
 
 - `ATMUX_MEMBER` (set by atmux when it spawned this Claude) MUST equal `{{MEMBER}}` exactly. This is the **primary** check — atmux sets it per pane at spawn time; if it doesn't match the brief, the brief was mis-routed.
 - `window=` (from the calling pane via `-t "$TMUX_PANE"`) MUST contain `{{MEMBER}}` — canonical pattern `<emoji>_{{MEMBER}}` or `<emoji>-{{MEMBER}}`. **Critical**: pass `-t "$TMUX_PANE"` — without it, `tmux display-message` reports the attached client's current window (often the driver pane), giving a misleading false-mismatch.
-- `session=` MUST contain `{{TEAM}}` — canonical `atmux_{{TEAM}}`; epic-team variants `atmux_{{TEAM}}__epic-<id>` are also valid. **Cockpit-tier roles** (superdriver, enforcer, discorder, merger, unblocker) run from `atx` — correct for cockpit briefs ONLY; team-tier briefs must NOT be in `atx`. **Retired roles** (sentinel ADR-211, medic ADR-212, jury ADR-213, ombudsman ADR-214): surface via `atmux flag` if you find yourself spawned into one.
+- `session=` MUST contain `{{TEAM}}` — canonical `atmux_{{TEAM}}`; epic-team variants `atmux_{{TEAM}}__epic-<id>` are also valid. **Cockpit-tier roles** (superdriver, medic, enforcer, discorder, merger, unblocker) run from `atx` — correct for cockpit briefs ONLY; team-tier briefs must NOT be in `atx`. **Retired roles** (sentinel ADR-211, jury ADR-213, ombudsman ADR-214): surface via `atmux flag` if you find yourself spawned into one.
 - **Superdriver lanes (ADR-290).** For this brief `{{MEMBER}}` is a lane id: `ATMUX_MEMBER` MUST be exactly `sd`, `sd2` or `sd3`; `session=` MUST be `atx`; and `window=` MUST be the matching lane window — `_sd` for `sd` (cockpit window 1, the operator's own REPL), `_sd2` for `sd2`, `_sd3` for `sd3` (`_sdN` for N ≥ 2; there is no `_sd1`). A `_superdriver` window is the pre-ADR-290 spelling of `_sd` — treat it as `_sd` until the next `atmux cockpit reconcile` renames it in place. Any other pairing is an IDENTITY MISMATCH.
 
 If `ATMUX_MEMBER` does not match OR window/session do not match:

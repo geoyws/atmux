@@ -1,6 +1,6 @@
 ---
 name: sweep
-description: Fleet-wide diagnose + complain sweep — runs `atmux doctor` and `atmux status --json` across every enabled team, files complaints on anomalies, and takes structural fixes (rotate lead, clear member, push branch fix). Persisted host-pressure playbook (per ADR-198) is one trigger. Per ADR-077 substrate; manually invoked (the auto-spawned cockpit role was retired per ADR-212).
+description: Fleet-wide diagnose + complain sweep — runs `atmux doctor` and `atmux status --json` across every enabled team, files complaints on anomalies, and takes structural fixes (rotate lead, clear member, push branch fix). Persisted host-pressure playbook (per ADR-198) is one trigger. Per ADR-077 substrate; invoked by the operator or by the medic lane, which is a live cockpit member again per ADR-291 (its 2026-05 retirement under ADR-212 is reversed).
 argument-hint: "[run | once | dry-run]"
 ---
 
@@ -8,7 +8,7 @@ argument-hint: "[run | once | dry-run]"
 
 # /atmux:sweep — fleet-wide diagnose + complain (per [ADR-077](../../../../docs/adr/077-superdoctor-cockpit-role.md) substrate)
 
-Single entry point for the cockpit-tier diagnosis loop. The auto-spawned cockpit role was retired per [ADR-212](../../../../docs/adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md); the probe substrate persists and is now operator-invoked via this slash command.
+Single entry point for the cockpit-tier diagnosis loop. The auto-spawned hourly-tick cockpit role was retired per [ADR-212](../../../../docs/adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md) in 2026-05, and the medic was **reinstated as a live cockpit member on 2026-09-07** per [ADR-291](../../../../docs/adr/291-medic-reinstated-as-cockpit-member.md) — working the `medic` kb board under an operator-armed standing goal instead of an hourly tick. The operator or that lane invokes this command; the probe substrate is the same either way.
 
 - **`run`** (default, bare) — main loop turn. Reads `~/.atmux/cockpit.json`, sweeps each enabled team, triages, acts.
 - **`once`** — single turn, do NOT re-arm. For ad-hoc dispatch from the operator.
@@ -121,7 +121,7 @@ This skill exists. The ADR-077 §F1-F4 deferreds remain tracked in atmux's kanba
 ## Cross-references
 
 - [ADR-077](../../../../docs/adr/077-superdoctor-cockpit-role.md) — original cockpit self-healing role (this skill's substrate).
-- [ADR-133](../../../../docs/adr/133-superdoctor-to-medic-rename.md) — historical rename of the cockpit role `superdoctor` → `medic` (to avoid collision with the `atmux doctor` verb).
-- [ADR-212](../../../../docs/adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md) — retirement of the medic cockpit-role auto-spawn; probe substrate + this slash command persist as on-demand surfaces.
+- [ADR-133](../../../../docs/adr/133-medic-rename.md) — historical rename of the cockpit role `superdoctor` → `medic` (to avoid collision with the `atmux doctor` verb). (Path corrected 2026-09-07: the link previously pointed at a nonexistent `133-superdoctor-to-medic-rename.md`.)
+- [ADR-212](../../../../docs/adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md) — the 2026-05 retirement of the medic cockpit-role auto-spawn. **Reversed** by [ADR-291](../../../../docs/adr/291-medic-reinstated-as-cockpit-member.md) (§D1 / §D5 / §D6 superseded): the medic is a live cockpit member again, and this slash command is one of the tools it runs.
 - [ADR-198](../../../../docs/adr/198-medic-host-pressure-playbook.md) — host-pressure playbook (one trigger inside `/atmux:sweep`).
 - [ADR-217](../../../../docs/adr/217-atmux-skills-plugin-bundled-and-wizard-installed.md) §D2.1 — naming rationale (`/atmux:sweep` vs `/atmux:superdoctor`/`/atmux:medic`).

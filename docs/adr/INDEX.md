@@ -180,7 +180,7 @@
 | 209 | Epic-team hold-posture deadlock + cage-state probe false-negative + sweep `lastCommitHoursAgo` semantic | 2026-05-21 | Proposed — filed by driver 2026-05-21 during sopx epic-dissolve sweep; diagnos |
 | 210 | Eliminate hold-posture deadlock structurally — lead brief fix + pull-protocol dispatch | 2026-05-21 | Proposed — filed by driver 2026-05-21 immediately after ADR-209 correction |
 | 211 | Retire the Sentinel role — observation functions distributed to Honker event consumers | 2026-05-21 | Implemented by e-be01fc89 (sentinel deleted in entirety 2026-05-23; honker-subst |
-| 212 | Retire Medic role — lead-gated rotation pattern; fold ADR-211's 4-EPIC sentinel-split back into one watchdogs EPIC (simplification pass) | 2026-05-21 | Accepted — ratified by driver 2026-05-21 (Medic role retires at cockpit W2; AD |
+| 212 | Retire Medic role — lead-gated rotation pattern; fold ADR-211's 4-EPIC sentinel-split back into one watchdogs EPIC (simplification pass) | 2026-05-21 | Accepted 2026-05-21 — **partially superseded 2026-09-07: medic §D1/§D5/§D6 superseded by ADR-291** (medic reinstated as a live cockpit member); §D2 lead-gated pattern, §D3 detection model, §D4 EPIC re-fold and §D7 context-pct enrichment stand |
 | 213 | Retire `_jury` role — Reviewer absorbs Acceptance-Criteria verification | 2026-05-21 | Accepted — ratified by driver 2026-05-21 (Jury role retires entirely; ADR-204  |
 | 214 | Retire Ombudsman role — Lead absorbs complaint adjudication via Honker push | 2026-05-21 | Accepted — ratified by driver 2026-05-21 (Ombudsman role retires entirely; ADR |
 | 215 | Multi-driver support per atmux team — ordinal driver-N identity, default count 3, shared inbox with identity-prefix | 2026-05-21 | Accepted — ratified by driver 2026-05-21 (multi-instance the existing driver c |
@@ -251,7 +251,8 @@
 | 282 | Never collect the whole environment in a test — allowlist at the source | 2026-08-28 | accepted (operator-direct) |
 | 284 | One sizing policy for every cockpit window — the `unum` `window-size smallest` override is retired | 2026-08-30 | accepted (operator-direct) |
 | 285 | Cooperative `_bot` seats and the `_superbot` offer protocol (renumbered from 281 on merge — collision) | 2026-08-28 | accepted (operator-direct; live activation held) |
-| 290 | Superdriver lane shortform — cockpit window 1 `_superdriver` → `_sd`, `_sdN` multi-lane cockpit (ADR-279 operator windows, lease-guarded dispatch), `/atmux:bruh` + `/atmux:bruhloop` retired and deleted (drafted as 287; renumbered to 288, then to 290 — collision) | 2026-09-02 | proposed |
+| 290 | Superdriver lane shortform — cockpit window 1 `_superdriver` → `_sd`, `_sdN` multi-lane cockpit (ADR-279 operator windows, lease-guarded dispatch), `/atmux:bruh` + `/atmux:bruhloop` retired and deleted (drafted as 287; renumbered to 288, then to 290 — collision) | 2026-09-02 | accepted (adversarial review 2026-09-02, 0 blockers; operator decision — George, 2026-09-02) |
+| 291 | The medic is reinstated as a live cockpit member — ADR-212 §D1/§D5/§D6 superseded, `_medic` sits after the `_sdN` lanes (ADR-290 §D5), pane carries `ATMUX_MEMBER=medic`, `buildSuperdoctor*` shims removed | 2026-09-07 | accepted (operator-direct — geoyws, 2026-09-07) |
 
 ## Superseded (skip)
 

@@ -32,7 +32,7 @@ The script emits per-team verdicts (🟢 BAU / 🟡 Quiescent-fresh / 🟡 Quies
 
 This is a thin synthesis layer — DO NOT re-format the script body. The operator's eye lands on the header, decides whether to read the table, and moves on.
 
-Verdict-mapping rationale (consistent with `/atmux:whip` §8.0 / `/atmux:sweep` §9.5 — the latter formerly the medic surface; per [ADR-212](../../../../docs/adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md) the role retired but the marker scheme stayed):
+Verdict-mapping rationale (consistent with `/atmux:whip` §8.0 / `/atmux:sweep` §9.5 — the latter formerly the medic surface; per [ADR-212](../../../../docs/adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md) the role retired per ADR-212 in 2026-05 and was reinstated per ADR-291 on 2026-09-07; the marker scheme stayed throughout):
 - 🟢 BAU and 🟡 Quiescent-fresh map to ✅ (the team is working as intended)
 - 🟡 Quiescent-stale maps to ⚠ (sliding, watch one cycle)
 - 🚫 Rate-Limited / 💤 Down / 💀 Saturated / ⚙️ Stuck-input / 🔴 Dormant map to 👁 + 🔴 unless the auto-fix is in-flight (then ⚠ for one cycle)

@@ -1,4 +1,5 @@
-<!-- brief-version: v4 -->
+<!-- brief-version: v5 -->
+<!-- Changed 2026-09-07 per ADR-291 — medic reinstated as a live cockpit member: dropped from the retired-roles list, added to the cockpit-tier roles. -->
 
 > ⚠ **orchd retired 2026-08-27 per [ADR-276](../../docs/adr/276-orchd-retirement-and-atmux-scope.md).** Every "orchd" / `__orchd__` window / ticker / auto-spawn / auto-merge-consumer sentence in this brief is HISTORY — no daemon runs. Manual orchestration ([ADR-260](../../docs/adr/260-manual-orchestration-mode-default.md)) is the reality; the one-shot event drain is operator-invoked `atmux committer --drain`.
 
@@ -17,7 +18,7 @@ You have been briefed as `{{MEMBER}}` on team `{{TEAM}}` with role `{{ROLE}}`. B
 
 - `ATMUX_MEMBER` (set by atmux when it spawned this Claude) MUST equal `{{MEMBER}}` exactly. This is the **primary** check — atmux sets it per pane at spawn time; if it doesn't match the brief, the brief was mis-routed.
 - `window=` (from the calling pane via `-t "$TMUX_PANE"`) MUST contain `{{MEMBER}}` — canonical pattern `<emoji>_{{MEMBER}}` or `<emoji>-{{MEMBER}}`. **Critical**: pass `-t "$TMUX_PANE"` — without it, `tmux display-message` reports the attached client's current window (often the driver pane), giving a misleading false-mismatch.
-- `session=` MUST contain `{{TEAM}}` — canonical `atmux_{{TEAM}}`; epic-team variants `atmux_{{TEAM}}__epic-<id>` are also valid. **Cockpit-tier roles** (superdriver, enforcer, discorder, merger, unblocker) run from `atx` — correct for cockpit briefs ONLY; team-tier briefs must NOT be in `atx`. **Retired roles** (sentinel/medic/jury/ombudsman per ADR-211/212/213/214): surface via `atmux flag` if you find yourself spawned into one.
+- `session=` MUST contain `{{TEAM}}` — canonical `atmux_{{TEAM}}`; epic-team variants `atmux_{{TEAM}}__epic-<id>` are also valid. **Cockpit-tier roles** (superdriver, medic, enforcer, discorder, merger, unblocker) run from `atx` — correct for cockpit briefs ONLY; team-tier briefs must NOT be in `atx`. **Retired roles** (sentinel/jury/ombudsman per ADR-211/213/214): surface via `atmux flag` if you find yourself spawned into one.
 
 If `ATMUX_MEMBER` does not match OR window/session do not match:
 

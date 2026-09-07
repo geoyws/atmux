@@ -74,6 +74,7 @@ import {
 } from "../core/safe-send.ts";
 import { getCockpitSocketName } from "../core/tmux-paths.ts";
 import type { Logger } from "../core/tui.ts";
+import { envPrefix } from "../core/tui-cmd.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type {
   CockpitClaudeAccount,
@@ -787,6 +788,12 @@ export const claudeUiGoneVerifier: PaneVerifier = (text: string) =>
  *  CLAUDE_GUARD_AGENT) before exec'ing claude. Unknown configDir
  *  throws ConfigError (refused upstream of any pane mutation).
  *
+ *  ADR-291 §D3: prefixed with `export ATMUX_MEMBER=medic &&` via the
+ *  shared `envPrefix` seam, matching `buildMedicWindowCommand`, so a
+ *  rotated medic keeps its lane identity — kb actor `claude@medic`,
+ *  `atmux claim` / `done` without `--as`. Without it the respawned pane
+ *  came up identity-less while the reconcile-created pane had one.
+ *
  *  Differs from cockpit rebuild's `buildClaudeWindowCommand` (which
  *  uses an inline env-set + bare `claude` binary): rotate respawn
  *  honors the literal ADR-167 spec text + lets fe-2's T7 hermetic
@@ -804,7 +811,7 @@ export function buildClaudeRespawnCommand(
   // CLAUDE_GUARD_AGENT explicit on the line (the wrapper exports it
   // too, but belt-and-suspenders matches global CLAUDE.md §Spawn
   // Pattern verbatim).
-  return `CLAUDE_GUARD_AGENT=1 ${wrapper}${pluginFlag} --permission-mode ${permission} --model claude-opus-4-7`;
+  return `${envPrefix("medic")} CLAUDE_GUARD_AGENT=1 ${wrapper}${pluginFlag} --permission-mode ${permission} --model claude-opus-4-7`;
 }
 
 /** Emit a success-outcome audit row. Mirrors `emitRefusal` but without

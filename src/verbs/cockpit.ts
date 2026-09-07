@@ -78,7 +78,7 @@ import {
 import { migrateLegacySessionName } from "../core/session-migrate.ts";
 import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
-import { resolveTuiCommand } from "../core/tui-cmd.ts";
+import { envPrefix, resolveTuiCommand } from "../core/tui-cmd.ts";
 import { UsageError } from "../errors.ts";
 import type {
   CockpitMedic,
@@ -121,16 +121,13 @@ export interface ResolveTeamWindowDeps {
    *  Receives the socket path resolved by `resolveCageSocket` so tests
    *  can capture which candidate was picked. */
   createCageTmux?: (socketPath: string) => TmuxNamespace;
-  /** Override the medic (legacy: superdoctor) window's shell command
-   *  (test injection). Default uses `buildMedicWindowCommand`. CI
-   *  runners don't have `claude` installed; tests inject
-   *  the shared portable keepalive loop so the window persists for
-   *  topology assertions. */
+  /** Override the medic window's shell command (test injection).
+   *  Default uses `buildMedicWindowCommand`. CI runners don't have
+   *  `claude` installed; tests inject the shared portable keepalive
+   *  loop so the window persists for topology assertions.
+   *  The ADR-133-era `buildSuperdoctor*` dep alias was removed on
+   *  2026-09-07 per ADR-291 §D3 (the ADR-266 §D2 shim window closed). */
   buildMedicCommand?: (m: CockpitMedic) => string;
-  /** Back-compat alias for `buildMedicCommand`. Existing test
-   *  fixtures injecting `buildSuperdoctorCommand` keep working; the
-   *  reconcile prefers `buildMedicCommand` when both are set. */
-  buildSuperdoctorCommand?: (sd: CockpitMedic) => string;
   /** t-22453c1e: sleep override for the medic auto-start
    *  poll loops. Default `setTimeout`-backed. Tests pass a no-op so
    *  wait-for-readiness doesn't burn real wall-clock seconds. */
@@ -2096,8 +2093,7 @@ export async function reconcileCockpitSession(
     let md = windowsBefore.find((w) => w.name === "_medic");
     let mdJustCreated = false;
     if (md === undefined) {
-      const builder =
-        deps.buildMedicCommand ?? deps.buildSuperdoctorCommand ?? buildMedicWindowCommand;
+      const builder = deps.buildMedicCommand ?? buildMedicWindowCommand;
       const cmd = builder(medic);
       const newId = await cockpitTmux.window.newWindow({
         sessionName,
@@ -2397,26 +2393,32 @@ export async function reconcileCockpitSession(
 }
 
 /**
- * ADR-077 + ADR-133: build the shell command the cockpit medic window
- * runs (legacy alias: `buildSuperdoctorWindowCommand`). Mirrors the
- * team-window claude-bootstrap shape (CLAUDE_CONFIG_DIR + effortLevel +
- * permissionMode + plugin-dir) when `claudeAccount` is set; otherwise
- * emits a bare `claude` invocation that inherits the operator's
- * default shell env (matches superdriver's default).
+ * ADR-077 + ADR-133 + ADR-291 §D3: build the shell command the cockpit
+ * medic window runs. Mirrors the team-window claude-bootstrap shape
+ * (CLAUDE_CONFIG_DIR + effortLevel + permissionMode + plugin-dir) when
+ * `claudeAccount` is set; otherwise emits a bare `claude` invocation
+ * that inherits the operator's default shell env (matches the `_sd`
+ * lane's default).
  *
  * Defaults match `normaliseTeamJson`'s tuiCommands.claude builder
  * (effortLevel=xhigh, permissionMode=auto) so a medic session runs with
  * the same Opus + auto-mode posture as a team window.
+ *
+ * ADR-291 §D3: the command is prefixed with `export ATMUX_MEMBER=medic
+ * &&` — emitted via `envPrefix`, the same seam `tuiClaude` uses for team
+ * panes; `posixQuote` leaves a bare word unquoted, so the literal
+ * carries no single quotes. The medic pane therefore has its lane
+ * identity: `atmux claim` / `done` and the kb actor `claude@medic`
+ * resolve without `--as`. No `cd`, and no trailing `exec zsh -i`: an
+ * interactive shell's `❯` prompt reads as "claude still up" to
+ * `cockpit rotate`'s `claudeUiGoneVerifier`.
+ *
+ * The deprecated `buildSuperdoctor*` window-command alias (ADR-133 rename
+ * era) was removed on 2026-09-07 per ADR-291 §D3 — ADR-266 §D2 had
+ * already closed the shim window for every other superdoctor alias.
  */
 export function buildMedicWindowCommand(m: CockpitMedic): string {
-  return buildClaudeWindowCommand(m);
-}
-
-/** @deprecated use {@link buildMedicWindowCommand} (ADR-133 rename) —
- *  kept as alias so legacy callers in tests / cron-install paths
- *  continue to work. */
-export function buildSuperdoctorWindowCommand(sd: CockpitMedic): string {
-  return buildClaudeWindowCommand(sd);
+  return `${envPrefix("medic")} ${buildClaudeWindowCommand(m)}`;
 }
 
 /** ADR-285: command for the cockpit scheduler window. The config path is

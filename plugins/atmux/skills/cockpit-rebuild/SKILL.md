@@ -1,6 +1,6 @@
 ---
 name: cockpit-rebuild
-description: Deterministically (re)build the atmux cockpit + every per-team cage via `atmux cockpit rebuild`. Idempotent — safe after reboot or accidental cage drop. Per ADR-063 / ADR-135 / ADR-162.
+description: Deterministically (re)build the atmux cockpit + every per-team cage via `atmux cockpit reconcile`. Idempotent — safe after reboot or accidental cage drop. Per ADR-063 / ADR-135 / ADR-162.
 argument-hint: [--no-cycle] [--force-cycle]
 ---
 
@@ -8,11 +8,11 @@ argument-hint: [--no-cycle] [--force-cycle]
 
 # /atmux:cockpit-rebuild — deterministic cockpit + cage topology
 
-Recreates the canonical cockpit topology in one shot via the `atmux cockpit rebuild` verb (ported from operator dotfiles into atmux proper per [ADR-063](../../../../docs/adr/063-cockpit-verb-port.md)):
+Recreates the canonical cockpit topology in one shot via the `atmux cockpit reconcile` verb (ported from operator dotfiles into atmux proper per [ADR-063](../../../../docs/adr/063-cockpit-verb-port.md)). **The verb is `reconcile`, not `rebuild`** — the `rebuild` alias hard-fails with an actionable `UsageError` per [ADR-266](../../../../docs/adr/266-shim-sunset-policy-and-first-sweep.md) §D2 (the ADR-235 §OQ4 deprecation window expired); this skill's own name is unchanged for back-compat.
 
 | Layer | What |
 |---|---|
-| Cockpit session `atx` ([ADR-264](../../../../docs/adr/264-cockpit-session-atx-rename.md) §D5; was `atmux_cockpit` per [ADR-135](../../../../docs/adr/135-cockpit-naming-convention.md) §D1, before that `atmux_teams`) | window 1 `_sd` (superdriver lane 1; was `_superdriver` — renamed in place per [ADR-290](../../../../docs/adr/290-superdriver-lane-shortform-and-multi-lane-cockpit.md) §D1); the `_sd2` / `_sd3` superdriver lanes immediately after it as declarative operator windows (ADR-290 §D2, placement per §D5); then optional `_medic` / `_sentinel` slots when configured (both retired as auto-spawn roles per ADR-211 + ADR-212 — slots stay for back-compat); per-team viewer windows from window N+1, each self-heal-loops `tmux attach` into its cage's driver window |
+| Cockpit session `atx` ([ADR-264](../../../../docs/adr/264-cockpit-session-atx-rename.md) §D5; was `atmux_cockpit` per [ADR-135](../../../../docs/adr/135-cockpit-naming-convention.md) §D1, before that `atmux_teams`) | window 1 `_sd` (superdriver lane 1; was `_superdriver` — renamed in place per [ADR-290](../../../../docs/adr/290-superdriver-lane-shortform-and-multi-lane-cockpit.md) §D1); the `_sd2` / `_sd3` superdriver lanes immediately after it as declarative operator windows (ADR-290 §D2, placement per §D5); then `_medic` when configured — a **live** cockpit member per [ADR-291](../../../../docs/adr/291-medic-reinstated-as-cockpit-member.md) §D1, in the slot after the last lane (ADR-290 §D5) — and the `_sentinel` slot, which stays only for back-compat (that role is retired per ADR-211); per-team viewer windows from window N+1, each self-heal-loops `tmux attach` into its cage's driver window |
 | Per-team cages | one tmux server per team on an atmux-resolved socket (`/tmp/atmux-<team>/sock`, or `team.json::tmuxTmpdir` override; see [ADR-018](../../../../docs/adr/018-per-team-tmux-socket-isolation.md) + [ADR-162](../../../../docs/adr/162-atmux-owns-tmux-infrastructure.md)). Each cage spawns Claude with an isolated `CLAUDE_CONFIG_DIR` so per-account session state and rate-limit windows don't cross-contaminate. Member panes use `--permission-mode auto` + bare window names per ADR-006. |
 | Cage prefix | per-cage prefix is **level-resolved** at rebuild time per [ADR-089](../../../../docs/adr/089-hierarchical-cockpit.md) §C — cages nested inside a parent cage gain a different prefix than top-level team cages, so the operator can target a specific layer without ambiguity. |
 | Registry `~/.claude/teams/registry.json` | trimmed to the canonical team set; existing emoji rosters preserved across rebuilds. |
@@ -20,7 +20,7 @@ Recreates the canonical cockpit topology in one shot via the `atmux cockpit rebu
 
 ## Instructions
 
-1. Run `atmux cockpit rebuild`, passing through `$ARGUMENTS` if non-empty.
+1. Run `atmux cockpit reconcile`, passing through `$ARGUMENTS` if non-empty.
    - `--no-cycle` — skip the cage stop+start cycle; only normalise `team.json` files, registry, and cockpit overlay. Use when in-flight REPL state in cages must be preserved.
    - `--force-cycle` — cycle even cages with running Claude REPL processes (default behavior protects live cages).
 2. Stream the verb's output to the user. The verb is verbose and self-documents each phase (`▸ normalising team.json files`, `▸ trimming registry`, `▸ stopping cages`, `▸ starting cages`, `▸ applying level-resolved cage prefix`, `▸ reconciling cockpit`).
@@ -64,11 +64,11 @@ Cockpit rebuild touches the full topology (cockpit-tier windows + per-team cages
 
 ## Cross-references
 
-- [ADR-063](../../../../docs/adr/063-cockpit-verb-port.md) — verb port (this skill's substrate; defines `atmux cockpit rebuild` surface)
+- [ADR-063](../../../../docs/adr/063-cockpit-verb-port.md) — verb port (this skill's substrate; defined the original `atmux cockpit rebuild` surface, renamed to `reconcile` per ADR-266 §D2)
 - [ADR-135](../../../../docs/adr/135-cockpit-naming-convention.md) — `atmux_teams` → `atmux_cockpit` session rename + `_`-prefix cockpit-role windows
 - [ADR-162](../../../../docs/adr/162-atmux-owns-tmux-infrastructure.md) — cockpit on isolated tmux socket; eliminates daily-driver socket contamination
 - [ADR-018](../../../../docs/adr/018-per-team-tmux-socket-isolation.md) — per-team cage socket isolation
 - [ADR-089](../../../../docs/adr/089-hierarchical-cockpit.md) §C — level-resolved cage prefix chain
 - [ADR-006](../../../../docs/adr/006-bare-atmux.md) — `bareWindowNames` convention
-- [ADR-211](../../../../docs/adr/211-retire-sentinel-role-distribute-to-honker-consumers.md) + [ADR-212](../../../../docs/adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md) — `_sentinel` + `_medic` cockpit-role auto-spawns retired (slots in `cockpit.json` schema kept for one-release back-compat)
+- [ADR-211](../../../../docs/adr/211-retire-sentinel-role-distribute-to-honker-consumers.md) — `_sentinel` cockpit-role auto-spawn retired (slot in the `cockpit.json` schema kept for back-compat). [ADR-212](../../../../docs/adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md) retired `_medic` on paper in 2026-05; that is **reversed** — the medic is a live cockpit member again per [ADR-291](../../../../docs/adr/291-medic-reinstated-as-cockpit-member.md) §D1, created by reconcile in the slot after the `_sdN` lanes.
 - [ADR-217](../../../../docs/adr/217-atmux-skills-plugin-bundled-and-wizard-installed.md) §D4 — generalization pass strip list (this carve)

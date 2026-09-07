@@ -271,3 +271,17 @@ The 2026-05-19 boundary text above moved pane-liveness scope to sentinel (W3 coc
 - **Cockpit-tier medic** — per [ADR-212](./212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md) the W2 medic scheduled-tick role is also retired; the **probe substrate library** described in §Amendment 2026-05-21 above PERSISTS for orchd consumer use.
 
 The 2026-05-19 cross-refs (ADR-132 §Amendment, t-186d5910 sentinel deploy, ADR-140 sentinel/medic boundary) are preserved as historical audit context; the live mechanisms they pointed at are gone.
+
+### 2026-09-07 — the role is LIVE again per ADR-291; the 2026-05-21 and 2026-05-23 retirement annotations above are HISTORICAL
+
+Operator decision (geoyws, 2026-09-07): **keep the medic.** [ADR-291](./291-medic-reinstated-as-cockpit-member.md) reinstates it as a live cockpit member and supersedes [ADR-212](./212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md) §D1 / §D5 / §D6. Read the two annotations above — §Amendment 2026-05-21 ("the cockpit-tier Medic scheduled-tick role retires per ADR-212 §D1") and the "Cockpit-tier medic" bullet of §Amendment 2026-05-23 — as the historical record of a retirement that was never executed, **not** as current guidance. ADR-212 §D5 gated the cutover on the Honker/orchd consumer substrate, which [ADR-276](./276-orchd-retirement-and-atmux-scope.md) deleted on 2026-08-27; the `_medic` window, its config block and its rotate path stayed in tree throughout.
+
+What changed relative to this ADR's own text:
+
+- **Window slot.** §D1's topology put the role at cockpit W2, immediately after window 1. It now sits **after `_sd` and every `_sdN` superdriver lane** — slot `anchor.index + 1 + laneCount` per [ADR-290](./290-superdriver-lane-shortform-and-multi-lane-cockpit.md) §D5 — and before `_superbot`, the other ADR-279 operator windows and the team viewers. With no lanes declared it collapses to this ADR's original `anchor.index + 1`.
+- **Pane identity.** The window command now begins `export ATMUX_MEMBER=medic &&` (ADR-291 §D3) so the pane's kb actor is `claude@medic` and `atmux claim` / `done` need no `--as`.
+- **Operating loop.** The hourly `/loop /whip` tick of §D3 is not the live loop. The medic runs as a cockpit lane working the `medic` kb board on `@@hax` under an operator-armed standing goal, interacting only through kb rows (ADR-291 §D2). The §D3–§D6 mechanics described here — the complaint box, the `__superdoctor__` inbox, the P0 runbook, the self-escalation primitives — all still ship and are still readable, but they are substrate, not the cadence.
+- **§D3's authority limits are unchanged and still binding**: no force-push, no push to a product staging ref, nothing against any prod environment, no `--no-verify`, and no writes into a driver or `_sd` / `_sdN` pane.
+- **The probe substrate library** (`src/core/doctor-class.ts`, the doctor probe registry, the probe-class taxonomy) was never in question and is unchanged.
+
+Sentinel stays retired per ADR-211 — the 2026-05-19 / 2026-05-23 sentinel text above remains correct history and correct current state for sentinel.

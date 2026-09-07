@@ -51,7 +51,7 @@ Pre-orchd atmux ran on cron-ticked polling loops (whip, sentinel, medic, bruhloo
 
 - **[ADR-202](adr/202-honker-in-db-messaging-substrate.md)** — Honker (SQLite NOTIFY/LISTEN extension) is the messaging substrate. Consumers `LISTEN` for topics like `task.done`, `epic.merged`, `member.no-progress`; producers `NOTIFY` inside the same transaction that mutates state. Cross-process wake latency ~0.7ms p50. Cost when idle: zero.
 - **[ADR-211](adr/211-retire-sentinel-role-distribute-to-honker-consumers.md)** — sentinel role retired. Mechanical observation (pane-classify, wedge-clear, refusal-handle, silent-team-detect) distributes to Honker consumers.
-- **[ADR-212](adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md)** — medic role retired. Rotation + clear decisions go to the lead under a lead-gated execution pattern (see §4).
+- **[ADR-212](adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md)** — medic role retired in 2026-05, and **reinstated as a live cockpit member on 2026-09-07** per [ADR-291](adr/291-medic-reinstated-as-cockpit-member.md) (§D1/§D5/§D6 of ADR-212 superseded). Rotation + clear decisions stay with the lead under ADR-212 §D2's lead-gated execution pattern (see §4) — the reinstated medic works fleet and host health on its own kb board and does not rotate team members.
 - **[ADR-213](adr/213-retire-jury-reviewer-absorbs-acceptance-criteria.md)** — jury role retired. Reviewer absorbs Story-level acceptance criteria signoff.
 - **[ADR-214](adr/214-retire-ombudsman-lead-absorbs-complaint-adjudication-via-honker.md)** — ombudsman role retired. Lead absorbs complaint adjudication via Honker events.
 

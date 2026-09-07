@@ -8,8 +8,12 @@
 > Sentinel was decommissioned per [ADR-211](adr/211-retire-sentinel-role-distribute-to-honker-consumers.md);
 > Ombudsman + Jury retired per [ADR-214](adr/214-retire-ombudsman-lead-absorbs-complaint-adjudication-via-honker.md)
 > + [ADR-213](adr/213-retire-jury-reviewer-absorbs-acceptance-criteria.md);
-> Medic narrowed to on-demand `atmux medic diagnose <team>` per
-> [ADR-212](adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md).
+> Medic was retired on paper per
+> [ADR-212](adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md)
+> — the "narrowed to on-demand `atmux medic diagnose <team>`" wording was
+> never true (no such verb was ever written) and the role is a **live
+> cockpit member again** as of 2026-09-07 per
+> [ADR-291](adr/291-medic-reinstated-as-cockpit-member.md).
 > Routine observation + nudging was to migrate to orchd consumers.
 >
 > **2026-08-27 — orchd itself is RETIRED** ([ADR-276](adr/276-orchd-retirement-and-atmux-scope.md)): the daemon,

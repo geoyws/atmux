@@ -910,8 +910,12 @@ describe("claudeUiGoneVerifier", () => {
 // ---------- T4: claude-wrapper resolver in spawn line ----------
 
 describe("buildClaudeRespawnCommand", () => {
-  test("default (no account) → bare claude wrapper", () => {
+  test("default (no account) → bare claude wrapper behind the medic identity prefix", () => {
     const cmd = buildClaudeRespawnCommand(undefined, undefined);
+    // ADR-291 §D3: a rotated medic keeps its lane identity, so the
+    // respawned pane's kb actor is still `claude@medic` and `atmux
+    // claim` / `done` work without `--as`.
+    expect(cmd.startsWith("export ATMUX_MEMBER=medic && ")).toBe(true);
     expect(cmd).toContain(" claude");
     expect(cmd).toContain("CLAUDE_GUARD_AGENT=1");
     expect(cmd).toContain("--permission-mode auto");

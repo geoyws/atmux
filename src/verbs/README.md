@@ -64,7 +64,7 @@ Operator one-pager: [docs/RUNBOOK-sync.md](../../docs/RUNBOOK-sync.md). Migrator
 
 ### `cockpit rotate` ([ADR-167](../../docs/adr/167-cockpit-rotate-verb.md))
 
-Operator-fired rotation of cockpit role panes (`medic` / `<team-name>`) with brief-paste-ready handoff. Historically closed Rung C of the `/bruh` escalation chain (the skill was retired per [ADR-290](../../docs/adr/290-superdriver-lane-shortform-and-multi-lane-cockpit.md) §D4) — the previously manual handoff + Ctrl-C + canonical-respawn protocol. Lives in [`src/verbs/cockpit-rotate.ts`](cockpit-rotate.ts) and dispatched from `src/verbs/cockpit.ts` (sub-verb pattern, sibling to `cockpit rebuild` + `cockpit migrate-socket`).
+Operator-fired rotation of cockpit role panes (`medic` / `<team-name>`) with brief-paste-ready handoff. The `medic` target is live: the `_medic` window is created by `atmux cockpit reconcile` and sits immediately after the `_sdN` superdriver lanes ([ADR-290](../../docs/adr/290-superdriver-lane-shortform-and-multi-lane-cockpit.md) §D5), reinstated as a cockpit member per [ADR-291](../../docs/adr/291-medic-reinstated-as-cockpit-member.md) §D1; the respawn command carries `export ATMUX_MEMBER=medic &&` (ADR-291 §D3). Historically closed Rung C of the `/bruh` escalation chain (the skill was retired per ADR-290 §D4) — the previously manual handoff + Ctrl-C + canonical-respawn protocol. Lives in [`src/verbs/cockpit-rotate.ts`](cockpit-rotate.ts) and dispatched from `src/verbs/cockpit.ts` (sub-verb pattern, sibling to `cockpit rebuild` + `cockpit migrate-socket`).
 
 Flag surface:
 

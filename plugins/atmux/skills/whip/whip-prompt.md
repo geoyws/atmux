@@ -63,7 +63,7 @@ The operator runs this team to produce real work — code committed, tests run, 
 
 ## 0.1. Test-fixture reaper — kill orphan spinTmux() leaks (every turn)
 
-Mirrors `/atmux:sweep` §0.6 (formerly the medic role's §0.6; per [ADR-212](../../../../docs/adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md) the auto-spawned medic role retired, the probe substrate persisted). `tests/unit/verbs/cockpit.test.ts` spawns real tmux servers via `spinTmux("<prefix>")` into `/tmp/atmux-cockpit-<prefix>-XXXXXX/sock`; cleanup hooks (`afterAll`, `process.on('exit')`) never fire when bun-test is SIGKILL'd (BashTool 2-min timeout, OS OOM, harness kill). Each leak holds a tmux server + zombie claude at ~140-280MB RSS (complaint c-27a1c8f4). Whip runs every 270s × N teams — runs the reaper too so leaks die faster than `/atmux:sweep`'s hourly cadence.
+Mirrors `/atmux:sweep` §0.6 (formerly the medic role's §0.6; per [ADR-212](../../../../docs/adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md) the auto-spawned medic role retired in 2026-05 and was reinstated per [ADR-291](../../../../docs/adr/291-medic-reinstated-as-cockpit-member.md) on 2026-09-07; the probe substrate persisted throughout). `tests/unit/verbs/cockpit.test.ts` spawns real tmux servers via `spinTmux("<prefix>")` into `/tmp/atmux-cockpit-<prefix>-XXXXXX/sock`; cleanup hooks (`afterAll`, `process.on('exit')`) never fire when bun-test is SIGKILL'd (BashTool 2-min timeout, OS OOM, harness kill). Each leak holds a tmux server + zombie claude at ~140-280MB RSS (complaint c-27a1c8f4). Whip runs every 270s × N teams — runs the reaper too so leaks die faster than `/atmux:sweep`'s hourly cadence.
 
 ```bash
 find /tmp -maxdepth 1 -type d -name 'atmux-cockpit-cockpit-*' -mmin +60
@@ -1362,7 +1362,7 @@ The verdict is derived from observed state (commit-cadence, member health, rate-
 
 Self-check before picking the marker: would the driver, scan-skimming 8 team status lines in 5 seconds, be misled if I picked ✅ for this turn? If yes, downgrade.
 
-Cross-skill consistency: `/atmux:sweep` uses the same verdict scheme in its lead-queue + operator reports (per [ADR-212](../../../../docs/adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md) the medic role retired but the marker scheme persisted into `/atmux:sweep`).
+Cross-skill consistency: `/atmux:sweep` uses the same verdict scheme in its lead-queue + operator reports (per [ADR-212](../../../../docs/adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md) the medic role retired in 2026-05 and was reinstated per [ADR-291](../../../../docs/adr/291-medic-reinstated-as-cockpit-member.md) on 2026-09-07; the marker scheme persisted into `/atmux:sweep` throughout).
 
 
 Derive the status from disk, not shell variables — Steps 7, 7.5, and 8 typically run in separate `Bash` tool calls, so in-memory shell state does NOT persist between them. File mtimes are the source of truth:

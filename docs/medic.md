@@ -1,33 +1,59 @@
 # medic
 
-> **2026-05-24 alignment** — Medic is **narrowed to on-demand**
-> per [ADR-212](./adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md).
-> The hourly cockpit-W2 scheduled-tick role retires once the
-> `e-honker-observation-watchdogs` consumer set ships stable ≥30 days
-> (cleanup-EPIC cutover). Until then medic continues running as the
-> safety net. Going forward operators invoke `atmux medic diagnose <team>`
-> directly when they want a diagnosis pass; routine observation +
-> rotation candidate emission migrates to lead-gated Honker consumers
-> (`member.context-high → tell-lead`, `complaint.filed → tell-lead`,
-> etc.) per [ADR-202](./adr/202-honker-in-db-messaging-substrate.md) /
-> [ADR-211](./adr/211-retire-sentinel-role-distribute-to-honker-consumers.md) /
-> [ADR-214](./adr/214-retire-ombudsman-lead-absorbs-complaint-adjudication-via-honker.md).
-> ADR-077's **probe substrate library** (`src/core/doctor-class.ts`,
-> doctor probe registry) PERSISTS — only the cockpit-tier scheduled-tick
-> role retires.
+> **2026-09-07 alignment — the medic is LIVE.** The role was reinstated as a
+> cockpit member by operator decision (geoyws, 2026-09-07) per
+> [ADR-291](./adr/291-medic-reinstated-as-cockpit-member.md), which supersedes
+> [ADR-212](./adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md)
+> §D1 (retire at cockpit W2), §D5 (retire last, behind the Honker/orchd
+> substrate — deleted by [ADR-276](./adr/276-orchd-retirement-and-atmux-scope.md)
+> on 2026-08-27) and §D6 (the `medic-config-residue` probe, never built).
+> ADR-212 §D2–§D4 / §D7 stand as history. ADR-077's **probe substrate library**
+> (`src/core/doctor-class.ts`, the doctor probe registry) was never in question
+> and is unchanged. Read the whole page with the four corrections below.
+>
+> 1. **Window placement is not "window 2".** `_medic` sits immediately after
+>    `_sd` and every `_sdN` superdriver lane — slot `anchor.index + 1 + laneCount`
+>    per [ADR-290](./adr/290-superdriver-lane-shortform-and-multi-lane-cockpit.md)
+>    §D5. On `@@mbp` the target order is `_sd, _sd2, _sd3, _medic, _misc, …`;
+>    with no lanes declared it collapses to the original slot 2.
+> 2. **The operating loop is a kb board, not an hourly tick.** The medic is a
+>    cockpit lane in the ADR-290 §D2 shape: identity `ATMUX_MEMBER=medic`
+>    (ADR-291 §D3), kb actor `claude@medic` on lane `medic`, working the `medic`
+>    kb board on `@@hax` under an operator-armed standing goal
+>    (`/standing-goal /kb-goal`). **kb rows are the only interaction surface**,
+>    and `tmux send-keys` into any pane is BANNED (board rule `r-1376df29`);
+>    panes are read-only for liveness checks. Mutating work is delegated to
+>    isolated worktrees; the shared cwd is read-only. The brief is
+>    [`templates/briefs/medic.md`](../templates/briefs/medic.md).
+> 3. **`autoStart: false` is the recommended setting.** The auto-start path
+>    (`autoStartSuperdoctorLoop`) send-keys `/loop /medic` into a freshly
+>    created pane. That slash command no longer exists in the operator's plugin
+>    tree (checked 2026-09-07), and injecting keystrokes conflicts with
+>    `r-1376df29`. The field and helper still ship; leave `autoStart` false (or
+>    omitted) and arm the standing goal by hand. ADR-291 §Out of scope carries
+>    the follow-up.
+> 4. **§"What it does each whip turn", §"P0 send-keys escalation runbook",
+>    §"Reading the complaint box", §"Talking to it" and §"Self-escalation"
+>    describe the ADR-077 substrate** — the hourly `/loop /whip` cadence,
+>    `atmux send __superdoctor__`, the complaint box, the P0 bypass. That
+>    machinery still ships and is still readable, but it is **historical
+>    mechanics, not the operating loop**, and the P0 send-keys bypass in
+>    particular is superseded by the send-keys ban. The §"What it must NOT do"
+>    hard limits are unchanged and still binding.
 
 > Operator reference for the cockpit-level self-healing role originally introduced as **`superdoctor`** in [ADR-077](./adr/077-superdoctor-cockpit-role.md) and renamed to **`medic`** on 2026-05-14 per [ADR-133](./adr/133-medic-rename.md). The role's design, authority surface, and complaint-box contract are canonical in ADR-077; only the role's *name* is superseded. **Storage-layer identifiers** (`superdoctor_attempts` table, `SuperdoctorAttemptsRepo`, member sentinel `__superdoctor__`, Discord dedup key `superdoctor-self-heal-escalation`) **remain unchanged** for the deprecation window per ADR-133 §Out of scope — table renames require a separate schema-migration ADR. The skill source (`~/.claude/skills/superdoctor/`) and Discord template prefix (`[superdoctor]`) rename land separately under EPIC `t-d25ff629` TR5 (plugin source) and follow-up work — until those ship, the operator-visible Discord prefix is `[superdoctor]` and the skill path stays put.
 
 ## What it is
 
-A second Claude Opus session in the operator cockpit, sitting at window 2 (right after `superdriver`, before the per-team viewer windows). It runs an hourly `/whip` loop and asks: *is anything abnormal in atmuxland, and if so, why, and how do I prevent it from happening again?*
+A dedicated Claude (or Codex) session in the operator cockpit, in the `_medic` window — placed immediately after `_sd` and every `_sdN` superdriver lane, before `_superbot`, the other operator windows and the per-team viewers ([ADR-290](./adr/290-superdriver-lane-shortform-and-multi-lane-cockpit.md) §D5; [ADR-291](./adr/291-medic-reinstated-as-cockpit-member.md) §D1). It works the `medic` kb board on `@@hax` under an operator-armed standing goal and asks: *is anything abnormal in atmuxland or on its hosts, and if so, why, and how do I prevent it from happening again?*
 
-| | superdriver (window 1) | medic (window 2) | per-team lead |
+| | `_sd` / `_sdN` superdriver lanes | `_medic` | per-team lead |
 |---|---|---|---|
-| **Lives at** | cockpit `atx:1` | cockpit `atx:2` | each team's cage `:driver` window |
-| **Cadence** | operator-driven (interactive REPL) | own `/loop /whip`, hourly | per-team whip (270s default) |
-| **Owns** | cross-team dispatch, ad-hoc decisions | diagnosis loop, complaint authoring, structural fixes | one team's coordination |
-| **Talks to operator via** | direct (it IS the REPL) | `pending-decisions.md` + Discord pings | driver-inbox + Discord |
+| **Lives at** | cockpit `atx:1` (`_sd`) + `atx:2..` (`_sdN`) | cockpit `_medic`, the window right after the last `_sdN` lane (`atx:4` on `@@mbp` with two lanes declared; `atx:2` when no lanes are declared) | each team's cage `:driver` window |
+| **Identity** | `ATMUX_MEMBER=sd` / `sdN`, kb `claude@sdN` | `ATMUX_MEMBER=medic`, kb `claude@medic` on lane `medic` (ADR-291 §D3) | team member id |
+| **Cadence** | operator-armed standing goal over the `superdriver` kb board | operator-armed standing goal over the `medic` kb board (`/standing-goal /kb-goal`) | per-team whip (270s default) |
+| **Owns** | cross-team dispatch, ad-hoc decisions | fleet + host health: doctor/status sweeps, host-pressure playbook ([ADR-198](./adr/198-medic-host-pressure-playbook.md)), branch fixes, cage cycles | one team's coordination |
+| **Talks to operator via** | kb rows (`sr` / `att`) | kb rows on the `medic` board — `kb att raise` for anything needing the operator | driver-inbox + Discord |
 
 (Per [ADR-264](./adr/264-cockpit-session-atx-rename.md) the cockpit session is `atx`; pre-ADR-264 deployments still see `atmux_cockpit` or, pre-ADR-135, `atmux_teams`.)
 
@@ -47,36 +73,37 @@ Default state: **off**. Activation is opt-in per operator.
 
 ## Enabling it
 
-Add a `medic` block to `~/.atmux/cockpit.json` (the legacy `superdoctor` key is still accepted during the deprecation window per ADR-133 §"Schema rename + backward-compat shim" — emits a deprecation warning, then proceeds normally):
+The canonical form is a `type: "medic"` entry in the cockpit roster's `sessions[]` array ([ADR-279](./adr/279-declarative-operator-cockpit-windows.md)). This is the exact live `@@mbp` entry from `~/.atmux/cockpit.macos.json` on 2026-09-07:
 
 ```jsonc
 {
-  "cockpitSession": "atx",
-  "medic": {
-    "enabled": true,
-    "claudeAccount": {
-      "configDir": "/root/.claude-personal",
-      "label": "personal"
-    },
-    "tuiOverrides": {
-      "effortLevel": "xhigh",
-      "permissionMode": "auto",
-      "pluginDir": "/root/work/journals/.sb/claude-skills"
-    }
+  "type": "medic",
+  "name": "medic",
+  "enabled": true,
+  "autoStart": false,
+  "claudeAccount": {
+    "configDir": "/Users/geoyws/.claude-gmail",
+    "label": "gmail"
   },
-  "teams": [ /* ...as today */ ]
+  "tuiOverrides": {
+    "effortLevel": "xhigh",
+    "permissionMode": "auto",
+    "pluginDir": "/Users/geoyws/work/journals/.sb/claude-skills"
+  }
 }
 ```
+
+`autoStart: false` is the recommended setting — see correction 3 in the banner at the top of this page. The legacy top-level `medic` block in `~/.atmux/cockpit.json` is still read and still works; the legacy `superdoctor` key is not (that shim expired per [ADR-266](./adr/266-shim-sunset-policy-and-first-sweep.md) §D2 — a config still carrying it fails with an actionable error).
 
 Then:
 
 ```bash
-atmux cockpit rebuild
+atmux cockpit reconcile
 ```
 
-Window 2 of the cockpit session shows `medic` (formerly `superdoctor`). Per-team viewers shift to windows 3..N (was 2..N before).
+(`reconcile` is the verb; `atmux cockpit rebuild` is gone.) The reconcile creates `_medic` in the slot right after `_sd` and the declared `_sdN` lanes and reorders any misaligned windows by moves only — no pane is killed, no `--yes` needed (ADR-290 §D5). Then arm the lane by hand in that pane: `/standing-goal /kb-goal` against the `medic` board.
 
-To disable: set `enabled: false` (or remove the block) and re-run `atmux cockpit rebuild`. The window is killed; no other cockpit shape changes.
+To disable: set `enabled: false` (or remove the entry) and re-run `atmux cockpit reconcile`. The window is killed; no other cockpit shape changes.
 
 ## Per-team `cageMode` flag (t-72a6b7d7 / c-a99bf461)
 
@@ -86,7 +113,7 @@ Each team entry in `~/.atmux/cockpit.json` accepts an optional `cageMode` field 
 |---|---|---|
 | `"autonomous"` (default — legacy configs without the field) | 🟢 cage healthy | 🔴 cage missing — autonomous team expected a live socket |
 | `"direct"` (operator-driven, no cage by design) | 🟡 unexpected live cage — confirm intent | 🟢 direct-driver mode (no cage by design) |
-| `"paused"` (intentionally down today) | 🟡 paused team has a live cage — clear pause or tear down | 🟡 paused — restart on next `atmux cockpit rebuild` |
+| `"paused"` (intentionally down today) | 🟡 paused team has a live cage — clear pause or tear down | 🟡 paused — restart on next `atmux cockpit reconcile` |
 
 Only the 🔴 cell is `actionable` (medic escalates it to the operator); every other cell is informational. The classifier is `verdictForCage(cageMode, sessionAlive)` in `src/core/superdoctor-cage-verdict.ts` — call it directly when wiring custom sweep logic.
 
@@ -102,7 +129,9 @@ Only the 🔴 cell is `actionable` (medic escalates it to the operator); every o
 
 Legacy cockpit.json files without `cageMode` keep their pre-flag behaviour exactly — every team defaults to `autonomous`, and the medic sweep continues to flag socket-missing rows red.
 
-## What it does each whip turn
+## What it does each whip turn (ADR-077 substrate — HISTORICAL mechanics)
+
+> **Not the operating loop.** This is the [ADR-077](./adr/077-superdoctor-cockpit-role.md) hourly-tick design as filed on 2026-05-08. The live loop is the `medic` kb board under an operator-armed standing goal (banner correction 2). The probes and verbs named below are exactly the ones a medic still runs — the *cadence* and the `__superdoctor__` inbox hop are what changed.
 
 Hourly `/loop /whip` cycle, in order:
 
@@ -131,7 +160,9 @@ These are illustrative (the actual action set is decided by the model at runtime
 | Recurring lead rotation timing out | Rotate lead via `/team rotate-lead`; capture context | "60min auto-rotate threshold is too short for this team's task complexity" |
 | Two teams competing for the same staging URL | File complaint with both team leads; pause the offending push | "branch-staging URL collision detector at deploy time" |
 
-## P0 send-keys escalation runbook
+## P0 send-keys escalation runbook (ADR-077 substrate — SUPERSEDED, do not use)
+
+> **The send-keys bypass below is BANNED as of 2026-09-02.** Board rule `r-1376df29` (basis verified against the live Anthropic Consumer Terms) forbids injecting keystrokes into another session's interactive TUI, and [ADR-291](./adr/291-medic-reinstated-as-cockpit-member.md) §D2 makes kb rows the medic's only interaction surface. A P0 today is a `kb att raise` row plus, where the operator has pre-cleared it, a non-send-keys recovery (cage cycle, `atmux cockpit rotate`). This section is retained as the ADR-077 record of what the role once did and to explain the `kind = 'p0'` complaint rows already in the state DBs.
 
 **When**: medic is allowed to bypass the SQL inbox and write directly to a teammate's pane via `tmux send-keys` only when (a) demo in <30min and a member is wedged on a recoverable error, OR (b) active stack regression and the team-lead's whip is stuck, OR (c) disk-full / process-table-full anomalies the team can't recover from autonomously. Anything else is a level-5b action (file complaint + `atmux send <team>:<lead>`), not P0.
 
@@ -172,7 +203,7 @@ atmux complaints resolve <id> --note "<observed result on next sweep>"
 | Member stuck on permission-prompt modal | `BTab` until status line shows `auto mode on` | Modes cycle: don't-ask → accept-edits → default → auto. Verify via capture-pane. |
 | Member queued message but not submitted | `Enter` | Only if the queued text is the right text — otherwise risks sending the wrong message. |
 | Lead pane on `Compacting conversation` | DO NOTHING. Compaction completes on its own. | False-positive wedge — bypass would corrupt the compaction. |
-| Cage tmux server alive but no driver session | `tmux -S <socket> kill-server` then `atmux cockpit rebuild` | Not actually a send-keys path — cage cycle. P0 because the team is fully offline. |
+| Cage tmux server alive but no driver session | `tmux -S <socket> kill-server` then `atmux cockpit reconcile` | Not actually a send-keys path — cage cycle. P0 because the team is fully offline. |
 
 **What this is NOT**: medic doesn't use `tmux send-keys` for routine messages. Routine = `atmux send <team>:<lead> "..."`. P0 send-keys is reserved for moments when the SQL inbox routing latency itself is the blocker.
 
@@ -181,7 +212,7 @@ atmux complaints resolve <id> --note "<observed result on next sweep>"
 Inherited from CLAUDE.md global policies:
 
 - **No force-push to `origin/main`** — universal.
-- **No push to `origin/${product}-staging`** — operator-manual only (push policy, ADR-024).
+- **No push to `origin/${product}-staging`** — operator-manual only. The binding rule is the global CLAUDE.md push policy: agents push feature / testing / staging / UAT branches, and `master` / `main` / production refs (`prod`, `production`, `*-prod`, `*-production`) need geoyws' approval.
 - **No actions against any product's prod environment** — medic scope is the operator's dev box + cockpit + dev/staging only.
 - **No skipping pre-commit hooks** — `--no-verify` and friends are off-limits, period. (Medic has no chat path to the operator for explicit one-off authorisation.)
 - **No `atmux send` writes to driver/superdriver panes.** Operator-only territory.
@@ -229,7 +260,9 @@ The shape (per ADR-077 §D5):
 - `status` — open / resolved / wontfix.
 - `related_task_id` — kanban task that implements the preventive ask, when one exists.
 
-## Talking to it
+## Talking to it (ADR-077 substrate — the live channel is the kb board)
+
+> **How you actually reach the medic in 2026-09:** file a row on the `medic` kb board on `@@hax` (`kb task add …` for work, `kb att raise …` for something that needs it now). The `atmux send __superdoctor__` inbox hop below still ships and still delivers, but the medic no longer runs an hourly turn that drains it, so a row is the reliable channel and a send is not.
 
 **Heads-up from a team member or lead** (e.g. "I think this stall is recurrent, please look"):
 
@@ -287,9 +320,13 @@ Read via `SuperdoctorAttemptsRepo` (`src/core/repositories/superdoctor-attempts-
 
 ## Status
 
-ADR-077 §D1 + §D2 (cockpit topology + schema), §F1 (skill brief in `~/.claude/skills/superdoctor/`), §F2 (complaint box SQLite + `atmux complaints` verb), §F3 (`atmux send __superdoctor__` validator), §F4 (P0 send-keys runbook), §F5 (status verb medic surface), and §F6 (self-escalation primitives — `superdoctor_attempts` table + `renderSelfHealFailed` Discord template) all ship. Setting `medic.enabled: true` (or legacy `superdoctor.enabled: true` during deprecation window per ADR-133) in `~/.atmux/cockpit.json` and running `atmux cockpit rebuild` spawns window 2 with a Claude Opus session that — when invoked as `/loop /medic` (or legacy `/loop /superdoctor` until plugin source TR5 lands) — runs the hourly diagnosis loop end-to-end.
+**Live as of 2026-09-07** per [ADR-291](./adr/291-medic-reinstated-as-cockpit-member.md). ADR-077 §D1 + §D2 (cockpit topology + schema), §F2 (complaint box SQLite + `atmux complaints` verb), §F3 (`atmux send __superdoctor__` validator), §F4 (the P0 send-keys runbook — shipped, now superseded by the send-keys ban), §F5 (status verb medic surface) and §F6 (self-escalation primitives) all ship. §F1's skill brief at `~/.claude/skills/superdoctor/` does **not** exist in the operator's plugin tree any more (checked 2026-09-07); the in-repo brief is [`templates/briefs/medic.md`](../templates/briefs/medic.md).
 
-Post-[ADR-140] roadmap: the hourly scan loop was to convert to event-driven listening on `~/.atmux/state/medic-events.log` once orchd event consumers shipped — they will not (orchd retired per ADR-276); medic's residual scope narrows to code-fix-class incidents. Sequenced via ADR-131 / ADR-139 / EPIC e-a946af69.
+Declaring a `type: "medic"` entry with `enabled: true` (or the legacy top-level `medic` block) and running `atmux cockpit reconcile` creates the `_medic` window right after `_sd` and the `_sdN` lanes, with a command that starts `export ATMUX_MEMBER=medic &&` (ADR-291 §D3). The operator then arms the lane by hand — `/standing-goal /kb-goal` against the `medic` kb board on `@@hax`. There is no `/loop /medic` slash command any more, and `autoStart` should stay `false`.
+
+On 2026-09-07 the live `@@hax` cockpit (`atmux_cockpit`) runs `_medic` in window 2 with Codex in it; the `@@mbp` cockpit (`atx`) declares the medic but has no `_medic` window yet. Two `atmux cockpit reconcile --no-launch` runs on 2026-09-03 exited 65 per `~/.atmux/logs/2026/09/events.jsonl`; the refusal source was not captured and does not reproduce (exit 65 is `EX_DATAERR`, the `schema` tag only, and on 2026-09-07 the branch code parsed the cockpit config plus all 42 enabled `team.json` files cleanly). Separately and definitely: under pre-ADR-290 code the medic slot was `anchor.index + 1` — the index `_sd2`'s live REPL occupies — and the fresh-add path would have silently moved-with-killed that pane with no gate at all. ADR-290 §D5 closed that, so the next reconcile on `@@mbp` creates `_medic` without killing a pane.
+
+Historical roadmap note: ADR-140's plan to convert the hourly scan loop to event-driven listening on `~/.atmux/state/medic-events.log` is dead — those orchd consumers never shipped (orchd retired per ADR-276). The kb board replaced that plan entirely.
 
 Open follow-ups (not blocking):
 

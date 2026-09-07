@@ -20,6 +20,7 @@ import {
   buildTeamWindowCommand,
   type CapturedCockpitWindow,
   cageAlive,
+  buildMedicWindowCommand,
   cockpit,
   cockpitAttach,
   cockpitMigrateSocket,
@@ -1041,7 +1042,7 @@ describe("reconcileCockpitSession", () => {
   // where `claude` isn't installed (otherwise newWindow's spawned process
   // exits immediately + tmux destroys the window).
   const sdDeps: ResolveTeamWindowDeps = {
-    buildSuperdoctorCommand: () => PORTABLE_KEEPALIVE_COMMAND,
+    buildMedicCommand: () => PORTABLE_KEEPALIVE_COMMAND,
   };
 
   // t-22453c1e: existing tests opt out of auto-start since the
@@ -1066,9 +1067,9 @@ describe("reconcileCockpitSession", () => {
       // teams 3..N. Indices may not literally be 1,2,3 if tmux is configured
       // with base-index != 1, but RELATIVE order is what we assert.
       expect(byIndex[0]?.name).toBe("_sd");
-      // ADR-133: window renamed superdoctor → medic. Legacy alias kept
-      //          in buildSuperdoctorCommand dep for back-compat; window
-      //          name is canonical "medic".
+      // ADR-133: window renamed superdoctor → medic. The legacy
+      //          buildSuperdoctor* dep alias was removed per
+      //          ADR-291 §D3; window name is canonical "_medic".
       expect(byIndex[1]?.name).toBe("_medic");
       expect(
         byIndex
@@ -1220,7 +1221,7 @@ describe("reconcileCockpitSession", () => {
       // namespace via deps, so we register a real call recorder via the
       // capturePane injection (which IS in deps).
       const deps: ResolveTeamWindowDeps = {
-        buildSuperdoctorCommand: () => PORTABLE_KEEPALIVE_COMMAND,
+        buildMedicCommand: () => PORTABLE_KEEPALIVE_COMMAND,
         autoStartSleep: async () => {},
         autoStartCapturePane: async (sessionName, windowIndex) => {
           captures.push({ sessionName, windowIndex });
@@ -1261,7 +1262,7 @@ describe("reconcileCockpitSession", () => {
       let captureCalls = 0;
       const sentKeys: string[] = [];
       const deps: ResolveTeamWindowDeps = {
-        buildSuperdoctorCommand: () => PORTABLE_KEEPALIVE_COMMAND,
+        buildMedicCommand: () => PORTABLE_KEEPALIVE_COMMAND,
         autoStartSleep: async () => {},
         autoStartCapturePane: async () => {
           captureCalls += 1;
@@ -1301,7 +1302,7 @@ describe("reconcileCockpitSession", () => {
       const { logger, logs } = makeLogger();
       const sentKeys: string[] = [];
       const deps: ResolveTeamWindowDeps = {
-        buildSuperdoctorCommand: () => PORTABLE_KEEPALIVE_COMMAND,
+        buildMedicCommand: () => PORTABLE_KEEPALIVE_COMMAND,
         autoStartSleep: async () => {},
         autoStartCapturePane: async () => "Loading...\n", // never settles
       };
@@ -1337,7 +1338,7 @@ describe("reconcileCockpitSession", () => {
       const { logger, logs: _logs } = makeLogger();
       const sentKeys: string[] = [];
       const deps: ResolveTeamWindowDeps = {
-        buildSuperdoctorCommand: () => PORTABLE_KEEPALIVE_COMMAND,
+        buildMedicCommand: () => PORTABLE_KEEPALIVE_COMMAND,
         autoStartSleep: async () => {},
         autoStartCapturePane: async () => "❯ Try\nauto mode on · tok 0/0",
       };
@@ -2204,35 +2205,40 @@ describe("reconcileCockpitSession — onlyTeam scope (ADR-063 ergonomic fix)", (
   });
 });
 
-// ---------- ADR-077: buildSuperdoctorWindowCommand ----------
+// ---------- ADR-077 + ADR-291: buildMedicWindowCommand ----------
 
-describe("buildSuperdoctorWindowCommand (ADR-077)", () => {
-  test("emits bare claude invocation when claudeAccount is unset", async () => {
-    const { buildSuperdoctorWindowCommand } = await import("../../../src/verbs/cockpit.ts");
-    const cmd = buildSuperdoctorWindowCommand({ enabled: true });
+describe("buildMedicWindowCommand (ADR-077 + ADR-291)", () => {
+  test("emits bare claude invocation behind the ATMUX_MEMBER prefix when claudeAccount is unset", () => {
+    const cmd = buildMedicWindowCommand({ enabled: true });
+    // ADR-291 §D3: the pane carries its lane identity so `atmux claim`
+    // and the kb actor `claude@medic` resolve without `--as`.
+    expect(cmd.startsWith("export ATMUX_MEMBER=medic && ")).toBe(true);
     expect(cmd).toContain("claude");
     expect(cmd).toContain("CLAUDE_CODE_EFFORT_LEVEL=xhigh");
     expect(cmd).toContain("--permission-mode auto");
     expect(cmd).not.toContain("CLAUDE_CONFIG_DIR=");
+    // No trailing interactive shell: a `❯` prompt reads as "claude still
+    // up" to cockpit rotate's claudeUiGoneVerifier.
+    expect(cmd).not.toContain("exec zsh");
   });
 
-  test("emits CLAUDE_CONFIG_DIR prefix when claudeAccount is set", async () => {
-    const { buildSuperdoctorWindowCommand } = await import("../../../src/verbs/cockpit.ts");
-    const cmd = buildSuperdoctorWindowCommand({
+  test("emits CLAUDE_CONFIG_DIR prefix when claudeAccount is set", () => {
+    const cmd = buildMedicWindowCommand({
       enabled: true,
       claudeAccount: { configDir: "/root/.claude-personal", label: "personal" },
     });
+    expect(cmd.startsWith("export ATMUX_MEMBER=medic && ")).toBe(true);
     expect(cmd).toContain("CLAUDE_CONFIG_DIR=/root/.claude-personal");
     expect(cmd).toContain("CLAUDE_CODE_EFFORT_LEVEL=xhigh");
     expect(cmd).toContain("--permission-mode auto");
   });
 
-  test("honours tuiOverrides", async () => {
-    const { buildSuperdoctorWindowCommand } = await import("../../../src/verbs/cockpit.ts");
-    const cmd = buildSuperdoctorWindowCommand({
+  test("honours tuiOverrides", () => {
+    const cmd = buildMedicWindowCommand({
       enabled: true,
       tuiOverrides: { effortLevel: "high", permissionMode: "dontAsk", pluginDir: "/p/dir" },
     });
+    expect(cmd.startsWith("export ATMUX_MEMBER=medic && ")).toBe(true);
     expect(cmd).toContain("CLAUDE_CODE_EFFORT_LEVEL=high");
     expect(cmd).toContain("--permission-mode dontAsk");
     expect(cmd).toContain("--plugin-dir=/p/dir");

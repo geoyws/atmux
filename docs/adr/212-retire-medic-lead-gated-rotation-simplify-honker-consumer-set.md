@@ -164,3 +164,18 @@ Stale + absent readings — both render as `ctx ?? (stale)` / `ctx ?? (no signal
 - ADR-143 — check-lead-rotate verb (reused by lead-gated consumer)
 - memory `feedback_opus_all_for_agile_flow` — operator stance reaffirmation 2026-05-21
 - memory `project_honker_pubsub_rehaul_design` — design state, needs simplify-pass annotation in impl-EPIC
+
+## Amendments
+
+### §Amendment 2026-09-07 — the medic retirement is REVERSED; §D1, §D5 and §D6 are superseded by ADR-291
+
+Operator decision (geoyws, 2026-09-07): **keep the medic.** [ADR-291](291-medic-reinstated-as-cockpit-member.md) reinstates it as a live cockpit member. Three sections of this ADR are superseded; the rest stands.
+
+- **§D1 (retire the Medic role at cockpit W2) — superseded.** The role was never removed from the code: on 2026-09-07 `src/verbs/cockpit.ts` still creates the `_medic` window on every reconcile from a `type: "medic"` roster entry (or the legacy top-level `medic` block) with `enabled: true`, `src/verbs/cockpit-rotate.ts` still rotates role `medic`, and `src/verbs/status.ts` still probes it. The `@@hax` cockpit has been running a live `_medic` window throughout. ADR-266 §KEEP had already declined to remove the window + config in the shim-sunset sweep. The slot is not vacant and does not become vacant.
+- **§D5 (sequencing — medic retires LAST, after `e-honker-observation-watchdogs` runs ≥30 days observed-stable) — superseded, precondition deleted.** [ADR-276](276-orchd-retirement-and-atmux-scope.md) removed the orchd/Honker consumer substrate outright on 2026-08-27. The gate this section made the retirement wait on can never open, so the sequencing plan cannot be executed as written.
+- **§D6 (the single narrow `medic-config-residue` doctor probe) — superseded, never implemented.** No such probe exists in `src/verbs/doctor*.ts` (measured 2026-09-07), and it would now be wrong: a non-null `medic` block is the supported configuration per ADR-291 §D1. No probe replaces it.
+- **§D2, §D3, §D4 and §D7 stand unchanged.** The lead-gated destructive-action pattern (§D2), the three-layer detection model (§D3), the EPIC re-fold (§D4) and the context-pct enrichment of rotation-candidate events (§D7) are independent of who occupies the cockpit medic slot, and remain the canonical references cited elsewhere in the tree.
+
+kb attention `a-cce8a963` (raised 2026-09-04) is what surfaced the retired-on-paper / live-in-code split. It is resolved for medic by ADR-291 and **remains open for the ombudsman** — ADR-214 is untouched by this amendment, as is ADR-211's sentinel retirement and ADR-213's jury retirement.
+
+Everything above this heading is the 2026-05-21 record and is left as written.
