@@ -237,7 +237,7 @@ describe("init verb — --skills-only flag", () => {
 // ---------- [s]how branch → SKILLS_TABLE + render ----------
 
 describe("SKILLS_TABLE — [s]how reference table", () => {
-  test("contains exactly 11 entries — §D2 carve set minus bruh/bruhloop (ADR-288 §D4)", () => {
+  test("contains exactly 11 entries — §D2 carve set minus bruh/bruhloop (ADR-290 §D4)", () => {
     expect(SKILLS_TABLE).toHaveLength(11);
   });
 
@@ -261,7 +261,7 @@ describe("SKILLS_TABLE — [s]how reference table", () => {
     expect(names).toContain("/atmux:budget");
     expect(names).toContain("/atmux:sweep");
     expect(names).toContain("/atmux:cockpit-rebuild");
-    // ADR-288 §D4: retired + deleted.
+    // ADR-290 §D4: retired + deleted.
     expect(names).not.toContain("/atmux:bruh");
     expect(names).not.toContain("/atmux:bruhloop");
   });

@@ -54,7 +54,7 @@ Each time this skill fires in `run` mode, do the following. Keep responses terse
 
 3. **Execute the brief.** Run the per-team sweep, triage, investigate, decide authority, act, log to complaint box.
 
-   **Eternal-improvement fallback**: if the per-team sweep finds zero anomalies AND zero open complaints AND every team is shipping (commit-cadence green per BAU verdict), run one eternal-improvement cycle in driver-scope per team in scope — file ONE `[improve P3]` task per the first heuristic that hits, in this order (formerly `/atmux:bruh` §0.7, retired per ADR-288 §D4; the list is inlined here so nothing dangles):
+   **Eternal-improvement fallback**: if the per-team sweep finds zero anomalies AND zero open complaints AND every team is shipping (commit-cadence green per BAU verdict), run one eternal-improvement cycle in driver-scope per team in scope — file ONE `[improve P3]` task per the first heuristic that hits, in this order (formerly `/atmux:bruh` §0.7, retired per ADR-290 §D4; the list is inlined here so nothing dangles):
 
    1. **Tech-debt grep** — `rg -nE 'TODO|FIXME|HACK|XXX' src/ docs/ -g '!**/node_modules/**' | head -10`; pick one TODO with concrete actionable scope and file it with the verbatim `file:line` + a fix sketch.
    2. **ADR §OQ follow-ups** — `rg -nE '^### OQ-|^## Open questions' docs/adr/ | head -10`; an open OQ older than 30 days is a candidate — file a P3 task to resolve it via ADR amendment.

@@ -256,8 +256,8 @@ describe("loadCockpit", () => {
     await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(ConfigError);
   });
 
-  test("ADR-288 — rejects `_sd` and legacy `_superdriver` / `superdriver` as operator windows; accepts `_sd2`", async () => {
-    // Window 1 literal (ADR-288 §D1) is reserved.
+  test("ADR-290 — rejects `_sd` and legacy `_superdriver` / `superdriver` as operator windows; accepts `_sd2`", async () => {
+    // Window 1 literal (ADR-290 §D1) is reserved.
     await writeCockpit({ windows: [{ name: "_sd", cwd: "/root/work" }] });
     await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(ConfigError);
     // Legacy spellings stay reserved for the deprecation window.
@@ -265,7 +265,7 @@ describe("loadCockpit", () => {
     await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(ConfigError);
     await writeCockpit({ windows: [{ name: "superdriver", cwd: "/root/work" }] });
     await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(ConfigError);
-    // ADR-288 §D2: `_sdN` lanes (N ≥ 2) are ordinary operator windows.
+    // ADR-290 §D2: `_sdN` lanes (N ≥ 2) are ordinary operator windows.
     await writeCockpit({
       windows: [
         { name: "_sd2", cwd: "/root/work", command: null },
@@ -276,13 +276,13 @@ describe("loadCockpit", () => {
     expect(cockpit.windows.map((w) => w.name)).toEqual(["_sd2", "_sd3"]);
   });
 
-  test("ADR-288 §D2 — malformed lane names `_sd1` / `_sd0` / `_sd01` fail loudly; `_sd2` / `_sd10` load", async () => {
+  test("ADR-290 §D2 — malformed lane names `_sd1` / `_sd0` / `_sd01` fail loudly; `_sd2` / `_sd10` load", async () => {
     for (const bad of ["_sd1", "_sd0", "_sd01", "_sd02"]) {
       await writeCockpit({ windows: [{ name: bad, cwd: "/root/work", command: null }] });
       const err = await loadCockpit({ home: homeDir, warn: () => {} }).catch((e: unknown) => e);
       expect(err).toBeInstanceOf(ConfigError);
       expect(String((err as Error).message)).toContain(`'${bad}' is not a valid superdriver lane name`);
-      expect(String((err as Error).message)).toContain("ADR-288 §D2");
+      expect(String((err as Error).message)).toContain("ADR-290 §D2");
     }
     await writeCockpit({
       windows: [

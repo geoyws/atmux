@@ -3,7 +3,7 @@
 // Historically it closed the missing rung in the /bruh escalation chain
 // (Rung A = member rotate, Rung B = lead rotate via medic, Rung C = this
 // verb, Rung D = full cockpit rebuild) — formerly the /bruh skill,
-// retired per ADR-288 §D4; the rung ladder is kept here as the verb's
+// retired per ADR-290 §D4; the rung ladder is kept here as the verb's
 // own scope description.
 //
 // T2 (shipped c376f63): verb dispatch, parser, gate-4 (never-rotate-
@@ -98,12 +98,12 @@ export interface ParsedCockpitRotateArgs {
 
 /** Session-names that the verb hard-refuses regardless of `--force`.
  *  Gate 4 fires before all others (cheapest + most load-bearing) — the
- *  superdriver pane (W1, window literal `_sd` per ADR-288 §D1; was
+ *  superdriver pane (W1, window literal `_sd` per ADR-290 §D1; was
  *  `_superdriver` per ADR-135) is the operator REPL; rotating it would
  *  kill the interactive session. The role name `superdriver` stays the
  *  canonical key (the gate identifier is `gate-4-never-rotate-superdriver`
  *  and the audit row's `sessionName` is what post-incident filters read);
- *  the ADR-288 shortform `sd` and both window literals are refused too so
+ *  the ADR-290 shortform `sd` and both window literals are refused too so
  *  no spelling of window 1 reaches the respawn path. `_sdN` lanes (N ≥ 2)
  *  are NOT in this set — they are ADR-279 operator windows, and the verb
  *  has no role for them: `classifyRole` files them as `team-driver`, and
@@ -235,7 +235,7 @@ export function targetWindowForRole(role: RoleId, sessionName: string): string {
 // below, which composes capture / stat / clock with the pure classifier.
 
 /** Gate 1 — user-not-typing. Refuses when the cockpit `_sd` (window 1,
- *  ADR-288 §D1) compose-box is TYPING. Reuses src/core/pane-state.ts
+ *  ADR-290 §D1) compose-box is TYPING. Reuses src/core/pane-state.ts
  *  (ADR-155) so the classifier definition stays in one place. */
 export function classifyGate1(superdriverCapture: string): string | null {
   const cls = classifyText(superdriverCapture);
@@ -510,7 +510,7 @@ async function resolveViewerHost(
  *  is absent and exactly one `_sdN` lane exists (measured on tmux 3.7c) —
  *  gate 1's legacy fallback would then never fire, and Ctrl-C / kill-window
  *  aimed at `_medic` could land on a `_medic*`-named window. Team viewer
- *  targets keep the plain `<session>:<team>` form (ADR-288 review). */
+ *  targets keep the plain `<session>:<team>` form (ADR-290 review). */
 function exactWindowTarget(sessionName: string, windowName: string): string {
   return `${sessionName}:=${windowName}`;
 }
@@ -962,7 +962,7 @@ function readTeamConfig(cockpit: LoadedCockpit, teamName: string): CockpitTeam |
   return cockpit.teams.find((t) => t.name === teamName) ?? null;
 }
 
-/** ADR-288 §D3 (review finding): refuse an unknown team-driver target as
+/** ADR-290 §D3 (review finding): refuse an unknown team-driver target as
  *  early as possible — right after role classification, BEFORE gates 1-3
  *  and BEFORE any handoff payload is written — so `rotate sd2` (an `_sdN`
  *  operator lane) or a typo cannot clobber the last real team-driver
@@ -1036,7 +1036,7 @@ async function performRespawn(
     return EX_SOFTWARE;
   }
 
-  // ADR-288 §D3 (review finding): an unknown team is refused BEFORE the
+  // ADR-290 §D3 (review finding): an unknown team is refused BEFORE the
   // handoff write below, never after it — otherwise the last real
   // team-driver payload would be clobbered on the way to a refusal.
   // Normally `refuseUnknownTeam` (pre-gate) has already settled this;
@@ -1238,7 +1238,7 @@ export async function cockpitRotate(
 
   const role = classifyRole(parsed.sessionName);
 
-  // ADR-288 §D3 (review finding): an unknown team-driver target — an
+  // ADR-290 §D3 (review finding): an unknown team-driver target — an
   // `_sdN` operator lane, or a typo — is refused here, before the gates
   // and before any handoff payload is written (exit 70, pane untouched).
   if (role === "team-driver") {
@@ -1256,12 +1256,12 @@ export async function cockpitRotate(
   // `gate-N-<name>: <reason>`. --force bypasses these (per ADR-167
   // §Pre-flight gate matrix bypass column for rows 1-3).
   if (!parsed.force) {
-    // Gate 1 — user-not-typing on cockpit `_sd` pane (ADR-288 §D1).
+    // Gate 1 — user-not-typing on cockpit `_sd` pane (ADR-290 §D1).
     // Deprecation-window fallback: a cockpit that has not been reconciled
-    // since the ADR-288 rename still names window 1 `_superdriver`; an
+    // since the ADR-290 rename still names window 1 `_superdriver`; an
     // empty `_sd` capture (window absent) falls back to the legacy name
     // so the typing guard never silently lapses between install and the
-    // first `cockpit reconcile`. Remove with the ADR-288 deprecation window.
+    // first `cockpit reconcile`. Remove with the ADR-290 deprecation window.
     // Both probes use the `=` exact-match target: a prefix-matched `atx:_sd`
     // would resolve to a lone `_sd2` lane and the fallback would never fire.
     const sd =

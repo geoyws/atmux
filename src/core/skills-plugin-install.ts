@@ -188,7 +188,7 @@ export async function writeOptOutMarker(
 // ---------- 11-skill reference table for the [s]how branch ----------
 
 /** Source of truth: ADR-217 §D2 carve set, minus `/atmux:bruh` +
- *  `/atmux:bruhloop` (retired + deleted per ADR-288 §D4). Surface used by
+ *  `/atmux:bruhloop` (retired + deleted per ADR-290 §D4). Surface used by
  *  the deferred interactive wizard prompt + plugins/atmux/README.md
  *  cross-link. */
 export const SKILLS_TABLE: ReadonlyArray<{ name: string; desc: string }> = [

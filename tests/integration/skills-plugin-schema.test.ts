@@ -155,7 +155,7 @@ describe("plugins/atmux/.claude-plugin/plugin.json (ADR-217 §D8)", () => {
     expect((plugin["description"] as string).length).toBeGreaterThan(0);
   });
 
-  test("skills array enumerates 11 entries — ADR-217 §D2 carve set minus bruh/bruhloop (ADR-288 §D4)", () => {
+  test("skills array enumerates 11 entries — ADR-217 §D2 carve set minus bruh/bruhloop (ADR-290 §D4)", () => {
     const plugin = loadPluginJson() as { skills: Array<{ name: string; path: string }> };
     expect(plugin.skills).toBeInstanceOf(Array);
     expect(plugin.skills).toHaveLength(11);

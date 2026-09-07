@@ -26,7 +26,7 @@
 //      same attach retry-loop the cockpit uses
 //   5. reconcile cockpit session (default `atx` per ADR-264) on
 //      the dedicated cockpit socket: window 1 = `_sd` (the operator's
-//      superdriver REPL; literal per ADR-288 §D1),
+//      superdriver REPL; literal per ADR-290 §D1),
 //      windows 2..N = one viewer per top-level group (nest-attaches to
 //      the group server) + one per UNGROUPED enabled team that
 //      nest-attaches to the cage via `tmux -S <sock> attach -t
@@ -1794,7 +1794,7 @@ function buildDefaultReadinessProbe(cageTmux: TmuxNamespace, opts: AutolaunchOpt
   };
 }
 
-/** ADR-288 §D1 window-1 anchor: canonical `_sd`, else an un-migrated
+/** ADR-290 §D1 window-1 anchor: canonical `_sd`, else an un-migrated
  *  legacy spelling (`_superdriver` per ADR-135 §D2, bare `superdriver`
  *  pre-ADR-135). The rename shim normally leaves only `_sd`, but its
  *  warn-and-continue path (rename-window failed) can leave a legacy window
@@ -1812,7 +1812,7 @@ export function findWindowOneAnchor<T extends { name: string }>(
   );
 }
 
-/** ADR-288 §D5 lane placement: an operator window named `_sdN` (N ≥ 2;
+/** ADR-290 §D5 lane placement: an operator window named `_sdN` (N ≥ 2;
  *  there is no `_sd1`) is a superdriver lane and sits IMMEDIATELY after
  *  `_sd`, before `_medic` / `_superbot`; every other operator window
  *  (e.g. `_misc`) keeps its ADR-279 slot after those role windows. The
@@ -1822,9 +1822,9 @@ export { isSuperdriverLaneName, SUPERDRIVER_LANE_RE } from "../core/cockpit.ts";
 
 /**
  * Reconcile the cockpit session: ensure it exists with window 1 =
- * `_sd` (the superdriver REPL — literal `_superdriver` until ADR-288
+ * `_sd` (the superdriver REPL — literal `_superdriver` until ADR-290
  * §D1), the `_sdN` superdriver lanes declared in `windows[]` right after
- * it (ADR-288 §D5), an optional `_medic` (ADR-077 role renamed per
+ * it (ADR-290 §D5), an optional `_medic` (ADR-077 role renamed per
  * ADR-133), and one viewer window per enabled team. Removes
  * windows for disabled teams. Idempotent.
  *
@@ -1919,7 +1919,7 @@ export async function reconcileCockpitSession(
   const onlyTeam = reconcileOpts.onlyTeam;
   const operatorWindows =
     onlyTeam === undefined ? (reconcileOpts.windows ?? []).filter((w) => w.enabled) : [];
-  // ADR-288 §D5 — superdriver lanes (`_sdN`) are placed right after `_sd`;
+  // ADR-290 §D5 — superdriver lanes (`_sdN`) are placed right after `_sd`;
   // the remaining operator windows keep their ADR-279 slot. Declaration
   // order is preserved within each group. `laneCount` shifts the medic
   // slot: it becomes "after the last declared lane".
@@ -1994,10 +1994,10 @@ export async function reconcileCockpitSession(
   const wantMedic = medic?.enabled === true;
   const wantSuperbot = onlyTeam === undefined && reconcileOpts.superbot?.enabled === true;
 
-  // ADR-135 §D4 + ADR-288 §D1 — legacy cockpit-role-window migration.
+  // ADR-135 §D4 + ADR-290 §D1 — legacy cockpit-role-window migration.
   // Renames in order: `superdoctor → medic` (ADR-133 carry-over),
-  // `superdriver → _sd` (pre-ADR-135 name straight to the ADR-288
-  // literal), `_superdriver → _sd` (ADR-135 §D2 name → ADR-288 §D1
+  // `superdriver → _sd` (pre-ADR-135 name straight to the ADR-290
+  // literal), `_superdriver → _sd` (ADR-135 §D2 name → ADR-290 §D1
   // shortform), `medic → _medic`.
   // Each rename is idempotent (no-op when canonical name already
   // present). Race-safe within a single rebuild: list windows once,
@@ -2019,7 +2019,7 @@ export async function reconcileCockpitSession(
         try {
           await cockpitTmux.window.renameWindow(`${sessionName}:${legacy}`, canonical);
           logger.log(
-            `  ✓ renamed window '${legacy}' → '${canonical}' (ADR-135 §D4 / ADR-288 §D1 migration; one-time per cockpit)`,
+            `  ✓ renamed window '${legacy}' → '${canonical}' (ADR-135 §D4 / ADR-290 §D1 migration; one-time per cockpit)`,
           );
           // Mutate windowsBefore so chained renames (superdoctor →
           // medic → _medic) see the post-rename state.
@@ -2034,7 +2034,7 @@ export async function reconcileCockpitSession(
         }
       } else if (hasLegacy && hasCanonical) {
         logger.warn(
-          `  ⚠ cockpit has BOTH '${legacy}' and '${canonical}' windows — ADR-135 §D4 / ADR-288 §D1 migration ambiguous. Kill the legacy one: 'tmux kill-window -t ${sessionName}:${legacy}' (recommended).`,
+          `  ⚠ cockpit has BOTH '${legacy}' and '${canonical}' windows — ADR-135 §D4 / ADR-290 §D1 migration ambiguous. Kill the legacy one: 'tmux kill-window -t ${sessionName}:${legacy}' (recommended).`,
         );
       }
     };
@@ -2043,7 +2043,7 @@ export async function reconcileCockpitSession(
     // legacy window OR a pre-existing medic window.
     await renameInPlace("superdoctor", "medic");
     // ADR-135 §D2 underscore-prefix migration for cockpit-role windows,
-    // with the window-1 target superseded by ADR-288 §D1 (`_sd`). Both
+    // with the window-1 target superseded by ADR-290 §D1 (`_sd`). Both
     // legacy spellings of window 1 land on `_sd`; when both exist the
     // second call surfaces the ambiguity warning above.
     await renameInPlace("superdriver", "_sd");
@@ -2074,7 +2074,7 @@ export async function reconcileCockpitSession(
   // IMMEDIATELY after the `_sd` window BEFORE adding team
   // viewers, so on a fresh cockpit the downstream windows land
   // at the correct slots. The target index is `_sd.index + 1 + laneCount`
-  // (ADR-288 §D5: the `_sdN` lanes sit between `_sd` and `_medic`) rather
+  // (ADR-290 §D5: the `_sdN` lanes sit between `_sd` and `_medic`) rather
   // than a literal `2` because tmux's `base-index` option (operator-config
   // dependent) determines whether window 1 sits at index 0 or 1.
   //
@@ -2116,11 +2116,11 @@ export async function reconcileCockpitSession(
         occupant !== undefined &&
         (operatorWindowNames.has(occupant.name) || occupant.name === "_superbot");
       if (heldByWantedWindow) {
-        // ADR-288 §D5: a lane / operator window / `_superbot` in the slot is
+        // ADR-290 §D5: a lane / operator window / `_superbot` in the slot is
         // never killed; the park-then-place pass places `_medic` after the
         // lanes without destroying anything.
         logger.log(
-          `  · '_medic' at idx ${md.index}; slot ${targetIdx} held by '${occupant.name}' — left to the park-then-place pass (ADR-288 §D5)`,
+          `  · '_medic' at idx ${md.index}; slot ${targetIdx} held by '${occupant.name}' — left to the park-then-place pass (ADR-290 §D5)`,
         );
       } else {
         // Forced relocation; kill whatever sits at the target slot (likely a
@@ -2281,7 +2281,7 @@ export async function reconcileCockpitSession(
   // `teams` array from enabledTeams() is already in DFS pre-order
   // (parent → child → next sibling), so the desired layout is:
   //   [_sd, ..._sdN lanes, _medic?, _superbot?, ...other operator windows,
-  //    ...teams in DFS order]                              (ADR-288 §D5)
+  //    ...teams in DFS order]                              (ADR-290 §D5)
   // `_medic` is part of the desired list so the collision-free park-then-
   // place walk can move it behind the lanes when a cockpit still carries
   // the pre-§D5 order (`_sd, _medic, _sd2, …`) — no kill, no --yes.
@@ -2290,7 +2290,7 @@ export async function reconcileCockpitSession(
   if (onlyTeam === undefined) {
     // Compute the base index where team windows should start, derived from
     // the cockpit-role windows that precede them (per ADR-135 §D2 +
-    // ADR-288 §D1).
+    // ADR-290 §D1).
     const windowsForOrder = await cockpitTmux.window.listWindows(sessionName);
     const sdrv = findWindowOneAnchor(windowsForOrder);
     // Fallback `2` (= assumed window-1 index 1, plus one) matches the medic
@@ -2367,9 +2367,9 @@ export async function reconcileCockpitSession(
   }
 
   // Remove orphan viewer windows (e.g. team that was removed/disabled).
-  // _sd + _medic (when enabled) are always preserved (ADR-288 §D1 /
+  // _sd + _medic (when enabled) are always preserved (ADR-290 §D1 /
   // ADR-135 canonical names). The legacy names `_superdriver` (ADR-135
-  // §D2, superseded by ADR-288) / `superdriver` / `medic` and the
+  // §D2, superseded by ADR-290) / `superdriver` / `medic` and the
   // pre-ADR-133 legacy `superdoctor` window are also preserved during
   // the deprecation window so an operator running between releases
   // doesn't lose a cage that hasn't been renamed yet. (Cage rename to
@@ -2534,7 +2534,7 @@ async function refusePlannedDestructiveOps(opts: RefuseDestructiveOpts): Promise
   const windows = await cockpitTmux.window.listWindows(sessionName);
   const planned: PlannedDestructiveOp[] = [];
 
-  // Canonical names are `_sd` (ADR-288 §D1; was `_superdriver` per
+  // Canonical names are `_sd` (ADR-290 §D1; was `_superdriver` per
   // ADR-135 §D2) / `_medic`; the in-place rename shim (above this call)
   // has already migrated legacy names by the time this dry-run walks
   // the window list. Legacy names are kept in the preserved-window
@@ -2543,7 +2543,7 @@ async function refusePlannedDestructiveOps(opts: RefuseDestructiveOpts): Promise
   const sdrv = findWindowOneAnchor(windows);
   const baseIdx = sdrv !== undefined ? sdrv.index : 1;
 
-  // ADR-288 §D5: the medic slot sits after the declared `_sdN` lanes.
+  // ADR-290 §D5: the medic slot sits after the declared `_sdN` lanes.
   const operatorNames = new Set(operatorWindows.map((w) => w.name));
   const laneCount = operatorWindows.filter((w) => isSuperdriverLaneName(w.name)).length;
 

@@ -1,6 +1,6 @@
 # atmux skills — Claude Code plugin
 
-Cockpit-tier workflows for atmux team-of-teams, shipped as a Claude Code plugin in the atmux source tree. 11 skills wrap atmux verbs + cross-team workflows that the operator-facing CLI alone can't express in one breath. (`/atmux:bruh` and `/atmux:bruhloop` were retired and deleted per [ADR-288](../../docs/adr/288-superdriver-lane-shortform-and-multi-lane-cockpit.md) §D4.)
+Cockpit-tier workflows for atmux team-of-teams, shipped as a Claude Code plugin in the atmux source tree. 11 skills wrap atmux verbs + cross-team workflows that the operator-facing CLI alone can't express in one breath. (`/atmux:bruh` and `/atmux:bruhloop` were retired and deleted per [ADR-290](../../docs/adr/290-superdriver-lane-shortform-and-multi-lane-cockpit.md) §D4.)
 
 Per [ADR-217](../../docs/adr/217-atmux-skills-plugin-bundled-and-wizard-installed.md) §D6.
 

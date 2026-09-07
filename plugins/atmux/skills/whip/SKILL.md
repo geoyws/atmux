@@ -52,7 +52,7 @@ Each time this skill fires in `run` mode, do the following. Keep the response te
 
 3. **Execute the prompt.** Do the team check, dispatch/unblock work, make judgment calls. Do NOT stop and wait for the user.
 
-   **Eternal-improvement fallback** (operator directive 2026-05-20): if the team check finds zero work to dispatch/unblock AND zero pending claims AND every member is genuinely idle (not paused / not rate-limited / not mid-rotation), run one eternal-improvement cycle for this team — file ONE `[improve P3]` task per the first heuristic that hits, in this order (formerly `/atmux:bruh` §0.7, retired per ADR-288 §D4; the list is inlined here so nothing dangles):
+   **Eternal-improvement fallback** (operator directive 2026-05-20): if the team check finds zero work to dispatch/unblock AND zero pending claims AND every member is genuinely idle (not paused / not rate-limited / not mid-rotation), run one eternal-improvement cycle for this team — file ONE `[improve P3]` task per the first heuristic that hits, in this order (formerly `/atmux:bruh` §0.7, retired per ADR-290 §D4; the list is inlined here so nothing dangles):
 
    1. **Tech-debt grep** — `rg -nE 'TODO|FIXME|HACK|XXX' src/ docs/ -g '!**/node_modules/**' | head -10`; pick one TODO with concrete actionable scope and file it with the verbatim `file:line` + a fix sketch.
    2. **ADR §OQ follow-ups** — `rg -nE '^### OQ-|^## Open questions' docs/adr/ | head -10`; an open OQ older than 30 days is a candidate — file a P3 task to resolve it via ADR amendment.
@@ -121,7 +121,7 @@ Each time this skill fires in `run` mode, do the following. Keep the response te
 - **Overnight** when team is idle — burning ~300k tokens/hour at 270s cadence for a silent team is waste. At 3600s you still get hourly heartbeat + emergency-signal propagation.
 - **Post-demo wind-down** — work shipped, team idle, the user wants to read without chatter.
 
-**Note** (operator directive 2026-05-20): eternal-improvement (the six-heuristic list inlined in step 3 — formerly `/atmux:bruh` §0.7, retired per ADR-288 §D4) fires from `/atmux:whip run` step 3 BEFORE the adaptive slow-down. Real idle (slow-down triggers) only after the fallback runs and STILL finds no work to do. Empty kanban + every improvement-heuristic already filed = legitimate idle. Idle ≠ "nothing to do" — idle = "nothing to do AND nothing to improve".
+**Note** (operator directive 2026-05-20): eternal-improvement (the six-heuristic list inlined in step 3 — formerly `/atmux:bruh` §0.7, retired per ADR-290 §D4) fires from `/atmux:whip run` step 3 BEFORE the adaptive slow-down. Real idle (slow-down triggers) only after the fallback runs and STILL finds no work to do. Empty kanban + every improvement-heuristic already filed = legitimate idle. Idle ≠ "nothing to do" — idle = "nothing to do AND nothing to improve".
 - **Rate-limit pressure** — slowing the lead's cadence reduces its share of the usage bucket.
 - **Demo rehearsal / live demo** — no Discord pings mid-presentation.
 

@@ -251,7 +251,7 @@
 | 282 | Never collect the whole environment in a test — allowlist at the source | 2026-08-28 | accepted (operator-direct) |
 | 284 | One sizing policy for every cockpit window — the `unum` `window-size smallest` override is retired | 2026-08-30 | accepted (operator-direct) |
 | 285 | Cooperative `_bot` seats and the `_superbot` offer protocol (renumbered from 281 on merge — collision) | 2026-08-28 | accepted (operator-direct; live activation held) |
-| 288 | Superdriver lane shortform — cockpit window 1 `_superdriver` → `_sd`, `_sdN` multi-lane cockpit (ADR-279 operator windows, lease-guarded dispatch), `/atmux:bruh` + `/atmux:bruhloop` retired and deleted (drafted as 287; renumbered — collision) | 2026-09-02 | proposed |
+| 290 | Superdriver lane shortform — cockpit window 1 `_superdriver` → `_sd`, `_sdN` multi-lane cockpit (ADR-279 operator windows, lease-guarded dispatch), `/atmux:bruh` + `/atmux:bruhloop` retired and deleted (drafted as 287; renumbered to 288, then to 290 — collision) | 2026-09-02 | proposed |
 
 ## Superseded (skip)
 

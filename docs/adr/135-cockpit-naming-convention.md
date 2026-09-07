@@ -147,9 +147,9 @@ Same idempotent-rewrite pattern as ADR-133 TR6 (`superdoctor → medic` cron lin
 
 ## Amendments
 
-### 2026-09-02 — §D2 window-1 literal superseded: `_superdriver` → `_sd` (ADR-288)
+### 2026-09-02 — §D2 window-1 literal superseded: `_superdriver` → `_sd` (ADR-290)
 
-[ADR-288](288-superdriver-lane-shortform-and-multi-lane-cockpit.md) §D1 supersedes this ADR's §D2 literal for cockpit window 1: the canonical window name is now **`_sd`** (the dotfiles ADR-009 pure-truncation shortform of `superdriver`, matching the `driver` → `d` lane rule). The underscore prefix, `_medic`, per-team viewer names and §D3 are unchanged. §D4's in-place `rename-window` shim is reused one step further — it now renames both `superdriver` and `_superdriver` to `_sd`, idempotently, with the same both-present ambiguity warning. `_superdriver` / `superdriver` stay in the never-prune guard and the reserved operator-window set for one release cycle, exactly as `superdoctor` was kept. ADR-288 §D2 additionally introduces `_sdN` (N ≥ 2, no `_sd1`) as ADR-279 declarative operator windows — not cockpit-role windows, so they carry no reservation.
+[ADR-290](290-superdriver-lane-shortform-and-multi-lane-cockpit.md) §D1 supersedes this ADR's §D2 literal for cockpit window 1: the canonical window name is now **`_sd`** (the dotfiles ADR-009 pure-truncation shortform of `superdriver`, matching the `driver` → `d` lane rule). The underscore prefix, `_medic`, per-team viewer names and §D3 are unchanged. §D4's in-place `rename-window` shim is reused one step further — it now renames both `superdriver` and `_superdriver` to `_sd`, idempotently, with the same both-present ambiguity warning. `_superdriver` / `superdriver` stay in the never-prune guard and the reserved operator-window set for one release cycle, exactly as `superdoctor` was kept. ADR-290 §D2 additionally introduces `_sdN` (N ≥ 2, no `_sd1`) as ADR-279 declarative operator windows — not cockpit-role windows, so they carry no reservation.
 
 ### 2026-07-28 — §D1 superseded: session literal `atmux_cockpit` → `atx` (ADR-264)
 

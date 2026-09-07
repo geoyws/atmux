@@ -1589,9 +1589,9 @@ describe("reconcileCockpitSession — ADR-264 §D4 legacy session rename shim", 
   });
 });
 
-// ---------- ADR-288 §D1: `_superdriver` → `_sd` window-1 shortform ----------
+// ---------- ADR-290 §D1: `_superdriver` → `_sd` window-1 shortform ----------
 
-describe("reconcileCockpitSession — ADR-288 §D1 legacy window-1 rename shim", () => {
+describe("reconcileCockpitSession — ADR-290 §D1 legacy window-1 rename shim", () => {
   // Portable medic command so the `_medic` window survives on runners
   // without `claude` (mirrors sdDeps in the ADR-077 block above).
   const medicDeps: ResolveTeamWindowDeps = {
@@ -1673,7 +1673,7 @@ describe("reconcileCockpitSession — ADR-288 §D1 legacy window-1 rename shim",
       expect(names).toContain("_sd");
       expect(names).toContain("_superdriver");
       expect(logs.join("\n")).toContain(
-        "cockpit has BOTH '_superdriver' and '_sd' windows — ADR-135 §D4 / ADR-288 §D1 migration ambiguous",
+        "cockpit has BOTH '_superdriver' and '_sd' windows — ADR-135 §D4 / ADR-290 §D1 migration ambiguous",
       );
     } finally {
       try {
@@ -1854,7 +1854,7 @@ describe("reconcileCockpitSession — ADR-288 §D1 legacy window-1 rename shim",
     }
   });
 
-  test("ADR-288 §D2: `_sd2` / `_sd3` lanes are plain operator windows ordered after `_sd`", async () => {
+  test("ADR-290 §D2: `_sd2` / `_sd3` lanes are plain operator windows ordered after `_sd`", async () => {
     const fx = await spinTmux("cockpit-a288-lanes");
     try {
       const { logger } = makeLogger();
@@ -1887,7 +1887,7 @@ describe("reconcileCockpitSession — ADR-288 §D1 legacy window-1 rename shim",
       await rm(fx.socketDir, { recursive: true, force: true });
     }
   });
-  // ---------- ADR-288 §D5: lane placement ----------
+  // ---------- ADR-290 §D5: lane placement ----------
 
   type Fx = Awaited<ReturnType<typeof spinTmux>>;
   const orderOf = async (fx: Fx, session = "s"): Promise<string[]> =>
@@ -1904,7 +1904,7 @@ describe("reconcileCockpitSession — ADR-288 §D1 legacy window-1 rename shim",
   ];
   const alphaTeam: CockpitTeam[] = [{ name: "alpha", root: "/a", enabled: true } as CockpitTeam];
 
-  test("ADR-288 §D5: fresh reconcile places lanes right after `_sd`, then `_medic`, `_misc`, viewers", async () => {
+  test("ADR-290 §D5: fresh reconcile places lanes right after `_sd`, then `_medic`, `_misc`, viewers", async () => {
     const fx = await spinTmux("cockpit-a288-d5-fresh");
     try {
       const { logger } = makeLogger();
@@ -1920,7 +1920,7 @@ describe("reconcileCockpitSession — ADR-288 §D1 legacy window-1 rename shim",
     }
   });
 
-  test("ADR-288 §D5: a cockpit already in lane order is a no-op on re-run (no kills, no moves)", async () => {
+  test("ADR-290 §D5: a cockpit already in lane order is a no-op on re-run (no kills, no moves)", async () => {
     const fx = await spinTmux("cockpit-a288-d5-noop");
     try {
       const { logger } = makeLogger();
@@ -1950,7 +1950,7 @@ describe("reconcileCockpitSession — ADR-288 §D1 legacy window-1 rename shim",
     }
   });
 
-  test("ADR-288 §D5: a cockpit in the OLD order `_sd,_medic,_sd2,_sd3,_misc` is reordered without killing anything and without --yes", async () => {
+  test("ADR-290 §D5: a cockpit in the OLD order `_sd,_medic,_sd2,_sd3,_misc` is reordered without killing anything and without --yes", async () => {
     const fx = await spinTmux("cockpit-a288-d5-old");
     try {
       const { logger, logs } = makeLogger();
@@ -1975,7 +1975,7 @@ describe("reconcileCockpitSession — ADR-288 §D1 legacy window-1 rename shim",
       expect(await idsOf(fx)).toEqual(idsBefore);
       // The medic pass deferred (no move-with-kill); the park-then-place
       // pass did the positioning — ids above prove nothing was killed.
-      expect(logs.some((l) => l.includes("left to the park-then-place pass (ADR-288 §D5)"))).toBe(true);
+      expect(logs.some((l) => l.includes("left to the park-then-place pass (ADR-290 §D5)"))).toBe(true);
     } finally {
       try {
         await fx.tmux.server.killServer();
@@ -1984,7 +1984,7 @@ describe("reconcileCockpitSession — ADR-288 §D1 legacy window-1 rename shim",
     }
   });
 
-  test("ADR-288 §D5: with medic disabled the lanes still lead, then `_misc`, then viewers", async () => {
+  test("ADR-290 §D5: with medic disabled the lanes still lead, then `_misc`, then viewers", async () => {
     const fx = await spinTmux("cockpit-a288-d5-nomedic");
     try {
       const { logger } = makeLogger();
@@ -2000,7 +2000,7 @@ describe("reconcileCockpitSession — ADR-288 §D1 legacy window-1 rename shim",
     }
   });
 
-  test("ADR-288 §D5: `_sd10` is a lane, `_sd1` / `_sdx` / `_misc` are not (placement regex)", () => {
+  test("ADR-290 §D5: `_sd10` is a lane, `_sd1` / `_sdx` / `_misc` are not (placement regex)", () => {
     expect(isSuperdriverLaneName("_sd2")).toBe(true);
     expect(isSuperdriverLaneName("_sd9")).toBe(true);
     expect(isSuperdriverLaneName("_sd10")).toBe(true);

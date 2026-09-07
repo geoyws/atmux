@@ -133,7 +133,7 @@ export function extractWindowNameFromTargetString(targetStr: string): string | n
   // exact-name match (`sess:=driver`). Strip it before classifying —
   // otherwise `=driver` never matches DRIVER_PANE_NAME_RE and the ADR-239
   // §D2 never-send-keys-to-driver guard is bypassed by any exact-match
-  // target (ADR-288 review finding; `cockpit rotate` uses `=` targets).
+  // target (ADR-290 review finding; `cockpit rotate` uses `=` targets).
   const winSeg = (dot < 0 ? after : after.slice(0, dot)).replace(/^=/, "");
   if (winSeg.length === 0) return null;
   // Numeric index → not a name to classify.

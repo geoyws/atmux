@@ -185,7 +185,7 @@ export function validateSuperbotRoutes(cockpit: CockpitShape, path = "cockpit.js
   }
 }
 
-/** ADR-288 §D5 lane placement: an operator window named `_sdN` (N ≥ 2 as
+/** ADR-290 §D5 lane placement: an operator window named `_sdN` (N ≥ 2 as
  *  a number: `_sd2`…`_sd9`, `_sd10`, …; there is no `_sd1`, no `_sd0`, no
  *  zero-padded `_sd01`) is a superdriver lane and is placed immediately
  *  after `_sd`, before `_medic` / `_superbot`. This decides placement (and
@@ -198,14 +198,14 @@ export function isSuperdriverLaneName(name: string): boolean {
 }
 
 /** Looks like a lane name (`_sd` + digits) but is not a valid one —
- *  `_sd0`, `_sd1` (ADR-288 §D2: there is no `_sd1`) or zero-padded forms
+ *  `_sd0`, `_sd1` (ADR-290 §D2: there is no `_sd1`) or zero-padded forms
  *  such as `_sd01` / `_sd02`. Rejected loudly at load so an obsolete or
  *  malformed lane never silently degrades into a plain operator window. */
 const MALFORMED_LANE_RE = /^_sd[0-9]+$/;
 
 /** ADR-279: operator windows share the cockpit tmux namespace with role
  * windows and team viewers, so every name must be globally unambiguous.
- * `_sd` is the ADR-288 §D1 window-1 literal; `_superdriver` (ADR-135
+ * `_sd` is the ADR-290 §D1 window-1 literal; `_superdriver` (ADR-135
  * §D2) and `superdriver` (pre-ADR-135) stay reserved as legacy names for
  * the deprecation window, exactly like `superdoctor` / `medic`. `_sdN`
  * lanes (N ≥ 2) are ordinary operator windows and are NOT reserved;
@@ -231,7 +231,7 @@ function validateOperatorWindowNames(cockpit: CockpitShape): void {
     if (MALFORMED_LANE_RE.test(window.name) && !isSuperdriverLaneName(window.name)) {
       throw new ConfigError({
         what: `cockpit operator window '${window.name}' is not a valid superdriver lane name`,
-        hint: "ADR-288 §D2: there is no `_sd1` (window 1 is `_sd`); lanes are `_sd2`, `_sd3`, … with no zero-padding",
+        hint: "ADR-290 §D2: there is no `_sd1` (window 1 is `_sd`); lanes are `_sd2`, `_sd3`, … with no zero-padding",
       });
     }
     if (occupied.has(window.name)) {

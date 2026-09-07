@@ -449,11 +449,11 @@ describe("cockpitRotate — gate-4 (T2 carry-forward)", () => {
     expect(h.capturedStderr.join("")).toContain("gate-4-never-rotate-superdriver");
   });
 
-  // ADR-288 §D1/§D3: the shortform `sd` and both window literals are
+  // ADR-290 §D1/§D3: the shortform `sd` and both window literals are
   // refused exactly like the role name — no spelling of window 1 reaches
   // the respawn path, and the gate identifier is unchanged.
   for (const spelling of ["sd", "_sd", "_superdriver"]) {
-    test(`ADR-288: refuses '${spelling}' under --force with the same gate-4 identifier`, async () => {
+    test(`ADR-290: refuses '${spelling}' under --force with the same gate-4 identifier`, async () => {
       const h = makeHarness();
       const exit = await cockpitRotate([spelling, "--force"], harnessOpts(h));
       expect(exit).toBe(65);
@@ -465,7 +465,7 @@ describe("cockpitRotate — gate-4 (T2 carry-forward)", () => {
     });
   }
 
-  test("ADR-288 §D3: an `_sdN` lane is not a rotate target — classifies team-driver, refused as unknown team, pane untouched", async () => {
+  test("ADR-290 §D3: an `_sdN` lane is not a rotate target — classifies team-driver, refused as unknown team, pane untouched", async () => {
     const h = makeHarness();
     // `sd2` is an ADR-279 operator window, not a team: gate-4 passes,
     // --force skips gates 1-3, then performRespawn finds no team config.
@@ -483,7 +483,7 @@ describe("cockpitRotate — gate-4 (T2 carry-forward)", () => {
     expect(h.handoffWrites.length).toBe(0);
   });
 
-  test("ADR-288 §D3: unknown team is refused BEFORE gates 1-3 (no --force needed, no gate state)", async () => {
+  test("ADR-290 §D3: unknown team is refused BEFORE gates 1-3 (no --force needed, no gate state)", async () => {
     const h = makeHarness();
     // No session-start marker, no captures: gates 1-3 would otherwise run
     // (and gate-3 would refuse on the missing marker). The unknown-team
@@ -497,7 +497,7 @@ describe("cockpitRotate — gate-4 (T2 carry-forward)", () => {
     expect(h.killWindowCalls.length).toBe(0);
   });
 
-  test("ADR-288 §D3: pre-gate cockpit load failure defers; performRespawn still refuses the unknown team before its handoff write", async () => {
+  test("ADR-290 §D3: pre-gate cockpit load failure defers; performRespawn still refuses the unknown team before its handoff write", async () => {
     const h = makeHarness();
     passGates(h, "team-driver");
     // First loadCockpit (pre-gate check) throws → deferred; the later
@@ -547,7 +547,7 @@ describe("cockpitRotate — gate 1 (user-not-typing)", () => {
     expect(firstDiscord(h).template).toBe("cockpit-rotate-refused");
   });
 
-  test("ADR-288 deprecation window: falls back to legacy `_superdriver` capture when `_sd` is absent", async () => {
+  test("ADR-290 deprecation window: falls back to legacy `_superdriver` capture when `_sd` is absent", async () => {
     const h = makeHarness();
     // No `_sd` window yet (cockpit not reconciled since the rename) —
     // the legacy window is still the operator's compose box.
@@ -558,7 +558,7 @@ describe("cockpitRotate — gate 1 (user-not-typing)", () => {
     expect(firstAuditRow(h).outcome).toBe("gate-1-refused");
   });
 
-  test("ADR-288 review: gate-1 probes use tmux exact-match targets (`:=_sd`, then `:=_superdriver`)", async () => {
+  test("ADR-290 review: gate-1 probes use tmux exact-match targets (`:=_sd`, then `:=_superdriver`)", async () => {
     const h = makeHarness();
     const seen: string[] = [];
     const base = makeTmuxFactory(h);
@@ -593,7 +593,7 @@ describe("cockpitRotate — gate 1 (user-not-typing)", () => {
     expect(seen).toContain("atmux_cockpit:=_medic");
   });
 
-  test("ADR-288: a present `_sd` capture wins over a stale legacy `_superdriver` capture", async () => {
+  test("ADR-290: a present `_sd` capture wins over a stale legacy `_superdriver` capture", async () => {
     const h = makeHarness();
     h.captures.set("atmux_cockpit:=_sd", "❯ ");
     h.captures.set("atmux_cockpit:=_superdriver", "Press up to edit queued messages");
