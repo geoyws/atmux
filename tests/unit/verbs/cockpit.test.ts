@@ -2760,10 +2760,10 @@ describe("cockpitRebuild", () => {
     expect(logs.some((l) => l.startsWith("warn:") && l.includes("no enabled teams"))).toBe(true);
   });
 
-  // ADR-077: rebuild emits a manual-start nudge when medic is
-  // enabled. Auto-firing /loop /superdoctor would re-fire on every
-  // idempotent rebuild — keep rebuild topological, nudge the operator.
-  test("ADR-077: medic enabled → success message includes /loop nudge", async () => {
+  // ADR-077 + ADR-291 §D2: reconcile emits a manual-arm nudge when medic
+  // is enabled. Nothing is typed into the pane (send-keys ban) — keep
+  // reconcile topological, nudge the operator to arm the standing goal.
+  test("ADR-291: medic enabled → success message includes the medic arming nudge", async () => {
     await writeFile(
       join(homeDir, ".atmux", "cockpit.json"),
       JSON.stringify({
@@ -2798,8 +2798,8 @@ describe("cockpitRebuild", () => {
       );
       expect(code).toBe(0);
       const joined = logs.join("\n");
-      expect(joined).toContain("/loop /superdoctor");
-      expect(joined).toContain("superdoctor");
+      expect(joined).toContain("▸ medic:");
+      expect(joined).toContain("/standing-goal /kb-goal");
     } finally {
       try {
         await fx.tmux.server.killServer();
@@ -2846,8 +2846,8 @@ describe("cockpitRebuild", () => {
       expect(code).toBe(0);
       const joined = logs.join("\n");
       // Nudge fires from the new canonical `cockpit.medic` read.
-      expect(joined).toContain("/loop /superdoctor");
-      expect(joined).toContain("medic");
+      expect(joined).toContain("▸ medic:");
+      expect(joined).toContain("_medic");
       // ADR-133 TR2 ships canonical "medic" window name; ADR-135 §D2
       // adds the `_` prefix on cockpit-role windows. The post-rename
       // canonical is `_medic`. (Pre-TR2 / pre-ADR-135 form was bare
@@ -2962,8 +2962,8 @@ describe("cockpitRebuild", () => {
       );
       expect(code).toBe(0);
       const joined = logs.join("\n");
-      // No medic / superdoctor configured → no /loop nudge surfaces.
-      expect(joined).not.toContain("/loop /superdoctor");
+      // No medic configured → no arming nudge surfaces.
+      expect(joined).not.toContain("▸ medic:");
     } finally {
       try {
         await fx.tmux.server.killServer();
@@ -3001,7 +3001,7 @@ describe("cockpitRebuild", () => {
         },
       );
       expect(code).toBe(0);
-      expect(logs.join("\n")).not.toContain("/loop /superdoctor");
+      expect(logs.join("\n")).not.toContain("▸ medic:");
     } finally {
       try {
         await fx.tmux.server.killServer();

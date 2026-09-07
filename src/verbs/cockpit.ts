@@ -1159,16 +1159,14 @@ export async function cockpitRebuild(
   // cleanup paths but is no longer called from trunk.
 
   logger.ok(`cockpit ready. attach: tmux attach -t ${cockpit.cockpitSession}`);
-  // ADR-077 + ADR-133: nudge the operator to start the medic loop
-  // manually. Rebuild stays purely topological — auto-firing
-  // `/loop /superdoctor` on every rebuild would either re-fire on
-  // idempotent re-runs or need fragile send-keys timing against a
-  // freshly-spawned claude. Manual start is one slash command and
-  // matches how the operator drives superdriver in window 1. Skill
-  // slug stays `/superdoctor` until TR3 ships the cascade rename.
+  // ADR-077 + ADR-291 §D2: nudge the operator to arm the medic lane by
+  // hand. Reconcile stays purely topological — the medic works the
+  // `medic` kb board under an operator-armed standing goal, and nothing
+  // is typed into its pane (send-keys ban r-1376df29; the autoStart
+  // auto-fire is being retired under kb t-74c9e79e).
   if (cockpit.medic?.enabled === true) {
     logger.log(
-      `  ▸ medic: select window 2 ('superdoctor') and type \`/loop /superdoctor\` to start the hourly diagnosis loop`,
+      "  ▸ medic: `_medic` sits after the `_sdN` lanes (ADR-290 §D5) — arm its standing goal by hand (`/standing-goal /kb-goal` on the `medic` board, ADR-291 §D2)",
     );
   }
   return 0;
