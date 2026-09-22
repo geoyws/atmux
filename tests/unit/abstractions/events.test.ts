@@ -27,6 +27,7 @@ import {
   announceHonkerState,
   drainSince,
   emit,
+  loadEventById,
   loadOffset,
   saveOffset,
   watchEvents,
@@ -823,5 +824,161 @@ describe("watchEvents", () => {
     // does 2, then loop drains 2 more, then 1 more on next wake.
     expect(ids.length).toBeGreaterThanOrEqual(4);
     expect(ids.length).toBeLessThanOrEqual(5);
+  });
+});
+
+describe("loadEventById", () => {
+  test("returns the parsed payload for a known event_id", () => {
+    const emitted = emit(
+      db,
+      { topic: "task.done", taskId: "t-1", member: "be-1", team: "alpha", doneAtSec: 100 },
+      { generateId: () => fakeId(1), nowSec: () => 100 },
+    );
+    const loaded = loadEventById(db, fakeId(1));
+    expect(loaded).toEqual(emitted);
+    expect(loaded?.eventId).toBe(fakeId(1));
+    expect(loaded?.topic).toBe("task.done");
+    if (loaded?.topic === "task.done") {
+      expect(loaded.taskId).toBe("t-1");
+    }
+  });
+
+  test("returns null for an unknown event_id", () => {
+    expect(loadEventById(db, fakeId(999))).toBeNull();
+  });
+
+  test("returns null for a poison row", () => {
+    emit(
+      db,
+      { topic: "task.done", taskId: "t-1", member: "be-1", team: "alpha", doneAtSec: 100 },
+      { generateId: () => fakeId(1), nowSec: () => 100 },
+    );
+    db.prepare("UPDATE events SET payload = 'not-json' WHERE event_id = ?").run(fakeId(1));
+    expect(loadEventById(db, fakeId(1))).toBeNull();
+  });
+});
+
+describe("watchEvents — notification-table poll mode", () => {
+  // Mirrors the substrate table shape the code queries
+  // (SELECT COALESCE(MAX(id),0)): a single auto-increment key is all
+  // watchEvents ever reads, so the minimal CREATE suffices.
+  const createNotificationsTable = () => {
+    db.exec("CREATE TABLE _honker_notifications (id INTEGER PRIMARY KEY)");
+  };
+
+  test("equal MAX(id) sleeps and continues", async () => {
+    createNotificationsTable();
+    const ac = new AbortController();
+    let sleepCalls = 0;
+    const watcher = watchEvents(db, {
+      topics: ["task.done"],
+      signal: ac.signal,
+      honkerLoaded: true,
+      sleep: async () => {
+        sleepCalls += 1;
+        if (sleepCalls === 1) ac.abort();
+      },
+    });
+    const seen: string[] = [];
+    for await (const ev of watcher) seen.push(ev.topic);
+    expect(seen).toEqual([]);
+    expect(sleepCalls).toBe(1);
+  });
+
+  test("a new notification advances the cursor and drains", async () => {
+    createNotificationsTable();
+    const ac = new AbortController();
+    let sleepCalls = 0;
+    const watcher = watchEvents(db, {
+      topics: ["task.done"],
+      signal: ac.signal,
+      honkerLoaded: true,
+      sleep: async () => {
+        sleepCalls += 1;
+        if (sleepCalls === 1) {
+          // Single-threaded seam, no timers: advance the notification
+          // cursor AND land one event, then let the next pass drain it.
+          db.exec("INSERT INTO _honker_notifications DEFAULT VALUES");
+          emit(
+            db,
+            { topic: "task.done", taskId: "t-notify", member: "x", team: "y", doneAtSec: 1 },
+            { generateId: () => fakeId(1) },
+          );
+          return;
+        }
+        ac.abort();
+      },
+    });
+    const seen: string[] = [];
+    for await (const ev of watcher) {
+      if (ev.topic === "task.done") seen.push(ev.taskId);
+    }
+    expect(seen).toEqual(["t-notify"]);
+  });
+
+  test("disappeared table degrades to fallback polling", async () => {
+    createNotificationsTable();
+    const ac = new AbortController();
+    let sleepCalls = 0;
+    const watcher = watchEvents(db, {
+      topics: ["task.done"],
+      signal: ac.signal,
+      honkerLoaded: true,
+      sleep: async () => {
+        sleepCalls += 1;
+        if (sleepCalls === 1) {
+          db.exec("DROP TABLE _honker_notifications");
+          return;
+        }
+        ac.abort();
+      },
+    });
+    const seen: string[] = [];
+    for await (const ev of watcher) seen.push(ev.topic);
+    // readHonkerNotificationMaxId catch returns -1 → degrade path;
+    // watcher still terminates cleanly with zero events.
+    expect(seen).toEqual([]);
+  });
+
+  test("defaultSleep honors an already-aborted signal (no seam)", async () => {
+    createNotificationsTable();
+    const ac = new AbortController();
+    // Real timer required here: the point is exercising the real
+    // defaultSleep against the platform clock, so fake timers cannot
+    // drive it. Generous margin: poll cadence 5ms vs abort at 20ms —
+    // asserts only termination + emptiness, never timing.
+    setTimeout(() => ac.abort(), 20);
+    const watcher = watchEvents(db, {
+      topics: ["task.done"],
+      signal: ac.signal,
+      honkerLoaded: true,
+      honkerPollIntervalMs: 5,
+    });
+    const seen: string[] = [];
+    for await (const ev of watcher) seen.push(ev.topic);
+    expect(seen).toEqual([]);
+  });
+
+  test("defaultSleep entry with already-aborted signal resolves immediately (gap path)", async () => {
+    createNotificationsTable();
+    const ac = new AbortController();
+    // Empty stream that aborts before ending: after the iterator
+    // completes, the externalSignalGapMs sleep runs with an
+    // already-aborted signal, exercising defaultSleep's entry
+    // early-out with the real sleeper. Fully deterministic, no timers.
+    // biome-ignore lint/correctness/useYield: intentional no-yield fixture — aborts then ends the stream to force the gap-sleep path with an aborted signal.
+    const signals = (async function* () {
+      ac.abort();
+    })();
+    const watcher = watchEvents(db, {
+      topics: ["task.done"],
+      signal: ac.signal,
+      honkerLoaded: true,
+      externalSignals: signals,
+      externalSignalGapMs: 50,
+    });
+    const seen: string[] = [];
+    for await (const ev of watcher) seen.push(ev.topic);
+    expect(seen).toEqual([]);
   });
 });
