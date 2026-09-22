@@ -149,7 +149,7 @@ export const KANBAN_CLI_FIXTURES = {
     argv: ["claim", "t-9e692daf", "--as", "be-1", "--caller-scope", "member", "--json"],
     exitCode: 0,
     stdout:
-      '{\n  "taskID": "t-9e692daf",\n  "agentID": "be-1",\n  "sessionID": null,\n  "leaseToken": "521635ee-0a29-4b76-b161-3de60ac23204",\n  "claimedAt": 1786933318421,\n  "heartbeatAt": 1786933318421,\n  "expiresAt": 1786934218421\n}\n',
+      '{\n  "taskID": "t-9e692daf",\n  "agentID": "be-1",\n  "sessionID": null,\n  "leaseToken": "11111111-1111-4111-8111-111111111111",\n  "claimedAt": 1786933318421,\n  "heartbeatAt": 1786933318421,\n  "expiresAt": 1786934218421\n}\n',
     stderr: "",
   },
   claimAlreadyClaimed: {
@@ -164,7 +164,7 @@ export const KANBAN_CLI_FIXTURES = {
     argv: ["claim", "--next", "--as", "be-1", "--json"],
     exitCode: 0,
     stdout:
-      '{\n  "taskID": "e-4d17bce8",\n  "agentID": "be-1",\n  "sessionID": null,\n  "leaseToken": "63116723-2a53-4dc0-96c1-86d1b039d332",\n  "claimedAt": 1786932661392,\n  "heartbeatAt": 1786932661392,\n  "expiresAt": 1786933561392\n}\n',
+      '{\n  "taskID": "e-4d17bce8",\n  "agentID": "be-1",\n  "sessionID": null,\n  "leaseToken": "22222222-2222-4222-8222-222222222222",\n  "claimedAt": 1786932661392,\n  "heartbeatAt": 1786932661392,\n  "expiresAt": 1786933561392\n}\n',
     stderr: "",
   },
   claimNextEmpty: {

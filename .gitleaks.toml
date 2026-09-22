@@ -1,0 +1,23 @@
+[extend]
+useDefault = true
+
+# t-92097ce7 synthetic test credentials, removed from the tree 2026-09-23.
+# The exact fake values below now live ONLY in git history (no history
+# rewrite per task contract). No rule is disabled or loosened: every regex
+# is anchored (^…$) to one full fake string. (Deliberately no `paths`
+# block: gitleaks ORs paths with regexes, so one would whole-file exempt
+# test files from every rule; the anchored secret regexes alone suffice.)
+[allowlist]
+description = "t-92097ce7 history-only synthetic test credentials removed 2026-09-23"
+regexTarget = "secret"
+regexes = [
+  # Fake kanban-claim fixture leaseTokens; replaced in-tree by repeated-digit UUIDs.
+  '''^521635ee-0a29-4b76-b161-3de60ac23204$''',
+  '''^63116723-2a53-4dc0-96c1-86d1b039d332$''',
+  # Synthetic known-secret const for vox log redaction tests; replaced by sk-fake-…-0000.
+  '''^sk-live-4f9a2c7e11b3d8f60a5e9c2b7d4188aa$''',
+  # Synthetic ?key= shape fixture; replaced by AIzaSy-UNIT-TEST-FAKE-KEY-DO-NOT-USE.
+  '''^AIzaSyUNKNOWN123456$''',
+  # Canonical jwt.io example token; replaced by an eyJFAKE… token.
+  '''^eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiIxMjM0NTY3ODkwIn0\.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk$''',
+]
