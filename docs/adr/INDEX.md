@@ -251,6 +251,7 @@
 | 282 | Never collect the whole environment in a test — allowlist at the source | 2026-08-28 | accepted (operator-direct) |
 | 284 | One sizing policy for every cockpit window — the `unum` `window-size smallest` override is retired | 2026-08-30 | accepted (operator-direct) |
 | 285 | Cooperative `_bot` seats and the `_superbot` offer protocol (renumbered from 281 on merge — collision) | 2026-08-28 | accepted (operator-direct; live activation held) |
+| 292 | `atmux msg` — mailbox record + wake over `inbox_messages` (supersedes ADR-154 §D2 per E1-T1 option b) | 2026-09-23 | proposed |
 
 ## Superseded (skip)
 
