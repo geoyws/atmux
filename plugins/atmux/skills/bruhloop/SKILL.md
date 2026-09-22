@@ -49,7 +49,6 @@ Plain-English shorthand for /atmux:bruh's four verbs (unblock all, approve all, 
 `/atmux:bruhloop` is one of a family of `/loop`-prefixed shortcuts the operator can build:
 
 - `/atmux:bruhloop` — 15min /atmux:bruh sentinel sweep (this skill)
-- `/loop /atmux:whip` — the canonical whip autonomous-work loop (see `/atmux:whip`)
 - Future: any other `/atmux:X` skill the operator wants on a fixed cadence can get its own `/atmux:Xloop` sugar.
 
 The pattern: thin skill, no logic, prompt is the spec.
@@ -57,7 +56,6 @@ The pattern: thin skill, no logic, prompt is the spec.
 ## Cross-references
 
 - [`/atmux:bruh`](../bruh/SKILL.md) — the per-iteration verb this loops on
-- [`/atmux:whip`](../whip/SKILL.md) — sibling autonomous-work loop
 - [ADR-192](../../../../docs/adr/192-cron-arm-idempotency-contract.md) — `/loop` dynamic-pacing idempotency contract (state-file at `~/.atmux/state/loop-arm-<hash>.json`; check before re-arming)
 - [ADR-211](../../../../docs/adr/211-retire-sentinel-role-distribute-to-honker-consumers.md) + [ADR-212](../../../../docs/adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md) — sentinel + medic role retirement (verbiage preserved per operator instruction; architectural history above)
 - [ADR-217](../../../../docs/adr/217-atmux-skills-plugin-bundled-and-wizard-installed.md) §D4 — generalization pass strip list (this carve)
