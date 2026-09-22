@@ -44,6 +44,10 @@
 // Everything it runs is READ-ONLY: `cat` on two /proc files, `grep -c`
 // on a third, and `df`. Nothing is written, installed, or loaded.
 
+// Type-only: the lazy `spawn` import inside `defaultRunSsh` stays dynamic
+// so `node:child_process` is loaded only on the ssh path, never at module
+// load; this import is erased at runtime.
+import type { spawn as spawnFnType } from "../../abstractions/spawn.ts";
 import {
   DEFAULT_MOUNTS,
   type HostPressureVerdict,
@@ -213,11 +217,19 @@ export function resolveHostProbeTimeoutMs(env: NodeJS.ProcessEnv = process.env):
 }
 
 /** Default ssh runner — `BatchMode=yes` so a host that would prompt for a
- *  password FAILS instead of hanging on a tty nobody is watching. */
-async function defaultRunSsh(sshHost: string, command: string, timeoutMs: number): Promise<string> {
-  const { spawn } = await import("../../abstractions/spawn.ts");
+ *  password FAILS instead of hanging on a tty nobody is watching.
+ *  Exported for the unit seam (t-599fa376): tests pass `spawnImpl` so
+ *  this body is covered without performing real SSH. Production callers
+ *  omit it and get the lazy `spawn` import below. */
+export async function defaultRunSsh(
+  sshHost: string,
+  command: string,
+  timeoutMs: number,
+  spawnImpl?: typeof spawnFnType,
+): Promise<string> {
+  const spawnFn = spawnImpl ?? (await import("../../abstractions/spawn.ts")).spawn;
   const connectTimeoutSec = Math.max(1, Math.floor(timeoutMs / 2000));
-  const r = await spawn({
+  const r = await spawnFn({
     cmd: "ssh",
     argv: ["-o", "BatchMode=yes", "-o", `ConnectTimeout=${connectTimeoutSec}`, sshHost, command],
     timeoutMs,

@@ -13,6 +13,7 @@
 // the clock. Nothing here shells out.
 
 import { describe, expect, test } from "bun:test";
+import type { SpawnOpts, SpawnResult } from "../../../../src/abstractions/spawn.ts";
 import {
   type HostPressureVerdict,
   type ProbeHostPressureDeps,
@@ -22,6 +23,7 @@ import {
   buildSnapshotCommand,
   DEFAULT_HOST_PROBE_TIMEOUT_MS,
   DEFAULT_HOST_TARGETS,
+  defaultRunSsh,
   type HostReportEntry,
   type HostTarget,
   parseSnapshot,
@@ -726,5 +728,41 @@ describe("DEFAULT_HOST_TARGETS", () => {
     for (const t of DEFAULT_HOST_TARGETS) {
       expect(Object.keys(t)).not.toContain("cpuCores");
     }
+  });
+});
+
+// ---------- defaultRunSsh production boundary (t-599fa376) ----------
+
+describe("defaultRunSsh", () => {
+  test("BatchMode + ConnectTimeout + any-exit + stdout passthrough, no real ssh", async () => {
+    // spawnImpl is injected directly — no mock.module, no subprocess, no
+    // SSH. (An earlier revision used mock.module against the lazy dynamic
+    // import; the mock did not intercept and the test SSH'd to hig. Never
+    // again: direct injection is the seam.)
+    const seen: SpawnOpts[] = [];
+    const out = await defaultRunSsh(
+      "hig",
+      "df -B1",
+      15000,
+      async (opts: SpawnOpts): Promise<SpawnResult> => {
+        seen.push(opts);
+        return {
+          cmd: opts.cmd,
+          argv: opts.argv ?? [],
+          exitCode: 0,
+          signalled: null,
+          stdout: "SNAP",
+          stderr: "",
+          durationMs: 1,
+        };
+      },
+    );
+    expect(out).toBe("SNAP");
+    expect(seen).toHaveLength(1);
+    const call = seen[0] as SpawnOpts;
+    expect(call.cmd).toBe("ssh");
+    expect(call.argv).toEqual(["-o", "BatchMode=yes", "-o", "ConnectTimeout=7", "hig", "df -B1"]);
+    expect(call.timeoutMs).toBe(15000);
+    expect(call.expectExitCode).toBe("any");
   });
 });
