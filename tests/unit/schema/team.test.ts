@@ -1528,3 +1528,23 @@ describe("TeamIssueSync schema (ADR-261 §D10)", () => {
     ).toThrow(ZodError);
   });
 });
+// ---------- TeamCrons — removed-key warn-and-ignore (E3) ----------
+describe("TeamCrons — removed keys warn once then strip", () => {
+  test("whipVelocityGateEnabled warns once across parses, strips the key", () => {
+    const warnings: string[] = [];
+    const orig = console.warn;
+    console.warn = (msg?: unknown) => {
+      warnings.push(String(msg));
+    };
+    try {
+      const first = TeamCrons.parse({ whipVelocityGateEnabled: true });
+      const second = TeamCrons.parse({ whipVelocityGateEnabled: true });
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toMatch(/crons\.whipVelocityGateEnabled is deprecated/);
+      expect(first).toEqual({ laneTickEnabled: true, laneTickMins: 5 });
+      expect(second).toEqual({ laneTickEnabled: true, laneTickMins: 5 });
+    } finally {
+      console.warn = orig;
+    }
+  });
+});
