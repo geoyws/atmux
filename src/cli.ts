@@ -369,6 +369,12 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
     case "":
       // bin/atmux:91 — bare `atmux` aliases to `up` (ADR-014).
       return up([]);
+    case "poke":
+    case "poke-resume-check":
+      throw new UsageError({
+        what: `verb '${verb}' retired (E3, ADR-289): the poke watchdog + whip estate are removed`,
+        hint: "delete any 'atmux poke' cron lines; pane-liveness detection moved to the E4 classifier",
+      });
     default:
       throw new UsageError({
         what: `unknown verb: ${verb || "<none>"}`,

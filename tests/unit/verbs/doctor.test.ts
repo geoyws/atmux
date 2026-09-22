@@ -1278,21 +1278,25 @@ describe("checkCronBlock", () => {
   test("crontab present with matching marker → no row", async () => {
     const body = [
       "# >>> atmux:team=alpha — managed by atmux start; do not edit by hand",
-      "*/15 * * * * ATMUX_DIR=/srv/alpha/.atmux /bin/atmux whip",
+      "*/15 * * * * ATMUX_DIR=/srv/alpha/.atmux /bin/atmux lane-tick",
       "# <<< atmux:team=alpha",
     ].join("\n");
     expect(await checkCronBlock(team(), { crontab: fakeIO(body) })).toEqual([]);
   });
 
-  test("empty crontab → one RED row pointing at cron-install", async () => {
+  test("empty crontab → one RED row pointing at start (ADR-233 no-op-shim caveat)", async () => {
     const rows = await checkCronBlock(team(), { crontab: fakeIO("") });
     expect(rows.length).toBe(1);
     const r = rows[0];
     expect(r?.status).toBe("red");
     expect(r?.label).toBe("cron-block:missing");
     expect(r?.detail).toContain("alpha");
-    expect(r?.detail).toContain("report / decisions / groom won't fire");
-    expect(r?.hint).toContain("atmux cron-install");
+    expect(r?.detail).toContain("lane-tick");
+    expect(r?.detail).not.toContain("whip");
+    expect(r?.hint).toContain("atmux start");
+    expect(r?.hint).toContain("ADR-233");
+    expect(r?.hint).toContain("no-op shim");
+    expect(r?.hint).not.toMatch(/run `atmux cron-install`/);
   });
 
   test("crontab has OTHER team's block but not ours → RED row", async () => {
@@ -1301,7 +1305,7 @@ describe("checkCronBlock", () => {
     // rendered header line so similar-prefix team names can't collide.
     const body = [
       "# >>> atmux:team=alpha-staging — managed by atmux start; do not edit by hand",
-      "*/15 * * * * ATMUX_DIR=/srv/alpha-staging/.atmux /bin/atmux whip",
+      "*/15 * * * * ATMUX_DIR=/srv/alpha-staging/.atmux /bin/atmux lane-tick",
       "# <<< atmux:team=alpha-staging",
     ].join("\n");
     const rows = await checkCronBlock(team(), { crontab: fakeIO(body) });
@@ -1696,7 +1700,6 @@ describe("doctor() — public verb", () => {
     expect(captured).toContain("atmux doctor");
   });
 });
-
 
 // ---------- ADR-057 §D5a: parseSubmoduleStatus + checkSubmoduleIntegrity ----------
 

@@ -157,9 +157,15 @@ export interface CheckCronBlockOpts {
  * **2026-05-24 post-ADR-233**: cron auto-install retired (orchd is the
  * runtime via Honker substrate). The probe now expects ZERO cron blocks
  * by default — `team.kanban.cronAutoInstall === false` is the canonical
- * post-cutover state and this probe is silent. The check is retained
- * for the deprecation window so teams that explicitly opt back in (via
- * `atmux cron-install`) get the safety net.
+ * post-cutover state and this probe is silent. (`atmux cron-install`
+ * no longer re-arms anything — no-op shim — so the opt-in path below
+ * fires only for blocks installed out-of-band.)
+ *
+ * **E3 (ADR-289)**: the poke/whip cron estate is deleted, so the RED
+ * row below names `lane-tick` — the surviving verb a managed block
+ * fires — and the hint points at `atmux start` (owner of the sandwich
+ * block) with the ADR-233 caveat, never at the `cron-install` no-op
+ * shim as if it installs.
  *
  * Returns:
  * - `[]` when team is null (the team-shape row already surfaced).
@@ -167,9 +173,8 @@ export interface CheckCronBlockOpts {
  *    (canonical post-ADR-233 state) or operator manages cron some other way.
  * - `[]` when `crontab` is not on the host (no PATH match); ADR-083
  *    posture is "skip gracefully on cron-less hosts."
- * - `[]` when the team's marker header (`# >>> atmux:team=<name> …`) is
- *    present anywhere in the current crontab.
- * - one RED row otherwise, hinting `atmux cron-install` (legacy path).
+ * - one RED row otherwise, hinting a re-run of `atmux start` (with the
+ *    ADR-233 no-op-shim caveat for `cron-install`, which installs nothing).
  *
  * RED (not YELLOW) because pre-ADR-233 the failure mode was overnight
  * team death — a GREEN doctor that hid a missing cron block was worse
@@ -200,8 +205,8 @@ export async function checkCronBlock(
     {
       status: "red",
       label: "cron-block:missing",
-      detail: `no managed atmux:team=${team.name} block in host crontab — report / decisions / groom won't fire`,
-      hint: "run `atmux cron-install` (or re-run `atmux start`) — block uses ATMUX_DIR + optional TMUX_TMPDIR so worktree-isolation is safe",
+      detail: `no managed atmux:team=${team.name} block in host crontab — lane-tick won't fire`,
+      hint: "re-run `atmux start` (owner of the managed block); per ADR-233 `atmux cron-install` is a no-op shim and installs nothing",
     },
   ];
 }

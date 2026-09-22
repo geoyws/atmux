@@ -480,14 +480,32 @@ describe("cli.main — cost verb dispatch", () => {
   });
 });
 
-// ---------- Dispatch — poke verb route (smoke; deep behaviour is in
-//                       tests/unit/verbs/poke.test.ts) ----------
-
-describe("cli.main — poke verb dispatch", () => {
-  test("'poke --bogus-flag' dispatches into poke (UsageError)", async () => {
-    const { exit, stderr } = await captureMain(["poke", "--bogus-flag"]);
+// ---------- Retired poke verbs (E3, ADR-289) ----------
+//
+// `poke` + `poke-resume-check` are dispatcher tombstones: the poke
+// watchdog + whip estate are removed, but stale 5-minute cron lines
+// still fire `atmux poke`. They must fail clean (UsageError → 64, no
+// stack) naming the retirement — never fall through to unknown-verb.
+describe("cli.main — retired poke verbs (E3, ADR-289)", () => {
+  test("'poke' → exit 64 + retired message naming ADR-289 (not unknown verb)", async () => {
+    const { exit, stdout, stderr } = await captureMain(["poke"]);
     expect(exit).toBe(64);
-    expect(stderr).toContain("atmux:");
+    expect(stdout).toBe("");
+    expect(stderr).toContain("retired");
+    expect(stderr).toContain("ADR-289");
+    expect(stderr).not.toContain("unknown verb");
+    expect(stderr).not.toContain("internal error");
+    expect(stderr).not.toMatch(/\n\s+at\s/);
+  });
+  test("'poke-resume-check' → exit 64 + retired message naming ADR-289 (not unknown verb)", async () => {
+    const { exit, stdout, stderr } = await captureMain(["poke-resume-check"]);
+    expect(exit).toBe(64);
+    expect(stdout).toBe("");
+    expect(stderr).toContain("retired");
+    expect(stderr).toContain("ADR-289");
+    expect(stderr).not.toContain("unknown verb");
+    expect(stderr).not.toContain("internal error");
+    expect(stderr).not.toMatch(/\n\s+at\s/);
   });
 });
 
