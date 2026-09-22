@@ -246,3 +246,7 @@ Same as the original §Rollback path. Revert the amendment commit; legacy `drive
 ### 2026-08-24 — D7 `drivers[].tui` is nullable (ADR-278)
 
 [ADR-278](278-nullable-driver-agent-harness.md) replaces D7's required `tui: string` with `tui?: string | null`. A non-null value still requests command-mode TUI launch; `null` or absence launches zsh with no agent harness so the operator can choose a harness per session. D2's no-send-keys invariant and the rest of the driver topology are unchanged.
+
+### 2026-09-23 — D2 guard kept as product behaviour after the 2026-09-08 pane-to-pane revocation (ADR-293)
+
+[ADR-293](293-driver-send-keys-guard-kept-after-2026-09-08-revocation.md) records the 2026-09-08 operator revocation of the pane-to-pane send-keys ban (capture-before-send required; `dialog`/`draft` stay refused; `send --queued` since 2026-09-15) and chooses (a) keep the in-tree `DriverSendKeysViolation` guard as product behaviour for send/nudge/dispatch. D2's no-send-keys invariant and the runtime guard are unchanged.
