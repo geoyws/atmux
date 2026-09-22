@@ -64,7 +64,7 @@ If the script's escalation step (Step 5) already wrote a velocity-fix to the tea
 - **Lead is always window 2** per ADR-044 + CLAUDE.md "Team Roles". The script doesn't `jq` into `team.json` to find it.
 - **`Working` is defined by commit-cadence, not pane liveness** (CLAUDE.md L191).
 - **Cage socket resolution** tries `/tmp/atmux-<team>/sock` (legacy) then `<team-root>/.atmux/tmux/tmux-0/default` (current).
-- **Stuck-input is cross-checked against whip-velocity-gate.log** (per t-0a4fc7f6). When pane-snapshot reports `queued_n>=3`, the script reads the team's last 3 entries from `$HOME/.atmux/logs/whip-velocity-gate.log` — if ANY show `velocity=OK`, the team is demonstrably shipping (commits-30min >= 1) and the verdict falls through to the normal BAU ladder instead of `⚙️ Stuck-input`. Stuck-input fires only when BOTH signals (pane-snapshot AND velocity-gate) agree teams are idle. The cross-check function lives at `scripts/lib-velocity-gate.sh` with bats tests at `tests/velocity-gate.bats`.
+- **Stuck-input is gated by pane-signal + commit-cadence.** When pane-snapshot reports `queued_n>=3`, the verdict fires `⚙️ Stuck-input` — unless the commit-cadence guard above already picked `🟢 BAU` (`total >= 1` with a commit inside the stale-threshold window), which remains the false-positive suppressor for shipping teams. (The former log cross-check was retired with poke (E3): the log it read has no writer since its producer was deleted.)
 
 ## When the script fails or surprises
 

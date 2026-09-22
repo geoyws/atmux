@@ -326,13 +326,9 @@ iso_to_local() {
   TZ="$COORD_TZ" date -d "$iso" +"%H:%M ${COORD_TZ_SUFFIX}" 2>/dev/null || echo "—"
 }
 
-# t-0a4fc7f6: cross-check whip-velocity-gate.log to disambiguate the
-# bau Stuck-input verdict from a transient pane-snapshot blind spot.
-# Loaded from a sibling lib so the function is bats-testable in isolation
-# without booting the rest of the bau pipeline.
-#
-# shellcheck source=./lib-velocity-gate.sh
-source "$(dirname "${BASH_SOURCE[0]}")/lib-velocity-gate.sh"
+# (Stuck-input log cross-check retired with poke, E3: the log it read has
+# no writer since its producer was deleted, so the check was vacuous.
+# Stuck-input gating is pane-signal + the commit-cadence guard below.)
 
 # Resolve ADR title from a team root + ADR number
 resolve_adr() {
@@ -564,12 +560,11 @@ analyse_team() {
 
   # --- Verdict ---
   #
-  # t-0a4fc7f6: the Stuck-input verdict (queued_n >= 3) is gated by a
-  # cross-check against whip-velocity-gate.log. If the velocity-gate
-  # has recorded velocity=OK in any of the team's last 3 readings (=
-  # last ~15min at 5min cadence), the team is demonstrably shipping —
-  # the queued-pane snapshot caught a mid-spinner gap and Stuck-input
-  # would be a false-positive. Downgrade to the normal BAU ladder.
+  # The Stuck-input log cross-check was retired with poke (E3): the log it
+  # read has no writer since its producer was deleted, so the check was
+  # vacuous. Stuck-input fires on the pane-signal alone (queued_n >= 3);
+  # the commit-cadence guard above (total >= 1 && last_ship_age_h < STALE)
+  # remains the false-positive suppressor for shipping teams.
   #
   # Commits-in-window weighted higher than pane-snapshot when they
   # disagree: total >= 1 with recent commit-age picks BAU regardless
@@ -590,9 +585,9 @@ analyse_team() {
     # is worse than missing a transient pane jam (which the next bau
     # cycle catches).
     verdict_emoji="🟢"; verdict_label="BAU"
-  elif (( queued_n >= 3 )) && ! team_recent_velocity_ok "$team"; then
-    # Both signals (pane-snapshot AND velocity-gate AND no recent
-    # commits in window) agree teams are idle → Stuck-input fires.
+  elif (( queued_n >= 3 )); then
+    # Pane-signal alone: 3+ queued panes with no recent commit in window
+    # (the commit-cadence guard above already passed) → Stuck-input.
     verdict_emoji="⚙️"; verdict_label="Stuck-input"
   elif (( last_ship_age_h < HOURS )); then
     verdict_emoji="🟡"; verdict_label="Quiescent-fresh"
