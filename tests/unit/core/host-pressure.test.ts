@@ -269,3 +269,100 @@ describe("formatPressureError", () => {
     expect(out).toContain("MemAvailable");
   });
 });
+
+describe("probeHostPressure — default readers", () => {
+  // Shared fakes: green vs defaults (8 cores × 0.75 = 6.0 load ceiling;
+  // 32 GB available vs 8192 MB floor; DF_HEALTHY root at 47% vs 90% cap).
+  const LOAD = "0.10 0.05 0.01 1/100 1000";
+  const MEM = "MemTotal: 67108864 kB\nMemAvailable: 33554432 kB\n";
+  const CPU = 8;
+
+  test("default df reader runs a real df subprocess", async () => {
+    const v = await probeHostPressure({
+      platform: "linux",
+      readLoadAvg: async () => LOAD,
+      readMemInfo: async () => MEM,
+      readCpuCount: async () => CPU,
+      env: {},
+      // readDf OMITTED — the real `df -P -k /` runs. df exists on both
+      // macOS and Linux, so this holds on either host. Structural
+      // assertions only: real df values vary by machine.
+    });
+    expect(v.skipped).toBe(false);
+    expect(Array.isArray(v.probe?.disks)).toBe(true);
+    for (const d of v.probe?.disks ?? []) {
+      expect(typeof d.mount).toBe("string");
+      expect(Number.isFinite(d.totalMb)).toBe(true);
+      expect(Number.isFinite(d.availableMb)).toBe(true);
+      expect(Number.isFinite(d.usedPercent)).toBe(true);
+    }
+    expect(v.thresholds).toEqual({ maxLoadRatio: 0.75, minMemMb: 8192, maxDiskPercent: 90 });
+  });
+
+  test("default loadavg reader reflects the host", async () => {
+    const deps = {
+      platform: "linux",
+      readMemInfo: async () => MEM,
+      readCpuCount: async () => CPU,
+      readDf: async () => DF_HEALTHY,
+      env: {},
+    };
+    // Platform contract: /proc/loadavg exists on Linux and is absent on
+    // macOS, where the default reader rejects — never hangs.
+    if (process.platform === "linux") {
+      const v = await probeHostPressure(deps); // readLoadAvg omitted
+      expect(Number.isFinite(v.probe?.loadAvg1min ?? NaN)).toBe(true);
+      expect(v.probe?.loadAvg1min ?? -1).toBeGreaterThanOrEqual(0);
+    } else {
+      await expect(probeHostPressure(deps)).rejects.toThrow();
+    }
+  });
+
+  test("default meminfo reader reflects the host", async () => {
+    const deps = {
+      platform: "linux",
+      readLoadAvg: async () => LOAD,
+      readCpuCount: async () => CPU,
+      readDf: async () => DF_HEALTHY,
+      env: {},
+    };
+    // Platform contract: /proc/meminfo exists on Linux and is absent on
+    // macOS, where the default reader rejects — never hangs.
+    if (process.platform === "linux") {
+      const v = await probeHostPressure(deps); // readMemInfo omitted
+      expect(Number.isFinite(v.probe?.memAvailableMb ?? NaN)).toBe(true);
+      expect(v.probe?.memAvailableMb ?? 0).toBeGreaterThan(0);
+    } else {
+      await expect(probeHostPressure(deps)).rejects.toThrow();
+    }
+  });
+
+  test("default cpu count reader reflects the host", async () => {
+    const deps = {
+      platform: "linux",
+      readLoadAvg: async () => LOAD,
+      readMemInfo: async () => MEM,
+      readDf: async () => DF_HEALTHY,
+      env: {},
+    };
+    // Platform contract: /proc/cpuinfo exists on Linux and is absent on
+    // macOS, where the default reader rejects — never hangs.
+    if (process.platform === "linux") {
+      const v = await probeHostPressure(deps); // readCpuCount omitted
+      expect(Number.isInteger(v.probe?.cpuCores)).toBe(true);
+      expect(v.probe?.cpuCores ?? 0).toBeGreaterThanOrEqual(1);
+    } else {
+      await expect(probeHostPressure(deps)).rejects.toThrow();
+    }
+  });
+});
+
+describe("parseMemAvailableMb — overflow", () => {
+  test("rejects kB overflow past float range", () => {
+    // Proof: the field regex admits only digits, and parseInt of a digit
+    // string is always finite and >= 0 — EXCEPT past ~1.8e308 where it
+    // saturates to Infinity ("9".repeat(310) ≈ 1e310 > Number.MAX_VALUE).
+    // This pins that overflow arm (line 271), the only reachable path to it.
+    expect(() => parseMemAvailableMb(`MemAvailable: ${"9".repeat(310)} kB`)).toThrow(/invalid/);
+  });
+});
