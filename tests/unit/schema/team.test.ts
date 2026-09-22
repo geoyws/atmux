@@ -475,6 +475,38 @@ describe("Team schema — nullable driver harness", () => {
   });
 });
 
+// ---------- drivers[] roster floor — t-6f1e62f9 (P0) ----------
+
+// Pins the LIVE contract: the parent-team driver floor is 1
+// (`drivers: z.array(...).min(1).max(10).optional()` in
+// src/schema/team.ts, ADR-239 OQ1 range 1-10). If a future decision
+// raises the floor, this test moves with it — it is not a vote for 1.
+// Regression anchor: the 2026-09-04 exit-65 outage, when a floor of 3
+// rejected the seven live single-driver teams at `atmux start` (kb atmux
+// task t-6f1e62f9, filed 2026-09-05 from medic t-037c5f71).
+describe("Team schema — drivers[] roster floor is 1 (t-6f1e62f9)", () => {
+  test("Team.parse accepts exactly one driver (single-driver team validates)", () => {
+    const team = Team.parse({
+      name: "demo",
+      members: [],
+      drivers: [{ name: "driver", cwd: "." }],
+    });
+    expect(team.drivers).toHaveLength(1);
+  });
+
+  test("Team.parse REJECTS an empty drivers[] (floor 1, not 0) with ZodError", () => {
+    let caught: unknown;
+    try {
+      Team.parse({ name: "demo", members: [], drivers: [] });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ZodError);
+    // Pins the ZodError to the drivers field (not an unrelated field).
+    expect((caught as ZodError).issues[0]?.path).toEqual(["drivers"]);
+  });
+});
+
 // ---------- worktreeIsolation / worktreeRoot — ADR-082 §2 ----------
 
 describe("Team schema — worktreeIsolation + worktreeRoot (ADR-082 §2)", () => {
