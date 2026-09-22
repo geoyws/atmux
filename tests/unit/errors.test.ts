@@ -14,11 +14,13 @@ import {
   formatErrorChain,
   HttpError,
   HttpTimeoutError,
+  KGuardExceededError,
   LockError,
   LockTimeoutError,
   SchemaError,
   SpawnError,
   SpawnTimeoutError,
+  TargetTeamResolutionError,
   TmuxError,
   TrackerRateLimitError,
   UsageError,
@@ -384,5 +386,69 @@ describe("formatErrorChain", () => {
     const out = formatErrorChain(a);
     // Should not infinite-loop; bounded output.
     expect(out.length).toBeLessThan(10_000);
+  });
+});
+
+describe("TargetTeamResolutionError", () => {
+  test("ambiguous reason names the match count and refuses the silent first-pick", () => {
+    const e = new TargetTeamResolutionError({ team: "x", reason: "ambiguous", matches: 3 });
+    expect(e.tag).toBe("issue-sync-target");
+    expect(e.message).toBe(
+      'cannot resolve target team "x": 3 cockpit sessions match — refusing the silent first-pick (ADR-150 §D5)',
+    );
+    expect(e.team).toBe("x");
+    expect(e.reason).toBe("ambiguous");
+    expect(e.matches).toBe(3);
+    expect(e.context).toEqual({ team: "x", reason: "ambiguous", matches: 3 });
+    expect(e instanceof AtmuxError).toBe(true);
+  });
+
+  test("not-found reason reports no session with that name", () => {
+    const e = new TargetTeamResolutionError({ team: "x", reason: "not-found", matches: 0 });
+    expect(e.message).toBe('cannot resolve target team "x": no cockpit team session has this name');
+    expect(e.matches).toBe(0);
+  });
+
+  test("no-root reason reports the unresolvable root", () => {
+    const e = new TargetTeamResolutionError({ team: "x", reason: "no-root", matches: 1 });
+    expect(e.message).toBe(
+      'cannot resolve target team "x": matched a team session with no resolvable root',
+    );
+  });
+});
+
+describe("KGuardExceededError", () => {
+  test("message names the cap, tracker, filed count, candidate, and backfill re-run", () => {
+    const report = { kGuardHit: true };
+    const e = new KGuardExceededError({
+      trackerId: "ix",
+      scope: "PROPERTY_AI",
+      sourceId: "PAI-1",
+      filedCount: 10,
+      maxNewComplaints: 10,
+      report,
+    });
+    expect(e.tag).toBe("issue-sync-kguard");
+    expect(e.message).toContain("refusing to file more than 10 new complaints");
+    expect(e.message).toContain("ix:PROPERTY_AI");
+    expect(e.message).toContain("10 already filed");
+    expect(e.message).toContain("next candidate PAI-1");
+    expect(e.message).toContain("--backfill");
+    expect(e.trackerId).toBe("ix");
+    expect(e.scope).toBe("PROPERTY_AI");
+    expect(e.filedCount).toBe(10);
+    expect(e.maxNewComplaints).toBe(10);
+    expect(e.context.report).toBe(report);
+  });
+
+  test("report is optional in context", () => {
+    const e = new KGuardExceededError({
+      trackerId: "ix",
+      scope: "s",
+      sourceId: "i-1",
+      filedCount: 0,
+      maxNewComplaints: 5,
+    });
+    expect(e.context.report).toBeUndefined();
   });
 });
