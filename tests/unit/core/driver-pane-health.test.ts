@@ -8,7 +8,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
-import { probeDriverPane } from "../../../src/core/driver-pane-health.ts";
+import { probeDriverPane, probeDriverPanes } from "../../../src/core/driver-pane-health.ts";
 import type { CaptureFn, PaneState } from "../../../src/core/pane-state.ts";
 import type { Team } from "../../../src/schema/team.ts";
 
@@ -47,6 +47,25 @@ function teamWithoutDriverSession(): Team {
   return {
     name: "team",
     members: [],
+    drivers: [
+      { name: "driver", tui: null, cwd: "." },
+      { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+      { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+    ],
+    driverPair: {
+      layout: "horizontal",
+      panes: [
+        { role: "worker", side: "left" },
+        {
+          role: "attention",
+          side: "right",
+          workflow: "kb-att",
+          authority: "decision-only",
+          tui: null,
+          command: null,
+        },
+      ],
+    },
   };
 }
 
@@ -54,6 +73,25 @@ function teamWithDriverSession(): Team {
   return {
     name: "team",
     members: [],
+    drivers: [
+      { name: "driver", tui: null, cwd: "." },
+      { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+      { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+    ],
+    driverPair: {
+      layout: "horizontal",
+      panes: [
+        { role: "worker", side: "left" },
+        {
+          role: "attention",
+          side: "right",
+          workflow: "kb-att",
+          authority: "decision-only",
+          tui: null,
+          command: null,
+        },
+      ],
+    },
     driverSession: { tui: "claude" },
   };
 }
@@ -62,6 +100,25 @@ function teamWithNullDriverSession(): Team {
   return {
     name: "team",
     members: [],
+    drivers: [
+      { name: "driver", tui: null, cwd: "." },
+      { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+      { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+    ],
+    driverPair: {
+      layout: "horizontal",
+      panes: [
+        { role: "worker", side: "left" },
+        {
+          role: "attention",
+          side: "right",
+          workflow: "kb-att",
+          authority: "decision-only",
+          tui: null,
+          command: null,
+        },
+      ],
+    },
     driverSession: null,
   };
 }
@@ -90,6 +147,21 @@ describe("probeDriverPane — configured=false short-circuits", () => {
     });
     expect(listCalled).toBe(false);
     expect(captureCalled).toBe(false);
+  });
+
+  test("driverName override is reflected in the snapshot and capture target", async () => {
+    let target = "";
+    const result = await probeDriverPane(teamWithDriverSession(), atmuxDir, {
+      driverName: "driver-2",
+      listWindowNames: async () => ["driver-2"],
+      capture: async (t) => {
+        target = t;
+        return STATE_FIXTURES.READY;
+      },
+    });
+    expect(result.driverName).toBe("driver-2");
+    expect(result.windowExists).toBe(true);
+    expect(target).toBe("test-sess:driver-2");
   });
 
   test("driverSession null → unconfigured (same as undefined)", async () => {
@@ -198,6 +270,36 @@ describe("probeDriverPane — production-default tmux adapters", () => {
   });
 });
 
+describe("probeDriverPanes — production-default tmux adapters", () => {
+  test("uses tmux.window.listWindows and tmux.pane.capturePane when deps omit overrides", async () => {
+    const tmux = {
+      window: {
+        async listWindows(_sessionName: string) {
+          return [
+            { index: 0, id: "%1", name: "driver", active: true },
+            { index: 1, id: "%2", name: "driver-2", active: false },
+            { index: 2, id: "%3", name: "driver-3", active: false },
+          ];
+        },
+      },
+      pane: {
+        async capturePane(_opts: {
+          target: string;
+          start?: number;
+          end?: number;
+          includeAnsi?: boolean;
+        }) {
+          return STATE_FIXTURES.READY;
+        },
+      },
+    } as unknown as TmuxNamespace;
+
+    const result = await probeDriverPanes(teamWithDriverSession(), atmuxDir, { tmux });
+    expect(result.map((h) => h.driverName)).toEqual(["driver", "driver-2", "driver-3"]);
+    expect(result.every((h) => h.state === "READY")).toBe(true);
+  });
+});
+
 // ---------- configured=true, windowExists=true × all 7 PaneStates ----------
 
 describe("probeDriverPane — windowExists=true × every PaneState", () => {
@@ -252,6 +354,330 @@ describe("probeDriverPane — capture failure", () => {
       state: null,
       evidence: "",
     });
+  });
+});
+
+function driverRoster(count: number): Team["drivers"] {
+  return Array.from({ length: count }, (_unused, i) => ({
+    name: i === 0 ? "driver" : `driver-${i + 1}`,
+    cwd: i === 0 ? "." : `.atmux/worktrees/driver-${i + 1}`,
+    tui: null,
+  }));
+}
+
+describe("probeDriverPanes — roster-shaped probes", () => {
+  test("team without driverSession returns unconfigured roster without I/O", async () => {
+    const team: Team = {
+      name: "team",
+      members: [],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
+    };
+    let listCalled = false;
+    let captureCalled = false;
+    const result = await probeDriverPanes(team, atmuxDir, {
+      listWindowNames: async () => {
+        listCalled = true;
+        return [];
+      },
+      capture: async () => {
+        captureCalled = true;
+        return STATE_FIXTURES.READY;
+      },
+    });
+    expect(result.map((h) => h.configured)).toEqual([false, false, false]);
+    expect(listCalled).toBe(false);
+    expect(captureCalled).toBe(false);
+  });
+
+  test("canonical 3-driver roster preserves roster order", async () => {
+    const team: Team = {
+      name: "team",
+      members: [],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
+      driverSession: { tui: "claude" },
+    };
+    let listCalls = 0;
+    const captureTargets: string[] = [];
+    const result = await probeDriverPanes(team, atmuxDir, {
+      listWindowNames: async () => {
+        listCalls += 1;
+        return ["driver", "driver-2", "driver-3"];
+      },
+      capture: async (target) => {
+        captureTargets.push(target);
+        return STATE_FIXTURES.READY;
+      },
+    });
+    expect(listCalls).toBe(1);
+    expect(result.map((h) => h.driverName)).toEqual(["driver", "driver-2", "driver-3"]);
+    expect(captureTargets).toEqual([
+      "test-sess:driver",
+      "test-sess:driver-2",
+      "test-sess:driver-3",
+    ]);
+  });
+
+  test("10-driver roster preserves declared order", async () => {
+    const team: Team = {
+      name: "team",
+      members: [],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
+      driverSession: { tui: "claude" },
+      drivers: driverRoster(10),
+    };
+    const result = await probeDriverPanes(team, atmuxDir, {
+      listWindowNames: async () => [
+        "driver",
+        "driver-2",
+        "driver-3",
+        "driver-4",
+        "driver-5",
+        "driver-6",
+        "driver-7",
+        "driver-8",
+        "driver-9",
+        "driver-10",
+      ],
+      capture: async () => STATE_FIXTURES.READY,
+    });
+    expect(result.map((h) => h.driverName)).toEqual([
+      "driver",
+      "driver-2",
+      "driver-3",
+      "driver-4",
+      "driver-5",
+      "driver-6",
+      "driver-7",
+      "driver-8",
+      "driver-9",
+      "driver-10",
+    ]);
+  });
+
+  test("driver healthy + driver-2 missing → missing window stays distinct", async () => {
+    const team: Team = {
+      name: "team",
+      members: [],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
+      driverSession: { tui: "claude" },
+    };
+    const result = await probeDriverPanes(team, atmuxDir, {
+      listWindowNames: async () => ["driver", "driver-3"],
+      capture: async () => STATE_FIXTURES.READY,
+    });
+    expect(result[0]).toMatchObject({
+      driverName: "driver",
+      configured: true,
+      windowExists: true,
+      state: "READY",
+    });
+    expect(result[1]).toMatchObject({
+      driverName: "driver-2",
+      configured: true,
+      windowExists: false,
+      state: null,
+    });
+  });
+
+  test("driver healthy + driver-10 capture malformed → fails closed without capture state", async () => {
+    const team: Team = {
+      name: "team",
+      members: [],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
+      driverSession: { tui: "claude" },
+      drivers: driverRoster(10),
+    };
+    const result = await probeDriverPanes(team, atmuxDir, {
+      listWindowNames: async () => [
+        "driver",
+        "driver-2",
+        "driver-3",
+        "driver-4",
+        "driver-5",
+        "driver-6",
+        "driver-7",
+        "driver-8",
+        "driver-9",
+        "driver-10",
+      ],
+      capture: async (target) => {
+        if (target.endsWith(":driver-10")) throw new Error("malformed pane capture");
+        return STATE_FIXTURES.READY;
+      },
+    });
+    expect(result[9]).toMatchObject({
+      driverName: "driver-10",
+      configured: true,
+      windowExists: true,
+      state: null,
+      evidence: "",
+    });
+  });
+
+  test("tmux list-window failure returns every configured driver as missing without capture", async () => {
+    const team: Team = {
+      name: "team",
+      members: [],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
+      driverSession: { tui: "claude" },
+    };
+    let captureCalled = false;
+    const result = await probeDriverPanes(team, atmuxDir, {
+      listWindowNames: async () => {
+        throw new Error("tmux list failed");
+      },
+      capture: async () => {
+        captureCalled = true;
+        return STATE_FIXTURES.READY;
+      },
+    });
+    expect(result.map((h) => h.windowExists)).toEqual([false, false, false]);
+    expect(result.every((h) => h.evidence === "" && h.state === null)).toBe(true);
+    expect(captureCalled).toBe(false);
+  });
+
+  test("attention window does not drive worker state", async () => {
+    const team: Team = {
+      name: "team",
+      members: [],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
+      driverSession: { tui: "claude" },
+    };
+    const captureTargets: string[] = [];
+    const result = await probeDriverPanes(team, atmuxDir, {
+      listWindowNames: async () => ["driver", "driver-2", "driver-3", "attention"],
+      capture: async (target) => {
+        captureTargets.push(target);
+        if (target.endsWith(":driver")) return STATE_FIXTURES.READY;
+        if (target.endsWith(":driver-2")) return STATE_FIXTURES.TYPING;
+        return STATE_FIXTURES.SHELL;
+      },
+    });
+    expect(result.map((h) => h.driverName)).toEqual(["driver", "driver-2", "driver-3"]);
+    expect(captureTargets).toEqual([
+      "test-sess:driver",
+      "test-sess:driver-2",
+      "test-sess:driver-3",
+    ]);
+    expect(result[0]?.state).toBe("READY");
+    expect(result[1]?.state).toBe("TYPING");
+    expect(result[2]?.state).toBe("SHELL");
   });
 });
 

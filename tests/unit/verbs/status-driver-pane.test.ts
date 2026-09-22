@@ -87,18 +87,63 @@ async function captureStdout<T>(fn: () => Promise<T>): Promise<{ out: string; re
 
 describe("gatherStatus — driverPane field populated", () => {
   test("team without driverSession → driverPane.configured=false", async () => {
-    const team: Team = { name: "team", members: [] };
+    const team: Team = {
+      name: "team",
+      members: [],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
+    };
     const tmux = buildFakeTmux();
     const snap = await gatherStatus(tmux, team, "test-sess", atmuxDir);
     expect(snap.driverPane.configured).toBe(false);
     expect(snap.driverPane.windowExists).toBe(false);
     expect(snap.driverPane.state).toBeNull();
+    expect(snap.driverPanes).toBeDefined();
+    const driverPanes = snap.driverPanes ?? [];
+    expect(driverPanes).toHaveLength(3);
+    expect(driverPanes.every((dp) => dp.configured === false)).toBe(true);
   });
 
   test("team with driverSession + driver window → state=READY surfaces", async () => {
     const team: Team = {
       name: "team",
       members: [],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
       driverSession: { tui: "claude" },
     };
     const tmux = buildFakeTmux({
@@ -109,12 +154,37 @@ describe("gatherStatus — driverPane field populated", () => {
     expect(snap.driverPane.configured).toBe(true);
     expect(snap.driverPane.windowExists).toBe(true);
     expect(snap.driverPane.state).toBe("READY");
+    expect(snap.driverPanes).toBeDefined();
+    expect((snap.driverPanes ?? []).map((dp) => dp.driverName)).toEqual([
+      "driver",
+      "driver-2",
+      "driver-3",
+    ]);
   });
 
   test("team with driverSession but no driver window → windowExists=false", async () => {
     const team: Team = {
       name: "team",
       members: [],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
       driverSession: { tui: "claude" },
     };
     const tmux = buildFakeTmux({
@@ -123,6 +193,7 @@ describe("gatherStatus — driverPane field populated", () => {
     const snap = await gatherStatus(tmux, team, "test-sess", atmuxDir);
     expect(snap.driverPane.configured).toBe(true);
     expect(snap.driverPane.windowExists).toBe(false);
+    expect(snap.driverPanes).toHaveLength(3);
   });
 });
 
@@ -133,6 +204,25 @@ describe("status verb JSON — includes driverPane", () => {
     const team: Team = {
       name: "team",
       members: [{ name: "m1" }],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
       driverSession: { tui: "claude" },
     };
     await writeFile(join(atmuxDir, "team.json"), JSON.stringify(team));
@@ -149,16 +239,44 @@ describe("status verb JSON — includes driverPane", () => {
     expect(parsed.driverPane.configured).toBe(true);
     // Window won't exist on a non-running socket; that's fine.
     expect(typeof parsed.driverPane.windowExists).toBe("boolean");
+    expect(parsed.driverPanes).toHaveLength(3);
+    expect(parsed.driverPanes[0]?.driverName).toBe("driver");
   });
 
   test("--json: team without driverSession → driverPane.configured=false in payload", async () => {
-    const team: Team = { name: "team", members: [{ name: "m1" }] };
+    const team: Team = {
+      name: "team",
+      members: [{ name: "m1" }],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
+    };
     await writeFile(join(atmuxDir, "team.json"), JSON.stringify(team));
     const { out } = await captureStdout(() =>
       status(["--json", "--socket", "/tmp/atmux-no-such-socket", "--team-dir", teamDir]),
     );
     const parsed = JSON.parse(out);
     expect(parsed.driverPane.configured).toBe(false);
+    expect(parsed.driverPanes).toHaveLength(3);
+    expect(parsed.driverPanes.every((dp: { configured: boolean }) => dp.configured === false)).toBe(
+      true,
+    );
   });
 });
 
@@ -169,14 +287,34 @@ describe("status verb text — driver row visibility", () => {
     const team: Team = {
       name: "team",
       members: [{ name: "m1" }],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
       driverSession: { tui: "claude" },
     };
     await writeFile(join(atmuxDir, "team.json"), JSON.stringify(team));
     const { out } = await captureStdout(() =>
       status(["--socket", "/tmp/atmux-no-such-socket", "--team-dir", teamDir]),
     );
-    expect(out).toContain("🚗 driver");
-    expect(out).toContain("configured=y");
+    expect(out).toContain("🚗 driver  configured=y");
+    expect(out).toContain("🚗 driver-2  configured=y");
+    expect(out).toContain("🚗 driver-3  configured=y");
     // Driver row must precede the member table header.
     const driverIdx = out.indexOf("🚗 driver");
     const memberHdrIdx = out.indexOf("member       role");
@@ -184,7 +322,29 @@ describe("status verb text — driver row visibility", () => {
   });
 
   test("configured=false → no driver row in text output", async () => {
-    const team: Team = { name: "team", members: [{ name: "m1" }] };
+    const team: Team = {
+      name: "team",
+      members: [{ name: "m1" }],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
+    };
     await writeFile(join(atmuxDir, "team.json"), JSON.stringify(team));
     const { out } = await captureStdout(() =>
       status(["--socket", "/tmp/atmux-no-such-socket", "--team-dir", teamDir]),

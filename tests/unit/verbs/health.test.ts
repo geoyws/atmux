@@ -199,11 +199,57 @@ describe("parseHealthArgs", () => {
 
 describe("uniqueClaudeAccounts", () => {
   test("empty roster → []", () => {
-    expect(uniqueClaudeAccounts({ name: "t", members: [] } as Team)).toEqual([]);
+    expect(
+      uniqueClaudeAccounts({
+        name: "t",
+        members: [],
+        drivers: [
+          { name: "driver", tui: null, cwd: "." },
+          { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+          { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+        ],
+        driverPair: {
+          layout: "horizontal",
+          panes: [
+            { role: "worker", side: "left" },
+            {
+              role: "attention",
+              side: "right",
+              workflow: "kb-att",
+              authority: "decision-only",
+              tui: null,
+              command: null,
+            },
+          ],
+        },
+      }),
+    ).toEqual([]);
   });
 
   test("roster with no claudeAccount fields → []", () => {
-    const team: Team = { name: "t", members: [{ name: "a" }, { name: "b" }] };
+    const team: Team = {
+      name: "t",
+      members: [{ name: "a" }, { name: "b" }],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
+    };
     expect(uniqueClaudeAccounts(team)).toEqual([]);
   });
 
@@ -245,6 +291,25 @@ describe("gatherHealth", () => {
     const team: Team = {
       name: teamName,
       members: [{ name: "alpha", role: "member", tui: "claude" }],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
     };
     const snap = await gatherHealth(
       tmux,
@@ -273,7 +338,29 @@ describe("gatherHealth", () => {
 
   test("fresh heartbeat → heartbeatStale=false", async () => {
     const { teamName, sessionName } = await stageTeam([{ name: "alpha" }], false);
-    const team: Team = { name: teamName, members: [{ name: "alpha" }] };
+    const team: Team = {
+      name: teamName,
+      members: [{ name: "alpha" }],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
+    };
     await writeHeartbeat(atmuxDir, "alpha", 1_000_000 - 30); // 30s old
     const snap = await gatherHealth(
       tmux,
@@ -289,7 +376,29 @@ describe("gatherHealth", () => {
 
   test("stale heartbeat → heartbeatStale=true", async () => {
     const { teamName, sessionName } = await stageTeam([{ name: "alpha" }], false);
-    const team: Team = { name: teamName, members: [{ name: "alpha" }] };
+    const team: Team = {
+      name: teamName,
+      members: [{ name: "alpha" }],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
+    };
     await writeHeartbeat(atmuxDir, "alpha", 1_000_000 - 600); // 600s old, staleSec=300
     const snap = await gatherHealth(
       tmux,
@@ -308,6 +417,25 @@ describe("gatherHealth", () => {
     const team: Team = {
       name: teamName,
       members: [{ name: "alpha", emoji: "🐝" }],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
     };
     const snap = await gatherHealth(
       tmux,
@@ -322,7 +450,29 @@ describe("gatherHealth", () => {
 
   test("kanban counts roll up across all statuses", async () => {
     const { teamName, sessionName } = await stageTeam([{ name: "alpha" }], false);
-    const team: Team = { name: teamName, members: [{ name: "alpha" }] };
+    const team: Team = {
+      name: teamName,
+      members: [{ name: "alpha" }],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
+    };
     await addTask(atmuxDir, { subject: "t1" });
     await addTask(atmuxDir, { subject: "t2" });
     const ipId = await addTask(atmuxDir, { subject: "ip" });
@@ -427,7 +577,29 @@ describe("gatherHealth", () => {
 
   test("includeBudget=true with no claudeAccount in roster → budget stays empty + no probe calls", async () => {
     const { teamName, sessionName } = await stageTeam([{ name: "alpha" }], false);
-    const team: Team = { name: teamName, members: [{ name: "alpha" }] };
+    const team: Team = {
+      name: teamName,
+      members: [{ name: "alpha" }],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
+    };
     let calls = 0;
     const fakeProbe = async (): Promise<BudgetProbeResult> => {
       calls += 1;
@@ -456,7 +628,29 @@ describe("gatherHealth", () => {
 
   test("default nowSec branch runs (no injection)", async () => {
     const { teamName, sessionName } = await stageTeam([{ name: "alpha" }], false);
-    const team: Team = { name: teamName, members: [{ name: "alpha" }] };
+    const team: Team = {
+      name: teamName,
+      members: [{ name: "alpha" }],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
+    };
     const snap = await gatherHealth(tmux, team, sessionName, atmuxDir, {
       includeBudget: false,
       staleSec: 300,

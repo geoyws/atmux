@@ -11,6 +11,11 @@
 import { describe, expect, test } from "bun:test";
 import { ZodError } from "zod";
 import {
+  CANONICAL_DRIVER_PAIR_PRESET,
+  CANONICAL_PARENT_TEAM_DRIVERS,
+  DriverSessionSchema,
+} from "../../../src/core/drivers.ts";
+import {
   DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG,
   DEFAULT_CADENCE_CONFIG,
   DEFAULT_CADENCE_THRESHOLDS,
@@ -472,6 +477,87 @@ describe("Team schema — nullable driver harness", () => {
 
     expect(withNull.drivers?.[0]?.tui).toBeNull();
     expect(omitted.drivers?.[0]?.tui).toBeUndefined();
+  });
+});
+
+describe("Team schema — canonical driver roster + pair contract", () => {
+  test("missing drivers default to the canonical three-driver roster", () => {
+    const team = Team.parse({ name: "demo", members: [] });
+    expect(team.drivers).toEqual([...CANONICAL_PARENT_TEAM_DRIVERS]);
+  });
+
+  test("explicit 3 drivers pass and preserve order", () => {
+    const drivers = [
+      { name: "driver", tui: null, cwd: ".", futureFlag: true },
+      { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+      { name: "driver-3", tui: "claude", cwd: ".atmux/worktrees/driver-3" },
+    ];
+    const team = Team.parse({ name: "demo", members: [], drivers });
+    expect(team.drivers).toEqual(drivers);
+    const firstDriver = drivers[0] as (typeof drivers)[number];
+    expect(DriverSessionSchema.parse(firstDriver)).toEqual(firstDriver);
+  });
+
+  test("explicit 1-2 drivers fail validation", () => {
+    expect(() =>
+      Team.parse({
+        name: "demo",
+        members: [],
+        drivers: [{ name: "driver", tui: null, cwd: "." }],
+      }),
+    ).toThrow(ZodError);
+    expect(() =>
+      Team.parse({
+        name: "demo",
+        members: [],
+        drivers: [
+          { name: "driver", tui: null, cwd: "." },
+          { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        ],
+      }),
+    ).toThrow(ZodError);
+  });
+
+  test("explicit >10 drivers fail validation", () => {
+    expect(() =>
+      Team.parse({
+        name: "demo",
+        members: [],
+        drivers: Array.from({ length: 11 }, (_, index) => ({
+          name: index === 0 ? "driver" : `driver-${index + 1}`,
+          tui: null,
+          cwd: index === 0 ? "." : `.atmux/worktrees/driver-${index + 1}`,
+        })),
+      }),
+    ).toThrow(ZodError);
+  });
+
+  test("driverPair defaults to the canonical worker/attention layout", () => {
+    const team = Team.parse({ name: "demo", members: [] });
+    expect(team.driverPair).toEqual(CANONICAL_DRIVER_PAIR_PRESET);
+  });
+
+  test("driverPair accepts an explicit null-default attention launch", () => {
+    const team = Team.parse({
+      name: "demo",
+      members: [],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: "shell",
+            command: null,
+          },
+        ],
+      },
+    });
+    expect(team.driverPair?.panes[1]?.tui).toBe("shell");
+    expect(team.driverPair?.panes[1]?.command).toBeNull();
   });
 });
 

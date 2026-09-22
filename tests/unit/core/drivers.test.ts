@@ -1,16 +1,20 @@
 // ADR-239 — unit tests for src/core/drivers.ts.
 //
-// Pure-fn coverage for resolveDriversList (drivers[] precedence + empty
-// fallthrough; the legacy driverSession/driverTui synthesis was removed
-// per ADR-266 §D2), resolveDriverCwd (relative / absolute /
-// "."), isDriverPaneName (driver / driver-N / non-driver), and
-// canonicalDriverName (index → name).
+// Pure-fn coverage for resolveDriversList (drivers[] precedence +
+// canonical default fallthrough), resolveDriverCwd (relative /
+// absolute / "."), isDriverPaneName (driver / driver-N / non-driver),
+// canonicalDriverName (index → name), and the canonical driver-pair
+// preset shared with later materializers.
 
 import { describe, expect, test } from "bun:test";
 import {
+  CANONICAL_DRIVER_PAIR_PRESET,
+  CANONICAL_PARENT_TEAM_DRIVERS,
   canonicalDriverName,
+  DriverPairPresetSchema,
   type DriverSession,
   isDriverPaneName,
+  isSupportedDriverCount,
   isTrunkDriver,
   resolveDriverCwd,
   resolveDriversList,
@@ -21,16 +25,52 @@ describe("resolveDriversList — ADR-239 §A1 (post ADR-266 §D2)", () => {
     const drivers: DriverSession[] = [
       { name: "driver", tui: "claude", cwd: "." },
       { name: "driver-2", tui: "claude", cwd: ".atmux/worktrees/driver-2" },
+      { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
     ];
     expect(resolveDriversList({ drivers })).toEqual(drivers);
   });
 
-  test("drivers[] empty → empty array (no legacy synthesis post-ADR-266)", () => {
-    expect(resolveDriversList({ drivers: [] })).toEqual([]);
+  test("drivers[] empty → canonical three-driver roster", () => {
+    expect(resolveDriversList({ drivers: [] })).toEqual([...CANONICAL_PARENT_TEAM_DRIVERS]);
   });
 
-  test("no drivers[] → empty array (caller falls back to __home placeholder)", () => {
-    expect(resolveDriversList({})).toEqual([]);
+  test("no drivers[] → canonical three-driver roster", () => {
+    expect(resolveDriversList({})).toEqual([...CANONICAL_PARENT_TEAM_DRIVERS]);
+  });
+
+  test("canonical default roster is fresh per call", () => {
+    const first = resolveDriversList({});
+    first[0]!.name = "mutated";
+    expect(resolveDriversList({})).toEqual([...CANONICAL_PARENT_TEAM_DRIVERS]);
+  });
+});
+
+describe("driver helpers — supported count + canonical pair preset", () => {
+  test("supported counts are 3 through 10 inclusive", () => {
+    expect(isSupportedDriverCount(3)).toBe(true);
+    expect(isSupportedDriverCount(10)).toBe(true);
+    expect(isSupportedDriverCount(2)).toBe(false);
+    expect(isSupportedDriverCount(11)).toBe(false);
+  });
+
+  test("canonical pair preset is horizontal with worker left / attention right", () => {
+    expect(CANONICAL_DRIVER_PAIR_PRESET).toEqual({
+      layout: "horizontal",
+      panes: [
+        { role: "worker", side: "left" },
+        {
+          role: "attention",
+          side: "right",
+          workflow: "kb-att",
+          authority: "decision-only",
+          tui: null,
+          command: null,
+        },
+      ],
+    });
+    expect(DriverPairPresetSchema.parse(CANONICAL_DRIVER_PAIR_PRESET)).toEqual(
+      CANONICAL_DRIVER_PAIR_PRESET,
+    );
   });
 });
 

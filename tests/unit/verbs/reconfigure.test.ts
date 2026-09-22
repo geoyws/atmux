@@ -85,7 +85,29 @@ function stubPrompter(answers: ReadonlyArray<string>): Prompter {
   };
 }
 
-const baseTeam: Team = { name: "x", members: [] };
+const baseTeam: Team = {
+  name: "x",
+  members: [],
+  drivers: [
+    { name: "driver", tui: null, cwd: "." },
+    { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+    { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+  ],
+  driverPair: {
+    layout: "horizontal",
+    panes: [
+      { role: "worker", side: "left" },
+      {
+        role: "attention",
+        side: "right",
+        workflow: "kb-att",
+        authority: "decision-only",
+        tui: null,
+        command: null,
+      },
+    ],
+  },
+};
 
 describe("planReconfigure", () => {
   test("all TUIs match built-in defaults → empty tuiCommands map (drop branch)", async () => {
@@ -155,6 +177,25 @@ describe("planReconfigure", () => {
     const team: Team = {
       name: "t",
       members: [],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
       tuiCommands: {
         claude: "claude-existing",
         opencode: "opencode-existing",
@@ -190,6 +231,25 @@ describe("planReconfigure", () => {
     const team: Team = {
       name: "t",
       members: [],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
       discord: { webhook: "https://x.example/hook" },
     };
     const plan = await planReconfigure(team, probe);
@@ -210,6 +270,25 @@ describe("planReconfigure", () => {
     const team: Team = {
       name: "t",
       members: [],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
       tuiCommands: {
         claude: 42, // wrong type → fallback to "claude"
         opencode: "", // empty string → fallback to "opencode"
@@ -233,6 +312,25 @@ describe("planReconfigure", () => {
     const team: Team = {
       name: "t",
       members: [],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
       // null is the explicit "no overrides" form — bash's jq returns
       // empty + "// default" picks the fallback.
       tuiCommands: null,
@@ -254,7 +352,30 @@ describe("planReconfigure", () => {
         return def;
       },
     };
-    const team: Team = { name: "t", members: [], discord: null };
+    const team: Team = {
+      name: "t",
+      members: [],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
+      discord: null,
+    };
     await planReconfigure(team, probe);
     expect(webhookDefault).toBe("");
   });
@@ -270,6 +391,25 @@ describe("planReconfigure", () => {
     const team: Team = {
       name: "t",
       members: [],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
       discord: { webhook: 42 },
     };
     await planReconfigure(team, probe);
@@ -296,7 +436,29 @@ describe("applyPlan", () => {
   });
 
   test("preserves passthrough keys (operator comments, experimental fields)", () => {
-    const team: Team = { name: "t", members: [] };
+    const team: Team = {
+      name: "t",
+      members: [],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
+    };
     // `Team` is `.passthrough()` so unknown fields survive parse — emulate
     // that in-memory by tacking on the extras.
     const teamWithExtras = { ...team, _comment_x: "keep me", custom: { foo: 1 } };

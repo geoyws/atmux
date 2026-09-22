@@ -109,6 +109,25 @@ describe("setBotHoldWithTmux — isolated tmux", () => {
   const team: Team = {
     name: "demo",
     members: [],
+    drivers: [
+      { name: "driver", tui: null, cwd: "." },
+      { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+      { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+    ],
+    driverPair: {
+      layout: "horizontal",
+      panes: [
+        { role: "worker", side: "left" },
+        {
+          role: "attention",
+          side: "right",
+          workflow: "kb-att",
+          authority: "decision-only",
+          tui: null,
+          command: null,
+        },
+      ],
+    },
     bot: { enabled: true, tui: null, cwd: ".atmux/worktrees/bot" },
   };
 
@@ -158,7 +177,34 @@ describe("setBotHoldWithTmux — isolated tmux", () => {
 
   test("refuses a team without an enabled bot", async () => {
     await expect(
-      setBotHoldWithTmux(tmux, { name: "demo", members: [] }, session, "hold"),
+      setBotHoldWithTmux(
+        tmux,
+        {
+          name: "demo",
+          members: [],
+          drivers: [
+            { name: "driver", tui: null, cwd: "." },
+            { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+            { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+          ],
+          driverPair: {
+            layout: "horizontal",
+            panes: [
+              { role: "worker", side: "left" },
+              {
+                role: "attention",
+                side: "right",
+                workflow: "kb-att",
+                authority: "decision-only",
+                tui: null,
+                command: null,
+              },
+            ],
+          },
+        },
+        session,
+        "hold",
+      ),
     ).rejects.toThrow(ConfigError);
   });
 
@@ -172,6 +218,25 @@ describe("bot", () => {
   const baseTeam: Team = {
     name: "demo",
     members: [],
+    drivers: [
+      { name: "driver", tui: null, cwd: "." },
+      { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+      { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+    ],
+    driverPair: {
+      layout: "horizontal",
+      panes: [
+        { role: "worker", side: "left" },
+        {
+          role: "attention",
+          side: "right",
+          workflow: "kb-att",
+          authority: "decision-only",
+          tui: null,
+          command: null,
+        },
+      ],
+    },
     bot: { enabled: true, tui: null, cwd: ".atmux/worktrees/bot" },
     tmuxTmpdir: "",
   };

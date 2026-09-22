@@ -243,11 +243,29 @@ describe("checkTeam", () => {
     expect(rows[0]?.detail).toContain("invalid JSON");
   });
 
-  test("empty members → red 'no members defined'", async () => {
+  test("empty members AND no drivers → red 'no members or drivers defined'", async () => {
     await writeFile(join(atmuxDir, "team.json"), JSON.stringify({ name: "x", members: [] }));
     const rows = await checkTeam(atmuxDir);
     expect(rows[0]?.status).toBe("red");
-    expect(rows[0]?.detail).toContain("no members");
+    expect(rows[0]?.detail).toBe("no members or drivers defined");
+  });
+
+  test("drivers-only team (members: [], drivers[] declared) → green (ADR-287 §D5 default roster)", async () => {
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      JSON.stringify({
+        name: "solo",
+        drivers: [
+          { name: "driver", cwd: "." },
+          { name: "driver-2", cwd: ".atmux/worktrees/driver-2" },
+        ],
+        members: [],
+      }),
+    );
+    const rows = await checkTeam(atmuxDir);
+    expect(rows).toEqual([
+      { status: "green", label: "team.json", detail: 'valid — team "solo", 2 drivers, 0 members' },
+    ]);
   });
 
   test("member missing name/role/tui → red list of bad names", async () => {
@@ -286,6 +304,25 @@ describe("checkTeam", () => {
 const baseTeam: Team = {
   name: "demo",
   members: [],
+  drivers: [
+    { name: "driver", tui: null, cwd: "." },
+    { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+    { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+  ],
+  driverPair: {
+    layout: "horizontal",
+    panes: [
+      { role: "worker", side: "left" },
+      {
+        role: "attention",
+        side: "right",
+        workflow: "kb-att",
+        authority: "decision-only",
+        tui: null,
+        command: null,
+      },
+    ],
+  },
 };
 
 describe("resolveMemberBin", () => {
@@ -368,6 +405,25 @@ describe("checkTuis", () => {
         { name: "bravo", tui: "claude" },
         { name: "shellguy", tui: "shell" }, // skipped
       ],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
     };
     const which = (cmd: string) => (cmd === "claude" ? "/usr/local/bin/claude" : null);
     const rows = checkTuis(team, { which, env: {}, platform: "linux" });
@@ -380,6 +436,25 @@ describe("checkTuis", () => {
     const team: Team = {
       name: "demo",
       members: [{ name: "alpha", tui: "opencode" }],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
     };
     const rows = checkTuis(team, { which: () => null, env: {}, platform: "linux" });
     expect(rows[0]?.status).toBe("red");
@@ -390,6 +465,25 @@ describe("checkTuis", () => {
     const team: Team = {
       name: "demo",
       members: [{ name: "alpha", tui: "wat" }],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
     };
     const rows = checkTuis(team, { which: () => "/x", env: {} });
     expect(rows[0]?.status).toBe("red");
@@ -400,6 +494,25 @@ describe("checkTuis", () => {
     const team: Team = {
       name: "demo",
       members: [{ name: "alpha", tui: "shell" }],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
     };
     expect(checkTuis(team)).toEqual([]);
   });
@@ -560,6 +673,25 @@ describe("checkWebhook", () => {
     const team: Team = {
       name: "x",
       members: [],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
       discord: { webhook: "https://from-team" },
     };
     let probedUrl = "";
@@ -952,13 +1084,85 @@ describe("checkOrphanSessions", () => {
   });
 
   test("singleSession=false (or unset) → no rows", async () => {
-    expect(await checkOrphanSessions({ name: "x", members: [] })).toEqual([]);
-    expect(await checkOrphanSessions({ name: "x", members: [], singleSession: false })).toEqual([]);
+    expect(
+      await checkOrphanSessions({
+        name: "x",
+        members: [],
+        drivers: [
+          { name: "driver", tui: null, cwd: "." },
+          { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+          { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+        ],
+        driverPair: {
+          layout: "horizontal",
+          panes: [
+            { role: "worker", side: "left" },
+            {
+              role: "attention",
+              side: "right",
+              workflow: "kb-att",
+              authority: "decision-only",
+              tui: null,
+              command: null,
+            },
+          ],
+        },
+      }),
+    ).toEqual([]);
+    expect(
+      await checkOrphanSessions({
+        name: "x",
+        members: [],
+        singleSession: false,
+        drivers: [
+          { name: "driver", tui: null, cwd: "." },
+          { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+          { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+        ],
+        driverPair: {
+          layout: "horizontal",
+          panes: [
+            { role: "worker", side: "left" },
+            {
+              role: "attention",
+              side: "right",
+              workflow: "kb-att",
+              authority: "decision-only",
+              tui: null,
+              command: null,
+            },
+          ],
+        },
+      }),
+    ).toEqual([]);
   });
 
   test("singleSession=true with no orphan session → 1 yellow (single-session-discouraged)", async () => {
     const rows = await checkOrphanSessions(
-      { name: "x", members: [], singleSession: true },
+      {
+        name: "x",
+        members: [],
+        singleSession: true,
+        drivers: [
+          { name: "driver", tui: null, cwd: "." },
+          { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+          { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+        ],
+        driverPair: {
+          layout: "horizontal",
+          panes: [
+            { role: "worker", side: "left" },
+            {
+              role: "attention",
+              side: "right",
+              workflow: "kb-att",
+              authority: "decision-only",
+              tui: null,
+              command: null,
+            },
+          ],
+        },
+      },
       { hasSession: async () => false },
     );
     expect(rows).toHaveLength(1);
@@ -967,7 +1171,30 @@ describe("checkOrphanSessions", () => {
 
   test("singleSession=true with orphan session → 2 yellows", async () => {
     const rows = await checkOrphanSessions(
-      { name: "x", members: [], singleSession: true },
+      {
+        name: "x",
+        members: [],
+        singleSession: true,
+        drivers: [
+          { name: "driver", tui: null, cwd: "." },
+          { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+          { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+        ],
+        driverPair: {
+          layout: "horizontal",
+          panes: [
+            { role: "worker", side: "left" },
+            {
+              role: "attention",
+              side: "right",
+              workflow: "kb-att",
+              authority: "decision-only",
+              tui: null,
+              command: null,
+            },
+          ],
+        },
+      },
       { hasSession: async () => true },
     );
     expect(rows).toHaveLength(2);
@@ -987,6 +1214,25 @@ describe("checkOrphanSessions", () => {
       rows = await checkOrphanSessions({
         name: fakeName,
         members: [],
+        drivers: [
+          { name: "driver", tui: null, cwd: "." },
+          { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+          { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+        ],
+        driverPair: {
+          layout: "horizontal",
+          panes: [
+            { role: "worker", side: "left" },
+            {
+              role: "attention",
+              side: "right",
+              workflow: "kb-att",
+              authority: "decision-only",
+              tui: null,
+              command: null,
+            },
+          ],
+        },
         singleSession: true,
       });
     } catch {
@@ -1005,7 +1251,30 @@ describe("checkOrphanSessions", () => {
 
 describe("checkCronIntervalDivisors", () => {
   const team = (overrides: Partial<Team> = {}): Team =>
-    ({ name: "demo", members: [], ...overrides }) as Team;
+    ({
+      name: "demo",
+      members: [],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
+      ...overrides,
+    }) as Team;
 
   test("null team → no rows", () => {
     expect(checkCronIntervalDivisors(null)).toEqual([]);
@@ -1266,7 +1535,30 @@ describe("checkCronBlock", () => {
   });
 
   const team = (overrides: Partial<Team> = {}): Team =>
-    ({ name: "alpha", members: [], ...overrides }) as Team;
+    ({
+      name: "alpha",
+      members: [],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
+      ...overrides,
+    }) as Team;
 
   test("null team → no rows", async () => {
     expect(await checkCronBlock(null, { crontab: fakeIO(null) })).toEqual([]);
@@ -1349,7 +1641,30 @@ describe("checkCronBlock", () => {
 
 describe("checkTuiCommandsClaudeOverride", () => {
   const team = (overrides: Partial<Team> = {}): Team =>
-    ({ name: "alpha", members: [], ...overrides }) as Team;
+    ({
+      name: "alpha",
+      members: [],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
+      ...overrides,
+    }) as Team;
 
   test("null team → no rows", () => {
     expect(checkTuiCommandsClaudeOverride(null)).toEqual([]);
@@ -1511,6 +1826,25 @@ describe("runAllChecks", () => {
     const team: Team = {
       name: "demo",
       members: [{ name: "alpha", role: "lead", tui: "shell" }], // shell skipped → no tui row
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
     };
     const rows = await runAllChecks(atmuxDir, team);
     // No tui:* rows because the only member uses shell (skipped).
@@ -1518,6 +1852,149 @@ describe("runAllChecks", () => {
     // But state-dir is green.
     const sd = rows.find((r) => r.label === "state-dir");
     expect(sd?.status).toBe("green");
+  });
+
+  test("wiring — ADR-287 §D7 probes run in the default chain (team-inside-team + deprecated-member-windows)", async () => {
+    // Point the production cockpit loader at a temp cockpit.json whose
+    // tree nests a team under a team, and whose child team's root holds
+    // a team.json that still declares members[]. Both rows must surface
+    // from the REAL chain — not from calling the probes directly.
+    await mkdir(atmuxDir, { recursive: true });
+    const childRoot = join(dir, "child-root");
+    await mkdir(join(childRoot, ".atmux"), { recursive: true });
+    await writeFile(
+      join(childRoot, ".atmux", "team.json"),
+      JSON.stringify({
+        name: "child",
+        members: [{ name: "lead", role: "team-lead", tui: "shell" }],
+      }),
+    );
+    const cockpitPath = join(dir, "cockpit.json");
+    await writeFile(
+      cockpitPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        sessions: [
+          {
+            type: "team",
+            name: "parent",
+            root: join(dir, "parent-root-without-team-json"),
+            sessions: [{ type: "team", name: "child", root: childRoot }],
+          },
+        ],
+      }),
+    );
+    const prev = process.env.ATMUX_COCKPIT_CONFIG;
+    process.env.ATMUX_COCKPIT_CONFIG = cockpitPath;
+    try {
+      const rows = await runAllChecks(atmuxDir, {
+        name: "drivers-only",
+        members: [],
+        drivers: [
+          { name: "driver", tui: null, cwd: "." },
+          { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+          { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+        ],
+        driverPair: {
+          layout: "horizontal",
+          panes: [
+            { role: "worker", side: "left" },
+            {
+              role: "attention",
+              side: "right",
+              workflow: "kb-att",
+              authority: "decision-only",
+              tui: null,
+              command: null,
+            },
+          ],
+        },
+      });
+      expect(rows.filter((r) => r.label === "team-inside-team")).toEqual([
+        {
+          status: "yellow",
+          label: "team-inside-team",
+          detail: "team 'child' is nested inside team 'parent' in cockpit.json",
+          hint: "move it under a group — team-inside-team is deprecated per ADR-287 §D3 (groups are branches, teams are leaf cages)",
+        },
+      ]);
+      // Only the cockpit team that declares members[] is flagged; the
+      // drivers-only current team and the root with no team.json are not.
+      expect(rows.filter((r) => r.label === "deprecated-member-windows")).toEqual([
+        {
+          status: "yellow",
+          label: "deprecated-member-windows",
+          detail: "team 'child' declares 1 member window(s): lead",
+          hint: "default roster is drivers-only per ADR-287 §D5; drop members[] when the lead/planner/reviewer loop is not in use",
+        },
+      ]);
+    } finally {
+      if (prev === undefined) delete process.env.ATMUX_COCKPIT_CONFIG;
+      else process.env.ATMUX_COCKPIT_CONFIG = prev;
+    }
+  });
+
+  test("wiring — ADR-287 §D7: a present-but-refused cockpit.json is one red cockpit.json row from the default chain, never swallowed", async () => {
+    // Same nested pair as above, but the chain is one rung short for the
+    // tree: loadCockpit refuses (§D4). doctor must SHOW that refusal —
+    // every other cockpit-loading verb stops on it — as a red row, and
+    // neither advisory probe gets to see the (unloaded) tree.
+    await mkdir(atmuxDir, { recursive: true });
+    const cockpitPath = join(dir, "cockpit.json");
+    await writeFile(
+      cockpitPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        prefixChain: ["F1"],
+        sessions: [
+          {
+            type: "team",
+            name: "parent",
+            root: join(dir, "parent-root"),
+            sessions: [{ type: "team", name: "child", root: join(dir, "child-root") }],
+          },
+        ],
+      }),
+    );
+    const prev = process.env.ATMUX_COCKPIT_CONFIG;
+    process.env.ATMUX_COCKPIT_CONFIG = cockpitPath;
+    try {
+      const rows = await runAllChecks(atmuxDir, {
+        name: "drivers-only",
+        members: [],
+        drivers: [
+          { name: "driver", tui: null, cwd: "." },
+          { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+          { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+        ],
+        driverPair: {
+          layout: "horizontal",
+          panes: [
+            { role: "worker", side: "left" },
+            {
+              role: "attention",
+              side: "right",
+              workflow: "kb-att",
+              authority: "decision-only",
+              tui: null,
+              command: null,
+            },
+          ],
+        },
+      });
+      const refused = rows.filter((r) => r.label === "cockpit.json");
+      expect(refused).toHaveLength(1);
+      expect(refused[0]?.status).toBe("red");
+      expect(refused[0]?.detail).toContain(
+        `refused at load — cockpit.json at ${cockpitPath}: 'child' (type team) sits at depth L3 and needs prefix rung 3, but prefixChain has 1 entries`,
+      );
+      expect(rows.filter((r) => r.status === "red").map((r) => r.label)).toContain("cockpit.json");
+      expect(rows.filter((r) => r.label === "team-inside-team")).toEqual([]);
+      expect(rows.filter((r) => r.label === "deprecated-member-windows")).toEqual([]);
+    } finally {
+      if (prev === undefined) delete process.env.ATMUX_COCKPIT_CONFIG;
+      else process.env.ATMUX_COCKPIT_CONFIG = prev;
+    }
   });
 });
 
@@ -2803,6 +3280,25 @@ describe("checkMemberCageStates — ADR-081 §D classifier", () => {
         tui: m.tui ?? "claude",
         ...m,
       })),
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
     }) as Team;
 
   test("team=null → empty rows (no work)", async () => {

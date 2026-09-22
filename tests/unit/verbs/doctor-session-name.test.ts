@@ -51,6 +51,33 @@ function member(name: string, over: Partial<TeamMember> = {}): TeamMember {
   return { name, role: "member", tui: "claude", ...over } as TeamMember;
 }
 
+function teamOf(name: string, over: Partial<Team> = {}): Team {
+  return {
+    name,
+    members: [],
+    drivers: [
+      { name: "driver", tui: null, cwd: "." },
+      { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+      { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+    ],
+    driverPair: {
+      layout: "horizontal",
+      panes: [
+        { role: "worker", side: "left" },
+        {
+          role: "attention",
+          side: "right",
+          workflow: "kb-att",
+          authority: "decision-only",
+          tui: null,
+          command: null,
+        },
+      ],
+    },
+    ...over,
+  };
+}
+
 function healthy(windowName: string): MemberCageHealth {
   return {
     state: "active",
@@ -78,17 +105,17 @@ function down(windowName: string): MemberCageHealth {
 describe("probeSessionName", () => {
   test("{ root } reads that team's own anchor — the underscore form the literal cannot build", async () => {
     const root = await makeRoot("atmux_unum");
-    expect(await probeSessionName({ name: "unum", members: [] }, { root })).toBe("atmux_unum");
+    expect(await probeSessionName(teamOf("unum"), { root })).toBe("atmux_unum");
   });
 
   test("{ root } with no anchor falls back to the bare form start.ts creates (e-419553c6)", async () => {
     const root = await makeRoot();
-    expect(await probeSessionName({ name: "sopx", members: [] }, { root })).toBe("sopx");
+    expect(await probeSessionName(teamOf("sopx"), { root })).toBe("sopx");
   });
 
   test("{ root } — the atmux team is bare like every other team now", async () => {
     const root = await makeRoot();
-    expect(await probeSessionName({ name: "atmux", members: [] }, { root })).toBe("atmux");
+    expect(await probeSessionName(teamOf("atmux"), { root })).toBe("atmux");
   });
 
   test("{ root } IGNORES the ATMUX_SESSION env pin — it would name one team's session for every team", async () => {
@@ -98,14 +125,14 @@ describe("probeSessionName", () => {
     // happened to be pinned to.
     process.env.ATMUX_SESSION = "atmux_something_else";
     const root = await makeRoot("atmux_unum");
-    expect(await probeSessionName({ name: "unum", members: [] }, { root })).toBe("atmux_unum");
+    expect(await probeSessionName(teamOf("unum"), { root })).toBe("atmux_unum");
   });
 
   test("{ atmuxDir } reads the anchor at that directory", async () => {
     const root = await makeRoot("atmux_unum");
-    expect(
-      await probeSessionName({ name: "unum", members: [] }, { atmuxDir: join(root, ".atmux") }),
-    ).toBe("atmux_unum");
+    expect(await probeSessionName(teamOf("unum"), { atmuxDir: join(root, ".atmux") })).toBe(
+      "atmux_unum",
+    );
   });
 
   test("{ atmuxDir } DOES honour the ATMUX_SESSION env pin — there it really is this team", async () => {
@@ -114,14 +141,14 @@ describe("probeSessionName", () => {
     // what this arm addresses.
     process.env.ATMUX_SESSION = "atmux_pinned";
     const root = await makeRoot("atmux_unum");
-    expect(
-      await probeSessionName({ name: "unum", members: [] }, { atmuxDir: join(root, ".atmux") }),
-    ).toBe("atmux_pinned");
+    expect(await probeSessionName(teamOf("unum"), { atmuxDir: join(root, ".atmux") })).toBe(
+      "atmux_pinned",
+    );
   });
 
   test("no source at all resolves the current team from the environment", async () => {
     process.env.ATMUX_SESSION = "atmux_current";
-    expect(await probeSessionName({ name: "whatever", members: [] }, {})).toBe("atmux_current");
+    expect(await probeSessionName(teamOf("whatever"), {})).toBe("atmux_current");
   });
 
   test("a singleSession team with no anchor fails SOFT to the bare name, never throws", async () => {
@@ -129,7 +156,7 @@ describe("probeSessionName", () => {
     // not take down the whole `atmux doctor` run, and the bare name is
     // what an unanchored team's session is actually called (e-419553c6).
     const root = await makeRoot();
-    const team: Team = { name: "legacy", members: [], singleSession: true };
+    const team: Team = teamOf("legacy", { singleSession: true });
     expect(await probeSessionName(team, { atmuxDir: join(root, ".atmux") })).toBe("legacy");
   });
 });
@@ -142,12 +169,16 @@ describe("checkMemberCageStates — session name resolution", () => {
   test("probes the ANCHORED session name, not atmux-<team>", async () => {
     const root = await makeRoot("atmux_unum");
     const asked: string[] = [];
-    await checkMemberCageStates({ name: "unum", members: [member("be-1")] }, join(root, ".atmux"), {
-      hasSession: async (name) => {
-        asked.push(name);
-        return false;
+    await checkMemberCageStates(
+      teamOf("unum", { members: [member("be-1")] }),
+      join(root, ".atmux"),
+      {
+        hasSession: async (name) => {
+          asked.push(name);
+          return false;
+        },
       },
-    });
+    );
     expect(asked).toEqual(["atmux_unum"]);
   });
 
@@ -158,7 +189,7 @@ describe("checkMemberCageStates — session name resolution", () => {
     // emitted no matter how broken the pane is.
     const root = await makeRoot("atmux_unum");
     const rows = await checkMemberCageStates(
-      { name: "unum", members: [member("be-1")] },
+      teamOf("unum", { members: [member("be-1")] }),
       join(root, ".atmux"),
       {
         hasSession: async (name) => name === "atmux_unum",
@@ -177,7 +208,7 @@ describe("checkMemberCageStates — session name resolution", () => {
     // resolved name rather than accepting either.
     const root = await makeRoot("atmux_unum");
     const rows = await checkMemberCageStates(
-      { name: "unum", members: [member("be-1")] },
+      teamOf("unum", { members: [member("be-1")] }),
       join(root, ".atmux"),
       {
         hasSession: async (name) => name === "atmux-unum",
@@ -190,25 +221,33 @@ describe("checkMemberCageStates — session name resolution", () => {
   test("the resolved name is THREADED to the per-member probe, not re-derived there", async () => {
     const root = await makeRoot("atmux_unum");
     const seen: string[] = [];
-    await checkMemberCageStates({ name: "unum", members: [member("be-1")] }, join(root, ".atmux"), {
-      hasSession: async () => true,
-      probe: async (_t, _m, sessionName) => {
-        seen.push(sessionName);
-        return healthy("🐝-be-1");
+    await checkMemberCageStates(
+      teamOf("unum", { members: [member("be-1")] }),
+      join(root, ".atmux"),
+      {
+        hasSession: async () => true,
+        probe: async (_t, _m, sessionName) => {
+          seen.push(sessionName);
+          return healthy("🐝-be-1");
+        },
       },
-    });
+    );
     expect(seen).toEqual(["atmux_unum"]);
   });
 
   test("an unanchored team probes the bare name (e-419553c6)", async () => {
     const root = await makeRoot();
     const asked: string[] = [];
-    await checkMemberCageStates({ name: "sopx", members: [member("be-1")] }, join(root, ".atmux"), {
-      hasSession: async (name) => {
-        asked.push(name);
-        return false;
+    await checkMemberCageStates(
+      teamOf("sopx", { members: [member("be-1")] }),
+      join(root, ".atmux"),
+      {
+        hasSession: async (name) => {
+          asked.push(name);
+          return false;
+        },
       },
-    });
+    );
     expect(asked).toEqual(["sopx"]);
   });
 });
@@ -246,7 +285,7 @@ describe("checkLegacyWindowNameFormat — session name resolution", () => {
     await checkLegacyWindowNameFormat(null, {
       tmux: tmux.spawn,
       loadCockpitFn: async () => ({ teams: [{ root }] }) as never,
-      loadTeamForRoot: async () => ({ name: "unum", members: [] }),
+      loadTeamForRoot: async () => teamOf("unum"),
       socketExists: async () => true,
     });
     expect(tmux.calls).toHaveLength(1);
@@ -264,10 +303,8 @@ describe("checkLegacyWindowNameFormat — session name resolution", () => {
     const rows = await checkLegacyWindowNameFormat(null, {
       tmux: tmux.spawn,
       loadCockpitFn: async () => ({ teams: [{ root }] }) as never,
-      loadTeamForRoot: async () => ({
-        name: "unum",
-        members: [member("lead", { role: "team-lead", emoji: "🧭" })],
-      }),
+      loadTeamForRoot: async () =>
+        teamOf("unum", { members: [member("lead", { role: "team-lead", emoji: "🧭" })] }),
       socketExists: async () => true,
     });
     expect(rows).toHaveLength(1);
@@ -292,7 +329,7 @@ describe("checkLegacyWindowNameFormat — session name resolution", () => {
         return { exitCode: 1, stdout: "", stderr: "" } as SpawnResult;
       },
       loadCockpitFn: async () => ({ teams: [{ root: a }, { root: b }] }) as never,
-      loadTeamForRoot: async (r) => ({ name: r === a ? "one" : "two", members: [] }),
+      loadTeamForRoot: async (r) => teamOf(r === a ? "one" : "two"),
       socketExists: async () => true,
     });
     const targets = calls.map((c) => c[c.indexOf("-t") + 1]);
@@ -303,7 +340,7 @@ describe("checkLegacyWindowNameFormat — session name resolution", () => {
     process.env.ATMUX_SESSION = "atmux_current";
     const tmux = tmuxFor("atmux_current", ["🧭_lead"]);
     await checkLegacyWindowNameFormat(
-      { name: "cur", members: [member("lead", { role: "team-lead", emoji: "🧭" })] },
+      teamOf("cur", { members: [member("lead", { role: "team-lead", emoji: "🧭" })] }),
       {
         tmux: tmux.spawn,
         loadCockpitFn: async () => null,
@@ -336,15 +373,12 @@ describe("checkOrphanSessions — bare-name era", () => {
   test("a live BARE-named session is not flagged — only the legacy literal is probed", async () => {
     await pinAtmuxDir("legacy-anchor-name");
     const asked: string[] = [];
-    const rows = await checkOrphanSessions(
-      { name: "sopx", members: [], singleSession: true } as Team,
-      {
-        hasSession: async (name) => {
-          asked.push(name);
-          return name === "sopx"; // only the bare session exists
-        },
+    const rows = await checkOrphanSessions(teamOf("sopx", { singleSession: true }), {
+      hasSession: async (name) => {
+        asked.push(name);
+        return name === "sopx"; // only the bare session exists
       },
-    );
+    });
     // The bare name is the CURRENT default — never probed as an orphan.
     expect(asked).toEqual(["atmux-sopx"]);
     expect(rows.filter((r) => r.label === "orphan-session")).toEqual([]);
@@ -352,10 +386,9 @@ describe("checkOrphanSessions — bare-name era", () => {
 
   test("a genuinely orphaned legacy atmux-<team> session is still flagged", async () => {
     await pinAtmuxDir(); // no anchor → resolution fails soft to bare
-    const rows = await checkOrphanSessions(
-      { name: "sopx", members: [], singleSession: true } as Team,
-      { hasSession: async (name) => name === "atmux-sopx" },
-    );
+    const rows = await checkOrphanSessions(teamOf("sopx", { singleSession: true }), {
+      hasSession: async (name) => name === "atmux-sopx",
+    });
     const orphans = rows.filter((r) => r.label === "orphan-session");
     expect(orphans).toHaveLength(1);
     expect(orphans[0]?.detail).toContain("atmux-sopx");
@@ -366,10 +399,9 @@ describe("checkOrphanSessions — bare-name era", () => {
 
   test("a team ANCHORED to atmux-<team> is not flagged — that IS its live session", async () => {
     await pinAtmuxDir("atmux-sopx");
-    const rows = await checkOrphanSessions(
-      { name: "sopx", members: [], singleSession: true } as Team,
-      { hasSession: async (name) => name === "atmux-sopx" },
-    );
+    const rows = await checkOrphanSessions(teamOf("sopx", { singleSession: true }), {
+      hasSession: async (name) => name === "atmux-sopx",
+    });
     expect(rows.filter((r) => r.label === "orphan-session")).toEqual([]);
   });
 });

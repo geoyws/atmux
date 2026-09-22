@@ -117,6 +117,25 @@ describe("findLeadMember", () => {
         { name: "lead-1", role: "team-lead" },
         { name: "lead-2", role: "team-lead" },
       ],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
     });
     expect(m?.name).toBe("lead-1");
   });
@@ -126,12 +145,55 @@ describe("findLeadMember", () => {
       findLeadMember({
         name: "t",
         members: [{ name: "alpha", role: "member" }],
+        drivers: [
+          { name: "driver", tui: null, cwd: "." },
+          { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+          { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+        ],
+        driverPair: {
+          layout: "horizontal",
+          panes: [
+            { role: "worker", side: "left" },
+            {
+              role: "attention",
+              side: "right",
+              workflow: "kb-att",
+              authority: "decision-only",
+              tui: null,
+              command: null,
+            },
+          ],
+        },
       }),
     ).toBeNull();
   });
 
   test("null on empty roster", () => {
-    expect(findLeadMember({ name: "t", members: [] })).toBeNull();
+    expect(
+      findLeadMember({
+        name: "t",
+        members: [],
+        drivers: [
+          { name: "driver", tui: null, cwd: "." },
+          { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+          { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+        ],
+        driverPair: {
+          layout: "horizontal",
+          panes: [
+            { role: "worker", side: "left" },
+            {
+              role: "attention",
+              side: "right",
+              workflow: "kb-att",
+              authority: "decision-only",
+              tui: null,
+              command: null,
+            },
+          ],
+        },
+      }),
+    ).toBeNull();
   });
 });
 
