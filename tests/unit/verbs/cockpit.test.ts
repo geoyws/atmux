@@ -2220,6 +2220,86 @@ describe("cockpitRebuild", () => {
     }
   });
 
+  // Deploy guard: reconcile against a live cage exits 0, logs the skip,
+  // never calls start, and leaves the pane running. The Phase 2
+  // alive-skip is identical with or without --no-launch (no-launch only
+  // keeps the Phase 4 auto-launch from firing, so the test stays off the
+  // claude-readiness poll) — if the skip ever regresses, startCalls goes
+  // 1 (fail) instead of cycling a fixture pane.
+  // --force-cycle-without-both-flags coverage already exists at the
+  // dispatch level (no-ack: lines 76-78 + 118-120; ack-without---yes:
+  // lines 1463-1484), so this test proves only the live-cage skip it
+  // does not duplicate.
+  test("live cage → reconcile exits 0, logs the skip, start never fires, pane survives", async () => {
+    await writeFile(
+      join(homeDir, ".atmux", "cockpit.json"),
+      JSON.stringify({
+        cockpitSession: "test_cockpit_live_skip",
+        teams: [{ name: "demo", root: projRoot, enabled: true }],
+      }),
+      "utf8",
+    );
+    const fx = await spinTmux("cockpit-live-skip");
+    let startCalls = 0;
+    try {
+      // Mark the cage alive: a pane whose current command is `node`
+      // satisfies cageAlive()'s claude-or-node probe. Bare team name
+      // "demo" is the cage's canonical session name (resolveCageSessionName
+      // bare fallback), so the legacy-rename pre-pass is a no-op.
+      await fx.tmux.session.newSession({
+        name: "demo",
+        detached: true,
+        windowName: "lead",
+        shellCommand: "node -e 'setInterval(()=>{},1000000)'",
+      });
+      // The node process needs a beat to become the pane's foreground
+      // command — poll the same probe Phase 2 uses so the test never
+      // races the spawn. Real-timer poll is deliberate here: the
+      // condition is external tmux process state, not an in-process
+      // timer — fake timers cannot advance it, and production's own
+      // readiness probes poll the same way.
+      const deadline = Date.now() + 5000;
+      while (!(await cageAlive(fx.tmux))) {
+        if (Date.now() > deadline) throw new Error("fixture cage never became alive");
+        const { promise, resolve } = Promise.withResolvers<void>();
+        setTimeout(resolve, 100);
+        await promise;
+      }
+      const { logger, logs } = makeLogger();
+      const code = await cockpitRebuild(
+        {
+          subverb: "reconcile",
+          noCycle: false,
+          forceCycle: false,
+          ackDangerous: false,
+          noLaunch: true,
+          yes: false,
+        },
+        {
+          env: { HOME: homeDir, ATMUX_NO_CRON: "1" },
+          tmuxFactory: () => fx.tmux,
+          logger,
+          startFn: async () => {
+            startCalls += 1;
+            return 0;
+          },
+        },
+      );
+      expect(code).toBe(0);
+      expect(startCalls).toBe(0); // alive cage skipped — start never fires
+      expect(logs.join("\n")).toContain("cage alive — skipping cycle");
+      // The pane survives the reconcile: still alive, session intact.
+      expect(await cageAlive(fx.tmux)).toBe(true);
+      const sessions = await fx.tmux.session.listSessions();
+      expect(sessions.map((s) => s.name)).toContain("demo");
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
   test("--force-cycle adds --force to start args", async () => {
     await writeFile(
       join(homeDir, ".atmux", "cockpit.json"),
