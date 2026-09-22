@@ -125,7 +125,7 @@ For each Bucket A2 verb (was cron-fired, now uncalled post-cron-source removal),
 | `atmux poke-resume-check` | DELETE | Same as poke. |
 | `atmux pulse` | DELETE | Cockpit-pulse role replaced by orchd's `heartbeat.tick` self-emit (D2 above). (Original justification also cited superorchd's supervision-failure escalation per ADR-236 §D3; ADR-240 dropped superorchd, so heartbeat-self-emit is now the sole replacement signal — orchd-death is operator-visible via the dead `__orchd__` pane on cockpit-attach.) |
 | `atmux report` | KEEP, manual only | Operator-fired one-shot report verb stays useful. Cron-fired path was the only auto-caller; now it's CLI-invokable when the operator wants a report. No Discord side effect by default. |
-| `atmux improve` | KEEP, manual only | Same as report. |
+| `atmux improve` | ~~KEEP, manual only~~ → **DELETE** | Superseded 2026-09-01 by [ADR-286](286-eternal-improvement-retirement.md). This row assumed atmux still owned work-state and orchd would funnel Discord; ADR-275/276 removed both premises. The verb, the loop and its three Discord templates are retired. |
 
 The deletion list (`watchdog`, `poke`, `poke-resume-check`, `pulse`, `discorder`) covers:
 - `src/verbs/{verb}.ts` + `src/core/{verb}-*.ts` helpers (deleted).
@@ -133,7 +133,7 @@ The deletion list (`watchdog`, `poke`, `poke-resume-check`, `pulse`, `discorder`
 - Schema fields referencing these verbs in `src/schema/{team,cockpit}.ts` (back-compat-shimmed for one release per ADR-237 §D5 deprecation pattern, then deleted).
 - Tests under `tests/unit/{verbs,core}/{verb}-*.test.ts` and `tests/e2e/{verb}-*.test.ts` (deleted).
 
-The kept list (`report`, `improve`) is preserved as operator-fired one-shots; their bodies are reviewed during implementation to strip any cron-caller assumptions but the manual-invoke path stays.
+The kept list (`report`, `improve`) is preserved as operator-fired one-shots; their bodies are reviewed during implementation to strip any cron-caller assumptions but the manual-invoke path stays. **Amended 2026-09-01 ([ADR-286](286-eternal-improvement-retirement.md)): the kept list is now `report` alone** — `improve` was retired outright.
 
 ### D5 — Bucket A1 callers refactor: emit-to-topic instead of direct-send
 

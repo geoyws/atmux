@@ -1,9 +1,11 @@
 # ADR-257: Eternal-improvement = backlog-burndown-first + worktree-isolated, deferred verified merge
 
-**Status**: accepted
+**Status**: Superseded by [ADR-286](286-eternal-improvement-retirement.md) on 2026-09-01 — operator-direct. The eternal-improvement loop, the `atmux improve` verb and its three Discord templates are retired: both auto-callers were already gone (cron per ADR-233, whip per ADR-237) and the loop's atmux-owned-kanban premise was dissolved by ADR-275/276/280. Retained below for historical trace.
+
+Original status when written: accepted
 **Date**: 2026-06-05
 **Driver-ref**: George 2026-06-05 — "make eternal-improvement always address longstanding issues first, then improvements that need tackling; work should sit neatly in worktrees or nested worktrees branched from worktrees, awaiting a merge into trunk later when verified. This way time and tokens are not wasted (tokens are pre-paid and expire every week)."
-**Relates**: [ADR-052](052-eternal-improvement-loop.md) (the substrate this reframes), [ADR-149](149-eternal-improvement-gating.md) (its backlog-defer gate, superseded here), [ADR-090](090-epic-team-lifecycle.md) (spawn-epic worktree isolation reused), [ADR-134](134-in-team-auto-merger.md) / [ADR-091](091-epic-team-committer.md) (verified fan-in to trunk), [ADR-082](082-long-lived-member-branches.md) / [ADR-084](084-merge-not-rebase.md) (long-lived worktree branches), [ADR-126](126-sqlite-state-store.md) (kanban store read by the selector).
+**Relates**: [ADR-052](052-eternal-improvement-loop.SUPERSEDED.md) (the substrate this reframes), [ADR-149](149-eternal-improvement-gating.SUPERSEDED.md) (its backlog-defer gate, superseded here), [ADR-090](090-epic-team-lifecycle.md) (spawn-epic worktree isolation reused), [ADR-134](134-in-team-auto-merger.md) / [ADR-091](091-epic-team-committer.md) (verified fan-in to trunk), [ADR-082](082-long-lived-member-branches.md) / [ADR-084](084-merge-not-rebase.md) (long-lived worktree branches), [ADR-126](126-sqlite-state-store.md) (kanban store read by the selector).
 
 ## Context
 
@@ -11,7 +13,7 @@ ADR-052's loop is **prompt-driven**: `armCycle` appends a directive to `<atmuxDi
 
 Two problems with that under the operator's economics (pre-paid, weekly-expiring tokens — idle capacity is a use-it-or-lose-it resource):
 
-1. **It amplifies the backlog instead of burning it down.** [ADR-149](149-eternal-improvement-gating.md) recognised this (its "Issue 2") and *accepted* a gate to DEFER the loop when the team has a non-empty backlog. But that backlog gate was **never implemented in the TS path** — the `atmux improve` arm path (`budget → idempotence → openCycle → armCycle`, `src/verbs/improve.ts`) opens a cycle unconditionally, and `tickCycle` has no backlog check. So in practice the loop neither defers on backlog nor works it; it just generates net-new work.
+1. **It amplifies the backlog instead of burning it down.** [ADR-149](149-eternal-improvement-gating.SUPERSEDED.md) recognised this (its "Issue 2") and *accepted* a gate to DEFER the loop when the team has a non-empty backlog. But that backlog gate was **never implemented in the TS path** — the `atmux improve` arm path (`budget → idempotence → openCycle → armCycle`, `src/verbs/improve.ts`) opens a cycle unconditionally, and `tickCycle` has no backlog check. So in practice the loop neither defers on backlog nor works it; it just generates net-new work.
 2. **Cycle work lands wherever the member happens to be working** — there is no structural guarantee it is isolated or that unverified work stays off trunk.
 
 The operator's directive resolves both: spend idle capacity **burning down the longstanding backlog first**, then net-new improvements; and capture all of it in **isolated worktrees** that reach trunk only when **verified**.

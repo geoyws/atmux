@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🧹 Removed — the eternal-improvement loop, the `improve` verb, and its three Discord templates (ADR-286)
+
+**`atmux improve` no longer exists.** The loop it drove (ADR-052), its config + backlog gates (ADR-149) and its burndown-first arming (ADR-257) are retired together; all three ADRs move to `*.SUPERSEDED.md`.
+
+Both of its callers were already gone. `src/core/cron.ts` is a no-op shim — its own header reads `// ADR-233 §retired — cron auto-install retired (orchd, the runtime that replaced it, was itself retired per ADR-276)` — so nothing fired `improve --tick`, and no cycle could close, re-arm or terminate on its own. Mode B was armed by whip's auto-stop intercept, and whip was removed by ADR-237 §D1. The premise went the same way: ADR-275 made the external `kanban` CLI the sole work-state authority, ADR-280 retired epic-teams (ADR-257 had pinned the loop to `IMPROVEMENT_EPIC_ID`), and ADR-276 narrowed atmux to tmux cages and `atmux vox`. What was left was a verb reachable only by hand, and three Discord templates that fired only when it was run by hand.
+
+The messages were also wrong on their own terms, which is what surfaced this. `tickCycle` fired **two** Discord messages per cycle close: a progress ping whose last bullet already read `🔜 cycle N+1 starting`, then — on the re-arm path — a start ping whose verdict read `🟢 **Shipping** — eternal-improvement run starting on 1.5M tokens`. On a re-arm that sentence is false; it is a cycle start, and the run started cycles earlier. That same re-sent start ping restated `🌱 budget:`, `🎯 mode:` and `📍 runId:` unchanged every iteration. Repairing the shape was the considered alternative and was declined — polishing narration for a loop with no caller buys nothing.
+
+Removed: `src/verbs/improve.ts`, `src/core/improve-cycle.ts`, `src/core/improve.ts`, `src/core/eternal-improvement.ts`, `src/schema/eternal-improvement.ts` (1,454 lines), their five test suites, the `case "improve"` dispatch in `src/cli.ts`, the `improve` row in `atmux help`, and `renderEternalImprovement{Start,Progress,Done}` with their `*Opts` interfaces and three `DiscordTemplate` union literals. No shim and no alias: ADR-266 §D1 requires an expiry, and a migration window serves callers that here do not exist.
+
+Emoji allowlists were trimmed to exactly what died, verified by grep. `🌱` (from both `CategoryEmoji` and `ALLOWED_BULLET_PREFIX`) and `🔜` (from `ALLOWED_BULLET_PREFIX`) had no emitter outside the retired templates; `🎯`, `💰`, `⏱️` and `🛑` stay, all four still live in the account-swap, budget-cap, duration and stalled/blocked/refusal renderers. `🌱` remains a live **member** emoji in `src/core/sync-claude-team-json/color-map.ts` — a different surface, untouched.
+
+`src/core/lead-handoff.ts` was the only live importer outside the verb: it read the state file to render `🌱 eternal-improvement: ACTIVE (…)` / `inactive` under `## Team state`. That import, the `eternalImprovement` field on `ComposeHandoffArgs`, the render branch and the snapshot block are gone, so lead handoffs are one line shorter. The neighbouring `budget-pause` and `account-swap` snapshots are untouched.
+
+`.atmux/state/eternal-improvement.json` is not migrated and not deleted — after this change nothing reads it, so any file left on a host is inert. No operator action needed.
+
+**Not affected:** the `♻️ eternal improvement` heuristic in the `bruh` / `whip` / `sweep` plugin skills, which files one `[improve P3]` task per idle cycle. It shares the name and nothing else — no shared code, no state file, no Discord template.
+
 ### ✨ Added — prefix-table Meta hotkeys for windows 10-19
 
 `templates/tmux/atmux.conf` now uses explicit `bind -T prefix` lines for `M-0..M-9` → `select-window -t 10..19`. The built-in prefix digits `1-9` stay untouched, the F-key prefix chain stays untouched, and the shipped config still loads the local override last.

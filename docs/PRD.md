@@ -311,7 +311,6 @@ Source: `bin/atmux` dispatcher + `lib/*.sh` per `PLAN.md` §6.2.
 | Task board           | `task add/list/show/move/assign/lane/priority/update/rm`                  |
 | Pull kanban          | `epic` / `story` / `claim` / `done` / `dispatch` / `inbox`                |
 | Cron-fired           | `whip` / `report` / `decisions digest` / `groom` / `whip-resume-check` (1-min, ADR-053 §D4) / `watchdog` (2-min, ADR-057 §D6b) / `pulse` (5-min, cockpit-wide, ADR-086) / `check-lead-rotate` (5-min, cockpit-wide, ADR-143) |
-| Eternal-improvement  | `improve` (Mode A user-invoked / Mode B idle-fallback) — ADR-052          |
 | R1 wave (budget + self-heal) | `whip-resume-check` (ADR-053) — auto-resume; budget-pause + drift surfaced via `whip` (ADR-053/054); cursor self-heal opt-in via `team.json::whip.selfHealEnabled` (ADR-055); account-swap opt-in via `team.json::whip.accountFallback` (ADR-056) |
 | Cost + budget        | `cost` / `pause` / `resume`                                               |
 | Maintenance          | `rotate` / `rotate-lead` / `handoff` / `add-member` / `reconfigure` / `dashboard` / `doctor` / `cleanup` / `migrate-to-driver-session` |
@@ -1249,7 +1248,7 @@ Critical ADRs with active behavior:
 - **ADR-123** — Phase 3 read-only lane scope.
 - **ADR-124** — Phase 3 lifecycle lane scope.
 - **ADR-125** — (worktree-local — distinct from parent ADR-125) error-class lane scope.
-- **ADR-052** — Eternal-improvement (kanban-empty fallback to autonomous self-improvement loop). Status: proposed; gated on OQ-1 / OQ-2 / reviewer signoff. T1–T7 landed (T8 e2e + T9 cross-cage announcement blocked).
+- **ADR-052** — Eternal-improvement (kanban-empty fallback to autonomous self-improvement loop). **RETIRED 2026-09-01 by [ADR-286](adr/286-eternal-improvement-retirement.md)** — the loop, the `improve` verb and its three Discord templates are removed; both auto-callers were already gone (cron per ADR-233, whip per ADR-237) and the atmux-owned-kanban premise was dissolved by ADR-275/276/280.
 - **ADR-053** — Budget observability (probe port + Fix C OAuth refresh + warning bands + refresh-soon + `whip-resume-check` 1-min cron + history.jsonl). R1-T1/T5/T6/T7 landed (`ffad610` / `65c16f3` / `65bdcda` / `09b8091` / `df3a08c` / `8160d71` / `f9ad15b` / `9c50354`).
 - **ADR-222 + ADR-223** — Fleet topology via `atmux topo` (read-only manifest + 6-class orphan classifier per ADR-222) + composable reap cascade (`--reap` flag-chain + 4-gate safety ladder per ADR-223). Replaces N × N manual cleanup with a single composer; cockpit-mirror Rust crate (e-95087c8b S2) pins on `schema_version: 1`. Operator runbook at `docs/RUNBOOK-topology.md`.
 - **ADR-054** — Zod whip-config (TeamWhip schema + per-tick drift detection + `[whip-config-drift]` ping). R1-T3/T4 landed (`4e93746` / `9751f7a`).

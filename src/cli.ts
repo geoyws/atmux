@@ -58,7 +58,6 @@ import { heartbeat } from "./verbs/heartbeat.ts";
 import { help } from "./verbs/help.ts";
 import { hostPressure } from "./verbs/host-pressure.ts";
 import { hygieneTick } from "./verbs/hygiene-tick.ts";
-import { improve } from "./verbs/improve.ts";
 import { inbox } from "./verbs/inbox.ts";
 import { init } from "./verbs/init.ts";
 import { laneDriftCheck } from "./verbs/lane-drift-check.ts";
@@ -336,8 +335,6 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return heartbeat(argv.slice(1));
     case "pulse":
       return pulse(argv.slice(1));
-    case "improve":
-      return improve(argv.slice(1));
     case "groom":
       return groom(argv.slice(1));
     case "hygiene-tick": {

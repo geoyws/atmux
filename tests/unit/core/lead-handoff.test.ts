@@ -120,22 +120,7 @@ describe("composeHandoff", () => {
     expect(md).not.toContain("ignored body");
   });
 
-  test("eternal-improvement state ACTIVE rendered with mode + budget", () => {
-    const md = composeHandoff({
-      team: "t",
-      generatedAtMyt: "12:00 MYT",
-      outgoingLead: "alice",
-      inFlightTasks: [],
-      recentDecisions: [],
-      recentDriverInbox: [],
-      eternalImprovement: { active: true, mode: "user-invoked", budget: "10usd" },
-    });
-    expect(md).toContain("eternal-improvement: ACTIVE");
-    expect(md).toContain("user-invoked");
-    expect(md).toContain("10usd");
-  });
-
-  test("eternal-improvement absent → 'inactive'", () => {
+  test("no state snapshots → all 'inactive'", () => {
     const md = composeHandoff({
       team: "t",
       generatedAtMyt: "12:00 MYT",
@@ -144,7 +129,6 @@ describe("composeHandoff", () => {
       recentDecisions: [],
       recentDriverInbox: [],
     });
-    expect(md).toContain("eternal-improvement: inactive");
     expect(md).toContain("budget-pause: inactive");
     expect(md).toContain("account-swap: inactive");
   });
@@ -297,7 +281,6 @@ describe("writeLeadHandoff", () => {
     });
     const md = await readFile(path, "utf8");
     // 3 sections with (none) — in-flight has 2 tasks from seed though.
-    expect(md).toContain("eternal-improvement: inactive");
     expect(md).toContain("budget-pause: inactive");
     expect(md).toContain("account-swap: inactive");
   });
@@ -351,35 +334,6 @@ describe("writeLeadHandoff", () => {
     expect(md).toContain("budget-pause: ACTIVE");
     expect(md).toContain("08:00 MYT");
     expect(md).toContain("1 member(s)");
-  });
-
-  test("eternal-improvement active state surfaced", async () => {
-    await writeFile(
-      join(atmuxDir, "state", "eternal-improvement.json"),
-      JSON.stringify({
-        active: true,
-        mode: "user-invoked",
-        runId: "ei-abcdef01",
-        startedAt: 100,
-        budgetSpec: "10usd",
-        budgetTotal: 1000,
-        budgetRemaining: 1000,
-        cycleN: 0,
-        currentCycle: null,
-        lastCycleClosedAt: null,
-        history: [],
-      }),
-    );
-    const path = await writeLeadHandoff({
-      atmuxDir,
-      team: "demo",
-      outgoingLead: "alice",
-      nowEpochSec: NOW_EPOCH_SEC,
-    });
-    const md = await readFile(path, "utf8");
-    expect(md).toContain("eternal-improvement: ACTIVE");
-    expect(md).toContain("user-invoked");
-    expect(md).toContain("10usd");
   });
 
   test("account-swap active state surfaced", async () => {

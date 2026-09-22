@@ -15,12 +15,10 @@ Returning the process exit code. The dispatcher in `src/cli.ts` resolves `verb �
 ```
 up.ts, init.ts, start.ts, stop.ts, attach.ts, status.ts,
 send.ts, tell.ts, reply.ts, kanban.ts, dispatch.ts, inbox.ts, claim.ts,
-report.ts, whip.ts, improve.ts, whip-resume-check.ts, watchdog.ts, cost.ts,
+report.ts, whip.ts, whip-resume-check.ts, watchdog.ts, cost.ts,
 rotate.ts, handoff.ts, pause.ts, add-member.ts, reconfigure.ts, dashboard.ts,
 doctor.ts
 ```
-
-`improve.ts` arms the ADR-052 eternal-improvement loop (kanban-empty fallback → autonomous self-improvement cycles, bounded by token budget). Lands as part of the automation bucket alongside `whip` / `report`.
 
 `whip-resume-check.ts` is the ADR-053 1-min cron-precision verb for auto-resume from budget-pause. Lock-skipped on contention; ~1 probe call per active account per tick (mostly cache reads). Cron line is gated on `team.whip.claudeAccount` per `src/core/cron.ts::renderCronBlock`. See [ADR-053 §D4](../../docs/adr/053-budget-observability.md).
 

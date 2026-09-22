@@ -1,6 +1,8 @@
 # ADR-149: Eternal-improvement gating — config disable toggle + backlog non-emptiness gate
 
-**Status**: Accepted — ratified by driver 2026-05-21 (per-team enable/disable via `team.json::eternalImprovement.enabled` default true; backlog non-emptiness gate; tickCycle short-circuit + no Discord ping + no EPIC spawn + doctor probe row; §OQ recommendations as-written)
+**Status**: Superseded by [ADR-286](286-eternal-improvement-retirement.md) on 2026-09-01 — operator-direct. The eternal-improvement loop, the `atmux improve` verb and its three Discord templates are retired: both auto-callers were already gone (cron per ADR-233, whip per ADR-237) and the loop's atmux-owned-kanban premise was dissolved by ADR-275/276/280. Retained below for historical trace.
+
+Original status when written: Accepted — ratified by driver 2026-05-21 (per-team enable/disable via `team.json::eternalImprovement.enabled` default true; backlog non-emptiness gate; tickCycle short-circuit + no Discord ping + no EPIC spawn + doctor probe row; §OQ recommendations as-written)
 **Date**: 2026-05-15
 **Author**: atmux team (whip-impl / t-496348ea)
 **Parent EPIC**: t-7c1c50f8
@@ -171,7 +173,7 @@ The `team.eternalImprovement` block is `.strict()` per the TeamWhip precedent. T
 
 ## Cross-references
 
-- **[ADR-052](052-eternal-improvement-loop.md) — eternal-improvement substrate**. This ADR gates the substrate's `openCycle` entry; the substrate's state-machine, cycle-loop mechanics, and Mode A / Mode B termination semantics are unchanged. (ADR-052 was backfilled retrospectively per `t-75a79d7c` after this ADR landed — code shipped during 2026-05 referenced ADR-052 by number through dozens of in-source headers + comments, but the ADR file itself was not authored at the time. The substrate captured in `src/core/improve-cycle.ts` + `src/core/eternal-improvement.ts` + `src/core/improve.ts` + `src/schema/eternal-improvement.ts` + `src/verbs/improve.ts` is now documented at the linked file.)
+- **[ADR-052](052-eternal-improvement-loop.SUPERSEDED.md) — eternal-improvement substrate**. This ADR gates the substrate's `openCycle` entry; the substrate's state-machine, cycle-loop mechanics, and Mode A / Mode B termination semantics are unchanged. (ADR-052 was backfilled retrospectively per `t-75a79d7c` after this ADR landed — code shipped during 2026-05 referenced ADR-052 by number through dozens of in-source headers + comments, but the ADR file itself was not authored at the time. The substrate captured in `src/core/improve-cycle.ts` + `src/core/eternal-improvement.ts` + `src/core/improve.ts` + `src/schema/eternal-improvement.ts` + `src/verbs/improve.ts` is now documented at the linked file.)
 - **ADR-148 — cadence-as-truth**. D5 names ADR-148 as the sibling principle: real-work signals dominate proxy signals. ADR-148 applies the principle to per-member shipping verdicts; ADR-149 applies it to per-team eternal-improvement entry.
 - **ADR-126 — SQLite state store**. The backlog gate reads from the canonical kanban store; the count is a `loadKanban()` filter, not a separate query.
 - **ADR-007 — pull-kanban**. Backlog count semantics align with pull-kanban claim-eligibility filter (status ∈ {todo, in-progress}).

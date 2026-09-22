@@ -38,13 +38,6 @@ export type DiscordTemplate =
   | "whip-decisions"
   | "whip-overdue"
   | "whip-budget"
-  // ADR-052 §"Discord templates": three named templates the eternal-
-  // improvement verb (T1) emits across a run lifecycle. Renderers live
-  // below in this module (`renderEternalImprovement{Start,Progress,Done}`)
-  // — adding the literals here is the compile-time R10 enforcement.
-  | "eternal-improvement-start"
-  | "eternal-improvement-progress"
-  | "eternal-improvement-done"
   | "report-digest"
   | "team-bootstrap"
   | "team-shipped"
@@ -198,7 +191,6 @@ export type CategoryEmoji =
   | "🚀"
   | "📍"
   | "🛠️"
-  | "🌱"
   // ADR-053 §D3 budget observability headers.
   | "⚠️"
   | "🌅"
@@ -289,14 +281,12 @@ export const ALLOWED_BULLET_PREFIX = new Set<string>([
   "🙏",
   "📍",
   "📊",
-  // ADR-052 §"Discord templates": eternal-improvement bullet emojis.
-  // 🌱 (run lifecycle bullet — budget line), 🎯 (mode line),
-  // 💰 (tokens spent / consumed), 🔜 (next-cycle line),
-  // ⏱️ (run duration), 🛑 (Mode B stop notice).
-  "🌱",
+  // 🎯 (target / fallback line), 💰 (token spend + caps),
+  // ⏱️ (durations), 🛑 (stop / blocked / refusal notices).
+  // 🌱 + 🔜 were retired here with the eternal-improvement templates
+  // (ADR-286 §D2) — no renderer emits either.
   "🎯",
   "💰",
-  "🔜",
   "⏱️",
   "🛑",
   // ADR-053 §D3: budget observability bullet emojis.
@@ -670,10 +660,11 @@ export async function resolveWebhookUrl(opts: ResolveWebhookOpts = {}): Promise<
   return null;
 }
 
-// ---------- Eternal-improvement template renderers (ADR-052) ----------
+// ---------- Token formatting ----------
 
 /**
- * Format a token count for human display per ADR-052 §"Discord templates".
+ * Format a token count for human display. Shared by the budget-cap and
+ * budget-observability templates below (ADR-053 §D3).
  *
  * - `n ≥ 1_000_000`  → `<X>M` with up to 2 decimal places, trailing zeros
  *                      trimmed (`1500000` → `"1.5M"`, `1520000` → `"1.52M"`,
@@ -693,132 +684,6 @@ function formatTokens(n: number): string {
   }
   if (abs >= 1_000) return `${Math.round(abs / 1_000)}k`;
   return `${Math.round(abs)}`;
-}
-
-export interface EternalImprovementStartOpts {
-  team: string;
-  /** Raw spec string as resolved (e.g. `"30%-wk"`). */
-  budgetSpec: string;
-  /** Token budget total computed at start (e.g. `1_500_000`). */
-  budgetTotal: number;
-  /** Per ADR-052 §"State-file schema". */
-  mode: "user-invoked" | "idle-fallback";
-  /** Per ADR-052 §"State-file schema" — `ei-<8-hex>`. */
-  runId: string;
-  /** Override timestamp (test injection); defaults to `now()`. */
-  whenMs?: number;
-}
-
-/**
- * Build the `[eternal-improvement-start]` Discord send opts per ADR-052.
- * Caller passes the result to `send()`.
- */
-export function renderEternalImprovementStart(opts: EternalImprovementStartOpts): DiscordSendOpts {
-  const out: DiscordSendOpts = {
-    template: "eternal-improvement-start",
-    team: opts.team,
-    category: "🌱",
-    verdict: `🟢 **Shipping** — eternal-improvement run starting on ${formatTokens(opts.budgetTotal)} tokens (${opts.mode})`,
-    bullets: [
-      `🌱 budget: ${opts.budgetSpec} = ${formatTokens(opts.budgetTotal)} tokens`,
-      `🎯 mode: ${opts.mode}`,
-      `📍 runId: ${opts.runId}`,
-    ],
-  };
-  if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
-  return out;
-}
-
-export interface EternalImprovementProgressOpts {
-  team: string;
-  /** Cycle that just closed (1-indexed). */
-  cycleN: number;
-  /** Tasks shipped in this cycle. */
-  tasksShipped: number;
-  /** Tokens spent in this cycle. */
-  tokensSpent: number;
-  /** Total token budget. */
-  budgetTotal: number;
-  /** Tokens remaining post-decrement. */
-  budgetRemaining: number;
-  whenMs?: number;
-}
-
-/**
- * Build the `[eternal-improvement-progress]` Discord send opts per ADR-052
- * (one per cycle close).
- */
-export function renderEternalImprovementProgress(
-  opts: EternalImprovementProgressOpts,
-): DiscordSendOpts {
-  const out: DiscordSendOpts = {
-    template: "eternal-improvement-progress",
-    team: opts.team,
-    category: "🌱",
-    verdict: `🟢 **Shipping** — cycle ${opts.cycleN} closed, ${opts.tasksShipped} task${opts.tasksShipped === 1 ? "" : "s"} shipped`,
-    bullets: [
-      `✅ cycle ${opts.cycleN} closed — ${opts.tasksShipped} tasks shipped`,
-      `💰 tokens spent: ${formatTokens(opts.tokensSpent)} of ${formatTokens(opts.budgetTotal)}`,
-      `📊 budget remaining: ${formatTokens(opts.budgetRemaining)}`,
-      `🔜 cycle ${opts.cycleN + 1} starting`,
-    ],
-  };
-  if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
-  return out;
-}
-
-export interface EternalImprovementDoneOpts {
-  team: string;
-  /** Total cycles completed during the run. */
-  cycleCount: number;
-  /** Total tasks shipped across all cycles. */
-  totalTasksShipped: number;
-  /** Total tokens consumed across the run. */
-  tokensConsumed: number;
-  /** Original budget total. */
-  budgetTotal: number;
-  /** Run duration in milliseconds. Rendered via `formatDuration`. */
-  durationMs: number;
-  /** Whether the run was Mode B (idle-fallback). When true, the template
-   *  appends the `🛑 (Mode B) team will now atmux stop` bullet per ADR-052. */
-  modeB: boolean;
-  whenMs?: number;
-}
-
-/**
- * Build the `[eternal-improvement-done]` Discord send opts per ADR-052.
- *
- * Overage handling: when `tokensConsumed > budgetTotal`, the tokens bullet
- * appends ` (X.X% overage, mid-task)` per the ADR's example output. The
- * driver's "feature must be fully built even though a bit more tokens are
- * used" directive (§"Loop mechanics") makes mid-cycle overage expected.
- */
-export function renderEternalImprovementDone(opts: EternalImprovementDoneOpts): DiscordSendOpts {
-  const overageBytes =
-    opts.tokensConsumed > opts.budgetTotal && opts.budgetTotal > 0
-      ? ` (${(((opts.tokensConsumed - opts.budgetTotal) / opts.budgetTotal) * 100).toFixed(1)}% overage, mid-task)`
-      : "";
-  const tokensBullet = `💰 tokens consumed: ${formatTokens(opts.tokensConsumed)} of ${formatTokens(opts.budgetTotal)}${overageBytes}`;
-  const bullets: string[] = [
-    `✅ run complete — ${opts.cycleCount} cycles, ${opts.totalTasksShipped} tasks shipped`,
-    tokensBullet,
-    `⏱️ duration: ${formatDuration(opts.durationMs)}`,
-  ];
-  if (opts.modeB) {
-    bullets.push("🛑 (Mode B) team will now `atmux stop`");
-  }
-  const verdict = opts.modeB
-    ? `🟡 **Cool** — eternal-improvement Mode B halted after ${opts.cycleCount} cycle${opts.cycleCount === 1 ? "" : "s"}`
-    : `🟢 **Shipping** — eternal-improvement complete: ${opts.cycleCount} cycle${opts.cycleCount === 1 ? "" : "s"}, ${opts.totalTasksShipped} task${opts.totalTasksShipped === 1 ? "" : "s"}`;
-  const out: DiscordSendOpts = {
-    template: "eternal-improvement-done",
-    team: opts.team,
-    category: "🌱",
-    verdict,
-    bullets,
-  };
-  if (opts.whenMs !== undefined) out.whenMs = opts.whenMs;
-  return out;
 }
 
 // ---------- ADR-054 §D3 [whip-config-drift] ----------

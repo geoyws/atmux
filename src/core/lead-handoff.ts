@@ -31,7 +31,6 @@ import { loadAccountSwapState } from "./account-swap.ts";
 import { loadBudgetPauseState } from "./budget-pause.ts";
 import { driverInboxPath, stateDir } from "./common.ts";
 import { type DriverInboxEntry, lastNEntries, parseEntries } from "./driver-inbox.ts";
-import { readState as readEternalImprovementState } from "./eternal-improvement.ts";
 import { listTasks } from "./kanban.ts";
 
 const HANDOFF_FILENAME_PREFIX = "lead-handoff-";
@@ -65,10 +64,6 @@ export interface ComposeHandoffArgs {
   /** Last N driver-inbox entries by file order (head line only — body
    *  excerpts would balloon the handoff size). */
   recentDriverInbox: ReadonlyArray<DriverInboxEntry>;
-  /** Mode B (eternal-improvement) snapshot — empty when not active. */
-  eternalImprovement?:
-    | { active: boolean; budget?: string | undefined; mode?: string | undefined }
-    | undefined;
   /** Budget-pause snapshot — empty when not active. */
   budgetPause?: { paused: boolean; pausedAtTs: string; atRiskCount: number } | undefined;
   /** Account-swap snapshot — empty when no active swap. */
@@ -122,13 +117,6 @@ export function composeHandoff(args: ComposeHandoffArgs): string {
   // ---- Team state ----
   lines.push("## Team state");
   lines.push("");
-  if (args.eternalImprovement?.active === true) {
-    lines.push(
-      `- 🌱 eternal-improvement: ACTIVE (mode=\`${args.eternalImprovement.mode ?? "?"}\`, budget=\`${args.eternalImprovement.budget ?? "?"}\`)`,
-    );
-  } else {
-    lines.push("- 🌱 eternal-improvement: inactive");
-  }
   if (args.budgetPause?.paused === true) {
     lines.push(
       `- 🪫 budget-pause: ACTIVE (since \`${args.budgetPause.pausedAtTs}\`, ${args.budgetPause.atRiskCount} member(s) at-risk)`,
@@ -187,16 +175,6 @@ export async function writeLeadHandoff(args: {
       : lastNEntries(parseEntries(inboxText, nowEpochSec), RECENT_DRIVER_INBOX_N);
 
   // 4. State snapshots.
-  const ei = await readEternalImprovementState(atmuxDir);
-  const eternalImprovement =
-    ei?.active === true
-      ? {
-          active: true,
-          mode: typeof ei.mode === "string" ? ei.mode : undefined,
-          budget: typeof ei.budgetSpec === "string" ? ei.budgetSpec : undefined,
-        }
-      : undefined;
-
   const bp = await loadBudgetPauseState(atmuxDir);
   const budgetPause =
     bp?.paused === true
@@ -225,7 +203,6 @@ export async function writeLeadHandoff(args: {
     recentDecisions,
     recentDriverInbox,
   };
-  if (eternalImprovement !== undefined) composeArgs.eternalImprovement = eternalImprovement;
   if (budgetPause !== undefined) composeArgs.budgetPause = budgetPause;
   if (accountSwap !== undefined) composeArgs.accountSwap = accountSwap;
   const body = composeHandoff(composeArgs);

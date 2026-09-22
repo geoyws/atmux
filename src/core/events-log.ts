@@ -161,8 +161,9 @@ export async function appendVerbEvent(
  * full, permissions, parent dir creation race) emits a single stderr
  * WARN line and resolves — the calling verb still completes.
  *
- * Mirrors the `safeFireDiscord` pattern in `verbs/improve.ts` — best-
- * effort observability sites should never block the verb's exit path.
+ * Same shape as the retired `safeFireDiscord` in `verbs/improve.ts`
+ * (removed with the eternal-improvement loop per ADR-286) — best-effort
+ * observability sites should never block the verb's exit path.
  */
 export async function safeAppendVerbEvent(
   atmuxDir: string,
