@@ -18,6 +18,10 @@
 //     longer in kanban.tasks[]
 //   - orphan-sessions: singleSession=true team has a stale `atmux-<team>`
 //     tmux session
+//   - team-inside-team + deprecated-member-windows: ADR-287 §D7 advisory
+//     nesting / roster probes (yellow only while cockpit.json loads; a
+//     present-but-refused cockpit.json is one red `cockpit.json` row —
+//     see ./doctor/nesting.ts)
 //
 // Render: human (stderr, color, glyph table) or JSON (--json, stdout).
 // --quiet suppresses output; exit 0 on green, 1 on any red.
@@ -69,6 +73,7 @@ import {
   checkWorktreeNestedStateDb,
 } from "./doctor/git.ts";
 import { checkClaudeAccountPool, checkHostPressure } from "./doctor/host.ts";
+import { checkDeprecatedMemberWindows, checkTeamInsideTeam } from "./doctor/nesting.ts";
 import { checkCursorPluginCache, checkSkillsPlugin } from "./doctor/plugins.ts";
 import { renderHuman, renderJson } from "./doctor/render.ts";
 import {
@@ -269,6 +274,18 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   // present-but-version-drift. Self-clearing post-build:install.
   rows.push(...(await checkVendoredTmuxBinary()));
   rows.push(...(await checkCockpitOnDefaultSocket()));
+  // ADR-287 §D7: two advisory nesting / roster probes, yellow only.
+  //   team-inside-team — one row per team nested DIRECTLY under a team
+  //   in cockpit.json (deprecated per §D3; move it under a group).
+  //   deprecated-member-windows — one row per team (cockpit walk ∪ the
+  //   current team) whose team.json still declares members[]; the
+  //   default roster is drivers-only per §D5. Both fall back silently
+  //   when the cockpit config is ABSENT (the roster probe then reads the
+  //   current team alone); a cockpit.json that is present but refused at
+  //   load (§D4 depth, invalid prefixChain, schema mismatch) is one red
+  //   `cockpit.json` row from checkTeamInsideTeam, never swallowed.
+  rows.push(...(await checkTeamInsideTeam()));
+  rows.push(...(await checkDeprecatedMemberWindows(team)));
   // t-400a1cad: deployed-binary-lag — warn class.
   // t-400a1cad: deployed-binary-lag — warn class. Compares git HEAD +
   // package.json version against /opt/atmux/current symlink target.
@@ -626,6 +643,15 @@ export {
   checkSendKeysFailureRecent,
 } from "./doctor/member-ops.ts";
 export {
+  type CheckDeprecatedMemberWindowsOpts,
+  type CheckTeamInsideTeamOpts,
+  checkDeprecatedMemberWindows,
+  checkTeamInsideTeam,
+  cockpitLoadRefusedRow,
+  deprecatedMemberWindowsRows,
+  teamInsideTeamRows,
+} from "./doctor/nesting.ts";
+export {
   type CheckCursorPluginCacheOpts,
   type CheckSkillsPluginOpts,
   checkCursorPluginCache,
@@ -664,6 +690,7 @@ export {
   parseTmuxVersion,
   TMUX_MIN_VERSION,
   TMUX_TESTED_VERSION,
+  versionConstants,
 } from "./doctor/tmux.ts";
 // ---------- Re-exports (ADR-266 split: probes live under ./doctor/) ----------
 export {

@@ -60,6 +60,36 @@ export interface CheckTmuxVersionOpts {
   tmux?: TmuxSpawn;
 }
 
+/** Guard for the embedded version constants. Extracted as a pure
+ *  function (t-923b5cae seam) so tests can drive the malformed-constant
+ *  branch without mutating module state; production passes no args and
+ *  gets identical behavior. The discriminated union keeps the parsed
+ *  pair non-null for the caller without a cast. */
+export function versionConstants(
+  minRaw: string = TMUX_MIN_VERSION,
+  testedRaw: string = TMUX_TESTED_VERSION,
+):
+  | { ok: true; min: ParsedTmuxVersion; tested: ParsedTmuxVersion }
+  | { ok: false; row: DoctorRow[] } {
+  const min = parseTmuxVersion(`tmux ${minRaw}`);
+  const tested = parseTmuxVersion(`tmux ${testedRaw}`);
+  if (min === null || tested === null) {
+    // Defensive — the embedded constants must parse. If a maintainer
+    // sets a malformed constant the probe surfaces it on every doctor
+    // run rather than failing silently.
+    const row: DoctorRow[] = [
+      {
+        status: "yellow",
+        label: "tmux-version-mismatch",
+        detail: "internal — TMUX_MIN_VERSION / TMUX_TESTED_VERSION constant unparseable",
+        hint: "report a bug; ADR-162 §Decision-anchor #5",
+      },
+    ];
+    return { ok: false, row };
+  }
+  return { ok: true, min, tested };
+}
+
 /**
  * ADR-162 §Decision-anchor #5 probe 1 — `tmux-version-mismatch`. Runs
  * `tmux -V`, parses output, and surfaces a yellow row when the host
@@ -72,26 +102,13 @@ export interface CheckTmuxVersionOpts {
  * collapses to a yellow row with `actual: "unknown"` so the operator
  * still sees something instead of silent skip.
  */
-
 export async function checkTmuxVersionMismatch(
   opts: CheckTmuxVersionOpts = {},
 ): Promise<DoctorRow[]> {
   const tmux = opts.tmux ?? defaultTmuxSpawn;
-  const min = parseTmuxVersion(`tmux ${TMUX_MIN_VERSION}`);
-  const tested = parseTmuxVersion(`tmux ${TMUX_TESTED_VERSION}`);
-  if (min === null || tested === null) {
-    // Defensive — the embedded constants must parse. If a maintainer
-    // sets a malformed constant the probe surfaces it on every doctor
-    // run rather than failing silently.
-    return [
-      {
-        status: "yellow",
-        label: "tmux-version-mismatch",
-        detail: "internal — TMUX_MIN_VERSION / TMUX_TESTED_VERSION constant unparseable",
-        hint: "report a bug; ADR-162 §Decision-anchor #5",
-      },
-    ];
-  }
+  const constants = versionConstants();
+  if (!constants.ok) return constants.row;
+  const { min, tested } = constants;
   let result: SpawnResult;
   try {
     result = await tmux(["-V"]);

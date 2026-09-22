@@ -76,6 +76,7 @@ import {
   TMUX_MIN_VERSION,
   TMUX_TESTED_VERSION,
   type TmuxSpawn,
+  versionConstants,
 } from "../../../src/verbs/doctor.ts";
 
 // ---------- parseDoctorArgs ----------
@@ -4706,6 +4707,30 @@ describe("checkTmuxVersionMismatch", () => {
   test("constants are at the documented values per ADR-162 §Part C", () => {
     expect(TMUX_MIN_VERSION).toBe("3.2");
     expect(TMUX_TESTED_VERSION).toBe("3.6a");
+  });
+
+  test("versionConstants: valid embedded constants → ok pair (no defensive row)", () => {
+    const got = versionConstants();
+    expect(got.ok).toBe(true);
+    if (got.ok) {
+      expect(got.min).toEqual({ major: 3, minor: 2, suffix: "" });
+      expect(got.tested).toEqual({ major: 3, minor: 6, suffix: "a" });
+    }
+  });
+
+  test("versionConstants: malformed constant → yellow internal row (t-923b5cae)", () => {
+    const got = versionConstants("bogus", "bogus");
+    expect(got).toEqual({
+      ok: false,
+      row: [
+        {
+          status: "yellow",
+          label: "tmux-version-mismatch",
+          detail: "internal — TMUX_MIN_VERSION / TMUX_TESTED_VERSION constant unparseable",
+          hint: "report a bug; ADR-162 §Decision-anchor #5",
+        },
+      ],
+    });
   });
 
   test("in-range tmux 3.6a (exact tested version) → no rows", async () => {
