@@ -181,7 +181,7 @@ Verb-IDs are **stable across `/clear` cycles** — referenced by HANDOFF.md and 
 | R-3 | Add §6.2 stable-ID checklist to PLAN.md | ✅ done |
 | R-4 | Drop TaskList refs from HANDOFF.md, link to §6.2 | ⏳ pending |
 | R-5 | ADR-020 — `Writer` abstraction + `core/io.ts` (lift duplicated default writers) | ✅ done |
-| R-6 | ADR-025 — `SendTarget` discriminated union (compile-time enforce "no send-keys to driver pane"); refactor `tmux.sendKeys` + `tmux.pasteBuffer` + 3 callers (rotate, send, stop) | ✅ done |
+| R-6 | ADR-025 — `SendTarget` discriminated union (compile-time enforce "no send-keys to driver pane"); refactor `tmux.sendKeys` + `tmux.pasteBuffer` + 3 callers (rotate, send, stop) | ✅ done — **driver-ban rationale superseded 2026-09-08** (ADR-239 §D2 revoked; `SendTarget` remains as the intent/audit declaration, `kind: "driver"` is now representable and no compile-time driver ban exists) |
 
 **Recommended next-batch order:** R-3 → R-4 → R-1 → R-2 → V-23 → V-20 → V-21 → V-22 → V-24 → R-5 → V-25 → V-01. Doctor before whip because whip calls into doctor in some flows. R-5 (Writer abstraction, ADR-020) lands before V-25 so whip writes against the canonical signature. **V-26 `session` + V-27 `team` are Phase-4 (post-cutover) per ADR-021** — paths canonicalized in ADR-021 so V-25 + V-01 use them from day one.
 
@@ -234,7 +234,7 @@ Numbered separately from bash ADRs to avoid collision. Architect drafts 001–00
 | **022** | **`whip` verb (V-25) port scope — in-scope subset + deferred bash-only checks** | 2 | driver |
 | **023** | **LLM judge cascade — Sonnet → Haiku → deterministic fallback (resilience contract for SOFT classifier + future judge call sites)** | 2 | driver |
 | **024** | **Spawned-agent account matching — team members must run on driver's claude account; no cross-account spawns** | 2 | driver |
-| **025** | **`SendTarget` discriminated union — compile-time enforce "no send-keys to driver pane" (R-6 design)** | 2 | driver |
+| **025** | **`SendTarget` discriminated union — compile-time enforce "no send-keys to driver pane" (R-6 design)** — *driver-ban portion superseded 2026-09-08; see [ADR-118](docs/adr/118-sendtarget-discriminated-union.md) header* | 2 | driver |
 | **026** | **Parity matrix iter-1 scope (refs ADR-009 §3) — matrix wire-up + lifecycle preset + 4 state-mutating verb rows; multi-team / cron / remaining 16 verbs / CI gate / lcov-gate harness deferred to iter 2+** | 3 | driver |
 | **027** | **Parity channel-mask contract (Option B per George 2026-05-05) — per-row, per-channel mask config (`exitCode` / `stdout` / `stderr` / `stateAfter`) for stylistic divergence (error-rendering + state-after non-determinism); semantic divergence still gated** | 3 | driver |
 | 028+ | Per-verb ADRs as non-obvious decisions surface during Phase 2 + Phase 3 iter-2+ | 2/3 | porters |

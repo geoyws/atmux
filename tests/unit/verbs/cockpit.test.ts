@@ -33,6 +33,7 @@ import {
   reconcileGroupServers,
   resolveTeamWindowMode,
 } from "../../../src/verbs/cockpit.ts";
+import { parseStartArgs } from "../../../src/verbs/start.ts";
 import {
   createCanonicalAtmuxTmux,
   PORTABLE_KEEPALIVE_COMMAND,
@@ -1252,6 +1253,52 @@ describe("reconcileCockpitSession", () => {
       await rm(fx.socketDir, { recursive: true, force: true });
     }
   });
+  test("medic readiness failure degrades: zsh kept, no cadence, later phases still reconcile", async () => {
+    const fx = await spinTmux("cockpit-medic-readiness-fail");
+    try {
+      const { logger, logs } = makeLogger();
+      const teams: CockpitTeam[] = [{ name: "alpha", root: "/a", enabled: true } as CockpitTeam];
+      const sentKeys: string[] = [];
+      const deps: ResolveTeamWindowDeps = {
+        buildSuperdoctorCommand: () => PORTABLE_KEEPALIVE_COMMAND,
+        autoStartSleep: async () => {},
+      };
+      // Swallow every keystroke: zsh stays usable, but the proof token
+      // can never appear and no TUI/cadence launch is allowed.
+      const swallowing: TmuxNamespace = {
+        ...fx.tmux,
+        pane: {
+          ...fx.tmux.pane,
+          sendKeys: async (opts) => {
+            sentKeys.push(opts.keys);
+          },
+        },
+      };
+      await reconcileCockpitSession(swallowing, "s", teams, logger, deps, {
+        enabled: true,
+        autoStart: true,
+      });
+      expect(logs.some((line) => line.includes("readiness probe"))).toBe(true);
+      expect(sentKeys).not.toContain("/loop /medic");
+      expect(sentKeys).not.toContain("/loop /superdoctor");
+      expect(logs.some((line) => line.includes("auto-started"))).toBe(false);
+      // Later phases ran anyway: the team viewer is created and the
+      // medic window still sits immediately after _superdriver.
+      const windows = (await fx.tmux.window.listWindows("s")).sort((a, b) => a.index - b.index);
+      expect(windows.map((w) => w.name)).toEqual(["_superdriver", "_medic", "alpha"]);
+      // …and the surviving medic pane is a usable shell, not a corpse.
+      const medic = windows.find((window) => window.name === "_medic");
+      expect(
+        await fx.tmux.pane.displayMessage({
+          target: { sessionName: "s", windowIndex: medic?.index ?? -1 },
+          format: "#{pane_current_command}",
+        }),
+      ).toBe("zsh");
+    } finally {
+      await fx.tmux.server.killServer().catch(() => {});
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
 
   test("t-22453c1e: autoStart=false → no send-keys (operator manual)", async () => {
     const fx = await spinTmux("cockpit-sd-autostart-off");
@@ -1763,6 +1810,31 @@ describe("buildSuperdoctorWindowCommand (ADR-077)", () => {
     expect(cmd).toContain("--permission-mode dontAsk");
     expect(cmd).toContain("--plugin-dir=/p/dir");
   });
+  test("quotes config and override values as single shell words", async () => {
+    const { buildSuperdoctorWindowCommand } = await import("../../../src/verbs/cockpit.ts");
+    const configDir = "/tmp/config dir; printf INJECTED";
+    const effort = "high; printf INJECTED";
+    const permission = "auto $(printf INJECTED)";
+    const pluginDir = "/tmp/plugin dir; printf INJECTED";
+    const cmd = buildSuperdoctorWindowCommand({
+      enabled: true,
+      claudeAccount: { configDir },
+      tuiOverrides: { effortLevel: effort, permissionMode: permission, pluginDir },
+    });
+    const script =
+      'function claude { printf \'<%s>\n\' "$CLAUDE_CONFIG_DIR" "$CLAUDE_CODE_EFFORT_LEVEL" "$@"; }; ' +
+      cmd;
+    const result = Bun.spawnSync(["zsh", "-c", script]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr.toString()).toBe("");
+    expect(result.stdout.toString().trim().split("\n")).toEqual([
+      `<${configDir}>`,
+      `<${effort}>`,
+      `<--plugin-dir=${pluginDir}>`,
+      "<--permission-mode>",
+      `<${permission}>`,
+    ]);
+  });
 });
 
 // ---------- ADR-064 §3: resolveTeamWindowMode + buildTeamWindowCommand ----------
@@ -2210,7 +2282,14 @@ describe("cockpitRebuild", () => {
         },
       );
       expect(code).toBe(0);
-      expect(startArgs).toEqual(["--no-doctor"]);
+      expect(startArgs).toEqual(["--no-doctor", "--no-launch"]);
+      // The forwarded argv must be accepted by the REAL start parser —
+      // asserting the string alone once certified a flag start rejected.
+      expect(parseStartArgs(startArgs ?? [], {})).toEqual({
+        force: false,
+        doctorMode: "skip",
+        noLaunch: true,
+      });
       expect(startCwd).toBe(projRoot);
     } finally {
       try {
@@ -2249,7 +2328,12 @@ describe("cockpitRebuild", () => {
           },
         },
       );
-      expect(startArgs).toEqual(["--force", "--no-doctor"]);
+      expect(startArgs).toEqual(["--force", "--no-doctor", "--no-launch"]);
+      expect(parseStartArgs(startArgs ?? [], {})).toEqual({
+        force: true,
+        doctorMode: "skip",
+        noLaunch: true,
+      });
     } finally {
       try {
         await fx.tmux.server.killServer();

@@ -2,15 +2,12 @@
 //
 // Pure-fn coverage for resolveDriversList (drivers[] precedence + empty
 // fallthrough; the legacy driverSession/driverTui synthesis was removed
-// per ADR-266 §D2), resolveDriverCwd (relative / absolute /
-// "."), isDriverPaneName (driver / driver-N / non-driver), and
-// canonicalDriverName (index → name).
+// per ADR-266 §D2), resolveDriverCwd, canonicalDriverName and trunk identity.
 
 import { describe, expect, test } from "bun:test";
 import {
   canonicalDriverName,
   type DriverSession,
-  isDriverPaneName,
   isTrunkDriver,
   resolveDriverCwd,
   resolveDriversList,
@@ -60,40 +57,6 @@ describe("resolveDriverCwd — relative / absolute / dot anchoring", () => {
     expect(
       resolveDriverCwd({ name: "driver-3", tui: "claude", cwd: "/opt/somewhere" }, "/srv/atmux"),
     ).toBe("/opt/somewhere");
-  });
-});
-
-describe("isDriverPaneName — ADR-239 §D2 driver-pattern", () => {
-  test('"driver" matches', () => {
-    expect(isDriverPaneName("driver")).toBe(true);
-  });
-
-  test('"driver-2" / "driver-5" / "driver-99" match', () => {
-    expect(isDriverPaneName("driver-2")).toBe(true);
-    expect(isDriverPaneName("driver-5")).toBe(true);
-    expect(isDriverPaneName("driver-99")).toBe(true);
-  });
-
-  test("non-driver names do NOT match", () => {
-    for (const name of [
-      "lead",
-      "planner",
-      "reviewer",
-      "docs",
-      "gitter",
-      "ombudsman",
-      "__orchd__",
-      "driverless",
-      "driver_old",
-      "Driver",
-      "DRIVER",
-      "driver-",
-      "driver-0",
-      "driver-01",
-      "",
-    ]) {
-      expect(isDriverPaneName(name)).toBe(false);
-    }
   });
 });
 

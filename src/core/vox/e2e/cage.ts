@@ -278,9 +278,9 @@ export async function materializeCage(
         await io.writeFile(pane.afterPath, pane.afterText);
       }
       // The receipt file is deliberately NOT created here. Its ABSENCE is
-      // the assertion the decline and driver-refusal scenarios rest on,
-      // and a file pre-created empty would make "absent" and "present but
-      // empty" two spellings of the same evidence.
+      // the assertion the decline scenario rests on, and a file
+      // pre-created empty would make "absent" and "present but empty"
+      // two spellings of the same evidence.
     }
   }
 

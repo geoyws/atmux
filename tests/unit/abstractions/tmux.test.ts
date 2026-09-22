@@ -687,37 +687,10 @@ describe("error mapping", () => {
   });
 });
 
-// ---------- ADR-025: SendTarget compile-time gate ----------
-//
-// "Driver" kind is intentionally absent from `SendTarget`. Any caller
-// attempting `{ kind: "driver", ... }` triggers a compile error at the
-// source — the discriminated union is the load-bearing gate, not a
-// runtime check. The `// @ts-expect-error` directive below ASSERTS
-// that the line under it fails to typecheck. If the union is ever
-// widened to admit `"driver"`, the directive itself becomes a TS2578
-// "Unused @ts-expect-error directive" error → tsc fails the build.
-// The directive IS the gate.
-//
-// `serializeSendTarget` round-trip for the two valid kinds is also
-// asserted here — covers the function-coverage requirement on the
-// helper without needing a live tmux call.
+// ---------- ADR-025: SendTarget intent serialization ----------
 
-describe("ADR-025 — SendTarget compile-time gate", () => {
-  test("driver kind is intentionally absent from SendTarget", () => {
-    // The wrapper accepts SendTarget, so the kind-mismatch error fires
-    // inside the call expression. The `@ts-expect-error` directive
-    // immediately above MUST be consumed by that error, otherwise tsc
-    // emits TS2578 (Unused '@ts-expect-error') and the build fails —
-    // which is exactly the gate ADR-025 §5 specifies.
-    const accept = (t: SendTarget): SendTarget => t;
-    // @ts-expect-error — driver kind is absent from the discriminated union (ADR-025)
-    const _banned = accept({ kind: "driver", team: "demo", target: "atmux-demo:lead" });
-    // _banned is intentionally unused; the typecheck IS the assertion.
-    void _banned;
-    expect(true).toBe(true);
-  });
-
-  test("serializeSendTarget round-trips member, lead, and cooperative bot kinds", () => {
+describe("ADR-025 — SendTarget serialization", () => {
+  test("serializeSendTarget round-trips member, lead, bot, and driver kinds", () => {
     const memberTarget: SendTarget = {
       kind: "member",
       member: "alice",
@@ -737,5 +710,11 @@ describe("ADR-025 — SendTarget compile-time gate", () => {
       target: "atmux-demo:_bot",
     };
     expect(serializeSendTarget(botTarget)).toBe("atmux-demo:_bot");
+    const driverTarget: SendTarget = {
+      kind: "driver",
+      team: "demo",
+      target: "atmux-demo:driver",
+    };
+    expect(serializeSendTarget(driverTarget)).toBe("atmux-demo:driver");
   });
 });

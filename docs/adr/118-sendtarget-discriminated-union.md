@@ -4,6 +4,8 @@
 **Date:** 2026-05-05
 **Owner:** driver
 
+**Driver-ban portions SUPERSEDED 2026-09-08** — the operator revoked the no-send-keys-to-drivers rule ([ADR-239](239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md) §D2). `SendTarget` survives as the *intent + audit* declaration for `sendKeys` / `pasteBuffer`, but it is no longer a driver exclusion: `kind: "driver"` is a representable variant (`src/abstractions/tmux.ts`), the `// @ts-expect-error driver kind banned` compile-time test is gone, and a driver pane takes input like any other agent pane — its TUI is launched by sending the command line into a verified-idle shell (`src/core/agent-pane.ts`). The remaining safety is behavioural: send only into a pane whose current state was observed first. Everything below — the Context's "banned, no exceptions", §1's *"`driver` is intentionally absent"*, §5's compile-time ban test, §6's *"`driver` stays absent"*, and the Non-goals / Consequences claims that the driver exclusion survives — is retained as the historical record of the 2026-05-05 design, NOT as live policy.
+
 ## Context
 
 CLAUDE.md pins a hard rule: **agent → teammate or lead pane is OK; agent → driver pane is banned, no exceptions.** The driver pane is the human REPL (George's interactive Claude Code session); send-keys into it overwrites whatever the human is typing — at best a UX glitch, at worst a destructive accidental keystroke into a sensitive prompt.

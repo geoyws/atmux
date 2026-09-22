@@ -482,9 +482,8 @@ atmux nudge --member be-1 --json                # the structured receipt
 
 ⚠️ **`submit` on a permission prompt accepts that modal's default selection.** That is the intended 2am behaviour and it is still a real grant of authority. Hear the finding from `fleet_attention` first.
 
-### Two limits you will hit immediately
+### The limit you will hit immediately
 
-- **Driver panes are refused, by rule.** [ADR-239](adr/239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md) §D2: atmux never sends keystrokes into a `driver` / `driver-N` pane. Most `idle-residue` findings on this fleet are on driver windows, so this is the first thing you will try. The refusal is raised up front and names the ADR; press Enter yourself.
 - **The member must be in `team.json`.** Delivery goes through `atmux send`, which addresses roster members. The sweep enumerates from **tmux windows** (most teams carry `members: []`), so a pane can be *reported* and not be *nudgeable*. Closing the gap would mean either a roster-driven sweep — which reports "all clear" across a working fleet — or a delivery path that is not `atmux send`, which D5 forbids. The gap is documented, not hidden.
 
 ### The receipt
@@ -724,7 +723,7 @@ Two consequences worth stating rather than learning twice:
 
 ### What it does not prove
 
-It is not a phone: no microphone, no browser audio pipeline, no PWA — V-9…V-17 remain the only evidence for the client half. Since 2026-08-20 it does exercise the mutating half ([ADR-272](adr/272-voice-operator-interface.md) §E6): `pane_nudge` confirmed and declined, the driver-pane refusal, one messaging verb asserted on disk, and the D7 token replay — each in its own cage, each graded on **cage state** rather than on what the tool returned. A passing run is still evidence about these fixtures and these questions, not a general claim about the assistant's judgement.
+It is not a phone: no microphone, no browser audio pipeline, no PWA — V-9…V-17 remain the only evidence for the client half. Since 2026-08-20 it does exercise the mutating half ([ADR-272](adr/272-voice-operator-interface.md) §E6): `pane_nudge` confirmed and declined, a driver pane nudged through the same confirm gate (the scenario asserted the old ADR-239 §D2 refusal until that rule was revoked on 2026-09-08), one messaging verb asserted on disk, and the D7 token replay — each in its own cage, each graded on **cage state** rather than on what the tool returned. A passing run is still evidence about these fixtures and these questions, not a general claim about the assistant's judgement.
 
 ## §7 — Verification checklist (V-1 … V-20)
 

@@ -82,8 +82,9 @@ export function resolveTuiCommand(
       return tuiKimi(name, cwd, model, env);
     case "cursor":
       return tuiCursor(name, cwd, model, env);
-    case "shell":
     case "bash":
+      return tuiBash(name, cwd);
+    case "shell":
     case "zsh":
       return tuiShell(name, cwd);
     default:
@@ -245,7 +246,64 @@ function tuiCursor(name: string, cwd: string, model: string, env: NodeJS.Process
 }
 
 function tuiShell(name: string, cwd: string): string {
-  return `${envPrefix(name)} cd ${posixQuote(cwd)} && exec $SHELL`;
+  return `${envPrefix(name)} cd ${posixQuote(cwd)}`;
+}
+
+function tuiBash(name: string, cwd: string): string {
+  return `${envPrefix(name)} cd ${posixQuote(cwd)} && bash -l -i`;
+}
+
+// ---------- Pane shell wrappers ----------
+
+/** The shell every agent pane runs as its PID-0 process. Hardcoded
+ *  (not `$SHELL`) for the same reason the operator/driver fallbacks in
+ *  `cockpit.ts` / `start.ts` already hardcode it: an agent pane is a
+ *  zsh surface, and inheriting whatever `$SHELL` the invoking cron /
+ *  launchd / tmux-server env happens to carry is exactly how panes end
+ *  up without the operator's interactive env. */
+export const AGENT_PANE_SHELL = "zsh";
+
+/** One-shot line-discipline reset run at pane startup so the shell
+ *  initialises from a sane terminal.
+ *
+ *  Operator evidence 2026-09-22: a freshly split pane came up blank and
+ *  unresponsive with a leftover raw line discipline (`-echo`,
+ *  `-icanon`) inherited from the TUI that had occupied the terminal;
+ *  `reset` by hand made the prompt appear. This is a STARTUP fix, not a
+ *  steady-state assertion: an interactive zsh with ZLE active keeps the
+ *  terminal in raw mode by design, and that is healthy. Never poll
+ *  `echo`/`icanon` to judge a live pane — the contract is a visible
+ *  prompt that accepts commands.
+ *
+ *  `2>/dev/null` + no `||` guard: `stty` failing (no controlling tty in
+ *  a detached edge case) must not stop the shell from coming up. */
+const TTY_INIT = "stty sane 2>/dev/null";
+
+/** `<shell> -l -i` — the login+interactive form every atmux-created
+ *  pane shell uses. `shell` may be a shell word (`zsh`, `bash`) or a
+ *  parameter expansion (`${SHELL:-zsh}`); it is spliced unquoted on
+ *  purpose so the pane's own shell expands it. */
+function interactiveLogin(shell: string): string {
+  return `${shell} -l -i`;
+}
+
+/**
+ * Pane start command for a plain interactive shell pane atmux creates
+ * (driver workspaces with no TUI, `_bot` shell seats, cockpit operator
+ * windows).
+ *
+ * Shape: `stty sane 2>/dev/null; exec zsh -l -i` — byte-for-byte the
+ * managed `default-command` (templates/tmux/atmux.conf). tmux hands a
+ * single shell-command string to `/bin/sh -c`, so the `exec` replaces
+ * that sh and the pane's PID-0 process IS the login+interactive zsh.
+ *
+ * NEVER wrap this in another `zsh -l -i -c '...'`: the wrapper is
+ * itself login+interactive, so .zprofile/.zshrc would be sourced twice
+ * and an atmux-created pane would diverge from a hand-split one on any
+ * non-idempotent rc file (PATH growth, one-shot launchers).
+ */
+export function shellPaneCommand(): string {
+  return `${TTY_INIT}; exec ${interactiveLogin(AGENT_PANE_SHELL)}`;
 }
 
 // ---------- Composers ----------

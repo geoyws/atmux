@@ -3,7 +3,7 @@
 **Status**: Accepted — operator-direct 2026-08-24
 **Date**: 2026-08-24
 **Driver-ref**: operator-direct — teams must no longer declare which agent harness a driver starts with; the default is `null`, and a driver with no harness starts in zsh. The operator may choose a different harness from that shell for each session.
-**Relates**: [ADR-239](239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md) (driver roster and command-mode launch), [ADR-266](266-shim-sunset-policy-and-first-sweep.md) (legacy `driverSession` launch fallback removed)
+**Relates**: [ADR-239](239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md) (driver roster; its §D2 command-mode launch / no-send-keys rule was revoked 2026-09-08 — a driver pane is now a login interactive zsh that receives its TUI command line as input), [ADR-266](266-shim-sunset-policy-and-first-sweep.md) (legacy `driverSession` launch fallback removed)
 
 ## Context
 
@@ -13,14 +13,14 @@ A stale persisted harness also couples a team rebuild to launch behavior that th
 
 ## Decision
 
-1. `drivers[].tui` is nullable and optional. A non-empty string remains an explicit request to auto-launch that named TUI through the existing command-mode path.
+1. `drivers[].tui` is nullable and optional. A non-empty string remains an explicit request to auto-launch that named TUI. **Current mechanism (since the 2026-09-08 revocation of ADR-239 §D2):** the pane is created running a login interactive zsh, an inert `printf` readiness probe is sent to that immutable pane ID and its output read back with `capture-pane` to prove the shell accepts and executes input, and only then is the resolved TUI command line sent into that verified-idle shell — the TUI is a **child of the pane's zsh**, not the pane's own command (`src/core/agent-pane.ts`). The command-mode path this decision originally described (`new-window -c <cwd> <cmd>` inlining the TUI as the pane command) no longer exists. The nullable-`tui` semantics below are unchanged by that switch.
 2. `null` or absence means no agent harness. `atmux start` launches `zsh` as the driver pane's command and does not resolve or launch a TUI alias.
 3. New-team defaults set every `drivers[].tui` to `null`.
 4. The operator's canonical atmux team configs set every `drivers[].tui` to `null`. The legacy `driverSession.tui` and `driverTui` markers are also normalized to `null`; ADR-266 already removed them from driver launch resolution, so this is configuration clarity rather than a second launch path.
 5. Member entries are unchanged. `members[].tui` continues to describe deliberately automated team-member launches.
 6. Existing running tmux sessions are not mutated. The new behavior applies when a driver window is next created by `atmux start` or a team rebuild.
 
-The ADR-239 no-send-keys invariant remains unchanged: zsh is supplied as the `new-session` / `new-window` command, never pasted into the pane.
+The ADR-239 no-send-keys invariant remains unchanged: zsh is supplied as the `new-session` / `new-window` command, never pasted into the pane. *(Superseded 2026-09-08 — the operator revoked ADR-239 §D2. A driver pane is still created running a shell, but the TUI is now launched by sending its command line into that verified-idle shell. The nullable-`tui` decision above is unaffected.)*
 
 ## Consequences
 
@@ -41,5 +41,5 @@ The versioned dotfiles inventory, its `/root/.atmux` mirrors, and every present 
 
 - [ADR-044](044-driver-session-on-default-socket.md) — retained driver-at-front placement; its singular harness precedence is historical.
 - [ADR-128](128-complete-driver-role-port.md) — retained driver-role observability; its `driverSession` assumptions are historical.
-- [ADR-239](239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md) — current driver roster and command-mode launch invariant.
+- [ADR-239](239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md) — current driver roster; its §D2 command-mode launch / no-send-keys invariant is historical, superseded 2026-09-08 by the shell-first, TUI-as-child launch.
 - [ADR-266](266-shim-sunset-policy-and-first-sweep.md) — legacy `driverSession` / `driverTui` launch fallback remains removed.

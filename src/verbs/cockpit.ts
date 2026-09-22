@@ -68,6 +68,7 @@ import {
 } from "../core/cockpit.ts";
 import { loadTeam, teamJsonPath } from "../core/common.ts";
 import { installCockpitCronBlock } from "../core/cron.ts";
+import { launchAgentInPane, resolveOnlyPane } from "../core/agent-pane.ts";
 import {
   awaitClaudePaneReady,
   formatReadinessWarning,
@@ -76,7 +77,7 @@ import {
 import { migrateLegacySessionName } from "../core/session-migrate.ts";
 import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
-import { resolveTuiCommand } from "../core/tui-cmd.ts";
+import { posixQuote, resolveTuiCommand, shellPaneCommand } from "../core/tui-cmd.ts";
 import { UsageError } from "../errors.ts";
 import type {
   CockpitMedic,
@@ -1014,6 +1015,7 @@ export async function cockpitRebuild(
       delete teamEnv.ATMUX_TEAM_DIR;
       delete teamEnv.ATMUX_SESSION;
       const startArgs = parsed.forceCycle ? ["--force", "--no-doctor"] : ["--no-doctor"];
+      if (parsed.noLaunch) startArgs.push("--no-launch");
       await startImpl(startArgs, { env: teamEnv, cwd: t.root, logger });
     }
   }
@@ -1565,11 +1567,12 @@ export async function normaliseTeamJson(team: CockpitTeam, logger: Logger): Prom
       const ov = team.tuiOverrides;
       const effort = ov?.effortLevel ?? "xhigh";
       const permission = ov?.permissionMode ?? "auto";
-      const pluginFlag = ov?.pluginDir !== undefined ? ` --plugin-dir=${ov.pluginDir}` : "";
+      const pluginFlag =
+        ov?.pluginDir !== undefined ? ` --plugin-dir=${posixQuote(ov.pluginDir)}` : "";
       const prefix =
-        `CLAUDE_CONFIG_DIR=${team.claudeAccount.configDir} ` +
-        `CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=${effort} CLAUDE_GUARD_AGENT=1 ` +
-        `claude${pluginFlag} --permission-mode ${permission}`;
+        `CLAUDE_CONFIG_DIR=${posixQuote(team.claudeAccount.configDir)} ` +
+        `CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=${posixQuote(effort)} CLAUDE_GUARD_AGENT=1 ` +
+        `claude${pluginFlag} --permission-mode ${posixQuote(permission)}`;
       const tcRaw = next.tuiCommands;
       const tc =
         tcRaw !== undefined && tcRaw !== null && typeof tcRaw === "object"
@@ -1732,12 +1735,25 @@ export async function autolaunchTeam(
     // whose name is a suffix of the window name.
     const member = teamShape.members.find((m) => w.name.endsWith(m.name));
     if (member === undefined) continue; // home placeholder etc.
+    const windowTarget = { sessionName: session, windowIndex: w.index };
+    let paneId;
+    try {
+      paneId = await resolveOnlyPane(cageTmux, windowTarget, session, w.index);
+    } catch {
+      skipped += 1;
+      continue;
+    }
     const cmd = resolveTuiCommand(member, teamShape, { env });
-    await cageTmux.pane.sendKeys({
-      target: { kind: "member", member: member.name, team: team.name, target },
-      keys: cmd,
-      enter: true,
+    const outcome = await launchAgentInPane({
+      tmux: cageTmux,
+      paneId,
+      intent: { kind: "member", member: member.name, team: team.name },
+      command: cmd,
     });
+    if (outcome === "no-prompt") {
+      skipped += 1;
+      continue;
+    }
     launched += 1;
     launchedTargets.push({ member: member.name, target });
   }
@@ -2045,6 +2061,12 @@ export async function reconcileCockpitSession(
     const targetIdx = sdrv !== undefined ? sdrv.index + 1 : 2;
     let md = windowsBefore.find((w) => w.name === "_medic");
     let mdJustCreated = false;
+    // A pane that never executed its readiness probe is a DEGRADED
+    // medic, not a failed reconcile: the window exists and is a live
+    // zsh, so the remaining windows, the window order, the cockpit
+    // prefix and the cron block must all still be reconciled. Only the
+    // cadence is withheld — there is no TUI to send `/loop /medic` to.
+    let medicLaunchFailed = false;
     if (md === undefined) {
       const builder =
         deps.buildMedicCommand ?? deps.buildSuperdoctorCommand ?? buildMedicWindowCommand;
@@ -2053,8 +2075,22 @@ export async function reconcileCockpitSession(
         sessionName,
         name: "_medic",
         detached: true,
-        shellCommand: cmd,
+        shellCommand: shellPaneCommand(),
       });
+      const paneId = await resolveOnlyPane(cockpitTmux, newId, sessionName, newId.windowIndex);
+      const launchOutcome = await launchAgentInPane({
+        tmux: cockpitTmux,
+        paneId,
+        intent: { kind: "service", team: "__cockpit__" },
+        command: cmd,
+        ...(deps.autoStartSleep !== undefined ? { sleep: deps.autoStartSleep } : {}),
+      });
+      if (launchOutcome === "no-prompt") {
+        medicLaunchFailed = true;
+        logger.warn(
+          "  ⚠ _medic zsh did not execute its readiness probe — TUI and cadence were NOT started (pane left as a usable shell; launch claude by hand)",
+        );
+      }
       logger.log(`  ✓ added window '_medic' (idx ${newId.windowIndex})`);
       windowsBefore = await cockpitTmux.window.listWindows(sessionName);
       md = windowsBefore.find((w) => w.name === "_medic");
@@ -2079,7 +2115,7 @@ export async function reconcileCockpitSession(
     // safe to re-poke. Honors `medic.autoStart` (default true) so
     // operators with manual-control workflows can opt out by flipping
     // `false`.
-    if (mdJustCreated && medic.autoStart !== false && md !== undefined) {
+    if (mdJustCreated && !medicLaunchFailed && medic.autoStart !== false && md !== undefined) {
       const settleSec = medic.autoStartTimeoutSec ?? 30;
       try {
         const autoStartOpts: AutoStartSuperdoctorOpts = {
@@ -2176,7 +2212,7 @@ export async function reconcileCockpitSession(
       name: w.name,
       detached: true,
       cwd: w.cwd,
-      shellCommand: w.command ?? "zsh",
+      shellCommand: w.command ?? shellPaneCommand(),
     });
     logger.log(`  ✓ added operator window '${w.name}'`);
   }
@@ -2356,7 +2392,11 @@ export function buildSuperbotWindowCommand(configPath?: string): string {
  *  Reads the `tuiOverrides` + `claudeAccount` fields the medic block
  *  surfaces (struct mirrored on purpose per ADR-077 §D2 — reuses
  *  `CockpitClaudeAccount` / `CockpitTuiOverrides` verbatim). Kept
- *  private so the public builder reads as an intent-named call site. */
+ *  private so the public builder reads as an intent-named call site.
+ *
+ *  The caller creates the pane with {@link shellPaneCommand}, verifies
+ *  that exact pane is idle, then sends this command so claude runs as
+ *  the interactive login shell's child. */
 function buildClaudeWindowCommand(cfg: {
   claudeAccount?: { configDir: string; label?: string | undefined } | undefined;
   tuiOverrides?:
@@ -2370,17 +2410,14 @@ function buildClaudeWindowCommand(cfg: {
   const ov = cfg.tuiOverrides;
   const effort = ov?.effortLevel ?? "xhigh";
   const permission = ov?.permissionMode ?? "auto";
-  const pluginFlag = ov?.pluginDir !== undefined ? ` --plugin-dir=${ov.pluginDir}` : "";
-  if (cfg.claudeAccount !== undefined) {
-    return (
-      `CLAUDE_CONFIG_DIR=${cfg.claudeAccount.configDir} ` +
-      `CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=${effort} CLAUDE_GUARD_AGENT=1 ` +
-      `claude${pluginFlag} --permission-mode ${permission}`
-    );
-  }
+  const pluginFlag = ov?.pluginDir !== undefined ? ` --plugin-dir=${posixQuote(ov.pluginDir)}` : "";
+  const accountPrefix =
+    cfg.claudeAccount !== undefined
+      ? `CLAUDE_CONFIG_DIR=${posixQuote(cfg.claudeAccount.configDir)} `
+      : "";
   return (
-    `CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=${effort} CLAUDE_GUARD_AGENT=1 ` +
-    `claude${pluginFlag} --permission-mode ${permission}`
+    `${accountPrefix}CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=${posixQuote(effort)} CLAUDE_GUARD_AGENT=1 ` +
+    `claude${pluginFlag} --permission-mode ${posixQuote(permission)}`
   );
 }
 

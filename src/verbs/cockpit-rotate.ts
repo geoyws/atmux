@@ -51,6 +51,7 @@ import {
 import { now as nowMsDefault } from "../abstractions/time.ts";
 import {
   createTmux,
+  type PaneId,
   type SendTarget,
   type Target,
   type TmuxConfig,
@@ -70,8 +71,14 @@ import {
   type SendKeysFn,
   safeSendKeysWithVerify as safeSendKeysWithVerifyDefault,
 } from "../core/safe-send.ts";
+import {
+  type LaunchAgentPaneOutcome,
+  launchAgentInPane as launchAgentInPaneDefault,
+  resolveOnlyPane,
+} from "../core/agent-pane.ts";
 import { getCockpitSocketName } from "../core/tmux-paths.ts";
 import type { Logger } from "../core/tui.ts";
+import { posixQuote, shellPaneCommand } from "../core/tui-cmd.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type {
   CockpitClaudeAccount,
@@ -339,6 +346,14 @@ export interface CockpitRotateOpts {
    *  fatal — operator falls back to manual `/loop /medic` if the marker
    *  isn't detected within the timeout). */
   autoStartMedicLoop?: typeof autoStartSuperdoctorLoopDefault;
+  /** Stage-2 agent-pane launch seam. Default delegates to
+   *  `src/core/agent-pane.ts::launchAgentInPane`, which sends an inert
+   *  unique probe into the newly created pane and polls `capture-pane`
+   *  until the probe's OUTPUT appears, then sends the TUI command into
+   *  that exact pane. Process names are never a readiness signal.
+   *  Tests inject a stub to drive the `no-prompt` outcome without
+   *  burning the real poll budget. */
+  launchAgentInPane?: typeof launchAgentInPaneDefault;
   /** Logger seam for the re-arm helpers (T4 t-a245bbc8). Default
    *  forwards via stderr; tests inject a recorder to assert the post-
    *  spawn cadence sequence. The autoStart helpers tag every log line
@@ -391,6 +406,7 @@ interface ResolvedDeps {
   loadCockpit: (opts?: LoadCockpitOpts) => Promise<LoadedCockpit>;
   safeSendKeysWithVerify: typeof safeSendKeysWithVerifyDefault;
   autoStartMedicLoop: typeof autoStartSuperdoctorLoopDefault;
+  launchAgentInPane: typeof launchAgentInPaneDefault;
   cadenceLogger: Logger;
   autoStartTimeoutMs: number;
   readAuditLog: (path: string) => Promise<string | null>;
@@ -419,6 +435,7 @@ function resolveDeps(opts: CockpitRotateOpts): ResolvedDeps {
     loadCockpit: opts.loadCockpit ?? loadCockpitDefault,
     safeSendKeysWithVerify: opts.safeSendKeysWithVerify ?? safeSendKeysWithVerifyDefault,
     autoStartMedicLoop: opts.autoStartMedicLoop ?? autoStartSuperdoctorLoopDefault,
+    launchAgentInPane: opts.launchAgentInPane ?? launchAgentInPaneDefault,
     cadenceLogger: opts.cadenceLogger ?? {
       log: (msg: string) => stderr(`${msg}\n`),
       ok: (msg: string) => stderr(`${msg}\n`),
@@ -749,6 +766,11 @@ export const claudeUiGoneVerifier: PaneVerifier = (text: string) =>
  *  CLAUDE_GUARD_AGENT) before exec'ing claude. Unknown configDir
  *  throws ConfigError (refused upstream of any pane mutation).
  *
+ *  The respawn caller first creates an interactive login zsh pane,
+ *  verifies that exact pane is idle, then sends this invocation so the
+ *  wrapper and claude run as children of the shell that sourced the
+ *  operator's rc files.
+ *
  *  Differs from cockpit rebuild's `buildClaudeWindowCommand` (which
  *  uses an inline env-set + bare `claude` binary): rotate respawn
  *  honors the literal ADR-167 spec text + lets fe-2's T7 hermetic
@@ -761,12 +783,19 @@ export function buildClaudeRespawnCommand(
   const configDir = account?.configDir ?? "/root/.claude";
   const wrapper = resolveClaudeWrapper(configDir);
   const permission = tuiOverrides?.permissionMode ?? "auto";
+  const effort = tuiOverrides?.effortLevel ?? "xhigh";
   const pluginFlag =
-    tuiOverrides?.pluginDir !== undefined ? ` --plugin-dir=${tuiOverrides.pluginDir}` : "";
+    tuiOverrides?.pluginDir !== undefined
+      ? ` --plugin-dir=${posixQuote(tuiOverrides.pluginDir)}`
+      : "";
   // CLAUDE_GUARD_AGENT explicit on the line (the wrapper exports it
   // too, but belt-and-suspenders matches global CLAUDE.md §Spawn
   // Pattern verbatim).
-  return `CLAUDE_GUARD_AGENT=1 ${wrapper}${pluginFlag} --permission-mode ${permission} --model claude-opus-4-7`;
+  return (
+    `CLAUDE_CONFIG_DIR=${posixQuote(configDir)} ` +
+    `CLAUDE_CODE_EFFORT_LEVEL=${posixQuote(effort)} CLAUDE_GUARD_AGENT=1 ` +
+    `${wrapper}${pluginFlag} --permission-mode ${posixQuote(permission)} --model claude-opus-4-7`
+  );
 }
 
 /** Emit a success-outcome audit row. Mirrors `emitRefusal` but without
@@ -1052,14 +1081,18 @@ async function performRespawn(
   }
 
   let windowIndex: number;
+  let paneId: PaneId | undefined;
   try {
     const winId = await tmux.window.newWindow({
       sessionName: viewerHost.sessionName,
       name: windowName,
       detached: true,
-      shellCommand: cmd,
+      shellCommand: role === "medic" ? shellPaneCommand() : cmd,
     });
     windowIndex = winId.windowIndex;
+    if (role === "medic") {
+      paneId = await resolveOnlyPane(tmux, winId, viewerHost.sessionName, windowIndex);
+    }
   } catch (e) {
     const cause = e instanceof Error ? e.message : String(e);
     deps.stderr(`cockpit rotate: new-window failed (${cause})\n`);
@@ -1070,6 +1103,37 @@ async function performRespawn(
       error: `newWindow: ${cause}`,
     });
     return EX_SOFTWARE;
+  }
+
+  // Stage 2 (medic only): the window above runs nothing but an
+  // interactive login shell. Verify that exact pane is idle at a
+  // prompt, then send the TUI invocation so claude runs as the
+  // shell's child — the pane survives quitting the TUI and inherits
+  // the operator's rc env (`src/core/agent-pane.ts`).
+  if (role === "medic") {
+    let failure: string | null = null;
+    try {
+      if (paneId === undefined) throw new Error("created medic pane was not resolved");
+      const outcome: LaunchAgentPaneOutcome = await deps.launchAgentInPane({
+        tmux,
+        paneId,
+        intent: { kind: "service", team: "__cockpit__" },
+        command: cmd,
+      });
+      if (outcome === "no-prompt") failure = "pane never executed its zsh readiness probe";
+    } catch (e) {
+      failure = e instanceof Error ? e.message : String(e);
+    }
+    if (failure !== null) {
+      deps.stderr(`cockpit rotate: medic TUI launch failed (${failure})\n`);
+      await emitRespawnFailure(deps, {
+        role,
+        sessionName: parsed.sessionName,
+        durationMs: deps.nowMs() - startMs,
+        error: `launchAgentInPane: ${failure}`,
+      });
+      return EX_SOFTWARE;
+    }
   }
 
   // Re-arm role-specific cadence. Non-fatal — the auto-start helpers

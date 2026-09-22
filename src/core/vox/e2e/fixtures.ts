@@ -319,9 +319,9 @@ export const MUTATION_FIXTURES: ReadonlyArray<TeamFixture> = Object.freeze([
       Object.freeze(
         blockedInteractivePane(
           "driver-2",
-          "pane driver-2 is the OPERATOR'S OWN driver pane. It is stopped on a permission " +
-            "prompt, but atmux is forbidden from typing into a driver pane (ADR-239), so it " +
-            "cannot be nudged — only the operator can answer it himself.",
+          "pane driver-2 is the operator's own driver pane, stopped on a permission " +
+            "prompt exactly like be-1 and be-2. Since the 2026-09-08 revocation of " +
+            "ADR-239 §D2 it is nudged the same confirm-gated way any other pane is.",
         ),
       ),
     ]),

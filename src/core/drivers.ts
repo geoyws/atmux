@@ -1,14 +1,9 @@
 // ADR-239 — driver roster helpers.
 //
-// Pure utilities for resolving + classifying drivers per ADR-239 §A1-§A5.
-// Used by `src/verbs/start.ts` (spawn loop), `src/abstractions/tmux.ts`
-// (send-keys guard), and `src/core/driver-pane-health.ts` (pane probes).
-//
-// Per ADR-239 §A3: drivers receive NO pre-prompts, NO briefs, NO role
-// anchors. The spawn-time launch flows through `tmux new-session` /
-// `new-window` `shellCommand` arguments (command-mode); never through
-// `pane.sendKeys`. Runtime `pane.sendKeys` is type-banned (ADR-025) +
-// runtime-guarded here (ADR-239 §D2 + §A5).
+// Pure utilities for resolving and classifying drivers per ADR-239 §A1.
+// Driver panes now follow the shared two-stage lifecycle: create an
+// interactive shell, verify it is idle, then launch the TUI by sending
+// the command to that immutable pane target.
 
 import { join } from "node:path";
 
@@ -68,21 +63,6 @@ export function resolveDriverCwd(driver: DriverSession, projectRoot: string): st
   if (cwd === "." || cwd === "") return projectRoot;
   if (cwd.startsWith("/")) return cwd;
   return join(projectRoot, cwd);
-}
-
-/**
- * Test whether a pane name belongs to a driver pane per ADR-239 §D2.
- *
- * Matches `driver` (the original singular driver) and `driver-N` for
- * any positive integer N. Used by the `pane.sendKeys` runtime guard
- * (`src/abstractions/tmux.ts`) to refuse any send-keys whose target
- * resolves to a driver pane.
- *
- * Pure. No I/O. Exported for direct unit-testing.
- */
-const DRIVER_PANE_NAME_RE = /^driver(?:-[1-9][0-9]*)?$/;
-export function isDriverPaneName(name: string): boolean {
-  return DRIVER_PANE_NAME_RE.test(name);
 }
 
 /**
