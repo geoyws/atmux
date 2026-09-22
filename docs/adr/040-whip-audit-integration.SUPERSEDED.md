@@ -1,4 +1,6 @@
 # ADR-040: Whip → audit sub-pass + `[whip-audit]` Discord template
+**Status**: Superseded by [ADR-289](289-poke-retirement.md) on 2026-09-23 — poke is retired, so the whip-hosted audit sub-pass has no host. Retained below for historical trace.
+
 
 **Status**: accepted
 **Date**: 2026-05-02

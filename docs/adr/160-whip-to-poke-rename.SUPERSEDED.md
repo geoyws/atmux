@@ -1,4 +1,6 @@
 # ADR-160: whip → poke rename — SV register sweep, atmux-internal scope
+**Status**: Superseded by [ADR-289](289-poke-retirement.md) on 2026-09-23 — poke is retired, so the rename it recorded names nothing live. Retained below for historical trace.
+
 
 **Status**: accepted
 **Date**: 2026-05-16

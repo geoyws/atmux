@@ -1,4 +1,6 @@
 # ADR-177: Whip Velocity-Gate — ground-truth classifier + strike counter
+**Status**: Superseded by [ADR-289](289-poke-retirement.md) on 2026-09-23 — poke is retired, so the whip-hosted velocity-gate has no host. Retained below for historical trace.
+
 
 > **§Amendment 2026-05-18 (t-fe51cf64) — renumbered ADR-087 → ADR-177.** The file was originally landed as `docs/adr/087-whip-velocity-gate.md` in commit 2a7db33, colliding with `docs/adr/087-atmux-stop-soft.md` (commit 3b8fd40, Status: Accepted 2026-05-15). Per atmux ADR convention (monotonic, append-only, one ADR per number; CLAUDE.md §Source-of-truth chain), the older soft-stop ADR keeps the 087 number; this ADR moves to the next free (177) — pre-flagged by the t-5d85dddb planner scope-refresh note ("ADR-087 file renumber 087-whip-velocity-gate.md → 177-*.md (planner reply forthcoming) — parent ADR ref will become ADR-177 post-renumber"). Source-commit history preserved: 2a7db33 (kernel) + eb97ea6 (V1 wiring per ADR-087 §What V1 defers, now ADR-177 §What V1 defers). All external references to the velocity-gate ADR-087 retarget to ADR-177 in the same commit; references to ADR-087 soft-stop remain unchanged. Convention precedent: b4d62da `docs(adr-176): renumber ADR-171 epic-aware-lane-drift-revert → ADR-176 (collision with trunk 086c142)` — same renumber pattern, different collision.
 

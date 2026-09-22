@@ -1,4 +1,6 @@
 # ADR-115: `whip` verb (V-25) — port scope + deferred bash-only checks
+**Status**: Superseded by [ADR-289](289-poke-retirement.md) on 2026-09-23 — poke is retired, so the verb port scope it defined is moot. Retained below for historical trace.
+
 
 **Status:** accepted
 **Date:** 2026-05-05

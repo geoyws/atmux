@@ -251,6 +251,7 @@
 | 282 | Never collect the whole environment in a test — allowlist at the source | 2026-08-28 | accepted (operator-direct) |
 | 284 | One sizing policy for every cockpit window — the `unum` `window-size smallest` override is retired | 2026-08-30 | accepted (operator-direct) |
 | 285 | Cooperative `_bot` seats and the `_superbot` offer protocol (renumbered from 281 on merge — collision) | 2026-08-28 | accepted (operator-direct; live activation held) |
+| 289 | poke is retired — the verb, the whip estate, and the six whip ADRs | 2026-09-23 | accepted (operator-direct) |
 
 ## Superseded (skip)
 
@@ -267,3 +268,9 @@ Retained for historical trace only. Skip unless investigating supersession histo
 - [206](206-sentinel-dynamic-epic-discovery.SUPERSEDED.md) — Sentinel dynamic epic-team discovery — drop the cockpit.json registration requirement — superseded by ADR-211
 - [207](207-opus-sentinel-supersedes-cursor-sentinel-adr-132.SUPERSEDED.md) — Opus-sentinel supersedes cursor-sentinel — rolls back ADR-132 §D1 cursor backend per ADR-201 rejection — superseded by ADR-211
 - [236](236-three-tier-orchd-supervision.SUPERSEDED.md) — Three-tier orchd supervision (D1 internal retry + D2 cockpit superorchd + D3 Discord escalation) — superseded by ADR-240 (D2/D3 dropped, D1+D5 preserved)
+- [040](040-whip-audit-integration.SUPERSEDED.md) — Whip → audit sub-pass + `[whip-audit]` Discord template — superseded by ADR-289
+- [043](043-whip-auto-stop-idle.SUPERSEDED.md) — Whip auto-stop on prolonged team idleness — superseded by ADR-289
+- [085](085-whip-approvals-watcher.SUPERSEDED.md) — Whip approvals-watcher — surface proposed-ADRs, stale driver-asks, long-blocked tasks — superseded by ADR-289
+- [115](115-whip-port-scope.SUPERSEDED.md) — `whip` verb (V-25) — port scope + deferred bash-only checks — superseded by ADR-289
+- [160](160-whip-to-poke-rename.SUPERSEDED.md) — whip → poke rename — SV register sweep, atmux-internal scope — superseded by ADR-289
+- [177](177-whip-velocity-gate.SUPERSEDED.md) — Whip Velocity-Gate — ground-truth classifier + strike counter — superseded by ADR-289
