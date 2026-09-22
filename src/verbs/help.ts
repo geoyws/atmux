@@ -188,7 +188,7 @@ Misc:
   help | --help | -h
 
 Environment:
-  ATMUX_DISCORD_WEBHOOK   Discord webhook URL for whip/report escalations
+  ATMUX_DISCORD_WEBHOOK   Discord webhook URL for report escalations
   ATMUX_DIR               Override state dir (default: ./.atmux)
   ATMUX_TEAM              Override team name (otherwise read from team.json)
   ATMUX_VOX_TOKEN         Required by \`vox\` — shared secret, >=32 chars

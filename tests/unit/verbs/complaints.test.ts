@@ -9,6 +9,7 @@ import { closeDatabase, openDatabase } from "../../../src/abstractions/sqlite.ts
 import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
 import { ComplaintsRepo } from "../../../src/core/repositories/complaints-repo.ts";
 import { UsageError } from "../../../src/errors.ts";
+import { COMPLAINT_SOURCE_KINDS } from "../../../src/schema/complaints.ts";
 import { complaints, parseComplaintsArgs } from "../../../src/verbs/complaints.ts";
 
 let teamDir: string;
@@ -1041,15 +1042,9 @@ describe("parseComplaintsArgs — t-7bd53cba flag-vocab compat", () => {
     expect(a.sourceKind).toBe("whip");
   });
 
-  test("file --source-kind allowlist now includes 'whip-velocity-gate'", () => {
-    const a = parseComplaintsArgs([
-      "file",
-      "--summary",
-      "x",
-      "--source-kind",
-      "whip-velocity-gate",
-    ]);
-    expect(a.sourceKind).toBe("whip-velocity-gate");
+  test("source-kind allowlist dropped 'whip-velocity-gate' (E3 velocity-gate deletion)", () => {
+    expect(COMPLAINT_SOURCE_KINDS).not.toContain("whip-velocity-gate");
+    expect(COMPLAINT_SOURCE_KINDS).toContain("whip");
   });
 
   test("file --title + --summary both passed → last one wins (single canonical field)", () => {
@@ -1134,57 +1129,36 @@ describe("complaints verb — t-7bd53cba target_team default + severity stashing
     }
   });
 
-  test("smoke — whip-velocity-gate's exact CLI invocation lands a row", async () => {
-    // Mirrors the call shape in /root/.atmux/bin/whip-velocity-gate.sh
-    // verbatim. Acceptance bullet from Task t-7bd53cba: "Smoke test:
-    // simulate velocity-gate's exact CLI invocation, verify row lands."
-    const { out } = await captureStdout(() =>
-      complaints([
-        "file",
-        "--target-team",
-        "atmux",
-        "--severity",
-        "high",
-        "--kind",
-        "heads-up",
-        "--source-kind",
-        "whip-velocity-gate",
-        "--source-id",
-        "whip-atmux-velocity-stalled",
-        "--title",
-        "atmux: velocity-stalled · 0 commits in 60min · whip-tried-3-menus",
-        "--body",
-        "Whip-velocity-gate strike threshold 3 reached for team atmux. Symptom: 0 commits in last 60min, lead pane idle/wedged/saturated, action-menu injections produced no commit-shaped reply.",
-        "--team-dir",
-        teamDir,
-      ]),
-    );
-    const id = out.trim();
-    expect(id).toMatch(/^c-[0-9a-f]{8}$/);
-
-    // Verify the row lands with every field the script intended
-    const { out: jsonOut } = await captureStdout(() =>
-      complaints([
-        "list",
-        "--source-kind",
-        "whip-velocity-gate",
-        "--target-team",
-        "atmux",
-        "--json",
-        "--team-dir",
-        teamDir,
-      ]),
-    );
-    const parsed = JSON.parse(jsonOut);
-    expect(Array.isArray(parsed)).toBe(true);
-    expect(parsed).toHaveLength(1);
-    expect(parsed[0].id).toBe(id);
-    expect(parsed[0].sourceKind).toBe("whip-velocity-gate");
-    expect(parsed[0].sourceId).toBe("whip-atmux-velocity-stalled");
-    expect(parsed[0].targetTeam).toBe("atmux");
-    expect(parsed[0].incidentSummary).toContain("atmux: velocity-stalled");
-    expect(parsed[0].rootCause).toContain("Whip-velocity-gate strike threshold");
-    expect(parsed[0].extra.kind).toBe("heads-up");
-    expect(parsed[0].extra.severity).toBe("high");
+  test("smoke — whip-velocity-gate's exact CLI invocation now rejects (E3)", async () => {
+    // The call shape mirrors /root/.atmux/bin/whip-velocity-gate.sh
+    // verbatim — but the `whip-velocity-gate` source-kind was removed
+    // with the velocity-gate deletion, so filing fails closed.
+    const origStderr = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (() => true) as typeof process.stderr.write;
+    try {
+      await expect(
+        complaints([
+          "file",
+          "--target-team",
+          "atmux",
+          "--severity",
+          "high",
+          "--kind",
+          "heads-up",
+          "--source-kind",
+          "whip-velocity-gate",
+          "--source-id",
+          "whip-atmux-velocity-stalled",
+          "--title",
+          "atmux: velocity-stalled · 0 commits in 60min · whip-tried-3-menus",
+          "--body",
+          "Whip-velocity-gate strike threshold 3 reached for team atmux.",
+          "--team-dir",
+          teamDir,
+        ]),
+      ).rejects.toThrow(UsageError);
+    } finally {
+      process.stderr.write = origStderr;
+    }
   });
 });

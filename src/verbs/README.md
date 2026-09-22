@@ -15,16 +15,14 @@ Returning the process exit code. The dispatcher in `src/cli.ts` resolves `verb �
 ```
 up.ts, init.ts, start.ts, stop.ts, attach.ts, status.ts,
 send.ts, tell.ts, reply.ts, kanban.ts, dispatch.ts, inbox.ts, claim.ts,
-report.ts, whip.ts, improve.ts, whip-resume-check.ts, watchdog.ts, cost.ts,
+report.ts, improve.ts, watchdog.ts, cost.ts,
 rotate.ts, handoff.ts, pause.ts, add-member.ts, reconfigure.ts, dashboard.ts,
 doctor.ts
 ```
 
-`improve.ts` arms the ADR-052 eternal-improvement loop (kanban-empty fallback → autonomous self-improvement cycles, bounded by token budget). Lands as part of the automation bucket alongside `whip` / `report`.
+`improve.ts` arms the ADR-052 eternal-improvement loop (kanban-empty fallback → autonomous self-improvement cycles, bounded by token budget). Lands as part of the automation bucket alongside `report`.
 
-`whip-resume-check.ts` is the ADR-053 1-min cron-precision verb for auto-resume from budget-pause. Lock-skipped on contention; ~1 probe call per active account per tick (mostly cache reads). Cron line is gated on `team.whip.claudeAccount` per `src/core/cron.ts::renderCronBlock`. See [ADR-053 §D4](../../docs/adr/053-budget-observability.md).
-
-`watchdog.ts` is the ADR-057 §D6b heartbeat-staleness detector — a separate `*/2` cron line independent of whip's body-hash logic so a stuck whip doesn't blind the watchdog. On each tick it reads `<atmuxDir>/heartbeats/<member>.epoch`, flags members whose heartbeat is older than `team.whip.stallPrevention.heartbeatStaleSec` (default 300s), fires a 24h-deduped 🛑 `[whip-watchdog]` Discord ping, and audit-logs to `.atmux/logs/watchdog.log`. USAGE: `atmux watchdog [--no-discord] [--team-dir <dir>]`. See [ADR-057 §D6](../../docs/adr/057-stall-prevention.md) and the [stall-recovery runbook](../../docs/RUNBOOK-stall-recovery.md).
+`watchdog.ts` is the ADR-057 §D6b heartbeat-staleness detector — an independent `*/2` cron line. On each tick it reads `<atmuxDir>/heartbeats/<member>.epoch`, flags members whose heartbeat is older than `team.whip.stallPrevention.heartbeatStaleSec` (default 300s), fires a 24h-deduped 🛑 `[whip-watchdog]` Discord ping, and audit-logs to `.atmux/logs/watchdog.log`. USAGE: `atmux watchdog [--no-discord] [--team-dir <dir>]`. See [ADR-057 §D6](../../docs/adr/057-stall-prevention.md) and the [stall-recovery runbook](../../docs/RUNBOOK-stall-recovery.md).
 
 `vox.ts` is the [ADR-272](../../docs/adr/272-voice-operator-interface.md) spoken operator interface — the boot wiring for the WebSocket + PWA server, and the only file that connects `src/core/vox/**` to the verbs the tool bridge invokes. USAGE: `atmux vox [--serve|--supervise|--status|--stop] [--port <n>] [--provider <p>] [--model <m>] [--readonly] [--max-frames <n>] [--print-assets-dir]`.
 
@@ -37,12 +35,6 @@ Three properties are load-bearing and enforced here rather than downstream:
 All server-side diagnostics go to `process.stderr`: `process.stdout` is capture-owned while a tool's verb runs (`src/core/verb-capture.ts`), so a stray stdout write would land inside a spoken tool result. Operating surface + the V-1…V-18 acceptance checklist live in [docs/RUNBOOK-vox.md](../../docs/RUNBOOK-vox.md).
 
 A dial is not complete when the socket opens — it completes on the provider's `session-ready`. `src/core/vox/session.ts` bounds that wait with `SESSION_READY_TIMEOUT_MS` (12s) and treats expiry as a **failed dial attempt**, so a provider that accepts the socket and then goes quiet inherits the ordinary redial backoff and the 5-attempt → 4500 exhaustion path instead of hanging forever (`connectWebSocket` bounds only the WS handshake; `session-ready` arrives afterwards from an inbound frame).
-
-## Cursor self-heal recipes (`src/core/cursor-recipes/`)
-
-Per ADR-055 — recipe-driven `cursor-agent` invocations for whitelisted problem classes. NOT verbs (no CLI surface); they're orchestration objects consumed by the whip-tick self-heal pass (`9554f70`). Each recipe at `src/core/cursor-recipes/<recipe>.ts` exports a `CursorRecipe` (`detect → propose → verify`) with `tokenCap` (default 5_000) + `fileAllowlist` (e.g. `["team.json", ".atmux/state/*"]`).
-
-v1 default-enabled recipes: `fix:team-json-schema-drift` / `fix:cron-pollution` / `fix:supervisor-missing`. Operators opt-in via `team.json::whip.selfHealEnabled` + `selfHealRecipes`. Patches stage to `.atmux/state/cursor-self-heal-pending/<recipe>-<ts>.patch` for reviewer-gate — never auto-commit. See HANDOFF.md "🩹 Cursor self-heal" for operator usage + add-a-recipe smoke-test path.
 
 Aliases routed in `src/cli.ts`: `broadcast` → `send`, `tell-lead` → `tell`, `outbox` → `reply`, `task` → `kanban`, `done` → `claim`, `rotate-lead` → `rotate`, `resume` → `pause`.
 
@@ -92,4 +84,4 @@ Some verbs collapse into nested subcommands and become folders here (`src/verbs/
 Phase 2 work — porter-A and porter-B fill in by verb-split per PLAN.md §6.1:
 
 - **porter-A (lifecycle + state, 13 verbs):** up, init, start, stop, attach, add-member, reconfigure, rotate, handoff, pause, kanban (→ `task`), claim, inbox.
-- **porter-B (messaging + supervisor + diag, 10 verbs):** send, tell, reply, dispatch, whip, report, doctor, cost, status, dashboard.
+- **porter-B (messaging + supervisor + diag, 10 verbs):** send, tell, reply, dispatch, report, doctor, cost, status, dashboard.

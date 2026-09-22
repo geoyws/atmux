@@ -1,3 +1,9 @@
+> **Historical record (E3):** the poke/whip cron estate described below
+> (`atmux whip`, `atmux whip-resume-check` lines, `team.json::whip`
+> cadence/budget keys) was deleted — cron auto-install itself was
+> already retired per ADR-233. Retained as the migration record for
+> the R1 wave; do not follow it to install new cron lines.
+
 # Runbook — cron migration for ADR-053 / R1 wave
 
 **Audience:** operators upgrading already-running atmux teams to the R1

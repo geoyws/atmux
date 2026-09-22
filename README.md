@@ -14,7 +14,7 @@
 > Operators upgrading run `atmux migrate-state` once per team root — see
 > §State layout for the migration runbook.
 
-A tmux-native multi-TUI agent orchestrator. Runs a fleet of coding-agent terminals (Claude Code, Cursor, OpenCode, Kimi) in parallel, with a kanban task board, per-member inboxes, a 5-minute whip watchdog, and a 30-minute progress digest to Discord.
+A tmux-native multi-TUI agent orchestrator. Runs a fleet of coding-agent terminals (Claude Code, Cursor, OpenCode, Kimi) in parallel, with a kanban task board, per-member inboxes, a 5-minute lane-tick supervisor, and a 30-minute progress digest to Discord.
 
 **Why not just Claude Code everywhere?** Because Claude is expensive and not every task needs it. With atmux, the **staff** (lead, planner, reviewer, committer, devops, dba) stay on Claude because they need the reasoning, while **workers can be Cursor Composer 2, MiniMax, or Kimi** for cheaper parallel throughput per feature lane. The driver (you, in a Claude Code REPL) talks to the lead; the lead routes to the planner (decomposition); workers **pull** their next Task from the kanban; committer commits; the reviewer signs off Stories; the lead writes the Epic summary back to the driver.
 
@@ -80,8 +80,8 @@ See [docs/adr/007-pull-kanban.md](docs/adr/007-pull-kanban.md) for the full ADR 
 └───────────────────────────────────────────────────────────────────────┘
                │ every 5 min                     every 30 min
                ▼                                 ▼
-         atmux whip                        atmux report
-         (stale panes? rate limits?)       (Discord digest)
+         atmux lane-tick                   atmux report
+         (lane claims? ctx-rotate gate?)   (Discord digest)
 ```
 
 **Read this diagram top-to-bottom**: the driver hands the lead an Epic-shaped ask; the lead routes it to the planner via `atmux send planner`; the planner runs `atmux epic add` + (optional) `atmux story add` + `atmux task add --epic <eid> --lane <lane> --deps …` to lay the work onto the kanban; FE / BE / DB / TEST workers then pull whatever's claimable in their lane via `atmux claim --next`. The lead doesn't dispatch per-Task — that's a relic of the push model; the kanban routes itself.
@@ -107,9 +107,8 @@ atmux status                  # team pulse + commit-cadence column (ADR-148)
 atmux outbox                  # read lead's async replies
 
 # 4. Automation is wired for you.
-# `atmux start` automatically installs three crontab entries scoped per team
+# `atmux start` automatically installs two crontab entries scoped per team
 # via marker comments (`# >>> atmux:team=<name>` … `# <<< atmux:team=<name>`):
-#   */5  * * * * atmux whip              # watchdog: stale panes, blockers, delta
 #   */30 * * * * atmux report            # digest: progress to Discord
 #   0 */4 * * * atmux decisions digest   # consolidates low/medium decision pings
 # `atmux stop` removes the block (idempotent — safe to re-run). Inspect with
@@ -118,7 +117,7 @@ atmux outbox                  # read lead's async replies
 # Disable auto-install via team.json (then manage cron yourself):
 #   { "kanban": { "cronAutoInstall": false } }
 #
-# Run `atmux whip` manually any time to fire a tick immediately — same code
+# Run `atmux lane-tick` manually any time to fire a tick immediately — same code
 # path as the 5-min cron. Useful when investigating an in-flight blocker or
 # right after a known event (deploy, rotate, etc.) without waiting for the
 # next scheduled tick.
@@ -164,7 +163,7 @@ By default every atmux team shares the user's main tmux server at `/tmp/tmux-$UI
 **What changes when set:**
 
 - `bin/atmux` exports `TMUX_TMPDIR=<value>` immediately on entry — every subsequent `tmux` call routes to the isolated socket. The directory is auto-created (`mkdir -p`). Existing `$TMUX_TMPDIR` env wins over the team.json value.
-- `lib/cron.sh` prepends `TMUX_TMPDIR=<value>` to every emitted `whip` / `report` / `decisions digest` cron line — without this the cron jobs would look at the wrong server and report session DOWN forever.
+- `lib/cron.sh` prepends `TMUX_TMPDIR=<value>` to every emitted `report` / `decisions digest` cron line — without this the cron jobs would look at the wrong server and report session DOWN forever.
 - Bare `tmux attach` no longer reaches the team. Use either:
 
   ```bash
@@ -248,11 +247,11 @@ atmux team rename <old> <new> [--session <new-session>] [--migrate-session] [--f
 
 **Orchestration sequence** — each step rollback-staged; a partial failure invokes rollback in reverse order (full detail in ADR-027 §Orchestration sequence):
 
-1. Set the `rename.lock` state file. Cron'd consumers (whip, super-status, decisions digest, cron orphan-detect) check this at entry and return 0 silently — no concurrent state mutation while the rename runs.
+1. Set the `rename.lock` state file. Cron'd consumers (super-status, decisions digest, cron orphan-detect) check this at entry and return 0 silently — no concurrent state mutation while the rename runs.
 2. `jq`-edit `team.json:.name` → `<new>`. Backup at `team.json.bak.<epoch>`.
 3. `tmux rename-window` for the cockpit team-viewer window matching the bare `<old>` name → `<new>` (per [ADR-135](docs/adr/135-cockpit-naming-convention.md) §window-naming: cockpit team-viewer carries the team name; per-member `<emoji>-<member>` + cockpit-role `_<role>` + epic-viewer `🌳-<eid>` windows do NOT carry team-name and are NOT touched). If `--session <new-session>` differs from the current session name, `tmux rename-session` runs too.
 4. Rewrite `state/session.txt` for single-session teams.
-5. **Cron re-install with NEW marker first, then remove the OLD marker.** Install-new-then-remove-old is the explicit ordering — avoids any window where the team has zero cron coverage (per ADR-027 OQ H3). Brief overlap of two markers is harmless; whip is flock-guarded so duplicate fires no-op.
+5. **Cron re-install with NEW marker first, then remove the OLD marker.** Install-new-then-remove-old is the explicit ordering — avoids any window where the team has zero cron coverage (per ADR-027 OQ H3). Brief overlap of two markers is harmless.
 6. Cockpit registry update: DFS-walk `cockpit.json::sessions[]` (per [ADR-089](docs/adr/089-hierarchical-cockpit.md) §B) for the `type: "team"` node matching `<old>`; mutate `.name = <new>` in place. Legacy flat `teams[]` rosters auto-lift to the canonical `sessions[]` shape on first rename via `migrateLegacyShape`. **Child nodes' `.name` fields are NOT touched** — only the renamed team's own `.name` is mutated. That holds for every kind of child cage, epic-team or otherwise; nesting is general (ADR-089 §Amendment 2026-08-27 §(A)).
 7. Clear `rename.lock`.
 8. Return success.
@@ -271,8 +270,8 @@ Operational state drifts from declared intent over time: a tmux session gets han
 
 ```bash
 atmux audit                       # detect-only; human render of findings
-atmux audit --quiet               # whip's sub-pass shape: exit 0 green / 1 drift, no output
-atmux audit --json                # findings array for whip / external dashboards
+atmux audit --quiet               # machine shape: exit 0 green / 1 drift, no output
+atmux audit --json                # findings array for external dashboards
 atmux audit --fix                 # apply fixes; defaults to safe classes (D, E, F)
 atmux audit --fix --class a       # narrow to a specific class
 atmux audit --dry-run             # print fix plan, no mutations (default for blast≥medium)
@@ -282,7 +281,7 @@ atmux audit --dry-run             # print fix plan, no mutations (default for bl
 
 | Class | Name | Detector signal | Blast | Auto-fix? | Runbook |
 |---|---|---|---|---|---|
-| **A** | driver-window naming | `tmux list-windows` shows bare `driver` instead of `__<team>__driver` | medium | ✅ gated on driver-pane idle (no claude REPL, no modal, no rate-limit banner) | `atmux audit --fix --class a` (whip auto-fires when idle; surfaces `⚠️` otherwise) |
+| **A** | driver-window naming | `tmux list-windows` shows bare `driver` instead of `__<team>__driver` | medium | ✅ gated on driver-pane idle (no claude REPL, no modal, no rate-limit banner) | `atmux audit --fix --class a` (auto-fires when idle; surfaces `⚠️` otherwise) |
 | **B** | cage path separator | `team.json:.tmuxTmpdir` matches old hyphen form `/tmp/atmux-tmux-*` instead of `/tmp/atmux_tmux_*` | high | ❌ surface only — driver fires | wraps `lib/team-repair-rename.sh` with rollback per [ADR-027](docs/adr/027-team-rename-verb-and-topology-invariant.md) |
 | **C** | window position drift | driver pane window position ≠ 1 OR team-lead position ≠ 2 | high | ❌ surface only — driver fires | `tmux swap-window` × N, no atomic wrapper today |
 | **D** | rename residue | window name has trailing-dash or partial-match pattern (`__ifca_aix__🪄lead-`) | low | ✅ | strip trailing dash via `tmux rename-window` |
@@ -294,14 +293,14 @@ atmux audit --dry-run             # print fix plan, no mutations (default for bl
 **When to invoke.**
 
 - **Ad-hoc**: after a fleet-wide convention shift (an ADR amendment, a rename burst, a manual `tmux` op that touched topology) — `atmux audit` shows the drift inventory; pick fixes class-by-class.
-- **Whip auto** (per [ADR-040](docs/adr/040-audit-whip-integration.md)): every 5-min whip tick invokes `atmux audit --quiet --fix` as a sub-pass; low-blast classes auto-fire, medium gates on idle, high surfaces. Zero operator action required for D/E/F drift.
-- **Daily backstop**: a once-a-day cron (operator opt-in) ensures classes that whip might have skipped (target pane busy all day) eventually surface. Phase 2 of the enforcer agent (ADR-039) may take this over fleet-wide.
+- **Scheduled auto-fix** (per [ADR-040](docs/adr/040-audit-whip-integration.md)): a scheduled tick invokes `atmux audit --quiet --fix` as a sub-pass; low-blast classes auto-fire, medium gates on idle, high surfaces. Zero operator action required for D/E/F drift.
+- **Daily backstop**: a once-a-day cron (operator opt-in) ensures classes that a scheduled pass might have skipped (target pane busy all day) eventually surface. Phase 2 of the enforcer agent (ADR-039) may take this over fleet-wide.
 
 **Fleet scope.** Per-team is the default invocation. Fleet aggregation walks `~/.claude/teams/registry.json`, runs the per-team audit on each entry, and rolls up findings — that's the **enforcer** role's job ([ADR-039](docs/adr/039-enforcer-agent-role.md)). Cross-team patterns (≥2 teams hitting the same class = convention shift, not 3 independent bugs) become visible at fleet scope.
 
 **Convergence with ELEVATION.** When the ELEVATION manifest + reconciler ships, `atmux audit` becomes a thin wrapper around `atmux diff --class drift` (detect) + `atmux apply --selected-class <a|b|c|d|e|f>` (fix). The class taxonomy migrates verbatim; gating policy survives. The class vocabulary (A–F + future additions) is the durable artifact.
 
-**See also**: [ADR-038](docs/adr/038-declarative-live-audit-model.md) (audit model + sources of truth + class taxonomy + per-class detector/fixer pair pattern); [ADR-039](docs/adr/039-enforcer-agent-role.md) (fleet-level enforcer agent that aggregates per-team audit findings); [ADR-040](docs/adr/040-audit-whip-integration.md) (whip sub-pass that auto-fires safe classes); `docs/audit.md` (operator guide — runbooks per class).
+**See also**: [ADR-038](docs/adr/038-declarative-live-audit-model.md) (audit model + sources of truth + class taxonomy + per-class detector/fixer pair pattern); [ADR-039](docs/adr/039-enforcer-agent-role.md) (fleet-level enforcer agent that aggregates per-team audit findings); [ADR-040](docs/adr/040-audit-whip-integration.md) (audit auto-fix integration); `docs/audit.md` (operator guide — runbooks per class).
 
 ### Preset modes
 
@@ -335,7 +334,7 @@ Optional dedicated blocker-triage member, spawned at `role=unblocker, lane=misc`
 
 **What it does.** Per [ADR-021](docs/adr/021-unblocker-role.md): on a 2-min cron tick, enumerates `tasks[]` with `status == "blocked"` OR (`status == "in-progress"` AND `claimedAt` mtime > 30 min with no commit-Task downstream). For each candidate, captures the assigned member's pane (`tmux capture-pane`) + recent activity, then classifies into one of **WEDGED** (modal/permission/rate-limit banner — surface to `lead-outbox.md` for `/team clear` approval), **IDLE** (no progress > 30 min — nudge via `atmux send <member>`), **LEGITIMATELY-SLOW** (active build/e2e — no action), or **WEDGED-WITH-DRIVER-NEEDED** (escalate to `driver-inbox.md` tagged `🚨 needs driver`). See `templates/briefs/unblocker.md` for the per-tick loop and action-authority table.
 
-**When to add it.** The lead's whip cycle bundles dispatch + rotation + Discord composition + blocker triage into a single 5-min budget. As teams grow past **~4–5 members** and stale `in-progress` claims start slipping past a full whip tick, the lead's blocker-triage attention gets crowded out. A dedicated unblocker at 2-min cadence isolates the cost. Skip it for small teams (≤3 members) — the lead's whip is enough.
+**When to add it.** The lead's supervisory cycle bundles dispatch + rotation + Discord composition + blocker triage into a single 5-min budget. As teams grow past **~4–5 members** and stale `in-progress` claims start slipping past a full supervisory tick, the lead's blocker-triage attention gets crowded out. A dedicated unblocker at 2-min cadence isolates the cost. Skip it for small teams (≤3 members) — the lead is enough.
 
 **How to add it.** No config edit needed; `atmux add-member` does the team.json mutation + spawn:
 
@@ -348,7 +347,7 @@ For `role=unblocker` the `--lane` flag is honored verbatim (`misc` is convention
 **Cadence + Discord behaviour.** `lib/cron.sh::atmux::cron_install` emits a `*/2 * * * * … atmux unblocker tick` line when `team.json` has a member with `role: unblocker` (otherwise no-op). The unblocker itself **does not send Discord pings directly** — its outputs are:
 
 - **Nudges** — `atmux send <member>` (tmux send-keys; no Discord).
-- **Surfaces** — `atmux flag add` (writes `flags.md`; the lead picks up the `flag-add` socket event per [ADR-032](docs/adr/032-socket-pubsub-messaging-layer.md) and composes a `whip-blocker` Discord ping at its next whip tick).
+- **Surfaces** — `atmux flag add` (writes `flags.md`; the lead picks up the `flag-add` socket event per [ADR-032](docs/adr/032-socket-pubsub-messaging-layer.md) and composes a blocker Discord ping).
 - **Driver escalations** — appended to `.atmux/driver-inbox.md` (no Discord; driver reads on-demand).
 
 The unblocker is the *detector*; the lead remains the urgent-Discord *voice*. (When a discorder is also present, scheduled `whip-progress` digests will mention surfaced blockers inline as a bullet — see [ADR-022](docs/adr/022-discorder-role.md).)
@@ -357,7 +356,7 @@ The unblocker is the *detector*; the lead remains the urgent-Discord *voice*. (W
 
 ### Discorder role
 
-Optional dedicated narrative-composition member, spawned at `role=discorder, lane=misc`. Owns the team's **scheduled** Discord pings — 30-min `whip-progress` digest + 60-min `whip-heartbeat` — while the team-lead keeps the **urgent** voice (`whip-blocker`, `whip-decisions`, `whip-critical`). Read-only on kanban / git-log / decisions; never claims, never plans, never sends urgent pings.
+Optional dedicated narrative-composition member, spawned at `role=discorder, lane=misc`. Owns the team's **scheduled** Discord pings — 30-min `whip-progress` digest + 60-min `whip-heartbeat` — while the team-lead keeps the **urgent** voice (blocker, decisions, critical pings). Read-only on kanban / git-log / decisions; never claims, never plans, never sends urgent pings.
 
 **What it does.** Per [ADR-022](docs/adr/022-discorder-role.md): on a scheduled cron tick, snapshots the kanban (SQLite `state.db` post-ADR-076) + recent commit log + new entries since the last decisions cursor, composes a `whip-progress` digest body matching the canonical `~/.claude/CLAUDE.md` Discord-format rule (header + bulleted body + per-bullet emoji), and routes via `~/.claude/skills/whip/scripts/ping-discord.sh`. Hourly the same loop fires a `whip-heartbeat` — single bullet, "team alive, last commit Nm ago, kanban: todo=X / in-progress=Y." See `templates/briefs/discorder.md` for the per-tick loop, the section discipline, and the one-line escalation rule (anything that needs judgment-on-correctness routes to lead via `atmux send lead`).
 
@@ -365,9 +364,7 @@ Optional dedicated narrative-composition member, spawned at `role=discorder, lan
 
 | Ping template          | Owner       | Why                                                                     |
 |------------------------|-------------|-------------------------------------------------------------------------|
-| `whip-blocker`         | **lead**    | Caused by the lead's own dispatch + coordination events.                |
-| `whip-decisions`       | **lead**    | High-rev decisions interrupt the driver in real time; lead authored.   |
-| `whip-critical` / 🚨   | **lead**    | Same urgency tier — lead saw it, lead pings.                            |
+| `critical` / 🚨          | **lead**    | Same urgency tier — lead saw it, lead pings.                            |
 | `whip-progress` (30m)  | **discorder** | Routine narrative summary. Composes 200–400 tokens — bigger than lead's coordination budget can absorb every tick. |
 | `whip-heartbeat` (60m) | **discorder** | Same shape: routine, no judgment-on-correctness.                        |
 | `team-bootstrap`       | **lead**    | Lifecycle event — lead's authority.                                      |
@@ -393,9 +390,9 @@ The legacy `atmux report` cron line — pre-discorder, lead-composed report — 
 
 ### Ombudsman role
 
-Optional per-team complaint-adjudicator member, spawned at `role=ombudsman, lane=misc` (emoji `⚖️`). Per [ADR-147](docs/adr/147-ombudsman-and-release-notes.md) §D1, reads open complaints (filed by medic / whip-velocity-gate / operator / CLI), triages each into one of five outcomes (file epic / file task / wontfix / already-addressed / defer), and writes its adjudication entry to the day's release-notes file. Surface-only on the code side — never claims code Tasks, never plans, only writes kanban + complaint resolutions.
+Optional per-team complaint-adjudicator member, spawned at `role=ombudsman, lane=misc` (emoji `⚖️`). Per [ADR-147](docs/adr/147-ombudsman-and-release-notes.md) §D1, reads open complaints (filed by medic / operator / CLI), triages each into one of five outcomes (file epic / file task / wontfix / already-addressed / defer), and writes its adjudication entry to the day's release-notes file. Surface-only on the code side — never claims code Tasks, never plans, only writes kanban + complaint resolutions.
 
-**Why**: the complaint *filing* side has named owners (medic per ADR-077, whip per ADR-177), but the *adjudicating* side has none — open complaints linger indefinitely until the operator triages them by hand. Ombudsman closes that loop per ADR-147 §Context.
+**Why**: the complaint *filing* side has named owners (medic per ADR-077), but the *adjudicating* side has none — open complaints linger indefinitely until the operator triages them by hand. Ombudsman closes that loop per ADR-147 §Context.
 
 **Wake mechanism** (per [ADR-147](docs/adr/147-ombudsman-and-release-notes.md) §D2): **event-driven, NOT whip-polled**. A sentinel file `.atmux/state/ombudsman-pending.json` is written-through by `atmux complaints file|resolve`; a cron line `atmux ombudsman tick` (default 15min via `team.ombudsman.tickIntervalMins`) fast-paths no-op when the sentinel is empty and wakes the ombudsman pane via verified send-keys ([ADR-138](docs/adr/138-verified-send-keys.md)) when non-empty. Lane-tick MUST NOT inject `atmux claim --next --as ombudsman` — the role is outside the pull-model cadence.
 
@@ -415,9 +412,9 @@ atmux add-member ombudsman --role ombudsman --tui claude --lane misc --cwd "$PWD
 
 Optional fleet-level audit consumer member, spawned on the **superdriver team** at `role=enforcer, lane=misc`. Walks `~/.claude/teams/registry.json` per tick, invokes `atmux audit --json` per registered team, aggregates findings, and routes by class — surface-only, never claims, never plans, never auto-fires high-blast fixes.
 
-**What it does.** Per [ADR-039](docs/adr/039-enforcer-agent-role.md): on each ON-DEMAND tick, reads `atmux super-status --json` + per-team `atmux audit --json` (per [ADR-038](docs/adr/038-declarative-live-audit-model.md)) and classifies every finding into one of four shapes — **fleet-wide pattern** (≥2 teams hitting the same audit class — surface as a digest entry to driver via `super-tell` OR append to `~/.claude/teams/superdriver-bypass-log.md`), **isolated finding** (one team only — no-op; whip's per-team auto-fix already owns it), **ambiguous medium/high-blast** (whip surfaced as `⚠️` — propose a fix command + safety gate; surface to driver), or **convention regression suggesting new class** (draft an ADR-038 amendment + route via planner). Maintains `docs/audit.md` operator guide + the ADR-038 class table via the planner ADR flow. See `templates/briefs/enforcer.md` for the per-tick loop, action-authority table, and channel matrix.
+**What it does.** Per [ADR-039](docs/adr/039-enforcer-agent-role.md): on each ON-DEMAND tick, reads `atmux super-status --json` + per-team `atmux audit --json` (per [ADR-038](docs/adr/038-declarative-live-audit-model.md)) and classifies every finding into one of four shapes — **fleet-wide pattern** (≥2 teams hitting the same audit class — surface as a digest entry to driver via `super-tell` OR append to `~/.claude/teams/superdriver-bypass-log.md`), **isolated finding** (one team only — no-op; per-team auto-fix already owns it), **ambiguous medium/high-blast** (surfaced as `⚠️` — propose a fix command + safety gate; surface to driver), or **convention regression suggesting new class** (draft an ADR-038 amendment + route via planner). Maintains `docs/audit.md` operator guide + the ADR-038 class table via the planner ADR flow. See `templates/briefs/enforcer.md` for the per-tick loop, action-authority table, and channel matrix.
 
-**When to add it.** Per-team `atmux audit` is necessary but not sufficient: cross-team patterns (a class hitting 3-of-4 teams = fleet-wide convention shift, not 3 independent bugs) are invisible to per-team whip. Add an enforcer once the fleet has **≥2 teams** running `atmux audit` and you've noticed yourself grepping across team logs by hand to spot patterns. Skip it for a single-team setup — there's nothing to aggregate. The role is opt-in on the superdriver team only; existing per-team teams need no change.
+**When to add it.** Per-team `atmux audit` is necessary but not sufficient: cross-team patterns (a class hitting 3-of-4 teams = fleet-wide convention shift, not 3 independent bugs) are invisible to per-team audit. Add an enforcer once the fleet has **≥2 teams** running `atmux audit` and you've noticed yourself grepping across team logs by hand to spot patterns. Skip it for a single-team setup — there's nothing to aggregate. The role is opt-in on the superdriver team only; existing per-team teams need no change.
 
 ```bash
 # Superdriver team's team.json — manual edit (wizard not yet aware of enforcer):
@@ -426,7 +423,7 @@ atmux add-member enforcer --role enforcer --tui claude --lane misc --cwd "$PWD"
 
 For `role=enforcer` the model is `claude-opus-4-7` with `CLAUDE_CODE_EFFORT_LEVEL=xhigh` per [ADR-024](docs/adr/024-per-member-model-selection.md) — cross-team audit is judgment-heavy work, not mechanical pattern-matching, so Sonnet is *not* the right fit (ADR-039 §B3). Standard member spawn — `+1 window` on the superdriver team.
 
-**Cadence + Discord behaviour.** **ON-DEMAND in v1**, mirroring the superdriver itself ([ADR-025](docs/adr/025-superdriver-phase-1.md)) — NO cron schedule, NO whip cycle. Driver invokes after fleet-wide changes (ADR amendments, convention shifts, post-incident sweeps). The enforcer's outputs are:
+**Cadence + Discord behaviour.** **ON-DEMAND in v1**, mirroring the superdriver itself ([ADR-025](docs/adr/025-superdriver-phase-1.md)) — NO cron schedule. Driver invokes after fleet-wide changes (ADR amendments, convention shifts, post-incident sweeps). The enforcer's outputs are:
 
 - **Digests** — `atmux super-tell driver "<digest>"` (cross-team, real-time; no direct Discord).
 - **Async audit log** — appended to `~/.claude/teams/superdriver-bypass-log.md` (driver reviews at next `super-attach`).
@@ -698,13 +695,10 @@ atmux pause <member>                         # dispatch/claim refuse
 atmux resume <member>
 
 🤖 Automation
-atmux whip                                   # 5-min watchdog (cron)
 atmux report [--no-discord]                  # 30-min digest (cron)
 atmux improve [--budget <spec>] [--status]   # eternal-improvement loop (ADR-052)
               [--dry-run] [--default-budget]
               [--idle-fallback] [--force]
-atmux whip-resume-check [--no-discord]       # 1-min auto-resume cron precision (ADR-053)
-              [--team-dir <dir>]
 atmux watchdog [--no-discord]                # 2-min heartbeat staleness detector (ADR-057 §D6b)
               [--team-dir <dir>]
 atmux pulse [--json] [--ping] [--config <p>] # 5-min cockpit-wide verdict probe (ADR-086)
@@ -812,7 +806,7 @@ It also carries `members[].agentState` (key-presence — absent means no probe r
 
 ## 🌱 Eternal-improvement (ADR-052)
 
-`atmux improve` — kanban-empty fallback to autonomous self-improvement loop. See [`docs/adr/052-eternal-improvement.md`](docs/adr/052-eternal-improvement.md). When the team's kanban hits empty, instead of `atmux stop` firing the cage dies, `atmux improve` decomposes "what can we improve on?" into kanban Tasks, dispatches them, loops cycles bounded by a token budget (default `30%-wk`), and only stops when the budget is exhausted AND kanban is still empty. Two modes share one implementation: **Mode A** (user-invoked — driver runs `atmux improve [--budget <spec>]` any time) and **Mode B** (idle-fallback — whip's ADR-043 hook intercepts the auto-stop with `--idle-fallback --default-budget`). Today's `kanban-empty → auto-stop → manual restart` becomes `kanban-empty → improve cycles → auto-stop`. State at `.atmux/state/eternal-improvement.json`.
+`atmux improve` — kanban-empty fallback to autonomous self-improvement loop. See [`docs/adr/052-eternal-improvement.md`](docs/adr/052-eternal-improvement.md). When the team's kanban hits empty, instead of `atmux stop` firing the cage dies, `atmux improve` decomposes "what can we improve on?" into kanban Tasks, dispatches them, loops cycles bounded by a token budget (default `30%-wk`), and only stops when the budget is exhausted AND kanban is still empty. Two modes share one implementation: **Mode A** (user-invoked — driver runs `atmux improve [--budget <spec>]` any time) and **Mode B** (idle-fallback — the ADR-043 hook intercepts the auto-stop with `--idle-fallback --default-budget`). Today's `kanban-empty → auto-stop → manual restart` becomes `kanban-empty → improve cycles → auto-stop`. State at `.atmux/state/eternal-improvement.json`.
 
 ## State layout
 
@@ -833,11 +827,10 @@ Everything lives in `.atmux/` at the project root (or wherever `ATMUX_DIR` point
 │                          #   alongside until `atmux migrate-state` lands them.
 ├── logs/
 │   ├── send-<member>.log
-│   ├── whip.log
 │   └── report.log
 ├── state/
 │   ├── session.txt        # tmux session name captured at start (ADR-026)
-│   ├── lead-session-start.txt # epoch seconds; whip uses for lead uptime
+│   ├── lead-session-start.txt # epoch seconds; status uses for lead uptime
 │   └── …                  # per-feature anchor files (rotated.epoch, etc.)
 └── archive/<timestamp>/   # created on atmux stop
 ```
@@ -891,12 +884,12 @@ Member briefs (`templates/briefs/*.md`) are paste-targets for every spawned pane
 2. **Middle — semi-stable rules.** Per-loop cadence, what-you-do / what-you-don't, hard rules.
 3. **Bottom — pointers to churning state.** `state.db` (tasks / inbox rows), `lead-outbox.md`, `flags.md`. The pointers are stable; the *stores they point at* churn faster than the cache TTL, so the references go LAST so the cached preamble survives every tick.
 
-See [ADR-041 §Prompt-cache discipline](docs/adr/041-token-savings-kanban-slicing.md) for the full rationale + claim-reply / `task list` / whip-prelude levers. Roll-out is incremental (per ADR-041 OQ D2 resolution): each brief touched in normal evolution gets reordered if needed; reviewer flags ordering on changes. Mass restructure was rejected — cache-discipline wins are cumulative.
+See [ADR-041 §Prompt-cache discipline](docs/adr/041-token-savings-kanban-slicing.md) for the full rationale + claim-reply / `task list` levers. Roll-out is incremental (per ADR-041 OQ D2 resolution): each brief touched in normal evolution gets reordered if needed; reviewer flags ordering on changes. Mass restructure was rejected — cache-discipline wins are cumulative.
 
 <!-- per ADR-217 §D7 -->
 ## 🛠️ Skills (`/atmux:` namespace)
 
-atmux ships with a Claude Code plugin bundling 12 cockpit-tier skills (`/atmux:bruh`, `/atmux:team`, `/atmux:tell-lead`, `/atmux:whip`, etc.) at [`plugins/atmux/`](plugins/atmux/). Each wraps a recurring multi-step atmux workflow so operators can drive a fleet without memorising the full verb surface. Install via the `atmux init` wizard (per [ADR-200](docs/adr/200-install-wizard-guided-first-run-setup.md)) or manually symlink `plugins/atmux/` into `~/.claude/plugins/atmux/`.
+atmux ships with a Claude Code plugin bundling 11 cockpit-tier skills (`/atmux:bruh`, `/atmux:team`, `/atmux:tell-lead`, etc.) at [`plugins/atmux/`](plugins/atmux/). Each wraps a recurring multi-step atmux workflow so operators can drive a fleet without memorising the full verb surface. Install via the `atmux init` wizard (per [ADR-200](docs/adr/200-install-wizard-guided-first-run-setup.md)) or manually symlink `plugins/atmux/` into `~/.claude/plugins/atmux/`.
 
 | Skill                       | What it does                                                              | Calls atmux verb              |
 |-----------------------------|---------------------------------------------------------------------------|-------------------------------|
@@ -911,7 +904,6 @@ atmux ships with a Claude Code plugin bundling 12 cockpit-tier skills (`/atmux:b
 | `/atmux:sweep`              | Cockpit-level self-healing diagnosis-and-prevention sweep.                | `atmux doctor / status`       |
 | `/atmux:team`               | Team lifecycle (start / stop / add / clear / cleanup / rotate-lead).      | `atmux team / start / stop`   |
 | `/atmux:tell-lead <msg>`    | Driver → lead durable ask with best-effort pane wake-up.                  | `atmux tell-lead`             |
-| `/atmux:whip`               | Autonomous-work nudge loop (run / cadence / watchdog verbs).              | `atmux whip`                  |
 
 **Install posture (per [ADR-217](docs/adr/217-atmux-skills-plugin-bundled-and-wizard-installed.md) §D5):**
 
@@ -930,9 +922,7 @@ See [`plugins/atmux/README.md`](plugins/atmux/README.md) for the full per-skill 
 | `ATMUX_TEAM`                         | `.name` in `team.json`                       | Override team name                                  |
 | `ATMUX_NO_WIZARD`                    | (unset)                                      | Set to `1` to suppress the first-run wizard prompt  |
 | `ATMUX_SESSION`                      | `atmux-<team>`                               | Override tmux session name                          |
-| `ATMUX_DISCORD_WEBHOOK`              | (unset → falls back to `DISCORD_WHIP_WEBHOOK`) | Discord webhook for whip/report                     |
-| `ATMUX_STALE_MIN`                    | `30`                                         | `atmux whip`: flag in-progress tasks older than this |
-| `ATMUX_LEAD_MAX_MIN`                 | `60`                                         | `atmux whip`: recommend `rotate-lead` after this     |
+| `ATMUX_DISCORD_WEBHOOK`              | (unset)                                        | Discord webhook for report                          |
 | `ATMUX_SPAWN_WAIT`                   | `6`                                          | seconds to wait after spawning before pasting brief |
 | `ATMUX_CLAUDE_EFFORT`                | `xhigh`                                      | `CLAUDE_CODE_EFFORT_LEVEL` per member               |
 | `ATMUX_CLAUDE_PERMISSION`            | `dontAsk`                                    | Claude Code `--permission-mode`                     |
@@ -982,9 +972,9 @@ by `cwd`. Configure in `team.json`:
 }
 ```
 
-- **`warn`** — whip logs + Discord-pings only.
-- **`pause`** — whip also calls `atmux pause <member>`; `dispatch`/`claim` refuse.
-- **`failover`** — whip additionally tries `atmux handoff <exhausted> <peer>`,
+- **`warn`** — budget-pause logs + Discord-pings only.
+- **`pause`** — budget-pause also calls `atmux pause <member>`; `dispatch`/`claim` refuse.
+- **`failover`** — budget-pause additionally tries `atmux handoff <exhausted> <peer>`,
   where `<peer>` is another member with the same `role` that still has budget.
 
 Override pricing with `ATMUX_PRICING_FILE=/path/to/my-pricing.json`. Default
@@ -1015,9 +1005,8 @@ accepting new work.
 
 ## 🔄 Driver rotation
 
-atmux can `/clear` team members (`atmux rotate <member>`, `atmux rotate-lead`,
-or auto-rotation when `team.whip.autoRotate=true`) but **it cannot `/clear`
-the driver** — that's you, the human at the keyboard. Your Claude Code
+atmux can `/clear` team members (`atmux rotate <member>`, `atmux rotate-lead`)
+but **it cannot `/clear` the driver** — that's you, the human at the keyboard. Your Claude Code
 session compacts on its own schedule, and when it does, the entire team's
 recent context goes opaque to your next session: who asked what, why the
 lead picked option (b), what's still pending in `driver-inbox.md`.
@@ -1042,7 +1031,7 @@ Tasks, and the recovery command sequence to fully re-bootstrap. Run it:
 re-derive it. Mirrors `atmux decisions add` shape — same `--reversibility`
 flag, same field structure — but writes to `.atmux/driver-state.md` and
 **does not ping Discord** (you're the audience; pinging yourself is noise).
-Team-scoped (lead can `cat` the rationale on any whip turn) so judgment
+Team-scoped (lead can `cat` the rationale any time) so judgment
 calls are visible to the team without round-tripping.
 
 ```bash
@@ -1141,12 +1130,12 @@ atmux super-tell <team> <member> <msg…>
 
 The verb resolves `<team>` via `~/.claude/teams/registry.json`, `cd`'s into the target's `projectRoot`, and:
 
-1. Appends the entry to `<projectRoot>/.atmux/driver-inbox.md` — the same file the target's lead reads at the top of every whip tick.
+1. Appends the entry to `<projectRoot>/.atmux/driver-inbox.md` — the same file the target's lead reads regularly.
 2. Sends a `📬 super-tell → <member>: <truncated-msg>` heads-up keystroke to the target's lead pane via `tmux send-keys`.
 
 **Pane-state preflight (refuses, doesn't fall through).** Before sending the keystroke, super-tell captures the target lead's pane and checks for the same status indicators every member-side `tmux send-keys` honors — `thinking with`, `Compacting conversation`, `Press up to edit queued messages`, rate-limit banners. Any of these fires a refuse with a "retry once it clears" message; the driver-inbox write happens regardless, so the ask is never lost — only the keystroke heads-up is gated. Re-running super-tell once the pane is idle is safe (idempotent on the inbox if the message body is identical).
 
-**Audit trail.** super-tell entries land in `<projectRoot>/.atmux/driver-inbox.md` alongside regular `tell-lead` entries. The line carries an explicit `(super-tell → <member>)` provenance tag so post-hoc audit (grep / lead's whip read) can distinguish a cross-team ask from a same-team driver ask, but the file format and the lead's reading discipline are identical:
+**Audit trail.** super-tell entries land in `<projectRoot>/.atmux/driver-inbox.md` alongside regular `tell-lead` entries. The line carries an explicit `(super-tell → <member>)` provenance tag so post-hoc audit (grep / lead's read) can distinguish a cross-team ask from a same-team driver ask, but the file format and the lead's reading discipline are identical:
 
 ```
 - [09:30 MYT] (super-tell → lead) rotate-lead — uptime over 4h, context rotting
@@ -1242,7 +1231,7 @@ The atmux binary is **self-locating** (`bin/atmux` walks `BASH_SOURCE` symlinks 
 
 ## Troubleshooting
 
-**"My whip stopped pinging."** Run `atmux doctor`. It surfaces two cron-related conditions:
+**"My Discord pings stopped."** Run `atmux doctor`. It surfaces two cron-related conditions:
 
 - `cron-config` (yellow) — atmux cron entries point at a different `ATMUX_DIR` than the current project. Common after the project moved on disk (rename, relocation, fresh checkout under a new path). Fix: `crontab -e` and update the path, or re-run `atmux start` from the new path.
 - `cron-orphan` (yellow) — a marker block exists for a team whose `ATMUX_DIR` is missing on disk (e.g. you `rm -rf`'d a worktree without `atmux stop`). Fix: `atmux doctor --fix` prunes the orphan block automatically, or `crontab -e` to remove by hand.
@@ -1251,7 +1240,7 @@ The atmux binary is **self-locating** (`bin/atmux` walks `BASH_SOURCE` symlinks 
 
 ### Preflight: logout-kill exposure
 
-**Why it matters.** On modern Linux (systemd ≥230), `KillUserProcesses=yes` is the stock default. When your SSH session ends, systemd-logind reaps the entire user cgroup — your tmux server, every atmux team in it, and any orphan helper scopes all die together. The 2026-04-26 incident on the-host cost both `myteam-alpha` and `atmux-kanban` their mid-flight state when an SSH session-3.scope ended; whip cron survived (it lives in crontab, outside the user session) and proceeded to ping Discord with "session DOWN" every 5 min until manually disabled. The fix is one `loginctl` call, but the **detection** has to happen before you start the team.
+When your SSH session ends, systemd-logind reaps the entire user cgroup — your tmux server, every atmux team in it, and any orphan helper scopes all die together. The 2026-04-26 incident on the-host cost both `myteam-alpha` and `atmux-kanban` their mid-flight state when an SSH session-3.scope ended; the scheduled tick survived (it lives in crontab, outside the user session) and kept reporting session DOWN every 5 min until manually disabled. The fix is one `loginctl` call, but the **detection** has to happen before you start the team.
 
 **The check.** `atmux doctor` runs `_doctor_check_logout_kill` as part of its preflight battery. It reads `loginctl show-user --property=Linger` + `/etc/systemd/logind.conf` and surfaces one of three rows:
 

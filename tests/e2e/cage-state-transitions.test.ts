@@ -182,7 +182,7 @@ beforeAll(async () => {
       model: "default",
       cwd: teamDir,
     })),
-    whip: { intervalMins: 15, staleMin: 30, leadMaxMin: 60 },
+    whip: { leadCtxRotateThreshold: 70 },
     report: { intervalMins: 30 },
   };
   await writeFile(join(atmuxDir, "team.json"), JSON.stringify(teamJson, null, 2));

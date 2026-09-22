@@ -50,7 +50,6 @@ import { createTmux, type TmuxNamespace } from "../../src/abstractions/tmux.ts";
 import { buildWindowName } from "../../src/core/common.ts";
 import { done as doneVerb } from "../../src/verbs/claim.ts";
 import { dispatch as dispatchVerb } from "../../src/verbs/dispatch.ts";
-import { poke as whipVerb } from "../../src/verbs/poke.ts";
 import { report as reportVerb } from "../../src/verbs/report.ts";
 import { send as sendVerb } from "../../src/verbs/send.ts";
 import { start as startVerb } from "../../src/verbs/start.ts";
@@ -341,26 +340,6 @@ describe("e2e lifecycle (1x cold-start+walk)", () => {
     expect(result).toBe(0);
     expect(stdout).toContain(`session=${sessionName}`);
     expect(stdout).toContain("[up]");
-  });
-
-  test("e2e: whip all-clean when session is up and no stale tasks", async () => {
-    await startVerb([]);
-    const { result, stdout } = await captureStdout(() => whipVerb([]));
-    expect(result).toBe(0);
-    expect(stdout).toContain("all clean");
-  });
-
-  test("e2e: whip flags DOWN after stop", async () => {
-    await startVerb([]);
-    const rc1 = await stopVerb(["--force"]);
-    expect(rc1).toBe(0);
-    const { result, stdout } = await captureStdout(() => whipVerb([]));
-    expect(result).toBe(0);
-    // First-tick suppression ("session DOWN (tick 1/2) — suppressing")
-    // OR a confirmed DOWN report after 2 ticks — both contain the
-    // substring "DOWN" / "down". Bash bats matches the same pair
-    // (lifecycle.bats:102).
-    expect(/DOWN|down/.test(stdout)).toBe(true);
   });
 
   test("e2e: stop archives state", async () => {

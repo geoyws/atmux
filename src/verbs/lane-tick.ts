@@ -50,7 +50,6 @@ import {
 } from "../core/safe-send.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { Team, TeamMember } from "../schema/team.ts";
-import { parseLeadCtxPct } from "./poke.ts";
 import { defaultBriefsDir, getBriefPath } from "./rotate.ts";
 
 // ---------- Public types (test-injectable deps) ----------
@@ -242,7 +241,7 @@ export async function runLaneTick(
   // threshold once per tick; the lead-only refusal gate inside the loop
   // consumes both. Threshold default `70` mirrors `whip.leadCtxRotateThreshold`'s
   // schema default — when team.whip is omitted, the lead refusal still
-  // fires at the same threshold whip uses for its rotate-recommendation.
+  // fires at the schema default.
   const leadName = team.members.find((m) => m.role === "team-lead")?.name;
   const leadCtxRotateThreshold = team.whip?.leadCtxRotateThreshold ?? 70;
 
@@ -809,6 +808,39 @@ export function parseLaneTickArgs(argv: ReadonlyArray<string>): ParsedArgs {
   if (teamDir !== undefined) out.teamDir = teamDir;
   if (backfillDone) out.backfillDone = true;
   return out;
+}
+
+/**
+ * Parse the lead pane's ctx-pct from a captured pane snapshot.
+ *
+ * Claude Code TUIs render a `tok N(.M)?k/<cap>` indicator near the
+ * bottom status line where N is the running token count (in thousands,
+ * possibly fractional) and `<cap>` is the per-conversation cap. ADR-080
+ * §A1 needs `(N / cap) * 100` rounded — pct of cap consumed — so the
+ * rotation gate can fire on ctx-pressure even when uptime hasn't
+ * tripped `leadMaxMin`.
+ *
+ * Returns `null` when the indicator is absent (transient: fresh
+ * bootstrap, modal-state pane, post-/clear before first prompt). Caller
+ * treats null as "no signal — fall through to uptime gate".
+ *
+ * Pattern examples:
+ *   `tok 67k/100`   → 67
+ *   `tok 67.3k/100` → 67   (rounded)
+ *   `tok 175k/200`  → 88   (rounded)
+ *   no `tok …`      → null
+ *
+ * Rehomed from `src/verbs/poke.ts` (E3 whip-estate deletion) — the
+ * §A2 lead-ctx-rotate gate here is the sole remaining consumer.
+ */
+const TOK_CTX_RE = /\btok\s+(\d+(?:\.\d+)?)k\/(\d+)k?\b/i;
+export function parseLeadCtxPct(captureText: string): number | null {
+  const m = captureText.match(TOK_CTX_RE);
+  if (m === null) return null;
+  const used = Number.parseFloat(m[1] ?? "");
+  const cap = Number.parseInt(m[2] ?? "", 10);
+  if (!Number.isFinite(used) || !Number.isFinite(cap) || cap <= 0) return null;
+  return Math.round((used / cap) * 100);
 }
 
 // ---------- Internals ----------

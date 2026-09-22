@@ -71,10 +71,13 @@
     }
   ],
   "whip": {
-    "intervalMins": 5,
-    "staleMin": 90,
-    "leadMaxMin": 60,
-    "autoRotate": true
+    "leadCtxRotateThreshold": 70,
+    "stallPrevention": {
+      "heartbeatStaleSec": 300,
+      "autoPushOnDone": true,
+      "rebaseBeforePush": true,
+      "allowedPushBranches": []
+    }
   },
   "report": {
     "intervalMins": 30

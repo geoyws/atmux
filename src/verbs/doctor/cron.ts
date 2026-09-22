@@ -1,63 +1,10 @@
 import { type CrontabIO, defaultCrontabIO } from "../../abstractions/crontab.ts";
-import { exists, readTextOrNull, statOrNull } from "../../abstractions/fs.ts";
+import { exists, statOrNull } from "../../abstractions/fs.ts";
 import { resolveDayFilePath } from "../../abstractions/release-notes.ts";
 import { mytDate, now } from "../../abstractions/time.ts";
-import { teamJsonPath } from "../../core/common.ts";
 import { type CronBlockTarget, findCronOrphans } from "../../core/cron.ts";
-import {
-  composeCatastrophicDrift,
-  composeDriftReport,
-  type DriftReport,
-} from "../../core/whip-config-drift.ts";
-import { type Team, Team as TeamSchema } from "../../schema/team.ts";
+import type { Team } from "../../schema/team.ts";
 import { type DoctorRow, defaultGitSpawn, type GitSpawn } from "./types.ts";
-
-// ---------- ADR-054 §D4: whip-config-drift ----------
-
-/**
- * Re-runs the same Zod safe-parse the whip tick performs and surfaces
- * any drift as a P3 (yellow) finding. Operator gets the drift signal
- * via `atmux doctor` immediately rather than waiting up to 5min for the
- * next whip tick.
- *
- * Returns no rows when team.json is absent — `checkTeam` already emits
- * the absent-file finding and we'd otherwise double-report.
- */
-
-export async function checkWhipConfigDrift(atmuxDir: string): Promise<DoctorRow[]> {
-  const path = teamJsonPath(atmuxDir);
-  const raw = await readTextOrNull(path);
-  if (raw === null) return [];
-
-  let driftReport: DriftReport | null = null;
-  try {
-    const parsed = JSON.parse(raw);
-    const result = TeamSchema.safeParse(parsed);
-    if (!result.success) {
-      driftReport = composeDriftReport(result.error, raw);
-    }
-  } catch (e) {
-    driftReport = composeCatastrophicDrift(e, raw);
-  }
-  if (driftReport === null) return [];
-
-  const issuesCount = driftReport.issues.length;
-  const first = driftReport.issues[0];
-  const firstSummary =
-    first === undefined
-      ? ""
-      : ` first: ${first.path.length === 0 ? "<root>" : first.path.join(".")} (${first.code})`;
-  return [
-    {
-      status: "yellow",
-      label: "poke-config-drift",
-      detail: driftReport.catastrophic
-        ? `team.json malformed — poke will use full safe defaults${firstSummary}`
-        : `team.json::whip validation failed — ${issuesCount} issue(s)${firstSummary}`,
-      hint: "edit team.json + re-run atmux doctor (per ADR-054)",
-    },
-  ];
-}
 
 // ---------- ADR-079 §A: cron-interval-divisor ----------
 
@@ -68,7 +15,6 @@ export async function checkWhipConfigDrift(atmuxDir: string): Promise<DoctorRow[
  * would otherwise be a hard fail.
  *
  * Checked fields:
- *   - team.whip.intervalMins (divisor of 60, 1–60)
  *   - team.report.intervalMins (divisor of 60, 1–60)
  *   - team.report.heartbeatHours (divisor of 24, 1–24)
  *   - team.decisions.intervalHours (divisor of 24, 1–24)
@@ -137,7 +83,6 @@ export function checkCronIntervalDivisors(team: Team | null): DoctorRow[] {
     }
   };
 
-  checkMinutes("whip.intervalMins", team.whip?.intervalMins);
   checkMinutes("report.intervalMins", team.report?.intervalMins);
   checkHours("report.heartbeatHours", team.report?.heartbeatHours);
   checkHours("decisions.intervalHours", team.decisions?.intervalHours);
@@ -255,7 +200,7 @@ export async function checkCronBlock(
     {
       status: "red",
       label: "cron-block:missing",
-      detail: `no managed atmux:team=${team.name} block in host crontab — whip / report / decisions / groom won't fire`,
+      detail: `no managed atmux:team=${team.name} block in host crontab — report / decisions / groom won't fire`,
       hint: "run `atmux cron-install` (or re-run `atmux start`) — block uses ATMUX_DIR + optional TMUX_TMPDIR so worktree-isolation is safe",
     },
   ];

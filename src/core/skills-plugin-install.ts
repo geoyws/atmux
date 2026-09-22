@@ -200,7 +200,6 @@ export const SKILLS_TABLE: ReadonlyArray<{ name: string; desc: string }> = [
   { name: "/atmux:heads-up", desc: "lightweight teammate ping" },
   { name: "/atmux:bruh", desc: "sweep blockers/flags/worktrees in one pass" },
   { name: "/atmux:bruhloop", desc: "hands-off /loop wrapper around bruh" },
-  { name: "/atmux:whip", desc: "autonomous-work nudge loop" },
   { name: "/atmux:bau", desc: "business-as-usual status sweep" },
   { name: "/atmux:ghostbuster", desc: "mergeable-branch sweeper (scoped to calling team)" },
   { name: "/atmux:budget", desc: "rate-limit probe across Claude accounts" },

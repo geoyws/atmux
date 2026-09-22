@@ -73,8 +73,6 @@ import { migrateState } from "./verbs/migrate-state.ts";
 import { nudge } from "./verbs/nudge.ts";
 import { ombudsman } from "./verbs/ombudsman.ts";
 import { pause, resume } from "./verbs/pause.ts";
-import { poke } from "./verbs/poke.ts";
-import { pokeResumeCheck } from "./verbs/poke-resume-check.ts";
 import { pulse } from "./verbs/pulse.ts";
 import { reconfigure } from "./verbs/reconfigure.ts";
 import { refusalScan } from "./verbs/refusal-scan.ts";
@@ -326,10 +324,6 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return health(argv.slice(1));
     case "driver-inbox":
       return driverInbox(argv.slice(1));
-    case "poke":
-      return poke(argv.slice(1));
-    case "poke-resume-check":
-      return pokeResumeCheck(argv.slice(1));
     case "watchdog":
       return watchdog(argv.slice(1));
     case "heartbeat":

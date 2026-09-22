@@ -255,7 +255,7 @@ The cockpit-W3 sentinel role retired per EPIC e-be01fc89 (2026-05-23) —
 mechanical observation distributes to Honker event consumers per
 sibling EPIC e-a946af69 (orchd Phase 3-5 — will not ship; orchd retired per ADR-276). Absent them,
 operators run on-demand audits via `atmux doctor` and the lead's
-self-driven whip cron (see `docs/RUNBOOK-on-demand-audit.md`). The
+supervisory loop (see `docs/RUNBOOK-on-demand-audit.md`). The
 historical sentinel install + recovery surface (W3 `_sentinel` window,
 `sentinel-state.json` state file, `cockpit-has-w3-sentinel` doctor
 probe, ADR-183 dynamic-discovery, ADR-185 epic-team scope) is fully
@@ -299,14 +299,13 @@ git push origin <branch>
 
 Use only when `atmux release` itself is broken (`atmux` binary unbootable, `package.json` non-semver). Per the design intent the legacy form is deprecated for daily use — `atmux release` is the canonical surface.
 
-## §9 — Operator coordination skills (`/atmux:bau`, `/atmux:bruh`, `/atmux:whip`, `/atmux:team`, …)
+## §9 — Operator coordination skills (`/atmux:bau`, `/atmux:bruh`, `/atmux:team`, …)
 
 Atmux ships a Claude Code skills plugin at `plugins/atmux/` (in the atmux source tree) that wraps the cockpit-tier verbs as operator-facing `/slash-commands`. Per [ADR-217](adr/217-atmux-skills-plugin-bundled-and-wizard-installed.md), the plugin is installed by the first-run wizard (`atmux init` per [ADR-200](adr/200-install-wizard-guided-first-run-setup.md) §D5) and symlinked into Claude Code's plugin discovery path so skill upgrades ride atmux releases automatically. Operators who prefer their own dotfiles-resident variants can override by dropping a real directory at `~/.claude/plugins/atmux/` (the wizard preserves it).
 
 | When to run | Skill | What it does |
 |---|---|---|
 | Start-of-session, status snapshot | `/atmux:bau [hours]` | Commit cadence / rate-limits / kanban / churn per team. Default 24h window. Escalates Dormant teams to lead. |
-| Want autonomous-work nudge cadence | `/atmux:whip [verb]` | Autonomous-work nudge loop (run / cadence / watchdog). Pure-shell. |
 | End-of-day unblocker pass | `/atmux:bruh` | Sweeps pending decisions / blockers / flags / worktrees in one pass. |
 | Hands-off 15-min `/atmux:bruh` cadence | `/atmux:bruhloop` | Sugar wrapper that arms `/loop 15mins /atmux:bruh …` so the operator doesn't retype the chain. |
 | One-shot team lifecycle | `/atmux:team <verb>` | start / stop / add / clear / cleanup / bootstrap / rotate-lead / rotate-member. Calls `atmux team` verbs underneath. |

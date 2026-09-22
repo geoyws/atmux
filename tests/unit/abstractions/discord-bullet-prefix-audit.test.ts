@@ -111,12 +111,12 @@ describe("bullet80(`<emoji>` audit — every emitted emoji is allowlisted", () =
 
   test("audit covers known callers (regression coverage anchor)", async () => {
     // Sanity: confirm the audit walks at least the named files from the
-    // dispatch (poke, discorder). If the walker breaks, this catches it
+    // dispatch (lane-tick, discorder). If the walker breaks, this catches it
     // before a silent zero-violation pass masks the regression.
-    // `poke.ts` was `whip.ts` pre-ADR-160 TR2 (refactor: whip→poke rename).
+    // E3 deleted poke.ts (`whip.ts` pre-ADR-160 TR2); anchor follows.
     const files = await walkTsFiles(SRC_ROOT);
     const names = files.map((f) => f.split("/").pop());
-    expect(names).toContain("poke.ts");
+    expect(names).toContain("lane-tick.ts");
     expect(names).toContain("discorder.ts");
     expect(names).toContain("discord.ts");
   });

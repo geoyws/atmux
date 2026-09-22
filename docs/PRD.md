@@ -310,9 +310,9 @@ Source: `bin/atmux` dispatcher + `lib/*.sh` per `PLAN.md` §6.2.
 | Messaging            | `send` / `broadcast` / `tell-lead` / `reply` / `outbox`                   |
 | Task board           | `task add/list/show/move/assign/lane/priority/update/rm`                  |
 | Pull kanban          | `epic` / `story` / `claim` / `done` / `dispatch` / `inbox`                |
-| Cron-fired           | `whip` / `report` / `decisions digest` / `groom` / `whip-resume-check` (1-min, ADR-053 §D4) / `watchdog` (2-min, ADR-057 §D6b) / `pulse` (5-min, cockpit-wide, ADR-086) / `check-lead-rotate` (5-min, cockpit-wide, ADR-143) |
+| Cron-fired           | `report` / `decisions digest` / `groom` / `watchdog` (2-min, ADR-057 §D6b) / `pulse` (5-min, cockpit-wide, ADR-086) / `check-lead-rotate` (5-min, cockpit-wide, ADR-143) |
 | Eternal-improvement  | `improve` (Mode A user-invoked / Mode B idle-fallback) — ADR-052          |
-| R1 wave (budget + self-heal) | `whip-resume-check` (ADR-053) — auto-resume; budget-pause + drift surfaced via `whip` (ADR-053/054); cursor self-heal opt-in via `team.json::whip.selfHealEnabled` (ADR-055); account-swap opt-in via `team.json::whip.accountFallback` (ADR-056) |
+| R1 wave (budget + self-heal, retired E3) | `whip-resume-check` (ADR-053) — auto-resume (retired); budget-pause + drift were surfaced via `whip` (ADR-053/054); cursor self-heal opt-in was via `team.json::whip.selfHealEnabled` (ADR-055); account-swap opt-in was via `team.json::whip.accountFallback` (ADR-056) |
 | Cost + budget        | `cost` / `pause` / `resume`                                               |
 | Maintenance          | `rotate` / `rotate-lead` / `handoff` / `add-member` / `reconfigure` / `dashboard` / `doctor` / `cleanup` / `migrate-to-driver-session` |
 | Decisions / flags    | `decisions add/list/show/digest` / `flags add/list/show/resolve`          |
@@ -360,9 +360,9 @@ pluggable cockpit-W3 whip-manager (ADR-132 / ADR-158 / ADR-183 / ADR-185)
 is fully removed. Mechanical observation + Enter-push + `claim-next`
 re-fires distribute to Honker event consumers per sibling EPIC
 e-a946af69 (orchd Phase 3-5 — these consumers will NOT ship; orchd retired
-per ADR-276). Absent them, the lead's
-self-driven whip cron (`team.whip.intervalMins`) is the canonical
-observe + intervene loop; on-demand audits via `atmux doctor` cover the
+per ADR-276). Absent them, the lead's supervisory loop (lane-tick claims
+plus watchdog staleness) is the canonical observe + intervene loop;
+on-demand audits via `atmux doctor` cover the gap.
 gap. Legacy `team.sentinel` / `cockpit.sentinel` / `cockpit.defaultSentinel`
 config keys are silently accepted via schema-passthrough but no longer
 drive any spawn.
@@ -397,10 +397,10 @@ Custom launch commands via `team.json:.tuiCommands` map per `README.md`
 ├── decisions.md               # auto-mode resolutions (markdown, append-only)
 ├── flags.md                   # operator escalations
 ├── inboxes/<member>.json      # legacy — writes no-op on SQL-canonical teams
-├── logs/                      # send-<member>.log / whip.log / report.log / etc
+├── logs/                      # send-<member>.log / report.log / etc
 ├── state/
 │   ├── session.txt            # captured at `atmux start` (ADR-026 single-session default)
-│   ├── session-start.txt      # epoch seconds (whip's lead-uptime source)
+│   ├── session-start.txt      # epoch seconds (status lead-uptime source)
 │   ├── last-report.epoch      # last `atmux report` fire
 │   ├── budget-pause.json      # per ADR-049 (when paused)
 │   └── cron-rename-migration.log  # ADR-133 TR6: append-only audit of `atmux superdoctor` → `atmux medic` cron-line rewrites (no-op on installs with no legacy lines)
@@ -418,10 +418,10 @@ source of truth.
 
 ### 3.5 Skills plugin (`/atmux:` namespace, optional)
 
-atmux ships with a Claude Code plugin (`plugins/atmux/`) bundling 12
+atmux ships with a Claude Code plugin (`plugins/atmux/`) bundling 11
 operator-cockpit-tier skills under the `/atmux:` namespace —
 `/atmux:bruh`, `/atmux:team`, `/atmux:tell-lead`, `/atmux:session`,
-`/atmux:whip`, `/atmux:bau`, `/atmux:budget`, `/atmux:cockpit-rebuild`,
+`/atmux:bau`, `/atmux:budget`, `/atmux:cockpit-rebuild`,
 `/atmux:ghostbuster`, `/atmux:heads-up`, `/atmux:bruhloop`,
 `/atmux:sweep`. Each wraps a recurring multi-step atmux workflow that
 operators previously either retyped from memory or maintained in
@@ -808,7 +808,7 @@ breakage at cutover.
 
 ### 5.3 Multi-tier fallback chain (kanban `t-706655ee`)
 
-When all team members hit Claude Max budget (whip's ADR-049 budget-pause
+When all team members hit Claude Max budget (ADR-049 budget-pause
 fires), work stops dead until 5h/wk window refresh. Multi-tier fallback
 extends throughput by spawning lower-tier executors in caged tmux +
 dedicated Linux users:
@@ -878,7 +878,7 @@ ADR at **Status: proposed**. Surface detail is in §3.6; business intent is in
 ### 6.1 LLM judge cascade (ADR-116, worktree-local)
 
 Sonnet → Haiku → deterministic fallback. Resilience contract for the
-SOFT classifier (whip's rate-limit triage) and future judge call sites
+SOFT classifier (rate-limit triage) and future judge call sites
 (reviewer / planner judgments).
 
 ### 6.2 Claude Max budget watcher (ADR-049, parent repo + 2026-05-06 ADDENDUM)
@@ -919,7 +919,7 @@ detail (lib edits in main checkout's `atmux-geoyws` branch).
 | Committer      | 4                    | claude        | **Two modes (auto-detected from `team.json`)**: (a) **single-trunk mode** when `worktreeIsolation: false` OR `autoMerge.enabled: false` — only member allowed to commit + push (per pull-model brief); (b) **auto-merge mode** when `worktreeIsolation: true` AND `autoMerge.enabled: true` per [ADR-134](adr/134-in-team-auto-merger.md) — watches `<base>-<member>` branches, auto-merges to base on task-done events via socket-pubsub + 10min cron backstop (`atmux cron-install --template committer-sweep` per ADR-134 T7), runs the 9-state machine (`open → in_progress → ready_to_merge → rebasing? → merging → tested → merged|test_failed → reverted`) with BEGIN IMMEDIATE transactions, 3-way conflict surface (state.db → atmux flag → Discord `[merge-conflict]`), and post-merge test gate via `team.json::autoMerge.testCommand` (default `bun test`). Workers self-commit on their own branches in auto-merge mode; committer owns only the merge layer. |
 | Devops      | 5                    | claude        | Deploys, env, CI/CD, infra |
 | Dba         | 6                    | claude (opt)  | Schema + migrations + data integrity |
-| Ombudsman   | (event-driven)       | claude (opt)  | Per-team complaint adjudicator per [ADR-147](adr/147-ombudsman-and-release-notes.md) §D1. Reads open complaints, triages → epic / wontfix / resolved / defer, appends day-file entry under `docs/release-notes/<Y>/<M>/<Y-M-D>.md`. **Event-driven** (sentinel `.atmux/state/ombudsman-pending.json` + 15min cron tick); NOT in whip cadence (ADR-147 §D2). |
+| Ombudsman   | (event-driven)       | claude (opt)  | Per-team complaint adjudicator per [ADR-147](adr/147-ombudsman-and-release-notes.md) §D1. Reads open complaints, triages → epic / wontfix / resolved / defer, appends day-file entry under `docs/release-notes/<Y>/<M>/<Y-M-D>.md`. **Event-driven** (sentinel `.atmux/state/ombudsman-pending.json` + 15min cron tick); NOT on a polling cadence (ADR-147 §D2). |
 | Members     | 7+                   | any           | Parallel throughput per feature lane |
 
 Driver ↔ lead routing: file-based (`~/.claude/teams/<team>/driver-inbox.md`)

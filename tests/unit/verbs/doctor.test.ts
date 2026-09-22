@@ -52,7 +52,6 @@ import {
   checkTuis,
   checkVendoredTmuxBinary,
   checkWebhook,
-  checkWhipConfigDrift,
   checkWorktreeIsolation,
   checkWorktreeNestedStateDb,
   collectSafeOrphanBranches,
@@ -1036,30 +1035,21 @@ describe("checkCronIntervalDivisors", () => {
     expect(checkCronIntervalDivisors(t)).toEqual([]);
   });
 
-  test("non-divisor whip.intervalMins=7 → 1 yellow row with hint", () => {
+  test("whip.intervalMins no longer probed (E3 removal) → no rows", () => {
     const t = team({ whip: { intervalMins: 7 } as never });
-    const rows = checkCronIntervalDivisors(t);
-    expect(rows.length).toBe(1);
-    expect(rows[0]?.status).toBe("yellow");
-    expect(rows[0]?.label).toBe("cron-interval-divisor");
-    expect(rows[0]?.detail).toContain("whip.intervalMins=7");
-    expect(rows[0]?.detail).toContain("not a divisor of 60");
-    expect(rows[0]?.hint).toContain("1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60");
+    expect(checkCronIntervalDivisors(t)).toEqual([]);
   });
 
-  test("out-of-range whip.intervalMins=120 → yellow row with 'out of range'", () => {
+  test("out-of-range whip.intervalMins=120 ignored (E3 removal) → no rows", () => {
     const t = team({ whip: { intervalMins: 120 } as never });
-    const rows = checkCronIntervalDivisors(t);
-    expect(rows.length).toBe(1);
-    expect(rows[0]?.status).toBe("yellow");
-    expect(rows[0]?.detail).toContain("out of range");
+    expect(checkCronIntervalDivisors(t)).toEqual([]);
   });
 
-  test("zero / negative whip.intervalMins → yellow row out of range", () => {
+  test("zero / negative whip.intervalMins ignored (E3 removal) → no rows", () => {
     const t1 = team({ whip: { intervalMins: 0 } as never });
     const t2 = team({ whip: { intervalMins: -5 } as never });
-    expect(checkCronIntervalDivisors(t1)[0]?.detail).toContain("out of range");
-    expect(checkCronIntervalDivisors(t2)[0]?.detail).toContain("out of range");
+    expect(checkCronIntervalDivisors(t1)).toEqual([]);
+    expect(checkCronIntervalDivisors(t2)).toEqual([]);
   });
 
   test("non-divisor report.heartbeatHours=5 → yellow row with divisor-of-24 hint", () => {
@@ -1099,20 +1089,18 @@ describe("checkCronIntervalDivisors", () => {
 
   test("multiple offenders → one row per field", () => {
     const t = team({
-      whip: { intervalMins: 7 } as never,
       report: { intervalMins: 11, heartbeatHours: 5 } as never,
       decisions: { intervalHours: 7 } as never,
       groom: { atHour: 30 } as never,
       unblocker: { intervalMins: 13 } as never,
     });
     const rows = checkCronIntervalDivisors(t);
-    expect(rows.length).toBe(6);
+    expect(rows.length).toBe(5);
     for (const r of rows) {
       expect(r.status).toBe("yellow");
       expect(r.label).toBe("cron-interval-divisor");
     }
     const labels = rows.map((r) => r.detail ?? "").join("|");
-    expect(labels).toContain("whip.intervalMins=7");
     expect(labels).toContain("report.intervalMins=11");
     expect(labels).toContain("report.heartbeatHours=5");
     expect(labels).toContain("decisions.intervalHours=7");
@@ -1121,7 +1109,7 @@ describe("checkCronIntervalDivisors", () => {
   });
 
   test("non-integer values flagged as out of range", () => {
-    const t = team({ whip: { intervalMins: 3.5 } as never });
+    const t = team({ report: { intervalMins: 3.5 } as never });
     expect(checkCronIntervalDivisors(t)[0]?.detail).toContain("out of range");
   });
 
@@ -1303,7 +1291,7 @@ describe("checkCronBlock", () => {
     expect(r?.status).toBe("red");
     expect(r?.label).toBe("cron-block:missing");
     expect(r?.detail).toContain("alpha");
-    expect(r?.detail).toContain("whip");
+    expect(r?.detail).toContain("report / decisions / groom won't fire");
     expect(r?.hint).toContain("atmux cron-install");
   });
 
@@ -1709,77 +1697,6 @@ describe("doctor() — public verb", () => {
   });
 });
 
-// ---------- ADR-054 §D4 — checkWhipConfigDrift ----------
-
-describe("checkWhipConfigDrift", () => {
-  let workDir: string;
-  let atmuxDir: string;
-
-  beforeEach(async () => {
-    workDir = await mkdtemp(join(tmpdir(), "atmux-doctor-drift-"));
-    atmuxDir = join(workDir, ".atmux");
-    await mkdir(atmuxDir, { recursive: true });
-  });
-
-  afterEach(async () => {
-    await rm(workDir, { recursive: true, force: true });
-  });
-
-  test("absent team.json → no rows (checkTeam owns the absent-file finding)", async () => {
-    expect(await checkWhipConfigDrift(atmuxDir)).toEqual([]);
-  });
-
-  test("valid team.json → no rows", async () => {
-    await writeFile(
-      join(atmuxDir, "team.json"),
-      JSON.stringify({
-        name: "demo",
-        members: [],
-        whip: { staleMin: 60 },
-      }),
-    );
-    expect(await checkWhipConfigDrift(atmuxDir)).toEqual([]);
-  });
-
-  test("strict-mode rejection → yellow row referencing the issue path + code", async () => {
-    await writeFile(
-      join(atmuxDir, "team.json"),
-      JSON.stringify({
-        name: "demo",
-        members: [],
-        whip: { unknownTypoKey: 1 },
-      }),
-    );
-    const rows = await checkWhipConfigDrift(atmuxDir);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.status).toBe("yellow");
-    expect(rows[0]?.label).toBe("poke-config-drift");
-    expect(rows[0]?.detail).toContain("validation failed");
-    expect(rows[0]?.hint).toContain("edit team.json");
-  });
-
-  test("type mismatch → yellow row", async () => {
-    await writeFile(
-      join(atmuxDir, "team.json"),
-      JSON.stringify({
-        name: "demo",
-        members: [],
-        whip: { budgetPauseThreshold: "ninety" },
-      }),
-    );
-    const rows = await checkWhipConfigDrift(atmuxDir);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.detail).toContain("budgetPauseThreshold");
-  });
-
-  test("malformed JSON → yellow row with malformed/full-defaults wording", async () => {
-    await writeFile(join(atmuxDir, "team.json"), "{not valid json");
-    const rows = await checkWhipConfigDrift(atmuxDir);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.detail).toContain("malformed");
-    expect(rows[0]?.detail).toContain("full safe defaults");
-  });
-});
 
 // ---------- ADR-057 §D5a: parseSubmoduleStatus + checkSubmoduleIntegrity ----------
 

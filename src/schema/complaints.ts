@@ -27,10 +27,12 @@ export type ComplaintStatus = (typeof COMPLAINT_STATUSES)[number];
  *  `status`. Documented mapping to `openedBy` / `sourceId` lives on
  *  the task body + ADR follow-up.
  *
- *  Whip-side values (`whip`, `whip-velocity-gate`) added per
- *  t-7bd53cba — cockpit-level whip cron files complaints AGAINST
- *  observed teams using these source-kinds so superdoctor can
- *  distinguish whip-driven escalations from operator/CLI filings.
+ *  Whip-side value (`whip`) added per t-7bd53cba — cockpit-level whip
+ *  cron filed complaints AGAINST observed teams using this source-kind
+ *  so superdoctor can distinguish whip-driven escalations from
+ *  operator/CLI filings. The `whip-velocity-gate` kind is removed
+ *  (E3 velocity-gate deletion); historic rows keep reading (TEXT
+ *  column, verb allowlist no longer accepts it for new filings).
  *
  *  ADR-133: `medic` is the canonical literal; `superdoctor` is the
  *  deprecated alias accepted during the one-release-cycle window. Both
@@ -45,7 +47,6 @@ export const COMPLAINT_SOURCE_KINDS = [
   "cli",
   "cron",
   "whip",
-  "whip-velocity-gate",
 ] as const;
 export type ComplaintSourceKind = (typeof COMPLAINT_SOURCE_KINDS)[number];
 

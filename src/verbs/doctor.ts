@@ -57,7 +57,6 @@ import {
   checkCronIntervalDivisors,
   checkCronOrphans,
   checkReleaseNoteMissing,
-  checkWhipConfigDrift,
 } from "./doctor/cron.ts";
 import { checkDeps } from "./doctor/deps.ts";
 import { checkHonker, checkWebhook } from "./doctor/discord.ts";
@@ -203,9 +202,6 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   // plugin missing its `~/.claude/plugins/cache/<m>/<p>/<v>` entry.
   rows.push(...(await checkCursorPluginCache()));
   rows.push(...(await checkOrphanSessions(team)));
-  // ADR-054 §D4: surface whip-config drift so the operator doesn't
-  // need to wait for the next whip tick to learn about it.
-  rows.push(...(await checkWhipConfigDrift(atmuxDir)));
   // ADR-057 §D5a: submodule pointer integrity (P2 finding per mismatch).
   rows.push(...(await checkSubmoduleIntegrity()));
   // ADR-057 §D5c: inbox-mark verification (P3 finding per orphan id).
@@ -582,7 +578,6 @@ export {
   checkCronIntervalDivisors,
   checkCronOrphans,
   checkReleaseNoteMissing,
-  checkWhipConfigDrift,
 } from "./doctor/cron.ts";
 export { type CheckDepsOpts, checkDeps, installHint } from "./doctor/deps.ts";
 export {

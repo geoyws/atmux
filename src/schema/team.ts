@@ -112,139 +112,79 @@ export const TeamEmojis = z
 export type TeamEmojis = z.infer<typeof TeamEmojis>;
 
 /**
- * `team.json::whip` sub-config — typed per ADR-054 §D1.
+ * `team.json::whip` sub-config — E3 (t-5e1cf30e) shrank this to the two
+ * shapes live code still reads: `stallPrevention` (consumed by
+ * `atmux watchdog` / `atmux status` / claim's done-leg auto-push) and
+ * `leadCtxRotateThreshold` (consumed by `atmux lane-tick`'s §A2
+ * lead-ctx-rotate gate). Every other key (cadence, budget, selfHeal,
+ * velocityGate, accountSwap, fallback, …) belonged to the deleted
+ * poke/whip tick and is gone.
  *
- * `.strict()` is intentional — drift detection requires unknown-key
- * rejection. Passthrough at this level would mask typos like
- * `budgetPauseTreshold` (note typo); strict surfaces them via the
- * 🔧 [whip-config-drift] Discord ping per ADR-054 §D3.
- *
- * Includes ALL fields used by ADR-053 (budget knobs), ADR-055
- * (selfHeal), and ADR-056 (account fallback). Adding a field requires
- * updating this schema — the intentional friction CLAUDE.md asks for.
- *
- * Bash-shared note: bash whip uses several of these fields too
- * (`staleMin`, `leadMaxMin`, `autoRotate`); they predate this schema
- * and are read in bash via `lib/whip.sh:71-81`'s loose jq lookup.
- * Adding the typed schema doesn't change bash behaviour — bash never
- * read a `schemaVersion` and we don't introduce one (per
- * `src/schema/README.md` §"Burn-in compatibility"). Operator typos in
- * fields bash uses also surface via this drift mechanism.
+ * One-release back-compat (ADR-237 §D5 pattern): removed keys stay
+ * parseable but are warn-and-ignored — the loader warns to stderr on
+ * first encounter per key, and the runtime never reads them. The
+ * object is `.strip()` (not `.strict()`) for this release so existing
+ * team.json files with old whip blocks still boot. Next release
+ * restores `.strict()` so typos fail loud again.
  */
-export const TeamWhip = z
-  .object({
-    /** Cron interval in minutes. Default 15 (raised from 5 on
-     *  2026-05-13 per t-dcbff97c §4 — auto-drain teams only need the
-     *  lead awake ~4× / hour; the prior 5min cadence amplified the
-     *  whip rate-limit footprint without commensurate benefit). ADR-054
-     *  OQ-1 surfaces cron-vs-schema mismatch as future doctor work. */
-    intervalMins: z.number().int().positive().default(15),
-    /** Stale-task threshold (min). Default 90 (raised from bash 30 in
-     *  bash E2/S7 — demo-walk tasks legitimately run 60-90min). */
-    staleMin: z.number().int().nonnegative().default(90),
-    /** Lead uptime cutoff (min). ≥this → recommend rotate. Default 60. */
-    leadMaxMin: z.number().int().positive().default(60),
-    /** Auto-rotate execution gate. V-25 only recommends; auto-execute
-     *  is V-26-deferred per ADR-021. Default false. */
-    autoRotate: z.boolean().default(false),
-    /** Number of consecutive DOWN ticks before reporting (false-alert
-     *  dampener). Default 2 per bash E6/S1. Used by readWhipConfig +
-     *  the 2-tick session-DOWN gate; pre-existed ADR-054 — added here
-     *  to keep `.strict()` mode from rejecting valid live team.json. */
-    downConfirmTicks: z.number().int().positive().default(2),
-    /** When `false`, suppress 💓 [whip-heartbeat] on clean ticks.
-     *  Pre-existed ADR-054 — added here to keep `.strict()` from
-     *  rejecting valid live team.json (every whip test sets it). */
-    heartbeat: z.boolean().default(true),
+/** Removed `team.json::whip` keys (E3 deletion) — warn-and-ignore for
+ *  one release per ADR-237 §D5. Includes the historical `cadence` key
+ *  (ADR-237 §D1) so pre-237 team files warn rather than reject. */
+const REMOVED_WHIP_KEYS: Record<string, true> = {
+  cadence: true,
+  intervalMins: true,
+  staleMin: true,
+  leadMaxMin: true,
+  autoRotate: true,
+  downConfirmTicks: true,
+  heartbeat: true,
+  budgetPauseThreshold: true,
+  budgetResumeThreshold: true,
+  budgetWarningBands: true,
+  budgetRefreshLeadMins: true,
+  claudeAccount: true,
+  autoStopAfterIdleTicks: true,
+  selfHealEnabled: true,
+  selfHealRecipes: true,
+  needsApprovalEnabled: true,
+  accountFallback: true,
+  accountSwapTriggerThreshold: true,
+  accountSwapFallbackHealthThreshold: true,
+  accountSwapPerMemberDeadlineSec: true,
+  accountSwapExcludeRoles: true,
+  velocityGate: true,
+  fallback: true,
+};
+
+/** Keys already warned about this process (warn-once per key). */
+const warnedWhipKeys = new Set<string>();
+
+/** ADR-237 §D5 loader half: warn to stderr on removed-key encounter,
+ *  then let `.strip()` below drop the key. Runtime never reads it. */
+function warnRemovedWhipKeys(raw: unknown): unknown {
+  if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
+    for (const key of Object.keys(raw)) {
+      if (REMOVED_WHIP_KEYS[key] === true && !warnedWhipKeys.has(key)) {
+        warnedWhipKeys.add(key);
+        console.warn(
+          `atmux: whip.${key} is deprecated (E3 whip-estate removal) — runtime ignored, remove from your config to silence`,
+        );
+      }
+    }
+  }
+  return raw;
+}
+
+export const TeamWhip = z.preprocess(
+  warnRemovedWhipKeys,
+  z
+    .object({
     /** ADR-080 §A1: lead ctx-pct rotation threshold (0–100). When the
      *  lead pane's `tok N/M` indicator parses to a pct ≥ this, the
-     *  rotate-recommendation fires even if uptime hasn't tripped
-     *  `leadMaxMin`. Default 70 — per George's >30% ctx remaining
-     *  directive (23:02 MYT 2026-05-08). Per-team field; only the lead
-     *  is gated this way (non-lead members rotate on uptime only per
-     *  OQ-A1 default). */
+     *  lane-tick §A2 lead-ctx-rotate gate fires. Default 70 — per
+     *  George's >30% ctx remaining directive (23:02 MYT 2026-05-08).
+     *  Per-team field; only the lead is gated this way. */
     leadCtxRotateThreshold: z.number().int().min(0).max(100).default(70),
-
-    // ---------- ADR-049 / ADR-053 budget knobs ----------
-    /** Pause threshold (% of budget consumed). Default 90. */
-    budgetPauseThreshold: z.number().int().min(0).max(100).default(90),
-    /** Resume threshold (% of budget remaining). Default 80. */
-    budgetResumeThreshold: z.number().int().min(0).max(100).default(80),
-    /** Warning bands (fractions of budget remaining). Default
-     *  [0.50, 0.25, 0.15] — pings at the 50%/25%/15% remaining marks. */
-    budgetWarningBands: z.array(z.number().min(0).max(1)).default([0.5, 0.25, 0.15]),
-    /** Lead time before refresh, in minutes. Default 30. */
-    budgetRefreshLeadMins: z.number().int().nonnegative().default(30),
-    /** Optional Claude account override for budget probe. */
-    claudeAccount: z.string().optional(),
-
-    // ---------- ADR-043 (deprecated under R1; back-compat read) ----------
-    /** Idle-tick threshold for ADR-043 auto-stop. Default 0 (disabled
-     *  under R1 — eternal-improvement Mode B + budget-pause supersede).
-     *  Doctor warns when value > 0 (informational; no behavior change). */
-    autoStopAfterIdleTicks: z.number().int().nonnegative().default(0),
-
-    // ---------- ADR-055 self-heal opt-in ----------
-    /** Enable cursor self-heal recipes. Default false. */
-    selfHealEnabled: z.boolean().default(false),
-    /** Whitelist of recipe ids the cursor may auto-apply. Default []. */
-    selfHealRecipes: z.array(z.string()).default([]),
-
-    // ---------- ADR-085 needs-approval watcher ----------
-    /** Whip §2.5: scan proposed-ADR / untriaged-inbox / long-blocked-
-     *  kanban buckets each tick, fire Discord ping on `total > 0`,
-     *  append a lead-events JSONL row regardless. Default true.
-     *  Setting `false` skips scan + ping + JSONL — pure opt-out. */
-    needsApprovalEnabled: z.boolean().default(true),
-
-    // ---------- ADR-056 account-swap opt-in ----------
-    /** Ordered fallback chain of Claude accounts. Default []. */
-    accountFallback: z.array(z.string()).default([]),
-    /** Threshold (% of budget) at which account-swap fires. Default 75. */
-    accountSwapTriggerThreshold: z.number().int().min(0).max(100).default(75),
-    /** Health threshold for fallback selection — a fallback account is
-     *  viable when BOTH h5 AND wk pct-used are ≤ this. Default 50
-     *  (ADR-056 §D2: "half-used is safe-enough; deeper would over-constrain"). */
-    accountSwapFallbackHealthThreshold: z.number().int().min(0).max(100).default(50),
-    /** Hard cap per single-member swap (seconds). Aborts the swap (not the
-     *  member) if exceeded. Default 300 (ADR-056 §"Push-back" 5-min cap). */
-    accountSwapPerMemberDeadlineSec: z.number().int().positive().default(300),
-    /** Roles excluded from swap pass — their conversation memory doesn't
-     *  survive `atmux handoff`. Default lead/planner/reviewer
-     *  (ADR-056 §"Lead/planner exclusion"). */
-    accountSwapExcludeRoles: z.array(z.string()).default(["lead", "planner", "reviewer"]),
-
-    // ---------- ADR-177 velocity-gate cadence knobs ----------
-    /** ADR-177 §Spec. Per-team tunables for the whip velocity-gate
-     *  classifier + strike counter. Operators rarely need to tune —
-     *  the defaults match the operator-observed failure mode that
-     *  drove the ADR (10 zero-commit heartbeats over 4.5h). The
-     *  feature kill-switch is `crons.whipVelocityGateEnabled` (lives
-     *  in `crons` for fleet-consistent shape with `laneTickEnabled`);
-     *  this sub-config carries the threshold knobs. */
-    velocityGate: z
-      .object({
-        /** Sliding window (minutes) over which the classifier counts
-         *  ground-truth commits. Default 60 — one hour; matches the
-         *  operator's "an hour without a commit on an active team is
-         *  the threshold of suspicion" framing in the Task body. */
-        windowMin: z.number().int().positive().optional(),
-        /** Strike count that escalates to a complaint via the
-         *  superdoctor-escalation pipeline (sibling Task t-e91fec98).
-         *  Default 3 — matches Task body §6 "3+ strikes → file
-         *  complaint for superdoctor". */
-        strikeThreshold: z.number().int().positive().optional(),
-        /** Standby grace window (minutes) — if a ground-truth commit
-         *  landed within this lookback, BAD is downgraded to STANDBY
-         *  (someone shipped recently; the team is not stalled, just
-         *  catching breath). Default 30 — half the main window, so
-         *  the "we just shipped, lead reading the next Task" state
-         *  doesn't strike. */
-        standbyGraceMin: z.number().int().positive().optional(),
-      })
-      .strict()
-      .optional(),
-
     // ---------- ADR-057 v1.1.x stall-prevention block ----------
     /** ADR-057 stall-prevention config. Carries the heartbeat staleness
      *  threshold consumed by `atmux watchdog` (§D6b) + `atmux status`
@@ -254,9 +194,8 @@ export const TeamWhip = z
      *  Pre-promotion the shape lived as a defensive `as { ... unknown
      *  }` cast in three places (src/core/auto-push.ts + src/verbs/
      *  watchdog.ts + src/verbs/status.ts). Schema-level promotion turns
-     *  typos (`heartbeatStaleSecond`) into refusals at boot (surfaced
-     *  via the existing whip-config-drift ping) instead of silent
-     *  defaults at every read site. */
+     *  typos (`heartbeatStaleSecond`) into refusals at boot instead of
+     *  silent defaults at every read site. */
     stallPrevention: z
       .object({
         /** Heartbeat staleness threshold (s). Default 300 (5min) per
@@ -279,47 +218,8 @@ export const TeamWhip = z
       })
       .strict()
       .optional(),
-
-    // ---------- ADR-050 fallback chain v1 (Tier 2 Cursor only) ----------
-    /** ADR-050 §Decision. Per-team Tier 2 (Cursor) fallback policy for
-     *  budget-pause recovery. Distinct from `team.fallback` (top-level,
-     *  ADR-058 multi-tier cascade) — v1 narrows to Tier 2 only with a
-     *  refuse-at-load `tier: z.literal(2)` so a misconfigured Tier 3+
-     *  value can't reach the v1 spawn path. Tier 3+ stays available
-     *  via the ADR-058 entry points (`dispatchFallbackOnPause`); the
-     *  v1 narrow path (`spawnFallbackCage` / `teardownFallbackCage`)
-     *  hits this sub-config. Once ADR-050b folds in Tier 3+, this
-     *  literal lifts. Default: every field has a default → omitting
-     *  the whole `fallback` block is equivalent to `enabled: false`
-     *  (existing teams see no behavior change). */
-    fallback: z
-      .object({
-        /** Master switch (v1 path). Default `false` — operator opts
-         *  in per-team after reading ADR-050 §Trigger semantics. */
-        enabled: z.boolean().default(false),
-        /** Minutes the budget-pause must be continuously active
-         *  before fallback fires. Default 30 — matches ADR-050
-         *  §Trigger §1 "one-off rate-limit blips that resolve
-         *  <30min do NOT spawn a fallback cage". Min 5 — anything
-         *  shorter risks spawning a cage that immediately gets torn
-         *  down when the resume tick arrives. */
-        sustainMins: z.number().int().min(5).default(30),
-        /** ADR-050 v1 supports Tier 2 only. `z.literal(2)` rejects
-         *  any other value at schema-load (the schema-layer half of
-         *  the Reviewer-pre-flag "defense-in-depth refuse at
-         *  schema-load + call-site" gate). Tier 3+ deferred to
-         *  ADR-050b — different isolation model (dedicated Linux
-         *  user, ACL-restricted workspace, no .git in cage). */
-        tier: z.literal(2).default(2),
-        /** Cursor model passed to `cursor-agent --print --model
-         *  <value> --force`. Default `composer-2` per ADR-050
-         *  §"Cursor's mutative-git path is e2e-validated" reference. */
-        cursorModel: z.string().default("composer-2"),
-      })
-      .strict()
-      .optional(),
-  })
-  .strict();
+    }),
+);
 export type TeamWhip = z.infer<typeof TeamWhip>;
 
 /**
@@ -476,8 +376,35 @@ export type TeamUnblocker = z.infer<typeof TeamUnblocker>;
  * that want claudeAccount probes but no auto-resume cron tick) would
  * land here too.
  */
-export const TeamCrons = z
-  .object({
+/** Removed `team.json::crons` key (E3 deletion) — warn-and-ignore for
+ *  one release per ADR-237 §D5. */
+const REMOVED_CRONS_KEYS: Record<string, true> = {
+  whipVelocityGateEnabled: true,
+};
+
+/** Keys already warned about this process (warn-once per key). */
+const warnedCronsKeys = new Set<string>();
+
+/** ADR-237 §D5 loader half for `crons`: warn to stderr on removed-key
+ *  encounter, then let `.strip()` below drop the key. */
+function warnRemovedCronsKeys(raw: unknown): unknown {
+  if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
+    for (const key of Object.keys(raw)) {
+      if (REMOVED_CRONS_KEYS[key] === true && !warnedCronsKeys.has(key)) {
+        warnedCronsKeys.add(key);
+        console.warn(
+          `atmux: crons.${key} is deprecated (E3 whip-estate removal) — runtime ignored, remove from your config to silence`,
+        );
+      }
+    }
+  }
+  return raw;
+}
+
+export const TeamCrons = z.preprocess(
+  warnRemovedCronsKeys,
+  z
+    .object({
     /** ADR-062 §Rollback. When `false`, suppress the `lane-tick` cron
      *  line even if the team has lane-tagged members. Default
      *  `true` (effective only when the gating member-condition holds —
@@ -485,17 +412,6 @@ export const TeamCrons = z
      *  Operators flip this off to halt lane-driven auto-claim without
      *  removing `.lane` annotations from `team.members[]`. */
     laneTickEnabled: z.boolean().default(true),
-    /** ADR-177 §Rollback. Velocity-gate kill-switch. When `false`,
-     *  whip skips ground-truth velocity classification + strike-counter
-     *  bumping entirely (effectively reverting to pre-ADR-177 fake-
-     *  liveness reliance on lead self-report). Default `true` — the
-     *  gate is opt-OUT, not opt-in, because the operator-observed
-     *  failure mode (10 zero-commit heartbeats over 4.5h) is what
-     *  ADR-177 was authored to prevent. Pairs with
-     *  `whip.velocityGate` cadence knobs (window minute count + strike
-     *  threshold); the kill-switch lives here for fleet-consistent
-     *  shape with `laneTickEnabled`. */
-    whipVelocityGateEnabled: z.boolean().default(true),
     /** ADR-157 §D6 — lane-tick cron cadence override (minutes). Default
      *  5 — `/goal` (Claude Code v2.1.139+ skill) drives fast handoff
      *  on the happy path via per-turn Haiku evaluator; lane-tick runs
@@ -516,8 +432,8 @@ export const TeamCrons = z
           "laneTickMins must be a divisor of 60 (1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60) — cronEvery rejects non-divisors per ADR-062",
       })
       .default(5),
-  })
-  .strict();
+    }),
+);
 export type TeamCrons = z.infer<typeof TeamCrons>;
 
 /** ADR-157 §D6 default cadence for lane-tick — pre-T5 was 2 (cron

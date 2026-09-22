@@ -57,9 +57,7 @@ import {
   TMUX_CHILD_ENV_ARGV,
   TMUX_CHILD_UNSET_ENV,
 } from "../../../src/abstractions/tmux.ts";
-import { makeFixSupervisorMissingRecipe } from "../../../src/core/cursor-recipes/fix-supervisor-missing.ts";
 import { defaultTmuxSpawn } from "../../../src/verbs/doctor/types.ts";
-import { sendCageBrief } from "../../../src/verbs/poke.ts";
 import { installSpawnRecorder, type SpawnRecorder } from "../../helpers/spawn-recorder.ts";
 
 const SOCKET_PATH = "/tmp/atmux-child-env-never-created/s";
@@ -164,41 +162,6 @@ describe("ADR-281 §D3 — every tmux spawn site deletes NO_COLOR from the child
     assertNoColorAbsentEverywhere(rec as SpawnRecorder);
   });
 
-  test("core/cursor-recipes/fix-supervisor-missing.ts — list-windows on an unpinned socket", async () => {
-    const recipe = makeFixSupervisorMissingRecipe();
-    await recipe.detect({
-      atmuxDir: "/tmp/atmux-child-env-never-created/.atmux",
-      projectCwd: "/tmp/atmux-child-env-never-created",
-      nowSec: 0,
-      teamName: "t",
-      sessionName: "s",
-    });
-    assertNoColorAbsentEverywhere(rec as SpawnRecorder);
-  });
-
-  test("verbs/poke.ts — sendCageBrief, operator branch (load/paste/send-keys)", async () => {
-    await sendCageBrief(
-      {
-        tier: 2,
-        team: "t",
-        lane: "driver-2",
-        taskId: "t-0",
-        agent: "operator",
-        tmuxTmpdir: "/tmp/atmux-child-env-never-created",
-        tmuxSocket: "atmux-child-env-never-created",
-        workDir: "/tmp/atmux-child-env-never-created/work",
-        sessionName: "s",
-        windowName: "w",
-        createdAt: 0,
-      },
-      "brief body",
-    );
-    const recorder = rec as SpawnRecorder;
-    // All three subprocesses — load-buffer, paste-buffer, send-keys.
-    expect(recorder.calls.length).toBe(3);
-    assertNoColorAbsentEverywhere(recorder);
-  });
-
   test("control — a spawn with no policy DOES carry NO_COLOR through", async () => {
     // The honesty leg. Every assertion above reads "absent"; if `spawn()`
     // simply never passed NO_COLOR to any child, they would all be green
@@ -221,9 +184,10 @@ describe("ADR-281 §D2 — the env(1) argv prefix, at the sites that build one",
   // the branch running under another UID where sudo's `env_reset` throws a
   // spawn-level `unsetEnv` away.
   //
-  // There are THREE such sites in `src/`. Two are reachable and are driven
-  // below; the third is provably unreachable and is pinned as such rather
-  // than given a test that could never fail.
+  // One reachable site remains in `src/` (E3 deleted poke's sendCageBrief
+  // leg): destroyFallbackCage's sudo kill-session, driven below. The
+  // provably-unreachable create branch is pinned as such rather than
+  // given a test that could never fail.
 
   /** A Tier-3 handle. `agent !== "operator"` is what selects the sudo
    *  branch at every one of these sites. */
@@ -267,20 +231,8 @@ describe("ADR-281 §D2 — the env(1) argv prefix, at the sites that build one",
     expect(envPrefixAfterEnv(killCalls[0]?.cmd ?? [])).toEqual([...TMUX_CHILD_ENV_ARGV]);
   });
 
-  test("poke.ts — sendCageBrief's sudo branch carries the prefix on all three calls", async () => {
-    await sendCageBrief(tier3Handle, "brief body");
-    const recorder = rec as SpawnRecorder;
-    const sudoCalls = recorder.calls.filter((c) => (c.cmd[0] ?? "").endsWith("sudo"));
-    // load-buffer, paste-buffer, send-keys — every one of them starts a
-    // tmux process under the agent's UID.
-    expect(sudoCalls.length).toBe(3);
-    expect(sudoCalls.map((c) => envPrefixAfterEnv(c.cmd))).toEqual(
-      sudoCalls.map(() => [...TMUX_CHILD_ENV_ARGV]),
-    );
-  });
-
   test("fallback-cage.ts — createFallbackCage's sudo new-session site is UNREACHABLE", async () => {
-    // The third `TMUX_CHILD_ENV_ARGV` site is dead code, and this pins the
+    // The other `TMUX_CHILD_ENV_ARGV` site is dead code, and this pins the
     // two facts that make it dead rather than asserting nothing:
     //
     //   1. `createFallbackCage` is the ONLY entry to that branch, and it
