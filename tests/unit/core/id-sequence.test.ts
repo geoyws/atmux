@@ -205,6 +205,14 @@ describe("matchesIdPrefix — partial lookup", () => {
     expect(matchesIdPrefix("t-12-abc12345", "t-12")).toBe(true);
   });
 
+  test("scope-only queries are rejected for s and e scopes too (t-c0c01935)", () => {
+    expect(matchesIdPrefix("s-7-deadbeef", "s")).toBe(false);
+    expect(matchesIdPrefix("s-7-deadbeef", "s-")).toBe(false);
+    expect(matchesIdPrefix("s-7-deadbeef", "s-7")).toBe(true);
+    expect(matchesIdPrefix("e-1-3b017960", "e")).toBe(false);
+    expect(matchesIdPrefix("e-1-3b017960", "e-")).toBe(false);
+  });
+
   test("empty query never matches", () => {
     expect(matchesIdPrefix("t-1-3b017960", "")).toBe(false);
   });
