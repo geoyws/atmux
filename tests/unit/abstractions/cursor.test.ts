@@ -1,12 +1,16 @@
 // Unit tests for src/abstractions/cursor.ts (ADR-055 §D3).
 //
-// All cursor invocations + git diff calls are stubbed via injected
-// `spawnFn` + `computePatch`. No real cursor-agent or git in tests.
+// All cursor invocations are stubbed via injected `spawnFn`. Patch
+// computation is stubbed via injected `computePatch`, except the
+// "default patch computation" block which exercises the real
+// defaultComputePatch against a real git binary in mkdtemp sandboxes.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { invokeCursor } from "../../../src/abstractions/cursor.ts";
 import type { CursorJob } from "../../../src/core/cursor-recipes/types.ts";
 
@@ -231,5 +235,51 @@ describe("invokeCursor — session log persistence", () => {
       computePatch: async () => ({ diff: "", files: [] }),
     });
     expect(r.exitCode).toBe(0);
+  });
+});
+
+describe("invokeCursor — default patch computation (real git sandbox)", () => {
+  const execFileAsync = promisify(execFile);
+  const git = (cwd: string, args: string[]) =>
+    execFileAsync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main", ...args], { cwd });
+  const okSpawn = async () => ({ exitCode: 0, stdout: '{"tokensUsed":10}', stderr: "" });
+
+  test("computes diff + files from a real sandbox repo", async () => {
+    const repo = join(tmpRoot, "repo-diff");
+    await mkdir(repo, { recursive: true });
+    await git(repo, ["init"]);
+    await writeFile(join(repo, "a.txt"), "hello\n");
+    await writeFile(join(repo, "old.txt"), "old content\n");
+    await git(repo, ["add", "-A"]);
+    await git(repo, ["commit", "-m", "init"]);
+    // Unstaged modification (surfaced via `git diff`) + staged rename
+    // (surfaced via `git status -s` as `old.txt -> new.txt`).
+    await writeFile(join(repo, "a.txt"), "hello\nADDED_MARKER_LINE\n");
+    await git(repo, ["mv", "old.txt", "new.txt"]);
+    const r = await invokeCursor(sampleJob({ cwd: repo }), { spawnFn: okSpawn });
+    expect(r.exitCode).toBe(0);
+    expect(r.patch.diff).toContain("ADDED_MARKER_LINE");
+    expect(r.patch.files).toContain("a.txt");
+    expect(r.patch.files).toContain("new.txt");
+    expect(r.patch.files.every((f) => !f.includes("->"))).toBe(true);
+  });
+
+  test("returns empty patch when the cwd is not a git repo / unreachable", async () => {
+    const r = await invokeCursor(sampleJob({ cwd: join(tmpRoot, "nope") }), { spawnFn: okSpawn });
+    expect(r.exitCode).toBe(0);
+    expect(r.patch).toEqual({ diff: "", files: [] });
+  });
+
+  test("reports clean repo as empty files but valid diff string", async () => {
+    const repo = join(tmpRoot, "repo-clean");
+    await mkdir(repo, { recursive: true });
+    await git(repo, ["init"]);
+    await writeFile(join(repo, "a.txt"), "hello\n");
+    await git(repo, ["add", "-A"]);
+    await git(repo, ["commit", "-m", "init"]);
+    const r = await invokeCursor(sampleJob({ cwd: repo }), { spawnFn: okSpawn });
+    expect(r.exitCode).toBe(0);
+    expect(r.patch.files).toEqual([]);
+    expect(typeof r.patch.diff).toBe("string");
   });
 });
