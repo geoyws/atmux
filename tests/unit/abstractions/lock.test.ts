@@ -1,7 +1,7 @@
 // Unit tests for src/abstractions/lock.ts (ADR-005).
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -498,5 +498,86 @@ describe("ADR-057 §D3a — acquireWithTTL crashed-PID recovery", () => {
     // process.pid is alive — should not force-release; wait + timeout.
     expect(caught).not.toBeNull();
     await child.exited;
+  });
+});
+
+describe("audit failure silence", () => {
+  test("unwritable auditDir → recovery stays silent, acquire path unmasked", async () => {
+    // chmod-based denial is a no-op for uid 0 (root bypasses directory
+    // DAC), so the test would fail deterministically there — same guard
+    // as tests/unit/verbs/doctor.test.ts.
+    if (process.getuid?.() === 0) return;
+    const target = join(dir, "audit-unwritable");
+    const lockPath = `${target}.lock`;
+    const auditDir = join(dir, "logs-unwritable");
+    await mkdir(auditDir, { recursive: true });
+
+    // Ready handshake (mirrors the orphan test above): the parent must
+    // not stamp the dead PID until the child actually holds the flock,
+    // or the probe succeeds vacuously and the audit branch is skipped.
+    const child = Bun.spawn(
+      [
+        "bun",
+        "-e",
+        `
+        const lock = await import("${process.cwd()}/src/abstractions/lock.ts");
+        const h = await lock.acquire("${target}");
+        process.stdout.write("ready\\n");
+        await new Promise(r => setTimeout(r, 1500));
+        await h.release();
+      `,
+      ],
+      { stdout: "pipe" },
+    );
+    const reader = child.stdout.getReader();
+    try {
+      const decoder = new TextDecoder();
+      let readyText = "";
+      while (!readyText.includes("ready\n")) {
+        const chunk = await reader.read();
+        if (chunk.done) {
+          throw new Error("child exited before signaling ready");
+        }
+        readyText += decoder.decode(chunk.value, { stream: true });
+      }
+      await writeFile(lockPath, "99999999\n");
+      const oldEpoch = Date.now() / 1000 - 600;
+      const { utimes } = await import("node:fs/promises");
+      await utimes(lockPath, oldEpoch, oldEpoch);
+      await chmod(auditDir, 0o555);
+
+      // Positive control: the dead PID survived the race, so a missing
+      // audit log proves a swallowed write rather than a skipped branch.
+      expect(await readLockOwnerPid(lockPath)).toBe(99999999);
+      let caught: LockTimeoutError | null = null;
+      try {
+        await acquireWithTTL(target, {
+          ttlSec: 300,
+          auditDir,
+          timeoutMs: 200,
+          retryDelayMs: 30,
+        });
+      } catch (e) {
+        if (e instanceof LockTimeoutError) caught = e;
+      } finally {
+        await chmod(auditDir, 0o755).catch(() => {});
+      }
+      // Real flock contention → still times out; the audit write failure
+      // must not mask the acquire path.
+      expect(caught).not.toBeNull();
+      // Confirm no audit log file appeared.
+      const { stat } = await import("node:fs/promises");
+      let auditExisted = false;
+      try {
+        await stat(join(auditDir, "lock-recovery.log"));
+        auditExisted = true;
+      } catch {
+        auditExisted = false;
+      }
+      expect(auditExisted).toBe(false);
+    } finally {
+      await reader.cancel().catch(() => {});
+      await child.exited;
+    }
   });
 });
