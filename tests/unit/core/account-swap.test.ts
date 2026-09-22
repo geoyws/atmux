@@ -1121,3 +1121,282 @@ describe("runAccountSwapCheck — ADR-078 refreshOnNearExpiry contract", () => {
 
 // Suppress unused-var warning for the imported type alias.
 void undefined as DiscordSendOpts | undefined;
+// ---------- perMemberSwap — failure-seam catches (strict-coverage residuals) ----------
+
+describe("perMemberSwap — failure-seam catches", () => {
+  test("post-spawn deadline exceeded → aborted + fail ping", async () => {
+    const T0 = 1_700_000_000_000;
+    const { deps, calls } = makePerMemberDeps();
+    let spawned = false;
+    deps.spawnShadow = async (opts) => {
+      spawned = true;
+      calls.spawnShadow.push({
+        originalName: opts.originalName,
+        targetAccount: opts.targetAccount,
+      });
+      return { shadowName: `${opts.originalName}-swap`, ready: true };
+    };
+    // Flag-based clock: T0 until the spawn lands, T0+350s after —
+    // trips only the post-spawn deadline check (803-815).
+    deps.nowMs = () => (spawned ? T0 + 350_000 : T0);
+    const result = await perMemberSwap(
+      atmuxDir,
+      "alpha",
+      pendingDecision("icloud", "ifca"),
+      "atmux",
+      { perMemberDeadlineSec: 300, passProgress: { done: 0, total: 1 } },
+      deps,
+    );
+    expect(result.decision.status).toBe("aborted");
+    expect(calls.discordTemplates).toContain("whip-account-swap-fail");
+  });
+
+  test("success-ping rejection is logged, result stays done", async () => {
+    const logs: string[] = [];
+    const { deps, calls } = makePerMemberDeps({ log: (m) => logs.push(m) });
+    deps.discordSend = async (opts) => {
+      calls.discordTemplates.push(opts.template);
+      if (opts.template === "whip-account-swap-success") throw new Error("discord-boom");
+    };
+    const result = await perMemberSwap(
+      atmuxDir,
+      "alpha",
+      pendingDecision("icloud", "ifca"),
+      "atmux",
+      { perMemberDeadlineSec: 300, passProgress: { done: 0, total: 1 } },
+      deps,
+    );
+    expect(result.decision.status).toBe("done");
+    expect(logs.some((m) => /discord success ping failed/.test(m))).toBe(true);
+  });
+
+  test("raiseFlag rejection is logged, abort still returned", async () => {
+    const logs: string[] = [];
+    const { deps, calls } = makePerMemberDeps({ log: (m) => logs.push(m) });
+    deps.probeTarget = async (account) => ({
+      ...probeAllowed(account, 0, 0),
+      status: "probe-401",
+    });
+    deps.raiseFlag = async () => {
+      throw new Error("flag-boom");
+    };
+    const result = await perMemberSwap(
+      atmuxDir,
+      "alpha",
+      pendingDecision("icloud", "ifca"),
+      "atmux",
+      { perMemberDeadlineSec: 300, passProgress: { done: 0, total: 1 } },
+      deps,
+    );
+    expect(result.decision.status).toBe("aborted");
+    expect(logs.some((m) => /raiseFlag failed/.test(m))).toBe(true);
+    // flagId fallback (null) must not block the fail ping.
+    expect(calls.discordTemplates).toContain("whip-account-swap-fail");
+  });
+
+  test("fail-ping rejection is logged, abort still returned", async () => {
+    const logs: string[] = [];
+    const { deps } = makePerMemberDeps({ log: (m) => logs.push(m) });
+    deps.probeTarget = async (account) => ({
+      ...probeAllowed(account, 0, 0),
+      status: "probe-401",
+    });
+    deps.discordSend = async () => {
+      throw new Error("discord-boom");
+    };
+    const result = await perMemberSwap(
+      atmuxDir,
+      "alpha",
+      pendingDecision("icloud", "ifca"),
+      "atmux",
+      { perMemberDeadlineSec: 300, passProgress: { done: 0, total: 1 } },
+      deps,
+    );
+    expect(result.decision.status).toBe("aborted");
+    expect(logs.some((m) => /discord fail ping failed/.test(m))).toBe(true);
+  });
+});
+
+// ---------- runSwapPass — pass-close failure seams ----------
+
+async function seedZeroPendingPass(): Promise<void> {
+  await writeAccountSwapState(atmuxDir, {
+    active: true,
+    passId: "swap-closeme",
+    startedAt: 1_700_000_000,
+    trigger: { account: "icloud", h5_pct_used: 76, wk_pct_used: 23 },
+    decisions: {
+      alpha: {
+        from: "icloud",
+        to: "ifca",
+        status: "done",
+        startedAt: 1_700_000_000,
+        finishedAt: 1_700_000_100,
+        shadowName: "alpha-swap",
+      },
+    },
+    history: [],
+  });
+}
+
+describe("runSwapPass — pass-close failure seams", () => {
+  test("zero pending closes the pass", async () => {
+    await seedZeroPendingPass();
+    const { deps } = makePerMemberDeps();
+    const r = await runSwapPass(atmuxDir, deps, { team: "atmux" });
+    expect(r.verdict).toBe("pass-complete");
+    expect(r.state?.active).toBe(false);
+    expect(r.state?.history).toHaveLength(1);
+  });
+
+  test("pass-complete ping rejection is logged", async () => {
+    await seedZeroPendingPass();
+    const logs: string[] = [];
+    const { deps } = makePerMemberDeps();
+    const r = await runSwapPass(atmuxDir, deps, {
+      team: "atmux",
+      log: (m) => logs.push(m),
+      discordSend: async () => {
+        throw new Error("discord-boom");
+      },
+    });
+    expect(r.verdict).toBe("pass-complete");
+    expect(logs.some((m) => /pass-complete ping failed/.test(m))).toBe(true);
+  });
+
+  test("driver-inbox append rejection is logged", async () => {
+    await seedZeroPendingPass();
+    const logs: string[] = [];
+    const { deps } = makePerMemberDeps();
+    const r = await runSwapPass(atmuxDir, deps, {
+      team: "atmux",
+      log: (m) => logs.push(m),
+      appendDriverInbox: async () => {
+        throw new Error("inbox-boom");
+      },
+    });
+    expect(r.verdict).toBe("pass-complete");
+    expect(logs.some((m) => /driver-inbox append failed/.test(m))).toBe(true);
+  });
+
+  test("default inbox writer persists the pass-close lines", async () => {
+    await seedZeroPendingPass();
+    // Delete (not undefined-assign) so the ?? chain falls through to
+    // defaultAppendDriverInbox under exactOptionalPropertyTypes.
+    const { deps } = makePerMemberDeps();
+    delete deps.appendDriverInbox;
+    const r = await runSwapPass(atmuxDir, deps, { team: "atmux" });
+    expect(r.verdict).toBe("pass-complete");
+    const inbox = await readFile(join(atmuxDir, "driver-inbox.md"), "utf8");
+    expect(inbox).toContain("swap-closeme");
+    expect(inbox).toContain("alpha-swap");
+    expect(inbox).toContain("ifca");
+  });
+});
+// ---------- loadAccountSwapState — validation residuals ----------
+
+describe("loadAccountSwapState — validation residuals", () => {
+  test("decision with unknown status → null (corrupt state)", async () => {
+    const bad = {
+      active: true,
+      passId: "swap-corrupt01",
+      startedAt: 1_700_000_000,
+      trigger: { account: "icloud", h5_pct_used: 76, wk_pct_used: 23 },
+      decisions: {
+        alpha: {
+          from: "icloud",
+          to: "ifca",
+          status: "bogus-status",
+          startedAt: null,
+          finishedAt: null,
+          shadowName: null,
+        },
+      },
+      history: [],
+    };
+    await writeAccountSwapState(atmuxDir, bad as unknown as AccountSwapState);
+    expect(await loadAccountSwapState(atmuxDir)).toBeNull();
+  });
+
+  test("non-empty valid history round-trips", async () => {
+    await writeAccountSwapState(atmuxDir, {
+      active: false,
+      passId: "swap-history01",
+      startedAt: 1_700_000_000,
+      trigger: { account: "icloud", h5_pct_used: 76, wk_pct_used: 23 },
+      decisions: {},
+      history: [
+        {
+          passId: "swap-history01",
+          completedAt: 1_700_000_100,
+          swapped: 1,
+          excluded: 0,
+          aborted: 0,
+        },
+      ],
+    });
+    const got = await loadAccountSwapState(atmuxDir);
+    expect(got?.history).toHaveLength(1);
+    expect(got?.history[0]?.swapped).toBe(1);
+  });
+});
+// ---------- default-seam fallbacks (no injected clock/logger) ----------
+
+describe("default seams — real clock + no-op log fallbacks", () => {
+  test("perMemberSwap without nowMs uses the real clock, still lands done", async () => {
+    const { deps } = makePerMemberDeps();
+    delete deps.nowMs;
+    const result = await perMemberSwap(
+      atmuxDir,
+      "alpha",
+      pendingDecision("icloud", "ifca"),
+      "atmux",
+      { perMemberDeadlineSec: 300, passProgress: { done: 0, total: 1 } },
+      deps,
+    );
+    expect(result.decision.status).toBe("done");
+  });
+
+  test("runSwapPass without nowMs/log closes a zero-pending pass", async () => {
+    await seedZeroPendingPass();
+    const { deps } = makePerMemberDeps();
+    delete deps.nowMs;
+    const r = await runSwapPass(atmuxDir, deps, { team: "atmux" });
+    expect(r.verdict).toBe("pass-complete");
+    expect(r.state?.active).toBe(false);
+  });
+
+  test("abort without logger still returns aborted when raiseFlag throws", async () => {
+    const { deps, calls } = makePerMemberDeps();
+    deps.probeTarget = async (account) => ({
+      ...probeAllowed(account, 0, 0),
+      status: "probe-401",
+    });
+    deps.raiseFlag = async () => {
+      throw new Error("flag-boom");
+    };
+    const result = await perMemberSwap(
+      atmuxDir,
+      "alpha",
+      pendingDecision("icloud", "ifca"),
+      "atmux",
+      { perMemberDeadlineSec: 300, passProgress: { done: 0, total: 1 } },
+      deps,
+    );
+    expect(result.decision.status).toBe("aborted");
+    expect(calls.discordTemplates).toContain("whip-account-swap-fail");
+  });
+
+  test("pass-close without logger swallows a throwing pass-complete ping", async () => {
+    await seedZeroPendingPass();
+    const { deps } = makePerMemberDeps();
+    const r = await runSwapPass(atmuxDir, deps, {
+      team: "atmux",
+      discordSend: async () => {
+        throw new Error("discord-boom");
+      },
+    });
+    expect(r.verdict).toBe("pass-complete");
+    expect(r.state?.active).toBe(false);
+  });
+});
