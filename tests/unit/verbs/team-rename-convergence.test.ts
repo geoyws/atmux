@@ -313,6 +313,305 @@ describe("verifyConvergence", () => {
   });
 });
 
+describe("verifyConvergence — residual catches", () => {
+  const tmpDirs: string[] = [];
+  afterEach(async () => {
+    for (const d of tmpDirs.splice(0)) await rm(d, { recursive: true, force: true });
+  });
+
+  async function convergedCockpitPath(): Promise<{ dir: string; path: string }> {
+    const dir = await mkdtemp(join(tmpdir(), "atmux-convergence-cockpit-"));
+    tmpDirs.push(dir);
+    return { dir, path: await cockpitFile(dir, [{ type: "team", name: "new-team" }]) };
+  }
+
+  test("team.json unreadable → 'team-json-name' read-failed gap", async () => {
+    const root = await mkdtemp(join(tmpdir(), "atmux-convergence-bare-"));
+    tmpDirs.push(root);
+    const { path: cockpitPath } = await convergedCockpitPath();
+
+    const result = await verifyConvergence({
+      atmuxDir: join(root, ".atmux"),
+      newName: "new-team",
+      newSession: "new-team",
+      oldName: "old-team",
+      cageTmux: tmuxWithSession("new-team"),
+      cockpitTmux: cockpitTmuxWithWindow("new-team"),
+      cockpitSession: "atmux_cockpit",
+      cockpitPath,
+      crontabRead: async () =>
+        "# >>> atmux:team=new-team\n*/5 * * * * echo\n# <<< atmux:team=new-team\n",
+    });
+    expect(
+      result.gaps.some((g) => g.check === "team-json-name" && /read failed/.test(g.detail)),
+    ).toBe(true);
+  });
+
+  test("cockpit.json unparsable → 'cockpit-registry' read/parse-failed gap", async () => {
+    const { root, atmuxDir } = await fixture({ teamName: "new-team" });
+    tmpDirs.push(root);
+    const cockpitDir = await mkdtemp(join(tmpdir(), "atmux-convergence-cockpit-"));
+    tmpDirs.push(cockpitDir);
+    const cockpitPath = join(cockpitDir, "cockpit.json");
+    await writeFile(cockpitPath, "{not json");
+
+    const result = await verifyConvergence({
+      atmuxDir,
+      newName: "new-team",
+      newSession: "new-team",
+      oldName: "old-team",
+      cageTmux: tmuxWithSession("new-team"),
+      cockpitTmux: cockpitTmuxWithWindow("new-team"),
+      cockpitSession: "atmux_cockpit",
+      cockpitPath,
+      crontabRead: async () =>
+        "# >>> atmux:team=new-team\n*/5 * * * * echo\n# <<< atmux:team=new-team\n",
+    });
+    expect(
+      result.gaps.some(
+        (g) => g.check === "cockpit-registry" && /read\/parse failed/.test(g.detail),
+      ),
+    ).toBe(true);
+  });
+
+  test("stale oldName team-viewer window → gap", async () => {
+    const { root, atmuxDir } = await fixture({ teamName: "new-team" });
+    tmpDirs.push(root);
+    const { path: cockpitPath } = await convergedCockpitPath();
+    const cockpitTmux = {
+      window: {
+        listWindows: async () => [
+          { index: 1, id: "@1", name: "new-team", active: true },
+          { index: 2, id: "@2", name: "old-team", active: false },
+        ],
+      },
+    } as unknown as TmuxNamespace;
+
+    const result = await verifyConvergence({
+      atmuxDir,
+      newName: "new-team",
+      newSession: "new-team",
+      oldName: "old-team",
+      cageTmux: tmuxWithSession("new-team"),
+      cockpitTmux,
+      cockpitSession: "atmux_cockpit",
+      cockpitPath,
+      crontabRead: async () =>
+        "# >>> atmux:team=new-team\n*/5 * * * * echo\n# <<< atmux:team=new-team\n",
+    });
+    expect(
+      result.gaps.some(
+        (g) =>
+          g.check === "cockpit-team-viewer-window" &&
+          g.detail.includes("still has window named 'old-team'"),
+      ),
+    ).toBe(true);
+  });
+
+  test("crontabRead rejection → 'leftover-cron-block' read-failed gap", async () => {
+    const { root, atmuxDir } = await fixture({ teamName: "new-team" });
+    tmpDirs.push(root);
+    const { path: cockpitPath } = await convergedCockpitPath();
+
+    const result = await verifyConvergence({
+      atmuxDir,
+      newName: "new-team",
+      newSession: "new-team",
+      oldName: "old-team",
+      cageTmux: tmuxWithSession("new-team"),
+      cockpitTmux: cockpitTmuxWithWindow("new-team"),
+      cockpitSession: "atmux_cockpit",
+      cockpitPath,
+      crontabRead: async () => {
+        throw new Error("cron exploded");
+      },
+    });
+    expect(
+      result.gaps.some((g) => g.check === "leftover-cron-block" && /read failed/.test(g.detail)),
+    ).toBe(true);
+  });
+
+  test("legacy root atmuxDir exercises parentDirOf fallback", async () => {
+    const { root } = await fixture({ teamName: "new-team" });
+    tmpDirs.push(root);
+    const { path: cockpitPath } = await convergedCockpitPath();
+
+    const result = await verifyConvergence({
+      atmuxDir: root,
+      newName: "new-team",
+      newSession: "new-team",
+      oldName: "old-team",
+      cageTmux: tmuxWithSession("new-team"),
+      cockpitTmux: cockpitTmuxWithWindow("new-team"),
+      cockpitSession: "atmux_cockpit",
+      cockpitPath,
+      crontabRead: async () =>
+        "# >>> atmux:team=new-team\n*/5 * * * * echo\n# <<< atmux:team=new-team\n",
+    });
+    expect(result.converged).toBe(true);
+  });
+
+  test("default crontab reader runs without a seam", async () => {
+    const { root, atmuxDir } = await fixture({ teamName: "new-team" });
+    tmpDirs.push(root);
+    const { path: cockpitPath } = await convergedCockpitPath();
+
+    const result = await verifyConvergence({
+      atmuxDir,
+      newName: "new-team",
+      newSession: "new-team",
+      oldName: "old-team-never-in-any-crontab",
+      cageTmux: tmuxWithSession("new-team"),
+      cockpitTmux: cockpitTmuxWithWindow("new-team"),
+      cockpitSession: "atmux_cockpit",
+      cockpitPath,
+    });
+    // The real defaultCrontabIO().read() runs here. Two machine
+    // outcomes: (a) crontab is available and returns the host table
+    // without our never-used marker → no leftover-cron-block gap;
+    // (b) crontab is unavailable (CI sandbox) and throws → a single
+    // read-failed gap. Either way there must be no false stale-marker gap.
+    for (const g of result.gaps) {
+      expect(g.check !== "leftover-cron-block" || /read failed/.test(g.detail)).toBe(true);
+    }
+  });
+  test("cage list-sessions failure → 'cage-session-alive' failure gap", async () => {
+    const { root, atmuxDir } = await fixture({ teamName: "new-team" });
+    tmpDirs.push(root);
+    const { path: cockpitPath } = await convergedCockpitPath();
+    const cageTmux = {
+      session: {
+        listSessions: async () => {
+          throw new Error("cage socket missing");
+        },
+      },
+    } as unknown as TmuxNamespace;
+
+    const result = await verifyConvergence({
+      atmuxDir,
+      newName: "new-team",
+      newSession: "new-team",
+      oldName: "old-team",
+      cageTmux,
+      cockpitTmux: cockpitTmuxWithWindow("new-team"),
+      cockpitSession: "atmux_cockpit",
+      cockpitPath,
+      crontabRead: async () =>
+        "# >>> atmux:team=new-team\n*/5 * * * * echo\n# <<< atmux:team=new-team\n",
+    });
+    expect(
+      result.gaps.some(
+        (g) => g.check === "cage-session-alive" && /list-sessions failed/.test(g.detail),
+      ),
+    ).toBe(true);
+  });
+
+  test("cockpit missing newName window → 'cockpit-team-viewer-window' gap", async () => {
+    const { root, atmuxDir } = await fixture({ teamName: "new-team" });
+    tmpDirs.push(root);
+    const { path: cockpitPath } = await convergedCockpitPath();
+
+    const result = await verifyConvergence({
+      atmuxDir,
+      newName: "new-team",
+      newSession: "new-team",
+      oldName: "old-team",
+      cageTmux: tmuxWithSession("new-team"),
+      cockpitTmux: cockpitTmuxWithWindow("some-other-window"),
+      cockpitSession: "atmux_cockpit",
+      cockpitPath,
+      crontabRead: async () =>
+        "# >>> atmux:team=new-team\n*/5 * * * * echo\n# <<< atmux:team=new-team\n",
+    });
+    expect(
+      result.gaps.some(
+        (g) =>
+          g.check === "cockpit-team-viewer-window" &&
+          g.detail.includes("has no window named 'new-team'"),
+      ),
+    ).toBe(true);
+  });
+  test("cage sessions without newSession lists found names", async () => {
+    const { root, atmuxDir } = await fixture({ teamName: "new-team" });
+    tmpDirs.push(root);
+    const { path: cockpitPath } = await convergedCockpitPath();
+
+    const result = await verifyConvergence({
+      atmuxDir,
+      newName: "new-team",
+      newSession: "new-team",
+      oldName: "old-team",
+      cageTmux: tmuxWithSession("stale-session"),
+      cockpitTmux: cockpitTmuxWithWindow("new-team"),
+      cockpitSession: "atmux_cockpit",
+      cockpitPath,
+      crontabRead: async () => "",
+    });
+    expect(
+      result.gaps.some(
+        (g) => g.check === "cage-session-alive" && g.detail.includes("stale-session"),
+      ),
+    ).toBe(true);
+  });
+
+  test("blank session anchor on single-session team → '<null>' gap", async () => {
+    const { root, atmuxDir } = await fixture({
+      teamName: "new-team",
+      sessionAnchor: "\n",
+    });
+    tmpDirs.push(root);
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      JSON.stringify({ name: "new-team", members: [], singleSession: true }),
+    );
+    const { path: cockpitPath } = await convergedCockpitPath();
+
+    const result = await verifyConvergence({
+      atmuxDir,
+      newName: "new-team",
+      newSession: "new-team",
+      oldName: "old-team",
+      cageTmux: tmuxWithSession("new-team"),
+      cockpitTmux: cockpitTmuxWithWindow("new-team"),
+      cockpitSession: "atmux_cockpit",
+      cockpitPath,
+      crontabRead: async () => "",
+    });
+    expect(
+      result.gaps.some((g) => g.check === "session-anchor" && g.detail.includes("anchor='<null>'")),
+    ).toBe(true);
+  });
+
+  test("legacy flat teams[] cockpit migrates cleanly", async () => {
+    const { root, atmuxDir } = await fixture({ teamName: "new-team" });
+    tmpDirs.push(root);
+    const cockpitDir = await mkdtemp(join(tmpdir(), "atmux-convergence-cockpit-"));
+    tmpDirs.push(cockpitDir);
+    const cockpitPath = join(cockpitDir, "cockpit.json");
+    await writeFile(
+      cockpitPath,
+      JSON.stringify({
+        cockpitSession: "atmux_cockpit",
+        teams: [{ name: "new-team", enabled: true, root: "/r", sessions: [] }],
+      }),
+    );
+
+    const result = await verifyConvergence({
+      atmuxDir,
+      newName: "new-team",
+      newSession: "new-team",
+      oldName: "old-team",
+      cageTmux: tmuxWithSession("new-team"),
+      cockpitTmux: cockpitTmuxWithWindow("new-team"),
+      cockpitSession: "atmux_cockpit",
+      cockpitPath,
+      crontabRead: async () =>
+        "# >>> atmux:team=new-team\n*/5 * * * * echo\n# <<< atmux:team=new-team\n",
+    });
+    expect(result.converged).toBe(true);
+  });
+});
+
 // ---------- formatConvergenceHint ----------
 
 describe("formatConvergenceHint", () => {
