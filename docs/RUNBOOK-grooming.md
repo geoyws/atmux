@@ -38,6 +38,18 @@ atmux groom --dry-run --zombie-sweep
 atmux groom --quiet --zombie-sweep
 ```
 
+### Test-cage layer (`atmux test-reaper`, per ADR-178)
+
+```bash
+# Dry-run (lists orphans, kills nothing):
+atmux test-reaper --dry-run
+
+# Reap sidecar-traced orphans older than 30 min with dead parents:
+atmux test-reaper
+```
+
+`spinTmux` writes a `.leak-tracker.json` sidecar beside every test socket; `test-reaper` reaps only sidecar-traced dirs whose parent pid is dead and whose age exceeds `--max-age-min` (default 30). Dirs without a sidecar are warned on and skipped. This sub-op's `--zombie-sweep` remains the sidecar-independent backstop.
+
 ### Pattern matching
 
 The sub-op walks `os.tmpdir()` and matches directories against `^atmux-(cockpit-)?[^/]+-[^/]+$`. The **trailing `-<suffix>`** is the mkdtemp random tail; production cage dirs like `/tmp/atmux-<teamname>/sock` lack this suffix and are deliberately excluded.
