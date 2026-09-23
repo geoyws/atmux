@@ -1218,7 +1218,9 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   //
   //     Scope: ADDITIVE only — `onlyTeam` mode in
   //     `reconcileCockpitSession` skips orphan removal + superdoctor
-  //     relocation. Un-rostered teams + cockpit.json-missing + team-
+  //     relocation, and (t-1dc684dd) medic provisioning entirely:
+  //     onlyTeam startup adds just the requested team's viewer.
+  //     Un-rostered teams + cockpit.json-missing + team-
   //     rostered-but-disabled all silent-skip (no auto-rostering — that
   //     stays operator-explicit).
   //

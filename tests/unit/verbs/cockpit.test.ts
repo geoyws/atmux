@@ -9,7 +9,7 @@ import type { TmuxConfig, TmuxNamespace } from "../../../src/abstractions/tmux.t
 import { buildGroupTopology, enabledTeams, groupSocketPath } from "../../../src/core/cockpit.ts";
 import type { Logger } from "../../../src/core/tui.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
-import type { Cockpit as CockpitShape, CockpitTeam } from "../../../src/schema/cockpit.ts";
+import type { Cockpit as CockpitShape, CockpitMedic, CockpitTeam } from "../../../src/schema/cockpit.ts";
 import type { Team } from "../../../src/schema/team.ts";
 import {
   applyCagePrefix,
@@ -1515,7 +1515,37 @@ describe("reconcileCockpitSession — onlyTeam scope (ADR-063 ergonomic fix)", (
     }
   });
 
-  test("onlyTeam filters teams[] arg defensively (mismatched name ignored)", async () => {
+  test("onlyTeam does NOT create _medic even when medic enabled (t-1dc684dd)", async () => {
+    const fx = await spinTmux("cockpit-onlyteam-no-medic");
+    try {
+      const { logger } = makeLogger();
+      // Per-team reconcile with an ENABLED medic block — fleet-wide
+      // mode would provision _medic, but onlyTeam must add just the
+      // requested team's viewer (atmux start once spawned a live
+      // _medic pane as a side effect).
+      await reconcileCockpitSession(
+        fx.tmux,
+        "s",
+        [{ name: "alpha", root: "/a", enabled: true } as CockpitTeam],
+        logger,
+        {},
+        { enabled: true } as CockpitMedic,
+        false,
+        { onlyTeam: "alpha" },
+      );
+      const names = (await fx.tmux.window.listWindows("s")).map((w) => w.name);
+      expect(names).toContain("alpha");
+      expect(names).toContain("_superdriver");
+      expect(names).not.toContain("_medic");
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+   test("onlyTeam filters teams[] arg defensively (mismatched name ignored)", async () => {
     const fx = await spinTmux("cockpit-onlyteam-filter");
     try {
       const { logger } = makeLogger();

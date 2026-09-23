@@ -1944,7 +1944,11 @@ export async function reconcileCockpitSession(
     logger.log(`  ✓ created session ${sessionName} (window 1: _superdriver)`);
   }
 
-  const wantMedic = medic?.enabled === true;
+  // t-1dc684dd: medic provisions ONLY on fleet-wide reconcile, mirroring
+  // wantSuperbot. Per-team (onlyTeam) startup must not create unrelated
+  // windows — `atmux start` from a team dir once spawned a live _medic
+  // pane as a side effect. Full `cockpit rebuild` still provisions.
+  const wantMedic = onlyTeam === undefined && medic?.enabled === true;
   const wantSuperbot = onlyTeam === undefined && reconcileOpts.superbot?.enabled === true;
 
   // ADR-135 §D4 — legacy cockpit-role-window migration. Renames in
@@ -2021,15 +2025,11 @@ export async function reconcileCockpitSession(
   // IMMEDIATELY after the superdriver window BEFORE adding team
   // viewers, so on a fresh cockpit the downstream windows land
   // at the correct slots. The target index is `superdriver.index + 1`
-  // rather than a literal `2` because tmux's `base-index` option
-  // (operator-config dependent) determines whether window 1 sits at
-  // index 0 or 1.
-  //
-  // Per-team mode (ADR-063 ergonomic fix): create-if-missing is fine
-  // (additive), but the forced-relocation pass is SKIPPED — moving the
-  // medic window could displace sibling team viewers that the
-  // single-team caller has no authority to disturb. The fleet-wide
-  // `cockpit rebuild` is responsible for the relocation invariant.
+  // Per-team mode (ADR-063 ergonomic fix + t-1dc684dd): the medic block
+  // is skipped entirely — wantMedic is false under onlyTeam, so a
+  // per-team `atmux start` never creates an unrelated _medic window.
+  // The fleet-wide `cockpit rebuild` owns medic provisioning (create +
+  // relocation) for the whole cockpit.
   if (wantMedic) {
     let windowsBefore = await cockpitTmux.window.listWindows(sessionName);
     const sdrv = windowsBefore.find((w) => w.name === "_superdriver");
