@@ -339,17 +339,18 @@ describe("CockpitMedic — canonical singleton shape", () => {
     const m = CockpitMedic.parse({ enabled: true });
     expect(m.enabled).toBe(true);
   });
-  test("inherits tuiOverrides + claudeAccount + autoStart fields", () => {
+  test("inherits tuiOverrides + claudeAccount", () => {
     const m = CockpitMedic.parse({
       enabled: true,
       claudeAccount: { configDir: "/root/.claude-ifca" },
       tuiOverrides: { effortLevel: "xhigh", permissionMode: "auto" },
-      autoStart: false,
-      autoStartTimeoutSec: 45,
     });
     expect(m.claudeAccount?.configDir).toBe("/root/.claude-ifca");
-    expect(m.autoStart).toBe(false);
-    expect(m.autoStartTimeoutSec).toBe(45);
+    expect(m.tuiOverrides?.effortLevel).toBe("xhigh");
+  });
+  test("rejects the retired autoStart keys (t-74c9e79e)", () => {
+    expect(() => CockpitMedic.parse({ enabled: true, autoStart: false })).toThrow();
+    expect(() => CockpitMedic.parse({ enabled: true, autoStartTimeoutSec: 45 })).toThrow();
   });
   test("rejects unknown keys (.strict carried over)", () => {
     expect(() => CockpitMedic.parse({ enabled: true, typo: "fail" })).toThrow();

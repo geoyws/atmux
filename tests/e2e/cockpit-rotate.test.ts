@@ -248,9 +248,6 @@ function rotateOpts(
     cockpitSessionName: COCKPIT_SESSION,
     cockpitSocketName: COCKPIT_SOCKET,
     stderr: (msg: string) => hermetic.stderrBuf.push(msg),
-    // Skip cadence settle — the synthetic cage has no real claude TUI
-    // to wait on; autoStart helpers no-op via timeoutMs=0.
-    autoStartTimeoutMs: 0,
     // Stub Discord so refusal pings don't escape the hermetic env.
     discordSend: async () => {
       /* recorded via test-local closure when needed */

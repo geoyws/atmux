@@ -193,12 +193,6 @@ export interface MedicSessionT {
   prefixChain?: string[];
   claudeAccount?: CockpitClaudeAccount;
   tuiOverrides?: CockpitTuiOverrides;
-  /** t-22453c1e: parity with the top-level `CockpitMedic.autoStart` so
-   *  the legacy-shape lift's spread-into-sessions[] doesn't strip a
-   *  field the reconcile-side check still reads. */
-  autoStart?: boolean;
-  /** t-22453c1e: parity with the top-level `CockpitMedic.autoStartTimeoutSec`. */
-  autoStartTimeoutSec?: number;
 }
 
 export type CockpitSessionT = TeamSessionT | GroupSessionT | SuperdriverSessionT | MedicSessionT;
@@ -246,8 +240,6 @@ export const SuperdriverSession: z.ZodType<SuperdriverSessionT> = z.lazy(() =>
 export const MedicSession: z.ZodType<MedicSessionT> = z.lazy(() =>
   CockpitSessionBase.extend({
     type: z.literal("medic"),
-    autoStart: z.boolean().optional(),
-    autoStartTimeoutSec: z.number().int().positive().optional(),
   }).strict(),
 ) as z.ZodType<MedicSessionT>;
 
@@ -311,20 +303,6 @@ export const CockpitMedic = z
     enabled: z.boolean().default(false),
     claudeAccount: CockpitClaudeAccount.optional(),
     tuiOverrides: CockpitTuiOverrides.optional(),
-    /** t-22453c1e: auto-fire `/loop /medic` (legacy `/loop /superdoctor`)
-     *  after a freshly-created medic window settles to its idle Claude
-     *  prompt. Default true when omitted (the reconcile-side check tests
-     *  for explicit `false`). Pre-existing windows are NEVER touched. Set
-     *  `false` for manual REPL control. `.optional()` rather than
-     *  `.default()` so the inferred TS type stays operator-friendly for
-     *  direct-object fixtures (tests + the reconcile call-path don't pay
-     *  for a Zod parse trip). */
-    autoStart: z.boolean().optional(),
-    /** t-22453c1e: max wall-clock seconds to wait for the new medic pane
-     *  to settle to a Claude idle prompt before bailing without a
-     *  send-keys. Defaults to 30 when omitted — empirically Claude welcome
-     *  screen + plugin load runs ~5-15s on hax; 30s leaves headroom. */
-    autoStartTimeoutSec: z.number().int().positive().optional(),
   })
   .strict();
 export type CockpitMedic = z.infer<typeof CockpitMedic>;

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🧹 Removed — medic autoStart send-keys auto-fire (ADR-289)
+
+**Fresh medic panes no longer get a keystroke typed into them.** `autoStartSuperdoctorLoop`, both call sites (reconcile fresh-window block, `cockpit rotate` respawn re-arm), the `ReconcileOpts` / `CockpitRotateOpts` seams and the `medic.autoStart` / `autoStartTimeoutSec` schema fields are gone. The helper typed `/loop /superdoctor` — stale since the ADR-133 rename, and the `/medic` skill is gone from the operator tree — into an interactive pane, the shape board rule r-1376df29 bans. The operator starts the loop by hand (`/loop /medic`); RUNBOOK-cockpit.md documents the manual step. Strict schemas reject the retired keys, so the operator's `cockpit.macos.json` drops its `autoStart: false` in the same step; `@@hax` omits the keys and is unaffected.
+
 ### 🧹 Removed — the eternal-improvement loop, the `improve` verb, and its three Discord templates (ADR-286)
 
 **`atmux improve` no longer exists.** The loop it drove (ADR-052), its config + backlog gates (ADR-149) and its burndown-first arming (ADR-257) are retired together; all three ADRs move to `*.SUPERSEDED.md`.

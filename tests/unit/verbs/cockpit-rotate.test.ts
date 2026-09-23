@@ -259,8 +259,6 @@ interface TestHarness {
   newWindowThrows?: Error;
   /** Recorded `tmux.window.listWindows` results — keyed by sessionName. */
   windowsBySession: Map<string, { index: number; id: string; name: string; active: boolean }[]>;
-  /** Recorded medic auto-start invocations. */
-  medicAutoStartCalls: { sessionName: string; windowIndex: number }[];
   /** Recorded T5 handoff writes. */
   handoffWrites: { path: string; content: string }[];
   /** Force atomicWrite to throw the given error on next call. */
@@ -321,7 +319,6 @@ function makeHarness(overrides: Partial<TestHarness> = {}): TestHarness {
       ? { newWindowThrows: overrides.newWindowThrows }
       : {}),
     windowsBySession: overrides.windowsBySession ?? new Map(),
-    medicAutoStartCalls: overrides.medicAutoStartCalls ?? [],
     handoffWrites: overrides.handoffWrites ?? [],
     ...(overrides.atomicWriteThrows !== undefined
       ? { atomicWriteThrows: overrides.atomicWriteThrows }
@@ -404,13 +401,6 @@ function harnessOpts(h: TestHarness) {
       return h.cockpit;
     },
     safeSendKeysWithVerify: makeSafeSendKeysStub(h),
-    autoStartMedicLoop: async (opts: { sessionName: string; windowIndex: number }) => {
-      h.medicAutoStartCalls.push({
-        sessionName: opts.sessionName,
-        windowIndex: opts.windowIndex,
-      });
-    },
-    autoStartTimeoutMs: 0, // bail immediately in tests
     // ---- T5 handoff seams ----
     atomicWrite: async (path: string, content: string) => {
       h.handoffWrites.push({ path, content });
@@ -839,7 +829,7 @@ describe("buildClaudeRespawnCommand", () => {
 // ---------- T4: medic respawn path ----------
 
 describe("cockpitRotate — T4 medic respawn", () => {
-  test("happy-path: Ctrl-C → killWindow → newWindow with wrapper-alias → autoStart → success audit", async () => {
+  test("happy-path: Ctrl-C → killWindow → newWindow with wrapper-alias → success audit", async () => {
     const h = makeHarness();
     passGates(h, "medic");
     const exit = await cockpitRotate(["medic"], harnessOpts(h));
@@ -855,9 +845,6 @@ describe("cockpitRotate — T4 medic respawn", () => {
     expect(h.newWindowCalls[0]?.name).toBe("_medic");
     expect(h.newWindowCalls[0]?.shellCommand).toContain(" claude ");
     expect(h.newWindowCalls[0]?.shellCommand).toContain("CLAUDE_GUARD_AGENT=1");
-    // Medic auto-start fired at the spawned window index.
-    expect(h.medicAutoStartCalls.length).toBe(1);
-    expect(h.medicAutoStartCalls[0]?.windowIndex).toBe(4);
     // Success audit row written (no Discord).
     expect(h.appendedAudit.length).toBe(1);
     const row = firstAuditRow(h);
@@ -902,7 +889,7 @@ describe("cockpitRotate — T4 medic respawn", () => {
 // ---------- T4: team-driver respawn path ----------
 
 describe("cockpitRotate — T4 team-driver respawn", () => {
-  test("happy-path: killWindow + newWindow with cageRetryLoop bash + NO autoStart", async () => {
+  test("happy-path: killWindow + newWindow with cageRetryLoop bash", async () => {
     const h = makeHarness();
     passGates(h, "team-driver");
     const exit = await cockpitRotate(["atmux"], harnessOpts(h));
@@ -916,8 +903,6 @@ describe("cockpitRotate — T4 team-driver respawn", () => {
     expect(h.newWindowCalls[0]?.shellCommand).toContain("tmux");
     expect(h.newWindowCalls[0]?.shellCommand).not.toMatch(/ claude /);
     expect(h.newWindowCalls[0]?.shellCommand).not.toContain("c-u");
-    // No cadence re-arm — team-driver's cageRetryLoop IS the loop.
-    expect(h.medicAutoStartCalls.length).toBe(0);
     expect(firstAuditRow(h).outcome).toBe("success");
     expect(firstAuditRow(h).role).toBe("team-driver");
     expect(firstAuditRow(h).sessionName).toBe("atmux");
@@ -997,7 +982,6 @@ describe("cockpitRotate — T4 failure modes", () => {
     expect(exit).toBe(70);
     expect(h.killWindowCalls.length).toBe(1);
     expect(h.newWindowCalls.length).toBe(1); // attempted
-    expect(h.medicAutoStartCalls.length).toBe(0); // never reached
     expect(firstAuditRow(h).outcome).toBe("respawn-failed");
     expect(firstAuditRow(h).error).toContain("newWindow");
   });
@@ -1014,24 +998,6 @@ describe("cockpitRotate — T4 failure modes", () => {
     expect(exit).toBe(0);
     expect(h.killWindowCalls.length).toBe(1);
     expect(h.newWindowCalls.length).toBe(1);
-    expect(firstAuditRow(h).outcome).toBe("success");
-  });
-
-  test("autoStart failure is non-fatal (operator falls back to manual /loop)", async () => {
-    const h = makeHarness();
-    passGates(h, "medic");
-    const opts = {
-      ...harnessOpts(h),
-      autoStartMedicLoop: async () => {
-        throw new Error("auto-start poll timeout");
-      },
-    };
-    const exit = await cockpitRotate(["medic"], opts);
-
-    // autoStart is best-effort — operator can `/loop /medic` manually.
-    // Respawn still reports success: the pane is alive at the right
-    // wrapper-alias spawn line, just without auto-fired cadence.
-    expect(exit).toBe(0);
     expect(firstAuditRow(h).outcome).toBe("success");
   });
 
@@ -1495,8 +1461,6 @@ describe("cockpitRotate — T6 defaultReadLeadOutboxTail (real-fs)", () => {
       },
       loadCockpit: async () => h.cockpit,
       safeSendKeysWithVerify: makeSafeSendKeysStub(h),
-      autoStartMedicLoop: async () => {},
-      autoStartTimeoutMs: 0,
       atomicWrite: async (path: string, content: string) => {
         h.handoffWrites.push({ path, content });
       },
@@ -1560,8 +1524,6 @@ describe("cockpitRotate — T6 defaultReadLeadOutboxTail (real-fs)", () => {
       },
       loadCockpit: async () => h.cockpit,
       safeSendKeysWithVerify: makeSafeSendKeysStub(h),
-      autoStartMedicLoop: async () => {},
-      autoStartTimeoutMs: 0,
       atomicWrite: async (path: string, content: string) => {
         h.handoffWrites.push({ path, content });
       },
@@ -1643,55 +1605,6 @@ describe("cockpitRotate — T6 safeCapturePane catch branch", () => {
     const refusals = h.appendedAudit.filter((a) => a.content.includes("gate-"));
     expect(refusals.length).toBe(0);
     expect(firstAuditRow(h).outcome).toBe("success");
-  });
-});
-
-// ---------- T6 residual: default cadenceLogger arrows ----------
-
-// cockpit-rotate.ts L423-428 declares 4 inline arrow functions
-// (log/ok/warn/err) inside the `?? {}` default for opts.cadenceLogger.
-// be-2's harness omits cadenceLogger (uses the default), but no test
-// actually drives an autoStartMedicLoop that calls
-// logger.log/ok/warn/err — so the 4 arrow bodies are constructed but
-// never invoked. Force-call them via a stub autoStartMedicLoop that
-// exercises every logger method.
-describe("cockpitRotate — T6 default cadenceLogger arrows", () => {
-  test("autoStart-driven logger calls hit log/ok/warn/err defaults via stderr", async () => {
-    const h = makeHarness();
-    passGates(h, "medic");
-
-    const opts = {
-      ...harnessOpts(h),
-      autoStartMedicLoop: async (autoOpts: {
-        sessionName: string;
-        windowIndex: number;
-        logger?: {
-          log: (s: string) => void;
-          ok: (s: string) => void;
-          warn: (s: string) => void;
-          err: (s: string) => void;
-        };
-      }) => {
-        // Drive each default arrow exactly once. They close over the
-        // injected `stderr` so the output lands in h.capturedStderr.
-        autoOpts.logger?.log("cadence-log-marker");
-        autoOpts.logger?.ok("cadence-ok-marker");
-        autoOpts.logger?.warn("cadence-warn-marker");
-        autoOpts.logger?.err("cadence-err-marker");
-      },
-    };
-    // INTENTIONALLY omit cadenceLogger from opts — verb falls through
-    // to resolveDeps default at cockpit-rotate.ts L423.
-    delete (opts as { cadenceLogger?: unknown }).cadenceLogger;
-
-    const exit = await cockpitRotate(["medic"], opts);
-    expect(exit).toBe(0);
-
-    const stderrJoined = h.capturedStderr.join("");
-    expect(stderrJoined).toContain("cadence-log-marker");
-    expect(stderrJoined).toContain("cadence-ok-marker");
-    expect(stderrJoined).toContain("cadence-warn-marker");
-    expect(stderrJoined).toContain("cadence-err-marker");
   });
 });
 

@@ -15,7 +15,7 @@
 // T4 (shipped 771a104): per-role respawn matrix (medic / team-driver),
 // c-alias wrapper resolver (load-bearing for medic; skipped for
 // team-driver), Ctrl-C via safeSendKeysWithVerify, success NDJSON
-// audit row + cadence re-arm via autoStartSuperdoctorLoop.
+// audit row.
 //
 // T5 (this commit): handoff write-path. Assembles per-role Markdown
 // payload (medic: audit-log rotation tail + placeholder state markers;
@@ -71,7 +71,6 @@ import {
   safeSendKeysWithVerify as safeSendKeysWithVerifyDefault,
 } from "../core/safe-send.ts";
 import { getCockpitSocketName } from "../core/tmux-paths.ts";
-import type { Logger } from "../core/tui.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type {
   CockpitClaudeAccount,
@@ -79,10 +78,7 @@ import type {
   CockpitTeam,
   CockpitTuiOverrides,
 } from "../schema/cockpit.ts";
-import {
-  autoStartSuperdoctorLoop as autoStartSuperdoctorLoopDefault,
-  buildTeamWindowCommand,
-} from "./cockpit.ts";
+import { buildTeamWindowCommand } from "./cockpit.ts";
 
 /** Parsed shape for `atmux cockpit rotate` argv. */
 export interface ParsedCockpitRotateArgs {
@@ -333,24 +329,6 @@ export interface CockpitRotateOpts {
    *  delegates to `src/core/safe-send.ts::safeSendKeysWithVerify` with
    *  tmux capture / sendKeys adapters around the cockpit socket. */
   safeSendKeysWithVerify?: typeof safeSendKeysWithVerifyDefault;
-  /** Medic cadence re-arm seam (T4 t-a245bbc8). Default delegates to
-   *  `autoStartSuperdoctorLoop` (mirrors cockpit rebuild's auto-start).
-   *  Returns void; errors are swallowed inside the default impl (non-
-   *  fatal — operator falls back to manual `/loop /medic` if the marker
-   *  isn't detected within the timeout). */
-  autoStartMedicLoop?: typeof autoStartSuperdoctorLoopDefault;
-  /** Logger seam for the re-arm helpers (T4 t-a245bbc8). Default
-   *  forwards via stderr; tests inject a recorder to assert the post-
-   *  spawn cadence sequence. The autoStart helpers tag every log line
-   *  themselves; this seam is a passthrough. Full `Logger` interface
-   *  (log/ok/warn/err) per src/core/tui.ts so the autoStart helpers
-   *  can call any method without type widening at the call site. */
-  cadenceLogger?: Logger;
-  /** Auto-start settle timeout (ms) for the re-arm helpers. Default
-   *  30_000 — matches cockpit rebuild's `autoStartTimeoutSec=30`. Tests
-   *  pass `0` so the helper bails immediately after pane readiness
-   *  check. */
-  autoStartTimeoutMs?: number;
   /** Read the audit-log file (entire body). Default reads via
    *  `fs.readTextOrNull` from `<homeDir>/.atmux/state/cockpit-rotate-
    *  audit.log`. Tests inject a recorder returning canned NDJSON for
@@ -390,9 +368,6 @@ interface ResolvedDeps {
   discordTeam: string;
   loadCockpit: (opts?: LoadCockpitOpts) => Promise<LoadedCockpit>;
   safeSendKeysWithVerify: typeof safeSendKeysWithVerifyDefault;
-  autoStartMedicLoop: typeof autoStartSuperdoctorLoopDefault;
-  cadenceLogger: Logger;
-  autoStartTimeoutMs: number;
   readAuditLog: (path: string) => Promise<string | null>;
   readLeadOutboxTail: (atmuxDir: string, lines: number) => Promise<string>;
   atomicWrite: (path: string, content: string) => Promise<void>;
@@ -418,14 +393,6 @@ function resolveDeps(opts: CockpitRotateOpts): ResolvedDeps {
     discordTeam: opts.discordTeam ?? "atmux",
     loadCockpit: opts.loadCockpit ?? loadCockpitDefault,
     safeSendKeysWithVerify: opts.safeSendKeysWithVerify ?? safeSendKeysWithVerifyDefault,
-    autoStartMedicLoop: opts.autoStartMedicLoop ?? autoStartSuperdoctorLoopDefault,
-    cadenceLogger: opts.cadenceLogger ?? {
-      log: (msg: string) => stderr(`${msg}\n`),
-      ok: (msg: string) => stderr(`${msg}\n`),
-      warn: (msg: string) => stderr(`${msg}\n`),
-      err: (msg: string) => stderr(`${msg}\n`),
-    },
-    autoStartTimeoutMs: opts.autoStartTimeoutMs ?? 30_000,
     readAuditLog: opts.readAuditLog ?? readTextOrNull,
     readLeadOutboxTail: opts.readLeadOutboxTail ?? defaultReadLeadOutboxTail,
     atomicWrite: opts.atomicWrite ?? atomicWriteDefault,
@@ -1051,15 +1018,13 @@ async function performRespawn(
     return EX_SOFTWARE;
   }
 
-  let windowIndex: number;
   try {
-    const winId = await tmux.window.newWindow({
+    await tmux.window.newWindow({
       sessionName: viewerHost.sessionName,
       name: windowName,
       detached: true,
       shellCommand: cmd,
     });
-    windowIndex = winId.windowIndex;
   } catch (e) {
     const cause = e instanceof Error ? e.message : String(e);
     deps.stderr(`cockpit rotate: new-window failed (${cause})\n`);
@@ -1070,30 +1035,6 @@ async function performRespawn(
       error: `newWindow: ${cause}`,
     });
     return EX_SOFTWARE;
-  }
-
-  // Re-arm role-specific cadence. Non-fatal — the auto-start helpers
-  // log + return on failure (the operator falls back to manual
-  // `/loop /medic`). Team-driver respawn has no cadence to re-arm
-  // (cageRetryLoop runs in the shell itself).
-  switch (role) {
-    case "medic":
-      try {
-        await deps.autoStartMedicLoop({
-          tmux,
-          sessionName: viewerHost.sessionName,
-          windowIndex,
-          timeoutMs: deps.autoStartTimeoutMs,
-          logger: deps.cadenceLogger,
-        });
-      } catch {
-        // autoStart is non-fatal by construction; defensive catch in
-        // case a future refactor raises.
-      }
-      break;
-    case "team-driver":
-      // No cadence re-arm — cageRetryLoop is the loop itself.
-      break;
   }
 
   await emitSuccess(deps, {

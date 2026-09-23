@@ -214,7 +214,7 @@ Per [ADR-167 §Per-role respawn matrix](adr/167-cockpit-rotate-verb.md):
 3. **`tmux kill-window`** the target pane (SIGHUP fallback for C-c-resistant claude).
 4. **Resolve `claudeAccount` wrapper** via the [ADR-094](adr/094-c-alias-spawn-convention.md) c-alias table (`/root/.claude → claude`, `-unum → c-u`, `-icloud → c-ic`, `-ifca → c-i`, unknown → `ConfigError` exit 70). Load-bearing for medic; skipped for team-driver (its spawn line is the cage retry loop, not a claude TUI).
 5. **`tmux new-window`** with the resolved respawn command.
-6. **Re-arm cadence** — medic gets `/loop /medic` via `autoStartSuperdoctorLoop`; team-driver has no claude TUI to re-arm.
+6. **Manual loop start** — no auto-fire: the operator types `/loop /medic` in the fresh pane (auto-start retired per ADR-289 — send-keys into interactive panes is banned and the auto-typed command went stale twice). Team-driver has no claude TUI to arm.
 7. **Append success audit row** to `~/.atmux/state/cockpit-rotate-audit.log` (NDJSON) with `outcome="success"` + `handoffPath`.
 
 ### Recovery — when a step fails
@@ -229,7 +229,7 @@ Per [ADR-167 §Per-role respawn matrix](adr/167-cockpit-rotate-verb.md):
 | `killWindow` throw | exit 70, `respawn-failed` audit row | Ctrl-C fired; kill failed (window may still exist — diagnose manually) |
 | `newWindow` throw | exit 70, `respawn-failed` audit row | window gone, no respawn (rare — tmux server unreachable) |
 | Ctrl-C verifier escalation | continues anyway (kill-window is destructive primitive) | rotated |
-| `autoStart` failure | continues (exit 0) | rotated but cadence un-armed — operator types `/loop /medic` manually |
+| Fresh-pane loop | operator types `/loop /medic` manually (no auto-fire since ADR-289) | rotated, idle prompt waiting |
 
 The verb favors **"either fully succeed or leave the pane intact"** over partial-state recovery. Handoff write success without respawn IS recoverable: the operator inspects `~/.claude/teams/__cockpit__/<role>/handoff.md`, fixes the underlying issue (typically wrapper resolution or tmux state), and re-runs the verb.
 

@@ -345,16 +345,12 @@ function enrichLegacyFields(cockpit: CockpitShape): LoadedCockpit {
       if (node.cageMode !== undefined) t.cageMode = node.cageMode;
       teams.push(t);
     } else if (node.type === "medic" && medicResolved === undefined) {
-      // ADR-133 canonical entry. Preserve the full claude shape
-      // (autoStart + autoStartTimeoutSec retained per trunk's shipped
-      // fields — the reconcile-side auto-start check reads them).
+      // ADR-133 canonical entry. The medic auto-start fields were removed
+      // with the send-keys auto-fire (t-74c9e79e), so only the claude
+      // shape propagates here.
       const m: CockpitMedic = { enabled: node.enabled };
       if (node.claudeAccount !== undefined) m.claudeAccount = node.claudeAccount;
       if (node.tuiOverrides !== undefined) m.tuiOverrides = node.tuiOverrides;
-      if (node.autoStart !== undefined) m.autoStart = node.autoStart;
-      if (node.autoStartTimeoutSec !== undefined) {
-        m.autoStartTimeoutSec = node.autoStartTimeoutSec;
-      }
       medicResolved = m;
     }
   });

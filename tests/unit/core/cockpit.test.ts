@@ -716,7 +716,7 @@ describe("loadCockpit — ADR-133 medic end-to-end (post ADR-266 §D2)", () => {
     await writeCockpit({
       schemaVersion: 1,
       sessions: [{ type: "team", name: "x", root: "/x" }],
-      medic: { enabled: true, autoStart: false },
+      medic: { enabled: true },
       superdoctor: { enabled: false },
     });
     await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(/ADR-266/);
