@@ -908,6 +908,8 @@ async function performRespawn(
   const viewerHost = host ?? cockpitViewerHost(deps);
   let cmd: string;
   let cockpit: LoadedCockpit;
+  /** Team root for the respawned viewer cwd (team-driver only; medic keeps invoker cwd). */
+  let respawnCwd: string | undefined;
   try {
     // Injected homeDir (tests) outranks ambient env; production keeps
     // env-first so `ATMUX_COCKPIT_CONFIG` still selects the config the
@@ -964,6 +966,9 @@ async function performRespawn(
       }
       case "team-driver": {
         const t = readTeamConfig(cockpit, parsed.sessionName);
+        // Respawned viewer inherits the team root so group-server panes
+        // don't sit in the rotate invoker's cwd (t-454ef211).
+        respawnCwd = t?.root;
         if (t === null) {
           const err = `team '${parsed.sessionName}' not found in cockpit.json`;
           deps.stderr(`cockpit rotate: ${err}\n`);
@@ -1024,6 +1029,7 @@ async function performRespawn(
       name: windowName,
       detached: true,
       shellCommand: cmd,
+      ...(respawnCwd !== undefined ? { cwd: respawnCwd } : {}),
     });
   } catch (e) {
     const cause = e instanceof Error ? e.message : String(e);

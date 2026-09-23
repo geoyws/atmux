@@ -251,7 +251,7 @@ interface TestHarness {
   /** Force killWindow to throw the given error on next call. */
   killWindowThrows?: Error;
   /** Recorded `tmux.window.newWindow` invocations. */
-  newWindowCalls: { name: string; shellCommand: string }[];
+  newWindowCalls: { name: string; shellCommand: string; cwd?: string }[];
   /** Window-index newWindow returns; default 4 (matches medic at idx 4
    *  for a fresh cockpit per ADR-135 §D2). */
   newWindowIndex: number;
@@ -342,10 +342,11 @@ function makeTmuxFactory(h: TestHarness): (cfg: TmuxConfig) => TmuxNamespace {
           h.killWindowCalls.push(target);
           if (h.killWindowThrows !== undefined) throw h.killWindowThrows;
         },
-        newWindow: async (opts: { name?: string; shellCommand?: string }) => {
+        newWindow: async (opts: { name?: string; shellCommand?: string; cwd?: string }) => {
           h.newWindowCalls.push({
             name: opts.name ?? "",
             shellCommand: opts.shellCommand ?? "",
+            ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
           });
           if (h.newWindowThrows !== undefined) throw h.newWindowThrows;
           return { sessionName: "atmux_cockpit", windowIndex: h.newWindowIndex };
@@ -897,6 +898,9 @@ describe("cockpitRotate — T4 team-driver respawn", () => {
     expect(exit).toBe(0);
     expect(h.killWindowCalls).toEqual(["atmux_cockpit:atmux"]);
     expect(h.newWindowCalls[0]?.name).toBe("atmux");
+    // Team-driver viewer inherits the team root (t-454ef211) — group-server
+    // panes must not sit in the rotate invoker's cwd.
+    expect(h.newWindowCalls[0]?.cwd).toBe("/root/work/src/atmux");
     // team-driver respawn uses cage-attach loop — `while true; do tmux
     // attach || tmux attach; sleep 1; done` per cockpit.ts cageRetryLoop.
     // No claude TUI invocation; no wrapper alias.
@@ -1568,10 +1572,11 @@ describe("cockpitRotate — T6 safeCapturePane catch branch", () => {
           killWindow: async (target: string) => {
             h.killWindowCalls.push(target);
           },
-          newWindow: async (opts: { name?: string; shellCommand?: string }) => {
+          newWindow: async (opts: { name?: string; shellCommand?: string; cwd?: string }) => {
             h.newWindowCalls.push({
               name: opts.name ?? "",
               shellCommand: opts.shellCommand ?? "",
+              ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
             });
             return { sessionName: "atmux_cockpit", windowIndex: h.newWindowIndex };
           },
