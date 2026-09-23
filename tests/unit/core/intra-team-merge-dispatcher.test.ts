@@ -626,3 +626,128 @@ describe("productionQueueMergeAttempt — logger evidence", () => {
     expect(logs.some((l) => l.includes("refuse-terminal"))).toBe(true);
   });
 });
+
+describe("productionQueueMergeAttempt — failure-catch residuals (t-dc5c2595)", () => {
+  test("rebase-tick fetch failure leaves the row in rebasing for the next tick", async () => {
+    seedState("rebasing");
+    const baseGit = makeRebaseAwareGitStub({ baseMoved: true, rebaseOutcome: "clean" });
+    const fetchFailGit: GitSpawn = async (argv) => {
+      if (argv.includes("fetch")) return spawnFail("", "network down", 128);
+      return baseGit(argv);
+    };
+    const fn = productionQueueMergeAttempt(
+      makeDeps({
+        git: fetchFailGit,
+        fetch: true,
+        resolveMemberWorktreePath: async () => "/tmp/fake-worktree/geoyws-fe-1",
+      }),
+    );
+    const r = await fn({ memberBranch: MEMBER_BRANCH, aheadCount: 2 });
+    expect(logs.some((l) => l.includes("rebase-tick threw"))).toBe(true);
+    expect(logs.some((l) => l.includes("network down"))).toBe(true);
+    // Row stays rebasing; no progress; dispatcher reports no-progress.
+    expect(mergerRepo.getState(MEMBER_BRANCH)?.state).toBe("rebasing");
+    expect(r.queued).toBe(false);
+    expect(r.reason?.startsWith("no-progress:")).toBe(true);
+  });
+
+  test("post-merge flip reporting flipped tasks is logged, merge still queues", async () => {
+    const flipCalls: Array<{ atmuxDir: string; fromSha: string | null; toSha: string }> = [];
+    const fn = productionQueueMergeAttempt(
+      makeDeps({
+        git: makeGitStub({ behavior: "success" }),
+        atmuxDir: scratch,
+        postMergeFlip: async (atmuxDir, fromSha, toSha) => {
+          flipCalls.push({ atmuxDir, fromSha, toSha });
+          return {
+            commitsScanned: 2,
+            openTasks: 1,
+            matched: 1,
+            flipped: 2,
+            decisions: [],
+          };
+        },
+      }),
+    );
+    const r = await fn({ memberBranch: MEMBER_BRANCH, aheadCount: 2 });
+    expect(r.queued).toBe(true);
+    expect(mergerRepo.getState(MEMBER_BRANCH)?.state).toBe("tested");
+    expect(flipCalls).toHaveLength(1);
+    expect(flipCalls[0]).toEqual({ atmuxDir: scratch, fromSha: null, toSha: "mergedSha123" });
+    expect(logs.some((l) => l.includes("post-merge flipped 2 task(s)"))).toBe(true);
+  });
+  test("post-merge flip throw is swallowed, merge still queues", async () => {
+    const fn = productionQueueMergeAttempt(
+      makeDeps({
+        git: makeGitStub({ behavior: "success" }),
+        atmuxDir: scratch,
+        postMergeFlip: async () => {
+          throw new Error("kanban-db-locked");
+        },
+      }),
+    );
+    const r = await fn({ memberBranch: MEMBER_BRANCH, aheadCount: 2 });
+    expect(r.queued).toBe(true);
+    expect(mergerRepo.getState(MEMBER_BRANCH)?.state).toBe("tested");
+    expect(logs.some((l) => l.includes("post-merge flip threw"))).toBe(true);
+    expect(logs.some((l) => l.includes("kanban-db-locked"))).toBe(true);
+  });
+
+  test("post-merge flip soft-skip is logged, merge still queues", async () => {
+    const fn = productionQueueMergeAttempt(
+      makeDeps({
+        git: makeGitStub({ behavior: "success" }),
+        atmuxDir: scratch,
+        postMergeFlip: async () => ({
+          commitsScanned: 0,
+          openTasks: 0,
+          matched: 0,
+          flipped: 0,
+          decisions: [],
+          skippedReason: "no-range" as const,
+        }),
+      }),
+    );
+    const r = await fn({ memberBranch: MEMBER_BRANCH, aheadCount: 2 });
+    expect(r.queued).toBe(true);
+    expect(mergerRepo.getState(MEMBER_BRANCH)?.state).toBe("tested");
+    expect(logs.some((l) => l.includes("post-merge flip skipped (no-range)"))).toBe(true);
+  });
+
+  test("entry in_progress + zero iteration budget reports gate-held with no progress", async () => {
+    // A held gate self-loop re-stamps the row (changed=true), so an
+    // honest walk always reports progress once it fires. The gate-held
+    // tail is reachable deterministically only when the walk fires
+    // nothing: a zero iteration budget skips the loop while the entry
+    // state is already in_progress. Pins the tail's gate-held mapping.
+    seedState("in_progress");
+    kanbanRepo.addTask({
+      id: "t-fixture-002",
+      subject: "fixture open task holding the gate",
+      body: "",
+      status: "in-progress",
+      owner: "fe-1",
+      deps: [],
+      priority: null,
+      epic: null,
+      story: null,
+      lane: null,
+      deliverable: null,
+      staleMin: null,
+      driverOnly: false,
+      createdAt: 100,
+      claimedAt: 150,
+      completedAt: null,
+      claimedFrom: null,
+      createdFrom: null,
+      note: null,
+    });
+    const fn = productionQueueMergeAttempt(
+      makeDeps({ git: makeGitStub({ behavior: "success" }), maxIterations: 0 }),
+    );
+    const r = await fn({ memberBranch: MEMBER_BRANCH, aheadCount: 2 });
+    expect(r.queued).toBe(false);
+    expect(r.reason?.startsWith("gate-held:")).toBe(true);
+    expect(mergerRepo.getState(MEMBER_BRANCH)?.state).toBe("in_progress");
+  });
+});
