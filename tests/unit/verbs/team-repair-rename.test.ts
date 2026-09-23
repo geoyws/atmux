@@ -1029,6 +1029,29 @@ describe("teamRepairRename", () => {
     expect(await readFile(fixture.stateFile, "utf8")).toBe("new\n");
   });
 
+  test("missing .atmux/state dir is recreated by ensureStateDir (t-f9b1b384)", async () => {
+    const oldTmpdir = `/tmp/atmux_tmux_repair_nostate_${Date.now()}`;
+    fixture = await buildFixture({
+      teamName: "new",
+      oldTmpdir,
+      createOldTmpdir: true,
+      stateContent: "old\n",
+    });
+    // Remove the state dir the fixture pre-creates. With no prior
+    // state there is nothing to sync (step 6 skips), but the verb
+    // must still recreate the dir (ensureStateDir) before applying.
+    await rm(join(fixture.atmuxDir, "state"), { recursive: true, force: true });
+    const { factory } = buildStubFactory({});
+    const code = await teamRepairRename(["--team-dir", join(fixture.atmuxDir, ".."), "new"], {
+      buildTmux: factory,
+      cronInstallFn: async () => 0,
+      stdout: () => true,
+      stderr: () => true,
+    });
+    expect(code).toBe(0);
+    expect(await dirExists(join(fixture.atmuxDir, "state"))).toBe(true);
+  });
+
   test("apply failure → exit 1, reason on stderr", async () => {
     const oldTmpdir = `/tmp/atmux_tmux_repair_failure_${Date.now()}`;
     fixture = await buildFixture({
