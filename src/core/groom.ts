@@ -1108,8 +1108,10 @@ export async function sweepZombieTmuxSockets(
 
 /** Production kill-server: spawn `tmux -S <sock> kill-server` via
  *  the canonical tmux abstraction. Failures bubble up; the caller
- *  filters expected "no server" errors via `isExpectedKillError`. */
-async function defaultKillServer(socketPath: string): Promise<void> {
+ *  filters expected "no server" errors via `isExpectedKillError`.
+ *  Exported for the unit seam (t-b618e465): the missing-socket case
+ *  fails fast with no side effects, pinning the fail-loud contract. */
+export async function defaultKillServer(socketPath: string): Promise<void> {
   const tmux = createTmux({ socketPath });
   await tmux.server.killServer();
 }

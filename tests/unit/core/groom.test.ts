@@ -279,6 +279,19 @@ describe("archiveDecisions", () => {
     const after = await readFile(join(env.atmuxDir, "decisions.md"), "utf8");
     expect(after).toBe(before);
   });
+
+  test("all-stale blocks with empty preamble rewrite to the bare header (t-b618e465)", async () => {
+    const oldEpoch = Math.floor(RUN_MS / 1000) - 60 * 86400;
+    await writeFile(
+      join(env.atmuxDir, "decisions.md"),
+      `### d-x\n- **timestamp**: ${oldEpoch}\nbody\n`,
+    );
+    const got = await archiveDecisions(env.atmuxDir, { nowMs: RUN_MS, days: 30 });
+    expect(got.staleBlocks).toBe(1);
+    expect(await readFile(join(env.atmuxDir, "decisions.md"), "utf8")).toBe(
+      "# atmux decisions — append-only log\n\n",
+    );
+  });
 });
 
 // ---------- summarizeKanban ----------
@@ -414,6 +427,19 @@ describe("summarizeKanban", () => {
     const after = await readFile(join(env.atmuxDir, "kanban.json"), "utf8");
     expect(after).toBe(before);
   });
+
+  test("garbage completedAt forms are rejected at the kanban schema read (t-b618e465)", async () => {
+    // toEpochSeconds string branches (groom.ts toEpochSeconds) are
+    // unreachable through summarizeKanban: Kanban.parse rejects
+    // non-numeric completedAt before it runs. This pins that contract.
+    const kanban = {
+      tasks: [baseTask({ id: "t-str", status: "done", completedAt: "not-a-date", subject: "s" })],
+      epics: [],
+      stories: [],
+    };
+    await writeFile(join(env.atmuxDir, "kanban.json"), JSON.stringify(kanban));
+    await expect(summarizeKanban(env.atmuxDir, { nowMs: RUN_MS, days: 30 })).rejects.toThrow();
+  });
 });
 
 // ---------- cullBakFiles ----------
@@ -521,6 +547,18 @@ describe("archiveSizeCheck", () => {
     expect(got[0]?.scope).toBe("kanban-log");
     expect(got[0]?.fileCount).toBe(2);
   });
+
+  test("nested subdirectories count toward archive totals (t-b618e465)", async () => {
+    await mkdir(join(env.archiveDir, "sub"), { recursive: true });
+    await writeFile(join(env.archiveDir, "sub", "nested.md"), "x".repeat(5 * 1024));
+    const got = await archiveSizeCheck(env.atmuxDir, {
+      archiveCapBytes: 1024,
+      kanbanLogCapBytes: 999_999_999,
+    });
+    expect(got).toHaveLength(1);
+    expect(got[0]?.scope).toBe("archive");
+    expect(got[0]?.fileCount).toBe(1);
+  });
 });
 
 // ---------- ageInboxOpenToArchive (t-82b6aed9 / c-7a308f7f) ----------
@@ -600,6 +638,11 @@ describe("parseEntryTimestamp", () => {
     // (acceptance criteria, TODO lists) must NOT match the entry-start.
     expect(parseEntryTimestamp("- [ ] acceptance criterion", RUN_MS)).toBeNull();
     expect(parseEntryTimestamp("- [x] checked AC", RUN_MS)).toBeNull();
+  });
+
+  test("returns null on out-of-range month/day (t-b618e465)", () => {
+    expect(parseEntryTimestamp("- [12:00 MYT 2026-13-08] bad-month", RUN_MS)).toBeNull();
+    expect(parseEntryTimestamp("- [12:00 MYT 2026-05-32] bad-day", RUN_MS)).toBeNull();
   });
 });
 
@@ -807,5 +850,24 @@ describe("ageInboxOpenToArchive", () => {
     const after = await readFile(src, "utf8");
     expect(after).toContain("## Archive\n");
     expect(after.indexOf("stale")).toBeGreaterThan(after.indexOf("## Archive"));
+  });
+
+  test("open section with zero parseable entries → zero-count row, file unchanged (t-b618e465)", async () => {
+    const src = join(env.atmuxDir, "driver-inbox.md");
+    const original = "# driver-inbox\n\n## Open\njust some notes, no entry shape\n## Archive\n";
+    await writeFile(src, original);
+    const got = await ageInboxOpenToArchive(env.atmuxDir, 7, { nowMs: RUN_MS });
+    expect(got).toEqual([{ file: "driver-inbox.md", agedCount: 0, remainingOpen: 0 }]);
+    expect(await readFile(src, "utf8")).toBe(original);
+  });
+
+  test("timestamp-shaped but unparseable entry stays in ## Open (t-b618e465)", async () => {
+    const src = join(env.atmuxDir, "driver-inbox.md");
+    await writeFile(src, "## Open\n- [25:99 MYT] bad-time\n## Archive\n");
+    const got = await ageInboxOpenToArchive(env.atmuxDir, 7, { nowMs: RUN_MS });
+    expect(got[0]?.agedCount).toBe(0);
+    expect(got[0]?.remainingOpen).toBe(1);
+    const after = await readFile(src, "utf8");
+    expect(after).toContain("## Open\n- [25:99 MYT] bad-time\n## Archive\n");
   });
 });

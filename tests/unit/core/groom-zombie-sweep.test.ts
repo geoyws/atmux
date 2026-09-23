@@ -3,11 +3,15 @@
 // that bypass the (a) primary fix (afterAll + process.on('exit')
 // hooks shipped in t-88b60ca7).
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { chmod, mkdir, mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sweepZombieTmuxSockets } from "../../../src/core/groom.ts";
+import {
+  defaultKillServer,
+  sweepZombieTmuxSockets,
+  type ZombieSweepResult,
+} from "../../../src/core/groom.ts";
 
 // Pin clock at 2026-05-16 12:00 UTC; 6h default threshold means
 // anything mtime'd at or before 06:00 UTC is sweep-eligible.
@@ -384,5 +388,89 @@ describe("sweepZombieTmuxSockets", () => {
     expect(r.skippedLiveChildren).toBe(0);
     expect(r.removed).toBe(1);
     expect(await stat(dir).catch(() => null)).toBeNull();
+  });
+
+  test("unremovable fixture dir → error row, never silent (t-b618e465)", async () => {
+    // chmod-based removal denial is a no-op for uid 0 — same guard as
+    // the lock audit-silence test.
+    if (process.getuid?.() === 0) return;
+    const dir = await makeFixtureDir("atmux-e2e-unremovable-URM", {
+      ageMs: SIX_HOURS_MS + 1000,
+      sock: "none",
+    });
+    // An unwritable child makes `rm -rf <full>` fail EACCES while
+    // readdir/stat on <full> itself still succeed.
+    const sub = join(dir, "sub");
+    await mkdir(sub, { recursive: true });
+    await writeFile(join(sub, "f"), "x");
+    await chmod(sub, 0o555);
+    // Creating sub/ refreshed the parent mtime — backdate again so the
+    // age gate triggers (utimes needs parent-write, unaffected by sub).
+    const { utimes } = await import("node:fs/promises");
+    const old = new Date(RUN_MS - (6 * 60 * 60 * 1000 + 1000));
+    await utimes(dir, old, old);
+
+    let r: ZombieSweepResult | undefined;
+    try {
+      r = await sweepZombieTmuxSockets({
+        tmpDir: env.fakeTmp,
+        nowMs: RUN_MS,
+        killServer: stubKill(env),
+        // Pin the guard false: the real hasLiveChildCages could take
+        // the skip path on the sub/ fixture and the rm catch under
+        // test would never execute.
+        hasLiveChildren: async () => false,
+      });
+    } finally {
+      await chmod(sub, 0o755).catch(() => {});
+    }
+    expect(r?.scanned).toBe(1);
+    expect(r?.removed).toBe(0);
+    expect(r?.errors).toHaveLength(1);
+    expect(r?.errors[0]?.path).toBe(dir);
+    expect(typeof r?.errors[0]?.message).toBe("string");
+  });
+
+  test("non-Error killServer throw surfaces via String(e) (t-b618e465)", async () => {
+    const dir = await makeFixtureDir("atmux-e2e-strthrow-STT", {
+      ageMs: SIX_HOURS_MS + 1000,
+      sock: "direct",
+    });
+    const r = await sweepZombieTmuxSockets({
+      tmpDir: env.fakeTmp,
+      nowMs: RUN_MS,
+      killServer: async () => {
+        throw "string-failure";
+      },
+    });
+    expect(r.scanned).toBe(1);
+    expect(r.killed).toBe(0);
+    expect(r.errors).toHaveLength(1);
+    expect(r.errors[0]?.path).toBe(join(dir, "sock"));
+    expect(r.errors[0]?.message).toBe("string-failure");
+  });
+  test("defaultKillServer delegates socketPath to the tmux server namespace (t-b618e465)", async () => {
+    // Static import (groom.ts imports createTmux statically), so
+    // mock.module reliably intercepts — unlike the lazy dynamic spawn
+    // import that burned the vox seam test. No subprocess runs.
+    const killCalls: string[] = [];
+    const realTmux = await import("../../../src/abstractions/tmux.ts");
+    const mockCreateTmux = (opts: { socketPath: string }) => ({
+      server: {
+        killServer: async () => {
+          killCalls.push(opts.socketPath);
+        },
+      },
+    });
+    mock.module("../../../src/abstractions/tmux.ts", () => ({
+      ...realTmux,
+      createTmux: mockCreateTmux,
+    }));
+    try {
+      await defaultKillServer(join(env.fakeTmp, "some-sock"));
+      expect(killCalls).toEqual([join(env.fakeTmp, "some-sock")]);
+    } finally {
+      mock.restore();
+    }
   });
 });
