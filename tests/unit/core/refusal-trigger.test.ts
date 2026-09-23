@@ -23,10 +23,18 @@
 //     Discord verdict=🚨
 //   - spawn returns non-zero exit → outcome=`rotate-fired` with
 //     [spawn-failed] suffix in reason, Discord escalation='spawn-failed'
+//   - spawn throws → outcome=`rotate-fired`, reason carries the thrown
+//     message (t-b26092d3)
+//   - Discord sender throws (rotate or cap-hit path) → swallowed,
+//     outcome stands (t-b26092d3)
+//   - cap-hit complaint file throws → swallowed, HARD escalation
+//     stands and the failure is logged (t-b26092d3)
+//   - unreadable rotations log (EACCES) → count 0, fail-closed (t-b26092d3)
+//   - omitted `log` / `nowSec` deps → stderr / wall-clock defaults (t-b26092d3)
 
 import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscordSendOpts } from "../../../src/abstractions/discord.ts";
@@ -343,5 +351,149 @@ describe("runRefusalTriggerForTeam — log file format", () => {
     // UTC day-key is "YYYY-MM-DD" — exact text doesn't matter, but
     // shape must match.
     expect(cols[1]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+});
+
+describe("runRefusalTriggerForTeam — residual catch-paths (t-b26092d3)", () => {
+  async function seedCapHitLog(): Promise<void> {
+    const utcDay = new Date(10500 * 1000).toISOString().slice(0, 10);
+    const iso = new Date(10500 * 1000).toISOString();
+    const logPath = join(env.atmuxDir, "state", "refusal-rotations.log");
+    await Bun.write(
+      Bun.file(logPath),
+      `${iso}\t${utcDay}\tdemo\talice\tsoft\tcap-seed-1\n` +
+        `${iso}\t${utcDay}\tdemo\talice\tsoft\tcap-seed-2\n` +
+        `${iso}\t${utcDay}\tdemo\talice\tsoft\tcap-seed-3\n`,
+    );
+  }
+
+  test("spawn throw marks rotate-fired with the thrown message", async () => {
+    // Fresh state, no pre-seeded rotations log: the count starts at 0
+    // via the missing-file "" path (the throw-catch is covered by the
+    // EACCES test below).
+    seedSoft("alice", 3, 10000);
+    const r = await runRefusalTriggerForTeam(team(["alice"]), {
+      db: env.db,
+      atmuxDir: env.atmuxDir,
+      spawnAtmux: async () => {
+        throw new Error("rotate-spawn-boom");
+      },
+      sendDiscord: recordedDiscord().send,
+      nowSec: () => 10500,
+      log: () => {},
+    });
+    expect(r.rotated).toBe(1);
+    expect(r.perMember[0]?.outcome).toBe("rotate-fired");
+    expect(r.perMember[0]?.reason).toContain("rotate-spawn-boom");
+  });
+
+  test("throwing Discord sender on the rotate path is swallowed", async () => {
+    seedSoft("alice", 3, 10000);
+    const r = await runRefusalTriggerForTeam(team(["alice"]), {
+      db: env.db,
+      atmuxDir: env.atmuxDir,
+      spawnAtmux: recordedSpawn().spawn,
+      sendDiscord: async () => {
+        throw new Error("discord-boom");
+      },
+      nowSec: () => 10500,
+      log: () => {},
+    });
+    expect(r.rotated).toBe(1);
+    expect(r.perMember[0]?.outcome).toBe("rotate-fired");
+  });
+
+  test("cap-hit complaint-file failure is swallowed, escalation stands", async () => {
+    seedSoft("alice", 3, 10000);
+    await seedCapHitLog();
+    // Drop the complaints table: the filer throws, the catch logs,
+    // the HARD escalation still stands. Event reads are unaffected.
+    env.db.run("DROP TABLE complaints");
+    const swallowed: string[] = [];
+    const { spawn, calls: spawnCalls } = recordedSpawn();
+    const r = await runRefusalTriggerForTeam(team(["alice"], { maxRotationsPerDay: 3 }), {
+      db: env.db,
+      atmuxDir: env.atmuxDir,
+      spawnAtmux: spawn,
+      sendDiscord: recordedDiscord().send,
+      nowSec: () => 10500,
+      log: (m) => {
+        swallowed.push(m);
+      },
+    });
+    expect(r.capHit).toBe(1);
+    expect(spawnCalls).toHaveLength(0);
+    expect(r.perMember[0]?.outcome).toBe("cap-hit-escalated");
+    expect(swallowed.some((m) => m.includes("cap-hit complaint file failed"))).toBe(true);
+  });
+
+  test("cap-hit with throwing Discord sender is swallowed, escalation stands", async () => {
+    seedSoft("alice", 3, 10000);
+    await seedCapHitLog();
+    const { spawn, calls: spawnCalls } = recordedSpawn();
+    const r = await runRefusalTriggerForTeam(team(["alice"], { maxRotationsPerDay: 3 }), {
+      db: env.db,
+      atmuxDir: env.atmuxDir,
+      spawnAtmux: spawn,
+      sendDiscord: async () => {
+        throw new Error("discord-cap-boom");
+      },
+      nowSec: () => 10500,
+      log: () => {},
+    });
+    expect(r.capHit).toBe(1);
+    expect(spawnCalls).toHaveLength(0);
+    expect(r.perMember[0]?.outcome).toBe("cap-hit-escalated");
+  });
+
+  test("omitted log dep falls back to stderr (defaultLog)", async () => {
+    seedSoft("alice", 3, 10000);
+    await seedCapHitLog();
+    // No `log` dep: the CAP-HIT summary line goes to real stderr via
+    // defaultLog. Assert the outcome, not the stream.
+    const r = await runRefusalTriggerForTeam(team(["alice"], { maxRotationsPerDay: 3 }), {
+      db: env.db,
+      atmuxDir: env.atmuxDir,
+      spawnAtmux: recordedSpawn().spawn,
+      sendDiscord: recordedDiscord().send,
+      nowSec: () => 10500,
+    });
+    expect(r.capHit).toBe(1);
+    expect(r.perMember[0]?.outcome).toBe("cap-hit-escalated");
+  });
+
+  test("unreadable rotations log counts as zero (fail-closed)", async () => {
+    // Seed three countable same-day rows, then strip permissions:
+    // exists() is true but text() throws EACCES, so countTodayRotations
+    // takes its catch → 0. Asserting 0 against countable rows proves
+    // the catch ran (a successful read would count 3). The exempt
+    // path returns right after the count, keeping the test single-purpose.
+    await seedCapHitLog();
+    const logPath = join(env.atmuxDir, "state", "refusal-rotations.log");
+    await chmod(logPath, 0o000);
+    const r = await runRefusalTriggerForTeam(team(["alice"], { exemptMembers: ["alice"] }), {
+      db: env.db,
+      atmuxDir: env.atmuxDir,
+      spawnAtmux: recordedSpawn().spawn,
+      nowSec: () => 10500,
+      log: () => {},
+    });
+    expect(r.exempt).toBe(1);
+    expect(r.perMember[0]?.outcome).toBe("exempt");
+    expect(r.perMember[0]?.rotationsToday).toBe(0);
+  });
+
+  test("omitted nowSec dep falls back to the wall clock", async () => {
+    // No `nowSec` dep: the Date.now() default fires. The exempt
+    // outcome does not depend on which day the clock reports.
+    const r = await runRefusalTriggerForTeam(team(["alice"], { exemptMembers: ["alice"] }), {
+      db: env.db,
+      atmuxDir: env.atmuxDir,
+      spawnAtmux: recordedSpawn().spawn,
+      sendDiscord: recordedDiscord().send,
+      log: () => {},
+    });
+    expect(r.exempt).toBe(1);
+    expect(r.perMember[0]?.outcome).toBe("exempt");
   });
 });
