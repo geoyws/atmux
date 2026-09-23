@@ -965,6 +965,146 @@ describe("rotate() — public verb", () => {
     expect(stderrBuf).toContain("lead handoff write failed");
   });
 
+  test("t-79dc90b1: bootClaudeMember throw is swallowed, rotation continues", async () => {
+    process.env.ATMUX_SESSION = "atmux-t";
+    const atmuxDir = join(scratch, ".atmux");
+    await seedTeam({
+      name: "t",
+      members: [{ name: "alice", role: "member", tui: "claude" }],
+    });
+    await mkdir(join(atmuxDir, "state"), { recursive: true });
+    await writeFile(
+      join(atmuxDir, "kanban.json"),
+      JSON.stringify({ version: 1, epics: [], stories: [], tasks: [] }),
+    );
+    // Empty pane: never TUI-ready, so boot reaches its first
+    // readiness sleep — which throws here — instead of succeeding.
+    const { tmux } = stubTmux({ windows: [{ index: 0, name: "alice", active: true }] });
+    let stderrBuf = "";
+    const exit = await rotate(["--team-dir", scratch, "alice"], {
+      buildTmux: () => tmux,
+      briefsDir,
+      sleep: async () => {},
+      stdout: () => {},
+      stderr: (s) => {
+        stderrBuf += s;
+      },
+      bootClaude: {
+        ...FAST_BOOT_CLAUDE,
+        sleep: async () => {
+          throw new Error("sleep-boom");
+        },
+      },
+    });
+    expect(exit).toBe(0);
+    expect(stderrBuf).toContain("bootClaudeMember threw");
+    expect(stderrBuf).toContain("sleep-boom");
+  });
+
+  test("t-79dc90b1: boot-failure notice write failure logs to stderr, rotation continues", async () => {
+    process.env.ATMUX_SESSION = "atmux-t";
+    const atmuxDir = join(scratch, ".atmux");
+    await seedTeam({
+      name: "t",
+      members: [{ name: "alice", role: "member", tui: "claude" }],
+    });
+    await mkdir(join(atmuxDir, "state"), { recursive: true });
+    await writeFile(
+      join(atmuxDir, "kanban.json"),
+      JSON.stringify({ version: 1, epics: [], stories: [], tasks: [] }),
+    );
+    // A directory at the outbox path: bootstrap fails (empty pane,
+    // tight 100ms timeouts) and the failure-notice append throws EISDIR.
+    await mkdir(join(atmuxDir, "lead-outbox.md"), { recursive: true });
+    const { tmux } = stubTmux({ windows: [{ index: 0, name: "alice", active: true }] });
+    let stderrBuf = "";
+    const exit = await rotate(["--team-dir", scratch, "alice"], {
+      buildTmux: () => tmux,
+      briefsDir,
+      sleep: async () => {},
+      stdout: () => {},
+      stderr: (s) => {
+        stderrBuf += s;
+      },
+      bootClaude: FAST_BOOT_CLAUDE,
+    });
+    expect(exit).toBe(0);
+    expect(stderrBuf).toContain("bootstrap FAILED");
+    expect(stderrBuf).toContain("failed to write boot-failure notice");
+  });
+
+  test("t-79dc90b1: lead-session-start write failure logs to stderr, rotation continues", async () => {
+    process.env.ATMUX_SESSION = "atmux-t";
+    const atmuxDir = join(scratch, ".atmux");
+    await seedTeam({
+      name: "t",
+      members: [{ name: "lead-x", role: "team-lead", tui: "claude" }],
+    });
+    await mkdir(join(atmuxDir, "state"), { recursive: true });
+    await writeFile(
+      join(atmuxDir, "kanban.json"),
+      JSON.stringify({ version: 1, epics: [], stories: [], tasks: [] }),
+    );
+    // A FILE at the marker home: ensureDir under it fails ENOTDIR.
+    const markerHomeFile = join(scratch, "marker-home-file");
+    await writeFile(markerHomeFile, "not a dir\n");
+    const { tmux } = stubTmux({
+      windows: [{ index: 0, name: "lead-x", active: true }],
+      paneText: "❯ ↑ 5k tokens",
+    });
+    let stderrBuf = "";
+    const exit = await rotate(["--team-dir", scratch, "--lead"], {
+      buildTmux: () => tmux,
+      briefsDir,
+      sleep: async () => {},
+      stdout: () => {},
+      stderr: (s) => {
+        stderrBuf += s;
+      },
+      leadMarkerHome: markerHomeFile,
+      bootClaude: FAST_BOOT_CLAUDE,
+    });
+    expect(exit).toBe(0);
+    expect(stderrBuf).toContain("lead-session-start.txt write failed");
+  });
+
+  test("t-79dc90b1: /goal injection throw is swallowed, rotation continues", async () => {
+    process.env.ATMUX_SESSION = "atmux-t";
+    const atmuxDir = join(scratch, ".atmux");
+    await seedTeam({
+      name: "t",
+      members: [{ name: "alice", role: "member", tui: "claude" }],
+    });
+    await mkdir(join(atmuxDir, "state"), { recursive: true });
+    await writeFile(
+      join(atmuxDir, "kanban.json"),
+      JSON.stringify({ version: 1, epics: [], stories: [], tasks: [] }),
+    );
+    // A directory at the member brief: boot succeeds, then
+    // resolveGoalForMember's readTextOrNull rethrows EISDIR (only
+    // ENOENT is swallowed) through injectGoalIfActive into the
+    // rotate catch. No member.goal, so the resolver must read the brief.
+    await mkdir(join(briefsDir, "member.md"), { recursive: true });
+    const { tmux } = stubTmux({
+      windows: [{ index: 0, name: "alice", active: true }],
+      paneText: "❯ ↑ 5k tokens",
+    });
+    let stderrBuf = "";
+    const exit = await rotate(["--team-dir", scratch, "alice"], {
+      buildTmux: () => tmux,
+      briefsDir,
+      sleep: async () => {},
+      stdout: () => {},
+      stderr: (s) => {
+        stderrBuf += s;
+      },
+      bootClaude: FAST_BOOT_CLAUDE,
+    });
+    expect(exit).toBe(0);
+    expect(stderrBuf).toContain("/goal injection threw");
+    expect(stderrBuf).toContain("rotation continues");
+  });
+
   test("non-claude TUI (opencode) → warn on stderr, no /clear, brief still pasted", async () => {
     process.env.ATMUX_SESSION = "atmux-t";
     await seedTeam({
