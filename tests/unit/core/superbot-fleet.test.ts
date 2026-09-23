@@ -3,7 +3,9 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   renderSuperbotFleetMigration,
+  SuperbotFleetOwnership,
   SuperbotFleetPlan,
+  SuperbotFleetTeam,
 } from "../../../src/core/superbot-fleet.ts";
 
 const planPath = join(import.meta.dir, "../../../docs/migrations/285-superbot-fleet-plan.json");
@@ -111,5 +113,81 @@ describe("ADR-285 held fleet migration plan", () => {
       ],
     };
     expect(() => SuperbotFleetPlan.parse(base)).toThrow();
+  });
+});
+
+describe("fleet validation refinements (t-4de30439)", () => {
+  const validBot = { enabled: true, tui: "claude", claudeAccount: "c-acc" };
+
+  function validPlan(): Record<string, unknown> {
+    return {
+      schemaVersion: 1,
+      observedAt: "2026-08-28T00:00:00Z",
+      sourceCockpit: "/tmp/cockpit.json",
+      sourceCockpitSha256: "a".repeat(64),
+      activation: "held",
+      persistentTeams: [
+        { name: "alpha", root: "/tmp/alpha", teamConfig: "present", bot: { ...validBot } },
+      ],
+      ownership: [],
+    };
+  }
+
+  test("team bot disabled is refused", () => {
+    const r = SuperbotFleetTeam.safeParse({
+      name: "alpha",
+      root: "/tmp/alpha",
+      teamConfig: "present",
+      bot: { ...validBot, enabled: false },
+    });
+    expect(r.success).toBe(false);
+    if (r.success) return;
+    expect(r.error.issues.map((i) => i.message)).toContain("fleet bot must be enabled");
+  });
+
+  test("duplicate ownership tag is refused", () => {
+    const r = SuperbotFleetOwnership.safeParse({
+      board: "alpha",
+      tags: ["core", "core"],
+      defaultTeam: "alpha",
+    });
+    expect(r.success).toBe(false);
+    if (r.success) return;
+    expect(r.error.issues.map((i) => i.message)).toContain("duplicate tag 'core'");
+  });
+
+  test("duplicate ownership teams are refused", () => {
+    const r = SuperbotFleetOwnership.safeParse({
+      board: "alpha",
+      tags: ["core"],
+      defaultTeam: "alpha",
+      fallbackTeams: ["alpha"],
+    });
+    expect(r.success).toBe(false);
+    if (r.success) return;
+    expect(r.error.issues.map((i) => i.message)).toContain("ownership teams must be unique");
+  });
+
+  test("duplicate persistent team is refused", () => {
+    const plan = validPlan();
+    plan.persistentTeams = [
+      { name: "alpha", root: "/tmp/alpha", teamConfig: "present", bot: { ...validBot } },
+      { name: "alpha", root: "/tmp/alpha-2", teamConfig: "present", bot: { ...validBot } },
+    ];
+    const r = SuperbotFleetPlan.safeParse(plan);
+    expect(r.success).toBe(false);
+    if (r.success) return;
+    expect(r.error.issues.map((i) => i.message)).toContain("duplicate persistent team 'alpha'");
+  });
+
+  test("ownership naming an unknown persistent team is refused", () => {
+    const plan = validPlan();
+    plan.ownership = [{ board: "alpha", tags: ["core"], defaultTeam: "ghost" }];
+    const r = SuperbotFleetPlan.safeParse(plan);
+    expect(r.success).toBe(false);
+    if (r.success) return;
+    expect(r.error.issues.map((i) => i.message)).toContain(
+      "ownership names unknown persistent team 'ghost'",
+    );
   });
 });
