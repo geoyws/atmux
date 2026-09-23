@@ -87,7 +87,7 @@ development. One tmux session per project team, one tmux window per agent, all
 coordination state on disk — canonically SQLite at `.atmux/state.db`
 ([ADR-126](adr/126-sqlite-state-store.md)), operator-private and symlinked out
 of the product repo
-([ADR-244](adr/244-per-repo-pre-commit-kanban-decisions-snapshot.md)
+([ADR-244](adr/244-per-repo-pre-commit-kanban-decisions-snapshot.SUPERSEDED.md)
 §Supersession-2026-05-26). No provider API. No long-lived process required —
 manual orchestration is the fleet default and the `atmux-orchd` daemon is
 opt-in ([ADR-260](adr/260-manual-orchestration-mode-default.md)). State
@@ -126,7 +126,7 @@ Three durable principles (see `docs/ARCHITECTURE.md`):
    and no `!.atmux/team.json` carve-out
    ([ADR-239](adr/239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md)
    §Supplement-2026-05-26,
-   [ADR-244](adr/244-per-repo-pre-commit-kanban-decisions-snapshot.md)
+   [ADR-244](adr/244-per-repo-pre-commit-kanban-decisions-snapshot.SUPERSEDED.md)
    §Supersession-2026-05-26). Node `fs` follows symlinks transparently, so no
    code changed. Snapshot cadence is `dotfiles push`, operator-driven —
    isolation protects teammates from the operator's artifacts; only
@@ -527,7 +527,7 @@ four, consistent with §1.2 principle 3 as corrected above.
 dotfile tree and is symlinked into each managed repo's `.atmux/`
 ([ADR-239](adr/239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md)
 §Supplement-2026-05-26,
-[ADR-244](adr/244-per-repo-pre-commit-kanban-decisions-snapshot.md)
+[ADR-244](adr/244-per-repo-pre-commit-kanban-decisions-snapshot.SUPERSEDED.md)
 §Supersession-2026-05-26). See §1.2 principle 2 as corrected.
 
 **The gap:** that guarantee is carried by a four-step **manual operator recipe**

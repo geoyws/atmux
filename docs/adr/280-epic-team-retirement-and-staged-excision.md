@@ -42,7 +42,7 @@ The 21 epic-specific ADRs recorded decisions that were true when made. **None of
 
 | Live today | | | |
 |---|---|---|---|
-| [090](090-epic-team-lifecycle.md) epic-team lifecycle | [144](144-epic-team-test-gate.md) epic-team test gate | [170](170-sweep-epics-verb.md) `sweep-epics` verb | [173](173-epic-show-enumerate-children.md) `epic show` children |
+| [090](090-epic-team-lifecycle.md) epic-team lifecycle | [144](144-epic-team-test-gate.md) epic-team test gate | [170](170-sweep-epics-verb.SUPERSEDED.md) `sweep-epics` verb | [173](173-epic-show-enumerate-children.md) `epic show` children |
 | [174](174-task-list-epic-story-filters.md) epic/story filters | [176](176-epic-aware-lane-drift-revert.md) epic-aware lane drift | [182](182-auto-reap-epic-team-on-epic-merge.md) auto-reap on merge | [184](184-host-wide-epic-team-cap-queue-and-dormancy-audit.md) host-wide cap |
 | [193](193-restore-task-add-epic-story-deliverable-flags.md) task-add epic flags | [195](195-epic-done-transfer-follow-up-tasks.md) epic-done transfer | [196](196-worktree-isolation-true-default-for-spawn-epic.md) worktree isolation | [199](199-claude-account-pool-for-epic-team-spawning.md) account pool |
 | [209](209-never-started-epic-team-detection.md) never-started detection | [219](219-dissolve-epic-completeness.md) dissolve completeness | [225](225-epic-dependencies-and-is-ready-toggle.md) epic deps + is_ready | [250](250-orchd-stale-epic-reaper.md) stale-epic reaper |

@@ -2,8 +2,8 @@
 
 **Status**: proposed
 **Date**: 2026-05-21
-**Driver-ref**: 2026-05-21 sopx observation — 12-branch backlog of epic-team branches that the [ADR-170](170-sweep-epics-verb.md) classifier had verdict-stamped SAFE-DISSOLVE for hours, but no automation drove the fold-in. Operator had to hand-run merge + dissolve per branch to clear the backlog. Filed via Epic `e-46f7fd64`.
-**Cross-refs**: [ADR-091](091-kanban-driven-auto-merge.md) (auto-merge state machine — substrate), [ADR-134](134-in-team-auto-merger.md) (in-team auto-merger — merge primitive this ADR re-uses), [ADR-170](170-sweep-epics-verb.md) (sweep-epics classifier — verdict source that this ADR chains FROM), [ADR-090](090-epic-team-lifecycle.md) §`dissolve-epic` (post-merge teardown — chained INTO), [ADR-137](137-merge-over-rebase.md) (merge convention — `git merge`, never rebase), [ADR-197](197-cron-reaper-teardown-contract.md) (cron-strip inherited via the dissolve-epic teardown hook), [ADR-210](210-eliminate-hold-posture-deadlock-structurally.md) §Tier 1 (lead bootstrap doctrine — same "act on what's already classified" theme).
+**Driver-ref**: 2026-05-21 sopx observation — 12-branch backlog of epic-team branches that the [ADR-170](170-sweep-epics-verb.SUPERSEDED.md) classifier had verdict-stamped SAFE-DISSOLVE for hours, but no automation drove the fold-in. Operator had to hand-run merge + dissolve per branch to clear the backlog. Filed via Epic `e-46f7fd64`.
+**Cross-refs**: [ADR-091](091-kanban-driven-auto-merge.md) (auto-merge state machine — substrate), [ADR-134](134-in-team-auto-merger.md) (in-team auto-merger — merge primitive this ADR re-uses), [ADR-170](170-sweep-epics-verb.SUPERSEDED.md) (sweep-epics classifier — verdict source that this ADR chains FROM), [ADR-090](090-epic-team-lifecycle.md) §`dissolve-epic` (post-merge teardown — chained INTO), [ADR-137](137-merge-over-rebase.md) (merge convention — `git merge`, never rebase), [ADR-197](197-cron-reaper-teardown-contract.md) (cron-strip inherited via the dissolve-epic teardown hook), [ADR-210](210-eliminate-hold-posture-deadlock-structurally.md) §Tier 1 (lead bootstrap doctrine — same "act on what's already classified" theme).
 
 ## Context
 
@@ -138,7 +138,7 @@ If auto-fold-in proves too aggressive:
 
 - [ADR-091](091-kanban-driven-auto-merge.md) (auto-merge state machine — substrate; §Decision-anchor #1 + #2 + #4 inherited).
 - [ADR-134](134-in-team-auto-merger.md) (in-team auto-merger — merge primitive this ADR re-uses at the parent-trunk layer).
-- [ADR-170](170-sweep-epics-verb.md) (sweep-epics classifier — verdict source; §D2 chains FROM `--apply`).
+- [ADR-170](170-sweep-epics-verb.SUPERSEDED.md) (sweep-epics classifier — verdict source; §D2 chains FROM `--apply`).
 - [ADR-090](090-epic-team-lifecycle.md) §`dissolve-epic` (post-merge teardown — chained INTO).
 - [ADR-137](137-merge-over-rebase.md) (merge convention — `git merge --no-edit`, never rebase).
 - [ADR-197](197-cron-reaper-teardown-contract.md) (cron-strip inherited via the dissolve-epic teardown hook).

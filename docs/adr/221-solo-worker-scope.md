@@ -3,7 +3,7 @@
 **Status:** Accepted — v1 substrate (`templates/epic-rosters/solo.json` + `solo+committer.json`) via merge `fe6bcda` 2026-05-22; v2 convenience verbs (spawn-worker / dissolve-worker / list-workers) via this commit 2026-05-23. Auto-dissolve folded into orchd lifecycle [e-a946af69](../tasks/t-0db3f393.md) Phase 4 / ADR-227.
 **Date:** 2026-05-22 (v1) · 2026-05-23 (§v2 amendment)
 **Deciders:** geoyws (driver)
-**Related:** [ADR-090](090-epic-team-lifecycle.md), [ADR-091](091-kanban-driven-auto-merge.md), [ADR-033](033-kanban-driver-only-flag.md), [ADR-170](170-sweep-epics-verb.md), [ADR-199](199-claude-account-pool-for-epic-team-spawning.md), [t-8c8ce51c](../tasks/t-8c8ce51c.md), [t-9aa2f8cb](../tasks/t-9aa2f8cb.md), [t-0542595c](../tasks/t-0542595c.md)
+**Related:** [ADR-090](090-epic-team-lifecycle.md), [ADR-091](091-kanban-driven-auto-merge.md), [ADR-033](033-kanban-driver-only-flag.md), [ADR-170](170-sweep-epics-verb.SUPERSEDED.md), [ADR-199](199-claude-account-pool-for-epic-team-spawning.md), [t-8c8ce51c](../tasks/t-8c8ce51c.md), [t-9aa2f8cb](../tasks/t-9aa2f8cb.md), [t-0542595c](../tasks/t-0542595c.md)
 
 ## Context
 
@@ -102,7 +102,7 @@ Promoted from the original "follow-up Task" outline. Three convenience verbs lan
 - [t-8c8ce51c](../tasks/t-8c8ce51c.md) — filing Task that motivated this ADR
 - [ADR-090 §`spawn-epic` verb](090-epic-team-lifecycle.md) — substrate this builds on
 - [ADR-091 §`epic-merge`](091-kanban-driven-auto-merge.md) — fan-in semantics shared with workers
-- [ADR-170 §`sweep-epics`](170-sweep-epics-verb.md) — companion read-only enumerator + housekeeping path (workers count against the same sweep)
+- [ADR-170 §`sweep-epics`](170-sweep-epics-verb.SUPERSEDED.md) — companion read-only enumerator + housekeeping path (workers count against the same sweep)
 - [ADR-202 §Amendment 2026-05-22](202-honker-in-db-messaging-substrate.md) — event substrate for §v3 auto-dissolve consumer (consumer wiring deferred to EPIC e-a946af69 Phase 4)
 - 2026-05-22 session log — multiple small-fix commits motivating the gap analysis
 - 2026-05-23 §v2 amendment — e-678dd038 epic-team shipped the 3 convenience verbs + tests; dogfood validation outstanding (operator self-spawn of a worker via the new verb)

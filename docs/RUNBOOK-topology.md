@@ -262,5 +262,5 @@ Cold first run on hax baseline (5 parent teams + 3 epic-teams):
 - [ADR-197](adr/197-cron-reaper-teardown-contract.md) — `cron-reaper` (cron-block reap primitive)
 - [ADR-178](adr/178-test-cage-leak-reaper.md) — `test-reaper` (test-class sibling — NOT composed into topo's reap)
 - [ADR-219](adr/219-dissolve-epic-completeness.md) — dissolve-epic completeness invariant (Gate 3 preserves §D2)
-- [ADR-170](adr/170-sweep-epics-verb.md) — `sweep-epics` verdict ladder (topo manifest is a strict superset)
+- [ADR-170](adr/170-sweep-epics-verb.SUPERSEDED.md) — `sweep-epics` verdict ladder (topo manifest is a strict superset)
 - [ADR-077](adr/077-superdoctor-cockpit-role.md) — doctor probes consume the topo manifest (per §D6 + 2026-05-22 amendment)
