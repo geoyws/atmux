@@ -50,6 +50,18 @@ atmux test-reaper
 
 `spinTmux` writes a `.leak-tracker.json` sidecar beside every test socket; `test-reaper` reaps only sidecar-traced dirs whose parent pid is dead and whose age exceeds `--max-age-min` (default 30). Dirs without a sidecar are warned on and skipped. This sub-op's `--zombie-sweep` remains the sidecar-independent backstop.
 
+### Cron-block layer (`atmux cron-reaper`, per ADR-197)
+
+```bash
+# Dry-run (lists roster-orphaned atmux: blocks, removes nothing):
+atmux cron-reaper --dry-run
+
+# Remove positively-orphaned blocks (fail-closed on unresolvable roster):
+atmux cron-reaper --apply
+```
+
+`atmux stop` strips its own team's block on hard teardown via the same core. The doctor `cron-config` orphan probe stays neutered per ADR-233 — reviving it is an owner decision, not part of this change.
+
 ### Pattern matching
 
 The sub-op walks `os.tmpdir()` and matches directories against `^atmux-(cockpit-)?[^/]+-[^/]+$`. The **trailing `-<suffix>`** is the mkdtemp random tail; production cage dirs like `/tmp/atmux-<teamname>/sock` lack this suffix and are deliberately excluded.
