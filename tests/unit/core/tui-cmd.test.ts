@@ -1,7 +1,12 @@
 // Unit tests for src/core/tui-cmd.ts — ADR-063 TUI launch resolver.
 
 import { describe, expect, test } from "bun:test";
-import { envPrefix, posixQuote, resolveTuiCommand } from "../../../src/core/tui-cmd.ts";
+import {
+  envPrefix,
+  posixQuote,
+  resolveTuiCommand,
+  shellFallbackCommand,
+} from "../../../src/core/tui-cmd.ts";
 import { UsageError } from "../../../src/errors.ts";
 import type { TeamMember, Team as TeamShape } from "../../../src/schema/team.ts";
 
@@ -306,6 +311,20 @@ describe("resolveTuiCommand priority chain", () => {
     const m = mkMember({ name: "x", tui: "shell", cwd: "/from-member" });
     expect(resolveTuiCommand(m, baseTeam, { env: {}, cwd: "/from-opts" })).toBe(
       "export ATMUX_MEMBER=x && cd /from-opts && exec $SHELL",
+    );
+  });
+});
+
+describe("shellFallbackCommand (shell-backed panes, 2026-09-23)", () => {
+  test("wraps a command with sh -c and drops to $SHELL when it exits", () => {
+    expect(shellFallbackCommand("claude --permission-mode auto")).toBe(
+      'sh -c "claude --permission-mode auto; exec $SHELL -i"',
+    );
+  });
+
+  test("keeps a path with spaces and single quotes shell-literal", () => {
+    expect(shellFallbackCommand("atmux superbot run --config '/tmp/a b.json'")).toBe(
+      "sh -c \"atmux superbot run --config '/tmp/a b.json'; exec $SHELL -i\"",
     );
   });
 });

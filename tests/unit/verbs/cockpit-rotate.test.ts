@@ -846,6 +846,10 @@ describe("cockpitRotate — T4 medic respawn", () => {
     expect(h.newWindowCalls[0]?.name).toBe("_medic");
     expect(h.newWindowCalls[0]?.shellCommand).toContain(" claude ");
     expect(h.newWindowCalls[0]?.shellCommand).toContain("CLAUDE_GUARD_AGENT=1");
+    // Shell-fallback wrap (2026-09-23): respawned claude runs as a child
+    // of sh; the pane survives the TUI exiting.
+    expect(h.newWindowCalls[0]?.shellCommand).toContain('sh -c "');
+    expect(h.newWindowCalls[0]?.shellCommand).toContain("exec $SHELL -i");
     // Success audit row written (no Discord).
     expect(h.appendedAudit.length).toBe(1);
     const row = firstAuditRow(h);

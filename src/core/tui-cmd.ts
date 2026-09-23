@@ -94,6 +94,21 @@ export function resolveTuiCommand(
   }
 }
 
+/**
+ * Wrap a foreground command so its pane survives the command exiting
+ * (tmux removes a pane whose start command exits — remain-on-exit is
+ * off): the command runs as a child of `sh`, and when it quits the pane
+ * drops to the operator's interactive shell instead of dying. Every
+ * command-mode pane spawn uses this one shape (ADR-239 §A5 driver wrap,
+ * the `_superbot` scheduler window, `cockpit rotate` medic respawn) per
+ * the operator rule that an atmux pane is always shell-backed (George,
+ * 2026-09-23). JSON.stringify keeps the composed command a single
+ * shell-literal for `tmux new-window` / `new-session`.
+ */
+export function shellFallbackCommand(cmd: string): string {
+  return `sh -c ${JSON.stringify(`${cmd}; exec $SHELL -i`)}`;
+}
+
 // ---------- Built-ins ----------
 
 /** Env vars stripped from the claude TUI invocation. ANTHROPIC_API_KEY +

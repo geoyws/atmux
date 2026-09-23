@@ -9,12 +9,17 @@ import type { TmuxConfig, TmuxNamespace } from "../../../src/abstractions/tmux.t
 import { buildGroupTopology, enabledTeams, groupSocketPath } from "../../../src/core/cockpit.ts";
 import type { Logger } from "../../../src/core/tui.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
-import type { Cockpit as CockpitShape, CockpitMedic, CockpitTeam } from "../../../src/schema/cockpit.ts";
+import type {
+  CockpitMedic,
+  Cockpit as CockpitShape,
+  CockpitTeam,
+} from "../../../src/schema/cockpit.ts";
 import type { Team } from "../../../src/schema/team.ts";
 import {
   applyCagePrefix,
   autolaunchTeam,
   buildGroupWindowCommand,
+  buildMedicWindowCommand,
   buildMigrationBreadcrumb,
   buildSuperbotWindowCommand,
   buildTeamWindowCommand,
@@ -987,8 +992,9 @@ describe("reconcileCockpitSession", () => {
         expect((await fx.tmux.pane.listPanes(`atmux_cockpit:${window}`))[0]?.pid).toBe(pid);
       }
       expect(buildSuperbotWindowCommand("/tmp/a b.json")).toBe(
-        "atmux superbot run --config '/tmp/a b.json'",
+        "sh -c \"atmux superbot run --config '/tmp/a b.json'; exec $SHELL -i\"",
       );
+      expect(buildSuperbotWindowCommand()).toBe('sh -c "atmux superbot run; exec $SHELL -i"');
     } finally {
       try {
         await fx.tmux.server.killServer();
@@ -1545,7 +1551,7 @@ describe("reconcileCockpitSession — onlyTeam scope (ADR-063 ergonomic fix)", (
     }
   });
 
-   test("onlyTeam filters teams[] arg defensively (mismatched name ignored)", async () => {
+  test("onlyTeam filters teams[] arg defensively (mismatched name ignored)", async () => {
     const fx = await spinTmux("cockpit-onlyteam-filter");
     try {
       const { logger } = makeLogger();
@@ -1575,38 +1581,20 @@ describe("reconcileCockpitSession — onlyTeam scope (ADR-063 ergonomic fix)", (
   });
 });
 
-// ---------- ADR-077: buildSuperdoctorWindowCommand ----------
+// ---------- ADR-077: buildMedicWindowCommand (medic opens to zsh, 2026-09-23) ----------
 
-describe("buildSuperdoctorWindowCommand (ADR-077)", () => {
-  test("emits bare claude invocation when claudeAccount is unset", async () => {
-    const { buildSuperdoctorWindowCommand } = await import("../../../src/verbs/cockpit.ts");
-    const cmd = buildSuperdoctorWindowCommand({ enabled: true });
-    expect(cmd).toContain("claude");
-    expect(cmd).toContain("CLAUDE_CODE_EFFORT_LEVEL=xhigh");
-    expect(cmd).toContain("--permission-mode auto");
-    expect(cmd).not.toContain("CLAUDE_CONFIG_DIR=");
-  });
-
-  test("emits CLAUDE_CONFIG_DIR prefix when claudeAccount is set", async () => {
-    const { buildSuperdoctorWindowCommand } = await import("../../../src/verbs/cockpit.ts");
-    const cmd = buildSuperdoctorWindowCommand({
+describe("buildMedicWindowCommand (ADR-077)", () => {
+  test("medic window opens to plain zsh -l — no claude TUI in the pane command", () => {
+    const cmd = buildMedicWindowCommand({
       enabled: true,
       claudeAccount: { configDir: "/root/.claude-personal", label: "personal" },
-    });
-    expect(cmd).toContain("CLAUDE_CONFIG_DIR=/root/.claude-personal");
-    expect(cmd).toContain("CLAUDE_CODE_EFFORT_LEVEL=xhigh");
-    expect(cmd).toContain("--permission-mode auto");
-  });
-
-  test("honours tuiOverrides", async () => {
-    const { buildSuperdoctorWindowCommand } = await import("../../../src/verbs/cockpit.ts");
-    const cmd = buildSuperdoctorWindowCommand({
-      enabled: true,
       tuiOverrides: { effortLevel: "high", permissionMode: "dontAsk", pluginDir: "/p/dir" },
     });
-    expect(cmd).toContain("CLAUDE_CODE_EFFORT_LEVEL=high");
-    expect(cmd).toContain("--permission-mode dontAsk");
-    expect(cmd).toContain("--plugin-dir=/p/dir");
+    expect(cmd).toBe("zsh -l");
+  });
+
+  test("bare medic block also opens to zsh -l", () => {
+    expect(buildMedicWindowCommand({ enabled: true })).toBe("zsh -l");
   });
 });
 

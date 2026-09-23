@@ -153,7 +153,7 @@ import { migrateLegacySessionName } from "../core/session-migrate.ts";
 import { consumedManifestPath, resumeManifestPath } from "../core/soft-stop.ts";
 import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
-import { CLAUDE_TUI_SCRUB_VARS, resolveTuiCommand } from "../core/tui-cmd.ts";
+import { CLAUDE_TUI_SCRUB_VARS, resolveTuiCommand, shellFallbackCommand } from "../core/tui-cmd.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import { ResumeManifest } from "../schema/resume.ts";
 import type { Team } from "../schema/team.ts";
@@ -505,18 +505,16 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
       // ADR-239 §A5 — command-mode launch: the resolved TUI cmd runs as
       // the pane's PID 0. To preserve the "pane stays a usable shell
       // after the TUI exits" property that the legacy send-keys path
-      // gave for free, non-shell TUIs are wrapped with `sh -c '<cmd>;
-      // exec $SHELL -i'` so the pane drops back to an interactive shell
-      // when the TUI quits. A null/absent TUI explicitly launches zsh:
-      // driver panes are operator workspaces and must not inherit a stale
+      // gave for free, non-shell TUIs are wrapped via the shared
+      // `shellFallbackCommand` helper (`sh -c '<cmd>; exec $SHELL -i'`)
+      // so the pane drops back to an interactive shell when the TUI
+      // quits. A null/absent TUI explicitly launches zsh: driver panes
+      // are operator workspaces and must not inherit a stale
       // agent-harness choice. Named shell kinds keep tmux's normal shell.
       const isShellOnlyTui = (tui: string | null | undefined): boolean =>
         tui === undefined || tui === null || tui === "shell" || tui === "bash" || tui === "zsh";
 
       const driverShellLabel = (tui: string | null | undefined): string => tui ?? "zsh";
-
-      const wrapForShellFallback = (cmd: string): string =>
-        `sh -c ${JSON.stringify(`${cmd}; exec $SHELL -i`)}`;
 
       const resolveCmd = (drv: DriverSession, cwd: string): string | undefined => {
         if (drv.tui === undefined || drv.tui === null) return "zsh";
@@ -531,7 +529,7 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
         };
         try {
           const raw = resolveTuiCommand(synth, team, { env, cwd });
-          return wrapForShellFallback(raw);
+          return shellFallbackCommand(raw);
         } catch (err) {
           logger.warn(
             `driver ${drv.name}: could not resolve command for tui='${drv.tui}' — pane will land in shell (${err instanceof Error ? err.message : String(err)})`,

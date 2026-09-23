@@ -75,7 +75,7 @@ import {
 import { migrateLegacySessionName } from "../core/session-migrate.ts";
 import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
-import { resolveTuiCommand } from "../core/tui-cmd.ts";
+import { resolveTuiCommand, shellFallbackCommand } from "../core/tui-cmd.ts";
 import { UsageError } from "../errors.ts";
 import type {
   CockpitMedic,
@@ -2278,66 +2278,31 @@ export async function reconcileCockpitSession(
 }
 
 /**
- * ADR-077 + ADR-133: build the shell command the cockpit medic window
- * runs (legacy alias: `buildSuperdoctorWindowCommand`). Mirrors the
- * team-window claude-bootstrap shape (CLAUDE_CONFIG_DIR + effortLevel +
- * permissionMode + plugin-dir) when `claudeAccount` is set; otherwise
- * emits a bare `claude` invocation that inherits the operator's
- * default shell env (matches superdriver's default).
- *
- * Defaults match `normaliseTeamJson`'s tuiCommands.claude builder
- * (effortLevel=xhigh, permissionMode=auto) so a medic session runs with
- * the same Opus + auto-mode posture as a team window.
+ * ADR-077 + ADR-133, amended 2026-09-23 (operator-direct): build the
+ * shell command the cockpit medic window runs. The medic window opens to a plain
+ * `zsh -l` login shell — same posture as the `_superdriver` window 1 —
+ * NEVER to a claude TUI: a TUI as the pane's start command kills the
+ * pane when the TUI exits (tmux removes the window; remain-on-exit is
+ * off), which is how `_medic` kept disappearing from the cockpit. The
+ * operator launches claude in it by hand (c-alias wrapper per ADR-167,
+ * or `atmux cockpit rotate medic`, whose respawn is shell-fallback
+ * wrapped). `claudeAccount` / `tuiOverrides` stay on the config — the
+ * rotate respawn matrix still reads them.
  */
-export function buildMedicWindowCommand(m: CockpitMedic): string {
-  return buildClaudeWindowCommand(m);
-}
-
-/** @deprecated use {@link buildMedicWindowCommand} (ADR-133 rename) —
- *  kept as alias so legacy callers in tests / cron-install paths
- *  continue to work. */
-export function buildSuperdoctorWindowCommand(sd: CockpitMedic): string {
-  return buildClaudeWindowCommand(sd);
+export function buildMedicWindowCommand(_m: CockpitMedic): string {
+  return "zsh -l";
 }
 
 /** ADR-285: command for the cockpit scheduler window. The config path is
- * single-quoted because this string is interpreted by the pane shell. */
+ *  single-quoted because this string is interpreted by the pane shell.
+ *  Shell-fallback wrapped (2026-09-23) so a scheduler exit lands the
+ *  pane on an interactive shell instead of killing the window. */
 export function buildSuperbotWindowCommand(configPath?: string): string {
-  if (configPath === undefined) return "atmux superbot run";
-  const safe = configPath.replace(/'/g, "'\\''");
-  return `atmux superbot run --config '${safe}'`;
-}
-
-/** Shared body for the medic window-command builder.
- *  Reads the `tuiOverrides` + `claudeAccount` fields the medic block
- *  surfaces (struct mirrored on purpose per ADR-077 §D2 — reuses
- *  `CockpitClaudeAccount` / `CockpitTuiOverrides` verbatim). Kept
- *  private so the public builder reads as an intent-named call site. */
-function buildClaudeWindowCommand(cfg: {
-  claudeAccount?: { configDir: string; label?: string | undefined } | undefined;
-  tuiOverrides?:
-    | {
-        effortLevel?: string | undefined;
-        permissionMode?: string | undefined;
-        pluginDir?: string | undefined;
-      }
-    | undefined;
-}): string {
-  const ov = cfg.tuiOverrides;
-  const effort = ov?.effortLevel ?? "xhigh";
-  const permission = ov?.permissionMode ?? "auto";
-  const pluginFlag = ov?.pluginDir !== undefined ? ` --plugin-dir=${ov.pluginDir}` : "";
-  if (cfg.claudeAccount !== undefined) {
-    return (
-      `CLAUDE_CONFIG_DIR=${cfg.claudeAccount.configDir} ` +
-      `CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=${effort} CLAUDE_GUARD_AGENT=1 ` +
-      `claude${pluginFlag} --permission-mode ${permission}`
-    );
-  }
-  return (
-    `CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=${effort} CLAUDE_GUARD_AGENT=1 ` +
-    `claude${pluginFlag} --permission-mode ${permission}`
-  );
+  const base =
+    configPath === undefined
+      ? "atmux superbot run"
+      : `atmux superbot run --config '${configPath.replace(/'/g, "'\\''")}'`;
+  return shellFallbackCommand(base);
 }
 
 // ---------- t-8b0e077e: cockpit safety gate ----------

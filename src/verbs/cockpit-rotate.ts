@@ -71,6 +71,7 @@ import {
   safeSendKeysWithVerify as safeSendKeysWithVerifyDefault,
 } from "../core/safe-send.ts";
 import { getCockpitSocketName } from "../core/tmux-paths.ts";
+import { shellFallbackCommand } from "../core/tui-cmd.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type {
   CockpitClaudeAccount,
@@ -716,9 +717,10 @@ export const claudeUiGoneVerifier: PaneVerifier = (text: string) =>
  *  CLAUDE_GUARD_AGENT) before exec'ing claude. Unknown configDir
  *  throws ConfigError (refused upstream of any pane mutation).
  *
- *  Differs from cockpit rebuild's `buildClaudeWindowCommand` (which
- *  uses an inline env-set + bare `claude` binary): rotate respawn
- *  honors the literal ADR-167 spec text + lets fe-2's T7 hermetic
+ *  The cockpit `_medic` window itself opens to plain `zsh -l`
+ *  (buildMedicWindowCommand, 2026-09-23) — this builder is only the
+ *  rotate-time REPL relaunch, shell-fallback wrapped at the call site;
+ *  it honors the literal ADR-167 spec text + lets fe-2's T7 hermetic
  *  fixtures exercise the resolver by stubbing the wrapper name on
  *  PATH (Plan A per the T6/T7 design handoff). */
 export function buildClaudeRespawnCommand(
@@ -961,7 +963,10 @@ async function performRespawn(
     switch (role) {
       case "medic": {
         const m = readMedicConfig(cockpit);
-        cmd = buildClaudeRespawnCommand(m?.claudeAccount, m?.tuiOverrides);
+        // Shell-fallback wrap (2026-09-23): the respawned claude runs as
+        // a child of sh; when it exits the pane lands on the operator's
+        // interactive shell instead of dying with the window.
+        cmd = shellFallbackCommand(buildClaudeRespawnCommand(m?.claudeAccount, m?.tuiOverrides));
         break;
       }
       case "team-driver": {
