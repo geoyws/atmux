@@ -229,7 +229,7 @@ async function runStart(
 describe("parseStartArgs", () => {
   test("defaults: force=false, doctor=preflight, no socket", () => {
     const got = parseStartArgs([], {});
-    expect(got).toEqual({ force: false, doctorMode: "preflight" });
+    expect(got).toEqual({ force: false, forceNest: false, doctorMode: "preflight" });
   });
 
   test("--force / -f sets force=true", () => {
@@ -283,7 +283,7 @@ describe("parseStartArgs", () => {
 
   test("flag combinations parse left-to-right", () => {
     const got = parseStartArgs(["--force", "--no-doctor", "--socket", "s1"], {});
-    expect(got).toEqual({ force: true, doctorMode: "skip", socket: "s1" });
+    expect(got).toEqual({ force: true, forceNest: false, doctorMode: "skip", socket: "s1" });
   });
 });
 
@@ -2122,5 +2122,31 @@ describe("start — t-eb0887fe parallelized member spawn", () => {
     }
     // Default cap is 6; all 4 members fit and fan out together.
     expect(maxInFlight).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("start — nest ban (e-39 T1/T2)", () => {
+  test("parseStartArgs accepts --force-nest", () => {
+    expect(parseStartArgs(["--force-nest"]).forceNest).toBe(true);
+    expect(parseStartArgs([]).forceNest).toBe(false);
+  });
+
+  test("nested cwd → ConfigError refusing nested before any writes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "atmux-start-nest-"));
+    try {
+      await mkdir(join(root, ".atmux"), { recursive: true });
+      const child = join(root, "child");
+      await mkdir(join(child, ".atmux"), { recursive: true });
+      let caught: unknown = null;
+      try {
+        await start([], { cwd: child, env: {} });
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(ConfigError);
+      expect((caught as Error).message).toContain("refusing nested");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

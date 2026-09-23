@@ -33,7 +33,7 @@ import { type AnsiPalette, createLogger, defaultPalette, type Logger } from "../
 import { ConfigError, UsageError } from "../errors.ts";
 import { attach, exactSessionTarget } from "./attach.ts";
 import { doctor } from "./doctor.ts";
-import { init } from "./init.ts";
+import { detectTeamLocation, init, nestedTeamError } from "./init.ts";
 import { start } from "./start.ts";
 
 // ---------- Public types ----------
@@ -45,6 +45,8 @@ export interface UpOpts {
   cwd?: string;
   /** `<root>/.atmux` — forwarded to `ResolveDirOpts.teamDir` chain. */
   teamDir?: string;
+  /** Explicit escape hatch for a local team nested beneath an ancestor team. */
+  forceNest?: boolean;
   isStdinTTY?: boolean;
   isStdoutTTY?: boolean;
   isStderrTTY?: boolean;
@@ -77,6 +79,7 @@ interface ResolvedDeps {
   teamDir: string | undefined;
   isStdinTTY: boolean;
   isStdoutTTY: boolean;
+  forceNest: boolean;
   isStderrTTY: boolean;
   initFn: NonNullable<UpOpts["initFn"]>;
   doctorFn: NonNullable<UpOpts["doctorFn"]>;
@@ -91,18 +94,24 @@ interface ResolvedDeps {
   palette: AnsiPalette;
 }
 
-const USAGE_HINT = "atmux up takes no arguments";
+const USAGE_HINT = "usage: atmux up [--force-nest]";
 
 // ---------- Pure helpers ----------
 
 /** Reject any argv — bash `lib/up.sh` takes no flags. */
-export function parseUpArgs(args: ReadonlyArray<string>): void {
-  if (args.length > 0) {
+export function parseUpArgs(args: ReadonlyArray<string>): { forceNest: boolean } {
+  let forceNest = false;
+  for (const arg of args) {
+    if (arg === "--force-nest") {
+      forceNest = true;
+      continue;
+    }
     throw new UsageError({
-      what: `up: unexpected argument: ${args[0] ?? ""}`,
+      what: `up: unexpected argument: ${arg}`,
       hint: USAGE_HINT,
     });
   }
+  return { forceNest };
 }
 
 /**
@@ -178,6 +187,7 @@ function resolveDeps(opts: UpOpts): ResolvedDeps {
     teamDir: opts.teamDir,
     isStdinTTY,
     isStdoutTTY,
+    forceNest: opts.forceNest ?? false,
     isStderrTTY,
     initFn: opts.initFn ?? init,
     doctorFn: opts.doctorFn ?? doctor,
@@ -209,6 +219,15 @@ function resolveDeps(opts: UpOpts): ResolvedDeps {
 export async function upWith(opts: UpOpts = {}): Promise<number> {
   const deps = resolveDeps(opts);
   const dirOpts = buildResolveDirOpts(deps.env, deps.cwd, deps.teamDir);
+  const location = await detectTeamLocation(deps.cwd);
+  if (location.kind === "nested" && !deps.forceNest) {
+    throw nestedTeamError("up", location.ancestorAtmuxDir);
+  }
+  if (location.kind === "subdir") {
+    deps.stderr(
+      `warning: invoked from subdir ${location.relpath}, using ancestor team_dir at ${location.teamDir}\n`,
+    );
+  }
 
   // ---- 1. wizard gate (lib/up.sh:16-19) ----
   if (!(await deps.hasTeamFn(dirOpts))) {
@@ -235,7 +254,7 @@ export async function upWith(opts: UpOpts = {}): Promise<number> {
   if (await deps.hasSession(session)) {
     deps.logger.log(`session ${session} already running — reusing`);
   } else {
-    await deps.startFn([], {});
+    await deps.startFn(deps.forceNest ? ["--force-nest"] : [], {});
   }
 
   // ---- 4. attach (TTY-gated, lib/up.sh:36-45) ----
@@ -308,6 +327,6 @@ async function runWizardGate(deps: ResolvedDeps, dirOpts: ResolveDirOpts): Promi
  * failure (mapped to sysexits by `src/cli.ts::reportError`).
  */
 export async function up(args: ReadonlyArray<string>, opts: UpOpts = {}): Promise<number> {
-  parseUpArgs(args);
-  return await upWith(opts);
+  const parsed = parseUpArgs(args);
+  return await upWith({ ...opts, forceNest: parsed.forceNest });
 }
