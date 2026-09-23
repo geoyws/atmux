@@ -36,6 +36,7 @@ import {
   requireTeam,
   resolveCallerScope,
 } from "../core/common.ts";
+import { isAnyId } from "../core/id-sequence.ts";
 import { removeFromInProgress } from "../core/inbox.ts";
 import {
   addTask,
@@ -80,13 +81,12 @@ const VALID_STATUSES = new Set(["todo", "in-progress", "done", "blocked"]);
 // ADR-193 §Validation: epic/story id SHAPE check — NO existence check
 // (§OQ1: cross-worktree decomp may file the epic in a sibling session;
 // operators run `atmux epic show <eid>` if they want a real check).
-// Accepts BOTH the legacy hex8 form (`e-3b017960`, genEpicId) AND the
-// ADR-202 §Amendment-VIII running-number form (`e-1`, `e-1203`). The
+// Accepts the legacy hex8 form (`e-3b017960`, genEpicId), the transitional
+// running-number form (`e-1`, `e-1203`), and the SQLite compound form
+// (`e-1-3b017960`) minted by id-sequence.
 // ADR's original `e-[0-9a-f]{8}`-only regex predated the running-number
 // migration (2026-05-22) and would reject every SQLite-mode id; relaxed
 // here per ADR-193 §Amendment 2026-06-05.
-const EPIC_ID_RE = /^e-([0-9a-f]{8}|\d+)$/;
-const STORY_ID_RE = /^s-([0-9a-f]{8}|\d+)$/;
 /** ADR-193 §OQ2: free-form deliverable string, capped to match the
  *  body-field policy. Over-length → exit 64 (UsageError). */
 const DELIVERABLE_MAX = 256;
@@ -95,9 +95,9 @@ const DELIVERABLE_MAX = 256;
  *  `UsageError` (exit 64) on a malformed id; returns the value
  *  unchanged on success. Shared by `task add` + `task update`. */
 function assertEpicShape(v: string, hint: string): string {
-  if (!EPIC_ID_RE.test(v)) {
+  if (!v.startsWith("e-") || !isAnyId(v)) {
     throw new UsageError({
-      what: `--epic must match e-<8hex> or e-<int> (got: ${v})`,
+      what: `--epic must match e-<8hex>, e-<int>, or e-<int>-<8hex> (got: ${v})`,
       hint,
     });
   }
@@ -106,9 +106,9 @@ function assertEpicShape(v: string, hint: string): string {
 
 /** ADR-193: validate a non-empty `--story` value's shape. */
 function assertStoryShape(v: string, hint: string): string {
-  if (!STORY_ID_RE.test(v)) {
+  if (!v.startsWith("s-") || !isAnyId(v)) {
     throw new UsageError({
-      what: `--story must match s-<8hex> or s-<int> (got: ${v})`,
+      what: `--story must match s-<8hex>, s-<int>, or s-<int>-<8hex> (got: ${v})`,
       hint,
     });
   }

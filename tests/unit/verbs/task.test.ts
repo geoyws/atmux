@@ -155,9 +155,22 @@ describe("parseAddArgs", () => {
     expect(a.story).toBe("s-1203");
   });
 
+  test("ADR-202: SQLite compound epic and story ids are accepted", () => {
+    const a = parseAddArgs([
+      "subj",
+      "--epic",
+      "e-1-3b017960",
+      "--story",
+      "s-1203-c4e91c33",
+    ]);
+    expect(a.epic).toBe("e-1-3b017960");
+    expect(a.story).toBe("s-1203-c4e91c33");
+  });
+
   test("ADR-193: malformed --epic → UsageError (shape check, exit 64)", () => {
     expect(() => parseAddArgs(["subj", "--epic", "e-zzz"])).toThrow(UsageError);
     expect(() => parseAddArgs(["subj", "--epic", "nope"])).toThrow(UsageError);
+    expect(() => parseAddArgs(["subj", "--epic", "e-1-nothex"])).toThrow(UsageError);
   });
 
   test("ADR-193: malformed --story → UsageError", () => {
