@@ -41,6 +41,7 @@ import { claim, done } from "./verbs/claim.ts";
 import { cleanup } from "./verbs/cleanup.ts";
 import { cockpit } from "./verbs/cockpit.ts";
 import { cockpitMirror } from "./verbs/cockpit-mirror.ts";
+import { cronReaper } from "./verbs/cron-reaper.ts";
 import { committer } from "./verbs/committer.ts";
 import { complaints } from "./verbs/complaints.ts";
 import { cost } from "./verbs/cost.ts";
@@ -296,6 +297,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return tokenBudget(argv.slice(1));
     case "cockpit":
       return cockpit(argv.slice(1));
+    case "cron-reaper":
+      return cronReaper(argv.slice(1));
     case "ombudsman":
       return ombudsman(argv.slice(1));
     case "committer":

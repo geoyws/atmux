@@ -57,7 +57,7 @@ import {
 import { quiesceCron, softStop } from "../core/soft-stop.ts";
 import { UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
-import { cronRemove } from "./cron-remove.ts";
+import { removeCronBlocks } from "./cron-reaper.ts";
 
 const USAGE = "atmux stop [--force|-f] [--soft] [--no-archive] [--prune-branch]";
 
@@ -168,11 +168,10 @@ export function archiveTimestamp(epochMs: number): string {
 
 /** `atmux stop [--force] [--no-archive]`. Returns 0. */
 export interface StopOpts {
-  /** ADR-083 follow-up: inject the cron-remove verb for tests so `stop`
-   *  never touches the host crontab. Default = the real verb; tests
-   *  pass a no-op or recorder. Production callers (CLI dispatch) omit
-   *  the opts and get the real impl. */
-  cronRemoveFn?: (argv: ReadonlyArray<string>) => Promise<number>;
+  /** ADR-197: inject the scoped cron-reaper helper for tests so `stop`
+   *  never touches the host crontab. Default = the real helper; tests
+   *  pass a no-op or recorder. Production callers omit the opts. */
+  removeCronBlocksFn?: (opts: { team: string; dryRun?: boolean }) => Promise<unknown>;
   /** ADR-082 W4: inject the git spawner for the per-member worktree
    *  prune step. Default = the real `git` via `defaultGitSpawn` from
    *  `abstractions/worktree.ts`. Tests pass a mock so the prune path
@@ -196,6 +195,7 @@ export async function stop(argv: ReadonlyArray<string>, opts: StopOpts = {}): Pr
 
   if (!(await tmux.session.hasSession(`=${sessionName}`))) {
     process.stderr.write(`atmux: warn: session ${sessionName} does not exist — nothing to stop\n`);
+    if (!parsed.soft) await removeTeamCron(team.name, opts.removeCronBlocksFn);
     return 0;
   }
 
@@ -277,26 +277,29 @@ export async function stop(argv: ReadonlyArray<string>, opts: StopOpts = {}): Pr
   }
   process.stdout.write(`session ${sessionName} stopped\n`);
 
-  // ADR-083 follow-up: drop the team's marker-fenced crontab block. The
-  // verb is unconditionally fired; its own internal strip is a free
-  // no-op when no block exists (matches bash lib/stop.sh:115 — operators
-  // who opted out of auto-install have no block to strip). Non-fatal:
-  // the verb itself swallows every install failure path.
-  const cronFn = opts.cronRemoveFn ?? cronRemove;
-  const cronArgs: string[] = ["--quiet"];
-  if (parsed.teamDir !== undefined) cronArgs.push("--team-dir", parsed.teamDir);
-  try {
-    await cronFn(cronArgs);
-  } catch (e) {
-    // Defense in depth: cronRemove is non-fatal internally, but if a
-    // future bug raised an unhandled error we'd rather warn than fail
-    // `stop`. Mirrors bash's `if atmux::cron_remove ...` guard at
-    // lib/stop.sh:115.
-    const cause = e instanceof Error ? e.message : String(e);
-    process.stderr.write(`atmux: warn: cron-remove fell through: ${cause}\n`);
-  }
+  // ADR-197 Part B: a hard stop strips this team's cron block only AFTER
+  // session kill + state flush. Soft-stop is resumable, so its arm stays.
+  if (!parsed.soft) await removeTeamCron(team.name, opts.removeCronBlocksFn);
 
   return 0;
+}
+
+/** Best-effort, idempotent teardown of one team's marker-fenced cron block. */
+async function removeTeamCron(
+  team: string,
+  removeCronBlocksFn: StopOpts["removeCronBlocksFn"],
+): Promise<void> {
+  // Preserve the established test/operator opt-out. An injected helper
+  // deliberately bypasses it so the teardown contract remains observable.
+  if (removeCronBlocksFn === undefined && process.env.ATMUX_NO_CRON === "1") return;
+  const remove = removeCronBlocksFn ?? removeCronBlocks;
+  try {
+    await remove({ team });
+  } catch (e) {
+    // Cron access must never prevent teardown from succeeding.
+    const cause = e instanceof Error ? e.message : String(e);
+    process.stderr.write(`atmux: warn: cron-reaper fell through: ${cause}\n`);
+  }
 }
 
 // ---------- Internals ----------
