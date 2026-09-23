@@ -8,7 +8,7 @@
 // verbatim per ADR-050 §step 3.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { composeFallbackBrief, fallbackBriefPath } from "../../../src/core/fallback-brief.ts";
@@ -311,5 +311,103 @@ describe("composeFallbackBrief — result shape contract", () => {
       },
     });
     expect(result.body).toBe(written);
+  });
+});
+
+describe("composeFallbackBrief — default deps (t-a130e4c8)", () => {
+  async function git(cwd: string, argv: string[]): Promise<void> {
+    const p = Bun.spawn(["git", ...argv], { cwd, stdout: "ignore", stderr: "ignore" });
+    const code = await p.exited;
+    if (code !== 0) throw new Error(`git ${argv.join(" ")} failed with ${code}`);
+  }
+
+  async function seedFixtureRepo(): Promise<string> {
+    const root = await mkdtemp(join(tmpdir(), "atmux-fb-git-"));
+    try {
+      await writeFile(join(root, "f.txt"), "one\n");
+      await git(root, ["init", "-q"]);
+      await git(root, ["add", "."]);
+      await git(root, ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "first"]);
+      await writeFile(join(root, "f.txt"), "two\n");
+      await git(root, ["add", "."]);
+      await git(root, ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "second"]);
+      return root;
+    } catch (e) {
+      await rm(root, { recursive: true, force: true });
+      throw e;
+    }
+  }
+
+  test("all defaults present: inbox body + template + git log + outbox tail land in the written brief", async () => {
+    const gitRoot = await seedFixtureRepo();
+    try {
+      await mkdir(join(atmuxDir, "inboxes"), { recursive: true });
+      await writeFile(
+        join(atmuxDir, "inboxes", "alpha.json"),
+        JSON.stringify({
+          pending: [],
+          inProgress: [{ id: "t-abc12345", subject: "subj", body: "INBOX_TASK_BODY_MARKER" }],
+          done: [],
+        }),
+      );
+      await writeFile(join(templatesDir, "member.md"), "TEMPLATE_MARKER {{MEMBER}}");
+      const outboxLines = Array.from({ length: 60 }, (_, i) => `outbox-${String(i + 1).padStart(3, "0")}`);
+      await writeFile(join(atmuxDir, "lead-outbox.md"), `${outboxLines.join("\n")}\n`);
+      const result = await composeFallbackBrief({
+        member: "alpha",
+        role: "member",
+        atmuxDir,
+        projectRoot: gitRoot,
+        agent: "cursor-agent",
+        templatesDir,
+      });
+      expect(result.path).toBe(fallbackBriefPath(atmuxDir, "alpha"));
+      expect(result.body).toContain("INBOX_TASK_BODY_MARKER");
+      expect(result.body).toContain("TEMPLATE_MARKER");
+      expect(result.body).toContain("first");
+      expect(result.body).toContain("second");
+      // Tail-50: the last line lands, the first line was sliced off.
+      expect(result.body).toContain("outbox-060");
+      expect(result.body).not.toContain("outbox-001");
+      const onDisk = await Bun.file(result.path).text();
+      expect(onDisk).toBe(result.body);
+    } finally {
+      await rm(gitRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("bare dirs: every default degrades to its notice line, brief still written", async () => {
+    const result = await composeFallbackBrief({
+      member: "alpha",
+      role: "member",
+      atmuxDir,
+      projectRoot,
+      agent: "cursor-agent",
+      templatesDir,
+    });
+    expect(result.body).toContain("_no in-progress task at pause time — execute defensively_");
+    expect(result.body).toContain("_brief template not found at");
+    expect(result.body).toContain("_no git log entries (worktree missing .git or empty repo)_");
+    expect(result.body).toContain("_lead-outbox empty or absent_");
+    const onDisk = await Bun.file(result.path).text();
+    expect(onDisk).toBe(result.body);
+  });
+
+  test("unspawnable git collapses to empty log via the fail-soft catch", async () => {
+    const nulRoot = "/tmp/\0unspawnable";
+    // Premise pin: the runtime must throw (not truncate) on NUL argv —
+    // otherwise the notice below could come from the exit≠0 branch and
+    // this test would pass without entering the catch.
+    expect(() => Bun.spawn(["git", "-C", nulRoot, "log"], { stdout: "ignore" })).toThrow();
+    const result = await composeFallbackBrief({
+      member: "alpha",
+      role: "member",
+      atmuxDir,
+      projectRoot: nulRoot,
+      agent: "cursor-agent",
+      templatesDir,
+      taskBody: "task",
+    });
+    expect(result.body).toContain("_no git log entries (worktree missing .git or empty repo)_");
   });
 });
