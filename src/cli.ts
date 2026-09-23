@@ -92,6 +92,7 @@ import { task } from "./verbs/task.ts";
 import { teamRename } from "./verbs/team-rename.ts";
 import { teamRepairRename } from "./verbs/team-repair-rename.ts";
 import { tellLead } from "./verbs/tell-lead.ts";
+import { testReaper } from "./verbs/test-reaper.ts";
 import { tokenBudget } from "./verbs/token-budget.ts";
 import { topo } from "./verbs/topo.ts";
 import { up } from "./verbs/up.ts";
@@ -247,6 +248,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return release(argv.slice(1));
     case "tell-lead":
       return tellLead(argv.slice(1));
+    case "test-reaper":
+      return testReaper(argv.slice(1));
     case "claim":
       return claim(argv.slice(1));
     case "done":
