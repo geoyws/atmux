@@ -18,6 +18,8 @@
 //     longer in kanban.tasks[]
 //   - orphan-sessions: singleSession=true team has a stale `atmux-<team>`
 //     tmux session
+//   - tmux-agent-env (ADR-294): a live cockpit / group / cage tmux server
+//     whose global environment carries an agent shell's markers
 //
 // Render: human (stderr, color, glyph table) or JSON (--json, stdout).
 // --quiet suppresses output; exit 0 on green, 1 on any red.
@@ -44,6 +46,7 @@ import {
 } from "../core/phantom-prune.ts";
 import { UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
+import { checkAgentShellEnv } from "./doctor/agent-env.ts";
 import {
   checkCockpitOnDefaultSocket,
   checkDeployedBinaryLag,
@@ -269,6 +272,10 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   // present-but-version-drift. Self-clearing post-build:install.
   rows.push(...(await checkVendoredTmuxBinary()));
   rows.push(...(await checkCockpitOnDefaultSocket()));
+  // ADR-294: live cockpit / group / cage servers whose global env was
+  // frozen from an agent shell (AGENT, CI, NO_COLOR, EDITOR=true, …).
+  // Warn class; names only, never values; never creates a server.
+  rows.push(...(await checkAgentShellEnv(team)));
   // t-400a1cad: deployed-binary-lag — warn class.
   // t-400a1cad: deployed-binary-lag — warn class. Compares git HEAD +
   // package.json version against /opt/atmux/current symlink target.
@@ -559,6 +566,17 @@ export interface FixStarvingOpts {
   verifyPollIntervalMs?: number;
 }
 
+export {
+  AGENT_SHELL_ENV_MARKERS,
+  type AgentEnvMarker,
+  type AtmuxServerSocket,
+  agentEnvRemedy,
+  type CheckAgentShellEnvOpts,
+  checkAgentShellEnv,
+  type DiscoverAtmuxServerSocketsOpts,
+  discoverAtmuxServerSockets,
+  findAgentEnvMarkers,
+} from "./doctor/agent-env.ts";
 export {
   type CheckCockpitOnDefaultSocketOpts,
   type CheckDeployedBinaryLagOpts,

@@ -144,6 +144,15 @@ Warn-class only — doesn't block atmux. Surfaces via `atmux doctor` (human) + `
 
 Both probes are warn-class — they don't block `atmux cockpit rebuild` or any verb. They surface drift; the operator decides when to act.
 
+**`tmux-agent-env`** ([ADR-294](adr/294-doctor-detects-agent-shell-env-in-tmux-servers.md)) — a third warn-class probe, added 2026-09-25. It walks every tmux server atmux knows about: the cockpit socket, each group in `cockpit.json`, each team's cage socket conventions, and the current team. It flags a server whose global environment (`tmux show-environment -g`) carries an agent shell's markers. A server started from inside an agent's shell tool hands those variables to every pane for its whole life. TUIs then render monochrome (`NO_COLOR`), and `git commit` silently takes the default message (`GIT_EDITOR=true`). Warn payload:
+
+```
+  ⚠️  tmux-agent-env         team reins server /tmp/atmux-reins/sock carries agent-shell env: AGENT, CI, EDITOR
+     → tmux -S /tmp/atmux-reins/sock set-environment -g -u AGENT; tmux -S /tmp/atmux-reins/sock set-environment -g -u CI; tmux -S /tmp/atmux-reins/sock set-environment -g -u EDITOR — panes already running keep the old environment until their processes restart
+```
+
+Run the hint's commands to repair the server in place. New panes are clean at once. A pane that is already running keeps its own environment until its process is restarted, or until you `unset` the variables in that pane's shell. `-NO_COLOR` in `show-environment -g` is tmux's removal mark, left by `atmux.conf`; it is healthy and is not flagged. The probe reads variable names and never prints values. It skips a missing socket, a stale socket with no server, and a server with no session, and it never creates a server.
+
 > **Skill cross-link** (per [ADR-217](adr/217-atmux-skills-plugin-bundled-and-wizard-installed.md) §D7): for a fleet-wide sweep of these probes plus `atmux status --json` across every enabled team (with auto-complaint filing and the [ADR-198](adr/198-medic-host-pressure-playbook.md) host-pressure playbook as one trigger), invoke `/atmux:sweep` from Claude Code instead of running `atmux doctor` team-by-team.
 
 ## §5 — `ATMUX_COCKPIT_SOCKET` escape hatch
