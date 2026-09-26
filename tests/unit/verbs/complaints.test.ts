@@ -254,6 +254,7 @@ describe("ComplaintsRepo — typed CRUD", () => {
         sourceKind: null,
         sourceId: null,
         targetTeam: null,
+        originTeam: null,
         extra: { kind: "incident" },
       });
       const got = repo.getById("c-aaaaaaaa");
@@ -285,6 +286,7 @@ describe("ComplaintsRepo — typed CRUD", () => {
         sourceKind: null,
         sourceId: null,
         targetTeam: null,
+        originTeam: null,
         extra: {},
       });
       repo.insert({
@@ -301,6 +303,7 @@ describe("ComplaintsRepo — typed CRUD", () => {
         sourceKind: null,
         sourceId: null,
         targetTeam: null,
+        originTeam: null,
         extra: {},
       });
       repo.insert({
@@ -317,6 +320,7 @@ describe("ComplaintsRepo — typed CRUD", () => {
         sourceKind: null,
         sourceId: null,
         targetTeam: null,
+        originTeam: null,
         extra: {},
       });
       const open = repo.list({ status: "open" });
@@ -347,6 +351,7 @@ describe("ComplaintsRepo — typed CRUD", () => {
         sourceKind: null,
         sourceId: null,
         targetTeam: null,
+        originTeam: null,
         extra: {},
       });
       const ok = repo.resolve({
@@ -744,6 +749,7 @@ describe("Complaint schema — v3 provenance fields", () => {
         sourceKind: null,
         sourceId: null,
         targetTeam: null,
+        originTeam: null,
         extra: {},
       });
       const got = repo.getById("c-v3-1");
@@ -778,6 +784,7 @@ describe("ComplaintsRepo — v3 provenance", () => {
         sourceKind: "superdoctor",
         sourceId: "sweep-1715290000",
         targetTeam: "sopx",
+        originTeam: null,
         extra: {},
       });
       const got = repo.getById("c-prov");
@@ -808,6 +815,7 @@ describe("ComplaintsRepo — v3 provenance", () => {
         sourceKind: "superdoctor",
         sourceId: null,
         targetTeam: null,
+        originTeam: null,
         extra: {},
       });
       repo.insert({
@@ -824,6 +832,7 @@ describe("ComplaintsRepo — v3 provenance", () => {
         sourceKind: "operator",
         sourceId: null,
         targetTeam: null,
+        originTeam: null,
         extra: {},
       });
       const sd = repo.list({ sourceKind: "superdoctor" });
@@ -854,6 +863,7 @@ describe("ComplaintsRepo — v3 provenance", () => {
         sourceKind: "superdoctor",
         sourceId: null,
         targetTeam: "sopx",
+        originTeam: null,
         extra: {},
       });
       repo.insert({
@@ -870,6 +880,7 @@ describe("ComplaintsRepo — v3 provenance", () => {
         sourceKind: "superdoctor",
         sourceId: null,
         targetTeam: "atmux",
+        originTeam: null,
         extra: {},
       });
       const sopx = repo.list({ targetTeam: "sopx" });
@@ -901,6 +912,7 @@ describe("ComplaintsRepo — v3 provenance", () => {
         sourceKind: "superdoctor",
         sourceId: null,
         targetTeam: null,
+        originTeam: null,
         extra: {},
       });
       repo.insert({
@@ -917,6 +929,7 @@ describe("ComplaintsRepo — v3 provenance", () => {
         sourceKind: "superdoctor",
         sourceId: null,
         targetTeam: null,
+        originTeam: null,
         extra: {},
       });
       // one open operator row (different source_kind)
@@ -934,6 +947,7 @@ describe("ComplaintsRepo — v3 provenance", () => {
         sourceKind: "operator",
         sourceId: null,
         targetTeam: null,
+        originTeam: null,
         extra: {},
       });
       const openSd = repo.list({ status: "open", sourceKind: "superdoctor" });
