@@ -221,6 +221,7 @@ describe("fileDedupedComplaint — bump within window", () => {
       sourceKind: "operator",
       sourceId: "whip-team-a-eta-lied",
       targetTeam: "team-a",
+      originTeam: null,
       extra: { kind: "heads-up" }, // no source_count
     });
 
