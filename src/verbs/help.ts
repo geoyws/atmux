@@ -118,6 +118,7 @@ Dispatch + work:
 
 Automation:
   report                      Post 30-min progress digest to Discord
+  budget collect|report [--json]  Multi-provider quota snapshots (ADR-270)
   cost [--member <m>] [--since <t>] [--json]  Per-member USD + token usage
   host-pressure [--host <h>] [--timeout-ms <n>] [--json]
                               CPU / memory / disk headroom for every host
