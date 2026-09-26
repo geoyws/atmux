@@ -30,6 +30,10 @@
 
 import { join } from "node:path";
 import { atomicWrite, ensureDir, readTextOrNull } from "../abstractions/fs.ts";
+import { flagsDbPresent, withFlags } from "./repositories/flags-repo.ts";
+
+/** state_kv feature for this module (e-38 P2). */
+const FEATURE = "heads-up-cursor";
 
 const STATE_FILENAME = "heads-up-cursor.json";
 
@@ -48,24 +52,39 @@ export function cursorKey(source: string, target: string): string {
 /** Read cursor from disk. Empty map on missing or malformed file
  *  (corruption is non-fatal — re-arms the dedup at one extra ping). */
 export async function loadHeadsUpCursor(atmuxDir: string): Promise<HeadsUpCursor> {
+  const legacy = await loadLegacyHeadsUpCursor(atmuxDir);
+  if (!(await flagsDbPresent(atmuxDir))) return legacy;
+  const kv = await withFlags(atmuxDir, (repo) => repo.list(FEATURE));
+  return { ...legacy, ...filterNumberMap(kv) };
+}
+
+async function loadLegacyHeadsUpCursor(atmuxDir: string): Promise<HeadsUpCursor> {
   const path = headsUpCursorPath(atmuxDir);
   const txt = await readTextOrNull(path);
   if (txt === null) return {};
   try {
     const parsed: unknown = JSON.parse(txt);
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
-    const out: HeadsUpCursor = {};
-    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-      if (typeof v === "number" && Number.isFinite(v)) out[k] = v;
-    }
-    return out;
+    return filterNumberMap(parsed as Record<string, unknown>);
   } catch {
     return {};
   }
 }
 
+function filterNumberMap(raw: Record<string, unknown>): HeadsUpCursor {
+  const out: HeadsUpCursor = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (typeof v === "number" && Number.isFinite(v)) out[k] = v;
+  }
+  return out;
+}
+
 /** Atomic-write the full cursor map. Creates `state/` dir if missing. */
 export async function writeHeadsUpCursor(atmuxDir: string, cursor: HeadsUpCursor): Promise<void> {
+  if (await flagsDbPresent(atmuxDir)) {
+    await withFlags(atmuxDir, (repo) => repo.replace(FEATURE, { ...cursor }));
+    return;
+  }
   await ensureDir(join(atmuxDir, "state"));
   await atomicWrite(headsUpCursorPath(atmuxDir), JSON.stringify(cursor));
 }

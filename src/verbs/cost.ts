@@ -30,6 +30,7 @@ import { z } from "zod";
 import { exists, statOrNull } from "../abstractions/fs.ts";
 import { tryParseJsonString, tryReadJson } from "../abstractions/json.ts";
 import { getAtmuxDir, type ResolveDirOpts, requireTeam, stateDir } from "../core/common.ts";
+import { flagsDbPresent, withFlags } from "../core/repositories/flags-repo.ts";
 import { defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { UsageError } from "../errors.ts";
 import { DEFAULT_PRICING, Pricing, pricingFor } from "../schema/pricing.ts";
@@ -366,8 +367,15 @@ export async function computeMemberCost(
 
 // ---------- Cache write ----------
 
-/** Write per-member detail to `<stateDir>/cost-<name>.json`. */
+/** Write per-member detail to `<stateDir>/cost-<name>.json`, or to the
+ *  `state_kv` feature `cost` (key = member) when state.db exists (e-38
+ *  P2). The cache is write-only (no tree readers); legacy files migrate
+ *  via `migrate-state --target=state`. */
 export async function writeCostCache(atmuxDir: string, detail: CostDetail): Promise<void> {
+  if (await flagsDbPresent(atmuxDir)) {
+    await withFlags(atmuxDir, (repo) => repo.set("cost", detail.member, detail));
+    return;
+  }
   const dir = stateDir(atmuxDir);
   await mkdir(dir, { recursive: true });
   await writeFile(join(dir, `cost-${detail.member}.json`), `${JSON.stringify(detail, null, 2)}\n`);

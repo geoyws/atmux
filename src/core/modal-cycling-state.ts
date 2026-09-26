@@ -20,6 +20,12 @@ import { join } from "node:path";
 import { z } from "zod";
 import { atomicWrite, readTextOrNull } from "../abstractions/fs.ts";
 import type { ModalClass, ModalHistoryEntry } from "./modal-cycling-detector.ts";
+import { flagsDbPresent, withFlags } from "./repositories/flags-repo.ts";
+
+/** state_kv features for this module (e-38 P2). History is per-member
+ *  (key = sanitized member); dedup is a single map under one key. */
+const HISTORY_FEATURE = "modal-history";
+const DEDUP_FEATURE = "modal-cycling-dedup";
 
 // ---------- Zod schemas ----------
 
@@ -67,6 +73,20 @@ export async function loadModalHistory(
   atmuxDir: string,
   member: string,
 ): Promise<ModalHistoryEntry[]> {
+  if (await flagsDbPresent(atmuxDir)) {
+    const v = await withFlags(atmuxDir, (repo) =>
+      repo.get(HISTORY_FEATURE, sanitizeMember(member)),
+    );
+    const parsed = ModalHistorySchema.safeParse(v ?? []);
+    if (!parsed.success) return [];
+    return parsed.data.map((e) => ({
+      member: e.member,
+      paneTextHash: e.paneTextHash,
+      detectedAt: e.detectedAt,
+      modalText: e.modalText,
+      modalClass: e.modalClass as ModalClass,
+    }));
+  }
   const path = modalHistoryPath(atmuxDir, member);
   const txt = await readTextOrNull(path);
   if (txt === null) return [];
@@ -94,6 +114,10 @@ export async function saveModalHistory(
   member: string,
   history: ModalHistoryEntry[],
 ): Promise<void> {
+  if (await flagsDbPresent(atmuxDir)) {
+    await withFlags(atmuxDir, (repo) => repo.set(HISTORY_FEATURE, sanitizeMember(member), history));
+    return;
+  }
   const path = modalHistoryPath(atmuxDir, member);
   await atomicWrite(path, `${JSON.stringify(history, null, 2)}\n`);
 }
@@ -106,6 +130,13 @@ export async function saveModalHistory(
 export type ModalCyclingDedupState = Record<string, number>;
 
 export async function loadDedupState(atmuxDir: string): Promise<ModalCyclingDedupState> {
+  const legacy = await loadLegacyDedupState(atmuxDir);
+  if (!(await flagsDbPresent(atmuxDir))) return legacy;
+  const kv = await withFlags(atmuxDir, (repo) => repo.list(DEDUP_FEATURE));
+  return { ...legacy, ...filterNumberMap(kv) };
+}
+
+async function loadLegacyDedupState(atmuxDir: string): Promise<ModalCyclingDedupState> {
   const path = modalCyclingDedupPath(atmuxDir);
   const txt = await readTextOrNull(path);
   if (txt === null) return {};
@@ -120,10 +151,22 @@ export async function loadDedupState(atmuxDir: string): Promise<ModalCyclingDedu
   return { ...parsed.data };
 }
 
+function filterNumberMap(raw: Record<string, unknown>): ModalCyclingDedupState {
+  const out: ModalCyclingDedupState = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (typeof v === "number" && Number.isFinite(v)) out[k] = v;
+  }
+  return out;
+}
+
 export async function saveDedupState(
   atmuxDir: string,
   state: ModalCyclingDedupState,
 ): Promise<void> {
+  if (await flagsDbPresent(atmuxDir)) {
+    await withFlags(atmuxDir, (repo) => repo.replace(DEDUP_FEATURE, { ...state }));
+    return;
+  }
   const path = modalCyclingDedupPath(atmuxDir);
   await atomicWrite(path, `${JSON.stringify(state, null, 2)}\n`);
 }

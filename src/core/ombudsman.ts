@@ -28,6 +28,11 @@ import { z } from "zod";
 import { ensureDir, exists } from "../abstractions/fs.ts";
 import { readJsonOr, updateJson } from "../abstractions/json.ts";
 import { stateDir } from "./common.ts";
+import { flagsDbPresent, withFlags } from "./repositories/flags-repo.ts";
+
+/** state_kv feature for the sentinel (e-38 P2). Single key `pending`
+ *  holding the string array. */
+const FEATURE = "ombudsman-pending";
 
 /** Zod schema for the on-disk sentinel — `{ pending: string[] }`. The
  *  wrapping object (rather than a bare array) leaves room for future
@@ -55,7 +60,16 @@ export function sentinelPath(atmuxDir: string): string {
  * rule for corrupted state.
  */
 export async function readSentinel(atmuxDir: string): Promise<OmbudsmanSentinel> {
-  return await readJsonOr(sentinelPath(atmuxDir), OmbudsmanSentinelSchema, EMPTY_SENTINEL);
+  const legacy = await readJsonOr(sentinelPath(atmuxDir), OmbudsmanSentinelSchema, EMPTY_SENTINEL);
+  if (!(await flagsDbPresent(atmuxDir))) return legacy;
+  const v = await withFlags(atmuxDir, (repo) => repo.get(FEATURE, "pending"));
+  const parsed = OmbudsmanSentinelSchema.safeParse({ pending: v ?? [] });
+  if (!parsed.success) return legacy;
+  const merged = [...legacy.pending];
+  for (const id of parsed.data.pending) {
+    if (!merged.includes(id)) merged.push(id);
+  }
+  return { pending: merged };
 }
 
 /**
@@ -64,6 +78,14 @@ export async function readSentinel(atmuxDir: string): Promise<OmbudsmanSentinel>
  * on first call.
  */
 export async function addToSentinel(atmuxDir: string, complaintId: string): Promise<void> {
+  if (await flagsDbPresent(atmuxDir)) {
+    await withFlags(atmuxDir, (repo) => {
+      const cur = repo.get(FEATURE, "pending");
+      const pending = Array.isArray(cur) ? (cur as string[]) : [];
+      if (!pending.includes(complaintId)) repo.set(FEATURE, "pending", [...pending, complaintId]);
+    });
+    return;
+  }
   await ensureDir(stateDir(atmuxDir));
   await updateJson(
     sentinelPath(atmuxDir),
@@ -83,6 +105,18 @@ export async function addToSentinel(atmuxDir: string, complaintId: string): Prom
  * whether to log the sentinel clear in addition to the DB flip.
  */
 export async function removeFromSentinel(atmuxDir: string, complaintId: string): Promise<boolean> {
+  if (await flagsDbPresent(atmuxDir)) {
+    return withFlags(atmuxDir, (repo) => {
+      const cur = repo.get(FEATURE, "pending");
+      const pending = Array.isArray(cur) ? (cur as string[]) : [];
+      const idx = pending.indexOf(complaintId);
+      if (idx === -1) return false;
+      const next = pending.slice();
+      next.splice(idx, 1);
+      repo.set(FEATURE, "pending", next);
+      return true;
+    });
+  }
   await ensureDir(stateDir(atmuxDir));
   let removed = false;
   await updateJson(

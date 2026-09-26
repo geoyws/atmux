@@ -229,15 +229,12 @@ async function migrateKanban(
 // ---------- Flags migration (e-38 P1; t-62feffe0) ----------
 
 /**
- * Migrate the P1 toggle JSON files into `state_kv` via FlagsRepo.
- * Sources (only files with live readers — resume.json is a soft-stop
- * orchestrator forensic trail, pulse-state.json is cockpit-global
- * `~/.atmux` scope, sentinel/eternal have no code refs):
- *   state/paused.json → feature `pause` (per-member entries)
- *   state/budget-pause.json → feature `budget-pause`, key `state`
- *   state/budget-refresh-soon-state.json → feature `budget-refresh-soon`
- *   state/budget-warning-state.json → feature `budget-warning`
- *   state/whip-config-drift-state.json → feature `whip-config-drift`
+ * Migrate the P1 toggle + P2 role-state JSON files into `state_kv` via
+ * FlagsRepo (P2 uses feature = namespace, key = role-or-key — no extra
+ * schema needed). Out of scope with reasons: resume.json (soft-stop
+ * forensic trail), pulse-state.json (cockpit-global ~/.atmux scope),
+ * sentinel/eternal (no code refs), fallback-brief-*.md (document
+ * store shared with cleanup + audit writers).
  * Returns total keys written. Lenient per-file: a missing file
  * contributes 0; an unparseable file is skipped with a warning.
  */
@@ -250,18 +247,67 @@ export interface FlagsMigrationCounts {
   filesSkippedInvalid: number;
 }
 
-const FLAGS_SOURCES: ReadonlyArray<{ file: string; feature: string; singleKey?: string }> = [
+interface FlagsSource {
+  /** Single file under atmuxDir (mutually exclusive with prefix). */
+  file?: string;
+  /** Per-member glob: all `state/<prefix>*<suffix>` files (e.g.
+   *  modal-history-<member>.json); key = middle segment. */
+  prefix?: string;
+  suffix?: string;
+  feature: string;
+  singleKey?: string;
+  /** Store parsed[subKey] instead of the whole document. */
+  subKey?: string;
+}
+
+const FLAGS_SOURCES: ReadonlyArray<FlagsSource> = [
   { file: "state/paused.json", feature: "pause" },
   { file: "state/budget-pause.json", feature: "budget-pause", singleKey: "state" },
   { file: "state/budget-refresh-soon-state.json", feature: "budget-refresh-soon" },
   { file: "state/budget-warning-state.json", feature: "budget-warning" },
   { file: "state/whip-config-drift-state.json", feature: "whip-config-drift" },
+  // e-38 P2 (t-66d8c7a4): role-state files. state_kv covers the body's
+  // role_state table as (feature = namespace, key = role-or-key) —
+  // no schema change needed. fallback-brief-*.md stays out (document
+  // store shared with cage-cleanup + audit writers, not role state).
+  { prefix: "modal-history-", suffix: ".json", feature: "modal-history" },
+  { file: "state/modal-cycling-dedup-state.json", feature: "modal-cycling-dedup" },
+  { file: "state/heads-up-cursor.json", feature: "heads-up-cursor" },
+  { file: "state/ombudsman-pending.json", feature: "ombudsman-pending", singleKey: "pending", subKey: "pending" },
+  { prefix: "cost-", suffix: ".json", feature: "cost" },
 ];
 
-function flagsEntriesFor(source: (typeof FLAGS_SOURCES)[number], parsed: unknown): Array<[string, unknown]> {
-  if (source.singleKey !== undefined) return [[source.singleKey, parsed]];
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return [];
-  return Object.entries(parsed as Record<string, unknown>);
+function flagsEntriesFor(source: FlagsSource, parsed: unknown): Array<[string, unknown]> {
+  const doc = source.subKey !== undefined &&
+      typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+    ? (parsed as Record<string, unknown>)[source.subKey]
+    : parsed;
+  if (source.singleKey !== undefined) {
+    if (doc === undefined) return [];
+    return [[source.singleKey, doc]];
+  }
+  if (typeof doc !== "object" || doc === null || Array.isArray(doc)) return [];
+  return Object.entries(doc as Record<string, unknown>);
+}
+
+/** Resolve one source to (relFile, keyOverride) pairs. Single-file
+ *  sources yield one pair; prefix sources scan state/ for matches. */
+async function flagsSourceFiles(
+  atmuxDir: string,
+  source: FlagsSource,
+): Promise<Array<{ file: string; key: string | null }>> {
+  if (source.file !== undefined) return [{ file: source.file, key: null }];
+  const { readdir } = await import("node:fs/promises");
+  const dir = join(atmuxDir, "state");
+  const names = await readdir(dir).catch(() => [] as string[]);
+  const out: Array<{ file: string; key: string | null }> = [];
+  for (const name of names) {
+    if (!name.startsWith(source.prefix ?? "") || !name.endsWith(source.suffix ?? "")) continue;
+    const key = name.slice((source.prefix ?? "").length, name.length - (source.suffix ?? "").length);
+    if (key.length === 0) continue;
+    out.push({ file: `state/${name}`, key });
+  }
+  return out.sort((a, b) => (a.file < b.file ? -1 : 1));
 }
 
 async function migrateFlags(
@@ -273,23 +319,39 @@ async function migrateFlags(
   const features: Record<string, number> = {};
   let filesSkippedInvalid = 0;
   for (const source of FLAGS_SOURCES) {
-    const path = join(atmuxDir, source.file);
-    const txt = await readTextOrNull(path);
-    if (txt === null) continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(txt);
-    } catch {
-      filesSkippedInvalid += 1;
-      continue;
+    for (const { file, key } of await flagsSourceFiles(atmuxDir, source)) {
+      const path = join(atmuxDir, file);
+      const txt = await readTextOrNull(path);
+      if (txt === null) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(txt);
+      } catch {
+        filesSkippedInvalid += 1;
+        continue;
+      }
+      let entries = flagsEntriesFor(source, parsed);
+      if (key !== null) {
+        // Per-member file: the whole document is one kv entry.
+        if (entries.length === 0 && source.singleKey === undefined) {
+          const doc = source.subKey !== undefined &&
+              typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+            ? (parsed as Record<string, unknown>)[source.subKey]
+            : parsed;
+          if (doc !== undefined) entries = [[key, doc]];
+        } else if (entries.length > 0 && source.singleKey === undefined) {
+          entries = [[key, parsed]];
+        }
+      }
+      if (!dryRun && entries.length > 0) {
+        db.transaction(() => {
+          for (const [k, v] of entries) repo.set(source.feature, k, v);
+        })();
+      }
+      if (entries.length > 0) {
+        features[source.feature] = (features[source.feature] ?? 0) + entries.length;
+      }
     }
-    const entries = flagsEntriesFor(source, parsed);
-    if (!dryRun && entries.length > 0) {
-      db.transaction(() => {
-        for (const [k, v] of entries) repo.set(source.feature, k, v);
-      })();
-    }
-    if (entries.length > 0) features[source.feature] = entries.length;
   }
   const keys = Object.values(features).reduce((a, b) => a + b, 0);
   return { keys, features, filesSkippedInvalid };
@@ -473,12 +535,14 @@ async function archiveJsonSources(
   // (target state|all) so an unrelated kanban-only run never moves them.
   if (target === "all" || target === "state") {
     for (const source of FLAGS_SOURCES) {
-      const src = join(atmuxDir, source.file);
-      if (await exists(src)) {
-        const dest = join(archiveDir, source.file);
-        if (!(await exists(dest))) {
-          await ensureDir(join(archiveDir, "state"));
-          await rename(src, dest);
+      for (const { file } of await flagsSourceFiles(atmuxDir, source)) {
+        const src = join(atmuxDir, file);
+        if (await exists(src)) {
+          const dest = join(archiveDir, file);
+          if (!(await exists(dest))) {
+            await ensureDir(join(archiveDir, "state"));
+            await rename(src, dest);
+          }
         }
       }
     }
