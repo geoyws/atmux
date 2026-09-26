@@ -148,6 +148,7 @@ export function fileDedupedComplaint(
     sourceKind: opts.sourceKind,
     sourceId: opts.sourceId,
     targetTeam: opts.targetTeam,
+    originTeam: null,
     extra: newExtra,
   };
   repo.insert(c);

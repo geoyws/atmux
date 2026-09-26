@@ -842,4 +842,17 @@ export const migrations: readonly Migration[] = [
 			`);
     },
   },
+  // ---------- v17 → v18 ----------
+  // ADR-150 §D3 (e-41 T1 / t-367c5c03): cross-cage complaint routing.
+  // `origin_team` records the filing team when a complaint is routed
+  // into another team's state.db. Nullable + backward-compat: legacy
+  // rows read as NULL; STRICT tables accept a bare ADD COLUMN with no
+  // default (NULL implicit).
+  {
+    from: 17,
+    to: 18,
+    up: (db) => {
+      db.exec(`ALTER TABLE complaints ADD COLUMN origin_team TEXT`);
+    },
+  },
 ];

@@ -33,6 +33,7 @@ interface ComplaintRow {
   source_kind: string | null;
   source_id: string | null;
   target_team: string | null;
+  origin_team: string | null;
   extra: string | null;
 }
 
@@ -54,6 +55,7 @@ export function complaintFromRow(row: ComplaintRow): Complaint {
     sourceKind: row.source_kind,
     sourceId: row.source_id,
     targetTeam: row.target_team,
+    originTeam: row.origin_team ?? null,
     extra,
   });
 }
@@ -73,6 +75,7 @@ export function complaintToRow(c: Complaint): ComplaintRow {
     source_kind: c.sourceKind ?? null,
     source_id: c.sourceId ?? null,
     target_team: c.targetTeam ?? null,
+    origin_team: c.originTeam ?? null,
     extra: c.extra && Object.keys(c.extra).length > 0 ? JSON.stringify(c.extra) : null,
   };
 }
@@ -101,8 +104,8 @@ export class ComplaintsRepo {
         `INSERT INTO complaints (
             id, opened_at, opened_by, incident_summary, root_cause,
             preventive_ask, status, resolved_at, resolved_by,
-            related_task_id, source_kind, source_id, target_team, extra
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            related_task_id, source_kind, source_id, target_team, origin_team, extra
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         row.id,
@@ -118,6 +121,7 @@ export class ComplaintsRepo {
         row.source_kind,
         row.source_id,
         row.target_team,
+        row.origin_team,
         row.extra,
       );
   }
