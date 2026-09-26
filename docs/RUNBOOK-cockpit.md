@@ -39,6 +39,8 @@ Use top-level `windows[]` for a durable cockpit workspace that is not backed by 
 
 Null or omitted `command` starts zsh. These windows appear after an enabled `_superbot` role and before team viewers, in declaration order. Without `_superbot`, the order remains after `_medic`. Reconcile preserves an existing matching pane and applies `cwd`/`command` only when recreating a missing window. Names must not collide with cockpit roles or team viewers.
 
+Upcoming (proposed, not shipped): top-level `blank=true` synthesizes a plain-shell `_blank` window after `_medic` (ADR-295, on its integration branch until it merges). Until it lands, declare the equivalent by hand as a `windows[]` entry with `command: null`.
+
 ### Held `_superbot` role (ADR-285)
 
 ADR-285 implements a deterministic scheduler window immediately after optional `_medic`, but the checked-in migration plan keeps activation held:
