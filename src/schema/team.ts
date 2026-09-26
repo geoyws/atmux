@@ -1391,6 +1391,14 @@ export const Team = z
     /** Single-session opt-in (default `false` per 2026-04-30 reversal,
      *  see templates/team.example.json comment). */
     singleSession: z.boolean().optional(),
+    /** e-47 (t-433aae9a): `epic add` defaults. `readyByDefault` flips
+     *  new epics is_ready=1 when neither --ready nor --no-ready is
+     *  passed. Default false. Zod-strict inner object per ADR-054 §D3
+     *  drift detection. */
+    epicAdd: z
+      .object({ readyByDefault: z.boolean().default(false) })
+      .strict()
+      .optional(),
     /** ADR-044: when set, marks the team as driver-opted-in — the
      *  cockpit viewer window + driver-pane health probe read this
      *  field's presence. `null` is accepted as "explicitly disabled"

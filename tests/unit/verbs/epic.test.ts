@@ -757,3 +757,75 @@ describe("epic verb — ADR-231 §D3 auto-spawn round-trip", () => {
     expect(after.length).toBe(before.length);
   });
 });
+
+describe("epic add --ready/--no-ready + epicAdd.readyByDefault (e-47)", () => {
+  test("parse: --ready sets readyFlag", () => {
+    expect(parseAddArgs(["t", "--ready"]).readyFlag).toBe("ready");
+  });
+
+  test("parse: --no-ready sets readyFlag", () => {
+    expect(parseAddArgs(["t", "--no-ready"]).readyFlag).toBe("no-ready");
+  });
+
+  test("parse: absent → readyFlag undefined", () => {
+    expect(parseAddArgs(["t"]).readyFlag).toBeUndefined();
+  });
+
+  test("parse: --ready + --no-ready rejects (mutex)", () => {
+    expect(() => parseAddArgs(["t", "--ready", "--no-ready"])).toThrow(/mutually exclusive/);
+  });
+
+  test("parse: literal `-- --ready` title does not trip the mutex", () => {
+    const a = parseAddArgs(["--", "--ready", "title"]);
+    expect(a.title).toContain("--ready");
+    expect(a.readyFlag).toBeUndefined();
+  });
+
+  test("verb: --ready flips is_ready on add", async () => {
+    const { out } = await captureStdout(async () => {
+      return await epic(["add", "--team-dir", teamDir, "R", "--ready"]);
+    });
+    const e = await showEpic(atmuxDir, out.trim());
+    expect(e?.isReady).toBe(true);
+  });
+
+  test("verb: default leaves is_ready=0", async () => {
+    const { out } = await captureStdout(async () => {
+      return await epic(["add", "--team-dir", teamDir, "N"]);
+    });
+    const e = await showEpic(atmuxDir, out.trim());
+    expect(e?.isReady).toBe(false);
+  });
+
+  test("verb: readyByDefault flips when no flag passed", async () => {
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      JSON.stringify({
+        name: "team",
+        members: [{ name: "lead", role: "team-lead" }],
+        epicAdd: { readyByDefault: true },
+      }),
+    );
+    const { out } = await captureStdout(async () => {
+      return await epic(["add", "--team-dir", teamDir, "D"]);
+    });
+    const e = await showEpic(atmuxDir, out.trim());
+    expect(e?.isReady).toBe(true);
+  });
+
+  test("verb: --no-ready wins over readyByDefault", async () => {
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      JSON.stringify({
+        name: "team",
+        members: [{ name: "lead", role: "team-lead" }],
+        epicAdd: { readyByDefault: true },
+      }),
+    );
+    const { out } = await captureStdout(async () => {
+      return await epic(["add", "--team-dir", teamDir, "O", "--no-ready"]);
+    });
+    const e = await showEpic(atmuxDir, out.trim());
+    expect(e?.isReady).toBe(false);
+  });
+});

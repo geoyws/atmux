@@ -16,7 +16,7 @@
 //   atmux epic set-depends-on  <id> <eid,…>            (ADR-225; empty clears)
 //   atmux epic deps            <id> [--json]           (ADR-225)
 
-import { getAtmuxDir, type ResolveDirOpts } from "../core/common.ts";
+import { getAtmuxDir, type ResolveDirOpts, tryLoadTeam } from "../core/common.ts";
 import {
   addEpic,
   advanceEpic,
@@ -31,7 +31,7 @@ import type { KanbanEpic, KanbanTask } from "../schema/kanban.ts";
 const USAGE_HINT_ROOT =
   "atmux epic <add|list|show|advance|ready|unready|set-depends-on|deps> [args]";
 const USAGE_ADD =
-  "atmux epic add <title> [--body T] [--driver-ref R] [--depends-on e-X,e-Y] " +
+  "atmux epic add <title> [--body T] [--driver-ref R] [--depends-on e-X,e-Y] [--ready | --no-ready] " +
   "[--auto-spawn | --no-auto-spawn] [--roster <name>] [--force-spawn]";
 const USAGE_LIST = "atmux epic list [--status S] [--json]";
 const USAGE_SHOW = "atmux epic show <id> [--json]";
@@ -99,6 +99,29 @@ async function epicAdd(argv: ReadonlyArray<string>): Promise<number> {
   if (parsed.autoSpawn !== undefined) opts.autoSpawn = parsed.autoSpawn;
   const id = await addEpic(atmuxDir, opts);
   process.stderr.write(`epic: added ${id} — ${parsed.title}\n`);
+  // e-47 (t-433aae9a): one-step ready flip. Explicit flags win;
+  // otherwise team.json epicAdd.readyByDefault (default false).
+  // Reuses setEpicReady so emit + validation stay single-sourced.
+  let wantReady: boolean | undefined;
+  if (parsed.readyFlag === "ready") wantReady = true;
+  else if (parsed.readyFlag === "no-ready") wantReady = false;
+  else {
+    try {
+      const team = await tryLoadTeam({ dir: atmuxDir });
+      wantReady = team?.epicAdd?.readyByDefault === true ? true : undefined;
+    } catch {
+      wantReady = undefined;
+    }
+  }
+  if (wantReady === true) {
+    await setEpicReady(atmuxDir, id, true);
+    process.stderr.write(`epic: ${id} is_ready: 0 → 1\n`);
+    if (parsed.dependsOn !== undefined && parsed.dependsOn.length > 0) {
+      process.stderr.write(
+        `epic: ${id} has depends_on; is_ready=1 takes effect when upstream epics are done (epic.unblocked fires then)\n`,
+      );
+    }
+  }
   process.stdout.write(`${id}\n`);
   return 0;
 }
@@ -474,6 +497,9 @@ interface ParsedAddArgs {
   teamDir?: string;
   // ADR-225: comma-separated dep list, empty/absent → no deps.
   dependsOn?: string[];
+  // e-47 (t-433aae9a): one-step ready flip. Mutually exclusive;
+  // absent → fall through to team.json epicAdd.readyByDefault.
+  readyFlag?: "ready" | "no-ready";
   // ADR-231 §D3: per-epic orchd auto-spawn config (resolved at parse
   // time; mutex'd at parse-error so the caller gets the helpful
   // message before any DB work). Absent → no autoSpawn key written
@@ -497,6 +523,10 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
   let autoSpawnFlag: "enable" | "disable" | undefined;
   let rosterFlag: string | undefined;
   let forceSpawnFlag = false;
+  // e-47 (t-433aae9a): one-step ready flip, mutex-checked below.
+  let readyFlag: "ready" | "no-ready" | undefined;
+  let seenReady = false;
+  let seenNoReady = false;
   let i = 0;
   while (i < argv.length) {
     const a = argv[i];
@@ -544,6 +574,19 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
       i += 2;
       continue;
     }
+    // e-47 (t-433aae9a): one-step ready flip.
+    if (a === "--ready") {
+      readyFlag = "ready";
+      seenReady = true;
+      i += 1;
+      continue;
+    }
+    if (a === "--no-ready") {
+      readyFlag = "no-ready";
+      seenNoReady = true;
+      i += 1;
+      continue;
+    }
     // ADR-231 §D3 — orchd auto-spawn per-epic config.
     if (a === "--auto-spawn") {
       autoSpawnFlag = "enable";
@@ -586,6 +629,16 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
     throw new UsageError({ what: "epic add: <title> required", hint: USAGE_ADD });
   }
 
+  // e-47 (t-433aae9a): --ready/--no-ready mutex (both intents are
+  // direct opposites — refuse instead of last-wins). Seen-flags
+  // (not argv scan) so a literal `-- --ready` title can't trip it.
+  // ADR-231 §D3 mutexes below follow the same parse-time pattern.
+  if (seenReady && seenNoReady) {
+    throw new UsageError({
+      what: "epic add: --ready cannot combine with --no-ready (mutually exclusive)",
+      hint: USAGE_ADD,
+    });
+  }
   // ADR-231 §D3 — flag mutex enforcement (parse-time so the caller
   // sees the error before any DB work).
   if (autoSpawnFlag === "disable" && forceSpawnFlag) {
@@ -612,6 +665,7 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
   if (driverRef !== undefined) out.driverRef = driverRef;
   if (teamDir !== undefined) out.teamDir = teamDir;
   if (dependsOn !== undefined) out.dependsOn = dependsOn;
+  if (readyFlag !== undefined) out.readyFlag = readyFlag;
   // ADR-231 §D3 — assemble autoSpawn sub-shape only when the operator
   // explicitly flagged one of the auto-spawn semantics. No flag →
   // absent autoSpawn key → caller falls back to per-team defaults
