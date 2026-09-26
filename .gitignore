@@ -18,6 +18,7 @@ tmp/
 # TS port (PLAN.md, atmux-bun)
 coverage/
 dist/
+dist-vendored/
 .bun/
 
 # Bash decommission archives (kept only in working tree, not git history)
