@@ -4076,4 +4076,91 @@ describe("cockpitAttach — ensure-up on/off (isolated)", () => {
       await rm(fx.socketDir, { recursive: true, force: true });
     }
   });
+  test("t-0a74e582: ensure-up preserves a hand-opened (unrostered) window and still reconciles", async () => {
+    const fx = await spinTmux("ckpt-att-hand");
+    try {
+      const { logger, logs } = makeLogger();
+      let attached = "";
+      // George's hand-opened window: in the cockpit session, named by no roster.
+      await fx.tmux.session.newSession({ name: "enscockpit", detached: true });
+      await fx.tmux.window.newWindow({
+        sessionName: "enscockpit",
+        name: "hand-opened",
+        detached: true,
+        shellCommand: "sleep 30",
+      });
+      const cockpitNs = {
+        ...fx.tmux,
+        client: {
+          attachSession: async (t: string) => {
+            attached = t;
+          },
+          attachSessionInheritStdio: async (t: string) => {
+            attached = `inherit:${t}`;
+          },
+        },
+      } as unknown as TmuxNamespace;
+      const code = await cockpitAttach(attachParsed(), {
+        env: { HOME: homeDir, ATMUX_NO_CRON: "1" },
+        tmuxFactory: (cfg) => ("socket" in cfg ? cockpitNs : fx.tmux),
+        logger,
+        startFn: async () => 0,
+      });
+      expect(code).toBe(0);
+      expect(attached).toBe("=enscockpit");
+      const names = (await fx.tmux.window.listWindows("enscockpit")).map((w) => w.name);
+      expect(names).toContain("hand-opened");
+      // Reconcile ran to completion (not refused by the destructive gate)…
+      expect(logs.some((l) => l.includes("phase 5 cockpit-session") && /\d+ms/.test(l))).toBe(true);
+      // …and never warned about a failed ensure-up.
+      expect(logs.some((l) => l.includes("attach ensure-up failed"))).toBe(false);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("t-0a74e582: explicit cockpit reconcile still removes the unrostered window", async () => {
+    const fx = await spinTmux("ckpt-rec-hand");
+    try {
+      const { logger, logs } = makeLogger();
+      await fx.tmux.session.newSession({ name: "enscockpit", detached: true });
+      await fx.tmux.window.newWindow({
+        sessionName: "enscockpit",
+        name: "hand-opened",
+        detached: true,
+        shellCommand: "sleep 30",
+      });
+      const code = await cockpitRebuild(
+        {
+          subverb: "reconcile",
+          noCycle: false,
+          forceCycle: false,
+          ackDangerous: false,
+          noLaunch: true,
+          yes: true,
+          dryRun: false,
+          keepLegacy: false,
+          configPath: cockpitJson,
+        },
+        {
+          env: { HOME: homeDir, ATMUX_NO_CRON: "1" },
+          tmuxFactory: () => fx.tmux,
+          logger,
+          startFn: async () => 0,
+        },
+      );
+      expect(code).toBe(0);
+      const names = (await fx.tmux.window.listWindows("enscockpit")).map((w) => w.name);
+      expect(names).not.toContain("hand-opened");
+      expect(logs.some((l) => l.includes("removed orphan window 'hand-opened'"))).toBe(true);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
 });

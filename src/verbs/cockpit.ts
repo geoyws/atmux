@@ -645,6 +645,11 @@ export interface ParsedCockpitArgs {
    *  every non-`attach` sub-verb. Optional for backward-compat (same
    *  pattern as `human` — undefined reads as false). */
   launch?: boolean;
+  /** Programmatic-only (t-0a74e582). Set by `cockpitAttach` on its
+   *  ensure-up args so attach never prunes hand-opened windows.
+   *  Never a CLI flag: `parseCockpitArgs` leaves it undefined and the
+   *  attach flag-rejection stays untouched. Undefined reads as false. */
+  skipOrphanPrune?: boolean;
 }
 
 /**
@@ -1000,6 +1005,10 @@ export async function cockpitAttach(
       ackDangerous: false,
       noLaunch: parsed.launch !== true,
       yes: false,
+      // t-0a74e582 fix (a): attach is additive — never prune
+      // hand-opened windows during ensure-up. Explicit `reconcile`
+      // / `aco` keeps the prune.
+      skipOrphanPrune: true,
     };
     if (parsed.configPath !== undefined) ensureArgs.configPath = parsed.configPath;
     try {
@@ -1248,6 +1257,8 @@ export async function cockpitRebuild(
         topology,
         superbot: cockpit.superbot,
         superbotCommand: buildSuperbotWindowCommand(resolveCockpitConfigPath(loadOpts)),
+        // t-0a74e582 fix (a): set only by `cockpitAttach` ensure-up.
+        skipOrphanPrune: parsed.skipOrphanPrune === true,
       },
     ),
   );
@@ -1979,6 +1990,12 @@ export interface ReconcileCockpitOpts {
    *  superdoctor force-relocated to slot 2, every team in `teams[]`
    *  processed). */
   onlyTeam?: string;
+  /** t-0a74e582 fix (a): skip the orphan-prune pass (and its
+   *  `refusePlannedDestructiveOps` Case 2) while running every other
+   *  fleet-wide phase. Set only by `cockpitAttach` ensure-up so attach
+   *  stays additive; explicit `cockpit reconcile` leaves it unset and
+   *  keeps pruning. Undefined reads as false. */
+  skipOrphanPrune?: boolean;
   /** Operator-owned cockpit windows with no backing team cage. Fleet-wide
    *  reconcile creates, orders, and preserves them; per-team reconcile does
    *  not touch them. */
@@ -2030,6 +2047,9 @@ export async function reconcileCockpitSession(
   reconcileOpts: ReconcileCockpitOpts = {},
 ): Promise<void> {
   const onlyTeam = reconcileOpts.onlyTeam;
+  // t-0a74e582 fix (a): attach ensure-up skips orphan removal while
+  // running every other fleet-wide phase.
+  const skipOrphanPrune = reconcileOpts.skipOrphanPrune === true;
   const operatorWindows =
     onlyTeam === undefined ? (reconcileOpts.windows ?? []).filter((w) => w.enabled) : [];
   const topology = reconcileOpts.topology;
@@ -2171,6 +2191,9 @@ export async function reconcileCockpitSession(
     operatorWindows,
     viewerNames: viewerEntries.map((v) => v.name),
     ...(onlyTeam !== undefined ? { onlyTeam } : {}),
+    // t-0a74e582 fix (a): the prune pass below is skipped, so its
+    // gate case must not refuse an ensure-up that will never fire it.
+    ...(skipOrphanPrune ? { skipOrphanPrune: true as const } : {}),
   });
 
   // ADR-077 + ADR-133: ensure the medic window exists + sits
@@ -2434,7 +2457,10 @@ export async function reconcileCockpitSession(
   // Per-team mode (ADR-063 ergonomic fix): SKIP this pass entirely.
   // The single-team caller has no authority to remove sibling team
   // viewers; only the fleet-wide `cockpit rebuild` does that.
-  if (onlyTeam !== undefined) return;
+  // t-0a74e582 fix (a): attach ensure-up is additive for the same
+  // reason — hand-opened windows survive; explicit `reconcile` keeps
+  // pruning.
+  if (onlyTeam !== undefined || skipOrphanPrune) return;
 
   // Orphan kills target distinct windows by name — parallelise. (The
   // park-then-place reorder above stays sequential: it re-lists before
@@ -2565,6 +2591,11 @@ interface RefuseDestructiveOpts {
    *  caller's `onlyTeam` path collides with the safety gate over ops
    *  that will never actually fire. */
   onlyTeam?: string;
+  /** t-0a74e582 fix (a) interplay: when set, the live body skips the
+   *  orphan-prune pass — so the gate must skip Case 2 as well, or the
+   *  attach ensure-up collides with the safety gate over a prune that
+   *  will never fire. Case 1 (medic displacement) still gates. */
+  skipOrphanPrune?: boolean;
 }
 
 /**
@@ -2596,6 +2627,7 @@ async function refusePlannedDestructiveOps(opts: RefuseDestructiveOpts): Promise
     operatorWindows,
     onlyTeam,
     viewerNames,
+    skipOrphanPrune,
   } = opts;
   // Per-team (onlyTeam) mode is purely additive in the live body — no
   // medic relocation, no orphan-prune. Skip the dry-run entirely
@@ -2642,8 +2674,12 @@ async function refusePlannedDestructiveOps(opts: RefuseDestructiveOpts): Promise
     }
   }
 
-  // Case 2 — orphan-prune. Compute the wanted-name set; anything else
-  // that isn't an always-preserved window gets killed.
+  // Case 2 — orphan-prune. Skipped when the live body will skip the
+  // prune pass (t-0a74e582 attach ensure-up): planning a prune that
+  // never fires would refuse an additive ensure-up.
+  // Compute the wanted-name set; anything else that isn't an
+  // always-preserved window gets killed.
+  if (skipOrphanPrune !== true) {
   const wanted = new Set<string>([
     "_superdriver",
     ...(wantMedic ? ["_medic"] : []),
@@ -2665,6 +2701,7 @@ async function refusePlannedDestructiveOps(opts: RefuseDestructiveOpts): Promise
       action: "prune-orphan",
       reason: "window not in cockpit.json roster + not preserved",
     });
+  }
   }
 
   if (planned.length === 0) return; // idempotent — nothing to gate
