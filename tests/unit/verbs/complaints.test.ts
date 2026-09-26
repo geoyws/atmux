@@ -9,7 +9,7 @@ import { closeDatabase, openDatabase } from "../../../src/abstractions/sqlite.ts
 import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
 import { ComplaintsRepo } from "../../../src/core/repositories/complaints-repo.ts";
 import { UsageError } from "../../../src/errors.ts";
-import { complaints, parseComplaintsArgs } from "../../../src/verbs/complaints.ts";
+import { complaints, lookupTeamAtmuxDir, parseComplaintsArgs } from "../../../src/verbs/complaints.ts";
 
 let teamDir: string;
 let atmuxDir: string;
@@ -1152,6 +1152,13 @@ describe("complaints verb — t-7bd53cba target_team default + severity stashing
     // Mirrors the call shape in /root/.atmux/bin/whip-velocity-gate.sh
     // verbatim. Acceptance bullet from Task t-7bd53cba: "Smoke test:
     // simulate velocity-gate's exact CLI invocation, verify row lands."
+    // e-41 T2: --target-team "atmux" is unknown in this hermetic
+    // registry, so the row falls back to local filing (ADR-150 §D3).
+    const cockpitPath = join(teamDir, "cockpit.json");
+    await writeFile(cockpitPath, JSON.stringify({ teams: [{ name: "test-team", root: teamDir }] }));
+    const prev = process.env.ATMUX_COCKPIT_CONFIG;
+    process.env.ATMUX_COCKPIT_CONFIG = cockpitPath;
+    try {
     const { out } = await captureStdout(() =>
       complaints([
         "file",
@@ -1200,5 +1207,130 @@ describe("complaints verb — t-7bd53cba target_team default + severity stashing
     expect(parsed[0].rootCause).toContain("Whip-velocity-gate strike threshold");
     expect(parsed[0].extra.kind).toBe("heads-up");
     expect(parsed[0].extra.severity).toBe("high");
+    } finally {
+      if (prev === undefined) delete process.env.ATMUX_COCKPIT_CONFIG;
+      else process.env.ATMUX_COCKPIT_CONFIG = prev;
+    }
+  });
+});
+
+describe("complaints verb — e-41 T2 cross-cage routing", () => {
+  async function secondTeam(): Promise<{ dir: string; atmux: string }> {
+    const dir = await mkdtemp(join(tmpdir(), "atmux-complaints-team-b-"));
+    const atmux = join(dir, ".atmux");
+    await mkdir(atmux, { recursive: true });
+    await writeFile(
+      join(atmux, "team.json"),
+      JSON.stringify({ name: "team-b", members: [{ name: "beta" }] }),
+    );
+    return { dir, atmux };
+  }
+
+  async function withCockpit(
+    entries: Array<{ name: string; root: string }>,
+    fn: () => Promise<void>,
+  ): Promise<void> {
+    const path = join(teamDir, "cockpit.json");
+    await writeFile(path, JSON.stringify({ teams: entries }));
+    const prev = process.env.ATMUX_COCKPIT_CONFIG;
+    process.env.ATMUX_COCKPIT_CONFIG = path;
+    try {
+      await fn();
+    } finally {
+      if (prev === undefined) delete process.env.ATMUX_COCKPIT_CONFIG;
+      else process.env.ATMUX_COCKPIT_CONFIG = prev;
+    }
+  }
+
+  function rowsIn(atmux: string): Array<{ id: string; originTeam: string | null }> {
+    const db = openDatabase(join(atmux, "state.db"), migrations);
+    try {
+      return new ComplaintsRepo(db).list() as Array<{ id: string; originTeam: string | null }>;
+    } finally {
+      closeDatabase(db);
+    }
+  }
+
+  test("lookupTeamAtmuxDir resolves registry entries, null on unknown", async () => {
+    const other = await secondTeam();
+    await withCockpit(
+      [
+        { name: "test-team", root: teamDir },
+        { name: "team-b", root: other.dir },
+      ],
+      async () => {
+        expect(await lookupTeamAtmuxDir("team-b", { path: join(teamDir, "cockpit.json") })).toBe(
+          join(other.dir, ".atmux"),
+        );
+        expect(await lookupTeamAtmuxDir("nope", { path: join(teamDir, "cockpit.json") })).toBeNull();
+      },
+    );
+    await rm(other.dir, { recursive: true, force: true });
+  });
+
+  test("file --target-team other routes the row with origin_team", async () => {
+    const other = await secondTeam();
+    await withCockpit(
+      [
+        { name: "test-team", root: teamDir },
+        { name: "team-b", root: other.dir },
+      ],
+      async () => {
+        const { out } = await captureStdout(() =>
+          complaints([
+            "file",
+            "--summary",
+            "cross-cage",
+            "--target-team",
+            "team-b",
+            "--team-dir",
+            teamDir,
+          ]),
+        );
+        const id = out.trim();
+        const targetRows = rowsIn(other.atmux);
+        expect(targetRows.map((r) => r.id)).toContain(id);
+        expect(targetRows.find((r) => r.id === id)?.originTeam).toBe("test-team");
+        expect(rowsIn(atmuxDir).map((r) => r.id)).not.toContain(id);
+      },
+    );
+    await rm(other.dir, { recursive: true, force: true });
+  });
+
+  test("file --target-team other --no-route stays local", async () => {
+    const other = await secondTeam();
+    await withCockpit(
+      [
+        { name: "test-team", root: teamDir },
+        { name: "team-b", root: other.dir },
+      ],
+      async () => {
+        const { out } = await captureStdout(() =>
+          complaints([
+            "file",
+            "--summary",
+            "local-escape",
+            "--target-team",
+            "team-b",
+            "--no-route",
+            "--team-dir",
+            teamDir,
+          ]),
+        );
+        const id = out.trim();
+        expect(rowsIn(atmuxDir).map((r) => r.id)).toContain(id);
+        expect(rowsIn(other.atmux)).toHaveLength(0);
+      },
+    );
+    await rm(other.dir, { recursive: true, force: true });
+  });
+
+  test("file --target-team unknown falls back local", async () => {
+    await withCockpit([{ name: "test-team", root: teamDir }], async () => {
+      const { out } = await captureStdout(() =>
+        complaints(["file", "--summary", "fallback", "--target-team", "ghost", "--team-dir", teamDir]),
+      );
+      expect(rowsIn(atmuxDir).map((r) => r.id)).toContain(out.trim());
+    });
   });
 });

@@ -37,7 +37,8 @@ import { join } from "node:path";
 import { emit } from "../abstractions/events.ts";
 import { closeDatabase, openDatabase, transactImmediate } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
-import { getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts";
+import { loadCockpit } from "../core/cockpit.ts";
+import { getAtmuxDir, type ResolveDirOpts, requireTeam, tryLoadTeam } from "../core/common.ts";
 import { addToSentinel, removeFromSentinel } from "../core/ombudsman.ts";
 import { ComplaintsRepo } from "../core/repositories/complaints-repo.ts";
 import { UsageError } from "../errors.ts";
@@ -54,8 +55,29 @@ function stateDbPath(atmuxDir: string): string {
 const USAGE =
   "atmux complaints {list [--status <s>|--all] [--source-kind <k>] [--target-team <t>] [--json] | " +
   "file (--summary <s>|--title <s>) [--root-cause <r>|--body <r>] [--ask <a>] [--by <id>] [--kind <k>] [--severity <s>] " +
-  "[--source-kind <k>] [--source-id <id>] [--target-team <t>] [--related-task <id>] | " +
+  "[--source-kind <k>] [--source-id <id>] [--target-team <t>] [--no-route] [--related-task <id>] | " +
   "resolve <id> [--status resolved|wontfix] [--by <id>] [--note <t>] [--related-task <id>]}";
+
+/**
+ * e-41 T2 (t-a1bd5a5e): resolve another team's `.atmux/` dir via the
+ * cockpit registry (ADR-150 §D1 cockpit-walk). Returns null when the
+ * cockpit is unreadable or the team is unknown — caller falls back to
+ * local filing with a stderr warning (degraded audit-trail beats lost
+ * signal per §D3). Exported for unit tests.
+ */
+export async function lookupTeamAtmuxDir(
+  teamName: string,
+  cockpitOpts?: Parameters<typeof loadCockpit>[0],
+): Promise<string | null> {
+  try {
+    const cockpit = await loadCockpit(cockpitOpts ?? {});
+    const entry = cockpit.teams.find((t) => t.name === teamName);
+    if (entry === undefined) return null;
+    return join(entry.root, ".atmux");
+  } catch {
+    return null;
+  }
+}
 
 export interface ParsedComplaintsArgs {
   subverb: "list" | "file" | "resolve";
@@ -75,6 +97,9 @@ export interface ParsedComplaintsArgs {
   sourceKind?: string;
   sourceId?: string;
   targetTeam?: string;
+  /** e-41 T2 (t-a1bd5a5e): escape hatch for tests/dry-run — file
+   *  locally even when --target-team names another team. */
+  noRoute?: boolean;
   /** t-7bd53cba: severity classification for `file` subverb. Free-form
    *  string (commonly `low`/`medium`/`high`) — stored in
    *  `extra.severity` since the Complaint schema has no first-class
@@ -185,6 +210,10 @@ export function parseComplaintsArgs(argv: ReadonlyArray<string>): ParsedComplain
       case "--target-team":
         out.targetTeam = need("--target-team");
         i += 2;
+        break;
+      case "--no-route":
+        out.noRoute = true;
+        i += 1;
         break;
       case "--related-task":
         out.relatedTask = need("--related-task");
@@ -309,7 +338,32 @@ async function complaintsFile(parsed: ParsedComplaintsArgs): Promise<number> {
   const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
   const team = await requireTeam(dirOpts);
   const atmuxDir = await getAtmuxDir(dirOpts);
-  const db = openDatabase(stateDbPath(atmuxDir), migrations);
+  // e-41 T2 (t-a1bd5a5e): ADR-150 §D1 cross-cage routing. An explicit
+  // --target-team naming ANOTHER team routes the INSERT to that
+  // team's state.db with origin_team set. --no-route, same-team, or
+  // unresolvable target → local filing (origin_team null).
+  let writeAtmuxDir = atmuxDir;
+  let originTeam: string | null = null;
+  if (
+    parsed.targetTeam !== undefined &&
+    parsed.targetTeam !== team.name &&
+    parsed.noRoute !== true
+  ) {
+    const target = await lookupTeamAtmuxDir(parsed.targetTeam);
+    if (target !== null) {
+      writeAtmuxDir = target;
+      originTeam = team.name;
+    } else {
+      process.stderr.write(
+        `complaints: target team '${parsed.targetTeam}' unknown in cockpit registry — filing locally (degraded audit trail per ADR-150 §D3)\n`,
+      );
+    }
+  } else if (parsed.noRoute === true && parsed.targetTeam !== undefined) {
+    process.stderr.write(
+      `complaints: --no-route set — filing locally despite --target-team '${parsed.targetTeam}'\n`,
+    );
+  }
+  const db = openDatabase(stateDbPath(writeAtmuxDir), migrations);
   try {
     const repo = new ComplaintsRepo(db);
     const id = `c-${randomBytes(4).toString("hex")}`;
@@ -345,7 +399,7 @@ async function complaintsFile(parsed: ParsedComplaintsArgs): Promise<number> {
       sourceKind: parsed.sourceKind ?? null,
       sourceId: parsed.sourceId ?? null,
       targetTeam,
-      originTeam: null,
+      originTeam,
       extra,
     };
     // ADR-147 T2 §D2: serialize the DB insert via BEGIN IMMEDIATE so
@@ -381,9 +435,19 @@ async function complaintsFile(parsed: ParsedComplaintsArgs): Promise<number> {
       // emit failure is non-fatal; row is durable.
     }
     // ADR-147 T2 skip-gate: only teams with `ombudsman.enabled: true`
-    // write the sentinel. Preserves byte-equal behavior for the
-    // existing fleet (every team currently has `ombudsman` unset).
-    if (team.ombudsman?.enabled === true) {
+    // write the sentinel. On routed rows the TARGET team's loop pages,
+    // so the gate reads the target team's config (best-effort; a
+    // malformed target team.json keeps the row without paging).
+    if (originTeam !== null) {
+      try {
+        const targetTeamCfg = await tryLoadTeam({ dir: writeAtmuxDir });
+        if (targetTeamCfg?.ombudsman?.enabled === true) {
+          await addToSentinel(writeAtmuxDir, id);
+        }
+      } catch {
+        // Row is durable; paging is best-effort on routed writes.
+      }
+    } else if (team.ombudsman?.enabled === true) {
       await addToSentinel(atmuxDir, id);
     }
     process.stdout.write(`${id}\n`);
