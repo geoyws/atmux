@@ -324,16 +324,20 @@ describe("migrateState", () => {
     });
   });
 
-  test("--target=state throws ConfigError (not implemented)", async () => {
-    await expect(
-      migrateState(["json-to-sqlite", "--team-dir", env.atmuxDir, "--target=state"], {
-        logger: env.logger,
-        stdout: (s) => env.stdoutBuf.push(s),
-      }),
-    ).rejects.toThrow(ConfigError);
+  test("--target=state migrates flags with no sources (e-38 P1)", async () => {
+    const exit = await migrateState(
+      ["json-to-sqlite", "--team-dir", env.atmuxDir, "--target=state"],
+      { logger: env.logger, stdout: (s) => env.stdoutBuf.push(s) },
+    );
+    expect(exit).toBe(0);
+    const summary = JSON.parse(env.stdoutBuf.join("")) as {
+      counts: { state: { keys: number; filesSkippedInvalid: number } };
+    };
+    expect(summary.counts.state.keys).toBe(0);
+    expect(summary.counts.state.filesSkippedInvalid).toBe(0);
   });
 
-  test("--target=all runs kanban + inboxes; warns about state-target only (ADR-076)", async () => {
+  test("--target=all runs kanban + inboxes + state with no warnings (e-38 P1)", async () => {
     await seedKanban(env);
 
     const exit = await migrateState(
@@ -345,10 +349,9 @@ describe("migrateState", () => {
 
     const auditPath = join(env.atmuxDir, "migration-state-sqlite.json");
     const audit = JSON.parse(await readText(auditPath));
-    // After ADR-076 inboxes target landed, only state target stays unimplemented;
-    // the inboxes-skipped warning is gone.
-    expect(audit.warnings.length).toBe(1);
-    expect(audit.warnings[0]).toContain("state target skipped");
+    // All three targets implemented (kanban, ADR-076 inboxes, e-38 P1
+    // flags) — no skipped-target warnings on a clean fixture.
+    expect(audit.warnings).toEqual([]);
     expect(audit.counts.kanban).toEqual({ tasks: 2, epics: 1, stories: 1 });
     expect(audit.counts.inboxes).toEqual({
       files: 0,
@@ -357,6 +360,7 @@ describe("migrateState", () => {
       entriesPresent: 0,
       filesSkippedInvalid: 0,
     });
+    expect(audit.counts.state.keys).toBe(0);
   });
 
   test("--db-path overrides default dbPath", async () => {
