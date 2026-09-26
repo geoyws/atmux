@@ -926,6 +926,36 @@ describe("reconcileCockpitSession", () => {
     }
   });
 
+  test("fresh _medic inserts after _superdriver without killing the window in its slot", async () => {
+    const fx = await spinTmux("cockpit-medic-insert");
+    try {
+      const { logger } = makeLogger();
+      const teams: CockpitTeam[] = [
+        { name: "alpha", root: "/a", enabled: true } as CockpitTeam,
+        { name: "beta", root: "/b", enabled: true } as CockpitTeam,
+      ];
+      const deps: ResolveTeamWindowDeps = { buildMedicCommand: () => PORTABLE_KEEPALIVE_COMMAND };
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger, deps);
+      const pidOf = async (w: string) => (await fx.tmux.pane.listPanes(`s:${w}`))[0]?.pid;
+      const before = { alpha: await pidOf("alpha"), beta: await pidOf("beta") };
+
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger, deps, { enabled: true });
+
+      const order = (await fx.tmux.window.listWindows("s"))
+        .slice()
+        .sort((a, b) => a.index - b.index)
+        .map((w) => w.name);
+      expect(order).toEqual(["_superdriver", "_medic", "alpha", "beta"]);
+      expect(await pidOf("alpha")).toBe(before.alpha);
+      expect(await pidOf("beta")).toBe(before.beta);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
   test("ADR-285: _superbot sits after optional _medic and preserves every pane on re-run", async () => {
     const fx = await spinTmux("cockpit-superbot-order");
     try {
@@ -987,7 +1017,7 @@ describe("reconcileCockpitSession", () => {
         expect((await fx.tmux.pane.listPanes(`atmux_cockpit:${window}`))[0]?.pid).toBe(pid);
       }
       expect(buildSuperbotWindowCommand("/tmp/a b.json")).toBe(
-        "atmux superbot run --config '/tmp/a b.json'",
+        "zsh -lc 'atmux superbot run --config '\\''/tmp/a b.json'\\''; exec zsh -l'",
       );
     } finally {
       try {

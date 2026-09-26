@@ -2039,11 +2039,18 @@ export async function reconcileCockpitSession(
       const builder =
         deps.buildMedicCommand ?? deps.buildSuperdoctorCommand ?? buildMedicWindowCommand;
       const cmd = builder(medic);
+      // Insert directly after _superdriver (tmux `new-window -a`) so later
+      // windows shift right. Appending then move-window -k onto the target
+      // slot would kill whatever lives there — on @@mbp 2026-09-26 that
+      // was the operator's live `_infra` omp pane.
       const newId = await cockpitTmux.window.newWindow({
         sessionName,
         name: "_medic",
         detached: true,
         shellCommand: cmd,
+        ...(sdrv !== undefined
+          ? { insert: { target: `${sessionName}:${sdrv.index}`, position: "after" as const } }
+          : {}),
       });
       logger.log(`  ✓ added window '_medic' (idx ${newId.windowIndex})`);
       windowsBefore = await cockpitTmux.window.listWindows(sessionName);
@@ -2290,22 +2297,30 @@ export async function reconcileCockpitSession(
  * the same Opus + auto-mode posture as a team window.
  */
 export function buildMedicWindowCommand(m: CockpitMedic): string {
-  return buildClaudeWindowCommand(m);
+  return withShellFloor(buildClaudeWindowCommand(m));
+}
+
+/** Run `cmd` as a child of a login zsh and fall back to an interactive
+ *  login zsh when it exits, so an agent window never closes when its TUI
+ *  quits. Pairs with the `pane-died` respawn hook in atmux.conf. */
+export function withShellFloor(cmd: string): string {
+  const quoted = `${cmd}; exec zsh -l`.replace(/'/g, "'\\''");
+  return `zsh -lc '${quoted}'`;
 }
 
 /** @deprecated use {@link buildMedicWindowCommand} (ADR-133 rename) —
  *  kept as alias so legacy callers in tests / cron-install paths
  *  continue to work. */
 export function buildSuperdoctorWindowCommand(sd: CockpitMedic): string {
-  return buildClaudeWindowCommand(sd);
+  return buildMedicWindowCommand(sd);
 }
 
 /** ADR-285: command for the cockpit scheduler window. The config path is
  * single-quoted because this string is interpreted by the pane shell. */
 export function buildSuperbotWindowCommand(configPath?: string): string {
-  if (configPath === undefined) return "atmux superbot run";
+  if (configPath === undefined) return withShellFloor("atmux superbot run");
   const safe = configPath.replace(/'/g, "'\\''");
-  return `atmux superbot run --config '${safe}'`;
+  return withShellFloor(`atmux superbot run --config '${safe}'`);
 }
 
 /** Shared body for the medic window-command builder.
