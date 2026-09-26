@@ -59,7 +59,7 @@
 // against this verb in parallel; the TS verb name + arg shape (`init
 // [--name <team>] [--force|-f]`) is the contract.
 
-import { basename, join } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { ensureDir, exists, readText, writeText } from "../abstractions/fs.ts";
 import { readJson } from "../abstractions/json.ts";
 import { now } from "../abstractions/time.ts";
@@ -80,6 +80,8 @@ export interface ParsedInitArgs {
   name?: string;
   /** --force / -f — allow overwrite of an existing team.json. */
   force: boolean;
+  /** Explicit escape hatch for creating/using a team inside another team. */
+  forceNest: boolean;
   /** --wizard / -w — interactive setup (NOT yet implemented in port). */
   wizard: boolean;
   /** t-3866c5b1 / ADR-094: non-interactive equivalent of the wizard's
@@ -111,13 +113,14 @@ export interface ParsedInitArgs {
 export function parseInitArgs(args: ReadonlyArray<string>): ParsedInitArgs {
   let name: string | undefined;
   let force = false;
+  let forceNest = false;
   let wizard = false;
   let claudeAccount: string | undefined;
   let noSkills = false;
   let skillsOnly = false;
 
   const usageHint =
-    "usage: atmux init [--name <team>] [--force|-f] [--no-skills|--skills-only] [--claude-account <suffix>]";
+    "usage: atmux init [--name <team>] [--force|-f] [--force-nest] [--no-skills|--skills-only] [--claude-account <suffix>]";
 
   let i = 0;
   while (i < args.length) {
@@ -138,6 +141,10 @@ export function parseInitArgs(args: ReadonlyArray<string>): ParsedInitArgs {
       case "--force":
       case "-f":
         force = true;
+        i += 1;
+        break;
+      case "--force-nest":
+        forceNest = true;
         i += 1;
         break;
       case "--wizard":
@@ -189,7 +196,7 @@ export function parseInitArgs(args: ReadonlyArray<string>): ParsedInitArgs {
   // exactOptionalPropertyTypes: only set keys when defined (an explicit
   // `name: undefined` is not the same as an absent key under the strict
   // tsconfig). Build the shape conditionally.
-  const out: ParsedInitArgs = { force, wizard, noSkills, skillsOnly };
+  const out: ParsedInitArgs = { force, forceNest, wizard, noSkills, skillsOnly };
   if (name !== undefined) out.name = name;
   if (claudeAccount !== undefined) out.claudeAccount = claudeAccount;
   return out;
@@ -211,6 +218,46 @@ export function parseInitArgs(args: ReadonlyArray<string>): ParsedInitArgs {
  */
 function defaultTemplatesDir(env: NodeJS.ProcessEnv): string {
   return resolveTemplatesDir(env);
+}
+export type TeamLocation =
+  | { kind: "flat" }
+  | { kind: "subdir"; atmuxDir: string; teamDir: string; relpath: string }
+  | { kind: "nested"; atmuxDir: string; ancestorAtmuxDir: string };
+
+/** Classify cwd against physical (not env-pinned) .atmux ancestors. */
+export async function detectTeamLocation(cwd: string): Promise<TeamLocation> {
+  const absoluteCwd = resolve(cwd);
+  const localAtmuxDir = join(absoluteCwd, ".atmux");
+  const nearest = await getAtmuxDir({ cwd: absoluteCwd, env: {} });
+  const nearestExists = await exists(nearest);
+
+  if (nearestExists && nearest === localAtmuxDir) {
+    const ancestor = await getAtmuxDir({ cwd: dirname(absoluteCwd), env: {} });
+    if (ancestor !== localAtmuxDir && (await exists(ancestor))) {
+      return { kind: "nested", atmuxDir: localAtmuxDir, ancestorAtmuxDir: ancestor };
+    }
+    return { kind: "flat" };
+  }
+
+  if (nearestExists) {
+    const teamDir = dirname(nearest);
+    // Second-level check: the found team itself may sit beneath an
+    // ancestor team (cwd deep inside a nested tree). Without this,
+    // cwd in <A>/<B>/subdir classifies subdir and misses ancestor A.
+    const above = await getAtmuxDir({ cwd: dirname(teamDir), env: {} });
+    if (above !== nearest && (await exists(above))) {
+      return { kind: "nested", atmuxDir: nearest, ancestorAtmuxDir: above };
+    }
+    return { kind: "subdir", atmuxDir: nearest, teamDir, relpath: relative(teamDir, absoluteCwd) };
+  }
+  return { kind: "flat" };
+}
+
+export function nestedTeamError(verb: "init" | "up" | "start", ancestorAtmuxDir: string): ConfigError {
+  return new ConfigError({
+    what: `${verb}: refusing nested atmux team beneath ${ancestorAtmuxDir}`,
+    hint: "re-run with --force-nest only if this nested team is intentional",
+  });
 }
 
 // ---------- Verb entry ----------
@@ -241,6 +288,14 @@ export interface InitOptions {
  */
 export async function init(argv: ReadonlyArray<string>, opts: InitOptions = {}): Promise<number> {
   const parsed = parseInitArgs(argv);
+  const cwd = opts.cwd ?? process.cwd();
+  const location = await detectTeamLocation(cwd);
+  if (location.kind === "subdir" && !parsed.forceNest) {
+    throw nestedTeamError("init", location.atmuxDir);
+  }
+  if (location.kind === "nested" && !parsed.forceNest) {
+    throw nestedTeamError("init", location.ancestorAtmuxDir);
+  }
 
   if (parsed.wizard) {
     // bash lib/init.sh:44-46 routes to `_atmux_init_wizard` here. Wizard
@@ -267,7 +322,6 @@ export async function init(argv: ReadonlyArray<string>, opts: InitOptions = {}):
     return 0;
   }
 
-  const cwd = opts.cwd ?? process.cwd();
   const teamName =
     parsed.name !== undefined && parsed.name.length > 0 ? parsed.name : basename(cwd);
 

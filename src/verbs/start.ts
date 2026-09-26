@@ -158,6 +158,7 @@ import { ConfigError, UsageError } from "../errors.ts";
 import { ResumeManifest } from "../schema/resume.ts";
 import type { Team } from "../schema/team.ts";
 import { applyCagePrefix, reconcileCockpitSession, reconcileGroupServers } from "./cockpit.ts";
+import { detectTeamLocation, nestedTeamError } from "./init.ts";
 // ADR-233 §D1: cron auto-install retired; the `cronInstall` import is gone.
 //   Operators who want crons run `atmux cron-install` explicitly.
 import { defaultBriefsDir, getBriefPath, renderBrief } from "./rotate.ts";
@@ -170,6 +171,8 @@ export type DoctorMode = "preflight" | "verbose" | "skip";
 
 export interface ParsedStartArgs {
   force: boolean;
+  /** Explicit escape hatch for starting a team nested beneath an ancestor team. */
+  forceNest: boolean;
   doctorMode: DoctorMode;
   /** -L socket short-name; mutually exclusive with `socketPath`. */
   socket?: string;
@@ -189,6 +192,7 @@ export function parseStartArgs(
   env: NodeJS.ProcessEnv = process.env,
 ): ParsedStartArgs {
   let force = false;
+  let forceNest = false;
   const onStart = env.ATMUX_DOCTOR_ON_START;
   let doctorMode: DoctorMode =
     onStart !== undefined && onStart.length > 0 ? "verbose" : "preflight";
@@ -202,6 +206,10 @@ export function parseStartArgs(
       case "--force":
       case "-f":
         force = true;
+        i += 1;
+        break;
+      case "--force-nest":
+        forceNest = true;
         i += 1;
         break;
       case "--doctor":
@@ -253,7 +261,7 @@ export function parseStartArgs(
 
   // exactOptionalPropertyTypes: only include socket / socketPath keys
   // when they're actually defined.
-  const out: ParsedStartArgs = { force, doctorMode };
+  const out: ParsedStartArgs = { force, forceNest, doctorMode };
   if (socket !== undefined) out.socket = socket;
   if (socketPath !== undefined) out.socketPath = socketPath;
   return out;
@@ -327,6 +335,7 @@ export interface StartOpts {
    *  `ATMUX_SPAWN_CONCURRENCY`). Tests pass `1` to force the legacy
    *  serial behaviour or a larger value to exercise N-in-flight. */
   spawnConcurrency?: number;
+  stderr?: (text: string) => void;
 }
 
 /**
@@ -343,6 +352,15 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   const parsed = parseStartArgs(args, env);
   const logger = opts.logger ?? createLogger();
   const factory = opts.tmuxFactory ?? createTmux;
+  const stderr = opts.stderr ?? ((text: string) => process.stderr.write(text));
+  const startCwd = opts.cwd ?? process.cwd();
+  const location = await detectTeamLocation(startCwd);
+  if (location.kind === "nested" && !parsed.forceNest) {
+    throw nestedTeamError("start", location.ancestorAtmuxDir);
+  }
+  if (location.kind === "subdir") {
+    stderr(`warning: invoked from subdir ${location.relpath}, using ancestor team_dir at ${location.teamDir}\n`);
+  }
   // ADR-081 §C: resolve brief-paste knobs once. `sleep` defaults to a
   // setTimeout-backed promise; tests pass a no-op. `spawnWaitMs` defaults
   // to `ATMUX_SPAWN_WAIT` env (seconds, bash parity) or 6000ms when unset.

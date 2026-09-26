@@ -44,11 +44,15 @@ describe("parseUpArgs", () => {
     expect(() => parseUpArgs(["foo"])).toThrow(UsageError);
   });
 
-  test("any flag → UsageError", () => {
+  test("--force-nest parses (nest escape hatch)", () => {
+    expect(parseUpArgs(["--force-nest"])).toEqual({ forceNest: true });
+  });
+
+  test("any other flag → UsageError", () => {
     expect(() => parseUpArgs(["--bogus"])).toThrow(UsageError);
   });
 
-  test("UsageError carries the offending arg + 'takes no arguments' hint", () => {
+  test("UsageError carries the offending arg + usage hint", () => {
     try {
       parseUpArgs(["--foo"]);
       expect.unreachable();
@@ -56,7 +60,7 @@ describe("parseUpArgs", () => {
       expect(err).toBeInstanceOf(UsageError);
       const msg = (err as Error).message;
       expect(msg).toContain("--foo");
-      expect(msg).toContain("takes no arguments");
+      expect(msg).toContain("--force-nest");
     }
   });
 });
@@ -607,5 +611,35 @@ describe("upWith — default hasSession closure (no opts.hasSession)", () => {
     expect(rc).toBe(0);
     expect(startCalls).toBe(1); // hasSession returned false → start called
     expect(attachCalls).toBe(1); // tty path → attach called
+  });
+});
+
+describe("upWith — nest ban (e-39 T1/T2)", () => {
+  test("nested cwd → ConfigError refusing nested, no initFn", async () => {
+    const root = await mkdtemp(join(tmpdir(), "atmux-up-nest-"));
+    try {
+      await mkdir(join(root, ".atmux"), { recursive: true });
+      const child = join(root, "child");
+      await mkdir(join(child, ".atmux"), { recursive: true });
+      const { log, baseOpts } = makeStubs({ cwd: child, teamDir: child });
+      await expect(upWith(baseOpts)).rejects.toThrow(/refusing nested/);
+      expect(log.init).toBe(0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("subdir cwd → warning on stderr, proceeds", async () => {
+    const root = await mkdtemp(join(tmpdir(), "atmux-up-sub-"));
+    try {
+      await mkdir(join(root, ".atmux"), { recursive: true });
+      const sub = join(root, "a");
+      await mkdir(sub, { recursive: true });
+      const { baseOpts, stderrChunks } = makeStubs({ cwd: sub, teamDir: root });
+      await upWith(baseOpts);
+      expect(stderrChunks.join("")).toContain("warning: invoked from subdir");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
