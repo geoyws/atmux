@@ -33,6 +33,7 @@ import {
   reconcileGroupServers,
   resolveTeamWindowMode,
 } from "../../../src/verbs/cockpit.ts";
+import { parseStartArgs } from "../../../src/verbs/start.ts";
 import {
   createCanonicalAtmuxTmux,
   PORTABLE_KEEPALIVE_COMMAND,
@@ -1017,7 +1018,7 @@ describe("reconcileCockpitSession", () => {
         expect((await fx.tmux.pane.listPanes(`atmux_cockpit:${window}`))[0]?.pid).toBe(pid);
       }
       expect(buildSuperbotWindowCommand("/tmp/a b.json")).toBe(
-        "zsh -lc 'atmux superbot run --config '\\''/tmp/a b.json'\\''; exec zsh -l'",
+        "atmux superbot run --config '/tmp/a b.json'",
       );
     } finally {
       try {
@@ -1638,6 +1639,31 @@ describe("buildSuperdoctorWindowCommand (ADR-077)", () => {
     expect(cmd).toContain("--permission-mode dontAsk");
     expect(cmd).toContain("--plugin-dir=/p/dir");
   });
+  test("quotes config and override values as single shell words", async () => {
+    const { buildSuperdoctorWindowCommand } = await import("../../../src/verbs/cockpit.ts");
+    const configDir = "/tmp/config dir; printf INJECTED";
+    const effort = "high; printf INJECTED";
+    const permission = "auto $(printf INJECTED)";
+    const pluginDir = "/tmp/plugin dir; printf INJECTED";
+    const cmd = buildSuperdoctorWindowCommand({
+      enabled: true,
+      claudeAccount: { configDir },
+      tuiOverrides: { effortLevel: effort, permissionMode: permission, pluginDir },
+    });
+    const script =
+      'function claude { printf \'<%s>\n\' "$CLAUDE_CONFIG_DIR" "$CLAUDE_CODE_EFFORT_LEVEL" "$@"; }; ' +
+      cmd;
+    const result = Bun.spawnSync(["zsh", "-c", script]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr.toString()).toBe("");
+    expect(result.stdout.toString().trim().split("\n")).toEqual([
+      `<${configDir}>`,
+      `<${effort}>`,
+      `<--plugin-dir=${pluginDir}>`,
+      "<--permission-mode>",
+      `<${permission}>`,
+    ]);
+  });
 });
 
 // ---------- ADR-064 §3: resolveTeamWindowMode + buildTeamWindowCommand ----------
@@ -2085,7 +2111,14 @@ describe("cockpitRebuild", () => {
         },
       );
       expect(code).toBe(0);
-      expect(startArgs).toEqual(["--no-doctor"]);
+      expect(startArgs).toEqual(["--no-doctor", "--no-launch"]);
+      // The forwarded argv must be accepted by the REAL start parser —
+      // asserting the string alone once certified a flag start rejected.
+      expect(parseStartArgs(startArgs ?? [], {})).toEqual({
+        force: false,
+        doctorMode: "skip",
+        noLaunch: true,
+      });
       expect(startCwd).toBe(projRoot);
     } finally {
       try {
@@ -2124,7 +2157,12 @@ describe("cockpitRebuild", () => {
           },
         },
       );
-      expect(startArgs).toEqual(["--force", "--no-doctor"]);
+      expect(startArgs).toEqual(["--force", "--no-doctor", "--no-launch"]);
+      expect(parseStartArgs(startArgs ?? [], {})).toEqual({
+        force: true,
+        doctorMode: "skip",
+        noLaunch: true,
+      });
     } finally {
       try {
         await fx.tmux.server.killServer();

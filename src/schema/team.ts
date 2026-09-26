@@ -1427,8 +1427,10 @@ export const Team = z
      *
      *  When present + non-empty, supersedes the legacy `driverSession` /
      *  `driverTui` fields and drives `atmux start`'s driver-spawn loop
-     *  per ADR-239 §A1. Operator-interactive ONLY — no send-keys EVER
-     *  (ADR-239 §D2), no pre-prompts / briefs (ADR-239 §D5 + §A3).
+     *  per ADR-239 §A1. Operator-interactive panes: no pre-prompts /
+     *  briefs (ADR-239 §D5 + §A3). ADR-239 §D2's no-send-keys rule was
+     *  revoked on 2026-09-08 — the driver TUI is launched by sending the
+     *  command into the pane's verified-idle shell.
      *
      *  Conventions enforced at spawn time (not by schema):
      *    - `drivers[0].name` SHOULD be `"driver"` (the trunk-worktree

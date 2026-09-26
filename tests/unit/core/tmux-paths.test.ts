@@ -13,6 +13,7 @@ import {
   COCKPIT_SOCKET_DEFAULT,
   getAtmuxTmuxConfPath,
   getCockpitSocketName,
+  getCockpitSocketPath,
 } from "../../../src/core/tmux-paths.ts";
 
 describe("getCockpitSocketName", () => {
@@ -44,6 +45,28 @@ describe("getCockpitSocketName", () => {
     const r = getCockpitSocketName();
     expect(typeof r).toBe("string");
     expect(r.length).toBeGreaterThan(0);
+  });
+});
+
+describe("getCockpitSocketPath", () => {
+  test("`/tmp/tmux-<uid>/<cockpit socket name>` when TMUX_TMPDIR is unset", () => {
+    expect(getCockpitSocketPath({}, 501)).toBe("/tmp/tmux-501/atmux-cockpit");
+  });
+
+  test("empty TMUX_TMPDIR is treated as unset", () => {
+    expect(getCockpitSocketPath({ TMUX_TMPDIR: "" }, 0)).toBe("/tmp/tmux-0/atmux-cockpit");
+  });
+
+  test("TMUX_TMPDIR + ATMUX_COCKPIT_SOCKET both honoured, as tmux's `-L` would", () => {
+    expect(getCockpitSocketPath({ TMUX_TMPDIR: "/x/tt", ATMUX_COCKPIT_SOCKET: "ck" }, 7)).toBe(
+      "/x/tt/tmux-7/ck",
+    );
+  });
+
+  test("defaults fall through to process env + process uid", () => {
+    const uid = process.getuid?.() ?? 0;
+    expect(getCockpitSocketPath()).toBe(getCockpitSocketPath(process.env, uid));
+    expect(getCockpitSocketPath().endsWith(`/tmux-${uid}/${getCockpitSocketName()}`)).toBe(true);
   });
 });
 

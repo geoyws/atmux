@@ -26,9 +26,16 @@ import {
   resolveClaudeWrapper,
 } from "../../../src/abstractions/claude-account-wrapper.ts";
 import type { DiscordSendOpts } from "../../../src/abstractions/discord.ts";
-import type { TmuxConfig, TmuxNamespace } from "../../../src/abstractions/tmux.ts";
+import {
+  type SendTarget,
+  type Target,
+  type TmuxConfig,
+  type TmuxNamespace,
+  serializeTarget,
+} from "../../../src/abstractions/tmux.ts";
 import type { LoadedCockpit } from "../../../src/core/cockpit.ts";
 import type { SafeSendKeysWithVerifyOpts } from "../../../src/core/safe-send.ts";
+import { shellPaneCommand } from "../../../src/core/tui-cmd.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
 import {
   buildClaudeRespawnCommand,
@@ -257,6 +264,14 @@ interface TestHarness {
   newWindowIndex: number;
   /** Force newWindow to throw the given error on next call. */
   newWindowThrows?: Error;
+  /** Pane process model — serialized tmux target →
+   *  `#{pane_current_command}`. `newWindow` seeds it from the launch
+   *  command line (a shell-only pane reports its shell); a send of a
+   *  TUI command line flips it to that TUI, which is the real
+   *  two-stage transition the launcher observes. */
+  paneCommands: Map<string, string>;
+  /** Recorded `tmux.pane.sendKeys` invocations (ADR-025 SendTarget). */
+  sendKeysCalls: { kind: string; target: string; keys: string; enter: boolean }[];
   /** Recorded `tmux.window.listWindows` results — keyed by sessionName. */
   windowsBySession: Map<string, { index: number; id: string; name: string; active: boolean }[]>;
   /** Recorded T5 handoff writes. */
@@ -318,6 +333,8 @@ function makeHarness(overrides: Partial<TestHarness> = {}): TestHarness {
     ...(overrides.newWindowThrows !== undefined
       ? { newWindowThrows: overrides.newWindowThrows }
       : {}),
+    paneCommands: overrides.paneCommands ?? new Map(),
+    sendKeysCalls: overrides.sendKeysCalls ?? [],
     windowsBySession: overrides.windowsBySession ?? new Map(),
     handoffWrites: overrides.handoffWrites ?? [],
     ...(overrides.atomicWriteThrows !== undefined
@@ -328,14 +345,54 @@ function makeHarness(overrides: Partial<TestHarness> = {}): TestHarness {
   };
 }
 
+/** Process name tmux reports for a pane whose PID-0 process ran
+ *  `cmd`. `shellPaneCommand()` execs an interactive login zsh, so the
+ *  pane reports `zsh`; anything else is the agent harness itself. */
+function paneProcessFor(cmd: string): string {
+  if (cmd === shellPaneCommand()) return "zsh";
+  if (/\b(claude|c-[a-z]+)\b/.test(cmd)) return "claude";
+  return "bash";
+}
+
 function makeTmuxFactory(h: TestHarness): (cfg: TmuxConfig) => TmuxNamespace {
   return (_cfg: TmuxConfig) =>
     ({
       pane: {
-        capturePane: async (opts: { target: string }) => {
-          return h.captures.get(opts.target) ?? "";
+        capturePane: async (opts: { target: Target }) => {
+          const target = serializeTarget(opts.target);
+          return h.captures.get(target) ?? "";
         },
-        sendKeys: async () => {},
+        /** Stage-2 input injection. Sending a command line into an idle
+         *  shell execs it, so the pane's current command becomes the
+         *  launched process — the transition the live pane makes. A
+         *  readiness probe instead records its decoded token as the
+         *  pane's captured OUTPUT.
+         *
+         *  There is deliberately no `displayMessage` seam: readiness is
+         *  proven by that captured output, never by a process name, so a
+         *  test reaching for `#{pane_current_command}` cannot compile. */
+        sendKeys: async (opts: { target: SendTarget; keys: string; enter?: boolean }) => {
+          const target = serializeTarget(opts.target.target);
+          h.sendKeysCalls.push({
+            kind: opts.target.kind,
+            target,
+            keys: opts.keys,
+            enter: opts.enter ?? false,
+          });
+          if (opts.keys === "C-m" && h.paneCommands.has(target)) {
+            const prior = h.sendKeysCalls.at(-2)?.keys ?? "";
+            if (prior.startsWith("printf '")) {
+              const encoded = prior.slice("printf '".length, -3);
+              const token = encoded.replace(/\\([0-7]{3})/g, (_match, octal: string) =>
+                String.fromCharCode(Number.parseInt(octal, 8)),
+              );
+              h.captures.set(target, token);
+            } else {
+              h.paneCommands.set(target, paneProcessFor(prior));
+            }
+          }
+        },
+        listPanes: async () => [{ index: 0, pid: 123, title: "zsh", width: 80, height: 24 }],
       },
       window: {
         killWindow: async (target: string) => {
@@ -343,13 +400,21 @@ function makeTmuxFactory(h: TestHarness): (cfg: TmuxConfig) => TmuxNamespace {
           if (h.killWindowThrows !== undefined) throw h.killWindowThrows;
         },
         newWindow: async (opts: { name?: string; shellCommand?: string; cwd?: string }) => {
+          const shellCommand = opts.shellCommand ?? "";
           h.newWindowCalls.push({
             name: opts.name ?? "",
-            shellCommand: opts.shellCommand ?? "",
+            shellCommand,
             ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
           });
           if (h.newWindowThrows !== undefined) throw h.newWindowThrows;
-          return { sessionName: "atmux_cockpit", windowIndex: h.newWindowIndex };
+          const windowIndex = h.newWindowIndex;
+          const paneTarget = serializeTarget({
+            sessionName: "atmux_cockpit",
+            windowIndex,
+            paneIndex: 0,
+          });
+          h.paneCommands.set(paneTarget, paneProcessFor(shellCommand));
+          return { sessionName: "atmux_cockpit", windowIndex };
         },
         listWindows: async (sessionName: string) => {
           return h.windowsBySession.get(sessionName) ?? [];
@@ -378,6 +443,13 @@ function makeSafeSendKeysStub(h: TestHarness) {
       finalCapture: h.ctrlCSucceeds ? "" : "❯ claude TUI still visible",
     };
   };
+}
+
+/** TUI command-line sends only; excludes the readiness probe and submit keys. */
+function tuiSends(h: TestHarness) {
+  return h.sendKeysCalls.filter(
+    (call) => call.keys !== "C-m" && call.keys !== "C-c" && !call.keys.startsWith("printf '"),
+  );
 }
 
 function harnessOpts(h: TestHarness) {
@@ -789,7 +861,7 @@ describe("buildClaudeRespawnCommand", () => {
   test("/root/.claude-unum → c-u wrapper-alias", () => {
     const cmd = buildClaudeRespawnCommand({ configDir: "/root/.claude-unum" }, undefined);
     expect(cmd).toMatch(/CLAUDE_GUARD_AGENT=1 c-u /);
-    expect(cmd).not.toContain("CLAUDE_CONFIG_DIR=");
+    expect(cmd).toContain("CLAUDE_CONFIG_DIR=/root/.claude-unum");
   });
 
   test("/root/.claude-icloud → c-ic wrapper-alias", () => {
@@ -844,8 +916,12 @@ describe("cockpitRotate — T4 medic respawn", () => {
     expect(h.killWindowCalls).toEqual(["atmux_cockpit:_medic"]);
     expect(h.newWindowCalls.length).toBe(1);
     expect(h.newWindowCalls[0]?.name).toBe("_medic");
-    expect(h.newWindowCalls[0]?.shellCommand).toContain(" claude ");
-    expect(h.newWindowCalls[0]?.shellCommand).toContain("CLAUDE_GUARD_AGENT=1");
+    // Stage 1 creates a shell-only pane; the TUI arrives in stage 2.
+    expect(h.newWindowCalls[0]?.shellCommand).toBe(shellPaneCommand());
+    const launch = tuiSends(h);
+    expect(launch.length).toBe(1);
+    expect(launch[0]?.keys).toContain(" claude ");
+    expect(launch[0]?.keys).toContain("CLAUDE_GUARD_AGENT=1");
     // Success audit row written (no Discord).
     expect(h.appendedAudit.length).toBe(1);
     const row = firstAuditRow(h);
@@ -869,8 +945,8 @@ describe("cockpitRotate — T4 medic respawn", () => {
     passGates(h, "medic");
     const exit = await cockpitRotate(["medic"], harnessOpts(h));
     expect(exit).toBe(0);
-    expect(h.newWindowCalls[0]?.shellCommand).toContain(" c-u ");
-    expect(h.newWindowCalls[0]?.shellCommand).not.toContain(" claude ");
+    expect(tuiSends(h)[0]?.keys).toContain(" c-u ");
+    expect(tuiSends(h)[0]?.keys).not.toContain(" claude ");
   });
 
   test("medic with no declared claudeAccount → default to bare claude", async () => {
@@ -883,7 +959,35 @@ describe("cockpitRotate — T4 medic respawn", () => {
     passGates(h, "medic");
     const exit = await cockpitRotate(["medic"], harnessOpts(h));
     expect(exit).toBe(0);
-    expect(h.newWindowCalls[0]?.shellCommand).toContain(" claude ");
+    expect(tuiSends(h)[0]?.keys).toContain(" claude ");
+  });
+
+  test("two-stage: shell-only window, that exact pane verified idle, TUI sent to it", async () => {
+    const h = makeHarness();
+    passGates(h, "medic");
+    expect(await cockpitRotate(["medic"], harnessOpts(h))).toBe(0);
+
+    // Stage 1 — the window's own command is a shell and nothing else,
+    // so quitting the TUI later returns the operator to a prompt.
+    expect(h.newWindowCalls[0]?.shellCommand).toBe(shellPaneCommand());
+    expect(h.newWindowCalls[0]?.shellCommand).not.toContain("claude");
+
+    // Stage 2 proves command execution before sending the TUI, and every
+    // input operation is pinned to the immutable pane rather than a window.
+    const probeIndex = h.sendKeysCalls.findIndex((call) => call.keys.startsWith("printf '"));
+    expect(probeIndex).toBeGreaterThanOrEqual(0);
+    expect(h.sendKeysCalls[probeIndex + 1]?.keys).toBe("C-m");
+    expect(
+      h.sendKeysCalls.slice(probeIndex).every((call) => call.target === "atmux_cockpit:4.0"),
+    ).toBe(true);
+
+    const launch = tuiSends(h);
+    expect(launch.length).toBe(1);
+    expect(launch[0]?.kind).toBe("service");
+    expect(launch[0]?.keys).toBe(
+      buildClaudeRespawnCommand({ configDir: "/root/.claude" }, undefined),
+    );
+    expect(h.paneCommands.get("atmux_cockpit:4.0")).toBe("claude");
   });
 });
 
@@ -988,6 +1092,35 @@ describe("cockpitRotate — T4 failure modes", () => {
     expect(h.newWindowCalls.length).toBe(1); // attempted
     expect(firstAuditRow(h).outcome).toBe("respawn-failed");
     expect(firstAuditRow(h).error).toContain("newWindow");
+  });
+
+  test("pane never executes readiness probe → respawn-failed + exit 70", async () => {
+    const h = makeHarness();
+    passGates(h, "medic");
+    const exit = await cockpitRotate(["medic"], {
+      ...harnessOpts(h),
+      launchAgentInPane: async () => "no-prompt" as const,
+    });
+
+    expect(exit).toBe(70);
+    expect(h.newWindowCalls.length).toBe(1);
+    expect(h.capturedStderr.join("")).toContain("medic TUI launch failed");
+    expect(firstAuditRow(h).outcome).toBe("respawn-failed");
+    expect(firstAuditRow(h).error).toContain("launchAgentInPane");
+  });
+
+  test("launch send throws → respawn-failed + exit 70 carrying the tmux cause", async () => {
+    const h = makeHarness();
+    passGates(h, "medic");
+    const exit = await cockpitRotate(["medic"], {
+      ...harnessOpts(h),
+      launchAgentInPane: async () => {
+        throw new Error("send-keys: no such pane");
+      },
+    });
+
+    expect(exit).toBe(70);
+    expect(firstAuditRow(h).error).toContain("send-keys: no such pane");
   });
 
   test("Ctrl-C verifier escalates → respawn STILL proceeds (kill-window is destructive)", async () => {
@@ -1312,8 +1445,7 @@ describe("cockpitRotate — T5 ordering invariant", () => {
       tmuxFactory: (_cfg: TmuxConfig) =>
         ({
           pane: {
-            capturePane: async () => "",
-            sendKeys: async () => {},
+            listPanes: async () => [{ index: 0, pid: 123, title: "zsh", width: 80, height: 24 }],
           },
           window: {
             killWindow: async () => {
@@ -1326,12 +1458,23 @@ describe("cockpitRotate — T5 ordering invariant", () => {
             listWindows: async () => [],
           },
         }) as unknown as TmuxNamespace,
+      launchAgentInPane: async () => {
+        sequence.push("launch-send");
+        return "launched" as const;
+      },
     };
 
     await cockpitRotate(["medic"], opts);
 
-    // ADR-167 §Ordering invariant: handoff → Ctrl-C → kill → new.
-    expect(sequence).toEqual(["handoff-write", "ctrl-c", "kill-window", "new-window"]);
+    // ADR-167 §Ordering invariant: handoff → Ctrl-C → kill → new; the
+    // two-stage launch appends the TUI send after the shell pane exists.
+    expect(sequence).toEqual([
+      "handoff-write",
+      "ctrl-c",
+      "kill-window",
+      "new-window",
+      "launch-send",
+    ]);
   });
 });
 
@@ -1567,6 +1710,7 @@ describe("cockpitRotate — T6 safeCapturePane catch branch", () => {
             throw new Error("synthetic tmux capture failure");
           },
           sendKeys: async () => {},
+          listPanes: async () => [{ index: 0, pid: 123, title: "zsh", width: 80, height: 24 }],
         },
         window: {
           killWindow: async (target: string) => {
@@ -1596,6 +1740,7 @@ describe("cockpitRotate — T6 safeCapturePane catch branch", () => {
       ...harnessOpts(h),
       tmuxFactory: throwingTmuxFactory,
       safeSendKeysWithVerify: noCaptureSafeSend,
+      launchAgentInPane: async () => "launched" as const,
     };
     const exit = await cockpitRotate(["medic"], opts);
 

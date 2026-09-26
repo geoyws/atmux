@@ -273,9 +273,10 @@ export async function sendToMember(
   // here — the lead pane IS a roster member from this lib's perspective
   // (the `kind: "lead"` audit tag is for callsites that explicitly
   // address the lead role and want it surfaced in reviewer-grep, like
-  // `rotate-lead` and `stop`). The compile-time gate ("driver pane
-  // banned") is what's load-bearing; the kind discrimination is audit
-  // metadata.
+  // `rotate-lead` and `stop`). The kind is audit metadata only: the
+  // operator revoked ADR-239 §D2 on 2026-09-08, so `kind: "driver"` is
+  // representable too (src/abstractions/tmux.ts) and no compile-time
+  // pane ban remains.
   const sendTarget: SendTarget = {
     kind: "member",
     member: target.member,

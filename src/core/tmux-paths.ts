@@ -56,6 +56,26 @@ export function getCockpitSocketName(env: NodeJS.ProcessEnv = process.env): stri
 }
 
 /**
+ * Absolute path of the cockpit's socket FILE — the one `tmux -L
+ * <getCockpitSocketName()>` connects to. tmux builds a `-L <name>` socket
+ * as `$TMUX_TMPDIR/tmux-<uid>/<name>`, with `/tmp` standing in when
+ * `TMUX_TMPDIR` is unset or empty; this is that same construction.
+ *
+ * For probes that must see the file BEFORE running any tmux subcommand
+ * against it: a subcommand aimed at a dead socket can start a server
+ * there (ADR-281 §Context), so `[ -S <path> ]` has to come first, and
+ * `-L` offers no path to test.
+ */
+export function getCockpitSocketPath(
+  env: NodeJS.ProcessEnv = process.env,
+  uid: number = process.getuid?.() ?? 0,
+): string {
+  const tmpdir = env.TMUX_TMPDIR;
+  const base = tmpdir !== undefined && tmpdir.length > 0 ? tmpdir : "/tmp";
+  return join(base, `tmux-${uid}`, getCockpitSocketName(env));
+}
+
+/**
  * Resolve the canonical atmux tmux.conf path. Per ADR-162 §Decision-
  * anchor #2 every atmux session-creation site threads this through
  * `TmuxConfig.configFile` (ADR-097), so every `tmux ...` invocation

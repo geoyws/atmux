@@ -80,6 +80,7 @@ Per [ADR-162](adr/162-atmux-owns-tmux-infrastructure.md):
 
 - `tmux-version-mismatch` — host tmux below min 3.2 or untested above tested-against 3.6a.
 - `cockpit-on-default-socket` — legacy cockpit session residue (`atx`, `atmux_cockpit`, or `atmux_teams`) on the default socket. Self-clearing post-migration.
+- `tmux-agent-env` — a live cockpit, group or cage server whose **global** environment was frozen from an agent shell (`AGENT`, `CI`, a set `NO_COLOR`, `EDITOR`/`VISUAL`/`GIT_EDITOR=true`, …; `TERM=dumb` is deliberately excluded because it never reaches a pane; the list is `AGENT_SHELL_ENV_MARKERS` in `src/verbs/doctor/agent-env.ts`). Names the socket and the variable names, never values. The hint is `tmux -S <sock> set-environment -g -u <VAR>` per variable; panes already running keep the old environment until their processes restart. It reads only; it never starts a server ([ADR-294](adr/294-doctor-detects-agent-shell-env-in-tmux-servers.md)). The three scrub layers above act at server start; this probe is the only thing that sees a server that is already polluted.
 
 **Member window-name format (per [ADR-161](adr/161-default-member-prefix-and-sort-verbs.md) §Part B):** in-team windows split by role class. `buildWindowName(name, emoji, label, role)` in `src/core/common.ts` picks the format:
 

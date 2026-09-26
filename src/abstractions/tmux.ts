@@ -34,7 +34,6 @@
 // constant for why the ADR-277 conf scrub is not sufficient on its own,
 // and ADR-281 §D2 for why the `COLORTERM=truecolor` half was dropped.
 
-import { isDriverPaneName } from "../core/drivers.ts";
 import { resolveTmuxBin } from "../core/resolve-tmux-bin.ts";
 import { TmuxError } from "../errors.ts";
 import { type ExpectExitCode, spawn, spawnInheritStdio } from "./spawn.ts";
@@ -94,57 +93,6 @@ export const TMUX_CHILD_UNSET_ENV: ReadonlyArray<string> = Object.freeze(["NO_CO
  */
 export const TMUX_CHILD_ENV_ARGV: ReadonlyArray<string> = Object.freeze(["-u", "NO_COLOR"]);
 
-// ---------- ADR-239 §D2 + §A5 — no-send-keys-to-drivers runtime guard ----------
-
-/** Thrown when any caller attempts to send-keys / paste-buffer into a
- *  driver pane. Type-level guard (ADR-025) is the first line of defense;
- *  this runtime guard catches synth-bypass patterns where a caller
- *  manually builds `{ kind: "member", member: "driver", ... }` to bypass
- *  the discriminated union. Refusal lives in the lowest-level helper so
- *  every consumer (verbs, core, abstractions) is covered without a
- *  per-call audit. */
-export class DriverSendKeysViolation extends Error {
-  constructor(targetStr: string, paneName: string) {
-    super(
-      `ADR-239 §D2 violation: refused to send-keys into driver pane '${paneName}' ` +
-        `(resolved target='${targetStr}'). Drivers are operator-interactive only — ` +
-        `atmux NEVER sends keystrokes to driver panes. Launch via tmux new-session / ` +
-        `new-window 'shellCommand' (command-mode), or address a member/lead/service pane instead.`,
-    );
-    this.name = "DriverSendKeysViolation";
-  }
-}
-
-/** Parse the window-name segment from a serialized tmux target string.
- *  Returns `null` when the segment looks like a numeric index (e.g.
- *  `session:2.0`) or when the format doesn't match the expected
- *  `session:<window>[.<pane>]` shape. Pure. Exported for direct
- *  unit-testing of the parse + classify chain. */
-export function extractWindowNameFromTargetString(targetStr: string): string | null {
-  // `session:<window>[.<pane>]` — split on first `:`, then strip any
-  // trailing `.<pane>` segment. The window portion is either a name
-  // (alpha) or a numeric index — we only classify it as a driver when
-  // it's a name match.
-  const colon = targetStr.indexOf(":");
-  if (colon < 0) return null;
-  const after = targetStr.slice(colon + 1);
-  const dot = after.indexOf(".");
-  const winSeg = dot < 0 ? after : after.slice(0, dot);
-  if (winSeg.length === 0) return null;
-  // Numeric index → not a name to classify.
-  if (/^[0-9]+$/.test(winSeg)) return null;
-  return winSeg;
-}
-
-/** Assert that the serialized target does NOT resolve to a driver pane.
- *  Pure (apart from the throw). */
-function assertNotDriverTarget(targetStr: string): void {
-  const winName = extractWindowNameFromTargetString(targetStr);
-  if (winName !== null && isDriverPaneName(winName)) {
-    throw new DriverSendKeysViolation(targetStr, winName);
-  }
-}
-
 // ---------- Target IDs ----------
 
 export interface PaneId {
@@ -171,15 +119,19 @@ export function serializeTarget(t: Target): string {
 
 /**
  * Discriminated union for tmux input-injection targets (`sendKeys` +
- * `pasteBuffer`). The `kind` field gates the human-REPL guarantee: the
- * driver pane is intentionally NOT a representable kind, so a caller
- * attempting `{ kind: "driver", ... }` triggers a compile error rather
- * than reaching production. ADR-025 has the rationale + migration
- * matrix + interaction with future cage / super-driver topology.
+ * `pasteBuffer`). The `kind` field declares intent and namespaces the
+ * audit trail; ADR-025 has the rationale + migration matrix.
+ *
+ * `driver` became a representable kind on 2026-09-08 when the operator
+ * revoked ADR-239 §D2's no-send-keys-to-drivers rule: a driver pane is
+ * created as an interactive login shell and its TUI is launched by
+ * sending the command into that verified-idle shell, exactly like every
+ * other agent surface (`src/core/agent-pane.ts`). The safety that
+ * remains is behavioural, not type-level: send only into a pane whose
+ * current state has been observed.
  *
  * Read-only methods (`capturePane`, `displayMessage`, `listPanes`,
- * `splitWindow`, `killPane`) keep `target: Target` — the rule guards
- * input-injection only.
+ * `splitWindow`, `killPane`) keep `target: Target`.
  */
 export type SendTarget =
   | {
@@ -208,9 +160,17 @@ export type SendTarget =
     }
   | {
       /** ADR-285 §D2 — the cooperative `_bot` seat is an explicit input
-       *  target. It is not a member and, crucially, does not widen the
-       *  unrepresentable driver kind from ADR-239. */
+       *  target. It is not a member. */
       readonly kind: "bot";
+      readonly team: string;
+      readonly target: Target;
+    }
+  | {
+      /** Operator driver pane (`driver`, `driver-N`). Input is allowed
+       *  since the 2026-09-08 revocation of ADR-239 §D2 — atmux launches
+       *  the driver's TUI into its shell the same way it does for
+       *  members. */
+      readonly kind: "driver";
       readonly team: string;
       readonly target: Target;
     };
@@ -438,7 +398,7 @@ export interface TmuxNamespace {
   };
   readonly pane: {
     sendKeys(opts: {
-      /** ADR-025: discriminated union — driver pane intentionally absent. */
+      /** Typed intent for the immutable target receiving input. */
       target: SendTarget;
       keys: string;
       literal?: boolean;
@@ -467,7 +427,7 @@ export interface TmuxNamespace {
     loadBuffer(opts: { name?: string; data: string }): Promise<void>;
     pasteBuffer(opts: {
       name?: string;
-      /** ADR-025: discriminated union — driver pane intentionally absent. */
+      /** Typed intent for the immutable target receiving input. */
       target: SendTarget;
       deleteAfter?: boolean;
     }): Promise<void>;
@@ -723,13 +683,10 @@ export function createTmux(config: TmuxConfig): TmuxNamespace {
 
     pane: {
       /** `tmux send-keys -t <target> [-l] <keys> [Enter]`.
-       *  `target: SendTarget` — driver pane is type-banned per ADR-025
-       *  AND runtime-guarded per ADR-239 §D2 + §A5 (any serialized
-       *  target whose window-name matches `^driver(-[0-9]+)?$` throws
-       *  `DriverSendKeysViolation` before tmux is touched). */
+       *  `target: SendTarget` — the kind declares intent (ADR-025); no
+       *  kind is refused here since the 2026-09-08 driver revocation. */
       async sendKeys(opts) {
         const targetStr = serializeSendTarget(opts.target);
-        assertNotDriverTarget(targetStr);
         const argv = ["send-keys", "-t", targetStr];
         if (opts.literal) argv.push("-l");
         argv.push(opts.keys);
@@ -845,13 +802,9 @@ export function createTmux(config: TmuxConfig): TmuxNamespace {
       },
 
       /** `tmux paste-buffer [-b <name>] [-d] -t <target>`.
-       *  `target: SendTarget` — driver pane is type-banned per ADR-025
-       *  AND runtime-guarded per ADR-239 §D2 + §A5. paste-buffer is the
-       *  same input-injection hazard as send-keys; the guard fires
-       *  symmetrically. */
+       *  `target: SendTarget` — same intent declaration as `sendKeys`. */
       async pasteBuffer(opts) {
         const targetStr = serializeSendTarget(opts.target);
-        assertNotDriverTarget(targetStr);
         const argv = ["paste-buffer"];
         if (opts.name) argv.push("-b", opts.name);
         if (opts.deleteAfter) argv.push("-d");
