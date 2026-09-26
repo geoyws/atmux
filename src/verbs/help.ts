@@ -46,7 +46,7 @@ Setup:
                               cockpit.json. Reads roster from
                               ~/.atmux/cockpit.json (override via
                               ATMUX_COCKPIT_CONFIG or --config <p>).
-  cockpit attach [--config <p>] [--human]
+  cockpit attach [--config <p>] [--human] [--no-ensure] [--launch]
                               tmux-attach to the cockpit session on its named
                               socket (\`tmux -L atmux-cockpit attach -t
                               atx\`). Socket + session name resolved
@@ -57,7 +57,10 @@ Setup:
                               spawn so the caller's controlling terminal
                               reaches tmux. Default (agent path) uses piped
                               stdio and exits 1 on no-tty — the intended
-                              shape for headless probes.
+                              shape for headless probes. Ensure-up runs
+                              first by default (cycle dead cages, no TUI
+                              launch — today's \`aco\`); \`--no-ensure\`
+                              skips it, \`--launch\` re-enables TUI launch.
   cockpit rotate <session-name> [--force]
                               ADR-167 Rung C: canonical rotation of a cockpit-
                               level role pane — \`medic\` (W2) or \`<team-name>\`

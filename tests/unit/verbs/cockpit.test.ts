@@ -19,12 +19,14 @@ import {
   buildSuperbotWindowCommand,
   buildTeamWindowCommand,
   type CapturedCockpitWindow,
+  COCKPIT_RECONCILE_CONCURRENCY,
   cageAlive,
   cockpit,
   cockpitAttach,
   cockpitMigrateSocket,
   cockpitRebuild,
   LEGACY_COCKPIT_SESSION_NAMES,
+  mapWithConcurrency,
   normaliseTeamJson,
   type ParsedCockpitArgs,
   parseCockpitArgs,
@@ -3620,6 +3622,453 @@ describe("reconcileCockpitSession — topology (grouped teams leave the cockpit)
       });
       const names = (await fx.tmux.window.listWindows("s")).map((w) => w.name);
       expect(names).toContain(solo);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------- Parallel reconcile (bounded concurrency) ----------
+
+// Hang guard: bounds the hang path only (a fan-out regression parks a gate
+// forever instead of failing). Never gates a passing assertion — the pass
+// path is fully signal-driven, no wall-clock sleeps. The timer is cleared
+// on settle so it never lingers past the test.
+async function withHangGuard<T>(promise: Promise<T>, what: string, ms = 5000): Promise<T> {
+  const guard = Promise.withResolvers<T>();
+  const timer = setTimeout(
+    () => guard.reject(new Error(`timed out waiting for ${what} (fan-out regressed?)`)),
+    ms,
+  );
+  try {
+    return await Promise.race([promise, guard.promise]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+describe("mapWithConcurrency", () => {
+  test("preserves input order under overlap", async () => {
+    const go = new Map<number, () => void>();
+    const done = new Map<number, Promise<void>>();
+    let entered = 0;
+    const allIn = Promise.withResolvers<void>();
+    const run = mapWithConcurrency([0, 1, 2], 3, async (_v, i) => {
+      entered += 1;
+      if (entered === 3) allIn.resolve();
+      const gate = Promise.withResolvers<void>();
+      const fin = Promise.withResolvers<void>();
+      go.set(i, gate.resolve);
+      done.set(i, fin.promise);
+      await withHangGuard(gate.promise, "order gate");
+      fin.resolve();
+      return i * 10;
+    });
+    await withHangGuard(allIn.promise, "order fan-in");
+    // Finish item 2 first, then 0 and 1 — output must still follow input order.
+    go.get(2)?.();
+    await withHangGuard(done.get(2) ?? Promise.reject(new Error("item 2 never parked")), "item 2 done");
+    go.get(0)?.();
+    go.get(1)?.();
+    await expect(withHangGuard(run, "overlap run")).resolves.toEqual([0, 10, 20]);
+  });
+
+  test("bounds in-flight work but overlaps (would be 1 if sequential)", async () => {
+    let inFlight = 0;
+    let max = 0;
+    let entered = 0;
+    const parked: Array<() => void> = [];
+    const twoUp = Promise.withResolvers<void>();
+    const allFour = Promise.withResolvers<void>();
+    const run = mapWithConcurrency([1, 2, 3, 4], 2, async () => {
+      inFlight += 1;
+      max = Math.max(max, inFlight);
+      entered += 1;
+      if (inFlight === 2) twoUp.resolve();
+      if (entered === 4) allFour.resolve();
+      const gate = Promise.withResolvers<void>();
+      parked.push(gate.resolve);
+      await withHangGuard(gate.promise, "bound gate");
+      inFlight -= 1;
+    });
+    // Two concurrent arms prove overlap; a sequential impl parks the first
+    // arm forever and trips the guard instead of hanging the suite.
+    await withHangGuard(twoUp.promise, "bound fan-in");
+    expect(max).toBe(2);
+    for (const release of parked.splice(0)) release(); // wave 1 → wave 2 parks
+    await withHangGuard(allFour.promise, "bound wave 2");
+    for (const release of parked.splice(0)) release(); // wave 2 → run settles
+    await withHangGuard(run, "bound run");
+    // The bound held throughout both waves.
+    expect(max).toBeLessThanOrEqual(2);
+  });
+
+  test("empty input resolves without calling fn", async () => {
+    let calls = 0;
+    const out = await mapWithConcurrency([], 4, async () => {
+      calls += 1;
+      return 1;
+    });
+    expect(out).toEqual([]);
+    expect(calls).toBe(0);
+  });
+
+  test("concurrency bound is exported + sane", () => {
+    expect(COCKPIT_RECONCILE_CONCURRENCY).toBeGreaterThanOrEqual(2);
+    expect(COCKPIT_RECONCILE_CONCURRENCY).toBeLessThanOrEqual(8);
+  });
+});
+
+describe("cockpitRebuild — parallel per-team phases", () => {
+  let homeDir: string;
+  let roots: string[];
+  const names = ["par-a", "par-b", "par-c"];
+
+  beforeEach(async () => {
+    homeDir = await mkdtemp(join(tmpdir(), "atmux-cockpit-par-home-"));
+    await mkdir(join(homeDir, ".atmux"), { recursive: true });
+    roots = [];
+    for (const n of names) {
+      const root = await mkdtemp(join(tmpdir(), `atmux-cockpit-par-${n}-`));
+      await mkdir(join(root, ".atmux"), { recursive: true });
+      await writeFile(
+        join(root, ".atmux", "team.json"),
+        JSON.stringify({ name: n, members: [{ name: "lead", role: "team-lead" }] }),
+        "utf8",
+      );
+      roots.push(root);
+    }
+    await writeFile(
+      join(homeDir, ".atmux", "cockpit.json"),
+      JSON.stringify({
+        cockpitSession: "parcockpit",
+        teams: names.map((n, i) => ({ name: n, root: roots[i], enabled: true })),
+      }),
+      "utf8",
+    );
+  });
+
+  afterEach(async () => {
+    await rm(homeDir, { recursive: true, force: true });
+    for (const r of roots) await rm(r, { recursive: true, force: true });
+  });
+
+  test("3 dead cages cycle concurrently + all viewers land + phase timings logged", async () => {
+    const fx = await spinTmux("cockpit-parallel");
+    try {
+      const { logger, logs } = makeLogger();
+      let inFlight = 0;
+      let maxInFlight = 0;
+      let entered = 0;
+      const startCwds: string[] = [];
+      const allThree = Promise.withResolvers<void>();
+      const code = await cockpitRebuild(
+        {
+          subverb: "reconcile",
+          noCycle: false,
+          forceCycle: false,
+          ackDangerous: false,
+          noLaunch: true,
+          yes: false,
+        },
+        {
+          env: { HOME: homeDir, ATMUX_NO_CRON: "1" },
+          tmuxFactory: () => fx.tmux,
+          logger,
+          startFn: async (_args, opts) => {
+            inFlight += 1;
+            maxInFlight = Math.max(maxInFlight, inFlight);
+            entered += 1;
+            if (opts?.cwd !== undefined) startCwds.push(opts.cwd);
+            // Barrier: all three arms must be in flight before any
+            // returns. Sequential code parks the first arm forever and
+            // trips the guard instead of hanging the suite.
+            if (entered === 3) allThree.resolve();
+            await withHangGuard(allThree.promise, "phase-2 fan-in");
+            inFlight -= 1;
+            return 0;
+          },
+        },
+      );
+      expect(code).toBe(0);
+      // Every dead cage cycled exactly once, with its own root as cwd.
+      expect(startCwds.sort()).toEqual(roots.slice().sort());
+      // Parallel, not sequential: all three start arms overlapped.
+      expect(maxInFlight).toBe(3);
+      // Every team.json normalised.
+      for (const r of roots) {
+        const tj = JSON.parse(await readFile(join(r, ".atmux", "team.json"), "utf8"));
+        expect(tj.bareWindowNames).toBe(true);
+      }
+      // Cockpit session carries every viewer.
+      const wins = (await fx.tmux.window.listWindows("parcockpit")).map((w) => w.name);
+      for (const n of names) expect(wins).toContain(n);
+      // Terse phase-timing lines on stderr (via logger).
+      for (const p of ["phase 1 ", "phase 2 ", "phase 3 ", "phase 4.5 ", "phase 5 "]) {
+        expect(logs.some((l) => l.includes(p) && /\d+ms/.test(l))).toBe(true);
+      }
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------- `cockpit attach` ensure-up on/off ----------
+
+describe("parseCockpitArgs — attach ensure-up flags", () => {
+  test("attach accepts --no-ensure", () => {
+    expect(parseCockpitArgs(["attach", "--no-ensure"]).noEnsure).toBe(true);
+  });
+
+  test("attach defaults noEnsure=false (ensure-up runs)", () => {
+    expect(parseCockpitArgs(["attach"]).noEnsure).toBe(false);
+  });
+
+  test("attach accepts --launch", () => {
+    expect(parseCockpitArgs(["attach", "--launch"]).launch).toBe(true);
+  });
+
+  test("attach defaults launch=false (no-TUI-launch ensure-up)", () => {
+    expect(parseCockpitArgs(["attach"]).launch).toBe(false);
+  });
+
+  test("attach accepts --human + --no-ensure + --launch together (single aca call)", () => {
+    const p = parseCockpitArgs(["attach", "--human", "--no-ensure", "--launch"]);
+    expect(p.human).toBe(true);
+    expect(p.noEnsure).toBe(true);
+    expect(p.launch).toBe(true);
+  });
+
+  test("reconcile rejects --no-ensure (attach-only flag)", () => {
+    expect(() => parseCockpitArgs(["reconcile", "--no-ensure"])).toThrow(UsageError);
+  });
+
+  test("reconcile rejects --launch (attach-only flag)", () => {
+    expect(() => parseCockpitArgs(["reconcile", "--launch"])).toThrow(UsageError);
+  });
+
+  test("reload rejects --no-ensure + --launch", () => {
+    expect(() => parseCockpitArgs(["reload", "--no-ensure"])).toThrow(UsageError);
+    expect(() => parseCockpitArgs(["reload", "--launch"])).toThrow(UsageError);
+  });
+
+  test("migrate-socket rejects --no-ensure + --launch", () => {
+    expect(() => parseCockpitArgs(["migrate-socket", "--no-ensure"])).toThrow(UsageError);
+    expect(() => parseCockpitArgs(["migrate-socket", "--launch"])).toThrow(UsageError);
+  });
+});
+
+describe("cockpitAttach — ensure-up on/off (isolated)", () => {
+  let homeDir: string;
+  let teamRoot: string;
+  let cockpitJson: string;
+
+  beforeEach(async () => {
+    homeDir = await mkdtemp(join(tmpdir(), "atmux-cockpit-att-ensure-home-"));
+    await mkdir(join(homeDir, ".atmux"), { recursive: true });
+    teamRoot = await mkdtemp(join(tmpdir(), "atmux-cockpit-att-ensure-team-"));
+    await mkdir(join(teamRoot, ".atmux"), { recursive: true });
+    await writeFile(
+      join(teamRoot, ".atmux", "team.json"),
+      JSON.stringify({ name: "ensdemo", members: [{ name: "lead", role: "team-lead" }] }),
+      "utf8",
+    );
+    cockpitJson = join(homeDir, ".atmux", "cockpit.json");
+    await writeFile(
+      cockpitJson,
+      JSON.stringify({
+        cockpitSession: "enscockpit",
+        teams: [{ name: "ensdemo", root: teamRoot, enabled: true }],
+      }),
+      "utf8",
+    );
+  });
+
+  afterEach(async () => {
+    await rm(homeDir, { recursive: true, force: true });
+    await rm(teamRoot, { recursive: true, force: true });
+  });
+
+  function attachParsed(overrides: Partial<ParsedCockpitArgs> = {}): ParsedCockpitArgs {
+    return {
+      subverb: "attach",
+      noCycle: false,
+      forceCycle: false,
+      ackDangerous: false,
+      noLaunch: false,
+      yes: false,
+      dryRun: false,
+      keepLegacy: false,
+      human: false,
+      configPath: cockpitJson,
+      ...overrides,
+    };
+  }
+
+  test("default runs ensure-up (dead cage cycled) then attaches + logs phase timings", async () => {
+    const fx = await spinTmux("cockpit-attach-ensure");
+    try {
+      const { logger, logs } = makeLogger();
+      let starts = 0;
+      let attached = "";
+      const cockpitNs = {
+        ...fx.tmux,
+        client: {
+          attachSession: async (t: string) => {
+            attached = t;
+          },
+          attachSessionInheritStdio: async (t: string) => {
+            attached = `inherit:${t}`;
+          },
+        },
+      } as unknown as TmuxNamespace;
+      const code = await cockpitAttach(attachParsed(), {
+        env: { HOME: homeDir, ATMUX_NO_CRON: "1" },
+        tmuxFactory: (cfg) => ("socket" in cfg ? cockpitNs : fx.tmux),
+        logger,
+        startFn: async () => {
+          starts += 1;
+          return 0;
+        },
+      });
+      expect(code).toBe(0);
+      expect(starts).toBe(1);
+      expect(attached).toBe("=enscockpit");
+      expect(logs.some((l) => l.includes("phase 2 ") && /\d+ms/.test(l))).toBe(true);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("--no-ensure skips ensure-up (no start) and still attaches", async () => {
+    const fx = await spinTmux("cockpit-attach-noensure");
+    try {
+      const { logger, logs } = makeLogger();
+      let starts = 0;
+      let attached = "";
+      // Pre-create the cockpit session so pure-attach has a target.
+      await fx.tmux.session.newSession({ name: "enscockpit", detached: true });
+      const cockpitNs = {
+        ...fx.tmux,
+        client: {
+          attachSession: async (t: string) => {
+            attached = t;
+          },
+          attachSessionInheritStdio: async (t: string) => {
+            attached = `inherit:${t}`;
+          },
+        },
+      } as unknown as TmuxNamespace;
+      const code = await cockpitAttach(attachParsed({ noEnsure: true }), {
+        env: { HOME: homeDir, ATMUX_NO_CRON: "1" },
+        tmuxFactory: (cfg) => ("socket" in cfg ? cockpitNs : fx.tmux),
+        logger,
+        startFn: async () => {
+          starts += 1;
+          return 0;
+        },
+      });
+      expect(code).toBe(0);
+      expect(starts).toBe(0);
+      expect(attached).toBe("=enscockpit");
+      expect(logs.some((l) => l.includes("cockpit roster"))).toBe(false);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("ensure-up never kills a tmux server or session and never passes --force to start", async () => {
+    const fx = await spinTmux("cockpit-attach-nokill");
+    try {
+      const { logger } = makeLogger();
+      const kills: string[] = [];
+      const startArgs: string[][] = [];
+      // A running cage session the ensure-up must leave alone.
+      await fx.tmux.session.newSession({ name: "ensdemo", detached: true });
+      const guard = (ns: TmuxNamespace, label: string): TmuxNamespace =>
+        ({
+          ...ns,
+          server: {
+            ...ns.server,
+            killServer: async () => {
+              kills.push(`${label}:kill-server`);
+            },
+          },
+          session: {
+            ...ns.session,
+            killSession: async (t: string) => {
+              kills.push(`${label}:kill-session:${t}`);
+            },
+          },
+          client: {
+            attachSession: async () => {},
+            attachSessionInheritStdio: async () => {},
+          },
+        }) as unknown as TmuxNamespace;
+      const cockpitNs = guard(fx.tmux, "cockpit");
+      const cageNs = guard(fx.tmux, "cage");
+      const code = await cockpitAttach(attachParsed({ human: true }), {
+        env: { HOME: homeDir, ATMUX_NO_CRON: "1" },
+        tmuxFactory: (cfg) => ("socket" in cfg ? cockpitNs : cageNs),
+        logger,
+        startFn: async (args: string[]) => {
+          startArgs.push([...args]);
+          return 0;
+        },
+      });
+      expect(code).toBe(0);
+      expect(kills).toEqual([]);
+      expect(startArgs.flat()).not.toContain("--force");
+      expect(await fx.tmux.session.hasSession("=ensdemo")).toBe(true);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("--human still routes through inherit-stdio with ensure-up on", async () => {
+    const fx = await spinTmux("cockpit-attach-human-ensure");
+    try {
+      const { logger } = makeLogger();
+      let starts = 0;
+      let attached = "";
+      const cockpitNs = {
+        ...fx.tmux,
+        client: {
+          attachSession: async (t: string) => {
+            attached = t;
+          },
+          attachSessionInheritStdio: async (t: string) => {
+            attached = `inherit:${t}`;
+          },
+        },
+      } as unknown as TmuxNamespace;
+      const code = await cockpitAttach(attachParsed({ human: true }), {
+        env: { HOME: homeDir, ATMUX_NO_CRON: "1" },
+        tmuxFactory: (cfg) => ("socket" in cfg ? cockpitNs : fx.tmux),
+        logger,
+        startFn: async () => {
+          starts += 1;
+          return 0;
+        },
+      });
+      expect(code).toBe(0);
+      expect(starts).toBe(1);
+      expect(attached).toBe("inherit:=enscockpit");
     } finally {
       try {
         await fx.tmux.server.killServer();

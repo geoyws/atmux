@@ -463,21 +463,27 @@ export async function reconcileGroupServers(
   // additive by construction). Names suffice; commands are built lazily
   // in the mutate pass.
   if (opts.onlyTeam === undefined) {
-    const planned: Array<{ group: string; window: string }> = [];
-    for (const { group, wanted } of plans) {
-      const gTmux = factory({ socketPath: groupSocketPath(group.name) });
-      if (!(await gTmux.session.hasSession(exactSessionTarget(group.name)))) continue;
-      const wantedNames = new Set(wanted.map((w) => w.name));
-      let windows: Array<{ name: string }>;
-      try {
-        windows = await gTmux.window.listWindows(group.name);
-      } catch {
-        continue;
-      }
-      for (const w of windows) {
-        if (!wantedNames.has(w.name)) planned.push({ group: group.name, window: w.name });
-      }
-    }
+    // Probes hit independent group sockets — parallelise; the warn +
+    // refuse below stay single-point (fail-fast, same as before).
+    const probed = await mapWithConcurrency(
+      plans,
+      COCKPIT_RECONCILE_CONCURRENCY,
+      async ({ group, wanted }) => {
+        const gTmux = factory({ socketPath: groupSocketPath(group.name) });
+        if (!(await gTmux.session.hasSession(exactSessionTarget(group.name)))) return [];
+        const wantedNames = new Set(wanted.map((w) => w.name));
+        let windows: Array<{ name: string }>;
+        try {
+          windows = await gTmux.window.listWindows(group.name);
+        } catch {
+          return [];
+        }
+        return windows
+          .filter((w) => !wantedNames.has(w.name))
+          .map((w) => ({ group: group.name, window: w.name }));
+      },
+    );
+    const planned: Array<{ group: string; window: string }> = probed.flat();
     if (planned.length > 0) {
       for (const op of planned) {
         logger.warn(
@@ -496,10 +502,13 @@ export async function reconcileGroupServers(
   }
 
   // Mutate pass — ensure servers, sessions, windows; prune; prefix.
-  for (const { group, wanted } of plans) {
+  // Groups are independent sockets — parallelise across groups. Windows
+  // WITHIN a group stay sequential: creation order defines window
+  // indices, so that loop has a real ordering dependency.
+  await mapWithConcurrency(plans, COCKPIT_RECONCILE_CONCURRENCY, async ({ group, wanted }) => {
     if (wanted.length === 0) {
       logger.log(`  · group '${group.name}' has no enabled children — skipping its server`);
-      continue;
+      return;
     }
     const sock = groupSocketPath(group.name);
     await ensureDir(dirname(sock));
@@ -552,7 +561,7 @@ export async function reconcileGroupServers(
       // falls through to applyCagePrefix's legacy default — cosmetic.
     }
     await applyCagePrefix(gTmux, prefix);
-  }
+  });
 }
 
 /** Local structural alias for the `GroupChildRef` team arm (avoids
@@ -623,6 +632,19 @@ export interface ParsedCockpitArgs {
    *  Optional for backward-compat with test fixtures constructed before
    *  ADR-180 added the flag (mirrors the dryRun / keepLegacy pattern). */
   human?: boolean;
+  /** `attach`-sub-verb-only flag. Skips the automatic ensure-up
+   *  (`reconcile` with cycle, no TUI launch) that `cockpit attach`
+   *  runs before attaching. Rejected on every non-`attach` sub-verb.
+   *  Optional for backward-compat with test fixtures constructed before
+   *  this flag (mirrors the dryRun / keepLegacy / human pattern —
+   *  call sites treat undefined as false). */
+  noEnsure?: boolean;
+  /** `attach`-sub-verb-only flag. Re-enables the TUI auto-launch phase
+   *  inside the attach-time ensure-up, which otherwise uses
+   *  no-TUI-launch semantics (today's `aco` behavior). Rejected on
+   *  every non-`attach` sub-verb. Optional for backward-compat (same
+   *  pattern as `human` — undefined reads as false). */
+  launch?: boolean;
 }
 
 /**
@@ -677,6 +699,8 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
   let keepLegacy = false;
 
   let human = false;
+  let noEnsure = false;
+  let launch = false;
 
   let i = 1;
   while (i < args.length) {
@@ -693,6 +717,28 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
           });
         }
         human = true;
+        i += 1;
+        break;
+      case "--no-ensure":
+        if (sub !== "attach") {
+          throw new UsageError({
+            what: `cockpit ${sub}: --no-ensure only applies to 'attach'`,
+            hint: "reconcile/reload always ensure; use 'atmux cockpit attach --no-ensure' to skip the attach-time ensure-up",
+          });
+        }
+        noEnsure = true;
+        i += 1;
+        break;
+      case "--launch":
+        if (sub !== "attach") {
+          throw new UsageError({
+            what: `cockpit ${sub}: --launch only applies to 'attach'`,
+            hint:
+              "reconcile/reload launch TUIs by default (pass --no-launch to skip); " +
+              "use 'atmux cockpit attach --launch' to re-enable TUI auto-launch inside the attach-time ensure-up",
+          });
+        }
+        launch = true;
         i += 1;
         break;
       case "--no-cycle":
@@ -774,15 +820,17 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
     }
   }
 
-  // `attach` is a read-only operation; reject every rebuild/migrate-socket
+  // `attach` runs ensure-up + attach; reject every rebuild/migrate-socket
   // flag so operators get a clear hint instead of silently-ignored args.
-  // `--human` (ADR-180) is the one attach-specific flag — gated above
-  // before this check so it doesn't trip the rejection.
+  // `--human` (ADR-180), `--no-ensure` and `--launch` are the
+  // attach-specific flags — gated above before this check so they don't
+  // trip the rejection. (`--no-launch` stays rejected: the attach-time
+  // ensure-up already skips TUI launch; pass `--launch` to opt back in.)
   if (sub === "attach") {
     if (noCycle || forceCycle || ackDangerous || noLaunch || yes || dryRun || keepLegacy) {
       throw new UsageError({
-        what: "cockpit attach: only --config and --human are accepted",
-        hint: "usage: atmux cockpit attach [--config <path>] [--human]",
+        what: "cockpit attach: only --config, --human, --no-ensure and --launch are accepted",
+        hint: "usage: atmux cockpit attach [--config <path>] [--human] [--no-ensure] [--launch]",
       });
     }
   }
@@ -843,7 +891,13 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
   // Surface the field only on the `attach` sub-verb so rebuild/reload
   // fixtures stay shape-stable. On attach we always emit (defaulting
   // to false) so callers + tests can read p.human directly.
-  if (sub === "attach") out.human = human;
+  // `noEnsure` + `launch` follow the same rule (attach-only surface,
+  // pre-flag fixtures omit them and read as falsy).
+  if (sub === "attach") {
+    out.human = human;
+    out.noEnsure = noEnsure;
+    out.launch = launch;
+  }
   return out;
 }
 
@@ -928,6 +982,35 @@ export async function cockpitAttach(
 ): Promise<number> {
   const env = opts.env ?? process.env;
   const factory = opts.tmuxFactory ?? createTmux;
+  const logger = opts.logger ?? createLogger();
+
+  // Ensure-up before attach (the old `aco` two-step collapsed into one
+  // invocation — saves a bun startup + guarantees the cockpit session
+  // exists before tmux tries to attach). `--no-ensure` opts out (pure
+  // attach). Ensure-up uses no-TUI-launch semantics (today's `aco`
+  // behavior); `--launch` re-enables the TUI auto-launch phase.
+  // Best-effort posture: an ensure-up failure warns and falls through
+  // to the attach (viewer retry-loops self-heal once cages recover) —
+  // attach stays the primary verb, never gated by reconcile gates.
+  if (parsed.noEnsure !== true) {
+    const ensureArgs: ParsedCockpitArgs = {
+      subverb: "reconcile",
+      noCycle: false,
+      forceCycle: false,
+      ackDangerous: false,
+      noLaunch: parsed.launch !== true,
+      yes: false,
+    };
+    if (parsed.configPath !== undefined) ensureArgs.configPath = parsed.configPath;
+    try {
+      await cockpitRebuild(ensureArgs, opts);
+    } catch (e) {
+      const cause = e instanceof Error ? e.message : String(e);
+      logger.warn(
+        `  ⚠ attach ensure-up failed (${cause}) — attaching anyway; run 'atmux cockpit reconcile' to repair`,
+      );
+    }
+  }
 
   const loadOpts: LoadCockpitOpts = { env };
   if (parsed.configPath !== undefined) loadOpts.path = parsed.configPath;
@@ -936,6 +1019,51 @@ export async function cockpitAttach(
   const socket = getCockpitSocketName(env);
   const tmux = factory({ socket });
   return attachWithTmux(tmux, cockpit.cockpitSession, { inheritStdio: parsed.human === true });
+}
+
+// ---------- Parallel reconcile (bounded concurrency) ----------
+
+/** Max parallel per-team/per-cage work items inside `cockpit reconcile`.
+ *  Each cage lives on its own tmux socket (ADR-018) so the per-team
+ *  phases are independent; the bound keeps the heavy arm (`start`,
+ *  which spawns a whole tmux server per dead cage) from stampeding the
+ *  host while collapsing N-team latency toward one team's cost. */
+export const COCKPIT_RECONCILE_CONCURRENCY = 4;
+
+/** Run `fn` over `items` with at most `limit` in flight. Results keep
+ *  input order; a rejection rejects the batch (same fail-fast posture
+ *  as the sequential loops this replaces). Exported for unit-test
+ *  directness. */
+export async function mapWithConcurrency<T, R>(
+  items: ReadonlyArray<T>,
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  if (items.length === 0) return out;
+  const width = Math.max(1, Math.min(limit, items.length));
+  let next = 0;
+  const workers = Array.from({ length: width }, async () => {
+    for (;;) {
+      const i = next;
+      next += 1;
+      if (i >= items.length) return;
+      const item = items[i];
+      if (item === undefined) return;
+      out[i] = await fn(item, i);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
+
+/** Time one reconcile phase; logs a terse `phase <name>: <ms>ms` line
+ *  to stderr (via the verb logger) so the next `aco` run shows where
+ *  the wall-clock goes. */
+async function timedPhase(logger: Logger, name: string, fn: () => Promise<unknown>): Promise<void> {
+  const t0 = Date.now();
+  await fn();
+  logger.log(`  ⏱ phase ${name}: ${Date.now() - t0}ms`);
 }
 
 /** The rebuild flow. Exported for direct unit-test access. */
@@ -966,47 +1094,54 @@ export async function cockpitRebuild(
     logger.log(`group servers: ${topology.groups.map((g) => g.name).join(", ")}`);
   }
 
-  // Phase 1: normalise each team's team.json (bareWindowNames + tuiCommands.claude).
-  for (const t of teams) {
-    await normaliseTeamJson(t, logger);
-  }
+  // Phase 1: normalise each team's team.json (bareWindowNames +
+  // tuiCommands.claude). Per-team files are disjoint — parallelise.
+  await timedPhase(logger, "1 normalise-team-json", () =>
+    mapWithConcurrency(teams, COCKPIT_RECONCILE_CONCURRENCY, (t) => normaliseTeamJson(t, logger)),
+  );
 
   // Phase 2: cycle cages (live-team-aware unless --force-cycle).
+  // Per-team cages are independent sockets — parallelise. Per-team
+  // ordering is preserved inside the worker (migrate → probe → start),
+  // and Phase 5's nest-attach retry-loops still run strictly after this
+  // phase completes (socket-must-exist dependency).
   if (!parsed.noCycle) {
-    for (const t of teams) {
-      const sock = await resolveCageSocket(t.name, t.root);
-      const cageTmux = factory({ socketPath: sock });
-      // e-419553c6 bare-name migration for LIVE cages. A live cage is
-      // deliberately not restarted below, so it never routes through
-      // start.ts's own migration — rename its legacy `atmux-<team>`
-      // session here (in place, clients + PIDs preserved) so the
-      // viewer attach loops and doctor probes, which resolve the bare
-      // name, keep reaching it. No-op on anchored names + once done.
-      await migrateLegacySessionName({
-        tmux: cageTmux,
-        teamName: t.name,
-        resolvedSession: await resolveCageSessionName(t),
-        log: (m) => logger.log(`  ✓ ${t.name}: ${m}`),
-        warn: (m) => logger.warn(`  ⚠ ${t.name}: ${m}`),
-      });
-      const alive = await cageAlive(cageTmux);
-      if (alive && !parsed.forceCycle) {
-        logger.log(`  · ${t.name} cage alive — skipping cycle (use --force-cycle to override)`);
-        continue;
-      }
-      logger.log(`  ▸ ${t.name} cage ${alive ? "force-cycle" : "dead/empty"} — start`);
-      // Pre-create socket parent — tmux/atmux-bun don't auto-mkdir (the
-      // failure that prompted ADR-063 in the first place).
-      await ensureDir(dirname(sock));
-      // Run start in-process. Use a per-team env that doesn't pin
-      // ATMUX_DIR (would override the per-team cwd-walk).
-      const teamEnv: NodeJS.ProcessEnv = { ...env };
-      delete teamEnv.ATMUX_DIR;
-      delete teamEnv.ATMUX_TEAM_DIR;
-      delete teamEnv.ATMUX_SESSION;
-      const startArgs = parsed.forceCycle ? ["--force", "--no-doctor"] : ["--no-doctor"];
-      await startImpl(startArgs, { env: teamEnv, cwd: t.root, logger });
-    }
+    await timedPhase(logger, "2 cycle-cages", () =>
+      mapWithConcurrency(teams, COCKPIT_RECONCILE_CONCURRENCY, async (t) => {
+        const sock = await resolveCageSocket(t.name, t.root);
+        const cageTmux = factory({ socketPath: sock });
+        // e-419553c6 bare-name migration for LIVE cages. A live cage is
+        // deliberately not restarted below, so it never routes through
+        // start.ts's own migration — rename its legacy `atmux-<team>`
+        // session here (in place, clients + PIDs preserved) so the
+        // viewer attach loops and doctor probes, which resolve the bare
+        // name, keep reaching it. No-op on anchored names + once done.
+        await migrateLegacySessionName({
+          tmux: cageTmux,
+          teamName: t.name,
+          resolvedSession: await resolveCageSessionName(t),
+          log: (m) => logger.log(`  ✓ ${t.name}: ${m}`),
+          warn: (m) => logger.warn(`  ⚠ ${t.name}: ${m}`),
+        });
+        const alive = await cageAlive(cageTmux);
+        if (alive && !parsed.forceCycle) {
+          logger.log(`  · ${t.name} cage alive — skipping cycle (use --force-cycle to override)`);
+          return;
+        }
+        logger.log(`  ▸ ${t.name} cage ${alive ? "force-cycle" : "dead/empty"} — start`);
+        // Pre-create socket parent — tmux/atmux-bun don't auto-mkdir (the
+        // failure that prompted ADR-063 in the first place).
+        await ensureDir(dirname(sock));
+        // Run start in-process. Use a per-team env that doesn't pin
+        // ATMUX_DIR (would override the per-team cwd-walk).
+        const teamEnv: NodeJS.ProcessEnv = { ...env };
+        delete teamEnv.ATMUX_DIR;
+        delete teamEnv.ATMUX_TEAM_DIR;
+        delete teamEnv.ATMUX_SESSION;
+        const startArgs = parsed.forceCycle ? ["--force", "--no-doctor"] : ["--no-doctor"];
+        await startImpl(startArgs, { env: teamEnv, cwd: t.root, logger });
+      }),
+    );
   }
 
   // Phase 3: apply the level-resolved cage prefix on every enabled cage
@@ -1028,36 +1163,42 @@ export async function cockpitRebuild(
   // a REAL tmux server (Phase 4.5) that consumes the F2 rung, so a
   // team under a top-level group resolves F3 (ADR-089 §Amendment
   // 2026-08-27, group-tier note as superseded 2026-08-28).
-  for (const t of teams) {
-    const sock = await resolveCageSocket(t.name, t.root);
-    const cageTmux = factory({ socketPath: sock });
-    let prefix: string | undefined;
-    try {
-      prefix = resolvePrefix(t.level + 2, cockpit.prefixChain);
-    } catch {
-      // Best-effort — invalid chain or level > MAX_NESTING_LEVEL falls
-      // through to applyCagePrefix's legacy `C-\` default (cosmetic
-      // only; cage operation unaffected).
-    }
-    await applyCagePrefix(cageTmux, prefix);
-  }
-
-  // Phase 4: TUI auto-launch (idempotent — skips panes already on claude).
-  if (!parsed.noLaunch) {
-    for (const t of teams) {
+  // Per-cage prefix sets are independent tmux servers — parallelise.
+  await timedPhase(logger, "3 cage-prefix", () =>
+    mapWithConcurrency(teams, COCKPIT_RECONCILE_CONCURRENCY, async (t) => {
       const sock = await resolveCageSocket(t.name, t.root);
       const cageTmux = factory({ socketPath: sock });
-      const teamSummary = await autolaunchTeam(t, cageTmux, env, logger);
-      const unbootMsg =
-        teamSummary.unbootstrapped.length > 0
-          ? ` ⚠ unbootstrapped=${teamSummary.unbootstrapped.length} ` +
-            `(${teamSummary.unbootstrapped.map((u) => `${u.member}:${u.result.state}`).join(", ")})`
-          : "";
-      logger.log(
-        `  ✓ ${t.name}: launched=${teamSummary.launched} ` +
-          `skipped=${teamSummary.skipped} (already-claude)${unbootMsg}`,
-      );
-    }
+      let prefix: string | undefined;
+      try {
+        prefix = resolvePrefix(t.level + 2, cockpit.prefixChain);
+      } catch {
+        // Best-effort — invalid chain or level > MAX_NESTING_LEVEL falls
+        // through to applyCagePrefix's legacy `C-\` default (cosmetic
+        // only; cage operation unaffected).
+      }
+      await applyCagePrefix(cageTmux, prefix);
+    }),
+  );
+
+  // Phase 4: TUI auto-launch (idempotent — skips panes already on claude).
+  // Per-cage send-keys are independent servers — parallelise.
+  if (!parsed.noLaunch) {
+    await timedPhase(logger, "4 tui-autolaunch", () =>
+      mapWithConcurrency(teams, COCKPIT_RECONCILE_CONCURRENCY, async (t) => {
+        const sock = await resolveCageSocket(t.name, t.root);
+        const cageTmux = factory({ socketPath: sock });
+        const teamSummary = await autolaunchTeam(t, cageTmux, env, logger);
+        const unbootMsg =
+          teamSummary.unbootstrapped.length > 0
+            ? ` ⚠ unbootstrapped=${teamSummary.unbootstrapped.length} ` +
+              `(${teamSummary.unbootstrapped.map((u) => `${u.member}:${u.result.state}`).join(", ")})`
+            : "";
+        logger.log(
+          `  ✓ ${t.name}: launched=${teamSummary.launched} ` +
+            `skipped=${teamSummary.skipped} (already-claude)${unbootMsg}`,
+        );
+      }),
+    );
   }
 
   // Phase 4.5 (e-419553c6 true containment): one tmux server per
@@ -1066,10 +1207,12 @@ export async function cockpitRebuild(
   // attach to live servers on first paint (the retry loop would cover a
   // late start, but first paint matters to the operator). Group servers
   // hold only attach clients — killing one can never touch a cage.
-  await reconcileGroupServers(factory, topology, logger, {
-    yes: parsed.yes,
-    ...(cockpit.prefixChain !== undefined ? { prefixChain: cockpit.prefixChain } : {}),
-  });
+  await timedPhase(logger, "4.5 group-servers", () =>
+    reconcileGroupServers(factory, topology, logger, {
+      yes: parsed.yes,
+      ...(cockpit.prefixChain !== undefined ? { prefixChain: cockpit.prefixChain } : {}),
+    }),
+  );
 
   // Phase 5: cockpit session on its dedicated socket (ADR-162
   // §Decision-anchor #1 — `tmux -L atmux-cockpit`). Resolver honours
@@ -1088,23 +1231,25 @@ export async function cockpitRebuild(
   // ADR-133: pass `medic` directly; the reconcile names the window
   // canonically and migrates any legacy "superdoctor" window in-place
   // on first reconcile.
-  await reconcileCockpitSession(
-    cockpitTmux,
-    cockpit.cockpitSession,
-    teams,
-    logger,
-    {},
-    cockpit.medic,
-    parsed.yes,
-    // fleet-wide; persist operator workspaces too. `topology` (e-419553c6)
-    // replaces grouped teams' cockpit windows with one window per
-    // top-level group; ungrouped teams keep their direct embed.
-    {
-      windows: cockpit.windows,
-      topology,
-      superbot: cockpit.superbot,
-      superbotCommand: buildSuperbotWindowCommand(resolveCockpitConfigPath(loadOpts)),
-    },
+  await timedPhase(logger, "5 cockpit-session", () =>
+    reconcileCockpitSession(
+      cockpitTmux,
+      cockpit.cockpitSession,
+      teams,
+      logger,
+      {},
+      cockpit.medic,
+      parsed.yes,
+      // fleet-wide; persist operator workspaces too. `topology` (e-419553c6)
+      // replaces grouped teams' cockpit windows with one window per
+      // top-level group; ungrouped teams keep their direct embed.
+      {
+        windows: cockpit.windows,
+        topology,
+        superbot: cockpit.superbot,
+        superbotCommand: buildSuperbotWindowCommand(resolveCockpitConfigPath(loadOpts)),
+      },
+    ),
   );
 
   // Phase 5b (t-3fb7bc54): apply the resolved prefix to the cockpit
@@ -1860,6 +2005,13 @@ type CockpitViewerAdd =
   | { kind: "team"; name: string; team: CockpitTeam }
   | { kind: "group"; name: string };
 
+/** A viewer slot paired with its resolved window command. The resolution
+ *  (cage probe + command build) parallelises across viewers; the
+ *  creation loop consumes these pairs sequentially in DFS order. */
+type ViewerCreation =
+  | { v: Extract<CockpitViewerAdd, { kind: "team" }>; cmd: string; mode: TeamWindowMode }
+  | { v: Extract<CockpitViewerAdd, { kind: "group" }>; cmd: string };
+
 export async function reconcileCockpitSession(
   cockpitTmux: TmuxNamespace,
   sessionName: string,
@@ -2146,34 +2298,48 @@ export async function reconcileCockpitSession(
 
   // Add missing viewer windows — team slots embed the cage directly,
   // group slots embed the group's server (e-419553c6).
-  for (const v of viewersToAdd) {
-    if (present.has(v.name)) {
-      logger.log(`  · window '${v.name}' already present`);
+  // Cage probes (mode resolution + command build) hit independent cage
+  // sockets — resolve them in parallel, then create windows
+  // SEQUENTIALLY in DFS order: creation order defines window indices,
+  // so the create loop has a real ordering dependency. (Probing earlier
+  // is observationally identical — creating a cockpit viewer never
+  // changes cage state.) Each pair carries its viewer so the create
+  // loop stays a plain for..of over the order-preserving result.
+  const creations: ViewerCreation[] = await mapWithConcurrency(
+    viewersToAdd,
+    COCKPIT_RECONCILE_CONCURRENCY,
+    async (v): Promise<ViewerCreation> => {
+      if (v.kind === "group") return { v, cmd: buildGroupWindowCommand(v.name) };
+      const mode = await resolveTeamWindowMode(v.team, deps);
+      return { v, cmd: await buildTeamWindowCommand(v.team, mode), mode };
+    },
+  );
+  for (const c of creations) {
+    if (present.has(c.v.name)) {
+      logger.log(`  · window '${c.v.name}' already present`);
       continue;
     }
-    if (v.kind === "group") {
+    if (!("mode" in c)) {
       await cockpitTmux.window.newWindow({
         sessionName,
-        name: v.name,
+        name: c.v.name,
         detached: true,
         ...((cwd) => (cwd !== undefined ? { cwd } : {}))(
-          topology !== undefined ? firstTeamRoot(topology, v.name) : undefined,
+          topology !== undefined ? firstTeamRoot(topology, c.v.name) : undefined,
         ),
-        shellCommand: buildGroupWindowCommand(v.name),
+        shellCommand: c.cmd,
       });
-      logger.log(`  ✓ added window '${v.name}' (group-server embed)`);
+      logger.log(`  ✓ added window '${c.v.name}' (group-server embed)`);
       continue;
     }
-    const mode = await resolveTeamWindowMode(v.team, deps);
-    const cmd = await buildTeamWindowCommand(v.team, mode);
     await cockpitTmux.window.newWindow({
       sessionName,
-      name: v.name,
+      name: c.v.name,
       detached: true,
-      cwd: v.team.root,
-      shellCommand: cmd,
+      cwd: c.v.team.root,
+      shellCommand: c.cmd,
     });
-    logger.log(`  ✓ added window '${v.name}' (${mode})`);
+    logger.log(`  ✓ added window '${c.v.name}' (${c.mode})`);
   }
 
   // ADR-135 §D2 §Amendment (t-34fa0132): a child team's viewer window MUST
@@ -2270,18 +2436,27 @@ export async function reconcileCockpitSession(
   // viewers; only the fleet-wide `cockpit rebuild` does that.
   if (onlyTeam !== undefined) return;
 
-  for (const w of windows) {
-    if (wanted.has(w.name)) continue;
-    if (w.name === "_superdriver" || w.name === "superdriver") continue;
-    if (w.name === "_medic" || w.name === "medic") continue;
-    if (w.name === "superdoctor") continue;
+  // Orphan kills target distinct windows by name — parallelise. (The
+  // park-then-place reorder above stays sequential: it re-lists before
+  // every move, a genuine read-after-write dependency on shared window
+  // indices.)
+  const orphans = windows.filter(
+    (w) =>
+      !wanted.has(w.name) &&
+      w.name !== "_superdriver" &&
+      w.name !== "superdriver" &&
+      w.name !== "_medic" &&
+      w.name !== "medic" &&
+      w.name !== "superdoctor",
+  );
+  await mapWithConcurrency(orphans, COCKPIT_RECONCILE_CONCURRENCY, async (w) => {
     try {
       await cockpitTmux.window.killWindow(`${sessionName}:${w.name}`);
       logger.log(`  ✓ removed orphan window '${w.name}'`);
     } catch {
       // window may already be gone
     }
-  }
+  });
 }
 
 /**

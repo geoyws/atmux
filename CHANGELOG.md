@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ⚡ Changed — `cockpit attach` ensures the cockpit is up; reconcile runs in parallel
+
+**`aca` now does what `aco` did, in one process.** `atmux cockpit attach` runs the ensure-up (cycle dead cages, no TUI launch) before attaching; `--no-ensure` skips it and `--launch` also starts TUIs. The ensure-up never passes `--force` to `start` and never kills a tmux server or session; a regression test pins that. If the ensure-up fails, attach warns and still attaches.
+
+**Reconcile runs its per-team work in parallel.** Cage cycling, cage prefixes, the group-server pre-pass, viewer command resolution and orphan-window removal run up to 4 teams at a time (`COCKPIT_RECONCILE_CONCURRENCY`). Window creation and reordering stay sequential, because order sets the window indices. Each phase logs its time (`⏱ phase N name: Xms`). Measured on a 3-team fixture: 96.6s before, 46.0s after. On the live 49-team roster on geoywsMBP, the whole ensure-up ran in about 3.2s.
+
 ### 🧹 Removed — medic autoStart send-keys auto-fire (ADR-289)
 
 **Fresh medic panes no longer get a keystroke typed into them.** `autoStartSuperdoctorLoop`, both call sites (reconcile fresh-window block, `cockpit rotate` respawn re-arm), the `ReconcileOpts` / `CockpitRotateOpts` seams and the `medic.autoStart` / `autoStartTimeoutSec` schema fields are gone. The helper typed `/loop /superdoctor` — stale since the ADR-133 rename, and the `/medic` skill is gone from the operator tree — into an interactive pane, the shape board rule r-1376df29 bans. The operator starts the loop by hand (`/loop /medic`); RUNBOOK-cockpit.md documents the manual step. Strict schemas reject the retired keys, so the operator's `cockpit.macos.json` drops its `autoStart: false` in the same step; `@@hax` omits the keys and is unaffected.
