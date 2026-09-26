@@ -1231,6 +1231,20 @@ export async function cockpitRebuild(
   // ADR-133: pass `medic` directly; the reconcile names the window
   // canonically and migrates any legacy "superdoctor" window in-place
   // on first reconcile.
+  // ADR-295: opt-in `_blank` troubleshooting window. Synthesized into the
+  // declarative operator-window flow so creation order (after `_medic`,
+  // before team viewers), orphan-prune preservation, and the destructive
+  // gate all apply unchanged. Plain shell (command omitted); absent or
+  // false leaves any leftover `_blank` an ordinary orphan. Per-team
+  // reconcile sees none of this (operator windows are fleet-only).
+  const blankHome = env.HOME ?? "";
+  if (cockpit.blank === true && blankHome === "") {
+    logger.warn("  ⚠ cockpit blank=true but $HOME is unset — skipping _blank window");
+  }
+  const blankWindow =
+    cockpit.blank === true && blankHome !== ""
+      ? [{ name: "_blank", enabled: true, cwd: blankHome, command: null }]
+      : [];
   await timedPhase(logger, "5 cockpit-session", () =>
     reconcileCockpitSession(
       cockpitTmux,
@@ -1244,7 +1258,7 @@ export async function cockpitRebuild(
       // replaces grouped teams' cockpit windows with one window per
       // top-level group; ungrouped teams keep their direct embed.
       {
-        windows: cockpit.windows,
+        windows: [...cockpit.windows, ...blankWindow],
         topology,
         superbot: cockpit.superbot,
         superbotCommand: buildSuperbotWindowCommand(resolveCockpitConfigPath(loadOpts)),

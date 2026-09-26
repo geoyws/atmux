@@ -439,6 +439,12 @@ export const Cockpit = z
     /** Declarative operator-owned windows placed after `_medic` and before
      *  team viewers. They have no team cage and default to zsh. */
     windows: z.array(CockpitWindow).default([]),
+    /** ADR-295: opt-in `_blank` troubleshooting window. When true, the
+     *  reconcile synthesizes a plain-shell `_blank` entry into the
+     *  declarative `windows[]` flow (created after `_medic`, before team
+     *  viewers; pruned as an ordinary orphan when turned back off).
+     *  Absent or false: no `_blank` window. */
+    blank: z.boolean().optional(),
     /** ADR-285 deterministic Kanban offer scheduler. Absence is parsed
      *  as disabled + shadow, never as implicit activation. */
     superbot: CockpitSuperbot.optional(),

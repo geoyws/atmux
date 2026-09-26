@@ -249,6 +249,7 @@
 | 284 | One sizing policy for every cockpit window — the `unum` `window-size smallest` override is retired | 2026-08-30 | accepted (operator-direct) |
 | 285 | Cooperative `_bot` seats and the `_superbot` offer protocol (renumbered from 281 on merge — collision) | 2026-08-28 | accepted (operator-direct; live activation held) |
 | 286 | Eternal-improvement retired — the loop, the `improve` verb and its three Discord templates | 2026-09-01 | accepted (operator-direct) |
+| 295 | Opt-in `_blank` cockpit troubleshooting window — plain shell after `_medic` | 2026-09-26 | proposed |
 
 ## Superseded (skip)
 
