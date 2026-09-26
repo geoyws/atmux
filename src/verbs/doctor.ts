@@ -77,10 +77,13 @@ import { checkDeprecatedMemberWindows, checkTeamInsideTeam } from "./doctor/nest
 import { checkCursorPluginCache, checkSkillsPlugin } from "./doctor/plugins.ts";
 import { renderHuman, renderJson } from "./doctor/render.ts";
 import {
+  archiveNestedStateDb,
   checkLegacyInboxJson,
+  checkNestedStateDb,
   checkPhantomInboxes,
   checkPhantomInProgressClaims,
   checkStateDir,
+  findNestedStateDb,
   probeLiveMembers,
 } from "./doctor/state.ts";
 import {
@@ -169,6 +172,7 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
     rows.push(...checkBotConfig(team));
   }
   rows.push(...(await checkStateDir(atmuxDir)));
+  rows.push(...(await checkNestedStateDb(atmuxDir)));
   rows.push(...(await checkWebhook(team)));
   rows.push(...(await checkPhantomInboxes(atmuxDir)));
   rows.push(...(await checkLegacyInboxJson(atmuxDir)));
@@ -331,7 +335,7 @@ export async function doctor(argv: ReadonlyArray<string>, opts: DoctorOpts = {})
     stderr(renderHuman(report));
   }
 
-  // --fix runs three actions, in order of operator value:
+  // --fix runs four actions, in order of operator value:
   //   1. ADR-081 §D — re-paste the role brief on every starving member
   //      so the operator doesn't have to ssh in + run the manual
   //      recovery sequence captured in the ADR's audit trail.
@@ -339,6 +343,8 @@ export async function doctor(argv: ReadonlyArray<string>, opts: DoctorOpts = {})
   //      orphan branches; actual deletion stays deferred per ADR-019.
   //   3. t-af159454 — phantom in-progress prune (operator can collapse
   //      cited phantom claim IDs in one shot).
+  //   4. t-a20da986 (e-39 item 4) — nested-state-db archive (t-62/t-63
+  //      class orphans move under <atmuxDir>/archives/).
   // Other --fix paths (branch-orphan deletion, team.json wizard re-run)
   // remain stubbed pending ADR-019 §"Fix" resolution; the trailing
   // hint below covers the residual.
@@ -386,6 +392,14 @@ export async function doctor(argv: ReadonlyArray<string>, opts: DoctorOpts = {})
         );
         for (const id of result.prunedIds) stderr(`  - ${id} → blocked (${asOfIso})\n`);
       }
+    }
+    // t-a20da986: archive nested-state orphans (--fix is explicit
+    // operator consent; the red row above names every archived path).
+    const nested = await findNestedStateDb(atmuxDir);
+    if (nested.length > 0) {
+      const archived = await archiveNestedStateDb(atmuxDir, nested);
+      stderr(`\natmux doctor --fix: archived ${archived.length} nested-state orphan(s):\n`);
+      for (const rel of archived) stderr(`  - ${rel}\n`);
     }
     // Other --fix paths (branch-orphan deletion, team.json wizard
     // re-run) remain deferred per ADR-019 V-24. Phantom-prune above

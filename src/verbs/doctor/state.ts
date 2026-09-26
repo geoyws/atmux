@@ -17,6 +17,93 @@ import { Kanban } from "../../schema/kanban.ts";
 import type { Team } from "../../schema/team.ts";
 import type { DoctorRow } from "./types.ts";
 
+// ---------- Check 4b: nested-state-db (e-39 item 4; t-a20da986) ----------
+
+/** One orphaned nested-state artefact: a `.atmux` dir nested inside the
+ *  team's own `.atmux/`, or a stub `state.db` outside the canonical
+ *  `<atmuxDir>/state.db`. `rel` is relative to `atmuxDir`. */
+export interface NestedStateOffender {
+  rel: string;
+  kind: "nested-atmux-dir" | "stub-state-db";
+}
+
+/** Depth cap for the subtree walk — worktree stubs sit 2-3 levels down
+ *  (`.atmux/worktrees/<m>/.atmux`); deeper trees are operator data. */
+const NESTED_SCAN_MAX_DEPTH = 4;
+
+/** Scan `atmuxDir` for nested-state orphans (t-62/t-63 class). Green-path
+ *  returns [] — T3 (t-b7c55f07) measured zero orphans 2026-09-23, so the
+ *  check is a guard, not a migration. Pure readdir walk; no DB opens. */
+export async function findNestedStateDb(atmuxDir: string): Promise<NestedStateOffender[]> {
+  const { readdir } = await import("node:fs/promises");
+  const out: NestedStateOffender[] = [];
+  const walk = async (dir: string, rel: string, depth: number): Promise<void> => {
+    if (depth > NESTED_SCAN_MAX_DEPTH) return;
+    const names = await readdir(dir).catch(() => [] as string[]);
+    for (const name of names) {
+      // Quarantine zone written by archiveNestedStateDb — archived
+      // orphans are contained, not live; never re-report them.
+      if (rel === "" && name === "archives") continue;
+      const childRel = rel === "" ? name : `${rel}/${name}`;
+      if (name === ".atmux" && rel !== "") {
+        out.push({ rel: childRel, kind: "nested-atmux-dir" });
+        continue; // do not descend into the nested dir itself
+      }
+      if (name === "state.db" && rel !== "") {
+        out.push({ rel: childRel, kind: "stub-state-db" });
+        continue;
+      }
+      if (name === "state.db" && rel === "") continue; // canonical DB
+      const st = await statOrNull(join(dir, name));
+      if (st !== null && st.isDirectory === true) await walk(join(dir, name), childRel, depth + 1);
+    }
+  };
+  await walk(atmuxDir, "", 0);
+  return out.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
+}
+
+export async function checkNestedStateDb(atmuxDir: string): Promise<DoctorRow[]> {
+  const offenders = await findNestedStateDb(atmuxDir);
+  if (offenders.length === 0) return [];
+  const sample = offenders
+    .slice(0, 3)
+    .map((o) => o.rel)
+    .join(", ");
+  const more = offenders.length > 3 ? ` (+${offenders.length - 3} more)` : "";
+  return [
+    {
+      status: "red",
+      label: "nested-state-db",
+      detail: `${offenders.length} nested-state orphan(s) under ${atmuxDir}: ${sample}${more}`,
+      hint: "atmux doctor --fix archives them under <atmuxDir>/archives/nested-state-db-<ts>/ (t-62/t-63 class)",
+    },
+  ];
+}
+
+/** Archive every offender under `<atmuxDir>/archives/nested-state-db-<ts>/`,
+ *  preserving relative paths. Returns archived rel paths. Uses node:fs
+ *  rename directly (abstractions/fs.ts has no move primitive). */
+export async function archiveNestedStateDb(
+  atmuxDir: string,
+  offenders: ReadonlyArray<NestedStateOffender>,
+  nowMs = Date.now(),
+): Promise<string[]> {
+  const { rename, mkdir } = await import("node:fs/promises");
+  const dest = join(atmuxDir, "archives", `nested-state-db-${nowMs}`);
+  await mkdir(dest, { recursive: true });
+  const archived: string[] = [];
+  for (const o of offenders) {
+    const src = join(atmuxDir, o.rel);
+    const dst = join(dest, o.rel);
+    await mkdir(join(dest, o.rel.split("/").slice(0, -1).join("/")), { recursive: true }).catch(
+      () => {},
+    );
+    await rename(src, dst);
+    archived.push(o.rel);
+  }
+  return archived;
+}
+
 // ---------- Check 4: state-dir ----------
 
 export async function checkStateDir(atmuxDir: string): Promise<DoctorRow[]> {
