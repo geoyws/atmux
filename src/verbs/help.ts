@@ -112,6 +112,7 @@ Automation:
   superbot tick [--shadow]    Run one deterministic Kanban offer cycle
   superbot run [--shadow]     Run the singleton 30-minute offer scheduler
   report                      Post 30-min progress digest to Discord
+  budget collect|report [--json]  Multi-provider quota snapshots (ADR-270)
   cost [--member <m>] [--since <t>] [--json]  Per-member USD + token usage
   host-pressure [--host <h>] [--timeout-ms <n>] [--json]
                               CPU / memory / disk headroom for every host

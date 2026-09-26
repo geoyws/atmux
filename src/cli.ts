@@ -37,6 +37,7 @@ import { attach } from "./verbs/attach.ts";
 import { audit } from "./verbs/audit.ts";
 import { blockers } from "./verbs/blockers.ts";
 import { bot } from "./verbs/bot.ts";
+import { budget } from "./verbs/budget.ts";
 import { claim, done } from "./verbs/claim.ts";
 import { cleanup } from "./verbs/cleanup.ts";
 import { cockpit } from "./verbs/cockpit.ts";
@@ -287,6 +288,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return handoff(argv.slice(1));
     case "report":
       return report(argv.slice(1));
+    case "budget":
+      return budget(argv.slice(1));
     case "cost":
       return cost(argv.slice(1));
     // ADR-273 §Supplement — the two infrastructure reads, also the
