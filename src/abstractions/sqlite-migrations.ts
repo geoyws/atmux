@@ -856,3 +856,38 @@ export const migrations: readonly Migration[] = [
     },
   },
 ];
+
+// ---------- Budget database (e-50 T2 / t-114d9f8e) ----------
+//
+// Separate ladder for the cockpit-global `~/.atmux/state/budget.db`
+// (docs/briefs/budget-tracker.md). Team state.db rows (tasks, flags,
+// complaints) are per-team; usage snapshots are per-operator, so they
+// live in their own file with their own `user_version` ladder.
+// Spec SQL verbatim: long/tidy row-per-metric shape absorbing
+// heterogeneous provider payloads.
+export const budgetMigrations: readonly Migration[] = [
+  // ---------- v0 → v1 ----------
+  {
+    from: 0,
+    to: 1,
+    up: (db) => {
+      db.exec(`
+				CREATE TABLE usage_snapshot (
+					id         INTEGER PRIMARY KEY AUTOINCREMENT,
+					ts         TEXT    NOT NULL,
+					provider   TEXT    NOT NULL,
+					account    TEXT    NOT NULL,
+					metric     TEXT    NOT NULL,
+					value      REAL,
+					value_text TEXT,
+					unit       TEXT,
+					ok         INTEGER NOT NULL DEFAULT 1,
+					error      TEXT,
+					raw_json   TEXT
+				) STRICT;
+			`);
+      db.exec("CREATE INDEX idx_usage_ts ON usage_snapshot(ts)");
+      db.exec("CREATE INDEX idx_usage_pa ON usage_snapshot(provider, account, ts)");
+    },
+  },
+];
