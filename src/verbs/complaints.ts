@@ -345,6 +345,7 @@ async function complaintsFile(parsed: ParsedComplaintsArgs): Promise<number> {
       sourceKind: parsed.sourceKind ?? null,
       sourceId: parsed.sourceId ?? null,
       targetTeam,
+      originTeam: null,
       extra,
     };
     // ADR-147 T2 §D2: serialize the DB insert via BEGIN IMMEDIATE so
