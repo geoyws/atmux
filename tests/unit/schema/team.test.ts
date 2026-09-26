@@ -11,11 +11,6 @@
 import { describe, expect, test } from "bun:test";
 import { ZodError } from "zod";
 import {
-  CANONICAL_DRIVER_PAIR_PRESET,
-  CANONICAL_PARENT_TEAM_DRIVERS,
-  DriverSessionSchema,
-} from "../../../src/core/drivers.ts";
-import {
   DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG,
   DEFAULT_CADENCE_CONFIG,
   DEFAULT_CADENCE_THRESHOLDS,
@@ -480,10 +475,20 @@ describe("Team schema — nullable driver harness", () => {
   });
 });
 
-describe("Team schema — canonical driver roster + pair contract", () => {
-  test("missing drivers default to the canonical three-driver roster", () => {
+// t-e885d8ee: the drivers[]/driverPair schema contract drift-fixed.
+// 9885cbfa (2026-09-22) rewrote src/core/drivers.ts to the pure
+// ADR-239 utilities and REMOVED CANONICAL_PARENT_TEAM_DRIVERS,
+// CANONICAL_DRIVER_PAIR_PRESET and DriverSessionSchema; the schema
+// made `drivers` optional with NO default and never carried
+// `driverPair` (ADR-287 §D5 drivers-only roster resolves drivers from
+// team.json content, not a schema-baked preset). The old assertions
+// were written against the pre-9885cbfa exports and could not even
+// load. Restated against the live schema:
+describe("Team schema — driver roster contract (drift-fixed t-e885d8ee)", () => {
+  test("drivers omitted stays undefined — roster is caller-owned", () => {
     const team = Team.parse({ name: "demo", members: [] });
-    expect(team.drivers).toEqual([...CANONICAL_PARENT_TEAM_DRIVERS]);
+    expect(team.drivers).toBeUndefined();
+    expect((team as Record<string, unknown>).driverPair).toBeUndefined();
   });
 
   test("explicit 3 drivers pass and preserve order", () => {
@@ -494,26 +499,14 @@ describe("Team schema — canonical driver roster + pair contract", () => {
     ];
     const team = Team.parse({ name: "demo", members: [], drivers });
     expect(team.drivers).toEqual(drivers);
-    const firstDriver = drivers[0] as (typeof drivers)[number];
-    expect(DriverSessionSchema.parse(firstDriver)).toEqual(firstDriver);
   });
 
-  test("explicit 1-2 drivers fail validation", () => {
+  test("explicit empty drivers array fails validation (min 1)", () => {
     expect(() =>
       Team.parse({
         name: "demo",
         members: [],
-        drivers: [{ name: "driver", tui: null, cwd: "." }],
-      }),
-    ).toThrow(ZodError);
-    expect(() =>
-      Team.parse({
-        name: "demo",
-        members: [],
-        drivers: [
-          { name: "driver", tui: null, cwd: "." },
-          { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
-        ],
+        drivers: [],
       }),
     ).toThrow(ZodError);
   });
@@ -530,34 +523,6 @@ describe("Team schema — canonical driver roster + pair contract", () => {
         })),
       }),
     ).toThrow(ZodError);
-  });
-
-  test("driverPair defaults to the canonical worker/attention layout", () => {
-    const team = Team.parse({ name: "demo", members: [] });
-    expect(team.driverPair).toEqual(CANONICAL_DRIVER_PAIR_PRESET);
-  });
-
-  test("driverPair accepts an explicit null-default attention launch", () => {
-    const team = Team.parse({
-      name: "demo",
-      members: [],
-      driverPair: {
-        layout: "horizontal",
-        panes: [
-          { role: "worker", side: "left" },
-          {
-            role: "attention",
-            side: "right",
-            workflow: "kb-att",
-            authority: "decision-only",
-            tui: "shell",
-            command: null,
-          },
-        ],
-      },
-    });
-    expect(team.driverPair?.panes[1]?.tui).toBe("shell");
-    expect(team.driverPair?.panes[1]?.command).toBeNull();
   });
 });
 
