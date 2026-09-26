@@ -27,6 +27,8 @@ Setup:
                               --soft (ADR-087): graceful path — notice every
                               pane, grace window, write resume manifest at
                               state/resume.json, NO worktree prune.
+  shutdown [--keep-cockpit]   Whole-fleet teardown: stop every enabled team,
+  [--force] [--dry-run]       kill cockpit session + server (ADR-242).
   attach                      tmux attach to the team session
   status                      Powerline team overview
   fleet [--attention|--quiet] [--top <n>] [--json] [--timeout-ms <n>]
