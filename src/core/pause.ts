@@ -30,6 +30,7 @@ import { join } from "node:path";
 import { readJsonOr, updateJson } from "../abstractions/json.ts";
 import { now as nowMs } from "../abstractions/time.ts";
 import { type PausedMap, PausedMapSchema, type PauseEntry } from "../schema/paused.ts";
+import { flagsDbPresent, withFlags } from "./repositories/flags-repo.ts";
 
 /** Default reason string when no override is supplied. Mirrors bash
  *  `${ATMUX_PAUSE_REASON:-manual}` from `lib/pause.sh:22`. */
@@ -45,9 +46,16 @@ export function pausedJsonPath(atmuxDir: string): string {
  * Load the paused map. Returns `{}` if the file is absent (first-run).
  * Throws `SchemaError` on malformed-but-existing files (no silent
  * fallback to defaults — ADR-005 rule).
+ *
+ * e-38 P1: when `<atmuxDir>/state.db` exists the `state_kv` feature
+ * `pause` is canonical; the legacy JSON merges underneath (kv wins)
+ * so rows written before `migrate-state` still read during rollout.
  */
 export async function loadPausedMap(atmuxDir: string): Promise<PausedMap> {
-  return readJsonOr(pausedJsonPath(atmuxDir), PausedMapSchema, {});
+  const legacy = await readJsonOr(pausedJsonPath(atmuxDir), PausedMapSchema, {});
+  if (!(await flagsDbPresent(atmuxDir))) return legacy;
+  const kv = await withFlags(atmuxDir, (repo) => repo.list("pause"));
+  return { ...legacy, ...(PausedMapSchema.parse(kv) as PausedMap) };
 }
 
 export interface PauseOpts {
@@ -72,6 +80,10 @@ export async function pauseMember(
 ): Promise<void> {
   const reason = opts?.reason ?? DEFAULT_PAUSE_REASON;
   const at = opts?.nowEpochSec ?? Math.floor(nowMs() / 1000);
+  if (await flagsDbPresent(atmuxDir)) {
+    await withFlags(atmuxDir, (repo) => repo.set("pause", member, { at, reason }));
+    return;
+  }
   await updateJson(
     pausedJsonPath(atmuxDir),
     PausedMapSchema,
@@ -86,6 +98,10 @@ export async function pauseMember(
  * absent. Returns nothing; caller checks via `isPaused` if it cares.
  */
 export async function resumeMember(atmuxDir: string, member: string): Promise<void> {
+  if (await flagsDbPresent(atmuxDir)) {
+    await withFlags(atmuxDir, (repo) => repo.delete("pause", member));
+    return;
+  }
   await updateJson(
     pausedJsonPath(atmuxDir),
     PausedMapSchema,

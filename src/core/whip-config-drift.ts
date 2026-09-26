@@ -29,6 +29,10 @@ import { z } from "zod";
 import { tryReadJson, writeJson } from "../abstractions/json.ts";
 import { TeamWhip } from "../schema/team.ts";
 import { stateDir } from "./common.ts";
+import { flagsDbPresent, withFlags } from "./repositories/flags-repo.ts";
+
+/** state_kv feature for the drift dedup map (e-38 P1). */
+const FEATURE = "whip-config-drift";
 
 // ---------- Types ----------
 
@@ -210,10 +214,12 @@ export async function shouldFireDriftPing(
   driftHash: string,
   nowSec: number,
 ): Promise<boolean> {
-  const path = whipConfigDriftStatePath(atmuxDir);
-  const state = await tryReadJson(path, DriftStateSchema);
-  if (state === null) return true;
-  const lastFired = state[driftHash];
+  const legacy = (await tryReadJson(whipConfigDriftStatePath(atmuxDir), DriftStateSchema)) ?? {};
+  let lastFired = legacy[driftHash];
+  if (await flagsDbPresent(atmuxDir)) {
+    const v = await withFlags(atmuxDir, (repo) => repo.get(FEATURE, driftHash));
+    if (typeof v === "number") lastFired = v;
+  }
   if (lastFired === undefined) return true;
   return nowSec - lastFired >= DRIFT_REFIRE_WINDOW_SEC;
 }
@@ -225,6 +231,10 @@ export async function recordDriftPing(
   driftHash: string,
   nowSec: number,
 ): Promise<void> {
+  if (await flagsDbPresent(atmuxDir)) {
+    await withFlags(atmuxDir, (repo) => repo.set(FEATURE, driftHash, nowSec));
+    return;
+  }
   const path = whipConfigDriftStatePath(atmuxDir);
   const existing = (await tryReadJson(path, DriftStateSchema)) ?? {};
   const next = { ...existing, [driftHash]: nowSec };

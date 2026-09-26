@@ -25,6 +25,10 @@
 
 import { join } from "node:path";
 import { atomicWrite, readTextOrNull, removeFile } from "../abstractions/fs.ts";
+import { flagsDbPresent, withFlags } from "./repositories/flags-repo.ts";
+
+/** state_kv feature for this module (e-38 P1). Single key `state`. */
+const FEATURE = "budget-pause";
 
 /** Per-member at-risk record carried in the state file. */
 export interface AtRiskMember {
@@ -58,6 +62,10 @@ export function budgetPauseStatePath(atmuxDir: string): string {
  *  loose decode mirrors bash's `[[ -f ]] && jq` short-circuit — neither
  *  side throws on absence. */
 export async function loadBudgetPauseState(atmuxDir: string): Promise<BudgetPauseState | null> {
+  if (await flagsDbPresent(atmuxDir)) {
+    const v = await withFlags(atmuxDir, (repo) => repo.get(FEATURE, "state"));
+    return isPauseState(v) ? v : null;
+  }
   const path = budgetPauseStatePath(atmuxDir);
   const txt = await readTextOrNull(path);
   if (txt === null) return null;
@@ -82,12 +90,20 @@ export async function writeBudgetPauseState(
   atmuxDir: string,
   state: BudgetPauseState,
 ): Promise<void> {
+  if (await flagsDbPresent(atmuxDir)) {
+    await withFlags(atmuxDir, (repo) => repo.set(FEATURE, "state", state));
+    return;
+  }
   const path = budgetPauseStatePath(atmuxDir);
   await atomicWrite(path, JSON.stringify(state));
 }
 
 /** Remove the pause state file (idempotent — absence is fine). */
 export async function clearBudgetPauseState(atmuxDir: string): Promise<void> {
+  if (await flagsDbPresent(atmuxDir)) {
+    await withFlags(atmuxDir, (repo) => repo.delete(FEATURE, "state"));
+    return;
+  }
   const path = budgetPauseStatePath(atmuxDir);
   await removeFile(path);
 }

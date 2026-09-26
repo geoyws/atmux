@@ -23,6 +23,10 @@
 
 import { join } from "node:path";
 import { atomicWrite, readTextOrNull } from "../abstractions/fs.ts";
+import { flagsDbPresent, withFlags } from "./repositories/flags-repo.ts";
+
+/** state_kv feature for this module (e-38 P1). */
+const FEATURE = "budget-warning";
 
 /** State-file path. */
 const STATE_FILENAME = "budget-warning-state.json";
@@ -36,24 +40,40 @@ export type WarningState = Record<string, number>;
 
 /** Read state from disk; empty map on missing/malformed. */
 export async function loadWarningState(atmuxDir: string): Promise<WarningState> {
+  const legacy = await loadLegacyWarningState(atmuxDir);
+  if (!(await flagsDbPresent(atmuxDir))) return legacy;
+  const kv = await withFlags(atmuxDir, (repo) => repo.list(FEATURE));
+  return { ...legacy, ...filterNumberMap(kv) };
+}
+
+/** Legacy JSON read: empty map on missing/malformed. */
+async function loadLegacyWarningState(atmuxDir: string): Promise<WarningState> {
   const path = budgetWarningStatePath(atmuxDir);
   const txt = await readTextOrNull(path);
   if (txt === null) return {};
   try {
     const parsed: unknown = JSON.parse(txt);
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
-    const out: WarningState = {};
-    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-      if (typeof v === "number" && Number.isFinite(v)) out[k] = v;
-    }
-    return out;
+    return filterNumberMap(parsed as Record<string, unknown>);
   } catch {
     return {}; // corrupt — re-arm fresh
   }
 }
 
+function filterNumberMap(raw: Record<string, unknown>): WarningState {
+  const out: WarningState = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (typeof v === "number" && Number.isFinite(v)) out[k] = v;
+  }
+  return out;
+}
+
 /** Atomic-write the full state map. */
 export async function writeWarningState(atmuxDir: string, state: WarningState): Promise<void> {
+  if (await flagsDbPresent(atmuxDir)) {
+    await withFlags(atmuxDir, (repo) => repo.replace(FEATURE, { ...state }));
+    return;
+  }
   await atomicWrite(budgetWarningStatePath(atmuxDir), JSON.stringify(state));
 }
 

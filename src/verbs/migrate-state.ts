@@ -5,9 +5,8 @@
 // "lets get the sqlite dogfooded asap" + "had too many jq corruptions":
 //
 //   - kanban target IS implemented (highest-leverage corruption target)
-//   - inboxes + state targets ARE NOT IMPLEMENTED in this commit;
-//     the verb's CLI surface accepts them but throws ConfigError so
-//     the team's follow-up work has a clear contract to extend
+//   - inboxes target IS implemented (ADR-076 backfill)
+//   - state target IS implemented (e-38 P1 flags → state_kv via FlagsRepo)
 //
 // USAGE:
 //   atmux migrate-state json-to-sqlite [--team-dir <dir>]
@@ -20,10 +19,8 @@
 //   --dry-run              Parse + report counts, no DB writes, no
 //                          archive moves. Exit 0 even if validation fails
 //                          on individual rows (errors surface to stderr).
-//   --target=<...>         Default `all`. Currently `kanban` is the only
-//                          fully-implemented target; `inboxes`/`state`
-//                          throw ConfigError. `all` runs kanban + skips
-//                          unimplemented targets with a stderr WARN.
+//   --target=<...>         Default `all`. `kanban`, `inboxes` and `state`
+//                          are implemented; `all` runs all three.
 //   --db-path <path>       Override .atmux/state.db location. Default:
 //                          <atmuxDir>/state.db.
 //
@@ -38,17 +35,18 @@
 // EXIT CODES (per ADR-006):
 //   0   success
 //   64  UsageError (bad arg shape)
-//   78  ConfigError (target not implemented; missing source file)
+//   78  ConfigError (missing source file)
 //   1   IOError / SQLite error (propagated)
 
 import { readdir, rename } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { ensureDir, exists, readText, writeText } from "../abstractions/fs.ts";
+import { ensureDir, exists, readText, readTextOrNull, writeText } from "../abstractions/fs.ts";
 import { closeDatabase, type Database, openDatabase } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { now } from "../abstractions/time.ts";
 import { getAtmuxDir, inboxDir, kanbanJsonPath } from "../core/common.ts";
 import { defaultStdoutWrite, type Writer } from "../core/io.ts";
+import { FlagsRepo } from "../core/repositories/flags-repo.ts";
 import { KanbanRepo } from "../core/repositories/kanban-repo.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { ConfigError, UsageError } from "../errors.ts";
@@ -165,7 +163,7 @@ export interface MigrationResult {
   counts: {
     kanban?: KanbanMigrationCounts;
     inboxes?: InboxMigrationCounts;
-    state?: number; // not implemented in this commit
+    state?: FlagsMigrationCounts;
   };
   warnings: string[];
 }
@@ -228,8 +226,74 @@ async function migrateKanban(
   return { tasks, epics, stories };
 }
 
-// ---------- Inbox migration (ADR-076) ----------
+// ---------- Flags migration (e-38 P1; t-62feffe0) ----------
 
+/**
+ * Migrate the P1 toggle JSON files into `state_kv` via FlagsRepo.
+ * Sources (only files with live readers — resume.json is a soft-stop
+ * orchestrator forensic trail, pulse-state.json is cockpit-global
+ * `~/.atmux` scope, sentinel/eternal have no code refs):
+ *   state/paused.json → feature `pause` (per-member entries)
+ *   state/budget-pause.json → feature `budget-pause`, key `state`
+ *   state/budget-refresh-soon-state.json → feature `budget-refresh-soon`
+ *   state/budget-warning-state.json → feature `budget-warning`
+ *   state/whip-config-drift-state.json → feature `whip-config-drift`
+ * Returns total keys written. Lenient per-file: a missing file
+ * contributes 0; an unparseable file is skipped with a warning.
+ */
+export interface FlagsMigrationCounts {
+  /** Total state_kv keys written across all features. */
+  keys: number;
+  /** Per-feature key counts (present files only). */
+  features: Record<string, number>;
+  /** Files skipped as unparseable. */
+  filesSkippedInvalid: number;
+}
+
+const FLAGS_SOURCES: ReadonlyArray<{ file: string; feature: string; singleKey?: string }> = [
+  { file: "state/paused.json", feature: "pause" },
+  { file: "state/budget-pause.json", feature: "budget-pause", singleKey: "state" },
+  { file: "state/budget-refresh-soon-state.json", feature: "budget-refresh-soon" },
+  { file: "state/budget-warning-state.json", feature: "budget-warning" },
+  { file: "state/whip-config-drift-state.json", feature: "whip-config-drift" },
+];
+
+function flagsEntriesFor(source: (typeof FLAGS_SOURCES)[number], parsed: unknown): Array<[string, unknown]> {
+  if (source.singleKey !== undefined) return [[source.singleKey, parsed]];
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return [];
+  return Object.entries(parsed as Record<string, unknown>);
+}
+
+async function migrateFlags(
+  atmuxDir: string,
+  db: Database,
+  dryRun: boolean,
+): Promise<FlagsMigrationCounts> {
+  const repo = new FlagsRepo(db);
+  const features: Record<string, number> = {};
+  let filesSkippedInvalid = 0;
+  for (const source of FLAGS_SOURCES) {
+    const path = join(atmuxDir, source.file);
+    const txt = await readTextOrNull(path);
+    if (txt === null) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(txt);
+    } catch {
+      filesSkippedInvalid += 1;
+      continue;
+    }
+    const entries = flagsEntriesFor(source, parsed);
+    if (!dryRun && entries.length > 0) {
+      db.transaction(() => {
+        for (const [k, v] of entries) repo.set(source.feature, k, v);
+      })();
+    }
+    if (entries.length > 0) features[source.feature] = entries.length;
+  }
+  const keys = Object.values(features).reduce((a, b) => a + b, 0);
+  return { keys, features, filesSkippedInvalid };
+}
 /**
  * Counts returned by the inboxes-target migration step.
  */
@@ -404,7 +468,21 @@ async function archiveJsonSources(
     }
   }
 
-  // inboxes + state archiving deferred until team builds the matching repos.
+  // inboxes archiving deferred until team builds the matching repo.
+  // state sources archive only when the flags migration actually ran
+  // (target state|all) so an unrelated kanban-only run never moves them.
+  if (target === "all" || target === "state") {
+    for (const source of FLAGS_SOURCES) {
+      const src = join(atmuxDir, source.file);
+      if (await exists(src)) {
+        const dest = join(archiveDir, source.file);
+        if (!(await exists(dest))) {
+          await ensureDir(join(archiveDir, "state"));
+          await rename(src, dest);
+        }
+      }
+    }
+  }
   return archiveDir;
 }
 
@@ -481,17 +559,14 @@ export async function migrateState(
       }
     }
 
-    // ----- state target (NOT IMPLEMENTED; team's bundle-2 follow-up) -----
-    if (parsed.target === "state") {
-      throw new ConfigError({
-        what: "migrate-state: --target=state not yet implemented",
-        hint: "StateKvRepo + matching migration helper is on the team's bundle-2 follow-up list (driver-inbox 2026-05-07 18:30 MYT)",
-      });
-    }
-    if (parsed.target === "all") {
-      warnings.push(
-        "state target skipped — StateKvRepo not yet implemented (team bundle-2 follow-up)",
-      );
+    // ----- state target (e-38 P1 flags migration) -----
+    if (parsed.target === "state" || parsed.target === "all") {
+      counts.state = await migrateFlags(atmuxDir, db, parsed.dryRun);
+      if (counts.state.filesSkippedInvalid > 0) {
+        warnings.push(
+          `state: ${counts.state.filesSkippedInvalid} file(s) failed JSON parse and were skipped`,
+        );
+      }
     }
 
     // Archive originals (only after migration writes succeeded).
