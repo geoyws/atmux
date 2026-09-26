@@ -30,6 +30,7 @@ import { ConfigError, UsageError } from "../../../src/errors.ts";
 import {
   defaultSocketPath,
   parseStartArgs,
+  pruneDeadLegacySocket,
   resolveSpawnWaitMs,
   resolveTmuxConfig,
   start,
@@ -2122,5 +2123,65 @@ describe("start — t-eb0887fe parallelized member spawn", () => {
     }
     // Default cap is 6; all 4 members fit and fan out together.
     expect(maxInFlight).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("pruneDeadLegacySocket — e-29 T1", () => {
+  function seams(overrides: {
+    exists?: boolean;
+    live?: boolean;
+    unlinkThrows?: boolean;
+  } = {}) {
+    const calls: { unlink: string[]; logs: string[] } = { unlink: [], logs: [] };
+    return {
+      calls,
+      deps: {
+        exists: async (_p: string) => overrides.exists ?? false,
+        isLive: async (_p: string) => overrides.live ?? false,
+        unlink: async (p: string) => {
+          if (overrides.unlinkThrows === true) throw new Error("unlink boom");
+          calls.unlink.push(p);
+        },
+        log: (m: string) => {
+          calls.logs.push(m);
+        },
+      },
+    };
+  }
+
+  test("override inactive → kept-override-inactive, nothing touched", async () => {
+    const { calls, deps } = seams({ exists: true, live: false });
+    const out = await pruneDeadLegacySocket("t", "/tmp/atmux-t/sock", false, deps);
+    expect(out).toBe("kept-override-inactive");
+    expect(calls.unlink).toEqual([]);
+  });
+
+  test("legacy absent → kept-absent", async () => {
+    const { calls, deps } = seams({ exists: false });
+    const out = await pruneDeadLegacySocket("t", "/tmp/atmux-t/sock", true, deps);
+    expect(out).toBe("kept-absent");
+    expect(calls.unlink).toEqual([]);
+  });
+
+  test("legacy live → kept-live, never deleted", async () => {
+    const { calls, deps } = seams({ exists: true, live: true });
+    const out = await pruneDeadLegacySocket("t", "/tmp/atmux-t/sock", true, deps);
+    expect(out).toBe("kept-live");
+    expect(calls.unlink).toEqual([]);
+  });
+
+  test("dead legacy + override active → removed, path logged", async () => {
+    const { calls, deps } = seams({ exists: true, live: false });
+    const out = await pruneDeadLegacySocket("t", "/tmp/atmux-t/sock", true, deps);
+    expect(out).toBe("removed");
+    expect(calls.unlink).toEqual(["/tmp/atmux-t/sock"]);
+    expect(calls.logs.some((l) => l.includes("/tmp/atmux-t/sock"))).toBe(true);
+  });
+
+  test("unlink failure propagates (call site catches, never breaks start)", async () => {
+    const { deps } = seams({ exists: true, live: false, unlinkThrows: true });
+    await expect(pruneDeadLegacySocket("t", "/tmp/atmux-t/sock", true, deps)).rejects.toThrow(
+      "unlink boom",
+    );
   });
 });

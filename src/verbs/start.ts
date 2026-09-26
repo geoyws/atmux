@@ -90,7 +90,7 @@
 
 import { rename } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { appendText, ensureDir, exists, readTextOrNull, writeText } from "../abstractions/fs.ts";
+import { appendText, ensureDir, exists, readTextOrNull, removeFile, writeText } from "../abstractions/fs.ts";
 import { now } from "../abstractions/time.ts";
 import {
   createTmux,
@@ -122,6 +122,7 @@ import {
 import {
   ATMUX_NESTING_LEVEL_ENV,
   buildGroupTopology,
+  cageSocketPath,
   enabledTeams,
   loadCockpit,
   readNestingLevel,
@@ -404,6 +405,30 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   //     port that pre-create here so atmux start actually starts.
   if ("socketPath" in tmuxConfig && typeof tmuxConfig.socketPath === "string") {
     await ensureDir(dirname(tmuxConfig.socketPath));
+  }
+
+  // 4b. e-29 T1: a tmuxTmpdir override abandons the legacy
+  //     `/tmp/atmux-<team>/sock`; a leftover file with no listener
+  //     confuses exists-first resolvers. Remove it when provably dead.
+  //     Best-effort: a prune failure warns and start continues.
+  if (typeof team.tmuxTmpdir === "string" && team.tmuxTmpdir.length > 0) {
+    try {
+      await pruneDeadLegacySocket(team.name, cageSocketPath(team.name), true, {
+        exists,
+        isLive: async (p) => {
+          try {
+            return await factory({ socketPath: p }).server.hasServer();
+          } catch {
+            return false;
+          }
+        },
+        unlink: removeFile,
+        log: (m) => logger.log(m),
+      });
+    } catch (e) {
+      const cause = e instanceof Error ? e.message : String(e);
+      logger.warn(`  ⚠ stale legacy socket prune failed (${cause}) — continuing start`);
+    }
   }
 
   // 5. Resolve session name (defaults to the bare `<team>` per
@@ -1378,6 +1403,43 @@ export function resolveTmuxConfig(
   if (parsed.socketPath !== undefined) return { socketPath: parsed.socketPath };
   if (parsed.socket !== undefined) return { socket: parsed.socket };
   return { socketPath: resolveTeamSocket(team) };
+}
+
+/** e-29 T1: outcome of the dead-legacy-socket prune. */
+export type PruneDeadLegacySocketResult =
+  | "removed"
+  | "kept-override-inactive"
+  | "kept-absent"
+  | "kept-live";
+
+/** e-29 T1: delete a dead legacy `/tmp/atmux-<team>/sock` when the
+ *  `team.tmuxTmpdir` override is active. A team on an override abandons
+ *  the legacy path; when the leftover file has no listener it confuses
+ *  exists-first resolvers, so start removes it — but ONLY when provably
+ *  dead. A live legacy socket is never touched, and without an active
+ *  override nothing happens at all. Pure modulo the injected seams;
+ *  the call site wraps it best-effort so a prune failure never breaks
+ *  start. Exported for direct unit-test access. */
+export async function pruneDeadLegacySocket(
+  teamName: string,
+  legacyPath: string,
+  overrideActive: boolean,
+  deps: {
+    exists: (p: string) => boolean | Promise<boolean>;
+    isLive: (p: string) => boolean | Promise<boolean>;
+    unlink: (p: string) => Promise<void>;
+    log: (m: string) => void;
+  },
+): Promise<PruneDeadLegacySocketResult> {
+  if (!overrideActive) return "kept-override-inactive";
+  if (!(await deps.exists(legacyPath))) return "kept-absent";
+  if (await deps.isLive(legacyPath)) return "kept-live";
+  await deps.unlink(legacyPath);
+  deps.log(
+    `  ✓ removed stale legacy socket '${legacyPath}' for team '${teamName}' ` +
+      "(tmuxTmpdir override active, no listener)",
+  );
+  return "removed";
 }
 
 /** t-eb0887fe: resolve the cap on concurrent non-lead member spawns.
