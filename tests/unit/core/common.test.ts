@@ -141,6 +141,28 @@ describe("getAtmuxDir", () => {
     expect(got).toBe(canonical);
   });
 
+  test("cwd at .atmux/ root itself resolves to canonical (e-39 item 5)", async () => {
+    // No trailing "/.atmux/" segment — walk starts at the .atmux dir,
+    // misses <root>/.atmux/.atmux, and must climb to the canonical dir.
+    const root = join(dir, "proj");
+    const canonical = join(root, ".atmux");
+    await mkdir(canonical, { recursive: true });
+    const got = await getAtmuxDir({ env: {}, cwd: canonical, stopAt: dir });
+    expect(got).toBe(canonical);
+  });
+
+  test("cwd at worktree member dir without stub resolves to canonical (e-39 item 5)", async () => {
+    // Distinct from the stub case: no nested .atmux exists, but the
+    // "/.atmux/" segment still triggers strip-back to the project root.
+    const root = join(dir, "proj");
+    const canonical = join(root, ".atmux");
+    const memberCwd = join(root, ".atmux", "worktrees", "driver");
+    await mkdir(canonical, { recursive: true });
+    await mkdir(memberCwd, { recursive: true });
+    const got = await getAtmuxDir({ env: {}, cwd: memberCwd, stopAt: dir });
+    expect(got).toBe(canonical);
+  });
+
   test("falls back to cwd/.atmux when walk-up exhausted", async () => {
     const lonely = join(dir, "lonely");
     await mkdir(lonely, { recursive: true });
