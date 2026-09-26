@@ -35,7 +35,7 @@
 //                         spawn-epic / dissolve-epic per ADR-033)
 
 import { join } from "node:path";
-import { resolveClaudeWrapper } from "../abstractions/claude-account-wrapper.ts";
+import { mergeWrapperRegistries, resolveClaudeWrapper } from "../abstractions/claude-account-wrapper.ts";
 import {
   type CockpitRotateRefusedOpts,
   type DiscordSendOpts,
@@ -724,9 +724,11 @@ export const claudeUiGoneVerifier: PaneVerifier = (text: string) =>
 export function buildClaudeRespawnCommand(
   account: CockpitClaudeAccount | undefined,
   tuiOverrides: CockpitTuiOverrides | undefined,
+  registry?: ReadonlyMap<string, string>,
 ): string {
   const configDir = account?.configDir ?? "/root/.claude";
-  const wrapper = resolveClaudeWrapper(configDir);
+  const wrapper =
+    registry === undefined ? resolveClaudeWrapper(configDir) : resolveClaudeWrapper(configDir, registry);
   const permission = tuiOverrides?.permissionMode ?? "auto";
   const pluginFlag =
     tuiOverrides?.pluginDir !== undefined ? ` --plugin-dir=${tuiOverrides.pluginDir}` : "";
@@ -961,7 +963,11 @@ async function performRespawn(
     switch (role) {
       case "medic": {
         const m = readMedicConfig(cockpit);
-        cmd = buildClaudeRespawnCommand(m?.claudeAccount, m?.tuiOverrides);
+        cmd = buildClaudeRespawnCommand(
+          m?.claudeAccount,
+          m?.tuiOverrides,
+          mergeWrapperRegistries(cockpit.wrappers),
+        );
         break;
       }
       case "team-driver": {

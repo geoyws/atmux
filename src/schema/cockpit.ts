@@ -495,6 +495,13 @@ export const Cockpit = z
       })
       .strict()
       .optional(),
+    /** e-48 (t-e6ebc77b): cockpit-scope wrapper registry —
+     *  `configDir → wrapper-command name`. Merges over the built-in
+     *  WRAPPER_TABLE; per-team `wrappers` merges over this. Lets
+     *  operators register new member-TUI wrappers (opencode,
+     *  gemini-cli, codex, future) by config edit alone instead of an
+     *  atmux release cycle. Absent/empty = built-ins only. */
+    wrappers: z.record(z.string(), z.string().min(1)).optional(),
   })
   .passthrough();
 export type Cockpit = z.infer<typeof Cockpit>;

@@ -1,3 +1,7 @@
+import {
+  mergeWrapperRegistries,
+  resolveClaudeWrapper,
+} from "../../abstractions/claude-account-wrapper.ts";
 import { teamJsonPath, tryLoadTeam } from "../../core/common.ts";
 import type { Team, TeamMember } from "../../schema/team.ts";
 import { installHint } from "./deps.ts";
@@ -386,4 +390,42 @@ export function collectSafeOrphanBranches(rows: ReadonlyArray<DoctorRow>): strin
     out.push(branch);
   }
   return out;
+}
+
+// ---------- Check: claude-wrapper registry (e-48; t-e6ebc77b) ----------
+
+/** Every team-held `claudeAccount` string (drivers[] entries + bot)
+ *  must resolve against the effective registry (built-ins →
+ *  cockpit.json `wrappers` → team.json `wrappers`). Red names the
+ *  unresolvable pairs so a config typo surfaces at `doctor` instead
+ *  of at spawn time. (Members carry no claudeAccount — they inherit
+ *  the driver/cockpit chain.) */
+export function checkClaudeWrappers(
+  team: Team | null,
+  cockpitWrappers?: Record<string, string>,
+): DoctorRow[] {
+  if (team === null) return [];
+  const registry = mergeWrapperRegistries(cockpitWrappers, team.wrappers);
+  const candidates: Array<[string, string | null | undefined]> = [
+    ["bot", team.bot?.claudeAccount],
+  ];
+  for (const d of team.drivers ?? []) candidates.push([`driver:${d.name}`, d.claudeAccount]);
+  const bad: string[] = [];
+  for (const [who, dir] of candidates) {
+    if (dir === undefined || dir === null || dir.length === 0) continue;
+    try {
+      resolveClaudeWrapper(dir, registry);
+    } catch {
+      bad.push(`${who}:${dir}`);
+    }
+  }
+  if (bad.length === 0) return [];
+  return [
+    {
+      status: "red",
+      label: "claude-wrappers",
+      detail: `${bad.length} account holder(s) reference unregistered wrapper configDir(s): ${bad.slice(0, 3).join(", ")}${bad.length > 3 ? ` (+${bad.length - 3} more)` : ""}`,
+      hint: "register the configDir in cockpit.json `wrappers` (or team.json `wrappers` override)",
+    },
+  ];
 }

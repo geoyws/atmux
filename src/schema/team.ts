@@ -1391,6 +1391,12 @@ export const Team = z
     /** Single-session opt-in (default `false` per 2026-04-30 reversal,
      *  see templates/team.example.json comment). */
     singleSession: z.boolean().optional(),
+    /** e-48 (t-e6ebc77b): per-team wrapper registry override —
+     *  `configDir → wrapper-command name`. Merges over the cockpit.json
+     *  `wrappers` registry and the built-in WRAPPER_TABLE (team wins).
+     *  Lets operators register new member-TUI wrappers by config edit
+     *  alone. Absent/empty = no override. */
+    wrappers: z.record(z.string(), z.string().min(1)).optional(),
     /** ADR-044: when set, marks the team as driver-opted-in — the
      *  cockpit viewer window + driver-pane health probe read this
      *  field's presence. `null` is accepted as "explicitly disabled"
