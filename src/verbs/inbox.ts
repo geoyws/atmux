@@ -153,7 +153,7 @@ function printSection(label: string, entries: ReadonlyArray<InboxEntry>): void {
   process.stdout.write("\n");
 }
 
-// ---------- `inbox archive` (e-77 T2) ----------
+// ---------- `inbox archive` (e-77 T2; contract owner: ADR-297) ----------
 
 /** Parsed `inbox archive` argv. `--older-than` defaults to 48h per OQ3. */
 export interface InboxArchiveArgs {

@@ -7,7 +7,8 @@
 // write authority — the verb stays the only AI-accessible mutation
 // path (epic e-774065d6 authority model).
 //
-// Cut contract (epic OQ3/OQ4/OQ5):
+// Cut contract (epic OQ3/OQ4/OQ5; decision owner: ADR-297
+// docs/adr/297-inbox-outbox-archive-cut-contract.md):
 //   - Entry dates: entries carry `HH:MM MYT` only. The absolute date is
 //     inferred by walking BACK from the file's mtime day: a timestamp
 //     later-than-now on the mtime day belongs to the previous day

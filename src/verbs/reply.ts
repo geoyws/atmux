@@ -321,7 +321,7 @@ export function collectOpenEntries(body: string): string[] {
   return out;
 }
 
-// ---------- `outbox archive` (e-77 T3) ----------
+// ---------- `outbox archive` (e-77 T3; contract owner: ADR-297) ----------
 //
 // Deliberate mirror of T2 `inbox archive` (src/verbs/inbox.ts): same
 // flags, same --team seam, same output shape, different file

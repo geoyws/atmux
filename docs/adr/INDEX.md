@@ -253,6 +253,7 @@
 | 288 | Driver window worker/attention pane pair — three-driver floor, null-default attention launch, and later-slice contract | 2026-09-03 | proposed |
 | 294 | `atmux doctor` detects tmux servers whose global environment came from an agent shell | 2026-09-25 | proposed |
 | 296 | Per-team `superdriver` window before `driver` | 2026-09-28 | accepted |
+| 297 | Inbox/outbox archive-cut contract (e-77: cut boundary, naming, idempotency, verb authority) | 2026-09-28 | accepted |
 
 ## Superseded (skip)
 
