@@ -142,9 +142,9 @@ Wraps `lib/team-repair-rename.sh` (atomic per team with rollback per [ADR-027](a
 
 ### Class C — window position drift
 
-**Symptom**: driver pane window position ≠ 1 OR team-lead pane window position ≠ 2.
+**Symptom**: driver pane window position ≠ 2 (≠ 1 when the ADR-296 superdriver seat is opted out) OR team-lead pane drifted from its expected slot.
 
-**Detection**: `tmux list-windows -t "$cage_session" -F '#{window_index} #{window_name}'`. Driver should be index 1 (first); team-lead should be index 2 (second). Other members fill 3+.
+**Detection**: `tmux list-windows -t "$cage_session" -F '#{window_index} #{window_name}'`. With the default-enabled superdriver seat ([ADR-296](adr/296-per-team-superdriver-window-before-driver.md)), `superdriver` should be index 1 (first) and `driver` index 2; team-lead follows the driver roster and `_bot`. Other members fill the rest.
 
 **Remediation**: `tmux swap-window -s <current-index> -t <target-index>` × N.
 

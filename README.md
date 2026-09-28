@@ -149,6 +149,8 @@ The verb refuses while a member is mid-task; run during a quiet window. ADR-016'
 
 See [docs/adr/026-always-single-session-topology.md](docs/adr/026-always-single-session-topology.md) for the rationale + window-count risk register, and [docs/adr/016-single-session-topology.md](docs/adr/016-single-session-topology.md) for the original opt-in design (default policy line is superseded; everything else stands).
 
+**Team-cage window order** (per [ADR-296](docs/adr/296-per-team-superdriver-window-before-driver.md)): `superdriver` (window 1, unless opted out via `team.json::superdriver.enabled: false`), then the driver roster (`driver` at window 2, `driver-2…` after), then the cooperative `_bot` seat, then members/services. The superdriver seat is orchestration-only — it runs `/sync-drivers` from the repo root and owns no worktree or branch. Address cage windows by name (`=<team>:driver`), not by number: numbers shift when the seat is enabled.
+
 ### Per-team tmux socket isolation (opt-in)
 
 By default every atmux team shares the user's main tmux server at `/tmp/tmux-$UID/default` — alongside the driver's daily-driver shells, other worktree windows, and any other atmux teams. **Per-team socket isolation** moves a team onto its own tmux server (its own `TMUX_TMPDIR`), so a buggy `kill-session -a` from a misbehaving lib change can't reach unrelated sessions.
@@ -284,7 +286,7 @@ atmux audit --dry-run             # print fix plan, no mutations (default for bl
 |---|---|---|---|---|---|
 | **A** | driver-window naming | `tmux list-windows` shows bare `driver` instead of `__<team>__driver` | medium | ✅ gated on driver-pane idle (no claude REPL, no modal, no rate-limit banner) | `atmux audit --fix --class a` (whip auto-fires when idle; surfaces `⚠️` otherwise) |
 | **B** | cage path separator | `team.json:.tmuxTmpdir` matches old hyphen form `/tmp/atmux-tmux-*` instead of `/tmp/atmux_tmux_*` | high | ❌ surface only — driver fires | wraps `lib/team-repair-rename.sh` with rollback per [ADR-027](docs/adr/027-team-rename-verb-and-topology-invariant.md) |
-| **C** | window position drift | driver pane window position ≠ 1 OR team-lead position ≠ 2 | high | ❌ surface only — driver fires | `tmux swap-window` × N, no atomic wrapper today |
+| **C** | window position drift | driver pane window position ≠ 2 (≠ 1 when the ADR-296 superdriver seat is opted out) OR team-lead position drifted from its expected slot | high | ❌ surface only — driver fires | `tmux swap-window` × N, no atomic wrapper today |
 | **D** | rename residue | window name has trailing-dash or partial-match pattern (`__ifca_aix__🪄lead-`) | low | ✅ | strip trailing dash via `tmux rename-window` |
 | **E** | stray empty cage dirs | `/tmp/atmux-tmux-*` or `/tmp/atmux_tmux_*` exist with no live socket AND no registry entry | low | ✅ | `rmdir` with `[ -z "$(ls -A)" ]` guard |
 | **F** | tmux config glyph mismatch | per-cage `tmux show-option -gv status-left` ≠ `~/.tmux.conf`-derived expansion (locale-blind tooling downgrades nerd-font glyph to `_`) | low | ✅ | `atmux tmux-conf-restore <cage-socket>` shared primitive |

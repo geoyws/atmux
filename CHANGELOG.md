@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ✨ Added — per-team `superdriver` window before `driver` (ADR-296)
+
+Every team cage gains an orchestration-only `superdriver` seat at window 1, ahead of the driver roster. It runs `/sync-drivers` from the repo root, reads the board, files/assigns kb rows and messages lane executors; it writes no product code and owns no worktree or branch (cwd pinned to the repo root). Opt-in by default: an absent `team.json::superdriver` block resolves to enabled, `{"enabled": false}` opts out, and `tui: null` leaves a plain zsh floor like nullable drivers. Fresh `atmux start` orders `superdriver`, drivers, `_bot`, members; incremental start inserts the seat with `new-window -b` without killing any pane. Kb actor `@:<team>/<board>/superdriver`, `--lane superdriver`, no shortform. Index shift: `driver` moves to window 2 — address cage windows by name. See `docs/adr/296-per-team-superdriver-window-before-driver.md`.
+
 ### 🐛 Fixed — panes survive their process exiting; fresh `_medic` no longer kills its slot
 
 `templates/tmux/atmux.conf` now sets `remain-on-exit on` and `pane-died → respawn-pane -k`, so `exit`, Ctrl-D, or a quit/crashed agent TUI respawns the pane with its start command (a login zsh) instead of deleting the window; `kill-pane`/`kill-window` still remove panes. A freshly created `_medic` window is inserted directly after `_superdriver` (`new-window -a`) instead of being appended and moved with `-k`, which killed whatever window held slot 2 (on `@@mbp` 2026-09-26, a live operator omp pane).

@@ -249,3 +249,7 @@ Same as the original §Rollback path. Revert the amendment commit; legacy `drive
 ### 2026-08-24 — D7 `drivers[].tui` is nullable (ADR-278)
 
 [ADR-278](278-nullable-driver-agent-harness.md) replaces D7's required `tui: string` with `tui?: string | null`. A non-null value still requests command-mode TUI launch; `null` or absence launches zsh with no agent harness so the operator can choose a harness per session. D2's no-send-keys invariant and the rest of the driver topology are unchanged.
+
+### 2026-09-28 — Driver window slots start at 2 when the ADR-296 superdriver seat is enabled
+
+The D3/A1 window layouts above predate the per-team `superdriver` seat: with [ADR-296](296-per-team-superdriver-window-before-driver.md) enabled (the default), `superdriver` occupies window 1 and the driver roster starts at window 2. Name-based targets are unaffected.

@@ -36,6 +36,7 @@ Per-member `<base>-<member>` branches are long-lived (ADR-082 + ADR-084). Fallin
 - **Rate-limit triage uses API headers, not pane footers** (footers freeze during active turns). Destructive recovery requires BOTH stale budget AND zero `✽`/`✻` markers in last 60s.
 - **Ping before touching shared live stack** (walks/runs/e2e/live-URL/bootstrap). Local-only work is autonomous.
 - **Watch filters: enumerate anomalous, not exclude noise.** Pair with a known-green smoke probe.
+- **Team-cage spawn order is `superdriver`, drivers, `_bot`, members** (per ADR-296; `superdriver` at window 1 unless opted out). Address cage panes by window name, never by raw index.
 
 ## Reviewer vs auditor
 

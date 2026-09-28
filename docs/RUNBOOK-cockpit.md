@@ -413,6 +413,8 @@ Each nesting level is its own tmux server on its own socket, and each gets its o
 
 **The shift is enforced by atmux itself since 2026-08-28** (ADR-089's true-containment group-tier note): every enabled `type: "group"` backs a real tmux server on `/tmp/atmux-grp-<group>/sock`, and `atmux cockpit reconcile` applies `resolvePrefix(level + 2, …)` to each group server AND each team cage — a top-level group binds `F2`, its teams `F3`, an ungrouped top-level team stays `F2`. The earlier caveat that the shift waited on the operator dotfiles' socket-pattern `if-shell` chain (`_dotfiles/tmux/.tmux.conf` + `_dotfiles/atmux/tmux.conf.local`) is superseded for prefix ASSIGNMENT; those dotfiles chains still exist and, matching on socket path, can re-clobber a reconcile-applied prefix — if a cage's chord is wrong after a reconcile, check the dotfiles chain second (depth first, per §Depth beyond the chain).
 
+**Window addressing inside a team cage** (per [ADR-296](adr/296-per-team-superdriver-window-before-driver.md)): window 1 is `superdriver` unless the team opted out, and the driver roster starts at window 2 — on the default chain `F3 1` lands on superdriver, `F3 2` on `driver`. Prefer name targets (`=<team>:driver`, `=<team>:superdriver`); raw window numbers shift with the seat.
+
 ### Override the chain
 
 ```bash

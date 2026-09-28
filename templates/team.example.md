@@ -64,6 +64,17 @@ The `.members[].model` field accepts:
   members still inherit `xhigh` effort (read-only roles benefit from full
   reasoning depth even on the smaller model).
 
+### `.superdriver` (per ADR-296)
+
+Top-level orchestration seat, not a `drivers[]` or `members[]` entry. Cage
+window 1 (drivers shift to 2..N+1); no worktree, no branch — cwd is pinned
+to the repo root. Runs `/sync-drivers` and coordinates across driver lanes.
+
+- `"enabled": true` (or block absent) — seat is created. Explicit
+  `{"enabled": false}` opts out and restores the old drivers-first layout.
+- `"tui": null` (or absent) — plain zsh floor like nullable drivers;
+  a non-null harness alias launches two-stage into the verified-idle shell.
+
 ## Override workflow
 
 To flip a member's model after the team is already running:
@@ -88,3 +99,4 @@ in-flight work.
 HIGH. Driver may flip `discorder` back to Opus (or any role to a different
 model) with one `jq` edit + one `atmux rotate <name>`. No schema migration,
 no data loss, no in-flight task disruption.
+

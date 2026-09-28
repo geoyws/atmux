@@ -4,6 +4,11 @@
   "tmuxTmpdir": "/tmp/atmux-tmux_my-team",
   "_comment_singleSession": "Default false (2026-04-30 reversal of ADR-026) — cage isolation per ADR-018 is the safe path; singleSession opts out of it on the daily-driver socket and reintroduces the side-channel pollution class (cage-prefix leak, cross-socket spawn, partial-rename mess). Launcher sessions (atmux_<team> created by atmux doctor --fix) preserve the at-a-glance benefit while keeping isolation. Set true ONLY for non-human-driven teams or detached observer setups (declared escape hatch).",
   "singleSession": false,
+  "_comment_superdriver": "ADR-296: per-team superdriver seat at cage window 1, before the drivers. Orchestration-only (runs /sync-drivers from the repo root; no worktree, no branch — cwd is pinned to the repo root). Absent block == enabled with defaults; {\"enabled\": false} opts out. null tui starts zsh like nullable drivers.",
+  "superdriver": {
+    "enabled": true,
+    "tui": null
+  },
   "_comment_drivers": "Drivers use isolated worktrees. Each pane starts in an interactive login zsh; when tui names a harness, atmux verifies the prompt and launches that harness as the shell's child through the pinned pane target.",
   "drivers": [
     { "name": "driver", "tui": null, "cwd": "." },
