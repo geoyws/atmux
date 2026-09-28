@@ -136,6 +136,8 @@ Every successful run rewrites `team.json::members[]` via `updateJson(Team)` unde
 
 > **Retired — `_superbot` offer-and-pull.** [ADR-285](adr/285-cooperative-bot-seat-and-superbot-offer-protocol.SUPERSEDED.md) is superseded by [ADR-298](adr/298-retire-bot-seat-and-superbot-scheduler.md): the `_bot` seat and `_superbot` scheduler were removed from code, schema, templates and docs on 2026-09-28 (zero live use measured). Kanban remains the sole work and lease authority per ADR-275; lane coordination runs through queued pane-agent pointers, not scheduler offers.
 
+**Rotation watch (lead-gated, [ADR-212](adr/212-retire-medic-lead-gated-rotation-simplify-honker-consumer-set.md)).** `src/core/rotation-observer.ts` classifies pane.stuck / member.no-progress / cage.starving over injected snapshots (thresholds via `team.json::rotation`); `src/core/rotation-consumer.ts` correlates signals per (team, member), emits `coordination.rotate-suggested`, and nudges the lead only on high confidence. Nothing rotates autonomously — the lead runs `atmux rotate <member> --reason` or `atmux clear-member --force`.
+
 The external private Kanban CLI is the current source of truth for work and
 leases per [ADR-275](adr/275-external-private-kanban-authority.md). The legacy
 in-repo schema below records the pre-cutover shape for historical and rollback
