@@ -46,6 +46,14 @@ Later runtime and observer slices can read one normalized source of truth for:
 
 The cost is one additional schema field and one extra contract surface in the template and ADR index. That is acceptable because it prevents each later consumer from re-declaring the same role semantics.
 
+## Amendment 2026-09-28 — floor superseded (a-cce1e2fa)
+
+George resolves a-cce1e2fa with floor 1 (`MIN_PARENT_TEAM_DRIVERS = 1`
+stays). The Decision's floor-3 wording above ("explicit 1-2 driver
+rosters fail validation") no longer holds; 1-10 validate, >10 fail.
+The canonical pair source itself is unaffected. See ADR-239
+§Amendment 2026-09-28.
+
 ## References
 
 - [ADR-239: three-driver minimum and no-sendkeys invariant](239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md)

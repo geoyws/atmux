@@ -503,24 +503,22 @@ describe("Team schema — canonical driver roster + pair contract", () => {
     expect(DriverSessionSchema.parse(firstDriver)).toEqual(firstDriver);
   });
 
-  test("explicit 1-2 drivers fail validation", () => {
-    expect(() =>
-      Team.parse({
-        name: "demo",
-        members: [],
-        drivers: [{ name: "driver", tui: null, cwd: "." }],
-      }),
-    ).toThrow(ZodError);
-    expect(() =>
-      Team.parse({
-        name: "demo",
-        members: [],
-        drivers: [
-          { name: "driver", tui: null, cwd: "." },
-          { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
-        ],
-      }),
-    ).toThrow(ZodError);
+  test("explicit 1-2 drivers validate (floor 1 per a-cce1e2fa)", () => {
+    const one = Team.parse({
+      name: "demo",
+      members: [],
+      drivers: [{ name: "driver", tui: null, cwd: "." }],
+    });
+    expect(one.drivers).toHaveLength(1);
+    const two = Team.parse({
+      name: "demo",
+      members: [],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+      ],
+    });
+    expect(two.drivers).toHaveLength(2);
   });
 
   test("explicit >10 drivers fail validation", () => {

@@ -261,6 +261,16 @@ The driver count is unchanged by ADR-287. The drift inside this ADR — the file
 [ADR-288](288-driver-window-worker-attention-pane-pair.md) supersedes ADR-239 Amendment 2026-05-26 A1's five-driver floor. The live floor returns to exactly three drivers (`driver`, `driver-2`, `driver-3`); explicit 1-2 driver rosters fail schema validation, 3-10 pass, and >10 fail. The rest of ADR-239 remains intact: no send-keys, existing names/worktrees, strict member-roster policy, and the historical incident/provenance text stay as written.
 
 The 2026-09-02 drivers-only-template note remains historical context for the concurrent branch, but the driver-count wording it carried forward is now superseded by ADR-288.
+
+### §Amendment 2026-09-28 — one-driver floor (a-cce1e2fa)
+
+George resolves a-cce1e2fa with floor 1: `MIN_PARENT_TEAM_DRIVERS = 1`
+(src/core/drivers.ts:37) stays. Explicit 1-2 driver rosters validate;
+1-10 pass, >10 fail. This supersedes the §Amendment 2026-09-03 floor-3
+wording above (and ADR-288's floor-3 decision) while keeping ADR-239's
+no-sendkeys invariant and the one-driver small-work-teams rule
+(2026-08-28) intact. History above stays as written.
+
 ### 2026-09-28 — Driver window slots start at 2 when the ADR-296 superdriver seat is enabled
 
 The D3/A1 window layouts above predate the per-team `superdriver` seat: with [ADR-296](296-per-team-superdriver-window-before-driver.md) enabled (the default), `superdriver` occupies window 1 and the driver roster starts at window 2. Name-based targets are unaffected.
