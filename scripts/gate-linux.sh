@@ -6,7 +6,7 @@
 #   scripts/gate-linux.sh --quick              # tsc only (no test run)
 #   scripts/gate-linux.sh tests/unit/verbs/    # pass through to `bun test`
 #
-# HEAVY GATE: wrap the invocation with gate-slot on @@mbp (never inside):
+# HEAVY GATE: wrap the invocation with gate-slot on the test host (never inside):
 #   GATE_SLOT="$(realpath ~/.agents/skills)/../../medic/skills/gate-slot/bin/gate-slot"
 #   "$GATE_SLOT" run --name <gate-name> -- scripts/gate-linux.sh
 # The slot wraps the BLOCKING `docker run` (no -d); a detached start would

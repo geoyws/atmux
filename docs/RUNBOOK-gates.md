@@ -1,8 +1,9 @@
 # RUNBOOK-gates — containerised Linux gates for atmux
 
 Every e2e run, quality gate and test suite for atmux runs INSIDE the Linux
-gate container on `@@mbp` (never as a native macOS process — the served
-host is Linux and a macOS-only pass proves nothing about the tier).
+gate container on the configured test host (never as a native macOS process
+— the served host is Linux and a macOS-only pass proves nothing about the
+tier). Which host that is lives in the estate placement docs, not here.
 Reference: repo rule "ALWAYS CONTAINERISE e2e, gates and tests".
 
 ## The gate
@@ -11,8 +12,8 @@ Reference: repo rule "ALWAYS CONTAINERISE e2e, gates and tests".
   by digest in the Dockerfile header — bump deliberately, never float).
 - Script: `scripts/gate-linux.sh` (builds the image if absent; mounts the
   repo; isolates HOME/TMPDIR/node_modules from the host).
-- Slot: every run goes through `gate-slot` on `@@mbp` (3 concurrent heavy
-  gates host-wide). Wrap the BLOCKING invocation, never a detached start:
+- Slot: every run goes through `gate-slot` on the test host. Wrap the
+  BLOCKING invocation, never a detached start:
 
 ```bash
 GATE_SLOT="$(realpath ~/.agents/skills)/../../medic/skills/gate-slot/bin/gate-slot"
@@ -32,3 +33,11 @@ counts as gate evidence (say so plainly when that is all you have).
   per-file (unchanged practice).
 - First containerised proof: t-e3aed002 (2026-09-28) — full unit suite in
   the gate image under slot; counts recorded on the task.
+
+## Addenda
+
+- 2026-09-28: test-host placement (which machine runs the gate, slot
+  concurrency, prod-adjacency safety floor) moved to the estate docs
+  (dotfiles `AGENTS.md`, infra-root ADR-005). This runbook stays
+  host-agnostic: env vars and a generic "test host" only. Earlier
+  receipts naming a specific host stay as historical record.
