@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ⚡ Changed — cockpit `_medic` runs OMP on a shell floor (ADR-299)
+
+**The `_medic` window now follows the standard pane lifecycle.** Its start command is the interactive login zsh floor (`shellPaneCommand()`); OMP launches as a child via `launchAgentInPane` once the shell prompt is live — quitting the TUI drops back to the pane's shell instead of killing the window. New `medic` config keys: `tui` (`"omp"` default, `"claude"` keeps the legacy Claude invocation — the only path that reads `claudeAccount`/`tuiOverrides`) and `cwd` (absolute path, default operator HOME). A live `_medic` window is never respawned by reconcile. Incidental fix: the Claude child command now `posixQuote`s its config values (the quoting test was red at baseline).
+
 ### 💥 Removed — `_bot` seat and `_superbot` scheduler (ADR-298, supersedes ADR-285)
 
 **The cooperative `_bot` seat and the cockpit `_superbot` offer loop are fully removed.** `atmux bot ...` and `atmux superbot ...` are unknown verbs; `team.json::bot` and `cockpit.json::superbot` schema blocks are gone (stale `superbot` blocks in existing cockpit files parse harmlessly; live `bot` blocks were stripped beforehand so strict `Team` parsing never trips). Reason: send-keys ban revoked 2026-09-08, planner→executor hand-off 2026-09-28, zero live use measured — George ordered removal. Lane coordination runs through queued pane-agent pointers off kb rows. Older entries below describing the seats stand as release history.

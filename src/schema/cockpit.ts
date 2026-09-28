@@ -201,7 +201,13 @@ export interface SuperdriverSessionT {
 /** Cockpit window 2 — fleet self-healing role (ADR-077 design, renamed
  *  from `superdoctor` per ADR-133; the legacy `superdoctor` discriminator
  *  was removed per ADR-266 §D2 — configs still carrying it fail at load
- *  with an actionable error). */
+ *  with an actionable error).
+ *
+ *  ADR-299: the medic window runs OMP on a shell floor by default. `tui`
+ *  selects the child TUI (`"omp"` default; `"claude"` keeps the legacy
+ *  `claudeAccount` + `tuiOverrides` Claude invocation). `cwd` is the
+ *  window's working directory (absolute path; defaults to the
+ *  operator's HOME — the medic repo is not known to atmux). */
 export interface MedicSessionT {
   type: "medic";
   name: string;
@@ -209,6 +215,8 @@ export interface MedicSessionT {
   prefixChain?: string[];
   claudeAccount?: CockpitClaudeAccount;
   tuiOverrides?: CockpitTuiOverrides;
+  tui?: string;
+  cwd?: string;
 }
 
 export type CockpitSessionT = TeamSessionT | GroupSessionT | SuperdriverSessionT | MedicSessionT;
@@ -254,10 +262,21 @@ export const SuperdriverSession: z.ZodType<SuperdriverSessionT> = z.lazy(() =>
 
 /** Cockpit window 2 — canonical fleet self-healing role (ADR-077 design;
  *  discriminator renamed from `superdoctor` to `medic` per ADR-133 §D1;
- *  the legacy `SuperdoctorSession` leaf was removed per ADR-266 §D2). */
+ *  the legacy `SuperdoctorSession` leaf was removed per ADR-266 §D2).
+ *  ADR-299 adds `tui` (default `"omp"`) + `cwd` (absolute path, unset =
+ *  operator HOME) — kept on this leaf only, not the shared session
+ *  base, so team/superdriver entries keep refusing the fields. */
 export const MedicSession: z.ZodType<MedicSessionT> = z.lazy(() =>
   CockpitSessionBase.extend({
     type: z.literal("medic"),
+    tui: z.string().default("omp"),
+    cwd: z
+      .string()
+      .min(1)
+      .refine((p) => p.startsWith("/"), {
+        message: "medic cwd must be an absolute path",
+      })
+      .optional(),
   }).strict(),
 ) as z.ZodType<MedicSessionT>;
 
@@ -321,6 +340,20 @@ export const CockpitMedic = z
     enabled: z.boolean().default(false),
     claudeAccount: CockpitClaudeAccount.optional(),
     tuiOverrides: CockpitTuiOverrides.optional(),
+    /** ADR-299: child TUI the `_medic` window runs on its shell floor.
+     *  `"omp"` (default) or `"claude"` (legacy Claude invocation —
+     *  the only value that reads `claudeAccount` / `tuiOverrides`). */
+    tui: z.string().default("omp"),
+    /** ADR-299: `_medic` window working directory. Absolute path;
+     *  unset means the operator's HOME (the medic repo is not known
+     *  to atmux). */
+    cwd: z
+      .string()
+      .min(1)
+      .refine((p) => p.startsWith("/"), {
+        message: "medic cwd must be an absolute path",
+      })
+      .optional(),
   })
   .strict();
 export type CockpitMedic = z.infer<typeof CockpitMedic>;

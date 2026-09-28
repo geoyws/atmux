@@ -711,6 +711,39 @@ describe("loadCockpit — ADR-133 medic end-to-end (post ADR-266 §D2)", () => {
     expect(cockpit.medic?.enabled).toBe(true);
     expect(warned).toHaveLength(0);
   });
+
+  test('ADR-299: sessions[] `type: "medic"` entry with tui/cwd synthesizes both', async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [
+        { type: "medic", name: "medic", enabled: true, tui: "claude", cwd: "/srv/medic" },
+        { type: "team", name: "sopx", root: "/p/sopx" },
+      ],
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
+    expect(cockpit.medic?.tui).toBe("claude");
+    expect(cockpit.medic?.cwd).toBe("/srv/medic");
+  });
+
+  test("ADR-299: top-level medic block defaults tui to omp and accepts cwd", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [{ type: "team", name: "x", root: "/x" }],
+      medic: { enabled: true, cwd: "/srv/medic" },
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
+    expect(cockpit.medic?.tui).toBe("omp");
+    expect(cockpit.medic?.cwd).toBe("/srv/medic");
+  });
+
+  test("ADR-299: relative medic cwd fails at load", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [{ type: "team", name: "x", root: "/x" }],
+      medic: { enabled: true, cwd: "relative/path" },
+    });
+    await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(/absolute/);
+  });
 });
 
 // ---------- ADR-089: walkSessions DFS ----------

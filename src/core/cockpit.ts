@@ -331,10 +331,13 @@ function enrichLegacyFields(cockpit: CockpitShape): LoadedCockpit {
     } else if (node.type === "medic" && medicResolved === undefined) {
       // ADR-133 canonical entry. The medic auto-start fields were removed
       // with the send-keys auto-fire (t-74c9e79e), so only the claude
-      // shape propagates here.
-      const m: CockpitMedic = { enabled: node.enabled };
+      // shape propagates here. ADR-299 adds the shell-floor fields
+      // (`tui` + `cwd`) — the leaf schema defaults `tui` to "omp",
+      // so it is always present on the parsed node.
+      const m: CockpitMedic = { enabled: node.enabled, tui: node.tui ?? "omp" };
       if (node.claudeAccount !== undefined) m.claudeAccount = node.claudeAccount;
       if (node.tuiOverrides !== undefined) m.tuiOverrides = node.tuiOverrides;
+      if (node.cwd !== undefined) m.cwd = node.cwd;
       medicResolved = m;
     }
   });

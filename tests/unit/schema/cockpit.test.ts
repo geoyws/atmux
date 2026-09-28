@@ -19,6 +19,7 @@ import {
   CockpitMedic,
   CockpitSession,
   CockpitWindow,
+  MedicSession,
   SuperdriverSession,
   TeamSession,
 } from "../../../src/schema/cockpit.ts";
@@ -238,6 +239,45 @@ describe("CockpitSession — recursive nesting", () => {
     });
     expect(parsed.sessions).toHaveLength(1);
     expect(parsed.sessions[0]?.type).toBe("medic");
+  });
+});
+
+// ---------- ADR-299: medic tui/cwd live on the medic leaf only ----------
+
+describe("MedicSession — tui/cwd (ADR-299)", () => {
+  test("defaults tui to omp, cwd unset", () => {
+    const m = MedicSession.parse({ type: "medic", name: "medic" });
+    expect(m.tui).toBe("omp");
+    expect(m.cwd).toBeUndefined();
+  });
+
+  test("accepts explicit tui + absolute cwd", () => {
+    const m = MedicSession.parse({
+      type: "medic",
+      name: "medic",
+      tui: "claude",
+      cwd: "/srv/medic",
+    });
+    expect(m.tui).toBe("claude");
+    expect(m.cwd).toBe("/srv/medic");
+  });
+
+  test("rejects relative cwd", () => {
+    expect(() => MedicSession.parse({ type: "medic", name: "medic", cwd: "rel/path" })).toThrow(
+      /absolute/,
+    );
+  });
+
+  test("team and superdriver leaves still refuse tui/cwd (.strict)", () => {
+    expect(() => TeamSession.parse({ type: "team", name: "x", root: "/x", tui: "omp" })).toThrow();
+    expect(() =>
+      SuperdriverSession.parse({ type: "superdriver", name: "sd", cwd: "/srv" }),
+    ).toThrow();
+  });
+
+  test("top-level medic block defaults tui to omp and refuses relative cwd", () => {
+    expect(CockpitMedic.parse({ enabled: true }).tui).toBe("omp");
+    expect(() => CockpitMedic.parse({ enabled: true, cwd: "rel/path" })).toThrow(/absolute/);
   });
 });
 

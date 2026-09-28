@@ -185,6 +185,16 @@ export type SendTarget =
       readonly kind: "superdriver";
       readonly team: string;
       readonly target: Target;
+    }
+  | {
+      /** ADR-299 — the cockpit `_medic` window. OMP (or Claude on the
+       *  `tui: "claude"` path) runs as a child of the window's shell
+       *  floor; the launch send-keys targets that verified-idle shell
+       *  under the same observed-state discipline. Tmux argv shape is
+       *  identical; the discriminator keeps reviewer-grep able to
+       *  isolate medic sends. */
+      readonly kind: "medic";
+      readonly target: Target;
     };
 
 /** Serialize the inner tmux target — pure pass-through to
