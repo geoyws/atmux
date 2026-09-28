@@ -79,7 +79,6 @@ import { resolveTuiCommand } from "../core/tui-cmd.ts";
 import { UsageError } from "../errors.ts";
 import type {
   CockpitMedic,
-  CockpitSuperbot,
   CockpitTeam,
   CockpitWindow,
 } from "../schema/cockpit.ts";
@@ -1252,8 +1251,6 @@ export async function cockpitRebuild(
       {
         windows: cockpit.windows,
         topology,
-        superbot: cockpit.superbot,
-        superbotCommand: buildSuperbotWindowCommand(resolveCockpitConfigPath(loadOpts)),
       },
     ),
   );
@@ -2000,12 +1997,6 @@ export interface ReconcileCockpitOpts {
    *  (legacy callers / tests), every team in `teams[]` embeds directly
    *  in the cockpit, exactly as before groups had servers. */
   topology?: GroupedTopology;
-  /** ADR-285 deterministic scheduler singleton. Per-team additive
-   * reconcile never creates or reorders this cockpit-owned role. */
-  superbot?: CockpitSuperbot;
-  /** Command for a newly-created `_superbot` window. Existing panes are
-   * preserved. Full rebuild pins the same cockpit config it loaded. */
-  superbotCommand?: string;
 }
 
 /** One cockpit-session viewer slot the reconcile should ensure — either
@@ -2105,12 +2096,11 @@ export async function reconcileCockpitSession(
     logger.log(`  ✓ created session ${sessionName} (window 1: _superdriver)`);
   }
 
-  // t-1dc684dd: medic provisions ONLY on fleet-wide reconcile, mirroring
-  // wantSuperbot. Per-team (onlyTeam) startup must not create unrelated
+  // t-1dc684dd: medic provisions ONLY on fleet-wide reconcile.
+  // Per-team (onlyTeam) startup must not create unrelated
   // windows — `atmux start` from a team dir once spawned a live _medic
   // pane as a side effect. Full `cockpit rebuild` still provisions.
   const wantMedic = onlyTeam === undefined && medic?.enabled === true;
-  const wantSuperbot = onlyTeam === undefined && reconcileOpts.superbot?.enabled === true;
 
   // ADR-135 §D4 — legacy cockpit-role-window migration. Renames in
   // order: `superdoctor → medic` (ADR-133 carry-over), `superdriver
@@ -2174,7 +2164,6 @@ export async function reconcileCockpitSession(
     sessionName,
     teams,
     wantMedic,
-    wantSuperbot,
     yes,
     logger,
     operatorWindows,
@@ -2231,23 +2220,6 @@ export async function reconcileCockpitSession(
     }
   }
 
-  // ADR-285: `_superbot` is a deterministic process window, not an
-  // agent/member session. Creation is additive; the shared park/place
-  // pass below positions it immediately after optional `_medic` without
-  // destroying existing panes.
-  if (wantSuperbot) {
-    const before = await cockpitTmux.window.listWindows(sessionName);
-    if (!before.some((window) => window.name === "_superbot")) {
-      await cockpitTmux.window.newWindow({
-        sessionName,
-        name: "_superbot",
-        detached: true,
-        shellCommand: reconcileOpts.superbotCommand ?? buildSuperbotWindowCommand(),
-      });
-      logger.log("  ✓ added window '_superbot'");
-    }
-  }
-
   const windows = await cockpitTmux.window.listWindows(sessionName);
   const present = new Set(windows.map((w) => w.name));
   // ADR-089 §Pillar 1 §Amendment (t-2ea3bdb9, ba1f1c1) used to filter
@@ -2262,7 +2234,6 @@ export async function reconcileCockpitSession(
   const wanted = new Set([
     "_superdriver",
     ...(wantMedic ? ["_medic"] : []),
-    ...(wantSuperbot ? ["_superbot"] : []),
     ...operatorWindows.map((w) => w.name),
     ...viewerEntries.map((v) => v.name),
   ]);
@@ -2355,7 +2326,7 @@ export async function reconcileCockpitSession(
   // sit immediately after its parent's viewer in cockpit window order. The
   // `teams` array from enabledTeams() is already in DFS pre-order
   // (parent → child → next sibling), so the desired layout is:
-  //   [_superdriver, _medic?, _superbot?, ...operator windows, ...teams in DFS order]
+  //   [_superdriver, _medic?, ...operator windows, ...teams in DFS order]
   // Skip this pass in per-team mode — single-team callers have no authority
   // to reorder sibling team viewers.
   if (onlyTeam === undefined) {
@@ -2369,7 +2340,6 @@ export async function reconcileCockpitSession(
     // entry that has no cockpit window (which would leave gaps and offset
     // sibling teams). Group windows order like team windows (e-419553c6).
     const desiredNames = [
-      ...(wantSuperbot ? ["_superbot"] : []),
       ...operatorWindows.map((entry) => entry.name),
       ...viewerEntries.map((entry) => entry.name),
     ];
@@ -2499,14 +2469,6 @@ export function buildSuperdoctorWindowCommand(sd: CockpitMedic): string {
   return buildMedicWindowCommand(sd);
 }
 
-/** ADR-285: command for the cockpit scheduler window. The config path is
- * single-quoted because this string is interpreted by the pane shell. */
-export function buildSuperbotWindowCommand(configPath?: string): string {
-  if (configPath === undefined) return withShellFloor("atmux superbot run");
-  const safe = configPath.replace(/'/g, "'\\''");
-  return withShellFloor(`atmux superbot run --config '${safe}'`);
-}
-
 /** Shared body for the medic window-command builder.
  *  Reads the `tuiOverrides` + `claudeAccount` fields the medic block
  *  surfaces (struct mirrored on purpose per ADR-077 §D2 — reuses
@@ -2558,7 +2520,6 @@ interface RefuseDestructiveOpts {
   sessionName: string;
   teams: ReadonlyArray<CockpitTeam>;
   wantMedic: boolean;
-  wantSuperbot: boolean;
   yes: boolean;
   logger: Logger;
   operatorWindows: ReadonlyArray<CockpitWindow>;
@@ -2599,7 +2560,6 @@ async function refusePlannedDestructiveOps(opts: RefuseDestructiveOpts): Promise
     sessionName,
     teams,
     wantMedic,
-    wantSuperbot,
     yes,
     logger,
     operatorWindows,
@@ -2656,7 +2616,6 @@ async function refusePlannedDestructiveOps(opts: RefuseDestructiveOpts): Promise
   const wanted = new Set<string>([
     "_superdriver",
     ...(wantMedic ? ["_medic"] : []),
-    ...(wantSuperbot ? ["_superbot"] : []),
     ...operatorWindows.map((w) => w.name),
     ...(viewerNames ?? teams.map((t) => t.name)),
   ]);

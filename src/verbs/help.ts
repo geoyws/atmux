@@ -109,8 +109,6 @@ Dispatch + work:
                               --task claims it, blocked --task blocks it
 
 Automation:
-  superbot tick [--shadow]    Run one deterministic Kanban offer cycle
-  superbot run [--shadow]     Run the singleton 30-minute offer scheduler
   report                      Post 30-min progress digest to Discord
   cost [--member <m>] [--since <t>] [--json]  Per-member USD + token usage
   host-pressure [--host <h>] [--timeout-ms <n>] [--json]

@@ -16,7 +16,6 @@ import {
   autolaunchTeam,
   buildGroupWindowCommand,
   buildMigrationBreadcrumb,
-  buildSuperbotWindowCommand,
   buildTeamWindowCommand,
   type CapturedCockpitWindow,
   COCKPIT_RECONCILE_CONCURRENCY,
@@ -951,77 +950,6 @@ describe("reconcileCockpitSession", () => {
       expect(order).toEqual(["_superdriver", "_medic", "alpha", "beta"]);
       expect(await pidOf("alpha")).toBe(before.alpha);
       expect(await pidOf("beta")).toBe(before.beta);
-    } finally {
-      try {
-        await fx.tmux.server.killServer();
-      } catch {}
-      await rm(fx.socketDir, { recursive: true, force: true });
-    }
-  });
-
-  test("ADR-285: _superbot sits after optional _medic and preserves every pane on re-run", async () => {
-    const fx = await spinTmux("cockpit-superbot-order");
-    try {
-      const { logger } = makeLogger();
-      const teams: CockpitTeam[] = [
-        { name: "alpha", root: "/a", enabled: true } as CockpitTeam,
-        { name: "beta", root: "/b", enabled: true } as CockpitTeam,
-      ];
-      const windows = [{ name: "_misc", enabled: true, cwd: "/tmp", command: null }];
-      const medic = { enabled: true };
-      const deps: ResolveTeamWindowDeps = { buildMedicCommand: () => PORTABLE_KEEPALIVE_COMMAND };
-      const reconcileOpts = {
-        windows,
-        superbot: {
-          enabled: true,
-          shadow: true,
-          intervalMins: 30,
-          fallbackAfterIntervals: 1,
-          maxOffersPerTick: 20,
-          routes: [],
-        },
-        superbotCommand: PORTABLE_KEEPALIVE_COMMAND,
-      };
-
-      await reconcileCockpitSession(
-        fx.tmux,
-        "atmux_cockpit",
-        teams,
-        logger,
-        deps,
-        medic,
-        false,
-        reconcileOpts,
-      );
-      const ordered = (await fx.tmux.window.listWindows("atmux_cockpit"))
-        .slice()
-        .sort((a, b) => a.index - b.index)
-        .map((window) => window.name);
-      expect(ordered).toEqual(["_superdriver", "_medic", "_superbot", "_misc", "alpha", "beta"]);
-      const before = new Map<string, number>();
-      for (const window of ordered) {
-        const pane = (await fx.tmux.pane.listPanes(`atmux_cockpit:${window}`))[0];
-        expect(pane).toBeDefined();
-        if (!pane) throw new Error(`missing pane for ${window}`);
-        before.set(window, pane.pid);
-      }
-
-      await reconcileCockpitSession(
-        fx.tmux,
-        "atmux_cockpit",
-        teams,
-        logger,
-        deps,
-        medic,
-        false,
-        reconcileOpts,
-      );
-      for (const [window, pid] of before) {
-        expect((await fx.tmux.pane.listPanes(`atmux_cockpit:${window}`))[0]?.pid).toBe(pid);
-      }
-      expect(buildSuperbotWindowCommand("/tmp/a b.json")).toBe(
-        "atmux superbot run --config '/tmp/a b.json'",
-      );
     } finally {
       try {
         await fx.tmux.server.killServer();

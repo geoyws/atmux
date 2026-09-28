@@ -86,7 +86,6 @@ import { start } from "./verbs/start.ts";
 import { status } from "./verbs/status.ts";
 import { stop } from "./verbs/stop.ts";
 import { story } from "./verbs/story.ts";
-import { superbot } from "./verbs/superbot.ts";
 import { dispatchSyncSubverb } from "./verbs/sync.ts";
 import { task } from "./verbs/task.ts";
 import { teamRename } from "./verbs/team-rename.ts";
@@ -234,8 +233,6 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return topo(argv.slice(1));
     case "fleet":
       return fleet(argv.slice(1));
-    case "superbot":
-      return superbot(argv.slice(1));
     case "nudge":
       return nudge(argv.slice(1));
     case "member":

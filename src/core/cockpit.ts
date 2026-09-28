@@ -18,7 +18,6 @@ import {
   type CockpitMedic,
   type CockpitSessionT,
   type Cockpit as CockpitShape,
-  type CockpitSuperbot,
   type CockpitTeam,
   type TeamSessionT,
 } from "../schema/cockpit.ts";
@@ -31,16 +30,6 @@ import { sessionAnchorPath } from "./common.ts";
  *  `type: "medic"` entry exists. */
 export type LoadedCockpit = CockpitShape & {
   teams: CockpitTeam[];
-  superbot: CockpitSuperbot;
-};
-
-export const DEFAULT_COCKPIT_SUPERBOT: CockpitSuperbot = {
-  enabled: false,
-  shadow: true,
-  intervalMins: 30,
-  fallbackAfterIntervals: 1,
-  maxOffersPerTick: 20,
-  routes: [],
 };
 
 export interface LoadCockpitOpts {
@@ -178,27 +167,7 @@ export async function loadCockpit(opts: LoadCockpitOpts = {}): Promise<LoadedCoc
   // the cage on the legacy `C-\` chord — one chord meaning two cages.
   assertDepthWithinChain(parsed, path);
   validateOperatorWindowNames(parsed);
-  validateSuperbotRoutes(parsed, path);
   return enrichLegacyFields(parsed);
-}
-
-/** ADR-285: route owners must be enabled persistent teams from this
- * cockpit roster. This deliberately does not infer teams from tags or
- * create transient workers. */
-export function validateSuperbotRoutes(cockpit: CockpitShape, path = "cockpit.json"): void {
-  const teams = new Set(enabledTeams(cockpit).map((team) => team.name));
-  for (const route of cockpit.superbot?.routes ?? []) {
-    for (const owner of [route.defaultTeam, ...route.fallbackTeams]) {
-      if (!teams.has(owner)) {
-        throw new ConfigError({
-          what:
-            `cockpit.json at ${path}: superbot route board='${route.board}' ` +
-            `tag='${route.tag}' names unknown or disabled team '${owner}'`,
-          hint: "route only to enabled persistent sessions[] team entries",
-        });
-      }
-    }
-  }
 }
 
 /** ADR-279: operator windows share the cockpit tmux namespace with role
@@ -210,7 +179,6 @@ function validateOperatorWindowNames(cockpit: CockpitShape): void {
     "_medic",
     "medic",
     "superdoctor",
-    "_superbot",
   ]);
   walkSessions(cockpit.sessions ?? [], 0, (node) => {
     // Groups occupy the cockpit window namespace too (e-419553c6 true
@@ -376,7 +344,6 @@ function enrichLegacyFields(cockpit: CockpitShape): LoadedCockpit {
   return {
     ...cockpit,
     teams,
-    superbot: cockpit.superbot ?? DEFAULT_COCKPIT_SUPERBOT,
     ...(medic !== undefined ? { medic } : {}),
   };
 }

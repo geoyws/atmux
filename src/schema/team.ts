@@ -1344,22 +1344,6 @@ export function resolveRefusalConfig(
   };
 }
 
-/** ADR-285 §D2 — cooperative automation seat. The block is opt-in so
- *  transient/legacy teams do not silently gain a long-lived harness;
- *  persistent parent teams are migrated explicitly. When present,
- *  `enabled` defaults true and the cwd is pinned to the one supported
- *  bot-worktree location. A null/omitted tui starts zsh for direct
- *  operator use but is intentionally unroutable by `_superbot`. */
-export const TeamBot = z
-  .object({
-    enabled: z.boolean().default(true),
-    tui: z.string().min(1).nullable().optional(),
-    cwd: z.literal(".atmux/worktrees/bot").default(".atmux/worktrees/bot"),
-    claudeAccount: z.string().min(1).nullable().optional(),
-  })
-  .strict();
-export type TeamBot = z.infer<typeof TeamBot>;
-
 /** ADR-296 — per-team superdriver orchestration seat. The block is
  *  OPTIONAL and defaults ON: an absent block resolves to enabled with
  *  defaults (see `core/superdriver.ts::resolveSuperdriver`), so every
@@ -1369,7 +1353,7 @@ export type TeamBot = z.infer<typeof TeamBot>;
  *  agent, same as drivers). There is deliberately NO cwd field — the
  *  seat is pinned to the repo root (not configurable), owns no branch
  *  and no worktree. Strict so typos trip the same drift-detection ping
- *  as the surrounding `bot` / `whip` sub-blocks. */
+ *  as the surrounding `whip` sub-block. */
 export const TeamSuperdriver = z
   .object({
     enabled: z.boolean().default(true),
@@ -1480,7 +1464,6 @@ export const Team = z
      *  `tui` / `command` default null so the pane opens an interactive
      *  shell unless configured deliberately. */
     driverPair: DriverPairPresetSchema.default(CANONICAL_DRIVER_PAIR_PRESET),
-    bot: TeamBot.optional(),
     /** ADR-296: per-team superdriver orchestration seat. Absent ==
      *  enabled with defaults (resolved in `core/superdriver.ts`); set
      *  `{"enabled": false}` to opt out. */

@@ -133,55 +133,6 @@ describe("loadCockpit", () => {
     expect(cockpit.cockpitSession).toBe("atx");
   });
 
-  test("ADR-285 defaults superbot to disabled + shadow", async () => {
-    await writeCockpit({ sessions: [{ type: "team", name: "x", root: "/x" }] });
-    const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
-    expect(cockpit.superbot).toEqual({
-      enabled: false,
-      shadow: true,
-      intervalMins: 30,
-      fallbackAfterIntervals: 1,
-      maxOffersPerTick: 20,
-      routes: [],
-    });
-  });
-
-  test("ADR-285 validates unique routes and persistent team owners", async () => {
-    const sessions = [
-      { type: "team", name: "x", root: "/x" },
-      { type: "team", name: "y", root: "/y" },
-    ];
-    await writeCockpit({
-      sessions,
-      superbot: {
-        enabled: true,
-        routes: [{ board: "atmux", tag: "dispatch", defaultTeam: "x", fallbackTeams: ["y"] }],
-      },
-    });
-    const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
-    expect(cockpit.superbot.shadow).toBe(true);
-    expect(cockpit.superbot.intervalMins).toBe(30);
-
-    await writeCockpit({
-      sessions,
-      superbot: {
-        routes: [
-          { board: "atmux", tag: "dispatch", defaultTeam: "x" },
-          { board: "atmux", tag: "dispatch", defaultTeam: "y" },
-        ],
-      },
-    });
-    await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(SchemaError);
-
-    await writeCockpit({
-      sessions,
-      superbot: {
-        routes: [{ board: "atmux", tag: "dispatch", defaultTeam: "missing" }],
-      },
-    });
-    await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(ConfigError);
-  });
-
   test("ADR-279 — preserves explicit cockpitSession 'atmux_teams' literally", async () => {
     await writeCockpit({
       cockpitSession: "atmux_teams",
