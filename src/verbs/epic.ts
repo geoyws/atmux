@@ -16,7 +16,7 @@
 //   atmux epic set-depends-on  <id> <eid,…>            (ADR-225; empty clears)
 //   atmux epic deps            <id> [--json]           (ADR-225)
 
-import { getAtmuxDir, type ResolveDirOpts } from "../core/common.ts";
+import { getAtmuxDir, tryLoadTeam, type ResolveDirOpts } from "../core/common.ts";
 import {
   addEpic,
   advanceEpic,
@@ -93,9 +93,15 @@ async function epicAdd(argv: ReadonlyArray<string>): Promise<number> {
   // ADR-225: pass the comma-split dependsOn list through to the core
   // validator (self / non-existent / cycle refused before insert).
   if (parsed.dependsOn !== undefined) opts.dependsOn = parsed.dependsOn;
-  // e-47 T1: operator-explicit ready bit straight through to core
-  // (team-default fallback lands in T2; absent here → core false).
-  if (parsed.ready !== undefined) opts.isReady = parsed.ready;
+  // e-47 T1: operator-explicit ready bit straight through to core.
+  // e-47 T2: neither flag → team `epicAdd.readyByDefault` (absent ⇒
+  // false, current behavior preserved). Explicit flags always win.
+  if (parsed.ready !== undefined) {
+    opts.isReady = parsed.ready;
+  } else {
+    const team = await tryLoadTeam(dirOpts);
+    if (team?.epicAdd?.readyByDefault === true) opts.isReady = true;
+  }
   // ADR-231 §D3: per-epic orchd auto-spawn config. core/epic.ts
   // writes this into the inserted row's `extra.autoSpawn` slot per
   // the schema shape landed in t-7-0ad1dfe3.

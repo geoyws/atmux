@@ -118,6 +118,20 @@ export const TeamEmojis = z
   })
   .passthrough();
 export type TeamEmojis = z.infer<typeof TeamEmojis>;
+/**
+ * `team.json::epicAdd` sub-config (e-47 T2). Operator default for the
+ * `epic add` ready bit when neither `--ready` nor `--no-ready` is
+ * passed. `.strict()` mirrors TeamWhip — drift detection rejects
+ * unknown keys (typo protection per ADR-054 §D3). Absent block ⇒
+ * `false` (current behavior preserved for teams that don't opt in).
+ */
+export const TeamEpicAdd = z
+  .object({
+    /** When true, `epic add` without explicit flags lands is_ready=1. */
+    readyByDefault: z.boolean().default(false),
+  })
+  .strict();
+export type TeamEpicAdd = z.infer<typeof TeamEpicAdd>;
 
 /**
  * `team.json::whip` sub-config — typed per ADR-054 §D1.
@@ -1586,6 +1600,9 @@ export const Team = z
      *  block ⇒ disabled; every pre-ADR-261 team.json parses unchanged.
      *  See {@link TeamIssueSync}. */
     issueSync: TeamIssueSync.optional(),
+    /** e-47 T2: `epic add` ready-bit default. Absent ⇒ false
+     *  (current behavior preserved). See {@link TeamEpicAdd}. */
+    epicAdd: TeamEpicAdd.optional(),
     /** Phase 2 sub-shapes — typed once verb porters land. */
     discord: z.unknown().optional(),
     tuiCommands: z.unknown().optional(),

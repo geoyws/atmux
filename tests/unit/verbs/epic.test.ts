@@ -478,6 +478,47 @@ describe("epic verb — e-47 T1 ready flags", () => {
   });
 });
 
+describe("epic verb — e-47 T2 team default", () => {
+  async function seedTeamWithEpicAdd(epicAdd: unknown): Promise<void> {
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      JSON.stringify({
+        name: "team",
+        members: [{ name: "lead", role: "team-lead" }],
+        epicAdd,
+      }),
+    );
+  }
+
+  test("readyByDefault:true + no flags → is_ready=1", async () => {
+    await seedTeamWithEpicAdd({ readyByDefault: true });
+    const { out } = await captureStdout(async () => {
+      return await epic(["add", "--team-dir", teamDir, "Z"]);
+    });
+    expect((await showEpic(atmuxDir, out.trim()))?.isReady).toBe(true);
+  });
+
+  test("readyByDefault:true + --no-ready → explicit off wins", async () => {
+    await seedTeamWithEpicAdd({ readyByDefault: true });
+    const { out } = await captureStdout(async () => {
+      return await epic(["add", "--team-dir", teamDir, "Z", "--no-ready"]);
+    });
+    expect((await showEpic(atmuxDir, out.trim()))?.isReady).toBe(false);
+  });
+
+  test("no epicAdd block + no flags → is_ready=0 (behavior preserved)", async () => {
+    const { out } = await captureStdout(async () => {
+      return await epic(["add", "--team-dir", teamDir, "Z"]);
+    });
+    expect((await showEpic(atmuxDir, out.trim()))?.isReady).toBe(false);
+  });
+
+  test("typo key in epicAdd block → SchemaError surfaces (drift)", async () => {
+    await seedTeamWithEpicAdd({ readyByDefalt: true });
+    await expect(epic(["add", "--team-dir", teamDir, "Z"])).rejects.toThrow();
+  });
+});
+
 describe("epic verb — ADR-225 dispatch", () => {
   test("`epic add --depends-on a,b` writes the dep list correctly", async () => {
     // Seed two upstream epics.

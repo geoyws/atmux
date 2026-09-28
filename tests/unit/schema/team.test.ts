@@ -33,6 +33,7 @@ import {
   TeamCadence,
   TeamCadenceThresholds,
   TeamCrons,
+  TeamEpicAdd,
   TeamFallback,
   TeamIssueSync,
   TeamLeadStallWatchdog,
@@ -1665,5 +1666,29 @@ describe("TeamIssueSync schema (ADR-261 §D10)", () => {
         trackers: [{ id: "github", repos: ["geoyws/atmux"], pollIntervalSec: 1.5 }],
       }),
     ).toThrow(ZodError);
+  });
+});
+
+// ---------- TeamEpicAdd (e-47 T2) ----------
+
+describe("TeamEpicAdd — defaults + strict", () => {
+  test("empty block defaults readyByDefault false", () => {
+    expect(TeamEpicAdd.parse({}).readyByDefault).toBe(false);
+  });
+
+  test("explicit true parses", () => {
+    expect(TeamEpicAdd.parse({ readyByDefault: true }).readyByDefault).toBe(true);
+  });
+
+  test("unknown key rejects (drift detection)", () => {
+    expect(() => TeamEpicAdd.parse({ readyByDefalt: true })).toThrow(ZodError);
+  });
+
+  test("root Team accepts absent epicAdd; present block parses", () => {
+    expect(Team.parse({ name: "t", members: [] }).epicAdd).toBeUndefined();
+    expect(
+      Team.parse({ name: "t", members: [], epicAdd: { readyByDefault: true } }).epicAdd
+        ?.readyByDefault,
+    ).toBe(true);
   });
 });
