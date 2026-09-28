@@ -173,6 +173,18 @@ export type SendTarget =
       readonly kind: "driver";
       readonly team: string;
       readonly target: Target;
+    }
+  | {
+      /** ADR-296 — the per-team `superdriver` orchestration seat
+       *  (window 1, repo root). An interactive operator shell exactly
+       *  like driver windows: input is allowed under the same
+       *  observed-state discipline (send only into a pane whose current
+       *  state has been observed). It is not a member and not a driver
+       *  roster entry. Distinct from the cockpit-tier `_superdriver`
+       *  REPL (ADR-290) — different session, different lifecycle. */
+      readonly kind: "superdriver";
+      readonly team: string;
+      readonly target: Target;
     };
 
 /** Serialize the inner tmux target — pure pass-through to

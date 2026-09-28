@@ -148,6 +148,7 @@ import {
   resolveDriverCwd,
   resolveDriversList,
 } from "../core/drivers.ts";
+import { SUPERDRIVER_WINDOW_NAME, resolveSuperdriver } from "../core/superdriver.ts";
 import { injectGoalIfActive } from "../core/goal-injection.ts";
 import { submitAfterPaste } from "../core/paste-submit.ts";
 import { migrateLegacySessionName } from "../core/session-migrate.ts";
@@ -485,8 +486,96 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   // legacy `driverSession` / `driverTui` synthesis was removed per
   // ADR-266 §D2 — only `drivers[]` drives the spawn loop now.)
   const drivers = resolveDriversList(team as Parameters<typeof resolveDriversList>[0]);
+  // ADR-296 — resolve the per-team superdriver orchestration seat.
+  // Absent block == enabled with defaults, so legacy team.json files
+  // gain the seat without migration; `{"enabled": false}` opts out.
+  // It is NOT a drivers[] entry and NOT a members[] entry: no
+  // worktree, no branch of its own, cwd pinned to the repo root.
+  const superdriver = resolveSuperdriver(team, projectRoot);
+  const superdriverShellLabel = superdriver.tui ?? "zsh";
+  let superdriverSpawned = false;
+
+  /** Stage-2 TUI command for the superdriver seat, or undefined for a
+   *  shell-only seat (null/absent/shell/zsh tui — same rule as
+   *  drivers). */
+  const superdriverTuiCommand = (): string | undefined => {
+    const tui = superdriver.tui;
+    if (tui === undefined || tui === null) return undefined;
+    if (tui === "shell" || tui === "zsh") return undefined;
+    const synth = {
+      name: SUPERDRIVER_WINDOW_NAME,
+      role: "superdriver",
+      tui,
+      model: "default",
+      cwd: projectRoot,
+    };
+    try {
+      return resolveTuiCommand(synth, team, { env, cwd: projectRoot });
+    } catch (err) {
+      logger.warn(
+        `superdriver: could not resolve command for tui='${superdriver.tui}' — pane will land in shell (${err instanceof Error ? err.message : String(err)})`,
+      );
+      return undefined;
+    }
+  };
+
+  /** Stage 2 for the superdriver pane. Never fatal: a seat whose TUI
+   *  did not come up is still a live shell the operator can use. */
+  const launchSuperdriverTui = async (paneId: PaneId): Promise<void> => {
+    const cmd = superdriverTuiCommand();
+    if (cmd === undefined) return;
+    if (parsed.noLaunch) {
+      logger.log("  · superdriver: --no-launch — pane left as a bare zsh");
+      return;
+    }
+    const outcome = await launchAgentInPane({
+      tmux,
+      paneId,
+      intent: { kind: "superdriver", team: team.name },
+      command: cmd,
+      sleep: briefSleep,
+    });
+    if (outcome === "no-prompt") {
+      logger.warn(
+        "superdriver: pane shell never executed its readiness probe — TUI not launched (pane is intact; start it by hand)",
+      );
+    }
+  };
   let driverInitial = false;
   if (!stillExists) {
+    // ---------- ADR-296 superdriver seat (window 1) ----------
+    //
+    // When enabled, the superdriver seat creates the session at window
+    // 1 (cwd pinned to the repo root — no worktree, no branch of its
+    // own), and every driver below attaches as a window after it
+    // (drivers at 2..N+1). When disabled, the layout below is exactly
+    // today's (first driver at window 1, else the __home
+    // placeholder).
+    if (superdriver.enabled) {
+      await tmux.session.newSession({
+        name: session,
+        windowName: SUPERDRIVER_WINDOW_NAME,
+        cwd: projectRoot,
+        shellCommand: shellPaneCommand(),
+      });
+      const created = (await tmux.window.listWindows(session)).filter(
+        (window) => window.name === SUPERDRIVER_WINDOW_NAME,
+      );
+      if (created.length !== 1 || created[0] === undefined) {
+        throw new Error("superdriver: expected exactly one fresh window");
+      }
+      const seatPane = await resolveOnlyPane(
+        tmux,
+        { sessionName: session, windowIndex: created[0].index },
+        session,
+        created[0].index,
+      );
+      await launchSuperdriverTui(seatPane);
+      logger.ok(
+        `created tmux session: ${session} (superdriver at window 1, ${superdriverShellLabel})`,
+      );
+      superdriverSpawned = true;
+    }
     if (drivers.length > 0) {
       // ---------- ADR-239 §A1/§A5 driver-spawn loop ----------
       //
@@ -612,11 +701,14 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
         }
       };
 
-      // First driver creates the session (window 1). Subsequent drivers
-      // attach as windows 2..N. Window order is driver-N at slots 1..N
-      // per ADR-239 §D3; members follow at N+1.
+      // First driver creates the session (window 1) — unless ADR-296
+      // already seeded it with the superdriver seat, in which case
+      // EVERY driver attaches as a window after it. Window order is
+      // driver-N at slots 1..N per ADR-239 §D3 when the seat is
+      // disabled, else superdriver at 1 and drivers at 2..N+1;
+      // members follow after the last driver.
       const firstDriver = drivers[0];
-      if (firstDriver !== undefined) {
+      if (firstDriver !== undefined && !superdriverSpawned) {
         const firstCwd0 = resolveDriverCwd(firstDriver, projectRoot);
         const firstCwd = await ensureDriverWorktree(firstDriver, firstCwd0);
         const newSessionOpts: Parameters<typeof tmux.session.newSession>[0] = {
@@ -645,7 +737,10 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
         driverInitial = true;
       }
 
-      for (let i = 1; i < drivers.length; i++) {
+      // ADR-296: when the seat seeded the session, drivers[0] did NOT
+      // take the new-session branch above — every driver attaches here,
+      // landing at windows 2..N+1 in roster order.
+      for (let i = superdriverSpawned ? 0 : 1; i < drivers.length; i++) {
         const drv = drivers[i];
         if (drv === undefined) continue;
         const cwd0 = resolveDriverCwd(drv, projectRoot);
@@ -661,11 +756,11 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
         const paneId = await resolveOnlyPane(tmux, winId, session, winId.windowIndex);
         await launchDriverTui(drv, cwd, paneId);
         logger.log(
-          `  · driver pane: ${drv.name} at window ${i + 1} (${driverShellLabel(drv.tui)}) cwd=${cwd}`,
+          `  · driver pane: ${drv.name} at window ${i + (superdriverSpawned ? 2 : 1)} (${driverShellLabel(drv.tui)}) cwd=${cwd}`,
         );
       }
     }
-    if (!driverInitial) {
+    if (!driverInitial && !superdriverSpawned) {
       await tmux.session.newSession({
         name: session,
         windowName: homeWin,
@@ -735,6 +830,55 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   const cagePrefix = await resolveCagePrefixBestEffort(nestingLevel, opts, logger);
   await applyCagePrefix(tmux, cagePrefix);
   logger.log(`cage prefix: level=${nestingLevel} prefix=${cagePrefix}`);
+
+  // 7a-sd. ADR-296 — ensure the superdriver seat on a live cage.
+  //     Fresh starts already seeded it above (superdriverSpawned), so
+  //     this is the incremental path: a running cage that lacks the
+  //     window (pre-ADR-296 cage, or one started with
+  //     `{"enabled": false}` then flipped on) gains it INSERTED
+  //     immediately BEFORE the first live driver window (tmux
+  //     `new-window -b`) — no existing pane is killed or respawned.
+  //     With no driver window live yet it goes first (before the
+  //     lowest-index window). Present already → untouched. Disabled →
+  //     never created (an existing one is left alone, reported).
+  //     Runs before the `_bot` block so the bot's insert-after-last-
+  //     driver snapshot below already includes the shifted indices.
+  if (superdriver.enabled && !superdriverSpawned) {
+    const live = await tmux.window.listWindows(session);
+    if (live.some((w) => w.name === SUPERDRIVER_WINDOW_NAME)) {
+      logger.log("  · superdriver: window exists, preserving operator state");
+    } else {
+      const driverNames = new Set(drivers.map((d) => d.name));
+      const ordered = [...live].sort((a, b) => a.index - b.index);
+      const firstDriver = ordered.find((w) => driverNames.has(w.name));
+      const anchor =
+        firstDriver ?? ordered.find((w) => w.name !== homeWin) ?? ordered[0];
+      const newWindowOpts: Parameters<typeof tmux.window.newWindow>[0] = {
+        sessionName: session,
+        name: SUPERDRIVER_WINDOW_NAME,
+        cwd: projectRoot,
+        detached: true,
+        shellCommand: shellPaneCommand(),
+      };
+      if (anchor !== undefined) {
+        newWindowOpts.insert = { target: `${session}:${anchor.index}`, position: "before" };
+      }
+      const seatWindow = await tmux.window.newWindow(newWindowOpts);
+      const seatPane = await resolveOnlyPane(tmux, seatWindow, session, seatWindow.windowIndex);
+      await launchSuperdriverTui(seatPane);
+      superdriverSpawned = true;
+      logger.log(
+        `  · superdriver seat: ${SUPERDRIVER_WINDOW_NAME} (${superdriverShellLabel}) cwd=${projectRoot}`,
+      );
+    }
+  } else if (!superdriver.enabled) {
+    const live = await tmux.window.listWindows(session);
+    if (live.some((w) => w.name === SUPERDRIVER_WINDOW_NAME)) {
+      logger.log(
+        "  · superdriver: disabled in team.json — existing window left alone (kill it by hand if the opt-out should take effect)",
+      );
+    }
+  }
 
   // 7b. ADR-285 §D2 — cooperative `_bot` seat. This is deliberately
   //     separate from both drivers (operator-interactive panes, no lane
@@ -1231,7 +1375,9 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
 
   // 9. Close the `__<team>__home` placeholder if any members spawned
   //    AND non-placeholder windows now exist (lib/start.sh:288-294).
-  if (spawned > 0 || botSpawned) {
+  //    ADR-296: an inserted superdriver seat counts too — an old cage
+  //    holding only `__home` gains the seat and drops the placeholder.
+  if (spawned > 0 || botSpawned || superdriverSpawned) {
     const after = await tmux.window.listWindows(session);
     const hasHome = after.some((w) => w.name === homeWin);
     const otherCount = after.filter((w) => w.name !== homeWin).length;

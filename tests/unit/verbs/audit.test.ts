@@ -279,6 +279,123 @@ describe("detectClassC", () => {
   });
 });
 
+describe("detectClassC — ADR-296 superdriver seat", () => {
+  test("enabled: superdriver@1, driver@2, lead@3 → GREEN", () => {
+    const r = detectClassC({
+      team: "atmux",
+      superdriverEnabled: true,
+      windows: [
+        { index: 1, name: "superdriver" },
+        { index: 2, name: "driver" },
+        { index: 3, name: "🧭lead" },
+      ],
+    });
+    expect(r).toEqual([]);
+  });
+
+  test("enabled: legacy prefixed driver in the driver slot → GREEN", () => {
+    const r = detectClassC({
+      team: "atmux",
+      superdriverEnabled: true,
+      windows: [
+        { index: 1, name: "superdriver" },
+        { index: 2, name: "__atmux__driver" },
+        { index: 3, name: "lead" },
+      ],
+    });
+    expect(r).toEqual([]);
+  });
+
+  test("enabled but seat missing (old cage: driver@1, lead@2) → superdriver finding", () => {
+    const r = detectClassC({
+      team: "atmux",
+      superdriverEnabled: true,
+      windows: [
+        { index: 1, name: "driver" },
+        { index: 2, name: "🧭lead" },
+      ],
+    });
+    // Lowest slot holds the driver, not the seat; the lead now sits in
+    // the driver slot too. Both findings must name the right slot —
+    // never a blind `-t :1` swap of the live driver pane.
+    expect(r.length).toBe(2);
+    expect(r[0]?.detail).toContain("expected superdriver seat");
+    expect(r[0]?.fix_hint).toContain("atmux start");
+    expect(r[0]?.fix_hint).not.toContain("swap-window");
+    expect(r[1]?.detail).toContain("window-position 2");
+    expect(r[1]?.fix_hint).toBe("tmux swap-window -s :driver -t :2");
+  });
+
+  test("enabled but seat later (driver@1, superdriver@2) → findings on both slots", () => {
+    const r = detectClassC({
+      team: "atmux",
+      superdriverEnabled: true,
+      windows: [
+        { index: 1, name: "driver" },
+        { index: 2, name: "superdriver" },
+        { index: 3, name: "🧭lead" },
+      ],
+    });
+    expect(r.length).toBe(2);
+    expect(r[0]?.detail).toContain("window-position 1 is 'driver'");
+    expect(r[0]?.detail).toContain("expected superdriver seat");
+    expect(r[1]?.detail).toContain("window-position 2 is 'superdriver'");
+  });
+
+  test("enabled: non-lead in the shifted lead slot → finding targets :3, not :2", () => {
+    const r = detectClassC({
+      team: "atmux",
+      superdriverEnabled: true,
+      windows: [
+        { index: 1, name: "superdriver" },
+        { index: 2, name: "driver" },
+        { index: 3, name: "🐝gitter" },
+      ],
+    });
+    expect(r.length).toBe(1);
+    expect(r[0]?.detail).toContain("window-position 3");
+    expect(r[0]?.fix_hint).toContain("-t :3");
+  });
+
+  test("disabled: seat layout flags W1 (today's rule kept)", () => {
+    const r = detectClassC({
+      team: "atmux",
+      superdriverEnabled: false,
+      windows: [
+        { index: 1, name: "superdriver" },
+        { index: 2, name: "driver" },
+        { index: 3, name: "🧭lead" },
+      ],
+    });
+    expect(r.length).toBe(2);
+    expect(r[0]?.detail).toContain("window-position 1 is 'superdriver'");
+    expect(r[0]?.detail).toContain("expected driver pane");
+  });
+
+  test("disabled + old layout stays GREEN", () => {
+    const r = detectClassC({
+      team: "atmux",
+      superdriverEnabled: false,
+      windows: [
+        { index: 1, name: "driver" },
+        { index: 2, name: "🧭lead" },
+      ],
+    });
+    expect(r).toEqual([]);
+  });
+
+  test("omitted flag keeps the pre-ADR-296 rule (back-compat for direct callers)", () => {
+    const r = detectClassC({
+      team: "atmux",
+      windows: [
+        { index: 1, name: "driver" },
+        { index: 2, name: "🧭lead" },
+      ],
+    });
+    expect(r).toEqual([]);
+  });
+});
+
 // ---------- detectClassD — trailing punctuation residue ----------
 
 describe("detectClassD", () => {
@@ -662,8 +779,12 @@ function makeStubTmux(
 }
 
 const STUB_TMUX: TmuxNamespace = makeStubTmux([
-  { index: 1, id: "@1", name: "driver", active: true },
-  { index: 2, id: "@2", name: "🧭lead", active: false },
+  // ADR-296 canonical cage: the fixture teams carry no `superdriver`
+  // block (absent == enabled), so GREEN needs the seat at the lowest
+  // slot with driver + lead following it.
+  { index: 1, id: "@1", name: "superdriver", active: true },
+  { index: 2, id: "@2", name: "driver", active: false },
+  { index: 3, id: "@3", name: "🧭lead", active: false },
 ]);
 
 const STUB_TMUX_DRIFTED: TmuxNamespace = makeStubTmux([
@@ -721,10 +842,12 @@ describe("runAllChecks (driver)", () => {
     const classes = findings.map((f) => f.class).sort();
     expect(classes).toContain("A");
     expect(classes).toContain("D");
-    // Class C: pos2 had trailing punct; class A at pos1 still gates the
-    // C-pos1-mismatch (legacy `__atmux__driver` is accepted at pos 1
-    // per detectClassC's compatibility branch). So C surfaces only the
-    // pos2 lead-shape finding via the trailing-punct path.
+    // Class C under ADR-296 (fixture team has no `superdriver` block,
+    // so the seat is enabled): the lowest slot holds legacy
+    // `__atmux__driver` instead of the seat, and the next slot holds
+    // the lead instead of the driver — both surface as C findings
+    // alongside A + D.
+    expect(classes).toContain("C");
   });
 
   test("class B surfaces hyphen-form tmpdir even when session is down", async () => {

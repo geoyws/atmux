@@ -63,6 +63,7 @@ import {
   type MemberWindow,
   MemberWindowResolveError,
   moveMemberWindow,
+  reservedSeatIndices,
   resolveMemberToWindowIdx,
   sortMembersDefaultsFirst,
   swapMemberWindows,
@@ -79,6 +80,8 @@ import {
   resolveTeamSocket,
   teamJsonPath,
 } from "../core/common.ts";
+import { resolveDriversList } from "../core/drivers.ts";
+import { SUPERDRIVER_WINDOW_NAME } from "../core/superdriver.ts";
 import { writeHeartbeat } from "../core/heartbeat.ts";
 import { loadInbox, movePendingToInProgress } from "../core/inbox.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
@@ -109,6 +112,23 @@ const COCKPIT_RESERVED_NAMES: ReadonlyArray<string> = ["atx", "atmux_cockpit", "
 
 function isCockpitContext(teamName: string): boolean {
   return COCKPIT_RESERVED_NAMES.includes(teamName);
+}
+
+/** Operator-seat window names for a team — the ADR-296 superdriver seat
+ *  plus every roster driver name. Name-based (indices shift when the
+ *  seat is enabled), so `member move/swap/sort` derive the protected
+ *  range from the live window list instead of assuming "driver is
+ *  window 1". The superdriver name is unconditional: a leftover seat
+ *  window on an opted-out team stays protected until the operator
+ *  kills it by hand. */
+export function seatNamesForTeam(team: Pick<TeamShape, "drivers">): ReadonlySet<string> {
+  const names = new Set<string>([SUPERDRIVER_WINDOW_NAME]);
+  // Cast mirrors start.ts: the Zod-output `drivers` carries an explicit
+  // `| undefined` that `DriverRosterTeam` (exactOptionalPropertyTypes)
+  // does not declare.
+  const roster = resolveDriversList(team as Parameters<typeof resolveDriversList>[0]);
+  for (const d of roster) names.add(d.name);
+  return names;
 }
 
 // ---------- Args ----------
@@ -759,6 +779,12 @@ export async function memberMoveInternal(
     return { exitCode: 0, wrote: false, moved: false };
   }
 
+  // ADR-296: the protected range is name-based (superdriver seat +
+  // roster driver names) — indices shift when the seat is enabled, so
+  // "driver is window 1" no longer holds. One listing feeds both the
+  // resolve guard and the move guard (nothing mutates between them).
+  const liveBeforeMove = await probe.tmux.window.listWindows(probe.sessionName);
+  const reserved = reservedSeatIndices(liveBeforeMove, seatNamesForTeam(team));
   let source: MemberWindow;
   const resolveMember = opts.resolveMemberToWindowIdxFn ?? resolveMemberToWindowIdx;
   try {
@@ -769,6 +795,7 @@ export async function memberMoveInternal(
       tmux: probe.tmux,
       buildWindowName,
       buildWindowNameLegacy,
+      reservedIndices: reserved,
     });
   } catch (e) {
     if (e instanceof MemberWindowResolveError)
@@ -776,7 +803,6 @@ export async function memberMoveInternal(
     throw e;
   }
 
-  const liveBeforeMove = await probe.tmux.window.listWindows(probe.sessionName);
   const occupiedIndices = new Set(liveBeforeMove.map((w) => w.index));
   let moved: boolean;
   const moveWindow = opts.moveMemberWindowFn ?? moveMemberWindow;
@@ -787,6 +813,7 @@ export async function memberMoveInternal(
       target: parsed.position,
       tmux: probe.tmux,
       occupiedIndices,
+      reservedIndices: reserved,
     });
   } catch (e) {
     if (e instanceof MemberWindowResolveError)
@@ -856,6 +883,11 @@ export async function memberSwapInternal(
     return { exitCode: 0, wrote: false, swapped: false };
   }
 
+  // ADR-296: both swap endpoints resolve through the name-based seat
+  // guard, so a member can never be swapped into (or out of — seats
+  // never resolve) a superdriver/driver slot.
+  const liveForSeats = await probe.tmux.window.listWindows(probe.sessionName);
+  const swapReserved = reservedSeatIndices(liveForSeats, seatNamesForTeam(team));
   let a: MemberWindow;
   let b: MemberWindow;
   const resolveMember = opts.resolveMemberToWindowIdxFn ?? resolveMemberToWindowIdx;
@@ -867,6 +899,7 @@ export async function memberSwapInternal(
       tmux: probe.tmux,
       buildWindowName,
       buildWindowNameLegacy,
+      reservedIndices: swapReserved,
     });
     b = await resolveMember({
       sessionName: probe.sessionName,
@@ -875,6 +908,7 @@ export async function memberSwapInternal(
       tmux: probe.tmux,
       buildWindowName,
       buildWindowNameLegacy,
+      reservedIndices: swapReserved,
     });
   } catch (e) {
     if (e instanceof MemberWindowResolveError)
@@ -976,15 +1010,26 @@ export async function memberSortInternal(
     // the slot is occupied) or `move-window` (when empty) — both
     // preserve PIDs + attached clients + claude-process state.
     //
-    // Driver slot derivation: lowest live window index (tmux base-index
-    // is 1 in production per ADR-162, but tests/legacy configs may use
-    // 0; deriving from the live list keeps the verb robust either way).
+    // ADR-296: operator-seat range is name-based (superdriver seat +
+    // roster driver names), not "lowest live index". Member slots start
+    // after the HIGHEST seat index, so sort never targets (or steps
+    // through) a superdriver/driver slot. With no seat window live,
+    // fall back to the legacy lowest-index+1 derivation (tmux
+    // base-index is 1 in production per ADR-162, but tests/legacy
+    // configs may use 0; deriving from the live list keeps the verb
+    // robust either way).
     const liveInit = await probe.tmux.window.listWindows(probe.sessionName);
+    const seatIdx = reservedSeatIndices(liveInit, seatNamesForTeam(team));
     const driverIdx = liveInit.reduce(
       (min, w) => (w.index < min ? w.index : min),
       Number.POSITIVE_INFINITY,
     );
-    const baseIdx = Number.isFinite(driverIdx) ? driverIdx + 1 : 2;
+    const baseIdx =
+      seatIdx.length > 0
+        ? Math.max(...seatIdx) + 1
+        : Number.isFinite(driverIdx)
+          ? driverIdx + 1
+          : 2;
 
     for (let i = 0; i < targetOrder.length; i++) {
       const memberId = targetOrder[i]!;
@@ -1004,6 +1049,7 @@ export async function memberSortInternal(
           buildWindowName,
           buildWindowNameLegacy,
           driverIndex: Number.isFinite(driverIdx) ? driverIdx : 1,
+          reservedIndices: seatIdx,
         });
       } catch (e) {
         // A rostered member may have no live window while paused or pre-spawn;
@@ -1019,6 +1065,7 @@ export async function memberSortInternal(
         tmux: probe.tmux,
         occupiedIndices,
         driverIndex: Number.isFinite(driverIdx) ? driverIdx : 1,
+        reservedIndices: seatIdx,
       });
       moveCount++;
     }

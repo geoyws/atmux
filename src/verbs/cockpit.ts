@@ -77,6 +77,7 @@ import { migrateLegacySessionName } from "../core/session-migrate.ts";
 import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { posixQuote, resolveTuiCommand, shellPaneCommand } from "../core/tui-cmd.ts";
+import { SUPERDRIVER_WINDOW_NAME } from "../core/superdriver.ts";
 import { UsageError } from "../errors.ts";
 import type {
   CockpitMedic,
@@ -1721,6 +1722,11 @@ export async function autolaunchTeam(
       skipped += 1;
       continue;
     }
+    // ADR-296: the per-team superdriver seat is an operator shell, not
+    // a member lane — autolaunch must never send a member TUI command
+    // into it (suffix matching below would pair it with any member
+    // whose name it ends with).
+    if (w.name === SUPERDRIVER_WINDOW_NAME) continue;
     // Match window name back to a member entry. Window names are
     // `<emoji><member>` per ADR-017 (buildWindowName). Find the member
     // whose name is a suffix of the window name.

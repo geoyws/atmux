@@ -11,6 +11,7 @@ import {
   candidateWindowNames,
   MemberWindowResolveError,
   moveMemberWindow,
+  reservedSeatIndices,
   resolveMemberToWindowIdx,
   sortMembersDefaultsFirst,
   swapMemberWindows,
@@ -400,5 +401,147 @@ describe("swapMemberWindows", () => {
         highestIndex: 4,
       }),
     ).rejects.toThrow("unexpected");
+  });
+});
+
+// ---------- reservedSeatIndices (ADR-296) ----------
+
+describe("reservedSeatIndices", () => {
+  const seats = new Set(["superdriver", "driver", "driver-2"]);
+
+  test("returns live indices of seat windows by name", () => {
+    const live = [
+      { index: 1, name: "superdriver" },
+      { index: 2, name: "driver" },
+      { index: 3, name: "driver-2" },
+      { index: 4, name: "🧭_lead" },
+    ];
+    expect(reservedSeatIndices(live, seats)).toEqual([1, 2, 3]);
+  });
+
+  test("ignores non-seat windows and unknown names", () => {
+    const live = [
+      { index: 1, name: "driver" },
+      { index: 2, name: "🧭_lead" },
+    ];
+    expect(reservedSeatIndices(live, seats)).toEqual([1]);
+  });
+
+  test("empty live list and empty seat set yield no reservations", () => {
+    expect(reservedSeatIndices([], seats)).toEqual([]);
+    expect(reservedSeatIndices([{ index: 1, name: "driver" }], new Set<string>())).toEqual([]);
+  });
+
+  test("a leftover seat window on an opted-out team is still reported", () => {
+    // seatNamesForTeam always includes the superdriver name, so a
+    // stale window stays protected until the operator kills it.
+    const live = [
+      { index: 1, name: "superdriver" },
+      { index: 2, name: "🧭_lead" },
+    ];
+    expect(reservedSeatIndices(live, new Set(["superdriver"]))).toEqual([1]);
+  });
+});
+
+describe("resolveMemberToWindowIdx — ADR-296 reservedIndices refusal", () => {
+  const members = [{ name: "lead", role: "team-lead", emoji: "🧭" }];
+
+  function stateWithSeat() {
+    return {
+      windows: [
+        { index: 1, id: "@1", name: "superdriver", active: false },
+        { index: 2, id: "@2", name: "driver", active: false },
+        { index: 3, id: "@3", name: "🧭_lead", active: false },
+      ],
+      swapCalls: [],
+      moveCalls: [],
+    };
+  }
+
+  test("member at a reserved seat index is refused like the driver slot", async () => {
+    const state = {
+      windows: [
+        { index: 1, id: "@1", name: "superdriver", active: false },
+        { index: 2, id: "@2", name: "🧭_lead", active: false },
+      ],
+      swapCalls: [],
+      moveCalls: [],
+    };
+    await expect(
+      resolveMemberToWindowIdx({
+        sessionName: "s",
+        memberId: "lead",
+        members,
+        tmux: stubTmux(state),
+        buildWindowName,
+        buildWindowNameLegacy,
+        reservedIndices: [1, 2],
+      }),
+    ).rejects.toThrow(/reserved window W2/);
+  });
+
+  test("same layout without reservedIndices still resolves (guard is load-bearing)", async () => {
+    const state = stateWithSeat();
+    const r = await resolveMemberToWindowIdx({
+      sessionName: "s",
+      memberId: "lead",
+      members,
+      tmux: stubTmux(state),
+      buildWindowName,
+      buildWindowNameLegacy,
+      driverIndex: 2,
+    });
+    expect(r).toEqual({ id: "lead", index: 3, name: "🧭_lead" });
+  });
+
+  test("legacy driverIndex=1 refusal still fires when reservedIndices is absent", async () => {
+    const state: StubState = {
+      windows: [{ index: 1, id: "@1", name: "🧭_lead", active: false }],
+      swapCalls: [],
+      moveCalls: [],
+    };
+    await expect(
+      resolveMemberToWindowIdx({
+        sessionName: "s",
+        memberId: "lead",
+        members,
+        tmux: stubTmux(state),
+        buildWindowName,
+        buildWindowNameLegacy,
+      }),
+    ).rejects.toThrow(/driver window/);
+  });
+});
+
+describe("moveMemberWindow — ADR-296 reservedIndices refusal", () => {
+  test("refuses a move into a reserved seat slot", async () => {
+    const state: StubState = { windows: [], swapCalls: [], moveCalls: [] };
+    await expect(
+      moveMemberWindow({
+        sessionName: "s",
+        source: { id: "lead", index: 4, name: "🧭_lead" },
+        target: 2,
+        tmux: stubTmux(state),
+        occupiedIndices: new Set([1, 2, 4]),
+        driverIndex: 99,
+        reservedIndices: [1, 2],
+      }),
+    ).rejects.toThrow(/cannot move .* to W2.*superdriver\/driver/);
+    expect(state.moveCalls).toHaveLength(0);
+    expect(state.swapCalls).toHaveLength(0);
+  });
+
+  test("same move without reservedIndices issues swap-window (guard is load-bearing)", async () => {
+    const state: StubState = { windows: [], swapCalls: [], moveCalls: [] };
+    const moved = await moveMemberWindow({
+      sessionName: "s",
+      source: { id: "lead", index: 4, name: "🧭_lead" },
+      target: 2,
+      tmux: stubTmux(state),
+      occupiedIndices: new Set([1, 2, 4]),
+      driverIndex: 99,
+    });
+    expect(moved).toBe(true);
+    expect(state.swapCalls).toEqual([{ source: "W4", target: "W2" }]);
   });
 });

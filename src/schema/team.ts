@@ -1352,6 +1352,24 @@ export const TeamBot = z
   .strict();
 export type TeamBot = z.infer<typeof TeamBot>;
 
+/** ADR-296 — per-team superdriver orchestration seat. The block is
+ *  OPTIONAL and defaults ON: an absent block resolves to enabled with
+ *  defaults (see `core/superdriver.ts::resolveSuperdriver`), so every
+ *  team gains the seat without editing its team.json;
+ *  `{"enabled": false}` opts out. When present, `enabled` defaults
+ *  true. A null/omitted tui starts the zsh floor (no auto-launched
+ *  agent, same as drivers). There is deliberately NO cwd field — the
+ *  seat is pinned to the repo root (not configurable), owns no branch
+ *  and no worktree. Strict so typos trip the same drift-detection ping
+ *  as the surrounding `bot` / `whip` sub-blocks. */
+export const TeamSuperdriver = z
+  .object({
+    enabled: z.boolean().default(true),
+    tui: z.string().min(1).nullable().optional(),
+  })
+  .strict();
+export type TeamSuperdriver = z.infer<typeof TeamSuperdriver>;
+
 /** `.atmux/team.json` — the team's durable identity + roster. */
 export const Team = z
   .object({
@@ -1462,6 +1480,10 @@ export const Team = z
       .max(10)
       .optional(),
     bot: TeamBot.optional(),
+    /** ADR-296: per-team superdriver orchestration seat. Absent ==
+     *  enabled with defaults (resolved in `core/superdriver.ts`); set
+     *  `{"enabled": false}` to opt out. */
+    superdriver: TeamSuperdriver.optional(),
     /** Member roster. Order is preserved (window layout depends on it). */
     members: z.array(TeamMember),
     emojis: TeamEmojis.optional(),

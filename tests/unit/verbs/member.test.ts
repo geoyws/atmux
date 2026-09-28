@@ -37,6 +37,7 @@ import {
   parseMemberRenameArgs,
   parseMemberSortArgs,
   parseMemberSwapArgs,
+  seatNamesForTeam,
 } from "../../../src/verbs/member.ts";
 
 interface TestEnv {
@@ -1204,5 +1205,198 @@ describe("mapWindowsToMemberIds", () => {
     const live = [{ index: 2, name: "🧭lead" }];
     const members = [{ name: "lead", role: "team-lead", emoji: "🧭" }];
     expect(mapWindowsToMemberIds(live, members)).toEqual(["lead"]);
+  });
+});
+
+// ---------- ADR-296 superdriver/driver seat guards (live session) ----------
+
+/** Write team.json with a driver roster (seatNamesForTeam reads it). */
+async function writeTeamJsonWithSeats(
+  members: ReadonlyArray<MinimalMember>,
+  drivers: ReadonlyArray<{ name: string; cwd: string }>,
+): Promise<void> {
+  const body = { name: env.team, members, drivers };
+  await writeFile(join(env.atmuxDir, "team.json"), `${JSON.stringify(body, null, 2)}\n`, "utf8");
+}
+
+/** Boot a live cage with the ADR-296 layout: superdriver@1, driver@2,
+ *  driver-2@3 (optional), then member windows. */
+async function bootSuperdriverTeam(
+  members: ReadonlyArray<{ name: string; role?: string; emoji?: string; label?: string }>,
+  opts: { secondDriver?: boolean; skipWindowsFor?: ReadonlyArray<string> } = {},
+): Promise<void> {
+  const drivers = [{ name: "driver", cwd: "." }];
+  if (opts.secondDriver !== false) drivers.push({ name: "driver-2", cwd: "." });
+  await writeTeamJsonWithSeats(members, drivers);
+  await startLiveSession({ windowName: "superdriver" });
+  for (const d of drivers) {
+    await env.tmux.window.newWindow({ sessionName: env.team, name: d.name, detached: true });
+  }
+  for (const m of members) {
+    if (opts.skipWindowsFor?.includes(m.name) === true) continue;
+    const role = m.role ?? "member";
+    const isDefault =
+      role === "team-lead" || role === "planner" || role === "reviewer" || role === "ombudsman";
+    const label = m.label ?? m.name;
+    const windowName = m.emoji === undefined ? label : `${m.emoji}${isDefault ? "_" : "-"}${label}`;
+    await env.tmux.window.newWindow({
+      sessionName: env.team,
+      name: windowName,
+      detached: true,
+    });
+  }
+}
+
+function memberCallEnv() {
+  return {
+    env: { ...process.env, ATMUX_DIR: env.atmuxDir },
+    cwd: env.atmuxDir,
+    home: env.home,
+    stdout: (s: string) => env.stdout.push(s),
+    stderr: (s: string) => env.stderr.push(s),
+  };
+}
+
+describe("seatNamesForTeam", () => {
+  test("returns the superdriver name plus every roster driver name", () => {
+    const names = seatNamesForTeam({
+      drivers: [
+        { name: "driver", cwd: "." },
+        { name: "driver-2", cwd: ".atmux/worktrees/driver-2" },
+      ],
+    });
+    expect(new Set(names)).toEqual(new Set(["superdriver", "driver", "driver-2"]));
+  });
+
+  test("team without a driver roster still protects the superdriver name", () => {
+    expect(new Set(seatNamesForTeam({}))).toEqual(new Set(["superdriver"]));
+  });
+});
+
+describe("memberMove — ADR-296 seat guards (superdriver@1, driver@2)", () => {
+  test("moving into W1 (superdriver) or W2 (driver) throws UsageError", async () => {
+    await bootSuperdriverTeam([
+      { name: "lead", role: "team-lead", emoji: "🧭" },
+      { name: "worker", role: "member", emoji: "🛠️" },
+    ]);
+    const before = await liveWindowsByName();
+    expect(before.map((w) => w.name)).toEqual([
+      "superdriver",
+      "driver",
+      "driver-2",
+      "🧭_lead",
+      "🛠️-worker",
+    ]);
+
+    // Both slots are occupied member-adjacent targets: without the
+    // guards these moves would succeed via swap-window.
+    await expect(
+      memberMoveInternal(["worker", "--to", "1", "--socket-path", env.socketPath], memberCallEnv()),
+    ).rejects.toThrow(UsageError);
+    await expect(
+      memberMoveInternal(["worker", "--to", "2", "--socket-path", env.socketPath], memberCallEnv()),
+    ).rejects.toThrow(/slot reserved for the superdriver\/driver seats/);
+
+    // Roster untouched by the refused moves.
+    const tj = await readTeamJson();
+    expect(tj.members.map((m) => m.name)).toEqual(["lead", "worker"]);
+  });
+
+  test("move among member slots succeeds and leaves seats pinned", async () => {
+    await bootSuperdriverTeam([
+      { name: "lead", role: "team-lead", emoji: "🧭" },
+      { name: "alpha", role: "member", emoji: "🛠️" },
+      { name: "beta", role: "member", emoji: "📦" },
+    ]);
+    const r = await memberMoveInternal(
+      ["beta", "--to", "4", "--socket-path", env.socketPath],
+      memberCallEnv(),
+    );
+    expect(r).toEqual({ exitCode: 0, wrote: true, moved: true });
+
+    const after = await liveWindowsByName();
+    const byIdx = new Map(after.map((w) => [w.index, w.name] as const));
+    expect(byIdx.get(1)).toBe("superdriver");
+    expect(byIdx.get(2)).toBe("driver");
+    expect(byIdx.get(3)).toBe("driver-2");
+    expect(byIdx.get(4)).toBe("📦-beta");
+  });
+});
+
+describe("memberSwap — ADR-296 seat guards (superdriver@1, driver@2)", () => {
+  test("swap of two members leaves the seat windows untouched", async () => {
+    await bootSuperdriverTeam([
+      { name: "lead", role: "team-lead", emoji: "🧭" },
+      { name: "alpha", role: "member", emoji: "🛠️" },
+      { name: "beta", role: "member", emoji: "📦" },
+    ]);
+    const r = await memberSwapInternal(
+      ["alpha", "beta", "--socket-path", env.socketPath],
+      memberCallEnv(),
+    );
+    expect(r).toEqual({ exitCode: 0, wrote: true, swapped: true });
+
+    const after = await liveWindowsByName();
+    const byIdx = new Map(after.map((w) => [w.index, w.name] as const));
+    expect(byIdx.get(1)).toBe("superdriver");
+    expect(byIdx.get(2)).toBe("driver");
+    expect(byIdx.get(5)).toBe("📦-beta");
+    expect(byIdx.get(6)).toBe("🛠️-alpha");
+  });
+
+  test("member colliding with the shifted driver name resolves to the seat and is refused", async () => {
+    // A no-emoji member named `driver` has the bare window name
+    // `driver`, so its only live window IS the seat at W2 (no separate
+    // member window is booted). Pre-ADR-296 code only refused W1, so it
+    // would have swapped the live driver pane.
+    await bootSuperdriverTeam(
+      [
+        { name: "driver", role: "member" },
+        { name: "lead", role: "team-lead", emoji: "🧭" },
+      ],
+      { secondDriver: false, skipWindowsFor: ["driver"] },
+    );
+    const before = await liveWindowsByName();
+    expect(before.map((w) => w.name)).toEqual(["superdriver", "driver", "🧭_lead"]);
+
+    await expect(
+      memberSwapInternal(["driver", "lead", "--socket-path", env.socketPath], memberCallEnv()),
+    ).rejects.toThrow(/reserved window W2/);
+
+    // The live driver seat was not relocated and the roster is intact.
+    const after = await liveWindowsByName();
+    expect(after.map((w) => w.name)).toEqual(["superdriver", "driver", "🧭_lead"]);
+    const tj = await readTeamJson();
+    expect(tj.members.map((m) => m.name)).toEqual(["driver", "lead"]);
+  });
+});
+
+describe("memberSort — ADR-296 seat guards (superdriver@1, driver@2)", () => {
+  test("sort starts member slots after the highest seat index; seats never move", async () => {
+    // Scrambled member order behind the seats.
+    await bootSuperdriverTeam(
+      [
+        { name: "alpha", role: "member", emoji: "🛠️" },
+        { name: "lead", role: "team-lead", emoji: "🧭" },
+      ],
+      { secondDriver: false },
+    );
+    const before = await liveWindowsByName();
+    expect(before.map((w) => w.name)).toEqual(["superdriver", "driver", "🛠️-alpha", "🧭_lead"]);
+
+    const r = await memberSortInternal(["--socket-path", env.socketPath], memberCallEnv());
+    expect(r.exitCode).toBe(0);
+    expect(r.wrote).toBe(true);
+
+    const after = await liveWindowsByName();
+    const byIdx = new Map(after.map((w) => [w.index, w.name] as const));
+    // Seats pinned; lead (defaults-first) now at W3, alpha at W4.
+    expect(byIdx.get(1)).toBe("superdriver");
+    expect(byIdx.get(2)).toBe("driver");
+    expect(byIdx.get(3)).toBe("🧭_lead");
+    expect(byIdx.get(4)).toBe("🛠️-alpha");
+
+    const tj = await readTeamJson();
+    expect(tj.members.map((m) => m.name)).toEqual(["lead", "alpha"]);
   });
 });

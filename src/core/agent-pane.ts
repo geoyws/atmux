@@ -13,7 +13,8 @@ export type LaunchAgentPaneIntent =
   | { readonly kind: "lead"; readonly team: string }
   | { readonly kind: "service"; readonly team: string }
   | { readonly kind: "bot"; readonly team: string }
-  | { readonly kind: "driver"; readonly team: string };
+  | { readonly kind: "driver"; readonly team: string }
+  | { readonly kind: "superdriver"; readonly team: string };
 
 export interface LaunchAgentPaneOpts {
   tmux: TmuxNamespace;
@@ -48,6 +49,7 @@ function pinnedTarget(intent: LaunchAgentPaneIntent, paneId: PaneId): SendTarget
     case "service":
     case "bot":
     case "driver":
+    case "superdriver":
       return { ...intent, target: paneId };
   }
 }

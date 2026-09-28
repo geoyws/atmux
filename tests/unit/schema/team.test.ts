@@ -41,6 +41,7 @@ import {
   TeamOmbudsman,
   TeamOrchestration,
   TeamRefusalDetection,
+  TeamSuperdriver,
   TeamWhip,
 } from "../../../src/schema/team.ts";
 
@@ -76,6 +77,45 @@ describe("TeamBot — explicit parent-team seat", () => {
   test("team-level bot remains optional for transient/legacy teams", () => {
     const parsed = Team.parse({ name: "ephemeral", members: [] });
     expect(parsed.bot).toBeUndefined();
+  });
+});
+
+// ---------- ADR-296 per-team superdriver seat ----------
+
+describe("TeamSuperdriver — optional seat defaulting on", () => {
+  test("empty block fills enabled:true (absent == enabled with defaults)", () => {
+    expect(TeamSuperdriver.parse({})).toEqual({ enabled: true });
+  });
+
+  test("explicit enabled:true / enabled:false round-trip", () => {
+    expect(TeamSuperdriver.parse({ enabled: true }).enabled).toBe(true);
+    expect(TeamSuperdriver.parse({ enabled: false }).enabled).toBe(false);
+  });
+
+  test("null / named tui passes through (zsh floor vs harness seat)", () => {
+    expect(TeamSuperdriver.parse({ tui: null })).toEqual({ enabled: true, tui: null });
+    expect(TeamSuperdriver.parse({ tui: "codex" }).tui).toBe("codex");
+  });
+
+  test("strict-mode rejects unknown keys (typo drift-detection ping)", () => {
+    expect(() => TeamSuperdriver.parse({ enabled: true, cwd: "." })).toThrow();
+    expect(() => TeamSuperdriver.parse({ typo: true })).toThrow();
+  });
+
+  test("team-level superdriver remains optional for legacy team.json files", () => {
+    const parsed = Team.parse({ name: "ephemeral", members: [] });
+    expect(parsed.superdriver).toBeUndefined();
+  });
+
+  test("team-level superdriver block integrates and fills defaults", () => {
+    const parsed = Team.parse({ name: "ephemeral", members: [], superdriver: {} });
+    expect(parsed.superdriver).toEqual({ enabled: true });
+    const optedOut = Team.parse({
+      name: "ephemeral",
+      members: [],
+      superdriver: { enabled: false },
+    });
+    expect(optedOut.superdriver).toEqual({ enabled: false });
   });
 });
 
