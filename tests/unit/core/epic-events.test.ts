@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closeDatabase, openDatabase } from "../../../src/abstractions/sqlite.ts";
 import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
-import { addEpic, advanceEpic, setEpicReady } from "../../../src/core/epic.ts";
+import { addEpic, advanceEpic, listEpics, setEpicReady } from "../../../src/core/epic.ts";
 
 let atmuxDir: string;
 
@@ -192,6 +192,22 @@ describe("epic.ready emission (setEpicReady)", () => {
     expect(events).toHaveLength(2);
     const ids = events.map((e) => e.payload.epicId as string).sort();
     expect(ids).toEqual([a, b].sort());
+  });
+});
+describe("addEpic isReady (e-47 T1)", () => {
+  test("isReady:true lands ready AND emits exactly one epic.ready", async () => {
+    const a = await addEpic(atmuxDir, { title: "A", isReady: true });
+    const row = (await listEpics(atmuxDir)).find((x) => x.id === a);
+    expect(row?.isReady).toBe(true);
+    const events = readEvents().filter((e) => e.topic === "epic.ready");
+    expect(events).toHaveLength(1);
+    expect(events[0]?.payload.epicId).toBe(a);
+  });
+
+  test("isReady absent/false emits no epic.ready", async () => {
+    await addEpic(atmuxDir, { title: "A" });
+    await addEpic(atmuxDir, { title: "B", isReady: false });
+    expect(readEvents().filter((e) => e.topic === "epic.ready")).toHaveLength(0);
   });
 });
 

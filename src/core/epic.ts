@@ -100,6 +100,10 @@ export interface AddEpicOpts {
   title: string;
   body?: string;
   driverRef?: string;
+  /** e-47 T1: operator-explicit ready bit. true → row lands
+   *  is_ready=1 AND `epic.ready` fires via `setEpicReady`
+   *  (no duplicated emit). false/absent → 0. */
+  isReady?: boolean;
   /** ADR-225 §Decision: upstream epic ids this new epic depends on.
    *  Validated synchronously inside the insert transaction —
    *  self-dep / non-existent / cycle all refuse with UsageError before
@@ -140,6 +144,7 @@ export async function addEpic(atmuxDir: string, opts: AddEpicOpts): Promise<stri
       ...(opts.driverRef ? { driverRef: opts.driverRef } : {}),
       ...(opts.autoSpawn ? { autoSpawn: opts.autoSpawn } : {}),
     });
+    if (opts.isReady === true) await setEpicReady(atmuxDir, id, true);
     return id;
   }
   if (!(await exists(_stateDbPath(atmuxDir)))) {
@@ -188,6 +193,10 @@ export async function addEpic(atmuxDir: string, opts: AddEpicOpts): Promise<stri
       assignedId = id;
     });
   });
+  // e-47 T1: ready flip reuses the existing readyEpic path — the row
+  // always lands cold so setEpicReady takes the 0→1 transition and
+  // fires exactly one `epic.ready` (no duplicated emit logic here).
+  if (opts.isReady === true) await setEpicReady(atmuxDir, assignedId, true);
   return assignedId;
 }
 

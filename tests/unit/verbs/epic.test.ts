@@ -417,6 +417,66 @@ describe("epic parseAddArgs — --depends-on (ADR-225)", () => {
     expect(a.dependsOn).toBeUndefined();
   });
 });
+describe("epic parseAddArgs — --ready/--no-ready (e-47 T1)", () => {
+  test("--ready → ready true", () => {
+    expect(parseAddArgs(["t", "--ready"]).ready).toBe(true);
+  });
+
+  test("--no-ready → ready false", () => {
+    expect(parseAddArgs(["t", "--no-ready"]).ready).toBe(false);
+  });
+
+  test("neither flag → ready undefined (team-default fallback in T2)", () => {
+    expect(parseAddArgs(["t"]).ready).toBeUndefined();
+  });
+
+  test("--ready + --no-ready → UsageError (mutually exclusive)", () => {
+    expect(() => parseAddArgs(["t", "--ready", "--no-ready"])).toThrow(UsageError);
+    expect(() => parseAddArgs(["t", "--no-ready", "--ready"])).toThrow(UsageError);
+  });
+
+  test("same flag twice is idempotent", () => {
+    expect(parseAddArgs(["t", "--ready", "--ready"]).ready).toBe(true);
+  });
+});
+
+describe("epic verb — e-47 T1 ready flags", () => {
+  test("`epic add --ready` lands is_ready=1", async () => {
+    const { out } = await captureStdout(async () => {
+      return await epic(["add", "--team-dir", teamDir, "Z", "--ready"]);
+    });
+    const z = await showEpic(atmuxDir, out.trim());
+    expect(z?.isReady).toBe(true);
+  });
+
+  test("`epic add --no-ready` lands is_ready=0", async () => {
+    const { out } = await captureStdout(async () => {
+      return await epic(["add", "--team-dir", teamDir, "Z", "--no-ready"]);
+    });
+    const z = await showEpic(atmuxDir, out.trim());
+    expect(z?.isReady).toBe(false);
+  });
+
+  test("`epic add --ready --depends-on` warns on stderr but still sets ready", async () => {
+    const a = await addEpic(atmuxDir, { title: "A" });
+    let err = "";
+    const orig = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((s: string | Uint8Array) => {
+      err += typeof s === "string" ? s : new TextDecoder().decode(s);
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      const { out } = await captureStdout(async () => {
+        return await epic(["add", "--team-dir", teamDir, "Z", "--ready", "--depends-on", a]);
+      });
+      const z = await showEpic(atmuxDir, out.trim());
+      expect(z?.isReady).toBe(true);
+    } finally {
+      process.stderr.write = orig;
+    }
+    expect(err).toMatch(/will not spawn until upstream/);
+  });
+});
 
 describe("epic verb — ADR-225 dispatch", () => {
   test("`epic add --depends-on a,b` writes the dep list correctly", async () => {

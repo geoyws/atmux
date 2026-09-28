@@ -93,10 +93,20 @@ async function epicAdd(argv: ReadonlyArray<string>): Promise<number> {
   // ADR-225: pass the comma-split dependsOn list through to the core
   // validator (self / non-existent / cycle refused before insert).
   if (parsed.dependsOn !== undefined) opts.dependsOn = parsed.dependsOn;
+  // e-47 T1: operator-explicit ready bit straight through to core
+  // (team-default fallback lands in T2; absent here → core false).
+  if (parsed.ready !== undefined) opts.isReady = parsed.ready;
   // ADR-231 §D3: per-epic orchd auto-spawn config. core/epic.ts
   // writes this into the inserted row's `extra.autoSpawn` slot per
   // the schema shape landed in t-7-0ad1dfe3.
   if (parsed.autoSpawn !== undefined) opts.autoSpawn = parsed.autoSpawn;
+  // e-47 T1: explicit --ready with deps still wins, but the operator
+  // gets a heads-up that spawn waits on epic.unblocked.
+  if (parsed.ready === true && parsed.dependsOn !== undefined && parsed.dependsOn.length > 0) {
+    process.stderr.write(
+      `epic: warning: ${parsed.dependsOn.join(",")} upstream — is_ready=1 will not spawn until upstream epics are done (epic.unblocked fires then)\n`,
+    );
+  }
   const id = await addEpic(atmuxDir, opts);
   process.stderr.write(`epic: added ${id} — ${parsed.title}\n`);
   process.stdout.write(`${id}\n`);
@@ -474,6 +484,10 @@ interface ParsedAddArgs {
   teamDir?: string;
   // ADR-225: comma-separated dep list, empty/absent → no deps.
   dependsOn?: string[];
+  // e-47 T1: operator-explicit ready bit. true (--ready) / false
+  // (--no-ready) / undefined (neither — falls through to the team
+  // default in T2; core defaults to false meanwhile).
+  ready?: boolean;
   // ADR-231 §D3: per-epic orchd auto-spawn config (resolved at parse
   // time; mutex'd at parse-error so the caller gets the helpful
   // message before any DB work). Absent → no autoSpawn key written
@@ -494,6 +508,7 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
   // ADR-231 §D3 flags — captured at parse time, mutex-checked after
   // the walk completes (an earlier --auto-spawn doesn't know whether
   // --no-auto-spawn will appear later).
+  let readyFlag: boolean | undefined;
   let autoSpawnFlag: "enable" | "disable" | undefined;
   let rosterFlag: string | undefined;
   let forceSpawnFlag = false;
@@ -572,6 +587,19 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
       i += 1;
       continue;
     }
+    // e-47 T1 — operator-explicit ready bit (mutex'd below).
+    if (a === "--ready" || a === "--no-ready") {
+      const want = a === "--ready";
+      if (readyFlag !== undefined && readyFlag !== want) {
+        throw new UsageError({
+          what: "epic add: --ready cannot combine with --no-ready (mutually exclusive — pick one)",
+          hint: USAGE_ADD,
+        });
+      }
+      readyFlag = want;
+      i += 1;
+      continue;
+    }
     if (a === "--") {
       title = argv.slice(i + 1).join(" ");
       break;
@@ -588,6 +616,8 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
 
   // ADR-231 §D3 — flag mutex enforcement (parse-time so the caller
   // sees the error before any DB work).
+  // e-47 T1 — --ready/--no-ready contradiction refused inline at
+  // parse time (see walk above); same-flag repeats are idempotent.
   if (autoSpawnFlag === "disable" && forceSpawnFlag) {
     throw new UsageError({
       what: "epic add: --no-auto-spawn cannot combine with --force-spawn (mutually exclusive — --no-auto-spawn opts OUT of orchd spawn, --force-spawn opts IN bypassing the eligibility predicate)",
@@ -612,6 +642,7 @@ export function parseAddArgs(argv: ReadonlyArray<string>): ParsedAddArgs {
   if (driverRef !== undefined) out.driverRef = driverRef;
   if (teamDir !== undefined) out.teamDir = teamDir;
   if (dependsOn !== undefined) out.dependsOn = dependsOn;
+  if (readyFlag !== undefined) out.ready = readyFlag;
   // ADR-231 §D3 — assemble autoSpawn sub-shape only when the operator
   // explicitly flagged one of the auto-spawn semantics. No flag →
   // absent autoSpawn key → caller falls back to per-team defaults
