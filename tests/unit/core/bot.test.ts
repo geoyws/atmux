@@ -1,25 +1,18 @@
 import { describe, expect, test } from "bun:test";
 import { renderBootPrompt } from "../../../src/core/boot-claude.ts";
 import {
-  BOT_DEFAULT_CWD,
   BOT_HOLD_OPTION,
   BOT_WINDOW_NAME,
   botActor,
-  botBranch,
   botSendTarget,
-  botWindowTarget,
   isBotRoutable,
-  resolveBotCwd,
 } from "../../../src/core/bot.ts";
 
-describe("ADR-285 bot identity primitives", () => {
-  test("pins actor, window, worktree, and branch identities", () => {
+describe("bot identity primitives (superbot offer targets)", () => {
+  test("pins actor, window, and send target identities", () => {
     expect(BOT_WINDOW_NAME).toBe("_bot");
     expect(BOT_HOLD_OPTION).toBe("@atmux_bot_hold");
     expect(botActor("atmux")).toBe("bot@atmux");
-    expect(botBranch("atmux-geoyws")).toBe("atmux-geoyws-bot");
-    expect(resolveBotCwd("/work/atmux")).toBe(`/work/atmux/${BOT_DEFAULT_CWD}`);
-    expect(botWindowTarget("atmux")).toBe("atmux:_bot");
     expect(botSendTarget("atmux", "atmux")).toEqual({
       kind: "bot",
       team: "atmux",
@@ -28,11 +21,12 @@ describe("ADR-285 bot identity primitives", () => {
   });
 
   test("only an enabled explicit non-shell harness is routable", () => {
+    const cwd = ".atmux/worktrees/bot" as const;
     expect(isBotRoutable(undefined)).toBe(false);
-    expect(isBotRoutable({ enabled: false, cwd: BOT_DEFAULT_CWD, tui: "claude" })).toBe(false);
-    expect(isBotRoutable({ enabled: true, cwd: BOT_DEFAULT_CWD, tui: null })).toBe(false);
-    expect(isBotRoutable({ enabled: true, cwd: BOT_DEFAULT_CWD, tui: "zsh" })).toBe(false);
-    expect(isBotRoutable({ enabled: true, cwd: BOT_DEFAULT_CWD, tui: "claude" })).toBe(true);
+    expect(isBotRoutable({ enabled: false, cwd, tui: "claude" })).toBe(false);
+    expect(isBotRoutable({ enabled: true, cwd, tui: null })).toBe(false);
+    expect(isBotRoutable({ enabled: true, cwd, tui: "zsh" })).toBe(false);
+    expect(isBotRoutable({ enabled: true, cwd, tui: "claude" })).toBe(true);
   });
 
   test("bot bootstrap names the exact harness-neutral contract", () => {

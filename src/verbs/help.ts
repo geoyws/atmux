@@ -109,8 +109,6 @@ Dispatch + work:
                               --task claims it, blocked --task blocks it
 
 Automation:
-  bot hold [team]             Reserve an idle-looking _bot for operator input
-  bot resume [team]           Clear the _bot operator hold interlock
   superbot tick [--shadow]    Run one deterministic Kanban offer cycle
   superbot run [--shadow]     Run the singleton 30-minute offer scheduler
   report                      Post 30-min progress digest to Discord

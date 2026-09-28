@@ -382,7 +382,7 @@ export interface TmuxNamespace {
       shellCommand?: string;
       detached?: boolean;
       /** Insert relative to an existing window. tmux's `-a`/`-b`
-       *  preserves every existing pane while allowing `_bot` to be
+       *  preserves every existing pane while allowing a seat to be
        *  placed after drivers and before members on incremental start. */
       insert?: { target: Target; position: "after" | "before" };
     }): Promise<WindowId>;

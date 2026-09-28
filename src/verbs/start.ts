@@ -114,13 +114,6 @@ import {
   renderBootFailureNotice,
 } from "../core/boot-claude.ts";
 import {
-  BOT_MEMBER_NAME,
-  BOT_WINDOW_NAME,
-  botBranch,
-  botSendTarget,
-  resolveBotCwd,
-} from "../core/bot.ts";
-import {
   ATMUX_NESTING_LEVEL_ENV,
   buildGroupTopology,
   enabledTeams,
@@ -841,8 +834,6 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   //     With no driver window live yet it goes first (before the
   //     lowest-index window). Present already → untouched. Disabled →
   //     never created (an existing one is left alone, reported).
-  //     Runs before the `_bot` block so the bot's insert-after-last-
-  //     driver snapshot below already includes the shifted indices.
   if (superdriver.enabled && !superdriverSpawned) {
     const live = await tmux.window.listWindows(session);
     if (live.some((w) => w.name === SUPERDRIVER_WINDOW_NAME)) {
@@ -877,157 +868,6 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
       logger.log(
         "  · superdriver: disabled in team.json — existing window left alone (kill it by hand if the opt-out should take effect)",
       );
-    }
-  }
-
-  // 7b. ADR-285 §D2 — cooperative `_bot` seat. This is deliberately
-  //     separate from both drivers (operator-interactive panes, no lane
-  //     dispatch) and members (no lane dispatch / member lifecycle). The
-  //     seat is opt-in through `team.bot`; persistent parent-team
-  //     migration adds it, while transient teams with no block remain
-  //     unchanged.
-  let botSpawned = false;
-  const bot = team.bot;
-  if (bot?.enabled === true) {
-    const windows = await tmux.window.listWindows(session);
-    if (windows.some((w) => w.name === BOT_WINDOW_NAME)) {
-      logger.log("  · bot: _bot window exists, preserving operator state");
-    } else {
-      const gitSpawn = opts.gitSpawn ?? defaultGitSpawn;
-      const teamRoot = dir.replace(/\/?\.atmux\/?$/, "") || "/";
-      const rootR = await gitSpawn(["-C", teamRoot, "rev-parse", "--show-toplevel"]);
-      const branchR = await gitSpawn(["-C", teamRoot, "branch", "--show-current"]);
-      const baseBranch = branchR.exitCode === 0 ? branchR.stdout.trim() : "";
-      if (rootR.exitCode !== 0 || baseBranch.length === 0) {
-        logger.warn(
-          "bot worktree: cannot detect repo root/current branch — skipping _bot (never falling back to shared trunk)",
-        );
-      } else {
-        const repoPath = rootR.stdout.trim();
-        const botCwd = resolveBotCwd(teamRoot, bot.cwd);
-        const branch = botBranch(baseBranch);
-        try {
-          const provisioned = await provisionWorktree(repoPath, baseBranch, branch, botCwd, {
-            git: gitSpawn,
-            ...(team.worktreeInitSubmodules === true ? { initSubmodules: true } : {}),
-          });
-          logger.log(
-            `  · bot worktree ${provisioned.created ? "created" : "reused"}: ${botCwd} [${branch}]`,
-          );
-
-          const tui = bot.tui;
-          const shellOnly = tui === undefined || tui === null || tui === "shell" || tui === "zsh";
-          const shellCommand = shellPaneCommand();
-          let tuiCommand: string | undefined;
-          if (tui !== undefined && tui !== null && tui !== "shell" && tui !== "zsh") {
-            const synth = {
-              name: BOT_MEMBER_NAME,
-              role: "bot",
-              tui,
-              model: "default",
-              cwd: botCwd,
-              ...(typeof bot.claudeAccount === "string"
-                ? { claudeAccount: bot.claudeAccount }
-                : {}),
-            };
-            try {
-              tuiCommand = resolveTuiCommand(synth, team, { env, cwd: botCwd });
-            } catch (err) {
-              logger.warn(
-                `bot: could not resolve command for tui='${tui}' — _bot will land in zsh and remain unroutable (${err instanceof Error ? err.message : String(err)})`,
-              );
-            }
-          }
-
-          // Fresh starts append naturally after the driver roster because
-          // this block runs before member spawn. Incremental starts insert
-          // after the last existing declared driver, or before the first
-          // non-placeholder window when no driver exists.
-          const ordered = [...windows].sort((a, b) => a.index - b.index);
-          const driverNames = new Set(drivers.map((d) => d.name));
-          const lastDriver = ordered.filter((w) => driverNames.has(w.name)).at(-1);
-          const firstOrdinary = ordered.find((w) => w.name !== homeWin && !driverNames.has(w.name));
-          const insert =
-            lastDriver !== undefined
-              ? ({ target: `${session}:${lastDriver.index}`, position: "after" } as const)
-              : firstOrdinary !== undefined
-                ? ({ target: `${session}:${firstOrdinary.index}`, position: "before" } as const)
-                : undefined;
-          const newWindowOpts: Parameters<typeof tmux.window.newWindow>[0] = {
-            sessionName: session,
-            name: BOT_WINDOW_NAME,
-            cwd: botCwd,
-            detached: true,
-          };
-          if (insert !== undefined) newWindowOpts.insert = insert;
-          newWindowOpts.shellCommand = shellCommand;
-          const botWindow = await tmux.window.newWindow(newWindowOpts);
-          const botPane = await resolveOnlyPane(tmux, botWindow, session, botWindow.windowIndex);
-          if (parsed.noLaunch && tuiCommand !== undefined) {
-            logger.log(`  · bot: --no-launch — ${BOT_WINDOW_NAME} left as a bare zsh`);
-          } else if (tuiCommand !== undefined) {
-            const outcome = await launchAgentInPane({
-              tmux,
-              paneId: botPane,
-              intent: { kind: "bot", team: team.name },
-              command: tuiCommand,
-              sleep: briefSleep,
-            });
-            if (outcome === "no-prompt") {
-              logger.warn("bot: pane shell never executed its readiness probe — TUI not launched");
-            }
-          }
-          botSpawned = true;
-          logger.log(
-            `  · bot seat: ${BOT_WINDOW_NAME} (${tui ?? "zsh"}) cwd=${botCwd} actor=bot@${team.name}`,
-          );
-
-          // The boot contract is the only input sent during seat creation.
-          // Scheduler offers are a later phase and remain disabled.
-          if (!shellOnly && !parsed.noLaunch) {
-            const target = botSendTarget(team.name, session);
-            if (tui === "claude") {
-              const briefPath = await getBriefPath("bot", briefsDir);
-              const bootOpts: BootClaudeOpts = {
-                tmux,
-                sendTarget: target,
-                paneTargetString: `${session}:${BOT_WINDOW_NAME}`,
-                team: team.name,
-                member: BOT_MEMBER_NAME,
-                briefPath,
-              };
-              if (opts.bootClaude !== undefined) Object.assign(bootOpts, opts.bootClaude);
-              const result = await bootClaudeMember(bootOpts).catch(
-                (): BootResult => ({ status: "failed", attempts: 0, reason: "capture-error" }),
-              );
-              if (result.status === "failed") {
-                logger.warn(
-                  `  · bot: bootstrap FAILED after ${result.attempts} attempt(s) (${result.reason ?? "?"})`,
-                );
-              } else {
-                logger.log(`  · bot: ${result.status} (${result.attempts} attempt(s))`);
-              }
-            } else {
-              await pasteBriefForMember({
-                tmux,
-                target,
-                member: BOT_MEMBER_NAME,
-                role: "bot",
-                team: team.name,
-                atmuxDir: dir,
-                briefsDir,
-                spawnWaitMs,
-                sleep: briefSleep,
-                logger,
-              });
-            }
-          }
-        } catch (err) {
-          logger.warn(
-            `bot seat: setup failed (never using shared trunk); inspect _bot state before retry: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
-      }
     }
   }
 
@@ -1377,7 +1217,7 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   //    AND non-placeholder windows now exist (lib/start.sh:288-294).
   //    ADR-296: an inserted superdriver seat counts too — an old cage
   //    holding only `__home` gains the seat and drops the placeholder.
-  if (spawned > 0 || botSpawned || superdriverSpawned) {
+  if (spawned > 0 || superdriverSpawned) {
     const after = await tmux.window.listWindows(session);
     const hasHome = after.some((w) => w.name === homeWin);
     const otherCount = after.filter((w) => w.name !== homeWin).length;

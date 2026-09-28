@@ -145,12 +145,6 @@ async function writeTeamJson(opts: {
   /** ADR-239 §A1: declarative driver roster (canonical post-ADR-266 §D2 —
    *  the legacy driverSession/driverTui synthesis was removed). */
   drivers?: ReadonlyArray<{ name: string; tui?: string | null; cwd: string }>;
-  bot?: {
-    enabled?: boolean;
-    tui?: string | null;
-    cwd?: ".atmux/worktrees/bot";
-    claudeAccount?: string | null;
-  };
   /** ADR-296: per-team superdriver seat. Omitted → enabled with
    *  defaults (the seat is created); pass `{ enabled: false }` to pin
    *  the pre-ADR-296 layout for tests whose subject is NOT the seat. */
@@ -180,9 +174,6 @@ async function writeTeamJson(opts: {
   }
   if (opts.drivers !== undefined) {
     body.drivers = opts.drivers;
-  }
-  if (opts.bot !== undefined) {
-    body.bot = opts.bot;
   }
   if (opts.superdriver !== undefined) {
     body.superdriver = opts.superdriver;
@@ -990,131 +981,6 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
   });
 });
 
-// ---------- ADR-285 §D2 cooperative _bot seat ----------
-
-describe("start — ADR-285 cooperative _bot seat", () => {
-  type GitSpawn = import("../../../src/abstractions/worktree.ts").GitSpawn;
-  type SpawnResult = import("../../../src/abstractions/spawn.ts").SpawnResult;
-
-  function result(exitCode: number, stdout = "", stderr = ""): SpawnResult {
-    return {
-      exitCode,
-      stdout,
-      stderr,
-      argv: [],
-      cmd: "git",
-      signalled: null,
-      durationMs: 0,
-    };
-  }
-
-  async function seedBotCwd(): Promise<string> {
-    const cwd = join(env.atmuxDir, ".atmux", "worktrees", "bot");
-    await mkdir(cwd, { recursive: true });
-    return cwd;
-  }
-
-  function healthyGit(calls: ReadonlyArray<string>[]): GitSpawn {
-    return async (argv) => {
-      calls.push(argv);
-      if (argv.includes("--show-toplevel")) return result(0, `${env.atmuxDir}\n`);
-      if (argv.includes("--show-current")) return result(0, "atmux-geoyws\n");
-      if (argv.includes("--verify")) return result(1);
-      return result(0);
-    };
-  }
-
-  test("fresh start places shell _bot after drivers and before members", async () => {
-    const botCwd = await seedBotCwd();
-    const calls: ReadonlyArray<string>[] = [];
-    await writeTeamJson({
-      drivers: [{ name: "driver", tui: null, cwd: "." }],
-      bot: { tui: null },
-      members: [
-        { name: "alpha", role: "team-lead", tui: "shell" },
-        { name: "bee", role: "member", tui: "shell" },
-      ],
-    });
-
-    expect(await runStart([], { gitSpawn: healthyGit(calls) })).toBe(0);
-
-    const session = env.team;
-    const ordered = (await env.tmux.window.listWindows(session)).sort((a, b) => a.index - b.index);
-    // ADR-296: the default-on superdriver seat leads; _bot still lands
-    // after the last driver and before members.
-    expect(ordered.map((window) => window.name)).toEqual([
-      "superdriver",
-      "driver",
-      "_bot",
-      "🧭_alpha",
-      "🐝-bee",
-    ]);
-    expect(
-      await env.tmux.pane.displayMessage({
-        target: `${session}:_bot`,
-        format: "#{pane_current_command}",
-      }),
-    ).toBe("zsh");
-    expect(calls.some((call) => call.includes("atmux-geoyws-bot"))).toBe(true);
-    expect(calls.some((call) => call.includes(botCwd))).toBe(true);
-  });
-
-  test("incremental start inserts a newly configured _bot without recreating members", async () => {
-    await writeTeamJson({
-      drivers: [{ name: "driver", tui: null, cwd: "." }],
-      members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
-    });
-    expect(await runStart([])).toBe(0);
-    const session = env.team;
-    const memberPidBefore = await env.tmux.pane.displayMessage({
-      target: `${session}:🧭_alpha`,
-      format: "#{pane_pid}",
-    });
-
-    await seedBotCwd();
-    await writeTeamJson({
-      drivers: [{ name: "driver", tui: null, cwd: "." }],
-      bot: { tui: null },
-      members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
-    });
-    expect(await runStart([], { gitSpawn: healthyGit([]) })).toBe(0);
-
-    const ordered = (await env.tmux.window.listWindows(session)).sort((a, b) => a.index - b.index);
-    // ADR-296: the first start already seeded the default-on seat, so
-    // _bot inserts after the driver with the seat leading.
-    expect(ordered.map((window) => window.name)).toEqual([
-      "superdriver",
-      "driver",
-      "_bot",
-      "🧭_alpha",
-    ]);
-    expect(
-      await env.tmux.pane.displayMessage({
-        target: `${session}:🧭_alpha`,
-        format: "#{pane_pid}",
-      }),
-    ).toBe(memberPidBefore);
-  });
-
-  test("worktree detection failure skips _bot instead of using shared trunk", async () => {
-    await writeTeamJson({
-      bot: { tui: null },
-      members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
-    });
-    const gitSpawn: GitSpawn = async () => result(128, "", "not a git repository");
-
-    expect(await runStart([], { gitSpawn })).toBe(0);
-    const names = (await env.tmux.window.listWindows(env.team)).map((w) => w.name);
-    expect(names).not.toContain("_bot");
-    expect(names).toContain("🧭_alpha");
-    expect(
-      env.logs.some(
-        (line) => line.kind === "warn" && line.msg.includes("never falling back to shared trunk"),
-      ),
-    ).toBe(true);
-  });
-});
-
 // ---------- start — ADR-296 per-team superdriver window ----------
 
 describe("start — ADR-296 per-team superdriver window", () => {
@@ -1284,7 +1150,6 @@ describe("start — ADR-296 per-team superdriver window", () => {
 describe("start — --no-launch", () => {
   const DRIVER_MARK = "FAKEDRIVERTUI";
   const MEMBER_MARK = "FAKEMEMBERTUI";
-  const BOT_MARK = "FAKEBOTTUI";
   const SUPERDRIVER_MARK = "FAKESUPERDRIVERTUI";
 
   function result(exitCode: number, stdout = "", stderr = ""): SpawnResult {
@@ -1304,7 +1169,7 @@ describe("start — --no-launch", () => {
    *  paste-buffer, because a brief/goal lands as a paste and a boot
    *  prompt as keys — recording only one of the two would let the other
    *  regress silently. The `SendTarget` kind IS the seat, so an entry is
-   *  attributable to driver / bot / member without string matching. */
+   *  attributable to each seat without string matching. */
   interface Injection {
     readonly op: "send-keys" | "paste-buffer";
     readonly seat: SendTarget["kind"];
@@ -1350,22 +1215,19 @@ describe("start — --no-launch", () => {
     } as unknown as TmuxNamespace;
   }
 
-  /** Driver + superdriver + `_bot` + member, each with a TUI whose
+  /** Driver + superdriver + member, each with a TUI whose
    *  command line carries a unique marker so a launch is unmistakable.
    *  The superdriver block is explicit here (same as the default) so
    *  the fleet exercises the seat's own TUI path. */
   async function writeFleetTeam(): Promise<void> {
-    await mkdir(join(env.atmuxDir, ".atmux", "worktrees", "bot"), { recursive: true });
     const body = {
       name: env.team,
       drivers: [{ name: "driver", tui: "fake-driver", cwd: "." }],
       superdriver: { tui: "fake-superdriver" },
-      bot: { tui: "fake-bot", cwd: ".atmux/worktrees/bot" },
       members: [{ name: "alpha", role: "team-lead", tui: "fake-member" }],
       tuiCommands: {
         "fake-driver": `true ${DRIVER_MARK}`,
         "fake-member": `true ${MEMBER_MARK}`,
-        "fake-bot": `true ${BOT_MARK}`,
         "fake-superdriver": `true ${SUPERDRIVER_MARK}`,
       },
     };
@@ -1391,12 +1253,11 @@ describe("start — --no-launch", () => {
 
     const sent = seen.map((i) => i.keys).join("\n");
     expect(sent).toContain(DRIVER_MARK);
-    expect(sent).toContain(BOT_MARK);
     expect(sent).toContain(MEMBER_MARK);
     expect(sent).toContain(SUPERDRIVER_MARK);
     // Each seat is genuinely typed at without the flag — this is the
     // contrast that makes the --no-launch emptiness below meaningful.
-    for (const seat of ["driver", "superdriver", "bot", "member"] as const) {
+    for (const seat of ["driver", "superdriver", "member"] as const) {
       expect(seen.filter((i) => i.seat === seat).length).toBeGreaterThan(0);
     }
   });
@@ -1409,23 +1270,23 @@ describe("start — --no-launch", () => {
     // Every seat still exists — --no-launch suppresses the TUI child,
     // not the reconcile. The superdriver seat leads (ADR-296).
     const windows = (await env.tmux.window.listWindows(env.team)).sort((a, b) => a.index - b.index);
-    expect(windows.map((w) => w.name)).toEqual(["superdriver", "driver", "_bot", "🧭_alpha"]);
+    expect(windows.map((w) => w.name)).toEqual(["superdriver", "driver", "🧭_alpha"]);
 
     // The load-bearing assertion: a bare zsh pane requires NO input, so
     // the whole recorded injection stream must be empty. This catches a
     // regression in any suppressed phase — the TUI command line, the
-    // readiness probe, the `_bot` boot contract, the superdriver TUI
+    // readiness probe, the superdriver TUI
     // launch, and a member's pasteBrief / injectGoal — none of which
     // carry a TUI marker.
     expect(seen).toEqual([]);
 
     // Named per-seat restatement so a failure says which seat regressed.
-    for (const seat of ["driver", "superdriver", "bot", "member"] as const) {
+    for (const seat of ["driver", "superdriver", "member"] as const) {
       expect(seen.filter((i) => i.seat === seat)).toEqual([]);
     }
 
     // …and each pane is a live zsh the operator can use.
-    for (const name of ["superdriver", "driver", "_bot", "🧭_alpha"]) {
+    for (const name of ["superdriver", "driver", "🧭_alpha"]) {
       expect(
         await env.tmux.pane.displayMessage({
           target: `${env.team}:${name}`,
@@ -1436,7 +1297,6 @@ describe("start — --no-launch", () => {
 
     const logged = env.logs.map((l) => l.msg).join("\n");
     expect(logged).toContain("driver driver: --no-launch");
-    expect(logged).toContain("bot: --no-launch");
     expect(logged).toContain("superdriver: --no-launch");
     expect(logged).toContain("alpha: --no-launch");
   });

@@ -219,8 +219,8 @@ export interface BootClaudeOpts {
   /** Team name + member name for the boot prompt template. */
   team: string;
   member: string;
-  /** Optional exact role-brief path. Used by the cooperative `_bot`
-   *  seat because it is deliberately absent from `team.members[]`. */
+  /** Optional exact role-brief path. Used when the seat is deliberately
+   *  absent from `team.members[]`. */
   briefPath?: string;
   // --- tunables (test injection) ---
   readyPollIntervalMs?: number;

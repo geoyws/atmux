@@ -87,7 +87,6 @@ import {
   probeLiveMembers,
 } from "./doctor/state.ts";
 import {
-  checkBotConfig,
   checkMemberLabelCollision,
   checkTeam,
   checkTuiCommandsClaudeOverride,
@@ -169,7 +168,6 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   rows.push(...(await checkTeam(atmuxDir)));
   if (team !== null) {
     rows.push(...checkTuis(team));
-    rows.push(...checkBotConfig(team));
   }
   rows.push(...(await checkStateDir(atmuxDir)));
   rows.push(...(await checkWebhook(team)));
@@ -689,7 +687,6 @@ export {
 } from "./doctor/state.ts";
 export {
   type CheckTuisOpts,
-  checkBotConfig,
   checkMemberLabelCollision,
   checkTeam,
   checkTuiCommandsClaudeOverride,

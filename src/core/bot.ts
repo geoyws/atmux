@@ -5,30 +5,17 @@
 // verified offer from `_superbot`. Driver panes are a separate seat with
 // their own lifecycle (ADR-239), not a flavour of this one.
 
-import { resolve } from "node:path";
 import type { SendTarget } from "../abstractions/tmux.ts";
 import type { Team } from "../schema/team.ts";
 
 export const BOT_WINDOW_NAME = "_bot";
-export const BOT_MEMBER_NAME = "_bot";
 export const BOT_HOLD_OPTION = "@atmux_bot_hold";
-export const BOT_DEFAULT_CWD = ".atmux/worktrees/bot";
 
 export type TeamBot = NonNullable<Team["bot"]>;
 
 /** Canonical Kanban actor for exact-task claims. */
 export function botActor(teamName: string): string {
   return `bot@${teamName}`;
-}
-
-/** Absolute, convention-pinned bot worktree path. */
-export function resolveBotCwd(teamRoot: string, cwd = BOT_DEFAULT_CWD): string {
-  return resolve(teamRoot, cwd);
-}
-
-/** Branch name paired with the bot worktree. */
-export function botBranch(baseBranch: string): string {
-  return `${baseBranch}-bot`;
 }
 
 /** A shell-only bot is valid for direct operator work but cannot receive
@@ -50,7 +37,3 @@ export function botSendTarget(teamName: string, sessionName: string): SendTarget
   };
 }
 
-/** Exact tmux target used by hold/resume and read-only probes. */
-export function botWindowTarget(sessionName: string): string {
-  return `${sessionName}:${BOT_WINDOW_NAME}`;
-}

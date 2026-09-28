@@ -5,10 +5,9 @@ Companion notes for `team.example.json`, the template `atmux init` copies.
 ## Roster: drivers-only by default (ADR-288 §D5)
 
 The template ships `drivers[]` (three driver windows per ADR-239's
-restored floor), the ADR-285 `bot` block, and `members: []`. A fresh
-team spawns drivers, the `_bot` seat if enabled, and nothing else —
-drivers work kb rows directly (ADR-275), so no in-cage lead → planner →
-member loop runs.
+restored floor) and `members: []`. A fresh team spawns the superdriver
+seat plus drivers, and nothing else — drivers work kb rows directly
+(ADR-275), so no in-cage lead → planner → member loop runs.
 
 The `lead` / `planner` / `reviewer` / generic `member` windows are
 **deprecated, not removed**. `members[]` is the opt-in: a team that still
@@ -64,8 +63,8 @@ inherit an account-isolated config tree. `atmux init --claude-account
 `--claude-account default` strips the field so the schema default applies.
 `bot.claudeAccount` is deliberately not stamped or stripped by the flag:
 ADR-285 requires the bot account to be chosen explicitly in `team.json`
-before automated offers are enabled, so the `bot` block renders verbatim
-(the template ships `null`).
+before automated offers are enabled, so a `bot` block carried over from
+an older scaffold renders verbatim.
 
 Valid values:
 

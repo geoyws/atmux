@@ -14,7 +14,7 @@
 // (read-failure on the source).
 //
 // ADR-288 §D5 (2026-09-03): the shipped template is drivers-only
-// (`members: []`, three `drivers[]`, the ADR-285 `bot` block). Tests
+// (`members: []`, three `drivers[]`, no `bot` block). Tests
 // against the real template assert THAT shape; the members-path
 // branches of `init` (cwd rewrite, claudeAccount stamp / strip /
 // passthrough, per-member inbox seeding + preservation) are exercised
@@ -275,7 +275,7 @@ describe("init — template path (bash lib/init.sh:87-107 parity)", () => {
     // Template-shape sanity. Tracks `templates/team.example.json` —
     // bump together when the shipped roster changes. ADR-288
     // (2026-09-03): the default roster is drivers-only — three drivers
-    // (ADR-239 floor restored), the ADR-285 bot seat, zero members.
+    // (ADR-239 floor restored), zero members, no bot seat.
     expect(tj.members).toEqual([]);
     expect(tj.drivers?.map((d) => d.name)).toEqual([
       "driver",
@@ -290,21 +290,21 @@ describe("init — template path (bash lib/init.sh:87-107 parity)", () => {
       ".atmux/worktrees/driver-2",
       ".atmux/worktrees/driver-3",
     ]);
-    expect(tj.bot?.enabled).toBe(true);
+    expect(tj.bot).toBeUndefined();
   });
 
-  test("ADR-288: default scaffold is drivers-only — members.length === 0, drivers.length === 3, bot seat enabled, comment cites §D5", async () => {
+  test("ADR-288: default scaffold is drivers-only — members.length === 0, drivers.length === 3, no bot block, comment cites §D5", async () => {
     // Explicit pin for the ADR-288 template contract: a fresh
     // `atmux init` from the shipped template yields NO member windows
-    // (lead / planner / reviewer / member are deprecated as defaults),
-    // the three-driver floor ADR-239 restores, and the
-    // ADR-285 `_bot` seat. `_comment_members` survives passthrough and
+    // (lead / planner / reviewer / member are deprecated as defaults)
+    // and the three-driver floor ADR-239 restores, with no bot seat.
+    // `_comment_members` survives passthrough and
     // must point operators at §D5.
     expect(await runInit(["--name", "solo-drivers"])).toBe(0);
     const tj = await readRendered();
     expect(tj.members.length).toBe(0);
     expect(tj.drivers?.length).toBe(3);
-    expect(tj.bot?.enabled).toBe(true);
+    expect(tj.bot).toBeUndefined();
     expect(tj._comment_members).toContain("ADR-288 §D5");
     expect(tj._comment_members).toContain("drivers-only");
     // No per-member inbox stub can exist for a roster with no members.
@@ -315,7 +315,7 @@ describe("init — template path (bash lib/init.sh:87-107 parity)", () => {
   // t-3866c5b1 / ADR-094: --claude-account flag end-to-end.
   // ADR-288 §D5: the flag stamps drivers[] as well as members[] — on the
   // drivers-only default template that is the ONLY thing it can stamp.
-  test("--claude-account personal stamps every driver on the drivers-only template; bot.claudeAccount stays null", async () => {
+  test("--claude-account personal stamps every driver on the drivers-only template; no bot block rendered", async () => {
     await runInit(["--name", "alpha", "--claude-account", "personal"]);
     const tj = await readRendered();
     expect(tj.members).toEqual([]);
@@ -323,11 +323,9 @@ describe("init — template path (bash lib/init.sh:87-107 parity)", () => {
     for (const d of tj.drivers ?? []) {
       expect(d.claudeAccount).toBe("personal");
     }
-    // ADR-285: the bot seat's account is an explicit operator choice in
-    // the durable team.json — the flag never stamps it. Pinned so a
-    // future "team-wide" widening is a deliberate change, not drift.
-    expect("claudeAccount" in (tj.bot ?? {})).toBe(true);
-    expect(tj.bot?.claudeAccount).toBeNull();
+    // The shipped template carries no `bot` block (seat removed), so
+    // there is nothing to stamp — the flag covers drivers[] + members[].
+    expect(tj.bot).toBeUndefined();
   });
 
   test("--claude-account personal stamps every member AND every driver on a declared-members template", async () => {
@@ -343,9 +341,7 @@ describe("init — template path (bash lib/init.sh:87-107 parity)", () => {
       expect(m.cwd).toBe(env.cwd);
     }
     // Drivers: the template's `icloud` on driver-2 is overridden too —
-    // the flag applies uniformly to every drivers[] and members[] entry
-    // (bot.claudeAccount is the one seat it leaves alone; see the
-    // drivers-only stamp test above).
+    // the flag applies uniformly to every drivers[] and members[] entry.
     expect(tj.drivers?.map((d) => d.claudeAccount)).toEqual(["personal", "personal"]);
   });
 
@@ -359,10 +355,9 @@ describe("init — template path (bash lib/init.sh:87-107 parity)", () => {
     for (const d of tj.drivers ?? []) {
       expect("claudeAccount" in d).toBe(false);
     }
-    // The strip branch is drivers[] + members[] only: the bot block
-    // passes through verbatim, template `null` included (ADR-285).
-    expect("claudeAccount" in (tj.bot ?? {})).toBe(true);
-    expect(tj.bot?.claudeAccount).toBeNull();
+    // The strip branch is drivers[] + members[] only, and the shipped
+    // template carries no `bot` block (seat removed).
+    expect(tj.bot).toBeUndefined();
   });
 
   test("--claude-account default STRIPS the declared-members template's lead + driver-2 demonstration values", async () => {
@@ -392,7 +387,7 @@ describe("init — template path (bash lib/init.sh:87-107 parity)", () => {
     for (const d of tj.drivers ?? []) {
       expect("claudeAccount" in d).toBe(false);
     }
-    expect(tj.bot?.claudeAccount).toBeNull();
+    expect(tj.bot).toBeUndefined();
   });
 
   test("no --claude-account → declared-members template's values pass through verbatim", async () => {
@@ -719,7 +714,7 @@ describe("init — default stdout sink (no opts.stdout)", () => {
 // fake git; NOT e2e — no real `git worktree add`, no cockpit, no cron).
 // ADR-288 §Consequences "New teams have no member windows": `atmux init`
 // from the SHIPPED template, then `atmux start` against the rendered
-// `.atmux/`, yields driver..driver-3 + `_bot` and nothing else. Because
+// `.atmux/`, yields superdriver + driver..driver-3 and nothing else. Because
 // `drivers[]` is non-empty the `__<team>__home` placeholder is never
 // created (driver is window 1), so start.ts step 9's close-out is a
 // no-op and step 9b leaves team.json byte-identical (no emoji fallback
@@ -773,7 +768,7 @@ describe("ADR-288 §D5 — init(shipped template) → start", () => {
   }
 
   /** Healthy repo on `atmux-geoyws`: rev-parse + branch succeed, no
-   *  `<base>-driver-N` / `<base>-bot` branch exists yet (`--verify` → 1),
+   *  `<base>-driver-N` branch exists yet (`--verify` → 1),
    *  every other git call (`worktree add`, …) succeeds without touching
    *  disk. */
   function healthyGit(calls: ReadonlyArray<string>[]): GitSpawn {
@@ -786,7 +781,7 @@ describe("ADR-288 §D5 — init(shipped template) → start", () => {
     };
   }
 
-  test("drivers-only default scaffold starts superdriver + driver..driver-3 + _bot at windows 1..5, never creates __<team>__home, leaves team.json byte-identical", async () => {
+  test("drivers-only default scaffold starts superdriver + driver..driver-3 at windows 1..4, never creates __<team>__home, leaves team.json byte-identical", async () => {
     const team = `i${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     expect(await runInit(["--name", team, "--no-skills"])).toBe(0);
     const atmuxDir = join(env.cwd, ".atmux");
@@ -799,11 +794,11 @@ describe("ADR-288 §D5 — init(shipped template) → start", () => {
       "driver-2",
       "driver-3",
     ]);
-    expect(tj.bot?.enabled).toBe(true);
+    expect(tj.bot).toBeUndefined();
 
     // The fake git never runs a real `worktree add`, so stand in for the
     // directories it would have created (tmux refuses a missing cwd).
-    for (const d of ["driver-2", "driver-3", "bot"]) {
+    for (const d of ["driver-2", "driver-3"]) {
       await mkdir(join(atmuxDir, "worktrees", d), { recursive: true });
     }
 
@@ -823,17 +818,16 @@ describe("ADR-288 §D5 — init(shipped template) → start", () => {
       "driver",
       "driver-2",
       "driver-3",
-      "_bot",
     ]);
-    expect(wins.map((w) => w.index)).toEqual([1, 2, 3, 4, 5]);
+    expect(wins.map((w) => w.index)).toEqual([1, 2, 3, 4]);
     expect(wins.some((w) => w.name === `__${team}__home`)).toBe(false);
     // Step 9b: no emoji fallback fired → team.json is byte-identical.
     expect(await readFile(tjPath, "utf8")).toBe(before);
     // Nothing errored on the way (init + start share the sink).
     expect(env.logs.filter((l) => l.kind === "err")).toEqual([]);
-    // Worktree provisioning was attempted for driver-2..5 + bot off the
+    // Worktree provisioning was attempted for driver-2/3 off the
     // detected base branch — the drivers-only roster still isolates.
-    for (const d of ["driver-2", "driver-3", "bot"]) {
+    for (const d of ["driver-2", "driver-3"]) {
       expect(calls.some((c) => c.includes(`atmux-geoyws-${d}`))).toBe(true);
     }
   });

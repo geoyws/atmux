@@ -289,8 +289,7 @@ function interactiveLogin(shell: string): string {
 
 /**
  * Pane start command for a plain interactive shell pane atmux creates
- * (driver workspaces with no TUI, `_bot` shell seats, cockpit operator
- * windows).
+ * (driver workspaces with no TUI, cockpit operator windows).
  *
  * Shape: `stty sane 2>/dev/null; exec zsh -l -i` — byte-for-byte the
  * managed `default-command` (templates/tmux/atmux.conf). tmux hands a
