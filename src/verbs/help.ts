@@ -120,8 +120,9 @@ Automation:
                               Provider quota headroom (codex/claude/zai/kimi).
                               Percent CONSUMED, exact reset times, cached rows
                               labelled with their age. ADR-273 Supplement-6.
-  rotate <member>             /clear the member and re-brief
-  rotate-lead                 /clear the lead and re-bootstrap
+  rotate <member> [--reason <t>]  /clear the member and re-brief
+  rotate-lead [--reason <t>]      /clear the lead and re-bootstrap
+  clear-member <member> --force   Kill + recreate the member window bare (no re-brief)
   handoff <from> <to>         Move in-flight work from one member to another
   pause <member>              Mark member paused (dispatch refuses to queue)
   resume <member>             Unpause

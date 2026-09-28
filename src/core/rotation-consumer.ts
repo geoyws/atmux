@@ -109,14 +109,15 @@ export function correlateSignals(
 
 /**
  * Render the tell-lead nudge for a high-confidence suggestion. Carries
- * the verbatim verb to run (rotate-member; clear-member stays a human
- * call — rotation restarts the worker, clearing wipes its state).
+ * the verbatim verb to run (`rotate` — the existing verb, NOT a new
+ * `rotate-member` spelling; clear-member stays a human call —
+ * rotation restarts the worker, clearing wipes its state).
  */
 export function renderSuggestionMessage(s: RotationSuggestion): string {
   const lines = [
     `rotation suggestion [${s.confidence}] — ${s.team}/${s.member} looks stuck:`,
     ...s.reasons.map((r) => `- ${r}`),
-    `suggested: \`atmux rotate-member ${s.member} --reason stuck-pane\``,
+    `suggested: \`atmux rotate ${s.member} --reason stuck-pane\``,
     `lead-gated: verify before running; reply here to dismiss.`,
   ];
   return lines.join("\n");

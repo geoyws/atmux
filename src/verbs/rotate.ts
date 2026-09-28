@@ -41,7 +41,7 @@ import { resolveBriefsDir } from "../core/templates-dir.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { Team, TeamMember } from "../schema/team.ts";
 
-const USAGE = "atmux rotate <member>  |  atmux rotate-lead";
+const USAGE = "atmux rotate <member> [--reason <text>]  |  atmux rotate-lead [--reason <text>]";
 
 // ---------- Args ----------
 
@@ -52,6 +52,9 @@ export interface RotateArgs {
   forLead: boolean;
   /** Member name; empty when `forLead` (resolved at runtime). */
   member: string;
+  /** e-cc3728bf T3: free-text reason (e.g. `stuck-pane` from the rotation
+   *  consumer) — recorded on the final output line, nothing else. */
+  reason?: string;
   socketPath?: string;
   teamDir?: string;
 }
@@ -60,6 +63,7 @@ export interface RotateArgs {
 export function parseRotateArgs(argv: ReadonlyArray<string>): RotateArgs {
   let forLead = false;
   let member = "";
+  let reason: string | undefined;
   let socketPath: string | undefined;
   let teamDir: string | undefined;
   let i = 0;
@@ -76,6 +80,15 @@ export function parseRotateArgs(argv: ReadonlyArray<string>): RotateArgs {
         throw new UsageError({ what: "rotate: --socket requires a path", hint: USAGE });
       }
       socketPath = v;
+      i += 2;
+      continue;
+    }
+    if (a === "--reason") {
+      const v = argv[i + 1];
+      if (v === undefined) {
+        throw new UsageError({ what: "rotate: --reason requires a value", hint: USAGE });
+      }
+      reason = v;
       i += 2;
       continue;
     }
@@ -99,6 +112,7 @@ export function parseRotateArgs(argv: ReadonlyArray<string>): RotateArgs {
     i += 1;
   }
   const out: RotateArgs = { forLead, member };
+  if (reason !== undefined) out.reason = reason;
   if (socketPath !== undefined) out.socketPath = socketPath;
   if (teamDir !== undefined) out.teamDir = teamDir;
   return out;
@@ -525,7 +539,7 @@ export async function rotate(argv: ReadonlyArray<string>, opts: RotateOpts = {})
     }
   }
 
-  stdout(`rotated ${target.name} (role=${role}, tui=${tui})\n`);
+  stdout(`rotated ${target.name} (role=${role}, tui=${tui}${parsed.reason !== undefined ? `, reason=${parsed.reason}` : ""})\n`);
   return 0;
 }
 

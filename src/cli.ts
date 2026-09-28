@@ -37,6 +37,7 @@ import { attach } from "./verbs/attach.ts";
 import { audit } from "./verbs/audit.ts";
 import { blockers } from "./verbs/blockers.ts";
 import { claim, done } from "./verbs/claim.ts";
+import { clearMember } from "./verbs/clear-member.ts";
 import { cleanup } from "./verbs/cleanup.ts";
 import { cockpit } from "./verbs/cockpit.ts";
 import { cockpitMirror } from "./verbs/cockpit-mirror.ts";
@@ -277,6 +278,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return rotate(argv.slice(1));
     case "rotate-lead":
       return rotateLead(argv.slice(1));
+    case "clear-member":
+      return clearMember(argv.slice(1));
     case "handoff":
       return handoff(argv.slice(1));
     case "report":

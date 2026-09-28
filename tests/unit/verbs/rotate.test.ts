@@ -1343,3 +1343,42 @@ describe("rotateLead", () => {
     }
   });
 });
+
+describe("rotate --reason (e-cc3728bf T3)", () => {
+  test("parse: --reason consumed", () => {
+    expect(parseRotateArgs(["alice", "--reason", "stuck-pane"]).reason).toBe("stuck-pane");
+  });
+  test("parse: --reason without value rejected", () => {
+    expect(() => parseRotateArgs(["alice", "--reason"])).toThrow(UsageError);
+  });
+  test("success output carries reason; absent without it", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "atmux-rotate-reason-"));
+    const priorSession = process.env.ATMUX_SESSION;
+    process.env.ATMUX_SESSION = "atmux-t";
+    try {
+      const atmuxDir = join(scratch, ".atmux");
+      await mkdir(atmuxDir, { recursive: true });
+      await writeFile(join(atmuxDir, "team.json"), JSON.stringify({ name: "t", members: [{ name: "alice", role: "member", tui: "zsh" }] }));
+      const { tmux } = stubTmux({ windows: [{ index: 0, name: "alice", active: true }] });
+      let out = "";
+      const run = (args: string[]) =>
+        rotate(["--team-dir", scratch, ...args], {
+          buildTmux: () => tmux,
+          briefsDir: join(scratch, "no-briefs"),
+          sleep: async () => {},
+          stdout: (s) => { out += s; },
+          stderr: () => {},
+        });
+      expect(await run(["alice", "--reason", "stuck-pane"])).toBe(0);
+      expect(out).toContain("rotated alice (role=member, tui=zsh, reason=stuck-pane)");
+      out = "";
+      expect(await run(["alice"])).toBe(0);
+      expect(out).toContain("rotated alice (role=member, tui=zsh)");
+      expect(out).not.toContain("reason=");
+    } finally {
+      if (priorSession !== undefined) process.env.ATMUX_SESSION = priorSession;
+      else delete process.env.ATMUX_SESSION;
+      await rm(scratch, { recursive: true, force: true });
+    }
+  });
+});

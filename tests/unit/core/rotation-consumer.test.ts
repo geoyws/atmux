@@ -83,7 +83,7 @@ describe("correlateSignals", () => {
 });
 
 describe("renderSuggestionMessage", () => {
-  test("carries verbatim rotate-member verb + lead gate", () => {
+  test("carries verbatim rotate verb + lead gate", () => {
     const msg = renderSuggestionMessage({
       team: "atx",
       member: "m1",
@@ -92,7 +92,7 @@ describe("renderSuggestionMessage", () => {
       evidence: "x",
       observedAtMs: NOW,
     });
-    expect(msg).toContain("atmux rotate-member m1 --reason stuck-pane");
+    expect(msg).toContain("atmux rotate m1 --reason stuck-pane");
     expect(msg).toContain("lead-gated");
   });
 });
@@ -129,7 +129,7 @@ describe("consumeTeam", () => {
     expect(got.nudged).toBe(1);
     expect(sent).toHaveLength(1);
     expect(sent[0]?.team).toBe("atx");
-    expect(sent[0]?.message).toContain("rotate-member m1");
+    expect(sent[0]?.message).toContain("atmux rotate m1 --reason stuck-pane");
     const rows = (db as Database).query("SELECT topic FROM events WHERE topic = 'coordination.rotate-suggested'").all() as Array<{ topic: string }>;
     expect(rows).toHaveLength(2);
   });
