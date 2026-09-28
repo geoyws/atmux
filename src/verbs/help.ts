@@ -100,6 +100,7 @@ Hierarchy (ADR-007):
 Dispatch + work:
   dispatch <member> <task-id> Push task to member's inbox + ping them
   inbox <member>              Show member's inbox
+  inbox archive [--older-than <Nm|Nh|Nd>] [--team <name>]  Archive old driver-inbox.md entries
   claim <task-id>             Claim a task from kanban (as a member)
   done <task-id>              Mark claimed task complete
   member status <idle|working|blocked|rate-limited> [--as <m>] [--note <t>] [--task <id>]
