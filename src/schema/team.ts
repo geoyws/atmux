@@ -546,6 +546,23 @@ export const DEFAULT_LANE_TICK_CRON_MINS = 5;
  * precedent (workers read the brief; one canonical name beats two
  * equivalent ones). `crossLaneClaim=true` ≡ `lanePickup.strict=false`.
  */
+/** e-cc3728bf T1 (ADR-212 §D2): per-team rotation-observer thresholds.
+ *  All fields optional; partial blocks fill missing fields from
+ *  DEFAULT_ROTATION_THRESHOLDS (src/core/rotation-observer.ts) at the
+ *  call-site. Milliseconds throughout. Strict so typos surface as
+ *  refusals, per the file's drift-detection convention. */
+export const TeamRotation = z
+  .object({
+    /** Idle ms with past-tense spinner residue before pane.stuck. */
+    stuckAfterMs: z.number().int().positive().optional(),
+    /** Ms since last commit before the commit side counts as stale. */
+    noProgressCommitMs: z.number().int().positive().optional(),
+    /** Ms since oldest active claim before the claim side counts as stale. */
+    noProgressClaimMs: z.number().int().positive().optional(),
+  })
+  .strict();
+export type TeamRotation = z.infer<typeof TeamRotation>;
+
 export const TeamKanban = z
   .object({
     /** Cross-lane fallback gate for `claim --next`. When `true` (default),
@@ -1514,6 +1531,11 @@ export const Team = z
      *  ADR-148 §D1 — `atmux status` surfaces verdict + age in the
      *  new cadence column. */
     cadence: TeamCadence.optional(),
+    /** e-cc3728bf T1 (ADR-212 §D2): per-team rotation-observer
+     *  thresholds. Absent block uses DEFAULT_ROTATION_THRESHOLDS;
+     *  partial blocks fill missing fields from the same defaults at
+     *  the call-site. */
+    rotation: TeamRotation.optional(),
     /** ADR-146 §D7: per-team `autoEmitTrunkMerge` config — governs
      *  the `moveTask` auto-emit hook that fires a `merge t-xxx
      *  (branch→trunk)` Task when the last leaf of a Story's task

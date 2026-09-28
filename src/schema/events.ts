@@ -488,6 +488,64 @@ export const MemberUsageSnapshotPayload = z
   .passthrough();
 
 /**
+ * `pane.stuck` — rotation observer (e-cc3728bf T1, ADR-212 §D1/D2)
+ * classified a member pane as stuck: idle-state text (READY/SHELL)
+ * carrying past-tense spinner residue (`✻ Baked for 1m 51s` — the
+ * ACTIVE_TURN_RE false-positive class) with no activity for longer
+ * than the team's stuck threshold. Lead consumer (T2) wakes and
+ * decides: suggest rotate-member / leave-alone. Signal, not instruction.
+ */
+export const PaneStuckPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("pane.stuck"),
+    team: z.string(),
+    member: z.string(),
+    lastActivitySec: z.number(),
+    captureExcerpt: z.string(),
+    observedAtSec: z.number(),
+  })
+  .passthrough();
+
+/**
+ * `member.no-progress` — rotation observer found a member with a stale
+ * claim and no recent commit (lastCommit older than the commit threshold
+ * AND oldest active claim older than the claim threshold). Either side
+ * missing means idle, not stuck — both must be stale.
+ */
+export const MemberNoProgressPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("member.no-progress"),
+    team: z.string(),
+    member: z.string(),
+    lastCommitSec: z.number().nullable(),
+    taskClaimedSec: z.number(),
+    hoursIdle: z.number(),
+    observedAtSec: z.number(),
+  })
+  .passthrough();
+
+/**
+ * `cage.starving` — rotation observer found a team cage idle past
+ * STARVING_THRESHOLD_S under resource pressure (cpu or mem above 0.8).
+ * Team-level (no member): starvation is a cage condition. Pressures are
+ * 0..1 fractions; null when the load probe failed (pressure unknown —
+ * the idle duration alone still reports).
+ */
+export const CageStarvingPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("cage.starving"),
+    team: z.string(),
+    cpuPressure: z.number().min(0).max(1).nullable(),
+    memPressure: z.number().min(0).max(1).nullable(),
+    sinceSec: z.number(),
+    observedAtSec: z.number(),
+  })
+  .passthrough();
+
+/**
  * `story.ready` — the planner advanced a story `planning → ready`.
  * ADR-247 §D1. Fired ONCE per story-ready transition (the
  * `planning → ready` edge only) — not re-fired on subsequent reads of
@@ -576,6 +634,9 @@ export const EventPayload = z.discriminatedUnion("topic", [
   MemberRateLimitedPayload,
   MemberOverloadedPayload,
   MemberUsageSnapshotPayload,
+  PaneStuckPayload,
+  MemberNoProgressPayload,
+  CageStarvingPayload,
   StoryReadyPayload,
   StoryUnclaimedPayload,
   InternalHonkerLoadedPayload,
@@ -605,6 +666,9 @@ export type MemberContextHighPayload = z.infer<typeof MemberContextHighPayload>;
 export type MemberRateLimitedPayload = z.infer<typeof MemberRateLimitedPayload>;
 export type MemberOverloadedPayload = z.infer<typeof MemberOverloadedPayload>;
 export type MemberUsageSnapshotPayload = z.infer<typeof MemberUsageSnapshotPayload>;
+export type PaneStuckPayload = z.infer<typeof PaneStuckPayload>;
+export type MemberNoProgressPayload = z.infer<typeof MemberNoProgressPayload>;
+export type CageStarvingPayload = z.infer<typeof CageStarvingPayload>;
 export type StoryReadyPayload = z.infer<typeof StoryReadyPayload>;
 export type StoryUnclaimedPayload = z.infer<typeof StoryUnclaimedPayload>;
 export type InternalHonkerLoadedPayload = z.infer<typeof InternalHonkerLoadedPayload>;
