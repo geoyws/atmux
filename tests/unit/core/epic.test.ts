@@ -306,3 +306,28 @@ describe("epicIsEligible — (deps-done × isReady) matrix", () => {
     expect(r.blockers[0]).toMatch(/not found/);
   });
 });
+
+describe("addEpic team-default isolation (e-47 T3)", () => {
+  test("core ignores team epicAdd.readyByDefault — row lands cold", async () => {
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      JSON.stringify({
+        name: "epic-core-test",
+        members: [{ name: "lead", role: "team-lead" }],
+        epicAdd: { readyByDefault: true },
+      }),
+    );
+    const id = await addEpic(atmuxDir, { title: "A" });
+    // Row landed cold despite the team default: the 0→1 flip is real.
+    const flip = await setEpicReady(atmuxDir, id, true);
+    expect(flip.noop).toBe(false);
+    expect(flip.from).toBe(false);
+  });
+
+  test("explicit isReady:true wins even when team default is false", async () => {
+    const id = await addEpic(atmuxDir, { title: "A", isReady: true });
+    // Already ready: second flip is a noop.
+    const again = await setEpicReady(atmuxDir, id, true);
+    expect(again.noop).toBe(true);
+  });
+});
