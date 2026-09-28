@@ -1,0 +1,21 @@
+# atmux Linux gate image — bun + the native deps the suite shells out to.
+#
+# The unit suite spawns `tmux` (fixture cages), `git` (worktree/show-toplevel
+# probes) and `jq` (config-shape assertions in a few helpers). oven/bun
+# ships none of those; this layer adds them on Debian trixie.
+#
+# Base pinned by digest (recorded 2026-09-28; bump deliberately, never float):
+#   oven/bun@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895
+#
+# Build:  docker build -f docker/Dockerfile.gate -t atmux-gate:latest .
+# Digest: docker inspect atmux-gate:latest --format='{{index .RepoDigests 0}}'
+#         (empty until pushed — receipts cite the base digest above plus the
+#         local image ID from `docker images atmux-gate --format '{{.ID}}'`).
+
+FROM oven/bun@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends tmux git jq procps \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /repo
