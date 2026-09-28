@@ -87,7 +87,27 @@ starts a plain zsh pane.
 - Any model ID (`"claude-opus-4-7"`, `"claude-sonnet-4-6"`, and so on) —
   passed verbatim as `claude --model <id>`.
 
-## Override workflow (declared members only)
+- `"default"` (or field absent) — claude CLI default. Currently Opus via the
+  global `CLAUDE_CODE_EFFORT_LEVEL=xhigh` env; teammates inherit `xhigh` effort.
+- `"claude-opus-4-7"` / `"claude-sonnet-4-6"` / `"claude-haiku-4-5-20251001"` /
+  any future model ID — passed verbatim as `claude --model <id>`. Sonnet
+  members still inherit `xhigh` effort (read-only roles benefit from full
+  reasoning depth even on the smaller model).
+
+### `.superdriver` (per ADR-296)
+
+Top-level orchestration seat, not a `drivers[]` or `members[]` entry. Cage
+window 1 (drivers shift to 2..N+1); no worktree, no branch — cwd is pinned
+to the repo root. Runs `/sync-drivers` and coordinates across driver lanes.
+
+- `"enabled": true` (or block absent) — seat is created. Explicit
+  `{"enabled": false}` opts out and restores the old drivers-first layout.
+- `"tui": null` (or absent) — plain zsh floor like nullable drivers;
+  a non-null harness alias launches two-stage into the verified-idle shell.
+
+## Override workflow
+
+To flip a member's model after the team is already running:
 
 ```bash
 jq '(.members[] | select(.name == "discorder") | .model) = "claude-sonnet-4-6"' \
@@ -96,5 +116,13 @@ jq '(.members[] | select(.name == "discorder") | .model) = "claude-sonnet-4-6"' 
 atmux rotate discorder
 ```
 
-`atmux rotate <member>` re-launches the pane with the new `--model`. Defer
-the rotate to the next natural cycle if the member is mid-work.
+`atmux rotate <member>` reads the updated field and re-launches the pane with
+the new `--model` flag. If the running session is mid-work, defer the rotate
+to the next natural cycle — the model change isn't urgent enough to interrupt
+in-flight work.
+
+## Reversibility
+
+HIGH. Driver may flip `discorder` back to Opus (or any role to a different
+model) with one `jq` edit + one `atmux rotate <name>`. No schema migration,
+no data loss, no in-flight task disruption.

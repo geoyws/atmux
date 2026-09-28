@@ -95,6 +95,7 @@ import { now } from "../abstractions/time.ts";
 import {
   createTmux,
   exactSessionTarget,
+  type PaneId,
   type SendTarget,
   type TmuxConfig,
   type TmuxNamespace,
@@ -147,13 +148,15 @@ import {
   resolveDriverCwd,
   resolveDriversList,
 } from "../core/drivers.ts";
+import { SUPERDRIVER_WINDOW_NAME, resolveSuperdriver } from "../core/superdriver.ts";
 import { injectGoalIfActive } from "../core/goal-injection.ts";
 import { submitAfterPaste } from "../core/paste-submit.ts";
 import { migrateLegacySessionName } from "../core/session-migrate.ts";
 import { consumedManifestPath, resumeManifestPath } from "../core/soft-stop.ts";
 import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
-import { CLAUDE_TUI_SCRUB_VARS, resolveTuiCommand } from "../core/tui-cmd.ts";
+import { launchAgentInPane, resolveOnlyPane } from "../core/agent-pane.ts";
+import { CLAUDE_TUI_SCRUB_VARS, resolveTuiCommand, shellPaneCommand } from "../core/tui-cmd.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import { ResumeManifest } from "../schema/resume.ts";
 import type { Team } from "../schema/team.ts";
@@ -171,6 +174,10 @@ export type DoctorMode = "preflight" | "verbose" | "skip";
 export interface ParsedStartArgs {
   force: boolean;
   doctorMode: DoctorMode;
+  /** Create/reconcile the bare zsh panes but launch no TUI child.
+   *  `cockpit reconcile --no-launch` forwards this so a cage cycle
+   *  leaves every agent seat as a usable shell. */
+  noLaunch: boolean;
   /** -L socket short-name; mutually exclusive with `socketPath`. */
   socket?: string;
   /** -S socket absolute path; mutually exclusive with `socket`. */
@@ -179,7 +186,8 @@ export interface ParsedStartArgs {
 
 /**
  * Parse `start` argv. Mirrors the case-loop at lib/start.sh:19-26 plus
- * the Phase 2 `--socket`/`--socket-path` flag pair.
+ * the Phase 2 `--socket`/`--socket-path` flag pair and `--no-launch`
+ * (shells only, no TUI children — forwarded by `cockpit reconcile`).
  *
  * `ATMUX_DOCTOR_ON_START` env override flips the default to `verbose`
  * (lib/start.sh:18). Tests inject `env` rather than mutate `process.env`.
@@ -194,6 +202,7 @@ export function parseStartArgs(
     onStart !== undefined && onStart.length > 0 ? "verbose" : "preflight";
   let socket: string | undefined;
   let socketPath: string | undefined;
+  let noLaunch = false;
 
   let i = 0;
   while (i < args.length) {
@@ -212,12 +221,16 @@ export function parseStartArgs(
         doctorMode = "skip";
         i += 1;
         break;
+      case "--no-launch":
+        noLaunch = true;
+        i += 1;
+        break;
       case "--socket": {
         const val = args[i + 1];
         if (val === undefined || val.length === 0) {
           throw new UsageError({
             what: "start: --socket requires a value",
-            hint: "usage: atmux start [--force] [--doctor|--no-doctor] [--socket <name> | --socket-path <abspath>]",
+            hint: "usage: atmux start [--force] [--doctor|--no-doctor] [--no-launch] [--socket <name> | --socket-path <abspath>]",
           });
         }
         socket = val;
@@ -229,7 +242,7 @@ export function parseStartArgs(
         if (val === undefined || val.length === 0) {
           throw new UsageError({
             what: "start: --socket-path requires a value",
-            hint: "usage: atmux start [--force] [--doctor|--no-doctor] [--socket <name> | --socket-path <abspath>]",
+            hint: "usage: atmux start [--force] [--doctor|--no-doctor] [--no-launch] [--socket <name> | --socket-path <abspath>]",
           });
         }
         socketPath = val;
@@ -239,7 +252,7 @@ export function parseStartArgs(
       default:
         throw new UsageError({
           what: `start: unknown arg: ${a}`,
-          hint: "see lib/start.sh:19-26 for accepted flags",
+          hint: "accepted: --force/-f, --doctor, --no-doctor, --no-launch, --socket <name>, --socket-path <abspath>",
         });
     }
   }
@@ -253,7 +266,7 @@ export function parseStartArgs(
 
   // exactOptionalPropertyTypes: only include socket / socketPath keys
   // when they're actually defined.
-  const out: ParsedStartArgs = { force, doctorMode };
+  const out: ParsedStartArgs = { force, doctorMode, noLaunch };
   if (socket !== undefined) out.socket = socket;
   if (socketPath !== undefined) out.socketPath = socketPath;
   return out;
@@ -473,15 +486,104 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   // legacy `driverSession` / `driverTui` synthesis was removed per
   // ADR-266 §D2 — only `drivers[]` drives the spawn loop now.)
   const drivers = resolveDriversList(team as Parameters<typeof resolveDriversList>[0]);
+  // ADR-296 — resolve the per-team superdriver orchestration seat.
+  // Absent block == enabled with defaults, so legacy team.json files
+  // gain the seat without migration; `{"enabled": false}` opts out.
+  // It is NOT a drivers[] entry and NOT a members[] entry: no
+  // worktree, no branch of its own, cwd pinned to the repo root.
+  const superdriver = resolveSuperdriver(team, projectRoot);
+  const superdriverShellLabel = superdriver.tui ?? "zsh";
+  let superdriverSpawned = false;
+
+  /** Stage-2 TUI command for the superdriver seat, or undefined for a
+   *  shell-only seat (null/absent/shell/zsh tui — same rule as
+   *  drivers). */
+  const superdriverTuiCommand = (): string | undefined => {
+    const tui = superdriver.tui;
+    if (tui === undefined || tui === null) return undefined;
+    if (tui === "shell" || tui === "zsh") return undefined;
+    const synth = {
+      name: SUPERDRIVER_WINDOW_NAME,
+      role: "superdriver",
+      tui,
+      model: "default",
+      cwd: projectRoot,
+    };
+    try {
+      return resolveTuiCommand(synth, team, { env, cwd: projectRoot });
+    } catch (err) {
+      logger.warn(
+        `superdriver: could not resolve command for tui='${superdriver.tui}' — pane will land in shell (${err instanceof Error ? err.message : String(err)})`,
+      );
+      return undefined;
+    }
+  };
+
+  /** Stage 2 for the superdriver pane. Never fatal: a seat whose TUI
+   *  did not come up is still a live shell the operator can use. */
+  const launchSuperdriverTui = async (paneId: PaneId): Promise<void> => {
+    const cmd = superdriverTuiCommand();
+    if (cmd === undefined) return;
+    if (parsed.noLaunch) {
+      logger.log("  · superdriver: --no-launch — pane left as a bare zsh");
+      return;
+    }
+    const outcome = await launchAgentInPane({
+      tmux,
+      paneId,
+      intent: { kind: "superdriver", team: team.name },
+      command: cmd,
+      sleep: briefSleep,
+    });
+    if (outcome === "no-prompt") {
+      logger.warn(
+        "superdriver: pane shell never executed its readiness probe — TUI not launched (pane is intact; start it by hand)",
+      );
+    }
+  };
   let driverInitial = false;
   if (!stillExists) {
+    // ---------- ADR-296 superdriver seat (window 1) ----------
+    //
+    // When enabled, the superdriver seat creates the session at window
+    // 1 (cwd pinned to the repo root — no worktree, no branch of its
+    // own), and every driver below attaches as a window after it
+    // (drivers at 2..N+1). When disabled, the layout below is exactly
+    // today's (first driver at window 1, else the __home
+    // placeholder).
+    if (superdriver.enabled) {
+      await tmux.session.newSession({
+        name: session,
+        windowName: SUPERDRIVER_WINDOW_NAME,
+        cwd: projectRoot,
+        shellCommand: shellPaneCommand(),
+      });
+      const created = (await tmux.window.listWindows(session)).filter(
+        (window) => window.name === SUPERDRIVER_WINDOW_NAME,
+      );
+      if (created.length !== 1 || created[0] === undefined) {
+        throw new Error("superdriver: expected exactly one fresh window");
+      }
+      const seatPane = await resolveOnlyPane(
+        tmux,
+        { sessionName: session, windowIndex: created[0].index },
+        session,
+        created[0].index,
+      );
+      await launchSuperdriverTui(seatPane);
+      logger.ok(
+        `created tmux session: ${session} (superdriver at window 1, ${superdriverShellLabel})`,
+      );
+      superdriverSpawned = true;
+    }
     if (drivers.length > 0) {
       // ---------- ADR-239 §A1/§A5 driver-spawn loop ----------
       //
-      // Each driver pane launches via tmux command-mode (shellCommand on
-      // new-session for the first driver, new-window for the rest). NEVER
-      // routes through pane.sendKeys — ADR-239 §D2 no-send-keys-EVER
-      // invariant is satisfied at spawn time by construction.
+      // Each driver pane is CREATED by tmux command-mode (shellCommand on
+      // new-session for the first driver, new-window for the rest) running
+      // an interactive shell; the TUI is then sent into that verified-idle
+      // shell (two-stage lifecycle below). ADR-239 §D2's no-send-keys rule
+      // was revoked by the operator on 2026-09-08.
       //
       // Worktree provisioning for driver-N (N>=2) happens inline: the cwd
       // convention `.atmux/worktrees/driver-N` triggers a provisionWorktree
@@ -502,41 +604,69 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
         );
       }
 
-      // ADR-239 §A5 — command-mode launch: the resolved TUI cmd runs as
-      // the pane's PID 0. To preserve the "pane stays a usable shell
-      // after the TUI exits" property that the legacy send-keys path
-      // gave for free, non-shell TUIs are wrapped with `sh -c '<cmd>;
-      // exec $SHELL -i'` so the pane drops back to an interactive shell
-      // when the TUI quits. A null/absent TUI explicitly launches zsh:
-      // driver panes are operator workspaces and must not inherit a stale
-      // agent-harness choice. Named shell kinds keep tmux's normal shell.
-      const isShellOnlyTui = (tui: string | null | undefined): boolean =>
-        tui === undefined || tui === null || tui === "shell" || tui === "bash" || tui === "zsh";
-
+      // Two-stage pane lifecycle (operator directive 2026-09-22):
+      //   stage 1 — the pane is CREATED running an interactive login
+      //     shell, which also resets the line discipline once so the
+      //     prompt is drawn on a sane terminal (no blank panes).
+      //   stage 2 — the TUI command is SENT into that verified-idle
+      //     shell, so the TUI is the shell's child and quitting it
+      //     (two Ctrl-C presses) returns to the same prompt instead of
+      //     removing the pane. A TUI is NEVER a pane start command.
+      // Sending into driver panes is allowed since the operator revoked
+      // ADR-239 §D2 (2026-09-08). A null/absent TUI stays a plain zsh
+      // workspace; named shell kinds keep the operator's `$SHELL`.
       const driverShellLabel = (tui: string | null | undefined): string => tui ?? "zsh";
 
-      const wrapForShellFallback = (cmd: string): string =>
-        `sh -c ${JSON.stringify(`${cmd}; exec $SHELL -i`)}`;
+      /** Stage-1 pane command for a driver: always a shell, never a TUI. */
+      const driverShellCommand = (_drv: DriverSession): string => shellPaneCommand();
 
-      const resolveCmd = (drv: DriverSession, cwd: string): string | undefined => {
-        if (drv.tui === undefined || drv.tui === null) return "zsh";
-        if (isShellOnlyTui(drv.tui)) return undefined;
+      /** Stage-2 TUI command, or undefined for a shell-only driver. */
+      const driverTuiCommand = (drv: DriverSession, cwd: string): string | undefined => {
+        const tui = drv.tui;
+        if (tui === undefined || tui === null) return undefined;
+        if (tui === "shell" || tui === "zsh") return undefined;
         const synth = {
           name: drv.name,
           role: "driver",
-          tui: drv.tui,
+          tui,
           model: "default",
           cwd,
           ...(drv.claudeAccount !== undefined ? { claudeAccount: drv.claudeAccount } : {}),
         };
         try {
-          const raw = resolveTuiCommand(synth, team, { env, cwd });
-          return wrapForShellFallback(raw);
+          return resolveTuiCommand(synth, team, { env, cwd });
         } catch (err) {
           logger.warn(
             `driver ${drv.name}: could not resolve command for tui='${drv.tui}' — pane will land in shell (${err instanceof Error ? err.message : String(err)})`,
           );
           return undefined;
+        }
+      };
+
+      /** Stage 2 for one driver pane. Never fatal: a driver whose TUI
+       *  did not come up is still a live shell the operator can use. */
+      const launchDriverTui = async (
+        drv: DriverSession,
+        cwd: string,
+        paneId: PaneId,
+      ): Promise<void> => {
+        const cmd = driverTuiCommand(drv, cwd);
+        if (cmd === undefined) return;
+        if (parsed.noLaunch) {
+          logger.log(`  · driver ${drv.name}: --no-launch — pane left as a bare zsh`);
+          return;
+        }
+        const outcome = await launchAgentInPane({
+          tmux,
+          paneId,
+          intent: { kind: "driver", team: team.name },
+          command: cmd,
+          sleep: briefSleep,
+        });
+        if (outcome === "no-prompt") {
+          logger.warn(
+            `driver ${drv.name}: pane shell never executed its readiness probe — TUI not launched (pane is intact; start it by hand)`,
+          );
         }
       };
 
@@ -571,47 +701,66 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
         }
       };
 
-      // First driver creates the session (window 1). Subsequent drivers
-      // attach as windows 2..N. Window order is driver-N at slots 1..N
-      // per ADR-239 §D3; members follow at N+1.
+      // First driver creates the session (window 1) — unless ADR-296
+      // already seeded it with the superdriver seat, in which case
+      // EVERY driver attaches as a window after it. Window order is
+      // driver-N at slots 1..N per ADR-239 §D3 when the seat is
+      // disabled, else superdriver at 1 and drivers at 2..N+1;
+      // members follow after the last driver.
       const firstDriver = drivers[0];
-      if (firstDriver !== undefined) {
+      if (firstDriver !== undefined && !superdriverSpawned) {
         const firstCwd0 = resolveDriverCwd(firstDriver, projectRoot);
         const firstCwd = await ensureDriverWorktree(firstDriver, firstCwd0);
-        const firstCmd = resolveCmd(firstDriver, firstCwd);
         const newSessionOpts: Parameters<typeof tmux.session.newSession>[0] = {
           name: session,
           windowName: firstDriver.name,
           cwd: firstCwd,
+          shellCommand: driverShellCommand(firstDriver),
         };
-        if (firstCmd !== undefined) newSessionOpts.shellCommand = firstCmd;
         await tmux.session.newSession(newSessionOpts);
+        const created = (await tmux.window.listWindows(session)).filter(
+          (window) => window.name === firstDriver.name,
+        );
+        if (created.length !== 1 || created[0] === undefined) {
+          throw new Error(`driver ${firstDriver.name}: expected exactly one fresh window`);
+        }
+        const firstPane = await resolveOnlyPane(
+          tmux,
+          { sessionName: session, windowIndex: created[0].index },
+          session,
+          created[0].index,
+        );
+        await launchDriverTui(firstDriver, firstCwd, firstPane);
         logger.ok(
           `created tmux session: ${session} (${firstDriver.name} at window 1, ${driverShellLabel(firstDriver.tui)})`,
         );
         driverInitial = true;
       }
 
-      for (let i = 1; i < drivers.length; i++) {
+      // ADR-296: when the seat seeded the session, drivers[0] did NOT
+      // take the new-session branch above — every driver attaches here,
+      // landing at windows 2..N+1 in roster order.
+      for (let i = superdriverSpawned ? 0 : 1; i < drivers.length; i++) {
         const drv = drivers[i];
         if (drv === undefined) continue;
         const cwd0 = resolveDriverCwd(drv, projectRoot);
         const cwd = await ensureDriverWorktree(drv, cwd0);
-        const cmd = resolveCmd(drv, cwd);
         const newWindowOpts: Parameters<typeof tmux.window.newWindow>[0] = {
           sessionName: session,
           name: drv.name,
           cwd,
           detached: true,
+          shellCommand: driverShellCommand(drv),
         };
-        if (cmd !== undefined) newWindowOpts.shellCommand = cmd;
-        await tmux.window.newWindow(newWindowOpts);
+        const winId = await tmux.window.newWindow(newWindowOpts);
+        const paneId = await resolveOnlyPane(tmux, winId, session, winId.windowIndex);
+        await launchDriverTui(drv, cwd, paneId);
         logger.log(
-          `  · driver pane: ${drv.name} at window ${i + 1} (${driverShellLabel(drv.tui)}) cwd=${cwd}`,
+          `  · driver pane: ${drv.name} at window ${i + (superdriverSpawned ? 2 : 1)} (${driverShellLabel(drv.tui)}) cwd=${cwd}`,
         );
       }
     }
-    if (!driverInitial) {
+    if (!driverInitial && !superdriverSpawned) {
       await tmux.session.newSession({
         name: session,
         windowName: homeWin,
@@ -682,11 +831,61 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   await applyCagePrefix(tmux, cagePrefix);
   logger.log(`cage prefix: level=${nestingLevel} prefix=${cagePrefix}`);
 
+  // 7a-sd. ADR-296 — ensure the superdriver seat on a live cage.
+  //     Fresh starts already seeded it above (superdriverSpawned), so
+  //     this is the incremental path: a running cage that lacks the
+  //     window (pre-ADR-296 cage, or one started with
+  //     `{"enabled": false}` then flipped on) gains it INSERTED
+  //     immediately BEFORE the first live driver window (tmux
+  //     `new-window -b`) — no existing pane is killed or respawned.
+  //     With no driver window live yet it goes first (before the
+  //     lowest-index window). Present already → untouched. Disabled →
+  //     never created (an existing one is left alone, reported).
+  //     Runs before the `_bot` block so the bot's insert-after-last-
+  //     driver snapshot below already includes the shifted indices.
+  if (superdriver.enabled && !superdriverSpawned) {
+    const live = await tmux.window.listWindows(session);
+    if (live.some((w) => w.name === SUPERDRIVER_WINDOW_NAME)) {
+      logger.log("  · superdriver: window exists, preserving operator state");
+    } else {
+      const driverNames = new Set(drivers.map((d) => d.name));
+      const ordered = [...live].sort((a, b) => a.index - b.index);
+      const firstDriver = ordered.find((w) => driverNames.has(w.name));
+      const anchor =
+        firstDriver ?? ordered.find((w) => w.name !== homeWin) ?? ordered[0];
+      const newWindowOpts: Parameters<typeof tmux.window.newWindow>[0] = {
+        sessionName: session,
+        name: SUPERDRIVER_WINDOW_NAME,
+        cwd: projectRoot,
+        detached: true,
+        shellCommand: shellPaneCommand(),
+      };
+      if (anchor !== undefined) {
+        newWindowOpts.insert = { target: `${session}:${anchor.index}`, position: "before" };
+      }
+      const seatWindow = await tmux.window.newWindow(newWindowOpts);
+      const seatPane = await resolveOnlyPane(tmux, seatWindow, session, seatWindow.windowIndex);
+      await launchSuperdriverTui(seatPane);
+      superdriverSpawned = true;
+      logger.log(
+        `  · superdriver seat: ${SUPERDRIVER_WINDOW_NAME} (${superdriverShellLabel}) cwd=${projectRoot}`,
+      );
+    }
+  } else if (!superdriver.enabled) {
+    const live = await tmux.window.listWindows(session);
+    if (live.some((w) => w.name === SUPERDRIVER_WINDOW_NAME)) {
+      logger.log(
+        "  · superdriver: disabled in team.json — existing window left alone (kill it by hand if the opt-out should take effect)",
+      );
+    }
+  }
+
   // 7b. ADR-285 §D2 — cooperative `_bot` seat. This is deliberately
-  //     separate from both drivers (which remain no-send-keys-ever) and
-  //     members (no lane dispatch / member lifecycle). The seat is opt-in
-  //     through `team.bot`; persistent parent-team migration adds it,
-  //     while transient teams with no block remain unchanged.
+  //     separate from both drivers (operator-interactive panes, no lane
+  //     dispatch) and members (no lane dispatch / member lifecycle). The
+  //     seat is opt-in through `team.bot`; persistent parent-team
+  //     migration adds it, while transient teams with no block remain
+  //     unchanged.
   let botSpawned = false;
   const bot = team.bot;
   if (bot?.enabled === true) {
@@ -717,14 +916,10 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
           );
 
           const tui = bot.tui;
-          const shellOnly =
-            tui === undefined || tui === null || tui === "shell" || tui === "bash" || tui === "zsh";
-          let shellCommand: string | undefined;
-          if (tui === undefined || tui === null || tui === "zsh") {
-            shellCommand = "zsh";
-          } else if (tui === "bash") {
-            shellCommand = "bash";
-          } else if (tui !== "shell") {
+          const shellOnly = tui === undefined || tui === null || tui === "shell" || tui === "zsh";
+          const shellCommand = shellPaneCommand();
+          let tuiCommand: string | undefined;
+          if (tui !== undefined && tui !== null && tui !== "shell" && tui !== "zsh") {
             const synth = {
               name: BOT_MEMBER_NAME,
               role: "bot",
@@ -736,13 +931,11 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
                 : {}),
             };
             try {
-              const raw = resolveTuiCommand(synth, team, { env, cwd: botCwd });
-              shellCommand = `sh -c ${JSON.stringify(`${raw}; exec $SHELL -i`)}`;
+              tuiCommand = resolveTuiCommand(synth, team, { env, cwd: botCwd });
             } catch (err) {
               logger.warn(
                 `bot: could not resolve command for tui='${tui}' — _bot will land in zsh and remain unroutable (${err instanceof Error ? err.message : String(err)})`,
               );
-              shellCommand = "zsh";
             }
           }
 
@@ -767,8 +960,23 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
             detached: true,
           };
           if (insert !== undefined) newWindowOpts.insert = insert;
-          if (shellCommand !== undefined) newWindowOpts.shellCommand = shellCommand;
-          await tmux.window.newWindow(newWindowOpts);
+          newWindowOpts.shellCommand = shellCommand;
+          const botWindow = await tmux.window.newWindow(newWindowOpts);
+          const botPane = await resolveOnlyPane(tmux, botWindow, session, botWindow.windowIndex);
+          if (parsed.noLaunch && tuiCommand !== undefined) {
+            logger.log(`  · bot: --no-launch — ${BOT_WINDOW_NAME} left as a bare zsh`);
+          } else if (tuiCommand !== undefined) {
+            const outcome = await launchAgentInPane({
+              tmux,
+              paneId: botPane,
+              intent: { kind: "bot", team: team.name },
+              command: tuiCommand,
+              sleep: briefSleep,
+            });
+            if (outcome === "no-prompt") {
+              logger.warn("bot: pane shell never executed its readiness probe — TUI not launched");
+            }
+          }
           botSpawned = true;
           logger.log(
             `  · bot seat: ${BOT_WINDOW_NAME} (${tui ?? "zsh"}) cwd=${botCwd} actor=bot@${team.name}`,
@@ -776,7 +984,7 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
 
           // The boot contract is the only input sent during seat creation.
           // Scheduler offers are a later phase and remain disabled.
-          if (!shellOnly) {
+          if (!shellOnly && !parsed.noLaunch) {
             const target = botSendTarget(team.name, session);
             if (tui === "claude") {
               const briefPath = await getBriefPath("bot", briefsDir);
@@ -994,6 +1202,7 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
       name: win,
       cwd: memberCwd,
       detached: true,
+      shellCommand: shellPaneCommand(),
     });
     logger.log(`  · ${member.name} (role=${role}): spawned window ${win}`);
     spawned += 1;
@@ -1007,28 +1216,38 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
     // omit `tui` and rely on the historical "empty shell pane" behaviour;
     // every real team scaffolded by `atmux init` has `tui` set per
     // member, so production gets the launch and tests get the bare pane.
-    // Real-shell members (`tui: shell|bash|zsh`) skip the send entirely
-    // — the pane already starts in `$SHELL` and `exec $SHELL` re-execs
-    // for no observable benefit.
+    // shell and zsh stay in the zsh parent. bash is launched only
+    // after that parent proves it can execute the readiness probe.
+    //
+    // `--no-launch` suppresses the whole stage-2 block (TUI send AND the
+    // boot/brief contract that follows it): the seat is a bare zsh, so
+    // there is nothing to boot and nothing may be typed at it.
     const tuiKind = member.tui;
-    const isShellOnly = tuiKind === "shell" || tuiKind === "bash" || tuiKind === "zsh";
-    if (typeof tuiKind === "string" && tuiKind.length > 0 && !isShellOnly) {
+    const isShellOnly = tuiKind === "shell" || tuiKind === "zsh";
+    if (parsed.noLaunch && typeof tuiKind === "string" && tuiKind.length > 0 && !isShellOnly) {
+      logger.log(`  · ${member.name}: --no-launch — pane left as a bare zsh`);
+    } else if (typeof tuiKind === "string" && tuiKind.length > 0 && !isShellOnly) {
       const cmd = resolveTuiCommand(member, team, { env, cwd: memberCwd });
-      // Target the window without a pane index — tmux routes to the
-      // active pane, which avoids `pane-base-index 1` configs (the user's
-      // ~/.tmux.conf often sets it) erroring with "can't find pane: 0".
-      // Bash mirror also uses `<session>:<window>` form (lib/start.sh:447).
+      const paneId = await resolveOnlyPane(tmux, winId, session, winId.windowIndex);
       const memberTarget: SendTarget = {
         kind: "member",
         member: member.name,
         team: team.name,
-        target: { sessionName: session, windowIndex: winId.windowIndex },
+        target: paneId,
       };
-      await tmux.pane.sendKeys({
-        target: memberTarget,
-        keys: cmd,
-        enter: true,
+      const outcome = await launchAgentInPane({
+        tmux,
+        paneId,
+        intent: { kind: "member", member: member.name, team: team.name },
+        command: cmd,
+        sleep: briefSleep,
       });
+      if (outcome === "no-prompt") {
+        logger.warn(
+          `  ⚠ ${member.name}: pane shell never executed its readiness probe — TUI not launched`,
+        );
+        return;
+      }
       // ADR-081 §C completion (t-94d7ad60): claude TUIs go through
       // the readiness-poll + single-line boot-prompt path so a
       // slow cold-start doesn't drop the brief into the spinner.
@@ -1156,7 +1375,9 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
 
   // 9. Close the `__<team>__home` placeholder if any members spawned
   //    AND non-placeholder windows now exist (lib/start.sh:288-294).
-  if (spawned > 0 || botSpawned) {
+  //    ADR-296: an inserted superdriver seat counts too — an old cage
+  //    holding only `__home` gains the seat and drops the placeholder.
+  if (spawned > 0 || botSpawned || superdriverSpawned) {
     const after = await tmux.window.listWindows(session);
     const hasHome = after.some((w) => w.name === homeWin);
     const otherCount = after.filter((w) => w.name !== homeWin).length;

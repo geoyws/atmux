@@ -63,10 +63,39 @@ export function candidateWindowNames(
   return [...new Set([canonical, adr135Hyphen, legacy])];
 }
 
-/** Resolve a member ID to its current tmux window index. Refuses the
- *  driver window (W1 per convention) and surfaces unknown-id as a
- *  refusal — both flows produce a `MemberWindowResolveError` that the
- *  verb layer translates to a UsageError / ConfigError. */
+/** Live window shape needed for seat-index derivation. Structural so
+ *  callers pass `listWindows` rows directly. */
+export interface LiveWindowShape {
+  readonly index: number;
+  readonly name: string;
+}
+
+/** Derive the protected seat indices from the live window list by NAME.
+ *
+ *  ADR-296: the superdriver seat (window 1) shifts every driver slot,
+ *  so "driver is window 1" / "lowest index is the driver slot" no
+ *  longer holds. Callers build `seatNames` from the live operator-seat
+ *  names (the superdriver window name + roster driver names) and the
+ *  returned indices are refused by both resolve and move below — a
+ *  member can never move/swap into (or before) an operator seat.
+ *
+ *  Pure. No I/O. */
+export function reservedSeatIndices(
+  live: ReadonlyArray<LiveWindowShape>,
+  seatNames: ReadonlySet<string>,
+): number[] {
+  const out: number[] = [];
+  for (const w of live) {
+    if (seatNames.has(w.name)) out.push(w.index);
+  }
+  return out;
+}
+
+/** Resolve a member ID to its current tmux window index. Refuses
+ *  operator-seat windows (driver slot per convention + every index in
+ *  `reservedIndices`) and surfaces unknown-id as a refusal — both flows
+ *  produce a `MemberWindowResolveError` that the verb layer translates
+ *  to a UsageError / ConfigError. */
 export async function resolveMemberToWindowIdx(opts: {
   sessionName: string;
   memberId: string;
@@ -74,10 +103,18 @@ export async function resolveMemberToWindowIdx(opts: {
   tmux: TmuxNamespace;
   buildWindowName: (name: string, emoji?: string, label?: string, role?: string) => string;
   buildWindowNameLegacy: (name: string, emoji?: string) => string;
-  /** Driver-window index — defaults to 1 per ADR-162 base-index. */
+  /** Driver-window index — defaults to 1 per ADR-162 base-index.
+   *  Always enforced, even when `reservedIndices` is given. */
   driverIndex?: number;
+  /** ADR-296: additional protected window indices, derived by NAME via
+   *  {@link reservedSeatIndices} (superdriver seat + roster driver
+   *  slots). A member resolving into one is refused exactly like the
+   *  driver slot. */
+  reservedIndices?: ReadonlyArray<number>;
 }): Promise<MemberWindow> {
   const driverIndex = opts.driverIndex ?? 1;
+  const reserved = new Set(opts.reservedIndices ?? []);
+  reserved.add(driverIndex);
   const member = opts.members.find((m) => m.name === opts.memberId);
   if (member === undefined) {
     throw new MemberWindowResolveError({
@@ -109,6 +146,12 @@ export async function resolveMemberToWindowIdx(opts: {
       message: `member '${opts.memberId}' resolves to driver window W${driverIndex} — atmux member move/swap/sort refuses to relocate the driver pane`,
     });
   }
+  if (reserved.has(hit.index)) {
+    throw new MemberWindowResolveError({
+      kind: "driver-window",
+      message: `member '${opts.memberId}' resolves to reserved window W${hit.index} (superdriver/driver seat) — atmux member move/swap/sort refuses to relocate operator seats`,
+    });
+  }
   return { id: opts.memberId, index: hit.index, name: hit.name };
 }
 
@@ -135,12 +178,22 @@ export async function moveMemberWindow(opts: {
   /** Driver-window index — defaults to 1. Refusal hits this OR `<source>`
    *  resolving to driver, but the resolve step already gates that. */
   driverIndex?: number;
+  /** ADR-296: additional protected window indices, derived by NAME via
+   *  {@link reservedSeatIndices} (superdriver seat + roster driver
+   *  slots). Moving into one is refused exactly like the driver slot. */
+  reservedIndices?: ReadonlyArray<number>;
 }): Promise<boolean> {
   const driverIndex = opts.driverIndex ?? 1;
   if (opts.target === driverIndex) {
     throw new MemberWindowResolveError({
       kind: "driver-window",
       message: `cannot move '${opts.source.id}' to W${driverIndex} — slot reserved for the driver pane`,
+    });
+  }
+  if ((opts.reservedIndices ?? []).includes(opts.target)) {
+    throw new MemberWindowResolveError({
+      kind: "driver-window",
+      message: `cannot move '${opts.source.id}' to W${opts.target} — slot reserved for the superdriver/driver seats`,
     });
   }
   if (opts.source.index === opts.target) return false;

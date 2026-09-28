@@ -1,7 +1,14 @@
 // Unit tests for src/core/tui-cmd.ts — ADR-063 TUI launch resolver.
 
 import { describe, expect, test } from "bun:test";
-import { envPrefix, posixQuote, resolveTuiCommand } from "../../../src/core/tui-cmd.ts";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import {
+  envPrefix,
+  posixQuote,
+  resolveTuiCommand,
+  shellPaneCommand,
+} from "../../../src/core/tui-cmd.ts";
 import { UsageError } from "../../../src/errors.ts";
 import type { TeamMember, Team as TeamShape } from "../../../src/schema/team.ts";
 
@@ -278,14 +285,17 @@ describe("resolveTuiCommand priority chain", () => {
     );
   });
 
-  test("shell tui execs $SHELL", () => {
+  test("shell tui stays in the pane's own zsh; bash is launched as its child", () => {
+    // A `shell` seat is already a login interactive zsh (the pane start
+    // command), so its resolved command only moves to the cwd — re-
+    // exec'ing $SHELL would replace that zsh with an unknown shell.
     const m = mkMember({ name: "x", tui: "shell", cwd: "/p" });
-    expect(resolveTuiCommand(m, baseTeam, { env: {} })).toBe(
-      "export ATMUX_MEMBER=x && cd /p && exec $SHELL",
-    );
+    expect(resolveTuiCommand(m, baseTeam, { env: {} })).toBe("export ATMUX_MEMBER=x && cd /p");
+    // `bash` is an explicit request for bash, launched INSIDE the zsh
+    // parent so quitting it returns to the zsh prompt.
     const m2 = mkMember({ name: "x", tui: "bash", cwd: "/p" });
     expect(resolveTuiCommand(m2, baseTeam, { env: {} })).toBe(
-      "export ATMUX_MEMBER=x && cd /p && exec $SHELL",
+      "export ATMUX_MEMBER=x && cd /p && bash -l -i",
     );
   });
 
@@ -305,7 +315,33 @@ describe("resolveTuiCommand priority chain", () => {
   test("opts.cwd overrides member.cwd", () => {
     const m = mkMember({ name: "x", tui: "shell", cwd: "/from-member" });
     expect(resolveTuiCommand(m, baseTeam, { env: {}, cwd: "/from-opts" })).toBe(
-      "export ATMUX_MEMBER=x && cd /from-opts && exec $SHELL",
+      "export ATMUX_MEMBER=x && cd /from-opts",
     );
+  });
+});
+
+describe("shellPaneCommand", () => {
+  test("is byte-identical to the managed default-command", async () => {
+    // An atmux-created agent pane and a hand-split pane MUST come up the
+    // same way. When these two drift, the atmux-created pane sources
+    // .zprofile/.zshrc a different number of times than the manual one,
+    // and every non-idempotent rc file (PATH growth, one-shot launchers)
+    // behaves differently depending on who made the pane.
+    const conf = await readFile(
+      join(import.meta.dir, "..", "..", "..", "templates", "tmux", "atmux.conf"),
+      "utf8",
+    );
+    const declared = /^set -g default-command "(.+)"$/m.exec(conf);
+    expect(declared?.[1]).toBe(shellPaneCommand());
+  });
+
+  test("execs a login interactive zsh exactly once, after one tty reset", () => {
+    const cmd = shellPaneCommand();
+    // tmux runs a single shell-command string through `sh -c`, so `exec`
+    // makes the pane's PID-0 process the zsh itself. A wrapping
+    // `zsh -l -i -c '…'` would be a SECOND login interactive shell.
+    expect(cmd).toBe("stty sane 2>/dev/null; exec zsh -l -i");
+    expect(cmd.match(/zsh -l -i/g)?.length).toBe(1);
+    expect(cmd.match(/stty sane/g)?.length).toBe(1);
   });
 });

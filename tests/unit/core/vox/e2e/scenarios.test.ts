@@ -28,7 +28,7 @@ describe("the scenario table", () => {
       "drilldown",
       "nudge_confirmed",
       "nudge_declined",
-      "driver_refused",
+      "driver_nudged",
       "tell_lead_delivered",
       "confirm_replay",
     ]);
@@ -113,11 +113,13 @@ describe("the scenario table", () => {
     expect(confirmed.map((p) => p.id)).toContain(`enters:${MUT_TEAM}/be-1=1`);
   });
 
-  test("the driver scenario asserts ZERO enters on the driver pane", () => {
-    // ADR-239 §D2 is the whole scenario, and it is unfalsifiable from the
-    // transcript alone — a model can say anything about what it did.
-    const ids = scenarioPostconditions(scenarioById("driver_refused") as Scenario).map((p) => p.id);
-    expect(ids).toContain(`enters:${MUT_TEAM}/driver-2=0`);
+  test("the driver scenario asserts the driver pane actually received the Enter", () => {
+    // ADR-239 §D2's no-send-keys rule was revoked on 2026-09-08: the
+    // claim under test is that a driver pane is nudged like any other,
+    // and it is unfalsifiable from the transcript alone — a model can
+    // say anything about what it did.
+    const ids = scenarioPostconditions(scenarioById("driver_nudged") as Scenario).map((p) => p.id);
+    expect(ids).toContain(`enters:${MUT_TEAM}/driver-2=1`);
   });
 
   test("criterion ids are unique within a scenario", () => {

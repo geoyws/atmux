@@ -151,6 +151,14 @@ Both probes are warn-class — they don't block `atmux cockpit rebuild` or any v
 **`deprecated-member-windows`** — one yellow row per team whose `team.json` declares one or more `members[]`, listing the member names. The default roster is drivers-only per ADR-287 §D5; this row is how an operator finds which teams still declare members (ADR-287 follow-up (d)).
 
 Both are advisory — neither changes exit codes on its own beyond the existing yellow accounting while `cockpit.json` loads. A `cockpit.json` that is present but refused at load (the ADR-287 §D4 depth refusal, an invalid `prefixChain`, a schema mismatch) is a different matter: `atmux doctor` renders one red `cockpit.json` row carrying the loader's message, so the diagnostic verb shows the error every other cockpit-loading verb stops on. An absent `cockpit.json` stays silent — a cage need not be on any cockpit — and `deprecated-member-windows` then reads the current team alone.
+**`tmux-agent-env`** ([ADR-294](adr/294-doctor-detects-agent-shell-env-in-tmux-servers.md)) — a third warn-class probe, added 2026-09-25. It walks every tmux server atmux knows about: the cockpit socket, each group in `cockpit.json`, each team's cage socket conventions, and the current team. It flags a server whose global environment (`tmux show-environment -g`) carries an agent shell's markers. A server started from inside an agent's shell tool hands those variables to every pane for its whole life. TUIs then render monochrome (`NO_COLOR`), and `git commit` silently takes the default message (`GIT_EDITOR=true`). Warn payload:
+
+```
+  ⚠️  tmux-agent-env         team reins server /tmp/atmux-reins/sock carries agent-shell env: AGENT, CI, EDITOR
+     → tmux -S /tmp/atmux-reins/sock set-environment -g -u AGENT; tmux -S /tmp/atmux-reins/sock set-environment -g -u CI; tmux -S /tmp/atmux-reins/sock set-environment -g -u EDITOR — panes already running keep the old environment until their processes restart
+```
+
+Run the hint's commands to repair the server in place. New panes are clean at once. A pane that is already running keeps its own environment until its process is restarted, or until you `unset` the variables in that pane's shell. `-NO_COLOR` in `show-environment -g` is tmux's removal mark, left by `atmux.conf`; it is healthy and is not flagged. The probe reads variable names and never prints values. It skips a missing socket, a stale socket with no server, and a server with no session, and it never creates a server.
 
 > **Skill cross-link** (per [ADR-217](adr/217-atmux-skills-plugin-bundled-and-wizard-installed.md) §D7): for a fleet-wide sweep of these probes plus `atmux status --json` across every enabled team (with auto-complaint filing and the [ADR-198](adr/198-medic-host-pressure-playbook.md) host-pressure playbook as one trigger), invoke `/atmux:sweep` from Claude Code instead of running `atmux doctor` team-by-team.
 
@@ -421,6 +429,8 @@ Your host tmux (the daily driver — `C-a` in the operator dotfiles) sits outsid
 ⚠ **Historical shift note (2026-08-27):** a team cage moved from `F2` to `F3` when the group tier was inserted (the epic-team rung that note also named is moot since ADR-280). If you have not run a fleet with a group tier, your cages are still at the pre-shift rungs; the table above is what a reconcile applies.
 
 **The shift is enforced by atmux itself since 2026-08-28** (ADR-089's true-containment group-tier note): every enabled `type: "group"` backs a real tmux server on `/tmp/atmux-grp-<group>/sock`, and `atmux cockpit reconcile` applies `resolvePrefix(level + 2, …)` to each group server AND each team cage — a top-level group binds `F2`, its teams `F3`, an ungrouped top-level team stays `F2`. The earlier caveat that the shift waited on the operator dotfiles' socket-pattern `if-shell` chain (`_dotfiles/tmux/.tmux.conf` + `_dotfiles/atmux/tmux.conf.local`) is superseded for prefix ASSIGNMENT; those dotfiles chains still exist and, matching on socket path, can re-clobber a reconcile-applied prefix — if a cage's chord is wrong after a reconcile, check the dotfiles chain second (depth first, per §Depth beyond the chain; since ADR-287 §D4 an over-deep tree is refused at load rather than handed a wrong chord, so a wrong chord on a tree that did load points at the dotfiles chain).
+
+**Window addressing inside a team cage** (per [ADR-296](adr/296-per-team-superdriver-window-before-driver.md)): window 1 is `superdriver` unless the team opted out, and the driver roster starts at window 2 — on the default chain `F3 1` lands on superdriver, `F3 2` on `driver`. Prefer name targets (`=<team>:driver`, `=<team>:superdriver`); raw window numbers shift with the seat.
 
 ### Override the chain
 

@@ -11,13 +11,10 @@
 // ---------------------------------------------------------------------
 //
 // This verb does NOT talk to tmux to deliver anything. It builds an argv
-// and calls the `send` VERB, which owns the member lookup, the ADR-135 /
-// ADR-161 window-rename shim, the ADR-025 driver-pane type gate, the
-// safe-send modal preflight, the bracketed-paste envelope and ADR-138's
-// verify-and-retry. Going through it means the nudge path is gated by
-// exactly the code the operator's own `atmux send` is gated by, not by a
-// parallel implementation that can drift — the same argument ADR-272 §D2
-// makes for the whole voice bridge.
+// and calls the `send` VERB, which owns member lookup, immutable target
+// resolution, safe-send modal preflight, bracketed-paste delivery and
+// ADR-138 verify-and-retry. Going through it keeps nudge on the same
+// guarded delivery path as the operator's own `atmux send`.
 //
 // This is settled by evidence, not preference: on wedged panes bare
 // Enter, triple-Enter, `C-m` and bracketed paste ALL failed, and the
@@ -27,18 +24,6 @@
 // `display-message` for the before/after observations. Reads are not
 // input injection and carry none of the guards above.
 //
-// ---------------------------------------------------------------------
-// Why driver panes are refused UP FRONT
-// ---------------------------------------------------------------------
-//
-// ADR-239 §D2 is absolute: atmux NEVER sends keystrokes into a driver
-// pane, and `tmux.pane.sendKeys` throws `DriverSendKeysViolation` at the
-// lowest level to enforce it. Most `idle-residue` findings on the live
-// fleet sit on `driver` / `driver-N` windows, so this is the FIRST thing
-// an operator will try — and a refusal that surfaces as a deep
-// abstraction throw reads like a bug rather than like a rule. The check
-// below is the same predicate the runtime guard uses, run early so the
-// spoken answer is "that pane is yours, I will not type into it".
 
 import { now as nowMs } from "../abstractions/time.ts";
 import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
@@ -48,7 +33,6 @@ import {
   requireTeam,
   resolveTeamSocket,
 } from "../core/common.ts";
-import { isDriverPaneName } from "../core/drivers.ts";
 import {
   classifyPaneObservation,
   type PaneObservation,
@@ -309,8 +293,7 @@ export async function observePane(opts: {
  *   read as success in a shell or in a spoken tool envelope.
  * - **`UsageError` (64)** — bad argv, or an action outside the
  *   allow-list.
- * - **`ConfigError` (78)** — a driver pane (ADR-239 §D2) or a member the
- *   roster does not carry.
+ * - **`ConfigError` (78)** — a member the roster does not carry.
  *
  * A delivery failure (missing window, tmux error) PROPAGATES rather than
  * being folded into a receipt: a receipt describes a nudge that happened.
@@ -324,14 +307,6 @@ export async function nudge(argv: ReadonlyArray<string>, deps: NudgeDeps = {}): 
     });
   }
   const action: NudgeAction = args.action;
-
-  // ADR-239 §D2 — refused here rather than 4 layers down. See header.
-  if (isDriverPaneName(args.member)) {
-    throw new ConfigError({
-      what: `nudge: refusing to nudge driver pane '${args.member}' — ADR-239 §D2: atmux never sends keystrokes into a driver pane`,
-      hint: "driver panes are operator-interactive only; nudge a member or lead pane, or press Enter in that pane yourself",
-    });
-  }
 
   const dirOpts: ResolveDirOpts = {};
   if (args.teamDir !== undefined) dirOpts.teamDir = args.teamDir;

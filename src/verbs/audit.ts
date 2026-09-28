@@ -22,11 +22,14 @@
 //                               legacy; canonical is underscore-form
 //                               `/tmp/atmux_tmux_<team>` (ADR-018,
 //                               ADR-027 ADDENDUM 11).
-//   C — window-position drift.  pos 1 = driver, pos 2 = lead. Lead
-//                               name accepted in ADR-110 form
-//                               (`<emoji>lead`) AND legacy prefixed
-//                               (`__<team>__<emoji>lead`) AND bare
-//                               `lead` — any mismatch is a finding.
+//   C — window-position drift.  pos 1 = driver, pos 2 = lead (superdriver
+//                               disabled). With the ADR-296 seat enabled
+//                               (the default) every slot shifts by one:
+//                               lowest = superdriver seat, next = driver,
+//                               next = lead. Lead name accepted in ADR-110
+//                               form (`<emoji>lead`) AND legacy prefixed
+//                               (`__<team>__<emoji>lead`) AND bare `lead`
+//                               — any mismatch is a finding.
 //   D — trailing punctuation    Legacy prefixed-form windows
 //       residue.                 (`__<team>__*`) with trailing `-`/`_`.
 //                               ADR-110 bare-emoji form is not in
@@ -63,6 +66,7 @@ import {
   tryLoadTeam,
 } from "../core/common.ts";
 import { defaultStdoutWrite, type Writer } from "../core/io.ts";
+import { resolveSuperdriver, SUPERDRIVER_WINDOW_NAME } from "../core/superdriver.ts";
 import { UsageError } from "../errors.ts";
 import { Team } from "../schema/team.ts";
 
@@ -253,13 +257,67 @@ export function detectClassB(opts: { team: string; tmuxTmpdir?: string }): Audit
   );
 }
 
-/** Class C — window-position drift. */
+/** Class C — window-position drift.
+ *
+ * ADR-296: when the per-team superdriver seat is enabled (the default —
+ * absent block counts as enabled), every cage slot shifts by one. The
+ * expectation is name-based over the lowest live windows: the lowest
+ * must be the `superdriver` seat, the next one the `driver` pane, and
+ * the lead follows the driver exactly as before (now one slot later).
+ * Hard-coding `index === 1` here would raise a false finding on every
+ * default cage and prescribe a destructive `swap-window` of live seats.
+ * Disabled teams keep today's rule (driver at 1, lead at 2). */
 export function detectClassC(opts: {
   team: string;
   windows: ReadonlyArray<{ index: number; name: string }>;
+  /** ADR-296 seat enabled for this team — the caller resolves it via
+   *  `core/superdriver.ts::resolveSuperdriver` (absent block ==
+   *  enabled). Omitted/false keeps the pre-ADR-296 rule. */
+  superdriverEnabled?: boolean;
 }): AuditFinding[] {
   const findings: AuditFinding[] = [];
   const team = opts.team;
+  if (opts.superdriverEnabled === true) {
+    const ordered = [...opts.windows].sort((a, b) => a.index - b.index);
+    const seat = ordered[0];
+    if (seat !== undefined && seat.name !== SUPERDRIVER_WINDOW_NAME) {
+      findings.push(
+        makeFinding(
+          "C",
+          team,
+          `window-position ${seat.index} is '${seat.name}' (expected superdriver seat: 'superdriver' per ADR-296)`,
+          "run `atmux start` from the team root — ADR-296 inserts the superdriver seat before `driver` without killing panes",
+        ),
+      );
+    }
+    const driverSlot = ordered[1];
+    if (driverSlot !== undefined) {
+      if (driverSlot.name !== "driver" && driverSlot.name !== `__${team}__driver`) {
+        findings.push(
+          makeFinding(
+            "C",
+            team,
+            `window-position ${driverSlot.index} is '${driverSlot.name}' (expected driver pane: 'driver')`,
+            `tmux swap-window -s :driver -t :${driverSlot.index}`,
+          ),
+        );
+      }
+    }
+    const leadSlot = ordered[2];
+    if (leadSlot !== undefined) {
+      if (!isLeadName(leadSlot.name, team)) {
+        findings.push(
+          makeFinding(
+            "C",
+            team,
+            `window-position ${leadSlot.index} is '${leadSlot.name}' (expected lead pane: '<emoji>lead' per ADR-110)`,
+            `tmux swap-window -t :${leadSlot.index} (target the lead pane's current index)`,
+          ),
+        );
+      }
+    }
+    return findings;
+  }
   const w1 = opts.windows.find((w) => w.index === 1);
   if (w1 !== undefined) {
     if (w1.name !== "driver" && w1.name !== `__${team}__driver`) {
@@ -528,7 +586,16 @@ export async function runAllChecks(
       if (r !== null) findings.push(r);
     }
     if (sessionExists && (args.classFilter === "c" || args.classFilter === "all")) {
-      findings.push(...detectClassC({ team: teamName, windows }));
+      // ADR-296: the superdriver seat (enabled by default) shifts every
+      // cage slot by one — the detector takes the resolved flag so a
+      // canonical cage (superdriver@lowest, driver next) stays GREEN.
+      findings.push(
+        ...detectClassC({
+          team: teamName,
+          windows,
+          superdriverEnabled: resolveSuperdriver(team).enabled,
+        }),
+      );
     }
     if (sessionExists && (args.classFilter === "d" || args.classFilter === "all")) {
       findings.push(...detectClassD({ team: teamName, windows }));

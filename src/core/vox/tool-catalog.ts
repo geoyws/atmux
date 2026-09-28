@@ -496,7 +496,7 @@ export const VOX_TOOL_CATALOG: ReadonlyArray<VoxToolEntry> = Object.freeze([
     params: withConfirmToken({
       team: TEAM_PARAM,
       member: positionalParam(
-        "Member whose pane to nudge, as named by fleet_attention. Driver panes (driver, driver-2, ...) cannot be nudged — ADR-239 forbids atmux typing into them.",
+        "Member whose pane to nudge, as named by fleet_attention. Driver panes (driver, driver-2, ...) are nudged the same way — ADR-239 §D2's no-send-keys rule was revoked on 2026-09-08.",
       ),
       action: z
         .enum(NUDGE_ACTIONS)

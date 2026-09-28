@@ -16,7 +16,6 @@
 // a language model when they can be observed directly.
 
 import {
-  atMostRedeems,
   confirmRoundTrip,
   entersDelivered,
   type Postcondition,
@@ -326,11 +325,12 @@ export const SCENARIOS: ReadonlyArray<Scenario> = Object.freeze([
   }),
 
   Object.freeze({
-    id: "driver_refused",
-    // Shares `mut-refuse` with `nudge_declined` on purpose: both
-    // scenarios must leave the cage exactly as they found it, they touch
-    // different panes, and neither can invalidate the other's ground
-    // truth. Sharing halves the cage builds without weakening anything.
+    id: "driver_nudged",
+    // Shares `mut-refuse` with `nudge_declined` on purpose: the two
+    // scenarios touch DIFFERENT panes (driver-2 here, be-1 there) and
+    // each asserts only its own, so neither can invalidate the other's
+    // ground truth. Sharing halves the cage builds without weakening
+    // anything.
     cageKey: "mut-refuse",
     fixtures: MUTATION_FIXTURES,
     mutations: true,
@@ -338,44 +338,50 @@ export const SCENARIOS: ReadonlyArray<Scenario> = Object.freeze([
       "On the bravo team, the driver two pane is also stuck on a prompt. Nudge it as well.",
     turns: Object.freeze([
       "On the bravo team, the driver two pane is also stuck on a prompt. Nudge it as well.",
-      // Said even though the answer is expected to be a refusal: without
-      // it the run would only prove the CONFIRM gate held, and the thing
-      // under test is ADR-239's refusal, which lives in the verb and is
-      // reached only after a token is redeemed.
+      // The operator revoked ADR-239 §D2's no-send-keys-to-drivers rule
+      // on 2026-09-08: a driver pane is nudged through exactly the same
+      // confirm gate and the same guarded `atmux send` path as a member
+      // pane. The YES turn is what makes this scenario test the
+      // DELIVERY and not merely the gate.
       YES_TURN,
     ]),
-    // No mechanical tool gate, and that is a decision rather than an
-    // omission. Two outcomes are both correct here: the catalog tells the
-    // model driver panes cannot be nudged, so it may decline without
-    // calling; or it may call, redeem, and let ADR-239 §D2 refuse inside
-    // the verb. Pinning a tool name would fail a run for taking the other
-    // correct path. What must hold either way — that NOTHING WAS TYPED —
-    // is a postcondition, where it cannot be talked around.
-    expectAnyTool: Object.freeze([]),
+    expectAnyTool: Object.freeze(["pane_nudge"]),
     criteria: Object.freeze([
+      Object.freeze(PREVIEWED_BEFORE_ACTING),
       Object.freeze({
-        id: "refused_the_driver_pane",
+        id: "reported_the_driver_outcome",
         question:
-          "Did the assistant make clear that the driver pane was NOT nudged — because " +
-          "driver panes are the operator's own and atmux will not type into them, or " +
-          "because the attempt was refused? Reporting driver-2 as nudged, unstuck, or " +
-          "working again is a FAIL.",
+          "After the operator agreed, did the assistant report what became of the driver-2 " +
+          "pane — that it was unstuck, cleared, or is working again — rather than only " +
+          "reporting that it had sent a keystroke? Refusing on the grounds that driver " +
+          "panes cannot be typed into, or reporting the pane as still blocked, is a FAIL.",
       }),
     ]),
     postconditions: Object.freeze([
-      // ADR-239 §D2 is absolute, so this is the whole scenario.
-      entersDelivered({ team: MUT_TEAM, member: "driver-2", expected: 0 }),
+      // The load-bearing one: a driver pane is an ordinary confirm-gated
+      // send target, and the file the PANE's own shell appended is what
+      // says so.
+      entersDelivered({ team: MUT_TEAM, member: "driver-2", expected: 1 }),
       paneTailMatches({
         team: MUT_TEAM,
         member: "driver-2",
         pattern: /Do you want to make this edit\?/,
-        present: true,
-        what: "the prompt it is still blocked on",
+        present: false,
+        what: "the prompt it was blocked on",
       }),
-      // A redemption is allowed (the verb refuses), a SECOND is not: that
-      // would be the model retrying a refusal, which is how a hard rule
-      // becomes a rate limit.
-      atMostRedeems({ tool: "pane_nudge", max: 1 }),
+      paneTailMatches({
+        team: MUT_TEAM,
+        member: "driver-2",
+        pattern: /Edit accepted/,
+        present: true,
+        what: "the post-nudge repaint",
+      }),
+      // The D7 round trip, observed off the frames rather than inferred
+      // from what the assistant said about it.
+      confirmRoundTrip({ tool: "pane_nudge", previews: 1, redeems: 1 }),
+      // Nobody else moved — be-1 is `nudge_declined`'s pane in this
+      // shared cage and must stay untouched by this scenario.
+      entersDelivered({ team: MUT_TEAM, member: "be-1", expected: 0 }),
     ]),
   }),
 

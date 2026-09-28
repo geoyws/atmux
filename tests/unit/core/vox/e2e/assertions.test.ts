@@ -7,7 +7,6 @@
 import { describe, expect, test } from "bun:test";
 import type { TmuxNamespace } from "../../../../../src/abstractions/tmux.ts";
 import {
-  atMostRedeems,
   awaitEnters,
   type CageProbe,
   capturePaneTail,
@@ -443,17 +442,6 @@ describe("tool-call evidence", () => {
     );
     expect(r.pass).toBe(false);
     expect(r.detail).toContain("expected 1 / 0");
-  });
-
-  test("atMostRedeems allows one refusal but not a retry", async () => {
-    const one = drive([{ args: '{"confirm_token":"t"}' }]);
-    const two = drive([{ args: '{"confirm_token":"t"}' }, { args: '{"confirm_token":"u"}' }]);
-    expect(
-      (await atMostRedeems({ tool: "pane_nudge", max: 1 }).check(ctx({ drive: one }))).pass,
-    ).toBe(true);
-    expect(
-      (await atMostRedeems({ tool: "pane_nudge", max: 1 }).check(ctx({ drive: two }))).pass,
-    ).toBe(false);
   });
 });
 

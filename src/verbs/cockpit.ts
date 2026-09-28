@@ -1139,6 +1139,7 @@ export async function cockpitRebuild(
         delete teamEnv.ATMUX_TEAM_DIR;
         delete teamEnv.ATMUX_SESSION;
         const startArgs = parsed.forceCycle ? ["--force", "--no-doctor"] : ["--no-doctor"];
+        if (parsed.noLaunch) startArgs.push("--no-launch");
         await startImpl(startArgs, { env: teamEnv, cwd: t.root, logger });
       }),
     );

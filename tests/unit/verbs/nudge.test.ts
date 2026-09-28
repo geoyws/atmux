@@ -316,20 +316,6 @@ describe("buildSendArgv — the delivery argv, validated against parseSendArgs",
 // ---------------------------------------------------------------------
 
 describe("refusals", () => {
-  test("a driver pane is refused UP FRONT, naming ADR-239", async () => {
-    const h = harness({ captures: [] });
-    for (const name of ["driver", "driver-2", "driver-17"]) {
-      await expect(nudge(["--member", name], h.deps)).rejects.toThrow(ConfigError);
-    }
-    // Nothing was read and nothing was sent — the refusal is before any IO.
-    expect(h.calls).toEqual([]);
-    expect(h.sendArgvs).toEqual([]);
-  });
-
-  test("the driver refusal message quotes the ADR, so the operator hears a rule not a bug", async () => {
-    const h = harness({ captures: [] });
-    await expect(nudge(["--member", "driver"], h.deps)).rejects.toThrow(/ADR-239/);
-  });
 
   test("a member the roster does not carry is refused (send addresses roster members)", async () => {
     const dir = await makeRoot();

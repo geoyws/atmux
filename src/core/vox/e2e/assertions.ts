@@ -26,11 +26,10 @@
 // Proving a NEGATIVE
 // ---------------------------------------------------------------------
 //
-// The decline and driver-refusal scenarios pass by showing nothing
-// happened, and "nothing happened" is the assertion shape most likely to
-// be vacuous: a receipt that stays at zero because the pane could never
-// have received an Enter proves nothing about the gate. Two things stop
-// that here.
+// The decline scenario passes by showing nothing happened, and "nothing
+// happened" is the assertion shape most likely to be vacuous: a receipt
+// that stays at zero because the pane could never have received an Enter
+// proves nothing about the gate. Two things stop that here.
 //
 //  1. Every interactive pane is built from the SAME fixture constructor,
 //     so a pane that is asserted to be untouched is byte-identical in
@@ -377,31 +376,11 @@ export function confirmRoundTrip(opts: {
   };
 }
 
-/**
- * At least one confirmation preview, and at most `maxRedeems` redemptions.
- *
- * The looser sibling of {@link confirmRoundTrip}, for the driver-refusal
- * scenario. Both outcomes there are correct: the model may decline to
- * call the tool at all (the catalog tells it driver panes are off-limits),
- * or it may call it, redeem, and let the VERB refuse. Pinning an exact
- * count would fail a run for taking the other correct path — and the
- * property actually under test is not which layer refused, it is that
- * NOTHING WAS TYPED, which the receipt assertion carries.
- */
-export function atMostRedeems(opts: { tool: string; max: number }): Postcondition {
-  const id = `confirm:${opts.tool}:redeems<=${opts.max}`;
-  return {
-    id,
-    check: (ctx): Promise<PostconditionResult> => {
-      const seen = countToolCalls(ctx.drive, opts.tool);
-      return Promise.resolve({
-        id,
-        pass: seen.redeems <= opts.max,
-        detail: `${opts.tool}: ${seen.previews} un-tokened call(s), ${seen.redeems} token-redeeming call(s) (cap ${opts.max})`,
-      });
-    },
-  };
-}
+// (A looser `atMostRedeems` helper lived here until 2026-09-22, for the
+// driver-refusal scenario that ADR-239 §D2's revocation retired. Driver
+// panes now go through the exact confirm round trip every other pane
+// does, so `confirmRoundTrip` covers them and the loose variant had no
+// remaining caller.)
 
 // ---------- Running them ----------
 

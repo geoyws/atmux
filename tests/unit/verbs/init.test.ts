@@ -786,7 +786,7 @@ describe("ADR-288 §D5 — init(shipped template) → start", () => {
     };
   }
 
-  test("drivers-only default scaffold starts driver..driver-3 + _bot at windows 1..4, never creates __<team>__home, leaves team.json byte-identical", async () => {
+  test("drivers-only default scaffold starts superdriver + driver..driver-3 + _bot at windows 1..5, never creates __<team>__home, leaves team.json byte-identical", async () => {
     const team = `i${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     expect(await runInit(["--name", team, "--no-skills"])).toBe(0);
     const atmuxDir = join(env.cwd, ".atmux");
@@ -819,12 +819,13 @@ describe("ADR-288 §D5 — init(shipped template) → start", () => {
 
     const wins = [...(await tmux.window.listWindows(team))].sort((a, b) => a.index - b.index);
     expect(wins.map((w) => w.name)).toEqual([
+      "superdriver",
       "driver",
       "driver-2",
       "driver-3",
       "_bot",
     ]);
-    expect(wins.map((w) => w.index)).toEqual([1, 2, 3, 4]);
+    expect(wins.map((w) => w.index)).toEqual([1, 2, 3, 4, 5]);
     expect(wins.some((w) => w.name === `__${team}__home`)).toBe(false);
     // Step 9b: no emoji fallback fired → team.json is byte-identical.
     expect(await readFile(tjPath, "utf8")).toBe(before);

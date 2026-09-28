@@ -2,8 +2,8 @@
 //
 // This module deliberately does not import the member or driver lifecycle.
 // `_bot` is an operator-cooperative automation target: it may receive a
-// verified offer from `_superbot`, while driver panes remain structurally
-// impossible send-keys targets under ADR-239.
+// verified offer from `_superbot`. Driver panes are a separate seat with
+// their own lifecycle (ADR-239), not a flavour of this one.
 
 import { resolve } from "node:path";
 import type { SendTarget } from "../abstractions/tmux.ts";

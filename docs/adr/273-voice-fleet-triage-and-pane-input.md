@@ -197,7 +197,7 @@ They are two actions rather than one with an optional string precisely because p
 
 ### T3 — D5 as built, and the one new capability it needed
 
-Delivery is `src/verbs/nudge.ts` building an argv and calling the **`send` verb**, not `sendToMember` and not tmux. Going through the verb means the nudge path inherits the member lookup, the ADR-135/ADR-161 window-rename shim, the ADR-025 driver-pane type gate, the safe-send modal preflight, the bracketed-paste envelope and ADR-138's verify-and-retry — the same argument ADR-272 D2 makes for the whole bridge, applied one layer down. A test injects a tmux namespace whose every input-injection method **throws**, so a hand-rolled `send-keys` creeping in later is a red suite rather than a silent regression.
+Delivery is `src/verbs/nudge.ts` building an argv and calling the **`send` verb**, not `sendToMember` and not tmux. Going through the verb means the nudge path inherits the member lookup, the ADR-135/ADR-161 window-rename shim, the ADR-025 driver-pane type gate *(as shipped — **superseded 2026-09-08**: ADR-239 §D2 was revoked, `SendTarget` no longer excludes driver panes, so the current nudge path inherits no driver type gate; the rest of this list is unchanged)*, the safe-send modal preflight, the bracketed-paste envelope and ADR-138's verify-and-retry — the same argument ADR-272 D2 makes for the whole bridge, applied one layer down. A test injects a tmux namespace whose every input-injection method **throws**, so a hand-rolled `send-keys` creeping in later is a red suite rather than a silent regression.
 
 **`atmux send` gained `--submit-only`, and it had to.** A bare Enter is not expressible as a message: `send <member> ""` is a usage error, and `send <member> "continue"` pastes onto the residue it is meant to submit. So `SendOpts.submitOnly` skips the load-buffer / paste-buffer pair and runs the **same** settle + `C-m` + ADR-138 verify step the paste path runs — extracted into one shared `submitStep`, so there is no second implementation to drift. Three combinations are **refused** rather than silently resolved, because each silent resolution would drop something the operator asked for: `--submit-only` with a message body, with `--no-submit`, and with `--broadcast`. The post-send `looksLikeNotConsumed` heuristic is skipped on this path — with no message its snippet is the empty string, which every capture contains, so it would report `warn-not-consumed` on every good submit; the ADR-138 verifier is the verification instead.
 
@@ -208,6 +208,8 @@ D5's "delivery is verified" is implemented as: read the pane, deliver, read the 
 **The one place the fleet classifier is NOT reused verbatim, and why.** `classifyPaneObservation` treats composer residue in a window tmux saw activity in within `RESIDUE_FRESH_SEC` (60s) as *someone is typing* and files it under `quiet: idle`. For a survey that is correct — it stops the tool reporting the pane the operator is mid-sentence in. For an after-nudge read it is exactly wrong: **the recent activity is our own paste, one second ago.** Left alone, a nudge that changed nothing at all would be reported as "idle and clear" — the tool announcing success for a failure, which is the precise thing D5 exists to prevent. `classifyAfterNudge` therefore overrides `quiet: idle` back to `idle-residue` when residue is still in the composer, and the override is deliberately narrow to that one bucket so a genuinely working pane (whose tail can carry a stale `❯` line) is never demoted. Both directions are pinned, including a test asserting the bare survey classifier really does disagree — the bug is demonstrated, not merely described.
 
 ### T5 — Driver panes cannot be nudged, and this is the biggest practical limit
+
+> **Superseded 2026-09-08 — historical.** The operator revoked ADR-239 §D2; `DriverSendKeysViolation` and `isDriverPaneName` no longer exist and `pane_nudge` no longer refuses driver panes up front. This section records the design as it shipped.
 
 **ADR-239 §D2 is absolute: atmux never sends keystrokes into a driver pane**, enforced at the lowest level by `DriverSendKeysViolation` in `tmux.pane.sendKeys`. On the live fleet most `idle-residue` findings sit on `driver` / `driver-N` windows (§S3.1: 14 of 15 enabled teams carry `members: []` while their sessions hold live driver windows), so **the most common finding `fleet_attention` reports is one `pane_nudge` structurally cannot act on.**
 
@@ -717,9 +719,11 @@ cost the operator a syllable:
    `ambiguous` resolution **refuses** rather than picking — the ladder already returns
    candidates (§Supplement-8), and a voice tool guessing a target is precisely the fault
    this ADR exists to avoid.
-2. **Driver panes are refused**, as `pane_nudge` already refuses them (ADR-239). The driver
-   is the operator's own interactive surface; text injected there is text the operator will
-   believe they typed.
+2. **Driver panes are refused** — written when `pane_nudge` refused them too (ADR-239 §D2).
+   *Superseded 2026-09-08: the operator revoked §D2 and `pane_nudge` no longer refuses a
+   driver pane, so this bound, if `pane_send` is ever built, is a `pane_send`-only choice
+   and no longer inherited from the nudge path.* The driver is the operator's own
+   interactive surface; text injected there is text the operator will believe they typed.
 3. **The text is a single line, capped.** Control characters, and any newline or carriage
    return that would submit more than the one previewed command, are rejected rather than
    stripped — stripping changes what the operator confirmed, which is the same class of

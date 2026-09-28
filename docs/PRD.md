@@ -931,6 +931,7 @@ The rows below are **deprecated defaults** (ADR-287 §D5): the shipped template 
 | Ombudsman   | (event-driven)       | claude (opt)  | Per-team complaint adjudicator per [ADR-147](adr/147-ombudsman-and-release-notes.md) §D1. Reads open complaints, triages → epic / wontfix / resolved / defer, appends day-file entry under `docs/release-notes/<Y>/<M>/<Y-M-D>.md`. **Event-driven** (sentinel `.atmux/state/ombudsman-pending.json` + 15min cron tick); NOT in whip cadence (ADR-147 §D2). |
 | Members     | m+7+                 | any           | Parallel throughput per feature lane |
 
+> Cage window slots (ADR-296, 2026-09-28): with the default-enabled per-team `superdriver` seat, `superdriver` occupies window 1 and every slot above shifts by one — address cage windows by name.
 Driver ↔ lead routing (teams that declare a `role: team-lead` member only,
 ADR-287 §D6): file-based (`~/.claude/teams/<team>/driver-inbox.md`)
 to avoid the `SendMessage` self-loop bug per `~/.claude-ifca/CLAUDE.md`
