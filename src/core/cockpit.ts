@@ -150,9 +150,9 @@ export async function loadCockpit(opts: LoadCockpitOpts = {}): Promise<LoadedCoc
   }
   const parsed = result.data;
   // ADR-089 §Decision-anchor #4: validate operator-supplied prefixChain
-  // (length ≥ MAX_NESTING_LEVEL + uniqueness) at load time. Failing here
-  // is preferable to a runtime KeyError when resolvePrefix is called
-  // from a deeply-nested cage and the chain doesn't reach that level.
+  // (≥1 entries, all non-empty, all unique) at load time. Whether the
+  // chain is LONG ENOUGH for this tree is the depth walk's job below
+  // (ADR-287 §D4) — the fixed ≥6 floor is retired.
   if (parsed.prefixChain !== undefined) {
     const v = validatePrefixChain(parsed.prefixChain);
     if (!v.ok) {
@@ -161,6 +161,22 @@ export async function loadCockpit(opts: LoadCockpitOpts = {}): Promise<LoadedCoc
       });
     }
   }
+  // ADR-287 §D3 — a team nested DIRECTLY under a team keeps parsing
+  // (grace period) but warns, naming parent and child, so the operator
+  // can move it under a group before a later ADR turns this into a
+  // refusal. Same sink as the ADR-089 §B migration warning.
+  for (const pair of findTeamInsideTeamPairs(parsed)) {
+    warn(
+      `cockpit.json: team '${pair.child}' is nested inside team '${pair.parent}' — ` +
+        "team-inside-team is deprecated per ADR-287 §D3; move it under a group\n",
+    );
+  }
+  // ADR-287 §D4 — depth past the effective prefix chain is REFUSED here,
+  // not clamped and not wrapped (ADR-089 §Amendment 2026-08-27 §(C) as
+  // written). Before this walk an over-deep node loaded clean and its
+  // `resolvePrefix` throw was swallowed in the reconcile loop, leaving
+  // the cage on the legacy `C-\` chord — one chord meaning two cages.
+  assertDepthWithinChain(parsed, path);
   validateOperatorWindowNames(parsed);
   validateSuperbotRoutes(parsed, path);
   return enrichLegacyFields(parsed);
@@ -508,6 +524,94 @@ export function walkSessions(
   }
 }
 
+// ---------- ADR-287 §D3 / §D4: nesting-shape checks on the parsed tree ----------
+
+/** One deprecated `team` → `team` edge in `sessions[]` (ADR-287 §D3). */
+export interface TeamInsideTeamPair {
+  /** The enclosing team — the node whose `sessions[]` holds `child`. */
+  parent: string;
+  /** The nested team. */
+  child: string;
+}
+
+/**
+ * ADR-287 §D3 — every `team` node whose DIRECT parent is a `team`
+ * node. Parents are visited in DFS pre-order and each parent's pairs
+ * are emitted together, so `a → [b → [c], d]` yields a/b, a/d, b/c.
+ * Direct only: `team A → group G → team B` is the
+ * canonical shape (a group is the branch node), so B is NOT reported
+ * even though `walkSessions` threads `parentName: "A"` to it. Reads
+ * `node.sessions` straight off each team rather than the walk's
+ * ancestry for exactly that reason.
+ *
+ * Shared by `loadCockpit` (the load-time warning) and the
+ * `team-inside-team` doctor probe (ADR-287 §D7) so the two can never
+ * disagree on what counts as nested. Pure — no IO. Follows the
+ * `walkSessions` pruning rules: a disabled group's subtree is off and
+ * is not reported; a disabled team's children are still visited.
+ */
+export function findTeamInsideTeamPairs(cockpit: {
+  sessions?: ReadonlyArray<CockpitSessionT>;
+}): TeamInsideTeamPair[] {
+  const pairs: TeamInsideTeamPair[] = [];
+  walkSessions(cockpit.sessions ?? [], 0, (node) => {
+    if (node.type !== "team") return;
+    for (const child of node.sessions ?? []) {
+      if (child.type === "team") pairs.push({ parent: node.name, child: child.name });
+    }
+  });
+  return pairs;
+}
+
+/**
+ * ADR-287 §D4 — refuse a tree deeper than the effective prefix chain.
+ *
+ * A `team` or `group` node at 0-indexed depth `d` backs a tmux server
+ * that binds `prefixChain[d + 1]` — rung `d + 2`, the cockpit being
+ * rung 1 (ADR-287 §D2). Only those two kinds consume a rung:
+ * `superdriver` / `medic` entries are cockpit windows, not servers, so
+ * they never count towards depth. The effective chain is
+ * `cockpit.prefixChain` when set, else {@link DEFAULT_PREFIX_CHAIN};
+ * `validatePrefixChain` has already refused an empty explicit chain
+ * by the time this runs.
+ *
+ * Throws `ConfigError` naming the deepest offending node, its depth,
+ * the rung it needs and the chain length. There is no clamp (one chord
+ * meaning two cages) and no wrap (the deepest cage colliding with the
+ * cockpit) — ADR-089 §Amendment 2026-08-27 §(C) as written. The chain,
+ * not a constant, is the one thing that bounds depth.
+ *
+ * Pure — no IO. Exported for direct unit-testing; `loadCockpit` is the
+ * production caller.
+ */
+export function assertDepthWithinChain(cockpit: CockpitShape, path: string): void {
+  const chain = cockpit.prefixChain ?? DEFAULT_PREFIX_CHAIN;
+  // Holder object rather than a bare `let`: TS does not see assignments
+  // made inside the visitor closure, so a bare `let` would narrow to
+  // `undefined` at the dereference below.
+  const found: { deepest?: { name: string; type: "team" | "group"; level: number } } = {};
+  walkSessions(cockpit.sessions ?? [], 0, (node, level) => {
+    if (node.type !== "team" && node.type !== "group") return;
+    // Strict `>` — the FIRST node reached at the deepest level (DFS
+    // pre-order) is the one named, so the message is deterministic.
+    if (found.deepest === undefined || level > found.deepest.level) {
+      found.deepest = { name: node.name, type: node.type, level };
+    }
+  });
+  const deepest = found.deepest;
+  if (deepest === undefined) return;
+  const neededRung = deepest.level + 2;
+  if (neededRung > chain.length) {
+    throw new ConfigError({
+      what:
+        `cockpit.json at ${path}: '${deepest.name}' (type ${deepest.type}) sits at depth ` +
+        `L${deepest.level + 2} and needs prefix rung ${neededRung}, but prefixChain has ` +
+        `${chain.length} entries`,
+      hint: "add entries to cockpit.prefixChain or reduce nesting depth (ADR-287 §D4)",
+    });
+  }
+}
+
 // ---------- ADR-092: cross-team tell-lead lookup + caller-scope gate ----------
 
 /** Result of `findTeamByName` — narrowed view of the matched cockpit
@@ -789,9 +893,11 @@ export function resolveTopLevelGroup(topology: GroupedTopology, name: string): s
 
 // ---------- ADR-089 §C: F-key prefix chain + ATMUX_NESTING_LEVEL ----------
 
-/** Default F-key prefix chain. Twelve entries (F1..F12) cover every
- *  level the schema's max-depth cap (6) allows plus headroom for any
- *  future super-cockpit / deep-nesting chains. Operator override via
+/** Default F-key prefix chain. Twelve entries (F1..F12): the cockpit
+ *  binds F1 and a `team` / `group` node at 0-indexed depth `d` binds
+ *  F(d+2), so the default admits nodes down to depth 10. The chain's
+ *  length IS the depth cap (ADR-287 §D4) — `loadCockpit` refuses a
+ *  tree that needs a rung past it. Operator override via
  *  `cockpit.prefixChain` flips the whole chain (per-level overrides
  *  are out of scope per ADR-089 §C). */
 export const DEFAULT_PREFIX_CHAIN: ReadonlyArray<string> = [
@@ -809,12 +915,19 @@ export const DEFAULT_PREFIX_CHAIN: ReadonlyArray<string> = [
   "F12",
 ];
 
-/** ADR-089 §Decision-anchor #6 — max nesting depth cockpit.json may
- *  declare. Computed as L1-L4 reserved (cockpit + team + nested team +
- *  one chain step) + 2 headroom. Used by validatePrefixChain (the
- *  chain must be long enough to assign a prefix per level) and by
- *  loadCockpit's depth check. */
-export const MAX_NESTING_LEVEL = 6;
+/** Length of {@link DEFAULT_PREFIX_CHAIN} — kept as an export for
+ *  existing callers only.
+ *
+ *  NO LONGER A DEPTH CAP (ADR-287 §D4, retiring ADR-089
+ *  §Decision-anchor #6's fixed `6`). The effective prefix chain —
+ *  `cockpit.prefixChain` when set, else the default — is the single
+ *  thing that bounds depth: `loadCockpit` walks the tree and refuses
+ *  any node whose rung lies past that chain, `validatePrefixChain` no
+ *  longer enforces a fixed minimum length, and `childNestingEnv`
+ *  guards against the chain length it is handed. Nothing in `src/`
+ *  compares against this constant any more; a caller that still does
+ *  sees the default chain length (12), not the retired `6`. */
+export const MAX_NESTING_LEVEL: number = DEFAULT_PREFIX_CHAIN.length;
 
 /** ADR-089 §D — env-var name carrying the cage's own nesting level.
  *  Centralised constant so callers don't drift on the spelling. */
@@ -868,7 +981,7 @@ export function resolvePrefix(level: number, chain?: ReadonlyArray<string>): str
   if (level > effective.length) {
     throw new ConfigError({
       what: `resolvePrefix: level ${level} exceeds prefix chain length ${effective.length}`,
-      hint: `add more entries to cockpit.prefixChain or reduce nesting depth (max ${MAX_NESTING_LEVEL})`,
+      hint: "add more entries to cockpit.prefixChain or reduce nesting depth — the chain length is the cap (ADR-287 §D4)",
     });
   }
   return effective[level - 1] as string;
@@ -882,26 +995,28 @@ export interface PrefixChainValidation {
 }
 
 /**
- * ADR-089 §Decision-anchor #4 — validate a prefix chain at
- * `loadCockpit` time:
- *   1. Length MUST be ≥ {@link MAX_NESTING_LEVEL} so every reachable
- *      level has a slot.
- *   2. Entries MUST be unique. Duplicates collide: `["F1","F2","F2"]`
+ * ADR-089 §Decision-anchor #4 (as amended by ADR-287 §D4) — validate
+ * a prefix chain's SHAPE at `loadCockpit` time:
+ *   1. At least one entry — the cockpit's own rung. (The fixed "≥6"
+ *      floor is retired: whether the chain reaches every node in THIS
+ *      tree is `assertDepthWithinChain`'s job, so a one-entry chain is
+ *      valid for a cockpit with no team or group sessions at all, and
+ *      a two-entry chain for a flat single-team fleet.)
+ *   2. Entries MUST be non-empty strings.
+ *   3. Entries MUST be unique. Duplicates collide: `["F1","F2","F2"]`
  *      means child + grand-child cages both bind `F2`, and tmux can't
  *      route the prefix unambiguously.
- *   3. Entries MUST be non-empty strings.
  *
  * Pure — no IO. Loader uses this once at parse time then trusts the
  * chain everywhere downstream.
  */
 export function validatePrefixChain(chain: ReadonlyArray<string>): PrefixChainValidation {
-  if (chain.length < MAX_NESTING_LEVEL) {
+  if (chain.length < 1) {
     return {
       ok: false,
       reason:
-        `prefixChain has ${chain.length} entries but must have ≥${MAX_NESTING_LEVEL} ` +
-        `(one per level up to the max-depth cap). Add ${MAX_NESTING_LEVEL - chain.length} ` +
-        `more entries or omit the field to use the default F-key chain.`,
+        "prefixChain is empty — it needs at least one entry (the cockpit's own rung) " +
+        "plus one per nesting level; omit the field to use the default F-key chain.",
     };
   }
   for (let i = 0; i < chain.length; i += 1) {
@@ -945,22 +1060,31 @@ export function validatePrefixChain(chain: ReadonlyArray<string>): PrefixChainVa
  *
  *   const childEnv = { ...parentEnv };
  *   delete childEnv[ATMUX_NESTING_LEVEL_ENV];
- *   Object.assign(childEnv, childNestingEnv(parentLevel));
+ *   Object.assign(childEnv, childNestingEnv(parentLevel, chain.length));
+ *
+ * `chainLength` is the effective prefix chain's length — the depth cap
+ * per ADR-287 §D4 (was the fixed `MAX_NESTING_LEVEL`). Defaults to the
+ * default chain's length for callers with no operator override. A child
+ * level past it is refused with `ConfigError`, never clamped.
  *
  * Pure helper — no IO. Exported for direct unit-testing of the
- * contract.
+ * contract; no `src/` caller as of 2026-09-02 (the live cage level is
+ * read from `ATMUX_NESTING_LEVEL` in `verbs/start.ts`).
  */
-export function childNestingEnv(parentLevel: number): Record<string, string> {
+export function childNestingEnv(
+  parentLevel: number,
+  chainLength: number = DEFAULT_PREFIX_CHAIN.length,
+): Record<string, string> {
   if (!Number.isInteger(parentLevel) || parentLevel < 1) {
     throw new ConfigError({
       what: `childNestingEnv: parentLevel must be a positive integer, got ${parentLevel}`,
     });
   }
   const childLevel = parentLevel + 1;
-  if (childLevel > MAX_NESTING_LEVEL) {
+  if (childLevel > chainLength) {
     throw new ConfigError({
-      what: `childNestingEnv: would exceed max depth ${MAX_NESTING_LEVEL} (parent=${parentLevel}, child=${childLevel})`,
-      hint: "reduce the nesting depth in cockpit.json",
+      what: `childNestingEnv: would exceed max depth ${chainLength} (parent=${parentLevel}, child=${childLevel})`,
+      hint: "add entries to cockpit.prefixChain or reduce nesting depth (ADR-287 §D4)",
     });
   }
   return { [ATMUX_NESTING_LEVEL_ENV]: String(childLevel) };

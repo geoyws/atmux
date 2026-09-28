@@ -24,6 +24,7 @@ describe("dashboard composeFrame — driver-pane block", () => {
 
   test("driverPane configured=false → block skipped", () => {
     const dp: DriverPaneHealth = {
+      driverName: "driver",
       configured: false,
       windowExists: false,
       state: null,
@@ -35,32 +36,35 @@ describe("dashboard composeFrame — driver-pane block", () => {
 
   test("driverPane configured + windowExists + READY → block rendered", () => {
     const dp: DriverPaneHealth = {
+      driverName: "driver",
       configured: true,
       windowExists: true,
       state: "READY",
       evidence: "tokens · esc to interrupt",
     };
     const frame = composeFrame({ ...BASE_FRAME, driverPane: dp });
-    expect(frame).toContain("─── driver pane ───");
-    expect(frame).toContain("configured=y  window=exists  state=READY");
+    expect(frame).toContain("─── driver pane: driver ───");
+    expect(frame).toContain("configured=y  driver=driver  window=exists  state=READY");
     expect(frame).toContain("evidence: tokens · esc to interrupt");
   });
 
   test("driverPane configured + no window → block shows window=missing + state=n/a", () => {
     const dp: DriverPaneHealth = {
+      driverName: "driver",
       configured: true,
       windowExists: false,
       state: null,
       evidence: "",
     };
     const frame = composeFrame({ ...BASE_FRAME, driverPane: dp });
-    expect(frame).toContain("─── driver pane ───");
+    expect(frame).toContain("─── driver pane: driver ───");
     expect(frame).toContain("window=missing");
     expect(frame).toContain("state=n/a");
   });
 
   test("driverPane state=COMPACTING shows the live state token", () => {
     const dp: DriverPaneHealth = {
+      driverName: "driver",
       configured: true,
       windowExists: true,
       state: "COMPACTING",
@@ -73,13 +77,14 @@ describe("dashboard composeFrame — driver-pane block", () => {
 
   test("driver-pane block appears ABOVE driver-inbox block (ordering)", () => {
     const dp: DriverPaneHealth = {
+      driverName: "driver",
       configured: true,
       windowExists: true,
       state: "READY",
       evidence: "",
     };
     const frame = composeFrame({ ...BASE_FRAME, driverPane: dp });
-    const paneIdx = frame.indexOf("─── driver pane ───");
+    const paneIdx = frame.indexOf("─── driver pane: driver ───");
     const inboxIdx = frame.indexOf("─── driver-inbox open ───");
     expect(paneIdx).toBeGreaterThan(-1);
     expect(inboxIdx).toBeGreaterThan(paneIdx);
@@ -88,6 +93,7 @@ describe("dashboard composeFrame — driver-pane block", () => {
   test("evidence is truncated to 80 chars in the dashboard block", () => {
     const longEvidence = "x".repeat(200);
     const dp: DriverPaneHealth = {
+      driverName: "driver",
       configured: true,
       windowExists: true,
       state: "MODAL",
@@ -101,6 +107,7 @@ describe("dashboard composeFrame — driver-pane block", () => {
 
   test("frame structure: status → kanban → driver-pane → driver-inbox → outbox", () => {
     const dp: DriverPaneHealth = {
+      driverName: "driver",
       configured: true,
       windowExists: true,
       state: "READY",
@@ -110,7 +117,7 @@ describe("dashboard composeFrame — driver-pane block", () => {
     const order = [
       "TEAM atmux", // status
       "─── recent kanban ───",
-      "─── driver pane ───",
+      "─── driver pane: driver ───",
       "─── driver-inbox open ───",
       "─── lead-outbox open ───",
     ];

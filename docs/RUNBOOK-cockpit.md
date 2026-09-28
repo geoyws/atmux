@@ -144,6 +144,14 @@ Warn-class only — doesn't block atmux. Surfaces via `atmux doctor` (human) + `
 
 Both probes are warn-class — they don't block `atmux cockpit rebuild` or any verb. They surface drift; the operator decides when to act.
 
+**Two more warn-class probes since 2026-09-02** ([ADR-287 §D7](adr/287-canonical-cockpit-nesting-and-drivers-only-roster.md)):
+
+**`team-inside-team`** — one yellow row per `team` nested under a `team` in `cockpit.json`, naming parent and child. The shape is deprecated per ADR-287 §D3; the fix is to move the child under a `group` (§11 below).
+
+**`deprecated-member-windows`** — one yellow row per team whose `team.json` declares one or more `members[]`, listing the member names. The default roster is drivers-only per ADR-287 §D5; this row is how an operator finds which teams still declare members (ADR-287 follow-up (d)).
+
+Both are advisory — neither changes exit codes on its own beyond the existing yellow accounting while `cockpit.json` loads. A `cockpit.json` that is present but refused at load (the ADR-287 §D4 depth refusal, an invalid `prefixChain`, a schema mismatch) is a different matter: `atmux doctor` renders one red `cockpit.json` row carrying the loader's message, so the diagnostic verb shows the error every other cockpit-loading verb stops on. An absent `cockpit.json` stays silent — a cage need not be on any cockpit — and `deprecated-member-windows` then reads the current team alone.
+
 > **Skill cross-link** (per [ADR-217](adr/217-atmux-skills-plugin-bundled-and-wizard-installed.md) §D7): for a fleet-wide sweep of these probes plus `atmux status --json` across every enabled team (with auto-complaint filing and the [ADR-198](adr/198-medic-host-pressure-playbook.md) host-pressure playbook as one trigger), invoke `/atmux:sweep` from Claude Code instead of running `atmux doctor` team-by-team.
 
 ## §5 — `ATMUX_COCKPIT_SOCKET` escape hatch
@@ -380,29 +388,39 @@ End-to-end dogfood pattern on the atmux team itself shipped under EPIC e-1e22368
 
 ## §11 — Nesting depth + the tmux prefix chain
 
-ADR-089 §C has cited this section since 2026-05-13; it is written here for the first time on 2026-08-27, alongside [ADR-089 §Amendment 2026-08-27](adr/089-hierarchical-cockpit.md).
+ADR-089 §C has cited this section since 2026-05-13; it was written here for the first time on 2026-08-27, alongside [ADR-089 §Amendment 2026-08-27](adr/089-hierarchical-cockpit.md), and rewritten on 2026-09-02 to carry the canonical model from [ADR-287](adr/287-canonical-cockpit-nesting-and-drivers-only-roster.md). The path grammar (§D1) and the chord table (§D2) below are copied verbatim from that ADR — it is the single source, and if this section and ADR-287 ever disagree, ADR-287 wins.
 
 ### Nest for any reason — the mechanism does not know why
 
-A cage may contain child cages, to arbitrary depth. There is **no rule that a nested cage must be an epic-team**, and no requirement that a child carry an `epicId`. Epic-teams are one kind of nested cage — the kind with a kanban epic behind them — and they keep their `epicId` because ADR-090's lifecycle joins on it. Nesting for organisational reasons (a group of products, a product's projects, a project's driver lanes) uses plain `type: "team"` children and needs no epic anywhere.
+Nesting is organisational (a group of products, a product's projects, a project's driver lanes) and needs no epic anywhere. Per ADR-287 §D1 `cockpit.json` `sessions[]` has exactly two nestable node kinds, and they are not interchangeable:
 
-### Which chord reaches which tier
+- **`group` is a branch node.** A cage-less container with no repo root and no roster, nestable to ANY depth, backing a real tmux server (`/tmp/atmux-grp-<group>/sock`) whose windows only attach children. A group with a parent is simply a group — "subgroup" is not a node kind.
+- **`team` is a LEAF cage.** It owns a project root, `.atmux/team.json`, worktrees and branches, and hosts the driver windows. A team is where work happens; it is not a place to hang more tree.
 
-Each nesting level is its own tmux server on its own socket, and each gets its own prefix key so a chord is unambiguous regardless of which socket you happen to be attached to:
+Drivers are windows inside a team cage, never a tier of the tree. The canonical path grammar is `group[/group...]/team/driver` — for example `unum/aix/driver-2`. Every doc, skill and error message that names a location in the fleet uses that grammar.
 
-| Level | Tier | Prefix |
+**team-inside-team is deprecated** (ADR-287 §D3). A `team` nested under a `team` still parses (grace period), but `loadCockpit` warns on every load, naming parent and child — `team-inside-team is deprecated per ADR-287 §D3; move it under a group` — and `atmux doctor` renders a yellow `team-inside-team` row per nested pair (ADR-287 §D7; §4 above). The migration is the one the warning names: move the child under a `group`. Hard refusal is reserved for a later ADR, once the fleet has no such nodes.
+
+> **Historical (superseded 2026-09-02 by ADR-287 §D1/§D3).** From 2026-08-27 this section read: a cage may contain child cages, to arbitrary depth; a nested cage need not be an epic-team and need not carry an `epicId`; organisational nesting uses plain `type: "team"` children. Epic-teams were retired by [ADR-280](adr/280-epic-team-retirement-and-staged-excision.md), and team-under-team is now the deprecated shape above.
+
+### Which chord reaches which node
+
+Each node in the tree is its own tmux server on its own socket, and each gets its own prefix key so a chord is unambiguous regardless of which socket you happen to be attached to. Per ADR-287 §D2 **the chord is derived from depth, never from node kind**: the cockpit session binds `prefixChain[0]` (`F1` by default), and a node at 0-indexed tree depth `d` binds `prefixChain[d+1]` — a top-level group or an ungrouped top-level team binds `F2`, a team under a top-level group binds `F3`, and so on. That is the arithmetic `atmux cockpit reconcile` already applies (`resolvePrefix(level + 2, …)` for each group server and each team cage).
+
+| Rung | Server it lands on | What its windows are |
 |---|---|---|
-| L0 | Host tmux (your daily driver) | `C-a` |
-| L1 | atmux cockpit | `F1` |
-| L2 | Group | `F2` |
-| L3 | Project / team cage | `F3` |
-| L4 | Nested cage — epic-team or any other reason | `F4` |
-| L5 | Spare | `F5` |
-| L6..L12 | Deeper nesting, if you have it | `F6`..`F12` |
+| `F1` | cockpit `atx` | one window per top-level group, plus ungrouped teams |
+| `F2` | top-level group server, or an ungrouped top-level team cage | group server: child groups and teams; team cage: `driver`, `driver-2`, … (+ any explicitly declared member windows) |
+| `F3` | team cage under a top-level group (or a second-level group server) | `driver`, `driver-2`, `driver-3` (+ any explicitly declared member windows) |
+| `F(d+2)` | deeper nodes | same pattern |
 
-⚠ **A team cage moved from `F2` to `F3`, and an epic-team from `F3` to `F4`, when the group tier was inserted (2026-08-27).** If you have not run a fleet with a group tier, your cages are still at the pre-shift rungs.
+At `F3` and deeper a group server's windows are child groups and teams, exactly as at `F2`; only a team cage's windows are drivers. Drivers are addressed with their team cage's chord plus a window index (`F3 1`, `F3 2`, …) and consume no rung of their own.
 
-**The shift is enforced by atmux itself since 2026-08-28** (ADR-089's true-containment group-tier note): every enabled `type: "group"` backs a real tmux server on `/tmp/atmux-grp-<group>/sock`, and `atmux cockpit reconcile` applies `resolvePrefix(level + 2, …)` to each group server AND each team cage — a top-level group binds `F2`, its teams `F3`, an ungrouped top-level team stays `F2`. The earlier caveat that the shift waited on the operator dotfiles' socket-pattern `if-shell` chain (`_dotfiles/tmux/.tmux.conf` + `_dotfiles/atmux/tmux.conf.local`) is superseded for prefix ASSIGNMENT; those dotfiles chains still exist and, matching on socket path, can re-clobber a reconcile-applied prefix — if a cage's chord is wrong after a reconcile, check the dotfiles chain second (depth first, per §Depth beyond the chain).
+Your host tmux (the daily driver — `C-a` in the operator dotfiles) sits outside the chain: it is not a node and holds no rung.
+
+⚠ **Historical shift note (2026-08-27):** a team cage moved from `F2` to `F3` when the group tier was inserted (the epic-team rung that note also named is moot since ADR-280). If you have not run a fleet with a group tier, your cages are still at the pre-shift rungs; the table above is what a reconcile applies.
+
+**The shift is enforced by atmux itself since 2026-08-28** (ADR-089's true-containment group-tier note): every enabled `type: "group"` backs a real tmux server on `/tmp/atmux-grp-<group>/sock`, and `atmux cockpit reconcile` applies `resolvePrefix(level + 2, …)` to each group server AND each team cage — a top-level group binds `F2`, its teams `F3`, an ungrouped top-level team stays `F2`. The earlier caveat that the shift waited on the operator dotfiles' socket-pattern `if-shell` chain (`_dotfiles/tmux/.tmux.conf` + `_dotfiles/atmux/tmux.conf.local`) is superseded for prefix ASSIGNMENT; those dotfiles chains still exist and, matching on socket path, can re-clobber a reconcile-applied prefix — if a cage's chord is wrong after a reconcile, check the dotfiles chain second (depth first, per §Depth beyond the chain; since ADR-287 §D4 an over-deep tree is refused at load rather than handed a wrong chord, so a wrong chord on a tree that did load points at the dotfiles chain).
 
 ### Override the chain
 
@@ -414,11 +432,15 @@ Each nesting level is its own tmux server on its own socket, and each gets its o
 "prefixChain": ["C-q", "C-w", "C-e", "C-r", "C-t", "C-y"]
 ```
 
-The chain must have at least `MAX_NESTING_LEVEL` (6) entries and every entry must be unique; `loadCockpit` refuses the config otherwise. Unset leaves the F1..F12 default in place.
+Per ADR-287 §D4 the chain needs at least one entry, every entry non-empty and unique, and enough rungs for the tree — a node at 0-indexed depth `d` needs `d+2` entries, so the two six-entry examples above admit nodes down to depth 4. `loadCockpit` refuses the config otherwise (see §Depth beyond the chain for the error). Unset leaves the F1..F12 default in place, which admits depth 0..10. The chain — not a separate number — is the one thing that bounds depth: `MAX_NESTING_LEVEL` still exports for callers, but it is defined as `DEFAULT_PREFIX_CHAIN.length` (12) and is no longer a cap.
+
+> **Historical (superseded 2026-09-02 by ADR-287 §D4).** Until then the rule here was a fixed floor — the chain had to carry at least six entries (the old `MAX_NESTING_LEVEL` constant), whatever the tree's depth. A one-entry chain is now valid, but only for a cockpit with no team or group sessions at all.
 
 ### Depth beyond the chain
 
-Every level gets a distinct key for as long as the chain lasts. Depth past the chain's end is meant to be **refused** with an actionable error — never clamped to the deepest key and never wrapped back to `F1`, both of which would make one chord mean two cages. **That refusal is not implemented yet** (ADR-089 §Amendment 2026-08-27 §(C)/§(D)): today an over-deep tree loads without complaint and the affected cage silently falls back to tmux's legacy `C-\` prefix. If a cage's chord is not what this table says, check your depth before checking your dotfiles.
+Every node gets a distinct key for as long as the chain lasts. Depth past the chain's end is **refused at load** per ADR-287 §D4 — never clamped to the deepest key and never wrapped back to `F1`, both of which would make one chord mean two cages. `loadCockpit` walks the parsed tree; if any node at 0-indexed depth `d` needs rung `d+2` beyond the effective chain (`cockpit.prefixChain` when set, else the `F1`..`F12` default) it throws a `ConfigError` naming the offending node, its depth, the rung it needs and the chain length, with the hint `add entries to cockpit.prefixChain or reduce nesting depth`. Because the refusal lives in the loader, every verb that loads the cockpit refuses — not only `cockpit reconcile`; `atmux doctor` reports it as a red `cockpit.json` row (§4) instead of aborting. The fix is one config edit: lengthen `prefixChain`, or flatten the tree. If a cage's chord is not what the table above says, the `cockpit.json` depth is wrong; check depth before checking your dotfiles.
+
+> **Historical (closed 2026-09-02 by ADR-287 §D4).** The refusal was ruled by ADR-089 §Amendment 2026-08-27 §(C) but not built (§(D)); until ADR-287 an over-deep tree loaded without complaint and the affected cage silently fell back to tmux's legacy `C-\` prefix.
 
 ### Verifying a cage's prefix
 
@@ -427,14 +449,15 @@ Every level gets a distinct key for as long as the chain lasts. Depth past the c
 tmux -S <socket> show-options -g prefix
 
 # What level does the cage believe it is at?
-echo "$ATMUX_NESTING_LEVEL"     # from inside a cage pane; 1-indexed, L1 = cockpit
+echo "$ATMUX_NESTING_LEVEL"     # from inside a cage pane; 1-indexed: cockpit = 1, a node at 0-indexed depth d = d+2 (ADR-287 §D2)
 ```
 
-A mismatch between those two is the ADR-092 doctor probe D9's finding class, and it is the symptom of the dotfiles chain and the depth arithmetic disagreeing.
+A mismatch between those two is the symptom of the dotfiles chain and the depth arithmetic disagreeing — see the dotfiles caveat under §Which chord reaches which node. (An earlier revision of this line attributed the finding to an "ADR-092 doctor probe D9"; ADR-092 has no such probe, and no doctor probe covers this mismatch as of 2026-09-02 — corrected per ADR-287 §Consequences.)
 
 ## Cross-references
 
-- [ADR-089](adr/089-hierarchical-cockpit.md) — hierarchical cockpit (recursive `sessions[]` + the prefix chain); §Amendment 2026-08-27 generalises nesting beyond epic-teams and records the group-tier prefix shift (§11 above).
+- [ADR-287](adr/287-canonical-cockpit-nesting-and-drivers-only-roster.md) — canonical cockpit nesting: groups are branches, teams are leaf cages hosting drivers (§D1); the chord is derived from depth (§D2 — the §11 table above is its verbatim copy); team-inside-team deprecated (§D3); depth past the prefix chain refused at load, chain length is the cap (§D4); drivers-only default roster (§D5); lead-dependent verbs fail closed on drivers-only teams (§D6); the `team-inside-team` + `deprecated-member-windows` doctor probes (§D7, §4 above).
+- [ADR-089](adr/089-hierarchical-cockpit.md) — hierarchical cockpit (recursive `sessions[]` + the prefix chain); §Amendment 2026-08-27 generalises nesting beyond epic-teams and records the group-tier prefix shift; §Amendment 2026-09-02 corrects its ledger and closes §(C)/§(D) per ADR-287 (§11 above).
 - [ADR-167](adr/167-cockpit-rotate-verb.md) — cockpit rotate verb (Rung C); §Amendment 2026-05-17 documents wrapper-resolver asymmetry + handoff write-path semantics.
 - [ADR-162](adr/162-atmux-owns-tmux-infrastructure.md) — atmux owns its tmux infrastructure (cockpit socket isolation + canonical atmux.conf + version probes).
 - [ADR-135](adr/135-cockpit-naming-convention.md) — cockpit naming convention (`_-prefix` for default-member windows; session literal now `atx` per [ADR-264](adr/264-cockpit-session-atx-rename.md)).

@@ -35,6 +35,18 @@
 //            non-TTY, matching bash's `[[ -t 1 ]]` gate)
 //   :80-84   "Next:" instruction lines → stdout
 //
+// ADR-287 §D5 (2026-09-02): the template now ships `members: []` — the
+// default roster is drivers-only (`drivers[]` + the ADR-285 `bot`
+// block). On the default scaffold the per-member inbox loop (bash
+// :56-60) therefore runs over an empty list and seeds nothing under
+// `inboxes/`; `--claude-account` stamps `drivers[]` as well as
+// `members[]` so the flag stays meaningful; and the third "Next:" hint
+// is drivers-first instead of `atmux tell-lead` (which fails closed on
+// a team with no declared `team-lead` — ADR-287 §D6). A template that
+// still declares `members[]` renders its members exactly as before
+// (cwd rewrite + stamp / strip / passthrough); the only addition for
+// such a template is that its `drivers[]` are stamped / stripped too.
+//
 // Deliberate divergences (documented for the parity matrix):
 //
 //   :8       . "$ATMUX_LIB_DIR/emoji.sh" — wizard-only side effect; the
@@ -84,10 +96,14 @@ export interface ParsedInitArgs {
   wizard: boolean;
   /** t-3866c5b1 / ADR-094: non-interactive equivalent of the wizard's
    *  team-wide claudeAccount prompt. When set + != "default", every
-   *  member entry in the rendered team.json is stamped with
-   *  `claudeAccount: <value>`. "default" (or absent) leaves the field
-   *  unset (schema-default applies). Operators run `atmux reconfigure`
-   *  to override per-member after init. */
+   *  member entry AND every `drivers[]` entry in the rendered team.json
+   *  is stamped with `claudeAccount: <value>` (drivers added per
+   *  ADR-287 §D5 — the default roster has no members, and
+   *  `DriverSession.claudeAccount` is what `atmux start` reads when a
+   *  driver sets a non-shell `tui`). "default" (or absent) leaves the
+   *  field unset (schema-default applies). `bot.claudeAccount` is never
+   *  touched by this flag (ADR-285: explicit operator choice). Operators
+   *  run `atmux reconfigure` to override per-member after init. */
   claudeAccount?: string;
   /** ADR-217 §D5: --no-skills skips the bundled /atmux: skills plugin
    *  install step (default behavior is to install). */
@@ -320,13 +336,33 @@ export async function init(argv: ReadonlyArray<string>, opts: InitOptions = {}):
   const templatePath = join(templatesDir, "team.example.json");
   const team = await readJson(templatePath, Team);
   // t-3866c5b1 / ADR-094: --claude-account triages into three branches.
-  // Unset (undefined) → preserve template's field verbatim (the
-  // template's lead entry carries demonstration `claudeAccount:
-  // "personal"`). Explicit "default" → STRIP any inherited field so
-  // schema-default applies (operator opted into the default tier; no
-  // disk litter). Non-default suffix → stamp every member with the
-  // suffix (CLAUDE_CONFIG_DIR prefix at spawn time). Operators run
+  // Unset (undefined) → preserve the template's field verbatim (a
+  // template that declares members may carry a demonstration
+  // `claudeAccount`; the shipped drivers-only template carries none).
+  // Explicit "default" → STRIP any inherited field so schema-default
+  // applies (operator opted into the default tier; no disk litter).
+  // Non-default suffix → stamp every entry with the suffix
+  // (CLAUDE_CONFIG_DIR prefix at spawn time). Operators run
   // `atmux reconfigure` post-init to override per-member.
+  //
+  // ADR-287 §D5: the same three branches apply to `drivers[]`. The
+  // shipped template has `members: []`, so without this the flag would
+  // be a silent no-op on every fresh scaffold; `drivers[].claudeAccount`
+  // is a declared schema field (`src/schema/team.ts` drivers block) that
+  // `atmux start`'s driver-spawn loop feeds into `resolveTuiCommand`
+  // when a driver sets a `tui`. Driver `cwd` is NOT rewritten — it stays
+  // relative (`.` / `.atmux/worktrees/driver-N`) because start.ts
+  // anchors it at the project root and keys worktree provisioning off
+  // the conventional relative path. `drivers` is optional in the schema;
+  // a template without it renders without the key (no `drivers:
+  // undefined` litter).
+  //
+  // `bot.claudeAccount` is deliberately NOT stamped or stripped. ADR-285
+  // requires the bot account (and harness) to be chosen explicitly in the
+  // durable team.json before automated offers are enabled, so the `bot`
+  // block passes through verbatim — the shipped template's `null` stays
+  // `null` under every branch of the flag. The `tui: null` driver seats
+  // reach `resolveTuiCommand` only once they set a non-shell `tui`.
   const explicit = parsed.claudeAccount;
   const stampAccount = explicit !== undefined && explicit.length > 0 && explicit !== "default";
   const stripAccount = explicit === "default";
@@ -334,6 +370,18 @@ export async function init(argv: ReadonlyArray<string>, opts: InitOptions = {}):
     ...team,
     name: teamName,
     tmuxTmpdir: `/tmp/atmux-tmux_${teamName}`,
+    ...(team.drivers !== undefined
+      ? {
+          drivers: team.drivers.map((d) => {
+            if (stampAccount) return { ...d, claudeAccount: explicit };
+            if (stripAccount) {
+              const { claudeAccount: _stripped, ...rest } = d;
+              return rest;
+            }
+            return d;
+          }),
+        }
+      : {}),
     members: team.members.map((m) => {
       if (stampAccount) return { ...m, cwd, claudeAccount: explicit };
       if (stripAccount) {
@@ -402,6 +450,13 @@ export async function init(argv: ReadonlyArray<string>, opts: InitOptions = {}):
   //   echo "  2. atmux start"                                    → stdout
   //   echo "  3. atmux tell-lead 'build feature X'"              → stdout
   //
+  // ADR-287 §D5 divergence: line 3 is drivers-first. The default roster
+  // declares no `team-lead`, so `atmux tell-lead` would fail closed
+  // (`no lead defined in team.json`, ADR-287 §D6) on a fresh scaffold;
+  // the operator attaches the cage, drives from a driver window, and
+  // keeps work state on the kb board. Teams that declare a lead can
+  // still use `atmux tell-lead` — the hint just stops assuming one.
+  //
   // Under the parity harness `NO_COLOR=1` + non-TTY, both bash + TS
   // emit color-stripped output (bash via `[[ -t 1 ]]`; TS via
   // `defaultPalette`'s isTty + NO_COLOR detection in src/core/tui.ts).
@@ -425,7 +480,9 @@ export async function init(argv: ReadonlyArray<string>, opts: InitOptions = {}):
   stdout("Next:\n");
   stdout(`  1. review ${tj}\n`);
   stdout("  2. atmux start\n");
-  stdout("  3. atmux tell-lead 'build feature X'\n");
+  stdout(
+    "  3. attach the cage and drive from a driver window — work state lives on the kb board (ADR-287 §D5)\n",
+  );
 
   return 0;
 }

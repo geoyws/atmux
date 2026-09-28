@@ -1,5 +1,10 @@
 // Unit tests for src/abstractions/member-roles.ts —
 // ADR-161 §Decision-anchor #1 closed-set of default member roles.
+//
+// ADR-287 §D5 (2026-09-02): these roles are deprecated as a SHIPPED
+// DEFAULT (the template declares no members) but the constant and the
+// predicate are retained unchanged for window-name rendering of roles a
+// team explicitly declares — so every assertion below still holds.
 
 import { describe, expect, test } from "bun:test";
 import {

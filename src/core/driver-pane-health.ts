@@ -25,10 +25,13 @@
 import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
 import type { Team } from "../schema/team.ts";
 import { getSessionName, resolveTeamSocket } from "./common.ts";
+import { resolveDriversList } from "./drivers.ts";
 import { type CaptureFn, classifyPane, type PaneState } from "./pane-state.ts";
 
 /** Snapshot of the driver pane's health at probe time. */
 export interface DriverPaneHealth {
+  /** Driver window name this snapshot describes. */
+  driverName?: string;
   /** True when `team.driverSession` is a truthy object (the team opted
    *  into the ADR-044 driver-window topology). False → driver-pane
    *  surfaces are skipped entirely (not a problem, just unconfigured). */
@@ -53,6 +56,8 @@ export interface ProbeDriverPaneDeps {
   /** Pre-built tmux namespace. Defaults to `createTmux({socketPath:
    *  getDefaultSocket(team.name)})`. */
   tmux?: TmuxNamespace;
+  /** Override the probed driver name. Defaults to `driver`. */
+  driverName?: string;
   /** Window-name lookup. Defaults to `tmux.window.listWindows` then
    *  `.map(w => w.name)`. Fixture injection lets tests skip the
    *  tmux dependency entirely. */
@@ -77,9 +82,17 @@ export async function probeDriverPane(
   atmuxDir: string,
   deps: ProbeDriverPaneDeps = {},
 ): Promise<DriverPaneHealth> {
+  const driverName = deps.driverName ?? "driver";
   const configured = team.driverSession !== null && team.driverSession !== undefined;
+  const withDriverName = (health: Omit<DriverPaneHealth, "driverName">): DriverPaneHealth =>
+    deps.driverName === undefined && driverName === "driver" ? health : { driverName, ...health };
   if (!configured) {
-    return { configured: false, windowExists: false, state: null, evidence: "" };
+    return withDriverName({
+      configured: false,
+      windowExists: false,
+      state: null,
+      evidence: "",
+    });
   }
 
   const tmux = deps.tmux ?? createTmux({ socketPath: resolveTeamSocket(team) });
@@ -93,27 +106,111 @@ export async function probeDriverPane(
     });
 
   const names = await listWindowNames(session).catch(() => [] as ReadonlyArray<string>);
-  const windowExists = names.includes("driver");
+  const windowExists = names.includes(driverName);
   if (!windowExists) {
-    return { configured: true, windowExists: false, state: null, evidence: "" };
+    return withDriverName({
+      configured: true,
+      windowExists: false,
+      state: null,
+      evidence: "",
+    });
   }
 
   const capture: CaptureFn =
     deps.capture ?? ((target: string) => tmux.pane.capturePane({ target, start: -30 }));
-  const target = `${session}:driver`;
+  const target = `${session}:${driverName}`;
 
   try {
     const classification = await classifyPane(target, capture);
-    return {
+    return withDriverName({
       configured: true,
       windowExists: true,
       state: classification.state,
       evidence: classification.evidence,
-    };
+    });
   } catch {
     // expected: tmux capture transient failure (server reload, pane
     // resize). Surface as state=null so the operator-facing renderers
     // know the snapshot is incomplete rather than misclassifying.
-    return { configured: true, windowExists: true, state: null, evidence: "" };
+    return withDriverName({
+      configured: true,
+      windowExists: true,
+      state: null,
+      evidence: "",
+    });
   }
+}
+
+/** Probe every configured driver window in roster order. */
+export async function probeDriverPanes(
+  team: Team,
+  atmuxDir: string,
+  deps: ProbeDriverPaneDeps = {},
+): Promise<DriverPaneHealth[]> {
+  const roster = resolveDriversList(team as Parameters<typeof resolveDriversList>[0]);
+  if (team.driverSession === null || team.driverSession === undefined) {
+    return roster.map((driver) => ({
+      driverName: driver.name,
+      configured: false,
+      windowExists: false,
+      state: null,
+      evidence: "",
+    }));
+  }
+
+  const tmux = deps.tmux ?? createTmux({ socketPath: resolveTeamSocket(team) });
+  const session = await getSessionName({ dir: atmuxDir, team });
+  const listWindowNames =
+    deps.listWindowNames ??
+    (async (s: string): Promise<ReadonlyArray<string>> => {
+      const ws = await tmux.window.listWindows(s);
+      return ws.map((w) => w.name);
+    });
+  const names = await listWindowNames(session).catch(() => null);
+  if (names === null) {
+    return roster.map((driver) => ({
+      driverName: driver.name,
+      configured: true,
+      windowExists: false,
+      state: null,
+      evidence: "",
+    }));
+  }
+
+  const capture: CaptureFn =
+    deps.capture ?? ((target: string) => tmux.pane.capturePane({ target, start: -30 }));
+  const out: DriverPaneHealth[] = [];
+  for (const driver of roster) {
+    const windowExists = names.includes(driver.name);
+    if (!windowExists) {
+      out.push({
+        driverName: driver.name,
+        configured: true,
+        windowExists: false,
+        state: null,
+        evidence: "",
+      });
+      continue;
+    }
+    const target = `${session}:${driver.name}`;
+    try {
+      const classification = await classifyPane(target, capture);
+      out.push({
+        driverName: driver.name,
+        configured: true,
+        windowExists: true,
+        state: classification.state,
+        evidence: classification.evidence,
+      });
+    } catch {
+      out.push({
+        driverName: driver.name,
+        configured: true,
+        windowExists: true,
+        state: null,
+        evidence: "",
+      });
+    }
+  }
+  return out;
 }

@@ -472,3 +472,19 @@ The mechanism (all in `src/core/cockpit.ts::buildGroupTopology` + `src/verbs/coc
 The 2026-08-27 note's §Implementation-ledger updates stand (row 3 ships, row 4 ships for `group`); row 9's "dotfiles socket chain" enforcement analysis is retired for schema groups — atmux enforces the shift itself.
 
 **Filed via** e-419553c6 (group-servers lane, 2026-08-28).
+
+### §Amendment 2026-09-02 — ledger corrections and §(C)/§(D) closure per ADR-287
+
+[ADR-287](287-canonical-cockpit-nesting-and-drivers-only-roster.md) makes `group` the only branch node and `team` a leaf cage (§D1), deprecates team-inside-team (§D3) and implements §(C) as written (§D4). The §Implementation ledger above is corrected as follows; the earlier rows stay as historical text.
+
+| # | Was | Now |
+|---|---|---|
+| 3 | Does NOT ship | **Ships** — `GroupSession` (`src/schema/cockpit.ts:223`), e-419553c6; a real server consuming the F2 rung since 2026-08-28 |
+| 4 | Does NOT ship | **Ships for `group`** — `walkSessions` (`src/core/cockpit.ts:470`) and `enabledTeams` recurse through groups; any other new type is still a leaf |
+| 7 | Ships for epics only | **Moot** — ADR-280 retired `spawn-epic`'s `epic-team` write; there is no nested-cage spawn verb, and ADR-287 §D3 deprecates the nested-team shape one would produce |
+| 8 | Does NOT ship — see §(D) | **Ships via ADR-287 §D4 (code lane, same batch — see ADR-287 §Implementation ledger)** — `loadCockpit` walks the tree and refuses any node needing a rung past the effective chain; the chain length is the cap and `MAX_NESTING_LEVEL` is retired as a separate cap |
+| 9 | Does NOT ship (dotfiles) | **Retired** — atmux enforces the shift itself (`applyCagePrefix` during reconcile, per the 2026-08-28 group-tier note); nothing remains for the dotfiles socket chain to enforce |
+
+Row 1's "No validation anywhere refuses a `team` under a `team`" stays literally true after ADR-287 §D3 (a load-time warning, not a refusal); hard refusal is reserved for a later ADR. §(C)'s "Not yet implemented" and §(D)'s debt record are closed by ADR-287 §D4. `docs/RUNBOOK-cockpit.md` §11 carries the operator-facing chord table from ADR-287 §D2 (same batch); its L0..L12 tier table and "not implemented yet" paragraph are gone.
+
+**Filed via** ADR-287 (docs lane, 2026-09-02).

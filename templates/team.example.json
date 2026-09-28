@@ -4,14 +4,27 @@
   "tmuxTmpdir": "/tmp/atmux-tmux_my-team",
   "_comment_singleSession": "Default false (2026-04-30 reversal of ADR-026) — cage isolation per ADR-018 is the safe path; singleSession opts out of it on the daily-driver socket and reintroduces the side-channel pollution class (cage-prefix leak, cross-socket spawn, partial-rename mess). Launcher sessions (atmux_<team> created by atmux doctor --fix) preserve the at-a-glance benefit while keeping isolation. Set true ONLY for non-human-driven teams or detached observer setups (declared escape hatch).",
   "singleSession": false,
-  "_comment_drivers": "ADR-239 (amended 2026-05-26): five drivers minimum per parent team, named driver / driver-2 / driver-3 / driver-4 / driver-5. Each is operator-interactive ONLY — atmux NEVER sends keystrokes to driver panes (no claim-next dispatch, no whip poke, no orchd unblock). NO PRE-PROMPTS, no brief paste, no role anchor — drivers start fresh in zsh and the operator launches whichever agent harness they want for that session. Set tui to a harness alias only when a team deliberately wants auto-launch. Each driver-N (N>=2) gets its own git worktree at .atmux/worktrees/driver-N on branch <base>-driver-N. driver (the original) lives at team root on the primary base branch (e.g. atmux-geoyws). Operator merges trunk into driver-N branches at their own discretion (no auto-merge cron for drivers). Drivers grouped at windows 1-5 in the cage tmux session, members follow at 6+.",
+  "_comment_drivers": "ADR-288 (2026-09-03): three drivers minimum per parent team, named driver / driver-2 / driver-3. Each is operator-interactive ONLY — atmux NEVER sends keystrokes to driver panes (no claim-next dispatch, no whip poke, no orchd unblock). NO PRE-PROMPTS, no brief paste, no role anchor — drivers start fresh in zsh and the operator launches whichever agent harness they want for that session. Set tui to a harness alias only when a team deliberately wants auto-launch. Each driver-N (N>=2) gets its own git worktree at .atmux/worktrees/driver-N on branch <base>-driver-N. driver (the original) lives at team root on the primary base branch (e.g. atmux-geoyws). Operator merges trunk into driver-N branches at their own discretion (no auto-merge cron for drivers). Drivers grouped at windows 1-3 in the cage tmux session, members follow after that.",
   "drivers": [
     { "name": "driver", "tui": null, "cwd": "." },
     { "name": "driver-2", "tui": null, "cwd": ".atmux/worktrees/driver-2" },
-    { "name": "driver-3", "tui": null, "cwd": ".atmux/worktrees/driver-3" },
-    { "name": "driver-4", "tui": null, "cwd": ".atmux/worktrees/driver-4" },
-    { "name": "driver-5", "tui": null, "cwd": ".atmux/worktrees/driver-5" }
+    { "name": "driver-3", "tui": null, "cwd": ".atmux/worktrees/driver-3" }
   ],
+  "_comment_driverPair": "ADR-288: canonical worker-left / attention-right pair used by later materializers. The attention pane is not a member, keeps workflow kb-att and authority decision-only, and starts with null tui/command so the operator gets an interactive shell unless they opt in deliberately.",
+  "driverPair": {
+    "layout": "horizontal",
+    "panes": [
+      { "role": "worker", "side": "left" },
+      {
+        "role": "attention",
+        "side": "right",
+        "workflow": "kb-att",
+        "authority": "decision-only",
+        "tui": null,
+        "command": null
+      }
+    ]
+  },
   "_comment_bot": "ADR-285: one cooperative _bot seat for persistent parent teams. It has an isolated .atmux/worktrees/bot worktree on <base>-bot and sits after drivers, before members. null tui starts zsh for operator use and is deliberately unroutable by _superbot; choose an explicit harness + account in the durable team config before automated offers are enabled. Nested teams omit this block unless configured explicitly.",
   "bot": {
     "enabled": true,
@@ -25,51 +38,9 @@
   "emojis": {
     "mode": "random"
   },
-  "_comment_claudeAccount": "Per-member Claude config-dir isolation. Valid values: 'default' (host default — Claude reads its standard config dir), 'personal', 'icloud', 'ifca', 'unum', OR any custom suffix the operator maintains. When set + != 'default', spawn prefixes 'CLAUDE_CONFIG_DIR=<HOME>/.claude-<value>' so the member's nested-shell `claude` invocations inherit an account-isolated config tree (no OAuth cross-pollination, no fresh-spawn re-auth dance). Per ADR-024 spawn-account-matching + ADR-094 c-alias spawn convention. Field lives at the MEMBER level (per-member override); template's lead carries an example string below.",
-  "_comment_members": "ADR-239 §A2 (amended 2026-05-26): strict 5-name member roster across every parent team — keep only members named {lead, planner, docs, reviewer, gitter}. Specialist seats (ombudsman, unblocker, discorder, devops, dba, tester, fe-auth, be-auth, db-auth, etc.) were swept out in the 2026-05-26 trim. Operator may re-add seats per-team but the template ships the lean default.",
-  "members": [
-    {
-      "name": "lead",
-      "role": "team-lead",
-      "lane": "misc",
-      "tui": "claude",
-      "model": "default",
-      "cwd": ".",
-      "claudeAccount": "personal"
-    },
-    {
-      "name": "planner",
-      "role": "planner",
-      "lane": "misc",
-      "tui": "claude",
-      "model": "default",
-      "cwd": "."
-    },
-    {
-      "name": "docs",
-      "role": "docs",
-      "lane": "misc",
-      "tui": "claude",
-      "model": "default",
-      "cwd": "."
-    },
-    {
-      "name": "reviewer",
-      "role": "reviewer",
-      "lane": "review",
-      "tui": "claude",
-      "model": "default",
-      "cwd": "."
-    },
-    {
-      "name": "gitter",
-      "role": "committer",
-      "lane": "misc",
-      "tui": "claude",
-      "model": "default",
-      "cwd": "."
-    }
-  ],
+  "_comment_claudeAccount": "Per-member Claude config-dir isolation. Valid values: 'default' (host default — Claude reads its standard config dir), 'personal', 'icloud', 'ifca', 'unum', OR any custom suffix the operator maintains. When set + != 'default', spawn prefixes 'CLAUDE_CONFIG_DIR=<HOME>/.claude-<value>' so the member's nested-shell `claude` invocations inherit an account-isolated config tree (no OAuth cross-pollination, no fresh-spawn re-auth dance). Per ADR-024 spawn-account-matching + ADR-094 c-alias spawn convention. Field lives on each members[] and drivers[] entry (and bot.claudeAccount); `atmux init --claude-account <suffix>` stamps drivers[] and any declared members[], `default` strips it. bot.claudeAccount is deliberately NOT stamped or stripped — ADR-285 requires the bot account to be chosen explicitly in team.json before automated offers are enabled. The shipped drivers-only template carries no example value.",
+  "_comment_members": "ADR-287 §D5 (2026-09-02): the default roster is drivers-only. lead / planner / reviewer / member windows are deprecated, not removed — declare members[] only if this team still runs the lead→planner→member loop; atmux doctor flags any members[] yellow. Briefs for declared roles remain under templates/briefs/.",
+  "members": [],
   "whip": {
     "intervalMins": 5,
     "staleMin": 90,

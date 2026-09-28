@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  assertDepthWithinChain,
   ATMUX_NESTING_LEVEL_ENV,
   buildGroupTopology,
   cageSessionName,
@@ -15,6 +16,7 @@ import {
   defaultCockpitConfigPath,
   enabledTeams,
   findTeamByName,
+  findTeamInsideTeamPairs,
   groupSocketPath,
   loadCockpit,
   MAX_NESTING_LEVEL,
@@ -1532,8 +1534,11 @@ describe("DEFAULT_PREFIX_CHAIN — F-key default ladder", () => {
     expect(DEFAULT_PREFIX_CHAIN[11]).toBe("F12");
   });
 
-  test("covers MAX_NESTING_LEVEL with headroom", () => {
-    expect(DEFAULT_PREFIX_CHAIN.length).toBeGreaterThanOrEqual(MAX_NESTING_LEVEL);
+  test("MAX_NESTING_LEVEL is the default chain length, not a separate cap (ADR-287 §D4)", () => {
+    // Retired as a depth cap: the export survives for callers and now
+    // reports the default chain's length (12), never the old fixed 6.
+    expect(MAX_NESTING_LEVEL).toBe(DEFAULT_PREFIX_CHAIN.length);
+    expect(MAX_NESTING_LEVEL).toBe(12);
   });
 
   test("all entries are unique", () => {
@@ -1592,7 +1597,12 @@ describe("resolvePrefix — level → prefix lookup", () => {
   });
 
   test("level exceeds chain length → ConfigError with helpful hint", () => {
-    expect(() => resolvePrefix(7, ["F1", "F2", "F3"])).toThrow(/exceeds prefix chain length/);
+    expect(() => resolvePrefix(7, ["F1", "F2", "F3"])).toThrow(/exceeds prefix chain length 3/);
+    // ADR-287 §D4: the hint names the chain as the cap — no fixed maximum quoted.
+    expect(() => resolvePrefix(7, ["F1", "F2", "F3"])).toThrow(
+      /the chain length is the cap \(ADR-287 §D4\)/,
+    );
+    expect(() => resolvePrefix(7, ["F1", "F2", "F3"])).not.toThrow(/max 6/);
   });
 
   test("non-integer level → ConfigError", () => {
@@ -1606,10 +1616,16 @@ describe("validatePrefixChain — load-time validation", () => {
     expect(v.ok).toBe(true);
   });
 
-  test("chain shorter than MAX_NESTING_LEVEL → not ok with explicit reason", () => {
-    const v = validatePrefixChain(["F1", "F2", "F3"]);
+  test("chain shorter than the retired ≥6 floor → ok (ADR-287 §D4: the tree walk decides length)", () => {
+    expect(validatePrefixChain(["F1", "F2", "F3"])).toEqual({ ok: true });
+    expect(validatePrefixChain(["F1", "F2"])).toEqual({ ok: true });
+    expect(validatePrefixChain(["F1"])).toEqual({ ok: true });
+  });
+
+  test("empty chain → not ok with an 'at least one entry' reason", () => {
+    const v = validatePrefixChain([]);
     expect(v.ok).toBe(false);
-    expect(v.reason).toContain(`≥${MAX_NESTING_LEVEL}`);
+    expect(v.reason).toContain("at least one entry");
   });
 
   test("duplicate entry → not ok with collision reason", () => {
@@ -1644,8 +1660,25 @@ describe("childNestingEnv — parent → child level propagation (§Decision-anc
     expect(() => childNestingEnv(0)).toThrow(ConfigError);
   });
 
-  test("parentLevel would push child past MAX_NESTING_LEVEL → ConfigError", () => {
-    expect(() => childNestingEnv(MAX_NESTING_LEVEL)).toThrow(/exceed max depth/);
+  test("parentLevel=6 → child 7 is allowed now (the retired fixed cap of 6 no longer applies)", () => {
+    expect(childNestingEnv(6)).toEqual({ [ATMUX_NESTING_LEVEL_ENV]: "7" });
+    expect(childNestingEnv(11)).toEqual({ [ATMUX_NESTING_LEVEL_ENV]: "12" });
+  });
+
+  test("child past the DEFAULT chain length → ConfigError naming the cap (ADR-287 §D4)", () => {
+    expect(() => childNestingEnv(DEFAULT_PREFIX_CHAIN.length)).toThrow(ConfigError);
+    expect(() => childNestingEnv(DEFAULT_PREFIX_CHAIN.length)).toThrow(
+      /exceed max depth 12 \(parent=12, child=13\)/,
+    );
+    expect(() => childNestingEnv(DEFAULT_PREFIX_CHAIN.length)).toThrow(
+      /add entries to cockpit.prefixChain or reduce nesting depth \(ADR-287 §D4\)/,
+    );
+  });
+
+  test("explicit chainLength is the cap — the operator's shorter chain wins over the default", () => {
+    expect(childNestingEnv(2, 3)).toEqual({ [ATMUX_NESTING_LEVEL_ENV]: "3" });
+    expect(() => childNestingEnv(3, 3)).toThrow(ConfigError);
+    expect(() => childNestingEnv(3, 3)).toThrow(/exceed max depth 3 \(parent=3, child=4\)/);
   });
 
   test("non-integer parentLevel → ConfigError", () => {
@@ -1673,13 +1706,29 @@ describe("loadCockpit — prefixChain validation (§Decision-anchor #4)", () => 
     expect(cockpit.prefixChain).toBeUndefined();
   });
 
-  test("too-short prefixChain → ConfigError at load", async () => {
+  test("2-entry prefixChain → accepted for a flat single-team fleet (ADR-287 §D4: no fixed floor)", async () => {
+    // Pre-ADR-287 this was refused for being shorter than 6. The team
+    // sits at depth 0 and needs rung 2, which a 2-entry chain provides.
     await writeCockpit({
       schemaVersion: 1,
       prefixChain: ["F1", "F2"],
       sessions: [{ type: "team", name: "x", root: "/x" }],
     });
+    const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
+    expect(cockpit.prefixChain).toEqual(["F1", "F2"]);
+    expect(enabledTeams(cockpit).map((t) => [t.name, t.level])).toEqual([["x", 0]]);
+  });
+
+  test("empty prefixChain → ConfigError at load", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      prefixChain: [],
+      sessions: [{ type: "team", name: "x", root: "/x" }],
+    });
     await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(ConfigError);
+    await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(
+      /invalid prefixChain — prefixChain is empty/,
+    );
   });
 
   test("duplicate-entry prefixChain → ConfigError at load", async () => {
@@ -1689,6 +1738,457 @@ describe("loadCockpit — prefixChain validation (§Decision-anchor #4)", () => 
       sessions: [{ type: "team", name: "x", root: "/x" }],
     });
     await expect(loadCockpit({ home: homeDir, warn: () => {} })).rejects.toThrow(/duplicated/);
+  });
+});
+
+// ---------- ADR-287 §D4: depth past the prefix chain is refused at load ----------
+
+/** Wrap `leaf` in `depth` nested enabled groups (`g1` outermost …
+ *  `g<depth>` innermost) so the leaf lands at 0-indexed level `depth`. */
+function nestInGroups(depth: number, leaf: unknown): unknown {
+  let node = leaf;
+  for (let i = depth; i >= 1; i -= 1) {
+    node = { type: "group", name: `g${i}`, enabled: true, sessions: [node] };
+  }
+  return node;
+}
+
+/** Load and assert the EXACT ConfigError message (what + hint) — a
+ *  regex `toThrow` would still pass on a message that named the wrong
+ *  node, depth or chain length. */
+async function expectDepthRefusal(expected: string): Promise<void> {
+  let caught: unknown;
+  try {
+    await loadCockpit({ home: homeDir, warn: () => {} });
+  } catch (e) {
+    caught = e;
+  }
+  expect(caught).toBeInstanceOf(ConfigError);
+  expect((caught as ConfigError).message).toBe(expected);
+}
+
+const DEPTH_HINT =
+  " (hint: add entries to cockpit.prefixChain or reduce nesting depth (ADR-287 §D4))";
+
+describe("loadCockpit — depth past the prefix chain is refused (ADR-287 §D4)", () => {
+  test("default chain: a node at depth 11 needs rung 13 → refused naming node, depth, rung, chain length", async () => {
+    const path = await writeCockpit({
+      schemaVersion: 1,
+      sessions: [nestInGroups(11, { type: "team", name: "deep", root: "/deep" })],
+    });
+    await expectDepthRefusal(
+      `cockpit.json at ${path}: 'deep' (type team) sits at depth L13 and needs prefix rung 13, but prefixChain has 12 entries${DEPTH_HINT}`,
+    );
+  });
+
+  test("default chain: a node at depth 10 needs rung 12 → accepted (boundary, no off-by-one)", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [nestInGroups(10, { type: "team", name: "edge", root: "/edge" })],
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
+    const teams = enabledTeams(cockpit);
+    expect(teams.map((t) => [t.name, t.level])).toEqual([["edge", 10]]);
+    // The rung it binds is the last entry of the default chain.
+    expect(resolvePrefix((teams[0]?.level ?? -1) + 2, cockpit.prefixChain)).toBe("F12");
+  });
+
+  test("3-entry chain: group → team accepted (team at depth 1 binds rung 3)", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      prefixChain: ["F1", "F2", "F3"],
+      sessions: [
+        { type: "group", name: "unum", sessions: [{ type: "team", name: "aix", root: "/aix" }] },
+      ],
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
+    const teams = enabledTeams(cockpit);
+    expect(teams.map((t) => [t.name, t.level, t.group])).toEqual([["aix", 1, "unum"]]);
+    expect(resolvePrefix((teams[0]?.level ?? -1) + 2, cockpit.prefixChain)).toBe("F3");
+  });
+
+  test("3-entry chain: group → group → team refused (team at depth 2 needs rung 4)", async () => {
+    const path = await writeCockpit({
+      schemaVersion: 1,
+      prefixChain: ["F1", "F2", "F3"],
+      sessions: [nestInGroups(2, { type: "team", name: "deep", root: "/deep" })],
+    });
+    await expectDepthRefusal(
+      `cockpit.json at ${path}: 'deep' (type team) sits at depth L4 and needs prefix rung 4, but prefixChain has 3 entries${DEPTH_HINT}`,
+    );
+  });
+
+  test("3-entry chain: group → group → group refused naming the GROUP (groups consume a rung too)", async () => {
+    const path = await writeCockpit({
+      schemaVersion: 1,
+      prefixChain: ["F1", "F2", "F3"],
+      sessions: [nestInGroups(3, { type: "team", name: "t", root: "/t", enabled: false })],
+    });
+    // g3 sits at depth 2 (rung 4); the disabled team beneath it is still
+    // walked (a disabled TEAM does not prune its subtree) and is deeper,
+    // so it is the one named — depth 3, rung 5.
+    await expectDepthRefusal(
+      `cockpit.json at ${path}: 't' (type team) sits at depth L5 and needs prefix rung 5, but prefixChain has 3 entries${DEPTH_HINT}`,
+    );
+  });
+
+  test("3-entry chain: three nested groups and nothing else → refused naming the innermost group", async () => {
+    const path = await writeCockpit({
+      schemaVersion: 1,
+      prefixChain: ["F1", "F2", "F3"],
+      sessions: [nestInGroups(2, { type: "group", name: "leaf-group", sessions: [] })],
+    });
+    await expectDepthRefusal(
+      `cockpit.json at ${path}: 'leaf-group' (type group) sits at depth L4 and needs prefix rung 4, but prefixChain has 3 entries${DEPTH_HINT}`,
+    );
+  });
+
+  test("explicit chain shorter than the tree → refused (2 entries, group → team needs rung 3)", async () => {
+    const path = await writeCockpit({
+      schemaVersion: 1,
+      prefixChain: ["F1", "F2"],
+      sessions: [
+        { type: "group", name: "unum", sessions: [{ type: "team", name: "aix", root: "/aix" }] },
+      ],
+    });
+    await expectDepthRefusal(
+      `cockpit.json at ${path}: 'aix' (type team) sits at depth L3 and needs prefix rung 3, but prefixChain has 2 entries${DEPTH_HINT}`,
+    );
+  });
+
+  test("no clamp, no wrap: refusal is thrown, never a resolved prefix", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      prefixChain: ["C-q", "C-w"],
+      sessions: [
+        { type: "group", name: "unum", sessions: [{ type: "team", name: "aix", root: "/aix" }] },
+      ],
+    });
+    // A clamp would have returned a cockpit whose deepest team binds
+    // "C-w"; a wrap would bind "C-q". Neither: the load itself fails.
+    let resolved: string | undefined;
+    try {
+      const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
+      const t = enabledTeams(cockpit).find((x) => x.name === "aix");
+      resolved = resolvePrefix((t?.level ?? -1) + 2, cockpit.prefixChain);
+    } catch (e) {
+      expect(e).toBeInstanceOf(ConfigError);
+    }
+    expect(resolved).toBeUndefined();
+  });
+
+  test("two siblings at the same over-deep level → the FIRST in DFS order is named", async () => {
+    const path = await writeCockpit({
+      schemaVersion: 1,
+      prefixChain: ["F1", "F2"],
+      sessions: [
+        {
+          type: "group",
+          name: "g",
+          sessions: [
+            { type: "team", name: "alpha", root: "/a" },
+            { type: "team", name: "beta", root: "/b" },
+          ],
+        },
+      ],
+    });
+    await expectDepthRefusal(
+      `cockpit.json at ${path}: 'alpha' (type team) sits at depth L3 and needs prefix rung 3, but prefixChain has 2 entries${DEPTH_HINT}`,
+    );
+  });
+
+  test("1-entry chain: a cockpit with only superdriver / medic entries loads (they bind no rung)", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      prefixChain: ["F1"],
+      sessions: [
+        { type: "superdriver", name: "sd" },
+        { type: "medic", name: "medic" },
+      ],
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
+    expect(cockpit.prefixChain).toEqual(["F1"]);
+    expect(cockpit.teams).toEqual([]);
+  });
+
+  test("1-entry chain: a single top-level team is refused (it needs rung 2)", async () => {
+    const path = await writeCockpit({
+      schemaVersion: 1,
+      prefixChain: ["F1"],
+      sessions: [{ type: "team", name: "x", root: "/x" }],
+    });
+    await expectDepthRefusal(
+      `cockpit.json at ${path}: 'x' (type team) sits at depth L2 and needs prefix rung 2, but prefixChain has 1 entries${DEPTH_HINT}`,
+    );
+  });
+
+  test("a medic nested under a team does not count towards depth", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      prefixChain: ["F1", "F2"],
+      sessions: [
+        { type: "team", name: "x", root: "/x", sessions: [{ type: "medic", name: "medic" }] },
+      ],
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
+    expect(cockpit.teams.map((t) => t.name)).toEqual(["x"]);
+  });
+
+  test("a DISABLED group prunes its subtree from the depth walk (nothing beneath it runs a server)", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      prefixChain: ["F1", "F2"],
+      sessions: [
+        { type: "team", name: "live", root: "/live" },
+        {
+          type: "group",
+          name: "off",
+          enabled: false,
+          sessions: [nestInGroups(3, { type: "team", name: "deep", root: "/deep" })],
+        },
+      ],
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
+    expect(enabledTeams(cockpit).map((t) => t.name)).toEqual(["live"]);
+  });
+
+  test("a DISABLED team's children still count (a disabled team is one cage's flag, not a subtree switch)", async () => {
+    const warns: string[] = [];
+    const path = await writeCockpit({
+      schemaVersion: 1,
+      prefixChain: ["F1", "F2"],
+      sessions: [
+        {
+          type: "team",
+          name: "parent",
+          root: "/p",
+          enabled: false,
+          sessions: [{ type: "team", name: "child", root: "/c" }],
+        },
+      ],
+    });
+    let caught: unknown;
+    try {
+      await loadCockpit({ home: homeDir, warn: (m) => warns.push(m) });
+    } catch (e) {
+      caught = e;
+    }
+    expect((caught as ConfigError).message).toBe(
+      `cockpit.json at ${path}: 'child' (type team) sits at depth L3 and needs prefix rung 3, but prefixChain has 2 entries${DEPTH_HINT}`,
+    );
+    // The §D3 warning fires BEFORE the §D4 refusal in the same load.
+    expect(warns).toEqual([
+      "cockpit.json: team 'child' is nested inside team 'parent' — team-inside-team is deprecated per ADR-287 §D3; move it under a group\n",
+    ]);
+  });
+
+  test("legacy flat teams[] roster: every team is depth 0 → accepted on a 2-entry chain", async () => {
+    await writeCockpit({
+      prefixChain: ["F1", "F2"],
+      teams: [
+        { name: "a", root: "/a" },
+        { name: "b", root: "/b" },
+      ],
+    });
+    const cockpit = await loadCockpit({ home: homeDir, warn: () => {} });
+    expect(enabledTeams(cockpit).map((t) => [t.name, t.level])).toEqual([
+      ["a", 0],
+      ["b", 0],
+    ]);
+  });
+});
+
+describe("assertDepthWithinChain — pure", () => {
+  test("no team / group nodes → returns without throwing, whatever the chain", () => {
+    expect(() => assertDepthWithinChain({ sessions: [] } as never, "/x.json")).not.toThrow();
+    expect(() => assertDepthWithinChain({} as never, "/x.json")).not.toThrow();
+    expect(() =>
+      assertDepthWithinChain(
+        { prefixChain: ["F1"], sessions: [{ type: "medic", name: "m", enabled: true }] } as never,
+        "/x.json",
+      ),
+    ).not.toThrow();
+  });
+
+  test("uses the default chain when prefixChain is unset and the explicit chain when set", () => {
+    const deep = { type: "team", name: "t", root: "/t", enabled: true, sessions: [] };
+    const tree = { sessions: [nestInGroups(3, deep)] } as never;
+    expect(() => assertDepthWithinChain(tree, "/x.json")).not.toThrow();
+    expect(() =>
+      assertDepthWithinChain(
+        { ...(tree as object), prefixChain: ["F1", "F2", "F3"] } as never,
+        "/x.json",
+      ),
+    ).toThrow(
+      "cockpit.json at /x.json: 't' (type team) sits at depth L5 and needs prefix rung 5, but prefixChain has 3 entries",
+    );
+  });
+});
+
+// ---------- ADR-287 §D3: team-inside-team warns at load ----------
+
+describe("loadCockpit — team-inside-team is deprecated (ADR-287 §D3)", () => {
+  const load = async (): Promise<{
+    cockpit: Awaited<ReturnType<typeof loadCockpit>>;
+    warns: string[];
+  }> => {
+    const warns: string[] = [];
+    const cockpit = await loadCockpit({ home: homeDir, warn: (m) => warns.push(m) });
+    return { cockpit, warns };
+  };
+
+  test("team → team: warns with the exact text naming child and parent, and still loads (grace period)", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [
+        {
+          type: "team",
+          name: "parent",
+          root: "/p",
+          sessions: [{ type: "team", name: "child", root: "/c" }],
+        },
+      ],
+    });
+    const { cockpit, warns } = await load();
+    expect(warns).toEqual([
+      "cockpit.json: team 'child' is nested inside team 'parent' — team-inside-team is deprecated per ADR-287 §D3; move it under a group\n",
+    ]);
+    // Grace period: the nested team is still a live cage.
+    expect(enabledTeams(cockpit).map((t) => [t.name, t.level, t.parent])).toEqual([
+      ["parent", 0, undefined],
+      ["child", 1, "parent"],
+    ]);
+  });
+
+  test("group → team: no warning (the canonical shape)", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [
+        { type: "group", name: "unum", sessions: [{ type: "team", name: "aix", root: "/aix" }] },
+      ],
+    });
+    const { cockpit, warns } = await load();
+    expect(warns).toEqual([]);
+    expect(enabledTeams(cockpit).map((t) => t.name)).toEqual(["aix"]);
+  });
+
+  test("team → group → team: no warning (the direct parent is the group)", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [
+        {
+          type: "team",
+          name: "a",
+          root: "/a",
+          sessions: [
+            { type: "group", name: "g", sessions: [{ type: "team", name: "b", root: "/b" }] },
+          ],
+        },
+      ],
+    });
+    const { cockpit, warns } = await load();
+    expect(warns).toEqual([]);
+    // walkSessions still threads `parent: "a"` through the group — the
+    // warning is about DIRECT nesting, which this is not.
+    expect(findTeamByName(cockpit, "b")?.parent).toBe("a");
+  });
+
+  test("one warning per nested pair — each parent's pairs together, parents in DFS pre-order", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [
+        {
+          type: "team",
+          name: "a",
+          root: "/a",
+          sessions: [
+            {
+              type: "team",
+              name: "b",
+              root: "/b",
+              sessions: [{ type: "team", name: "c", root: "/c" }],
+            },
+            { type: "team", name: "d", root: "/d" },
+          ],
+        },
+      ],
+    });
+    const { warns } = await load();
+    expect(warns).toEqual([
+      "cockpit.json: team 'b' is nested inside team 'a' — team-inside-team is deprecated per ADR-287 §D3; move it under a group\n",
+      "cockpit.json: team 'd' is nested inside team 'a' — team-inside-team is deprecated per ADR-287 §D3; move it under a group\n",
+      "cockpit.json: team 'c' is nested inside team 'b' — team-inside-team is deprecated per ADR-287 §D3; move it under a group\n",
+    ]);
+  });
+
+  test("flat fleet: no warning at all (the legacy-shape warning is a different message)", async () => {
+    await writeCockpit({
+      schemaVersion: 1,
+      sessions: [
+        { type: "team", name: "a", root: "/a" },
+        { type: "team", name: "b", root: "/b" },
+      ],
+    });
+    const { warns } = await load();
+    expect(warns).toEqual([]);
+  });
+});
+
+describe("findTeamInsideTeamPairs — pure", () => {
+  test("empty / missing sessions → []", () => {
+    expect(findTeamInsideTeamPairs({})).toEqual([]);
+    expect(findTeamInsideTeamPairs({ sessions: [] })).toEqual([]);
+  });
+
+  test("a team node without a sessions array (hand-built fixture) → no pair, no throw", () => {
+    const fixture = { sessions: [{ type: "team", name: "bare", root: "/bare", enabled: true }] };
+    expect(findTeamInsideTeamPairs(fixture as never)).toEqual([]);
+  });
+
+  test("reports direct team → team edges only, in DFS order", () => {
+    const fixture = {
+      sessions: [
+        {
+          type: "team",
+          name: "a",
+          root: "/a",
+          enabled: true,
+          sessions: [
+            { type: "team", name: "b", root: "/b", enabled: true, sessions: [] },
+            {
+              type: "group",
+              name: "g",
+              enabled: true,
+              sessions: [{ type: "team", name: "c", root: "/c", enabled: true, sessions: [] }],
+            },
+            { type: "medic", name: "m", enabled: true },
+          ],
+        },
+      ],
+    };
+    expect(findTeamInsideTeamPairs(fixture as never)).toEqual([{ parent: "a", child: "b" }]);
+  });
+
+  test("a disabled group prunes its subtree — pairs beneath it are not reported", () => {
+    const fixture = {
+      sessions: [
+        {
+          type: "group",
+          name: "off",
+          enabled: false,
+          sessions: [
+            {
+              type: "team",
+              name: "p",
+              root: "/p",
+              enabled: true,
+              sessions: [{ type: "team", name: "c", root: "/c", enabled: true, sessions: [] }],
+            },
+          ],
+        },
+      ],
+    };
+    expect(findTeamInsideTeamPairs(fixture as never)).toEqual([]);
   });
 });
 

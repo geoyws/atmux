@@ -7,7 +7,7 @@ import {
 import {
   type DriverPaneHealth,
   type ProbeDriverPaneDeps,
-  probeDriverPane,
+  probeDriverPanes,
 } from "../../core/driver-pane-health.ts";
 import { loadKanban } from "../../core/kanban.ts";
 import { kanbanWorkStateAvailable } from "../../core/kanban-backend.ts";
@@ -24,6 +24,8 @@ export interface CheckDriverPaneStateOpts {
   probeDeps?: ProbeDriverPaneDeps;
   /** Override the probe entirely (single-shot fixture for the check). */
   probe?: (team: Team, atmuxDir: string) => Promise<DriverPaneHealth>;
+  /** Override the roster probe entirely. */
+  probeMany?: (team: Team, atmuxDir: string) => Promise<DriverPaneHealth[]>;
 }
 
 /**
@@ -45,17 +47,32 @@ export async function checkDriverPaneState(
   opts: CheckDriverPaneStateOpts = {},
 ): Promise<DoctorRow[]> {
   if (team === null) return [];
-  const probe = opts.probe ?? ((t, dir) => probeDriverPane(t, dir, opts.probeDeps));
-  const health = await probe(team, atmuxDir);
+  const probeMany =
+    opts.probeMany ??
+    (opts.probe === undefined ? (t, dir) => probeDriverPanes(t, dir, opts.probeDeps) : undefined);
+  const healths =
+    probeMany !== undefined
+      ? await probeMany(team, atmuxDir)
+      : opts.probe === undefined
+        ? []
+        : [await opts.probe(team, atmuxDir)];
+  const rows: DoctorRow[] = [];
+  for (const health of healths) {
+    rows.push(...renderDriverPaneRows(health));
+  }
+  return rows;
+}
 
+function renderDriverPaneRows(health: DriverPaneHealth): DoctorRow[] {
   if (!health.configured) return [];
+  const driverName = health.driverName ?? "driver";
 
   if (!health.windowExists) {
     return [
       {
         status: "yellow",
         label: "driver-pane-state",
-        detail: "team has driverSession set but no live driver window",
+        detail: `${driverName}: team has driverSession set but no live driver window`,
         hint: "run atmux start",
       },
     ];
@@ -69,7 +86,7 @@ export async function checkDriverPaneState(
       {
         status: "green",
         label: "driver-pane-state",
-        detail: `state=${health.state}`,
+        detail: `${driverName}: state=${health.state}`,
       },
     ];
   }
@@ -79,7 +96,7 @@ export async function checkDriverPaneState(
       {
         status: "yellow",
         label: "driver-pane-state",
-        detail: "driver pane capture returned no signal",
+        detail: `${driverName}: driver pane capture returned no signal`,
         hint: "check tmux server health",
       },
     ];
@@ -91,7 +108,7 @@ export async function checkDriverPaneState(
       {
         status: "yellow",
         label: "driver-pane-state",
-        detail: `driver pane stuck in ${health.state}${evidence === "" ? "" : ` (${evidence})`}`,
+        detail: `${driverName}: driver pane stuck in ${health.state}${evidence === "" ? "" : ` (${evidence})`}`,
         hint:
           health.state === "RATE-LIMIT"
             ? "wait for budget refresh"
@@ -109,7 +126,7 @@ export async function checkDriverPaneState(
     {
       status: "yellow",
       label: "driver-pane-state",
-      detail: `driver pane in unexpected state=${health.state}${evidence === "" ? "" : ` (${evidence})`}`,
+      detail: `${driverName}: driver pane in unexpected state=${health.state}${evidence === "" ? "" : ` (${evidence})`}`,
       hint: "check the driver pane manually",
     },
   ];

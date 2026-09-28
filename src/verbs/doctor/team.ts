@@ -49,13 +49,18 @@ export async function checkTeam(atmuxDir: string): Promise<DoctorRow[]> {
   // name surfaces as a SchemaError caught above ("invalid JSON" red row).
   // No separate empty-name branch needed.
 
-  if (team.members.length === 0) {
+  // ADR-287 §D5: the default roster is drivers-only, so an empty
+  // members[] is a HEALTHY team when drivers[] is declared. Red only
+  // when the team declares no seat at all (no drivers, no members) —
+  // a cage with nothing to spawn.
+  const driverCount = team.drivers?.length ?? 0;
+  if (team.members.length === 0 && driverCount === 0) {
     return [
       {
         status: "red",
         label: "team.json",
-        detail: "no members defined",
-        hint: "run: atmux add-member <name> --role member --tui claude",
+        detail: "no members or drivers defined",
+        hint: "declare drivers[] (ADR-239 / ADR-287 §D5), or run: atmux add-member <name> --role member --tui claude",
       },
     ];
   }
@@ -77,7 +82,7 @@ export async function checkTeam(atmuxDir: string): Promise<DoctorRow[]> {
     {
       status: "green",
       label: "team.json",
-      detail: `valid — team "${team.name}", ${team.members.length} members`,
+      detail: `valid — team "${team.name}", ${driverCount} drivers, ${team.members.length} members`,
     },
   ];
 }

@@ -145,6 +145,25 @@ describe("superbotTick", () => {
     const team: Team = {
       name: "atmux",
       members: [],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
       bot: { enabled: true, tui: "claude", cwd: ".atmux/worktrees/bot" },
     };
     const cockpit = {
@@ -293,6 +312,25 @@ describe("superbotTick", () => {
     const team: Team = {
       name: "atmux",
       members: [],
+      drivers: [
+        { name: "driver", tui: null, cwd: "." },
+        { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+        { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+      ],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
       bot: { enabled: true, tui: "claude", cwd: ".atmux/worktrees/bot" },
     };
     const cockpit = {
@@ -417,8 +455,27 @@ describe("superbotTick", () => {
         },
       } as unknown as TmuxNamespace;
       const team: Team = {
-        name: "atmux",
         members: [],
+        name: "atmux",
+        drivers: [
+          { name: "driver", tui: null, cwd: "." },
+          { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+          { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+        ],
+        driverPair: {
+          layout: "horizontal",
+          panes: [
+            { role: "worker", side: "left" },
+            {
+              role: "attention",
+              side: "right",
+              workflow: "kb-att",
+              authority: "decision-only",
+              tui: null,
+              command: null,
+            },
+          ],
+        },
         bot: { enabled: true, tui: "claude", cwd: ".atmux/worktrees/bot" },
       };
       const cockpit = {
@@ -545,6 +602,25 @@ describe("superbotTick", () => {
         loadTeamFn: async () => ({
           name: "atmux",
           members: [],
+          drivers: [
+            { name: "driver", tui: null, cwd: "." },
+            { name: "driver-2", tui: null, cwd: ".atmux/worktrees/driver-2" },
+            { name: "driver-3", tui: null, cwd: ".atmux/worktrees/driver-3" },
+          ],
+          driverPair: {
+            layout: "horizontal",
+            panes: [
+              { role: "worker", side: "left" },
+              {
+                role: "attention",
+                side: "right",
+                workflow: "kb-att",
+                authority: "decision-only",
+                tui: null,
+                command: null,
+              },
+            ],
+          },
           bot: { enabled: true, tui: "claude", cwd: ".atmux/worktrees/bot" },
         }),
         now: () => 1_000,

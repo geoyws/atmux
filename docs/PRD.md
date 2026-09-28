@@ -907,27 +907,44 @@ detail (lib edits in main checkout's `atmux-geoyws` branch).
 
 ## 7. Coordination model
 
-### 7.1 Driver / lead / planner / workers
+### 7.1 Drivers / lead / planner / workers
+
+**Default roster: drivers only** ([ADR-287 §D5](adr/287-canonical-cockpit-nesting-and-drivers-only-roster.md)). Positions per [ADR-239 §D3](adr/239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md): drivers occupy windows 1..N of the team cage first, the `_bot` seat follows when enabled ([ADR-285](adr/285-cooperative-bot-seat-and-superbot-offer-protocol.md)), and any declared members come after that.
 
 | Position    | Window | Default TUI | Purpose |
 |-------------|--------|-------------|---------|
-| Driver      | — (external)         | any           | Relays human intent via `atmux tell-lead` + `atmux send` |
-| Team-lead   | 1                    | claude        | Routes asks + dispatches; never plans itself |
-| Planner     | 2                    | claude        | Decomposes asks into kanban tasks + writes ADRs |
-| Reviewer    | 3                    | claude        | Reviews diffs, approves commits |
-| Committer      | 4                    | claude        | **Two modes (auto-detected from `team.json`)**: (a) **single-trunk mode** when `worktreeIsolation: false` OR `autoMerge.enabled: false` — only member allowed to commit + push (per pull-model brief); (b) **auto-merge mode** when `worktreeIsolation: true` AND `autoMerge.enabled: true` per [ADR-134](adr/134-in-team-auto-merger.md) — watches `<base>-<member>` branches, auto-merges to base on task-done events via socket-pubsub + 10min cron backstop (`atmux cron-install --template committer-sweep` per ADR-134 T7), runs the 9-state machine (`open → in_progress → ready_to_merge → rebasing? → merging → tested → merged|test_failed → reverted`) with BEGIN IMMEDIATE transactions, 3-way conflict surface (state.db → atmux flag → Discord `[merge-conflict]`), and post-merge test gate via `team.json::autoMerge.testCommand` (default `bun test`). Workers self-commit on their own branches in auto-merge mode; committer owns only the merge layer. |
-| Devops      | 5                    | claude        | Deploys, env, CI/CD, infra |
-| Dba         | 6                    | claude (opt)  | Schema + migrations + data integrity |
-| Ombudsman   | (event-driven)       | claude (opt)  | Per-team complaint adjudicator per [ADR-147](adr/147-ombudsman-and-release-notes.md) §D1. Reads open complaints, triages → epic / wontfix / resolved / defer, appends day-file entry under `docs/release-notes/<Y>/<M>/<Y-M-D>.md`. **Event-driven** (sentinel `.atmux/state/ombudsman-pending.json` + 15min cron tick); NOT in whip cadence (ADR-147 §D2). |
-| Members     | 7+                   | any           | Parallel throughput per feature lane |
+| Driver(s)   | 1..N (`driver`, `driver-2`, …) | any (zsh; the operator launches a harness) | One window per `drivers[]` entry, each on its own worktree (ADR-239 §D4). Operator-interactive only — never briefed, never dispatched, never sent keys (ADR-239 §D2/§D5). Work external kb rows directly ([ADR-275](adr/275-external-private-kanban-authority.md)). |
+| `_bot`      | N+1 (when `bot.enabled`) | per `team.json::bot.tui` | Cooperative seat on its own worktree (ADR-285). Not a driver, not a member. |
 
-Driver ↔ lead routing: file-based (`~/.claude/teams/<team>/driver-inbox.md`)
+The rows below are **deprecated defaults** (ADR-287 §D5): the shipped template declares none of them, and they spawn only for a team whose `team.json` declares them in `members[]` (`atmux doctor` flags such teams with `deprecated-member-windows`, ADR-287 §D7). Window positions are relative — `m+1`, `m+2`, … after the `m` driver + `_bot` windows, lead first (ADR-044), then declared order.
+
+> Historical: until 2026-09-02 this table put the driver outside the cage ("— (external)") and the team-lead at window 1, planner at 2, reviewer at 3 — already contradicted by ADR-239 §D3 (2026-05-24) and corrected here per ADR-287 §Consequences.
+
+| Position    | Window | Default TUI | Purpose |
+|-------------|--------|-------------|---------|
+| Team-lead   | m+1                  | claude        | Routes asks + dispatches; never plans itself. Required by `atmux tell-lead`, `rotate-lead`, the lead-stall watchdog, `poke`'s lead branch and `sync claude-team-json`'s `agentType` mapping — absent it, those fail closed with their existing errors (ADR-287 §D6). |
+| Planner     | m+2                  | claude        | Decomposes asks into kanban tasks + writes ADRs |
+| Reviewer    | m+3                  | claude        | Reviews diffs, approves commits |
+| Committer      | m+4                  | claude        | **Two modes (auto-detected from `team.json`)**: (a) **single-trunk mode** when `worktreeIsolation: false` OR `autoMerge.enabled: false` — only member allowed to commit + push (per pull-model brief); (b) **auto-merge mode** when `worktreeIsolation: true` AND `autoMerge.enabled: true` per [ADR-134](adr/134-in-team-auto-merger.md) — watches `<base>-<member>` branches, auto-merges to base on task-done events via socket-pubsub + 10min cron backstop (`atmux cron-install --template committer-sweep` per ADR-134 T7), runs the 9-state machine (`open → in_progress → ready_to_merge → rebasing? → merging → tested → merged|test_failed → reverted`) with BEGIN IMMEDIATE transactions, 3-way conflict surface (state.db → atmux flag → Discord `[merge-conflict]`), and post-merge test gate via `team.json::autoMerge.testCommand` (default `bun test`). Workers self-commit on their own branches in auto-merge mode; committer owns only the merge layer. |
+| Devops      | m+5                  | claude        | Deploys, env, CI/CD, infra |
+| Dba         | m+6                  | claude (opt)  | Schema + migrations + data integrity |
+| Ombudsman   | (event-driven)       | claude (opt)  | Per-team complaint adjudicator per [ADR-147](adr/147-ombudsman-and-release-notes.md) §D1. Reads open complaints, triages → epic / wontfix / resolved / defer, appends day-file entry under `docs/release-notes/<Y>/<M>/<Y-M-D>.md`. **Event-driven** (sentinel `.atmux/state/ombudsman-pending.json` + 15min cron tick); NOT in whip cadence (ADR-147 §D2). |
+| Members     | m+7+                 | any           | Parallel throughput per feature lane |
+
+Driver ↔ lead routing (teams that declare a `role: team-lead` member only,
+ADR-287 §D6): file-based (`~/.claude/teams/<team>/driver-inbox.md`)
 to avoid the `SendMessage` self-loop bug per `~/.claude-ifca/CLAUDE.md`
-"Driver→Lead routing is via file, not SendMessage."
+"Driver→Lead routing is via file, not SendMessage." On a drivers-only
+team `atmux tell-lead` fails closed with its existing
+`no lead defined in team.json` error — expected, not a config bug — and
+the ask goes to the kb board (attention item or task) instead.
 
 ### 7.2 Pull kanban (ADR-007 + ADR-031, parent repo)
 
-Workers `atmux claim --next --as <member>`. Selection: `priority`
+Declared members (workers) `atmux claim --next --as <member>`; drivers
+never claim from the in-cage kanban — they work external kb rows
+directly ([ADR-275](adr/275-external-private-kanban-authority.md),
+ADR-287 §D5). Selection: `priority`
 ascending, then `createdAt` ascending. Tasks with non-`done` deps are
 skipped automatically. Cross-lane fallback when a lane is dry
 (`crossLaneClaim=true` default); REVIEW-lane carve-out (ADR-031).

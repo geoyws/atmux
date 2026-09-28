@@ -47,7 +47,7 @@ import {
   requireTeam,
   resolveTeamSocket,
 } from "../core/common.ts";
-import { type DriverPaneHealth, probeDriverPane } from "../core/driver-pane-health.ts";
+import { type DriverPaneHealth, probeDriverPanes } from "../core/driver-pane-health.ts";
 import { DEFAULT_HEARTBEAT_STALE_SEC, readHeartbeatAges } from "../core/heartbeat.ts";
 import { loadInbox } from "../core/inbox.ts";
 import { loadKanban } from "../core/kanban.ts";
@@ -330,6 +330,8 @@ export interface StatusSnapshot {
   /** ADR-064 §4: driver-pane health snapshot. Always populated;
    *  renderer skips display when `configured=false`. */
   driverPane: DriverPaneHealth;
+  /** ADR-064 §4: roster-shaped driver-pane health snapshots. */
+  driverPanes?: DriverPaneHealth[];
   /** ADR-077 §F5 / ADR-133: cockpit medic snapshot. Always populated;
    *  renderer skips display when `configured=false`. */
   medic: MedicState;
@@ -837,7 +839,14 @@ export async function gatherStatus(
   // ADR-064 §4: driver-pane health probe. Reuses the same tmux
   // namespace already in scope so we don't pay a second connection
   // setup; the helper itself stays I/O-bounded to one capture call.
-  const driverPane = await probeDriverPane(team, atmuxDir, { tmux });
+  const driverPanes = await probeDriverPanes(team, atmuxDir, { tmux });
+  const driverPane = driverPanes[0] ?? {
+    driverName: "driver",
+    configured: false,
+    windowExists: false,
+    state: null,
+    evidence: "",
+  };
 
   // ADR-077 §F5 / ADR-133: cockpit medic probe. Independent of the
   // team's own cage tmux — uses the operator's default socket via a
@@ -879,6 +888,7 @@ export async function gatherStatus(
     kanban: counts,
     driverInboxOpen,
     driverPane,
+    driverPanes,
     medic,
     needsApproval,
     lead,
@@ -974,6 +984,7 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
       kanban: snap.kanban,
       driverInboxOpen: snap.driverInboxOpen,
       driverPane: snap.driverPane,
+      driverPanes: snap.driverPanes,
       medic: snap.medic,
       needsApproval: snap.needsApproval,
       // ADR-077 §lead-uptime-measurement (t-6d950ffd): explicit-naming
@@ -1117,12 +1128,17 @@ function renderTextStatus(snap: StatusSnapshot, staleSec: number): void {
   // ADR-064 §4: driver-pane row above the per-member table — only when
   // the team opted into the ADR-044 driver-window topology. Mirrors the
   // existing `driver-inbox open=N` skip-when-empty pattern below.
-  if (snap.driverPane.configured) {
-    const dp = snap.driverPane;
+  const driverPanes = snap.driverPanes?.length ? snap.driverPanes : [snap.driverPane];
+  for (const dp of driverPanes) {
+    if (!dp.configured) continue;
+    const driverName = dp.driverName ?? "driver";
     const stateLabel = dp.windowExists ? (dp.state ?? "UNKNOWN") : "no-window";
     const evidence = dp.evidence.length > 60 ? `${dp.evidence.slice(0, 60)}…` : dp.evidence;
-    process.stdout.write(`🚗 driver  configured=y  state=${stateLabel}  evidence=${evidence}\n\n`);
+    process.stdout.write(
+      `🚗 ${driverName}  configured=y  state=${stateLabel}  evidence=${evidence}\n`,
+    );
   }
+  if (driverPanes.some((dp) => dp.configured)) process.stdout.write("\n");
   // t-74273200: text mode replaced the pane_current_command proxy (which
   // mis-reported welcome-screen claude TUIs as `(down)`) with `cageState`
   // — the unified 4-state taxonomy down/bootstrapping/active/wedged.

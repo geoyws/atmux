@@ -30,7 +30,7 @@
 
 import { exists } from "../abstractions/fs.ts";
 import { driverInboxPath, getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts";
-import { type DriverPaneHealth, probeDriverPane } from "../core/driver-pane-health.ts";
+import { type DriverPaneHealth, probeDriverPanes } from "../core/driver-pane-health.ts";
 import { captureVerbStdout } from "../core/verb-capture.ts";
 import { UsageError } from "../errors.ts";
 
@@ -126,6 +126,8 @@ export interface FrameSnapshot {
    *  with existing test fixtures; absence is rendered same as
    *  `configured=false` (block skipped). */
   driverPane?: DriverPaneHealth;
+  /** ADR-064 §4: roster-shaped driver-pane health snapshots. */
+  driverPanes?: readonly DriverPaneHealth[];
 }
 
 /** Compose one frame body (no leading clear; the loop emits that). */
@@ -138,8 +140,13 @@ export function composeFrame(snap: FrameSnapshot): string {
   // ADR-064 §4: driver-pane block above driver-inbox. Skipped when the
   // team didn't opt into the ADR-044 driver-window topology OR when the
   // snapshot lacks the field (back-compat).
-  const driverPaneBlock =
-    snap.driverPane === undefined ? "" : renderDriverPaneBlock(snap.driverPane);
+  const driverPaneHealths =
+    snap.driverPanes !== undefined && snap.driverPanes.length > 0
+      ? snap.driverPanes
+      : snap.driverPane === undefined
+        ? []
+        : [snap.driverPane];
+  const driverPaneBlock = driverPaneHealths.map(renderDriverPaneBlock).join("");
   const inboxBlock = `─── driver-inbox open ───\n${snap.driverInbox}${ensureTrailingNewline(snap.driverInbox)}\n`;
   const outboxBlock = `─── lead-outbox open ───\n${snap.outbox}${ensureTrailingNewline(snap.outbox)}`;
   return `${header}${statusBlock}${kanbanBlock}${driverPaneBlock}${inboxBlock}${outboxBlock}`;
@@ -149,12 +156,13 @@ export function composeFrame(snap: FrameSnapshot): string {
  *  block); else 3-line block with trailing newline. */
 function renderDriverPaneBlock(dp: DriverPaneHealth): string {
   if (!dp.configured) return "";
+  const driverName = dp.driverName ?? "driver";
   const window = dp.windowExists ? "exists" : "missing";
   const state = dp.windowExists ? (dp.state ?? "UNKNOWN") : "n/a";
   const evidence = dp.evidence.length > 80 ? `${dp.evidence.slice(0, 80)}…` : dp.evidence;
   return (
-    `─── driver pane ───\n` +
-    `configured=y  window=${window}  state=${state}\n` +
+    `─── driver pane: ${driverName} ───\n` +
+    `configured=y  driver=${driverName}  window=${window}  state=${state}\n` +
     `evidence: ${evidence}\n`
   );
 }
@@ -271,7 +279,7 @@ export function makeRealCollect(
   collectTaskList: () => Promise<string>,
   collectOutbox: () => Promise<string>,
   readDriverInbox: () => Promise<string | null>,
-  collectDriverPane?: () => Promise<DriverPaneHealth>,
+  collectDriverPanes?: () => Promise<readonly DriverPaneHealth[]>,
 ): () => Promise<Omit<FrameSnapshot, "intervalSec">> {
   return async () => {
     // SEQUENTIAL — `captureVerbStdout` mutates `process.stdout.write`
@@ -284,7 +292,7 @@ export function makeRealCollect(
     const kanban = await collectTaskList();
     const outbox = await collectOutbox();
     const di = await readDriverInbox();
-    const driverPane = collectDriverPane === undefined ? undefined : await collectDriverPane();
+    const driverPanes = collectDriverPanes === undefined ? undefined : await collectDriverPanes();
     let driverInbox = "";
     if (di !== null) {
       const lines = collectDashboardOpenLines(di).slice(0, 5);
@@ -296,7 +304,7 @@ export function makeRealCollect(
       outbox: takeFirstLines(outbox, 10),
       driverInbox,
     };
-    if (driverPane !== undefined) out.driverPane = driverPane;
+    if (driverPanes !== undefined) out.driverPanes = driverPanes;
     return out;
   };
 }
@@ -335,7 +343,7 @@ export function buildLoopDeps(
   taskVerb: VerbFn,
   outboxVerb: VerbFn,
   signal: AbortSignal,
-  collectDriverPane?: () => Promise<DriverPaneHealth>,
+  collectDriverPanes?: () => Promise<readonly DriverPaneHealth[]>,
 ): DashboardLoopDeps {
   return {
     collect: makeRealCollect(
@@ -343,7 +351,7 @@ export function buildLoopDeps(
       () => captureVerbStdout(taskVerb, ["list"], "task list"),
       () => captureVerbStdout(outboxVerb, [], "outbox"),
       buildDriverInboxReader(atmuxDir),
-      collectDriverPane,
+      collectDriverPanes,
     ),
     sleep: realSleep,
     write: (s: string) => {
@@ -394,7 +402,7 @@ export async function dashboard(argv: ReadonlyArray<string>): Promise<number> {
   process.once("SIGTERM", onSignal);
   try {
     const deps = buildLoopDeps(atmuxDir, statusVerb, taskVerb, outboxVerb, abort.signal, () =>
-      probeDriverPane(team, atmuxDir),
+      probeDriverPanes(team, atmuxDir),
     );
     return await dashboardLoop(deps, parsed.intervalSec);
   } finally {

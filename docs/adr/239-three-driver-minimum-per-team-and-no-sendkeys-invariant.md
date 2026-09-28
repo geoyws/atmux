@@ -246,3 +246,15 @@ Same as the original §Rollback path. Revert the amendment commit; legacy `drive
 ### 2026-08-24 — D7 `drivers[].tui` is nullable (ADR-278)
 
 [ADR-278](278-nullable-driver-agent-harness.md) replaces D7's required `tui: string` with `tui?: string | null`. A non-null value still requests command-mode TUI launch; `null` or absence launches zsh with no agent harness so the operator can choose a harness per session. D2's no-send-keys invariant and the rest of the driver topology are unchanged.
+
+### §Amendment 2026-09-02 — default template ships zero members (ADR-287 §D5)
+
+[ADR-287](287-canonical-cockpit-nesting-and-drivers-only-roster.md) §D5 amends §D6 and §A5 item 6: `templates/team.example.json` ships `drivers[]`, the ADR-285 `bot` block, and `members: []`, and `atmux doctor` renders a yellow `deprecated-member-windows` row for any team whose `team.json` still declares `members[]` (ADR-287 §D7) — both from the same batch as ADR-287 (code lane; see ADR-287 §Implementation ledger). The lead / planner / reviewer / generic member windows are deprecated, not removed — a `team.json` that still declares `members[]` spawns them exactly as before. §A2's strict five-name roster becomes the ceiling for teams that opt back in, no longer the shipped default.
+
+The driver count is unchanged by ADR-287. The drift inside this ADR — the filename and §D1 say three, the title and §A1 say five, the template ships five — is recorded in ADR-287 §Amends and left unresolved here.
+
+### §Amendment 2026-09-03 — ADR-288 restores the three-driver floor and adds the canonical pair source
+
+[ADR-288](288-driver-window-worker-attention-pane-pair.md) supersedes ADR-239 Amendment 2026-05-26 A1's five-driver floor. The live floor returns to exactly three drivers (`driver`, `driver-2`, `driver-3`); explicit 1-2 driver rosters fail schema validation, 3-10 pass, and >10 fail. The rest of ADR-239 remains intact: no send-keys, existing names/worktrees, strict member-roster policy, and the historical incident/provenance text stay as written.
+
+The 2026-09-02 drivers-only-template note remains historical context for the concurrent branch, but the driver-count wording it carried forward is now superseded by ADR-288.

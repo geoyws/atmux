@@ -15,6 +15,18 @@
 // (the union is strict) rather than aliasing silently — ADR-266 §D2's
 // expired-contract precedent.
 //
+// ADR-287 (2026-09-02) settles WHICH kind nests: `group` is the branch
+// node (cage-less, nestable to any depth), `team` is the LEAF cage that
+// owns a root and hosts the driver windows; the path grammar is
+// `group[/group...]/team/driver` (§D1). A `team` nested under a `team`
+// still PARSES — `TeamSession.sessions[]` stays in the schema as a
+// grace period — but it is deprecated per ADR-287 §D3: `loadCockpit`
+// warns naming parent and child, and `atmux doctor` renders a yellow
+// `team-inside-team` row (§D7). Hard refusal is reserved for a later
+// ADR once the fleet has no such nodes. Depth past the effective prefix
+// chain is refused at load per §D4 (the loader's job, not the schema's).
+// No schema behaviour changed for ADR-287.
+//
 // ADR-133 (medic rename) + ADR-132 (sentinel at W3) — the schema admits
 // both the legacy `superdoctor` discriminator + block AND the canonical
 // `medic` form during the one-release-cycle deprecation window. Loader
@@ -149,7 +161,11 @@ export interface TeamSessionT {
    *  green/yellow/red interpretation. Defaults to `"autonomous"` at
    *  parse time so configs without the field keep pre-flag semantics. */
   cageMode?: CockpitTeamCageMode;
-  /** Recursive — children of any session type. */
+  /** Recursive — children of any session type. A `team` child is
+   *  DEPRECATED per ADR-287 §D3 (a team is a leaf cage; nest under a
+   *  `group` instead): it still parses during the grace period, the
+   *  loader warns naming parent and child, and doctor renders a yellow
+   *  `team-inside-team` row. */
   sessions: CockpitSessionT[];
 }
 
@@ -199,7 +215,9 @@ export type CockpitSessionT = TeamSessionT | GroupSessionT | SuperdriverSessionT
 
 // ---------- Concrete leaf schemas ----------
 
-/** Standalone team — owns a project root + worktree. */
+/** Standalone team — owns a project root + worktree. The leaf cage of
+ *  the tree per ADR-287 §D1; its recursive `sessions[]` is kept for the
+ *  §D3 grace period (team-inside-team is deprecated, still parses). */
 export const TeamSession: z.ZodType<TeamSessionT> = z.lazy(() =>
   CockpitSessionBase.extend({
     type: z.literal("team"),

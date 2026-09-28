@@ -1172,9 +1172,14 @@ export async function cockpitRebuild(
       try {
         prefix = resolvePrefix(t.level + 2, cockpit.prefixChain);
       } catch {
-        // Best-effort — invalid chain or level > MAX_NESTING_LEVEL falls
-        // through to applyCagePrefix's legacy `C-\` default (cosmetic
-        // only; cage operation unaffected).
+        // Best-effort belt. Since ADR-287 §D4 `loadCockpit` refuses any
+        // tree whose deepest team/group needs a rung past the effective
+        // chain (the chain length is the cap — there is no separate
+        // MAX_NESTING_LEVEL constant to exceed), so a loaded cockpit
+        // cannot reach here on depth; only a hand-built cockpit object
+        // with a bad chain can. A throw falls through to
+        // applyCagePrefix's legacy `C-\` default (cosmetic only; cage
+        // operation unaffected).
       }
       await applyCagePrefix(cageTmux, prefix);
     }),
@@ -1273,10 +1278,13 @@ export async function cockpitRebuild(
   // "Fix code to match ADR §C table + my mental model") replacing the
   // pre-shift convention where cockpit and top-level team shared F1.
   //
-  // Best-effort wrap mirrors the Phase 3 loop above — invalid chain
-  // or level > MAX_NESTING_LEVEL falls through to applyCagePrefix's
-  // legacy `C-\` default (cosmetic only; cockpit operation
-  // unaffected).
+  // Best-effort wrap mirrors the Phase 3 loop above — the cockpit is
+  // rung 1 and `validatePrefixChain` guarantees a loaded chain has at
+  // least one entry (ADR-287 §D4: the chain length is the cap, the
+  // fixed MAX_NESTING_LEVEL floor is retired), so only a hand-built
+  // cockpit object can throw here; it falls through to
+  // applyCagePrefix's legacy `C-\` default (cosmetic only; cockpit
+  // operation unaffected).
   {
     let cockpitPrefix: string | undefined;
     try {

@@ -2,7 +2,7 @@
 
 **atmux** — *agent teams multiplexer.* One tmux session per project team, one tmux window per agent.
 
-> 🎮 **Driver** (you) → 🧭 **Team Lead** → 🐝 **Team Members** — coordinated through tmux, not an API.
+> 🎮 **Drivers** (you — `driver`, `driver-2`, … one worktree each; five in the shipped template, ADR-239) work the kanban directly — coordinated through tmux, not an API. The 🧭 **Team Lead** and 🐝 **Team Members** loop is a deprecated opt-in, spawned only for teams that declare `members[]` ([ADR-287 §D5](docs/adr/287-canonical-cockpit-nesting-and-drivers-only-roster.md)).
 
 > **State storage.** Per [ADR-126](docs/adr/126-sqlite-state-store.md) +
 > ADR-076 (inbox JSON elimination — file pending; see commits `27d80ee` →
@@ -16,7 +16,7 @@
 
 A tmux-native multi-TUI agent orchestrator. Runs a fleet of coding-agent terminals (Claude Code, Cursor, OpenCode, Kimi) in parallel, with a kanban task board, per-member inboxes, a 5-minute whip watchdog, and a 30-minute progress digest to Discord.
 
-**Why not just Claude Code everywhere?** Because Claude is expensive and not every task needs it. With atmux, the **staff** (lead, planner, reviewer, committer, devops, dba) stay on Claude because they need the reasoning, while **workers can be Cursor Composer 2, MiniMax, or Kimi** for cheaper parallel throughput per feature lane. The driver (you, in a Claude Code REPL) talks to the lead; the lead routes to the planner (decomposition); workers **pull** their next Task from the kanban; committer commits; the reviewer signs off Stories; the lead writes the Epic summary back to the driver.
+**Why not just Claude Code everywhere?** *(This paragraph describes the declared-member loop — a deprecated default since [ADR-287 §D5](docs/adr/287-canonical-cockpit-nesting-and-drivers-only-roster.md); the shipped template spawns drivers only.)* Because Claude is expensive and not every task needs it. With atmux, the **staff** (lead, planner, reviewer, committer, devops, dba) stay on Claude because they need the reasoning, while **workers can be Cursor Composer 2, MiniMax, or Kimi** for cheaper parallel throughput per feature lane. The driver (you, in a Claude Code REPL) talks to the lead; the lead routes to the planner (decomposition); workers **pull** their next Task from the kanban; committer commits; the reviewer signs off Stories; the lead writes the Epic summary back to the driver.
 
 ## Agile vocabulary
 
@@ -49,7 +49,14 @@ See [docs/adr/007-pull-kanban.md](docs/adr/007-pull-kanban.md) for the full ADR 
 ┌───────────────────────────────────────────────────────────────────┐
 │ tmux session: atmux-<team>                                         │
 │                                                                    │
-│  🧭 STAFF                                                          │
+│  🎮 DRIVERS — the default roster (ADR-287 §D5); windows 1..N       │
+│  ┌────────────┐  ┌────────────┐  ┌────────────┐                    │
+│  │ driver     │  │ driver-2   │  │ driver-3   │  ← you, one per    │
+│  │ trunk      │  │ worktree   │  │ worktree   │    worktree; work  │
+│  └────────────┘  └────────────┘  └────────────┘    kb rows directly│
+│                                                                    │
+│  🧭 STAFF — optional, deprecated default (ADR-287 §D5); spawned    │
+│     only when team.json declares members[]                         │
 │  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐   │
 │  │ 🧭 lead    │  │ 🗺️  planner │  │ 🔍 reviewer│  │ 🌿 committer  │   │
 │  │ ROUTES     │  │ DECOMPOSES │  │ STORY GATE │  │ COMMITS    │   │
@@ -148,6 +155,8 @@ atmux migrate-to-driver-session <team>
 The verb refuses while a member is mid-task; run during a quiet window. ADR-016's Phase 2 migrate infrastructure remains the canonical move path even though [ADR-026](docs/adr/026-always-single-session-topology.md) supersedes ADR-016's *default policy*.
 
 See [docs/adr/026-always-single-session-topology.md](docs/adr/026-always-single-session-topology.md) for the rationale + window-count risk register, and [docs/adr/016-single-session-topology.md](docs/adr/016-single-session-topology.md) for the original opt-in design (default policy line is superseded; everything else stands).
+
+**Fleet topology (per [ADR-287 §D1](docs/adr/287-canonical-cockpit-nesting-and-drivers-only-roster.md)).** Above the team, `~/.atmux/cockpit.json` nests exactly two node kinds: `group` is the branch (cage-less, any depth, a real tmux server whose windows only attach children) and `team` is the leaf cage that owns the repo root, `.atmux/team.json`, worktrees and the driver windows. Drivers are windows inside a team cage, never a tier. The canonical path grammar is `group[/group...]/team/driver` — for example `unum/aix/driver-2`. A team nested under a team is deprecated (§D3: warns at load, yellow in `atmux doctor`). Each node binds one rung of the F-key prefix chain by depth (§D2), and depth past the chain is refused at load (§D4) — the table and the rule are in [`docs/RUNBOOK-cockpit.md` §11](docs/RUNBOOK-cockpit.md#11--nesting-depth--the-tmux-prefix-chain).
 
 ### Per-team tmux socket isolation (opt-in)
 
@@ -1312,7 +1321,7 @@ Full mechanism + ADR-026 single-session topology rationale that justifies the in
 
 Driver + members share one tmux session because that's how a human actually drives the team: they want to see everything at a glance, hop between members with `prefix w`, and avoid the session-soup that dedicated sessions accumulate when you run multiple teams. Window-name prefix `__<team>__<member>` keeps choose-tree (`prefix s`) grouped visually, and `lib/stop.sh`'s refuse-gate prevents accidental `kill-session` on the driver shell. ADR-026 captures the rationale + window-count risk register.
 
-For window jumps, tmux's built-in `prefix 1-9` stays in place, `prefix Meta+0..9` jumps straight to windows 10-19, and 20+ still goes through chooser / explicit `select-window`. That leaves the F-key prefix chain for nested cages alone.
+For window jumps, tmux's built-in `prefix 1-9` stays in place, `prefix Meta+0..9` jumps straight to windows 10-19, and 20+ still goes through chooser / explicit `select-window`. That leaves the F-key prefix chain for the cockpit tree alone: the cockpit binds `F1` and every node binds one rung by depth — a top-level group or an ungrouped team `F2`, a team under a top-level group `F3`, and so on ([ADR-287 §D2](docs/adr/287-canonical-cockpit-nesting-and-drivers-only-roster.md)); the full table is in [`docs/RUNBOOK-cockpit.md` §11](docs/RUNBOOK-cockpit.md#11--nesting-depth--the-tmux-prefix-chain).
 
 Flip `singleSession=false` only for teams that aren't being driven by a human — non-human-driven team or a detached observer setup that wants a dedicated `atmux-<team>` session it can attach to in isolation. The wizard does not prompt for it; the field is a declared escape hatch, edited by hand. ADR-016 holds the original opt-in design for context (its default policy line is superseded by ADR-026, but the migrate verb + refuse-gate infrastructure stand).
 

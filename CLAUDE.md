@@ -19,7 +19,7 @@ Look-up order: `rg -i '<topic>' docs/adr/` → `rg -i '<topic>' docs/ README.md 
 
 ## Pull model
 
-Members auto-claim via `atmux claim --next --as <member>`. Lead routes priority + EPIC decomposition to planner, not per-Task dispatch. Docs discipline is **member-first, reviewer-second, lead-third**.
+Default roster is drivers-only (ADR-287 §D5): drivers work kb rows directly (ADR-275) and never claim from the in-cage kanban. The rest of this section applies only to teams that declare `members[]` — a deprecated default. Members auto-claim via `atmux claim --next --as <member>`. Lead routes priority + EPIC decomposition to planner, not per-Task dispatch. Docs discipline is **member-first, reviewer-second, lead-third**; on a drivers-only team it is driver-first, with the global adversarial-review rule standing in for the reviewer.
 
 ## Trunk integration — merge, not rebase (ADR-137)
 
@@ -28,7 +28,8 @@ Per-member `<base>-<member>` branches are long-lived (ADR-082 + ADR-084). Fallin
 ## Spawning + model selection
 
 - Manual Claude spawn always `--permission-mode auto` (other modes stop on every tool call). Match driver's account: `.claude-unum` → `c-u`, `.claude-icloud` → `c-ic`, `.claude-ifca` → `c-i`, else `claude`. Set `CLAUDE_GUARD_AGENT=1`. Wrong mode after spawn → `tmux send-keys -t <window> BTab`, never kill+respawn. Verify `⏵⏵ auto mode on`.
-- Models: team members + driver + lead always Opus (`claude-opus-4-7`) + `CLAUDE_CODE_EFFORT_LEVEL=xhigh`. Never Sonnet for member roles. Sub-agents: Sonnet OK for read-only (Explore, general-purpose); Opus when writing code.
+- Roster: the default is drivers-only (ADR-287 §D5) — `atmux start` spawns `drivers[]`, the `_bot` seat when enabled, and no member windows unless `team.json` declares `members[]` (deprecated default; `atmux doctor` flags it). Lead-dependent verbs (`tell-lead`, `rotate-lead`, lead-stall watchdog) fail closed on a drivers-only team; that is expected (ADR-287 §D6) — file the ask on the kb board.
+- Models: drivers + every declared member (lead included) always Opus (`claude-opus-4-7`) + `CLAUDE_CODE_EFFORT_LEVEL=xhigh`. Never Sonnet for member roles. Sub-agents: Sonnet OK for read-only (Explore, general-purpose); Opus when writing code.
 
 ## Tmux + pane discipline
 
@@ -38,6 +39,8 @@ Per-member `<base>-<member>` branches are long-lived (ADR-082 + ADR-084). Fallin
 - **Watch filters: enumerate anomalous, not exclude noise.** Pair with a known-green smoke probe.
 
 ## Reviewer vs auditor
+
+Applies to teams that declare a `reviewer` member — a deprecated default per ADR-287 §D5. On a drivers-only team (the shipped default) the global adversarial-review rule stands in for the reviewer gate, and an auditor's flag goes to the kb board instead of a team-lead (ADR-287 §D6).
 
 - **Reviewer** = per-commit auto-gate, narrow + deep on diff (schema / GraphQL / authz / secrets / coverage / doc-update). Blocks code-without-tests + code-without-doc-update; fail-state.
 - **Auditor** = driver-dispatched, system-wide, read-only. Flags via team-lead. Push back on stub-scaffolds requested purely for demo when a real implementation exists — propose signoff carve-out citing the real mechanism + ADR.

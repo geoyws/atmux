@@ -15,6 +15,14 @@
 // lib/common.sh::atmux::team_field (bash-side reader).
 
 import { z } from "zod";
+import {
+  CANONICAL_DRIVER_PAIR_PRESET,
+  CANONICAL_PARENT_TEAM_DRIVERS,
+  DriverPairPresetSchema,
+  DriverSessionSchema,
+  MAX_PARENT_TEAM_DRIVERS,
+  MIN_PARENT_TEAM_DRIVERS,
+} from "../core/drivers.ts";
 
 /** TUI types atmux supports launching into a pane.
  *
@@ -1443,22 +1451,15 @@ export const Team = z
      *  need more concurrent driver panes should cite a follow-up ADR
      *  raising the cap, not silently exceed it. */
     drivers: z
-      .array(
-        z
-          .object({
-            name: z.string().min(1),
-            /** Optional driver agent harness. `null` / absent means atmux
-             *  starts only the driver's normal interactive shell (zsh for
-             *  the operator) so the harness can be chosen per session. */
-            tui: z.string().min(1).nullable().optional(),
-            cwd: z.string().min(1),
-            claudeAccount: z.string().optional(),
-          })
-          .passthrough(),
-      )
-      .min(1)
-      .max(10)
-      .optional(),
+      .array(DriverSessionSchema)
+      .min(MIN_PARENT_TEAM_DRIVERS)
+      .max(MAX_PARENT_TEAM_DRIVERS)
+      .default(() => CANONICAL_PARENT_TEAM_DRIVERS.map((driver) => ({ ...driver }))),
+    /** ADR-288: the canonical worker-left / attention-right pair that
+     *  later materializers consume. Attention is not a roster member;
+     *  `tui` / `command` default null so the pane opens an interactive
+     *  shell unless configured deliberately. */
+    driverPair: DriverPairPresetSchema.default(CANONICAL_DRIVER_PAIR_PRESET),
     bot: TeamBot.optional(),
     /** Member roster. Order is preserved (window layout depends on it). */
     members: z.array(TeamMember),
