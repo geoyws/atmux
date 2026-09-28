@@ -29,11 +29,16 @@
 import { writeText } from "../abstractions/fs.ts";
 import { withLock } from "../abstractions/lock.ts";
 import { formatMyt } from "../abstractions/time.ts";
+import { findTeamByName, loadCockpit } from "../core/cockpit.ts";
 import { getAtmuxDir, leadOutboxPath, type ResolveDirOpts, requireTeam } from "../core/common.ts";
+import { archiveFile, parseDuration } from "../core/inbox-outbox-archive.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 
 const USAGE_REPLY = "atmux reply [--from <member>] <msg...>";
 const USAGE_OUTBOX = "atmux outbox [--ack] [--json]";
+
+const OUTBOX_ARCHIVE_USAGE =
+  "atmux outbox archive [--older-than <Nm|Nh|Nd>] [--team <name>] [--team-dir <path>] [--json]";
 
 const OUTBOX_HEADER = `# Lead Outbox — replies back to the driver
 
@@ -240,6 +245,15 @@ export function parseOutboxArgs(argv: ReadonlyArray<string>): OutboxArgs {
 
 /** `atmux outbox [--ack] [--json]`. Returns 0. */
 export async function outbox(argv: ReadonlyArray<string>): Promise<number> {
+  // e-77 T3 OQ1 precedence (mirrors T2 `inbox archive`): the `archive`
+  // subcommand keyword wins over flag parsing — strip the first
+  // positional occurrence and route the rest to the archive flow.
+  // Previously `outbox archive` died with "unknown arg"; now it
+  // archives lead-outbox.md via the T1 helper.
+  const subIdx = argv.findIndex((a) => !a.startsWith("-"));
+  if (subIdx >= 0 && argv[subIdx] === "archive") {
+    return outboxArchive([...argv.slice(0, subIdx), ...argv.slice(subIdx + 1)]);
+  }
   const parsed = parseOutboxArgs(argv);
   const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
   await requireTeam(dirOpts);
@@ -305,6 +319,139 @@ export function collectOpenEntries(body: string): string[] {
     }
   }
   return out;
+}
+
+// ---------- `outbox archive` (e-77 T3) ----------
+//
+// Deliberate mirror of T2 `inbox archive` (src/verbs/inbox.ts): same
+// flags, same --team seam, same output shape, different file
+// (lead-outbox.md) and label. Not factored into a shared helper —
+// T2 already landed green and the verbs tree duplicates this small
+// wiring shape per verb by convention.
+
+/** Parsed `outbox archive` argv. `--older-than` defaults to 48h per OQ3. */
+export interface OutboxArchiveArgs {
+  olderThan: string;
+  team?: string;
+  teamDir?: string;
+  json: boolean;
+}
+
+/** Pure parser. Takes argv *without* the `archive` keyword. */
+export function parseOutboxArchiveArgs(argv: ReadonlyArray<string>): OutboxArchiveArgs {
+  let olderThan = "48h";
+  let team: string | undefined;
+  let teamDir: string | undefined;
+  let json = false;
+  let i = 0;
+  while (i < argv.length) {
+    const a = argv[i];
+    if (a === "--older-than") {
+      const v = argv[i + 1];
+      if (v === undefined) {
+        throw new UsageError({ what: "outbox archive: --older-than requires a value", hint: OUTBOX_ARCHIVE_USAGE });
+      }
+      olderThan = v;
+      i += 2;
+      continue;
+    }
+    if (a === "--team") {
+      const v = argv[i + 1];
+      if (v === undefined) {
+        throw new UsageError({ what: "outbox archive: --team requires a value", hint: OUTBOX_ARCHIVE_USAGE });
+      }
+      team = v;
+      i += 2;
+      continue;
+    }
+    if (a === "--team-dir") {
+      const v = argv[i + 1];
+      if (v === undefined) {
+        throw new UsageError({ what: "outbox archive: --team-dir requires a value", hint: OUTBOX_ARCHIVE_USAGE });
+      }
+      teamDir = v;
+      i += 2;
+      continue;
+    }
+    if (a === "--json") {
+      json = true;
+      i += 1;
+      continue;
+    }
+    if (a?.startsWith("-")) {
+      throw new UsageError({ what: `outbox archive: unknown flag: ${a}`, hint: OUTBOX_ARCHIVE_USAGE });
+    }
+    throw new UsageError({ what: `outbox archive: unexpected arg: ${a}`, hint: OUTBOX_ARCHIVE_USAGE });
+  }
+  const out: OutboxArchiveArgs = { olderThan, json };
+  if (team !== undefined) out.team = team;
+  if (teamDir !== undefined) out.teamDir = teamDir;
+  return out;
+}
+
+/** Test seam for `outboxArchive` output. Defaults to process.stdout. */
+export interface OutboxArchiveOut {
+  stdout?: { write(chunk: string): unknown };
+}
+
+/**
+ * `atmux outbox archive [--older-than <dur>] [--team <name>] [--json]`.
+ * Archives lead-outbox.md entries older than the cutoff via the T1
+ * helper. Missing file is a no-op exit 0 (epic Decision: read-side
+ * disposal never fails a cron tick). Returns 0.
+ */
+export async function outboxArchive(
+  argv: ReadonlyArray<string>,
+  out?: OutboxArchiveOut,
+): Promise<number> {
+  const parsed = parseOutboxArchiveArgs(argv);
+  const stdout = out?.stdout ?? process.stdout;
+  let dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
+
+  // OQ2: --team resolves via the existing cockpit-walk team resolver,
+  // same seam tell-lead --team uses (loadCockpit + findTeamByName),
+  // re-anchored to the target root. No caller-scope gate: archive is
+  // local maintenance on files the driver already owns, not a
+  // cross-team send.
+  if (parsed.team !== undefined) {
+    const cockpit = await loadCockpit();
+    const target = findTeamByName(cockpit, parsed.team);
+    if (target === null) {
+      throw new ConfigError({
+        what: `outbox archive --team: no team \`${parsed.team}\` in cockpit tree`,
+        hint: 'check ~/.atmux/cockpit.json (or ATMUX_COCKPIT_CONFIG); team name must match a `type: "team"` node',
+      });
+    }
+    dirOpts = { teamDir: target.root };
+  }
+
+  const atmuxDir = await getAtmuxDir(dirOpts);
+  const outboxPath = leadOutboxPath(atmuxDir);
+  const result = await archiveFile(outboxPath, parseDuration(parsed.olderThan));
+
+  if (parsed.json) {
+    stdout.write(
+      `${JSON.stringify(
+        {
+          path: outboxPath,
+          olderThan: parsed.olderThan,
+          entriesArchived: result.entriesArchived,
+          archivePath: result.archivePath,
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    return 0;
+  }
+  if (result.archivePath === null) {
+    stdout.write(`outbox archive: nothing older than ${parsed.olderThan} in ${outboxPath}\n`);
+    return 0;
+  }
+  stdout.write(
+    `outbox archive: ${result.entriesArchived} entries older than ${parsed.olderThan} → ${result.archivePath}\n`,
+  );
+  return 0;
 }
 
 // ---------- Internals ----------

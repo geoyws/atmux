@@ -77,6 +77,7 @@ Messaging:
   tell-lead <msg...>          Driver-only: send to lead + append to driver-inbox.md
   reply <msg...>              Member → driver: write to lead-outbox.md
   outbox [--ack] [--json]     Driver: read lead-outbox.md (--ack archives)
+  outbox archive [--older-than <Nm|Nh|Nd>] [--team <name>]  Archive old lead-outbox.md entries
 
 Task board (kanban):
   task add <subject> [--body <text>] [--assignee <member>] [--deps <id,id>] [--driver-only]
