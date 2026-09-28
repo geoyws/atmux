@@ -254,6 +254,7 @@
 | 296 | Per-team `superdriver` window before `driver` | 2026-09-28 | accepted |
 | 297 | Inbox/outbox archive-cut contract (e-77: cut boundary, naming, idempotency, verb authority) | 2026-09-28 | accepted |
 | 298 | Retire the `_bot` seat and `_superbot` scheduler (supersedes ADR-285) | 2026-09-28 | accepted |
+| 299 | Cockpit medic runs OMP on a shell floor (two-stage `_medic` window: shell start command, child TUI via `launchAgentInPane`) | 2026-09-28 | accepted |
 
 ## Superseded (skip)
 

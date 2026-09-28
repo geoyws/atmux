@@ -2,12 +2,13 @@
 
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TmuxConfig, TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import { buildGroupTopology, enabledTeams, groupSocketPath } from "../../../src/core/cockpit.ts";
 import type { Logger } from "../../../src/core/tui.ts";
+import { shellPaneCommand } from "../../../src/core/tui-cmd.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
 import type { Cockpit as CockpitShape, CockpitMedic, CockpitTeam } from "../../../src/schema/cockpit.ts";
 import type { Team } from "../../../src/schema/team.ts";
@@ -15,6 +16,7 @@ import {
   applyCagePrefix,
   autolaunchTeam,
   buildGroupWindowCommand,
+  buildMedicWindowCommand,
   buildMigrationBreadcrumb,
   buildTeamWindowCommand,
   type CapturedCockpitWindow,
@@ -32,6 +34,7 @@ import {
   type ResolveTeamWindowDeps,
   reconcileCockpitSession,
   reconcileGroupServers,
+  resolveMedicCwd,
   resolveTeamWindowMode,
 } from "../../../src/verbs/cockpit.ts";
 import { parseStartArgs } from "../../../src/verbs/start.ts";
@@ -884,7 +887,7 @@ describe("reconcileCockpitSession", () => {
         { name: "beta", root: "/b", enabled: true } as CockpitTeam,
       ];
       const windows = [{ name: "_misc", enabled: true, cwd: "/tmp", command: null }];
-      const medic = { enabled: true };
+      const medic: CockpitMedic = { enabled: true, tui: "omp" };
       const deps: ResolveTeamWindowDeps = { buildMedicCommand: () => PORTABLE_KEEPALIVE_COMMAND };
 
       await reconcileCockpitSession(fx.tmux, "atmux_cockpit", teams, logger, deps, medic, false, {
@@ -941,7 +944,10 @@ describe("reconcileCockpitSession", () => {
       const pidOf = async (w: string) => (await fx.tmux.pane.listPanes(`s:${w}`))[0]?.pid;
       const before = { alpha: await pidOf("alpha"), beta: await pidOf("beta") };
 
-      await reconcileCockpitSession(fx.tmux, "s", teams, logger, deps, { enabled: true });
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger, deps, {
+        enabled: true,
+        tui: "omp",
+      });
 
       const order = (await fx.tmux.window.listWindows("s"))
         .slice()
@@ -1004,7 +1010,7 @@ describe("reconcileCockpitSession", () => {
     buildSuperdoctorCommand: () => PORTABLE_KEEPALIVE_COMMAND,
   };
 
-  const medicEnabled = { enabled: true };
+  const medicEnabled: CockpitMedic = { enabled: true, tui: "omp" };
 
   test("ADR-077: superdoctor opt-in places window 2 between superdriver and team viewers", async () => {
     const fx = await spinTmux("cockpit-sd-fresh");
@@ -1046,7 +1052,14 @@ describe("reconcileCockpitSession", () => {
       const teams: CockpitTeam[] = [{ name: "alpha", root: "/a", enabled: true } as CockpitTeam];
       // Both forms (omit + explicit disabled) are no-ops.
       await reconcileCockpitSession(fx.tmux, "s", teams, logger);
-      await reconcileCockpitSession(fx.tmux, "s", teams, logger, {}, { enabled: false });
+      await reconcileCockpitSession(
+        fx.tmux,
+        "s",
+        teams,
+        logger,
+        {},
+        { enabled: false, tui: "omp" },
+      );
       const names = (await fx.tmux.window.listWindows("s")).map((w) => w.name).sort();
       // ADR-135 §D2: `_superdriver` sorts before `alpha` (`_` < lowercase ASCII).
       expect(names).toEqual(["_superdriver", "alpha"]);
@@ -1263,6 +1276,145 @@ describe("reconcileCockpitSession", () => {
     expect(parseCockpitArgs(["reconcile", "--yes"]).yes).toBe(true);
     expect(parseCockpitArgs(["reconcile", "-y"]).yes).toBe(true);
     expect(parseCockpitArgs(["reload", "--yes"]).yes).toBe(true);
+  });
+});
+
+describe("medic shell floor reconcile (ADR-299)", () => {
+  test("fresh _medic starts on the shell floor; the child command arrives via launchAgentInPane", async () => {
+    const fx = await spinTmux("cockpit-medic-shellfloor");
+    try {
+      const { logger } = makeLogger();
+      const launches: Array<{ command: string; kind: string }> = [];
+      const deps: ResolveTeamWindowDeps = {
+        buildMedicCommand: () => PORTABLE_KEEPALIVE_COMMAND,
+        launchAgentInPane: async (opts) => {
+          launches.push({ command: opts.command, kind: opts.intent.kind });
+          return "launched";
+        },
+      };
+      await reconcileCockpitSession(fx.tmux, "s", [], logger, deps, { enabled: true, tui: "omp" });
+      // Stage 1: the window's start command is the interactive shell floor,
+      // never the agent command. (tmux display-quotes the value because
+      // it contains spaces — compare against the quoted form.)
+      const startCmd = await fx.tmux.pane.displayMessage({
+        target: "s:_medic",
+        format: "#{pane_start_command}",
+      });
+      expect(startCmd).toBe(`"${shellPaneCommand()}"`);
+      // Stage 2: the injected child command was handed to the launcher
+      // with the medic intent — nothing was baked into the start command.
+      expect(launches).toHaveLength(1);
+      expect(launches[0]?.command).toBe(PORTABLE_KEEPALIVE_COMMAND);
+      expect(launches[0]?.kind).toBe("medic");
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("default medic launches omp as the child with HOME cwd", async () => {
+    const fx = await spinTmux("cockpit-medic-omp");
+    try {
+      const { logger } = makeLogger();
+      const launches: Array<{ command: string; kind: string }> = [];
+      const deps: ResolveTeamWindowDeps = {
+        launchAgentInPane: async (opts) => {
+          launches.push({ command: opts.command, kind: opts.intent.kind });
+          return "launched";
+        },
+      };
+      // No buildMedicCommand injection — the default builder runs.
+      await reconcileCockpitSession(fx.tmux, "s", [], logger, deps, { enabled: true, tui: "omp" });
+      expect(launches).toHaveLength(1);
+      expect(launches[0]?.command).toBe("omp");
+      expect(launches[0]?.kind).toBe("medic");
+      // Unset cwd → operator HOME (spinTmux pins HOME to the fixture
+      // dir; realpath because tmux reports the canonical path).
+      const paneCwd = await fx.tmux.pane.displayMessage({
+        target: "s:_medic",
+        format: "#{pane_current_path}",
+      });
+      expect(paneCwd).toBe(await realpath(process.env.HOME as string));
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test('tui "claude" launches the Claude child command with explicit cwd', async () => {
+    const fx = await spinTmux("cockpit-medic-claude");
+    try {
+      const { logger } = makeLogger();
+      const launches: Array<{ command: string; kind: string }> = [];
+      const deps: ResolveTeamWindowDeps = {
+        launchAgentInPane: async (opts) => {
+          launches.push({ command: opts.command, kind: opts.intent.kind });
+          return "launched";
+        },
+      };
+      await reconcileCockpitSession(fx.tmux, "s", [], logger, deps, {
+        enabled: true,
+        tui: "claude",
+        cwd: fx.socketDir,
+        claudeAccount: { configDir: "/root/.claude-personal", label: "personal" },
+      });
+      expect(launches).toHaveLength(1);
+      expect(launches[0]?.command).toContain("claude");
+      expect(launches[0]?.command).toContain("CLAUDE_CONFIG_DIR=/root/.claude-personal");
+      expect(launches[0]?.kind).toBe("medic");
+      // Start command is still the shell floor on the claude path
+      // (tmux display-quotes the value — see the omp test above).
+      const startCmd = await fx.tmux.pane.displayMessage({
+        target: "s:_medic",
+        format: "#{pane_start_command}",
+      });
+      expect(startCmd).toBe(`"${shellPaneCommand()}"`);
+      // Explicit cwd is honoured (canonical path compare).
+      const paneCwd = await fx.tmux.pane.displayMessage({
+        target: "s:_medic",
+        format: "#{pane_current_path}",
+      });
+      expect(paneCwd).toBe(await realpath(fx.socketDir));
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("an existing _medic window is never respawned", async () => {
+    const fx = await spinTmux("cockpit-medic-preserve");
+    try {
+      const { logger } = makeLogger();
+      const launches: Array<{ command: string; kind: string }> = [];
+      const deps: ResolveTeamWindowDeps = {
+        buildMedicCommand: () => PORTABLE_KEEPALIVE_COMMAND,
+        launchAgentInPane: async (opts) => {
+          launches.push({ command: opts.command, kind: opts.intent.kind });
+          return "launched";
+        },
+      };
+      const medic: CockpitMedic = { enabled: true, tui: "omp" };
+      await reconcileCockpitSession(fx.tmux, "s", [], logger, deps, medic);
+      const pidOf = async () => (await fx.tmux.pane.listPanes("s:_medic"))[0]?.pid;
+      const before = await pidOf();
+      expect(before).toBeDefined();
+      expect(launches).toHaveLength(1);
+      // Second pass: the live window is preserved — no new launch, same pane.
+      await reconcileCockpitSession(fx.tmux, "s", [], logger, deps, medic);
+      expect(launches).toHaveLength(1);
+      expect(await pidOf()).toBe(before);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -1536,22 +1688,36 @@ describe("reconcileCockpitSession — onlyTeam scope (ADR-063 ergonomic fix)", (
   });
 });
 
-// ---------- ADR-077: buildSuperdoctorWindowCommand ----------
+// ---------- ADR-077 + ADR-299: buildMedicWindowCommand ----------
 
-describe("buildSuperdoctorWindowCommand (ADR-077)", () => {
-  test("emits bare claude invocation when claudeAccount is unset", async () => {
-    const { buildSuperdoctorWindowCommand } = await import("../../../src/verbs/cockpit.ts");
-    const cmd = buildSuperdoctorWindowCommand({ enabled: true });
+describe("buildMedicWindowCommand (ADR-077 + ADR-299)", () => {
+  test("defaults to the omp child command (no tui)", () => {
+    expect(buildMedicWindowCommand({ enabled: true, tui: "omp" })).toBe("omp");
+  });
+
+  test("ignores claudeAccount/tuiOverrides on the omp path", () => {
+    expect(
+      buildMedicWindowCommand({
+        enabled: true,
+        tui: "omp",
+        claudeAccount: { configDir: "/root/.claude-personal", label: "personal" },
+        tuiOverrides: { effortLevel: "high", permissionMode: "dontAsk", pluginDir: "/p/dir" },
+      }),
+    ).toBe("omp");
+  });
+
+  test('tui "claude": emits bare claude invocation when claudeAccount is unset', () => {
+    const cmd = buildMedicWindowCommand({ enabled: true, tui: "claude" });
     expect(cmd).toContain("claude");
     expect(cmd).toContain("CLAUDE_CODE_EFFORT_LEVEL=xhigh");
     expect(cmd).toContain("--permission-mode auto");
     expect(cmd).not.toContain("CLAUDE_CONFIG_DIR=");
   });
 
-  test("emits CLAUDE_CONFIG_DIR prefix when claudeAccount is set", async () => {
-    const { buildSuperdoctorWindowCommand } = await import("../../../src/verbs/cockpit.ts");
-    const cmd = buildSuperdoctorWindowCommand({
+  test('tui "claude": emits CLAUDE_CONFIG_DIR prefix when claudeAccount is set', () => {
+    const cmd = buildMedicWindowCommand({
       enabled: true,
+      tui: "claude",
       claudeAccount: { configDir: "/root/.claude-personal", label: "personal" },
     });
     expect(cmd).toContain("CLAUDE_CONFIG_DIR=/root/.claude-personal");
@@ -1559,24 +1725,24 @@ describe("buildSuperdoctorWindowCommand (ADR-077)", () => {
     expect(cmd).toContain("--permission-mode auto");
   });
 
-  test("honours tuiOverrides", async () => {
-    const { buildSuperdoctorWindowCommand } = await import("../../../src/verbs/cockpit.ts");
-    const cmd = buildSuperdoctorWindowCommand({
+  test('tui "claude": honours tuiOverrides', () => {
+    const cmd = buildMedicWindowCommand({
       enabled: true,
+      tui: "claude",
       tuiOverrides: { effortLevel: "high", permissionMode: "dontAsk", pluginDir: "/p/dir" },
     });
     expect(cmd).toContain("CLAUDE_CODE_EFFORT_LEVEL=high");
     expect(cmd).toContain("--permission-mode dontAsk");
     expect(cmd).toContain("--plugin-dir=/p/dir");
   });
-  test("quotes config and override values as single shell words", async () => {
-    const { buildSuperdoctorWindowCommand } = await import("../../../src/verbs/cockpit.ts");
+  test('tui "claude": quotes config and override values as single shell words', () => {
     const configDir = "/tmp/config dir; printf INJECTED";
     const effort = "high; printf INJECTED";
     const permission = "auto $(printf INJECTED)";
     const pluginDir = "/tmp/plugin dir; printf INJECTED";
-    const cmd = buildSuperdoctorWindowCommand({
+    const cmd = buildMedicWindowCommand({
       enabled: true,
+      tui: "claude",
       claudeAccount: { configDir },
       tuiOverrides: { effortLevel: effort, permissionMode: permission, pluginDir },
     });
@@ -1593,6 +1759,24 @@ describe("buildSuperdoctorWindowCommand (ADR-077)", () => {
       "<--permission-mode>",
       `<${permission}>`,
     ]);
+  });
+});
+
+// ---------- ADR-299: resolveMedicCwd ----------
+
+describe("resolveMedicCwd (ADR-299)", () => {
+  test("explicit cwd wins over HOME", () => {
+    expect(
+      resolveMedicCwd({ enabled: true, tui: "omp", cwd: "/srv/medic" }, { HOME: "/home/op" }),
+    ).toBe("/srv/medic");
+  });
+
+  test("unset cwd defaults to the operator HOME", () => {
+    expect(resolveMedicCwd({ enabled: true, tui: "omp" }, { HOME: "/home/op" })).toBe("/home/op");
+  });
+
+  test("empty HOME falls back to os.homedir()", () => {
+    expect(resolveMedicCwd({ enabled: true, tui: "omp" }, { HOME: "" })).toBe(homedir());
   });
 });
 
@@ -3989,7 +4173,7 @@ describe("cockpitAttach — ensure-up on/off (isolated)", () => {
         env: { HOME: homeDir, ATMUX_NO_CRON: "1" },
         tmuxFactory: (cfg) => ("socket" in cfg ? cockpitNs : cageNs),
         logger,
-        startFn: async (args: string[]) => {
+        startFn: async (args: readonly string[]) => {
           startArgs.push([...args]);
           return 0;
         },

@@ -38,6 +38,7 @@
 // piece the dotfiles bash script exercised, so this is enough to retire
 // the script and let the proper bun path become the runtime.
 
+import { homedir } from "node:os";
 import { dirname } from "node:path";
 import { type CrontabIO, defaultCrontabIO } from "../abstractions/crontab.ts";
 import { ensureDir } from "../abstractions/fs.ts";
@@ -48,6 +49,11 @@ import {
   type TmuxConfig,
   type TmuxNamespace,
 } from "../abstractions/tmux.ts";
+import {
+  type LaunchAgentPaneOutcome,
+  launchAgentInPane as launchAgentInPaneDefault,
+  resolveOnlyPane,
+} from "../core/agent-pane.ts";
 import {
   buildGroupTopology,
   cageSocketPath,
@@ -75,7 +81,7 @@ import {
 import { migrateLegacySessionName } from "../core/session-migrate.ts";
 import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
-import { resolveTuiCommand } from "../core/tui-cmd.ts";
+import { posixQuote, resolveTuiCommand, shellPaneCommand } from "../core/tui-cmd.ts";
 import { UsageError } from "../errors.ts";
 import type {
   CockpitMedic,
@@ -117,9 +123,13 @@ export interface ResolveTeamWindowDeps {
    *  Receives the socket path resolved by `resolveCageSocket` so tests
    *  can capture which candidate was picked. */
   createCageTmux?: (socketPath: string) => TmuxNamespace;
-  /** Override the medic (legacy: superdoctor) window's shell command
-   *  (test injection). Default uses `buildMedicWindowCommand`. CI
-   *  runners don't have `claude` installed; tests inject
+  /** Override the medic `_medic` window's CHILD launch command (test
+   *  injection). ADR-299: the window's start command is always
+   *  `shellPaneCommand()` (an interactive login zsh floor); this hook
+   *  supplies only the TUI command `launchAgentInPane` sends once the
+   *  shell prompt is live. Default uses `buildMedicWindowCommand`
+   *  (`omp`, or the Claude invocation when `tui: "claude"`). CI
+   *  runners don't have `omp`/`claude` installed; tests inject
    *  the shared portable keepalive loop so the window persists for
    *  topology assertions. */
   buildMedicCommand?: (m: CockpitMedic) => string;
@@ -127,8 +137,13 @@ export interface ResolveTeamWindowDeps {
    *  fixtures injecting `buildSuperdoctorCommand` keep working; the
    *  reconcile prefers `buildMedicCommand` when both are set. */
   buildSuperdoctorCommand?: (sd: CockpitMedic) => string;
+  /** Stage-2 agent-pane launch seam. Default delegates to
+   *  `src/core/agent-pane.ts::launchAgentInPane` (probe the fresh
+   *  shell, then send the child TUI command). Tests with a fake
+   *  tmux namespace inject a recorder to assert the child command
+   *  without a live pane. */
+  launchAgentInPane?: typeof launchAgentInPaneDefault;
 }
-
 interface DriverSessionShape {
   tui?: string | null;
   command?: string;
@@ -2188,7 +2203,13 @@ export async function reconcileCockpitSession(
     if (md === undefined) {
       const builder =
         deps.buildMedicCommand ?? deps.buildSuperdoctorCommand ?? buildMedicWindowCommand;
-      const cmd = builder(medic);
+      const childCmd = builder(medic);
+      // ADR-299 two-stage shape (mirrors drivers/superdriver in
+      // `start.ts` via `launchAgentInPane`): the window's start command
+      // is always the shell floor — an interactive login zsh — so the
+      // pane survives quitting the TUI. The agent command arrives as a
+      // child once the shell prompt is verified live (never `exec omp`,
+      // never OMP as the start command).
       // Insert directly after _superdriver (tmux `new-window -a`) so later
       // windows shift right. Appending then move-window -k onto the target
       // slot would kill whatever lives there — on @@mbp 2026-09-26 that
@@ -2197,7 +2218,8 @@ export async function reconcileCockpitSession(
         sessionName,
         name: "_medic",
         detached: true,
-        shellCommand: cmd,
+        shellCommand: shellPaneCommand(),
+        cwd: resolveMedicCwd(medic),
         ...(sdrv !== undefined
           ? { insert: { target: `${sessionName}:${sdrv.index}`, position: "after" as const } }
           : {}),
@@ -2205,6 +2227,29 @@ export async function reconcileCockpitSession(
       logger.log(`  ✓ added window '_medic' (idx ${newId.windowIndex})`);
       windowsBefore = await cockpitTmux.window.listWindows(sessionName);
       md = windowsBefore.find((w) => w.name === "_medic");
+      // Stage 2: launch the agent as a child of the fresh shell. Never
+      // fatal — a seat whose TUI did not come up is still a live shell
+      // the operator can use (same rule as driver seats in `start.ts`).
+      if (md !== undefined) {
+        try {
+          const paneId = await resolveOnlyPane(cockpitTmux, newId, sessionName, newId.windowIndex);
+          const launch = deps.launchAgentInPane ?? launchAgentInPaneDefault;
+          const outcome: LaunchAgentPaneOutcome = await launch({
+            tmux: cockpitTmux,
+            paneId,
+            intent: { kind: "medic" },
+            command: childCmd,
+          });
+          if (outcome === "no-prompt") {
+            logger.warn(
+              "  ⚠ _medic shell never executed its readiness probe — TUI not launched (pane is intact; start it by hand)",
+            );
+          }
+        } catch (e) {
+          const cause = e instanceof Error ? e.message : String(e);
+          logger.warn(`  ⚠ _medic TUI launch failed (${cause}) — pane is intact; start it by hand`);
+        }
+      }
     }
     if (onlyTeam === undefined && md !== undefined && md.index !== targetIdx) {
       // Forced relocation; kill whatever sits at the target slot (likely a
@@ -2439,34 +2484,40 @@ export async function reconcileCockpitSession(
 }
 
 /**
- * ADR-077 + ADR-133: build the shell command the cockpit medic window
- * runs (legacy alias: `buildSuperdoctorWindowCommand`). Mirrors the
- * team-window claude-bootstrap shape (CLAUDE_CONFIG_DIR + effortLevel +
- * permissionMode + plugin-dir) when `claudeAccount` is set; otherwise
- * emits a bare `claude` invocation that inherits the operator's
- * default shell env (matches superdriver's default).
+ * ADR-077 + ADR-133 + ADR-299: build the CHILD launch command the
+ * cockpit `_medic` window runs on its shell floor. This is NOT the
+ * window's start command — reconcile creates the window with
+ * `shellPaneCommand()` (an interactive login zsh) and sends this
+ * string via `launchAgentInPane` once the shell prompt is live, so
+ * quitting the TUI drops back to the pane's shell instead of killing
+ * the window.
  *
- * Defaults match `normaliseTeamJson`'s tuiCommands.claude builder
- * (effortLevel=xhigh, permissionMode=auto) so a medic session runs with
- * the same Opus + auto-mode posture as a team window.
+ * `tui: "omp"` (default) resolves to the literal `omp` — no per-driver
+ * OMP command rules exist to reuse. `tui: "claude"` keeps the legacy
+ * invocation below (mirrors the team-window claude-bootstrap shape:
+ * CLAUDE_CONFIG_DIR + effortLevel + permissionMode + plugin-dir when
+ * `claudeAccount` is set, else a bare `claude` inheriting the
+ * operator's shell env; defaults effortLevel=xhigh,
+ * permissionMode=auto to match `normaliseTeamJson`'s tuiCommands.claude
+ * builder). `claudeAccount` / `tuiOverrides` apply ONLY on the
+ * `"claude"` path.
  */
 export function buildMedicWindowCommand(m: CockpitMedic): string {
-  return withShellFloor(buildClaudeWindowCommand(m));
+  if ((m.tui ?? "omp") === "claude") return buildClaudeWindowCommand(m);
+  return "omp";
 }
 
-/** Run `cmd` as a child of a login zsh and fall back to an interactive
- *  login zsh when it exits, so an agent window never closes when its TUI
- *  quits. Pairs with the `pane-died` respawn hook in atmux.conf. */
-export function withShellFloor(cmd: string): string {
-  const quoted = `${cmd}; exec zsh -l`.replace(/'/g, "'\\''");
-  return `zsh -lc '${quoted}'`;
-}
-
-/** @deprecated use {@link buildMedicWindowCommand} (ADR-133 rename) —
- *  kept as alias so legacy callers in tests / cron-install paths
- *  continue to work. */
-export function buildSuperdoctorWindowCommand(sd: CockpitMedic): string {
-  return buildMedicWindowCommand(sd);
+/**
+ * ADR-299: resolve the `_medic` window's working directory. An explicit
+ * `cwd` wins; otherwise the operator's HOME (`$HOME`, falling back to
+ * `os.homedir()`) — the medic repo is not known to atmux, so there is
+ * no project root to pin. Test injection point: pass `env`.
+ */
+export function resolveMedicCwd(m: CockpitMedic, env: NodeJS.ProcessEnv = process.env): string {
+  if (m.cwd !== undefined && m.cwd.length > 0) return m.cwd;
+  const home = env.HOME;
+  if (home !== undefined && home.length > 0) return home;
+  return homedir();
 }
 
 /** Shared body for the medic window-command builder.
@@ -2487,17 +2538,20 @@ function buildClaudeWindowCommand(cfg: {
   const ov = cfg.tuiOverrides;
   const effort = ov?.effortLevel ?? "xhigh";
   const permission = ov?.permissionMode ?? "auto";
-  const pluginFlag = ov?.pluginDir !== undefined ? ` --plugin-dir=${ov.pluginDir}` : "";
+  // Quote every operator-controlled word as a single shell word —
+  // configDir/effort/permission/pluginDir all ride from cockpit.json
+  // into a pane command line (ADR-299 quoting test pins this).
+  const pluginFlag = ov?.pluginDir !== undefined ? ` --plugin-dir=${posixQuote(ov.pluginDir)}` : "";
   if (cfg.claudeAccount !== undefined) {
     return (
-      `CLAUDE_CONFIG_DIR=${cfg.claudeAccount.configDir} ` +
-      `CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=${effort} CLAUDE_GUARD_AGENT=1 ` +
-      `claude${pluginFlag} --permission-mode ${permission}`
+      `CLAUDE_CONFIG_DIR=${posixQuote(cfg.claudeAccount.configDir)} ` +
+      `CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=${posixQuote(effort)} CLAUDE_GUARD_AGENT=1 ` +
+      `claude${pluginFlag} --permission-mode ${posixQuote(permission)}`
     );
   }
   return (
-    `CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=${effort} CLAUDE_GUARD_AGENT=1 ` +
-    `claude${pluginFlag} --permission-mode ${permission}`
+    `CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=${posixQuote(effort)} CLAUDE_GUARD_AGENT=1 ` +
+    `claude${pluginFlag} --permission-mode ${posixQuote(permission)}`
   );
 }
 

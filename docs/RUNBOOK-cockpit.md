@@ -39,6 +39,18 @@ Use top-level `windows[]` for a durable cockpit workspace that is not backed by 
 
 Null or omitted `command` starts zsh. These windows appear after `_medic` and before team viewers, in declaration order. Reconcile preserves an existing matching pane and applies `cwd`/`command` only when recreating a missing window. Names must not collide with cockpit roles or team viewers.
 
+### The `_medic` window: OMP on a shell floor (ADR-299)
+
+The `_medic` executor follows the standard pane lifecycle: reconcile creates a missing `_medic` window with an interactive login zsh as its start command and launches the agent as a child via `launchAgentInPane` once the shell prompt is live — quitting the TUI returns to the shell prompt instead of killing the window. A live `_medic` window is never respawned by reconcile.
+
+```json
+{
+  "medic": { "enabled": true, "tui": "omp", "cwd": "/root/work" }
+}
+```
+
+`tui` selects the child (`"omp"` default; `"claude"` keeps the legacy Claude invocation and is the only value that reads `claudeAccount`/`tuiOverrides`). `cwd` must be absolute; when unset the window starts in the operator's HOME (the medic repo is not known to atmux).
+
 ### Retired `_superbot` role (was ADR-285, superseded by ADR-298)
 
 The `_superbot` scheduler window and the `_bot` team seat were removed on 2026-09-28. Stale `superbot` blocks in existing cockpit.json files parse harmlessly (top-level passthrough); legacy `_superbot` windows fall into orphan-prune on the next reconcile.
