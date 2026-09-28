@@ -546,6 +546,27 @@ export const CageStarvingPayload = z
   .passthrough();
 
 /**
+ * `coordination.rotate-suggested` — rotation consumer (e-cc3728bf T2,
+ * ADR-212 §D1/D3) correlated observer signals into a rotation
+ * suggestion. `confidence` is high when pane.stuck + member.no-progress
+ * hit the same (team, member) within the correlation window, medium
+ * for a lone signal. Lead-gated per ADR-212: the event is a signal,
+ * never an instruction — only the lead invokes rotate/clear verbs.
+ */
+export const CoordinationRotateSuggestedPayload = z
+  .object({
+    ...BasePayloadFields,
+    topic: z.literal("coordination.rotate-suggested"),
+    team: z.string(),
+    member: z.string(),
+    confidence: z.enum(["high", "medium"]),
+    reasons: z.array(z.string()).min(1),
+    evidence: z.string(),
+    observedAtSec: z.number(),
+  })
+  .passthrough();
+
+/**
  * `story.ready` — the planner advanced a story `planning → ready`.
  * ADR-247 §D1. Fired ONCE per story-ready transition (the
  * `planning → ready` edge only) — not re-fired on subsequent reads of
@@ -637,6 +658,7 @@ export const EventPayload = z.discriminatedUnion("topic", [
   PaneStuckPayload,
   MemberNoProgressPayload,
   CageStarvingPayload,
+  CoordinationRotateSuggestedPayload,
   StoryReadyPayload,
   StoryUnclaimedPayload,
   InternalHonkerLoadedPayload,
@@ -669,6 +691,7 @@ export type MemberUsageSnapshotPayload = z.infer<typeof MemberUsageSnapshotPaylo
 export type PaneStuckPayload = z.infer<typeof PaneStuckPayload>;
 export type MemberNoProgressPayload = z.infer<typeof MemberNoProgressPayload>;
 export type CageStarvingPayload = z.infer<typeof CageStarvingPayload>;
+export type CoordinationRotateSuggestedPayload = z.infer<typeof CoordinationRotateSuggestedPayload>;
 export type StoryReadyPayload = z.infer<typeof StoryReadyPayload>;
 export type StoryUnclaimedPayload = z.infer<typeof StoryUnclaimedPayload>;
 export type InternalHonkerLoadedPayload = z.infer<typeof InternalHonkerLoadedPayload>;
