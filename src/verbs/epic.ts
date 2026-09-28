@@ -4,6 +4,7 @@
 // Subverb routing:
 //
 //   atmux epic add             <title> [--body T] [--driver-ref R] [--depends-on e-X,e-Y]
+//                              [--ready | --no-ready] (e-47; default: team epicAdd.readyByDefault)
 //   atmux epic list            [--status S] [--json]   (table + R/D columns)
 //   atmux epic ls              ↔ list
 //   atmux epic show            <id> [--json]           (is_ready + depends_on; children tree
@@ -31,7 +32,7 @@ import type { KanbanEpic, KanbanTask } from "../schema/kanban.ts";
 const USAGE_HINT_ROOT =
   "atmux epic <add|list|show|advance|ready|unready|set-depends-on|deps> [args]";
 const USAGE_ADD =
-  "atmux epic add <title> [--body T] [--driver-ref R] [--depends-on e-X,e-Y] " +
+  "atmux epic add <title> [--body T] [--driver-ref R] [--depends-on e-X,e-Y] [--ready | --no-ready] " +
   "[--auto-spawn | --no-auto-spawn] [--roster <name>] [--force-spawn]";
 const USAGE_LIST = "atmux epic list [--status S] [--json]";
 const USAGE_SHOW = "atmux epic show <id> [--json]";

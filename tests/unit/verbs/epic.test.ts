@@ -519,6 +519,18 @@ describe("epic verb — e-47 T2 team default", () => {
   });
 });
 
+describe("epic verb — e-47 T4 usage surface", () => {
+  test("parse-error hint names the ready flags", () => {
+    try {
+      parseAddArgs(["t", "--bogus"]);
+      expect.unreachable();
+    } catch (e) {
+      const hint = (e as { context: { hint: string } }).context.hint as string;
+      expect(hint).toMatch(/\[--ready \| --no-ready\]/);
+    }
+  });
+});
+
 describe("epic verb — ADR-225 dispatch", () => {
   test("`epic add --depends-on a,b` writes the dep list correctly", async () => {
     // Seed two upstream epics.
