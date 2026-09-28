@@ -1,6 +1,8 @@
 # ADR-285: Cooperative `_bot` seats and the `_superbot` offer protocol
 
-**Status**: accepted (operator-direct; source implemented, live activation held)
+**Status**: Superseded by [ADR-298](298-retire-bot-seat-and-superbot-scheduler.md) on 2026-09-28 — operator-direct (George ordered removal: send-keys ban revoked 2026-09-08, planner→executor hand-off 2026-09-28, zero live use measured). The `_bot` seat and `_superbot` scheduler are removed from code, schema, templates and docs (t-e9e1168d, t-67f9a21d). Retained below for historical trace.
+
+Original status when written: accepted (operator-direct; source implemented, live activation held)
 **Date**: 2026-08-28
 **Driver-ref**: operator-direct — every persistent team needs an operator-cooperative bot window named exactly `_bot`; the cockpit needs `_superbot` immediately after `_medic`; `_superbot` should scan `/kb` every 30 minutes and offer actionable work to the owning team without preventing the operator from typing directly into `_bot`.
 **Relates**: [ADR-239](239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md) (drivers are operator-only and never receive automated send-keys), [ADR-261](261-issue-sync-external-tracker-ingestion.md) (external issue ingestion remains a separate adapter concern), [ADR-275](275-external-private-kanban-authority.md) (Kanban is the sole work/lease authority), [ADR-278](278-nullable-driver-agent-harness.md) (null harness means zsh), [ADR-279](279-declarative-operator-cockpit-windows.md) (cockpit ordering and non-destructive persistence)

@@ -247,13 +247,13 @@
 | 281 | The `NO_COLOR` scrub moves to the spawn seam — a tmux server atmux starts can never inherit it | 2026-08-28 | accepted (operator-direct) |
 | 282 | Never collect the whole environment in a test — allowlist at the source | 2026-08-28 | accepted (operator-direct) |
 | 284 | One sizing policy for every cockpit window — the `unum` `window-size smallest` override is retired | 2026-08-30 | accepted (operator-direct) |
-| 285 | Cooperative `_bot` seats and the `_superbot` offer protocol (renumbered from 281 on merge — collision) | 2026-08-28 | accepted (operator-direct; live activation held) |
 | 286 | Eternal-improvement retired — the loop, the `improve` verb and its three Discord templates | 2026-09-01 | accepted (operator-direct) |
 | 287 | Canonical cockpit nesting — groups are branches, teams are leaf cages hosting drivers; the default roster is drivers-only | 2026-09-02 | accepted (operator-direct) |
 | 288 | Driver window worker/attention pane pair — three-driver floor, null-default attention launch, and later-slice contract | 2026-09-03 | proposed |
 | 294 | `atmux doctor` detects tmux servers whose global environment came from an agent shell | 2026-09-25 | proposed |
 | 296 | Per-team `superdriver` window before `driver` | 2026-09-28 | accepted |
 | 297 | Inbox/outbox archive-cut contract (e-77: cut boundary, naming, idempotency, verb authority) | 2026-09-28 | accepted |
+| 298 | Retire the `_bot` seat and `_superbot` scheduler (supersedes ADR-285) | 2026-09-28 | accepted |
 
 ## Superseded (skip)
 
@@ -273,3 +273,4 @@ Retained for historical trace only. Skip unless investigating supersession histo
 - [207](207-opus-sentinel-supersedes-cursor-sentinel-adr-132.SUPERSEDED.md) — Opus-sentinel supersedes cursor-sentinel — rolls back ADR-132 §D1 cursor backend per ADR-201 rejection — superseded by ADR-211
 - [236](236-three-tier-orchd-supervision.SUPERSEDED.md) — Three-tier orchd supervision (D1 internal retry + D2 cockpit superorchd + D3 Discord escalation) — superseded by ADR-240 (D2/D3 dropped, D1+D5 preserved)
 - [257](257-eternal-improvement-burndown-first-worktree-isolated.SUPERSEDED.md) — Eternal-improvement = backlog-burndown-first + worktree-isolated, deferred verified merge — superseded by ADR-286
+- [285](285-cooperative-bot-seat-and-superbot-offer-protocol.SUPERSEDED.md) — Cooperative `_bot` seats and the `_superbot` offer protocol — superseded by ADR-298

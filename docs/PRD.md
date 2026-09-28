@@ -296,9 +296,7 @@ Per `PLAN.md` §15:
 > table, and probe named there is a proposal, not an available command.
 > §3.7, added 2026-08-15, returns to **shipped** surface: the vox operator
 > interface, live and deployed in a deliberately reduced read-only posture.
-> ADR-285's `_bot` / `_superbot` offer-and-pull design is **proposed and not
-> activated**; the cockpit table below shows its intended order explicitly so a
-> source-only proposal is not mistaken for the current live topology.
+> ADR-285's `_bot` / `_superbot` offer-and-pull design is **retired** (superseded by [ADR-298](adr/298-retire-bot-seat-and-superbot-scheduler.md) 2026-09-28); the cockpit table below shows the current live topology.
 
 ### 3.1 Verbs (30, including aliases)
 
@@ -333,8 +331,7 @@ cages use `<emoji>-<member>` (hyphen-separated, ADR-135 §D3).
 |---|--------|------|-----------------|
 | 1 | `_superdriver` | Operator cross-team REPL | ADR-063 (renamed per ADR-135 §D2) |
 | 2 | `_medic` (was `medic`/`superdoctor`) | Fleet self-healing / diagnosis-and-prevention loop | ADR-077 + ADR-133 + ADR-135 §D2 |
-| 3 | `_superbot` (proposed; absent while disabled) | Deterministic 30-minute Kanban candidate router; never claims or assigns | ADR-285 |
-| 4..N | declarative operator windows, then per-team viewers | Operator workspaces in declaration order, then one viewer per enabled parent team | ADR-279 + ADR-063 |
+| 3..N | declarative operator windows, then per-team viewers | Operator workspaces in declaration order, then one viewer per enabled parent team | ADR-279 + ADR-063 |
 
 Backward-compat: a cockpit.json without a `medic` block retains the
 pre-ADR-077 topology (W1 `_superdriver` + W2..N per-team viewers).
@@ -345,14 +342,7 @@ renames them in-place (idempotent) per ADR-135 §D4. Member windows in
 legacy `<emoji><member>` format get the same in-place rename treatment
 on next `atmux start`.
 
-**Proposed cooperative bot seat (ADR-285).** Every persistent parent team gains
-an exact `_bot` window after all drivers and before members/services, backed by
-`<base>-bot` in `.atmux/worktrees/bot`. It is neither a driver nor a member. The
-operator may type into it directly; `_superbot` may offer a tagged Kanban task
-only after conservative idle/readiness checks and an exact-task claim remains
-the first bot action. V1 excludes transient teams and external-issue polling.
-Defaults remain disabled + shadow until process and isolated-tmux integration
-receipts pass and the operator separately authorizes live activation.
+**Cooperative bot seat retired ([ADR-298](adr/298-retire-bot-seat-and-superbot-scheduler.md), 2026-09-28)** — the ADR-285 `_bot` window and `_superbot` offer loop are fully removed (code, schema, templates, docs) after zero live use measured. Lane coordination runs through queued pane-agent pointers off kb rows, not scheduler offers.
 
 **Cockpit-W3 sentinel retired (EPIC e-be01fc89, 2026-05-23)** — the
 pluggable cockpit-W3 whip-manager (ADR-132 / ADR-158 / ADR-183 / ADR-185)
@@ -909,14 +899,14 @@ detail (lib edits in main checkout's `atmux-geoyws` branch).
 
 ### 7.1 Drivers / lead / planner / workers
 
-**Default roster: drivers only** ([ADR-287 §D5](adr/287-canonical-cockpit-nesting-and-drivers-only-roster.md)). Positions per [ADR-239 §D3](adr/239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md): drivers occupy windows 1..N of the team cage first, the `_bot` seat follows when enabled ([ADR-285](adr/285-cooperative-bot-seat-and-superbot-offer-protocol.md)), and any declared members come after that.
+**Default roster: drivers only** ([ADR-287 §D5](adr/287-canonical-cockpit-nesting-and-drivers-only-roster.md)). Positions per [ADR-239 §D3](adr/239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md): drivers occupy windows 1..N of the team cage first, and any declared members come after that. (The ADR-285 `_bot` seat was retired by ADR-298.)
 
 | Position    | Window | Default TUI | Purpose |
 |-------------|--------|-------------|---------|
 | Driver(s)   | 1..N (`driver`, `driver-2`, …) | any (zsh; the operator launches a harness) | One window per `drivers[]` entry, each on its own worktree (ADR-239 §D4). Operator-interactive only — never briefed, never dispatched, never sent keys (ADR-239 §D2/§D5). Work external kb rows directly ([ADR-275](adr/275-external-private-kanban-authority.md)). |
-| `_bot`      | N+1 (when `bot.enabled`) | per `team.json::bot.tui` | Cooperative seat on its own worktree (ADR-285). Not a driver, not a member. |
+| *( `_bot` retired )* | — | — | Seat removed 2026-09-28 ([ADR-298](adr/298-retire-bot-seat-and-superbot-scheduler.md)); row kept so position history stays readable. |
 
-The rows below are **deprecated defaults** (ADR-287 §D5): the shipped template declares none of them, and they spawn only for a team whose `team.json` declares them in `members[]` (`atmux doctor` flags such teams with `deprecated-member-windows`, ADR-287 §D7). Window positions are relative — `m+1`, `m+2`, … after the `m` driver + `_bot` windows, lead first (ADR-044), then declared order.
+The rows below are **deprecated defaults** (ADR-287 §D5): the shipped template declares none of them, and they spawn only for a team whose `team.json` declares them in `members[]` (`atmux doctor` flags such teams with `deprecated-member-windows`, ADR-287 §D7). Window positions are relative — `m+1`, `m+2`, … after the `m` driver windows, lead first (ADR-044), then declared order.
 
 > Historical: until 2026-09-02 this table put the driver outside the cage ("— (external)") and the team-lead at window 1, planner at 2, reviewer at 3 — already contradicted by ADR-239 §D3 (2026-05-24) and corrected here per ADR-287 §Consequences.
 

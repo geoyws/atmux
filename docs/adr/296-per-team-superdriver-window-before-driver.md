@@ -3,7 +3,7 @@
 **Status**: accepted (operator-direct)
 **Date**: 2026-09-28
 **Driver-ref**: operator-direct (George, 2026-09-28) — every team cage gains a `superdriver` seat at window 1, ahead of the driver roster. Superdrivers are typically used to coordinate driver syncs (`/sync-drivers`) and deployments across the lanes, and to arm the executor drivers (`/kb-arm`); the deployments themselves are typically done by driver 1 (`driver`, the trunk lane).
-**Relates**: [ADR-239](239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md) (driver roster, worktrees, front-of-cage ordering), [ADR-285](285-cooperative-bot-seat-and-superbot-offer-protocol.md) (the `_bot` seat that follows the drivers), [ADR-278](278-nullable-driver-agent-harness.md) (null harness means zsh), ADR-287 §D5 (`members[]` deprecated), ADR-290 (cockpit-tier `_superdriver` / `_sd` operator windows — different session, different lifecycle)
+**Relates**: [ADR-239](239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md) (driver roster, worktrees, front-of-cage ordering), [ADR-285](285-cooperative-bot-seat-and-superbot-offer-protocol.SUPERSEDED.md) (the `_bot` seat that follows the drivers), [ADR-278](278-nullable-driver-agent-harness.md) (null harness means zsh), ADR-287 §D5 (`members[]` deprecated), ADR-290 (cockpit-tier `_superdriver` / `_sd` operator windows — different session, different lifecycle)
 
 ## Context
 
