@@ -3,6 +3,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TmuxConfig, TmuxNamespace } from "../../../src/abstractions/tmux.ts";
@@ -2070,15 +2071,111 @@ describe("buildTeamWindowCommand", () => {
     expect(cmd).toContain("||");
   });
 
-  test("attach mode keeps both attach legs socket-guarded before tmux and preserves || fallback", async () => {
-    const cmd = await buildTeamWindowCommand(team, "attach");
-    const legacyLeg = `{ [ -S /tmp/atmux-demo/sock ] && tmux -S /tmp/atmux-demo/sock attach -t '=demo:driver' 2>/dev/null; }`;
-    const perTeamLeg = `{ [ -S /d/.atmux/tmux/tmux-${uid}/default ] && tmux -S /d/.atmux/tmux/tmux-${uid}/default attach -t '=demo:driver' 2>/dev/null; }`;
+  // t-9625de61: behavioural proof for the socket guards above. The stub
+  // tmux reproduces the reported homebrew behaviour — attach against a
+  // missing socket dir prints "error creating <sock> ..." yet exits 0 —
+  // so a bare `attachA || attachB` wrapper could never reach attachB.
+  // Real unix-socket files back the `[ -S ]` guards; the wrapper's real
+  // `sleep 1` paces loop iterations, so polling for the first argv line
+  // observes exactly the first pass before the shell is killed.
+  // Timer exception (ts-no-test-timers): this drives a REAL `sh` child
+  // process, so fake timers cannot advance it — the poll below awaits
+  // the argv-log signal, not a fixed wait; the 50ms sleeps are backoff.
+  async function runWrapperFirstPass(cmd: string, bin: string): Promise<string[]> {
+    const log = join(bin, "argv.log");
+    const proc = Bun.spawn(["sh", "-c", cmd], {
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    try {
+      const deadline = Date.now() + 5000;
+      for (;;) {
+        if (existsSync(log)) {
+          const lines = readFileSync(log, "utf8").split("\n").filter(Boolean);
+          if (lines.length > 0) return lines;
+        }
+        if (Date.now() > deadline) throw new Error("stub tmux was never invoked");
+        await Bun.sleep(50);
+      }
+    } finally {
+      proc.kill();
+      await proc.exited;
+    }
+  }
 
-    expect(cmd).toContain(legacyLeg);
-    expect(cmd).toContain(perTeamLeg);
-    expect(cmd.indexOf(legacyLeg)).toBeLessThan(cmd.indexOf("||"));
-    expect(cmd.indexOf("||")).toBeLessThan(cmd.indexOf(perTeamLeg));
+  async function stubTmuxOnPath(): Promise<{ bin: string; log: string }> {
+    const bin = await mkdtemp(join(tmpdir(), "t9625de61-bin-"));
+    const log = join(bin, "argv.log");
+    await writeFile(
+      join(bin, "tmux"),
+      `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\necho "error creating $2 (No such file or directory)" >&2\nexit 0\n`,
+      { mode: 0o755 },
+    );
+    return { bin, log };
+  }
+
+  test("t-9625de61: missing legacy socket dir falls through to the per-team socket", async () => {
+    const teamName = `t9625miss-${process.pid}`;
+    const root = await mkdtemp(join(tmpdir(), "t9625miss-"));
+    const t = { name: teamName, root, enabled: true } as CockpitTeam;
+    const cmd = await buildTeamWindowCommand(t, "attach");
+    const legacySock = `/tmp/atmux-${teamName}/sock`;
+    const perTeamSock = `${root}/.atmux/tmux/tmux-${uid}/default`;
+    expect(cmd).toContain(legacySock);
+    expect(cmd).toContain(perTeamSock);
+
+    // Legacy dir absent entirely; per-team socket live.
+    rmSync(`/tmp/atmux-${teamName}`, { recursive: true, force: true });
+    await mkdir(join(root, ".atmux", "tmux", `tmux-${uid}`), { recursive: true });
+    const server = createServer();
+    await new Promise<void>((resolve) => server.listen(perTeamSock, resolve));
+    const { bin } = await stubTmuxOnPath();
+    try {
+      const lines = await runWrapperFirstPass(cmd, bin);
+      expect(lines.length).toBeGreaterThan(0);
+      // The guard must skip the legacy dial outright (the stub would
+      // exit 0 there and, unguarded, swallow the fallback), so every
+      // dial in the pass targets the per-team socket.
+      expect(lines.every((l) => l.includes(perTeamSock))).toBe(true);
+      expect(lines.some((l) => l.includes(legacySock))).toBe(false);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(root, { recursive: true, force: true });
+      await rm(bin, { recursive: true, force: true });
+    }
+  });
+
+  test("t-9625de61: live legacy socket is dialled exclusively, no fallback dial", async () => {
+    const teamName = `t9625live-${process.pid}`;
+    const root = await mkdtemp(join(tmpdir(), "t9625live-"));
+    const t = { name: teamName, root, enabled: true } as CockpitTeam;
+    const cmd = await buildTeamWindowCommand(t, "attach");
+    const legacySock = `/tmp/atmux-${teamName}/sock`;
+    const perTeamSock = `${root}/.atmux/tmux/tmux-${uid}/default`;
+
+    // BOTH sockets live: the first (legacy) dial succeeds (stub exits
+    // 0), so the `||` fallback must not fire — guards against an
+    // overcorrection that dials both sockets every pass.
+    await mkdir(`/tmp/atmux-${teamName}`, { recursive: true });
+    await mkdir(join(root, ".atmux", "tmux", `tmux-${uid}`), { recursive: true });
+    const legacyServer = createServer();
+    const perTeamServer = createServer();
+    await new Promise<void>((resolve) => legacyServer.listen(legacySock, resolve));
+    await new Promise<void>((resolve) => perTeamServer.listen(perTeamSock, resolve));
+    const { bin } = await stubTmuxOnPath();
+    try {
+      const lines = await runWrapperFirstPass(cmd, bin);
+      expect(lines.length).toBeGreaterThan(0);
+      expect(lines.every((l) => l.includes(legacySock))).toBe(true);
+      expect(lines.some((l) => l.includes(perTeamSock))).toBe(false);
+    } finally {
+      await new Promise<void>((resolve) => legacyServer.close(() => resolve()));
+      await new Promise<void>((resolve) => perTeamServer.close(() => resolve()));
+      await rm(`/tmp/atmux-${teamName}`, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true });
+      await rm(bin, { recursive: true, force: true });
+    }
   });
 
   test("no-driver-config emits the 'set team.json::driverSession' guidance", async () => {
