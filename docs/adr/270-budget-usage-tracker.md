@@ -45,3 +45,19 @@
 ## Acceptance
 
 Authored by the lane executor as e-50 T1 (t-8e1f5050), same branch as the T3 code it ratifies (`atmux-t-25764270-w1-7f9c03`). `proposed` → `accepted` requires reviewer signoff or driver/lead `decisions-add` (lane executor does not self-accept).
+
+## Amendment 2026-09-29 — T5: hourly OS-crontab one-liners (documented, no scheduler)
+
+Operator decision (attention `a-553d4498`, option 1): T5 ships a DOCUMENTED one-liner invoking `atmux budget collect` from the OS crontab. No scheduler, daemon, or new verb. The entry reuses the `atmux start` sandwich-marker convention (`# >>> atmux:budget` / `# <<< atmux:budget`) per [ADR-192](192-cron-arm-idempotency-contract.md) §Rule consistency check: install strips any existing budget block before appending the fresh one, so double-install leaves exactly one entry. `$(command -v atmux …)` bakes in the absolute path at install time (cron's minimal `PATH`); output appends to `~/.atmux/state/budget-collect.log`, never cron mail. Canonical operator copy lives in `docs/RUNBOOK-budget.md` §2 (this amendment must match it line-for-line — enforced by `tests/unit/verbs/budget-cron.test.ts`); D7's "hourly cron via `crontab.ts`" is superseded for T5 by these documented one-liners (`src/abstractions/crontab.ts` remains the retired ADR-233 no-op shim — T5 adds no code).
+
+Install — hourly, idempotent (preserves unrelated lines; works with no crontab yet):
+
+```cron-install-sh
+( (crontab -l 2>/dev/null || true) | grep -v -F -e '# >>> atmux:budget' -e '# <<< atmux:budget' -e 'atmux budget collect' || true; echo '# >>> atmux:budget — managed by operator; do not edit by hand'; echo "7 * * * * PATH=$(dirname "$(command -v bun 2>/dev/null || echo /usr/local/bin/bun)"):/usr/bin:/bin $(command -v atmux 2>/dev/null || echo atmux) budget collect >>$HOME/.atmux/state/budget-collect.log 2>&1"; echo '# <<< atmux:budget') | crontab -
+```
+
+Remove — deletes only the budget block, leaving everything else byte-identical:
+
+```cron-remove-sh
+( (crontab -l 2>/dev/null || true) | grep -v -F -e '# >>> atmux:budget' -e '# <<< atmux:budget' -e 'atmux budget collect' || true ) | crontab -
+```

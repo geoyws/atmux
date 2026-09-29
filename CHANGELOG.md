@@ -9,7 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### ✨ Added — `atmux budget collect|report`: multi-provider usage tracker (ADR-270, e-50 T3+T4)
 
-**One command shows every provider's quota.** `atmux budget collect` probes seven providers (anthropic, zai, deepseek, openrouter, minimax, kimi, cursor) in one batch into the cockpit-global `~/.atmux/state/budget.db` `usage_snapshot` table. A failing provider writes an `ok=0` row with the reason and never aborts the batch. `atmux budget report [--json] [--window 24h|7d] [--provider <p>] [--live]` renders the latest snapshot with window deltas and reset times. Only usage numbers are stored, never keys or tokens. The hourly cron (T5) and `/budget` skill wiring (T6) are not shipped yet.
+**One command shows every provider's quota.** `atmux budget collect` probes seven providers (anthropic, zai, deepseek, openrouter, minimax, kimi, cursor) in one batch into the cockpit-global `~/.atmux/state/budget.db` `usage_snapshot` table. A failing provider writes an `ok=0` row with the reason and never aborts the batch. `atmux budget report [--json] [--window 24h|7d] [--provider <p>] [--live]` renders the latest snapshot with window deltas and reset times. Only usage numbers are stored, never keys or tokens. The `/budget` skill reads it through its opt-in `/budget atmux` source (skills-root 3a248e9).
+
+### ✨ Added — hourly `atmux budget collect` cron one-liners (ADR-270 T5)
+
+**One documented crontab line arms the hourly collector.** `docs/RUNBOOK-budget.md` §2 carries an idempotent install one-liner (hourly `7 * * * *`, `# >>> atmux:budget` sandwich per ADR-192, absolute atmux path and bun's directory as an inline `PATH=` baked in at install time, so cron's `/usr/bin:/bin` can run the `#!/usr/bin/env bun` binary; output to `~/.atmux/state/budget-collect.log`) plus a remove one-liner that restores the table byte-identical. No scheduler, daemon, or new verb ships. Proven by `tests/unit/verbs/budget-cron.test.ts`, which executes the documented lines against a fake `crontab`.
 
 ### ✨ Added — opt-in `_blank` cockpit troubleshooting window (ADR-295)
 
