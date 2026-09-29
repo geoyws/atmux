@@ -76,6 +76,11 @@ import {
   checkWorktreeNestedStateDb,
 } from "./doctor/git.ts";
 import { checkClaudeAccountPool, checkHostPressure } from "./doctor/host.ts";
+import {
+  checkNestedStateDb,
+  type FixNestedStateDbOpts,
+  runFixNestedStateDb,
+} from "./doctor/nested-state.ts";
 import { checkDeprecatedMemberWindows, checkTeamInsideTeam } from "./doctor/nesting.ts";
 import { checkCursorPluginCache, checkSkillsPlugin } from "./doctor/plugins.ts";
 import { renderHuman, renderJson } from "./doctor/render.ts";
@@ -96,7 +101,7 @@ import {
 import { checkTmuxVersionMismatch, checkVendoredTmuxBinary } from "./doctor/tmux.ts";
 import { buildReport, type DoctorRow } from "./doctor/types.ts";
 
-const USAGE = "atmux doctor [--quiet|-q] [--fix] [--json]";
+const USAGE = "atmux doctor [--quiet|-q] [--fix] [--json] [--fix-nested-state-db <archive|delete>]";
 
 // ---------- Args ----------
 
@@ -105,6 +110,9 @@ export interface DoctorArgs {
   fix: boolean;
   json: boolean;
   teamDir?: string;
+  /** Confirm-gated nested-state remediation (t-a20da986). Absent =
+   *  read-only: detection rows only, never mutate. */
+  fixNestedStateDb?: "archive" | "delete";
 }
 
 /** Pure parser. Throws `UsageError` on bad invocation. */
@@ -113,6 +121,7 @@ export function parseDoctorArgs(argv: ReadonlyArray<string>): DoctorArgs {
   let fix = false;
   let json = false;
   let teamDir: string | undefined;
+  let fixNestedStateDb: "archive" | "delete" | undefined;
   let i = 0;
   while (i < argv.length) {
     const a = argv[i];
@@ -140,13 +149,31 @@ export function parseDoctorArgs(argv: ReadonlyArray<string>): DoctorArgs {
       i += 2;
       continue;
     }
+    if (a === "--fix-nested-state-db") {
+      const v = argv[i + 1];
+      if (v === undefined) {
+        throw new UsageError({
+          what: "doctor: --fix-nested-state-db requires a value (archive|delete)",
+          hint: USAGE,
+        });
+      }
+      if (v !== "archive" && v !== "delete") {
+        throw new UsageError({
+          what: `doctor: --fix-nested-state-db must be archive|delete, got: ${v}`,
+          hint: USAGE,
+        });
+      }
+      fixNestedStateDb = v;
+      i += 2;
+      continue;
+    }
     throw new UsageError({ what: `doctor: unknown arg: ${a ?? ""}`, hint: USAGE });
   }
   const out: DoctorArgs = { quiet, fix, json };
   if (teamDir !== undefined) out.teamDir = teamDir;
+  if (fixNestedStateDb !== undefined) out.fixNestedStateDb = fixNestedStateDb;
   return out;
 }
-
 // ---------- Public verb entry ----------
 
 export interface DoctorOpts {
@@ -158,10 +185,12 @@ export interface DoctorOpts {
    *  `--fix` finds starving rows. Test fixtures inject a no-op sleep +
    *  tiny verify deadline; production callers omit. */
   fixStarvingOpts?: FixStarvingOpts;
+  /** t-a20da986: seams threaded into `runFixNestedStateDb` when
+   *  `--fix-nested-state-db` is passed. Production callers omit. */
+  fixNestedStateDbOpts?: FixNestedStateDbOpts;
 }
 
 /** Default chain — all in-scope checks invoked in bash main() order. */
-
 export async function runAllChecks(atmuxDir: string, team: Team | null): Promise<DoctorRow[]> {
   const rows: DoctorRow[] = [];
   rows.push(...checkDeps());
@@ -250,6 +279,13 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   // four preventive hooks (getAtmuxDir strip-back, provisioning team.json-
   // only, orchd-window spawn guard, checkWorktreeIsolation orphan walk).
   rows.push(...(await checkWorktreeNestedStateDb(team, atmuxDir)));
+  // t-a20da986 (e-39 items 4/6/7): nested `.atmux/` dirs + stray
+  // `state.db` files beneath the team's own `.atmux/` (plus ancestor
+  // teams above the project root). RED banner row naming every path;
+  // worktree-stub dbs stay owned by checkWorktreeNestedStateDb above so
+  // one leak never surfaces as two rows. Read-only — remediation needs
+  // the explicit `--fix-nested-state-db` confirm flag.
+  rows.push(...(await checkNestedStateDb(team, atmuxDir)));
   // ADR-136 TR4: member-label-collision — warn when 2+ members share
   // the same `(emoji, label-or-name)` display tuple. Pure (no I/O);
   // returns [] when team is null OR no collisions exist.
@@ -398,6 +434,14 @@ export async function doctor(argv: ReadonlyArray<string>, opts: DoctorOpts = {})
     stderr(
       "\natmux doctor --fix: V-24 ships read-only checks; --fix actions deferred per ADR-019.\n",
     );
+  }
+  // t-a20da986: confirm-gated nested-state remediation. The flag IS the
+  // explicit confirm — absent means read-only (detection rows only).
+  if (parsed.fixNestedStateDb !== undefined) {
+    await runFixNestedStateDb(atmuxDir, team, parsed.fixNestedStateDb, {
+      ...opts.fixNestedStateDbOpts,
+      stderr,
+    });
   }
 
   return report.redCount === 0 ? 0 : 1;
@@ -658,6 +702,22 @@ export {
   checkMemberForcePushRecent,
   checkSendKeysFailureRecent,
 } from "./doctor/member-ops.ts";
+export {
+  type CheckNestedStateDbOpts,
+  checkNestedStateDb,
+  type FixNestedStateDbOpts,
+  findNestedStateOffenders,
+  formatNestedStateBanner,
+  type NestedStateDirEntry,
+  type NestedStateOffender,
+  type NestedStateOffenderKind,
+  type NestedStateRemediation,
+  type NestedStateScanOpts,
+  nestedStateDbRows,
+  type RemediateNestedStateDbOpts,
+  remediateNestedStateDb,
+  runFixNestedStateDb,
+} from "./doctor/nested-state.ts";
 export {
   type CheckDeprecatedMemberWindowsOpts,
   type CheckTeamInsideTeamOpts,

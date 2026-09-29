@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ✨ Added — `atmux doctor` nested-state-db probe + `--fix-nested-state-db` (t-a20da986)
+
+**Nested `.atmux/` dirs and stray `state.db` files surface as one red banner row.** The new `nested-state-db` check scans for `.atmux/` directories nested beneath the team's own `.atmux/` (plus ancestor teams above the project root) and for `state.db` files other than the canonical `<atmuxDir>/state.db`, naming every offender path in a single banner row. Worktree-stub dbs stay owned by the existing `worktree:nested-state-db` probe so one leak never surfaces twice; the quarantine subtree (`<atmuxDir>/archive/`) never self-flags. Detection is read-only — `atmux doctor --fix-nested-state-db archive` quarantines owned offenders under `<atmuxDir>/archive/` and `... delete` removes them; without the flag nothing is touched, and paths outside the team's own `.atmux/` (another team's property) are always skipped for the operator to resolve by hand.
+
 ### 🧹 Changed — `atmux start` removes a dead legacy socket under an active override (e-29 T1)
 
 **Stale `/tmp/atmux-<team>/sock` files stop shadowing the override.** When `team.json::tmuxTmpdir` reroutes a team, `start` now deletes the legacy socket file when no server responds on it and the override socket is live or absent — one log line naming the path. A live legacy socket, an existing-but-dead override socket, or any deletion failure leaves everything untouched.
