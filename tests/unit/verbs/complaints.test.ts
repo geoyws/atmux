@@ -59,6 +59,25 @@ async function captureStdout<T>(fn: () => Promise<T>): Promise<{ out: string; re
   return { out: store.chunks.join(""), result };
 }
 
+// ADR-150 §D1: an explicit `--target-team` routes through the cockpit
+// registry, so tests exercising explicit targets install a hermetic
+// fixture (never the ambient ATMUX_COCKPIT_CONFIG) and restore it.
+async function installCockpitFixture(map: Record<string, string>): Promise<() => void> {
+  const saved = process.env.ATMUX_COCKPIT_CONFIG;
+  const cockpitPath = join(teamDir, "cockpit-fixture.json");
+  await writeFile(
+    cockpitPath,
+    JSON.stringify({
+      sessions: Object.entries(map).map(([name, root]) => ({ type: "team", name, root })),
+    }),
+  );
+  process.env.ATMUX_COCKPIT_CONFIG = cockpitPath;
+  return () => {
+    if (saved === undefined) delete process.env.ATMUX_COCKPIT_CONFIG;
+    else process.env.ATMUX_COCKPIT_CONFIG = saved;
+  };
+}
+
 // ---------- parseComplaintsArgs ----------
 
 describe("parseComplaintsArgs", () => {
@@ -948,41 +967,48 @@ describe("ComplaintsRepo — v3 provenance", () => {
 
 describe("complaints verb — v3 integration", () => {
   test("file --source-kind + --source-id + --target-team persists via repo + list filter recovers", async () => {
-    const { out } = await captureStdout(() =>
-      complaints([
-        "file",
-        "--summary",
-        "cross-team bug",
-        "--source-kind",
-        "superdoctor",
-        "--source-id",
-        "sweep-1715290000",
-        "--target-team",
-        "sopx",
-        "--team-dir",
-        teamDir,
-      ]),
-    );
-    const id = out.trim();
-    const { out: jsonOut } = await captureStdout(() =>
-      complaints([
-        "list",
-        "--source-kind",
-        "superdoctor",
-        "--target-team",
-        "sopx",
-        "--json",
-        "--team-dir",
-        teamDir,
-      ]),
-    );
-    const parsed = JSON.parse(jsonOut);
-    expect(Array.isArray(parsed)).toBe(true);
-    expect(parsed).toHaveLength(1);
-    expect(parsed[0].id).toBe(id);
-    expect(parsed[0].sourceKind).toBe("superdoctor");
-    expect(parsed[0].sourceId).toBe("sweep-1715290000");
-    expect(parsed[0].targetTeam).toBe("sopx");
+    // ADR-150: explicit target self-routes through a hermetic registry fixture.
+    const restoreCockpit = await installCockpitFixture({ sopx: teamDir });
+    try {
+      const { out } = await captureStdout(() =>
+        complaints([
+          "file",
+          "--summary",
+          "cross-team bug",
+          "--source-kind",
+          "superdoctor",
+          "--source-id",
+          "sweep-1715290000",
+          "--target-team",
+          "sopx",
+          "--team-dir",
+          teamDir,
+        ]),
+      );
+      const id = out.trim();
+      const { out: jsonOut } = await captureStdout(() =>
+        complaints([
+          "list",
+          "--source-kind",
+          "superdoctor",
+          "--target-team",
+          "sopx",
+          "--json",
+          "--team-dir",
+          teamDir,
+        ]),
+      );
+      const parsed = JSON.parse(jsonOut);
+      expect(Array.isArray(parsed)).toBe(true);
+      expect(parsed).toHaveLength(1);
+      expect(parsed[0].id).toBe(id);
+      expect(parsed[0].sourceKind).toBe("superdoctor");
+      expect(parsed[0].sourceId).toBe("sweep-1715290000");
+      expect(parsed[0].targetTeam).toBe("sopx");
+      expect(parsed[0].originTeam).toBe("test-team");
+    } finally {
+      restoreCockpit();
+    }
   });
 
   test("file --source-kind=bogus → UsageError surface", async () => {
@@ -1079,26 +1105,33 @@ describe("complaints verb — t-7bd53cba target_team default + severity stashing
   });
 
   test("file with explicit --target-team wins over default", async () => {
-    const { out } = await captureStdout(() =>
-      complaints([
-        "file",
-        "--summary",
-        "x",
-        "--target-team",
-        "different-team",
-        "--team-dir",
-        teamDir,
-      ]),
-    );
-    const id = out.trim();
-    const path = join(atmuxDir, "state.db");
-    const db = openDatabase(path, migrations);
+    // ADR-150: explicit target routes through a hermetic registry fixture.
+    const restoreCockpit = await installCockpitFixture({ "different-team": teamDir });
     try {
-      const repo = new ComplaintsRepo(db);
-      const c = repo.getById(id);
-      expect(c?.targetTeam).toBe("different-team");
+      const { out } = await captureStdout(() =>
+        complaints([
+          "file",
+          "--summary",
+          "x",
+          "--target-team",
+          "different-team",
+          "--team-dir",
+          teamDir,
+        ]),
+      );
+      const id = out.trim();
+      const path = join(atmuxDir, "state.db");
+      const db = openDatabase(path, migrations);
+      try {
+        const repo = new ComplaintsRepo(db);
+        const c = repo.getById(id);
+        expect(c?.targetTeam).toBe("different-team");
+        expect(c?.originTeam).toBe("test-team");
+      } finally {
+        closeDatabase(db);
+      }
     } finally {
-      closeDatabase(db);
+      restoreCockpit();
     }
   });
 
@@ -1138,53 +1171,178 @@ describe("complaints verb — t-7bd53cba target_team default + severity stashing
     // Mirrors the call shape in /root/.atmux/bin/whip-velocity-gate.sh
     // verbatim. Acceptance bullet from Task t-7bd53cba: "Smoke test:
     // simulate velocity-gate's exact CLI invocation, verify row lands."
+    // ADR-150: explicit target self-routes through a hermetic registry fixture.
+    const restoreCockpit = await installCockpitFixture({ atmux: teamDir });
+    try {
+      const { out } = await captureStdout(() =>
+        complaints([
+          "file",
+          "--target-team",
+          "atmux",
+          "--severity",
+          "high",
+          "--kind",
+          "heads-up",
+          "--source-kind",
+          "whip-velocity-gate",
+          "--source-id",
+          "whip-atmux-velocity-stalled",
+          "--title",
+          "atmux: velocity-stalled · 0 commits in 60min · whip-tried-3-menus",
+          "--body",
+          "Whip-velocity-gate strike threshold 3 reached for team atmux. Symptom: 0 commits in last 60min, lead pane idle/wedged/saturated, action-menu injections produced no commit-shaped reply.",
+          "--team-dir",
+          teamDir,
+        ]),
+      );
+      const id = out.trim();
+      expect(id).toMatch(/^c-[0-9a-f]{8}$/);
+
+      // Verify the row lands with every field the script intended
+      const { out: jsonOut } = await captureStdout(() =>
+        complaints([
+          "list",
+          "--source-kind",
+          "whip-velocity-gate",
+          "--target-team",
+          "atmux",
+          "--json",
+          "--team-dir",
+          teamDir,
+        ]),
+      );
+      const parsed = JSON.parse(jsonOut);
+      expect(Array.isArray(parsed)).toBe(true);
+      expect(parsed).toHaveLength(1);
+      expect(parsed[0].id).toBe(id);
+      expect(parsed[0].sourceKind).toBe("whip-velocity-gate");
+      expect(parsed[0].sourceId).toBe("whip-atmux-velocity-stalled");
+      expect(parsed[0].targetTeam).toBe("atmux");
+      expect(parsed[0].incidentSummary).toContain("atmux: velocity-stalled");
+      expect(parsed[0].rootCause).toContain("Whip-velocity-gate strike threshold");
+      expect(parsed[0].extra.kind).toBe("heads-up");
+      expect(parsed[0].extra.severity).toBe("high");
+    } finally {
+      restoreCockpit();
+    }
+  });
+});
+
+// ---------- ADR-150 §D1/D5 cross-team file routing (e-41 T2) ----------
+
+describe("complaints verb — cross-team file routing", () => {
+  let filerDir: string;
+  let targetDir: string;
+  let savedCockpitEnv: string | undefined;
+
+  beforeEach(async () => {
+    filerDir = await mkdtemp(join(tmpdir(), "atmux-complaints-filer-"));
+    targetDir = await mkdtemp(join(tmpdir(), "atmux-complaints-target-"));
+    for (const [dir, name] of [
+      [filerDir, "team-a"],
+      [targetDir, "team-b"],
+    ] as const) {
+      await mkdir(join(dir, ".atmux"), { recursive: true });
+      await writeFile(
+        join(dir, ".atmux", "team.json"),
+        JSON.stringify({ name, members: [{ name: "alpha" }] }),
+      );
+    }
+    const cockpitPath = join(filerDir, "cockpit.json");
+    await writeFile(
+      cockpitPath,
+      JSON.stringify({
+        sessions: [
+          { type: "team", name: "team-a", root: filerDir },
+          { type: "team", name: "team-b", root: targetDir },
+        ],
+      }),
+    );
+    savedCockpitEnv = process.env.ATMUX_COCKPIT_CONFIG;
+    process.env.ATMUX_COCKPIT_CONFIG = cockpitPath;
+  });
+
+  afterEach(async () => {
+    if (savedCockpitEnv === undefined) delete process.env.ATMUX_COCKPIT_CONFIG;
+    else process.env.ATMUX_COCKPIT_CONFIG = savedCockpitEnv;
+    await rm(filerDir, { recursive: true, force: true });
+    await rm(targetDir, { recursive: true, force: true });
+  });
+
+  function openRepo(dir: string) {
+    const db = openDatabase(join(dir, ".atmux", "state.db"), migrations);
+    return { db, repo: new ComplaintsRepo(db) };
+  }
+
+  test("routed file lands in the target DB with origin_team; filer DB has no copy", async () => {
     const { out } = await captureStdout(() =>
       complaints([
         "file",
+        "--summary",
+        "cross ping",
         "--target-team",
-        "atmux",
-        "--severity",
-        "high",
-        "--kind",
-        "heads-up",
-        "--source-kind",
-        "whip-velocity-gate",
-        "--source-id",
-        "whip-atmux-velocity-stalled",
-        "--title",
-        "atmux: velocity-stalled · 0 commits in 60min · whip-tried-3-menus",
-        "--body",
-        "Whip-velocity-gate strike threshold 3 reached for team atmux. Symptom: 0 commits in last 60min, lead pane idle/wedged/saturated, action-menu injections produced no commit-shaped reply.",
+        "team-b",
         "--team-dir",
-        teamDir,
+        filerDir,
       ]),
     );
     const id = out.trim();
-    expect(id).toMatch(/^c-[0-9a-f]{8}$/);
+    const target = openRepo(targetDir);
+    try {
+      const row = target.repo.getById(id);
+      expect(row?.incidentSummary).toBe("cross ping");
+      expect(row?.targetTeam).toBe("team-b");
+      expect(row?.originTeam).toBe("team-a");
+    } finally {
+      closeDatabase(target.db);
+    }
+    const filer = openRepo(filerDir);
+    try {
+      expect(filer.repo.getById(id)).toBe(null);
+    } finally {
+      closeDatabase(filer.db);
+    }
+  });
 
-    // Verify the row lands with every field the script intended
-    const { out: jsonOut } = await captureStdout(() =>
-      complaints([
-        "list",
-        "--source-kind",
-        "whip-velocity-gate",
-        "--target-team",
-        "atmux",
-        "--json",
-        "--team-dir",
-        teamDir,
-      ]),
+  test("unknown target refuses (no silent local fallback)", async () => {
+    await expect(
+      complaints(["file", "--summary", "x", "--target-team", "team-zz", "--team-dir", filerDir]),
+    ).rejects.toThrow(/not found in cockpit registry/);
+  });
+
+  test("ambiguous target refuses", async () => {
+    await writeFile(
+      process.env.ATMUX_COCKPIT_CONFIG as string,
+      JSON.stringify({
+        sessions: [
+          { type: "team", name: "dup", root: filerDir },
+          { type: "team", name: "dup", root: targetDir },
+        ],
+      }),
     );
-    const parsed = JSON.parse(jsonOut);
-    expect(Array.isArray(parsed)).toBe(true);
-    expect(parsed).toHaveLength(1);
-    expect(parsed[0].id).toBe(id);
-    expect(parsed[0].sourceKind).toBe("whip-velocity-gate");
-    expect(parsed[0].sourceId).toBe("whip-atmux-velocity-stalled");
-    expect(parsed[0].targetTeam).toBe("atmux");
-    expect(parsed[0].incidentSummary).toContain("atmux: velocity-stalled");
-    expect(parsed[0].rootCause).toContain("Whip-velocity-gate strike threshold");
-    expect(parsed[0].extra.kind).toBe("heads-up");
-    expect(parsed[0].extra.severity).toBe("high");
+    await expect(
+      complaints(["file", "--summary", "x", "--target-team", "dup", "--team-dir", filerDir]),
+    ).rejects.toThrow(/ambiguous \(2 matches/);
+  });
+
+  test("local file keeps originTeam null; list --target-team stays a local read", async () => {
+    const { out } = await captureStdout(() =>
+      complaints(["file", "--summary", "local ping", "--team-dir", filerDir]),
+    );
+    const id = out.trim();
+    const filer = openRepo(filerDir);
+    try {
+      expect(filer.repo.getById(id)?.originTeam).toBe(null);
+    } finally {
+      closeDatabase(filer.db);
+    }
+    const { out: hitOut } = await captureStdout(() =>
+      complaints(["list", "--target-team", "team-a", "--team-dir", filerDir]),
+    );
+    expect(hitOut).toContain(id);
+    const { out: missOut } = await captureStdout(() =>
+      complaints(["list", "--target-team", "team-b", "--team-dir", filerDir]),
+    );
+    expect(missOut).not.toContain(id);
   });
 });
