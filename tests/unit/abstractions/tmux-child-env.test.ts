@@ -58,6 +58,7 @@ import {
   TMUX_CHILD_UNSET_ENV,
 } from "../../../src/abstractions/tmux.ts";
 import { makeFixSupervisorMissingRecipe } from "../../../src/core/cursor-recipes/fix-supervisor-missing.ts";
+import { getAtmuxTmuxConfPath } from "../../../src/core/tmux-paths.ts";
 import { defaultTmuxSpawn } from "../../../src/verbs/doctor/types.ts";
 import { sendCageBrief } from "../../../src/verbs/poke.ts";
 import { installSpawnRecorder, type SpawnRecorder } from "../../helpers/spawn-recorder.ts";
@@ -208,6 +209,62 @@ describe("ADR-281 §D3 — every tmux spawn site deletes NO_COLOR from the child
     await spawn({ cmd: "true", expectExitCode: "any" });
     const recorder = rec as SpawnRecorder;
     expect(recorder.calls.map((c) => c.env?.NO_COLOR)).toEqual(["1"]);
+  });
+});
+
+describe("ADR-303 — raw cage-socket tmux spawns carry -f <conf> before the subcommand", () => {
+  const CAGE_SOCKET = "atmux-child-env-never-created";
+  const cageHandle = (agent: string): CageHandle => ({
+    tier: 2,
+    team: "t",
+    lane: "driver-2",
+    taskId: "t-0",
+    agent,
+    tmuxTmpdir: "/tmp/atmux-child-env-never-created",
+    tmuxSocket: CAGE_SOCKET,
+    workDir: "/tmp/atmux-child-env-never-created/work",
+    sessionName: "s",
+    windowName: "w",
+    createdAt: 0,
+  });
+
+  /** For every recorded call that dials the cage socket with `-L`, the two
+   *  tokens after the socket must be `-f <canonical conf>`: tmux only reads
+   *  `-f` before the subcommand, and only when that command starts the
+   *  server. Returns how many such calls were checked. */
+  function assertConfAfterCageSocket(recorder: SpawnRecorder): number {
+    const conf = getAtmuxTmuxConfPath();
+    const cageCalls = recorder.calls.filter((c) => {
+      const i = c.cmd.indexOf("-L");
+      return i >= 0 && c.cmd[i + 1] === CAGE_SOCKET;
+    });
+    expect(
+      cageCalls.map((c) => {
+        const i = c.cmd.indexOf("-L");
+        return c.cmd.slice(i, i + 4);
+      }),
+    ).toEqual(cageCalls.map(() => ["-L", CAGE_SOCKET, "-f", conf]));
+    return cageCalls.length;
+  }
+
+  test("verbs/poke.ts — sendCageBrief, operator branch", async () => {
+    await sendCageBrief(cageHandle("operator"), "brief body");
+    expect(assertConfAfterCageSocket(rec as SpawnRecorder)).toBe(3);
+  });
+
+  test("verbs/poke.ts — sendCageBrief, sudo branch", async () => {
+    await sendCageBrief(cageHandle("atmux-agent-t"), "brief body");
+    const recorder = rec as SpawnRecorder;
+    expect(recorder.calls.every((c) => (c.cmd[0] ?? "").endsWith("sudo"))).toBe(true);
+    expect(assertConfAfterCageSocket(recorder)).toBe(3);
+  });
+
+  test("abstractions/fallback-cage.ts — destroyFallbackCage raw teardown spawns", async () => {
+    await destroyFallbackCage(cageHandle("operator"), {
+      atmuxDir: "/tmp/atmux-child-env-never-created/.atmux",
+      tmuxFactory: () => createTmux({ socketPath: SOCKET_PATH }),
+    });
+    expect(assertConfAfterCageSocket(rec as SpawnRecorder)).toBeGreaterThan(0);
   });
 });
 

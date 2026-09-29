@@ -35,6 +35,7 @@ import {
   type RefusalClass,
   type RefusalDetectionResult,
 } from "./refusal-classifier.ts";
+import { getAtmuxTmuxConfPath } from "./tmux-paths.ts";
 
 /** Severity stored on a `refusal_events` row — `none` is never written
  *  (caller only writes when `detected === true`), so the column union
@@ -224,7 +225,9 @@ export async function scanTeamForRefusals(
   const filter = deps.memberFilter ?? (() => true);
 
   const session = await getSessionName({ dir: atmuxDir, team });
-  const tmux = deps.tmux ?? createTmux({ socketPath: resolveTeamSocket(team) });
+  const tmux =
+    deps.tmux ??
+    createTmux({ socketPath: resolveTeamSocket(team), configFile: getAtmuxTmuxConfPath() });
   const paneCapture: (target: string) => Promise<string> =
     deps.paneCapture ?? ((target: string) => tmux.pane.capturePane({ target, start: -50 }));
 

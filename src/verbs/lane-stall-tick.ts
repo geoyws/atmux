@@ -52,8 +52,9 @@ import {
   pruneDedupState,
   readDedupState,
 } from "../core/lane-stall.ts";
-import { type CaptureFn } from "../core/pane-state.ts";
+import type { CaptureFn } from "../core/pane-state.ts";
 import { type SafeSendOpts, type SendKeysFn, safeSendKeys } from "../core/safe-send.ts";
+import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
 import { UsageError } from "../errors.ts";
 import { DEFAULT_LANE_STALL_MIN_AGE_SEC, type Team, type TeamMember } from "../schema/team.ts";
 
@@ -226,7 +227,9 @@ export async function runLaneStallTick(
 
   // Resolve session + tmux for the fire-decision send-keys.
   const session = await getSessionName({ dir: atmuxDir, team });
-  const tmux = deps.tmux ?? createTmux({ socketPath: resolveTeamSocket(team) });
+  const tmux =
+    deps.tmux ??
+    createTmux({ socketPath: resolveTeamSocket(team), configFile: getAtmuxTmuxConfPath() });
   const capture: CaptureFn =
     deps.capture ?? ((target: string) => tmux.pane.capturePane({ target, start: -30 }));
   const sendKeys: SendKeysFn =

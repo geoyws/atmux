@@ -55,6 +55,7 @@ import {
   prunePhantomInProgressClaims,
 } from "../core/phantom-prune.ts";
 import { quiesceCron, softStop } from "../core/soft-stop.ts";
+import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
 import { UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
 import { removeCronBlocks } from "./cron-reaper.ts";
@@ -191,7 +192,7 @@ export async function stop(argv: ReadonlyArray<string>, opts: StopOpts = {}): Pr
   // `hasSession === false`, and exited 0 without killing the live cage.
   // Same fix as tell-lead / send / dispatch in this commit.
   const socketPath = parsed.socketPath ?? resolveTeamSocket(team);
-  const tmux = createTmux({ socketPath });
+  const tmux = createTmux({ socketPath, configFile: getAtmuxTmuxConfPath() });
 
   if (!(await tmux.session.hasSession(`=${sessionName}`))) {
     process.stderr.write(`atmux: warn: session ${sessionName} does not exist — nothing to stop\n`);

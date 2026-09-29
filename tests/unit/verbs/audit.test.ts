@@ -611,7 +611,7 @@ describe("defaultHasLiveSocket", () => {
 describe("buildTmuxConfig", () => {
   test("socketOverride takes precedence", () => {
     const cfg = buildTmuxConfig({ name: "t" }, "/tmp/override.sock");
-    expect(cfg).toEqual({ socketPath: "/tmp/override.sock" });
+    expect(cfg).toMatchObject({ socketPath: "/tmp/override.sock" });
   });
 
   test("falls through to resolveTeamSocket on tmuxTmpdir", () => {

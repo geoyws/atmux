@@ -39,6 +39,7 @@ import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.
 import { externalKanbanEnabled } from "../core/kanban-backend.ts";
 import { pauseMember } from "../core/pause.ts";
 import { sendToMember } from "../core/send.ts";
+import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import { type InboxEntry, Inbox as InboxSchema } from "../schema/inbox.ts";
 import { Kanban as KanbanSchema, type KanbanTask } from "../schema/kanban.ts";
@@ -330,7 +331,7 @@ export async function pollForFile(
 // ---------- Public verb entry ----------
 
 export interface HandoffOpts {
-  /** Tmux factory — defaults to `createTmux({ socketPath })`. */
+  /** Tmux factory — defaults to `defaultBuildTmux` (`createTmux` + canonical conf). */
   buildTmux?: (socketPath: string) => TmuxNamespace;
   /** File-existence poller — defaults to `pollForFile`. */
   pollFile?: (path: string, timeoutMs: number, intervalMs: number) => Promise<boolean>;
@@ -352,7 +353,7 @@ export interface HandoffOpts {
 /** Default tmux factory — exported so tests can drive the closure
  *  without going through the rotate() / handoff() verb wiring. */
 export function defaultBuildTmux(socketPath: string): TmuxNamespace {
-  return createTmux({ socketPath });
+  return createTmux({ socketPath, configFile: getAtmuxTmuxConfPath() });
 }
 
 /** Resolve the wait timeout from opts → env → default 30s. Exported so

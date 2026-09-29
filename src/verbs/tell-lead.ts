@@ -32,6 +32,7 @@ import {
 } from "../core/common.ts";
 import { recordHeadsUp, shouldEmitHeadsUp } from "../core/heads-up-cursor.ts";
 import { sendToMember } from "../core/send.ts";
+import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { Team, TeamMember } from "../schema/team.ts";
 
@@ -223,7 +224,7 @@ export async function tellLead(argv: ReadonlyArray<string>): Promise<number> {
   // the lead pane never woke" — exactly the 07:52 + 08:25 MYT
   // 2026-05-13 failures.
   const socketPath = parsed.socketPath ?? resolveTeamSocket(team);
-  const tmux = createTmux({ socketPath });
+  const tmux = createTmux({ socketPath, configFile: getAtmuxTmuxConfPath() });
   // EPIC e-a3077ca0 T6: self-heal window-name resolution. Resolve the
   // lead's window to its canonical (ADR-161 `_-prefix` default-member)
   // form, atomically renaming any legacy variant (`<emoji>-<name>`

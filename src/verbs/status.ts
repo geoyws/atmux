@@ -903,7 +903,7 @@ export async function status(argv: ReadonlyArray<string>): Promise<number> {
   const sessionName = await getSessionName({ ...dirOpts, team });
   const atmuxDir = await getAtmuxDir(dirOpts);
   const socketPath = parsed.socketPath ?? resolveTeamSocket(team);
-  const tmux = createTmux({ socketPath });
+  const tmux = createTmux({ socketPath, configFile: getAtmuxTmuxConfPath() });
   const snap = await gatherStatus(tmux, team, sessionName, atmuxDir);
   const heartbeatStaleSec = resolveHeartbeatStaleSec(team);
 

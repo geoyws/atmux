@@ -312,22 +312,27 @@ export function clientRowToObject(row: Record<string, string>): {
  * / `$TMUX_TMPDIR` env state — env-level isolation is belt-and-braces, the
  * socket flag is the load-bearing guarantee.
  *
- * **Config (optional)** — `configFile?: string` adds `-f <path>` after the
- * socket flag on every invocation. It is a generic API field: live-server
- * tests and selected production server-starting paths pass the canonical
- * `getAtmuxTmuxConfPath()` path. Other callers may provide a different path
- * or omit it; production callers that might start a server must be audited
- * before omission is treated as safe.
+ * **Config (optional in type, REQUIRED in production)** —
+ * `configFile?: string` adds `-f <path>` after the socket flag on
+ * every invocation. tmux starts a server implicitly for ANY subcommand
+ * against a dead socket (t-2ff4f48e: `list-keys` and `attach` both
+ * created conf-less production servers), so the "creating argv" cannot
+ * be identified by subcommand — every production namespace MUST pass
+ * the canonical `getAtmuxTmuxConfPath()` path, read-only callers
+ * included. `-f` is inert when the server already exists, so pinning
+ * it everywhere costs nothing and closes the whole class. Tests may
+ * omit it (see `tests/helpers/tmux.ts::createCanonicalAtmuxTmux` for
+ * the live-server default).
  */
 type SocketConfig =
   | { readonly socket: string; readonly socketPath?: never }
   | { readonly socketPath: string; readonly socket?: never };
 
 export type TmuxConfig = SocketConfig & {
-  /** Optional `-f <path>` flag appended after the socket flag. It is a
-   *  generic API field; live-server tests and selected production
-   *  server-starting paths use the canonical `getAtmuxTmuxConfPath()` helper
-   *  path. */
+  /** Optional `-f <path>` flag appended after the socket flag. Every
+   *  production caller passes the canonical `getAtmuxTmuxConfPath()`
+   *  path — any invocation can be the one that implicitly starts the
+   *  server (t-2ff4f48e), and `-f` is inert once it exists. */
   readonly configFile?: string;
   /** Test seam for `attachSessionInheritStdio`; defaults to the module import. */
   readonly hooks?: {

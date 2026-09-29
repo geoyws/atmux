@@ -151,6 +151,7 @@ import {
 import { resolveTmuxBin } from "../core/resolve-tmux-bin.ts";
 import { composerEmpty, safeSendKeysWithVerify } from "../core/safe-send.ts";
 import { checkStaleAnchor } from "../core/stale-anchor.ts";
+import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
 import {
   paneStateToSignal,
   runVelocityGateCheck,
@@ -972,7 +973,9 @@ export async function poke(argv: ReadonlyArray<string>, opts: PokeOpts = {}): Pr
   }
 
   const modalCyclingConfig = resolveModalCycling(team);
-  const tmuxNs = opts.tmux ?? createTmux({ socketPath: resolveTeamSocket(team) });
+  const tmuxNs =
+    opts.tmux ??
+    createTmux({ socketPath: resolveTeamSocket(team), configFile: getAtmuxTmuxConfPath() });
   const defaultCommitCount = makeDefaultCommitCount({ atmuxDir });
   const defaultClarifier = makeDefaultModalCyclingClarifier({
     team,
@@ -1703,6 +1706,10 @@ export async function sendCageBrief(handle: CageHandle, body: string): Promise<v
   // it. The sudo branch cannot rely on that (env_reset), so the scrub
   // rides in the `env(1)` argv prefix instead; the spawn-level `unsetEnv`
   // is kept there too so the two branches cannot drift apart.
+  // t-2ff4f48e: `load-buffer` against a dead cage socket implicitly
+  // starts the server, so both branches carry `-f <conf>` right after
+  // the socket flag — the creating argv must load the ADR-277 scrub.
+  const confPath = getAtmuxTmuxConfPath();
   const tmuxArgv = (
     rest: string[],
   ): {
@@ -1711,7 +1718,7 @@ export async function sendCageBrief(handle: CageHandle, body: string): Promise<v
     unsetEnv: ReadonlyArray<string>;
   } => ({
     ...(isOperator
-      ? { cmd: resolveTmuxBin(), argv: ["-L", handle.tmuxSocket, ...rest] }
+      ? { cmd: resolveTmuxBin(), argv: ["-L", handle.tmuxSocket, "-f", confPath, ...rest] }
       : {
           cmd: "sudo",
           argv: [
@@ -1723,6 +1730,8 @@ export async function sendCageBrief(handle: CageHandle, body: string): Promise<v
             resolveTmuxBin(),
             "-L",
             handle.tmuxSocket,
+            "-f",
+            confPath,
             ...rest,
           ],
         }),

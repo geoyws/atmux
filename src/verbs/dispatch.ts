@@ -41,6 +41,7 @@ import { claimTask, showTask } from "../core/kanban.ts";
 import { isPaused } from "../core/pause.ts";
 import { verifierForTui } from "../core/safe-send.ts";
 import { type SendOpts, sendToMember } from "../core/send.ts";
+import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
 import { resolveTarget } from "../core/window-id.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
@@ -200,7 +201,7 @@ export async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
     // text in their compose box — the original 2026-05-08 t-f786031f
     // symptom of "4 members stuck at compose for 4h20m".
     const socketPath = parsed.socketPath ?? resolveTeamSocket(team);
-    const tmux = createTmux({ socketPath });
+    const tmux = createTmux({ socketPath, configFile: getAtmuxTmuxConfPath() });
     // EPIC e-a3077ca0 T4: self-heal cross-format windows before
     // resolveTarget tries to find them by name. A cage continuously
     // running across the ADR-161 hyphen→underscore deploy will have

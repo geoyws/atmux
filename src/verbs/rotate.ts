@@ -38,6 +38,7 @@ import { writeLeadSessionStart } from "../core/lead-marker.ts";
 import { submitAfterPaste } from "../core/paste-submit.ts";
 import { safePreflight } from "../core/safe-send.ts";
 import { resolveBriefsDir } from "../core/templates-dir.ts";
+import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { Team, TeamMember } from "../schema/team.ts";
 
@@ -234,11 +235,11 @@ export function defaultSleep(ms: number): Promise<void> {
   return new Promise((res) => setTimeout(res, ms));
 }
 
-/** Default tmux factory — wraps `createTmux({ socketPath })`. Exported
+/** Default tmux factory — wraps `createTmux({ socketPath, configFile })`. Exported
  *  so tests can hit the closure body without going through the
  *  rotate() verb. */
 export function defaultBuildTmux(socketPath: string): TmuxNamespace {
-  return createTmux({ socketPath });
+  return createTmux({ socketPath, configFile: getAtmuxTmuxConfPath() });
 }
 
 /** `atmux rotate <member>` / `atmux rotate-lead`. Returns 0 on success. */
@@ -539,7 +540,9 @@ export async function rotate(argv: ReadonlyArray<string>, opts: RotateOpts = {})
     }
   }
 
-  stdout(`rotated ${target.name} (role=${role}, tui=${tui}${parsed.reason !== undefined ? `, reason=${parsed.reason}` : ""})\n`);
+  stdout(
+    `rotated ${target.name} (role=${role}, tui=${tui}${parsed.reason !== undefined ? `, reason=${parsed.reason}` : ""})\n`,
+  );
   return 0;
 }
 

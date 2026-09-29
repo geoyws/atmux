@@ -41,6 +41,7 @@ import {
 import { getAtmuxDir, getDefaultSocket, loadTeam, type ResolveDirOpts } from "../core/common.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { listTasks } from "../core/kanban.ts";
+import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { Cockpit, CockpitSessionT } from "../schema/cockpit.ts";
 import type { KanbanTask } from "../schema/kanban.ts";
@@ -567,14 +568,14 @@ export async function teamRename(
     cageTmux = opts.buildCageTmux(socketPath);
   } else {
     const { createTmux } = await import("../abstractions/tmux.ts");
-    cageTmux = createTmux({ socketPath });
+    cageTmux = createTmux({ socketPath, configFile: getAtmuxTmuxConfPath() });
   }
   let cockpitTmux: TmuxNamespace;
   if (opts.buildCockpitTmux !== undefined) {
     cockpitTmux = opts.buildCockpitTmux();
   } else {
     const { createTmux } = await import("../abstractions/tmux.ts");
-    cockpitTmux = createTmux({ socket: "atmux-cockpit" });
+    cockpitTmux = createTmux({ socket: "atmux-cockpit", configFile: getAtmuxTmuxConfPath() });
   }
   // e-419553c6: viewer host — the group server for grouped teams, the
   // cockpit session otherwise (see `viewerSession` resolution above).
@@ -585,7 +586,7 @@ export async function teamRename(
       viewerTmux = opts.buildGroupViewerTmux(groupSock);
     } else {
       const { createTmux } = await import("../abstractions/tmux.ts");
-      viewerTmux = createTmux({ socketPath: groupSock });
+      viewerTmux = createTmux({ socketPath: groupSock, configFile: getAtmuxTmuxConfPath() });
     }
   }
   const crontabIo = opts.crontab ?? (await import("../abstractions/crontab.ts")).defaultCrontabIO();

@@ -49,6 +49,7 @@ import {
   formatPruneIso,
   prunePhantomInProgressClaims,
 } from "../core/phantom-prune.ts";
+import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
 import { UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
 import { checkAgentShellEnv } from "./doctor/agent-env.ts";
@@ -527,7 +528,7 @@ async function fixStarvingMembers(
   // same way — a hand-built literal here would re-paste into a session
   // that may not exist under that name.
   const sessionName = await probeSessionName(team, { atmuxDir });
-  const tmux = createTmux({ socketPath });
+  const tmux = createTmux({ socketPath, configFile: getAtmuxTmuxConfPath() });
   const briefsDir = opts.briefsDir ?? defaultBriefsDir();
   const sleep =
     opts.sleep ??

@@ -62,6 +62,7 @@ import type {
   VoiceProviderConfig,
   VoiceProviderKind,
 } from "../abstractions/voice-provider.ts";
+import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
 import { createVerbMutex, type VerbFn } from "../core/verb-capture.ts";
 import { resolveVoxAsset } from "../core/vox/assets.ts";
 import { authorizeUpgrade } from "../core/vox/auth.ts";
@@ -1252,6 +1253,15 @@ export async function voice(
   return await vox(argv, overrides);
 }
 
+/** Default tmux namespace for `vox` — canonical atmux conf pinned via
+ *  `-f`. `--supervise` issues `new-session` (and its `has-session`
+ *  probe can implicitly start the server first), so the creating argv
+ *  must load the ADR-277 colour scrub. Exported for the argv unit
+ *  seam. */
+export function defaultVoxTmux(): TmuxNamespace {
+  return createTmux({ socket: VOX_TMUX_SOCKET, configFile: getAtmuxTmuxConfPath() });
+}
+
 /**
  * `atmux vox [flags]`.
  *
@@ -1283,7 +1293,7 @@ export async function vox(
     return 0;
   }
 
-  const tmux = overrides.tmux ?? createTmux({ socket: VOX_TMUX_SOCKET });
+  const tmux = overrides.tmux ?? defaultVoxTmux();
 
   if (args.action === "supervise") {
     const binOpts: Parameters<typeof resolveSuperviseBin>[0] = {};

@@ -28,6 +28,7 @@ import { loadCockpit, resolveCockpitConfigPath } from "../core/cockpit.ts";
 import { loadKanban } from "../core/kanban.ts";
 import { externalKanbanEnabled } from "../core/kanban-backend.ts";
 import { makeReapZombieWorktree, type ReapDeps, type ReapLogEntry } from "../core/reap.ts";
+import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
 import type {
   BranchOnParent,
   CronMarkerBlock,
@@ -68,7 +69,7 @@ export function defaultDiscoveryIO(): DiscoveryIO {
     },
     async cageAlive(socket) {
       try {
-        const tx = createTmux({ socketPath: socket });
+        const tx = createTmux({ socketPath: socket, configFile: getAtmuxTmuxConfPath() });
         return await tx.server.hasServer();
       } catch {
         return false;
@@ -261,7 +262,7 @@ async function listCageSocketsOnDisk(): Promise<TmuxSocketEntry[]> {
 async function isLiveCageSocket(socketPath: string): Promise<boolean> {
   if (!(await exists(socketPath))) return false;
   try {
-    const tx = createTmux({ socketPath });
+    const tx = createTmux({ socketPath, configFile: getAtmuxTmuxConfPath() });
     return await tx.server.hasServer();
   } catch {
     return false;
@@ -422,7 +423,7 @@ export function defaultReapDeps(): ReapDeps {
   });
   return {
     async killCageServer(socket) {
-      const tx = createTmux({ socketPath: socket });
+      const tx = createTmux({ socketPath: socket, configFile: getAtmuxTmuxConfPath() });
       await tx.server.killServer();
     },
     async cronReaperReap(scope) {
@@ -465,7 +466,7 @@ export function defaultReapDeps(): ReapDeps {
       // 3. Delegates to the unit-tested predicate; the only production
       // wiring is the real tmux session-lister.
       return isCageActiveWith(() => {
-        const tx = createTmux({ socketPath: socket });
+        const tx = createTmux({ socketPath: socket, configFile: getAtmuxTmuxConfPath() });
         return tx.session.listSessions();
       });
     },

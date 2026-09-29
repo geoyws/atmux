@@ -44,6 +44,7 @@ import {
   formatDurationCompact,
 } from "../core/lane-drift.ts";
 import { classifyText, maybeLogUnknownPane, type PaneClassification } from "../core/pane-state.ts";
+import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
 import { UsageError } from "../errors.ts";
 import type { KanbanTask } from "../schema/kanban.ts";
 import type { Team } from "../schema/team.ts";
@@ -261,7 +262,7 @@ export async function runLaneDriftCheck(
   const tmux =
     deps.tmux ??
     (deps.classifyMember === undefined
-      ? createTmux({ socketPath: resolveTeamSocket(team) })
+      ? createTmux({ socketPath: resolveTeamSocket(team), configFile: getAtmuxTmuxConfPath() })
       : undefined);
 
   const inFlightLister =

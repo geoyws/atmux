@@ -49,6 +49,7 @@ import {
 import { appendInboxMessage } from "../core/inbox.ts";
 import { verifierForTui } from "../core/safe-send.ts";
 import { type SendOpts, sendToMember } from "../core/send.ts";
+import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
 
@@ -382,7 +383,7 @@ export async function send(argv: ReadonlyArray<string>): Promise<number> {
   // sister-pattern of the resolveTeamSocket migration already applied
   // to whip / up / lane-tick / audit / status / doctor.
   const socketPath = parsed.socketPath ?? resolveTeamSocket(team);
-  const tmux = createTmux({ socketPath });
+  const tmux = createTmux({ socketPath, configFile: getAtmuxTmuxConfPath() });
 
   const sendOpts: SendOpts = {
     verify: !parsed.noVerify,

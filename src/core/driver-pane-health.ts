@@ -27,6 +27,7 @@ import type { Team } from "../schema/team.ts";
 import { getSessionName, resolveTeamSocket } from "./common.ts";
 import { resolveDriversList } from "./drivers.ts";
 import { type CaptureFn, classifyPane, type PaneState } from "./pane-state.ts";
+import { getAtmuxTmuxConfPath } from "./tmux-paths.ts";
 
 /** Snapshot of the driver pane's health at probe time. */
 export interface DriverPaneHealth {
@@ -95,7 +96,9 @@ export async function probeDriverPane(
     });
   }
 
-  const tmux = deps.tmux ?? createTmux({ socketPath: resolveTeamSocket(team) });
+  const tmux =
+    deps.tmux ??
+    createTmux({ socketPath: resolveTeamSocket(team), configFile: getAtmuxTmuxConfPath() });
   const session = await getSessionName({ dir: atmuxDir, team });
 
   const listWindowNames =
@@ -158,7 +161,9 @@ export async function probeDriverPanes(
     }));
   }
 
-  const tmux = deps.tmux ?? createTmux({ socketPath: resolveTeamSocket(team) });
+  const tmux =
+    deps.tmux ??
+    createTmux({ socketPath: resolveTeamSocket(team), configFile: getAtmuxTmuxConfPath() });
   const session = await getSessionName({ dir: atmuxDir, team });
   const listWindowNames =
     deps.listWindowNames ??

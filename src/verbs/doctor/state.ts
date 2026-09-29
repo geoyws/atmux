@@ -13,6 +13,7 @@ import { loadInbox } from "../../core/inbox.ts";
 import { listTasks } from "../../core/kanban.ts";
 import { externalKanbanEnabled } from "../../core/kanban-backend.ts";
 import { findPhantomInProgressClaims } from "../../core/phantom-prune.ts";
+import { getAtmuxTmuxConfPath } from "../../core/tmux-paths.ts";
 import { Kanban } from "../../schema/kanban.ts";
 import type { Team } from "../../schema/team.ts";
 import type { DoctorRow } from "./types.ts";
@@ -167,7 +168,10 @@ export async function checkPhantomInboxes(atmuxDir: string): Promise<DoctorRow[]
  *  ADR-026 (the deprecated mode isn't the prune target). */
 export async function probeLiveMembers(team: Team, atmuxDir: string): Promise<ReadonlySet<string>> {
   try {
-    const tmux = createTmux({ socketPath: resolveTeamSocket(team) });
+    const tmux = createTmux({
+      socketPath: resolveTeamSocket(team),
+      configFile: getAtmuxTmuxConfPath(),
+    });
     const session = await resolveCageSessionName({ name: team.name, root: dirname(atmuxDir) });
     if (!(await tmux.session.hasSession(session))) return new Set();
     const windows = await tmux.window.listWindows(session);

@@ -62,6 +62,7 @@ import {
 } from "./common.ts";
 import { readHeartbeat } from "./heartbeat.ts";
 import { classifyText, type PaneState } from "./pane-state.ts";
+import { getAtmuxTmuxConfPath } from "./tmux-paths.ts";
 import {
   classifyPaneObservation,
   type PaneObservation,
@@ -348,7 +349,7 @@ export async function probeCageState(
   // resolve one, else the bare-name default (e-419553c6: session names
   // dropped the `atmux-` prefix). See `ProbeCageStateOpts`.
   const sessionName = opts.sessionName ?? team.name;
-  const tmux = opts.tmux ?? createTmux({ socketPath });
+  const tmux = opts.tmux ?? createTmux({ socketPath, configFile: getAtmuxTmuxConfPath() });
   const spawnProbe = opts.spawnProbe ?? defaultSpawn;
   const hasSession =
     opts.hasSession ??

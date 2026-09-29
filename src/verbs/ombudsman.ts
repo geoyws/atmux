@@ -65,6 +65,7 @@ import {
   type SendKeysFn,
   safeSendKeysWithVerify,
 } from "../core/safe-send.ts";
+import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
 import { UsageError } from "../errors.ts";
 import type { Team, TeamMember } from "../schema/team.ts";
 
@@ -290,7 +291,9 @@ async function ombudsmanTick(parsed: ParsedOmbudsmanArgs, deps: OmbudsmanDeps): 
     capture = deps.capture;
     sendKeys = deps.sendKeys;
   } else {
-    const tmux = deps.tmux ?? createTmux({ socketPath: resolveTeamSocket(team) });
+    const tmux =
+      deps.tmux ??
+      createTmux({ socketPath: resolveTeamSocket(team), configFile: getAtmuxTmuxConfPath() });
     capture = async (target: string) => await tmux.pane.capturePane({ target, start: -30 });
     sendKeys = async (target: string, text: string, opts) =>
       await tmux.pane.sendKeys({

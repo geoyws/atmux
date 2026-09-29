@@ -79,7 +79,7 @@ import {
   type SendKeysFn,
   safeSendKeysWithVerify as safeSendKeysWithVerifyDefault,
 } from "../core/safe-send.ts";
-import { getCockpitSocketName } from "../core/tmux-paths.ts";
+import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.ts";
 import { posixQuote, shellPaneCommand } from "../core/tui-cmd.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type {
@@ -446,7 +446,10 @@ interface ViewerHost {
 
 /** The cockpit-session host (gate-1 + medic + ungrouped team-driver). */
 function cockpitViewerHost(deps: ResolvedDeps): ViewerHost {
-  return { cfg: { socket: deps.cockpitSocketName }, sessionName: deps.cockpitSessionName };
+  return {
+    cfg: { socket: deps.cockpitSocketName, configFile: getAtmuxTmuxConfPath() },
+    sessionName: deps.cockpitSessionName,
+  };
 }
 
 /** Resolve the viewer host for a rotate target. Best-effort: a
@@ -471,7 +474,10 @@ async function resolveViewerHost(
   }
   const lookup = findTeamByName(cockpit, sessionName);
   if (lookup?.group === undefined) return cockpitViewerHost(deps);
-  return { cfg: { socketPath: groupSocketPath(lookup.group) }, sessionName: lookup.group };
+  return {
+    cfg: { socketPath: groupSocketPath(lookup.group), configFile: getAtmuxTmuxConfPath() },
+    sessionName: lookup.group,
+  };
 }
 
 /** Capture a cockpit-session pane's last N lines via the cockpit socket.

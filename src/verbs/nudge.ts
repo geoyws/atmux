@@ -33,6 +33,7 @@ import {
   requireTeam,
   resolveTeamSocket,
 } from "../core/common.ts";
+import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
 import {
   classifyPaneObservation,
   type PaneObservation,
@@ -220,7 +221,7 @@ function stdoutLog(line: string): void {
  *  the production wiring is reachable from a test without a tmux server
  *  — `createTmux` only closes over the socket, it starts nothing. */
 export function defaultNudgeTmux(socketPath: string): TmuxNamespace {
-  return createTmux({ socketPath });
+  return createTmux({ socketPath, configFile: getAtmuxTmuxConfPath() });
 }
 
 /**

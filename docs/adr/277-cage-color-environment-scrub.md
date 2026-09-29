@@ -75,3 +75,16 @@ Cages resolve the conf through `resolveTemplatesDir` → `/opt/atmux/<v>/templat
 ## Out of scope
 
 `CLAUDECODE=1`, `CLAUDE_CODE_CHILD_SESSION=1`, `CLAUDE_CODE_SESSION_ID` and `CLAUDE_CODE_EXECPATH` also leak from the launching Bash tool into every pane of an agent-launched cage. `CLAUDE_CODE_SESSION_ID` in particular is a stale identifier being handed to processes that have nothing to do with that session. No user-visible fault has been traced to them, and scrubbing tool-detection variables could change how tools inside a cage behave — a separate decision with its own risk, not a rider on a colour fix. Recorded so the next reader finds it already seen rather than missed.
+
+## §Amendment 2026-09-29 (t-2ff4f48e; [ADR-303](303-tmux-conf-on-every-production-argv.md))
+
+The arrival half is now structural: every production tmux argv carries
+`-f <canonical conf>` (all `createTmux` namespaces plus the two raw
+cage-socket spawn paths), because any subcommand against a dead socket
+can be the creating one. The §D1 sentence "this covers every cage,
+however it was launched" stays retracted (per the ADR-281 note above);
+with ADR-303 it is true for every server born through atmux, and still
+not true for servers born through bare out-of-band tmux. Deferred,
+explicitly not riders: the conf-provenance sentinel, `doctor`
+environment checks, the `has-server` creation guard, and making
+`configFile` a required field (see ADR-303 §D3).

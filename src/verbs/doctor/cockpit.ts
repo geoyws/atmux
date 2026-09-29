@@ -18,6 +18,7 @@ import {
   resolveTeamSocket,
   tryLoadTeam,
 } from "../../core/common.ts";
+import { getAtmuxTmuxConfPath } from "../../core/tmux-paths.ts";
 import type { Team, TeamMember } from "../../schema/team.ts";
 import {
   type DoctorRow,
@@ -50,7 +51,10 @@ export async function checkOrphanSessions(
   const hasSession =
     opts.hasSession ??
     (async (name: string) => {
-      const tmux = createTmux({ socketPath: resolveTeamSocket(team) });
+      const tmux = createTmux({
+        socketPath: resolveTeamSocket(team),
+        configFile: getAtmuxTmuxConfPath(),
+      });
       return await tmux.session.hasSession(exactSessionTarget(name));
     });
   // e-419553c6: the bare `<team>` name is the CURRENT default, so a
@@ -223,7 +227,7 @@ export async function checkMemberCageStates(
   const hasSession =
     opts.hasSession ??
     (async (name: string, sock: string) => {
-      const tmux = createTmux({ socketPath: sock });
+      const tmux = createTmux({ socketPath: sock, configFile: getAtmuxTmuxConfPath() });
       return await tmux.session.hasSession(exactSessionTarget(name));
     });
   if (!(await hasSession(sessionName, socketPath))) return [];

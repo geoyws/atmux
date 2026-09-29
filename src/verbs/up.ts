@@ -29,6 +29,7 @@ import {
   type SessionNameOpts,
   teamJsonPath,
 } from "../core/common.ts";
+import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
 import { type AnsiPalette, createLogger, defaultPalette, type Logger } from "../core/tui.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import { attach, exactSessionTarget } from "./attach.ts";
@@ -169,7 +170,10 @@ function defaultHasSession(
 ): (sessionName: string) => Promise<boolean> {
   return async (sessionName: string) => {
     const team = await requireTeam(buildResolveDirOpts(env, cwd, teamDir));
-    const tmux = createTmux({ socketPath: resolveTeamSocket(team) });
+    const tmux = createTmux({
+      socketPath: resolveTeamSocket(team),
+      configFile: getAtmuxTmuxConfPath(),
+    });
     return await tmux.session.hasSession(exactSessionTarget(sessionName));
   };
 }

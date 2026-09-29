@@ -118,7 +118,7 @@ export interface ResolveTeamWindowDeps {
    *  prior single-socket `resolveTeamSocket(teamShape)` path from
    *  t-b5864443 — see ADR-063 follow-up commit 3cab619. */
   resolveCageSocket?: (teamName: string, teamRoot: string) => Promise<string>;
-  /** Build the team's cage TmuxNamespace. Default `createTmux({socketPath})`.
+  /** Build the team's cage TmuxNamespace. Default `defaultCageTmuxFactory` (`createTmux` + canonical conf).
    *  Receives the socket path resolved by `resolveCageSocket` so tests
    *  can capture which candidate was picked. */
   createCageTmux?: (socketPath: string) => TmuxNamespace;
@@ -218,8 +218,8 @@ export async function resolveTeamWindowMode(
   }
 }
 
-function defaultCageTmuxFactory(socketPath: string): TmuxNamespace {
-  return createTmux({ socketPath });
+export function defaultCageTmuxFactory(socketPath: string): TmuxNamespace {
+  return createTmux({ socketPath, configFile: getAtmuxTmuxConfPath() });
 }
 
 /**
@@ -487,7 +487,10 @@ export async function reconcileGroupServers(
       plans,
       COCKPIT_RECONCILE_CONCURRENCY,
       async ({ group, wanted }) => {
-        const gTmux = factory({ socketPath: groupSocketPath(group.name) });
+        const gTmux = factory({
+          socketPath: groupSocketPath(group.name),
+          configFile: getAtmuxTmuxConfPath(),
+        });
         if (!(await gTmux.session.hasSession(exactSessionTarget(group.name)))) return [];
         const wantedNames = new Set(wanted.map((w) => w.name));
         let windows: Array<{ name: string }>;
@@ -1050,7 +1053,7 @@ export async function cockpitAttach(
   const cockpit = await loadCockpit(loadOpts);
 
   const socket = getCockpitSocketName(env);
-  const tmux = factory({ socket });
+  const tmux = factory({ socket, configFile: getAtmuxTmuxConfPath() });
   return attachWithTmux(tmux, cockpit.cockpitSession, { inheritStdio: parsed.human === true });
 }
 
@@ -1161,7 +1164,7 @@ export async function cockpitRebuild(
     await timedPhase(logger, "2 cycle-cages", () =>
       mapWithConcurrency(teams, COCKPIT_RECONCILE_CONCURRENCY, async (t) => {
         const sock = await resolveCageSocket(t.name, t.root);
-        const cageTmux = factory({ socketPath: sock });
+        const cageTmux = factory({ socketPath: sock, configFile: getAtmuxTmuxConfPath() });
         // e-419553c6 bare-name migration for LIVE cages. A live cage is
         // deliberately not restarted below, so it never routes through
         // start.ts's own migration — rename its legacy `atmux-<team>`
@@ -1252,7 +1255,7 @@ export async function cockpitRebuild(
   await timedPhase(logger, "3 cage-prefix", () =>
     mapWithConcurrency(teams, COCKPIT_RECONCILE_CONCURRENCY, async (t) => {
       const sock = await resolveCageSocket(t.name, t.root);
-      const cageTmux = factory({ socketPath: sock });
+      const cageTmux = factory({ socketPath: sock, configFile: getAtmuxTmuxConfPath() });
       let prefix: string | undefined;
       try {
         prefix = resolvePrefix(t.level + 2, cockpit.prefixChain);
@@ -1276,7 +1279,7 @@ export async function cockpitRebuild(
     await timedPhase(logger, "4 tui-autolaunch", () =>
       mapWithConcurrency(teams, COCKPIT_RECONCILE_CONCURRENCY, async (t) => {
         const sock = await resolveCageSocket(t.name, t.root);
-        const cageTmux = factory({ socketPath: sock });
+        const cageTmux = factory({ socketPath: sock, configFile: getAtmuxTmuxConfPath() });
         // --dry-run: send-keys is recorded-not-executed, so the post-spawn
         // readiness probe would poll live panes (up to 30s each) for a TUI
         // that was never launched — skip it; the send-keys intent is in
@@ -1522,7 +1525,7 @@ export async function cockpitMigrateSocket(
   const keepLegacy = parsed.keepLegacy ?? false;
 
   // Phase 1 — discovery on the operator's default tmux socket.
-  const legacyTmux = factory({ socket: "default" });
+  const legacyTmux = factory({ socket: "default", configFile: getAtmuxTmuxConfPath() });
   let sessions: { name: string; windows: number; created: number }[];
   try {
     sessions = await legacyTmux.session.listSessions();

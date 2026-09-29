@@ -44,6 +44,7 @@ import {
   writeProgressCursor,
 } from "../core/discorder.ts";
 import { defaultStdoutWrite, type Writer } from "../core/io.ts";
+import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { ConfigError, LockError, LockTimeoutError, UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
@@ -341,7 +342,9 @@ async function runHeartbeat(
   if (team === null) return 0;
 
   const sessionName = await getSessionName({ ...dirOpts, team });
-  const tmux = opts.tmux ?? createTmux({ socketPath: resolveTeamSocket(team) });
+  const tmux =
+    opts.tmux ??
+    createTmux({ socketPath: resolveTeamSocket(team), configFile: getAtmuxTmuxConfPath() });
 
   const snap = await aggregateHeartbeat(team, atmuxDir, sessionName, tmux, {
     ...(opts.nowMs !== undefined ? { nowMs: opts.nowMs } : {}),

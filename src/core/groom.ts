@@ -41,6 +41,7 @@ import { createTmux } from "../abstractions/tmux.ts";
 import { Kanban } from "../schema/kanban.ts";
 import { hasLiveChildCages } from "./cage-children.ts";
 import { kanbanJsonPath, archiveDir as resolveArchiveDir } from "./common.ts";
+import { getAtmuxTmuxConfPath } from "./tmux-paths.ts";
 
 // ---------- Shared time helpers ----------
 
@@ -989,7 +990,7 @@ export interface SweepZombieSocketsOpts {
   /** When true, scans + reports counts but does NOT kill or remove. */
   dryRun?: boolean;
   /** Test injection — replace the tmux kill-server call. Production
-   *  uses `createTmux({ socketPath }).server.killServer()`. */
+   *  uses `createTmux({ socketPath, configFile }).server.killServer()`. */
   killServer?: (socketPath: string) => Promise<void>;
   /** ADR-252 (t-65bec10b) test seam — live-child-cage guard. Default:
    *  real {@link hasLiveChildCages}. Returns `true` when a nested cage
@@ -1114,7 +1115,7 @@ export async function sweepZombieTmuxSockets(
  *  Exported for the unit seam (t-b618e465): the missing-socket case
  *  fails fast with no side effects, pinning the fail-loud contract. */
 export async function defaultKillServer(socketPath: string): Promise<void> {
-  const tmux = createTmux({ socketPath });
+  const tmux = createTmux({ socketPath, configFile: getAtmuxTmuxConfPath() });
   await tmux.server.killServer();
 }
 

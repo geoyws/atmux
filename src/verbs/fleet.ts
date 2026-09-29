@@ -65,6 +65,7 @@ import {
 } from "../core/cockpit.ts";
 import { buildWindowName, resolveTeamSocket, tryLoadTeam } from "../core/common.ts";
 import { readDriverInbox } from "../core/driver-inbox.ts";
+import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
 import {
   ATTENTION_TOP_DEFAULT,
   ATTENTION_TOP_MAX,
@@ -220,6 +221,13 @@ export {
   type WindowProbe,
 } from "../core/vox/fleet.ts";
 
+/** Default per-socket tmux factory — canonical atmux conf pinned via
+ *  `-f` so a probe that is first on a dead socket still starts a
+ *  scrubbed server (ADR-277). Exported for the argv unit seam. */
+export function defaultFleetTmux(socketPath: string): TmuxNamespace {
+  return createTmux({ socketPath, configFile: getAtmuxTmuxConfPath() });
+}
+
 /**
  * Production per-team probe. Resolves the socket + the ANCHOR-AWARE
  * session name, enumerates windows, then reads each one.
@@ -238,7 +246,7 @@ export async function probeTeamLive(
   const socketPath =
     roster !== null ? resolveTeamSocket(roster) : await resolveCageSocket(team.name, team.root);
   const sessionName = await resolveCageSessionName({ name: team.name, root: team.root });
-  const tmux = (deps.tmux ?? ((s: string) => createTmux({ socketPath: s })))(socketPath);
+  const tmux = (deps.tmux ?? defaultFleetTmux)(socketPath);
 
   const asks = await readTeamAsks(team, nowSec);
 

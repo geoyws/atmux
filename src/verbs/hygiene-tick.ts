@@ -60,6 +60,7 @@ import {
 import { HygieneRepo } from "../core/repositories/hygiene-repo.ts";
 import type { FixDeps, TeamState } from "../core/superdoctor-hygiene/_shared.ts";
 import { type DrainTickResult, drainTick } from "../core/superdoctor-hygiene/drain.ts";
+import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
 import { UsageError } from "../errors.ts";
 
 /** Default minimum age (seconds) before a phantom is opportunistically
@@ -466,7 +467,7 @@ async function defaultLiveMembersProbe(
   try {
     const sessionName = await getSessionName({ ...dirOpts, team });
     const socketPath = resolveTeamSocket(team);
-    const tmux = createTmux({ socketPath });
+    const tmux = createTmux({ socketPath, configFile: getAtmuxTmuxConfPath() });
     if (!(await tmux.session.hasSession(`=${sessionName}`))) return new Set();
     const windows = await tmux.window.listWindows(sessionName);
     const liveNames = new Set(windows.map((w) => w.name));

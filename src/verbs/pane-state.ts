@@ -32,6 +32,7 @@ import {
 } from "../core/common.ts";
 import { readLeadWindowName, type SkillsTeamPathsOpts } from "../core/lead-marker.ts";
 import { classifyText, type PaneClassification } from "../core/pane-state.ts";
+import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { Team, TeamMember } from "../schema/team.ts";
 
@@ -176,7 +177,7 @@ export async function paneState(argv: ReadonlyArray<string>): Promise<number> {
   }
   const sessionName = await getSessionName({ ...dirOpts, team });
   const socketPath = parsed.socketPath ?? resolveTeamSocket(team);
-  const tmux = createTmux({ socketPath });
+  const tmux = createTmux({ socketPath, configFile: getAtmuxTmuxConfPath() });
   const cls = await paneStateWithTmux(tmux, team, sessionName, memberEntry);
   if (parsed.json) {
     process.stdout.write(`${JSON.stringify(cls)}\n`);

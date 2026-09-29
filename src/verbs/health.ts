@@ -28,6 +28,7 @@ import {
   resolveTeamSocket,
 } from "../core/common.ts";
 import { DEFAULT_HEARTBEAT_STALE_SEC, readHeartbeatAges } from "../core/heartbeat.ts";
+import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
 import { UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
 import { gatherStatus, type KanbanCounts, type StatusSnapshot } from "./status.ts";
@@ -275,6 +276,15 @@ export async function gatherHealth(
 
 // ---------- Verb entry ----------
 
+/** Default tmux factory — wraps `createTmux` with the canonical atmux
+ *  conf so the probe carries `-f` even when it is first on a dead
+ *  socket (any tmux subcommand implicitly starts the server; the
+ *  creating argv must load the ADR-277 colour scrub). Exported so tests
+ *  can drive the closure without going through the verb wiring. */
+export function defaultBuildTmux(socketPath: string): TmuxNamespace {
+  return createTmux({ socketPath, configFile: getAtmuxTmuxConfPath() });
+}
+
 /** Build-tmux injection seam (mirrors `status` / `rotate` patterns so
  *  the verb is unit-testable without a real tmux server). */
 export interface HealthOpts {
@@ -290,7 +300,7 @@ export async function health(argv: ReadonlyArray<string>, opts: HealthOpts = {})
   const sessionName = await getSessionName({ ...dirOpts, team });
   const atmuxDir = await getAtmuxDir(dirOpts);
   const socketPath = parsed.socketPath ?? resolveTeamSocket(team);
-  const tmux = (opts.buildTmux ?? ((sp) => createTmux({ socketPath: sp })))(socketPath);
+  const tmux = (opts.buildTmux ?? defaultBuildTmux)(socketPath);
   const snap = await gatherHealth(
     tmux,
     team,

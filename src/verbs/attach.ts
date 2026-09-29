@@ -51,6 +51,7 @@ import {
   type ResolveDirOpts,
   requireTeam,
 } from "../core/common.ts";
+import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 
 /** Re-export for back-compat with existing tests; new code imports
@@ -168,6 +169,15 @@ export async function attachWithTmux(
   }
 }
 
+/** Default tmux namespace for `attach` — canonical atmux conf pinned
+ *  via `-f`. `attach-session` against a dead socket implicitly starts
+ *  the server, so the attach argv itself must carry the conf (ADR-277);
+ *  that is the `grp-geoyws` shape from t-2ff4f48e. Exported for the
+ *  argv unit seam. */
+export function defaultAttachTmux(socketPath: string): TmuxNamespace {
+  return createTmux({ socketPath, configFile: getAtmuxTmuxConfPath() });
+}
+
 /**
  * `atmux attach [--socket <path>] [--team-dir <dir>]`.
  *
@@ -186,5 +196,5 @@ export async function attach(args: ReadonlyArray<string>): Promise<number> {
   const sessionName = await getSessionName({ ...dirOpts, team });
   const socketPath = parsed.socketPath ?? defaultSocketPath(team.name);
 
-  return attachWithTmux(createTmux({ socketPath }), sessionName);
+  return attachWithTmux(defaultAttachTmux(socketPath), sessionName);
 }

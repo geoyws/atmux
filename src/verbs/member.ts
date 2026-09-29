@@ -81,7 +81,6 @@ import {
   teamJsonPath,
 } from "../core/common.ts";
 import { resolveDriversList } from "../core/drivers.ts";
-import { SUPERDRIVER_WINDOW_NAME } from "../core/superdriver.ts";
 import { writeHeartbeat } from "../core/heartbeat.ts";
 import { loadInbox, movePendingToInProgress } from "../core/inbox.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
@@ -92,6 +91,8 @@ import {
   MEMBER_SELF_STATUS_VALUES,
   writeMemberStatus,
 } from "../core/member-status.ts";
+import { SUPERDRIVER_WINDOW_NAME } from "../core/superdriver.ts";
+import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { Team as TeamShape } from "../schema/team.ts";
 import { Team, type TeamMember } from "../schema/team.ts";
@@ -332,8 +333,8 @@ export async function memberRenameInternal(
   const buildTmux = opts.buildTmux ?? createTmux;
   const tmuxCfg: TmuxConfig =
     parsed.socketPath !== undefined
-      ? { socketPath: parsed.socketPath }
-      : { socketPath: resolveTeamSocket(teamPre) };
+      ? { socketPath: parsed.socketPath, configFile: getAtmuxTmuxConfPath() }
+      : { socketPath: resolveTeamSocket(teamPre), configFile: getAtmuxTmuxConfPath() };
   const tmux = buildTmux(tmuxCfg);
 
   let sessionName: string | null = null;
@@ -713,8 +714,8 @@ async function probeLiveSession(opts: {
 }): Promise<{ tmux: TmuxNamespace; sessionName: string } | null> {
   const tmuxCfg: TmuxConfig =
     opts.socketPath !== undefined
-      ? { socketPath: opts.socketPath }
-      : { socketPath: resolveTeamSocket(opts.team) };
+      ? { socketPath: opts.socketPath, configFile: getAtmuxTmuxConfPath() }
+      : { socketPath: resolveTeamSocket(opts.team), configFile: getAtmuxTmuxConfPath() };
   const tmux = opts.buildTmux(tmuxCfg);
   let sessionName: string | null = null;
   try {

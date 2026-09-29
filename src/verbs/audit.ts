@@ -67,6 +67,7 @@ import {
 } from "../core/common.ts";
 import { defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { resolveSuperdriver, SUPERDRIVER_WINDOW_NAME } from "../core/superdriver.ts";
+import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
 import { UsageError } from "../errors.ts";
 import { Team } from "../schema/team.ts";
 
@@ -626,13 +627,14 @@ export function buildTmuxConfig(
   socketOverride?: string,
 ): TmuxConfig {
   if (socketOverride !== undefined && socketOverride.length > 0) {
-    return { socketPath: socketOverride };
+    return { socketPath: socketOverride, configFile: getAtmuxTmuxConfPath() };
   }
   return {
     socketPath: resolveTeamSocket({
       name: team.name,
       tmuxTmpdir: typeof team.tmuxTmpdir === "string" ? team.tmuxTmpdir : undefined,
     }),
+    configFile: getAtmuxTmuxConfPath(),
   };
 }
 

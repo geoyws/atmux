@@ -48,6 +48,7 @@ import {
   safeSendKeys,
   safeSendKeysWithVerify,
 } from "../core/safe-send.ts";
+import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { Team, TeamMember } from "../schema/team.ts";
 import { parseLeadCtxPct } from "./poke.ts";
@@ -200,7 +201,9 @@ export async function runLaneTick(
   deps: LaneTickDeps = {},
 ): Promise<LaneTickResult> {
   const log = deps.log ?? defaultLog;
-  const tmux = deps.tmux ?? createTmux({ socketPath: resolveTeamSocket(team) });
+  const tmux =
+    deps.tmux ??
+    createTmux({ socketPath: resolveTeamSocket(team), configFile: getAtmuxTmuxConfPath() });
   const sendFn = deps.sendFn ?? safeSendKeys;
   const capture: CaptureFn =
     deps.capture ?? ((target: string) => tmux.pane.capturePane({ target, start: -30 }));
@@ -635,7 +638,9 @@ export async function runLaneTickForOne(
     };
   }
 
-  const tmux = deps.tmux ?? createTmux({ socketPath: resolveTeamSocket(team) });
+  const tmux =
+    deps.tmux ??
+    createTmux({ socketPath: resolveTeamSocket(team), configFile: getAtmuxTmuxConfPath() });
   const capture: CaptureFn =
     deps.capture ?? ((target: string) => tmux.pane.capturePane({ target, start: -30 }));
   const shimOps: WindowShimOps | null =

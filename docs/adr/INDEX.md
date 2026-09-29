@@ -262,6 +262,7 @@
 | 300 | Cockpit reconcile dry-run preview (recording tmux wrapper + plan print, exit 0) | 2026-09-29 | accepted |
 | 301 | Test-cage leak reaper — SAFETY invariant + `atmux test-reaper` verb (implements ADR-178 T3) | 2026-09-29 | accepted |
 | 302 | Host-aware `bun build --compile` target (host default + `ATMUX_BUN_TARGET` / `--target` override) | 2026-09-29 | accepted |
+| 303 | Every production tmux argv carries `-f <atmux conf>` (t-2ff4f48e conf-arrival fix; amends ADR-277) | 2026-09-29 | accepted |
 
 ## Superseded (skip)
 

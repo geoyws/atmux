@@ -512,6 +512,11 @@ export async function destroyFallbackCage(
       argv: [
         "-L",
         handle.tmuxSocket,
+        // t-2ff4f48e: a probe that is first on a dead socket IS the
+        // creating argv — carry `-f` so the server it starts loads the
+        // ADR-277 colour scrub.
+        "-f",
+        getAtmuxTmuxConfPath(),
         "capture-pane",
         "-t",
         `${handle.sessionName}:${handle.windowName}`,
@@ -545,7 +550,10 @@ export async function destroyFallbackCage(
   // Kill the cage tmux session. Idempotent: ignore non-zero exit
   // (session already gone is fine).
   if (handle.agent === "operator") {
-    const tmux = tmuxFactory({ socket: handle.tmuxSocket });
+    const tmux = tmuxFactory({
+      socket: handle.tmuxSocket,
+      configFile: getAtmuxTmuxConfPath(),
+    });
     try {
       await tmux.session.killSession(handle.sessionName);
     } catch {
@@ -564,6 +572,10 @@ export async function destroyFallbackCage(
         resolveTmuxBin(),
         "-L",
         handle.tmuxSocket,
+        // t-2ff4f48e: same creating-argv rule as the capture-pane probe
+        // above — `kill-session` against a dead socket starts the server.
+        "-f",
+        getAtmuxTmuxConfPath(),
         "kill-session",
         "-t",
         handle.sessionName,

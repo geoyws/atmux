@@ -63,6 +63,7 @@ import {
   teamJsonPath,
 } from "../core/common.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
+import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import { Team } from "../schema/team.ts";
 import { cronInstall } from "./cron-install.ts";
@@ -588,7 +589,7 @@ export interface TeamRepairRenameOpts {
 }
 
 export function defaultBuildTmux(socketPath: string): TmuxNamespace {
-  return createTmux({ socketPath });
+  return createTmux({ socketPath, configFile: getAtmuxTmuxConfPath() });
 }
 
 export async function teamRepairRename(
