@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ✨ Added — `atmux cockpit reconcile --dry-run` read-only preview (ADR-300)
+
+**Preview the reconcile plan without touching anything.** Every tmux namespace routes through a recording wrapper: reads delegate to the live server, mutations are recorded never executed, team.json writes + cage starts + socket-dir creation + readiness probes are skipped. Prints one line per planned op then `dry-run: N rename, M kill, K other operations (nothing executed)`; exits 0. The `--yes` destructive-op gates are bypassed (warnings still log). `reload` and `attach` still refuse `--dry-run`.
+
 ### 🗄️ Changed — per-role tracking files move to the state.db role_state table (ADR-169 P2, e-38)
 
 **Twelve-plus tracking files are now role_state rows.** `cost-<member>` and `modal-history-<member>` (role-scoped) plus `heads-up-cursor`, `brief-versions`, `ombudsman-pending` (team scope, sentinel `role='_'`) live in `role_state (role, namespace, payload, updated_at, schema_version)`; readers promote leftover JSON on first read, writers are table-only. `atmux migrate-state --target=role-state` glob-discovers `cost-*.json` + `modal-history-*.json`, imports + archives sources (dry-run supported). `modal-cycling-dedup-state.json` stays JSON (not enumerated in ADR-169); budget files stay JSON per OQ-3 (P3).

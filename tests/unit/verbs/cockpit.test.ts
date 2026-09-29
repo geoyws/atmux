@@ -2586,8 +2586,12 @@ describe("parseCockpitArgs — migrate-socket subverb (ADR-162 TR3)", () => {
     expect(p.keepLegacy).toBe(true);
   });
 
-  test("--dry-run rejected on reconcile (subverb-scoped flag)", () => {
-    expect(() => parseCockpitArgs(["reconcile", "--dry-run"])).toThrow(UsageError);
+  test("--dry-run parses on reconcile (read-only preview)", () => {
+    expect(parseCockpitArgs(["reconcile", "--dry-run"]).dryRun).toBe(true);
+  });
+
+  test("--dry-run still rejected on reload (subverb-scoped flag)", () => {
+    expect(() => parseCockpitArgs(["reload", "--dry-run"])).toThrow(UsageError);
   });
 
   test("--keep-legacy rejected on reload (subverb-scoped flag)", () => {

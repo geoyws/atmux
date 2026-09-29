@@ -57,6 +57,17 @@ The `_superbot` scheduler window and the `_bot` team seat were removed on 2026-0
 
 **Why this matters:** before ADR-162, atmux cockpit windows landed in the operator's own tmux server. A stray `tmux kill-server` from the operator wiped both their personal state AND atmux's cockpit. The socket-isolation closes that foot-gun.
 
+### Previewing a reconcile: `atmux cockpit reconcile --dry-run` (ADR-300, shipped)
+
+```bash
+# Read-only preview — nothing executes, exit 0
+atmux cockpit reconcile --dry-run
+
+# Commit when the plan looks right
+atmux cockpit reconcile
+```
+
+Reads (session/window/pane listings) hit the live servers so the plan reflects real state; every mutation (kills, renames, new windows, send-keys, prefix sets) is recorded, not executed. team.json writes, cage starts, and socket-dir creation are skipped. Output is one line per planned op, then `dry-run: N rename, M kill, K other operations (nothing executed)`. The `--yes` destructive-op gate is bypassed (its warnings still print as part of the preview). `reload` and `attach` refuse `--dry-run`.
 ### Tearing down the cockpit: `atmux shutdown` (ADR-242, shipped)
 
 `atmux shutdown` stops every enabled team, then kills this cockpit session

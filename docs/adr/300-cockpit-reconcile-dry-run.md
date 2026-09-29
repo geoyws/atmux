@@ -1,0 +1,71 @@
+# ADR-300: Cockpit reconcile dry-run preview
+
+**Status**: accepted (operator-direct — George, 2026-09-28, a-0a420779 preflight-then-lift)
+**Date**: 2026-09-29
+**Driver-ref**: kb atmux t-6a6828f5
+**Relates**: [ADR-162](162-atmux-owns-tmux-infrastructure.md) (TR3 `migrate-socket --dry-run` precedent), [ADR-235](235-cockpit-verb-surface-rationalization.md) (reconcile workhorse), [ADR-097](097-tmux-abstraction.md) (TmuxNamespace)
+
+## Context
+
+`atmux cockpit migrate-socket --dry-run` already previews its six-phase
+migration without mutating either socket. The canonical workhorse —
+`cockpit reconcile` — had no equivalent: an operator who wanted to see
+what a reconcile WOULD do (orphan kills, medic relocation, viewer
+adds, prefix sets, cage starts) had to run it and read the aftermath.
+The t-8b0e077e `--yes` gate refuses destructive runs without
+confirmation, but it only names the DESTRUCTIVE subset — the additive
+plan (new windows, renames, launches) stayed invisible until applied.
+
+## Decision
+
+### D1 — `reconcile --dry-run` is a read-only preview; exit 0
+
+`parseCockpitArgs` accepts `--dry-run` on `reconcile` (in addition to
+`migrate-socket`); `reload` and `attach` still refuse it. A dry-run
+reconcile prints one line per planned operation, then the summary line
+`dry-run: N rename, M kill, K other operations (nothing executed)`,
+and exits 0.
+
+### D2 — Recording tmux wrapper (`src/core/tmux-dry-run.ts`)
+
+Every tmux namespace the reconcile builds routes through
+`createDryRunTmux(real, ops)`. Read-only methods (`hasSession`,
+`listSessions`, `listWindows`, `capturePane`, `listPanes`,
+`displayMessage`, `listClients`, `showOptions`, `hasServer`) delegate
+to the real namespace so the preview reflects live state; every other
+method records its intent (`kill-window -t …`, `rename-window …`,
+`new-window …`, `send-keys …`, `set-option …`, …) and returns a
+benign success value without executing. Classification is
+conservative: unknown ⇒ mutating (record, do not execute).
+
+Summary categories: `rename*` → rename, `kill*` → kill (session,
+window, pane, server), every other mutation → other.
+
+### D3 — Non-tmux side effects are skipped, not recorded
+
+The wrapper cannot intercept work outside tmux, so the reconcile
+guards each such phase on the dry-run flag: Phase 1 team.json
+normalisation is skipped (logged as would-normalise), Phase 2 cage
+`start` + socket-dir creation are skipped (logged as would-start; the
+legacy-session rename probe still runs through the recorder), group
+socket-dir creation is skipped via `ReconcileGroupServersOpts.dryRun`,
+and the Phase 4 TUI readiness probe runs with `skipReadinessProbe`
+(a recorded-not-executed send-keys would otherwise poll live panes
+for up to 30s for a TUI that was never launched).
+
+### D4 — The `--yes` destructive-op gates are moot under dry-run
+
+Nothing mutates, so `cockpitRebuild` threads `yes: true` into
+`reconcileGroupServers` and `reconcileCockpitSession` when dry-run is
+set. The planned-op warnings still log (they are part of the
+preview); only the refusal throw is bypassed.
+
+## Consequences
+
+- Operators preview with `atmux cockpit reconcile --dry-run`, commit
+  without the flag — the same two-step the TR3 migration established.
+- The plan is best-effort ordering, not an atomicity promise: live
+  state can shift between preview and apply (same documented
+  race-window as the `--yes` gate).
+- `reload` keeps refusing `--dry-run`: the hot-reload alias is for
+  applying topology diffs now, not previewing them.

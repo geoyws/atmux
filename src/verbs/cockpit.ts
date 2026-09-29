@@ -79,15 +79,12 @@ import {
   type PaneReadinessResult,
 } from "../core/pane-readiness.ts";
 import { migrateLegacySessionName } from "../core/session-migrate.ts";
+import { createDryRunTmux, type DryRunOp, printDryRunPlan } from "../core/tmux-dry-run.ts";
 import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { posixQuote, resolveTuiCommand, shellPaneCommand } from "../core/tui-cmd.ts";
 import { UsageError } from "../errors.ts";
-import type {
-  CockpitMedic,
-  CockpitTeam,
-  CockpitWindow,
-} from "../schema/cockpit.ts";
+import type { CockpitMedic, CockpitTeam, CockpitWindow } from "../schema/cockpit.ts";
 import { Team } from "../schema/team.ts";
 import { attachWithTmux } from "./attach.ts";
 import { cockpitRotate } from "./cockpit-rotate.ts";
@@ -352,6 +349,11 @@ export interface ReconcileGroupServersOpts {
    *  window, nothing is pruned or reordered, sibling windows are not
    *  added. No-op when the team has no group ancestor. */
   onlyTeam?: string;
+  /** Read-only preview (`cockpit reconcile --dry-run`): skip the socket-dir
+   *  creation (a real filesystem side effect). Tmux mutations need no
+   *  guard here — the caller's factory routes them through the recording
+   *  wrapper. */
+  dryRun?: boolean;
 }
 
 /** One planned viewer window inside a group server. */
@@ -525,7 +527,9 @@ export async function reconcileGroupServers(
       return;
     }
     const sock = groupSocketPath(group.name);
-    await ensureDir(dirname(sock));
+    if (opts.dryRun !== true) {
+      await ensureDir(dirname(sock));
+    }
     const gTmux = factory({ socketPath: sock, configFile: getAtmuxTmuxConfPath() });
     const first = wanted[0] as GroupWantedWindow;
     if (!(await gTmux.session.hasSession(exactSessionTarget(group.name)))) {
@@ -601,12 +605,16 @@ export interface ParsedCockpitArgs {
   noCycle: boolean;
   /** Cycle every cage even if claude procs are running (DESTRUCTIVE — kills in-flight work). */
   forceCycle: boolean;
-  /** ADR-162 TR3 `migrate-socket`: preview the planned migration without
-   *  executing. Reports legacy sessions/windows discovered + the cleanup
-   *  intent; no socket mutation, no scrollback capture, no window
-   *  recreate. Operator runs `--dry-run` first; commits without when
-   *  satisfied. Inert on other subverbs. Optional for backward-compat
-   *  with test fixtures constructed before TR3 added the flag. */
+  /** Preview flag. On `migrate-socket` (ADR-162 TR3): preview the planned
+   *  migration without executing — reports legacy sessions/windows
+   *  discovered + the cleanup intent; no socket mutation, no scrollback
+   *  capture, no window recreate. On `reconcile`: read-only preview of
+   *  the full reconcile plan (tmux mutations recorded via the dry-run
+   *  wrapper, team.json writes + cage starts skipped); prints one line
+   *  per planned op + a summary, exits 0. Operator runs `--dry-run`
+   *  first; commits without when satisfied. Rejected on every other
+   *  subverb. Optional for backward-compat with test fixtures
+   *  constructed before TR3 added the flag. */
   dryRun?: boolean;
   /** ADR-162 TR3 `migrate-socket`: skip the legacy-session cleanup
    *  (Phase 6). Old default-socket cockpit and new atmux-cockpit
@@ -807,10 +815,10 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
         break;
       }
       case "--dry-run":
-        if (sub !== "migrate-socket") {
+        if (sub !== "migrate-socket" && sub !== "reconcile") {
           throw new UsageError({
-            what: `cockpit ${sub}: --dry-run only applies to 'migrate-socket'`,
-            hint: "use 'atmux cockpit migrate-socket --dry-run' to preview ADR-162 TR3 migration",
+            what: `cockpit ${sub}: --dry-run only applies to 'reconcile' and 'migrate-socket'`,
+            hint: "use 'atmux cockpit reconcile --dry-run' to preview the reconcile plan or 'atmux cockpit migrate-socket --dry-run' to preview ADR-162 TR3 migration",
           });
         }
         dryRun = true;
@@ -1087,7 +1095,17 @@ export async function cockpitRebuild(
 ): Promise<number> {
   const env = opts.env ?? process.env;
   const logger = opts.logger ?? createLogger();
-  const factory = opts.tmuxFactory ?? createTmux;
+  // --dry-run: route every tmux namespace through the recording wrapper.
+  // Reads delegate to the live server (preview reflects real state);
+  // mutations are recorded, never executed. Non-tmux side effects
+  // (team.json writes, cage starts, socket-dir creation, readiness
+  // probes) are guarded on `dryRun` at each phase below.
+  const dryRun = parsed.dryRun ?? false;
+  const dryRunOps: DryRunOp[] = [];
+  const baseFactory = opts.tmuxFactory ?? createTmux;
+  const factory = dryRun
+    ? (cfg: TmuxConfig) => createDryRunTmux(baseFactory(cfg), dryRunOps)
+    : baseFactory;
   const startImpl = opts.startFn ?? start;
 
   // Phase 0: load roster.
@@ -1110,9 +1128,18 @@ export async function cockpitRebuild(
 
   // Phase 1: normalise each team's team.json (bareWindowNames +
   // tuiCommands.claude). Per-team files are disjoint — parallelise.
-  await timedPhase(logger, "1 normalise-team-json", () =>
-    mapWithConcurrency(teams, COCKPIT_RECONCILE_CONCURRENCY, (t) => normaliseTeamJson(t, logger)),
-  );
+  // --dry-run: filesystem write — skip, preview only.
+  if (dryRun) {
+    for (const t of teams) {
+      logger.log(
+        `  · [dry-run] would normalise ${t.name} team.json (bareWindowNames + tuiCommands.claude)`,
+      );
+    }
+  } else {
+    await timedPhase(logger, "1 normalise-team-json", () =>
+      mapWithConcurrency(teams, COCKPIT_RECONCILE_CONCURRENCY, (t) => normaliseTeamJson(t, logger)),
+    );
+  }
 
   // Phase 2: cycle cages (live-team-aware unless --force-cycle).
   // Per-team cages are independent sockets — parallelise. Per-team
@@ -1140,6 +1167,15 @@ export async function cockpitRebuild(
         const alive = await cageAlive(cageTmux);
         if (alive && !parsed.forceCycle) {
           logger.log(`  · ${t.name} cage alive — skipping cycle (use --force-cycle to override)`);
+          return;
+        }
+        // --dry-run: launching the cage (start) + creating its socket dir
+        // are real side effects — preview only. The legacy-session rename
+        // above already routes through the recording wrapper.
+        if (dryRun) {
+          logger.log(
+            `  · [dry-run] would start cage '${t.name}' (${alive ? "force-cycle" : "dead/empty"} — no launch executed)`,
+          );
           return;
         }
         logger.log(`  ▸ ${t.name} cage ${alive ? "force-cycle" : "dead/empty"} — start`);
@@ -1207,7 +1243,17 @@ export async function cockpitRebuild(
       mapWithConcurrency(teams, COCKPIT_RECONCILE_CONCURRENCY, async (t) => {
         const sock = await resolveCageSocket(t.name, t.root);
         const cageTmux = factory({ socketPath: sock });
-        const teamSummary = await autolaunchTeam(t, cageTmux, env, logger);
+        // --dry-run: send-keys is recorded-not-executed, so the post-spawn
+        // readiness probe would poll live panes (up to 30s each) for a TUI
+        // that was never launched — skip it; the send-keys intent is in
+        // the plan.
+        const teamSummary = await autolaunchTeam(
+          t,
+          cageTmux,
+          env,
+          logger,
+          dryRun ? { skipReadinessProbe: true } : {},
+        );
         const unbootMsg =
           teamSummary.unbootstrapped.length > 0
             ? ` ⚠ unbootstrapped=${teamSummary.unbootstrapped.length} ` +
@@ -1229,7 +1275,10 @@ export async function cockpitRebuild(
   // hold only attach clients — killing one can never touch a cage.
   await timedPhase(logger, "4.5 group-servers", () =>
     reconcileGroupServers(factory, topology, logger, {
-      yes: parsed.yes,
+      // --dry-run never mutates, so the destructive-op gate is moot —
+      // pass yes to keep the preview from refusing, warnings still log.
+      yes: dryRun ? true : parsed.yes,
+      dryRun,
       ...(cockpit.prefixChain !== undefined ? { prefixChain: cockpit.prefixChain } : {}),
     }),
   );
@@ -1259,7 +1308,10 @@ export async function cockpitRebuild(
       logger,
       {},
       cockpit.medic,
-      parsed.yes,
+      // --dry-run never mutates, so the destructive-op gate inside is
+      // moot — pass yes to keep the preview from refusing (planned-op
+      // warnings still log).
+      dryRun ? true : parsed.yes,
       // fleet-wide; persist operator workspaces too. `topology` (e-419553c6)
       // replaces grouped teams' cockpit windows with one window per
       // top-level group; ungrouped teams keep their direct embed.
@@ -1306,6 +1358,16 @@ export async function cockpitRebuild(
       // Same swallow as Phase 3 — best-effort cosmetic.
     }
     await applyCagePrefix(cockpitTmux, cockpitPrefix);
+  }
+
+  // --dry-run: print the recorded plan + exit 0. Nothing above executed
+  // a mutation (team.json writes, cage starts, socket-dir creation, and
+  // readiness probes were skipped; every tmux write was recorded, not
+  // run), so the "cockpit ready" line below would be a lie — return
+  // here instead.
+  if (dryRun) {
+    printDryRunPlan(logger, dryRunOps);
+    return 0;
   }
 
   // Phase 6 (ADR-086, superseded by ADR-233 §D2): cockpit-pulse cron
