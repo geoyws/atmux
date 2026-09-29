@@ -13,8 +13,8 @@
 // no team.json yet, the --force backup best-effort swallow path
 // (read-failure on the source).
 //
-// ADR-288 §D5 (2026-09-03): the shipped template is drivers-only
-// (`members: []`, three `drivers[]`, no `bot` block). Tests
+// ADR-287 §D5 (2026-09-02): the shipped template is drivers-only
+// (`members: []`, three `drivers[]` per ADR-288, no `bot` block). Tests
 // against the real template assert THAT shape; the members-path
 // branches of `init` (cwd rewrite, claudeAccount stamp / strip /
 // passthrough, per-member inbox seeding + preservation) are exercised
@@ -121,7 +121,7 @@ async function readRendered(): Promise<RenderedTeam> {
   return JSON.parse(await readFile(join(env.cwd, ".atmux", "team.json"), "utf8")) as RenderedTeam;
 }
 
-/** ADR-288 §D5: the shipped template declares no members, so the
+/** ADR-287 §D5: the shipped template declares no members, so the
  *  members-path branches of `init` are exercised against this
  *  explicitly-declared roster (a team that still runs the
  *  lead→planner→member loop). `driver-2` carries a demonstration
@@ -275,9 +275,9 @@ describe("init — template path (bash lib/init.sh:87-107 parity)", () => {
     // Bash lib/init.sh:104 — tmuxTmpdir set to the per-team cage path.
     expect(tj.tmuxTmpdir).toBe("/tmp/atmux-tmux_hello");
     // Template-shape sanity. Tracks `templates/team.example.json` —
-    // bump together when the shipped roster changes. ADR-288
-    // (2026-09-03): the default roster is drivers-only — three drivers
-    // (ADR-239 floor restored), zero members, no bot seat.
+    // bump together when the shipped roster changes. ADR-287 §D5
+    // (2026-09-02): the default roster is drivers-only — three drivers
+    // (ADR-288 canonical roster), zero members, no bot seat.
     expect(tj.members).toEqual([]);
     expect(tj.drivers?.map((d) => d.name)).toEqual(["driver", "driver-2", "driver-3"]);
     // Driver cwd is NOT rewritten to PWD (unlike members[].cwd): start.ts
@@ -291,11 +291,11 @@ describe("init — template path (bash lib/init.sh:87-107 parity)", () => {
     expect(tj.bot).toBeUndefined();
   });
 
-  test("ADR-288: default scaffold is drivers-only — members.length === 0, drivers.length === 3, no bot block, comment cites §D5", async () => {
-    // Explicit pin for the ADR-288 template contract: a fresh
+  test("ADR-287 §D5: default scaffold is drivers-only — members.length === 0, drivers.length === 3, no bot block, comment cites §D5", async () => {
+    // Explicit pin for the ADR-287 §D5 template contract: a fresh
     // `atmux init` from the shipped template yields NO member windows
     // (lead / planner / reviewer / member are deprecated as defaults)
-    // and the three-driver floor ADR-239 restores, with no bot seat.
+    // and the ADR-288 canonical three-driver roster, with no bot seat.
     // `_comment_members` survives passthrough and
     // must point operators at §D5.
     expect(await runInit(["--name", "solo-drivers"])).toBe(0);
@@ -303,7 +303,7 @@ describe("init — template path (bash lib/init.sh:87-107 parity)", () => {
     expect(tj.members.length).toBe(0);
     expect(tj.drivers?.length).toBe(3);
     expect(tj.bot).toBeUndefined();
-    expect(tj._comment_members).toContain("ADR-288 §D5");
+    expect(tj._comment_members).toContain("ADR-287 §D5");
     expect(tj._comment_members).toContain("drivers-only");
     // No per-member inbox stub can exist for a roster with no members.
     const { readdir } = await import("node:fs/promises");
@@ -311,7 +311,7 @@ describe("init — template path (bash lib/init.sh:87-107 parity)", () => {
   });
 
   // t-3866c5b1 / ADR-094: --claude-account flag end-to-end.
-  // ADR-288 §D5: the flag stamps drivers[] as well as members[] — on the
+  // ADR-287 §D5: the flag stamps drivers[] as well as members[] — on the
   // drivers-only default template that is the ONLY thing it can stamp.
   test("--claude-account personal stamps every driver on the drivers-only template; no bot block rendered", async () => {
     await runInit(["--name", "alpha", "--claude-account", "personal"]);
@@ -419,7 +419,7 @@ describe("init — template path (bash lib/init.sh:87-107 parity)", () => {
     // Bash lib/init.sh:51 — `: > "$di"` produces a zero-byte file.
     expect(await readFile(join(dir, "driver-inbox.md"), "utf8")).toBe("");
     // Bash lib/init.sh:59 — every member.name gets a stub inbox. The
-    // ADR-288 §D5 default roster has no members, so the loop runs over
+    // ADR-287 §D5 default roster has no members, so the loop runs over
     // an empty list: `inboxes/` exists (scaffold mkdir) and is empty.
     const { readdir } = await import("node:fs/promises");
     expect(await readdir(join(dir, "inboxes"))).toEqual([]);
@@ -465,7 +465,7 @@ describe("init — template path (bash lib/init.sh:87-107 parity)", () => {
     // stdout matches bash :80-84 + the ADR-217 §D5 skills-install render
     // line that precedes it. Test harness passes `env: {}` so the helper
     // short-circuits with `{kind: "skipped", reason: "$HOME unset"}`.
-    // ADR-288 §D5: line 3 is drivers-first — the default roster has no
+    // ADR-287 §D5: line 3 is drivers-first — the default roster has no
     // team-lead, so the old `atmux tell-lead` hint would fail closed.
     const stdout = env.stdoutBuf.join("");
     expect(stdout).toBe(
@@ -475,7 +475,7 @@ describe("init — template path (bash lib/init.sh:87-107 parity)", () => {
         "Next:\n",
         `  1. review ${join(env.cwd, ".atmux", "team.json")}\n`,
         "  2. atmux start\n",
-        "  3. attach the cage and drive from a driver window — work state lives on the kb board (ADR-288 §D5)\n",
+        "  3. attach the cage and drive from a driver window — work state lives on the kb board (ADR-287 §D5)\n",
       ].join(""),
     );
     expect(stdout).not.toContain("tell-lead");
@@ -713,10 +713,12 @@ describe("init — templates dir resolution", () => {
       expect(tj.members.length).toBe(1);
       expect(tj.members[0]?.name).toBe("solo");
       expect(tj.members[0]?.cwd).toBe(env.cwd);
-      // A template with no `drivers[]` renders without the key — init
-      // must not litter `drivers: undefined` / `drivers: []` (the schema
-      // rejects an empty drivers array on the next load).
-      expect("drivers" in tj).toBe(false);
+      // A template with no `drivers[]` gets the schema default — the
+      // ADR-288 canonical three-driver roster (src/schema/team.ts:
+      // `drivers` defaults to CANONICAL_PARENT_TEAM_DRIVERS). Init
+      // must not litter `drivers: undefined` / `drivers: []` (the
+      // schema rejects an empty drivers array on the next load).
+      expect(tj.drivers?.map((d) => d.name)).toEqual(["driver", "driver-2", "driver-3"]);
     } finally {
       await rm(customRoot, { recursive: true, force: true });
     }
@@ -736,13 +738,13 @@ describe("init — templates dir resolution", () => {
     expect(exit).toBe(0);
     const tj = await readRendered();
     expect(tj.name).toBe("default-tmpls");
-    // The shipped template is the ADR-287 §D5 drivers-only roster (five
-    // ADR-239 drivers, zero members) — sanity-pin tracks
-    // `templates/team.example.json`. (This asserts the default-resolved
-    // template was loaded, not an injected one: the custom fixtures in
-    // this file carry 0 or 2 drivers, never 5.)
+    // The shipped template is the ADR-287 §D5 drivers-only roster
+    // (ADR-288 canonical three drivers, zero members) — sanity-pin
+    // tracks `templates/team.example.json`. (This asserts the
+    // default-resolved template was loaded, not an injected one: the
+    // custom fixtures in this file carry 0 or 2 drivers, never 3.)
     expect(tj.members.length).toBe(0);
-    expect(tj.drivers?.length).toBe(5);
+    expect(tj.drivers?.length).toBe(3);
   });
 });
 
@@ -776,9 +778,9 @@ describe("init — default stdout sink (no opts.stdout)", () => {
     expect(captured).toContain("Next:");
     expect(captured).toContain("1. review");
     expect(captured).toContain("2. atmux start");
-    // ADR-288 §D5 drivers-first hint replaces the `atmux tell-lead` line.
+    // ADR-287 §D5 drivers-first hint replaces the `atmux tell-lead` line.
     expect(captured).toContain("3. attach the cage and drive from a driver window");
-    expect(captured).toContain("ADR-288 §D5");
+    expect(captured).toContain("ADR-287 §D5");
     expect(captured).not.toContain("tell-lead");
   });
 });
@@ -792,11 +794,11 @@ describe("init — default stdout sink (no opts.stdout)", () => {
 // fails at `readJson` schema validation before init's loop runs.
 // Coverage doesn't care; the invariant is enforced one layer up.)
 
-// ---------- ADR-288 §D5 — init(shipped template) → `atmux start` ----------
+// ---------- ADR-287 §D5 — init(shipped template) → `atmux start` ----------
 //
 // Integration pin (real per-socket tmux server via tests/helpers/tmux.ts,
 // fake git; NOT e2e — no real `git worktree add`, no cockpit, no cron).
-// ADR-288 §Consequences "New teams have no member windows": `atmux init`
+// ADR-287 §Consequences "New teams have no member windows": `atmux init`
 // from the SHIPPED template, then `atmux start` against the rendered
 // `.atmux/`, yields superdriver + driver..driver-3 and nothing else. Because
 // `drivers[]` is non-empty the `__<team>__home` placeholder is never
@@ -811,7 +813,7 @@ describe("init — default stdout sink (no opts.stdout)", () => {
 // `ATMUX_NO_CRON=1` keeps the host crontab untouched, and the tmux HOME
 // is a throwaway dir so no `tmux.conf.local` leaks in.
 
-describe("ADR-288 §D5 — init(shipped template) → start", () => {
+describe("ADR-287 §D5 — init(shipped template) → start", () => {
   let socketDir: string;
   let homeDir: string;
   let socketPath: string;
