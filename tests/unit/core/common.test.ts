@@ -173,6 +173,44 @@ describe("getAtmuxDir", () => {
   });
 });
 
+// e-39 T6 — six-point invocation matrix: every cwd an operator may
+// invoke atmux from resolves to the right ancestor (or the documented
+// fallback). Subdir / worktrees-stub / .atmux-logs rows above cover
+// three points; these close the remaining three. Host-absolute rows
+// (/tmp, /) assert the fallback shape only when the walk path is
+// provably clean — a host-resident /.atmux would legitimately win,
+// so those rows return early with a reason instead of asserting.
+
+describe("getAtmuxDir six-point invocation matrix", () => {
+  test("bare .atmux dir resolves to itself via the parent", async () => {
+    const root = join(dir, "proj");
+    const canonical = join(root, ".atmux");
+    await mkdir(canonical, { recursive: true });
+    const got = await getAtmuxDir({ env: {}, cwd: canonical, stopAt: dir });
+    expect(got).toBe(canonical);
+  });
+
+  test("/tmp with a clean walk falls back to /tmp/.atmux", async () => {
+    const { existsSync } = await import("node:fs");
+    if (existsSync("/tmp/.atmux") || existsSync("/.atmux")) {
+      console.log("skip: host-resident /tmp/.atmux or /.atmux owns the walk");
+      return;
+    }
+    const got = await getAtmuxDir({ env: {}, cwd: "/tmp" });
+    expect(got).toBe(join("/tmp", ".atmux"));
+  });
+
+  test("/ with a clean walk falls back to /.atmux", async () => {
+    const { existsSync } = await import("node:fs");
+    if (existsSync("/.atmux")) {
+      console.log("skip: host-resident /.atmux owns the walk");
+      return;
+    }
+    const got = await getAtmuxDir({ env: {}, cwd: "/" });
+    expect(got).toBe(join("/", ".atmux"));
+  });
+});
+
 describe("path helpers", () => {
   test("teamJsonPath / kanbanJsonPath / inboxDir", () => {
     expect(teamJsonPath("/x/.atmux")).toBe("/x/.atmux/team.json");
