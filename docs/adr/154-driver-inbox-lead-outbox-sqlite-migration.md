@@ -275,3 +275,7 @@ Reviewer / operator: any non-default flips `Status: proposed → accepted`.
 Promoted from `proposed` → `accepted` per [docs/audits/adr-status-drift-audit-2026-05-20.md](../audits/adr-status-drift-audit-2026-05-20.md) (sha=a6f1541). Code-refs + git-log refs both present at audit time confirming shipped + dogfooded status; the `proposed` marker was bookkeeping debt. Original Date preserved verbatim. Append-only — see Status field for the canonical flip; this §Amendment carries the audit traceability.
 
 **Filed via** t-45b401c3 (T4 sweep, 2026-05-20).
+
+## §Amendment 2026-09-23 — §D2 schema shape superseded by ADR-292
+
+§D2's unified `coordination_messages` table shape is superseded by [ADR-292](292-atmux-msg-mailbox-record-and-wake.md) on 2026-09-23, per E1-T1 option (b) (t-50652206): `msg` rows extend the existing `inbox_messages` table with `kind='msg'` + `extra.priority` instead of landing in a unified table. The rest of ADR-154 (D1 canonical-SQLite cutover, D3 render-only markdown, D4 status enum, D5–D9 verbs/migration/deprecation) stands unchanged.
