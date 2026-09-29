@@ -1,6 +1,6 @@
 # ADR-301: Test-cage leak reaper — SAFETY invariant + `atmux test-reaper` verb
 
-**Status**: proposed
+**Status**: accepted (reviewer signoff 2026-09-29, after the tmuxSocket containment fix)
 **Date**: 2026-09-29
 **Driver-ref**: kb atmux t-164af71d (epic e-eb778642, refiled by George 2026-09-28, a-a5c9cb84)
 **Builds on**: [ADR-178](178-test-cage-leak-reaper.md) (sidecar schema + verb shape; Status: proposed (deferred) — substance stands, schedule slipped)
