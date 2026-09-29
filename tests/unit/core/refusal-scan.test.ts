@@ -22,7 +22,7 @@
 //   - guard: recordRefusalEvent rejects when `detected === false`
 
 import type { Database } from "bun:sqlite";
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -205,6 +205,18 @@ describe("listRefusalEventsForMember", () => {
 });
 
 describe("scanTeamForRefusals", () => {
+  // A fresh, never-shared atmuxDir per test: a literal like `/tmp/x` breaks the
+  // suite whenever that path happens to exist as a file on the host.
+  let scratch = "";
+  let atmuxDir = "";
+  beforeEach(async () => {
+    scratch = await mkdtemp(join(tmpdir(), "atmux-refusal-scan-"));
+    atmuxDir = join(scratch, ".atmux");
+  });
+  afterEach(async () => {
+    await rm(scratch, { recursive: true, force: true });
+  });
+
   test("records positives + skips non-detections with severity='none'", async () => {
     const { db, close } = openMem();
     try {
@@ -220,7 +232,7 @@ describe("scanTeamForRefusals", () => {
         if (target.includes("alice")) return "I REFUSE to claim";
         return "happy path output";
       };
-      const result = await scanTeamForRefusals(team, "/tmp/x", {
+      const result = await scanTeamForRefusals(team, atmuxDir, {
         classify,
         paneCapture,
         openDb: () => ({ db, close: () => {} }),
@@ -260,7 +272,7 @@ describe("scanTeamForRefusals", () => {
         log: () => {},
       };
 
-      const first = await scanTeamForRefusals(team, "/tmp/x", {
+      const first = await scanTeamForRefusals(team, atmuxDir, {
         ...baseDeps,
         nowSec: () => 5000,
       });
@@ -268,7 +280,7 @@ describe("scanTeamForRefusals", () => {
       expect(first.deduped).toBe(0);
 
       // Same minute_bucket (5000/60 === 5030/60 === 83).
-      const second = await scanTeamForRefusals(team, "/tmp/x", {
+      const second = await scanTeamForRefusals(team, atmuxDir, {
         ...baseDeps,
         nowSec: () => 5030,
       });
@@ -294,7 +306,7 @@ describe("scanTeamForRefusals", () => {
         if (target.includes("alice")) throw new Error("tmux pane dead");
         return "I refuse to work";
       };
-      const result = await scanTeamForRefusals(team, "/tmp/x", {
+      const result = await scanTeamForRefusals(team, atmuxDir, {
         classify,
         paneCapture,
         openDb: () => ({ db, close: () => {} }),
@@ -326,7 +338,7 @@ describe("scanTeamForRefusals", () => {
         classifyCalls += 1;
         return none();
       };
-      const result = await scanTeamForRefusals(team, "/tmp/x", {
+      const result = await scanTeamForRefusals(team, atmuxDir, {
         classify,
         paneCapture: async () => "",
         openDb: () => ({ db, close: () => {} }),
@@ -346,7 +358,7 @@ describe("scanTeamForRefusals", () => {
     const { db, close } = openMem();
     try {
       const team = makeTeam(["alice", "bob"]);
-      const result = await scanTeamForRefusals(team, "/tmp/x", {
+      const result = await scanTeamForRefusals(team, atmuxDir, {
         classify: () => detection("hard", 0.8, [{ phrase: "x", class: "hard" }]),
         paneCapture: async () => "REFUSE",
         openDb: () => ({ db, close: () => {} }),
