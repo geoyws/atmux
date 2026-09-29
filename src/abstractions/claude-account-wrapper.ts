@@ -47,7 +47,10 @@ const WRAPPER_TABLE: ReadonlyMap<string, ClaudeWrapper> = new Map([
  *  the wrapper, but callers still validate via this resolver to refuse
  *  unknown configDirs at the verb boundary. */
 export function resolveClaudeWrapper(configDir: string): ClaudeWrapper;
-export function resolveClaudeWrapper(configDir: string, registry: ReadonlyMap<string, string>): string;
+export function resolveClaudeWrapper(
+  configDir: string,
+  registry: ReadonlyMap<string, string>,
+): string;
 export function resolveClaudeWrapper(
   configDir: string,
   registry: ReadonlyMap<string, string> = WRAPPER_TABLE,
@@ -76,8 +79,8 @@ export function mergeWrapperRegistries(
   return out;
 }
 
- /** Enumerate registered configDirs. Surfaces in error hints + the
-  *  doctor / cockpit-rotate audit telemetry. */
- export function knownClaudeConfigDirs(): ReadonlyArray<string> {
-   return [...WRAPPER_TABLE.keys()];
- }
+/** Enumerate registered configDirs. Surfaces in error hints + the
+ *  doctor / cockpit-rotate audit telemetry. */
+export function knownClaudeConfigDirs(): ReadonlyArray<string> {
+  return [...WRAPPER_TABLE.keys()];
+}

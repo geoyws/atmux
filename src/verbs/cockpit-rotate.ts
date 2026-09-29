@@ -35,7 +35,10 @@
 //                         spawn-epic / dissolve-epic per ADR-033)
 
 import { join } from "node:path";
-import { mergeWrapperRegistries, resolveClaudeWrapper } from "../abstractions/claude-account-wrapper.ts";
+import {
+  mergeWrapperRegistries,
+  resolveClaudeWrapper,
+} from "../abstractions/claude-account-wrapper.ts";
 import {
   type CockpitRotateRefusedOpts,
   type DiscordSendOpts,
@@ -58,6 +61,11 @@ import {
   type TmuxNamespace,
 } from "../abstractions/tmux.ts";
 import {
+  type LaunchAgentPaneOutcome,
+  launchAgentInPane as launchAgentInPaneDefault,
+  resolveOnlyPane,
+} from "../core/agent-pane.ts";
+import {
   findTeamByName,
   groupSocketPath,
   type LoadCockpitOpts,
@@ -71,11 +79,6 @@ import {
   type SendKeysFn,
   safeSendKeysWithVerify as safeSendKeysWithVerifyDefault,
 } from "../core/safe-send.ts";
-import {
-  type LaunchAgentPaneOutcome,
-  launchAgentInPane as launchAgentInPaneDefault,
-  resolveOnlyPane,
-} from "../core/agent-pane.ts";
 import { getCockpitSocketName } from "../core/tmux-paths.ts";
 import { posixQuote, shellPaneCommand } from "../core/tui-cmd.ts";
 import { ConfigError, UsageError } from "../errors.ts";
@@ -750,7 +753,9 @@ export function buildClaudeRespawnCommand(
 ): string {
   const configDir = account?.configDir ?? "/root/.claude";
   const wrapper =
-    registry === undefined ? resolveClaudeWrapper(configDir) : resolveClaudeWrapper(configDir, registry);
+    registry === undefined
+      ? resolveClaudeWrapper(configDir)
+      : resolveClaudeWrapper(configDir, registry);
   const permission = tuiOverrides?.permissionMode ?? "auto";
   const effort = tuiOverrides?.effortLevel ?? "xhigh";
   const pluginFlag =
