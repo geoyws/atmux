@@ -899,4 +899,17 @@ export const migrations: readonly Migration[] = [
 			`);
     },
   },
+  // ---------- v19 → v20 ----------
+  // ADR-150 §D2 (e-41 T1): `origin_team` on complaints — the filer
+  // team's name on cross-team filings. Nullable, forward-only;
+  // legacy rows stay NULL (no backfill — same posture as the v2→v3
+  // source_kind/target_team add).
+  {
+    from: 19,
+    to: 20,
+    up: (db) => {
+      db.exec("ALTER TABLE complaints ADD COLUMN origin_team TEXT");
+      db.exec("CREATE INDEX idx_complaints_origin_team ON complaints(origin_team)");
+    },
+  },
 ];

@@ -88,6 +88,10 @@ export const Complaint = z
      *  whose state.db holds the row. Enables cross-team filing
      *  (medic on team A pinging about team B's bug). */
     targetTeam: z.string().nullable().default(null),
+    /** Filer team name on cross-team filings (ADR-150 §D2, e-41 T1).
+     *  NULL for same-team filings and all legacy rows. Nullable +
+     *  optional at leaf strictness, same as `targetTeam`. */
+    originTeam: z.string().nullable().optional(),
     /** Forward-compat JSON bag (parsed on read; serialized on write). */
     extra: z.record(z.string(), z.unknown()).default({}),
   })

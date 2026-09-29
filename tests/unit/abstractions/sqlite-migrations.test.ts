@@ -30,7 +30,7 @@ afterEach(async () => {
 });
 
 describe("sqlite-migrations live ladder", () => {
-  test("opening with the full ladder advances user_version to the tail (v18)", () => {
+  test("opening with the full ladder advances user_version to the tail (v20)", () => {
     // Bump this when a new migration lands. Failing here is the
     // intentional reminder to confirm the new migration's tests cover
     // the new table or column.
@@ -60,9 +60,49 @@ describe("sqlite-migrations live ladder", () => {
     //   - v18→v19 added role_state for the ADR-169 P2 per-role tracking
     //             files (EPIC e-38ee9939); shape tests live in
     //             tests/unit/core/role-state-repo.test.ts
-    expect(readUserVersion(db)).toBe(19);
+    //   - v19→v20 added complaints.origin_team for the ADR-150 cross-team
+    //             filing leg (EPIC e-41 T1); shape tests live in
+    //             tests/unit/core/complaints.test.ts
+    expect(readUserVersion(db)).toBe(20);
   });
 });
+describe("v19 → v20: complaints.origin_team", () => {
+  test("column exists, nullable, legacy rows stay NULL", () => {
+    const cols = db.prepare("PRAGMA table_info(complaints)").all() as Array<{
+      name: string;
+      type: string;
+      notnull: number;
+      dflt_value: string | null;
+    }>;
+    const col = cols.find((c) => c.name === "origin_team");
+    expect(col).toBeDefined();
+    expect(col?.type).toBe("TEXT");
+    expect(col?.notnull).toBe(0);
+    const idx = db.prepare("PRAGMA index_list(complaints)").all() as Array<{ name: string }>;
+    expect(idx.some((i) => i.name === "idx_complaints_origin_team")).toBe(true);
+  });
+
+  test("v19 DB with a legacy row upgrades without loss", () => {
+    const legacy = join(scratch, "legacy.db");
+    const oldDb = openDatabase(legacy, migrations.slice(0, -1));
+    expect(readUserVersion(oldDb)).toBe(19);
+    oldDb
+      .prepare(
+        `INSERT INTO complaints (id, opened_at, incident_summary, status)
+         VALUES ('c-legacy1', 1000, 'pre-migration row', 'open')`,
+      )
+      .run();
+    closeDatabase(oldDb);
+    const upgraded = openDatabase(legacy, migrations);
+    expect(readUserVersion(upgraded)).toBe(20);
+    const row = upgraded
+      .query("SELECT origin_team FROM complaints WHERE id = 'c-legacy1'")
+      .get() as { origin_team: string | null };
+    expect(row.origin_team).toBe(null);
+    closeDatabase(upgraded);
+  });
+});
+
 describe("v18 → v19: role_state", () => {
   test("table exists with the ADR-169 column set + composite key", () => {
     const cols = db.prepare("PRAGMA table_info(role_state)").all() as Array<{
@@ -466,7 +506,7 @@ describe("v13 → v14: backfill semantics on a pre-existing v13 DB", () => {
     // settles at the tail; v13→v14 backfill semantics still apply to
     // the rows seeded above since the column-set is additive.
     const full = openDatabase(path, migrations);
-    expect(readUserVersion(full)).toBe(19);
+    expect(readUserVersion(full)).toBe(20);
 
     const seen = full
       .prepare("SELECT id, status, depends_on, is_ready FROM epics ORDER BY id")
