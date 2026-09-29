@@ -169,6 +169,11 @@ Maintenance:
                               Rotate big *.log files; prune old .done[] in
                               member inboxes, or --purge-legacy to delete
                               stale .atmux/inboxes/*.json on SQL teams.
+  test-reaper [--max-age-min N] [--dry-run] [--prefix P] [--json]
+                              Reap orphan spinTmux test-cage tmux servers
+                              (ADR-301): kills + removes only sidecar-traced
+                              tmpdir dirs whose parent pid is dead and whose
+                              age exceeds the threshold (default 30 min).
   discorder <progress|heartbeat>
                               ADR-022 Discord cron pings. progress = 30-min
                               digest; heartbeat = hourly state-of-team.

@@ -1,14 +1,14 @@
-// ADR-178: reap stale tmux servers left behind by killed test processes.
-
+// ADR-301 (implements ADR-178 T3): reap stale tmux servers left behind by killed test processes.
+// SAFETY invariant (ADR-301 §D1): act only on a direct tmpdir child matching the spinTmux
+// prefix pattern whose parseable sidecar's socketDir equals its own dir; never follow symlinks.
 import { spawnSync } from "node:child_process";
-import { readdir, readFile, rm } from "node:fs/promises";
+import { lstat, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { UsageError } from "../errors.ts";
 
 const SIDECAR = ".leak-tracker.json";
-const USAGE =
-  "atmux test-reaper [--max-age-min N] [--dry-run] [--prefix P] [--json]";
+const USAGE = "atmux test-reaper [--max-age-min N] [--dry-run] [--prefix P] [--json]";
 
 export type ReaperStatus =
   | "would-reap"
@@ -16,7 +16,8 @@ export type ReaperStatus =
   | "too-young"
   | "parent-alive"
   | "missing-sidecar"
-  | "corrupt-sidecar";
+  | "corrupt-sidecar"
+  | "symlink-skipped";
 
 export interface ReaperResult {
   socketDir: string;
@@ -99,9 +100,18 @@ export async function testReaper(
 
   const entries = await readdir(root, { withFileTypes: true });
   for (const entry of entries) {
-    if (!entry.isDirectory() || !matchesPrefix(entry.name, flags.prefix)) continue;
-
+    if (!matchesPrefix(entry.name, flags.prefix)) continue;
     const candidateDir = resolve(root, entry.name);
+    // ADR-301 §D1(d): never follow symlinks — check first, because a symlink
+    // to a dir reports isDirectory() false and would otherwise slip past
+    // silently. lstat (no follow) also catches a link swapped in after
+    // readdir. Symlinks are warned on and skipped: no sidecar read, no rm.
+    if (entry.isSymbolicLink() || (await lstat(candidateDir)).isSymbolicLink()) {
+      results.push({ socketDir: candidateDir, status: "symlink-skipped" });
+      stderr(`test-reaper: warning: ${entry.name}: symlink-skipped\n`);
+      continue;
+    }
+    if (!entry.isDirectory()) continue;
     const sidecarPath = resolve(candidateDir, SIDECAR);
     let tracker: LeakTracker;
     try {
@@ -152,7 +162,12 @@ function usage(what: string): UsageError {
 
 function matchesPrefix(name: string, prefix: string): boolean {
   const suffix = name.slice(prefix.length + 1);
-  return name.startsWith(`${prefix}-`) && suffix.includes("-") && !suffix.startsWith("-") && !suffix.endsWith("-");
+  return (
+    name.startsWith(`${prefix}-`) &&
+    suffix.includes("-") &&
+    !suffix.startsWith("-") &&
+    !suffix.endsWith("-")
+  );
 }
 
 function isLeakTracker(value: unknown, candidateDir: string): value is LeakTracker {

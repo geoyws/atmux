@@ -38,7 +38,7 @@ atmux groom --dry-run --zombie-sweep
 atmux groom --quiet --zombie-sweep
 ```
 
-### Test-cage layer (`atmux test-reaper`, per ADR-178)
+### Test-cage layer (`atmux test-reaper`, per ADR-301, implements ADR-178 T3)
 
 ```bash
 # Dry-run (lists orphans, kills nothing):
@@ -49,6 +49,8 @@ atmux test-reaper
 ```
 
 `spinTmux` writes a `.leak-tracker.json` sidecar beside every test socket; `test-reaper` reaps only sidecar-traced dirs whose parent pid is dead and whose age exceeds `--max-age-min` (default 30). Dirs without a sidecar are warned on and skipped. This sub-op's `--zombie-sweep` remains the sidecar-independent backstop.
+
+SAFETY (ADR-301 §D1): the reaper acts only on a direct OS-tmpdir child matching the spinTmux prefix pattern whose parseable sidecar's `socketDir` equals its own dir; symlinks are never followed. Live cockpit / team-cage sockets (under `~/.atmux/`, per ADR-018) are invisible to it.
 
 ### Cron-block layer (`atmux cron-reaper`, per ADR-197)
 
