@@ -54,6 +54,7 @@ import { UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
 import { checkAgentShellEnv } from "./doctor/agent-env.ts";
 import { checkClaudeAccountsConfig } from "./doctor/claude-accounts.ts";
+import { checkComplaintResidue } from "./doctor/complaint-row-residue.ts";
 import {
   checkCockpitOnDefaultSocket,
   checkDeployedBinaryLag,
@@ -259,6 +260,10 @@ export async function runAllChecks(
   // (embedded defaults still work), red when present-but-malformed
   // (the loader refuses), silent when valid.
   rows.push(...(await checkClaudeAccountsConfig()));
+  // t-a1f9e37e: complaint-row-residue — yellow per pre-routing row that
+  // names another team without a --no-route record. Silent when the
+  // cockpit registry is absent (single-team operator) or clean.
+  rows.push(...(await checkComplaintResidue()));
   // t-af159454: phantom in-progress claims (kanban rows with dead
   // owner panes). Distinct vulnerability class from phantom-inbox
   // above (that one scans member inProgress via loadInbox; this scans

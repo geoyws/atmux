@@ -10,15 +10,23 @@
 //
 // Sub-verbs:
 //
-//   atmux complaints list [--status <s>] [--json]
+//   atmux complaints list [--status <s>] [--sent-by-me] [--json]
 //       — list complaints in the current team's state.db. Default
 //         status filter `open`. Omit `--status` filter via `--all`.
-//
+//         `--sent-by-me` (ADR-150 §D4) walks the cockpit registry and
+//         surfaces rows this team filed into other teams' DBs
+//         (`origin_team` match). Read-only across DBs.
+
 //   atmux complaints file --summary <s>
 //                         [--root-cause <r>] [--ask <a>]
 //                         [--by <attribution>] [--related-task <id>]
-//                         [--kind <k>]
-//       — file a new complaint. Returns the new id on stdout.
+//                         [--kind <k>] [--target-team <t>] [--no-route]
+//       — file a new complaint. Returns the new id on stdout. With
+//         `--target-team` the row routes into the target team's DB and
+//         stdout carries the resident atmuxDir next to the id (t-8e840edd);
+//         `--no-route` (t-31a7ffa3) forces a local insert and notes
+//         `routing disabled` on stderr (the row is marked
+//         `extra.no_route` so the residue probe stays silent).
 //
 //   atmux complaints resolve <id> [--status resolved|wontfix]
 //                                  [--by <attribution>]
@@ -27,16 +35,18 @@
 //       — flip status to `resolved` (default) or `wontfix`. Stamps
 //         resolved_at + resolved_by.
 //
-// Cross-team listing (e.g. `atmux complaints list --all-teams`) is
-// out of scope here — operator can `find /root/work/**/.atmux/state.db
-// -exec ...` until F5+1 lands a cockpit-aware verb.
+// Fleet-wide reads use `list --sent-by-me` (ADR-150 §D4, rows this team
+// filed elsewhere). A full `--all-teams` aggregate view stays out of
+// scope — that lands via ADR-152's deferred cross-team aggregation.
 
 import { randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 
 import { emit } from "../abstractions/events.ts";
 import { closeDatabase, openDatabase, transactImmediate } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
-import { loadCockpit, lookupTeamAtmuxDir } from "../core/cockpit.ts";
+import { enabledTeams, loadCockpit, lookupTeamAtmuxDir } from "../core/cockpit.ts";
 import { getAtmuxDir, type ResolveDirOpts, requireTeam, stateDbPath } from "../core/common.ts";
 import { addToSentinel, removeFromSentinel } from "../core/ombudsman.ts";
 import { ComplaintsRepo } from "../core/repositories/complaints-repo.ts";
@@ -48,9 +58,9 @@ import {
 } from "../schema/complaints.ts";
 
 const USAGE =
-  "atmux complaints {list [--status <s>|--all] [--source-kind <k>] [--target-team <t>] [--json] | " +
+  "atmux complaints {list [--status <s>|--all] [--source-kind <k>] [--target-team <t>] [--sent-by-me] [--json] | " +
   "file (--summary <s>|--title <s>) [--root-cause <r>|--body <r>] [--ask <a>] [--by <id>] [--kind <k>] [--severity <s>] " +
-  "[--source-kind <k>] [--source-id <id>] [--target-team <t>] [--related-task <id>] | " +
+  "[--source-kind <k>] [--source-id <id>] [--target-team <t>] [--no-route] [--related-task <id>] | " +
   "resolve <id> [--status resolved|wontfix] [--by <id>] [--note <t>] [--related-task <id>]}";
 
 export interface ParsedComplaintsArgs {
@@ -59,6 +69,10 @@ export interface ParsedComplaintsArgs {
   status?: string;
   all?: boolean;
   json?: boolean;
+  /** ADR-150 §D4 (t-cce84151): filer-audit selector — walk the cockpit
+   *  registry and surface rows with `origin_team` === filer name.
+   *  List-only. */
+  sentByMe?: boolean;
   /** file */
   summary?: string;
   rootCause?: string;
@@ -66,6 +80,9 @@ export interface ParsedComplaintsArgs {
   by?: string;
   relatedTask?: string;
   kind?: string;
+  /** t-31a7ffa3: force a local insert even when `--target-team` is set
+   *  (opt out of ADR-150 §D1 routing). File-only. */
+  noRoute?: boolean;
   /** v3 / t-e5e5d576: structured provenance — used by both `file`
    *  (writes the columns) and `list` (filters). */
   sourceKind?: string;
@@ -132,6 +149,16 @@ export function parseComplaintsArgs(argv: ReadonlyArray<string>): ParsedComplain
         break;
       case "--json":
         out.json = true;
+        i += 1;
+        break;
+      case "--sent-by-me":
+        // ADR-150 §D4 (t-cce84151): filer-audit selector, list-only.
+        out.sentByMe = true;
+        i += 1;
+        break;
+      case "--no-route":
+        // t-31a7ffa3: local-insert opt-out, file-only.
+        out.noRoute = true;
         i += 1;
         break;
       case "--summary":
@@ -223,6 +250,18 @@ export function parseComplaintsArgs(argv: ReadonlyArray<string>): ParsedComplain
       });
     }
   }
+  if (out.sentByMe === true && sub !== "list") {
+    throw new UsageError({
+      what: `complaints ${sub}: --sent-by-me is list-only`,
+      hint: USAGE,
+    });
+  }
+  if (out.noRoute === true && sub !== "file") {
+    throw new UsageError({
+      what: `complaints ${sub}: --no-route is file-only`,
+      hint: USAGE,
+    });
+  }
   if (sub === "resolve") {
     if (out.resolveStatus === undefined && out.status !== undefined) {
       // `--status resolved|wontfix` accepted on the resolve verb too.
@@ -277,18 +316,51 @@ export async function complaints(argv: ReadonlyArray<string>): Promise<number> {
 
 async function complaintsList(parsed: ParsedComplaintsArgs): Promise<number> {
   const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
-  await requireTeam(dirOpts);
+  const team = await requireTeam(dirOpts);
+  const status = parsed.all === true ? undefined : (parsed.status ?? "open");
+  const listOpts: Parameters<ComplaintsRepo["list"]>[0] = {};
+  if (status !== undefined) {
+    listOpts.status = status as Complaint["status"] as never;
+  }
+  if (parsed.sourceKind !== undefined) listOpts.sourceKind = parsed.sourceKind;
+  if (parsed.targetTeam !== undefined) listOpts.targetTeam = parsed.targetTeam;
+  // ADR-150 §D4 (t-cce84151): `--sent-by-me` walks the cockpit registry
+  // and aggregates rows this team filed into other teams' DBs
+  // (`origin_team` match). Strictly read-only across DBs: SELECT only,
+  // teams without a state.db are skipped (opening would CREATE one —
+  // `openDatabase` runs with `{ create: true }`).
+  if (parsed.sentByMe === true) {
+    const cockpit = await loadCockpit();
+    const rows: Complaint[] = [];
+    const seen = new Set<string>();
+    for (const entry of enabledTeams(cockpit)) {
+      const dir = join(entry.root, ".atmux");
+      if (seen.has(dir)) continue;
+      seen.add(dir);
+      const dbPath = stateDbPath(dir);
+      if (!existsSync(dbPath)) continue;
+      const db = openDatabase(dbPath, migrations);
+      try {
+        const repo = new ComplaintsRepo(db);
+        for (const c of repo.list(listOpts)) {
+          if (c.originTeam === team.name) rows.push(c);
+        }
+      } finally {
+        closeDatabase(db);
+      }
+    }
+    rows.sort((a, b) => b.openedAt - a.openedAt);
+    if (parsed.json === true) {
+      process.stdout.write(`${JSON.stringify(rows, null, 2)}\n`);
+    } else {
+      renderTextList(rows, status);
+    }
+    return 0;
+  }
   const atmuxDir = await getAtmuxDir(dirOpts);
   const db = openDatabase(stateDbPath(atmuxDir), migrations);
   try {
     const repo = new ComplaintsRepo(db);
-    const status = parsed.all === true ? undefined : (parsed.status ?? "open");
-    const listOpts: Parameters<typeof repo.list>[0] = {};
-    if (status !== undefined) {
-      listOpts.status = status as Complaint["status"] as never;
-    }
-    if (parsed.sourceKind !== undefined) listOpts.sourceKind = parsed.sourceKind;
-    if (parsed.targetTeam !== undefined) listOpts.targetTeam = parsed.targetTeam;
     const rows = repo.list(listOpts);
     if (parsed.json === true) {
       process.stdout.write(`${JSON.stringify(rows, null, 2)}\n`);
@@ -314,9 +386,19 @@ async function complaintsFile(parsed: ParsedComplaintsArgs): Promise<number> {
   // a mis-delivered row is worse than a refused filing).
   let residentDir = atmuxDir;
   let originTeam: string | null = null;
-  if (parsed.targetTeam !== undefined) {
+  // t-31a7ffa3: `--no-route` opts out of routing — the row inserts
+  // locally even when `--target-team` names another team. The row is
+  // marked `extra.no_route` so the complaint-row-residue probe
+  // (t-a1f9e37e) stays silent on the intentional local copy.
+  const routed = parsed.targetTeam !== undefined && parsed.noRoute !== true;
+  if (parsed.noRoute === true) {
+    process.stderr.write(
+      `atmux: complaints file: routing disabled (--no-route); row filed locally in ${atmuxDir}\n`,
+    );
+  }
+  if (routed) {
     const cockpit = await loadCockpit();
-    const found = lookupTeamAtmuxDir(cockpit, parsed.targetTeam);
+    const found = lookupTeamAtmuxDir(cockpit, parsed.targetTeam as string);
     if ("error" in found) {
       if (found.error === "not-found") {
         throw new UsageError({
@@ -346,6 +428,10 @@ async function complaintsFile(parsed: ParsedComplaintsArgs): Promise<number> {
     if (parsed.severity !== undefined && parsed.severity.length > 0) {
       extra.severity = parsed.severity;
     }
+    // t-31a7ffa3: record the routing opt-out on the row so the
+    // complaint-row-residue probe (t-a1f9e37e) can tell an intentional
+    // local copy apart from pre-ADR-150 routing residue.
+    if (parsed.noRoute === true) extra.no_route = true;
 
     // t-7bd53cba: when --target-team omitted, default to the current
     // team's name. Preserves the pre-v3 implicit "complaint in team X's
@@ -412,7 +498,10 @@ async function complaintsFile(parsed: ParsedComplaintsArgs): Promise<number> {
     if (team.ombudsman?.enabled === true) {
       await addToSentinel(residentDir, id);
     }
-    process.stdout.write(`${id}\n`);
+    // t-8e840edd: a routed filing names its resident atmuxDir next to
+    // the id so "where did my complaint go?" is answered on stdout.
+    // Local filings keep the bare-id line (backward compat).
+    process.stdout.write(routed ? `${id} ${residentDir}\n` : `${id}\n`);
     return 0;
   } finally {
     closeDatabase(db);

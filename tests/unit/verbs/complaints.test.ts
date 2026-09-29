@@ -2,6 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -76,6 +77,30 @@ async function installCockpitFixture(map: Record<string, string>): Promise<() =>
     if (saved === undefined) delete process.env.ATMUX_COCKPIT_CONFIG;
     else process.env.ATMUX_COCKPIT_CONFIG = saved;
   };
+}
+// t-8e840edd: routed filings print `<id> <resident-atmuxDir>` on stdout;
+// local filings print the bare id. The first whitespace-delimited token
+// is the id on both paths.
+function filedId(out: string): string {
+  return (out.trim().split(/\s+/)[0] ?? "").trim();
+}
+
+// t-31a7ffa3: capture stderr around a verb call (the `--no-route`
+// notice lands there). Restores the original writer — mirrors the
+// inline monkey-patch in the v3 bogus-source-kind test.
+async function captureStderr<T>(fn: () => Promise<T>): Promise<{ err: string; result: T }> {
+  let buf = "";
+  const orig = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((s: string | Uint8Array) => {
+    buf += typeof s === "string" ? s : new TextDecoder().decode(s);
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    const result = await fn();
+    return { err: buf, result };
+  } finally {
+    process.stderr.write = orig;
+  }
 }
 
 // ---------- parseComplaintsArgs ----------
@@ -985,7 +1010,7 @@ describe("complaints verb — v3 integration", () => {
           teamDir,
         ]),
       );
-      const id = out.trim();
+      const id = filedId(out);
       const { out: jsonOut } = await captureStdout(() =>
         complaints([
           "list",
@@ -1119,7 +1144,7 @@ describe("complaints verb — t-7bd53cba target_team default + severity stashing
           teamDir,
         ]),
       );
-      const id = out.trim();
+      const id = filedId(out);
       const path = join(atmuxDir, "state.db");
       const db = openDatabase(path, migrations);
       try {
@@ -1195,7 +1220,7 @@ describe("complaints verb — t-7bd53cba target_team default + severity stashing
           teamDir,
         ]),
       );
-      const id = out.trim();
+      const id = filedId(out);
       expect(id).toMatch(/^c-[0-9a-f]{8}$/);
 
       // Verify the row lands with every field the script intended
@@ -1286,7 +1311,7 @@ describe("complaints verb — cross-team file routing", () => {
         filerDir,
       ]),
     );
-    const id = out.trim();
+    const id = filedId(out);
     const target = openRepo(targetDir);
     try {
       const row = target.repo.getById(id);
@@ -1344,5 +1369,267 @@ describe("complaints verb — cross-team file routing", () => {
       complaints(["list", "--target-team", "team-b", "--team-dir", filerDir]),
     );
     expect(missOut).not.toContain(id);
+  });
+});
+// ---------- t-cce84151: list --sent-by-me (ADR-150 §D4 filer audit) ----------
+describe("complaints verb — list --sent-by-me", () => {
+  let filerDir: string;
+  let targetDir: string;
+  let ghostDir: string;
+  let savedCockpitEnv: string | undefined;
+  beforeEach(async () => {
+    filerDir = await mkdtemp(join(tmpdir(), "atmux-sent-filer-"));
+    targetDir = await mkdtemp(join(tmpdir(), "atmux-sent-target-"));
+    ghostDir = await mkdtemp(join(tmpdir(), "atmux-sent-ghost-"));
+    for (const [dir, name] of [
+      [filerDir, "team-a"],
+      [targetDir, "team-b"],
+    ] as const) {
+      await mkdir(join(dir, ".atmux"), { recursive: true });
+      await writeFile(
+        join(dir, ".atmux", "team.json"),
+        JSON.stringify({ name, members: [{ name: "alpha" }] }),
+      );
+    }
+    const cockpitPath = join(filerDir, "cockpit.json");
+    await writeFile(
+      cockpitPath,
+      JSON.stringify({
+        sessions: [
+          { type: "team", name: "team-a", root: filerDir },
+          { type: "team", name: "team-b", root: targetDir },
+          { type: "team", name: "team-ghost", root: ghostDir },
+        ],
+      }),
+    );
+    savedCockpitEnv = process.env.ATMUX_COCKPIT_CONFIG;
+    process.env.ATMUX_COCKPIT_CONFIG = cockpitPath;
+  });
+  afterEach(async () => {
+    if (savedCockpitEnv === undefined) delete process.env.ATMUX_COCKPIT_CONFIG;
+    else process.env.ATMUX_COCKPIT_CONFIG = savedCockpitEnv;
+    await rm(filerDir, { recursive: true, force: true });
+    await rm(targetDir, { recursive: true, force: true });
+    await rm(ghostDir, { recursive: true, force: true });
+  });
+  function openRepo(dir: string) {
+    const db = openDatabase(join(dir, ".atmux", "state.db"), migrations);
+    return { db, repo: new ComplaintsRepo(db) };
+  }
+  test("surfaces rows filed into another team's DB; skips local-only rows", async () => {
+    const { out } = await captureStdout(() =>
+      complaints([
+        "file",
+        "--summary",
+        "cross ping",
+        "--target-team",
+        "team-b",
+        "--team-dir",
+        filerDir,
+      ]),
+    );
+    const routedId = filedId(out);
+    const { out: localOut } = await captureStdout(() =>
+      complaints(["file", "--summary", "local ping", "--team-dir", filerDir]),
+    );
+    const localId = filedId(localOut);
+    const { out: sentOut } = await captureStdout(() =>
+      complaints(["list", "--sent-by-me", "--team-dir", filerDir]),
+    );
+    expect(sentOut).toContain(routedId);
+    expect(sentOut).not.toContain(localId);
+    const { out: jsonOut } = await captureStdout(() =>
+      complaints(["list", "--sent-by-me", "--json", "--team-dir", filerDir]),
+    );
+    const parsed = JSON.parse(jsonOut);
+    expect(parsed.map((c: { id: string }) => c.id)).toEqual([routedId]);
+    expect(parsed[0].originTeam).toBe("team-a");
+  });
+  test("read-only: team without a state.db gains none; other team's rows untouched", async () => {
+    const { out } = await captureStdout(() =>
+      complaints([
+        "file",
+        "--summary",
+        "cross ping",
+        "--target-team",
+        "team-b",
+        "--team-dir",
+        filerDir,
+      ]),
+    );
+    const routedId = filedId(out);
+    const before = openRepo(targetDir);
+    const beforeRow = before.repo.getById(routedId);
+    closeDatabase(before.db);
+    await captureStdout(() => complaints(["list", "--sent-by-me", "--team-dir", filerDir]));
+    expect(existsSync(join(ghostDir, ".atmux", "state.db"))).toBe(false);
+    const after = openRepo(targetDir);
+    try {
+      expect(after.repo.getById(routedId)).toEqual(beforeRow);
+    } finally {
+      closeDatabase(after.db);
+    }
+  });
+  test("empty outbox prints the no-complaints line", async () => {
+    const { out } = await captureStdout(() =>
+      complaints(["list", "--sent-by-me", "--team-dir", filerDir]),
+    );
+    expect(out).toContain("(no complaints");
+  });
+});
+// ---------- t-31a7ffa3: file --no-route (local-only insert) ----------
+describe("complaints verb — file --no-route", () => {
+  let filerDir: string;
+  let targetDir: string;
+  let savedCockpitEnv: string | undefined;
+  beforeEach(async () => {
+    filerDir = await mkdtemp(join(tmpdir(), "atmux-noroute-filer-"));
+    targetDir = await mkdtemp(join(tmpdir(), "atmux-noroute-target-"));
+    for (const [dir, name] of [
+      [filerDir, "team-a"],
+      [targetDir, "team-b"],
+    ] as const) {
+      await mkdir(join(dir, ".atmux"), { recursive: true });
+      await writeFile(
+        join(dir, ".atmux", "team.json"),
+        JSON.stringify({ name, members: [{ name: "alpha" }] }),
+      );
+    }
+    const cockpitPath = join(filerDir, "cockpit.json");
+    await writeFile(
+      cockpitPath,
+      JSON.stringify({
+        sessions: [
+          { type: "team", name: "team-a", root: filerDir },
+          { type: "team", name: "team-b", root: targetDir },
+        ],
+      }),
+    );
+    savedCockpitEnv = process.env.ATMUX_COCKPIT_CONFIG;
+    process.env.ATMUX_COCKPIT_CONFIG = cockpitPath;
+  });
+  afterEach(async () => {
+    if (savedCockpitEnv === undefined) delete process.env.ATMUX_COCKPIT_CONFIG;
+    else process.env.ATMUX_COCKPIT_CONFIG = savedCockpitEnv;
+    await rm(filerDir, { recursive: true, force: true });
+    await rm(targetDir, { recursive: true, force: true });
+  });
+  test("inserts locally with no_route marker; stderr notes routing disabled", async () => {
+    const { out } = await captureStdout(async () => {
+      const { err } = await captureStderr(() =>
+        complaints([
+          "file",
+          "--summary",
+          "stay home",
+          "--target-team",
+          "team-b",
+          "--no-route",
+          "--team-dir",
+          filerDir,
+        ]),
+      );
+      expect(err).toContain("routing disabled");
+    });
+    const id = filedId(out);
+    expect(out.trim()).toBe(id);
+    const filerDb = openDatabase(join(filerDir, ".atmux", "state.db"), migrations);
+    try {
+      const row = new ComplaintsRepo(filerDb).getById(id);
+      expect(row?.targetTeam).toBe("team-b");
+      expect(row?.originTeam).toBe(null);
+      expect(row?.extra.no_route).toBe(true);
+    } finally {
+      closeDatabase(filerDb);
+    }
+    expect(existsSync(join(targetDir, ".atmux", "state.db"))).toBe(false);
+  });
+});
+// ---------- t-8e840edd: routed file prints the resident atmuxDir ----------
+describe("complaints verb — routed file stdout carries residency", () => {
+  let filerDir: string;
+  let targetDir: string;
+  let savedCockpitEnv: string | undefined;
+  beforeEach(async () => {
+    filerDir = await mkdtemp(join(tmpdir(), "atmux-resid-filer-"));
+    targetDir = await mkdtemp(join(tmpdir(), "atmux-resid-target-"));
+    for (const [dir, name] of [
+      [filerDir, "team-a"],
+      [targetDir, "team-b"],
+    ] as const) {
+      await mkdir(join(dir, ".atmux"), { recursive: true });
+      await writeFile(
+        join(dir, ".atmux", "team.json"),
+        JSON.stringify({ name, members: [{ name: "alpha" }] }),
+      );
+    }
+    const cockpitPath = join(filerDir, "cockpit.json");
+    await writeFile(
+      cockpitPath,
+      JSON.stringify({
+        sessions: [
+          { type: "team", name: "team-a", root: filerDir },
+          { type: "team", name: "team-b", root: targetDir },
+        ],
+      }),
+    );
+    savedCockpitEnv = process.env.ATMUX_COCKPIT_CONFIG;
+    process.env.ATMUX_COCKPIT_CONFIG = cockpitPath;
+  });
+  afterEach(async () => {
+    if (savedCockpitEnv === undefined) delete process.env.ATMUX_COCKPIT_CONFIG;
+    else process.env.ATMUX_COCKPIT_CONFIG = savedCockpitEnv;
+    await rm(filerDir, { recursive: true, force: true });
+    await rm(targetDir, { recursive: true, force: true });
+  });
+  test("stdout names the resident atmuxDir next to the id", async () => {
+    const { out } = await captureStdout(() =>
+      complaints([
+        "file",
+        "--summary",
+        "cross ping",
+        "--target-team",
+        "team-b",
+        "--team-dir",
+        filerDir,
+      ]),
+    );
+    const residentDir = join(targetDir, ".atmux");
+    expect(out).toContain(residentDir);
+    const id = filedId(out);
+    expect(id).toMatch(/^c-[0-9a-f]{8}$/);
+    const db = openDatabase(join(targetDir, ".atmux", "state.db"), migrations);
+    try {
+      expect(new ComplaintsRepo(db).getById(id)?.incidentSummary).toBe("cross ping");
+    } finally {
+      closeDatabase(db);
+    }
+  });
+  test("local file keeps the bare-id line", async () => {
+    const { out } = await captureStdout(() =>
+      complaints(["file", "--summary", "local ping", "--team-dir", filerDir]),
+    );
+    expect(out.trim()).toMatch(/^c-[0-9a-f]{8}$/);
+  });
+});
+// ---------- parser: --sent-by-me / --no-route ----------
+describe("parseComplaintsArgs — t-cce84151 / t-31a7ffa3 flags", () => {
+  test("list --sent-by-me captured", () => {
+    expect(parseComplaintsArgs(["list", "--sent-by-me"]).sentByMe).toBe(true);
+  });
+  test("file --no-route captured", () => {
+    expect(parseComplaintsArgs(["file", "--summary", "x", "--no-route"]).noRoute).toBe(true);
+  });
+  test("flags unset → undefined", () => {
+    const a = parseComplaintsArgs(["file", "--summary", "x"]);
+    expect(a.sentByMe).toBeUndefined();
+    expect(a.noRoute).toBeUndefined();
+  });
+  test("file --sent-by-me rejected", () => {
+    expect(() => parseComplaintsArgs(["file", "--summary", "x", "--sent-by-me"])).toThrow(
+      /list-only/,
+    );
+  });
+  test("list --no-route rejected", () => {
+    expect(() => parseComplaintsArgs(["list", "--no-route"])).toThrow(/file-only/);
   });
 });

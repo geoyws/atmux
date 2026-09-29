@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
++### ✨ Added — init --wizard gains --yes / --no-start / --json (t-c17184ad)
++
++**Agent and CI mode for first-run setup.** `--yes` takes every default without prompting (or `ATMUX_INSTALL_YES=1`), `--no-start` drops the post-init `atmux start` hint (or `ATMUX_INSTALL_NO_START=1`), and `--json` emits one machine-readable result object on stdout with human lines suppressed.
++
++### ✨ Added — init --wizard prints a branded header with numbered steps (t-f1a57aff)
++
++**The wizard shows its progress.** An ADR-200 §D5 header plus numbered Step N/5 lines; color degrades to plain text without a TTY, under `NO_COLOR`, or with `TERM=dumb`.
++
++### ✨ Added — init --wizard ends with a verification step (t-eb01402c)
++
++**The wizard proves the install before it finishes.** A doctor quiet-path probe (no shell-out) prints `verification: ship it`, lists warnings, or halts with a fix recipe; red verification returns exit 1, yellow stays exit 0.
++
++### ✨ Added — complaints list --sent-by-me shows cross-team filings (t-cce84151)
++
++**Audit what this team filed elsewhere.** The selector walks cockpit-registered team DBs read-only and surfaces rows with `origin_team` matching the filer; teams without a state.db are skipped, never created.
++
++### ✨ Added — complaints file --no-route files locally (t-31a7ffa3)
++
++**Opt out of ADR-150 routing explicitly.** The row inserts locally with a `routing disabled` stderr notice and an `extra.no_route` marker, so the residue probe stays silent on the intentional copy.
++
++### 🩺 Doctor — complaint-row-residue probe flags pre-routing rows (t-a1f9e37e)
++
++**Find complaints stranded by the routing change.** The probe walks cockpit-registered team DBs SELECT-only and raises a yellow row for complaints whose `target_team` differs from the owning team with no `--no-route` record. Silent for single-team operators and clean fleets.
++
++### ✨ Added — routed complaints file prints residency (t-8e840edd)
++
++**See where a routed complaint landed.** A `--target-team` filing prints `<id> <resident-atmuxDir>` on stdout; local filings keep the bare-id line.
++
 +### 🩺 Doctor — migration-state-incomplete probe enforces ADR-169 lists (t-5ac8783c)
 +
 +**Doctor flags migrated JSON sources still present and unclassified state files.** The `migration-state-incomplete` probe scans `<atmuxDir>/state/*.json`: ADR-169 migrated sources still present go red with the owning `migrate-state --target=` in the hint, and so does any JSON that is neither a migrated source nor KEEP-AS-JSON. Silent on archived copies and KEEP-AS-JSON entries.
