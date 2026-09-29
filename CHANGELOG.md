@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🗄️ Changed — whip budget files move to the state.db budget table (ADR-169 P3, e-38)
+
+**`budget-pause`, `budget-warning-state` and `budget-refresh-soon-state` are now budget-table rows.** Team `<atmuxDir>/state.db` gains `budget (probe_name, observed_at, state, updated_at, schema_version)` — one row per probe with a queryable `observed_at` (`pausedAt` for pause entries, max fire epoch for the dedup maps, file mtime when the payload carries no timestamp). Readers promote leftover JSON on first read, writers are table-only. `atmux migrate-state --target=budget` imports + archives sources (dry-run supported). This is the team whip state — not the ADR-270 global `~/.atmux/state/budget.db` usage time-series, which is untouched.
+
 ### 🐛 Fixed — budget probe resolves the canonical `.atmux` via caller-injected dir (t-eb67d998)
 
 **Probes fired from a project subdirectory no longer land in `<cwd>/.atmux`.** `probeBudget` silently joined `process.cwd()` when `opts.atmuxDir` was absent, skipping the `getAtmuxDir` walk-up and the `ATMUX_DIR` pin — and resolving canonically inside the abstraction would have needed a core import (ADR-096 layering). The probe now takes the canonical dir (resolved path or lazy resolver) from its callers and fails closed with `UsageError` when it is missing; every production caller passes it through (`whip-budget-check`, `orchd-budget-scan`, the `poke` swap checks, `budget collect` via the anthropic adapter; `health` and `poke-resume-check` already did). Proven by walk-up + env-pin + fail-closed tests in `tests/unit/abstractions/budget-probe.test.ts` with wiring pins in the caller suites.

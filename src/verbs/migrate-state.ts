@@ -11,7 +11,7 @@
 //
 //   atmux migrate-state json-to-sqlite [--team-dir <dir>]
 //                                      [--dry-run]
-//                                      [--target=all|kanban|inboxes|state|flags|role-state]
+//                                      [--target=all|kanban|inboxes|state|flags|role-state|budget]
 //                                      [--db-path <path>]
 //
 //   --team-dir <dir>       Override .atmux dir resolution. Default: walk
@@ -19,10 +19,10 @@
 //   --dry-run              Parse + report counts, no DB writes, no
 //                          archive moves. Exit 0 even if validation fails
 //                          on individual rows (errors surface to stderr).
-//   --target=<...>         Default `all`. `kanban`, `inboxes`, `flags`
-//                          and `role-state` are implemented; `state`
-//                          throws ConfigError. `all` runs kanban +
-//                          inboxes + flags + role-state, skipping
+//   --target=<...>         Default `all`. `kanban`, `inboxes`, `flags`,
+//                          `role-state` and `budget` are implemented;
+//                          `state` throws ConfigError. `all` runs kanban +
+//                          inboxes + flags + role-state + budget, skipping
 //                          unimplemented targets with a stderr WARN.
 //   --db-path <path>       Override .atmux/state.db location. Default:
 //                          <atmuxDir>/state.db.
@@ -44,11 +44,18 @@
 import { readdir, rename } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
-import { ensureDir, exists, readText, writeText } from "../abstractions/fs.ts";
+import { ensureDir, exists, readText, statOrNull, writeText } from "../abstractions/fs.ts";
 import { parseJsonString } from "../abstractions/json.ts";
 import { closeDatabase, type Database, openDatabase } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { now } from "../abstractions/time.ts";
+import { budgetPauseObservedAtMs } from "../core/budget-pause.ts";
+import {
+  BUDGET_PROBES,
+  type BudgetProbe,
+  BudgetRepo,
+  maxFireEpochObservedAtMs,
+} from "../core/budget-state-repo.ts";
 import { getAtmuxDir, inboxDir, kanbanJsonPath } from "../core/common.ts";
 import {
   COCKPIT_FLAG_FILES,
@@ -72,7 +79,14 @@ import { Kanban, type KanbanTask } from "../schema/kanban.ts";
 
 // ---------- Arg parsing ----------
 
-export type MigrateTarget = "all" | "kanban" | "inboxes" | "state" | "flags" | "role-state";
+export type MigrateTarget =
+  | "all"
+  | "kanban"
+  | "inboxes"
+  | "state"
+  | "flags"
+  | "role-state"
+  | "budget";
 
 export interface ParsedMigrateArgs {
   teamDir?: string;
@@ -88,6 +102,7 @@ const VALID_TARGETS: ReadonlySet<string> = new Set([
   "state",
   "flags",
   "role-state",
+  "budget",
 ]);
 
 export function parseMigrateArgs(args: ReadonlyArray<string>): ParsedMigrateArgs {
@@ -112,7 +127,7 @@ export function parseMigrateArgs(args: ReadonlyArray<string>): ParsedMigrateArgs
         if (val === undefined) {
           throw new UsageError({
             what: "migrate-state: --team-dir requires a value",
-            hint: "usage: atmux migrate-state json-to-sqlite [--team-dir <dir>] [--dry-run] [--target=<all|kanban|inboxes|state|flags|role-state>]",
+            hint: "usage: atmux migrate-state json-to-sqlite [--team-dir <dir>] [--dry-run] [--target=<all|kanban|inboxes|state|flags|role-state|budget>]",
           });
         }
         teamDir = val;
@@ -140,7 +155,7 @@ export function parseMigrateArgs(args: ReadonlyArray<string>): ParsedMigrateArgs
         if (!VALID_TARGETS.has(val)) {
           throw new UsageError({
             what: `migrate-state: unknown --target=${val}`,
-            hint: "valid targets: all, kanban, inboxes, state, flags, role-state",
+            hint: "valid targets: all, kanban, inboxes, state, flags, role-state, budget",
           });
         }
         target = val as MigrateTarget;
@@ -150,7 +165,7 @@ export function parseMigrateArgs(args: ReadonlyArray<string>): ParsedMigrateArgs
       default:
         throw new UsageError({
           what: `migrate-state: unknown arg: ${a}`,
-          hint: "usage: atmux migrate-state json-to-sqlite [--team-dir <dir>] [--dry-run] [--target=<all|kanban|inboxes|state|flags|role-state>]",
+          hint: "usage: atmux migrate-state json-to-sqlite [--team-dir <dir>] [--dry-run] [--target=<all|kanban|inboxes|state|flags|role-state|budget>]",
         });
     }
   }
@@ -188,7 +203,6 @@ export interface FlagsMigrationCounts {
   /** Files skipped: a flags row already exists (archived anyway). */
   filesSkippedRowExists: number;
 }
-
 export interface RoleStateMigrationCounts {
   /** Tracking files seen under `<atmuxDir>/state/` (glob + team files). */
   filesSeen: number;
@@ -197,6 +211,17 @@ export interface RoleStateMigrationCounts {
   /** Files skipped: present but not valid JSON (left in place). */
   filesSkippedInvalid: number;
   /** Files skipped: a role_state row already exists (archived anyway). */
+  filesSkippedRowExists: number;
+}
+
+export interface BudgetMigrationCounts {
+  /** Budget files seen under `<atmuxDir>/state/` (3 enumerated probes). */
+  filesSeen: number;
+  /** Rows upserted into `budget`. */
+  rowsWritten: number;
+  /** Files skipped: present but not valid JSON (left in place). */
+  filesSkippedInvalid: number;
+  /** Files skipped: a budget row already exists (archived anyway). */
   filesSkippedRowExists: number;
 }
 
@@ -212,6 +237,7 @@ export interface MigrationResult {
     state?: number; // not implemented in this commit
     flags?: FlagsMigrationCounts;
     roleState?: RoleStateMigrationCounts;
+    budget?: BudgetMigrationCounts;
   };
   warnings: string[];
 }
@@ -554,8 +580,9 @@ interface RoleStateSource {
  * address, or null when the file is not an enumerated tracking file.
  * Role-scoped prefixes glob (`cost-*.json`, `modal-history-*.json`);
  * team-scoped files (`heads-up-cursor`, `brief-versions`,
- * `ombudsman-pending`) pin the sentinel role. Anything else (budget
- * files, KEEP-AS-JSON, operator ad-hoc) is not ours.
+ * `ombudsman-pending`) pin the sentinel role. Anything else
+ * (KEEP-AS-JSON, operator ad-hoc — and the budget files, which
+ * `--target=budget` owns per ADR-169 OQ-3) is not ours.
  */
 function roleStateSourceFor(stateDirPath: string, filename: string): RoleStateSource | null {
   if (!filename.endsWith(".json")) return null;
@@ -653,8 +680,82 @@ async function migrateRoleState(
   return { counts, warnings };
 }
 
-// ---------- Archive helper ----------
+// ---------- Budget migration (ADR-169 P3) ----------
+/** `observed_at` extractor per probe (ADR-169 §Decision — epoch ms
+ *  parsed from the payload's timestamp field). */
+const BUDGET_OBSERVE: Record<BudgetProbe, (text: string, fallbackMs: number) => number> = {
+  "budget-pause": budgetPauseObservedAtMs,
+  "budget-refresh-soon-state": maxFireEpochObservedAtMs,
+  "budget-warning-state": maxFireEpochObservedAtMs,
+};
 
+/**
+ * Read the 3 budget files, upsert each valid one into the `budget`
+ * table with its queryable `observed_at`, and archive the migrated
+ * sources.
+ *
+ * Per-file policy (safe re-run, mirrors `--target=flags`):
+ *   - absent → skip silently.
+ *   - row already present → skip the write, archive the redundant file.
+ *   - invalid JSON → skip the write AND the archive (data would be
+ *     lost), count + warn.
+ *   - otherwise → upsert the raw blob, archive the source.
+ * `observed_at` falls back to the source file's mtime (ADR-169
+ * §Decision) when the payload carries no timestamp (empty dedup map).
+ */
+async function migrateBudget(
+  atmuxDir: string,
+  db: Database,
+  opts: { dryRun: boolean; migratedAtEpoch: number },
+): Promise<{ counts: BudgetMigrationCounts; warnings: string[] }> {
+  const counts: BudgetMigrationCounts = {
+    filesSeen: 0,
+    rowsWritten: 0,
+    filesSkippedInvalid: 0,
+    filesSkippedRowExists: 0,
+  };
+  const warnings: string[] = [];
+  const repo = new BudgetRepo(db);
+  const stateDirPath = join(atmuxDir, "state");
+  const archiveDir = join(atmuxDir, "archive", `json-pre-sqlite-${opts.migratedAtEpoch}`);
+
+  for (const probe of BUDGET_PROBES) {
+    const srcPath = join(stateDirPath, `${probe}.json`);
+    if (!(await exists(srcPath))) continue;
+    counts.filesSeen += 1;
+    const text = await readText(srcPath);
+    try {
+      parseJsonString(srcPath, z.unknown(), text);
+    } catch {
+      counts.filesSkippedInvalid += 1;
+      warnings.push(`budget: ${srcPath} is not valid JSON — left in place, not migrated`);
+      continue;
+    }
+    if (repo.get(probe) !== null) {
+      counts.filesSkippedRowExists += 1;
+      warnings.push(`budget: ${probe} row already present — archived redundant source ${srcPath}`);
+    } else {
+      counts.rowsWritten += 1;
+      if (!opts.dryRun) {
+        const stat = await statOrNull(srcPath);
+        // STRICT INTEGER columns reject REALs — floor the float mtime.
+        const observedAt = Math.floor(stat?.mtimeMs ?? opts.migratedAtEpoch);
+        repo.set(probe, text, BUDGET_OBSERVE[probe](text, observedAt), opts.migratedAtEpoch);
+      }
+    }
+    if (!opts.dryRun) {
+      const archiveDest = join(archiveDir, "state", `${probe}.json`);
+      await ensureDir(dirname(archiveDest));
+      if (!(await exists(archiveDest))) {
+        await rename(srcPath, archiveDest);
+      }
+    }
+  }
+
+  return { counts, warnings };
+}
+
+// ---------- Archive helper ----------
 /**
  * Move source JSON files to `.atmux/archive/json-pre-sqlite-<epoch>/`,
  * preserving directory structure. Skipped on --dry-run.
@@ -780,7 +881,15 @@ export async function migrateState(
       counts.roleState = migrated.counts;
       warnings.push(...migrated.warnings);
     }
-
+    // ----- budget target (ADR-169 P3 — whip budget files → budget) -----
+    if (parsed.target === "all" || parsed.target === "budget") {
+      const migrated = await migrateBudget(atmuxDir, db, {
+        dryRun: parsed.dryRun,
+        migratedAtEpoch,
+      });
+      counts.budget = migrated.counts;
+      warnings.push(...migrated.warnings);
+    }
     // ----- state target (NOT IMPLEMENTED; team's bundle-2 follow-up) -----
     if (parsed.target === "state") {
       throw new ConfigError({
@@ -837,6 +946,10 @@ export async function migrateState(
         logger.log(
           `migrate-state: dry-run OK — ${counts.roleState?.rowsWritten ?? 0} role_state rows, ${counts.roleState?.filesSkippedInvalid ?? 0} invalid skipped`,
         );
+      } else if (parsed.target === "budget") {
+        logger.log(
+          `migrate-state: dry-run OK — ${counts.budget?.rowsWritten ?? 0} budget rows, ${counts.budget?.filesSkippedInvalid ?? 0} invalid skipped`,
+        );
       } else {
         logger.log(
           `migrate-state: dry-run OK — ${counts.kanban?.tasks ?? 0} tasks, ${counts.kanban?.epics ?? 0} epics, ${counts.kanban?.stories ?? 0} stories scanned`,
@@ -849,6 +962,10 @@ export async function migrateState(
     } else if (parsed.target === "role-state") {
       logger.ok(
         `migrate-state: migrated ${counts.roleState?.rowsWritten ?? 0} role_state rows to ${dbPath}`,
+      );
+    } else if (parsed.target === "budget") {
+      logger.ok(
+        `migrate-state: migrated ${counts.budget?.rowsWritten ?? 0} budget rows to ${dbPath}`,
       );
     } else {
       logger.ok(

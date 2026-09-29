@@ -8,16 +8,15 @@
 // regular checks (and ADR-052 Mode B kanban-empty fallback) don't fire
 // while the team is in a deliberate hold.
 //
-// State files driven from this module (all under <atmuxDir>/state/):
+// Budget state driven from this module (ADR-169 P3: rows in the
+// `budget` table in <atmuxDir>/state.db — leftover JSON files under
+// <atmuxDir>/state/ promote on first read):
 //
-//   - budget-pause.json           (entry + exit lifecycle)
-//   - budget-warning-state.json   (band-crossing dedup, 4.1)
-//   - budget-refresh-soon-state.json (refresh-soon dedup, 4.2)
+//   - budget-pause              (entry + exit lifecycle)
+//   - budget-warning-state      (band-crossing dedup, 4.1)
+//   - budget-refresh-soon-state (refresh-soon dedup, 4.2)
 //   - budget-probe-<account>.json (managed by budget-probe abstraction)
 //   - logs/budget-history.jsonl   (managed by budget-history helper)
-//
-// All five files are bash-readable so the bash whip runtime can
-// observe TS-side state during the bash→bun transition.
 //
 // Test surface: every external dependency is injectable via
 // `BudgetCheckDeps`. Defaults wire up the production functions.

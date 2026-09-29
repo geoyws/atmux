@@ -7,13 +7,18 @@
 // entries (or the next `wipeStaleEntries` call here, called per-tick
 // from whip-tick).
 //
-// State file: `<atmuxDir>/state/budget-refresh-soon-state.json`. Schema
-// per ADR-053 §D3:
+// State lives in the `budget` table in `<atmuxDir>/state.db`
+// (row `budget-refresh-soon-state`, ADR-169 P3). Schema per ADR-053
+// §D3 (the TEXT-blob `state`):
 //
 //   {
 //     "<account>:<window>:<resetEpoch>": <fire-epoch>,
 //     ...
 //   }
+//
+// A leftover `<atmuxDir>/state/budget-refresh-soon-state.json` is
+// promoted into the table on first read; writers are table-only
+// (see `core/budget-state-repo.ts`).
 //
 // Why include resetEpoch in the key (not just account+window): one
 // 5h window can refresh multiple times in a single budget-pause cycle
@@ -21,10 +26,20 @@
 // per cycle.
 
 import { join } from "node:path";
-import { atomicWrite, readTextOrNull } from "../abstractions/fs.ts";
+import { now } from "../abstractions/time.ts";
+import {
+  maxFireEpochObservedAtMs,
+  readBudgetTextAtDb,
+  teamBudgetDbPath,
+  writeBudgetTextAtDb,
+} from "./budget-state-repo.ts";
+
+const BUDGET_PROBE = "budget-refresh-soon-state";
 
 const STATE_FILENAME = "budget-refresh-soon-state.json";
 
+/** Legacy state-file path (pre-migration address; still the fallback
+ *  address for pre-migration teams). */
 export function budgetRefreshSoonStatePath(atmuxDir: string): string {
   return join(atmuxDir, "state", STATE_FILENAME);
 }
@@ -32,10 +47,16 @@ export function budgetRefreshSoonStatePath(atmuxDir: string): string {
 /** State map: `<account>:<window>:<resetEpoch>` → epoch-of-fire. */
 export type RefreshSoonState = Record<string, number>;
 
-/** Read state from disk; empty map on missing/malformed. */
+/** Read state; empty map on missing/malformed. Row-first: promotes a
+ *  leftover legacy file into the budget table on first read. */
 export async function loadRefreshSoonState(atmuxDir: string): Promise<RefreshSoonState> {
   const path = budgetRefreshSoonStatePath(atmuxDir);
-  const txt = await readTextOrNull(path);
+  const txt = await readBudgetTextAtDb(
+    teamBudgetDbPath(atmuxDir),
+    BUDGET_PROBE,
+    path,
+    maxFireEpochObservedAtMs,
+  );
   if (txt === null) return {};
   try {
     const parsed: unknown = JSON.parse(txt);
@@ -50,12 +71,18 @@ export async function loadRefreshSoonState(atmuxDir: string): Promise<RefreshSoo
   }
 }
 
-/** Atomic-write the full state map. */
+/** Table-only write of the full state map (observed_at = max fire epoch). */
 export async function writeRefreshSoonState(
   atmuxDir: string,
   state: RefreshSoonState,
 ): Promise<void> {
-  await atomicWrite(budgetRefreshSoonStatePath(atmuxDir), JSON.stringify(state));
+  const text = JSON.stringify(state);
+  await writeBudgetTextAtDb(
+    teamBudgetDbPath(atmuxDir),
+    BUDGET_PROBE,
+    text,
+    maxFireEpochObservedAtMs(text, now()),
+  );
 }
 
 /** Compose the canonical key for a (account, window, resetEpoch) tuple. */

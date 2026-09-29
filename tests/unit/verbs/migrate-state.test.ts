@@ -19,6 +19,7 @@ import { join } from "node:path";
 import { exists, readText } from "../../../src/abstractions/fs.ts";
 import { closeDatabase, openDatabase } from "../../../src/abstractions/sqlite.ts";
 import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
+import { BudgetRepo } from "../../../src/core/budget-state-repo.ts";
 import { FlagsRepo } from "../../../src/core/flags-repo.ts";
 import { RoleStateRepo } from "../../../src/core/role-state-repo.ts";
 import type { Logger } from "../../../src/core/tui.ts";
@@ -337,10 +338,9 @@ describe("migrateState", () => {
     ).rejects.toThrow(ConfigError);
   });
 
-  test("--target=all runs kanban + inboxes + flags + role-state; warns state + empty cockpit (ADR-076)", async () => {
+  test("--target=all runs kanban + inboxes + flags + role-state + budget; warns state + empty cockpit (ADR-076)", async () => {
     await seedKanban(env);
     // Fake HOME keeps the cockpit-scope flags migration hermetic — the
-    // verb must never touch the operator's real ~/.atmux in tests.
     const fakeHome = await mkdtemp(join(tmpdir(), "atmux-migrate-all-home-"));
     try {
       const exit = await migrateState(
@@ -376,6 +376,12 @@ describe("migrateState", () => {
         filesSkippedRowExists: 0,
       });
       expect(audit.counts.roleState).toEqual({
+        filesSeen: 0,
+        rowsWritten: 0,
+        filesSkippedInvalid: 0,
+        filesSkippedRowExists: 0,
+      });
+      expect(audit.counts.budget).toEqual({
         filesSeen: 0,
         rowsWritten: 0,
         filesSkippedInvalid: 0,
@@ -600,7 +606,8 @@ describe("migrateState --target=role-state", () => {
     await seedState(env, "heads-up-cursor.json", JSON.stringify({ "a:b": 5 }));
     await seedState(env, "brief-versions.json", JSON.stringify({ worker: { version: "v1" } }));
     await seedState(env, "ombudsman-pending.json", JSON.stringify({ pending: [] }));
-    // Non-tracking files are not ours — budget stays JSON per OQ-3.
+    // Non-tracking files are not ours — budget files belong to
+    // --target=budget (ADR-169 P3), so role-state leaves them alone.
     await seedState(env, "budget-pause.json", JSON.stringify({ paused: true }));
     await seedState(env, "random.json", JSON.stringify({ whatever: 1 }));
     await seedState(env, "notes.txt", "not json at all");
@@ -708,9 +715,172 @@ describe("migrateState --target=role-state", () => {
     expect(parseMigrateArgs(["json-to-sqlite", "--target=role-state"]).target).toBe("role-state");
   });
 });
+
+// ---------- --target=budget (ADR-169 P3, e-38) ----------
+
+describe("migrateState --target=budget", () => {
+  let env: TestEnv;
+
+  beforeEach(async () => {
+    env = await makeEnv();
+  });
+
+  afterEach(async () => {
+    await teardown(env);
+  });
+
+  async function seedState(env: TestEnv, filename: string, text: string): Promise<string> {
+    const p = join(env.atmuxDir, "state", filename);
+    await mkdir(join(env.atmuxDir, "state"), { recursive: true });
+    await writeFile(p, text, "utf8");
+    return p;
+  }
+
+  function budgetRow(dbPath: string, probe: string): { state: string; observedAt: number } | null {
+    const db = openDatabase(dbPath, migrations);
+    try {
+      return new BudgetRepo(db).get(probe);
+    } finally {
+      closeDatabase(db);
+    }
+  }
+
+  const runBudget = (extra: ReadonlyArray<string> = []) =>
+    migrateState(["json-to-sqlite", "--team-dir", env.atmuxDir, "--target=budget", ...extra], {
+      logger: env.logger,
+      stdout: (s) => env.stdoutBuf.push(s),
+      env: { ...process.env },
+    });
+
+  const PAUSE_TEXT = JSON.stringify({
+    paused: true,
+    pausedAt: 1_700_000_000,
+    pausedAtTs: "11:44 MYT",
+    atRisk: [],
+  });
+  const WARNING_TEXT = JSON.stringify({ "icloud:5h:0.5": 100, "icloud:5h:0.25": 200 });
+  const REFRESH_TEXT = JSON.stringify({ "icloud:5h:1700000000": 1699999990 });
+
+  test("import + archive: 3 probes become rows with queryable observed_at", async () => {
+    await seedState(env, "budget-pause.json", PAUSE_TEXT);
+    await seedState(env, "budget-warning-state.json", WARNING_TEXT);
+    await seedState(env, "budget-refresh-soon-state.json", REFRESH_TEXT);
+    // Out-of-scope files stay put.
+    await seedState(env, "random.json", JSON.stringify({ whatever: 1 }));
+
+    expect(await runBudget()).toBe(0);
+    expect(budgetRow(env.dbPath, "budget-pause")).toEqual({
+      state: PAUSE_TEXT,
+      observedAt: 1_700_000_000_000,
+    });
+    expect(budgetRow(env.dbPath, "budget-warning-state")).toEqual({
+      state: WARNING_TEXT,
+      observedAt: 200_000,
+    });
+    expect(budgetRow(env.dbPath, "budget-refresh-soon-state")).toEqual({
+      state: REFRESH_TEXT,
+      observedAt: 1699999990 * 1000,
+    });
+    for (const f of [
+      "budget-pause.json",
+      "budget-warning-state.json",
+      "budget-refresh-soon-state.json",
+    ]) {
+      expect(await exists(join(env.atmuxDir, "state", f))).toBe(false);
+    }
+    expect(await exists(join(env.atmuxDir, "state", "random.json"))).toBe(true);
+    const audit = JSON.parse(await readText(join(env.atmuxDir, "migration-state-sqlite.json")));
+    expect(audit.counts.budget).toEqual({
+      filesSeen: 3,
+      rowsWritten: 3,
+      filesSkippedInvalid: 0,
+      filesSkippedRowExists: 0,
+    });
+    expect(env.logLines.some((l) => l.includes("3 budget rows"))).toBe(true);
+  });
+
+  test("empty dedup map migrates with mtime-fallback observed_at", async () => {
+    await seedState(env, "budget-warning-state.json", JSON.stringify({}));
+    expect(await runBudget()).toBe(0);
+    const row = budgetRow(env.dbPath, "budget-warning-state");
+    expect(row?.state).toBe(JSON.stringify({}));
+    expect(row?.observedAt).toBeGreaterThan(0);
+  });
+
+  test("invalid JSON: skipped, warned, left in place", async () => {
+    const p = await seedState(env, "budget-pause.json", "{not-json");
+    expect(await runBudget()).toBe(0);
+    expect(budgetRow(env.dbPath, "budget-pause")).toBe(null);
+    expect(await exists(p)).toBe(true);
+    expect(env.logLines.some((l) => l.includes("not valid JSON"))).toBe(true);
+  });
+
+  test("row exists: redundant source archived, write skipped", async () => {
+    await seedState(env, "budget-pause.json", PAUSE_TEXT);
+    expect(await runBudget()).toBe(0);
+    // Re-seed the same probe after archival, with different content.
+    await seedState(env, "budget-pause.json", JSON.stringify({ paused: true, pausedAt: 5 }));
+    expect(await runBudget()).toBe(0);
+    // Original row wins; redundant source archived anyway.
+    expect(budgetRow(env.dbPath, "budget-pause")).toEqual({
+      state: PAUSE_TEXT,
+      observedAt: 1_700_000_000_000,
+    });
+    expect(await exists(join(env.atmuxDir, "state", "budget-pause.json"))).toBe(false);
+    expect(env.logLines.some((l) => l.includes("row already present"))).toBe(true);
+  });
+
+  test("dry-run: counts without writes or archive moves", async () => {
+    const p = await seedState(env, "budget-pause.json", PAUSE_TEXT);
+    expect(await runBudget(["--dry-run"])).toBe(0);
+    expect(budgetRow(env.dbPath, "budget-pause")).toBe(null);
+    expect(await exists(p)).toBe(true);
+    expect(env.logLines.some((l) => l.includes("dry-run OK"))).toBe(true);
+    expect(env.logLines.some((l) => l.includes("budget rows"))).toBe(true);
+  });
+
+  test("no budget files: nothing seen, nothing written", async () => {
+    await seedState(env, "random.json", JSON.stringify({ whatever: 1 }));
+    expect(await runBudget()).toBe(0);
+    const audit = JSON.parse(await readText(join(env.atmuxDir, "migration-state-sqlite.json")));
+    expect(audit.counts.budget).toEqual({
+      filesSeen: 0,
+      rowsWritten: 0,
+      filesSkippedInvalid: 0,
+      filesSkippedRowExists: 0,
+    });
+
+    // Fresh team without a state/ dir at all.
+    const fresh = await makeEnv();
+    try {
+      const exit = await migrateState(
+        ["json-to-sqlite", "--team-dir", fresh.atmuxDir, "--target=budget"],
+        { logger: fresh.logger, stdout: (s) => fresh.stdoutBuf.push(s), env: { ...process.env } },
+      );
+      expect(exit).toBe(0);
+      const freshAudit = JSON.parse(
+        await readText(join(fresh.atmuxDir, "migration-state-sqlite.json")),
+      );
+      expect(freshAudit.counts.budget.filesSeen).toBe(0);
+    } finally {
+      await teardown(fresh);
+    }
+  });
+
+  test("idempotent re-run: second pass sees zero files", async () => {
+    await seedState(env, "budget-pause.json", PAUSE_TEXT);
+    expect(await runBudget()).toBe(0);
+    expect(await runBudget()).toBe(0);
+    const audit = JSON.parse(await readText(join(env.atmuxDir, "migration-state-sqlite.json")));
+    expect(audit.counts.budget.filesSeen).toBe(0);
+  });
+
+  test("parses --target=budget", () => {
+    expect(parseMigrateArgs(["json-to-sqlite", "--target=budget"]).target).toBe("budget");
+  });
+});
 // ---------- Coverage backfill (t-981f2f3f slice 3: 100% lines on migrate-state.ts) ----------
 //
-// The suites above leave the inboxes backfill body (migrateInboxes with a
 // populated inboxes/ dir, dry-run probe, invalid-file skips) and the
 // cockpit-scope flags branch (present cockpit sources) uncovered. These
 // tests exercise those paths with real temp dirs + real SQLite files.

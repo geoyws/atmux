@@ -8,7 +8,7 @@
 // ADR-053 §D7 "tests/unit/state/budget-refresh-soon-state.test.ts".
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -21,6 +21,7 @@ import {
   wipeStaleEntries,
   writeRefreshSoonState,
 } from "../../../src/core/budget-refresh-soon-state.ts";
+import { BudgetRepo, teamBudgetDbPath, withBudgetDb } from "../../../src/core/budget-state-repo.ts";
 
 let atmuxDir: string;
 
@@ -188,19 +189,35 @@ describe("multi-cycle re-arming", () => {
   });
 });
 
-// ---------- File IO ----------
+// ---------- Table IO (ADR-169 P3) ----------
 
-describe("file IO", () => {
-  test("writeRefreshSoonState produces JSON the bash side can cat-read", async () => {
+describe("table IO", () => {
+  test("writeRefreshSoonState lands a queryable budget row (observed_at = max fire epoch)", async () => {
     const s: RefreshSoonState = { "ifca:5h:1700000000": 1699999990 };
     await writeRefreshSoonState(atmuxDir, s);
-    const text = await readFile(budgetRefreshSoonStatePath(atmuxDir), "utf8");
-    expect(JSON.parse(text)).toEqual(s);
+    await withBudgetDb(teamBudgetDbPath(atmuxDir), (db) => {
+      const row = new BudgetRepo(db).get("budget-refresh-soon-state");
+      expect(row?.state).toBe(JSON.stringify(s));
+      expect(row?.observedAt).toBe(1699999990 * 1000);
+    });
+    expect(await loadRefreshSoonState(atmuxDir)).toEqual(s);
   });
 
-  test("writeRefreshSoonState overwrites existing file", async () => {
+  test("writeRefreshSoonState overwrites the row", async () => {
     await writeRefreshSoonState(atmuxDir, { k1: 1 });
     await writeRefreshSoonState(atmuxDir, { k2: 2 });
     expect(await loadRefreshSoonState(atmuxDir)).toEqual({ k2: 2 });
+  });
+
+  test("legacy file promotes into the row on first load (DB already present)", async () => {
+    const s: RefreshSoonState = { "ifca:5h:1700000000": 1699999990 };
+    await writeFile(budgetRefreshSoonStatePath(atmuxDir), JSON.stringify(s));
+    await withBudgetDb(teamBudgetDbPath(atmuxDir), () => {});
+    expect(await loadRefreshSoonState(atmuxDir)).toEqual(s);
+    await withBudgetDb(teamBudgetDbPath(atmuxDir), (db) => {
+      expect(new BudgetRepo(db).get("budget-refresh-soon-state")?.observedAt).toBe(
+        1699999990 * 1000,
+      );
+    });
   });
 });

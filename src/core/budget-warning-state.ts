@@ -9,22 +9,31 @@
 //       past the previously observed value), at which point the
 //       per-window entries are wiped + bands re-arm.
 //
-// State file: `<atmuxDir>/state/budget-warning-state.json`. Schema
-// per ADR-053 §D3 is a flat key-value map with composite keys:
+// State lives in the `budget` table in `<atmuxDir>/state.db`
+// (row `budget-warning-state`, ADR-169 P3). Schema per ADR-053 §D3 is
+// a flat key-value map with composite keys (the TEXT-blob `state`):
 //
 //   {
 //     "<account>:<window>:<band-fraction>": <epoch-of-fire>,
 //     ...
 //   }
 //
-// Window-reset wipe semantics: callers pass the previously-observed
-// reset epoch + the current reset epoch; if it advanced, all
-// `<account>:<window>:*` entries are cleared.
-
+// A leftover `<atmuxDir>/state/budget-warning-state.json` is promoted
+// into the table on first read; writers are table-only
+// (see `core/budget-state-repo.ts`).
 import { join } from "node:path";
-import { atomicWrite, readTextOrNull } from "../abstractions/fs.ts";
+import { now } from "../abstractions/time.ts";
+import {
+  maxFireEpochObservedAtMs,
+  readBudgetTextAtDb,
+  teamBudgetDbPath,
+  writeBudgetTextAtDb,
+} from "./budget-state-repo.ts";
 
-/** State-file path. */
+const BUDGET_PROBE = "budget-warning-state";
+
+/** Legacy state-file path (pre-migration address; still the fallback
+ *  address for pre-migration teams). */
 const STATE_FILENAME = "budget-warning-state.json";
 
 export function budgetWarningStatePath(atmuxDir: string): string {
@@ -34,10 +43,16 @@ export function budgetWarningStatePath(atmuxDir: string): string {
 /** State map: `<account>:<window>:<band-fraction>` → epoch-seconds-of-fire. */
 export type WarningState = Record<string, number>;
 
-/** Read state from disk; empty map on missing/malformed. */
+/** Read state; empty map on missing/malformed. Row-first: promotes a
+ *  leftover legacy file into the budget table on first read. */
 export async function loadWarningState(atmuxDir: string): Promise<WarningState> {
   const path = budgetWarningStatePath(atmuxDir);
-  const txt = await readTextOrNull(path);
+  const txt = await readBudgetTextAtDb(
+    teamBudgetDbPath(atmuxDir),
+    BUDGET_PROBE,
+    path,
+    maxFireEpochObservedAtMs,
+  );
   if (txt === null) return {};
   try {
     const parsed: unknown = JSON.parse(txt);
@@ -52,9 +67,15 @@ export async function loadWarningState(atmuxDir: string): Promise<WarningState> 
   }
 }
 
-/** Atomic-write the full state map. */
+/** Table-only write of the full state map (observed_at = max fire epoch). */
 export async function writeWarningState(atmuxDir: string, state: WarningState): Promise<void> {
-  await atomicWrite(budgetWarningStatePath(atmuxDir), JSON.stringify(state));
+  const text = JSON.stringify(state);
+  await writeBudgetTextAtDb(
+    teamBudgetDbPath(atmuxDir),
+    BUDGET_PROBE,
+    text,
+    maxFireEpochObservedAtMs(text, now()),
+  );
 }
 
 /** Compose the canonical key for a (account, window, band) tuple. */

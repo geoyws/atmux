@@ -12,14 +12,14 @@
 // --team-dir, UsageError branches.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BudgetProbeResult, ProbeBudgetOpts } from "../../../src/abstractions/budget-probe.ts";
 import type { DiscordSendOpts } from "../../../src/abstractions/discord.ts";
 import {
   type BudgetPauseState,
-  budgetPauseStatePath,
+  isBudgetPauseActive,
   writeBudgetPauseState,
 } from "../../../src/core/budget-pause.ts";
 import { ConfigError, LockTimeoutError, UsageError } from "../../../src/errors.ts";
@@ -405,12 +405,8 @@ describe("pokeResumeCheck() — public verb", () => {
     expect(resumeRec.members).toEqual([]);
     expect(discordRec.pings).toEqual([]);
     expect(stdoutBuf).toContain("gate not met");
-    // pause state file still present
-    const exists = await stat(budgetPauseStatePath(atmuxDir)).then(
-      () => true,
-      () => false,
-    );
-    expect(exists).toBe(true);
+    // pause state row still present
+    expect(await isBudgetPauseActive(atmuxDir)).toBe(true);
   });
 
   test("paused + gate-met → full resume flow", async () => {
@@ -442,11 +438,7 @@ describe("pokeResumeCheck() — public verb", () => {
     // Both members resumed in roster order.
     expect(resumeRec.members).toEqual(["alice", "bob"]);
     // Pause state cleared.
-    const cleared = await stat(budgetPauseStatePath(atmuxDir)).then(
-      () => false,
-      () => true,
-    );
-    expect(cleared).toBe(true);
+    expect(await isBudgetPauseActive(atmuxDir)).toBe(false);
     // Driver-inbox entry written.
     const inbox = await readFile(join(atmuxDir, "driver-inbox.md"), "utf8");
     expect(inbox).toContain("budget-resume");
@@ -645,11 +637,7 @@ describe("pokeResumeCheck() — public verb", () => {
     expect(stderrBuf).toContain("alice");
     expect(stderrBuf).toContain("alice resume boom");
     // State still cleared because the loop continues past one bad resume.
-    const cleared = await stat(budgetPauseStatePath(atmuxDir)).then(
-      () => false,
-      () => true,
-    );
-    expect(cleared).toBe(true);
+    expect(await isBudgetPauseActive(atmuxDir)).toBe(false);
   });
 
   test("driver-inbox entry appended (existing file path)", async () => {

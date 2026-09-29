@@ -30,7 +30,7 @@ afterEach(async () => {
 });
 
 describe("sqlite-migrations live ladder", () => {
-  test("opening with the full ladder advances user_version to the tail (v20)", () => {
+  test("opening with the full ladder advances user_version to the tail (v21)", () => {
     // Bump this when a new migration lands. Failing here is the
     // intentional reminder to confirm the new migration's tests cover
     // the new table or column.
@@ -63,7 +63,41 @@ describe("sqlite-migrations live ladder", () => {
     //   - v19→v20 added complaints.origin_team for the ADR-150 cross-team
     //             filing leg (EPIC e-41 T1); shape tests live in
     //             tests/unit/core/complaints.test.ts
-    expect(readUserVersion(db)).toBe(20);
+    //   - v20→v21 added budget for the ADR-169 P3 whip budget files
+    //             (EPIC e-38ee9939); shape tests live in
+    //             tests/unit/core/budget-state-repo.test.ts
+    expect(readUserVersion(db)).toBe(21);
+  });
+});
+describe("v20 → v21: budget", () => {
+  test("table exists with the ADR-169 column set + observed_at index", () => {
+    const cols = db.prepare("PRAGMA table_info(budget)").all() as Array<{
+      name: string;
+      type: string;
+      notnull: number;
+      pk: number;
+    }>;
+    expect(cols.map((c) => [c.name, c.type, c.notnull, c.pk])).toEqual([
+      ["probe_name", "TEXT", 1, 1],
+      ["observed_at", "INTEGER", 1, 0],
+      ["state", "TEXT", 1, 0],
+      ["updated_at", "INTEGER", 1, 0],
+      ["schema_version", "INTEGER", 1, 0],
+    ]);
+    const idx = db.prepare("PRAGMA index_list(budget)").all() as Array<{ name: string }>;
+    expect(idx.some((i) => i.name === "idx_budget_observed_at")).toBe(true);
+  });
+
+  test("v20 DB upgrades to v21 with an empty budget table", () => {
+    const legacy = join(scratch, "legacy.db");
+    const oldDb = openDatabase(legacy, migrations.slice(0, -1));
+    expect(readUserVersion(oldDb)).toBe(20);
+    closeDatabase(oldDb);
+    const upgraded = openDatabase(legacy, migrations);
+    expect(readUserVersion(upgraded)).toBe(21);
+    const rows = upgraded.query("SELECT COUNT(*) AS n FROM budget").get() as { n: number };
+    expect(rows.n).toBe(0);
+    closeDatabase(upgraded);
   });
 });
 describe("v19 → v20: complaints.origin_team", () => {
@@ -84,7 +118,7 @@ describe("v19 → v20: complaints.origin_team", () => {
 
   test("v19 DB with a legacy row upgrades without loss", () => {
     const legacy = join(scratch, "legacy.db");
-    const oldDb = openDatabase(legacy, migrations.slice(0, -1));
+    const oldDb = openDatabase(legacy, migrations.slice(0, -2));
     expect(readUserVersion(oldDb)).toBe(19);
     oldDb
       .prepare(
@@ -94,7 +128,7 @@ describe("v19 → v20: complaints.origin_team", () => {
       .run();
     closeDatabase(oldDb);
     const upgraded = openDatabase(legacy, migrations);
-    expect(readUserVersion(upgraded)).toBe(20);
+    expect(readUserVersion(upgraded)).toBe(21);
     const row = upgraded
       .query("SELECT origin_team FROM complaints WHERE id = 'c-legacy1'")
       .get() as { origin_team: string | null };
@@ -506,8 +540,7 @@ describe("v13 → v14: backfill semantics on a pre-existing v13 DB", () => {
     // settles at the tail; v13→v14 backfill semantics still apply to
     // the rows seeded above since the column-set is additive.
     const full = openDatabase(path, migrations);
-    expect(readUserVersion(full)).toBe(20);
-
+    expect(readUserVersion(full)).toBe(21);
     const seen = full
       .prepare("SELECT id, status, depends_on, is_ready FROM epics ORDER BY id")
       .all() as Array<{

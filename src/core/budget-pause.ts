@@ -1,30 +1,22 @@
-// ADR-053 §D2: budget-pause state-file primitives.
+// ADR-053 §D2: budget-pause state primitives (ADR-169 P3: the `budget`
+// table in `<atmuxDir>/state.db`, row `budget-pause`).
 //
-// Mirrors bash `lib/whip.sh::_atmux_whip_budget_pause_*` helpers. State
-// file lives at `<atmuxDir>/state/budget-pause.json` (bash-byte-
-// identical shape so the bash runtime can read pause state during the
-// transition window).
+// Mirrors bash `lib/whip.sh::_atmux_whip_budget_pause_*` helpers. The
+// pre-migration file lived at `<atmuxDir>/state/budget-pause.json`
+// (bash-byte-identical shape so the bash runtime could read pause state
+// during the transition window); readers promote a leftover file into
+// the table on first read, writers are table-only, and clear removes
+// both (see `core/budget-state-repo.ts`).
 //
-// Schema:
-//   {
-//     "paused": true,
-//     "pausedAt": <epoch-seconds>,
-//     "pausedAtTs": "<HH:MM MYT formatted ts>",
-//     "atRisk": [
-//       { "member": "<name>", "h5": <pct-used 0..100>, "wk": <pct-used 0..100> }
-//     ]
-//   }
-//
-// Lifetime: written on entry, re-read every tick to drive the should-
-// resume gate, deleted on resume. The bash version's `paused: false`
-// resting state isn't represented here — file absence == not paused.
-//
-// The verb layer (`src/verbs/whip.ts`) composes these primitives with
-// `atmux pause` / `atmux resume` / `atmux handoff` calls; this module
-// is pure state I/O.
+// Schema (the TEXT-blob `state`, bash-compatible):
 
 import { join } from "node:path";
-import { atomicWrite, readTextOrNull, removeFile } from "../abstractions/fs.ts";
+import {
+  clearBudgetTextAtDb,
+  readBudgetTextAtDb,
+  teamBudgetDbPath,
+  writeBudgetTextAtDb,
+} from "./budget-state-repo.ts";
 
 /** Per-member at-risk record carried in the state file. */
 export interface AtRiskMember {
@@ -49,17 +41,44 @@ export interface BudgetPauseState {
 
 const STATE_FILENAME = "budget-pause.json";
 
-/** Resolve canonical state-file path. */
+const BUDGET_PROBE = "budget-pause";
+
+/** Resolve the legacy state-file path (pre-migration address; still the
+ *  fallback address for pre-migration teams). */
 export function budgetPauseStatePath(atmuxDir: string): string {
   return join(atmuxDir, "state", STATE_FILENAME);
 }
 
+/**
+ * `observed_at` extractor for the budget row (ADR-169 §Decision):
+ * `pausedAt` (epoch seconds) × 1000. Falls back to `fallbackMs` when
+ * the text is unparseable or carries no finite `pausedAt`.
+ */
+export function budgetPauseObservedAtMs(text: string, fallbackMs: number): number {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (typeof parsed === "object" && parsed !== null) {
+      const at = (parsed as Record<string, unknown>).pausedAt;
+      if (typeof at === "number" && Number.isFinite(at)) return Math.floor(at * 1000);
+    }
+  } catch {
+    // fall through to the fallback below
+  }
+  return fallbackMs;
+}
+
 /** Read state if present; returns null when absent OR malformed. The
  *  loose decode mirrors bash's `[[ -f ]] && jq` short-circuit — neither
- *  side throws on absence. */
+ *  side throws on absence. Row-first: promotes a leftover legacy file
+ *  into the budget table on first read. */
 export async function loadBudgetPauseState(atmuxDir: string): Promise<BudgetPauseState | null> {
   const path = budgetPauseStatePath(atmuxDir);
-  const txt = await readTextOrNull(path);
+  const txt = await readBudgetTextAtDb(
+    teamBudgetDbPath(atmuxDir),
+    BUDGET_PROBE,
+    path,
+    budgetPauseObservedAtMs,
+  );
   if (txt === null) return null;
   let parsed: unknown;
   try {
@@ -71,25 +90,33 @@ export async function loadBudgetPauseState(atmuxDir: string): Promise<BudgetPaus
   return parsed;
 }
 
-/** True iff a valid pause state file is present and `paused === true`. */
+/** True iff a valid pause state is present and `paused === true`. */
 export async function isBudgetPauseActive(atmuxDir: string): Promise<boolean> {
   const s = await loadBudgetPauseState(atmuxDir);
   return s !== null && s.paused === true;
 }
 
-/** Atomically write a fresh pause state file. */
+/** Table-only write of a fresh pause state (observed_at = pausedAt). */
 export async function writeBudgetPauseState(
   atmuxDir: string,
   state: BudgetPauseState,
 ): Promise<void> {
-  const path = budgetPauseStatePath(atmuxDir);
-  await atomicWrite(path, JSON.stringify(state));
+  await writeBudgetTextAtDb(
+    teamBudgetDbPath(atmuxDir),
+    BUDGET_PROBE,
+    JSON.stringify(state),
+    Math.floor(state.pausedAt * 1000),
+  );
 }
 
-/** Remove the pause state file (idempotent — absence is fine). */
+/** Table-only clear that also removes a leftover legacy file
+ *  (idempotent — absence on both sides is fine). */
 export async function clearBudgetPauseState(atmuxDir: string): Promise<void> {
-  const path = budgetPauseStatePath(atmuxDir);
-  await removeFile(path);
+  await clearBudgetTextAtDb(
+    teamBudgetDbPath(atmuxDir),
+    BUDGET_PROBE,
+    budgetPauseStatePath(atmuxDir),
+  );
 }
 
 // ---------- Internal ----------

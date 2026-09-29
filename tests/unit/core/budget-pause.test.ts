@@ -1,18 +1,19 @@
-// Unit tests for src/core/budget-pause.ts (ADR-053 §D2).
-
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { exists } from "../../../src/abstractions/fs.ts";
 import {
   type AtRiskMember,
   type BudgetPauseState,
+  budgetPauseObservedAtMs,
   budgetPauseStatePath,
   clearBudgetPauseState,
   isBudgetPauseActive,
   loadBudgetPauseState,
   writeBudgetPauseState,
 } from "../../../src/core/budget-pause.ts";
+import { BudgetRepo, teamBudgetDbPath, withBudgetDb } from "../../../src/core/budget-state-repo.ts";
 
 let atmuxDir: string;
 
@@ -62,13 +63,28 @@ describe("writeBudgetPauseState + roundtrip", () => {
     expect(loaded?.atRisk).toEqual(sampleAtRisk);
   });
 
-  test("write produces bash-compatible JSON shape (no schema-version)", async () => {
+  test("write lands a bash-compatible JSON blob in the budget row (no schema-version)", async () => {
     await writeBudgetPauseState(atmuxDir, sampleState());
-    const txt = await readFile(budgetPauseStatePath(atmuxDir), "utf8");
-    const raw = JSON.parse(txt);
-    // Bash readers expect exactly these top-level keys.
-    expect(Object.keys(raw).sort()).toEqual(["atRisk", "paused", "pausedAt", "pausedAtTs"]);
-    expect(raw.paused).toBe(true);
+    await withBudgetDb(teamBudgetDbPath(atmuxDir), (db) => {
+      const row = new BudgetRepo(db).get("budget-pause");
+      const raw = JSON.parse(row?.state ?? "{}");
+      // Bash readers expect exactly these top-level keys.
+      expect(Object.keys(raw).sort()).toEqual(["atRisk", "paused", "pausedAt", "pausedAtTs"]);
+      expect(raw.paused).toBe(true);
+      expect(row?.observedAt).toBe(1_700_000_000 * 1000);
+    });
+    // The legacy file is not recreated by table writes.
+    expect(await exists(budgetPauseStatePath(atmuxDir))).toBe(false);
+  });
+
+  test("legacy file promotes into the row on first load (DB already present)", async () => {
+    await writeFile(budgetPauseStatePath(atmuxDir), JSON.stringify(sampleState()));
+    await withBudgetDb(teamBudgetDbPath(atmuxDir), () => {});
+    const loaded = await loadBudgetPauseState(atmuxDir);
+    expect(loaded?.pausedAt).toBe(1_700_000_000);
+    await withBudgetDb(teamBudgetDbPath(atmuxDir), (db) => {
+      expect(new BudgetRepo(db).get("budget-pause")?.observedAt).toBe(1_700_000_000 * 1000);
+    });
   });
 
   test("isBudgetPauseActive returns true after write", async () => {
@@ -77,8 +93,22 @@ describe("writeBudgetPauseState + roundtrip", () => {
   });
 });
 
+describe("budgetPauseObservedAtMs", () => {
+  test("pausedAt seconds × 1000", () => {
+    expect(
+      budgetPauseObservedAtMs(JSON.stringify({ paused: true, pausedAt: 1_700_000_000 }), 9),
+    ).toBe(1_700_000_000_000);
+  });
+
+  test("unparseable / missing / non-finite pausedAt → fallback", () => {
+    expect(budgetPauseObservedAtMs("not json{", 9)).toBe(9);
+    expect(budgetPauseObservedAtMs(JSON.stringify({ paused: true }), 9)).toBe(9);
+    expect(budgetPauseObservedAtMs(JSON.stringify({ paused: true, pausedAt: "now" }), 9)).toBe(9);
+  });
+});
+
 describe("clearBudgetPauseState", () => {
-  test("removes the file (active → inactive)", async () => {
+  test("removes the row (active → inactive)", async () => {
     await writeBudgetPauseState(atmuxDir, sampleState());
     expect(await isBudgetPauseActive(atmuxDir)).toBe(true);
     await clearBudgetPauseState(atmuxDir);

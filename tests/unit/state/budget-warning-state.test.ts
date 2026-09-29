@@ -8,9 +8,10 @@
 // "tests/unit/state/budget-warning-state.test.ts".
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { BudgetRepo, teamBudgetDbPath, withBudgetDb } from "../../../src/core/budget-state-repo.ts";
 import {
   budgetWarningStatePath,
   hasBandFired,
@@ -193,20 +194,34 @@ describe("wipeForResetWindow", () => {
   });
 });
 
-// ---------- File IO + persistence ----------
+// ---------- Table IO + persistence (ADR-169 P3) ----------
 
-describe("file IO + persistence", () => {
-  test("writeWarningState produces JSON the bash side can cat-read", async () => {
+describe("table IO + persistence", () => {
+  test("writeWarningState lands a queryable budget row (observed_at = max fire epoch)", async () => {
     const s: WarningState = { "ifca:5h:0.5": 1700000010 };
     await writeWarningState(atmuxDir, s);
-    const text = await readFile(budgetWarningStatePath(atmuxDir), "utf8");
-    expect(JSON.parse(text)).toEqual(s);
+    await withBudgetDb(teamBudgetDbPath(atmuxDir), (db) => {
+      const row = new BudgetRepo(db).get("budget-warning-state");
+      expect(row?.state).toBe(JSON.stringify(s));
+      expect(row?.observedAt).toBe(1700000010 * 1000);
+    });
+    expect(await loadWarningState(atmuxDir)).toEqual(s);
   });
 
-  test("writeWarningState overwrites existing file", async () => {
+  test("writeWarningState overwrites the row", async () => {
     await writeWarningState(atmuxDir, { k1: 1 });
     await writeWarningState(atmuxDir, { k2: 2 });
     const after = await loadWarningState(atmuxDir);
     expect(after).toEqual({ k2: 2 });
+  });
+
+  test("legacy file promotes into the row on first load (DB already present)", async () => {
+    const s: WarningState = { "ifca:5h:0.5": 1700000010 };
+    await writeFile(budgetWarningStatePath(atmuxDir), JSON.stringify(s));
+    await withBudgetDb(teamBudgetDbPath(atmuxDir), () => {});
+    expect(await loadWarningState(atmuxDir)).toEqual(s);
+    await withBudgetDb(teamBudgetDbPath(atmuxDir), (db) => {
+      expect(new BudgetRepo(db).get("budget-warning-state")?.observedAt).toBe(1700000010 * 1000);
+    });
   });
 });

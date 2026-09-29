@@ -847,10 +847,11 @@ export const migrations: readonly Migration[] = [
   // the single-row JSON toggles into one `flags` table. One row per
   // source file; `key` = file basename without the `.json` suffix
   // (paused, resume, pulse-state, sentinel-state, eternal-improvement,
-  // whip-config-drift-state, budget-pause, budget-refresh-soon-state,
-  // budget-warning-state); `value` = full JSON blob (TEXT-blob encoding
-  // per ADR-169 OQ-1); `updated_at` = epoch ms at write time;
+  // whip-config-drift-state); `value` = full JSON blob (TEXT-blob
+  // encoding per ADR-169 OQ-1); `updated_at` = epoch ms at write time;
   // `schema_version` = per-row forward-compat marker per OQ-2.
+  // Budget files live in the `budget` table exclusively per OQ-3 (P3,
+  // v20→v21) — never in `flags`.
   //
   // Residency note: team-scoped keys live in the team's
   // `<atmuxDir>/state.db`; cockpit-scoped keys (pulse-state,
@@ -910,6 +911,35 @@ export const migrations: readonly Migration[] = [
     up: (db) => {
       db.exec("ALTER TABLE complaints ADD COLUMN origin_team TEXT");
       db.exec("CREATE INDEX idx_complaints_origin_team ON complaints(origin_team)");
+    },
+  },
+  // ---------- v20 → v21 ----------
+  // ADR-169 §Decision (budget table, P3 — EPIC e-38ee9939): consolidate
+  // the 3 whip budget files into one `budget` table. One row per probe;
+  // `probe_name` = file basename without the `.json` suffix
+  // (budget-pause, budget-refresh-soon-state, budget-warning-state);
+  // `observed_at` = epoch ms parsed from the payload's timestamp field
+  // (queryable per OQ-3 — the affordance the `flags` blob lacks);
+  // `state` = full JSON blob (TEXT-blob encoding per OQ-1);
+  // `updated_at` = epoch ms at write time; `schema_version` = per-row
+  // forward-compat marker per OQ-2. Team scope (`<atmuxDir>/state.db`) —
+  // NOT the ADR-270 global `~/.atmux/state/budget.db`, which is a
+  // per-operator usage time-series, not per-team whip state.
+  // See `src/core/budget-state-repo.ts`.
+  {
+    from: 20,
+    to: 21,
+    up: (db) => {
+      db.exec(`
+				CREATE TABLE budget (
+					probe_name TEXT PRIMARY KEY NOT NULL,
+					observed_at INTEGER NOT NULL,
+					state TEXT NOT NULL,
+					updated_at INTEGER NOT NULL,
+					schema_version INTEGER NOT NULL
+				) STRICT;
+			`);
+      db.exec("CREATE INDEX idx_budget_observed_at ON budget(observed_at)");
     },
   },
 ];
