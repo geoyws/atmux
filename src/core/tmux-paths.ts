@@ -18,7 +18,7 @@
 // `TmuxConfig.configFile` (ADR-097), closing the operator's
 // `~/.tmux.conf` inheritance path.
 
-import { existsSync as fsExistsSync, rmSync as fsRmSync } from "node:fs";
+import { existsSync as fsExistsSync, lstatSync as fsLstatSync, rmSync as fsRmSync } from "node:fs";
 import { join } from "node:path";
 import { getDefaultSocket } from "./common.ts";
 import { resolveTemplatesDir } from "./templates-dir.ts";
@@ -110,6 +110,7 @@ export function getAtmuxTmuxConfPath(env: NodeJS.ProcessEnv = process.env): stri
 /** Seams for {@link removeStaleLegacySocket}. `isLive` and `remove` are
  *  REQUIRED — a dead-server probe and a file deletion have no safe
  *  unit-test defaults. `exists` defaults to a pure filesystem read;
+ *  `isSocket` defaults to a real lstat check ({@link defaultIsLegacySocket});
  *  `log` defaults to stderr. */
 export interface StaleLegacySocketDeps {
   exists?: (path: string) => boolean;
@@ -117,7 +118,35 @@ export interface StaleLegacySocketDeps {
   isLive: (path: string) => Promise<boolean>;
   /** Delete the legacy socket file. */
   remove: (path: string) => void;
+  /** True when the legacy path is a unix socket (lstat, never follows
+   *  symlinks). Lives on this interface — not inside
+   *  {@link defaultRemoveLegacySocket} — so an injected `remove` double
+   *  can never bypass the socket-type gate. */
+  isSocket?: (path: string) => boolean;
   log?: (msg: string) => void;
+}
+
+/** Production socket check: lstat without following symlinks, so a
+ *  symlink-to-socket still reads as `symlink`, never as `socket`. */
+export function defaultIsLegacySocket(path: string): boolean {
+  return fsLstatSync(path).isSocket();
+}
+
+/** One-word filesystem kind for the refusal log (lstat, no follow). */
+function describeLegacyNode(path: string): string {
+  try {
+    const st = fsLstatSync(path);
+    if (st.isSocket()) return "socket";
+    if (st.isDirectory()) return "directory";
+    if (st.isFile()) return "regular file";
+    if (st.isSymbolicLink()) return "symlink";
+    if (st.isFIFO()) return "fifo";
+    if (st.isBlockDevice()) return "block device";
+    if (st.isCharacterDevice()) return "character device";
+    return "non-socket node";
+  } catch {
+    return "unstatable node";
+  }
 }
 
 /**
@@ -127,12 +156,13 @@ export interface StaleLegacySocketDeps {
  * the override socket differs, the legacy file exists, NO server
  * responds on it, and the override socket is live or absent (an
  * existing-but-dead override socket means the situation is ambiguous —
- * leave everything alone).
+ * leave everything alone). The legacy path must additionally BE a socket
+ * (lstat, never following symlinks): a regular file, directory, symlink,
+ * or any other non-socket node is refused with a one-line log and never
+ * deleted.
  *
- * NEVER deletes a socket with a responding server. NEVER touches the
- * override path. Bringup-safe: a failed deletion logs + returns false
- * instead of throwing. Returns true only when the legacy file was
- * removed. Dry-run safe by construction (probe before delete).
+ * NEVER deletes a socket with a responding server. NEVER deletes a
+ * non-socket node. NEVER touches the
  */
 export async function removeStaleLegacySocket(
   teamName: string,
@@ -141,11 +171,27 @@ export async function removeStaleLegacySocket(
 ): Promise<boolean> {
   const exists = deps.exists ?? fsExistsSync;
   const log = deps.log ?? ((s: string) => process.stderr.write(`${s}\n`));
+  const isSocket = deps.isSocket ?? defaultIsLegacySocket;
   const legacy = getDefaultSocket(teamName);
   if (legacy === overrideSocket) return false;
   if (!exists(legacy)) return false;
   if (await deps.isLive(legacy)) return false;
   if (!(await deps.isLive(overrideSocket)) && exists(overrideSocket)) return false;
+  // Socket-type gate: e-29 requires deletion only when the path IS a
+  // socket (S_IFSOCK). A stat failure (ENOENT race against `exists`, or a
+  // test double asserting existence for a path absent on the real fs)
+  // falls through to the remover attempt below, whose try/catch already
+  // logs + returns false — so a refused-by-rm outcome is identical.
+  try {
+    if (!isSocket(legacy)) {
+      log(
+        `[atmux start] stale legacy path ${legacy} is a ${describeLegacyNode(legacy)} — not a socket, leaving in place`,
+      );
+      return false;
+    }
+  } catch {
+    // Unstatable: let the remover attempt report (see above).
+  }
   try {
     deps.remove(legacy);
   } catch (e) {

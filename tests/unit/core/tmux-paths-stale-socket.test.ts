@@ -3,10 +3,11 @@
 // = /tmp/atmux-<team>/sock (never created here — exists is faked).
 
 import { describe, expect, test } from "bun:test";
-import { existsSync as fsExistsSync, writeFileSync } from "node:fs";
+import { existsSync as fsExistsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   defaultRemoveLegacySocket,
   removeStaleLegacySocket,
@@ -24,9 +25,33 @@ function deps(over: Partial<StaleLegacySocketDeps> = {}): StaleLegacySocketDeps 
     remove: () => {
       throw new Error("remove must not run");
     },
+    // Socket-type gate: seam-doubled tests assume a socket unless the
+    // case under test says otherwise; real-filesystem cases below omit
+    // this seam to exercise the production lstat default.
+    isSocket: () => true,
     log: () => {},
     ...over,
   };
+}
+
+/** Listen a real unix socket at `path` and return its closer. Bun unlinks
+ *  the node on `server.close()`, so callers keep the listener up until
+ *  after the gate runs; "dead" for the unit under test is declared by the
+ *  faked `isLive` probe (a node:net listener is not a tmux server). */
+function listenLive(path: string): Promise<() => Promise<void>> {
+  const { promise, resolve, reject } = Promise.withResolvers<() => Promise<void>>();
+  const server = createServer();
+  server.on("error", reject);
+  server.listen(path, () => {
+    const close = (): Promise<void> => {
+      const { promise: p, resolve: res } = Promise.withResolvers<void>();
+      // Path may already be unlinked by the remover; never fail teardown.
+      server.close(() => res());
+      return p;
+    };
+    resolve(close);
+  });
+  return promise;
 }
 
 describe("removeStaleLegacySocket", () => {
@@ -170,20 +195,135 @@ describe("removeStaleLegacySocket", () => {
     const r = await removeStaleLegacySocket(TEAM, OVERRIDE, {
       exists: (p) => p === LEGACY,
       isLive: async () => false,
+      isSocket: () => true,
       remove: () => {},
     });
     expect(r).toBe(true);
   });
 
-  test("defaultRemoveLegacySocket deletes a real temp file", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "stale-sock-rm-"));
+  test("non-socket legacy (seam) → false, remove uncalled, log names path", async () => {
+    const removed: string[] = [];
+    const logs: string[] = [];
+    const r = await removeStaleLegacySocket(
+      TEAM,
+      OVERRIDE,
+      deps({
+        exists: (p) => p === LEGACY,
+        isLive: async () => false,
+        isSocket: () => false,
+        remove: (p) => {
+          removed.push(p);
+        },
+        log: (s) => {
+          logs.push(s);
+        },
+      }),
+    );
+    expect(r).toBe(false);
+    expect(removed).toEqual([]);
+    expect(logs.some((l) => l.includes(LEGACY) && l.includes("leaving in place"))).toBe(true);
+  });
+
+  test("real regular file at legacy path → refused, file survives", async () => {
+    const team = `${TEAM}-file-${process.pid}`;
+    const legacy = `/tmp/atmux-${team}/sock`;
+    mkdirSync(dirname(legacy), { recursive: true });
     try {
-      const target = join(dir, "sock");
-      writeFileSync(target, "", "utf8");
-      defaultRemoveLegacySocket(target);
-      expect(fsExistsSync(target)).toBe(false);
+      writeFileSync(legacy, "", "utf8");
+      const logs: string[] = [];
+      const r = await removeStaleLegacySocket(team, join(dirname(legacy), "override"), {
+        isLive: async () => false,
+        remove: () => {
+          throw new Error("remove must not run for a regular file");
+        },
+        log: (s) => {
+          logs.push(s);
+        },
+      });
+      expect(r).toBe(false);
+      expect(fsExistsSync(legacy)).toBe(true);
+      expect(logs.some((l) => l.includes(legacy) && l.includes("regular file"))).toBe(true);
     } finally {
-      await rm(dir, { recursive: true, force: true });
+      await rm(dirname(legacy), { recursive: true, force: true });
+    }
+  });
+
+  test("real directory at legacy path → refused, dir survives", async () => {
+    const team = `${TEAM}-dir-${process.pid}`;
+    const legacy = `/tmp/atmux-${team}/sock`;
+    mkdirSync(legacy, { recursive: true });
+    try {
+      const logs: string[] = [];
+      const r = await removeStaleLegacySocket(team, join(dirname(legacy), "override"), {
+        isLive: async () => false,
+        remove: () => {
+          throw new Error("remove must not run for a directory");
+        },
+        log: (s) => {
+          logs.push(s);
+        },
+      });
+      expect(r).toBe(false);
+      expect(fsExistsSync(legacy)).toBe(true);
+      expect(logs.some((l) => l.includes(legacy) && l.includes("directory"))).toBe(true);
+    } finally {
+      await rm(dirname(legacy), { recursive: true, force: true });
+    }
+  });
+
+  test("symlink-to-socket at legacy path → refused (no follow), link survives", async () => {
+    const sockDir = await mkdtemp(join(tmpdir(), "stale-sock-target-"));
+    const team = `${TEAM}-link-${process.pid}`;
+    const legacy = `/tmp/atmux-${team}/sock`;
+    mkdirSync(dirname(legacy), { recursive: true });
+    let closeTarget: (() => Promise<void>) | undefined;
+    try {
+      const target = join(sockDir, "real.sock");
+      closeTarget = await listenLive(target);
+      expect(fsExistsSync(target)).toBe(true);
+      symlinkSync(target, legacy);
+      const logs: string[] = [];
+      const r = await removeStaleLegacySocket(team, join(dirname(legacy), "override"), {
+        isLive: async () => false,
+        remove: () => {
+          throw new Error("remove must not run for a symlink");
+        },
+        log: (s) => {
+          logs.push(s);
+        },
+      });
+      expect(r).toBe(false);
+      expect(fsExistsSync(legacy)).toBe(true);
+      expect(logs.some((l) => l.includes(legacy) && l.includes("symlink"))).toBe(true);
+    } finally {
+      await closeTarget?.();
+      await rm(dirname(legacy), { recursive: true, force: true });
+      await rm(sockDir, { recursive: true, force: true });
+    }
+  });
+
+  test("real dead socket at legacy path → removed via production seams", async () => {
+    const team = `${TEAM}-sock-${process.pid}`;
+    const legacy = `/tmp/atmux-${team}/sock`;
+    mkdirSync(dirname(legacy), { recursive: true });
+    let closeServer: (() => Promise<void>) | undefined;
+    try {
+      closeServer = await listenLive(legacy);
+      expect(fsExistsSync(legacy)).toBe(true);
+      const logs: string[] = [];
+      const r = await removeStaleLegacySocket(team, join(dirname(legacy), "override"), {
+        isLive: async () => false,
+        remove: defaultRemoveLegacySocket,
+        log: (s) => {
+          logs.push(s);
+        },
+      });
+      expect(r).toBe(true);
+      expect(fsExistsSync(legacy)).toBe(false);
+      expect(logs.some((l) => l.includes(legacy) && l.includes("removed"))).toBe(true);
+    } finally {
+      await closeServer?.();
+      await rm(dirname(legacy), { recursive: true, force: true });
     }
   });
 });
