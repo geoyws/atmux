@@ -173,13 +173,7 @@ export async function loadCockpit(opts: LoadCockpitOpts = {}): Promise<LoadedCoc
 /** ADR-279: operator windows share the cockpit tmux namespace with role
  * windows and team viewers, so every name must be globally unambiguous. */
 function validateOperatorWindowNames(cockpit: CockpitShape): void {
-  const occupied = new Set([
-    "_superdriver",
-    "superdriver",
-    "_medic",
-    "medic",
-    "superdoctor",
-  ]);
+  const occupied = new Set(["_superdriver", "superdriver", "_medic", "medic", "superdoctor"]);
   walkSessions(cockpit.sessions ?? [], 0, (node) => {
     // Groups occupy the cockpit window namespace too (e-419553c6 true
     // containment: a top-level group gets a cockpit viewer window
@@ -492,6 +486,38 @@ export function walkSessions(
       }
     }
   }
+}
+
+// ---------- ADR-150 §D5: team-name → atmuxDir lookup ----------
+
+/** Result of {@link lookupTeamAtmuxDir}. */
+export type TeamAtmuxDirLookup =
+  | { atmuxDir: string }
+  | { error: "not-found" }
+  | { error: "ambiguous"; matches: number };
+
+/** Resolve a team name to its `<root>/.atmux` dir via DFS over
+ *  `sessions[]` (ADR-150 §D5, reuses ADR-089 `walkSessions`).
+ *
+ *  Only enabled `type: "team"` entries match — a disabled team is
+ *  mid-teardown and routing a complaint into its DB would lose the
+ *  signal, so it reads as not-found (same filter as
+ *  {@link enabledTeams}). Refuse-on-multi-match per the §D5 pre-flag
+ *  #5 lock-in: duplicate names are an operator config error and a
+ *  silent first-pick would mis-deliver. */
+export function lookupTeamAtmuxDir(
+  cockpit: CockpitShape,
+  targetTeamName: string,
+): TeamAtmuxDirLookup {
+  const hits: string[] = [];
+  walkSessions(cockpit.sessions ?? [], 0, (node) => {
+    if (node.type === "team" && node.enabled && node.name === targetTeamName) {
+      hits.push(join(node.root, ".atmux"));
+    }
+  });
+  if (hits.length === 0) return { error: "not-found" };
+  if (hits.length > 1) return { error: "ambiguous", matches: hits.length };
+  return { atmuxDir: hits[0] as string };
 }
 
 // ---------- ADR-287 §D3 / §D4: nesting-shape checks on the parsed tree ----------

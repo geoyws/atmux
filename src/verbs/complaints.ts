@@ -37,6 +37,7 @@ import { join } from "node:path";
 import { emit } from "../abstractions/events.ts";
 import { closeDatabase, openDatabase, transactImmediate } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
+import { loadCockpit, lookupTeamAtmuxDir } from "../core/cockpit.ts";
 import { getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts";
 import { addToSentinel, removeFromSentinel } from "../core/ombudsman.ts";
 import { ComplaintsRepo } from "../core/repositories/complaints-repo.ts";
@@ -309,7 +310,34 @@ async function complaintsFile(parsed: ParsedComplaintsArgs): Promise<number> {
   const dirOpts: ResolveDirOpts = parsed.teamDir !== undefined ? { teamDir: parsed.teamDir } : {};
   const team = await requireTeam(dirOpts);
   const atmuxDir = await getAtmuxDir(dirOpts);
-  const db = openDatabase(stateDbPath(atmuxDir), migrations);
+  // ADR-150 §D1: an explicit `--target-team` makes storage residency
+  // authoritative — the row lands in the TARGET team's state.db, with
+  // `origin_team` set to the filer name (§D3). `requireTeam` above
+  // already guarantees a readable filer team.json, so the §D3
+  // missing/unparseable edge (NULL + stderr warn) cannot trigger here.
+  // Not-found / ambiguous refuse per §D5 (no silent local fallback —
+  // a mis-delivered row is worse than a refused filing).
+  let residentDir = atmuxDir;
+  let originTeam: string | null = null;
+  if (parsed.targetTeam !== undefined) {
+    const cockpit = await loadCockpit();
+    const found = lookupTeamAtmuxDir(cockpit, parsed.targetTeam);
+    if ("error" in found) {
+      if (found.error === "not-found") {
+        throw new UsageError({
+          what: `complaints file: target team '${parsed.targetTeam}' not found in cockpit registry; check ~/.atmux/cockpit.json sessions[].teams[].name`,
+          hint: USAGE,
+        });
+      }
+      throw new UsageError({
+        what: `complaints file: target team '${parsed.targetTeam}' is ambiguous (${found.matches} matches in cockpit registry); rename one of the duplicates or specify by session path (deferred)`,
+        hint: USAGE,
+      });
+    }
+    residentDir = found.atmuxDir;
+    originTeam = team.name;
+  }
+  const db = openDatabase(stateDbPath(residentDir), migrations);
   try {
     const repo = new ComplaintsRepo(db);
     const id = `c-${randomBytes(4).toString("hex")}`;
@@ -345,6 +373,7 @@ async function complaintsFile(parsed: ParsedComplaintsArgs): Promise<number> {
       sourceKind: parsed.sourceKind ?? null,
       sourceId: parsed.sourceId ?? null,
       targetTeam,
+      originTeam,
       extra,
     };
     // ADR-147 T2 §D2: serialize the DB insert via BEGIN IMMEDIATE so
@@ -382,8 +411,11 @@ async function complaintsFile(parsed: ParsedComplaintsArgs): Promise<number> {
     // ADR-147 T2 skip-gate: only teams with `ombudsman.enabled: true`
     // write the sentinel. Preserves byte-equal behavior for the
     // existing fleet (every team currently has `ombudsman` unset).
+    // ADR-150 §D1: the sentinel follows residency — the TARGET team's
+    // ombudsman drains the row, so the wakeup entry lands in the
+    // resident dir. Gate stays filer-side (v1 parity with local filing).
     if (team.ombudsman?.enabled === true) {
-      await addToSentinel(atmuxDir, id);
+      await addToSentinel(residentDir, id);
     }
     process.stdout.write(`${id}\n`);
     return 0;
