@@ -1,0 +1,6 @@
+# SHA256 of upstream tmux release tarballs, one line per pinned version.
+# Format matches `shasum -a 256 -c` input: "<sha>  <filename>".
+# Provenance: measured 2026-09-26 from
+# https://github.com/tmux/tmux/releases/download/3.6a/tmux-3.6a.tar.gz
+# Reviewer: confirm against an independent fetch before trusting (ADR-191).
+b6d8d9c76585db8ef5fa00d4931902fa4b8cbe8166f528f44fc403961a3f3759  tmux-3.6a.tar.gz
