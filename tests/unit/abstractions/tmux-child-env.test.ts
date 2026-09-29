@@ -214,7 +214,7 @@ describe("ADR-281 §D3 — every tmux spawn site deletes NO_COLOR from the child
 
 describe("ADR-303 — raw cage-socket tmux spawns carry -f <conf> before the subcommand", () => {
   const CAGE_SOCKET = "atmux-child-env-never-created";
-  const cageHandle = (agent: string): CageHandle => ({
+  const cageHandle = (agent: CageHandle["agent"]): CageHandle => ({
     tier: 2,
     team: "t",
     lane: "driver-2",
@@ -253,7 +253,7 @@ describe("ADR-303 — raw cage-socket tmux spawns carry -f <conf> before the sub
   });
 
   test("verbs/poke.ts — sendCageBrief, sudo branch", async () => {
-    await sendCageBrief(cageHandle("atmux-agent-t"), "brief body");
+    await sendCageBrief(cageHandle("kimi-agent"), "brief body");
     const recorder = rec as SpawnRecorder;
     expect(recorder.calls.every((c) => (c.cmd[0] ?? "").endsWith("sudo"))).toBe(true);
     expect(assertConfAfterCageSocket(recorder)).toBe(3);
