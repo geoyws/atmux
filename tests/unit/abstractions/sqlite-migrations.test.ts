@@ -135,6 +135,32 @@ describe("v19 → v20: complaints.origin_team", () => {
     expect(row.origin_team).toBe(null);
     closeDatabase(upgraded);
   });
+
+  test("v19 DB that already carries origin_team (version drift) still upgrades", () => {
+    // Measured 2026-09-29 on the atmux team's own state.db: user_version 19
+    // with complaints.origin_team already present and no index. A plain
+    // ALTER TABLE aborted every open with "duplicate column name".
+    const legacy = join(scratch, "drifted.db");
+    const oldDb = openDatabase(legacy, migrations.slice(0, -2));
+    oldDb.exec("ALTER TABLE complaints ADD COLUMN origin_team TEXT");
+    oldDb
+      .prepare(
+        `INSERT INTO complaints (id, opened_at, incident_summary, status, origin_team)
+         VALUES ('c-drift1', 1000, 'drifted row', 'open', 'geoyws')`,
+      )
+      .run();
+    expect(readUserVersion(oldDb)).toBe(19);
+    closeDatabase(oldDb);
+    const upgraded = openDatabase(legacy, migrations);
+    expect(readUserVersion(upgraded)).toBe(21);
+    const idx = upgraded.query("PRAGMA index_list('complaints')").all() as { name: string }[];
+    expect(idx.some((i) => i.name === "idx_complaints_origin_team")).toBe(true);
+    const row = upgraded
+      .query("SELECT origin_team FROM complaints WHERE id = 'c-drift1'")
+      .get() as { origin_team: string | null };
+    expect(row.origin_team).toBe("geoyws");
+    closeDatabase(upgraded);
+  });
 });
 
 describe("v18 → v19: role_state", () => {

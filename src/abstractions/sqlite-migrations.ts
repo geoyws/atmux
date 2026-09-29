@@ -909,8 +909,16 @@ export const migrations: readonly Migration[] = [
     from: 19,
     to: 20,
     up: (db) => {
-      db.exec("ALTER TABLE complaints ADD COLUMN origin_team TEXT");
-      db.exec("CREATE INDEX idx_complaints_origin_team ON complaints(origin_team)");
+      // Tolerate version drift: a DB measured 2026-09-29 carried the
+      // column at user_version 19 (added by a pre-merge build), so a bare
+      // ALTER aborted every open with "duplicate column name".
+      const hasOriginTeam = db
+        .query("SELECT 1 FROM pragma_table_info('complaints') WHERE name = 'origin_team'")
+        .get();
+      if (hasOriginTeam === null) {
+        db.exec("ALTER TABLE complaints ADD COLUMN origin_team TEXT");
+      }
+      db.exec("CREATE INDEX IF NOT EXISTS idx_complaints_origin_team ON complaints(origin_team)");
     },
   },
   // ---------- v20 → v21 ----------
