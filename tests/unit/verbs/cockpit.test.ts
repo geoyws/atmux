@@ -947,6 +947,45 @@ describe("reconcileCockpitSession", () => {
     }
   });
 
+  test("ADR-295: blank:true places _blank right after _medic, before windows[] and viewers; off removes it", async () => {
+    const fx = await spinTmux("cockpit-blank-window");
+    try {
+      const { logger } = makeLogger();
+      const teams: CockpitTeam[] = [
+        { name: "alpha", root: "/a", enabled: true } as CockpitTeam,
+        { name: "beta", root: "/b", enabled: true } as CockpitTeam,
+      ];
+      const declared = [{ name: "_misc", enabled: true, cwd: "/tmp", command: null }];
+      const medic: CockpitMedic = { enabled: true, tui: "omp" };
+      const deps: ResolveTeamWindowDeps = { buildMedicCommand: () => PORTABLE_KEEPALIVE_COMMAND };
+      const order = async () =>
+        (await fx.tmux.window.listWindows("atmux_cockpit"))
+          .slice()
+          .sort((a, b) => a.index - b.index)
+          .map((w) => w.name);
+
+      await reconcileCockpitSession(fx.tmux, "atmux_cockpit", teams, logger, deps, medic, true, {
+        windows: cockpitOperatorWindows(
+          { blank: true, windows: declared },
+          { HOME: "/tmp" },
+          logger,
+        ),
+      });
+      expect(await order()).toEqual(["_superdriver", "_medic", "_blank", "_misc", "alpha", "beta"]);
+
+      // Default (flag absent) on the next fleet reconcile: _blank is an orphan and goes.
+      await reconcileCockpitSession(fx.tmux, "atmux_cockpit", teams, logger, deps, medic, true, {
+        windows: cockpitOperatorWindows({ windows: declared }, { HOME: "/tmp" }, logger),
+      });
+      expect(await order()).toEqual(["_superdriver", "_medic", "_misc", "alpha", "beta"]);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
   test("ADR-279: recreates and preserves _misc as zsh between medic and team viewers", async () => {
     const fx = await spinTmux("cockpit-operator-window");
     try {
