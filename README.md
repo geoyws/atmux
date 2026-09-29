@@ -691,7 +691,7 @@ atmux story unsignoff <id> [--as <m>] [--note <t>]  # Revert review-signoff (pre
 atmux task add <subject> [--body <txt>] [--epic <eid>] [--story <sid>] \
                          [--lane fe|be|db|ops|test|review|misc] \
                          [--deliverable <text>] [--assignee <m>] [--deps <id,id>] [--priority <n>]
-atmux task list [--status …] [--assignee <m>] [--json]
+atmux task list [--status …] [--assignee <m>] [--lane <lane>] [--epic <eid>] [--story <sid>] [--json]
 atmux task show <id>
 atmux task move <id> <todo|in-progress|done|blocked>   # done auto-dispatches commit-Task to committer
 atmux task assign <id> <member>

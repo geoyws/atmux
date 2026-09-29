@@ -156,13 +156,7 @@ describe("parseAddArgs", () => {
   });
 
   test("ADR-202: SQLite compound epic and story ids are accepted", () => {
-    const a = parseAddArgs([
-      "subj",
-      "--epic",
-      "e-1-3b017960",
-      "--story",
-      "s-1203-c4e91c33",
-    ]);
+    const a = parseAddArgs(["subj", "--epic", "e-1-3b017960", "--story", "s-1203-c4e91c33"]);
     expect(a.epic).toBe("e-1-3b017960");
     expect(a.story).toBe("s-1203-c4e91c33");
   });
@@ -1067,5 +1061,113 @@ describe("'task move' drains assignee inbox.inProgress on parking transitions", 
     const k = await loadKanban(atmuxDir);
     expect(k.tasks[0]?.status).toBe("done");
     expect(k.tasks[0]?.completedAt).toBeGreaterThan(0);
+  });
+});
+
+// ---------- ADR-174: `task list --epic/--story` filters (t-2ce0adf3) ----------
+
+describe("parseListArgs --epic/--story (ADR-174)", () => {
+  test("--epic / --story consumed", () => {
+    const a = parseListArgs(["--epic", "e-1", "--story", "s-2"]);
+    expect(a.epic).toBe("e-1");
+    expect(a.story).toBe("s-2");
+  });
+
+  test("--epic without value → UsageError", () => {
+    expect(() => parseListArgs(["--epic"])).toThrow(UsageError);
+  });
+
+  test("--story without value → UsageError", () => {
+    expect(() => parseListArgs(["--story"])).toThrow(UsageError);
+  });
+
+  test("--epic malformed value → UsageError", () => {
+    expect(() => parseListArgs(["--epic", "bogus"])).toThrow(UsageError);
+    expect(() => parseListArgs(["--epic", "e-xyz"])).toThrow(UsageError);
+  });
+
+  test("--story malformed value → UsageError", () => {
+    expect(() => parseListArgs(["--story", "bogus"])).toThrow(UsageError);
+    expect(() => parseListArgs(["--story", "s-xyz"])).toThrow(UsageError);
+  });
+});
+
+describe("'task list --epic/--story' filters (ADR-174, t-2ce0adf3)", () => {
+  test("filter by epic returns only that epic's tasks", async () => {
+    await addTask(atmuxDir, { subject: "epic-one-task", epic: "e-1" });
+    await addTask(atmuxDir, { subject: "epic-two-task", epic: "e-2" });
+    await addTask(atmuxDir, { subject: "orphan-task" });
+    const { exit, out } = await captureStdout(() =>
+      task(["list", "--epic", "e-1", "--team-dir", teamDir]),
+    );
+    expect(exit).toBe(0);
+    expect(out).toContain("epic-one-task");
+    expect(out).not.toContain("epic-two-task");
+    expect(out).not.toContain("orphan-task");
+  });
+
+  test("filter by story returns only that story's tasks", async () => {
+    await addTask(atmuxDir, { subject: "story-one-task", story: "s-1" });
+    await addTask(atmuxDir, { subject: "story-two-task", story: "s-2" });
+    await addTask(atmuxDir, { subject: "orphan-task" });
+    const { exit, out } = await captureStdout(() =>
+      task(["list", "--story", "s-1", "--team-dir", teamDir]),
+    );
+    expect(exit).toBe(0);
+    expect(out).toContain("story-one-task");
+    expect(out).not.toContain("story-two-task");
+    expect(out).not.toContain("orphan-task");
+  });
+
+  test("--epic + --story together AND-narrow", async () => {
+    await addTask(atmuxDir, { subject: "both-match", epic: "e-1", story: "s-1" });
+    await addTask(atmuxDir, { subject: "epic-only", epic: "e-1", story: "s-2" });
+    await addTask(atmuxDir, { subject: "story-only", epic: "e-2", story: "s-1" });
+    const { out } = await captureStdout(() =>
+      task(["list", "--epic", "e-1", "--story", "s-1", "--team-dir", teamDir]),
+    );
+    expect(out).toContain("both-match");
+    expect(out).not.toContain("epic-only");
+    expect(out).not.toContain("story-only");
+  });
+
+  test("--epic combines with an existing filter (--status)", async () => {
+    const doneId = await addTask(atmuxDir, { subject: "epic-done", epic: "e-1" });
+    await moveTask(atmuxDir, doneId, "done");
+    await addTask(atmuxDir, { subject: "epic-todo", epic: "e-1" });
+    const { out } = await captureStdout(() =>
+      task(["list", "--epic", "e-1", "--status", "todo", "--team-dir", teamDir]),
+    );
+    expect(out).toContain("epic-todo");
+    expect(out).not.toContain("epic-done");
+  });
+
+  test("well-formed-but-unknown epic id → empty list, exit 0", async () => {
+    await addTask(atmuxDir, { subject: "some-task", epic: "e-1" });
+    const { exit, out } = await captureStdout(() =>
+      task(["list", "--epic", "e-9", "--team-dir", teamDir]),
+    );
+    expect(exit).toBe(0);
+    expect(out).toContain("(no tasks)");
+    expect(out).not.toContain("some-task");
+  });
+
+  test("well-formed-but-unknown story id → empty list, exit 0", async () => {
+    await addTask(atmuxDir, { subject: "some-task", story: "s-1" });
+    const { exit, out } = await captureStdout(() =>
+      task(["list", "--story", "s-9", "--team-dir", teamDir]),
+    );
+    expect(exit).toBe(0);
+    expect(out).toContain("(no tasks)");
+  });
+
+  test("missing --epic value → UsageError", async () => {
+    await expect(task(["list", "--team-dir", teamDir, "--epic"])).rejects.toThrow(UsageError);
+  });
+
+  test("malformed --story value → UsageError", async () => {
+    await expect(task(["list", "--story", "nope", "--team-dir", teamDir])).rejects.toThrow(
+      UsageError,
+    );
   });
 });

@@ -100,6 +100,7 @@ Task board (kanban):
   task add <subject> [--body <text>] [--assignee <member>] [--deps <id,id>] [--driver-only]
            [--epic <eid>] [--story <sid>] [--deliverable <text>]
   task list [--status todo|in-progress|done|blocked] [--assignee <member>]
+            [--lane <lane>] [--epic <eid>] [--story <sid>] [--json]
   task show <id>
   task move <id> <todo|in-progress|done|blocked>
   task update <id> [--body <text>] [--deps <id,id>] [--owner <member>|--unassign]

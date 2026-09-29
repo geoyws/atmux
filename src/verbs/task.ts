@@ -7,7 +7,7 @@
 //                                [--priority N | --prio N] [--lane L]
 //                                [--driver-only]
 //                                [--epic <eid>] [--story <sid>] [--deliverable T]
-//   atmux task list   [--status S] [--assignee M] [--json]
+//   atmux task list   [--status S] [--assignee M] [--lane L] [--epic <eid>] [--story <sid>] [--json]
 //   atmux task ls     ↔ list
 //   atmux task show   <id>
 //   atmux task get    ↔ show
@@ -69,7 +69,8 @@ const USAGE_HINT_ROOT =
 
 const USAGE_ADD =
   "atmux task add <subject> [--body T] [--assignee M] [--deps a,b] [--priority N] [--lane L] [--driver-only] [--epic <eid>] [--story <sid>] [--deliverable <text>]";
-const USAGE_LIST = "atmux task list [--status S] [--assignee M] [--lane L] [--json]";
+const USAGE_LIST =
+  "atmux task list [--status S] [--assignee M] [--lane L] [--epic <eid>] [--story <sid>] [--json]";
 const USAGE_MOVE = "atmux task move <id> <todo|in-progress|done|blocked>";
 const USAGE_LANE = "atmux task lane <id> <fe|be|db|ops|test|review|misc|git|docs|->";
 const USAGE_PRIORITY = "atmux task priority <id> <N|->";
@@ -533,6 +534,8 @@ async function taskList(argv: ReadonlyArray<string>): Promise<number> {
   if (parsed.status !== undefined) filter.status = parsed.status;
   if (parsed.assignee !== undefined) filter.assignee = parsed.assignee;
   if (parsed.lane !== undefined) filter.lane = parsed.lane;
+  if (parsed.epic !== undefined) filter.epic = parsed.epic;
+  if (parsed.story !== undefined) filter.story = parsed.story;
   const tasks = await listTasks(atmuxDir, filter);
   if (parsed.json) {
     process.stdout.write(`${JSON.stringify(tasks, null, 2)}\n`);
@@ -845,6 +848,10 @@ interface ParsedListArgs {
   status?: string;
   assignee?: string;
   lane?: string;
+  /** ADR-174: parent epic id filter (shape-validated, no existence check). */
+  epic?: string;
+  /** ADR-174: parent story id filter (shape-validated, no existence check). */
+  story?: string;
   json: boolean;
   teamDir?: string;
 }
@@ -853,6 +860,8 @@ export function parseListArgs(argv: ReadonlyArray<string>): ParsedListArgs {
   let status: string | undefined;
   let assignee: string | undefined;
   let lane: string | undefined;
+  let epic: string | undefined;
+  let story: string | undefined;
   let json = false;
   let teamDir: string | undefined;
   let i = 0;
@@ -906,6 +915,36 @@ export function parseListArgs(argv: ReadonlyArray<string>): ParsedListArgs {
       i += 2;
       continue;
     }
+    // ADR-174: `--epic` / `--story` narrow the WHERE clause (AND with
+    // sibling filters). Shape-validated like the `task add` / `task
+    // update` flags (assertEpicShape / assertStoryShape — relaxed
+    // isAnyId per the ADR-193 §Amendment 2026-06-05, not the original
+    // hex8-only regex); well-formed-but-unknown ids return an empty
+    // list, never an error (ADR-174 OQ-4, same stance as ADR-193 §OQ1).
+    if (a === "--epic") {
+      const v = argv[i + 1];
+      if (v === undefined) {
+        throw new UsageError({
+          what: "task list: --epic requires a value",
+          hint: USAGE_LIST,
+        });
+      }
+      epic = assertEpicShape(v, USAGE_LIST);
+      i += 2;
+      continue;
+    }
+    if (a === "--story") {
+      const v = argv[i + 1];
+      if (v === undefined) {
+        throw new UsageError({
+          what: "task list: --story requires a value",
+          hint: USAGE_LIST,
+        });
+      }
+      story = assertStoryShape(v, USAGE_LIST);
+      i += 2;
+      continue;
+    }
     if (a === "--json") {
       json = true;
       i += 1;
@@ -929,6 +968,8 @@ export function parseListArgs(argv: ReadonlyArray<string>): ParsedListArgs {
   if (status !== undefined) out.status = status;
   if (assignee !== undefined) out.assignee = assignee;
   if (lane !== undefined) out.lane = lane;
+  if (epic !== undefined) out.epic = epic;
+  if (story !== undefined) out.story = story;
   if (teamDir !== undefined) out.teamDir = teamDir;
   return out;
 }
