@@ -35,6 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **A plain shell in the cockpit, on request.** Top-level `"blank": true` in `cockpit.json` adds a `_blank` zsh window in `$HOME`, directly after `_medic`. Turning the flag off prunes it on the next fleet reconcile.
 
+### 🐛 Fixed — `cockpit reconcile --dry-run` previews `start`-internal renames/kills (ADR-300, t-eb11cdb4)
+
+**The dry-run plan no longer hides cage repairs.** For each cage the preview would start, the legacy member-window renames (ADR-135/ADR-161) and the `__<team>__home` placeholder kill a non-force `start` performs are now recorded in the plan lines and summary counts. The planner (`src/core/start-repairs.ts`) is shared with the real `start` path, so the preview cannot drift from behaviour; the cage launch itself stays skipped. Clean cages plan no extra ops.
+
 ### ✨ Added — `atmux cockpit reconcile --dry-run` read-only preview (ADR-300)
 
 **Preview the reconcile plan without touching anything.** Every tmux namespace routes through a recording wrapper: reads delegate to the live server, mutations are recorded never executed, team.json writes + cage starts + socket-dir creation + readiness probes are skipped. Prints one line per planned op then `dry-run: N rename, M kill, K other operations (nothing executed)`; exits 0. The `--yes` destructive-op gates are bypassed (warnings still log). `reload` and `attach` still refuse `--dry-run`.

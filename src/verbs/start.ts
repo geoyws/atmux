@@ -124,7 +124,6 @@ import {
 } from "../core/cockpit.ts";
 import {
   buildWindowName,
-  buildWindowNameLegacy,
   defaultEmojiForRole,
   ensureAtmuxDirs,
   getAtmuxDir,
@@ -156,6 +155,11 @@ import {
   parsePreflightFlags,
   runStartPreflight,
 } from "../core/start-preflight.ts";
+import {
+  homeWindowName,
+  planMemberRenameArms,
+  shouldKillHomeWindow,
+} from "../core/start-repairs.ts";
 import { resolveSuperdriver, SUPERDRIVER_WINDOW_NAME } from "../core/superdriver.ts";
 import {
   defaultRemoveLegacySocket,
@@ -561,7 +565,8 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   //    `team.driverSession === null` is treated the same as missing —
   //    matches the existing wizard's "explicitly disabled" output and
   //    keeps `null` round-trip-safe for teams that opted out.
-  const homeWin = `__${team.name}__home`;
+  // Shared with core/start-repairs.ts (dry-run preview plans the same kill).
+  const homeWin = homeWindowName(team.name);
   const stillExists = sessionExisted && !parsed.force;
   const projectRoot = dirname(dir);
   // ADR-239 §A1 + §A5 — resolve the declarative driver roster. (The
@@ -1087,37 +1092,46 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
     // named `<emoji>-<label>` (hyphen). Detect via buildWindowName
     // with `role: undefined` (hyphen path) and rename to the new
     // `_-prefix` shape.
-    const winHyphen = buildWindowName(member.name, emoji, member.label);
-    const winLegacy = buildWindowNameLegacy(member.name, emoji);
-    if (winHyphen !== win && existingNames.has(winHyphen)) {
+    // Shared planner (core/start-repairs.ts::planMemberRenameArms) — the
+    // same arms the `cockpit reconcile --dry-run` preview plans, so the
+    // plan cannot drift from behaviour. Priority (hyphen-first) and the
+    // fall-through (a failed hyphen rename still probes the legacy arm)
+    // match the inline logic this replaces.
+    const renameArms = planMemberRenameArms(
+      { name: member.name, emoji, label: member.label, role: member.role },
+      (n) => existingNames.has(n),
+    );
+    if (renameArms.hyphen !== undefined) {
+      const from = renameArms.hyphen.from;
       try {
-        await tmux.window.renameWindow(`${session}:${winHyphen}`, win);
+        await tmux.window.renameWindow(`${session}:${from}`, win);
         logger.log(
-          `  · ${member.name}: renamed legacy window '${winHyphen}' → '${win}' (ADR-161 _-prefix migration)`,
+          `  · ${member.name}: renamed legacy window '${from}' → '${win}' (ADR-161 _-prefix migration)`,
         );
         existingNames.add(win);
-        existingNames.delete(winHyphen);
+        existingNames.delete(from);
         return;
       } catch (e) {
         const cause = e instanceof Error ? e.message : String(e);
         logger.warn(
-          `  · ${member.name}: rename '${winHyphen}' → '${win}' failed (${cause}); continuing — manual fix via 'tmux rename-window'`,
+          `  · ${member.name}: rename '${from}' → '${win}' failed (${cause}); continuing — manual fix via 'tmux rename-window'`,
         );
       }
     }
-    if (winLegacy !== win && existingNames.has(winLegacy)) {
+    if (renameArms.legacy !== undefined) {
+      const from = renameArms.legacy.from;
       try {
-        await tmux.window.renameWindow(`${session}:${winLegacy}`, win);
+        await tmux.window.renameWindow(`${session}:${from}`, win);
         logger.log(
-          `  · ${member.name}: renamed legacy window '${winLegacy}' → '${win}' (ADR-135 migration)`,
+          `  · ${member.name}: renamed legacy window '${from}' → '${win}' (ADR-135 migration)`,
         );
         existingNames.add(win);
-        existingNames.delete(winLegacy);
+        existingNames.delete(from);
         return;
       } catch (e) {
         const cause = e instanceof Error ? e.message : String(e);
         logger.warn(
-          `  ⚠ ${member.name}: failed to rename legacy window '${winLegacy}' → '${win}': ${cause} — falling through to spawn`,
+          `  ⚠ ${member.name}: failed to rename legacy window '${from}' → '${win}': ${cause} — falling through to spawn`,
         );
       }
     }
@@ -1307,9 +1321,14 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   //    holding only `__home` gains the seat and drops the placeholder.
   if (spawned > 0 || superdriverSpawned) {
     const after = await tmux.window.listWindows(session);
-    const hasHome = after.some((w) => w.name === homeWin);
-    const otherCount = after.filter((w) => w.name !== homeWin).length;
-    if (hasHome && otherCount > 0) {
+    // Shared predicate (core/start-repairs.ts::shouldKillHomeWindow) —
+    // the `cockpit reconcile --dry-run` preview plans the same kill.
+    if (
+      shouldKillHomeWindow(
+        after.map((w) => w.name),
+        homeWin,
+      )
+    ) {
       try {
         await tmux.window.killWindow(`${session}:${homeWin}`);
       } catch {

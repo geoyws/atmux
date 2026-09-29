@@ -7,6 +7,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
+import { planStartRepairs, shouldKillHomeWindow } from "../../../src/core/start-repairs.ts";
 import {
   createDryRunTmux,
   type DryRunOp,
@@ -307,6 +308,310 @@ describe("cockpitRebuild --dry-run", () => {
     expect(text).toContain("oldteam");
     // … with exact counts: 0 renames, 1 kill (oldteam), 4 other
     // (new-window _medic, new-window demo, 2× set-option prefix).
+    expect(text).toContain("dry-run: 0 rename, 1 kill, 4 other operations (nothing executed)");
+  });
+});
+
+describe("planStartRepairs (shared start/dry-run planner)", () => {
+  test("legacy no-separator window plans an ADR-135 rename and NO home kill (a rename spawns nothing)", () => {
+    const plan = planStartRepairs({
+      teamName: "t",
+      session: "t",
+      members: [{ name: "w1", role: "member" }],
+      existingNames: ["🐝w1", "__t__home"],
+    });
+    expect(plan.renames).toEqual([
+      { memberName: "w1", from: "🐝w1", to: "🐝-w1", migration: "ADR-135" },
+    ]);
+    expect(plan.spawns).toEqual([]);
+    expect(plan.killHome).toBe(false);
+  });
+
+  test("hyphen window wins over the legacy form when both exist (ADR-161 priority)", () => {
+    const plan = planStartRepairs({
+      teamName: "t",
+      session: "t",
+      members: [{ name: "lead", role: "team-lead" }],
+      existingNames: ["🧭lead", "🧭-lead", "__t__home"],
+    });
+    expect(plan.renames).toEqual([
+      { memberName: "lead", from: "🧭-lead", to: "🧭_lead", migration: "ADR-161" },
+    ]);
+    expect(plan.killHome).toBe(false);
+  });
+
+  test("clean cage plans nothing", () => {
+    const plan = planStartRepairs({
+      teamName: "t",
+      session: "t",
+      members: [{ name: "lead", role: "team-lead" }],
+      existingNames: ["🧭_lead"],
+    });
+    expect(plan.renames).toEqual([]);
+    expect(plan.killHome).toBe(false);
+  });
+
+  test("start step 9: the placeholder dies only when start would spawn something", () => {
+    const base = { teamName: "t", session: "t" };
+    // Canonical window + home, nothing to spawn: start keeps the home window.
+    expect(
+      planStartRepairs({
+        ...base,
+        members: [{ name: "lead", role: "team-lead" }],
+        existingNames: ["🧭_lead", "__t__home"],
+      }).killHome,
+    ).toBe(false);
+    // A missing member window is spawned, then the home window goes.
+    const spawnPlan = planStartRepairs({
+      ...base,
+      members: [
+        { name: "lead", role: "team-lead" },
+        { name: "w1", role: "member" },
+      ],
+      existingNames: ["🧭_lead", "__t__home"],
+    });
+    expect(spawnPlan.spawns).toEqual(["🐝-w1"]);
+    expect(spawnPlan.killHome).toBe(true);
+    // Home alone plus a spawn: the spawned window makes home killable.
+    expect(
+      planStartRepairs({
+        ...base,
+        members: [{ name: "w1", role: "member" }],
+        existingNames: ["__t__home"],
+      }).killHome,
+    ).toBe(true);
+  });
+
+  test("an inserted superdriver seat counts as a spawn (ADR-296); a present seat does not", () => {
+    const opts = {
+      teamName: "t",
+      session: "t",
+      members: [{ name: "lead", role: "team-lead" }],
+      superdriverEnabled: true,
+    };
+    const seat = planStartRepairs({ ...opts, existingNames: ["🧭_lead", "__t__home"] });
+    expect(seat.seatSpawn).toBe(true);
+    expect(seat.killHome).toBe(true);
+    const present = planStartRepairs({
+      ...opts,
+      existingNames: ["superdriver", "🧭_lead", "__t__home"],
+    });
+    expect(present.seatSpawn).toBe(false);
+    expect(present.killHome).toBe(false);
+  });
+
+  test("an explicit empty emoji keeps start's `??` semantics (bare name, no role default)", () => {
+    const plan = planStartRepairs({
+      teamName: "t",
+      session: "t",
+      members: [{ name: "w1", role: "member", emoji: "" }],
+      existingNames: ["w1"],
+    });
+    // start names this member's window from emoji "" — it already exists.
+    expect(plan.renames).toEqual([]);
+    expect(plan.spawns).toEqual([]);
+  });
+
+  test("home alone (no real windows) never plans a kill", () => {
+    expect(shouldKillHomeWindow(["__t__home"], "__t__home")).toBe(false);
+    expect(shouldKillHomeWindow(["__t__home", "🧭_lead"], "__t__home")).toBe(true);
+    expect(shouldKillHomeWindow(["🧭_lead"], "__t__home")).toBe(false);
+  });
+});
+
+describe("cockpitRebuild --dry-run previews start repairs (t-eb11cdb4)", () => {
+  let homeDir: string;
+  let projRoot: string;
+
+  beforeEach(async () => {
+    homeDir = await mkdtemp(join(tmpdir(), "atmux-dryrun-repair-home-"));
+    await mkdir(join(homeDir, ".atmux"), { recursive: true });
+    projRoot = await mkdtemp(join(tmpdir(), "atmux-dryrun-repair-proj-"));
+    await mkdir(join(projRoot, ".atmux"), { recursive: true });
+    await writeFile(
+      join(projRoot, ".atmux", "team.json"),
+      JSON.stringify({
+        name: "demo",
+        members: [{ name: "lead", role: "team-lead", tui: "claude" }],
+      }),
+      "utf8",
+    );
+    await writeFile(
+      join(homeDir, ".atmux", "cockpit.json"),
+      JSON.stringify({
+        cockpitSession: "test_cockpit",
+        medic: { enabled: true },
+        teams: [{ name: "demo", root: projRoot, enabled: true }],
+      }),
+      "utf8",
+    );
+  });
+  afterEach(async () => {
+    await rm(homeDir, { recursive: true, force: true });
+    await rm(projRoot, { recursive: true, force: true });
+  });
+
+  /** Cage fake: existing `demo` session; every mutation lands in `calls`
+   *  (the "real execution" the dry-run wrapper must never trigger). */
+  function makeCageFake(
+    calls: string[],
+    windows: Array<{ index: number; id: string; name: string; active: boolean }>,
+  ): TmuxNamespace {
+    const mark = (name: string) => {
+      calls.push(name);
+    };
+    return {
+      session: {
+        newSession: async () => {
+          mark("cage.session.newSession");
+        },
+        hasSession: async (name: string) => name === "=demo",
+        killSession: async () => {
+          mark("cage.session.killSession");
+        },
+        listSessions: async () => [{ name: "demo", windows: windows.length, created: 0 }],
+        renameSession: async () => {
+          mark("cage.session.renameSession");
+        },
+        setEnvironment: async () => {
+          mark("cage.session.setEnvironment");
+        },
+      },
+      window: {
+        newWindow: async () => {
+          mark("cage.window.newWindow");
+          return { sessionName: "demo", windowIndex: 9 };
+        },
+        killWindow: async () => {
+          mark("cage.window.killWindow");
+        },
+        listWindows: async () => windows,
+        renameWindow: async () => {
+          mark("cage.window.renameWindow");
+        },
+        selectWindow: async () => {
+          mark("cage.window.selectWindow");
+        },
+        moveWindow: async () => {
+          mark("cage.window.moveWindow");
+        },
+        swapWindow: async () => {
+          mark("cage.window.swapWindow");
+        },
+      },
+      pane: {
+        sendKeys: async () => {
+          mark("cage.pane.sendKeys");
+        },
+        capturePane: async () => "pane-content",
+        listPanes: async () => [],
+        displayMessage: async () => "bash",
+        killPane: async () => {
+          mark("cage.pane.killPane");
+        },
+        splitWindow: async () => {
+          mark("cage.pane.splitWindow");
+          return { sessionName: "demo", windowIndex: 0, paneIndex: 0 };
+        },
+      },
+      buffer: {
+        loadBuffer: async () => {
+          mark("cage.buffer.loadBuffer");
+        },
+        pasteBuffer: async () => {
+          mark("cage.buffer.pasteBuffer");
+        },
+        deleteBuffer: async () => {
+          mark("cage.buffer.deleteBuffer");
+        },
+      },
+      client: {
+        attachSession: async () => {
+          mark("cage.client.attachSession");
+        },
+        attachSessionInheritStdio: async () => {
+          mark("cage.client.attachSessionInheritStdio");
+        },
+        switchClient: async () => {
+          mark("cage.client.switchClient");
+        },
+        listClients: async () => [],
+      },
+      option: {
+        setOption: async () => {
+          mark("cage.option.setOption");
+        },
+        showOptions: async () => ({ prefix: "F2" }),
+      },
+      server: {
+        hasServer: async () => true,
+        killServer: async () => {
+          mark("cage.server.killServer");
+        },
+      },
+    };
+  }
+
+  async function runReconcile(
+    cageWindows: Array<{ index: number; id: string; name: string; active: boolean }>,
+  ): Promise<{ code: number; calls: string[]; text: string; startCalls: number }> {
+    const calls: string[] = [];
+    const { logger, logs } = makeLogger();
+    let startCalls = 0;
+    const cage = makeCageFake(calls, cageWindows);
+    const cockpitNs = makeFake(calls);
+    const code = await cockpitRebuild(
+      {
+        subverb: "reconcile",
+        noCycle: false,
+        forceCycle: false,
+        ackDangerous: false,
+        noLaunch: true,
+        yes: false,
+        dryRun: true,
+      },
+      {
+        env: { HOME: homeDir },
+        tmuxFactory: (cfg) => ("socketPath" in cfg ? cage : cockpitNs),
+        logger,
+        startFn: async () => {
+          startCalls += 1;
+          return 0;
+        },
+      },
+    );
+    return { code, calls, text: logs.join("\n"), startCalls };
+  }
+
+  test("legacy window + home placeholder yield rename and kill ops, nothing executed", async () => {
+    const { code, calls, text, startCalls } = await runReconcile([
+      { index: 0, id: "@0", name: "🧭lead", active: true },
+      { index: 1, id: "@1", name: "__demo__home", active: false },
+    ]);
+    expect(code).toBe(0);
+    // Nothing executed against the (fake) live servers …
+    expect(calls).toEqual([]);
+    // … no cage was launched …
+    expect(startCalls).toBe(0);
+    // … the start-internal repairs are in the plan …
+    expect(text).toContain("would rename legacy window '🧭lead' → '🧭_lead' (ADR-135 migration)");
+    expect(text).toContain("rename-window -t demo:🧭lead 🧭_lead");
+    expect(text).toContain("would kill placeholder window '__demo__home'");
+    expect(text).toContain("kill-window -t demo:__demo__home");
+    // … with exact counts: 1 rename + 1 kill over the base plan's
+    // 0 rename, 1 kill (cockpit orphan), 4 other.
+    expect(text).toContain("dry-run: 1 rename, 2 kill, 4 other operations (nothing executed)");
+  });
+
+  test("clean cage (canonical window, no home) plans no start repairs", async () => {
+    const { code, calls, text, startCalls } = await runReconcile([
+      { index: 0, id: "@0", name: "🧭_lead", active: true },
+    ]);
+    expect(code).toBe(0);
+    expect(calls).toEqual([]);
+    expect(startCalls).toBe(0);
+    expect(text).not.toContain("would rename legacy window");
+    expect(text).not.toContain("would kill placeholder window");
     expect(text).toContain("dry-run: 0 rename, 1 kill, 4 other operations (nothing executed)");
   });
 });
