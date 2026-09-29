@@ -1534,7 +1534,9 @@ async function runAccountSwapTickCheck(
     ctx.budgetProbe ??
     (async (account: string, opts?: { force?: boolean; refreshOnNearExpiry?: boolean }) => {
       const { probeBudget: defaultProbe } = await import("../abstractions/budget-probe.ts");
-      return defaultProbe(account, opts ?? {});
+      // t-eb67d998: canonical dir — TickCtx.atmuxDir is the getAtmuxDir
+      // walk-up result, never a cwd join.
+      return defaultProbe(account, { ...(opts ?? {}), atmuxDir: ctx.atmuxDir });
     });
   const swapCtx: AccountSwapCheckCtx = {
     atmuxDir: ctx.atmuxDir,
@@ -1587,7 +1589,9 @@ async function runSwapPassTickCheck(ctx: TickCtx, _config: WhipConfig): Promise<
     ctx.budgetProbe ??
     (async (account: string, opts?: { force?: boolean; refreshOnNearExpiry?: boolean }) => {
       const { probeBudget: defaultProbe } = await import("../abstractions/budget-probe.ts");
-      return defaultProbe(account, opts ?? {});
+      // t-eb67d998: canonical dir — TickCtx.atmuxDir is the getAtmuxDir
+      // walk-up result, never a cwd join.
+      return defaultProbe(account, { ...(opts ?? {}), atmuxDir: ctx.atmuxDir });
     });
   const deps: PerMemberSwapDeps = {
     probeTarget: (account) => probeBudget(account),

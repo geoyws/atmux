@@ -8,14 +8,17 @@
 // wiring are deliberately OUT (owner decision on tick source — see
 // e-14 epic note 2026-09-28).
 
-import { probeBudget as defaultProbeBudget, type BudgetProbeResult } from "../abstractions/budget-probe.ts";
+import {
+  type BudgetProbeResult,
+  probeBudget as defaultProbeBudget,
+} from "../abstractions/budget-probe.ts";
 import {
   hasBandFired,
   loadWarningState,
   recordBandFire,
+  type WarningState,
   wipeForResetWindow,
   writeWarningState,
-  type WarningState,
 } from "./budget-warning-state.ts";
 
 /** Warn when either window utilization reaches this percent. */
@@ -65,11 +68,19 @@ export async function scanBudgetAcrossAccounts(
   deps: BudgetScanDeps = {},
   atmuxDir?: string,
 ): Promise<BudgetScan> {
-  const probe = deps.probe ?? defaultProbeBudget;
+  // t-eb67d998: the production probe resolves via the canonical dir
+  // (never a cwd join). When the caller passes no atmuxDir, the probe
+  // fails closed with UsageError instead of probing the wrong project.
+  const probe =
+    deps.probe ??
+    ((account: string) =>
+      defaultProbeBudget(account, { ...(atmuxDir !== undefined ? { atmuxDir } : {}) }));
   const threshold = deps.warnAtPct ?? BUDGET_WARN_PCT;
-  const loadState = deps.loadState ?? (() => (atmuxDir !== undefined ? loadWarningState(atmuxDir) : {}));
-  const saveState = deps.saveState ?? ((s) => (atmuxDir !== undefined ? writeWarningState(atmuxDir, s) : undefined));
-
+  const loadState =
+    deps.loadState ?? (() => (atmuxDir !== undefined ? loadWarningState(atmuxDir) : {}));
+  const saveState =
+    deps.saveState ??
+    ((s) => (atmuxDir !== undefined ? writeWarningState(atmuxDir, s) : undefined));
   const rows: AccountBudget[] = [];
   for (const username of accounts) {
     const r = await probe(username);
@@ -93,7 +104,13 @@ export async function scanBudgetAcrossAccounts(
       if (w.pct < threshold) continue;
       state = wipeForResetWindow(state, row.username, w.window, w.reset);
       if (hasBandFired(state, row.username, w.window, BUDGET_WARN_BAND)) continue;
-      state = recordBandFire(state, row.username, w.window, BUDGET_WARN_BAND, Math.floor(Date.now() / 1000));
+      state = recordBandFire(
+        state,
+        row.username,
+        w.window,
+        BUDGET_WARN_BAND,
+        Math.floor(Date.now() / 1000),
+      );
       newlyWarned.push({ account: row.username, window: w.window, pct: w.pct });
     }
   }

@@ -868,3 +868,20 @@ describe("runBudgetCheck — ADR-078 refreshOnNearExpiry contract", () => {
     }
   });
 });
+
+describe("runBudgetCheck — production probe wiring (t-eb67d998)", () => {
+  test("default probe resolves via ctx.atmuxDir (canonical dir, no cwd join)", async () => {
+    // No deps.probeBudget: the production default runs the real probeBudget
+    // against ctx.atmuxDir. The account is deliberately nonexistent, so no
+    // credentials exist on ANY machine — hermetic, no network. Without the
+    // canonical-dir wiring the probe throws UsageError and this rejects.
+    const v = await runBudgetCheck(ctxOf([{ name: "alpha", claudeAccount: "no-such-acct-xyz" }]), {
+      pauseMember: async () => {},
+      resumeMember: async () => {},
+      appendDriverInbox: async () => {},
+    });
+    // no-credentials is not at-risk data → no pause, "active" verdict.
+    expect(v).toBe("active");
+    expect(await isBudgetPauseActive(atmuxDir)).toBe(false);
+  });
+});

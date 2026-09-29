@@ -18,6 +18,7 @@ import {
   normalizeOpenRouter,
   normalizeZai,
   probeAllProviders,
+  probeAnthropic,
   probeCursor,
   probeDeepSeek,
   probeKimi,
@@ -259,5 +260,25 @@ describe("probeAllProviders", () => {
     ]) {
       expect(providers.has(key)).toBe(true);
     }
+  });
+});
+
+describe("probeAnthropic — canonical dir injection (t-eb67d998)", () => {
+  test("forwards the atmuxDir resolver to the budget probe (once per account)", async () => {
+    let calls = 0;
+    const rows = await probeAnthropic({
+      env: {},
+      // Nonexistent home: credentials are missing, so the probe returns
+      // no-credentials without touching the network — the resolver call
+      // count below is the forwarding proof.
+      homeDir: "/nonexistent-home-xyz",
+      atmuxDir: async () => {
+        calls += 1;
+        return "/nonexistent-atmux-xyz";
+      },
+    });
+    expect(calls).toBe(2); // gmail + ifca2 suffixes
+    expect(rows.length).toBeGreaterThan(0);
+    for (const r of rows) expect(r.ok).toBe(0);
   });
 });

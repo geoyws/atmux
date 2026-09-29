@@ -187,10 +187,13 @@ export async function runBudgetCheck(
   ctx: BudgetCheckCtx,
   deps: BudgetCheckDeps = {},
 ): Promise<BudgetCheckVerdict> {
+  // t-eb67d998: the production probe resolves via the canonical dir —
+  // ctx.atmuxDir is already the getAtmuxDir walk-up result, so probes
+  // from any cwd land in the project's .atmux (never a cwd join).
   const probe =
     deps.probeBudget ??
     ((account: string, opts?: { refreshOnNearExpiry?: boolean }) =>
-      defaultProbeBudget(account, opts ?? {}));
+      defaultProbeBudget(account, { ...(opts ?? {}), atmuxDir: ctx.atmuxDir }));
   const pauseMem = deps.pauseMember ?? defaultPauseMember;
   const resumeMem = deps.resumeMember ?? defaultResumeMember;
   const send = deps.discordSend;

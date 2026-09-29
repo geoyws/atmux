@@ -94,6 +94,45 @@ describe("collectBudget", () => {
     expect(stored[0]).toMatchObject({ provider: "zai", metric: "util_5h", value: 30, ok: 1 });
     expect(stored[1]).toMatchObject({ provider: "kimi", ok: 0, error: "boom", raw_json: null });
   });
+
+  test("default probe path resolves the canonical dir without a stubbed probe", async () => {
+    // No `probe` injection: collectBudget falls back to probeAllProviders
+    // with the canonical getAtmuxDir result (t-eb67d998). Provider keys
+    // are stripped so every key-gated adapter short-circuits to ok=0
+    // rows without network; the anthropic creds-file probe finds no
+    // credentials on CI (and any live-probe writes land in gitignored
+    // .atmux state, never the repo).
+    const stripped = [
+      "ZAI_API_KEY",
+      "DEEPSEEK_API_KEY",
+      "DEEPSEEK_API_KEY_IFCA",
+      "OPENROUTER_API_KEY",
+      "MINIMAX_API_KEY",
+      "MINIMAX_API_KEY_IFCA",
+    ];
+    const saved: Record<string, string | undefined> = {};
+    for (const k of stripped) {
+      saved[k] = process.env[k];
+      delete process.env[k];
+    }
+    try {
+      const home = tempHome();
+      const summary = await collectBudget({ home, now: () => "2026-09-26T00:00:00.000Z" });
+      expect(summary.rows).toBeGreaterThan(0);
+      expect(summary.rows).toBe(summary.ok + summary.failed);
+      const stored = await withBudgetDb(
+        (db) => db.query("SELECT COUNT(*) AS n FROM usage_snapshot").get() as { n: number },
+        { home },
+      );
+      expect(stored.n).toBe(summary.rows);
+    } finally {
+      for (const k of stripped) {
+        const v = saved[k];
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  });
 });
 
 describe("reportBudget", () => {

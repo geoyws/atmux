@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🐛 Fixed — budget probe resolves the canonical `.atmux` via caller-injected dir (t-eb67d998)
+
+**Probes fired from a project subdirectory no longer land in `<cwd>/.atmux`.** `probeBudget` silently joined `process.cwd()` when `opts.atmuxDir` was absent, skipping the `getAtmuxDir` walk-up and the `ATMUX_DIR` pin — and resolving canonically inside the abstraction would have needed a core import (ADR-096 layering). The probe now takes the canonical dir (resolved path or lazy resolver) from its callers and fails closed with `UsageError` when it is missing; every production caller passes it through (`whip-budget-check`, `orchd-budget-scan`, the `poke` swap checks, `budget collect` via the anthropic adapter; `health` and `poke-resume-check` already did). Proven by walk-up + env-pin + fail-closed tests in `tests/unit/abstractions/budget-probe.test.ts` with wiring pins in the caller suites.
+
 ### 📝 Docs — KB continuity authority port lands as ADR-304 (t-affc6107)
 
 **The unmerged 2026-09-03 continuity change is now on the lane.** t-09ff9d96 was marked done but its merge never reached the lane, and its ADR number 289 has since been taken by the medic-autostart retirement — so the change is ported as [ADR-304](docs/adr/304-kb-authoritative-agent-continuity.md) (accepted on reviewer signoff 2026-09-29). HAX KB is the continuity authority (plan / progress / blocker / checkpoint rows); `atmux handoff` is legacy-mode only (`USAGE` + `help` text + README + briefs say so). [ADR-267](docs/adr/267-durable-agent-continuity-contract.md) marks itself superseded by ADR-304, and `docs/PRD.md` §§3.6/5.5/10.5 + the ADR batch list point at ADR-304. No runtime behaviour change.

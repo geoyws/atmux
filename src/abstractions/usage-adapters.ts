@@ -38,6 +38,11 @@ export interface UsageRow {
 export interface AdapterCtx {
   env: NodeJS.ProcessEnv;
   homeDir?: string;
+  /** Canonical `.atmux/` dir for the anthropic budget-probe cache/history
+   *  (t-eb67d998). Forwarded to `probeBudget`, which requires it; when
+   *  omitted the anthropic adapter surfaces the probe's missing-dir error
+   *  as ok=0 rows (the batch never throws). */
+  atmuxDir?: string | (() => Promise<string>);
   request?: (opts: HttpRequestOpts) => Promise<HttpResponse>;
 }
 
@@ -79,6 +84,7 @@ export async function probeAnthropic(ctx: AdapterCtx): Promise<UsageRow[]> {
     try {
       const r = await probeBudget(suffix, {
         ...(ctx.homeDir !== undefined ? { homeDir: ctx.homeDir } : {}),
+        ...(ctx.atmuxDir !== undefined ? { atmuxDir: ctx.atmuxDir } : {}),
         force: true,
         flagSurface: async () => {},
       });

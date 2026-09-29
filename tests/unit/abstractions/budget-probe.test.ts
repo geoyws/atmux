@@ -16,13 +16,17 @@
 //   - no-credentials → file missing / malformed / no accessToken.
 //   - probe-error → non-2xx, missing utilization headers.
 //   - All failure paths still write cache + history (observability).
-
+//   - Canonical dir injection (t-eb67d998): resolver-form walk-up from a
+//     project subdir + ATMUX_DIR pin; missing/empty dir fails closed with
+//     UsageError and never joins process.cwd() (old behaviour gone).
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type BudgetProbeResult, probeBudget } from "../../../src/abstractions/budget-probe.ts";
 import { resetNow, setNow } from "../../../src/abstractions/time.ts";
+import { getAtmuxDir } from "../../../src/core/common.ts";
+import { UsageError } from "../../../src/errors.ts";
 
 // ---------- Fixed test clock ----------
 
@@ -1143,6 +1147,130 @@ describe("probeBudget — ADR-078 refreshOnNearExpiry gate", () => {
       } finally {
         await server.stop();
       }
+    }
+  });
+});
+
+// ---------- Canonical dir injection (t-eb67d998) ----------
+
+describe("probeBudget — canonical dir injection", () => {
+  async function expectMissingDirError(opts: {
+    homeDir: string;
+    atmuxDir?: string | (() => Promise<string>);
+  }): Promise<void> {
+    let err: unknown = null;
+    try {
+      await probeBudget("icloud", { ...opts, force: true });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(UsageError);
+    if (!(err instanceof Error)) throw new Error("expected probeBudget to throw an Error");
+    expect(err.message).toContain("atmuxDir");
+  }
+
+  test("missing atmuxDir → UsageError and no cwd .atmux is created", async () => {
+    // Run with cwd inside an isolated subdir: the old behaviour joined
+    // process.cwd()/.atmux and probed there. Failing closed must leave
+    // the cwd untouched.
+    const cwd = join(tmpRoot, "some-subdir");
+    await mkdir(cwd, { recursive: true });
+    const prev = process.cwd();
+    process.chdir(cwd);
+    try {
+      await expectMissingDirError({ homeDir });
+      await expect(
+        readFile(join(cwd, ".atmux", "state", "budget-probe-icloud.json"), "utf8"),
+      ).rejects.toThrow();
+    } finally {
+      process.chdir(prev);
+    }
+  });
+
+  test("empty-string atmuxDir → UsageError", async () => {
+    await expectMissingDirError({ homeDir, atmuxDir: "" });
+  });
+
+  test("resolver returning empty string → UsageError", async () => {
+    await expectMissingDirError({ homeDir, atmuxDir: async () => "" });
+  });
+
+  test("resolver form: probe from a project subdir resolves the project's .atmux (walk-up)", async () => {
+    const server = startProbeServer({
+      utilization5h: 0.12,
+      utilization7d: 0.34,
+      reset5h: FIXED_NOW_SEC + 3600,
+      reset7d: FIXED_NOW_SEC + 86400,
+      statusHeader: "allowed",
+    });
+    try {
+      await writeCreds("walkup");
+      const subdir = join(tmpRoot, "project", "a", "b");
+      await mkdir(subdir, { recursive: true });
+      const r = await probeBudget("walkup", {
+        // Pure walk-up: empty env disables every pin (this process may
+        // carry ATMUX_DIR itself when tests run inside a cage).
+        atmuxDir: () => getAtmuxDir({ cwd: subdir, env: {} }),
+        homeDir,
+        force: true,
+        probeUrl: server.url,
+        oauthRefreshUrl: server.refreshUrl,
+        flagSurface: async () => {},
+      });
+      expect(r.status).toBe("allowed");
+      expect(r.h5_pct_used).toBe(12);
+      // Cache + history landed in the PROJECT's .atmux …
+      const cache = JSON.parse(
+        await readFile(join(atmuxDir, "state", "budget-probe-walkup.json"), "utf8"),
+      );
+      expect(cache.h5_util).toBe(0.12);
+      const history = await readHistoryLines();
+      const seenWalkup = history.some(
+        (h) => typeof h === "object" && h !== null && "account" in h && h.account === "walkup",
+      );
+      expect(seenWalkup).toBe(true);
+      // … and no stub .atmux was created under the subdir.
+      await expect(
+        readFile(join(subdir, ".atmux", "state", "budget-probe-walkup.json"), "utf8"),
+      ).rejects.toThrow();
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("resolver form: ATMUX_DIR pin wins over walk-up", async () => {
+    const server = startProbeServer({
+      utilization5h: 0.5,
+      utilization7d: 0.1,
+      reset5h: FIXED_NOW_SEC + 3600,
+      reset7d: FIXED_NOW_SEC + 86400,
+      statusHeader: "allowed",
+    });
+    try {
+      await writeCreds("pinned");
+      const pinned = join(tmpRoot, "elsewhere", ".atmux");
+      await mkdir(pinned, { recursive: true });
+      const subdir = join(tmpRoot, "project", "deep", "nested");
+      await mkdir(subdir, { recursive: true });
+      const r = await probeBudget("pinned", {
+        atmuxDir: () => getAtmuxDir({ cwd: subdir, env: { ATMUX_DIR: pinned } }),
+        homeDir,
+        force: true,
+        probeUrl: server.url,
+        oauthRefreshUrl: server.refreshUrl,
+        flagSurface: async () => {},
+      });
+      expect(r.status).toBe("allowed");
+      const cache = JSON.parse(
+        await readFile(join(pinned, "state", "budget-probe-pinned.json"), "utf8"),
+      );
+      expect(cache.h5_util).toBe(0.5);
+      // The walked-up project .atmux was NOT used.
+      await expect(
+        readFile(join(atmuxDir, "state", "budget-probe-pinned.json"), "utf8"),
+      ).rejects.toThrow();
+    } finally {
+      await server.stop();
     }
   });
 });

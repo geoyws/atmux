@@ -49,6 +49,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { appendHistoryEntry } from "../core/budget-history.ts";
+import { UsageError } from "../errors.ts";
 import { atomicWrite, readTextOrNull, statOrNull } from "./fs.ts";
 import { request } from "./http.ts";
 import { now } from "./time.ts";
@@ -89,8 +90,17 @@ export interface ProbeBudgetOpts {
   force?: boolean;
   /** Cache age tolerance; default 240s (matches bash). */
   ttlSec?: number;
-  /** Override `.atmux/` location; default `<cwd>/.atmux`. */
-  atmuxDir?: string;
+  /** Canonical `.atmux/` dir — REQUIRED for every probe that touches the
+   *  cache or history (i.e. every real account; the empty/default/null
+   *  short-circuit returns before any filesystem touch).
+   *
+   *  Pass a resolved path or a lazy resolver. Production callers pass
+   *  `getAtmuxDir()` from `src/core/common.ts` (walk-up + `ATMUX_DIR` /
+   *  `ATMUX_TEAM_DIR` pins) so a probe fired from a project subdir
+   *  resolves the project's `.atmux` (t-eb67d998). There is deliberately
+   *  NO `process.cwd()`-join fallback: it skips the walk-up and the env
+   *  pin. Omitting (or empty-stringing) this option throws `UsageError`. */
+  atmuxDir?: string | (() => Promise<string>);
   /** Override `$HOME`; default `os.homedir()`. */
   homeDir?: string;
   /** OAuth token endpoint; default Anthropic prod. */
@@ -151,7 +161,9 @@ const DEFAULT_PROBE_URL = "https://api.anthropic.com/v1/messages";
  * `account` is the suffix of the credentials directory: `icloud`,
  * `ifca`, `unum`, etc. (bash convention `~/.claude-<account>/.credentials.json`).
  * Empty / `default` / `null` are accepted but short-circuit to a
- * `no-credentials` result without touching the filesystem.
+ * `no-credentials` result without touching the filesystem (and without
+ * needing `opts.atmuxDir`). Every other account REQUIRES `opts.atmuxDir`
+ * (resolved path or lazy resolver) — there is no cwd fallback.
  *
  * Returns a `BudgetProbeResult` with `source: "cache-hit"` when a
  * fresh cache is found AND `force !== true`; otherwise fires a live
@@ -163,7 +175,6 @@ export async function probeBudget(
 ): Promise<BudgetProbeResult> {
   const ttlSec = opts.ttlSec ?? DEFAULT_TTL_SEC;
   const force = opts.force === true;
-  const atmuxDir = opts.atmuxDir ?? join(process.cwd(), ".atmux");
   const homeDir = opts.homeDir ?? homedir();
   const oauthUrl = opts.oauthRefreshUrl ?? DEFAULT_OAUTH_URL;
   const probeUrl = opts.probeUrl ?? DEFAULT_PROBE_URL;
@@ -175,6 +186,10 @@ export async function probeBudget(
     return noCredsResult(account, "account name not set");
   }
 
+  // t-eb67d998: resolve AFTER the short-circuit (no-op accounts never
+  // touch the filesystem) and never fall back to a cwd join — the caller
+  // injects the canonical dir (getAtmuxDir walk-up + env pin).
+  const atmuxDir = await resolveAtmuxDir(opts.atmuxDir);
   const cachePath = join(atmuxDir, "state", `budget-probe-${account}.json`);
 
   // 1. Cache check (skipped on force).
@@ -329,6 +344,24 @@ export async function probeBudget(
   };
   await appendHistory(atmuxDir, result, h5Util, wkUtil, tokenRefreshed);
   return result;
+}
+
+/**
+ * Resolve the injected atmux dir (t-eb67d998 seam). Accepts a resolved
+ * path or a lazy `getAtmuxDir`-style resolver so callers can defer the
+ * walk-up to probe time. Missing/empty fails closed with `UsageError` —
+ * silently joining `process.cwd()` would skip the walk-up and the env
+ * pin, resolving the wrong project from a subdirectory.
+ */
+async function resolveAtmuxDir(
+  dirOrResolver: string | (() => Promise<string>) | undefined,
+): Promise<string> {
+  const resolved = typeof dirOrResolver === "function" ? await dirOrResolver() : dirOrResolver;
+  if (typeof resolved === "string" && resolved.length > 0) return resolved;
+  throw new UsageError({
+    what: "probeBudget requires opts.atmuxDir (canonical .atmux dir)",
+    hint: "pass getAtmuxDir() from src/core/common.ts or a resolver returning it",
+  });
 }
 
 // ---------- Internals ----------

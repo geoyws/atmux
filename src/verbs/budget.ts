@@ -114,7 +114,15 @@ export interface CollectSummary {
 /** Probe every provider and persist one batch. Returns the batch summary. */
 export async function collectBudget(opts: BudgetOpts = {}): Promise<CollectSummary> {
   const ts = (opts.now ?? (() => new Date().toISOString()))();
-  const rows = await (opts.probe ?? (() => probeAllProviders({ env: process.env })))();
+  const rows = await (
+    opts.probe ??
+    (async () => {
+      // t-eb67d998: the anthropic adapter's probe cache/history resolves
+      // via the canonical dir (walk-up + env pin), never a cwd join.
+      const atmuxDir = await getAtmuxDir();
+      return probeAllProviders({ env: process.env, atmuxDir });
+    })
+  )();
   await withBudgetDb(
     (db) => {
       insertBatch(db, ts, rows);
