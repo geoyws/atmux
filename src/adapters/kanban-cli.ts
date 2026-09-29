@@ -337,7 +337,13 @@ export class KanbanCliAdapter {
 
   async listTasks(
     atmuxDir: string,
-    filter: { status?: string; assignee?: string; lane?: string } = {},
+    filter: {
+      status?: string;
+      assignee?: string;
+      lane?: string;
+      epic?: string;
+      story?: string;
+    } = {},
   ): Promise<KanbanTask[]> {
     const records = await this.listRecords(atmuxDir);
     return records
@@ -345,7 +351,9 @@ export class KanbanCliAdapter {
       .map((task) => taskFromExternal(task, records))
       .filter((task) => (filter.status ? task.status === filter.status : true))
       .filter((task) => (filter.assignee ? task.owner === filter.assignee : true))
-      .filter((task) => (filter.lane ? task.lane === filter.lane : true));
+      .filter((task) => (filter.lane ? task.lane === filter.lane : true))
+      .filter((task) => (filter.epic ? task.epic === filter.epic : true))
+      .filter((task) => (filter.story ? task.story === filter.story : true));
   }
 
   async loadKanban(atmuxDir: string): Promise<Kanban> {

@@ -97,3 +97,14 @@ Demoted from `Accepted — ratified by driver 2026-05-21` → `proposed (deferre
 **Cross-refs**: `t-b1bd0f9c` (Status-vs-Impl drift audit — this ADR is one of 5 in the Path B cluster; siblings ADR-173/178/183/193); `d-7b8d444f-batch` (lead-recorded decision authorizing close-or-§Amendment per gap-class); CLAUDE.md §Source-of-truth chain (deferred-status escape hatch); `b6d634f` (the originating bookkeeping batch).
 
 **Filed as part of Path B cluster per d-7b8d444f-batch + t-b1bd0f9c (Status-vs-Impl audit).**
+
+## §Amendment 2026-09-29 — Implemented per kb row t-2ce0adf3
+
+The `--epic <eid>` / `--story <sid>` filters land in `src/verbs/task.ts::parseListArgs` + `taskList`, with the WHERE-narrowing threaded through `src/core/kanban.ts::listTasks` (JSON exact-match, SQLite `KanbanRepo` `epic`/`story` clauses which already existed, external-adapter pass-through). Combinable with `--status` / `--assignee` / `--lane` via AND, including `--epic` + `--story` together. Output shape, sort order, and exit codes unchanged (empty slice → `(no tasks)`, exit 0).
+
+Two deltas vs the §Decision text as-written (both forced by later amendments, neither changes the decision):
+
+1. **Shape validation follows the relaxed ADR-193 rule** (`assertEpicShape` / `assertStoryShape` → `isAnyId`: `e-<8hex>`, `e-<int>`, `e-<int>-<8hex>`, same for `s-`), not the original `e-[0-9a-f]{8}` / `s-[0-9a-f]{8}`-only regex. The running-number migration (2026-05-22) postdates this ADR; validating hex8-only would reject every SQLite-mode id.
+2. **No `--epic ''` orphan-matching.** An empty value fails shape validation (exit 64 `UsageError`, same as any malformed id). The OQ-2 "empty matches null" default is not implemented — out of scope for the kb row, and silent null-matching would surprise `task list --epic ""` typo callers.
+
+**Authority for implementing despite the banner:** George refiled this work on 2026-09-28 (attention `a-64dcf112`, kb row `t-2ce0adf3`), a month after ADR-280; his later, explicit decision governs over the banner's "Do not implement from it". The `SUPERSEDED 2026-08-27 by ADR-280` banner above is left intact: it speaks to the epic-team cage lifecycle, while the `epic` / `story` task-linkage columns (ADR-193) and the `epic` / `story` verbs remain in the tree — this filter reads those columns only. Status flip back to `accepted` is left for reviewer signoff per the 2026-05-22 amendment.

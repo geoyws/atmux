@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ✨ Added — `atmux task list --epic <eid>` / `--story <sid>` filters (ADR-174, t-2ce0adf3)
+
+**Slice the kanban by parent without `--json | jq`.** `atmux task list` accepts two new optional filters, combinable with `--status` / `--assignee` / `--lane` via AND: `--epic <eid>` matches tasks whose `.epic` equals the id, `--story <sid>` matches `.story`. Values are shape-validated like the `task add` / `task update` flags (missing or malformed value → exit 64 `UsageError`); a well-formed-but-unknown id returns an empty list with the usual `(no tasks)` output and exit 0.
+
 ### ✨ Added — `atmux msg send|check|read`: pane-to-pane messenger (ADR-292, E1-T3)
 
 **Mailbox a message, wake with a printed pointer — never send-keys.** `atmux msg send <peer> [--priority p0..p3] <body...>` appends a `kind='msg'` row to the team's `.atmux/state.db` `inbox_messages` table (priority in `extra.priority`, zero schema change) and prints the peer's `<session>:<window>` address plus a wake pointer the caller delivers via `/pane-agent send --queued`. `atmux msg check [--min <p>] [--since <epoch>] [--all] [--ack] [--json]` exits 1 when unread exists at or above `--min`, else 0; `atmux msg read` shows full bodies with per-row ack columns. Cursors live in `state_kv` (`--all` > `--since` > stored), per-reader acks in `extra.acked_by` so acking never hides a row from anyone else. See `docs/RUNBOOK-msg.md`.

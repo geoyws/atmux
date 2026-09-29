@@ -146,6 +146,10 @@ export interface ListTasksFilter {
   status?: string;
   assignee?: string;
   lane?: string;
+  /** ADR-174: parent epic id — exact match on `.epic`. */
+  epic?: string;
+  /** ADR-174: parent story id — exact match on `.story`. */
+  story?: string;
 }
 
 /**
@@ -325,6 +329,8 @@ export async function listTasks(atmuxDir: string, filter?: ListTasksFilter): Pro
       ...(filter?.status !== undefined ? { status: filter.status } : {}),
       ...(filter?.assignee !== undefined ? { assignee: filter.assignee } : {}),
       ...(filter?.lane !== undefined ? { lane: filter.lane } : {}),
+      ...(filter?.epic !== undefined ? { epic: filter.epic } : {}),
+      ...(filter?.story !== undefined ? { story: filter.story } : {}),
     });
   }
   if (await _useSqlite(atmuxDir)) {
@@ -335,6 +341,8 @@ export async function listTasks(atmuxDir: string, filter?: ListTasksFilter): Pro
       if (filter?.status !== undefined) repoFilter.status = filter.status;
       if (filter?.assignee !== undefined) repoFilter.owner = filter.assignee;
       if (filter?.lane !== undefined) repoFilter.lane = filter.lane;
+      if (filter?.epic !== undefined) repoFilter.epic = filter.epic;
+      if (filter?.story !== undefined) repoFilter.story = filter.story;
       return repo.listTasks(repoFilter);
     });
   }
@@ -351,6 +359,14 @@ export async function listTasks(atmuxDir: string, filter?: ListTasksFilter): Pro
   if (filter?.lane !== undefined) {
     const lane = filter.lane;
     out = out.filter((t) => t.lane === lane);
+  }
+  if (filter?.epic !== undefined) {
+    const epic = filter.epic;
+    out = out.filter((t) => t.epic === epic);
+  }
+  if (filter?.story !== undefined) {
+    const story = filter.story;
+    out = out.filter((t) => t.story === story);
   }
   return [...out];
 }
