@@ -99,6 +99,40 @@ describe("sweepZombieTmuxSockets", () => {
     expect(await stat(dir).catch(() => null)).toBeNull();
   });
 
+  test("never sweeps atmux-grp-* group sockets (t-05dadc44)", async () => {
+    const dir = await makeFixtureDir("atmux-grp-geoyws", {
+      ageMs: SIX_HOURS_MS + 1000,
+    });
+
+    const r = await sweepZombieTmuxSockets({
+      tmpDir: env.fakeTmp,
+      nowMs: RUN_MS,
+      killServer: stubKill(env),
+    });
+
+    expect(r.scanned).toBe(0);
+    expect(r.killed).toBe(0);
+    expect(r.removed).toBe(0);
+    expect(env.killCalls).toEqual([]);
+    expect(await stat(dir).catch(() => null)).not.toBeNull();
+  });
+
+  test("still sweeps atmux-start-sock-* fixtures (t-05dadc44 control)", async () => {
+    const dir = await makeFixtureDir("atmux-start-sock-XYZ123", {
+      ageMs: SIX_HOURS_MS + 1000,
+    });
+
+    const r = await sweepZombieTmuxSockets({
+      tmpDir: env.fakeTmp,
+      nowMs: RUN_MS,
+      killServer: stubKill(env),
+    });
+
+    expect(r.scanned).toBe(1);
+    expect(r.removed).toBe(1);
+    expect(await stat(dir).catch(() => null)).toBeNull();
+  });
+
   test("skips fixture dirs younger than minAgeMs (default 6h)", async () => {
     const dir = await makeFixtureDir("atmux-e2e-fresh-AAA", {
       ageMs: SIX_HOURS_MS - 60 * 1000, // 5h59m old

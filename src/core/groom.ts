@@ -1001,8 +1001,10 @@ export interface SweepZombieSocketsOpts {
 /** Fixture-shape regex: trailing `-…` is the mkdtemp random suffix
  *  that production cage dirs (e.g. `/tmp/atmux-atmux`) lack. The
  *  `(cockpit-)?` group covers `atmux-cockpit-<name>-…` test patterns
- *  per the c-4698c603 (b) arm proposal. */
-const ZOMBIE_FIXTURE_PATTERN = /^atmux-(cockpit-)?[^/]+-[^/]+$/;
+ *  per the c-4698c603 (b) arm proposal. The `(?!grp-)` guard excludes
+ *  group sockets (`/tmp/atmux-grp-<name>` — live multi-team sockets,
+ *  never fixtures) per t-05dadc44. */
+const ZOMBIE_FIXTURE_PATTERN = /^atmux-(cockpit-)?(?!grp-)[^/]+-[^/]+$/;
 
 /** 6h default — short enough to drain typical CI rounds, long enough
  *  that a stale-looking fixture dir at minute 5h59 of an actively-
