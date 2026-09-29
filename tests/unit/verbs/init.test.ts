@@ -575,30 +575,116 @@ describe("init — overwrite gating (bash lib/init.sh:30-32, :40-42)", () => {
   });
 });
 
-// ---------- init verb — wizard refuse ----------
+// ---------- init verb — wizard flow (ADR-200) ----------
 
-describe("init — --wizard not yet implemented (deferred)", () => {
-  test("--wizard → ConfigError with explicit hint", async () => {
-    let caught: unknown = null;
+describe("init — --wizard guided flow", () => {
+  test("--wizard scaffolds team.json + cockpit entry, returns 0", async () => {
+    const home = await mkdtemp(join(tmpdir(), "atmux-wiz-home-"));
     try {
-      await runInit(["--wizard"]);
-    } catch (e) {
-      caught = e;
+      const answers = ["wizteam", ""];
+      const result = await runInit(["--wizard", "--no-skills"], {
+        env: { HOME: home },
+        prompter: async (_q, def) => answers.shift() ?? def,
+        prereqCheck: () => true,
+      });
+      expect(result).toBe(0);
+      const team = JSON.parse(await readFile(join(env.cwd, ".atmux", "team.json"), "utf8"));
+      expect(team.name).toBe("wizteam");
+      // Drivers-only roster default (ADR-287 §D5) flows through Team.parse.
+      expect(team.members).toEqual([]);
+      expect(team.drivers?.map((d: { name: string }) => d.name)).toEqual([
+        "driver",
+        "driver-2",
+        "driver-3",
+      ]);
+      const cockpit = JSON.parse(await readFile(join(home, ".atmux", "cockpit.json"), "utf8"));
+      expect(JSON.stringify(cockpit)).toContain(env.cwd);
+    } finally {
+      await rm(home, { recursive: true, force: true });
     }
-    expect(caught).toBeInstanceOf(ConfigError);
-    expect((caught as ConfigError).context.what as string).toContain(
-      "--wizard not yet implemented",
-    );
   });
 
-  test("-w → same ConfigError (short flag parity)", async () => {
+  test("-w routes to the same wizard flow (short flag parity)", async () => {
+    const home = await mkdtemp(join(tmpdir(), "atmux-wiz-home-"));
+    try {
+      const answers = ["wizteam", ""];
+      const result = await runInit(["-w", "--no-skills"], {
+        env: { HOME: home },
+        prompter: async (_q, def) => answers.shift() ?? def,
+        prereqCheck: () => true,
+      });
+      expect(result).toBe(0);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("--wizard with missing prereq → ConfigError naming it", async () => {
     let caught: unknown = null;
     try {
-      await runInit(["-w"]);
+      await runInit(["--wizard"], {
+        prompter: async (_q, def) => def,
+        prereqCheck: (bin) => bin !== "jq",
+      });
     } catch (e) {
       caught = e;
     }
     expect(caught).toBeInstanceOf(ConfigError);
+    expect((caught as ConfigError).context.what as string).toContain("jq");
+  });
+
+  test("--wizard refuses over existing team.json without --force", async () => {
+    const dir = join(env.cwd, ".atmux");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "team.json"), '{"name":"old"}');
+    let caught: unknown = null;
+    try {
+      await runInit(["--wizard", "--no-skills"], {
+        prompter: async (_q, def) => def,
+        prereqCheck: () => true,
+      });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(ConfigError);
+    expect((caught as ConfigError).context.what as string).toContain("already initialized");
+  });
+
+  test("--wizard persists account-pool suffixes to cockpit.json", async () => {
+    const home = await mkdtemp(join(tmpdir(), "atmux-wiz-home-"));
+    try {
+      const answers = ["poolteam", "ifca, personal"];
+      const result = await runInit(["--wizard", "--no-skills"], {
+        env: { HOME: home },
+        prompter: async (_q, def) => answers.shift() ?? def,
+        prereqCheck: () => true,
+      });
+      expect(result).toBe(0);
+      const cockpit = JSON.parse(await readFile(join(home, ".atmux", "cockpit.json"), "utf8"));
+      expect(cockpit.claudeAccountPool).toEqual([
+        { configDir: join(home, ".claude-ifca"), label: "ifca" },
+        { configDir: join(home, ".claude-personal"), label: "personal" },
+      ]);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("--wizard --no-skills skips the plugin step", async () => {
+    const home = await mkdtemp(join(tmpdir(), "atmux-wiz-home-"));
+    try {
+      const answers = ["skiless", ""];
+      const result = await runInit(["--wizard", "--no-skills"], {
+        env: { HOME: home },
+        prompter: async (_q, def) => answers.shift() ?? def,
+        prereqCheck: () => true,
+      });
+      expect(result).toBe(0);
+      // No plugin symlink attempted under the scratch HOME.
+      expect(env.stdoutBuf.join("")).not.toContain("skills plugin installed");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
   });
 });
 

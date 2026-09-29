@@ -768,6 +768,22 @@ atmux release <patch|minor|major>            # one-shot deploy: bump package.jso
                                              # exit 0=ok, 64=usage, 65=dirty/no-op refused, 70=step failure
 ```
 
+### Init wizard (`atmux init --wizard`)
+
+Guided first-run setup per [ADR-200](docs/adr/200-install-wizard-guided-first-run-setup.md) §D2.
+Prompts are piped-stdin safe, so scripted runs work too:
+`printf 'my-team\n\n' | atmux init --wizard --no-skills`.
+
+| Step | What it does |
+|------|--------------|
+| 1. Prereq probe | Refuses with install hints when `bun`, `tmux`, `git`, `jq`, or `sqlite3` is missing (Homebrew hints on macOS, apt on Linux). |
+| 2. Cockpit init | Scaffolds `~/.atmux/cockpit.json` when absent, or adds the project entry idempotently. |
+| 3. team.json | Writes `.atmux/team.json` with the drivers-only roster (`members: []` + canonical `drivers[]`, per ADR-287 §D5). Refuses over an existing file without `--force`. |
+| 4. Account pool | Optional comma-separated `~/.claude-<suffix>` list → `cockpit.json::claudeAccountPool[]` (ADR-199). Empty skips. |
+| 5. Skills plugin | Installs the bundled `/atmux:` plugin symlink (ADR-217 §D5); `--no-skills` skips it. |
+
+`--force` overwrites an existing `team.json`; `-w` is the short flag.
+
 ### Tearing down the fleet
 
 `atmux shutdown` ([ADR-242](docs/adr/242-atmux-shutdown-fleet-teardown-verb.md)) is the

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ✨ Added — `atmux init --wizard` guided first-run setup (ADR-200, e-b545b70c T1+T2+T3)
+
+**One interactive command scaffolds project + cockpit.** `atmux init --wizard` (short `-w`) walks five steps: prereq probe (`bun`/`tmux`/`git`/`jq`/`sqlite3` with platform install hints, refusing on missing), `~/.atmux/cockpit.json` scaffold-or-add, `.atmux/team.json` with the drivers-only roster (`members: []` + canonical `drivers[]` per ADR-287 §D5, refusing over an existing file without `--force`), optional `~/.claude-<suffix>` account-pool setup (ADR-199), and the bundled `/atmux:` skills-plugin install (`--no-skills` skips, ADR-217 §D5). Prompts are piped-stdin safe for scripted runs. Proven by `tests/unit/core/wizard-prereq.test.ts`, `tests/unit/core/wizard-scaffold.test.ts`, `tests/unit/verbs/init.test.ts` (wizard flow block), and the scripted `tests/e2e/init-wizard.test.ts` run of the real CLI against a scratch HOME.
+
 ### ✨ Added — `atmux budget collect|report`: multi-provider usage tracker (ADR-270, e-50 T3+T4)
 
 **One command shows every provider's quota.** `atmux budget collect` probes seven providers (anthropic, zai, deepseek, openrouter, minimax, kimi, cursor) in one batch into the cockpit-global `~/.atmux/state/budget.db` `usage_snapshot` table. A failing provider writes an `ok=0` row with the reason and never aborts the batch. `atmux budget report [--json] [--window 24h|7d] [--provider <p>] [--live]` renders the latest snapshot with window deltas and reset times. Only usage numbers are stored, never keys or tokens. The `/budget` skill reads it through its opt-in `/budget atmux` source (skills-root 3a248e9).

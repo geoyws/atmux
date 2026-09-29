@@ -3,14 +3,14 @@
 //
 // Scope (Phase 2 MVP — lifecycle lane #1):
 //
-//   atmux init [--name <team>] [--force|-f]
+//   atmux init [--name <team>] [--force|-f] [--wizard|-w] [--no-skills]
 //
 // Creates a `.atmux/` scaffold + `team.json` from
 // `templates/team.example.json`, mirroring bash `_atmux_init_template`
 // (lib/init.sh:87-107). Per-member inbox stubs, kanban.json, and
-// driver-inbox.md are seeded if absent. The non-interactive template
-// path is the operator-priority MVP target — `--wizard` is parsed for
-// arg-shape parity but throws `ConfigError` (Phase 2 follow-up).
+// driver-inbox.md are seeded if absent. `--wizard` runs the ADR-200
+// guided flow instead (prereq probe → cockpit scaffold → team.json →
+// account pool → skills plugin); see `runInitWizard` below.
 //
 // Bash semantics matched 1:1 (cite: lib/init.sh):
 //
@@ -54,11 +54,12 @@
 //            doesn't import equivalent symbols.
 //   :11      atmux::require jq — bash-only dep check; TS uses `bun` +
 //            zod, no jq dependency.
-//   :44-48   --wizard branch — interactive prompts (~250 LOC of bash);
-//            deferred to a Phase 2 follow-up. Throws ConfigError →
-//            exit 78 with a clear "not yet implemented" message so
-//            operators get an explicit signal rather than a silent
-//            template-fallback footgun.
+//   :44-48   --wizard branch — ADR-200 guided flow (`runInitWizard`):
+//            prereq probe (bun/tmux/git/jq/sqlite3 + platform hints) →
+//            cockpit scaffold → team.json (drivers-only roster per
+//            ADR-287 §D5) → account pool → skills plugin. Piped-stdin
+//            safe; `--force` overwrites team.json, `--no-skills` skips
+//            the plugin step.
 //   :70-77   atmux::registry_upsert — registry abstraction not yet
 //            ported in atmux-bun; the registry lives at
 //            ~/.claude/teams/registry.json (outside `.atmux/`) so the
@@ -71,8 +72,10 @@
 // against this verb in parallel; the TS verb name + arg shape (`init
 // [--name <team>] [--force|-f]`) is the contract.
 
+import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
-import { ensureDir, exists, readText, writeText } from "../abstractions/fs.ts";
+import { createInterface } from "node:readline/promises";
+import { ensureDir, exists, readText, readTextOrNull, writeText } from "../abstractions/fs.ts";
 import { readJson } from "../abstractions/json.ts";
 import { now } from "../abstractions/time.ts";
 import { KanbanCliAdapter } from "../adapters/kanban-cli.ts";
@@ -82,6 +85,12 @@ import { externalKanbanEnabled } from "../core/kanban-backend.ts";
 import { installSkillsPlugin, renderSkillsInstallResult } from "../core/skills-plugin-install.ts";
 import { resolveTemplatesDir } from "../core/templates-dir.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
+import { probePrereqs, scaffoldCockpit } from "../core/wizard-prereq.ts";
+import {
+  installSkillsPlugin as installSkillsPluginStep,
+  scaffoldTeamJson,
+  setupAccountPool,
+} from "../core/wizard-scaffold.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import { Team, type Team as TeamShape } from "../schema/team.ts";
 
@@ -94,7 +103,8 @@ export interface ParsedInitArgs {
   force: boolean;
   /** Explicit escape hatch for creating/using a team inside another team. */
   forceNest: boolean;
-  /** --wizard / -w — interactive setup (NOT yet implemented in port). */
+  /** --wizard / -w — ADR-200 guided setup (prereq probe → cockpit →
+   *  team.json → account pool → skills plugin). */
   wizard: boolean;
   /** t-3866c5b1 / ADR-094: non-interactive equivalent of the wizard's
    *  team-wide claudeAccount prompt. When set + != "default", every
@@ -296,14 +306,18 @@ export interface InitOptions {
   kanbanAdapter?: Pick<KanbanCliAdapter, "initialize">;
   /** Backup source reader override for the best-effort `--force` copy. */
   backupReadText?: typeof readText;
+  /** Wizard prompt override (test injection); defaults to readline on stdin. */
+  prompter?: (question: string, def: string) => Promise<string>;
+  /** Wizard prereq-presence override (test injection); defaults to `Bun.which`. */
+  prereqCheck?: (bin: string) => boolean;
 }
-
 /**
- * `atmux init` — scaffold a fresh `.atmux/` from the bundled template.
+ * `atmux init` — scaffold a fresh `.atmux/` from the bundled template,
+ * or run the ADR-200 guided flow with `--wizard`.
  *
  * Returns 0 on success. Throws `UsageError` (exit 64) on bad args,
  * `ConfigError` (exit 78) on already-initialized-without-force or on
- * the deferred --wizard branch.
+ * missing wizard prerequisites.
  */
 export async function init(argv: ReadonlyArray<string>, opts: InitOptions = {}): Promise<number> {
   const parsed = parseInitArgs(argv);
@@ -317,15 +331,7 @@ export async function init(argv: ReadonlyArray<string>, opts: InitOptions = {}):
   }
 
   if (parsed.wizard) {
-    // bash lib/init.sh:44-46 routes to `_atmux_init_wizard` here. Wizard
-    // is interactive prompts (~250 LOC); deferred to a follow-up commit
-    // so this MVP can land the operator-priority template path. Refusing
-    // explicitly is safer than silently falling through to the template
-    // path with a different observable shape than bash.
-    throw new ConfigError({
-      what: "init: --wizard not yet implemented in atmux-bun",
-      hint: "use 'atmux init --name <team>' for the template path; bash 'atmux init --wizard' still works",
-    });
+    return await runInitWizard(opts, parsed);
   }
 
   const env = opts.env ?? process.env;
@@ -542,4 +548,105 @@ export async function init(argv: ReadonlyArray<string>, opts: InitOptions = {}):
   );
 
   return 0;
+}
+
+/**
+ * ADR-200 guided `init --wizard` flow. Prompts (piped-stdin safe) then
+ * runs the pure wizard steps with real filesystem bindings: prereq
+ * probe → cockpit scaffold → team.json scaffold → account pool →
+ * skills plugin. Missing prereqs refuse with install hints; existing
+ * team.json refuses without --force (same gate as the template path).
+ *
+ * The persisted team.json goes through the `Team` schema, so the
+ * drivers-only roster default (ADR-287 §D5) applies: `members: []` plus
+ * the canonical `drivers[]` even though the wizard only asks for a name.
+ */
+async function runInitWizard(opts: InitOptions, parsed: ParsedInitArgs): Promise<number> {
+  const env = opts.env ?? process.env;
+  const stdout = opts.stdout ?? defaultStdoutWrite;
+  const cwd = opts.cwd ?? process.cwd();
+  const platform = process.platform === "darwin" ? "darwin" : "linux";
+  const checkPrereq = opts.prereqCheck ?? ((bin: string) => Bun.which(bin) !== null);
+  const probe = probePrereqs(checkPrereq, platform);
+  if (probe.missing.length > 0) {
+    const lines = probe.missing.map((m) => `  ${m.bin}: ${m.hint}`).join("\n");
+    throw new ConfigError({
+      what: `init --wizard: missing prerequisites:\n${lines}`,
+      hint: "install the above, then re-run 'atmux init --wizard'",
+    });
+  }
+  // Piped stdin (e2e/scripted runs) is slurped up front: sequential
+  // rl.question calls race stream-end on pipes in some runtimes.
+  // A TTY keeps true interactive prompting. Injected prompters (unit
+  // tests) skip stdin entirely so no fd is consumed.
+  const pipedAnswers =
+    opts.prompter === undefined && process.stdin.isTTY !== true
+      ? (await Bun.stdin.text()).split("\n").map((line) => line.trim())
+      : null;
+  const rl =
+    opts.prompter === undefined && pipedAnswers === null
+      ? createInterface({ input: process.stdin, output: process.stdout })
+      : undefined;
+  const ask = async (question: string, def: string): Promise<string> => {
+    if (opts.prompter !== undefined) return opts.prompter(question, def);
+    if (pipedAnswers !== null) {
+      const answer = pipedAnswers.shift() ?? "";
+      return answer === "" ? def : answer;
+    }
+    const answer = (await rl!.question(`${question} [${def}]: `)).trim();
+    return answer === "" ? def : answer;
+  };
+  try {
+    // Refuse before any side effect: a refused re-run must not touch
+    // cockpit.json either.
+    const dir = join(cwd, ".atmux");
+    const tj = join(dir, "team.json");
+    if ((await exists(tj)) && !parsed.force) {
+      throw new ConfigError({
+        what: `already initialized at ${tj} — pass --force to overwrite`,
+      });
+    }
+    const teamName = await ask("Team name", parsed.name ?? basename(cwd));
+    const home = env.HOME ?? homedir();
+    const cockpitFs = {
+      cockpitPath: join(home, ".atmux", "cockpit.json"),
+      mkdir: (path: string) => ensureDir(path),
+      writeFile: (path: string, content: string) => writeText(path, content),
+      readFile: (path: string) => readTextOrNull(path),
+    };
+    const cockpitResult = await scaffoldCockpit(cockpitFs, cwd);
+    stdout(
+      `cockpit: ${cockpitResult.changed ? "updated" : "unchanged"} ${cockpitResult.cockpitPath}`,
+    );
+    await ensureDir(dir);
+    const teamDeps = {
+      path: tj,
+      readText: (path: string) => readTextOrNull(path),
+      writeText: (path: string, content: string) => writeText(path, content),
+    };
+    const teamResult = await scaffoldTeamJson(teamDeps, { name: teamName });
+    stdout(`team.json: ${teamResult.kind} ${tj}`);
+    const suffixes = await ask("Claude account suffixes (comma-separated, empty skips pool)", "");
+    const accounts = suffixes
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)
+      .map((suffix) => ({ configDir: join(home, `.claude-${suffix}`), label: suffix }));
+    if (accounts.length > 0) {
+      const poolDeps = { ...teamDeps, path: cockpitFs.cockpitPath };
+      const poolResult = await setupAccountPool(poolDeps, accounts);
+      stdout(`account pool: ${poolResult.kind} (${accounts.length} entries)`);
+    }
+    if (!parsed.noSkills) {
+      const skillsResult = await installSkillsPluginStep({
+        runner: (stepOpts) =>
+          installSkillsPlugin({ env, force: parsed.force, noSkills: parsed.noSkills, ...stepOpts }),
+      });
+      stdout(renderSkillsInstallResult(skillsResult));
+    }
+    stdout(`wizard complete: team '${teamName}' ready — run 'atmux start' next`);
+    return 0;
+  } finally {
+    if (rl !== undefined) rl.close();
+  }
 }
