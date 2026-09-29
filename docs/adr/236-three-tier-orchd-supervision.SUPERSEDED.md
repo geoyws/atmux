@@ -2,6 +2,10 @@
 
 **Status**: Superseded by [ADR-240](240-drop-superorchd-orchd-self-supervises.md) on 2026-05-24 — operator-direct *"simpler is better"*; D2 (superorchd binary) and D3 (Discord escalation) dropped, D1 (orchd internal retry) and D5 (remove bash supervisor) preserved by ADR-240. Retained below for historical trace + reversal recovery path.
 
+> 2026-09-29 chain note (e-30 T1): the superseding ADR-240 is itself retired —
+> [ADR-276](276-orchd-retirement-and-atmux-scope.md) removed orchd entirely on
+> 2026-08-27. The chain 236 → 240 → retired is history end to end.
+
 Original status when written: Proposed (operator-fired 2026-05-24 in conversation after sopx + atmux orchd windows were found absent; ship under driver once D1+D2 land in code).
 
 **Date**: 2026-05-24

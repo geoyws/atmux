@@ -54,3 +54,13 @@ If solo-operator-supervision-cadence proves insufficient in practice — e.g. or
 A lighter reversal is restoring just the per-team bash supervisor (`orchd-window.ts:206-250` content), which catches process-death the same way ADR-236 §D2 would have but without the cross-team observability or typed Discord escalation. Cost: the bash-supervisor PIPESTATUS-class bug surface returns.
 
 ADR-233's cron-retirement stays as-is regardless — this ADR builds on it but doesn't depend on its details.
+
+## Amendment 2026-09-29 — retired with orchd (e-30 T1)
+
+This ADR's contract is RETIRED, not merely superseded: [ADR-276](276-orchd-retirement-and-atmux-scope.md)
+(operator-direct 2026-08-27, executed the same day) removed orchd entirely —
+the daemon, the `atmux orchd` verb, the `__orchd__` window, the tickers and the
+epic-machinery consumers no longer exist. There is no self-supervising orchd
+left for this ADR's D1 to describe; the "Accepted" status above is history.
+Read every present-tense orchd sentence in this file as history. The reversal
+paths above are moot (nothing to re-supervise). History above stays as written.

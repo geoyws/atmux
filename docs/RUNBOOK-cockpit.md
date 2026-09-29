@@ -57,6 +57,15 @@ The `_superbot` scheduler window and the `_bot` team seat were removed on 2026-0
 
 **Why this matters:** before ADR-162, atmux cockpit windows landed in the operator's own tmux server. A stray `tmux kill-server` from the operator wiped both their personal state AND atmux's cockpit. The socket-isolation closes that foot-gun.
 
+### Tearing down the cockpit: `atmux shutdown` (ADR-242, shipped)
+
+`atmux shutdown` stops every enabled team, then kills this cockpit session
+(`superdriver` + `medic` + the windows above) and the atmux-pinned tmux
+server. Flags: `--keep-cockpit` drains teams but leaves the cockpit alive
+for diagnostics; `--force` skips per-team stop; `--dry-run` enumerates
+without acting. No confirmation prompt. Reversal is `atmux start`.
+`_blank` operator lanes are upcoming (e-25, blocked) — not yet a surface.
+
 ## §2 — Migration from legacy default-socket cockpit
 
 Existing operators upgrading from a pre-ADR-162 install have their cockpit on the default socket today. Run the one-shot migration verb:
