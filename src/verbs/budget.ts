@@ -11,12 +11,12 @@
 // `raw_json` is stored NULL (no secret-stripping risk at all).
 
 import type { Database } from "bun:sqlite";
+import { probeAllProviders, type UsageRow } from "../abstractions/usage-adapters.ts";
+import { withBudgetDb } from "../core/budget-db.ts";
 import { getAtmuxDir, tryLoadTeam } from "../core/common.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
-import { computeMemberCost, loadPricing } from "./cost.ts";
-import { withBudgetDb } from "../core/budget-db.ts";
-import { probeAllProviders, type UsageRow } from "../abstractions/usage-adapters.ts";
 import { UsageError } from "../errors.ts";
+import { computeMemberCost, loadPricing } from "./cost.ts";
 
 const USAGE =
   "atmux budget collect [--json]\n" +
@@ -71,12 +71,14 @@ export function parseBudgetArgs(argv: ReadonlyArray<string>): BudgetArgs {
       i += 1;
     } else if (a === "--live") {
       flag("--live");
-      if (sub !== "report") throw new UsageError({ what: "budget: --live is report-only", hint: USAGE });
+      if (sub !== "report")
+        throw new UsageError({ what: "budget: --live is report-only", hint: USAGE });
       out.live = true;
       i += 1;
     } else if (a === "--window") {
       flag("--window");
-      if (sub !== "report") throw new UsageError({ what: "budget: --window is report-only", hint: USAGE });
+      if (sub !== "report")
+        throw new UsageError({ what: "budget: --window is report-only", hint: USAGE });
       const v = rest[i + 1];
       if (v !== "24h" && v !== "7d") {
         throw new UsageError({ what: "budget: --window takes 24h|7d", hint: USAGE });
@@ -85,7 +87,8 @@ export function parseBudgetArgs(argv: ReadonlyArray<string>): BudgetArgs {
       i += 2;
     } else if (a === "--provider") {
       flag("--provider");
-      if (sub !== "report") throw new UsageError({ what: "budget: --provider is report-only", hint: USAGE });
+      if (sub !== "report")
+        throw new UsageError({ what: "budget: --provider is report-only", hint: USAGE });
       const v = rest[i + 1];
       if (v === undefined || v.length === 0) {
         throw new UsageError({ what: "budget: --provider requires a value", hint: USAGE });
@@ -146,7 +149,10 @@ export interface ReportAccount {
   provider: string;
   account: string;
   ok: number;
-  metrics: Record<string, { value: number | null; valueText: string | null; unit: string | null; reset?: string }>;
+  metrics: Record<
+    string,
+    { value: number | null; valueText: string | null; unit: string | null; reset?: string }
+  >;
   /** Measured Claude actual-spend (USD) — anthropic accounts only, null when unresolvable. */
   actualUsd: number | null;
   /** util_5h/util_weekly delta vs window start (latest − earliest), null when no earlier batch. */
@@ -207,7 +213,12 @@ export async function reportBudget(args: BudgetArgs, opts: BudgetOpts = {}): Pro
     }
     acc.metrics[r.metric] = metricView(r);
     const base = snapshot.baseline.get(`${key}\0${r.metric}`);
-    if (base !== undefined && r.value !== null && base !== null && (r.metric === "util_5h" || r.metric === "util_weekly")) {
+    if (
+      base !== undefined &&
+      r.value !== null &&
+      base !== null &&
+      (r.metric === "util_5h" || r.metric === "util_weekly")
+    ) {
       const delta = r.value - base;
       if (r.metric === "util_5h") acc.delta5h = delta;
       else acc.deltaWeekly = delta;
@@ -217,7 +228,11 @@ export async function reportBudget(args: BudgetArgs, opts: BudgetOpts = {}): Pro
 }
 
 function metricView(r: SnapshotRow): ReportAccount["metrics"][string] {
-  const view: ReportAccount["metrics"][string] = { value: r.value, valueText: r.value_text, unit: r.unit };
+  const view: ReportAccount["metrics"][string] = {
+    value: r.value,
+    valueText: r.value_text,
+    unit: r.unit,
+  };
   if (r.metric === "reset_5h" || r.metric === "reset_weekly") {
     view.reset = renderReset(r.value, r.value_text, r.unit);
   }
@@ -225,7 +240,11 @@ function metricView(r: SnapshotRow): ReportAccount["metrics"][string] {
 }
 
 /** Absolute local + relative reset rendering. Unknown shapes pass through as text. */
-export function renderReset(value: number | null, valueText: string | null, unit: string | null): string {
+export function renderReset(
+  value: number | null,
+  valueText: string | null,
+  unit: string | null,
+): string {
   let ms: number | null = null;
   if (value !== null && unit === "epoch_ms") ms = value;
   else if (value !== null && unit === "epoch_s") ms = value * 1000;
@@ -243,7 +262,8 @@ export function renderReset(value: number | null, valueText: string | null, unit
 function relTime(diffMs: number): string {
   const past = diffMs < 0;
   const mins = Math.round(Math.abs(diffMs) / 60000);
-  const text = mins < 60 ? `${mins}m` : `${Math.floor(mins / 60)}h${mins % 60 === 0 ? "" : `${mins % 60}m`}`;
+  const text =
+    mins < 60 ? `${mins}m` : `${Math.floor(mins / 60)}h${mins % 60 === 0 ? "" : `${mins % 60}m`}`;
   return past ? `${text} ago` : `in ${text}`;
 }
 
@@ -255,32 +275,33 @@ interface Batches {
 }
 
 function readBatches(db: Database, provider: string | undefined, windowMs: number): Batches {
-  const latestTs = db
-    .query("SELECT MAX(ts) AS ts FROM usage_snapshot")
-    .get() as { ts: string | null };
+  const latestTs = db.query("SELECT MAX(ts) AS ts FROM usage_snapshot").get() as {
+    ts: string | null;
+  };
   if (latestTs.ts === null) return { latest: [], latestTs: "", baseline: new Map() };
   const cutoff = new Date(Date.parse(latestTs.ts) - windowMs).toISOString();
-  const latestQuery = db.query(`SELECT ts, provider, account, metric, value, value_text, unit, ok, error
+  const latestQuery =
+    db.query(`SELECT ts, provider, account, metric, value, value_text, unit, ok, error
             FROM usage_snapshot WHERE ts = ? ${provider !== undefined ? "AND provider = ?" : ""}`);
-  const latest = (provider !== undefined
-    ? latestQuery.all(latestTs.ts, provider)
-    : latestQuery.all(latestTs.ts)) as SnapshotRow[];
-  const baseTs = db
-    .query("SELECT MIN(ts) AS ts FROM usage_snapshot WHERE ts >= ?")
-    .get(cutoff) as { ts: string | null };
+  const latest = (
+    provider !== undefined ? latestQuery.all(latestTs.ts, provider) : latestQuery.all(latestTs.ts)
+  ) as SnapshotRow[];
+  const baseTs = db.query("SELECT MIN(ts) AS ts FROM usage_snapshot WHERE ts >= ?").get(cutoff) as {
+    ts: string | null;
+  };
   const baseline = new Map<string, number | null>();
   if (baseTs.ts !== null && baseTs.ts !== latestTs.ts) {
     const baseQuery = db.query(
       `SELECT provider, account, metric, value FROM usage_snapshot WHERE ts = ? ${provider !== undefined ? "AND provider = ?" : ""}`,
     );
-    const base = (provider !== undefined
-      ? baseQuery.all(baseTs.ts, provider)
-      : baseQuery.all(baseTs.ts)) as Array<{
-        provider: string;
-        account: string;
-        metric: string;
-        value: number | null;
-      }>;
+    const base = (
+      provider !== undefined ? baseQuery.all(baseTs.ts, provider) : baseQuery.all(baseTs.ts)
+    ) as Array<{
+      provider: string;
+      account: string;
+      metric: string;
+      value: number | null;
+    }>;
     for (const b of base) baseline.set(`${b.provider}\0${b.account}\0${b.metric}`, b.value);
   }
   return { latest, latestTs: latestTs.ts, baseline };
@@ -360,7 +381,9 @@ export async function budget(argv: ReadonlyArray<string>, opts: BudgetOpts = {})
       .filter((s) => s !== null)
       .join("; ");
     const actual = a.actualUsd !== null ? ` actual_spend=$${a.actualUsd.toFixed(2)}` : "";
-    lines.push(`- ${a.provider}:${a.account} [${mark}] ${utils} ${money}${actual}${resets.length > 0 ? ` | ${resets}` : ""}`);
+    lines.push(
+      `- ${a.provider}:${a.account} [${mark}] ${utils} ${money}${actual}${resets.length > 0 ? ` | ${resets}` : ""}`,
+    );
   }
   stdout(`${lines.join("\n")}\n`);
   return 0;

@@ -6,8 +6,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { withBudgetDb } from "../../../src/core/budget-db.ts";
 import type { UsageRow } from "../../../src/abstractions/usage-adapters.ts";
+import { withBudgetDb } from "../../../src/core/budget-db.ts";
 import {
   budget,
   collectBudget,
@@ -26,8 +26,15 @@ function tempHome(): string {
 
 describe("parseBudgetArgs", () => {
   test("collect + report defaults", () => {
-    expect(parseBudgetArgs(["collect"])).toMatchObject({ subcommand: "collect", json: false, window: "24h", live: false });
-    expect(parseBudgetArgs(["report", "--window", "7d", "--provider", "zai", "--live", "--json"])).toMatchObject({
+    expect(parseBudgetArgs(["collect"])).toMatchObject({
+      subcommand: "collect",
+      json: false,
+      window: "24h",
+      live: false,
+    });
+    expect(
+      parseBudgetArgs(["report", "--window", "7d", "--provider", "zai", "--live", "--json"]),
+    ).toMatchObject({
       subcommand: "report",
       window: "7d",
       provider: "zai",
@@ -56,13 +63,24 @@ describe("collectBudget", () => {
     const home = tempHome();
     const probe = async (): Promise<UsageRow[]> => [
       row("zai", "zai", "util_5h", 30),
-      { provider: "kimi", account: "kimi", metric: "status", value: null, valueText: null, unit: "enum", ok: 0, error: "boom" },
+      {
+        provider: "kimi",
+        account: "kimi",
+        metric: "status",
+        value: null,
+        valueText: null,
+        unit: "enum",
+        ok: 0,
+        error: "boom",
+      },
     ];
     const summary = await collectBudget({ home, probe, now: () => "2026-09-26T00:00:00.000Z" });
     expect(summary).toMatchObject({ ts: "2026-09-26T00:00:00.000Z", rows: 2, ok: 1, failed: 1 });
     const stored = await withBudgetDb(
       (db) =>
-        db.query("SELECT provider, metric, value, ok, error, raw_json FROM usage_snapshot").all() as Array<{
+        db
+          .query("SELECT provider, metric, value, ok, error, raw_json FROM usage_snapshot")
+          .all() as Array<{
           provider: string;
           metric: string;
           value: number | null;

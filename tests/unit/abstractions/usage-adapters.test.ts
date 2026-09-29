@@ -8,7 +8,9 @@
 // network: every probe test injects a stub `request` or empty env.
 
 import { describe, expect, test } from "bun:test";
+import type { HttpRequestOpts, HttpResponse } from "../../../src/abstractions/http.ts";
 import {
+  type AdapterCtx,
   normalizeCursor,
   normalizeDeepSeek,
   normalizeKimi,
@@ -22,12 +24,13 @@ import {
   probeMinimax,
   probeOpenRouter,
   probeZai,
-  type AdapterCtx,
   type UsageRow,
 } from "../../../src/abstractions/usage-adapters.ts";
-import type { HttpRequestOpts, HttpResponse } from "../../../src/abstractions/http.ts";
 
-function stubRequest(body: unknown, status = 200): (opts: HttpRequestOpts) => Promise<HttpResponse> {
+function stubRequest(
+  body: unknown,
+  status = 200,
+): (opts: HttpRequestOpts) => Promise<HttpResponse> {
   return async () =>
     ({
       url: "https://stub",
@@ -85,7 +88,10 @@ describe("normalizeZai", () => {
 describe("normalizeDeepSeek", () => {
   test("balance + status rows", () => {
     const m = rowsFor(
-      normalizeDeepSeek({ balance_infos: [{ total_balance: 7.25, is_available: true }] }, "deepseek"),
+      normalizeDeepSeek(
+        { balance_infos: [{ total_balance: 7.25, is_available: true }] },
+        "deepseek",
+      ),
       "deepseek",
       "deepseek",
     );
@@ -175,7 +181,10 @@ describe("normalizeCursor", () => {
   test("request/token/balance rows", () => {
     const m = rowsFor(
       normalizeCursor(
-        { "gpt-4": { numRequests: 400, maxRequestUsage: 500, numTokens: 123456 }, customerBalance: 3.5 },
+        {
+          "gpt-4": { numRequests: 400, maxRequestUsage: 500, numTokens: 123456 },
+          customerBalance: 3.5,
+        },
         "cursor",
       ),
       "cursor",
