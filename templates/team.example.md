@@ -2,10 +2,11 @@
 
 Companion notes for `team.example.json`, the template `atmux init` copies.
 
-## Roster: drivers-only by default (ADR-288 §D5)
+## Roster: drivers-only by default (ADR-287 §D5)
 
-The template ships `drivers[]` (three driver windows per ADR-239's
-restored floor) and `members: []`. A fresh team spawns the superdriver
+The template ships `drivers[]` (`driver`, `driver-2`, `driver-3` — a
+three-driver default; the schema floor is one per ADR-239 as amended
+2026-09-28) and `members: []`. A fresh team spawns the superdriver
 seat plus drivers, and nothing else — drivers work kb rows directly
 (ADR-275), so no in-cage lead → planner → member loop runs.
 
@@ -17,7 +18,7 @@ renders a yellow `deprecated-member-windows` row for any team that
 declares one or more members. Briefs for every declared role remain under
 `templates/briefs/`. Lead-dependent verbs (`atmux tell-lead`,
 `atmux rotate-lead`, and siblings) fail closed with their existing errors
-on a drivers-only team — that is expected, not a config bug (ADR-288 §D6):
+on a drivers-only team — that is expected, not a config bug (ADR-287 §D6):
 file the ask on the kb board instead.
 
 ## Canonical driver pair (ADR-288)

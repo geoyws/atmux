@@ -12,6 +12,8 @@ The sibling ADR-287 branch carries the concurrent cockpit-nesting work and the d
 
 ## Decision
 
+> **Floor wording superseded 2026-09-28** (a-cce1e2fa; see §Amendment 2026-09-28 below): floor is ONE, default three. The pair contract below stands.
+
 We restore the parent-team driver floor to exactly three drivers:
 
 - `driver`

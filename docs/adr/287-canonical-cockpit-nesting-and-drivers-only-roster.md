@@ -140,3 +140,7 @@ Status as of authoring, 2026-09-02. Code lanes implement §D3, §D4, §D5-templa
 | ADR-089 ledger rows 3, 4, 7, 8, 9 corrected | docs-only, this batch | [ADR-089](089-hierarchical-cockpit.md) §Amendment 2026-09-02 |
 | ADR-239 §D6 amended | docs-only, this batch | [ADR-239](239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md) §Amendment 2026-09-02 |
 | Follow-ups (a)–(f) | deferred | §Out of scope / follow-ups |
+
+## Amendment 2026-09-29 — three-vs-five drift resolved: floor 1, default 3 (a-cce1e2fa + a-36c48abd + a-396da821, t-a46a2a18 docs sweep)
+
+The §Amends "recorded here, not resolved" drift is now resolved: schema floor ONE (`MIN_PARENT_TEAM_DRIVERS = 1`), parent-team default three, worker-left + attention-right pair per ADR-288 (accepted 2026-09-28). The §Context "ships five drivers" line describes the 2026-09-02 template and stays as history. Nothing else in this ADR changes.

@@ -153,6 +153,8 @@ Resolve OQ1-OQ5 before flipping any sibling ADR to "accepted" that depends on D7
 
 ## Amendment-2026-05-26 — five-driver floor + strict 5-member roster
 
+> **Retired 2026-09-28** (George, a-cce1e2fa; confirmed 2026-09-29 via a-36c48abd + a-396da821, t-a46a2a18 docs sweep): the five-driver floor in §A1 below is historical, NOT live policy. Current rule: schema floor ONE (`MIN_PARENT_TEAM_DRIVERS = 1`), parent-team default three, worker-left + attention-right pair per ADR-288. See §Amendment 2026-09-28 — one-driver floor.
+
 **Driver-ref**: operator-direct 2026-05-26 — verbatim two messages: (1) *"i want each atmux parent team to have 5 drivers... driver, driver-2, driver-3.. etc and you do not give them any pre-prompts. they should also spawn into their own git worktrees... (e.g. atmux-geoyws-driver-2) but driver (the original) always remains in atmux-geoyws (the working trunk).... then i want u to spawn these drivers for every running atmux parent team"*; (2) *"i will shutdown and rebuild every team later so it'll reset properly.... also i want u to go thru each team.json and remove ombudsman and any other member apart from lead, planner, docs, reviewer, gitter"*. Operator-decision-scope: ALL parent teams (atmux + sopx-root + aix-root + auditx-root + rentx-root + rentx + ifca-docs + mx-root + unum/root); strict 5-role roster (specialist seats removed across all teams — operator-confirmed via AskUserQuestion, 2026-05-26).
 
 ### A1 — Driver floor bumped from 3 → 5
@@ -260,6 +262,8 @@ The driver count is unchanged by ADR-287. The drift inside this ADR — the file
 
 ### §Amendment 2026-09-03 — ADR-288 restores the three-driver floor and adds the canonical pair source
 
+> **Superseded 2026-09-28** by §Amendment 2026-09-28 below (floor 1): the "exactly three drivers / 1-2 fail validation" wording is historical. The pair-source half of ADR-288 stands.
+
 [ADR-288](288-driver-window-worker-attention-pane-pair.md) supersedes ADR-239 Amendment 2026-05-26 A1's five-driver floor. The live floor returns to exactly three drivers (`driver`, `driver-2`, `driver-3`); explicit 1-2 driver rosters fail schema validation, 3-10 pass, and >10 fail. The rest of ADR-239 remains intact: no send-keys, existing names/worktrees, strict member-roster policy, and the historical incident/provenance text stay as written.
 
 The 2026-09-02 drivers-only-template note remains historical context for the concurrent branch, but the driver-count wording it carried forward is now superseded by ADR-288.
@@ -272,6 +276,10 @@ George resolves a-cce1e2fa with floor 1: `MIN_PARENT_TEAM_DRIVERS = 1`
 wording above (and ADR-288's floor-3 decision) while keeping ADR-239's
 no-sendkeys invariant and the one-driver small-work-teams rule
 (2026-08-28) intact. History above stays as written.
+
+### §Amendment 2026-09-29 — docs sweep: floor 1, default 3, pair per ADR-288 (a-36c48abd + a-396da821, t-a46a2a18)
+
+George confirms the 2026-09-28 floor-1 ruling and retargets t-a46a2a18 to docs-only: the row's "minimum of three drivers" clause is dropped, `MIN_PARENT_TEAM_DRIVERS = 1` stands, a default roster of three drivers is fine, and the worker-left + attention-right pair proceeds per ADR-288 (accepted 2026-09-28). No schema or code change. Live surfaces that stated a five-driver or three-driver minimum as current rule (README tagline, `docs/ARCHITECTURE.md` window list, `templates/team.example.md` roster note) now read floor 1 / default 3; the five-driver §A1 text above and the 2026-09-03 floor-3 note below stay as history under their retired banners.
 
 ### 2026-09-28 — Driver window slots start at 2 when the ADR-296 superdriver seat is enabled
 

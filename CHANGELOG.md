@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🧹 Changed — driver-count wording sweep: floor 1, default 3, pair per ADR-288 (t-a46a2a18 docs-only)
+
+**Stale five-/three-driver minimums now read floor 1 / default 3.** Per George (a-36c48abd + a-396da821, 2026-09-29) this row is docs-only: `MIN_PARENT_TEAM_DRIVERS = 1` stands, a default roster of three is fine, and the worker-left + attention-right pair is already ADR-288. `README.md` tagline, `docs/ARCHITECTURE.md` window list, and `templates/team.example.md` roster note state the current rule; ADR-239 Amendment A1 (five-driver floor), its 2026-09-03 floor-3 note, ADR-288's floor-3 decision wording, and ADR-287's three-vs-five drift note carry dated retired/superseded banners plus §Amendment 2026-09-29 records, with history otherwise untouched. No schema or code change.
+
 ### ✨ Added — `atmux task list --epic <eid>` / `--story <sid>` filters (ADR-174, t-2ce0adf3)
 
 **Slice the kanban by parent without `--json | jq`.** `atmux task list` accepts two new optional filters, combinable with `--status` / `--assignee` / `--lane` via AND: `--epic <eid>` matches tasks whose `.epic` equals the id, `--story <sid>` matches `.story`. Values are shape-validated like the `task add` / `task update` flags (missing or malformed value → exit 64 `UsageError`); a well-formed-but-unknown id returns an empty list with the usual `(no tasks)` output and exit 0.

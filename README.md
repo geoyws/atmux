@@ -2,7 +2,7 @@
 
 **atmux** — *agent teams multiplexer.* One tmux session per project team, one tmux window per agent.
 
-> 🎮 **Drivers** (you — `driver`, `driver-2`, … one worktree each; five in the shipped template, ADR-239) work the kanban directly — coordinated through tmux, not an API. The 🧭 **Team Lead** and 🐝 **Team Members** loop is a deprecated opt-in, spawned only for teams that declare `members[]` ([ADR-287 §D5](docs/adr/287-canonical-cockpit-nesting-and-drivers-only-roster.md)).
+> 🎮 **Drivers** (you — `driver`, `driver-2`, `driver-3` in the shipped template, one worktree each; schema floor one, per [ADR-239](docs/adr/239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md) as amended 2026-09-28) work the kanban directly — coordinated through tmux, not an API. The 🧭 **Team Lead** and 🐝 **Team Members** loop is a deprecated opt-in, spawned only for teams that declare `members[]` ([ADR-287 §D5](docs/adr/287-canonical-cockpit-nesting-and-drivers-only-roster.md)). Every driver window carries the worker-left + attention-right pane pair per [ADR-288](docs/adr/288-driver-window-worker-attention-pane-pair.md).
 
 > **State storage.** Per [ADR-126](docs/adr/126-sqlite-state-store.md) +
 > ADR-076 (inbox JSON elimination — file pending; see commits `27d80ee` →

@@ -250,7 +250,7 @@
 | 284 | One sizing policy for every cockpit window — the `unum` `window-size smallest` override is retired | 2026-08-30 | accepted (operator-direct) |
 | 286 | Eternal-improvement retired — the loop, the `improve` verb and its three Discord templates | 2026-09-01 | accepted (operator-direct) |
 | 287 | Canonical cockpit nesting — groups are branches, teams are leaf cages hosting drivers; the default roster is drivers-only | 2026-09-02 | accepted (operator-direct) |
-| 288 | Driver window worker/attention pane pair — three-driver floor, null-default attention launch, and later-slice contract | 2026-09-03 | accepted (operator-direct — George, 2026-09-28, a-6b92a0d4). Was: proposed |
+| 288 | Driver window worker/attention pane pair — floor-1 default-3 pair contract (floor-3 wording superseded 2026-09-28), null-default attention launch, and later-slice contract | 2026-09-03 | accepted (operator-direct — George, 2026-09-28, a-6b92a0d4). Was: proposed |
 | 292 | `atmux msg` — mailbox record + wake over `inbox_messages` (supersedes ADR-154 §D2 per E1-T1 option b) | 2026-09-23 | accepted (reviewer signoff 2026-09-29) |
 | 293 | Driver send-keys guard kept as product behaviour after the 2026-09-08 pane-to-pane revocation | 2026-09-23 | accepted (operator-direct — George, 2026-09-28, a-62b50705). Was: proposed |
 | 294 | `atmux doctor` detects tmux servers whose global environment came from an agent shell | 2026-09-25 | proposed |
