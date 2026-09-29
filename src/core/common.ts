@@ -108,6 +108,13 @@ export function kanbanJsonPath(atmuxDir: string): string {
   return join(atmuxDir, "kanban.json");
 }
 
+/** `<atmuxDir>/state.db` — canonical SQLite store (ADR-060). Single
+ *  resolver shared by kanban / inbox / epic / groom-archive (t-17a11371);
+ *  all four previously held a byte-identical private copy. */
+export function stateDbPath(atmuxDir: string): string {
+  return join(atmuxDir, "state.db");
+}
+
 export function inboxDir(atmuxDir: string): string {
   return join(atmuxDir, "inboxes");
 }

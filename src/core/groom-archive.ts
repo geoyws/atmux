@@ -25,12 +25,9 @@ import { exists } from "../abstractions/fs.ts";
 import { closeDatabase, openDatabase, transact } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { now } from "../abstractions/time.ts";
+import { stateDbPath } from "./common.ts";
 
 // ---------- Paths ----------
-
-export function stateDbPath(atmuxDir: string): string {
-  return join(atmuxDir, "state.db");
-}
 
 export function archiveDbPath(atmuxDir: string): string {
   return join(atmuxDir, "archive.db");

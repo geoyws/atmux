@@ -16,7 +16,8 @@ import { join } from "node:path";
 import { exists } from "../../../src/abstractions/fs.ts";
 import { closeDatabase, openDatabase } from "../../../src/abstractions/sqlite.ts";
 import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
-import { archiveDbPath, groomArchive, stateDbPath } from "../../../src/core/groom-archive.ts";
+import { stateDbPath } from "../../../src/core/common.ts";
+import { archiveDbPath, groomArchive } from "../../../src/core/groom-archive.ts";
 import { KanbanRepo } from "../../../src/core/repositories/kanban-repo.ts";
 
 let atmuxDir: string;

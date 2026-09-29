@@ -8,7 +8,6 @@
 // layer stays thin (parser + display).
 
 import { randomBytes } from "node:crypto";
-import { join } from "node:path";
 import { emit } from "../abstractions/events.ts";
 import { exists } from "../abstractions/fs.ts";
 import {
@@ -21,7 +20,7 @@ import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { KanbanCliAdapter } from "../adapters/kanban-cli.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { KanbanEpic, KanbanStory, KanbanTask } from "../schema/kanban.ts";
-import { tryLoadTeam } from "./common.ts";
+import { stateDbPath, tryLoadTeam } from "./common.ts";
 import { nextId } from "./id-sequence.ts";
 import { nowEpoch } from "./kanban.ts";
 import { externalKanbanEnabled } from "./kanban-backend.ts";
@@ -65,15 +64,14 @@ export function epicLegalTransition(from: string, to: string): boolean {
   return epicNextState(from) === to;
 }
 
-function _stateDbPath(atmuxDir: string): string {
-  return join(atmuxDir, "state.db");
-}
+// DB access uses the canonical `core/common.ts::stateDbPath` resolver
+// (t-17a11371) — no local copy.
 
 async function _withRepo<T>(
   atmuxDir: string,
   fn: (repo: KanbanRepo) => T | Promise<T>,
 ): Promise<T> {
-  const db = openDatabase(_stateDbPath(atmuxDir), migrations);
+  const db = openDatabase(stateDbPath(atmuxDir), migrations);
   try {
     return await fn(new KanbanRepo(db));
   } finally {
@@ -88,7 +86,7 @@ async function _withDbAndRepo<T>(
   atmuxDir: string,
   fn: (db: Database, repo: KanbanRepo) => T | Promise<T>,
 ): Promise<T> {
-  const db = openDatabase(_stateDbPath(atmuxDir), migrations);
+  const db = openDatabase(stateDbPath(atmuxDir), migrations);
   try {
     return await fn(db, new KanbanRepo(db));
   } finally {
@@ -147,9 +145,9 @@ export async function addEpic(atmuxDir: string, opts: AddEpicOpts): Promise<stri
     if (opts.isReady === true) await setEpicReady(atmuxDir, id, true);
     return id;
   }
-  if (!(await exists(_stateDbPath(atmuxDir)))) {
+  if (!(await exists(stateDbPath(atmuxDir)))) {
     throw new ConfigError({
-      what: `epic add: ${_stateDbPath(atmuxDir)} not initialized; run \`atmux init\` first`,
+      what: `epic add: ${stateDbPath(atmuxDir)} not initialized; run \`atmux init\` first`,
     });
   }
   const proposedDeps = opts.dependsOn ?? [];
@@ -303,7 +301,7 @@ export async function setEpicReady(
       await externalKanban.patchMetadata(atmuxDir, id, "atmux", { isReady: ready });
     return { from, to: ready, noop: from === ready };
   }
-  if (!(await exists(_stateDbPath(atmuxDir)))) {
+  if (!(await exists(stateDbPath(atmuxDir)))) {
     throw new ConfigError({ what: `epic ready: no such epic: ${id}` });
   }
   return await _withDbAndRepo(atmuxDir, (db, repo) => {
@@ -378,7 +376,7 @@ export async function setEpicDependsOn(
     await externalKanban.updateTask(atmuxDir, id, "atmux", { dependencies: deps });
     return;
   }
-  if (!(await exists(_stateDbPath(atmuxDir)))) {
+  if (!(await exists(stateDbPath(atmuxDir)))) {
     throw new ConfigError({ what: `epic set-depends-on: no such epic: ${id}` });
   }
   await _withDbAndRepo(atmuxDir, (db, repo) => {
@@ -412,7 +410,7 @@ export async function epicTransitiveDeps(atmuxDir: string, id: string): Promise<
     seen.delete(id);
     return [...seen];
   }
-  if (!(await exists(_stateDbPath(atmuxDir)))) return [];
+  if (!(await exists(stateDbPath(atmuxDir)))) return [];
   return await _withRepo(atmuxDir, (repo) => {
     const chain = _walkTransitiveDeps(repo, id);
     chain.delete(id); // AC: excluding `id` itself.
@@ -454,7 +452,7 @@ export async function epicIsEligible(atmuxDir: string, id: string): Promise<Epic
     }
     return { eligible: blockers.length === 0, blockers };
   }
-  if (!(await exists(_stateDbPath(atmuxDir)))) {
+  if (!(await exists(stateDbPath(atmuxDir)))) {
     return { eligible: false, blockers: [`epic ${id}: state.db not initialized`] };
   }
   return await _withRepo(atmuxDir, (repo) => {
@@ -490,7 +488,7 @@ export async function listEpics(
     const epics = (await externalKanban.loadKanban(atmuxDir)).epics;
     return filter.status ? epics.filter((epic) => epic.status === filter.status) : epics;
   }
-  if (!(await exists(_stateDbPath(atmuxDir)))) return [];
+  if (!(await exists(stateDbPath(atmuxDir)))) return [];
   return await _withRepo(atmuxDir, (repo) => {
     let epics = repo.listEpics();
     if (filter.status !== undefined) {
@@ -519,7 +517,7 @@ export async function showEpic(atmuxDir: string, id: string): Promise<EpicWithCh
     const tasks = board.tasks.filter((task) => task.epic === id && !task.story);
     return { ...epic, stories: storyRows.map((story) => story.id), storyRows, tasks };
   }
-  if (!(await exists(_stateDbPath(atmuxDir)))) return null;
+  if (!(await exists(stateDbPath(atmuxDir)))) return null;
   return await _withRepo(atmuxDir, (repo) => {
     const epic = repo.getEpic(id);
     if (epic === null) return null;
@@ -545,7 +543,7 @@ export async function epicBlockingChildren(atmuxDir: string, id: string): Promis
       ...shown.tasks.filter((task) => task.status !== "done").map((task) => task.id),
     ];
   }
-  if (!(await exists(_stateDbPath(atmuxDir)))) return [];
+  if (!(await exists(stateDbPath(atmuxDir)))) return [];
   return await _withRepo(atmuxDir, (repo) => {
     const stories = repo.listStories({ epic: id }).filter((s) => s.status !== "done");
     const directTasks = repo
@@ -603,7 +601,7 @@ export async function advanceEpic(
     );
     return { from: cur, to: resolved, summaryTaskId: null, noop: false };
   }
-  if (!(await exists(_stateDbPath(atmuxDir)))) {
+  if (!(await exists(stateDbPath(atmuxDir)))) {
     throw new ConfigError({ what: `epic advance: no such epic: ${id}` });
   }
   return await _withDbAndRepo(atmuxDir, async (db, repo) => {

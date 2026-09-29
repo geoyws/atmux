@@ -24,21 +24,18 @@
 // - `movePendingToInProgress` ↔ `lib/claim.sh:88-95` (claim with claimedAt).
 // - `moveInProgressToDone` ↔ `lib/claim.sh:96-101` (done with completedAt).
 
-import { join } from "node:path";
 import { ensureDir, exists } from "../abstractions/fs.ts";
 import { updateJson } from "../abstractions/json.ts";
 import { closeDatabase, openDatabase } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { type Inbox, type InboxEntry, Inbox as InboxSchema } from "../schema/inbox.ts";
-import { inboxPathFor } from "./common.ts";
+import { inboxPathFor, stateDbPath } from "./common.ts";
 import { listTasks } from "./kanban.ts";
 import { externalKanbanEnabled } from "./kanban-backend.ts";
 
 // ---------- SQL helper (ADR-076) ----------
 
-function _stateDbPath(atmuxDir: string): string {
-  return join(atmuxDir, "state.db");
-}
+// SQL-canonical gating uses `core/common.ts::stateDbPath` (t-17a11371).
 
 /** SQL-backed loadInbox. Queries `tasks` table for member-owned rows
  *  and buckets by status. KanbanTask → InboxEntry is essentially identity
@@ -101,7 +98,7 @@ export function emptyInbox(): Inbox {
  * "empty inbox").
  */
 export async function loadInbox(atmuxDir: string, member: string): Promise<Inbox> {
-  if ((await externalKanbanEnabled(atmuxDir)) || (await exists(_stateDbPath(atmuxDir)))) {
+  if ((await externalKanbanEnabled(atmuxDir)) || (await exists(stateDbPath(atmuxDir)))) {
     return await _loadInboxFromTasks(atmuxDir, member);
   }
   return await updateJson(inboxPathFor(atmuxDir, member), InboxSchema, (i) => i, {
@@ -135,7 +132,7 @@ export async function appendDispatched(
   task: InboxEntry,
   dispatchedAt: number,
 ): Promise<void> {
-  if (await exists(_stateDbPath(atmuxDir))) {
+  if (await exists(stateDbPath(atmuxDir))) {
     return; // SQL-canonical: kanban-repo paired write is authoritative.
   }
   const entry: InboxEntry = { ...task, dispatchedAt };
@@ -158,7 +155,7 @@ export async function appendPending(
   task: InboxEntry,
   dispatchedAt?: number,
 ): Promise<void> {
-  if (await exists(_stateDbPath(atmuxDir))) {
+  if (await exists(stateDbPath(atmuxDir))) {
     return;
   }
   const entry: InboxEntry = dispatchedAt !== undefined ? { ...task, dispatchedAt } : { ...task };
@@ -182,7 +179,7 @@ export async function movePendingToInProgress(
   task: InboxEntry,
   claimedAt: number,
 ): Promise<void> {
-  if (await exists(_stateDbPath(atmuxDir))) {
+  if (await exists(stateDbPath(atmuxDir))) {
     return;
   }
   const entry: InboxEntry = { ...task, claimedAt };
@@ -211,7 +208,7 @@ export async function removeFromInProgress(
   member: string,
   id: string,
 ): Promise<void> {
-  if (await exists(_stateDbPath(atmuxDir))) {
+  if (await exists(stateDbPath(atmuxDir))) {
     return;
   }
   await updateJson(
@@ -266,7 +263,7 @@ export async function appendInboxMessage(
   opts: AppendInboxMessageOpts,
 ): Promise<number> {
   await ensureDir(atmuxDir);
-  const db = openDatabase(_stateDbPath(atmuxDir), migrations);
+  const db = openDatabase(stateDbPath(atmuxDir), migrations);
   try {
     const ts = opts.ts ?? Math.floor(Date.now() / 1000);
     const stmt = db.prepare(
@@ -325,8 +322,8 @@ export async function loadInboxMessages(
   atmuxDir: string,
   opts: LoadInboxMessagesOpts,
 ): Promise<InboxMessage[]> {
-  if (!(await exists(_stateDbPath(atmuxDir)))) return [];
-  const db = openDatabase(_stateDbPath(atmuxDir), migrations);
+  if (!(await exists(stateDbPath(atmuxDir)))) return [];
+  const db = openDatabase(stateDbPath(atmuxDir), migrations);
   try {
     const limit = opts.limit ?? 1000;
     const sinceTs = opts.sinceTs ?? 0;
@@ -374,7 +371,7 @@ export async function moveInProgressToDone(
   task: InboxEntry,
   completedAt: number,
 ): Promise<void> {
-  if (await exists(_stateDbPath(atmuxDir))) {
+  if (await exists(stateDbPath(atmuxDir))) {
     return;
   }
   const entry: InboxEntry = { ...task, completedAt };

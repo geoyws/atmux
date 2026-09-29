@@ -50,6 +50,7 @@ import {
   resolveWindowWithRenameShim,
   SUPERDOCTOR_INBOX_KEY,
   sessionAnchorPath,
+  stateDbPath,
   stateDir,
   teamJsonPath,
   tryLoadTeam,
@@ -230,6 +231,24 @@ describe("path helpers", () => {
     expect(leadOutboxPath("/x/.atmux")).toBe("/x/.atmux/lead-outbox.md");
     expect(decisionsLogPath("/x/.atmux")).toBe("/x/.atmux/decisions.md");
     expect(sessionAnchorPath("/x/.atmux")).toBe("/x/.atmux/state/session.txt");
+  });
+
+  test("stateDbPath pins the pre-unification join semantics (t-17a11371)", () => {
+    // All four pre-unification bodies were byte-identical
+    // `join(atmuxDir, "state.db")`: pure join, no env pin, no walk-up.
+    expect(stateDbPath("/x/.atmux")).toBe("/x/.atmux/state.db");
+    // join normalises a trailing slash — callers passing `dir/` get the
+    // same address rather than a doubled separator.
+    expect(stateDbPath("/x/.atmux/")).toBe("/x/.atmux/state.db");
+    // No env consult: an ATMUX_DIR-style override never redirects it.
+    const saved = process.env.ATMUX_DIR;
+    process.env.ATMUX_DIR = "/elsewhere/.atmux";
+    try {
+      expect(stateDbPath("/x/.atmux")).toBe("/x/.atmux/state.db");
+    } finally {
+      if (saved === undefined) delete process.env.ATMUX_DIR;
+      else process.env.ATMUX_DIR = saved;
+    }
   });
 });
 

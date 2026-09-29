@@ -44,7 +44,6 @@
 // both ship.
 
 import { randomBytes } from "node:crypto";
-import { join } from "node:path";
 import { emit as defaultEmit } from "../abstractions/events.ts";
 import { exists } from "../abstractions/fs.ts";
 import { updateJson } from "../abstractions/json.ts";
@@ -65,7 +64,7 @@ import {
   type KanbanTask,
 } from "../schema/kanban.ts";
 import { DEFAULT_AUTO_EMIT_TRUNK_MERGE_CONFIG, type Team } from "../schema/team.ts";
-import { type CallerScope, kanbanJsonPath, tryLoadTeam } from "./common.ts";
+import { type CallerScope, kanbanJsonPath, stateDbPath, tryLoadTeam } from "./common.ts";
 import { nextId } from "./id-sequence.ts";
 import { externalKanbanEnabled } from "./kanban-backend.ts";
 import { KanbanRepo } from "./repositories/kanban-repo.ts";
@@ -87,14 +86,13 @@ import { KanbanRepo } from "./repositories/kanban-repo.ts";
 // later, swap to a module-level Map<atmuxDir, Database> with process-
 // exit close.
 
-function _stateDbPath(atmuxDir: string): string {
-  return join(atmuxDir, "state.db");
-}
+// Storage routing uses the canonical `core/common.ts::stateDbPath`
+// resolver (t-17a11371) — no local copy.
 
 const externalKanban = new KanbanCliAdapter();
 
 async function _useSqlite(atmuxDir: string): Promise<boolean> {
-  return await exists(_stateDbPath(atmuxDir));
+  return await exists(stateDbPath(atmuxDir));
 }
 
 /** Open DB, run `fn`, close. Migrations apply on open (idempotent). */
@@ -102,7 +100,7 @@ async function _withDb<T>(
   atmuxDir: string,
   fn: (db: Database, repo: KanbanRepo) => T | Promise<T>,
 ): Promise<T> {
-  const db = openDatabase(_stateDbPath(atmuxDir), migrations);
+  const db = openDatabase(stateDbPath(atmuxDir), migrations);
   try {
     const repo = new KanbanRepo(db);
     return await fn(db, repo);
