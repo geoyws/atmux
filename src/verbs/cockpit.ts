@@ -79,6 +79,8 @@ import {
   type PaneReadinessResult,
 } from "../core/pane-readiness.ts";
 import { migrateLegacySessionName } from "../core/session-migrate.ts";
+import { previewStartRepairs } from "../core/start-repairs.ts";
+import { resolveSuperdriver } from "../core/superdriver.ts";
 import { createDryRunTmux, type DryRunOp, printDryRunPlan } from "../core/tmux-dry-run.ts";
 import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
@@ -1182,6 +1184,29 @@ export async function cockpitRebuild(
         // are real side effects — preview only. The legacy-session rename
         // above already routes through the recording wrapper.
         if (dryRun) {
+          // t-eb11cdb4 (closes the ADR-300 preview limit): plan the
+          // incremental repairs a non-force start would perform on this
+          // live session — legacy member-window renames + the home
+          // placeholder kill — through the recording wrapper, so they
+          // land in the plan + summary counts. The probe is read-only
+          // (has-session + window list); the launch itself stays skipped.
+          try {
+            const session = await resolveCageSessionName(t);
+            const teamShape = await loadTeam({ teamDir: t.root });
+            await previewStartRepairs(
+              cageTmux,
+              {
+                teamName: t.name,
+                session,
+                members: teamShape.members,
+                superdriverEnabled: resolveSuperdriver(teamShape, t.root).enabled,
+              },
+              logger,
+            );
+          } catch {
+            // Best-effort: unreadable team.json / unreachable socket —
+            // the would-start line below is the whole preview.
+          }
           logger.log(
             `  · [dry-run] would start cage '${t.name}' (${alive ? "force-cycle" : "dead/empty"} — no launch executed)`,
           );

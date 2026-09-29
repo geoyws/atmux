@@ -69,7 +69,7 @@ atmux cockpit reconcile --dry-run
 atmux cockpit reconcile
 ```
 
-Reads (session/window/pane listings) hit the live servers so the plan reflects real state; every mutation (kills, renames, new windows, send-keys, prefix sets) is recorded, not executed. team.json writes, cage starts, and socket-dir creation are skipped. Output is one line per planned op, then `dry-run: N rename, M kill, K other operations (nothing executed)`. The `--yes` destructive-op gate is bypassed (its warnings still print as part of the preview). `reload` and `attach` refuse `--dry-run`.
+Reads (session/window/pane listings) hit the live servers so the plan reflects real state; every mutation (kills, renames, new windows, send-keys, prefix sets) is recorded, not executed. team.json writes, cage launches, and socket-dir creation are skipped — but for each cage the preview *would* start, the legacy member-window renames (ADR-135/ADR-161) and the `__<team>__home` placeholder kill a non-force `start` would perform are planned from the live window list via the shared `src/core/start-repairs.ts` planner, so they appear in the op lines and the summary counts (per ADR-300 amendment 2026-09-29, t-eb11cdb4). Output is one line per planned op, then `dry-run: N rename, M kill, K other operations (nothing executed)`. The `--yes` destructive-op gate is bypassed (its warnings still print as part of the preview). `reload` and `attach` refuse `--dry-run`.
 ### Tearing down the cockpit: `atmux shutdown` (ADR-242, shipped)
 
 `atmux shutdown` stops every enabled team, then kills this cockpit session

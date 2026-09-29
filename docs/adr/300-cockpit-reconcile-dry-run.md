@@ -89,3 +89,27 @@ omp cage.
   and the `__<team>__home` placeholder kill. A `would start cage` line
   on a live server is a prompt to check its window list for those
   names; the plan counts do not cover it.
+
+## Amendment 2026-09-29 — `start`-internal renames/kills are previewed; limit closed (t-eb11cdb4)
+
+The preview limit above is closed. The dry-run Phase 2 branch now probes
+each cage it would start (`has-session` + window list, both read-only)
+and records the incremental repairs a non-force `start` would perform on
+that live session — legacy member-window renames (ADR-135, ADR-161) and
+the `__<team>__home` placeholder kill — through the same `DryRunOp`
+list, so they land in the plan lines and the summary counts. The kill
+follows start's step-9 gate exactly: it is planned only when start would
+spawn something (a member window still missing after the renames, or the
+ADR-296 superdriver seat) and the placeholder would then sit beside real
+windows. A rename-only start spawns nothing and keeps the placeholder. The cage
+launch itself (plus team.json writes, socket-dir creation, readiness
+probes) stays skipped behind the `would start cage` line.
+
+No-drift construction: the planner lives in
+`src/core/start-repairs.ts` (pure `planStartRepairs` over a window-name
+list, plus the `previewStartRepairs` probe-and-record driver) and the
+real `start` path consumes the same arms (`planMemberRenameArms`) and
+the same kill predicate (`shouldKillHomeWindow`) — one shared
+implementation, not two matching descriptions. Coverage:
+`tests/unit/verbs/cockpit-reconcile-dry-run.test.ts` (legacy+home cage
+plans rename+kill with nothing executed; clean cage plans none).
