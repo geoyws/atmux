@@ -83,6 +83,26 @@ describe("checkClaudeWrappers", () => {
     });
     expect(checkClaudeWrappers(team)).toEqual([]);
   });
+  test("cockpit registry covers a custom dir without team override (t-e25770ff)", () => {
+    const team = Team.parse({
+      name: "t",
+      members: [{ name: "m0" }],
+      drivers: [{ name: "driver", cwd: "/tmp", claudeAccount: "/root/.opencode" }],
+    });
+    expect(checkClaudeWrappers(team, { "/root/.opencode": "od" })).toEqual([]);
+  });
+
+  test("cockpit + team registries combine; unknown dir still red (t-e25770ff)", () => {
+    const team = Team.parse({
+      name: "t",
+      members: [{ name: "m0" }],
+      drivers: [{ name: "driver", cwd: "/tmp", claudeAccount: "/nope/dir" }],
+      wrappers: { "/root/.opencode": "od" },
+    });
+    const rows = checkClaudeWrappers(team, { "/root/.opencode": "cockpit-od" });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.detail).toMatch(/driver:driver:\/nope\/dir/);
+  });
 });
 
 describe("wrappers schema fields", () => {

@@ -32,6 +32,7 @@
 //   deferred per ADR-019).
 
 import { createTmux } from "../abstractions/tmux.ts";
+import { loadCockpit } from "../core/cockpit.ts";
 import {
   buildWindowName,
   defaultEmojiForRole,
@@ -181,7 +182,11 @@ export interface DoctorOpts {
   stdout?: Writer;
   stderr?: Writer;
   /** Inject the underlying check executors (test override). */
-  runChecks?: (atmuxDir: string, team: Team | null) => Promise<DoctorRow[]>;
+  runChecks?: (
+    atmuxDir: string,
+    team: Team | null,
+    cockpitWrappers?: Record<string, string>,
+  ) => Promise<DoctorRow[]>;
   /** ADR-081 §D: opts threaded into {@link fixStarvingMembers} when
    *  `--fix` finds starving rows. Test fixtures inject a no-op sleep +
    *  tiny verify deadline; production callers omit. */
@@ -192,15 +197,19 @@ export interface DoctorOpts {
 }
 
 /** Default chain — all in-scope checks invoked in bash main() order. */
-export async function runAllChecks(atmuxDir: string, team: Team | null): Promise<DoctorRow[]> {
+export async function runAllChecks(
+  atmuxDir: string,
+  team: Team | null,
+  cockpitWrappers?: Record<string, string>,
+): Promise<DoctorRow[]> {
   const rows: DoctorRow[] = [];
   rows.push(...checkDeps());
   rows.push(...(await checkTeam(atmuxDir)));
   if (team !== null) {
     rows.push(...checkTuis(team));
-    // e-48: team-override + built-ins covered; cockpit.json registry
-    // threading waits on doctor gaining cockpit context (follow-up).
-    rows.push(...checkClaudeWrappers(team));
+    // e-48 follow-up (t-e25770ff): cockpit.json registry threaded —
+    // built-ins → cockpit → team merge happens in checkClaudeWrappers.
+    rows.push(...checkClaudeWrappers(team, cockpitWrappers));
   }
   rows.push(...(await checkStateDir(atmuxDir)));
   rows.push(...(await checkWebhook(team)));
@@ -367,7 +376,20 @@ export async function doctor(argv: ReadonlyArray<string>, opts: DoctorOpts = {})
   const stderr = opts.stderr ?? defaultStderrWrite;
   const runChecks = opts.runChecks ?? runAllChecks;
 
-  const rows = await runChecks(atmuxDir, team);
+  // e-48 follow-up (t-e25770ff): cockpit.json `wrappers` thread into
+  // the claude-wrappers probe. Best-effort — absent/unreadable
+  // cockpit falls back to built-ins + team override (single-cage
+  // default). Skipped for injected runChecks doubles (hermetic tests).
+  let cockpitWrappers: Record<string, string> | undefined;
+  if (opts.runChecks === undefined) {
+    try {
+      cockpitWrappers = (await loadCockpit()).wrappers;
+    } catch {
+      cockpitWrappers = undefined;
+    }
+  }
+
+  const rows = await runChecks(atmuxDir, team, cockpitWrappers);
   const report = buildReport(rows);
 
   if (parsed.json) {
