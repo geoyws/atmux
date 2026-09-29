@@ -84,7 +84,7 @@
 | 105 | Time + timezone handling (MYT discipline, UTC internals) |  |  |
 | 106 | WIP-bash deferral (Phase 5 scope) |  |  |
 | 107 | Verb design debt — deferred v2 redesign (Phase 6) |  |  |
-| 108 | Team members work in isolated git worktrees by default |  |  |
+| 108 | Team members work in isolated git worktrees by default |  | deferred (operator-direct — George, 2026-09-28, a-6b92a0d4). Was: (blank — proposed in ADR file) |
 | 109 | Schema-version rollout deferred to Phase 6 |  |  |
 | 110 | tmux window naming — drop `__<team>__` prefix |  |  |
 | 111 | Integration contract with `/coordination:*` Claude skills plugin |  |  |
@@ -97,7 +97,7 @@
 | 118 | `SendTarget` discriminated union — type-system enforcement of "no send-keys to driver pane" |  |  |
 | 119 | Parity matrix iter-1 scope (refs ADR-102 §3) |  |  |
 | 120 | Parity channel-mask contract (Option B per George 2026-05-05) |  |  |
-| 121 | Phase 4a parity matrix — cron-fired lane scope (refs ADR-119, ADR-120) |  |  |
+| 121 | Phase 4a parity matrix — cron-fired lane scope (refs ADR-119, ADR-120) |  | deferred (operator-direct — George, 2026-09-28, a-6b92a0d4). Was: (blank — proposed in ADR file) |
 | 122 | Phase 3 iter-3 state-mutating lane scope (refs ADR-119 §Iter-3, ADR-120 mask contract) |  |  |
 | 123 | Phase 4a parity matrix iter-3 read-only lane scope (refs ADR-119, ADR-120) |  |  |
 | 124 | Parity matrix iter-2 — lifecycle lane scope (refs ADR-119, ADR-120) |  |  |
@@ -204,7 +204,7 @@
 | 235 | Cockpit verb-surface rationalization — `reconcile`/`doctor`/`up`/`start` orthogonality, cage-down banner, plain-English refusals | 2026-05-24 | proposed |
 | 237 | No LLM cadence into Discord — remove hourly whips, medic on-demand only | 2026-05-24 | Proposed (operator-fired 2026-05-24; ship under driver — surface spans member-skill + cockpit + Discord-template) |
 | 238 | orchd is the single Discord emitter — substrate events publish, orchd subscribes-and-renders | 2026-05-24 | Proposed (operator-fired 2026-05-24; architectural-funnel piece making the post-cron Discord surface coherent) |
-| 239 | Three-driver minimum per team + no-send-keys-to-drivers invariant — `drivers[]` schema, per-driver worktree, windows grouped at front | 2026-05-24 | Accepted; **§D2 (no-send-keys-to-drivers) superseded 2026-09-08** (operator-direct 14:30 MYT; atmux team pilot landed 14:45 MYT; code-enforcement task t-51-576216b2; sibling teams pending op |
+| 239 | One-driver schema floor (parent-team default three) per team + no-send-keys-to-drivers invariant — `drivers[]` schema, per-driver worktree, windows grouped at front | 2026-05-24 | Accepted; **§D2 (no-send-keys-to-drivers) superseded 2026-09-08** (operator-direct 14:30 MYT; atmux team pilot landed 14:45 MYT; code-enforcement task t-51-576216b2; sibling teams pending op |
 | 240 | Drop superorchd — orchd self-supervises, bash supervisor retires (supersedes ADR-236) | 2026-05-24 | Accepted (operator-direct *"simpler is better"* 2026-05-24; D1 + D5 of ADR-236 preserved, D2/D3 dropped) |
 | 241 | `atmux start` preflight wizard — installs vendored deps on cold hosts | 2026-05-25 | Accepted (operator-direct *"let's do the recommended"* 2026-05-25; gated on ADR-191 §Pending `build:install` extension landing first) |
 | 242 | `atmux shutdown` — single-verb whole-fleet teardown (symmetric inverse of `atmux start`) | 2026-05-25 | Accepted (operator-direct *"let's do the recommended"* 2026-05-25) |
@@ -236,8 +236,8 @@
 | 269 | Recursive branch ledger — per-repo branch state across a monorepo's nested submodules | 2026-08-06 | proposed |
 | 271 | SQLite is the sole coordination store (retire `kanban.json`); Rust `atmux-orchd` coordinates by default | 2026-08-07 | proposed |
 | 272 | `atmux voice` — spoken operator interface (mobile PWA + provider-neutral realtime seam + verb-only tool bridge) — renamed `atmux vox` by ADR-274 | 2026-08-14 | proposed |
-| 273 | Voice fleet triage + pane input ("what needs me?" + "type that") — extends ADR-272 | 2026-08-15 | proposed |
-| 274 | The voice operator interface is named `atmux vox` — rename + two deprecation shims (`atmux voice`, `ATMUX_VOICE_*`), sunset v0.9.1 | 2026-08-16 | proposed |
+| 273 | Voice fleet triage + pane input ("what needs me?" + "type that") — extends ADR-272 | 2026-08-15 | accepted (operator-direct — George, 2026-09-28, a-6b92a0d4). Was: proposed |
+| 274 | The voice operator interface is named `atmux vox` — rename + two deprecation shims (`atmux voice`, `ATMUX_VOICE_*`), sunset v0.9.1 | 2026-08-16 | accepted (operator-direct — George, 2026-09-28, a-6b92a0d4). Was: proposed |
 | 275 | External private Kanban is the sole work-state authority | 2026-08-16 | accepted (operator-direct) |
 | 276 | orchd is retired; atmux's scope narrows to tmux cages and `atmux vox` | 2026-08-16 | proposed |
 | 277 | Cages scrub `NO_COLOR` from their tmux server environment | 2026-08-18 | accepted (operator-direct) |
@@ -249,8 +249,8 @@
 | 284 | One sizing policy for every cockpit window — the `unum` `window-size smallest` override is retired | 2026-08-30 | accepted (operator-direct) |
 | 286 | Eternal-improvement retired — the loop, the `improve` verb and its three Discord templates | 2026-09-01 | accepted (operator-direct) |
 | 287 | Canonical cockpit nesting — groups are branches, teams are leaf cages hosting drivers; the default roster is drivers-only | 2026-09-02 | accepted (operator-direct) |
-| 288 | Driver window worker/attention pane pair — three-driver floor, null-default attention launch, and later-slice contract | 2026-09-03 | proposed |
-| 293 | Driver send-keys guard kept as product behaviour after the 2026-09-08 pane-to-pane revocation | 2026-09-23 | proposed |
+| 288 | Driver window worker/attention pane pair — three-driver floor, null-default attention launch, and later-slice contract | 2026-09-03 | accepted (operator-direct — George, 2026-09-28, a-6b92a0d4). Was: proposed |
+| 293 | Driver send-keys guard kept as product behaviour after the 2026-09-08 pane-to-pane revocation | 2026-09-23 | accepted (operator-direct — George, 2026-09-28, a-62b50705). Was: proposed |
 | 294 | `atmux doctor` detects tmux servers whose global environment came from an agent shell | 2026-09-25 | proposed |
 | 296 | Per-team `superdriver` window before `driver` | 2026-09-28 | accepted |
 | 297 | Inbox/outbox archive-cut contract (e-77: cut boundary, naming, idempotency, verb authority) | 2026-09-28 | accepted |

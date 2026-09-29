@@ -1,6 +1,6 @@
 # ADR-293: Driver send-keys guard kept as product behaviour after the 2026-09-08 pane-to-pane revocation
 
-**Status**: proposed
+**Status**: accepted (operator-direct — George, 2026-09-28, a-62b50705). Was: proposed
 **Date**: 2026-09-23
 **Driver-ref**: E1-T0 amendment task (kb `atmux` t-d90f05c6) — operator revoked the pane-to-pane send-keys ban 2026-09-08; epic direction chooses (a) keep the in-tree guard.
 **Relates**: [ADR-239](239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md) §D2 (no-send-keys-to-drivers invariant + `DriverSendKeysViolation` runtime guard), [ADR-285](285-cooperative-bot-seat-and-superbot-offer-protocol.md) (the `_bot` cooperative seat is the automation-capable target, not a driver)

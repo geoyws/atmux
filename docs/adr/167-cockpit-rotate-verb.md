@@ -183,7 +183,7 @@ T5 wires the handoff write-path at the TODO(T5) anchor T4 left at `performRespaw
 
 ## Related
 
-- [ADR-006](006-error-class-and-exit-code.md) — error class → exit code mapping (65 EX_DATAERR for gate refusals).
+- ADR-006 (no surviving ADR records the error-class-and-exit-code decision) — error class → exit code mapping (65 EX_DATAERR for gate refusals).
 - [ADR-033](033-caller-scope-gate.md) — caller-scope gate; cockpit rotate is driver-only.
 - [ADR-077](077-superdoctor-self-healing.md) → renamed medic per ADR-133 — medic cadence; re-arm step in per-role respawn matrix.
 - [ADR-094](094-c-alias-spawn-convention.md) — c-alias spawn convention; claudeAccount wrapper resolution.

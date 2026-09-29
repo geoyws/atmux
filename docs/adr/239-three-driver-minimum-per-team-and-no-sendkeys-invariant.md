@@ -1,4 +1,4 @@
-# ADR-239: Five-driver minimum per team + no-send-keys-to-drivers invariant
+# ADR-239: One-driver schema floor (parent-team default three) per team + no-send-keys-to-drivers invariant
 
 **Status**: Accepted — ratified by operator 2026-05-24 14:30 MYT (live operator-design session). **Amended 2026-05-26** — driver floor bumped 3→5; member-roster trimmed to {lead, planner, docs, reviewer, gitter} across every parent team (see §Amendment-2026-05-26).
 **§D2 SUPERSEDED 2026-09-08** — the operator revoked the no-send-keys-to-drivers rule. Driver panes are created as interactive login shells and their TUI is launched by sending the command into that verified-idle shell (`src/core/agent-pane.ts`); the `DriverSendKeysViolation` runtime guard and the `isDriverPaneName` predicate no longer exist. Everything below in §D2 (and the §D2 references in §Implementation and the 2026-05-26 / ADR-278 notes) is retained as the historical record, NOT as live policy. The rest of ADR-239 — driver floor, worktrees, window ordering, no pre-prompts — still stands.
@@ -19,7 +19,9 @@ Two operator pain-points motivate the change:
 
 ## Decision
 
-### D1 — Three drivers per team is the floor
+### D1 — Three drivers per team is the default (schema floor: one)
+
+> **Amended 2026-09-28** (George, a-cd38b3aa + a-7c0e1839, via t-87f83c6c): the schema floor is ONE driver (`MIN_PARENT_TEAM_DRIVERS = 1`, src/core/drivers.ts:37) and a parent team defaults to the three canonical drivers when `drivers[]` is omitted. See §Amendment 2026-09-28 — one-driver floor below. The original D1 text is kept as history.
 
 Every team's cage tmux session MUST host three driver panes minimum, named `driver`, `driver-2`, `driver-3`. Teams MAY declare more (`driver-4`, etc.) per operator preference; three is the floor, not the cap.
 

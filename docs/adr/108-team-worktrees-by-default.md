@@ -1,6 +1,6 @@
 # ADR-108: Team members work in isolated git worktrees by default
 
-**Status:** proposed (Phase 6 / v2 scope)
+**Status:** deferred (operator-direct — George, 2026-09-28, a-6b92a0d4). Was: proposed (Phase 6 / v2 scope)
 **Date:** 2026-05-05
 **Owner:** architect (proposal originated from driver during Phase 1 dogfooding)
 

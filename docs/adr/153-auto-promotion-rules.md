@@ -310,7 +310,7 @@ Reviewer-gated at each Task per the standing reviewer audit-bar.
 
 ## Cross-references
 
-- **[ADR-005](005-kanban-as-source-of-truth.md)** — kanban as source of truth; R1 reads `tasks.status`.
+- **ADR-005** (no surviving ADR records the kanban-as-source-of-truth decision) — kanban as source of truth; R1 reads `tasks.status`.
 - **[ADR-007](007-pull-kanban.md)** — kanban pull-model + `blocked` lifecycle state. R1 measures time-in-blocked.
 - **[ADR-008](008-decisions-verb.md)** — decisions verb; the `🔵 Decisions Needed` surface that ADR-152 catalogs.
 - **[ADR-010](010-atmux-flag.md)** — `atmux flag` + `.atmux/flags.md` lifecycle. R2 emits into this surface.

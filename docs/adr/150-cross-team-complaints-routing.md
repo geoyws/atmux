@@ -185,7 +185,7 @@ Reviewer-gated at each Task per the standing reviewer audit-bar (§Audit checkli
 
 ## Cross-references
 
-- **[ADR-005](005-kanban-as-source-of-truth.md)** — kanban-as-source-of-truth invariant; ADR-150's storage-authority rule mirrors the pattern (one DB owns the row).
+- **ADR-005** (no surviving ADR records the kanban-as-source-of-truth decision) — kanban-as-source-of-truth invariant; ADR-150's storage-authority rule mirrors the pattern (one DB owns the row).
 - **[ADR-077](077-superdoctor-cockpit-role.md)** — medic + complaints substrate; the `complaints` table this ADR extends.
 - **[ADR-089](089-hierarchical-cockpit.md)** — cockpit recursive `sessions[]` + DFS walk; `walkSessions` / `enabledTeams` are the primitives `lookupTeamAtmuxDir` reuses.
 - **[ADR-133](133-medic-rename.md)** — medic rename; storage identifiers (`__superdoctor__` sentinel, `superdoctor_attempts` table) unchanged per ADR-133 §Out of scope, so ADR-150's column addition lands on the existing-named `complaints` table without rename collision.

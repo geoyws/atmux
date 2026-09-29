@@ -1,6 +1,6 @@
 # ADR-288: Driver window worker/attention pane pair
 
-**Status:** Proposed
+**Status:** accepted (operator-direct — George, 2026-09-28, a-6b92a0d4). Was: Proposed
 **Date:** 2026-09-03
 **Deciders:** Team
 

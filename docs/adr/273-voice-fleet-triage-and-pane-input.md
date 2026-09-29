@@ -1,6 +1,6 @@
 # ADR-273 — Voice fleet triage and pane input ("what needs me?" + "type that")
 
-Status: proposed
+Status: accepted (operator-direct — George, 2026-09-28, a-6b92a0d4). Was: proposed
 Date: 2026-08-15
 Implementation: **D1–D3 built 2026-08-16** (`fleet_attention` + `fleet_quiet`); **D4's `pane_nudge` + D5 built 2026-08-16** (see §Supplement-2); **`pane_send` still not built** — **OQ-1 is now ANSWERED (§Supplement-9, 2026-08-21: no spoken second factor; four structural bounds instead), which opens the gate but does not close the work.** §AA5 lists what must be true before it ships. Status stays `proposed` pending reviewer signoff — an ADR is not accepted by being implemented.
 Extends: [ADR-272](272-voice-operator-interface.md) (voice operator interface)

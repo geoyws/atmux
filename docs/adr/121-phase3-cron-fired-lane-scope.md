@@ -1,6 +1,6 @@
 # ADR-121: Phase 4a parity matrix — cron-fired lane scope (refs ADR-119, ADR-120)
 
-**Status:** proposed
+**Status:** deferred (operator-direct — George, 2026-09-28, a-6b92a0d4). Was: proposed
 **Date:** 2026-05-06
 **Owner:** parity-cron-impl
 

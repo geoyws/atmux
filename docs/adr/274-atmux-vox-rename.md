@@ -1,6 +1,6 @@
 # ADR-274 — The voice operator interface is named **atmux vox**
 
-Status: proposed
+Status: accepted (operator-direct — George, 2026-09-28, a-6b92a0d4). Was: proposed
 Date: 2026-08-16
 Supersedes: [ADR-272](272-voice-operator-interface.md) **OQ-5** (resolved 2026-08-14 as "`voice` stands as a top-level verb")
 Relates: [ADR-266](266-shim-sunset-policy-and-first-sweep.md) (shim sunset policy — this ADR owes one), [ADR-273](273-voice-fleet-triage-and-pane-input.md) (fleet triage, same feature)
