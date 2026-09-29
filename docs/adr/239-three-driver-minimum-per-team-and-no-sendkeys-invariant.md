@@ -274,3 +274,6 @@ no-sendkeys invariant and the one-driver small-work-teams rule
 ### 2026-09-28 — Driver window slots start at 2 when the ADR-296 superdriver seat is enabled
 
 The D3/A1 window layouts above predate the per-team `superdriver` seat: with [ADR-296](296-per-team-superdriver-window-before-driver.md) enabled (the default), `superdriver` occupies window 1 and the driver roster starts at window 2. Name-based targets are unaffected.
+### 2026-09-23 — D2 guard kept as product behaviour after the 2026-09-08 pane-to-pane revocation (ADR-293)
+
+[ADR-293](293-driver-send-keys-guard-kept-after-2026-09-08-revocation.md) records the 2026-09-08 operator revocation of the pane-to-pane send-keys ban (capture-before-send required; `dialog`/`draft` stay refused; `send --queued` since 2026-09-15) and chooses (a) keep the in-tree `DriverSendKeysViolation` guard as product behaviour for send/nudge/dispatch. D2's no-send-keys invariant and the runtime guard are unchanged.
