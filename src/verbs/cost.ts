@@ -31,9 +31,15 @@ import { join, resolve as resolvePath } from "node:path";
 import { z } from "zod";
 import { exists, statOrNull } from "../abstractions/fs.ts";
 import { tryParseJsonString, tryReadJson } from "../abstractions/json.ts";
-import { getAtmuxDir, type ResolveDirOpts, requireTeam, stateDir } from "../core/common.ts";
+import {
+  getAtmuxDir,
+  type ResolveDirOpts,
+  requireTeam,
+  stateDbPath,
+  stateDir,
+} from "../core/common.ts";
 import { defaultStdoutWrite, type Writer } from "../core/io.ts";
-import { COST_NAMESPACE, teamRoleStateDbPath, writeRoleTextAtDb } from "../core/role-state-repo.ts";
+import { COST_NAMESPACE, writeRoleTextAtDb } from "../core/role-state-repo.ts";
 import { UsageError } from "../errors.ts";
 import { DEFAULT_PRICING, Pricing, pricingFor } from "../schema/pricing.ts";
 import type { TeamMember } from "../schema/team.ts";
@@ -380,7 +386,7 @@ export function costCachePath(atmuxDir: string, member: string): string {
  *  — row-first readers prefer the row. */
 export async function writeCostCache(atmuxDir: string, detail: CostDetail): Promise<void> {
   await writeRoleTextAtDb(
-    teamRoleStateDbPath(atmuxDir),
+    stateDbPath(atmuxDir),
     detail.member,
     COST_NAMESPACE,
     JSON.stringify(detail),

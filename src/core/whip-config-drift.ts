@@ -28,8 +28,8 @@ import type { ZodError } from "zod";
 import { z } from "zod";
 import { parseJsonString } from "../abstractions/json.ts";
 import { TeamWhip } from "../schema/team.ts";
-import { stateDir } from "./common.ts";
-import { readFlagTextAtDb, teamFlagsDbPath, writeFlagTextAtDb } from "./flags-repo.ts";
+import { stateDbPath, stateDir } from "./common.ts";
+import { readFlagTextAtDb, writeFlagTextAtDb } from "./flags-repo.ts";
 
 // ---------- Types ----------
 
@@ -214,7 +214,7 @@ export async function shouldFireDriftPing(
   nowSec: number,
 ): Promise<boolean> {
   const path = whipConfigDriftStatePath(atmuxDir);
-  const text = await readFlagTextAtDb(teamFlagsDbPath(atmuxDir), "whip-config-drift-state", path);
+  const text = await readFlagTextAtDb(stateDbPath(atmuxDir), "whip-config-drift-state", path);
   if (text === null) return true;
   const state = parseJsonString(path, DriftStateSchema, text);
   const lastFired = state[driftHash];
@@ -230,7 +230,7 @@ export async function recordDriftPing(
   nowSec: number,
 ): Promise<void> {
   const path = whipConfigDriftStatePath(atmuxDir);
-  const dbPath = teamFlagsDbPath(atmuxDir);
+  const dbPath = stateDbPath(atmuxDir);
   const text = await readFlagTextAtDb(dbPath, "whip-config-drift-state", path);
   const existing = text === null ? {} : parseJsonString(path, DriftStateSchema, text);
   const next = DriftStateSchema.parse({ ...existing, [driftHash]: nowSec });

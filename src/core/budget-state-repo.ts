@@ -27,7 +27,7 @@
 // sources; until it runs, deployment-edge teams keep working off
 // their JSON files.
 
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { ensureDir, exists, readTextOrNull, removeFile } from "../abstractions/fs.ts";
 import { closeDatabase, type Database, openDatabase } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
@@ -45,11 +45,6 @@ export const BUDGET_PROBES = [
 
 /** One row per source file; `probe_name` = file basename without `.json`. */
 export type BudgetProbe = (typeof BUDGET_PROBES)[number];
-
-/** Resolve the team-scope budget DB. */
-export function teamBudgetDbPath(atmuxDir: string): string {
-  return join(atmuxDir, "state.db");
-}
 
 /** One budget row: the TEXT-blob state plus its queryable timestamp. */
 export interface BudgetRow {

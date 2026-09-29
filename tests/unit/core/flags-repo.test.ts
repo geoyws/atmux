@@ -11,6 +11,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exists } from "../../../src/abstractions/fs.ts";
+import { stateDbPath } from "../../../src/core/common.ts";
 import {
   COCKPIT_FLAG_FILES,
   clearFlagTextAtDb,
@@ -21,7 +22,6 @@ import {
   importLegacyFlagText,
   readFlagTextAtDb,
   TEAM_FLAG_FILES,
-  teamFlagsDbPath,
   withFlagsDb,
   writeFlagTextAtDb,
 } from "../../../src/core/flags-repo.ts";
@@ -59,10 +59,6 @@ describe("flag key lists + schema version", () => {
 });
 
 describe("path helpers", () => {
-  test("teamFlagsDbPath appends state.db", () => {
-    expect(teamFlagsDbPath("/x/.atmux")).toBe("/x/.atmux/state.db");
-  });
-
   test("cockpitFlagsDbPath resolves under home", () => {
     expect(cockpitFlagsDbPath("/home/op")).toBe("/home/op/.atmux/state.db");
   });
@@ -76,7 +72,7 @@ describe("path helpers", () => {
 
 describe("FlagsRepo CRUD", () => {
   test("get misses on empty table; set/get roundtrips; set overwrites", async () => {
-    await withFlagsDb(teamFlagsDbPath(atmuxDir), (db) => {
+    await withFlagsDb(stateDbPath(atmuxDir), (db) => {
       const repo = new FlagsRepo(db);
       expect(repo.get("paused")).toBeNull();
       repo.set("paused", '{"a":1}', 1000);
@@ -92,7 +88,7 @@ describe("FlagsRepo CRUD", () => {
   });
 
   test("delete removes the row; no-op when absent", async () => {
-    await withFlagsDb(teamFlagsDbPath(atmuxDir), (db) => {
+    await withFlagsDb(stateDbPath(atmuxDir), (db) => {
       const repo = new FlagsRepo(db);
       repo.delete("paused");
       expect(repo.get("paused")).toBeNull();
@@ -103,7 +99,7 @@ describe("FlagsRepo CRUD", () => {
   });
 
   test("withFlagsDb returns the callback value", async () => {
-    const out = await withFlagsDb(teamFlagsDbPath(atmuxDir), () => 42);
+    const out = await withFlagsDb(stateDbPath(atmuxDir), () => 42);
     expect(out).toBe(42);
   });
 });
@@ -112,7 +108,7 @@ describe("importLegacyFlagText", () => {
   test("existing row wins; legacy file untouched", async () => {
     const legacy = join(atmuxDir, "state", "paused.json");
     await writeFile(legacy, '{"from":"file"}');
-    await withFlagsDb(teamFlagsDbPath(atmuxDir), async (db) => {
+    await withFlagsDb(stateDbPath(atmuxDir), async (db) => {
       const repo = new FlagsRepo(db);
       repo.set("paused", '{"from":"row"}', 7);
       expect(await importLegacyFlagText(db, "paused", legacy, 8)).toBe('{"from":"row"}');
@@ -123,14 +119,14 @@ describe("importLegacyFlagText", () => {
   test("absent row + present file → promotes file content into the row", async () => {
     const legacy = join(atmuxDir, "state", "paused.json");
     await writeFile(legacy, '{"from":"file"}');
-    await withFlagsDb(teamFlagsDbPath(atmuxDir), async (db) => {
+    await withFlagsDb(stateDbPath(atmuxDir), async (db) => {
       expect(await importLegacyFlagText(db, "paused", legacy, 9)).toBe('{"from":"file"}');
       expect(new FlagsRepo(db).get("paused")).toBe('{"from":"file"}');
     });
   });
 
   test("absent row + absent file → null", async () => {
-    await withFlagsDb(teamFlagsDbPath(atmuxDir), async (db) => {
+    await withFlagsDb(stateDbPath(atmuxDir), async (db) => {
       expect(
         await importLegacyFlagText(db, "paused", join(atmuxDir, "state", "nope.json"), 9),
       ).toBeNull();
@@ -142,25 +138,21 @@ describe("readFlagTextAtDb", () => {
   test("no DB yet + legacy file → file content, DB not created", async () => {
     const legacy = join(atmuxDir, "state", "paused.json");
     await writeFile(legacy, '{"a":1}');
-    const dbPath = teamFlagsDbPath(atmuxDir);
+    const dbPath = stateDbPath(atmuxDir);
     expect(await readFlagTextAtDb(dbPath, "paused", legacy)).toBe('{"a":1}');
     expect(await exists(dbPath)).toBe(false);
   });
 
   test("no DB + no file → null", async () => {
     expect(
-      await readFlagTextAtDb(
-        teamFlagsDbPath(atmuxDir),
-        "paused",
-        join(atmuxDir, "state", "nope.json"),
-      ),
+      await readFlagTextAtDb(stateDbPath(atmuxDir), "paused", join(atmuxDir, "state", "nope.json")),
     ).toBeNull();
   });
 
   test("DB row wins over legacy file", async () => {
     const legacy = join(atmuxDir, "state", "paused.json");
     await writeFile(legacy, '{"from":"file"}');
-    const dbPath = teamFlagsDbPath(atmuxDir);
+    const dbPath = stateDbPath(atmuxDir);
     await writeFlagTextAtDb(dbPath, "paused", '{"from":"row"}', 3);
     expect(await readFlagTextAtDb(dbPath, "paused", legacy)).toBe('{"from":"row"}');
   });
@@ -168,7 +160,7 @@ describe("readFlagTextAtDb", () => {
   test("DB present + no row + legacy file → promotes and returns", async () => {
     const legacy = join(atmuxDir, "state", "paused.json");
     await writeFile(legacy, '{"from":"file"}');
-    const dbPath = teamFlagsDbPath(atmuxDir);
+    const dbPath = stateDbPath(atmuxDir);
     await writeFlagTextAtDb(dbPath, "other", "{}", 3);
     expect(await readFlagTextAtDb(dbPath, "paused", legacy)).toBe('{"from":"file"}');
     await withFlagsDb(dbPath, (db) => {
@@ -177,7 +169,7 @@ describe("readFlagTextAtDb", () => {
   });
 
   test("DB present + neither → null", async () => {
-    const dbPath = teamFlagsDbPath(atmuxDir);
+    const dbPath = stateDbPath(atmuxDir);
     await writeFlagTextAtDb(dbPath, "other", "{}", 3);
     expect(
       await readFlagTextAtDb(dbPath, "paused", join(atmuxDir, "state", "nope.json")),
@@ -187,7 +179,7 @@ describe("readFlagTextAtDb", () => {
 
 describe("writeFlagTextAtDb / clearFlagTextAtDb", () => {
   test("write creates the DB + row with default clock", async () => {
-    const dbPath = teamFlagsDbPath(atmuxDir);
+    const dbPath = stateDbPath(atmuxDir);
     await writeFlagTextAtDb(dbPath, "paused", "{}");
     await withFlagsDb(dbPath, (db) => {
       expect(new FlagsRepo(db).get("paused")).toBe("{}");
@@ -197,7 +189,7 @@ describe("writeFlagTextAtDb / clearFlagTextAtDb", () => {
   test("clear removes row + leftover legacy file", async () => {
     const legacy = join(atmuxDir, "state", "paused.json");
     await writeFile(legacy, '{"stale":true}');
-    const dbPath = teamFlagsDbPath(atmuxDir);
+    const dbPath = stateDbPath(atmuxDir);
     await writeFlagTextAtDb(dbPath, "paused", '{"fresh":true}', 3);
     await clearFlagTextAtDb(dbPath, "paused", legacy);
     expect(await exists(legacy)).toBe(false);
@@ -209,15 +201,11 @@ describe("writeFlagTextAtDb / clearFlagTextAtDb", () => {
   test("clear with no DB still removes a legacy file", async () => {
     const legacy = join(atmuxDir, "state", "paused.json");
     await writeFile(legacy, '{"stale":true}');
-    await clearFlagTextAtDb(teamFlagsDbPath(atmuxDir), "paused", legacy);
+    await clearFlagTextAtDb(stateDbPath(atmuxDir), "paused", legacy);
     expect(await exists(legacy)).toBe(false);
   });
 
   test("clear idempotent when both sides absent", async () => {
-    await clearFlagTextAtDb(
-      teamFlagsDbPath(atmuxDir),
-      "paused",
-      join(atmuxDir, "state", "nope.json"),
-    );
+    await clearFlagTextAtDb(stateDbPath(atmuxDir), "paused", join(atmuxDir, "state", "nope.json"));
   });
 });

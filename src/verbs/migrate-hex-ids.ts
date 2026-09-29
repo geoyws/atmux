@@ -28,7 +28,7 @@ import { exists } from "../abstractions/fs.ts";
 import { closeDatabase, type Database, openDatabase } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { now } from "../abstractions/time.ts";
-import { getAtmuxDir, loadTeam } from "../core/common.ts";
+import { getAtmuxDir, loadTeam, stateDbPath } from "../core/common.ts";
 import { assignSequenceToLegacyId, type IdScope } from "../core/id-sequence.ts";
 import { defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
@@ -376,7 +376,7 @@ export async function migrateHexIds(
   const team = await loadTeam();
   const teamName = opts.teamOverride ?? team.name;
 
-  const dbPath = join(atmuxDir, "state.db");
+  const dbPath = stateDbPath(atmuxDir);
   const db = openDatabase(dbPath, migrations);
 
   try {

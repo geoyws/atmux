@@ -30,9 +30,9 @@ import { now } from "../abstractions/time.ts";
 import {
   maxFireEpochObservedAtMs,
   readBudgetTextAtDb,
-  teamBudgetDbPath,
   writeBudgetTextAtDb,
 } from "./budget-state-repo.ts";
+import { stateDbPath } from "./common.ts";
 
 const BUDGET_PROBE = "budget-refresh-soon-state";
 
@@ -52,7 +52,7 @@ export type RefreshSoonState = Record<string, number>;
 export async function loadRefreshSoonState(atmuxDir: string): Promise<RefreshSoonState> {
   const path = budgetRefreshSoonStatePath(atmuxDir);
   const txt = await readBudgetTextAtDb(
-    teamBudgetDbPath(atmuxDir),
+    stateDbPath(atmuxDir),
     BUDGET_PROBE,
     path,
     maxFireEpochObservedAtMs,
@@ -78,7 +78,7 @@ export async function writeRefreshSoonState(
 ): Promise<void> {
   const text = JSON.stringify(state);
   await writeBudgetTextAtDb(
-    teamBudgetDbPath(atmuxDir),
+    stateDbPath(atmuxDir),
     BUDGET_PROBE,
     text,
     maxFireEpochObservedAtMs(text, now()),

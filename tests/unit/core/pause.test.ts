@@ -9,11 +9,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  readFlagTextAtDb,
-  teamFlagsDbPath,
-  writeFlagTextAtDb,
-} from "../../../src/core/flags-repo.ts";
+import { stateDbPath } from "../../../src/core/common.ts";
+import { readFlagTextAtDb, writeFlagTextAtDb } from "../../../src/core/flags-repo.ts";
 import {
   DEFAULT_PAUSE_REASON,
   getPauseInfo,
@@ -168,11 +165,7 @@ describe("pauseMember", () => {
 
   test("written flags row is a JSON blob with the bash-faithful shape", async () => {
     await pauseMember(atmuxDir, "alice", { nowEpochSec: 99, reason: "manual" });
-    const text = await readFlagTextAtDb(
-      teamFlagsDbPath(atmuxDir),
-      "paused",
-      pausedJsonPath(atmuxDir),
-    );
+    const text = await readFlagTextAtDb(stateDbPath(atmuxDir), "paused", pausedJsonPath(atmuxDir));
     const parsed = JSON.parse(text ?? "");
     expect(parsed).toEqual({ alice: { at: 99, reason: "manual" } });
     // No schemaVersion field — parity with bash.
@@ -203,7 +196,7 @@ describe("pauseMember", () => {
   });
 
   test("malformed flags row throws SchemaError", async () => {
-    await writeFlagTextAtDb(teamFlagsDbPath(atmuxDir), "paused", "{not json", 1);
+    await writeFlagTextAtDb(stateDbPath(atmuxDir), "paused", "{not json", 1);
     await expect(loadPausedMap(atmuxDir)).rejects.toBeInstanceOf(SchemaError);
   });
 });

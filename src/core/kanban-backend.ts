@@ -1,6 +1,7 @@
 import { chmod, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { atomicWrite, exists } from "../abstractions/fs.ts";
+import { stateDbPath } from "./common.ts";
 
 export type KanbanBackend = "legacy" | "external";
 
@@ -57,9 +58,7 @@ export async function kanbanWorkStateAvailable(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<boolean> {
   if (await externalKanbanEnabled(atmuxDir, env)) return true;
-  return (
-    (await exists(join(atmuxDir, "state.db"))) || (await exists(join(atmuxDir, "kanban.json")))
-  );
+  return (await exists(stateDbPath(atmuxDir))) || (await exists(join(atmuxDir, "kanban.json")));
 }
 
 export async function writeKanbanBackendMarker(

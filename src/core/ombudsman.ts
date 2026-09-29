@@ -33,13 +33,12 @@ import { z } from "zod";
 import { parseJsonString } from "../abstractions/json.ts";
 import { transactImmediate } from "../abstractions/sqlite.ts";
 import { now } from "../abstractions/time.ts";
-import { stateDir } from "./common.ts";
+import { stateDbPath, stateDir } from "./common.ts";
 import {
   importLegacyRoleText,
   RoleStateRepo,
   readRoleTextAtDb,
   TEAM_ROLE_STATE,
-  teamRoleStateDbPath,
   withRoleStateDb,
 } from "./role-state-repo.ts";
 
@@ -74,7 +73,7 @@ const SENTINEL_NAMESPACE = "ombudsman-pending";
 export async function readSentinel(atmuxDir: string): Promise<OmbudsmanSentinel> {
   const path = sentinelPath(atmuxDir);
   const text = await readRoleTextAtDb(
-    teamRoleStateDbPath(atmuxDir),
+    stateDbPath(atmuxDir),
     TEAM_ROLE_STATE,
     SENTINEL_NAMESPACE,
     path,
@@ -102,7 +101,7 @@ export async function addToSentinel(atmuxDir: string, complaintId: string): Prom
  */
 export async function removeFromSentinel(atmuxDir: string, complaintId: string): Promise<boolean> {
   const path = sentinelPath(atmuxDir);
-  const dbPath = teamRoleStateDbPath(atmuxDir);
+  const dbPath = stateDbPath(atmuxDir);
   return withRoleStateDb(dbPath, async (db) => {
     await importLegacyRoleText(db, TEAM_ROLE_STATE, SENTINEL_NAMESPACE, path, now());
     return transactImmediate(db, () => {
@@ -136,7 +135,7 @@ async function updateSentinel(
   mutator: (current: OmbudsmanSentinel) => OmbudsmanSentinel,
 ): Promise<void> {
   const path = sentinelPath(atmuxDir);
-  const dbPath = teamRoleStateDbPath(atmuxDir);
+  const dbPath = stateDbPath(atmuxDir);
   await withRoleStateDb(dbPath, async (db) => {
     await importLegacyRoleText(db, TEAM_ROLE_STATE, SENTINEL_NAMESPACE, path, now());
     transactImmediate(db, () => {

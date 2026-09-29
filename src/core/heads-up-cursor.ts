@@ -29,12 +29,8 @@
 // next emitter sees the older cursor + fires); the dedup is best-
 // effort, not strict-once.
 import { join } from "node:path";
-import {
-  readRoleTextAtDb,
-  TEAM_ROLE_STATE,
-  teamRoleStateDbPath,
-  writeRoleTextAtDb,
-} from "./role-state-repo.ts";
+import { stateDbPath } from "./common.ts";
+import { readRoleTextAtDb, TEAM_ROLE_STATE, writeRoleTextAtDb } from "./role-state-repo.ts";
 
 const STATE_FILENAME = "heads-up-cursor.json";
 
@@ -55,7 +51,7 @@ export function cursorKey(source: string, target: string): string {
  *  Row-first: promotes a leftover legacy file on first read. */
 export async function loadHeadsUpCursor(atmuxDir: string): Promise<HeadsUpCursor> {
   const txt = await readRoleTextAtDb(
-    teamRoleStateDbPath(atmuxDir),
+    stateDbPath(atmuxDir),
     TEAM_ROLE_STATE,
     "heads-up-cursor",
     headsUpCursorPath(atmuxDir),
@@ -78,7 +74,7 @@ export async function loadHeadsUpCursor(atmuxDir: string): Promise<HeadsUpCursor
  *  on disk is harmless — readers prefer the row. */
 export async function writeHeadsUpCursor(atmuxDir: string, cursor: HeadsUpCursor): Promise<void> {
   await writeRoleTextAtDb(
-    teamRoleStateDbPath(atmuxDir),
+    stateDbPath(atmuxDir),
     TEAM_ROLE_STATE,
     "heads-up-cursor",
     JSON.stringify(cursor),

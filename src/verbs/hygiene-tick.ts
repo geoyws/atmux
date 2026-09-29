@@ -43,6 +43,7 @@ import {
   type ResolveDirOpts,
   requireTeam,
   resolveTeamSocket,
+  stateDbPath,
 } from "../core/common.ts";
 import { listTasks } from "../core/kanban.ts";
 import { resolveMergerConfig } from "../core/merger-config.ts";
@@ -253,7 +254,7 @@ export async function hygieneTick(
   const atmuxDir = await getAtmuxDir(dirOpts);
   const now = (opts.nowSeconds ?? (() => Math.floor(Date.now() / 1000)))();
 
-  const db = openDatabase(join(atmuxDir, "state.db"), migrations);
+  const db = openDatabase(stateDbPath(atmuxDir), migrations);
   let drain: DrainTickResult;
   try {
     const kanban = await listTasks(atmuxDir);

@@ -26,13 +26,9 @@
 import { join } from "node:path";
 import { z } from "zod";
 import { atomicWrite, readTextOrNull } from "../abstractions/fs.ts";
+import { stateDbPath } from "./common.ts";
 import type { ModalClass, ModalHistoryEntry } from "./modal-cycling-detector.ts";
-import {
-  MODAL_HISTORY_NAMESPACE,
-  readRoleTextAtDb,
-  teamRoleStateDbPath,
-  writeRoleTextAtDb,
-} from "./role-state-repo.ts";
+import { MODAL_HISTORY_NAMESPACE, readRoleTextAtDb, writeRoleTextAtDb } from "./role-state-repo.ts";
 
 // ---------- Zod schemas ----------
 
@@ -83,7 +79,7 @@ export async function loadModalHistory(
 ): Promise<ModalHistoryEntry[]> {
   const path = modalHistoryPath(atmuxDir, member);
   const txt = await readRoleTextAtDb(
-    teamRoleStateDbPath(atmuxDir),
+    stateDbPath(atmuxDir),
     sanitizeMember(member),
     MODAL_HISTORY_NAMESPACE,
     path,
@@ -116,7 +112,7 @@ export async function saveModalHistory(
   history: ModalHistoryEntry[],
 ): Promise<void> {
   await writeRoleTextAtDb(
-    teamRoleStateDbPath(atmuxDir),
+    stateDbPath(atmuxDir),
     sanitizeMember(member),
     MODAL_HISTORY_NAMESPACE,
     JSON.stringify(history),

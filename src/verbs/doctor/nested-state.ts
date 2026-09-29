@@ -30,6 +30,7 @@
 import { readdir, rename } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { ensureDir, exists, removeRecursive } from "../../abstractions/fs.ts";
+import { stateDbPath } from "../../core/common.ts";
 import { defaultStderrWrite, type Writer } from "../../core/io.ts";
 import type { Team } from "../../schema/team.ts";
 import type { DoctorRow } from "./types.ts";
@@ -121,7 +122,7 @@ export async function findNestedStateOffenders(
   }
 
   // (2) Downward: bounded walk beneath our own `.atmux/`.
-  const canonicalDb = join(atmuxDir, "state.db");
+  const canonicalDb = stateDbPath(atmuxDir);
   const archiveRoot = join(atmuxDir, "archive");
   const worktreesRoot = join(atmuxDir, "worktrees");
   const stack: Array<{ dir: string; depth: number }> = [{ dir: atmuxDir, depth: 0 }];

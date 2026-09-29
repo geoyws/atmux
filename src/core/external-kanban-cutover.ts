@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { atomicWrite, exists } from "../abstractions/fs.ts";
 import { KanbanCliAdapter } from "../adapters/kanban-cli.ts";
 import { ConfigError } from "../errors.ts";
+import { stateDbPath } from "./common.ts";
 import {
   type KanbanBackendMarker,
   readKanbanBackendMarker,
@@ -45,7 +46,7 @@ export async function prepareExternalKanbanCutover(
   atmuxDir: string,
   options: PrepareExternalKanbanOptions,
 ): Promise<ExternalKanbanCutoverReceipt> {
-  const sqliteSource = resolve(atmuxDir, "state.db");
+  const sqliteSource = resolve(stateDbPath(atmuxDir));
   const jsonSource = resolve(atmuxDir, "kanban.json");
   const sourceKind = (await exists(sqliteSource)) ? "sqlite" : "json";
   const source = sourceKind === "sqlite" ? sqliteSource : jsonSource;
@@ -255,7 +256,8 @@ export async function activateExternalKanbanCutover(
     await readFile(preparationReceipt, "utf8"),
   ) as ExternalKanbanCutoverReceipt;
   const sourceKind = prepared.sourceKind ?? "sqlite";
-  const source = resolve(atmuxDir, sourceKind === "sqlite" ? "state.db" : "kanban.json");
+  const source =
+    sourceKind === "sqlite" ? resolve(stateDbPath(atmuxDir)) : resolve(atmuxDir, "kanban.json");
   if (
     prepared.version !== 1 ||
     prepared.status !== "prepared" ||

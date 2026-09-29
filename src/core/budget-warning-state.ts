@@ -26,9 +26,9 @@ import { now } from "../abstractions/time.ts";
 import {
   maxFireEpochObservedAtMs,
   readBudgetTextAtDb,
-  teamBudgetDbPath,
   writeBudgetTextAtDb,
 } from "./budget-state-repo.ts";
+import { stateDbPath } from "./common.ts";
 
 const BUDGET_PROBE = "budget-warning-state";
 
@@ -48,7 +48,7 @@ export type WarningState = Record<string, number>;
 export async function loadWarningState(atmuxDir: string): Promise<WarningState> {
   const path = budgetWarningStatePath(atmuxDir);
   const txt = await readBudgetTextAtDb(
-    teamBudgetDbPath(atmuxDir),
+    stateDbPath(atmuxDir),
     BUDGET_PROBE,
     path,
     maxFireEpochObservedAtMs,
@@ -71,7 +71,7 @@ export async function loadWarningState(atmuxDir: string): Promise<WarningState> 
 export async function writeWarningState(atmuxDir: string, state: WarningState): Promise<void> {
   const text = JSON.stringify(state);
   await writeBudgetTextAtDb(
-    teamBudgetDbPath(atmuxDir),
+    stateDbPath(atmuxDir),
     BUDGET_PROBE,
     text,
     maxFireEpochObservedAtMs(text, now()),

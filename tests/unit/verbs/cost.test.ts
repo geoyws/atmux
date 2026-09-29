@@ -15,11 +15,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  RoleStateRepo,
-  teamRoleStateDbPath,
-  withRoleStateDb,
-} from "../../../src/core/role-state-repo.ts";
+import { stateDbPath } from "../../../src/core/common.ts";
+import { RoleStateRepo, withRoleStateDb } from "../../../src/core/role-state-repo.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
 import { DEFAULT_PRICING, type Pricing } from "../../../src/schema/pricing.ts";
 import type { TeamMember } from "../../../src/schema/team.ts";
@@ -50,7 +47,7 @@ import {
 /** Read a cost cache row back out of role_state (null when absent). */
 async function readCostRowOrNull(atmuxDir: string, member: string): Promise<CostDetail | null> {
   let payload: string | null = null;
-  await withRoleStateDb(teamRoleStateDbPath(atmuxDir), (db) => {
+  await withRoleStateDb(stateDbPath(atmuxDir), (db) => {
     payload = new RoleStateRepo(db).get(member, "cost");
   });
   return payload === null ? null : (JSON.parse(payload) as CostDetail);
@@ -601,7 +598,7 @@ describe("writeCostCache", () => {
   test("writes a role_state (member, cost) row; no legacy file on disk", async () => {
     const detail: CostDetail = emptyDetail("alpha", "claude", "claude-jsonl");
     await writeCostCache(dir, detail);
-    await withRoleStateDb(teamRoleStateDbPath(dir), (db) => {
+    await withRoleStateDb(stateDbPath(dir), (db) => {
       const parsed = JSON.parse(new RoleStateRepo(db).get("alpha", "cost") ?? "null") as CostDetail;
       expect(parsed.member).toBe("alpha");
     });

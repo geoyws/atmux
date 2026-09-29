@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BudgetRepo, teamBudgetDbPath, withBudgetDb } from "../../../src/core/budget-state-repo.ts";
+import { BudgetRepo, withBudgetDb } from "../../../src/core/budget-state-repo.ts";
 import {
   budgetWarningStatePath,
   hasBandFired,
@@ -22,6 +22,7 @@ import {
   wipeForResetWindow,
   writeWarningState,
 } from "../../../src/core/budget-warning-state.ts";
+import { stateDbPath } from "../../../src/core/common.ts";
 
 let atmuxDir: string;
 
@@ -200,7 +201,7 @@ describe("table IO + persistence", () => {
   test("writeWarningState lands a queryable budget row (observed_at = max fire epoch)", async () => {
     const s: WarningState = { "ifca:5h:0.5": 1700000010 };
     await writeWarningState(atmuxDir, s);
-    await withBudgetDb(teamBudgetDbPath(atmuxDir), (db) => {
+    await withBudgetDb(stateDbPath(atmuxDir), (db) => {
       const row = new BudgetRepo(db).get("budget-warning-state");
       expect(row?.state).toBe(JSON.stringify(s));
       expect(row?.observedAt).toBe(1700000010 * 1000);
@@ -218,9 +219,9 @@ describe("table IO + persistence", () => {
   test("legacy file promotes into the row on first load (DB already present)", async () => {
     const s: WarningState = { "ifca:5h:0.5": 1700000010 };
     await writeFile(budgetWarningStatePath(atmuxDir), JSON.stringify(s));
-    await withBudgetDb(teamBudgetDbPath(atmuxDir), () => {});
+    await withBudgetDb(stateDbPath(atmuxDir), () => {});
     expect(await loadWarningState(atmuxDir)).toEqual(s);
-    await withBudgetDb(teamBudgetDbPath(atmuxDir), (db) => {
+    await withBudgetDb(stateDbPath(atmuxDir), (db) => {
       expect(new BudgetRepo(db).get("budget-warning-state")?.observedAt).toBe(1700000010 * 1000);
     });
   });

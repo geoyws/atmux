@@ -21,7 +21,8 @@ import {
   wipeStaleEntries,
   writeRefreshSoonState,
 } from "../../../src/core/budget-refresh-soon-state.ts";
-import { BudgetRepo, teamBudgetDbPath, withBudgetDb } from "../../../src/core/budget-state-repo.ts";
+import { BudgetRepo, withBudgetDb } from "../../../src/core/budget-state-repo.ts";
+import { stateDbPath } from "../../../src/core/common.ts";
 
 let atmuxDir: string;
 
@@ -195,7 +196,7 @@ describe("table IO", () => {
   test("writeRefreshSoonState lands a queryable budget row (observed_at = max fire epoch)", async () => {
     const s: RefreshSoonState = { "ifca:5h:1700000000": 1699999990 };
     await writeRefreshSoonState(atmuxDir, s);
-    await withBudgetDb(teamBudgetDbPath(atmuxDir), (db) => {
+    await withBudgetDb(stateDbPath(atmuxDir), (db) => {
       const row = new BudgetRepo(db).get("budget-refresh-soon-state");
       expect(row?.state).toBe(JSON.stringify(s));
       expect(row?.observedAt).toBe(1699999990 * 1000);
@@ -212,9 +213,9 @@ describe("table IO", () => {
   test("legacy file promotes into the row on first load (DB already present)", async () => {
     const s: RefreshSoonState = { "ifca:5h:1700000000": 1699999990 };
     await writeFile(budgetRefreshSoonStatePath(atmuxDir), JSON.stringify(s));
-    await withBudgetDb(teamBudgetDbPath(atmuxDir), () => {});
+    await withBudgetDb(stateDbPath(atmuxDir), () => {});
     expect(await loadRefreshSoonState(atmuxDir)).toEqual(s);
-    await withBudgetDb(teamBudgetDbPath(atmuxDir), (db) => {
+    await withBudgetDb(stateDbPath(atmuxDir), (db) => {
       expect(new BudgetRepo(db).get("budget-refresh-soon-state")?.observedAt).toBe(
         1699999990 * 1000,
       );

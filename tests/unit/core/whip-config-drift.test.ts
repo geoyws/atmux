@@ -14,7 +14,8 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type ZodError, z } from "zod";
-import { readFlagTextAtDb, teamFlagsDbPath } from "../../../src/core/flags-repo.ts";
+import { stateDbPath } from "../../../src/core/common.ts";
+import { readFlagTextAtDb } from "../../../src/core/flags-repo.ts";
 import {
   composeCatastrophicDrift,
   composeDriftReport,
@@ -370,7 +371,7 @@ describe("shouldFireDriftPing", () => {
 describe("recordDriftPing", () => {
   async function readRow(): Promise<unknown> {
     const text = await readFlagTextAtDb(
-      teamFlagsDbPath(atmuxDir),
+      stateDbPath(atmuxDir),
       "whip-config-drift-state",
       whipConfigDriftStatePath(atmuxDir),
     );

@@ -26,13 +26,8 @@ import {
   type ResumeReason,
 } from "../schema/resume.ts";
 import type { Team, TeamMember } from "../schema/team.ts";
-import { buildWindowName, defaultEmojiForRole } from "./common.ts";
-import {
-  clearFlagTextAtDb,
-  readFlagTextAtDb,
-  teamFlagsDbPath,
-  writeFlagTextAtDb,
-} from "./flags-repo.ts";
+import { buildWindowName, defaultEmojiForRole, stateDbPath } from "./common.ts";
+import { clearFlagTextAtDb, readFlagTextAtDb, writeFlagTextAtDb } from "./flags-repo.ts";
 import { listTasks } from "./kanban.ts";
 
 /** Default grace window between the per-member notify and the manifest
@@ -138,7 +133,7 @@ export async function softStop(opts: SoftStopOpts): Promise<SoftStopResult> {
     members: opts.team.members.map((m) => buildResumeMember(m, inFlightByMember)),
   };
   const manifestPath = resumeManifestPath(opts.atmuxDir);
-  await writeFlagTextAtDb(teamFlagsDbPath(opts.atmuxDir), "resume", JSON.stringify(manifest));
+  await writeFlagTextAtDb(stateDbPath(opts.atmuxDir), "resume", JSON.stringify(manifest));
 
   const inFlightCount = manifest.members.filter((m) => m.lastClaim !== null).length;
   return { manifest, manifestPath, notifiedCount, inFlightCount };
@@ -155,7 +150,7 @@ export function resumeManifestPath(atmuxDir: string): string {
  *  exists. Callers parse defensively — a corrupt manifest must not wedge
  *  the start pipeline. */
 export async function readResumeManifestText(atmuxDir: string): Promise<string | null> {
-  return readFlagTextAtDb(teamFlagsDbPath(atmuxDir), "resume", resumeManifestPath(atmuxDir));
+  return readFlagTextAtDb(stateDbPath(atmuxDir), "resume", resumeManifestPath(atmuxDir));
 }
 
 /**
@@ -171,7 +166,7 @@ export async function consumeResumeManifest(
   startSeconds: number,
 ): Promise<void> {
   await atomicWrite(consumedManifestPath(atmuxDir, startSeconds), rawText);
-  await clearFlagTextAtDb(teamFlagsDbPath(atmuxDir), "resume", resumeManifestPath(atmuxDir));
+  await clearFlagTextAtDb(stateDbPath(atmuxDir), "resume", resumeManifestPath(atmuxDir));
 }
 
 /** Path the start-side reader renames a consumed manifest to. The `<ts>`

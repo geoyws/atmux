@@ -56,7 +56,7 @@ import {
   BudgetRepo,
   maxFireEpochObservedAtMs,
 } from "../core/budget-state-repo.ts";
-import { getAtmuxDir, inboxDir, kanbanJsonPath } from "../core/common.ts";
+import { getAtmuxDir, inboxDir, kanbanJsonPath, stateDbPath } from "../core/common.ts";
 import {
   COCKPIT_FLAG_FILES,
   cockpitFlagsDbPath,
@@ -830,7 +830,7 @@ export async function migrateState(
   const atmuxDir = parsed.teamDir ? resolve(parsed.teamDir) : await getAtmuxDir({ cwd, env });
 
   // Resolve dbPath.
-  const dbPath = parsed.dbPath ? resolve(parsed.dbPath) : join(atmuxDir, "state.db");
+  const dbPath = parsed.dbPath ? resolve(parsed.dbPath) : stateDbPath(atmuxDir);
 
   const warnings: string[] = [];
   const counts: MigrationResult["counts"] = {};

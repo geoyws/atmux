@@ -26,7 +26,7 @@
 // ADR-169 §Context — stays a JSON file) and the budget files
 // (`budget` table owns those exclusively per ADR-169 OQ-3, P3).
 
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { ensureDir, exists, readTextOrNull, removeFile } from "../abstractions/fs.ts";
 import { closeDatabase, type Database, openDatabase } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
@@ -48,11 +48,6 @@ export const TEAM_ROLE_STATE_FILES = [
   "brief-versions",
   "ombudsman-pending",
 ] as const;
-
-/** Resolve the team-scope role_state DB. */
-export function teamRoleStateDbPath(atmuxDir: string): string {
-  return join(atmuxDir, "state.db");
-}
 
 /** Typed CRUD surface over `role_state`. Construct per open DB handle —
  *  callers that need lifecycle management use `withRoleStateDb`. */

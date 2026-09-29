@@ -57,7 +57,7 @@ import {
 import type { IssueSyncRecord } from "../schema/issue-sync.ts";
 import { resolveOrchestrationMode, type Team, type TeamIssueSyncTracker } from "../schema/team.ts";
 import { type LoadCockpitOpts, loadCockpit, walkSessions } from "./cockpit.ts";
-import { getAtmuxDir, loadTeam } from "./common.ts";
+import { getAtmuxDir, loadTeam, stateDbPath } from "./common.ts";
 import { DEFAULT_DEDUP_WINDOW_SEC, fileDedupedComplaint } from "./complaints.ts";
 import { ComplaintsRepo } from "./repositories/complaints-repo.ts";
 import { IssueSyncRepo } from "./repositories/issue-sync-repo.ts";
@@ -203,7 +203,7 @@ export function defaultTrackers(): Readonly<Record<string, IssueTracker>> {
 /** Default DB opener — `<atmuxDir>/state.db` through the house sqlite
  *  abstraction with the full migration ladder. */
 export function defaultOpenStateDb(atmuxDir: string): Database {
-  return openDatabase(join(atmuxDir, "state.db"), migrations);
+  return openDatabase(stateDbPath(atmuxDir), migrations);
 }
 
 /** Default clock — epoch seconds. */

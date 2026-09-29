@@ -12,6 +12,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exists } from "../../../src/abstractions/fs.ts";
+import { stateDbPath } from "../../../src/core/common.ts";
 import {
   COST_NAMESPACE,
   clearRoleTextAtDb,
@@ -22,7 +23,6 @@ import {
   readRoleTextAtDb,
   TEAM_ROLE_STATE,
   TEAM_ROLE_STATE_FILES,
-  teamRoleStateDbPath,
   withRoleStateDb,
   writeRoleTextAtDb,
 } from "../../../src/core/role-state-repo.ts";
@@ -60,15 +60,9 @@ describe("namespace lists + schema version", () => {
   });
 });
 
-describe("path helpers", () => {
-  test("teamRoleStateDbPath appends state.db", () => {
-    expect(teamRoleStateDbPath("/x/.atmux")).toBe("/x/.atmux/state.db");
-  });
-});
-
 describe("RoleStateRepo CRUD", () => {
   test("get misses on empty table; set/get roundtrips; set overwrites", async () => {
-    await withRoleStateDb(teamRoleStateDbPath(atmuxDir), (db) => {
+    await withRoleStateDb(stateDbPath(atmuxDir), (db) => {
       const repo = new RoleStateRepo(db);
       expect(repo.get("alpha", "cost")).toBeNull();
       repo.set("alpha", "cost", '{"a":1}', 1000);
@@ -89,7 +83,7 @@ describe("RoleStateRepo CRUD", () => {
   });
 
   test("composite key: same role across namespaces + same namespace across roles", async () => {
-    await withRoleStateDb(teamRoleStateDbPath(atmuxDir), (db) => {
+    await withRoleStateDb(stateDbPath(atmuxDir), (db) => {
       const repo = new RoleStateRepo(db);
       repo.set("alpha", "cost", '{"n":1}', 1);
       repo.set("alpha", "modal-history", "[]", 1);
@@ -102,7 +96,7 @@ describe("RoleStateRepo CRUD", () => {
   });
 
   test("delete removes the row; no-op when absent", async () => {
-    await withRoleStateDb(teamRoleStateDbPath(atmuxDir), (db) => {
+    await withRoleStateDb(stateDbPath(atmuxDir), (db) => {
       const repo = new RoleStateRepo(db);
       repo.delete("alpha", "cost");
       expect(repo.get("alpha", "cost")).toBeNull();
@@ -113,7 +107,7 @@ describe("RoleStateRepo CRUD", () => {
   });
 
   test("list returns every (role, payload) under one namespace", async () => {
-    await withRoleStateDb(teamRoleStateDbPath(atmuxDir), (db) => {
+    await withRoleStateDb(stateDbPath(atmuxDir), (db) => {
       const repo = new RoleStateRepo(db);
       expect(repo.list("cost")).toEqual([]);
       repo.set("alpha", "cost", '{"n":1}', 1);
@@ -128,7 +122,7 @@ describe("RoleStateRepo CRUD", () => {
   });
 
   test("withRoleStateDb returns the callback value", async () => {
-    const out = await withRoleStateDb(teamRoleStateDbPath(atmuxDir), () => 42);
+    const out = await withRoleStateDb(stateDbPath(atmuxDir), () => 42);
     expect(out).toBe(42);
   });
 });
@@ -137,7 +131,7 @@ describe("importLegacyRoleText", () => {
   test("existing row wins; legacy file untouched", async () => {
     const legacy = join(atmuxDir, "state", "cost-alpha.json");
     await writeFile(legacy, '{"from":"file"}');
-    await withRoleStateDb(teamRoleStateDbPath(atmuxDir), async (db) => {
+    await withRoleStateDb(stateDbPath(atmuxDir), async (db) => {
       const repo = new RoleStateRepo(db);
       repo.set("alpha", "cost", '{"from":"row"}', 7);
       expect(await importLegacyRoleText(db, "alpha", "cost", legacy, 8)).toBe('{"from":"row"}');
@@ -148,14 +142,14 @@ describe("importLegacyRoleText", () => {
   test("absent row + present file → promotes file content into the row", async () => {
     const legacy = join(atmuxDir, "state", "cost-alpha.json");
     await writeFile(legacy, '{"from":"file"}');
-    await withRoleStateDb(teamRoleStateDbPath(atmuxDir), async (db) => {
+    await withRoleStateDb(stateDbPath(atmuxDir), async (db) => {
       expect(await importLegacyRoleText(db, "alpha", "cost", legacy, 9)).toBe('{"from":"file"}');
       expect(new RoleStateRepo(db).get("alpha", "cost")).toBe('{"from":"file"}');
     });
   });
 
   test("absent row + absent file → null", async () => {
-    await withRoleStateDb(teamRoleStateDbPath(atmuxDir), async (db) => {
+    await withRoleStateDb(stateDbPath(atmuxDir), async (db) => {
       expect(
         await importLegacyRoleText(db, "alpha", "cost", join(atmuxDir, "state", "nope.json"), 9),
       ).toBeNull();
@@ -167,7 +161,7 @@ describe("readRoleTextAtDb", () => {
   test("no DB yet + legacy file → file content, DB not created", async () => {
     const legacy = join(atmuxDir, "state", "cost-alpha.json");
     await writeFile(legacy, '{"a":1}');
-    const dbPath = teamRoleStateDbPath(atmuxDir);
+    const dbPath = stateDbPath(atmuxDir);
     expect(await readRoleTextAtDb(dbPath, "alpha", "cost", legacy)).toBe('{"a":1}');
     expect(await exists(dbPath)).toBe(false);
   });
@@ -175,7 +169,7 @@ describe("readRoleTextAtDb", () => {
   test("no DB + no file → null", async () => {
     expect(
       await readRoleTextAtDb(
-        teamRoleStateDbPath(atmuxDir),
+        stateDbPath(atmuxDir),
         "alpha",
         "cost",
         join(atmuxDir, "state", "nope.json"),
@@ -186,7 +180,7 @@ describe("readRoleTextAtDb", () => {
   test("DB row wins over legacy file", async () => {
     const legacy = join(atmuxDir, "state", "cost-alpha.json");
     await writeFile(legacy, '{"from":"file"}');
-    const dbPath = teamRoleStateDbPath(atmuxDir);
+    const dbPath = stateDbPath(atmuxDir);
     await writeRoleTextAtDb(dbPath, "alpha", "cost", '{"from":"row"}', 3);
     expect(await readRoleTextAtDb(dbPath, "alpha", "cost", legacy)).toBe('{"from":"row"}');
   });
@@ -194,7 +188,7 @@ describe("readRoleTextAtDb", () => {
   test("DB present + no row + legacy file → promotes and returns", async () => {
     const legacy = join(atmuxDir, "state", "cost-alpha.json");
     await writeFile(legacy, '{"from":"file"}');
-    const dbPath = teamRoleStateDbPath(atmuxDir);
+    const dbPath = stateDbPath(atmuxDir);
     await writeRoleTextAtDb(dbPath, "other", "cost", "{}", 3);
     expect(await readRoleTextAtDb(dbPath, "alpha", "cost", legacy)).toBe('{"from":"file"}');
     await withRoleStateDb(dbPath, (db) => {
@@ -203,7 +197,7 @@ describe("readRoleTextAtDb", () => {
   });
 
   test("DB present + neither → null", async () => {
-    const dbPath = teamRoleStateDbPath(atmuxDir);
+    const dbPath = stateDbPath(atmuxDir);
     await writeRoleTextAtDb(dbPath, "other", "cost", "{}", 3);
     expect(
       await readRoleTextAtDb(dbPath, "alpha", "cost", join(atmuxDir, "state", "nope.json")),
@@ -213,7 +207,7 @@ describe("readRoleTextAtDb", () => {
 
 describe("writeRoleTextAtDb / clearRoleTextAtDb", () => {
   test("write creates the DB + row with default clock", async () => {
-    const dbPath = teamRoleStateDbPath(atmuxDir);
+    const dbPath = stateDbPath(atmuxDir);
     await writeRoleTextAtDb(dbPath, "_", "heads-up-cursor", "{}");
     await withRoleStateDb(dbPath, (db) => {
       expect(new RoleStateRepo(db).get("_", "heads-up-cursor")).toBe("{}");
@@ -223,7 +217,7 @@ describe("writeRoleTextAtDb / clearRoleTextAtDb", () => {
   test("clear removes row + leftover legacy file", async () => {
     const legacy = join(atmuxDir, "state", "ombudsman-pending.json");
     await writeFile(legacy, '{"stale":true}');
-    const dbPath = teamRoleStateDbPath(atmuxDir);
+    const dbPath = stateDbPath(atmuxDir);
     await writeRoleTextAtDb(dbPath, "_", "ombudsman-pending", '{"fresh":true}', 3);
     await clearRoleTextAtDb(dbPath, "_", "ombudsman-pending", legacy);
     expect(await exists(legacy)).toBe(false);
@@ -235,13 +229,13 @@ describe("writeRoleTextAtDb / clearRoleTextAtDb", () => {
   test("clear with no DB still removes a legacy file", async () => {
     const legacy = join(atmuxDir, "state", "ombudsman-pending.json");
     await writeFile(legacy, '{"stale":true}');
-    await clearRoleTextAtDb(teamRoleStateDbPath(atmuxDir), "_", "ombudsman-pending", legacy);
+    await clearRoleTextAtDb(stateDbPath(atmuxDir), "_", "ombudsman-pending", legacy);
     expect(await exists(legacy)).toBe(false);
   });
 
   test("clear idempotent when both sides absent", async () => {
     await clearRoleTextAtDb(
-      teamRoleStateDbPath(atmuxDir),
+      stateDbPath(atmuxDir),
       "_",
       "ombudsman-pending",
       join(atmuxDir, "state", "nope.json"),

@@ -23,7 +23,7 @@ import { z } from "zod";
 import { exists, removeFile, statOrNull, writeText } from "../abstractions/fs.ts";
 import { tryReadJson, updateJson } from "../abstractions/json.ts";
 import { now as nowMs } from "../abstractions/time.ts";
-import { inboxDir as resolveInboxDir, logsDir as resolveLogsDir } from "./common.ts";
+import { inboxDir as resolveInboxDir, logsDir as resolveLogsDir, stateDbPath } from "./common.ts";
 
 export type DirectoryRead = (path: string) => Promise<string[]>;
 
@@ -274,7 +274,7 @@ export async function purgeLegacyInboxes(
   opts: PurgeLegacyInboxesOpts = {},
 ): Promise<PurgeLegacyInboxesResult> {
   const dryRun = opts.dryRun === true;
-  const stateDb = join(atmuxDir, "state.db");
+  const stateDb = stateDbPath(atmuxDir);
   if (!(await exists(stateDb))) {
     return { removed: [], skipped: true };
   }

@@ -25,6 +25,7 @@ import { ensureDir, exists } from "../abstractions/fs.ts";
 import { createTmux } from "../abstractions/tmux.ts";
 import { defaultGitSpawn, type GitSpawn } from "../abstractions/worktree.ts";
 import { loadCockpit, resolveCockpitConfigPath } from "../core/cockpit.ts";
+import { stateDbPath } from "../core/common.ts";
 import { loadKanban } from "../core/kanban.ts";
 import { externalKanbanEnabled } from "../core/kanban-backend.ts";
 import { makeReapZombieWorktree, type ReapDeps, type ReapLogEntry } from "../core/reap.ts";
@@ -185,7 +186,7 @@ export function defaultDiscoveryIO(): DiscoveryIO {
 // ---------- Helpers ----------
 
 async function probeKanban(atmuxDir: string, parent: boolean): Promise<KanbanProbe | null> {
-  const dbPath = join(atmuxDir, "state.db");
+  const dbPath = stateDbPath(atmuxDir);
   if (!(await externalKanbanEnabled(atmuxDir)) && !(await exists(dbPath))) return null;
   try {
     const kanban = await loadKanban(atmuxDir);
@@ -211,7 +212,7 @@ async function probeKanban(atmuxDir: string, parent: boolean): Promise<KanbanPro
 }
 
 async function probeKanbanEpicRows(atmuxDir: string): Promise<KanbanEpicRow[] | null> {
-  const dbPath = join(atmuxDir, "state.db");
+  const dbPath = stateDbPath(atmuxDir);
   if (!(await externalKanbanEnabled(atmuxDir)) && !(await exists(dbPath))) return null;
   try {
     return (await loadKanban(atmuxDir)).epics.map((epic) => ({

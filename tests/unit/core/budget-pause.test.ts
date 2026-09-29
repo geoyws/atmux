@@ -13,7 +13,8 @@ import {
   loadBudgetPauseState,
   writeBudgetPauseState,
 } from "../../../src/core/budget-pause.ts";
-import { BudgetRepo, teamBudgetDbPath, withBudgetDb } from "../../../src/core/budget-state-repo.ts";
+import { BudgetRepo, withBudgetDb } from "../../../src/core/budget-state-repo.ts";
+import { stateDbPath } from "../../../src/core/common.ts";
 
 let atmuxDir: string;
 
@@ -65,7 +66,7 @@ describe("writeBudgetPauseState + roundtrip", () => {
 
   test("write lands a bash-compatible JSON blob in the budget row (no schema-version)", async () => {
     await writeBudgetPauseState(atmuxDir, sampleState());
-    await withBudgetDb(teamBudgetDbPath(atmuxDir), (db) => {
+    await withBudgetDb(stateDbPath(atmuxDir), (db) => {
       const row = new BudgetRepo(db).get("budget-pause");
       const raw = JSON.parse(row?.state ?? "{}");
       // Bash readers expect exactly these top-level keys.
@@ -79,10 +80,10 @@ describe("writeBudgetPauseState + roundtrip", () => {
 
   test("legacy file promotes into the row on first load (DB already present)", async () => {
     await writeFile(budgetPauseStatePath(atmuxDir), JSON.stringify(sampleState()));
-    await withBudgetDb(teamBudgetDbPath(atmuxDir), () => {});
+    await withBudgetDb(stateDbPath(atmuxDir), () => {});
     const loaded = await loadBudgetPauseState(atmuxDir);
     expect(loaded?.pausedAt).toBe(1_700_000_000);
-    await withBudgetDb(teamBudgetDbPath(atmuxDir), (db) => {
+    await withBudgetDb(stateDbPath(atmuxDir), (db) => {
       expect(new BudgetRepo(db).get("budget-pause")?.observedAt).toBe(1_700_000_000 * 1000);
     });
   });

@@ -38,13 +38,8 @@ import { parseJsonString } from "../abstractions/json.ts";
 import { transactImmediate } from "../abstractions/sqlite.ts";
 import { now as nowMs } from "../abstractions/time.ts";
 import { type PausedMap, PausedMapSchema, type PauseEntry } from "../schema/paused.ts";
-import {
-  FlagsRepo,
-  importLegacyFlagText,
-  readFlagTextAtDb,
-  teamFlagsDbPath,
-  withFlagsDb,
-} from "./flags-repo.ts";
+import { stateDbPath } from "./common.ts";
+import { FlagsRepo, importLegacyFlagText, readFlagTextAtDb, withFlagsDb } from "./flags-repo.ts";
 
 /** Default reason string when no override is supplied. Mirrors bash
  *  `${ATMUX_PAUSE_REASON:-manual}` from `lib/pause.sh:22`. */
@@ -63,7 +58,7 @@ export function pausedJsonPath(atmuxDir: string): string {
  */
 export async function loadPausedMap(atmuxDir: string): Promise<PausedMap> {
   const path = pausedJsonPath(atmuxDir);
-  const text = await readFlagTextAtDb(teamFlagsDbPath(atmuxDir), "paused", path);
+  const text = await readFlagTextAtDb(stateDbPath(atmuxDir), "paused", path);
   if (text === null) return {};
   return parseJsonString(path, PausedMapSchema, text);
 }
@@ -79,7 +74,7 @@ async function updatePausedMap(
   mutator: (current: PausedMap) => PausedMap,
 ): Promise<PausedMap> {
   const path = pausedJsonPath(atmuxDir);
-  const dbPath = teamFlagsDbPath(atmuxDir);
+  const dbPath = stateDbPath(atmuxDir);
   return withFlagsDb(dbPath, async (db) => {
     await importLegacyFlagText(db, "paused", path, nowMs());
     return transactImmediate(db, () => {

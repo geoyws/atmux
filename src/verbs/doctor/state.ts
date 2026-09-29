@@ -7,6 +7,7 @@ import {
   buildWindowName,
   kanbanJsonPath,
   resolveTeamSocket,
+  stateDbPath,
   tryLoadTeam,
 } from "../../core/common.ts";
 import { loadInbox } from "../../core/inbox.ts";
@@ -81,7 +82,7 @@ export interface PhantomEntry {
 }
 
 export async function findPhantomInboxes(atmuxDir: string): Promise<PhantomEntry[]> {
-  const stateDb = join(atmuxDir, "state.db");
+  const stateDb = stateDbPath(atmuxDir);
   // Malformed team.json → SchemaError out of tryLoadTeam. checkTeam already
   // surfaces the red row; phantom-inbox scan has no team roster to walk, so
   // treat unparseable identically to absent (return []). Without this catch,
@@ -118,7 +119,7 @@ export async function findPhantomInboxes(atmuxDir: string): Promise<PhantomEntry
 /** Legacy ADR-076 JSON inbox files on SQL-canonical teams mislead tools
  *  that read the path directly. Surface for `atmux cleanup inboxes --purge-legacy`. */
 export async function findLegacyInboxJson(atmuxDir: string): Promise<string[]> {
-  const stateDb = join(atmuxDir, "state.db");
+  const stateDb = stateDbPath(atmuxDir);
   if (!(await exists(stateDb))) return [];
   const ibDir = join(atmuxDir, "inboxes");
   if (!(await exists(ibDir))) return [];

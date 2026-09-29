@@ -42,11 +42,6 @@ export const TEAM_FLAG_FILES = [
 /** Flags keys resident in the COCKPIT `~/.atmux/state.db`. */
 export const COCKPIT_FLAG_FILES = ["pulse-state", "sentinel-state"] as const;
 
-/** Resolve the team-scope flags DB. */
-export function teamFlagsDbPath(atmuxDir: string): string {
-  return join(atmuxDir, "state.db");
-}
-
 /** Resolve the cockpit-scope flags DB from a home directory. */
 export function cockpitFlagsDbPath(home: string): string {
   return join(home, ".atmux", "state.db");

@@ -73,7 +73,7 @@ import {
   committerSweep,
   type QueueMergeFn,
 } from "../core/committer-sweep.ts";
-import { getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts";
+import { getAtmuxDir, type ResolveDirOpts, requireTeam, stateDbPath } from "../core/common.ts";
 import { bootstrapEventSubscriptions, EVENT_SUBSCRIPTIONS } from "../core/event-subscriptions.ts";
 import {
   createGitterMergeHandler as createGitterMergeHandlerImport,
@@ -318,7 +318,7 @@ export async function committerSweepVerb(
   // Open the team's state.db for merger_state lookups. The repo
   // stays open only for the duration of the sweep — cron firings
   // are one-shot.
-  const db = openDb(join(atmuxDir, "state.db"));
+  const db = openDb(stateDbPath(atmuxDir));
   try {
     const repo = new MergerStateRepo(db);
     // T9 (t-6987392a): default to the production dispatcher when
@@ -537,7 +537,7 @@ export async function committerDaemonVerb(
     // loaded and (b) the binary is available on disk. Falls back to
     // the in-process 100ms poll path when either is missing.
     const channel = "honker:stream:task.done";
-    const dbPath = `${ctx.atmuxDir}/state.db`;
+    const dbPath = stateDbPath(ctx.atmuxDir);
     let externalSignals: AsyncIterable<string> | undefined;
     let wakeMode = "poll";
     if (honkerLoaded) {
@@ -688,7 +688,7 @@ export async function buildEventDrivenContext(
     : join(atmuxDir, "..");
   const merger = await resolveMergerConfig(team, teamRoot, { git });
   const baseBranch = merger.baseBranch;
-  const db = openDb(join(atmuxDir, "state.db"));
+  const db = openDb(stateDbPath(atmuxDir));
   // Boot Honker against this db so getHonkerState() resolves true when
   // the substrate is healthy. Best-effort — bootHonker never throws.
   bootHonkerImport(db);

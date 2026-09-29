@@ -23,13 +23,12 @@
 
 import type { Database } from "bun:sqlite";
 import { randomBytes } from "node:crypto";
-import { join } from "node:path";
 import { exists } from "../abstractions/fs.ts";
 import { closeDatabase, openDatabase } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
 import type { Team, TeamMember } from "../schema/team.ts";
-import { buildWindowName, getSessionName, resolveTeamSocket } from "./common.ts";
+import { buildWindowName, getSessionName, resolveTeamSocket, stateDbPath } from "./common.ts";
 import {
   classifyRefusal,
   type RefusalClass,
@@ -207,7 +206,7 @@ function defaultLog(msg: string): void {
  *  migration ladder. Returns the `close` callback so callers don't
  *  need to import `closeDatabase` directly. */
 function defaultOpenDb(atmuxDir: string): { db: Database; close: () => void } {
-  const path = join(atmuxDir, "state.db");
+  const path = stateDbPath(atmuxDir);
   const db = openDatabase(path, migrations);
   return { db, close: () => closeDatabase(db) };
 }
@@ -234,7 +233,7 @@ export async function scanTeamForRefusals(
   // DB is required before we start scanning — if the state.db is
   // missing (uninitialized team), short-circuit to a fully no-op
   // result rather than crashing the cron loop.
-  const dbPath = join(atmuxDir, "state.db");
+  const dbPath = stateDbPath(atmuxDir);
   if (deps.openDb === undefined && !(await exists(dbPath))) {
     log(`refusal-scan: ${dbPath} not initialized — skipping`);
     return { scanned: 0, detected: 0, recorded: 0, deduped: 0, perMember: [] };

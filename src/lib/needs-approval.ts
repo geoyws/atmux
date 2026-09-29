@@ -15,7 +15,7 @@
 import { readdir } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { readTextOrNull, statOrNull } from "../abstractions/fs.ts";
-import { driverInboxPath, getAtmuxDir } from "../core/common.ts";
+import { driverInboxPath, getAtmuxDir, stateDbPath } from "../core/common.ts";
 import { parseEntries } from "../core/driver-inbox.ts";
 import { listTasks } from "../core/kanban.ts";
 import type { KanbanTask } from "../schema/kanban.ts";
@@ -316,7 +316,7 @@ export async function scanBlockedTasks(
   clock: () => number,
 ): Promise<NeedsApprovalEntry[]> {
   const atmuxDir = join(projectRoot, ".atmux");
-  const dbPath = join(atmuxDir, "state.db");
+  const dbPath = stateDbPath(atmuxDir);
   const rows = await kanban.listBlocked(atmuxDir);
   const now = clock();
   const out: NeedsApprovalEntry[] = [];

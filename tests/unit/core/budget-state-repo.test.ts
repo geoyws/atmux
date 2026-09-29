@@ -20,10 +20,10 @@ import {
   importLegacyBudgetText,
   maxFireEpochObservedAtMs,
   readBudgetTextAtDb,
-  teamBudgetDbPath,
   withBudgetDb,
   writeBudgetTextAtDb,
 } from "../../../src/core/budget-state-repo.ts";
+import { stateDbPath } from "../../../src/core/common.ts";
 
 let root: string;
 let atmuxDir: string;
@@ -57,15 +57,11 @@ describe("probe list + schema version", () => {
   test("schema version marker is 1", () => {
     expect(BUDGET_SCHEMA_VERSION).toBe(1);
   });
-
-  test("teamBudgetDbPath appends state.db", () => {
-    expect(teamBudgetDbPath("/x/.atmux")).toBe("/x/.atmux/state.db");
-  });
 });
 
 describe("BudgetRepo CRUD", () => {
   test("get misses on empty table; set/get roundtrips observed_at; set overwrites", async () => {
-    await withBudgetDb(teamBudgetDbPath(atmuxDir), (db) => {
+    await withBudgetDb(stateDbPath(atmuxDir), (db) => {
       const repo = new BudgetRepo(db);
       expect(repo.get("budget-pause")).toBeNull();
       repo.set("budget-pause", '{"paused":true}', 1_700_000_000_000, 1000);
@@ -87,7 +83,7 @@ describe("BudgetRepo CRUD", () => {
   });
 
   test("delete removes the row; no-op when absent", async () => {
-    await withBudgetDb(teamBudgetDbPath(atmuxDir), (db) => {
+    await withBudgetDb(stateDbPath(atmuxDir), (db) => {
       const repo = new BudgetRepo(db);
       repo.delete("budget-pause");
       expect(repo.get("budget-pause")).toBeNull();
@@ -98,7 +94,7 @@ describe("BudgetRepo CRUD", () => {
   });
 
   test("withBudgetDb returns the callback value", async () => {
-    const out = await withBudgetDb(teamBudgetDbPath(atmuxDir), () => 42);
+    const out = await withBudgetDb(stateDbPath(atmuxDir), () => 42);
     expect(out).toBe(42);
   });
 });
@@ -130,7 +126,7 @@ describe("importLegacyBudgetText", () => {
   test("existing row wins; legacy file untouched", async () => {
     const legacy = join(atmuxDir, "state", "budget-pause.json");
     await writeFile(legacy, '{"from":"file"}');
-    await withBudgetDb(teamBudgetDbPath(atmuxDir), async (db) => {
+    await withBudgetDb(stateDbPath(atmuxDir), async (db) => {
       const repo = new BudgetRepo(db);
       repo.set("budget-pause", '{"from":"row"}', 7, 7);
       expect(await importLegacyBudgetText(db, "budget-pause", legacy, observePausedAt, 8)).toBe(
@@ -143,7 +139,7 @@ describe("importLegacyBudgetText", () => {
   test("empty dedup map → updatedAtMs as observed_at (nothing observed yet)", async () => {
     const legacy = join(atmuxDir, "state", "budget-warning-state.json");
     await writeFile(legacy, JSON.stringify({}));
-    await withBudgetDb(teamBudgetDbPath(atmuxDir), async (db) => {
+    await withBudgetDb(stateDbPath(atmuxDir), async (db) => {
       expect(
         await importLegacyBudgetText(
           db,
@@ -162,7 +158,7 @@ describe("importLegacyBudgetText", () => {
   test("absent row + present file → promotes content + derived observed_at", async () => {
     const legacy = join(atmuxDir, "state", "budget-pause.json");
     await writeFile(legacy, JSON.stringify({ paused: true, pausedAt: 1_700_000_000 }));
-    await withBudgetDb(teamBudgetDbPath(atmuxDir), async (db) => {
+    await withBudgetDb(stateDbPath(atmuxDir), async (db) => {
       expect(await importLegacyBudgetText(db, "budget-pause", legacy, observePausedAt, 9)).toBe(
         JSON.stringify({ paused: true, pausedAt: 1_700_000_000 }),
       );
@@ -174,7 +170,7 @@ describe("importLegacyBudgetText", () => {
   });
 
   test("absent row + absent file → null", async () => {
-    await withBudgetDb(teamBudgetDbPath(atmuxDir), async (db) => {
+    await withBudgetDb(stateDbPath(atmuxDir), async (db) => {
       expect(
         await importLegacyBudgetText(
           db,
@@ -192,7 +188,7 @@ describe("readBudgetTextAtDb", () => {
   test("no DB yet + legacy file → file content, DB not created", async () => {
     const legacy = join(atmuxDir, "state", "budget-pause.json");
     await writeFile(legacy, '{"a":1}');
-    const dbPath = teamBudgetDbPath(atmuxDir);
+    const dbPath = stateDbPath(atmuxDir);
     expect(await readBudgetTextAtDb(dbPath, "budget-pause", legacy, observePausedAt)).toBe(
       '{"a":1}',
     );
@@ -202,7 +198,7 @@ describe("readBudgetTextAtDb", () => {
   test("no DB + no file → null", async () => {
     expect(
       await readBudgetTextAtDb(
-        teamBudgetDbPath(atmuxDir),
+        stateDbPath(atmuxDir),
         "budget-pause",
         join(atmuxDir, "state", "nope.json"),
         observePausedAt,
@@ -213,7 +209,7 @@ describe("readBudgetTextAtDb", () => {
   test("DB row wins over legacy file", async () => {
     const legacy = join(atmuxDir, "state", "budget-pause.json");
     await writeFile(legacy, '{"from":"file"}');
-    const dbPath = teamBudgetDbPath(atmuxDir);
+    const dbPath = stateDbPath(atmuxDir);
     await writeBudgetTextAtDb(dbPath, "budget-pause", '{"from":"row"}', 3);
     expect(await readBudgetTextAtDb(dbPath, "budget-pause", legacy, observePausedAt)).toBe(
       '{"from":"row"}',
@@ -223,7 +219,7 @@ describe("readBudgetTextAtDb", () => {
   test("DB present + no row + legacy file → promotes and returns", async () => {
     const legacy = join(atmuxDir, "state", "budget-pause.json");
     await writeFile(legacy, '{"from":"file"}');
-    const dbPath = teamBudgetDbPath(atmuxDir);
+    const dbPath = stateDbPath(atmuxDir);
     await writeBudgetTextAtDb(dbPath, "budget-warning-state", "{}", 3);
     expect(await readBudgetTextAtDb(dbPath, "budget-pause", legacy, observePausedAt)).toBe(
       '{"from":"file"}',
@@ -234,7 +230,7 @@ describe("readBudgetTextAtDb", () => {
   });
 
   test("DB present + neither → null", async () => {
-    const dbPath = teamBudgetDbPath(atmuxDir);
+    const dbPath = stateDbPath(atmuxDir);
     await writeBudgetTextAtDb(dbPath, "budget-warning-state", "{}", 3);
     expect(
       await readBudgetTextAtDb(
@@ -249,7 +245,7 @@ describe("readBudgetTextAtDb", () => {
 
 describe("writeBudgetTextAtDb / clearBudgetTextAtDb", () => {
   test("write creates the DB + row with default clock", async () => {
-    const dbPath = teamBudgetDbPath(atmuxDir);
+    const dbPath = stateDbPath(atmuxDir);
     await writeBudgetTextAtDb(dbPath, "budget-pause", "{}", 11);
     await withBudgetDb(dbPath, (db) => {
       expect(new BudgetRepo(db).get("budget-pause")).toEqual({ state: "{}", observedAt: 11 });
@@ -259,7 +255,7 @@ describe("writeBudgetTextAtDb / clearBudgetTextAtDb", () => {
   test("clear removes row + leftover legacy file", async () => {
     const legacy = join(atmuxDir, "state", "budget-pause.json");
     await writeFile(legacy, '{"stale":true}');
-    const dbPath = teamBudgetDbPath(atmuxDir);
+    const dbPath = stateDbPath(atmuxDir);
     await writeBudgetTextAtDb(dbPath, "budget-pause", '{"fresh":true}', 3);
     await clearBudgetTextAtDb(dbPath, "budget-pause", legacy);
     expect(await exists(legacy)).toBe(false);
@@ -271,13 +267,13 @@ describe("writeBudgetTextAtDb / clearBudgetTextAtDb", () => {
   test("clear with no DB still removes a legacy file", async () => {
     const legacy = join(atmuxDir, "state", "budget-pause.json");
     await writeFile(legacy, '{"stale":true}');
-    await clearBudgetTextAtDb(teamBudgetDbPath(atmuxDir), "budget-pause", legacy);
+    await clearBudgetTextAtDb(stateDbPath(atmuxDir), "budget-pause", legacy);
     expect(await exists(legacy)).toBe(false);
   });
 
   test("clear idempotent when both sides absent", async () => {
     await clearBudgetTextAtDb(
-      teamBudgetDbPath(atmuxDir),
+      stateDbPath(atmuxDir),
       "budget-pause",
       join(atmuxDir, "state", "nope.json"),
     );

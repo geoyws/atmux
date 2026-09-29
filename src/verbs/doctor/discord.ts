@@ -1,4 +1,3 @@
-import { join } from "node:path";
 import { resolveWebhookUrl } from "../../abstractions/discord.ts";
 import { announceHonkerState } from "../../abstractions/events.ts";
 import { exists } from "../../abstractions/fs.ts";
@@ -10,6 +9,7 @@ import {
 import { probeStatus } from "../../abstractions/http.ts";
 import { closeDatabase, openDatabase } from "../../abstractions/sqlite.ts";
 import { migrations } from "../../abstractions/sqlite-migrations.ts";
+import { stateDbPath } from "../../core/common.ts";
 import type { Team } from "../../schema/team.ts";
 import type { DoctorRow } from "./types.ts";
 
@@ -135,7 +135,7 @@ export function honkerStateRows(state: HonkerRuntimeState | null): DoctorRow[] {
  *  Tolerant of missing state.db (returns info row) — first-run hosts
  *  don't fail this probe. */
 export async function checkHonker(atmuxDir: string, hooks: HonkerHooks = {}): Promise<DoctorRow[]> {
-  const stateDb = join(atmuxDir, "state.db");
+  const stateDb = stateDbPath(atmuxDir);
   if (!(await exists(stateDb))) {
     return [
       {

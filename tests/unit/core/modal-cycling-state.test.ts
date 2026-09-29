@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { stateDbPath } from "../../../src/core/common.ts";
 import type { ModalHistoryEntry } from "../../../src/core/modal-cycling-detector.ts";
 import {
   loadDedupState,
@@ -17,11 +18,7 @@ import {
   saveModalHistory,
   shouldFireDedup,
 } from "../../../src/core/modal-cycling-state.ts";
-import {
-  RoleStateRepo,
-  teamRoleStateDbPath,
-  withRoleStateDb,
-} from "../../../src/core/role-state-repo.ts";
+import { RoleStateRepo, withRoleStateDb } from "../../../src/core/role-state-repo.ts";
 
 describe("modalHistoryPath / modalCyclingDedupPath", () => {
   test("history path includes member name", () => {
@@ -109,7 +106,7 @@ describe("loadModalHistory / saveModalHistory — roundtrip + corrupt fallback",
     expect(await loadModalHistory(atmuxDir, "alice")).toEqual(a);
     expect(await loadModalHistory(atmuxDir, "bob")).toEqual(b);
     // Confirm separate rows exist in role_state (no legacy files written).
-    await withRoleStateDb(teamRoleStateDbPath(atmuxDir), (db) => {
+    await withRoleStateDb(stateDbPath(atmuxDir), (db) => {
       const repo = new RoleStateRepo(db);
       expect(repo.get("alice", "modal-history")).toContain("sha256:a");
       expect(repo.get("alice", "modal-history")).not.toContain("sha256:b");

@@ -14,9 +14,9 @@ import { join } from "node:path";
 import {
   clearBudgetTextAtDb,
   readBudgetTextAtDb,
-  teamBudgetDbPath,
   writeBudgetTextAtDb,
 } from "./budget-state-repo.ts";
+import { stateDbPath } from "./common.ts";
 
 /** Per-member at-risk record carried in the state file. */
 export interface AtRiskMember {
@@ -74,7 +74,7 @@ export function budgetPauseObservedAtMs(text: string, fallbackMs: number): numbe
 export async function loadBudgetPauseState(atmuxDir: string): Promise<BudgetPauseState | null> {
   const path = budgetPauseStatePath(atmuxDir);
   const txt = await readBudgetTextAtDb(
-    teamBudgetDbPath(atmuxDir),
+    stateDbPath(atmuxDir),
     BUDGET_PROBE,
     path,
     budgetPauseObservedAtMs,
@@ -102,7 +102,7 @@ export async function writeBudgetPauseState(
   state: BudgetPauseState,
 ): Promise<void> {
   await writeBudgetTextAtDb(
-    teamBudgetDbPath(atmuxDir),
+    stateDbPath(atmuxDir),
     BUDGET_PROBE,
     JSON.stringify(state),
     Math.floor(state.pausedAt * 1000),
@@ -112,11 +112,7 @@ export async function writeBudgetPauseState(
 /** Table-only clear that also removes a leftover legacy file
  *  (idempotent — absence on both sides is fine). */
 export async function clearBudgetPauseState(atmuxDir: string): Promise<void> {
-  await clearBudgetTextAtDb(
-    teamBudgetDbPath(atmuxDir),
-    BUDGET_PROBE,
-    budgetPauseStatePath(atmuxDir),
-  );
+  await clearBudgetTextAtDb(stateDbPath(atmuxDir), BUDGET_PROBE, budgetPauseStatePath(atmuxDir));
 }
 
 // ---------- Internal ----------
