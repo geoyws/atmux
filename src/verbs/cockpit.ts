@@ -2775,27 +2775,27 @@ async function refusePlannedDestructiveOps(opts: RefuseDestructiveOpts): Promise
   // Compute the wanted-name set; anything else that isn't an
   // always-preserved window gets killed.
   if (skipOrphanPrune !== true) {
-  const wanted = new Set<string>([
-    "_superdriver",
-    ...(wantMedic ? ["_medic"] : []),
-    ...operatorWindows.map((w) => w.name),
-    ...(viewerNames ?? teams.map((t) => t.name)),
-  ]);
-  for (const w of windows) {
-    if (wanted.has(w.name)) continue;
-    if (w.name === "_superdriver" || w.name === "superdriver") continue;
-    if (w.name === "_medic" || w.name === "medic") continue;
-    // Legacy `superdoctor` window is preserved during the ADR-133
-    // deprecation window — rebuild migrates it via rename-window
-    // (pre-pass), not prune. If wantMedic is OFF and the legacy window
-    // exists, leave it alone (operator may still rely on it).
-    if (w.name === "superdoctor") continue;
-    planned.push({
-      window: w.name,
-      action: "prune-orphan",
-      reason: "window not in cockpit.json roster + not preserved",
-    });
-  }
+    const wanted = new Set<string>([
+      "_superdriver",
+      ...(wantMedic ? ["_medic"] : []),
+      ...operatorWindows.map((w) => w.name),
+      ...(viewerNames ?? teams.map((t) => t.name)),
+    ]);
+    for (const w of windows) {
+      if (wanted.has(w.name)) continue;
+      if (w.name === "_superdriver" || w.name === "superdriver") continue;
+      if (w.name === "_medic" || w.name === "medic") continue;
+      // Legacy `superdoctor` window is preserved during the ADR-133
+      // deprecation window — rebuild migrates it via rename-window
+      // (pre-pass), not prune. If wantMedic is OFF and the legacy window
+      // exists, leave it alone (operator may still rely on it).
+      if (w.name === "superdoctor") continue;
+      planned.push({
+        window: w.name,
+        action: "prune-orphan",
+        reason: "window not in cockpit.json roster + not preserved",
+      });
+    }
   }
 
   if (planned.length === 0) return; // idempotent — nothing to gate
