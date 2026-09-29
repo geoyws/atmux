@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 📝 Docs — KB continuity authority port lands as ADR-304 (t-affc6107)
+
+**The unmerged 2026-09-03 continuity change is now on the lane.** t-09ff9d96 was marked done but its merge never reached the lane, and its ADR number 289 has since been taken by the medic-autostart retirement — so the change is ported as [ADR-304](docs/adr/304-kb-authoritative-agent-continuity.md) (accepted on reviewer signoff 2026-09-29). HAX KB is the continuity authority (plan / progress / blocker / checkpoint rows); `atmux handoff` is legacy-mode only (`USAGE` + `help` text + README + briefs say so). [ADR-267](docs/adr/267-durable-agent-continuity-contract.md) marks itself superseded by ADR-304, and `docs/PRD.md` §§3.6/5.5/10.5 + the ADR batch list point at ADR-304. No runtime behaviour change.
+
 ### 🐛 Fixed — every production tmux argv carries `-f <atmux conf>` ([ADR-303](docs/adr/303-tmux-conf-on-every-production-argv.md), t-2ff4f48e)
 
 **A server born through atmux can no longer miss the ADR-277 colour scrub.** tmux starts a server implicitly for ANY subcommand against a dead socket, so the creating argv could be `list-keys` or `attach` — six production servers had never loaded any atmux conf, two with a live `NO_COLOR=1` greyscaling every agent TUI in them. All production `createTmux` namespaces now pin the canonical conf (read-only callers included; `-f` is inert once the server exists), and the two raw cage-socket spawn paths (`fallback-cage` teardown, `poke sendCageBrief`) splice `-f` after the socket flag. Proven by `tests/unit/abstractions/tmux-conf-creating-paths.test.ts` (argv recording per factory + creating path, with a conf-less sensitivity control) and live-server legs in `tests/regression/atmux-conf-no-color-scrub.test.ts` (atmux-factory server under `NO_COLOR=1` arrives clean; the bare no-`-f` fault shape stays dirty).

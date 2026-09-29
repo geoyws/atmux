@@ -143,6 +143,8 @@ Automation:
   rotate-lead [--reason <t>]      /clear the lead and re-bootstrap
   clear-member <member> --force   Kill + recreate the member window bare (no re-brief)
   handoff <from> <to>         Move in-flight work from one member to another
+                              (legacy-mode only; current continuity uses KB
+                              checkpoint/handoff records)
   pause <member>              Mark member paused (dispatch refuses to queue)
   resume <member>             Unpause
 
