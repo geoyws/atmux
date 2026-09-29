@@ -8,9 +8,12 @@
 //     within + past window, deduped non-urgent + deduped urgent.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { closeDatabase, openDatabase } from "../../../src/abstractions/sqlite.ts";
+import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
+import { cockpitDbPathForStateFile, writeFlagTextAtDb } from "../../../src/core/flags-repo.ts";
 import {
   DEFAULT_PULSE_DEDUP_LADDER,
   DEFAULT_PULSE_DEDUP_MIN,
@@ -23,7 +26,7 @@ import {
   shouldFire,
   writePulseState,
 } from "../../../src/core/pulse-state.ts";
-import { ConfigError } from "../../../src/errors.ts";
+import { ConfigError, SchemaError } from "../../../src/errors.ts";
 
 /** ADR-086 §Phase 1.5 test helper: build a ladder that mirrors the
  *  pre-1.5 binary URGENT_VERDICTS semantic — flat int for 🔴 / 🚨,
@@ -98,6 +101,37 @@ describe("readPulseState / writePulseState", () => {
     expect(got.teams.atmux?.verdict).toBe("🟢 Shipping");
     expect(got.teams.atmux?.lastFireEpoch).toBe(1700000000);
     expect(got.teams.atmux?.lastCommitCount).toBe(3);
+  });
+  test("DB present + no row + no file → empty state", async () => {
+    const path = pulseStatePath({ home });
+    await mkdir(join(home, ".atmux"), { recursive: true });
+    const db = openDatabase(cockpitDbPathForStateFile(path), migrations);
+    closeDatabase(db);
+    expect(await readPulseState(path)).toEqual({ teams: {} });
+  });
+
+  test("DB present + legacy file → promotes file content", async () => {
+    const path = pulseStatePath({ home });
+    await writePulseState(path, { teams: {} });
+    await mkdir(join(home, ".atmux", "state"), { recursive: true });
+    await writeFile(
+      path,
+      JSON.stringify({
+        teams: { atmux: { verdict: "🔴 Stalled", lastFireEpoch: 5, lastCommitCount: 0 } },
+      }),
+    );
+    // Drop the row so only the legacy file remains, with the DB present.
+    const db = openDatabase(cockpitDbPathForStateFile(path), migrations);
+    db.query("DELETE FROM flags WHERE key = 'pulse-state'").run();
+    closeDatabase(db);
+    const got = await readPulseState(path);
+    expect(got.teams.atmux?.verdict).toBe("🔴 Stalled");
+  });
+
+  test("malformed flags row throws SchemaError", async () => {
+    const path = pulseStatePath({ home });
+    await writeFlagTextAtDb(cockpitDbPathForStateFile(path), "pulse-state", "{bad", 1);
+    await expect(readPulseState(path)).rejects.toBeInstanceOf(SchemaError);
   });
 });
 

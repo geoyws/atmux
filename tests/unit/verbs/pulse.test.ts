@@ -12,13 +12,13 @@
 // now() + gitSpawn shim.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscordSendOpts } from "../../../src/abstractions/discord.ts";
 import type { SpawnResult } from "../../../src/abstractions/spawn.ts";
 import type { GitSpawn } from "../../../src/abstractions/worktree.ts";
-import { DEFAULT_PULSE_DEDUP_LADDER } from "../../../src/core/pulse-state.ts";
+import { DEFAULT_PULSE_DEDUP_LADDER, readPulseState } from "../../../src/core/pulse-state.ts";
 import { UsageError } from "../../../src/errors.ts";
 import {
   countBluePendingDecisions,
@@ -230,14 +230,14 @@ describe("pulse — 3-team fixture (shipping / stalled / need-you)", () => {
     // Without --ping AND no env webhook/recorder set → no Discord sends.
     expect(sent).toHaveLength(0);
 
-    // State file should still be written — fires were determined; ping
+    // State row should still be written — fires were determined; ping
     // was just suppressed.
     const statePath = join(home, ".atmux", "state", "pulse-state.json");
-    const state = JSON.parse(await readFile(statePath, "utf8"));
+    const state = await readPulseState(statePath);
     expect(Object.keys(state.teams).sort()).toEqual(["alpha", "beta", "gamma"]);
-    expect(state.teams.alpha.verdict).toBe("🟢 Shipping");
-    expect(state.teams.beta.verdict).toBe("🔴 Stalled");
-    expect(state.teams.gamma.verdict).toBe("🚨 Need you");
+    expect(state.teams.alpha?.verdict).toBe("🟢 Shipping");
+    expect(state.teams.beta?.verdict).toBe("🔴 Stalled");
+    expect(state.teams.gamma?.verdict).toBe("🚨 Need you");
   });
 
   test("--ping fires Discord per team on first observation", async () => {

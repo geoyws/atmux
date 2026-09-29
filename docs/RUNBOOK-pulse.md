@@ -70,7 +70,7 @@ Defaults are 30 / 5 / 30. Omit the block entirely for defaults; all three fields
 
 ## State file
 
-`~/.atmux/state/pulse-state.json` — cockpit-scoped, one entry per enabled team. Atomic writes (mktemp + rename). Safe to inspect; safe to delete (next tick re-observes everything as a `first-observation`).
+`pulse-state` lives in the cockpit `~/.atmux/state.db` `flags` table (ADR-169 P1) — one entry per enabled team. A leftover `~/.atmux/state/pulse-state.json` is promoted on first read and archived by `atmux migrate-state --target=flags`. Safe to inspect via the flags row; safe to delete the row (next tick re-observes everything as a `first-observation`).
 
 ## Troubleshooting
 

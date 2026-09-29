@@ -16,9 +16,10 @@
 
 import { join } from "node:path";
 import { z } from "zod";
-import { ensureDir } from "../abstractions/fs.ts";
-import { tryReadJson, writeJson } from "../abstractions/json.ts";
+import { exists } from "../abstractions/fs.ts";
+import { parseJsonString, tryReadJson } from "../abstractions/json.ts";
 import { ConfigError } from "../errors.ts";
+import { cockpitDbPathForStateFile, readFlagTextAtDb, writeFlagTextAtDb } from "./flags-repo.ts";
 import type { PulseVerdict } from "./pulse-verdict.ts";
 
 /** Phase 1.1 fallback for the flat `cockpit.pulse.dedupMins` legacy
@@ -141,22 +142,30 @@ export function emptyPulseState(): PulseState {
   return { teams: {} };
 }
 
-/** Read state from disk; return empty state on absence. Malformed state
- *  still throws `SchemaError` (per ADR-005 — never silent fallback). */
+/** Read state; return empty state on absence. ADR-169 P1: the state
+ *  lives in the `flags` table (`key='pulse-state'`) of the
+ *  cockpit-scope `~/.atmux/state.db`, resolved as a sibling of the
+ *  legacy file's directory. Malformed state still throws
+ *  `SchemaError` (per ADR-005 — never silent fallback). */
 export async function readPulseState(path: string): Promise<PulseState> {
-  const got = await tryReadJson(path, PulseStateSchema);
-  return got ?? emptyPulseState();
+  const dbPath = cockpitDbPathForStateFile(path);
+  if (!(await exists(dbPath))) {
+    const got = await tryReadJson(path, PulseStateSchema);
+    return got ?? emptyPulseState();
+  }
+  const text = await readFlagTextAtDb(dbPath, "pulse-state", path);
+  if (text === null) return emptyPulseState();
+  return parseJsonString(path, PulseStateSchema, text);
 }
 
-/** Persist state atomically. Parent dirs created lazily. */
+/** Persist state as a flags row. Parent dirs created lazily. */
 export async function writePulseState(path: string, state: PulseState): Promise<void> {
-  await ensureDir(dirnameOf(path));
-  await writeJson(path, PulseStateSchema, state);
-}
-
-function dirnameOf(path: string): string {
-  const i = path.lastIndexOf("/");
-  return i >= 0 ? path.slice(0, i) : ".";
+  const validated = PulseStateSchema.parse(state);
+  await writeFlagTextAtDb(
+    cockpitDbPathForStateFile(path),
+    "pulse-state",
+    JSON.stringify(validated),
+  );
 }
 
 export interface ShouldFireInputs {

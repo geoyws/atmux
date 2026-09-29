@@ -88,9 +88,9 @@
 // question listed in `src/core/common.ts` §"Socket resolver" + ADR-004
 // amend Consequences §Phase 2.
 
-import { rename } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { appendText, ensureDir, exists, readTextOrNull, writeText } from "../abstractions/fs.ts";
+import { appendText, ensureDir, exists, writeText } from "../abstractions/fs.ts";
+import { tryParseJsonString } from "../abstractions/json.ts";
 import { now } from "../abstractions/time.ts";
 import {
   createTmux,
@@ -145,7 +145,11 @@ import {
 import { injectGoalIfActive } from "../core/goal-injection.ts";
 import { submitAfterPaste } from "../core/paste-submit.ts";
 import { migrateLegacySessionName } from "../core/session-migrate.ts";
-import { consumedManifestPath, resumeManifestPath } from "../core/soft-stop.ts";
+import {
+  consumeResumeManifest,
+  readResumeManifestText,
+  resumeManifestPath,
+} from "../core/soft-stop.ts";
 import {
   type PreflightDeps,
   type PreflightFlags,
@@ -1679,34 +1683,33 @@ export async function pasteBriefForMember(args: PasteBriefArgs): Promise<void> {
 }
 
 /**
- * ADR-087: read `<atmuxDir>/state/resume.json` if a prior soft-stop
- * wrote one, log a one-line resume summary plus a per-member breakdown
- * for entries with `lastClaim !== null`, then rename the manifest to
- * `state/resume.json.<startSeconds>.consumed` so subsequent starts
- * don't re-surface it.
+ * ADR-087: read the `resume` flags row if a prior soft-stop wrote one,
+ * log a one-line resume summary plus a per-member breakdown for entries
+ * with `lastClaim !== null`, then consume the manifest (forensic-trail
+ * copy at `state/resume.json.<startSeconds>.consumed` + row clear) so
+ * subsequent starts don't re-surface it.
  *
- * No-op when the file is absent (the common case). Failures are
- * swallowed by the caller's outer try/catch — the start path must not
- * wedge on a malformed manifest.
+ * No-op when no row (and no legacy file) exists (the common case).
+ * Failures are swallowed by the caller's outer try/catch — the start
+ * path must not wedge on a malformed manifest.
  */
-async function surfaceResumeManifest(
+export async function surfaceResumeManifest(
   atmuxDir: string,
   startSeconds: number,
   logger: Logger,
 ): Promise<void> {
   const manifestPath = resumeManifestPath(atmuxDir);
-  const raw = await readTextOrNull(manifestPath);
+  const raw = await readResumeManifestText(atmuxDir);
   if (raw === null) return;
-  // Parse defensively — a corrupt manifest must not block start. Zod's
-  // strict mode catches unknown keys + missing fields; either path
-  // surfaces as a single warn line and the manifest stays in place for
+  // Parse defensively — a corrupt manifest must not block start. A null
+  // parse covers both non-JSON bytes and Zod shape mismatches; either
+  // path surfaces as a single warn line and the row stays in place for
   // operator inspection.
-  let parsed: ResumeManifest;
-  try {
-    parsed = ResumeManifest.parse(JSON.parse(raw));
-  } catch (e) {
-    const cause = e instanceof Error ? e.message : String(e);
-    logger.warn(`resume-hint: manifest at ${manifestPath} unparseable — ${cause}`);
+  const parsed = tryParseJsonString(raw, ResumeManifest);
+  if (parsed === null) {
+    logger.warn(
+      `resume-hint: manifest at ${manifestPath} unparseable — left in place for inspection`,
+    );
     return;
   }
   const inFlight = parsed.members.filter((m) => m.lastClaim !== null);
@@ -1725,12 +1728,11 @@ async function surfaceResumeManifest(
       logger.log(`  · ${m.name}: ${m.lastClaim}${ageHint}`);
     }
   }
-  // Rename so the next start doesn't re-surface the same manifest.
-  // Best-effort: if the rename fails (cross-device, permission), leave
-  // the manifest in place — better to re-surface than to lose forensic
-  // trail.
+  // Consume so the next start doesn't re-surface the same manifest.
+  // Best-effort: on failure leave the row in place — better to
+  // re-surface than to lose the forensic trail.
   try {
-    await rename(manifestPath, consumedManifestPath(atmuxDir, startSeconds));
+    await consumeResumeManifest(atmuxDir, raw, startSeconds);
   } catch (e) {
     const cause = e instanceof Error ? e.message : String(e);
     logger.warn(`resume-hint: could not archive consumed manifest — ${cause}`);

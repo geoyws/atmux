@@ -1,5 +1,11 @@
 // ADR-003: pause-flag read/write + dispatch-gate check.
 //
+// ADR-169 P1 (EPIC e-38ee9939): the paused map lives in the `flags`
+// table (`key='paused'`) of `<atmuxDir>/state.db`, not in
+// `<atmuxDir>/state/paused.json`. Readers promote a leftover legacy
+// file on first read; writers are table-only. The legacy path helper
+// stays as the fallback address.
+//
 // Encapsulates the bash `lib/pause.sh` state-flag pattern: pausing a
 // member writes `<atmuxDir>/state/paused.json[member] = {at, reason}`;
 // resuming deletes the entry; `isPaused` checks presence. Used by the
@@ -8,8 +14,9 @@
 //
 // Per ADR-003, this core lib takes its dependencies as args (no global
 // state); callers pass `atmuxDir` so tests can inject any directory.
-// All JSON IO routes through `src/abstractions/json.ts` (atomic write +
-// flock-protected mutation per ADR-005).
+// All state IO routes through the `flags` table
+// (`src/core/flags-repo.ts`); JSON parsing still validates via
+// `src/abstractions/json.ts` per ADR-005.
 //
 // Parity contract (PLAN.md §4.1, ADR-013). The TS port runs side-by-side
 // with bash atmux during the burn-in window; both binaries read + write
@@ -27,27 +34,63 @@
 // per ADR-013; any redesign waits for Phase 6 / ADR-014.
 
 import { join } from "node:path";
-import { readJsonOr, updateJson } from "../abstractions/json.ts";
+import { parseJsonString } from "../abstractions/json.ts";
+import { transactImmediate } from "../abstractions/sqlite.ts";
 import { now as nowMs } from "../abstractions/time.ts";
 import { type PausedMap, PausedMapSchema, type PauseEntry } from "../schema/paused.ts";
+import {
+  FlagsRepo,
+  importLegacyFlagText,
+  readFlagTextAtDb,
+  teamFlagsDbPath,
+  withFlagsDb,
+} from "./flags-repo.ts";
 
 /** Default reason string when no override is supplied. Mirrors bash
  *  `${ATMUX_PAUSE_REASON:-manual}` from `lib/pause.sh:22`. */
 export const DEFAULT_PAUSE_REASON = "manual";
 
-/** Resolve `<atmuxDir>/state/paused.json`. Mirrors bash
- *  `$(atmux::state_dir)/paused.json` from `lib/common.sh:71` + `lib/pause.sh:15`. */
+/** Legacy path: `<atmuxDir>/state/paused.json`. Still the fallback
+ *  address for pre-migration teams (mirrors bash
+ *  `$(atmux::state_dir)/paused.json`). */
 export function pausedJsonPath(atmuxDir: string): string {
   return join(atmuxDir, "state", "paused.json");
 }
-
 /**
- * Load the paused map. Returns `{}` if the file is absent (first-run).
- * Throws `SchemaError` on malformed-but-existing files (no silent
- * fallback to defaults — ADR-005 rule).
+ * Load the paused map. Returns `{}` when neither a flags row nor a
+ * legacy file exists (first-run). Throws `SchemaError` on
+ * malformed-but-existing state (no silent fallback — ADR-005 rule).
  */
 export async function loadPausedMap(atmuxDir: string): Promise<PausedMap> {
-  return readJsonOr(pausedJsonPath(atmuxDir), PausedMapSchema, {});
+  const path = pausedJsonPath(atmuxDir);
+  const text = await readFlagTextAtDb(teamFlagsDbPath(atmuxDir), "paused", path);
+  if (text === null) return {};
+  return parseJsonString(path, PausedMapSchema, text);
+}
+
+/**
+ * Read-modify-write the paused map inside one IMMEDIATE transaction
+ * (the SQLite successor to the old flock-guarded `updateJson` — concurrent
+ * `pause`/`resume` verbs serialize instead of losing updates). Output
+ * re-validates, mirroring the old mutation path.
+ */
+async function updatePausedMap(
+  atmuxDir: string,
+  mutator: (current: PausedMap) => PausedMap,
+): Promise<PausedMap> {
+  const path = pausedJsonPath(atmuxDir);
+  const dbPath = teamFlagsDbPath(atmuxDir);
+  return withFlagsDb(dbPath, async (db) => {
+    await importLegacyFlagText(db, "paused", path, nowMs());
+    return transactImmediate(db, () => {
+      const repo = new FlagsRepo(db);
+      const raw = repo.get("paused");
+      const current = raw === null ? {} : parseJsonString(path, PausedMapSchema, raw);
+      const next = PausedMapSchema.parse(mutator(current));
+      repo.set("paused", JSON.stringify(next), nowMs());
+      return next;
+    });
+  });
 }
 
 export interface PauseOpts {
@@ -72,12 +115,7 @@ export async function pauseMember(
 ): Promise<void> {
   const reason = opts?.reason ?? DEFAULT_PAUSE_REASON;
   const at = opts?.nowEpochSec ?? Math.floor(nowMs() / 1000);
-  await updateJson(
-    pausedJsonPath(atmuxDir),
-    PausedMapSchema,
-    (current) => ({ ...current, [member]: { at, reason } }),
-    { initial: {} },
-  );
+  await updatePausedMap(atmuxDir, (current) => ({ ...current, [member]: { at, reason } }));
 }
 
 /**
@@ -86,16 +124,11 @@ export async function pauseMember(
  * absent. Returns nothing; caller checks via `isPaused` if it cares.
  */
 export async function resumeMember(atmuxDir: string, member: string): Promise<void> {
-  await updateJson(
-    pausedJsonPath(atmuxDir),
-    PausedMapSchema,
-    (current) => {
-      if (!(member in current)) return current;
-      const { [member]: _removed, ...rest } = current;
-      return rest;
-    },
-    { initial: {} },
-  );
+  await updatePausedMap(atmuxDir, (current) => {
+    if (!(member in current)) return current;
+    const { [member]: _removed, ...rest } = current;
+    return rest;
+  });
 }
 
 /**

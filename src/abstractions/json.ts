@@ -124,6 +124,20 @@ export async function updateJson<T>(
   return await withLock(path, body, lockOpts);
 }
 
+/**
+ * Parse a JSON string + validate via `schema`, throwing `SchemaError`
+ * on parse OR validation failure. The strict counterpart to
+ * `tryParseJsonString` — for callers migrating off file reads
+ * (`readJsonOr` / `tryReadJson`) onto SQLite-backed blobs, where the
+ * text no longer comes from a file but the throw-on-corrupt posture
+ * (ADR-005) still applies. `label` names the logical source and
+ * surfaces as the `file` field of the thrown `SchemaError`. Four
+ * call sites share this seam (paused, drift, pulse, resume readers).
+ */
+export function parseJsonString<T>(label: string, schema: ZodType<T>, text: string): T {
+  return parseAndValidate(label, schema, text);
+}
+
 // ---------- Parse-from-string (JSONL line-readers) ----------
 
 /**

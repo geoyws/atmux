@@ -5,8 +5,8 @@
 // `C-c` (interrupt) + 2s grace + archive + kill, soft-stop sends a
 // notice-only (comment-prefixed) line per pane, sleeps a longer grace
 // (default 5s, configurable via `team.softStopGraceSeconds`), captures
-// in-flight kanban state into `<atmuxDir>/state/resume.json`, then kills
-// the session WITHOUT pruning worktrees.
+// in-flight kanban state into the `resume` row of the flags table, then
+// kills the session WITHOUT pruning worktrees.
 //
 // Hard-stop concerns (archive, cron-remove, force semantics) stay in
 // `verbs/stop.ts` — this module is a pure orchestration helper composed
@@ -27,6 +27,12 @@ import {
 } from "../schema/resume.ts";
 import type { Team, TeamMember } from "../schema/team.ts";
 import { buildWindowName, defaultEmojiForRole } from "./common.ts";
+import {
+  clearFlagTextAtDb,
+  readFlagTextAtDb,
+  teamFlagsDbPath,
+  writeFlagTextAtDb,
+} from "./flags-repo.ts";
 import { listTasks } from "./kanban.ts";
 
 /** Default grace window between the per-member notify and the manifest
@@ -46,8 +52,8 @@ export interface SoftStopOpts {
   /** Team config — needed for the member roster + grace override + the
    *  emoji-based window-name resolution. */
   team: Team;
-  /** Atmux dir for the team (`<root>/.atmux`). Manifest lands at
-   *  `<atmuxDir>/state/resume.json`. */
+  /** Atmux dir for the team (`<root>/.atmux`). Manifest lands in the
+   *  `flags` table (`key='resume'`) of `<atmuxDir>/state.db`. */
   atmuxDir: string;
   /** Tmux session name (e.g. `atmux-<team>`). Used to target send-keys. */
   sessionName: string;
@@ -67,9 +73,9 @@ export interface SoftStopOpts {
  *  ALREADY written to disk by the time this returns — the result is
  *  primarily for tests + future composability with ADR-090. */
 export interface SoftStopResult {
-  /** The manifest as written to `<atmuxDir>/state/resume.json`. */
+  /** The manifest as written to the `resume` flags row. */
   manifest: ResumeManifest;
-  /** Absolute path of the manifest file. */
+  /** Legacy address of the manifest file (fallback + forensic-trail anchor). */
   manifestPath: string;
   /** Count of members the notice was successfully sent to. Best-effort
    *  — a failure on one pane (member never spawned, window killed by
@@ -91,7 +97,7 @@ export interface SoftStopResult {
  *   2. Send {@link SOFT_STOP_NOTICE} to each non-shell-only member's
  *      pane via `tmux send-keys` (best-effort).
  *   3. Sleep the grace window (`team.softStopGraceSeconds ?? 5` seconds).
- *   4. Atomic-write the manifest to `<atmuxDir>/state/resume.json`.
+ *   4. Write the manifest to the `resume` flags row.
  */
 export async function softStop(opts: SoftStopOpts): Promise<SoftStopResult> {
   const clock = opts.clock ?? now;
@@ -132,16 +138,40 @@ export async function softStop(opts: SoftStopOpts): Promise<SoftStopResult> {
     members: opts.team.members.map((m) => buildResumeMember(m, inFlightByMember)),
   };
   const manifestPath = resumeManifestPath(opts.atmuxDir);
-  await atomicWrite(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  await writeFlagTextAtDb(teamFlagsDbPath(opts.atmuxDir), "resume", JSON.stringify(manifest));
 
   const inFlightCount = manifest.members.filter((m) => m.lastClaim !== null).length;
   return { manifest, manifestPath, notifiedCount, inFlightCount };
 }
 
-/** Path to the resume manifest. Exported so the start-side reader uses
- *  the SAME path constant — no risk of writer/reader drift. */
+/** Legacy path of the resume manifest. Exported so the start-side reader
+ *  uses the SAME path constant for the pre-migration fallback — no risk
+ *  of writer/reader drift. */
 export function resumeManifestPath(atmuxDir: string): string {
   return join(atmuxDir, "state", "resume.json");
+}
+
+/** Raw manifest blob, or null when neither a flags row nor a legacy file
+ *  exists. Callers parse defensively — a corrupt manifest must not wedge
+ *  the start pipeline. */
+export async function readResumeManifestText(atmuxDir: string): Promise<string | null> {
+  return readFlagTextAtDb(teamFlagsDbPath(atmuxDir), "resume", resumeManifestPath(atmuxDir));
+}
+
+/**
+ * Consume a manifest previously read via `readResumeManifestText`: append
+ * the forensic-trail copy, then clear the flags row (plus any leftover
+ * legacy file). Write-before-clear preserves the old rename's
+ * better-to-re-surface-than-lose posture — a crash between the two
+ * re-surfaces the hint on the next start instead of losing it.
+ */
+export async function consumeResumeManifest(
+  atmuxDir: string,
+  rawText: string,
+  startSeconds: number,
+): Promise<void> {
+  await atomicWrite(consumedManifestPath(atmuxDir, startSeconds), rawText);
+  await clearFlagTextAtDb(teamFlagsDbPath(atmuxDir), "resume", resumeManifestPath(atmuxDir));
 }
 
 /** Path the start-side reader renames a consumed manifest to. The `<ts>`

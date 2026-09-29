@@ -10,10 +10,11 @@
 //     hash dedup, multi-hash sequencing.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type ZodError, z } from "zod";
+import { readFlagTextAtDb, teamFlagsDbPath } from "../../../src/core/flags-repo.ts";
 import {
   composeCatastrophicDrift,
   composeDriftReport,
@@ -367,33 +368,52 @@ describe("shouldFireDriftPing", () => {
 // ---------- recordDriftPing ----------
 
 describe("recordDriftPing", () => {
-  test("creates state file with single hash entry on first call", async () => {
+  async function readRow(): Promise<unknown> {
+    const text = await readFlagTextAtDb(
+      teamFlagsDbPath(atmuxDir),
+      "whip-config-drift-state",
+      whipConfigDriftStatePath(atmuxDir),
+    );
+    return JSON.parse(text ?? "");
+  }
+
+  test("creates flags row with single hash entry on first call", async () => {
     await recordDriftPing(atmuxDir, "abc", 1_800_000_000);
-    const text = await readFile(whipConfigDriftStatePath(atmuxDir), "utf8");
-    const parsed = JSON.parse(text);
-    expect(parsed).toEqual({ abc: 1_800_000_000 });
+    expect(await readRow()).toEqual({ abc: 1_800_000_000 });
   });
 
   test("appends new hash without losing previous entries", async () => {
     await recordDriftPing(atmuxDir, "abc", 1_800_000_000);
     await recordDriftPing(atmuxDir, "def", 1_800_001_000);
-    const parsed = JSON.parse(await readFile(whipConfigDriftStatePath(atmuxDir), "utf8"));
-    expect(parsed).toEqual({ abc: 1_800_000_000, def: 1_800_001_000 });
+    expect(await readRow()).toEqual({ abc: 1_800_000_000, def: 1_800_001_000 });
   });
 
   test("re-fire updates the timestamp for an existing hash", async () => {
     await recordDriftPing(atmuxDir, "abc", 1_800_000_000);
     await recordDriftPing(atmuxDir, "abc", 1_800_999_999);
-    const parsed = JSON.parse(await readFile(whipConfigDriftStatePath(atmuxDir), "utf8"));
-    expect(parsed).toEqual({ abc: 1_800_999_999 });
+    expect(await readRow()).toEqual({ abc: 1_800_999_999 });
   });
 
   test("multi-drift sequencing: 3 distinct hashes accumulate", async () => {
     await recordDriftPing(atmuxDir, "h1", 1);
     await recordDriftPing(atmuxDir, "h2", 2);
     await recordDriftPing(atmuxDir, "h3", 3);
-    const parsed = JSON.parse(await readFile(whipConfigDriftStatePath(atmuxDir), "utf8"));
-    expect(Object.keys(parsed).sort()).toEqual(["h1", "h2", "h3"]);
+    expect(Object.keys((await readRow()) as Record<string, number>).sort()).toEqual([
+      "h1",
+      "h2",
+      "h3",
+    ]);
+  });
+
+  test("legacy file is promoted: prior hashes survive the first record", async () => {
+    await writeFile(whipConfigDriftStatePath(atmuxDir), JSON.stringify({ old: 5 }));
+    await recordDriftPing(atmuxDir, "new", 6);
+    expect(await readRow()).toEqual({ old: 5, new: 6 });
+  });
+
+  test("malformed legacy file throws SchemaError on record", async () => {
+    await writeFile(whipConfigDriftStatePath(atmuxDir), "{not json");
+    await expect(recordDriftPing(atmuxDir, "abc", 1)).rejects.toThrow();
   });
 });
 

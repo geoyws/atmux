@@ -842,4 +842,32 @@ export const migrations: readonly Migration[] = [
 			`);
     },
   },
+  // ---------- v17 → v18 ----------
+  // ADR-169 §Decision (flags table, P1 — EPIC e-38ee9939): consolidate
+  // the single-row JSON toggles into one `flags` table. One row per
+  // source file; `key` = file basename without the `.json` suffix
+  // (paused, resume, pulse-state, sentinel-state, eternal-improvement,
+  // whip-config-drift-state, budget-pause, budget-refresh-soon-state,
+  // budget-warning-state); `value` = full JSON blob (TEXT-blob encoding
+  // per ADR-169 OQ-1); `updated_at` = epoch ms at write time;
+  // `schema_version` = per-row forward-compat marker per OQ-2.
+  //
+  // Residency note: team-scoped keys live in the team's
+  // `<atmuxDir>/state.db`; cockpit-scoped keys (pulse-state,
+  // sentinel-state) live in `~/.atmux/state.db`. Same DDL in both —
+  // see `src/core/flags-repo.ts`.
+  {
+    from: 17,
+    to: 18,
+    up: (db) => {
+      db.exec(`
+				CREATE TABLE flags (
+					key TEXT PRIMARY KEY NOT NULL,
+					value TEXT NOT NULL,
+					updated_at INTEGER NOT NULL,
+					schema_version INTEGER NOT NULL
+				) STRICT;
+			`);
+    },
+  },
 ];

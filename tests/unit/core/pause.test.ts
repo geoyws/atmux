@@ -6,9 +6,14 @@
 // tests to keep parse-error coverage honest.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  readFlagTextAtDb,
+  teamFlagsDbPath,
+  writeFlagTextAtDb,
+} from "../../../src/core/flags-repo.ts";
 import {
   DEFAULT_PAUSE_REASON,
   getPauseInfo,
@@ -161,13 +166,45 @@ describe("pauseMember", () => {
     expect(Object.keys(map).sort()).toEqual(["alice", "bob"]);
   });
 
-  test("written file is readable as JSON with the bash-faithful shape", async () => {
+  test("written flags row is a JSON blob with the bash-faithful shape", async () => {
     await pauseMember(atmuxDir, "alice", { nowEpochSec: 99, reason: "manual" });
-    const text = await readFile(pausedJsonPath(atmuxDir), "utf8");
-    const parsed = JSON.parse(text);
+    const text = await readFlagTextAtDb(
+      teamFlagsDbPath(atmuxDir),
+      "paused",
+      pausedJsonPath(atmuxDir),
+    );
+    const parsed = JSON.parse(text ?? "");
     expect(parsed).toEqual({ alice: { at: 99, reason: "manual" } });
     // No schemaVersion field — parity with bash.
     expect(Object.hasOwn(parsed, "schemaVersion")).toBe(false);
+  });
+
+  test("legacy file is promoted into the flags row on read", async () => {
+    await writeFile(
+      pausedJsonPath(atmuxDir),
+      JSON.stringify({ alice: { at: 5, reason: "manual" } }),
+    );
+    expect(await loadPausedMap(atmuxDir)).toEqual({ alice: { at: 5, reason: "manual" } });
+    // Promotion happened: the row now exists and later writes merge into it.
+    await pauseMember(atmuxDir, "bob", { nowEpochSec: 6, reason: "x" });
+    expect(await loadPausedMap(atmuxDir)).toEqual({
+      alice: { at: 5, reason: "manual" },
+      bob: { at: 6, reason: "x" },
+    });
+  });
+
+  test("flags row wins over a stale legacy file", async () => {
+    await pauseMember(atmuxDir, "alice", { nowEpochSec: 1, reason: "fresh" });
+    await writeFile(
+      pausedJsonPath(atmuxDir),
+      JSON.stringify({ alice: { at: 2, reason: "stale" } }),
+    );
+    expect(await getPauseInfo(atmuxDir, "alice")).toEqual({ at: 1, reason: "fresh" });
+  });
+
+  test("malformed flags row throws SchemaError", async () => {
+    await writeFlagTextAtDb(teamFlagsDbPath(atmuxDir), "paused", "{not json", 1);
+    await expect(loadPausedMap(atmuxDir)).rejects.toBeInstanceOf(SchemaError);
   });
 });
 

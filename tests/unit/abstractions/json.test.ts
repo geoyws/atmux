@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import {
+  parseJsonString,
   readJson,
   readJsonOr,
   tryParseJsonString,
@@ -306,5 +307,18 @@ describe("tryParseJsonString", () => {
 
   test("returns null on empty string (parse fails)", () => {
     expect(tryParseJsonString("", Entry)).toBeNull();
+  });
+});
+
+describe("parseJsonString", () => {
+  const Entry = z.object({ id: z.string(), n: z.number() });
+
+  test("returns the validated value on well-formed input", () => {
+    expect(parseJsonString("label", Entry, '{"id":"a","n":1}')).toEqual({ id: "a", n: 1 });
+  });
+
+  test("throws SchemaError on malformed input (strict read)", () => {
+    expect(() => parseJsonString("label", Entry, "not-json")).toThrow(SchemaError);
+    expect(() => parseJsonString("label", Entry, '{"id":"a"}')).toThrow(SchemaError);
   });
 });

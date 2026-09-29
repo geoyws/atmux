@@ -17,6 +17,9 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exists, readText } from "../../../src/abstractions/fs.ts";
+import { closeDatabase, openDatabase } from "../../../src/abstractions/sqlite.ts";
+import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
+import { FlagsRepo } from "../../../src/core/flags-repo.ts";
 import type { Logger } from "../../../src/core/tui.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
 import { migrateState, parseMigrateArgs } from "../../../src/verbs/migrate-state.ts";
@@ -333,30 +336,49 @@ describe("migrateState", () => {
     ).rejects.toThrow(ConfigError);
   });
 
-  test("--target=all runs kanban + inboxes; warns about state-target only (ADR-076)", async () => {
+  test("--target=all runs kanban + inboxes + flags; warns state + empty cockpit (ADR-076)", async () => {
     await seedKanban(env);
+    // Fake HOME keeps the cockpit-scope flags migration hermetic — the
+    // verb must never touch the operator's real ~/.atmux in tests.
+    const fakeHome = await mkdtemp(join(tmpdir(), "atmux-migrate-all-home-"));
+    try {
+      const exit = await migrateState(
+        ["json-to-sqlite", "--team-dir", env.atmuxDir, "--target=all"],
+        {
+          logger: env.logger,
+          stdout: (s) => env.stdoutBuf.push(s),
+          env: { ...process.env, HOME: fakeHome },
+        },
+      );
 
-    const exit = await migrateState(
-      ["json-to-sqlite", "--team-dir", env.atmuxDir, "--target=all"],
-      { logger: env.logger, stdout: (s) => env.stdoutBuf.push(s) },
-    );
+      expect(exit).toBe(0);
 
-    expect(exit).toBe(0);
-
-    const auditPath = join(env.atmuxDir, "migration-state-sqlite.json");
-    const audit = JSON.parse(await readText(auditPath));
-    // After ADR-076 inboxes target landed, only state target stays unimplemented;
-    // the inboxes-skipped warning is gone.
-    expect(audit.warnings.length).toBe(1);
-    expect(audit.warnings[0]).toContain("state target skipped");
-    expect(audit.counts.kanban).toEqual({ tasks: 2, epics: 1, stories: 1 });
-    expect(audit.counts.inboxes).toEqual({
-      files: 0,
-      entriesSeen: 0,
-      entriesBackfilled: 0,
-      entriesPresent: 0,
-      filesSkippedInvalid: 0,
-    });
+      const auditPath = join(env.atmuxDir, "migration-state-sqlite.json");
+      const audit = JSON.parse(await readText(auditPath));
+      // After ADR-076 inboxes target landed, only state target stays unimplemented;
+      // the inboxes-skipped warning is gone. Flags ran with zero sources.
+      expect(audit.warnings.length).toBe(2);
+      expect(audit.warnings[0]).toContain("no cockpit sources");
+      expect(audit.warnings[1]).toContain("state target skipped");
+      expect(audit.counts.kanban).toEqual({ tasks: 2, epics: 1, stories: 1 });
+      expect(audit.counts.inboxes).toEqual({
+        files: 0,
+        entriesSeen: 0,
+        entriesBackfilled: 0,
+        entriesPresent: 0,
+        filesSkippedInvalid: 0,
+      });
+      expect(audit.counts.flags).toEqual({
+        filesSeen: 0,
+        flagsWritten: 0,
+        filesSkippedInvalid: 0,
+        filesSkippedRowExists: 0,
+      });
+      // No cockpit DB is created when no cockpit sources exist.
+      expect(await exists(join(fakeHome, ".atmux", "state.db"))).toBe(false);
+    } finally {
+      await rm(fakeHome, { recursive: true, force: true });
+    }
   });
 
   test("--db-path overrides default dbPath", async () => {
@@ -370,5 +392,157 @@ describe("migrateState", () => {
 
     expect(await exists(customDb)).toBe(true);
     expect(await exists(env.dbPath)).toBe(false); // default path NOT used
+  });
+});
+
+// ---------- --target=flags (ADR-169 P1, e-38) ----------
+
+describe("migrateState --target=flags", () => {
+  let env: TestEnv;
+
+  beforeEach(async () => {
+    env = await makeEnv();
+  });
+
+  afterEach(async () => {
+    await teardown(env);
+  });
+  async function seedFlag(env: TestEnv, key: string, text: string): Promise<string> {
+    const p = join(env.atmuxDir, "state", `${key}.json`);
+    await mkdir(join(env.atmuxDir, "state"), { recursive: true });
+    await writeFile(p, text, "utf8");
+    return p;
+  }
+
+  function flagValue(dbPath: string, key: string): string | null {
+    const db = openDatabase(dbPath, migrations);
+    try {
+      return new FlagsRepo(db).get(key);
+    } finally {
+      closeDatabase(db);
+    }
+  }
+
+  test("import + archive: valid sources become rows, files move to archive", async () => {
+    const fakeHome = await mkdtemp(join(tmpdir(), "atmux-migrate-flags-home-"));
+    try {
+      await seedFlag(env, "paused", JSON.stringify({ paused: true }));
+      await seedFlag(env, "resume", JSON.stringify({ pending: [] }));
+      const exit = await migrateState(
+        ["json-to-sqlite", "--team-dir", env.atmuxDir, "--target=flags"],
+        {
+          logger: env.logger,
+          stdout: (s) => env.stdoutBuf.push(s),
+          env: { ...process.env, HOME: fakeHome },
+        },
+      );
+      expect(exit).toBe(0);
+      expect(flagValue(env.dbPath, "paused")).toBe(JSON.stringify({ paused: true }));
+      expect(flagValue(env.dbPath, "resume")).toBe(JSON.stringify({ pending: [] }));
+      expect(await exists(join(env.atmuxDir, "state", "paused.json"))).toBe(false);
+      const audit = JSON.parse(await readText(join(env.atmuxDir, "migration-state-sqlite.json")));
+      expect(audit.counts.flags).toEqual({
+        filesSeen: 2,
+        flagsWritten: 2,
+        filesSkippedInvalid: 0,
+        filesSkippedRowExists: 0,
+      });
+    } finally {
+      await rm(fakeHome, { recursive: true, force: true });
+    }
+  });
+
+  test("invalid JSON: skipped, warned, left in place", async () => {
+    const fakeHome = await mkdtemp(join(tmpdir(), "atmux-migrate-flags-bad-"));
+    try {
+      const p = await seedFlag(env, "paused", "{not-json");
+      const exit = await migrateState(
+        ["json-to-sqlite", "--team-dir", env.atmuxDir, "--target=flags"],
+        {
+          logger: env.logger,
+          stdout: (s) => env.stdoutBuf.push(s),
+          env: { ...process.env, HOME: fakeHome },
+        },
+      );
+      expect(exit).toBe(0);
+      expect(flagValue(env.dbPath, "paused")).toBe(null);
+      expect(await exists(p)).toBe(true);
+      expect(env.logLines.some((l) => l.includes("not valid JSON"))).toBe(true);
+    } finally {
+      await rm(fakeHome, { recursive: true, force: true });
+    }
+  });
+
+  test("row exists: redundant source archived, write skipped", async () => {
+    const fakeHome = await mkdtemp(join(tmpdir(), "atmux-migrate-flags-dup-"));
+    try {
+      await seedFlag(env, "paused", JSON.stringify({ paused: true }));
+      const run = (extraEnv: NodeJS.ProcessEnv = {}) =>
+        migrateState(["json-to-sqlite", "--team-dir", env.atmuxDir, "--target=flags"], {
+          logger: env.logger,
+          stdout: (s) => env.stdoutBuf.push(s),
+          env: { ...process.env, HOME: fakeHome, ...extraEnv },
+        });
+      expect(await run()).toBe(0);
+      // Re-seed the same key after archival, with different content.
+      await seedFlag(env, "paused", JSON.stringify({ paused: false }));
+      expect(await run()).toBe(0);
+      // Original row wins; redundant source archived anyway.
+      expect(flagValue(env.dbPath, "paused")).toBe(JSON.stringify({ paused: true }));
+      expect(await exists(join(env.atmuxDir, "state", "paused.json"))).toBe(false);
+      expect(env.logLines.some((l) => l.includes("row already present"))).toBe(true);
+    } finally {
+      await rm(fakeHome, { recursive: true, force: true });
+    }
+  });
+
+  test("dry-run: counts without writes or archive moves", async () => {
+    const fakeHome = await mkdtemp(join(tmpdir(), "atmux-migrate-flags-dry-"));
+    try {
+      const p = await seedFlag(env, "paused", JSON.stringify({ paused: true }));
+      const exit = await migrateState(
+        ["json-to-sqlite", "--team-dir", env.atmuxDir, "--target=flags", "--dry-run"],
+        {
+          logger: env.logger,
+          stdout: (s) => env.stdoutBuf.push(s),
+          env: { ...process.env, HOME: fakeHome },
+        },
+      );
+      expect(exit).toBe(0);
+      expect(flagValue(env.dbPath, "paused")).toBe(null);
+      expect(await exists(p)).toBe(true);
+    } finally {
+      await rm(fakeHome, { recursive: true, force: true });
+    }
+  });
+
+  test("HOME unset: team scope migrates, cockpit skipped with warning", async () => {
+    await seedFlag(env, "paused", JSON.stringify({ paused: true }));
+    const exit = await migrateState(
+      ["json-to-sqlite", "--team-dir", env.atmuxDir, "--target=flags"],
+      { logger: env.logger, stdout: (s) => env.stdoutBuf.push(s), env: {} },
+    );
+    expect(exit).toBe(0);
+    expect(flagValue(env.dbPath, "paused")).toBe(JSON.stringify({ paused: true }));
+    expect(env.logLines.some((l) => l.includes("HOME unset"))).toBe(true);
+  });
+
+  test("idempotent re-run: second pass sees zero files", async () => {
+    const fakeHome = await mkdtemp(join(tmpdir(), "atmux-migrate-flags-idem-"));
+    const run = () =>
+      migrateState(["json-to-sqlite", "--team-dir", env.atmuxDir, "--target=flags"], {
+        logger: env.logger,
+        stdout: (s) => env.stdoutBuf.push(s),
+        env: { ...process.env, HOME: fakeHome },
+      });
+    try {
+      await seedFlag(env, "paused", JSON.stringify({ paused: true }));
+      expect(await run()).toBe(0);
+      expect(await run()).toBe(0);
+      const audit = JSON.parse(await readText(join(env.atmuxDir, "migration-state-sqlite.json")));
+      expect(audit.counts.flags.filesSeen).toBe(0);
+    } finally {
+      await rm(fakeHome, { recursive: true, force: true });
+    }
   });
 });

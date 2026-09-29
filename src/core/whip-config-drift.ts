@@ -26,9 +26,10 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import type { ZodError } from "zod";
 import { z } from "zod";
-import { tryReadJson, writeJson } from "../abstractions/json.ts";
+import { parseJsonString } from "../abstractions/json.ts";
 import { TeamWhip } from "../schema/team.ts";
 import { stateDir } from "./common.ts";
+import { readFlagTextAtDb, teamFlagsDbPath, writeFlagTextAtDb } from "./flags-repo.ts";
 
 // ---------- Types ----------
 
@@ -198,11 +199,13 @@ export function makeDriftSafeDefaults(raw: unknown): Record<string, unknown> {
   return out;
 }
 
-// ---------- Dedup state ----------
+// ---------- Dedup state (ADR-169 P1: `flags` table, key
+// `whip-config-drift-state`) ----------
 
 /**
  * Decide whether to fire the drift ping. Returns `true` when:
- *   - the hash isn't in the dedup state file, OR
+ *   - no flags row (and no legacy file) exists, OR
+ *   - the hash isn't in the dedup state, OR
  *   - the recorded epoch is more than DRIFT_REFIRE_WINDOW_SEC ago.
  */
 export async function shouldFireDriftPing(
@@ -211,22 +214,25 @@ export async function shouldFireDriftPing(
   nowSec: number,
 ): Promise<boolean> {
   const path = whipConfigDriftStatePath(atmuxDir);
-  const state = await tryReadJson(path, DriftStateSchema);
-  if (state === null) return true;
+  const text = await readFlagTextAtDb(teamFlagsDbPath(atmuxDir), "whip-config-drift-state", path);
+  if (text === null) return true;
+  const state = parseJsonString(path, DriftStateSchema, text);
   const lastFired = state[driftHash];
   if (lastFired === undefined) return true;
   return nowSec - lastFired >= DRIFT_REFIRE_WINDOW_SEC;
 }
 
-/** Record `driftHash → nowSec` in the dedup state file. Creates the
- *  file if absent. */
+/** Record `driftHash → nowSec` in the dedup flags row. Creates the
+ *  row (and the DB) if absent. */
 export async function recordDriftPing(
   atmuxDir: string,
   driftHash: string,
   nowSec: number,
 ): Promise<void> {
   const path = whipConfigDriftStatePath(atmuxDir);
-  const existing = (await tryReadJson(path, DriftStateSchema)) ?? {};
-  const next = { ...existing, [driftHash]: nowSec };
-  await writeJson(path, DriftStateSchema, next);
+  const dbPath = teamFlagsDbPath(atmuxDir);
+  const text = await readFlagTextAtDb(dbPath, "whip-config-drift-state", path);
+  const existing = text === null ? {} : parseJsonString(path, DriftStateSchema, text);
+  const next = DriftStateSchema.parse({ ...existing, [driftHash]: nowSec });
+  await writeFlagTextAtDb(dbPath, "whip-config-drift-state", JSON.stringify(next));
 }

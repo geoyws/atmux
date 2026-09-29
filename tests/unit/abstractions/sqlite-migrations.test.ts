@@ -30,7 +30,7 @@ afterEach(async () => {
 });
 
 describe("sqlite-migrations live ladder", () => {
-  test("opening with the full ladder advances user_version to the tail (v17)", () => {
+  test("opening with the full ladder advances user_version to the tail (v18)", () => {
     // Bump this when a new migration lands. Failing here is the
     // intentional reminder to confirm the new migration's tests cover
     // the new table or column.
@@ -54,7 +54,26 @@ describe("sqlite-migrations live ladder", () => {
     //             §D4 ledger (issue-sync external tracker ingestion);
     //             shape tests live in
     //             tests/unit/core/repositories/issue-sync-repo.test.ts
-    expect(readUserVersion(db)).toBe(17);
+    //   - v17→v18 added flags for the ADR-169 P1 single-row toggles
+    //             (EPIC e-38ee9939); shape tests live in
+    //             tests/unit/core/flags-repo.test.ts
+    expect(readUserVersion(db)).toBe(18);
+  });
+});
+describe("v17 → v18: flags", () => {
+  test("table exists with the ADR-169 column set + types", () => {
+    const cols = db.prepare("PRAGMA table_info(flags)").all() as Array<{
+      name: string;
+      type: string;
+      notnull: number;
+      pk: number;
+    }>;
+    expect(cols.map((c) => [c.name, c.type, c.notnull, c.pk])).toEqual([
+      ["key", "TEXT", 1, 1],
+      ["value", "TEXT", 1, 0],
+      ["updated_at", "INTEGER", 1, 0],
+      ["schema_version", "INTEGER", 1, 0],
+    ]);
   });
 });
 
@@ -427,7 +446,7 @@ describe("v13 → v14: backfill semantics on a pre-existing v13 DB", () => {
     // settles at the tail; v13→v14 backfill semantics still apply to
     // the rows seeded above since the column-set is additive.
     const full = openDatabase(path, migrations);
-    expect(readUserVersion(full)).toBe(17);
+    expect(readUserVersion(full)).toBe(18);
 
     const seen = full
       .prepare("SELECT id, status, depends_on, is_ready FROM epics ORDER BY id")

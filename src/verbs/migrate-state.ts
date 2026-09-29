@@ -12,7 +12,7 @@
 // USAGE:
 //   atmux migrate-state json-to-sqlite [--team-dir <dir>]
 //                                      [--dry-run]
-//                                      [--target=all|kanban|inboxes|state]
+//                                      [--target=all|kanban|inboxes|state|flags]
 //                                      [--db-path <path>]
 //
 //   --team-dir <dir>       Override .atmux dir resolution. Default: walk
@@ -20,9 +20,9 @@
 //   --dry-run              Parse + report counts, no DB writes, no
 //                          archive moves. Exit 0 even if validation fails
 //                          on individual rows (errors surface to stderr).
-//   --target=<...>         Default `all`. Currently `kanban` is the only
-//                          fully-implemented target; `inboxes`/`state`
-//                          throw ConfigError. `all` runs kanban + skips
+//   --target=<...>         Default `all`. `kanban`, `inboxes` and `flags`
+//                          are implemented; `state` throws ConfigError.
+//                          `all` runs kanban + inboxes + flags, skipping
 //                          unimplemented targets with a stderr WARN.
 //   --db-path <path>       Override .atmux/state.db location. Default:
 //                          <atmuxDir>/state.db.
@@ -42,12 +42,20 @@
 //   1   IOError / SQLite error (propagated)
 
 import { readdir, rename } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { z } from "zod";
 import { ensureDir, exists, readText, writeText } from "../abstractions/fs.ts";
+import { parseJsonString } from "../abstractions/json.ts";
 import { closeDatabase, type Database, openDatabase } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { now } from "../abstractions/time.ts";
 import { getAtmuxDir, inboxDir, kanbanJsonPath } from "../core/common.ts";
+import {
+  COCKPIT_FLAG_FILES,
+  cockpitFlagsDbPath,
+  FlagsRepo,
+  TEAM_FLAG_FILES,
+} from "../core/flags-repo.ts";
 import { defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { KanbanRepo } from "../core/repositories/kanban-repo.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
@@ -57,7 +65,7 @@ import { Kanban, type KanbanTask } from "../schema/kanban.ts";
 
 // ---------- Arg parsing ----------
 
-export type MigrateTarget = "all" | "kanban" | "inboxes" | "state";
+export type MigrateTarget = "all" | "kanban" | "inboxes" | "state" | "flags";
 
 export interface ParsedMigrateArgs {
   teamDir?: string;
@@ -66,7 +74,7 @@ export interface ParsedMigrateArgs {
   dbPath?: string;
 }
 
-const VALID_TARGETS: ReadonlySet<string> = new Set(["all", "kanban", "inboxes", "state"]);
+const VALID_TARGETS: ReadonlySet<string> = new Set(["all", "kanban", "inboxes", "state", "flags"]);
 
 export function parseMigrateArgs(args: ReadonlyArray<string>): ParsedMigrateArgs {
   let subVerb: string | undefined;
@@ -90,7 +98,7 @@ export function parseMigrateArgs(args: ReadonlyArray<string>): ParsedMigrateArgs
         if (val === undefined) {
           throw new UsageError({
             what: "migrate-state: --team-dir requires a value",
-            hint: "usage: atmux migrate-state json-to-sqlite [--team-dir <dir>] [--dry-run] [--target=<all|kanban|inboxes|state>]",
+            hint: "usage: atmux migrate-state json-to-sqlite [--team-dir <dir>] [--dry-run] [--target=<all|kanban|inboxes|state|flags>]",
           });
         }
         teamDir = val;
@@ -118,7 +126,7 @@ export function parseMigrateArgs(args: ReadonlyArray<string>): ParsedMigrateArgs
         if (!VALID_TARGETS.has(val)) {
           throw new UsageError({
             what: `migrate-state: unknown --target=${val}`,
-            hint: "valid targets: all, kanban, inboxes, state",
+            hint: "valid targets: all, kanban, inboxes, state, flags",
           });
         }
         target = val as MigrateTarget;
@@ -128,7 +136,7 @@ export function parseMigrateArgs(args: ReadonlyArray<string>): ParsedMigrateArgs
       default:
         throw new UsageError({
           what: `migrate-state: unknown arg: ${a}`,
-          hint: "usage: atmux migrate-state json-to-sqlite [--team-dir <dir>] [--dry-run] [--target=<all|kanban|inboxes|state>]",
+          hint: "usage: atmux migrate-state json-to-sqlite [--team-dir <dir>] [--dry-run] [--target=<all|kanban|inboxes|state|flags>]",
         });
     }
   }
@@ -156,6 +164,17 @@ export interface KanbanMigrationCounts {
   stories: number;
 }
 
+export interface FlagsMigrationCounts {
+  /** Flag source files seen across both scopes (team + cockpit). */
+  filesSeen: number;
+  /** Rows upserted into `flags`. */
+  flagsWritten: number;
+  /** Files skipped: present but not valid JSON (left in place). */
+  filesSkippedInvalid: number;
+  /** Files skipped: a flags row already exists (archived anyway). */
+  filesSkippedRowExists: number;
+}
+
 export interface MigrationResult {
   dryRun: boolean;
   dbPath: string;
@@ -166,6 +185,7 @@ export interface MigrationResult {
     kanban?: KanbanMigrationCounts;
     inboxes?: InboxMigrationCounts;
     state?: number; // not implemented in this commit
+    flags?: FlagsMigrationCounts;
   };
   warnings: string[];
 }
@@ -372,6 +392,125 @@ async function migrateInboxes(
 
   return { files, entriesSeen, entriesBackfilled, entriesPresent, filesSkippedInvalid };
 }
+// ---------- Flags migration (ADR-169 P1) ----------
+
+/**
+ * Read the 6 single-row toggle files, upsert each valid one into the
+ * `flags` table, and archive the migrated sources.
+ *
+ * Scopes: the 4 team files (`TEAM_FLAG_FILES` under
+ * `<atmuxDir>/state/`) go into the passed `db`; the 2 cockpit files
+ * (`COCKPIT_FLAG_FILES` under `~/.atmux/state/`, HOME from `env`) go
+ * into the cockpit `~/.atmux/state.db` (opened + closed here).
+ *
+ * Per-file policy (safe re-run):
+ *   - absent → skip silently.
+ *   - row already present → skip the write, archive the redundant file.
+ *   - invalid JSON → skip the write AND the archive (data would be
+ *     lost), count + warn.
+ *   - otherwise → upsert the raw blob, archive the source.
+ *
+ * Never throws on cockpit layout — an unresolvable HOME warns and
+ * migrates the team scope alone.
+ */
+async function migrateFlags(
+  atmuxDir: string,
+  db: Database,
+  opts: { env: NodeJS.ProcessEnv; dryRun: boolean; migratedAtEpoch: number },
+): Promise<{ counts: FlagsMigrationCounts; warnings: string[] }> {
+  const counts: FlagsMigrationCounts = {
+    filesSeen: 0,
+    flagsWritten: 0,
+    filesSkippedInvalid: 0,
+    filesSkippedRowExists: 0,
+  };
+  const warnings: string[] = [];
+  const repo = new FlagsRepo(db);
+
+  const migrateOne = async (
+    scopeRepo: FlagsRepo,
+    key: string,
+    srcPath: string,
+    archiveDest: string,
+  ): Promise<void> => {
+    if (!(await exists(srcPath))) return;
+    counts.filesSeen += 1;
+    const text = await readText(srcPath);
+    try {
+      parseJsonString(srcPath, z.unknown(), text);
+    } catch {
+      counts.filesSkippedInvalid += 1;
+      warnings.push(`flags: ${srcPath} is not valid JSON — left in place, not migrated`);
+      return;
+    }
+    if (scopeRepo.get(key) !== null) {
+      counts.filesSkippedRowExists += 1;
+      warnings.push(`flags: ${key} row already present — archived redundant source ${srcPath}`);
+    } else {
+      counts.flagsWritten += 1;
+      if (!opts.dryRun) {
+        scopeRepo.set(key, text, opts.migratedAtEpoch);
+      }
+    }
+    if (!opts.dryRun) {
+      await ensureDir(dirname(archiveDest));
+      if (!(await exists(archiveDest))) {
+        await rename(srcPath, archiveDest);
+      }
+    }
+  };
+
+  const archiveDir = join(atmuxDir, "archive", `json-pre-sqlite-${opts.migratedAtEpoch}`);
+  for (const key of TEAM_FLAG_FILES) {
+    await migrateOne(
+      repo,
+      key,
+      join(atmuxDir, "state", `${key}.json`),
+      join(archiveDir, "state", `${key}.json`),
+    );
+  }
+
+  const home = opts.env.HOME;
+  if (home === undefined || home.length === 0) {
+    warnings.push("flags: cockpit sources skipped — HOME unset");
+  } else {
+    const cockpitDir = join(home, ".atmux");
+    const cockpitDbPath = cockpitFlagsDbPath(home);
+    const cockpitArchiveDir = join(
+      cockpitDir,
+      "archive",
+      `json-pre-sqlite-${opts.migratedAtEpoch}`,
+    );
+    // Skip the cockpit scope entirely when neither source file exists —
+    // opening the DB would gratuitously create `~/.atmux/state.db`.
+    const cockpitSources = COCKPIT_FLAG_FILES.map((key) => ({
+      key,
+      src: join(cockpitDir, "state", `${key}.json`),
+    }));
+    const present: typeof cockpitSources = [];
+    for (const s of cockpitSources) {
+      if (await exists(s.src)) present.push(s);
+    }
+    if (present.length === 0) {
+      warnings.push("flags: no cockpit sources present — cockpit scope skipped");
+    } else {
+      if (!opts.dryRun) {
+        await ensureDir(cockpitDir);
+      }
+      const cockpitDb = openDatabase(cockpitDbPath, migrations);
+      try {
+        const cockpitRepo = new FlagsRepo(cockpitDb);
+        for (const { key, src } of present) {
+          await migrateOne(cockpitRepo, key, src, join(cockpitArchiveDir, `${key}.json`));
+        }
+      } finally {
+        closeDatabase(cockpitDb);
+      }
+    }
+  }
+
+  return { counts, warnings };
+}
 
 // ---------- Archive helper ----------
 
@@ -481,6 +620,17 @@ export async function migrateState(
       }
     }
 
+    // ----- flags target (ADR-169 P1 — 9 single-row toggles → flags table) -----
+    if (parsed.target === "all" || parsed.target === "flags") {
+      const migrated = await migrateFlags(atmuxDir, db, {
+        env,
+        dryRun: parsed.dryRun,
+        migratedAtEpoch,
+      });
+      counts.flags = migrated.counts;
+      warnings.push(...migrated.warnings);
+    }
+
     // ----- state target (NOT IMPLEMENTED; team's bundle-2 follow-up) -----
     if (parsed.target === "state") {
       throw new ConfigError({
@@ -529,8 +679,18 @@ export async function migrateState(
     stdout(`${JSON.stringify(summary, null, 2)}\n`);
 
     if (parsed.dryRun) {
-      logger.log(
-        `migrate-state: dry-run OK — ${counts.kanban?.tasks ?? 0} tasks, ${counts.kanban?.epics ?? 0} epics, ${counts.kanban?.stories ?? 0} stories scanned`,
+      if (parsed.target === "flags") {
+        logger.log(
+          `migrate-state: dry-run OK — ${counts.flags?.flagsWritten ?? 0} flags, ${counts.flags?.filesSkippedInvalid ?? 0} invalid skipped`,
+        );
+      } else {
+        logger.log(
+          `migrate-state: dry-run OK — ${counts.kanban?.tasks ?? 0} tasks, ${counts.kanban?.epics ?? 0} epics, ${counts.kanban?.stories ?? 0} stories scanned`,
+        );
+      }
+    } else if (parsed.target === "flags") {
+      logger.ok(
+        `migrate-state: migrated ${counts.flags?.flagsWritten ?? 0} flags to ${dbPath} (+ cockpit)`,
       );
     } else {
       logger.ok(

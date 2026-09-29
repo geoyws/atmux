@@ -5,7 +5,7 @@
 // so we can verify per-pane notify behaviour without spawning processes.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CrontabIO } from "../../../src/abstractions/crontab.ts";
@@ -13,9 +13,11 @@ import type { SendTarget, TmuxNamespace } from "../../../src/abstractions/tmux.t
 import { addTask, claimTaskForMember } from "../../../src/core/kanban.ts";
 import {
   consumedManifestPath,
+  consumeResumeManifest,
   DEFAULT_SOFT_STOP_GRACE_SECONDS,
   QUIESCE_TAG,
   quiesceCron,
+  readResumeManifestText,
   resumeManifestPath,
   SOFT_STOP_NOTICE,
   softStop,
@@ -142,7 +144,7 @@ describe("softStop", () => {
     expect(result.manifest.members.find((m) => m.name === "shell-only")?.lastClaim).toBeNull();
   });
 
-  test("manifest on disk parses cleanly via the strict Zod schema", async () => {
+  test("manifest flags row parses cleanly via the strict Zod schema", async () => {
     const { tmux } = makeRecorderTmux();
     await softStop({
       team: makeTeam(),
@@ -153,10 +155,10 @@ describe("softStop", () => {
       clock: () => 1_778_700_000_000,
       sleep: async () => {},
     });
-    const raw = await readFile(resumeManifestPath(atmuxDir), "utf8");
+    const raw = await readResumeManifestText(atmuxDir);
     // Re-parse to confirm we wrote a schema-conforming JSON blob — a
     // .strict() schema catches any drift between writer + reader.
-    const parsed = ResumeManifest.parse(JSON.parse(raw));
+    const parsed = ResumeManifest.parse(JSON.parse(raw ?? ""));
     expect(parsed.version).toBe(1);
     expect(parsed.members.map((m) => m.name)).toEqual(["lead", "w1", "shell-only"]);
   });
@@ -200,7 +202,7 @@ describe("softStop", () => {
     expect(sent).toHaveLength(1);
     expect(sent[0]?.target.kind).toBe("member");
     // Manifest still written despite the per-pane failure.
-    await stat(result.manifestPath); // throws if absent
+    expect(await readResumeManifestText(atmuxDir)).not.toBeNull();
   });
 
   test("grace window defaults to DEFAULT_SOFT_STOP_GRACE_SECONDS * 1000ms", async () => {
@@ -263,9 +265,9 @@ describe("softStop", () => {
     expect(result.manifest.reason).toBe("dissolve-epic");
   });
 
-  test("atomic write — partial-write recovery does not leave a half-file", async () => {
-    // The atomicWrite helper writes to a temp + rename. After a clean
-    // softStop call, no temp files should remain under state/.
+  test("manifest lands in flags — no resume.json file left on disk", async () => {
+    // The flags write is transactional. After a clean softStop call,
+    // the row exists and no legacy JSON file was created.
     const { tmux } = makeRecorderTmux();
     await softStop({
       team: makeTeam(),
@@ -275,12 +277,28 @@ describe("softStop", () => {
       reason: "soft-stop",
       sleep: async () => {},
     });
-    // List state/ and assert no .tmp.* siblings of resume.json.
-    const { readdir } = await import("node:fs/promises");
-    const entries = await readdir(join(atmuxDir, "state"));
-    const stragglers = entries.filter((e) => e.startsWith("resume.json.tmp."));
-    expect(stragglers).toHaveLength(0);
-    expect(entries).toContain("resume.json");
+    expect(await readResumeManifestText(atmuxDir)).not.toBeNull();
+    // No legacy file was created (state/ may not even exist).
+    await expect(stat(join(atmuxDir, "state", "resume.json"))).rejects.toThrow();
+  });
+
+  test("consumeResumeManifest archives the trail + clears the row", async () => {
+    const { tmux } = makeRecorderTmux();
+    await softStop({
+      team: makeTeam(),
+      atmuxDir,
+      sessionName: "atmux-softstop-test",
+      tmux,
+      reason: "soft-stop",
+      sleep: async () => {},
+    });
+    const raw = await readResumeManifestText(atmuxDir);
+    expect(raw).not.toBeNull();
+    await consumeResumeManifest(atmuxDir, raw ?? "", 1_778_700_000);
+    expect(await readResumeManifestText(atmuxDir)).toBeNull();
+    const { readFile } = await import("node:fs/promises");
+    const trail = await readFile(consumedManifestPath(atmuxDir, 1_778_700_000), "utf8");
+    expect(trail).toBe(raw ?? "");
   });
 
   test("default sleep uses globalThis.setTimeout and waits 3000ms when grace is 3s", async () => {
