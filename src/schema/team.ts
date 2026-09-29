@@ -1499,7 +1499,11 @@ export const Team = z
     /** ADR-288: the canonical worker-left / attention-right pair that
      *  later materializers consume. Attention is not a roster member;
      *  `tui` / `command` default null so the pane opens an interactive
-     *  shell unless configured deliberately. */
+     *  shell unless configured deliberately. ROLLOUT GATE (amendment
+     *  2026-09-29): `materialize` is optional and absent means false —
+     *  start/reconcile creates pair panes only when true (see
+     *  `isDriverPairMaterialized`); row t-d1f18085 owns flipping the
+     *  default. */
     driverPair: DriverPairPresetSchema.default(CANONICAL_DRIVER_PAIR_PRESET),
     /** ADR-296: per-team superdriver orchestration seat. Absent ==
      *  enabled with defaults (resolved in `core/superdriver.ts`); set

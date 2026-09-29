@@ -33,7 +33,10 @@ re-deriving the layout from runtime state. The canonical shape is:
 - attention workflow = `kb-att`;
 - attention authority = `decision-only`;
 - attention `tui` / `command` default to `null` so the pane starts an
-  interactive shell unless deliberately configured.
+  interactive shell unless deliberately configured;
+- `materialize` defaults to `false` (rollout gate, ADR-288 amendment
+  2026-09-29): start/reconcile creates the two-pane layout only when
+  `true`, otherwise driver windows stay single-pane as before.
 
 ## Per-role model assignment for declared members (per ADR-024 revised)
 

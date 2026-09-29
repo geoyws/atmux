@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ✨ Added — driver window worker/attention pair runtime behind `driverPair.materialize` ([ADR-288](docs/adr/288-driver-window-worker-attention-pane-pair.md), t-75fe8bb4)
+
+**Each configured driver window can now materialize as one window with two horizontal panes: worker left + attention right.** Fresh creation tags both panes (`@atmux_driver_pane_role`), repeated start/reconcile is idempotent, a missing right pane is added with the left pane and PID preserved, and >2-pane / missing / reversed / ambiguous layouts fail closed (surfaced by `atmux doctor` as `driver-pane-pair` rows; never deleted or swapped). The attention pane launches a plain shell when `command` is null — no agent auto-launch. All pane creation is gated on the per-team `driverPair.materialize` flag (schema-optional, absent means false); flag off keeps exactly today's single-pane windows and silent doctor. Row t-d1f18085 owns flipping the default; `templates/team.example.json` keeps `"materialize": false`.
+
 ### 🗄️ Changed — whip budget files move to the state.db budget table (ADR-169 P3, e-38)
 
 **`budget-pause`, `budget-warning-state` and `budget-refresh-soon-state` are now budget-table rows.** Team `<atmuxDir>/state.db` gains `budget (probe_name, observed_at, state, updated_at, schema_version)` — one row per probe with a queryable `observed_at` (`pausedAt` for pause entries, max fire epoch for the dedup maps, file mtime when the payload carries no timestamp). Readers promote leftover JSON on first read, writers are table-only. `atmux migrate-state --target=budget` imports + archives sources (dry-run supported). This is the team whip state — not the ADR-270 global `~/.atmux/state/budget.db` usage time-series, which is untouched.

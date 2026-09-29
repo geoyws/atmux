@@ -28,7 +28,8 @@
         "tui": null,
         "command": null
       }
-    ]
+    ],
+    "materialize": false
   },
   "tuiCommands": {
     "_comment": "Per-team TUI launch aliases. If set, the prefix here replaces the built-in default for that TUI type. atmux appends --model <model> unless the prefix already has one. Example: \"claude\": \"claude --plugin-dir=$HOME/work/journals/.sb/claude-skills\""

@@ -22,12 +22,28 @@
 // inspection. Dependencies are injectable so the helper unit-tests
 // without a real tmux server.
 
-import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
+import { createTmux, type PaneInfo, type TmuxNamespace } from "../abstractions/tmux.ts";
 import type { Team } from "../schema/team.ts";
 import { getSessionName, resolveTeamSocket } from "./common.ts";
-import { resolveDriversList } from "./drivers.ts";
+import {
+  type DriverPane,
+  type DriverPanePairPlan,
+  type DriverPanePairReasonCode,
+  planDriverPanePair,
+} from "./driver-pair.ts";
+import { isDriverPairMaterialized, resolveDriversList } from "./drivers.ts";
 import { type CaptureFn, classifyPane, type PaneState } from "./pane-state.ts";
 import { getAtmuxTmuxConfPath } from "./tmux-paths.ts";
+
+/** Pair-planner decision for a live driver window, when observed.
+ *  `unavailable` marks observer failure before pair classification. */
+export type DriverPanePairDecision = DriverPanePairPlan["decision"] | "unavailable";
+/** Stable pair reason code, including observer-only reasons. */
+export type DriverPanePairReason =
+  | DriverPanePairReasonCode
+  | "pair.observer.list_windows_failed"
+  | "pair.observer.list_panes_failed"
+  | "pair.observer.missing_pane_metadata";
 
 /** Snapshot of the driver pane's health at probe time. */
 export interface DriverPaneHealth {
@@ -41,6 +57,16 @@ export interface DriverPaneHealth {
    *  session. False when configured but the window is absent — config
    *  drift (operator should `atmux start`). */
   windowExists: boolean;
+  /** Pair-planner decision for the live driver window, when pane
+   *  metadata was observed. Absent for missing windows and for
+   *  legacy fixtures whose `listPanes` yields no rows (pre-pair
+   *  fakes); `unavailable` marks observer failure before pair
+   *  classification. */
+  pairDecision?: DriverPanePairDecision;
+  /** Stable pair reason code, including observer-only reasons. */
+  pairReason?: DriverPanePairReason;
+  /** Pair planner diagnostics or observer diagnostics. */
+  pairDiagnostics?: readonly [string, string];
   /** Pane classification per `classifyPane`. `null` when the window
    *  doesn't exist (no pane to classify) or the capture call threw
    *  (transient tmux error — surfaces as null + empty evidence). */
@@ -63,9 +89,49 @@ export interface ProbeDriverPaneDeps {
    *  `.map(w => w.name)`. Fixture injection lets tests skip the
    *  tmux dependency entirely. */
   listWindowNames?: (session: string) => Promise<ReadonlyArray<string>>;
+  /** Pane listing for a live driver window. Defaults to
+   *  `tmux.pane.listPanes(target)`. Fixtures that predate the pair
+   *  return `[]` — the probe then keeps the legacy window-target
+   *  capture and leaves pair fields absent. */
+  listPanes?: (target: string) => Promise<ReadonlyArray<PaneInfo>>;
   /** Pane-capture function. Defaults to `tmux.pane.capturePane({target,
    *  start: -30})`. */
   capture?: CaptureFn;
+}
+
+function observerDiagnostics(problem: string): readonly [string, string] {
+  return [problem, "Run atmux doctor to inspect driver-pane roles and geometry."];
+}
+
+/** Normalize one listed pane for the pair planner. `null` when the
+ *  row lacks the immutable `%N` id or geometry the planner needs —
+ *  the caller fails closed instead of guessing. */
+function toDriverPane(pane: PaneInfo): DriverPane | null {
+  if (typeof pane.id !== "string" || !/^%[0-9]+$/.test(pane.id)) return null;
+  if (typeof pane.left !== "number" || !Number.isFinite(pane.left)) return null;
+  const normalized: DriverPane = {
+    id: pane.id,
+    index: pane.index,
+    pid: pane.pid,
+    left: pane.left,
+  };
+  if (typeof pane.role === "string") normalized.role = pane.role;
+  return normalized;
+}
+
+/** Classify listed panes into a pair plan, or `null` when the listing
+ *  carries no pair signal at all (legacy `[]` fixture). Pure. */
+function classifyListedPanes(
+  panes: ReadonlyArray<PaneInfo>,
+): { plan: DriverPanePairPlan } | { observerReason: "pair.observer.missing_pane_metadata" } | null {
+  if (panes.length === 0) return null;
+  const driverPanes: DriverPane[] = [];
+  for (const pane of panes) {
+    const normalized = toDriverPane(pane);
+    if (normalized === null) return { observerReason: "pair.observer.missing_pane_metadata" };
+    driverPanes.push(normalized);
+  }
+  return { plan: planDriverPanePair(driverPanes) };
 }
 
 /**
@@ -119,17 +185,77 @@ export async function probeDriverPane(
     });
   }
 
+  // Rollout gate (ADR-288 amendment 2026-09-29): with driverPair.materialize
+  // off, never list panes, so the probe runs exactly the pre-pair path
+  // (window-target capture, no pair fields) on every live cage.
+  const listPanes = isDriverPairMaterialized(team)
+    ? (deps.listPanes ??
+      ((windowTarget: string): Promise<ReadonlyArray<PaneInfo>> =>
+        tmux.pane.listPanes(windowTarget)))
+    : async (): Promise<ReadonlyArray<PaneInfo>> => [];
+  const windowTarget = `${session}:${driverName}`;
+  const listed = await listPanes(windowTarget).catch(() => null as ReadonlyArray<PaneInfo> | null);
+  if (listed === null) {
+    return withDriverName({
+      configured: true,
+      windowExists: true,
+      state: null,
+      evidence: "",
+      pairDecision: "unavailable",
+      pairReason: "pair.observer.list_panes_failed",
+      pairDiagnostics: observerDiagnostics("Driver pane metadata could not be read from tmux."),
+    });
+  }
+  const classified = classifyListedPanes(listed);
+  if (classified !== null && "observerReason" in classified) {
+    return withDriverName({
+      configured: true,
+      windowExists: true,
+      state: null,
+      evidence: "",
+      pairDecision: "fail-closed",
+      pairReason: classified.observerReason,
+      pairDiagnostics: observerDiagnostics("Driver pane metadata is incomplete."),
+    });
+  }
+  const plan = classified?.plan;
+  if (plan?.decision === "fail-closed") {
+    return withDriverName({
+      configured: true,
+      windowExists: true,
+      state: null,
+      evidence: "",
+      pairDecision: plan.decision,
+      pairReason: plan.reasonCode,
+      pairDiagnostics: plan.diagnostics,
+    });
+  }
+  // Pair plan is a healthy shape (noop / plan-add-attention) or the
+  // fixture predates pair metadata (`[]`) — capture the worker pane
+  // by immutable id when known, else the legacy window target.
+  const captureTarget =
+    plan === undefined
+      ? windowTarget
+      : plan.decision === "noop"
+        ? plan.workerPane.id
+        : plan.keepPane.id;
+
   const capture: CaptureFn =
     deps.capture ?? ((target: string) => tmux.pane.capturePane({ target, start: -30 }));
-  const target = `${session}:${driverName}`;
-
   try {
-    const classification = await classifyPane(target, capture);
+    const classification = await classifyPane(captureTarget, capture);
     return withDriverName({
       configured: true,
       windowExists: true,
       state: classification.state,
       evidence: classification.evidence,
+      ...(plan === undefined
+        ? {}
+        : {
+            pairDecision: plan.decision,
+            pairReason: plan.reasonCode,
+            pairDiagnostics: plan.diagnostics,
+          }),
     });
   } catch {
     // expected: tmux capture transient failure (server reload, pane
@@ -140,6 +266,13 @@ export async function probeDriverPane(
       windowExists: true,
       state: null,
       evidence: "",
+      ...(plan === undefined
+        ? {}
+        : {
+            pairDecision: plan.decision,
+            pairReason: plan.reasonCode,
+            pairDiagnostics: plan.diagnostics,
+          }),
     });
   }
 }
@@ -184,6 +317,14 @@ export async function probeDriverPanes(
 
   const capture: CaptureFn =
     deps.capture ?? ((target: string) => tmux.pane.capturePane({ target, start: -30 }));
+  // Rollout gate (ADR-288 amendment 2026-09-29): with driverPair.materialize
+  // off, never list panes, so the probe runs exactly the pre-pair path
+  // (window-target capture, no pair fields) on every live cage.
+  const listPanes = isDriverPairMaterialized(team)
+    ? (deps.listPanes ??
+      ((windowTarget: string): Promise<ReadonlyArray<PaneInfo>> =>
+        tmux.pane.listPanes(windowTarget)))
+    : async (): Promise<ReadonlyArray<PaneInfo>> => [];
   const out: DriverPaneHealth[] = [];
   for (const driver of roster) {
     const windowExists = names.includes(driver.name);
@@ -197,15 +338,74 @@ export async function probeDriverPanes(
       });
       continue;
     }
-    const target = `${session}:${driver.name}`;
+    const windowTarget = `${session}:${driver.name}`;
+    const listed = await listPanes(windowTarget).catch(
+      () => null as ReadonlyArray<PaneInfo> | null,
+    );
+    if (listed === null) {
+      out.push({
+        driverName: driver.name,
+        configured: true,
+        windowExists: true,
+        state: null,
+        evidence: "",
+        pairDecision: "unavailable",
+        pairReason: "pair.observer.list_panes_failed",
+        pairDiagnostics: observerDiagnostics("Driver pane metadata could not be read from tmux."),
+      });
+      continue;
+    }
+    const classified = classifyListedPanes(listed);
+    if (classified !== null && "observerReason" in classified) {
+      out.push({
+        driverName: driver.name,
+        configured: true,
+        windowExists: true,
+        state: null,
+        evidence: "",
+        pairDecision: "fail-closed",
+        pairReason: classified.observerReason,
+        pairDiagnostics: observerDiagnostics("Driver pane metadata is incomplete."),
+      });
+      continue;
+    }
+    const plan = classified?.plan;
+    if (plan?.decision === "fail-closed") {
+      out.push({
+        driverName: driver.name,
+        configured: true,
+        windowExists: true,
+        state: null,
+        evidence: "",
+        pairDecision: plan.decision,
+        pairReason: plan.reasonCode,
+        pairDiagnostics: plan.diagnostics,
+      });
+      continue;
+    }
+    const captureTarget =
+      plan === undefined
+        ? windowTarget
+        : plan.decision === "noop"
+          ? plan.workerPane.id
+          : plan.keepPane.id;
+    const pairFields =
+      plan === undefined
+        ? {}
+        : {
+            pairDecision: plan.decision,
+            pairReason: plan.reasonCode,
+            pairDiagnostics: plan.diagnostics,
+          };
     try {
-      const classification = await classifyPane(target, capture);
+      const classification = await classifyPane(captureTarget, capture);
       out.push({
         driverName: driver.name,
         configured: true,
         windowExists: true,
         state: classification.state,
         evidence: classification.evidence,
+        ...pairFields,
       });
     } catch {
       out.push({
@@ -214,6 +414,7 @@ export async function probeDriverPanes(
         windowExists: true,
         state: null,
         evidence: "",
+        ...pairFields,
       });
     }
   }

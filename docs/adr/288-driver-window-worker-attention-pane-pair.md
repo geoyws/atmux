@@ -56,6 +56,24 @@ rosters fail validation") no longer holds; 1-10 validate, >10 fail.
 The canonical pair source itself is unaffected. See ADR-239
 §Amendment 2026-09-28.
 
+## Amendment 2026-09-29 — rollout gate: `driverPair.materialize` (t-75fe8bb4)
+
+All runtime/reconcile pane creation is behind a per-team flag,
+`driverPair.materialize` (boolean, schema-optional, absent means
+`false`). With the flag false, `atmux start` / reconcile behaviour is
+exactly the pre-pair single pane per driver window; `atmux doctor` may
+report pair state read-only but stays silent on single-pane windows
+(no `driver-pane-pair` rows while the flag is off). With the flag
+true, fresh creation yields worker-left / attention-right (attention
+launch null = plain shell, no agent auto-launch), reruns are no-ops,
+missing right panes are added with the left PID preserved, and
+>2-pane / missing / reversed / ambiguous role layouts fail closed
+(surfaced by doctor, never deleted or swapped).
+
+Row t-d1f18085 (adversarially verify and safely roll out) owns
+flipping the default. `templates/team.example.json` keeps
+`"materialize": false`.
+
 ## References
 
 - [ADR-239: three-driver minimum and no-sendkeys invariant](239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md)

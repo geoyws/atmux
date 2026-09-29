@@ -257,3 +257,118 @@ describe("checkDriverPaneState — roster mode", () => {
     expect(rows[1]?.detail).toContain("driver-2: team has driverSession");
   });
 });
+
+// ---------- ADR-288 driver-pane-pair rows (materialize gate) ----------
+
+const GATED_TEAM: Team = {
+  ...FAKE_TEAM,
+  driverPair: {
+    ...FAKE_TEAM.driverPair,
+    materialize: true,
+  },
+};
+
+function pairHealth(
+  overrides: Partial<DriverPaneHealth> & Pick<DriverPaneHealth, "pairDecision">,
+): DriverPaneHealth {
+  return {
+    driverName: "driver",
+    configured: true,
+    windowExists: true,
+    state: "READY",
+    evidence: "",
+    pairReason: "pair.two.valid",
+    pairDiagnostics: ["The driver pair is valid and ordered left-to-right.", "Run atmux doctor."],
+    ...overrides,
+  };
+}
+
+describe("checkDriverPaneState — driver-pane-pair rows", () => {
+  test("gate off: observed pair stays silent (state rows only)", async () => {
+    const rows = await checkDriverPaneState(FAKE_TEAM, FAKE_DIR, {
+      probe: probe(
+        pairHealth({
+          pairDecision: "plan-add-attention",
+          pairReason: "pair.singleton.safe_worker_role",
+        }),
+      ),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.label).toBe("driver-pane-state");
+  });
+
+  test("gate on + noop → green pair row ahead of the state row", async () => {
+    const rows = await checkDriverPaneState(GATED_TEAM, FAKE_DIR, {
+      probe: probe(pairHealth({ pairDecision: "noop" })),
+    });
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.status).toBe("green");
+    expect(rows[0]?.label).toBe("driver-pane-pair");
+    expect(rows[0]?.detail).toContain("reason=pair.two.valid");
+    expect(rows[1]?.label).toBe("driver-pane-state");
+  });
+
+  test("gate on + plan-add-attention → single yellow pair row", async () => {
+    const rows = await checkDriverPaneState(GATED_TEAM, FAKE_DIR, {
+      probe: probe(
+        pairHealth({
+          pairDecision: "plan-add-attention",
+          pairReason: "pair.singleton.safe_worker_role",
+          state: "SHELL",
+        }),
+      ),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("yellow");
+    expect(rows[0]?.label).toBe("driver-pane-pair");
+    expect(rows[0]?.hint).toBe("run atmux start to add the attention pane");
+  });
+
+  test("gate on + fail-closed → single red pair row", async () => {
+    const rows = await checkDriverPaneState(GATED_TEAM, FAKE_DIR, {
+      probe: probe(
+        pairHealth({
+          pairDecision: "fail-closed",
+          pairReason: "pair.too_many_panes",
+          pairDiagnostics: ["More than two driver panes is not safe.", "Run atmux doctor."],
+          state: null,
+        }),
+      ),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("red");
+    expect(rows[0]?.label).toBe("driver-pane-pair");
+    expect(rows[0]?.detail).toContain("reason=pair.too_many_panes");
+    expect(rows[0]?.hint).toBe("repair the driver-pane layout before starting");
+  });
+
+  test("gate on + unavailable observer → red pair row", async () => {
+    const rows = await checkDriverPaneState(GATED_TEAM, FAKE_DIR, {
+      probe: probe(
+        pairHealth({
+          pairDecision: "unavailable",
+          pairReason: "pair.observer.list_panes_failed",
+          pairDiagnostics: ["Driver pane metadata could not be read.", "Run atmux doctor."],
+          state: null,
+        }),
+      ),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("red");
+    expect(rows[0]?.label).toBe("driver-pane-pair");
+  });
+
+  test("gate on without pair observation → state rows only", async () => {
+    const rows = await checkDriverPaneState(GATED_TEAM, FAKE_DIR, {
+      probe: probe({
+        driverName: "driver",
+        configured: true,
+        windowExists: true,
+        state: "READY",
+        evidence: "",
+      }),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.label).toBe("driver-pane-state");
+  });
+});

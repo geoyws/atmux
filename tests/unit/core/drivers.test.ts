@@ -6,10 +6,13 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+  CANONICAL_DRIVER_PAIR_PRESET,
   canonicalDriverName,
   type DriverSession,
+  isDriverPairMaterialized,
   isTrunkDriver,
   resolveDriverCwd,
+  resolveDriverPair,
   resolveDriversList,
 } from "../../../src/core/drivers.ts";
 
@@ -87,5 +90,31 @@ describe("isTrunkDriver — driver-1 (original) identification", () => {
   test('"driver-N" (N>=2) is NOT trunk', () => {
     expect(isTrunkDriver({ name: "driver-2", tui: "claude", cwd: "x" })).toBe(false);
     expect(isTrunkDriver({ name: "driver-5", tui: "claude", cwd: "x" })).toBe(false);
+  });
+});
+
+describe("resolveDriverPair — ADR-288 rollout gate", () => {
+  test("absent driverPair → fresh canonical preset with materialize falsy", () => {
+    const resolved = resolveDriverPair({});
+    expect(resolved).toEqual(CANONICAL_DRIVER_PAIR_PRESET);
+    expect(resolved).not.toBe(CANONICAL_DRIVER_PAIR_PRESET);
+    expect(resolved.panes).not.toBe(CANONICAL_DRIVER_PAIR_PRESET.panes);
+    expect(isDriverPairMaterialized({})).toBe(false);
+  });
+
+  test("null driverPair → canonical preset, gate off", () => {
+    expect(resolveDriverPair({ driverPair: null }).materialize).toBe(false);
+    expect(isDriverPairMaterialized({ driverPair: null })).toBe(false);
+  });
+
+  test("explicit materialize:true passes through and opens the gate", () => {
+    const preset = { ...resolveDriverPair({}), materialize: true as const };
+    expect(resolveDriverPair({ driverPair: preset })).toBe(preset);
+    expect(isDriverPairMaterialized({ driverPair: preset })).toBe(true);
+  });
+
+  test("explicit driverPair without materialize → gate off", () => {
+    const { materialize: _dropped, ...rest } = CANONICAL_DRIVER_PAIR_PRESET;
+    expect(isDriverPairMaterialized({ driverPair: rest })).toBe(false);
   });
 });

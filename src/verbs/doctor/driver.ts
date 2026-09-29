@@ -9,6 +9,7 @@ import {
   type ProbeDriverPaneDeps,
   probeDriverPanes,
 } from "../../core/driver-pane-health.ts";
+import { isDriverPairMaterialized } from "../../core/drivers.ts";
 import { loadKanban } from "../../core/kanban.ts";
 import { kanbanWorkStateAvailable } from "../../core/kanban-backend.ts";
 import type { Team } from "../../schema/team.ts";
@@ -38,7 +39,11 @@ export interface CheckDriverPaneStateOpts {
  *   - configured=true, state ∈ {RATE-LIMIT, MODAL, COMPACTING} → yellow ("driver pane stuck")
  *   - configured=true, state ∈ {SHELL, UNKNOWN, null}   → yellow ("unexpected state")
  *
- * Single label across all rows: `driver-pane-state`.
+ * State rows keep the single `driver-pane-state` label. When the team
+ * opts into `driverPair.materialize` (ADR-288 amendment 2026-09-29),
+ * an observed pair adds a `driver-pane-pair` row ahead of the state
+ * rows: noop → green, plan-add-attention → yellow, fail-closed /
+ * observer failure → red. Flag off → no pair rows at all.
  */
 
 export async function checkDriverPaneState(
@@ -56,17 +61,66 @@ export async function checkDriverPaneState(
       : opts.probe === undefined
         ? []
         : [await opts.probe(team, atmuxDir)];
+  // ROLLOUT GATE (ADR-288 amendment 2026-09-29): pair rows render only
+  // when the team opts into `driverPair.materialize`. Flag off →
+  // exactly today's state rows; single-pane windows stay silent.
+  const pairGated = isDriverPairMaterialized(team);
   const rows: DoctorRow[] = [];
   for (const health of healths) {
-    rows.push(...renderDriverPaneRows(health));
+    rows.push(...renderDriverPaneRows(health, pairGated));
   }
   return rows;
 }
 
-function renderDriverPaneRows(health: DriverPaneHealth): DoctorRow[] {
+/** Render the `driver-pane-pair` row for an observed pair, or `null`
+ *  when the snapshot carries no pair observation. Pure. */
+function renderDriverPanePairRow(health: DriverPaneHealth, driverName: string): DoctorRow | null {
+  if (
+    health.pairDecision === undefined ||
+    health.pairReason === undefined ||
+    health.pairDiagnostics === undefined
+  ) {
+    return null;
+  }
+  const detail = `${driverName}: ${health.pairDiagnostics[0]} (reason=${health.pairReason})`;
+  if (health.pairDecision === "noop") {
+    return { status: "green", label: "driver-pane-pair", detail };
+  }
+  if (health.pairDecision === "plan-add-attention") {
+    return {
+      status: "yellow",
+      label: "driver-pane-pair",
+      detail,
+      hint: "run atmux start to add the attention pane",
+    };
+  }
+  return {
+    status: "red",
+    label: "driver-pane-pair",
+    detail,
+    hint: "repair the driver-pane layout before starting",
+  };
+}
+
+function renderDriverPaneRows(health: DriverPaneHealth, pairGated: boolean): DoctorRow[] {
   if (!health.configured) return [];
   const driverName = health.driverName ?? "driver";
+  if (pairGated) {
+    const pairRow = renderDriverPanePairRow(health, driverName);
+    // Green pairs fall through to the state rows below; anything
+    // else is the finding (fail-closed and observer failures never
+    // captured, so there is no state signal to add).
+    if (pairRow !== null && pairRow.status !== "green") return [pairRow];
+    if (pairRow !== null) {
+      const stateRows = renderDriverPaneStateRows(health, driverName);
+      return [pairRow, ...stateRows];
+    }
+  }
 
+  return renderDriverPaneStateRows(health, driverName);
+}
+
+function renderDriverPaneStateRows(health: DriverPaneHealth, driverName: string): DoctorRow[] {
   if (!health.windowExists) {
     return [
       {

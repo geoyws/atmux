@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
+import type { PaneInfo, TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import { probeDriverPane, probeDriverPanes } from "../../../src/core/driver-pane-health.ts";
 import type { CaptureFn, PaneState } from "../../../src/core/pane-state.ts";
 import type { Team } from "../../../src/schema/team.ts";
@@ -218,6 +218,11 @@ describe("probeDriverPane — production-default tmux adapters", () => {
         },
       },
       pane: {
+        // Pre-pair fixture shape: no pane rows → the probe keeps the
+        // legacy window-target capture and leaves pair fields absent.
+        async listPanes(_target: string) {
+          return [];
+        },
         async capturePane(_opts: {
           target: string;
           start?: number;
@@ -283,6 +288,10 @@ describe("probeDriverPanes — production-default tmux adapters", () => {
         },
       },
       pane: {
+        // Pre-pair fixture shape: no pane rows → legacy capture, no pair fields.
+        async listPanes(_target: string) {
+          return [];
+        },
         async capturePane(_opts: {
           target: string;
           start?: number;
@@ -696,5 +705,268 @@ describe("probeDriverPane — target uses session anchor", () => {
     });
     // session.txt seeded as "test-sess" in beforeEach.
     expect(target).toBe("test-sess:driver");
+  });
+});
+
+// ---------- ADR-288 pair observation ----------
+
+function pairPane(overrides: Partial<PaneInfo> & Pick<PaneInfo, "left">): PaneInfo {
+  return {
+    index: 0,
+    pid: 111,
+    title: "pane",
+    width: 80,
+    height: 24,
+    ...overrides,
+  };
+}
+
+/** teamWithDriverSession with the ADR-288 rollout gate switched on. */
+function materializedTeam(): Team {
+  const team = teamWithDriverSession();
+  return { ...team, driverPair: { ...team.driverPair, materialize: true } } as Team;
+}
+
+describe("probe with driverPair.materialize off (rollout gate)", () => {
+  // Live driver windows today often hold two panes with no role metadata
+  // (the operator's own left/right split). With the gate off the probe
+  // must not look at panes at all: same window-target capture as before
+  // the pair runtime, and no pair fields.
+  const rolelessSplit = async (): Promise<ReadonlyArray<PaneInfo>> => {
+    throw new Error("listPanes must not be called with the gate off");
+  };
+
+  test("probeDriverPane never lists panes and classifies the window target", async () => {
+    const targets: string[] = [];
+    const result = await probeDriverPane(teamWithDriverSession(), atmuxDir, {
+      listWindowNames: async () => ["driver"],
+      listPanes: rolelessSplit,
+      capture: async (target) => {
+        targets.push(target);
+        return STATE_FIXTURES.READY;
+      },
+    });
+    expect(targets).toEqual(["test-sess:driver"]);
+    expect(result.state).toBe("READY");
+    expect(result.pairDecision).toBeUndefined();
+    expect(result.pairReason).toBeUndefined();
+  });
+
+  test("probeDriverPanes never lists panes for any live window", async () => {
+    const targets: string[] = [];
+    const result = await probeDriverPanes(teamWithDriverSession(), atmuxDir, {
+      listWindowNames: async () => ["driver", "driver-2"],
+      listPanes: async () => [
+        pairPane({ id: "%1", left: 0 }),
+        pairPane({ id: "%2", left: 80 }),
+        pairPane({ id: "%3", left: 120 }),
+      ],
+      capture: async (target) => {
+        targets.push(target);
+        return STATE_FIXTURES.READY;
+      },
+    });
+    expect(targets).toEqual(["test-sess:driver", "test-sess:driver-2"]);
+    expect(result.map((r) => r.pairDecision)).toEqual([undefined, undefined, undefined]);
+    expect(result.map((r) => r.state)).toEqual(["READY", "READY", null]);
+  });
+});
+
+describe("probeDriverPane — pair observation", () => {
+  test("listPanes rejects → unavailable observer failure, no capture", async () => {
+    let captureCalled = false;
+    const result = await probeDriverPane(materializedTeam(), atmuxDir, {
+      listWindowNames: async () => ["driver"],
+      listPanes: async () => {
+        throw new Error("tmux unreachable");
+      },
+      capture: async () => {
+        captureCalled = true;
+        return STATE_FIXTURES.READY;
+      },
+    });
+    expect(result.windowExists).toBe(true);
+    expect(result.state).toBeNull();
+    expect(result.pairDecision).toBe("unavailable");
+    expect(result.pairReason).toBe("pair.observer.list_panes_failed");
+    expect(result.pairDiagnostics?.[1]).toContain("atmux doctor");
+    expect(captureCalled).toBe(false);
+  });
+
+  test("pane row missing the immutable id → fail-closed, no capture", async () => {
+    let captureCalled = false;
+    const result = await probeDriverPane(materializedTeam(), atmuxDir, {
+      listWindowNames: async () => ["driver"],
+      listPanes: async () => [pairPane({ left: 0 })],
+      capture: async () => {
+        captureCalled = true;
+        return STATE_FIXTURES.READY;
+      },
+    });
+    expect(result.pairDecision).toBe("fail-closed");
+    expect(result.pairReason).toBe("pair.observer.missing_pane_metadata");
+    expect(result.state).toBeNull();
+    expect(captureCalled).toBe(false);
+  });
+
+  test("three panes → fail-closed too_many_panes, no capture", async () => {
+    let captureCalled = false;
+    const result = await probeDriverPane(materializedTeam(), atmuxDir, {
+      listWindowNames: async () => ["driver"],
+      listPanes: async () => [
+        pairPane({ id: "%1", left: 0, role: "worker" }),
+        pairPane({ id: "%2", left: 40, role: "attention" }),
+        pairPane({ id: "%3", left: 80, role: "worker" }),
+      ],
+      capture: async () => {
+        captureCalled = true;
+        return STATE_FIXTURES.READY;
+      },
+    });
+    expect(result.pairDecision).toBe("fail-closed");
+    expect(result.pairReason).toBe("pair.too_many_panes");
+    expect(result.state).toBeNull();
+    expect(captureCalled).toBe(false);
+  });
+
+  test("valid pair → noop observation and worker pane captured by id", async () => {
+    const targets: string[] = [];
+    const result = await probeDriverPane(materializedTeam(), atmuxDir, {
+      listWindowNames: async () => ["driver"],
+      listPanes: async () => [
+        pairPane({ id: "%9", left: 40, role: "attention" }),
+        pairPane({ id: "%8", left: 0, role: "worker" }),
+      ],
+      capture: async (t) => {
+        targets.push(t);
+        return STATE_FIXTURES.READY;
+      },
+    });
+    expect(result.pairDecision).toBe("noop");
+    expect(result.pairReason).toBe("pair.two.valid");
+    expect(result.state).toBe("READY");
+    expect(targets).toEqual(["%8"]);
+  });
+
+  test("safe singleton → plan-add-attention and keep pane captured by id", async () => {
+    const targets: string[] = [];
+    const result = await probeDriverPane(materializedTeam(), atmuxDir, {
+      listWindowNames: async () => ["driver"],
+      listPanes: async () => [pairPane({ id: "%7", left: 0, role: "worker" })],
+      capture: async (t) => {
+        targets.push(t);
+        return STATE_FIXTURES.SHELL;
+      },
+    });
+    expect(result.pairDecision).toBe("plan-add-attention");
+    expect(result.pairReason).toBe("pair.singleton.safe_worker_role");
+    expect(result.state).toBe("SHELL");
+    expect(targets).toEqual(["%7"]);
+  });
+
+  test("capture failure keeps the pair observation with state=null", async () => {
+    const result = await probeDriverPane(materializedTeam(), atmuxDir, {
+      listWindowNames: async () => ["driver"],
+      listPanes: async () => [
+        pairPane({ id: "%8", left: 0, role: "worker" }),
+        pairPane({ id: "%9", left: 40, role: "attention" }),
+      ],
+      capture: async () => {
+        throw new Error("transient tmux error");
+      },
+    });
+    expect(result.pairDecision).toBe("noop");
+    expect(result.pairReason).toBe("pair.two.valid");
+    expect(result.state).toBeNull();
+  });
+
+  test("legacy [] listing → window-target capture and absent pair fields", async () => {
+    const targets: string[] = [];
+    const result = await probeDriverPane(materializedTeam(), atmuxDir, {
+      listWindowNames: async () => ["driver"],
+      listPanes: async () => [],
+      capture: async (t) => {
+        targets.push(t);
+        return STATE_FIXTURES.READY;
+      },
+    });
+    expect(result.pairDecision).toBeUndefined();
+    expect(result.state).toBe("READY");
+    expect(targets).toEqual(["test-sess:driver"]);
+  });
+});
+
+describe("probeDriverPanes — pair observation per window", () => {
+  test("mixed roster: noop + fail-closed + missing stay distinct", async () => {
+    const targets: string[] = [];
+    const result = await probeDriverPanes(materializedTeam(), atmuxDir, {
+      listWindowNames: async () => ["driver", "driver-2"],
+      listPanes: async (target) => {
+        if (target === "test-sess:driver") {
+          return [
+            pairPane({ id: "%8", left: 0, role: "worker" }),
+            pairPane({ id: "%9", left: 40, role: "attention" }),
+          ];
+        }
+        return [
+          pairPane({ id: "%10", left: 0, role: "worker" }),
+          pairPane({ id: "%11", left: 40, role: "attention" }),
+          pairPane({ id: "%12", left: 80 }),
+        ];
+      },
+      capture: async (t) => {
+        targets.push(t);
+        return STATE_FIXTURES.READY;
+      },
+    });
+    expect(result.map((h) => h.driverName)).toEqual(["driver", "driver-2", "driver-3"]);
+    expect(result[0]?.pairDecision).toBe("noop");
+    expect(result[0]?.state).toBe("READY");
+    expect(result[1]?.pairDecision).toBe("fail-closed");
+    expect(result[1]?.pairReason).toBe("pair.too_many_panes");
+    expect(result[1]?.state).toBeNull();
+    expect(result[2]?.windowExists).toBe(false);
+    expect(result[2]?.pairDecision).toBeUndefined();
+    expect(targets).toEqual(["%8"]);
+  });
+
+  test("listPanes rejects → unavailable per live window", async () => {
+    const result = await probeDriverPanes(materializedTeam(), atmuxDir, {
+      listWindowNames: async () => ["driver"],
+      listPanes: async () => {
+        throw new Error("tmux unreachable");
+      },
+      capture: async () => STATE_FIXTURES.READY,
+    });
+    expect(result[0]?.pairDecision).toBe("unavailable");
+    expect(result[0]?.pairReason).toBe("pair.observer.list_panes_failed");
+    expect(result[0]?.state).toBeNull();
+  });
+
+  test("incomplete metadata fails a single window closed without capture", async () => {
+    let captureCalled = false;
+    const result = await probeDriverPanes(materializedTeam(), atmuxDir, {
+      listWindowNames: async () => ["driver"],
+      listPanes: async () => [pairPane({ id: "%8", left: 0 }), pairPane({ left: 40 })],
+      capture: async () => {
+        captureCalled = true;
+        return STATE_FIXTURES.READY;
+      },
+    });
+    expect(result[0]?.pairDecision).toBe("fail-closed");
+    expect(result[0]?.pairReason).toBe("pair.observer.missing_pane_metadata");
+    expect(captureCalled).toBe(false);
+  });
+
+  test("capture failure keeps the pair observation with state=null", async () => {
+    const result = await probeDriverPanes(materializedTeam(), atmuxDir, {
+      listWindowNames: async () => ["driver"],
+      listPanes: async () => [pairPane({ id: "%8", left: 0 })],
+      capture: async () => {
+        throw new Error("transient tmux error");
+      },
+    });
+    expect(result[0]?.pairDecision).toBe("plan-add-attention");
+    expect(result[0]?.state).toBeNull();
   });
 });

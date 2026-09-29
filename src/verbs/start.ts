@@ -96,6 +96,7 @@ import {
   createTmux,
   exactSessionTarget,
   type PaneId,
+  type PaneInfo,
   type SendTarget,
   type TmuxConfig,
   type TmuxNamespace,
@@ -136,9 +137,17 @@ import {
   teamJsonPath,
 } from "../core/common.ts";
 import {
+  DRIVER_PANE_ROLE_ATTENTION,
+  DRIVER_PANE_ROLE_WORKER,
+  type DriverPane,
+  planDriverPanePair,
+} from "../core/driver-pair.ts";
+import {
   type DriverSession,
+  isDriverPairMaterialized,
   isTrunkDriver,
   resolveDriverCwd,
+  resolveDriverPair,
   resolveDriversList,
 } from "../core/drivers.ts";
 import { injectGoalIfActive } from "../core/goal-injection.ts";
@@ -390,6 +399,139 @@ export interface StartOpts {
   stderr?: (text: string) => void;
 }
 
+// ---------- ADR-288 driver worker/attention pair (ROLLOUT-GATED) ----------
+//
+// All runtime/reconcile pane creation runs ONLY when the team opts into
+// `driverPair.materialize` (schema default false — today's single-pane
+// driver windows). The helpers below never delete or swap panes: a
+// valid two-pane layout is a no-op, a safe singleton gains the
+// attention pane with the worker PID preserved, and anything else
+// throws a ConfigError (fail closed, surfaced by `atmux doctor`).
+
+function driverPairError(reasonCode: string, detail: string): ConfigError {
+  return new ConfigError({
+    what: `start: driver pair ${reasonCode}: ${detail}`,
+    hint: "run atmux doctor",
+  });
+}
+
+/** Normalize one listed pane for the pair planner. Throws (fail closed)
+ *  when the row lacks the immutable `%N` id, a positive pid, or pane
+ *  geometry — the reconciler never guesses. */
+function normalizePairPane(pane: PaneInfo, windowName: string): DriverPane {
+  if (pane.id === undefined || !/^%[0-9]+$/.test(pane.id)) {
+    throw driverPairError(
+      "preflight failed [pair.missing_required_metadata]",
+      `driver window '${windowName}' is missing strict tmux pane id metadata`,
+    );
+  }
+  if (!Number.isInteger(pane.pid) || pane.pid <= 0) {
+    throw driverPairError(
+      "preflight failed [pair.missing_required_metadata]",
+      `driver window '${windowName}' is missing positive pane pid metadata`,
+    );
+  }
+  if (!Number.isInteger(pane.left) || (pane.left as number) < 0) {
+    throw driverPairError(
+      "preflight failed [pair.missing_required_metadata]",
+      `driver window '${windowName}' is missing non-negative pane left metadata`,
+    );
+  }
+  if (!Number.isInteger(pane.index) || pane.index < 0) {
+    throw driverPairError(
+      "preflight failed [pair.missing_required_metadata]",
+      `driver window '${windowName}' is missing non-negative pane index metadata`,
+    );
+  }
+  return {
+    id: pane.id,
+    index: pane.index,
+    pid: pane.pid,
+    left: pane.left as number,
+    ...(pane.role !== undefined ? { role: pane.role } : {}),
+  };
+}
+
+export interface EnsureDriverPairArgs {
+  tmux: TmuxNamespace;
+  session: string;
+  driverName: string;
+  /** Resolved cwd for the attention pane (same tree as the worker). */
+  driverCwd: string;
+  /** Canonical attention launch (`driverPair.panes[1].command`); null
+   *  means a plain interactive shell — never an agent auto-launch. */
+  attentionCommand: string | null;
+}
+
+/**
+ * Reconcile one driver window to the worker-left / attention-right
+ * pair. Idempotent: valid layouts return `"noop"` without touching
+ * tmux; safe singletons gain the right pane (`"repaired"`) with the
+ * worker pane and its PID preserved; anything else throws before any
+ * mutation. The split is horizontal (`-h`, side-by-side); the new
+ * pane lands right of the worker by tmux geometry.
+ */
+export async function ensureDriverPairMaterialized(
+  args: EnsureDriverPairArgs,
+): Promise<"noop" | "repaired"> {
+  const { tmux, session, driverName, driverCwd, attentionCommand } = args;
+  const windowTarget = `${session}:${driverName}`;
+  const before = (await tmux.pane.listPanes(windowTarget)).map((pane) =>
+    normalizePairPane(pane, driverName),
+  );
+  const planned = planDriverPanePair(before);
+  if (planned.decision === "noop") return "noop";
+  if (planned.decision === "fail-closed") {
+    throw driverPairError(`preflight failed [${planned.reasonCode}]`, planned.diagnostics[0]);
+  }
+  const setPaneRole = tmux.pane.setPaneRole;
+  if (setPaneRole === undefined) {
+    throw driverPairError(
+      "materialization failed [pair.missing_set_pane_role]",
+      `tmux namespace does not expose setPaneRole for driver window '${driverName}'`,
+    );
+  }
+  await setPaneRole({ target: { paneId: planned.keepPane.id }, value: DRIVER_PANE_ROLE_WORKER });
+  await tmux.pane.splitWindow({
+    target: windowTarget,
+    detached: true,
+    cwd: driverCwd,
+    ...(attentionCommand !== null ? { shellCommand: attentionCommand } : {}),
+  });
+  const afterSplit = (await tmux.pane.listPanes(windowTarget)).map((pane) =>
+    normalizePairPane(pane, driverName),
+  );
+  if (afterSplit.length !== 2) {
+    throw driverPairError(
+      "materialization failed [pair.repair_split_failed]",
+      `driver window '${driverName}' did not settle to two panes after split`,
+    );
+  }
+  const leftPane = afterSplit.reduce((left, pane) => (pane.left < left.left ? pane : left));
+  const rightPane = afterSplit.find((pane) => pane.id !== leftPane.id);
+  if (rightPane === undefined) {
+    throw driverPairError(
+      "materialization failed [pair.repair_split_failed]",
+      `driver window '${driverName}' lost its attention pane during split`,
+    );
+  }
+  if (leftPane.pid !== planned.keepPane.pid) {
+    throw driverPairError(
+      "materialization failed [pair.worker_pid_changed]",
+      `driver window '${driverName}' replaced the worker pane process during pair materialization`,
+    );
+  }
+  await setPaneRole({ target: { paneId: rightPane.id }, value: DRIVER_PANE_ROLE_ATTENTION });
+  const final = (await tmux.pane.listPanes(windowTarget)).map((pane) =>
+    normalizePairPane(pane, driverName),
+  );
+  const settled = planDriverPanePair(final);
+  if (settled.decision !== "noop") {
+    throw driverPairError(`materialization failed [${settled.reasonCode}]`, settled.diagnostics[0]);
+  }
+  return "repaired";
+}
+
 /**
  * `atmux start` — spawn a tmux session for the team, with one window
  * per `team.members[]` entry. Window names follow
@@ -573,6 +715,12 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   // legacy `driverSession` / `driverTui` synthesis was removed per
   // ADR-266 §D2 — only `drivers[]` drives the spawn loop now.)
   const drivers = resolveDriversList(team as Parameters<typeof resolveDriversList>[0]);
+  // ADR-288 amendment 2026-09-29 — ROLLOUT GATE: pair materialization
+  // runs ONLY when `driverPair.materialize` is true (schema-absent
+  // means false). Flag off → every hook below is skipped and driver
+  // windows stay exactly today's single panes.
+  const pairGated = isDriverPairMaterialized(team);
+  const driverAttentionCommand = pairGated ? resolveDriverPair(team).panes[1].command : null;
   // ADR-296 — resolve the per-team superdriver orchestration seat.
   // Absent block == enabled with defaults, so legacy team.json files
   // gain the seat without migration; `{"enabled": false}` opts out.
@@ -818,6 +966,18 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
           created[0].index,
         );
         await launchDriverTui(firstDriver, firstCwd, firstPane);
+        if (pairGated) {
+          const outcome = await ensureDriverPairMaterialized({
+            tmux,
+            session,
+            driverName: firstDriver.name,
+            driverCwd: firstCwd,
+            attentionCommand: driverAttentionCommand,
+          });
+          logger.log(
+            `  · driver pair: ${firstDriver.name} worker-left / attention-right ${outcome}`,
+          );
+        }
         logger.ok(
           `created tmux session: ${session} (${firstDriver.name} at window 1, ${driverShellLabel(firstDriver.tui)})`,
         );
@@ -842,6 +1002,16 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
         const winId = await tmux.window.newWindow(newWindowOpts);
         const paneId = await resolveOnlyPane(tmux, winId, session, winId.windowIndex);
         await launchDriverTui(drv, cwd, paneId);
+        if (pairGated) {
+          const outcome = await ensureDriverPairMaterialized({
+            tmux,
+            session,
+            driverName: drv.name,
+            driverCwd: cwd,
+            attentionCommand: driverAttentionCommand,
+          });
+          logger.log(`  · driver pair: ${drv.name} worker-left / attention-right ${outcome}`);
+        }
         logger.log(
           `  · driver pane: ${drv.name} at window ${i + (superdriverSpawned ? 2 : 1)} (${driverShellLabel(drv.tui)}) cwd=${cwd}`,
         );
@@ -961,6 +1131,40 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
       logger.log(
         "  · superdriver: disabled in team.json — existing window left alone (kill it by hand if the opt-out should take effect)",
       );
+    }
+  }
+
+  // 7b. ADR-288 — reconcile the worker/attention pair on a live cage
+  //     (incremental path only; fresh creation materializes inline in
+  //     step 7 above).
+  //     ROLLOUT-GATED on `driverPair.materialize`; flag off → skipped
+  //     entirely (incremental behaviour is exactly today's). Every
+  //     configured driver window present in the live session is
+  //     classified: valid pairs are no-ops, safe singletons gain the
+  //     attention pane with the worker PID preserved, and anything
+  //     else throws ConfigError BEFORE any mutation (fail closed —
+  //     repair via `atmux doctor`, never delete/swap panes here).
+  //     Missing driver windows are NOT created here (no worktree
+  //     provisioning on the incremental path) — the operator recreates
+  //     them with `atmux start --force`.
+  if (pairGated && stillExists && drivers.length > 0) {
+    const liveWindows = await tmux.window.listWindows(session);
+    const liveNames = new Set(liveWindows.map((w) => w.name));
+    for (const drv of drivers) {
+      if (!liveNames.has(drv.name)) {
+        logger.log(`  · driver ${drv.name}: window missing — start --force to recreate`);
+        continue;
+      }
+      const outcome = await ensureDriverPairMaterialized({
+        tmux,
+        session,
+        driverName: drv.name,
+        driverCwd: resolveDriverCwd(drv, projectRoot),
+        attentionCommand: driverAttentionCommand,
+      });
+      if (outcome === "repaired") {
+        logger.log(`  · driver pair: ${drv.name} attention pane added (worker preserved)`);
+      }
     }
   }
 

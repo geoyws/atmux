@@ -61,6 +61,12 @@ export const DriverPairPresetSchema = z
   .object({
     layout: z.literal("horizontal"),
     panes: z.tuple([DriverPairWorkerPaneSchema, DriverPairAttentionPaneSchema]),
+    /** ROLLOUT GATE (ADR-288 amendment 2026-09-29): pair
+     *  materialization in start/reconcile runs ONLY when true.
+     *  Optional so existing team literals stay compatible; absent
+     *  means false (see `isDriverPairMaterialized`). Row t-d1f18085
+     *  owns flipping the default. */
+    materialize: z.boolean().optional(),
   })
   .strict();
 export type DriverPairPreset = z.infer<typeof DriverPairPresetSchema>;
@@ -84,7 +90,39 @@ export const CANONICAL_DRIVER_PAIR_PRESET = Object.freeze({
       command: null,
     },
   ],
+  materialize: false,
 } satisfies DriverPairPreset);
+
+/** Input shape for {@link resolveDriverPair}. */
+export interface DriverPairTeamLike {
+  driverPair?: DriverPairPreset | null | undefined;
+}
+
+/**
+ * Resolve the canonical worker/attention pair for a team.
+ *
+ * Stored configs keep `driverPair` optional so existing `Team` literals
+ * stay compatible. When the field is absent, callers materialize a fresh
+ * copy of the canonical preset (which carries `materialize: false`).
+ */
+export function resolveDriverPair(team: DriverPairTeamLike): DriverPairPreset {
+  if (team.driverPair !== undefined && team.driverPair !== null) {
+    return team.driverPair;
+  }
+  const canonical = CANONICAL_DRIVER_PAIR_PRESET;
+  return {
+    layout: canonical.layout,
+    panes: [{ ...canonical.panes[0] }, { ...canonical.panes[1] }],
+    materialize: canonical.materialize,
+  };
+}
+
+/** ROLLOUT GATE (ADR-288 amendment 2026-09-29): true only when the team
+ *  explicitly opts into pair materialization. Absent/null driverPair
+ *  means today's single-pane behaviour. */
+export function isDriverPairMaterialized(team: DriverPairTeamLike): boolean {
+  return resolveDriverPair(team).materialize === true;
+}
 
 /** Input shape for {@link resolveDriversList}. */
 interface DriverRosterTeam {

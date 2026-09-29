@@ -101,6 +101,132 @@ export interface PaneId {
   paneIndex: number;
 }
 
+/** Immutable tmux pane reference (`%N`) — stable across splits that
+ *  renumber pane indexes. ADR-288 pair writes (role tags, right-pane
+ *  identification after a split) always address panes this way, never
+ *  by `session:window.pane` index. */
+export interface PaneIdRef {
+  paneId: string;
+}
+
+/** Target for pane-scoped option writes: index address or immutable id. */
+export type PaneTarget = PaneId | PaneIdRef;
+
+/** ADR-288 driver-pair pane roles carried in tmux pane options. */
+export type PaneRoleValue = "worker" | "attention";
+
+/** One row of `tmux list-panes` with ADR-288 pair metadata.
+ *
+ *  `id` / `left` / `role` are optional so pre-pair fixtures and
+ *  hand-built fakes (which only know index/pid/title/width/height)
+ *  keep compiling; the pair reconciler treats absent metadata as a
+ *  fail-closed signal, never as a default. */
+export interface PaneInfo {
+  id?: string;
+  index: number;
+  pid: number;
+  title: string;
+  left?: number;
+  width: number;
+  height: number;
+  role?: string;
+}
+
+export const PANE_LIST_FIELDS = Object.freeze([
+  "id",
+  "index",
+  "pid",
+  "title",
+  "left",
+  "width",
+  "height",
+  "role",
+] as const);
+
+export const PANE_LIST_FORMAT =
+  "#{pane_id}\t#{pane_index}\t#{pane_pid}\t#{pane_title}\t#{pane_left}\t#{pane_width}\t#{pane_height}\t#{@atmux_driver_pane_role}";
+
+export const ATMUX_DRIVER_PANE_ROLE_OPTION = "@atmux_driver_pane_role";
+
+function parseRequiredInt(value: string | undefined): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/** Map one `parseTabular` row (keyed by `PANE_LIST_FIELDS`) to a `PaneInfo`. Pure. */
+export function paneRowToObject(row: Record<string, string>): PaneInfo {
+  const out: PaneInfo = {
+    index: parseRequiredInt(row.index),
+    pid: parseRequiredInt(row.pid),
+    title: row.title ?? "",
+    width: parseRequiredInt(row.width),
+    height: parseRequiredInt(row.height),
+  };
+  if (row.id !== undefined && row.id.length > 0) out.id = row.id;
+  if (row.left !== undefined && row.left.trim().length > 0) {
+    const left = Number.parseInt(row.left, 10);
+    if (Number.isFinite(left)) out.left = left;
+  }
+  if (row.role !== undefined && row.role.length > 0) out.role = row.role;
+  return out;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return (
+    typeof value === "number" && Number.isFinite(value) && Number.isInteger(value) && value >= 0
+  );
+}
+
+/** Serialize a pane-option target: `%N` passes through, structured ids
+ *  reuse `serializeTarget`. Pure. */
+export function serializePaneTarget(target: PaneTarget): string {
+  if (typeof target !== "object" || target === null) {
+    throw new TypeError("pane role target must be a pane target object");
+  }
+  if ("paneId" in target) {
+    if (!/^%[0-9]+$/.test(target.paneId)) {
+      throw new TypeError(`invalid tmux pane id: ${JSON.stringify(target.paneId)}`);
+    }
+    return target.paneId;
+  }
+  if ("sessionName" in target && "windowIndex" in target && "paneIndex" in target) {
+    if (
+      !isNonEmptyString(target.sessionName) ||
+      !isNonNegativeInteger(target.windowIndex) ||
+      !isNonNegativeInteger(target.paneIndex)
+    ) {
+      throw new TypeError(
+        "pane role target must use a nonempty session name and whole-number indices",
+      );
+    }
+    return serializeTarget(target);
+  }
+  throw new TypeError("pane role target must be a pane target object");
+}
+
+function assertPaneRoleValue(value: unknown): asserts value is PaneRoleValue {
+  if (value !== "worker" && value !== "attention") {
+    throw new TypeError(`invalid pane role value: ${JSON.stringify(value)}`);
+  }
+}
+
+/** Build `tmux set-option -p -t <pane> @atmux_driver_pane_role <role>`. Pure. */
+export function buildSetPaneRoleArgv(target: PaneTarget, value: PaneRoleValue): string[] {
+  assertPaneRoleValue(value);
+  return [
+    "set-option",
+    "-p",
+    "-t",
+    serializePaneTarget(target),
+    ATMUX_DRIVER_PANE_ROLE_OPTION,
+    value,
+  ];
+}
+
 export interface WindowId {
   sessionName: string;
   windowIndex: number;
@@ -437,9 +563,11 @@ export interface TmuxNamespace {
       end?: number;
       includeAnsi?: boolean;
     }): Promise<string>;
-    listPanes(
-      target: Target,
-    ): Promise<{ index: number; pid: number; title: string; width: number; height: number }[]>;
+    listPanes(target: Target): Promise<PaneInfo[]>;
+    /** `tmux set-option -p -t <pane> @atmux_driver_pane_role <role>`.
+     *  Optional so hand-built fakes that predate the pair can omit it;
+     *  the pair reconciler fails closed when it is absent. */
+    setPaneRole?(opts: { target: PaneTarget; value: PaneRoleValue }): Promise<void>;
     displayMessage(opts: { target: Target; format: string; print?: boolean }): Promise<string>;
     killPane(target: Target): Promise<void>;
     splitWindow(opts: {
@@ -732,22 +860,22 @@ export function createTmux(config: TmuxConfig): TmuxNamespace {
       },
 
       /**
-       * `tmux list-panes -t <target> -F '#{pane_index}\t#{pane_pid}\t#{pane_title}\t#{pane_width}\t#{pane_height}'`.
+       * `tmux list-panes -t <target> -F '<PANE_LIST_FORMAT>'` — pane
+       * geometry plus the ADR-288 `@atmux_driver_pane_role` option
+       * (empty when never tagged).
        */
       async listPanes(target) {
-        const fmt = "#{pane_index}\t#{pane_pid}\t#{pane_title}\t#{pane_width}\t#{pane_height}";
         const r = await tmuxRunRaw(
-          ["list-panes", "-t", serializeTarget(target), "-F", fmt],
+          ["list-panes", "-t", serializeTarget(target), "-F", PANE_LIST_FORMAT],
           [0, 1],
         );
         if (r.exitCode === 1 && r.stdout.length === 0) return [];
-        return parseTabular(r.stdout, ["index", "pid", "title", "width", "height"]).map((row) => ({
-          index: Number.parseInt(row.index ?? "0", 10) || 0,
-          pid: Number.parseInt(row.pid ?? "0", 10) || 0,
-          title: row.title ?? "",
-          width: Number.parseInt(row.width ?? "0", 10) || 0,
-          height: Number.parseInt(row.height ?? "0", 10) || 0,
-        }));
+        return parseTabular(r.stdout, PANE_LIST_FIELDS).map(paneRowToObject);
+      },
+
+      /** `tmux set-option -p -t <pane-target> @atmux_driver_pane_role <value>`. */
+      async setPaneRole(opts) {
+        await tmuxRun(buildSetPaneRoleArgv(opts.target, opts.value));
       },
 
       /** `tmux display-message [-p] -t <target> '<format>'`. */
