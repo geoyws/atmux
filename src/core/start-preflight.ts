@@ -35,7 +35,9 @@ export interface DepProbe {
   status: DepProbeStatus;
   /** Installed version when observed (tmux `-V`; marker record). */
   installed?: string;
-  /** Expected version when a pin source exists (tmux only). */
+  /** Expected version when a pin source exists (tmux only). Invariant:
+   *  every tmux row (pinned/drifted/absent) carries it — the drift
+   *  renderer reads it without a fallback so the 100% branch gate holds. */
   expected?: string;
 }
 
@@ -74,6 +76,11 @@ export interface PreflightDeps {
   isTTY?: boolean;
   /** Ask a Y/n question; default readline over stdio. Tests inject. */
   prompt?: (question: string) => Promise<boolean>;
+  /** Streams for the default prompt (reconfigure.ts `PrompterStreams`
+   *  precedent). Tests pass `Readable.from([...])`; production omits
+   *  both and gets process stdio. */
+  promptInput?: NodeJS.ReadableStream;
+  promptOutput?: NodeJS.WritableStream;
   /** Run the installer; resolve its exit code. Default streams
    *  `bun run build:install` in the caller's cwd. */
   runInstall?: () => Promise<number>;
@@ -91,8 +98,12 @@ function defaultTmuxVersion(bin: string): string | null {
   }
 }
 
-function defaultPrompt(question: string): Promise<boolean> {
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
+function defaultPrompt(
+  question: string,
+  input: NodeJS.ReadableStream,
+  output: NodeJS.WritableStream,
+): Promise<boolean> {
+  const rl = createInterface({ input, output });
   const { promise, resolve } = Promise.withResolvers<boolean>();
   rl.question(question, (answer: string) => {
     rl.close();
@@ -139,7 +150,11 @@ export function probeVendoredDeps(deps: PreflightDeps = {}): DepProbe[] {
   const expected = readPin().trim();
   return PREFLIGHT_ARTEFACTS.map((name): DepProbe => {
     const path = join(prefix, name);
-    if (!existsSync(path)) return { name, path, status: "absent" };
+    if (!existsSync(path)) {
+      return name === "tmux"
+        ? { name, path, status: "absent", expected }
+        : { name, path, status: "absent" };
+    }
     if (name !== "tmux") return { name, path, status: "present" };
     const out = tmuxVersion(path);
     const parsed = out === null ? null : parseTmuxVersion(out);
@@ -165,7 +180,7 @@ function renderTable(probes: ReadonlyArray<DepProbe>): string[] {
       );
     } else if (p.status === "drifted") {
       lines.push(
-        `  Drift   : ${p.name} (installed ${p.installed ?? "unknown"}, expected ${p.expected ?? "unknown"})`,
+        `  Drift   : ${p.name} (installed ${p.installed ?? "unknown"}, expected ${p.expected})`,
       );
     }
   }
@@ -204,14 +219,19 @@ export async function runStartPreflight(
 
   for (const line of renderTable(probes)) log(line);
   const isTTY = deps.isTTY ?? process.stdin.isTTY === true;
-  const prompt = deps.prompt ?? defaultPrompt;
   let accept: boolean;
   if (flags.skipDeps) {
     accept = false;
   } else if (flags.nonInteractive || !isTTY) {
     accept = true;
+  } else if (deps.prompt !== undefined) {
+    accept = await deps.prompt("Install/rebuild via `bun run build:install`? [Y/n] ");
   } else {
-    accept = await prompt("Install/rebuild via `bun run build:install`? [Y/n] ");
+    accept = await defaultPrompt(
+      "Install/rebuild via `bun run build:install`? [Y/n] ",
+      deps.promptInput ?? process.stdin,
+      deps.promptOutput ?? process.stdout,
+    );
   }
 
   if (!accept) {
