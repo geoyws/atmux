@@ -106,6 +106,14 @@ atmux                         # one-stop: wizard (if new) → doctor → start �
 atmux init --wizard           # interactive setup only
 atmux doctor                  # environment check (deps / team.json / TUI PATH / webhook)
 atmux start                   # spawn the team
+#
+# On a cold host `atmux start` first runs a vendored-deps preflight
+# ([ADR-241](docs/adr/241-start-preflight-wizard.md)): when
+# /opt/atmux/current/bin artefacts are missing or the vendored tmux
+# drifted from the pinned version, it offers a one-shot
+# `bun run build:install` ([Y/n], default yes). Flags:
+# --skip-deps (run on system binaries), --non-interactive (install
+# without asking), --no-preflight (skip the check entirely).
 atmux attach                  # tmux attach to watch
 
 # 3. Drive the team:

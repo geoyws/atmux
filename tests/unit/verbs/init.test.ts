@@ -277,11 +277,7 @@ describe("init — template path (bash lib/init.sh:87-107 parity)", () => {
     // (2026-09-03): the default roster is drivers-only — three drivers
     // (ADR-239 floor restored), zero members, no bot seat.
     expect(tj.members).toEqual([]);
-    expect(tj.drivers?.map((d) => d.name)).toEqual([
-      "driver",
-      "driver-2",
-      "driver-3",
-    ]);
+    expect(tj.drivers?.map((d) => d.name)).toEqual(["driver", "driver-2", "driver-3"]);
     // Driver cwd is NOT rewritten to PWD (unlike members[].cwd): start.ts
     // anchors the relative path at the project root and keys worktree
     // provisioning off the conventional `.atmux/worktrees/driver-N`.
@@ -789,11 +785,7 @@ describe("ADR-288 §D5 — init(shipped template) → start", () => {
     const before = await readFile(tjPath, "utf8");
     const tj = JSON.parse(before) as RenderedTeam;
     expect(tj.members).toEqual([]);
-    expect(tj.drivers?.map((d) => d.name)).toEqual([
-      "driver",
-      "driver-2",
-      "driver-3",
-    ]);
+    expect(tj.drivers?.map((d) => d.name)).toEqual(["driver", "driver-2", "driver-3"]);
     expect(tj.bot).toBeUndefined();
 
     // The fake git never runs a real `worktree add`, so stand in for the
@@ -809,16 +801,19 @@ describe("ADR-288 §D5 — init(shipped template) → start", () => {
       logger: env.logger,
       loadCockpitFn: async () => null,
       gitSpawn: healthyGit(calls),
+      // ADR-241: pinned-present fakes so start never probes /opt or
+      // shells out to the installer (cf. preflightFakes in start.test.ts).
+      preflightDeps: {
+        existsSync: () => true,
+        tmuxVersion: () => "tmux 3.6a",
+        readPin: () => "3.6a",
+        homeDir: atmuxDir,
+      },
     });
     expect(exit).toBe(0);
 
     const wins = [...(await tmux.window.listWindows(team))].sort((a, b) => a.index - b.index);
-    expect(wins.map((w) => w.name)).toEqual([
-      "superdriver",
-      "driver",
-      "driver-2",
-      "driver-3",
-    ]);
+    expect(wins.map((w) => w.name)).toEqual(["superdriver", "driver", "driver-2", "driver-3"]);
     expect(wins.map((w) => w.index)).toEqual([1, 2, 3, 4]);
     expect(wins.some((w) => w.name === `__${team}__home`)).toBe(false);
     // Step 9b: no emoji fallback fired → team.json is byte-identical.

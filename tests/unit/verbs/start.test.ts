@@ -189,6 +189,18 @@ type StartOpts = NonNullable<Parameters<typeof start>[1]>;
 type LoadCockpitFn = NonNullable<StartOpts["loadCockpitFn"]>;
 type CockpitReconcileFn = NonNullable<StartOpts["cockpitReconcileFn"]>;
 
+/** ADR-241: pinned-present preflight fakes so `start` never probes /opt
+ *  or shells out to the installer. Direct `start()` call sites spread
+ *  `preflightDeps: preflightFakes(env.atmuxDir)` into their opts. */
+function preflightFakes(homeDir: string): NonNullable<StartOpts["preflightDeps"]> {
+  return {
+    existsSync: () => true,
+    tmuxVersion: () => "tmux 3.6a",
+    readPin: () => "3.6a",
+    homeDir,
+  };
+}
+
 async function runStart(
   args: ReadonlyArray<string>,
   opts: {
@@ -216,8 +228,16 @@ async function runStart(
     // dev host (varies per machine) and possibly succeed-with-noise.
     // Opt-in tests override `loadCockpitFn` to inject a fake roster.
     loadCockpitFn: async () => null,
+    // ADR-241 default for the test harness: preflight sees pinned-present
+    // fakes so the start path never probes /opt or shells out to the
+    // installer. Tests exercising the wizard pass their own seams.
+    preflightDeps: {
+      existsSync: () => true,
+      tmuxVersion: () => "tmux 3.6a",
+      readPin: () => "3.6a",
+      homeDir: env.atmuxDir,
+    },
   };
-  if (opts.gitSpawn !== undefined) startOpts.gitSpawn = opts.gitSpawn;
   if (opts.briefsDir !== undefined) startOpts.briefsDir = opts.briefsDir;
   if (opts.spawnWaitMs !== undefined) startOpts.spawnWaitMs = opts.spawnWaitMs;
   if (opts.sleep !== undefined) startOpts.sleep = opts.sleep;
@@ -229,14 +249,24 @@ async function runStart(
 // ---------- parseStartArgs ----------
 
 describe("parseStartArgs", () => {
-  test("defaults: force=false, doctor=preflight, noLaunch=false, no socket", () => {
+  test("defaults: force=false, doctor=preflight, noLaunch=false, preflight off, no socket", () => {
     const got = parseStartArgs([], {});
-    expect(got).toEqual({ force: false, doctorMode: "preflight", noLaunch: false });
+    expect(got).toEqual({
+      force: false,
+      doctorMode: "preflight",
+      noLaunch: false,
+      preflight: { skipDeps: false, nonInteractive: false, noPreflight: false },
+    });
   });
 
   test("--no-launch sets noLaunch=true and leaves doctor mode alone", () => {
     const got = parseStartArgs(["--no-launch"], {});
-    expect(got).toEqual({ force: false, doctorMode: "preflight", noLaunch: true });
+    expect(got).toEqual({
+      force: false,
+      doctorMode: "preflight",
+      noLaunch: true,
+      preflight: { skipDeps: false, nonInteractive: false, noPreflight: false },
+    });
   });
 
   test("--no-launch is accepted alongside the flags cockpit forwards", () => {
@@ -244,12 +274,25 @@ describe("parseStartArgs", () => {
       force: false,
       doctorMode: "skip",
       noLaunch: true,
+      preflight: { skipDeps: false, nonInteractive: false, noPreflight: false },
     });
     expect(parseStartArgs(["--force", "--no-doctor", "--no-launch"], {})).toEqual({
       force: true,
       doctorMode: "skip",
       noLaunch: true,
+      preflight: { skipDeps: false, nonInteractive: false, noPreflight: false },
     });
+  });
+
+  test("ADR-241 flags land on .preflight; mutex still enforced", () => {
+    expect(parseStartArgs(["--skip-deps"], {}).preflight).toEqual({
+      skipDeps: true,
+      nonInteractive: false,
+      noPreflight: false,
+    });
+    expect(parseStartArgs(["--non-interactive"], {}).preflight.nonInteractive).toBe(true);
+    expect(parseStartArgs(["--no-preflight"], {}).preflight.noPreflight).toBe(true);
+    expect(() => parseStartArgs(["--skip-deps", "--non-interactive"], {})).toThrow(UsageError);
   });
 
   test("--force / -f sets force=true", () => {
@@ -303,7 +346,13 @@ describe("parseStartArgs", () => {
 
   test("flag combinations parse left-to-right", () => {
     const got = parseStartArgs(["--force", "--no-doctor", "--socket", "s1"], {});
-    expect(got).toEqual({ force: true, doctorMode: "skip", noLaunch: false, socket: "s1" });
+    expect(got).toEqual({
+      force: true,
+      doctorMode: "skip",
+      noLaunch: false,
+      socket: "s1",
+      preflight: { skipDeps: false, nonInteractive: false, noPreflight: false },
+    });
   });
 });
 
@@ -323,6 +372,7 @@ describe("resolveTmuxConfig", () => {
         force: false,
         doctorMode: "preflight",
         noLaunch: false,
+        preflight: { skipDeps: false, nonInteractive: false, noPreflight: false },
         socketPath: "/explicit",
       },
     );
@@ -336,6 +386,7 @@ describe("resolveTmuxConfig", () => {
         force: false,
         doctorMode: "preflight",
         noLaunch: false,
+        preflight: { skipDeps: false, nonInteractive: false, noPreflight: false },
         socket: "named",
       },
     );
@@ -345,7 +396,12 @@ describe("resolveTmuxConfig", () => {
   test("falls back to default socket path when tmuxTmpdir unset", () => {
     const cfg = resolveTmuxConfig(
       { name: "t" },
-      { force: false, doctorMode: "preflight", noLaunch: false },
+      {
+        force: false,
+        doctorMode: "preflight",
+        noLaunch: false,
+        preflight: { skipDeps: false, nonInteractive: false, noPreflight: false },
+      },
     );
     expect(cfg).toEqual({ socketPath: "/tmp/atmux-t/sock" });
   });
@@ -356,7 +412,12 @@ describe("resolveTmuxConfig", () => {
     // so the test is uid-portable).
     const cfg = resolveTmuxConfig(
       { name: "t", tmuxTmpdir: "/proj/.atmux/tmux" },
-      { force: false, doctorMode: "preflight", noLaunch: false },
+      {
+        force: false,
+        doctorMode: "preflight",
+        noLaunch: false,
+        preflight: { skipDeps: false, nonInteractive: false, noPreflight: false },
+      },
     );
     expect("socketPath" in cfg).toBe(true);
     if ("socketPath" in cfg) {
@@ -368,7 +429,12 @@ describe("resolveTmuxConfig", () => {
   test("t-b37c8f4f: empty-string tmuxTmpdir falls back to canonical socket", () => {
     const cfg = resolveTmuxConfig(
       { name: "t", tmuxTmpdir: "" },
-      { force: false, doctorMode: "preflight", noLaunch: false },
+      {
+        force: false,
+        doctorMode: "preflight",
+        noLaunch: false,
+        preflight: { skipDeps: false, nonInteractive: false, noPreflight: false },
+      },
     );
     expect(cfg).toEqual({ socketPath: "/tmp/atmux-t/sock" });
   });
@@ -632,6 +698,7 @@ describe("start — single-session refusal (deferred port)", () => {
         env: { ...process.env, ATMUX_DIR: env.atmuxDir, ATMUX_DRIVER_SESSION: "1" },
         cwd: env.atmuxDir,
         logger: env.logger,
+        preflightDeps: preflightFakes(env.atmuxDir),
       }),
     ).rejects.toThrow(ConfigError);
   });
@@ -1024,7 +1091,8 @@ describe("start — ADR-296 per-team superdriver window", () => {
     ).toBe("zsh");
     expect(
       env.logs.some(
-        (l) => l.kind === "ok" && l.msg.includes("superdriver at window 1") && l.msg.includes("zsh"),
+        (l) =>
+          l.kind === "ok" && l.msg.includes("superdriver at window 1") && l.msg.includes("zsh"),
       ),
     ).toBe(true);
   });
@@ -1117,9 +1185,9 @@ describe("start — ADR-296 per-team superdriver window", () => {
     env.logs.length = 0;
     expect(await runStart([])).toBe(0);
     expect(await orderedNames(env.team)).toEqual(["superdriver"]);
-    expect(env.logs.some((l) => l.msg.includes("superdriver") && l.msg.includes("left alone"))).toBe(
-      true,
-    );
+    expect(
+      env.logs.some((l) => l.msg.includes("superdriver") && l.msg.includes("left alone")),
+    ).toBe(true);
   });
 
   test("unknown superdriver tui warns and lands in shell", async () => {
@@ -1133,7 +1201,10 @@ describe("start — ADR-296 per-team superdriver window", () => {
     expect(await orderedNames(env.team)).toEqual(["superdriver", "driver", "🧭_alpha"]);
     expect(
       env.logs.some(
-        (l) => l.kind === "warn" && l.msg.includes("superdriver") && l.msg.includes("could not resolve command"),
+        (l) =>
+          l.kind === "warn" &&
+          l.msg.includes("superdriver") &&
+          l.msg.includes("could not resolve command"),
       ),
     ).toBe(true);
     expect(
@@ -1243,6 +1314,7 @@ describe("start — --no-launch", () => {
       gitSpawn: healthyGit(),
       spawnWaitMs: 0,
       tmuxFactory: () => recordingTmux(seen),
+      preflightDeps: preflightFakes(env.atmuxDir),
     });
   }
 
@@ -2066,6 +2138,7 @@ describe("start — ADR-063 cockpit auto-reconcile", () => {
       cwd: env.atmuxDir,
       logger: env.logger,
       cockpitReconcileFn: reconcileFn,
+      preflightDeps: preflightFakes(env.atmuxDir),
     });
     expect(exit).toBe(0);
     expect(calls).toHaveLength(0);
@@ -2309,6 +2382,7 @@ describe("start — t-eb0887fe parallelized member spawn", () => {
         briefsDir,
         spawnWaitMs: SLEEP_MS,
         spawnConcurrency: 1,
+        preflightDeps: preflightFakes(env.atmuxDir),
         sleep: async (ms) => {
           inFlight += 1;
           maxInFlight = Math.max(maxInFlight, inFlight);

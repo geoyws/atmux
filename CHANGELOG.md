@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ✨ Added — `atmux start` vendored-deps preflight wizard (ADR-241)
+
+**Cold hosts self-heal on first `start`.** Before team bringup, `start` probes the `/opt/atmux/current/bin` artefacts (`tmux`, `atmux`, `atmux-listener`, `atmux-cockpit-mirror`; `atmux-orchd` stays retired per ADR-276) and compares the vendored tmux against the pinned version. When anything is missing or drifted it prints a missing/drifted table and offers a one-shot `bun run build:install` (`[Y/n]`, default yes; auto-yes when stdin is not a TTY). A failed install fails loudly and skips bringup; declining logs one warning and continues on system binaries. New flags: `--skip-deps`, `--non-interactive`, `--no-preflight` (plus `ATMUX_START_NO_PREFLIGHT=1`); a `~/.atmux/state/preflight-<version>.json` marker keeps warm starts silent.
+
 ### ⚡ Changed — cockpit `_medic` runs OMP on a shell floor (ADR-299)
 
 **The `_medic` window now follows the standard pane lifecycle.** Its start command is the interactive login zsh floor (`shellPaneCommand()`); OMP launches as a child via `launchAgentInPane` once the shell prompt is live — quitting the TUI drops back to the pane's shell instead of killing the window. New `medic` config keys: `tui` (`"omp"` default, `"claude"` keeps the legacy Claude invocation — the only path that reads `claudeAccount`/`tuiOverrides`) and `cwd` (absolute path, default operator HOME). A live `_medic` window is never respawned by reconcile. Incidental fix: the Claude child command now `posixQuote`s its config values (the quoting test was red at baseline).

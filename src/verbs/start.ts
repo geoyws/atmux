@@ -107,6 +107,7 @@ import {
   resolveWorktreePath,
   sanitizeBranchSegment,
 } from "../abstractions/worktree.ts";
+import { launchAgentInPane, resolveOnlyPane } from "../core/agent-pane.ts";
 import {
   type BootClaudeOpts,
   type BootResult,
@@ -141,14 +142,19 @@ import {
   resolveDriverCwd,
   resolveDriversList,
 } from "../core/drivers.ts";
-import { SUPERDRIVER_WINDOW_NAME, resolveSuperdriver } from "../core/superdriver.ts";
 import { injectGoalIfActive } from "../core/goal-injection.ts";
 import { submitAfterPaste } from "../core/paste-submit.ts";
 import { migrateLegacySessionName } from "../core/session-migrate.ts";
 import { consumedManifestPath, resumeManifestPath } from "../core/soft-stop.ts";
+import {
+  type PreflightDeps,
+  type PreflightFlags,
+  parsePreflightFlags,
+  runStartPreflight,
+} from "../core/start-preflight.ts";
+import { resolveSuperdriver, SUPERDRIVER_WINDOW_NAME } from "../core/superdriver.ts";
 import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
-import { launchAgentInPane, resolveOnlyPane } from "../core/agent-pane.ts";
 import { CLAUDE_TUI_SCRUB_VARS, resolveTuiCommand, shellPaneCommand } from "../core/tui-cmd.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import { ResumeManifest } from "../schema/resume.ts";
@@ -171,6 +177,8 @@ export interface ParsedStartArgs {
    *  `cockpit reconcile --no-launch` forwards this so a cage cycle
    *  leaves every agent seat as a usable shell. */
   noLaunch: boolean;
+  /** ADR-241 vendored-deps preflight flags. */
+  preflight: PreflightFlags;
   /** -L socket short-name; mutually exclusive with `socketPath`. */
   socket?: string;
   /** -S socket absolute path; mutually exclusive with `socket`. */
@@ -218,6 +226,13 @@ export function parseStartArgs(
         noLaunch = true;
         i += 1;
         break;
+      case "--skip-deps":
+      case "--non-interactive":
+      case "--no-preflight":
+        // ADR-241 values recorded below via parsePreflightFlags, which
+        // also enforces the --skip-deps/--non-interactive mutex.
+        i += 1;
+        break;
       case "--socket": {
         const val = args[i + 1];
         if (val === undefined || val.length === 0) {
@@ -245,7 +260,7 @@ export function parseStartArgs(
       default:
         throw new UsageError({
           what: `start: unknown arg: ${a}`,
-          hint: "accepted: --force/-f, --doctor, --no-doctor, --no-launch, --socket <name>, --socket-path <abspath>",
+          hint: "accepted: --force/-f, --doctor, --no-doctor, --no-launch, --skip-deps, --non-interactive, --no-preflight, --socket <name>, --socket-path <abspath>",
         });
     }
   }
@@ -259,7 +274,12 @@ export function parseStartArgs(
 
   // exactOptionalPropertyTypes: only include socket / socketPath keys
   // when they're actually defined.
-  const out: ParsedStartArgs = { force, doctorMode, noLaunch };
+  const out: ParsedStartArgs = {
+    force,
+    doctorMode,
+    noLaunch,
+    preflight: parsePreflightFlags(args),
+  };
   if (socket !== undefined) out.socket = socket;
   if (socketPath !== undefined) out.socketPath = socketPath;
   return out;
@@ -333,6 +353,11 @@ export interface StartOpts {
    *  `ATMUX_SPAWN_CONCURRENCY`). Tests pass `1` to force the legacy
    *  serial behaviour or a larger value to exercise N-in-flight. */
   spawnConcurrency?: number;
+  /** ADR-241 (e-22 T2): inject the vendored-deps preflight seams.
+   *  Default = live probes (`/opt` existsSync, real `tmux -V`,
+   *  interactive prompt, real `bun run build:install`). Tests pass
+   *  pinned-present fakes so the start path never shells out. */
+  preflightDeps?: PreflightDeps;
 }
 
 /**
@@ -360,6 +385,14 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
       }));
   const spawnWaitMs = resolveSpawnWaitMs(opts.spawnWaitMs, env);
   const briefsDir = opts.briefsDir ?? defaultBriefsDir();
+
+  // 0. ADR-241 vendored-deps preflight (before team load / bringup).
+  // "halt" means the install failed — skip bringup entirely (D7).
+  const preflightVerdict = await runStartPreflight(parsed.preflight, env, {
+    log: (msg: string) => logger.log(msg),
+    ...opts.preflightDeps,
+  });
+  if (preflightVerdict === "halt") return 1;
 
   // 1. Load team + ensure standard dirs (lib/start.sh:12-14).
   // exactOptionalPropertyTypes: build the resolve-opts conditionally so
@@ -842,8 +875,7 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
       const driverNames = new Set(drivers.map((d) => d.name));
       const ordered = [...live].sort((a, b) => a.index - b.index);
       const firstDriver = ordered.find((w) => driverNames.has(w.name));
-      const anchor =
-        firstDriver ?? ordered.find((w) => w.name !== homeWin) ?? ordered[0];
+      const anchor = firstDriver ?? ordered.find((w) => w.name !== homeWin) ?? ordered[0];
       const newWindowOpts: Parameters<typeof tmux.window.newWindow>[0] = {
         sessionName: session,
         name: SUPERDRIVER_WINDOW_NAME,

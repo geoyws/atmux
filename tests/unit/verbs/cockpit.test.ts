@@ -10,7 +10,11 @@ import { buildGroupTopology, enabledTeams, groupSocketPath } from "../../../src/
 import type { Logger } from "../../../src/core/tui.ts";
 import { shellPaneCommand } from "../../../src/core/tui-cmd.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
-import type { Cockpit as CockpitShape, CockpitMedic, CockpitTeam } from "../../../src/schema/cockpit.ts";
+import type {
+  CockpitMedic,
+  Cockpit as CockpitShape,
+  CockpitTeam,
+} from "../../../src/schema/cockpit.ts";
 import type { Team } from "../../../src/schema/team.ts";
 import {
   applyCagePrefix,
@@ -1658,7 +1662,7 @@ describe("reconcileCockpitSession — onlyTeam scope (ADR-063 ergonomic fix)", (
     }
   });
 
-   test("onlyTeam filters teams[] arg defensively (mismatched name ignored)", async () => {
+  test("onlyTeam filters teams[] arg defensively (mismatched name ignored)", async () => {
     const fx = await spinTmux("cockpit-onlyteam-filter");
     try {
       const { logger } = makeLogger();
@@ -2232,6 +2236,7 @@ describe("cockpitRebuild", () => {
         force: false,
         doctorMode: "skip",
         noLaunch: true,
+        preflight: { skipDeps: false, nonInteractive: false, noPreflight: false },
       });
       expect(startCwd).toBe(projRoot);
     } finally {
@@ -2276,6 +2281,7 @@ describe("cockpitRebuild", () => {
         force: true,
         doctorMode: "skip",
         noLaunch: true,
+        preflight: { skipDeps: false, nonInteractive: false, noPreflight: false },
       });
     } finally {
       try {
@@ -3820,7 +3826,10 @@ describe("mapWithConcurrency", () => {
     await withHangGuard(allIn.promise, "order fan-in");
     // Finish item 2 first, then 0 and 1 — output must still follow input order.
     go.get(2)?.();
-    await withHangGuard(done.get(2) ?? Promise.reject(new Error("item 2 never parked")), "item 2 done");
+    await withHangGuard(
+      done.get(2) ?? Promise.reject(new Error("item 2 never parked")),
+      "item 2 done",
+    );
     go.get(0)?.();
     go.get(1)?.();
     await expect(withHangGuard(run, "overlap run")).resolves.toEqual([0, 10, 20]);
