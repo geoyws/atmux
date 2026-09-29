@@ -69,3 +69,23 @@ preview); only the refusal throw is bypassed.
   race-window as the `--yes` gate).
 - `reload` keeps refusing `--dry-run`: the hot-reload alias is for
   applying topology diffs now, not previewing them.
+
+## Amendment 2026-09-29 — cage liveness recognises omp; `start` is not previewed
+
+The first live run (2026-09-29, t-6a6828f5) printed `0 rename, 0 kill`
+but classed all 49 cages `dead/empty`, including the cage running the
+run. `cageAlive` matched only `claude`/`node` and probed only each
+window's active pane; an omp pane reports `pane_current_command` `bun`.
+That silently broke the [ADR-063](063-cockpit-verb-port.md) live-team
+protection: a real reconcile would have re-run `start` over every live
+omp cage.
+
+- **Liveness.** `cageAlive` now probes every pane of every window and
+  treats `claude`, `node`, `omp`, `bun` and `codex` as a live agent TUI.
+  Over-matching errs safe (a false "alive" only skips a cycle).
+- **Preview limit.** Dry-run skips `start` entirely, so `start`'s own
+  tmux mutations are not in the plan. On an existing session without
+  `--force` those are: legacy member-window renames (ADR-135, ADR-161)
+  and the `__<team>__home` placeholder kill. A `would start cage` line
+  on a live server is a prompt to check its window list for those
+  names; the plan counts do not cover it.

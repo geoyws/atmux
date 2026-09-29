@@ -1802,9 +1802,17 @@ export async function normaliseTeamJson(team: CockpitTeam, logger: Logger): Prom
   logger.log(`  ✓ ${team.name} → ${path}`);
 }
 
-/** True iff the cage's tmux server is up AND has at least one pane
- *  whose current command is `claude` (or `node`, which can be the
- *  bun-claude or claude-code wrapper while it boots). */
+/** Pane commands that mark a live agent TUI. `claude` / `node` are the
+ *  Claude Code process (node while the wrapper boots); `omp` runs under
+ *  bun, so a live Oh My Pi pane reports `bun` (measured 2026-09-29 on the
+ *  atmux cage); `codex` is the Codex CLI. Over-matching errs safe: a
+ *  false "alive" only skips a cycle, a false "dead" re-runs `start` over
+ *  live work (ADR-063 live-team protection, ADR-300 amendment). */
+const AGENT_PANE_COMMANDS: ReadonlySet<string> = new Set(["claude", "node", "omp", "bun", "codex"]);
+
+/** True iff the cage's tmux server is up AND at least one pane — any
+ *  pane in any window, not only each window's active pane — runs an
+ *  agent TUI command from {@link AGENT_PANE_COMMANDS}. */
 export async function cageAlive(cageTmux: TmuxNamespace): Promise<boolean> {
   if (!(await cageTmux.server.hasServer())) return false;
   // listSessions throws if no server / no sessions — wrap defensively.
@@ -1818,17 +1826,19 @@ export async function cageAlive(cageTmux: TmuxNamespace): Promise<boolean> {
   for (const s of sessions) {
     const windows = await cageTmux.window.listWindows(s.name);
     for (const w of windows) {
-      const target = `${s.name}:${w.index}`;
+      const windowTarget = `${s.name}:${w.index}`;
       try {
-        const cmd = await cageTmux.pane.displayMessage({
-          target,
-          format: "#{pane_current_command}",
-          print: true,
-        });
-        const trimmed = cmd.trim();
-        if (trimmed === "claude" || trimmed === "node") return true;
+        const panes = await cageTmux.pane.listPanes(windowTarget);
+        for (const p of panes) {
+          const cmd = await cageTmux.pane.displayMessage({
+            target: `${windowTarget}.${p.index}`,
+            format: "#{pane_current_command}",
+            print: true,
+          });
+          if (AGENT_PANE_COMMANDS.has(cmd.trim())) return true;
+        }
       } catch {
-        // ignore — pane may be in transition
+        // ignore — window/pane may be in transition
       }
     }
   }

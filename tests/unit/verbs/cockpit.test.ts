@@ -795,6 +795,40 @@ describe("cageAlive", () => {
       await rm(fx.socketDir, { recursive: true, force: true });
     }
   });
+
+  test("returns true when a NON-active pane runs omp (reports `bun`)", async () => {
+    // Regression 2026-09-29 (t-6a6828f5): omp panes report
+    // pane_current_command `bun`, and only each window's active pane was
+    // probed — every live omp cage read as dead, so reconcile re-ran
+    // `start` over live work.
+    const fx = await spinTmux("cage-omp");
+    try {
+      await fx.tmux.session.newSession({ name: "s", detached: true, windowName: "w" });
+      await fx.tmux.pane.splitWindow({
+        target: "s:w",
+        detached: true,
+        shellCommand: `${JSON.stringify(process.execPath)} -e "setInterval(() => {}, 1e6)"`,
+      });
+      // detached split keeps the original shell pane active.
+      const active = await fx.tmux.pane.displayMessage({
+        target: "s:w",
+        format: "#{pane_current_command}",
+        print: true,
+      });
+      expect(active.trim()).not.toBe("bun");
+      let alive = false;
+      for (let i = 0; i < 40 && !alive; i += 1) {
+        alive = await cageAlive(fx.tmux);
+        if (!alive) await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(alive).toBe(true);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("applyCagePrefix", () => {
