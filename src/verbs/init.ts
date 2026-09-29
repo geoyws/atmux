@@ -254,29 +254,62 @@ export type TeamLocation =
 export async function detectTeamLocation(cwd: string): Promise<TeamLocation> {
   const absoluteCwd = resolve(cwd);
   const localAtmuxDir = join(absoluteCwd, ".atmux");
-  const nearest = await getAtmuxDir({ cwd: absoluteCwd, env: {} });
-  const nearestExists = await exists(nearest);
-
-  if (nearestExists && nearest === localAtmuxDir) {
-    const ancestor = await getAtmuxDir({ cwd: dirname(absoluteCwd), env: {} });
-    if (ancestor !== localAtmuxDir && (await exists(ancestor))) {
-      return { kind: "nested", atmuxDir: localAtmuxDir, ancestorAtmuxDir: ancestor };
+  // An ancestor `.atmux/` counts as a team only when it carries a
+  // `team.json` (the convention the doctor nested-state scanner uses —
+  // see `findNestedStateOffenders` upward scan). The cockpit home
+  // (`~/.atmux`, `cockpit.json` but no `team.json`) must never trip the
+  // nest ban. Walk every level manually: `getAtmuxDir` stops at the
+  // first existing `.atmux/` it finds, so a team.json-less dir between
+  // the team and a real ancestor team would hide the real ancestor.
+  const nearestTeamDir = await findAncestorTeamDir(absoluteCwd);
+  if (nearestTeamDir === null) {
+    return { kind: "flat" };
+  }
+  const nearest = join(nearestTeamDir, ".atmux");
+  if (nearest === localAtmuxDir) {
+    const ancestorTeamDir = await findAncestorTeamDir(dirname(absoluteCwd));
+    if (ancestorTeamDir !== null) {
+      return {
+        kind: "nested",
+        atmuxDir: localAtmuxDir,
+        ancestorAtmuxDir: join(ancestorTeamDir, ".atmux"),
+      };
     }
     return { kind: "flat" };
   }
 
-  if (nearestExists) {
-    const teamDir = dirname(nearest);
-    // Second-level check: the found team itself may sit beneath an
-    // ancestor team (cwd deep inside a nested tree). Without this,
-    // cwd in <A>/<B>/subdir classifies subdir and misses ancestor A.
-    const above = await getAtmuxDir({ cwd: dirname(teamDir), env: {} });
-    if (above !== nearest && (await exists(above))) {
-      return { kind: "nested", atmuxDir: nearest, ancestorAtmuxDir: above };
-    }
-    return { kind: "subdir", atmuxDir: nearest, teamDir, relpath: relative(teamDir, absoluteCwd) };
+  // Second-level check: the found team itself may sit beneath an
+  // ancestor team (cwd deep inside a nested tree). Without this,
+  // cwd in <A>/<B>/subdir classifies subdir and misses ancestor A.
+  const aboveTeamDir = await findAncestorTeamDir(dirname(nearestTeamDir));
+  if (aboveTeamDir !== null) {
+    return { kind: "nested", atmuxDir: nearest, ancestorAtmuxDir: join(aboveTeamDir, ".atmux") };
   }
-  return { kind: "flat" };
+  return {
+    kind: "subdir",
+    atmuxDir: nearest,
+    teamDir: nearestTeamDir,
+    relpath: relative(nearestTeamDir, absoluteCwd),
+  };
+}
+
+/**
+ * Nearest ancestor-or-self directory whose `.atmux/team.json` exists,
+ * walking from `start` up to the filesystem root. Returns the team
+ * directory (the parent of `.atmux/`), or `null` when none qualifies.
+ * Team.json-less `.atmux/` dirs (e.g. the cockpit home) are stepped
+ * over rather than stopping the walk.
+ */
+async function findAncestorTeamDir(start: string): Promise<string | null> {
+  let cur = resolve(start);
+  while (true) {
+    if (await exists(join(cur, ".atmux", "team.json"))) {
+      return cur;
+    }
+    const parent = dirname(cur);
+    if (parent === cur) return null;
+    cur = parent;
+  }
 }
 
 export function nestedTeamError(

@@ -619,8 +619,10 @@ describe("upWith — nest ban (e-39 T1/T2)", () => {
     const root = await mkdtemp(join(tmpdir(), "atmux-up-nest-"));
     try {
       await mkdir(join(root, ".atmux"), { recursive: true });
+      await writeFile(join(root, ".atmux", "team.json"), "{}");
       const child = join(root, "child");
       await mkdir(join(child, ".atmux"), { recursive: true });
+      await writeFile(join(child, ".atmux", "team.json"), "{}");
       const { log, baseOpts } = makeStubs({ cwd: child, teamDir: child });
       await expect(upWith(baseOpts)).rejects.toThrow(/refusing nested/);
       expect(log.init).toBe(0);
@@ -633,6 +635,7 @@ describe("upWith — nest ban (e-39 T1/T2)", () => {
     const root = await mkdtemp(join(tmpdir(), "atmux-up-sub-"));
     try {
       await mkdir(join(root, ".atmux"), { recursive: true });
+      await writeFile(join(root, ".atmux", "team.json"), "{}");
       const sub = join(root, "a");
       await mkdir(sub, { recursive: true });
       const { baseOpts, stderrChunks } = makeStubs({ cwd: sub, teamDir: root });

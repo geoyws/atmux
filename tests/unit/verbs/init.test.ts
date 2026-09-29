@@ -945,6 +945,7 @@ describe("init — nest ban", () => {
     const root = await mkdtemp(join(tmpdir(), "atmux-nest-sub-"));
     try {
       await mkdir(join(root, ".atmux"), { recursive: true });
+      await writeFile(join(root, ".atmux", "team.json"), "{}");
       await mkdir(join(root, "a", "b"), { recursive: true });
       const loc = await detectTeamLocation(join(root, "a", "b"));
       expect(loc.kind).toBe("subdir");
@@ -962,7 +963,9 @@ describe("init — nest ban", () => {
     const root = await mkdtemp(join(tmpdir(), "atmux-nest-deep-"));
     try {
       await mkdir(join(root, ".atmux"), { recursive: true });
+      await writeFile(join(root, ".atmux", "team.json"), "{}");
       await mkdir(join(root, "child", ".atmux"), { recursive: true });
+      await writeFile(join(root, "child", ".atmux", "team.json"), "{}");
       await mkdir(join(root, "child", "sub"), { recursive: true });
       const direct = await detectTeamLocation(join(root, "child"));
       expect(direct.kind).toBe("nested");
@@ -973,10 +976,48 @@ describe("init — nest ban", () => {
     }
   });
 
+  test("detectTeamLocation: team under team.json-less ancestor .atmux → flat", async () => {
+    const { detectTeamLocation } = await import("../../../src/verbs/init.ts");
+    const root = await mkdtemp(join(tmpdir(), "atmux-nest-cockpit-"));
+    try {
+      // Cockpit-home shape: `.atmux/` with `cockpit.json` but no `team.json`.
+      await mkdir(join(root, ".atmux"), { recursive: true });
+      await writeFile(join(root, ".atmux", "cockpit.json"), "{}");
+      const team = join(root, "team");
+      await mkdir(join(team, ".atmux"), { recursive: true });
+      await writeFile(join(team, ".atmux", "team.json"), "{}");
+      expect(await detectTeamLocation(team)).toEqual({ kind: "flat" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("detectTeamLocation: real ancestor team above team.json-less .atmux → still nested", async () => {
+    const { detectTeamLocation } = await import("../../../src/verbs/init.ts");
+    const root = await mkdtemp(join(tmpdir(), "atmux-nest-skip-"));
+    try {
+      await mkdir(join(root, ".atmux"), { recursive: true });
+      await writeFile(join(root, ".atmux", "team.json"), "{}");
+      const middle = join(root, "middle");
+      await mkdir(join(middle, ".atmux"), { recursive: true });
+      const team = join(middle, "team");
+      await mkdir(join(team, ".atmux"), { recursive: true });
+      await writeFile(join(team, ".atmux", "team.json"), "{}");
+      const loc = await detectTeamLocation(team);
+      expect(loc.kind).toBe("nested");
+      if (loc.kind === "nested") {
+        expect(loc.ancestorAtmuxDir).toBe(join(root, ".atmux"));
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("nested init refuses without --force-nest (no writes)", async () => {
     const root = await mkdtemp(join(tmpdir(), "atmux-nest-refuse-"));
     try {
       await mkdir(join(root, ".atmux"), { recursive: true });
+      await writeFile(join(root, ".atmux", "team.json"), "{}");
       const child = join(root, "child");
       await mkdir(child, { recursive: true });
       let caught: unknown = null;
