@@ -253,6 +253,7 @@
 | 292 | `atmux msg` — mailbox record + wake over `inbox_messages` (supersedes ADR-154 §D2 per E1-T1 option b) | 2026-09-23 | proposed |
 | 293 | Driver send-keys guard kept as product behaviour after the 2026-09-08 pane-to-pane revocation | 2026-09-23 | accepted (operator-direct — George, 2026-09-28, a-62b50705). Was: proposed |
 | 294 | `atmux doctor` detects tmux servers whose global environment came from an agent shell | 2026-09-25 | proposed |
+| 295 | Opt-in `_blank` cockpit troubleshooting window — plain shell after `_medic` | 2026-09-26 | proposed |
 | 296 | Per-team `superdriver` window before `driver` | 2026-09-28 | accepted |
 | 297 | Inbox/outbox archive-cut contract (e-77: cut boundary, naming, idempotency, verb authority) | 2026-09-28 | accepted |
 | 298 | Retire the `_bot` seat and `_superbot` scheduler (supersedes ADR-285) | 2026-09-28 | accepted |
