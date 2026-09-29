@@ -70,6 +70,8 @@ atmux cockpit reconcile
 ```
 
 Reads (session/window/pane listings) hit the live servers so the plan reflects real state; every mutation (kills, renames, new windows, send-keys, prefix sets) is recorded, not executed. team.json writes, cage launches, and socket-dir creation are skipped — but for each cage the preview *would* start, the legacy member-window renames (ADR-135/ADR-161) and the `__<team>__home` placeholder kill a non-force `start` would perform are planned from the live window list via the shared `src/core/start-repairs.ts` planner, so they appear in the op lines and the summary counts (per ADR-300 amendment 2026-09-29, t-eb11cdb4). Output is one line per planned op, then `dry-run: N rename, M kill, K other operations (nothing executed)`. The `--yes` destructive-op gate is bypassed (its warnings still print as part of the preview). `reload` and `attach` refuse `--dry-run`.
+The fuller `atmux cockpit doctor` whole-cockpit diff verb (e-28) remains upcoming — proposed in [ADR-235](docs/adr/235-cockpit-verb-surface-rationalization.md), not yet shipped; `reconcile --dry-run` above is the shipped read-only preview surface.
+
 ### Tearing down the cockpit: `atmux shutdown` (ADR-242, shipped)
 
 `atmux shutdown` stops every enabled team, then kills this cockpit session
@@ -77,7 +79,7 @@ Reads (session/window/pane listings) hit the live servers so the plan reflects r
 server. Flags: `--keep-cockpit` drains teams but leaves the cockpit alive
 for diagnostics; `--force` skips per-team stop; `--dry-run` enumerates
 without acting. No confirmation prompt. Reversal is `atmux start`.
-`_blank` operator lanes are upcoming (e-25, blocked) — not yet a surface.
+The opt-in `_blank` troubleshooting window is a shipped surface (per [ADR-295](docs/adr/295-cockpit-blank-troubleshooting-window.md); see §1 above) — `atmux shutdown` tears it down with the rest of the cockpit session.
 
 ## §2 — Migration from legacy default-socket cockpit
 

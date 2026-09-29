@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
++### 🐛 Fixed — `atmux start` no longer deletes a non-socket legacy path (t-a1b998d9)
++
++**Stale legacy cleanup deletes only when the path IS a socket.** `removeStaleLegacySocket` lstats the legacy `/tmp/atmux-<team>/sock` path (never following symlinks) before removal: a regular file, directory, symlink, or any other non-socket node is refused with a one-line log naming the path and its kind, and never deleted.
++
++### 🐛 Fixed — nest ban no longer misfires on the cockpit home (t-a7f8e487)
++
++**An ancestor `.atmux/` counts as a team only when it carries `team.json`.** `detectTeamLocation` treated any existing ancestor `.atmux/` as a team, so every team under `$HOME` classified `nested` on hosts with a cockpit home (`~/.atmux` carries `cockpit.json` but no `team.json`) and `atmux start` / `up` / `init` refused without `--force-nest`. The check now walks each level requiring `<ancestor>/.atmux/team.json` — the same convention the doctor nested-state scanner uses — stepping over team.json-less dirs so a real ancestor team above a bare `.atmux/` is still detected.
++
+### 📝 Docs — cockpit/runbook/README consistency sweep (t-48a06029)
+
+**Three stale-or-missing live-doc passages now agree with the ADRs they cite.** `docs/RUNBOOK-cockpit.md` no longer calls the opt-in `_blank` window upcoming — it is a shipped surface per [ADR-295](docs/adr/295-cockpit-blank-troubleshooting-window.md) — and it records the e-28 `atmux cockpit doctor` whole-cockpit diff verb as upcoming (proposed in [ADR-235](docs/adr/235-cockpit-verb-surface-rationalization.md), not folded into the shipped `reconcile --dry-run` preview per [ADR-300](docs/adr/300-cockpit-reconcile-dry-run.md)). `README.md` §🔑 now points at the [ADR-243](docs/adr/243-runtime-configurable-claude-accounts.md) `~/.atmux/claude-accounts.json` shape as pending, not yet shipped (the shipped account surfaces remain the built-in wrapper table + `wrappers` overrides and the [ADR-199](docs/adr/199-claude-account-pool-for-epic-team-spawning.md) pool selector). No runtime behaviour change.
+
 ### ✨ Added — driver window worker/attention pair runtime behind `driverPair.materialize` ([ADR-288](docs/adr/288-driver-window-worker-attention-pane-pair.md), t-75fe8bb4)
 
 **Each configured driver window can now materialize as one window with two horizontal panes: worker left + attention right.** Fresh creation tags both panes (`@atmux_driver_pane_role`), repeated start/reconcile is idempotent, a missing right pane is added with the left pane and PID preserved, and >2-pane / missing / reversed / ambiguous layouts fail closed (surfaced by `atmux doctor` as `driver-pane-pair` rows; never deleted or swapped). The attention pane launches a plain shell when `command` is null — no agent auto-launch. All pane creation is gated on the per-team `driverPair.materialize` flag (schema-optional, absent means false); flag off keeps exactly today's single-pane windows and silent doctor. Row t-d1f18085 owns flipping the default; `templates/team.example.json` keeps `"materialize": false`.
