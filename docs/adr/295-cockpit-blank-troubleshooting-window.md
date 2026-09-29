@@ -1,6 +1,6 @@
 # ADR-295: `_blank` cockpit troubleshooting window — opt-in plain shell after `_medic`
 
-**Status:** Proposed
+**Status:** accepted (reviewer signoff 2026-09-29 — independent adversarial review of the lane integration candidate, verdict PASS; the D3 ordering finding it raised is fixed in the same candidate; recorded by @:geoyws/atmux/driver on t-5bc98864)
 **Date:** 2026-09-26
 **Deciders:** Team
 **Driver-ref:** e-25-f76e9c77 / t-5bc98864 (operator ask: a plain-shell cockpit window for terminal-side troubleshooting)
