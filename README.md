@@ -658,6 +658,10 @@ Resolution: `claudeAccount: "<suffix>"` → spawn cmd prepends `CLAUDE_CONFIG_DI
 
 **Runtime accounts file (shipped, t-c2f75e13).** [ADR-243](docs/adr/243-runtime-configurable-claude-accounts.md) `~/.atmux/claude-accounts.json` (`{ schemaVersion, accounts: [{ configDir, wrapper }] }`) is the runtime source for the configDir→wrapper mapping: present → that table wins; absent → the built-in table in `src/abstractions/claude-account-wrapper.ts`; present-but-malformed → refuse with `ConfigError`. Extendable today via the `wrappers` record in `cockpit.json` (fleet-wide) or `team.json` (per-team override). Not to be confused with the [ADR-199](docs/adr/199-claude-account-pool-for-epic-team-spawning.md) `claudeAccountPool` (shipped): a spawn-time least-loaded account selector over `cockpit.json::claudeAccountPool[]` — a different mechanism, not a superset of ADR-243.
 
+#### Configuring Claude accounts
+
+`~/.atmux/claude-accounts.json` (`{ schemaVersion: 1, accounts: [{ configDir, wrapper }] }`) is the runtime source for the configDir→wrapper mapping ([ADR-243](docs/adr/243-runtime-configurable-claude-accounts.md)). Three states: **present** → that table wins; **absent** → the built-in defaults in `src/abstractions/claude-accounts-config.ts` apply; **present-but-malformed** → atmux refuses with a `ConfigError` naming the file (never silently falls back, never deletes the file). `atmux init --wizard` bootstraps the file on first run — it writes the defaults when absent and leaves an existing file (valid or malformed) untouched; `--json` reports the outcome as `claudeAccounts: { path, kind }` (`written` | `unchanged`).
+
 ## Commands
 
 ```

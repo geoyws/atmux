@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
++### ✨ Added — init --wizard bootstraps claude-accounts.json on first run (t-3f0c79c7)
++
++**First run writes ADR-243 defaults when the accounts file is absent.** The bootstrap serializes the built-in table and never overwrites an existing file (valid or malformed); `--json` reports `claudeAccounts: { path, kind }`. README gains a Configuring Claude accounts section.
++
 +### ✨ Added — init --wizard gains --yes / --no-start / --json (t-c17184ad)
 +
 +**Agent and CI mode for first-run setup.** `--yes` takes every default without prompting (or `ATMUX_INSTALL_YES=1`), `--no-start` drops the post-init `atmux start` hint (or `ATMUX_INSTALL_NO_START=1`), and `--json` emits one machine-readable result object on stdout with human lines suppressed.

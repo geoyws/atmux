@@ -25,6 +25,10 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import {
+  claudeAccountsConfigPath,
+  DEFAULT_CLAUDE_ACCOUNTS,
+} from "../../../src/abstractions/claude-accounts-config.ts";
 import type { SpawnResult } from "../../../src/abstractions/spawn.ts";
 import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import type { GitSpawn } from "../../../src/abstractions/worktree.ts";
@@ -695,6 +699,111 @@ describe("init — --wizard guided flow", () => {
     }
   });
 
+  test("--wizard writes default claude-accounts.json when absent", async () => {
+    const home = await mkdtemp(join(tmpdir(), "atmux-wiz-home-"));
+    try {
+      const answers = ["accabsent", ""];
+      const result = await runInit(["--wizard", "--no-skills"], {
+        env: { HOME: home },
+        prompter: async (_q, def) => answers.shift() ?? def,
+        prereqCheck: () => true,
+      });
+      expect(result).toBe(0);
+      const raw = await readFile(claudeAccountsConfigPath(home), "utf8");
+      expect(JSON.parse(raw)).toEqual(DEFAULT_CLAUDE_ACCOUNTS);
+      expect(env.stdoutBuf.join("")).toContain(
+        `claude-accounts: written ${claudeAccountsConfigPath(home)}`,
+      );
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("--wizard leaves a present-valid claude-accounts.json untouched", async () => {
+    const home = await mkdtemp(join(tmpdir(), "atmux-wiz-home-"));
+    try {
+      const custom = { schemaVersion: 1, accounts: [{ configDir: "/tmp/custom", wrapper: "c-x" }] };
+      await mkdir(join(home, ".atmux"), { recursive: true });
+      await writeFile(claudeAccountsConfigPath(home), JSON.stringify(custom, null, 2));
+      const answers = ["accpresent", ""];
+      const result = await runInit(["--wizard", "--no-skills"], {
+        env: { HOME: home },
+        prompter: async (_q, def) => answers.shift() ?? def,
+        prereqCheck: () => true,
+      });
+      expect(result).toBe(0);
+      expect(JSON.parse(await readFile(claudeAccountsConfigPath(home), "utf8"))).toEqual(custom);
+      expect(env.stdoutBuf.join("")).toContain(
+        `claude-accounts: unchanged ${claudeAccountsConfigPath(home)}`,
+      );
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("--wizard leaves a present-malformed claude-accounts.json untouched", async () => {
+    const home = await mkdtemp(join(tmpdir(), "atmux-wiz-home-"));
+    try {
+      await mkdir(join(home, ".atmux"), { recursive: true });
+      await writeFile(claudeAccountsConfigPath(home), "{ not-json");
+      const answers = ["accmalformed", ""];
+      const result = await runInit(["--wizard", "--no-skills"], {
+        env: { HOME: home },
+        prompter: async (_q, def) => answers.shift() ?? def,
+        prereqCheck: () => true,
+      });
+      expect(result).toBe(0);
+      expect(await readFile(claudeAccountsConfigPath(home), "utf8")).toBe("{ not-json");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("--wizard --force re-run still leaves claude-accounts.json untouched", async () => {
+    const home = await mkdtemp(join(tmpdir(), "atmux-wiz-home-"));
+    try {
+      const custom = { schemaVersion: 1, accounts: [{ configDir: "/tmp/kept", wrapper: "c-k" }] };
+      await mkdir(join(home, ".atmux"), { recursive: true });
+      await writeFile(claudeAccountsConfigPath(home), JSON.stringify(custom, null, 2));
+      const answers = ["accforce", ""];
+      const result = await runInit(["--wizard", "--force", "--no-skills", "--json"], {
+        env: { HOME: home },
+        prompter: async (_q, def) => answers.shift() ?? def,
+        prereqCheck: () => true,
+      });
+      expect(result).toBe(0);
+      expect(JSON.parse(await readFile(claudeAccountsConfigPath(home), "utf8"))).toEqual(custom);
+      const parsed = JSON.parse(env.stdoutBuf.join(""));
+      expect(parsed.claudeAccounts).toEqual({
+        path: claudeAccountsConfigPath(home),
+        kind: "unchanged",
+      });
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("--wizard --json reports the claude-accounts bootstrap", async () => {
+    const home = await mkdtemp(join(tmpdir(), "atmux-wiz-home-"));
+    try {
+      const result = await runInit(["--wizard", "--yes", "--no-skills", "--json"], {
+        env: { HOME: home },
+        prompter: async (_q, def) => def,
+        prereqCheck: () => true,
+      });
+      expect(result).toBe(0);
+      const parsed = JSON.parse(env.stdoutBuf.join(""));
+      expect(parsed.claudeAccounts).toEqual({
+        path: claudeAccountsConfigPath(home),
+        kind: "written",
+      });
+      expect(JSON.parse(await readFile(claudeAccountsConfigPath(home), "utf8"))).toEqual(
+        DEFAULT_CLAUDE_ACCOUNTS,
+      );
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
   test("--wizard --no-skills skips the plugin step", async () => {
     const home = await mkdtemp(join(tmpdir(), "atmux-wiz-home-"));
     try {

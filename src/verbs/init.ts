@@ -75,6 +75,7 @@
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
+import { claudeAccountsConfigPath } from "../abstractions/claude-accounts-config.ts";
 import { ensureDir, exists, readText, readTextOrNull, writeText } from "../abstractions/fs.ts";
 import { readJson } from "../abstractions/json.ts";
 import { now } from "../abstractions/time.ts";
@@ -89,6 +90,7 @@ import { createLogger, type Logger } from "../core/tui.ts";
 import { probePrereqs, scaffoldCockpit } from "../core/wizard-prereq.ts";
 import {
   installSkillsPlugin as installSkillsPluginStep,
+  scaffoldClaudeAccounts,
   scaffoldTeamJson,
   setupAccountPool,
 } from "../core/wizard-scaffold.ts";
@@ -639,9 +641,10 @@ export async function init(argv: ReadonlyArray<string>, opts: InitOptions = {}):
  * ADR-200 guided `init --wizard` flow. Prompts (piped-stdin safe) then
  * runs the pure wizard steps with real filesystem bindings: prereq
  * probe → cockpit scaffold → team.json scaffold → account pool →
- * skills plugin → final verification. Missing prereqs refuse with
- * install hints; existing team.json refuses without --force (same gate
- * as the template path).
+ * claude-accounts bootstrap (ADR-243 defaults when absent, never
+ * overwrites) → skills plugin → final verification. Missing prereqs
+ * refuse with install hints; existing team.json refuses without --force
+ * (same gate as the template path).
  *
  * The persisted team.json goes through the `Team` schema, so the
  * drivers-only roster default (ADR-287 §D5) applies: `members: []` plus
@@ -666,6 +669,7 @@ export interface WizardJsonResult {
   teamJson: { path: string; kind: "written" | "unchanged" };
   cockpit: { path: string; changed: boolean };
   accountPool: { entries: number } | null;
+  claudeAccounts: { path: string; kind: "written" | "unchanged" };
   skills: SkillsInstallResult;
   verification: {
     status: WizardVerificationStatus;
@@ -771,6 +775,13 @@ async function runInitWizard(opts: InitOptions, parsed: ParsedInitArgs): Promise
     } else {
       say("account pool: skipped (no suffixes)");
     }
+    const claudeAccountsPath = claudeAccountsConfigPath(home);
+    const claudeAccountsResult = await scaffoldClaudeAccounts({
+      path: claudeAccountsPath,
+      readText: (path: string) => readTextOrNull(path),
+      writeText: (path: string, content: string) => writeText(path, content),
+    });
+    say(`claude-accounts: ${claudeAccountsResult.kind} ${claudeAccountsPath}`);
     say(renderWizardStep(5, WIZARD_STEP_COUNT, "Skills plugin", { color }));
     let skillsResult: SkillsInstallResult;
     if (!parsed.noSkills) {
@@ -815,6 +826,7 @@ async function runInitWizard(opts: InitOptions, parsed: ParsedInitArgs): Promise
       teamJson: { path: tj, kind: teamResult.kind },
       cockpit: { path: cockpitResult.cockpitPath, changed: cockpitResult.changed },
       accountPool: poolEntries === null ? null : { entries: poolEntries },
+      claudeAccounts: { path: claudeAccountsPath, kind: claudeAccountsResult.kind },
       skills: skillsResult,
       verification: { status, red: report.redCount, yellow: report.yellowCount, rows },
       started: false,

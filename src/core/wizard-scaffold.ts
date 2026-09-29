@@ -2,12 +2,15 @@
 // All side effects are injected so the init verb can own prompting and paths.
 
 import {
+  type ClaudeAccountsConfig,
+  DEFAULT_CLAUDE_ACCOUNTS,
+} from "../abstractions/claude-accounts-config.ts";
+import {
   type ClaudeAccountPoolEntry as AccountPoolEntry,
   ClaudeAccountPoolEntry,
 } from "../schema/cockpit.ts";
 import { Team, type Team as TeamShape } from "../schema/team.ts";
 import type { InstallSkillsPluginOpts, SkillsInstallResult } from "./skills-plugin-install.ts";
-
 export interface WizardJsonFsDeps {
   path: string;
   readText: (path: string) => Promise<string | null>;
@@ -89,4 +92,27 @@ export async function installSkillsPlugin(
   deps: InstallSkillsPluginStepDeps,
 ): Promise<SkillsInstallResult> {
   return deps.runner(deps.options ?? {});
+}
+
+/**
+ * Bootstrap `~/.atmux/claude-accounts.json` on first run (e-24 T2).
+ * Serializes DEFAULT_CLAUDE_ACCOUNTS when the file is absent; an
+ * existing file — valid or malformed — is left untouched (malformed
+ * refuses downstream per the T1 loader contract, so the wizard must
+ * not delete or rewrite it). Never prompts, so `--yes` flows through
+ * with no special-casing; `--force` does not change this step (the
+ * team.json refusal gate already guards re-runs).
+ */
+export interface ClaudeAccountsBootstrapResult {
+  kind: "written" | "unchanged";
+  path: string;
+}
+export async function scaffoldClaudeAccounts(
+  deps: WizardJsonFsDeps,
+): Promise<ClaudeAccountsBootstrapResult> {
+  const current = await deps.readText(deps.path);
+  if (current !== null) return { kind: "unchanged", path: deps.path };
+  const value: ClaudeAccountsConfig = DEFAULT_CLAUDE_ACCOUNTS;
+  await deps.writeText(deps.path, jsonDocument(value));
+  return { kind: "written", path: deps.path };
 }
