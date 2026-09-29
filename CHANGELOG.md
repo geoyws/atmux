@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🐛 Fixed — `build:compile` follows the host instead of hardcoding linux-x64 ([ADR-302](docs/adr/302-host-aware-bun-compile-target.md), t-af727acd)
+
+**`bun run build:install` on macOS no longer installs a Linux ELF.** `build:compile` now runs `scripts/build-compile.ts`, which resolves the bun target from the host (`src/core/build-target.ts`: darwin-arm64/x64, linux-x64/arm64, windows-x64) and prints `build-compile: target=<t> (via …)`. Explicit override for cross-compiling Linux artefacts: `bun run build:compile:linux` (`ATMUX_BUN_TARGET=bun-linux-x64`) or `bun scripts/build-compile.ts --target=<t>` per-invocation; unknown values fail closed (exit 2). No CI/release change — `ci.yml` never builds the binary and `atmux release` runs `build:install` on the Linux deploy hosts, where the host default is still linux-x64. Verified on @@mbp: `dist/atmux: Mach-O 64-bit executable arm64`, reports `atmux 0.8.30`. Pinned by `tests/unit/core/build-target.test.ts` (16 tests: every host row, override, blank-override fallthrough, argv splitter).
+
 ### 🧹 Changed — driver-count wording sweep: floor 1, default 3, pair per ADR-288 (t-a46a2a18 docs-only)
 
 **Stale five-/three-driver minimums now read floor 1 / default 3.** Per George (a-36c48abd + a-396da821, 2026-09-29) this row is docs-only: `MIN_PARENT_TEAM_DRIVERS = 1` stands, a default roster of three is fine, and the worker-left + attention-right pair is already ADR-288. `README.md` tagline, `docs/ARCHITECTURE.md` window list, and `templates/team.example.md` roster note state the current rule; ADR-239 Amendment A1 (five-driver floor), its 2026-09-03 floor-3 note, ADR-288's floor-3 decision wording, and ADR-287's three-vs-five drift note carry dated retired/superseded banners plus §Amendment 2026-09-29 records, with history otherwise untouched. No schema or code change.
