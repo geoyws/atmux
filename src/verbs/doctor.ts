@@ -53,6 +53,7 @@ import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
 import { UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
 import { checkAgentShellEnv } from "./doctor/agent-env.ts";
+import { checkClaudeAccountsConfig } from "./doctor/claude-accounts.ts";
 import {
   checkCockpitOnDefaultSocket,
   checkDeployedBinaryLag,
@@ -103,6 +104,13 @@ import {
 } from "./doctor/team.ts";
 import { checkTmuxVersionMismatch, checkVendoredTmuxBinary } from "./doctor/tmux.ts";
 import { buildReport, type DoctorRow } from "./doctor/types.ts";
+
+export {
+  type CheckClaudeAccountsConfigOpts,
+  type ClaudeAccountsConfigState,
+  checkClaudeAccountsConfig,
+  claudeAccountsConfigStateRows,
+} from "./doctor/claude-accounts.ts";
 
 const USAGE = "atmux doctor [--quiet|-q] [--fix] [--json] [--fix-nested-state-db <archive|delete>]";
 
@@ -241,6 +249,10 @@ export async function runAllChecks(
   // valid; yellow on missing / malformed; info when user opted out
   // via wizard [n]. $HOME-unset → silent no-row.
   rows.push(...(await checkSkillsPlugin()));
+  // ADR-243: claude-accounts config file state. Yellow when absent
+  // (embedded defaults still work), red when present-but-malformed
+  // (the loader refuses), silent when valid.
+  rows.push(...(await checkClaudeAccountsConfig()));
   // t-af159454: phantom in-progress claims (kanban rows with dead
   // owner panes). Distinct vulnerability class from phantom-inbox
   // above (that one scans member inProgress via loadInbox; this scans

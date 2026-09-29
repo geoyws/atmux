@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🗄️ Changed — claude-accounts mapping moves to `~/.atmux/claude-accounts.json` ([ADR-243](docs/adr/243-runtime-configurable-claude-accounts.md), t-c2f75e13)
+
+**New claude accounts no longer require editing TS source + rebuilding atmux.** `src/abstractions/claude-account-wrapper.ts` now resolves the configDir → wrapper table from `~/.atmux/claude-accounts.json` (schema v1: `{ schemaVersion: 1, accounts: [{ configDir, wrapper }] }`, loaded once per process and cached) instead of a source-resident literal. File absent → the same 4 built-in entries as before (plus a one-time stderr notice); file present-but-malformed (bad JSON, unknown schemaVersion, duplicate configDir, missing field) → ConfigError refusal quoting the path. `resolveClaudeWrapper` + `knownClaudeConfigDirs` signatures are unchanged, and `atmux doctor` gains a `claude-accounts` row (yellow when absent, red when malformed, silent when valid).
+
 +### 🐛 Fixed — `atmux start` no longer deletes a non-socket legacy path (t-a1b998d9)
 +
 +**Stale legacy cleanup deletes only when the path IS a socket.** `removeStaleLegacySocket` lstats the legacy `/tmp/atmux-<team>/sock` path (never following symlinks) before removal: a regular file, directory, symlink, or any other non-socket node is refused with a one-line log naming the path and its kind, and never deleted.
