@@ -155,6 +155,8 @@ async function writeTeamJson(opts: {
   /** ADR-082 W3: relative root for the worktree tree (default
    *  `.atmux/worktrees` via the W2 schema default). */
   worktreeRoot?: string;
+  /** e-29 T1: team.json tmuxTmpdir override (reroutes the team socket). */
+  tmuxTmpdir?: string;
 }): Promise<void> {
   const body: Record<string, unknown> = {
     name: env.team,
@@ -177,6 +179,9 @@ async function writeTeamJson(opts: {
   }
   if (opts.superdriver !== undefined) {
     body.superdriver = opts.superdriver;
+  }
+  if (opts.tmuxTmpdir !== undefined) {
+    body.tmuxTmpdir = opts.tmuxTmpdir;
   }
   await writeFile(join(env.atmuxDir, "team.json"), `${JSON.stringify(body, null, 2)}\n`, "utf8");
 }
@@ -201,6 +206,19 @@ function preflightFakes(homeDir: string): NonNullable<StartOpts["preflightDeps"]
   };
 }
 
+/** e-29 T1: stale-legacy-socket noop for direct `start()` call sites —
+ *  no legacy file exists, so the cleanup never probes tmux. */
+function staleSocketNoop(): NonNullable<StartOpts["legacySocketDeps"]> {
+  return {
+    exists: () => false,
+    isLive: async () => false,
+    remove: () => {
+      throw new Error("legacySocketDeps.remove must not run in unit tests");
+    },
+    log: () => {},
+  };
+}
+
 async function runStart(
   args: ReadonlyArray<string>,
   opts: {
@@ -216,6 +234,9 @@ async function runStart(
      *  default test env. Used to exercise ATMUX_NESTING_LEVEL / cockpit
      *  override / ATMUX_NO_CRON paths without polluting `process.env`. */
     extraEnv?: Record<string, string>;
+    /** e-29 T1: stale-legacy-socket seams — defaulted to a no-legacy
+     *  view so the start path never probes /tmp or spawns tmux. */
+    legacySocketDeps?: NonNullable<StartOpts["legacySocketDeps"]>;
   } = {},
 ): Promise<number> {
   const startOpts: StartOpts = {
@@ -237,7 +258,19 @@ async function runStart(
       readPin: () => "3.6a",
       homeDir: env.atmuxDir,
     },
+    // e-29 T1 default: no legacy socket file exists, so the cleanup is a
+    // no-op that never probes tmux. `remove` throws to catch regressions
+    // where a test accidentally arms the removal path.
+    legacySocketDeps: {
+      exists: () => false,
+      isLive: async () => false,
+      remove: () => {
+        throw new Error("legacySocketDeps.remove must not run in unit tests");
+      },
+      log: () => {},
+    },
   };
+  if (opts.legacySocketDeps !== undefined) startOpts.legacySocketDeps = opts.legacySocketDeps;
   if (opts.briefsDir !== undefined) startOpts.briefsDir = opts.briefsDir;
   if (opts.spawnWaitMs !== undefined) startOpts.spawnWaitMs = opts.spawnWaitMs;
   if (opts.sleep !== undefined) startOpts.sleep = opts.sleep;
@@ -437,6 +470,59 @@ describe("resolveTmuxConfig", () => {
       },
     );
     expect(cfg).toEqual({ socketPath: "/tmp/atmux-t/sock" });
+  });
+});
+
+// ---------- e-29 T1: stale legacy socket cleanup in the start path ----------
+
+describe("start — stale legacy socket cleanup", () => {
+  test("override-active + dead legacy → legacy removed, bringup continues", async () => {
+    const overrideDir = join(env.atmuxDir, "tmux");
+    await writeTeamJson({
+      members: [{ name: "alice", role: "team-lead" }],
+      superdriver: { enabled: false },
+      tmuxTmpdir: overrideDir,
+    });
+    const legacy = `/tmp/atmux-${env.team}/sock`;
+    const removed: string[] = [];
+    const logs: string[] = [];
+    const exit = await runStart([], {
+      legacySocketDeps: {
+        exists: (p) => p === legacy,
+        isLive: async (p) => p !== legacy,
+        remove: (p) => {
+          removed.push(p);
+        },
+        log: (m) => {
+          logs.push(m);
+        },
+      },
+    });
+    expect(exit).toBe(0);
+    expect(removed).toEqual([legacy]);
+    expect(logs.some((l) => l.includes(legacy))).toBe(true);
+  });
+
+  test("override-active + live legacy → untouched", async () => {
+    const overrideDir = join(env.atmuxDir, "tmux");
+    await writeTeamJson({
+      members: [{ name: "alice", role: "team-lead" }],
+      superdriver: { enabled: false },
+      tmuxTmpdir: overrideDir,
+    });
+    let removed = 0;
+    const exit = await runStart([], {
+      legacySocketDeps: {
+        exists: () => true,
+        isLive: async () => true,
+        remove: () => {
+          removed += 1;
+        },
+        log: () => {},
+      },
+    });
+    expect(exit).toBe(0);
+    expect(removed).toBe(0);
   });
 });
 
@@ -699,6 +785,7 @@ describe("start — single-session refusal (deferred port)", () => {
         cwd: env.atmuxDir,
         logger: env.logger,
         preflightDeps: preflightFakes(env.atmuxDir),
+        legacySocketDeps: staleSocketNoop(),
       }),
     ).rejects.toThrow(ConfigError);
   });
@@ -1315,6 +1402,7 @@ describe("start — --no-launch", () => {
       spawnWaitMs: 0,
       tmuxFactory: () => recordingTmux(seen),
       preflightDeps: preflightFakes(env.atmuxDir),
+      legacySocketDeps: staleSocketNoop(),
     });
   }
 
@@ -2139,6 +2227,7 @@ describe("start — ADR-063 cockpit auto-reconcile", () => {
       logger: env.logger,
       cockpitReconcileFn: reconcileFn,
       preflightDeps: preflightFakes(env.atmuxDir),
+      legacySocketDeps: staleSocketNoop(),
     });
     expect(exit).toBe(0);
     expect(calls).toHaveLength(0);
@@ -2383,6 +2472,7 @@ describe("start — t-eb0887fe parallelized member spawn", () => {
         spawnWaitMs: SLEEP_MS,
         spawnConcurrency: 1,
         preflightDeps: preflightFakes(env.atmuxDir),
+        legacySocketDeps: staleSocketNoop(),
         sleep: async (ms) => {
           inFlight += 1;
           maxInFlight = Math.max(maxInFlight, inFlight);

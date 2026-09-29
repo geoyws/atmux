@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🧹 Changed — `atmux start` removes a dead legacy socket under an active override (e-29 T1)
+
+**Stale `/tmp/atmux-<team>/sock` files stop shadowing the override.** When `team.json::tmuxTmpdir` reroutes a team, `start` now deletes the legacy socket file when no server responds on it and the override socket is live or absent — one log line naming the path. A live legacy socket, an existing-but-dead override socket, or any deletion failure leaves everything untouched.
+
 ### ✨ Added — `atmux shutdown` whole-fleet teardown (ADR-242)
 
 **One verb takes the whole fleet down.** `atmux shutdown` stops every enabled team in `~/.atmux/cockpit.json` (best-effort — one team's failure warns and the sweep continues), then kills the cockpit session and the atmux-pinned tmux server (personal tmux on the default socket untouched). Flags: `--keep-cockpit` (drain teams, leave `superdriver`/`medic` alive), `--force` (skip per-team stop, straight to the tmux kill), `--dry-run` (enumerate without acting, exit 0). No confirmation prompt. Every run appends a one-line summary to `~/.atmux/state/shutdown.log` (last 10 entries). Deviation from the ADR as accepted: the orchd orphan-sweep is dropped (orchd retired per ADR-276) and the summary carries no orchd count. Reversal is `atmux start`.

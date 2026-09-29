@@ -809,6 +809,15 @@ describe("ADR-288 §D5 — init(shipped template) → start", () => {
         readPin: () => "3.6a",
         homeDir: atmuxDir,
       },
+      // e-29 T1: no legacy socket exists — cleanup never probes tmux.
+      legacySocketDeps: {
+        exists: () => false,
+        isLive: async () => false,
+        remove: () => {
+          throw new Error("legacySocketDeps.remove must not run in unit tests");
+        },
+        log: () => {},
+      },
     });
     expect(exit).toBe(0);
 

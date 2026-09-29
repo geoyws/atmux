@@ -153,7 +153,13 @@ import {
   runStartPreflight,
 } from "../core/start-preflight.ts";
 import { resolveSuperdriver, SUPERDRIVER_WINDOW_NAME } from "../core/superdriver.ts";
-import { getAtmuxTmuxConfPath, getCockpitSocketName } from "../core/tmux-paths.ts";
+import {
+  defaultRemoveLegacySocket,
+  getAtmuxTmuxConfPath,
+  getCockpitSocketName,
+  removeStaleLegacySocket,
+  type StaleLegacySocketDeps,
+} from "../core/tmux-paths.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { CLAUDE_TUI_SCRUB_VARS, resolveTuiCommand, shellPaneCommand } from "../core/tui-cmd.ts";
 import { ConfigError, UsageError } from "../errors.ts";
@@ -358,6 +364,11 @@ export interface StartOpts {
    *  interactive prompt, real `bun run build:install`). Tests pass
    *  pinned-present fakes so the start path never shells out. */
   preflightDeps?: PreflightDeps;
+  /** e-29 T1: inject the stale-legacy-socket cleanup seams. Default =
+   *  live probes (filesystem exists, `hasServer` per socket, real
+   *  deletion). Tests pass fakes so the start path never touches
+   *  `/tmp/atmux-*` or spawns tmux probes. */
+  legacySocketDeps?: StaleLegacySocketDeps;
 }
 
 /**
@@ -443,6 +454,25 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   //     port that pre-create here so atmux start actually starts.
   if ("socketPath" in tmuxConfig && typeof tmuxConfig.socketPath === "string") {
     await ensureDir(dirname(tmuxConfig.socketPath));
+    // 4b. e-29 T1: when the tmuxTmpdir override reroutes the team away
+    //     from the legacy path, remove a verified-dead legacy socket
+    //     file so later resolves stop tripping over it. Never deletes a
+    //     live socket, never touches the override path.
+    if ((team.tmuxTmpdir ?? "") !== "" && tmuxConfig.socketPath !== getDefaultSocket(team.name)) {
+      const configFile = getAtmuxTmuxConfPath();
+      await removeStaleLegacySocket(team.name, tmuxConfig.socketPath, {
+        log: (msg: string) => logger.log(msg),
+        isLive: async (sock: string): Promise<boolean> => {
+          try {
+            return await factory({ socketPath: sock, configFile }).server.hasServer();
+          } catch {
+            return false;
+          }
+        },
+        remove: defaultRemoveLegacySocket,
+        ...opts.legacySocketDeps,
+      });
+    }
   }
 
   // 5. Resolve session name (defaults to the bare `<team>` per

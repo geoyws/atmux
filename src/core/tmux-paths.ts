@@ -18,7 +18,9 @@
 // `TmuxConfig.configFile` (ADR-097), closing the operator's
 // `~/.tmux.conf` inheritance path.
 
+import { existsSync as fsExistsSync, rmSync as fsRmSync } from "node:fs";
 import { join } from "node:path";
+import { getDefaultSocket } from "./common.ts";
 import { resolveTemplatesDir } from "./templates-dir.ts";
 
 /** Per ADR-162 §Decision-anchor #1: dedicated tmux socket name for the
@@ -103,4 +105,59 @@ export function getAtmuxTmuxConfPath(env: NodeJS.ProcessEnv = process.env): stri
   const override = env.ATMUX_TMUX_CONF;
   if (override !== undefined && override.length > 0) return override;
   return join(resolveTemplatesDir(env), ATMUX_TMUX_CONF_RELPATH);
+}
+
+/** Seams for {@link removeStaleLegacySocket}. `isLive` and `remove` are
+ *  REQUIRED — a dead-server probe and a file deletion have no safe
+ *  unit-test defaults. `exists` defaults to a pure filesystem read;
+ *  `log` defaults to stderr. */
+export interface StaleLegacySocketDeps {
+  exists?: (path: string) => boolean;
+  /** True when a tmux server responds on the socket (`hasServer`). */
+  isLive: (path: string) => Promise<boolean>;
+  /** Delete the legacy socket file. */
+  remove: (path: string) => void;
+  log?: (msg: string) => void;
+}
+
+/**
+ * e-29 T1: delete a stale legacy socket when the `tmuxTmpdir` override
+ * reroutes the team elsewhere. Removes
+ * `getDefaultSocket(teamName)` (`/tmp/atmux-<team>/sock`) exactly when:
+ * the override socket differs, the legacy file exists, NO server
+ * responds on it, and the override socket is live or absent (an
+ * existing-but-dead override socket means the situation is ambiguous —
+ * leave everything alone).
+ *
+ * NEVER deletes a socket with a responding server. NEVER touches the
+ * override path. Bringup-safe: a failed deletion logs + returns false
+ * instead of throwing. Returns true only when the legacy file was
+ * removed. Dry-run safe by construction (probe before delete).
+ */
+export async function removeStaleLegacySocket(
+  teamName: string,
+  overrideSocket: string,
+  deps: StaleLegacySocketDeps,
+): Promise<boolean> {
+  const exists = deps.exists ?? fsExistsSync;
+  const log = deps.log ?? ((s: string) => process.stderr.write(`${s}\n`));
+  const legacy = getDefaultSocket(teamName);
+  if (legacy === overrideSocket) return false;
+  if (!exists(legacy)) return false;
+  if (await deps.isLive(legacy)) return false;
+  if (!(await deps.isLive(overrideSocket)) && exists(overrideSocket)) return false;
+  try {
+    deps.remove(legacy);
+  } catch (e) {
+    const cause = e instanceof Error ? e.message : String(e);
+    log(`[atmux start] stale legacy socket ${legacy} not removed (${cause}) — leaving in place`);
+    return false;
+  }
+  log(`[atmux start] removed stale legacy socket ${legacy} (override ${overrideSocket} active)`);
+  return true;
+}
+
+/** Default legacy-socket remover (production seam wiring). */
+export function defaultRemoveLegacySocket(path: string): void {
+  fsRmSync(path);
 }
