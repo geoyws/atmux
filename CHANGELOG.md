@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🐛 Fixed — `build-vendored-tmux.sh` no longer stages a relative `--stage` into the deleted temp dir (t-c06ac71f)
+
+**`--stage dist-vendored` lands under the caller's cwd again.** The script resolved `STAGED_BIN` from the raw `--stage` value and then `cd`'d into `$WORK/tmux-$VERSION` before `mkdir -p $STAGE/bin`, so `build:install`'s relative stage landed inside `$WORK` — deleted by the EXIT trap — while the script still printed success and exited 0 (the later `sudo install dist-vendored/bin/tmux` then failed). `STAGE` is now canonicalized to an absolute path right after argument parsing (`mkdir -p` + `cd` + `pwd -P`, portable macOS/Linux), and the script exits 1 with a clear `staged binary missing at <path>` error if the binary is not present at the reported path after copying. Offline-proof via `tests/unit/scripts/build-vendored-tmux.test.ts`, which runs the script from a scratch cwd with a relative `--stage` under the new `ATMUX_VENDORED_TMUX_STUB_BUILD=1` seam (no download/compile; same cd-then-stage ordering). Real download/verify/compile/smoke paths are unchanged and unexercised by the test.
+
 ### 🧹 Changed — driver-count wording sweep: floor 1, default 3, pair per ADR-288 (t-a46a2a18 docs-only)
 
 **Stale five-/three-driver minimums now read floor 1 / default 3.** Per George (a-36c48abd + a-396da821, 2026-09-29) this row is docs-only: `MIN_PARENT_TEAM_DRIVERS = 1` stands, a default roster of three is fine, and the worker-left + attention-right pair is already ADR-288. `README.md` tagline, `docs/ARCHITECTURE.md` window list, and `templates/team.example.md` roster note state the current rule; ADR-239 Amendment A1 (five-driver floor), its 2026-09-03 floor-3 note, ADR-288's floor-3 decision wording, and ADR-287's three-vs-five drift note carry dated retired/superseded banners plus §Amendment 2026-09-29 records, with history otherwise untouched. No schema or code change.

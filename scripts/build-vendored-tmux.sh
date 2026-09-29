@@ -11,6 +11,10 @@
 #   bash scripts/build-vendored-tmux.sh [--version V] [--stage DIR]
 #       [--jobs N] [--force] [--no-smoke]
 #
+# Test seam: ATMUX_VENDORED_TMUX_STUB_BUILD=1 skips fetch/verify/build
+# and stages a stub reporting the pinned version (same cd-then-stage
+# ordering, so relative---stage resolution is still exercised).
+#
 # Build deps: curl, shasum (or sha256sum), tar, make, C toolchain,
 # bison, pkg-config, libevent + ncurses dev files. macOS: brew
 # install libevent (ncurses ships with the SDK); Linux: distro
@@ -35,6 +39,14 @@ while [ "$#" -gt 0 ]; do
     *) echo "build-vendored-tmux: unknown flag $1" >&2; exit 2 ;;
   esac
 done
+
+# Resolve STAGE to an absolute path now: the build below `cd`s into
+# $WORK/tmux-$VERSION before staging, so a relative --stage (e.g. the
+# `dist-vendored` from package.json build:install) would otherwise land
+# inside $WORK and be deleted by the EXIT trap. Portable on macOS and
+# Linux: create the dir, then `cd` + `pwd -P` (no GNU-only realpath).
+mkdir -p "$STAGE"
+STAGE="$(cd "$STAGE" && pwd -P)"
 
 if [ -z "$VERSION" ]; then
   VERSION="$(tr -d '[:space:]' < "$ROOT/tmux/PINNED_VERSION")"
@@ -74,33 +86,50 @@ fi
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/vendored-tmux.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
-echo "build-vendored-tmux: fetching $URL"
-curl -fSL --retry 3 --max-time 300 -o "$WORK/$TARBALL" "$URL"
+if [ "${ATMUX_VENDORED_TMUX_STUB_BUILD:-0}" = "1" ]; then
+  # Offline test seam: skip fetch/verify/configure/compile and plant a
+  # stub binary reporting the pinned version. Still `cd`s into the build
+  # tree first, so tests exercise the same cd-then-stage ordering as a
+  # real build (t-c06ac71f).
+  mkdir -p "$WORK/tmux-${VERSION}"
+  cd "$WORK/tmux-${VERSION}"
+  mkdir -p "$STAGE/bin"
+  printf '#!/usr/bin/env bash\necho "tmux %s"\n' "$VERSION" > "$STAGED_BIN"
+  chmod 755 "$STAGED_BIN"
+else
+  echo "build-vendored-tmux: fetching $URL"
+  curl -fSL --retry 3 --max-time 300 -o "$WORK/$TARBALL" "$URL"
 
-echo "build-vendored-tmux: verifying SHA256 against tmux/SHA256SUMS"
-EXPECTED="$(grep -F "  $TARBALL" "$ROOT/tmux/SHA256SUMS" | awk '{print $1}')"
-if [ -z "$EXPECTED" ]; then
-  echo "build-vendored-tmux: no checksum entry for $TARBALL in tmux/SHA256SUMS — refusing" >&2; exit 1
+  echo "build-vendored-tmux: verifying SHA256 against tmux/SHA256SUMS"
+  EXPECTED="$(grep -F "  $TARBALL" "$ROOT/tmux/SHA256SUMS" | awk '{print $1}')"
+  if [ -z "$EXPECTED" ]; then
+    echo "build-vendored-tmux: no checksum entry for $TARBALL in tmux/SHA256SUMS — refusing" >&2; exit 1
+  fi
+  ACTUAL="$(cd "$WORK" && $SHASUM "$TARBALL" | awk '{print $1}')"
+  if [ "$ACTUAL" != "$EXPECTED" ]; then
+    echo "build-vendored-tmux: CHECKSUM MISMATCH for $TARBALL" >&2
+    echo "  expected $EXPECTED" >&2
+    echo "  actual   $ACTUAL" >&2
+    exit 1
+  fi
+
+  echo "build-vendored-tmux: building tmux $VERSION (jobs=$JOBS)"
+  tar -xzf "$WORK/$TARBALL" -C "$WORK"
+  cd "$WORK/tmux-${VERSION}"
+  # tmux 3.6+ forces an explicit utf8proc choice. --disable-utf8proc keeps
+  # the vendored binary dependency-free (matches the --disable-utempter
+  # minimize-surface posture); reviewer signs off per ADR-191 OQ4.
+  ./configure --prefix="$WORK/prefix" --disable-utempter --disable-utf8proc >/dev/null
+  make -j "$JOBS" >/dev/null
+  mkdir -p "$STAGE/bin"
+  cp tmux "$STAGED_BIN"
+  chmod 755 "$STAGED_BIN"
 fi
-ACTUAL="$(cd "$WORK" && $SHASUM "$TARBALL" | awk '{print $1}')"
-if [ "$ACTUAL" != "$EXPECTED" ]; then
-  echo "build-vendored-tmux: CHECKSUM MISMATCH for $TARBALL" >&2
-  echo "  expected $EXPECTED" >&2
-  echo "  actual   $ACTUAL" >&2
+
+if [ ! -x "$STAGED_BIN" ]; then
+  echo "build-vendored-tmux: staged binary missing at $STAGED_BIN after copy — refusing" >&2
   exit 1
 fi
-
-echo "build-vendored-tmux: building tmux $VERSION (jobs=$JOBS)"
-tar -xzf "$WORK/$TARBALL" -C "$WORK"
-cd "$WORK/tmux-${VERSION}"
-# tmux 3.6+ forces an explicit utf8proc choice. --disable-utf8proc keeps
-# the vendored binary dependency-free (matches the --disable-utempter
-# minimize-surface posture); reviewer signs off per ADR-191 OQ4.
-./configure --prefix="$WORK/prefix" --disable-utempter --disable-utf8proc >/dev/null
-make -j "$JOBS" >/dev/null
-mkdir -p "$STAGE/bin"
-cp tmux "$STAGED_BIN"
-chmod 755 "$STAGED_BIN"
 
 if ! "$STAGED_BIN" -V 2>/dev/null | grep -q "tmux ${VERSION}\$"; then
   echo "build-vendored-tmux: staged binary failed version check:" >&2
