@@ -47,19 +47,25 @@ describe("budgetMigrations", () => {
   });
 
   test("snapshot rows round-trip", async () => {
-    await withBudgetDb(async (db) => {
-      db.query(
-        `INSERT INTO usage_snapshot (ts, provider, account, metric, value, unit, ok)
+    await withBudgetDb(
+      async (db) => {
+        db.query(
+          `INSERT INTO usage_snapshot (ts, provider, account, metric, value, unit, ok)
          VALUES ('2026-07-31T00:00:00Z', 'deepseek', 'deepseek', 'balance_usd', 12.5, 'usd', 1)`,
-      ).run();
-    }, { home });
-    await withBudgetDb(async (db) => {
-      const rows = db.query("SELECT provider, value FROM usage_snapshot").all() as Array<{
-        provider: string;
-        value: number;
-      }>;
-      expect(rows).toEqual([{ provider: "deepseek", value: 12.5 }]);
-    }, { home });
+        ).run();
+      },
+      { home },
+    );
+    await withBudgetDb(
+      async (db) => {
+        const rows = db.query("SELECT provider, value FROM usage_snapshot").all() as Array<{
+          provider: string;
+          value: number;
+        }>;
+        expect(rows).toEqual([{ provider: "deepseek", value: 12.5 }]);
+      },
+      { home },
+    );
   });
 });
 
