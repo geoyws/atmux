@@ -1,0 +1,7 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`msg send prints the peer address + pointer line (snapshot) 1`] = `
+"peer=driver-2 window=t:🚀-driver-2 priority=p0
+pointer="msg m-1 from driver: prod deploy wedged — atmux msg check"
+"
+`;

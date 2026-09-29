@@ -86,6 +86,15 @@ Messaging:
   reply <msg...>              Member → driver: write to lead-outbox.md
   outbox [--ack] [--json]     Driver: read lead-outbox.md (--ack archives)
   outbox archive [--older-than <Nm|Nh|Nd>] [--team <name>]  Archive old lead-outbox.md entries
+  msg send <peer> [--priority p0..p3] <body...>
+                              Mailbox a message to a member (ADR-292); prints
+                              the peer <session>:<window> address + wake
+                              pointer, never send-keys
+  msg check [--min <p>] [--since <epoch>] [--all] [--ack] [--json]
+                              Unread mailbox summary; exit 1 when unread
+                              exists at or above --min, else 0
+  msg read [--min <p>] [--since <epoch>] [--all] [--ack] [--json]
+                              Full-body mailbox read with per-row ack state
 
 Task board (kanban):
   task add <subject> [--body <text>] [--assignee <member>] [--deps <id,id>] [--driver-only]

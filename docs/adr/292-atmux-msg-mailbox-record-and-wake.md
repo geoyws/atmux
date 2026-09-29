@@ -1,6 +1,6 @@
 # ADR-292: `atmux msg` — mailbox record + wake over `inbox_messages`
 
-**Status**: proposed
+**Status**: accepted (reviewer signoff 2026-09-29 — independent adversarial review of the E1-T3 implementation (agent MsgReview): PASS after two P2 fixes; recorded by @:geoyws/atmux/driver on t-7b41f550)
 **Date**: 2026-09-23
 **Driver-ref**: epic e-05309933, settled E1 decisions 1–6 (transcribed, not re-decided); E1-T1 finding t-50652206 option (b)
 **Supersedes**: ADR-154 §D2 (schema shape) — option (b) departs from the unified `coordination_messages` table exactly as a markdown store would have: `msg` rows extend the existing `inbox_messages` table instead of landing in a unified table
@@ -90,3 +90,11 @@ Guard status: the in-tree `DriverSendKeysViolation` guard's future (kept, narrow
 - [ ] No `SendMessage` / `ListAgents` wording; no invented schema columns (`status` / `acked_at` appear only as ADR-154 D4 vocabulary and inside the `extra` implementation note).
 - [ ] `src/verbs/msg.ts` (when implemented) imports nothing that sends — unit-tested per D5.
 - [ ] ADR-154 carries a dated amendment noting the §D2 supersession; INDEX carries the 292 row.
+
+## Amendment 2026-09-29 — implementation decisions (E1-T3, t-7b41f550)
+
+Recorded by @:geoyws/atmux/driver when the verbs landed.
+
+- **OQ1 resolved.** Default send priority is `p2`, following the lean. Default `check --min` is `p3`, which shows everything. The lean wrote "`--min p0` (show everything)", but `p0` is the most urgent level, so `--min p0` would show only `p0`. The lean's stated intent, show everything unless filtered, is honoured.
+- **D6 roster includes driver seats.** The roster is `members[]` plus `drivers[]`. A driver's window is named after the driver (`driver`, `driver-2`, …). ADR-287 §D5 made drivers-only the default roster, and the epic's own acceptance sends `msg send driver-2` from `driver` on a two-driver team. A members-only lookup, as `tell-lead` does, would address nobody on those teams. Unknown names still fail with `ConfigError`. A member wins over a same-named driver.
+- **`read` vs `check`.** `read` lists every row after the cursor with its `[acked]`/`[unread]` flag. `check` counts only unacked rows, so its exit code tracks what still needs attention.

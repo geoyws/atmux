@@ -71,6 +71,7 @@ import { mergeMember } from "./verbs/merge-member.ts";
 import { migrateHexIds } from "./verbs/migrate-hex-ids.ts";
 import { migrateKanban } from "./verbs/migrate-kanban.ts";
 import { migrateState } from "./verbs/migrate-state.ts";
+import { msg } from "./verbs/msg.ts";
 import { nudge } from "./verbs/nudge.ts";
 import { ombudsman } from "./verbs/ombudsman.ts";
 import { pause, resume } from "./verbs/pause.ts";
@@ -242,6 +243,9 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return nudge(argv.slice(1));
     case "member":
       return dispatchMemberSubverb(argv.slice(1));
+    case "msg":
+      // ADR-292 — pane-to-pane messenger (mailbox + print-address wake).
+      return msg(argv.slice(1));
     case "sync":
       return dispatchSyncSubverb(argv.slice(1));
     case "release":

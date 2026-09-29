@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ✨ Added — `atmux msg send|check|read`: pane-to-pane messenger (ADR-292, E1-T3)
+
+**Mailbox a message, wake with a printed pointer — never send-keys.** `atmux msg send <peer> [--priority p0..p3] <body...>` appends a `kind='msg'` row to the team's `.atmux/state.db` `inbox_messages` table (priority in `extra.priority`, zero schema change) and prints the peer's `<session>:<window>` address plus a wake pointer the caller delivers via `/pane-agent send --queued`. `atmux msg check [--min <p>] [--since <epoch>] [--all] [--ack] [--json]` exits 1 when unread exists at or above `--min`, else 0; `atmux msg read` shows full bodies with per-row ack columns. Cursors live in `state_kv` (`--all` > `--since` > stored), per-reader acks in `extra.acked_by` so acking never hides a row from anyone else. See `docs/RUNBOOK-msg.md`.
+
 ### ✨ Added — `atmux budget collect|report`: multi-provider usage tracker (ADR-270, e-50 T3+T4)
 
 **One command shows every provider's quota.** `atmux budget collect` probes seven providers (anthropic, zai, deepseek, openrouter, minimax, kimi, cursor) in one batch into the cockpit-global `~/.atmux/state/budget.db` `usage_snapshot` table. A failing provider writes an `ok=0` row with the reason and never aborts the batch. `atmux budget report [--json] [--window 24h|7d] [--provider <p>] [--live]` renders the latest snapshot with window deltas and reset times. Only usage numbers are stored, never keys or tokens. The `/budget` skill reads it through its opt-in `/budget atmux` source (skills-root 3a248e9).
