@@ -160,6 +160,9 @@ describe("parseInitArgs", () => {
     expect(r.name).toBeUndefined();
     expect(r.force).toBe(false);
     expect(r.wizard).toBe(false);
+    expect(r.yes).toBe(false);
+    expect(r.noStart).toBe(false);
+    expect(r.json).toBe(false);
   });
 
   test("--name <team>", () => {
@@ -168,6 +171,9 @@ describe("parseInitArgs", () => {
       force: false,
       forceNest: false,
       wizard: false,
+      yes: false,
+      noStart: false,
+      json: false,
       noSkills: false,
       skillsOnly: false,
     });
@@ -189,12 +195,31 @@ describe("parseInitArgs", () => {
     expect(parseInitArgs(["-w"]).wizard).toBe(true);
   });
 
+  test("--yes captures agent/CI mode", () => {
+    expect(parseInitArgs(["--wizard", "--yes"]).yes).toBe(true);
+  });
+
+  test("-y short flag", () => {
+    expect(parseInitArgs(["-y"]).yes).toBe(true);
+  });
+
+  test("--no-start captures smoke mode", () => {
+    expect(parseInitArgs(["--wizard", "--no-start"]).noStart).toBe(true);
+  });
+
+  test("--json captures machine-readable mode", () => {
+    expect(parseInitArgs(["--wizard", "--json"]).json).toBe(true);
+  });
+
   test("--name + --force combined", () => {
     expect(parseInitArgs(["--name", "x", "--force"])).toEqual({
       name: "x",
       force: true,
       forceNest: false,
       wizard: false,
+      yes: false,
+      noStart: false,
+      json: false,
       noSkills: false,
       skillsOnly: false,
     });
@@ -682,6 +707,169 @@ describe("init — --wizard guided flow", () => {
       expect(result).toBe(0);
       // No plugin symlink attempted under the scratch HOME.
       expect(env.stdoutBuf.join("")).not.toContain("skills plugin installed");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("--wizard prints the ADR-200 §D5 branded header + Step N/5 lines", async () => {
+    const home = await mkdtemp(join(tmpdir(), "atmux-wiz-home-"));
+    try {
+      const answers = ["headteam", ""];
+      const result = await runInit(["--wizard", "--no-skills"], {
+        env: { HOME: home, NO_COLOR: "1" },
+        prompter: async (_q, def) => answers.shift() ?? def,
+        prereqCheck: () => true,
+      });
+      expect(result).toBe(0);
+      const out = env.stdoutBuf.join("");
+      expect(out).toContain("atmux init --wizard");
+      expect(out).toContain("Step 1/5");
+      expect(out).toContain("Step 5/5");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("--wizard --yes takes defaults without prompting", async () => {
+    const home = await mkdtemp(join(tmpdir(), "atmux-wiz-home-"));
+    try {
+      let prompts = 0;
+      const result = await runInit(["--wizard", "--yes", "--no-skills", "--name", "yesteam"], {
+        env: { HOME: home },
+        prompter: async (_q, def) => {
+          prompts += 1;
+          return def;
+        },
+        prereqCheck: () => true,
+      });
+      expect(result).toBe(0);
+      expect(prompts).toBe(0);
+      const team = JSON.parse(await readFile(join(env.cwd, ".atmux", "team.json"), "utf8"));
+      expect(team.name).toBe("yesteam");
+      const cockpit = JSON.parse(await readFile(join(home, ".atmux", "cockpit.json"), "utf8"));
+      expect(cockpit.claudeAccountPool ?? []).toEqual([]);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("--wizard --yes derives the team name from cwd basename without --name", async () => {
+    const home = await mkdtemp(join(tmpdir(), "atmux-wiz-home-"));
+    try {
+      const result = await runInit(["--wizard", "--yes", "--no-skills"], {
+        env: { HOME: home },
+        prompter: async () => {
+          throw new Error("must not prompt under --yes");
+        },
+        prereqCheck: () => true,
+      });
+      expect(result).toBe(0);
+      const team = JSON.parse(await readFile(join(env.cwd, ".atmux", "team.json"), "utf8"));
+      expect(team.name).toBe("project");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("--wizard --no-start drops the start hint but keeps the complete line", async () => {
+    const home = await mkdtemp(join(tmpdir(), "atmux-wiz-home-"));
+    try {
+      const answers = ["nostart", ""];
+      const result = await runInit(["--wizard", "--no-start", "--no-skills"], {
+        env: { HOME: home },
+        prompter: async (_q, def) => answers.shift() ?? def,
+        prereqCheck: () => true,
+      });
+      expect(result).toBe(0);
+      const out = env.stdoutBuf.join("");
+      expect(out).toContain("wizard complete: team 'nostart' ready");
+      expect(out).not.toContain("atmux start");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("--wizard --json emits one parseable result object", async () => {
+    const home = await mkdtemp(join(tmpdir(), "atmux-wiz-home-"));
+    try {
+      const result = await runInit(["--wizard", "--yes", "--no-skills", "--json"], {
+        env: { HOME: home },
+        prompter: async (_q, def) => def,
+        prereqCheck: () => true,
+      });
+      expect(result).toBe(0);
+      const parsed = JSON.parse(env.stdoutBuf.join(""));
+      expect(parsed.ok).toBe(true);
+      expect(parsed.team).toBe("project");
+      expect(parsed.teamJson.path).toBe(join(env.cwd, ".atmux", "team.json"));
+      expect(parsed.cockpit.path).toBe(join(home, ".atmux", "cockpit.json"));
+      expect(parsed.verification.status).toBe("ship");
+      expect(parsed.started).toBe(false);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("--wizard verification prints the ship line on green", async () => {
+    const home = await mkdtemp(join(tmpdir(), "atmux-wiz-home-"));
+    try {
+      const answers = ["shipteam", ""];
+      const result = await runInit(["--wizard", "--no-skills"], {
+        env: { HOME: home },
+        prompter: async (_q, def) => answers.shift() ?? def,
+        prereqCheck: () => true,
+      });
+      expect(result).toBe(0);
+      expect(env.stdoutBuf.join("")).toContain("verification: ship it");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("--wizard verification warns and continues on yellow", async () => {
+    const home = await mkdtemp(join(tmpdir(), "atmux-wiz-home-"));
+    try {
+      const answers = ["warnteam", ""];
+      const result = await runInit(["--wizard", "--no-skills"], {
+        env: { HOME: home },
+        prompter: async (_q, def) => answers.shift() ?? def,
+        prereqCheck: () => true,
+        verifyProbe: async () => [
+          { status: "green", label: "team.json", detail: "valid" },
+          { status: "yellow", label: "state-dir", detail: "not yet created" },
+        ],
+      });
+      expect(result).toBe(0);
+      const out = env.stdoutBuf.join("");
+      expect(out).toContain("verification: warnings");
+      expect(out).toContain("state-dir");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("--wizard verification halts with the fix recipe on red", async () => {
+    const home = await mkdtemp(join(tmpdir(), "atmux-wiz-home-"));
+    try {
+      const answers = ["haltteam", ""];
+      const result = await runInit(["--wizard", "--no-skills"], {
+        env: { HOME: home },
+        prompter: async (_q, def) => answers.shift() ?? def,
+        prereqCheck: () => true,
+        verifyProbe: async () => [
+          {
+            status: "red",
+            label: "team.json",
+            detail: "invalid JSON",
+            hint: "re-run: atmux init --force --wizard",
+          },
+        ],
+      });
+      expect(result).toBe(1);
+      const out = env.stdoutBuf.join("");
+      expect(out).toContain("verification: halt");
+      expect(out).toContain("re-run 'atmux init --wizard --force'");
     } finally {
       await rm(home, { recursive: true, force: true });
     }

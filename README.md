@@ -783,8 +783,12 @@ Prompts are piped-stdin safe, so scripted runs work too:
 | 3. team.json | Writes `.atmux/team.json` with the drivers-only roster (`members: []` + canonical `drivers[]`, per ADR-287 §D5). Refuses over an existing file without `--force`. |
 | 4. Account pool | Optional comma-separated `~/.claude-<suffix>` list → `cockpit.json::claudeAccountPool[]` (ADR-199). Empty skips. |
 | 5. Skills plugin | Installs the bundled `/atmux:` plugin symlink (ADR-217 §D5); `--no-skills` skips it. |
+| Final verification | Reuses the `doctor` quiet-path subset (`team.json` + state-dir read-back, no shell-out): all green prints `verification: ship it`, yellow prints warnings and continues, red prints the halt recipe (`re-run 'atmux init --wizard --force'` + `atmux doctor`) and exits 1. |
 
-`--force` overwrites an existing `team.json`; `-w` is the short flag.
+The header brands the run (`atmux init --wizard <version>`) with numbered `Step N/5` lines per [ADR-200](docs/adr/200-install-wizard-guided-first-run-setup.md) §D5; color degrades to plain text when stdout is not a TTY, `NO_COLOR` is set, or `TERM=dumb`.
+
+`--force` overwrites an existing `team.json`; `-w` is the short flag. Agent/CI mode:
+`atmux init --wizard --yes --no-start --json` — `--yes` (`-y`, or `ATMUX_INSTALL_YES=1`) takes every default without prompting, `--no-start` (or `ATMUX_INSTALL_NO_START=1`) drops the `atmux start` next-command hint (the wizard never auto-starts), and `--json` emits one machine-readable result object (`{ ok, team, teamJson, cockpit, accountPool, skills, verification, started }`) instead of the human step lines.
 
 ### Tearing down the fleet
 

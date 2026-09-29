@@ -82,6 +82,7 @@ import { KanbanCliAdapter } from "../adapters/kanban-cli.ts";
 import { driverInboxPath, getAtmuxDir, inboxPathFor, kanbanJsonPath } from "../core/common.ts";
 import { defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { externalKanbanEnabled } from "../core/kanban-backend.ts";
+import type { SkillsInstallResult } from "../core/skills-plugin-install.ts";
 import { installSkillsPlugin, renderSkillsInstallResult } from "../core/skills-plugin-install.ts";
 import { resolveTemplatesDir } from "../core/templates-dir.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
@@ -91,8 +92,18 @@ import {
   scaffoldTeamJson,
   setupAccountPool,
 } from "../core/wizard-scaffold.ts";
+import {
+  renderWizardHeader,
+  renderWizardStep,
+  shouldUseWizardColor,
+  WIZARD_STEP_COUNT,
+} from "../core/wizard-ui.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import { Team, type Team as TeamShape } from "../schema/team.ts";
+import { checkStateDir } from "./doctor/state.ts";
+import { checkTeam } from "./doctor/team.ts";
+import { buildReport, type DoctorRow } from "./doctor/types.ts";
+import { ATMUX_VERSION } from "./version.ts";
 
 // ---------- Arg parsing ----------
 
@@ -106,6 +117,17 @@ export interface ParsedInitArgs {
   /** --wizard / -w — ADR-200 guided setup (prereq probe → cockpit →
    *  team.json → account pool → skills plugin). */
   wizard: boolean;
+  /** -y / --yes — auto-accept every prompt default (ADR-200 §D4 agent /
+   *  CI mode). No prompt fires; team name falls back to --name or the
+   *  cwd basename and the account-pool step is skipped. */
+  yes: boolean;
+  /** --no-start — exit after the final step without the `atmux start`
+   *  next-command hint (ADR-200 §D4 CI/smoke mode). The wizard never
+   *  auto-starts; this only suppresses the hint. */
+  noStart: boolean;
+  /** --json — emit a single machine-readable result object on stdout
+   *  instead of the human step lines. */
+  json: boolean;
   /** t-3866c5b1 / ADR-094: non-interactive equivalent of the wizard's
    *  team-wide claudeAccount prompt. When set + != "default", every
    *  member entry AND every `drivers[]` entry in the rendered team.json
@@ -141,12 +163,15 @@ export function parseInitArgs(args: ReadonlyArray<string>): ParsedInitArgs {
   let force = false;
   let forceNest = false;
   let wizard = false;
+  let yes = false;
+  let noStart = false;
+  let json = false;
   let claudeAccount: string | undefined;
   let noSkills = false;
   let skillsOnly = false;
 
   const usageHint =
-    "usage: atmux init [--name <team>] [--force|-f] [--force-nest] [--no-skills|--skills-only] [--claude-account <suffix>]";
+    "usage: atmux init [--name <team>] [--force|-f] [--force-nest] [--wizard|-w [--yes|-y] [--no-start] [--json]] [--no-skills|--skills-only] [--claude-account <suffix>]";
 
   let i = 0;
   while (i < args.length) {
@@ -176,6 +201,19 @@ export function parseInitArgs(args: ReadonlyArray<string>): ParsedInitArgs {
       case "--wizard":
       case "-w":
         wizard = true;
+        i += 1;
+        break;
+      case "--yes":
+      case "-y":
+        yes = true;
+        i += 1;
+        break;
+      case "--no-start":
+        noStart = true;
+        i += 1;
+        break;
+      case "--json":
+        json = true;
         i += 1;
         break;
       case "--no-skills":
@@ -222,7 +260,16 @@ export function parseInitArgs(args: ReadonlyArray<string>): ParsedInitArgs {
   // exactOptionalPropertyTypes: only set keys when defined (an explicit
   // `name: undefined` is not the same as an absent key under the strict
   // tsconfig). Build the shape conditionally.
-  const out: ParsedInitArgs = { force, forceNest, wizard, noSkills, skillsOnly };
+  const out: ParsedInitArgs = {
+    force,
+    forceNest,
+    wizard,
+    yes,
+    noStart,
+    json,
+    noSkills,
+    skillsOnly,
+  };
   if (name !== undefined) out.name = name;
   if (claudeAccount !== undefined) out.claudeAccount = claudeAccount;
   return out;
@@ -343,6 +390,11 @@ export interface InitOptions {
   prompter?: (question: string, def: string) => Promise<string>;
   /** Wizard prereq-presence override (test injection); defaults to `Bun.which`. */
   prereqCheck?: (bin: string) => boolean;
+  /** Final-verification probe override (test injection). Defaults to the
+   *  doctor quiet-path subset for a fresh scaffold: `checkTeam` +
+   *  `checkStateDir` read back from `atmuxDir` (no shell-out, no tmux /
+   *  cron / network touch). */
+  verifyProbe?: (atmuxDir: string) => Promise<DoctorRow[]>;
 }
 /**
  * `atmux init` — scaffold a fresh `.atmux/` from the bundled template,
@@ -587,17 +639,56 @@ export async function init(argv: ReadonlyArray<string>, opts: InitOptions = {}):
  * ADR-200 guided `init --wizard` flow. Prompts (piped-stdin safe) then
  * runs the pure wizard steps with real filesystem bindings: prereq
  * probe → cockpit scaffold → team.json scaffold → account pool →
- * skills plugin. Missing prereqs refuse with install hints; existing
- * team.json refuses without --force (same gate as the template path).
+ * skills plugin → final verification. Missing prereqs refuse with
+ * install hints; existing team.json refuses without --force (same gate
+ * as the template path).
  *
  * The persisted team.json goes through the `Team` schema, so the
  * drivers-only roster default (ADR-287 §D5) applies: `members: []` plus
  * the canonical `drivers[]` even though the wizard only asks for a name.
+ *
+ * Flags (ADR-200 §D4): `--yes` takes every default without prompting
+ * (also via `ATMUX_INSTALL_YES=1`); `--no-start` drops the `atmux start`
+ * next-command hint (also via `ATMUX_INSTALL_NO_START=1`) — the wizard
+ * never auto-starts, the hint is the only start surface; `--json`
+ * replaces the human step lines with one machine-readable result object.
+ *
+ * Verification reuses the doctor quiet-path subset for a fresh scaffold
+ * (`checkTeam` + `checkStateDir`, no shell-out): all green prints the
+ * ship line, yellow-only prints warnings and continues, red prints the
+ * halt recipe and returns 1.
  */
+export type WizardVerificationStatus = "ship" | "warnings" | "halt";
+
+export interface WizardJsonResult {
+  ok: boolean;
+  team: string;
+  teamJson: { path: string; kind: "written" | "unchanged" };
+  cockpit: { path: string; changed: boolean };
+  accountPool: { entries: number } | null;
+  skills: SkillsInstallResult;
+  verification: {
+    status: WizardVerificationStatus;
+    red: number;
+    yellow: number;
+    rows: DoctorRow[];
+  };
+  started: false;
+}
+
 async function runInitWizard(opts: InitOptions, parsed: ParsedInitArgs): Promise<number> {
   const env = opts.env ?? process.env;
   const stdout = opts.stdout ?? defaultStdoutWrite;
   const cwd = opts.cwd ?? process.cwd();
+  const yes = parsed.yes || env.ATMUX_INSTALL_YES === "1";
+  const noStart = parsed.noStart || env.ATMUX_INSTALL_NO_START === "1";
+  const jsonMode = parsed.json;
+  const color =
+    !jsonMode &&
+    shouldUseWizardColor({ NO_COLOR: env.NO_COLOR, TERM: env.TERM }, process.stdout.isTTY === true);
+  const say = (line: string): void => {
+    if (!jsonMode) stdout(`${line}\n`);
+  };
   const platform = process.platform === "darwin" ? "darwin" : "linux";
   const checkPrereq = opts.prereqCheck ?? ((bin: string) => Bun.which(bin) !== null);
   const probe = probePrereqs(checkPrereq, platform);
@@ -611,16 +702,18 @@ async function runInitWizard(opts: InitOptions, parsed: ParsedInitArgs): Promise
   // Piped stdin (e2e/scripted runs) is slurped up front: sequential
   // rl.question calls race stream-end on pipes in some runtimes.
   // A TTY keeps true interactive prompting. Injected prompters (unit
-  // tests) skip stdin entirely so no fd is consumed.
+  // tests) skip stdin entirely so no fd is consumed. --yes skips
+  // stdin entirely — every prompt takes its default.
   const pipedAnswers =
-    opts.prompter === undefined && process.stdin.isTTY !== true
+    opts.prompter === undefined && !yes && process.stdin.isTTY !== true
       ? (await Bun.stdin.text()).split("\n").map((line) => line.trim())
       : null;
   const rl =
-    opts.prompter === undefined && pipedAnswers === null
+    opts.prompter === undefined && pipedAnswers === null && !yes
       ? createInterface({ input: process.stdin, output: process.stdout })
       : undefined;
   const ask = async (question: string, def: string): Promise<string> => {
+    if (yes) return def;
     if (opts.prompter !== undefined) return opts.prompter(question, def);
     if (pipedAnswers !== null) {
       const answer = pipedAnswers.shift() ?? "";
@@ -639,6 +732,9 @@ async function runInitWizard(opts: InitOptions, parsed: ParsedInitArgs): Promise
         what: `already initialized at ${tj} — pass --force to overwrite`,
       });
     }
+    say(renderWizardHeader({ version: ATMUX_VERSION, color }));
+    say(renderWizardStep(1, WIZARD_STEP_COUNT, "Prereq probe", { color }));
+    say("prereqs: all required binaries present");
     const teamName = await ask("Team name", parsed.name ?? basename(cwd));
     const home = env.HOME ?? homedir();
     const cockpitFs = {
@@ -647,10 +743,10 @@ async function runInitWizard(opts: InitOptions, parsed: ParsedInitArgs): Promise
       writeFile: (path: string, content: string) => writeText(path, content),
       readFile: (path: string) => readTextOrNull(path),
     };
+    say(renderWizardStep(2, WIZARD_STEP_COUNT, "Cockpit init", { color }));
     const cockpitResult = await scaffoldCockpit(cockpitFs, cwd);
-    stdout(
-      `cockpit: ${cockpitResult.changed ? "updated" : "unchanged"} ${cockpitResult.cockpitPath}`,
-    );
+    say(`cockpit: ${cockpitResult.changed ? "updated" : "unchanged"} ${cockpitResult.cockpitPath}`);
+    say(renderWizardStep(3, WIZARD_STEP_COUNT, "team.json", { color }));
     await ensureDir(dir);
     const teamDeps = {
       path: tj,
@@ -658,28 +754,92 @@ async function runInitWizard(opts: InitOptions, parsed: ParsedInitArgs): Promise
       writeText: (path: string, content: string) => writeText(path, content),
     };
     const teamResult = await scaffoldTeamJson(teamDeps, { name: teamName });
-    stdout(`team.json: ${teamResult.kind} ${tj}`);
+    say(`team.json: ${teamResult.kind} ${tj}`);
+    say(renderWizardStep(4, WIZARD_STEP_COUNT, "Account pool", { color }));
     const suffixes = await ask("Claude account suffixes (comma-separated, empty skips pool)", "");
     const accounts = suffixes
       .split(",")
       .map((s) => s.trim())
       .filter((s) => s.length > 0)
       .map((suffix) => ({ configDir: join(home, `.claude-${suffix}`), label: suffix }));
+    let poolEntries: number | null = null;
     if (accounts.length > 0) {
       const poolDeps = { ...teamDeps, path: cockpitFs.cockpitPath };
       const poolResult = await setupAccountPool(poolDeps, accounts);
-      stdout(`account pool: ${poolResult.kind} (${accounts.length} entries)`);
+      poolEntries = accounts.length;
+      say(`account pool: ${poolResult.kind} (${accounts.length} entries)`);
+    } else {
+      say("account pool: skipped (no suffixes)");
     }
+    say(renderWizardStep(5, WIZARD_STEP_COUNT, "Skills plugin", { color }));
+    let skillsResult: SkillsInstallResult;
     if (!parsed.noSkills) {
-      const skillsResult = await installSkillsPluginStep({
+      skillsResult = await installSkillsPluginStep({
         runner: (stepOpts) =>
           installSkillsPlugin({ env, force: parsed.force, noSkills: parsed.noSkills, ...stepOpts }),
       });
-      stdout(renderSkillsInstallResult(skillsResult));
+      say(renderSkillsInstallResult(skillsResult).trimEnd());
+    } else {
+      skillsResult = { kind: "skipped", reason: "--no-skills" };
+      say("skills plugin: skipped (--no-skills)");
     }
-    stdout(`wizard complete: team '${teamName}' ready — run 'atmux start' next`);
-    return 0;
+    // Final verification (ADR-200 Layer 1 step 7 analogue): the doctor
+    // quiet-path subset for a fresh scaffold, read back from disk.
+    say("Final verification");
+    const verify = opts.verifyProbe ?? defaultWizardVerifyProbe;
+    const rows = await verify(dir);
+    const report = buildReport(rows);
+    const status: WizardVerificationStatus =
+      report.redCount > 0 ? "halt" : report.yellowCount > 0 ? "warnings" : "ship";
+    if (status === "ship") {
+      say(`verification: ship it — ${rows.length} doctor checks green, team '${teamName}' ready`);
+    } else if (status === "warnings") {
+      say(`verification: warnings — ${report.yellowCount} yellow check(s), continuing`);
+      for (const row of rows) {
+        if (row.status === "yellow") say(`  ! ${row.label}: ${row.detail ?? ""}`);
+      }
+      say("run 'atmux doctor' for the full report");
+    } else {
+      say(`verification: halt — ${report.redCount} red check(s)`);
+      for (const row of rows) {
+        if (row.status === "red") {
+          say(`  ✗ ${row.label}: ${row.detail ?? ""}${row.hint ? ` — fix: ${row.hint}` : ""}`);
+        }
+      }
+      say("fix: address the rows above, then re-run 'atmux init --wizard --force'");
+      say(`detail: run 'atmux doctor' in ${cwd} for the full report`);
+    }
+    const result: WizardJsonResult = {
+      ok: status !== "halt",
+      team: teamName,
+      teamJson: { path: tj, kind: teamResult.kind },
+      cockpit: { path: cockpitResult.cockpitPath, changed: cockpitResult.changed },
+      accountPool: poolEntries === null ? null : { entries: poolEntries },
+      skills: skillsResult,
+      verification: { status, red: report.redCount, yellow: report.yellowCount, rows },
+      started: false,
+    };
+    if (jsonMode) {
+      stdout(`${JSON.stringify(result)}\n`);
+      return result.ok ? 0 : 1;
+    }
+    if (noStart) {
+      stdout(`wizard complete: team '${teamName}' ready\n`);
+    } else {
+      stdout(`wizard complete: team '${teamName}' ready — run 'atmux start' next\n`);
+    }
+    return result.ok ? 0 : 1;
   } finally {
     if (rl !== undefined) rl.close();
   }
+}
+
+/**
+ * Default final-verification probe: the doctor quiet-path subset that a
+ * fresh scaffold can satisfy — `checkTeam` (team.json parses + roster
+ * sane) + `checkStateDir` (`.atmux/` writable). Pure read-back, no
+ * shell-out, no tmux / cron / network touch.
+ */
+async function defaultWizardVerifyProbe(atmuxDir: string): Promise<DoctorRow[]> {
+  return [...(await checkTeam(atmuxDir)), ...(await checkStateDir(atmuxDir))];
 }

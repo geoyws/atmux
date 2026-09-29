@@ -63,6 +63,8 @@ describe.skipIf(MISSING.length > 0)(
       try {
         const result = runWizard(project, home, "e2e-wiz\n\n", ["--no-skills"]);
         expect(`${result.stdout}\n${result.stderr}`).toContain("wizard complete");
+        // ADR-200 step 7 analogue: the final verification ships green.
+        expect(`${result.stdout}\n${result.stderr}`).toContain("verification: ship it");
         expect(result.exitCode).toBe(0);
 
         const team = Team.parse(
@@ -75,6 +77,25 @@ describe.skipIf(MISSING.length > 0)(
 
         const cockpit = JSON.parse(await readFile(join(home, ".atmux", "cockpit.json"), "utf8"));
         expect(JSON.stringify(cockpit.sessions)).toContain(project);
+      } finally {
+        await rm(work, { recursive: true, force: true });
+      }
+    });
+
+    test("--yes --json → one parseable result object with ship verification", async () => {
+      const work = await mkdtemp(join(tmpdir(), "atmux-wiz-e2e-"));
+      const home = join(work, "home");
+      const project = join(work, "proj");
+      await mkdir(home, { recursive: true });
+      await mkdir(project, { recursive: true });
+      try {
+        const result = runWizard(project, home, "", ["--yes", "--json", "--no-skills"]);
+        expect(result.exitCode).toBe(0);
+        const parsed = JSON.parse(result.stdout);
+        expect(parsed.ok).toBe(true);
+        expect(parsed.team).toBe("proj");
+        expect(parsed.verification.status).toBe("ship");
+        expect(parsed.started).toBe(false);
       } finally {
         await rm(work, { recursive: true, force: true });
       }
