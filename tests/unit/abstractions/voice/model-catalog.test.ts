@@ -21,7 +21,7 @@ import {
   stripGeminiPrefix,
 } from "../../../../src/abstractions/voice/model-catalog.ts";
 
-const KEY = "sk-live-secret-value-9f3a";
+const KEY = "sk-fake-unit-test-credential-DO-NOT-USE";
 
 describe("modelListRequestFor", () => {
   test("openai: the documented index, key on an Authorization header", () => {

@@ -15,7 +15,7 @@ import {
   VOX_REDACTED,
 } from "../../../../src/core/vox/log.ts";
 
-const API_KEY = "sk-live-4f9a2c7e11b3d8f60a5e9c2b7d4188aa";
+const API_KEY = "sk-fake-unit-test-key-DO-NOT-USE-0000";
 const TOKEN = "v".repeat(40);
 
 describe("redactVoxSecrets — known secrets", () => {
@@ -68,8 +68,8 @@ describe("redactVoxSecrets — shape patterns (credentials we were never told ab
   test.each([
     [
       "?key= query auth (the form Gemini Live's WS URL uses)",
-      "wss://generativelanguage.googleapis.com/ws?key=AIzaSyUNKNOWN123456 failed",
-      "AIzaSyUNKNOWN123456",
+      "wss://generativelanguage.googleapis.com/ws?key=AIzaSy-UNIT-TEST-FAKE-KEY-DO-NOT-USE failed",
+      "AIzaSy-UNIT-TEST-FAKE-KEY-DO-NOT-USE",
       "wss://generativelanguage.googleapis.com/ws?key=",
     ],
     [

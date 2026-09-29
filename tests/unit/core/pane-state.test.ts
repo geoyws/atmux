@@ -337,21 +337,21 @@ describe("PaneState exhaustiveness", () => {
 
 describe("redactSensitive", () => {
   test("redacts sk- tokens", () => {
-    const got = redactSensitive("api error: sk-ant-api03-AbCd1234EfGh5678IjKlMnOp\n");
+    const got = redactSensitive("api error: sk-ant-api03-FAKEFAKEFAKEFAKEFAKEFAKE00\n");
     expect(got).toContain("[REDACTED:sk]");
     expect(got).not.toContain("sk-ant-api03");
   });
 
   test("redacts pat- tokens", () => {
-    const got = redactSensitive("PAT='pat-1234567890abcdef1234567890abcdef'");
+    const got = redactSensitive("PAT='pat-FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE00'");
     expect(got).toContain("[REDACTED:pat]");
-    expect(got).not.toContain("pat-1234567890");
+    expect(got).not.toContain("pat-FAKEFAKE");
   });
 
   test("redacts ghp_ GitHub PATs", () => {
-    const got = redactSensitive("ghp_ABCDEFGHIJKLMNOPQRSTUVWX1234567890");
+    const got = redactSensitive("ghp_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE00");
     expect(got).toContain("[REDACTED:gh]");
-    expect(got).not.toContain("ghp_ABCDEFGHIJ");
+    expect(got).not.toContain("ghp_FAKEFAKE");
   });
 
   test("redacts $HOME/.claude paths", () => {
@@ -379,7 +379,7 @@ describe("buildUnknownPaneEvent", () => {
   test("captures target + timestamps + redacted evidence", () => {
     const event = buildUnknownPaneEvent({
       target: "atmux-x:🧭lead",
-      text: "weird pane content with sk-ant-api03-AbCd1234EfGh5678IjKlMnOp inside",
+      text: "weird pane content with sk-ant-api03-FAKEFAKEFAKEFAKEFAKEFAKE00 inside",
       capturedAt: 1_700_000_000_000,
       now: () => 1_700_000_001_000,
     });

@@ -557,14 +557,11 @@ describe("redactSecrets", () => {
   // AND the marker present — so a regex that silently stopped matching
   // could not pass by leaving the input untouched.
   test.each([
-    ["sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAA", "an sk- API key"],
-    [
-      "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk",
-      "a JWT",
-    ],
-    ["Bearer abcdefghijklmnopqrstuvwxyz0123456789", "a Bearer header"],
-    ["ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "a GitHub token"],
-    ["AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "a bare 44-char opaque run"],
+    ["sk-ant-api03-FAKEFAKEFAKEFAKEFAKEFAKEFAKE00", "an sk- API key"],
+    ["eyJFAKEFAKEFAKEFAKEFAKE.eyJFAKEFAKEFAKEFAKEFAKE.FAKEFAKEFAKEFAKEFAKEFAKEFAKE00", "a JWT"],
+    ["Bearer FAKE-UNIT-TEST-CREDENTIAL-DO-NOT-USE-00", "a Bearer header"],
+    ["ghp_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE00", "a GitHub token"],
+    ["FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE", "a bare 44-char opaque run"],
   ])("masks %p (%s)", (secret) => {
     const out = redactSecrets(`note: ${secret} end`);
     expect(out).not.toContain(secret);
@@ -584,7 +581,7 @@ describe("redactSecrets", () => {
 });
 
 describe("renderBudgetReport — no credential reaches the spoken output", () => {
-  const PLANTED = "sk-ant-oat01-DEADBEEFDEADBEEFDEADBEEFDEADBEEF";
+  const PLANTED = "sk-ant-oat01-FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE";
 
   test("CONTROL: a benign note IS rendered verbatim", () => {
     // This runs first and must pass, or the leak assertions below prove
@@ -603,7 +600,7 @@ describe("renderBudgetReport — no credential reaches the spoken output", () =>
       NOW,
     );
     expect(out).not.toContain(PLANTED);
-    expect(out).not.toContain("DEADBEEF");
+    expect(out).not.toContain("FAKEFAKE");
     expect(out).toContain(REDACTED);
     // The surrounding prose survives, so we know the note was rendered
     // and the token specifically was removed.

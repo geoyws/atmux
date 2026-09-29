@@ -35,7 +35,7 @@ import {
   suggestModels,
 } from "../../../../src/core/vox/model-check.ts";
 
-const KEY = "sk-live-secret-value-9f3a";
+const KEY = "sk-fake-unit-test-credential-DO-NOT-USE";
 
 /** The live Gemini pin — a DATED PREVIEW id, i.e. the one this guard
  *  exists for. */
