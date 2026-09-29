@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
++### 🩺 Doctor — migration-state-incomplete probe enforces ADR-169 lists (t-5ac8783c)
++
++**Doctor flags migrated JSON sources still present and unclassified state files.** The `migration-state-incomplete` probe scans `<atmuxDir>/state/*.json`: ADR-169 migrated sources still present go red with the owning `migrate-state --target=` in the hint, and so does any JSON that is neither a migrated source nor KEEP-AS-JSON. Silent on archived copies and KEEP-AS-JSON entries.
++
 ### 🗄️ Changed — claude-accounts mapping moves to `~/.atmux/claude-accounts.json` ([ADR-243](docs/adr/243-runtime-configurable-claude-accounts.md), t-c2f75e13)
 
 **New claude accounts no longer require editing TS source + rebuilding atmux.** `src/abstractions/claude-account-wrapper.ts` now resolves the configDir → wrapper table from `~/.atmux/claude-accounts.json` (schema v1: `{ schemaVersion: 1, accounts: [{ configDir, wrapper }] }`, loaded once per process and cached) instead of a source-resident literal. File absent → the same 4 built-in entries as before (plus a one-time stderr notice); file present-but-malformed (bad JSON, unknown schemaVersion, duplicate configDir, missing field) → ConfigError refusal quoting the path. `resolveClaudeWrapper` + `knownClaudeConfigDirs` signatures are unchanged, and `atmux doctor` gains a `claude-accounts` row (yellow when absent, red when malformed, silent when valid).

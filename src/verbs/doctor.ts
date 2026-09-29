@@ -79,6 +79,7 @@ import {
   checkWorktreeNestedStateDb,
 } from "./doctor/git.ts";
 import { checkClaudeAccountPool, checkHostPressure } from "./doctor/host.ts";
+import { checkMigrationStateIncomplete } from "./doctor/migration-state.ts";
 import {
   checkNestedStateDb,
   type FixNestedStateDbOpts,
@@ -224,6 +225,11 @@ export async function runAllChecks(
   rows.push(...(await checkWebhook(team)));
   rows.push(...(await checkPhantomInboxes(atmuxDir)));
   rows.push(...(await checkLegacyInboxJson(atmuxDir)));
+  // ADR-169 OQ-6: migration-state-incomplete — RED per ADR-169 migrated
+  // source still present in state/ or unclassified ad-hoc state file.
+  // Silent when clean (archived copies live under archive/, outside
+  // the scan root). Read-only; remediation is `migrate-state`.
+  rows.push(...(await checkMigrationStateIncomplete(atmuxDir)));
   // ADR-202 §D11: Honker substrate runtime probe. Surfaces extension-
   // load state + fallback reason so operators can see whether the
   // event-driven path is live or whether consumers are in cron-backstop
@@ -741,6 +747,14 @@ export {
   checkMemberForcePushRecent,
   checkSendKeysFailureRecent,
 } from "./doctor/member-ops.ts";
+export {
+  checkMigrationStateIncomplete,
+  classifyMigrationStateFile,
+  MIGRATION_STATE_LABEL,
+  type MigrationStateFileKind,
+  migrationStateIncompleteRows,
+  migrationTargetFor,
+} from "./doctor/migration-state.ts";
 export {
   type CheckNestedStateDbOpts,
   checkNestedStateDb,
