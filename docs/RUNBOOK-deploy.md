@@ -26,7 +26,7 @@ Old versions preserved under `/opt/atmux/<version>/` for one-line rollback (see 
 3. **Commit on trunk** (`geoyws`). `package.json` + `CHANGELOG.md` only; conventional-commits subject (`chore(deploy): bump A.B.C → X.Y.Z + atmux build:install (t-…)`); body documents bump rationale + smoke targets.
 
 4. **Run `bun run build:install`** from the trunk worktree (`/root/work/src/atmux` or equivalent). The script:
-   1. `bun build:compile` → `dist/atmux` (bun ELF, ~100MB)
+   1. `bun run build:compile` → `dist/atmux` (host-native binary, ~100MB: `bun-darwin-arm64` on Apple Silicon, `bun-linux-x64` on the Linux deploy hosts, per ADR-302). Cross-compile a Linux artefact from macOS explicitly with `bun run build:compile:linux` (`ATMUX_BUN_TARGET=bun-linux-x64`); `bun scripts/build-compile.ts --target=<t>` overrides per-invocation.
    2. `sudo install -d -m 755 /opt/atmux/<V>/bin`
    3. `sudo install -m 755 dist/atmux /opt/atmux/<V>/bin/atmux`
    4. `sudo rm -rf /opt/atmux/<V>/templates && sudo cp -r templates /opt/atmux/<V>/templates` ← static-assets ship (added per c-003a2a4c / t-17d413b1: compiled bun's `import.meta.dir` walks $bunfs to `/templates` so `atmux init` + brief reads need on-disk templates alongside the binary; the resolver at `src/core/templates-dir.ts` probes `<execPath>/../templates` as the installed-mode fallback after the dev-mode probe misses)
@@ -106,7 +106,7 @@ sudo ln -sfn /opt/atmux/<prior-version> /opt/atmux/current
 
 Next cron tick picks up the rolled-back binary. In-flight long-lived TUIs keep reading from `state.db`; cron-fired verbs re-exec the binary every tick.
 
-Preserved versions enumerable via `ls /opt/atmux/`. Each is a self-contained `bin/atmux` ELF reachable by direct path.
+Preserved versions enumerable via `ls /opt/atmux/`. Each is a self-contained `bin/atmux` host-native binary (ELF on Linux, Mach-O on macOS per ADR-302) reachable by direct path.
 
 ## Vendored tmux binary (ADR-191)
 

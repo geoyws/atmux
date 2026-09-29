@@ -261,6 +261,7 @@
 | 299 | Cockpit medic runs OMP on a shell floor (two-stage `_medic` window: shell start command, child TUI via `launchAgentInPane`) | 2026-09-28 | accepted |
 | 300 | Cockpit reconcile dry-run preview (recording tmux wrapper + plan print, exit 0) | 2026-09-29 | accepted |
 | 301 | Test-cage leak reaper — SAFETY invariant + `atmux test-reaper` verb (implements ADR-178 T3) | 2026-09-29 | accepted |
+| 302 | Host-aware `bun build --compile` target (host default + `ATMUX_BUN_TARGET` / `--target` override) | 2026-09-29 | accepted |
 
 ## Superseded (skip)
 
