@@ -11,15 +11,28 @@
 //       file because dedup writes are rare (only on actual fire) and
 //       the read is one-shot per tick.
 //
-// Both files are Zod-validated on read; corrupt JSON resets to the empty
-// shape and logs a recovery line. No exception thrown — the detector
-// continues with an empty history rather than crashing the whip-tick
-// (mirrors `perm-mode-drift-state.ts` + `cursor-self-heal-state.ts`).
+// ADR-169 P2 (EPIC e-38ee9939): the per-member history lives in the
+// `role_state` table (`role=<member>`, `namespace='modal-history'`)
+// of `<atmuxDir>/state.db`, not in
+// `<atmuxDir>/state/modal-history-<member>.json`. Readers promote a
+// leftover legacy file on first read; writers are table-only. The
+// dedup map is NOT enumerated in ADR-169 §Context — it stays a JSON
+// file. Both files are Zod-validated on read; corrupt JSON resets to
+// the empty shape and logs a recovery line. No exception thrown —
+// the detector continues with an empty history rather than crashing
+// the whip-tick (mirrors `perm-mode-drift-state.ts` +
+// `cursor-self-heal-state.ts`).
 
 import { join } from "node:path";
 import { z } from "zod";
 import { atomicWrite, readTextOrNull } from "../abstractions/fs.ts";
 import type { ModalClass, ModalHistoryEntry } from "./modal-cycling-detector.ts";
+import {
+  MODAL_HISTORY_NAMESPACE,
+  readRoleTextAtDb,
+  teamRoleStateDbPath,
+  writeRoleTextAtDb,
+} from "./role-state-repo.ts";
 
 // ---------- Zod schemas ----------
 
@@ -62,13 +75,19 @@ export function modalCyclingDedupPath(atmuxDir: string): string {
 
 // ---------- History I/O ----------
 
-/** Read per-member history. Empty array on missing/corrupt. */
+/** Read per-member history. Empty array on missing/corrupt. Row-first:
+ *  promotes a leftover legacy file on first read. */
 export async function loadModalHistory(
   atmuxDir: string,
   member: string,
 ): Promise<ModalHistoryEntry[]> {
   const path = modalHistoryPath(atmuxDir, member);
-  const txt = await readTextOrNull(path);
+  const txt = await readRoleTextAtDb(
+    teamRoleStateDbPath(atmuxDir),
+    sanitizeMember(member),
+    MODAL_HISTORY_NAMESPACE,
+    path,
+  );
   if (txt === null) return [];
   let raw: unknown;
   try {
@@ -88,14 +107,20 @@ export async function loadModalHistory(
   }));
 }
 
-/** Atomic write per-member history. */
+/** Table-only write of the per-member history. The role key is the
+ *  sanitized member name so runtime rows line up with the
+ *  `modal-history-<member>.json` filenames the migration imports. */
 export async function saveModalHistory(
   atmuxDir: string,
   member: string,
   history: ModalHistoryEntry[],
 ): Promise<void> {
-  const path = modalHistoryPath(atmuxDir, member);
-  await atomicWrite(path, `${JSON.stringify(history, null, 2)}\n`);
+  await writeRoleTextAtDb(
+    teamRoleStateDbPath(atmuxDir),
+    sanitizeMember(member),
+    MODAL_HISTORY_NAMESPACE,
+    JSON.stringify(history),
+  );
 }
 
 // ---------- Dedup state I/O ----------

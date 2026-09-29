@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🗄️ Changed — per-role tracking files move to the state.db role_state table (ADR-169 P2, e-38)
+
+**Twelve-plus tracking files are now role_state rows.** `cost-<member>` and `modal-history-<member>` (role-scoped) plus `heads-up-cursor`, `brief-versions`, `ombudsman-pending` (team scope, sentinel `role='_'`) live in `role_state (role, namespace, payload, updated_at, schema_version)`; readers promote leftover JSON on first read, writers are table-only. `atmux migrate-state --target=role-state` glob-discovers `cost-*.json` + `modal-history-*.json`, imports + archives sources (dry-run supported). `modal-cycling-dedup-state.json` stays JSON (not enumerated in ADR-169); budget files stay JSON per OQ-3 (P3).
+
 ### 🗄️ Changed — single-row toggles move to the state.db flags table (ADR-169 P1, e-38)
 
 **Six toggle files are now flags-table rows.** `paused`, `resume`, `eternal-improvement`, `whip-config-drift-state` (team scope) plus `pulse-state`, `sentinel-state` (cockpit scope) live in `flags (key, value, updated_at, schema_version)`; readers promote leftover JSON on first read, writers are table-only. `atmux migrate-state --target=flags` imports + archives sources (dry-run supported). Budget files stay JSON per ADR-169 OQ-3 — they get the dedicated `budget` table in P3.

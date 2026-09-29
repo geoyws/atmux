@@ -3,7 +3,7 @@
 // member isolation, and dedup helpers.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModalHistoryEntry } from "../../../src/core/modal-cycling-detector.ts";
@@ -17,6 +17,11 @@ import {
   saveModalHistory,
   shouldFireDedup,
 } from "../../../src/core/modal-cycling-state.ts";
+import {
+  RoleStateRepo,
+  teamRoleStateDbPath,
+  withRoleStateDb,
+} from "../../../src/core/role-state-repo.ts";
 
 describe("modalHistoryPath / modalCyclingDedupPath", () => {
   test("history path includes member name", () => {
@@ -103,10 +108,13 @@ describe("loadModalHistory / saveModalHistory — roundtrip + corrupt fallback",
     await saveModalHistory(atmuxDir, "bob", b);
     expect(await loadModalHistory(atmuxDir, "alice")).toEqual(a);
     expect(await loadModalHistory(atmuxDir, "bob")).toEqual(b);
-    // Confirm separate files exist on disk.
-    const aText = await readFile(modalHistoryPath(atmuxDir, "alice"), "utf8");
-    expect(aText).toContain("sha256:a");
-    expect(aText).not.toContain("sha256:b");
+    // Confirm separate rows exist in role_state (no legacy files written).
+    await withRoleStateDb(teamRoleStateDbPath(atmuxDir), (db) => {
+      const repo = new RoleStateRepo(db);
+      expect(repo.get("alice", "modal-history")).toContain("sha256:a");
+      expect(repo.get("alice", "modal-history")).not.toContain("sha256:b");
+    });
+    expect(await Bun.file(modalHistoryPath(atmuxDir, "alice")).exists()).toBe(false);
   });
 });
 

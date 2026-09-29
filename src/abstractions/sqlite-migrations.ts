@@ -870,4 +870,33 @@ export const migrations: readonly Migration[] = [
 			`);
     },
   },
+  // ---------- v18 → v19 ----------
+  // ADR-169 §Decision (role_state table, P2 — EPIC e-38ee9939):
+  // consolidate the per-role tracking files into one `role_state`
+  // table. Composite key `(role, namespace)`; `payload` = full JSON
+  // blob (TEXT-blob encoding per ADR-169 OQ-1); `updated_at` = epoch
+  // ms at write time; `schema_version` = per-row forward-compat
+  // marker per OQ-2.
+  //
+  // Residency: everything is team scope (`<atmuxDir>/state.db`).
+  // Role-scoped namespaces (`cost`, `modal-history`) key `role` by
+  // member name; team-scoped namespaces (`heads-up-cursor`,
+  // `brief-versions`, `ombudsman-pending`) use sentinel `role='_'`.
+  // See `src/core/role-state-repo.ts`.
+  {
+    from: 18,
+    to: 19,
+    up: (db) => {
+      db.exec(`
+				CREATE TABLE role_state (
+					role TEXT NOT NULL,
+					namespace TEXT NOT NULL,
+					payload TEXT NOT NULL,
+					updated_at INTEGER NOT NULL,
+					schema_version INTEGER NOT NULL,
+					PRIMARY KEY (role, namespace)
+				) STRICT;
+			`);
+    },
+  },
 ];

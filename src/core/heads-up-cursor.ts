@@ -15,11 +15,12 @@
 // already been pinged for this revision). After a successful emit,
 // callers `recordHeadsUp(...)` to advance the cursor.
 //
-// State file layout: `<atmuxDir>/state/heads-up-cursor.json`
-// {
-//   "<source>:<target>": <last-emitted-source-mtime-ms>,
-//   ...
-// }
+// ADR-169 P2 (EPIC e-38ee9939): the cursor map lives in the
+// `role_state` table (`role='_'`, `namespace='heads-up-cursor'`) of
+// `<atmuxDir>/state.db`, not in
+// `<atmuxDir>/state/heads-up-cursor.json`. Readers promote a leftover
+// legacy file on first read; writers are table-only. The legacy path
+// helper stays as the fallback address.
 //
 // Atomic-write semantics inherited from `abstractions/fs.atomicWrite`
 // (mktemp + rename). Read-modify-write is best-effort; concurrent
@@ -27,9 +28,13 @@
 // trade-off: a lost-update means at most ONE redundant ping (the
 // next emitter sees the older cursor + fires); the dedup is best-
 // effort, not strict-once.
-
 import { join } from "node:path";
-import { atomicWrite, ensureDir, readTextOrNull } from "../abstractions/fs.ts";
+import {
+  readRoleTextAtDb,
+  TEAM_ROLE_STATE,
+  teamRoleStateDbPath,
+  writeRoleTextAtDb,
+} from "./role-state-repo.ts";
 
 const STATE_FILENAME = "heads-up-cursor.json";
 
@@ -45,11 +50,16 @@ export function cursorKey(source: string, target: string): string {
   return `${source}:${target}`;
 }
 
-/** Read cursor from disk. Empty map on missing or malformed file
- *  (corruption is non-fatal — re-arms the dedup at one extra ping). */
+/** Read the cursor map. Empty map on missing or malformed state
+ *  (corruption is non-fatal — re-arms the dedup at one extra ping).
+ *  Row-first: promotes a leftover legacy file on first read. */
 export async function loadHeadsUpCursor(atmuxDir: string): Promise<HeadsUpCursor> {
-  const path = headsUpCursorPath(atmuxDir);
-  const txt = await readTextOrNull(path);
+  const txt = await readRoleTextAtDb(
+    teamRoleStateDbPath(atmuxDir),
+    TEAM_ROLE_STATE,
+    "heads-up-cursor",
+    headsUpCursorPath(atmuxDir),
+  );
   if (txt === null) return {};
   try {
     const parsed: unknown = JSON.parse(txt);
@@ -64,10 +74,15 @@ export async function loadHeadsUpCursor(atmuxDir: string): Promise<HeadsUpCursor
   }
 }
 
-/** Atomic-write the full cursor map. Creates `state/` dir if missing. */
+/** Table-only write of the full cursor map. A stale legacy file left
+ *  on disk is harmless — readers prefer the row. */
 export async function writeHeadsUpCursor(atmuxDir: string, cursor: HeadsUpCursor): Promise<void> {
-  await ensureDir(join(atmuxDir, "state"));
-  await atomicWrite(headsUpCursorPath(atmuxDir), JSON.stringify(cursor));
+  await writeRoleTextAtDb(
+    teamRoleStateDbPath(atmuxDir),
+    TEAM_ROLE_STATE,
+    "heads-up-cursor",
+    JSON.stringify(cursor),
+  );
 }
 
 export interface HeadsUpEmitOpts {

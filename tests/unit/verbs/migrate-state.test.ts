@@ -20,6 +20,7 @@ import { exists, readText } from "../../../src/abstractions/fs.ts";
 import { closeDatabase, openDatabase } from "../../../src/abstractions/sqlite.ts";
 import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
 import { FlagsRepo } from "../../../src/core/flags-repo.ts";
+import { RoleStateRepo } from "../../../src/core/role-state-repo.ts";
 import type { Logger } from "../../../src/core/tui.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
 import { migrateState, parseMigrateArgs } from "../../../src/verbs/migrate-state.ts";
@@ -336,7 +337,7 @@ describe("migrateState", () => {
     ).rejects.toThrow(ConfigError);
   });
 
-  test("--target=all runs kanban + inboxes + flags; warns state + empty cockpit (ADR-076)", async () => {
+  test("--target=all runs kanban + inboxes + flags + role-state; warns state + empty cockpit (ADR-076)", async () => {
     await seedKanban(env);
     // Fake HOME keeps the cockpit-scope flags migration hermetic — the
     // verb must never touch the operator's real ~/.atmux in tests.
@@ -371,6 +372,12 @@ describe("migrateState", () => {
       expect(audit.counts.flags).toEqual({
         filesSeen: 0,
         flagsWritten: 0,
+        filesSkippedInvalid: 0,
+        filesSkippedRowExists: 0,
+      });
+      expect(audit.counts.roleState).toEqual({
+        filesSeen: 0,
+        rowsWritten: 0,
         filesSkippedInvalid: 0,
         filesSkippedRowExists: 0,
       });
@@ -544,5 +551,160 @@ describe("migrateState --target=flags", () => {
     } finally {
       await rm(fakeHome, { recursive: true, force: true });
     }
+  });
+});
+// ---------- --target=role-state (ADR-169 P2, e-38) ----------
+
+describe("migrateState --target=role-state", () => {
+  let env: TestEnv;
+
+  beforeEach(async () => {
+    env = await makeEnv();
+  });
+
+  afterEach(async () => {
+    await teardown(env);
+  });
+
+  async function seedState(env: TestEnv, filename: string, text: string): Promise<string> {
+    const p = join(env.atmuxDir, "state", filename);
+    await mkdir(join(env.atmuxDir, "state"), { recursive: true });
+    await writeFile(p, text, "utf8");
+    return p;
+  }
+
+  function roleValue(dbPath: string, role: string, namespace: string): string | null {
+    const db = openDatabase(dbPath, migrations);
+    try {
+      return new RoleStateRepo(db).get(role, namespace);
+    } finally {
+      closeDatabase(db);
+    }
+  }
+
+  const runRoleState = (extra: ReadonlyArray<string> = []) =>
+    migrateState(["json-to-sqlite", "--team-dir", env.atmuxDir, "--target=role-state", ...extra], {
+      logger: env.logger,
+      stdout: (s) => env.stdoutBuf.push(s),
+      env: { ...process.env },
+    });
+
+  test("import + archive: glob + team files become rows, sources move to archive", async () => {
+    await seedState(env, "cost-alpha.json", JSON.stringify({ member: "alpha", usd: 1 }));
+    await seedState(env, "cost-bravo.json", JSON.stringify({ member: "bravo", usd: 2 }));
+    await seedState(
+      env,
+      "modal-history-alpha.json",
+      JSON.stringify([{ member: "alpha", modalClass: "choice-prompt" }]),
+    );
+    await seedState(env, "heads-up-cursor.json", JSON.stringify({ "a:b": 5 }));
+    await seedState(env, "brief-versions.json", JSON.stringify({ worker: { version: "v1" } }));
+    await seedState(env, "ombudsman-pending.json", JSON.stringify({ pending: [] }));
+    // Non-tracking files are not ours — budget stays JSON per OQ-3.
+    await seedState(env, "budget-pause.json", JSON.stringify({ paused: true }));
+    await seedState(env, "random.json", JSON.stringify({ whatever: 1 }));
+    await seedState(env, "notes.txt", "not json at all");
+
+    expect(await runRoleState()).toBe(0);
+    expect(roleValue(env.dbPath, "alpha", "cost")).toBe(
+      JSON.stringify({ member: "alpha", usd: 1 }),
+    );
+    expect(roleValue(env.dbPath, "bravo", "cost")).toBe(
+      JSON.stringify({ member: "bravo", usd: 2 }),
+    );
+    expect(roleValue(env.dbPath, "alpha", "modal-history")).toBe(
+      JSON.stringify([{ member: "alpha", modalClass: "choice-prompt" }]),
+    );
+    expect(roleValue(env.dbPath, "_", "heads-up-cursor")).toBe(JSON.stringify({ "a:b": 5 }));
+    expect(roleValue(env.dbPath, "_", "brief-versions")).toBe(
+      JSON.stringify({ worker: { version: "v1" } }),
+    );
+    expect(roleValue(env.dbPath, "_", "ombudsman-pending")).toBe(JSON.stringify({ pending: [] }));
+    for (const f of [
+      "cost-alpha.json",
+      "cost-bravo.json",
+      "modal-history-alpha.json",
+      "heads-up-cursor.json",
+      "brief-versions.json",
+      "ombudsman-pending.json",
+    ]) {
+      expect(await exists(join(env.atmuxDir, "state", f))).toBe(false);
+    }
+    // Out-of-scope files stay put.
+    expect(await exists(join(env.atmuxDir, "state", "budget-pause.json"))).toBe(true);
+    expect(await exists(join(env.atmuxDir, "state", "random.json"))).toBe(true);
+    const audit = JSON.parse(await readText(join(env.atmuxDir, "migration-state-sqlite.json")));
+    expect(audit.counts.roleState).toEqual({
+      filesSeen: 6,
+      rowsWritten: 6,
+      filesSkippedInvalid: 0,
+      filesSkippedRowExists: 0,
+    });
+    expect(env.logLines.some((l) => l.includes("6 role_state rows"))).toBe(true);
+  });
+
+  test("invalid JSON: skipped, warned, left in place", async () => {
+    const p = await seedState(env, "cost-alpha.json", "{not-json");
+    expect(await runRoleState()).toBe(0);
+    expect(roleValue(env.dbPath, "alpha", "cost")).toBe(null);
+    expect(await exists(p)).toBe(true);
+    expect(env.logLines.some((l) => l.includes("not valid JSON"))).toBe(true);
+  });
+
+  test("row exists: redundant source archived, write skipped", async () => {
+    await seedState(env, "heads-up-cursor.json", JSON.stringify({ "a:b": 1 }));
+    expect(await runRoleState()).toBe(0);
+    // Re-seed the same namespace after archival, with different content.
+    await seedState(env, "heads-up-cursor.json", JSON.stringify({ "a:b": 2 }));
+    expect(await runRoleState()).toBe(0);
+    // Original row wins; redundant source archived anyway.
+    expect(roleValue(env.dbPath, "_", "heads-up-cursor")).toBe(JSON.stringify({ "a:b": 1 }));
+    expect(await exists(join(env.atmuxDir, "state", "heads-up-cursor.json"))).toBe(false);
+    expect(env.logLines.some((l) => l.includes("row already present"))).toBe(true);
+  });
+
+  test("dry-run: counts without writes or archive moves", async () => {
+    const p = await seedState(env, "cost-alpha.json", JSON.stringify({ member: "alpha" }));
+    expect(await runRoleState(["--dry-run"])).toBe(0);
+    expect(roleValue(env.dbPath, "alpha", "cost")).toBe(null);
+    expect(await exists(p)).toBe(true);
+    expect(env.logLines.some((l) => l.includes("dry-run OK"))).toBe(true);
+  });
+
+  test("empty role stems + missing state dir: nothing seen, nothing written", async () => {
+    await seedState(env, "cost-.json", JSON.stringify({ member: "" }));
+    await seedState(env, "modal-history-.json", JSON.stringify([]));
+    expect(await runRoleState()).toBe(0);
+    const audit = JSON.parse(await readText(join(env.atmuxDir, "migration-state-sqlite.json")));
+    expect(audit.counts.roleState.filesSeen).toBe(0);
+    expect(await exists(join(env.atmuxDir, "state", "cost-.json"))).toBe(true);
+
+    // Fresh team without a state/ dir at all.
+    const fresh = await makeEnv();
+    try {
+      const exit = await migrateState(
+        ["json-to-sqlite", "--team-dir", fresh.atmuxDir, "--target=role-state"],
+        { logger: fresh.logger, stdout: (s) => fresh.stdoutBuf.push(s), env: { ...process.env } },
+      );
+      expect(exit).toBe(0);
+      const freshAudit = JSON.parse(
+        await readText(join(fresh.atmuxDir, "migration-state-sqlite.json")),
+      );
+      expect(freshAudit.counts.roleState.filesSeen).toBe(0);
+    } finally {
+      await teardown(fresh);
+    }
+  });
+
+  test("idempotent re-run: second pass sees zero files", async () => {
+    await seedState(env, "cost-alpha.json", JSON.stringify({ member: "alpha" }));
+    expect(await runRoleState()).toBe(0);
+    expect(await runRoleState()).toBe(0);
+    const audit = JSON.parse(await readText(join(env.atmuxDir, "migration-state-sqlite.json")));
+    expect(audit.counts.roleState.filesSeen).toBe(0);
+  });
+
+  test("parses --target=role-state", () => {
+    expect(parseMigrateArgs(["json-to-sqlite", "--target=role-state"]).target).toBe("role-state");
   });
 });

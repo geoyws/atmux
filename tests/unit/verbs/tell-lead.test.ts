@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import * as commonCore from "../../../src/core/common.ts";
+import { loadHeadsUpCursor } from "../../../src/core/heads-up-cursor.ts";
 import * as sendCore from "../../../src/core/send.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
 import {
@@ -449,16 +450,15 @@ describe("tellLead — integration", () => {
     await captureStdoutStderr(() =>
       tellLead(["--socket", socketPath, "--team-dir", teamDir, "first ask"]),
     );
-    const cursorPath = join(atmuxDir, "state", "heads-up-cursor.json");
-    const cursorJson = JSON.parse(await Bun.file(cursorPath).text()) as Record<string, number>;
+    const cursor = await loadHeadsUpCursor(atmuxDir);
     const inboxPath = join(atmuxDir, "driver-inbox.md");
     const key = `${inboxPath}:alpha`;
-    expect(cursorJson[key]).toBeGreaterThan(0);
+    expect(cursor[key]).toBeGreaterThan(0);
     // The cursor mtime should match the inbox file's mtime exactly
     // (we recorded what we observed on disk).
     const fs = await import("node:fs/promises");
     const stat = await fs.stat(inboxPath);
-    expect(cursorJson[key]).toBe(stat.mtimeMs);
+    expect(cursor[key]).toBe(stat.mtimeMs);
   });
 
   test("t-bf09aec0: heads-up SUPPRESSED when cursor already at-or-past inbox mtime", async () => {

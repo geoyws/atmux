@@ -12,9 +12,14 @@
 // against fixture team.json with injected computeMember + writeCache.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  RoleStateRepo,
+  teamRoleStateDbPath,
+  withRoleStateDb,
+} from "../../../src/core/role-state-repo.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
 import { DEFAULT_PRICING, type Pricing } from "../../../src/schema/pricing.ts";
 import type { TeamMember } from "../../../src/schema/team.ts";
@@ -25,6 +30,7 @@ import {
   computeMemberCost,
   computeTeamCost,
   cost,
+  costCachePath,
   emptyDetail,
   formatEpochUtc,
   formatJsonReport,
@@ -40,6 +46,22 @@ import {
   usageFromLine,
   writeCostCache,
 } from "../../../src/verbs/cost.ts";
+
+/** Read a cost cache row back out of role_state (null when absent). */
+async function readCostRowOrNull(atmuxDir: string, member: string): Promise<CostDetail | null> {
+  let payload: string | null = null;
+  await withRoleStateDb(teamRoleStateDbPath(atmuxDir), (db) => {
+    payload = new RoleStateRepo(db).get(member, "cost");
+  });
+  return payload === null ? null : (JSON.parse(payload) as CostDetail);
+}
+
+/** Read a cost cache row; throws when absent (test bug, not prod path). */
+async function readCostRow(atmuxDir: string, member: string): Promise<CostDetail> {
+  const row = await readCostRowOrNull(atmuxDir, member);
+  expect(row).not.toBeNull();
+  return row as CostDetail;
+}
 
 // ---------- parseCostArgs ----------
 
@@ -576,13 +598,14 @@ describe("writeCostCache", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  test("writes <atmuxDir>/state/cost-<member>.json with pretty JSON", async () => {
+  test("writes a role_state (member, cost) row; no legacy file on disk", async () => {
     const detail: CostDetail = emptyDetail("alpha", "claude", "claude-jsonl");
     await writeCostCache(dir, detail);
-    const text = await readFile(join(dir, "state", "cost-alpha.json"), "utf8");
-    const parsed = JSON.parse(text) as CostDetail;
-    expect(parsed.member).toBe("alpha");
-    expect(text.endsWith("\n")).toBe(true);
+    await withRoleStateDb(teamRoleStateDbPath(dir), (db) => {
+      const parsed = JSON.parse(new RoleStateRepo(db).get("alpha", "cost") ?? "null") as CostDetail;
+      expect(parsed.member).toBe("alpha");
+    });
+    expect(await Bun.file(costCachePath(dir, "alpha")).exists()).toBe(false);
   });
 });
 
@@ -660,10 +683,8 @@ describe("cost() — public verb", () => {
     expect(stdoutBuf).toContain("alpha");
     expect(stdoutBuf).toContain("bravo");
     expect(stdoutBuf).toContain("TOTAL: $0.0000");
-    // Cache files written.
-    const a = JSON.parse(
-      await readFile(join(atmuxDir, "state", "cost-alpha.json"), "utf8"),
-    ) as CostDetail;
+    // Cache row written.
+    const a = await readCostRow(atmuxDir, "alpha");
     expect(a.member).toBe("alpha");
   });
 
@@ -683,13 +704,9 @@ describe("cost() — public verb", () => {
     await cost(["--team-dir", teamDir, "--since", "0", "--member", "bravo"], { stdout });
     expect(stdoutBuf).toContain("bravo");
     expect(stdoutBuf).not.toContain("  alpha   "); // narrow check — bravo only
-    // Only bravo's cache exists.
-    const cacheA = await readFile(join(atmuxDir, "state", "cost-alpha.json"), "utf8").catch(
-      () => null,
-    );
-    const cacheB = await readFile(join(atmuxDir, "state", "cost-bravo.json"), "utf8");
-    expect(cacheA).toBeNull();
-    expect(cacheB).toContain("bravo");
+    // Only bravo's cache row exists.
+    expect(await readCostRowOrNull(atmuxDir, "alpha")).toBeNull();
+    expect((await readCostRow(atmuxDir, "bravo")).member).toBe("bravo");
   });
 
   test("delegates to injected computeMember + writeCache", async () => {

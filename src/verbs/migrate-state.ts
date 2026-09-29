@@ -9,10 +9,9 @@
 //     the verb's CLI surface accepts them but throws ConfigError so
 //     the team's follow-up work has a clear contract to extend
 //
-// USAGE:
 //   atmux migrate-state json-to-sqlite [--team-dir <dir>]
 //                                      [--dry-run]
-//                                      [--target=all|kanban|inboxes|state|flags]
+//                                      [--target=all|kanban|inboxes|state|flags|role-state]
 //                                      [--db-path <path>]
 //
 //   --team-dir <dir>       Override .atmux dir resolution. Default: walk
@@ -20,9 +19,10 @@
 //   --dry-run              Parse + report counts, no DB writes, no
 //                          archive moves. Exit 0 even if validation fails
 //                          on individual rows (errors surface to stderr).
-//   --target=<...>         Default `all`. `kanban`, `inboxes` and `flags`
-//                          are implemented; `state` throws ConfigError.
-//                          `all` runs kanban + inboxes + flags, skipping
+//   --target=<...>         Default `all`. `kanban`, `inboxes`, `flags`
+//                          and `role-state` are implemented; `state`
+//                          throws ConfigError. `all` runs kanban +
+//                          inboxes + flags + role-state, skipping
 //                          unimplemented targets with a stderr WARN.
 //   --db-path <path>       Override .atmux/state.db location. Default:
 //                          <atmuxDir>/state.db.
@@ -58,6 +58,13 @@ import {
 } from "../core/flags-repo.ts";
 import { defaultStdoutWrite, type Writer } from "../core/io.ts";
 import { KanbanRepo } from "../core/repositories/kanban-repo.ts";
+import {
+  COST_NAMESPACE,
+  MODAL_HISTORY_NAMESPACE,
+  RoleStateRepo,
+  TEAM_ROLE_STATE,
+  TEAM_ROLE_STATE_FILES,
+} from "../core/role-state-repo.ts";
 import { createLogger, type Logger } from "../core/tui.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import { Inbox } from "../schema/inbox.ts";
@@ -65,7 +72,7 @@ import { Kanban, type KanbanTask } from "../schema/kanban.ts";
 
 // ---------- Arg parsing ----------
 
-export type MigrateTarget = "all" | "kanban" | "inboxes" | "state" | "flags";
+export type MigrateTarget = "all" | "kanban" | "inboxes" | "state" | "flags" | "role-state";
 
 export interface ParsedMigrateArgs {
   teamDir?: string;
@@ -74,7 +81,14 @@ export interface ParsedMigrateArgs {
   dbPath?: string;
 }
 
-const VALID_TARGETS: ReadonlySet<string> = new Set(["all", "kanban", "inboxes", "state", "flags"]);
+const VALID_TARGETS: ReadonlySet<string> = new Set([
+  "all",
+  "kanban",
+  "inboxes",
+  "state",
+  "flags",
+  "role-state",
+]);
 
 export function parseMigrateArgs(args: ReadonlyArray<string>): ParsedMigrateArgs {
   let subVerb: string | undefined;
@@ -98,7 +112,7 @@ export function parseMigrateArgs(args: ReadonlyArray<string>): ParsedMigrateArgs
         if (val === undefined) {
           throw new UsageError({
             what: "migrate-state: --team-dir requires a value",
-            hint: "usage: atmux migrate-state json-to-sqlite [--team-dir <dir>] [--dry-run] [--target=<all|kanban|inboxes|state|flags>]",
+            hint: "usage: atmux migrate-state json-to-sqlite [--team-dir <dir>] [--dry-run] [--target=<all|kanban|inboxes|state|flags|role-state>]",
           });
         }
         teamDir = val;
@@ -126,7 +140,7 @@ export function parseMigrateArgs(args: ReadonlyArray<string>): ParsedMigrateArgs
         if (!VALID_TARGETS.has(val)) {
           throw new UsageError({
             what: `migrate-state: unknown --target=${val}`,
-            hint: "valid targets: all, kanban, inboxes, state, flags",
+            hint: "valid targets: all, kanban, inboxes, state, flags, role-state",
           });
         }
         target = val as MigrateTarget;
@@ -136,7 +150,7 @@ export function parseMigrateArgs(args: ReadonlyArray<string>): ParsedMigrateArgs
       default:
         throw new UsageError({
           what: `migrate-state: unknown arg: ${a}`,
-          hint: "usage: atmux migrate-state json-to-sqlite [--team-dir <dir>] [--dry-run] [--target=<all|kanban|inboxes|state|flags>]",
+          hint: "usage: atmux migrate-state json-to-sqlite [--team-dir <dir>] [--dry-run] [--target=<all|kanban|inboxes|state|flags|role-state>]",
         });
     }
   }
@@ -175,6 +189,17 @@ export interface FlagsMigrationCounts {
   filesSkippedRowExists: number;
 }
 
+export interface RoleStateMigrationCounts {
+  /** Tracking files seen under `<atmuxDir>/state/` (glob + team files). */
+  filesSeen: number;
+  /** Rows upserted into `role_state`. */
+  rowsWritten: number;
+  /** Files skipped: present but not valid JSON (left in place). */
+  filesSkippedInvalid: number;
+  /** Files skipped: a role_state row already exists (archived anyway). */
+  filesSkippedRowExists: number;
+}
+
 export interface MigrationResult {
   dryRun: boolean;
   dbPath: string;
@@ -186,6 +211,7 @@ export interface MigrationResult {
     inboxes?: InboxMigrationCounts;
     state?: number; // not implemented in this commit
     flags?: FlagsMigrationCounts;
+    roleState?: RoleStateMigrationCounts;
   };
   warnings: string[];
 }
@@ -512,6 +538,121 @@ async function migrateFlags(
   return { counts, warnings };
 }
 
+// ---------- Role-state migration (ADR-169 P2) ----------
+
+const COST_FILE_PREFIX = "cost-";
+const MODAL_HISTORY_FILE_PREFIX = "modal-history-";
+
+interface RoleStateSource {
+  role: string;
+  namespace: string;
+  srcPath: string;
+}
+
+/**
+ * Map a `<atmuxDir>/state/` filename to its `(role, namespace)` row
+ * address, or null when the file is not an enumerated tracking file.
+ * Role-scoped prefixes glob (`cost-*.json`, `modal-history-*.json`);
+ * team-scoped files (`heads-up-cursor`, `brief-versions`,
+ * `ombudsman-pending`) pin the sentinel role. Anything else (budget
+ * files, KEEP-AS-JSON, operator ad-hoc) is not ours.
+ */
+function roleStateSourceFor(stateDirPath: string, filename: string): RoleStateSource | null {
+  if (!filename.endsWith(".json")) return null;
+  const stem = filename.slice(0, -".json".length);
+  if (stem.startsWith(COST_FILE_PREFIX)) {
+    const role = stem.slice(COST_FILE_PREFIX.length);
+    if (role.length === 0) return null;
+    return { role, namespace: COST_NAMESPACE, srcPath: join(stateDirPath, filename) };
+  }
+  if (stem.startsWith(MODAL_HISTORY_FILE_PREFIX)) {
+    const role = stem.slice(MODAL_HISTORY_FILE_PREFIX.length);
+    if (role.length === 0) return null;
+    return { role, namespace: MODAL_HISTORY_NAMESPACE, srcPath: join(stateDirPath, filename) };
+  }
+  if ((TEAM_ROLE_STATE_FILES as readonly string[]).includes(stem)) {
+    return { role: TEAM_ROLE_STATE, namespace: stem, srcPath: join(stateDirPath, filename) };
+  }
+  return null;
+}
+
+/**
+ * Glob-discover `cost-*.json` + `modal-history-*.json`, read the 3
+ * team-scoped files, upsert each valid one into `role_state`, and
+ * archive the migrated sources.
+ *
+ * Per-file policy (safe re-run, mirrors `--target=flags`):
+ *   - absent → skip silently.
+ *   - row already present → skip the write, archive the redundant file.
+ *   - invalid JSON → skip the write AND the archive (data would be
+ *     lost), count + warn.
+ *   - otherwise → upsert the raw blob, archive the source.
+ */
+async function migrateRoleState(
+  atmuxDir: string,
+  db: Database,
+  opts: { dryRun: boolean; migratedAtEpoch: number },
+): Promise<{ counts: RoleStateMigrationCounts; warnings: string[] }> {
+  const counts: RoleStateMigrationCounts = {
+    filesSeen: 0,
+    rowsWritten: 0,
+    filesSkippedInvalid: 0,
+    filesSkippedRowExists: 0,
+  };
+  const warnings: string[] = [];
+  const repo = new RoleStateRepo(db);
+  const stateDirPath = join(atmuxDir, "state");
+
+  const sources: RoleStateSource[] = [];
+  for (const name of TEAM_ROLE_STATE_FILES) {
+    sources.push({
+      role: TEAM_ROLE_STATE,
+      namespace: name,
+      srcPath: join(stateDirPath, `${name}.json`),
+    });
+  }
+  if (await exists(stateDirPath)) {
+    for (const filename of await readdir(stateDirPath)) {
+      const parsed = roleStateSourceFor(stateDirPath, filename);
+      if (parsed !== null && parsed.role !== TEAM_ROLE_STATE) sources.push(parsed);
+    }
+  }
+
+  const archiveDir = join(atmuxDir, "archive", `json-pre-sqlite-${opts.migratedAtEpoch}`);
+  for (const { role, namespace, srcPath } of sources) {
+    if (!(await exists(srcPath))) continue;
+    counts.filesSeen += 1;
+    const text = await readText(srcPath);
+    try {
+      parseJsonString(srcPath, z.unknown(), text);
+    } catch {
+      counts.filesSkippedInvalid += 1;
+      warnings.push(`role-state: ${srcPath} is not valid JSON — left in place, not migrated`);
+      continue;
+    }
+    if (repo.get(role, namespace) !== null) {
+      counts.filesSkippedRowExists += 1;
+      warnings.push(
+        `role-state: (${role}, ${namespace}) row already present — archived redundant source ${srcPath}`,
+      );
+    } else {
+      counts.rowsWritten += 1;
+      if (!opts.dryRun) {
+        repo.set(role, namespace, text, opts.migratedAtEpoch);
+      }
+    }
+    if (!opts.dryRun) {
+      const archiveDest = join(archiveDir, "state", srcPath.slice(stateDirPath.length + 1));
+      await ensureDir(dirname(archiveDest));
+      if (!(await exists(archiveDest))) {
+        await rename(srcPath, archiveDest);
+      }
+    }
+  }
+
+  return { counts, warnings };
+}
+
 // ---------- Archive helper ----------
 
 /**
@@ -630,6 +771,15 @@ export async function migrateState(
       counts.flags = migrated.counts;
       warnings.push(...migrated.warnings);
     }
+    // ----- role-state target (ADR-169 P2 — per-role tracking → role_state) -----
+    if (parsed.target === "all" || parsed.target === "role-state") {
+      const migrated = await migrateRoleState(atmuxDir, db, {
+        dryRun: parsed.dryRun,
+        migratedAtEpoch,
+      });
+      counts.roleState = migrated.counts;
+      warnings.push(...migrated.warnings);
+    }
 
     // ----- state target (NOT IMPLEMENTED; team's bundle-2 follow-up) -----
     if (parsed.target === "state") {
@@ -683,6 +833,10 @@ export async function migrateState(
         logger.log(
           `migrate-state: dry-run OK — ${counts.flags?.flagsWritten ?? 0} flags, ${counts.flags?.filesSkippedInvalid ?? 0} invalid skipped`,
         );
+      } else if (parsed.target === "role-state") {
+        logger.log(
+          `migrate-state: dry-run OK — ${counts.roleState?.rowsWritten ?? 0} role_state rows, ${counts.roleState?.filesSkippedInvalid ?? 0} invalid skipped`,
+        );
       } else {
         logger.log(
           `migrate-state: dry-run OK — ${counts.kanban?.tasks ?? 0} tasks, ${counts.kanban?.epics ?? 0} epics, ${counts.kanban?.stories ?? 0} stories scanned`,
@@ -691,6 +845,10 @@ export async function migrateState(
     } else if (parsed.target === "flags") {
       logger.ok(
         `migrate-state: migrated ${counts.flags?.flagsWritten ?? 0} flags to ${dbPath} (+ cockpit)`,
+      );
+    } else if (parsed.target === "role-state") {
+      logger.ok(
+        `migrate-state: migrated ${counts.roleState?.rowsWritten ?? 0} role_state rows to ${dbPath}`,
       );
     } else {
       logger.ok(

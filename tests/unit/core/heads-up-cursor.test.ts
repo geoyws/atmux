@@ -5,7 +5,7 @@
 // conditions degrade to "one extra ping," never to wrong-routing.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -92,10 +92,10 @@ describe("loadHeadsUpCursor", () => {
 });
 
 describe("writeHeadsUpCursor", () => {
-  test("creates state dir if missing + atomically writes", async () => {
+  test("table-only write roundtrips through the loader (no legacy file)", async () => {
     await writeHeadsUpCursor(atmuxDir, { "a:b": 12345 });
-    const txt = await readFile(headsUpCursorPath(atmuxDir), "utf8");
-    expect(JSON.parse(txt)).toEqual({ "a:b": 12345 });
+    expect(await loadHeadsUpCursor(atmuxDir)).toEqual({ "a:b": 12345 });
+    expect(await Bun.file(headsUpCursorPath(atmuxDir)).exists()).toBe(false);
   });
 });
 

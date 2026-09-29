@@ -57,7 +57,27 @@ describe("sqlite-migrations live ladder", () => {
     //   - v17→v18 added flags for the ADR-169 P1 single-row toggles
     //             (EPIC e-38ee9939); shape tests live in
     //             tests/unit/core/flags-repo.test.ts
-    expect(readUserVersion(db)).toBe(18);
+    //   - v18→v19 added role_state for the ADR-169 P2 per-role tracking
+    //             files (EPIC e-38ee9939); shape tests live in
+    //             tests/unit/core/role-state-repo.test.ts
+    expect(readUserVersion(db)).toBe(19);
+  });
+});
+describe("v18 → v19: role_state", () => {
+  test("table exists with the ADR-169 column set + composite key", () => {
+    const cols = db.prepare("PRAGMA table_info(role_state)").all() as Array<{
+      name: string;
+      type: string;
+      notnull: number;
+      pk: number;
+    }>;
+    expect(cols.map((c) => [c.name, c.type, c.notnull, c.pk])).toEqual([
+      ["role", "TEXT", 1, 1],
+      ["namespace", "TEXT", 1, 2],
+      ["payload", "TEXT", 1, 0],
+      ["updated_at", "INTEGER", 1, 0],
+      ["schema_version", "INTEGER", 1, 0],
+    ]);
   });
 });
 describe("v17 → v18: flags", () => {
@@ -446,7 +466,7 @@ describe("v13 → v14: backfill semantics on a pre-existing v13 DB", () => {
     // settles at the tail; v13→v14 backfill semantics still apply to
     // the rows seeded above since the column-set is additive.
     const full = openDatabase(path, migrations);
-    expect(readUserVersion(full)).toBe(18);
+    expect(readUserVersion(full)).toBe(19);
 
     const seen = full
       .prepare("SELECT id, status, depends_on, is_ready FROM epics ORDER BY id")

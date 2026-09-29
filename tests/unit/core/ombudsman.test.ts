@@ -1,12 +1,13 @@
 // Unit tests for src/core/ombudsman.ts (ADR-147 T1 — sentinel R/W).
 //
 // Round-trip + idempotency + concurrency-safety assertions on the
-// `.atmux/state/ombudsman-pending.json` sentinel. SchemaError on
-// corrupt file body is intentional (see ADR-005 §"never silent
-// fallback to defaults") and tested.
+// `role_state` (`_`, `ombudsman-pending`) sentinel (ADR-169 P2), with
+// legacy-file promotion coverage. SchemaError on corrupt state is
+// intentional (see ADR-005 §"never silent fallback to defaults") and
+// tested.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ensureDir } from "../../../src/abstractions/fs.ts";
@@ -148,8 +149,7 @@ describe("addToSentinel + removeFromSentinel — round-trip", () => {
   test("remove on absent file is a no-op (returns false)", async () => {
     const removed = await removeFromSentinel(atmuxDir, "c-abc12345");
     expect(removed).toBe(false);
-    // File should have been created with empty pending by updateJson's
-    // initial-fallback path.
+    // Table-backed: no row exists, so the read falls back to empty.
     const got = await readSentinel(atmuxDir);
     expect(got.pending).toEqual([]);
   });
@@ -161,11 +161,5 @@ describe("addToSentinel + removeFromSentinel — round-trip", () => {
     expect((await readSentinel(atmuxDir)).pending).toEqual([]);
     await addToSentinel(atmuxDir, "c-roundtrip");
     expect((await readSentinel(atmuxDir)).pending).toEqual(["c-roundtrip"]);
-  });
-
-  test("on-disk JSON is human-readable (2-space indent + trailing newline)", async () => {
-    await addToSentinel(atmuxDir, "c-readable");
-    const raw = await readFile(sentinelPath(atmuxDir), "utf8");
-    expect(raw).toMatch(/^\{\n {2}"pending": \[\n {4}"c-readable"\n {2}\]\n\}\n$/);
   });
 });

@@ -8,12 +8,14 @@
 //     against the per-model pricing map (USD per million tokens).
 //   - other TUIs: emit zero-shape with `source: "unknown"`.
 //
-// Each per-member detail is cached at `<atmuxDir>/state/cost-<name>.json`
-// so subsequent invocations (whip ticks) can read the cache rather than
-// re-parsing the full history every time. (The current implementation
-// re-parses on every run; the cache file IS the cache, but no read-side
-// invalidation logic exists yet — that's V-25 whip's call when it adds
-// the cron loop.)
+// Each per-member detail is cached as a `role_state` row
+// (`role=<name>`, `namespace='cost'`) in `<atmuxDir>/state.db` (ADR-169
+// P2) so subsequent invocations (whip ticks) can read the cache rather
+// than re-parsing the full history every time. (The current
+// implementation re-parses on every run; the row IS the cache, but no
+// read-side invalidation logic exists yet — that's V-25 whip's call
+// when it adds the cron loop.) The legacy path helper stays as the
+// fallback address for pre-migration teams.
 //
 // `since-epoch` resolution order (mirrors bash:45-55):
 //
@@ -23,7 +25,7 @@
 //   2. `<atmuxDir>/state/session-start.txt` (written by `atmux start`)
 //   3. `0` (start of epoch — count everything)
 
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
 import { z } from "zod";
@@ -31,6 +33,7 @@ import { exists, statOrNull } from "../abstractions/fs.ts";
 import { tryParseJsonString, tryReadJson } from "../abstractions/json.ts";
 import { getAtmuxDir, type ResolveDirOpts, requireTeam, stateDir } from "../core/common.ts";
 import { defaultStdoutWrite, type Writer } from "../core/io.ts";
+import { COST_NAMESPACE, teamRoleStateDbPath, writeRoleTextAtDb } from "../core/role-state-repo.ts";
 import { UsageError } from "../errors.ts";
 import { DEFAULT_PRICING, Pricing, pricingFor } from "../schema/pricing.ts";
 import type { TeamMember } from "../schema/team.ts";
@@ -366,11 +369,22 @@ export async function computeMemberCost(
 
 // ---------- Cache write ----------
 
-/** Write per-member detail to `<stateDir>/cost-<name>.json`. */
+/** Legacy path: `<stateDir>/cost-<name>.json`. Still the fallback
+ *  address for pre-migration teams. */
+export function costCachePath(atmuxDir: string, member: string): string {
+  return join(stateDir(atmuxDir), `cost-${member}.json`);
+}
+
+/** Table-only write of the per-member detail (`role=<member>`,
+ *  `namespace='cost'`). A stale legacy file left on disk is harmless
+ *  — row-first readers prefer the row. */
 export async function writeCostCache(atmuxDir: string, detail: CostDetail): Promise<void> {
-  const dir = stateDir(atmuxDir);
-  await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, `cost-${detail.member}.json`), `${JSON.stringify(detail, null, 2)}\n`);
+  await writeRoleTextAtDb(
+    teamRoleStateDbPath(atmuxDir),
+    detail.member,
+    COST_NAMESPACE,
+    JSON.stringify(detail),
+  );
 }
 
 // ---------- Output formatters ----------
