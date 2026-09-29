@@ -92,6 +92,7 @@ import {
   probeLiveMembers,
 } from "./doctor/state.ts";
 import {
+  checkClaudeWrappers,
   checkMemberLabelCollision,
   checkTeam,
   checkTuiCommandsClaudeOverride,
@@ -197,6 +198,9 @@ export async function runAllChecks(atmuxDir: string, team: Team | null): Promise
   rows.push(...(await checkTeam(atmuxDir)));
   if (team !== null) {
     rows.push(...checkTuis(team));
+    // e-48: team-override + built-ins covered; cockpit.json registry
+    // threading waits on doctor gaining cockpit context (follow-up).
+    rows.push(...checkClaudeWrappers(team));
   }
   rows.push(...(await checkStateDir(atmuxDir)));
   rows.push(...(await checkWebhook(team)));
@@ -747,6 +751,7 @@ export {
 } from "./doctor/state.ts";
 export {
   type CheckTuisOpts,
+  checkClaudeWrappers,
   checkMemberLabelCollision,
   checkTeam,
   checkTuiCommandsClaudeOverride,

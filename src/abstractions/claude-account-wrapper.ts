@@ -17,7 +17,8 @@
 //   - Unknown configDir → ConfigError with the hint listing every
 //     registered configDir.
 //
-// New wrapper aliases register by extending `WRAPPER_TABLE` here.
+// New wrapper aliases register via config (cockpit.json `wrappers` +
+// team.json `wrappers` override); the table below is built-in defaults.
 
 import { ConfigError } from "../errors.ts";
 
@@ -45,19 +46,38 @@ const WRAPPER_TABLE: ReadonlyMap<string, ClaudeWrapper> = new Map([
  *  uses the cage retry-loop (per ADR-162) and does NOT thread through
  *  the wrapper, but callers still validate via this resolver to refuse
  *  unknown configDirs at the verb boundary. */
-export function resolveClaudeWrapper(configDir: string): ClaudeWrapper {
-  const w = WRAPPER_TABLE.get(configDir);
+export function resolveClaudeWrapper(configDir: string): ClaudeWrapper;
+export function resolveClaudeWrapper(configDir: string, registry: ReadonlyMap<string, string>): string;
+export function resolveClaudeWrapper(
+  configDir: string,
+  registry: ReadonlyMap<string, string> = WRAPPER_TABLE,
+): string {
+  const w = registry.get(configDir);
   if (w === undefined) {
     throw new ConfigError({
       what: `unknown claudeAccount.configDir '${configDir}' — no wrapper registered (ADR-094 c-alias convention)`,
-      hint: `register a shell wrapper for this configDir under your shell init (see global CLAUDE.md §Spawn Pattern) OR pick one of: ${[...WRAPPER_TABLE.keys()].join(", ")}`,
+      hint: `register the wrapper in cockpit.json \`wrappers\` (or team.json \`wrappers\` override) OR pick one of: ${[...registry.keys()].join(", ")}`,
     });
   }
   return w;
 }
 
-/** Enumerate registered configDirs. Surfaces in error hints + the
- *  doctor / cockpit-rotate audit telemetry. */
-export function knownClaudeConfigDirs(): ReadonlyArray<string> {
-  return [...WRAPPER_TABLE.keys()];
+/** Merge registries left-to-right (later wins): built-ins →
+ *  cockpit.json `wrappers` → team.json `wrappers`. Accepts plain
+ *  records from parsed config. */
+export function mergeWrapperRegistries(
+  ...registries: ReadonlyArray<Record<string, string> | undefined>
+): Map<string, string> {
+  const out = new Map<string, string>(WRAPPER_TABLE);
+  for (const r of registries) {
+    if (r === undefined) continue;
+    for (const [k, v] of Object.entries(r)) out.set(k, v);
+  }
+  return out;
 }
+
+ /** Enumerate registered configDirs. Surfaces in error hints + the
+  *  doctor / cockpit-rotate audit telemetry. */
+ export function knownClaudeConfigDirs(): ReadonlyArray<string> {
+   return [...WRAPPER_TABLE.keys()];
+ }
