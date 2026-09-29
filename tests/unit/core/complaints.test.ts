@@ -14,6 +14,7 @@ import { closeDatabase, openDatabase } from "../../../src/abstractions/sqlite.ts
 import { migrations } from "../../../src/abstractions/sqlite-migrations.ts";
 import { DEFAULT_DEDUP_WINDOW_SEC, fileDedupedComplaint } from "../../../src/core/complaints.ts";
 import { ComplaintsRepo } from "../../../src/core/repositories/complaints-repo.ts";
+import { Complaint as ComplaintSchema } from "../../../src/schema/complaints.ts";
 
 let teamDir: string;
 let db: Database;
@@ -596,5 +597,35 @@ describe("ComplaintsRepo.mergeExtra", () => {
     expect(c?.extra.patchOnly).toBe("applied");
     expect(c?.extra.source_count).toBe(1);
     expect(c?.extra.last_seen).toBe(1000);
+  });
+});
+
+// ---------- origin_team (ADR-150 §D2, e-41 T1) ----------
+
+describe("origin_team nullable round-trip", () => {
+  test("insert with originTeam reads back", () => {
+    const repo = new ComplaintsRepo(db);
+    const c = ComplaintSchema.parse({
+      id: "c-origin01",
+      openedAt: 1770000000,
+      incidentSummary: "cross-team ping",
+      targetTeam: "team-b",
+      originTeam: "team-a",
+    });
+    repo.insert(c);
+    const got = repo.getById("c-origin01");
+    expect(got?.originTeam).toBe("team-a");
+    expect(got?.targetTeam).toBe("team-b");
+  });
+
+  test("insert without originTeam reads back null (legacy shape)", () => {
+    const repo = new ComplaintsRepo(db);
+    const c = ComplaintSchema.parse({
+      id: "c-origin02",
+      openedAt: 1770000000,
+      incidentSummary: "local ping",
+    });
+    repo.insert(c);
+    expect(repo.getById("c-origin02")?.originTeam).toBe(null);
   });
 });
