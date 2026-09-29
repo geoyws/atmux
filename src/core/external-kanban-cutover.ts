@@ -34,6 +34,11 @@ export interface PrepareExternalKanbanOptions {
   reconcile?: boolean;
   writersStopped?: boolean;
   adapter?: KanbanCliAdapter;
+  /**
+   * Test seam: override the sqlite `PRAGMA integrity_check` verdict.
+   * Unset in production, where the live database is always consulted.
+   */
+  integrityCheck?: (db: Database) => string;
 }
 
 export async function prepareExternalKanbanCutover(
@@ -69,10 +74,12 @@ export async function prepareExternalKanbanCutover(
   if (sourceKind === "sqlite") {
     const sourceDatabase = new Database(source, { readonly: true });
     try {
-      sourceIntegrity = String(
-        (sourceDatabase.query("PRAGMA integrity_check").get() as Record<string, unknown>)
-          .integrity_check,
-      );
+      sourceIntegrity = options.integrityCheck
+        ? options.integrityCheck(sourceDatabase)
+        : String(
+            (sourceDatabase.query("PRAGMA integrity_check").get() as Record<string, unknown>)
+              .integrity_check,
+          );
       serialized = sourceDatabase.serialize();
     } finally {
       sourceDatabase.close();
@@ -151,6 +158,11 @@ export interface ActivateExternalKanbanOptions {
   preparationReceipt: string;
   writersStopped: boolean;
   adapter?: KanbanCliAdapter;
+  /**
+   * Test seam: override the sqlite `PRAGMA integrity_check` verdict.
+   * Unset in production, where the live database is always consulted.
+   */
+  integrityCheck?: (db: Database) => string;
 }
 
 function sha256(bytes: Uint8Array | string): string {
@@ -268,9 +280,12 @@ export async function activateExternalKanbanCutover(
   if (sourceKind === "sqlite") {
     const sourceDb = new Database(source, { readonly: true });
     try {
-      const integrity = String(
-        (sourceDb.query("PRAGMA integrity_check").get() as Record<string, unknown>).integrity_check,
-      );
+      const integrity = options.integrityCheck
+        ? options.integrityCheck(sourceDb)
+        : String(
+            (sourceDb.query("PRAGMA integrity_check").get() as Record<string, unknown>)
+              .integrity_check,
+          );
       if (integrity !== "ok") {
         throw new ConfigError({
           what: `external Kanban activate: source integrity is ${integrity}`,

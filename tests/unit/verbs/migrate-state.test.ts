@@ -13,7 +13,7 @@
 
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exists, readText } from "../../../src/abstractions/fs.ts";
@@ -706,5 +706,247 @@ describe("migrateState --target=role-state", () => {
 
   test("parses --target=role-state", () => {
     expect(parseMigrateArgs(["json-to-sqlite", "--target=role-state"]).target).toBe("role-state");
+  });
+});
+// ---------- Coverage backfill (t-981f2f3f slice 3: 100% lines on migrate-state.ts) ----------
+//
+// The suites above leave the inboxes backfill body (migrateInboxes with a
+// populated inboxes/ dir, dry-run probe, invalid-file skips) and the
+// cockpit-scope flags branch (present cockpit sources) uncovered. These
+// tests exercise those paths with real temp dirs + real SQLite files.
+
+describe("migrateState coverage backfill", () => {
+  let env: TestEnv;
+
+  beforeEach(async () => {
+    env = await makeEnv();
+  });
+
+  afterEach(async () => {
+    await teardown(env);
+  });
+
+  async function seedInbox(env: TestEnv, member: string, payload: unknown): Promise<string> {
+    const dir = join(env.atmuxDir, "inboxes");
+    await mkdir(dir, { recursive: true });
+    const p = join(dir, `${member}.json`);
+    await writeFile(p, typeof payload === "string" ? payload : JSON.stringify(payload), "utf8");
+    return p;
+  }
+
+  function taskRows(
+    dbPath: string,
+  ): Array<{ id: string; subject: string | null; extra: string | null }> {
+    const db = new Database(dbPath, { readonly: true });
+    try {
+      return db.query("SELECT id, subject, extra FROM tasks ORDER BY id").all() as Array<{
+        id: string;
+        subject: string | null;
+        extra: string | null;
+      }>;
+    } finally {
+      db.close();
+    }
+  }
+
+  test("inboxes happy path: buckets backfilled, dispatchedAt stripped, non-json ignored", async () => {
+    await seedInbox(env, "alice", {
+      pending: [
+        {
+          id: "t-aaa10001",
+          subject: "inbox pending",
+          status: "todo",
+          lane: "fe",
+          createdAt: 1730000000,
+          dispatchedAt: 1730000050,
+        },
+      ],
+      inProgress: [
+        {
+          id: "t-aaa10002",
+          subject: "inbox claimed",
+          status: "in-progress",
+          owner: "alice",
+          claimedAt: 1730000060,
+          dispatchedAt: 1730000055,
+        },
+      ],
+      done: [],
+    });
+    await seedInbox(env, "bob", {
+      pending: [],
+      inProgress: [],
+      done: [{ id: "t-aaa10003", subject: "inbox done", status: "done", completedAt: 1730000070 }],
+    });
+    // Lockfiles + stray files never enter the migration.
+    await writeFile(join(env.atmuxDir, "inboxes", "alice.json.lock"), "locked", "utf8");
+    await writeFile(join(env.atmuxDir, "inboxes", "notes.txt"), "not an inbox", "utf8");
+
+    const exit = await migrateState(
+      ["json-to-sqlite", "--team-dir", env.atmuxDir, "--target=inboxes"],
+      { logger: env.logger, stdout: (s) => env.stdoutBuf.push(s) },
+    );
+    expect(exit).toBe(0);
+
+    const rows = taskRows(env.dbPath);
+    expect(rows.map((r) => r.id)).toEqual(["t-aaa10001", "t-aaa10002", "t-aaa10003"]);
+    expect(rows[0]?.subject).toBe("inbox pending");
+    // dispatchedAt is inbox-only: it must not leak into the tasks extra column.
+    const extra =
+      rows[0]?.extra === null
+        ? {}
+        : (JSON.parse(rows[0]?.extra ?? "{}") as Record<string, unknown>);
+    expect("dispatchedAt" in extra).toBe(false);
+
+    const audit = JSON.parse(await readText(join(env.atmuxDir, "migration-state-sqlite.json")));
+    expect(audit.counts.inboxes).toEqual({
+      files: 2,
+      entriesSeen: 3,
+      entriesBackfilled: 3,
+      entriesPresent: 0,
+      filesSkippedInvalid: 0,
+    });
+  });
+
+  test("inboxes present-vs-backfilled: dry-run probes, real run upserts", async () => {
+    await seedKanban(env, {
+      ...SAMPLE_KANBAN,
+      tasks: [
+        {
+          id: "t-keep0001",
+          subject: "already in kanban",
+          status: "todo",
+          lane: "fe",
+          createdAt: 1730000000,
+        },
+      ],
+      epics: [],
+      stories: [],
+    });
+    expect(
+      await migrateState(["json-to-sqlite", "--team-dir", env.atmuxDir, "--target=kanban"], {
+        logger: env.logger,
+        stdout: (s) => env.stdoutBuf.push(s),
+      }),
+    ).toBe(0);
+
+    await seedInbox(env, "carol", {
+      pending: [
+        {
+          id: "t-keep0001",
+          subject: "already in kanban",
+          status: "todo",
+          dispatchedAt: 1730000050,
+        },
+        { id: "t-new00002", subject: "kanban never saw this", status: "todo" },
+      ],
+      inProgress: [],
+      done: [],
+    });
+
+    const dryExit = await migrateState(
+      ["json-to-sqlite", "--team-dir", env.atmuxDir, "--target=inboxes", "--dry-run"],
+      { logger: env.logger, stdout: (s) => env.stdoutBuf.push(s) },
+    );
+    expect(dryExit).toBe(0);
+    const drySummary = JSON.parse(env.stdoutBuf.at(-1) ?? "{}") as {
+      counts: { inboxes: { entriesBackfilled: number; entriesPresent: number } };
+    };
+    expect(drySummary.counts.inboxes.entriesBackfilled).toBe(1);
+    expect(drySummary.counts.inboxes.entriesPresent).toBe(1);
+    // Dry-run writes nothing.
+    expect(taskRows(env.dbPath).map((r) => r.id)).toEqual(["t-keep0001"]);
+
+    const exit = await migrateState(
+      ["json-to-sqlite", "--team-dir", env.atmuxDir, "--target=inboxes"],
+      { logger: env.logger, stdout: (s) => env.stdoutBuf.push(s) },
+    );
+    expect(exit).toBe(0);
+    expect(taskRows(env.dbPath).map((r) => r.id)).toEqual(["t-keep0001", "t-new00002"]);
+    const audit = JSON.parse(await readText(join(env.atmuxDir, "migration-state-sqlite.json")));
+    expect(audit.counts.inboxes.entriesBackfilled).toBe(1);
+    expect(audit.counts.inboxes.entriesPresent).toBe(1);
+  });
+
+  test("inboxes invalid files: skipped, counted, warned", async () => {
+    await seedInbox(env, "good", {
+      pending: [{ id: "t-good0001", subject: "survivor", status: "todo" }],
+      inProgress: [],
+      done: [],
+    });
+    await seedInbox(env, "bad-json", "{not-json");
+    await seedInbox(env, "bad-schema", { pending: "nope", inProgress: [], done: [] });
+    // Dangling symlink: listed by readdir, unreadable by readText.
+    await mkdir(join(env.atmuxDir, "inboxes"), { recursive: true });
+    await symlink(
+      join(env.atmuxDir, "inboxes", "missing-target.json"),
+      join(env.atmuxDir, "inboxes", "ghost.json"),
+    );
+
+    const exit = await migrateState(
+      ["json-to-sqlite", "--team-dir", env.atmuxDir, "--target=inboxes"],
+      { logger: env.logger, stdout: (s) => env.stdoutBuf.push(s) },
+    );
+    expect(exit).toBe(0);
+    expect(taskRows(env.dbPath).map((r) => r.id)).toEqual(["t-good0001"]);
+    const audit = JSON.parse(await readText(join(env.atmuxDir, "migration-state-sqlite.json")));
+    expect(audit.counts.inboxes.files).toBe(1);
+    expect(audit.counts.inboxes.filesSkippedInvalid).toBe(3);
+    expect(env.logLines.some((l) => l.includes("failed Zod parse"))).toBe(true);
+  });
+
+  test("flags cockpit scope: present sources migrate to the cockpit DB + archive", async () => {
+    const fakeHome = await mkdtemp(join(tmpdir(), "atmux-migrate-flags-cockpit-"));
+    try {
+      const teamPath = join(env.atmuxDir, "state", "paused.json");
+      await mkdir(join(env.atmuxDir, "state"), { recursive: true });
+      await writeFile(teamPath, JSON.stringify({ paused: true }), "utf8");
+      const cockpitStateDir = join(fakeHome, ".atmux", "state");
+      await mkdir(cockpitStateDir, { recursive: true });
+      const pulseText = JSON.stringify({ enabled: true });
+      const sentinelText = JSON.stringify({ armed: false });
+      await writeFile(join(cockpitStateDir, "pulse-state.json"), pulseText, "utf8");
+      await writeFile(join(cockpitStateDir, "sentinel-state.json"), sentinelText, "utf8");
+
+      const exit = await migrateState(
+        ["json-to-sqlite", "--team-dir", env.atmuxDir, "--target=flags"],
+        {
+          logger: env.logger,
+          stdout: (s) => env.stdoutBuf.push(s),
+          env: { ...process.env, HOME: fakeHome },
+        },
+      );
+      expect(exit).toBe(0);
+
+      // Team row landed in the team DB.
+      const teamDb = openDatabase(env.dbPath, migrations);
+      try {
+        expect(new FlagsRepo(teamDb).get("paused")).toBe(JSON.stringify({ paused: true }));
+      } finally {
+        closeDatabase(teamDb);
+      }
+      // Cockpit rows landed in ~/.atmux/state.db, sources archived away.
+      const cockpitDbPath = join(fakeHome, ".atmux", "state.db");
+      const cockpitDb = openDatabase(cockpitDbPath, migrations);
+      try {
+        expect(new FlagsRepo(cockpitDb).get("pulse-state")).toBe(pulseText);
+        expect(new FlagsRepo(cockpitDb).get("sentinel-state")).toBe(sentinelText);
+      } finally {
+        closeDatabase(cockpitDb);
+      }
+      expect(await exists(join(cockpitStateDir, "pulse-state.json"))).toBe(false);
+      expect(await exists(join(cockpitStateDir, "sentinel-state.json"))).toBe(false);
+      expect(await exists(teamPath)).toBe(false);
+
+      const audit = JSON.parse(await readText(join(env.atmuxDir, "migration-state-sqlite.json")));
+      expect(audit.counts.flags).toEqual({
+        filesSeen: 3,
+        flagsWritten: 3,
+        filesSkippedInvalid: 0,
+        filesSkippedRowExists: 0,
+      });
+    } finally {
+      await rm(fakeHome, { recursive: true, force: true });
+    }
   });
 });
