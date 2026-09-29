@@ -4,7 +4,7 @@
 import { spawnSync } from "node:child_process";
 import { lstat, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { UsageError } from "../errors.ts";
 
 const SIDECAR = ".leak-tracker.json";
@@ -176,6 +176,9 @@ function isLeakTracker(value: unknown, candidateDir: string): value is LeakTrack
   return (
     typeof tracker.tmuxSocket === "string" &&
     tracker.tmuxSocket.length > 0 &&
+    // ADR-301 D1: the kill target must live inside the dir being reaped, so a
+    // planted sidecar can never aim kill-server at a cockpit or cage socket.
+    dirname(resolve(tracker.tmuxSocket)) === candidateDir &&
     tracker.socketDir === candidateDir &&
     Number.isSafeInteger(tracker.parentPid) &&
     (tracker.parentPid as number) > 0 &&

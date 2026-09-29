@@ -243,6 +243,52 @@ describe("test-reaper", () => {
   });
 });
 
+describe("test-reaper kill-target containment (ADR-301 D1)", () => {
+  test.each([
+    [
+      "an absolute socket outside the dir",
+      (_dir: string, root: string) => join(root, "cockpit-sock"),
+    ],
+    ["a relative escape out of the dir", (dir: string) => join(dir, "..", "cockpit-sock")],
+    ["a socket nested below the dir", (dir: string) => join(dir, "nested", "sock")],
+  ])("a sidecar pointing at %s is corrupt and never killed", async (_label, socketFor) => {
+    const root = await mkdtemp(join(tmpdir(), "atmux-test-reaper-escape-"));
+    roots.push(root);
+    const socketDir = join(root, "fixture-escape-old");
+    await mkdir(socketDir);
+    await writeFile(
+      join(socketDir, ".leak-tracker.json"),
+      JSON.stringify({
+        tmuxSocket: socketFor(socketDir, root),
+        socketDir,
+        parentPid: DEAD_PID,
+        createdAt: NOW - 2_000,
+      }),
+      "utf8",
+    );
+    const killed: string[] = [];
+    const out: string[] = [];
+    expect(
+      await testReaper(["--prefix", "fixture", "--json"], {
+        tmpDir: root,
+        nowSeconds: () => NOW,
+        parentIsDead: () => true,
+        killServer: (socket: string) => {
+          killed.push(socket);
+        },
+        stdout: (text) => {
+          out.push(text);
+        },
+        stderr: () => {},
+      }),
+    ).toBe(0);
+    const { results } = JSON.parse(out.join("")) as { results: ReaperResult[] };
+    expect(statusesByBasename(results)).toEqual({ "fixture-escape-old": "corrupt-sidecar" });
+    expect(killed).toEqual([]);
+    expect(await pathExists(socketDir)).toBe(true);
+  });
+});
+
 describe("test-reaper argument errors", () => {
   test.each([
     [["--max-age-min", "-1"], "--max-age-min requires a non-negative number"],
