@@ -663,6 +663,7 @@ Resolution: `claudeAccount: "<suffix>"` → spawn cmd prepends `CLAUDE_CONFIG_DI
 atmux init [--wizard] [--force] [--name <team>]
 atmux start [--force]
 atmux stop [--force] [--no-archive] [--prune-branch]
+atmux shutdown [--keep-cockpit] [--force] [--dry-run]
 atmux attach
 atmux status [--json]
 
@@ -766,6 +767,25 @@ atmux release <patch|minor|major>            # one-shot deploy: bump package.jso
               [--dry-run] [--allow-dirty]    # + bun run build:install + git push (ADR-183 sibling — t-c3f4c418)
                                              # exit 0=ok, 64=usage, 65=dirty/no-op refused, 70=step failure
 ```
+
+### Tearing down the fleet
+
+`atmux shutdown` ([ADR-242](docs/adr/242-atmux-shutdown-fleet-teardown-verb.md)) is the
+single-verb inverse of `atmux start`: it stops every enabled team in
+`~/.atmux/cockpit.json`, then kills the cockpit session (`superdriver` + `medic` +
+any other cockpit-scope windows) and the atmux-pinned tmux server. Your personal
+tmux sessions (default socket) are untouched — the kill targets the atmux-pinned
+socket only. There is no confirmation prompt; `--dry-run` is the safety valve.
+
+| Flag | Effect |
+|------|--------|
+| `--keep-cockpit` | Stop teams but skip the cockpit + tmux-server kill — `superdriver` / `medic` stay alive for diagnostics. |
+| `--force` | Skip per-team `atmux stop` and go straight to the tmux kill (bypasses team-state cleanup). |
+| `--dry-run` | Enumerate + log what would happen; take no action; exit 0. |
+
+Per-team stops are best-effort: one team's failure warns and the sweep continues.
+Every run appends a one-line summary to `~/.atmux/state/shutdown.log` (last 10
+entries — `tail` it for post-mortem). Reversal is just `atmux start`.
 
 ## 📡 Commit-cadence column (ADR-148)
 

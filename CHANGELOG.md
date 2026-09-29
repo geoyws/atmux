@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ✨ Added — `atmux shutdown` whole-fleet teardown (ADR-242)
+
+**One verb takes the whole fleet down.** `atmux shutdown` stops every enabled team in `~/.atmux/cockpit.json` (best-effort — one team's failure warns and the sweep continues), then kills the cockpit session and the atmux-pinned tmux server (personal tmux on the default socket untouched). Flags: `--keep-cockpit` (drain teams, leave `superdriver`/`medic` alive), `--force` (skip per-team stop, straight to the tmux kill), `--dry-run` (enumerate without acting, exit 0). No confirmation prompt. Every run appends a one-line summary to `~/.atmux/state/shutdown.log` (last 10 entries). Deviation from the ADR as accepted: the orchd orphan-sweep is dropped (orchd retired per ADR-276) and the summary carries no orchd count. Reversal is `atmux start`.
+
 ### ✨ Added — `atmux start` vendored-deps preflight wizard (ADR-241)
 
 **Cold hosts self-heal on first `start`.** Before team bringup, `start` probes the `/opt/atmux/current/bin` artefacts (`tmux`, `atmux`, `atmux-listener`, `atmux-cockpit-mirror`; `atmux-orchd` stays retired per ADR-276) and compares the vendored tmux against the pinned version. When anything is missing or drifted it prints a missing/drifted table and offers a one-shot `bun run build:install` (`[Y/n]`, default yes; auto-yes when stdin is not a TTY). A failed install fails loudly and skips bringup; declining logs one warning and continues on system binaries. New flags: `--skip-deps`, `--non-interactive`, `--no-preflight` (plus `ATMUX_START_NO_PREFLIGHT=1`); a `~/.atmux/state/preflight-<version>.json` marker keeps warm starts silent.

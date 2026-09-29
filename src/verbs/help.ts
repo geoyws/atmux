@@ -27,6 +27,14 @@ Setup:
                               --soft (ADR-087): graceful path — notice every
                               pane, grace window, write resume manifest at
                               state/resume.json, NO worktree prune.
+  shutdown [--keep-cockpit] [--force] [--dry-run]
+                              Whole-fleet teardown (ADR-242): stop every
+                              enabled team in ~/.atmux/cockpit.json, then
+                              kill the cockpit session + the atmux-pinned
+                              tmux server. --keep-cockpit drains teams but
+                              leaves the cockpit alive; --force skips
+                              per-team stop; --dry-run enumerates without
+                              acting. No confirmation prompt.
   attach                      tmux attach to the team session
   status                      Powerline team overview
   fleet [--attention|--quiet] [--top <n>] [--json] [--timeout-ms <n>]
