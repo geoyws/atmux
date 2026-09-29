@@ -39,6 +39,8 @@ Use top-level `windows[]` for a durable cockpit workspace that is not backed by 
 
 Null or omitted `command` starts zsh. These windows appear after `_medic` and before team viewers, in declaration order. Reconcile preserves an existing matching pane and applies `cwd`/`command` only when recreating a missing window. Names must not collide with cockpit roles or team viewers.
 
+Set top-level `"blank": true` for an opt-in `_blank` troubleshooting window (ADR-295): a plain zsh in `$HOME`, placed directly after `_medic` and ahead of every declared `windows[]` entry. Remove the flag (or set `false`) and the next fleet reconcile prunes `_blank` as an ordinary orphan; `aca` (attach ensure-up) never prunes it. With `$HOME` unset, reconcile warns and skips it.
+
 ### The `_medic` window: OMP on a shell floor (ADR-299)
 
 The `_medic` executor follows the standard pane lifecycle: reconcile creates a missing `_medic` window with an interactive login zsh as its start command and launches the agent as a child via `launchAgentInPane` once the shell prompt is live — quitting the TUI returns to the shell prompt instead of killing the window. A live `_medic` window is never respawned by reconcile.

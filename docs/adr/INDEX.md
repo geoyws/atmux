@@ -234,7 +234,7 @@
 | 267 | Durable agent-continuity contract — plan/intent is written as you go, not captured on the death-bed | 2026-08-06 | proposed |
 | 268 | Managed-repo state isolation — enforce the dotfile-tree invariant in code, not in operator memory | 2026-08-06 | proposed |
 | 269 | Recursive branch ledger — per-repo branch state across a monorepo's nested submodules | 2026-08-06 | proposed |
-| 270 | Multi-provider budget usage tracker (`atmux budget`: usage_snapshot, 7 provider adapters, collect + report) | 2026-09-26 | proposed |
+| 270 | Multi-provider budget usage tracker (`atmux budget`: usage_snapshot, 7 provider adapters, collect + report) | 2026-09-26 | accepted (reviewer signoff 2026-09-29) |
 | 271 | SQLite is the sole coordination store (retire `kanban.json`); Rust `atmux-orchd` coordinates by default | 2026-08-07 | proposed |
 | 272 | `atmux voice` — spoken operator interface (mobile PWA + provider-neutral realtime seam + verb-only tool bridge) — renamed `atmux vox` by ADR-274 | 2026-08-14 | proposed |
 | 273 | Voice fleet triage + pane input ("what needs me?" + "type that") — extends ADR-272 | 2026-08-15 | accepted (operator-direct — George, 2026-09-28, a-6b92a0d4). Was: proposed |

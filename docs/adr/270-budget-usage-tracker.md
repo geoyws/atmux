@@ -1,6 +1,6 @@
 # ADR-270: Multi-provider budget usage tracker (`atmux budget`)
 
-**Status**: proposed
+**Status**: accepted (reviewer signoff 2026-09-29 — independent adversarial review of the lane integration candidate, verdict PASS; recorded by @:geoyws/atmux/driver on t-8e1f5050)
 **Date**: 2026-09-26
 **Driver-ref**: e-50 story s-52-2f587abd; spec `docs/briefs/budget-tracker.md` (+ companion `budget-tracker-discovery.md`); scope locked by operator 2026-07-31 (SQLite not Postgres; 7 providers; reuse `budget-probe.ts`/`cost.ts`/migrations/crontab/`http.ts`; usage numbers only, never keys).
 **Relates**: [ADR-192](192-cron-arm-idempotency-contract.md) (hourly cron arm must be idempotent), [ADR-126](126-sqlite-state-store.md) (SQLite canonical store), e-38 (flags/role_state `state_kv` migration idiom — the tracker reuses the repo pattern, not the tables).
@@ -28,7 +28,7 @@
 
 **D6 — Security posture (NON-NEGOTIABLE, from the brief).** The DB stores ONLY usage numbers — never keys, tokens, JWTs, cookies; `raw_json` is secrets-stripped before persist. Credentials are read from env (by variable name, never hardcoded) and OAuth files at call time, never logged or persisted. The collector phones home to provider APIs only — no telemetry, no other egress. It runs as its own cron process (the operator's interactive classifier is not in the runtime path).
 
-**D7 — Verbs + skill (T4–T6, not yet built at acceptance).** `atmux budget collect` (one batch, shared `ts`), `atmux budget report [--json] [--window] [--provider]` (latest + trend deltas, quota AND actual-spend folded in from `cost.ts`), hourly cron via `crontab.ts` honoring ADR-192, `/budget` skill switched to `report --json` with a `--live` collect-first flag.
+**D7 — Verbs + skill (T4 shipped at acceptance; T5–T6 pending).** `atmux budget collect` (one batch, shared `ts`), `atmux budget report [--json] [--window] [--provider]` (latest + trend deltas, quota AND actual-spend folded in from `cost.ts`), hourly cron via `crontab.ts` honoring ADR-192, `/budget` skill switched to `report --json` with a `--live` collect-first flag.
 
 ## Verification (T3, 2026-09-26)
 
@@ -38,9 +38,9 @@
 
 ## Deferred / out of scope
 
-- `usage_snapshot` migration (e-50 T2), collect/report verbs (T4), hourly cron (T5), `/budget` skill wiring (T6).
+- Hourly cron (T5) and `/budget` skill wiring (T6). The `usage_snapshot` migration (T2, t-114d9f8e) and the collect/report verbs (T4, t-c56842cb) shipped with this ADR's acceptance.
 - kimi/cursor drift: any future failure is an `ok=0` row by contract (D4); no special-casing.
-- INDEX.md row deferred per ADR-271 §D9 precedent (index is batch-refreshed; manual edits clobber). Spec pointer: the brief already names ADR-270 — no brief edit needed.
+- Spec pointer: the brief already names ADR-270 — no brief edit needed. (The INDEX row was first deferred; INDEX.md has no generator, so the row landed with acceptance.)
 
 ## Acceptance
 

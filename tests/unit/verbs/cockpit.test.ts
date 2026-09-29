@@ -27,6 +27,7 @@ import {
   COCKPIT_RECONCILE_CONCURRENCY,
   cageAlive,
   cockpit,
+  cockpitOperatorWindows,
   cockpitAttach,
   cockpitMigrateSocket,
   cockpitRebuild,
@@ -766,6 +767,36 @@ describe("autolaunchTeam", () => {
       await rm(fx.socketDir, { recursive: true, force: true });
       if (projRoot) await rm(projRoot, { recursive: true, force: true });
     }
+  });
+});
+
+describe("cockpitOperatorWindows (ADR-295 _blank)", () => {
+  const misc = { name: "_misc", enabled: true, cwd: "/w", command: null };
+
+  test("blank:true puts _blank FIRST, ahead of declared windows[] (ADR-295 D3)", () => {
+    const { logger } = makeLogger();
+    const out = cockpitOperatorWindows(
+      { blank: true, windows: [misc] },
+      { HOME: "/home/op" },
+      logger,
+    );
+    expect(out.map((w) => w.name)).toEqual(["_blank", "_misc"]);
+    expect(out[0]).toEqual({ name: "_blank", enabled: true, cwd: "/home/op", command: null });
+  });
+
+  test("blank absent or false yields exactly the declared windows (toggle-off leaves _blank an orphan)", () => {
+    const { logger } = makeLogger();
+    for (const blank of [undefined, false]) {
+      const out = cockpitOperatorWindows({ blank, windows: [misc] }, { HOME: "/home/op" }, logger);
+      expect(out.map((w) => w.name)).toEqual(["_misc"]);
+    }
+  });
+
+  test("blank:true with $HOME unset warns and skips _blank", () => {
+    const { logger, logs } = makeLogger();
+    const out = cockpitOperatorWindows({ blank: true, windows: [misc] }, {}, logger);
+    expect(out.map((w) => w.name)).toEqual(["_misc"]);
+    expect(logs.some((l) => l.includes("$HOME is unset"))).toBe(true);
   });
 });
 

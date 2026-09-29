@@ -1309,20 +1309,7 @@ export async function cockpitRebuild(
   // ADR-133: pass `medic` directly; the reconcile names the window
   // canonically and migrates any legacy "superdoctor" window in-place
   // on first reconcile.
-  // ADR-295: opt-in `_blank` troubleshooting window. Synthesized into the
-  // declarative operator-window flow so creation order (after `_medic`,
-  // before team viewers), orphan-prune preservation, and the destructive
-  // gate all apply unchanged. Plain shell (command omitted); absent or
-  // false leaves any leftover `_blank` an ordinary orphan. Per-team
-  // reconcile sees none of this (operator windows are fleet-only).
-  const blankHome = env.HOME ?? "";
-  if (cockpit.blank === true && blankHome === "") {
-    logger.warn("  ⚠ cockpit blank=true but $HOME is unset — skipping _blank window");
-  }
-  const blankWindow =
-    cockpit.blank === true && blankHome !== ""
-      ? [{ name: "_blank", enabled: true, cwd: blankHome, command: null }]
-      : [];
+  const operatorWindows = cockpitOperatorWindows(cockpit, env, logger);
   await timedPhase(logger, "5 cockpit-session", () =>
     reconcileCockpitSession(
       cockpitTmux,
@@ -1339,7 +1326,7 @@ export async function cockpitRebuild(
       // replaces grouped teams' cockpit windows with one window per
       // top-level group; ungrouped teams keep their direct embed.
       {
-        windows: [...cockpit.windows, ...blankWindow],
+        windows: operatorWindows,
         topology,
         // t-0a74e582 fix (a): set only by `cockpitAttach` ensure-up.
         skipOrphanPrune: parsed.skipOrphanPrune === true,
@@ -1825,6 +1812,29 @@ export async function normaliseTeamJson(team: CockpitTeam, logger: Logger): Prom
     return next;
   });
   logger.log(`  ✓ ${team.name} → ${path}`);
+}
+
+/**
+ * ADR-295: the operator-window list reconcile places after `_medic` and
+ * before team viewers. `blank: true` synthesizes a plain-shell `_blank`
+ * window (cwd `$HOME`) FIRST, ahead of declared `windows[]` (ADR-295
+ * D3), so creation order, orphan-prune preservation and the destructive
+ * gate all apply unchanged. Absent/false leaves any leftover `_blank` an
+ * ordinary orphan. Unset `$HOME` warns and skips it. Fleet-only: the
+ * per-team reconcile never sees operator windows.
+ */
+export function cockpitOperatorWindows(
+  cockpit: { blank?: boolean | undefined; windows: CockpitWindow[] },
+  env: NodeJS.ProcessEnv,
+  logger: Logger,
+): CockpitWindow[] {
+  if (cockpit.blank !== true) return cockpit.windows;
+  const home = env.HOME ?? "";
+  if (home === "") {
+    logger.warn("  ⚠ cockpit blank=true but $HOME is unset — skipping _blank window");
+    return cockpit.windows;
+  }
+  return [{ name: "_blank", enabled: true, cwd: home, command: null }, ...cockpit.windows];
 }
 
 /** Pane commands that mark a live agent TUI. `claude` / `node` are the

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ✨ Added — `atmux budget collect|report`: multi-provider usage tracker (ADR-270, e-50 T3+T4)
+
+**One command shows every provider's quota.** `atmux budget collect` probes seven providers (anthropic, zai, deepseek, openrouter, minimax, kimi, cursor) in one batch into the cockpit-global `~/.atmux/state/budget.db` `usage_snapshot` table. A failing provider writes an `ok=0` row with the reason and never aborts the batch. `atmux budget report [--json] [--window 24h|7d] [--provider <p>] [--live]` renders the latest snapshot with window deltas and reset times. Only usage numbers are stored, never keys or tokens. The hourly cron (T5) and `/budget` skill wiring (T6) are not shipped yet.
+
+### ✨ Added — opt-in `_blank` cockpit troubleshooting window (ADR-295)
+
+**A plain shell in the cockpit, on request.** Top-level `"blank": true` in `cockpit.json` adds a `_blank` zsh window in `$HOME`, directly after `_medic`. Turning the flag off prunes it on the next fleet reconcile.
+
 ### ✨ Added — `atmux cockpit reconcile --dry-run` read-only preview (ADR-300)
 
 **Preview the reconcile plan without touching anything.** Every tmux namespace routes through a recording wrapper: reads delegate to the live server, mutations are recorded never executed, team.json writes + cage starts + socket-dir creation + readiness probes are skipped. Prints one line per planned op then `dry-run: N rename, M kill, K other operations (nothing executed)`; exits 0. The `--yes` destructive-op gates are bypassed (warnings still log). `reload` and `attach` still refuse `--dry-run`.
