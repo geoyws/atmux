@@ -1,12 +1,13 @@
 // ADR-239 — unit tests for src/core/drivers.ts.
 //
-// Pure-fn coverage for resolveDriversList (drivers[] precedence + empty
-// fallthrough; the legacy driverSession/driverTui synthesis was removed
-// per ADR-266 §D2), resolveDriverCwd, canonicalDriverName and trunk identity.
+// Pure-fn coverage for resolveDriversList (drivers[] precedence + canonical
+// three-driver fallback; the legacy driverSession/driverTui synthesis was
+// removed per ADR-266 §D2), resolveDriverCwd, canonicalDriverName and trunk identity.
 
 import { describe, expect, test } from "bun:test";
 import {
   CANONICAL_DRIVER_PAIR_PRESET,
+  CANONICAL_PARENT_TEAM_DRIVERS,
   canonicalDriverName,
   type DriverSession,
   isDriverPairMaterialized,
@@ -25,12 +26,20 @@ describe("resolveDriversList — ADR-239 §A1 (post ADR-266 §D2)", () => {
     expect(resolveDriversList({ drivers })).toEqual(drivers);
   });
 
-  test("drivers[] empty → empty array (no legacy synthesis post-ADR-266)", () => {
-    expect(resolveDriversList({ drivers: [] })).toEqual([]);
+  test("drivers[] empty → canonical three-driver roster", () => {
+    expect(resolveDriversList({ drivers: [] })).toEqual([...CANONICAL_PARENT_TEAM_DRIVERS]);
   });
 
-  test("no drivers[] → empty array (caller falls back to __home placeholder)", () => {
-    expect(resolveDriversList({})).toEqual([]);
+  test("no drivers[] → canonical three-driver roster", () => {
+    expect(resolveDriversList({})).toEqual([...CANONICAL_PARENT_TEAM_DRIVERS]);
+  });
+
+  test("fallback returns fresh copies; mutating them leaves the canonical roster intact", () => {
+    const first = resolveDriversList({});
+    (first[0] as { cwd: string }).cwd = "/mutated";
+    first.push({ name: "driver-4", tui: null, cwd: "." });
+    expect(resolveDriversList({})).toEqual([...CANONICAL_PARENT_TEAM_DRIVERS]);
+    expect(CANONICAL_PARENT_TEAM_DRIVERS[0]?.cwd).toBe(".");
   });
 });
 
