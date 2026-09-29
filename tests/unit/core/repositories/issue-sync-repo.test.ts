@@ -200,14 +200,17 @@ describe("migration idempotency", () => {
   test("re-opening the same db with the full ladder is a no-op and preserves rows", () => {
     ghPending();
     repo.setCursor("github", "geoyws/atmux", "page-3", 1_500);
+    const before = readUserVersion(db);
     closeDatabase(db);
 
     // Re-open the SAME file with the SAME ladder — every migration's
     // `from` is below user_version, so nothing re-runs and no
-    // duplicate-table error throws.
+    // duplicate-table error throws. The version is read, not pinned:
+    // the ladder grows over time (v17 was issue-sync) and the pin would
+    // rot on every later migration.
     db = openDatabase(dbPath, migrations);
     repo = new IssueSyncRepo(db);
-    expect(readUserVersion(db)).toBe(17);
+    expect(readUserVersion(db)).toBe(before);
 
     const survived = repo.getBySourceId(GH_SOURCE);
     expect(survived?.sourceId).toBe(GH_SOURCE);
