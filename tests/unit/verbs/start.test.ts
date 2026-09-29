@@ -270,6 +270,11 @@ async function runStart(
       log: () => {},
     },
   };
+  // ADR-082 W3 seam: forward the injected git mock so worktree tests never
+  // shell out to the live repo. (Accidentally dropped in 7207f08c when the
+  // preflightDeps block landed — without this the mock is silently ignored
+  // and every W3 git assertion observes defaultGitSpawn instead.)
+  if (opts.gitSpawn !== undefined) startOpts.gitSpawn = opts.gitSpawn;
   if (opts.legacySocketDeps !== undefined) startOpts.legacySocketDeps = opts.legacySocketDeps;
   if (opts.briefsDir !== undefined) startOpts.briefsDir = opts.briefsDir;
   if (opts.spawnWaitMs !== undefined) startOpts.spawnWaitMs = opts.spawnWaitMs;
@@ -555,15 +560,21 @@ describe("start — happy path", () => {
     const session = env.team;
     expect(await env.tmux.session.hasSession(session)).toBe(true);
 
-    // Two member windows, no `__<team>__home` placeholder remaining.
+    // Two member windows plus the canonical three-driver roster, no
+    // `__<team>__home` placeholder remaining. Per resolveDriversList
+    // (src/core/drivers.ts) + the drivers[] schema default
+    // (src/schema/team.ts), an absent drivers[] resolves to the canonical
+    // roster (driver, driver-2, driver-3) — there is no longer a
+    // drivers-absent path that skips driver windows.
     // (Placeholder still uses the `__<team>__home` form — only member
     // windows dropped the prefix per ADR-017.)
     const windows = await env.tmux.window.listWindows(session);
     const names = windows.map((w) => w.name).sort();
     // buildWindowName(member, emoji, label, role) → ADR-161 TR2:
     // default roles render `_-prefix`. emojis from defaultEmojiForRole:
-    // team-lead → 🧭, reviewer → 🔍. Sort order: 🔍_bob < 🧭_alice.
-    expect(names).toEqual(["🔍_bob", "🧭_alice"]);
+    // team-lead → 🧭, reviewer → 🔍. Sort order: ASCII driver names first,
+    // then 🔍_bob < 🧭_alice.
+    expect(names).toEqual(["driver", "driver-2", "driver-3", "🔍_bob", "🧭_alice"]);
     expect(names).not.toContain(`__${env.team}__home`);
 
     // Timestamp written as integer seconds
@@ -626,13 +637,21 @@ describe("start — happy path", () => {
     ).toBe(true);
   });
 
-  test("zero-member team creates session + leaves __home in place", async () => {
+  test("zero-member team creates session + spawns exactly the canonical driver roster", async () => {
+    // Was: "leaves __home in place". Per resolveDriversList
+    // (src/core/drivers.ts) + the drivers[] schema default
+    // (src/schema/team.ts), an absent drivers[] resolves to the canonical
+    // three-driver roster — the no-driver __home path is unreachable on a
+    // fresh start (start.ts only takes the __home branch when the resolved
+    // driver list is empty, which the resolver never returns). The seat is
+    // opted out here so the layout is exactly the canonical roster.
     await writeTeamJson({ members: [], superdriver: { enabled: false } });
     const exit = await runStart([]);
     expect(exit).toBe(0);
     const session = env.team;
     const wins = await env.tmux.window.listWindows(session);
-    expect(wins.map((w) => w.name)).toEqual([`__${env.team}__home`]);
+    expect(wins.map((w) => w.name)).toEqual(["driver", "driver-2", "driver-3"]);
+    expect(wins.some((w) => w.name === `__${env.team}__home`)).toBe(false);
   });
 
   test("applies the level-resolved cage prefix globally on the tmux server (ADR-089 §C)", async () => {
@@ -945,14 +964,16 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
     ).toBe(true);
   });
 
-  test("ADR-266 §D2: legacy driverSession/driverTui fields no longer spawn a driver window", async () => {
+  test("ADR-266 §D2: legacy driverSession/driverTui fields synthesize nothing beyond the canonical roster", async () => {
     await writeTeamJson({
       superdriver: { enabled: false },
       members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
       // Legacy fields only — the ADR-239 §D7 synthesis expired per
-      // ADR-266 §D2; without drivers[] the start path falls through to
-      // the __home placeholder flow (driverSession stays as the
-      // cockpit/health opt-in marker only).
+      // ADR-266 §D2 (driverSession stays as the cockpit/health opt-in
+      // marker only). Without drivers[] the schema default +
+      // resolveDriversList (src/core/drivers.ts) supply the canonical
+      // three-driver roster — the spawned driver windows must be EXACTLY
+      // that roster, with nothing extra derived from the legacy fields.
       driverSession: { tui: "shell" },
       driverTui: "shell",
     });
@@ -960,17 +981,28 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
     const exit = await runStart([]);
     expect(exit).toBe(0);
 
-    expect(env.logs.some((l) => l.msg.includes("driver at window 1"))).toBe(false);
+    // The canonical roster drives the driver-initial path (not the legacy
+    // fields): driver at window 1 IS logged.
+    expect(env.logs.some((l) => l.msg.includes("driver at window 1"))).toBe(true);
     const wins = await env.tmux.window.listWindows(env.team);
-    expect(wins.some((w) => w.name === "driver")).toBe(false);
+    const names = wins.map((w) => w.name).sort();
+    expect(names).toEqual(["driver", "driver-2", "driver-3", "🧭_alpha"]);
+    expect(wins.some((w) => w.name === `__${env.team}__home`)).toBe(false);
   });
 
-  test("explicitly disabled: driverSession=null falls through to legacy __home", async () => {
+  test("explicitly disabled: driverSession=null no longer selects the __home path", async () => {
+    // Was: "falls through to legacy __home". The null-driverSession marker
+    // never drove spawning (only the removed ADR-239 §D7 synthesis did);
+    // with drivers[] absent the schema default + resolveDriversList
+    // (src/core/drivers.ts) supply the canonical three-driver roster, so
+    // the driver-initial path runs and the __home branch is unreachable.
+    // What this still guards: a present-but-null driverSession must not
+    // contribute any window of its own.
     await writeTeamJson({
       superdriver: { enabled: false },
       members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
       // Matches the wizard's "explicitly disabled" output. The field is
-      // present but null — must NOT trigger the driver-initial path.
+      // present but null.
       driverSession: null,
     });
 
@@ -978,24 +1010,26 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
     expect(exit).toBe(0);
 
     const wins = await env.tmux.window.listWindows(env.team);
-    expect(wins.some((w) => w.name === "driver")).toBe(false);
-    // __home was created then cleaned up by step 9 (member spawned).
+    expect(wins.map((w) => w.name).sort()).toEqual(["driver", "driver-2", "driver-3", "🧭_alpha"]);
+    // No __home placeholder ever created (drivers seed the session).
     expect(wins.some((w) => w.name === `__${env.team}__home`)).toBe(false);
-    // No driver-at-window-1 log line when the path was skipped.
-    expect(env.logs.some((l) => l.msg.includes("driver at window 1"))).toBe(false);
+    // The driver-initial path ran — via the canonical roster, not the null
+    // legacy field.
+    expect(env.logs.some((l) => l.msg.includes("driver at window 1"))).toBe(true);
   });
 
-  test("absent: legacy __home placeholder path is unchanged", async () => {
-    // Regression guard: zero-member team.json without driverSession must
-    // still leave the __home placeholder, matching the pre-ADR-044
-    // "happy path: zero-member team" assertion.
+  test("absent drivers[]: fresh start spawns the canonical roster, never __home", async () => {
+    // Was: "legacy __home placeholder path is unchanged". That path is
+    // unreachable on a fresh start now: an absent drivers[] resolves via
+    // the schema default + resolveDriversList (src/core/drivers.ts) to the
+    // canonical three-driver roster, so start.ts always takes the
+    // driver-initial branch. This guard now pins the replacement invariant:
+    // zero-member + seat opted out ⇒ exactly the canonical roster.
     await writeTeamJson({ members: [], superdriver: { enabled: false } });
-    // ADR-296 pin: without the opt-out the default-on seat replaces
-    // __home on a zero-member team; this guard covers the opt-out path.
     const exit = await runStart([]);
     expect(exit).toBe(0);
     const wins = await env.tmux.window.listWindows(env.team);
-    expect(wins.map((w) => w.name)).toEqual([`__${env.team}__home`]);
+    expect(wins.map((w) => w.name)).toEqual(["driver", "driver-2", "driver-3"]);
   });
 
   test("unknown tui: driver window still created, warn surfaces, pane lands in shell", async () => {
@@ -1031,17 +1065,26 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
     ).toBe(true);
   });
 
-  test("incremental: existing session without driver is left alone (ADR-044 D3)", async () => {
+  test("incremental: existing session gains no driver windows on re-run (ADR-044 D3)", async () => {
     // ADR-044 D3 explicitly forbids retroactively inserting a driver into
     // an existing session — that would shift member window indices and
-    // disrupt operator state on attached sessions.
+    // disrupt operator state on attached sessions. Was: "existing session
+    // without driver is left alone" — but a fresh start without drivers[]
+    // now spawns the canonical roster immediately (schema default +
+    // resolveDriversList, src/core/drivers.ts), so the first start below
+    // already holds driver/driver-2/driver-3. The D3 guard this still
+    // exercises: re-running start (incremental, no --force) with a
+    // DIFFERENT drivers[] roster must neither add nor remove windows.
     await writeTeamJson({
       members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
     });
     expect(await runStart([])).toBe(0);
+    const before = (await env.tmux.window.listWindows(env.team)).map((w) => w.name).sort();
+    expect(before).toEqual(["driver", "driver-2", "driver-3", "superdriver", "🧭_alpha"]);
 
-    // Now add drivers[] AFTER the session is up. Re-run start
-    // (incremental, no --force) — must NOT add a driver window.
+    // Narrow drivers[] to a single entry AFTER the session is up. Re-run
+    // start (incremental, no --force) — the live window set must be
+    // untouched: no insertion, no removal, no respawn.
     await writeTeamJson({
       members: [{ name: "alpha", role: "team-lead", tui: "shell" }],
       drivers: [{ name: "driver", tui: "shell", cwd: "." }],
@@ -1049,9 +1092,9 @@ describe("start — ADR-239 §A1 drivers[] topology", () => {
     env.logs.length = 0;
     expect(await runStart([])).toBe(0);
 
-    const wins = await env.tmux.window.listWindows(env.team);
-    expect(wins.some((w) => w.name === "driver")).toBe(false);
-    // No driver-at-window-1 log line either (path didn't run).
+    const after = (await env.tmux.window.listWindows(env.team)).map((w) => w.name).sort();
+    expect(after).toEqual(before);
+    // No driver-at-window-1 log line either (driver-initial path didn't run).
     expect(env.logs.some((l) => l.msg.includes("driver at window 1"))).toBe(false);
   });
 
@@ -1261,27 +1304,35 @@ describe("start — ADR-296 per-team superdriver window", () => {
     ).toBe(memberPidBefore);
   });
 
-  test("incremental: seat goes first when no driver window exists yet", async () => {
+  test("incremental: seat goes first ahead of the canonical drivers", async () => {
+    // Was: "when no driver window exists yet" (pre-canonical __home
+    // layout). A fresh start without drivers[] now spawns the canonical
+    // roster immediately (schema default + resolveDriversList,
+    // src/core/drivers.ts), so "no driver yet" is unreachable on a fresh
+    // start. What this still guards: enabling the seat on a live
+    // driver-only cage inserts it BEFORE the first driver window.
     await writeTeamJson({ members: [], superdriver: { enabled: false } });
     expect(await runStart([])).toBe(0);
-    expect(await orderedNames(env.team)).toEqual([`__${env.team}__home`]);
+    expect(await orderedNames(env.team)).toEqual(["driver", "driver-2", "driver-3"]);
 
-    // Flip on: the seat inserts before __home, and step-9 cleanup drops
-    // the placeholder now that a real window exists.
+    // Flip on: the seat inserts before the first driver; no placeholder
+    // was ever created (drivers seeded the session).
     await writeTeamJson({ members: [] });
     expect(await runStart([])).toBe(0);
-    expect(await orderedNames(env.team)).toEqual(["superdriver"]);
+    expect(await orderedNames(env.team)).toEqual(["superdriver", "driver", "driver-2", "driver-3"]);
   });
 
   test("disabled: an existing seat window is left alone and reported", async () => {
+    // Default-on seat + canonical roster (absent drivers[] resolves via
+    // the schema default + resolveDriversList, src/core/drivers.ts).
     await writeTeamJson({ members: [] });
     expect(await runStart([])).toBe(0);
-    expect(await orderedNames(env.team)).toEqual(["superdriver"]);
+    expect(await orderedNames(env.team)).toEqual(["superdriver", "driver", "driver-2", "driver-3"]);
 
     await writeTeamJson({ members: [], superdriver: { enabled: false } });
     env.logs.length = 0;
     expect(await runStart([])).toBe(0);
-    expect(await orderedNames(env.team)).toEqual(["superdriver"]);
+    expect(await orderedNames(env.team)).toEqual(["superdriver", "driver", "driver-2", "driver-3"]);
     expect(
       env.logs.some((l) => l.msg.includes("superdriver") && l.msg.includes("left alone")),
     ).toBe(true);
@@ -1501,8 +1552,18 @@ describe("start — ADR-082 W3 worktree-isolation", () => {
     };
   }
 
-  test("legacy team (no worktreeIsolation field) makes ZERO git invocations", async () => {
+  test("legacy team (no worktreeIsolation field) provisions no MEMBER worktrees", async () => {
+    // Was: "makes ZERO git invocations". That blanket claim predates the
+    // ADR-239 §A1 driver worktree path (start.ts driver-spawn loop), which
+    // unconditionally probes the repo root/branch and provisions driver-N
+    // worktrees even for legacy teams — while the per-MEMBER loop below
+    // still gates strictly at `team.worktreeIsolation === true`
+    // (start.ts §7c). What this still guards: no member-branch git
+    // activity and no member worktree log lines for a legacy team.
     await writeTeamJson({
+      // Seat pinned off: this test's subject is the member-worktree gate,
+      // not the ADR-296 seat.
+      superdriver: { enabled: false },
       members: [
         { name: "alice", role: "team-lead" },
         { name: "bob", role: "reviewer" },
@@ -1515,10 +1576,18 @@ describe("start — ADR-082 W3 worktree-isolation", () => {
     };
     const exit = await runStart([], { gitSpawn });
     expect(exit).toBe(0);
-    // The legacy short-circuit MUST gate at `team.worktreeIsolation === true`
-    // — any git invocation here is a regression that resurrects the
-    // shared-tree-only path's behaviour for opt-in teams.
-    expect(calls).toEqual([]);
+    // No git invocation touches a member branch or member worktree path…
+    expect(calls.filter((c) => c.some((a) => a.includes("alice") || a.includes("bob")))).toEqual(
+      [],
+    );
+    // …and no member worktree is announced. (Driver-N provisioning calls
+    // ARE expected — they belong to the driver loop, not the member loop.)
+    expect(env.logs.some((l) => l.msg.includes("worktree created: alice"))).toBe(false);
+    expect(env.logs.some((l) => l.msg.includes("worktree created: bob"))).toBe(false);
+    // Members still spawn alongside the canonical roster.
+    const wins = await env.tmux.window.listWindows(env.team);
+    const names = wins.map((w) => w.name).sort();
+    expect(names).toEqual(["driver", "driver-2", "driver-3", "🔍_bob", "🧭_alice"]);
   });
 
   test("worktreeIsolation=true happy path: each member gets a per-member-branch worktree provisioned + cwd overridden", async () => {
@@ -1549,38 +1618,50 @@ describe("start — ADR-082 W3 worktree-isolation", () => {
     };
     const exit = await runStart([], { gitSpawn });
     expect(exit).toBe(0);
-    // Per ADR-084: 1× rev-parse --show-toplevel, 1× branch
-    // --show-current, then per member 3 calls (list, rev-parse
-    // --verify refs/heads/<wtBranch>, worktree add -b <wtBranch>).
-    // Total: 2 + 2*3 = 8.
-    expect(calls).toHaveLength(8);
-    expect(calls[0]).toEqual([
+    // Per ADR-084: each provisioning section runs 1× rev-parse
+    // --show-toplevel + 1× branch --show-current, then 3 calls per
+    // provisioned pane (list, rev-parse --verify refs/heads/<wtBranch>,
+    // worktree add -b <wtBranch>). Two sections run here: the ADR-239 §A1
+    // driver loop provisions driver-2 + driver-3 (driver[0] is the trunk
+    // driver — no worktree), then the §7c member loop provisions alice +
+    // bob. Total: (2 + 2*3) + (2 + 2*3) = 16.
+    expect(calls).toHaveLength(16);
+    // Driver-section probes run at dirname(atmuxDir) (start.ts resolves
+    // the driver projectRoot via dirname(dir)); the member section uses
+    // the .atmux-strip path (== atmuxDir for these fixtures).
+    expect(calls[0]).toEqual(["-C", dirname(env.atmuxDir), "rev-parse", "--show-toplevel"]);
+    expect(calls[1]).toEqual(["-C", dirname(env.atmuxDir), "branch", "--show-current"]);
+    expect(calls[8]).toEqual([
       "-C",
       env.atmuxDir.replace(/\/?\.atmux\/?$/, "") || "/",
       "rev-parse",
       "--show-toplevel",
     ]);
-    expect(calls[1]).toEqual([
+    expect(calls[9]).toEqual([
       "-C",
       env.atmuxDir.replace(/\/?\.atmux\/?$/, "") || "/",
       "branch",
       "--show-current",
     ]);
     // Per-member-branch path: `worktree add -b <baseBranch>-<member>
-    // <wtPath> <baseBranch>`. Verify both members get a `-b` add with
-    // the right derived branch name.
+    // <wtPath> <baseBranch>`. Both drivers (driver-2, driver-3) and both
+    // members get a `-b` add with the right derived branch name.
     const addCalls = calls.filter((c) => c.includes("add"));
-    expect(addCalls).toHaveLength(2);
+    expect(addCalls).toHaveLength(4);
     for (const c of addCalls) {
       expect(c).toContain("-b");
       // baseBranch checkout target is the last positional arg.
       expect(c[c.length - 1]).toBe("geoyws");
     }
+    expect(addCalls.some((c) => c.includes("geoyws-driver-2"))).toBe(true);
+    expect(addCalls.some((c) => c.includes("geoyws-driver-3"))).toBe(true);
     expect(addCalls.some((c) => c.includes("geoyws-alice"))).toBe(true);
     expect(addCalls.some((c) => c.includes("geoyws-bob"))).toBe(true);
     // rev-parse --verify call targets the derived branch ref.
     const verifyCalls = calls.filter((c) => c.includes("--verify"));
-    expect(verifyCalls).toHaveLength(2);
+    expect(verifyCalls).toHaveLength(4);
+    expect(verifyCalls.some((c) => c.includes("refs/heads/geoyws-driver-2"))).toBe(true);
+    expect(verifyCalls.some((c) => c.includes("refs/heads/geoyws-driver-3"))).toBe(true);
     expect(verifyCalls.some((c) => c.includes("refs/heads/geoyws-alice"))).toBe(true);
     expect(verifyCalls.some((c) => c.includes("refs/heads/geoyws-bob"))).toBe(true);
     // Operator-visible log lines surface each provision with branch.
@@ -1588,6 +1669,13 @@ describe("start — ADR-082 W3 worktree-isolation", () => {
     expect(env.logs.some((l) => l.msg.includes("worktree created: bob"))).toBe(true);
     expect(env.logs.some((l) => l.msg.includes("[geoyws-alice]"))).toBe(true);
     expect(env.logs.some((l) => l.msg.includes("[geoyws-bob]"))).toBe(true);
+    // …and the driver provisions are announced on their own lines.
+    expect(
+      env.logs.some((l) => l.msg.includes("driver-2") && l.msg.includes("[geoyws-driver-2]")),
+    ).toBe(true);
+    expect(
+      env.logs.some((l) => l.msg.includes("driver-3") && l.msg.includes("[geoyws-driver-3]")),
+    ).toBe(true);
   });
 
   test("partial-fail: one member's provisionWorktree throws → others still spawn, failed one falls back", async () => {
@@ -1614,12 +1702,21 @@ describe("start — ADR-082 W3 worktree-isolation", () => {
     };
     const exit = await runStart([], { gitSpawn });
     expect(exit).toBe(0);
-    // Team still spawned all 3 members despite bob's provision failure.
+    // Team still spawned all 3 members despite bob's provision failure —
+    // alongside the default-on seat and the canonical driver roster
+    // (absent drivers[] resolves via the schema default +
+    // resolveDriversList, src/core/drivers.ts).
     const wins = await env.tmux.window.listWindows(env.team);
     const names = wins.map((w) => w.name).sort();
-    expect(names).toContain("🧭_alice");
-    expect(names).toContain("🔍_bob");
-    expect(names).toContain("🐝-carol");
+    expect(names).toEqual([
+      "driver",
+      "driver-2",
+      "driver-3",
+      "superdriver",
+      "🐝-carol",
+      "🔍_bob",
+      "🧭_alice",
+    ]);
     // Operator-visible warning names the failing member specifically.
     const warns = env.logs.filter((l) => l.kind === "warn");
     expect(warns.some((l) => l.msg.includes("bob") && l.msg.includes("provision failed"))).toBe(
@@ -1648,16 +1745,25 @@ describe("start — ADR-082 W3 worktree-isolation", () => {
     };
     const exit = await runStart([], { gitSpawn });
     expect(exit).toBe(0);
-    // rev-parse + branch are the only calls — branch is exec'd before
-    // the rev-parse-failure gate kicks in (the impl reads both up-front).
-    // No `worktree add` invocations.
+    // rev-parse + branch per section are the only calls — branch is exec'd
+    // before the rev-parse-failure gate kicks in (each impl reads both
+    // up-front), and both the driver loop and the member loop hit the
+    // gate. No `worktree add` invocations.
     expect(calls.filter((c) => c.includes("add"))).toHaveLength(0);
     // Warning surfaces the repo-root detection failure.
     const warns = env.logs.filter((l) => l.kind === "warn");
     expect(warns.some((l) => l.msg.includes("cannot detect repo root"))).toBe(true);
-    // Members still spawn — pane creation is unaffected.
+    // Members still spawn — pane creation is unaffected — alongside the
+    // canonical roster (absent drivers[] resolves via the schema default
+    // + resolveDriversList, src/core/drivers.ts; the seat is opted out).
     const wins = await env.tmux.window.listWindows(env.team);
-    expect(wins.map((w) => w.name).sort()).toEqual(["🔍_bob", "🧭_alice"]);
+    expect(wins.map((w) => w.name).sort()).toEqual([
+      "driver",
+      "driver-2",
+      "driver-3",
+      "🔍_bob",
+      "🧭_alice",
+    ]);
   });
 
   test("detached HEAD (empty branch) → all fall back with 'detached HEAD' warning, no provisioning", async () => {
@@ -2556,9 +2662,13 @@ describe("start — nest ban (e-39 T1/T2)", () => {
   test("nested cwd → ConfigError refusing nested before any writes", async () => {
     const root = await mkdtemp(join(tmpdir(), "atmux-start-nest-"));
     try {
+      // Bare `.atmux/` dirs are not teams: an ancestor counts only with
+      // `team.json` (t-a7f8e487), so both levels stage one.
       await mkdir(join(root, ".atmux"), { recursive: true });
+      await writeFile(join(root, ".atmux", "team.json"), "{}");
       const child = join(root, "child");
       await mkdir(join(child, ".atmux"), { recursive: true });
+      await writeFile(join(child, ".atmux", "team.json"), "{}");
       let caught: unknown = null;
       try {
         await start([], { cwd: child, env: {} });
