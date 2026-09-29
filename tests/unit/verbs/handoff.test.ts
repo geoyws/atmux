@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import { addTask } from "../../../src/core/kanban.ts";
-import { isPaused } from "../../../src/core/pause.ts";
+import { getPauseInfo, isPaused } from "../../../src/core/pause.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
 import {
   buildAbsentSourceNote,
@@ -782,8 +782,8 @@ describe("handoff() — public verb", () => {
       stderr: () => {},
       now: () => Date.UTC(2026, 4, 5, 10, 0, 0),
     });
-    const paused = JSON.parse(await readFile(join(atmuxDir, "state", "paused.json"), "utf8"));
-    expect(paused.alpha.reason).toBe("handoff-manual");
+    const info = await getPauseInfo(atmuxDir, "alpha");
+    expect(info?.reason).toBe("handoff-manual");
   });
 
   test("native sendToMember throws → falls through to screen capture, warns", async () => {
