@@ -54,20 +54,11 @@ export async function checkTeam(atmuxDir: string): Promise<DoctorRow[]> {
   // No separate empty-name branch needed.
 
   // ADR-287 §D5: the default roster is drivers-only, so an empty
-  // members[] is a HEALTHY team when drivers[] is declared. Red only
-  // when the team declares no seat at all (no drivers, no members) —
-  // a cage with nothing to spawn.
-  const driverCount = team.drivers?.length ?? 0;
-  if (team.members.length === 0 && driverCount === 0) {
-    return [
-      {
-        status: "red",
-        label: "team.json",
-        detail: "no members or drivers defined",
-        hint: "declare drivers[] (ADR-239 / ADR-287 §D5), or run: atmux add-member <name> --role member --tui claude",
-      },
-    ];
-  }
+  // members[] is a HEALTHY team. A seatless team is unrepresentable:
+  // the schema defaults drivers[] to the canonical roster and refuses
+  // `drivers: []` (min 1), which surfaces as the "invalid JSON" red row
+  // above (t-0ba8ec22).
+  const driverCount = team.drivers.length;
   const bad = team.members.filter(
     (m) => m.name === undefined || m.role === undefined || m.tui === undefined,
   );

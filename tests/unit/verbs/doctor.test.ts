@@ -243,11 +243,20 @@ describe("checkTeam", () => {
     expect(rows[0]?.detail).toContain("invalid JSON");
   });
 
-  test("empty members AND no drivers → red 'no members or drivers defined'", async () => {
-    await writeFile(join(atmuxDir, "team.json"), JSON.stringify({ name: "x", members: [] }));
+  test("explicit empty drivers[] with no members → red (schema refuses a seatless team)", async () => {
+    await writeFile(
+      join(atmuxDir, "team.json"),
+      JSON.stringify({ name: "x", members: [], drivers: [] }),
+    );
     const rows = await checkTeam(atmuxDir);
     expect(rows[0]?.status).toBe("red");
-    expect(rows[0]?.detail).toBe("no members or drivers defined");
+    expect(rows[0]?.detail).toContain("invalid JSON");
+  });
+
+  test("empty members with drivers omitted → canonical roster default, no seatless red", async () => {
+    await writeFile(join(atmuxDir, "team.json"), JSON.stringify({ name: "x", members: [] }));
+    const rows = await checkTeam(atmuxDir);
+    expect(rows.some((r) => r.status === "red")).toBe(false);
   });
 
   test("drivers-only team (members: [], drivers[] declared) → green (ADR-287 §D5 default roster)", async () => {
