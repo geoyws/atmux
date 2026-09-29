@@ -50,6 +50,7 @@ import {
   type ResolveDirOpts,
   requireTeam,
   resolveTeamSocket,
+  stateDbPath,
 } from "../core/common.ts";
 import {
   isSentinelEmpty,
@@ -487,10 +488,6 @@ function findOmbudsmanMember(team: Team): TeamMember | null {
     if (m.role === "ombudsman") return m;
   }
   return null;
-}
-
-function stateDbPath(atmuxDir: string): string {
-  return join(atmuxDir, "state.db");
 }
 
 /** Walk up from `atmuxDir` until a `.git` directory is found; that's the

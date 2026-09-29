@@ -12,7 +12,6 @@
 // (atomic — single repo transaction).
 
 import { randomBytes } from "node:crypto";
-import { join } from "node:path";
 import { emit } from "../abstractions/events.ts";
 import { exists } from "../abstractions/fs.ts";
 import {
@@ -26,7 +25,7 @@ import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { KanbanCliAdapter } from "../adapters/kanban-cli.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import type { KanbanStory, KanbanTask } from "../schema/kanban.ts";
-import { tryLoadTeam } from "./common.ts";
+import { stateDbPath, tryLoadTeam } from "./common.ts";
 import { nextId } from "./id-sequence.ts";
 import { nowEpoch } from "./kanban.ts";
 import { externalKanbanEnabled } from "./kanban-backend.ts";
@@ -73,15 +72,11 @@ export function storyLegalTransition(from: string, to: string): boolean {
   return storyNextState(from) === to;
 }
 
-function _stateDbPath(atmuxDir: string): string {
-  return join(atmuxDir, "state.db");
-}
-
 async function _withRepo<T>(
   atmuxDir: string,
   fn: (repo: KanbanRepo, db: Database) => T | Promise<T>,
 ): Promise<T> {
-  const db = openDatabase(_stateDbPath(atmuxDir), migrations);
+  const db = openDatabase(stateDbPath(atmuxDir), migrations);
   try {
     return await fn(new KanbanRepo(db), db);
   } finally {
@@ -126,9 +121,9 @@ export async function addStory(atmuxDir: string, opts: AddStoryOpts): Promise<st
     });
     return id;
   }
-  if (!(await exists(_stateDbPath(atmuxDir)))) {
+  if (!(await exists(stateDbPath(atmuxDir)))) {
     throw new ConfigError({
-      what: `story add: ${_stateDbPath(atmuxDir)} not initialized; run \`atmux init\` first`,
+      what: `story add: ${stateDbPath(atmuxDir)} not initialized; run \`atmux init\` first`,
     });
   }
   return await _withRepo(atmuxDir, (repo, db) => {
@@ -184,7 +179,7 @@ export async function listStories(
     );
     return filter.status ? stories.filter((story) => story.status === filter.status) : stories;
   }
-  if (!(await exists(_stateDbPath(atmuxDir)))) return [];
+  if (!(await exists(stateDbPath(atmuxDir)))) return [];
   return await _withRepo(atmuxDir, (repo) => {
     let stories = repo.listStories({ epic: filter.epic });
     if (filter.status !== undefined) {
@@ -205,7 +200,7 @@ export async function showStory(atmuxDir: string, id: string): Promise<StoryWith
     const story = board.stories.find((item) => item.id === id);
     return story ? { ...story, tasks: board.tasks.filter((task) => task.story === id) } : null;
   }
-  if (!(await exists(_stateDbPath(atmuxDir)))) return null;
+  if (!(await exists(stateDbPath(atmuxDir)))) return null;
   return await _withRepo(atmuxDir, (repo) => {
     const story = repo.getStory(id);
     if (story === null) return null;
@@ -251,7 +246,7 @@ export async function advanceStory(
       noop: result.noop,
     };
   }
-  if (!(await exists(_stateDbPath(atmuxDir)))) {
+  if (!(await exists(stateDbPath(atmuxDir)))) {
     throw new ConfigError({ what: `story advance: no such story: ${id}` });
   }
   // Look up dispatch recipients up-front so the DB transaction is pure.
@@ -607,7 +602,7 @@ export async function storySignoff(
       noteApplied: result.note,
     };
   }
-  if (!(await exists(_stateDbPath(atmuxDir)))) {
+  if (!(await exists(stateDbPath(atmuxDir)))) {
     throw new ConfigError({ what: `story signoff: no such story: ${id}` });
   }
   const team = await tryLoadTeam({ dir: atmuxDir });
@@ -672,7 +667,7 @@ export async function storyUnsignoff(
       noteApplied: result.note,
     };
   }
-  if (!(await exists(_stateDbPath(atmuxDir)))) {
+  if (!(await exists(stateDbPath(atmuxDir)))) {
     throw new ConfigError({ what: `story unsignoff: no such story: ${id}` });
   }
   const team = await tryLoadTeam({ dir: atmuxDir });
@@ -761,7 +756,7 @@ export async function updateStory(
     }
     return;
   }
-  if (!(await exists(_stateDbPath(atmuxDir)))) {
+  if (!(await exists(stateDbPath(atmuxDir)))) {
     throw new ConfigError({ what: `story update: no such story: ${id}` });
   }
   await _withRepo(atmuxDir, (repo, db) => {

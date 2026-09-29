@@ -32,13 +32,12 @@
 // -exec ...` until F5+1 lands a cockpit-aware verb.
 
 import { randomBytes } from "node:crypto";
-import { join } from "node:path";
 
 import { emit } from "../abstractions/events.ts";
 import { closeDatabase, openDatabase, transactImmediate } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
 import { loadCockpit, lookupTeamAtmuxDir } from "../core/cockpit.ts";
-import { getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts";
+import { getAtmuxDir, type ResolveDirOpts, requireTeam, stateDbPath } from "../core/common.ts";
 import { addToSentinel, removeFromSentinel } from "../core/ombudsman.ts";
 import { ComplaintsRepo } from "../core/repositories/complaints-repo.ts";
 import { UsageError } from "../errors.ts";
@@ -47,10 +46,6 @@ import {
   COMPLAINT_STATUSES,
   type Complaint,
 } from "../schema/complaints.ts";
-
-function stateDbPath(atmuxDir: string): string {
-  return join(atmuxDir, "state.db");
-}
 
 const USAGE =
   "atmux complaints {list [--status <s>|--all] [--source-kind <k>] [--target-team <t>] [--json] | " +

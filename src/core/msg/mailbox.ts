@@ -15,7 +15,6 @@
 // injection surface from `src/abstractions/tmux.ts` — the wake is
 // print-only (§D5). A unit test pins that boundary.
 
-import { join } from "node:path";
 import { ensureDir, exists } from "../../abstractions/fs.ts";
 import {
   closeDatabase,
@@ -24,6 +23,7 @@ import {
   transactImmediate,
 } from "../../abstractions/sqlite.ts";
 import { migrations } from "../../abstractions/sqlite-migrations.ts";
+import { stateDbPath } from "../common.ts";
 import { appendInboxMessage } from "../inbox.ts";
 
 /** `inbox_messages.kind` discriminator for mailbox rows (ADR-292 §D1). */
@@ -89,10 +89,6 @@ export function formatMyt(epochSec: number): string {
   }).formatToParts(new Date(epochSec * 1000));
   const get = (t: string): string => parts.find((p) => p.type === t)?.value ?? "";
   return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")} MYT`;
-}
-
-function stateDbPath(atmuxDir: string): string {
-  return join(atmuxDir, "state.db");
 }
 
 // ---------- Cursors (state_kv) ----------

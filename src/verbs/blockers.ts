@@ -27,7 +27,6 @@
 // · age · summary. JSON is the unblocker / dashboard contract — stable
 // row shape per `BlockerRow`.
 
-import { join } from "node:path";
 import { closeDatabase, openDatabase } from "../abstractions/sqlite.ts";
 import { migrations } from "../abstractions/sqlite-migrations.ts";
 import {
@@ -38,13 +37,9 @@ import {
   isBlockerSource,
   queryAllBlockers,
 } from "../core/blockers.ts";
-import { getAtmuxDir, type ResolveDirOpts, requireTeam } from "../core/common.ts";
+import { getAtmuxDir, type ResolveDirOpts, requireTeam, stateDbPath } from "../core/common.ts";
 import { loadKanban } from "../core/kanban.ts";
 import { UsageError } from "../errors.ts";
-
-function stateDbPath(atmuxDir: string): string {
-  return join(atmuxDir, "state.db");
-}
 
 const USAGE =
   "atmux blockers list [--json] [--class <c>] [--source <s>] [--max-age <duration>] [--team-dir <dir>]";
