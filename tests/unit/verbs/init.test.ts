@@ -166,6 +166,7 @@ describe("parseInitArgs", () => {
     expect(parseInitArgs(["--name", "alpha"])).toEqual({
       name: "alpha",
       force: false,
+      forceNest: false,
       wizard: false,
       noSkills: false,
       skillsOnly: false,
@@ -192,6 +193,7 @@ describe("parseInitArgs", () => {
     expect(parseInitArgs(["--name", "x", "--force"])).toEqual({
       name: "x",
       force: true,
+      forceNest: false,
       wizard: false,
       noSkills: false,
       skillsOnly: false,
@@ -833,6 +835,77 @@ describe("ADR-288 §D5 — init(shipped template) → start", () => {
     // detected base branch — the drivers-only roster still isolates.
     for (const d of ["driver-2", "driver-3"]) {
       expect(calls.some((c) => c.includes(`atmux-geoyws-${d}`))).toBe(true);
+    }
+  });
+});
+
+// ---------- init verb — nest ban (e-39 T1/T2) ----------
+
+describe("init — nest ban", () => {
+  test("detectTeamLocation: no ancestor .atmux → flat", async () => {
+    const { detectTeamLocation } = await import("../../../src/verbs/init.ts");
+    const dir = await mkdtemp(join(tmpdir(), "atmux-nest-flat-"));
+    try {
+      expect(await detectTeamLocation(dir)).toEqual({ kind: "flat" });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("detectTeamLocation: subdir of team → subdir with relpath", async () => {
+    const { detectTeamLocation } = await import("../../../src/verbs/init.ts");
+    const root = await mkdtemp(join(tmpdir(), "atmux-nest-sub-"));
+    try {
+      await mkdir(join(root, ".atmux"), { recursive: true });
+      await mkdir(join(root, "a", "b"), { recursive: true });
+      const loc = await detectTeamLocation(join(root, "a", "b"));
+      expect(loc.kind).toBe("subdir");
+      if (loc.kind === "subdir") {
+        expect(loc.teamDir).toBe(root);
+        expect(loc.relpath).toBe(join("a", "b"));
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("detectTeamLocation: team under team → nested (incl. deep subdir)", async () => {
+    const { detectTeamLocation } = await import("../../../src/verbs/init.ts");
+    const root = await mkdtemp(join(tmpdir(), "atmux-nest-deep-"));
+    try {
+      await mkdir(join(root, ".atmux"), { recursive: true });
+      await mkdir(join(root, "child", ".atmux"), { recursive: true });
+      await mkdir(join(root, "child", "sub"), { recursive: true });
+      const direct = await detectTeamLocation(join(root, "child"));
+      expect(direct.kind).toBe("nested");
+      const deep = await detectTeamLocation(join(root, "child", "sub"));
+      expect(deep.kind).toBe("nested");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("nested init refuses without --force-nest (no writes)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "atmux-nest-refuse-"));
+    try {
+      await mkdir(join(root, ".atmux"), { recursive: true });
+      const child = join(root, "child");
+      await mkdir(child, { recursive: true });
+      let caught: unknown = null;
+      try {
+        await runInit(["--name", "nested"], { cwd: child });
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(ConfigError);
+      expect((caught as ConfigError).context.what as string).toContain("refusing nested");
+      expect(
+        await stat(join(child, ".atmux"))
+          .then(() => true)
+          .catch(() => false),
+      ).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 });

@@ -2234,6 +2234,7 @@ describe("cockpitRebuild", () => {
       // asserting the string alone once certified a flag start rejected.
       expect(parseStartArgs(startArgs ?? [], {})).toEqual({
         force: false,
+        forceNest: false,
         doctorMode: "skip",
         noLaunch: true,
         preflight: { skipDeps: false, nonInteractive: false, noPreflight: false },
@@ -2279,6 +2280,7 @@ describe("cockpitRebuild", () => {
       expect(startArgs).toEqual(["--force", "--no-doctor", "--no-launch"]);
       expect(parseStartArgs(startArgs ?? [], {})).toEqual({
         force: true,
+        forceNest: false,
         doctorMode: "skip",
         noLaunch: true,
         preflight: { skipDeps: false, nonInteractive: false, noPreflight: false },

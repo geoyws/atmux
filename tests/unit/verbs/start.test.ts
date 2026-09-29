@@ -286,6 +286,7 @@ describe("parseStartArgs", () => {
     const got = parseStartArgs([], {});
     expect(got).toEqual({
       force: false,
+      forceNest: false,
       doctorMode: "preflight",
       noLaunch: false,
       preflight: { skipDeps: false, nonInteractive: false, noPreflight: false },
@@ -296,6 +297,7 @@ describe("parseStartArgs", () => {
     const got = parseStartArgs(["--no-launch"], {});
     expect(got).toEqual({
       force: false,
+      forceNest: false,
       doctorMode: "preflight",
       noLaunch: true,
       preflight: { skipDeps: false, nonInteractive: false, noPreflight: false },
@@ -305,12 +307,14 @@ describe("parseStartArgs", () => {
   test("--no-launch is accepted alongside the flags cockpit forwards", () => {
     expect(parseStartArgs(["--no-doctor", "--no-launch"], {})).toEqual({
       force: false,
+      forceNest: false,
       doctorMode: "skip",
       noLaunch: true,
       preflight: { skipDeps: false, nonInteractive: false, noPreflight: false },
     });
     expect(parseStartArgs(["--force", "--no-doctor", "--no-launch"], {})).toEqual({
       force: true,
+      forceNest: false,
       doctorMode: "skip",
       noLaunch: true,
       preflight: { skipDeps: false, nonInteractive: false, noPreflight: false },
@@ -381,6 +385,7 @@ describe("parseStartArgs", () => {
     const got = parseStartArgs(["--force", "--no-doctor", "--socket", "s1"], {});
     expect(got).toEqual({
       force: true,
+      forceNest: false,
       doctorMode: "skip",
       noLaunch: false,
       socket: "s1",
@@ -403,6 +408,7 @@ describe("resolveTmuxConfig", () => {
       { name: "t", tmuxTmpdir: "/proj/.atmux/tmux" },
       {
         force: false,
+        forceNest: false,
         doctorMode: "preflight",
         noLaunch: false,
         preflight: { skipDeps: false, nonInteractive: false, noPreflight: false },
@@ -417,6 +423,7 @@ describe("resolveTmuxConfig", () => {
       { name: "t", tmuxTmpdir: "/proj/.atmux/tmux" },
       {
         force: false,
+        forceNest: false,
         doctorMode: "preflight",
         noLaunch: false,
         preflight: { skipDeps: false, nonInteractive: false, noPreflight: false },
@@ -431,6 +438,7 @@ describe("resolveTmuxConfig", () => {
       { name: "t" },
       {
         force: false,
+        forceNest: false,
         doctorMode: "preflight",
         noLaunch: false,
         preflight: { skipDeps: false, nonInteractive: false, noPreflight: false },
@@ -447,6 +455,7 @@ describe("resolveTmuxConfig", () => {
       { name: "t", tmuxTmpdir: "/proj/.atmux/tmux" },
       {
         force: false,
+        forceNest: false,
         doctorMode: "preflight",
         noLaunch: false,
         preflight: { skipDeps: false, nonInteractive: false, noPreflight: false },
@@ -464,6 +473,7 @@ describe("resolveTmuxConfig", () => {
       { name: "t", tmuxTmpdir: "" },
       {
         force: false,
+        forceNest: false,
         doctorMode: "preflight",
         noLaunch: false,
         preflight: { skipDeps: false, nonInteractive: false, noPreflight: false },
@@ -2534,5 +2544,31 @@ describe("start — t-eb0887fe parallelized member spawn", () => {
     }
     // Default cap is 6; all 4 members fit and fan out together.
     expect(maxInFlight).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("start — nest ban (e-39 T1/T2)", () => {
+  test("parseStartArgs accepts --force-nest", () => {
+    expect(parseStartArgs(["--force-nest"]).forceNest).toBe(true);
+    expect(parseStartArgs([]).forceNest).toBe(false);
+  });
+
+  test("nested cwd → ConfigError refusing nested before any writes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "atmux-start-nest-"));
+    try {
+      await mkdir(join(root, ".atmux"), { recursive: true });
+      const child = join(root, "child");
+      await mkdir(join(child, ".atmux"), { recursive: true });
+      let caught: unknown = null;
+      try {
+        await start([], { cwd: child, env: {} });
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(ConfigError);
+      expect((caught as Error).message).toContain("refusing nested");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
