@@ -42,7 +42,7 @@ import { homedir } from "node:os";
 import { dirname } from "node:path";
 import { type CrontabIO, defaultCrontabIO } from "../abstractions/crontab.ts";
 import { ensureDir } from "../abstractions/fs.ts";
-import { updateJson } from "../abstractions/json.ts";
+import { readJson, updateJson } from "../abstractions/json.ts";
 import {
   createTmux,
   exactSessionTarget,
@@ -548,9 +548,10 @@ export async function reconcileGroupServers(
       logger.log(`  ✓ created group server '${group.name}' (${sock}; window 1: ${first.name})`);
     }
     const present = new Set((await gTmux.window.listWindows(group.name)).map((w) => w.name));
+    let alreadyPresent = 0;
     for (const w of wanted) {
       if (present.has(w.name)) {
-        logger.log(`  · group '${group.name}': window '${w.name}' already present`);
+        alreadyPresent += 1;
         continue;
       }
       await gTmux.window.newWindow({
@@ -562,6 +563,11 @@ export async function reconcileGroupServers(
       });
       present.add(w.name);
       logger.log(`  ✓ group '${group.name}': added window '${w.name}'`);
+    }
+    if (alreadyPresent > 0) {
+      logger.log(
+        `  · group '${group.name}': ${alreadyPresent} window${alreadyPresent === 1 ? "" : "s"} already present`,
+      );
     }
     if (opts.onlyTeam === undefined) {
       const wantedNames = new Set(wanted.map((w) => w.name));
@@ -1096,10 +1102,11 @@ export async function mapWithConcurrency<T, R>(
 /** Time one reconcile phase; logs a terse `phase <name>: <ms>ms` line
  *  to stderr (via the verb logger) so the next `aco` run shows where
  *  the wall-clock goes. */
-async function timedPhase(logger: Logger, name: string, fn: () => Promise<unknown>): Promise<void> {
+async function timedPhase<T>(logger: Logger, name: string, fn: () => Promise<T>): Promise<T> {
   const t0 = Date.now();
-  await fn();
+  const out = await fn();
   logger.log(`  ⏱ phase ${name}: ${Date.now() - t0}ms`);
+  return out;
 }
 
 /** The rebuild flow. Exported for direct unit-test access. */
@@ -1135,23 +1142,55 @@ export async function cockpitRebuild(
   // once — group servers (Phase 4.5) and the cockpit session (Phase 5)
   // both consume it, so they can never disagree on where a viewer lives.
   const topology = buildGroupTopology(cockpit);
-  logger.log(`cockpit roster: ${teams.map((t) => t.name).join(", ")}`);
-  if (topology.groups.length > 0) {
-    logger.log(`group servers: ${topology.groups.map((g) => g.name).join(", ")}`);
-  }
+  const groupNames = topology.groups.map((g) => g.name);
+  logger.log(
+    `cockpit: ${teams.length} team${teams.length === 1 ? "" : "s"}` +
+      (groupNames.length > 0
+        ? ` · ${groupNames.length} group servers (${groupNames.join(", ")})`
+        : ""),
+  );
 
   // Phase 1: normalise each team's team.json (bareWindowNames +
   // tuiCommands.claude). Per-team files are disjoint — parallelise.
-  // --dry-run: filesystem write — skip, preview only.
+  // Only changed files log a line; the phase ends with one summary.
   if (dryRun) {
-    for (const t of teams) {
-      logger.log(
-        `  · [dry-run] would normalise ${t.name} team.json (bareWindowNames + tuiCommands.claude)`,
-      );
-    }
+    const wouldChange = (
+      await mapWithConcurrency(teams, COCKPIT_RECONCILE_CONCURRENCY, async (t) => {
+        try {
+          const current = await readJson(teamJsonPath(`${t.root}/.atmux`), Team);
+          return JSON.stringify(current) !== JSON.stringify(computeNormalisedTeamJson(current, t))
+            ? t.name
+            : null;
+        } catch {
+          return `${t.name} (unreadable)`;
+        }
+      })
+    ).filter((n): n is string => n !== null);
+    logger.log(
+      `  · team.json: ${teams.length} checked` +
+        (wouldChange.length === 0
+          ? " — all current (dry-run)"
+          : ` — ${wouldChange.length} would change: ${wouldChange.join(", ")} (dry-run)`),
+    );
   } else {
-    await timedPhase(logger, "1 normalise-team-json", () =>
-      mapWithConcurrency(teams, COCKPIT_RECONCILE_CONCURRENCY, (t) => normaliseTeamJson(t, logger)),
+    const changed = await timedPhase(logger, "1 normalise-team-json", () =>
+      mapWithConcurrency(teams, COCKPIT_RECONCILE_CONCURRENCY, async (t) => {
+        try {
+          return (await normaliseTeamJson(t, logger)) ? t.name : null;
+        } catch (e) {
+          logger.warn(
+            `  ⚠ ${t.name}: normalise failed (${e instanceof Error ? e.message : String(e)})`,
+          );
+          return null;
+        }
+      }),
+    );
+    const changedNames = changed.filter((n): n is string => n !== null);
+    logger.log(
+      `  · team.json: ${teams.length} checked` +
+        (changedNames.length === 0
+          ? " — all current"
+          : ` — ${changedNames.length} updated: ${changedNames.join(", ")}`),
     );
   }
 
@@ -1161,7 +1200,7 @@ export async function cockpitRebuild(
   // and Phase 5's nest-attach retry-loops still run strictly after this
   // phase completes (socket-must-exist dependency).
   if (!parsed.noCycle) {
-    await timedPhase(logger, "2 cycle-cages", () =>
+    const cageOutcomes = await timedPhase(logger, "2 cycle-cages", () =>
       mapWithConcurrency(teams, COCKPIT_RECONCILE_CONCURRENCY, async (t) => {
         const sock = await resolveCageSocket(t.name, t.root);
         const cageTmux = factory({ socketPath: sock, configFile: getAtmuxTmuxConfPath() });
@@ -1179,10 +1218,7 @@ export async function cockpitRebuild(
           warn: (m) => logger.warn(`  ⚠ ${t.name}: ${m}`),
         });
         const alive = await cageAlive(cageTmux);
-        if (alive && !parsed.forceCycle) {
-          logger.log(`  · ${t.name} cage alive — skipping cycle (use --force-cycle to override)`);
-          return;
-        }
+        if (alive && !parsed.forceCycle) return "skipped";
         // --dry-run: launching the cage (start) + creating its socket dir
         // are real side effects — preview only. The legacy-session rename
         // above already routes through the recording wrapper.
@@ -1213,7 +1249,7 @@ export async function cockpitRebuild(
           logger.log(
             `  · [dry-run] would start cage '${t.name}' (${alive ? "force-cycle" : "dead/empty"} — no launch executed)`,
           );
-          return;
+          return "starting";
         }
         logger.log(`  ▸ ${t.name} cage ${alive ? "force-cycle" : "dead/empty"} — start`);
         // Pre-create socket parent — tmux/atmux-bun don't auto-mkdir (the
@@ -1228,8 +1264,13 @@ export async function cockpitRebuild(
         const startArgs = parsed.forceCycle ? ["--force", "--no-doctor"] : ["--no-doctor"];
         if (parsed.noLaunch) startArgs.push("--no-launch");
         await startImpl(startArgs, { env: teamEnv, cwd: t.root, logger });
+        return "starting";
       }),
     );
+    const skipped = cageOutcomes.filter((o) => o === "skipped").length;
+    if (skipped > 0) {
+      logger.log(`  · cages: ${skipped} alive — skipped (use --force-cycle to override)`);
+    }
   }
 
   // Phase 3: apply the level-resolved cage prefix on every enabled cage
@@ -1276,7 +1317,7 @@ export async function cockpitRebuild(
   // Phase 4: TUI auto-launch (idempotent — skips panes already on claude).
   // Per-cage send-keys are independent servers — parallelise.
   if (!parsed.noLaunch) {
-    await timedPhase(logger, "4 tui-autolaunch", () =>
+    const tuiOutcomes = await timedPhase(logger, "4 tui-autolaunch", () =>
       mapWithConcurrency(teams, COCKPIT_RECONCILE_CONCURRENCY, async (t) => {
         const sock = await resolveCageSocket(t.name, t.root);
         const cageTmux = factory({ socketPath: sock, configFile: getAtmuxTmuxConfPath() });
@@ -1291,20 +1332,30 @@ export async function cockpitRebuild(
           logger,
           dryRun ? { skipReadinessProbe: true } : {},
         );
-        const unbootMsg =
-          teamSummary.unbootstrapped.length > 0
-            ? ` ⚠ unbootstrapped=${teamSummary.unbootstrapped.length} ` +
-              `(${teamSummary.unbootstrapped.map((u) => `${u.member}:${u.result.state}`).join(", ")})`
-            : "";
-        logger.log(
-          `  ✓ ${t.name}: launched=${teamSummary.launched} ` +
-            `skipped=${teamSummary.skipped} (already-claude)${unbootMsg}`,
-        );
+        return {
+          name: t.name,
+          launched: teamSummary.launched,
+          unbootstrapped: teamSummary.unbootstrapped,
+        };
       }),
     );
+    // Per-team lines only for cages with news; the steady state is one summary.
+    for (const o of tuiOutcomes) {
+      if (o.launched > 0 || o.unbootstrapped.length > 0) {
+        const unbootMsg =
+          o.unbootstrapped.length > 0
+            ? ` ⚠ unbootstrapped=${o.unbootstrapped.length} ` +
+              `(${o.unbootstrapped.map((u) => `${u.member}:${u.result.state}`).join(", ")})`
+            : "";
+        logger.log(`  ✓ ${o.name}: launched=${o.launched}${unbootMsg}`);
+      }
+    }
+    const launchedTotal = tuiOutcomes.reduce((n, o) => n + o.launched, 0);
+    logger.log(
+      `  · tui: ${teams.length} cages checked, ${launchedTotal} launched` +
+        (launchedTotal === 0 ? " — all already on claude" : ""),
+    );
   }
-
-  // Phase 4.5 (e-419553c6 true containment): one tmux server per
   // enabled group, sitting between the cockpit (L1) and the team cages
   // (L3). Runs BEFORE Phase 5 so the cockpit's group-viewer windows
   // attach to live servers on first paint (the retry loop would cover a
@@ -1811,35 +1862,47 @@ function defaultResolveAtmuxBin(): string | null {
 
 // ---------- Phase helpers (exported for test directness) ----------
 
+/** Pure step of the team.json normalisation below: the content after
+ *  normalisation, without touching the filesystem. */
+export function computeNormalisedTeamJson(current: Team, team: CockpitTeam): Team {
+  const next = { ...current, bareWindowNames: true } as Team;
+  if (team.claudeAccount !== undefined) {
+    const ov = team.tuiOverrides;
+    const effort = ov?.effortLevel ?? "xhigh";
+    const permission = ov?.permissionMode ?? "auto";
+    const pluginFlag = ov?.pluginDir !== undefined ? ` --plugin-dir=${ov.pluginDir}` : "";
+    const prefix =
+      `CLAUDE_CONFIG_DIR=${team.claudeAccount.configDir} ` +
+      `CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=${effort} CLAUDE_GUARD_AGENT=1 ` +
+      `claude${pluginFlag} --permission-mode ${permission}`;
+    const tcRaw = next.tuiCommands;
+    const tc =
+      tcRaw !== undefined && tcRaw !== null && typeof tcRaw === "object"
+        ? { ...(tcRaw as Record<string, unknown>) }
+        : {};
+    tc.claude = prefix;
+    next.tuiCommands = tc;
+  }
+  return next;
+}
+
 /**
  * Set bareWindowNames=true and write tuiCommands.claude from the cockpit
  * team's claudeAccount + tuiOverrides config (when claudeAccount is
- * present). Idempotent — repeated runs converge.
+ * present). Idempotent — repeated runs converge. Returns true when the
+ * file content changed.
  */
-export async function normaliseTeamJson(team: CockpitTeam, logger: Logger): Promise<void> {
+
+export async function normaliseTeamJson(team: CockpitTeam, logger: Logger): Promise<boolean> {
   const path = teamJsonPath(`${team.root}/.atmux`);
+  let changed = false;
   await updateJson(path, Team, (current) => {
-    const next = { ...current, bareWindowNames: true } as typeof current;
-    if (team.claudeAccount !== undefined) {
-      const ov = team.tuiOverrides;
-      const effort = ov?.effortLevel ?? "xhigh";
-      const permission = ov?.permissionMode ?? "auto";
-      const pluginFlag = ov?.pluginDir !== undefined ? ` --plugin-dir=${ov.pluginDir}` : "";
-      const prefix =
-        `CLAUDE_CONFIG_DIR=${team.claudeAccount.configDir} ` +
-        `CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=${effort} CLAUDE_GUARD_AGENT=1 ` +
-        `claude${pluginFlag} --permission-mode ${permission}`;
-      const tcRaw = next.tuiCommands;
-      const tc =
-        tcRaw !== undefined && tcRaw !== null && typeof tcRaw === "object"
-          ? { ...(tcRaw as Record<string, unknown>) }
-          : {};
-      tc.claude = prefix;
-      next.tuiCommands = tc;
-    }
+    const next = computeNormalisedTeamJson(current, team);
+    changed = JSON.stringify(current) !== JSON.stringify(next);
     return next;
   });
-  logger.log(`  ✓ ${team.name} → ${path}`);
+  if (changed) logger.log(`  ✓ ${team.name} → ${path}`);
+  return changed;
 }
 
 /**

@@ -164,10 +164,17 @@ export function formatDryRunSummary(ops: ReadonlyArray<DryRunOp>): string {
   return `dry-run: ${rename} rename, ${kill} kill, ${other} other operations (nothing executed)`;
 }
 
-/** Print one line per recorded op, then the summary line. */
+/** Print the recorded plan, then the summary line. Consecutive identical
+ *  ops collapse into one line with a repeat count (order preserved —
+ *  only runs collapse, so `× 46` still means 46 back-to-back ops). */
 export function printDryRunPlan(logger: Logger, ops: ReadonlyArray<DryRunOp>): void {
-  for (const op of ops) {
-    logger.log(`  · [dry-run] ${op.description}`);
+  let i = 0;
+  while (i < ops.length) {
+    let run = 1;
+    while (i + run < ops.length && ops[i + run]?.description === ops[i]?.description) run += 1;
+    const description = ops[i]?.description ?? "";
+    logger.log(`  · [dry-run] ${description}${run > 1 ? ` (×${run})` : ""}`);
+    i += run;
   }
   logger.log(formatDryRunSummary(ops));
 }

@@ -350,6 +350,16 @@ describe("normaliseTeamJson", () => {
     const second = await readFile(join(projRoot, ".atmux", "team.json"), "utf8");
     expect(second).toBe(first);
   });
+  test("returns true on change, false when already current (silent second run)", async () => {
+    await writeTeamJson({ name: "x", members: [{ name: "lead", role: "team-lead" }] });
+    const first = makeLogger();
+    const team = { name: "x", root: projRoot, enabled: true } as CockpitTeam;
+    expect(await normaliseTeamJson(team, first.logger)).toBe(true);
+    expect(first.logs.join("\n")).toContain("✓ x →");
+    const second = makeLogger();
+    expect(await normaliseTeamJson(team, second.logger)).toBe(false);
+    expect(second.logs.join("\n")).not.toContain("✓ x →");
+  });
 });
 
 // ---------- Tmux integration tests ----------
@@ -2516,7 +2526,7 @@ describe("cockpitRebuild", () => {
       );
       expect(code).toBe(0);
       expect(startCalls).toBe(0); // alive cage skipped — start never fires
-      expect(logs.join("\n")).toContain("cage alive — skipping cycle");
+      expect(logs.join("\n")).toContain("alive — skipped");
       // The pane survives the reconcile: still alive, session intact.
       expect(await cageAlive(fx.tmux)).toBe(true);
       const sessions = await fx.tmux.session.listSessions();
@@ -3710,7 +3720,7 @@ describe("reconcileGroupServers (e-419553c6)", () => {
         .sort((a, b) => a.index - b.index)
         .map((w) => `${w.index}:${w.name}`);
       expect(second).toEqual(first);
-      expect(logs.some((l) => l.includes(`window '${t1}' already present`))).toBe(true);
+      expect(logs.some((l) => l.includes("2 windows already present"))).toBe(true);
     } finally {
       try {
         await gTmux.server.killServer();
