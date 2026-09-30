@@ -64,8 +64,9 @@ describe("verbs/version", () => {
 
   test("version --features prints the ADR-305 socket-dir marker on its own line", async () => {
     // Bootstrap contract: `atmux version --features | grep -qx
-    // 'socket-dirs=per-user-0700'`. An older build prints only the
-    // version line, so the grep fails closed.
+    // 'socket-dirs=per-user-0700;rev=3'`. An older build prints only the
+    // version line, and the refused first two cuts printed the bare
+    // scheme name, so the grep fails closed on all of them.
     const captured: string[] = [];
     const orig = console.log;
     console.log = (msg: unknown) => {
@@ -73,8 +74,8 @@ describe("verbs/version", () => {
     };
     try {
       expect(await version(["--features"])).toBe(0);
-      expect(captured).toEqual([`atmux ${ATMUX_VERSION}`, "socket-dirs=per-user-0700"]);
-      expect(ATMUX_FEATURES).toEqual(["socket-dirs=per-user-0700"]);
+      expect(captured).toEqual([`atmux ${ATMUX_VERSION}`, "socket-dirs=per-user-0700;rev=3"]);
+      expect(ATMUX_FEATURES).toEqual(["socket-dirs=per-user-0700;rev=3"]);
     } finally {
       console.log = orig;
     }

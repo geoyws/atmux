@@ -76,16 +76,23 @@ export const SOCKET_BASE_DIR = "/tmp";
 export const PRIVATE_DIR_MODE = 0o700;
 
 /**
- * Stable capability marker (ADR-305 §D5). Printed as its own line by
+ * Capability marker (ADR-305 §D5). Printed as its own line by
  * `atmux version --features` and carried in the green `socket-dir`
  * doctor row, so a bootstrap can refuse an atmux build that predates
- * per-user private socket directories:
+ * per-user private socket directories — or predates a security fix to
+ * them:
  *
- *   atmux version --features | grep -qx 'socket-dirs=per-user-0700'
+ *   atmux version --features | grep -qx 'socket-dirs=per-user-0700;rev=3'
  *
- * Never reword it; a successor scheme gets a new marker.
+ * `socket-dirs=per-user-0700` names the scheme and is never reworded (a
+ * successor scheme gets a new name). `;rev=N` counts the security
+ * revisions of that scheme: the unreleased first two cuts printed the
+ * bare name, so requiring `;rev=3` refuses them. Bump N with every fix a
+ * consumer must be able to require.
  */
-export const SOCKET_DIR_FEATURE = "socket-dirs=per-user-0700";
+export const SOCKET_DIR_FEATURE_NAME = "socket-dirs=per-user-0700";
+export const SOCKET_DIR_REVISION = 3;
+export const SOCKET_DIR_FEATURE = `${SOCKET_DIR_FEATURE_NAME};rev=${SOCKET_DIR_REVISION}`;
 
 /** Group + world permission bits. Any of them set ⇒ not private. */
 const GROUP_WORLD_BITS = 0o077;
@@ -326,10 +333,16 @@ function failed(issue: SocketPathIssue): WalkResult {
   return { kind: "issue", issue };
 }
 
+interface Split {
+  steps: Step[];
+  /** The socket's own name, or `null` when the path names a directory. */
+  leaf: string | null;
+}
+
 /** Split an absolute (or cwd-relative) socket path into directory steps
  *  plus the socket's own name. `.` / `..` components are refused: tmux
  *  resolves them physically, so they would only blur what is checked. */
-function socketPathSteps(socketPath: string): { steps: Step[]; leaf: string } | SocketPathIssue {
+function socketPathSteps(socketPath: string): Split | SocketPathIssue {
   const abs = socketPath.startsWith("/") ? socketPath : `${process.cwd()}/${socketPath}`;
   const names = abs.split("/").filter((n) => n.length > 0);
   const leaf = names.pop();
@@ -597,6 +610,16 @@ function walkSocketPath(
 ): WalkResult {
   const split = socketPathSteps(socketPath);
   if ("problem" in split) return failed(split);
+  return walkChain(split, socketPath, uid, fs, mode);
+}
+
+function walkChain(
+  split: Split,
+  socketPath: string,
+  uid: number,
+  fs: SocketDirFs,
+  mode: WalkMode,
+): WalkResult {
   const w: Walk = { fs, uid, mode, queue: [...split.steps], held: [], created: [], hops: 0 };
   try {
     const root = fs.openRoot();
@@ -610,6 +633,7 @@ function walkSocketPath(
       const r = walkStep(w, step);
       if (r !== null) return r;
     }
+    if (split.leaf === null) return { kind: "ok", absentAt: null, node: null, created: w.created };
     return checkNode(w, socketPath, split.leaf);
   } catch (e) {
     return failed(uninspectable(socketPath, e, uid));
@@ -668,6 +692,34 @@ export function prepareSocketDial(socketPath: string, opts: SocketDirOpts = {}):
   const r = walkSocketPath(socketPath, uid, fs, "connect");
   if (r.kind === "issue") throw new UnsafeSocketPathError(socketPath, r.issue);
   return r.node?.isSocket() === true;
+}
+
+/**
+ * Is `dirPath` an existing directory that is ours alone — owned by this
+ * uid with no group/other bit, reached through a chain that passes the
+ * rule? `null` when it is; the refusal otherwise (a missing directory is
+ * a refusal here). Read-only, descriptor-based like every walk. Callers
+ * that delete a tree (`test-reaper`) run it right before the removal:
+ * once it passes, no other uid can rename any component of the path or
+ * plant anything inside the directory.
+ */
+export function privateDirIssue(dirPath: string, opts: SocketDirOpts = {}): SocketPathIssue | null {
+  const uid = uidOf(opts);
+  if (uid === null) return null;
+  const split = socketPathSteps(`${dirPath}/.probe`);
+  if ("problem" in split) return { ...split, path: dirPath };
+  const dirSplit: Split = { steps: split.steps, leaf: null };
+  const r = walkChain(dirSplit, dirPath, uid, opts.fs ?? realSocketDirFs, "inspect");
+  if (r.kind === "issue") return r.issue;
+  if (r.absentAt !== null) {
+    return {
+      path: r.absentAt,
+      problem: "uninspectable",
+      detail: "does not exist",
+      hint: `nothing to act on under ${dirPath}`,
+    };
+  }
+  return null;
 }
 
 /** {@link prepareSocketDial} without the answer: the guard `createTmux`
@@ -826,7 +878,7 @@ export async function settleSocketForCreate(
     if (await isListening(legacyPath)) {
       throw new ConfigError({
         what: `a live tmux server on ${legacyPath} (yours) sits in an unsafe directory chain: ${info.issue.path} ${info.issue.detail}; atmux no longer uses shared socket directories`,
-        hint: `${info.issue.hint} — that keeps the server usable until it next restarts; or stop it (tmux -S ${legacyPath} kill-server) and re-run`,
+        hint: `${info.issue.hint} — that keeps the server usable until it next restarts; or stop it (atmux socket-dial ${legacyPath} kill-server) and re-run`,
       });
     }
     return resolved;

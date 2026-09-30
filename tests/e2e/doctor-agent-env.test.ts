@@ -200,7 +200,9 @@ describe.skipIf(TMUX_BIN === null)(
         `team ${polluted.name} server ${polluted.socket} carries agent-shell env: AGENT, CI, EDITOR`,
       );
       for (const v of ["AGENT", "CI", "EDITOR"]) {
-        expect(row.hint).toContain(`tmux -S ${polluted.socket} set-environment -g -u ${v}`);
+        expect(row.hint).toContain(
+          `atmux socket-dial ${polluted.socket} set-environment -g -u ${v}`,
+        );
       }
       expect(row.hint).toContain(
         "panes already running keep the old environment until their processes restart",
@@ -242,13 +244,26 @@ describe.skipIf(TMUX_BIN === null)(
 
     test("beat 4 — running the row's remedy commands verbatim clears the finding", () => {
       // `<cmd>; <cmd>; <cmd> — <caveat>`: run each command as written, with
-      // the leading `tmux` resolved to the binary the servers run on.
+      // the leading `atmux` resolved to this checkout. ADR-305 §D6: the
+      // copy-paste dials through `atmux socket-dial`, never raw `tmux -S`.
       const cmds = remedy.split(" — ")[0]?.split("; ") ?? [];
       expect(cmds).toHaveLength(3);
       for (const cmd of cmds) {
-        const [bin, flag, socket, ...rest] = cmd.split(" ");
-        expect([bin, flag, socket]).toEqual(["tmux", "-S", polluted.socket]);
-        expect(tmuxAt(polluted.socket, rest).exitCode).toBe(0);
+        const [bin, verb, socket, ...rest] = cmd.split(" ");
+        expect([bin, verb, socket]).toEqual(["atmux", "socket-dial", polluted.socket]);
+        const run = Bun.spawnSync({
+          cmd: [
+            process.execPath,
+            join(REPO_ROOT, "bin", "atmux"),
+            "socket-dial",
+            socket ?? "",
+            ...rest,
+          ],
+          env: { PATH: process.env.PATH ?? "", HOME: home, TERM: "xterm-256color" },
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        expect(run.exitCode).toBe(0);
       }
       expect(runDoctor()).toEqual([]);
     });

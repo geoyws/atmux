@@ -8,16 +8,31 @@
 //   bun socket-dir-actor.ts ensure <sockPath>  ensurePrivateSocketDir only
 //   bun socket-dir-actor.ts probe <sockPath>   createTmux(...).hasSession through the guard
 //   bun socket-dir-actor.ts kill <sockPath>    kill-server through the guard
+//   bun socket-dir-actor.ts session-name <team.json>  the session doctor probes for a team
+//   bun socket-dir-actor.ts doctor-race <json>  {socket, team, n, control}: the review-of-a9f96ac2
+//       rename race — `control` dials through a hand copy of the revision-2 doctor gate
+//       (negative control), then n runs each of the two real doctor dial sites;
+//       counts how many reached a server carrying the planted AGENT marker /
+//       legacy window
 //
 // Refusals are reported, never thrown: `{ ok: false, problem, message }`.
 
-import { statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import { createTmux } from "../../src/abstractions/tmux.ts";
 import { getDefaultSocket } from "../../src/core/common.ts";
-import { ensurePrivateSocketDir, UnsafeSocketPathError } from "../../src/core/socket-dir.ts";
+import { resolveTmuxBin } from "../../src/core/resolve-tmux-bin.ts";
+import {
+  ensurePrivateSocketDir,
+  socketPathIssue,
+  UnsafeSocketPathError,
+} from "../../src/core/socket-dir.ts";
 import { getAtmuxTmuxConfPath } from "../../src/core/tmux-paths.ts";
+import type { Team } from "../../src/schema/team.ts";
 import { ensurePrivateGroupSocket } from "../../src/verbs/cockpit.ts";
+import { checkAgentShellEnv } from "../../src/verbs/doctor/agent-env.ts";
+import { checkLegacyWindowNameFormat, probeSessionName } from "../../src/verbs/doctor/cockpit.ts";
 
 function out(v: Record<string, unknown>): void {
   process.stdout.write(`${JSON.stringify({ uid: process.getuid?.(), ...v })}\n`);
@@ -75,6 +90,44 @@ async function main(verb: string, arg: string): Promise<void> {
         await tmuxAt(arg).server.killServer();
         out({ ok: true });
         return;
+      case "session-name": {
+        const team = JSON.parse(readFileSync(arg, "utf8")) as Team;
+        out({ ok: true, session: await probeSessionName(team, {}) });
+        return;
+      }
+      case "doctor-race": {
+        const { socket, team, n, control: controlN } = JSON.parse(arg) as {
+          socket: string;
+          team: Team;
+          n: number;
+          control: number;
+        };
+        // Negative control: revision 2's doctor gate, by hand — the socket
+        // file exists, the inspect-only walk finds no issue (a missing
+        // directory counts as safe), then a raw dial.
+        let control = 0;
+        const tmuxBin = resolveTmuxBin();
+        for (let i = 0; i < controlN; i++) {
+          const isSock = await stat(socket).then(
+            (s) => s.isSocket(),
+            () => false,
+          );
+          if (!isSock || socketPathIssue(socket) !== null) continue;
+          const r = Bun.spawnSync([tmuxBin, "-S", socket, "show-environment", "-g"]);
+          if (r.stdout.toString().includes("AGENT=")) control++;
+        }
+        // The real doctor dial sites, with every default.
+        let agentEnv = 0;
+        let legacy = 0;
+        for (let i = 0; i < n; i++) {
+          agentEnv += (await checkAgentShellEnv(null, { sockets: [{ socket, owner: "race" }] }))
+            .length;
+          legacy += (await checkLegacyWindowNameFormat(team, { loadCockpitFn: async () => null }))
+            .length;
+        }
+        out({ ok: true, control, agentEnv, legacy });
+        return;
+      }
       default:
         out({ ok: false, problem: "usage", message: `unknown verb ${verb}` });
     }

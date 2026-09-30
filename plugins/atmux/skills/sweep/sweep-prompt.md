@@ -36,15 +36,20 @@ For each result, check the socket and kill if it's a test fixture:
 
 ```bash
 DIR=...
-[ -S "$DIR/sock" ] && tmux -S "$DIR/sock" list-sessions -F '#{session_name}' 2>/dev/null
+atmux socket-dial "$DIR/sock" list-sessions -F '#{session_name}' 2>/dev/null
 ```
+
+`atmux socket-dial` runs tmux only after the socket's whole directory chain passes [ADR-305](../../../../docs/adr/305-per-user-private-socket-dirs.md) §D2: exit 1 = no socket, 78 = the directory is not yours or is shared — leave that one alone. Never dial `tmux -S` on a `/tmp` path directly.
 
 If the session name starts with `test_cockpit_` OR the parent dir name matches `atmux-cockpit-cockpit-(reb-sd-|sd-autostart-|sd-nudge-|sd-depr-)`, it's a test fixture safe to reap:
 
 ```bash
-tmux -S "$DIR/sock" kill-server
-rm -rf "$DIR"
+atmux socket-dial "$DIR/sock" kill-server
+# Remove only a real directory you own (a sticky /tmp lets only its owner swap it).
+[ ! -L "$DIR" ] && [ -O "$DIR" ] && rm -rf "$DIR"
 ```
+
+`atmux test-reaper` does the same for sidecar-tracked fixtures with every check built in (ADR-301, ADR-305).
 
 **Hard constraints:**
 
@@ -210,12 +215,12 @@ jq -r --arg name "$TEAM" '
 ' "$HOME/.atmux/cockpit.json"
 ```
 
-Probe socket liveness (the default path is `/tmp/atmux-<team>/sock` per [ADR-058](../../../../docs/adr/058-cage-tier-isolation.md) cage tiering; some teams override via `team.json::tmuxTmpdir`):
+Probe socket liveness. The default path is the per-user `/tmp/atmux-<uid>/<team>/sock` ([ADR-305](../../../../docs/adr/305-per-user-private-socket-dirs.md)); a cage not restarted since ADR-305 may still be on the pre-ADR-305 `/tmp/atmux-<team>/sock`, and a team that sets `team.json::tmuxTmpdir` uses `<tmuxTmpdir>/tmux-<uid>/default`. Dial through `atmux socket-dial`, never a raw `tmux -S`:
 
 ```bash
 TEAM=...
-SOCK="/tmp/atmux-$TEAM/sock"
-if [ -S "$SOCK" ] && tmux -S "$SOCK" list-sessions >/dev/null 2>&1
+SOCK="/tmp/atmux-$(id -u)/$TEAM/sock"
+if atmux socket-dial "$SOCK" list-sessions >/dev/null 2>&1
 then
   SESSION_ALIVE=true
 else
@@ -339,7 +344,7 @@ For each red signal, do not stop at the symptom. Trace it back. Useful sources, 
 1. **Recent commits** — `git -C <team-root> log --since='4 hours ago' --oneline` and the diffs of any commit that landed shortly before the anomaly fired. The most common root cause is a recent commit.
 2. **Lead-queue + driver-inbox archive** — `<team-root>/.atmux/lead-queue.md` and `<team-root>/.atmux/driver-inbox.md` `## Archive` section. Tells you what the lead and operator have been working on.
 3. **Pane state** — `tmux capture-pane -p -t <team-cage-socket-target> -S -100` for the suspected wedged pane. Look for: permission-prompt modals, `Compacting conversation`, `You've hit your limit`, `Now using extra usage`, `thinking with...` lasting longer than reasonable.
-4. **Cage tmux server** — for cage-down anomalies, `ls -la /tmp/atmux-<team>/sock` and `tmux -S /tmp/atmux-<team>/sock list-sessions` (or the team's `tmuxTmpdir` if set per `team.json`). A cage with no sessions but a stale socket file means a previous cage process died without cleaning up.
+4. **Cage tmux server** — for cage-down anomalies, `ls -la /tmp/atmux-$(id -u)/<team>/sock` and `atmux socket-dial /tmp/atmux-$(id -u)/<team>/sock list-sessions` (the pre-ADR-305 `/tmp/atmux-<team>/sock` for a cage not restarted since, or `<tmuxTmpdir>/tmux-<uid>/default` when `team.json` sets `tmuxTmpdir`). Exit 78 means the path is unsafe and was not dialled. A cage with no sessions but a stale socket file means a previous cage process died without cleaning up.
 5. **Past complaints** — once F2 ships, `atmux complaints list <team> --status open` may already have an existing root cause for a recurring symptom. Don't re-diagnose what's already documented.
 
 When the search is wide (e.g. "why did this dispatch go to the wrong member"), spawn an `Agent` with `subagent_type: Explore` and `model: sonnet` for read-only research — your own context is precious, and these searches consume a lot of tokens for small answers.
@@ -362,7 +367,7 @@ You take a structural action yourself. Permitted actions:
 
 - **Rotate a wedged lead** — invoke `/atmux:team rotate-lead` against the affected team's cage (note: the skill expects to run from inside the team's cage, so capture-pane → send-keys to the lead's pane: `/atmux:team rotate-lead`).
 - **Clear a confused member** — `/atmux:team clear <member>` similarly, via send-keys to the team-lead pane within the cage.
-- **Cycle a stuck cage** — when the cage tmux server is wedged but the team's git state is fine: `tmux -S <socket> kill-server` then re-spawn via `atmux cockpit rebuild`.
+- **Cycle a stuck cage** — when the cage tmux server is wedged but the team's git state is fine: `atmux socket-dial <socket> kill-server` then re-spawn via `atmux cockpit rebuild`.
 - **Push a fix to atmux source on its own branch** — when the bug is in atmux itself (recurrence-prevention naturally lives in atmux): create branch `sweep/<short-slug>`, commit fix, push, open a PR. Do NOT merge — operator review required.
 - **Modify `~/.atmux/cockpit.json`** — e.g. flip `enabled: false` on a team that's hard-stuck and dragging the cockpit. Re-run `atmux cockpit rebuild` after.
 

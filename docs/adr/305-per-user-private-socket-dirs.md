@@ -41,7 +41,11 @@ Resolvers: `core/socket-dir.ts` (`resolveCageSocketPath`, `resolveGroupSocketPat
 
 Why this is enough: under rules 1–3 no other uid can rename, replace or re-point any component of the checked path — a sticky directory lets only an entry's owner (or root) rename it, and every other directory on the way is writable only by root or this uid — so the path atmux then hands tmux still means what the walk checked. Without `/proc` (macOS), names resolve against the walk's own resolved path, which holds no symlink and, by the same rules, nothing another uid can change.
 
-Enforcement points: `ensurePrivateSocketDir` at every creation site (`atmux start`, `cockpit reconcile` cage pre-create and group servers); the connect-time guard in `createTmux`, before EVERY tmux spawn of a namespace (`-S` path, and the `-L` name's `$TMUX_TMPDIR/tmux-<uid>/<name>`); `atmux socket-dial` (D6) for shell loops; `bin/atmux-tmux`, which applies the same rules in POSIX shell (`cd -P` to the physical path, then `ls -ldn` per component top-down, `umask 077; mkdir` for missing ones, and it hands tmux the checked physical path). A refusal is `UnsafeSocketPathError`, a `ConfigError` (exit 78). Raw `tmux -S` probes in doctor (`tmux-agent-env`, legacy window names) skip an unsafe socket instead of dialling it.
+Enforcement points: `ensurePrivateSocketDir` at every creation site (`atmux start`, `cockpit reconcile` cage pre-create and group servers); the connect-time guard in `createTmux`, before EVERY tmux spawn of a namespace (`-S` path, and the `-L` name's `$TMUX_TMPDIR/tmux-<uid>/<name>`); `atmux socket-dial` (D6) for shell loops; `bin/atmux-tmux`, which applies the same rules in POSIX shell (`cd -P` to the physical path, then `ls -ldn` per component top-down, `umask 077; mkdir` for missing ones, and it hands tmux the checked physical path). A refusal is `UnsafeSocketPathError`, a `ConfigError` (exit 78).
+
+**Every dial runs the guard itself, immediately before it spawns.** An inspect-only check (`socketPathIssue`, which treats a missing directory as safe) never gates a dial, and no check result is reused for a later dial: another uid that squatted `/tmp/atmux-<uid>` can rename it away for the check and back for the dial. The dial sites outside `createTmux` are guarded the same way: doctor's tmux spawn (`verbs/doctor/types.ts::defaultTmuxSpawn`, for `tmux-agent-env`, `legacy-window-name-format` and `cockpit-on-default-socket`) runs `guardTmuxArgv` on every `-S`/`-L` argv; `atmux test-reaper` guards its `kill-server`; the fallback-cage operator paths (`poke.ts::sendCageBrief`, `fallback-cage.ts` capture) guard their `-L` dials. Copy-paste hints in doctor rows, orphan reports and refusals name `atmux socket-dial <socket> …`, never a raw `tmux -S`.
+
+**Deleting a tree.** `atmux test-reaper` acts only on a fixture directory that `privateDirIssue` (a descriptor walk) shows is ours alone — owned by this uid, no group/other bit, a passing chain — and whose `sock` is not a symlink or another uid's; it re-runs that check right before the removal. Anything else is reported `unsafe-skipped` and left alone. The groom zombie sweep never kills through or removes a directory another uid owns.
 
 ### D3 — Pre-ADR-305 sockets
 
@@ -55,13 +59,13 @@ At create time (`start`, group-server reconcile): a dead legacy socket with a pa
 
 ### D5 — Capability marker
 
-`SOCKET_DIR_FEATURE = "socket-dirs=per-user-0700"` (`core/socket-dir.ts`), printed as its own line by `atmux version --features` and carried in the green `socket-dir` row. A bootstrap refuses an older build with:
+`SOCKET_DIR_FEATURE = "socket-dirs=per-user-0700;rev=3"` (`core/socket-dir.ts`), printed as its own line by `atmux version --features` and carried in the green `socket-dir` row. A bootstrap refuses an older build with:
 
 ```sh
-atmux version --features | grep -qx 'socket-dirs=per-user-0700'
+atmux version --features | grep -qx 'socket-dirs=per-user-0700;rev=3'
 ```
 
-An older build prints only the version line, so the grep fails closed. The token is never reworded; a successor scheme gets a new marker.
+An older build prints only the version line, and the two unreleased cuts that failed review (35ea2c3, a9f96ac2) printed the bare `socket-dirs=per-user-0700`, so the grep fails closed on all of them. `socket-dirs=per-user-0700` names the scheme and is never reworded (a successor scheme gets a new name); `;rev=N` (`SOCKET_DIR_REVISION`) is bumped by every security fix a consumer must be able to require.
 
 ### D6 — `atmux socket-dial` for shell loops
 
@@ -74,6 +78,10 @@ An older build prints only the version line, so the grep fails closed. The token
 - `/tmp/atmux-<uid>` can be squatted by another local user (atmux then refuses, clearly, rather than using it). That is a denial of service, never a hijack.
 - macOS: the chain is walked through the trusted `/tmp → private/tmp` link without `/proc`; `bin/atmux-tmux` hands tmux the physical `/private/tmp/…` path. Untested on macOS — verify.
 - Out of scope: the `-L` fallback cages (`/tmp/atmux_fallback_*`, tmux enforces its own directory), retired epic-cage probe paths in `topo`, and the ~22k leftover `/tmp/atmux-*` directories on @@hax (infra t-67d80702).
+
+## Revision 3 — 2026-09-30, review of revision 2 (a9f96ac2)
+
+Revision 2 still let doctor check a socket with the inspect-only walk and then dial it raw, so a squatter renaming `/tmp/atmux-<uid>` away and back reached doctor's tmux client; `atmux test-reaper` dialled `kill-server` without the guard and removed any matching directory, so a planted `sock` link let another uid aim root's reaper at root's own cage; and the sweep/whip prompts still told agents to run raw `tmux -S` on shared `/tmp` paths. Revision 3 guards every dial at the dial (D2 above), gates test-reaper's kill and removal, points every prompt and hint at `atmux socket-dial`, and adds `;rev=3` to the D5 marker. Regressions: `tests/unit/verbs/adr305-dial-regressions.test.ts` (fails on a9f96ac2, passes here) and e2e beats 12–13.
 
 ## Revision — 2026-09-30, review of the first cut (35ea2c3)
 

@@ -43,6 +43,13 @@
 //      dial; a squatted one refuses `socket-dial` and `start`.
 //  11. cockpit socket: another uid's /tmp/tmux-<uid> stops
 //      `cockpit reconcile` with exit 78.
+//  12. review of a9f96ac2, item 1: carol squats /tmp/atmux-<erin> with a
+//      server and renames it away and back in a loop. A hand copy of the
+//      revision-2 doctor gate (check, then dial) is raced into carol's
+//      server (negative control); the real doctor dial sites never are.
+//  13. review of a9f96ac2, item 2: carol plants a test-reaper fixture whose
+//      `sock` links to root's live server. Root's `atmux test-reaper`
+//      leaves both alone; root's own fixture is still reaped.
 
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, writeFileSync } from "node:fs";
@@ -55,7 +62,7 @@ const ACTOR = resolve(REPO, "tests/helpers/socket-dir-actor.ts");
 const ATMUX = resolve(REPO, "bin/atmux");
 const WRAPPER = resolve(REPO, "bin/atmux-tmux");
 const NONCE = `${process.pid.toString(36)}${Date.now().toString(36).slice(-4)}`;
-const USERS = { alice: 4201, bob: 4202, carol: 4203, dave: 4204 } as const;
+const USERS = { alice: 4201, bob: 4202, carol: 4203, dave: 4204, erin: 4205 } as const;
 type Who = keyof typeof USERS | "root";
 /** Primary gid per user, read back after `useradd -U`. */
 const GIDS: Record<string, number> = {};
@@ -618,5 +625,122 @@ describe.skipIf(SKIP)("e2e: ADR-305 per-user private socket dirs across two real
     expect(r.code).toBe(78);
     expect(r.err).toContain("/tmp/tmux-4204 is owned by uid 4202, not uid 4204");
     expect(existsSync("/tmp/tmux-4204/atmux-cockpit")).toBe(false);
+  });
+  test("beat 12 — review item 1: a squatter renaming /tmp/atmux-<uid> away and back never reaches doctor", async () => {
+    const team = `e2e-race-${NONCE}`;
+    const squat = "/tmp/atmux-4205";
+    const away = `/tmp/e2e-away-${NONCE}`;
+    scratch.push(squat, away);
+    sh(["rm", "-rf", squat]);
+    const c = as("carol");
+    // carol's server, where erin's cage socket would be, carrying an agent
+    // marker and a legacy-form window so either doctor probe shows a hit.
+    const teamObj = {
+      name: team,
+      members: [{ name: "lead", role: "team-lead", emoji: "L", tui: "claude" }],
+    };
+    const tj = `${HOME_OF("erin")}/race-team.json`;
+    writeFileSync(tj, JSON.stringify(teamObj));
+    sh(["chown", `4205:${GIDS.erin}`, tj]);
+    const session = actor("erin", "session-name", tj).session as string;
+    sh([...c.argv, "mkdir", "-m", "777", squat, `${squat}/${team}`], c.env);
+    const sock = `${squat}/${team}/sock`;
+    for (const argv of [
+      ["new-session", "-d", "-s", session, "-n", "L-lead", "sleep", "600"],
+      ["set-environment", "-g", "AGENT", "1"],
+      ["server-access", "-a", "erin"],
+    ]) {
+      expect(sh([...c.argv, "tmux", "-S", sock, ...argv], c.env).code).toBe(0);
+    }
+    started.push({ who: "carol", sock: `${away}/${team}/sock` });
+    started.push({ who: "carol", sock });
+    sh([...c.argv, "chmod", "777", sock], c.env);
+    const flipper = Bun.spawn(
+      [
+        ...c.argv,
+        "sh",
+        "-c",
+        `while :; do mv -T ${squat} ${away} 2>/dev/null; mv -T ${away} ${squat} 2>/dev/null; done`,
+      ],
+      { env: { PATH: process.env.PATH ?? "", ...c.env }, stdout: "ignore", stderr: "ignore" },
+    );
+    background.push(flipper);
+    try {
+      const r = actor(
+        "erin",
+        "doctor-race",
+        JSON.stringify({ socket: sock, team: teamObj, n: 3000, control: 5000 }),
+      );
+      process.stderr.write(
+        `beat 12: revision-2 gate reached carol's server ${String(r.control)}/5000; doctor tmux-agent-env ${String(r.agentEnv)}/3000, legacy-window ${String(r.legacy)}/3000\n`,
+      );
+      expect(r.ok).toBe(true);
+      expect(r.agentEnv).toBe(0);
+      expect(r.legacy).toBe(0);
+      // Negative control: the check-then-dial gate IS raced here.
+      expect(Number(r.control)).toBeGreaterThan(0);
+    } finally {
+      flipper.kill();
+      await flipper.exited;
+    }
+    // Once doctor dialled, the name is erin's: carol can no longer put hers back.
+    expect(modeOwner(squat)).toBe("700 4205");
+  });
+
+  test("beat 13 — review item 2: root's test-reaper never kills through, or removes, carol's planted fixture", () => {
+    const prefix = `e2ereap${NONCE}`;
+    // root's live server: the target of carol's planted link.
+    const victimDir = `/tmp/e2e-victim-${NONCE}`;
+    scratch.push(victimDir);
+    sh(["install", "-d", "-m", "700", victimDir]);
+    const victim = `${victimDir}/sock`;
+    expect(
+      sh(["tmux", "-S", victim, "new-session", "-d", "-s", "victim", "sleep", "600"], {
+        HOME: HOME_OF("root"),
+      }).code,
+    ).toBe(0);
+    started.push({ who: "root", sock: victim });
+    const sidecar = (dir: string): string =>
+      JSON.stringify({
+        tmuxSocket: `${dir}/sock`,
+        socketDir: dir,
+        parentPid: 999_999_931,
+        createdAt: Math.floor(Date.now() / 1000) - 7_200,
+      });
+    // carol's plant: her dir, a valid sidecar, `sock` -> root's server.
+    const planted = `/tmp/${prefix}-plant-x`;
+    scratch.push(planted);
+    const c = as("carol");
+    sh([...c.argv, "mkdir", "-m", "777", planted], c.env);
+    writeFileSync(`${planted}/.leak-tracker.json`, sidecar(planted));
+    sh(["chown", `4203:${GIDS.carol}`, `${planted}/.leak-tracker.json`]);
+    sh([...c.argv, "ln", "-s", victim, `${planted}/sock`], c.env);
+    // root's own leaked fixture (positive control): private dir, own server.
+    const own = `/tmp/${prefix}-own-x`;
+    scratch.push(own);
+    sh(["install", "-d", "-m", "700", own]);
+    writeFileSync(`${own}/.leak-tracker.json`, sidecar(own));
+    expect(
+      sh(["tmux", "-S", `${own}/sock`, "new-session", "-d", "-s", "own", "sleep", "600"], {
+        HOME: HOME_OF("root"),
+      }).code,
+    ).toBe(0);
+    started.push({ who: "root", sock: `${own}/sock` });
+
+    const r = atmux("root", ["test-reaper", "--max-age-min", "0", "--prefix", prefix, "--json"], {
+      env: { TMPDIR: "/tmp" },
+    });
+    expect(`${r.code} ${r.err}`).toStartWith("0 ");
+    const results = (JSON.parse(r.out) as { results: Array<{ socketDir: string; status: string }> })
+      .results;
+    const status = Object.fromEntries(results.map((x) => [x.socketDir, x.status]));
+    expect(status[planted]).toBe("unsafe-skipped");
+    expect(status[own]).toBe("reaped");
+    // root's server behind carol's link is alive; carol's dir is intact.
+    expect(sh(["tmux", "-S", victim, "has-session", "-t", "=victim"]).code).toBe(0);
+    expect(existsSync(`${planted}/.leak-tracker.json`)).toBe(true);
+    // root's own fixture really was reaped.
+    expect(existsSync(own)).toBe(false);
+    expect(sh(["tmux", "-S", `${own}/sock`, "has-session"]).code).not.toBe(0);
   });
 });

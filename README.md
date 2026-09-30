@@ -213,7 +213,7 @@ atmux checks the WHOLE path, from `/` down, before it creates or dials a socket:
 
 Shell loops (the cockpit's viewer windows, the bau skill) dial through `atmux socket-dial <socket> <tmux-args…>`, which runs tmux only after that check: exit 1 when there is no socket, 78 when it is unsafe.
 
-Bootstrap check for a build with this guarantee: `atmux version --features | grep -qx 'socket-dirs=per-user-0700'`.
+Bootstrap check for a build with this guarantee: `atmux version --features | grep -qx 'socket-dirs=per-user-0700;rev=3'` (`;rev=` counts security revisions of the scheme; the bare name was printed only by unreleased cuts that failed review).
 
 ### Per-member worktree isolation (opt-in)
 

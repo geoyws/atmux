@@ -18,7 +18,6 @@ import {
   resolveTeamSocket,
   tryLoadTeam,
 } from "../../core/common.ts";
-import { socketPathIssue } from "../../core/socket-dir.ts";
 import { getAtmuxTmuxConfPath } from "../../core/tmux-paths.ts";
 import type { Team, TeamMember } from "../../schema/team.ts";
 import {
@@ -605,10 +604,10 @@ export async function checkLegacyWindowNameFormat(
         return null;
       }
     });
-  // ADR-305: a socket in a shared / foreign directory (or owned by another
-  // uid) reads as absent — the raw `tmux -S` probe below never dials it.
-  const socketExistsFn =
-    opts.socketExists ?? (async (p: string) => (await exists(p)) && socketPathIssue(p) === null);
+  // A cheap pre-filter only. The SAFETY check is the ADR-305 guard that
+  // the default `tmux` spawn runs right before the `-S` dial below: an
+  // unsafe socket throws there and the team is skipped.
+  const socketExistsFn = opts.socketExists ?? exists;
 
   // Build the probe target set: cockpit teams (when loadable) ∪ currentTeam.
   // Dedup by team name so a current-team that's also in cockpit isn't
@@ -685,7 +684,7 @@ export async function checkLegacyWindowNameFormat(
           status: "yellow",
           label: "legacy-window-name-format",
           detail: `${team.name} cage: window '${legacyName}' should be '${canonical}' (default-member role '${m.role}')`,
-          hint: `tmux -S ${socket} rename-window -t ${sessionName}:${legacyName} ${canonical}`,
+          hint: `atmux socket-dial ${socket} rename-window -t ${sessionName}:${legacyName} ${canonical}`,
         });
       }
     }

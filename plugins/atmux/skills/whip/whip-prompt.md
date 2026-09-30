@@ -73,15 +73,20 @@ For each result:
 
 ```bash
 DIR=...
-[ -S "$DIR/sock" ] && tmux -S "$DIR/sock" list-sessions -F '#{session_name}' 2>/dev/null
+atmux socket-dial "$DIR/sock" list-sessions -F '#{session_name}' 2>/dev/null
 ```
+
+`atmux socket-dial` runs tmux only after the socket's whole directory chain passes [ADR-305](../../../../docs/adr/305-per-user-private-socket-dirs.md) §D2: exit 1 = no socket, 78 = the directory is not yours or is shared — leave that one alone. Never dial `tmux -S` on a `/tmp` path directly.
 
 If session name starts with `test_cockpit_` OR parent dir name matches `atmux-cockpit-cockpit-(reb-sd-|sd-autostart-|sd-nudge-|sd-depr-)`, it's a test fixture safe to reap:
 
 ```bash
-tmux -S "$DIR/sock" kill-server
-rm -rf "$DIR"
+atmux socket-dial "$DIR/sock" kill-server
+# Remove only a real directory you own (a sticky /tmp lets only its owner swap it).
+[ ! -L "$DIR" ] && [ -O "$DIR" ] && rm -rf "$DIR"
 ```
+
+`atmux test-reaper` does the same for sidecar-tracked fixtures with every check built in (ADR-301, ADR-305).
 
 **Hard constraints (same as `/atmux:sweep` §0.6):**
 - ONLY dirs whose name starts with `atmux-cockpit-cockpit-` (double-cockpit test-convention prefix). Single-`cockpit-` dirs may be live; do NOT touch.

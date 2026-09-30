@@ -22,7 +22,7 @@
 // can pin the clock; archive month-stamps default to UTC formatting to
 // match bash's cron-on-hax (TZ=UTC) behaviour byte-for-byte.
 
-import { readdir, rm } from "node:fs/promises";
+import { lstat, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -41,6 +41,7 @@ import { createTmux } from "../abstractions/tmux.ts";
 import { Kanban } from "../schema/kanban.ts";
 import { hasLiveChildCages } from "./cage-children.ts";
 import { kanbanJsonPath, archiveDir as resolveArchiveDir } from "./common.ts";
+import { currentUid } from "./socket-dir.ts";
 import { getAtmuxTmuxConfPath } from "./tmux-paths.ts";
 
 // ---------- Shared time helpers ----------
@@ -997,6 +998,9 @@ export interface SweepZombieSocketsOpts {
    *  under `<dir>` is live ⇒ the sweep SKIPS removing that parent dir
    *  (no kill, no rm) and bumps `skippedLiveChildren`. */
   hasLiveChildren?: (parentTmpdir: string) => Promise<boolean>;
+  /** ADR-305 seam: the uid whose directories the sweep may touch.
+   *  Default `process.getuid()`; `null` (no POSIX uid) disables the check. */
+  uid?: number | null;
 }
 
 /** Fixture-shape regex: trailing `-…` is the mkdtemp random suffix
@@ -1021,6 +1025,7 @@ export async function sweepZombieTmuxSockets(
   const dryRun = opts.dryRun === true;
   const killServer = opts.killServer ?? defaultKillServer;
   const hasLiveChildren = opts.hasLiveChildren ?? hasLiveChildCages;
+  const ownUid = opts.uid === undefined ? currentUid() : opts.uid;
 
   const result: ZombieSweepResult = {
     scanned: 0,
@@ -1043,6 +1048,20 @@ export async function sweepZombieTmuxSockets(
     if (now - st.mtimeMs < minAgeMs) continue;
 
     result.scanned += 1;
+
+    // ADR-305: another uid's directory is never killed through or removed —
+    // it is not ours to reap, and its owner controls what lies inside. lstat
+    // (no follow): a sticky /tmp lets only an entry's owner swap it.
+    if (ownUid !== null) {
+      const owner = (await lstat(full).catch(() => null))?.uid;
+      if (owner !== ownUid) {
+        result.errors.push({
+          path: full,
+          message: `owned by uid ${owner ?? "?"}, not uid ${ownUid} — left alone (ADR-305)`,
+        });
+        continue;
+      }
+    }
 
     // ADR-252 (t-65bec10b) — structural live-child-cage guard, generalised
     // past epic-teams by ADR-280 stage 3. BEFORE any kill/rm, refuse to

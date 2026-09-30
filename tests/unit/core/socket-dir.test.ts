@@ -30,11 +30,14 @@ import {
   MAX_SYMLINK_HOPS,
   PRIVATE_DIR_MODE,
   prepareSocketDial,
+  privateDirIssue,
   realSocketDirFs,
   resolveCageSocketPath,
   resolveGroupSocketPath,
   SOCKET_BASE_DIR,
   SOCKET_DIR_FEATURE,
+  SOCKET_DIR_FEATURE_NAME,
+  SOCKET_DIR_REVISION,
   settleSocketForCreate,
   socketPathIssue,
   UnsafeSocketPathError,
@@ -78,7 +81,12 @@ describe("per-user path scheme (ADR-305 §D1)", () => {
   });
 
   test("stable capability marker", () => {
-    expect(SOCKET_DIR_FEATURE).toBe("socket-dirs=per-user-0700");
+    // The scheme name is stable; `;rev=3` lets a consumer refuse the
+    // unreleased first two cuts (35ea2c3, a9f96ac2), which printed the
+    // bare name.
+    expect(SOCKET_DIR_FEATURE).toBe("socket-dirs=per-user-0700;rev=3");
+    expect(SOCKET_DIR_FEATURE_NAME).toBe("socket-dirs=per-user-0700");
+    expect(SOCKET_DIR_REVISION).toBe(3);
   });
 });
 
@@ -467,6 +475,54 @@ describe("socketPathIssue — every ancestor from / down (review of 35ea2c3, ite
     expect(socketPathIssue("rel/sock", { uid: A, fs })).toBeNull();
     const first = process.cwd().split("/").filter(Boolean)[0];
     expect(fs.calls).toContain(`open /${first}`);
+  });
+});
+
+// ---------- privateDirIssue (test-reaper's removal gate) ----------
+
+describe("privateDirIssue — a directory that is ours alone", () => {
+  test("ours, 0700, passing chain → null; nothing created", () => {
+    const fs = fakeSocketFs({ "/tmp/atmux-cockpit-a-b": dir(A) });
+    expect(privateDirIssue("/tmp/atmux-cockpit-a-b", { uid: A, fs })).toBeNull();
+    expect(fs.calls.some((c) => c.startsWith("mkdir"))).toBe(false);
+    expect(fs.openHandles()).toBe(0);
+  });
+
+  test("another uid's directory → foreign-owner", () => {
+    const fs = fakeSocketFs({ "/tmp/atmux-cockpit-a-b": dir(B, 0o777) });
+    expect(privateDirIssue("/tmp/atmux-cockpit-a-b", { uid: 0, fs })).toMatchObject({
+      problem: "foreign-owner",
+      path: "/tmp/atmux-cockpit-a-b",
+    });
+  });
+
+  test("ours but shared (0755) → shared-mode", () => {
+    const fs = fakeSocketFs({ "/srv": dir(0, 0o755), "/srv/x": dir(A, 0o755) });
+    expect(privateDirIssue("/srv/x", { uid: A, fs })?.problem).toBe("shared-mode");
+  });
+
+  test("a symlink where the directory should be → refused, never followed", () => {
+    const fs = fakeSocketFs({ "/tmp/atmux-cockpit-a-b": link("/srv/x", A), "/srv": dir(0, 0o755) });
+    expect(privateDirIssue("/tmp/atmux-cockpit-a-b", { uid: A, fs })?.problem).toBe("symlink");
+  });
+
+  test("missing → a refusal naming it", () => {
+    expect(privateDirIssue("/tmp/atmux-gone", { uid: A, fs: fakeSocketFs() })).toMatchObject({
+      problem: "uninspectable",
+      path: "/tmp/atmux-gone",
+      detail: "does not exist",
+    });
+  });
+
+  test("not normalized → refused with the directory as its path", () => {
+    expect(privateDirIssue("/tmp/../etc", { uid: A, fs: fakeSocketFs() })).toMatchObject({
+      problem: "not-normalized",
+      path: "/tmp/../etc",
+    });
+  });
+
+  test("no POSIX uid → checks off", () => {
+    expect(privateDirIssue("/anything", { uid: null, fs: fakeSocketFs() })).toBeNull();
   });
 });
 

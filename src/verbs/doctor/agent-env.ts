@@ -10,7 +10,6 @@ import {
   walkSessions,
 } from "../../core/cockpit.ts";
 import { resolveTeamSocket, tryLoadTeam } from "../../core/common.ts";
-import { socketPathIssue } from "../../core/socket-dir.ts";
 import { getCockpitSocketPath } from "../../core/tmux-paths.ts";
 import type { Team } from "../../schema/team.ts";
 import { type DoctorRow, defaultTmuxSpawn, type TmuxSpawn } from "./types.ts";
@@ -105,7 +104,10 @@ export function findAgentEnvMarkers(
  *  global environment. New panes are clean at once; running panes keep
  *  their own environment, which is why the text says so. */
 export function agentEnvRemedy(socket: string, names: ReadonlyArray<string>): string {
-  const cmds = names.map((n) => `tmux -S ${socket} set-environment -g -u ${n}`).join("; ");
+  // ADR-305 §D6: the operator's copy-paste dials through the guard too.
+  const cmds = names
+    .map((n) => `atmux socket-dial ${socket} set-environment -g -u ${n}`)
+    .join("; ");
   return `${cmds} — panes already running keep the old environment until their processes restart`;
 }
 
@@ -193,12 +195,10 @@ export async function discoverAtmuxServerSockets(
 export interface CheckAgentShellEnvOpts extends DiscoverAtmuxServerSocketsOpts {
   /** tmux spawn override. */
   tmux?: TmuxSpawn;
-  /** `[ -S <path> ]` override — true only for an existing socket file. */
+  /** `[ -S <path> ]` override — true only for an existing socket file.
+   *  A cheap pre-filter only: the SAFETY check is the ADR-305 guard that
+   *  the default `tmux` spawn runs right before each dial. */
   isSocket?: (path: string) => Promise<boolean>;
-  /** ADR-305 override — false for a socket in a shared / foreign /
-   *  symlinked directory or owned by another uid; such a server is never
-   *  dialled. Default: `socketPathIssue(path) === null`. */
-  isSafeSocket?: (path: string) => boolean;
   /** Probe exactly these sockets instead of discovering them. */
   sockets?: ReadonlyArray<AtmuxServerSocket>;
 }
@@ -230,12 +230,12 @@ export async function checkAgentShellEnv(
 ): Promise<DoctorRow[]> {
   const tmux = opts.tmux ?? defaultTmuxSpawn;
   const isSocket = opts.isSocket ?? defaultIsSocket;
-  const isSafeSocket = opts.isSafeSocket ?? ((p: string) => socketPathIssue(p) === null);
   const sockets = opts.sockets ?? (await discoverAtmuxServerSockets(currentTeam, opts));
   const rows: DoctorRow[] = [];
   for (const { socket, owner } of sockets) {
     if (!(await isSocket(socket))) continue;
-    if (!isSafeSocket(socket)) continue; // ADR-305: never dial another uid's server
+    // ADR-305: each dial below is guarded by `defaultTmuxSpawn` right
+    // before it spawns; an unsafe socket throws there and is skipped.
     let shown: SpawnResult;
     try {
       const alive = await tmux(["-S", socket, "has-session"]);

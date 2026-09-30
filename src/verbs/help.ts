@@ -212,7 +212,7 @@ Vox (ADR-272):
 
 Misc:
   version [--features]        --features adds capability markers, one per line
-                              (socket-dirs=per-user-0700, ADR-305 §D5)
+                              (socket-dirs=per-user-0700;rev=3, ADR-305 §D5)
   socket-dial <socket> <tmux-args…>
                               Run tmux against an atmux socket only after its
                               whole directory chain passes ADR-305 §D2; exit 1

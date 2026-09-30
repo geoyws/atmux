@@ -37,6 +37,7 @@ import { spawn as defaultSpawn, type SpawnOpts, type SpawnResult } from "./spawn
 import type { TmuxConfig, TmuxNamespace } from "./tmux.ts";
 import {
   createTmux as defaultCreateTmux,
+  defaultSocketGuard,
   TMUX_CHILD_ENV_ARGV,
   TMUX_CHILD_UNSET_ENV,
 } from "./tmux.ts";
@@ -504,6 +505,9 @@ export async function destroyFallbackCage(
     // For Tier 2, capture the session's last 1000 lines of pane content
     // as the post-mortem artefact. The operator's worktree is NOT
     // archived (it's the live project tree).
+    // ADR-305 §D2: this probe dials `-L <name>` outside `createTmux`, so
+    // it runs the same connect-time guard right before the spawn.
+    defaultSocketGuard({ socket: handle.tmuxSocket });
     const captureR = await spawnFn({
       cmd: resolveTmuxBin(),
       // ADR-281: `capture-pane` against a dead socket starts a server, so

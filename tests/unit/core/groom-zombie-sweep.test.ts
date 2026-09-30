@@ -341,6 +341,39 @@ describe("sweepZombieTmuxSockets", () => {
     expect(await stat(dir).catch(() => null)).toBeNull();
   });
 
+  test("ADR-305: another uid's directory is never killed through or removed", async () => {
+    const dir = await makeFixtureDir("atmux-e2e-foreign-AbCdEf", { ageMs: SIX_HOURS_MS + 1000 });
+    const notMe = (process.getuid?.() ?? 0) + 4242;
+    const r = await sweepZombieTmuxSockets({
+      tmpDir: env.fakeTmp,
+      nowMs: RUN_MS,
+      killServer: stubKill(env),
+      uid: notMe,
+    });
+    expect(r.scanned).toBe(1);
+    expect(r.killed).toBe(0);
+    expect(r.removed).toBe(0);
+    expect(env.killCalls).toEqual([]);
+    expect(r.errors).toEqual([
+      {
+        path: dir,
+        message: `owned by uid ${process.getuid?.() ?? 0}, not uid ${notMe} — left alone (ADR-305)`,
+      },
+    ]);
+    expect((await stat(dir)).isDirectory()).toBe(true);
+  });
+
+  test("ADR-305: no POSIX uid → the ownership check is off", async () => {
+    await makeFixtureDir("atmux-e2e-nouid-AbCdEf", { ageMs: SIX_HOURS_MS + 1000 });
+    const r = await sweepZombieTmuxSockets({
+      tmpDir: env.fakeTmp,
+      nowMs: RUN_MS,
+      killServer: stubKill(env),
+      uid: null,
+    });
+    expect(r.removed).toBe(1);
+  });
+
   test("missing tmpDir returns clean empty result (cold-start safety)", async () => {
     const r = await sweepZombieTmuxSockets({
       tmpDir: join(env.fakeTmp, "does-not-exist"),
