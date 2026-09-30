@@ -211,9 +211,9 @@ Every tmux socket atmux binds lives in a directory only its owner can enter:
 
 atmux checks the WHOLE path, from `/` down, before it creates or dials a socket: every directory on the way must be owned by root or you and not writable by group or other (a root-owned sticky `/tmp` is fine), and the socket's own directory — plus any `/tmp/atmux-*` directory — must be yours with no group/other bit at all. It refuses anything else with the exact fix (`chmod 700 <dir>` for the common case), and a socket owned by another user; it never chmods anything. Directories it creates are 0700. `atmux doctor` lists refusals (`socket-dir`, `socket-dir-legacy`). A live cage still on the old shared `/tmp/atmux-<team>/sock` keeps working while that path passes, and moves to the per-user path when it next restarts.
 
-Shell loops (the cockpit's viewer windows, the bau skill) dial through `atmux socket-dial <socket> <tmux-args…>`, which runs tmux only after that check: exit 1 when there is no socket, 78 when it is unsafe.
+Shell loops (the cockpit's viewer windows, the bau skill) dial through `atmux socket-dial <socket> <tmux-args…>`, which runs tmux only after that check: exit 1 when there is no socket, 78 when it is unsafe. Nothing removes or renames a socket or socket directory by path: atmux acts relative to the directory descriptor its walk holds, removes a socket only when that directory is yours alone and a connect() to the socket is refused, and never reads a refused path as "dead". Shells remove a dead fixture directory with `atmux socket-rmdir <dir>` (exit 0 removed, 1 absent, 78 not yours alone).
 
-Bootstrap check for a build with this guarantee: `atmux version --features | grep -qx 'socket-dirs=per-user-0700;rev=3'` (`;rev=` counts security revisions of the scheme; the bare name was printed only by unreleased cuts that failed review).
+Bootstrap check for a build with this guarantee: `atmux version --features | grep -qx 'socket-dirs=per-user-0700;rev=4'` (`;rev=` counts security revisions of the scheme; the bare name and `;rev=3` were printed only by unreleased cuts that failed review).
 
 ### Per-member worktree isolation (opt-in)
 

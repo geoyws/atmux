@@ -12,13 +12,20 @@
 // dial (nothing was run — a viewer loop falls through to its next
 // candidate); 78 (EX_CONFIG) when the path is unsafe (nothing was run);
 // 64 on bad usage.
+//
+// Its sibling `atmux socket-rmdir <dir>` (ADR-305 revision 4) is how a
+// shell or an agent prompt removes a dead fixture's socket directory:
+// `[ -O "$DIR" ] && rm -rf "$DIR"` checks a path, then acts on a path.
+// This verb walks the same chain, requires the directory to be ours
+// alone, and removes it relative to the held parent descriptor. Exit 0
+// removed, 1 absent, 78 unsafe (nothing removed), 64 bad usage.
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { spawnInheritStdio } from "../abstractions/spawn.ts";
 import { TMUX_CHILD_UNSET_ENV } from "../abstractions/tmux.ts";
 import { resolveTmuxBin } from "../core/resolve-tmux-bin.ts";
-import { prepareSocketDial, type SocketDirOpts } from "../core/socket-dir.ts";
+import { prepareSocketDial, removePrivateTree, type SocketDirOpts } from "../core/socket-dir.ts";
 import { posixQuote } from "../core/tui-cmd.ts";
 import { UsageError } from "../errors.ts";
 
@@ -46,6 +53,23 @@ export async function socketDial(
   if (!prepareSocketDial(socket, deps)) return SOCKET_DIAL_ABSENT;
   const run = deps.spawn ?? defaultSpawn;
   return run((deps.tmuxBin ?? resolveTmuxBin)(), ["-S", socket, ...tmuxArgs]);
+}
+
+/** `atmux socket-rmdir <dir>` — see the module header. Throws
+ *  `UnsafeSocketPathError` (exit 78) when the directory is not ours
+ *  alone; nothing is removed then. */
+export async function socketRmdir(
+  argv: ReadonlyArray<string>,
+  deps: SocketDirOpts = {},
+): Promise<number> {
+  const [dir, ...rest] = argv;
+  if (dir === undefined || dir === "" || dir.startsWith("-") || rest.length > 0) {
+    throw new UsageError({
+      what: "socket-rmdir needs exactly one socket directory",
+      hint: "usage: atmux socket-rmdir <dir>",
+    });
+  }
+  return removePrivateTree(dir, deps) ? 0 : SOCKET_DIAL_ABSENT;
 }
 
 function defaultSpawn(cmd: string, argv: string[]): Promise<number> {

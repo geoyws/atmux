@@ -18,9 +18,10 @@
 // `TmuxConfig.configFile` (ADR-097), closing the operator's
 // `~/.tmux.conf` inheritance path.
 
-import { existsSync as fsExistsSync, lstatSync as fsLstatSync, rmSync as fsRmSync } from "node:fs";
+import { existsSync as fsExistsSync, lstatSync as fsLstatSync } from "node:fs";
 import { join } from "node:path";
 import { getDefaultSocket } from "./common.ts";
+import { isOwnSocket, removeDeadSocketOrThrow } from "./socket-dir.ts";
 import { resolveTemplatesDir } from "./templates-dir.ts";
 
 /** Per ADR-162 §Decision-anchor #1: dedicated tmux socket name for the
@@ -110,29 +111,34 @@ export function getAtmuxTmuxConfPath(env: NodeJS.ProcessEnv = process.env): stri
 /** Seams for {@link removeStaleLegacySocket}. `isLive` and `remove` are
  *  REQUIRED — a dead-server probe and a file deletion have no safe
  *  unit-test defaults. `exists` defaults to a pure filesystem read;
- *  `isSocket` defaults to a real lstat check ({@link defaultIsLegacySocket});
- *  `log` defaults to stderr. */
+ *  `isSocket` defaults to the ADR-305 descriptor walk
+ *  ({@link defaultIsLegacySocket}); `log` defaults to stderr. */
 export interface StaleLegacySocketDeps {
   exists?: (path: string) => boolean;
-  /** True when a tmux server responds on the socket (`hasServer`). */
+  /** True when a tmux server responds on the socket (`hasServer`). A
+   *  throw — above all the ADR-305 guard's `UnsafeSocketPathError` —
+   *  means "cannot tell", never "dead": nothing is removed. */
   isLive: (path: string) => Promise<boolean>;
-  /** Delete the legacy socket file. */
-  remove: (path: string) => void;
-  /** True when the legacy path is a unix socket (lstat, never follows
-   *  symlinks). Lives on this interface — not inside
+  /** Delete the legacy socket (a returned promise is awaited); throws
+   *  to report why it did not. Production: {@link defaultRemoveLegacySocket}. */
+  remove: (path: string) => unknown;
+  /** True when the legacy path is OUR unix socket behind a chain that
+   *  passes ADR-305 §D2. Lives on this interface — not inside
    *  {@link defaultRemoveLegacySocket} — so an injected `remove` double
    *  can never bypass the socket-type gate. */
   isSocket?: (path: string) => boolean;
   log?: (msg: string) => void;
 }
 
-/** Production socket check: lstat without following symlinks, so a
- *  symlink-to-socket still reads as `symlink`, never as `socket`. */
+/** Production socket check: the ADR-305 descriptor walk from `/` — a
+ *  symlink anywhere another uid could plant it, another uid's directory
+ *  or node, or a non-socket all read as "not our socket". */
 export function defaultIsLegacySocket(path: string): boolean {
-  return fsLstatSync(path).isSocket();
+  return isOwnSocket(path);
 }
 
-/** One-word filesystem kind for the refusal log (lstat, no follow). */
+/** Filesystem kind for the refusal log (lstat, no follow). Only words
+ *  for a log line — the removal decision is the descriptor walk's. */
 function describeLegacyNode(path: string): string {
   try {
     const st = fsLstatSync(path);
@@ -157,13 +163,18 @@ function describeLegacyNode(path: string): string {
  * the override socket differs, the legacy file exists, NO server
  * responds on it, and the override socket is live or absent (an
  * existing-but-dead override socket means the situation is ambiguous —
- * leave everything alone). The legacy path must additionally BE a socket
- * (lstat, never following symlinks): a regular file, directory, symlink,
- * or any other non-socket node is refused with a one-line log and never
- * deleted.
+ * leave everything alone). The legacy path must additionally BE our
+ * socket behind a chain that passes ADR-305 §D2 (descriptor walk, never a
+ * path lstat): a regular file, directory, symlink, another uid's node or
+ * directory, or any other non-socket node is refused with a one-line log
+ * and never deleted. A liveness probe that throws — the socket guard
+ * refusing the path above all — is "cannot tell", never "dead"
+ * (ADR-305 revision 4): the socket is left in place.
  *
  * NEVER deletes a socket with a responding server. NEVER deletes a
- * non-socket node. NEVER touches the
+ * non-socket node. NEVER deletes through a path another uid can
+ * re-point: the production remover acts relative to held descriptors.
+ * NEVER touches the override path.
  */
 export async function removeStaleLegacySocket(
   teamName: string,
@@ -176,17 +187,38 @@ export async function removeStaleLegacySocket(
   const legacy = getDefaultSocket(teamName);
   if (legacy === overrideSocket) return false;
   if (!exists(legacy)) return false;
-  if (await deps.isLive(legacy)) return false;
-  if (!(await deps.isLive(overrideSocket)) && exists(overrideSocket)) return false;
-  // Socket-type gate: e-29 requires deletion only when the path IS a
-  // socket (S_IFSOCK). A stat failure (ENOENT race against `exists`, or a
-  // test double asserting existence for a path absent on the real fs)
-  // falls through to the remover attempt below, whose try/catch already
-  // logs + returns false — so a refused-by-rm outcome is identical.
+  // ADR-305 rev 4: a probe that throws (the socket guard refusing the
+  // path, above all) is "cannot tell" — never "dead". Leave it in place.
+  const probe = async (path: string): Promise<boolean | string> => {
+    try {
+      return await deps.isLive(path);
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e);
+    }
+  };
+  const legacyLive = await probe(legacy);
+  if (typeof legacyLive === "string") {
+    log(`[atmux start] legacy socket ${legacy} left in place — cannot probe it: ${legacyLive}`);
+    return false;
+  }
+  if (legacyLive) return false;
+  const overrideLive = await probe(overrideSocket);
+  if (typeof overrideLive === "string") {
+    log(
+      `[atmux start] legacy socket ${legacy} left in place — cannot probe ${overrideSocket}: ${overrideLive}`,
+    );
+    return false;
+  }
+  if (!overrideLive && exists(overrideSocket)) return false;
+  // Socket-type gate: e-29 requires deletion only when the path IS our
+  // socket behind a passing chain. The default (the descriptor walk)
+  // never throws — an absent node reads as "not a socket". An injected
+  // gate that throws falls through to the remover attempt below, whose
+  // try/catch logs + returns false, so a refused remove is identical.
   try {
     if (!isSocket(legacy)) {
       log(
-        `[atmux start] stale legacy path ${legacy} is a ${describeLegacyNode(legacy)} — not a socket, leaving in place`,
+        `[atmux start] stale legacy path ${legacy} is not your socket behind a private directory chain (lstat: ${describeLegacyNode(legacy)}) — leaving in place`,
       );
       return false;
     }
@@ -194,7 +226,7 @@ export async function removeStaleLegacySocket(
     // Unstatable: let the remover attempt report (see above).
   }
   try {
-    deps.remove(legacy);
+    await deps.remove(legacy);
   } catch (e) {
     const cause = e instanceof Error ? e.message : String(e);
     log(`[atmux start] stale legacy socket ${legacy} not removed (${cause}) — leaving in place`);
@@ -204,7 +236,11 @@ export async function removeStaleLegacySocket(
   return true;
 }
 
-/** Default legacy-socket remover (production seam wiring). */
-export function defaultRemoveLegacySocket(path: string): void {
-  fsRmSync(path);
+/** Default legacy-socket remover (production seam wiring): ADR-305
+ *  rev 4 `removeDeadSocket` — walk the chain, require the socket's own
+ *  directory to be ours alone, connect() through the held descriptor
+ *  (only ECONNREFUSED is dead), unlink relative to it. Throws why it
+ *  left the socket in place. */
+export function defaultRemoveLegacySocket(path: string): Promise<void> {
+  return removeDeadSocketOrThrow(path);
 }

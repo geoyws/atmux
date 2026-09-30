@@ -162,6 +162,7 @@ import {
   resolveCageSocketPath,
   type SettleSocketDeps,
   settleSocketForCreate,
+  UnsafeSocketPathError,
   userCageSocketPath,
 } from "../core/socket-dir.ts";
 import {
@@ -679,7 +680,10 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
     // 4b. e-29 T1: when the tmuxTmpdir override reroutes the team away
     //     from the legacy path, remove a verified-dead legacy socket
     //     file so later resolves stop tripping over it. Never deletes a
-    //     live socket, never touches the override path.
+    //     live socket, never touches the override path. ADR-305 rev 4:
+    //     a guard refusal is "unsafe", never "dead" — it propagates out
+    //     of `isLive` and the socket is left in place; the remover
+    //     itself acts only through held descriptors.
     if ((team.tmuxTmpdir ?? "") !== "" && tmuxConfig.socketPath !== getDefaultSocket(team.name)) {
       const configFile = getAtmuxTmuxConfPath();
       await removeStaleLegacySocket(team.name, tmuxConfig.socketPath, {
@@ -687,7 +691,8 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
         isLive: async (sock: string): Promise<boolean> => {
           try {
             return await factory({ socketPath: sock, configFile }).server.hasServer();
-          } catch {
+          } catch (e) {
+            if (e instanceof UnsafeSocketPathError) throw e;
             return false;
           }
         },

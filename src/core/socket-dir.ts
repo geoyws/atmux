@@ -51,6 +51,15 @@
 // socket is ours AND its whole chain passes. `start` moves a dead one to
 // the per-user path; a live one in an unsafe chain is refused with the
 // fix that adopts it.
+//
+// Removal (ADR-305 revision 4): nothing that deletes or renames a socket
+// or a socket directory acts on a path. It walks the chain with the same
+// rule, keeps the descriptors, and unlinks / removes / renames relative
+// to the held parent directory: a dead socket only when its directory is
+// ours alone and a connect() through that descriptor is refused
+// (`removeDeadSocket`); a directory tree only when it is ours alone
+// (`removePrivateTree`); a directory move only between parents that pass
+// the rule (`renameOwnedDir`). A path the walk refuses is never "dead".
 
 import {
   closeSync,
@@ -61,7 +70,9 @@ import {
   mkdirSync,
   openSync,
   readlinkSync,
+  renameSync,
   rmSync,
+  unlinkSync,
 } from "node:fs";
 import { createConnection } from "node:net";
 import { dirname, join } from "node:path";
@@ -82,16 +93,17 @@ export const PRIVATE_DIR_MODE = 0o700;
  * per-user private socket directories — or predates a security fix to
  * them:
  *
- *   atmux version --features | grep -qx 'socket-dirs=per-user-0700;rev=3'
+ *   atmux version --features | grep -qx 'socket-dirs=per-user-0700;rev=4'
  *
  * `socket-dirs=per-user-0700` names the scheme and is never reworded (a
  * successor scheme gets a new name). `;rev=N` counts the security
  * revisions of that scheme: the unreleased first two cuts printed the
- * bare name, so requiring `;rev=3` refuses them. Bump N with every fix a
- * consumer must be able to require.
+ * bare name, so requiring `;rev=N` refuses them; rev 4 removes sockets
+ * and socket directories only through held descriptors. Bump N with
+ * every fix a consumer must be able to require.
  */
 export const SOCKET_DIR_FEATURE_NAME = "socket-dirs=per-user-0700";
-export const SOCKET_DIR_REVISION = 3;
+export const SOCKET_DIR_REVISION = 4;
 export const SOCKET_DIR_FEATURE = `${SOCKET_DIR_FEATURE_NAME};rev=${SOCKET_DIR_REVISION}`;
 
 /** Group + world permission bits. Any of them set ⇒ not private. */
@@ -144,8 +156,23 @@ export interface SocketDirFs {
   /** mkdirat(parent, name, 0700) under umask 077. `true` = created,
    *  `false` = something already exists there (EEXIST). */
   mkdirAt(parent: DirHandle, name: string): boolean;
+  /** unlinkat(parent, name, 0): one non-directory entry. */
+  unlinkAt(parent: DirHandle, name: string): void;
+  /** Remove the entry `name` of `parent` and everything below it; a
+   *  symlink inside is removed, never followed. */
+  removeTreeAt(parent: DirHandle, name: string): void;
+  /** renameat(fromParent, fromName, toParent, toName). */
+  renameAt(fromParent: DirHandle, fromName: string, toParent: DirHandle, toName: string): void;
+  /** connect() to the unix socket `name` inside `parent` (see
+   *  {@link probeUnixSocket}). */
+  connectAt(parent: DirHandle, name: string, timeoutMs: number): Promise<SocketProbe>;
   close(dir: DirHandle): void;
 }
+
+/** What a connect() to a unix socket showed. `dead` is ONLY a refused
+ *  connection (ECONNREFUSED: a socket node with no listener); a timeout
+ *  or any other error is `unknown`, never `dead`. */
+export type SocketProbe = "live" | "dead" | "absent" | "unknown";
 
 function errCode(e: unknown): string | undefined {
   return typeof e === "object" && e !== null && "code" in e
@@ -200,6 +227,18 @@ export function createRealSocketDirFs(opts: RealSocketDirFsOpts = {}): SocketDir
     },
     readlinkAt(parent, name) {
       return readlinkSync(at(parent, name));
+    },
+    unlinkAt(parent, name) {
+      unlinkSync(at(parent, name));
+    },
+    removeTreeAt(parent, name) {
+      rmSync(at(parent, name), { recursive: true, force: true });
+    },
+    renameAt(fromParent, fromName, toParent, toName) {
+      renameSync(at(fromParent, fromName), at(toParent, toName));
+    },
+    connectAt(parent, name, timeoutMs) {
+      return probeUnixSocket(at(parent, name), timeoutMs);
     },
     mkdirAt(parent, name) {
       // umask 077 → the directory is exactly 0700 whatever the caller's
@@ -620,26 +659,56 @@ function walkChain(
   fs: SocketDirFs,
   mode: WalkMode,
 ): WalkResult {
+  const { r, held } = walkChainHeld(split, socketPath, uid, fs, mode);
+  release(fs, held);
+  return r;
+}
+
+/** A finished walk plus the directories it still holds, root first; the
+ *  last one is the socket's own directory when the walk passed. The
+ *  caller acts relative to them, then {@link release}s them. */
+interface HeldWalk {
+  r: WalkResult;
+  held: Held[];
+}
+
+function walkChainHeld(
+  split: Split,
+  socketPath: string,
+  uid: number,
+  fs: SocketDirFs,
+  mode: WalkMode,
+): HeldWalk {
   const w: Walk = { fs, uid, mode, queue: [...split.steps], held: [], created: [], hops: 0 };
+  let r: WalkResult;
   try {
-    const root = fs.openRoot();
-    const held: Held = { dir: root, shared: false };
-    w.held.push(held);
-    // A socket directly under `/` makes `/` its private directory.
-    const verdict = checkDir(root.path, fs.fstat(root), uid, split.steps.length === 0);
-    if ("issue" in verdict) return failed(verdict.issue);
-    held.shared = verdict.shared;
-    for (let step = w.queue.shift(); step !== undefined; step = w.queue.shift()) {
-      const r = walkStep(w, step);
-      if (r !== null) return r;
-    }
-    if (split.leaf === null) return { kind: "ok", absentAt: null, node: null, created: w.created };
-    return checkNode(w, socketPath, split.leaf);
+    r = runWalk(w, split, socketPath);
   } catch (e) {
-    return failed(uninspectable(socketPath, e, uid));
-  } finally {
-    for (const h of w.held) fs.close(h.dir);
+    r = failed(uninspectable(socketPath, e, uid));
   }
+  return { r, held: w.held };
+}
+
+function runWalk(w: Walk, split: Split, socketPath: string): WalkResult {
+  const root = w.fs.openRoot();
+  const held: Held = { dir: root, shared: false };
+  w.held.push(held);
+  // A socket directly under `/` makes `/` its private directory (a walk
+  // to a parent directory has no leaf: `/` is then just an ancestor).
+  const rootPrivate = split.steps.length === 0 && split.leaf !== null;
+  const verdict = checkDir(root.path, w.fs.fstat(root), w.uid, rootPrivate);
+  if ("issue" in verdict) return failed(verdict.issue);
+  held.shared = verdict.shared;
+  for (let step = w.queue.shift(); step !== undefined; step = w.queue.shift()) {
+    const r = walkStep(w, step);
+    if (r !== null) return r;
+  }
+  if (split.leaf === null) return { kind: "ok", absentAt: null, node: null, created: w.created };
+  return checkNode(w, socketPath, split.leaf);
+}
+
+function release(fs: SocketDirFs, held: Held[]): void {
+  for (const h of held) fs.close(h.dir);
 }
 
 // ---------- Public checks ----------
@@ -706,20 +775,212 @@ export function prepareSocketDial(socketPath: string, opts: SocketDirOpts = {}):
 export function privateDirIssue(dirPath: string, opts: SocketDirOpts = {}): SocketPathIssue | null {
   const uid = uidOf(opts);
   if (uid === null) return null;
+  const split = privateDirSplit(dirPath);
+  if ("problem" in split) return split;
+  const r = walkChain(split, dirPath, uid, opts.fs ?? realSocketDirFs, "inspect");
+  if (r.kind === "issue") return r.issue;
+  return r.absentAt === null ? null : absentIssue(r.absentAt, dirPath);
+}
+
+/** The walk steps of a directory whose last component must be private.
+ *  `/` itself is refused: it has no parent to act relative to. */
+function privateDirSplit(dirPath: string): Split | SocketPathIssue {
   const split = socketPathSteps(`${dirPath}/.probe`);
   if ("problem" in split) return { ...split, path: dirPath };
-  const dirSplit: Split = { steps: split.steps, leaf: null };
-  const r = walkChain(dirSplit, dirPath, uid, opts.fs ?? realSocketDirFs, "inspect");
-  if (r.kind === "issue") return r.issue;
-  if (r.absentAt !== null) {
+  if (split.steps.length === 0) {
     return {
-      path: r.absentAt,
-      problem: "uninspectable",
-      detail: "does not exist",
-      hint: `nothing to act on under ${dirPath}`,
+      path: dirPath,
+      problem: "not-normalized",
+      detail: "is the root directory",
+      hint: "name a directory below /",
     };
   }
-  return null;
+  return { steps: split.steps, leaf: null };
+}
+
+function absentIssue(absentAt: string, dirPath: string): SocketPathIssue {
+  return {
+    path: absentAt,
+    problem: "uninspectable",
+    detail: "does not exist",
+    hint: `nothing to act on under ${dirPath}`,
+  };
+}
+
+function noUidIssue(path: string): SocketPathIssue {
+  return {
+    path,
+    problem: "uninspectable",
+    detail: "cannot be checked (no POSIX uid on this platform)",
+    hint: "remove it by hand",
+  };
+}
+
+/** The directory the walk ended in (the last one it holds). */
+function heldTop(held: Held[]): DirHandle {
+  return (held[held.length - 1] as Held).dir;
+}
+
+/** Why {@link removeDeadSocket} left a socket in place. */
+export type DeadSocketRemoval =
+  | { removed: true }
+  | { removed: false; reason: "unsafe"; issue: SocketPathIssue }
+  | { removed: false; reason: "absent" | "not-socket" | "live" | "unknown" };
+
+export interface RemoveDeadSocketOpts extends SocketDirOpts {
+  /** connect() timeout; a timeout is `unknown`, never dead. Default 500. */
+  timeoutMs?: number;
+}
+
+/**
+ * Delete a DEAD socket of ours (ADR-305 revision 4). The whole chain is
+ * walked with the rule, the socket's own directory must be ours alone
+ * (the {@link privateDirIssue} rule, checked by the same walk that keeps
+ * its descriptor), the node must be our socket — then connect() runs
+ * through that descriptor (`/proc/self/fd/<dir>/<name>` on Linux) and
+ * only a refused connection (ECONNREFUSED) counts as dead. The unlink
+ * runs relative to the same descriptor. A path the walk refuses is
+ * `unsafe`: nothing is removed.
+ */
+export async function removeDeadSocket(
+  socketPath: string,
+  opts: RemoveDeadSocketOpts = {},
+): Promise<DeadSocketRemoval> {
+  const uid = uidOf(opts);
+  if (uid === null) return { removed: false, reason: "unsafe", issue: noUidIssue(socketPath) };
+  const fs = opts.fs ?? realSocketDirFs;
+  const split = socketPathSteps(socketPath);
+  if ("problem" in split) return { removed: false, reason: "unsafe", issue: split };
+  const leaf = split.leaf as string;
+  const { r, held } = walkChainHeld(split, socketPath, uid, fs, "inspect");
+  try {
+    if (r.kind === "issue") return { removed: false, reason: "unsafe", issue: r.issue };
+    // checkNode already refused a symlink or another uid's node.
+    if (r.node === null) return { removed: false, reason: "absent" };
+    if (!r.node.isSocket()) return { removed: false, reason: "not-socket" };
+    const dir = heldTop(held);
+    const probe = await fs.connectAt(dir, leaf, opts.timeoutMs ?? 500);
+    if (probe !== "dead") return { removed: false, reason: probe };
+    fs.unlinkAt(dir, leaf);
+    return { removed: true };
+  } finally {
+    release(fs, held);
+  }
+}
+
+/** One line for a log: why a socket was left in place. */
+export function describeSocketRemoval(out: Exclude<DeadSocketRemoval, { removed: true }>): string {
+  switch (out.reason) {
+    case "unsafe":
+      return `unsafe: ${out.issue.path} ${out.issue.detail}`;
+    case "absent":
+      return "no socket there";
+    case "not-socket":
+      return "not a socket";
+    case "live":
+      return "a server accepts connections on it";
+    case "unknown":
+      return "its connect probe was inconclusive";
+  }
+}
+
+/**
+ * Remove the directory `dirPath` and everything in it — only when the
+ * {@link privateDirIssue} walk shows it is ours alone. The walk keeps
+ * the descriptors and the removal runs relative to the held parent, so
+ * no rename after the check can redirect it; inside a private directory
+ * only this uid can have planted anything. Throws
+ * {@link UnsafeSocketPathError} on a refusal; `false` when it is absent.
+ */
+export function removePrivateTree(dirPath: string, opts: SocketDirOpts = {}): boolean {
+  const uid = uidOf(opts);
+  if (uid === null) throw new UnsafeSocketPathError(dirPath, noUidIssue(dirPath));
+  const fs = opts.fs ?? realSocketDirFs;
+  const split = privateDirSplit(dirPath);
+  if ("problem" in split) throw new UnsafeSocketPathError(dirPath, split);
+  const { r, held } = walkChainHeld(split, dirPath, uid, fs, "inspect");
+  try {
+    if (r.kind === "issue") throw new UnsafeSocketPathError(dirPath, r.issue);
+    if (r.absentAt !== null) return false;
+    // A private step is never reached through a symlink, so the held
+    // directory below the top is its parent and its name is the last step.
+    const parent = (held[held.length - 2] as Held).dir;
+    fs.removeTreeAt(parent, (split.steps[split.steps.length - 1] as Step).name);
+    return true;
+  } finally {
+    release(fs, held);
+  }
+}
+
+/** Walk to the parent of `path` (ancestor rule, nothing created), keep
+ *  it, and return it with the entry name — or the refusal. */
+function walkToParent(
+  path: string,
+  uid: number,
+  fs: SocketDirFs,
+): { held: Held[]; name: string } | { issue: SocketPathIssue } {
+  const split = socketPathSteps(path);
+  if ("problem" in split) return { issue: split };
+  const parentSplit: Split = {
+    steps: split.steps.map((st) => ({ name: st.name, private: false })),
+    leaf: null,
+  };
+  const { r, held } = walkChainHeld(parentSplit, path, uid, fs, "inspect");
+  if (r.kind === "issue" || r.absentAt !== null) {
+    release(fs, held);
+    return {
+      issue: r.kind === "issue" ? r.issue : absentIssue(r.absentAt as string, path),
+    };
+  }
+  return { held, name: split.leaf as string };
+}
+
+/**
+ * Move directory `from` to `to` (team repair-rename's tmpdir move) with
+ * renameat relative to held parents: both parent chains must pass the
+ * rule, `from` must be a real directory owned by this uid, and nothing
+ * may exist at `to`. Throws {@link UnsafeSocketPathError}.
+ */
+export function renameOwnedDir(from: string, to: string, opts: SocketDirOpts = {}): void {
+  const uid = uidOf(opts);
+  if (uid === null) throw new UnsafeSocketPathError(from, noUidIssue(from));
+  const fs = opts.fs ?? realSocketDirFs;
+  const src = walkToParent(from, uid, fs);
+  if ("issue" in src) throw new UnsafeSocketPathError(from, src.issue);
+  try {
+    const node = fs.lstatAt(heldTop(src.held), src.name);
+    if (node === null || !node.isDirectory() || node.uid !== uid) {
+      throw new UnsafeSocketPathError(from, {
+        path: from,
+        problem:
+          node === null ? "uninspectable" : node.uid !== uid ? "foreign-owner" : "not-directory",
+        detail:
+          node === null
+            ? "does not exist"
+            : node.uid !== uid
+              ? `is owned by uid ${node.uid}, not uid ${uid}`
+              : "is not a real directory",
+        hint: `move only a directory of yours; inspect ${from}`,
+      });
+    }
+    const dst = walkToParent(to, uid, fs);
+    if ("issue" in dst) throw new UnsafeSocketPathError(to, dst.issue);
+    try {
+      if (fs.lstatAt(heldTop(dst.held), dst.name) !== null) {
+        throw new UnsafeSocketPathError(to, {
+          path: to,
+          problem: "uninspectable",
+          detail: "already exists",
+          hint: `refusing to clobber ${to}; inspect it`,
+        });
+      }
+      fs.renameAt(heldTop(src.held), src.name, heldTop(dst.held), dst.name);
+    } finally {
+      release(fs, dst.held);
+    }
+  } finally {
+    release(fs, src.held);
+  }
 }
 
 /** {@link prepareSocketDial} without the answer: the guard `createTmux`
@@ -776,24 +1037,46 @@ export type LegacySocketInfo =
 export function legacySocketInfo(legacyPath: string, opts: SocketDirOpts = {}): LegacySocketInfo {
   const uid = uidOf(opts);
   const fs = opts.fs ?? realSocketDirFs;
+  if (uid === null) return { state: safeLstat(fs, legacyPath) === null ? "absent" : "adoptable" };
+  const r = walkSocketPath(legacyPath, uid, fs, "inspect");
+  if (r.kind === "ok") {
+    if (r.node === null) return { state: "absent" };
+    return { state: r.node.isSocket() ? "adoptable" : "foreign" };
+  }
+  // Only a directory of OURS whose mode is too open is the pre-ADR-305
+  // shape `start` reports loudly; a symlink, another uid's directory or
+  // node, or anything else is not ours to report on. This path lstat
+  // only chooses which refusal to print — nothing is used or removed.
+  if (r.issue.problem !== "shared-mode") return { state: "foreign" };
   const node = safeLstat(fs, legacyPath);
   if (node === null) return { state: "absent" };
-  if (uid === null) return { state: "adoptable" };
   if (!node.isSocket() || node.uid !== uid) return { state: "foreign" };
-  const issue = socketPathIssue(legacyPath, { uid, fs });
-  return issue === null ? { state: "adoptable" } : { state: "shared-dir", issue };
+  return { state: "shared-dir", issue: r.issue };
 }
 
 export function legacySocketState(legacyPath: string, opts: SocketDirOpts = {}): LegacySocketState {
   return legacySocketInfo(legacyPath, opts).state;
 }
 
-function isSocketNode(fs: SocketDirFs, path: string): boolean {
-  return safeLstat(fs, path)?.isSocket() === true;
+/** Our socket at `path`, reached through a chain that passes the rule —
+ *  the descriptor walk, never a path lstat (which would follow another
+ *  uid's symlink in the middle of the path). */
+function ownSocketAt(fs: SocketDirFs, path: string, uid: number): boolean {
+  const r = walkSocketPath(path, uid, fs, "inspect");
+  return r.kind === "ok" && r.node?.isSocket() === true;
+}
+
+/** {@link ownSocketAt} for callers outside this module (the legacy
+ *  socket gate in `tmux-paths.ts`). */
+export function isOwnSocket(path: string, opts: SocketDirOpts = {}): boolean {
+  const uid = uidOf(opts);
+  const fs = opts.fs ?? realSocketDirFs;
+  if (uid === null) return safeLstat(fs, path)?.isSocket() === true;
+  return ownSocketAt(fs, path, uid);
 }
 
 function pickCompat(userPath: string, legacyPath: string, uid: number, fs: SocketDirFs): string {
-  if (isSocketNode(fs, userPath)) return userPath;
+  if (ownSocketAt(fs, userPath, uid)) return userPath;
   if (legacySocketState(legacyPath, { uid, fs }) === "adoptable") return legacyPath;
   return userPath;
 }
@@ -801,7 +1084,7 @@ function pickCompat(userPath: string, legacyPath: string, uid: number, fs: Socke
 /**
  * Resolve a team's default cage socket (no `tmuxTmpdir`). Sync + cheap
  * so every verb can call it. Order:
- *   1. per-user socket exists → it;
+ *   1. per-user socket of ours with a passing chain → it;
  *   2. legacy `/tmp/atmux-<team>/sock` is ours with a passing chain →
  *      legacy (a live pre-ADR-305 cage keeps working until it restarts);
  *   3. otherwise the per-user path.
@@ -832,25 +1115,37 @@ export function resolveGroupSocketPath(groupName: string, opts: SocketDirOpts = 
 
 // ---------- Create-time settlement (start / cockpit reconcile) ----------
 
-/** True when something accepts a connection on the unix socket. A tmux
- *  server always does; a dead socket file refuses (ECONNREFUSED). */
-export function isSocketListening(path: string, timeoutMs = 500): Promise<boolean> {
-  const { promise, resolve } = Promise.withResolvers<boolean>();
+/** connect() to a unix socket: `live` when it accepts (a tmux server
+ *  always does), `dead` only on ECONNREFUSED, `absent` on ENOENT, and
+ *  `unknown` on a timeout or any other error. */
+export function probeUnixSocket(path: string, timeoutMs = 500): Promise<SocketProbe> {
+  const { promise, resolve } = Promise.withResolvers<SocketProbe>();
   const sock = createConnection({ path });
-  const done = (live: boolean): void => {
+  const done = (out: SocketProbe): void => {
     clearTimeout(timer);
     sock.destroy();
-    resolve(live);
+    resolve(out);
   };
-  const timer = setTimeout(done, timeoutMs, false);
-  sock.once("connect", () => done(true));
-  sock.once("error", () => done(false));
+  const timer = setTimeout(done, timeoutMs, "unknown");
+  sock.once("connect", () => done("live"));
+  sock.once("error", (e) => {
+    const code = errCode(e);
+    done(code === "ECONNREFUSED" ? "dead" : code === "ENOENT" ? "absent" : "unknown");
+  });
   return promise;
+}
+
+/** True when something accepts a connection on the unix socket. */
+export async function isSocketListening(path: string, timeoutMs = 500): Promise<boolean> {
+  return (await probeUnixSocket(path, timeoutMs)) === "live";
 }
 
 export interface SettleSocketDeps extends SocketDirOpts {
   isListening?: (path: string) => Promise<boolean>;
-  remove?: (path: string) => void;
+  /** Delete the dead legacy socket (a returned promise is awaited);
+   *  throws to report why it did not. Default: {@link removeDeadSocket}
+   *  (descriptor-based). */
+  remove?: (path: string) => unknown;
   log?: (msg: string) => void;
 }
 
@@ -886,7 +1181,7 @@ export async function settleSocketForCreate(
   if (info.state === "adoptable" && resolved === legacyPath && legacyPath !== userPath) {
     if (await isListening(legacyPath)) return legacyPath;
     try {
-      (deps.remove ?? defaultRemoveSocket)(legacyPath);
+      await (deps.remove ?? ((p: string) => removeDeadSocketOrThrow(p, deps)))(legacyPath);
       log(`[atmux] removed dead legacy socket ${legacyPath}; moving to ${userPath} (ADR-305)`);
     } catch (e) {
       log(
@@ -898,8 +1193,12 @@ export async function settleSocketForCreate(
   return resolved;
 }
 
-/** Removes one node. The state check before it proved the node is our
- *  own socket in a chain no other uid can rewrite. */
-function defaultRemoveSocket(path: string): void {
-  rmSync(path);
+/** {@link removeDeadSocket} for a seam that reports by throwing: the
+ *  error says why the socket was left in place. */
+export async function removeDeadSocketOrThrow(
+  path: string,
+  opts: RemoveDeadSocketOpts = {},
+): Promise<void> {
+  const out = await removeDeadSocket(path, opts);
+  if (!out.removed) throw new Error(describeSocketRemoval(out));
 }

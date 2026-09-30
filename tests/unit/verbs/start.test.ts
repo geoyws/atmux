@@ -27,9 +27,14 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { SpawnResult } from "../../../src/abstractions/spawn.ts";
 import type { SendTarget, TmuxConfig, TmuxNamespace } from "../../../src/abstractions/tmux.ts";
-import { serializeSendTarget } from "../../../src/abstractions/tmux.ts";
+import { createTmux, serializeSendTarget } from "../../../src/abstractions/tmux.ts";
 import type { GitSpawn } from "../../../src/abstractions/worktree.ts";
-import { realSocketDirFs, type SocketDirFs } from "../../../src/core/socket-dir.ts";
+import {
+  realSocketDirFs,
+  type SocketDirFs,
+  UnsafeSocketPathError,
+} from "../../../src/core/socket-dir.ts";
+import type { StaleLegacySocketDeps } from "../../../src/core/tmux-paths.ts";
 import type { Logger } from "../../../src/core/tui.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
 import {
@@ -682,6 +687,9 @@ describe("start — stale legacy socket cleanup", () => {
       legacySocketDeps: {
         exists: (p) => p === legacy,
         isLive: async (p) => p !== legacy,
+        // The legacy path is a seam fiction (nothing on disk): declare it
+        // a socket so the default descriptor-walk gate is not consulted.
+        isSocket: () => true,
         remove: (p) => {
           removed.push(p);
         },
@@ -715,6 +723,71 @@ describe("start — stale legacy socket cleanup", () => {
     });
     expect(exit).toBe(0);
     expect(removed).toBe(0);
+  });
+
+  /** start's OWN default `isLive` (no seam): the probe of `legacy` goes
+   *  through the tmux factory, whose hasServer does what `probe` says. */
+  async function startWithDefaultProbe(probe: () => Promise<boolean>): Promise<{
+    exit: number;
+    legacy: string;
+    removed: string[];
+    logs: string[];
+  }> {
+    await writeTeamJson({
+      members: [{ name: "alice", role: "team-lead" }],
+      superdriver: { enabled: false },
+      tmuxTmpdir: join(env.atmuxDir, "tmux"),
+    });
+    const legacy = `/tmp/atmux-${UID}/${env.team}/sock`;
+    const removed: string[] = [];
+    const logs: string[] = [];
+    const deps = {
+      exists: (p: string) => p === legacy,
+      isSocket: () => true,
+      remove: (p: string) => {
+        removed.push(p);
+      },
+      log: (m: string) => {
+        logs.push(m);
+      },
+    } as unknown as StaleLegacySocketDeps; // isLive omitted on purpose
+    const exit = await runStart([], {
+      legacySocketDeps: deps,
+      tmuxFactory: (cfg) =>
+        cfg.socketPath === legacy
+          ? ({ server: { hasServer: probe } } as unknown as TmuxNamespace)
+          : createTmux(cfg),
+    });
+    return { exit, legacy, removed, logs };
+  }
+
+  test("rev 4: a guard refusal from the default probe is 'unsafe', never 'dead' — nothing removed", async () => {
+    const issue = {
+      path: "/tmp/atmux-0",
+      problem: "foreign-owner" as const,
+      detail: "is owned by uid 4302, not uid 0",
+      hint: "have its owner or root remove /tmp/atmux-0",
+    };
+    const out = await startWithDefaultProbe(async () => {
+      throw new UnsafeSocketPathError(`/tmp/atmux-${UID}/${env.team}/sock`, issue);
+    });
+    expect(out.exit).toBe(0);
+    expect(out.removed).toEqual([]);
+    expect(
+      out.logs.some(
+        (l) =>
+          l.includes(`legacy socket ${out.legacy} left in place`) &&
+          l.includes("/tmp/atmux-0 is owned by uid 4302"),
+      ),
+    ).toBe(true);
+  });
+
+  test("the default probe's other failures (tmux itself failing) still read as no server", async () => {
+    const out = await startWithDefaultProbe(async () => {
+      throw new Error("tmux: spawn failed");
+    });
+    expect(out.exit).toBe(0);
+    expect(out.removed).toEqual([out.legacy]);
   });
 });
 

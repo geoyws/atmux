@@ -12,7 +12,16 @@
 // fails here.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, readdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
@@ -21,7 +30,9 @@ import {
   assertSocketPathSafe,
   createRealSocketDirFs,
   currentUid,
+  describeSocketRemoval,
   ensurePrivateSocketDir,
+  isOwnSocket,
   isSocketListening,
   legacyCageSocketPath,
   legacyGroupSocketPath,
@@ -31,7 +42,12 @@ import {
   PRIVATE_DIR_MODE,
   prepareSocketDial,
   privateDirIssue,
+  probeUnixSocket,
   realSocketDirFs,
+  removeDeadSocket,
+  removeDeadSocketOrThrow,
+  removePrivateTree,
+  renameOwnedDir,
   resolveCageSocketPath,
   resolveGroupSocketPath,
   SOCKET_BASE_DIR,
@@ -46,6 +62,7 @@ import {
   userSocketRoot,
 } from "../../../src/core/socket-dir.ts";
 import { ConfigError } from "../../../src/errors.ts";
+import { deadUnixSocket } from "../../helpers/dead-socket.ts";
 import {
   dir,
   type FakeNode,
@@ -81,12 +98,12 @@ describe("per-user path scheme (ADR-305 §D1)", () => {
   });
 
   test("stable capability marker", () => {
-    // The scheme name is stable; `;rev=3` lets a consumer refuse the
-    // unreleased first two cuts (35ea2c3, a9f96ac2), which printed the
-    // bare name.
-    expect(SOCKET_DIR_FEATURE).toBe("socket-dirs=per-user-0700;rev=3");
+    // The scheme name is stable; `;rev=4` lets a consumer refuse the
+    // unreleased cuts before it: 35ea2c3 and a9f96ac2 printed the bare
+    // name, ccd9f275 printed `;rev=3` and removed sockets by path.
+    expect(SOCKET_DIR_FEATURE).toBe("socket-dirs=per-user-0700;rev=4");
     expect(SOCKET_DIR_FEATURE_NAME).toBe("socket-dirs=per-user-0700");
-    expect(SOCKET_DIR_REVISION).toBe(3);
+    expect(SOCKET_DIR_REVISION).toBe(4);
   });
 });
 
@@ -932,8 +949,37 @@ describe("resolveCageSocketPath / resolveGroupSocketPath (ADR-305 §D3)", () => 
   });
 
   test("per-user socket present wins over an adoptable legacy one", () => {
-    const fs = fakeSocketFs({ [user]: sock(A), [legacyDir]: dir(A), [legacy]: sock(A) });
+    const fs = fakeSocketFs({
+      "/tmp/atmux-1000": dir(A),
+      "/tmp/atmux-1000/px": dir(A),
+      [user]: sock(A),
+      [legacyDir]: dir(A),
+      [legacy]: sock(A),
+    });
     expect(resolveCageSocketPath("px", { uid: A, fs })).toBe(user);
+  });
+
+  test("rev 4: a per-user socket behind another uid's root or a planted symlink is not 'present'", () => {
+    // What a path lstat would report through the planted chain: a socket.
+    // The descriptor walk refuses the chain, so the adoptable legacy
+    // socket wins — the user path is never taken on the planted view.
+    const foreignRoot = fakeSocketFs({
+      "/tmp/atmux-1000": dir(B, 0o755),
+      "/tmp/atmux-1000/px": dir(A),
+      [user]: sock(A),
+      [legacyDir]: dir(A),
+      [legacy]: sock(A),
+    });
+    expect(resolveCageSocketPath("px", { uid: A, fs: foreignRoot })).toBe(legacy);
+    const planted = fakeSocketFs({
+      "/tmp/atmux-1000": dir(A),
+      "/tmp/atmux-1000/px": link("/tmp/atmux-journal", A),
+      "/tmp/atmux-journal": dir(A),
+      [user]: sock(A),
+      [legacyDir]: dir(A),
+      [legacy]: sock(A),
+    });
+    expect(resolveCageSocketPath("px", { uid: A, fs: planted })).toBe(legacy);
   });
 
   test("legacy socket ours in a private (0700) dir → legacy (live cage keeps working)", () => {
@@ -1008,6 +1054,42 @@ describe("legacySocketState / legacySocketInfo", () => {
   ] as const)("%s", (_label, nodes, want) => {
     const fs = fakeSocketFs(nodes as Record<string, FakeNode>);
     expect(legacySocketState(legacy, { uid: A, fs })).toBe(want);
+  });
+
+  test("rev 4: a legacy path behind a symlink or another uid's directory is foreign, never shared-dir", () => {
+    // The pre-ADR `/tmp/atmux-px` is a symlink (another uid's, in the
+    // shared /tmp) to a dir holding OUR socket: a path lstat says "ours";
+    // the walk says the chain is not ours to report on.
+    const viaLink = fakeSocketFs({
+      "/tmp/atmux-px": link("/tmp/atmux-journal", B),
+      "/tmp/atmux-journal": dir(A),
+      [legacy]: sock(A),
+    });
+    expect(legacySocketState(legacy, { uid: A, fs: viaLink })).toBe("foreign");
+    const foreignDir = fakeSocketFs({ "/tmp/atmux-px": dir(B, 0o777), [legacy]: sock(A) });
+    expect(legacySocketState(legacy, { uid: A, fs: foreignDir })).toBe("foreign");
+  });
+
+  test("shared-dir needs our socket: a missing or foreign node behind an open dir is absent / foreign", () => {
+    expect(
+      legacySocketState(legacy, { uid: A, fs: fakeSocketFs({ "/tmp/atmux-px": dir(A, 0o777) }) }),
+    ).toBe("absent");
+    expect(
+      legacySocketState(legacy, {
+        uid: A,
+        fs: fakeSocketFs({ "/tmp/atmux-px": dir(A, 0o777), [legacy]: sock(B) }),
+      }),
+    ).toBe("foreign");
+    expect(
+      legacySocketState(legacy, {
+        uid: A,
+        fs: fakeSocketFs({ "/tmp/atmux-px": dir(A, 0o777), [legacy]: file(A) }),
+      }),
+    ).toBe("foreign");
+  });
+
+  test("no POSIX uid + nothing present → absent", () => {
+    expect(legacySocketState(legacy, { uid: null, fs: fakeSocketFs() })).toBe("absent");
   });
 
   test("shared-dir carries the chain issue", () => {
@@ -1141,7 +1223,7 @@ describe("settleSocketForCreate (create-time migration)", () => {
     expect(logs[0]).toContain("not removed (Error: EPERM)");
   });
 
-  test("default remover + default logger on a real (absent) path", async () => {
+  test("default remover (descriptor-based) + default logger", async () => {
     const team = `sockdir-settle-${process.pid}`;
     const l = `/tmp/atmux-${team}/sock`;
     const u = `/tmp/atmux-${A}/${team}/sock`;
@@ -1153,13 +1235,36 @@ describe("settleSocketForCreate (create-time migration)", () => {
       return true;
     }) as typeof process.stderr.write;
     try {
-      // Default isListening dials the (absent) real path → dead; default
-      // remover hits ENOENT → logged via the default stderr logger.
+      // Default isListening dials the (absent) real path → not live; the
+      // default remover re-walks, probes through the held directory and
+      // unlinks relative to it.
       expect(await settleSocketForCreate(l, u, l, { uid: A, fs })).toBe(u);
     } finally {
       process.stderr.write = orig;
     }
-    expect(writes.join("")).toContain(`dead legacy socket ${l} not removed`);
+    expect(fs.calls).toContain(`connect ${l}`);
+    expect(fs.calls).toContain(`unlink ${l}`);
+    expect(fs.nodes.has(l)).toBe(false);
+    expect(fs.openHandles()).toBe(0);
+    expect(writes.join("")).toContain(`removed dead legacy socket ${l}`);
+  });
+
+  test("default remover refuses a socket its own probe finds live, and says why", async () => {
+    const fs = fakeSocketFs(
+      { "/tmp/atmux-px": dir(A), [legacy]: sock(A) },
+      { probe: { [legacy]: "live" } },
+    );
+    const logs: string[] = [];
+    const out = await settleSocketForCreate(legacy, user, legacy, {
+      uid: A,
+      fs,
+      isListening: async () => false,
+      log: (m) => logs.push(m),
+    });
+    expect(out).toBe(user);
+    expect(fs.nodes.has(legacy)).toBe(true);
+    expect(fs.calls.some((c) => c.startsWith("unlink"))).toBe(false);
+    expect(logs[0]).toContain("not removed (Error: a server accepts connections on it)");
   });
 
   test("adoptable legacy but resolved elsewhere (per-user socket present) → unchanged", async () => {
@@ -1171,5 +1276,393 @@ describe("settleSocketForCreate (create-time migration)", () => {
     expect(await settleSocketForCreate(user, user, legacy, { uid: A, fs: fakeSocketFs() })).toBe(
       user,
     );
+  });
+});
+
+// ---------- ADR-305 revision 4: removal only through held descriptors ----------
+
+describe("removeDeadSocket (rev 4) — fake fs", () => {
+  const d = "/tmp/atmux-1000/px";
+  const s = `${d}/sock`;
+  const base = (): Record<string, FakeNode> => ({
+    "/tmp/atmux-1000": dir(A),
+    [d]: dir(A),
+    [s]: sock(A),
+  });
+
+  test("a dead socket of ours in a private dir → probed and unlinked through the held dir", async () => {
+    const fs = fakeSocketFs(base());
+    expect(await removeDeadSocket(s, { uid: A, fs })).toEqual({ removed: true });
+    // The probe and the unlink come AFTER the walk opened every directory.
+    const opened = fs.calls.indexOf(`open ${d}`);
+    expect(opened).toBeGreaterThan(-1);
+    expect(fs.calls.indexOf(`connect ${s}`)).toBeGreaterThan(opened);
+    expect(fs.calls.indexOf(`unlink ${s}`)).toBeGreaterThan(fs.calls.indexOf(`connect ${s}`));
+    expect(fs.nodes.has(s)).toBe(false);
+    expect(fs.openHandles()).toBe(0);
+  });
+
+  test("THE REPRO: our root is another uid's 0755 dir with a symlink to a live socket dir → unsafe, nothing probed or removed", async () => {
+    // uid 0's `/tmp/atmux-0` planted by uid 4302, `kanban -> /tmp/atmux-journal`.
+    const fs = fakeSocketFs({
+      "/tmp/atmux-0": dir(4302, 0o755),
+      "/tmp/atmux-0/kanban": link("/tmp/atmux-journal", 4302),
+      "/tmp/atmux-journal": dir(0),
+      "/tmp/atmux-journal/sock": sock(0),
+      // What a path lstat through the planted chain would see.
+      "/tmp/atmux-0/kanban/sock": sock(0),
+    });
+    const out = await removeDeadSocket("/tmp/atmux-0/kanban/sock", { uid: 0, fs });
+    expect(out).toMatchObject({
+      removed: false,
+      reason: "unsafe",
+      issue: { path: "/tmp/atmux-0", problem: "foreign-owner" },
+    });
+    expect(fs.calls.some((c) => c.startsWith("connect") || c.startsWith("unlink"))).toBe(false);
+    expect(fs.nodes.has("/tmp/atmux-journal/sock")).toBe(true);
+    expect(fs.openHandles()).toBe(0);
+  });
+
+  test("a symlink as the socket's own dir (even our own link) → unsafe", async () => {
+    const fs = fakeSocketFs({
+      "/tmp/atmux-1000": dir(A),
+      [d]: link("/tmp/atmux-journal", A),
+      "/tmp/atmux-journal": dir(A),
+      "/tmp/atmux-journal/sock": sock(A),
+    });
+    expect(await removeDeadSocket(s, { uid: A, fs })).toMatchObject({
+      removed: false,
+      reason: "unsafe",
+      issue: { path: d, problem: "symlink" },
+    });
+    expect(fs.nodes.has("/tmp/atmux-journal/sock")).toBe(true);
+  });
+
+  test("the socket's own dir with group/other bits → unsafe (not ours alone)", async () => {
+    const fs = fakeSocketFs({ ...base(), [d]: dir(A, 0o755) });
+    expect(await removeDeadSocket(s, { uid: A, fs })).toMatchObject({
+      reason: "unsafe",
+      issue: { path: d, problem: "shared-mode" },
+    });
+    expect(fs.nodes.has(s)).toBe(true);
+  });
+
+  test("a symlink or another uid's node at the socket path → unsafe", async () => {
+    for (const node of [link("/tmp/atmux-journal/sock", A), sock(B)]) {
+      const fs = fakeSocketFs({ ...base(), [s]: node });
+      expect(await removeDeadSocket(s, { uid: A, fs })).toMatchObject({ reason: "unsafe" });
+      expect(fs.nodes.has(s)).toBe(true);
+    }
+  });
+
+  test("live / unknown / vanished probe → left in place", async () => {
+    for (const [probe, reason] of [
+      ["live", "live"],
+      ["unknown", "unknown"],
+      ["absent", "absent"],
+    ] as const) {
+      const fs = fakeSocketFs(base(), { probe: { [s]: probe } });
+      expect(await removeDeadSocket(s, { uid: A, fs })).toEqual({ removed: false, reason });
+      expect(fs.nodes.has(s)).toBe(true);
+      expect(fs.openHandles()).toBe(0);
+    }
+  });
+
+  test("absent node, absent dir, non-socket node → not removed", async () => {
+    const noNode = fakeSocketFs({ "/tmp/atmux-1000": dir(A), [d]: dir(A) });
+    expect(await removeDeadSocket(s, { uid: A, fs: noNode })).toEqual({
+      removed: false,
+      reason: "absent",
+    });
+    expect(await removeDeadSocket(s, { uid: A, fs: fakeSocketFs() })).toEqual({
+      removed: false,
+      reason: "absent",
+    });
+    const f = fakeSocketFs({ ...base(), [s]: file(A) });
+    expect(await removeDeadSocket(s, { uid: A, fs: f })).toEqual({
+      removed: false,
+      reason: "not-socket",
+    });
+    expect(f.nodes.has(s)).toBe(true);
+  });
+
+  test("a failing unlink propagates and still closes every descriptor", async () => {
+    const fs = fakeSocketFs(base(), { removeThrows: { [s]: "EPERM" } });
+    await expect(removeDeadSocket(s, { uid: A, fs })).rejects.toThrow("EPERM");
+    expect(fs.openHandles()).toBe(0);
+  });
+
+  test("not-normalized path and no POSIX uid → unsafe, nothing touched", async () => {
+    expect(
+      await removeDeadSocket("/tmp/../tmp/x/sock", { uid: A, fs: fakeSocketFs() }),
+    ).toMatchObject({
+      reason: "unsafe",
+      issue: { problem: "not-normalized" },
+    });
+    expect(await removeDeadSocket(s, { uid: null, fs: fakeSocketFs(base()) })).toMatchObject({
+      reason: "unsafe",
+      issue: { problem: "uninspectable" },
+    });
+  });
+
+  test("removeDeadSocketOrThrow + describeSocketRemoval name every reason", async () => {
+    await removeDeadSocketOrThrow(s, { uid: A, fs: fakeSocketFs(base()) });
+    await expect(
+      removeDeadSocketOrThrow(s, { uid: A, fs: fakeSocketFs(base(), { probe: { [s]: "live" } }) }),
+    ).rejects.toThrow("a server accepts connections on it");
+    expect(
+      describeSocketRemoval({
+        removed: false,
+        reason: "unsafe",
+        issue: { path: "/x", problem: "symlink", detail: "is a symlink", hint: "" },
+      }),
+    ).toBe("unsafe: /x is a symlink");
+    expect(describeSocketRemoval({ removed: false, reason: "absent" })).toBe("no socket there");
+    expect(describeSocketRemoval({ removed: false, reason: "not-socket" })).toBe("not a socket");
+    expect(describeSocketRemoval({ removed: false, reason: "live" })).toBe(
+      "a server accepts connections on it",
+    );
+    expect(describeSocketRemoval({ removed: false, reason: "unknown" })).toBe(
+      "its connect probe was inconclusive",
+    );
+  });
+});
+
+describe("removePrivateTree (rev 4) — fake fs", () => {
+  const d = "/tmp/atmux-1000/px";
+
+  test("ours alone → removed relative to the held parent; every descriptor closed", () => {
+    const fs = fakeSocketFs({
+      "/tmp/atmux-1000": dir(A),
+      [d]: dir(A),
+      [`${d}/sock`]: sock(A),
+      [`${d}/sub`]: dir(A),
+    });
+    expect(removePrivateTree(d, { uid: A, fs })).toBe(true);
+    expect(fs.calls).toContain(`rmtree ${d}`);
+    expect([...fs.nodes.keys()].some((k) => k.startsWith(d))).toBe(false);
+    expect(fs.nodes.has("/tmp/atmux-1000")).toBe(true);
+    expect(fs.openHandles()).toBe(0);
+  });
+
+  test("a trusted symlinked ancestor → removed at its physical path", () => {
+    const fs = fakeSocketFs({
+      "/run": link("/var/run", 0),
+      "/var": dir(0, 0o755),
+      "/var/run": dir(0, 0o755),
+      "/var/run/x": dir(A),
+    });
+    expect(removePrivateTree("/run/x", { uid: A, fs })).toBe(true);
+    expect(fs.calls).toContain("rmtree /var/run/x");
+    expect(fs.nodes.has("/var/run/x")).toBe(false);
+  });
+
+  test("absent → false, nothing removed", () => {
+    const fs = fakeSocketFs({ "/tmp/atmux-1000": dir(A) });
+    expect(removePrivateTree(d, { uid: A, fs })).toBe(false);
+    expect(fs.calls.some((c) => c.startsWith("rmtree"))).toBe(false);
+  });
+
+  test("not ours alone (mode, owner, symlink, planted chain) → UnsafeSocketPathError, nothing removed", () => {
+    const cases: Record<string, FakeNode>[] = [
+      { "/tmp/atmux-1000": dir(A), [d]: dir(A, 0o755) },
+      { "/tmp/atmux-1000": dir(A), [d]: dir(B) },
+      { "/tmp/atmux-1000": dir(A), [d]: link("/tmp/elsewhere", A), "/tmp/elsewhere": dir(A) },
+      { "/tmp/atmux-1000": dir(B, 0o755), [d]: dir(A) },
+    ];
+    for (const nodes of cases) {
+      const fs = fakeSocketFs(nodes);
+      expect(() => removePrivateTree(d, { uid: A, fs })).toThrow(UnsafeSocketPathError);
+      expect(fs.calls.some((c) => c.startsWith("rmtree"))).toBe(false);
+      expect(fs.openHandles()).toBe(0);
+    }
+  });
+
+  test("/, a not-normalized path, and no POSIX uid → refused", () => {
+    expect(() => removePrivateTree("/", { uid: A, fs: fakeSocketFs() })).toThrow(
+      "is the root directory",
+    );
+    expect(() => removePrivateTree("/tmp/./x", { uid: A, fs: fakeSocketFs() })).toThrow(
+      UnsafeSocketPathError,
+    );
+    expect(() => removePrivateTree(d, { uid: null, fs: fakeSocketFs() })).toThrow("no POSIX uid");
+  });
+
+  test("a failing removal propagates and still closes every descriptor", () => {
+    const fs = fakeSocketFs(
+      { "/tmp/atmux-1000": dir(A), [d]: dir(A) },
+      { removeThrows: { [d]: "EACCES" } },
+    );
+    expect(() => removePrivateTree(d, { uid: A, fs })).toThrow("EACCES");
+    expect(fs.openHandles()).toBe(0);
+  });
+});
+
+describe("renameOwnedDir (rev 4) — fake fs", () => {
+  const from = "/tmp/atmux_tmux_old";
+  const to = "/tmp/atmux_tmux_new";
+
+  test("a directory of ours → renamed relative to both held parents", () => {
+    const fs = fakeSocketFs({ [from]: dir(A, 0o755), [`${from}/tmux-1000`]: dir(A) });
+    renameOwnedDir(from, to, { uid: A, fs });
+    expect(fs.calls).toContain(`rename ${from} ${to}`);
+    expect(fs.nodes.has(`${to}/tmux-1000`)).toBe(true);
+    expect(fs.nodes.has(from)).toBe(false);
+    expect(fs.openHandles()).toBe(0);
+  });
+
+  test("refusals: absent, another uid's, a symlink, a target that exists, an unsafe parent", () => {
+    const cases: [Record<string, FakeNode>, string, string, string][] = [
+      [{}, from, to, "does not exist"],
+      [{ [from]: dir(B) }, from, to, `is owned by uid ${B}`],
+      [{ [from]: link("/tmp/x", A), "/tmp/x": dir(A) }, from, to, "is not a real directory"],
+      [{ [from]: dir(A), [to]: dir(B) }, from, to, "already exists"],
+      [{ "/srv": dir(B, 0o755), "/srv/old": dir(A) }, "/srv/old", to, `neither root nor uid ${A}`],
+      [{ [from]: dir(A), "/srv": dir(0, 0o777) }, from, "/srv/new", "has mode 0777"],
+      [{ [from]: dir(A) }, from, "/nope/new", "does not exist"],
+    ];
+    for (const [nodes, src, dst, msg] of cases) {
+      const fs = fakeSocketFs(nodes);
+      expect(() => renameOwnedDir(src, dst, { uid: A, fs })).toThrow(msg);
+      expect(fs.calls.some((c) => c.startsWith("rename"))).toBe(false);
+      expect(fs.openHandles()).toBe(0);
+    }
+  });
+
+  test("an entry directly under / has / as an ordinary (non-private) parent", () => {
+    const fs = fakeSocketFs({ "/old": dir(A, 0o755) });
+    renameOwnedDir("/old", "/new", { uid: A, fs });
+    expect(fs.calls).toContain("rename /old /new");
+    expect(fs.openHandles()).toBe(0);
+  });
+
+  test("not-normalized and no POSIX uid → refused", () => {
+    expect(() => renameOwnedDir("/tmp/../x", to, { uid: A, fs: fakeSocketFs() })).toThrow(
+      UnsafeSocketPathError,
+    );
+    expect(() => renameOwnedDir(from, to, { uid: null, fs: fakeSocketFs() })).toThrow(
+      "no POSIX uid",
+    );
+  });
+});
+
+describe("isOwnSocket", () => {
+  test("walk-based: ours behind a passing chain only", () => {
+    const d = "/tmp/atmux-1000/px";
+    const ok = fakeSocketFs({ "/tmp/atmux-1000": dir(A), [d]: dir(A), [`${d}/sock`]: sock(A) });
+    expect(isOwnSocket(`${d}/sock`, { uid: A, fs: ok })).toBe(true);
+    const planted = fakeSocketFs({
+      "/tmp/atmux-1000": dir(B, 0o755),
+      [d]: dir(A),
+      [`${d}/sock`]: sock(A),
+    });
+    expect(isOwnSocket(`${d}/sock`, { uid: A, fs: planted })).toBe(false);
+    expect(isOwnSocket(`${d}/sock`, { uid: null, fs: ok })).toBe(true);
+    expect(isOwnSocket(`${d}/nope`, { uid: null, fs: ok })).toBe(false);
+  });
+});
+
+describe("rev 4 — real filesystem", () => {
+  let scratch: string;
+  let server: Server | null = null;
+  const uid = process.getuid?.() ?? 0;
+  beforeEach(async () => {
+    scratch = await mkdtemp(join(tmpdir(), "sockdir-rm-"));
+  });
+  afterEach(async () => {
+    if (server !== null) await new Promise<void>((r) => server?.close(() => r()));
+    server = null;
+    await rm(scratch, { recursive: true, force: true });
+  });
+
+  test("probeUnixSocket: live, dead (SIGKILLed server), absent; a regular file is never live", async () => {
+    const live = join(scratch, "live");
+    server = createServer();
+    await new Promise<void>((r) => server?.listen(live, () => r()));
+    expect(await probeUnixSocket(live)).toBe("live");
+    const dead = join(scratch, "dead");
+    await deadUnixSocket(dead);
+    expect(lstatSync(dead).isSocket()).toBe(true);
+    expect(await probeUnixSocket(dead)).toBe("dead");
+    expect(await probeUnixSocket(join(scratch, "nope"))).toBe("absent");
+    // Measured (bun 1.4.2): connect() to a regular file — or through one —
+    // also reports ECONNREFUSED. "dead" alone never proves a dead SOCKET,
+    // which is why removeDeadSocket first checks, through the held
+    // directory, that the node is our socket.
+    writeFileSync(join(scratch, "file"), "");
+    expect(await probeUnixSocket(join(scratch, "file"))).not.toBe("live");
+  });
+
+  for (const procFd of [true, false]) {
+    test(`removeDeadSocket end to end (procFd=${procFd}): dead removed, live kept, symlinked dir refused`, async () => {
+      const fs = createRealSocketDirFs({ procFd });
+      const d = join(scratch, "d");
+      mkdirSync(d, { mode: 0o700 });
+      const dead = join(d, "dead");
+      await deadUnixSocket(dead);
+      expect(await removeDeadSocket(dead, { uid, fs })).toEqual({ removed: true });
+      expect(existsSync(dead)).toBe(false);
+      const live = join(d, "live");
+      server = createServer();
+      await new Promise<void>((r) => server?.listen(live, () => r()));
+      expect(await removeDeadSocket(live, { uid, fs })).toEqual({ removed: false, reason: "live" });
+      expect(existsSync(live)).toBe(true);
+      // A symlink as the socket's own dir, pointing at a dir with a dead
+      // socket: a path unlink would remove the target; this refuses.
+      const target = join(scratch, "target");
+      mkdirSync(target, { mode: 0o700 });
+      await deadUnixSocket(join(target, "sock"));
+      symlinkSync(target, join(scratch, "via"));
+      expect(await removeDeadSocket(join(scratch, "via", "sock"), { uid, fs })).toMatchObject({
+        reason: "unsafe",
+        issue: { problem: "symlink" },
+      });
+      expect(lstatSync(join(target, "sock")).isSocket()).toBe(true);
+    });
+  }
+
+  test("removePrivateTree on disk: a symlink inside is removed, never followed; a 0755 dir is refused", () => {
+    const d = join(scratch, "tree");
+    mkdirSync(join(d, "sub"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(d, "sub", "f"), "x");
+    const outside = join(scratch, "outside");
+    mkdirSync(outside);
+    writeFileSync(join(outside, "keep"), "k");
+    symlinkSync(outside, join(d, "link"));
+    expect(removePrivateTree(d)).toBe(true);
+    expect(existsSync(d)).toBe(false);
+    expect(existsSync(join(outside, "keep"))).toBe(true);
+    const wide = join(scratch, "wide");
+    mkdirSync(wide, { mode: 0o700 });
+    chmodSync(wide, 0o755);
+    expect(() => removePrivateTree(wide)).toThrow("has mode 0755");
+    expect(existsSync(wide)).toBe(true);
+    expect(removePrivateTree(join(scratch, "gone"))).toBe(false);
+  });
+
+  test("renameOwnedDir on disk", () => {
+    const from = join(scratch, "old");
+    mkdirSync(join(from, `tmux-${uid}`), { recursive: true, mode: 0o700 });
+    renameOwnedDir(from, join(scratch, "new"));
+    expect(existsSync(join(scratch, "new", `tmux-${uid}`))).toBe(true);
+    expect(existsSync(from)).toBe(false);
+  });
+
+  test("realSocketDirFs removal primitives, with and without /proc/self/fd", () => {
+    for (const procFd of [true, false]) {
+      const fs = createRealSocketDirFs({ procFd });
+      const parent = procFd
+        ? { path: scratch, fd: openScratch(fs, scratch) }
+        : { path: scratch, fd: -1 };
+      writeFileSync(join(scratch, `f-${procFd}`), "");
+      fs.unlinkAt(parent, `f-${procFd}`);
+      expect(existsSync(join(scratch, `f-${procFd}`))).toBe(false);
+      mkdirSync(join(scratch, `t-${procFd}`, "x"), { recursive: true });
+      fs.renameAt(parent, `t-${procFd}`, parent, `u-${procFd}`);
+      expect(existsSync(join(scratch, `u-${procFd}`, "x"))).toBe(true);
+      fs.removeTreeAt(parent, `u-${procFd}`);
+      expect(existsSync(join(scratch, `u-${procFd}`))).toBe(false);
+      if (procFd) fs.close(parent);
+    }
   });
 });

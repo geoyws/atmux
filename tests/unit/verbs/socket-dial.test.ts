@@ -19,6 +19,7 @@ import {
   SOCKET_DIAL_ABSENT,
   socketDial,
   socketDialCommand,
+  socketRmdir,
 } from "../../../src/verbs/socket-dial.ts";
 import { dir, fakeSocketFs, sock } from "../../helpers/fake-socket-fs.ts";
 
@@ -234,6 +235,74 @@ describe("atmux socket-dial (real CLI, real filesystem)", () => {
   });
 
   test("usage error → exit 64", () => {
+    expect(run().code).toBe(64);
+  });
+});
+
+// ---------- `atmux socket-rmdir` (ADR-305 revision 4) ----------
+
+describe("socketRmdir (seams)", () => {
+  const D = "/tmp/atmux-1000/px";
+
+  test.each([[[]], [[""]], [["-x"]], [[D, "extra"]]])("usage %p → UsageError", async (argv) => {
+    await expect(socketRmdir(argv, { uid: A, fs: fakeSocketFs() })).rejects.toBeInstanceOf(
+      UsageError,
+    );
+  });
+
+  test("ours alone → 0, removed relative to the held parent", async () => {
+    const fs = fakeSocketFs({ "/tmp/atmux-1000": dir(A), [D]: dir(A), [`${D}/sock`]: sock(A) });
+    expect(await socketRmdir([D], { uid: A, fs })).toBe(0);
+    expect(fs.calls).toContain(`rmtree ${D}`);
+    expect(fs.nodes.has(D)).toBe(false);
+  });
+
+  test("absent → exit 1", async () => {
+    const fs = fakeSocketFs({ "/tmp/atmux-1000": dir(A) });
+    expect(await socketRmdir([D], { uid: A, fs })).toBe(SOCKET_DIAL_ABSENT);
+  });
+
+  test("not ours alone → UnsafeSocketPathError (exit 78), nothing removed", async () => {
+    const fs = fakeSocketFs({ "/tmp/atmux-1000": dir(A), [D]: dir(A, 0o755) });
+    await expect(socketRmdir([D], { uid: A, fs })).rejects.toBeInstanceOf(UnsafeSocketPathError);
+    expect(fs.nodes.has(D)).toBe(true);
+  });
+});
+
+describe("atmux socket-rmdir (real CLI, real filesystem)", () => {
+  let scratch: string;
+  beforeEach(async () => {
+    scratch = await mkdtemp(join(tmpdir(), "socket-rmdir-"));
+  });
+  afterEach(async () => {
+    await rm(scratch, { recursive: true, force: true });
+  });
+
+  function run(...argv: string[]): { code: number; err: string } {
+    const p = Bun.spawnSync({
+      cmd: [process.execPath, join(REPO, "bin", "atmux"), "socket-rmdir", ...argv],
+      env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? scratch },
+      cwd: scratch,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    return { code: p.exitCode ?? -1, err: p.stderr.toString() };
+  }
+
+  test("a private dir is removed (0); gone → 1; a 0755 one is refused (78) and kept; usage → 64", () => {
+    const d = join(scratch, "fixture");
+    mkdirSync(join(d, "sub"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(d, "sub", "f"), "x");
+    expect(run(d).code).toBe(0);
+    expect(existsSync(d)).toBe(false);
+    expect(run(d).code).toBe(1);
+    const wide = join(scratch, "wide");
+    mkdirSync(wide, { mode: 0o700 });
+    chmodSync(wide, 0o755);
+    const r = run(wide);
+    expect(r.code).toBe(78);
+    expect(r.err).toContain(`${wide} has mode 0755`);
+    expect(existsSync(wide)).toBe(true);
     expect(run().code).toBe(64);
   });
 });

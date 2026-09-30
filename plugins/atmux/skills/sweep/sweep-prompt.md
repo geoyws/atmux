@@ -45,9 +45,10 @@ If the session name starts with `test_cockpit_` OR the parent dir name matches `
 
 ```bash
 atmux socket-dial "$DIR/sock" kill-server
-# Remove only a real directory you own (a sticky /tmp lets only its owner swap it).
-[ ! -L "$DIR" ] && [ -O "$DIR" ] && rm -rf "$DIR"
+atmux socket-rmdir "$DIR"
 ```
+
+`atmux socket-rmdir` removes the directory only when it is yours alone (mode 0700, a safe chain) and acts through a held descriptor, never a path: exit 1 = already gone, 78 = not yours alone — leave it and report it. Never `rm -rf` a `/tmp` socket directory directly.
 
 `atmux test-reaper` does the same for sidecar-tracked fixtures with every check built in (ADR-301, ADR-305).
 

@@ -22,7 +22,7 @@
 // can pin the clock; archive month-stamps default to UTC formatting to
 // match bash's cron-on-hax (TZ=UTC) behaviour byte-for-byte.
 
-import { lstat, readdir, rm } from "node:fs/promises";
+import { readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -41,7 +41,12 @@ import { createTmux } from "../abstractions/tmux.ts";
 import { Kanban } from "../schema/kanban.ts";
 import { hasLiveChildCages } from "./cage-children.ts";
 import { kanbanJsonPath, archiveDir as resolveArchiveDir } from "./common.ts";
-import { currentUid } from "./socket-dir.ts";
+import {
+  currentUid,
+  privateDirIssue,
+  removePrivateTree,
+  UnsafeSocketPathError,
+} from "./socket-dir.ts";
 import { getAtmuxTmuxConfPath } from "./tmux-paths.ts";
 
 // ---------- Shared time helpers ----------
@@ -1049,15 +1054,18 @@ export async function sweepZombieTmuxSockets(
 
     result.scanned += 1;
 
-    // ADR-305: another uid's directory is never killed through or removed —
-    // it is not ours to reap, and its owner controls what lies inside. lstat
-    // (no follow): a sticky /tmp lets only an entry's owner swap it.
+    // ADR-305: a directory that is not ours alone — another uid's, one
+    // with group/other bits, one behind a chain another uid can rewrite —
+    // is never killed through or removed: it is not ours to reap, or
+    // another uid may have planted what lies inside. The descriptor walk
+    // (`privateDirIssue`) decides; the removal below re-walks it and runs
+    // relative to the held parent (ADR-305 revision 4).
     if (ownUid !== null) {
-      const owner = (await lstat(full).catch(() => null))?.uid;
-      if (owner !== ownUid) {
+      const issue = privateDirIssue(full, { uid: ownUid });
+      if (issue !== null) {
         result.errors.push({
           path: full,
-          message: `owned by uid ${owner ?? "?"}, not uid ${ownUid} — left alone (ADR-305)`,
+          message: `${issue.path} ${issue.detail} — left alone (ADR-305)`,
         });
         continue;
       }
@@ -1118,10 +1126,15 @@ export async function sweepZombieTmuxSockets(
     if (attemptedKill) result.killed += 1;
 
     try {
-      await rm(full, { recursive: true, force: true });
+      if (ownUid === null) await rm(full, { recursive: true, force: true });
+      else removePrivateTree(full, { uid: ownUid });
       result.removed += 1;
     } catch (e) {
-      result.errors.push({ path: full, message: errMsg(e) });
+      const message =
+        e instanceof UnsafeSocketPathError
+          ? `${e.issue.path} ${e.issue.detail} — left alone (ADR-305)`
+          : errMsg(e);
+      result.errors.push({ path: full, message });
     }
   }
 

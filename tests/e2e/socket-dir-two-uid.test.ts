@@ -50,6 +50,15 @@
 //  13. review of a9f96ac2, item 2: carol plants a test-reaper fixture whose
 //      `sock` links to root's live server. Root's `atmux test-reaper`
 //      leaves both alone; root's own fixture is still reaped.
+//  14. review of ccd9f275 (HIGH), the reviewer's repro: frank has a live
+//      server at /tmp/atmux-<journal>/sock; carol creates /tmp/atmux-<frank>
+//      (0755) with `<team> -> /tmp/atmux-<journal>`. frank's `atmux start`
+//      of a tmuxTmpdir team must NOT read the guard's refusal as "dead" and
+//      unlink his own live socket through carol's link.
+//  15. review of ccd9f275 (LOW): `bin/atmux-tmux` checks each component
+//      before following a symlink (it used to `cd -P` first): carol's link
+//      in her own directory, or in the sticky /tmp, is refused and nothing
+//      is made behind it.
 
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, writeFileSync } from "node:fs";
@@ -62,7 +71,14 @@ const ACTOR = resolve(REPO, "tests/helpers/socket-dir-actor.ts");
 const ATMUX = resolve(REPO, "bin/atmux");
 const WRAPPER = resolve(REPO, "bin/atmux-tmux");
 const NONCE = `${process.pid.toString(36)}${Date.now().toString(36).slice(-4)}`;
-const USERS = { alice: 4201, bob: 4202, carol: 4203, dave: 4204, erin: 4205 } as const;
+const USERS = {
+  alice: 4201,
+  bob: 4202,
+  carol: 4203,
+  dave: 4204,
+  erin: 4205,
+  frank: 4206,
+} as const;
 type Who = keyof typeof USERS | "root";
 /** Primary gid per user, read back after `useradd -U`. */
 const GIDS: Record<string, number> = {};
@@ -742,5 +758,91 @@ describe.skipIf(SKIP)("e2e: ADR-305 per-user private socket dirs across two real
     // root's own fixture really was reaped.
     expect(existsSync(own)).toBe(false);
     expect(sh(["tmux", "-S", `${own}/sock`, "has-session"]).code).not.toBe(0);
+  });
+
+  test("beat 14 — review of ccd9f275 (HIGH): carol's /tmp/atmux-<frank> + symlink never makes frank's `atmux start` unlink his own live socket", () => {
+    const team = `e2e-unl-${NONCE}`;
+    const f = as("frank");
+    // frank's live server on a pre-ADR-305 path of another team (dir 0700).
+    const journal = `/tmp/atmux-e2ej${NONCE}`;
+    scratch.push(journal);
+    sh(["install", "-d", "-m", "700", "-o", "4206", "-g", String(GIDS.frank), journal]);
+    const victim = `${journal}/sock`;
+    expect(
+      sh(
+        [...f.argv, "tmux", "-S", victim, "new-session", "-d", "-s", "victim", "sleep", "600"],
+        f.env,
+      ).code,
+    ).toBe(0);
+    started.push({ who: "frank", sock: victim });
+    // carol's plant: frank's per-user root (0755, hers) + `<team>` -> journal.
+    const squat = "/tmp/atmux-4206";
+    sh(["rm", "-rf", squat]);
+    const c = as("carol");
+    expect(sh([...c.argv, "mkdir", "-m", "755", squat], c.env).code).toBe(0);
+    expect(sh([...c.argv, "ln", "-s", journal, `${squat}/${team}`], c.env).code).toBe(0);
+    const legacy = `${squat}/${team}/sock`;
+
+    // frank starts a team whose tmuxTmpdir reroutes it away from `legacy`.
+    const root = teamRoot("frank", team, {});
+    const tmpdir = `${root}/tmux`;
+    const tj = `${root}/.atmux/team.json`;
+    const obj = JSON.parse(sh(["cat", tj]).out) as Record<string, unknown>;
+    writeFileSync(tj, JSON.stringify({ ...obj, tmuxTmpdir: tmpdir }));
+    started.push({ who: "frank", sock: `${tmpdir}/tmux-4206/default` });
+    const r = startTeam("frank", root);
+    process.stderr.write(`beat 14: start exit ${r.code}\n${r.out}${r.err}\n`);
+    expect(r.code).toBe(0);
+    const log = `${r.out}${r.err}`;
+    expect(log).not.toContain("removed stale legacy socket");
+    expect(log).toContain(`legacy socket ${legacy} left in place`);
+    expect(log).toContain(`${squat} is owned by uid 4203, not uid 4206`);
+    // frank's live server still answers; carol's plant is as she left it.
+    expect(sh([...f.argv, "tmux", "-S", victim, "has-session", "-t", "=victim"], f.env).code).toBe(
+      0,
+    );
+    expect(sh(["test", "-S", victim]).code).toBe(0);
+    expect(modeOwner(squat)).toBe("755 4203");
+    expect(sh(["test", "-L", `${squat}/${team}`]).code).toBe(0);
+    // …and frank's cage came up on the tmuxTmpdir path.
+    expect(
+      sh(
+        [...f.argv, "tmux", "-S", `${tmpdir}/tmux-4206/default`, "has-session", "-t", `=${team}`],
+        f.env,
+      ).code,
+    ).toBe(0);
+  });
+
+  test("beat 15 — review of ccd9f275 (LOW): bin/atmux-tmux checks each component before following a symlink", () => {
+    const f = as("frank");
+    const c = as("carol");
+    const target = `/tmp/e2e-ttt-${NONCE}`;
+    scratch.push(target);
+    sh(["install", "-d", "-m", "700", "-o", "4206", "-g", String(GIDS.frank), target]);
+    // (a) carol's link inside HER OWN directory (not sticky, so the kernel's
+    //     protected_symlinks does not stop the follow): the ccd9f275 wrapper
+    //     `cd -P`'d through it before checking anything and made
+    //     tmux-4206 behind it; each component is now checked first.
+    const carolDir = `/tmp/e2e-ttc-${NONCE}`;
+    scratch.push(carolDir);
+    sh(["install", "-d", "-m", "755", "-o", "4203", "-g", String(GIDS.carol), carolDir]);
+    expect(sh([...c.argv, "ln", "-s", target, `${carolDir}/l`], c.env).code).toBe(0);
+    const viaDir = sh([...f.argv, "sh", WRAPPER, "-V"], { ...f.env, TMUX_TMPDIR: `${carolDir}/l` });
+    expect(viaDir.code).toBe(78);
+    expect(viaDir.err).toContain(`${carolDir} is owned by uid 4203 (neither root nor uid 4206)`);
+    expect(existsSync(`${target}/tmux-4206`)).toBe(false);
+    // (b) carol's link directly in the shared sticky /tmp: refused by the
+    //     wrapper's own rule, whatever fs.protected_symlinks says.
+    const planted = `/tmp/e2e-ttl-${NONCE}`;
+    scratch.push(planted);
+    expect(sh([...c.argv, "ln", "-s", target, planted], c.env).code).toBe(0);
+    const w = sh([...f.argv, "sh", WRAPPER, "-V"], { ...f.env, TMUX_TMPDIR: planted });
+    expect(w.code).toBe(78);
+    expect(w.err).toContain(`${planted} is a symlink`);
+    expect(existsSync(`${target}/tmux-4206`)).toBe(false);
+    // Positive control: frank's own real directory works.
+    const ok = sh([...f.argv, "sh", WRAPPER, "-V"], { ...f.env, TMUX_TMPDIR: target });
+    expect(`${ok.code} ${ok.err}`).toStartWith("0 ");
+    expect(modeOwner(`${target}/tmux-4206`)).toBe("700 4206");
   });
 });

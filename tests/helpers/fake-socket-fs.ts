@@ -10,7 +10,12 @@
 // rule walks through.
 
 import { join } from "node:path";
-import type { DirHandle, SocketDirFs, SocketNodeStat } from "../../src/core/socket-dir.ts";
+import type {
+  DirHandle,
+  SocketDirFs,
+  SocketNodeStat,
+  SocketProbe,
+} from "../../src/core/socket-dir.ts";
 
 export type FakeKind = "dir" | "socket" | "file" | "symlink";
 
@@ -48,11 +53,17 @@ export interface FakeSocketFsOpts {
   afterCreateOpenThrows?: Record<string, string>;
   /** `openRoot` throws this code. */
   rootThrows?: string;
+  /** path → what `connectAt` reports (default `dead`). */
+  probe?: Record<string, SocketProbe>;
+  /** path → errno code thrown by `unlinkAt` / `removeTreeAt` / `renameAt`
+   *  (keyed by the source path). */
+  removeThrows?: Record<string, string>;
 }
 
 export interface FakeSocketFs extends SocketDirFs {
   readonly nodes: Map<string, FakeNode>;
-  /** `open <path>` / `mkdir <path>` / `mkdirp <path> <mode>` / `lstat <path>`. */
+  /** `open <path>` / `mkdir <path>` / `mkdirp <path> <mode>` / `lstat <path>` /
+   *  `connect <path>` / `unlink <path>` / `rmtree <path>` / `rename <from> <to>`. */
   readonly calls: string[];
   /** Handles opened and not yet closed. */
   openHandles(): number;
@@ -147,8 +158,44 @@ export function fakeSocketFs(
       created.add(path);
       return true;
     },
+    unlinkAt(parent, name) {
+      const path = join(parent.path, name);
+      calls.push(`unlink ${path}`);
+      failIf(path);
+      map.delete(path);
+    },
+    removeTreeAt(parent, name) {
+      const path = join(parent.path, name);
+      calls.push(`rmtree ${path}`);
+      failIf(path);
+      for (const key of [...map.keys()]) {
+        if (key === path || key.startsWith(`${path}/`)) map.delete(key);
+      }
+    },
+    renameAt(fromParent, fromName, toParent, toName) {
+      const from = join(fromParent.path, fromName);
+      const to = join(toParent.path, toName);
+      calls.push(`rename ${from} ${to}`);
+      failIf(from);
+      for (const key of [...map.keys()]) {
+        if (key === from || key.startsWith(`${from}/`)) {
+          map.set(to + key.slice(from.length), map.get(key) as FakeNode);
+          map.delete(key);
+        }
+      }
+    },
+    async connectAt(parent, name) {
+      const path = join(parent.path, name);
+      calls.push(`connect ${path}`);
+      return opts.probe?.[path] ?? "dead";
+    },
     close(h) {
       open.delete(h.fd);
     },
   };
+
+  function failIf(path: string): void {
+    const code = opts.removeThrows?.[path];
+    if (code !== undefined) throw errno(code);
+  }
 }

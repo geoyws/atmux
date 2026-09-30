@@ -212,12 +212,16 @@ Vox (ADR-272):
 
 Misc:
   version [--features]        --features adds capability markers, one per line
-                              (socket-dirs=per-user-0700;rev=3, ADR-305 §D5)
+                              (socket-dirs=per-user-0700;rev=4, ADR-305 §D5)
   socket-dial <socket> <tmux-args…>
                               Run tmux against an atmux socket only after its
                               whole directory chain passes ADR-305 §D2; exit 1
                               when no socket is there, 78 when it is unsafe.
                               What cockpit viewer loops dial through.
+  socket-rmdir <dir>          Remove a dead socket directory only when it is
+                              yours alone (0700, safe chain), relative to a
+                              held parent descriptor; exit 1 when absent, 78
+                              when unsafe (nothing removed).
   help | --help | -h
 
 Environment:

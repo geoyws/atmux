@@ -47,7 +47,9 @@ directory that satisfies ALL of:
    and its `sock` is neither a symlink nor another uid's. The
    `kill-server` dial runs the ADR-305 connect-time guard right before
    it spawns, and the removal re-runs the ownership walk right before
-   it deletes. A directory failing any of this is reported
+   it deletes, then deletes relative to the parent descriptor that
+   walk holds (`removePrivateTree`, ADR-305 revision 4) — never by
+   path. A directory failing any of this is reported
    `unsafe-skipped` (dry runs too) and never dialled or removed: root's
    reaper must never kill a server through another user's planted link
    or delete another user's tree.

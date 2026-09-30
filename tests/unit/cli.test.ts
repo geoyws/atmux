@@ -500,6 +500,12 @@ describe("cli.main — socket-dial verb dispatch (ADR-305 §D6)", () => {
     expect(exit).toBe(64);
     expect(stderr).toContain("usage: atmux socket-dial <socket> <tmux-args…>");
   });
+
+  test("'socket-rmdir' without a directory dispatches into socket-rmdir (UsageError)", async () => {
+    const { exit, stderr } = await captureMain(["socket-rmdir"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("usage: atmux socket-rmdir <dir>");
+  });
 });
 
 // ---------- Dispatch — doctor verb route (smoke; deep behaviour is in

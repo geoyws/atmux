@@ -6,7 +6,7 @@
 // ConfigError — never be swallowed into a TmuxError or a "no server".
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -175,10 +175,16 @@ describe("defaultSocketGuard", () => {
       expect(() => defaultSocketGuard({ socket: "atmux-cockpit" }, {}, ghost)).toThrow(
         UnsafeSocketPathError,
       );
-      // …and a non-empty TMUX_TMPDIR moves the lookup away from /tmp.
+      // …and a non-empty TMUX_TMPDIR moves the lookup away from /tmp. The
+      // base must pass the chain rule FOR THE GHOST: `/` is root's and
+      // not shared, so `/tmux-<ghost>` is simply absent and nothing is
+      // created. (The per-test scratch would not do: under a plain
+      // `bun test` it is a `/tmp/atmux-*` entry, which must be the
+      // ghost's own — and it is ours.)
       expect(() =>
-        defaultSocketGuard({ socket: "atmux-cockpit" }, { TMUX_TMPDIR: scratch }, ghost),
+        defaultSocketGuard({ socket: "atmux-cockpit" }, { TMUX_TMPDIR: "/" }, ghost),
       ).not.toThrow();
+      expect(existsSync(`/tmux-${ghost}`)).toBe(false);
     } finally {
       await rm(planted, { recursive: true, force: true });
     }

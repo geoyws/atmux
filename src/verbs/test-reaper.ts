@@ -4,15 +4,17 @@
 // ADR-305 §D2: act only on a directory that is OURS alone (owned by this uid, no group/other
 // bit, reached through a chain no other uid can rewrite — `privateDirIssue`, a descriptor
 // walk); the kill-server dial runs the connect-time guard right before it spawns, so a
-// planted `sock` symlink or another uid's socket is never dialled; and the removal re-checks
-// the directory right before it runs. Anything else is `unsafe-skipped`, never touched.
+// planted `sock` symlink or another uid's socket is never dialled; and the removal re-walks
+// the directory and removes it relative to the held parent descriptor (`removePrivateTree`,
+// ADR-305 revision 4). Anything else is `unsafe-skipped`, never touched.
 import { spawnSync } from "node:child_process";
-import { lstat, readdir, readFile, rm } from "node:fs/promises";
+import { lstat, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import {
   prepareSocketDial,
   privateDirIssue,
+  removePrivateTree,
   type SocketPathIssue,
   socketPathIssue,
   UnsafeSocketPathError,
@@ -268,10 +270,9 @@ function defaultKillServer(socket: string): void {
 }
 
 /** Remove a reaped directory only when a descriptor walk, run right
- *  before the removal, shows it is ours alone: then no other uid can
- *  rename any component of the path or have planted anything inside. */
+ *  before the removal, shows it is ours alone; the removal runs relative
+ *  to the parent descriptor that walk holds, so no rename after the
+ *  check can redirect it. Throws {@link UnsafeSocketPathError}. */
 async function removeOwnedDir(dir: string): Promise<void> {
-  const issue = privateDirIssue(dir);
-  if (issue !== null) throw new UnsafeSocketPathError(dir, issue);
-  await rm(dir, { recursive: true, force: true });
+  removePrivateTree(dir);
 }

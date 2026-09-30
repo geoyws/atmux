@@ -44,7 +44,8 @@ async function makeFixtureDir(
   opts: { ageMs: number; sock?: "direct" | "tmux-uid" | "none" } = { ageMs: 0 },
 ): Promise<string> {
   const dir = join(env.fakeTmp, name);
-  await mkdir(dir, { recursive: true });
+  // ADR-305: the sweep reaps only a directory that is ours alone (0700).
+  await mkdir(dir, { recursive: true, mode: 0o700 });
   const sock = opts.sock ?? "direct";
   if (sock === "direct") {
     await writeFile(join(dir, "sock"), "");
@@ -354,10 +355,55 @@ describe("sweepZombieTmuxSockets", () => {
     expect(r.killed).toBe(0);
     expect(r.removed).toBe(0);
     expect(env.killCalls).toEqual([]);
+    expect(r.errors).toHaveLength(1);
+    expect(r.errors[0]?.path).toBe(dir);
+    // The walk names the first directory on the way that is not notMe's
+    // alone: the fixture itself, or the scratch root when that sits in
+    // the shared /tmp as an `atmux-*` entry.
+    expect(r.errors[0]?.message).toMatch(
+      new RegExp(
+        ` is owned by uid ${process.getuid?.() ?? 0}, not uid ${notMe} — left alone \\(ADR-305\\)$`,
+      ),
+    );
+    expect((await stat(dir)).isDirectory()).toBe(true);
+  });
+
+  test("ADR-305: a directory of ours with group/other bits is never killed through or removed", async () => {
+    const dir = await makeFixtureDir("atmux-e2e-wide-AbCdEf", { ageMs: SIX_HOURS_MS + 1000 });
+    await chmod(dir, 0o755);
+    const old = new Date(RUN_MS - (SIX_HOURS_MS + 1000));
+    await utimes(dir, old, old);
+    const r = await sweepZombieTmuxSockets({
+      tmpDir: env.fakeTmp,
+      nowMs: RUN_MS,
+      killServer: stubKill(env),
+    });
+    expect(r.removed).toBe(0);
+    expect(env.killCalls).toEqual([]);
     expect(r.errors).toEqual([
       {
         path: dir,
-        message: `owned by uid ${process.getuid?.() ?? 0}, not uid ${notMe} — left alone (ADR-305)`,
+        message: `${dir} has mode 0755 (group or world bits set) — left alone (ADR-305)`,
+      },
+    ]);
+    expect((await stat(dir)).isDirectory()).toBe(true);
+  });
+
+  test("ADR-305: a directory swapped after the check is left alone by the removal's own walk", async () => {
+    const dir = await makeFixtureDir("atmux-e2e-swap-AbCdEf", { ageMs: SIX_HOURS_MS + 1000 });
+    const r = await sweepZombieTmuxSockets({
+      tmpDir: env.fakeTmp,
+      nowMs: RUN_MS,
+      // The kill runs between the check and the removal: widen it there.
+      killServer: async () => {
+        await chmod(dir, 0o777);
+      },
+    });
+    expect(r.removed).toBe(0);
+    expect(r.errors).toEqual([
+      {
+        path: dir,
+        message: `${dir} has mode 0777 (group or world bits set) — left alone (ADR-305)`,
       },
     ]);
     expect((await stat(dir)).isDirectory()).toBe(true);
