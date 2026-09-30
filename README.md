@@ -196,6 +196,21 @@ By default every atmux team shares the user's main tmux server at `/tmp/tmux-$UI
 
 The init wizard does not prompt for this field — opt-in is a manual `team.json` edit, since the field is for advanced/dogfooding setups. See [docs/adr/018-per-team-tmux-socket-isolation.md](docs/adr/018-per-team-tmux-socket-isolation.md) for the full design + risk register.
 
+### Socket directories are per-user and private ([ADR-305](docs/adr/305-per-user-private-socket-dirs.md))
+
+Every tmux socket atmux binds lives in a directory only its owner can enter:
+
+| Socket | Path |
+|---|---|
+| Team cage | `/tmp/atmux-<uid>/<team>/sock` |
+| Group server | `/tmp/atmux-<uid>/grp-<group>/sock` |
+| Team with `tmuxTmpdir` | `<tmuxTmpdir>/tmux-<uid>/default` |
+| Cockpit | tmux's own `-L atmux-cockpit` (`$TMUX_TMPDIR/tmux-<uid>/`) |
+
+atmux creates these directories 0700. It refuses — with the exact fix — a socket directory that is a symlink, belongs to another user, or has any group/world permission bit, and a socket owned by another user. Fix a refused directory you own with `chmod 700 <dir>`; `atmux doctor` lists them (`socket-dir`, `socket-dir-legacy`). A live cage still on the old shared `/tmp/atmux-<team>/sock` keeps working while that directory is private, and moves to the per-user path when it next restarts.
+
+Bootstrap check for a build with this guarantee: `atmux version --features | grep -qx 'socket-dirs=per-user-0700'`.
+
 ### Per-member worktree isolation (opt-in)
 
 By default every member in an atmux team shares one working tree — `team.json` writes the same `cwd` for all members, and `atmux start` spawns each member's TUI against that single directory. At 10+ concurrent members this fails in three observed ways (see ADR-082 §Context for the full incident log):

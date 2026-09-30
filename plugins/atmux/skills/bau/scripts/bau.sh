@@ -100,7 +100,10 @@ SCOPE_FALLBACK=""
 
 # (1) tmux cage socket — operator is explicitly inside a cage pane.
 if SOCKPATH=$(tmux display-message -p '#{socket_path}' 2>/dev/null); then
-  if [[ "$SOCKPATH" =~ /tmp/atmux-([^/]+)/sock$ ]]; then
+  # ADR-305 per-user socket first, then the pre-ADR-305 shared shape.
+  if [[ "$SOCKPATH" =~ ^/tmp/atmux-[0-9]+/([^/]+)/sock$ ]]; then
+    BAU_SCOPE="${BASH_REMATCH[1]}"
+  elif [[ "$SOCKPATH" =~ /tmp/atmux-([^/]+)/sock$ ]]; then
     BAU_SCOPE="${BASH_REMATCH[1]}"
   fi
 fi
@@ -235,15 +238,20 @@ collect_team() {
   local dir="$TMPDIR_BAU/$team"
   mkdir -p "$dir"
 
-  # Resolve cage socket — try both conventions:
-  #   1) legacy: /tmp/atmux-<team>/sock
-  #   2) current: <team-root>/.atmux/tmux/tmux-0/default
-  local sock=""
-  if [[ -S "/tmp/atmux-${team}/sock" ]]; then
-    sock="/tmp/atmux-${team}/sock"
-  elif [[ -S "${root}/.atmux/tmux/tmux-0/default" ]]; then
-    sock="${root}/.atmux/tmux/tmux-0/default"
-  fi
+  # Resolve cage socket — every convention, each only when the socket is
+  # owned by this uid (`-O`, ADR-305: never read another user's server):
+  #   1) per-user: /tmp/atmux-<uid>/<team>/sock (ADR-305)
+  #   2) legacy:   /tmp/atmux-<team>/sock (pre-ADR-305)
+  #   3) team-root: <team-root>/.atmux/tmux/tmux-<uid>/default
+  local sock="" uid cand
+  uid=$(id -u)
+  for cand in "/tmp/atmux-${uid}/${team}/sock" "/tmp/atmux-${team}/sock" \
+    "${root}/.atmux/tmux/tmux-${uid}/default"; do
+    if [[ -S "$cand" && -O "$cand" ]]; then
+      sock="$cand"
+      break
+    fi
+  done
   echo "$sock" > "$dir/sock_path.txt"
 
   cd "$root" 2>/dev/null || { echo "ROOT_MISSING" > "$dir/error.txt"; return; }

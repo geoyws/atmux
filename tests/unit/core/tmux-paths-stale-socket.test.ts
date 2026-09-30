@@ -1,6 +1,7 @@
 // e-29 T1 — stale-legacy-socket removal matrix. All seams faked; no
 // /tmp writes, no tmux spawns. Legacy path is getDefaultSocket(team)
-// = /tmp/atmux-<team>/sock (never created here — exists is faked).
+// = ADR-305 `/tmp/atmux-<uid>/<team>/sock` (never created by the seam
+// cases — exists is faked; the real-fs cases create it 0700).
 
 import { describe, expect, test } from "bun:test";
 import { existsSync as fsExistsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
@@ -8,6 +9,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { getDefaultSocket } from "../../../src/core/common.ts";
+import { ensurePrivateSocketDir } from "../../../src/core/socket-dir.ts";
 import {
   defaultRemoveLegacySocket,
   removeStaleLegacySocket,
@@ -15,7 +18,9 @@ import {
 } from "../../../src/core/tmux-paths.ts";
 
 const TEAM = "tmum-test-team";
-const LEGACY = `/tmp/atmux-${TEAM}/sock`;
+// ADR-305: the path a stale socket shadows is the team's default socket —
+// the per-user `/tmp/atmux-<uid>/<team>/sock` for this uid.
+const LEGACY = getDefaultSocket(TEAM);
 const OVERRIDE = "/tmp/tmum-override/tmux-0/default";
 
 function deps(over: Partial<StaleLegacySocketDeps> = {}): StaleLegacySocketDeps {
@@ -226,8 +231,9 @@ describe("removeStaleLegacySocket", () => {
 
   test("real regular file at legacy path → refused, file survives", async () => {
     const team = `${TEAM}-file-${process.pid}`;
-    const legacy = `/tmp/atmux-${team}/sock`;
-    mkdirSync(dirname(legacy), { recursive: true });
+    const legacy = getDefaultSocket(team);
+    // 0700 chain — never leave the per-user root group/world-accessible.
+    ensurePrivateSocketDir(legacy);
     try {
       writeFileSync(legacy, "", "utf8");
       const logs: string[] = [];
@@ -250,8 +256,9 @@ describe("removeStaleLegacySocket", () => {
 
   test("real directory at legacy path → refused, dir survives", async () => {
     const team = `${TEAM}-dir-${process.pid}`;
-    const legacy = `/tmp/atmux-${team}/sock`;
-    mkdirSync(legacy, { recursive: true });
+    const legacy = getDefaultSocket(team);
+    ensurePrivateSocketDir(legacy);
+    mkdirSync(legacy);
     try {
       const logs: string[] = [];
       const r = await removeStaleLegacySocket(team, join(dirname(legacy), "override"), {
@@ -274,8 +281,9 @@ describe("removeStaleLegacySocket", () => {
   test("symlink-to-socket at legacy path → refused (no follow), link survives", async () => {
     const sockDir = await mkdtemp(join(tmpdir(), "stale-sock-target-"));
     const team = `${TEAM}-link-${process.pid}`;
-    const legacy = `/tmp/atmux-${team}/sock`;
-    mkdirSync(dirname(legacy), { recursive: true });
+    const legacy = getDefaultSocket(team);
+    // 0700 chain — never leave the per-user root group/world-accessible.
+    ensurePrivateSocketDir(legacy);
     let closeTarget: (() => Promise<void>) | undefined;
     try {
       const target = join(sockDir, "real.sock");
@@ -304,8 +312,9 @@ describe("removeStaleLegacySocket", () => {
 
   test("real dead socket at legacy path → removed via production seams", async () => {
     const team = `${TEAM}-sock-${process.pid}`;
-    const legacy = `/tmp/atmux-${team}/sock`;
-    mkdirSync(dirname(legacy), { recursive: true });
+    const legacy = getDefaultSocket(team);
+    // 0700 chain — never leave the per-user root group/world-accessible.
+    ensurePrivateSocketDir(legacy);
     let closeServer: (() => Promise<void>) | undefined;
     try {
       closeServer = await listenLive(legacy);

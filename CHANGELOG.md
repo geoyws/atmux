@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
++### 🔒 Security — per-user private tmux socket directories ([ADR-305](docs/adr/305-per-user-private-socket-dirs.md), t-049753ab)
++
++**Another local user can no longer reach your cages.** Cage and group-server sockets move from the shared `/tmp/atmux-<team>/sock` and `/tmp/atmux-grp-<group>/sock` to `/tmp/atmux-<uid>/<team>/sock` and `/tmp/atmux-<uid>/grp-<group>/sock`. Every directory atmux creates is 0700; an existing socket directory that is a symlink, another uid's, or has any group/world bit is refused with the exact fix (`chmod 700 <dir>`), never chmod'ed, and so is a socket owned by another uid. `createTmux` checks before every tmux spawn; cockpit viewer loops dial only sockets the viewer owns (`[ -O ]`). A live cage on a pre-ADR-305 socket keeps working while its directory is private; `start` moves a dead one to the per-user path and refuses a live one in a shared directory. `atmux doctor` adds `socket-dir` / `socket-dir-legacy`; `atmux version --features` prints the `socket-dirs=per-user-0700` marker.
++
 +### ✨ Changed — cockpit reconcile output summarizes instead of flooding (aca/aco)
 +
 +**One line per fact, not per team.** The roster is a count (`cockpit: 49 teams · 4 group servers`), team.json reports `N checked` with only changed files named (dry-run previews `would change`), alive cages collapse to one skipped line, the TUI phase reports `N checked, M launched`, group windows report counts, and repeated dry-run ops collapse (`set-option -g prefix F3 (×49)`). Per-team lines now appear only when something happened.

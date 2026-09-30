@@ -21,14 +21,15 @@
 // session-start timestamp write.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { realpathSync } from "node:fs";
+import { chmodSync, realpathSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { SpawnResult } from "../../../src/abstractions/spawn.ts";
-import type { SendTarget, TmuxNamespace } from "../../../src/abstractions/tmux.ts";
+import type { SendTarget, TmuxConfig, TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import { serializeSendTarget } from "../../../src/abstractions/tmux.ts";
 import type { GitSpawn } from "../../../src/abstractions/worktree.ts";
+import { realSocketDirFs, type SocketDirFs } from "../../../src/core/socket-dir.ts";
 import type { Logger } from "../../../src/core/tui.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
 import {
@@ -237,6 +238,12 @@ async function runStart(
     /** e-29 T1: stale-legacy-socket seams — defaulted to a no-legacy
      *  view so the start path never probes /tmp or spawns tmux. */
     legacySocketDeps?: NonNullable<StartOpts["legacySocketDeps"]>;
+    /** ADR-305: private socket-dir seams. */
+    socketDirDeps?: NonNullable<StartOpts["socketDirDeps"]>;
+    /** Replace the tmux factory (records the resolved socket config). */
+    tmuxFactory?: NonNullable<StartOpts["tmuxFactory"]>;
+    /** ADR-305: omit `--socket-path` so start resolves the team default. */
+    noSocketPath?: boolean;
   } = {},
 ): Promise<number> {
   const startOpts: StartOpts = {
@@ -281,6 +288,9 @@ async function runStart(
   if (opts.sleep !== undefined) startOpts.sleep = opts.sleep;
   if (opts.loadCockpitFn !== undefined) startOpts.loadCockpitFn = opts.loadCockpitFn;
   if (opts.cockpitReconcileFn !== undefined) startOpts.cockpitReconcileFn = opts.cockpitReconcileFn;
+  if (opts.socketDirDeps !== undefined) startOpts.socketDirDeps = opts.socketDirDeps;
+  if (opts.tmuxFactory !== undefined) startOpts.tmuxFactory = opts.tmuxFactory;
+  if (opts.noSocketPath === true) return await start([...args], startOpts);
   return await start([...args, "--socket-path", env.socketPath], startOpts);
 }
 
@@ -401,9 +411,11 @@ describe("parseStartArgs", () => {
 
 // ---------- defaultSocketPath / resolveTmuxConfig ----------
 
+const UID = process.getuid?.() ?? 0;
+
 describe("defaultSocketPath", () => {
-  test("default shape matches `/tmp/atmux-<team>/sock`", () => {
-    expect(defaultSocketPath("alpha")).toBe("/tmp/atmux-alpha/sock");
+  test("default shape is the ADR-305 per-user `/tmp/atmux-<uid>/<team>/sock`", () => {
+    expect(defaultSocketPath("alpha")).toBe(`/tmp/atmux-${UID}/alpha/sock`);
   });
 });
 
@@ -449,7 +461,7 @@ describe("resolveTmuxConfig", () => {
         preflight: { skipDeps: false, nonInteractive: false, noPreflight: false },
       },
     );
-    expect(cfg).toEqual({ socketPath: "/tmp/atmux-t/sock" });
+    expect(cfg).toEqual({ socketPath: `/tmp/atmux-${UID}/t/sock` });
   });
 
   test("t-b37c8f4f: honours team.tmuxTmpdir on the write side", () => {
@@ -484,7 +496,196 @@ describe("resolveTmuxConfig", () => {
         preflight: { skipDeps: false, nonInteractive: false, noPreflight: false },
       },
     );
-    expect(cfg).toEqual({ socketPath: "/tmp/atmux-t/sock" });
+    expect(cfg).toEqual({ socketPath: `/tmp/atmux-${UID}/t/sock` });
+  });
+});
+
+// ---------- ADR-305: private per-user socket directories in the start path ----------
+
+describe("start — ADR-305 per-user private socket dir", () => {
+  const STOP = new Error("stop after the factory call");
+  /** Factory that records the socket config start resolved, then halts. */
+  function recordingFactory(seen: TmuxConfig[]): NonNullable<StartOpts["tmuxFactory"]> {
+    return (cfg) => {
+      seen.push(cfg);
+      throw STOP;
+    };
+  }
+  const tmpNode = {
+    uid: 0,
+    mode: 0o1777,
+    isDirectory: () => true,
+    isSymbolicLink: () => false,
+    isSocket: () => false,
+  };
+  /** Fake fs: only a pre-ADR-305 `/tmp/atmux-<team>/sock` (and /tmp) exist. */
+  function legacyOnlyFs(team: string, dirMode: number): SocketDirFs {
+    const legacyDir = `/tmp/atmux-${team}`;
+    return {
+      lstat: (p) => {
+        if (p === "/tmp") return tmpNode;
+        if (p === legacyDir)
+          return {
+            uid: UID,
+            mode: dirMode,
+            isDirectory: () => true,
+            isSymbolicLink: () => false,
+            isSocket: () => false,
+          };
+        if (p === `${legacyDir}/sock`)
+          return {
+            uid: UID,
+            mode: 0o660,
+            isDirectory: () => false,
+            isSymbolicLink: () => false,
+            isSocket: () => true,
+          };
+        return null;
+      },
+      mkdir: () => true,
+      mkdirp: () => {},
+      chmod: () => {},
+    };
+  }
+
+  test("default-path team: binds /tmp/atmux-<uid>/<team>/sock in a 0700 dir chain", async () => {
+    await writeTeamJson({
+      members: [{ name: "alice", role: "team-lead" }],
+      superdriver: { enabled: false },
+    });
+    const seen: TmuxConfig[] = [];
+    const userSock = `/tmp/atmux-${UID}/${env.team}/sock`;
+    // Every tmux call after the directory step rejects with STOP, so the
+    // test observes exactly the socket choice + the directory start made.
+    const halting = new Proxy(
+      {},
+      {
+        get: () =>
+          new Proxy(
+            {},
+            {
+              get: () => async () => {
+                throw STOP;
+              },
+            },
+          ),
+      },
+    ) as unknown as TmuxNamespace;
+    try {
+      await expect(
+        runStart([], {
+          noSocketPath: true,
+          socketDirDeps: { uid: UID, fs: realSocketDirFs },
+          tmuxFactory: (cfg) => {
+            seen.push(cfg);
+            return halting;
+          },
+        }),
+      ).rejects.toBe(STOP);
+      expect(seen[0]?.socketPath).toBe(userSock);
+      expect(statSync(`/tmp/atmux-${UID}/${env.team}`).mode & 0o777).toBe(0o700);
+      expect(statSync(`/tmp/atmux-${UID}`).mode & 0o077).toBe(0);
+    } finally {
+      await rm(`/tmp/atmux-${UID}/${env.team}`, { recursive: true, force: true });
+    }
+  });
+
+  test("dead private pre-ADR-305 socket: removed, start moves to the per-user path", async () => {
+    await writeTeamJson({
+      members: [{ name: "alice", role: "team-lead" }],
+      superdriver: { enabled: false },
+    });
+    const seen: TmuxConfig[] = [];
+    const removed: string[] = [];
+    await expect(
+      runStart([], {
+        noSocketPath: true,
+        tmuxFactory: recordingFactory(seen),
+        socketDirDeps: {
+          uid: UID,
+          fs: legacyOnlyFs(env.team, 0o700),
+          isListening: async () => false,
+          remove: (p) => removed.push(p),
+        },
+      }),
+    ).rejects.toBe(STOP);
+    expect(removed).toEqual([`/tmp/atmux-${env.team}/sock`]);
+    expect(seen[0]?.socketPath).toBe(`/tmp/atmux-${UID}/${env.team}/sock`);
+    expect(env.logs.some((l) => l.msg.includes("removed dead legacy socket"))).toBe(true);
+  });
+
+  test("live private pre-ADR-305 socket: kept (a live cage keeps its socket)", async () => {
+    await writeTeamJson({
+      members: [{ name: "alice", role: "team-lead" }],
+      superdriver: { enabled: false },
+    });
+    const seen: TmuxConfig[] = [];
+    await expect(
+      runStart([], {
+        noSocketPath: true,
+        tmuxFactory: recordingFactory(seen),
+        socketDirDeps: {
+          uid: UID,
+          fs: legacyOnlyFs(env.team, 0o700),
+          isListening: async () => true,
+        },
+      }),
+    ).rejects.toBe(STOP);
+    expect(seen[0]?.socketPath).toBe(`/tmp/atmux-${env.team}/sock`);
+  });
+
+  test("live pre-ADR-305 socket in a SHARED dir: refused before any tmux call", async () => {
+    await writeTeamJson({
+      members: [{ name: "alice", role: "team-lead" }],
+      superdriver: { enabled: false },
+    });
+    const seen: TmuxConfig[] = [];
+    await expect(
+      runStart([], {
+        noSocketPath: true,
+        tmuxFactory: recordingFactory(seen),
+        socketDirDeps: {
+          uid: UID,
+          fs: legacyOnlyFs(env.team, 0o777),
+          isListening: async () => true,
+        },
+      }),
+    ).rejects.toThrow(`chmod 700 /tmp/atmux-${env.team} to keep using that server`);
+    expect(seen).toEqual([]);
+  });
+
+  test("no POSIX uid: settlement skipped, resolved default used as-is", async () => {
+    await writeTeamJson({
+      members: [{ name: "alice", role: "team-lead" }],
+      superdriver: { enabled: false },
+    });
+    const seen: TmuxConfig[] = [];
+    await expect(
+      runStart([], {
+        noSocketPath: true,
+        tmuxFactory: recordingFactory(seen),
+        socketDirDeps: {
+          uid: null,
+          remove: () => {
+            throw new Error("must not remove");
+          },
+        },
+      }),
+    ).rejects.toBe(STOP);
+    expect(seen[0]?.socketPath).toBe(`/tmp/atmux-${UID}/${env.team}/sock`);
+  });
+
+  test("an existing shared socket dir for the bound socket is refused with the chmod hint", async () => {
+    await writeTeamJson({
+      members: [{ name: "alice", role: "team-lead" }],
+      superdriver: { enabled: false },
+    });
+    chmodSync(dirname(env.socketPath), 0o755);
+    try {
+      await expect(runStart([])).rejects.toThrow(`chmod 700 ${dirname(env.socketPath)}`);
+    } finally {
+      chmodSync(dirname(env.socketPath), 0o700);
+    }
   });
 });
 
@@ -498,7 +699,8 @@ describe("start — stale legacy socket cleanup", () => {
       superdriver: { enabled: false },
       tmuxTmpdir: overrideDir,
     });
-    const legacy = `/tmp/atmux-${env.team}/sock`;
+    // The path a stale socket would shadow: the ADR-305 default.
+    const legacy = `/tmp/atmux-${UID}/${env.team}/sock`;
     const removed: string[] = [];
     const logs: string[] = [];
     const exit = await runStart([], {

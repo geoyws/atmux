@@ -874,8 +874,8 @@ export interface PokeOpts {
   /** Clock — defaults to `Date.now`. */
   now?: () => number;
   /** Pre-built tmux namespace. Defaults to `createTmux({ socketPath })`
-   *  using the cage path for the team (`/tmp/atmux-<team>/sock`). Tests
-   *  inject a fake. */
+   *  using the team's cage socket (`resolveTeamSocket`; ADR-305 per-user
+   *  `/tmp/atmux-<uid>/<team>/sock` by default). Tests inject a fake. */
   tmux?: TmuxNamespace;
   /** Discord sender override. Defaults to `discord.send`. Errors caught
    *  + warned, not re-thrown — same posture as report.ts. */

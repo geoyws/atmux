@@ -22,6 +22,7 @@ import {
   type TeamSessionT,
 } from "../schema/cockpit.ts";
 import { sessionAnchorPath } from "./common.ts";
+import { resolveCageSocketPath, resolveGroupSocketPath, type SocketDirOpts } from "./socket-dir.ts";
 
 /** Output of `loadCockpit` — same as `Cockpit` but with the legacy
  *  back-compat fields (`teams`, `medic`)
@@ -787,7 +788,7 @@ export interface GroupedTopology {
  * colliding tmux state rather than a wrong-but-visible layout:
  *
  *   1. duplicate enabled group names — two groups named `x` would share
- *      `/tmp/atmux-grp-x/sock` AND session `x`;
+ *      `/tmp/atmux-<uid>/grp-x/sock` AND session `x`;
  *   2. duplicate viewer-window names inside one namespace (the cockpit
  *      entry list, or one group's children) — tmux windows are addressed
  *      by name during reconcile, so a `unum` group next to an ungrouped
@@ -1092,26 +1093,28 @@ export function childNestingEnv(
 // the verb), so future changes (e.g. a different per-team-cage path) flip
 // in one place.
 
-/** Cage socket absolute path: `/tmp/atmux-<team>/sock`. Mirrors
- *  `core/common.ts::getDefaultSocket` — kept as a separate helper so
- *  cockpit topology can diverge from `atmux start`'s default later
- *  without churning unrelated callsites. */
-export function cageSocketPath(teamName: string): string {
-  return `/tmp/atmux-${teamName}/sock`;
+/** Default cage socket for a team (ADR-305): `/tmp/atmux-<uid>/<team>/sock`,
+ *  or the pre-ADR-305 `/tmp/atmux-<team>/sock` while that socket is ours
+ *  in a private directory. Mirrors `core/common.ts::getDefaultSocket` —
+ *  kept as a separate helper so cockpit topology can diverge from
+ *  `atmux start`'s default later without churning unrelated callsites. */
+export function cageSocketPath(teamName: string, opts: SocketDirOpts = {}): string {
+  return resolveCageSocketPath(teamName, opts);
 }
 
-/** Group tmux-server socket absolute path: `/tmp/atmux-grp-<group>/sock`
- *  (e-419553c6 true containment, 2026-08-28). The `-grp-` infix is
- *  deliberate: group sockets live in a namespace team sockets
- *  (`/tmp/atmux-<team>/sock`) can only reach by a team literally naming
+/** Group tmux-server socket (ADR-305): `/tmp/atmux-<uid>/grp-<group>/sock`,
+ *  or the pre-ADR-305 `/tmp/atmux-grp-<group>/sock` while that socket is
+ *  ours in a private directory (e-419553c6 true containment, 2026-08-28).
+ *  The `grp-` infix is deliberate: group sockets live in a namespace team
+ *  sockets (`…/<team>/sock`) can only reach by a team literally naming
  *  itself `grp-<something>` — a group and a team may share a name (the
  *  live fleet has both a `unum` group and a `unum` team) without their
  *  servers colliding. (`ponytail:` the `grp-`-prefixed-team collision is
  *  not load-guarded; a team named `grp-x` next to a group named `x`
  *  would share a socket. No such team exists and the naming convention
  *  makes one unlikely; a loader refusal is the upgrade path.) */
-export function groupSocketPath(groupName: string): string {
-  return `/tmp/atmux-grp-${groupName}/sock`;
+export function groupSocketPath(groupName: string, opts: SocketDirOpts = {}): string {
+  return resolveGroupSocketPath(groupName, opts);
 }
 
 /** Per-team cage socket absolute path under team-root convention:
@@ -1129,11 +1132,13 @@ export function perTeamCageSocketPath(teamRoot: string): string {
  * ADR-063 follow-up (driver-inbox 2026-05-14): probe BOTH socket
  * conventions used by atmux cages and return the first that exists.
  * Order:
- *   1. Legacy `/tmp/atmux-<team>/sock` (ADR-063 era; back-compat first).
+ *   1. Default cage socket {@link cageSocketPath} — per-user
+ *      `/tmp/atmux-<uid>/<team>/sock`, or a private pre-ADR-305
+ *      `/tmp/atmux-<team>/sock` (back-compat first).
  *   2. Per-team `<teamRoot>/.atmux/tmux/tmux-<uid>/default` (current
  *      convention used by teams with `team.tmuxTmpdir` set).
  *
- * Falls through to the legacy path when neither exists, so downstream
+ * Falls through to the default path when neither exists, so downstream
  * error messages reference a canonical location. Pure modulo `exists`;
  * tests inject `deps.exists` to drive every branch.
  *

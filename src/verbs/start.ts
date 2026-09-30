@@ -81,15 +81,17 @@
 //
 // **Socket resolver — Phase 2 architectural decision pending.**
 // Per task brief: accept `--socket <name>` (-L) or `--socket-path <abs>`
-// (-S). Default when neither given: `socketPath = /tmp/atmux-<team>/sock`,
-// matching the bash cage convention `<TMUX_TMPDIR>/tmux-<uid>/default`
-// (paraphrased — see ADR-018 / project_cage_topology_2026_04_27.md).
+// (-S). Default when neither given: the ADR-305 per-user socket
+// `/tmp/atmux-<uid>/<team>/sock` (dir 0700), replacing the bash-era shared
+// `/tmp/atmux-<team>/sock`, and paralleling the bash cage convention
+// `<TMUX_TMPDIR>/tmux-<uid>/default` (paraphrased — see ADR-018 /
+// project_cage_topology_2026_04_27.md).
 // The final resolver (env? team.json? cage-derived?) is the open
 // question listed in `src/core/common.ts` §"Socket resolver" + ADR-004
 // amend Consequences §Phase 2.
 
 import { dirname, join } from "node:path";
-import { appendText, ensureDir, exists, writeText } from "../abstractions/fs.ts";
+import { appendText, exists, writeText } from "../abstractions/fs.ts";
 import { tryParseJsonString } from "../abstractions/json.ts";
 import { now } from "../abstractions/time.ts";
 import {
@@ -153,6 +155,15 @@ import {
 import { injectGoalIfActive } from "../core/goal-injection.ts";
 import { submitAfterPaste } from "../core/paste-submit.ts";
 import { migrateLegacySessionName } from "../core/session-migrate.ts";
+import {
+  currentUid,
+  ensurePrivateSocketDir,
+  legacyCageSocketPath,
+  resolveCageSocketPath,
+  type SettleSocketDeps,
+  settleSocketForCreate,
+  userCageSocketPath,
+} from "../core/socket-dir.ts";
 import {
   consumeResumeManifest,
   readResumeManifestText,
@@ -395,6 +406,9 @@ export interface StartOpts {
    *  deletion). Tests pass fakes so the start path never touches
    *  `/tmp/atmux-*` or spawns tmux probes. */
   legacySocketDeps?: StaleLegacySocketDeps;
+  /** ADR-305: seams for the private socket-directory step (uid / fs /
+   *  liveness / removal). Default = live filesystem + real probes. */
+  socketDirDeps?: SettleSocketDeps;
   /** Nest-ban stderr sink (retained e-39). Default = process.stderr. */
   stderr?: (text: string) => void;
 }
@@ -611,7 +625,37 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   //    (t-b37c8f4f — write-side parity with the read-side fix in t-add5976a:
   //    a team declaring tmuxTmpdir must get its socket created under that
   //    path so subsequent status/doctor reads find the same socket).
-  const tmuxConfig: TmuxConfig = resolveTmuxConfig(team, parsed);
+  let tmuxConfig: TmuxConfig = resolveTmuxConfig(team, parsed);
+  // 4-pre. ADR-305 §D3: a default-path team (no tmuxTmpdir, no explicit
+  //     socket flag) may still be on its pre-ADR-305 `/tmp/atmux-<team>/sock`.
+  //     A dead one in a private dir moves to `/tmp/atmux-<uid>/<team>/sock`;
+  //     a live one in a SHARED dir is refused (a second server on the
+  //     per-user path would duplicate the cage).
+  if (
+    "socketPath" in tmuxConfig &&
+    typeof tmuxConfig.socketPath === "string" &&
+    parsed.socketPath === undefined &&
+    (team.tmuxTmpdir ?? "") === ""
+  ) {
+    const sdDeps = opts.socketDirDeps ?? {};
+    const uid = sdDeps.uid === undefined ? currentUid() : sdDeps.uid;
+    if (uid !== null) {
+      // Same value `resolveTeamSocket(team)` produced above for a
+      // default-path team, re-resolved through the seams so the
+      // legacy-compat probe and the settlement read one filesystem view.
+      const resolved = resolveCageSocketPath(team.name, {
+        uid,
+        ...(sdDeps.fs !== undefined ? { fs: sdDeps.fs } : {}),
+      });
+      const settled = await settleSocketForCreate(
+        resolved,
+        userCageSocketPath(team.name, uid),
+        legacyCageSocketPath(team.name),
+        { log: (msg: string) => logger.log(msg), ...sdDeps },
+      );
+      tmuxConfig = { socketPath: settled };
+    }
+  }
   // ADR-162 §Decision-anchor #2: thread the canonical atmux.conf so
   // every `tmux ...` invocation runs with `-f <path>`. Operator's
   // ~/.tmux.conf is NEVER inherited; override via ATMUX_TMUX_CONF.
@@ -624,8 +668,14 @@ export async function start(args: ReadonlyArray<string>, opts: StartOpts = {}): 
   //     Bash bin/atmux's `_atmux_resolve_tmux_tmpdir` did `mkdir -p`
   //     before any tmux call (.archive-bash-atmux-20260507/bin-atmux:227);
   //     port that pre-create here so atmux start actually starts.
+  //     ADR-305 §D2: the directory is created 0700 and owner-checked; an
+  //     existing foreign-owned / shared / symlinked one is refused.
   if ("socketPath" in tmuxConfig && typeof tmuxConfig.socketPath === "string") {
-    await ensureDir(dirname(tmuxConfig.socketPath));
+    const sdDeps = opts.socketDirDeps ?? {};
+    ensurePrivateSocketDir(tmuxConfig.socketPath, {
+      ...(sdDeps.uid !== undefined ? { uid: sdDeps.uid } : {}),
+      ...(sdDeps.fs !== undefined ? { fs: sdDeps.fs } : {}),
+    });
     // 4b. e-29 T1: when the tmuxTmpdir override reroutes the team away
     //     from the legacy path, remove a verified-dead legacy socket
     //     file so later resolves stop tripping over it. Never deletes a
@@ -1735,8 +1785,8 @@ async function autoReconcileCockpitForTeam(
  * happy path stays readable; exported for test directness.
  *
  * Precedence: `--socket-path` > `--socket` > `team.tmuxTmpdir`-derived
- * socket (via {@link resolveTeamSocket}) > canonical fallback
- * `/tmp/atmux-<team>/sock`. The `team.tmuxTmpdir` honour is the
+ * socket (via {@link resolveTeamSocket}) > the ADR-305 per-user default
+ * `/tmp/atmux-<uid>/<team>/sock`. The `team.tmuxTmpdir` honour is the
  * write-side companion to t-add5976a's read-side resolveTeamSocket
  * fix — without it, a team.json declaring a project-local cage path
  * gets a socket at the canonical fallback anyway, and subsequent

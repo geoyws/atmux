@@ -63,9 +63,32 @@ fi
 # Tmux puts its socket at <TMUX_TMPDIR>/tmux-<UID>/<label>; <label>
 # defaults to "default". Auto-mkdir keeps the first-run UX painless;
 # 0700 matches tmux's own behaviour when it creates the dir itself.
+#
+# ADR-305: the socket directory must be private to this uid. A directory
+# this script creates is made 0700; an existing one is never chmod'ed —
+# a symlink, a non-directory, another uid's directory, or one with any
+# group/world bit is refused (exit 78, EX_CONFIG), as is a socket owned
+# by another uid. `tmux -S` itself does none of these checks.
 _uid=$(id -u)
 _sockdir="$_tmpdir/tmux-$_uid"
-mkdir -p "$_sockdir" 2>/dev/null || true
-chmod 700 "$_sockdir" 2>/dev/null || true
+_refuse() {
+  printf 'atmux-tmux: refusing socket directory %s: %s (hint: %s)\n' "$_sockdir" "$1" "$2" >&2
+  exit 78
+}
+if [ ! -e "$_sockdir" ] && [ ! -L "$_sockdir" ]; then
+  mkdir -p "$_tmpdir" 2>/dev/null || true
+  if (umask 077 && mkdir "$_sockdir") 2>/dev/null; then
+    chmod 700 "$_sockdir"
+  fi
+fi
+[ -L "$_sockdir" ] && _refuse "is a symlink" "rm $_sockdir"
+[ -d "$_sockdir" ] || _refuse "is missing or not a directory" "rm $_sockdir"
+[ -O "$_sockdir" ] || _refuse "is not owned by uid $_uid" "have its owner or root remove it"
+# `ls -ld` columns 5-10 are the group + world permission bits.
+_perm=$(ls -ld "$_sockdir" | cut -c5-10)
+[ "$_perm" = "------" ] || _refuse "has group/world permissions" "chmod 700 $_sockdir"
+if [ -e "$_sockdir/default" ] && [ ! -O "$_sockdir/default" ]; then
+  _refuse "holds a socket owned by another uid" "have its owner or root remove $_sockdir/default"
+fi
 
 exec tmux -S "$_sockdir/default" "$@"

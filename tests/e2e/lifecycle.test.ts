@@ -15,7 +15,7 @@
 // at a glance from this list.
 //
 // Walks TS atmux directly against a fixture `.atmux/` dir on a private
-// tmux socket (`/tmp/atmux-<team>/sock` per ADR-018 cage convention).
+// tmux socket (ADR-305 per-user `/tmp/atmux-<uid>/<team>/sock`, dir 0700).
 // NOT a parity comparison vs bash atmux — that's the parity-harness lane
 // (PLAN.md §8.2). Pure TS-side e2e: assertions are on TS atmux's
 // behaviour alone.
@@ -45,9 +45,10 @@
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createTmux, type TmuxNamespace } from "../../src/abstractions/tmux.ts";
-import { buildWindowName } from "../../src/core/common.ts";
+import { buildWindowName, getDefaultSocket } from "../../src/core/common.ts";
+import { ensurePrivateSocketDir } from "../../src/core/socket-dir.ts";
 import { done as doneVerb } from "../../src/verbs/claim.ts";
 import { dispatch as dispatchVerb } from "../../src/verbs/dispatch.ts";
 import { poke as whipVerb } from "../../src/verbs/poke.ts";
@@ -78,7 +79,7 @@ const priorEnv: Record<string, string | undefined> = {};
 
 beforeAll(async () => {
   // Per-run unique team name so the cage socket path
-  // (/tmp/atmux-<team>/sock) and the home-side
+  // (/tmp/atmux-<uid>/<team>/sock) and the home-side
   // ~/.claude/teams/<team>/ marker dir don't collide with concurrent
   // test files or stale prior runs.
   teamName = `lc${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
@@ -92,11 +93,12 @@ beforeAll(async () => {
   await mkdir(join(atmuxDir, "state"), { recursive: true });
   await mkdir(join(atmuxDir, "archive"), { recursive: true });
 
-  // start.ts defaults to /tmp/atmux-<team>/sock (cage path); pre-create
-  // the directory so tmux's first newSession can bind without ENOENT.
-  socketDir = `/tmp/atmux-${teamName}`;
-  await mkdir(socketDir, { recursive: true });
-  socketPath = join(socketDir, "sock");
+  // ADR-305: the cage binds the per-user default socket
+  // (/tmp/atmux-<uid>/<team>/sock); pre-create its 0700 directory chain
+  // exactly as `atmux start` does — never a shared /tmp/atmux-<team>/.
+  socketPath = getDefaultSocket(teamName);
+  socketDir = dirname(socketPath);
+  ensurePrivateSocketDir(socketPath);
 
   // Mirrors the .bats setup: shell-tui members so newWindow doesn't try
   // to launch claude/etc. Roster matches lifecycle.bats line 13-18.

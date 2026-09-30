@@ -18,6 +18,7 @@ import {
   resolveTeamSocket,
   tryLoadTeam,
 } from "../../core/common.ts";
+import { socketPathIssue } from "../../core/socket-dir.ts";
 import { getAtmuxTmuxConfPath } from "../../core/tmux-paths.ts";
 import type { Team, TeamMember } from "../../schema/team.ts";
 import {
@@ -604,7 +605,10 @@ export async function checkLegacyWindowNameFormat(
         return null;
       }
     });
-  const socketExistsFn = opts.socketExists ?? exists;
+  // ADR-305: a socket in a shared / foreign directory (or owned by another
+  // uid) reads as absent — the raw `tmux -S` probe below never dials it.
+  const socketExistsFn =
+    opts.socketExists ?? (async (p: string) => (await exists(p)) && socketPathIssue(p) === null);
 
   // Build the probe target set: cockpit teams (when loadable) ∪ currentTeam.
   // Dedup by team name so a current-team that's also in cockpit isn't

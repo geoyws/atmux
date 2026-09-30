@@ -152,7 +152,8 @@ function describeLegacyNode(path: string): string {
 /**
  * e-29 T1: delete a stale legacy socket when the `tmuxTmpdir` override
  * reroutes the team elsewhere. Removes
- * `getDefaultSocket(teamName)` (`/tmp/atmux-<team>/sock`) exactly when:
+ * `getDefaultSocket(teamName)` (ADR-305: `/tmp/atmux-<uid>/<team>/sock`,
+ * or a private pre-ADR-305 `/tmp/atmux-<team>/sock`) exactly when:
  * the override socket differs, the legacy file exists, NO server
  * responds on it, and the override socket is live or absent (an
  * existing-but-dead override socket means the situation is ambiguous —

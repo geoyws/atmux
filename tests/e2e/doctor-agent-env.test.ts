@@ -50,7 +50,9 @@ let clean: TeamFixture;
 let dead: TeamFixture;
 let stale: TeamFixture;
 let cockpitSocket = "";
-const groupSocket = `/tmp/atmux-grp-${NONCE}/sock`;
+// ADR-305 per-user group socket (and, below, the per-user + pre-ADR-305
+// cage sockets) — all asserted absent.
+const groupSocket = `/tmp/atmux-${UID}/grp-${NONCE}/sock`;
 const startedSockets: string[] = [];
 /** Beat 1's hint, run verbatim by beat 4. */
 let remedy = "";
@@ -70,7 +72,8 @@ async function makeTeam(tag: string): Promise<TeamFixture> {
   const name = `${NONCE}-${tag}`;
   const root = join(work, tag);
   const tmuxTmpdir = join(root, ".atmux", "tmux");
-  await mkdir(join(tmuxTmpdir, `tmux-${UID}`), { recursive: true });
+  // ADR-305: the socket directory is private (0700) or the doctor skips it.
+  await mkdir(join(tmuxTmpdir, `tmux-${UID}`), { recursive: true, mode: 0o700 });
   await writeFile(
     join(root, ".atmux", "team.json"),
     JSON.stringify({ name, tmuxTmpdir, members: [] }),
@@ -217,7 +220,13 @@ describe.skipIf(TMUX_BIN === null)(
     });
 
     test("beat 3 — missing and stale sockets are skipped, and no server is created on them", () => {
-      const neverThere = [dead.socket, cockpitSocket, groupSocket, `/tmp/atmux-${dead.name}/sock`];
+      const neverThere = [
+        dead.socket,
+        cockpitSocket,
+        groupSocket,
+        `/tmp/atmux-${UID}/${dead.name}/sock`,
+        `/tmp/atmux-${dead.name}/sock`,
+      ];
       for (const p of neverThere) expect(existsSync(p)).toBe(false);
       expect(existsSync(stale.socket)).toBe(true);
 

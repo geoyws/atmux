@@ -8,6 +8,7 @@
 // tmux + real CLI walk lives in tests/e2e/doctor-agent-env.test.ts.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { chmodSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -193,17 +194,18 @@ describe("discoverAtmuxServerSockets", () => {
     });
     expect(got).toEqual([
       { socket: `/tmp/tmux-${UID}/atmux-cockpit`, owner: "cockpit" },
-      { socket: "/tmp/atmux-grp-g1/sock", owner: "group g1" },
-      { socket: "/tmp/atmux-grp-g2/sock", owner: "group g2" },
+      // ADR-305 per-user group + cage sockets.
+      { socket: `/tmp/atmux-${UID}/grp-g1/sock`, owner: "group g1" },
+      { socket: `/tmp/atmux-${UID}/grp-g2/sock`, owner: "group g2" },
       // ta: roster path == per-team path, so it appears once.
       { socket: `/r/ta/.atmux/tmux/tmux-${UID}/default`, owner: "team ta" },
-      { socket: "/tmp/atmux-ta/sock", owner: "team ta" },
+      { socket: `/tmp/atmux-${UID}/ta/sock`, owner: "team ta" },
       // tn (disabled, nested under ta): roster tmuxTmpdir differs from the per-team path.
       { socket: `/elsewhere/tn/tmux-${UID}/default`, owner: "team tn" },
-      { socket: "/tmp/atmux-tn/sock", owner: "team tn" },
+      { socket: `/tmp/atmux-${UID}/tn/sock`, owner: "team tn" },
       { socket: `/r/tn/.atmux/tmux/tmux-${UID}/default`, owner: "team tn" },
-      // tb: no roster; the current team resolves to its legacy socket — already listed.
-      { socket: "/tmp/atmux-tb/sock", owner: "team tb" },
+      // tb: no roster; the current team resolves to its default socket — already listed.
+      { socket: `/tmp/atmux-${UID}/tb/sock`, owner: "team tb" },
       { socket: `/r/tb/.atmux/tmux/tmux-${UID}/default`, owner: "team tb" },
     ]);
   });
@@ -247,9 +249,9 @@ describe("discoverAtmuxServerSockets", () => {
       // team.json honoured for `good` …
       expect(sockets).toContain(join(dir, "tt-good", `tmux-${UID}`, "default"));
       // … and a malformed / absent team.json still leaves the path conventions probed.
-      expect(sockets).toContain("/tmp/atmux-bad/sock");
+      expect(sockets).toContain(`/tmp/atmux-${UID}/bad/sock`);
       expect(sockets).toContain(join(bad, ".atmux", "tmux", `tmux-${UID}`, "default"));
-      expect(sockets).toContain("/tmp/atmux-none/sock");
+      expect(sockets).toContain(`/tmp/atmux-${UID}/none/sock`);
       expect(got[0]).toEqual({
         socket: join(dir, `tmux-${UID}`, "atmux-cockpit"),
         owner: "cockpit",
@@ -273,6 +275,9 @@ describe("checkAgentShellEnv", () => {
   const S1: AtmuxServerSocket = { socket: "/s/one", owner: "team one" };
   const S2: AtmuxServerSocket = { socket: "/s/two", owner: "group two" };
   const everySocket = async () => true;
+  // ADR-305 safety seam: the fake `/s/...` paths are hermetic only when
+  // the directory check is stubbed too (a host `/s` dir would read shared).
+  const everySafe = () => true;
 
   test("polluted server → one yellow row naming socket + variable NAMES, never values", async () => {
     const { spawn, calls } = fakeTmux({
@@ -282,6 +287,7 @@ describe("checkAgentShellEnv", () => {
       sockets: [S1],
       tmux: spawn,
       isSocket: everySocket,
+      isSafeSocket: everySafe,
     });
     expect(rows).toEqual([
       {
@@ -301,7 +307,12 @@ describe("checkAgentShellEnv", () => {
   test("clean server → no row", async () => {
     const { spawn } = fakeTmux({ "/s/one": { env: "-NO_COLOR\nTERM=xterm-256color\n" } });
     expect(
-      await checkAgentShellEnv(null, { sockets: [S1], tmux: spawn, isSocket: everySocket }),
+      await checkAgentShellEnv(null, {
+        sockets: [S1],
+        tmux: spawn,
+        isSocket: everySocket,
+        isSafeSocket: everySafe,
+      }),
     ).toEqual([]);
   });
 
@@ -316,10 +327,51 @@ describe("checkAgentShellEnv", () => {
     expect(calls).toEqual([]);
   });
 
+  test("ADR-305: a socket in a shared / foreign directory is never dialled", async () => {
+    const { spawn, calls } = fakeTmux({
+      "/s/one": { env: "AGENT=1\n" },
+      "/s/two": { env: "AGENT=1\n" },
+    });
+    const rows = await checkAgentShellEnv(null, {
+      sockets: [S1, S2],
+      tmux: spawn,
+      isSocket: everySocket,
+      isSafeSocket: (p) => p === "/s/two",
+    });
+    // Only the safe server is probed and reported.
+    expect(rows.map((r) => r.detail)).toEqual([
+      "group two server /s/two carries agent-shell env: AGENT",
+    ]);
+    expect(calls.every((c) => c[1] === "/s/two")).toBe(true);
+  });
+
+  test("ADR-305 default safety check: a real 0777 socket dir is skipped", async () => {
+    const d = await mkdtemp(join(tmpdir(), "atmux-agentenv-shared-"));
+    try {
+      chmodSync(d, 0o777);
+      const shared: AtmuxServerSocket = { socket: join(d, "sock"), owner: "team shared" };
+      const { spawn, calls } = fakeTmux({ [shared.socket]: { env: "AGENT=1\n" } });
+      const rows = await checkAgentShellEnv(null, {
+        sockets: [shared],
+        tmux: spawn,
+        isSocket: everySocket,
+      });
+      expect(rows).toEqual([]);
+      expect(calls).toEqual([]);
+    } finally {
+      await rm(d, { recursive: true, force: true });
+    }
+  });
+
   test("stale socket / no session → skipped before show-environment", async () => {
     const { spawn, calls } = fakeTmux({ "/s/one": { alive: false, env: "AGENT=1\n" } });
     expect(
-      await checkAgentShellEnv(null, { sockets: [S1], tmux: spawn, isSocket: everySocket }),
+      await checkAgentShellEnv(null, {
+        sockets: [S1],
+        tmux: spawn,
+        isSocket: everySocket,
+        isSafeSocket: everySafe,
+      }),
     ).toEqual([]);
     expect(calls).toEqual([["-S", "/s/one", "has-session"]]);
   });
@@ -327,7 +379,12 @@ describe("checkAgentShellEnv", () => {
   test("show-environment failing → skipped", async () => {
     const { spawn } = fakeTmux({ "/s/one": { env: "AGENT=1\n", envExit: 1 } });
     expect(
-      await checkAgentShellEnv(null, { sockets: [S1], tmux: spawn, isSocket: everySocket }),
+      await checkAgentShellEnv(null, {
+        sockets: [S1],
+        tmux: spawn,
+        isSocket: everySocket,
+        isSafeSocket: everySafe,
+      }),
     ).toEqual([]);
   });
 
@@ -342,6 +399,7 @@ describe("checkAgentShellEnv", () => {
       sockets: [S1, S2],
       tmux: spawn,
       isSocket: everySocket,
+      isSafeSocket: everySafe,
     });
     expect(rows.map((r) => r.detail)).toEqual([
       "group two server /s/two carries agent-shell env: CI",
@@ -360,6 +418,7 @@ describe("checkAgentShellEnv", () => {
         probed.push(p);
         return true;
       },
+      isSafeSocket: everySafe,
     });
     expect(probed).toEqual([`/d/tmux-${UID}/ck`]);
     expect(rows.map((r) => r.detail)).toEqual([

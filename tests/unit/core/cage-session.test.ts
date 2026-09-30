@@ -11,6 +11,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveCageSession } from "../../../src/core/cage-session.ts";
 
+const UID = process.getuid?.() ?? 0;
+
 describe("resolveCageSession (name + socket)", () => {
   let root: string;
   let atmuxDir: string;
@@ -30,10 +32,10 @@ describe("resolveCageSession (name + socket)", () => {
     await writeFile(join(atmuxDir, "state", "session.txt"), value);
   }
 
-  test("anchor absent + no tmuxTmpdir → BARE name + legacy /tmp socket (rentx)", async () => {
+  test("anchor absent + no tmuxTmpdir → BARE name + ADR-305 per-user socket (rentx)", async () => {
     const out = await resolveCageSession({ name: "rentx" }, atmuxDir);
     expect(out.sessionName).toBe("rentx");
-    expect(out.socketPath).toBe("/tmp/atmux-rentx/sock");
+    expect(out.socketPath).toBe(`/tmp/atmux-${UID}/rentx/sock`);
   });
 
   test("anchor absent preserves dashes in team name (ifca-docs)", async () => {
@@ -41,7 +43,7 @@ describe("resolveCageSession (name + socket)", () => {
     // `ifca-docs` session start.ts actually creates (e-419553c6).
     const out = await resolveCageSession({ name: "ifca-docs" }, atmuxDir);
     expect(out.sessionName).toBe("ifca-docs");
-    expect(out.socketPath).toBe("/tmp/atmux-ifca-docs/sock");
+    expect(out.socketPath).toBe(`/tmp/atmux-${UID}/ifca-docs/sock`);
   });
 
   test("UNDERSCORE anchor honoured verbatim + tmuxTmpdir socket (unum)", async () => {
@@ -74,32 +76,32 @@ describe("resolveCageSession (name + socket)", () => {
     // `/tmp/atmux/sock` was a drift from the canonical resolvers.
     const out = await resolveCageSession({ name: "atmux" }, atmuxDir);
     expect(out.sessionName).toBe("atmux");
-    expect(out.socketPath).toBe("/tmp/atmux-atmux/sock");
+    expect(out.socketPath).toBe(`/tmp/atmux-${UID}/atmux/sock`);
   });
 
   test("empty-string anchor treated as absent → BARE fallback (rentx)", async () => {
     await writeAnchor("   \n");
     const out = await resolveCageSession({ name: "rentx" }, atmuxDir);
     expect(out.sessionName).toBe("rentx");
-    expect(out.socketPath).toBe("/tmp/atmux-rentx/sock");
+    expect(out.socketPath).toBe(`/tmp/atmux-${UID}/rentx/sock`);
   });
 
   test("trailing-newline anchor is trimmed; socket stays TEAM-derived (e-419553c6)", async () => {
     // Session names and socket paths are decoupled: the anchor renames
-    // the SESSION only — the socket keeps the /tmp/atmux-<team> shape
-    // the dotfiles prefix chain and /tmp namespacing depend on.
+    // the SESSION only — the socket keeps the team-derived ADR-305
+    // /tmp/atmux-<uid>/<team> shape.
     await writeAnchor("atmux-custom\n\n");
     const out = await resolveCageSession({ name: "rentx" }, atmuxDir);
     expect(out.sessionName).toBe("atmux-custom");
-    expect(out.socketPath).toBe("/tmp/atmux-rentx/sock");
+    expect(out.socketPath).toBe(`/tmp/atmux-${UID}/rentx/sock`);
   });
 
-  test("empty-string tmuxTmpdir falls through to legacy /tmp socket", async () => {
+  test("empty-string tmuxTmpdir falls through to the per-user default socket", async () => {
     // Branch: tmuxTmpdir present but zero-length → NOT a per-team cage,
-    // must use the legacy /tmp/<sessionName>/sock derivation.
+    // must use the ADR-305 default /tmp/atmux-<uid>/<team>/sock.
     const out = await resolveCageSession({ name: "rentx", tmuxTmpdir: "" }, atmuxDir);
     expect(out.sessionName).toBe("rentx");
-    expect(out.socketPath).toBe("/tmp/atmux-rentx/sock");
+    expect(out.socketPath).toBe(`/tmp/atmux-${UID}/rentx/sock`);
   });
 
   test("tmuxTmpdir socket ignores the session NAME (anchor-independent path)", async () => {

@@ -10,6 +10,7 @@ import {
   walkSessions,
 } from "../../core/cockpit.ts";
 import { resolveTeamSocket, tryLoadTeam } from "../../core/common.ts";
+import { socketPathIssue } from "../../core/socket-dir.ts";
 import { getCockpitSocketPath } from "../../core/tmux-paths.ts";
 import type { Team } from "../../schema/team.ts";
 import { type DoctorRow, defaultTmuxSpawn, type TmuxSpawn } from "./types.ts";
@@ -194,6 +195,10 @@ export interface CheckAgentShellEnvOpts extends DiscoverAtmuxServerSocketsOpts {
   tmux?: TmuxSpawn;
   /** `[ -S <path> ]` override — true only for an existing socket file. */
   isSocket?: (path: string) => Promise<boolean>;
+  /** ADR-305 override — false for a socket in a shared / foreign /
+   *  symlinked directory or owned by another uid; such a server is never
+   *  dialled. Default: `socketPathIssue(path) === null`. */
+  isSafeSocket?: (path: string) => boolean;
   /** Probe exactly these sockets instead of discovering them. */
   sockets?: ReadonlyArray<AtmuxServerSocket>;
 }
@@ -225,10 +230,12 @@ export async function checkAgentShellEnv(
 ): Promise<DoctorRow[]> {
   const tmux = opts.tmux ?? defaultTmuxSpawn;
   const isSocket = opts.isSocket ?? defaultIsSocket;
+  const isSafeSocket = opts.isSafeSocket ?? ((p: string) => socketPathIssue(p) === null);
   const sockets = opts.sockets ?? (await discoverAtmuxServerSockets(currentTeam, opts));
   const rows: DoctorRow[] = [];
   for (const { socket, owner } of sockets) {
     if (!(await isSocket(socket))) continue;
+    if (!isSafeSocket(socket)) continue; // ADR-305: never dial another uid's server
     let shown: SpawnResult;
     try {
       const alive = await tmux(["-S", socket, "has-session"]);

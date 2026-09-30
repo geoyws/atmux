@@ -129,12 +129,12 @@ describe("real-tmux integration for t-add5976a resolveTeamSocket — tmux honour
       );
       expect(newSess.exitCode).toBe(0);
 
-      // Pre-fix path: status used getDefaultSocket(team.name) →
-      // /tmp/atmux-<team>/sock — which is NOT where this session lives.
-      // hasSession returns false → status renders [down]. This is the
-      // bug the dispatch describes.
+      // Pre-fix path: status used getDefaultSocket(team.name) → the
+      // default cage socket (ADR-305: /tmp/atmux-<uid>/<team>/sock) —
+      // which is NOT where this session lives. hasSession returns false →
+      // status renders [down]. This is the bug the dispatch describes.
       const canonicalSocket = getDefaultSocket(TEAM);
-      expect(canonicalSocket).toBe(`/tmp/atmux-${TEAM}/sock`);
+      expect(canonicalSocket).toBe(`/tmp/atmux-${process.getuid?.() ?? 0}/${TEAM}/sock`);
       const tmuxCanonical = createCanonicalAtmuxTmux({ socketPath: canonicalSocket });
       const foundCanonical = await tmuxCanonical.session.hasSession(SESSION);
       expect(foundCanonical).toBe(false); // [down] — false positive

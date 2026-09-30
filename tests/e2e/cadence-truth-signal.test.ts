@@ -56,7 +56,7 @@
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { TmuxNamespace } from "../../src/abstractions/tmux.ts";
 import {
   type CadenceObservation,
@@ -64,7 +64,9 @@ import {
   classifyCadence,
   classifyMemberCadence,
 } from "../../src/core/cadence-classifier.ts";
+import { getDefaultSocket } from "../../src/core/common.ts";
 import { decideLaneStall, type LaneStallMemberInput } from "../../src/core/lane-stall.ts";
+import { ensurePrivateSocketDir } from "../../src/core/socket-dir.ts";
 import type { Team } from "../../src/schema/team.ts";
 import { runLaneStallTick } from "../../src/verbs/lane-stall-tick.ts";
 import { formatCadenceColumn, gatherStatus } from "../../src/verbs/status.ts";
@@ -105,9 +107,12 @@ beforeAll(async () => {
   atmuxDir = join(teamDir, ".atmux");
   await mkdir(atmuxDir, { recursive: true });
   await mkdir(join(atmuxDir, "state"), { recursive: true });
-  socketDir = `/tmp/atmux-${teamName}`;
-  await mkdir(socketDir, { recursive: true });
-  socketPath = join(socketDir, "sock");
+  // ADR-305: the cage binds the per-user default socket
+  // (/tmp/atmux-<uid>/<team>/sock); pre-create its 0700 directory chain
+  // exactly as `atmux start` does — never a shared /tmp/atmux-<team>/.
+  socketPath = getDefaultSocket(teamName);
+  socketDir = dirname(socketPath);
+  ensurePrivateSocketDir(socketPath);
   homeDir = await mkdtemp(join(tmpdir(), "atmux-cadence-home-"));
   await mkdir(join(homeDir, ".atmux", "state"), { recursive: true });
 

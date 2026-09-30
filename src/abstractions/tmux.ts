@@ -34,7 +34,9 @@
 // constant for why the ADR-277 conf scrub is not sufficient on its own,
 // and ADR-281 §D2 for why the `COLORTERM=truecolor` half was dropped.
 
+import { join } from "node:path";
 import { resolveTmuxBin } from "../core/resolve-tmux-bin.ts";
+import { assertSocketPathSafe, currentUid } from "../core/socket-dir.ts";
 import { TmuxError } from "../errors.ts";
 import { type ExpectExitCode, spawn, spawnInheritStdio } from "./spawn.ts";
 
@@ -450,7 +452,7 @@ export function clientRowToObject(row: Record<string, string>): {
  * omit it (see `tests/helpers/tmux.ts::createCanonicalAtmuxTmux` for
  * the live-server default).
  */
-type SocketConfig =
+export type SocketConfig =
   | { readonly socket: string; readonly socketPath?: never }
   | { readonly socketPath: string; readonly socket?: never };
 
@@ -463,8 +465,37 @@ export type TmuxConfig = SocketConfig & {
   /** Test seam for `attachSessionInheritStdio`; defaults to the module import. */
   readonly hooks?: {
     readonly spawnInheritStdio?: typeof spawnInheritStdio;
+    /** ADR-305 connect-time socket guard, run before EVERY tmux spawn of
+     *  this namespace. Defaults to {@link defaultSocketGuard}. */
+    readonly socketGuard?: (config: SocketConfig) => void;
   };
 };
+
+/**
+ * ADR-305 connect-time guard: refuse to talk to a socket whose directory
+ * is not private to this uid (symlink, foreign owner, any group/world
+ * bit) or whose socket node belongs to another uid. `-S <path>` checks
+ * `dirname(path)` (plus the per-user root `/tmp/atmux-<uid>` when the
+ * path sits under it); `-L <name>` checks the `$TMUX_TMPDIR/tmux-<uid>`
+ * directory tmux itself resolves (tmux only rejects world bits there;
+ * this also rejects group bits). An absent directory passes — there is
+ * nothing to hijack and tmux reports "no server". Throws
+ * {@link UnsafeSocketPathError} (ConfigError, exit 78), never a TmuxError.
+ */
+export function defaultSocketGuard(
+  config: SocketConfig,
+  env: NodeJS.ProcessEnv = process.env,
+  uid: number | null = currentUid(),
+): void {
+  if (typeof config.socketPath === "string") {
+    assertSocketPathSafe(config.socketPath, { uid });
+    return;
+  }
+  if (uid === null) return;
+  const tmpdir = env.TMUX_TMPDIR;
+  const base = tmpdir !== undefined && tmpdir.length > 0 ? tmpdir : "/tmp";
+  assertSocketPathSafe(join(base, `tmux-${uid}`, config.socket as string), { uid });
+}
 
 /**
  * Build the exact-match tmux target for a session name. tmux's `-t`
@@ -648,6 +679,10 @@ export function createTmux(config: TmuxConfig): TmuxNamespace {
     return flags;
   })();
   const spawnInheritStdioImpl = config.hooks?.spawnInheritStdio ?? spawnInheritStdio;
+  // ADR-305: re-checked before every spawn (not once at construction) —
+  // a namespace can outlive the directory state it was built against.
+  const socketGuard = config.hooks?.socketGuard ?? ((c: SocketConfig) => defaultSocketGuard(c));
+  const guard = (): void => socketGuard(config);
 
   async function tmuxRun(subArgv: ReadonlyArray<string>): Promise<RawResult> {
     return tmuxRunRaw(subArgv, 0);
@@ -658,6 +693,7 @@ export function createTmux(config: TmuxConfig): TmuxNamespace {
     expect: ExpectExitCode,
   ): Promise<RawResult> {
     const argv = [...socketArgs, ...subArgv];
+    guard();
     try {
       const r = await spawn({
         cmd: resolveTmuxBin(),
@@ -931,6 +967,7 @@ export function createTmux(config: TmuxConfig): TmuxNamespace {
         if (opts.name) subArgv.push("-b", opts.name);
         subArgv.push("-");
         const argv = [...socketArgs, ...subArgv];
+        guard();
         try {
           await spawn({
             cmd: resolveTmuxBin(),
@@ -987,6 +1024,7 @@ export function createTmux(config: TmuxConfig): TmuxNamespace {
        *  shapes match the rest of the namespace. */
       async attachSessionInheritStdio(name) {
         const argv = [...socketArgs, "attach-session", "-t", name];
+        guard();
         const exitCode = await spawnInheritStdioImpl({
           cmd: resolveTmuxBin(),
           argv,

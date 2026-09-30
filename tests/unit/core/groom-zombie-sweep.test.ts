@@ -117,6 +117,36 @@ describe("sweepZombieTmuxSockets", () => {
     expect(await stat(dir).catch(() => null)).not.toBeNull();
   });
 
+  test("never sweeps an ADR-305 per-user socket root (/tmp/atmux-<uid>) or the cages inside it", async () => {
+    // The per-user root is ONE `atmux-<uid>` entry with no second hyphen,
+    // so the fixture pattern cannot match it — a `/tmp/atmux-<uid>-<team>`
+    // scheme would have matched and had its live servers killed.
+    for (const uid of ["0", "501", "1000"]) {
+      const root = await makeFixtureDir(`atmux-${uid}`, {
+        ageMs: SIX_HOURS_MS + 1000,
+        sock: "none",
+      });
+      await mkdir(join(root, "px"), { recursive: true });
+      await writeFile(join(root, "px", "sock"), "");
+      await mkdir(join(root, "grp-unum"), { recursive: true });
+      await writeFile(join(root, "grp-unum", "sock"), "");
+    }
+
+    const r = await sweepZombieTmuxSockets({
+      tmpDir: env.fakeTmp,
+      nowMs: RUN_MS,
+      killServer: stubKill(env),
+    });
+
+    expect(r.scanned).toBe(0);
+    expect(env.killCalls).toEqual([]);
+    for (const uid of ["0", "501", "1000"]) {
+      expect(
+        await stat(join(env.fakeTmp, `atmux-${uid}`, "px", "sock")).catch(() => null),
+      ).not.toBeNull();
+    }
+  });
+
   test("still sweeps atmux-start-sock-* fixtures (t-05dadc44 control)", async () => {
     const dir = await makeFixtureDir("atmux-start-sock-XYZ123", {
       ageMs: SIX_HOURS_MS + 1000,
@@ -489,6 +519,9 @@ describe("sweepZombieTmuxSockets", () => {
     // import that burned the vox seam test. No subprocess runs.
     const killCalls: string[] = [];
     const realTmux = await import("../../../src/abstractions/tmux.ts");
+    // Captured BEFORE mocking: the namespace object is a live binding, so
+    // `realTmux.createTmux` reads the mock once `mock.module` runs.
+    const realCreateTmux = realTmux.createTmux;
     const mockCreateTmux = (opts: { socketPath: string }) => ({
       server: {
         killServer: async () => {
@@ -505,6 +538,14 @@ describe("sweepZombieTmuxSockets", () => {
       expect(killCalls).toEqual([join(env.fakeTmp, "some-sock")]);
     } finally {
       mock.restore();
+      // `mock.restore()` does not undo `mock.module` in Bun: without this
+      // re-registration every later test file in the same `bun test`
+      // process gets the killServer-only stub as `createTmux`
+      // ("tmux.session is undefined").
+      mock.module("../../../src/abstractions/tmux.ts", () => ({
+        ...realTmux,
+        createTmux: realCreateTmux,
+      }));
     }
   });
 });

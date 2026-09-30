@@ -20,9 +20,10 @@
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createTmux, type TmuxNamespace } from "../../src/abstractions/tmux.ts";
-import { buildWindowName } from "../../src/core/common.ts";
+import { buildWindowName, getDefaultSocket } from "../../src/core/common.ts";
+import { ensurePrivateSocketDir } from "../../src/core/socket-dir.ts";
 import { ResumeManifest } from "../../src/schema/resume.ts";
 import { claim as claimVerb } from "../../src/verbs/claim.ts";
 import { start as startVerb } from "../../src/verbs/start.ts";
@@ -55,9 +56,12 @@ beforeAll(async () => {
   await mkdir(join(atmuxDir, "state"), { recursive: true });
   await mkdir(join(atmuxDir, "archive"), { recursive: true });
 
-  socketDir = `/tmp/atmux-${teamName}`;
-  await mkdir(socketDir, { recursive: true });
-  socketPath = join(socketDir, "sock");
+  // ADR-305: the cage binds the per-user default socket
+  // (/tmp/atmux-<uid>/<team>/sock); pre-create its 0700 directory chain
+  // exactly as `atmux start` does — never a shared /tmp/atmux-<team>/.
+  socketPath = getDefaultSocket(teamName);
+  socketDir = dirname(socketPath);
+  ensurePrivateSocketDir(socketPath);
 
   // Shell-only roster so member spawn doesn't try to launch claude/etc.
   // softStopGraceSeconds=0 keeps the beat snappy.

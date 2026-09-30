@@ -93,10 +93,11 @@ describe("parseAttachArgs", () => {
 });
 
 describe("defaultSocketPath", () => {
-  test("returns /tmp/atmux-<team>/sock — bash cage convention", () => {
-    expect(defaultSocketPath("atmux")).toBe("/tmp/atmux-atmux/sock");
-    expect(defaultSocketPath("unum")).toBe("/tmp/atmux-unum/sock");
-    expect(defaultSocketPath("ifca_aux")).toBe("/tmp/atmux-ifca_aux/sock");
+  test("returns the ADR-305 per-user /tmp/atmux-<uid>/<team>/sock", () => {
+    const uid = process.getuid?.() ?? 0;
+    expect(defaultSocketPath("atmux")).toBe(`/tmp/atmux-${uid}/atmux/sock`);
+    expect(defaultSocketPath("unum")).toBe(`/tmp/atmux-${uid}/unum/sock`);
+    expect(defaultSocketPath("ifca_aux")).toBe(`/tmp/atmux-${uid}/ifca_aux/sock`);
   });
 });
 
