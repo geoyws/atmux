@@ -37,28 +37,30 @@ describe.skipIf(!hasTmux)(
       });
       await writeFile(teamFile, originalTeam);
       try {
-        const proc = Bun.spawnSync({
-          cmd: [
-            process.execPath,
-            join(repoRoot, "bin", "atmux-bun"),
-            "cockpit",
-            "reconcile",
-            "--dry-run",
-            "--no-launch",
-          ],
-          cwd: project,
-          env: {
-            HOME: home,
-            PATH: `${dirname(process.execPath)}:${process.env.PATH ?? ""}`,
-            TMUX_TMPDIR: tmuxDir,
-            ATMUX_COCKPIT_CONFIG: config,
-            ATMUX_COCKPIT_SOCKET: `aco-output-${process.pid}`,
-            NO_COLOR: "1",
-          },
-          stdout: "pipe",
-          stderr: "pipe",
-          timeout: 60_000,
-        });
+        const run = () =>
+          Bun.spawnSync({
+            cmd: [
+              process.execPath,
+              join(repoRoot, "bin", "atmux-bun"),
+              "cockpit",
+              "reconcile",
+              "--dry-run",
+              "--no-launch",
+            ],
+            cwd: project,
+            env: {
+              HOME: home,
+              PATH: `${dirname(process.execPath)}:${process.env.PATH ?? ""}`,
+              TMUX_TMPDIR: tmuxDir,
+              ATMUX_COCKPIT_CONFIG: config,
+              ATMUX_COCKPIT_SOCKET: `aco-output-${process.pid}`,
+              NO_COLOR: "1",
+            },
+            stdout: "pipe",
+            stderr: "pipe",
+            timeout: 60_000,
+          });
+        const proc = run();
         const output = `${proc.stdout?.toString() ?? ""}${proc.stderr?.toString() ?? ""}`;
         expect(proc.exitCode).toBe(0);
         expect(output).toContain("cockpit: 1 team");
@@ -70,6 +72,21 @@ describe.skipIf(!hasTmux)(
           "dry-run: 0 rename, 0 kill, 4 other operations (nothing executed)",
         );
         expect(output).not.toContain("would start cage '");
+        expect(await readFile(teamFile, "utf8")).toBe(originalTeam);
+        await writeFile(teamFile, "{broken");
+        const failed = run();
+        expect(failed.exitCode).toBe(0);
+        const failedOutput = `${failed.stdout?.toString() ?? ""}${failed.stderr?.toString() ?? ""}`;
+        expect(failedOutput).toContain(
+          "team.json: 1 checked — 1 would change: sample (unreadable) (dry-run)",
+        );
+        expect(await readFile(teamFile, "utf8")).toBe("{broken");
+        await writeFile(teamFile, originalTeam);
+        const recovered = run();
+        expect(recovered.exitCode).toBe(0);
+        expect(
+          `${recovered.stdout?.toString() ?? ""}${recovered.stderr?.toString() ?? ""}`,
+        ).toContain("cages: 1 would start (sample) (dry-run)");
         expect(await readFile(teamFile, "utf8")).toBe(originalTeam);
       } finally {
         await rm(scratch, { recursive: true, force: true });
