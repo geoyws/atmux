@@ -491,6 +491,17 @@ describe("cli.main — poke verb dispatch", () => {
   });
 });
 
+// ---------- Dispatch — socket-dial route (smoke; deep behaviour is in
+//                       tests/unit/verbs/socket-dial.test.ts) ----------
+
+describe("cli.main — socket-dial verb dispatch (ADR-305 §D6)", () => {
+  test("'socket-dial' without a socket dispatches into socket-dial (UsageError)", async () => {
+    const { exit, stderr } = await captureMain(["socket-dial"]);
+    expect(exit).toBe(64);
+    expect(stderr).toContain("usage: atmux socket-dial <socket> <tmux-args…>");
+  });
+});
+
 // ---------- Dispatch — doctor verb route (smoke; deep behaviour is in
 //                       tests/unit/verbs/doctor.test.ts) ----------
 
@@ -767,7 +778,9 @@ describe("logVerbEvent — events-log envelope", () => {
     ["-V"],
     ["--help"],
     ["-h"],
-  ])("skips event-log entirely for `%s` alias", async (verb) => {
+    // ADR-305 §D6: viewer loops dial about once a second.
+    ["socket-dial"],
+  ])("skips event-log entirely for `%s`", async (verb) => {
     const { logVerbEvent } = await import("../../src/cli.ts");
     await logVerbEvent({
       verb,

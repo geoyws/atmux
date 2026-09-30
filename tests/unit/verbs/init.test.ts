@@ -301,8 +301,10 @@ describe("init — template path (bash lib/init.sh:87-107 parity)", () => {
 
     const tj = await readRendered();
     expect(tj.name).toBe("hello");
-    // Bash lib/init.sh:104 — tmuxTmpdir set to the per-team cage path.
-    expect(tj.tmuxTmpdir).toBe("/tmp/atmux-tmux_hello");
+    // ADR-305 §D1: no shared `/tmp/atmux-tmux_<team>` stamp (the bash
+    // lib/init.sh:104 default) — the team runs on its per-user private
+    // cage socket /tmp/atmux-<uid>/<team>/sock instead.
+    expect(tj.tmuxTmpdir).toBeUndefined();
     // Template-shape sanity. Tracks `templates/team.example.json` —
     // bump together when the shipped roster changes. ADR-287 §D5
     // (2026-09-02): the default roster is drivers-only — three drivers

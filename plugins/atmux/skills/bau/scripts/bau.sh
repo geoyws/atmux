@@ -274,16 +274,19 @@ collect_team() {
   ( atmux task list --json 2>/dev/null > "$dir/tasks.json" || echo "[]" > "$dir/tasks.json" ) &
   ( atmux complaints list --status open --json 2>/dev/null > "$dir/complaints.json" || echo "[]" > "$dir/complaints.json" ) &
 
-  # tmux pane captures — one per window
+  # tmux pane captures — one per window. Every dial goes through
+  # `atmux socket-dial` (ADR-305 §D6): it re-checks the socket's whole
+  # directory chain before tmux runs, which the `-S`/`-O` selection above
+  # cannot (it follows symlinks and races a directory swap).
   if [[ -n "$sock" && -S "$sock" ]]; then
     local session
-    session=$(tmux -S "$sock" list-sessions -F '#{session_name}' 2>/dev/null | head -1)
+    session=$(atmux socket-dial "$sock" list-sessions -F '#{session_name}' 2>/dev/null | head -1)
     if [[ -n "$session" ]]; then
       echo "$session" > "$dir/session.txt"
-      tmux -S "$sock" list-windows -t "$session" -F '#{window_index}|#{window_name}' 2>/dev/null > "$dir/windows.txt"
+      atmux socket-dial "$sock" list-windows -t "$session" -F '#{window_index}|#{window_name}' 2>/dev/null > "$dir/windows.txt"
       while IFS='|' read -r w wname; do
         [[ -z "$w" ]] && continue
-        ( tmux -S "$sock" capture-pane -p -t "${session}:${w}" -S -30 2>/dev/null > "$dir/pane-${w}.txt" ) &
+        ( atmux socket-dial "$sock" capture-pane -p -t "${session}:${w}" -S -30 2>/dev/null > "$dir/pane-${w}.txt" ) &
       done < "$dir/windows.txt"
     fi
   fi

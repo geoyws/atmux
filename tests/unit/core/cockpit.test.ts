@@ -35,6 +35,7 @@ import {
 import type { SocketDirFs } from "../../../src/core/socket-dir.ts";
 import { ConfigError, SchemaError } from "../../../src/errors.ts";
 import type { CockpitSessionT, Cockpit as CockpitShape } from "../../../src/schema/cockpit.ts";
+import { fakeSocketFs } from "../../helpers/fake-socket-fs.ts";
 
 let homeDir: string;
 
@@ -302,13 +303,8 @@ describe("enabledTeams", () => {
 // probe. The new test suite below covers the same scenarios with the
 // new contract. See merge commit body for the supersession trail.
 
-/** Hermetic ADR-305 fs seam: nothing on disk. */
-const NO_SOCKET_FS: SocketDirFs = {
-  lstat: () => null,
-  mkdir: () => false,
-  mkdirp: () => {},
-  chmod: () => {},
-};
+/** Hermetic ADR-305 fs seam: nothing on disk but `/` and `/tmp`. */
+const NO_SOCKET_FS: SocketDirFs = fakeSocketFs();
 
 /** Default cage socket for team `x` under this process's uid (ADR-305). */
 const DEFAULT_X = `/tmp/atmux-${process.getuid?.() ?? 0}/x/sock`;

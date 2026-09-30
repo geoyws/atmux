@@ -211,7 +211,13 @@ Vox (ADR-272):
                               Removed in v0.9.1.
 
 Misc:
-  version
+  version [--features]        --features adds capability markers, one per line
+                              (socket-dirs=per-user-0700, ADR-305 §D5)
+  socket-dial <socket> <tmux-args…>
+                              Run tmux against an atmux socket only after its
+                              whole directory chain passes ADR-305 §D2; exit 1
+                              when no socket is there, 78 when it is unsafe.
+                              What cockpit viewer loops dial through.
   help | --help | -h
 
 Environment:

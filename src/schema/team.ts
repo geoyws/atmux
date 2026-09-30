@@ -1400,8 +1400,10 @@ export const Team = z
     name: z.string().min(1),
     /** Free-form description; surfaced in `atmux status` headers. */
     description: z.string().optional(),
-    /** Cage tmpdir per ADR-018 (`/tmp/atmux-tmux_<team>`); empty/null
-     *  means the team uses the operator default socket. */
+    /** Cage tmpdir per ADR-018; the socket is `<tmuxTmpdir>/tmux-<uid>/default`.
+     *  Empty/unset (the `atmux init` default since ADR-305) means the team's
+     *  own server on the per-user `/tmp/atmux-<uid>/<team>/sock`. Must be a
+     *  directory only root or the uid can write (ADR-305 §D2). */
     tmuxTmpdir: z.string().optional(),
     /** ADR-082 §2: per-member git worktree isolation. When `true`,
      *  `atmux start` provisions a worktree under

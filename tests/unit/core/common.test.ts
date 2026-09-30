@@ -58,6 +58,7 @@ import {
 } from "../../../src/core/common.ts";
 import type { SocketDirFs } from "../../../src/core/socket-dir.ts";
 import { ConfigError, SchemaError, UsageError } from "../../../src/errors.ts";
+import { dir as fakeDir, sock as fakeSock, fakeSocketFs } from "../../helpers/fake-socket-fs.ts";
 
 let dir: string;
 
@@ -897,40 +898,25 @@ describe("classifyPaneState", () => {
   });
 });
 
-/** Hermetic ADR-305 fs seam: nothing exists, nothing may be created. */
-const NO_FS: SocketDirFs = {
-  lstat: () => null,
-  mkdir: () => {
+/** A resolver must never create anything. */
+function noCreate(fs: SocketDirFs): SocketDirFs {
+  const refuse = (): never => {
     throw new Error("resolver must not create");
-  },
-  mkdirp: () => {
-    throw new Error("resolver must not create");
-  },
-  chmod: () => {
-    throw new Error("resolver must not chmod");
-  },
-};
+  };
+  return { ...fs, mkdirAt: refuse, mkdirp: refuse };
+}
 
-/** fs seam holding one private pre-ADR-305 socket owned by `uid`. */
+/** Hermetic ADR-305 fs seam: only `/` and `/tmp` exist. */
+const NO_FS: SocketDirFs = noCreate(fakeSocketFs());
+
+/** fs seam holding one pre-ADR-305 socket (and its dir) owned by `uid`. */
 function legacyFs(team: string, uid: number, dirMode: number): SocketDirFs {
-  const nodes: Record<string, { dir: boolean; mode: number }> = {
-    [`/tmp/atmux-${team}`]: { dir: true, mode: dirMode },
-    [`/tmp/atmux-${team}/sock`]: { dir: false, mode: 0o660 },
-  };
-  return {
-    ...NO_FS,
-    lstat: (p) => {
-      const n = nodes[p];
-      if (n === undefined) return null;
-      return {
-        uid,
-        mode: n.mode,
-        isDirectory: () => n.dir,
-        isSymbolicLink: () => false,
-        isSocket: () => !n.dir,
-      };
-    },
-  };
+  return noCreate(
+    fakeSocketFs({
+      [`/tmp/atmux-${team}`]: fakeDir(uid, dirMode),
+      [`/tmp/atmux-${team}/sock`]: fakeSock(uid),
+    }),
+  );
 }
 
 describe("getDefaultSocket (ADR-305 per-user default; R-2 lift from verbs/start.ts)", () => {

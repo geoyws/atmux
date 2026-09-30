@@ -11,34 +11,26 @@ import {
 import { ConfigError } from "../../../src/errors.ts";
 import type { Team } from "../../../src/schema/team.ts";
 import { checkSocketDirs, unlessUnsafeSocket } from "../../../src/verbs/doctor/socket-dir.ts";
-
-type Kind = "dir" | "socket";
-function fakeFs(nodes: Record<string, { kind: Kind; uid: number; mode: number }>): SocketDirFs {
-  return {
-    lstat: (p) => {
-      const n = nodes[p];
-      if (n === undefined) return null;
-      return {
-        uid: n.uid,
-        mode: n.mode,
-        isDirectory: () => n.kind === "dir",
-        isSymbolicLink: () => false,
-        isSocket: () => n.kind === "socket",
-      };
-    },
-    mkdir: () => {
-      throw new Error("doctor must never create");
-    },
-    mkdirp: () => {
-      throw new Error("doctor must never create");
-    },
-    chmod: () => {
-      throw new Error("doctor must never chmod");
-    },
-  };
-}
+import { dir, type FakeNode, fakeSocketFs } from "../../helpers/fake-socket-fs.ts";
 
 const A = 1000;
+
+/** Doctor never creates anything; `/` and `/tmp` exist, plus `/tt`
+ *  (the test's TMUX_TMPDIR) and `/r/.atmux/tmux` (a tmuxTmpdir). */
+function fakeFs(nodes: Record<string, FakeNode>): SocketDirFs {
+  const refuse = (): never => {
+    throw new Error("doctor must never create");
+  };
+  const fs = fakeSocketFs({
+    "/tt": dir(0, 0o755),
+    "/r": dir(A, 0o755),
+    "/r/.atmux": dir(A, 0o755),
+    "/r/.atmux/tmux": dir(A, 0o755),
+    ...nodes,
+  });
+  return { ...fs, mkdirAt: refuse, mkdirp: refuse };
+}
+
 const env = { TMUX_TMPDIR: "/tt" };
 const team = (name: string, tmuxTmpdir?: string): Team =>
   ({ name, ...(tmuxTmpdir !== undefined ? { tmuxTmpdir } : {}) }) as unknown as Team;

@@ -472,15 +472,18 @@ export type TmuxConfig = SocketConfig & {
 };
 
 /**
- * ADR-305 connect-time guard: refuse to talk to a socket whose directory
- * is not private to this uid (symlink, foreign owner, any group/world
- * bit) or whose socket node belongs to another uid. `-S <path>` checks
- * `dirname(path)` (plus the per-user root `/tmp/atmux-<uid>` when the
- * path sits under it); `-L <name>` checks the `$TMUX_TMPDIR/tmux-<uid>`
- * directory tmux itself resolves (tmux only rejects world bits there;
- * this also rejects group bits). An absent directory passes — there is
- * nothing to hijack and tmux reports "no server". Throws
- * {@link UnsafeSocketPathError} (ConfigError, exit 78), never a TmuxError.
+ * ADR-305 connect-time guard (`core/socket-dir.ts::assertSocketPathSafe`):
+ * walk the socket's WHOLE directory chain from `/` with descriptors and
+ * refuse unless every directory is owned by root or this uid and not
+ * group/other-writable (a root-owned sticky `/tmp` may be traversed), the
+ * socket's own directory is private to this uid, and the socket node is
+ * ours. `-S <path>` walks `path`; `-L <name>` walks the
+ * `$TMUX_TMPDIR/tmux-<uid>/<name>` path tmux itself resolves. A missing
+ * entry of a shared sticky directory (`/tmp/atmux-<uid>`) is created 0700
+ * first, so no other uid can plant it between check and dial; a missing
+ * directory below a private one is fine (tmux reports "no server").
+ * Throws {@link UnsafeSocketPathError} (ConfigError, exit 78), never a
+ * TmuxError.
  */
 export function defaultSocketGuard(
   config: SocketConfig,

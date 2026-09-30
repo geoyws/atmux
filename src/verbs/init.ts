@@ -29,8 +29,9 @@
 //            $ATMUX_DIR — under the parity harness ATMUX_DIR is set so
 //            both bash + TS resolve to the same fixture path)
 //   :56-60   per-member inbox files seeded from `.members[].name`
-//   :87-107  template render — set name, tmuxTmpdir = "/tmp/atmux-tmux_<name>",
-//            members[].cwd = $PWD
+//   :87-107  template render — set name, members[].cwd = $PWD. The bash
+//            port also stamped tmuxTmpdir = "/tmp/atmux-tmux_<name>";
+//            ADR-305 drops it (see the render below)
 //   :79      atmux::ok success line → stderr (color-suppressed under
 //            non-TTY, matching bash's `[[ -t 1 ]]` gate)
 //   :80-84   "Next:" instruction lines → stdout
@@ -478,8 +479,14 @@ export async function init(argv: ReadonlyArray<string>, opts: InitOptions = {}):
     }
   }
 
-  // Render template. Bash :102-106 jq filter: set name + tmuxTmpdir +
-  // members[].cwd. ZodTeam is `.passthrough()` so the template's
+  // Render template. Bash :102-106 jq filter: set name + members[].cwd.
+  // ADR-305 §D1: no `tmuxTmpdir` stamp. The bash-era default
+  // `/tmp/atmux-tmux_<team>` was one shared /tmp name any local user
+  // could create first (and did: pre-planted 0777 by another uid, root's
+  // cage socket was renamed out from under it). With the field unset the
+  // team gets its own server on the per-user private cage socket
+  // `/tmp/atmux-<uid>/<team>/sock` — the same ADR-018 isolation, owned by
+  // the uid that runs it, and team.json stays portable across uids. ZodTeam is `.passthrough()` so the template's
   // `_comment_*` keys + Phase-2 sub-shapes survive intact (per
   // src/schema/team.ts header comment).
   const templatesDir = opts.templatesDir ?? defaultTemplatesDir(env);
@@ -519,7 +526,6 @@ export async function init(argv: ReadonlyArray<string>, opts: InitOptions = {}):
   const rendered: TeamShape = {
     ...team,
     name: teamName,
-    tmuxTmpdir: `/tmp/atmux-tmux_${teamName}`,
     ...(team.drivers !== undefined
       ? {
           drivers: team.drivers.map((d) => {

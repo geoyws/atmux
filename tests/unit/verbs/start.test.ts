@@ -39,6 +39,7 @@ import {
   resolveTmuxConfig,
   start,
 } from "../../../src/verbs/start.ts";
+import { dir, fakeSocketFs, sock } from "../../helpers/fake-socket-fs.ts";
 import { createCanonicalAtmuxTmux, setCanonicalAtmuxTmuxHome } from "../../helpers/tmux.ts";
 
 // ---------- Test fixture helpers ----------
@@ -511,41 +512,13 @@ describe("start — ADR-305 per-user private socket dir", () => {
       throw STOP;
     };
   }
-  const tmpNode = {
-    uid: 0,
-    mode: 0o1777,
-    isDirectory: () => true,
-    isSymbolicLink: () => false,
-    isSocket: () => false,
-  };
-  /** Fake fs: only a pre-ADR-305 `/tmp/atmux-<team>/sock` (and /tmp) exist. */
+  /** Fake fs: only a pre-ADR-305 `/tmp/atmux-<team>/sock` (plus `/` and
+   *  `/tmp`) exist; directories start creates are made as UID. */
   function legacyOnlyFs(team: string, dirMode: number): SocketDirFs {
-    const legacyDir = `/tmp/atmux-${team}`;
-    return {
-      lstat: (p) => {
-        if (p === "/tmp") return tmpNode;
-        if (p === legacyDir)
-          return {
-            uid: UID,
-            mode: dirMode,
-            isDirectory: () => true,
-            isSymbolicLink: () => false,
-            isSocket: () => false,
-          };
-        if (p === `${legacyDir}/sock`)
-          return {
-            uid: UID,
-            mode: 0o660,
-            isDirectory: () => false,
-            isSymbolicLink: () => false,
-            isSocket: () => true,
-          };
-        return null;
-      },
-      mkdir: () => true,
-      mkdirp: () => {},
-      chmod: () => {},
-    };
+    return fakeSocketFs(
+      { [`/tmp/atmux-${team}`]: dir(UID, dirMode), [`/tmp/atmux-${team}/sock`]: sock(UID) },
+      { creatorUid: UID },
+    );
   }
 
   test("default-path team: binds /tmp/atmux-<uid>/<team>/sock in a 0700 dir chain", async () => {
@@ -650,7 +623,9 @@ describe("start — ADR-305 per-user private socket dir", () => {
           isListening: async () => true,
         },
       }),
-    ).rejects.toThrow(`chmod 700 /tmp/atmux-${env.team} to keep using that server`);
+    ).rejects.toThrow(
+      `chmod 700 /tmp/atmux-${env.team} — that keeps the server usable until it next restarts`,
+    );
     expect(seen).toEqual([]);
   });
 

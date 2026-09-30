@@ -24,6 +24,12 @@ tmux -L default list-sessions 2>&1 | grep -i atmux  # expect empty
 tmux -L atmux-cockpit list-sessions  # expect: configured cockpitSession (default: atx)
 ```
 
+**Viewer windows dial through `atmux socket-dial`** ([ADR-305](adr/305-per-user-private-socket-dirs.md) §D6). Each team and group viewer runs a retry loop whose every dial is `atmux socket-dial <socket> attach -t '=<session>…'`: tmux runs only after the socket's whole directory chain passes the ADR-305 §D2 check (exit 1 = no socket yet, 78 = unsafe; the loop moves on to its next candidate either way). A viewer that stays blank while its cage is up: run the dial by hand to see the refusal and its fix —
+
+```bash
+atmux socket-dial /tmp/atmux-$(id -u)/<team>/sock has-session -t '=<team>'; echo "exit $?"
+```
+
 ### Operator-owned cockpit windows
 
 Use top-level `windows[]` for a durable cockpit workspace that is not backed by an atmux team cage:

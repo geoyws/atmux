@@ -6,42 +6,12 @@
 import { describe, expect, test } from "bun:test";
 import { statSync } from "node:fs";
 import { rm } from "node:fs/promises";
-import type { SocketDirFs, SocketNodeStat } from "../../../src/core/socket-dir.ts";
 import { ConfigError } from "../../../src/errors.ts";
 import { ensurePrivateGroupSocket } from "../../../src/verbs/cockpit.ts";
+import { type FakeNode, type FakeSocketFs, fakeSocketFs } from "../../helpers/fake-socket-fs.ts";
 
-type Node = { kind: "dir" | "socket"; uid: number; mode: number };
-function fakeFs(
-  initial: Record<string, Node>,
-  creatorUid: number,
-): SocketDirFs & { nodes: Map<string, Node> } {
-  const nodes = new Map(Object.entries(initial));
-  const st = (n: Node): SocketNodeStat => ({
-    uid: n.uid,
-    mode: n.mode,
-    isDirectory: () => n.kind === "dir",
-    isSymbolicLink: () => false,
-    isSocket: () => n.kind === "socket",
-  });
-  return {
-    nodes,
-    lstat: (p) => {
-      const n = nodes.get(p);
-      return n === undefined ? null : st(n);
-    },
-    mkdir: (p, mode) => {
-      if (nodes.has(p)) return false;
-      nodes.set(p, { kind: "dir", uid: creatorUid, mode: mode & ~0o022 });
-      return true;
-    },
-    mkdirp: (p, mode) => {
-      nodes.set(p, { kind: "dir", uid: creatorUid, mode });
-    },
-    chmod: (p, mode) => {
-      const n = nodes.get(p);
-      if (n !== undefined) n.mode = mode;
-    },
-  };
+function fakeFs(initial: Record<string, FakeNode>, creatorUid: number): FakeSocketFs {
+  return fakeSocketFs(initial, { creatorUid });
 }
 
 const logger = (): { log: (m: string) => void; logs: string[] } => {
@@ -124,7 +94,7 @@ describe("ensurePrivateGroupSocket (ADR-305)", () => {
     await expect(p).rejects.toBeInstanceOf(ConfigError);
     await expect(
       ensurePrivateGroupSocket("g", logger(), { uid: 1000, fs, isListening: async () => true }),
-    ).rejects.toThrow("chmod 700 /tmp/atmux-grp-g");
+    ).rejects.toThrow("chmod 700 /tmp/atmux-grp-g — that keeps the server usable");
   });
 
   test("per-user root squatted by another uid → refused (ConfigError), nothing created", async () => {
@@ -146,7 +116,7 @@ describe("ensurePrivateGroupSocket (ADR-305)", () => {
     expect(await ensurePrivateGroupSocket("g", logger(), { uid: null, fs })).toBe(
       "/tmp/atmux-grp-g/sock",
     );
-    expect(fs.nodes.has("/tmp/atmux-grp-g")).toBe(true);
+    expect(fs.calls).toEqual(["mkdirp /tmp/atmux-grp-g 700"]);
   });
 
   test("defaults (real uid, real fs): creates the per-user group dir 0700", async () => {

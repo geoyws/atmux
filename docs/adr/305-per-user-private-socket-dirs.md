@@ -15,35 +15,43 @@ atmux passes `-S <path>` for cages and group servers. With `-S`, tmux does none 
 
 ### D1 — Path scheme
 
-| Socket | Path | Private directories |
+| Socket | Path | Private directories (owned by the uid, no group/other bit) |
 |---|---|---|
 | Team cage (no `tmuxTmpdir`) | `/tmp/atmux-<uid>/<team>/sock` | `/tmp/atmux-<uid>`, `/tmp/atmux-<uid>/<team>` |
 | Group server | `/tmp/atmux-<uid>/grp-<group>/sock` | `/tmp/atmux-<uid>`, `/tmp/atmux-<uid>/grp-<group>` |
-| Team with `tmuxTmpdir` | `<tmuxTmpdir>/tmux-<uid>/default` (unchanged) | `<tmuxTmpdir>/tmux-<uid>` |
+| Team with `tmuxTmpdir` | `<tmuxTmpdir>/tmux-<uid>/default` (unchanged) | `<tmuxTmpdir>/tmux-<uid>`, and `<tmuxTmpdir>` itself when it is an `atmux-*` entry of `/tmp` |
 | Cockpit | tmux's own `-L atmux-cockpit` → `$TMUX_TMPDIR/tmux-<uid>/atmux-cockpit` (unchanged) | `$TMUX_TMPDIR/tmux-<uid>` |
 
 The base is the literal `/tmp`, not `$XDG_RUNTIME_DIR` or `os.tmpdir()`: cron, launchd and interactive shells must all resolve the same path, and neither alternative is set in all of them (macOS has no `XDG_RUNTIME_DIR`; cron sets none). The per-user root is ONE `/tmp` entry named `atmux-<uid>`, not `/tmp/atmux-<uid>-<team>`: a name with a second hyphen matches groom's zombie-fixture sweep pattern `^atmux-(cockpit-)?(?!grp-)[^/]+-[^/]+$`, which kills the tmux servers it finds under an old directory.
 
+`atmux init` no longer stamps `tmuxTmpdir: "/tmp/atmux-tmux_<team>"` (the ADR-018 bash-era default). That name was one shared `/tmp` entry any local user could create first. With the field unset a new team runs its own server on the per-user cage socket above — the same ADR-018 blast-radius isolation, owned by the uid that runs it, and `team.json` stays portable across uids. An operator who sets `tmuxTmpdir` points it at a directory they (or root) own that no other user can write.
+
 Resolvers: `core/socket-dir.ts` (`resolveCageSocketPath`, `resolveGroupSocketPath`); `core/common.ts::getDefaultSocket` / `resolveTeamSocket` and `core/cockpit.ts::cageSocketPath` / `groupSocketPath` delegate to them.
 
-### D2 — Creation and refusal rules
+### D2 — The whole chain, from `/` down
 
-1. A directory atmux creates is created 0700 and chmod'ed 0700 right after, so no umask leaves it wider (or too narrow to use).
-2. An existing directory is never chmod'ed. It is refused, with the exact fix, when it is a symlink, not a directory, owned by another uid, or has any group or world bit (read, write or search).
-3. A socket node owned by another uid (or a symlink) is refused.
-4. Nothing atmux does ever widens a mode; no code path sets 0666 or 0777.
+`tmux -S <path>` checks nothing, so atmux checks the WHOLE path it hands tmux, not only the socket's directory. The walk (`core/socket-dir.ts`) starts at `/` and opens one component at a time with `open(O_RDONLY|O_DIRECTORY|O_NOFOLLOW)` resolved inside the directory already checked — on Linux through `/proc/self/fd/<parent>/<name>` (openat semantics) — then `fstat`s the descriptor it just opened. It holds every descriptor until the walk ends. Rules:
 
-Enforcement points: `ensurePrivateSocketDir` at every creation site (`atmux start`, `cockpit reconcile` cage pre-create and group servers), and a connect-time guard in `createTmux` that runs before EVERY tmux spawn of a namespace (`-S` path, and the `-L` name's `tmux-<uid>` directory). A refusal is `UnsafeSocketPathError`, a `ConfigError` (exit 78). Raw `tmux -S` probes in doctor (`tmux-agent-env`, legacy window names) skip an unsafe socket instead of dialling it. The cockpit's viewer retry-loops dial a socket only when `[ -S s ] && [ -O s ]`. `bin/atmux-tmux` applies the same rules in shell.
+1. **Every directory on the way** is a real directory owned by root or by this uid and not writable by group or other — EXCEPT a root-owned sticky directory (`/tmp`, 1777), which may be traversed.
+2. **Private directories** — the socket's own directory, and any `atmux-*` entry of a shared sticky directory (`/tmp/atmux-<uid>`, `/tmp/atmux-tmux_*`, pre-ADR-305 `/tmp/atmux-<team>`) — are owned by this uid with no group or other bit at all (read, write or search).
+3. **Symlinks.** A symlink is followed only when it sits in a directory no other uid can write (rule 1 without the sticky exception) and is owned by root or this uid — macOS `/tmp → private/tmp` is the case that needs this. A symlink at a private position, inside a shared sticky directory, or owned by another uid is refused. `.`/`..` in the socket path itself are refused.
+4. **The socket node** is refused when it is a symlink or owned by another uid.
+5. **Missing directories.** `ensurePrivateSocketDir` (create) creates every missing directory with `mkdir(0700)` under umask 077, through the parent descriptor, then opens and checks it like any other. The connect-time check creates only a missing entry of a shared sticky directory (`/tmp/atmux-<uid>` above all), so no other uid can plant it between the check and the dial; a missing directory below one only this uid (or root) can write is safe (nothing can appear there; tmux reports "no server").
+6. **Nothing is ever chmod'ed**, and no code path sets 0666 or 0777. An existing directory that breaks a rule is refused with the exact fix.
+
+Why this is enough: under rules 1–3 no other uid can rename, replace or re-point any component of the checked path — a sticky directory lets only an entry's owner (or root) rename it, and every other directory on the way is writable only by root or this uid — so the path atmux then hands tmux still means what the walk checked. Without `/proc` (macOS), names resolve against the walk's own resolved path, which holds no symlink and, by the same rules, nothing another uid can change.
+
+Enforcement points: `ensurePrivateSocketDir` at every creation site (`atmux start`, `cockpit reconcile` cage pre-create and group servers); the connect-time guard in `createTmux`, before EVERY tmux spawn of a namespace (`-S` path, and the `-L` name's `$TMUX_TMPDIR/tmux-<uid>/<name>`); `atmux socket-dial` (D6) for shell loops; `bin/atmux-tmux`, which applies the same rules in POSIX shell (`cd -P` to the physical path, then `ls -ldn` per component top-down, `umask 077; mkdir` for missing ones, and it hands tmux the checked physical path). A refusal is `UnsafeSocketPathError`, a `ConfigError` (exit 78). Raw `tmux -S` probes in doctor (`tmux-agent-env`, legacy window names) skip an unsafe socket instead of dialling it.
 
 ### D3 — Pre-ADR-305 sockets
 
-A live cage or group server still on `/tmp/atmux-<team>/sock` (or `/tmp/atmux-grp-<group>/sock`) keeps working only while that socket is ours AND its directory passes D2 (for example the @@hax directories chmod'ed 0700 on 2026-09-30). Resolution order: per-user socket present → it; else a legacy socket that is ours in a private directory → it; else the per-user path. A legacy socket in a shared directory is never used, and another uid's legacy socket never becomes this uid's default.
+A live cage or group server still on `/tmp/atmux-<team>/sock` (or `/tmp/atmux-grp-<group>/sock`) keeps working only while that socket is ours AND its whole chain passes D2 (for example the @@hax directories chmod'ed 0700 on 2026-09-30, under the now-sticky `/tmp`). Resolution order: per-user socket present → it; else a legacy socket of ours with a passing chain → it; else the per-user path. A legacy socket in a failing chain is never used, and another uid's legacy socket never becomes this uid's default.
 
-At create time (`start`, group-server reconcile): a dead private legacy socket is removed and the server moves to the per-user path; a LIVE legacy socket of ours in a shared directory is refused (a second server on the per-user path would duplicate the cage), with the hint `chmod 700 <dir>` to adopt it until its next restart.
+At create time (`start`, group-server reconcile): a dead legacy socket with a passing chain is removed and the server moves to the per-user path; a LIVE legacy socket of ours in a failing chain is refused (a second server on the per-user path would duplicate the cage), with the fix for the component that fails (`chmod 700 <dir>` for the usual case) to adopt it until its next restart.
 
 ### D4 — Doctor
 
-`atmux doctor` gains `socket-dir` (red: the team's or cockpit's socket directory breaks D2; green otherwise) and `socket-dir-legacy` (yellow: a legacy socket of ours in a shared directory). Cage-probing checks that the guard refuses return no rows instead of aborting the run.
+`atmux doctor` gains `socket-dir` (red: the team's or cockpit's socket path breaks D2; green otherwise) and `socket-dir-legacy` (yellow: a legacy socket of ours in a failing chain). Cage-probing checks that the guard refuses return no rows instead of aborting the run.
 
 ### D5 — Capability marker
 
@@ -55,9 +63,18 @@ atmux version --features | grep -qx 'socket-dirs=per-user-0700'
 
 An older build prints only the version line, so the grep fails closed. The token is never reworded; a successor scheme gets a new marker.
 
+### D6 — `atmux socket-dial` for shell loops
+
+`atmux socket-dial <socket> <tmux-args…>` runs `tmux -S <socket> <tmux-args…>` with inherited stdio only after the D2 connect-time walk passes; it exits 1 when there is no socket of ours to dial and 78 when the path is unsafe, in both cases without running tmux. The cockpit's viewer retry-loops (team windows and group windows) and the bau skill dial through it, invoking the atmux build that wrote the loop (`ATMUX_BIN`, else this checkout's `bin/atmux`, else the compiled binary). A shell `[ -S s ] && [ -O s ] && tmux -S s` test is not a substitute: it follows symlinks and checks only the socket node, so a uid that can rename a directory on the way swaps the path between the test and the dial (the review of the first cut measured 80 of 300 such dials reaching the other uid's server; the e2e below reproduces it). `socket-dial` is exempt from the per-verb events log (a viewer dials about once a second).
+
 ## Consequences
 
-- Root and every other uid get disjoint socket trees; a second uid cannot connect to (or even see) another uid's cage or group socket. Proven by `tests/e2e/socket-dir-two-uid.test.ts` with real uids in a Linux container, including a negative control showing the pre-ADR shape was reachable.
-- Operator-visible break: an existing socket directory with group/world bits is refused until fixed. On hosts where cages were started with a 022 umask (`/tmp/atmux-<team>/` at 0755, `<root>/.atmux/tmux/tmux-<uid>/` at 0755), the cage verbs refuse that cage with the `chmod 700 <dir>` hint; `atmux doctor` lists them. Dead leftovers in shared legacy directories are ignored, not refused.
-- `/tmp/atmux-<uid>` can be squatted by another local user (atmux then refuses, clearly, rather than using it). That is a denial of service, never a hijack. A world-writable `/tmp` without the sticky bit (as measured on @@hax) makes squatting easier and is a host fix owned by infra.
+- Root and every other uid get disjoint socket trees; a second uid cannot connect to (or even see) another uid's cage, group or cockpit socket. Proven by `tests/e2e/socket-dir-two-uid.test.ts` with real uids in a Linux container: library calls (beats 1–5) and the real CLI — `atmux start` and `cockpit reconcile` as two uids, `socket-dial`, `bin/atmux-tmux` — including a pre-planted `tmuxTmpdir` parent, a racing symlink swap (the old guard is reached, `socket-dial` never is), a missing `/tmp/atmux-<uid>`, and a squatted cockpit directory.
+- Operator-visible break: a socket path with a group- or world-writable (non-sticky) directory anywhere on the way, a foreign-owned directory on the way, or a private directory with any group/other bit, is refused until fixed; `atmux doctor` lists them. Measured on @@hax on 2026-09-30: `/tmp` is now root 1777 (it was 0777 without the sticky bit when this ADR was opened — under that mode every atmux socket on the host would be refused); `/root/work/geoyws/src/root/.atmux/tmux/tmux-0` is 0755 (refused, `chmod 700` fixes it); the empty `/tmp/atmux-tmux_{geoyws,hrx,hx}` directories are root 0777 and would be refused if a team pointed at them (no team.json on the host does); `/tmp/atmux-journal` and `/tmp/atmux-px` are root 0700 and adopted.
+- `/tmp/atmux-<uid>` can be squatted by another local user (atmux then refuses, clearly, rather than using it). That is a denial of service, never a hijack.
+- macOS: the chain is walked through the trusted `/tmp → private/tmp` link without `/proc`; `bin/atmux-tmux` hands tmux the physical `/private/tmp/…` path. Untested on macOS — verify.
 - Out of scope: the `-L` fallback cages (`/tmp/atmux_fallback_*`, tmux enforces its own directory), retired epic-cage probe paths in `topo`, and the ~22k leftover `/tmp/atmux-*` directories on @@hax (infra t-67d80702).
+
+## Revision — 2026-09-30, review of the first cut (35ea2c3)
+
+The first cut checked only the socket's own directory (plus `/tmp/atmux-<uid>`), treated a missing directory as safe, chmod'ed what it created by path, left `atmux init` stamping the shared `/tmp/atmux-tmux_<team>`, and let the cockpit viewer loops dial after a shell `[ -S ] && [ -O ]` test. An independent review showed a pre-planted 0777 `tmuxTmpdir` parent let another uid rename root's `tmux-0` and reach 46 of 300 guarded probes, and a symlink swap redirected 80 of 300 viewer dials. D1 (init), D2 (whole chain, descriptor walk, create-before-dial, no chmod), D3 and D6 are the fix.

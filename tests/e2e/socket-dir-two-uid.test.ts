@@ -1,9 +1,11 @@
 // E2E — ADR-305: a second local uid cannot reach another uid's atmux
 // cage or group server, and atmux refuses planted / shared socket dirs.
 //
-// REAL uids, REAL tmux, REAL atmux code: each actor runs
-// tests/helpers/socket-dir-actor.ts under `setpriv --reuid/--regid`, so the
-// kernel — not a mock — decides who can reach which socket.
+// REAL uids, REAL tmux, REAL atmux code: beats 1–5 run library calls
+// through tests/helpers/socket-dir-actor.ts, beats 6–11 run the real CLI
+// (`bin/atmux start`, `cockpit reconcile`, `socket-dial`, and the
+// `bin/atmux-tmux` shell wrapper), each under `setpriv --reuid/--regid`,
+// so the kernel — not a mock — decides who can reach which socket.
 //
 // It creates throwaway local users, so it runs ONLY where that is safe
 // and intended: Linux, as root, inside a container (`/.dockerenv`), with
@@ -23,17 +25,37 @@
 //      (foreign owner); a 0777 socket dir is refused (shared mode); a
 //      socket root plants in alice's private dir is refused (foreign
 //      socket owner).
+//   6. real CLI: `atmux start` as alice and as bob for ONE team name →
+//      two private servers; each uid's `socket-dial` of the other's socket
+//      is refused before tmux runs.
+//   7. cockpit: `atmux cockpit reconcile` as alice — her viewer window
+//      attaches to HER cage (never bob's same-named one), and her cockpit
+//      `-L atmux-cockpit` socket is private to her.
+//   8. review of 35ea2c3, item 1: a tmuxTmpdir parent another uid
+//      pre-planted (0777) stops `atmux start`, `socket-dial` and
+//      `bin/atmux-tmux`; nothing is created inside, and the other uid's
+//      server planted there is never dialled.
+//   9. review item 2: a swap of a directory another uid can rename. The
+//      35ea2c3 viewer guard (`[ -S ] && [ -O ] && tmux -S`) is raced into
+//      the other uid's server (negative control); `socket-dial` refuses
+//      every dial, even while the path points at root's own server.
+//  10. review item 4: a missing /tmp/atmux-<uid> is created 0700 before a
+//      dial; a squatted one refuses `socket-dial` and `start`.
+//  11. cockpit socket: another uid's /tmp/tmux-<uid> stops
+//      `cockpit reconcile` with exit 78.
 
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 
-setDefaultTimeout(60_000);
+setDefaultTimeout(120_000);
 
 const REPO = resolve(import.meta.dir, "../..");
 const ACTOR = resolve(REPO, "tests/helpers/socket-dir-actor.ts");
+const ATMUX = resolve(REPO, "bin/atmux");
+const WRAPPER = resolve(REPO, "bin/atmux-tmux");
 const NONCE = `${process.pid.toString(36)}${Date.now().toString(36).slice(-4)}`;
-const USERS = { alice: 4201, bob: 4202, carol: 4203 } as const;
+const USERS = { alice: 4201, bob: 4202, carol: 4203, dave: 4204 } as const;
 type Who = keyof typeof USERS | "root";
 /** Primary gid per user, read back after `useradd -U`. */
 const GIDS: Record<string, number> = {};
@@ -54,10 +76,12 @@ if (SKIP) process.stderr.write(`socket-dir-two-uid e2e skipped: ${skipReason}\n`
 function sh(
   argv: string[],
   env: Record<string, string> = {},
+  cwd?: string,
 ): { code: number; out: string; err: string } {
   const p = Bun.spawnSync({
     cmd: argv,
-    env: { PATH: process.env.PATH ?? "", ...env },
+    env: { PATH: process.env.PATH ?? "", LANG: "C.UTF-8", ...env },
+    ...(cwd !== undefined ? { cwd } : {}),
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -94,6 +118,70 @@ function rawTmux(who: Who, sock: string, ...argv: string[]): { code: number; err
   return { code: r.code, err: r.err };
 }
 
+/** The REAL atmux CLI (this checkout) as `who`. */
+function atmux(
+  who: Who,
+  argv: string[],
+  opts: { cwd?: string; env?: Record<string, string> } = {},
+): { code: number; out: string; err: string } {
+  const a = as(who);
+  return sh(
+    [...a.argv, process.execPath, ATMUX, ...argv],
+    { ...a.env, ATMUX_NO_CRON: "1", ...opts.env },
+    opts.cwd,
+  );
+}
+
+/** `stat -c '%a %u'` of a path (as root). */
+function modeOwner(p: string): string {
+  return sh(["stat", "-c", "%a %u", p]).out.trim();
+}
+
+const HOME_OF = (who: Who): string =>
+  who === "root" ? "/tmp/e2e-home-root" : `/tmp/e2e-home-${who}`;
+const uidOf = (who: Who): number => (who === "root" ? 0 : USERS[who]);
+
+/** A team root owned by `who` (0700) with a drivers-only team.json whose
+ *  cage the cockpit attaches to (`driverSession` set). */
+function teamRoot(who: Who, team: string, extra: Record<string, unknown> = {}): string {
+  const root = `/tmp/e2e-proj-${who}-${team}`;
+  scratch.push(root);
+  const uid = String(uidOf(who));
+  const gid = who === "root" ? "0" : String(GIDS[who]);
+  sh(["install", "-d", "-m", "700", "-o", uid, "-g", gid, root, `${root}/.atmux`]);
+  const tj = `${root}/.atmux/team.json`;
+  writeFileSync(
+    tj,
+    JSON.stringify({
+      name: team,
+      members: [],
+      drivers: [{ name: "driver", cwd: ".", tui: null }],
+      superdriver: { enabled: false },
+      driverSession: { tui: null },
+      ...extra,
+    }),
+  );
+  sh(["chown", `${uid}:${gid}`, tj]);
+  return root;
+}
+
+/** `atmux start` (no TUIs, no doctor, no preflight) for a team root. */
+function startTeam(who: Who, root: string): { code: number; out: string; err: string } {
+  return atmux(who, ["start", "--no-launch", "--no-doctor", "--no-preflight"], {
+    cwd: root,
+    env: { ATMUX_DIR: `${root}/.atmux` },
+  });
+}
+
+/** Clients attached to a tmux server, as `who` (raw tmux). */
+function clients(who: Who, sock: string): number {
+  const a = as(who);
+  const r = sh([...a.argv, "tmux", "-S", sock, "list-clients", "-F", "#{client_tty}"], a.env);
+  return r.code === 0 ? r.out.split("\n").filter(Boolean).length : 0;
+}
+
+const roots: Record<string, string> = {};
+
 /** `test -e` as `who` — can that uid even see the path? */
 function canSee(who: Who, p: string): boolean {
   const a = as(who);
@@ -101,6 +189,7 @@ function canSee(who: Who, p: string): boolean {
 }
 
 const started: Array<{ who: Who; sock: string }> = [];
+const background: Array<{ kill(): void }> = [];
 const scratch: string[] = [];
 
 describe.skipIf(SKIP)("e2e: ADR-305 per-user private socket dirs across two real uids", () => {
@@ -127,13 +216,14 @@ describe.skipIf(SKIP)("e2e: ADR-305 per-user private socket dirs across two real
   });
 
   afterAll(() => {
+    for (const p of background) p.kill();
     for (const { who, sock } of started) {
       const a = as(who);
       sh([...a.argv, "tmux", "-S", sock, "kill-server"], a.env);
     }
     for (const d of scratch) sh(["rm", "-rf", d]);
     for (const [name, uid] of Object.entries(USERS)) {
-      sh(["rm", "-rf", `/tmp/atmux-${uid}`, `/tmp/e2e-home-${name}`]);
+      sh(["rm", "-rf", `/tmp/atmux-${uid}`, `/tmp/tmux-${uid}`, `/tmp/e2e-home-${name}`]);
       sh(["userdel", name]);
     }
     sh(["rm", "-rf", "/tmp/e2e-home-root"]);
@@ -275,5 +365,258 @@ describe.skipIf(SKIP)("e2e: ADR-305 per-user private socket dirs across two real
       problem: "foreign-owner",
       path: planted,
     });
+  });
+  test("beat 6 — real CLI: `atmux start` as alice and as bob for one team name → two private servers", () => {
+    const team = `e2e-cli-${NONCE}`;
+    for (const who of ["alice", "bob"] as const) {
+      const root = teamRoot(who, team);
+      roots[who] = root;
+      const r = startTeam(who, root);
+      expect(`${r.code} ${r.err}`).toStartWith("0 ");
+      const sock = `/tmp/atmux-${USERS[who]}/${team}/sock`;
+      started.push({ who, sock });
+      expect(modeOwner(`/tmp/atmux-${USERS[who]}`)).toBe(`700 ${USERS[who]}`);
+      expect(modeOwner(`/tmp/atmux-${USERS[who]}/${team}`)).toBe(`700 ${USERS[who]}`);
+      // The owner dials her own cage through the CLI.
+      expect(atmux(who, ["socket-dial", sock, "has-session", "-t", `=${team}`]).code).toBe(0);
+    }
+    // Each uid's dial of the other's socket is refused before tmux runs.
+    for (const [who, other] of [
+      ["alice", "bob"],
+      ["bob", "alice"],
+    ] as const) {
+      const x = atmux(who, [
+        "socket-dial",
+        `/tmp/atmux-${USERS[other]}/${team}/sock`,
+        "has-session",
+        "-t",
+        `=${team}`,
+      ]);
+      expect(x.code).toBe(78);
+      expect(x.err).toContain(`refusing tmux socket /tmp/atmux-${USERS[other]}/${team}/sock`);
+      expect(x.err).toContain(
+        `/tmp/atmux-${USERS[other]} is owned by uid ${USERS[other]}, not uid ${USERS[who]}`,
+      );
+    }
+  });
+
+  test("beat 7 — cockpit: alice's `cockpit reconcile` viewer attaches to HER cage, never bob's; her cockpit socket is private", async () => {
+    const team = `e2e-cli-${NONCE}`;
+    const aliceSock = `/tmp/atmux-4201/${team}/sock`;
+    const bobSock = `/tmp/atmux-4202/${team}/sock`;
+    expect(roots.alice).toBeDefined();
+    const cfgDir = `${HOME_OF("alice")}/.atmux`;
+    sh(["install", "-d", "-m", "700", "-o", "4201", "-g", String(GIDS.alice), cfgDir]);
+    writeFileSync(
+      join(cfgDir, "cockpit.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        sessions: [{ type: "team", name: team, root: roots.alice, enabled: true }],
+      }),
+    );
+    sh(["chown", `4201:${GIDS.alice}`, join(cfgDir, "cockpit.json")]);
+    const r = atmux("alice", ["cockpit", "reconcile", "--no-launch", "--no-cycle"]);
+    expect(`${r.code} ${r.err}`).toStartWith("0 ");
+    const cockpitSock = "/tmp/tmux-4201/atmux-cockpit";
+    started.push({ who: "alice", sock: cockpitSock });
+    // The viewer loop dials through `atmux socket-dial`: poll until its
+    // client shows up on alice's cage.
+    const deadline = Date.now() + 30_000;
+    while (clients("alice", aliceSock) === 0 && Date.now() < deadline) await Bun.sleep(250);
+    expect(clients("alice", aliceSock)).toBe(1);
+    expect(clients("bob", bobSock)).toBe(0);
+    // The cockpit server itself: tmux's own private tmux-<uid> dir.
+    expect(modeOwner("/tmp/tmux-4201")).toBe("700 4201");
+    const b = rawTmux("bob", cockpitSock, "list-sessions");
+    expect(b.code).not.toBe(0);
+    expect(b.err).toContain("Permission denied");
+  });
+
+  test("beat 8 — review item 1: a tmuxTmpdir parent another uid pre-planted (0777) stops start, socket-dial and atmux-tmux", () => {
+    const planted = `/tmp/atmux-tmux_rv${NONCE}`;
+    scratch.push(planted);
+    sh(["install", "-d", "-m", "777", "-o", "4203", "-g", String(GIDS.carol), planted]);
+    const team = `e2e-rv-${NONCE}`;
+    const root = teamRoot("root", team, { tmuxTmpdir: planted });
+    const want = `${planted} is owned by uid 4203, not uid 0`;
+
+    const r = startTeam("root", root);
+    expect(r.code).toBe(78);
+    expect(r.err).toContain(want);
+    // Nothing of root's was created inside carol's directory.
+    expect(existsSync(`${planted}/tmux-0`)).toBe(false);
+
+    // The reviewer's exploit, replayed: carol serves her own tmux at the
+    // exact path root's team would dial.
+    const c = as("carol");
+    sh([...c.argv, "mkdir", "-m", "700", `${planted}/tmux-0`], c.env);
+    const carolSock = `${planted}/tmux-0/default`;
+    expect(
+      sh(
+        [
+          ...c.argv,
+          "tmux",
+          "-S",
+          carolSock,
+          "new-session",
+          "-d",
+          "-s",
+          "carolsess",
+          "sleep",
+          "600",
+        ],
+        c.env,
+      ).code,
+    ).toBe(0);
+    started.push({ who: "carol", sock: carolSock });
+    const d = atmux("root", ["socket-dial", carolSock, "list-sessions", "-F", "#{session_name}"]);
+    expect(d.code).toBe(78);
+    expect(d.err).toContain(want);
+    expect(d.out).not.toContain("carolsess");
+    // The atmux library guard (createTmux) refuses it too.
+    expect(actor("root", "probe", carolSock)).toMatchObject({
+      ok: false,
+      problem: "foreign-owner",
+      path: planted,
+    });
+    // …and so does the shell mirror, bin/atmux-tmux.
+    const w = sh(["sh", WRAPPER, "list-sessions"], { HOME: HOME_OF("root"), TMUX_TMPDIR: planted });
+    expect(w.code).toBe(78);
+    expect(w.err).toContain(want);
+    expect(w.out).not.toContain("carolsess");
+  });
+
+  test("beat 9 — review item 2: a directory another uid can rename never redirects socket-dial (the 35ea2c3 guard is raced)", async () => {
+    const base = `/tmp/e2e-swap-${NONCE}`;
+    scratch.push(base);
+    sh(["install", "-d", "-m", "777", "-o", "4203", "-g", String(GIDS.carol), base]);
+    // root's server, reached through a directory carol owns.
+    sh(["install", "-d", "-m", "700", `${base}/real`, `${base}/real/tmux-0`]);
+    const rootSock = `${base}/real/tmux-0/default`;
+    expect(
+      sh(["tmux", "-S", rootSock, "new-session", "-d", "-s", "rootsess", "sleep", "600"], {
+        HOME: HOME_OF("root"),
+      }).code,
+    ).toBe(0);
+    started.push({ who: "root", sock: rootSock });
+    // carol's server at the same relative spot, and the link she flips.
+    const c = as("carol");
+    sh([...c.argv, "mkdir", "-p", "-m", "700", `${base}/evil/tmux-0`], c.env);
+    const carolSock = `${base}/evil/tmux-0/default`;
+    expect(
+      sh(
+        [
+          ...c.argv,
+          "tmux",
+          "-S",
+          carolSock,
+          "new-session",
+          "-d",
+          "-s",
+          "carolsess",
+          "sleep",
+          "600",
+        ],
+        c.env,
+      ).code,
+    ).toBe(0);
+    started.push({ who: "carol", sock: carolSock });
+    sh([...c.argv, "ln", "-s", "real", `${base}/cur`], c.env);
+    const P = `${base}/cur/tmux-0/default`;
+
+    // Deterministic: even while P points at root's OWN live server, the
+    // chain is swappable, so socket-dial refuses (a node-only check dials).
+    const det = atmux("root", ["socket-dial", P, "list-sessions", "-F", "#{session_name}"]);
+    expect(det.code).toBe(78);
+    expect(det.err).toContain(`${base} is owned by uid 4203 (neither root nor uid 0)`);
+
+    // The race: carol flips `cur` between real/ and evil/ as fast as she can.
+    const flipper = Bun.spawn(
+      [
+        ...c.argv,
+        "sh",
+        "-c",
+        "while :; do ln -sfn real cur.n && mv -Tf cur.n cur; ln -sfn evil cur.n && mv -Tf cur.n cur; done",
+      ],
+      {
+        cwd: base,
+        env: { PATH: process.env.PATH ?? "", ...c.env },
+        stdout: "ignore",
+        stderr: "ignore",
+      },
+    );
+    background.push(flipper);
+    try {
+      // Negative control — 35ea2c3's viewer dial, 300 times as root.
+      const old = sh(
+        [
+          "sh",
+          "-c",
+          `n=0; i=0; while [ $i -lt 300 ]; do i=$((i+1)); o=$({ [ -S "$P" ] && [ -O "$P" ] && tmux -S "$P" list-sessions -F '#{session_name}' 2>/dev/null; }); [ "$o" = carolsess ] && n=$((n+1)); done; echo $n`,
+        ],
+        { P, HOME: HOME_OF("root") },
+      );
+      const oldHits = Number(old.out.trim());
+      // socket-dial, 60 times as root, same race.
+      const now = sh(
+        [
+          "sh",
+          "-c",
+          `h=0; r=0; i=0; while [ $i -lt 60 ]; do i=$((i+1)); o=$("$BUN" "$ATMUX" socket-dial "$P" list-sessions -F '#{session_name}' 2>/dev/null); [ $? -eq 78 ] && r=$((r+1)); [ "$o" = carolsess ] && h=$((h+1)); done; echo "$h $r"`,
+        ],
+        { P, HOME: HOME_OF("root"), BUN: process.execPath, ATMUX, ATMUX_NO_CRON: "1" },
+      );
+      process.stderr.write(
+        `beat 9: 35ea2c3 guard reached carol's server ${oldHits}/300; socket-dial (hits refused) ${now.out.trim()}/60\n`,
+      );
+      expect(now.out.trim()).toBe("0 60");
+      expect(oldHits).toBeGreaterThan(0);
+    } finally {
+      flipper.kill();
+      await flipper.exited;
+    }
+  });
+
+  test("beat 10 — review item 4: a missing /tmp/atmux-<uid> is made 0700 before a dial; a squatted one refuses socket-dial and start", () => {
+    const team = `e2e-miss-${NONCE}`;
+    sh(["rm", "-rf", "/tmp/atmux-4204"]);
+    const r = atmux("dave", ["socket-dial", `/tmp/atmux-4204/${team}/sock`, "has-session"]);
+    expect(r.code).toBe(1);
+    expect(modeOwner("/tmp/atmux-4204")).toBe("700 4204");
+    expect(existsSync(`/tmp/atmux-4204/${team}`)).toBe(false);
+
+    // bob squats carol's root (same shape as beat 5a, via the CLI now).
+    if (!existsSync("/tmp/atmux-4203")) {
+      sh(["install", "-d", "-m", "777", "-o", "4202", "-g", String(GIDS.bob), "/tmp/atmux-4203"]);
+    }
+    const want = "/tmp/atmux-4203 is owned by uid 4202, not uid 4203";
+    const d = atmux("carol", ["socket-dial", `/tmp/atmux-4203/${team}/sock`, "has-session"]);
+    expect(d.code).toBe(78);
+    expect(d.err).toContain(want);
+    const s = startTeam("carol", teamRoot("carol", team));
+    expect(s.code).toBe(78);
+    expect(s.err).toContain(want);
+    expect(existsSync(`/tmp/atmux-4203/${team}`)).toBe(false);
+  });
+
+  test("beat 11 — cockpit socket: another uid's /tmp/tmux-<uid> stops `cockpit reconcile` (exit 78)", () => {
+    const team = `e2e-ck-${NONCE}`;
+    const root = teamRoot("dave", team);
+    const cfgDir = `${HOME_OF("dave")}/.atmux`;
+    sh(["install", "-d", "-m", "700", "-o", "4204", "-g", String(GIDS.dave), cfgDir]);
+    writeFileSync(
+      join(cfgDir, "cockpit.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        sessions: [{ type: "team", name: team, root, enabled: true }],
+      }),
+    );
+    sh(["chown", `4204:${GIDS.dave}`, join(cfgDir, "cockpit.json")]);
+    sh(["rm", "-rf", "/tmp/tmux-4204"]);
+    sh(["install", "-d", "-m", "700", "-o", "4202", "-g", String(GIDS.bob), "/tmp/tmux-4204"]);
+    const r = atmux("dave", ["cockpit", "reconcile", "--no-launch", "--no-cycle"]);
+    expect(r.code).toBe(78);
+    expect(r.err).toContain("/tmp/tmux-4204 is owned by uid 4202, not uid 4204");
+    expect(existsSync("/tmp/tmux-4204/atmux-cockpit")).toBe(false);
   });
 });

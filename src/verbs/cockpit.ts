@@ -99,6 +99,7 @@ import type { CockpitMedic, CockpitTeam, CockpitWindow } from "../schema/cockpit
 import { Team } from "../schema/team.ts";
 import { attachWithTmux } from "./attach.ts";
 import { cockpitRotate } from "./cockpit-rotate.ts";
+import { socketDialCommand } from "./socket-dial.ts";
 import { start } from "./start.ts";
 
 // ---------- ADR-064 §3: per-team driverSession resolution ----------
@@ -286,8 +287,9 @@ export async function buildTeamWindowCommand(
  *  session `start.ts` created, not the underscore-form guess. */
 function cageRetryLoop(team: CockpitTeam, session: string): string {
   // ADR-305: the default socket resolves to the per-user path, or to a
-  // private pre-ADR-305 path while one is in use; the per-user path is
-  // always tried too, so a cage that migrates on restart is re-found.
+  // pre-ADR-305 path of ours with a passing chain while one is in use;
+  // the per-user path is always tried too, so a cage that migrates on
+  // restart is re-found.
   const sockets = socketCandidates(cageSocketPath(team.name), userCageSocketPathOrNull(team.name));
   const perTeam = perTeamCageSocketPath(team.root);
   // `=`-anchored session portion: bare session names (e-419553c6)
@@ -299,28 +301,20 @@ function cageRetryLoop(team: CockpitTeam, session: string): string {
   // macOS (proven live 2026-08-27 — the unquoted form dies within
   // seconds, the quoted form survives).
   //
-  // `[ -S <sock> ] &&` guards (e-419553c6, proven on macOS 2026-08-28):
-  // when the socket's parent DIRECTORY doesn't exist, tmux prints
-  // "error creating <sock> (No such file or directory)" and exits **0**
-  // (homebrew tmux on macOS), so a bare `dialA || dialB` never reaches
-  // dialB — the per-team-convention fallback was silently dead for any
-  // team without a legacy /tmp/atmux-<team>/ dir. Guarding each dial on
-  // socket existence restores the fallback and keeps the original
-  // semantics: a clean detach from the first dial (exit 0) still skips
-  // the second, a missing/stale first socket falls through.
-  //
-  // `[ -O <sock> ]` (ADR-305): dial only a socket owned by the viewer's
-  // own uid — never another user's server planted on a guessable path.
+  // Every dial goes through `atmux socket-dial` (ADR-305 §D2): it walks
+  // the socket's whole directory chain with descriptors and runs tmux
+  // only when no other uid can re-point any component; it exits 1
+  // (nothing to dial) or 78 (unsafe) WITHOUT running tmux. That keeps
+  // the e-419553c6 fallback alive — when the socket's parent DIRECTORY
+  // doesn't exist, homebrew tmux prints "error creating <sock>" and
+  // exits **0**, so an unguarded `dialA || dialB` never reached dialB —
+  // while a clean detach from the first dial (exit 0) still skips the
+  // rest. A shell `[ -S s ] && [ -O s ]` test is NOT enough: it follows
+  // symlinks and checks only the socket node, so another uid who can
+  // rename a directory on the way swaps the path between test and dial.
   const target = `'${exactSessionTarget(session)}:driver'`;
-  const dials = [...sockets, perTeam].map((s) => guardedDial(s, `attach -t ${target}`));
+  const dials = [...sockets, perTeam].map((s) => socketDialCommand(s, `attach -t ${target}`));
   return `while true; do ${dials.join(" || ")}; sleep 1; done`;
-}
-
-/** `{ [ -S s ] && [ -O s ] && tmux -S s <args> 2>/dev/null; }` — one
- *  dial of a viewer retry-loop: only an existing socket owned by the
- *  viewer's own uid is dialled (ADR-305). */
-function guardedDial(sock: string, tmuxArgs: string): string {
-  return `{ [ -S ${sock} ] && [ -O ${sock} ] && tmux -S ${sock} ${tmuxArgs} 2>/dev/null; }`;
 }
 
 /** Ordered, de-duplicated socket candidates: the resolved path first,
@@ -360,8 +354,8 @@ function shellPlaceholder(msg: string): string {
  *  ({@link groupSocketPath}); since ADR-305 that resolves to the per-user
  *  `/tmp/atmux-<uid>/grp-<group>/sock` (or a private pre-ADR-305 path
  *  while one is in use), and the per-user path is always tried too.
- *  Each dial is `[ -S ] && [ -O ]`-guarded: only a socket owned by the
- *  viewer's uid is dialled. Targets the bare session (no `:driver` — a
+ *  Each dial goes through `atmux socket-dial` (whole-chain check, see
+ *  `cageRetryLoop`). Targets the bare session (no `:driver` — a
  *  group session's active window is whichever child the operator last
  *  used). `=`-anchored + single-quoted for the same zsh `=cmd`-expansion
  *  reason documented on `cageRetryLoop`. */
@@ -371,7 +365,7 @@ export function buildGroupWindowCommand(groupName: string): string {
     userGroupSocketPathOrNull(groupName),
   );
   const target = `'${exactSessionTarget(groupName)}'`;
-  const dials = sockets.map((s) => guardedDial(s, `attach -t ${target}`));
+  const dials = sockets.map((s) => socketDialCommand(s, `attach -t ${target}`));
   return `while true; do ${dials.join(" || ")}; sleep 1; done`;
 }
 

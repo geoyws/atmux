@@ -2078,12 +2078,17 @@ describe("buildTeamWindowCommand", () => {
     // the team's name + root so cockpit viewers self-heal across cage
     // socket-convention flips without requiring a pre-resolved socket.
     // ADR-305: the default is the per-user socket, never the shared
-    // /tmp/atmux-<team>/sock, and every dial is owner-guarded.
-    expect(cmd).toContain(`/tmp/atmux-${uid}/demo/sock`);
+    // /tmp/atmux-<team>/sock, and every dial goes through `atmux
+    // socket-dial` (whole-chain descriptor walk) — never a shell
+    // `[ -S ] && [ -O ]` test followed by a raw `tmux -S` (review of
+    // 35ea2c3, item 2: that pair follows symlinks and races a swap).
     expect(cmd).not.toContain("/tmp/atmux-demo/sock");
-    expect(cmd).toContain(`[ -O /tmp/atmux-${uid}/demo/sock ]`);
-    expect(cmd).toContain(`/d/.atmux/tmux/tmux-${uid}/default`);
-    expect(cmd).toContain(`[ -O /d/.atmux/tmux/tmux-${uid}/default ]`);
+    expect(cmd).toContain(`socket-dial /tmp/atmux-${uid}/demo/sock attach -t '=demo:driver'`);
+    expect(cmd).toContain(
+      `socket-dial /d/.atmux/tmux/tmux-${uid}/default attach -t '=demo:driver'`,
+    );
+    expect(cmd).not.toContain("[ -O");
+    expect(cmd).not.toContain("tmux -S");
     expect(cmd).toContain("||");
   });
 
@@ -2091,21 +2096,30 @@ describe("buildTeamWindowCommand", () => {
   // tmux reproduces the reported homebrew behaviour — attach against a
   // missing socket dir prints "error creating <sock> ..." yet exits 0 —
   // so a bare `attachA || attachB` wrapper could never reach attachB.
-  // Real unix-socket files back the `[ -S ]` guards; the wrapper's real
-  // `sleep 1` paces loop iterations, so polling for the first argv line
-  // observes exactly the first pass before the shell is killed.
+  // Each dial runs the REAL `atmux socket-dial` (this checkout, via
+  // bun), which resolves tmux from PATH → the stub; real unix-socket
+  // files back its checks. The wrapper's real `sleep 1` paces loop
+  // iterations, so polling for the first argv line observes exactly the
+  // first pass before the shell is killed.
   // Timer exception (ts-no-test-timers): this drives a REAL `sh` child
   // process, so fake timers cannot advance it — the poll below awaits
   // the argv-log signal, not a fixed wait; the 50ms sleeps are backoff.
   async function runWrapperFirstPass(cmd: string, bin: string): Promise<string[]> {
     const log = join(bin, "argv.log");
     const proc = Bun.spawn(["sh", "-c", cmd], {
-      env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+        // socket-dial resolves tmux itself: pin the stub even where a
+        // vendored /opt/atmux tmux exists.
+        ATMUX_TMUX_BIN: join(bin, "tmux"),
+      },
       stdout: "ignore",
       stderr: "ignore",
     });
     try {
-      const deadline = Date.now() + 5000;
+      // Each dial is a bun process loading the CLI: allow for a slow host.
+      const deadline = Date.now() + 20_000;
       for (;;) {
         if (existsSync(log)) {
           const lines = readFileSync(log, "utf8").split("\n").filter(Boolean);
@@ -2206,8 +2220,8 @@ describe("buildTeamWindowCommand", () => {
         { name: teamName, root: "/r", enabled: true } as CockpitTeam,
         "attach",
       );
-      const iLegacy = cmd.indexOf(`tmux -S ${legacySock}`);
-      const iUser = cmd.indexOf(`tmux -S /tmp/atmux-${uid}/${teamName}/sock`);
+      const iLegacy = cmd.indexOf(`socket-dial ${legacySock}`);
+      const iUser = cmd.indexOf(`socket-dial /tmp/atmux-${uid}/${teamName}/sock`);
       expect(iLegacy).toBeGreaterThan(-1);
       expect(iUser).toBeGreaterThan(iLegacy);
     } finally {
@@ -2236,7 +2250,7 @@ describe("buildTeamWindowCommand", () => {
   });
 
   test.skipIf((process.getuid?.() ?? -1) !== 0)(
-    "ADR-305: `[ -O ]` skips a live socket owned by another uid (runs as root)",
+    "ADR-305: socket-dial skips a live socket owned by another uid (runs as root)",
     async () => {
       const teamName = `adr305owner-${process.pid}`;
       const root = await mkdtemp(join(tmpdir(), "adr305owner-"));
@@ -2250,8 +2264,8 @@ describe("buildTeamWindowCommand", () => {
       const own = createServer();
       await new Promise<void>((resolve) => foreign.listen(userSock, resolve));
       await new Promise<void>((resolve) => own.listen(perTeamSock, resolve));
-      // Root can hand the first socket to another uid: `[ -S ]` still
-      // passes, so only the `[ -O ]` guard can skip it.
+      // Root can hand the first socket to another uid: it is still a
+      // socket, so only socket-dial's owner check can skip it.
       chownSync(userSock, 4242, 4242);
       const { bin } = await stubTmuxOnPath();
       try {
@@ -3819,7 +3833,8 @@ describe("reconcileGroupServers (e-419553c6)", () => {
     activeFixtureDirs.add(cageRoot);
     const uid = process.getuid?.() ?? 0;
     const cageSockDir = join(cageRoot, ".atmux", "tmux", `tmux-${uid}`);
-    await mkdir(cageSockDir, { recursive: true });
+    // ADR-305: a socket directory is private (0700) or atmux refuses it.
+    await mkdir(cageSockDir, { recursive: true, mode: 0o700 });
     const cageSock = join(cageSockDir, "default");
     activeFixtureSockets.add(cageSock);
     const cageHome = await mkdtemp(join(tmpdir(), "wnest-cage-home-"));
@@ -3998,13 +4013,13 @@ describe("reconcileGroupServers (e-419553c6)", () => {
 });
 
 describe("buildGroupWindowCommand", () => {
-  test("attach retry-loop against the per-user group socket, owner-guarded, exact-match + single-quoted target", () => {
+  test("attach retry-loop against the per-user group socket, via socket-dial, exact-match + single-quoted target", () => {
     const uid = process.getuid?.() ?? 0;
     const sock = `/tmp/atmux-${uid}/grp-geoyws/sock`;
     const cmd = buildGroupWindowCommand("geoyws");
-    expect(cmd).toContain(
-      `[ -S ${sock} ] && [ -O ${sock} ] && tmux -S ${sock} attach -t '=geoyws'`,
-    );
+    expect(cmd).toContain(`socket-dial ${sock} attach -t '=geoyws' 2>/dev/null`);
+    expect(cmd).not.toContain("[ -O");
+    expect(cmd).not.toContain("tmux -S");
     expect(cmd).not.toContain("/tmp/atmux-grp-geoyws/sock");
     expect(cmd).toContain("while true");
     expect(cmd).toContain("sleep 1");
@@ -4020,8 +4035,8 @@ describe("buildGroupWindowCommand", () => {
     await new Promise<void>((resolve) => server.listen(`${legacyDir}/sock`, resolve));
     try {
       const cmd = buildGroupWindowCommand(g);
-      const iLegacy = cmd.indexOf(`tmux -S ${legacyDir}/sock`);
-      const iUser = cmd.indexOf(`tmux -S /tmp/atmux-${uid}/grp-${g}/sock`);
+      const iLegacy = cmd.indexOf(`socket-dial ${legacyDir}/sock`);
+      const iUser = cmd.indexOf(`socket-dial /tmp/atmux-${uid}/grp-${g}/sock`);
       expect(iLegacy).toBeGreaterThan(-1);
       expect(iUser).toBeGreaterThan(iLegacy);
     } finally {

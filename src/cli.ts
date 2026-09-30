@@ -86,6 +86,7 @@ import { report } from "./verbs/report.ts";
 import { rotate, rotateLead } from "./verbs/rotate.ts";
 import { send } from "./verbs/send.ts";
 import { shutdown } from "./verbs/shutdown.ts";
+import { socketDial } from "./verbs/socket-dial.ts";
 import { start } from "./verbs/start.ts";
 import { status } from "./verbs/status.ts";
 import { stop } from "./verbs/stop.ts";
@@ -158,6 +159,9 @@ export async function logVerbEvent(opts: LogVerbEventOpts): Promise<void> {
   // shell tab-complete probe.
   if (opts.verb === "--version" || opts.verb === "-V") return;
   if (opts.verb === "--help" || opts.verb === "-h") return;
+  // ADR-305: cockpit viewer loops dial through `socket-dial` about once
+  // a second; an event per dial would flood the team's events log.
+  if (opts.verb === "socket-dial") return;
   let atmuxDir: string;
   try {
     atmuxDir = await getAtmuxDir({});
@@ -211,6 +215,8 @@ async function dispatch(argv: ReadonlyArray<string>): Promise<number> {
       return stop(argv.slice(1));
     case "shutdown":
       return shutdown(argv.slice(1));
+    case "socket-dial":
+      return socketDial(argv.slice(1));
     case "status":
       return status(argv.slice(1));
     case "attach":

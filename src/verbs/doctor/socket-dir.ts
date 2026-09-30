@@ -1,28 +1,30 @@
-// ADR-305: `socket-dir` doctor probe — are this uid's tmux socket
-// directories private?
+// ADR-305: `socket-dir` doctor probe — are this uid's tmux sockets
+// reached through a safe directory chain?
 //
 // Rows:
-//   - `socket-dir` green: the team's cage socket directory (and the
-//     cockpit's `tmux-<uid>` directory) is private to this uid, or not
-//     created yet. The detail carries the stable marker
+//   - `socket-dir` green: the team's cage socket (and the cockpit's
+//     `-L` socket) passes the whole-chain rule — every directory from `/`
+//     owned by root or this uid and not group/other-writable (a root-owned
+//     sticky `/tmp` excepted), the socket's own directory private to this
+//     uid — or is not created yet. The detail carries the stable marker
 //     {@link SOCKET_DIR_FEATURE} so a bootstrap can grep for it.
-//   - `socket-dir` red: a directory is a symlink, foreign-owned, or has
-//     group/world bits, or the socket node belongs to another uid. The
-//     createTmux guard refuses that socket, so every cage verb fails
-//     until the hint is applied.
+//   - `socket-dir` red: a directory on the way is a symlink atmux cannot
+//     trust, not a directory, foreign-owned, or too open, or the socket
+//     node belongs to another uid. The createTmux guard refuses that
+//     socket, so every cage verb fails until the hint is applied.
 //   - `socket-dir-legacy` yellow: a pre-ADR-305 `/tmp/atmux-<team>/sock`
-//     that is ours but sits in a shared directory. atmux ignores it;
+//     that is ours but whose chain fails the rule. atmux ignores it;
 //     `atmux start` refuses while it is live (a second server would
 //     duplicate the cage).
 //
-// Pure modulo lstat (through the socket-dir seams). Never touches tmux.
+// Read-only (inspect walk through the socket-dir seams). Never touches tmux.
 
 import { dirname } from "node:path";
 import { resolveTeamSocket } from "../../core/common.ts";
 import {
   currentUid,
   legacyCageSocketPath,
-  legacySocketState,
+  legacySocketInfo,
   SOCKET_DIR_FEATURE,
   type SocketDirOpts,
   socketPathIssue,
@@ -63,13 +65,13 @@ export function checkSocketDirs(team: Team | null, opts: CheckSocketDirsOpts = {
   }
   if (team !== null && (team.tmuxTmpdir ?? "") === "") {
     const legacy = legacyCageSocketPath(team.name);
-    if (legacySocketState(legacy, dirOpts) === "shared-dir") {
-      const dir = dirname(legacy);
+    const info = legacySocketInfo(legacy, dirOpts);
+    if (info.state === "shared-dir") {
       rows.push({
         status: "yellow",
         label: "socket-dir-legacy",
-        detail: `pre-ADR-305 socket ${legacy} is yours but ${dir} is shared — atmux ignores it`,
-        hint: `if a cage is live there: chmod 700 ${dir} (atmux adopts it until its next restart); otherwise rm ${legacy}`,
+        detail: `pre-ADR-305 socket ${legacy} is yours but its directory chain is unsafe (${info.issue.path} ${info.issue.detail}) — atmux ignores it`,
+        hint: `if a cage is live there: ${info.issue.hint} (atmux adopts it until its next restart); otherwise rm ${legacy}`,
       });
     }
   }
