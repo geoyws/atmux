@@ -304,6 +304,11 @@ describe("cockpitRebuild --dry-run", () => {
     expect(tj.bareWindowNames).toBeUndefined();
     // … the orphan kill was planned …
     const text = logs.join("\n");
+    expect(text).toContain("· cages: 1 would start (demo) (dry-run)");
+    expect(text).not.toContain("would start cage '");
+    expect(text.match(/⏱/g)).toHaveLength(1);
+    expect(text).toMatch(/cycle-cages \d+ms/);
+    expect(text).toMatch(/cockpit-session \d+ms/);
     expect(text).toContain("kill-window");
     expect(text).toContain("oldteam");
     // … with exact counts: 0 renames, 1 kill (oldteam), 4 other

@@ -945,11 +945,18 @@ describe("reconcileCockpitSession", () => {
     try {
       const { logger } = makeLogger();
       const teams: CockpitTeam[] = [{ name: "a", root: "/a", enabled: true } as CockpitTeam];
-      await reconcileCockpitSession(fx.tmux, "s", teams, logger);
+      const opts = { windows: [{ name: "_misc", cwd: "/tmp", command: null, enabled: true }] };
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger, {}, undefined, false, opts);
       const before = (await fx.tmux.window.listWindows("s")).map((w) => `${w.index}:${w.name}`);
-      await reconcileCockpitSession(fx.tmux, "s", teams, logger);
+      await reconcileCockpitSession(fx.tmux, "s", teams, logger, {}, undefined, false, opts);
       const after = (await fx.tmux.window.listWindows("s")).map((w) => `${w.index}:${w.name}`);
       expect(after).toEqual(before);
+      const second = makeLogger();
+      await reconcileCockpitSession(fx.tmux, "s", teams, second.logger, {}, undefined, false, opts);
+      expect(second.logs.some((l) => l.includes("· cockpit: 2 windows already present"))).toBe(
+        true,
+      );
+      expect(second.logs.some((l) => /window '.*' already present/.test(l))).toBe(false);
     } finally {
       try {
         await fx.tmux.server.killServer();
@@ -2418,7 +2425,7 @@ describe("cockpitRebuild", () => {
     let startArgs: ReadonlyArray<string> | undefined;
     let startCwd: string | undefined;
     try {
-      const { logger } = makeLogger();
+      const { logger, logs } = makeLogger();
       const code = await cockpitRebuild(
         {
           subverb: "reconcile",
@@ -2435,6 +2442,9 @@ describe("cockpitRebuild", () => {
           startFn: async (args, opts) => {
             startArgs = args;
             startCwd = opts?.cwd;
+            opts?.logger?.log("created tmux session");
+            opts?.logger?.ok("team demo is up. attach with: atmux attach");
+            opts?.logger?.warn("operator warning");
             return 0;
           },
         },
@@ -2451,6 +2461,77 @@ describe("cockpitRebuild", () => {
         preflight: { skipDeps: false, nonInteractive: false, noPreflight: false },
       });
       expect(startCwd).toBe(projRoot);
+      expect(logs.join("\n")).toContain("· cages: 1 started (demo)");
+      expect(logs.join("\n")).toContain("warn:   ⚠ demo: operator warning");
+      expect(logs.join("\n")).not.toContain("created tmux session");
+      expect(logs.join("\n")).not.toContain("team demo is up");
+      expect(logs.join("\n")).toContain("ok: cockpit ready — attach: atmux cockpit attach");
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+  test("failed starts expose buffered diagnosis for both exit and throw", async () => {
+    await writeFile(
+      join(homeDir, ".atmux", "cockpit.json"),
+      JSON.stringify({
+        cockpitSession: "failcockpit",
+        teams: [{ name: "demo", root: projRoot, enabled: true }],
+      }),
+      "utf8",
+    );
+    const fx = await spinTmux("cockpit-start-fail");
+    try {
+      for (const failure of ["exit", "throw"] as const) {
+        const { logger, logs } = makeLogger();
+        let code: number | null = null;
+        let thrown: unknown;
+        try {
+          code = await cockpitRebuild(
+            {
+              subverb: "reconcile",
+              noCycle: false,
+              forceCycle: false,
+              ackDangerous: false,
+              noLaunch: true,
+              yes: false,
+            },
+            {
+              env: { HOME: homeDir, ATMUX_NO_CRON: "1" },
+              tmuxFactory: () => fx.tmux,
+              logger,
+              startFn: async (_args, opts) => {
+                opts?.logger?.log("created session for diagnosis");
+                opts?.logger?.ok("driver pane for diagnosis");
+                opts?.logger?.err("start stderr");
+                if (failure === "throw") throw new Error("socket unavailable");
+                return 7;
+              },
+            },
+          );
+        } catch (e) {
+          thrown = e;
+        }
+        if (failure === "throw") {
+          expect(thrown).toBeInstanceOf(Error);
+          expect((thrown as Error).message).toBe("socket unavailable");
+          expect(logs.join("\n")).not.toContain("cockpit ready");
+        } else {
+          expect(code).toBe(0);
+        }
+        const text = logs.join("\n");
+        expect(text).toContain(
+          `err:   ✗ demo: start failed (${failure === "exit" ? "exit 7" : "socket unavailable"})`,
+        );
+        expect(text).toContain("err:   ✗ demo: start stderr");
+        expect(text).toContain("log:     created session for diagnosis");
+        expect(text).toContain("log:     driver pane for diagnosis");
+        if (failure === "exit") expect(text).toContain("· cages: 1 failed (demo)");
+        else expect(text).not.toContain("· cages:");
+        expect(text).not.toContain("use --force-cycle to override");
+      }
     } finally {
       try {
         await fx.tmux.server.killServer();
@@ -2526,7 +2607,7 @@ describe("cockpitRebuild", () => {
       );
       expect(code).toBe(0);
       expect(startCalls).toBe(0); // alive cage skipped — start never fires
-      expect(logs.join("\n")).toContain("alive — skipped");
+      expect(logs.join("\n")).toContain("· cages: 1 alive (use --force-cycle to override)");
       // The pane survives the reconcile: still alive, session intact.
       expect(await cageAlive(fx.tmux)).toBe(true);
       const sessions = await fx.tmux.session.listSessions();
@@ -2548,7 +2629,18 @@ describe("cockpitRebuild", () => {
     const fx = await spinTmux("cockpit-force");
     let startArgs: ReadonlyArray<string> | undefined;
     try {
-      const { logger } = makeLogger();
+      await fx.tmux.session.newSession({
+        name: "demo",
+        detached: true,
+        windowName: "lead",
+        shellCommand: "node -e 'setInterval(()=>{},1000000)'",
+      });
+      const deadline = Date.now() + 5000;
+      while (!(await cageAlive(fx.tmux))) {
+        if (Date.now() > deadline) throw new Error("fixture cage never became alive");
+        await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      }
+      const { logger, logs } = makeLogger();
       await cockpitRebuild(
         {
           subverb: "reconcile",
@@ -2576,6 +2668,8 @@ describe("cockpitRebuild", () => {
         noLaunch: true,
         preflight: { skipDeps: false, nonInteractive: false, noPreflight: false },
       });
+      expect(logs.join("\n")).toContain("· cages: 1 restarted (demo)");
+      expect(logs.join("\n")).not.toContain("use --force-cycle to override");
     } finally {
       try {
         await fx.tmux.server.killServer();
@@ -4262,9 +4356,18 @@ describe("cockpitRebuild — parallel per-team phases", () => {
       // Cockpit session carries every viewer.
       const wins = (await fx.tmux.window.listWindows("parcockpit")).map((w) => w.name);
       for (const n of names) expect(wins).toContain(n);
-      // Terse phase-timing lines on stderr (via logger).
-      for (const p of ["phase 1 ", "phase 2 ", "phase 3 ", "phase 4.5 ", "phase 5 "]) {
-        expect(logs.some((l) => l.includes(p) && /\d+ms/.test(l))).toBe(true);
+      // ONE timing footer on stderr (via logger), not per-phase lines.
+      expect(logs.some((l) => /phase \d/.test(l))).toBe(false);
+      const footer = logs.find((l) => l.includes("⏱")) ?? "";
+      expect(footer).toMatch(/⏱ \d+\.\d+s — /);
+      for (const p of [
+        "normalise-team-json",
+        "cycle-cages",
+        "cage-prefix",
+        "group-servers",
+        "cockpit-session",
+      ]) {
+        expect(footer).toMatch(new RegExp(`${p} \\d+ms`));
       }
     } finally {
       try {
@@ -4396,7 +4499,9 @@ describe("cockpitAttach — ensure-up on/off (isolated)", () => {
       expect(code).toBe(0);
       expect(starts).toBe(1);
       expect(attached).toBe("=enscockpit");
-      expect(logs.some((l) => l.includes("phase 2 ") && /\d+ms/.test(l))).toBe(true);
+      expect(logs.some((l) => l.includes("⏱") && /cycle-cages \d+ms/.test(l))).toBe(true);
+      // Attach follows ensure-up immediately; a second attach hint is noise.
+      expect(logs.join("\n")).not.toContain("cockpit ready — attach:");
     } finally {
       try {
         await fx.tmux.server.killServer();
@@ -4567,7 +4672,7 @@ describe("cockpitAttach — ensure-up on/off (isolated)", () => {
       const names = (await fx.tmux.window.listWindows("enscockpit")).map((w) => w.name);
       expect(names).toContain("hand-opened");
       // Reconcile ran to completion (not refused by the destructive gate)…
-      expect(logs.some((l) => l.includes("phase 5 cockpit-session") && /\d+ms/.test(l))).toBe(true);
+      expect(logs.some((l) => l.includes("⏱") && /cockpit-session \d+ms/.test(l))).toBe(true);
       // …and never warned about a failed ensure-up.
       expect(logs.some((l) => l.includes("attach ensure-up failed"))).toBe(false);
     } finally {

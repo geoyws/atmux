@@ -7,58 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-+### ✨ Changed — cockpit reconcile output summarizes instead of flooding (aca/aco)
-+
-+**One line per fact, not per team.** The roster is a count (`cockpit: 49 teams · 4 group servers`), team.json reports `N checked` with only changed files named (dry-run previews `would change`), alive cages collapse to one skipped line, the TUI phase reports `N checked, M launched`, group windows report counts, and repeated dry-run ops collapse (`set-option -g prefix F3 (×49)`). Per-team lines now appear only when something happened.
-+
-+### ✨ Added — init --wizard bootstraps claude-accounts.json on first run (t-3f0c79c7)
-+
-+**First run writes ADR-243 defaults when the accounts file is absent.** The bootstrap serializes the built-in table and never overwrites an existing file (valid or malformed); `--json` reports `claudeAccounts: { path, kind }`. README gains a Configuring Claude accounts section.
-+
-+### ✨ Added — init --wizard gains --yes / --no-start / --json (t-c17184ad)
-+
-+**Agent and CI mode for first-run setup.** `--yes` takes every default without prompting (or `ATMUX_INSTALL_YES=1`), `--no-start` drops the post-init `atmux start` hint (or `ATMUX_INSTALL_NO_START=1`), and `--json` emits one machine-readable result object on stdout with human lines suppressed.
-+
-+### ✨ Added — init --wizard prints a branded header with numbered steps (t-f1a57aff)
-+
-+**The wizard shows its progress.** An ADR-200 §D5 header plus numbered Step N/5 lines; color degrades to plain text without a TTY, under `NO_COLOR`, or with `TERM=dumb`.
-+
-+### ✨ Added — init --wizard ends with a verification step (t-eb01402c)
-+
-+**The wizard proves the install before it finishes.** A doctor quiet-path probe (no shell-out) prints `verification: ship it`, lists warnings, or halts with a fix recipe; red verification returns exit 1, yellow stays exit 0.
-+
-+### ✨ Added — complaints list --sent-by-me shows cross-team filings (t-cce84151)
-+
-+**Audit what this team filed elsewhere.** The selector walks cockpit-registered team DBs read-only and surfaces rows with `origin_team` matching the filer; teams without a state.db are skipped, never created.
-+
-+### ✨ Added — complaints file --no-route files locally (t-31a7ffa3)
-+
-+**Opt out of ADR-150 routing explicitly.** The row inserts locally with a `routing disabled` stderr notice and an `extra.no_route` marker, so the residue probe stays silent on the intentional copy.
-+
-+### 🩺 Doctor — complaint-row-residue probe flags pre-routing rows (t-a1f9e37e)
-+
-+**Find complaints stranded by the routing change.** The probe walks cockpit-registered team DBs SELECT-only and raises a yellow row for complaints whose `target_team` differs from the owning team with no `--no-route` record. Silent for single-team operators and clean fleets.
-+
-+### ✨ Added — routed complaints file prints residency (t-8e840edd)
-+
-+**See where a routed complaint landed.** A `--target-team` filing prints `<id> <resident-atmuxDir>` on stdout; local filings keep the bare-id line.
-+
-+### 🩺 Doctor — migration-state-incomplete probe enforces ADR-169 lists (t-5ac8783c)
-+
-+**Doctor flags migrated JSON sources still present and unclassified state files.** The `migration-state-incomplete` probe scans `<atmuxDir>/state/*.json`: ADR-169 migrated sources still present go red with the owning `migrate-state --target=` in the hint, and so does any JSON that is neither a migrated source nor KEEP-AS-JSON. Silent on archived copies and KEEP-AS-JSON entries.
-+
+### Changed — quieter cockpit attach/reconcile output (t-7f310559)
+
+**Routine cage start messages are summarized, not repeated.** `aca` and `aco` report cage outcomes, existing cockpit windows, and one timing footer. Warnings and errors remain visible; a start exception prints buffered diagnostics and still aborts reconcile. The ready hint now names `atmux cockpit attach` instead of a bare `tmux attach` on the wrong socket. Dry-run still prints its planned operations and exact totals.
+
+### ✨ Changed — cockpit reconcile output summarizes instead of flooding (aca/aco)
+
+**One line per fact, not per team.** The roster is a count (`cockpit: 49 teams · 4 group servers`), team.json reports `N checked` with only changed files named (dry-run previews `would change`), alive cages collapse to one skipped line, the TUI phase reports `N checked, M launched`, group windows report counts, and repeated dry-run ops collapse (`set-option -g prefix F3 (×49)`). Per-team lines now appear only when something happened.
+
+### ✨ Added — init --wizard bootstraps claude-accounts.json on first run (t-3f0c79c7)
+
+**First run writes ADR-243 defaults when the accounts file is absent.** The bootstrap serializes the built-in table and never overwrites an existing file (valid or malformed); `--json` reports `claudeAccounts: { path, kind }`. README gains a Configuring Claude accounts section.
+
+### ✨ Added — init --wizard gains --yes / --no-start / --json (t-c17184ad)
+
+**Agent and CI mode for first-run setup.** `--yes` takes every default without prompting (or `ATMUX_INSTALL_YES=1`), `--no-start` drops the post-init `atmux start` hint (or `ATMUX_INSTALL_NO_START=1`), and `--json` emits one machine-readable result object on stdout with human lines suppressed.
+
+### ✨ Added — init --wizard prints a branded header with numbered steps (t-f1a57aff)
+
+**The wizard shows its progress.** An ADR-200 §D5 header plus numbered Step N/5 lines; color degrades to plain text without a TTY, under `NO_COLOR`, or with `TERM=dumb`.
+
+### ✨ Added — init --wizard ends with a verification step (t-eb01402c)
+
+**The wizard proves the install before it finishes.** A doctor quiet-path probe (no shell-out) prints `verification: ship it`, lists warnings, or halts with a fix recipe; red verification returns exit 1, yellow stays exit 0.
+
+### ✨ Added — complaints list --sent-by-me shows cross-team filings (t-cce84151)
+
+**Audit what this team filed elsewhere.** The selector walks cockpit-registered team DBs read-only and surfaces rows with `origin_team` matching the filer; teams without a state.db are skipped, never created.
+
+### ✨ Added — complaints file --no-route files locally (t-31a7ffa3)
+
+**Opt out of ADR-150 routing explicitly.** The row inserts locally with a `routing disabled` stderr notice and an `extra.no_route` marker, so the residue probe stays silent on the intentional copy.
+
+### 🩺 Doctor — complaint-row-residue probe flags pre-routing rows (t-a1f9e37e)
+
+**Find complaints stranded by the routing change.** The probe walks cockpit-registered team DBs SELECT-only and raises a yellow row for complaints whose `target_team` differs from the owning team with no `--no-route` record. Silent for single-team operators and clean fleets.
+
+### ✨ Added — routed complaints file prints residency (t-8e840edd)
+
+**See where a routed complaint landed.** A `--target-team` filing prints `<id> <resident-atmuxDir>` on stdout; local filings keep the bare-id line.
+
+### 🩺 Doctor — migration-state-incomplete probe enforces ADR-169 lists (t-5ac8783c)
+
+**Doctor flags migrated JSON sources still present and unclassified state files.** The `migration-state-incomplete` probe scans `<atmuxDir>/state/*.json`: ADR-169 migrated sources still present go red with the owning `migrate-state --target=` in the hint, and so does any JSON that is neither a migrated source nor KEEP-AS-JSON. Silent on archived copies and KEEP-AS-JSON entries.
+
 ### 🗄️ Changed — claude-accounts mapping moves to `~/.atmux/claude-accounts.json` ([ADR-243](docs/adr/243-runtime-configurable-claude-accounts.md), t-c2f75e13)
 
 **New claude accounts no longer require editing TS source + rebuilding atmux.** `src/abstractions/claude-account-wrapper.ts` now resolves the configDir → wrapper table from `~/.atmux/claude-accounts.json` (schema v1: `{ schemaVersion: 1, accounts: [{ configDir, wrapper }] }`, loaded once per process and cached) instead of a source-resident literal. File absent → the same 4 built-in entries as before (plus a one-time stderr notice); file present-but-malformed (bad JSON, unknown schemaVersion, duplicate configDir, missing field) → ConfigError refusal quoting the path. `resolveClaudeWrapper` + `knownClaudeConfigDirs` signatures are unchanged, and `atmux doctor` gains a `claude-accounts` row (yellow when absent, red when malformed, silent when valid).
 
-+### 🐛 Fixed — `atmux start` no longer deletes a non-socket legacy path (t-a1b998d9)
-+
-+**Stale legacy cleanup deletes only when the path IS a socket.** `removeStaleLegacySocket` lstats the legacy `/tmp/atmux-<team>/sock` path (never following symlinks) before removal: a regular file, directory, symlink, or any other non-socket node is refused with a one-line log naming the path and its kind, and never deleted.
-+
-+### 🐛 Fixed — nest ban no longer misfires on the cockpit home (t-a7f8e487)
-+
-+**An ancestor `.atmux/` counts as a team only when it carries `team.json`.** `detectTeamLocation` treated any existing ancestor `.atmux/` as a team, so every team under `$HOME` classified `nested` on hosts with a cockpit home (`~/.atmux` carries `cockpit.json` but no `team.json`) and `atmux start` / `up` / `init` refused without `--force-nest`. The check now walks each level requiring `<ancestor>/.atmux/team.json` — the same convention the doctor nested-state scanner uses — stepping over team.json-less dirs so a real ancestor team above a bare `.atmux/` is still detected.
-+
+### 🐛 Fixed — `atmux start` no longer deletes a non-socket legacy path (t-a1b998d9)
+
+**Stale legacy cleanup deletes only when the path IS a socket.** `removeStaleLegacySocket` lstats the legacy `/tmp/atmux-<team>/sock` path (never following symlinks) before removal: a regular file, directory, symlink, or any other non-socket node is refused with a one-line log naming the path and its kind, and never deleted.
+
+### 🐛 Fixed — nest ban no longer misfires on the cockpit home (t-a7f8e487)
+
+**An ancestor `.atmux/` counts as a team only when it carries `team.json`.** `detectTeamLocation` treated any existing ancestor `.atmux/` as a team, so every team under `$HOME` classified `nested` on hosts with a cockpit home (`~/.atmux` carries `cockpit.json` but no `team.json`) and `atmux start` / `up` / `init` refused without `--force-nest`. The check now walks each level requiring `<ancestor>/.atmux/team.json` — the same convention the doctor nested-state scanner uses — stepping over team.json-less dirs so a real ancestor team above a bare `.atmux/` is still detected.
+
 ### 📝 Docs — cockpit/runbook/README consistency sweep (t-48a06029)
 
 **Three stale-or-missing live-doc passages now agree with the ADRs they cite.** `docs/RUNBOOK-cockpit.md` no longer calls the opt-in `_blank` window upcoming — it is a shipped surface per [ADR-295](docs/adr/295-cockpit-blank-troubleshooting-window.md) — and it records the e-28 `atmux cockpit doctor` whole-cockpit diff verb as upcoming (proposed in [ADR-235](docs/adr/235-cockpit-verb-surface-rationalization.md), not folded into the shipped `reconcile --dry-run` preview per [ADR-300](docs/adr/300-cockpit-reconcile-dry-run.md)). `README.md` §🔑 now points at the [ADR-243](docs/adr/243-runtime-configurable-claude-accounts.md) `~/.atmux/claude-accounts.json` shape as pending, not yet shipped (the shipped account surfaces remain the built-in wrapper table + `wrappers` overrides and the [ADR-199](docs/adr/199-claude-account-pool-for-epic-team-spawning.md) pool selector). No runtime behaviour change.

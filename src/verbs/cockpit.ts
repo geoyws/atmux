@@ -1099,13 +1099,25 @@ export async function mapWithConcurrency<T, R>(
   return out;
 }
 
-/** Time one reconcile phase; logs a terse `phase <name>: <ms>ms` line
- *  to stderr (via the verb logger) so the next `aco` run shows where
- *  the wall-clock goes. */
-async function timedPhase<T>(logger: Logger, name: string, fn: () => Promise<T>): Promise<T> {
+/** One reconcile phase's wall-clock cost. Collected per-run in
+ *  `cockpitRebuild` (threaded explicitly — no module-global state,
+ *  since reconcile can run concurrently in tests) and printed as ONE
+ *  `⏱` footer after phase 5b. */
+interface PhaseTiming {
+  readonly name: string;
+  readonly ms: number;
+}
+
+/** Time one reconcile phase; records `{name, ms}` into `timings`.
+ *  Logs nothing — the footer owns the output. */
+async function timedPhase<T>(
+  timings: PhaseTiming[],
+  name: string,
+  fn: () => Promise<T>,
+): Promise<T> {
   const t0 = Date.now();
   const out = await fn();
-  logger.log(`  ⏱ phase ${name}: ${Date.now() - t0}ms`);
+  timings.push({ name, ms: Date.now() - t0 });
   return out;
 }
 
@@ -1150,21 +1162,28 @@ export async function cockpitRebuild(
         : ""),
   );
 
+  // Wall clock for the ONE ⏱ footer (printed after phase 5b): starts
+  // at the first phase. Early returns below print no footer.
+  const runStart = Date.now();
+  const phaseTimings: PhaseTiming[] = [];
+
   // Phase 1: normalise each team's team.json (bareWindowNames +
   // tuiCommands.claude). Per-team files are disjoint — parallelise.
   // Only changed files log a line; the phase ends with one summary.
   if (dryRun) {
     const wouldChange = (
-      await mapWithConcurrency(teams, COCKPIT_RECONCILE_CONCURRENCY, async (t) => {
-        try {
-          const current = await readJson(teamJsonPath(`${t.root}/.atmux`), Team);
-          return JSON.stringify(current) !== JSON.stringify(computeNormalisedTeamJson(current, t))
-            ? t.name
-            : null;
-        } catch {
-          return `${t.name} (unreadable)`;
-        }
-      })
+      await timedPhase(phaseTimings, "normalise-team-json", () =>
+        mapWithConcurrency(teams, COCKPIT_RECONCILE_CONCURRENCY, async (t) => {
+          try {
+            const current = await readJson(teamJsonPath(`${t.root}/.atmux`), Team);
+            return JSON.stringify(current) !== JSON.stringify(computeNormalisedTeamJson(current, t))
+              ? t.name
+              : null;
+          } catch {
+            return `${t.name} (unreadable)`;
+          }
+        }),
+      )
     ).filter((n): n is string => n !== null);
     logger.log(
       `  · team.json: ${teams.length} checked` +
@@ -1173,7 +1192,7 @@ export async function cockpitRebuild(
           : ` — ${wouldChange.length} would change: ${wouldChange.join(", ")} (dry-run)`),
     );
   } else {
-    const changed = await timedPhase(logger, "1 normalise-team-json", () =>
+    const changed = await timedPhase(phaseTimings, "normalise-team-json", () =>
       mapWithConcurrency(teams, COCKPIT_RECONCILE_CONCURRENCY, async (t) => {
         try {
           return (await normaliseTeamJson(t, logger)) ? t.name : null;
@@ -1200,8 +1219,15 @@ export async function cockpitRebuild(
   // and Phase 5's nest-attach retry-loops still run strictly after this
   // phase completes (socket-must-exist dependency).
   if (!parsed.noCycle) {
-    const cageOutcomes = await timedPhase(logger, "2 cycle-cages", () =>
-      mapWithConcurrency(teams, COCKPIT_RECONCILE_CONCURRENCY, async (t) => {
+    // Per-team outcome: success stays silent (one combined summary
+    // below replaces the per-team start lines); only failures print
+    // per-team lines.
+    interface CageOutcome {
+      readonly name: string;
+      readonly status: "skipped" | "started" | "restarted" | "failed" | "would-start";
+    }
+    const cageOutcomes = await timedPhase(phaseTimings, "cycle-cages", () =>
+      mapWithConcurrency(teams, COCKPIT_RECONCILE_CONCURRENCY, async (t): Promise<CageOutcome> => {
         const sock = await resolveCageSocket(t.name, t.root);
         const cageTmux = factory({ socketPath: sock, configFile: getAtmuxTmuxConfPath() });
         // e-419553c6 bare-name migration for LIVE cages. A live cage is
@@ -1218,7 +1244,7 @@ export async function cockpitRebuild(
           warn: (m) => logger.warn(`  ⚠ ${t.name}: ${m}`),
         });
         const alive = await cageAlive(cageTmux);
-        if (alive && !parsed.forceCycle) return "skipped";
+        if (alive && !parsed.forceCycle) return { name: t.name, status: "skipped" };
         // --dry-run: launching the cage (start) + creating its socket dir
         // are real side effects — preview only. The legacy-session rename
         // above already routes through the recording wrapper.
@@ -1244,14 +1270,10 @@ export async function cockpitRebuild(
             );
           } catch {
             // Best-effort: unreadable team.json / unreachable socket —
-            // the would-start line below is the whole preview.
+            // the cages summary below is the whole preview.
           }
-          logger.log(
-            `  · [dry-run] would start cage '${t.name}' (${alive ? "force-cycle" : "dead/empty"} — no launch executed)`,
-          );
-          return "starting";
+          return { name: t.name, status: "would-start" };
         }
-        logger.log(`  ▸ ${t.name} cage ${alive ? "force-cycle" : "dead/empty"} — start`);
         // Pre-create socket parent — tmux/atmux-bun don't auto-mkdir (the
         // failure that prompted ADR-063 in the first place).
         await ensureDir(dirname(sock));
@@ -1263,14 +1285,65 @@ export async function cockpitRebuild(
         delete teamEnv.ATMUX_SESSION;
         const startArgs = parsed.forceCycle ? ["--force", "--no-doctor"] : ["--no-doctor"];
         if (parsed.noLaunch) startArgs.push("--no-launch");
-        await startImpl(startArgs, { env: teamEnv, cwd: t.root, logger });
-        return "starting";
+        // Quiet start: a dead cage's `start` prints ~5 lines (session
+        // created, driver pane, prefix, a stale attach hint) — buffer
+        // log/ok, forward warn/err immediately prefixed with the team
+        // name so nothing is hidden. Success prints nothing per team;
+        // failure prints the buffered lines for diagnosis.
+        const buffered: string[] = [];
+        const teamLogger: Logger = {
+          log: (m) => {
+            buffered.push(m);
+          },
+          ok: (m) => {
+            buffered.push(m);
+          },
+          warn: (m) => logger.warn(`  ⚠ ${t.name}: ${m}`),
+          err: (m) => logger.err(`  ✗ ${t.name}: ${m}`),
+        };
+        let code: number;
+        try {
+          code = await startImpl(startArgs, { env: teamEnv, cwd: t.root, logger: teamLogger });
+        } catch (e) {
+          const cause = e instanceof Error ? e.message : String(e);
+          logger.err(`  ✗ ${t.name}: start failed (${cause})`);
+          for (const line of buffered) logger.log(`    ${line}`);
+          // A thrown start error aborted reconcile before output was quieted.
+          // Preserve that failure path; suppressing it would report 'ready'
+          // without having brought the cage up.
+          throw e;
+        }
+        if (code !== 0) {
+          logger.err(`  ✗ ${t.name}: start failed (exit ${code})`);
+          for (const line of buffered) logger.log(`    ${line}`);
+          return { name: t.name, status: "failed" };
+        }
+        return { name: t.name, status: alive ? "restarted" : "started" };
       }),
     );
-    const skipped = cageOutcomes.filter((o) => o === "skipped").length;
-    if (skipped > 0) {
-      logger.log(`  · cages: ${skipped} alive — skipped (use --force-cycle to override)`);
-    }
+    const skipped = cageOutcomes.filter((o) => o.status === "skipped").length;
+    const namesOf = (s: CageOutcome["status"]): string[] =>
+      cageOutcomes.filter((o) => o.status === s).map((o) => o.name);
+    const started = namesOf("started");
+    const restarted = namesOf("restarted");
+    const failed = namesOf("failed");
+    const wouldStart = namesOf("would-start");
+    // At most 8 names inline, then `+N more`. Zero parts are omitted.
+    const fmtNames = (ns: readonly string[]): string =>
+      ns.length <= 8 ? ns.join(", ") : `${ns.slice(0, 8).join(", ")} +${ns.length - 8} more`;
+    const parts: string[] = [];
+    if (skipped > 0) parts.push(`${skipped} alive`);
+    if (started.length > 0) parts.push(`${started.length} started (${fmtNames(started)})`);
+    if (restarted.length > 0) parts.push(`${restarted.length} restarted (${fmtNames(restarted)})`);
+    if (failed.length > 0) parts.push(`${failed.length} failed (${fmtNames(failed)})`);
+    if (wouldStart.length > 0)
+      parts.push(`${wouldStart.length} would start (${fmtNames(wouldStart)})`);
+    // The force-cycle hint stays only when some cages were skipped;
+    // dry-run marks the whole line instead.
+    logger.log(
+      `  · cages: ${parts.join(" · ")}` +
+        (dryRun ? " (dry-run)" : skipped > 0 ? " (use --force-cycle to override)" : ""),
+    );
   }
 
   // Phase 3: apply the level-resolved cage prefix on every enabled cage
@@ -1293,7 +1366,7 @@ export async function cockpitRebuild(
   // team under a top-level group resolves F3 (ADR-089 §Amendment
   // 2026-08-27, group-tier note as superseded 2026-08-28).
   // Per-cage prefix sets are independent tmux servers — parallelise.
-  await timedPhase(logger, "3 cage-prefix", () =>
+  await timedPhase(phaseTimings, "cage-prefix", () =>
     mapWithConcurrency(teams, COCKPIT_RECONCILE_CONCURRENCY, async (t) => {
       const sock = await resolveCageSocket(t.name, t.root);
       const cageTmux = factory({ socketPath: sock, configFile: getAtmuxTmuxConfPath() });
@@ -1317,7 +1390,7 @@ export async function cockpitRebuild(
   // Phase 4: TUI auto-launch (idempotent — skips panes already on claude).
   // Per-cage send-keys are independent servers — parallelise.
   if (!parsed.noLaunch) {
-    const tuiOutcomes = await timedPhase(logger, "4 tui-autolaunch", () =>
+    const tuiOutcomes = await timedPhase(phaseTimings, "tui-autolaunch", () =>
       mapWithConcurrency(teams, COCKPIT_RECONCILE_CONCURRENCY, async (t) => {
         const sock = await resolveCageSocket(t.name, t.root);
         const cageTmux = factory({ socketPath: sock, configFile: getAtmuxTmuxConfPath() });
@@ -1361,7 +1434,7 @@ export async function cockpitRebuild(
   // attach to live servers on first paint (the retry loop would cover a
   // late start, but first paint matters to the operator). Group servers
   // hold only attach clients — killing one can never touch a cage.
-  await timedPhase(logger, "4.5 group-servers", () =>
+  await timedPhase(phaseTimings, "group-servers", () =>
     reconcileGroupServers(factory, topology, logger, {
       // --dry-run never mutates, so the destructive-op gate is moot —
       // pass yes to keep the preview from refusing, warnings still log.
@@ -1389,7 +1462,7 @@ export async function cockpitRebuild(
   // canonically and migrates any legacy "superdoctor" window in-place
   // on first reconcile.
   const operatorWindows = cockpitOperatorWindows(cockpit, env, logger);
-  await timedPhase(logger, "5 cockpit-session", () =>
+  await timedPhase(phaseTimings, "cockpit-session", () =>
     reconcileCockpitSession(
       cockpitTmux,
       cockpit.cockpitSession,
@@ -1451,6 +1524,13 @@ export async function cockpitRebuild(
     await applyCagePrefix(cockpitTmux, cockpitPrefix);
   }
 
+  // ONE timing footer for the whole run (per-phase lines are gone):
+  // total = wall clock from the first phase start, one decimal.
+  {
+    const totalS = ((Date.now() - runStart) / 1000).toFixed(1);
+    const breakdown = phaseTimings.map((p) => `${p.name} ${p.ms}ms`).join(" · ");
+    logger.log(`  ⏱ ${totalS}s — ${breakdown}`);
+  }
   // --dry-run: print the recorded plan + exit 0. Nothing above executed
   // a mutation (team.json writes, cage starts, socket-dir creation, and
   // readiness probes were skipped; every tmux write was recorded, not
@@ -1469,7 +1549,10 @@ export async function cockpitRebuild(
   // `core/cron.ts` stays exported as a strip-only utility for legacy
   // cleanup paths but is no longer called from trunk.
 
-  logger.ok(`cockpit ready. attach: tmux attach -t ${cockpit.cockpitSession}`);
+  // The cockpit lives on its own socket — a bare `tmux attach` targets
+  // the wrong server. Point at the verb that knows the socket.
+  // aca/aco attach immediately after ensure-up, so omit a redundant hint.
+  if (parsed.skipOrphanPrune !== true) logger.ok("cockpit ready — attach: atmux cockpit attach");
   // ADR-077 + ADR-133: nudge the operator to start the medic loop
   // manually. Rebuild stays purely topological — auto-firing
   // `/loop /superdoctor` on every rebuild would either re-fire on
@@ -2516,9 +2599,11 @@ export async function reconcileCockpitSession(
 
   // Add missing operator-owned windows before team viewers. Existing panes
   // are preserved as-is; creation is the only time cwd/command are applied.
+  // Already-present windows collapse into ONE summary line after both loops.
+  let alreadyPresent = 0;
   for (const w of operatorWindows) {
     if (present.has(w.name)) {
-      logger.log(`  · window '${w.name}' already present`);
+      alreadyPresent += 1;
       continue;
     }
     await cockpitTmux.window.newWindow({
@@ -2551,7 +2636,7 @@ export async function reconcileCockpitSession(
   );
   for (const c of creations) {
     if (present.has(c.v.name)) {
-      logger.log(`  · window '${c.v.name}' already present`);
+      alreadyPresent += 1;
       continue;
     }
     if (!("mode" in c)) {
@@ -2575,6 +2660,11 @@ export async function reconcileCockpitSession(
       shellCommand: c.cmd,
     });
     logger.log(`  ✓ added window '${c.v.name}' (${c.mode})`);
+  }
+  if (alreadyPresent > 0) {
+    logger.log(
+      `  · cockpit: ${alreadyPresent} window${alreadyPresent === 1 ? "" : "s"} already present`,
+    );
   }
 
   // ADR-135 §D2 §Amendment (t-34fa0132): a child team's viewer window MUST
