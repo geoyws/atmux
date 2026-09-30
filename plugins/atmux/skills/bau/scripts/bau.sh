@@ -100,7 +100,10 @@ SCOPE_FALLBACK=""
 
 # (1) tmux cage socket — operator is explicitly inside a cage pane.
 if SOCKPATH=$(tmux display-message -p '#{socket_path}' 2>/dev/null); then
-  if [[ "$SOCKPATH" =~ /tmp/atmux-([^/]+)/sock$ ]]; then
+  # ADR-305 per-user socket first, then the pre-ADR-305 shared shape.
+  if [[ "$SOCKPATH" =~ ^/tmp/atmux-[0-9]+/([^/]+)/sock$ ]]; then
+    BAU_SCOPE="${BASH_REMATCH[1]}"
+  elif [[ "$SOCKPATH" =~ /tmp/atmux-([^/]+)/sock$ ]]; then
     BAU_SCOPE="${BASH_REMATCH[1]}"
   fi
 fi
@@ -235,15 +238,20 @@ collect_team() {
   local dir="$TMPDIR_BAU/$team"
   mkdir -p "$dir"
 
-  # Resolve cage socket — try both conventions:
-  #   1) legacy: /tmp/atmux-<team>/sock
-  #   2) current: <team-root>/.atmux/tmux/tmux-0/default
-  local sock=""
-  if [[ -S "/tmp/atmux-${team}/sock" ]]; then
-    sock="/tmp/atmux-${team}/sock"
-  elif [[ -S "${root}/.atmux/tmux/tmux-0/default" ]]; then
-    sock="${root}/.atmux/tmux/tmux-0/default"
-  fi
+  # Resolve cage socket — every convention, each only when the socket is
+  # owned by this uid (`-O`, ADR-305: never read another user's server):
+  #   1) per-user: /tmp/atmux-<uid>/<team>/sock (ADR-305)
+  #   2) legacy:   /tmp/atmux-<team>/sock (pre-ADR-305)
+  #   3) team-root: <team-root>/.atmux/tmux/tmux-<uid>/default
+  local sock="" uid cand
+  uid=$(id -u)
+  for cand in "/tmp/atmux-${uid}/${team}/sock" "/tmp/atmux-${team}/sock" \
+    "${root}/.atmux/tmux/tmux-${uid}/default"; do
+    if [[ -S "$cand" && -O "$cand" ]]; then
+      sock="$cand"
+      break
+    fi
+  done
   echo "$sock" > "$dir/sock_path.txt"
 
   cd "$root" 2>/dev/null || { echo "ROOT_MISSING" > "$dir/error.txt"; return; }
@@ -266,16 +274,19 @@ collect_team() {
   ( atmux task list --json 2>/dev/null > "$dir/tasks.json" || echo "[]" > "$dir/tasks.json" ) &
   ( atmux complaints list --status open --json 2>/dev/null > "$dir/complaints.json" || echo "[]" > "$dir/complaints.json" ) &
 
-  # tmux pane captures — one per window
+  # tmux pane captures — one per window. Every dial goes through
+  # `atmux socket-dial` (ADR-305 §D6): it re-checks the socket's whole
+  # directory chain before tmux runs, which the `-S`/`-O` selection above
+  # cannot (it follows symlinks and races a directory swap).
   if [[ -n "$sock" && -S "$sock" ]]; then
     local session
-    session=$(tmux -S "$sock" list-sessions -F '#{session_name}' 2>/dev/null | head -1)
+    session=$(atmux socket-dial "$sock" list-sessions -F '#{session_name}' 2>/dev/null | head -1)
     if [[ -n "$session" ]]; then
       echo "$session" > "$dir/session.txt"
-      tmux -S "$sock" list-windows -t "$session" -F '#{window_index}|#{window_name}' 2>/dev/null > "$dir/windows.txt"
+      atmux socket-dial "$sock" list-windows -t "$session" -F '#{window_index}|#{window_name}' 2>/dev/null > "$dir/windows.txt"
       while IFS='|' read -r w wname; do
         [[ -z "$w" ]] && continue
-        ( tmux -S "$sock" capture-pane -p -t "${session}:${w}" -S -30 2>/dev/null > "$dir/pane-${w}.txt" ) &
+        ( atmux socket-dial "$sock" capture-pane -p -t "${session}:${w}" -S -30 2>/dev/null > "$dir/pane-${w}.txt" ) &
       done < "$dir/windows.txt"
     fi
   fi

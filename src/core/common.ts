@@ -21,6 +21,7 @@ import { readJson, tryReadJson } from "../abstractions/json.ts";
 import { isDefaultMemberRole } from "../abstractions/member-roles.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import { Team, type Team as TeamShape } from "../schema/team.ts";
+import { resolveCageSocketPath, type SocketDirFs } from "./socket-dir.ts";
 
 // ---------- Path resolution (bash atmux::dir) ----------
 
@@ -882,30 +883,33 @@ export function classifyPaneState(state: string): PaneStateSnapshot {
 // both into this canonical helper so doctor + every future verb has
 // one import target.
 //
-// Returns the cage path `/tmp/atmux-<team>/sock`. Bash mirror: every
-// `tmux -S "$socket"` invocation in `lib/start.sh` / `lib/attach.sh`
-// uses the same convention.
-//
-// The richer Phase-2 resolver (env vars, team.json overrides, --socket
-// short-name vs path) is still pending per ADR-004 amend §Consequences;
-// when it lands, this signature stays compatible — the body just gains
-// fallback resolution.
+// ADR-305: the default cage socket is per-user and private —
+// `/tmp/atmux-<uid>/<team>/sock` (directory 0700). A pre-ADR-305
+// `/tmp/atmux-<team>/sock` is honoured only while that socket is ours
+// and sits in a private directory (`core/socket-dir.ts`). Bash mirror
+// (historical): `lib/start.sh` / `lib/attach.sh` used the shared
+// `/tmp/atmux-<team>/sock`, which any local user could reach.
 
-/** Bash cage-socket path: `/tmp/atmux-<team>/sock`. */
-export function getDefaultSocket(teamName: string): string {
-  return `/tmp/atmux-${teamName}/sock`;
-}
-
-/** Options for `resolveTeamSocket` — uid injection for tests. */
+/** Options for the socket resolvers — uid / fs injection for tests. */
 export interface ResolveTeamSocketOpts {
   /** Override `process.getuid()`. */
   uid?: number;
+  /** Filesystem seam for the ADR-305 legacy-compat probe. */
+  fs?: SocketDirFs;
+}
+
+/** Default cage socket for a team with no `tmuxTmpdir` (ADR-305):
+ *  `/tmp/atmux-<uid>/<team>/sock`, or the team's pre-ADR-305
+ *  `/tmp/atmux-<team>/sock` while that socket is ours in a private
+ *  directory. */
+export function getDefaultSocket(teamName: string, opts: ResolveTeamSocketOpts = {}): string {
+  return resolveCageSocketPath(teamName, opts);
 }
 
 /**
  * Resolve the live tmux socket for a team. Honors `team.tmuxTmpdir`
- * authoritatively when set; otherwise falls back to the canonical bun
- * cage path `/tmp/atmux-<team>/sock`.
+ * authoritatively when set; otherwise falls back to the per-user default
+ * cage socket ({@link getDefaultSocket}, ADR-305).
  *
  * When `team.tmuxTmpdir` is set, the socket lives at the standard tmux
  * short-name `default` shape: `<tmuxTmpdir>/tmux-<uid>/default`. This
@@ -915,7 +919,8 @@ export interface ResolveTeamSocketOpts {
  * pick was 2026-05-08 t-add5976a P1 (`atmux status` reported [down]
  * for live cage when team.json declared a project-local `.atmux/tmux`
  * tmpdir; canonical fallback is wrong when the team was started under
- * bash or a tmpdir-honoring start path).
+ * bash or a tmpdir-honoring start path). The `tmux-<uid>` leaf is the
+ * private directory ADR-305 creates 0700 and owner-checks.
  *
  * All sites (read AND write) MUST use this resolver to reach the actual
  * live socket. The pre-2026-05-13 carve-out for write verbs (send /
@@ -936,7 +941,7 @@ export function resolveTeamSocket(
     const uid = opts.uid ?? process.getuid?.() ?? 0;
     return join(tmpdir, `tmux-${uid}`, "default");
   }
-  return getDefaultSocket(team.name);
+  return getDefaultSocket(team.name, opts);
 }
 
 /** Caller-scope verdict — `driver` or `member`. Default is `member`

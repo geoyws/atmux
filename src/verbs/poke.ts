@@ -71,6 +71,7 @@ import { acquire as acquireLock, type LockHandle } from "../abstractions/lock.ts
 import { spawn } from "../abstractions/spawn.ts";
 import {
   createTmux,
+  defaultSocketGuard,
   exactSessionTarget,
   type SendTarget,
   serializeSendTarget,
@@ -874,8 +875,8 @@ export interface PokeOpts {
   /** Clock — defaults to `Date.now`. */
   now?: () => number;
   /** Pre-built tmux namespace. Defaults to `createTmux({ socketPath })`
-   *  using the cage path for the team (`/tmp/atmux-<team>/sock`). Tests
-   *  inject a fake. */
+   *  using the team's cage socket (`resolveTeamSocket`; ADR-305 per-user
+   *  `/tmp/atmux-<uid>/<team>/sock` by default). Tests inject a fake. */
   tmux?: TmuxNamespace;
   /** Discord sender override. Defaults to `discord.send`. Errors caught
    *  + warned, not re-thrown — same posture as report.ts. */
@@ -1715,6 +1716,20 @@ export async function sendCageBrief(handle: CageHandle, body: string): Promise<v
   // the socket flag — the creating argv must load the ADR-277 scrub.
   const confPath = getAtmuxTmuxConfPath();
   const tmuxArgv = (
+    rest: string[],
+  ): {
+    cmd: string;
+    argv: string[];
+    unsetEnv: ReadonlyArray<string>;
+  } => {
+    // ADR-305 §D2: the operator branch dials `-L <name>` itself, so it
+    // runs the connect-time guard right before each of its spawns (every
+    // `tmuxArgv` call directly precedes one). The sudo branch dials as
+    // the cage's own uid, which tmux's `-L` directory check covers.
+    if (isOperator) defaultSocketGuard({ socket: handle.tmuxSocket });
+    return tmuxArgvFor(rest);
+  };
+  const tmuxArgvFor = (
     rest: string[],
   ): {
     cmd: string;

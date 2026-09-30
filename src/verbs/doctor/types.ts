@@ -1,5 +1,9 @@
 import { spawn as defaultSpawn, type SpawnResult } from "../../abstractions/spawn.ts";
-import { TMUX_CHILD_UNSET_ENV } from "../../abstractions/tmux.ts";
+import {
+  defaultSocketGuard,
+  type SocketConfig,
+  TMUX_CHILD_UNSET_ENV,
+} from "../../abstractions/tmux.ts";
 import { resolveTmuxBin } from "../../core/resolve-tmux-bin.ts";
 
 // ---------- Row + report shape ----------
@@ -47,7 +51,39 @@ export function truncateEvidence(s: string, n: number): string {
 /** Spawn override for the tmux probes. Test-injection point. */
 export type TmuxSpawn = (argv: ReadonlyArray<string>) => Promise<SpawnResult>;
 
-export const defaultTmuxSpawn: TmuxSpawn = (argv) =>
+/**
+ * ADR-305 §D2: every doctor probe that names a socket (`-S <path>` or
+ * `-L <name>` as its first flag) runs the connect-time guard IMMEDIATELY
+ * before that spawn — a missing `/tmp/atmux-<uid>` is created first and
+ * any unsafe component refuses (the guard throws, the probe skips). A
+ * probe never reuses an earlier check: an inspect-only check treats a
+ * missing directory as safe, and another uid can rename a directory it
+ * squatted back in between that check and the dial.
+ */
+export function guardTmuxArgv(
+  argv: ReadonlyArray<string>,
+  guard: (config: SocketConfig) => void = defaultSocketGuard,
+): void {
+  const value = argv[1];
+  if (value === undefined) return;
+  if (argv[0] === "-S") guard({ socketPath: value });
+  else if (argv[0] === "-L") guard({ socket: value });
+}
+
+/** Wrap a raw tmux spawn so every socket-naming argv is guarded first. */
+export function createGuardedTmuxSpawn(
+  spawnImpl: TmuxSpawn,
+  guard: (config: SocketConfig) => void = defaultSocketGuard,
+): TmuxSpawn {
+  return async (argv) => {
+    guardTmuxArgv(argv, guard);
+    return spawnImpl(argv);
+  };
+}
+
+/** The unguarded spawn under {@link defaultTmuxSpawn}; never exported, so
+ *  no doctor probe can dial a socket without the guard. */
+const rawTmuxSpawn: TmuxSpawn = (argv) =>
   defaultSpawn({
     cmd: resolveTmuxBin(),
     argv,
@@ -59,3 +95,6 @@ export const defaultTmuxSpawn: TmuxSpawn = (argv) =>
     // frozen. Same child-env policy as `abstractions/tmux.ts`.
     unsetEnv: TMUX_CHILD_UNSET_ENV,
   });
+
+/** Doctor's tmux spawn: {@link rawTmuxSpawn} behind {@link guardTmuxArgv}. */
+export const defaultTmuxSpawn: TmuxSpawn = createGuardedTmuxSpawn(rawTmuxSpawn);

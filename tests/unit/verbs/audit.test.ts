@@ -622,7 +622,10 @@ describe("buildTmuxConfig", () => {
 
   test("non-string tmuxTmpdir → falls through to default cage path", () => {
     const cfg = buildTmuxConfig({ name: "demo", tmuxTmpdir: 0 as unknown });
-    expect((cfg as { socketPath: string }).socketPath).toBe("/tmp/atmux-demo/sock");
+    // ADR-305 per-user default cage path.
+    expect((cfg as { socketPath: string }).socketPath).toBe(
+      `/tmp/atmux-${process.getuid?.() ?? 0}/demo/sock`,
+    );
   });
 });
 

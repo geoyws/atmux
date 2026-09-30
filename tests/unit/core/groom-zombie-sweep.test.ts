@@ -44,7 +44,8 @@ async function makeFixtureDir(
   opts: { ageMs: number; sock?: "direct" | "tmux-uid" | "none" } = { ageMs: 0 },
 ): Promise<string> {
   const dir = join(env.fakeTmp, name);
-  await mkdir(dir, { recursive: true });
+  // ADR-305: the sweep reaps only a directory that is ours alone (0700).
+  await mkdir(dir, { recursive: true, mode: 0o700 });
   const sock = opts.sock ?? "direct";
   if (sock === "direct") {
     await writeFile(join(dir, "sock"), "");
@@ -115,6 +116,36 @@ describe("sweepZombieTmuxSockets", () => {
     expect(r.removed).toBe(0);
     expect(env.killCalls).toEqual([]);
     expect(await stat(dir).catch(() => null)).not.toBeNull();
+  });
+
+  test("never sweeps an ADR-305 per-user socket root (/tmp/atmux-<uid>) or the cages inside it", async () => {
+    // The per-user root is ONE `atmux-<uid>` entry with no second hyphen,
+    // so the fixture pattern cannot match it — a `/tmp/atmux-<uid>-<team>`
+    // scheme would have matched and had its live servers killed.
+    for (const uid of ["0", "501", "1000"]) {
+      const root = await makeFixtureDir(`atmux-${uid}`, {
+        ageMs: SIX_HOURS_MS + 1000,
+        sock: "none",
+      });
+      await mkdir(join(root, "px"), { recursive: true });
+      await writeFile(join(root, "px", "sock"), "");
+      await mkdir(join(root, "grp-unum"), { recursive: true });
+      await writeFile(join(root, "grp-unum", "sock"), "");
+    }
+
+    const r = await sweepZombieTmuxSockets({
+      tmpDir: env.fakeTmp,
+      nowMs: RUN_MS,
+      killServer: stubKill(env),
+    });
+
+    expect(r.scanned).toBe(0);
+    expect(env.killCalls).toEqual([]);
+    for (const uid of ["0", "501", "1000"]) {
+      expect(
+        await stat(join(env.fakeTmp, `atmux-${uid}`, "px", "sock")).catch(() => null),
+      ).not.toBeNull();
+    }
   });
 
   test("still sweeps atmux-start-sock-* fixtures (t-05dadc44 control)", async () => {
@@ -311,6 +342,84 @@ describe("sweepZombieTmuxSockets", () => {
     expect(await stat(dir).catch(() => null)).toBeNull();
   });
 
+  test("ADR-305: another uid's directory is never killed through or removed", async () => {
+    const dir = await makeFixtureDir("atmux-e2e-foreign-AbCdEf", { ageMs: SIX_HOURS_MS + 1000 });
+    const notMe = (process.getuid?.() ?? 0) + 4242;
+    const r = await sweepZombieTmuxSockets({
+      tmpDir: env.fakeTmp,
+      nowMs: RUN_MS,
+      killServer: stubKill(env),
+      uid: notMe,
+    });
+    expect(r.scanned).toBe(1);
+    expect(r.killed).toBe(0);
+    expect(r.removed).toBe(0);
+    expect(env.killCalls).toEqual([]);
+    expect(r.errors).toHaveLength(1);
+    expect(r.errors[0]?.path).toBe(dir);
+    // The walk names the first directory on the way that is not notMe's
+    // alone: the fixture itself, or the scratch root when that sits in
+    // the shared /tmp as an `atmux-*` entry.
+    expect(r.errors[0]?.message).toMatch(
+      new RegExp(
+        ` is owned by uid ${process.getuid?.() ?? 0}, not uid ${notMe} — left alone \\(ADR-305\\)$`,
+      ),
+    );
+    expect((await stat(dir)).isDirectory()).toBe(true);
+  });
+
+  test("ADR-305: a directory of ours with group/other bits is never killed through or removed", async () => {
+    const dir = await makeFixtureDir("atmux-e2e-wide-AbCdEf", { ageMs: SIX_HOURS_MS + 1000 });
+    await chmod(dir, 0o755);
+    const old = new Date(RUN_MS - (SIX_HOURS_MS + 1000));
+    await utimes(dir, old, old);
+    const r = await sweepZombieTmuxSockets({
+      tmpDir: env.fakeTmp,
+      nowMs: RUN_MS,
+      killServer: stubKill(env),
+    });
+    expect(r.removed).toBe(0);
+    expect(env.killCalls).toEqual([]);
+    expect(r.errors).toEqual([
+      {
+        path: dir,
+        message: `${dir} has mode 0755 (group or world bits set) — left alone (ADR-305)`,
+      },
+    ]);
+    expect((await stat(dir)).isDirectory()).toBe(true);
+  });
+
+  test("ADR-305: a directory swapped after the check is left alone by the removal's own walk", async () => {
+    const dir = await makeFixtureDir("atmux-e2e-swap-AbCdEf", { ageMs: SIX_HOURS_MS + 1000 });
+    const r = await sweepZombieTmuxSockets({
+      tmpDir: env.fakeTmp,
+      nowMs: RUN_MS,
+      // The kill runs between the check and the removal: widen it there.
+      killServer: async () => {
+        await chmod(dir, 0o777);
+      },
+    });
+    expect(r.removed).toBe(0);
+    expect(r.errors).toEqual([
+      {
+        path: dir,
+        message: `${dir} has mode 0777 (group or world bits set) — left alone (ADR-305)`,
+      },
+    ]);
+    expect((await stat(dir)).isDirectory()).toBe(true);
+  });
+
+  test("ADR-305: no POSIX uid → the ownership check is off", async () => {
+    await makeFixtureDir("atmux-e2e-nouid-AbCdEf", { ageMs: SIX_HOURS_MS + 1000 });
+    const r = await sweepZombieTmuxSockets({
+      tmpDir: env.fakeTmp,
+      nowMs: RUN_MS,
+      killServer: stubKill(env),
+      uid: null,
+    });
+    expect(r.removed).toBe(1);
+  });
+
   test("missing tmpDir returns clean empty result (cold-start safety)", async () => {
     const r = await sweepZombieTmuxSockets({
       tmpDir: join(env.fakeTmp, "does-not-exist"),
@@ -489,6 +598,9 @@ describe("sweepZombieTmuxSockets", () => {
     // import that burned the vox seam test. No subprocess runs.
     const killCalls: string[] = [];
     const realTmux = await import("../../../src/abstractions/tmux.ts");
+    // Captured BEFORE mocking: the namespace object is a live binding, so
+    // `realTmux.createTmux` reads the mock once `mock.module` runs.
+    const realCreateTmux = realTmux.createTmux;
     const mockCreateTmux = (opts: { socketPath: string }) => ({
       server: {
         killServer: async () => {
@@ -505,6 +617,14 @@ describe("sweepZombieTmuxSockets", () => {
       expect(killCalls).toEqual([join(env.fakeTmp, "some-sock")]);
     } finally {
       mock.restore();
+      // `mock.restore()` does not undo `mock.module` in Bun: without this
+      // re-registration every later test file in the same `bun test`
+      // process gets the killServer-only stub as `createTmux`
+      // ("tmux.session is undefined").
+      mock.module("../../../src/abstractions/tmux.ts", () => ({
+        ...realTmux,
+        createTmux: realCreateTmux,
+      }));
     }
   });
 });

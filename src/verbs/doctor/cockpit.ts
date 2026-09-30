@@ -604,6 +604,9 @@ export async function checkLegacyWindowNameFormat(
         return null;
       }
     });
+  // A cheap pre-filter only. The SAFETY check is the ADR-305 guard that
+  // the default `tmux` spawn runs right before the `-S` dial below: an
+  // unsafe socket throws there and the team is skipped.
   const socketExistsFn = opts.socketExists ?? exists;
 
   // Build the probe target set: cockpit teams (when loadable) ∪ currentTeam.
@@ -681,7 +684,7 @@ export async function checkLegacyWindowNameFormat(
           status: "yellow",
           label: "legacy-window-name-format",
           detail: `${team.name} cage: window '${legacyName}' should be '${canonical}' (default-member role '${m.role}')`,
-          hint: `tmux -S ${socket} rename-window -t ${sessionName}:${legacyName} ${canonical}`,
+          hint: `atmux socket-dial ${socket} rename-window -t ${sessionName}:${legacyName} ${canonical}`,
         });
       }
     }

@@ -41,6 +41,12 @@ import { createTmux } from "../abstractions/tmux.ts";
 import { Kanban } from "../schema/kanban.ts";
 import { hasLiveChildCages } from "./cage-children.ts";
 import { kanbanJsonPath, archiveDir as resolveArchiveDir } from "./common.ts";
+import {
+  currentUid,
+  privateDirIssue,
+  removePrivateTree,
+  UnsafeSocketPathError,
+} from "./socket-dir.ts";
 import { getAtmuxTmuxConfPath } from "./tmux-paths.ts";
 
 // ---------- Shared time helpers ----------
@@ -997,6 +1003,9 @@ export interface SweepZombieSocketsOpts {
    *  under `<dir>` is live ⇒ the sweep SKIPS removing that parent dir
    *  (no kill, no rm) and bumps `skippedLiveChildren`. */
   hasLiveChildren?: (parentTmpdir: string) => Promise<boolean>;
+  /** ADR-305 seam: the uid whose directories the sweep may touch.
+   *  Default `process.getuid()`; `null` (no POSIX uid) disables the check. */
+  uid?: number | null;
 }
 
 /** Fixture-shape regex: trailing `-…` is the mkdtemp random suffix
@@ -1021,6 +1030,7 @@ export async function sweepZombieTmuxSockets(
   const dryRun = opts.dryRun === true;
   const killServer = opts.killServer ?? defaultKillServer;
   const hasLiveChildren = opts.hasLiveChildren ?? hasLiveChildCages;
+  const ownUid = opts.uid === undefined ? currentUid() : opts.uid;
 
   const result: ZombieSweepResult = {
     scanned: 0,
@@ -1043,6 +1053,23 @@ export async function sweepZombieTmuxSockets(
     if (now - st.mtimeMs < minAgeMs) continue;
 
     result.scanned += 1;
+
+    // ADR-305: a directory that is not ours alone — another uid's, one
+    // with group/other bits, one behind a chain another uid can rewrite —
+    // is never killed through or removed: it is not ours to reap, or
+    // another uid may have planted what lies inside. The descriptor walk
+    // (`privateDirIssue`) decides; the removal below re-walks it and runs
+    // relative to the held parent (ADR-305 revision 4).
+    if (ownUid !== null) {
+      const issue = privateDirIssue(full, { uid: ownUid });
+      if (issue !== null) {
+        result.errors.push({
+          path: full,
+          message: `${issue.path} ${issue.detail} — left alone (ADR-305)`,
+        });
+        continue;
+      }
+    }
 
     // ADR-252 (t-65bec10b) — structural live-child-cage guard, generalised
     // past epic-teams by ADR-280 stage 3. BEFORE any kill/rm, refuse to
@@ -1099,10 +1126,15 @@ export async function sweepZombieTmuxSockets(
     if (attemptedKill) result.killed += 1;
 
     try {
-      await rm(full, { recursive: true, force: true });
+      if (ownUid === null) await rm(full, { recursive: true, force: true });
+      else removePrivateTree(full, { uid: ownUid });
       result.removed += 1;
     } catch (e) {
-      result.errors.push({ path: full, message: errMsg(e) });
+      const message =
+        e instanceof UnsafeSocketPathError
+          ? `${e.issue.path} ${e.issue.detail} — left alone (ADR-305)`
+          : errMsg(e);
+      result.errors.push({ path: full, message });
     }
   }
 

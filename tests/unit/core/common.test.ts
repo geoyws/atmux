@@ -56,7 +56,9 @@ import {
   tryLoadTeam,
   type WindowShimOps,
 } from "../../../src/core/common.ts";
+import type { SocketDirFs } from "../../../src/core/socket-dir.ts";
 import { ConfigError, SchemaError, UsageError } from "../../../src/errors.ts";
+import { dir as fakeDir, sock as fakeSock, fakeSocketFs } from "../../helpers/fake-socket-fs.ts";
 
 let dir: string;
 
@@ -896,11 +898,59 @@ describe("classifyPaneState", () => {
   });
 });
 
-describe("getDefaultSocket (R-2 lift from verbs/start.ts)", () => {
-  test("returns /tmp/atmux-<team>/sock — bash cage convention", () => {
-    expect(getDefaultSocket("atmux")).toBe("/tmp/atmux-atmux/sock");
-    expect(getDefaultSocket("unum")).toBe("/tmp/atmux-unum/sock");
-    expect(getDefaultSocket("ifca_aux")).toBe("/tmp/atmux-ifca_aux/sock");
+/** A resolver must never create anything. */
+function noCreate(fs: SocketDirFs): SocketDirFs {
+  const refuse = (): never => {
+    throw new Error("resolver must not create");
+  };
+  return { ...fs, mkdirAt: refuse, mkdirp: refuse };
+}
+
+/** Hermetic ADR-305 fs seam: only `/` and `/tmp` exist. */
+const NO_FS: SocketDirFs = noCreate(fakeSocketFs());
+
+/** fs seam holding one pre-ADR-305 socket (and its dir) owned by `uid`. */
+function legacyFs(team: string, uid: number, dirMode: number): SocketDirFs {
+  return noCreate(
+    fakeSocketFs({
+      [`/tmp/atmux-${team}`]: fakeDir(uid, dirMode),
+      [`/tmp/atmux-${team}/sock`]: fakeSock(uid),
+    }),
+  );
+}
+
+describe("getDefaultSocket (ADR-305 per-user default; R-2 lift from verbs/start.ts)", () => {
+  test("returns /tmp/atmux-<uid>/<team>/sock — per-user, not the shared bash-era path", () => {
+    expect(getDefaultSocket("atmux", { uid: 0, fs: NO_FS })).toBe("/tmp/atmux-0/atmux/sock");
+    expect(getDefaultSocket("unum", { uid: 1000, fs: NO_FS })).toBe("/tmp/atmux-1000/unum/sock");
+    expect(getDefaultSocket("ifca_aux", { uid: 501, fs: NO_FS })).toBe(
+      "/tmp/atmux-501/ifca_aux/sock",
+    );
+  });
+
+  test("two uids never share a default socket for the same team", () => {
+    expect(getDefaultSocket("px", { uid: 0, fs: NO_FS })).not.toBe(
+      getDefaultSocket("px", { uid: 1000, fs: NO_FS }),
+    );
+  });
+
+  test("a private pre-ADR-305 socket of ours is still honoured (live cage keeps working)", () => {
+    expect(getDefaultSocket("px", { uid: 0, fs: legacyFs("px", 0, 0o700) })).toBe(
+      "/tmp/atmux-px/sock",
+    );
+    // …but not when its directory is shared, and never for another uid.
+    expect(getDefaultSocket("px", { uid: 0, fs: legacyFs("px", 0, 0o777) })).toBe(
+      "/tmp/atmux-0/px/sock",
+    );
+    expect(getDefaultSocket("px", { uid: 1000, fs: legacyFs("px", 0, 0o700) })).toBe(
+      "/tmp/atmux-1000/px/sock",
+    );
+  });
+
+  test("default opts resolve under this process's own uid", () => {
+    const uid = process.getuid?.() ?? 0;
+    const team = `gds-${process.pid}`;
+    expect(getDefaultSocket(team)).toBe(`/tmp/atmux-${uid}/${team}/sock`);
   });
 });
 
@@ -926,13 +976,18 @@ describe("resolveTeamSocket (t-add5976a — read-side tmuxTmpdir honour)", () =>
     expect(got).toBe("/root/work/src/atmux/.atmux/tmux/tmux-0/default");
   });
 
-  test("tmuxTmpdir unset → canonical /tmp/atmux-<team>/sock fallback", () => {
-    expect(resolveTeamSocket({ name: "atmux" }, { uid: 0 })).toBe("/tmp/atmux-atmux/sock");
+  test("tmuxTmpdir unset → ADR-305 per-user /tmp/atmux-<uid>/<team>/sock fallback", () => {
+    expect(resolveTeamSocket({ name: "atmux" }, { uid: 0, fs: NO_FS })).toBe(
+      "/tmp/atmux-0/atmux/sock",
+    );
+    expect(resolveTeamSocket({ name: "atmux" }, { uid: 1000, fs: NO_FS })).toBe(
+      "/tmp/atmux-1000/atmux/sock",
+    );
   });
 
-  test("tmuxTmpdir empty string → canonical fallback (treats '' as unset)", () => {
-    expect(resolveTeamSocket({ name: "atmux", tmuxTmpdir: "" }, { uid: 0 })).toBe(
-      "/tmp/atmux-atmux/sock",
+  test("tmuxTmpdir empty string → per-user fallback (treats '' as unset)", () => {
+    expect(resolveTeamSocket({ name: "atmux", tmuxTmpdir: "" }, { uid: 0, fs: NO_FS })).toBe(
+      "/tmp/atmux-0/atmux/sock",
     );
   });
 

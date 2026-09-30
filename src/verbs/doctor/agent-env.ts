@@ -104,7 +104,10 @@ export function findAgentEnvMarkers(
  *  global environment. New panes are clean at once; running panes keep
  *  their own environment, which is why the text says so. */
 export function agentEnvRemedy(socket: string, names: ReadonlyArray<string>): string {
-  const cmds = names.map((n) => `tmux -S ${socket} set-environment -g -u ${n}`).join("; ");
+  // ADR-305 §D6: the operator's copy-paste dials through the guard too.
+  const cmds = names
+    .map((n) => `atmux socket-dial ${socket} set-environment -g -u ${n}`)
+    .join("; ");
   return `${cmds} — panes already running keep the old environment until their processes restart`;
 }
 
@@ -192,7 +195,9 @@ export async function discoverAtmuxServerSockets(
 export interface CheckAgentShellEnvOpts extends DiscoverAtmuxServerSocketsOpts {
   /** tmux spawn override. */
   tmux?: TmuxSpawn;
-  /** `[ -S <path> ]` override — true only for an existing socket file. */
+  /** `[ -S <path> ]` override — true only for an existing socket file.
+   *  A cheap pre-filter only: the SAFETY check is the ADR-305 guard that
+   *  the default `tmux` spawn runs right before each dial. */
   isSocket?: (path: string) => Promise<boolean>;
   /** Probe exactly these sockets instead of discovering them. */
   sockets?: ReadonlyArray<AtmuxServerSocket>;
@@ -229,6 +234,8 @@ export async function checkAgentShellEnv(
   const rows: DoctorRow[] = [];
   for (const { socket, owner } of sockets) {
     if (!(await isSocket(socket))) continue;
+    // ADR-305: each dial below is guarded by `defaultTmuxSpawn` right
+    // before it spawns; an unsafe socket throws there and is skipped.
     let shown: SpawnResult;
     try {
       const alive = await tmux(["-S", socket, "has-session"]);

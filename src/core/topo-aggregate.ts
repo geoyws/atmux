@@ -36,6 +36,7 @@
 
 import { join } from "node:path";
 import type { LoadedCockpit } from "./cockpit.ts";
+import { resolveCageSocketPath } from "./socket-dir.ts";
 
 // ---------- Manifest types (the §D2 public --json contract) ----------
 
@@ -204,7 +205,8 @@ export interface CockpitDiscovery {
 }
 
 export interface GlobalDiscovery {
-  /** Alive cage tmux sockets enumerated from `/tmp/atmux-<name>/`,
+  /** Alive cage tmux sockets enumerated from `/tmp/atmux-<uid>/<name>/`
+   *  (ADR-305) and pre-ADR-305 `/tmp/atmux-<name>/`,
    *  regardless of registry. Class 1 consumes this. */
   sockets_alive: TmuxSocketEntry[];
   /** Marker-fenced cron blocks. null per §D5 row 4 on crontab read
@@ -254,7 +256,8 @@ export interface EpicDiscovery {
 
 export interface TmuxSocketEntry {
   socket: string;
-  /** Team name parsed from `/tmp/atmux-<parent>/...`. */
+  /** Team name parsed from `/tmp/atmux-<uid>/<parent>/...` or
+   *  pre-ADR-305 `/tmp/atmux-<parent>/...`. */
   parent: string;
   /** Epic id when socket is an epic-team cage; null for a parent. */
   eid: string | null;
@@ -325,7 +328,8 @@ export interface DiscoveryIO {
   gitAheadCount(repoPath: string, base: string, branch: string): Promise<number | null>;
   /** True iff `branch` is merged into `base`. null per §D5 row 5. */
   gitMergedInto(repoPath: string, base: string, branch: string): Promise<boolean | null>;
-  /** Walk `/tmp/atmux-<name>/` for alive cage sockets. Pre-filtered alive. */
+  /** Walk `/tmp/atmux-<uid>/<name>/` + pre-ADR-305 `/tmp/atmux-<name>/`
+   *  for alive cage sockets owned by this uid. Pre-filtered alive. */
   listAliveCageSockets(): Promise<TmuxSocketEntry[]>;
   /** Parse `crontab -l` into marker-fenced blocks. Each carries pre-
    *  resolved `atmux_dir_exists`. null per §D5 row 4 on crontab fail. */
@@ -345,8 +349,10 @@ export interface DiscoveryIO {
 
 // ---------- Path computation (per ADR-162 socket convention) ----------
 
+/** ADR-305 default cage socket: per-user `/tmp/atmux-<uid>/<team>/sock`,
+ *  or a private pre-ADR-305 `/tmp/atmux-<team>/sock` still in use. */
 export function cageSocketForTeam(teamName: string): string {
-  return `/tmp/atmux-${teamName}/sock`;
+  return resolveCageSocketPath(teamName);
 }
 
 export function cageSocketForEpic(parentName: string, eid: string): string {

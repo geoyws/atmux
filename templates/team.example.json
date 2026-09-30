@@ -1,7 +1,7 @@
 {
   "name": "my-team",
   "description": "atmux team — edit this to match your project",
-  "tmuxTmpdir": "/tmp/atmux-tmux_my-team",
+  "_comment_tmuxTmpdir": "ADR-305: leave tmuxTmpdir unset — the team then runs its own tmux server on the per-user private socket /tmp/atmux-<uid>/<team>/sock. If you set it, point it at a directory you (or root) own that no other user can write; a /tmp/atmux-* directory must be yours and 0700.",
   "_comment_singleSession": "Default false (2026-04-30 reversal of ADR-026) — cage isolation per ADR-018 is the safe path; singleSession opts out of it on the daily-driver socket and reintroduces the side-channel pollution class (cage-prefix leak, cross-socket spawn, partial-rename mess). Launcher sessions (atmux_<team> created by atmux doctor --fix) preserve the at-a-glance benefit while keeping isolation. Set true ONLY for non-human-driven teams or detached observer setups (declared escape hatch).",
   "singleSession": false,
   "_comment_superdriver": "ADR-296: per-team superdriver seat at cage window 1, before the drivers. Orchestration-only (runs /sync-drivers from the repo root; no worktree, no branch — cwd is pinned to the repo root). Absent block == enabled with defaults; {\"enabled\": false} opts out. null tui starts zsh like nullable drivers.",

@@ -14,7 +14,7 @@
 // (state.txt) can be inspected before/after without touching /tmp.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
@@ -661,6 +661,44 @@ describe("applyRepair", () => {
       expect(await dirExists(oldTmpdir)).toBe(true);
     } finally {
       await rm(newTmpdir, { recursive: true, force: true });
+    }
+  });
+
+  test("step 1 (ADR-305 rev 4): a symlinked old tmpdir is refused — the link and its target stay put", async () => {
+    const oldTmpdir = `/tmp/atmux_tmux_repair_test_${Date.now()}_link`;
+    fixture = await buildFixture({ teamName: "new", oldTmpdir });
+    const target = await mkdtemp(join(tmpdir(), "atmux-repair-link-target-"));
+    await symlink(target, oldTmpdir);
+    const newTmpdir = "/tmp/atmux_tmux_new";
+    try {
+      const { factory } = buildStubFactory({});
+      const snap: DriftSnapshot = {
+        oldTmpdir,
+        newTmpdir,
+        oldSess: null,
+        staleWindows: [],
+        oldStateContent: null,
+        cageAlive: false,
+      };
+      const flags: DriftFlags = {
+        needsTmpdirMv: true,
+        needsSessionRename: false,
+        needsWindowRename: false,
+        needsStateSync: false,
+      };
+      const result = await applyRepair(fixture.atmuxDir, "new", snap, flags, {
+        tmux: factory("/x"),
+        buildTmuxAtSocket: factory,
+        stderr: () => true,
+      });
+      expect(result.appliedSteps).toEqual([]);
+      expect(result.reason).toContain("is not a real directory");
+      expect((await lstat(oldTmpdir)).isSymbolicLink()).toBe(true);
+      expect(await dirExists(target)).toBe(true);
+      expect(await dirExists(newTmpdir)).toBe(false);
+    } finally {
+      await rm(oldTmpdir, { force: true });
+      await rm(target, { recursive: true, force: true });
     }
   });
 

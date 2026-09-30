@@ -68,7 +68,8 @@ beforeAll(async () => {
   // probe doesn't touch the real `atmux-cockpit` socket.
   sessionName = `atmux_cockpit_no_sentinel_${stamp}`;
   socketDir = `/tmp/atmux-no-sentinel-${stamp}`;
-  await mkdir(socketDir, { recursive: true });
+  // ADR-305: a private (0700) socket dir, or the createTmux guard refuses it.
+  await mkdir(socketDir, { recursive: true, mode: 0o700 });
   socketPath = join(socketDir, "sock");
   cockpitTmux = createTmux({ socketPath });
 

@@ -89,6 +89,7 @@ import {
 import { checkDeprecatedMemberWindows, checkTeamInsideTeam } from "./doctor/nesting.ts";
 import { checkCursorPluginCache, checkSkillsPlugin } from "./doctor/plugins.ts";
 import { renderHuman, renderJson } from "./doctor/render.ts";
+import { checkSocketDirs, unlessUnsafeSocket } from "./doctor/socket-dir.ts";
 import {
   checkLegacyInboxJson,
   checkPhantomInboxes,
@@ -216,6 +217,12 @@ export async function runAllChecks(
   const rows: DoctorRow[] = [];
   rows.push(...checkDeps());
   rows.push(...(await checkTeam(atmuxDir)));
+  // ADR-305: per-user private socket directories. Red when the team's
+  // cage socket (or the cockpit's tmux-<uid> dir) is shared / foreign /
+  // symlinked — the createTmux guard refuses it, so the cage probes
+  // below run inside `unlessUnsafeSocket` and stay silent instead of
+  // aborting the run. The green row carries the SOCKET_DIR_FEATURE marker.
+  rows.push(...checkSocketDirs(team));
   if (team !== null) {
     rows.push(...checkTuis(team));
     // e-48 follow-up (t-e25770ff): cockpit.json registry threaded —
@@ -269,12 +276,12 @@ export async function runAllChecks(
   // above (that one scans member inProgress via loadInbox; this scans
   // the live kanban). Cage-only — singleSession teams short-circuit in
   // check itself.
-  rows.push(...(await checkPhantomInProgressClaims(atmuxDir, team)));
+  rows.push(...(await unlessUnsafeSocket(() => checkPhantomInProgressClaims(atmuxDir, team))));
   // Cursor-plugin-cache parity — only fires when cursor-agent is
   // installed AND there's at least one directory-source marketplace
   // plugin missing its `~/.claude/plugins/cache/<m>/<p>/<v>` entry.
   rows.push(...(await checkCursorPluginCache()));
-  rows.push(...(await checkOrphanSessions(team)));
+  rows.push(...(await unlessUnsafeSocket(() => checkOrphanSessions(team))));
   // ADR-054 §D4: surface whip-config drift so the operator doesn't
   // need to wait for the next whip tick to learn about it.
   rows.push(...(await checkWhipConfigDrift(atmuxDir)));
@@ -283,11 +290,11 @@ export async function runAllChecks(
   // ADR-057 §D5c: inbox-mark verification (P3 finding per orphan id).
   rows.push(...(await checkInboxMarks(atmuxDir)));
   // ADR-064 §4: driver-pane health (no row when team unconfigured).
-  rows.push(...(await checkDriverPaneState(team, atmuxDir)));
+  rows.push(...(await unlessUnsafeSocket(() => checkDriverPaneState(team, atmuxDir))));
   // ADR-081 §D: per-member cage-state — surface `starving` panes whose
   // brief never landed, and `down` panes where claude isn't running.
   // Silent on a healthy team (active members emit no row).
-  rows.push(...(await checkMemberCageStates(team, atmuxDir)));
+  rows.push(...(await unlessUnsafeSocket(() => checkMemberCageStates(team, atmuxDir))));
   // ADR-079 §A: cron interval values must be divisors of 60 (minutes)
   // or 24 (hours). Yellow per offender; surfaces before atmux start.
   rows.push(...checkCronIntervalDivisors(team));
@@ -359,7 +366,7 @@ export async function runAllChecks(
   //   load (§D4 depth, invalid prefixChain, schema mismatch) is one red
   //   `cockpit.json` row from checkTeamInsideTeam, never swallowed.
   rows.push(...(await checkTeamInsideTeam()));
-  rows.push(...(await checkDeprecatedMemberWindows(team)));
+  rows.push(...(await unlessUnsafeSocket(() => checkDeprecatedMemberWindows(team))));
   // ADR-294: live cockpit / group / cage servers whose global env was
   // frozen from an agent shell (AGENT, CI, NO_COLOR, EDITOR=true, …).
   // Warn class; names only, never values; never creates a server.

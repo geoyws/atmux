@@ -49,7 +49,6 @@
 // running TUIs in panes don't notice. New `tmux -S <new-path>`
 // connections succeed; old paths fail (caller updates state files).
 
-import { rename } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { atomicWrite, exists, readTextOrNull } from "../abstractions/fs.ts";
 import { createTmux, type TmuxNamespace } from "../abstractions/tmux.ts";
@@ -63,6 +62,7 @@ import {
   teamJsonPath,
 } from "../core/common.ts";
 import { defaultStderrWrite, defaultStdoutWrite, type Writer } from "../core/io.ts";
+import { renameOwnedDir } from "../core/socket-dir.ts";
 import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
 import { ConfigError, UsageError } from "../errors.ts";
 import { Team } from "../schema/team.ts";
@@ -388,7 +388,7 @@ export async function applyRepair(
         switch (op.kind) {
           case "tmpdir":
             if ((await exists(op.current)) && !(await exists(op.old))) {
-              await rename(op.current, op.old);
+              renameOwnedDir(op.current, op.old, { uid });
             }
             break;
           case "session": {
@@ -424,7 +424,9 @@ export async function applyRepair(
       };
     }
     try {
-      await rename(snap.oldTmpdir, snap.newTmpdir);
+      // ADR-305 rev 4: renameat relative to held parent descriptors, only
+      // a directory of ours, only between parents no other uid can rewrite.
+      renameOwnedDir(snap.oldTmpdir, snap.newTmpdir, { uid });
       ops.push({ kind: "tmpdir", old: snap.oldTmpdir, current: snap.newTmpdir });
       appliedSteps.push(1);
     } catch (e) {

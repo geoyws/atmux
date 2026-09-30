@@ -16,6 +16,7 @@
 
 import { dirname } from "node:path";
 import { resolveCageSessionName } from "./cockpit.ts";
+import { resolveCageSocketPath } from "./socket-dir.ts";
 
 /** A resolved cage tmux handle: both halves needed to target a cage's
  *  tmux server — the session NAME (`tmux ... -t <sessionName>`) and the
@@ -26,8 +27,8 @@ export interface CageSession {
    *  prefixed forms). */
   sessionName: string;
   /** `<team.tmuxTmpdir>/sock` when the team pins a per-team tmux tmpdir
-   *  (sopx / unum / atmux dogfood); otherwise the legacy
-   *  `/tmp/atmux-<team>/sock`. */
+   *  (sopx / unum / atmux dogfood); otherwise the per-user default cage
+   *  socket (ADR-305, `core/socket-dir.ts::resolveCageSocketPath`). */
   socketPath: string;
 }
 
@@ -42,10 +43,10 @@ export interface CageSession {
  *
  *  Socket path derives from the TEAM, never from the session name
  *  (e-419553c6 decoupled them: session names dropped the `atmux-`
- *  prefix but socket paths KEEP it — the dotfiles prefix chain and
- *  /tmp namespacing depend on `/tmp/atmux-<team>/…`):
+ *  prefix but socket paths KEEP it, under the ADR-305 per-user root):
  *    - `team.tmuxTmpdir` set → `<tmuxTmpdir>/sock`
- *    - else → legacy `/tmp/atmux-<team.name>/sock` (matches
+ *    - else → `/tmp/atmux-<uid>/<team.name>/sock`, or a private
+ *      pre-ADR-305 `/tmp/atmux-<team.name>/sock` (matches
  *      `common.ts::getDefaultSocket` / `cockpit.ts::cageSocketPath` —
  *      the pre-e-419553c6 session-name-derived form was a drift from
  *      both and had no production caller).
@@ -64,6 +65,6 @@ export async function resolveCageSession(
   const socketPath =
     team.tmuxTmpdir !== undefined && team.tmuxTmpdir.length > 0
       ? `${team.tmuxTmpdir}/sock`
-      : `/tmp/atmux-${team.name}/sock`;
+      : resolveCageSocketPath(team.name);
   return { sessionName, socketPath };
 }

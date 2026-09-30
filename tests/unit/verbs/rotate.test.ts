@@ -1182,7 +1182,8 @@ describe("rotate() — public verb", () => {
       bootClaude: FAST_BOOT_CLAUDE,
     });
     expect(exit).toBe(0);
-    expect(receivedSock).toBe("/tmp/atmux-team-default/sock");
+    // ADR-305: the per-user default, never the shared bash-era path.
+    expect(receivedSock).toBe(`/tmp/atmux-${process.getuid?.() ?? 0}/team-default/sock`);
   });
 
   test("default stdout/stderr/sleep paths exercised when opts omitted", async () => {

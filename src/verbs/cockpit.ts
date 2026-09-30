@@ -21,7 +21,8 @@
 //      + tmux send-keys (skip with --no-launch)
 //   4.5 (e-419553c6 true containment) reconcile GROUP servers — one
 //      tmux server per enabled `type: "group"` (socket
-//      `/tmp/atmux-grp-<group>/sock`, session named after the group,
+//      `/tmp/atmux-<uid>/grp-<group>/sock` per ADR-305, directory 0700;
+//      pre-ADR-305 `/tmp/atmux-grp-<group>/sock`), session named after the group,
 //      prefix F2), one viewer window per child team/group running the
 //      same attach retry-loop the cockpit uses
 //   5. reconcile cockpit session (default `atx` per ADR-264) on
@@ -39,9 +40,7 @@
 // the script and let the proper bun path become the runtime.
 
 import { homedir } from "node:os";
-import { dirname } from "node:path";
 import { type CrontabIO, defaultCrontabIO } from "../abstractions/crontab.ts";
-import { ensureDir } from "../abstractions/fs.ts";
 import { readJson, updateJson } from "../abstractions/json.ts";
 import {
   createTmux,
@@ -79,6 +78,16 @@ import {
   type PaneReadinessResult,
 } from "../core/pane-readiness.ts";
 import { migrateLegacySessionName } from "../core/session-migrate.ts";
+import {
+  currentUid,
+  ensurePrivateSocketDir,
+  legacyGroupSocketPath,
+  type SettleSocketDeps,
+  type SocketDirOpts,
+  settleSocketForCreate,
+  userCageSocketPath,
+  userGroupSocketPath,
+} from "../core/socket-dir.ts";
 import { previewStartRepairs } from "../core/start-repairs.ts";
 import { resolveSuperdriver } from "../core/superdriver.ts";
 import { createDryRunTmux, type DryRunOp, printDryRunPlan } from "../core/tmux-dry-run.ts";
@@ -90,6 +99,7 @@ import type { CockpitMedic, CockpitTeam, CockpitWindow } from "../schema/cockpit
 import { Team } from "../schema/team.ts";
 import { attachWithTmux } from "./attach.ts";
 import { cockpitRotate } from "./cockpit-rotate.ts";
+import { socketDialCommand } from "./socket-dial.ts";
 import { start } from "./start.ts";
 
 // ---------- ADR-064 §3: per-team driverSession resolution ----------
@@ -109,11 +119,12 @@ export interface ResolveTeamWindowDeps {
   /** Override `loadTeam` for tests. Default reads `<root>/.atmux/team.json`. */
   loadTeam?: (opts: { teamDir: string }) => Promise<Team>;
   /** ADR-063 follow-up (t-31bef86e): override the socket resolver.
-   *  Default probes both legacy `/tmp/atmux-<team>/sock` AND per-team
-   *  `<root>/.atmux/tmux/tmux-<uid>/default` via
+   *  Default probes both the default cage socket (ADR-305 per-user
+   *  `/tmp/atmux-<uid>/<team>/sock`, or a private pre-ADR-305 path) AND
+   *  per-team `<root>/.atmux/tmux/tmux-<uid>/default` via
    *  `core/cockpit::resolveCageSocket`, returning whichever exists
-   *  (legacy-first for back-compat, falls through to legacy when neither
-   *  exists). Tests inject a constant returning a known path to assert
+   *  (default-first for back-compat, falls through to the default when
+   *  neither exists). Tests inject a constant returning a known path to assert
    *  which socket the cage factory is built against. Supersedes the
    *  prior single-socket `resolveTeamSocket(teamShape)` path from
    *  t-b5864443 — see ADR-063 follow-up commit 3cab619. */
@@ -228,8 +239,9 @@ export function defaultCageTmuxFactory(socketPath: string): TmuxNamespace {
  *
  *   - `"attach"` — dual-socket retry-loop attaching `<session>:driver`
  *     so the cockpit operator lands on the team's driver pane on focus
- *     (OQ4 default). Tries legacy `/tmp/atmux-<team>/sock` first then
- *     per-team `<root>/.atmux/tmux/tmux-<uid>/default` so cage flips
+ *     (OQ4 default). Tries the default cage socket (ADR-305 per-user
+ *     `/tmp/atmux-<uid>/<team>/sock`, or a private pre-ADR-305 path) first
+ *     then per-team `<root>/.atmux/tmux/tmux-<uid>/default` so cage flips
  *     between conventions self-recover (ADR-063 follow-up t-31bef86e).
  *   - `"session-down"` — print a one-shot "not running" status THEN
  *     the same dual-socket retry-loop so the window self-heals once
@@ -265,15 +277,20 @@ export async function buildTeamWindowCommand(
 }
 
 /** Dual-socket attach retry-loop shared by the `attach` and `session-down`
- *  modes. Tries the legacy `/tmp/atmux-<team>/sock` first (back-compat),
- *  falls through to the per-team `<root>/.atmux/tmux/tmux-<uid>/default`
+ *  modes. Tries the default cage socket first (ADR-305: the resolved
+ *  path, then the per-user `/tmp/atmux-<uid>/<team>/sock` when those
+ *  differ), falls through to the per-team `<root>/.atmux/tmux/tmux-<uid>/default`
  *  (current convention) inside ONE shell iteration, then sleeps 1s.
  *  Targets `<session>:driver` per OQ4. Session name MUST be pre-resolved
  *  via `resolveCageSessionName(team)` so anchor-bearing teams (whose
  *  state/session.txt names a non-default session) attach to the actual
  *  session `start.ts` created, not the underscore-form guess. */
 function cageRetryLoop(team: CockpitTeam, session: string): string {
-  const legacy = cageSocketPath(team.name);
+  // ADR-305: the default socket resolves to the per-user path, or to a
+  // pre-ADR-305 path of ours with a passing chain while one is in use;
+  // the per-user path is always tried too, so a cage that migrates on
+  // restart is re-found.
+  const sockets = socketCandidates(cageSocketPath(team.name), userCageSocketPathOrNull(team.name));
   const perTeam = perTeamCageSocketPath(team.root);
   // `=`-anchored session portion: bare session names (e-419553c6)
   // prefix-collide, and an attach that lands on a sibling cage would be
@@ -284,23 +301,38 @@ function cageRetryLoop(team: CockpitTeam, session: string): string {
   // macOS (proven live 2026-08-27 — the unquoted form dies within
   // seconds, the quoted form survives).
   //
-  // `[ -S <sock> ] &&` guards (e-419553c6, proven on macOS 2026-08-28):
-  // when the socket's parent DIRECTORY doesn't exist, tmux prints
-  // "error creating <sock> (No such file or directory)" and exits **0**
-  // (homebrew tmux on macOS), so a bare `dialA || dialB` never reaches
-  // dialB — the per-team-convention fallback was silently dead for any
-  // team without a legacy /tmp/atmux-<team>/ dir. Guarding each dial on
-  // socket existence restores the fallback and keeps the original
-  // semantics: a clean detach from the first dial (exit 0) still skips
-  // the second, a missing/stale first socket falls through.
+  // Every dial goes through `atmux socket-dial` (ADR-305 §D2): it walks
+  // the socket's whole directory chain with descriptors and runs tmux
+  // only when no other uid can re-point any component; it exits 1
+  // (nothing to dial) or 78 (unsafe) WITHOUT running tmux. That keeps
+  // the e-419553c6 fallback alive — when the socket's parent DIRECTORY
+  // doesn't exist, homebrew tmux prints "error creating <sock>" and
+  // exits **0**, so an unguarded `dialA || dialB` never reached dialB —
+  // while a clean detach from the first dial (exit 0) still skips the
+  // rest. A shell `[ -S s ] && [ -O s ]` test is NOT enough: it follows
+  // symlinks and checks only the socket node, so another uid who can
+  // rename a directory on the way swaps the path between test and dial.
   const target = `'${exactSessionTarget(session)}:driver'`;
-  return (
-    `while true; do ` +
-    `{ [ -S ${legacy} ] && tmux -S ${legacy} attach -t ${target} 2>/dev/null; } ` +
-    `|| { [ -S ${perTeam} ] && tmux -S ${perTeam} attach -t ${target} 2>/dev/null; }; ` +
-    `sleep 1; ` +
-    `done`
-  );
+  const dials = [...sockets, perTeam].map((s) => socketDialCommand(s, `attach -t ${target}`));
+  return `while true; do ${dials.join(" || ")}; sleep 1; done`;
+}
+
+/** Ordered, de-duplicated socket candidates: the resolved path first,
+ *  then the per-user path when it differs (ADR-305 §D3). */
+function socketCandidates(resolved: string, userPath: string | null): string[] {
+  return userPath === null || userPath === resolved ? [resolved] : [resolved, userPath];
+}
+
+/** Per-user cage socket for the current uid; `null` without a POSIX uid. */
+function userCageSocketPathOrNull(teamName: string): string | null {
+  const uid = currentUid();
+  return uid === null ? null : userCageSocketPath(teamName, uid);
+}
+
+/** Per-user group socket for the current uid; `null` without a POSIX uid. */
+function userGroupSocketPathOrNull(groupName: string): string | null {
+  const uid = currentUid();
+  return uid === null ? null : userGroupSocketPath(groupName, uid);
 }
 
 /** Shell-quote-safe single-message placeholder. The single-quote
@@ -318,16 +350,58 @@ function shellPlaceholder(msg: string): string {
 
 /** Attach retry-loop for a GROUP server — the command a group's viewer
  *  window runs (in the cockpit session for a top-level group; in the
- *  parent group's server for a nested one). Single socket — groups have
- *  exactly one convention ({@link groupSocketPath}), unlike the
- *  dual-convention team cages `cageRetryLoop` covers. Targets the bare
- *  session (no `:driver` — a group session's active window is whichever
- *  child the operator last used). `=`-anchored + single-quoted for the
- *  same zsh `=cmd`-expansion reason documented on `cageRetryLoop`. */
+ *  parent group's server for a nested one). Groups have one convention
+ *  ({@link groupSocketPath}); since ADR-305 that resolves to the per-user
+ *  `/tmp/atmux-<uid>/grp-<group>/sock` (or a private pre-ADR-305 path
+ *  while one is in use), and the per-user path is always tried too.
+ *  Each dial goes through `atmux socket-dial` (whole-chain check, see
+ *  `cageRetryLoop`). Targets the bare session (no `:driver` — a
+ *  group session's active window is whichever child the operator last
+ *  used). `=`-anchored + single-quoted for the same zsh `=cmd`-expansion
+ *  reason documented on `cageRetryLoop`. */
 export function buildGroupWindowCommand(groupName: string): string {
-  const sock = groupSocketPath(groupName);
+  const sockets = socketCandidates(
+    groupSocketPath(groupName),
+    userGroupSocketPathOrNull(groupName),
+  );
   const target = `'${exactSessionTarget(groupName)}'`;
-  return `while true; do tmux -S ${sock} attach -t ${target} 2>/dev/null; sleep 1; done`;
+  const dials = sockets.map((s) => socketDialCommand(s, `attach -t ${target}`));
+  return `while true; do ${dials.join(" || ")}; sleep 1; done`;
+}
+
+/** `uid` / `fs` subset of the socket-dir seams, spread-safe under
+ *  `exactOptionalPropertyTypes`. */
+function socketDirOpts(deps: SettleSocketDeps): SocketDirOpts {
+  return {
+    ...(deps.uid !== undefined ? { uid: deps.uid } : {}),
+    ...(deps.fs !== undefined ? { fs: deps.fs } : {}),
+  };
+}
+
+/**
+ * ADR-305 create-time settlement for a group server's socket: resolve it
+ * ({@link groupSocketPath}), move a dead private pre-ADR-305 socket to the
+ * per-user path, refuse a live one in a shared directory, then create the
+ * socket directory 0700 (owner-checked). Returns the socket to bind.
+ */
+export async function ensurePrivateGroupSocket(
+  groupName: string,
+  logger: Pick<Logger, "log">,
+  deps: SettleSocketDeps = {},
+): Promise<string> {
+  const dirOpts = socketDirOpts(deps);
+  let sock = groupSocketPath(groupName, dirOpts);
+  const uid = deps.uid === undefined ? currentUid() : deps.uid;
+  if (uid !== null) {
+    sock = await settleSocketForCreate(
+      sock,
+      userGroupSocketPath(groupName, uid),
+      legacyGroupSocketPath(groupName),
+      { log: (m: string) => logger.log(`  ${m}`), ...deps },
+    );
+  }
+  ensurePrivateSocketDir(sock, dirOpts);
+  return sock;
 }
 
 /** Options for {@link reconcileGroupServers}. */
@@ -356,6 +430,9 @@ export interface ReconcileGroupServersOpts {
    *  guard here — the caller's factory routes them through the recording
    *  wrapper. */
   dryRun?: boolean;
+  /** ADR-305: seams for the private socket-directory step (uid / fs /
+   *  liveness / removal). Default = live filesystem + real probes. */
+  socketDirDeps?: SettleSocketDeps;
 }
 
 /** One planned viewer window inside a group server. */
@@ -531,10 +608,10 @@ export async function reconcileGroupServers(
       logger.log(`  · group '${group.name}' has no enabled children — skipping its server`);
       return;
     }
-    const sock = groupSocketPath(group.name);
-    if (opts.dryRun !== true) {
-      await ensureDir(dirname(sock));
-    }
+    const sock =
+      opts.dryRun === true
+        ? groupSocketPath(group.name)
+        : await ensurePrivateGroupSocket(group.name, logger, opts.socketDirDeps ?? {});
     const gTmux = factory({ socketPath: sock, configFile: getAtmuxTmuxConfPath() });
     const first = wanted[0] as GroupWantedWindow;
     if (!(await gTmux.session.hasSession(exactSessionTarget(group.name)))) {
@@ -1275,8 +1352,9 @@ export async function cockpitRebuild(
           return { name: t.name, status: "would-start" };
         }
         // Pre-create socket parent — tmux/atmux-bun don't auto-mkdir (the
-        // failure that prompted ADR-063 in the first place).
-        await ensureDir(dirname(sock));
+        // failure that prompted ADR-063 in the first place). ADR-305: 0700,
+        // owner-checked; a foreign-owned or shared directory is refused.
+        ensurePrivateSocketDir(sock);
         // Run start in-process. Use a per-team env that doesn't pin
         // ATMUX_DIR (would override the per-team cwd-walk).
         const teamEnv: NodeJS.ProcessEnv = { ...env };

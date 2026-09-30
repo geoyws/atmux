@@ -1,9 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { chmodSync } from "node:fs";
 import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { UnsafeSocketPathError } from "../../../src/core/socket-dir.ts";
 import { UsageError } from "../../../src/errors.ts";
-import { type ReaperResult, testReaper } from "../../../src/verbs/test-reaper.ts";
+import {
+  type ReaperResult,
+  type TestReaperDeps,
+  testReaper,
+} from "../../../src/verbs/test-reaper.ts";
 
 const NOW = 10_000;
 const DEAD_PID = 900_001;
@@ -214,7 +220,7 @@ describe("test-reaper", () => {
     const root = await mkdtemp(join(tmpdir(), "atmux-test-reaper-"));
     roots.push(root);
     const socketDir = join(root, "fixture-real-old");
-    await mkdir(socketDir);
+    await mkdir(socketDir, { mode: 0o700 });
     const socket = join(socketDir, "sock");
     const env = { ...process.env };
     delete env.TMUX;
@@ -289,6 +295,132 @@ describe("test-reaper kill-target containment (ADR-301 D1)", () => {
   });
 });
 
+describe("test-reaper ADR-305 ownership (review of a9f96ac2, item 2)", () => {
+  async function root(): Promise<string> {
+    const r = await mkdtemp(join(tmpdir(), "atmux-test-reaper-305-"));
+    roots.push(r);
+    return r;
+  }
+
+  function run(
+    tmpDir: string,
+    argv: string[],
+    extra: TestReaperDeps = {},
+  ): Promise<{ statuses: Record<string, string>; warnings: string }> {
+    const out: string[] = [];
+    const err: string[] = [];
+    return testReaper(["--prefix", "fixture", "--json", ...argv], {
+      tmpDir,
+      nowSeconds: () => NOW,
+      parentIsDead: () => true,
+      stdout: (t) => {
+        out.push(t);
+      },
+      stderr: (t) => {
+        err.push(t);
+      },
+      ...extra,
+    }).then(() => ({
+      statuses: statusesByBasename(
+        (JSON.parse(out.join("")) as { results: ReaperResult[] }).results,
+      ),
+      warnings: err.join(""),
+    }));
+  }
+
+  test("a shared (0755) fixture dir is unsafe-skipped — in a dry run and for real — and left alone", async () => {
+    const r = await root();
+    const dir = await fixture(r, "fixture-shared-old", DEAD_PID, NOW - 2_000);
+    chmodSync(dir, 0o755);
+    const killed: string[] = [];
+    const deps = { killServer: (s: string) => void killed.push(s) };
+    const dry = await run(r, ["--dry-run"], deps);
+    expect(dry.statuses).toEqual({ "fixture-shared-old": "unsafe-skipped" });
+    const real = await run(r, [], deps);
+    expect(real.statuses).toEqual({ "fixture-shared-old": "unsafe-skipped" });
+    expect(real.warnings).toContain(`fixture-shared-old: unsafe-skipped (${dir} has mode 0755`);
+    expect(killed).toEqual([]);
+    expect(await pathExists(dir)).toBe(true);
+  });
+
+  test("a `sock` symlink in our own private dir is unsafe-skipped", async () => {
+    const r = await root();
+    const dir = await fixture(r, "fixture-link-old", DEAD_PID, NOW - 2_000);
+    await symlink(join(r, "elsewhere"), join(dir, "sock"));
+    const killed: string[] = [];
+    const res = await run(r, [], { killServer: (s: string) => void killed.push(s) });
+    expect(res.statuses).toEqual({ "fixture-link-old": "unsafe-skipped" });
+    expect(res.warnings).toContain(`${join(dir, "sock")} is a symlink`);
+    expect(killed).toEqual([]);
+    expect(await pathExists(dir)).toBe(true);
+  });
+
+  test("a guard refusal at kill time (a swap after the check) is unsafe-skipped, nothing removed", async () => {
+    const r = await root();
+    const dir = await fixture(r, "fixture-swap-old", DEAD_PID, NOW - 2_000);
+    const removed: string[] = [];
+    const res = await run(r, [], {
+      killServer: (s: string) => {
+        throw new UnsafeSocketPathError(s, {
+          path: dir,
+          problem: "foreign-owner",
+          detail: "is owned by uid 4242, not uid 0",
+          hint: "x",
+        });
+      },
+      removeDir: (d: string) => void removed.push(d),
+    });
+    expect(res.statuses).toEqual({ "fixture-swap-old": "unsafe-skipped" });
+    expect(res.warnings).toContain("is owned by uid 4242");
+    expect(removed).toEqual([]);
+  });
+
+  test("the default removal re-checks the directory right before it runs", async () => {
+    const r = await root();
+    const dir = await fixture(r, "fixture-late-old", DEAD_PID, NOW - 2_000);
+    // The dir turns shared between the check and the removal.
+    const res = await run(r, [], { killServer: () => chmodSync(dir, 0o777) });
+    expect(res.statuses).toEqual({ "fixture-late-old": "unsafe-skipped" });
+    expect(await pathExists(dir)).toBe(true);
+  });
+
+  test("an unsafe-skipped warning reaches the default stderr", async () => {
+    const r = await root();
+    const dir = await fixture(r, "fixture-stderr-old", DEAD_PID, NOW - 2_000);
+    chmodSync(dir, 0o777);
+    const writes: string[] = [];
+    const orig = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((s: string) => {
+      writes.push(String(s));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      await testReaper(["--prefix", "fixture", "--dry-run"], {
+        tmpDir: r,
+        nowSeconds: () => NOW,
+        parentIsDead: () => true,
+        stdout: () => {},
+      });
+    } finally {
+      process.stderr.write = orig;
+    }
+    expect(writes.join("")).toContain("fixture-stderr-old: unsafe-skipped");
+  });
+
+  test("any other kill error still propagates", async () => {
+    const r = await root();
+    await fixture(r, "fixture-boom-old", DEAD_PID, NOW - 2_000);
+    const boom = new Error("boom");
+    await expect(
+      run(r, [], {
+        killServer: () => {
+          throw boom;
+        },
+      }),
+    ).rejects.toBe(boom);
+  });
+});
+
 describe("test-reaper argument errors", () => {
   test.each([
     [["--max-age-min", "-1"], "--max-age-min requires a non-negative number"],
@@ -347,7 +479,8 @@ async function fixture(
   createdAt: number,
 ): Promise<string> {
   const socketDir = join(root, name);
-  await mkdir(socketDir);
+  // ADR-305: spinTmux socket dirs are mkdtemp'd, i.e. 0700 and ours.
+  await mkdir(socketDir, { mode: 0o700 });
   await writeFile(
     join(socketDir, ".leak-tracker.json"),
     JSON.stringify({

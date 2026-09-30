@@ -9,7 +9,7 @@
 
 import { describe, expect, test } from "bun:test";
 import pkg from "../../../package.json" with { type: "json" };
-import { ATMUX_VERSION, version } from "../../../src/verbs/version.ts";
+import { ATMUX_FEATURES, ATMUX_VERSION, version } from "../../../src/verbs/version.ts";
 
 describe("verbs/version", () => {
   test("ATMUX_VERSION constant matches package.json::version at runtime", () => {
@@ -57,6 +57,25 @@ describe("verbs/version", () => {
       const exit = await version(["foo", "bar", "baz"]);
       expect(exit).toBe(0);
       expect(captured).toEqual([`atmux ${ATMUX_VERSION}`]);
+    } finally {
+      console.log = orig;
+    }
+  });
+
+  test("version --features prints the ADR-305 socket-dir marker on its own line", async () => {
+    // Bootstrap contract: `atmux version --features | grep -qx
+    // 'socket-dirs=per-user-0700;rev=4'`. An older build prints only the
+    // version line, and the refused earlier cuts printed the bare scheme
+    // name or `;rev=3`, so the grep fails closed on all of them.
+    const captured: string[] = [];
+    const orig = console.log;
+    console.log = (msg: unknown) => {
+      captured.push(String(msg));
+    };
+    try {
+      expect(await version(["--features"])).toBe(0);
+      expect(captured).toEqual([`atmux ${ATMUX_VERSION}`, "socket-dirs=per-user-0700;rev=4"]);
+      expect(ATMUX_FEATURES).toEqual(["socket-dirs=per-user-0700;rev=4"]);
     } finally {
       console.log = orig;
     }

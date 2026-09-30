@@ -40,6 +40,19 @@ directory that satisfies ALL of:
 4. (d) it is not a symlink — an `lstat` check skips symlinked entries
    before any read, so the reaper never follows a link out of the
    tmpdir and never resolves a socket path through one.
+5. (e) per [ADR-305](305-per-user-private-socket-dirs.md) §D2
+   (added 2026-09-30, revision 3): it is ours alone — a descriptor
+   walk (`privateDirIssue`) shows it owned by the caller's uid with no
+   group/other bit, reached through a chain no other uid can rewrite —
+   and its `sock` is neither a symlink nor another uid's. The
+   `kill-server` dial runs the ADR-305 connect-time guard right before
+   it spawns, and the removal re-runs the ownership walk right before
+   it deletes, then deletes relative to the parent descriptor that
+   walk holds (`removePrivateTree`, ADR-305 revision 4) — never by
+   path. A directory failing any of this is reported
+   `unsafe-skipped` (dry runs too) and never dialled or removed: root's
+   reaper must never kill a server through another user's planted link
+   or delete another user's tree.
 
 In particular it never touches any other tmux socket: the live
 cockpit and team cages live under `~/.atmux/` socket paths (ADR-018),
@@ -59,7 +72,7 @@ A directory passing D1 is reaped only when BOTH hold:
   survivors of still-running suites are never reaped.
 
 Anything else (`parent-alive`, `too-young`, `missing-sidecar`,
-`corrupt-sidecar`) is kept, and the sidecar-less/corrupt cases emit a
+`corrupt-sidecar`, `symlink-skipped`, `unsafe-skipped`) is kept, and the sidecar-less/corrupt cases emit a
 stderr warning. Reap = `tmux -S <tmuxSocket> kill-server` (with
 `TMUX` scrubbed from env so the kill never escapes to the caller's
 server) + `rm -rf` of that socket dir only.

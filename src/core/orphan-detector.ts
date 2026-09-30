@@ -205,7 +205,8 @@ function detectCageWithoutRegistry(
           ref: s.parent,
           atmux_dir: undefined,
           details: `parent cage tmux alive at ${s.socket}; '${s.parent}' not in cockpit teams[]`,
-          reap_hint: `tmux -S ${s.socket} kill-server`,
+          // ADR-305 §D6: the operator's copy-paste dials through the guard.
+          reap_hint: `atmux socket-dial ${s.socket} kill-server`,
         });
       }
     } else {
@@ -221,7 +222,8 @@ function detectCageWithoutRegistry(
           ref: s.eid,
           atmux_dir: undefined,
           details: `epic-team cage tmux alive at ${s.socket}; ${s.eid} not in cockpit sessions[] under '${s.parent}'`,
-          reap_hint: `tmux -S ${s.socket} kill-server`,
+          // ADR-305 §D6: the operator's copy-paste dials through the guard.
+          reap_hint: `atmux socket-dial ${s.socket} kill-server`,
         });
       }
     }

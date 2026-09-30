@@ -1,10 +1,24 @@
 // ADR-301 (implements ADR-178 T3): reap stale tmux servers left behind by killed test processes.
 // SAFETY invariant (ADR-301 §D1): act only on a direct tmpdir child matching the spinTmux
 // prefix pattern whose parseable sidecar's socketDir equals its own dir; never follow symlinks.
+// ADR-305 §D2: act only on a directory that is OURS alone (owned by this uid, no group/other
+// bit, reached through a chain no other uid can rewrite — `privateDirIssue`, a descriptor
+// walk); the kill-server dial runs the connect-time guard right before it spawns, so a
+// planted `sock` symlink or another uid's socket is never dialled; and the removal re-walks
+// the directory and removes it relative to the held parent descriptor (`removePrivateTree`,
+// ADR-305 revision 4). Anything else is `unsafe-skipped`, never touched.
 import { spawnSync } from "node:child_process";
-import { lstat, readdir, readFile, rm } from "node:fs/promises";
+import { lstat, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
+import {
+  prepareSocketDial,
+  privateDirIssue,
+  removePrivateTree,
+  type SocketPathIssue,
+  socketPathIssue,
+  UnsafeSocketPathError,
+} from "../core/socket-dir.ts";
 import { UsageError } from "../errors.ts";
 
 const SIDECAR = ".leak-tracker.json";
@@ -17,7 +31,8 @@ export type ReaperStatus =
   | "parent-alive"
   | "missing-sidecar"
   | "corrupt-sidecar"
-  | "symlink-skipped";
+  | "symlink-skipped"
+  | "unsafe-skipped";
 
 export interface ReaperResult {
   socketDir: string;
@@ -95,7 +110,7 @@ export async function testReaper(
   const stderr = deps.stderr ?? ((text: string) => process.stderr.write(text));
   const parentIsDead = deps.parentIsDead ?? defaultParentIsDead;
   const killServer = deps.killServer ?? defaultKillServer;
-  const removeDir = deps.removeDir ?? ((dir: string) => rm(dir, { recursive: true, force: true }));
+  const removeDir = deps.removeDir ?? removeOwnedDir;
   const results: ReaperResult[] = [];
 
   const entries = await readdir(root, { withFileTypes: true });
@@ -134,13 +149,28 @@ export async function testReaper(
       results.push({ socketDir: candidateDir, status: "parent-alive" });
       continue;
     }
+    // ADR-305: another uid's directory, a shared one, or a planted `sock`
+    // symlink / foreign socket is reported and left alone — in a dry run too.
+    const unsafe = privateDirIssue(candidateDir) ?? socketPathIssue(tracker.tmuxSocket);
+    if (unsafe !== null) {
+      results.push(unsafeSkipped(candidateDir, entry.name, unsafe, stderr));
+      continue;
+    }
     if (flags.dryRun) {
       results.push({ socketDir: candidateDir, status: "would-reap" });
       continue;
     }
 
-    await killServer(tracker.tmuxSocket);
-    await removeDir(candidateDir);
+    try {
+      await killServer(tracker.tmuxSocket);
+      await removeDir(candidateDir);
+    } catch (error) {
+      // The guards re-check right before the dial and the removal; a
+      // directory swapped after the check above lands here.
+      if (!(error instanceof UnsafeSocketPathError)) throw error;
+      results.push(unsafeSkipped(candidateDir, entry.name, error.issue, stderr));
+      continue;
+    }
     results.push({ socketDir: candidateDir, status: "reaped" });
   }
 
@@ -154,6 +184,16 @@ export async function testReaper(
     }
   }
   return 0;
+}
+
+function unsafeSkipped(
+  socketDir: string,
+  name: string,
+  issue: SocketPathIssue,
+  stderr: (text: string) => void,
+): ReaperResult {
+  stderr(`test-reaper: warning: ${name}: unsafe-skipped (${issue.path} ${issue.detail})\n`);
+  return { socketDir, status: "unsafe-skipped" };
 }
 
 function usage(what: string): UsageError {
@@ -219,8 +259,20 @@ function isEsrch(error: unknown): boolean {
   );
 }
 
+/** kill-server through the ADR-305 connect-time guard, run right before
+ *  the dial: an unsafe path throws {@link UnsafeSocketPathError}; no
+ *  socket of ours there means nothing to kill. */
 function defaultKillServer(socket: string): void {
+  if (!prepareSocketDial(socket)) return;
   const env = { ...process.env };
   delete env.TMUX;
   spawnSync("tmux", ["-S", socket, "kill-server"], { env, stdio: "ignore" });
+}
+
+/** Remove a reaped directory only when a descriptor walk, run right
+ *  before the removal, shows it is ours alone; the removal runs relative
+ *  to the parent descriptor that walk holds, so no rename after the
+ *  check can redirect it. Throws {@link UnsafeSocketPathError}. */
+async function removeOwnedDir(dir: string): Promise<void> {
+  removePrivateTree(dir);
 }

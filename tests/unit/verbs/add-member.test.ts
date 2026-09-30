@@ -342,7 +342,8 @@ describe("resolveAddMemberTmuxConfig", () => {
         command: "",
       },
     );
-    expect(cfg).toEqual({ socketPath: "/tmp/atmux-alpha/sock" });
+    // ADR-305 per-user default.
+    expect(cfg).toEqual({ socketPath: `/tmp/atmux-${process.getuid?.() ?? 0}/alpha/sock` });
   });
 
   test("t-d0229be5: honours team.tmuxTmpdir on the write side", () => {
@@ -376,7 +377,7 @@ describe("resolveAddMemberTmuxConfig", () => {
         command: "",
       },
     );
-    expect(cfg).toEqual({ socketPath: "/tmp/atmux-t/sock" });
+    expect(cfg).toEqual({ socketPath: `/tmp/atmux-${process.getuid?.() ?? 0}/t/sock` });
   });
 });
 

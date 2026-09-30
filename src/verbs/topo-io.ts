@@ -29,7 +29,8 @@ import { stateDbPath } from "../core/common.ts";
 import { loadKanban } from "../core/kanban.ts";
 import { externalKanbanEnabled } from "../core/kanban-backend.ts";
 import { makeReapZombieWorktree, type ReapDeps, type ReapLogEntry } from "../core/reap.ts";
-import { getAtmuxTmuxConfPath } from "../core/tmux-paths.ts";
+import { currentUid, userSocketRoot } from "../core/socket-dir.ts";
+import { getAtmuxTmuxConfPath, getCockpitSocketPath } from "../core/tmux-paths.ts";
 import type {
   BranchOnParent,
   CronMarkerBlock,
@@ -65,8 +66,9 @@ export function defaultDiscoveryIO(): DiscoveryIO {
       }
     },
     cockpitSocketPath() {
-      const uid = typeof process.getuid === "function" ? process.getuid() : 0;
-      return `/tmp/.tmux-${uid}/atmux-cockpit`;
+      // The path tmux itself binds for `-L atmux-cockpit` (the old
+      // `/tmp/.tmux-<uid>/…` literal named a directory tmux never uses).
+      return getCockpitSocketPath();
     },
     async cageAlive(socket) {
       try {
@@ -226,11 +228,32 @@ async function probeKanbanEpicRows(atmuxDir: string): Promise<KanbanEpicRow[] | 
 
 async function listCageSocketsOnDisk(): Promise<TmuxSocketEntry[]> {
   const out: TmuxSocketEntry[] = [];
+  // ADR-305 per-user tree: `/tmp/atmux-<uid>/<team>/sock`. Group servers
+  // (`grp-<group>`) are not cages. `isLiveCageSocket` runs through the
+  // createTmux socket guard, so a shared or foreign socket reads dead.
+  const uid = currentUid();
+  const userRoot = uid === null ? null : userSocketRoot(uid);
+  if (userRoot !== null) {
+    try {
+      for (const e of await readdir(userRoot, { withFileTypes: true })) {
+        if (!e.isDirectory() || e.name.startsWith("grp-")) continue;
+        const sock = join(userRoot, e.name, "sock");
+        if (await isLiveCageSocket(sock)) out.push({ socket: sock, parent: e.name, eid: null });
+      }
+    } catch {
+      // absent / unreadable per-user root — nothing of ours there
+    }
+  }
   let topLevel: string[] = [];
   try {
     const ents = await readdir("/tmp", { withFileTypes: true });
     topLevel = ents
-      .filter((e) => e.isDirectory() && e.name.startsWith("atmux-"))
+      .filter(
+        (e) =>
+          e.isDirectory() &&
+          e.name.startsWith("atmux-") &&
+          (userRoot === null || join("/tmp", e.name) !== userRoot),
+      )
       .map((e) => e.name);
   } catch {
     return out;

@@ -2,6 +2,7 @@
 // /opt, HOME, or stdio touched (homeDir + prompt + runInstall faked).
 
 import { describe, expect, mock, test } from "bun:test";
+import * as childProcess from "node:child_process";
 import { existsSync as fsExistsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -14,6 +15,18 @@ import {
   runStartPreflight,
 } from "../../../src/core/start-preflight.ts";
 import { UsageError } from "../../../src/errors.ts";
+
+// Captured at load, before any test mocks `node:child_process`: the
+// module namespace is a live binding, so reading `spawnSync` after a
+// `mock.module` returns the double. `restoreChildProcess` re-registers
+// the real function — `mock.restore()` does not undo `mock.module`, and
+// without this every later test file in the same `bun test` process
+// inherits the throwing / canned `spawnSync`.
+const REAL_SPAWN_SYNC = childProcess.spawnSync;
+function restoreChildProcess(realCp: typeof childProcess): void {
+  mock.restore();
+  mock.module("node:child_process", () => ({ ...realCp, spawnSync: REAL_SPAWN_SYNC }));
+}
 
 const VERSION = "0.8.26-test";
 
@@ -670,7 +683,7 @@ describe("runStartPreflight production defaults", () => {
       expect(spawns.some((s) => s.args.includes("-V"))).toBe(true);
       expect(fsExistsSync(join(home, ".atmux", "state", `preflight-${VERSION}.json`))).toBe(true);
     } finally {
-      mock.restore();
+      restoreChildProcess(realCp);
       await rm(home, { recursive: true, force: true });
     }
   });
@@ -697,7 +710,7 @@ describe("runStartPreflight production defaults", () => {
       expect(r).toBe("halt");
       expect(logs.some((l) => l.includes("exit 1"))).toBe(true);
     } finally {
-      mock.restore();
+      restoreChildProcess(realCp);
     }
   });
 
@@ -725,7 +738,7 @@ describe("runStartPreflight production defaults", () => {
       expect(r).toBe("continue");
       expect(logs.some((l) => l.includes("installed unknown"))).toBe(true);
     } finally {
-      mock.restore();
+      restoreChildProcess(realCp);
     }
   });
 });

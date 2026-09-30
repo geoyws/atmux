@@ -1,13 +1,14 @@
 // Unit tests for src/verbs/cockpit.ts — ADR-063 cockpit verb.
 
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chownSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TmuxConfig, TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import { buildGroupTopology, enabledTeams, groupSocketPath } from "../../../src/core/cockpit.ts";
+import { ensurePrivateSocketDir } from "../../../src/core/socket-dir.ts";
 import type { Logger } from "../../../src/core/tui.ts";
 import { shellPaneCommand } from "../../../src/core/tui-cmd.ts";
 import { ConfigError, UsageError } from "../../../src/errors.ts";
@@ -2083,8 +2084,18 @@ describe("buildTeamWindowCommand", () => {
     // the dual-socket retry loop derives both paths internally from
     // the team's name + root so cockpit viewers self-heal across cage
     // socket-convention flips without requiring a pre-resolved socket.
-    expect(cmd).toContain("/tmp/atmux-demo/sock");
-    expect(cmd).toContain(`/d/.atmux/tmux/tmux-${uid}/default`);
+    // ADR-305: the default is the per-user socket, never the shared
+    // /tmp/atmux-<team>/sock, and every dial goes through `atmux
+    // socket-dial` (whole-chain descriptor walk) — never a shell
+    // `[ -S ] && [ -O ]` test followed by a raw `tmux -S` (review of
+    // 35ea2c3, item 2: that pair follows symlinks and races a swap).
+    expect(cmd).not.toContain("/tmp/atmux-demo/sock");
+    expect(cmd).toContain(`socket-dial /tmp/atmux-${uid}/demo/sock attach -t '=demo:driver'`);
+    expect(cmd).toContain(
+      `socket-dial /d/.atmux/tmux/tmux-${uid}/default attach -t '=demo:driver'`,
+    );
+    expect(cmd).not.toContain("[ -O");
+    expect(cmd).not.toContain("tmux -S");
     expect(cmd).toContain("||");
   });
 
@@ -2092,21 +2103,30 @@ describe("buildTeamWindowCommand", () => {
   // tmux reproduces the reported homebrew behaviour — attach against a
   // missing socket dir prints "error creating <sock> ..." yet exits 0 —
   // so a bare `attachA || attachB` wrapper could never reach attachB.
-  // Real unix-socket files back the `[ -S ]` guards; the wrapper's real
-  // `sleep 1` paces loop iterations, so polling for the first argv line
-  // observes exactly the first pass before the shell is killed.
+  // Each dial runs the REAL `atmux socket-dial` (this checkout, via
+  // bun), which resolves tmux from PATH → the stub; real unix-socket
+  // files back its checks. The wrapper's real `sleep 1` paces loop
+  // iterations, so polling for the first argv line observes exactly the
+  // first pass before the shell is killed.
   // Timer exception (ts-no-test-timers): this drives a REAL `sh` child
   // process, so fake timers cannot advance it — the poll below awaits
   // the argv-log signal, not a fixed wait; the 50ms sleeps are backoff.
   async function runWrapperFirstPass(cmd: string, bin: string): Promise<string[]> {
     const log = join(bin, "argv.log");
     const proc = Bun.spawn(["sh", "-c", cmd], {
-      env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+        // socket-dial resolves tmux itself: pin the stub even where a
+        // vendored /opt/atmux tmux exists.
+        ATMUX_TMUX_BIN: join(bin, "tmux"),
+      },
       stdout: "ignore",
       stderr: "ignore",
     });
     try {
-      const deadline = Date.now() + 5000;
+      // Each dial is a bun process loading the CLI: allow for a slow host.
+      const deadline = Date.now() + 20_000;
       for (;;) {
         if (existsSync(log)) {
           const lines = readFileSync(log, "utf8").split("\n").filter(Boolean);
@@ -2132,19 +2152,19 @@ describe("buildTeamWindowCommand", () => {
     return { bin, log };
   }
 
-  test("t-9625de61: missing legacy socket dir falls through to the per-team socket", async () => {
+  test("t-9625de61: missing default socket dir falls through to the per-team socket", async () => {
     const teamName = `t9625miss-${process.pid}`;
     const root = await mkdtemp(join(tmpdir(), "t9625miss-"));
     const t = { name: teamName, root, enabled: true } as CockpitTeam;
     const cmd = await buildTeamWindowCommand(t, "attach");
-    const legacySock = `/tmp/atmux-${teamName}/sock`;
+    const legacySock = `/tmp/atmux-${uid}/${teamName}/sock`;
     const perTeamSock = `${root}/.atmux/tmux/tmux-${uid}/default`;
     expect(cmd).toContain(legacySock);
     expect(cmd).toContain(perTeamSock);
 
-    // Legacy dir absent entirely; per-team socket live.
-    rmSync(`/tmp/atmux-${teamName}`, { recursive: true, force: true });
-    await mkdir(join(root, ".atmux", "tmux", `tmux-${uid}`), { recursive: true });
+    // Default dir absent entirely; per-team socket live.
+    rmSync(`/tmp/atmux-${uid}/${teamName}`, { recursive: true, force: true });
+    await mkdir(join(root, ".atmux", "tmux", `tmux-${uid}`), { recursive: true, mode: 0o700 });
     const server = createServer();
     await new Promise<void>((resolve) => server.listen(perTeamSock, resolve));
     const { bin } = await stubTmuxOnPath();
@@ -2163,19 +2183,19 @@ describe("buildTeamWindowCommand", () => {
     }
   });
 
-  test("t-9625de61: live legacy socket is dialled exclusively, no fallback dial", async () => {
+  test("t-9625de61: live default socket is dialled exclusively, no fallback dial", async () => {
     const teamName = `t9625live-${process.pid}`;
     const root = await mkdtemp(join(tmpdir(), "t9625live-"));
     const t = { name: teamName, root, enabled: true } as CockpitTeam;
     const cmd = await buildTeamWindowCommand(t, "attach");
-    const legacySock = `/tmp/atmux-${teamName}/sock`;
+    const legacySock = `/tmp/atmux-${uid}/${teamName}/sock`;
     const perTeamSock = `${root}/.atmux/tmux/tmux-${uid}/default`;
 
-    // BOTH sockets live: the first (legacy) dial succeeds (stub exits
+    // BOTH sockets live: the first (default) dial succeeds (stub exits
     // 0), so the `||` fallback must not fire — guards against an
     // overcorrection that dials both sockets every pass.
-    await mkdir(`/tmp/atmux-${teamName}`, { recursive: true });
-    await mkdir(join(root, ".atmux", "tmux", `tmux-${uid}`), { recursive: true });
+    ensurePrivateSocketDir(legacySock);
+    await mkdir(join(root, ".atmux", "tmux", `tmux-${uid}`), { recursive: true, mode: 0o700 });
     const legacyServer = createServer();
     const perTeamServer = createServer();
     await new Promise<void>((resolve) => legacyServer.listen(legacySock, resolve));
@@ -2189,11 +2209,86 @@ describe("buildTeamWindowCommand", () => {
     } finally {
       await new Promise<void>((resolve) => legacyServer.close(() => resolve()));
       await new Promise<void>((resolve) => perTeamServer.close(() => resolve()));
-      await rm(`/tmp/atmux-${teamName}`, { recursive: true, force: true });
+      await rm(`/tmp/atmux-${uid}/${teamName}`, { recursive: true, force: true });
       await rm(root, { recursive: true, force: true });
       await rm(bin, { recursive: true, force: true });
     }
   });
+
+  test("ADR-305: a private pre-ADR-305 socket of ours is dialled first, the per-user path next", async () => {
+    const teamName = `adr305legacy-${process.pid}`;
+    const legacyDir = `/tmp/atmux-${teamName}`;
+    const legacySock = `${legacyDir}/sock`;
+    await mkdir(legacyDir, { mode: 0o700 });
+    const server = createServer();
+    await new Promise<void>((resolve) => server.listen(legacySock, resolve));
+    try {
+      const cmd = await buildTeamWindowCommand(
+        { name: teamName, root: "/r", enabled: true } as CockpitTeam,
+        "attach",
+      );
+      const iLegacy = cmd.indexOf(`socket-dial ${legacySock}`);
+      const iUser = cmd.indexOf(`socket-dial /tmp/atmux-${uid}/${teamName}/sock`);
+      expect(iLegacy).toBeGreaterThan(-1);
+      expect(iUser).toBeGreaterThan(iLegacy);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(legacyDir, { recursive: true, force: true });
+    }
+  });
+
+  test("ADR-305: a shared (0755) pre-ADR-305 dir is never dialled", async () => {
+    const teamName = `adr305shared-${process.pid}`;
+    const legacyDir = `/tmp/atmux-${teamName}`;
+    await mkdir(legacyDir, { mode: 0o755 });
+    const server = createServer();
+    await new Promise<void>((resolve) => server.listen(`${legacyDir}/sock`, resolve));
+    try {
+      const cmd = await buildTeamWindowCommand(
+        { name: teamName, root: "/r", enabled: true } as CockpitTeam,
+        "attach",
+      );
+      expect(cmd).not.toContain(legacyDir);
+      expect(cmd).toContain(`/tmp/atmux-${uid}/${teamName}/sock`);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(legacyDir, { recursive: true, force: true });
+    }
+  });
+
+  test.skipIf((process.getuid?.() ?? -1) !== 0)(
+    "ADR-305: socket-dial skips a live socket owned by another uid (runs as root)",
+    async () => {
+      const teamName = `adr305owner-${process.pid}`;
+      const root = await mkdtemp(join(tmpdir(), "adr305owner-"));
+      const t = { name: teamName, root, enabled: true } as CockpitTeam;
+      const cmd = await buildTeamWindowCommand(t, "attach");
+      const userSock = `/tmp/atmux-${uid}/${teamName}/sock`;
+      const perTeamSock = `${root}/.atmux/tmux/tmux-${uid}/default`;
+      ensurePrivateSocketDir(userSock);
+      await mkdir(join(root, ".atmux", "tmux", `tmux-${uid}`), { recursive: true, mode: 0o700 });
+      const foreign = createServer();
+      const own = createServer();
+      await new Promise<void>((resolve) => foreign.listen(userSock, resolve));
+      await new Promise<void>((resolve) => own.listen(perTeamSock, resolve));
+      // Root can hand the first socket to another uid: it is still a
+      // socket, so only socket-dial's owner check can skip it.
+      chownSync(userSock, 4242, 4242);
+      const { bin } = await stubTmuxOnPath();
+      try {
+        const lines = await runWrapperFirstPass(cmd, bin);
+        expect(lines.length).toBeGreaterThan(0);
+        expect(lines.some((l) => l.includes(userSock))).toBe(false);
+        expect(lines.every((l) => l.includes(perTeamSock))).toBe(true);
+      } finally {
+        await new Promise<void>((resolve) => foreign.close(() => resolve()));
+        await new Promise<void>((resolve) => own.close(() => resolve()));
+        await rm(`/tmp/atmux-${uid}/${teamName}`, { recursive: true, force: true });
+        await rm(root, { recursive: true, force: true });
+        await rm(bin, { recursive: true, force: true });
+      }
+    },
+  );
 
   test("no-driver-config emits the 'set team.json::driverSession' guidance", async () => {
     const cmd = await buildTeamWindowCommand(team, "no-driver-config");
@@ -2212,7 +2307,7 @@ describe("buildTeamWindowCommand", () => {
     expect(cmd).not.toContain("sleep infinity");
     expect(cmd).toContain("while true");
     expect(cmd).toContain("sleep 1");
-    expect(cmd).toContain("/tmp/atmux-demo/sock");
+    expect(cmd).toContain(`/tmp/atmux-${uid}/demo/sock`);
     expect(cmd).toContain(`/d/.atmux/tmux/tmux-${uid}/default`);
   });
 
@@ -3832,7 +3927,8 @@ describe("reconcileGroupServers (e-419553c6)", () => {
     activeFixtureDirs.add(cageRoot);
     const uid = process.getuid?.() ?? 0;
     const cageSockDir = join(cageRoot, ".atmux", "tmux", `tmux-${uid}`);
-    await mkdir(cageSockDir, { recursive: true });
+    // ADR-305: a socket directory is private (0700) or atmux refuses it.
+    await mkdir(cageSockDir, { recursive: true, mode: 0o700 });
     const cageSock = join(cageSockDir, "default");
     activeFixtureSockets.add(cageSock);
     const cageHome = await mkdtemp(join(tmpdir(), "wnest-cage-home-"));
@@ -4011,12 +4107,36 @@ describe("reconcileGroupServers (e-419553c6)", () => {
 });
 
 describe("buildGroupWindowCommand", () => {
-  test("attach retry-loop against the group socket, exact-match + single-quoted target", () => {
+  test("attach retry-loop against the per-user group socket, via socket-dial, exact-match + single-quoted target", () => {
+    const uid = process.getuid?.() ?? 0;
+    const sock = `/tmp/atmux-${uid}/grp-geoyws/sock`;
     const cmd = buildGroupWindowCommand("geoyws");
-    expect(cmd).toContain("tmux -S /tmp/atmux-grp-geoyws/sock attach -t '=geoyws'");
+    expect(cmd).toContain(`socket-dial ${sock} attach -t '=geoyws' 2>/dev/null`);
+    expect(cmd).not.toContain("[ -O");
+    expect(cmd).not.toContain("tmux -S");
+    expect(cmd).not.toContain("/tmp/atmux-grp-geoyws/sock");
     expect(cmd).toContain("while true");
     expect(cmd).toContain("sleep 1");
     expect(cmd).toContain("2>/dev/null");
+  });
+
+  test("ADR-305: a private pre-ADR-305 group socket of ours is dialled first, the per-user path next", async () => {
+    const uid = process.getuid?.() ?? 0;
+    const g = `adr305grp-${process.pid}`;
+    const legacyDir = `/tmp/atmux-grp-${g}`;
+    await mkdir(legacyDir, { mode: 0o700 });
+    const server = createServer();
+    await new Promise<void>((resolve) => server.listen(`${legacyDir}/sock`, resolve));
+    try {
+      const cmd = buildGroupWindowCommand(g);
+      const iLegacy = cmd.indexOf(`socket-dial ${legacyDir}/sock`);
+      const iUser = cmd.indexOf(`socket-dial /tmp/atmux-${uid}/grp-${g}/sock`);
+      expect(iLegacy).toBeGreaterThan(-1);
+      expect(iUser).toBeGreaterThan(iLegacy);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(legacyDir, { recursive: true, force: true });
+    }
   });
 });
 

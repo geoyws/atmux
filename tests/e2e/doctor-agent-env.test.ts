@@ -50,7 +50,9 @@ let clean: TeamFixture;
 let dead: TeamFixture;
 let stale: TeamFixture;
 let cockpitSocket = "";
-const groupSocket = `/tmp/atmux-grp-${NONCE}/sock`;
+// ADR-305 per-user group socket (and, below, the per-user + pre-ADR-305
+// cage sockets) — all asserted absent.
+const groupSocket = `/tmp/atmux-${UID}/grp-${NONCE}/sock`;
 const startedSockets: string[] = [];
 /** Beat 1's hint, run verbatim by beat 4. */
 let remedy = "";
@@ -70,7 +72,8 @@ async function makeTeam(tag: string): Promise<TeamFixture> {
   const name = `${NONCE}-${tag}`;
   const root = join(work, tag);
   const tmuxTmpdir = join(root, ".atmux", "tmux");
-  await mkdir(join(tmuxTmpdir, `tmux-${UID}`), { recursive: true });
+  // ADR-305: the socket directory is private (0700) or the doctor skips it.
+  await mkdir(join(tmuxTmpdir, `tmux-${UID}`), { recursive: true, mode: 0o700 });
   await writeFile(
     join(root, ".atmux", "team.json"),
     JSON.stringify({ name, tmuxTmpdir, members: [] }),
@@ -197,7 +200,9 @@ describe.skipIf(TMUX_BIN === null)(
         `team ${polluted.name} server ${polluted.socket} carries agent-shell env: AGENT, CI, EDITOR`,
       );
       for (const v of ["AGENT", "CI", "EDITOR"]) {
-        expect(row.hint).toContain(`tmux -S ${polluted.socket} set-environment -g -u ${v}`);
+        expect(row.hint).toContain(
+          `atmux socket-dial ${polluted.socket} set-environment -g -u ${v}`,
+        );
       }
       expect(row.hint).toContain(
         "panes already running keep the old environment until their processes restart",
@@ -217,7 +222,13 @@ describe.skipIf(TMUX_BIN === null)(
     });
 
     test("beat 3 — missing and stale sockets are skipped, and no server is created on them", () => {
-      const neverThere = [dead.socket, cockpitSocket, groupSocket, `/tmp/atmux-${dead.name}/sock`];
+      const neverThere = [
+        dead.socket,
+        cockpitSocket,
+        groupSocket,
+        `/tmp/atmux-${UID}/${dead.name}/sock`,
+        `/tmp/atmux-${dead.name}/sock`,
+      ];
       for (const p of neverThere) expect(existsSync(p)).toBe(false);
       expect(existsSync(stale.socket)).toBe(true);
 
@@ -233,13 +244,26 @@ describe.skipIf(TMUX_BIN === null)(
 
     test("beat 4 — running the row's remedy commands verbatim clears the finding", () => {
       // `<cmd>; <cmd>; <cmd> — <caveat>`: run each command as written, with
-      // the leading `tmux` resolved to the binary the servers run on.
+      // the leading `atmux` resolved to this checkout. ADR-305 §D6: the
+      // copy-paste dials through `atmux socket-dial`, never raw `tmux -S`.
       const cmds = remedy.split(" — ")[0]?.split("; ") ?? [];
       expect(cmds).toHaveLength(3);
       for (const cmd of cmds) {
-        const [bin, flag, socket, ...rest] = cmd.split(" ");
-        expect([bin, flag, socket]).toEqual(["tmux", "-S", polluted.socket]);
-        expect(tmuxAt(polluted.socket, rest).exitCode).toBe(0);
+        const [bin, verb, socket, ...rest] = cmd.split(" ");
+        expect([bin, verb, socket]).toEqual(["atmux", "socket-dial", polluted.socket]);
+        const run = Bun.spawnSync({
+          cmd: [
+            process.execPath,
+            join(REPO_ROOT, "bin", "atmux"),
+            "socket-dial",
+            socket ?? "",
+            ...rest,
+          ],
+          env: { PATH: process.env.PATH ?? "", HOME: home, TERM: "xterm-256color" },
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        expect(run.exitCode).toBe(0);
       }
       expect(runDoctor()).toEqual([]);
     });

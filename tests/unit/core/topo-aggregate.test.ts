@@ -274,9 +274,10 @@ function epicDiscovery(overrides: Partial<EpicDiscovery> = {}): EpicDiscovery {
 // ---------- Path helpers ----------
 
 describe("path helpers", () => {
-  test("cageSocketForTeam returns /tmp/atmux-<team>/sock", () => {
-    expect(cageSocketForTeam("atmux")).toBe("/tmp/atmux-atmux/sock");
-    expect(cageSocketForTeam("unum")).toBe("/tmp/atmux-unum/sock");
+  test("cageSocketForTeam returns the ADR-305 per-user /tmp/atmux-<uid>/<team>/sock", () => {
+    const uid = process.getuid?.() ?? 0;
+    expect(cageSocketForTeam("atmux")).toBe(`/tmp/atmux-${uid}/atmux/sock`);
+    expect(cageSocketForTeam("unum")).toBe(`/tmp/atmux-${uid}/unum/sock`);
   });
 
   test("cageSocketForEpic returns /tmp/atmux-<parent>/epics/<eid>/tmux-0/default", () => {
@@ -636,7 +637,7 @@ describe("gatherDiscovery — populated paths", () => {
     const { io, calls } = makeStubIO({ cockpit });
     await gatherDiscovery(io);
     expect(calls.cageAlive).toContain("/tmp/.tmux-1000/atmux-cockpit");
-    expect(calls.cageAlive).toContain("/tmp/atmux-atmux/sock");
+    expect(calls.cageAlive).toContain(`/tmp/atmux-${process.getuid?.() ?? 0}/atmux/sock`);
     expect(calls.cageAlive).toContain("/tmp/atmux-atmux/epics/e-1/tmux-0/default");
   });
 });

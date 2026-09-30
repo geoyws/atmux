@@ -36,7 +36,8 @@ chmod +x "$INSTALL_DIR/bin/atmux" "$INSTALL_DIR/bin/atmux-tmux" "$INSTALL_DIR"/l
 # Link bin/atmux + bin/atmux-tmux into the same parent dir as $BIN_TARGET.
 # atmux-tmux (ADR-018) is the cage-aware tmux wrapper — paired binary so
 # `attach` lands on the right socket without operators having to remember
-# `tmux -S /tmp/atmux-tmux-<team>/tmux-$UID/default attach`.
+# `<tmuxTmpdir>/tmux-$UID/default`, and checks that socket's whole
+# directory chain first (ADR-305 §D2).
 _bin_target_dir="$(dirname "$BIN_TARGET")"
 _atmuxtmux_target="$_bin_target_dir/atmux-tmux"
 

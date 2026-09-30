@@ -32,8 +32,10 @@ import {
   validatePrefixChain,
   walkSessions,
 } from "../../../src/core/cockpit.ts";
+import type { SocketDirFs } from "../../../src/core/socket-dir.ts";
 import { ConfigError, SchemaError } from "../../../src/errors.ts";
 import type { CockpitSessionT, Cockpit as CockpitShape } from "../../../src/schema/cockpit.ts";
+import { fakeSocketFs } from "../../helpers/fake-socket-fs.ts";
 
 let homeDir: string;
 
@@ -301,10 +303,18 @@ describe("enabledTeams", () => {
 // probe. The new test suite below covers the same scenarios with the
 // new contract. See merge commit body for the supersession trail.
 
+/** Hermetic ADR-305 fs seam: nothing on disk but `/` and `/tmp`. */
+const NO_SOCKET_FS: SocketDirFs = fakeSocketFs();
+
+/** Default cage socket for team `x` under this process's uid (ADR-305). */
+const DEFAULT_X = `/tmp/atmux-${process.getuid?.() ?? 0}/x/sock`;
+
 describe("cageSocketPath", () => {
-  test("returns /tmp/atmux-<team>/sock", () => {
-    expect(cageSocketPath("sopx")).toBe("/tmp/atmux-sopx/sock");
-    expect(cageSocketPath("atmux")).toBe("/tmp/atmux-atmux/sock");
+  test("returns the ADR-305 per-user /tmp/atmux-<uid>/<team>/sock", () => {
+    const uid = process.getuid?.() ?? 0;
+    expect(cageSocketPath("sopx-csp-probe")).toBe(`/tmp/atmux-${uid}/sopx-csp-probe/sock`);
+    expect(cageSocketPath("x", { uid: 1000, fs: NO_SOCKET_FS })).toBe("/tmp/atmux-1000/x/sock");
+    expect(cageSocketPath("x", { uid: 0, fs: NO_SOCKET_FS })).toBe("/tmp/atmux-0/x/sock");
   });
 });
 
@@ -319,15 +329,15 @@ describe("perTeamCageSocketPath", () => {
 });
 
 describe("resolveCageSocket (ADR-063 follow-up)", () => {
-  test("returns legacy path when only legacy exists", async () => {
+  test("returns the default (per-user) path when only it exists", async () => {
     const seen: string[] = [];
     const exists = async (p: string) => {
       seen.push(p);
-      return p === "/tmp/atmux-x/sock";
+      return p === DEFAULT_X;
     };
-    expect(await resolveCageSocket("x", "/root/x", { exists })).toBe("/tmp/atmux-x/sock");
-    // Probe stopped at legacy hit; per-team path never queried.
-    expect(seen).toEqual(["/tmp/atmux-x/sock"]);
+    expect(await resolveCageSocket("x", "/root/x", { exists })).toBe(DEFAULT_X);
+    // Probe stopped at the default hit; per-team path never queried.
+    expect(seen).toEqual([DEFAULT_X]);
   });
 
   test("returns per-team path when only per-team exists", async () => {
@@ -336,24 +346,29 @@ describe("resolveCageSocket (ADR-063 follow-up)", () => {
     expect(await resolveCageSocket("x", "/root/x", { exists })).toBe(perTeam);
   });
 
-  test("returns legacy first when both exist (backward-compat precedence)", async () => {
+  test("returns the default first when both exist (backward-compat precedence)", async () => {
     const exists = async () => true;
-    expect(await resolveCageSocket("x", "/root/x", { exists })).toBe("/tmp/atmux-x/sock");
+    expect(await resolveCageSocket("x", "/root/x", { exists })).toBe(DEFAULT_X);
   });
 
-  test("falls through to legacy when neither exists", async () => {
+  test("falls through to the default when neither exists", async () => {
     const exists = async () => false;
-    expect(await resolveCageSocket("x", "/root/x", { exists })).toBe("/tmp/atmux-x/sock");
+    expect(await resolveCageSocket("x", "/root/x", { exists })).toBe(DEFAULT_X);
   });
 
-  test("probe order matches helper output (legacy → per-team)", async () => {
+  test("never falls back to another user's shared /tmp/atmux-<team>/sock", async () => {
+    const exists = async () => false;
+    expect(await resolveCageSocket("x", "/root/x", { exists })).not.toBe("/tmp/atmux-x/sock");
+  });
+
+  test("probe order matches helper output (default → per-team)", async () => {
     const seen: string[] = [];
     const exists = async (p: string) => {
       seen.push(p);
       return false;
     };
     await resolveCageSocket("z", "/some/root", { exists });
-    expect(seen).toEqual(["/tmp/atmux-z/sock", perTeamCageSocketPath("/some/root")]);
+    expect(seen).toEqual([cageSocketPath("z"), perTeamCageSocketPath("/some/root")]);
   });
 });
 
@@ -1265,8 +1280,16 @@ describe('type: "group" — findTeamByName', () => {
 // ---------- e-419553c6: group servers (true containment, 2026-08-28) ----------
 
 describe("groupSocketPath — collision-freedom", () => {
-  test("carries the -grp- infix", () => {
-    expect(groupSocketPath("geoyws")).toBe("/tmp/atmux-grp-geoyws/sock");
+  test("carries the grp- infix under the ADR-305 per-user root", () => {
+    const uid = process.getuid?.() ?? 0;
+    expect(groupSocketPath("geoyws-gsp-probe")).toBe(`/tmp/atmux-${uid}/grp-geoyws-gsp-probe/sock`);
+    expect(groupSocketPath("geoyws", { uid: 1000, fs: NO_SOCKET_FS })).toBe(
+      "/tmp/atmux-1000/grp-geoyws/sock",
+    );
+    // Two uids never share a group server.
+    expect(groupSocketPath("g", { uid: 0, fs: NO_SOCKET_FS })).not.toBe(
+      groupSocketPath("g", { uid: 1000, fs: NO_SOCKET_FS }),
+    );
   });
 
   test("a group and a team sharing a name never share a socket", () => {

@@ -61,11 +61,152 @@ if [ -z "${_tmpdir:-}" ]; then
 fi
 
 # Tmux puts its socket at <TMUX_TMPDIR>/tmux-<UID>/<label>; <label>
-# defaults to "default". Auto-mkdir keeps the first-run UX painless;
-# 0700 matches tmux's own behaviour when it creates the dir itself.
+# defaults to "default". Missing directories are created so the first
+# `atmux-tmux attach` does not bail with ENOENT.
+#
+# ADR-305 §D2 — the WHOLE chain, because `tmux -S` checks nothing. The
+# tmpdir is walked from / one component at a time, the way atmux's
+# descriptor walk does (src/core/socket-dir.ts), and nothing is followed
+# before it is checked:
+#   - every directory must be a real directory owned by root or this uid
+#     and not writable by group or other — except a root-owned sticky
+#     directory (/tmp, 1777), which may be traversed; an `atmux-*` entry
+#     of such a sticky directory (`/tmp/atmux-tmux_*`) and the socket's
+#     own `tmux-<uid>` must be ours with no group/other bit at all;
+#   - a symlink is followed only when it is owned by root or this uid AND
+#     sits in a directory no other uid can write — never inside a shared
+#     sticky directory such as /tmp, never as `tmux-<uid>`; its target is
+#     then walked the same way (at most 32 hops), so tmux is handed the
+#     checked physical path;
+#   - a missing directory is created with `umask 077; mkdir` (exactly
+#     0700) and then checked like any other; nothing is ever chmod'ed;
+#   - a socket node that is a symlink or another uid's is refused.
+# Under these rules no other uid can rename or re-point any component
+# after the check. Any refusal exits 78 (EX_CONFIG) with the fix.
+set -f # `ls -ldn` output is split into fields below; never glob it.
 _uid=$(id -u)
-_sockdir="$_tmpdir/tmux-$_uid"
-mkdir -p "$_sockdir" 2>/dev/null || true
-chmod 700 "$_sockdir" 2>/dev/null || true
+_refuse() {
+  printf 'atmux-tmux: refusing tmux socket under %s: %s %s (hint: %s)\n' "$_tmpdir" "$1" "$2" "$3" >&2
+  exit 78
+}
 
-exec tmux -S "$_sockdir/default" "$@"
+# _check <dir> <private:0|1> <parent-shared:0|1> — apply the rule to one
+# directory; sets _shared=1 when it is a root-owned sticky shared dir.
+_check() {
+  _d=$1 _priv=$2
+  case "${_d##*/}" in atmux-*) [ "$3" = 1 ] && _priv=1 ;; esac
+  [ -L "$_d" ] && _refuse "$_d" "is a symlink" "replace it with a real directory"
+  [ -d "$_d" ] || _refuse "$_d" "is not a directory" "rm $_d"
+  # `ls -ldn` fields: 1 = mode string, 3 = numeric owner (both precede
+  # the name, so odd names cannot shift them).
+  # shellcheck disable=SC2046
+  set -- $(ls -ldn -- "$_d")
+  _m=${1:-} _o=${3:-} _shared=0
+  if [ "$_priv" = 1 ]; then
+    [ "$_o" = "$_uid" ] || _refuse "$_d" "is owned by uid $_o, not uid $_uid" "have its owner or root remove $_d"
+    case "$_m" in
+      ????------*) ;;
+      *) _refuse "$_d" "has mode $_m (group or world bits set)" "chmod 700 $_d" ;;
+    esac
+    return 0
+  fi
+  [ "$_o" = 0 ] || [ "$_o" = "$_uid" ] ||
+    _refuse "$_d" "is owned by uid $_o (neither root nor uid $_uid)" "move tmuxTmpdir under directories you or root own"
+  case "$_m" in
+    ?????w* | ????????w*)
+      case "$_m" in
+        ?????????[tT]*) [ "$_o" = 0 ] && _shared=1 && return 0 ;;
+      esac
+      _refuse "$_d" "has mode $_m (writable by group or other, not a root-owned sticky directory)" "chmod go-w $_d, or move tmuxTmpdir elsewhere"
+      ;;
+  esac
+  return 0
+}
+
+# _step <name> <private:0|1> — create (0700) if missing, then check; the
+# checked directory becomes the current one.
+_step() {
+  _next="$_cur/$1"
+  if [ ! -e "$_next" ] && [ ! -L "$_next" ]; then
+    (umask 077 && mkdir -- "$_next") 2>/dev/null ||
+      [ -e "$_next" ] || [ -L "$_next" ] ||
+      _refuse "$_next" "cannot be created" "make its parent writable by uid $_uid, or move tmuxTmpdir"
+  fi
+  _check "$_next" "$2" "$_shared"
+  _cur=$_next
+  _sst="$_sst$_shared"
+}
+
+# _follow <link> — a symlink met on the way: follow it only when it is
+# trusted (see above), by queueing its target's components in front of
+# what is left to walk.
+_follow() {
+  # shellcheck disable=SC2046
+  set -- $(ls -ldn -- "$1") "$1"
+  _lo=${3:-}
+  shift $(($# - 1))
+  if [ "$_shared" = 1 ] || { [ "$_lo" != 0 ] && [ "$_lo" != "$_uid" ]; }; then
+    _refuse "$1" "is a symlink" "atmux follows a symlink only inside a directory no other user can write, owned by root or you; replace $1 with a real directory"
+  fi
+  _hops=$((_hops + 1))
+  [ "$_hops" -gt 32 ] && _refuse "$1" "is a symlink chain longer than 32 hops" "replace $1 with a real directory"
+  _t=$(readlink -- "$1") || _refuse "$1" "cannot be read" "replace $1 with a real directory"
+  case "$_t" in
+    /*)
+      # An absolute target restarts at /, whose check still holds.
+      _cur="" _sst=${_sst%"${_sst#?}"} _shared=$_sst
+      ;;
+  esac
+  _q="${_t#/}${_q:+/$_q}"
+}
+
+while :; do
+  case "$_tmpdir" in
+    ?*/) _tmpdir=${_tmpdir%/} ;;
+    *) break ;;
+  esac
+done
+case "$_tmpdir" in
+  /*) ;;
+  *) _refuse "$_tmpdir" "is not an absolute path" "set tmuxTmpdir / TMUX_TMPDIR to an absolute path" ;;
+esac
+case "$_tmpdir/" in
+  */./* | */../*) _refuse "$_tmpdir" "has '.' or '..' components" "use a normalized absolute path" ;;
+esac
+
+_shared=0
+_check / 0 0
+# _cur: the checked physical directory so far ("" = /). _sst: the shared
+# flag of each directory on the way, / first, so `..` in a symlink target
+# restores its parent's. _q: components still to walk.
+_cur="" _sst=$_shared _hops=0 _q=${_tmpdir#/}
+while [ -n "$_q" ]; do
+  case "$_q" in
+    */*) _c=${_q%%/*} _q=${_q#*/} ;;
+    *) _c=$_q _q="" ;;
+  esac
+  case "$_c" in
+    "" | .) continue ;;
+    ..)
+      if [ "${#_sst}" -gt 1 ]; then
+        _cur=${_cur%/*} _sst=${_sst%?}
+        _shared=${_sst#"${_sst%?}"}
+      fi
+      continue
+      ;;
+  esac
+  if [ -L "$_cur/$_c" ]; then
+    _follow "$_cur/$_c"
+    continue
+  fi
+  _step "$_c" 0
+done
+_step "tmux-$_uid" 1
+
+_sock="$_cur/default"
+[ -L "$_sock" ] && _refuse "$_sock" "is a symlink" "rm $_sock"
+if [ -e "$_sock" ] && [ ! -O "$_sock" ]; then
+  _refuse "$_sock" "is owned by another uid" "have its owner or root remove $_sock"
+fi
+
+exec tmux -S "$_sock" "$@"

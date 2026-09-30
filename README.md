@@ -175,9 +175,11 @@ By default every atmux team shares the user's main tmux server at `/tmp/tmux-$UI
 
 ```json
 {
-  "tmuxTmpdir": "/tmp/atmux-tmux_<team>"
+  "tmuxTmpdir": "/abs/path/to/project/.atmux/tmux"
 }
 ```
+
+Point it at a directory you (or root) own that no other user can write; a `/tmp/atmux-*` directory must be yours and 0700 ([ADR-305](docs/adr/305-per-user-private-socket-dirs.md) §D2). `atmux init` no longer sets this field: without it a team already gets its own server on the private per-user socket `/tmp/atmux-<uid>/<team>/sock`.
 
 **What changes when set:**
 
@@ -187,7 +189,7 @@ By default every atmux team shares the user's main tmux server at `/tmp/tmux-$UI
 
   ```bash
   atmux attach                                                # honours team.json
-  tmux -S /tmp/atmux-tmux_<team>/tmux-$UID/default attach     # raw tmux fallback
+  tmux -S <tmuxTmpdir>/tmux-$UID/default attach              # raw tmux fallback
   ```
 
 - `atmux doctor` adds a `tmuxTmpdir` row asserting the directory is writable and (when a session exists) the isolated socket is reachable.
@@ -195,6 +197,23 @@ By default every atmux team shares the user's main tmux server at `/tmp/tmux-$UI
 **Caveat.** Orthogonal to the single-session default (ADR-026): every team is single-session today, so `tmuxTmpdir` simply moves the driver's *shared* session onto the team's isolated socket. If you've used the `singleSession=false` escape hatch, the dedicated `atmux-<team>` session lives on the isolated socket instead. Either combination is supported.
 
 The init wizard does not prompt for this field — opt-in is a manual `team.json` edit, since the field is for advanced/dogfooding setups. See [docs/adr/018-per-team-tmux-socket-isolation.md](docs/adr/018-per-team-tmux-socket-isolation.md) for the full design + risk register.
+
+### Socket directories are per-user and private ([ADR-305](docs/adr/305-per-user-private-socket-dirs.md))
+
+Every tmux socket atmux binds lives in a directory only its owner can enter:
+
+| Socket | Path |
+|---|---|
+| Team cage | `/tmp/atmux-<uid>/<team>/sock` |
+| Group server | `/tmp/atmux-<uid>/grp-<group>/sock` |
+| Team with `tmuxTmpdir` | `<tmuxTmpdir>/tmux-<uid>/default` |
+| Cockpit | tmux's own `-L atmux-cockpit` (`$TMUX_TMPDIR/tmux-<uid>/`) |
+
+atmux checks the WHOLE path, from `/` down, before it creates or dials a socket: every directory on the way must be owned by root or you and not writable by group or other (a root-owned sticky `/tmp` is fine), and the socket's own directory — plus any `/tmp/atmux-*` directory — must be yours with no group/other bit at all. It refuses anything else with the exact fix (`chmod 700 <dir>` for the common case), and a socket owned by another user; it never chmods anything. Directories it creates are 0700. `atmux doctor` lists refusals (`socket-dir`, `socket-dir-legacy`). A live cage still on the old shared `/tmp/atmux-<team>/sock` keeps working while that path passes, and moves to the per-user path when it next restarts.
+
+Shell loops (the cockpit's viewer windows, the bau skill) dial through `atmux socket-dial <socket> <tmux-args…>`, which runs tmux only after that check: exit 1 when there is no socket, 78 when it is unsafe. Nothing removes or renames a socket or socket directory by path: atmux acts relative to the directory descriptor its walk holds, removes a socket only when that directory is yours alone and a connect() to the socket is refused, and never reads a refused path as "dead". Shells remove a dead fixture directory with `atmux socket-rmdir <dir>` (exit 0 removed, 1 absent, 78 not yours alone).
+
+Bootstrap check for a build with this guarantee: `atmux version --features | grep -qx 'socket-dirs=per-user-0700;rev=4'` (`;rev=` counts security revisions of the scheme; the bare name and `;rev=3` were printed only by unreleased cuts that failed review).
 
 ### Per-member worktree isolation (opt-in)
 

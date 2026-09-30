@@ -279,7 +279,9 @@ Flags:
                            Default: sub-op runs every groom. Per t-dc830eb0.
   --zombie-sweep           Also walk os.tmpdir() for stale fixture tmux
                            socket dirs (atmux-*-XXXXXX/) older than 6h;
-                           kill any tmux server inside + rm -rf the dir.
+                           kill any tmux server inside + remove the dir,
+                           only when it is yours alone (0700, safe chain;
+                           ADR-305 — others are reported, left alone).
                            Idempotent. Defense-in-depth for SIGKILL-bypass
                            per c-4698c603 (b) / t-0027eec3. Opt-in only.
 

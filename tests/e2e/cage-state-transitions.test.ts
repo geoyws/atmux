@@ -68,14 +68,16 @@
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { TmuxNamespace } from "../../src/abstractions/tmux.ts";
 import {
   probeCageState,
   STARVING_THRESHOLD_S,
   WEDGED_HEARTBEAT_STALE_SEC,
 } from "../../src/core/cage-state.ts";
+import { getDefaultSocket } from "../../src/core/common.ts";
 import { writeHeartbeat } from "../../src/core/heartbeat.ts";
+import { ensurePrivateSocketDir } from "../../src/core/socket-dir.ts";
 import type { Team } from "../../src/schema/team.ts";
 import { checkMemberCageStates, doctor as doctorVerb } from "../../src/verbs/doctor.ts";
 import { status as statusVerb } from "../../src/verbs/status.ts";
@@ -162,9 +164,12 @@ beforeAll(async () => {
   await mkdir(join(atmuxDir, "state"), { recursive: true });
   await mkdir(join(atmuxDir, "inboxes"), { recursive: true });
 
-  socketDir = `/tmp/atmux-${teamName}`;
-  await mkdir(socketDir, { recursive: true });
-  socketPath = join(socketDir, "sock");
+  // ADR-305: the cage binds the per-user default socket
+  // (/tmp/atmux-<uid>/<team>/sock); pre-create its 0700 directory chain
+  // exactly as `atmux start` does — never a shared /tmp/atmux-<team>/.
+  socketPath = getDefaultSocket(teamName);
+  socketDir = dirname(socketPath);
+  ensurePrivateSocketDir(socketPath);
 
   // `tui: "claude"` is the load-bearing field — status.ts:269 + doctor.ts
   // checkMemberCageStates only probe members whose tui is "claude" (the
