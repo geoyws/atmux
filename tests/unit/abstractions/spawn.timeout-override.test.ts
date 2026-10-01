@@ -10,16 +10,20 @@
 //
 // Coverage:
 //   (1) DEFAULT_GIT_SPAWN_TIMEOUT_MS exported + consumable, equals 30_000.
-//   (2) resolveGitTimeoutMs precedence: opts.timeoutMs > env > DEFAULT,
-//       both override layers failing closed to DEFAULT on bad values.
 //   (3) defaultGitSpawn actually forwards the resolved timeout into the
-//       spawn layer — proven end-to-end by hanging a real `git` process
-//       (local `ext::` transport, no network) and asserting the resulting
-//       SpawnTimeoutError carries the exact per-call timeout. If forwarding
-//       were broken (literal 30_000 instead of the resolved value), the
-//       error's context.timeoutMs would not equal our tiny override.
+//       spawn layer — proven end-to-end by pointing a real `git` at a
+//       test-owned blackhole (a loopback TCP server that accepts and
+//       never responds, so git's `git://` client blocks on read until
+//       our tiny override SIGTERMs it) and asserting the resulting
+//       SpawnTimeoutError carries the exact per-call timeout. If
+//       forwarding were broken (literal 30_000 instead of the resolved
+//       value), the error's context.timeoutMs would not equal our tiny
+//       override. Loopback-only, so a fast-failing external connect
+//       (e.g. `git://10.255.255.1` in the Linux gate container) cannot
+//       flake this.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { createServer, type Server, type Socket } from "node:net";
 import {
   DEFAULT_GIT_SPAWN_TIMEOUT_MS,
   resolveGitTimeoutMs,
@@ -110,28 +114,60 @@ describe("resolveGitTimeoutMs — ATMUX_GIT_TIMEOUT_MS env + opts.timeoutMs over
 
 describe("defaultGitSpawn — forwards resolved timeout into the spawn layer", () => {
   const original = process.env.ATMUX_GIT_TIMEOUT_MS;
+  let server: Server = createServer();
+  let port = 0;
+  const sockets = new Set<Socket>();
 
-  afterEach(() => {
-    if (original === undefined) delete process.env.ATMUX_GIT_TIMEOUT_MS;
-    else process.env.ATMUX_GIT_TIMEOUT_MS = original;
+  // Hang a real `git` by pointing its native `git://` client at a
+  // test-owned blackhole: the server accepts on loopback and never
+  // responds, so git blocks on read (verified: `timeout 3 git ls-remote`
+  // against a silent acceptor exits 124) until our tiny per-call
+  // timeout SIGTERMs git — which closes the socket + stdio pipes so
+  // spawn() resolves promptly. Loopback-only, no external network, so
+  // a fast-failing connect (as in the Linux gate container) cannot
+  // flake this. The thrown SpawnTimeoutError must carry exactly the
+  // timeout we asked for, proving defaultGitSpawn plumbed opts.timeoutMs
+  // through resolveGitTimeoutMs into spawn() rather than a hardcoded
+  // 30_000 literal (which would NOT fire in this window — surfacing as
+  // a bun-test timeout, not a clean SpawnTimeoutError).
+  beforeEach(async () => {
+    sockets.clear();
+    server = createServer((sock) => {
+      sockets.add(sock);
+      sock.on("close", () => {
+        sockets.delete(sock);
+      });
+      sock.on("error", () => {
+        /* expected: SIGTERM'd git resets the held connection */
+      });
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const addr = server.address();
+    if (typeof addr !== "object" || addr === null) {
+      throw new Error("blackhole server did not bind to 127.0.0.1");
+    }
+    port = addr.port;
   });
 
-  // Hang a real `git` by dialing the native `git://` protocol at a
-  // non-routable reserved address: git opens the TCP socket itself (no
-  // pipe-holding helper child), so the connect blocks until our tiny
-  // per-call timeout SIGTERMs git — which closes the socket + stdio pipes
-  // so spawn() resolves promptly. The thrown SpawnTimeoutError must carry
-  // exactly the timeout we asked for, proving defaultGitSpawn plumbed
-  // opts.timeoutMs through resolveGitTimeoutMs into spawn() rather than a
-  // hardcoded 30_000 literal (which would NOT fire in this window —
-  // surfacing as a bun-test timeout, not a clean SpawnTimeoutError).
-  const HANG_ARGV = ["ls-remote", "git://10.255.255.1/atmux-timeout-probe.git"] as const;
+  afterEach(async () => {
+    if (original === undefined) delete process.env.ATMUX_GIT_TIMEOUT_MS;
+    else process.env.ATMUX_GIT_TIMEOUT_MS = original;
+    for (const sock of sockets) sock.destroy();
+    sockets.clear();
+    await new Promise<void>((resolve, reject) => {
+      server.close((err?: Error) => (err ? reject(err) : resolve()));
+    });
+  });
 
   test("per-call opts.timeoutMs reaches spawn (SpawnTimeoutError carries it)", async () => {
     delete process.env.ATMUX_GIT_TIMEOUT_MS;
     let caught: SpawnTimeoutError | null = null;
     try {
-      await defaultGitSpawn([...HANG_ARGV], { timeoutMs: 250 });
+      await defaultGitSpawn(["ls-remote", `git://127.0.0.1:${port}/atmux-timeout-probe.git`], {
+        timeoutMs: 250,
+      });
     } catch (e) {
       if (e instanceof SpawnTimeoutError) caught = e;
       else throw e;
@@ -144,7 +180,7 @@ describe("defaultGitSpawn — forwards resolved timeout into the spawn layer", (
     process.env.ATMUX_GIT_TIMEOUT_MS = "275";
     let caught: SpawnTimeoutError | null = null;
     try {
-      await defaultGitSpawn([...HANG_ARGV]);
+      await defaultGitSpawn(["ls-remote", `git://127.0.0.1:${port}/atmux-timeout-probe.git`]);
     } catch (e) {
       if (e instanceof SpawnTimeoutError) caught = e;
       else throw e;
