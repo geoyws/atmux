@@ -89,7 +89,8 @@ export interface PreflightDeps {
 
 function defaultTmuxVersion(bin: string): string | null {
   try {
-    const r = nativeSpawnSync(bin, ["-V"], { encoding: "utf8" });
+    // t-48cef478: `-u` on every client call, version probes included.
+    const r = nativeSpawnSync(bin, ["-u", "-V"], { encoding: "utf8" });
     if (r.status !== 0) return null;
     const out = (r.stdout ?? "").trim();
     return out.length > 0 ? out : null;

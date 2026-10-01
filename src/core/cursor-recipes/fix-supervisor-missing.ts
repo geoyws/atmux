@@ -68,7 +68,9 @@ async function defaultListWindows(sessionName: string): Promise<ReadonlyArray<st
   try {
     r = await spawn({
       cmd: resolveTmuxBin(),
-      argv: ["list-windows", "-t", sessionName, "-F", "#{window_name}"],
+      // t-48cef478: `-u` forces UTF-8 on the client (POSIX-locale TAB→`_`
+      // corruption); global flags precede the subcommand.
+      argv: ["-u", "list-windows", "-t", sessionName, "-F", "#{window_name}"],
       timeoutMs: 5_000,
       expectExitCode: "any",
       // ADR-281 — unpinned socket + implicit server start: this probe can

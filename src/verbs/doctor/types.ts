@@ -64,10 +64,14 @@ export function guardTmuxArgv(
   argv: ReadonlyArray<string>,
   guard: (config: SocketConfig) => void = defaultSocketGuard,
 ): void {
-  const value = argv[1];
+  // t-48cef478: argv here carries the tmux `-u` global first
+  // (`rawTmuxSpawn` below), so the socket flag sits at index 1 then.
+  const flagIndex = argv[0] === "-u" ? 1 : 0;
+  const flag = argv[flagIndex];
+  const value = argv[flagIndex + 1];
   if (value === undefined) return;
-  if (argv[0] === "-S") guard({ socketPath: value });
-  else if (argv[0] === "-L") guard({ socket: value });
+  if (flag === "-S") guard({ socketPath: value });
+  else if (flag === "-L") guard({ socket: value });
 }
 
 /** Wrap a raw tmux spawn so every socket-naming argv is guarded first. */
@@ -86,7 +90,9 @@ export function createGuardedTmuxSpawn(
 const rawTmuxSpawn: TmuxSpawn = (argv) =>
   defaultSpawn({
     cmd: resolveTmuxBin(),
-    argv,
+    // t-48cef478: `-u` on every client call (POSIX-locale TAB→`_` corruption);
+    // the guard above already ran on the caller's argv.
+    argv: ["-u", ...argv],
     expectExitCode: "any",
     timeoutMs: 5_000,
     // ADR-281: a doctor probe is read-only against tmux STATE, but tmux

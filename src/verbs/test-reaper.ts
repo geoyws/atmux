@@ -266,7 +266,8 @@ function defaultKillServer(socket: string): void {
   if (!prepareSocketDial(socket)) return;
   const env = { ...process.env };
   delete env.TMUX;
-  spawnSync("tmux", ["-S", socket, "kill-server"], { env, stdio: "ignore" });
+  // t-48cef478: `-u` on every client call (POSIX-locale TAB→`_` corruption).
+  spawnSync("tmux", ["-u", "-S", socket, "kill-server"], { env, stdio: "ignore" });
 }
 
 /** Remove a reaped directory only when a descriptor walk, run right

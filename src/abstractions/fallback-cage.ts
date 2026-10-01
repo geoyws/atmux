@@ -514,6 +514,9 @@ export async function destroyFallbackCage(
       // even this teardown probe carries the child-env policy.
       unsetEnv: TMUX_CHILD_UNSET_ENV,
       argv: [
+        // t-48cef478: `-u` forces UTF-8 on the client (POSIX-locale TAB→`_`
+        // corruption); global flags precede the subcommand.
+        "-u",
         "-L",
         handle.tmuxSocket,
         // t-2ff4f48e: a probe that is first on a dead socket IS the
@@ -574,6 +577,9 @@ export async function destroyFallbackCage(
         ...TMUX_CHILD_ENV_ARGV,
         `TMUX_TMPDIR=${handle.tmuxTmpdir}`,
         resolveTmuxBin(),
+        // t-48cef478: tmux `-u` (UTF-8 client; distinct from sudo's `-u`
+        // above) — global flags precede the subcommand.
+        "-u",
         "-L",
         handle.tmuxSocket,
         // t-2ff4f48e: same creating-argv rule as the capture-pane probe

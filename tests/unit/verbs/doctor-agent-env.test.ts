@@ -68,6 +68,18 @@ describe("guardTmuxArgv / createGuardedTmuxSpawn", () => {
     expect(seen).toEqual([{ socketPath: "/p/sock" }, { socket: "default" }]);
   });
 
+  test("t-48cef478: a leading tmux -u global does not hide the socket flag from the guard", () => {
+    const seen: unknown[] = [];
+    const guard = (c: unknown): void => {
+      seen.push(c);
+    };
+    guardTmuxArgv(["-u", "-S", "/p/sock", "has-session"], guard);
+    guardTmuxArgv(["-u", "-L", "default", "list-sessions"], guard);
+    guardTmuxArgv(["-u", "-V"], guard);
+    guardTmuxArgv(["-u"], guard);
+    expect(seen).toEqual([{ socketPath: "/p/sock" }, { socket: "default" }]);
+  });
+
   test("a refusing guard stops the spawn", async () => {
     const calls: string[][] = [];
     const spawn = createGuardedTmuxSpawn(
