@@ -250,6 +250,8 @@
 | 286 | Eternal-improvement retired — the loop, the `improve` verb and its three Discord templates | 2026-09-01 | accepted (operator-direct) |
 | 287 | Canonical cockpit nesting — groups are branches, teams are leaf cages hosting drivers; the default roster is drivers-only | 2026-09-02 | accepted (operator-direct) |
 | 288 | Driver window worker/attention pane pair — floor-1 default-3 pair contract (floor-3 wording superseded 2026-09-28), null-default attention launch, and later-slice contract | 2026-09-03 | accepted (operator-direct — George, 2026-09-28, a-6b92a0d4). Was: proposed |
+| 290 | Superdriver lane shortform — cockpit window 1 `_superdriver` → `_sd`, `_sdN` multi-lane cockpit (ADR-279 operator windows, lease-guarded dispatch), `/atmux:bruh` + `/atmux:bruhloop` retired and deleted (drafted as 287; renumbered to 288, then to 290 — collision) | 2026-09-02 | accepted (adversarial review 2026-09-02, 0 blockers; operator decision — George, 2026-09-02) |
+| 291 | The medic is reinstated as a live cockpit member — ADR-212 §D1/§D5/§D6 superseded, `_medic` sits after the `_sdN` lanes (ADR-290 §D5), pane carries `ATMUX_MEMBER=medic`, `buildSuperdoctor*` shims removed | 2026-09-07 | accepted (operator-direct — geoyws, 2026-09-07) |
 | 292 | `atmux msg` — mailbox record + wake over `inbox_messages` (supersedes ADR-154 §D2 per E1-T1 option b) | 2026-09-23 | accepted (reviewer signoff 2026-09-29) |
 | 293 | Driver send-keys guard kept as product behaviour after the 2026-09-08 pane-to-pane revocation | 2026-09-23 | accepted (operator-direct — George, 2026-09-28, a-62b50705). Was: proposed |
 | 294 | `atmux doctor` detects tmux servers whose global environment came from an agent shell | 2026-09-25 | proposed |
