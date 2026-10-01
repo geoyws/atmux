@@ -34,7 +34,7 @@
 
 import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmod, mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscordSendOpts } from "../../../src/abstractions/discord.ts";
@@ -463,20 +463,28 @@ describe("runRefusalTriggerForTeam — residual catch-paths (t-b26092d3)", () =>
   });
 
   test("unreadable rotations log counts as zero (fail-closed)", async () => {
-    // Seed three countable same-day rows, then strip permissions:
-    // exists() is true but text() throws EACCES, so countTodayRotations
-    // takes its catch → 0. Asserting 0 against countable rows proves
-    // the catch ran (a successful read would count 3). The exempt
-    // path returns right after the count, keeping the test single-purpose.
+    // Seed three countable same-day rows, then inject an EACCES throw
+    // via the fsRead seam: countTodayRotations takes its catch → 0.
+    // Asserting 0 against countable rows proves the catch ran (a
+    // successful read would count 3). The exempt path returns right
+    // after the count, keeping the test single-purpose. No chmod: root
+    // reads through 000, so a permission-based failure is uid-dependent.
     await seedCapHitLog();
-    const logPath = join(env.atmuxDir, "state", "refusal-rotations.log");
-    await chmod(logPath, 0o000);
+    const eacces = Object.assign(
+      new Error("EACCES: permission denied, open 'refusal-rotations.log'"),
+      {
+        code: "EACCES",
+      },
+    );
     const r = await runRefusalTriggerForTeam(team(["alice"], { exemptMembers: ["alice"] }), {
       db: env.db,
       atmuxDir: env.atmuxDir,
       spawnAtmux: recordedSpawn().spawn,
       nowSec: () => 10500,
       log: () => {},
+      fsRead: async () => {
+        throw eacces;
+      },
     });
     expect(r.exempt).toBe(1);
     expect(r.perMember[0]?.outcome).toBe("exempt");

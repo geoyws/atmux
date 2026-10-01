@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — refusal-trigger EACCES test no longer depends on uid (t-f1a936f8)
+
+- **`runRefusalTriggerForTeam` gains an optional `fsRead` dep** (default: the existing `Bun.file` read returning `""` when the rotations log is missing). The `unreadable rotations log counts as zero` test now injects an EACCES throw through that seam instead of `chmod 000`, which root reads through — so the catch path is exercised identically as root (Linux gate) and non-root (macOS).
+
 ### Fixed — every tmux client call carries `-u` (UTF-8) (t-48cef478)
 
 **Tab-separated tmux parses survive a POSIX locale.** With no UTF-8 locale (LANG unset, LC_CTYPE=POSIX — containers, cron, systemd) the tmux client prints a literal TAB inside `-F` formats as `_`, so every `list-windows`/`list-panes` lookup returned nothing (measured 2026-10-01 on tmux 3.6a/3.5a). Every atmux client argv now leads with the `-u` global flag — via `createTmux`'s socket prefix, `socket-dial`, doctor's tmux spawn, the fallback-cage/poke raw spawns, `test-reaper`, the cursor-recipes probe, and the preflight version probe — per proposed [ADR-307](docs/adr/307-tmux-client-utf8-flag.md). No LANG/LC_* is forced anywhere.

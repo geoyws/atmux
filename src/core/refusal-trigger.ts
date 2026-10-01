@@ -18,8 +18,8 @@
 //      `[member-refusal-rotate]` template, file a complaint (HARD only).
 //
 // Pure-of-direct-IO via the `RefusalTriggerDeps` seam — every
-// collaborator (DB handle, spawn, clock, logger, fs append, Discord
-// sender) is injectable. Production callers (medic) call
+// collaborator (DB handle, spawn, clock, logger, fs append/read,
+// Discord sender) is injectable. Production callers (medic) call
 // `runRefusalTriggerForTeam` once per tick after the SCAN + RECORD
 // pass; the function iterates members + dispatches per-member.
 
@@ -113,6 +113,11 @@ export interface RefusalTriggerDeps {
   /** Filesystem append override — defaults to `appendText` from
    *  `src/abstractions/fs.ts`. Tests pass a recorder. */
   fsAppend?: (path: string, body: string) => Promise<void>;
+  /** Filesystem read override for the rotations log — defaults to a
+   *  `Bun.file` read returning `""` when the file is missing. Tests
+   *  pass a thrower to exercise the EACCES catch path without
+   *  depending on uid (root reads through chmod 000). */
+  fsRead?: (path: string) => Promise<string>;
   /** Member subset — defaults to all team members. */
   memberFilter?: (m: TeamMember) => boolean;
 }
@@ -259,12 +264,16 @@ export async function runRefusalTriggerForTeam(
   // Read the rotations log once per tick; pass to the per-member
   // counter via a tiny `readFile` closure so we don't re-read for
   // every member. The cap is a per-MEMBER count, so we parse the
-  // file lazily per member-check.
-  const readFile = async (path: string): Promise<string> => {
-    const file = Bun.file(path);
-    if (!(await file.exists())) return "";
-    return file.text();
-  };
+  // file lazily per member-check. `fsRead` override exists so tests
+  // can inject an EACCES throw without depending on uid (root reads
+  // through chmod 000).
+  const readFile =
+    deps.fsRead ??
+    (async (path: string): Promise<string> => {
+      const file = Bun.file(path);
+      if (!(await file.exists())) return "";
+      return file.text();
+    });
 
   for (const m of team.members) {
     if (!filter(m)) continue;
