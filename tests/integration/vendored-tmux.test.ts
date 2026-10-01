@@ -17,6 +17,7 @@
 //      surfaces yellow `vendored-tmux-missing` row.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -110,13 +111,13 @@ describe("ADR-191 resolveTmuxBin — real filesystem / real env", () => {
 });
 
 describe("ADR-191 — atmux doctor end-to-end probe smoke", () => {
-  test("`atmux doctor` surfaces vendored-tmux-missing row on this cage", async () => {
-    // /opt/atmux/current/bin/tmux is absent on this development box
-    // (the whole premise of the unshipped-impl Epic). The doctor
-    // probe wired in this same commit should report a yellow row.
-    // We run atmux doctor via bun --bun-direct invocation to avoid
-    // depending on the installed /usr/local/bin/atmux binary which
-    // may lag the source.
+  // The probe reads the real /opt/atmux/current/bin/tmux, so the expected
+  // row depends on this host: absent → yellow `vendored-tmux-missing`;
+  // present (the Linux gate image installs the pin there) → no missing row.
+  // Either way the real doctor runs end to end. We run it via bun on the
+  // source entry to avoid the installed /usr/local/bin/atmux, which may lag.
+  const vendoredPresent = existsSync(VENDORED_TMUX_PATH);
+  test(`\`atmux doctor\` ${vendoredPresent ? "reports no vendored-tmux-missing row (vendored tmux installed)" : "surfaces vendored-tmux-missing row (vendored tmux absent)"}`, async () => {
     const r = await spawn({
       cmd: process.execPath, // bun binary
       argv: ["run", join(REPO_ROOT, "bin/atmux-entry.ts"), "doctor"],
@@ -127,7 +128,12 @@ describe("ADR-191 — atmux doctor end-to-end probe smoke", () => {
     // doctor may exit non-zero when blockers exist (e.g. lead pane
     // down warnings or other env state) — we only assert on the row.
     const combined = `${r.stdout}\n${r.stderr}`;
-    expect(combined).toContain("vendored-tmux-missing");
-    expect(combined).toContain("/opt/atmux/current/bin/tmux");
+    expect(combined).toContain("atmux doctor");
+    if (vendoredPresent) {
+      expect(combined).not.toContain("vendored-tmux-missing");
+    } else {
+      expect(combined).toContain("vendored-tmux-missing");
+      expect(combined).toContain("/opt/atmux/current/bin/tmux");
+    }
   });
 });
