@@ -188,7 +188,7 @@ describe("review item 2 — test-reaper never kills through, or removes, what is
     servers.push(server);
     await new Promise<void>((r) => server.listen(join(dir, "sock"), () => r()));
     const json = await reap(root);
-    expect(readFileSync(log, "utf8")).toBe(`-S ${join(dir, "sock")} kill-server\n`);
+    expect(readFileSync(log, "utf8")).toBe(`-u -S ${join(dir, "sock")} kill-server\n`);
     expect(existsSync(dir)).toBe(false);
     expect(json).toContain('"reaped"');
     await rm(dir, { recursive: true, force: true });
