@@ -88,7 +88,14 @@ function spawnTmux(
   const env = { ...process.env, ...extraEnv };
   delete env.TMUX;
   const proc = Bun.spawnSync({
-    cmd: ["tmux", "-f", CANONICAL_ATMUX_TMUX_CONF_PATH, "-L", socketName, ...argv],
+    // `-u` leads every argv per ADR-307: with no UTF-8 locale (LANG unset
+    // in the Linux gate) the tmux client prints a literal TAB inside `-F`
+    // formats as `_`, which collapses every tab-separated parse below to a
+    // single column so no window lookup matches. Production gets this from
+    // createTmux's socketArgs prefix; this raw fixture spawn needs it
+    // inline (ADR-307 §D2 left fixtures alone assuming they parse no
+    // tabs — this one does, at every list-windows call site).
+    cmd: ["tmux", "-u", "-f", CANONICAL_ATMUX_TMUX_CONF_PATH, "-L", socketName, ...argv],
     env,
     stdout: "pipe",
     stderr: "pipe",
@@ -176,12 +183,69 @@ exec sh -c '${PORTABLE_KEEPALIVE_COMMAND}'
   await chmod(stubClaude, 0o755);
 }
 
+/** Diagnostic format for a window-visibility mismatch. Space-separated so
+ *  it survives the ADR-307 TAB→`_` degradation that tab formats suffer
+ *  under a POSIX locale — the dump stays parseable by eye in the gate
+ *  log no matter the client encoding. */
+const WINDOW_DIAGNOSTIC_FORMAT =
+  "#{window_index} #{window_name} #{pane_dead} #{pane_dead_status} #{pane_current_command}";
+
+/** Poll list-windows until every expected name is present (bounded).
+ *
+ *  `new-window` acks only after the server creates the window, so on a
+ *  healthy server the first poll already succeeds; the loop absorbs slow
+ *  registration under gate load. On timeout it throws with a
+ *  `WINDOW_DIAGNOSTIC_FORMAT` dump so the gate log names the mechanism
+ *  (dead pane? missing window? wrong command?) instead of merely showing
+ *  an undefined id downstream (t-1ada4d1b).
+ *
+ *  Budget is deliberately short (3s at 100ms): it must fit inside bun's
+ *  5s default per-test timeout alongside the verb under test. */
+async function waitForWindows(hermetic: Hermetic, expected: ReadonlyArray<string>): Promise<void> {
+  const deadline = Date.now() + 3_000;
+  for (;;) {
+    const list = tmuxCage(hermetic, [
+      "list-windows",
+      "-t",
+      COCKPIT_SESSION,
+      "-F",
+      "#{window_name}",
+    ]);
+    const names = list.stdout
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+    if (expected.every((n) => names.includes(n))) return;
+    if (Date.now() >= deadline) {
+      const diag = tmuxCage(hermetic, [
+        "list-windows",
+        "-t",
+        COCKPIT_SESSION,
+        "-F",
+        WINDOW_DIAGNOSTIC_FORMAT,
+      ]);
+      throw new Error(
+        `cockpit-rotate fixture: timed out waiting for windows [${expected.join(", ")}] ` +
+          `in session ${COCKPIT_SESSION} (exit=${diag.exitCode})\n${diag.stdout}\n${diag.stderr}`,
+      );
+    }
+    // Live tmux is an external process; fake timers cannot advance its
+    // state, so this integration poll sleeps for real (cf. waitFor in
+    // tests/e2e/pane-shell-lifecycle.test.ts).
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 100);
+    await promise;
+  }
+}
+
 /** Spawn the synthetic cockpit session with the 3 windows the verb
  *  reads/touches: _superdriver (gate-1 source), _medic, team-alpha
  *  (team-driver target). Each window runs the shared portable
  *  keepalive so they stay alive until the verb's killWindow tears
- *  them down. */
-function spawnCockpitSession(hermetic: Hermetic): void {
+ *  them down. Waits (bounded) for all three windows to list before
+ *  returning so slow registration under gate load surfaces as a
+ *  diagnostic dump, not a bare undefined id downstream. */
+async function spawnCockpitSession(hermetic: Hermetic): Promise<void> {
   const newSess = tmuxCage(hermetic, [
     "new-session",
     "-d",
@@ -208,6 +272,7 @@ function spawnCockpitSession(hermetic: Hermetic): void {
     ]);
     expect(w.exitCode).toBe(0);
   }
+  await waitForWindows(hermetic, ["_superdriver", "_medic", "team-alpha"]);
 }
 
 /** Read + parse the last NDJSON audit row from the hermetic audit log.
@@ -339,7 +404,7 @@ describe.skipIf(!HAS_TMUX)("integration ADR-167 T7 — atmux cockpit rotate", ()
   // ----- Run 1: medic rotation success (Plan A) -----
 
   test("Run 1 — medic rotation success (Plan A: real resolver via stub claude on PATH)", async () => {
-    spawnCockpitSession(hermetic);
+    await spawnCockpitSession(hermetic);
     // Capture pre-rotation _medic pane id for "pid changed" assertion.
     const preList = tmuxCage(hermetic, [
       "list-windows",
@@ -391,7 +456,7 @@ describe.skipIf(!HAS_TMUX)("integration ADR-167 T7 — atmux cockpit rotate", ()
   // ----- Run 2: gate-4 superdriver-refuse (unconditional) -----
 
   test("Run 2 — gate-4 superdriver-refuse is unconditional (--force has NO effect)", async () => {
-    spawnCockpitSession(hermetic);
+    await spawnCockpitSession(hermetic);
 
     // Without --force.
     const exit1 = await cockpitRotate(["superdriver"], rotateOpts(hermetic));
@@ -423,7 +488,7 @@ describe.skipIf(!HAS_TMUX)("integration ADR-167 T7 — atmux cockpit rotate", ()
   // ----- Run 3: gate-3 uptime refusal + --force bypass -----
 
   test("Run 3 — gate-3 uptime refuses fresh marker; --force bypasses", async () => {
-    spawnCockpitSession(hermetic);
+    await spawnCockpitSession(hermetic);
 
     // Re-touch _medic marker to NOW (mtime <60min → gate-3 refuses).
     const markerPath = join(hermetic.homeDir, ".claude/teams/__cockpit__/medic/session-start.txt");
@@ -472,7 +537,7 @@ describe.skipIf(!HAS_TMUX)("integration ADR-167 T7 — atmux cockpit rotate", ()
   // ----- Run 4: gate-1 user-typing refusal -----
 
   test("Run 4 — gate-1 user-typing refuses when _superdriver compose box has queued text", async () => {
-    spawnCockpitSession(hermetic);
+    await spawnCockpitSession(hermetic);
     // Replace _superdriver pane with a fake Claude-Code-shaped TUI
     // that classifyText() classifies as TYPING. The classifier in
     // src/core/pane-state.ts keys off the `❯ <text>` prompt at the
@@ -504,7 +569,7 @@ describe.skipIf(!HAS_TMUX)("integration ADR-167 T7 — atmux cockpit rotate", ()
   // ----- Run 5: team-driver rotation, cage socket unaffected -----
 
   test("Run 5 — team-driver rotation respawns cockpit window; per-team cage socket unaffected", async () => {
-    spawnCockpitSession(hermetic);
+    await spawnCockpitSession(hermetic);
     // Spawn a separate per-team "cage" session on a different socket
     // → proves cockpit rotate's tmuxFactory threads cockpit socket
     // only (per ADR-162). We use a second named socket inside the
@@ -571,7 +636,7 @@ describe.skipIf(!HAS_TMUX)("integration ADR-167 T7 — atmux cockpit rotate", ()
   // ----- Run 6: handoff-write-failed atomicity (Plan B injection) -----
 
   test("Run 6 — handoff-write-failed: PANE NOT TOUCHED, recovery posture preserved", async () => {
-    spawnCockpitSession(hermetic);
+    await spawnCockpitSession(hermetic);
 
     // Record every tmux operation the verb attempts. The atomicity
     // assertion is "nothing destructive fires when handoff-write
