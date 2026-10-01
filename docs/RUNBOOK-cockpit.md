@@ -80,6 +80,21 @@ Reads (session/window/pane listings) hit the live servers so the plan reflects r
 Reconcile and the `aca`/`aco` attach wrappers show one summary per fleet phase: team.json changes, cage states, TUI launches, existing windows, and a single timing footer. The cage line splits three states: `running` (an agent TUI pane is up; skipped), `idle` (the server is up with no agent pane; a non-force `start` refreshes it in place — counted, not named), and down (`started` / `would start`, named). A dry-run groups repeated identical planned operations as `(... ×N)` without changing the final operation counts. Changed resources and failures still get individual lines; a failed cage start prints its buffered diagnostics, and a thrown start error still aborts reconcile. Explicit reconcile's ready hint uses `atmux cockpit attach`, which selects the cockpit's dedicated socket; `aca`/`aco` omit that redundant hint because they attach immediately.
 The fuller `atmux cockpit doctor` whole-cockpit diff verb (e-28) remains upcoming — proposed in [ADR-235](docs/adr/235-cockpit-verb-surface-rationalization.md), not yet shipped; `reconcile --dry-run` above is the shipped read-only preview surface.
 
+### Attaching without ensure-up: `cockpit attach --live` (ADR-306, shipped)
+
+`atmux cockpit attach` runs ensure-up first (the `aca` shape: cycle dead
+cages, reconcile, then attach). `atmux cockpit attach --live` is the
+`aco` shape: attach to whichever candidate cockpit is LIVE, with no
+ensure-up, no reconcile, no TUI launch — and never a server-creating
+command. Candidates are `atmux-cockpit` + `atmux-vendored-cockpit`, or
+the `ATMUX_COCKPIT_SOCKET` override alone when set. Each candidate is
+probed read-only (socket node + connect-dial before any tmux call; a
+missing socket triggers the SIGUSR1 re-bind only when its server process
+still exists). None live → one-line hint naming `aca`, exit 1; several
+live → listing (socket path, session, window count, server version) and
+refusal, exit 1 — disambiguate with `ATMUX_COCKPIT_SOCKET`. `--live`
+implies `--no-ensure` and refuses `--launch`; `--human` keeps working.
+
 ### Tearing down the cockpit: `atmux shutdown` (ADR-242, shipped)
 
 `atmux shutdown` stops every enabled team, then kills this cockpit session

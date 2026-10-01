@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ✨ Added — `cockpit attach --live` fast path to the live cockpit (t-671763e7)
+
+**Attach without ensure-up, and never create a server to do it.** `atmux cockpit attach --live` (the `aco` shape per the 2026-10-01 decision) probes `atmux-cockpit` + `atmux-vendored-cockpit` — or the `ATMUX_COCKPIT_SOCKET` override alone — read-only (socket node + connect-dial before any tmux call, SIGUSR1 re-bind only when a server outlives its socket, client fallback server binary → Homebrew → vendored → PATH) and attaches to the one live cockpit. None live prints a one-line `aca` hint (exit 1); several live lists them and refuses (exit 1) until `ATMUX_COCKPIT_SOCKET` disambiguates. `--live` implies `--no-ensure`, refuses `--launch`, and accepts `--human`. See ADR-306.
+
 ### Changed — quieter cockpit attach/reconcile output (t-7f310559)
 
 **Routine cage start messages are summarized, not repeated.** `aca` and `aco` report cage outcomes, existing cockpit windows, and one timing footer. The cage line separates `running` cages (agent up), `idle` cages (server up, no agent; refreshed in place and only counted) and cages that were down (`started`, named), so a fleet of idle driver shells no longer reads as "42 would start". Warnings and errors remain visible; a start exception prints buffered diagnostics and still aborts reconcile. The ready hint now names `atmux cockpit attach` instead of a bare `tmux attach` on the wrong socket. Dry-run still prints its planned operations and exact totals.
