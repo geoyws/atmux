@@ -4,18 +4,39 @@
 # probes) and `jq` (config-shape assertions in a few helpers). oven/bun
 # ships none of those; this layer adds them on Debian trixie.
 #
+# tmux is the PINNED version (tmux/PINNED_VERSION, ADR-191), built from the
+# checksum-verified release tarball by scripts/build-vendored-tmux.sh and
+# installed at /opt/atmux/<v>/bin/tmux with /opt/atmux/current and
+# /usr/local/bin/tmux pointing at it — never the distro package. Debian
+# trixie ships 3.5a, which rewrites a literal TAB in a `-F` format to `_`
+# (3.6a keeps it), so every tab-separated list-windows/list-panes parse in
+# src/ failed under 3.5a and the gate measured the distro, not atmux
+# (t-4716165e).
+#
 # Base pinned by digest (recorded 2026-09-28; bump deliberately, never float):
 #   oven/bun@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895
 #
-# Build:  docker build -f docker/Dockerfile.gate -t atmux-gate:latest .
-# Digest: docker inspect atmux-gate:latest --format='{{index .RepoDigests 0}}'
+# Build:  docker build -f docker/Dockerfile.gate -t atmux-gate:<tag> .
+#         (scripts/gate-linux.sh tags by a hash of this file + the pin
+#         inputs, so an edit here or a pin bump forces a rebuild.)
+# Digest: docker inspect atmux-gate:<tag> --format='{{index .RepoDigests 0}}'
 #         (empty until pushed — receipts cite the base digest above plus the
 #         local image ID from `docker images atmux-gate --format '{{.ID}}'`).
 
 FROM oven/bun@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends tmux git jq procps \
+  && apt-get install -y --no-install-recommends git jq procps \
+     curl ca-certificates build-essential bison pkg-config libevent-dev libncurses-dev \
   && rm -rf /var/lib/apt/lists/*
+
+COPY tmux/PINNED_VERSION tmux/SHA256SUMS /build/tmux/
+COPY scripts/build-vendored-tmux.sh /build/scripts/
+RUN v="$(tr -d '[:space:]' < /build/tmux/PINNED_VERSION)" \
+  && bash /build/scripts/build-vendored-tmux.sh --stage "/opt/atmux/$v" \
+  && ln -s "/opt/atmux/$v" /opt/atmux/current \
+  && ln -s /opt/atmux/current/bin/tmux /usr/local/bin/tmux \
+  && rm -rf /build \
+  && test "$(tmux -V)" = "tmux $v"
 
 WORKDIR /repo

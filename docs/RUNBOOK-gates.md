@@ -8,10 +8,14 @@ Reference: repo rule "ALWAYS CONTAINERISE e2e, gates and tests".
 
 ## The gate
 
-- Image: `docker/Dockerfile.gate` (oven/bun + tmux + git + jq; base pinned
-  by digest in the Dockerfile header — bump deliberately, never float).
-- Script: `scripts/gate-linux.sh` (builds the image if absent; mounts the
-  repo; isolates HOME/TMPDIR/node_modules from the host).
+- Image: `docker/Dockerfile.gate` (oven/bun + git + jq + the PINNED tmux
+  from `tmux/PINNED_VERSION`, built checksum-verified by
+  `scripts/build-vendored-tmux.sh` per ADR-191 — never the distro tmux,
+  whose `-F` tab handling differs; base pinned by digest in the Dockerfile
+  header — bump deliberately, never float).
+- Script: `scripts/gate-linux.sh` (tags the image by a hash of its inputs
+  and builds it when that tag is absent; mounts the repo; isolates
+  HOME/TMPDIR/node_modules from the host).
 - Slot: every run goes through `gate-slot` on the test host. Wrap the
   BLOCKING invocation, never a detached start:
 

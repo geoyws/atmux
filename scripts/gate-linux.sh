@@ -22,11 +22,17 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IMAGE="${ATMUX_GATE_IMAGE:-atmux-gate:latest}"
+# The default tag is a hash of every image input, so a Dockerfile edit or a
+# tmux pin bump (tmux/PINNED_VERSION, tmux/SHA256SUMS, the build script)
+# builds a fresh image instead of silently reusing a stale `latest`.
+sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi; }
+INPUTS_HASH="$(cd "$REPO" && cat docker/Dockerfile.gate tmux/PINNED_VERSION tmux/SHA256SUMS scripts/build-vendored-tmux.sh | sha256 | cut -c1-12)"
+IMAGE="${ATMUX_GATE_IMAGE:-atmux-gate:$INPUTS_HASH}"
 
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   docker build -f "$REPO/docker/Dockerfile.gate" -t "$IMAGE" "$REPO"
 fi
+echo "gate-linux: image $IMAGE ($(docker image inspect "$IMAGE" --format '{{.Id}}'))"
 
 if [[ "${1:-}" == "--quick" ]]; then
   CMD=(bash -c 'bunx tsc --noEmit -p tsconfig.json')
