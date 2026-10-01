@@ -1514,6 +1514,7 @@ export async function cockpitRebuild(
         return {
           name: t.name,
           launched: teamSummary.launched,
+          skipped: teamSummary.skipped,
           unbootstrapped: teamSummary.unbootstrapped,
         };
       }),
@@ -1530,9 +1531,14 @@ export async function cockpitRebuild(
       }
     }
     const launchedTotal = tuiOutcomes.reduce((n, o) => n + o.launched, 0);
+    const onAgentTotal = tuiOutcomes.reduce((n, o) => n + o.skipped, 0);
+    // Zero launched is the drivers-only steady state (no member windows to
+    // launch into); only claim panes are "on an agent" when we counted them.
     logger.log(
       `  · tui: ${teams.length} cages checked, ${launchedTotal} launched` +
-        (launchedTotal === 0 ? " — all already on claude" : ""),
+        (onAgentTotal > 0
+          ? `, ${onAgentTotal} pane${onAgentTotal === 1 ? "" : "s"} already on an agent`
+          : ""),
     );
   }
   // enabled group, sitting between the cockpit (L1) and the team cages
