@@ -1816,6 +1816,43 @@ describe("runAllChecks", () => {
     expect(sd?.status).toBe("green");
   });
 
+  test("wiring — medic claudeAccount threads into the claude-wrappers probe (t-fd92b0ea)", async () => {
+    await mkdir(atmuxDir, { recursive: true });
+    const team: Team = {
+      name: "demo",
+      members: [],
+      drivers: [{ name: "driver", tui: null, cwd: "." }],
+      driverPair: {
+        layout: "horizontal",
+        panes: [
+          { role: "worker", side: "left" },
+          {
+            role: "attention",
+            side: "right",
+            workflow: "kb-att",
+            authority: "decision-only",
+            tui: null,
+            command: null,
+          },
+        ],
+      },
+    };
+    const red = await runAllChecks(atmuxDir, team, undefined, "/nope/medic-dir");
+    const wrapperRows = red.filter((r) => r.label === "claude-wrappers");
+    expect(wrapperRows).toHaveLength(1);
+    expect(wrapperRows[0]?.status).toBe("red");
+    expect(wrapperRows[0]?.detail).toMatch(/medic:\/nope\/medic-dir/);
+    // Registered (built-in) medic dir → silent; unset medic dir → silent.
+    expect(
+      (await runAllChecks(atmuxDir, team, undefined, "/root/.claude")).some(
+        (r) => r.label === "claude-wrappers",
+      ),
+    ).toBe(false);
+    expect((await runAllChecks(atmuxDir, team)).some((r) => r.label === "claude-wrappers")).toBe(
+      false,
+    );
+  });
+
   test("wiring — ADR-287 §D7 probes run in the default chain (team-inside-team + deprecated-member-windows)", async () => {
     // Point the production cockpit loader at a temp cockpit.json whose
     // tree nests a team under a team, and whose child team's root holds

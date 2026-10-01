@@ -78,6 +78,8 @@ Window 2 of the cockpit session shows `medic` (formerly `superdoctor`). Per-team
 
 To disable: set `enabled: false` (or remove the block) and re-run `atmux cockpit rebuild`. The window is killed; no other cockpit shape changes.
 
+`atmux doctor` validates the `medic.claudeAccount.configDir` against the same wrapper registry as the team drivers (built-ins → `cockpit.json` `wrappers`; per ADR-243 the built-ins are the `~/.atmux/claude-accounts.json` table when present). The medic is a cockpit seat — resolved at cockpit scope via `mergeWrapperRegistries(cockpit.wrappers)` in `cockpit-rotate.ts` — so a `team.json` `wrappers` override does not cover it. An unregistered medic dir surfaces as a red `claude-wrappers` row naming `medic:<dir>` with the fix (register the dir in `cockpit.json` `wrappers`); a registered or unset account stays silent.
+
 ## Per-team `cageMode` flag (t-72a6b7d7 / c-a99bf461)
 
 Each team entry in `~/.atmux/cockpit.json` accepts an optional `cageMode` field that declares operator intent for the team's cage tmux socket. Medic's sweep cross-references the declared mode against live socket-presence to colour each row — eliminating the pre-flag failure mode where "cage intentionally torn down" looked identical to "cage anomalously absent".

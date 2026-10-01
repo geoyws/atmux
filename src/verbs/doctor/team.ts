@@ -335,13 +335,20 @@ export function collectSafeOrphanBranches(rows: ReadonlyArray<DoctorRow>): strin
 /** Every team-held `claudeAccount` string (drivers[] entries; the
  *  `_bot` seat is gone per t-e9e1168d) must resolve against the
  *  effective registry (built-ins → cockpit.json `wrappers` →
- *  team.json `wrappers`). Red names the unresolvable pairs so a
- *  config typo surfaces at `doctor` instead of at spawn time.
+ *  team.json `wrappers`). The cockpit `_medic` seat's `claudeAccount`
+ *  (`medicConfigDir`) is validated too, but against built-ins →
+ *  cockpit.json `wrappers` ONLY: the medic is a cockpit seat, resolved
+ *  at cockpit scope via `mergeWrapperRegistries(cockpit.wrappers)` in
+ *  `cockpit-rotate.ts`, so a team.json `wrappers` override must not
+ *  cover it. Red names the unresolvable pairs so a config typo
+ *  surfaces at `doctor` instead of at spawn time (drivers) or at
+ *  cockpit rebuild (medic).
  *  (Members carry no claudeAccount — they inherit the
  *  driver/cockpit chain.) */
 export function checkClaudeWrappers(
   team: Team | null,
   cockpitWrappers?: Record<string, string>,
+  medicConfigDir?: string | null | undefined,
 ): DoctorRow[] {
   if (team === null) return [];
   const registry = mergeWrapperRegistries(cockpitWrappers, team.wrappers);
@@ -354,6 +361,15 @@ export function checkClaudeWrappers(
       resolveClaudeWrapper(dir, registry);
     } catch {
       bad.push(`${who}:${dir}`);
+    }
+  }
+  // t-fd92b0ea: cockpit-seat registry — team.json `wrappers` excluded
+  // (see doc comment above). Unset medic account stays silent.
+  if (medicConfigDir !== undefined && medicConfigDir !== null && medicConfigDir.length > 0) {
+    try {
+      resolveClaudeWrapper(medicConfigDir, mergeWrapperRegistries(cockpitWrappers));
+    } catch {
+      bad.push(`medic:${medicConfigDir}`);
     }
   }
   if (bad.length === 0) return [];
