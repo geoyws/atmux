@@ -15,6 +15,7 @@ Reference: repo rule "ALWAYS CONTAINERISE e2e, gates and tests".
   `git config --system --add safe.directory /repo` so git trusts the
   bind-mounted repo when running as root (t-b5797444);
   the container has no UTF-8 locale, which ADR-307's `tmux -u` covers; base pinned by digest in the Dockerfile
+  header — bump deliberately, never float).
 - Script: `scripts/gate-linux.sh` (tags the image by a hash of its inputs
   and builds it when that tag is absent; mounts the repo; isolates
   HOME/TMPDIR/node_modules from the host).
