@@ -1,8 +1,12 @@
-# atmux Linux gate image — bun + the native deps the suite shells out to.
-#
-# The unit suite spawns `tmux` (fixture cages), `git` (worktree/show-toplevel
-# probes) and `jq` (config-shape assertions in a few helpers). oven/bun
-# ships none of those; this layer adds them on Debian trixie.
+# atmux Linux gate image — bun + the native deps the suite shells out to:
+# `tmux` (fixture cages), `git` (worktree/show-toplevel probes, plus a
+# system-level `safe.directory /repo` so git trusts the bind-mounted repo
+# when running as root), `jq` (config-shape assertions in a few helpers),
+# `rg` (ripgrep — docs-consolidation asserts on its exit codes directly),
+# and `sudo` (tmux-child-env drives the sudo argv branches for real, and
+# `resolveCmd` throws before the spawn recorder can answer unless
+# `Bun.which('sudo')` resolves — no sudoers entry needed, only the binary).
+# oven/bun ships none of those; this layer adds them on Debian trixie.
 #
 # zsh is required: templates/tmux/atmux.conf sets default-command to
 # `exec zsh -l -i`, so without zsh every fresh pane dies at once and the
@@ -30,10 +34,13 @@
 FROM oven/bun@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends git jq procps zsh \
+  && apt-get install -y --no-install-recommends git jq procps zsh ripgrep sudo \
      curl ca-certificates build-essential bison pkg-config libevent-dev libncurses-dev \
   && rm -rf /var/lib/apt/lists/* \
   && find /usr/share/zsh -path '*/scripts/newuser' -delete \
+  && git config --system --add safe.directory /repo \
+  && test "$(git config --system --get-all safe.directory)" = /repo \
+  && command -v rg sudo >/dev/null \
   && test "$(cd "$(mktemp -d)" && HOME="$PWD" zsh -l -i -c 'print ok' </dev/null 2>&1)" = ok
 
 COPY tmux/PINNED_VERSION tmux/SHA256SUMS /build/tmux/
