@@ -206,7 +206,7 @@ describe.skipIf(!HAS_TMUX)("integration ADR-306 — cockpit attach --live", () =
 
     expect(await runLive()).toBe(0);
     expect(h.attached).toHaveLength(1);
-    expect(h.attached[0]?.argv[1]).toBe(sock);
+    expect(h.attached[0]?.argv[2]).toBe(sock);
     expect(await socketDirEntries(h)).toEqual(before);
   });
 

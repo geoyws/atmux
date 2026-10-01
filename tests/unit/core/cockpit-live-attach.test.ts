@@ -59,7 +59,7 @@ function liveSeams(overrides: Partial<LiveProbeSeams> = {}): {
   const calls: { run: Array<{ bin: string; argv: ReadonlyArray<string> }> } = { run: [] };
   const run = async (bin: string, argv: ReadonlyArray<string>): Promise<LiveRunResult> => {
     calls.run.push({ bin, argv });
-    const sub = argv[2] as string;
+    const sub = argv[3] as string;
     if (sub === "has-session") return { ok: bin === "binA", stdout: "" };
     if (sub === "list-windows") return { ok: true, stdout: "0: w1\n1: w2\n" };
     return { ok: true, stdout: "3.7c\n" };
@@ -343,7 +343,7 @@ describe("probeLiveCandidate", () => {
   test("falls through to the next client when the first does not answer", async () => {
     const { seams } = liveSeams({
       runTmux: async (bin, argv) => {
-        const sub = argv[2] as string;
+        const sub = argv[3] as string;
         if (sub !== "has-session") return { ok: true, stdout: "0: w\n" };
         return { ok: bin === "binB", stdout: "" };
       },
@@ -366,7 +366,7 @@ describe("probeLiveCandidate", () => {
     const { seams } = liveSeams({
       resolveClients: () => ["a", "b"],
       runTmux: async (bin, argv) => {
-        if (argv[2] === "has-session") return { ok: true, stdout: "" };
+        if (argv[3] === "has-session") return { ok: true, stdout: "" };
         if (bin === "a") return { ok: false, stdout: "" };
         return { ok: true, stdout: "0: w\n" };
       },
@@ -377,7 +377,7 @@ describe("probeLiveCandidate", () => {
   test("zero windows is not live", async () => {
     const { seams } = liveSeams({
       runTmux: async (_bin, argv) => {
-        if (argv[2] === "has-session") return { ok: true, stdout: "" };
+        if (argv[3] === "has-session") return { ok: true, stdout: "" };
         return { ok: true, stdout: "\n" };
       },
     });
@@ -386,7 +386,7 @@ describe("probeLiveCandidate", () => {
   test("empty version reads as unknown", async () => {
     const { seams } = liveSeams({
       runTmux: async (_bin, argv) => {
-        const sub = argv[2] as string;
+        const sub = argv[3] as string;
         if (sub === "has-session") return { ok: true, stdout: "" };
         if (sub === "list-windows") return { ok: true, stdout: "0: w\n" };
         return { ok: false, stdout: "" };
