@@ -3971,7 +3971,10 @@ describe("reconcileGroupServers (e-419553c6)", () => {
         .sort((a, b) => a.index - b.index)
         .map((w) => `${w.index}:${w.name}`);
       expect(second).toEqual(first);
-      expect(logs.some((l) => l.includes("2 windows already present"))).toBe(true);
+      expect(logs.some((l) => l.includes(`· groups: 2 windows already present (${g} 2)`))).toBe(
+        true,
+      );
+      expect(logs.some((l) => l.includes(`group '${g}': 2 windows`))).toBe(false);
     } finally {
       try {
         await gTmux.server.killServer();

@@ -603,71 +603,79 @@ export async function reconcileGroupServers(
   // Groups are independent sockets — parallelise across groups. Windows
   // WITHIN a group stay sequential: creation order defines window
   // indices, so that loop has a real ordering dependency.
-  await mapWithConcurrency(plans, COCKPIT_RECONCILE_CONCURRENCY, async ({ group, wanted }) => {
-    if (wanted.length === 0) {
-      logger.log(`  · group '${group.name}' has no enabled children — skipping its server`);
-      return;
-    }
-    const sock =
-      opts.dryRun === true
-        ? groupSocketPath(group.name)
-        : await ensurePrivateGroupSocket(group.name, logger, opts.socketDirDeps ?? {});
-    const gTmux = factory({ socketPath: sock, configFile: getAtmuxTmuxConfPath() });
-    const first = wanted[0] as GroupWantedWindow;
-    if (!(await gTmux.session.hasSession(exactSessionTarget(group.name)))) {
-      await gTmux.session.newSession({
-        name: group.name,
-        detached: true,
-        windowName: first.name,
-        ...(first.cwd !== undefined ? { cwd: first.cwd } : {}),
-        shellCommand: await first.buildCmd(),
-      });
-      logger.log(`  ✓ created group server '${group.name}' (${sock}; window 1: ${first.name})`);
-    }
-    const present = new Set((await gTmux.window.listWindows(group.name)).map((w) => w.name));
-    let alreadyPresent = 0;
-    for (const w of wanted) {
-      if (present.has(w.name)) {
-        alreadyPresent += 1;
-        continue;
+  // Unchanged windows are tallied per group and reported as ONE line
+  // after every group finishes; added/removed windows keep their own lines.
+  const presentCounts = await mapWithConcurrency(
+    plans,
+    COCKPIT_RECONCILE_CONCURRENCY,
+    async ({ group, wanted }): Promise<{ group: string; count: number }> => {
+      if (wanted.length === 0) {
+        logger.log(`  · group '${group.name}' has no enabled children — skipping its server`);
+        return { group: group.name, count: 0 };
       }
-      await gTmux.window.newWindow({
-        sessionName: group.name,
-        name: w.name,
-        detached: true,
-        ...(w.cwd !== undefined ? { cwd: w.cwd } : {}),
-        shellCommand: await w.buildCmd(),
-      });
-      present.add(w.name);
-      logger.log(`  ✓ group '${group.name}': added window '${w.name}'`);
-    }
-    if (alreadyPresent > 0) {
-      logger.log(
-        `  · group '${group.name}': ${alreadyPresent} window${alreadyPresent === 1 ? "" : "s"} already present`,
-      );
-    }
-    if (opts.onlyTeam === undefined) {
-      const wantedNames = new Set(wanted.map((w) => w.name));
-      for (const w of await gTmux.window.listWindows(group.name)) {
-        if (wantedNames.has(w.name)) continue;
-        try {
-          await gTmux.window.killWindow(`${group.name}:${w.name}`);
-          logger.log(`  ✓ group '${group.name}': removed orphan window '${w.name}'`);
-        } catch {
-          // window may already be gone
+      const sock =
+        opts.dryRun === true
+          ? groupSocketPath(group.name)
+          : await ensurePrivateGroupSocket(group.name, logger, opts.socketDirDeps ?? {});
+      const gTmux = factory({ socketPath: sock, configFile: getAtmuxTmuxConfPath() });
+      const first = wanted[0] as GroupWantedWindow;
+      if (!(await gTmux.session.hasSession(exactSessionTarget(group.name)))) {
+        await gTmux.session.newSession({
+          name: group.name,
+          detached: true,
+          windowName: first.name,
+          ...(first.cwd !== undefined ? { cwd: first.cwd } : {}),
+          shellCommand: await first.buildCmd(),
+        });
+        logger.log(`  ✓ created group server '${group.name}' (${sock}; window 1: ${first.name})`);
+      }
+      const present = new Set((await gTmux.window.listWindows(group.name)).map((w) => w.name));
+      let alreadyPresent = 0;
+      for (const w of wanted) {
+        if (present.has(w.name)) {
+          alreadyPresent += 1;
+          continue;
+        }
+        await gTmux.window.newWindow({
+          sessionName: group.name,
+          name: w.name,
+          detached: true,
+          ...(w.cwd !== undefined ? { cwd: w.cwd } : {}),
+          shellCommand: await w.buildCmd(),
+        });
+        present.add(w.name);
+        logger.log(`  ✓ group '${group.name}': added window '${w.name}'`);
+      }
+      if (opts.onlyTeam === undefined) {
+        const wantedNames = new Set(wanted.map((w) => w.name));
+        for (const w of await gTmux.window.listWindows(group.name)) {
+          if (wantedNames.has(w.name)) continue;
+          try {
+            await gTmux.window.killWindow(`${group.name}:${w.name}`);
+            logger.log(`  ✓ group '${group.name}': removed orphan window '${w.name}'`);
+          } catch {
+            // window may already be gone
+          }
         }
       }
-    }
-    // Group server prefix — F2 for a top-level group, one rung deeper
-    // per nesting step; same best-effort posture as Phase 3.
-    let prefix: string | undefined;
-    try {
-      prefix = resolvePrefix(group.level + 2, opts.prefixChain);
-    } catch {
-      // falls through to applyCagePrefix's legacy default — cosmetic.
-    }
-    await applyCagePrefix(gTmux, prefix);
-  });
+      // Group server prefix — F2 for a top-level group, one rung deeper
+      // per nesting step; same best-effort posture as Phase 3.
+      let prefix: string | undefined;
+      try {
+        prefix = resolvePrefix(group.level + 2, opts.prefixChain);
+      } catch {
+        // falls through to applyCagePrefix's legacy default — cosmetic.
+      }
+      await applyCagePrefix(gTmux, prefix);
+      return { group: group.name, count: alreadyPresent };
+    },
+  );
+  const withPresent = presentCounts.filter((p) => p.count > 0);
+  if (withPresent.length > 0) {
+    const total = withPresent.reduce((n, p) => n + p.count, 0);
+    const per = withPresent.map((p) => `${p.group} ${p.count}`).join(", ");
+    logger.log(`  · groups: ${total} window${total === 1 ? "" : "s"} already present (${per})`);
+  }
 }
 
 /** Local structural alias for the `GroupChildRef` team arm (avoids

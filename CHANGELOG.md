@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### ✨ Changed — cockpit reconcile output summarizes instead of flooding (aca/aco)
 
-**One line per fact, not per team.** The roster is a count (`cockpit: 49 teams · 4 group servers`), team.json reports `N checked` with only changed files named (dry-run previews `would change`), alive cages collapse to one skipped line, the TUI phase reports `N checked, M launched`, group windows report counts, and repeated dry-run ops collapse (`set-option -g prefix F3 (×49)`). Per-team lines now appear only when something happened.
+**One line per fact, not per team.** The roster is a count (`cockpit: 49 teams · 4 group servers`), team.json reports `N checked` with only changed files named (dry-run previews `would change`), alive cages collapse to one skipped line, the TUI phase reports `N checked, M launched`, unchanged group windows report one fleet line (`groups: 49 windows already present (_infra 1, geoyws 12, …)`), and repeated dry-run ops collapse (`set-option -g prefix F3 (×49)`). Per-team lines now appear only when something happened.
 
 ### ✨ Added — init --wizard bootstraps claude-accounts.json on first run (t-3f0c79c7)
 
