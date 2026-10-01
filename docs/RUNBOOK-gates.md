@@ -10,8 +10,8 @@ Reference: repo rule "ALWAYS CONTAINERISE e2e, gates and tests".
 
 - Image: `docker/Dockerfile.gate` (oven/bun + git + jq + zsh + the PINNED tmux
   from `tmux/PINNED_VERSION`, built checksum-verified by
-  `scripts/build-vendored-tmux.sh` per ADR-191 — never the distro tmux,
-  whose `-F` tab handling differs; base pinned by digest in the Dockerfile
+  `scripts/build-vendored-tmux.sh` per ADR-191 — never the distro tmux;
+  the container has no UTF-8 locale, which ADR-307's `tmux -u` covers; base pinned by digest in the Dockerfile
   header — bump deliberately, never float).
 - Script: `scripts/gate-linux.sh` (tags the image by a hash of its inputs
   and builds it when that tag is absent; mounts the repo; isolates

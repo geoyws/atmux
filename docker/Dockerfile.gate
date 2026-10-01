@@ -13,9 +13,9 @@
 # tmux is the PINNED version (tmux/PINNED_VERSION, ADR-191), built from the
 # checksum-verified release tarball by scripts/build-vendored-tmux.sh and
 # installed at /opt/atmux/<v>/bin/tmux with /opt/atmux/current and
-# /usr/local/bin/tmux pointing at it — never the distro package, so the gate
-# measures the tmux atmux ships (Debian trixie's 3.5a differs: it rewrites a
-# literal TAB in a `-F` format to `_`, 3.6a keeps it).
+# /usr/local/bin/tmux pointing at it — never the distro package (trixie ships
+# 3.5a), so the gate measures the tmux atmux ships. The container has no UTF-8
+# locale; atmux passes tmux -u on every client call for that (ADR-307).
 #
 # Base pinned by digest (recorded 2026-09-28; bump deliberately, never float):
 #   oven/bun@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895

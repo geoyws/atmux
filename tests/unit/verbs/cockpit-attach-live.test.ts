@@ -38,7 +38,7 @@ function makeLogger(): { logger: Logger; warns: string[] } {
 /** Live seams: first candidate socket live, `liveBin` answers. */
 function liveSeams(): LiveProbeSeams {
   const run = async (bin: string, argv: ReadonlyArray<string>): Promise<LiveRunResult> => {
-    const sub = argv[2] as string;
+    const sub = argv[3] as string; // argv = ["-u", "-S", <sock>, <subcommand>, …]
     if (sub === "has-session") return { ok: bin === "liveBin", stdout: "" };
     if (sub === "list-windows") return { ok: true, stdout: "0: superdriver\n" };
     return { ok: true, stdout: "3.6a\n" };
