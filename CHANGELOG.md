@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### ✨ Added — `cockpit attach --live` fast path to the live cockpit (t-671763e7)
 
 **Attach without ensure-up, and never create a server to do it.** `atmux cockpit attach --live` (the `aco` shape per the 2026-10-01 decision) probes `atmux-cockpit` + `atmux-vendored-cockpit` — or the `ATMUX_COCKPIT_SOCKET` override alone — read-only (socket node + connect-dial before any tmux call, SIGUSR1 re-bind only when a server outlives its socket, client fallback server binary → Homebrew → vendored → PATH) and attaches to the one live cockpit. None live prints a one-line `aca` hint (exit 1); several live lists them and refuses (exit 1) until `ATMUX_COCKPIT_SOCKET` disambiguates. `--live` implies `--no-ensure`, refuses `--launch`, and accepts `--human`. See ADR-306.
+### 🔧 Changed — medic claude spawn resolves its wrapper from the registry (e-48 t-67bef218)
+
+**One source for the wrapper name.** `cockpit rebuild`'s initial `_medic` launch (`tui: "claude"` + `claudeAccount`) now derives the wrapper binary from the merged registry (effective [ADR-243](docs/adr/243-runtime-configurable-claude-accounts.md) table → `cockpit.json` `wrappers`, threaded through as `ReconcileCockpitOpts.cockpitWrappers`) instead of a hardcoded `claude` — so initial spawn agrees with `cockpit rotate` respawns for the same seat (e.g. `/root/.claude-unum` launches via `c-u` on both paths, and a cockpit `wrappers` override changes both). An unregistered `configDir` refuses with the registry `ConfigError`; rebuild warns naming the fix and leaves the window on its shell floor rather than aborting. `tuiCommands.claude` handling and the member `claudeAccount` env axis are intentionally unchanged (narrow scope per George's 2026-10-01 decision).
 
 ### Changed — quieter cockpit attach/reconcile output (t-7f310559)
 
