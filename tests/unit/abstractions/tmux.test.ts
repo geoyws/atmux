@@ -595,19 +595,38 @@ describe("client operations", () => {
     }
     expect(call).toEqual({
       cmd: expect.stringMatching(/(?:^|\/)tmux$/),
-      argv: ["-S", socketPath, "-f", CANONICAL_ATMUX_TMUX_CONF_PATH, "attach-session", "-t", name],
+      // t-48cef478: `-u` (UTF-8 client) leads every client argv.
+      argv: [
+        "-u",
+        "-S",
+        socketPath,
+        "-f",
+        CANONICAL_ATMUX_TMUX_CONF_PATH,
+        "attach-session",
+        "-t",
+        name,
+      ],
       unsetEnv: ["NO_COLOR"],
     });
     expect(call.env).toBeUndefined();
     expect(call.cwd).toBeUndefined();
     const tmuxError = error as TmuxError;
     expect(tmuxError.context).toEqual({
-      argv: ["-S", socketPath, "-f", CANONICAL_ATMUX_TMUX_CONF_PATH, "attach-session", "-t", name],
+      argv: [
+        "-u",
+        "-S",
+        socketPath,
+        "-f",
+        CANONICAL_ATMUX_TMUX_CONF_PATH,
+        "attach-session",
+        "-t",
+        name,
+      ],
       exitCode: 17,
       stderr: "",
       stdout: "",
     });
-    expect(tmuxError.message).toBe("tmux -S failed (exit 17): ");
+    expect(tmuxError.message).toBe("tmux -u failed (exit 17): ");
   });
 });
 

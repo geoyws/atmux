@@ -49,7 +49,7 @@ describe("socketDial (seams)", () => {
     expect(calls).toEqual([]);
   });
 
-  test("our socket in a passing chain → tmux -S <sock> <args>, its exit code returned", async () => {
+  test("our socket in a passing chain → tmux -u -S <sock> <args>, its exit code returned", async () => {
     const fs = fakeSocketFs({
       "/tmp/atmux-1000": dir(A),
       "/tmp/atmux-1000/px": dir(A),
@@ -63,7 +63,8 @@ describe("socketDial (seams)", () => {
       spawn: recorder(calls, 3),
     });
     expect(code).toBe(3);
-    expect(calls).toEqual([["/opt/tmux", "-S", S, "attach", "-t", "=px:driver"]]);
+    // t-48cef478: `-u` (UTF-8 client) leads every client argv.
+    expect(calls).toEqual([["/opt/tmux", "-u", "-S", S, "attach", "-t", "=px:driver"]]);
   });
 
   test("no socket there → exit 1 without running tmux; /tmp/atmux-<uid> made first", async () => {
@@ -198,7 +199,7 @@ describe("atmux socket-dial (real CLI, real filesystem)", () => {
     await listen(join(d, "default"));
     const r = run(join(d, "default"), "has-session", "-t", "=x");
     expect(r.code).toBe(7);
-    expect(readFileSync(log, "utf8")).toBe(`-S ${join(d, "default")} has-session -t =x\n`);
+    expect(readFileSync(log, "utf8")).toBe(`-u -S ${join(d, "default")} has-session -t =x\n`);
   });
 
   test("in-process default spawn: tmux runs with inherited stdio, its exit code returned", async () => {
@@ -209,7 +210,7 @@ describe("atmux socket-dial (real CLI, real filesystem)", () => {
       tmuxBin: () => join(bin, "tmux"),
     });
     expect(code).toBe(7);
-    expect(readFileSync(log, "utf8")).toBe(`-S ${join(d, "default")} has-session\n`);
+    expect(readFileSync(log, "utf8")).toBe(`-u -S ${join(d, "default")} has-session\n`);
   });
 
   test("no socket → exit 1, tmux never run", () => {

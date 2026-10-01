@@ -670,12 +670,17 @@ interface RawResult {
  * incident motivation.
  */
 export function createTmux(config: TmuxConfig): TmuxNamespace {
-  // Build the global-flag prefix (socket + optional config-file) exactly
-  // once; closure-captured below. `-L`/`-S` MUST come before any subcommand
-  // — and `-f` is documented in tmux(1) as a global flag in the same slot.
+  // Build the global-flag prefix (UTF-8 + socket + optional config-file)
+  // exactly once; closure-captured below. `-u`/`-L`/`-S` MUST come before
+  // any subcommand — and `-f` is documented in tmux(1) as a global flag in
+  // the same slot. `-u` forces UTF-8 on the CLIENT: without a UTF-8 locale
+  // (POSIX LC_CTYPE in containers/cron/systemd) the client prints a literal
+  // TAB inside `-F` formats as `_`, which breaks tab-separated parsing.
   const socketArgs: ReadonlyArray<string> = (() => {
-    const flags: string[] =
-      typeof config.socket === "string" ? ["-L", config.socket] : ["-S", config.socketPath];
+    const flags: string[] = ["-u"];
+    flags.push(
+      ...(typeof config.socket === "string" ? ["-L", config.socket] : ["-S", config.socketPath]),
+    );
     if (typeof config.configFile === "string") {
       flags.push("-f", config.configFile);
     }

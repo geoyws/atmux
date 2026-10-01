@@ -1737,7 +1737,12 @@ export async function sendCageBrief(handle: CageHandle, body: string): Promise<v
     unsetEnv: ReadonlyArray<string>;
   } => ({
     ...(isOperator
-      ? { cmd: resolveTmuxBin(), argv: ["-L", handle.tmuxSocket, "-f", confPath, ...rest] }
+      ? {
+          cmd: resolveTmuxBin(),
+          // t-48cef478: `-u` forces UTF-8 on the client (POSIX-locale
+          // TAB→`_` corruption); global flags precede the subcommand.
+          argv: ["-u", "-L", handle.tmuxSocket, "-f", confPath, ...rest],
+        }
       : {
           cmd: "sudo",
           argv: [
@@ -1747,6 +1752,8 @@ export async function sendCageBrief(handle: CageHandle, body: string): Promise<v
             ...TMUX_CHILD_ENV_ARGV,
             `TMUX_TMPDIR=${handle.tmuxTmpdir}`,
             resolveTmuxBin(),
+            // t-48cef478: tmux `-u` (distinct from sudo's `-u` above).
+            "-u",
             "-L",
             handle.tmuxSocket,
             "-f",

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — every tmux client call carries `-u` (UTF-8) (t-48cef478)
+
+**Tab-separated tmux parses survive a POSIX locale.** With no UTF-8 locale (LANG unset, LC_CTYPE=POSIX — containers, cron, systemd) the tmux client prints a literal TAB inside `-F` formats as `_`, so every `list-windows`/`list-panes` lookup returned nothing (measured 2026-10-01 on tmux 3.6a/3.5a). Every atmux client argv now leads with the `-u` global flag — via `createTmux`'s socket prefix, `socket-dial`, doctor's tmux spawn, the fallback-cage/poke raw spawns, `test-reaper`, the cursor-recipes probe, and the preflight version probe — per proposed [ADR-307](docs/adr/307-tmux-client-utf8-flag.md). No LANG/LC_* is forced anywhere.
+
 ### Changed — quieter cockpit attach/reconcile output (t-7f310559)
 
 **Routine cage start messages are summarized, not repeated.** `aca` and `aco` report cage outcomes, existing cockpit windows, and one timing footer. The cage line separates `running` cages (agent up), `idle` cages (server up, no agent; refreshed in place and only counted) and cages that were down (`started`, named), so a fleet of idle driver shells no longer reads as "42 would start". Warnings and errors remain visible; a start exception prints buffered diagnostics and still aborts reconcile. The ready hint now names `atmux cockpit attach` instead of a bare `tmux attach` on the wrong socket. Dry-run still prints its planned operations and exact totals.

@@ -52,7 +52,11 @@ export async function socketDial(
   // Throws UnsafeSocketPathError (exit 78) before anything is dialled.
   if (!prepareSocketDial(socket, deps)) return SOCKET_DIAL_ABSENT;
   const run = deps.spawn ?? defaultSpawn;
-  return run((deps.tmuxBin ?? resolveTmuxBin)(), ["-S", socket, ...tmuxArgs]);
+  // t-48cef478: `-u` forces UTF-8 on the client (POSIX-locale TAB→`_`
+  // corruption). It is injected here — not in the caller's tmuxArgs string —
+  // so every viewer-loop dial (`attach -t …` via socketDialCommand) is
+  // covered by this one site; global flags precede the subcommand.
+  return run((deps.tmuxBin ?? resolveTmuxBin)(), ["-u", "-S", socket, ...tmuxArgs]);
 }
 
 /** `atmux socket-rmdir <dir>` — see the module header. Throws

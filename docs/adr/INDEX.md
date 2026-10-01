@@ -264,6 +264,7 @@
 | 303 | Every production tmux argv carries `-f <atmux conf>` (t-2ff4f48e conf-arrival fix; amends ADR-277) | 2026-09-29 | accepted |
 | 304 | HAX KB is the sole continuity authority for agent work (supersedes ADR-267; ported 2026-09-29 from the 2026-09-03 operator-direct decision) | 2026-09-03 | accepted |
 | 305 | Per-user private tmux socket directories (`/tmp/atmux-<uid>/…`, 0700; whole-chain descriptor walk from `/`; removal only through held descriptors; `atmux socket-dial` / `socket-rmdir` for shells; amends ADR-018) | 2026-09-30 | proposed |
+| 307 | Every atmux tmux client call carries `-u` (UTF-8; POSIX-locale TAB→`_` fix, t-48cef478) | 2026-10-01 | proposed |
 
 ## Superseded (skip)
 
