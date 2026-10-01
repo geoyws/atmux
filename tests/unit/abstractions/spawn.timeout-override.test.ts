@@ -141,7 +141,8 @@ describe("defaultGitSpawn — forwards resolved timeout into the spawn layer", (
         /* expected: SIGTERM'd git resets the held connection */
       });
     });
-    await new Promise<void>((resolve) => {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
       server.listen(0, "127.0.0.1", resolve);
     });
     const addr = server.address();
