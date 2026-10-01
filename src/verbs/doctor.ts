@@ -54,7 +54,6 @@ import { UsageError } from "../errors.ts";
 import type { Team } from "../schema/team.ts";
 import { checkAgentShellEnv } from "./doctor/agent-env.ts";
 import { checkClaudeAccountsConfig } from "./doctor/claude-accounts.ts";
-import { checkComplaintResidue } from "./doctor/complaint-row-residue.ts";
 import {
   checkCockpitOnDefaultSocket,
   checkDeployedBinaryLag,
@@ -63,6 +62,7 @@ import {
   checkOrphanSessions,
   probeSessionName,
 } from "./doctor/cockpit.ts";
+import { checkComplaintResidue } from "./doctor/complaint-row-residue.ts";
 import {
   checkCronBlock,
   checkCronIntervalDivisors,
@@ -198,6 +198,7 @@ export interface DoctorOpts {
     atmuxDir: string,
     team: Team | null,
     cockpitWrappers?: Record<string, string>,
+    medicConfigDir?: string | null | undefined,
   ) => Promise<DoctorRow[]>;
   /** ADR-081 §D: opts threaded into {@link fixStarvingMembers} when
    *  `--fix` finds starving rows. Test fixtures inject a no-op sleep +
@@ -213,6 +214,7 @@ export async function runAllChecks(
   atmuxDir: string,
   team: Team | null,
   cockpitWrappers?: Record<string, string>,
+  medicConfigDir?: string | null | undefined,
 ): Promise<DoctorRow[]> {
   const rows: DoctorRow[] = [];
   rows.push(...checkDeps());
@@ -227,7 +229,9 @@ export async function runAllChecks(
     rows.push(...checkTuis(team));
     // e-48 follow-up (t-e25770ff): cockpit.json registry threaded —
     // built-ins → cockpit → team merge happens in checkClaudeWrappers.
-    rows.push(...checkClaudeWrappers(team, cockpitWrappers));
+    // t-fd92b0ea: the _medic seat's claudeAccount rides along — validated
+    // against built-ins → cockpit only (cockpit seat, no team override).
+    rows.push(...checkClaudeWrappers(team, cockpitWrappers, medicConfigDir));
   }
   rows.push(...(await checkStateDir(atmuxDir)));
   rows.push(...(await checkWebhook(team)));
@@ -411,16 +415,23 @@ export async function doctor(argv: ReadonlyArray<string>, opts: DoctorOpts = {})
   // the claude-wrappers probe. Best-effort — absent/unreadable
   // cockpit falls back to built-ins + team override (single-cage
   // default). Skipped for injected runChecks doubles (hermetic tests).
+  // t-fd92b0ea: the _medic seat's claudeAccount comes from the SAME
+  // loadCockpit() read (no second loader) — absent cockpit stays
+  // silent via the catch below.
   let cockpitWrappers: Record<string, string> | undefined;
+  let medicConfigDir: string | undefined;
   if (opts.runChecks === undefined) {
     try {
-      cockpitWrappers = (await loadCockpit()).wrappers;
+      const cockpit = await loadCockpit();
+      cockpitWrappers = cockpit.wrappers;
+      medicConfigDir = cockpit.medic?.claudeAccount?.configDir;
     } catch {
       cockpitWrappers = undefined;
+      medicConfigDir = undefined;
     }
   }
 
-  const rows = await runChecks(atmuxDir, team, cockpitWrappers);
+  const rows = await runChecks(atmuxDir, team, cockpitWrappers, medicConfigDir);
   const report = buildReport(rows);
 
   if (parsed.json) {

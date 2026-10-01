@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🩺 Doctor — `claude-wrappers` probe covers the cockpit medic seat (t-fd92b0ea)
+
+**An unregistered medic `claudeAccount` is red at `doctor` time, not a warning at cockpit rebuild.** `checkClaudeWrappers` now also validates `cockpit.json` `medic.claudeAccount.configDir` against built-ins → `cockpit.json` `wrappers` (the medic is a cockpit seat, resolved at cockpit scope in `cockpit-rotate.ts`, so `team.json` `wrappers` does not cover it). Unregistered → red `claude-wrappers` row naming `medic:<dir>` with the `cockpit.json` `wrappers` fix hint; registered or unset stays silent. `doctor` reads the medic dir from the same `loadCockpit()` call that already feeds the probe — no second loader, absent cockpit stays silent.
+
 ### Changed — quieter cockpit attach/reconcile output (t-7f310559)
 
 **Routine cage start messages are summarized, not repeated.** `aca` and `aco` report cage outcomes, existing cockpit windows, and one timing footer. The cage line separates `running` cages (agent up), `idle` cages (server up, no agent; refreshed in place and only counted) and cages that were down (`started`, named), so a fleet of idle driver shells no longer reads as "42 would start". Warnings and errors remain visible; a start exception prints buffered diagnostics and still aborts reconcile. The ready hint now names `atmux cockpit attach` instead of a bare `tmux attach` on the wrong socket. Dry-run still prints its planned operations and exact totals.

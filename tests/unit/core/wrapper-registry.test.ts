@@ -103,6 +103,54 @@ describe("checkClaudeWrappers", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.detail).toMatch(/driver:driver:\/nope\/dir/);
   });
+
+  test("unregistered medic dir → red row naming medic (t-fd92b0ea)", () => {
+    const rows = checkClaudeWrappers(teamWith("/root/.claude", null), undefined, "/nope/medic-dir");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("red");
+    expect(rows[0]?.label).toBe("claude-wrappers");
+    expect(rows[0]?.detail).toMatch(/medic:\/nope\/medic-dir/);
+    expect(rows[0]?.hint).toMatch(/cockpit\.json `wrappers`/);
+  });
+
+  test("cockpit-registered medic dir → green (t-fd92b0ea)", () => {
+    expect(
+      checkClaudeWrappers(
+        teamWith("/root/.claude", null),
+        { "/root/.opencode": "od" },
+        "/root/.opencode",
+      ),
+    ).toEqual([]);
+  });
+
+  test("built-in medic dir → green without any registry (t-fd92b0ea)", () => {
+    expect(
+      checkClaudeWrappers(teamWith("/root/.claude", null), undefined, "/root/.claude"),
+    ).toEqual([]);
+  });
+
+  test("no medic claudeAccount → no row (t-fd92b0ea)", () => {
+    expect(checkClaudeWrappers(teamWith("/root/.claude", null))).toEqual([]);
+    expect(checkClaudeWrappers(teamWith("/root/.claude", null), undefined, undefined)).toEqual([]);
+    expect(checkClaudeWrappers(teamWith("/root/.claude", null), undefined, null)).toEqual([]);
+    expect(checkClaudeWrappers(teamWith("/root/.claude", null), undefined, "")).toEqual([]);
+  });
+
+  test("team-only registration does NOT cover the medic seat (t-fd92b0ea)", () => {
+    const team = Team.parse({
+      name: "t",
+      members: [{ name: "m0" }],
+      drivers: [{ name: "driver", cwd: "/tmp", claudeAccount: "/root/.claude" }],
+      wrappers: { "/root/.opencode": "od" },
+    });
+    const rows = checkClaudeWrappers(team, undefined, "/root/.opencode");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.detail).toMatch(/medic:\/root\/\.opencode/);
+  });
+
+  test("null team + medic dir → no row (team probe owns the red; t-fd92b0ea)", () => {
+    expect(checkClaudeWrappers(null, undefined, "/nope/medic-dir")).toEqual([]);
+  });
 });
 
 describe("wrappers schema fields", () => {
