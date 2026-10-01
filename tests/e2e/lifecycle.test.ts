@@ -147,12 +147,25 @@ beforeAll(async () => {
   // the on-disk fixture, leaving 4 cron lines per run pointing at the now-
   // deleted /tmp/atmux-lifecycle-XXXXXX/. Mirrors stop.test.ts:35-36 +
   // tests/helpers/setup.bash:47 (bash sandbox parity).
-  for (const k of ["ATMUX_DIR", "ATMUX_TEAM_DIR", "ATMUX_SESSION", "TMUX", "ATMUX_NO_CRON"]) {
+  for (const k of [
+    "ATMUX_DIR",
+    "ATMUX_TEAM_DIR",
+    "ATMUX_SESSION",
+    "TMUX",
+    "ATMUX_NO_CRON",
+    "ATMUX_START_NO_PREFLIGHT",
+  ]) {
     priorEnv[k] = process.env[k];
   }
   process.env.ATMUX_DIR = atmuxDir;
   process.env.ATMUX_TEAM_DIR = teamDir;
   process.env.ATMUX_NO_CRON = "1";
+  // t-00d9e8c1: skip the ADR-241 vendored-deps preflight — these beats
+  // exercise team bringup, not the installer. Without this, a host with
+  // only vendored tmux present (e.g. the Linux gate image) takes the
+  // wizard path and shells out to `bun run build:install` (needs cargo,
+  // sudo-installs into /opt).
+  process.env.ATMUX_START_NO_PREFLIGHT = "1";
   delete process.env.ATMUX_SESSION;
   delete process.env.TMUX;
 

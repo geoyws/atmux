@@ -18,12 +18,13 @@
 //      the manifest is not re-read)
 
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createTmux, type TmuxNamespace } from "../../src/abstractions/tmux.ts";
 import { buildWindowName, getDefaultSocket } from "../../src/core/common.ts";
 import { ensurePrivateSocketDir } from "../../src/core/socket-dir.ts";
+import { readResumeManifestText } from "../../src/core/soft-stop.ts";
 import { ResumeManifest } from "../../src/schema/resume.ts";
 import { claim as claimVerb } from "../../src/verbs/claim.ts";
 import { start as startVerb } from "../../src/verbs/start.ts";
@@ -86,13 +87,26 @@ beforeAll(async () => {
   await writeFile(join(atmuxDir, "kanban.json"), '{"tasks":[],"epics":[],"stories":[]}');
   await writeFile(join(atmuxDir, "driver-inbox.md"), "");
 
-  for (const k of ["ATMUX_DIR", "ATMUX_TEAM_DIR", "ATMUX_SESSION", "TMUX", "ATMUX_NO_CRON"]) {
+  for (const k of [
+    "ATMUX_DIR",
+    "ATMUX_TEAM_DIR",
+    "ATMUX_SESSION",
+    "TMUX",
+    "ATMUX_NO_CRON",
+    "ATMUX_START_NO_PREFLIGHT",
+  ]) {
     priorEnv[k] = process.env[k];
   }
   process.env.ATMUX_DIR = atmuxDir;
   process.env.ATMUX_TEAM_DIR = teamDir;
   // Suppress cron auto-install — test env, never write to host crontab.
   process.env.ATMUX_NO_CRON = "1";
+  // t-00d9e8c1: skip the ADR-241 vendored-deps preflight — these beats
+  // exercise team bringup, not the installer. Without this, a host with
+  // only vendored tmux present (e.g. the Linux gate image) takes the
+  // wizard path and shells out to `bun run build:install` (needs cargo,
+  // sudo-installs into /opt).
+  process.env.ATMUX_START_NO_PREFLIGHT = "1";
   delete process.env.ATMUX_SESSION;
   delete process.env.TMUX;
 
@@ -164,9 +178,12 @@ describe("e2e: stop --soft (ADR-087)", () => {
     expect(stdout).toContain("soft-stop:");
     expect(stdout).toContain("0 in-flight tasks");
 
-    const manifestPath = join(atmuxDir, "state", "resume.json");
-    const raw = await readFile(manifestPath, "utf8");
-    const parsed = ResumeManifest.parse(JSON.parse(raw));
+    // Manifest lives in the state.db flags table now (soft-stop.ts);
+    // state/resume.json is a retired legacy path the writer no longer
+    // creates. Read through the same seam the start-side reader uses.
+    const raw = await readResumeManifestText(atmuxDir);
+    expect(raw).not.toBeNull();
+    const parsed = ResumeManifest.parse(JSON.parse(raw ?? ""));
     expect(parsed.version).toBe(1);
     expect(parsed.reason).toBe("soft-stop");
     expect(parsed.team).toBe(teamName);
@@ -193,8 +210,9 @@ describe("e2e: stop --soft (ADR-087)", () => {
     const { stdout: stopOut } = await captureStdout(() => stopVerb(["--soft"]));
     expect(stopOut).toContain("1 in-flight task");
 
-    const manifestPath = join(atmuxDir, "state", "resume.json");
-    const parsed = ResumeManifest.parse(JSON.parse(await readFile(manifestPath, "utf8")));
+    const raw = await readResumeManifestText(atmuxDir);
+    expect(raw).not.toBeNull();
+    const parsed = ResumeManifest.parse(JSON.parse(raw ?? ""));
     const w1 = parsed.members.find((m) => m.name === "w1");
     expect(w1?.lastClaim).toBe(taskId);
     // Post-ADR-135 canonical: role=member → `<emoji>-<name>` (hyphen).

@@ -254,10 +254,14 @@ describe("cli.main — start verb dispatch", () => {
     // the worktree's parent tree. loadTeam then ConfigErrors on the
     // missing team.json (config tag → exit 78). This pins the dispatch
     // line; deep verb behaviour lives in tests/unit/verbs/start.test.ts.
+    // t-00d9e8c1: --no-preflight so the ADR-241 installer never runs
+    // here — on a host with only vendored tmux present the wizard would
+    // shell out to `bun run build:install` (needs cargo) and halt with
+    // exit 1 before team load is ever reached.
     const SAVED_DIR = process.env.ATMUX_DIR;
     process.env.ATMUX_DIR = "/tmp/atmux-cli-test-nonexistent-dir";
     try {
-      const { exit, stderr } = await captureMain(["start", "--no-doctor"]);
+      const { exit, stderr } = await captureMain(["start", "--no-doctor", "--no-preflight"]);
       expect(exit).toBe(78);
       expect(stderr).toContain("atmux: config:");
       expect(stderr).toContain("no team.json");
