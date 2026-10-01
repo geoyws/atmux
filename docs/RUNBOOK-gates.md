@@ -8,7 +8,7 @@ Reference: repo rule "ALWAYS CONTAINERISE e2e, gates and tests".
 
 ## The gate
 
-- Image: `docker/Dockerfile.gate` (oven/bun + git + jq + the PINNED tmux
+- Image: `docker/Dockerfile.gate` (oven/bun + git + jq + zsh + the PINNED tmux
   from `tmux/PINNED_VERSION`, built checksum-verified by
   `scripts/build-vendored-tmux.sh` per ADR-191 — never the distro tmux,
   whose `-F` tab handling differs; base pinned by digest in the Dockerfile
