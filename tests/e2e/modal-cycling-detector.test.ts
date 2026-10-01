@@ -39,6 +39,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscordSendOpts } from "../../src/abstractions/discord.ts";
 import type { TmuxNamespace } from "../../src/abstractions/tmux.ts";
+import type { ModalHistoryEntry } from "../../src/core/modal-cycling-detector.ts";
+import { loadModalHistory, saveModalHistory } from "../../src/core/modal-cycling-state.ts";
 import { poke as whip } from "../../src/verbs/poke.ts";
 
 // ---------- Fixture builders ----------
@@ -143,17 +145,7 @@ function hashOf(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
-function seededEntry(
-  member: string,
-  modalText: string,
-  detectedAt: number,
-): {
-  member: string;
-  paneTextHash: string;
-  detectedAt: number;
-  modalText: string;
-  modalClass: string;
-} {
+function seededEntry(member: string, modalText: string, detectedAt: number): ModalHistoryEntry {
   return {
     member,
     paneTextHash: hashOf(modalText),
@@ -173,11 +165,9 @@ async function seedTwoPriorEntries(
     seededEntry(member, MODAL_A, anchorSec - 1200),
     seededEntry(member, MODAL_B, anchorSec - 600),
   ];
-  await writeFile(
-    join(atmuxDirPath, "state", `modal-history-${member}.json`),
-    JSON.stringify(entries, null, 2),
-    "utf8",
-  );
+  // Seed through the table seam (ADR-169 P2): writers are table-only,
+  // so a legacy JSON seed would go stale on the first tick.
+  await saveModalHistory(atmuxDirPath, member, entries);
 }
 
 async function seedTeam(
@@ -291,9 +281,8 @@ describe("API-level integration-style modal-cycling-detector walk (ADR-142 §D1-
     expect(sendKeysCalls).toBe(0);
     expect(bufferCalls).toBe(0);
 
-    // History file now has 3 entries with 3 distinct hashes.
-    const historyRaw = await readFile(join(atmuxDir, "state", "modal-history-alice.json"), "utf8");
-    const history = JSON.parse(historyRaw) as Array<{ paneTextHash: string }>;
+    // History row now has 3 entries with 3 distinct hashes.
+    const history = await loadModalHistory(atmuxDir, "alice");
     expect(history).toHaveLength(3);
     expect(new Set(history.map((e) => e.paneTextHash)).size).toBe(3);
 
@@ -349,10 +338,9 @@ describe("API-level integration-style modal-cycling-detector walk (ADR-142 §D1-
     expect(clarifierCalls).toHaveLength(1);
     expect(flagCalls).toHaveLength(1);
 
-    // History file STILL records the second tick's modal (we appended,
+    // History row STILL records the second tick's modal (we appended,
     // even though surface actions were dedup'd).
-    const historyRaw = await readFile(join(atmuxDir, "state", "modal-history-alice.json"), "utf8");
-    const history = JSON.parse(historyRaw) as Array<unknown>;
+    const history = await loadModalHistory(atmuxDir, "alice");
     expect(history.length).toBeGreaterThanOrEqual(3);
   });
 
@@ -390,10 +378,9 @@ describe("API-level integration-style modal-cycling-detector walk (ADR-142 §D1-
     expect(sent.filter((s) => s.template === "whip-modal-cycling")).toHaveLength(0);
     expect(clarifierCalls).toHaveLength(0);
 
-    // History recording still happens — the 3rd modal lands on disk;
+    // History recording still happens — the 3rd modal lands in the row;
     // only the SURFACE action was suppressed.
-    const historyRaw = await readFile(join(atmuxDir, "state", "modal-history-alice.json"), "utf8");
-    const history = JSON.parse(historyRaw) as Array<unknown>;
+    const history = await loadModalHistory(atmuxDir, "alice");
     expect(history).toHaveLength(3);
   });
 
@@ -431,10 +418,9 @@ describe("API-level integration-style modal-cycling-detector walk (ADR-142 §D1-
     expect(sent.filter((s) => s.template === "whip-modal-cycling")).toHaveLength(0);
     expect(clarifierCalls).toHaveLength(0);
 
-    // History file is NOT updated for exempt members — the per-member
+    // History row is NOT updated for exempt members — the per-member
     // detector branch is short-circuited at the enabled+exempt gate.
-    const historyRaw = await readFile(join(atmuxDir, "state", "modal-history-alice.json"), "utf8");
-    const history = JSON.parse(historyRaw) as Array<unknown>;
+    const history = await loadModalHistory(atmuxDir, "alice");
     expect(history).toHaveLength(2); // unchanged from seed
   });
 
@@ -506,8 +492,7 @@ describe("API-level integration-style modal-cycling-detector walk (ADR-142 §D1-
     expect(sent.filter((s) => s.template === "whip-modal-cycling")).toHaveLength(0);
 
     // History unchanged — narrative pane never trips classifyPaneAsModal.
-    const historyRaw = await readFile(join(atmuxDir, "state", "modal-history-alice.json"), "utf8");
-    const history = JSON.parse(historyRaw) as Array<unknown>;
+    const history = await loadModalHistory(atmuxDir, "alice");
     expect(history).toHaveLength(2);
   });
 });

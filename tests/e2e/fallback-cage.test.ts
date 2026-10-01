@@ -54,7 +54,11 @@ import {
   createFallbackCage,
   destroyFallbackCage,
 } from "../../src/abstractions/fallback-cage.ts";
-import { type BudgetPauseState, budgetPauseStatePath } from "../../src/core/budget-pause.ts";
+import {
+  type BudgetPauseState,
+  budgetPauseStatePath,
+  loadBudgetPauseState,
+} from "../../src/core/budget-pause.ts";
 import {
   type BudgetCheckCtx,
   type BudgetCheckDeps,
@@ -484,7 +488,7 @@ describe("e2e ADR-058 fallback-cage Beat 4 — default-OFF regression", () => {
     await rm(teamDir, { recursive: true, force: true });
   });
 
-  test("fallback omitted: budget-pause writes pause-state-file but NO cages-file; listInFlightTasks/dispatchFallback never called", async () => {
+  test("fallback omitted: budget-pause writes pause-state row but NO cages-file; listInFlightTasks/dispatchFallback never called", async () => {
     let listInFlightCalls = 0;
     let dispatchCalls = 0;
     const pausedMembers: string[] = [];
@@ -541,13 +545,12 @@ describe("e2e ADR-058 fallback-cage Beat 4 — default-OFF regression", () => {
 
     const verdict = await runBudgetCheck(ctx, deps);
 
-    // Existing pause path ran verbatim.
+    // Existing pause path ran verbatim (pause state now lives in the
+    // state.db budget table — assert through the production seam).
     expect(verdict).toBe("paused-just-now");
-    expect(existsSync(budgetPauseStatePath(atmuxDir))).toBe(true);
-    const pauseRaw = await readFile(budgetPauseStatePath(atmuxDir), "utf8");
-    const pauseState = JSON.parse(pauseRaw) as BudgetPauseState;
-    expect(pauseState.paused).toBe(true);
-    expect(pauseState.atRisk.map((r) => r.member).sort()).toEqual(["alpha", "bravo"]);
+    const pauseState = await loadBudgetPauseState(atmuxDir);
+    expect(pauseState?.paused).toBe(true);
+    expect(pauseState?.atRisk.map((r) => r.member).sort()).toEqual(["alpha", "bravo"]);
     expect(pausedMembers.sort()).toEqual(["alpha", "bravo"]);
 
     // Fallback chain MUST NOT have fired.

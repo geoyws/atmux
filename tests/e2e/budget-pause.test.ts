@@ -36,6 +36,8 @@ import { join } from "node:path";
 import type { BudgetProbeResult, BudgetProbeStatus } from "../../src/abstractions/budget-probe.ts";
 import type { DiscordSendOpts, DiscordTemplate } from "../../src/abstractions/discord.ts";
 import type { TmuxNamespace } from "../../src/abstractions/tmux.ts";
+import { loadBudgetPauseState } from "../../src/core/budget-pause.ts";
+import { loadPausedMap } from "../../src/core/pause.ts";
 import { poke as whip } from "../../src/verbs/poke.ts";
 
 // ---------- Fixture builders ----------
@@ -221,9 +223,8 @@ describe("e2e budget-pause walk (ADR-053 §D2)", () => {
       }),
     );
     expect(exit).toBe(0);
-    // No pause state file written.
-    const pauseStatePath = join(atmuxDir, "state", "budget-pause.json");
-    await expect(readFile(pauseStatePath, "utf8")).rejects.toThrow();
+    // No pause state row written (ADR-169 P3: budget table, not budget-pause.json).
+    expect(await loadBudgetPauseState(atmuxDir)).toBeNull();
     // No pause Discord ping fired.
     expect(discordSent.find((d) => d.template === "whip-budget-pause")).toBeUndefined();
   });
@@ -247,21 +248,16 @@ describe("e2e budget-pause walk (ADR-053 §D2)", () => {
     );
     expect(exit).toBe(0);
 
-    // Pause state file exists with at-risk members listed.
-    const pauseStatePath = join(atmuxDir, "state", "budget-pause.json");
-    const pauseState = JSON.parse(await readFile(pauseStatePath, "utf8"));
-    expect(pauseState.paused).toBe(true);
-    expect(pauseState.atRisk).toHaveLength(2); // both members on ifca account
-    expect(pauseState.atRisk.map((r: { member: string }) => r.member).sort()).toEqual([
-      "alpha",
-      "bravo",
-    ]);
+    // Pause state row exists with at-risk members listed.
+    const pauseState = await loadBudgetPauseState(atmuxDir);
+    expect(pauseState?.paused).toBe(true);
+    expect(pauseState?.atRisk).toHaveLength(2); // both members on ifca account
+    expect(pauseState?.atRisk.map((r) => r.member).sort()).toEqual(["alpha", "bravo"]);
 
     // Both team members marked paused.
-    const pausedPath = join(atmuxDir, "state", "paused.json");
-    const pausedMap = JSON.parse(await readFile(pausedPath, "utf8"));
+    const pausedMap = await loadPausedMap(atmuxDir);
     expect(Object.keys(pausedMap).sort()).toEqual(["alpha", "bravo"]);
-    expect(pausedMap.alpha.reason).toBe("budget-low");
+    expect(pausedMap.alpha?.reason).toBe("budget-low");
 
     // Driver-inbox got the pause entry.
     const di = await readFile(join(atmuxDir, "driver-inbox.md"), "utf8");
@@ -293,9 +289,8 @@ describe("e2e budget-pause walk (ADR-053 §D2)", () => {
     expect(exit).toBe(0);
 
     // Pause state still present.
-    const pauseStatePath = join(atmuxDir, "state", "budget-pause.json");
-    const pauseState = JSON.parse(await readFile(pauseStatePath, "utf8"));
-    expect(pauseState.paused).toBe(true);
+    const pauseState = await loadBudgetPauseState(atmuxDir);
+    expect(pauseState?.paused).toBe(true);
 
     // No second pause ping fired this tick.
     expect(discordSent.find((d) => d.template === "whip-budget-pause")).toBeUndefined();
@@ -323,13 +318,10 @@ describe("e2e budget-pause walk (ADR-053 §D2)", () => {
     expect(exit).toBe(0);
 
     // Pause state cleared.
-    const pauseStatePath = join(atmuxDir, "state", "budget-pause.json");
-    await expect(readFile(pauseStatePath, "utf8")).rejects.toThrow();
+    expect(await loadBudgetPauseState(atmuxDir)).toBeNull();
 
     // Members resumed.
-    const pausedPath = join(atmuxDir, "state", "paused.json");
-    const pausedMap = JSON.parse(await readFile(pausedPath, "utf8"));
-    expect(pausedMap).toEqual({});
+    expect(await loadPausedMap(atmuxDir)).toEqual({});
 
     // Driver-inbox got the resume entry.
     const di = await readFile(join(atmuxDir, "driver-inbox.md"), "utf8");
@@ -358,9 +350,8 @@ describe("e2e budget-pause walk (ADR-053 §D2)", () => {
     );
     expect(exit).toBe(0);
 
-    const pauseStatePath = join(atmuxDir, "state", "budget-pause.json");
-    const pauseState = JSON.parse(await readFile(pauseStatePath, "utf8"));
-    expect(pauseState.paused).toBe(true);
+    const pauseState = await loadBudgetPauseState(atmuxDir);
+    expect(pauseState?.paused).toBe(true);
     // No resume ping.
     expect(discordSent.find((d) => d.template === "whip-budget-resume")).toBeUndefined();
   });
