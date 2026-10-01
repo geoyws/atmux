@@ -337,7 +337,7 @@ describe("probeLiveCandidate", () => {
     });
     expect(calls.run[0]).toEqual({
       bin: "binA",
-      argv: ["-S", "/s/sock", "has-session", "-t", "=atx"],
+      argv: ["-u", "-S", "/s/sock", "has-session", "-t", "=atx"],
     });
   });
   test("falls through to the next client when the first does not answer", async () => {
@@ -524,7 +524,7 @@ describe("attachLiveCockpit", () => {
       expect(attached).toEqual([
         {
           bin: "binA",
-          argv: ["-S", "/t/tmux-501/atmux-cockpit", "attach-session", "-t", "=atx"],
+          argv: ["-u", "-S", "/t/tmux-501/atmux-cockpit", "attach-session", "-t", "=atx"],
           inherit: false,
         },
       ]);

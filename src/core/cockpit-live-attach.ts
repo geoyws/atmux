@@ -386,14 +386,24 @@ export async function probeLiveCandidate(
     serverBinForClients === undefined ? null : await serverBinForClients(socketName);
   const tried = seams.resolveClients(serverBin);
   for (const bin of tried) {
-    const has = await seams.runTmux(bin, ["-S", socketPath, "has-session", "-t", target]);
+    // `-u` on every client call (ADR-307): a POSIX locale would otherwise
+    // rewrite tabs in tmux output.
+    const has = await seams.runTmux(bin, ["-u", "-S", socketPath, "has-session", "-t", target]);
     if (!has.ok) continue;
-    const windows = await seams.runTmux(bin, ["-S", socketPath, "list-windows", "-t", target]);
+    const windows = await seams.runTmux(bin, [
+      "-u",
+      "-S",
+      socketPath,
+      "list-windows",
+      "-t",
+      target,
+    ]);
     const count = windows.stdout.split("\n").filter((l) => l.length > 0).length;
     // A session always has ≥1 window — 0 means the client is not
     // really answering; try the next binary.
     if (!windows.ok || count === 0) continue;
     const version = await seams.runTmux(bin, [
+      "-u",
       "-S",
       socketPath,
       "display-message",
@@ -465,7 +475,7 @@ export async function attachLiveCockpit(opts: LiveCockpitAttachOpts): Promise<nu
     try {
       return await seams.attachTmux(
         only.bin,
-        ["-S", only.socketPath, "attach-session", "-t", `=${only.session}`],
+        ["-u", "-S", only.socketPath, "attach-session", "-t", `=${only.session}`],
         opts.inheritStdio === true,
       );
     } finally {
