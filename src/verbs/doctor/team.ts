@@ -373,12 +373,21 @@ export function checkClaudeWrappers(
     }
   }
   if (bad.length === 0) return [];
+  // A team.json override can only clear driver seats; the medic seat
+  // resolves at cockpit scope, so never offer it the team.json fix.
+  const driverBad = bad.some((b) => b.startsWith("driver:"));
+  const medicBad = bad.some((b) => b.startsWith("medic:"));
+  const hint = !medicBad
+    ? "register the configDir in cockpit.json `wrappers` (or team.json `wrappers` override)"
+    : driverBad
+      ? "register the configDir in cockpit.json `wrappers` (team.json `wrappers` covers drivers only, never the medic seat)"
+      : "register the medic configDir in cockpit.json `wrappers` (team.json `wrappers` does not cover the medic seat)";
   return [
     {
       status: "red",
       label: "claude-wrappers",
       detail: `${bad.length} account holder(s) reference unregistered wrapper configDir(s): ${bad.slice(0, 3).join(", ")}${bad.length > 3 ? ` (+${bad.length - 3} more)` : ""}`,
-      hint: "register the configDir in cockpit.json `wrappers` (or team.json `wrappers` override)",
+      hint,
     },
   ];
 }

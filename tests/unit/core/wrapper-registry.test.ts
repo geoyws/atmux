@@ -72,6 +72,7 @@ describe("checkClaudeWrappers", () => {
     expect(rows[0]?.status).toBe("red");
     expect(rows[0]?.label).toBe("claude-wrappers");
     expect(rows[0]?.detail).toMatch(/driver:driver:\/nope\/dir/);
+    expect(rows[0]?.hint).toMatch(/team\.json `wrappers` override/);
   });
 
   test("team override registers a custom dir", () => {
@@ -110,7 +111,18 @@ describe("checkClaudeWrappers", () => {
     expect(rows[0]?.status).toBe("red");
     expect(rows[0]?.label).toBe("claude-wrappers");
     expect(rows[0]?.detail).toMatch(/medic:\/nope\/medic-dir/);
-    expect(rows[0]?.hint).toMatch(/cockpit\.json `wrappers`/);
+    // Medic-only red never offers the team.json fix: it cannot clear the seat.
+    expect(rows[0]?.hint).toMatch(/medic configDir in cockpit\.json `wrappers`/);
+    expect(rows[0]?.hint).not.toMatch(/team\.json `wrappers` override/);
+  });
+
+  test("driver + medic both red → hint scopes team.json to drivers only (t-fd92b0ea)", () => {
+    const rows = checkClaudeWrappers(teamWith("/nope/dir"), undefined, "/nope/medic-dir");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.detail).toMatch(/driver:driver:\/nope\/dir, medic:\/nope\/medic-dir/);
+    expect(rows[0]?.hint).toMatch(
+      /team\.json `wrappers` covers drivers only, never the medic seat/,
+    );
   });
 
   test("cockpit-registered medic dir → green (t-fd92b0ea)", () => {
