@@ -57,7 +57,7 @@ The `_medic` executor follows the standard pane lifecycle: reconcile creates a m
 }
 ```
 
-`tui` selects the child (`"omp"` default; `"claude"` keeps the legacy Claude invocation and is the only value that reads `claudeAccount`/`tuiOverrides`). `cwd` must be absolute; when unset the window starts in the operator's HOME (the medic repo is not known to atmux).
+`tui` selects the child (`"omp"` default; `"claude"` keeps the legacy Claude invocation and is the only value that reads `claudeAccount`/`tuiOverrides`). `cwd` must be absolute; when unset the window starts in the operator's HOME (the medic repo is not known to atmux). With `tui: "claude"` + `claudeAccount`, rebuild resolves the wrapper name from the merged registry (effective [ADR-243](adr/243-runtime-configurable-claude-accounts.md) table → `cockpit.json` `wrappers`, e-48) — the same single source `cockpit rotate` respawns from, so initial spawn and respawn agree; an unregistered `configDir` warns and leaves the window on its shell floor instead of launching.
 
 ### Retired `_superbot` role (was ADR-285, superseded by ADR-298)
 

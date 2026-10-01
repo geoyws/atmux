@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🔧 Changed — medic claude spawn resolves its wrapper from the registry (e-48 t-67bef218)
+
+**One source for the wrapper name.** `cockpit rebuild`'s initial `_medic` launch (`tui: "claude"` + `claudeAccount`) now derives the wrapper binary from the merged registry (effective [ADR-243](docs/adr/243-runtime-configurable-claude-accounts.md) table → `cockpit.json` `wrappers`, threaded through as `ReconcileCockpitOpts.cockpitWrappers`) instead of a hardcoded `claude` — so initial spawn agrees with `cockpit rotate` respawns for the same seat (e.g. `/root/.claude-unum` launches via `c-u` on both paths, and a cockpit `wrappers` override changes both). An unregistered `configDir` refuses with the registry `ConfigError`; rebuild warns naming the fix and leaves the window on its shell floor rather than aborting. `tuiCommands.claude` handling and the member `claudeAccount` env axis are intentionally unchanged (narrow scope per George's 2026-10-01 decision).
+
 ### Changed — quieter cockpit attach/reconcile output (t-7f310559)
 
 **Routine cage start messages are summarized, not repeated.** `aca` and `aco` report cage outcomes, existing cockpit windows, and one timing footer. The cage line separates `running` cages (agent up), `idle` cages (server up, no agent; refreshed in place and only counted) and cages that were down (`started`, named), so a fleet of idle driver shells no longer reads as "42 would start". Warnings and errors remain visible; a start exception prints buffered diagnostics and still aborts reconcile. The ready hint now names `atmux cockpit attach` instead of a bare `tmux attach` on the wrong socket. Dry-run still prints its planned operations and exact totals.

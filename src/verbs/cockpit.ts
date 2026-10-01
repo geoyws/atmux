@@ -40,6 +40,10 @@
 // the script and let the proper bun path become the runtime.
 
 import { homedir } from "node:os";
+import {
+  mergeWrapperRegistries,
+  resolveClaudeWrapper,
+} from "../abstractions/claude-account-wrapper.ts";
 import { type CrontabIO, defaultCrontabIO } from "../abstractions/crontab.ts";
 import { readJson, updateJson } from "../abstractions/json.ts";
 import {
@@ -1594,6 +1598,12 @@ export async function cockpitRebuild(
         topology,
         // t-0a74e582 fix (a): set only by `cockpitAttach` ensure-up.
         skipOrphanPrune: parsed.skipOrphanPrune === true,
+        // e-48 t-67bef218: the default `_medic` claude builder resolves
+        // its wrapper name from the merged registry — thread the
+        // cockpit layer so initial spawn agrees with rotate respawns.
+        // (Conditional spread: exactOptionalPropertyTypes forbids an
+        // explicit `cockpitWrappers: undefined`.)
+        ...(cockpit.wrappers !== undefined ? { cockpitWrappers: cockpit.wrappers } : {}),
       },
     ),
   );
@@ -2419,6 +2429,13 @@ export interface ReconcileCockpitOpts {
    *  (legacy callers / tests), every team in `teams[]` embeds directly
    *  in the cockpit, exactly as before groups had servers. */
   topology?: GroupedTopology;
+  /** e-48 t-67bef218: cockpit.json `wrappers` registry threaded so the
+   *  default `_medic` claude builder resolves the wrapper name from the
+   *  same merged source (built-ins → cockpit → team via
+   *  {@link mergeWrapperRegistries}) that `cockpit rotate` respawns
+   *  from. Absent = effective built-ins only. Injected
+   *  `buildMedicCommand` builders bypass it (single-arg seam). */
+  cockpitWrappers?: Record<string, string>;
 }
 
 /** One cockpit-session viewer slot the reconcile should ensure — either
@@ -2614,9 +2631,30 @@ export async function reconcileCockpitSession(
     const targetIdx = sdrv !== undefined ? sdrv.index + 1 : 2;
     let md = windowsBefore.find((w) => w.name === "_medic");
     if (md === undefined) {
+      // e-48 t-67bef218: the default builder resolves the claude wrapper
+      // name from the merged registry (built-ins → cockpit.json
+      // `wrappers`) — the same single source `cockpit rotate` respawns
+      // from — instead of a hardcoded `claude`. Injected builders keep
+      // their single-arg shape and bypass the registry.
+      const registry = mergeWrapperRegistries(reconcileOpts.cockpitWrappers);
       const builder =
-        deps.buildMedicCommand ?? deps.buildSuperdoctorCommand ?? buildMedicWindowCommand;
-      const childCmd = builder(medic);
+        deps.buildMedicCommand ??
+        deps.buildSuperdoctorCommand ??
+        ((m: CockpitMedic) => buildMedicWindowCommand(m, registry));
+      // Unknown claudeAccount.configDir (no wrapper registered) refuses
+      // here via ConfigError — same refusal class as rotate's
+      // respawn-failed row. Never fatal: the shell floor above is
+      // already live, so warn naming the registry fix and leave the
+      // window on its shell (mirrors the stage-2 posture below).
+      let childCmd: string | null = null;
+      try {
+        childCmd = builder(medic);
+      } catch (e) {
+        const cause = e instanceof Error ? e.message : String(e);
+        logger.warn(
+          `  ⚠ _medic TUI command failed to resolve (${cause}) — window stays on its shell floor (register the wrapper in cockpit.json \`wrappers\` or pick a registered claudeAccount.configDir)`,
+        );
+      }
       // ADR-299 two-stage shape (mirrors drivers/superdriver in
       // `start.ts` via `launchAgentInPane`): the window's start command
       // is always the shell floor — an interactive login zsh — so the
@@ -2643,7 +2681,9 @@ export async function reconcileCockpitSession(
       // Stage 2: launch the agent as a child of the fresh shell. Never
       // fatal — a seat whose TUI did not come up is still a live shell
       // the operator can use (same rule as driver seats in `start.ts`).
-      if (md !== undefined) {
+      // A null childCmd means the builder refused (unknown wrapper —
+      // warned above); skip the launch, keep the shell.
+      if (md !== undefined && childCmd !== null) {
         try {
           const paneId = await resolveOnlyPane(cockpitTmux, newId, sessionName, newId.windowIndex);
           const launch = deps.launchAgentInPane ?? launchAgentInPaneDefault;
@@ -2917,16 +2957,28 @@ export async function reconcileCockpitSession(
  *
  * `tui: "omp"` (default) resolves to the literal `omp` — no per-driver
  * OMP command rules exist to reuse. `tui: "claude"` keeps the legacy
- * invocation below (mirrors the team-window claude-bootstrap shape:
- * CLAUDE_CONFIG_DIR + effortLevel + permissionMode + plugin-dir when
- * `claudeAccount` is set, else a bare `claude` inheriting the
- * operator's shell env; defaults effortLevel=xhigh,
- * permissionMode=auto to match `normaliseTeamJson`'s tuiCommands.claude
- * builder). `claudeAccount` / `tuiOverrides` apply ONLY on the
- * `"claude"` path.
+ * invocation below: CLAUDE_CONFIG_DIR + effortLevel + permissionMode
+ * + plugin-dir when `claudeAccount` is set, else a bare `claude`
+ * inheriting the operator's shell env (no configDir input, so no
+ * registry derivation — matches ADR-117's bare-claude default
+ * fallthrough); defaults effortLevel=xhigh, permissionMode=auto to
+ * match `normaliseTeamJson`'s tuiCommands.claude builder (that axis is
+ * intentionally untouched per e-48 t-67bef218). `claudeAccount` /
+ * `tuiOverrides` apply ONLY on the `"claude"` path.
+ *
+ * e-48 t-67bef218: when `claudeAccount` is set, the wrapper NAME is
+ * derived from the merged registry (built-ins → cockpit.json
+ * `wrappers` — threaded via `ReconcileCockpitOpts.cockpitWrappers`) so
+ * initial spawn agrees with `cockpit rotate` respawns for the same
+ * seat. Unknown configDir throws ConfigError (same refusal class as
+ * the respawn path). `registry` defaults to the effective built-ins
+ * when the caller has no cockpit layer (direct unit use).
  */
-export function buildMedicWindowCommand(m: CockpitMedic): string {
-  if ((m.tui ?? "omp") === "claude") return buildClaudeWindowCommand(m);
+export function buildMedicWindowCommand(
+  m: CockpitMedic,
+  registry?: ReadonlyMap<string, string>,
+): string {
+  if ((m.tui ?? "omp") === "claude") return buildClaudeWindowCommand(m, registry);
   return "omp";
 }
 
@@ -2948,28 +3000,39 @@ export function resolveMedicCwd(m: CockpitMedic, env: NodeJS.ProcessEnv = proces
  *  surfaces (struct mirrored on purpose per ADR-077 §D2 — reuses
  *  `CockpitClaudeAccount` / `CockpitTuiOverrides` verbatim). Kept
  *  private so the public builder reads as an intent-named call site. */
-function buildClaudeWindowCommand(cfg: {
-  claudeAccount?: { configDir: string; label?: string | undefined } | undefined;
-  tuiOverrides?:
-    | {
-        effortLevel?: string | undefined;
-        permissionMode?: string | undefined;
-        pluginDir?: string | undefined;
-      }
-    | undefined;
-}): string {
+function buildClaudeWindowCommand(
+  cfg: {
+    claudeAccount?: { configDir: string; label?: string | undefined } | undefined;
+    tuiOverrides?:
+      | {
+          effortLevel?: string | undefined;
+          permissionMode?: string | undefined;
+          pluginDir?: string | undefined;
+        }
+      | undefined;
+  },
+  registry?: ReadonlyMap<string, string>,
+): string {
   const ov = cfg.tuiOverrides;
   const effort = ov?.effortLevel ?? "xhigh";
   const permission = ov?.permissionMode ?? "auto";
   // Quote every operator-controlled word as a single shell word —
   // configDir/effort/permission/pluginDir all ride from cockpit.json
-  // into a pane command line (ADR-299 quoting test pins this).
+  // into a pane command line (ADR-299 quoting test pins this). The
+  // wrapper name itself rides bare (it is a command name from the
+  // registry, not a shell word) — same shape as the rotate respawn.
   const pluginFlag = ov?.pluginDir !== undefined ? ` --plugin-dir=${posixQuote(ov.pluginDir)}` : "";
   if (cfg.claudeAccount !== undefined) {
+    // e-48 t-67bef218: single source for the wrapper NAME — the merged
+    // registry, not a hardcoded `claude`.
+    const wrapper =
+      registry === undefined
+        ? resolveClaudeWrapper(cfg.claudeAccount.configDir)
+        : resolveClaudeWrapper(cfg.claudeAccount.configDir, registry);
     return (
       `CLAUDE_CONFIG_DIR=${posixQuote(cfg.claudeAccount.configDir)} ` +
       `CLAUDECODE=1 CLAUDE_CODE_EFFORT_LEVEL=${posixQuote(effort)} CLAUDE_GUARD_AGENT=1 ` +
-      `claude${pluginFlag} --permission-mode ${posixQuote(permission)}`
+      `${wrapper}${pluginFlag} --permission-mode ${posixQuote(permission)}`
     );
   }
   return (

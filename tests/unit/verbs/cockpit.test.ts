@@ -6,6 +6,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promi
 import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { mergeWrapperRegistries } from "../../../src/abstractions/claude-account-wrapper.ts";
 import type { TmuxConfig, TmuxNamespace } from "../../../src/abstractions/tmux.ts";
 import { buildGroupTopology, enabledTeams, groupSocketPath } from "../../../src/core/cockpit.ts";
 import { ensurePrivateSocketDir } from "../../../src/core/socket-dir.ts";
@@ -1484,15 +1485,18 @@ describe("medic shell floor reconcile (ADR-299)", () => {
           return "launched";
         },
       };
+      // e-48 t-67bef218: default builder resolves the wrapper from the
+      // registry — /root/.claude-unum launches via `c-u`, not bare
+      // `claude` (initial spawn now agrees with rotate respawns).
       await reconcileCockpitSession(fx.tmux, "s", [], logger, deps, {
         enabled: true,
         tui: "claude",
         cwd: fx.socketDir,
-        claudeAccount: { configDir: "/root/.claude-personal", label: "personal" },
+        claudeAccount: { configDir: "/root/.claude-unum", label: "unum" },
       });
       expect(launches).toHaveLength(1);
-      expect(launches[0]?.command).toContain("claude");
-      expect(launches[0]?.command).toContain("CLAUDE_CONFIG_DIR=/root/.claude-personal");
+      expect(launches[0]?.command).toMatch(/ c-u --permission-mode/);
+      expect(launches[0]?.command).toContain("CLAUDE_CONFIG_DIR=/root/.claude-unum");
       expect(launches[0]?.kind).toBe("medic");
       // Start command is still the shell floor on the claude path
       // (tmux display-quotes the value — see the omp test above).
@@ -1507,6 +1511,82 @@ describe("medic shell floor reconcile (ADR-299)", () => {
         format: "#{pane_current_path}",
       });
       expect(paneCwd).toBe(await realpath(fx.socketDir));
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test('tui "claude" with an unregistered configDir warns and keeps the shell floor (e-48 t-67bef218)', async () => {
+    const fx = await spinTmux("cockpit-medic-unknown-dir");
+    try {
+      const { logger, logs } = makeLogger();
+      const launches: Array<{ command: string; kind: string }> = [];
+      const deps: ResolveTeamWindowDeps = {
+        launchAgentInPane: async (opts) => {
+          launches.push({ command: opts.command, kind: opts.intent.kind });
+          return "launched";
+        },
+      };
+      // No cockpitWrappers threaded and /root/.claude-personal is not in
+      // the built-ins: the builder refuses, the reconcile warns naming
+      // the registry fix, launches nothing, but the window still exists
+      // on its shell floor (never fatal).
+      await reconcileCockpitSession(fx.tmux, "s", [], logger, deps, {
+        enabled: true,
+        tui: "claude",
+        cwd: fx.socketDir,
+        claudeAccount: { configDir: "/root/.claude-personal", label: "personal" },
+      });
+      expect(launches).toHaveLength(0);
+      expect(logs.join("\n")).toMatch(/_medic TUI command failed to resolve/);
+      expect(logs.join("\n")).toContain("cockpit.json `wrappers`");
+      const startCmd = await fx.tmux.pane.displayMessage({
+        target: "s:_medic",
+        format: "#{pane_start_command}",
+      });
+      expect(startCmd).toBe(`"${shellPaneCommand()}"`);
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test('tui "claude" honours threaded cockpitWrappers at reconcile (e-48 t-67bef218)', async () => {
+    const fx = await spinTmux("cockpit-medic-reg");
+    try {
+      const { logger } = makeLogger();
+      const launches: Array<{ command: string; kind: string }> = [];
+      const deps: ResolveTeamWindowDeps = {
+        launchAgentInPane: async (opts) => {
+          launches.push({ command: opts.command, kind: opts.intent.kind });
+          return "launched";
+        },
+      };
+      // A cockpit-registered override for a known dir changes the
+      // launched wrapper end-to-end through the real reconcile path.
+      await reconcileCockpitSession(
+        fx.tmux,
+        "s",
+        [],
+        logger,
+        deps,
+        {
+          enabled: true,
+          tui: "claude",
+          cwd: fx.socketDir,
+          claudeAccount: { configDir: "/root/.claude-unum", label: "unum" },
+        },
+        false,
+        { cockpitWrappers: { "/root/.claude-unum": "c-custom" } },
+      );
+      expect(launches).toHaveLength(1);
+      expect(launches[0]?.command).toMatch(/ c-custom --permission-mode/);
+      expect(launches[0]?.command).not.toMatch(/ c-u --permission-mode/);
     } finally {
       try {
         await fx.tmux.server.killServer();
@@ -1842,15 +1922,65 @@ describe("buildMedicWindowCommand (ADR-077 + ADR-299)", () => {
     expect(cmd).not.toContain("CLAUDE_CONFIG_DIR=");
   });
 
-  test('tui "claude": emits CLAUDE_CONFIG_DIR prefix when claudeAccount is set', () => {
+  test('tui "claude": wrapper name comes from the registry (e-48 t-67bef218)', () => {
     const cmd = buildMedicWindowCommand({
       enabled: true,
       tui: "claude",
-      claudeAccount: { configDir: "/root/.claude-personal", label: "personal" },
+      claudeAccount: { configDir: "/root/.claude-unum", label: "unum" },
     });
-    expect(cmd).toContain("CLAUDE_CONFIG_DIR=/root/.claude-personal");
+    expect(cmd).toContain("CLAUDE_CONFIG_DIR=/root/.claude-unum");
+    expect(cmd).toMatch(/ c-u --permission-mode/);
     expect(cmd).toContain("CLAUDE_CODE_EFFORT_LEVEL=xhigh");
     expect(cmd).toContain("--permission-mode auto");
+  });
+
+  test('tui "claude": default configDir still resolves to bare claude', () => {
+    const cmd = buildMedicWindowCommand({
+      enabled: true,
+      tui: "claude",
+      claudeAccount: { configDir: "/root/.claude" },
+    });
+    expect(cmd).toContain("CLAUDE_CONFIG_DIR=/root/.claude");
+    expect(cmd).toMatch(/ CLAUDE_GUARD_AGENT=1 claude --permission-mode/);
+  });
+
+  test('tui "claude": unknown configDir throws ConfigError (single source)', () => {
+    expect(() =>
+      buildMedicWindowCommand({
+        enabled: true,
+        tui: "claude",
+        claudeAccount: { configDir: "/root/.claude-personal", label: "personal" },
+      }),
+    ).toThrow(ConfigError);
+  });
+
+  test('tui "claude": cockpit wrappers override changes the launched wrapper', () => {
+    const registry = mergeWrapperRegistries({ "/root/.claude-unum": "c-custom" });
+    const cmd = buildMedicWindowCommand(
+      {
+        enabled: true,
+        tui: "claude",
+        claudeAccount: { configDir: "/root/.claude-unum", label: "unum" },
+      },
+      registry,
+    );
+    expect(cmd).toContain("CLAUDE_CONFIG_DIR=/root/.claude-unum");
+    expect(cmd).toMatch(/ c-custom --permission-mode/);
+    expect(cmd).not.toMatch(/ c-u --permission-mode/);
+  });
+
+  test('tui "omp": registry is ignored on the omp path', () => {
+    const registry = mergeWrapperRegistries({ "/root/.claude-unum": "c-custom" });
+    expect(
+      buildMedicWindowCommand(
+        {
+          enabled: true,
+          tui: "omp",
+          claudeAccount: { configDir: "/root/.claude-unum", label: "unum" },
+        },
+        registry,
+      ),
+    ).toBe("omp");
   });
 
   test('tui "claude": honours tuiOverrides', () => {
@@ -1868,12 +1998,17 @@ describe("buildMedicWindowCommand (ADR-077 + ADR-299)", () => {
     const effort = "high; printf INJECTED";
     const permission = "auto $(printf INJECTED)";
     const pluginDir = "/tmp/plugin dir; printf INJECTED";
-    const cmd = buildMedicWindowCommand({
-      enabled: true,
-      tui: "claude",
-      claudeAccount: { configDir },
-      tuiOverrides: { effortLevel: effort, permissionMode: permission, pluginDir },
-    });
+    // e-48 t-67bef218: the hostile dir is registered explicitly so the
+    // test exercises quoting (not the unknown-dir refusal).
+    const cmd = buildMedicWindowCommand(
+      {
+        enabled: true,
+        tui: "claude",
+        claudeAccount: { configDir },
+        tuiOverrides: { effortLevel: effort, permissionMode: permission, pluginDir },
+      },
+      mergeWrapperRegistries({ [configDir]: "claude" }),
+    );
     const script =
       'function claude { printf \'<%s>\n\' "$CLAUDE_CONFIG_DIR" "$CLAUDE_CODE_EFFORT_LEVEL" "$@"; }; ' +
       cmd;

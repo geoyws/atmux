@@ -747,11 +747,15 @@ export const claudeUiGoneVerifier: PaneVerifier = (text: string) =>
  *  wrapper and claude run as children of the shell that sourced the
  *  operator's rc files.
  *
- *  Differs from cockpit rebuild's `buildClaudeWindowCommand` (which
- *  uses an inline env-set + bare `claude` binary): rotate respawn
- *  honors the literal ADR-167 spec text + lets fe-2's T7 hermetic
- *  fixtures exercise the resolver by stubbing the wrapper name on
- *  PATH (Plan A per the T6/T7 design handoff). */
+ *  e-48 t-67bef218: cockpit rebuild's `buildClaudeWindowCommand`
+ *  resolves the same registry for the same seat, so initial spawn and
+ *  this respawn agree on the wrapper name. Remaining differences are
+ *  launch-shape only: rebuild sets the env inline (belt-and-suspenders
+ *  beside the wrapper's own exports) while this respawn relies on the
+ *  wrapper's shell init per the literal ADR-167 spec text, pins
+ *  `--model claude-opus-4-7`, and lets fe-2's T7 hermetic fixtures
+ *  exercise the resolver by stubbing the wrapper name on PATH (Plan A
+ *  per the T6/T7 design handoff). */
 export function buildClaudeRespawnCommand(
   account: CockpitClaudeAccount | undefined,
   tuiOverrides: CockpitTuiOverrides | undefined,
