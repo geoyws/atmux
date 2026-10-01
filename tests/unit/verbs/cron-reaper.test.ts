@@ -17,7 +17,9 @@ function fixture(
   const output: string[] = [];
   const deps: CronReaperDeps = {
     readCrontab: () => crontab,
-    writeCrontab: (content) => writes.push(content),
+    writeCrontab: (content) => {
+      writes.push(content);
+    },
     loadCockpitRoster: () => cockpit,
     loadEpicTeamRegistry: () => epicTeams,
     stdout: (text) => output.push(text),
