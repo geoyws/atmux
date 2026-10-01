@@ -28,10 +28,10 @@ import {
 import type { DiscordSendOpts } from "../../../src/abstractions/discord.ts";
 import {
   type SendTarget,
+  serializeTarget,
   type Target,
   type TmuxConfig,
   type TmuxNamespace,
-  serializeTarget,
 } from "../../../src/abstractions/tmux.ts";
 import type { LoadedCockpit } from "../../../src/core/cockpit.ts";
 import type { SafeSendKeysWithVerifyOpts } from "../../../src/core/safe-send.ts";
@@ -634,7 +634,13 @@ describe("cockpitRotate — gate 2 (pane-idle)", () => {
     expect(h.capturedStderr.join("")).toContain("gate-2-pane-idle");
     expect(captureTargets).toContain("platform:atmux");
     expect(captureTargets).not.toContain("atmux_cockpit:atmux");
-    expect(tmuxConfigs).toContainEqual({ socketPath: "/tmp/atmux-grp-platform/sock" });
+    // ADR-305: group servers live at /tmp/atmux-<uid>/grp-<group>/sock —
+    // never the shared pre-ADR-305 /tmp/atmux-grp-<group>/sock. Derive the
+    // uid at runtime so the shape holds for root (Linux gate) and 501 (mac).
+    const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+    expect(tmuxConfigs).toContainEqual(
+      expect.objectContaining({ socketPath: `/tmp/atmux-${uid}/grp-platform/sock` }),
+    );
   });
 
   test("grouped team-driver falls back to cockpit host when loadCockpit throws", async () => {

@@ -5,7 +5,7 @@
 // via stdout capture (renderTextStatus is module-private).
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
@@ -14,6 +14,7 @@ import { gatherStatus, status } from "../../../src/verbs/status.ts";
 
 let teamDir: string;
 let atmuxDir: string;
+let sockDir: string;
 
 beforeEach(async () => {
   teamDir = await mkdtemp(join(tmpdir(), "atmux-status-driver-"));
@@ -21,10 +22,17 @@ beforeEach(async () => {
   await mkdir(atmuxDir, { recursive: true });
   await mkdir(join(atmuxDir, "state"), { recursive: true });
   await writeFile(join(atmuxDir, "state", "session.txt"), "test-sess\n");
+  // ADR-305: a --socket leaf straight under a shared sticky /tmp is
+  // refused (its own directory would be /tmp itself), so stage the dead
+  // socket under a private 0700 dir; the absent leaf then reads as
+  // session-down instead of throwing UnsafeSocketPathError.
+  sockDir = await mkdtemp(join(tmpdir(), "atmux-status-dead-sock-"));
+  await chmod(sockDir, 0o700);
 });
 
 afterEach(async () => {
   await rm(teamDir, { recursive: true, force: true });
+  await rm(sockDir, { recursive: true, force: true });
 });
 
 // ---------- Fake tmux namespace ----------
@@ -232,7 +240,7 @@ describe("status verb JSON — includes driverPane", () => {
     // probes will return configured=true + windowExists=false. Asserts
     // the JSON path serializes driverPane regardless of pane health.
     const { out } = await captureStdout(() =>
-      status(["--json", "--socket", "/tmp/atmux-no-such-socket", "--team-dir", teamDir]),
+      status(["--json", "--socket", join(sockDir, "no-such-socket"), "--team-dir", teamDir]),
     );
     const parsed = JSON.parse(out);
     expect(parsed.driverPane).toBeDefined();
@@ -269,7 +277,7 @@ describe("status verb JSON — includes driverPane", () => {
     };
     await writeFile(join(atmuxDir, "team.json"), JSON.stringify(team));
     const { out } = await captureStdout(() =>
-      status(["--json", "--socket", "/tmp/atmux-no-such-socket", "--team-dir", teamDir]),
+      status(["--json", "--socket", join(sockDir, "no-such-socket"), "--team-dir", teamDir]),
     );
     const parsed = JSON.parse(out);
     expect(parsed.driverPane.configured).toBe(false);
@@ -310,7 +318,7 @@ describe("status verb text — driver row visibility", () => {
     };
     await writeFile(join(atmuxDir, "team.json"), JSON.stringify(team));
     const { out } = await captureStdout(() =>
-      status(["--socket", "/tmp/atmux-no-such-socket", "--team-dir", teamDir]),
+      status(["--socket", join(sockDir, "no-such-socket"), "--team-dir", teamDir]),
     );
     expect(out).toContain("🚗 driver  configured=y");
     expect(out).toContain("🚗 driver-2  configured=y");
@@ -347,7 +355,7 @@ describe("status verb text — driver row visibility", () => {
     };
     await writeFile(join(atmuxDir, "team.json"), JSON.stringify(team));
     const { out } = await captureStdout(() =>
-      status(["--socket", "/tmp/atmux-no-such-socket", "--team-dir", teamDir]),
+      status(["--socket", join(sockDir, "no-such-socket"), "--team-dir", teamDir]),
     );
     expect(out).not.toContain("🚗 driver");
   });

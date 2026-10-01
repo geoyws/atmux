@@ -2,7 +2,7 @@
 // Bash spec: lib/tell.sh @ worktree-frozen.
 
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TmuxNamespace } from "../../../src/abstractions/tmux.ts";
@@ -520,7 +520,11 @@ describe("tellLead — integration", () => {
     const tmpdirParent = socketDir;
     const tmpdirSocket = pjoin(tmpdirParent, `tmux-${uid}`, "default");
     // tmux needs the socket's parent dir to exist before bind(2).
-    await mkdir(pjoin(tmpdirParent, `tmux-${uid}`), { recursive: true });
+    // ADR-305: <tmuxTmpdir>/tmux-<uid> is a private dir — plain mkdir -p
+    // leaves 0755 and the connect-time guard refuses it. chmod covers
+    // the umask so the mode holds on macOS and the Linux root gate.
+    await mkdir(pjoin(tmpdirParent, `tmux-${uid}`), { recursive: true, mode: 0o700 });
+    await chmod(pjoin(tmpdirParent, `tmux-${uid}`), 0o700);
     // Spin a fresh tmux on the tmuxTmpdir-derived socket.
     const tmpdirTmux = createCanonicalAtmuxTmux({ socketPath: tmpdirSocket });
     try {
