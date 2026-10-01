@@ -2572,11 +2572,17 @@ describe("start — ADR-063 cockpit auto-reconcile", () => {
     ).toBe(true);
   });
 
-  test("default loadCockpitFn (production path) — no cockpit.json on dev host → silent skip", async () => {
+  test("default loadCockpitFn (production path) — missing cockpit.json → silent skip", async () => {
     // The harness defaults loadCockpitFn to `async () => null` to keep
     // existing tests host-independent; this test asserts the real
     // default is host-agnostic too (no cockpit.json should mean silent
     // skip, not a thrown error).
+    // Hermetic by construction: the default loader threads opts.env
+    // (start.ts), so the ATMUX_COCKPIT_CONFIG override below fully
+    // determines resolution — ambient process.env.ATMUX_COCKPIT_CONFIG /
+    // $HOME (e.g. an operator cockpit on the dev box or gate host) cannot
+    // leak in. Previously the loader read ambient process.env directly
+    // and this override was silently dropped (t-33114a31).
     await writeTeamJson({
       members: [{ name: "alice", role: "team-lead" }],
     });
@@ -2598,6 +2604,36 @@ describe("start — ADR-063 cockpit auto-reconcile", () => {
     expect(exit).toBe(0);
     expect(calls).toHaveLength(0);
     expect(env.logs.some((l) => l.kind === "warn" && l.msg.includes("cockpit"))).toBe(false);
+  });
+
+  test("default loadCockpitFn (production path) — malformed cockpit.json → warn-and-continue", async () => {
+    // Companion to the silent-skip test above: a present-but-unparseable
+    // config must WARN (not throw) and start still returns 0 — the
+    // malformed row of the ADR-063 behaviour matrix, exercised through
+    // the real loader rather than an injected stub.
+    await writeTeamJson({
+      members: [{ name: "alice", role: "team-lead" }],
+    });
+    const badPath = join(env.atmuxDir, "bad-cockpit.json");
+    await writeFile(badPath, "{ not valid json");
+    const { fn: reconcileFn, calls } = makeReconcileRecorder();
+    const exit = await start(["--socket-path", env.socketPath], {
+      env: {
+        ...process.env,
+        ATMUX_DIR: env.atmuxDir,
+        ATMUX_COCKPIT_CONFIG: badPath,
+      },
+      cwd: env.atmuxDir,
+      logger: env.logger,
+      cockpitReconcileFn: reconcileFn,
+      preflightDeps: preflightFakes(env.atmuxDir),
+      legacySocketDeps: staleSocketNoop(),
+    });
+    expect(exit).toBe(0);
+    expect(calls).toHaveLength(0);
+    const cockpitWarns = env.logs.filter((l) => l.kind === "warn" && l.msg.includes("cockpit"));
+    expect(cockpitWarns).toHaveLength(1);
+    expect(cockpitWarns[0]?.msg).toContain("cannot load cockpit.json");
   });
 });
 

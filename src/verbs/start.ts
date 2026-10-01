@@ -1690,13 +1690,17 @@ async function autoReconcileCockpitForTeam(
     opts.loadCockpitFn ??
     (async (): Promise<Awaited<ReturnType<typeof loadCockpit>> | null> => {
       try {
-        return await loadCockpit();
+        // Thread opts.env (not ambient process.env) so the injected test
+        // env + embedded callers' env actually govern config resolution.
+        // Matches the resolvePrefix helper's loadCockpit({ env }) call.
+        return await loadCockpit({ env: opts.env ?? process.env });
       } catch (e) {
         // ConfigError on missing file is the silent-skip path. Schema
         // errors (malformed JSON) surface as WARN. Distinguish via
-        // error name; anything else is also a WARN (defensive).
-        const isMissingConfig =
-          e instanceof Error && e.name === "ConfigError" && /no cockpit config/i.test(e.message);
+        // instanceof: AtmuxError subclasses never set `.name`, so a
+        // `e.name === "ConfigError"` check is always false (t-33114a31) —
+        // it sent every missing-config down the WARN branch.
+        const isMissingConfig = e instanceof ConfigError && /no cockpit config/i.test(e.message);
         if (isMissingConfig) return null;
         const cause = e instanceof Error ? e.message : String(e);
         logger.warn(`cockpit reconcile skipped: cannot load cockpit.json (${cause})`);

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — `start` cockpit auto-reconcile honours `opts.env` and stays silent on missing config (t-33114a31)
+
+**Two stacked defects sent every missing `cockpit.json` down the WARN branch.** The default loader called `loadCockpit()` with no args (ambient `process.env`) so an injected `opts.env` — including the test's `ATMUX_COCKPIT_CONFIG` override — was silently dropped; and the missing-vs-malformed discriminator checked `e.name === "ConfigError"`, which is never true because `AtmuxError` subclasses don't set `.name`. The loader now threads `opts.env ?? process.env` and discriminates with `instanceof ConfigError`: missing stays a silent skip per the ADR-063 matrix, malformed still warns and `start` still returns 0.
+
 ### Fixed — refusal-trigger EACCES test no longer depends on uid (t-f1a936f8)
 
 - **`runRefusalTriggerForTeam` gains an optional `fsRead` dep** (default: the existing `Bun.file` read returning `""` when the rotations log is missing). The `unreadable rotations log counts as zero` test now injects an EACCES throw through that seam instead of `chmod 000`, which root reads through — so the catch path is exercised identically as root (Linux gate) and non-root (macOS).
