@@ -1299,9 +1299,19 @@ export async function cockpitRebuild(
     // Per-team outcome: success stays silent (one combined summary
     // below replaces the per-team start lines); only failures print
     // per-team lines.
+    // `idle` = server up with no agent pane; `start` refreshes it in place
+    // rather than creating a server, so it is reported apart from cages
+    // that were down.
     interface CageOutcome {
       readonly name: string;
-      readonly status: "skipped" | "started" | "restarted" | "failed" | "would-start";
+      readonly status:
+        | "skipped"
+        | "started"
+        | "refreshed"
+        | "restarted"
+        | "failed"
+        | "would-start"
+        | "would-refresh";
     }
     const cageOutcomes = await timedPhase(phaseTimings, "cycle-cages", () =>
       mapWithConcurrency(teams, COCKPIT_RECONCILE_CONCURRENCY, async (t): Promise<CageOutcome> => {
@@ -1320,7 +1330,8 @@ export async function cockpitRebuild(
           log: (m) => logger.log(`  ✓ ${t.name}: ${m}`),
           warn: (m) => logger.warn(`  ⚠ ${t.name}: ${m}`),
         });
-        const alive = await cageAlive(cageTmux);
+        const state = await probeCage(cageTmux);
+        const alive = state === "agent";
         if (alive && !parsed.forceCycle) return { name: t.name, status: "skipped" };
         // --dry-run: launching the cage (start) + creating its socket dir
         // are real side effects — preview only. The legacy-session rename
@@ -1349,7 +1360,7 @@ export async function cockpitRebuild(
             // Best-effort: unreadable team.json / unreachable socket —
             // the cages summary below is the whole preview.
           }
-          return { name: t.name, status: "would-start" };
+          return { name: t.name, status: state === "idle" ? "would-refresh" : "would-start" };
         }
         // Pre-create socket parent — tmux/atmux-bun don't auto-mkdir (the
         // failure that prompted ADR-063 in the first place). ADR-305: 0700,
@@ -1396,21 +1407,30 @@ export async function cockpitRebuild(
           for (const line of buffered) logger.log(`    ${line}`);
           return { name: t.name, status: "failed" };
         }
-        return { name: t.name, status: alive ? "restarted" : "started" };
+        // --force-cycle rebuilds any live server; only a plain start on an
+        // idle server is an in-place refresh.
+        const status: CageOutcome["status"] =
+          state === "down" ? "started" : alive || parsed.forceCycle ? "restarted" : "refreshed";
+        return { name: t.name, status };
       }),
     );
     const skipped = cageOutcomes.filter((o) => o.status === "skipped").length;
     const namesOf = (s: CageOutcome["status"]): string[] =>
       cageOutcomes.filter((o) => o.status === s).map((o) => o.name);
     const started = namesOf("started");
+    const refreshed = namesOf("refreshed");
     const restarted = namesOf("restarted");
     const failed = namesOf("failed");
     const wouldStart = namesOf("would-start");
+    const wouldRefresh = namesOf("would-refresh");
     // At most 8 names inline, then `+N more`. Zero parts are omitted.
+    // Idle refreshes are counted, not named: they are routine.
     const fmtNames = (ns: readonly string[]): string =>
       ns.length <= 8 ? ns.join(", ") : `${ns.slice(0, 8).join(", ")} +${ns.length - 8} more`;
     const parts: string[] = [];
-    if (skipped > 0) parts.push(`${skipped} alive`);
+    if (skipped > 0) parts.push(`${skipped} running`);
+    if (refreshed.length > 0) parts.push(`${refreshed.length} idle, refreshed`);
+    if (wouldRefresh.length > 0) parts.push(`${wouldRefresh.length} idle, would refresh`);
     if (started.length > 0) parts.push(`${started.length} started (${fmtNames(started)})`);
     if (restarted.length > 0) parts.push(`${restarted.length} restarted (${fmtNames(restarted)})`);
     if (failed.length > 0) parts.push(`${failed.length} failed (${fmtNames(failed)})`);
@@ -2097,19 +2117,22 @@ export function cockpitOperatorWindows(
  *  live work (ADR-063 live-team protection, ADR-300 amendment). */
 const AGENT_PANE_COMMANDS: ReadonlySet<string> = new Set(["claude", "node", "omp", "bun", "codex"]);
 
-/** True iff the cage's tmux server is up AND at least one pane — any
- *  pane in any window, not only each window's active pane — runs an
- *  agent TUI command from {@link AGENT_PANE_COMMANDS}. */
-export async function cageAlive(cageTmux: TmuxNamespace): Promise<boolean> {
-  if (!(await cageTmux.server.hasServer())) return false;
+/** Cage state for reconcile reporting: `agent` = server up with an agent
+ *  TUI pane ({@link AGENT_PANE_COMMANDS}, any pane in any window);
+ *  `idle` = server up with sessions but no agent pane; `down` = no
+ *  server or no sessions. */
+export type CageState = "agent" | "idle" | "down";
+
+export async function probeCage(cageTmux: TmuxNamespace): Promise<CageState> {
+  if (!(await cageTmux.server.hasServer())) return "down";
   // listSessions throws if no server / no sessions — wrap defensively.
   let sessions: { name: string }[];
   try {
     sessions = await cageTmux.session.listSessions();
   } catch {
-    return false;
+    return "down";
   }
-  if (sessions.length === 0) return false;
+  if (sessions.length === 0) return "down";
   for (const s of sessions) {
     const windows = await cageTmux.window.listWindows(s.name);
     for (const w of windows) {
@@ -2122,14 +2145,19 @@ export async function cageAlive(cageTmux: TmuxNamespace): Promise<boolean> {
             format: "#{pane_current_command}",
             print: true,
           });
-          if (AGENT_PANE_COMMANDS.has(cmd.trim())) return true;
+          if (AGENT_PANE_COMMANDS.has(cmd.trim())) return "agent";
         }
       } catch {
         // ignore — window/pane may be in transition
       }
     }
   }
-  return false;
+  return "idle";
+}
+
+/** True iff {@link probeCage} finds an agent TUI pane. */
+export async function cageAlive(cageTmux: TmuxNamespace): Promise<boolean> {
+  return (await probeCage(cageTmux)) === "agent";
 }
 
 /** ADR-089 §C: apply the cage's tmux prefix. Pre-ADR-089 path hardcoded

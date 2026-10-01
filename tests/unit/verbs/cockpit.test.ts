@@ -38,6 +38,7 @@ import {
   normaliseTeamJson,
   type ParsedCockpitArgs,
   parseCockpitArgs,
+  probeCage,
   type ResolveTeamWindowDeps,
   reconcileCockpitSession,
   reconcileGroupServers,
@@ -2702,11 +2703,72 @@ describe("cockpitRebuild", () => {
       );
       expect(code).toBe(0);
       expect(startCalls).toBe(0); // alive cage skipped — start never fires
-      expect(logs.join("\n")).toContain("· cages: 1 alive (use --force-cycle to override)");
+      expect(logs.join("\n")).toContain("· cages: 1 running (use --force-cycle to override)");
       // The pane survives the reconcile: still alive, session intact.
       expect(await cageAlive(fx.tmux)).toBe(true);
       const sessions = await fx.tmux.session.listSessions();
       expect(sessions.map((s) => s.name)).toContain("demo");
+    } finally {
+      try {
+        await fx.tmux.server.killServer();
+      } catch {}
+      await rm(fx.socketDir, { recursive: true, force: true });
+    }
+  });
+
+  test("idle cage (server up, no agent pane) is refreshed and reported apart from started cages", async () => {
+    await writeFile(
+      join(homeDir, ".atmux", "cockpit.json"),
+      JSON.stringify({
+        cockpitSession: "test_cockpit_idle",
+        teams: [{ name: "demo", root: projRoot, enabled: true }],
+      }),
+      "utf8",
+    );
+    const fx = await spinTmux("cockpit-idle");
+    let startCalls = 0;
+    try {
+      await fx.tmux.session.newSession({
+        name: "demo",
+        detached: true,
+        windowName: "driver",
+        shellCommand: "sleep 1000000",
+      });
+      expect(await probeCage(fx.tmux)).toBe("idle");
+      const run = async (dryRun: boolean) => {
+        const { logger, logs } = makeLogger();
+        const code = await cockpitRebuild(
+          {
+            subverb: "reconcile",
+            noCycle: false,
+            forceCycle: false,
+            ackDangerous: false,
+            noLaunch: true,
+            yes: false,
+            dryRun,
+          },
+          {
+            env: { HOME: homeDir, ATMUX_NO_CRON: "1" },
+            tmuxFactory: () => fx.tmux,
+            logger,
+            startFn: async () => {
+              startCalls += 1;
+              return 0;
+            },
+          },
+        );
+        return { code, text: logs.join("\n") };
+      };
+      const preview = await run(true);
+      expect(preview.code).toBe(0);
+      expect(startCalls).toBe(0);
+      expect(preview.text).toContain("· cages: 1 idle, would refresh (dry-run)");
+      expect(preview.text).not.toContain("would start");
+      const real = await run(false);
+      expect(real.code).toBe(0);
+      expect(startCalls).toBe(1);
+      expect(real.text).toContain("· cages: 1 idle, refreshed");
+      expect(real.text).not.toContain("started (demo)");
     } finally {
       try {
         await fx.tmux.server.killServer();
@@ -4109,12 +4171,15 @@ describe("reconcileGroupServers (e-419553c6)", () => {
 describe("buildGroupWindowCommand", () => {
   test("attach retry-loop against the per-user group socket, via socket-dial, exact-match + single-quoted target", () => {
     const uid = process.getuid?.() ?? 0;
-    const sock = `/tmp/atmux-${uid}/grp-geoyws/sock`;
-    const cmd = buildGroupWindowCommand("geoyws");
-    expect(cmd).toContain(`socket-dial ${sock} attach -t '=geoyws' 2>/dev/null`);
+    // A unique group name: a live legacy socket for a real group on the
+    // host (e.g. a 0700 /tmp/atmux-grp-geoyws) would add a legacy dial.
+    const g = `adr305new-${process.pid}`;
+    const sock = `/tmp/atmux-${uid}/grp-${g}/sock`;
+    const cmd = buildGroupWindowCommand(g);
+    expect(cmd).toContain(`socket-dial ${sock} attach -t '=${g}' 2>/dev/null`);
     expect(cmd).not.toContain("[ -O");
     expect(cmd).not.toContain("tmux -S");
-    expect(cmd).not.toContain("/tmp/atmux-grp-geoyws/sock");
+    expect(cmd).not.toContain(`/tmp/atmux-grp-${g}/sock`);
     expect(cmd).toContain("while true");
     expect(cmd).toContain("sleep 1");
     expect(cmd).toContain("2>/dev/null");
