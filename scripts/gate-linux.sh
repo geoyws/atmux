@@ -51,9 +51,19 @@ else
   CMD=(bash -c 'export HOME=/tmp/gate-home TMPDIR=/tmp/gate-tmp && mkdir -p "$HOME" "$TMPDIR" && bun install --silent --frozen-lockfile && test -d node_modules/bun-types && (bunx tsc --noEmit -p tsconfig.json; echo "TSC_EXIT=$?") && bun test "$@"' _ "$@")
 fi
 
+# A linked worktree's `.git` is a file pointing at the main repo's git dir
+# by absolute host path. Mount that common dir read-only at the SAME path
+# so git (git grep, rev-parse, …) works in the container; without it every
+# git call in the suite exits 128 "not a git repository".
+GIT_MOUNT=()
+if [[ -f "$REPO/.git" ]]; then
+  GIT_COMMON="$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)"
+  GIT_MOUNT=(-v "$GIT_COMMON:$GIT_COMMON:ro")
+fi
+
 docker run --rm \
   --cpus 4 --memory 8g \
-  -v "$REPO:/repo:rw" \
+  -v "$REPO:/repo:rw" ${GIT_MOUNT[@]+"${GIT_MOUNT[@]}"} \
   -v atmux-gate-nm:/repo/node_modules \
   -w /repo \
   -e TMUX_TMPDIR=/tmp/gate-tmp \
