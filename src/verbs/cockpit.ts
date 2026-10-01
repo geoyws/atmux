@@ -70,6 +70,7 @@ import {
   resolvePrefix,
   resolveTopLevelGroup,
 } from "../core/cockpit.ts";
+import { attachLiveCockpit, type LiveCockpitAttachOpts } from "../core/cockpit-live-attach.ts";
 import { loadTeam, teamJsonPath } from "../core/common.ts";
 import { installCockpitCronBlock } from "../core/cron.ts";
 import {
@@ -761,8 +762,21 @@ export interface ParsedCockpitArgs {
    *  inside the attach-time ensure-up, which otherwise uses
    *  no-TUI-launch semantics (today's `aco` behavior). Rejected on
    *  every non-`attach` sub-verb. Optional for backward-compat (same
-   *  pattern as `human` — undefined reads as false). */
+   *  pattern as `human` — undefined reads as false). Contradicts
+   *  `--live` (which never runs ensure-up): the parser refuses the
+   *  combination. */
   launch?: boolean;
+  /** ADR-306: `attach`-sub-verb-only flag. Fast attach to whichever
+   *  candidate cockpit is LIVE (`atmux-cockpit`, else
+   *  `atmux-vendored-cockpit`, else the `ATMUX_COCKPIT_SOCKET` override
+   *  alone) — no ensure-up, no reconcile, no TUI launch, and never a
+   *  server-creating command. Implies `--no-ensure` (accepted
+   *  alongside it; `--launch` is refused with it). None live → hint
+   *  naming `aca`, exit 1; several live → list + refuse, exit 1.
+   *  Rejected on every non-`attach` sub-verb. Optional for
+   *  backward-compat (same pattern as `human` — undefined reads as
+   *  false). */
+  live?: boolean;
   /** Programmatic-only (t-0a74e582). Set by `cockpitAttach` on its
    *  ensure-up args so attach never prunes hand-opened windows.
    *  Never a CLI flag: `parseCockpitArgs` leaves it undefined and the
@@ -824,6 +838,7 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
   let human = false;
   let noEnsure = false;
   let launch = false;
+  let live = false;
 
   let i = 1;
   while (i < args.length) {
@@ -862,6 +877,18 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
           });
         }
         launch = true;
+        i += 1;
+        break;
+      case "--live":
+        if (sub !== "attach") {
+          throw new UsageError({
+            what: `cockpit ${sub}: --live only applies to 'attach'`,
+            hint:
+              "reconcile/reload always ensure; " +
+              "use 'atmux cockpit attach --live' for the fast no-ensure-up attach to the live cockpit",
+          });
+        }
+        live = true;
         i += 1;
         break;
       case "--no-cycle":
@@ -945,15 +972,26 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
 
   // `attach` runs ensure-up + attach; reject every rebuild/migrate-socket
   // flag so operators get a clear hint instead of silently-ignored args.
-  // `--human` (ADR-180), `--no-ensure` and `--launch` are the
-  // attach-specific flags — gated above before this check so they don't
-  // trip the rejection. (`--no-launch` stays rejected: the attach-time
-  // ensure-up already skips TUI launch; pass `--launch` to opt back in.)
+  // `--human` (ADR-180), `--no-ensure`, `--launch` and `--live`
+  // (ADR-306) are the attach-specific flags — gated above before this
+  // check so they don't trip the rejection. (`--no-launch` stays
+  // rejected: the attach-time ensure-up already skips TUI launch; pass
+  // `--launch` to opt back in.)
   if (sub === "attach") {
     if (noCycle || forceCycle || ackDangerous || noLaunch || yes || dryRun || keepLegacy) {
       throw new UsageError({
-        what: "cockpit attach: only --config, --human, --no-ensure and --launch are accepted",
-        hint: "usage: atmux cockpit attach [--config <path>] [--human] [--no-ensure] [--launch]",
+        what: "cockpit attach: only --config, --human, --no-ensure, --launch and --live are accepted",
+        hint: "usage: atmux cockpit attach [--config <path>] [--human] [--no-ensure] [--launch] [--live]",
+      });
+    }
+    // ADR-306: `--live` never runs ensure-up, so `--launch` (which only
+    // affects ensure-up's TUI phase) contradicts it. `--no-ensure` is
+    // accepted alongside `--live` — it is implied, so the combination
+    // is redundant but harmless.
+    if (live && launch) {
+      throw new UsageError({
+        what: "cockpit attach: --live and --launch are mutually exclusive",
+        hint: "--live never runs ensure-up (it implies --no-ensure); --launch only affects ensure-up's TUI phase",
       });
     }
   }
@@ -1014,12 +1052,13 @@ export function parseCockpitArgs(args: ReadonlyArray<string>): ParsedCockpitArgs
   // Surface the field only on the `attach` sub-verb so rebuild/reload
   // fixtures stay shape-stable. On attach we always emit (defaulting
   // to false) so callers + tests can read p.human directly.
-  // `noEnsure` + `launch` follow the same rule (attach-only surface,
-  // pre-flag fixtures omit them and read as falsy).
+  // `noEnsure` + `launch` + `live` follow the same rule (attach-only
+  // surface, pre-flag fixtures omit them and read as falsy).
   if (sub === "attach") {
     out.human = human;
     out.noEnsure = noEnsure;
     out.launch = launch;
+    out.live = live;
   }
   return out;
 }
@@ -1045,6 +1084,10 @@ export interface CockpitOpts {
   /** ADR-086: resolve the atmux binary path for the cron line. Default
    *  reads `ATMUX_BIN` env then falls back to `Bun.which("atmux")`. */
   resolveAtmuxBin?: () => string | null;
+  /** ADR-306: `cockpit attach --live` seams (fs/process/tmux probes +
+   *  final attach exec). Tests inject fakes; production uses the
+   *  ported-`acl` defaults. Only read on the `--live` path. */
+  cockpitLiveDeps?: Omit<LiveCockpitAttachOpts, "session">;
 }
 
 /** Top-level dispatch for `atmux cockpit <subverb>`. */
@@ -1106,6 +1149,14 @@ export async function cockpitAttach(
   const env = opts.env ?? process.env;
   const factory = opts.tmuxFactory ?? createTmux;
   const logger = opts.logger ?? createLogger();
+  // ADR-306: `--live` is the ported-`acl` fast path — attach to
+  // whichever candidate cockpit is LIVE. Implies `--no-ensure`: no
+  // ensure-up, no reconcile, no TUI launch, and never a
+  // server-creating command. Branches BEFORE ensure-up so the live
+  // path cannot create anything even when the cockpit is down.
+  if (parsed.live === true) {
+    return await cockpitAttachLive(parsed, opts);
+  }
 
   // Ensure-up before attach (the old `aco` two-step collapsed into one
   // invocation — saves a bun startup + guarantees the cockpit session
@@ -1146,6 +1197,34 @@ export async function cockpitAttach(
   const socket = getCockpitSocketName(env);
   const tmux = factory({ socket, configFile: getAtmuxTmuxConfPath() });
   return attachWithTmux(tmux, cockpit.cockpitSession, { inheritStdio: parsed.human === true });
+}
+
+/** ADR-306: `atmux cockpit attach --live` — fast attach to whichever
+ *  candidate cockpit is LIVE (ported from the dotfiles `acl` shell
+ *  function). The session name comes from the same `loadCockpit` →
+ *  `cockpitSession` field the ensure-up path uses; all socket
+ *  probing, the SIGUSR1 re-bind, the client fallback order, and the
+ *  final attach exec live in `src/core/cockpit-live-attach.ts` with
+ *  `opts.cockpitLiveDeps` as the injection seam.
+ *
+ *  Exported for direct unit-test access (mirrors `cockpitAttach`). */
+export async function cockpitAttachLive(
+  parsed: ParsedCockpitArgs,
+  opts: CockpitOpts = {},
+): Promise<number> {
+  const env = opts.env ?? process.env;
+  const loadOpts: LoadCockpitOpts = { env };
+  if (parsed.configPath !== undefined) loadOpts.path = parsed.configPath;
+  const cockpit = await loadCockpit(loadOpts);
+  const deps = opts.cockpitLiveDeps ?? {};
+  const logger = deps.logger ?? opts.logger;
+  return attachLiveCockpit({
+    session: cockpit.cockpitSession,
+    inheritStdio: parsed.human === true,
+    ...deps,
+    env: deps.env ?? env,
+    ...(logger === undefined ? {} : { logger }),
+  });
 }
 
 // ---------- Parallel reconcile (bounded concurrency) ----------

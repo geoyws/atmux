@@ -54,7 +54,7 @@ Setup:
                               cockpit.json. Reads roster from
                               ~/.atmux/cockpit.json (override via
                               ATMUX_COCKPIT_CONFIG or --config <p>).
-  cockpit attach [--config <p>] [--human] [--no-ensure] [--launch]
+  cockpit attach [--config <p>] [--human] [--no-ensure] [--launch] [--live]
                               tmux-attach to the cockpit session on its named
                               socket (\`tmux -L atmux-cockpit attach -t
                               atx\`). Socket + session name resolved
@@ -69,6 +69,13 @@ Setup:
                               first by default (cycle dead cages, no TUI
                               launch — today's \`aco\`); \`--no-ensure\`
                               skips it, \`--launch\` re-enables TUI launch.
+                              \`--live\` (ADR-306): skip ensure-up entirely
+                              and attach to whichever candidate cockpit is
+                              LIVE (\`atmux-cockpit\` /
+                              \`atmux-vendored-cockpit\`, or the
+                              ATMUX_COCKPIT_SOCKET override alone) — never
+                              creates a server, refuses when ambiguous.
+                              Implies \`--no-ensure\`; refuses \`--launch\`.
   cockpit rotate <session-name> [--force]
                               ADR-167 Rung C: canonical rotation of a cockpit-
                               level role pane — \`medic\` (W2) or \`<team-name>\`
