@@ -865,7 +865,7 @@ detail (lib edits in main checkout's `atmux-geoyws` branch).
 
 | Position    | Window | Default TUI | Purpose |
 |-------------|--------|-------------|---------|
-| Driver(s)   | 1..N (`driver`, `driver-2`, …) | any (zsh; the operator launches a harness) | One window per `drivers[]` entry, each on its own worktree (ADR-239 §D4). Operator-interactive only — never briefed, never dispatched, never sent keys (ADR-239 §D2/§D5). Work external kb rows directly ([ADR-275](adr/275-external-private-kanban-authority.md)). |
+| Driver(s)   | 1..N (`driver`, `driver-2`, …) | any (zsh; the operator launches a harness) | One window per `drivers[]` entry, each on its own worktree (ADR-239 §D4). Never briefed, never dispatched (ADR-239 §D5); pane input is not refused (ADR-239 §D2 superseded, ADR-293 as amended 2026-10-02 — senders follow `/pane-agent`). Work external kb rows directly ([ADR-275](adr/275-external-private-kanban-authority.md)). |
 | *( `_bot` retired )* | — | — | Seat removed 2026-09-28 ([ADR-298](adr/298-retire-bot-seat-and-superbot-scheduler.md)); row kept so position history stays readable. |
 
 The rows below are **deprecated defaults** (ADR-287 §D5): the shipped template declares none of them, and they spawn only for a team whose `team.json` declares them in `members[]` (`atmux doctor` flags such teams with `deprecated-member-windows`, ADR-287 §D7). Window positions are relative — `m+1`, `m+2`, … after the `m` driver windows, lead first (ADR-044), then declared order.

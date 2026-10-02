@@ -254,7 +254,7 @@
 | 290 | Superdriver lane shortform — cockpit window 1 `_superdriver` → `_sd`, `_sdN` multi-lane cockpit (ADR-279 operator windows, lease-guarded dispatch), `/atmux:bruh` + `/atmux:bruhloop` retired and deleted (drafted as 287; renumbered to 288, then to 290 — collision) | 2026-09-02 | accepted (adversarial review 2026-09-02, 0 blockers; operator decision — George, 2026-09-02) |
 | 291 | The medic is reinstated as a live cockpit member — ADR-212 §D1/§D5/§D6 superseded, `_medic` sits after the `_sdN` lanes (ADR-290 §D5), pane carries `ATMUX_MEMBER=medic`, `buildSuperdoctor*` shims removed | 2026-09-07 | accepted (operator-direct — geoyws, 2026-09-07) |
 | 292 | `atmux msg` — mailbox record + wake over `inbox_messages` (supersedes ADR-154 §D2 per E1-T1 option b) | 2026-09-23 | accepted (reviewer signoff 2026-09-29) |
-| 293 | Driver send-keys guard kept as product behaviour after the 2026-09-08 pane-to-pane revocation | 2026-09-23 | accepted (operator-direct — George, 2026-09-28, a-62b50705). Was: proposed |
+| 293 | Driver send-keys guard kept as product behaviour after the 2026-09-08 pane-to-pane revocation — **amended 2026-10-02: the guard is gone (9885cbfa); pane messaging stays free; D1 void** | 2026-09-23 | accepted (operator-direct — George, 2026-09-28, a-62b50705); amended (George, 2026-10-02, a-8892ab33) |
 | 294 | `atmux doctor` detects tmux servers whose global environment came from an agent shell | 2026-09-25 | proposed |
 | 295 | Opt-in `_blank` cockpit troubleshooting window — plain shell after `_medic` | 2026-09-26 | accepted (reviewer signoff 2026-09-29) |
 | 296 | Per-team `superdriver` window before `driver` | 2026-09-28 | accepted |

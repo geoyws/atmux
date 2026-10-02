@@ -98,3 +98,7 @@ Recorded by @:geoyws/atmux/driver when the verbs landed.
 - **OQ1 resolved.** Default send priority is `p2`, following the lean. Default `check --min` is `p3`, which shows everything. The lean wrote "`--min p0` (show everything)", but `p0` is the most urgent level, so `--min p0` would show only `p0`. The lean's stated intent, show everything unless filtered, is honoured.
 - **D6 roster includes driver seats.** The roster is `members[]` plus `drivers[]`. A driver's window is named after the driver (`driver`, `driver-2`, …). ADR-287 §D5 made drivers-only the default roster, and the epic's own acceptance sends `msg send driver-2` from `driver` on a two-driver team. A members-only lookup, as `tell-lead` does, would address nobody on those teams. Unknown names still fail with `ConfigError`. A member wins over a same-named driver.
 - **`read` vs `check`.** `read` lists every row after the cursor with its `[acked]`/`[unread]` flag. `check` counts only unacked rows, so its exit code tracks what still needs attention.
+
+## Amendment 2026-10-02 — OQ3 settled (t-b832b925)
+
+OQ3 and the D5 "Guard status" paragraph are settled: the guard is gone. `DriverSendKeysViolation` was removed at 9885cbfa (2026-09-22), and [ADR-293](293-driver-send-keys-guard-kept-after-2026-09-08-revocation.md) was amended on 2026-10-02 (George, a-8892ab33) to record that pane messaging stays free. `msg` is unaffected: it never sends pane input, by construction.

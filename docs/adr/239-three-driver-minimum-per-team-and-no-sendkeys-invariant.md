@@ -287,3 +287,7 @@ The D3/A1 window layouts above predate the per-team `superdriver` seat: with [AD
 ### 2026-09-23 — D2 guard kept as product behaviour after the 2026-09-08 pane-to-pane revocation (ADR-293)
 
 [ADR-293](293-driver-send-keys-guard-kept-after-2026-09-08-revocation.md) records the 2026-09-08 operator revocation of the pane-to-pane send-keys ban (capture-before-send required; `dialog`/`draft` stay refused; `send --queued` since 2026-09-15) and chooses (a) keep the in-tree `DriverSendKeysViolation` guard as product behaviour for send/nudge/dispatch. D2's no-send-keys invariant and the runtime guard are unchanged.
+
+### 2026-10-02 — ADR-293 amended: the guard is gone
+
+The 2026-09-23 note above is superseded. The guard it says was kept had already been removed at 9885cbfa (2026-09-22). George amended [ADR-293](293-driver-send-keys-guard-kept-after-2026-09-08-revocation.md) on 2026-10-02 (a-8892ab33): no driver send-keys guard exists or is to be restored, and pane messaging stays free per the 2026-09-08 revocation.

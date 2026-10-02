@@ -1,6 +1,6 @@
 # ADR-293: Driver send-keys guard kept as product behaviour after the 2026-09-08 pane-to-pane revocation
 
-**Status**: accepted (operator-direct — George, 2026-09-28, a-62b50705). Was: proposed
+**Status**: accepted (operator-direct — George, 2026-09-28, a-62b50705). Was: proposed. **Amended 2026-10-02 (George, a-8892ab33): D1 is void — the guard is gone and pane messaging stays free; see the Amendment section at the end.**
 **Date**: 2026-09-23
 **Driver-ref**: E1-T0 amendment task (kb `atmux` t-d90f05c6) — operator revoked the pane-to-pane send-keys ban 2026-09-08; epic direction chooses (a) keep the in-tree guard.
 **Relates**: [ADR-239](239-three-driver-minimum-per-team-and-no-sendkeys-invariant.md) §D2 (no-send-keys-to-drivers invariant + `DriverSendKeysViolation` runtime guard), [ADR-285](285-cooperative-bot-seat-and-superbot-offer-protocol.md) (the `_bot` cooperative seat is the automation-capable target, not a driver)
@@ -45,3 +45,17 @@ The in-tree `DriverSendKeysViolation` guard stays as product behaviour for every
 
 - `tests/unit/abstractions/tmux-driver-guard.test.ts` stays green unchanged (5 refusal + 4 pass-through + message-shape + 8 parse tests).
 - Promotion to `accepted` is the owner's call; this ADR ships as `proposed`.
+
+## Amendment — 2026-10-02: the guard is gone; pane messaging stays free (George, a-8892ab33, t-b832b925)
+
+This ADR's Context and D1 describe a guard that was no longer in the tree when George accepted the ADR. Commit 9885cbfa ("keep a login zsh parent under every agent pane", 2026-09-22, on trunk) removed `DriverSendKeysViolation` and the `isDriverPaneName` predicate from `src/abstractions/tmux.ts`. `src/verbs/nudge.ts` has no driver handling, and ADR-239's header already records §D2 as superseded on 2026-09-08. The "18 guard tests pass" receipt came from branch `atmux-t-d90f05c6-w1-f70817`, not trunk. `tests/unit/abstractions/tmux-driver-guard.test.ts` does not exist on trunk, so the Acceptance gates above cannot be met.
+
+The acceptance in a-62b50705 therefore rested on a false premise: it picked (a) and rejected (c) "the guard was already deleted", but (c) was the true state. On 2026-10-02 George chose to amend this ADR rather than restore the guard (a-8892ab33, option "amend-adr"). The rest of this ADR stands as history.
+
+**Decision as amended:**
+
+- **D1 is void.** atmux does not refuse `send-keys`, `paste-buffer` or `nudge` to driver-named panes, and no guard is to be restored. A driver pane is messaged like any other pane, which is the 2026-09-08 revocation applied to atmux itself.
+- **The safety rules come from the procedure, not a product guard.** `/pane-agent` keeps the fresh capture before every send, refuses `dialog` and an existing `draft`, and allows `send --queued` only for `idle`/`busy`/`unknown`. The board stays the durable record, never a keystroke alone.
+- **Rejected:** restoring `DriverSendKeysViolation` (option "restore"). It would re-ban what George revoked on 2026-09-08 and re-add product code for a refusal nobody now wants.
+
+[ADR-308](308-wedged-pane-classification-and-recovery-ladder.md)'s landing-tree note, which described this disagreement as unsettled, is answered by this amendment.
