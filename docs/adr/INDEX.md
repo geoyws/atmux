@@ -250,6 +250,7 @@
 | 286 | Eternal-improvement retired — the loop, the `improve` verb and its three Discord templates | 2026-09-01 | accepted (operator-direct) |
 | 287 | Canonical cockpit nesting — groups are branches, teams are leaf cages hosting drivers; the default roster is drivers-only | 2026-09-02 | accepted (operator-direct) |
 | 288 | Driver window worker/attention pane pair — floor-1 default-3 pair contract (floor-3 wording superseded 2026-09-28), null-default attention launch, and later-slice contract | 2026-09-03 | accepted (operator-direct — George, 2026-09-28, a-6b92a0d4). Was: proposed |
+| 289 | Retire medic autoStart send-keys auto-fire — reconcile/rotate no longer types the loop command into fresh medic panes | 2026-09-23 | accepted (reviewer signoff 2026-09-23) |
 | 290 | Superdriver lane shortform — cockpit window 1 `_superdriver` → `_sd`, `_sdN` multi-lane cockpit (ADR-279 operator windows, lease-guarded dispatch), `/atmux:bruh` + `/atmux:bruhloop` retired and deleted (drafted as 287; renumbered to 288, then to 290 — collision) | 2026-09-02 | accepted (adversarial review 2026-09-02, 0 blockers; operator decision — George, 2026-09-02) |
 | 291 | The medic is reinstated as a live cockpit member — ADR-212 §D1/§D5/§D6 superseded, `_medic` sits after the `_sdN` lanes (ADR-290 §D5), pane carries `ATMUX_MEMBER=medic`, `buildSuperdoctor*` shims removed | 2026-09-07 | accepted (operator-direct — geoyws, 2026-09-07) |
 | 292 | `atmux msg` — mailbox record + wake over `inbox_messages` (supersedes ADR-154 §D2 per E1-T1 option b) | 2026-09-23 | accepted (reviewer signoff 2026-09-29) |
@@ -268,6 +269,8 @@
 | 305 | Per-user private tmux socket directories (`/tmp/atmux-<uid>/…`, 0700; whole-chain descriptor walk from `/`; removal only through held descriptors; `atmux socket-dial` / `socket-rmdir` for shells; amends ADR-018) | 2026-09-30 | proposed |
 | 306 | `cockpit attach --live` fast attach to the live cockpit (ported dotfiles `acl`; read-only probes, SIGUSR1 re-bind, client fallback; implies `--no-ensure`, refuses `--launch`; e-3caa18a2) | 2026-10-01 | proposed |
 | 307 | Every atmux tmux client call carries `-u` (UTF-8; POSIX-locale TAB→`_` fix, t-48cef478) | 2026-10-01 | proposed |
+| 308 | Wedged-pane classification + sanctioned recovery ladder — `/pane-agent` section; detector + escalation only (drafted as ADR-290 at 39579c2f; renumbered on landing) | 2026-09-23 | accepted (operator-direct) |
+| 309 | Driver send-keys revocation reconciliation — same option-a outcome now recorded in ADR-293; never accepted (drafted as ADR-290 at d1219b79) | 2026-09-23 | superseded by ADR-293 |
 
 ## Superseded (skip)
 
@@ -289,3 +292,4 @@ Retained for historical trace only. Skip unless investigating supersession histo
 - [257](257-eternal-improvement-burndown-first-worktree-isolated.SUPERSEDED.md) — Eternal-improvement = backlog-burndown-first + worktree-isolated, deferred verified merge — superseded by ADR-286
 - [285](285-cooperative-bot-seat-and-superbot-offer-protocol.SUPERSEDED.md) — Cooperative `_bot` seats and the `_superbot` offer protocol — superseded by ADR-298
 - [267](267-durable-agent-continuity-contract.md) — Durable agent-continuity contract — plan/intent is written as you go, not captured on the death-bed — superseded by ADR-304
+- [309](309-send-keys-revocation-reconciliation.SUPERSEDED.md) — Driver send-keys revocation reconciliation — option-(a) draft superseded before acceptance — superseded by ADR-293

@@ -55,3 +55,10 @@ The reintroduced auto-fire is defective three ways:
   auto-start is wanted, it needs a non-send-keys mechanism and a new
   ADR; restoring this helper from git is explicitly not the path
   (the typed command is stale by construction).
+
+### 2026-10-02 — Context staleness note (t-8030039a; history untouched)
+
+The Context section's "no ADR-289/290/291 file exists on disk" was true when
+written; all three files now exist (this ADR-289, ADR-290 superdriver-lane
+shortform, ADR-291 medic reinstatement). The original sentence stands as
+history.
