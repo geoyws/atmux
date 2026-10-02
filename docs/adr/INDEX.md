@@ -270,7 +270,6 @@
 | 306 | `cockpit attach --live` fast attach to the live cockpit (ported dotfiles `acl`; read-only probes, SIGUSR1 re-bind, client fallback; implies `--no-ensure`, refuses `--launch`; e-3caa18a2) | 2026-10-01 | proposed |
 | 307 | Every atmux tmux client call carries `-u` (UTF-8; POSIX-locale TAB→`_` fix, t-48cef478) | 2026-10-01 | proposed |
 | 308 | Wedged-pane classification + sanctioned recovery ladder — `/pane-agent` section; detector + escalation only (drafted as ADR-290 at 39579c2f; renumbered on landing) | 2026-09-23 | accepted (operator-direct) |
-| 309 | Driver send-keys revocation reconciliation — same option-a outcome now recorded in ADR-293; never accepted (drafted as ADR-290 at d1219b79) | 2026-09-23 | superseded by ADR-293 |
 
 ## Superseded (skip)
 
