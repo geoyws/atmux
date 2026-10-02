@@ -704,3 +704,7 @@ Every row verified against disk on **2026-08-14** unless dated otherwise.
 - **Constrained by**: [ADR-233](233-cron-auto-install-disabled-trust-orchd.md) (no boot autostart — D10), [ADR-268](268-managed-repo-state-isolation-enforcement.md) (state residency), [ADR-009](009-auto-rotation.md) §2 + [ADR-254](254-coverage-gate-completeness.md) (coverage gate not widened — D9), [ADR-203](203-event-topic-taxonomy.md) (closed topic set — untouched).
 - **Does not change**: any existing verb's behavior, any schema, any event topic, any team's configuration. The tool bridge calls verbs; it does not modify them.
 - **Operator-facing companion**: [docs/RUNBOOK-voice.md](../RUNBOOK-voice.md) — env vars, start/stop, nginx, and the V-1…V-20 verification checklist.
+
+## Amendment 2026-10-02 — no driver send-keys guard (t-b832b925)
+
+D2 item 2 above says "the driver-pane send-keys guard … appl[ies] unchanged". That guard no longer exists: `DriverSendKeysViolation` was removed at 9885cbfa (2026-09-22), and [ADR-293](293-driver-send-keys-guard-kept-after-2026-09-08-revocation.md) was amended on 2026-10-02 (George, a-8892ab33) to record that pane messaging stays free. The [ADR-033](033-kanban-driver-only-flag.md) caller-scope gates still apply unchanged, and the voice path still goes through the same verbs as the operator's shell.

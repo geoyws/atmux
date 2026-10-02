@@ -138,3 +138,7 @@ Operator decision (George, 2026-09-02 11:20 MYT): the live cockpit is `1:_sd 2:_
 ### §Amendment 2026-09-07 — the `_medic` slot is occupied, not empty
 
 [ADR-291](291-medic-reinstated-as-cockpit-member.md) reinstates the medic as a live cockpit member (operator geoyws, 2026-09-07) and supersedes ADR-212 §D1 / §D5 / §D6. The §OQ row and the ADR-212 cross-reference above previously said the slot "is normally empty"; both were corrected in the same commit. §D5's placement rule is unchanged — `_medic` sits at `anchor.index + 1 + laneCount`, after `_sd` and every `_sdN` lane — and it now holds a working pane whose command carries `export ATMUX_MEMBER=medic &&` (ADR-291 §D3).
+
+### §Amendment 2026-10-02 — the driver guard bullet is historical
+
+The Consequences bullet "`=` exact-match targets do not bypass the driver guard" describes a guard that no longer exists. `DriverSendKeysViolation` was removed at 9885cbfa (2026-09-22), and [ADR-293](293-driver-send-keys-guard-kept-after-2026-09-08-revocation.md) was amended on 2026-10-02 (George, a-8892ab33): pane messaging stays free. The `=`-stripping in `extractWindowNameFromTargetString`, if still present, no longer gates any refusal.
